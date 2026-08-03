@@ -4,9 +4,50 @@ import {SystemInfo} from './system.js';
 
 export interface ExclusiveFileLockOptions {
   readonly heartbeatIntervalMilliseconds?: number;
+  readonly onAcquired?: (lockPath: string) => Effect.Effect<void, never>;
+  readonly onCompleted?: (lockPath: string) => Effect.Effect<void, never>;
+  readonly onContention?: (lockPath: string) => Effect.Effect<void, never>;
   readonly retryIntervalMilliseconds: number;
   readonly staleAfterMilliseconds: number;
   readonly waitTimeoutMilliseconds: number;
+}
+
+export class FileLockTimeout extends Error {
+  override readonly name = 'FileLockTimeout';
+
+  constructor(readonly lockPath: string) {
+    super(`Timed out waiting for local lock ${lockPath}.`);
+  }
+}
+
+export interface FileLockOwner {
+  readonly processId: number;
+  readonly processStartIdentity?: string;
+  readonly token: string;
+  readonly version: 1;
+}
+
+/**
+ * Reads the privacy-safe owner identity of an existing lock without attempting
+ * recovery or changing the lock. Callers use this to report which process owns
+ * a long-running operation; absence includes malformed, missing, oversized, and
+ * symbolic-link lock files.
+ */
+export const readExclusiveFileLockOwner = Effect.fn('fileLock.readOwner')(function* (
+  fs: FileSystem.FileSystem,
+  lockPath: string,
+) {
+  return yield* Effect.gen(function* () {
+    if (!(yield* fs.exists(lockPath))) return Option.none<FileLockOwner>();
+    if (Option.isSome(yield* fs.readLink(lockPath).pipe(Effect.option))) return Option.none<FileLockOwner>();
+    const info = yield* fs.stat(lockPath);
+    if (info.type !== 'File' || Number(info.size) > 4_096) return Option.none<FileLockOwner>();
+    return Option.fromUndefinedOr(fileLockOwner((yield* fs.readFileString(lockPath)).trim()));
+  }).pipe(Effect.catch(() => Effect.succeed(Option.none<FileLockOwner>())));
+});
+
+export function isFileLockTimeout(cause: unknown): cause is FileLockTimeout {
+  return cause instanceof FileLockTimeout;
 }
 
 /**
@@ -23,14 +64,17 @@ export function withExclusiveFileLock<A, E, R>(
   return Effect.gen(function* () {
     const pathService = yield* Path.Path;
     yield* fs.makeDirectory(pathService.dirname(lockPath), {recursive: true});
-    const crypto = yield* Crypto.Crypto;
-    const system = yield* SystemInfo;
-    const token = `${system.processId}:${yield* crypto.randomUUIDv4}`;
+    const token = yield* fileLockToken();
     const startedAt = yield* Clock.currentTimeMillis;
+    let contentionReported = false;
     while (!(yield* tryAcquireFileLock(fs, lockPath, token, options.staleAfterMilliseconds))) {
+      if (!contentionReported) {
+        yield* options.onContention?.(lockPath) ?? Effect.void;
+        contentionReported = true;
+      }
       const now = yield* Clock.currentTimeMillis;
       if (now - startedAt >= options.waitTimeoutMilliseconds) {
-        return yield* Effect.fail(new Error(`Timed out waiting for local lock ${lockPath}.`));
+        return yield* Effect.fail(new FileLockTimeout(lockPath));
       }
       yield* Effect.sleep(options.retryIntervalMilliseconds);
     }
@@ -39,7 +83,8 @@ export function withExclusiveFileLock<A, E, R>(
     const protectedEffect = Effect.scoped(
       Effect.gen(function* () {
         yield* Effect.forkScoped(refreshFileLockLease(fs, lockPath, token, heartbeatIntervalMilliseconds));
-        return yield* effect;
+        yield* options.onAcquired?.(lockPath) ?? Effect.void;
+        return yield* effect.pipe(Effect.ensuring(options.onCompleted?.(lockPath) ?? Effect.void));
       }),
     );
     return yield* protectedEffect.pipe(Effect.ensuring(releaseFileLock(fs, lockPath, token)));
@@ -96,9 +141,7 @@ function acquireRecoveryGuard(
   staleAfterMilliseconds: number,
 ): Effect.Effect<string | undefined, unknown, Crypto.Crypto | SystemInfo> {
   return Effect.gen(function* () {
-    const crypto = yield* Crypto.Crypto;
-    const system = yield* SystemInfo;
-    const token = `${system.processId}:${yield* crypto.randomUUIDv4}`;
+    const token = yield* fileLockToken();
     if (yield* tryWriteLockToken(fs, guardPath, token)) {
       return token;
     }
@@ -133,14 +176,23 @@ function staleDeadLockToken(
       return undefined;
     }
     const info = yield* fs.stat(path);
+    const token = (yield* fs.readFileString(path)).trim();
+    const owner = fileLockOwner(token);
+    if (owner && !system.isProcessRunning(owner.processId)) {
+      return token;
+    }
     const modifiedAt = Option.getOrUndefined(info.mtime)?.getTime();
     const now = yield* Clock.currentTimeMillis;
     if (modifiedAt === undefined || now - modifiedAt <= staleAfterMilliseconds) {
       return undefined;
     }
-    const token = (yield* fs.readFileString(path)).trim();
-    const ownerPid = fileLockOwnerPid(token);
-    return ownerPid === undefined || !system.isProcessRunning(ownerPid) ? token : undefined;
+    if (owner?.processStartIdentity) {
+      const currentStartIdentity = yield* system.processStartIdentity(owner.processId);
+      if (currentStartIdentity !== undefined && currentStartIdentity !== owner.processStartIdentity) {
+        return token;
+      }
+    }
+    return owner === undefined ? token : undefined;
   });
 }
 
@@ -181,9 +233,39 @@ function refreshFileLockLease(
   }).pipe(Effect.catch(() => Effect.void));
 }
 
-function fileLockOwnerPid(token: string): number | undefined {
-  const value = Number.parseInt(token.split(':', 1)[0] ?? '', 10);
-  return Number.isSafeInteger(value) && value > 0 ? value : undefined;
+const fileLockToken = Effect.fn('fileLock.token')(function* () {
+  const crypto = yield* Crypto.Crypto;
+  const system = yield* SystemInfo;
+  const processStartIdentity = yield* system.processStartIdentity(system.processId);
+  return JSON.stringify({
+    processId: system.processId,
+    ...(processStartIdentity ? {processStartIdentity} : {}),
+    token: yield* crypto.randomUUIDv4,
+    version: 1,
+  } satisfies FileLockOwner);
+});
+
+function fileLockOwner(token: string): FileLockOwner | undefined {
+  try {
+    const parsed = JSON.parse(token) as Partial<FileLockOwner>;
+    if (
+      parsed.version === 1 &&
+      Number.isSafeInteger(parsed.processId) &&
+      parsed.processId! > 0 &&
+      (parsed.processStartIdentity === undefined ||
+        (typeof parsed.processStartIdentity === 'string' && parsed.processStartIdentity.length > 0)) &&
+      typeof parsed.token === 'string' &&
+      parsed.token.length > 0
+    ) {
+      return parsed as FileLockOwner;
+    }
+  } catch {
+    // Threadnote 4 beta lock tokens used the legacy "<pid>:<nonce>" format.
+  }
+  const legacyProcessId = Number.parseInt(token.split(':', 1)[0] ?? '', 10);
+  return Number.isSafeInteger(legacyProcessId) && legacyProcessId > 0
+    ? {processId: legacyProcessId, token, version: 1}
+    : undefined;
 }
 
 function releaseFileLock(fs: FileSystem.FileSystem, lockPath: string, token: string): Effect.Effect<void, never> {

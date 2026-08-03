@@ -1,0 +1,134 @@
+import * as BunRuntime from '@effect/platform-bun/BunRuntime';
+import * as BunServices from '@effect/platform-bun/BunServices';
+import {Effect} from 'effect';
+import {withCliOutputConsole} from './effect/cli_output.js';
+import {CODE_GRAPH_PARSER_WORKER_ARGUMENT, LOCAL_MODEL_WORKER_ARGUMENT} from './worker_protocol.js';
+
+const executableName = process.execPath.replaceAll('\\', '/').split('/').at(-1)?.toLowerCase();
+const arguments_ = process.argv.slice(2);
+const isLocalModelWorker = arguments_[0] === LOCAL_MODEL_WORKER_ARGUMENT;
+const isCodeGraphParserWorker = arguments_[0] === CODE_GRAPH_PARSER_WORKER_ARGUMENT;
+const isMcpServer = executableName?.startsWith('threadnote-mcp-server') === true || arguments_[0] === 'mcp-server';
+
+const program = isLocalModelWorker
+  ? await localModelWorkerProgram(arguments_)
+  : isCodeGraphParserWorker
+    ? await codeGraphParserWorkerProgram(arguments_)
+    : await applicationProgram(arguments_, isMcpServer);
+
+BunRuntime.runMain(program, {
+  disableErrorReporting: isLocalModelWorker || isCodeGraphParserWorker || !isMcpServer,
+});
+
+async function localModelWorkerProgram(arguments_: readonly string[]) {
+  const [model, systemModule, processDiagnostics, processLease] = await Promise.all([
+    import('./effect/ai/isolated-local-model-runtime.js'),
+    import('./effect/system.js'),
+    import('./process_diagnostics.js'),
+    import('./standalone_process_lease.js'),
+  ]);
+  const processHome = normalizedProcessHome(arguments_, processDiagnostics.threadnoteHomeForProcess);
+  return processHome.pipe(
+    Effect.flatMap(home =>
+      processLease.withStandaloneProcessLease(
+        processDiagnostics.withThreadnoteProcessRegistration(
+          home,
+          'local-model-worker',
+          Effect.scoped(model.nativeLocalModelWorkerServer),
+          'model-stdio',
+        ),
+      ),
+    ),
+    Effect.provide(systemModule.SystemInfo.layer),
+    Effect.provide(BunServices.layer),
+  );
+}
+
+async function codeGraphParserWorkerProgram(arguments_: readonly string[]) {
+  const [parser, treeSitter, systemModule, processDiagnostics, processLease] = await Promise.all([
+    import('./code_graph/parser_worker.js'),
+    import('./code_graph/tree_sitter/runtime.js'),
+    import('./effect/system.js'),
+    import('./process_diagnostics.js'),
+    import('./standalone_process_lease.js'),
+  ]);
+  const processHome = normalizedProcessHome(arguments_, processDiagnostics.threadnoteHomeForProcess);
+  return processHome.pipe(
+    Effect.flatMap(home =>
+      processLease.withStandaloneProcessLease(
+        processDiagnostics.withThreadnoteProcessRegistration(
+          home,
+          'graph-parser-worker',
+          Effect.scoped(parser.codeGraphParserWorkerServer),
+          'parser-stdio',
+        ),
+      ),
+    ),
+    Effect.provide(treeSitter.TreeSitterRuntime.layer),
+    Effect.provide(systemModule.SystemInfo.layer),
+    Effect.provide(BunServices.layer),
+  );
+}
+
+async function applicationProgram(arguments_: readonly string[], isMcpServer: boolean) {
+  const [runtime, processDiagnostics, processLease] = await Promise.all([
+    import('./effect/runtime.js'),
+    import('./process_diagnostics.js'),
+    import('./standalone_process_lease.js'),
+  ]);
+  if (isMcpServer) {
+    const {mcpServerEffect} = await import('./mcp_server.js');
+    const processHome = normalizedProcessHome(arguments_, processDiagnostics.threadnoteHomeForProcess);
+    return processHome.pipe(
+      Effect.flatMap(home =>
+        processLease.withStandaloneProcessLease(
+          processDiagnostics.withThreadnoteProcessRegistration(
+            home,
+            'mcp',
+            Effect.scoped(mcpServerEffect),
+            'mcp-server',
+          ),
+        ),
+      ),
+      Effect.provide(runtime.ApplicationLayer),
+    );
+  }
+
+  const [{inspectCliInvocation}, {cliEffect}] = await Promise.all([
+    import('./effect/cli.js'),
+    import('./threadnote.js'),
+  ]);
+  const cliOperation = inspectCliInvocation(arguments_).operation;
+  const processRole = cliOperation === 'manage' ? 'manager' : 'cli';
+  const processOperation = cliOperation === 'manage' ? 'manager-ui' : cliOperation;
+  const processHome = normalizedProcessHome(arguments_, processDiagnostics.threadnoteHomeForProcess);
+  return processHome.pipe(
+    Effect.flatMap(home =>
+      processLease.withStandaloneProcessLease(
+        processDiagnostics.withThreadnoteProcessRegistration(
+          home,
+          processRole,
+          withCliOutputConsole(cliEffect(arguments_)),
+          processOperation,
+        ),
+      ),
+    ),
+    Effect.provide(runtime.ApplicationLayer),
+  );
+}
+
+function normalizedProcessHome(
+  arguments_: readonly string[],
+  resolveHome: typeof import('./process_diagnostics.js').threadnoteHomeForProcess,
+) {
+  return resolveHome(arguments_, process.env).pipe(
+    Effect.tap(home =>
+      Effect.sync(() => {
+        // Normalize CLI-only --home into the environment inherited by the
+        // crash-isolated model worker and by the direct MCP entrypoint. Runtime
+        // diagnostics and model storage must remain in the same Threadnote home.
+        process.env.THREADNOTE_HOME = home;
+      }),
+    ),
+  );
+}

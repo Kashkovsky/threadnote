@@ -1,60 +1,430 @@
-name: Publish
+name: Publish standalone release
 
 on:
-  release:
-    types: [published]
+  push:
+    tags: ['v*']
   workflow_dispatch:
 
 permissions:
   contents: read
-  id-token: write # required for npm OIDC trusted publishing + provenance
 
 concurrency:
-  group: publish-${{ github.event.release.tag_name }}
+  group: publish-${{ github.ref_name }}
   cancel-in-progress: false
 
+env:
+  BUN_VERSION: 1.3.14
+
 jobs:
-  publish:
-    if: github.event_name == 'release'
+  # Verification, platform builds, and exact-commit evidence start together. Publication joins the required outcomes.
+  # Betas report production-large evidence asynchronously; RC and stable publication depend on it.
+  production-large-evidence:
+    name: Validate production-large release evidence
+    if: >-
+      github.event_name == 'push' &&
+      (startsWith(github.ref, 'refs/tags/v4.0.0-beta.') ||
+       startsWith(github.ref, 'refs/tags/v4.0.0-rc.') ||
+       github.ref == 'refs/tags/v4.0.0')
+    uses: ./.github/workflows/production-large-evidence.yml
+    with:
+      gate_release: ${{ startsWith(github.ref, 'refs/tags/v4.0.0-rc.') || github.ref == 'refs/tags/v4.0.0' }}
+      release_ref: ${{ github.ref }}
+      release_sha: ${{ github.sha }}
+
+  verify:
+    name: Verify release source
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v7
+
+      - uses: oven-sh/setup-bun@v2
         with:
-          ref: ${{ github.event.release.tag_name }}
+          bun-version: ${{ env.BUN_VERSION }}
 
-      - uses: actions/setup-node@v7
-        with:
-          node-version-file: .nvmrc
-          registry-url: https://registry.npmjs.org
-
-      # OIDC trusted publishing requires npm >= 11.5.1. Keep the major compatible
-      # with the Node 22 runner instead of inheriting npm 12 engine changes.
-      - run: npm install -g npm@11
-
-      - run: npm ci
+      - run: bun install --frozen-lockfile
 
       - name: Verify release tag matches package version
+        if: github.event_name == 'push'
+        shell: bash
         run: |
-          pkg="v$(node -p "require('./package.json').version")"
-          tag="${{ github.event.release.tag_name }}"
-          if [ "$pkg" != "$tag" ]; then
-            echo "::error::package.json ($pkg) does not match release tag ($tag)"
+          package_tag="v$(bun -e 'console.log((await Bun.file("package.json").json()).version)')"
+          release_tag="${{ github.ref_name }}"
+          if [ "$package_tag" != "$release_tag" ]; then
+            echo "::error::package.json ($package_tag) does not match release tag ($release_tag)"
             exit 1
           fi
 
-      - run: npm run lint
-      - run: npm run typecheck
-      - run: npm run build
-      - run: npm run test
-
-      # No NODE_AUTH_TOKEN: auth comes from the OIDC trusted publisher.
-      # Provenance is attached automatically; --provenance makes it explicit.
-      - name: Publish to npm
-        env:
-          IS_PRERELEASE: ${{ github.event.release.prerelease }}
+      - name: Verify versioned release notes
+        if: github.event_name == 'push'
+        shell: bash
         run: |
-          tag=latest
-          if [ "$IS_PRERELEASE" = "true" ]; then
-            tag=beta
+          set -euo pipefail
+          release_notes_file=".github/release-notes/${{ github.ref_name }}.md"
+          if [[ ! -s "$release_notes_file" ]]; then
+            echo "::error::Add non-empty release notes at $release_notes_file before tagging the release."
+            exit 1
           fi
-          npm publish --provenance --access public --tag "$tag"
+          first_non_empty_line="$(sed -n '/[^[:space:]]/{p;q;}' "$release_notes_file")"
+          if [[ "$first_non_empty_line" != "## What's new" ]]; then
+            echo "::error::$release_notes_file must begin with the heading: ## What's new"
+            exit 1
+          fi
+
+      - run: bun run lint
+      - run: bun run prettier:check
+      - run: bun run typecheck
+      - run: bun run test
+
+  linux:
+    name: Linux · ${{ matrix.architecture }}
+    if: github.event_name == 'push'
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: x64
+            runner: ubuntu-latest
+            target: bun-linux-x64-baseline
+          - architecture: arm64
+            runner: ubuntu-24.04-arm
+            target: bun-linux-arm64
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - run: bun install --frozen-lockfile
+      - run: bun run build
+        env:
+          THREADNOTE_BUILD_TARGET: ${{ matrix.target }}
+      - run: ./dist/threadnote --version
+      - name: Prepare strict doctor fixture
+        shell: bash
+        env:
+          CI: '1'
+          HOME: ${{ runner.temp }}/threadnote-release-user
+          THREADNOTE_BIN_DIR: ${{ runner.temp }}/threadnote-release-bin
+          THREADNOTE_HOME: ${{ runner.temp }}/threadnote-release-home
+          THREADNOTE_INSTALL_ROOT: ${{ runner.temp }}/threadnote-release-install
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME"
+          ./dist/threadnote --home "$THREADNOTE_HOME" install --no-start
+      - name: Verify release with strict read-only doctor
+        env:
+          CI: '1'
+          HOME: ${{ runner.temp }}/threadnote-release-user
+          THREADNOTE_BIN_DIR: ${{ runner.temp }}/threadnote-release-bin
+          THREADNOTE_HOME: ${{ runner.temp }}/threadnote-release-home
+          THREADNOTE_INSTALL_ROOT: ${{ runner.temp }}/threadnote-release-install
+        run: ./dist/threadnote --home "$THREADNOTE_HOME" doctor --dry-run --strict
+      - name: Produce a real embedding with the release payload
+        run: bun --bun vitest run --config vitest.e2e.config.ts test/e2e/local-bins.e2e.ts
+      - run: bun run archive:release
+        env:
+          THREADNOTE_RELEASE_TARGET: linux-${{ matrix.architecture }}
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-linux-${{ matrix.architecture }}
+          path: artifacts/
+          if-no-files-found: error
+
+  macos:
+    name: macOS · ${{ matrix.architecture }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: arm64
+            runner: macos-15
+            target: bun-darwin-arm64
+          - architecture: x64
+            runner: macos-15-intel
+            target: bun-darwin-x64
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - run: bun install --frozen-lockfile
+      - run: bun run build
+        env:
+          THREADNOTE_BUILD_TARGET: ${{ matrix.target }}
+      - run: ./dist/threadnote --version
+      - name: Prepare strict doctor fixture
+        shell: bash
+        env:
+          CI: '1'
+          HOME: ${{ runner.temp }}/threadnote-release-user
+          THREADNOTE_BIN_DIR: ${{ runner.temp }}/threadnote-release-bin
+          THREADNOTE_HOME: ${{ runner.temp }}/threadnote-release-home
+          THREADNOTE_INSTALL_ROOT: ${{ runner.temp }}/threadnote-release-install
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME"
+          ./dist/threadnote --home "$THREADNOTE_HOME" install --no-start
+      - name: Verify release with strict read-only doctor
+        env:
+          CI: '1'
+          HOME: ${{ runner.temp }}/threadnote-release-user
+          THREADNOTE_BIN_DIR: ${{ runner.temp }}/threadnote-release-bin
+          THREADNOTE_HOME: ${{ runner.temp }}/threadnote-release-home
+          THREADNOTE_INSTALL_ROOT: ${{ runner.temp }}/threadnote-release-install
+        run: ./dist/threadnote --home "$THREADNOTE_HOME" doctor --dry-run --strict
+      - name: Produce a real embedding with the release payload
+        run: bun --bun vitest run --config vitest.e2e.config.ts test/e2e/local-bins.e2e.ts
+
+      - name: Import and select Developer ID certificate
+        shell: bash
+        env:
+          APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_KEYCHAIN_PASSWORD: ${{ secrets.APPLE_KEYCHAIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          certificate_path="$RUNNER_TEMP/threadnote-developer-id.p12"
+          keychain_path="$RUNNER_TEMP/threadnote-signing.keychain-db"
+          printf '%s' "$APPLE_CERTIFICATE_P12_BASE64" | base64 --decode > "$certificate_path"
+          security create-keychain -p "$APPLE_KEYCHAIN_PASSWORD" "$keychain_path"
+          security set-keychain-settings -lut 21600 "$keychain_path"
+          security unlock-keychain -p "$APPLE_KEYCHAIN_PASSWORD" "$keychain_path"
+          security import "$certificate_path" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$keychain_path"
+          security list-keychain -d user -s "$keychain_path"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$APPLE_KEYCHAIN_PASSWORD" "$keychain_path"
+          identity_output="$(security find-identity -v -p codesigning "$keychain_path")"
+          identity_hashes="$(
+            printf '%s\n' "$identity_output" |
+              awk '/"Developer ID Application:/ { print $2 }'
+          )"
+          identity_count="$(
+            printf '%s\n' "$identity_hashes" |
+              awk 'NF { count += 1 } END { print count + 0 }'
+          )"
+          if [[ "$identity_count" -ne 1 ]]; then
+            printf '%s\n' "$identity_output"
+            echo "::error::Expected exactly one valid Developer ID Application identity, found $identity_count."
+            exit 1
+          fi
+          printf 'APPLE_SIGNING_IDENTITY=%s\n' "$identity_hashes" >> "$GITHUB_ENV"
+
+      - name: Sign nested native code and Bun executable
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r -d '' native_file; do
+            if file "$native_file" | grep -q 'Mach-O'; then
+              codesign --force --options runtime --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$native_file"
+              codesign --verify --strict --verbose=2 "$native_file"
+            fi
+          done < <(find dist/runtime -type f -print0)
+          codesign \
+            --force \
+            --options runtime \
+            --timestamp \
+            --entitlements scripts/macos-entitlements.plist \
+            --sign "$APPLE_SIGNING_IDENTITY" \
+            dist/threadnote
+          codesign --verify --strict --verbose=2 dist/threadnote
+
+      - name: Notarize the exact release payload
+        shell: bash
+        env:
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_KEY_P8_BASE64: ${{ secrets.APPLE_NOTARY_KEY_P8_BASE64 }}
+        run: |
+          set -euo pipefail
+          notary_key="$RUNNER_TEMP/AuthKey_${APPLE_NOTARY_KEY_ID}.p8"
+          notarization_zip="$RUNNER_TEMP/threadnote-notarization.zip"
+          printf '%s' "$APPLE_NOTARY_KEY_P8_BASE64" | base64 --decode > "$notary_key"
+          ditto -c -k --keepParent dist "$notarization_zip"
+          xcrun notarytool submit "$notarization_zip" \
+            --key "$notary_key" \
+            --key-id "$APPLE_NOTARY_KEY_ID" \
+            --issuer "$APPLE_NOTARY_ISSUER_ID" \
+            --wait
+          codesign --verify --strict --verbose=2 dist/threadnote
+
+      - run: bun run archive:release
+        env:
+          THREADNOTE_RELEASE_TARGET: darwin-${{ matrix.architecture }}
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-darwin-${{ matrix.architecture }}
+          path: artifacts/
+          if-no-files-found: error
+
+  windows-build:
+    name: Windows build · ${{ matrix.architecture }} · disabled
+    # Windows 4 release artifacts stay unavailable until Authenticode signing is approved and verified.
+    if: ${{ false }}
+    needs: verify
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: x64
+            runner: windows-2025
+            target: bun-windows-x64-baseline
+          - architecture: arm64
+            runner: windows-11-arm
+            target: bun-windows-arm64
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - run: bun install --frozen-lockfile
+      - run: bun run build
+        env:
+          THREADNOTE_BUILD_TARGET: ${{ matrix.target }}
+      - name: Prepare fixture and verify with strict read-only doctor
+        shell: pwsh
+        env:
+          CI: '1'
+          HOME: ${{ runner.temp }}/threadnote-release-user
+          USERPROFILE: ${{ runner.temp }}/threadnote-release-user
+          THREADNOTE_BIN_DIR: ${{ runner.temp }}/threadnote-release-bin
+          THREADNOTE_HOME: ${{ runner.temp }}/threadnote-release-home
+          THREADNOTE_INSTALL_ROOT: ${{ runner.temp }}/threadnote-release-install
+        run: |
+          New-Item -ItemType Directory -Force -Path $env:HOME | Out-Null
+          & .\dist\threadnote.exe --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & .\dist\threadnote.exe --home $env:THREADNOTE_HOME install --no-start
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & .\dist\threadnote.exe --home $env:THREADNOTE_HOME doctor --dry-run --strict
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Produce a real embedding with the release payload
+        run: bun --bun vitest run --config vitest.e2e.config.ts test/e2e/local-bins.e2e.ts
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: unsigned-windows-${{ matrix.architecture }}
+          path: dist/
+          if-no-files-found: error
+
+  windows-sign:
+    name: Windows sign · ${{ matrix.architecture }} · disabled
+    # Keep the implementation ready for the Authenticode work without publishing unsigned artifacts.
+    if: ${{ false }}
+    needs: windows-build
+    runs-on: windows-2025
+    strategy:
+      fail-fast: false
+      matrix:
+        architecture: [x64, arm64]
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - run: bun install --frozen-lockfile
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: unsigned-windows-${{ matrix.architecture }}
+          path: dist
+
+      - name: Azure login for Artifact Signing
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Authenticode-sign executable and native payload
+        uses: azure/artifact-signing-action@v2
+        with:
+          endpoint: ${{ secrets.AZURE_ARTIFACT_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ secrets.AZURE_ARTIFACT_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.AZURE_ARTIFACT_SIGNING_PROFILE }}
+          files-folder: ${{ github.workspace }}\dist
+          files-folder-filter: exe,dll,node
+          files-folder-recurse: true
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Verify Authenticode signatures
+        shell: pwsh
+        run: |
+          $signedFiles = Get-ChildItem dist -Recurse -File | Where-Object {
+            $_.Extension -in '.exe', '.dll', '.node'
+          }
+          if ($signedFiles.Count -eq 0) {
+            throw 'No Windows executable or native library was found to verify.'
+          }
+          foreach ($file in $signedFiles) {
+            $signature = Get-AuthenticodeSignature $file.FullName
+            if ($signature.Status -ne 'Valid') {
+              throw "Invalid Authenticode signature for $($file.FullName): $($signature.Status)"
+            }
+          }
+
+      - run: bun run archive:release
+        env:
+          THREADNOTE_RELEASE_TARGET: windows-${{ matrix.architecture }}
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-windows-${{ matrix.architecture }}
+          path: artifacts/
+          if-no-files-found: error
+
+  # Keep beta feedback fast: verified, signed platform artifacts are sufficient to publish the prerelease.
+  publish-beta:
+    name: Publish beta without waiting for production-large evidence
+    if: >-
+      always() &&
+      github.event_name == 'push' &&
+      startsWith(github.ref, 'refs/tags/v4.0.0-beta.') &&
+      needs.verify.result == 'success' &&
+      needs.linux.result == 'success' &&
+      needs.macos.result == 'success'
+    needs: [verify, linux, macos]
+    permissions:
+      contents: write
+    uses: ./.github/workflows/publish-release-assets.yml
+    with:
+      release_tag: ${{ github.ref_name }}
+
+  publish-evidence-gated:
+    name: Publish release after required production-large evidence
+    if: >-
+      always() &&
+      github.event_name == 'push' &&
+      !startsWith(github.ref, 'refs/tags/v4.0.0-beta.') &&
+      needs.verify.result == 'success' &&
+      needs.linux.result == 'success' &&
+      needs.macos.result == 'success' &&
+      (((startsWith(github.ref, 'refs/tags/v4.0.0-rc.') ||
+         github.ref == 'refs/tags/v4.0.0') &&
+        needs.production-large-evidence.result == 'success') ||
+       (!(startsWith(github.ref, 'refs/tags/v4.0.0-rc.') ||
+          github.ref == 'refs/tags/v4.0.0') &&
+        needs.production-large-evidence.result == 'skipped'))
+    needs: [verify, linux, macos, production-large-evidence]
+    permissions:
+      contents: write
+    uses: ./.github/workflows/publish-release-assets.yml
+    with:
+      release_tag: ${{ github.ref_name }}

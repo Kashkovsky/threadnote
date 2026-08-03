@@ -5,8 +5,8 @@ import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {StdioClientTransport} from '@modelcontextprotocol/sdk/client/stdio.js';
 import {describe, expect, it} from 'vitest';
 
-const sourceUri = 'viking://user/test-user/memories/durable/projects/foo/bar.md';
-const targetUri = 'viking://user/test-user/memories/shared/default/durable/projects/foo/bar.md';
+const sourceUri = 'threadnote://user/test-user/memories/durable/projects/foo/bar.md';
+const targetUri = 'threadnote://user/test-user/memories/shared/default/durable/projects/foo/bar.md';
 
 interface TextContent {
   readonly text: string;
@@ -15,11 +15,10 @@ interface TextContent {
 
 async function makeHome(root: string): Promise<string> {
   const home = join(root, 'home');
-  const worktree = join(home, 'data', 'viking', 'local', 'user', 'test-user', 'memories', 'shared', 'default');
+  const worktree = join(home, 'share', 'worktrees', 'default');
   const sourcePath = join(
     home,
     'data',
-    'viking',
     'local',
     'user',
     'test-user',
@@ -81,7 +80,6 @@ async function makeFakeBin(root: string, options: {readonly mutateSourceOnCommit
     root,
     'home',
     'data',
-    'viking',
     'local',
     'user',
     'test-user',
@@ -91,66 +89,12 @@ async function makeFakeBin(root: string, options: {readonly mutateSourceOnCommit
     'foo',
     'bar.md',
   );
-  const removeMarkerPath = join(root, 'source-remove-invoked');
-  const targetPath = join(
-    root,
-    'home',
-    'data',
-    'viking',
-    'local',
-    'user',
-    'test-user',
-    'memories',
-    'shared',
-    'default',
-    'durable',
-    'projects',
-    'foo',
-    'bar.md',
-  );
-  const targetDirectory = join(targetPath, '..');
   await mkdir(bin, {recursive: true});
-  await writeExecutable(
-    join(bin, 'ov'),
-    `#! /usr/bin/env node
-const args = process.argv.slice(2);
-const command = args[0];
-const sourceUri = ${JSON.stringify(sourceUri)};
-const targetUri = ${JSON.stringify(targetUri)};
-if (command === 'read' && args[1] === sourceUri) {
-  process.stdout.write('MEMORY\\nkind: durable\\nstatus: active\\nproject: foo\\ntopic: bar\\n\\nBody\\n');
-  process.exit(0);
-}
-if (command === 'stat') {
-  process.exit(args[1] === targetUri ? 1 : 0);
-}
-if (command === 'write' && args[1] === targetUri) {
-  const fs = require('node:fs');
-  const sourceFile = args[args.indexOf('--from-file') + 1];
-  fs.mkdirSync(${JSON.stringify(targetDirectory)}, {recursive: true});
-  fs.copyFileSync(sourceFile, ${JSON.stringify(targetPath)});
-  process.stdout.write('fake ov write progress that must not reach MCP stdout\\n');
-  process.exit(0);
-}
-if (command === 'rm' && args[1] === sourceUri) {
-  const fs = require('node:fs');
-  fs.writeFileSync(${JSON.stringify(removeMarkerPath)}, 'invoked\\n');
-  fs.rmSync(${JSON.stringify(sourcePath)}, {force: true});
-  process.stdout.write('fake ov rm progress that must not reach MCP stdout\\n');
-  process.exit(0);
-}
-if (command === 'mkdir') {
-  process.exit(0);
-}
-process.stderr.write('unexpected ov command: ' + args.join(' ') + '\\n');
-process.exit(1);
-`,
-  );
   await writeExecutable(
     join(bin, 'git'),
     `#! /usr/bin/env node
 const args = process.argv.slice(2);
-if (args.includes('fetch') || args.includes('add')) {
+if (args.includes('fetch') || args.includes('add') || args.includes('ls-files')) {
   process.exit(0);
 }
 if (args.includes('rev-list')) {
@@ -185,7 +129,7 @@ describe('Threadnote MCP share_publish', () => {
     const fakeBin = await makeFakeBin(root);
     const repoRoot = process.cwd();
     const transport = new StdioClientTransport({
-      args: [join(repoRoot, 'node_modules', 'tsx', 'dist', 'cli.mjs'), join(repoRoot, 'src', 'mcp_server.ts')],
+      args: [join(repoRoot, 'src', 'standalone.ts'), 'mcp-server'],
       command: process.execPath,
       cwd: repoRoot,
       env: {
@@ -194,7 +138,6 @@ describe('Threadnote MCP share_publish', () => {
         THREADNOTE_AGENT_ID: 'threadnote',
         THREADNOTE_HOME: home,
         THREADNOTE_MANIFEST: join(home, 'seed-manifest.yaml'),
-        THREADNOTE_OPENVIKING_MCP_URL: 'not-a-url',
         THREADNOTE_USER: 'test-user',
       },
       stderr: 'pipe',
@@ -221,6 +164,9 @@ describe('Threadnote MCP share_publish', () => {
       const text = (result.content as TextContent[]).map(item => item.text).join('\n');
       expect(text).toContain(`Published ${sourceUri} -> ${targetUri}`);
       expect(text).toContain('git push skipped (push=false)');
+      await expect(
+        readFile(join(home, 'share', 'worktrees', 'default', 'durable', 'projects', 'foo', 'bar.md'), 'utf8'),
+      ).resolves.toContain('Body');
     } finally {
       await client.close().catch(() => undefined);
       await rm(root, {force: true, recursive: true});
@@ -236,7 +182,6 @@ describe('Threadnote MCP share_publish', () => {
     const sourcePath = join(
       home,
       'data',
-      'viking',
       'local',
       'user',
       'test-user',
@@ -247,7 +192,7 @@ describe('Threadnote MCP share_publish', () => {
       'bar.md',
     );
     const transport = new StdioClientTransport({
-      args: [join(repoRoot, 'node_modules', 'tsx', 'dist', 'cli.mjs'), join(repoRoot, 'src', 'mcp_server.ts')],
+      args: [join(repoRoot, 'src', 'standalone.ts'), 'mcp-server'],
       command: process.execPath,
       cwd: repoRoot,
       env: {
@@ -256,7 +201,6 @@ describe('Threadnote MCP share_publish', () => {
         THREADNOTE_AGENT_ID: 'threadnote',
         THREADNOTE_HOME: home,
         THREADNOTE_MANIFEST: join(home, 'seed-manifest.yaml'),
-        THREADNOTE_OPENVIKING_MCP_URL: 'not-a-url',
         THREADNOTE_USER: 'test-user',
       },
       stderr: 'pipe',

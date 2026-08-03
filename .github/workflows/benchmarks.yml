@@ -1,0 +1,461 @@
+name: Platform benchmarks
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/benchmarks.yml'
+      - '.github/workflows/production-large-evidence.yml'
+      - 'bun.lock'
+      - 'package.json'
+      - 'scripts/benchmark-code-graph.ts'
+      - 'scripts/benchmark-code-graph-heavy-tail.ts'
+      - 'scripts/code-graph-benchmark-sampler.ts'
+      - 'scripts/benchmark-recall-vectors.ts'
+      - 'scripts/code-graph-fixture.ts'
+      - 'scripts/code-graph-heavy-tail-fixture.ts'
+      - 'scripts/evaluate-recall.ts'
+      - 'src/code_graph/**'
+      - 'src/crypto/**'
+      - 'src/effect/ai/**'
+      - 'src/effect/command.ts'
+      - 'src/effect/digest.ts'
+      - 'src/effect/file_lock.ts'
+      - 'src/effect/runtime.ts'
+      - 'src/effect/system.ts'
+      - 'src/evaluation/**'
+      - 'src/models/**'
+      - 'src/recall/**'
+      - 'src/search/chunker.ts'
+      - 'src/search/vector-index.ts'
+      - 'src/search/vector-search.ts'
+      - 'src/storage/layout.ts'
+      - 'test/evaluation/baselines/code-graph-v1/**'
+      - 'test/evaluation/candidates/threadnote-4.0.0/**'
+      - 'test/evaluation/fixtures/code-graph-v1/**'
+      - 'test/evaluation/fixtures/recall-v1/**'
+  workflow_dispatch:
+    inputs:
+      include_100k:
+        description: Run the 100k scale-boundary suite on Linux
+        required: false
+        type: boolean
+        default: false
+      include_production_large:
+        description: Run the n=1 48k-file production-large graph profile on the pinned Linux runner class
+        required: false
+        type: boolean
+        default: false
+      include_heavy_tail:
+        description: Run parser/cache heavy-tail coverage; this is not a production materialization benchmark
+        required: false
+        type: boolean
+        default: false
+  schedule:
+    - cron: '23 3 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: benchmarks-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  BUN_VERSION: 1.3.14
+  CODE_GRAPH_EMBEDDING_MODEL_ID: bge-small-en-v1.5-q8
+  CODE_GRAPH_EMBEDDING_MODEL_SHA256: f046db1dc724cf4f6f0a0c5917e922823b73eb1d27b8f9a9c2797f7866974804
+
+jobs:
+  recall-pr-10k:
+    name: Recall production 10k · Linux
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - run: bun install --frozen-lockfile
+
+      - name: Gate production lexical and exact-search behavior
+        run: bun run eval:recall
+
+      - name: Gate paged vector storage and incremental reuse
+        run: >-
+          bun run bench:recall:vectors --
+          --documents 10000
+          --samples 5
+          --fail-on-budget
+          --output artifacts/recall-vectors-pr-10000-Linux-${{ runner.arch }}.json
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: recall-vector-benchmark-pr-10000-Linux-${{ runner.arch }}
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 14
+
+  code-graph-pr-scale:
+    name: Code graph PR lexical ${{ matrix.scale }} · Linux
+    if: github.event_name == 'pull_request'
+    strategy:
+      fail-fast: false
+      matrix:
+        scale: [10000, 100000]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - run: bun install --frozen-lockfile
+
+      - name: Gate changed graph runtime at ${{ matrix.scale }} symbols
+        run: >-
+          bun run bench:code-graph --
+          --scale-symbols ${{ matrix.scale }}
+          --samples 3
+          --warmups 1
+          --fail-on-budget
+          --output artifacts/code-graph-pr-${{ matrix.scale }}-Linux-${{ runner.arch }}.json
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: code-graph-pr-${{ matrix.scale }}-Linux-${{ runner.arch }}
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 14
+
+  code-graph:
+    name: Code graph · ${{ matrix.os }}
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - run: bun install --frozen-lockfile
+
+      - name: Gate native graph quality
+        run: bun run eval:code-graph
+
+      - name: Capture native graph benchmark
+        run: >-
+          bun run bench:code-graph --
+          --samples 25
+          --warmups 5
+          --fail-on-budget
+          --output artifacts/code-graph-${{ runner.os }}-${{ runner.arch }}.json
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: code-graph-benchmarks-${{ runner.os }}-${{ runner.arch }}
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 30
+
+  code-graph-10k:
+    name: Code graph 10k · ${{ matrix.os }}
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - run: bun install --frozen-lockfile
+
+      - name: Gate 10k-symbol indexing and queries
+        run: >-
+          bun run bench:code-graph --
+          --scale-symbols 10000
+          --samples 10
+          --warmups 2
+          --fail-on-budget
+          --output artifacts/code-graph-10k-${{ runner.os }}-${{ runner.arch }}.json
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: code-graph-benchmarks-10k-${{ runner.os }}-${{ runner.arch }}
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 30
+
+  code-graph-vectors:
+    name: Code graph pinned vectors · Linux
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - run: bun install --frozen-lockfile
+
+      - name: Restore pinned graph model
+        uses: actions/cache@v5
+        with:
+          key: threadnote-code-graph-model-${{ env.CODE_GRAPH_EMBEDDING_MODEL_SHA256 }}
+          path: artifacts/code-graph-model-home/models/embedding/${{ env.CODE_GRAPH_EMBEDDING_MODEL_ID }}
+
+      - name: Gate production vector activation and semantic queries
+        run: >-
+          bun run bench:code-graph --
+          --vectors
+          --model-home artifacts/code-graph-model-home
+          --samples 10
+          --warmups 2
+          --fail-on-budget
+          --output artifacts/code-graph-vectors-Linux-${{ runner.arch }}.json
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: code-graph-vector-benchmark-Linux-${{ runner.arch }}
+          path: artifacts/code-graph-vectors-Linux-${{ runner.arch }}.json
+          if-no-files-found: error
+          retention-days: 30
+
+  code-graph-vectors-10k:
+    name: Code graph pinned vectors 10k · Linux
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - run: bun install --frozen-lockfile
+
+      - name: Restore pinned graph model
+        uses: actions/cache@v5
+        with:
+          key: threadnote-code-graph-model-${{ env.CODE_GRAPH_EMBEDDING_MODEL_SHA256 }}
+          path: artifacts/code-graph-model-home/models/embedding/${{ env.CODE_GRAPH_EMBEDDING_MODEL_ID }}
+
+      - name: Gate 10k production-vector activation and scans
+        run: >-
+          bun run bench:code-graph --
+          --vectors
+          --scale-symbols 10000
+          --model-home artifacts/code-graph-model-home
+          --samples 5
+          --warmups 1
+          --fail-on-budget
+          --output artifacts/code-graph-vectors-10k-Linux-${{ runner.arch }}.json
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: code-graph-vector-benchmark-10k-Linux-${{ runner.arch }}
+          path: artifacts/code-graph-vectors-10k-Linux-${{ runner.arch }}.json
+          if-no-files-found: error
+          retention-days: 30
+
+  code-graph-100k:
+    name: Code graph 100k scale boundary · Linux
+    if: github.event_name == 'schedule' || inputs.include_100k
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - run: bun install --frozen-lockfile
+
+      - name: Gate 100k-symbol indexing and queries
+        run: >-
+          bun run bench:code-graph --
+          --scale-symbols 100000
+          --samples 5
+          --warmups 1
+          --fail-on-budget
+          --output artifacts/code-graph-100k-Linux-${{ runner.arch }}.json
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: code-graph-benchmarks-100k-Linux-${{ runner.arch }}
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 30
+
+  code-graph-vectors-100k:
+    name: Code graph pinned vectors 100k · Linux
+    if: github.event_name == 'schedule' || inputs.include_100k
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - run: bun install --frozen-lockfile
+
+      - name: Restore pinned graph model
+        uses: actions/cache@v5
+        with:
+          key: threadnote-code-graph-model-${{ env.CODE_GRAPH_EMBEDDING_MODEL_SHA256 }}
+          path: artifacts/code-graph-model-home/models/embedding/${{ env.CODE_GRAPH_EMBEDDING_MODEL_ID }}
+
+      - name: Gate 100k production-vector activation and scans
+        run: >-
+          bun run bench:code-graph --
+          --vectors
+          --scale-symbols 100000
+          --model-home artifacts/code-graph-model-home
+          --samples 3
+          --warmups 1
+          --fail-on-budget
+          --output artifacts/code-graph-vectors-100k-Linux-${{ runner.arch }}.json
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: code-graph-vector-benchmark-100k-Linux-${{ runner.arch }}
+          path: artifacts/code-graph-vectors-100k-Linux-${{ runner.arch }}.json
+          if-no-files-found: error
+          retention-days: 30
+
+  code-graph-production-large:
+    if: github.event_name == 'schedule' || inputs.include_production_large
+    uses: ./.github/workflows/production-large-evidence.yml
+
+  code-graph-heavy-tail:
+    name: Code graph parser/cache heavy tail · pinned Linux class
+    if: github.event_name == 'schedule' || inputs.include_heavy_tail
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - run: bun install --frozen-lockfile
+
+      - name: Capture parser heavy tail, cache determinism, and interruption resume
+        timeout-minutes: 160
+        env:
+          THREADNOTE_BENCHMARK_RUNNER_CLASS: github-hosted-ubuntu-24.04-${{ runner.arch }}
+          THREADNOTE_BENCHMARK_RUNNER_ID: ${{ runner.name }}
+        run: >-
+          bun run bench:code-graph:heavy-tail --
+          --output artifacts/code-graph-heavy-tail-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}.json
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        timeout-minutes: 10
+        with:
+          name: code-graph-heavy-tail-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}
+          path: artifacts/code-graph-heavy-tail-*.json
+          if-no-files-found: warn
+          retention-days: 90
+
+  recall-10k:
+    name: Recall 10k · ${{ matrix.os }}
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - run: bun install --frozen-lockfile
+
+      - name: Capture process benchmark
+        run: >-
+          bun run bench:recall --
+          --documents 10000
+          --samples 25
+          --warmups 5
+          --output artifacts/recall-10k-${{ runner.os }}-${{ runner.arch }}.json
+
+      - name: Capture built-artifact microbenchmark
+        shell: bash
+        run: >-
+          bun run bench:recall:micro --
+          --output artifacts/recall-micro-${{ runner.os }}-${{ runner.arch }}.json
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: recall-benchmarks-${{ runner.os }}-${{ runner.arch }}
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 30
+
+  recall-100k:
+    name: Recall 100k scale boundary · Linux
+    if: github.event_name == 'schedule' || inputs.include_100k
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - run: bun install --frozen-lockfile
+
+      - name: Capture 100k process benchmark
+        run: >-
+          bun run bench:recall --
+          --documents 100000
+          --samples 5
+          --warmups 1
+          --output artifacts/recall-100k-Linux-${{ runner.arch }}.json
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: recall-benchmarks-100k-Linux-${{ runner.arch }}
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 30

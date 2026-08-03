@@ -45,7 +45,13 @@ export const SCRUBBER_PATTERNS: readonly ScrubberPattern[] = [
   },
   {name: 'URL basic auth', regex: /\bhttps?:\/\/[^:\s/@]+:[^@\s]+@[^\s)>"'`,]+/i},
 
-  {name: 'macOS home path', placeholder: '<local-path>', regex: /\/Users\/[^\s)>"'`,]+/},
+  {
+    name: 'macOS home path',
+    placeholder: '<local-path>',
+    // Match a real POSIX macOS home root, not Git-Bash/WSL/Windows path
+    // fragments such as /c/Users, /mnt/c/Users, or C:/Users.
+    regex: /(?<![A-Za-z0-9_:])\/Users\/[^\s)>"'`,]+/,
+  },
   {name: 'linux home path', placeholder: '<local-path>', regex: /\/home\/[^\s)>"'`,]+/},
 ];
 

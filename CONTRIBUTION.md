@@ -10,34 +10,32 @@ open an issue first so the intended contract can be agreed before substantial im
 
 You need:
 
-- Node.js 22.19 or newer (the version in `.nvmrc` is recommended);
-- npm;
-- uv and Python 3.12 only when running the live OpenViking end-to-end suite.
+- Bun `1.3.14`.
 
 Install dependencies and run the fast validation set:
 
 ```bash
-npm ci
-npm run lint
-npm run prettier:check
-npm run typecheck
-npm test
+bun install --frozen-lockfile
+bun run lint
+bun run prettier:check
+bun run typecheck
+bun run test
 ```
 
 Run the source CLI or MCP server during development with:
 
 ```bash
-npm run dev -- --help
-npm run dev:mcp-server
+bun run dev -- --help
+bun run dev:mcp-server
 ```
 
-Do not commit credentials, API keys, private memories, customer data, raw production logs, or a local OpenViking
-datastore. Test fixtures must use synthetic data.
+Do not commit credentials, API keys, private memories, customer data, raw production logs, or a local Threadnote home.
+Test fixtures must use synthetic data.
 
 ## Architecture expectations
 
-Threadnote uses Effect 4 beta for infrastructure and orchestration. See [`docs/effect.md`](./docs/effect.md) before
-changing the CLI, lifecycle, manager, MCP, command execution, HTTP, retry, or AI code.
+Threadnote uses Effect 4 beta for infrastructure and orchestration. Preserve the capability, lifecycle, and runtime
+boundaries below when changing the CLI, lifecycle, manager, MCP, command execution, HTTP, retry, or AI code.
 
 Keep these invariants intact:
 
@@ -54,9 +52,11 @@ Keep these invariants intact:
 - MCP inputs use Effect Schema as the source for types, runtime validation, descriptions, and emitted JSON Schema.
 - Pure transformations and React state may remain plain TypeScript when Effect would not improve composition or error
   handling.
-- The npm package is ESM. The checked-in `.cjs` files under `bin/` must remain tiny dynamic-import launchers rather than
-  bundling CommonJS copies of the application.
-- Keep `effect`, `@effect/platform-node`, `@effect/vitest`, and `@effect/ai-openai-compat` pinned to the same exact beta.
+- The release entrypoint is ESM and compiles to a bytecode-enabled standalone executable with the pinned Bun runtime.
+- Use Effect's Bun platform services for filesystem, path, command, HTTP, terminal, server, socket, and SQLite access.
+  Application and build-script code must not import `node:*` modules.
+- Keep `effect`, `@effect/platform-bun`, `@effect/sql-sqlite-bun`, `@effect/vitest`, and
+  `@effect/ai-openai-compat` pinned to the same exact beta.
 
 Threadnote intentionally uses `effect/unstable/*`. API instability is acceptable, but an upgrade must update its
 adapters and compatibility tests together.
@@ -69,53 +69,51 @@ services; integration tests cover CLI, MCP, manager, lifecycle, and protocol bou
 Before opening a pull request, run:
 
 ```bash
-npm run lint
-npm run prettier:check
-npm run typecheck
-npm run test:coverage
-npm run build
-npm run check:bundle-size
-npm run pack:dry-run
+bun run lint
+bun run prettier:check
+bun run typecheck
+bun run test:coverage
+bun run build
+bun run check:self-contained
+bun run test:smoke:self-contained
 ```
 
-`typecheck` intentionally uses TypeScript 7 for both source and test code. Bundle-size failures should trigger a
-dependency or bundling review rather than an unexplained limit increase.
+`typecheck` intentionally uses TypeScript 7 for both source and test code.
 
-### Live OpenViking end-to-end tests
+### Local distribution end-to-end tests
 
-Run the live suite when a change affects any of the following:
+Run the local-bin suite when a change affects any of the following:
 
-- the OpenViking version, configuration, installer, CLI arguments, URI semantics, or datastore behavior;
+- installation, CLI arguments, URI semantics, or datastore behavior;
 - Threadnote CLI launchers or argument parsing;
 - MCP schemas, forwarding, or native parity;
 - manager APIs, shutdown, or Effect AI consolidation;
-- sharing, memory lifecycle, OVPack import/export, packaging, or generated distribution bundles;
+- sharing, memory lifecycle, pack import/export, packaging, or generated distribution bundles;
 - Effect runtime, resource, interruption, or error-boundary behavior.
 
 ```bash
-npm run test:e2e:install-openviking
-npm run test:e2e:local-bins
+bun run test:e2e:local-bins
 ```
 
-The installer selects the exact version pinned in `src/constants.ts`. If uv rejects a malformed prebuilt
-`llama-cpp-python` wheel, it retries with a bounded local source build, which can take several minutes.
+The suite uses a temporary Threadnote home, exercises the built standalone launchers, native SQLite and vector
+indexes, the local model runtime, MCP stdio, and sharing, then removes the home. It must never use or mutate a
+contributor's normal `~/.threadnote` state.
 
-The suite starts a real OpenViking server on a random local port, uses a suite-scoped temporary datastore, exercises the
-built and npm-packed binaries, and removes the datastore after the run. It must never use or mutate the contributor's
-normal OpenViking store. Do not replace the live server with a mock merely to make an upgrade pass.
+### Exact-HEAD global developer runtime
 
-## Updating OpenViking
+Before a long local benchmark or testing a host integration that launches the global `threadnote` command, install the
+clean checked-out commit into the managed standalone location:
 
-The OpenViking pin is a compatibility contract. For an upgrade:
+```bash
+bun run dev:install-global -- --terminate-superseded --json
+```
 
-1. Read every official OpenViking release note between the current pin and the target version.
-2. Identify changes to URI rules, identity and tenancy, CLI output, MCP schemas, import/export, storage, and retrieval.
-3. Update `DEFAULT_OPENVIKING_VERSION` in `src/constants.ts` and any user-facing version examples.
-4. Install the new version with `npm run test:e2e:install-openviking`.
-5. Run the complete live suite and address behavioral incompatibilities in code and tests.
-6. Run all normal validation and packaging gates.
-
-Do not loosen version assertions or skip failing live scenarios without documenting a deliberate compatibility change.
+The installer refuses a dirty worktree, embeds the full source commit in a local-only version, validates the staged
+executable and provenance receipt before atomic activation, and only terminates superseded processes whose start
+identity still matches their lease. Long local benchmarks require this exact-HEAD receipt; do not rely on whichever
+beta a launcher or editor process happened to start earlier. The exported fail-closed
+`verifyManagedDevelopmentRuntimeForSource` verifier is the preflight for long benchmark harnesses; it returns the
+sanitized version, source commit, executable digest, target, and runtime evidence without recording local paths.
 
 ## Changing MCP tools
 
@@ -124,16 +122,20 @@ Keep tool names and the default core toolset compact and backward-compatible. Wh
 - define it with Effect Schema through the MCP adapter;
 - preserve documented aliases when removing them would break existing agents;
 - test emitted JSON Schema and runtime rejection;
-- test forwarding to a real OpenViking MCP server when the parameter is native;
-- consider the context cost before adding a tool to the six-tool core surface.
+- test the built native MCP server over stdio when the parameter affects runtime behavior;
+- consider the context cost before adding a tool to the focused core surface.
 
 ## Documentation and generated output
 
 Update documentation in the same pull request as behavior. Keep `README.md` concise and put architectural or
 operational detail under `docs/`.
 
-`dist/` and `manager/app.js` are generated by `npm run build`; do not hand-edit them. Always run the build and package
+`dist/` and `manager/app.js` are generated by `bun run build`; do not hand-edit them. Always run the build and release
 checks when changing entrypoints, dependencies, manager UI code, or build scripts.
+
+The public React website is developed separately with `bun run site:dev` and validated with
+`bun run site:check && bun run site:build`. Its source lives under `website/`, its ignored output is `site-dist/`, and
+neither is part of a standalone release. See [`docs/website.md`](./docs/website.md).
 
 ## Pull requests
 

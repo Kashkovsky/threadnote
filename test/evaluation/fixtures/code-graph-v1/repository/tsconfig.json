@@ -1,0 +1,14 @@
+{
+  "compilerOptions": {
+    "baseUrl": ".",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "paths": {
+      "@fixture/core": ["packages/core/src/index.ts"],
+      "@fixture/search": ["packages/search/src/index.ts"]
+    },
+    "strict": true,
+    "target": "ES2022"
+  },
+  "include": ["packages/**/*.ts", "tests/**/*.ts"]
+}

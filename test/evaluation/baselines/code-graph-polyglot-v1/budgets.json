@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "fixture": {
+    "hash": "e0a7c7446bcb91f9b244c0d4d49d44472fd4db2a58a6ce02a7292f18be5ed8b1",
+    "id": "polyglot-workspace"
+  },
+  "quality": {
+    "authoritativeFalseEdgeRateMaximum": 0,
+    "edgeRecallMinimum": 1,
+    "meanReciprocalRankMinimum": 1,
+    "noAnswerPrecisionMinimum": 1,
+    "noAnswerRecallMinimum": 1,
+    "symbolRecallMinimum": 1,
+    "worktreeLeakageRateMaximum": 0
+  },
+  "developmentPerformance": {
+    "coldIndexP95MillisecondsMaximum": 30000,
+    "coldMaterializationP95MillisecondsMaximum": 15000,
+    "derivedIndexBytesMaximum": 134217728,
+    "hotQueryP95MillisecondsMaximum": 500,
+    "oneFileIncrementalP95MillisecondsMaximum": 15000,
+    "oneFileMaterializationP95MillisecondsMaximum": 10000,
+    "processPeakRssBytesMaximum": 1610612736,
+    "wholeGraphAnalysisP95MillisecondsMaximum": 2000
+  },
+  "notes": [
+    "The fixture executes the compiler-backed TypeScript pack and bundled Java, Kotlin, and Swift WASM packs.",
+    "The quality gate requires exact reviewed cross-language edges, zero authoritative false edges, and no-answer preservation.",
+    "Performance budgets are broad cross-platform regression guards; production monorepo scale remains covered by generated scale runs.",
+    "Materialization duration is gated independently from parser/extraction and activation work."
+  ]
+}

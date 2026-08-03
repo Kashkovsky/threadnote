@@ -1,10 +1,12 @@
 import {Console, Effect, FileSystem} from 'effect';
+import {isFileLockTimeout} from './file_lock.js';
 import {withMemoryUriLocks} from './memory_lock.js';
-import {withSharedRepositoryLock} from './share_lock.js';
+import {observeSharedRepositoryHomeLock, withSharedRepositoryLock} from './share_lock.js';
 import {
   installSharedAgentArtifacts as installSharedAgentArtifactsEffect,
   listSharedAgentArtifacts as listSharedAgentArtifactsEffect,
   listShareConflicts as listShareConflictsEffect,
+  markSharedAutoSyncDeferred,
   removeMemoryUri as removeMemoryUriEffect,
   refreshSharedReposInBackground as refreshSharedReposInBackgroundEffect,
   resolveShareConflict as resolveShareConflictEffect,
@@ -50,6 +52,10 @@ import type {
   ShareRuntime,
 } from '../types.js';
 
+const SHARED_REPOSITORY_READ_LOCK_WAIT_TIMEOUT_MILLISECONDS = 250;
+const SHARED_REPOSITORY_READ_UNHEALTHY_LOCK_WARNING =
+  'Shared repository auto-sync used the local snapshot because the repository lock was stale or unverifiable; run threadnote doctor --dry-run if this warning persists.';
+
 export const runShareInit = (config: ShareRuntime, remoteUrl: string, options: ShareInitOptions) =>
   withSharedRepositoryLock(config, runShareInitEffect(config, remoteUrl, options));
 export const runShareStatus = (config: ShareRuntime, options: ShareStatusOptions) =>
@@ -70,7 +76,28 @@ export const monitorSharedRepositories = Effect.fn('share.monitorRepositories')(
   }
 });
 export const syncSharedReposBeforeAgentRead = Effect.fn('share.syncBeforeAgentRead')(function* (config: ShareRuntime) {
-  return yield* withSharedRepositoryLock(config, syncSharedReposBeforeAgentReadEffect(config));
+  const observed = yield* observeSharedRepositoryHomeLock(config.agentContextHome);
+  if (observed === 'active') {
+    markSharedAutoSyncDeferred(config);
+    return {syncedTeams: [] as readonly string[], warnings: [] as readonly string[]};
+  }
+  const sync = withSharedRepositoryLock(config, syncSharedReposBeforeAgentReadEffect(config), {
+    waitTimeoutMilliseconds: SHARED_REPOSITORY_READ_LOCK_WAIT_TIMEOUT_MILLISECONDS,
+  });
+  return yield* sync.pipe(
+    Effect.catchIf(isFileLockTimeout, () =>
+      Effect.sync(() => markSharedAutoSyncDeferred(config)).pipe(
+        Effect.andThen(observeSharedRepositoryHomeLock(config.agentContextHome)),
+        Effect.map(lockState => ({
+          syncedTeams: [] as readonly string[],
+          warnings:
+            lockState === 'unhealthy'
+              ? ([SHARED_REPOSITORY_READ_UNHEALTHY_LOCK_WARNING] as readonly string[])
+              : ([] as readonly string[]),
+        })),
+      ),
+    ),
+  );
 });
 export const runShareConflicts = (config: ShareRuntime, options: ShareConflictOptions) =>
   withSharedRepositoryLock(config, runShareConflictsEffect(config, options));

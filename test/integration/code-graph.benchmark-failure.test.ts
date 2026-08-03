@@ -1,0 +1,136 @@
+import {mkdtemp, readFile, readdir, rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {fileURLToPath} from 'node:url';
+import * as BunServices from '@effect/platform-bun/BunServices';
+import {Effect, FileSystem, Path} from 'effect';
+import {describe, expect, it} from 'vitest';
+import {parseCodeGraphBenchmarkRunCheckpoint, startExternalSampler} from '../../scripts/benchmark-code-graph.js';
+import {parseCodeGraphBenchmarkSamplerCheckpoint} from '../../scripts/code-graph-benchmark-sampler.js';
+
+describe('production-large benchmark failure telemetry', () => {
+  it('accepts only structured run lifecycle checkpoints', () => {
+    expect(
+      parseCodeGraphBenchmarkRunCheckpoint({
+        phase: 'incremental-index',
+        state: 'running',
+        updatedAt: '2026-07-31T12:00:00.000Z',
+        version: 1,
+      }),
+    ).toMatchObject({phase: 'incremental-index', state: 'running'});
+
+    for (const malformed of [
+      undefined,
+      {},
+      {phase: '../escape', state: 'running', updatedAt: '2026-07-31T12:00:00.000Z', version: 1},
+      {phase: 'cold-index', state: 'unknown', updatedAt: '2026-07-31T12:00:00.000Z', version: 1},
+      {phase: 'cold-index', state: 'running', updatedAt: 'not-a-date', version: 1},
+      {phase: 'cold-index', state: 'running', updatedAt: '2026-07-31T12:00:00.000Z', version: 2},
+    ]) {
+      expect(() => parseCodeGraphBenchmarkRunCheckpoint(malformed)).toThrow('Benchmark run checkpoint');
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'retains a parseable upload checkpoint when the benchmark parent is killed after sampler readiness',
+    async () => {
+      const root = await mkdtemp(join(tmpdir(), 'threadnote-benchmark-parent-crash-'));
+      const artifactRoot = join(root, 'artifacts');
+      const checkpoint = join(artifactRoot, 'code-graph-production-large-n1-test.json.bootstrap.sampler.json');
+      const ready = join(root, 'parent.ready');
+      const parent = Bun.spawn({
+        cmd: [
+          process.execPath,
+          fileURLToPath(new URL('../helpers/code-graph-benchmark-parent.ts', import.meta.url)),
+          root,
+          checkpoint,
+          ready,
+        ],
+        stderr: 'pipe',
+        stdout: 'ignore',
+      });
+      try {
+        await waitFor(() => Bun.file(ready).exists(), 10_000);
+        expect(parseCodeGraphBenchmarkSamplerCheckpoint(JSON.parse(await readFile(checkpoint, 'utf8')))).toMatchObject({
+          state: 'running',
+        });
+
+        parent.kill(9);
+        expect(await parent.exited).not.toBe(0);
+        const terminal = await waitFor(async () => {
+          try {
+            const parsed = parseCodeGraphBenchmarkSamplerCheckpoint(JSON.parse(await readFile(checkpoint, 'utf8')));
+            return parsed.state === 'parent-exited' ? parsed : undefined;
+          } catch {
+            return undefined;
+          }
+        }, 10_000);
+
+        expect(terminal).toMatchObject({state: 'parent-exited'});
+        expect(
+          (await readdir(artifactRoot)).filter(name => name.startsWith('code-graph-production-large-n1-')),
+        ).toEqual(['code-graph-production-large-n1-test.json.bootstrap.sampler.json']);
+      } finally {
+        if (parent.exitCode === null) parent.kill(9);
+        await parent.exited.catch(() => undefined);
+        await rm(root, {force: true, recursive: true});
+      }
+    },
+    20_000,
+  );
+
+  it('terminates within a bound and preserves the last checkpoint when stop signaling fails', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'threadnote-benchmark-stop-failure-'));
+    const checkpoint = join(root, 'artifacts', 'code-graph-production-large-n1-stop-failure.bootstrap.sampler.json');
+    try {
+      const result = await Effect.runPromise(
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const failingFileSystem = FileSystem.FileSystem.of({
+            ...fileSystem,
+            writeFileString: (file, data, options) =>
+              file.endsWith('.stop')
+                ? Effect.die(new Error('injected stop-write failure'))
+                : fileSystem.writeFileString(file, data, options),
+          });
+          const sampler = yield* startExternalSampler(
+            failingFileSystem,
+            path,
+            join(root, 'sampler'),
+            join(root, 'sqlite-temp'),
+            join(root, 'not-created.sqlite'),
+            checkpoint,
+            'bootstrap',
+          );
+          const before = parseCodeGraphBenchmarkSamplerCheckpoint(
+            JSON.parse(yield* fileSystem.readFileString(checkpoint)),
+          );
+          const startedAt = Date.now();
+          const exit = yield* Effect.exit(sampler.stop());
+          return {before, elapsedMilliseconds: Date.now() - startedAt, exit};
+        }).pipe(Effect.provide(BunServices.layer)),
+      );
+
+      expect(result.before.state).toBe('running');
+      expect(result.exit._tag).toBe('Failure');
+      expect(result.elapsedMilliseconds).toBeLessThan(3_000);
+      const after = parseCodeGraphBenchmarkSamplerCheckpoint(JSON.parse(await readFile(checkpoint, 'utf8')));
+      await Bun.sleep(100);
+      const stable = parseCodeGraphBenchmarkSamplerCheckpoint(JSON.parse(await readFile(checkpoint, 'utf8')));
+      expect(stable.sampler.samples).toBe(after.sampler.samples);
+    } finally {
+      await rm(root, {force: true, recursive: true});
+    }
+  });
+});
+
+async function waitFor<A>(observe: () => A | Promise<A>, timeoutMilliseconds: number): Promise<NonNullable<A>> {
+  const deadline = Date.now() + timeoutMilliseconds;
+  for (;;) {
+    const value = await observe();
+    if (value !== undefined && value !== false && value !== null) return value as NonNullable<A>;
+    if (Date.now() >= deadline) throw new Error(`Timed out after ${timeoutMilliseconds} ms.`);
+    await Bun.sleep(20);
+  }
+}

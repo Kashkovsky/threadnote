@@ -1,0 +1,141 @@
+{
+  "createdAt": "2026-07-30T15:45:51.436Z",
+  "environment": {
+    "architecture": "arm64",
+    "commit": "e4b123092027b8ac557379c8a757dc9c35fe7ec6",
+    "cpu": "Apple M1 Max",
+    "dirty": true,
+    "fixtureHash": "e0a7c7446bcb91f9b244c0d4d49d44472fd4db2a58a6ce02a7292f18be5ed8b1",
+    "memoryBytes": 68719476736,
+    "node": "bun/1.3.14",
+    "operatingSystem": "macOS 27.0",
+    "packageManager": "bun/1.3.14",
+    "runner": "threadnote-code-graph-e2e",
+    "runnerVersion": "1"
+  },
+  "measurements": [
+    {
+      "maximum": 1312.424,
+      "mean": 1312.424,
+      "minimum": 1312.424,
+      "name": "cold-index",
+      "p50": 1312.424,
+      "p95": 1312.424,
+      "p99": 1312.424,
+      "samples": 1,
+      "unit": "milliseconds"
+    },
+    {
+      "maximum": 1261.318291,
+      "mean": 1261.318291,
+      "minimum": 1261.318291,
+      "name": "cold-pre-activation",
+      "p50": 1261.318291,
+      "p95": 1261.318291,
+      "p99": 1261.318291,
+      "samples": 1,
+      "unit": "milliseconds"
+    },
+    {
+      "maximum": 51.105709,
+      "mean": 51.105709,
+      "minimum": 51.105709,
+      "name": "cold-activation-lexical-only",
+      "p50": 51.105709,
+      "p95": 51.105709,
+      "p99": 51.105709,
+      "samples": 1,
+      "unit": "milliseconds"
+    },
+    {
+      "maximum": 196.919625,
+      "mean": 196.919625,
+      "minimum": 196.919625,
+      "name": "one-file-incremental-index",
+      "p50": 196.919625,
+      "p95": 196.919625,
+      "p99": 196.919625,
+      "samples": 1,
+      "unit": "milliseconds"
+    },
+    {
+      "maximum": 151.668834,
+      "mean": 151.668834,
+      "minimum": 151.668834,
+      "name": "one-file-incremental-pre-activation",
+      "p50": 151.668834,
+      "p95": 151.668834,
+      "p99": 151.668834,
+      "samples": 1,
+      "unit": "milliseconds"
+    },
+    {
+      "maximum": 45.250791,
+      "mean": 45.250791,
+      "minimum": 45.250791,
+      "name": "one-file-incremental-activation-lexical-only",
+      "p50": 45.250791,
+      "p95": 45.250791,
+      "p99": 45.250791,
+      "samples": 1,
+      "unit": "milliseconds"
+    },
+    {
+      "maximum": 45.568792,
+      "mean": 43.304566400000006,
+      "minimum": 41.385958,
+      "name": "hot-exact-lexical-query",
+      "p50": 42.756416,
+      "p95": 45.568792,
+      "p99": 45.568792,
+      "samples": 5,
+      "unit": "milliseconds"
+    },
+    {
+      "maximum": 285949952,
+      "mean": 285949952,
+      "minimum": 285949952,
+      "name": "cold-process-peak-rss",
+      "p50": 285949952,
+      "p95": 285949952,
+      "p99": 285949952,
+      "samples": 1,
+      "unit": "bytes"
+    },
+    {
+      "maximum": 305577984,
+      "mean": 305577984,
+      "minimum": 305577984,
+      "name": "incremental-process-peak-rss",
+      "p50": 305577984,
+      "p95": 305577984,
+      "p99": 305577984,
+      "samples": 1,
+      "unit": "bytes"
+    },
+    {
+      "maximum": 274432,
+      "mean": 274432,
+      "minimum": 274432,
+      "name": "derived-index-disk",
+      "p50": 274432,
+      "p95": 274432,
+      "p99": 274432,
+      "samples": 1,
+      "unit": "bytes"
+    }
+  ],
+  "metadata": {
+    "coldEdges": 15,
+    "coldFiles": 10,
+    "coldSymbols": 14,
+    "incrementalReusedFiles": 9,
+    "queries": 5,
+    "retrievalMode": "lexical-only",
+    "rssMeasurement": "process.resourceUsage.maxRSS at phase boundary",
+    "vectorEnabled": false
+  },
+  "suite": "code-graph-polyglot-v1",
+  "version": 1,
+  "warmups": 1
+}

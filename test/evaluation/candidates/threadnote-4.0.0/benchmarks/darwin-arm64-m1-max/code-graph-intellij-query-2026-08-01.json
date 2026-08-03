@@ -1,0 +1,184 @@
+{
+  "createdAt": "2026-08-01T16:12:55Z",
+  "environment": {
+    "architecture": "arm64",
+    "bun": "1.3.14",
+    "cpu": "Apple M1 Max",
+    "memoryBytes": 68719476736,
+    "operatingSystem": "Darwin 27.0",
+    "threadnoteBaseCommit": "58390f02c1d7846a5aef313ab1d90d6cf07d7019",
+    "threadnoteDirty": true,
+    "threadnoteQueryDiffSha256": "f5810e9ca9fdba9b9400bc23aa49f6a87ec1ab668afd7681c2e3230f7a150872"
+  },
+  "fixture": {
+    "databaseBytes": 35340595200,
+    "databasePageCount": 8628075,
+    "databasePageSize": 4096,
+    "edgeCount": 7340596,
+    "extractorSet": "f452b9827084cd948908172eacc32150749a43f46c88c7c1d0ef221f507d70cf",
+    "fileCount": 232750,
+    "publicRepository": "JetBrains/intellij-community",
+    "repositoryCommit": "3cbdad9ee6c8a5135fc0f01cc90114fc25c0655c",
+    "snapshotId": "cgsn_7ccb83f2c25ccb4336ef40e69634f54c23c88383",
+    "symbolCount": 2666762
+  },
+  "method": {
+    "cliCommand": "/usr/bin/time -p bun <threadnote-worktree>/src/standalone.ts graph query --query ProgressManager --cwd <intellij-checkout> --home <threadnote-home> --node-limit 20 --edge-limit 40",
+    "mcpByteAccounting": "serializedContentBytes is Buffer.byteLength(JSON.stringify(result.content), 'utf8'); serializedStructuredContentBytes applies the same calculation to result.structuredContent. Neither includes the enclosing JSON-RPC message.",
+    "mcpCommand": "Call inspect_code_graph over a real local stdio server with callerCwd=<intellij-checkout>, the recorded query and limits, and a 30 second client timeout.",
+    "pathPolicy": "All machine-local paths are replaced with reviewed placeholders; the indexed repository and commit are public.",
+    "queryDiffHash": {
+      "command": "git diff -- src/code_graph/query.ts src/code_graph/store.ts src/code_graph/commands.ts src/mcp_server.ts | shasum -a 256",
+      "input": "Raw unified-diff bytes emitted for those four tracked files relative to threadnoteBaseCommit at measurement time. It excludes every other path, untracked files, and staged-only changes."
+    },
+    "sqlMethod": "Call CodeGraphStore search and adjacency operations against the pinned ready snapshot in one Bun process after opening the 35.34 GB SQLite database."
+  },
+  "queryPlanResults": {
+    "after": {
+      "hotAdjacencyMilliseconds": [13.1, 12.1],
+      "hotCombinedApproximateMilliseconds": 43.7,
+      "hotSearchMilliseconds": [30.5, 31.7],
+      "indexedAdjacency": true,
+      "indexedExactAndTermSearch": true
+    },
+    "before": {
+      "adjacencyMillisecondsRange": [77000, 87000],
+      "searchMilliseconds": 32028
+    },
+    "notes": [
+      "The direct SQL measurements exclude Git freshness observation and MCP serialization.",
+      "Overlay replacements, deletions, incoming/outgoing direction, self-loop deduplication, exact ranking, and bounded branch limits are covered by deterministic and property-based tests."
+    ]
+  },
+  "endToEndResults": {
+    "cli": {
+      "afterMilliseconds": 4660,
+      "beforeMilliseconds": 14450,
+      "operation": "query",
+      "query": "ProgressManager",
+      "speedup": 3.1
+    },
+    "mcp": [
+      {
+        "edgeCount": 29,
+        "elapsedMilliseconds": 4667.24,
+        "languageEvidence": "java",
+        "nodeCount": 20,
+        "operation": "query",
+        "query": "ProgressManager",
+        "serializedContentBytes": 8255,
+        "serializedStructuredContentBytes": 23780
+      },
+      {
+        "edgeCount": 24,
+        "elapsedMilliseconds": 3898.13,
+        "languageEvidence": "kotlin",
+        "nodeCount": 12,
+        "operation": "query",
+        "query": "GradleWarmupConfigurator",
+        "serializedContentBytes": 8508,
+        "serializedStructuredContentBytes": 18981
+      },
+      {
+        "edgeCount": 24,
+        "elapsedMilliseconds": 3739.02,
+        "languageEvidence": "starlark-bazel",
+        "nodeCount": 12,
+        "operation": "query",
+        "query": "KotlincOptions",
+        "serializedContentBytes": 6571,
+        "serializedStructuredContentBytes": 16447
+      },
+      {
+        "edgeCount": 24,
+        "elapsedMilliseconds": 3538.95,
+        "languageEvidence": "typescript",
+        "nodeCount": 12,
+        "operation": "query",
+        "query": "plugins/ui.webview/webview-src/packages/controls/src/elements/button/button.ts",
+        "serializedContentBytes": 6698,
+        "serializedStructuredContentBytes": 16982
+      },
+      {
+        "edgeCount": 19,
+        "elapsedMilliseconds": 3967.28,
+        "languageEvidence": "java",
+        "nodeCount": 20,
+        "operation": "neighbors",
+        "query": "ProgressManager exact symbol ID",
+        "serializedContentBytes": 6592,
+        "serializedStructuredContentBytes": 18343
+      },
+      {
+        "edgeCount": 1,
+        "elapsedMilliseconds": 6919.13,
+        "languageEvidence": "java",
+        "nodeCount": 2,
+        "operation": "path",
+        "query": "CoreProgressManager to ProgressManager",
+        "serializedContentBytes": 729,
+        "serializedStructuredContentBytes": 1953
+      },
+      {
+        "edgeCount": 29,
+        "elapsedMilliseconds": 7945.41,
+        "languageEvidence": "java",
+        "nodeCount": 20,
+        "operation": "impact",
+        "query": "ProgressManager depth 1",
+        "serializedContentBytes": 7653,
+        "serializedStructuredContentBytes": 23564
+      }
+    ],
+    "observations": [
+      "Every result used the exact current Git snapshot and remained within the MCP graph response budget.",
+      "A persistent-server exact query remained about 4.3 seconds because exact worktree observation dominates the roughly 44 millisecond hot SQL read; watcher-backed invalidation was not assumed without proof.",
+      "Strict path and impact operations perform a second observation to prevent publishing a mixed-snapshot answer, explaining their higher end-to-end time.",
+      "An exact repository path now bypasses broad lexical candidate expansion; the TypeScript query fell from 6640.83 milliseconds to 3538.95 milliseconds and no longer exhausted the elapsed traversal budget."
+    ]
+  },
+  "responseBudgets": {
+    "largestSerializedContentBytes": 8508,
+    "largestSerializedStructuredContentBytes": 23780,
+    "structuredLimitBytes": 24576
+  },
+  "validation": {
+    "diffCheck": {
+      "command": "git diff --check",
+      "passed": true
+    },
+    "format": {
+      "command": "bunx prettier --check src/code_graph/store.ts src/code_graph/query.ts src/code_graph/commands.ts src/mcp_server.ts test/unit/code-graph.store-query.property.test.ts test/unit/code-graph.query.test.ts test/integration/code-graph.lifecycle.test.ts test/evaluation/candidates/threadnote-4.0.0/README.md test/evaluation/candidates/threadnote-4.0.0/benchmarks/darwin-arm64-m1-max/code-graph-intellij-query-2026-08-01.json",
+      "passed": true
+    },
+    "json": {
+      "command": "bun -e \"await Bun.file('test/evaluation/candidates/threadnote-4.0.0/benchmarks/darwin-arm64-m1-max/code-graph-intellij-query-2026-08-01.json').json()\"",
+      "passed": true
+    },
+    "lint": {
+      "command": "bunx oxlint src/code_graph/store.ts src/code_graph/query.ts src/code_graph/commands.ts src/mcp_server.ts test/unit/code-graph.store-query.property.test.ts test/unit/code-graph.query.test.ts test/integration/code-graph.lifecycle.test.ts",
+      "passed": true
+    },
+    "tests": [
+      {
+        "command": "bun --bun vitest run test/unit/code-graph.store-query.property.test.ts test/unit/code-graph.query.test.ts",
+        "passed": 16,
+        "skipped": 0,
+        "testFilesPassed": 2
+      },
+      {
+        "command": "bun --bun vitest run test/integration/code-graph.lifecycle.test.ts test/integration/cli.effect.test.ts -t \"synchronously refreshes stale|retries a strict read|keeps hot queries incremental|reuses an exact status observation|recovers committed deletions\"",
+        "passed": 5,
+        "skipped": 80,
+        "testFilesPassed": 2
+      }
+    ],
+    "typecheck": {
+      "command": "bun --bun tsc --noEmit && bun --bun tsc -p test/tsconfig.json --noEmit && bun --bun tsc -p website/tsconfig.json --noEmit",
+      "passed": true,
+      "projects": 3
+    }
+  },
+  "suite": "code-graph-public-large-repository-query-v1",
+  "version": 1
+}

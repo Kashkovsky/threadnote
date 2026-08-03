@@ -3,7 +3,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {Effect} from 'effect';
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
-import * as aiEnrichment from '../../src/effect/ai-enrichment.js';
+import * as aiEnrichment from '../../src/effect/ai/enrichment.js';
 import {runRemember} from '../../src/memory.js';
 import type {MemoryMetadata} from '../../src/memory_document.js';
 import type {CommandResult, RuntimeConfig} from '../../src/types.js';
@@ -17,15 +17,14 @@ vi.mock('../../src/utils.js', async importOriginal => {
   return {
     ...actual,
     maybeRun: vi.fn(),
-    openVikingCliForMode: vi.fn().mockReturnValue(Effect.succeed('/ov')),
     requiredExecutable: vi.fn().mockReturnValue(Effect.succeed('git')),
     runCommand: vi.fn(),
     sleep: vi.fn().mockReturnValue(Effect.void),
   };
 });
 
-vi.mock('../../src/effect/ai-enrichment.js', async importOriginal => {
-  const actual = await importOriginal<typeof import('../../src/effect/ai-enrichment.js')>();
+vi.mock('../../src/effect/ai/enrichment.js', async importOriginal => {
+  const actual = await importOriginal<typeof import('../../src/effect/ai/enrichment.js')>();
   return {
     ...actual,
     enrichMemoryMetadataWithConfiguredLocalAi: vi.fn((_config: RuntimeConfig, metadata: MemoryMetadata) =>
@@ -42,6 +41,28 @@ async function makeRuntime(): Promise<RuntimeConfig> {
   const worktree = join(home, 'shared', 'default');
   const gitdir = join(home, 'share', 'teams', 'default.gitdir');
   await mkdir(join(home, 'share'), {recursive: true});
+  await mkdir(worktree, {recursive: true});
+  const sharedContent =
+    'MEMORY\nkind: durable\nstatus: active\nproject: orion-worker\ntopic: lease\n\nOriginal shared lease memory.\n';
+  const canonicalSharedPath = join(
+    home,
+    'data',
+    'local',
+    'user',
+    'test-user',
+    'memories',
+    'shared',
+    'default',
+    'durable',
+    'projects',
+    'orion-worker',
+    'lease.md',
+  );
+  const worktreeSharedPath = join(worktree, 'durable', 'projects', 'orion-worker', 'lease.md');
+  await mkdir(join(canonicalSharedPath, '..'), {recursive: true});
+  await mkdir(join(worktreeSharedPath, '..'), {recursive: true});
+  await writeFile(canonicalSharedPath, sharedContent);
+  await writeFile(worktreeSharedPath, sharedContent);
   await writeFile(
     join(home, 'share', 'teams.json'),
     `${JSON.stringify(
@@ -66,10 +87,7 @@ async function makeRuntime(): Promise<RuntimeConfig> {
     account: 'local',
     agentContextHome: home,
     agentId: 'threadnote',
-    host: '127.0.0.1',
     manifestPath: join(home, 'manifest.json'),
-    openVikingVersion: '0.0.0',
-    port: 1933,
     user: 'test-user',
   };
 }
@@ -81,7 +99,6 @@ describe('remember shared replacement', () => {
     vi.mocked(utils.maybeRun).mockImplementation((dryRun, executable, args, options) =>
       dryRun ? Effect.succeed(undefined) : vi.mocked(utils.runCommand)(executable, args, options),
     );
-    vi.mocked(utils.openVikingCliForMode).mockReturnValue(Effect.succeed('/ov'));
     vi.mocked(utils.requiredExecutable).mockReturnValue(Effect.succeed('git'));
     vi.mocked(utils.runCommand).mockReset();
     vi.mocked(aiEnrichment.enrichMemoryMetadataWithConfiguredLocalAi).mockClear();
@@ -100,7 +117,7 @@ describe('remember shared replacement', () => {
       logs.push(args.map(String).join(' '));
     });
 
-    const sharedUri = 'viking://user/test-user/memories/shared/default/durable/projects/orion-worker/lease.md';
+    const sharedUri = 'threadnote://user/test-user/memories/shared/default/durable/projects/orion-worker/lease.md';
     await runTestEffect(
       runRemember(config, {
         dryRun: true,
@@ -131,7 +148,7 @@ describe('remember shared replacement', () => {
       logs.push(args.map(String).join(' '));
     });
 
-    const sharedUri = 'viking://user/test-user/memories/shared/default/durable/projects/orion-worker/lease.md';
+    const sharedUri = 'threadnote://user/test-user/memories/shared/default/durable/projects/orion-worker/lease.md';
     await runTestEffect(
       runRemember(config, {
         dryRun: true,
@@ -159,7 +176,7 @@ describe('remember shared replacement', () => {
       logs.push(args.map(String).join(' '));
     });
 
-    const sharedUri = 'viking://user/test-user/memories/shared/default/durable/projects/orion-worker/lease.md';
+    const sharedUri = 'threadnote://user/test-user/memories/shared/default/durable/projects/orion-worker/lease.md';
     await runTestEffect(
       runRemember(config, {
         dryRun: true,
@@ -184,7 +201,7 @@ describe('remember shared replacement', () => {
         runRemember(config, {
           dryRun: true,
           kind: 'handoff',
-          replace: 'viking://user/test-user/memories/shared/default/durable/projects/foo/bar.md',
+          replace: 'threadnote://user/test-user/memories/shared/default/durable/projects/foo/bar.md',
           text: 'Not shareable.',
         }).pipe(Effect.provide(ApplicationLayer)),
       ),
@@ -199,7 +216,7 @@ describe('remember shared replacement', () => {
     await runTestEffect(
       runRemember(config, {
         kind: 'durable',
-        replace: 'viking://user/test-user/memories/shared/default/durable/projects/orion-worker/lease.md',
+        replace: 'threadnote://user/test-user/memories/shared/default/durable/projects/orion-worker/lease.md',
         text: 'Updated shared lease memory.',
       }).pipe(Effect.provide(ApplicationLayer)),
     );
@@ -210,7 +227,7 @@ describe('remember shared replacement', () => {
   it('surfaces git push failures instead of reporting a successful shared update', async () => {
     const config = await makeRuntime();
     homes.push(config.agentContextHome);
-    const sharedUri = 'viking://user/test-user/memories/shared/default/durable/projects/orion-worker/lease.md';
+    const sharedUri = 'threadnote://user/test-user/memories/shared/default/durable/projects/orion-worker/lease.md';
     vi.mocked(utils.runCommand).mockImplementation((executable, args) => {
       if (executable === '/ov' && args[0] === 'stat') {
         return Effect.succeed(ok());

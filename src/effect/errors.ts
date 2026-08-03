@@ -17,6 +17,11 @@ export function applicationError(operation: string, cause: unknown): Application
 export const fromPromise = <A>(operation: string, evaluate: () => Promise<A>) =>
   Effect.tryPromise({try: evaluate, catch: cause => applicationError(operation, cause)});
 
+export const fromPromiseInterruptible = <A, E>(
+  evaluate: (signal: AbortSignal) => PromiseLike<A>,
+  onError: (cause: unknown) => E,
+) => Effect.tryPromise({try: evaluate, catch: onError});
+
 export const fromPromiseError = <A>(evaluate: () => PromiseLike<A>) =>
   Effect.tryPromise({
     try: evaluate,

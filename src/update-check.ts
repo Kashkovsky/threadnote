@@ -1,12 +1,12 @@
 import {Effect, FileSystem, Path, Result} from 'effect';
 import * as ChildProcess from 'effect/unstable/process/ChildProcess';
-import {getJsonEffect} from './effect/http.js';
 import {SystemInfo} from './effect/system.js';
 import {selectUpdateChannel, type UpdateChannel} from './update_channel.js';
-import {compareVersions, isJsonObject} from './utils.js';
+import {fetchLatestVersion, releaseSource} from './update.js';
+import {compareVersions} from './utils.js';
+import {isStandaloneThreadnoteBuild} from './version.js';
 
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
-const NPM_REGISTRY_URL = 'https://registry.npmjs.org/threadnote/';
 const FETCH_TIMEOUT_MS = 3000;
 
 interface UpdateCacheFile {
@@ -23,15 +23,15 @@ export interface UpdateCheckResult {
 }
 
 /**
- * Looks up the latest published threadnote version on npm and compares it to
- * `currentVersion`. Caches the registry response at `cachePath` for 24h so
+ * Looks up the latest standalone Threadnote GitHub release and compares it to
+ * `currentVersion`. Caches the release response at `cachePath` for 24h so
  * subsequent calls within the same day are instant. On the first call of the
  * day the user pays a 0.5–3s network round-trip (bounded by
  * {@link FETCH_TIMEOUT_MS}); subsequent calls hit the cache.
  *
  * Returns `undefined` when the result is unactionable: the current version is
  * unknown (dev build), the network call failed and no cache is available, or
- * the registry returned malformed data. Never throws — callers can fire and
+ * the release source returned malformed data. Never throws — callers can fire and
  * forget without wrapping in try/catch.
  */
 export function checkForThreadnoteUpdate(args: {readonly cachePath: string; readonly currentVersion: string}) {
@@ -45,7 +45,11 @@ export function checkForThreadnoteUpdate(args: {readonly cachePath: string; read
     if (channelCache && isCacheFresh(channelCache)) {
       return toUpdateCheckResult(args.currentVersion, channelCache.latestVersion);
     }
-    const fresh = yield* fetchLatestVersionEffect(channel);
+    const system = yield* SystemInfo;
+    const fresh = yield* fetchLatestVersion(releaseSource(system.environment()), channel).pipe(
+      Effect.timeout(FETCH_TIMEOUT_MS),
+      Effect.catch(() => Effect.succeed(undefined)),
+    );
     if (fresh) {
       yield* writeUpdateCache(args.cachePath, {
         channel,
@@ -62,21 +66,24 @@ export function checkForThreadnoteUpdate(args: {readonly cachePath: string; read
 /**
  * Spawns `threadnote update --yes` as a detached background process so the
  * current hook fire can return immediately. The child re-invokes the same
- * bundled CJS via the same node binary, inheriting nothing and writing to
- * /dev/null — its job is to swap the install in time for the next session.
+ * standalone executable, inheriting nothing and writing to the null device —
+ * its job is to swap the install in time for the next session.
  *
- * Best-effort: silently returns if the spawn fails (no node binary, permission
- * denied, etc.). The nag banner remains as the fallback signal.
+ * Best-effort: silently returns if the spawn fails. The nag banner remains as
+ * the fallback signal.
  */
 export const spawnDetachedAutoUpdate = Effect.fn('updateCheck.spawnDetachedAutoUpdate')(function* () {
   const system = yield* SystemInfo;
-  const entry = system.processArguments[1];
-  if (typeof entry !== 'string' || entry.length === 0) {
-    return;
-  }
+  const developmentEntry = system.processArguments[1];
+  const arguments_ = isStandaloneThreadnoteBuild()
+    ? ['update', '--yes']
+    : typeof developmentEntry === 'string' && developmentEntry.length > 0
+      ? [developmentEntry, 'update', '--yes']
+      : undefined;
+  if (!arguments_) return;
   yield* Effect.scoped(
     Effect.gen(function* () {
-      const child = yield* ChildProcess.make(system.executablePath, [entry, 'update', '--yes'], {
+      const child = yield* ChildProcess.make(system.executablePath, arguments_, {
         detached: true,
         stdin: 'ignore',
         stdout: 'ignore',
@@ -133,18 +140,4 @@ const writeUpdateCache = Effect.fn('updateCheck.writeCache')((cachePath: string,
     yield* fs.makeDirectory(path.dirname(cachePath), {recursive: true});
     yield* fs.writeFileString(cachePath, `${JSON.stringify(contents)}\n`, {mode: 0o600});
   }).pipe(Effect.ignore),
-);
-
-const fetchLatestVersionEffect = Effect.fn('fetchLatestHookVersion')((channel: UpdateChannel) =>
-  getJsonEffect(`${NPM_REGISTRY_URL}${channel}`, {
-    headers: {accept: 'application/json'},
-    timeoutMs: FETCH_TIMEOUT_MS,
-  }).pipe(
-    Effect.map(response =>
-      isJsonObject(response.body) && typeof response.body.version === 'string' && response.body.version.length > 0
-        ? response.body.version
-        : undefined,
-    ),
-    Effect.catch(() => Effect.succeed(undefined)),
-  ),
 );

@@ -1,0 +1,66 @@
+{
+  "schemaVersion": 1,
+  "capturedAt": "2026-07-30",
+  "runtime": {
+    "bun": "1.3.14",
+    "nodeLlamaCpp": "3.19.1",
+    "platform": "darwin-arm64",
+    "machine": "Apple M1 Max, 64 GiB"
+  },
+  "model": {
+    "id": "bge-small-en-v1.5-q8",
+    "dimensions": 384,
+    "sha256": "f046db1dc724cf4f6f0a0c5917e922823b73eb1d27b8f9a9c2797f7866974804"
+  },
+  "comparison": {
+    "baseline": "automatic Metal layer offload",
+    "candidate": "gpuLayers=0 with native thread selection",
+    "samples": 35,
+    "sampleSources": [
+      "test/evaluation/fixtures/recall-v1/fixture.json queries and documents",
+      "test/evaluation/fixtures/code-graph-v1/fixture.json queries",
+      "test/evaluation/fixtures/code-graph-v1/repository source files"
+    ],
+    "sameTextCosine": {
+      "minimum": 0.999878932208691,
+      "p50": 0.9999103325964831,
+      "p95": 0.9999261351355081,
+      "maximum": 0.9999292533960459
+    },
+    "mixedBackendRecall": {
+      "queries": 8,
+      "top1Agreements": 8,
+      "maximumScoreDelta": 0.0023217532915504324
+    },
+    "mixedBackendCodeGraph": {
+      "queries": 4,
+      "top1Agreements": 4,
+      "maximumScoreDelta": 0.002502755544840529
+    },
+    "embeddingMilliseconds": {
+      "automaticMetal": 247.12320800000003,
+      "gpuLayers0": 174.26762499999995
+    }
+  },
+  "stressProbes": {
+    "note": "Exploratory throughput probes used four embedding threads and are not the shipped native-thread performance result above.",
+    "embeddingThreads": 4,
+    "coldCyclesPerPolicy": 50,
+    "successfulColdCyclesPerPolicy": 50,
+    "shortInputs1000Milliseconds": {
+      "automaticMetalRange": [6690, 7280],
+      "gpuLayers0Range": [2340, 2350]
+    },
+    "longInputs200Milliseconds": {
+      "automaticMetal": 2140,
+      "gpuLayers0": 4280
+    }
+  },
+  "compatibilityDecision": {
+    "reuseExistingVectors": true,
+    "reason": "The execution policy does not change the model, dimensions, normalization, or prompt recipe. Measured mixed-backend score deltas stayed below 0.003 and preserved every top-1 result in both frozen fixtures.",
+    "minimumSameTextCosine": 0.999,
+    "maximumMixedScoreDelta": 0.01,
+    "requireAllTop1Agreements": true
+  }
+}

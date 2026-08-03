@@ -1,6 +1,6 @@
-import {Config, Console, Effect, Option, Schema} from 'effect';
+import {Console, Effect, Option, Schema} from 'effect';
 import {Argument, CliError, Command, Flag} from 'effect/unstable/cli';
-import {OPENVIKING_MCP_NAME} from '../constants.js';
+import {THREADNOTE_MCP_NAME} from '../constants.js';
 import {runHooksInstall, runPreCompactHook, runSessionStartHook} from '../hooks.js';
 import {runDoctor, runInstall, runRepair, runStart, runStop, runUninstall} from '../lifecycle.js';
 import {
@@ -27,11 +27,31 @@ import {
   runMigrateLifecycle,
   runMigrateMemories,
   runMigrateProjectNames,
+  parseMemoryKind,
+  parseMemoryStatus,
   runRead,
   runRecall,
   runRemember,
 } from '../memory.js';
 import {runMcpInstall} from '../mcp.js';
+import {runObsidianInboxScan} from '../obsidian_inbox.js';
+import {runObsidianOpen} from '../obsidian_open.js';
+import {
+  runObsidianProjectionAdd,
+  runObsidianProjectionList,
+  runObsidianProjectionPublish,
+  runObsidianProjectionRemove,
+  runObsidianProjectionStatus,
+  runObsidianProjectionSync,
+} from '../obsidian_projection.js';
+import {
+  runObsidianSourceAdd,
+  runObsidianSourceInventory,
+  runObsidianSourceList,
+  runObsidianSourceRemove,
+  runObsidianSourceStatus,
+  runObsidianSourceSync,
+} from '../obsidian_source.js';
 import {getRuntimeConfig} from '../runtime.js';
 import {runInitManifest, runSeed, runSeedSkills, runWorksetList, runWorksetShow} from '../seeding.js';
 import {
@@ -57,12 +77,42 @@ import {errorMessage} from '../utils.js';
 import {runVersion} from '../version_command.js';
 import {runManage} from '../manager.js';
 import {applicationError} from './errors.js';
+import {runHomeMigration} from '../migration/home.js';
+import {
+  runModelInstall,
+  runModelList,
+  runModelRemove,
+  runModelRuntimeStatus,
+  runModelSelect,
+  runModelVerify,
+} from '../models/commands.js';
+import {runIndexPurge, runIndexRebuild, runIndexStatus, runIndexVerify} from '../search/commands.js';
+import {runProductionLogs} from './production_log.js';
+import {runReportIssue} from '../report_issue.js';
+import {
+  runCodeGraphAnalysis,
+  runCodeGraphCompact,
+  runCodeGraphExport,
+  runCodeGraphImpact,
+  runCodeGraphIndex,
+  runCodeGraphInspect,
+  runCodeGraphPurge,
+  runCodeGraphReport,
+  runCodeGraphStatus,
+  runCodeGraphWatch,
+} from '../code_graph/commands.js';
+import {runProcessDiagnostics} from '../process_diagnostics.js';
 
 const describeFlag = <A>(flag: Flag.Flag<A>, description: string): Flag.Flag<A> =>
   flag.pipe(Flag.withDescription(description));
 
 const encodedStringPrefix = '\u{f0000}threadnote:';
 const valueFlagKinds = new Map<string, 'other' | 'string'>();
+const booleanFlagNames = new Set<string>();
+const cliRuntimeValueFlagKinds = new Map<string, 'other' | 'string'>([
+  ['--completions', 'other'],
+  ['--log-level', 'other'],
+]);
 
 const valueFlag = <A>(name: string, flag: Flag.Flag<A>, kind: 'other' | 'string'): Flag.Flag<A> => {
   valueFlagKinds.set(`--${name}`, kind);
@@ -93,11 +143,15 @@ const requiredString = (name: string, description: string): Flag.Flag<string> =>
 const defaultString = (name: string, description: string, value: string): Flag.Flag<string> =>
   describeFlag(stringFlag(name), description).pipe(Flag.withDefault(value));
 
-const boolean = (name: string, description: string): Flag.Flag<boolean> =>
-  describeFlag(Flag.boolean(name), description);
+const boolean = (name: string, description: string): Flag.Flag<boolean> => {
+  booleanFlagNames.add(`--${name}`);
+  return describeFlag(Flag.boolean(name), description);
+};
 
-const negatedBoolean = (name: string, description: string): Flag.Flag<boolean> =>
-  describeFlag(Flag.boolean(`no-${name}`), description).pipe(Flag.map(value => !value));
+const negatedBoolean = (name: string, description: string): Flag.Flag<boolean> => {
+  booleanFlagNames.add(`--no-${name}`);
+  return describeFlag(Flag.boolean(`no-${name}`), description).pipe(Flag.map(value => !value));
+};
 
 const optionalChoice = <const Choices extends readonly string[]>(
   name: string,
@@ -126,13 +180,7 @@ const optionalArgument = (name: string, description: string, fallback: string): 
 const root = Command.make('threadnote').pipe(
   Command.withSharedFlags({
     home: optionalString('home', 'Override THREADNOTE_HOME for this invocation'),
-    host: optionalString('host', 'Override THREADNOTE_HOST for this invocation'),
     manifest: optionalString('manifest', 'Override THREADNOTE_MANIFEST for this invocation'),
-    port: optional(
-      describeFlag(integerFlag('port'), 'Override THREADNOTE_PORT for this invocation').pipe(
-        Flag.withSchema(Config.Port),
-      ),
-    ),
   }),
 );
 
@@ -161,6 +209,16 @@ const manage = Command.make(
   options => withRuntimeEffect(config => runManage(config, options)),
 ).pipe(Command.withDescription('Open the local Threadnote web manager'));
 
+const processes = Command.make(
+  'processes',
+  {
+    json: boolean('json', 'Emit versioned machine-readable JSON'),
+  },
+  options => withRuntimeEffect(config => runProcessDiagnostics(config, options)),
+).pipe(
+  Command.withDescription('Show privacy-safe roles, relationships, age, operations, and memory for live processes'),
+);
+
 const doctor = Command.make(
   'doctor',
   {
@@ -180,9 +238,8 @@ const install = Command.make(
   'install',
   {
     dryRun: boolean('dry-run', 'Print the actions without making changes'),
-    force: boolean('force', 'Reinstall OpenViking at the pinned version even if a working install is already present'),
-    packageManager: optionalChoice('package-manager', ['uv', 'pipx', 'pip'], 'uv, pipx, or pip'),
-    start: negatedBoolean('start', 'Do not start OpenViking or check server health after installing'),
+    force: boolean('force', 'Re-assert the Threadnote-owned layout and configuration'),
+    start: negatedBoolean('start', 'Skip the local runtime readiness message'),
     withHooks: boolean(
       'with-hooks',
       'Also install agent-side hooks for deterministic handoff snapshots and context preload',
@@ -202,42 +259,49 @@ const install = Command.make(
         yield* maybeNotifyUpdate(config, {dryRun: options.dryRun});
       }),
     ),
-).pipe(
-  Command.withDescription('Install OpenViking, local config files, command shim, and user-level agent instructions'),
-);
+).pipe(Command.withDescription('Initialize the self-contained Threadnote home and user-level integrations'));
 
 const version = Command.make(
   'version',
   {
-    allowUntrustedRegistry: boolean(
-      'allow-untrusted-registry',
-      'Allow a non-default npm registry without package signature verification',
-    ),
-    registry: optionalString('registry', 'npm registry URL'),
+    allowUntrustedSource: boolean('allow-untrusted-source', 'Allow a non-default release API source'),
+    source: optionalString('source', 'GitHub-compatible releases API URL'),
   },
   options => withRuntimeEffect(config => runVersion(config, options)),
-).pipe(Command.withDescription('Print the installed Threadnote version, latest npm version, and release notes'));
+).pipe(Command.withDescription('Print the installed Threadnote version, latest release, and release notes'));
+
+const logs = Command.make('logs', {}, () => withRuntimeEffect(runProductionLogs)).pipe(
+  Command.withDescription('Show privacy-safe rotating production log files for support'),
+);
+
+const reportIssue = Command.make(
+  'report-issue',
+  {
+    approval: optionalString('approval', 'Digest printed by the exact issue preview'),
+    apply: boolean('apply', 'Create the GitHub issue after reviewing the preview'),
+    body: requiredString('body', 'Public issue description'),
+    includeLogs: boolean('include-logs', 'Include bounded privacy-safe production logs in the issue body'),
+    title: requiredString('title', 'Public issue title'),
+  },
+  options => withRuntimeEffect(config => runReportIssue(config, options)),
+).pipe(Command.withDescription('Preview or create a support issue in Kashkovsky/threadnote'));
 
 const update = Command.make(
   'update',
   {
-    allowUntrustedRegistry: boolean(
-      'allow-untrusted-registry',
-      'Allow a non-default npm registry without package signature verification',
-    ),
+    allowUntrustedSource: boolean('allow-untrusted-source', 'Allow a non-default release API source'),
     beta: boolean('beta', 'Update to the latest beta release'),
     check: boolean('check', 'Only check whether a newer version is available'),
     dryRun: boolean('dry-run', 'Print update and repair commands without running them'),
-    force: boolean('force', 'Run package-manager update even if this version is already current'),
+    force: boolean('force', 'Reinstall the selected standalone release even if already current'),
     postUpdate: negatedBoolean('post-update', 'Skip post-update migration prompts'),
-    registry: optionalString('registry', 'npm registry URL'),
     repair: negatedBoolean('repair', 'Skip threadnote repair after updating the package'),
-    runtime: defaultChoice('runtime', ['auto', 'npm', 'bun', 'deno'], 'auto, npm, bun, or deno', 'auto'),
+    source: optionalString('source', 'GitHub-compatible releases API URL'),
     stable: boolean('stable', 'Switch to the latest stable release'),
     yes: boolean('yes', 'Accept applicable post-update actions without prompting'),
   },
   options => withRuntimeEffect(config => runUpdate(config, options)),
-).pipe(Command.withDescription('Update the published Threadnote package, then repair local shims and MCP config'));
+).pipe(Command.withDescription('Install a verified standalone Threadnote release, then repair local integrations'));
 
 const postUpdate = Command.make(
   'post-update',
@@ -253,21 +317,20 @@ const postUpdate = Command.make(
 const repair = Command.make(
   'repair',
   {
+    deep: boolean('deep', 'Run explicit full SQLite integrity, foreign-key, and derived-state cleanup checks'),
     dryRun: boolean('dry-run', 'Print the repair actions without making changes'),
     mcp: defaultString(
       'mcp',
       'MCP clients: available, all, none, codex, claude, cursor, copilot, or comma-separated list',
       'available',
     ),
-    packageManager: optionalChoice('package-manager', ['uv', 'pipx', 'pip'], 'uv, pipx, or pip'),
     postUpdate: negatedBoolean('post-update', 'Skip post-update migration prompts after repair'),
-    start: negatedBoolean('start', 'Do not start OpenViking if health is failing'),
   },
   options =>
     withRuntimeEffect(config =>
       Effect.gen(function* () {
         yield* runRepair(config, options);
-        if (options.start !== false && (yield* readLocalAiSettings(config))?.enabled === true) {
+        if ((yield* readLocalAiSettings(config))?.enabled === true) {
           if (options.dryRun) {
             yield* runLocalAiStart(config, {dryRun: true});
           } else {
@@ -279,16 +342,14 @@ const repair = Command.make(
         yield* maybeNotifyUpdate(config, {dryRun: options.dryRun});
       }),
     ),
-).pipe(
-  Command.withDescription('Repair local OpenViking install, config, server health, shim, manifest, and MCP config'),
-);
+).pipe(Command.withDescription('Repair Threadnote storage, derived indexes, hooks, and MCP configuration'));
 
 const start = Command.make(
   'start',
   {
     dryRun: boolean('dry-run', 'Print the start command without running it'),
-    foreground: boolean('foreground', 'Run in the foreground instead of detaching'),
-    launchd: boolean('launchd', 'Install and start a macOS LaunchAgent'),
+    foreground: boolean('foreground', 'Deprecated compatibility flag; Threadnote runs in the invoking process'),
+    launchd: boolean('launchd', 'Deprecated compatibility flag; Threadnote has no LaunchAgent'),
   },
   options =>
     withRuntimeEffect(config =>
@@ -304,7 +365,7 @@ const start = Command.make(
         yield* maybeNotifyUpdate(config, {dryRun: options.dryRun});
       }),
     ),
-).pipe(Command.withDescription('Start the local OpenViking server'));
+).pipe(Command.withDescription('Verify runtime readiness (no daemon is required)'));
 
 const stop = Command.make(
   'stop',
@@ -318,19 +379,19 @@ const stop = Command.make(
         yield* runStop(config, options);
       }),
     ),
-).pipe(Command.withDescription('Stop the local OpenViking server or LaunchAgent'));
+).pipe(Command.withDescription('Compatibility command; Threadnote owns no daemon'));
 
 const uninstall = Command.make(
   'uninstall',
   {
     dryRun: boolean('dry-run', 'Print uninstall actions without making changes'),
-    eraseMemories: boolean('erase-memories', 'Delete THREADNOTE_HOME, including all OpenViking memories'),
+    eraseMemories: boolean('erase-memories', 'Delete THREADNOTE_HOME, including all Threadnote memories and models'),
     mcp: defaultString(
       'mcp',
       'MCP clients to remove: available, all, none, codex, claude, cursor, copilot, or comma-separated list',
       'available',
     ),
-    preserveMemories: boolean('preserve-memories', 'Preserve THREADNOTE_HOME and OpenViking memories (default)'),
+    preserveMemories: boolean('preserve-memories', 'Preserve THREADNOTE_HOME and Threadnote memories (default)'),
   },
   options =>
     withRuntimeEffect(config =>
@@ -349,11 +410,11 @@ const localAiInstall = Command.make(
     dryRun: boolean('dry-run', 'Print local AI installation actions without making changes'),
     force: boolean('force', 'Re-download and re-verify the managed model'),
     model: optionalString('model', 'Verified model to install: gemma-4-E4B-it-Q4_0'),
-    modelPath: optionalString('model-path', 'Use an existing verified GGUF file for the selected model'),
-    start: negatedBoolean('start', 'Install and configure without starting the local model service'),
+    modelPath: optionalString('model-path', 'Deprecated; unmanaged GGUF paths are rejected'),
+    start: negatedBoolean('start', 'Deprecated compatibility flag; inference starts locally on demand'),
   },
   options => withRuntimeEffect(config => runLocalAiInstall(config, options)),
-).pipe(Command.withDescription('Install and enable a local recall model (Gemma by default)'));
+).pipe(Command.withDescription('Deprecated alias for models install/select generation'));
 
 const localAiEnable = Command.make(
   'enable',
@@ -371,13 +432,13 @@ const localAiStart = Command.make(
   'start',
   {dryRun: boolean('dry-run', 'Print the local AI start action without running it')},
   options => withRuntimeEffect(config => runLocalAiStart(config, options)),
-).pipe(Command.withDescription('Start the configured loopback model service'));
+).pipe(Command.withDescription('Verify the selected local generation model'));
 
 const localAiStop = Command.make(
   'stop',
   {dryRun: boolean('dry-run', 'Print the local AI stop action without running it')},
   options => withRuntimeEffect(config => runLocalAiStop(config, options)),
-).pipe(Command.withDescription('Stop the configured loopback model service'));
+).pipe(Command.withDescription('Explain local-model worker resource lifetime'));
 
 const localAiStatus = Command.make('status', {}, () => withRuntimeEffect(config => runLocalAiStatus(config))).pipe(
   Command.withDescription('Show local model installation and health'),
@@ -407,7 +468,7 @@ const localAiUninstall = Command.make(
 ).pipe(Command.withDescription('Remove local AI configuration and optionally its managed model'));
 
 const localAi = Command.make('local-ai').pipe(
-  Command.withDescription('Manage opt-in local AI recall'),
+  Command.withDescription('Deprecated compatibility aliases for local model management'),
   Command.withSubcommands([
     localAiInstall,
     localAiEnable,
@@ -420,10 +481,494 @@ const localAi = Command.make('local-ai').pipe(
   ]),
 );
 
+const modelsList = Command.make('list', {}, () => withRuntimeEffect(config => runModelList(config))).pipe(
+  Command.withDescription('List pinned local model candidates and installation state'),
+);
+
+const modelsInstall = Command.make(
+  'install',
+  {
+    dryRun: boolean('dry-run', 'Show the pinned download and checksum without changing files'),
+    modelId: argument('model-id', 'Pinned model ID from threadnote models list'),
+  },
+  ({modelId, ...options}) => withRuntimeEffect(config => runModelInstall(config, modelId, options)),
+).pipe(Command.withDescription('Resumably download and verify a pinned GGUF model'));
+
+const modelsVerify = Command.make('verify', {modelId: argument('model-id', 'Installed model ID')}, ({modelId}) =>
+  withRuntimeEffect(config => runModelVerify(config, modelId)),
+).pipe(Command.withDescription('Verify an installed model size and SHA-256'));
+
+const modelsRemove = Command.make(
+  'remove',
+  {
+    dryRun: boolean('dry-run', 'Show the exact managed model path without removing it'),
+    modelId: argument('model-id', 'Installed model ID'),
+  },
+  ({modelId, ...options}) => withRuntimeEffect(config => runModelRemove(config, modelId, options)),
+).pipe(Command.withDescription('Remove one Threadnote-managed model'));
+
+const modelsSelect = Command.make(
+  'select',
+  {
+    dryRun: boolean('dry-run', 'Show the role selection without changing it'),
+    modelId: argument('model-id', 'Installed model ID'),
+    role: Argument.choice('role', ['embedding', 'reranker', 'generation']).pipe(
+      Argument.withDescription('embedding, reranker, or generation'),
+    ),
+  },
+  ({modelId, role, ...options}) => withRuntimeEffect(config => runModelSelect(config, role, modelId, options)),
+).pipe(Command.withDescription('Select a verified installed model for one runtime role'));
+
+const modelsRuntime = Command.make('runtime', {}, () => withRuntimeEffect(() => runModelRuntimeStatus())).pipe(
+  Command.withDescription('Verify the prebuilt-only node-llama-cpp runtime and show its backend'),
+);
+
+const models = Command.make('models').pipe(
+  Command.withDescription('Manage pinned local GGUF models'),
+  Command.withSubcommands([modelsList, modelsInstall, modelsVerify, modelsRemove, modelsSelect, modelsRuntime]),
+);
+
+const indexRebuild = Command.make(
+  'rebuild',
+  {model: optionalString('model', 'Embedding model ID; defaults to the selected embedding model')},
+  options => withRuntimeEffect(config => runIndexRebuild(config, options)),
+).pipe(Command.withDescription('Build and atomically activate a complete vector-index generation'));
+
+const indexStatus = Command.make('status', {}, () => withRuntimeEffect(config => runIndexStatus(config))).pipe(
+  Command.withDescription('Show vector-index generation and compatibility state'),
+);
+
+const indexVerify = Command.make(
+  'verify',
+  {model: optionalString('model', 'Embedding model ID; defaults to the selected embedding model')},
+  options => withRuntimeEffect(config => runIndexVerify(config, options)),
+).pipe(Command.withDescription('Verify the selected SQLite vector index and active mapping'));
+
+const indexPurge = Command.make(
+  'purge',
+  {
+    dryRun: boolean('dry-run', 'Show which derived index would be removed'),
+    model: optionalString('model', 'Embedding model ID; defaults to the selected embedding model'),
+  },
+  options => withRuntimeEffect(config => runIndexPurge(config, options)),
+).pipe(Command.withDescription('Remove disposable vector data without touching canonical resources'));
+
+const indexCommand = Command.make('index').pipe(
+  Command.withDescription('Inspect and rebuild derived recall indexes'),
+  Command.withSubcommands([indexRebuild, indexStatus, indexVerify, indexPurge]),
+);
+
+const graphBounds = {
+  cwd: optionalString('cwd', 'Repository or worktree directory; defaults to the current directory'),
+  depth: optional(
+    describeFlag(
+      integerFlag('depth').pipe(Flag.withSchema(Schema.Int.check(Schema.isBetween({minimum: 0, maximum: 8})))),
+      'Maximum relationship traversal depth',
+    ),
+  ),
+  edgeLimit: optional(
+    describeFlag(
+      integerFlag('edge-limit').pipe(Flag.withSchema(Schema.Int.check(Schema.isBetween({minimum: 1, maximum: 500})))),
+      'Maximum returned relationships',
+    ),
+  ),
+  includeHeuristic: boolean('include-heuristic', 'Include lower-confidence heuristic relationships'),
+  includeModelAssociations: boolean('include-model-associations', 'Include model-derived semantic associations'),
+  json: boolean('json', 'Emit versioned machine-readable JSON'),
+  nodeLimit: optional(
+    describeFlag(
+      integerFlag('node-limit').pipe(Flag.withSchema(Schema.Int.check(Schema.isBetween({minimum: 1, maximum: 200})))),
+      'Maximum returned nodes',
+    ),
+  ),
+} as const;
+
+const graphStatus = Command.make(
+  'status',
+  {
+    cwd: graphBounds.cwd,
+    json: graphBounds.json,
+  },
+  options => withRuntimeEffect(config => runCodeGraphStatus(config, options)),
+).pipe(Command.withDescription('Show native code graph snapshot and freshness state'));
+
+const graphIndex = Command.make(
+  'index',
+  {
+    cwd: graphBounds.cwd,
+    full: boolean('full', 'Ignore reusable snapshot state and rebuild the graph'),
+    json: graphBounds.json,
+  },
+  options => withRuntimeEffect(config => runCodeGraphIndex(config, options)),
+).pipe(Command.withDescription('Build and atomically activate a current native code graph snapshot'));
+
+const graphQuery = Command.make(
+  'query',
+  {
+    ...graphBounds,
+    query: requiredString('query', 'Concept, symbol, module, path, or documentation query'),
+  },
+  options => withRuntimeEffect(config => runCodeGraphInspect(config, {...options, operation: 'query'})),
+).pipe(Command.withDescription('Search symbols and inspect a bounded relationship neighborhood'));
+
+const graphNode = Command.make(
+  'node',
+  {
+    cwd: graphBounds.cwd,
+    json: graphBounds.json,
+    nodeId: requiredString('node-id', 'Exact stable cgs_ node ID returned by graph inspection'),
+  },
+  options => withRuntimeEffect(config => runCodeGraphInspect(config, {...options, operation: 'node'})),
+).pipe(Command.withDescription('Read one code graph node by its exact stable ID'));
+
+const graphNeighbors = Command.make(
+  'neighbors',
+  {
+    ...graphBounds,
+    direction: defaultChoice(
+      'direction',
+      ['both', 'incoming', 'outgoing'],
+      'Relationship direction relative to each traversal frontier',
+      'both',
+    ),
+    nodeId: requiredString('node-id', 'Exact stable cgs_ node ID returned by graph inspection'),
+  },
+  options => withRuntimeEffect(config => runCodeGraphInspect(config, {...options, operation: 'neighbors'})),
+).pipe(Command.withDescription('Traverse a bounded neighborhood from one exact stable node ID'));
+
+const graphExplain = Command.make(
+  'explain',
+  {
+    ...graphBounds,
+    symbol: requiredString('symbol', 'Symbol, qualified name, or source path selector'),
+  },
+  options => withRuntimeEffect(config => runCodeGraphInspect(config, {...options, operation: 'explain'})),
+).pipe(Command.withDescription('Explain one symbol with declaration and relationship evidence'));
+
+const graphPath = Command.make(
+  'path',
+  {
+    ...graphBounds,
+    from: requiredString('from', 'Starting symbol, path#symbol selector, or stable cgs_ node ID'),
+    to: requiredString('to', 'Target symbol, path#symbol selector, or stable cgs_ node ID'),
+  },
+  options => withRuntimeEffect(config => runCodeGraphInspect(config, {...options, operation: 'path'})),
+).pipe(Command.withDescription('Find a bounded authoritative path between two code concepts'));
+
+const graphImpact = Command.make(
+  'impact',
+  {
+    base: optionalString('base', 'Git base ref used to derive changed paths; defaults to HEAD~1'),
+    cwd: graphBounds.cwd,
+    depth: graphBounds.depth,
+    edgeLimit: graphBounds.edgeLimit,
+    json: graphBounds.json,
+    nodeLimit: graphBounds.nodeLimit,
+    query: optionalString('query', 'Symbol or path whose reverse impact should be inspected'),
+  },
+  options => withRuntimeEffect(config => runCodeGraphImpact(config, options)),
+).pipe(Command.withDescription('Trace reverse impact from a symbol, path, or Git diff'));
+
+const graphAnalysisBounds = {
+  cwd: graphBounds.cwd,
+  includeHeuristic: graphBounds.includeHeuristic,
+  includeModelAssociations: graphBounds.includeModelAssociations,
+  json: graphBounds.json,
+} as const;
+
+const graphCommunityMemberLimit = optional(
+  describeFlag(
+    integerFlag('member-limit').pipe(Flag.withSchema(Schema.Int.check(Schema.isBetween({minimum: 0, maximum: 5_000})))),
+    'Maximum deterministic community members to return',
+  ),
+);
+
+const graphAnalyze = Command.make(
+  'analyze',
+  {
+    ...graphAnalysisBounds,
+    communityId: optionalString('community-id', 'Stable cgc_ community identifier required by the community view'),
+    memberLimit: graphCommunityMemberLimit,
+    view: defaultChoice(
+      'view',
+      ['stats', 'communities', 'community', 'groups', 'hubs', 'surprises', 'confidence', 'full'],
+      'Analysis view to render',
+      'stats',
+    ),
+  },
+  options => withRuntimeEffect(config => runCodeGraphAnalysis(config, options)),
+).pipe(
+  Command.withDescription(
+    'Analyze whole-graph statistics, structural communities, hubs, surprising links, and relationship confidence',
+  ),
+);
+
+const graphStats = Command.make('stats', graphAnalysisBounds, options =>
+  withRuntimeEffect(config => runCodeGraphAnalysis(config, {...options, view: 'stats'})),
+).pipe(Command.withDescription('Show whole-graph structural statistics'));
+
+const graphCommunities = Command.make('communities', graphAnalysisBounds, options =>
+  withRuntimeEffect(config => runCodeGraphAnalysis(config, {...options, view: 'communities'})),
+).pipe(Command.withDescription('Find deterministic structural communities and their stable IDs'));
+
+const graphCommunity = Command.make(
+  'community',
+  {
+    ...graphAnalysisBounds,
+    communityId: requiredString('community-id', 'Stable cgc_ identifier returned by graph communities'),
+    memberLimit: graphCommunityMemberLimit,
+  },
+  options => withRuntimeEffect(config => runCodeGraphAnalysis(config, {...options, view: 'community'})),
+).pipe(Command.withDescription('Inspect bounded members of one stable structural community'));
+
+const graphHubs = Command.make('hubs', graphAnalysisBounds, options =>
+  withRuntimeEffect(config => runCodeGraphAnalysis(config, {...options, view: 'hubs'})),
+).pipe(Command.withDescription('Rank hubs and graph-wide god nodes'));
+
+const graphGroups = Command.make('groups', graphAnalysisBounds, options =>
+  withRuntimeEffect(config => runCodeGraphAnalysis(config, {...options, view: 'groups'})),
+).pipe(Command.withDescription('Derive bounded high-degree fan-in and fan-out structural hyperedges'));
+
+const graphSurprises = Command.make('surprises', graphAnalysisBounds, options =>
+  withRuntimeEffect(config => runCodeGraphAnalysis(config, {...options, view: 'surprises'})),
+).pipe(Command.withDescription('Rank unexpected cross-community relationships'));
+
+const graphConfidence = Command.make('confidence', graphAnalysisBounds, options =>
+  withRuntimeEffect(config => runCodeGraphAnalysis(config, {...options, view: 'confidence'})),
+).pipe(Command.withDescription('Audit relationship confidence, provenance, and endpoint coverage'));
+
+const graphReport = Command.make(
+  'report',
+  {
+    cwd: graphBounds.cwd,
+    includeHeuristic: graphBounds.includeHeuristic,
+    includeModelAssociations: graphBounds.includeModelAssociations,
+    output: requiredString('output', 'New Markdown report path; existing files are never overwritten'),
+  },
+  options => withRuntimeEffect(config => runCodeGraphReport(config, options)),
+).pipe(Command.withDescription('Write a deterministic architecture report with suggested graph questions'));
+
+const graphWatch = Command.make('watch', {cwd: graphBounds.cwd}, options =>
+  withRuntimeEffect(config => runCodeGraphWatch(config, options)),
+).pipe(Command.withDescription('Keep one worktree graph current in the foreground'));
+
+const graphExport = Command.make(
+  'export',
+  {
+    cwd: graphBounds.cwd,
+    edgeLimit: optionalString('edge-limit', 'Maximum relationships to export, or all; defaults by format'),
+    format: defaultChoice('format', ['json', 'graphml', 'html', 'svg'], 'Explicit export format', 'json'),
+    nodeLimit: optionalString('node-limit', 'Maximum nodes to export, or all; defaults by format'),
+    output: requiredString('output', 'New output file; existing files are never overwritten'),
+  },
+  options => withRuntimeEffect(config => runCodeGraphExport(config, options)),
+).pipe(Command.withDescription('Stream a portable JSON, GraphML, HTML, or SVG graph snapshot'));
+
+const graphPurge = Command.make(
+  'purge',
+  {
+    all: boolean('all', 'Remove every disposable native code graph index'),
+    cwd: graphBounds.cwd,
+    dryRun: boolean('dry-run', 'Show the derived index path without removing it'),
+    obsolete: boolean('obsolete', 'Remove only verified older graph-vN SQLite files for this checkout'),
+  },
+  options => withRuntimeEffect(config => runCodeGraphPurge(config, options)),
+).pipe(Command.withDescription('Remove disposable native code graph data without touching repositories or memories'));
+
+const graphCompact = Command.make(
+  'compact',
+  {
+    cwd: graphBounds.cwd,
+    dryRun: boolean('dry-run', 'Inspect and verify compaction without changing the active database'),
+    force: boolean('force', 'Compact even when reclaimable space is below the reviewed threshold'),
+    json: graphBounds.json,
+  },
+  options => withRuntimeEffect(config => runCodeGraphCompact(config, options)),
+).pipe(Command.withDescription('Safely reclaim free pages in the active code graph database'));
+
+const graphCommand = Command.make('graph').pipe(
+  Command.withDescription('Index and inspect the self-contained native code graph'),
+  Command.withSubcommands([
+    graphStatus,
+    graphIndex,
+    graphQuery,
+    graphNode,
+    graphNeighbors,
+    graphExplain,
+    graphPath,
+    graphImpact,
+    graphAnalyze,
+    graphStats,
+    graphCommunities,
+    graphCommunity,
+    graphGroups,
+    graphHubs,
+    graphSurprises,
+    graphConfidence,
+    graphReport,
+    graphWatch,
+    graphExport,
+    graphCompact,
+    graphPurge,
+  ]),
+);
+
+const sourceAdd = Command.make(
+  'add',
+  {
+    apply: boolean('apply', 'Write the source configuration; without this, print a preview'),
+    exclude: repeatedString('exclude', 'Vault-relative exclusion glob; repeat for multiple'),
+    id: requiredString('id', 'Stable source identifier'),
+    inbox: optionalString('inbox', 'Vault-relative Threadnote Inbox folder'),
+    include: repeatedString('include', 'Required vault-relative allowlist glob; repeat for multiple'),
+    type: defaultChoice('type', ['obsidian'], 'External source type', 'obsidian'),
+    vault: requiredString('vault', 'Obsidian vault directory'),
+  },
+  ({type: _type, ...options}) => withRuntimeEffect(config => runObsidianSourceAdd(config, options)),
+).pipe(Command.withDescription('Configure an allowlisted read-only external source'));
+
+const sourceList = Command.make('list', {}, () => withRuntimeEffect(config => runObsidianSourceList(config))).pipe(
+  Command.withDescription('List configured external sources'),
+);
+
+const sourceInventory = Command.make('inventory', {id: argument('id', 'Source identifier')}, ({id}) =>
+  withRuntimeEffect(config => runObsidianSourceInventory(config, id)),
+).pipe(Command.withDescription('Inventory allowed, changed, removed, and unsafe source notes'));
+
+const sourceSync = Command.make(
+  'sync',
+  {
+    id: argument('id', 'Source identifier'),
+    apply: boolean('apply', 'Update the external index; without this, print a dry run'),
+    dryRun: boolean('dry-run', 'Print changes without updating the external index'),
+  },
+  options => withRuntimeEffect(config => runObsidianSourceSync(config, options)),
+).pipe(Command.withDescription('Incrementally synchronize an allowlisted external source'));
+
+const sourceStatus = Command.make('status', {id: argument('id', 'Source identifier')}, ({id}) =>
+  withRuntimeEffect(config => runObsidianSourceStatus(config, id)),
+).pipe(Command.withDescription('Show source configuration and pending changes'));
+
+const sourceRemove = Command.make(
+  'remove',
+  {
+    id: argument('id', 'Source identifier'),
+    apply: boolean('apply', 'Remove source configuration and its external index'),
+    dryRun: boolean('dry-run', 'Print removal without changing anything'),
+  },
+  options => withRuntimeEffect(config => runObsidianSourceRemove(config, options)),
+).pipe(Command.withDescription('Remove a source index while preserving its vault and Threadnote memories'));
+
+const source = Command.make('source').pipe(
+  Command.withDescription('Manage capability-scoped external knowledge sources'),
+  Command.withSubcommands([sourceAdd, sourceList, sourceInventory, sourceSync, sourceStatus, sourceRemove]),
+);
+
+const projectionAdd = Command.make(
+  'add',
+  {
+    apply: boolean('apply', 'Write the projection configuration; without this, print a preview'),
+    folder: defaultString('folder', 'Vault-relative managed projection folder', 'Threadnote'),
+    id: requiredString('id', 'Stable projection identifier'),
+    includeShared: negatedBoolean('shared', 'Exclude shared memories from this projection'),
+    kind: repeatedString('kind', 'Memory kind to project; repeat for multiple'),
+    status: repeatedString('status', 'Memory status to project; repeat for multiple'),
+    type: defaultChoice('type', ['obsidian'], 'Projection type', 'obsidian'),
+    vault: requiredString('vault', 'Obsidian vault directory'),
+  },
+  ({kind, status, type: _type, ...options}) =>
+    withRuntimeEffect(config =>
+      runObsidianProjectionAdd(config, {
+        ...options,
+        kinds: kind.map(parseMemoryKind),
+        statuses: status.map(parseMemoryStatus),
+      }),
+    ),
+).pipe(Command.withDescription('Configure a deterministic read-only memory projection'));
+
+const projectionList = Command.make('list', {}, () =>
+  withRuntimeEffect(config => runObsidianProjectionList(config)),
+).pipe(Command.withDescription('List configured memory projections'));
+
+const projectionSync = Command.make(
+  'sync',
+  {
+    id: argument('id', 'Projection identifier'),
+    apply: boolean('apply', 'Write projection changes; without this, print a dry run'),
+    dryRun: boolean('dry-run', 'Print changes without writing the vault'),
+    force: boolean('force', 'Regenerate edited managed files; never overwrites unmanaged files'),
+  },
+  options => withRuntimeEffect(config => runObsidianProjectionSync(config, options)),
+).pipe(Command.withDescription('Refresh memories already selected for an Obsidian projection'));
+
+const projectionPublish = Command.make(
+  'publish',
+  {
+    id: argument('id', 'Projection identifier'),
+    apply: boolean('apply', 'Select and write the memories; without this, print a dry run'),
+    dryRun: boolean('dry-run', 'Print changes without writing the vault or projection selection'),
+    force: boolean('force', 'Regenerate edited managed files; never overwrites unmanaged files'),
+    uri: repeatedString('uri', 'Canonical Threadnote memory URI; repeat for multiple memories'),
+  },
+  ({uri, ...options}) => withRuntimeEffect(config => runObsidianProjectionPublish(config, {...options, uris: uri})),
+).pipe(Command.withDescription('Publish explicitly selected Threadnote memories to Obsidian'));
+
+const projectionStatus = Command.make('status', {id: argument('id', 'Projection identifier')}, ({id}) =>
+  withRuntimeEffect(config => runObsidianProjectionStatus(config, id)),
+).pipe(Command.withDescription('Show projection configuration, drift, and pending changes'));
+
+const projectionRemove = Command.make(
+  'remove',
+  {
+    id: argument('id', 'Projection identifier'),
+    apply: boolean('apply', 'Remove unchanged managed files and projection configuration'),
+    dryRun: boolean('dry-run', 'Print removal without changing anything'),
+    force: boolean('force', 'Also remove edited files previously managed by this projection'),
+  },
+  options => withRuntimeEffect(config => runObsidianProjectionRemove(config, options)),
+).pipe(Command.withDescription('Remove managed projection files while preserving the vault and memories'));
+
+const projection = Command.make('projection').pipe(
+  Command.withDescription('Manage one-way human-readable memory projections'),
+  Command.withSubcommands([
+    projectionAdd,
+    projectionList,
+    projectionPublish,
+    projectionSync,
+    projectionStatus,
+    projectionRemove,
+  ]),
+);
+
+const openMemory = Command.make(
+  'open',
+  {
+    uri: argument('uri', 'Projected threadnote:// memory URI'),
+    dryRun: boolean('dry-run', 'Print the Obsidian command without opening it'),
+    projection: optionalString('projection', 'Projection identifier when a memory appears in more than one'),
+  },
+  ({uri, ...options}) => withRuntimeEffect(config => runObsidianOpen(config, uri, options)),
+).pipe(Command.withDescription('Open a projected Threadnote memory in Obsidian'));
+
+const inboxScan = Command.make(
+  'scan',
+  {
+    apply: boolean('apply', 'Persist candidate reviews; without this, print a dry run'),
+    dryRun: boolean('dry-run', 'Print candidate reviews without persisting them'),
+    source: requiredString('source', 'Obsidian source identifier with a configured Inbox'),
+  },
+  options => withRuntimeEffect(config => runObsidianInboxScan(config, options)),
+).pipe(Command.withDescription('Form reviewed memory candidates from an explicit Obsidian Inbox'));
+
+const inbox = Command.make('inbox').pipe(
+  Command.withDescription('Review explicit external writeback candidates'),
+  Command.withSubcommands([inboxScan]),
+);
+
 const seed = Command.make(
   'seed',
   {
-    dryRun: boolean('dry-run', 'Print files and ov commands without importing'),
+    dryRun: boolean('dry-run', 'Print files and native store operations without importing'),
     force: boolean('force', 'Re-upload every candidate even if recorded state matches'),
     graph: boolean('graph', 'Also seed per-project dependency facts with cross-repo edges'),
     only: repeatedString('only', 'Restrict seeding to one or more manifest projects; repeat for multiple'),
@@ -445,8 +990,7 @@ const initManifest = Command.make(
 const seedSkills = Command.make(
   'seed-skills',
   {
-    dryRun: boolean('dry-run', 'Print skill files and ov commands without importing'),
-    native: boolean('native', 'Use native OpenViking skill ingestion; requires a working VLM config'),
+    dryRun: boolean('dry-run', 'Print skill files without importing'),
   },
   options => withRuntimeEffect(config => runSeedSkills(config, options)),
 ).pipe(Command.withDescription('Seed Codex/Claude skills and Claude command markdown files as a searchable catalog'));
@@ -458,15 +1002,12 @@ const mcpInstall = Command.make(
       Argument.withDescription('codex, claude, cursor, or copilot'),
     ),
     apply: boolean('apply', 'Actually modify the selected agent config'),
-    bearerTokenEnvVar: optionalString('bearer-token-env-var', 'Environment variable containing the local API key'),
-    name: defaultString('name', 'MCP server name', OPENVIKING_MCP_NAME),
-    nativeHttp: boolean('native-http', 'Install OpenViking native HTTP MCP instead of the local stdio adapter'),
+    name: defaultString('name', 'MCP server name', THREADNOTE_MCP_NAME),
     scope: defaultChoice('scope', ['user', 'local', 'project'], 'Claude MCP config scope', 'user'),
     toolset: optionalChoice('toolset', ['core', 'full'], 'Stdio adapter toolset'),
-    url: optionalString('url', 'OpenViking native HTTP MCP URL'),
   },
   ({agent, ...options}) => withRuntimeEffect(config => runMcpInstall(config, agent, options)),
-).pipe(Command.withDescription('Install OpenViking MCP config for a supported agent'));
+).pipe(Command.withDescription('Install the Threadnote stdio MCP config for a supported agent'));
 
 const installHooks = Command.make(
   'install-hooks',
@@ -489,14 +1030,14 @@ const preCompactHook = Command.make(
 
 const sessionStartHook = Command.make(
   'session-start-hook',
-  {dryRun: boolean('dry-run', 'Print the planned ov command without running it')},
+  {dryRun: boolean('dry-run', 'Print the planned native operation without running it')},
   options => withRuntimeEffect(config => runSessionStartHook(config, options)),
 ).pipe(Command.withDescription('Print current repo handoff context at session start'), Command.withHidden);
 
 const remember = Command.make(
   'remember',
   {
-    dryRun: boolean('dry-run', 'Print memory and ov command without storing'),
+    dryRun: boolean('dry-run', 'Print memory and native operation without storing'),
     kind: defaultChoice(
       'kind',
       ['durable', 'handoff', 'incident', 'preference', 'smoke'],
@@ -504,7 +1045,7 @@ const remember = Command.make(
       'durable',
     ),
     project: optionalString('project', 'Project/repo/topic namespace for lifecycle-aware storage'),
-    replace: optionalString('replace', 'Supersede an existing viking:// memory after storing the new memory'),
+    replace: optionalString('replace', 'Supersede an existing threadnote:// memory after storing the new memory'),
     sourceAgentClient: defaultString('source-agent-client', 'Originating agent client name', 'codex'),
     status: defaultChoice('status', ['active', 'archived', 'superseded'], 'Memory lifecycle status', 'active'),
     stdin: boolean('stdin', 'Read memory text from stdin'),
@@ -512,18 +1053,35 @@ const remember = Command.make(
     topic: optionalString('topic', 'Stable topic name for an active project/topic memory'),
   },
   options => withRuntimeEffect(config => runRemember(config, options)),
-).pipe(Command.withDescription('Store a durable engineering memory in OpenViking'));
+).pipe(Command.withDescription('Store a durable engineering memory in the native Threadnote store'));
 
 const migrateMemories = Command.make(
   'migrate-memories',
   {
-    allAccounts: boolean('all-accounts', 'Scan all local OpenViking accounts under THREADNOTE_HOME'),
+    allAccounts: boolean('all-accounts', 'Scan all local canonical accounts under THREADNOTE_HOME'),
     dryRun: boolean('dry-run', 'Print migration actions without writing memories'),
     limit: optionalString('limit', 'Maximum number of memories to migrate'),
-    sourceAccount: repeatedString('source-account', 'Source OpenViking account; repeat for multiple accounts'),
+    sourceAccount: repeatedString('source-account', 'Source canonical account; repeat for multiple accounts'),
   },
   options => withRuntimeEffect(config => runMigrateMemories(config, options)),
 ).pipe(Command.withDescription('Migrate legacy session-only memories into durable memory files'));
+
+const migrateHome = Command.make(
+  'migrate',
+  {
+    apply: boolean('apply', 'Stage, validate, and atomically promote ~/.threadnote'),
+    dryRun: boolean('dry-run', 'Inspect the legacy home without changing files'),
+    legacyHome: optionalString('legacy-home', 'Legacy OpenViking home; defaults to ~/.openviking'),
+  },
+  options =>
+    withRuntimeEffect(config =>
+      runHomeMigration({
+        apply: options.apply && !options.dryRun,
+        legacyHome: options.legacyHome,
+        targetHome: config.agentContextHome,
+      }),
+    ),
+).pipe(Command.withDescription('Migrate a legacy ~/.openviking home into the self-contained ~/.threadnote home'));
 
 const migrateLifecycle = Command.make(
   'migrate-lifecycle',
@@ -565,18 +1123,18 @@ const recall = Command.make(
   'recall',
   {
     callerCwd: optionalString('caller-cwd', 'Absolute caller workspace path for current repo/branch resolution'),
-    dryRun: boolean('dry-run', 'Print ov command without searching'),
+    dryRun: boolean('dry-run', 'Print the native query without searching'),
     includeArchived: boolean('include-archived', 'Include archived memories in recall results'),
     inferScope: negatedBoolean('infer-scope', 'Disable query-based scope inference'),
     nodeLimit: withValueAlias(optionalString('node-limit', 'Maximum number of search results'), 'n', 'string'),
     project: optionalString('project', 'Add a scoped project memory pass alongside global search'),
     query: requiredString('query', 'Search query'),
     threshold: optionalString('threshold', 'Minimum relevance score 0-1'),
-    uri: optionalString('uri', 'Restrict search to a viking:// URI'),
+    uri: optionalString('uri', 'Restrict search to a threadnote:// URI'),
     workset: optionalString('workset', 'Recall across a named seed-manifest workset'),
   },
   options => withRuntimeEffect(config => runRecall(config, options)),
-).pipe(Command.withDescription('Search shared OpenViking context'));
+).pipe(Command.withDescription('Search shared Threadnote context'));
 
 const worksetList = Command.make('list', {}, () => withRuntimeEffect(config => runWorksetList(config))).pipe(
   Command.withDescription('List worksets defined in the seed manifest'),
@@ -605,22 +1163,25 @@ const compact = Command.make(
 
 const read = Command.make(
   'read',
-  {dryRun: boolean('dry-run', 'Print ov command without reading'), uri: argument('uri', 'viking:// URI to read')},
+  {
+    dryRun: boolean('dry-run', 'Print the native read without running it'),
+    uri: argument('uri', 'threadnote:// URI to read'),
+  },
   ({uri, ...options}) => withRuntimeEffect(config => runRead(config, uri, options)),
-).pipe(Command.withDescription('Read a viking:// URI returned by recall or list'));
+).pipe(Command.withDescription('Read a threadnote:// URI returned by recall or list'));
 
 const list = Command.make(
   'list',
   {
     all: boolean('all', 'Show hidden files such as .abstract.md and .overview.md').pipe(Flag.withAlias('a')),
-    dryRun: boolean('dry-run', 'Print ov command without listing'),
+    dryRun: boolean('dry-run', 'Print the native listing operation without running it'),
     nodeLimit: withValueAlias(optionalString('node-limit', 'Maximum number of nodes to list'), 'n', 'string'),
     recursive: boolean('recursive', 'List subdirectories recursively').pipe(Flag.withAlias('r')),
     simple: boolean('simple', 'Print only paths').pipe(Flag.withAlias('s')),
-    uri: optionalArgument('uri', 'viking:// directory URI', 'viking://'),
+    uri: optionalArgument('uri', 'threadnote:// directory URI', 'threadnote://'),
   },
   ({uri, ...options}) => withRuntimeEffect(config => runList(config, uri, options)),
-).pipe(Command.withDescription('List a viking:// directory'), Command.withAlias('ls'));
+).pipe(Command.withDescription('List a threadnote:// directory'), Command.withAlias('ls'));
 
 const handoff = Command.make(
   'handoff',
@@ -632,7 +1193,7 @@ const handoff = Command.make(
     nextStep: optionalString('next-step', 'Suggested next step'),
     pr: optionalString('pr', 'Related pull request reference'),
     project: optionalString('project', 'Project/repo namespace; defaults to current repo'),
-    reference: repeatedString('reference', 'Prior viking:// context URI; repeat for multiple'),
+    reference: repeatedString('reference', 'Prior threadnote:// context URI; repeat for multiple'),
     replace: optionalString('replace', 'Supersede an existing memory after storing the handoff'),
     sourceAgentClient: defaultString('source-agent-client', 'Originating agent client name', 'codex'),
     task: optionalString('task', 'Current task summary'),
@@ -650,16 +1211,19 @@ const archive = Command.make(
     kind: optionalChoice('kind', ['durable', 'handoff', 'incident', 'preference', 'smoke'], 'Memory kind'),
     project: optionalString('project', 'Override inferred project/repo namespace'),
     topic: optionalString('topic', 'Override inferred topic'),
-    uri: argument('uri', 'viking:// memory URI to archive'),
+    uri: argument('uri', 'threadnote:// memory URI to archive'),
   },
   ({uri, ...options}) => withRuntimeEffect(config => runArchive(config, uri, options)),
 ).pipe(Command.withDescription('Move a memory into the archived lifecycle tree'));
 
 const forget = Command.make(
   'forget',
-  {dryRun: boolean('dry-run', 'Print ov command without deleting'), uri: argument('uri', 'viking:// URI to remove')},
+  {
+    dryRun: boolean('dry-run', 'Print the native delete without running it'),
+    uri: argument('uri', 'threadnote:// URI to remove'),
+  },
   ({uri, ...options}) => withRuntimeEffect(config => runForget(config, uri, options)),
-).pipe(Command.withDescription('Remove a viking:// URI from local OpenViking context'));
+).pipe(Command.withDescription('Remove a threadnote:// URI from local Threadnote context'));
 
 const shareInit = Command.make(
   'init',
@@ -700,7 +1264,7 @@ const shareConflicts = Command.make(
 const conflictShow = Command.make(
   'show',
   {
-    conflictId: argument('conflict-id', 'Conflict id, relative path, or shared viking:// URI'),
+    conflictId: argument('conflict-id', 'Conflict id, relative path, or shared threadnote:// URI'),
     team: optionalString('team', 'Team name for a relative path'),
   },
   ({conflictId, ...options}) => withRuntimeEffect(config => runShareConflictShow(config, conflictId, options)),
@@ -709,7 +1273,7 @@ const conflictShow = Command.make(
 const conflictResolve = Command.make(
   'resolve',
   {
-    conflictId: argument('conflict-id', 'Conflict id, relative path, or shared viking:// URI'),
+    conflictId: argument('conflict-id', 'Conflict id, relative path, or shared threadnote:// URI'),
     dryRun: boolean('dry-run', 'Print actions without writing'),
     fromFile: optionalString('from-file', 'Merged memory markdown to write to both stores'),
     message: optionalString('message', 'Commit message'),
@@ -736,7 +1300,7 @@ const publishFlags = {
 
 const sharePublish = Command.make(
   'publish',
-  {...publishFlags, uri: argument('viking-uri', 'Personal viking:// memory URI')},
+  {...publishFlags, uri: argument('resource-uri', 'Personal threadnote:// memory URI')},
   ({uri, ...options}) => withRuntimeEffect(config => runSharePublish(config, uri, options)),
 ).pipe(Command.withDescription('Move a personal memory into the shared team namespace, commit and push'));
 
@@ -783,7 +1347,7 @@ const shareUnpublish = Command.make(
     message: optionalString('message', 'Commit message override'),
     push: negatedBoolean('push', 'Skip the push step'),
     team: optionalString('team', 'Team name'),
-    uri: argument('viking-uri', 'Shared viking:// memory URI'),
+    uri: argument('resource-uri', 'Shared threadnote:// memory URI'),
   },
   ({uri, ...options}) => withRuntimeEffect(config => runShareUnpublish(config, uri, options)),
 ).pipe(Command.withDescription('Pull a shared memory back into the personal namespace'));
@@ -846,63 +1410,229 @@ const share = Command.make('share').pipe(
 const exportPack = Command.make(
   'export-pack',
   {
-    dryRun: boolean('dry-run', 'Print ov command without exporting'),
+    dryRun: boolean('dry-run', 'Print the native export without running it'),
     path: optionalString('path', 'Output .ovpack path'),
-    uri: optionalString('uri', 'Source viking:// URI; defaults to the current user memories'),
+    uri: optionalString('uri', 'Source threadnote:// URI; defaults to the current user memories'),
   },
   options => withRuntimeEffect(config => runExportPack(config, options)),
-).pipe(Command.withDescription('Export local OpenViking context to an .ovpack'));
+).pipe(Command.withDescription('Export local Threadnote context to an .ovpack archive'));
 
 const importPack = Command.make(
   'import-pack',
   {
-    dryRun: boolean('dry-run', 'Print ov command without importing'),
+    dryRun: boolean('dry-run', 'Print the native import without running it'),
     path: requiredString('path', 'Input .ovpack path'),
-    targetUri: optionalString('target-uri', 'Target parent viking:// URI; defaults to the current user'),
+    targetUri: optionalString('target-uri', 'Target parent threadnote:// URI; defaults to the current user'),
   },
   options => withRuntimeEffect(config => runImportPack(config, options)),
-).pipe(Command.withDescription('Import an .ovpack into local OpenViking context'));
+).pipe(Command.withDescription('Import an .ovpack archive into local Threadnote context'));
+
+type ProductionLogMode = 'always' | 'never' | 'requires-apply' | 'skips-on-preview';
+
+interface TopLevelCommandMetadata {
+  readonly aliases?: readonly string[];
+  readonly productionLog?: {
+    readonly mode?: ProductionLogMode;
+    readonly subcommands?: Readonly<Record<string, ProductionLogMode>>;
+  };
+}
+
+const registerTopLevelCommand = <const Name extends string, CommandType>(
+  canonicalName: Name,
+  command: CommandType,
+  metadata: TopLevelCommandMetadata = {},
+) => ({
+  aliases: metadata.aliases ?? [],
+  canonicalName,
+  command,
+  productionLog: metadata.productionLog ?? {},
+});
+
+const topLevelCommandRegistrations = [
+  registerTopLevelCommand('manage', manage),
+  registerTopLevelCommand('processes', processes, {productionLog: {mode: 'never'}}),
+  registerTopLevelCommand('doctor', doctor),
+  registerTopLevelCommand('install', install),
+  registerTopLevelCommand('version', version),
+  registerTopLevelCommand('logs', logs),
+  registerTopLevelCommand('report-issue', reportIssue, {productionLog: {mode: 'never'}}),
+  registerTopLevelCommand('update', update),
+  registerTopLevelCommand('post-update', postUpdate),
+  registerTopLevelCommand('repair', repair),
+  registerTopLevelCommand('start', start),
+  registerTopLevelCommand('stop', stop),
+  registerTopLevelCommand('uninstall', uninstall),
+  registerTopLevelCommand('models', models),
+  registerTopLevelCommand('index', indexCommand),
+  registerTopLevelCommand('graph', graphCommand),
+  registerTopLevelCommand('local-ai', localAi),
+  registerTopLevelCommand('source', source, {
+    productionLog: {
+      subcommands: {add: 'requires-apply', remove: 'requires-apply', sync: 'requires-apply'},
+    },
+  }),
+  registerTopLevelCommand('projection', projection, {
+    productionLog: {
+      subcommands: {
+        add: 'requires-apply',
+        publish: 'requires-apply',
+        remove: 'requires-apply',
+        sync: 'requires-apply',
+      },
+    },
+  }),
+  registerTopLevelCommand('open', openMemory),
+  registerTopLevelCommand('inbox', inbox, {
+    productionLog: {subcommands: {scan: 'requires-apply'}},
+  }),
+  registerTopLevelCommand('seed', seed),
+  registerTopLevelCommand('init-manifest', initManifest),
+  registerTopLevelCommand('seed-skills', seedSkills),
+  registerTopLevelCommand('mcp-install', mcpInstall, {productionLog: {mode: 'requires-apply'}}),
+  registerTopLevelCommand('install-hooks', installHooks, {productionLog: {mode: 'requires-apply'}}),
+  registerTopLevelCommand('pre-compact-hook', preCompactHook),
+  registerTopLevelCommand('session-start-hook', sessionStartHook),
+  registerTopLevelCommand('remember', remember),
+  registerTopLevelCommand('migrate', migrateHome, {productionLog: {mode: 'requires-apply'}}),
+  registerTopLevelCommand('migrate-memories', migrateMemories),
+  registerTopLevelCommand('migrate-lifecycle', migrateLifecycle, {
+    productionLog: {mode: 'requires-apply'},
+  }),
+  registerTopLevelCommand('migrate-projects', migrateProjectNames, {
+    productionLog: {mode: 'requires-apply'},
+  }),
+  registerTopLevelCommand('migrate-project-names', migrateProjectNamesCompatibility, {
+    productionLog: {mode: 'requires-apply'},
+  }),
+  registerTopLevelCommand('enrich-memories', enrichMemories, {
+    productionLog: {mode: 'requires-apply'},
+  }),
+  registerTopLevelCommand('recall', recall),
+  registerTopLevelCommand('workset', workset),
+  registerTopLevelCommand('compact', compact, {productionLog: {mode: 'requires-apply'}}),
+  registerTopLevelCommand('read', read),
+  registerTopLevelCommand('list', list, {aliases: ['ls']}),
+  registerTopLevelCommand('handoff', handoff),
+  registerTopLevelCommand('archive', archive),
+  registerTopLevelCommand('forget', forget),
+  registerTopLevelCommand('share', share, {
+    productionLog: {
+      subcommands: {
+        'install-artifacts': 'requires-apply',
+        publish: 'skips-on-preview',
+        'publish-artifact': 'skips-on-preview',
+        'publish-bundle': 'skips-on-preview',
+      },
+    },
+  }),
+  registerTopLevelCommand('export-pack', exportPack),
+  registerTopLevelCommand('import-pack', importPack),
+] as const;
+
+const topLevelOperationByName = new Map(
+  topLevelCommandRegistrations.flatMap(registration => [
+    [registration.canonicalName, registration.canonicalName] as const,
+    ...registration.aliases.map(alias => [alias, registration.canonicalName] as const),
+  ]),
+);
+
+const topLevelRegistrationByName = new Map(
+  topLevelCommandRegistrations.map(registration => [registration.canonicalName, registration] as const),
+);
 
 export const threadnoteCommand = root.pipe(
   Command.withDescription('Threadnote shared context workflow for development agents'),
-  Command.withSubcommands([
-    manage,
-    doctor,
-    install,
-    version,
-    update,
-    postUpdate,
-    repair,
-    start,
-    stop,
-    uninstall,
-    localAi,
-    seed,
-    initManifest,
-    seedSkills,
-    mcpInstall,
-    installHooks,
-    preCompactHook,
-    sessionStartHook,
-    remember,
-    migrateMemories,
-    migrateLifecycle,
-    migrateProjectNames,
-    migrateProjectNamesCompatibility,
-    enrichMemories,
-    recall,
-    workset,
-    compact,
-    read,
-    list,
-    handoff,
-    archive,
-    forget,
-    share,
-    exportPack,
-    importPack,
-  ]),
+  Command.withSubcommands(topLevelCommandRegistrations.map(registration => registration.command)),
 );
+
+export interface CliInvocationInspection {
+  readonly homeOverride?: string;
+  readonly operation?: string;
+  readonly writeProductionLog: boolean;
+}
+
+export function inspectCliInvocation(arguments_: readonly string[]): CliInvocationInspection {
+  const scanned = scanCliArguments(arguments_);
+  const selectedName = scanned.positionals[0];
+  const operation = selectedName === undefined ? undefined : (topLevelOperationByName.get(selectedName) ?? 'unknown');
+  const registration =
+    operation === undefined || operation === 'unknown' ? undefined : topLevelRegistrationByName.get(operation);
+  const mode =
+    registration?.productionLog.subcommands?.[scanned.positionals[1] ?? ''] ??
+    registration?.productionLog.mode ??
+    'always';
+  const writeProductionLog =
+    operation !== undefined &&
+    mode !== 'never' &&
+    scanned.booleanValues.get('--dry-run') !== true &&
+    !scanned.flags.has('--help') &&
+    !scanned.flags.has('-h') &&
+    !(mode === 'requires-apply' && scanned.booleanValues.get('--apply') !== true) &&
+    !(mode === 'skips-on-preview' && scanned.booleanValues.get('--preview') === true);
+  return {
+    ...(scanned.homeOverride === undefined ? {} : {homeOverride: scanned.homeOverride}),
+    ...(operation === undefined ? {} : {operation}),
+    writeProductionLog,
+  };
+}
+
+function scanCliArguments(arguments_: readonly string[]) {
+  const booleanValues = new Map<string, boolean>();
+  const flags = new Set<string>();
+  const positionals: string[] = [];
+  let homeOverride: string | undefined;
+  for (let index = 0; index < arguments_.length; index += 1) {
+    const argument = arguments_[index] ?? '';
+    const equalsIndex = argument.indexOf('=');
+    const flagName = equalsIndex > 0 ? argument.slice(0, equalsIndex) : argument;
+    const valueKind = valueFlagKinds.get(flagName) ?? cliRuntimeValueFlagKinds.get(flagName);
+    if (valueKind !== undefined) {
+      const value = equalsIndex > 0 ? argument.slice(equalsIndex + 1) : arguments_[index + 1];
+      if (flagName === '--home') {
+        homeOverride = value;
+      }
+      if (equalsIndex < 0 && value !== undefined) {
+        index += 1;
+      }
+      continue;
+    }
+    if (booleanFlagNames.has(flagName)) {
+      const inlineValue = equalsIndex > 0 ? parseCliBoolean(argument.slice(equalsIndex + 1)) : undefined;
+      const followingValue = equalsIndex < 0 ? parseCliBoolean(arguments_[index + 1]) : undefined;
+      booleanValues.set(flagName, inlineValue ?? followingValue ?? true);
+      if (followingValue !== undefined) {
+        index += 1;
+      }
+      continue;
+    }
+    if (argument.startsWith('-')) {
+      flags.add(flagName);
+    } else {
+      positionals.push(argument);
+    }
+  }
+  return {booleanValues, flags, homeOverride, positionals};
+}
+
+function parseCliBoolean(value: string | undefined): boolean | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  switch (value.toLowerCase()) {
+    case '1':
+    case 'on':
+    case 'true':
+    case 'yes':
+      return true;
+    case '0':
+    case 'false':
+    case 'no':
+    case 'off':
+      return false;
+    default:
+      return undefined;
+  }
+}
 
 /**
  * Preserve Commander-compatible string values while Effect 4's beta lexer

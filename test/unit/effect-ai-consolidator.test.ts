@@ -9,7 +9,7 @@ import {
   EFFECT_AI_ENABLED_ENV,
   EFFECT_AI_MODEL_ENV,
   effectAiConfiguration,
-} from '../../src/effect/ai-consolidator.js';
+} from '../../src/effect/ai/consolidator.js';
 
 describe('Effect AI consolidator', () => {
   it('requires explicit opt-in', () => {

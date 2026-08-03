@@ -4,6 +4,7 @@ import {describe} from 'vitest';
 import {
   boundedRecallExpansionScopes,
   expandRecallQueryEffect,
+  expandWeakRecallQueryEffect,
   isLoopbackAiEndpoint,
   limitRecallRewritesForConfidence,
   mergeRecallRewritesForConfidence,
@@ -13,8 +14,9 @@ import {
   recallHybridMinimumScore,
   RecallQueryExpander,
   selectRecallCandidatesEffect,
+  selectExpandedRecallCandidatesEffect,
   shouldExpandRecall,
-} from '../../src/effect/ai-recall.js';
+} from '../../src/effect/ai/recall.js';
 
 describe('Effect AI recall expansion', () => {
   it('only expands weak deterministic recalls', () => {
@@ -60,10 +62,10 @@ describe('Effect AI recall expansion', () => {
     expect(
       boundedRecallExpansionScopes([
         undefined,
-        'viking://user/me/memories/durable/projects/threadnote',
+        'threadnote://user/me/memories/durable/projects/threadnote',
         undefined,
-        'viking://resources/repos/threadnote',
-        'viking://resources/repos/atlas-cache',
+        'threadnote://resources/repos/threadnote',
+        'threadnote://resources/repos/atlas-cache',
       ]),
     ).toEqual([undefined]);
   });
@@ -93,8 +95,8 @@ describe('Effect AI recall expansion', () => {
 
   it('keeps only known, unique candidate IDs and supports a confident empty selection', () => {
     const candidates = [
-      {id: 'c1', summary: 'first', uri: 'viking://first'},
-      {id: 'c2', summary: 'second', uri: 'viking://second'},
+      {id: 'c1', summary: 'first', uri: 'threadnote://first'},
+      {id: 'c2', summary: 'second', uri: 'threadnote://second'},
     ];
     expect(
       normalizeRecallCandidateSelection({candidateIds: ['c2', 'unknown', 'c2'], relevant: true}, candidates),
@@ -106,7 +108,7 @@ describe('Effect AI recall expansion', () => {
     const manyCandidates = Array.from({length: 12}, (_unused, index) => ({
       id: `c${index + 1}`,
       summary: `candidate ${index + 1}`,
-      uri: `viking://candidate-${index + 1}`,
+      uri: `threadnote://candidate-${index + 1}`,
     }));
     expect(
       normalizeRecallCandidateSelection(
@@ -129,7 +131,7 @@ describe('Effect AI recall expansion', () => {
 
   it.effect('keeps candidate selection provider-independent', () =>
     selectRecallCandidatesEffect({
-      candidates: [{id: 'c1', summary: 'release channel', uri: 'viking://release'}],
+      candidates: [{id: 'c1', summary: 'release channel', uri: 'threadnote://release'}],
       query: 'preview release updates',
     }).pipe(
       Effect.provide(
@@ -139,5 +141,27 @@ describe('Effect AI recall expansion', () => {
       ),
       Effect.tap(selected => Effect.sync(() => expect(selected).toEqual(['c1']))),
     ),
+  );
+
+  it.effect('does not auto-load an optional generation model for ordinary recall', () =>
+    Effect.gen(function* () {
+      expect(
+        yield* expandWeakRecallQueryEffect(
+          {confidence: {level: 'no_answer'}, query: 'missing memory'},
+          {agentContextHome: '/unused'},
+          undefined,
+        ),
+      ).toEqual([]);
+      expect(
+        yield* selectExpandedRecallCandidatesEffect(
+          {
+            candidates: [{id: 'c1', summary: 'candidate', uri: 'threadnote://candidate'}],
+            query: 'missing memory',
+          },
+          {agentContextHome: '/unused'},
+          undefined,
+        ),
+      ).toBeUndefined();
+    }),
   );
 });

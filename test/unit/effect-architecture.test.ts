@@ -5,7 +5,7 @@ import {describe, expect, it} from 'vitest';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const sourceRoot = join(repoRoot, 'src');
-const codeRoots = ['bin', 'scripts', 'src', 'test'].map(path => join(repoRoot, path));
+const codeRoots = ['scripts', 'src', 'test'].map(path => join(repoRoot, path));
 
 async function codeFiles(path: string): Promise<readonly string[]> {
   const files: string[] = [];
@@ -41,7 +41,15 @@ describe('Effect architecture boundaries', () => {
   });
 
   it('keeps raw Promise lifting primitives inside the shared adapters', async () => {
-    const allowed = new Set(['src/effect/console.ts', 'src/effect/errors.ts', 'src/mcp_server.ts']);
+    const allowed = new Set([
+      'src/effect/archive.ts',
+      'src/effect/ai/isolated-local-model-runtime.ts',
+      'src/effect/cli_output.ts',
+      'src/effect/console.ts',
+      'src/effect/errors.ts',
+      'src/effect/system.ts',
+      'src/mcp_server.ts',
+    ]);
     for (const path of await sourceFiles()) {
       const source = await readFile(path, 'utf8');
       const relativePath = relative(repoRoot, path);
@@ -60,7 +68,7 @@ describe('Effect architecture boundaries', () => {
     }
   });
 
-  it('keeps Node built-ins behind Effect platform services in production source', async () => {
+  it('does not depend on Node built-ins in production source', async () => {
     for (const path of await sourceFiles()) {
       const source = await readFile(path, 'utf8');
       expect(source, relative(repoRoot, path)).not.toMatch(
@@ -69,10 +77,24 @@ describe('Effect architecture boundaries', () => {
     }
   });
 
-  it('keeps process globals inside the SystemInfo service boundary', async () => {
+  it('uses only Bun Effect platform adapters in production source', async () => {
+    for (const path of await sourceFiles()) {
+      const source = await readFile(path, 'utf8');
+      expect(source, relative(repoRoot, path)).not.toMatch(
+        /@effect\/(?:platform-node|sql-sqlite-node)|\bNode(?:Runtime|Services|HttpClient|HttpServer|Socket|Stdio)\b/,
+      );
+    }
+  });
+
+  it('keeps runtime globals inside the SystemInfo, process-adapter, and executable boundaries', async () => {
+    const allowed = new Set([
+      'src/effect/ai/isolated-local-model-runtime.ts',
+      'src/effect/system.ts',
+      'src/standalone.ts',
+    ]);
     for (const path of await sourceFiles()) {
       const relativePath = relative(repoRoot, path);
-      if (relativePath === 'src/effect/system.ts') {
+      if (allowed.has(relativePath)) {
         continue;
       }
       const source = await readFile(path, 'utf8');
@@ -89,5 +111,50 @@ describe('Effect architecture boundaries', () => {
         expect(source, relative(repoRoot, path)).not.toMatch(/\bconsole\.(?:debug|error|info|log|warn)\s*\(/);
       }
     }
+  });
+
+  it('isolates unstable Effect AI imports inside the AI adapter directory', async () => {
+    for (const path of await sourceFiles()) {
+      const source = await readFile(path, 'utf8');
+      if (!source.includes('effect/unstable/ai')) {
+        continue;
+      }
+      expect(relative(repoRoot, path)).toMatch(/^src\/effect\/ai\//);
+    }
+  });
+
+  it('isolates node-llama-cpp access inside its native adapter', async () => {
+    const allowed = 'src/effect/ai/node-llama-cpp.ts';
+    for (const path of await sourceFiles()) {
+      const source = await readFile(path, 'utf8');
+      if (!/(?:from\s+['"]node-llama-cpp['"]|import\s*\(\s*['"]node-llama-cpp['"]\s*\))/.test(source)) {
+        continue;
+      }
+      expect(relative(repoRoot, path)).toBe(allowed);
+    }
+  });
+
+  it('keeps application inference crash-isolated in source and release executions', async () => {
+    const runtime = await readFile(join(sourceRoot, 'effect', 'runtime.ts'), 'utf8');
+    expect(runtime).toContain('isolatedLocalModelRuntimeLayer()');
+    expect(runtime).not.toContain('LocalModelRuntime.nativeLayer');
+    expect(runtime).not.toContain('THREADNOTE_STANDALONE');
+  });
+
+  it('keeps standalone worker dispatch independent from application entry modules', async () => {
+    const standalone = await readFile(join(sourceRoot, 'standalone.ts'), 'utf8');
+    const workerProtocol = await readFile(join(sourceRoot, 'worker_protocol.ts'), 'utf8');
+    const processLease = await readFile(join(sourceRoot, 'standalone_process_lease.ts'), 'utf8');
+
+    expect(standalone).not.toMatch(
+      /from ['"]\.\/(?:code_graph\/parser_worker|effect\/ai\/isolated-local-model-runtime|effect\/cli|effect\/runtime|installations|mcp_server|process_diagnostics|threadnote)\.js['"]/,
+    );
+    expect(standalone).toContain("import('./code_graph/parser_worker.js')");
+    expect(standalone).toContain("import('./effect/ai/isolated-local-model-runtime.js')");
+    expect(standalone).toContain("import('./effect/runtime.js')");
+    expect(standalone).toContain("import('./mcp_server.js')");
+    expect(workerProtocol).not.toMatch(/^import\s/m);
+    expect(processLease).not.toContain("from './installations.js'");
+    expect(processLease).not.toContain("from './utils.js'");
   });
 });

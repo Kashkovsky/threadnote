@@ -6,17 +6,12 @@ export type ClaudeMcpScope = 'local' | 'project' | 'user';
 export type CommandStatus = 'fail' | 'ok' | 'warn';
 export type MemoryKind = 'durable' | 'handoff' | 'incident' | 'preference' | 'smoke';
 export type MemoryStatus = 'active' | 'archived' | 'superseded';
-export type PackageManager = 'pip' | 'pipx' | 'uv';
-export type UpdateRuntime = 'auto' | 'bun' | 'deno' | 'npm';
 
 export interface RuntimeConfig {
   readonly account: string;
   readonly agentContextHome: string;
   readonly agentId: string;
-  readonly host: string;
   readonly manifestPath: string;
-  readonly openVikingVersion: string;
-  readonly port: number;
   readonly user: string;
 }
 
@@ -68,6 +63,7 @@ export interface SeedCandidate {
 }
 
 export interface SkillCandidate {
+  readonly content: string;
   readonly filePath: string;
   readonly hash: string;
   readonly kind: 'command' | 'skill';
@@ -83,13 +79,8 @@ export interface MappedCommand {
 export interface InstallOptions {
   readonly dryRun?: boolean;
   readonly force?: boolean;
-  readonly packageManager?: PackageManager;
   readonly printNextSteps?: boolean;
   readonly repairInvalidConfigs?: boolean;
-  // When an install ran but openviking-server is still unresolvable, throw
-  // (default) so `threadnote install` fails loudly. Repair sets this false to
-  // warn-and-continue so config/manifest/MCP/hook repairs still run.
-  readonly requireServerBinary?: boolean;
   readonly start?: boolean;
   readonly withHooks?: boolean;
 }
@@ -105,9 +96,9 @@ export interface HookRunnerOptions {
 }
 
 export interface RepairOptions {
+  readonly deep?: boolean;
   readonly dryRun?: boolean;
   readonly mcp?: string;
-  readonly packageManager?: PackageManager;
   readonly postUpdate?: boolean;
   readonly start?: boolean;
 }
@@ -120,22 +111,21 @@ export interface UninstallOptions {
 }
 
 export interface UpdateOptions {
-  readonly allowUntrustedRegistry?: boolean;
+  readonly allowUntrustedSource?: boolean;
   readonly beta?: boolean;
   readonly check?: boolean;
   readonly dryRun?: boolean;
   readonly force?: boolean;
   readonly postUpdate?: boolean;
-  readonly registry?: string;
   readonly repair?: boolean;
-  readonly runtime?: UpdateRuntime;
+  readonly source?: string;
   readonly stable?: boolean;
   readonly yes?: boolean;
 }
 
 export interface VersionOptions {
-  readonly allowUntrustedRegistry?: boolean;
-  readonly registry?: string;
+  readonly allowUntrustedSource?: boolean;
+  readonly source?: string;
 }
 
 export interface PostUpdateOptions {
@@ -172,12 +162,10 @@ export interface SeedOptions {
 
 export interface McpInstallOptions {
   readonly apply?: boolean;
-  readonly bearerTokenEnvVar?: string;
+  readonly dryRunApplyCommand?: string;
   readonly name?: string;
-  readonly nativeHttp?: boolean;
   readonly scope?: ClaudeMcpScope;
   readonly toolset?: McpToolset;
-  readonly url?: string;
 }
 
 export interface RememberOptions {

@@ -1,5 +1,5 @@
 import {describe, expect, it} from 'vitest';
-import {applyScrubber, scrubberBlocker, stripPersonalProvenance} from '../../src/share.js';
+import {applyScrubber, scrubberBlocker, setMemoryVisibility, stripPersonalProvenance} from '../../src/share.js';
 
 function fixture(...parts: readonly string[]): string {
   return parts.join('');
@@ -75,6 +75,17 @@ describe('applyScrubber', () => {
     expect(redacted.redactions.find(r => r.name === 'macOS home path')?.count).toBe(1);
   });
 
+  it('does not treat Git-Bash, WSL, or Windows user paths as macOS homes', () => {
+    const input = 'Git-Bash /c/Users/jane/work, WSL /mnt/c/Users/jane/work, Windows C:/Users/jane/work';
+    const result = applyScrubber(input, {redact: false});
+    expect(result.blocker).toBeUndefined();
+    expect(result.cleaned).toBe(input);
+  });
+
+  it('still redacts a macOS home embedded in a file URL', () => {
+    expect(applyScrubber('open file:///Users/jane/work', {redact: true}).cleaned).toBe('open file://<local-path>');
+  });
+
   it('redacts linux home paths when preceded by a word boundary', () => {
     const input = 'cd/home/bob/work then done';
     const redacted = applyScrubber(input, {redact: true});
@@ -113,15 +124,15 @@ describe('stripPersonalProvenance', () => {
       'MEMORY',
       'kind: durable',
       'project: foo',
-      'supersedes: viking://user/me/memories/old.md',
-      'archived_from: viking://user/me/memories/archive.md',
+      'supersedes: threadnote://user/me/memories/old.md',
+      'archived_from: threadnote://user/me/memories/archive.md',
       '',
       'Body text mentioning supersedes: should NOT be stripped.',
       'archived_from: also kept here.',
     ].join('\n');
     const out = stripPersonalProvenance(input);
     expect(out).not.toMatch(/^supersedes:/m);
-    expect(out).not.toMatch(/^archived_from: viking/m);
+    expect(out).not.toMatch(/^archived_from: threadnote/m);
     expect(out).toContain('Body text mentioning supersedes:');
     expect(out).toContain('archived_from: also kept here.');
   });
@@ -131,8 +142,8 @@ describe('stripPersonalProvenance', () => {
       'MEMORY',
       'kind: durable',
       'project: foo',
-      'references: viking://user/me/memories/durable/projects/foo/a.md',
-      'references: viking://user/me/memories/handoffs/active/foo/b.md',
+      'references: threadnote://user/me/memories/durable/projects/foo/a.md',
+      'references: threadnote://user/me/memories/handoffs/active/foo/b.md',
       '',
       'Body mentioning references: should NOT be stripped.',
     ].join('\n');
@@ -149,7 +160,7 @@ describe('stripPersonalProvenance', () => {
       'candidate_id: review-abc-1',
       'source_session_id: local-session',
       'evidence: /Users/me/repo/file.ts',
-      'relation: evidence_for viking://user/me/memories/private.md',
+      'relation: evidence_for threadnote://user/me/memories/private.md',
       'authority: user_approved',
       'trust: approved',
       '',
@@ -170,9 +181,40 @@ describe('stripPersonalProvenance', () => {
   });
 
   it('handles input with no blank line (entire content is header)', () => {
-    const input = ['MEMORY', 'supersedes: viking://x', 'project: y'].join('\n');
+    const input = ['MEMORY', 'supersedes: threadnote://x', 'project: y'].join('\n');
     const out = stripPersonalProvenance(input);
     expect(out).not.toMatch(/^supersedes:/m);
     expect(out).toContain('project: y');
+  });
+});
+
+describe('setMemoryVisibility', () => {
+  it('changes visibility without changing stable identity or unknown headers', () => {
+    const personal = [
+      'MEMORY',
+      'schema_version: 3',
+      'memory_id: tn_stable',
+      'kind: durable',
+      'timestamp: 2026-07-27T00:00:00.000Z',
+      'visibility: personal',
+      'future_field: preserved',
+      '',
+      'Body.',
+    ].join('\n');
+
+    const shared = setMemoryVisibility(personal, 'shared');
+
+    expect(shared).toContain('memory_id: tn_stable');
+    expect(shared).toContain('visibility: shared');
+    expect(shared).toContain('future_field: preserved');
+    expect(shared).not.toContain('visibility: personal');
+  });
+
+  it('adds missing visibility to legacy memory headers and ignores non-memory documents', () => {
+    const legacy = ['HANDOFF', 'kind: handoff', 'timestamp: 2026-07-27T00:00:00.000Z', '', 'Body.'].join('\n');
+    expect(setMemoryVisibility(legacy, 'shared')).toContain(
+      'timestamp: 2026-07-27T00:00:00.000Z\nvisibility: shared\n\nBody.',
+    );
+    expect(setMemoryVisibility('plain Markdown', 'shared')).toBe('plain Markdown');
   });
 });

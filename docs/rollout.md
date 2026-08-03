@@ -1,24 +1,20 @@
-# Rollout
+# 4.0 rollout
 
-Start with a local-only pilot.
+Release gates are cumulative:
 
-## Pilot Steps
+1. Frozen 3.0.3 recall-v2 and M1 Max performance baselines remain immutable.
+2. Unit, integration, type, lint, formatting, coverage, build, and package-content checks pass.
+3. Global and per-category recall non-inferiority pass with no safety or contract regression.
+4. Clean install and core recall pass on Linux, macOS, and Windows without an interpreter or daemon.
+5. Migration fault-injection covers interruption, insufficient space, unsafe links, source mutation, unrelated target,
+   idempotence, and preserved rollback source.
+6. Model bake-off artifacts record exact revisions, hashes, hardware, latency, memory, and recall deltas.
+7. Package scans prove no legacy executable, server config, interpreter bootstrap, or raw native-addon consumer ships.
 
-1. Run `doctor --dry-run`.
-2. Run `install --dry-run`, review paths, then run `install`.
-3. For a solo pilot, use the default local embedding backend; for broader rollout, configure a company-approved
-   embedding and summary provider in `~/.openviking/ov.conf`.
-4. Run `start` and confirm `doctor` reports a healthy server.
-5. Run `seed --dry-run` and inspect every planned import.
-6. Run `seed`.
-7. Run `seed-skills --dry-run`, then `seed-skills`.
-8. Install MCP for one agent, validate recall, then install the second.
+Embedding and reranker defaults are selected only from checked-in reviewed bake-off summaries. The measured 36.7 MB
+BGE Small model is installed and selected automatically because semantic recall is core functionality. Additional
+embedding candidates, rerankers, and generation models remain explicit choices. Lexical recall is the deterministic
+fail-open path when native inference is temporarily unavailable.
 
-## Acceptance Criteria
-
-- Install completes in under 10 minutes after prerequisites.
-- `doctor` reports clear actionable checks.
-- Codex, Claude, Cursor, or Copilot can store and recall a shared handoff after MCP setup.
-- Seeding curated guidance does not import known secret patterns.
-- Fresh agents can recall repo testing guidance and discover relevant skills.
-- `uninstall --dry-run` previews removal, and `uninstall` leaves memories intact unless `--erase-memories` is explicit.
+Rollback never deletes canonical data. Disable model selection or purge a derived index first. For a migration issue,
+point the previous release at the preserved legacy home while the 4.0 target is investigated.

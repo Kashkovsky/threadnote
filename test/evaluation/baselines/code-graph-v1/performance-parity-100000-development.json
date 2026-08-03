@@ -1,0 +1,221 @@
+{
+  "createdAt": "2026-07-31T10:56:29.059Z",
+  "environment": {
+    "architecture": "arm64",
+    "commit": "1e2ad10a2666ca638ec88bcf862be9d430b403f8",
+    "cpu": "Apple M1 Max",
+    "dirty": true,
+    "fixtureHash": "generated-code-graph-v1:100000",
+    "memoryBytes": 68719476736,
+    "node": "bun/1.3.14",
+    "operatingSystem": "macOS 27.0",
+    "packageManager": "bun/1.3.14",
+    "runner": "threadnote-code-graph-e2e",
+    "runnerVersion": "1"
+  },
+  "measurements": [
+    {
+      "maximum": 36577.109,
+      "mean": 36577.109,
+      "minimum": 36577.109,
+      "name": "cold-index",
+      "p50": 36577.109,
+      "p95": 36577.109,
+      "p99": 36577.109,
+      "samples": 1,
+      "unit": "milliseconds"
+    },
+    {
+      "maximum": 25909.255834,
+      "mean": 25909.255834,
+      "minimum": 25909.255834,
+      "name": "cold-pre-activation",
+      "p50": 25909.255834,
+      "p95": 25909.255834,
+      "p99": 25909.255834,
+      "samples": 1,
+      "unit": "milliseconds"
+    },
+    {
+      "maximum": 17504.930334,
+      "mean": 17504.930334,
+      "minimum": 17504.930334,
+      "name": "cold-materialization",
+      "p50": 17504.930334,
+      "p95": 17504.930334,
+      "p99": 17504.930334,
+      "samples": 1,
+      "unit": "milliseconds"
+    },
+    {
+      "maximum": 8353.3625,
+      "mean": 8353.3625,
+      "minimum": 8353.3625,
+      "name": "cold-reference-resolution",
+      "p50": 8353.3625,
+      "p95": 8353.3625,
+      "p99": 8353.3625,
+      "samples": 1,
+      "unit": "milliseconds"
+    },
+    {
+      "maximum": 50.963,
+      "mean": 50.963,
+      "minimum": 50.963,
+      "name": "cold-pre-activation-validation",
+      "p50": 50.963,
+      "p95": 50.963,
+      "p99": 50.963,
+      "samples": 1,
+      "unit": "milliseconds"
+    },
+    {
+      "maximum": 10667.853166,
+      "mean": 10667.853166,
+      "minimum": 10667.853166,
+      "name": "cold-activation-lexical-only",
+      "p50": 10667.853166,
+      "p95": 10667.853166,
+      "p99": 10667.853166,
+      "samples": 1,
+      "unit": "milliseconds"
+    },
+    {
+      "maximum": 24933.883292,
+      "mean": 24933.883292,
+      "minimum": 24933.883292,
+      "name": "one-file-incremental-index",
+      "p50": 24933.883292,
+      "p95": 24933.883292,
+      "p99": 24933.883292,
+      "samples": 1,
+      "unit": "milliseconds"
+    },
+    {
+      "maximum": 22196.315459,
+      "mean": 22196.315459,
+      "minimum": 22196.315459,
+      "name": "one-file-incremental-pre-activation",
+      "p50": 22196.315459,
+      "p95": 22196.315459,
+      "p99": 22196.315459,
+      "samples": 1,
+      "unit": "milliseconds"
+    },
+    {
+      "maximum": 14672.458167,
+      "mean": 14672.458167,
+      "minimum": 14672.458167,
+      "name": "one-file-incremental-materialization",
+      "p50": 14672.458167,
+      "p95": 14672.458167,
+      "p99": 14672.458167,
+      "samples": 1,
+      "unit": "milliseconds"
+    },
+    {
+      "maximum": 7467.878042,
+      "mean": 7467.878042,
+      "minimum": 7467.878042,
+      "name": "one-file-incremental-reference-resolution",
+      "p50": 7467.878042,
+      "p95": 7467.878042,
+      "p99": 7467.878042,
+      "samples": 1,
+      "unit": "milliseconds"
+    },
+    {
+      "maximum": 55.97925,
+      "mean": 55.97925,
+      "minimum": 55.97925,
+      "name": "one-file-incremental-pre-activation-validation",
+      "p50": 55.97925,
+      "p95": 55.97925,
+      "p99": 55.97925,
+      "samples": 1,
+      "unit": "milliseconds"
+    },
+    {
+      "maximum": 2737.567833,
+      "mean": 2737.567833,
+      "minimum": 2737.567833,
+      "name": "one-file-incremental-activation-lexical-only",
+      "p50": 2737.567833,
+      "p95": 2737.567833,
+      "p99": 2737.567833,
+      "samples": 1,
+      "unit": "milliseconds"
+    },
+    {
+      "maximum": 822.998584,
+      "mean": 822.998584,
+      "minimum": 822.998584,
+      "name": "hot-exact-lexical-query",
+      "p50": 822.998584,
+      "p95": 822.998584,
+      "p99": 822.998584,
+      "samples": 1,
+      "unit": "milliseconds"
+    },
+    {
+      "maximum": 3040.696458,
+      "mean": 3040.696458,
+      "minimum": 3040.696458,
+      "name": "whole-graph-structural-analysis",
+      "p50": 3040.696458,
+      "p95": 3040.696458,
+      "p99": 3040.696458,
+      "samples": 1,
+      "unit": "milliseconds"
+    },
+    {
+      "maximum": 745799680,
+      "mean": 745799680,
+      "minimum": 745799680,
+      "name": "cold-process-peak-rss",
+      "p50": 745799680,
+      "p95": 745799680,
+      "p99": 745799680,
+      "samples": 1,
+      "unit": "bytes"
+    },
+    {
+      "maximum": 751435776,
+      "mean": 751435776,
+      "minimum": 751435776,
+      "name": "incremental-process-peak-rss",
+      "p50": 751435776,
+      "p95": 751435776,
+      "p99": 751435776,
+      "samples": 1,
+      "unit": "bytes"
+    },
+    {
+      "maximum": 710615040,
+      "mean": 710615040,
+      "minimum": 710615040,
+      "name": "derived-index-disk",
+      "p50": 710615040,
+      "p95": 710615040,
+      "p99": 710615040,
+      "samples": 1,
+      "unit": "bytes"
+    }
+  ],
+  "metadata": {
+    "coldEdges": 199999,
+    "coldFiles": 1002,
+    "coldSymbols": 101001,
+    "incrementalReusedFiles": 1001,
+    "analysisSamples": 1,
+    "analysisCoverage": "complete",
+    "queries": 1,
+    "retrievalMode": "lexical-only",
+    "rssMeasurement": "process.resourceUsage.maxRSS at phase boundary",
+    "vectorEnabled": false,
+    "scaleSymbols": 100000
+  },
+  "suite": "code-graph-scale-v1",
+  "version": 1,
+  "warmups": 0
+}

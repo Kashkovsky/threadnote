@@ -1,0 +1,1809 @@
+export type DocsTextBlock = {
+  type: 'paragraph' | 'note' | 'warning';
+  text: string;
+};
+
+export type DocsHeadingBlock = {
+  type: 'heading';
+  text: string;
+};
+
+export type DocsCodeBlock = {
+  type: 'code';
+  language?: string;
+  code: string;
+};
+
+export type DocsListBlock = {
+  type: 'list';
+  items: string[];
+};
+
+export type DocsTableBlock = {
+  type: 'table';
+  headers: string[];
+  rows: string[][];
+};
+
+export type DocsBlock = DocsTextBlock | DocsHeadingBlock | DocsCodeBlock | DocsListBlock | DocsTableBlock;
+
+export interface DocsArticle {
+  id: string;
+  title: string;
+  summary: string;
+  keywords?: string[];
+  body: DocsBlock[];
+}
+
+export interface DocsSection {
+  id: string;
+  title: string;
+  description?: string;
+  articles: DocsArticle[];
+}
+
+export interface CliCommandReference {
+  command: string;
+  summary: string;
+  examples: string[];
+}
+
+export interface McpToolReference {
+  name: string;
+  toolset: 'core' | 'full';
+  summary: string;
+  keyInputs: string[];
+}
+
+export const defaultDocId = 'what-is-threadnote';
+
+export const cliCommands: CliCommandReference[] = [
+  {
+    command: 'install',
+    summary: 'Initialize the self-contained home, core embedding model, indexes, and user-level integrations.',
+    examples: ['threadnote install', 'threadnote install --with-hooks'],
+  },
+  {
+    command: 'mcp-install',
+    summary: 'Preview or install the local stdio MCP configuration for Codex, Claude, Cursor, or Copilot.',
+    examples: ['threadnote mcp-install codex --apply', 'threadnote mcp-install claude --toolset full --apply'],
+  },
+  {
+    command: 'recall',
+    summary: 'Search personal, shared, and seeded context with hybrid lexical and local semantic ranking.',
+    examples: [
+      'threadnote recall --query "mobile auth rollout" --caller-cwd "$PWD"',
+      'threadnote recall --query "checkout contract" --workset commerce',
+    ],
+  },
+  {
+    command: 'read / list',
+    summary: 'Read a returned threadnote:// file or browse a canonical URI directory.',
+    examples: [
+      'threadnote read threadnote://user/me/memories/durable/projects/mobile/auth.md',
+      'threadnote list threadnote://user/me/memories --recursive',
+    ],
+  },
+  {
+    command: 'remember',
+    summary: 'Store a lifecycle-aware memory with a stable project and topic identity.',
+    examples: [
+      'threadnote remember --kind durable --project mobile --topic auth-contract --text "..."',
+      'threadnote remember --kind durable --project mobile --topic auth-contract --replace <threadnote-uri> --text "..."',
+    ],
+  },
+  {
+    command: 'handoff',
+    summary: 'Capture current status, checks, blockers, references, and next step for another session or agent.',
+    examples: [
+      'threadnote handoff --project mobile --topic auth-rollout --task "Ship refresh tokens" --tests "bun test" --next-step "Open PR"',
+    ],
+  },
+  {
+    command: 'share',
+    summary: 'Configure, synchronize, publish to, and resolve conflicts in Git-backed team memory repositories.',
+    examples: [
+      'threadnote share init git@github.com:org/team-memories.git',
+      'threadnote share publish threadnote://user/me/memories/durable/projects/mobile/auth.md',
+      'threadnote share sync',
+    ],
+  },
+  {
+    command: 'graph',
+    summary: 'Build, inspect, analyze, report on, and export the current snapshot-aware polyglot code graph.',
+    examples: [
+      'threadnote graph query --query "session refresh"',
+      'threadnote graph node --node-id cgs_…',
+      'threadnote graph neighbors --node-id cgs_… --direction incoming',
+      'threadnote graph explain --symbol RefreshSession',
+      'threadnote graph path --from LoginScreen --to TokenStore',
+      'threadnote graph impact --base origin/main',
+      'threadnote graph analyze --view full',
+      'threadnote graph report --output architecture-report.md',
+      'threadnote graph export --format graphml --output code-graph.graphml',
+    ],
+  },
+  {
+    command: 'seed / workset',
+    summary: 'Import curated repository guidance and search named groups of related repositories.',
+    examples: [
+      'threadnote init-manifest --repo "$PWD"',
+      'threadnote seed --dry-run',
+      'threadnote seed',
+      'threadnote workset show commerce',
+    ],
+  },
+  {
+    command: 'models / index',
+    summary: 'Inspect pinned local model state and rebuild or verify the selected vector generation.',
+    examples: [
+      'threadnote models list',
+      'threadnote models runtime',
+      'threadnote index status',
+      'threadnote index verify',
+    ],
+  },
+  {
+    command: 'manage',
+    summary: 'Open the loopback-only Manager for diagnostics, memories, shares, and graph visualizations.',
+    examples: ['threadnote manage', 'threadnote manage --no-open'],
+  },
+  {
+    command: 'version / logs / report-issue',
+    summary: 'Inspect release state and preview privacy-safe diagnostics or a public support report.',
+    examples: [
+      'threadnote version',
+      'threadnote logs',
+      'threadnote report-issue --title "Recall failed" --body "Steps and expected behavior"',
+    ],
+  },
+  {
+    command: 'source / projection / inbox',
+    summary: 'Configure the zero-plugin Obsidian bridge, publish selected views, and form reviewed Inbox candidates.',
+    examples: [
+      'threadnote source status engineering',
+      'threadnote projection status engineering-memory',
+      'threadnote inbox scan --source engineering',
+    ],
+  },
+  {
+    command: 'compact / archive / forget',
+    summary: 'Preview scoped memory hygiene, preserve old records as provenance, or remove canonical local context.',
+    examples: [
+      'threadnote compact --project mobile --dry-run',
+      'threadnote archive <threadnote-uri>',
+      'threadnote forget <threadnote-uri> --dry-run',
+    ],
+  },
+  {
+    command: 'migrate',
+    summary:
+      'Preview and apply the non-destructive legacy-home migration; specialized migration commands normalize older memory layouts.',
+    examples: [
+      'threadnote migrate',
+      'threadnote migrate --apply',
+      'threadnote migrate-memories --dry-run',
+      'threadnote migrate-lifecycle --dry-run',
+      'threadnote migrate-projects --dry-run',
+    ],
+  },
+  {
+    command: 'seed-skills / enrich-memories',
+    summary: 'Seed searchable local agent artifacts or add local-model retrieval keywords to existing memories.',
+    examples: ['threadnote seed-skills --help', 'threadnote enrich-memories --help'],
+  },
+  {
+    command: 'export-pack / import-pack',
+    summary: 'Move an explicitly selected portable context archive between Threadnote installations.',
+    examples: ['threadnote export-pack --help', 'threadnote import-pack --help'],
+  },
+  {
+    command: 'start / stop',
+    summary: 'Verify on-demand runtime readiness or invoke the compatibility no-op; no service is started or stopped.',
+    examples: ['threadnote start', 'threadnote stop'],
+  },
+  {
+    command: 'uninstall',
+    summary:
+      'Remove Threadnote integrations and installation state, with explicit options controlling owned data removal.',
+    examples: ['threadnote uninstall --help'],
+  },
+  {
+    command: 'doctor / repair',
+    summary: 'Diagnose the owned home and safely repair integrations or disposable derived state.',
+    examples: [
+      'threadnote doctor --dry-run',
+      'threadnote doctor --strict',
+      'threadnote repair --dry-run',
+      'threadnote repair',
+    ],
+  },
+  {
+    command: 'update',
+    summary: 'Install a verified standalone release and repair local integrations while preserving owned data.',
+    examples: ['threadnote update', 'threadnote update --beta', 'threadnote update --stable'],
+  },
+  {
+    command: 'local-ai',
+    summary: 'Deprecated compatibility aliases for the models surface; use threadnote models in new automation.',
+    examples: ['threadnote models list'],
+  },
+];
+
+export const mcpTools: McpToolReference[] = [
+  {
+    name: 'threadnote_guide',
+    toolset: 'core',
+    summary: 'Return a state-aware capability tour when a user asks what Threadnote can do or how to begin.',
+    keyInputs: [],
+  },
+  {
+    name: 'recall_context',
+    toolset: 'core',
+    summary: 'Search historical memories and seeded project guidance, returning ranked threadnote:// pointers.',
+    keyInputs: ['query', 'project', 'callerCwd', 'nodeLimit', 'threshold', 'workset', 'includeArchived'],
+  },
+  {
+    name: 'read_context',
+    toolset: 'core',
+    summary: 'Read one or more canonical threadnote:// file URIs returned by recall or list.',
+    keyInputs: ['uri or uris'],
+  },
+  {
+    name: 'list_context',
+    toolset: 'core',
+    summary: 'Browse a canonical threadnote:// directory without loading unrelated records.',
+    keyInputs: ['uri', 'recursive', 'all', 'nodeLimit'],
+  },
+  {
+    name: 'remember_context',
+    toolset: 'core',
+    summary: 'Store or replace normal durable knowledge, handoffs, incidents, or preferences.',
+    keyInputs: ['text', 'kind', 'project', 'topic', 'replaceUri', 'references', 'sourceAgentClient'],
+  },
+  {
+    name: 'inspect_code_graph',
+    toolset: 'core',
+    summary:
+      'Inspect current source definitions, relationships, paths, and reverse impact separately from memory recall.',
+    keyInputs: [
+      'operation: query | node | neighbors | explain | path | impact',
+      'callerCwd',
+      'query or symbol',
+      'nodeId and direction for exact node drill-down',
+      'from and to',
+      'base',
+      'nodeLimit',
+      'edgeLimit',
+    ],
+  },
+  {
+    name: 'analyze_code_graph',
+    toolset: 'core',
+    summary:
+      'Analyze whole-repository topology with stable communities, structural groups, confidence, hubs, and surprising links.',
+    keyInputs: [
+      'operation: stats | communities | community | groups | hubs | surprises | confidence | full',
+      'callerCwd',
+      'communityId and memberLimit for community drill-down',
+    ],
+  },
+  {
+    name: 'review_session_context',
+    toolset: 'core',
+    summary: 'Create up to three additional review candidates; this never silently creates active memory.',
+    keyInputs: [
+      'task',
+      'outcome',
+      'project or callerCwd',
+      'decisions',
+      'invariants',
+      'preferences',
+      'handoff',
+      'evidence',
+    ],
+  },
+  {
+    name: 'apply_memory_candidates',
+    toolset: 'core',
+    summary:
+      'Apply an explicit approve, defer, or reject decision to one pending candidate using its current revision.',
+    keyInputs: ['reviewId', 'candidateId', 'revision', 'action', 'approved', 'operation', 'replaceUri', 'editedText'],
+  },
+  {
+    name: 'share_publish',
+    toolset: 'core',
+    summary: 'Preview and, after confirmation, publish an active durable personal memory to a configured team.',
+    keyInputs: ['uri', 'preview', 'team', 'redact', 'push', 'message'],
+  },
+  {
+    name: 'obsidian_publish',
+    toolset: 'core',
+    summary: 'Preview or publish explicitly selected memory URIs into a configured Obsidian projection.',
+    keyInputs: ['projection', 'uri or uris', 'apply', 'force'],
+  },
+  {
+    name: 'compact_context',
+    toolset: 'full',
+    summary: 'Plan or apply scoped hygiene for duplicate memories and stale handoffs.',
+    keyInputs: ['project', 'topic', 'kind', 'apply'],
+  },
+  {
+    name: 'recall_feedback',
+    toolset: 'full',
+    summary: 'Record bounded useful, wrong, pin, or dismiss feedback without storing the full query.',
+    keyInputs: ['query', 'uri', 'action', 'project'],
+  },
+  {
+    name: 'health',
+    toolset: 'full',
+    summary: 'Check the self-contained runtime and owned home from an MCP client.',
+    keyInputs: [],
+  },
+  {
+    name: 'search / read / list / store',
+    toolset: 'full',
+    summary: 'Compatibility aliases for recall_context, read_context, list_context, and remember_context.',
+    keyInputs: ['same inputs as the corresponding core tool'],
+  },
+  {
+    name: 'archive_context / archive',
+    toolset: 'full',
+    summary: 'Archive a memory as provenance before the original active URI is removed.',
+    keyInputs: ['uri', 'kind', 'project', 'topic'],
+  },
+  {
+    name: 'forget',
+    toolset: 'full',
+    summary: 'Remove a canonical resource or, when explicitly requested, a directory subtree.',
+    keyInputs: ['uri', 'recursive'],
+  },
+  {
+    name: 'add_resource',
+    toolset: 'full',
+    summary: 'Copy a local text file or directory into canonical Threadnote resources.',
+    keyInputs: ['sourcePath or path', 'to', 'description', 'wait', 'watchInterval'],
+  },
+  {
+    name: 'grep / glob',
+    toolset: 'full',
+    summary: 'Run exact-text or filename-pattern searches inside canonical Threadnote storage.',
+    keyInputs: ['pattern', 'uri', 'nodeLimit'],
+  },
+  {
+    name: 'share_conflicts / share_conflict_show / share_conflict_resolve',
+    toolset: 'full',
+    summary: 'List, inspect, and explicitly resolve pending local-vs-team memory conflicts.',
+    keyInputs: ['id', 'team', 'take', 'mergedContent', 'dryRun', 'push'],
+  },
+  {
+    name: 'share_skill / share_bundle',
+    toolset: 'full',
+    summary: 'Preview and publish a reusable agent artifact or declared multi-skill bundle to a team.',
+    keyInputs: ['path', 'team', 'preview', 'redact', 'force', 'push'],
+  },
+  {
+    name: 'list_shared_skills / install_shared_skill',
+    toolset: 'full',
+    summary: 'Discover team artifact catalogs and preview or install one selected skill, command, or pack.',
+    keyInputs: ['name', 'agent', 'kind', 'team', 'dryRun', 'force'],
+  },
+];
+
+export const docsSections: DocsSection[] = [
+  {
+    id: 'getting-started',
+    title: 'Getting started',
+    description: 'Install the standalone runtime, connect an agent, and complete the first recall-to-handoff loop.',
+    articles: [
+      {
+        id: 'what-is-threadnote',
+        title: 'What is Threadnote?',
+        summary:
+          'A local-first memory and current-source intelligence layer shared by the coding agents your team already uses.',
+        keywords: [
+          'code search',
+          'polyglot code graph',
+          'current worktree',
+          'dependency graph',
+          'impact analysis',
+          'agent memory',
+        ],
+        body: [
+          {
+            type: 'paragraph',
+            text: 'Threadnote gives Codex, Claude Code, Cursor, and Copilot two complementary evidence systems without forcing the team into one chat product: durable engineering memory for what people learned, and a snapshot-aware polyglot code graph for what the current source actually contains. Personal working state and code indexes stay local. Curated durable knowledge can be published to a Git-backed team store, then recalled by another teammate using another agent.',
+          },
+          {
+            type: 'list',
+            items: [
+              'Memory recall answers what the team learned, decided, or handed off.',
+              'Polyglot graph search finds current symbols and concepts across language and project boundaries, then follows definitions, calls, imports, inheritance, paths, and reverse impact.',
+              'Whole-repository graph analysis surfaces structural communities, groups, hubs, confidence, and surprising cross-boundary links without flooding an agent context window.',
+              'A pinned local embedding model improves recall without sending memory text to a hosted embedding service.',
+              'The Manager and Obsidian bridge provide visual and human-readable views while canonical files remain authoritative.',
+            ],
+          },
+          {
+            type: 'note',
+            text: 'Repository files remain authoritative. Threadnote is the operational context layer that helps an agent find the right file, memory, and current-code evidence at the right time.',
+          },
+          {
+            type: 'heading',
+            text: 'Memory and current-source evidence stay separate',
+          },
+          {
+            type: 'paragraph',
+            text: 'Agents use `recall_context` for historical knowledge, `inspect_code_graph` for focused current-source questions such as query, node, neighbors, explain, path, and impact, and `analyze_code_graph` for repository-wide topology. The graph binds committed Git objects to an isolated staged, unstaged, renamed, deleted, and eligible-untracked overlay for the active worktree, so an answer reflects the checkout the agent is editing rather than a stale shared index.',
+          },
+          {
+            type: 'heading',
+            text: 'Self-contained in 4.0',
+          },
+          {
+            type: 'paragraph',
+            text: 'Threadnote 4 is a standalone executable with an embedded Bun runtime. It owns canonical content, models, SQLite indexes, locks, logs, migration receipts, and share metadata below ~/.threadnote. It needs no Python, OpenViking service, separately installed Node or Bun runtime, database server, or background daemon.',
+          },
+        ],
+      },
+      {
+        id: 'installation',
+        title: 'Install Threadnote',
+        summary: 'Install a checksum-verified standalone release and initialize the owned home.',
+        body: [
+          {
+            type: 'heading',
+            text: 'macOS and Linux',
+          },
+          {
+            type: 'code',
+            language: 'sh',
+            code: `curl -fsSL https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/install.sh | sh
+threadnote doctor`,
+          },
+          {
+            type: 'paragraph',
+            text: 'The bootstrap installer downloads an immutable GitHub release, verifies SHA-256, atomically promotes it, and invokes threadnote install. That lifecycle initializes ~/.threadnote, downloads and selects the core BGE Small embedding model, builds recall indexes, and writes user-level instructions. Existing verified models and canonical data are preserved during updates.',
+          },
+          {
+            type: 'note',
+            text: 'On macOS and Linux the launcher is written to ~/.local/bin. If that directory is not already on PATH, the installer updates the detected shell profile and prints both an absolute command that works immediately and the shell-specific PATH command to apply in the current terminal.',
+          },
+          {
+            type: 'heading',
+            text: 'Beta channel',
+          },
+          {
+            type: 'code',
+            language: 'sh',
+            code: 'curl -fsSL https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/install.sh | sh -s -- --beta',
+          },
+          {
+            type: 'warning',
+            text: 'Official Threadnote 4 Windows archives are temporarily paused until Authenticode signing and clean-machine verification are enabled. Threadnote will not publish an unsigned official Windows archive.',
+          },
+          {
+            type: 'note',
+            text: 'Users do not need Node, npm, Bun, Python, uv, pip, or a daemon. Contributors use the Bun version pinned by the repository; that is a development requirement, not an end-user requirement.',
+          },
+        ],
+      },
+      {
+        id: 'connect-an-agent',
+        title: 'Connect your agent',
+        summary: 'Install the focused local stdio MCP toolset and start a fresh agent session.',
+        body: [
+          {
+            type: 'code',
+            language: 'sh',
+            code: `threadnote mcp-install codex --apply
+# Or: claude, cursor, copilot
+threadnote doctor`,
+          },
+          {
+            type: 'paragraph',
+            text: 'MCP runs as a local stdio child process. There is no HTTP endpoint, host, token, port, or daemon to configure. Restart the agent after changing its MCP configuration.',
+          },
+          {
+            type: 'paragraph',
+            text: 'The default core toolset includes recall, read, list, remember, candidate review, scoped code graph inspection, whole-graph analysis, selected-memory Obsidian publishing, team-memory publishing, and the guided tour. Use --toolset full only when the agent needs maintenance, conflict-resolution, artifact-sharing, or compatibility tools.',
+          },
+          {
+            type: 'code',
+            language: 'sh',
+            code: 'threadnote mcp-install claude --toolset full --apply',
+          },
+          {
+            type: 'note',
+            text: 'Ask your agent “what can I do with Threadnote?” to invoke threadnote_guide. The tour is loaded only on demand, so normal sessions do not pay its context cost.',
+          },
+        ],
+      },
+      {
+        id: 'agent-instructions-and-hooks',
+        title: 'Agent instructions and hooks',
+        summary: 'Teach agents when to recall, inspect the graph, store a handoff, and ask before publishing.',
+        body: [
+          {
+            type: 'paragraph',
+            text: 'Install writes a bounded Threadnote instruction block into the supported user-level agent instruction file. Checked-in AGENTS.md, CLAUDE.md, and equivalent repository guidance remain authoritative and take precedence.',
+          },
+          {
+            type: 'list',
+            items: [
+              'Recall historical context with project and absolute callerCwd at the start of non-trivial work.',
+              'Use inspect_code_graph separately, before broad text search, for current source relationships.',
+              'Use analyze_code_graph for repository-wide statistics, structural communities, hubs, and surprising links.',
+              'Store normal durable feature knowledge and a concise handoff at meaningful closeout.',
+              'Ask before publishing durable memory; never publish handoffs or preferences.',
+              'If Threadnote fails, show a privacy-safe issue preview and create it only after explicit approval.',
+            ],
+          },
+          {
+            type: 'code',
+            language: 'sh',
+            code: `threadnote install-hooks claude --dry-run
+threadnote install-hooks claude --apply
+# Or install home, instructions, and hooks together:
+threadnote install --with-hooks`,
+          },
+          {
+            type: 'paragraph',
+            text: 'Managed SessionStart and PreCompact lifecycle hooks are currently available for Claude Code only. Codex, Cursor, and Copilot rely on the user-level instructions Threadnote installs because those clients do not expose equivalent managed hooks. Hooks do not replace agent judgment or start a Threadnote daemon.',
+          },
+        ],
+      },
+      {
+        id: 'first-workflow',
+        title: 'Your first memory loop',
+        summary: 'Recall before work, read selected evidence, and leave a stable handoff when the work pauses.',
+        body: [
+          {
+            type: 'heading',
+            text: 'From an agent',
+          },
+          {
+            type: 'list',
+            items: [
+              'At the start of a non-trivial task, call recall_context with a focused query, stable project, and absolute callerCwd.',
+              'Treat returned threadnote:// URIs as pointers. Read only the records that matter.',
+              'Use inspect_code_graph for a scoped current-source question and analyze_code_graph for whole-repository topology.',
+              'Store reusable decisions and contracts as durable memory. Store status, checks, blockers, and next steps as a handoff.',
+            ],
+          },
+          {
+            type: 'heading',
+            text: 'From the CLI',
+          },
+          {
+            type: 'code',
+            language: 'sh',
+            code: `threadnote recall --query "mobile auth latest handoff" --caller-cwd "$PWD"
+threadnote read threadnote://user/me/memories/handoffs/active/mobile/auth-rollout.md
+threadnote graph query --query "refresh token boundary"
+threadnote handoff --project mobile --topic auth-rollout \\
+  --task "Finish refresh-token rollout" \\
+  --tests "bun test auth" \\
+  --next-step "Update the iOS caller"`,
+          },
+          {
+            type: 'note',
+            text: 'Use a stable project/topic pair and replace the existing active record. Timestamped duplicates make currentness harder to judge and should be reserved for historical records.',
+          },
+        ],
+      },
+      {
+        id: 'upgrade-from-3',
+        title: 'Upgrade from 3.x',
+        summary: 'Migrate legacy content once, without changing or deleting the rollback source.',
+        body: [
+          {
+            type: 'paragraph',
+            text: 'Threadnote 3 cannot cross the standalone-runtime boundary with threadnote update. Install Threadnote 4 with the bootstrap installer, then migrate the legacy ~/.openviking home.',
+          },
+          {
+            type: 'code',
+            language: 'sh',
+            code: `threadnote migrate
+threadnote migrate --apply
+threadnote doctor
+threadnote index status`,
+          },
+          {
+            type: 'paragraph',
+            text: 'Migration inventories, stages, hashes, validates, and atomically promotes canonical content into ~/.threadnote. It can recover an earlier beta home without overwriting different current content. A completed matching receipt makes reruns idempotent.',
+          },
+          {
+            type: 'warning',
+            text: 'The legacy source is never deleted automatically. Keep ~/.openviking until you have verified memories, resources, shares, models, recall, and rollback expectations on the new machine.',
+          },
+        ],
+      },
+    ],
+  },
+  {
+    id: 'concepts',
+    title: 'Core concepts',
+    description: 'Understand authority, lifecycle, stable identifiers, hybrid recall, and local inference.',
+    articles: [
+      {
+        id: 'authority-and-storage',
+        title: 'Authority and storage',
+        summary: 'Canonical Markdown and Git are authoritative; every index is disposable.',
+        body: [
+          {
+            type: 'paragraph',
+            text: 'Threadnote stores canonical resources as ordinary files below ~/.threadnote/data/<account> and addresses them with stable threadnote:// URIs. The URI is the durable pointer; internal filesystem layout and derived index formats may evolve independently.',
+          },
+          {
+            type: 'table',
+            headers: ['Data', 'Role', 'Authority'],
+            rows: [
+              ['Personal and ingested memories', '~/.threadnote/data/<account>', 'Authoritative'],
+              ['Shared team Git repository', '~/.threadnote/share', 'Authoritative transport and history'],
+              ['Lexical/vector indexes', '~/.threadnote/indexes', 'Derived and disposable'],
+              ['GGUF models', '~/.threadnote/models', 'Verified, immutable, re-downloadable'],
+              ['Locks, logs, migration state', '~/.threadnote/{locks,logs,migration}', 'Operational'],
+            ],
+          },
+          {
+            type: 'note',
+            text: 'Deleting a corrupt derived index must never delete a memory. Repair rebuilds derived state from canonical files.',
+          },
+        ],
+      },
+      {
+        id: 'memory-lifecycle',
+        title: 'Memory lifecycle',
+        summary: 'Use the kind that matches how the knowledge should age, move, and be shared.',
+        body: [
+          {
+            type: 'table',
+            headers: ['Kind', 'Use for', 'Typical lifecycle'],
+            rows: [
+              [
+                'durable',
+                'Decisions, contracts, invariants, workflows, reusable feature knowledge',
+                'Active until replaced, superseded, or archived',
+              ],
+              [
+                'handoff',
+                'Current status, tests, blockers, branch state, next steps',
+                'Active while work continues, then archived',
+              ],
+              [
+                'incident',
+                'Operational case history and resolution context',
+                'Scoped history; sanitize before storing',
+              ],
+              ['preference', 'Explicit user working preferences', 'Personal; never team-published'],
+              ['smoke', 'Installation and test probes', 'Disposable validation state'],
+            ],
+          },
+          {
+            type: 'paragraph',
+            text: 'Active, archived, and superseded status makes currentness explicit. Normal recall excludes archived memories unless requested. Use stable project and topic values so a current fact has one identity.',
+          },
+          {
+            type: 'warning',
+            text: 'Never store secrets, credentials, customer data, or raw production logs. Handoffs and preferences are intentionally not publishable to a team.',
+          },
+        ],
+      },
+      {
+        id: 'stable-uris',
+        title: 'Stable URIs and replacement',
+        summary: 'Update one current project/topic memory instead of accumulating timestamped copies.',
+        body: [
+          {
+            type: 'paragraph',
+            text: 'Recall returns compact ranking evidence and threadnote:// pointers. Read the selected pointer, then pass replaceUri in MCP—or --replace in the CLI—when updating the same current knowledge.',
+          },
+          {
+            type: 'code',
+            language: 'json',
+            code: `{
+  "kind": "durable",
+  "project": "mobile",
+  "topic": "auth-contract",
+  "replaceUri": "threadnote://user/me/memories/durable/projects/mobile/auth-contract.md",
+  "text": "The current contract and bounded evidence..."
+}`,
+          },
+          {
+            type: 'paragraph',
+            text: 'A personal replacement stores the new record safely before removing the previous one. Shared-memory replacement updates the shared record in place through the team workflow. One-way references can link prior context without copying its full body into the new record.',
+          },
+        ],
+      },
+      {
+        id: 'hybrid-recall',
+        title: 'Hybrid recall',
+        summary:
+          'Lexical, semantic, scope, lifecycle, authority, graph, time, and feedback signals produce explainable ranking.',
+        body: [
+          {
+            type: 'paragraph',
+            text: 'Recall first auto-syncs clean shared repositories and refreshes enabled external sources. SQLite returns bounded lexical candidates; the local embedding worker supplies semantic similarity; the ranker combines those signals with exact terms, fields, inferred project/branch scope, lifecycle, authority, currentness, graph links, and bounded feedback.',
+          },
+          {
+            type: 'list',
+            items: [
+              'Confidence and no-answer gates prevent weak semantic-only results from being presented as answers.',
+              'Ranking output explains why each result matched and warns when evidence is lexical-only or untrusted.',
+              'The lexical path remains available if local inference is temporarily unavailable.',
+              'Concurrent refreshes are generation-fenced. If the corpus keeps changing during semantic scoring, Threadnote retries with a fresh lexical snapshot and can return lexical-only results instead of mixing generations.',
+              'Recall returns pointers, so an agent loads selected records instead of replaying all history.',
+            ],
+          },
+          {
+            type: 'code',
+            language: 'sh',
+            code: `threadnote recall --query "checkout retry contract" --caller-cwd "$PWD"
+# Broaden a sparse search deliberately:
+threadnote recall --query "checkout retry contract" --threshold 0.3 --caller-cwd "$PWD"`,
+          },
+          {
+            type: 'note',
+            text: 'Pass the absolute caller workspace path. It lets Threadnote resolve current repo and branch scope without guessing from the MCP process directory.',
+          },
+        ],
+      },
+      {
+        id: 'local-ai',
+        title: 'Local AI',
+        summary: 'A core BGE embedding model runs locally through a supervised node-llama-cpp worker.',
+        body: [
+          {
+            type: 'paragraph',
+            text: 'Install and repair automatically download, verify, select, and preserve the pinned 36.7 MB BGE Small embedding model. Model manifests pin revision, filename, byte size, SHA-256, license, runtime compatibility, and memory class before atomic promotion.',
+          },
+          {
+            type: 'paragraph',
+            text: 'The parent CLI, MCP, or Manager process lazily starts one supervised local-model child from the same standalone executable. The worker keeps model sessions warm and isolates native-addon crashes from the long-lived parent. Threadnote requests prebuilt node-llama-cpp binaries only and never silently compiles llama.cpp.',
+          },
+          {
+            type: 'code',
+            language: 'sh',
+            code: `threadnote models list
+threadnote models runtime
+threadnote models verify bge-small-en-v1.5-q8
+threadnote index status`,
+          },
+          {
+            type: 'note',
+            text: 'Embedding is core functionality. Reranking and structured generation are optional roles and are not silently selected; the measured Jina reranker failed the frozen no-answer gate.',
+          },
+        ],
+      },
+      {
+        id: 'memory-vs-code',
+        title: 'Memory vs current code',
+        summary: 'Use recall for history and the graph for the current repository snapshot.',
+        body: [
+          {
+            type: 'table',
+            headers: ['Question', 'Use', 'Example'],
+            rows: [
+              [
+                'What did we decide, learn, or leave unfinished?',
+                'recall_context',
+                '“Why is refresh rotation disabled on iOS?”',
+              ],
+              [
+                'Where is this implemented and what calls it now?',
+                'inspect_code_graph',
+                'query or explain RefreshSession',
+              ],
+              ['How are two concepts connected?', 'inspect_code_graph path', 'LoginScreen → TokenStore'],
+              ['What might this branch change affect?', 'inspect_code_graph impact', 'base origin/main'],
+            ],
+          },
+          {
+            type: 'paragraph',
+            text: 'The tools are deliberately separate. Graph indexing never runs as a side effect of memory recall, and graph evidence cannot convert a memory no-answer into an answer. Use both when a task needs historical rationale and current source evidence.',
+          },
+        ],
+      },
+      {
+        id: 'concurrent-agents',
+        title: 'Concurrent agents and linked worktrees',
+        summary: 'Run several agents against one repository without sharing dirty source state between worktrees.',
+        body: [
+          {
+            type: 'paragraph',
+            text: 'Threadnote supports Conductor-style orchestrators and other workflows that run multiple agents in linked Git worktrees. Sessions using the same Threadnote home—~/.threadnote by default—share canonical memory, while graph state is scoped more narrowly: each linked worktree has its own dirty overlay and active pointer. One agent can recall the same durable decision without seeing another worktree’s uncommitted source as current-code evidence.',
+          },
+          {
+            type: 'list',
+            items: [
+              'Always pass the absolute callerCwd for the agent’s own worktree so repository, branch, and graph scope are unambiguous.',
+              'Use distinct handoff topics for independent tasks. Reuse a project/topic identity only when the agents intentionally update the same current record.',
+              'Linked worktrees may extract graph facts concurrently; Threadnote serializes the short publication step and prevents a stale waiter from replacing a newer active generation.',
+              'Graph maintenance and parser-cache cleanup wait for active linked-worktree builders before changing shared derived state.',
+            ],
+          },
+          {
+            type: 'note',
+            text: 'Concurrent sessions share the local memory home, not a chat transcript. Repository files remain authoritative, and every graph answer still identifies the worktree snapshot it used.',
+          },
+        ],
+      },
+    ],
+  },
+  {
+    id: 'memory-workflows',
+    title: 'Memory workflows',
+    description: 'Capture durable knowledge, continue across agents, seed trusted guidance, and keep memory healthy.',
+    articles: [
+      {
+        id: 'remember-and-handoff',
+        title: 'Remember and hand off',
+        summary: 'Separate reusable truth from transient work state.',
+        body: [
+          {
+            type: 'heading',
+            text: 'Durable feature knowledge',
+          },
+          {
+            type: 'code',
+            language: 'sh',
+            code: `threadnote remember \\
+  --kind durable \\
+  --project payments \\
+  --topic idempotency-contract \\
+  --source-agent-client codex \\
+  --text "Retries reuse the original idempotency key. Evidence: docs/payments.md."`,
+          },
+          {
+            type: 'heading',
+            text: 'Current work state',
+          },
+          {
+            type: 'code',
+            language: 'sh',
+            code: `threadnote handoff \\
+  --project payments \\
+  --topic retry-rollout \\
+  --task "Roll out idempotent retries" \\
+  --tests "bun test payments" \\
+  --blockers "Sandbox fixture is unavailable" \\
+  --next-step "Re-run integration tests"`,
+          },
+          {
+            type: 'paragraph',
+            text: 'Store normal feature knowledge and handoffs directly at meaningful closeout. A later agent can recall the stable decision and the active execution state independently.',
+          },
+        ],
+      },
+      {
+        id: 'candidate-review',
+        title: 'Additional candidate review',
+        summary: 'Let the agent propose extra memories without silently turning a session summary into truth.',
+        body: [
+          {
+            type: 'paragraph',
+            text: 'After normal durable and handoff writes, review_session_context may form up to three extra decision, invariant, preference, or handoff candidates. It compares existing active project/topic memories and persists only a pending review with audit history.',
+          },
+          {
+            type: 'list',
+            items: [
+              'Approve may create or replace active memory only with explicit user approval.',
+              'Reject and defer never write active memory.',
+              'Revision and content checks prevent a stale review from overwriting newer knowledge.',
+              'Evidence is required for material candidate content.',
+            ],
+          },
+          {
+            type: 'note',
+            text: 'Use candidate review for additional session-extracted suggestions, not as a substitute for the normal handoff and durable writes an agent already knows are needed.',
+          },
+        ],
+      },
+      {
+        id: 'seeding',
+        title: 'Seed repository guidance',
+        summary: 'Import a curated allowlist of agent instructions and docs without indexing an entire repository.',
+        body: [
+          {
+            type: 'code',
+            language: 'sh',
+            code: `threadnote init-manifest --repo "$PWD"
+threadnote seed --dry-run
+threadnote seed`,
+          },
+          {
+            type: 'paragraph',
+            text: 'The per-developer seed manifest maps projects to canonical resource URIs and explicit patterns. Defaults focus on AGENTS.md, CLAUDE.md, README, contribution guidance, selected .github/.claude files, and docs Markdown.',
+          },
+          {
+            type: 'paragraph',
+            text: 'Ignore rules apply during traversal. Hidden directories are skipped unless an explicit manifest pattern names one, and dependency/build caches such as node_modules and .nx are excluded. Per-project traversal and candidate limits stop pathological trees; one failed project does not prevent later projects from seeding.',
+          },
+          {
+            type: 'warning',
+            text: 'Seeded repository text remains secondary to the current checked-in file. Do not use seeding as an automatic whole-repository ingestion mechanism.',
+          },
+        ],
+      },
+      {
+        id: 'worksets',
+        title: 'Cross-repository worksets',
+        summary: 'Search a named set of related repositories as one bounded working context.',
+        body: [
+          {
+            type: 'code',
+            language: 'yaml',
+            code: `version: 1
+projects:
+  - name: checkout-api
+    path: ~/src/checkout-api
+    uri: threadnote://resources/repos/checkout-api
+  - name: checkout-web
+    path: ~/src/checkout-web
+    uri: threadnote://resources/repos/checkout-web
+worksets:
+  - name: checkout
+    description: Checkout API and client
+    projects: [checkout-api, checkout-web]`,
+          },
+          {
+            type: 'code',
+            language: 'sh',
+            code: `threadnote workset list
+threadnote workset show checkout
+threadnote recall --query "payment retry contract" --workset checkout`,
+          },
+          {
+            type: 'paragraph',
+            text: 'Worksets expand recall across each member’s durable and seeded scope. They do not merge repositories into one code graph; every Git checkout keeps its own graph identity.',
+          },
+        ],
+      },
+      {
+        id: 'memory-hygiene',
+        title: 'Archive, compact, and forget',
+        summary: 'Preserve provenance while keeping active recall current and focused.',
+        body: [
+          {
+            type: 'code',
+            language: 'sh',
+            code: `threadnote compact --project payments --dry-run
+threadnote compact --project payments --apply
+threadnote archive <threadnote-uri>
+threadnote forget <threadnote-uri> --dry-run`,
+          },
+          {
+            type: 'paragraph',
+            text: 'Compact is scoped and previews by default. It can archive stale handoffs and remove exact duplicates while preserving the selected current record. Archive writes provenance before removing the active source. Forget removes local canonical context and should be previewed when the target is broad.',
+          },
+        ],
+      },
+    ],
+  },
+  {
+    id: 'team-sharing',
+    title: 'Team sharing',
+    description: 'Move only reviewed, reusable knowledge between teammates and agents through Git.',
+    articles: [
+      {
+        id: 'sharing-setup',
+        title: 'Configure a team',
+        summary: 'Connect a user-provided Git repository and inspect its clean synchronization state.',
+        body: [
+          {
+            type: 'code',
+            language: 'sh',
+            code: `threadnote share init git@github.com:org/team-memories.git
+threadnote share list
+threadnote share status
+threadnote share sync`,
+          },
+          {
+            type: 'paragraph',
+            text: 'Threadnote keeps shared canonical resources under ~/.threadnote/data and isolates Git metadata and worktrees under ~/.threadnote/share. Recall and read auto-sync incoming changes only when the team worktree is clean.',
+          },
+          {
+            type: 'note',
+            text: 'A team may use different coding agents. The shared contract is the Git-backed memory, not a vendor-specific chat transcript.',
+          },
+        ],
+      },
+      {
+        id: 'publish-memory',
+        title: 'Publish a memory',
+        summary: 'Preview and publish one active durable memory after user confirmation.',
+        keywords: ['share memory', 'team memory', 'publish durable memory', 'memory sharing'],
+        body: [
+          {
+            type: 'code',
+            language: 'sh',
+            code: `threadnote share publish threadnote://user/me/memories/durable/projects/app/cache.md --preview
+# Review the exact bytes and destination, then publish:
+threadnote share publish threadnote://user/me/memories/durable/projects/app/cache.md`,
+          },
+          {
+            type: 'paragraph',
+            text: 'Preview re-reads, validates, and scans the personal source, then returns the exact shared bytes and destination without writing. Publishing repeats those checks, writes and verifies the shared canonical copy, commits and pushes the team worktree, verifies that the personal source did not change, then removes the personal copy. A failure before completion preserves the personal memory.',
+          },
+          {
+            type: 'list',
+            items: [
+              'Only active durable memories are publishable.',
+              'Credential and customer-like secret matches block publishing.',
+              'Supported machine-local path leaks may be replaced with placeholders only when --redact is selected; preview again after redaction.',
+              'Handoffs and preferences always stay personal.',
+            ],
+          },
+          {
+            type: 'warning',
+            text: 'Before an agent publishes, it must show or describe the safe durable memory and get user confirmation. Never publish a handoff, preference, secret, customer data, or raw incident log.',
+          },
+        ],
+      },
+      {
+        id: 'share-conflicts',
+        title: 'Synchronize and resolve conflicts',
+        summary: 'Keep dirty or divergent team state explicit; never silently overwrite one side.',
+        body: [
+          {
+            type: 'code',
+            language: 'sh',
+            code: `threadnote share sync
+threadnote share conflicts
+threadnote share conflict show <id>
+threadnote share conflict resolve <id> --take shared`,
+          },
+          {
+            type: 'paragraph',
+            text: 'Clean tracked files follow the remote team repository. Dirty state, divergent canonical content, or a failed replay becomes a pending conflict with a stable ID. Inspect both sides before choosing shared, local, or an explicit merged file.',
+          },
+          {
+            type: 'note',
+            text: 'Conflict resolution writes a local backup before mutation. Choosing local republishes reviewed local content; choosing shared accepts the Git copy into canonical storage.',
+          },
+        ],
+      },
+      {
+        id: 'shared-artifacts',
+        title: 'Share agent artifacts',
+        summary:
+          'Publish reusable Codex or Claude skills, commands, and multi-skill bundles with the full MCP toolset.',
+        body: [
+          {
+            type: 'paragraph',
+            text: 'The full toolset can preview and publish Codex or Claude skills, Claude command Markdown, and declared multi-skill bundles. Companion scripts, references, and assets can travel with a skill. Manifests describe names, agents, included paths, external dependencies, and portable path rewrites.',
+          },
+          {
+            type: 'list',
+            items: [
+              'Unsafe traversal, credentials, reserved tokens, and locally modified installs are blocked.',
+              'Binary files require an explicit opt-in because the scrubber cannot inspect them.',
+              'Preview the exact bundle before commit and push.',
+              'List shared artifacts before installing so agent, kind, and name are unambiguous.',
+            ],
+          },
+        ],
+      },
+    ],
+  },
+  {
+    id: 'code-graph',
+    title: 'Polyglot code graph',
+    description:
+      'Inspect and analyze the current Git snapshot and dirty worktree across code, schemas, documentation, and local project artifacts.',
+    articles: [
+      {
+        id: 'graph-operations',
+        title: 'Query, exact nodes, neighbors, path, and impact',
+        summary: 'Choose the graph operation that matches the source question.',
+        keywords: ['code graph search', 'graph impact', 'inspect code graph', 'dependency path', 'symbol neighbors'],
+        body: [
+          {
+            type: 'table',
+            headers: ['Operation', 'Use it for', 'CLI'],
+            rows: [
+              [
+                'query',
+                'Find definitions, concepts, files, and a bounded relationship neighborhood',
+                'threadnote graph query --query "session refresh"',
+              ],
+              [
+                'node',
+                'Round-trip one exact stable cgs_ node ID from an earlier result',
+                'threadnote graph node --node-id cgs_…',
+              ],
+              [
+                'neighbors',
+                'Walk bounded incoming, outgoing, or bidirectional relationships from an exact node',
+                'threadnote graph neighbors --node-id cgs_… --direction incoming',
+              ],
+              [
+                'explain',
+                'Inspect one symbol with declaration and relationship evidence',
+                'threadnote graph explain --symbol RefreshSession',
+              ],
+              [
+                'path',
+                'Find an authoritative bounded path between two concepts',
+                'threadnote graph path --from LoginScreen --to TokenStore',
+              ],
+              [
+                'impact',
+                'Trace reverse dependencies from a symbol, path, or Git diff',
+                'threadnote graph impact --base origin/main',
+              ],
+            ],
+          },
+          {
+            type: 'paragraph',
+            text: 'Query results expose stable cgs_ node IDs. Feed an ID to node or neighbors for an unambiguous follow-up, or use it as either path endpoint. Neighbor traversal honors direction, depth, node, edge, and provenance bounds. Every relationship reports evidence and provenance: declared, resolved, syntactic, heuristic, or model-derived. Heuristic and model associations are opt-in; they are never promoted to authoritative source edges.',
+          },
+          {
+            type: 'note',
+            text: 'For non-trivial source investigation, agents should use inspect_code_graph before broad text search. Use analyze_code_graph when the question is about whole-repository topology. Use rg or grep afterward for exact literals, unsupported files, verification, or an explicitly reported graph failure.',
+          },
+        ],
+      },
+      {
+        id: 'graph-analysis',
+        title: 'Statistics, communities, groups, confidence, hubs, and surprises',
+        summary:
+          'Analyze whole-repository topology deterministically without loading one repository-sized graph document.',
+        keywords: [
+          'architecture analysis',
+          'repository architecture',
+          'whole graph analysis',
+          'code graph communities',
+          'structural analysis',
+        ],
+        body: [
+          {
+            type: 'table',
+            headers: ['View', 'Use it for', 'CLI'],
+            rows: [
+              [
+                'stats',
+                'Composition, connectivity, degree, provenance, and relationship counts',
+                'threadnote graph stats',
+              ],
+              [
+                'communities',
+                'Stable structural communities and weak connected components',
+                'threadnote graph communities',
+              ],
+              [
+                'community',
+                'Inspect bounded members of one stable community ID',
+                'threadnote graph community --community-id cgc_…',
+              ],
+              ['groups', 'Find bounded deterministic n-ary fan-in and fan-out groups', 'threadnote graph groups'],
+              [
+                'confidence',
+                'Audit provenance, confidence bands, endpoints, and review findings',
+                'threadnote graph confidence',
+              ],
+              ['hubs', 'High-degree hubs and graph-wide god nodes', 'threadnote graph hubs'],
+              [
+                'surprises',
+                'Unusual, high-signal relationships that cross structural communities',
+                'threadnote graph surprises',
+              ],
+              ['full', 'A compact combined analysis', 'threadnote graph analyze --view full'],
+            ],
+          },
+          {
+            type: 'paragraph',
+            text: 'Community IDs, membership, structural groups, component, hub, confidence, and surprising-link algorithms are deterministic for the same snapshot and selected provenance tiers. Results include bounded suggested questions. Rationale comments and ADR/RFC references become first-class evidence nodes, so a report can connect a non-obvious constraint to the source it documents.',
+          },
+          {
+            type: 'code',
+            language: 'sh',
+            code: `threadnote graph report --output architecture-report.md
+# Existing output files are never overwritten.`,
+          },
+          {
+            type: 'paragraph',
+            text: 'The analyzer pages nodes and relationships from SQLite instead of hydrating the entire graph in memory. Repository size is not admission-capped. Elapsed-time and response-output budgets return an explicit partial-coverage warning rather than presenting an incomplete result as complete.',
+          },
+          {
+            type: 'note',
+            text: 'MCP keeps scoped inspection and whole-graph analysis separate: inspect_code_graph supports query, node, neighbors, explain, path, and impact; analyze_code_graph supports stats, communities, community, groups, hubs, surprises, confidence, and full.',
+          },
+        ],
+      },
+      {
+        id: 'graph-indexing',
+        title: 'Indexing and freshness',
+        summary: 'Lazy, transactional snapshots scale to large monorepos without repository-size admission limits.',
+        body: [
+          {
+            type: 'paragraph',
+            text: 'The first graph query lazily builds a per-checkout SQLite snapshot below ~/.threadnote/indexes/code-graph. Committed source comes from bounded Git object reads; staged, unstaged, renamed, deleted, and eligible untracked files form the current worktree overlay.',
+          },
+          {
+            type: 'code',
+            language: 'sh',
+            code: `threadnote graph status
+threadnote graph index
+threadnote graph index --full
+threadnote graph watch
+threadnote graph compact --dry-run`,
+          },
+          {
+            type: 'paragraph',
+            text: 'Repositories are not rejected by aggregate byte, file, project, symbol, edge, lexical-term, or vector admission caps. Content parsing and SQLite activation run in bounded batches, and completed parser batches plus immutable commit snapshots are reusable after interruption. A pathological single-file fact payload degrades deterministically at the reviewed persistence ceiling, retains higher-value topology first, and reports omitted lower-priority facts explicitly. Individual query responses remain intentionally bounded by their node, edge, and result limits.',
+          },
+          {
+            type: 'paragraph',
+            text: 'Interactive CLI, Manager, and benchmark artifacts retain detailed indexing diagnostics. MCP keeps code-graph evidence small: inspection defaults to 20 nodes and 40 relationships, strips parser/index-only fields and repository-local activity paths, caps structured graph evidence at 24 KiB, and returns stable cgs_ IDs for focused follow-up calls. That graph-only response budget never truncates canonical memories returned by read_context.',
+          },
+          {
+            type: 'paragraph',
+            text: 'When an orchestrator runs agents in several linked worktrees, extraction can proceed concurrently. Each worktree keeps an isolated dirty overlay; only the short publication step is serialized. Maintenance waits for active builders before compacting or cleaning shared parser facts.',
+          },
+          {
+            type: 'paragraph',
+            text: 'graph status reports exact active database, WAL, and SHM bytes and, when no build owns the checkout, page count, freelist pages, and reclaimable bytes. Threadnote recommends graph compact once at least 512 MiB and 20% are reclaimable. The explicit command uses zero-wait maintenance/build locks, pre/post verification, and SQLite transactional VACUUM; use --dry-run to preview or --force below the threshold.',
+          },
+          {
+            type: 'paragraph',
+            text: 'A cold MCP call in a large repository may return state=indexing with a phase and retryAfterMilliseconds while one session-scoped build continues. Retry the same inspect_code_graph call after the requested delay. Query, node, neighbors, and explain may disclose a ready stale snapshot while refresh continues; path and impact wait for current state.',
+          },
+          {
+            type: 'note',
+            text: 'The first MCP graph inspection starts a watcher for that worktree during the MCP session. The watcher debounces filesystem events and performs a full Git reconciliation every five minutes. graph watch exposes the same behavior as a foreground CLI command.',
+          },
+        ],
+      },
+      {
+        id: 'graph-languages',
+        title: 'Languages and evidence',
+        summary:
+          'A compiler-backed TypeScript extractor, bundled structural AST packs, and deterministic schema and corpus packs.',
+        body: [
+          {
+            type: 'table',
+            headers: ['Language', 'Extractor', 'Workspace evidence'],
+            rows: [
+              [
+                'TypeScript / JavaScript',
+                'Pinned TypeScript compiler',
+                'npm workspaces, package and tsconfig metadata',
+              ],
+              ['Java', 'Bundled checksum-verified Tree-sitter WASM', 'Maven and Gradle project metadata'],
+              [
+                'Kotlin',
+                'Bundled checksum-verified Tree-sitter WASM',
+                'Gradle, Android, Kotlin Multiplatform source sets',
+              ],
+              ['Swift', 'Bundled checksum-verified Tree-sitter WASM', 'SwiftPM and conservative Xcode metadata'],
+              [
+                'Python, Go, Rust, C/C++, C#, Ruby, PHP, Bash, HCL',
+                'Bundled checksum-verified structural AST packs',
+                'Definitions, references, imports, calls, and conservative language-specific relationships',
+              ],
+              [
+                'Dart, Elixir, Julia, Lua, Objective-C, PowerShell, Scala, Solidity, Zig',
+                'Bundled checksum-verified structural AST packs',
+                'Definitions, references, imports, calls, and conservative language-specific relationships',
+              ],
+              [
+                'Verilog / SystemVerilog',
+                'Bundled checksum-verified structural AST pack',
+                'Modules, interfaces, programs, packages, classes, functions, tasks, instances, and inheritance',
+              ],
+              [
+                'Svelte / Vue',
+                'Bundled checksum-verified structural AST packs',
+                'Component-markup structure and references; embedded script is not presented as full JavaScript/TypeScript semantics',
+              ],
+              [
+                'Fortran, Apex, Razor',
+                'Bounded deterministic text-structural extractors',
+                'Explicit definitions and references without an external compiler, Python process, or false AST claim',
+              ],
+              [
+                'SQL, GraphQL, Protobuf, JSON/YAML/TOML/INI, MSBuild/XAML/solutions, Dockerfiles',
+                'Deterministic schema and configuration extractors',
+                'Declarations, dependencies, imports, and project metadata where declared',
+              ],
+              ['Markdown / manifests', 'Built-in data extractors', 'Documentation and declared dependency facts'],
+            ],
+          },
+          {
+            type: 'paragraph',
+            text: 'Repository build scripts are never executed during indexing. Structural depth is reported honestly: a portable AST pack is not presented as equivalent to TypeScript compiler resolution. The generated language-pack catalog owns file classification, parser identity, verified assets, capabilities, workspace discovery, and resolution domains, so another first-party language can be added without redesigning inventory, storage, query, CLI, or MCP.',
+          },
+        ],
+      },
+      {
+        id: 'graph-corpus-and-exports',
+        title: 'Documents, diagrams, media assets, and exports',
+        summary: 'Bring deterministic local project artifacts into the graph and export a pinned snapshot explicitly.',
+        body: [
+          {
+            type: 'list',
+            items: [
+              'Markdown, plain-text and rich-text formats, HTML/XML, CSV/TSV, notebooks, URL pointers, and TeX are indexed as searchable document structure.',
+              'PDF text and links are extracted locally. OpenXML, OpenDocument, and EPUB archives contribute bounded local text sections.',
+              'Mermaid, PlantUML, DOT, draw.io, GraphML, and SVG files are indexed as project artifacts and can contribute text and references.',
+              'Image, audio, and video assets are searchable by filename, format, size, and deterministic image dimensions when available. Threadnote does not claim OCR, pixel understanding, or transcription.',
+            ],
+          },
+          {
+            type: 'note',
+            text: 'Corpus parsing has a 64 MiB per-artifact source budget. Larger eligible files are still admitted to the graph as searchable metadata-only assets. Archive extraction separately bounds each selected entry and total expanded text to prevent decompression blowups. These are per-artifact extraction safety budgets, not repository or graph-size admission caps.',
+          },
+          {
+            type: 'code',
+            language: 'sh',
+            code: `threadnote graph export --format json --output code-graph.json
+threadnote graph export --format graphml --output code-graph.graphml
+threadnote graph export --format html --output code-graph.html
+threadnote graph export --format svg --output code-graph.svg`,
+          },
+          {
+            type: 'paragraph',
+            text: 'Exports pin one ready snapshot and page it from SQLite. JSON and GraphML support complete portable exports without a fixed graph-size cap. HTML and SVG are explicit visualization artifacts and accept caller-selected node and edge bounds, including all where the format and consumer can handle it. Existing output files are never overwritten.',
+          },
+          {
+            type: 'warning',
+            text: 'Repository-derived document text, asset names, paths, and graph labels remain untrusted evidence. Export only to an intended local destination and review an artifact before sharing it.',
+          },
+        ],
+      },
+      {
+        id: 'graph-monorepos',
+        title: 'Monorepos and nested workspaces',
+        summary:
+          'One checkout is one graph scope; nested projects disambiguate resolution rather than partitioning the graph.',
+        body: [
+          {
+            type: 'paragraph',
+            text: 'Symbols are assigned to the deepest containing project or source root. A nested app can remain its own workspace and also be an integrated module of an outer monorepo. It can cross into outer libs or inner modules only through declared project dependencies.',
+          },
+          {
+            type: 'list',
+            items: [
+              'Java and Kotlin share the JVM resolution domain.',
+              'Ambiguous and dynamic dependencies remain syntactic instead of becoming false resolved edges.',
+              'Nested Git repositories and submodules keep separate graph identities and are not traversed from the parent checkout.',
+              'Linked worktrees can share an immutable commit snapshot, but every dirty overlay and active pointer is worktree-scoped so concurrent agents cannot leak uncommitted source state across branches.',
+              'Independent clones of the same remote keep separate operational stores.',
+            ],
+          },
+          {
+            type: 'paragraph',
+            text: 'The [Performance page](../performance/) documents the bounded indexing architecture and publishes final large-repository values only from one retained exact-HEAD artifact with provenance, polyglot controls, resource high-water, query and Manager timings, and incremental-versus-independent-rebuild digest parity.',
+          },
+        ],
+      },
+    ],
+  },
+  {
+    id: 'surfaces',
+    title: 'Manager and integrations',
+    description: 'Inspect local state visually and bridge selected knowledge to Obsidian.',
+    articles: [
+      {
+        id: 'manager',
+        title: 'Manager',
+        summary: 'A foreground, loopback-only web UI for Doctor, memories, shares, tools, and graph visualizations.',
+        body: [
+          {
+            type: 'code',
+            language: 'sh',
+            code: `threadnote manage
+# Start without opening the browser:
+threadnote manage --no-open`,
+          },
+          {
+            type: 'paragraph',
+            text: 'Manager starts a temporary local HTTP server only for the foreground session, binds to loopback, and uses a per-process bearer token. It is not a daemon and never exposes a model or memory server.',
+          },
+          {
+            type: 'list',
+            items: [
+              'Doctor: installation, integration, model, index, and storage health.',
+              'Memory: browse lifecycle-aware canonical records and pending candidates.',
+              'Knowledge graph: explore current symbols and relationships visually, then request topology signals such as communities, hubs, and surprising links on demand.',
+              'Shares: inspect configured teams, synchronization, and conflicts.',
+              'Tools: discover operational surfaces without memorizing every command.',
+            ],
+          },
+        ],
+      },
+      {
+        id: 'obsidian-source',
+        title: 'Obsidian as a recall source',
+        summary: 'Import only allowlisted vault notes as untrusted external context.',
+        body: [
+          {
+            type: 'code',
+            language: 'sh',
+            code: `threadnote source add --type obsidian --id engineering \\
+  --vault "/path/to/Engineering Vault" \\
+  --include "Engineering/**" \\
+  --exclude "Engineering/Private/**"
+
+# Review the normalized configuration, then persist it.
+threadnote source add --type obsidian --id engineering \\
+  --vault "/path/to/Engineering Vault" \\
+  --include "Engineering/**" \\
+  --exclude "Engineering/Private/**" \\
+  --apply`,
+          },
+          {
+            type: 'paragraph',
+            text: 'Every applied CLI recall and MCP recall_context refreshes enabled sources incrementally before ranking. A failed refresh warns and recall continues with the last successful snapshot. The vault is never modified by a source sync.',
+          },
+          {
+            type: 'warning',
+            text: 'Imported notes always have external authority and untrusted trust, regardless of frontmatter. Source traversal rejects symlinks and boundary escapes, excludes Obsidian internals, configured Inbox folders, and managed projections, and secret-scans the sanitized copy.',
+          },
+        ],
+      },
+      {
+        id: 'obsidian-projection',
+        title: 'Project memories into Obsidian',
+        summary: 'Publish explicitly selected Threadnote memories as deterministic, drift-protected Markdown.',
+        body: [
+          {
+            type: 'code',
+            language: 'sh',
+            code: `threadnote projection add --type obsidian --id engineering-memory \\
+  --vault "/path/to/Engineering Vault" \\
+  --folder Threadnote \\
+  --apply
+
+threadnote projection publish engineering-memory \\
+  --uri threadnote://user/me/memories/durable/projects/mobile/auth.md \\
+  --apply
+
+threadnote open threadnote://user/me/memories/durable/projects/mobile/auth.md`,
+          },
+          {
+            type: 'paragraph',
+            text: 'A new projection selects no memories. Publish adds only the supplied canonical URIs; sync later refreshes only that selection. Generated notes contain a managed marker, stable ID, canonical URI, lifecycle metadata, evidence, and relation links.',
+          },
+          {
+            type: 'paragraph',
+            text: 'Threadnote never overwrites an unmanaged file. If a generated note was edited, status reports drift and preserves it; force applies only to a path already recorded as managed. Editing a projected note never updates canonical memory.',
+          },
+        ],
+      },
+      {
+        id: 'obsidian-inbox',
+        title: 'Obsidian Inbox candidates',
+        summary: 'Turn explicitly marked vault notes into review candidates, never silent memories.',
+        body: [
+          {
+            type: 'code',
+            language: 'yaml',
+            code: `---
+threadnote_candidate: true
+kind: durable
+project: mobile
+topic: auth-contract
+---
+The proposed memory body.`,
+          },
+          {
+            type: 'code',
+            language: 'sh',
+            code: `threadnote inbox scan --source engineering
+threadnote inbox scan --source engineering --apply`,
+          },
+          {
+            type: 'paragraph',
+            text: 'Inbox scanning reads only direct Markdown children of the configured Inbox. Apply creates candidate reviews visible to the agent workflow and Manager Candidate Inbox; it does not create or replace active durable memory. Unchanged notes are idempotent.',
+          },
+        ],
+      },
+    ],
+  },
+  {
+    id: 'operations',
+    title: 'Operations',
+    description: 'Diagnose, repair, update, secure, and support a standalone Threadnote installation.',
+    articles: [
+      {
+        id: 'doctor-and-repair',
+        title: 'Doctor and repair',
+        summary: 'Diagnose first, then repair only owned integrations or disposable derived state.',
+        body: [
+          {
+            type: 'code',
+            language: 'sh',
+            code: `threadnote doctor --dry-run
+threadnote doctor --strict
+threadnote repair --dry-run
+threadnote repair`,
+          },
+          {
+            type: 'paragraph',
+            text: 'Doctor checks the self-contained home, canonical layout, core model, recall indexes, code-graph integrity, configured MCP clients, and agent instructions. Strict mode exits non-zero when a check fails.',
+          },
+          {
+            type: 'paragraph',
+            text: 'Repair can reassert storage layout, provision the core embedding model, rebuild derived lexical/vector state, clean corrupt or abandoned code-graph databases, and repair hooks or MCP configuration. It does not modify repositories or delete canonical memories.',
+          },
+          {
+            type: 'note',
+            text: 'Threadnote 4 has no daemon to restart. start verifies on-demand readiness; stop is a compatibility no-op.',
+          },
+        ],
+      },
+      {
+        id: 'models-and-indexes',
+        title: 'Models and recall indexes',
+        summary: 'Verify the pinned core model, manage vector generations, and repair all derived recall state safely.',
+        body: [
+          {
+            type: 'code',
+            language: 'sh',
+            code: `threadnote models list
+threadnote models runtime
+threadnote models verify bge-small-en-v1.5-q8
+threadnote index status
+threadnote index verify
+threadnote index rebuild
+# Validate or rebuild lexical and vector state together:
+threadnote repair --dry-run
+threadnote repair`,
+          },
+          {
+            type: 'paragraph',
+            text: 'Model downloads are resumable. A partial or checksum-mismatched artifact is never selected. A verified existing model is preserved across reinstall and update.',
+          },
+          {
+            type: 'paragraph',
+            text: 'The index commands above manage the selected vector generation only. Vector rebuild creates a complete generation and switches the active mapping transactionally only after every required row is ready; content-addressed vectors already verified on disk are reused after interruption. Use threadnote repair when lexical and vector derived state both need validation or rebuilding.',
+          },
+          {
+            type: 'warning',
+            text: 'index purge removes disposable vector data, not canonical resources. If you are uncertain which state is safe to rebuild, run doctor --dry-run and repair --dry-run first.',
+          },
+        ],
+      },
+      {
+        id: 'updates',
+        title: 'Updates and channels',
+        summary: 'Stay on stable or beta intentionally while preserving models, memory, and integration state.',
+        body: [
+          {
+            type: 'code',
+            language: 'sh',
+            code: `threadnote update
+threadnote update --beta
+threadnote update --stable
+threadnote update --check`,
+          },
+          {
+            type: 'paragraph',
+            text: 'After opting into beta, ordinary version and update checks remain on the beta channel. Use --stable to return to stable even when that version is numerically lower. Updates verify immutable release assets, promote atomically, preserve ~/.threadnote data and verified model files, then repair integrations.',
+          },
+          {
+            type: 'paragraph',
+            text: 'The standalone installer removes only verified obsolete Threadnote runtimes, such as old global npm packages and Threadnote-owned legacy tooling. It never deletes the legacy ~/.openviking data source.',
+          },
+        ],
+      },
+      {
+        id: 'security-and-privacy',
+        title: 'Security and privacy',
+        summary: 'Local transport, safe canonical writes, explicit publishing, and bounded diagnostics.',
+        body: [
+          {
+            type: 'list',
+            items: [
+              'Canonical URI parsing rejects traversal, ambiguous encodings, escaping links, and unsupported file types.',
+              'Writes use bounded locks, same-directory temporary files, durable close, atomic rename, and compare-and-swap where replacement requires it.',
+              'MCP uses local stdio. Manager binds to loopback with a per-process bearer token. No daemon or storage port listens in the background.',
+              'Model files and release archives are pinned and SHA-256 verified before atomic promotion; native compilation and implicit downloads are disabled.',
+              'Team publishing and Obsidian boundaries secret-scan content and preserve the source when validation or promotion fails.',
+            ],
+          },
+          {
+            type: 'warning',
+            text: 'Do not store credentials, customer data, private production payloads, or raw logs. Review every team publish and external projection for the intended audience.',
+          },
+        ],
+      },
+      {
+        id: 'logs-and-support',
+        title: 'Logs and support reports',
+        summary: 'Preview privacy-safe diagnostics and require exact approval before creating a public issue.',
+        body: [
+          {
+            type: 'code',
+            language: 'sh',
+            code: `threadnote logs
+threadnote report-issue \\
+  --title "Short failure summary" \\
+  --body "What happened, what was expected, and how to reproduce it"`,
+          },
+          {
+            type: 'paragraph',
+            text: 'Rotating JSON Lines logs live below ~/.threadnote/logs. They contain version, embedded Bun version, platform, command or MCP tool name, duration, outcome, and typed failure name. They never record arguments, environment values, memory content, recall queries or results, MCP payloads, or exception messages.',
+          },
+          {
+            type: 'paragraph',
+            text: 'report-issue previews the exact public body and prints an approval digest. Create the issue only after reviewing that preview and explicitly rerunning with --apply --approval <digest>. Include bounded allowlisted logs only with a separate --include-logs choice.',
+          },
+        ],
+      },
+    ],
+  },
+  {
+    id: 'reference',
+    title: 'Reference',
+    description: 'CLI, MCP, configuration, storage, and architecture contracts for Threadnote 4.',
+    articles: [
+      {
+        id: 'cli-reference',
+        title: 'CLI reference',
+        summary:
+          'The complete execution surface; every mutating integration command supports an explicit preview or dry-run contract where applicable.',
+        body: [
+          {
+            type: 'paragraph',
+            text: 'Run threadnote <command> --help for the installed version’s exact flags. The groups below cover the stable 4.0 operator surface.',
+          },
+          {
+            type: 'table',
+            headers: ['Group', 'Commands'],
+            rows: cliCommands.map(item => [item.command, item.summary]),
+          },
+          {
+            type: 'note',
+            text: 'Global overrides include --home, --manifest, --log-level, shell completions, and --wizard. Prefer explicit --query and absolute --caller-cwd in scripts.',
+          },
+        ],
+      },
+      {
+        id: 'mcp-reference',
+        title: 'MCP reference',
+        summary: 'Focused core tools for daily agent work, with a larger explicit maintenance toolset.',
+        body: [
+          {
+            type: 'paragraph',
+            text: 'The local MCP adapter exposes the core toolset by default. Compatibility aliases and maintenance, conflict, artifact, feedback, and direct-storage tools require --toolset full.',
+          },
+          {
+            type: 'table',
+            headers: ['Tool', 'Toolset', 'Purpose'],
+            rows: mcpTools.map(item => [item.name, item.toolset, item.summary]),
+          },
+          {
+            type: 'note',
+            text: 'All graph calls require an absolute callerCwd. recall_context should also receive callerCwd for current repo and branch resolution. Read returned threadnote:// pointers instead of asking recall to inline the entire corpus.',
+          },
+        ],
+      },
+      {
+        id: 'configuration',
+        title: 'Configuration',
+        summary: 'Use the owned defaults; override paths and behavior only for managed or test environments.',
+        body: [
+          {
+            type: 'table',
+            headers: ['Setting', 'Purpose', 'Default'],
+            rows: [
+              ['THREADNOTE_HOME / --home', 'Relocate all Threadnote-owned state', '~/.threadnote'],
+              [
+                'THREADNOTE_MANIFEST / --manifest',
+                'Choose the per-developer seed manifest',
+                '~/.threadnote/seed-manifest.yaml',
+              ],
+              ['THREADNOTE_RECALL_THRESHOLD', 'Default minimum recall relevance', 'Product default'],
+              ['THREADNOTE_CALLER_CWD', 'Fallback workspace for CLI scope resolution', 'Current process directory'],
+              ['THREADNOTE_MCP_TOOLSET', 'Select core or full MCP tools', 'core'],
+              [
+                'THREADNOTE_CANDIDATE_POLICY',
+                'Select suggest, handoff-only, or off for extra session candidates',
+                'suggest',
+              ],
+              ['THREADNOTE_AUTO_UPDATE', 'Set to 1 to enable hook-driven update checks', 'unset'],
+              ['THREADNOTE_NO_SPINNER', 'Disable interactive progress spinners', 'unset'],
+            ],
+          },
+          {
+            type: 'warning',
+            text: 'Internal build, worker, release-source, parser-asset, command-limit, and install-root variables are implementation or test controls, not normal user configuration. Do not copy them into agent configs.',
+          },
+        ],
+      },
+      {
+        id: 'storage-layout',
+        title: 'Storage layout',
+        summary: 'Know which paths are authoritative, disposable, or operational.',
+        body: [
+          {
+            type: 'table',
+            headers: ['Path', 'Contents', 'Recovery'],
+            rows: [
+              [
+                '~/.threadnote/data/<account>',
+                'Canonical resources and personal/ingested shared memories',
+                'Back up; never purge as an index',
+              ],
+              [
+                '~/.threadnote/models',
+                'Verified immutable GGUF files and role selections',
+                'Preserved on update; re-downloadable',
+              ],
+              [
+                '~/.threadnote/indexes/lexical',
+                'SQLite BM25/postings and exact-search data',
+                'Disposable; repair/rebuild',
+              ],
+              ['~/.threadnote/indexes/vectors', 'Paged content-addressed recall vectors', 'Disposable; repair/rebuild'],
+              [
+                '~/.threadnote/indexes/code-graph',
+                'Per-checkout source snapshots and symbol vectors',
+                'Disposable; next query rebuilds',
+              ],
+              [
+                '~/.threadnote/share',
+                'Team configuration, isolated Git worktrees and gitdirs',
+                'Operational; resolve dirty state explicitly',
+              ],
+              ['~/.threadnote/migration', 'Checksummed migration receipts', 'Preserve for idempotence and diagnosis'],
+              [
+                '~/.threadnote/locks, logs, tmp',
+                'Coordination, bounded diagnostics, staging',
+                'Operational; repair owns cleanup',
+              ],
+            ],
+          },
+          {
+            type: 'note',
+            text: 'A 4.0 runtime never writes current owned state to ~/.openviking. That directory is only an untouched legacy migration and rollback source.',
+          },
+        ],
+      },
+      {
+        id: 'architecture',
+        title: 'Architecture',
+        summary:
+          'One foreground Effect runtime, canonical files, SQLite-derived search, and an isolated local-model worker.',
+        body: [
+          {
+            type: 'heading',
+            text: 'Runtime',
+          },
+          {
+            type: 'paragraph',
+            text: 'Each CLI, MCP, or Manager process owns one root Effect runtime and scope. Raw filesystem, process, HTTP, digest, SQLite, and native-addon access stays behind capability adapters. Domain services depend on Threadnote-owned ports so unstable Effect APIs and node-llama-cpp remain localized.',
+          },
+          {
+            type: 'heading',
+            text: 'Storage and retrieval',
+          },
+          {
+            type: 'paragraph',
+            text: 'ResourceStore owns safe canonical files. SQLite owns normalized lexical postings, paged vectors, and per-repository code-graph snapshots as derived state. Recall combines deterministic and local-model signals; scoped graph inspection and whole-graph topology analysis remain separate snapshot-aware services that page from the same ready graph generation.',
+          },
+          {
+            type: 'heading',
+            text: 'Local inference',
+          },
+          {
+            type: 'paragraph',
+            text: 'A supervised worker process owns the prebuilt node-llama-cpp adapter and keeps scoped models warm. Transport or native failure causes bounded disposal and one retry with a fresh worker; repeated failure becomes a typed error while recall can fall open to lexical results.',
+          },
+          {
+            type: 'heading',
+            text: 'Sharing and surfaces',
+          },
+          {
+            type: 'paragraph',
+            text: 'Git is the explicit cross-team transport. MCP is local stdio. Manager is a temporary loopback UI. Obsidian sources and projections are capability-scoped bridges that preserve Threadnote identity, trust, provenance, and lifecycle boundaries.',
+          },
+        ],
+      },
+    ],
+  },
+];

@@ -1,292 +1,255 @@
 # Troubleshooting
 
-## `openviking-server` Missing
+## The executable does not start
 
-Run:
+Threadnote releases are standalone executables with an embedded Bun runtime; users do not need Bun, Node, npm, or
+Python installed. Verify the immutable release and archive checksum, then run `threadnote doctor --dry-run`. On macOS,
+`codesign --verify --strict --verbose=2 "$(command -v threadnote)"` checks the Developer ID signature. On Windows,
+`Get-AuthenticodeSignature (Get-Command threadnote).Source` should report `Valid`.
 
-```bash
-threadnote install
+If an older npm-based Threadnote command shadows the standalone launcher, compare every result from
+`command -v -a threadnote` on POSIX or `Get-Command threadnote -All` in PowerShell. The standalone installer removes
+verified npm-distributed Threadnote installations automatically, including early Node-based 4.0 betas. If it warns
+that a package manager could not remove one, run the exact printed uninstall command and rerun the installer. Threadnote
+does not remove unverified third-party files. Threadnote 3 cannot install v4 through `threadnote update`; a fresh
+standalone install is the supported upgrade path.
+
+Preserve the release channel when reinstalling. The bootstrap defaults to stable; beta users select the beta channel:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/install.sh | sh -s -- --beta
 ```
 
-The installer prefers `uv`, then `pipx`, then the platform Python launcher (`py`/`python` on Windows or `python3` on
-macOS and Linux). For `curl | sh` installs, the wrapper reattaches `threadnote install` to your terminal when possible
-so it can prompt to install `uv` and continue instead of falling straight through to the pip fallback. Native Windows
-uses `scripts/install.ps1`, preserves npm's `threadnote.cmd` launcher, and can install `uv` with its official PowerShell
-bootstrap.
-
-## `uv` Fails With `UnknownIssuer`
-
-Some corporate machines trust PyPI through certificates installed in the system keychain. Threadnote passes
-`--system-certs` when it uses `uv` so those system certificates are loaded. This flag requires uv 0.11.0 or newer;
-Threadnote selects a compatible `uv` elsewhere on `PATH` or tries to update an older installation before using it.
-
-If the automatic update cannot produce a compatible version, update uv and retry:
-
-```bash
-uv self update       # standalone uv installation
-brew upgrade uv      # Homebrew installation
-threadnote update
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/install.ps1))) -Beta
 ```
 
-If an older install still fails with `invalid peer certificate: UnknownIssuer`, retry with:
+The PowerShell installer path is available for testing but no official Windows 4 asset is published until Authenticode
+signing is re-enabled.
 
-```bash
-UV_NATIVE_TLS=1 threadnote install
+## The installer finished but `threadnote` is not found
+
+The POSIX launcher lives in `~/.local/bin`. When that directory is absent from `PATH`, the standalone installer adds an
+idempotent entry to the detected zsh, bash, fish, or POSIX shell profile. A child installer cannot modify the shell that
+launched it, so either open a new terminal or apply the command printed by the installer:
+
+```sh
+export PATH="$HOME/.local/bin:$PATH"
 ```
 
-Or use a different Python installer:
+For fish, use:
 
-```bash
-threadnote install --package-manager pipx
-threadnote install --package-manager pip
+```fish
+set -gx PATH "$HOME/.local/bin" $PATH
 ```
 
-## Model Download Fails With `CERTIFICATE_VERIFY_FAILED`
+The absolute command printed at the end of installation also works immediately, for example
+`"$HOME/.local/bin/threadnote" doctor --dry-run`. A custom `THREADNOTE_BIN_DIR` is never added to a profile
+automatically; add that directory to `PATH` yourself or use its absolute launcher path.
 
-On install or first start, OpenViking may download the local embedding model from Hugging Face. If
-`~/.openviking/logs/server.log` shows `SSLCertVerificationError`, `self-signed certificate in certificate chain`, or
-`Failed to download local embedding model`, repair the OpenViking Python environment and start again:
+## Start and stop do not launch a service
 
-```bash
-threadnote repair --package-manager uv
+Threadnote 4 owns no daemon. `threadnote start` verifies the on-demand runtime and `threadnote stop` is a compatibility
+no-op. Use `threadnote doctor` for storage, index, and model diagnostics.
+
+## Collect production logs for support
+
+Run `threadnote logs` to list the available files. Threadnote writes JSON Lines operational diagnostics under
+`~/.threadnote/logs/threadnote.log`, rotates at 1 MiB, and retains five rotated files (`threadnote.log.1` through
+`threadnote.log.5`). Appends and rotation are serialized both within one process and across concurrent agent
+processes.
+
+The log schema is intentionally narrower than console output: it includes the Threadnote and embedded Bun versions,
+operating system and architecture, CLI command or MCP tool name, duration, outcome, and typed failure name. It never
+records command arguments, environment values, memory content, recall queries or results, MCP request/response
+payloads, or exception messages. Help, dry-run, implicit preview, and `report-issue` commands do not write logs.
+Logging starts only after Threadnote owns a valid home, never creates a home before migration, and is best-effort so a
+logging failure cannot fail the command.
+
+Review the files before attaching them to a support report. The active file is newest; numbered files are progressively
+older.
+
+Create a Threadnote GitHub issue through an exact public preview:
+
+```sh
+threadnote report-issue \
+  --title "Short failure summary" \
+  --body "What happened, what was expected, and how to reproduce it"
+```
+
+Preview does not require GitHub CLI. For submission, install it from [cli.github.com](https://cli.github.com/) (or use
+`brew install gh` on macOS / `winget install --id GitHub.cli` on Windows), authenticate with `gh auth login`, and rerun
+with `--apply --approval sha256:...` using the approval digest printed by the preview. Threadnote refuses submission if
+the title, body, diagnostics, or selected log excerpt changed after review. Add `--include-logs` only when you want the
+newest valid production-log entries embedded in the issue. Threadnote re-parses those JSONL entries through a strict
+field allowlist, omits older entries beyond the issue-body budget, and never posts raw command output. The request body
+is passed to `gh api` through an owner-only temporary file rather than process arguments.
+
+## Home or migration problems
+
+The owned home defaults to `~/.threadnote`. Check for an accidental override:
+
+```sh
+echo "$THREADNOTE_HOME"
+threadnote doctor
+threadnote migrate
+```
+
+`migrate` is a dry run unless `--apply` is present. It never deletes the legacy source. An interrupted copy can be
+resumed; a promoted target has a checksummed receipt. If the target is unrelated or free space is insufficient,
+migration stops before promotion.
+
+The standalone installer removes verified obsolete runtimes, not legacy data. It may uninstall the old global
+Threadnote package, the Threadnote-owned OpenViking uv/pipx/user-pip tool, and the macOS
+`io.threadnote.openviking` LaunchAgent. It never deletes `~/.openviking`; run `threadnote migrate --apply` to import
+that source into the native Threadnote 4 home.
+
+## Seed is slow or skips files
+
+Threadnote applies `.threadnoteignore` while walking the filesystem, before entering ignored directories. The default
+rules exclude dependency and build caches such as `node_modules/` and `.nx/`. Broad patterns also skip every directory
+whose name starts with `.`, while an explicitly named manifest pattern such as `.github/**` or `.claude/**` still
+includes that directory.
+
+Each project is limited to 20,000 candidates, 250,000 visited non-ignored entries, and 4 MiB per file. Narrow the
+project's seed patterns or extend `.threadnoteignore` if a limit is reported. A failed project no longer prevents later
+projects from being processed, but the command returns a failure after writing the completed project state.
+
+The final summary reports safety skips and project failures. Local POSIX home paths are redacted from every seeded text
+file. Windows paths such as `C:/Users/...`, Git-Bash paths such as `/c/Users/...`, and WSL paths such as
+`/mnt/c/Users/...` are retained because they describe portable path conventions rather than a macOS home.
+
+## Semantic recall is unavailable
+
+The core BGE embedding model and vector index are installed automatically by `threadnote install`. Repair their
+derived state without selecting a model manually:
+
+```sh
+threadnote repair
+threadnote models list
+threadnote models runtime
+threadnote models verify bge-small-en-v1.5-q8
+threadnote index status
+threadnote index verify
+```
+
+The initial model download requires HTTPS access to the manifest’s pinned repository revision and resumes after an
+interruption. Repeat installs preserve a verified existing model. A checksum mismatch deletes the invalid partial file
+and never activates it. Lexical recall remains available if native inference is temporarily unavailable, while
+`threadnote doctor` reports the missing core capability as a failure.
+
+The runtime requests prebuilt `node-llama-cpp` binaries only. If `models runtime` reports that no compatible prebuilt
+binary exists, install the Threadnote archive matching your operating system and architecture; Threadnote will not
+silently compile one.
+
+Install and repair also retire the old 3.x Python local-AI daemon after migration. Threadnote signals a process only
+after its legacy receipt, loopback health response, PID, launch ID, model ID, and token-derived proof all agree.
+Unverified or unresponsive PIDs are left untouched with a warning.
+
+## Threadnote shows several processes or uses more memory than expected
+
+Each active stdio client owns one MCP process, and semantic work lazily starts one crash-isolated local-model worker
+below that parent. Run `threadnote processes` to see a bounded privacy-safe inventory with role, parent PID, age,
+current operation, and RSS. The output excludes command lines, working directories, repository names, prompts, and
+model input.
+
+An unused model worker unloads after five minutes by default. Set
+`THREADNOTE_LOCAL_MODEL_WORKER_IDLE_TIMEOUT_MS=<milliseconds>` before starting the client to use a different idle
+window; `0` disables idle eviction. Closing the stdio client closes both its MCP server and worker.
+
+## An index rebuild was interrupted
+
+Re-run `threadnote repair` or `threadnote index rebuild`. The lexical and vector SQLite databases are disposable and
+rebuilt from canonical Markdown after corruption. Vector values are content-addressed, so a retry reuses every valid
+value already written. A changed active mapping is committed in one SQLite transaction only after every required
+vector is present; an interrupted embedding run leaves the previous mapping available.
+
+Repair and doctor also run a full SQLite integrity check over each derived native code graph. Large monorepo graphs can
+take time to scan; both commands print the current graph database and cleanup phase while they work. If a graph is
+reported as corrupt, run `threadnote repair`; repair discards unreadable derived graph databases, and the next graph
+query rebuilds them.
+
+```sh
+threadnote index verify
+threadnote index rebuild
+```
+
+## Code graph indexing or a language pack fails
+
+The native graph supports compiler-backed TypeScript/JavaScript and structural Java, Kotlin, Swift, Bash, C, C++, C#,
+Dart, Elixir, Go, HCL/Terraform, Julia, Lua, Objective-C, PHP, PowerShell, Python, Ruby, Rust, Scala, Solidity, Svelte,
+SystemVerilog/Verilog, Vue, Zig, Apex, Fortran, and Razor without invoking repository build tools. The standalone
+archive bundles checksum-verified grammar WASM for the AST-backed structural packs. Apex, Fortran, and Razor are
+bounded deterministic text-structural packs and do not claim AST coverage. Threadnote also has deterministic
+extractors for common schema/configuration formats and local document corpora. Check the disposable graph and rebuild
+it with:
+
+```sh
+threadnote graph status
 threadnote doctor --dry-run
+threadnote graph index --full
 ```
 
-Threadnote installs `pip-system-certs` into the OpenViking environment so Python `requests` can use certificates trusted
-by the operating system.
+Interactive indexing shows each Git read batch, then each extraction file and language with parse timing, followed by
+the persistence batches. Long pauses can therefore be attributed to input, parsing, or SQLite publication instead of
+appearing as an undifferentiated spinner. Generated roots such as `node_modules`, `dist`, `build`, `out`, hidden caches, and
+`bazel-*` are pruned before reads. Snapshot/golden/fixture structured data is fingerprinted without hydrating its
+payload and retained as file/module metadata only; manifests, schemas, and configs still use their dedicated parsers.
 
-If an older Threadnote release tries to reinstall all of OpenViking and fails while fetching packages such as `openai`,
-install the certificate bridge directly into the existing OpenViking environment:
+A large cold MCP inspection can return `state: "indexing"` with measured phase progress, an optional phase-scoped
+estimate, and adaptive retry timing. Continue useful targeted text or path investigation while it builds, then retry
+the same `inspect_code_graph` call before making relationship-aware graph claims. There is no repository-size admission
+limit and no daemon to start. Nested Maven, Gradle, SwiftPM, and Xcode scopes are detected statically. Dynamic build
+logic and ambiguous dependencies remain syntactic rather than being guessed. Bazel workspaces, packages, targets,
+loads, and labels are also detected statically from `WORKSPACE*`, `MODULE.bazel`, `BUILD*`, `.bzl`, and `.bazelrc`;
+Threadnote never invokes Bazel or evaluates Starlark macros.
 
-```bash
-uv pip install --system-certs --python "$(dirname "$(realpath "$(which openviking-server)")")/python" pip-system-certs
-threadnote start
-```
+For whole-repository topology, call MCP `analyze_code_graph` or run `threadnote graph analyze --view full`. Analysis
+has no repository-size admission cap. The MCP surface independently caps topology retention at 100,000 symbols,
+500,000 distinct relationships, and 1,000,000 relationship visits; larger snapshots still return aggregate statistics,
+with topology explicitly marked partial or unavailable. CLI and Manager analysis keep their complete snapshot-derived
+budgets. MCP structured content and rendered text each have an independent deterministic 24 KiB UTF-8 envelope with
+output coverage and omission metadata. Reaching any analysis or response budget does not imply that the stored
+snapshot was truncated. Manager shows statistics, community drill-down, structural groups, confidence, hubs, and
+cross-community signals only after **Analyze** is selected.
 
-## Local Embedding Extra Missing
+Document extraction is deliberately local and deterministic. PDFs, OpenXML/OpenDocument files, EPUB, text documents,
+notebooks, and text-based diagram formats contribute extractable text and links. A scanned PDF, image, audio file, or
+video is indexed as an asset with deterministic metadata only: Threadnote does not perform OCR, image understanding,
+transcription, or video analysis. An extraction diagnostic for one such asset does not mean the rest of the graph
+failed. Any corpus artifact over 64 MiB is intentionally kept as metadata only instead of being rejected or
+semantically decompressed. OpenXML, OpenDocument, and EPUB expand only selected text entries, bounded to 16 MiB per
+entry and 64 MiB cumulatively; crossing a budget falls back to asset metadata. These are per-artifact extraction
+safety budgets, not repository or graph-size limits.
 
-The default OpenViking config uses the local embedding backend. If the server log says `llama-cpp-python` is missing,
-rerun:
+For a portable artifact, `threadnote graph export --format json|graphml|html|svg --output <new-file>` never overwrites
+an existing file. JSON, GraphML, and HTML default to the complete snapshot. SVG defaults to 300 nodes and 1,000 edges;
+pass `--node-limit all --edge-limit all` only when an intentionally large SVG is acceptable. Export limits affect the
+artifact, not graph admission or snapshot coverage. `threadnote graph report --output <new-file.md>` produces a
+deterministic architecture report and likewise refuses to overwrite.
 
-```bash
-threadnote install
-```
+If doctor reports a missing or mismatched grammar asset, reinstall or update the standalone archive for the current
+platform. Threadnote never downloads parser grammars at runtime. Repair may discard and rebuild graph SQLite files, but
+it does not modify the repository or canonical memories.
 
-The installer repairs this by installing `openviking[local-embed]`.
+## MCP does not appear in the agent
 
-## Server Health Fails
-
-Current Threadnote installs start the local server by default. If `doctor` reports
-`WARN openviking health: connect ECONNREFUSED 127.0.0.1:1933`, the local server is not running. Start it and recheck:
-
-```bash
-threadnote start
-threadnote doctor --dry-run
-```
-
-Check whether the server is running:
-
-```bash
-curl http://127.0.0.1:1933/health
-```
-
-For detached starts, logs are written to:
-
-```text
-~/.openviking/logs/server.log
-```
-
-If `start` reports that OpenViking did not become healthy, first check whether it finished shortly after the timeout:
-
-```bash
-threadnote doctor --dry-run
-```
-
-If it still is not healthy, open that log. Certificate failures during the first embedding model download are covered
-above.
-
-## Semantic Queue Stuck / Memory Writes Hang
-
-Symptom: agents hang or `remember`/`handoff` get very slow, and `~/.openviking/logs/server.log` repeats:
-
-```
-RuntimeError: Failed to list memory directory viking://user/.../memories/.../<name>.md: Directory not found
-```
-
-A memory _file_ got enqueued for directory-level semantic processing; older OpenViking releases listed it as a
-directory, failed, and re-enqueued the message forever. The entry is AGFS-persisted, so it survives a server restart.
-Check the queue — a non-zero `Errors`/`Requeued` on the `Semantic` row is the signature:
-
-```bash
-ov observer queue
-```
-
-This is fixed upstream in OpenViking 0.4.5. Update Threadnote so it upgrades the pinned OpenViking install and restarts
-the server:
-
-```bash
-threadnote update
-```
-
-If Threadnote is already current but OpenViking is still older than 0.4.5, force a reinstall of the pinned OpenViking
-tool:
-
-```bash
-threadnote install --force
-```
-
-## Port Already In Use
-
-The default bind address is `127.0.0.1:1933`. This does not conflict with projects serving `localhost:80`,
-`localhost:443`, or custom hostnames from `/etc/hosts`; those are different host and port bindings.
-
-If another process already uses port `1933`, pick a different port:
-
-```bash
-THREADNOTE_PORT=1934 threadnote start
-THREADNOTE_PORT=1934 threadnote mcp-install codex --apply
-```
-
-Keep the same port in the agent MCP configuration and in future `threadnote` invocations.
-
-## Seed Skips Files
-
-Skipped files usually matched a secret detector after redaction. Inspect the file manually and either remove the risky
-content or leave it out of the manifest.
-
-## `seed-skills --native` Fails With `[INTERNAL]`
-
-Native OpenViking skill ingestion generates skill overviews with the configured VLM provider. If the server log shows an
-OpenAI quota, rate-limit, or authentication error, run `seed-skills` without `--native`. The default mode stores
-`SKILL.md` files as searchable resources and does not require native skill overview generation.
-
-After changing `~/.openviking/ov.conf`, restart the server:
-
-```bash
-threadnote stop
-threadnote start
-```
-
-## Local AI Recall Is Stopped or Unhealthy
-
-Inspect the persisted model path and loopback service:
-
-```bash
-threadnote local-ai status
-threadnote local-ai enable
-threadnote local-ai start
+```sh
+threadnote mcp-install codex --apply
 threadnote doctor
 ```
 
-Startup logs are written to `THREADNOTE_HOME/logs/local-ai.log`. If the model file is missing or fails verification,
-or the private access token is missing or has unsafe permissions, rerun `threadnote local-ai install --force`.
-`threadnote doctor` reports whether local AI is absent, disabled, healthy, or misconfigured. The generic
-`threadnote local-ai model switch` command recognizes verified models only; if none are available, it prints the
-installation command instead of opening an empty selector. A
-local-model failure does not block recall: Threadnote returns its deterministic result without query expansion or
-candidate post-filtering. Stop
-also refuses to signal a recorded PID when the authenticated endpoint cannot prove the same launch identity; inspect
-that process manually instead of deleting the safety check.
+Then start a fresh agent session. Replace `codex` with the relevant client. Threadnote supports local stdio MCP only;
+there is no HTTP endpoint, bearer token, host, or port to configure.
 
-For an interrupted memory backfill, rerun:
+## Recall quality changed
 
-```bash
-threadnote enrich-memories --apply
+Run the frozen release gate before changing ranking weights, chunking, model manifests, or fixture judgments:
+
+```sh
+bun run eval:recall:v2 -- \
+  --baseline test/evaluation/baselines/threadnote-3.0.3/recall-v2-lexical.json \
+  --fail-on-regression --fail-on-contract
 ```
 
-Memories that already contain generated `keywords:` headers are skipped. The command continues past individual model
-or write failures, reports them in its summary, and exits unsuccessfully so a post-update action is not silently marked
-complete. After reviewing enriched shared memories, run each printed `threadnote share sync --team <team>` command to
-commit and publish those team changes.
-
-## Claude MCP Fails While Health Is OK
-
-Threadnote uses its bundled stdio MCP adapter by default, even when the installed OpenViking server exposes native
-`/mcp`. The adapter adds Threadnote-specific tools and behavior such as shared-memory sync, exact recall fallback,
-seeded-resource recall augmentation, and recall-index repair.
-
-The adapter exposes eight tools by default: `recall_context`, `read_context`, `list_context`, `remember_context`,
-`review_session_context`, `apply_memory_candidates`, `share_publish`, and `threadnote_guide`. Install with
-`--toolset full` to also expose memory maintenance, advanced sharing/artifact tools, compatibility aliases, and raw
-OpenViking parity tools with `ov_*` names for native behaviors such as code symbol navigation, watch management, raw
-search/read/list/store/remember, grep/glob, resource import, and forget.
-
-Use the default stdio adapter:
-
-```bash
-threadnote mcp-install claude --apply
-claude mcp list
-```
-
-Changing toolsets rewrites the same MCP entry. For the complete surface, run
-`threadnote mcp-install claude --toolset full --apply`, then start a fresh agent session.
-
-`mcp-install claude` writes user-scoped Claude config by default. This is intentional: local-scoped config only applies
-to one repo/project, and the `threadnote` shim runs the implementation from the checkout that installed it.
-
-Only use `--native-http` when you intentionally want the raw OpenViking HTTP endpoint instead of Threadnote's adapter.
-
-## Worktree Was Deleted
-
-Memories live in `~/.openviking/data`, so deleting a branch or worktree does not delete stored memories. The launcher
-configuration can still point at scripts inside the deleted worktree, though.
-
-From any fresh checkout, run:
-
-```bash
-threadnote repair
-```
-
-`repair` reinstalls the `threadnote` shim, repairs generated config files, starts OpenViking if needed, repairs stale
-recall indexes, and rewrites Codex/Claude/Cursor/Copilot MCP configs to point at the current checkout.
-
-## MCP Install Is Only Printing Commands
-
-This is expected. Run with `--apply` after reviewing the command:
-
-```bash
-threadnote mcp-install codex --apply
-```
-
-For Cursor:
-
-```bash
-threadnote mcp-install cursor --apply
-```
-
-This updates the global `~/.cursor/mcp.json` file. Restart Cursor or open a fresh agent session after changing MCP
-config.
-
-For GitHub Copilot in VS Code:
-
-```bash
-threadnote mcp-install copilot --apply
-```
-
-This updates the VS Code user-profile `mcp.json` file. Restart VS Code or run `MCP: List Servers` from the Command
-Palette after changing MCP config. If VS Code uses a custom profile path, set `THREADNOTE_COPILOT_MCP_CONFIG` to that
-`mcp.json` path before running the command.
-
-## Cursor MCP Tool Says Query Is Missing
-
-If Cursor shows an error like `expected string, received undefined` for Threadnote `search`, the MCP server started but
-Cursor called the tool without JSON arguments. Prefer the Threadnote-named tool and pass a query explicitly:
-
-```json
-{"query": "current repo latest handoff"}
-```
-
-Current Threadnote adapters expose `recall_context` for this flow. Older adapters expose `search`; both require the same
-`query` argument. Run `threadnote repair` after upgrading if Cursor still lists only stale tools.
-
-## Uninstall Without Losing Memories
-
-Run:
-
-```bash
-threadnote uninstall --dry-run
-threadnote uninstall
-```
-
-By default, uninstall removes Threadnote-managed shims, MCP config, launchd config, and user instruction blocks while
-preserving `THREADNOTE_HOME`. To delete local OpenViking data too, pass `--erase-memories`.
+Inspect global and per-category deltas. Safety metrics and failure counts cannot regress.

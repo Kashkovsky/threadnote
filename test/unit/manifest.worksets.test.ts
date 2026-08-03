@@ -23,11 +23,11 @@ version: 1
 projects:
   - name: web-app
     path: ~/src/web-app
-    uri: viking://resources/repos/web-app
+    uri: threadnote://resources/repos/web-app
     seed: [README.md]
   - name: design-system
     path: ~/src/design-system
-    uri: viking://resources/repos/design-system
+    uri: threadnote://resources/repos/design-system
     seed: [README.md]
 worksets:
   - name: storefront
@@ -83,7 +83,7 @@ version: 1
 projects:
   - name: web-app
     path: ~/src/web-app
-    uri: viking://resources/repos/web-app
+    uri: threadnote://resources/repos/web-app
     seed: [README.md]
 worksets:
   - name: api
@@ -105,11 +105,11 @@ worksets:
         'projects:',
         '  - name: threadnote',
         '    path: ~/src/threadnote',
-        '    uri: viking://resources/repos/threadnote',
+        '    uri: threadnote://resources/repos/threadnote',
         '    seed: []',
         '  - name: orion-worker',
         '    path: ~/src/orion-worker',
-        '    uri: viking://resources/repos/orion-worker',
+        '    uri: threadnote://resources/repos/orion-worker',
         '    seed: []',
         '',
       ].join('\n'),
@@ -129,11 +129,11 @@ worksets:
         'projects:',
         '  - name: orion-worker',
         '    path: ~/src/orion-worker',
-        '    uri: viking://resources/repos/orion-worker',
+        '    uri: threadnote://resources/repos/orion-worker',
         '    seed: []',
         '  - name: atlas-worker',
         '    path: ~/src/atlas-worker',
-        '    uri: viking://resources/repos/atlas-worker',
+        '    uri: threadnote://resources/repos/atlas-worker',
         '    seed: []',
         '',
       ].join('\n'),
@@ -152,15 +152,15 @@ worksets:
         'projects:',
         '  - name: orion',
         '    path: ~/src/orion',
-        '    uri: viking://resources/repos/orion',
+        '    uri: threadnote://resources/repos/orion',
         '    seed: []',
         '  - name: orion-worker',
         '    path: ~/src/orion-worker',
-        '    uri: viking://resources/repos/orion-worker',
+        '    uri: threadnote://resources/repos/orion-worker',
         '    seed: []',
         '  - name: atlas-cache',
         '    path: ~/src/atlas-cache',
-        '    uri: viking://resources/repos/atlas-cache',
+        '    uri: threadnote://resources/repos/atlas-cache',
         '    seed: []',
         '',
       ].join('\n'),

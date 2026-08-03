@@ -1,4 +1,5 @@
-import {Console, Effect, Fiber, Ref, Schedule, Terminal} from 'effect';
+import {Clock, Console, Effect, Fiber, Ref, Schedule, Semaphore, Terminal} from 'effect';
+import {CliOutput, flushCliOutput} from './effect/cli_output.js';
 import {SystemInfo} from './effect/system.js';
 
 type ColorName = 'blue' | 'cyan' | 'dim' | 'green' | 'red' | 'yellow';
@@ -77,6 +78,7 @@ export const promptForConfirmation = Effect.fn('cliUi.promptForConfirmation')(fu
   defaultYes = false,
 ) {
   const system = yield* SystemInfo;
+  yield* flushCliOutput;
   return yield* Effect.callback<boolean>(resume => {
     const cleanup = system.readLine(prompt, answer => resume(Effect.succeed(confirmationAnswer(answer, defaultYes))));
     return Effect.sync(cleanup);
@@ -101,7 +103,7 @@ export function promptForSelection(
   prompt: string,
   choices: readonly string[],
   defaultIndex = 0,
-): Effect.Effect<number, never, SystemInfo> {
+): Effect.Effect<number, never, CliOutput | SystemInfo> {
   return Effect.gen(function* () {
     if (choices.length === 0) {
       return -1;
@@ -112,6 +114,7 @@ export function promptForSelection(
     }
     const system = yield* SystemInfo;
     while (true) {
+      yield* flushCliOutput;
       const answer = yield* Effect.callback<string>(resume => {
         const cleanup = system.readLine(`Select [${defaultIndex + 1}]: `, line => resume(Effect.succeed(line)));
         return Effect.sync(cleanup);
@@ -146,15 +149,19 @@ export function withSpinnerEffect<A, E, R>(message: string, effect: Effect.Effec
 
 const startSpinner = Effect.fn('cliUi.startSpinner')(function* (message: string) {
   const terminal = yield* Terminal.Terminal;
+  const output = yield* CliOutput;
+  const flush = output.flush.pipe(Effect.orDie);
   const frames = ['-', '\\', '|', '/'];
   const frameIndex = yield* Ref.make(0);
   const render = Ref.getAndUpdate(frameIndex, index => (index + 1) % frames.length).pipe(
-    Effect.flatMap(index => terminal.display(`\r\u001b[2K${muted(frames[index])} ${message}`)),
+    Effect.flatMap(index =>
+      flush.pipe(Effect.andThen(terminal.display(`\r\u001b[2K${muted(frames[index])} ${message}`))),
+    ),
   );
   yield* render;
   const fiber = yield* render.pipe(Effect.repeat(Schedule.spaced(100)), Effect.forkDetach);
   return {
-    stop: () => Fiber.interrupt(fiber).pipe(Effect.andThen(terminal.display('\r\u001b[2K'))),
+    stop: () => Fiber.interrupt(fiber).pipe(Effect.andThen(flush), Effect.andThen(terminal.display('\r\u001b[2K'))),
   };
 });
 
@@ -163,29 +170,102 @@ export interface ProgressIndicator {
   stop(): Effect.Effect<void>;
 }
 
+interface LineProgressState {
+  readonly family: string;
+  readonly lastEmittedAtMilliseconds: number;
+  readonly lastEmittedMessage: string;
+  readonly pendingMessage?: string;
+}
+
+const LINE_PROGRESS_INTERVAL_MILLISECONDS = 1_000;
+
 export const startProgress = Effect.fn('cliUi.startProgress')(function* (message: string) {
   const system = yield* SystemInfo;
   const environment = system.environment();
   if (!system.stdoutIsTTY || environment.CI !== undefined || environment.THREADNOTE_NO_SPINNER !== undefined) {
     yield* Console.log(message);
+    const state = yield* Ref.make<LineProgressState>({
+      family: progressMessageFamily(message),
+      lastEmittedAtMilliseconds: yield* Clock.currentTimeMillis,
+      lastEmittedMessage: message,
+    });
+    const gate = yield* Semaphore.make(1);
     return {
-      update: (nextMessage: string) => Console.log(nextMessage),
-      stop: () => Effect.void,
+      update: (nextMessage: string) =>
+        gate.withPermit(
+          Effect.gen(function* () {
+            const current = yield* Ref.get(state);
+            if (nextMessage === current.lastEmittedMessage || nextMessage === current.pendingMessage) return;
+            const now = yield* Clock.currentTimeMillis;
+            const family = progressMessageFamily(nextMessage);
+            const familyChanged = family !== current.family;
+            if (familyChanged) {
+              if (
+                current.pendingMessage !== undefined &&
+                current.pendingMessage !== current.lastEmittedMessage &&
+                current.pendingMessage !== nextMessage
+              ) {
+                yield* Console.log(current.pendingMessage);
+              }
+              yield* Console.log(nextMessage);
+              yield* Ref.set(state, {
+                family,
+                lastEmittedAtMilliseconds: now,
+                lastEmittedMessage: nextMessage,
+              });
+              return;
+            }
+            if (now - current.lastEmittedAtMilliseconds >= LINE_PROGRESS_INTERVAL_MILLISECONDS) {
+              yield* Console.log(nextMessage);
+              yield* Ref.set(state, {
+                family,
+                lastEmittedAtMilliseconds: now,
+                lastEmittedMessage: nextMessage,
+              });
+              return;
+            }
+            yield* Ref.set(state, {...current, pendingMessage: nextMessage});
+          }),
+        ),
+      stop: () =>
+        gate.withPermit(
+          Effect.gen(function* () {
+            const current = yield* Ref.get(state);
+            if (current.pendingMessage === undefined || current.pendingMessage === current.lastEmittedMessage) return;
+            yield* Console.log(current.pendingMessage);
+            yield* Ref.set(state, {
+              family: progressMessageFamily(current.pendingMessage),
+              lastEmittedAtMilliseconds: yield* Clock.currentTimeMillis,
+              lastEmittedMessage: current.pendingMessage,
+            });
+          }),
+        ),
     };
   }
 
   const terminal = yield* Terminal.Terminal;
+  const output = yield* CliOutput;
+  const flush = output.flush.pipe(Effect.orDie);
   const frames = ['-', '\\', '|', '/'];
   const frameIndex = yield* Ref.make(0);
   const currentMessage = yield* Ref.make(message);
   const render = Effect.all([
     Ref.getAndUpdate(frameIndex, index => (index + 1) % frames.length),
     Ref.get(currentMessage),
-  ]).pipe(Effect.flatMap(([index, text]) => terminal.display(`\r\u001b[2K${muted(frames[index])} ${text}`)));
+  ]).pipe(
+    Effect.flatMap(([index, text]) =>
+      flush.pipe(Effect.andThen(terminal.display(`\r\u001b[2K${muted(frames[index])} ${text}`))),
+    ),
+  );
   yield* render;
   const fiber = yield* render.pipe(Effect.repeat(Schedule.spaced(100)), Effect.forkDetach);
   return {
     update: (nextMessage: string) => Ref.set(currentMessage, nextMessage).pipe(Effect.andThen(render)),
-    stop: () => Fiber.interrupt(fiber).pipe(Effect.andThen(terminal.display('\r\u001b[2K'))),
+    stop: () => Fiber.interrupt(fiber).pipe(Effect.andThen(flush), Effect.andThen(terminal.display('\r\u001b[2K'))),
   };
 });
+
+function progressMessageFamily(message: string): string {
+  const separator = / · |:| \(/.exec(message);
+  return separator ? message.slice(0, separator.index) : message;
+}

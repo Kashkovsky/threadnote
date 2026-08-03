@@ -1,1 +1,5 @@
+for variable in $(git rev-parse --local-env-vars); do
+  unset "$variable"
+done
+
 npm run precommit

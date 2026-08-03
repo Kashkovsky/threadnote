@@ -3,7 +3,8 @@
   "compilerOptions": {
     "rootDir": "..",
     "noEmit": true,
-    "types": ["node"]
+    "types": ["bun"]
   },
-  "include": ["./**/*.ts", "../src/**/*.ts", "../vitest.config.ts"]
+  "include": ["./**/*.ts", "../src/**/*.ts", "../vitest.config.ts"],
+  "exclude": ["./evaluation/fixtures/**/repository/**"]
 }

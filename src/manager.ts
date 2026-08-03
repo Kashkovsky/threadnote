@@ -1,11 +1,18 @@
-import * as NodeHttpServer from '@effect/platform-node/NodeHttpServer';
-import {Console, Crypto, Effect, Encoding, FileSystem, Path, Result} from 'effect';
+import * as BunHttpServer from '@effect/platform-bun/BunHttpServer';
+import {Console, Crypto, Effect, Encoding, FileSystem, Option, Path, Result} from 'effect';
 import * as HttpServer from 'effect/unstable/http/HttpServer';
 import * as HttpServerRequest from 'effect/unstable/http/HttpServerRequest';
 import * as HttpServerResponse from 'effect/unstable/http/HttpServerResponse';
-import {ensureEffectAiReady, resolveEffectAiConfiguration, runEffectAiConsolidation} from './effect/ai-consolidator.js';
+import {
+  ensureEffectAiReady,
+  resolveEffectAiConfiguration,
+  runEffectAiConsolidation,
+  runNativeAiConsolidation,
+} from './effect/ai/consolidator.js';
+import {resolveSelectedLocalModel} from './models/inference.js';
 import {runCommandEffect} from './effect/command.js';
 import {captureConsole} from './effect/console.js';
+import {ResourceStore} from './effect/resource-store.js';
 import type {ApplicationServices} from './effect/runtime.js';
 import {withSharedRepositoryLock} from './effect/share_lock.js';
 import {SystemInfo} from './effect/system.js';
@@ -33,6 +40,7 @@ import {
 import {parseMemoryDocument, type MemoryRecord} from './memory_hygiene.js';
 import {
   ensureSharedDirectoryChain,
+  assertSharedWorktreeFileReady,
   isInSharedNamespace,
   parentUri,
   publishShareGitChange,
@@ -40,13 +48,24 @@ import {
   removeMemoryUri,
   resolveTeam,
   sharedTeamNameForUri,
-  vikingUriToWorktreeRelative,
+  resourceUriToWorktreeRelative,
   writeMemoryFile,
+  writeSharedWorktreeFile,
 } from './share.js';
 import {collectDoctorChecks, runRepair, runStart} from './lifecycle.js';
 import {runSeed, runSeedSkills} from './seeding.js';
-import {currentPackageVersion, fetchLatestVersion, updateRegistry} from './update.js';
+import {currentPackageVersion, fetchLatestVersion, releaseSource} from './update.js';
 import {selectUpdateChannel} from './update_channel.js';
+import {
+  managerGraphAnalysis,
+  managerGraphBuildCatalog,
+  managerGraphCatalog,
+  managerGraphCatalogPage,
+  managerGraphNodeDetail,
+  managerGraphQuery,
+  managerGraphVisualization,
+  managerGraphViewsPage,
+} from './code_graph/visualization.js';
 import type {
   AgentClient,
   ConsolidationAgent,
@@ -57,17 +76,15 @@ import type {
   RuntimeConfig,
 } from './types.js';
 import {
-  assertVikingUri,
+  assertResourceUri,
   errorMessage,
   findExecutable,
-  openVikingCliForMode,
   runCommand,
   safeTimestamp,
   sha256,
   shellQuote,
   toolRoot,
 } from './utils.js';
-import {openVikingLogPath, withIdentity} from './runtime.js';
 
 interface ManagerDirectoryEntry {
   readonly name: string;
@@ -176,6 +193,7 @@ interface ManagerResponseSink {
 
 type ManagerOperation<A> = Effect.Effect<A, unknown, ApplicationServices>;
 type ManagerEffectPromise = undefined;
+const NATIVE_RESOURCE_BACKEND = 'threadnote-native';
 
 type ConsolidationStatus = 'completed' | 'failed' | 'running';
 
@@ -207,17 +225,16 @@ interface BulkItemResult {
 }
 
 const STATIC_FILES: Readonly<
-  Record<string, {readonly contentType: string; readonly path: string; readonly root?: 'docs' | 'manager'}>
+  Record<string, {readonly contentType: string; readonly directory?: 'assets/brand' | 'manager'; readonly path: string}>
 > = {
   '/': {contentType: 'text/html; charset=utf-8', path: 'index.html'},
   '/index.html': {contentType: 'text/html; charset=utf-8', path: 'index.html'},
   '/app.css': {contentType: 'text/css; charset=utf-8', path: 'app.css'},
   '/app.js': {contentType: 'text/javascript; charset=utf-8', path: 'app.js'},
-  '/threadnote-logo.svg': {contentType: 'image/svg+xml; charset=utf-8', path: 'threadnote-logo.svg', root: 'docs'},
-  '/threadnote-logo-inverted.svg': {
+  '/threadnote-logo.svg': {
     contentType: 'image/svg+xml; charset=utf-8',
-    path: 'threadnote-logo-inverted.svg',
-    root: 'docs',
+    directory: 'assets/brand',
+    path: 'threadnote-logo.svg',
   },
 };
 
@@ -237,7 +254,7 @@ export function runManage(config: RuntimeConfig, options: ManageOptions) {
       }
       return yield* Effect.never;
     }),
-  ).pipe(Effect.provide(NodeHttpServer.layerTest));
+  ).pipe(Effect.provide(BunHttpServer.layerTest));
 }
 
 type ManagerRequestEffect = Effect.Effect<void, never, ApplicationServices>;
@@ -271,12 +288,12 @@ export function createManagerServer(
 
 export const memoryTree = Effect.fn('manager.memoryTree')(function* (config: RuntimeConfig) {
   const root = yield* localMemoriesRoot(config);
-  return yield* readTree(config, root, `viking://user/${uriSegment(config.user)}/memories`, '');
+  return yield* readTree(config, root, `threadnote://user/${uriSegment(config.user)}/memories`, '');
 });
 
 export const resourcesTree = Effect.fn('manager.resourcesTree')(function* (config: RuntimeConfig) {
   const root = yield* localResourcesRoot(config);
-  return yield* readTree(config, root, 'viking://resources', '', {
+  return yield* readTree(config, root, 'threadnote://resources', '', {
     parseMemoryDocuments: false,
     rootName: 'resources',
   }).pipe(
@@ -291,14 +308,14 @@ export const resourcesTree = Effect.fn('manager.resourcesTree')(function* (confi
         isSystem: false,
         name: 'resources',
         relativePath: '',
-        uri: 'viking://resources',
+        uri: 'threadnote://resources',
       });
     }),
   );
 });
 
 export const readManagedMemory = Effect.fn('manager.readManagedMemory')(function* (config: RuntimeConfig, uri: string) {
-  assertVikingUri(uri);
+  assertResourceUri(uri);
   const path = yield* localPathForMemoryUri(config, uri);
   if (!path) {
     return yield* Effect.fail(new Error(`Manager can only read current-user memory URIs: ${uri}`));
@@ -335,7 +352,7 @@ export const readContextUri = Effect.fn('manager.readContextUri')(function* (
   uri: string,
   runEffect?: ManagerEffectPromise,
 ) {
-  assertVikingUri(uri);
+  assertResourceUri(uri);
   const localMemory = yield* Effect.result(readManagedMemory(config, uri));
   if (Result.isSuccess(localMemory)) {
     return {
@@ -352,6 +369,7 @@ export const detectConsolidationAgents = Effect.fn('manager.detectConsolidationA
   config: Pick<RuntimeConfig, 'agentContextHome'>,
 ) {
   const effectAi = yield* resolveEffectAiConfiguration(config, (yield* SystemInfo).environment());
+  const nativeGeneration = yield* resolveSelectedLocalModel(config.agentContextHome, 'generation');
   const [codex, claude, cursor, copilot] = yield* Effect.all([
     findExecutable(['codex']),
     findExecutable(['claude']),
@@ -364,10 +382,10 @@ export const detectConsolidationAgents = Effect.fn('manager.detectConsolidationA
     {available: cursor !== undefined, command: cursor, id: 'cursor', label: 'Cursor'},
     {available: copilot !== undefined, command: copilot, id: 'copilot', label: 'Copilot'},
     {
-      available: effectAi !== undefined,
-      command: effectAi?.configuration.model,
+      available: nativeGeneration !== undefined || effectAi !== undefined,
+      command: nativeGeneration?.manifest.id ?? effectAi?.configuration.model,
       id: 'effect-ai',
-      label: 'Effect AI (OpenAI-compatible)',
+      label: nativeGeneration ? 'Threadnote local AI' : 'Effect AI (explicit remote provider)',
     },
   ];
 });
@@ -387,15 +405,14 @@ function handleRequestEffect(
       }
       const system = yield* SystemInfo;
       const [agents, version] = yield* Effect.all([detectConsolidationAgents(context.config), currentPackageVersion()]);
-      const latest = yield* Effect.succeed(updateRegistry(system.environment())).pipe(
-        Effect.flatMap(registry => fetchLatestVersion(registry, selectUpdateChannel(version))),
+      const latest = yield* Effect.succeed(releaseSource(system.environment())).pipe(
+        Effect.flatMap(source => fetchLatestVersion(source, selectUpdateChannel(version))),
         Effect.match({onFailure: Result.fail, onSuccess: Result.succeed}),
       );
       writeJson(response, 200, {
         agents,
         config: publicConfig(context.config),
         latestVersion: Result.isSuccess(latest) ? latest.success : undefined,
-        openVikingLogPath: yield* openVikingLogPath(context.config),
         version,
       });
     });
@@ -444,6 +461,113 @@ const handleRequestLegacy = Effect.fn('manager.handleRequestLegacy')(function* (
   if (request.method === 'GET' && url.pathname === '/api/tree') {
     const [tree, resourceTree] = yield* Effect.all([memoryTree(context.config), resourcesTree(context.config)]);
     writeJson(response, 200, {resourcesTree: resourceTree, tree});
+    return;
+  }
+  if (request.method === 'GET' && url.pathname === '/api/graphs') {
+    writeJson(response, 200, yield* managerGraphCatalog(context.config.agentContextHome));
+    return;
+  }
+  if (request.method === 'GET' && url.pathname === '/api/graphs/status') {
+    writeJson(response, 200, yield* managerGraphBuildCatalog(context.config.agentContextHome));
+    return;
+  }
+  if (request.method === 'GET' && url.pathname === '/api/graphs/page') {
+    writeJson(
+      response,
+      200,
+      yield* managerGraphCatalogPage(
+        context.config.agentContextHome,
+        requiredQuery(url, 'repository'),
+        Option.some(requiredQuery(url, 'snapshot')),
+        {
+          offset: Option.getOrUndefined(optionalNonNegativeIntegerQuery(url, 'offset')),
+          query: Option.getOrUndefined(optionalNonEmptyQuery(url, 'query')),
+          workspaceOffset: Option.getOrUndefined(optionalNonNegativeIntegerQuery(url, 'workspaceOffset')),
+        },
+      ),
+    );
+    return;
+  }
+  if (request.method === 'GET' && url.pathname === '/api/graphs/views') {
+    writeJson(
+      response,
+      200,
+      yield* managerGraphViewsPage(context.config.agentContextHome, requiredQuery(url, 'repository'), {
+        offset: Option.getOrUndefined(optionalNonNegativeIntegerQuery(url, 'offset')),
+        query: Option.getOrUndefined(optionalNonEmptyQuery(url, 'query')),
+      }),
+    );
+    return;
+  }
+  if (request.method === 'GET' && url.pathname === '/api/graph') {
+    writeJson(
+      response,
+      200,
+      yield* managerGraphVisualization(
+        context.config.agentContextHome,
+        requiredQuery(url, 'repository'),
+        Option.getOrElse(Option.fromNullishOr(url.searchParams.get('project')), () => 'all'),
+        {
+          ...Option.match(optionalPositiveIntegerQuery(url, 'edgeLimit'), {
+            onNone: () => ({}),
+            onSome: edgeLimit => ({edgeLimit}),
+          }),
+          ...Option.match(optionalPositiveIntegerQuery(url, 'nodeLimit'), {
+            onNone: () => ({}),
+            onSome: nodeLimit => ({nodeLimit}),
+          }),
+        },
+        optionalNonEmptyQuery(url, 'snapshot'),
+      ),
+    );
+    return;
+  }
+  if (request.method === 'GET' && url.pathname === '/api/graph/analysis') {
+    writeJson(
+      response,
+      200,
+      yield* managerGraphAnalysis(
+        context.config.agentContextHome,
+        requiredQuery(url, 'repository'),
+        optionalNonEmptyQuery(url, 'snapshot'),
+      ),
+    );
+    return;
+  }
+  if (request.method === 'GET' && url.pathname === '/api/graph/query') {
+    writeJson(
+      response,
+      200,
+      yield* managerGraphQuery(
+        context.config.agentContextHome,
+        requiredQuery(url, 'repository'),
+        requiredQuery(url, 'query'),
+        {
+          ...Option.match(optionalPositiveIntegerQuery(url, 'edgeLimit'), {
+            onNone: () => ({}),
+            onSome: edgeLimit => ({edgeLimit}),
+          }),
+          ...Option.match(optionalPositiveIntegerQuery(url, 'nodeLimit'), {
+            onNone: () => ({}),
+            onSome: nodeLimit => ({nodeLimit}),
+          }),
+        },
+        Option.some(requiredQuery(url, 'snapshot')),
+      ),
+    );
+    return;
+  }
+  if (request.method === 'GET' && url.pathname === '/api/graph/node') {
+    writeJson(
+      response,
+      200,
+      yield* managerGraphNodeDetail(
+        context.config.agentContextHome,
+        requiredQuery(url, 'repository'),
+        requiredQuery(url, 'node'),
+        optionalNonEmptyQuery(url, 'snapshot'),
+      ),
+    );
     return;
   }
   if (request.method === 'GET' && url.pathname === '/api/memory') {
@@ -713,12 +837,11 @@ const serveStatic = Effect.fn('manager.serveStatic')(function* (
   response: ManagerResponseSink,
 ) {
   const file = STATIC_FILES[url.pathname] ?? STATIC_FILES['/'];
-  const content = yield* readFile(yield* pathJoin(yield* toolRoot(), file.root ?? 'manager', file.path));
-  const headers: Record<string, string> = {'content-type': file.contentType};
-  if (file.root !== 'docs') {
-    headers['cache-control'] = 'no-store';
-  }
-  response.response = HttpServerResponse.uint8Array(content, {status: 200, headers});
+  const content = yield* readFile(yield* pathJoin(yield* toolRoot(), file.directory ?? 'manager', file.path));
+  response.response = HttpServerResponse.uint8Array(content, {
+    status: 200,
+    headers: {'cache-control': 'no-store', 'content-type': file.contentType},
+  });
 });
 
 const readTree: (
@@ -822,17 +945,20 @@ const writeRawMemory = Effect.fn('manager.writeRawMemory')(function* (
   uri: string,
   content: string,
 ) {
-  assertVikingUri(uri);
-  const ov = yield* openVikingCliForMode(false);
+  assertResourceUri(uri);
+  const ov = NATIVE_RESOURCE_BACKEND;
   if (isInSharedNamespace(config, uri)) {
     const teamName = sharedTeamNameForUri(config, uri);
     if (!teamName) {
       throw new Error(`${uri} is not in a configured shared namespace.`);
     }
     const team = yield* resolveTeam(config, teamName);
+    const existing = yield* readManagedMemory(config, uri);
+    const relativePath = resourceUriToWorktreeRelative(config, uri, team.name);
+    yield* assertSharedWorktreeFileReady(team.config.worktree, relativePath, existing.content);
     yield* ensureSharedDirectoryChain(config, ov, uri, false);
     yield* writeMemoryFile(config, ov, uri, content, 'replace', false);
-    const relativePath = vikingUriToWorktreeRelative(config, uri, team.name);
+    yield* writeSharedWorktreeFile(team.config.worktree, relativePath, content);
     yield* publishShareGitChange(team.config.worktree, relativePath, `share: update ${relativePath}`);
     return;
   }
@@ -846,7 +972,7 @@ const moveMemory = Effect.fn('manager.moveMemory')(function* (
   target: TargetMemoryInput,
   runEffect: ManagerEffectPromise | undefined,
 ) {
-  assertVikingUri(sourceUri);
+  assertResourceUri(sourceUri);
   const source = yield* readManagedMemory(config, sourceUri);
   const sourceRecord = source.record;
   const text = sourceRecord?.body ?? source.content;
@@ -943,18 +1069,21 @@ const moveSharedWithinTeam = Effect.fn('manager.moveSharedWithinTeam')(function*
   teamName: string,
 ) {
   const team = yield* resolveTeam(config, teamName);
-  const ov = yield* openVikingCliForMode(false);
+  const ov = NATIVE_RESOURCE_BACKEND;
+  const targetRelativePath = resourceUriToWorktreeRelative(config, targetUri, team.name);
+  yield* assertSharedWorktreeFileReady(team.config.worktree, targetRelativePath, undefined);
   yield* ensureSharedDirectoryChain(config, ov, targetUri, false);
   yield* writeMemoryFile(config, ov, targetUri, content, 'create', false);
+  yield* writeSharedWorktreeFile(team.config.worktree, targetRelativePath, content);
   yield* publishShareGitChange(
     team.config.worktree,
-    vikingUriToWorktreeRelative(config, targetUri, team.name),
-    `share: move ${vikingUriToWorktreeRelative(config, sourceUri, team.name)} to ${vikingUriToWorktreeRelative(config, targetUri, team.name)}`,
+    resourceUriToWorktreeRelative(config, targetUri, team.name),
+    `share: move ${resourceUriToWorktreeRelative(config, sourceUri, team.name)} to ${resourceUriToWorktreeRelative(config, targetUri, team.name)}`,
   );
   yield* publishShareGitChange(
     team.config.worktree,
-    vikingUriToWorktreeRelative(config, sourceUri, team.name),
-    `share: remove ${vikingUriToWorktreeRelative(config, sourceUri, team.name)}`,
+    resourceUriToWorktreeRelative(config, sourceUri, team.name),
+    `share: remove ${resourceUriToWorktreeRelative(config, sourceUri, team.name)}`,
     {
       verb: 'rm',
     },
@@ -971,11 +1100,11 @@ const removeSharedSource = Effect.fn('manager.removeSharedSource')(function* (
     throw new Error(`${sourceUri} is not a shared memory.`);
   }
   const team = yield* resolveTeam(config, teamName);
-  const ov = yield* openVikingCliForMode(false);
+  const ov = NATIVE_RESOURCE_BACKEND;
   yield* publishShareGitChange(
     team.config.worktree,
-    vikingUriToWorktreeRelative(config, sourceUri, team.name),
-    `share: remove ${vikingUriToWorktreeRelative(config, sourceUri, team.name)}`,
+    resourceUriToWorktreeRelative(config, sourceUri, team.name),
+    `share: remove ${resourceUriToWorktreeRelative(config, sourceUri, team.name)}`,
     {
       verb: 'rm',
     },
@@ -984,8 +1113,8 @@ const removeSharedSource = Effect.fn('manager.removeSharedSource')(function* (
 });
 
 const removeManagedFolder = Effect.fn('manager.removeManagedFolder')(function* (config: RuntimeConfig, uri: string) {
-  assertVikingUri(uri);
-  const rootUri = `viking://user/${uriSegment(config.user)}/memories`;
+  assertResourceUri(uri);
+  const rootUri = `threadnote://user/${uriSegment(config.user)}/memories`;
   if (uri === rootUri) {
     throw new Error('Refusing to remove the root memories folder.');
   }
@@ -1156,15 +1285,19 @@ function runConsolidationAgent(
   if (agent === 'effect-ai') {
     return Effect.gen(function* () {
       const resolved = yield* resolveEffectAiConfiguration(runtimeConfig, (yield* SystemInfo).environment());
-      if (!resolved) {
-        return yield* Effect.fail(
-          new Error(
-            'Effect AI is not configured. Run `threadnote local-ai install`, or set the THREADNOTE_EFFECT_AI provider variables.',
-          ),
-        );
+      if (resolved) {
+        yield* ensureEffectAiReady(runtimeConfig, resolved);
+        return yield* runEffectAiConsolidation(prompt, resolved.configuration);
       }
-      yield* ensureEffectAiReady(runtimeConfig, resolved);
-      return yield* runEffectAiConsolidation(prompt, resolved.configuration);
+      const native = yield* runNativeAiConsolidation(runtimeConfig, prompt);
+      return (
+        native ??
+        (yield* Effect.fail(
+          new Error(
+            'No generation model is selected. Install and select one with `threadnote models`, or configure an explicit remote Effect AI provider.',
+          ),
+        ))
+      );
     });
   }
   if (agent !== 'codex' && agent !== 'claude') {
@@ -1216,7 +1349,7 @@ function consolidationPrompt(sources: readonly {readonly content: string; readon
   return [
     'Consolidate these Threadnote memories into one concise memory.',
     'Return only the replacement memory body in Markdown. Do not include frontmatter.',
-    'Preserve important facts, current status, decisions, blockers, and source viking:// URIs.',
+    'Preserve important facts, current status, decisions, blockers, and source threadnote:// URIs.',
     '',
     ...sources.flatMap(source => [`--- SOURCE ${source.node.uri} ---`, source.content.trim(), '']),
   ].join('\n');
@@ -1258,17 +1391,7 @@ const collectManagerDoctorChecks = Effect.fn('manager.collectManagerDoctorChecks
   }
   const result = yield* runCommand(
     threadnote,
-    [
-      '--home',
-      config.agentContextHome,
-      '--manifest',
-      config.manifestPath,
-      '--host',
-      config.host,
-      '--port',
-      String(config.port),
-      'doctor',
-    ],
+    ['--home', config.agentContextHome, '--manifest', config.manifestPath, 'doctor'],
     {allowFailure: true, maxOutputBytes: 1024 * 1024},
   );
   const checks = parseDoctorChecksFromOutput([result.stdout, result.stderr].filter(Boolean).join('\n'));
@@ -1344,7 +1467,7 @@ function sharedMemoryUriFor(
   if (metadata.kind !== 'durable') {
     throw new Error('Only durable memories can be moved into shared team memory.');
   }
-  return `viking://user/${uriSegment(config.user)}/memories/shared/${uriSegment(team)}/durable/projects/${uriSegment(metadata.project)}/${uriSegment(metadata.topic)}.md`;
+  return `threadnote://user/${uriSegment(config.user)}/memories/shared/${uriSegment(team)}/durable/projects/${uriSegment(metadata.project)}/${uriSegment(metadata.topic)}.md`;
 }
 
 function memoryDirectoryUri(
@@ -1353,7 +1476,7 @@ function memoryDirectoryUri(
   status: MemoryStatus,
   projectSegment: string,
 ): string {
-  const base = `viking://user/${uriSegment(config.user)}/memories`;
+  const base = `threadnote://user/${uriSegment(config.user)}/memories`;
   switch (kind) {
     case 'preference':
       return status === 'active' ? `${base}/preferences` : `${base}/preferences/${uriSegment(status)}`;
@@ -1371,26 +1494,18 @@ function memoryDirectoryUri(
 }
 
 const localMemoriesRoot = Effect.fn('manager.localMemoriesRoot')(function* (config: RuntimeConfig) {
-  return yield* pathJoin(
-    config.agentContextHome,
-    'data',
-    'viking',
-    config.account,
-    'user',
-    uriSegment(config.user),
-    'memories',
-  );
+  return yield* pathJoin(config.agentContextHome, 'data', config.account, 'user', uriSegment(config.user), 'memories');
 });
 
 const localResourcesRoot = Effect.fn('manager.localResourcesRoot')(function* (config: RuntimeConfig) {
-  return yield* pathJoin(config.agentContextHome, 'data', 'viking', config.account, 'resources');
+  return yield* pathJoin(config.agentContextHome, 'data', config.account, 'resources');
 });
 
 const localPathForMemoryUri = Effect.fn('manager.localPathForMemoryUri')(function* (
   config: RuntimeConfig,
   uri: string,
 ) {
-  const prefix = `viking://user/${uriSegment(config.user)}/memories`;
+  const prefix = `threadnote://user/${uriSegment(config.user)}/memories`;
   if (uri !== prefix && !uri.startsWith(`${prefix}/`)) {
     return undefined;
   }
@@ -1420,26 +1535,21 @@ const localPathToMemoryUri = Effect.fn('manager.localPathToMemoryUri')(function*
   if (!relativePath || relativePath.startsWith('..') || relativePath.split(yield* pathSeparator).includes('..')) {
     throw new Error(`Path is outside the memories tree: ${path}`);
   }
-  return `viking://user/${uriSegment(config.user)}/memories/${relativePath.split(yield* pathSeparator).join('/')}`;
+  return `threadnote://user/${uriSegment(config.user)}/memories/${relativePath.split(yield* pathSeparator).join('/')}`;
 });
 
 const ensurePersonalDirectoryChain = Effect.fn('manager.ensurePersonalDirectoryChain')(function* (
   config: RuntimeConfig,
-  ov: string,
+  _ov: string,
   directoryUri: string,
 ) {
-  const prefix = 'viking://';
+  const store = yield* ResourceStore;
+  const prefix = 'threadnote://';
   const parts = directoryUri.startsWith(prefix) ? directoryUri.slice(prefix.length).split('/').filter(Boolean) : [];
   const startIndex = parts[0] === 'user' && parts.length > 2 ? 3 : 1;
   for (let index = startIndex; index <= parts.length; index += 1) {
     const uri = `${prefix}${parts.slice(0, index).join('/')}`;
-    const statResult = yield* runCommand(ov, withIdentity(config, ['stat', uri]), {allowFailure: true});
-    if (statResult.exitCode !== 0) {
-      yield* runCommand(
-        ov,
-        withIdentity(config, ['mkdir', uri, '--description', 'Threadnote lifecycle-aware local memories.']),
-      );
-    }
+    yield* store.makeDirectory({account: config.account, home: config.agentContextHome, user: config.user}, uri);
   }
 });
 
@@ -1448,9 +1558,7 @@ function publicConfig(config: RuntimeConfig): Record<string, unknown> {
     account: config.account,
     agentContextHome: config.agentContextHome,
     agentId: config.agentId,
-    host: config.host,
     manifestPath: config.manifestPath,
-    port: config.port,
     user: config.user,
   };
 }
@@ -1481,6 +1589,27 @@ function requiredQuery(url: URL, name: string): string {
     throw new Error(`Missing query parameter: ${name}`);
   }
   return value;
+}
+
+function optionalPositiveIntegerQuery(url: URL, name: string): Option.Option<number> {
+  return Option.fromNullishOr(url.searchParams.get(name)).pipe(
+    Option.map(value => Number(value)),
+    Option.filter(value => Number.isSafeInteger(value) && value > 0),
+  );
+}
+
+function optionalNonNegativeIntegerQuery(url: URL, name: string): Option.Option<number> {
+  return Option.fromNullishOr(url.searchParams.get(name)).pipe(
+    Option.map(value => Number(value)),
+    Option.filter(value => Number.isSafeInteger(value) && value >= 0),
+  );
+}
+
+function optionalNonEmptyQuery(url: URL, name: string): Option.Option<string> {
+  return Option.fromNullishOr(url.searchParams.get(name)).pipe(
+    Option.map(value => value.trim()),
+    Option.filter(value => value.length > 0),
+  );
 }
 
 function requireString(value: unknown, name: string): string {

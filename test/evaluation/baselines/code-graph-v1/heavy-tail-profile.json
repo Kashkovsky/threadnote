@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "profile": {
+    "callsPerPathologicalTypeScriptFile": 12000,
+    "generatedTypeScriptBytes": 3145728,
+    "id": "large-monorepo-heavy-tail",
+    "interruptAfterPersistedFiles": 256,
+    "lowSignalJsonBytes": 26214400,
+    "parallelWorkers": 4,
+    "pathologicalTypeScriptFiles": 8,
+    "regularTypeScriptFiles": 256,
+    "textlessSvgFiles": 4000,
+    "version": 1
+  },
+  "reviewedShape": {
+    "eligibleFiles": 4269,
+    "interruptionResumeRequired": true,
+    "latencyBudget": "same-run comparison only; no portable absolute threshold",
+    "lowSignalJsonPolicy": "one module symbol and at most 16384 cached fact bytes",
+    "parallelDeterminism": "workers=1 graph digest must equal workers=4 graph digest",
+    "pathologicalTypeScriptPolicy": "imports, exports, and declarations after bounded calls remain present",
+    "textlessSvgPolicy": "one deterministic metadata symbol per tracked SVG"
+  }
+}

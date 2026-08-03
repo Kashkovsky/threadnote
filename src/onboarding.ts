@@ -17,16 +17,13 @@ interface OnboardingConfig {
 // probe that fails leaves its field empty/undefined so the guide still renders.
 export interface OnboardingState {
   readonly seededProjects: readonly string[];
-  // true = OpenViking responded healthy, false = it errored, undefined = unknown
-  // (not probed / timed out). Only `false` shows the "start the server" nudge.
-  readonly serverUp?: boolean;
+  readonly runtimeReady?: boolean;
   readonly teams: readonly string[];
   readonly toolset?: McpToolset;
 }
 
 // Reads the local, cheap pieces of onboarding state (configured share teams and
-// seeded projects). Server health is probed separately by the caller, since that
-// requires the OpenViking adapter the MCP server owns.
+// seeded projects). Runtime readiness is probed separately by the caller.
 export const gatherOnboardingContext = Effect.fn('onboarding.gatherContext')(function* (config: OnboardingConfig) {
   const [seededProjects, teams] = yield* Effect.all([safeSeededProjects(config), safeTeams(config)]);
   return {seededProjects, teams};
@@ -47,15 +44,15 @@ const safeSeededProjects = Effect.fn('onboarding.safeSeededProjects')((config: O
 );
 
 // Builds the agent-facing onboarding walkthrough. Pure and deterministic so it is
-// unit-testable without the MCP/OpenViking plumbing. The text is instructions FOR
+// unit-testable without MCP plumbing. The text is instructions FOR
 // the agent (present conversationally, offer to run), not a message to paste.
 export function buildOnboardingGuide(state: OnboardingState): string {
-  const serverLine =
-    state.serverUp === false
-      ? 'OpenViking is NOT responding — recall/remember will fail until the user runs `threadnote start`. Offer to walk them through that first.'
-      : state.serverUp === true
-        ? 'OpenViking is running.'
-        : 'OpenViking status unknown — if recall/remember return connection errors, the fix is `threadnote start`.';
+  const runtimeLine =
+    state.runtimeReady === false
+      ? 'The Threadnote home is not ready — run `threadnote install`, then `threadnote doctor`. Offer to walk the user through that first.'
+      : state.runtimeReady === true
+        ? 'The self-contained Threadnote runtime is ready.'
+        : 'Runtime status is unknown — run `threadnote doctor` if a native storage or model operation fails.';
 
   const teamLine =
     state.teams.length > 0
@@ -79,7 +76,7 @@ export function buildOnboardingGuide(state: OnboardingState): string {
     'go-ahead) instead of only describing it. Start small.',
     '',
     '## Current setup',
-    `- ${serverLine}`,
+    `- ${runtimeLine}`,
     `- ${teamLine}`,
     `- ${seedLine}`,
     '',
@@ -88,7 +85,7 @@ export function buildOnboardingGuide(state: OnboardingState): string {
     'Recall context — pull back the last handoff and durable knowledge for the current',
     'repo+branch before starting work, so the session continues where the last one left off.',
     '  Run: recall_context({"query":"<repo> latest handoff","callerCwd":"<abs cwd>"}), then',
-    '  read_context the most relevant viking:// URI it returns.',
+    '  read_context the most relevant threadnote:// URI it returns.',
     '',
     'Capture work — Store routine durable feature knowledge and handoffs directly at meaningful',
     'task closeout; these writes do not need user approval.',
@@ -102,7 +99,7 @@ export function buildOnboardingGuide(state: OnboardingState): string {
     'Share with your team — publish a durable memory teammates’ agents can recall. Secrets are',
     'scrubbed/blocked; handoffs/preferences/local-path notes are never shared.',
     hasTeam
-      ? '  Run: share_publish({"uri":"viking://user/<you>/memories/durable/projects/<p>/<m>.md"}).'
+      ? '  Run: share_publish({"uri":"threadnote://user/<you>/memories/durable/projects/<p>/<m>.md"}).'
       : '  First (one-time): `threadnote share init git@github.com:org/team-memories.git`, then share_publish({"uri":"..."}).',
     '',
     ...(fullToolset
@@ -121,21 +118,21 @@ export function buildOnboardingGuide(state: OnboardingState): string {
           '## Advanced capabilities',
           '',
           'Memory maintenance — archive and compact overlapping context.',
-          'OpenViking utilities and raw parity — resource import, grep/glob, health, watches, and code navigation.',
+          'Native resource utilities — resource import, grep/glob, health, and recall-index operations.',
           'Advanced sharing and artifacts — conflict resolution plus skill and bundle publishing or installation.',
           'Use the equivalent `threadnote` CLI command when one of these is needed now. To expose their',
           'MCP tools in future sessions, run `threadnote mcp-install <agent> --toolset full --apply` and',
           'start a fresh agent session.',
           '',
         ]),
-    'Setup & health — verify the local install and server.',
-    state.serverUp === false
-      ? '  Run: `threadnote start` to bring OpenViking up.'
+    'Setup & health — verify the local home, indexes, and optional model files.',
+    state.runtimeReady === false
+      ? '  Run: `threadnote install`, then `threadnote doctor`.'
       : '  Run: `threadnote doctor` to check prerequisites.',
     '',
     '## How to proceed',
-    'Pick the single most useful step for right now given the setup above (if the server is',
-    'down, that first; otherwise a recall for the current repo is the usual starting point),',
+    'Pick the single most useful step for right now given the setup above (if the runtime is',
+    'not ready, fix that first; otherwise recall for the current repo is the usual starting point),',
     'describe it in one sentence, and ask whether to run it. Then chain into the others as the',
     'user shows interest. Keep it interactive — one offer at a time, not a wall of options.',
   ].join('\n');

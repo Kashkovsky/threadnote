@@ -1,0 +1,165 @@
+{
+  "createdAt": "2026-08-01T16:29:36Z",
+  "environment": {
+    "architecture": "arm64",
+    "bun": "1.3.14",
+    "cpu": "Apple M1 Max",
+    "memoryBytes": 68719476736,
+    "operatingSystem": "Darwin 27.0",
+    "threadnoteAnalysisDiffSha256": "1539398791d290e0f57e8093ac27193af0e02a0b0a175ee0337689290d441e16",
+    "threadnoteBaseCommit": "58390f02c1d7846a5aef313ab1d90d6cf07d7019",
+    "threadnoteDirty": true
+  },
+  "fixture": {
+    "databaseBytesBefore": 35340595200,
+    "databasePageCountBefore": 8628075,
+    "databasePageSize": 4096,
+    "edgeCount": 7340596,
+    "extractorSet": "f452b9827084cd948908172eacc32150749a43f46c88c7c1d0ef221f507d70cf",
+    "fileCount": 232750,
+    "publicRepository": "JetBrains/intellij-community",
+    "repositoryCommit": "3cbdad9ee6c8a5135fc0f01cc90114fc25c0655c",
+    "repositoryWorktreeState": "clean",
+    "snapshotId": "cgsn_7ccb83f2c25ccb4336ef40e69634f54c23c88383",
+    "symbolCount": 2666762
+  },
+  "method": {
+    "analysisDiffHash": {
+      "command": "git diff -- src/code_graph/analysis.ts src/code_graph/analysis_render.ts src/code_graph/store.ts src/code_graph/indexer.ts src/code_graph/types.ts src/manager_graph.tsx test/helpers/code-graph-analysis.ts test/unit/code-graph.analysis.test.ts test/unit/code-graph.analysis.property.test.ts test/unit/code-graph.analysis-render.test.ts test/unit/code-graph.analysis-store.property.test.ts test/unit/code-graph.analysis-summary.property.test.ts test/integration/code-graph.lifecycle.test.ts test/unit/manager-graph.test.ts | shasum -a 256",
+      "input": "Raw unified-diff bytes for the listed analysis-summary implementation and coverage files relative to threadnoteBaseCommit. The shared worktree contained other agents' changes outside this path set; they are intentionally not represented by this digest."
+    },
+    "backfillCommand": "bun -e 'import { Effect } from \"effect\"; import { CodeGraphStore } from \"<threadnote-worktree>/src/code_graph/store.ts\"; import { ApplicationLayer } from \"<threadnote-worktree>/src/effect/runtime.ts\"; const databasePath = \"<graph-database>\"; const snapshotId = \"cgsn_7ccb83f2c25ccb4336ef40e69634f54c23c88383\"; const program = Effect.gen(function*(){ const store = yield* CodeGraphStore; yield* store.initialize(databasePath); const started = performance.now(); const backfilled = yield* store.ensureAnalysisSummary(databasePath, snapshotId); const summary = yield* store.loadAnalysisSummary(databasePath, snapshotId); return {backfilled, milliseconds: Math.round(performance.now()-started), summary}; }); Effect.runPromise(program.pipe(Effect.provide(ApplicationLayer))).then(value => console.log(JSON.stringify(value))).catch(error => { console.error(error); process.exitCode = 1; });'",
+    "ensureAndReadCommand": "/usr/bin/time -p bun -e 'import { Effect, Option } from \"effect\"; import { CodeGraphStore } from \"<threadnote-worktree>/src/code_graph/store.ts\"; import { ApplicationLayer } from \"<threadnote-worktree>/src/effect/runtime.ts\"; const databasePath = \"<graph-database>\"; const snapshotId = \"cgsn_7ccb83f2c25ccb4336ef40e69634f54c23c88383\"; const value = await Effect.runPromise(Effect.gen(function*(){ const store = yield* CodeGraphStore; const started = performance.now(); const backfilled = yield* store.ensureAnalysisSummary(databasePath, snapshotId); const summary = Option.getOrThrow(yield* store.loadAnalysisSummary(databasePath, snapshotId)); return {backfilled, milliseconds: performance.now()-started, symbolGroups: summary.symbols.length, edgeGroups: summary.edges.length, symbolCount: summary.symbolCount, edgeCount: summary.edgeCount}; }).pipe(Effect.provide(ApplicationLayer))); console.log(JSON.stringify(value));'",
+    "legacyStatsCommand": "/usr/bin/time -p bun <threadnote-worktree>/src/standalone.ts graph stats --home <threadnote-home> --cwd <intellij-checkout> --json",
+    "pathPolicy": "Every machine-local path is replaced with a reviewed placeholder. The repository, commit, aggregate counts, and snapshot identity describe a public fixture.",
+    "persistedStatsCommand": "/usr/bin/time -p bun <threadnote-worktree>/src/standalone.ts graph stats --home <threadnote-home> --cwd <intellij-checkout> --json",
+    "storageCommand": "stat -f '{\"databaseBytes\":%z}' <graph-database>; sqlite3 <graph-database> \"select page_count from pragma_page_count; select page_size from pragma_page_size; select freelist_count from pragma_freelist_count; select count(*) from snapshot_analysis_summary_receipts; select count(*) from snapshot_analysis_symbol_counts; select count(*) from snapshot_analysis_edge_histogram; select count(*) from snapshot_analysis_edge_counts; select count(*) from building_analysis_batches;\""
+  },
+  "provenance": {
+    "caveats": [
+      "The Threadnote implementation was measured from a dirty, shared candidate worktree, not an immutable released commit. The scoped analysis diff digest makes the relevant source bytes reviewable but does not claim provenance for unrelated dirty paths.",
+      "The IntelliJ fixture itself was clean at the recorded public commit, and the JSON stats response reported that exact commit and ready snapshot.",
+      "The 48.0 second and 52.6 second legacy observations were recorded during the interactive audit but their raw /usr/bin/time stdout was not retained as a separate artifact. They are preserved only at the precision originally recorded.",
+      "The first backfill completed in approximately 20 seconds. Its exact elapsed output was not retained, so this artifact deliberately does not report sub-second precision for that observation.",
+      "The complete CLI wall time includes exact current-Git observation and process startup; result.usage.durationMilliseconds isolates the in-process analysis read."
+    ],
+    "legacyTimingSource": "Interactive 2026-08-01 IntelliJ whole-graph analysis audit run log, summarized before the persisted-summary backfill. The two recorded variants used aggregate page sizes of 50,000 and 250,000.",
+    "storageBeforeSource": "code-graph-intellij-query-2026-08-01.json in this directory, captured from the same database and snapshot before summary tables were materialized."
+  },
+  "results": {
+    "legacyPagedFallback": {
+      "aggregatePageVariants": [
+        {
+          "aggregatePageSize": 50000,
+          "wallMilliseconds": 48000
+        },
+        {
+          "aggregatePageSize": 250000,
+          "wallMilliseconds": 52600
+        }
+      ],
+      "reportedWallMillisecondsRange": [48000, 53000],
+      "source": "interactive-audit-run-log",
+      "summarySource": "bounded-paged-fallback"
+    },
+    "oneTimeLegacyBackfill": {
+      "elapsedMillisecondsApproximate": 20000,
+      "precision": "Approximate whole-second observation; exact timing stdout was not retained.",
+      "result": "completed",
+      "summaryRows": {
+        "edgeGroups": 23,
+        "edgeHistogramGroups": 31,
+        "receipts": 1,
+        "symbolGroups": 158
+      }
+    },
+    "persistedEnsureAndRead": {
+      "backfilled": false,
+      "edgeCount": 7340596,
+      "edgeGroups": 23,
+      "elapsedMilliseconds": 34.248917000000006,
+      "processRealSeconds": 0.38,
+      "symbolCount": 2666762,
+      "symbolGroups": 158
+    },
+    "persistedExactCurrentStats": {
+      "aggregateSummaryReads": [1, 1],
+      "analysisDurationMilliseconds": [6, 7],
+      "cliProcessRealSeconds": [3.99, 3.91],
+      "cliProcessSystemSeconds": [8.59, 8.04],
+      "cliProcessUserSeconds": [1.19, 1.19],
+      "resultCommit": "3cbdad9ee6c8a5135fc0f01cc90114fc25c0655c",
+      "resultSnapshotId": "cgsn_7ccb83f2c25ccb4336ef40e69634f54c23c88383",
+      "summarySource": "persisted-summary",
+      "warnings": []
+    }
+  },
+  "storage": {
+    "after": {
+      "buildingAnalysisBatchRows": 0,
+      "databaseBytes": 35340640256,
+      "databasePageCount": 8628086,
+      "edgeGroupRows": 23,
+      "edgeHistogramRows": 31,
+      "freelistPageCount": 1275384,
+      "sharedMemorySidecarBytesAtCapture": 32768,
+      "summaryReceiptRows": 1,
+      "symbolGroupRows": 158,
+      "walSidecarBytesAtCapture": 0
+    },
+    "before": {
+      "databaseBytes": 35340595200,
+      "databasePageCount": 8628075
+    },
+    "durableDatabaseByteDelta": 45056,
+    "durableDatabasePageDelta": 11,
+    "notes": [
+      "The durable delta is exactly 11 SQLite pages at 4,096 bytes each.",
+      "The WAL was empty at capture. The 32 KiB shared-memory sidecar is transient SQLite coordination state and is excluded from the durable database delta.",
+      "No building_analysis_batches receipts remained after the ready snapshot completed."
+    ]
+  },
+  "suite": "code-graph-public-large-repository-analysis-summary-v1",
+  "validation": {
+    "artifact": {
+      "formatCommand": "bun --bun prettier --check test/evaluation/candidates/threadnote-4.0.0/README.md test/evaluation/candidates/threadnote-4.0.0/benchmarks/darwin-arm64-m1-max/code-graph-intellij-analysis-summary-2026-08-01.json",
+      "invariantsCommand": "bun -e \"const p='test/evaluation/candidates/threadnote-4.0.0/benchmarks/darwin-arm64-m1-max/code-graph-intellij-analysis-summary-2026-08-01.json'; const x=await Bun.file(p).json(); if(x.storage.after.databaseBytes-x.storage.before.databaseBytes!==x.storage.durableDatabaseByteDelta) throw new Error('byte delta'); if((x.storage.after.databasePageCount-x.storage.before.databasePageCount)*x.fixture.databasePageSize!==x.storage.durableDatabaseByteDelta) throw new Error('page delta'); if(x.results.persistedEnsureAndRead.symbolCount!==x.fixture.symbolCount||x.results.persistedEnsureAndRead.edgeCount!==x.fixture.edgeCount) throw new Error('counts');\"",
+      "jsonParseCommand": "bun -e \"await Bun.file('test/evaluation/candidates/threadnote-4.0.0/benchmarks/darwin-arm64-m1-max/code-graph-intellij-analysis-summary-2026-08-01.json').json()\"",
+      "passed": true,
+      "privacyScanCommand": "rg -n \"/(U)sers/|/(p)rivate/|/(t)mp/threadnote|denys[k]ashkovskyi\" test/evaluation/candidates/threadnote-4.0.0/benchmarks/darwin-arm64-m1-max/code-graph-intellij-analysis-summary-2026-08-01.json test/evaluation/candidates/threadnote-4.0.0/README.md",
+      "privacyScanMatches": 0
+    },
+    "diffCheck": {
+      "command": "git diff --check",
+      "passed": true
+    },
+    "focusedAnalysisAndMaterialization": {
+      "command": "bun --bun vitest run test/unit/code-graph.analysis.test.ts test/unit/code-graph.analysis.property.test.ts test/unit/code-graph.analysis-render.test.ts test/unit/code-graph.analysis.scaling.test.ts test/unit/code-graph.analysis-store.property.test.ts test/unit/code-graph.analysis-summary.property.test.ts test/unit/code-graph.materialization-store.test.ts --reporter=verbose --testTimeout=30000",
+      "passed": 48,
+      "skipped": 0,
+      "testFilesPassed": 7
+    },
+    "managerAndRender": {
+      "command": "bun --bun vitest run test/unit/manager-graph.test.ts test/unit/code-graph.analysis-render.test.ts --reporter=verbose",
+      "passed": 19,
+      "skipped": 0,
+      "testFilesPassed": 2
+    },
+    "targetedLint": {
+      "command": "bun --bun oxlint src/code_graph/analysis.ts src/code_graph/analysis_render.ts src/code_graph/indexer.ts src/code_graph/store.ts src/manager_graph.tsx test/helpers/code-graph-analysis.ts test/unit/code-graph.analysis.test.ts test/unit/code-graph.analysis.property.test.ts test/unit/code-graph.analysis-render.test.ts test/unit/code-graph.analysis-store.property.test.ts test/unit/code-graph.analysis-summary.property.test.ts test/integration/code-graph.lifecycle.test.ts test/unit/manager-graph.test.ts",
+      "passed": true
+    },
+    "targetedLifecycle": {
+      "command": "bun --bun vitest run test/integration/code-graph.lifecycle.test.ts -t \"atomically indexes|visibly and idempotently backfills|shares immutable clean snapshots|coalesces ten independent runtimes\" --reporter=verbose --testTimeout=40000",
+      "passed": 4,
+      "skipped": 64,
+      "testFilesPassed": 1
+    },
+    "typecheck": {
+      "command": "bun --bun tsc --noEmit && bun --bun tsc -p test/tsconfig.json --noEmit",
+      "passed": true,
+      "projects": 2
+    }
+  },
+  "version": 1
+}

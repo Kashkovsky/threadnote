@@ -1,8 +1,11 @@
 import type {MemoryKind, MemoryStatus} from './types.js';
+import {parseResourceId} from './storage/resource-id.js';
 
 export type MemoryAuthority = 'agent_generated' | 'canonical_repo' | 'external' | 'reviewed_shared' | 'user_approved';
 
 export type MemoryTrust = 'approved' | 'inferred' | 'untrusted';
+
+export type MemoryVisibility = 'external' | 'personal' | 'shared';
 
 export type MemoryRelationType = 'depends_on' | 'evidence_for' | 'references' | 'related_to' | 'supersedes';
 
@@ -15,14 +18,17 @@ export interface MemoryMetadata {
   readonly archivedFrom?: string;
   readonly authority?: MemoryAuthority;
   readonly candidateId?: string;
+  readonly createdAt?: string;
   readonly evidence?: readonly string[];
   readonly kind: MemoryKind;
   readonly keywords?: readonly string[];
   readonly lastReviewed?: string;
+  readonly memoryId?: string;
   readonly project?: string;
   readonly references?: readonly string[];
   readonly relations?: readonly MemoryRelation[];
   readonly schemaVersion?: number;
+  readonly sourceHash?: string;
   readonly sourceAgentClient: string;
   readonly sourceCommit?: string;
   readonly sourceObservedAt?: string;
@@ -32,8 +38,10 @@ export interface MemoryMetadata {
   readonly timestamp: string;
   readonly topic?: string;
   readonly trust?: MemoryTrust;
+  readonly updatedAt?: string;
   readonly validFrom?: string;
   readonly validTo?: string;
+  readonly visibility?: MemoryVisibility;
 }
 
 export interface MemoryRecord {
@@ -44,7 +52,7 @@ export interface MemoryRecord {
   readonly uri: string;
 }
 
-const OPENVIKING_MEMORY_FIELDS_TRAILER = /\r?\n\r?\n<!-- MEMORY_FIELDS\r?\n[\s\S]*?\r?\n-->\s*$/;
+const LEGACY_MEMORY_FIELDS_TRAILER = /\r?\n\r?\n<!-- MEMORY_FIELDS\r?\n[\s\S]*?\r?\n-->\s*$/;
 const HEADER_LINE_BREAK = /[\r\n]/;
 const AUTHORITY_LEVEL: Readonly<Record<MemoryAuthority, number>> = {
   external: 0,
@@ -71,7 +79,7 @@ export function parseMemoryDocument(uri: string, content: string): MemoryRecord 
       ? ''
       : trimmed
           .slice(separatorIndex + 2)
-          .replace(OPENVIKING_MEMORY_FIELDS_TRAILER, '')
+          .replace(LEGACY_MEMORY_FIELDS_TRAILER, '')
           .trim();
   const firstLine = header.split('\n')[0]?.trim();
   if (firstLine !== 'MEMORY' && firstLine !== 'HANDOFF') {
@@ -86,43 +94,52 @@ export function parseMemoryDocument(uri: string, content: string): MemoryRecord 
     content: trimmed,
     headerTitle: firstLine,
     metadata: {
-      archivedFrom: memoryHeaderValue(header, 'archived_from'),
+      archivedFrom: canonicalOptionalResourceInput(memoryHeaderValue(header, 'archived_from')),
       authority: parseMemoryAuthority(memoryHeaderValue(header, 'authority')),
       candidateId: memoryHeaderValue(header, 'candidate_id'),
-      evidence: memoryHeaderValues(header, 'evidence'),
+      createdAt: memoryHeaderValue(header, 'created_at'),
+      evidence: canonicalResourceInputs(memoryHeaderValues(header, 'evidence')),
       kind,
       keywords: memoryHeaderValues(header, 'keywords'),
       lastReviewed: memoryHeaderValue(header, 'last_reviewed'),
+      memoryId: memoryHeaderValue(header, 'memory_id'),
       project: normalizeOptionalMetadata(memoryHeaderValue(header, 'project') ?? memoryHeaderValue(header, 'repo')),
-      references: memoryHeaderValues(header, 'references'),
+      references: canonicalResourceInputs(memoryHeaderValues(header, 'references')),
       relations: parseMemoryRelations(memoryHeaderValues(header, 'relation')),
       schemaVersion: parseSchemaVersion(memoryHeaderValue(header, 'schema_version')),
+      sourceHash: memoryHeaderValue(header, 'source_hash'),
       sourceAgentClient: memoryHeaderValue(header, 'source_agent_client') ?? 'unknown',
       sourceCommit: memoryHeaderValue(header, 'source_commit'),
       sourceObservedAt: memoryHeaderValue(header, 'source_observed_at'),
       sourceSessionId: memoryHeaderValue(header, 'source_session_id'),
       status: parseMemoryStatus(memoryHeaderValue(header, 'status')) ?? 'active',
-      supersedes: memoryHeaderValue(header, 'supersedes'),
+      supersedes: canonicalOptionalResourceInput(memoryHeaderValue(header, 'supersedes')),
       timestamp: memoryHeaderValue(header, 'timestamp') ?? new Date(0).toISOString(),
       topic: normalizeOptionalMetadata(memoryHeaderValue(header, 'topic')),
       trust: parseMemoryTrust(memoryHeaderValue(header, 'trust')),
+      updatedAt: memoryHeaderValue(header, 'updated_at'),
       validFrom: memoryHeaderValue(header, 'valid_from'),
       validTo: memoryHeaderValue(header, 'valid_to'),
+      visibility: parseMemoryVisibility(memoryHeaderValue(header, 'visibility')),
     },
-    uri,
+    uri: canonicalResourceInput(uri),
   };
 }
 
 export function formatMemoryDocument(title: 'MEMORY' | 'HANDOFF', metadata: MemoryMetadata, body: string): string {
   const header = [
     title,
-    metadata.schemaVersion !== undefined ? `schema_version: ${metadata.schemaVersion}` : undefined,
     `kind: ${metadata.kind}`,
     `status: ${metadata.status}`,
     memoryHeaderLine('project', metadata.project),
     memoryHeaderLine('topic', metadata.topic),
     memoryHeaderLine('source_agent_client', metadata.sourceAgentClient),
     memoryHeaderLine('timestamp', metadata.timestamp),
+    metadata.schemaVersion !== undefined ? `schema_version: ${metadata.schemaVersion}` : undefined,
+    memoryHeaderLine('memory_id', metadata.memoryId),
+    memoryHeaderLine('created_at', metadata.createdAt),
+    memoryHeaderLine('updated_at', metadata.updatedAt),
+    memoryHeaderLine('visibility', metadata.visibility),
     memoryHeaderLine('authority', metadata.authority),
     memoryHeaderLine('trust', metadata.trust),
     memoryHeaderLine('valid_from', metadata.validFrom),
@@ -132,6 +149,7 @@ export function formatMemoryDocument(title: 'MEMORY' | 'HANDOFF', metadata: Memo
     memoryHeaderLine('source_session_id', metadata.sourceSessionId),
     memoryHeaderLine('source_commit', metadata.sourceCommit),
     memoryHeaderLine('candidate_id', metadata.candidateId),
+    memoryHeaderLine('source_hash', metadata.sourceHash),
     memoryHeaderLine('supersedes', metadata.supersedes),
     memoryHeaderLine('archived_from', metadata.archivedFrom),
     ...(metadata.references ?? []).map(reference => memoryHeaderLine('references', reference)),
@@ -153,11 +171,11 @@ export function formatMemoryDocumentWithKeywords(content: string, keywords: read
 }
 
 /**
- * OpenViking appends a managed indexing trailer after writes. It is not part
+ * A legacy indexer appended a managed indexing trailer after writes. It is not part
  * of the user-approved memory payload and must not affect content identity.
  */
 export function canonicalMemoryDocumentContent(content: string): string {
-  return content.trim().replace(OPENVIKING_MEMORY_FIELDS_TRAILER, '').trim();
+  return content.trim().replace(LEGACY_MEMORY_FIELDS_TRAILER, '').trim();
 }
 
 /**
@@ -172,11 +190,12 @@ export function boundedMemoryAuthority(
   options: {readonly canonicalResource?: boolean} = {},
 ): MemoryAuthority {
   const reviewedCandidate = isReviewedCandidateMetadata(metadata);
+  const canonicalUri = canonicalResourceInput(uri);
   const fallback: MemoryAuthority = options.canonicalResource
     ? 'canonical_repo'
-    : uri.startsWith('viking://resources/')
+    : canonicalUri.startsWith('threadnote://resources/')
       ? 'external'
-      : isSharedMemoryUri(uri)
+      : isSharedMemoryUri(canonicalUri)
         ? 'reviewed_shared'
         : reviewedCandidate
           ? 'user_approved'
@@ -191,10 +210,11 @@ export function boundedMemoryTrust(
   options: {readonly canonicalResource?: boolean} = {},
 ): MemoryTrust {
   const reviewedCandidate = isReviewedCandidateMetadata(metadata);
+  const canonicalUri = canonicalResourceInput(uri);
   const fallback: MemoryTrust =
-    options.canonicalResource || isSharedMemoryUri(uri) || reviewedCandidate
+    options.canonicalResource || isSharedMemoryUri(canonicalUri) || reviewedCandidate
       ? 'approved'
-      : uri.startsWith('viking://resources/')
+      : canonicalUri.startsWith('threadnote://resources/')
         ? 'untrusted'
         : 'inferred';
   const asserted = metadata?.trust;
@@ -202,39 +222,52 @@ export function boundedMemoryTrust(
 }
 
 export function isSharedMemoryUri(uri: string): boolean {
-  return /^viking:\/\/user\/[^/]+\/memories\/shared\/[^/]+\//.test(uri);
+  return /^threadnote:\/\/user\/[^/]+\/memories\/shared\/[^/]+\//.test(canonicalResourceInput(uri));
+}
+
+function canonicalResourceInput(uri: string): string {
+  try {
+    return parseResourceId(uri).canonicalUri;
+  } catch {
+    return uri;
+  }
 }
 
 export function inferMemoryMetadata(memory: string): Partial<MemoryMetadata> {
   const header = memory.slice(0, Math.max(0, memory.indexOf('\n\n')) || memory.length);
   const firstLine = header.split('\n')[0]?.trim();
   return {
-    archivedFrom: memoryHeaderValue(header, 'archived_from'),
+    archivedFrom: canonicalOptionalResourceInput(memoryHeaderValue(header, 'archived_from')),
     authority: parseMemoryAuthority(memoryHeaderValue(header, 'authority')),
     candidateId: memoryHeaderValue(header, 'candidate_id'),
-    evidence: memoryHeaderValues(header, 'evidence'),
+    createdAt: memoryHeaderValue(header, 'created_at'),
+    evidence: canonicalResourceInputs(memoryHeaderValues(header, 'evidence')),
     kind: parseMemoryKind(memoryHeaderValue(header, 'kind')) ?? (firstLine === 'HANDOFF' ? 'handoff' : undefined),
     keywords: memoryHeaderValues(header, 'keywords'),
     lastReviewed: memoryHeaderValue(header, 'last_reviewed'),
+    memoryId: memoryHeaderValue(header, 'memory_id'),
     project: normalizeOptionalMetadata(
       memoryHeaderValue(header, 'project') ??
         memoryHeaderValue(header, 'repo') ??
         memoryHeaderValue(header, 'repo_path'),
     ),
-    references: memoryHeaderValues(header, 'references'),
+    references: canonicalResourceInputs(memoryHeaderValues(header, 'references')),
     relations: parseMemoryRelations(memoryHeaderValues(header, 'relation')),
     schemaVersion: parseSchemaVersion(memoryHeaderValue(header, 'schema_version')),
+    sourceHash: memoryHeaderValue(header, 'source_hash'),
     sourceAgentClient: memoryHeaderValue(header, 'source_agent_client'),
     sourceCommit: memoryHeaderValue(header, 'source_commit'),
     sourceObservedAt: memoryHeaderValue(header, 'source_observed_at'),
     sourceSessionId: memoryHeaderValue(header, 'source_session_id'),
     status: parseMemoryStatus(memoryHeaderValue(header, 'status')),
-    supersedes: memoryHeaderValue(header, 'supersedes'),
+    supersedes: canonicalOptionalResourceInput(memoryHeaderValue(header, 'supersedes')),
     timestamp: memoryHeaderValue(header, 'timestamp'),
     topic: normalizeOptionalMetadata(memoryHeaderValue(header, 'topic') ?? memoryHeaderValue(header, 'task')),
     trust: parseMemoryTrust(memoryHeaderValue(header, 'trust')),
+    updatedAt: memoryHeaderValue(header, 'updated_at'),
     validFrom: memoryHeaderValue(header, 'valid_from'),
     validTo: memoryHeaderValue(header, 'valid_to'),
+    visibility: parseMemoryVisibility(memoryHeaderValue(header, 'visibility')),
   };
 }
 
@@ -285,6 +318,10 @@ function parseMemoryTrust(value: string | undefined): MemoryTrust | undefined {
   return value === 'approved' || value === 'inferred' || value === 'untrusted' ? value : undefined;
 }
 
+function parseMemoryVisibility(value: string | undefined): MemoryVisibility | undefined {
+  return value === 'external' || value === 'personal' || value === 'shared' ? value : undefined;
+}
+
 function parseMemoryRelations(values: readonly string[] | undefined): readonly MemoryRelation[] | undefined {
   if (!values) {
     return undefined;
@@ -296,14 +333,27 @@ function parseMemoryRelations(values: readonly string[] | undefined): readonly M
         return undefined;
       }
       const type = value.slice(0, separator);
-      const uri = value.slice(separator + 1).trim();
-      if (!uri.startsWith('viking://') || !isMemoryRelationType(type)) {
+      const uri = canonicalOptionalResourceInput(value.slice(separator + 1).trim());
+      if (!uri || !uri.startsWith('threadnote://') || !isMemoryRelationType(type)) {
         return undefined;
       }
       return {type, uri};
     })
     .filter((relation): relation is MemoryRelation => relation !== undefined);
   return relations.length > 0 ? relations : undefined;
+}
+
+function canonicalOptionalResourceInput(uri: string | undefined): string | undefined {
+  if (!uri) return undefined;
+  try {
+    return parseResourceId(uri).canonicalUri;
+  } catch {
+    return uri;
+  }
+}
+
+function canonicalResourceInputs(values: readonly string[] | undefined): readonly string[] | undefined {
+  return values?.map(value => canonicalOptionalResourceInput(value) ?? value);
 }
 
 function isMemoryRelationType(value: string): value is MemoryRelationType {

@@ -1,0 +1,22 @@
+{
+  "fixture": {
+    "declarationSymbols": 752000,
+    "sourceFiles": 47880,
+    "workspaceCount": 24
+  },
+  "notes": [
+    "Scheduled and manually dispatched runs plus the Threadnote 4 exact-tag publication gate use this profile; ordinary pull requests do not materialize it.",
+    "Targets come from the beta.27 large-monorepo investigation and are shape checks, not portable latency budgets.",
+    "A checked performance artifact must come from a measured run; no synthetic latency baseline is accepted.",
+    "Threadnote 4 beta, RC, and final publication waits for one exact-commit observation retained for 90 days; ordinary pull requests do not run this profile.",
+    "This profile retains materialization duration, CPU, RSS, and aggregate row counts; the separate heavy-tail fixture is parser/cache coverage, not materialization evidence."
+  ],
+  "profile": "production-large",
+  "targets": {
+    "eligibleFiles": 48000,
+    "graphEdges": 2700000,
+    "graphSymbols": 800000,
+    "lexicalTermRows": 12000000
+  },
+  "version": 1
+}

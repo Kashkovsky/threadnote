@@ -1,8 +1,13 @@
 import {mkdir, mkdtemp, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {dirname, join} from 'node:path';
+import {it as effectIt} from '@effect/vitest';
+import {Effect, FileSystem, Path} from 'effect';
 import {afterEach, describe, expect, it} from 'vitest';
-import {memoryProjectConsistencyCheck} from '../../src/lifecycle.js';
+import {captureConsole} from '../../src/effect/console.js';
+import {ApplicationLayer} from '../../src/effect/runtime.js';
+import {SystemInfo} from '../../src/effect/system.js';
+import {memoryProjectConsistencyCheck, runDoctor} from '../../src/lifecycle.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import {runEffect} from '../helpers/effect-runtime.js';
 
@@ -19,16 +24,13 @@ async function makeConfig(): Promise<RuntimeConfig> {
     account: 'local',
     agentContextHome: home,
     agentId: 'threadnote',
-    host: '127.0.0.1',
     manifestPath: join(home, 'manifest.json'),
-    openVikingVersion: '0.0.0',
-    port: 1933,
     user: 'test-user',
   };
 }
 
 function memoriesDir(config: RuntimeConfig): string {
-  return join(config.agentContextHome, 'data', 'viking', config.account, 'user', config.user, 'memories');
+  return join(config.agentContextHome, 'data', config.account, 'user', config.user, 'memories');
 }
 
 async function writeMemory(root: string, relPath: string, project: string | undefined): Promise<void> {
@@ -105,4 +107,45 @@ describe('memoryProjectConsistencyCheck', () => {
     expect(check.detail).toMatch(/^4 memory/);
     expect(check.detail).toContain('+1 more');
   });
+});
+
+describe('doctor report resilience', () => {
+  effectIt.effect('prints a complete fail-soft report when an individual check cannot read its state', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const system = yield* SystemInfo;
+        const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-doctor-resilience-'});
+        const userHome = path.join(root, 'user');
+        const threadnoteHome = path.join(userHome, '.threadnote');
+        yield* fs.makeDirectory(path.join(threadnoteHome, 'layout.json'), {recursive: true});
+        const config: RuntimeConfig = {
+          account: 'local',
+          agentContextHome: threadnoteHome,
+          agentId: 'threadnote',
+          manifestPath: path.join(threadnoteHome, 'manifest.yaml'),
+          user: 'tester',
+        };
+        const testSystem = SystemInfo.of({
+          ...system,
+          environment: () => ({...system.environment(), PATH: ''}),
+          homeDirectory: userHome,
+        });
+
+        const report = yield* captureConsole(runDoctor(config, {dryRun: true})).pipe(
+          Effect.provideService(SystemInfo, testSystem),
+        );
+
+        expect(report.output).toContain('Running Threadnote doctor checks.');
+        expect(report.output).toContain('FAIL storage layout:');
+        expect(report.output).toMatch(/WARN (?:MCP configuration|copilot MCP):/);
+        expect(report.output).toContain('WARN codex user instructions:');
+        expect(report.output).toContain('FAIL embedding model:');
+        expect(report.output).toContain('FAIL vector recall index:');
+        expect(report.output).toContain('FAIL lexical recall index:');
+        expect(report.output).toContain('Summary: 4 failure(s)');
+      }),
+    ).pipe(Effect.provide(ApplicationLayer)),
+  );
 });

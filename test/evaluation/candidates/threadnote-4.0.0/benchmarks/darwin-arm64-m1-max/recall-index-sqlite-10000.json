@@ -1,0 +1,78 @@
+{
+  "createdAt": "2026-07-30T18:40:07Z",
+  "environment": {
+    "architecture": "arm64",
+    "commit": "bc053331d31790c8ed939ba0e995f66bb8083eef",
+    "cpu": "Apple M1 Max",
+    "dirty": true,
+    "memoryBytes": 68719476736,
+    "node": "v24.16.0",
+    "operatingSystem": "Darwin 27.0.0",
+    "packageManager": "npm/11.13.0",
+    "runner": "scripts/evaluate-recall.ts",
+    "runnerVersion": "sqlite-v3-exact-search"
+  },
+  "fixture": {
+    "documents": 10000,
+    "qualityFixture": "test/evaluation/fixtures/recall-v1/fixture.json",
+    "warmups": 5
+  },
+  "quality": {
+    "averageContextTokens": 23.25,
+    "meanNdcgAt5": 1,
+    "meanReciprocalRank": 1,
+    "noAnswerPrecision": 1,
+    "noAnswerRecall": 1,
+    "recallAt5": 1,
+    "requiredReasonsPresent": true,
+    "staleHitRate": 0
+  },
+  "qualityQueryLatencyMilliseconds": {
+    "p50": 1.411458,
+    "p95": 2.737791
+  },
+  "scenarios": {
+    "coldDecode": {
+      "p50Milliseconds": 48.334458,
+      "p95LimitMilliseconds": 1000,
+      "p95Milliseconds": 48.752083,
+      "samples": 5
+    },
+    "exactNoHit": {
+      "p50Milliseconds": 1.412375,
+      "p95LimitMilliseconds": 150,
+      "p95Milliseconds": 3.215083,
+      "samples": 25
+    },
+    "exactSubstring": {
+      "p50Milliseconds": 1.932833,
+      "p95LimitMilliseconds": 150,
+      "p95Milliseconds": 3.556916,
+      "samples": 25
+    },
+    "hotQuery": {
+      "p50Milliseconds": 47.277375,
+      "p95LimitMilliseconds": 150,
+      "p95Milliseconds": 48.4205,
+      "samples": 25
+    },
+    "incrementalUpdate": {
+      "p50Milliseconds": 217.011375,
+      "p95LimitMilliseconds": 2000,
+      "p95Milliseconds": 229.814042,
+      "samples": 40
+    },
+    "sourceValidation": {
+      "p50Milliseconds": 233.721792,
+      "p95LimitMilliseconds": 2000,
+      "p95Milliseconds": 256.971833,
+      "samples": 3
+    }
+  },
+  "source": {
+    "index": "@effect/sql-sqlite-bun 4.0.0-beta.99; lexical schema v3 with trigram exact search",
+    "rankerVersion": "hybrid-v3",
+    "threadnoteVersion": "4.0.0-beta.24"
+  },
+  "version": 1
+}

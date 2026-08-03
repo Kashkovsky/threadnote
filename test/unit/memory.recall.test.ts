@@ -2,54 +2,27 @@ import {mkdir, mkdtemp, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {Effect} from 'effect';
-import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
+import {afterEach, describe, expect, it, vi} from 'vitest';
 import {ApplicationLayer, type ApplicationServices} from '../../src/effect/runtime.js';
 import {hasAgentSkillCatalogIntent, runRecall, stripAdvancedSearchFlags} from '../../src/memory.js';
 import type {RuntimeConfig} from '../../src/types.js';
-import * as indexRepair from '../../src/index_repair.js';
 import * as utils from '../../src/utils.js';
 
 const run = <A, E>(effect: Effect.Effect<A, E, ApplicationServices>) =>
   Effect.runPromise(effect.pipe(Effect.provide(ApplicationLayer)));
 
-vi.mock('../../src/index_repair.js', async importOriginal => {
-  const actual = await importOriginal<typeof import('../../src/index_repair.js')>();
-  return {
-    ...actual,
-    repairStaleRecallIndex: vi.fn(),
-  };
-});
-
 vi.mock('../../src/utils.js', async importOriginal => {
   const actual = await importOriginal<typeof import('../../src/utils.js')>();
-  return {
-    ...actual,
-    openVikingCliForMode: vi.fn().mockReturnValue(Effect.succeed('/ov')),
-  };
+  return {...actual};
 });
 
 const runtime: RuntimeConfig = {
   account: 'local',
   agentContextHome: '/tmp/threadnote-test',
   agentId: 'threadnote',
-  host: '127.0.0.1',
   manifestPath: '/tmp/threadnote-test/seed-manifest.yaml',
-  openVikingVersion: '0.0.0',
-  port: 1933,
   user: 'denys',
 };
-
-beforeEach(() => {
-  vi.mocked(indexRepair.repairStaleRecallIndex).mockReset();
-  vi.mocked(indexRepair.repairStaleRecallIndex).mockReturnValue(
-    Effect.succeed({
-      repairedUris: [],
-      skippedRecentUris: [],
-      warnings: [],
-    }),
-  );
-  vi.mocked(utils.openVikingCliForMode).mockReturnValue(Effect.succeed('/ov'));
-});
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -70,20 +43,19 @@ describe('recall skill catalog intent inference', () => {
   });
 });
 
-describe('runRecall index repair fallback', () => {
-  it('continues to search when automatic index repair fails', async () => {
-    vi.mocked(indexRepair.repairStaleRecallIndex).mockReturnValue(Effect.fail(new Error('repair failed')));
+describe('runRecall native index', () => {
+  it('uses the native recall index without a repair subprocess', async () => {
     const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
 
     await run(runRecall(runtime, {dryRun: true, query: 'availability check'}));
 
     const output = log.mock.calls.map(call => call.join(' ')).join('\n');
-    expect(output).toContain('Auto-index repair warning: repair failed');
-    expect(output).toContain('Would run: /ov search');
+    expect(output).not.toContain('repair failed');
+    expect(output).toContain('Would search native recall index');
     expect(output).toContain('availability check');
   });
 
-  it('keeps deterministic recall available when the optional local AI config is malformed', async () => {
+  it('ignores obsolete local-AI service configuration while deterministic recall remains available', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'threadnote-recall-malformed-local-ai-'));
     await mkdir(join(dir, 'threadnote'), {recursive: true});
     await writeFile(join(dir, 'threadnote', 'local-ai.json'), '{invalid', 'utf8');
@@ -105,8 +77,8 @@ describe('runRecall index repair fallback', () => {
     }
 
     const output = log.mock.calls.map(call => call.join(' ')).join('\n');
-    expect(output).toContain('Local AI recall unavailable: Invalid Threadnote local AI configuration');
-    expect(output).toContain('Deterministic recall continued.');
+    expect(output).not.toContain('Invalid Threadnote local AI configuration');
+    expect(output).not.toContain('background service');
   });
 
   it('adds remote-derived project memory scopes for current repo recall', async () => {
@@ -156,8 +128,8 @@ describe('runRecall index repair fallback', () => {
     const output = log.mock.calls.map(call => call.join(' ')).join('\n');
     expect(output).toContain('current repo latest handoff');
     expect(output).toContain('threadnote');
-    expect(output).toContain('--uri viking://user/denys/memories/durable/projects/threadnote');
-    expect(output).toContain('--uri viking://user/denys/memories/handoffs/active/threadnote');
+    expect(output).toContain('--uri threadnote://user/denys/memories/durable/projects/threadnote');
+    expect(output).toContain('--uri threadnote://user/denys/memories/handoffs/active/threadnote');
     expect(output).not.toContain('easy-to-type');
   });
 
@@ -188,11 +160,11 @@ describe('runRecall index repair fallback', () => {
           'projects:',
           '  - name: threadnote',
           `    path: ${repoRoot}`,
-          '    uri: viking://resources/repos/threadnote',
+          '    uri: threadnote://resources/repos/threadnote',
           '    seed: []',
           '  - name: orion-worker',
           `    path: ${dir}/orion-worker`,
-          '    uri: viking://resources/repos/orion-worker',
+          '    uri: threadnote://resources/repos/orion-worker',
           '    seed: []',
           '',
         ].join('\n'),
@@ -219,9 +191,9 @@ describe('runRecall index repair fallback', () => {
     }
 
     const output = log.mock.calls.map(call => call.join(' ')).join('\n');
-    expect(output).toContain('--uri viking://user/denys/memories/durable/projects/orion-worker');
-    expect(output).toContain('--uri viking://resources/repos/orion-worker');
-    expect(output).not.toContain('--uri viking://user/denys/memories/durable/projects/threadnote');
+    expect(output).toContain('--uri threadnote://user/denys/memories/durable/projects/orion-worker');
+    expect(output).toContain('--uri threadnote://resources/repos/orion-worker');
+    expect(output).not.toContain('--uri threadnote://user/denys/memories/durable/projects/threadnote');
   });
 
   it('does not duplicate current project durable scope through workset expansion', async () => {
@@ -251,7 +223,7 @@ describe('runRecall index repair fallback', () => {
           'projects:',
           '  - name: threadnote',
           `    path: ${repoRoot}`,
-          '    uri: viking://resources/repos/threadnote',
+          '    uri: threadnote://resources/repos/threadnote',
           '    seed: []',
           'worksets:',
           '  - name: platform',
@@ -286,7 +258,7 @@ describe('runRecall index repair fallback', () => {
     }
 
     const output = log.mock.calls.map(call => call.join(' ')).join('\n');
-    const durableScope = '--uri viking://user/denys/memories/durable/projects/threadnote';
+    const durableScope = '--uri threadnote://user/denys/memories/durable/projects/threadnote';
     expect(output.split(durableScope)).toHaveLength(2);
   });
 
@@ -300,7 +272,7 @@ describe('runRecall index repair fallback', () => {
         'projects:',
         '  - name: alpha',
         `    path: ${dir}/alpha`,
-        '    uri: viking://resources/repos/alpha',
+        '    uri: threadnote://resources/repos/alpha',
         '    seed: []',
         'worksets:',
         '  - name: platform',
@@ -329,7 +301,7 @@ describe('runRecall index repair fallback', () => {
 
     const output = log.mock.calls.map(call => call.join(' ')).join('\n');
     expect(output).toContain('Workset scope: platform (alpha)');
-    expect(output).toContain('viking://resources/repos/alpha');
+    expect(output).toContain('threadnote://resources/repos/alpha');
   });
 
   it('reports an unknown explicit workset instead of running unscoped', async () => {
@@ -342,7 +314,7 @@ describe('runRecall index repair fallback', () => {
         'projects:',
         '  - name: alpha',
         `    path: ${dir}/alpha`,
-        '    uri: viking://resources/repos/alpha',
+        '    uri: threadnote://resources/repos/alpha',
         '    seed: []',
         'worksets:',
         '  - name: platform',
@@ -382,7 +354,7 @@ describe('runRecall index repair fallback', () => {
         'projects:',
         '  - name: alpha',
         `    path: ${dir}/alpha`,
-        '    uri: viking://resources/repos/alpha',
+        '    uri: threadnote://resources/repos/alpha',
         '    seed: []',
         'worksets:',
         '  - name: platform',
@@ -401,7 +373,7 @@ describe('runRecall index repair fallback', () => {
             {
               dryRun: true,
               query: 'current status',
-              uri: 'viking://resources/repos/alpha',
+              uri: 'threadnote://resources/repos/alpha',
               workset: 'platfrom',
             },
           ),
@@ -417,8 +389,8 @@ describe('runRecall index repair fallback', () => {
 describe('stripAdvancedSearchFlags', () => {
   it('removes --threshold and --level with their values, keeping the rest', () => {
     expect(
-      stripAdvancedSearchFlags(['search', 'q', '--threshold', '0.45', '--level', '2', '--uri', 'viking://x']),
-    ).toEqual(['search', 'q', '--uri', 'viking://x']);
+      stripAdvancedSearchFlags(['search', 'q', '--threshold', '0.45', '--level', '2', '--uri', 'threadnote://x']),
+    ).toEqual(['search', 'q', '--uri', 'threadnote://x']);
   });
 
   it('is a no-op when no advanced flags are present', () => {

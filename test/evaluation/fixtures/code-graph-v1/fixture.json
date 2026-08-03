@@ -1,0 +1,316 @@
+{
+  "version": 1,
+  "id": "typescript-workspace",
+  "repositoryRoot": "repository",
+  "languages": ["en"],
+  "expectedSymbols": [
+    {
+      "kind": "function",
+      "name": "withExclusiveFileLock",
+      "path": "packages/core/src/lock.ts"
+    },
+    {
+      "kind": "class",
+      "name": "FileLock",
+      "path": "packages/core/src/lock.ts"
+    },
+    {
+      "kind": "interface",
+      "name": "LockLease",
+      "path": "packages/core/src/lock.ts"
+    },
+    {
+      "kind": "function",
+      "name": "ensureVectorIndex",
+      "path": "packages/search/src/vector-index.ts"
+    },
+    {
+      "kind": "function",
+      "name": "refreshRecallIndex",
+      "path": "packages/search/src/recall-index.ts"
+    },
+    {
+      "kind": "class",
+      "name": "VectorIndexCoordinator",
+      "path": "packages/search/src/vector-index.ts"
+    },
+    {
+      "kind": "function",
+      "name": "runApplication",
+      "path": "packages/app/src/main.ts"
+    }
+  ],
+  "allowedAuthoritativeEdges": [
+    {
+      "provenance": "declared",
+      "relation": "depends_on",
+      "source": "@fixture/app",
+      "target": "@fixture/search"
+    },
+    {
+      "provenance": "declared",
+      "relation": "depends_on",
+      "source": "@fixture/search",
+      "target": "@fixture/core"
+    },
+    {
+      "provenance": "resolved",
+      "relation": "extends",
+      "source": "VectorIndexCoordinator",
+      "target": "FileLock"
+    },
+    {
+      "provenance": "resolved",
+      "relation": "calls",
+      "source": "activate",
+      "target": "ensureVectorIndex"
+    },
+    {
+      "provenance": "resolved",
+      "relation": "calls",
+      "source": "ensureVectorIndex",
+      "target": "withExclusiveFileLock"
+    },
+    {
+      "provenance": "resolved",
+      "relation": "constructs",
+      "source": "lease",
+      "target": "FileLock"
+    },
+    {
+      "provenance": "resolved",
+      "relation": "imports",
+      "source": "packages/app/src/main.ts",
+      "target": "ensureVectorIndex"
+    },
+    {
+      "provenance": "resolved",
+      "relation": "imports",
+      "source": "packages/app/src/main.ts",
+      "target": "packages/search/src/index.ts"
+    },
+    {
+      "provenance": "resolved",
+      "relation": "imports",
+      "source": "packages/app/src/main.ts",
+      "target": "refreshRecallIndex"
+    },
+    {
+      "provenance": "resolved",
+      "relation": "reexports",
+      "source": "packages/core/src/index.ts",
+      "target": "FileLock"
+    },
+    {
+      "provenance": "resolved",
+      "relation": "reexports",
+      "source": "packages/core/src/index.ts",
+      "target": "LockLease"
+    },
+    {
+      "provenance": "resolved",
+      "relation": "reexports",
+      "source": "packages/core/src/index.ts",
+      "target": "packages/core/src/lock.ts"
+    },
+    {
+      "provenance": "resolved",
+      "relation": "reexports",
+      "source": "packages/core/src/index.ts",
+      "target": "withExclusiveFileLock"
+    },
+    {
+      "provenance": "resolved",
+      "relation": "reexports",
+      "source": "packages/search/src/index.ts",
+      "target": "VectorIndexCoordinator"
+    },
+    {
+      "provenance": "resolved",
+      "relation": "reexports",
+      "source": "packages/search/src/index.ts",
+      "target": "ensureVectorIndex"
+    },
+    {
+      "provenance": "resolved",
+      "relation": "reexports",
+      "source": "packages/search/src/index.ts",
+      "target": "packages/search/src/recall-index.ts"
+    },
+    {
+      "provenance": "resolved",
+      "relation": "reexports",
+      "source": "packages/search/src/index.ts",
+      "target": "packages/search/src/vector-index.ts"
+    },
+    {
+      "provenance": "resolved",
+      "relation": "reexports",
+      "source": "packages/search/src/index.ts",
+      "target": "refreshRecallIndex"
+    },
+    {
+      "provenance": "resolved",
+      "relation": "imports",
+      "source": "packages/search/src/recall-index.ts",
+      "target": "packages/core/src/index.ts"
+    },
+    {
+      "provenance": "resolved",
+      "relation": "imports",
+      "source": "packages/search/src/recall-index.ts",
+      "target": "withExclusiveFileLock"
+    },
+    {
+      "provenance": "resolved",
+      "relation": "imports",
+      "source": "packages/search/src/vector-index.ts",
+      "target": "FileLock"
+    },
+    {
+      "provenance": "resolved",
+      "relation": "imports",
+      "source": "packages/search/src/vector-index.ts",
+      "target": "packages/core/src/index.ts"
+    },
+    {
+      "provenance": "resolved",
+      "relation": "imports",
+      "source": "packages/search/src/vector-index.ts",
+      "target": "withExclusiveFileLock"
+    },
+    {
+      "provenance": "resolved",
+      "relation": "calls",
+      "source": "refreshRecallIndex",
+      "target": "withExclusiveFileLock"
+    },
+    {
+      "provenance": "resolved",
+      "relation": "calls",
+      "source": "runApplication",
+      "target": "ensureVectorIndex"
+    },
+    {
+      "provenance": "resolved",
+      "relation": "calls",
+      "source": "runApplication",
+      "target": "refreshRecallIndex"
+    },
+    {
+      "provenance": "resolved",
+      "relation": "imports",
+      "source": "tests/vector-index.ts",
+      "target": "VectorIndexCoordinator"
+    },
+    {
+      "provenance": "resolved",
+      "relation": "imports",
+      "source": "tests/vector-index.ts",
+      "target": "packages/search/src/index.ts"
+    },
+    {
+      "provenance": "resolved",
+      "relation": "constructs",
+      "source": "vectorIndexContract",
+      "target": "VectorIndexCoordinator"
+    }
+  ],
+  "expectedEdges": [
+    {
+      "provenance": "resolved",
+      "relation": "calls",
+      "source": "ensureVectorIndex",
+      "target": "withExclusiveFileLock"
+    },
+    {
+      "provenance": "resolved",
+      "relation": "calls",
+      "source": "refreshRecallIndex",
+      "target": "withExclusiveFileLock"
+    },
+    {
+      "provenance": "resolved",
+      "relation": "extends",
+      "source": "VectorIndexCoordinator",
+      "target": "FileLock"
+    },
+    {
+      "provenance": "resolved",
+      "relation": "calls",
+      "source": "runApplication",
+      "target": "ensureVectorIndex"
+    },
+    {
+      "provenance": "resolved",
+      "relation": "calls",
+      "source": "runApplication",
+      "target": "refreshRecallIndex"
+    },
+    {
+      "provenance": "declared",
+      "relation": "depends_on",
+      "source": "@fixture/app",
+      "target": "@fixture/search"
+    },
+    {
+      "provenance": "declared",
+      "relation": "depends_on",
+      "source": "@fixture/search",
+      "target": "@fixture/core"
+    }
+  ],
+  "queries": [
+    {
+      "answerable": true,
+      "category": "definition",
+      "id": "definition-exclusive-lock",
+      "operation": "query",
+      "query": "exclusive file lock",
+      "relevantSymbols": ["withExclusiveFileLock", "FileLock"]
+    },
+    {
+      "answerable": true,
+      "category": "path",
+      "from": "runApplication",
+      "id": "path-app-to-lock",
+      "operation": "path",
+      "relevantSymbols": ["runApplication", "ensureVectorIndex", "withExclusiveFileLock"],
+      "to": "withExclusiveFileLock"
+    },
+    {
+      "answerable": true,
+      "category": "impact",
+      "id": "impact-lock",
+      "operation": "impact",
+      "query": "withExclusiveFileLock",
+      "relevantSymbols": ["ensureVectorIndex", "refreshRecallIndex", "runApplication"]
+    },
+    {
+      "answerable": true,
+      "category": "documentation",
+      "id": "documentation-recovery",
+      "operation": "query",
+      "query": "lock recovery and vector indexing",
+      "relevantPaths": ["docs/architecture.md", "packages/search/src/vector-index.ts"],
+      "relevantSymbols": []
+    },
+    {
+      "answerable": false,
+      "category": "no-answer",
+      "id": "missing-payment-service",
+      "operation": "query",
+      "query": "payment settlement gateway",
+      "relevantSymbols": []
+    }
+  ],
+  "worktreeContracts": [
+    {
+      "basePath": "packages/search/src/vector-index.ts",
+      "baseSymbol": "ensureVectorIndex",
+      "branchAReplacement": "ensureBranchAVectorIndex",
+      "branchBReplacement": "ensureBranchBVectorIndex",
+      "forbiddenCrossBranch": true
+    }
+  ]
+}

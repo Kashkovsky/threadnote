@@ -1,30 +1,31 @@
 import yaml from 'js-yaml';
-import {Console, Crypto, Effect, FileSystem, Path, Result, pipe} from 'effect';
+import {Clock, Console, Crypto, Effect, FileSystem, Option, Path, Result} from 'effect';
 import {
-  boundedRecallExpansionScopes,
   expandWeakRecallQueryEffect,
   limitRecallRewritesForConfidence,
-  localRecallAiEnabled,
   mergeRecallRewritesForConfidence,
   recallHybridMinimumScore,
   recallRewriteLimitForConfidence,
   selectExpandedRecallCandidatesEffect,
   shouldExpandRecall,
-} from './effect/ai-recall.js';
-import {resolveEffectAiConfiguration} from './effect/ai-consolidator.js';
+} from './effect/ai/recall.js';
+import {resolveEffectAiConfiguration} from './effect/ai/consolidator.js';
 import {
   enrichMemoryMetadataWithConfiguredLocalAi,
   enrichMemoryWithInstalledLocalAi,
   isUnusableMemoryEnrichmentOutput,
-} from './effect/ai-enrichment.js';
-import {maybeRunEffect} from './effect/command.js';
-import {readLocalAiSettings, runLocalAiEnable, runLocalAiInstall} from './effect/local-ai.js';
+} from './effect/ai/enrichment.js';
 import {withMemoryUriLocks} from './effect/memory_lock.js';
-import {removeOpenVikingResourceEffect} from './effect/openviking.js';
+import {writeFinalCliOutput} from './effect/cli_output.js';
 import {scanFilesWithinBoundary} from './effect/safe_scan.js';
 import {syncSharedReposBeforeAgentRead} from './effect/share.js';
 import {withSharedRepositoryLock} from './effect/share_lock.js';
 import {SystemInfo} from './effect/system.js';
+import {ResourceStore, type ResourceStoreMutation} from './effect/resource-store.js';
+import {runModelInstall, runModelSelect} from './models/commands.js';
+import {resolveSelectedLocalModel} from './models/inference.js';
+import {syncObsidianSourcesBeforeRecall} from './obsidian_source.js';
+import {canonicalResourceUri, parseResourceId, resourceIdWithoutAnchor} from './storage/resource-id.js';
 import {
   inferProjectFromQuery,
   inferWorksetFromQuery,
@@ -32,11 +33,11 @@ import {
   requireWorkset,
   uriSegment,
 } from './manifest.js';
-import {formatRecallIndexRepairMessages, repairStaleRecallIndex} from './index_repair.js';
 import {
   activePersonalMemoryUrisFromText,
   buildCompactPlan,
   type CompactableMemoryKind,
+  existingReferencedUris,
   formatCompactPlan,
   formatReferencedContextPointers,
   handoffTopicForBranch,
@@ -57,13 +58,16 @@ import {
 import {
   buildRecallIndexSelectionCandidates,
   buildRecallSelectionCandidates,
+  createRecallRerankerCache,
   loadRecallExpansionVocabulary,
+  loadRecallSemanticScoresResult,
   prepareRecallSections,
   recallSelectionQueries,
   recallSelectionAnchorIds,
   selectedRecallCandidateUris,
+  type RecallSemanticScoresResult,
 } from './recall/runtime.js';
-import {withIdentity} from './runtime.js';
+import {loadRecallExactMatches} from './recall/index.js';
 import type {
   ArchiveOptions,
   CompactOptions,
@@ -85,24 +89,21 @@ import type {
   RuntimeConfig,
 } from './types.js';
 import {
-  assertVikingUri,
+  assertResourceUri,
   enrichRecallQueryWithWorkspaceContext,
   enrichRecallQueryWithWorkspaceProjectContext,
   ensureDirectory,
-  expandPath,
+  errorMessage,
   exactMemoryScopeUris,
   exactRecallScopeIntents,
   exactRecallTerms,
-  collectExactMatches,
-  formatShellCommand,
+  expandPath,
   getInputText,
   getInvocationCwd,
   gitValue,
   isJsonObject,
-  openVikingCliForMode,
-  parentVikingUri,
+  parentResourceUri,
   parsePositiveInteger,
-  parseRecallHits,
   readFileIfExists,
   type RecallHit,
   recallScoreThreshold,
@@ -110,13 +111,13 @@ import {
   resolveRepoFolderName,
   resolveRepoName,
   resolveWorkspaceRepoName,
-  runCommand,
   safeTimestamp,
   sha256,
   trimTrailingSlash,
 } from './utils.js';
 import {
   applyScrubber,
+  assertSharedWorktreeFileReady,
   ensureSharedDirectoryChain,
   isInSharedNamespace,
   publishShareGitChange,
@@ -125,11 +126,10 @@ import {
   sharedMemoryUriParts,
   sharedTeamNameForUri,
   stripPersonalProvenance,
-  vikingUriToWorktreeRelative,
+  resourceUriToWorktreeRelative,
   writeMemoryFile,
+  writeSharedWorktreeFile,
 } from './share.js';
-
-const LAST_MEMORY_STAGING_LOCK_URI = 'threadnote://local/last-memory-staging';
 
 interface LegacyMemoryCandidate {
   readonly comparableHash: string;
@@ -223,18 +223,32 @@ const attemptSync = <A>(evaluate: () => A) =>
 const requireValue = <A>(value: A | undefined, message: string): Effect.Effect<A, Error> =>
   value === undefined ? Effect.fail(new Error(message)) : Effect.succeed(value);
 
+const NATIVE_RESOURCE_BACKEND = 'threadnote-native';
+
 export const runRemember = Effect.fn('runRemember')(function* (config: RuntimeConfig, options: RememberOptions) {
   const text = yield* getInputText(options.text, options.stdin === true);
   if (!text.trim()) {
     yield* Effect.fail(new Error('Provide memory text with --text or --stdin.'));
   }
+  const timestamp = new Date(yield* Clock.currentTimeMillis).toISOString();
+  const [replaced] = options.replace ? yield* readMemoryRecordsByUri(config, [options.replace]) : [];
+  const crypto = yield* Crypto.Crypto;
+  // Projection computes source_hash from canonical content. Keeping the
+  // high-entropy digest out of Threadnote's indexed memory preserves semantic
+  // retrieval quality while the stable identity and lifecycle fields remain
+  // part of the authoritative record.
   const baseMetadata: MemoryMetadata = {
+    createdAt: replaced?.metadata.createdAt ?? replaced?.metadata.timestamp ?? timestamp,
     kind: options.kind ?? 'durable',
+    memoryId: replaced?.metadata.memoryId ?? `tn_${(yield* crypto.randomUUIDv4).replaceAll('-', '')}`,
     project: normalizeOptionalMetadata(options.project),
+    schemaVersion: 3,
     sourceAgentClient: options.sourceAgentClient ?? 'codex',
     status: options.status ?? 'active',
-    timestamp: new Date().toISOString(),
+    timestamp,
     topic: normalizeOptionalMetadata(options.topic),
+    updatedAt: timestamp,
+    visibility: options.replace && isInSharedNamespace(config, options.replace) ? 'shared' : 'personal',
   };
   const metadata =
     options.dryRun === true || (options.replace !== undefined && isInSharedNamespace(config, options.replace))
@@ -267,13 +281,13 @@ export const runMigrateMemories = Effect.fn('runMigrateMemories')(function* (
     : undefined;
   const sourceAccounts = yield* legacySourceAccounts(config, options);
   if (sourceAccounts.length === 0) {
-    yield* Console.log('No local OpenViking accounts found to scan.');
+    yield* Console.log('No local canonical accounts found to scan.');
     return;
   }
 
   const candidates = yield* legacyMemoryCandidates(config, sourceAccounts);
   const existingHashes = yield* existingDurableMemoryHashes(config);
-  const ov = yield* openVikingCliForMode(dryRun);
+  const ov = NATIVE_RESOURCE_BACKEND;
   const migrationPath = path.join(config.agentContextHome, 'legacy-memory-migration.txt');
 
   let duplicateCount = 0;
@@ -306,7 +320,7 @@ export const runMigrateMemories = Effect.fn('runMigrateMemories')(function* (
       }
 
       const memoryUri = migratedDurableMemoryUri(config, candidate.hash);
-      if (!dryRun && (yield* vikingResourceExists(ov, config, memoryUri))) {
+      if (!dryRun && (yield* resourceExists(ov, config, memoryUri))) {
         duplicateCount += 1;
         existingHashes.add(candidate.hash);
         continue;
@@ -366,33 +380,26 @@ export const runEnrichMemories = Effect.fn('runEnrichMemories')(function* (
     return;
   }
 
-  const localAiSettings = yield* readLocalAiSettings(config);
-  if (!localAiSettings) {
-    if (options.installLocalAi !== true) {
-      return yield* Effect.fail(
-        new Error('Local AI is not installed. Run `threadnote local-ai install`, or rerun with `--install-local-ai`.'),
-      );
-    }
-    yield* Console.log(
-      'Local AI is not installed. Installing the pinned model before enrichment; the one-time download is 4.59 GB.',
-    );
-    yield* runLocalAiInstall(config, {});
-  } else if (!localAiSettings.enabled) {
+  const selectedGeneration = yield* resolveSelectedLocalModel(config.agentContextHome, 'generation');
+  if (!selectedGeneration) {
     if (options.installLocalAi !== true) {
       return yield* Effect.fail(
         new Error(
-          'Local AI is disabled. Run `threadnote local-ai enable`, or rerun with `--install-local-ai` to enable it.',
+          'No local generation model is selected. Use `threadnote models install` and `threadnote models select generation`, or rerun with `--install-local-ai`.',
         ),
       );
     }
-    yield* Console.log('Local AI is disabled. Enabling the existing installation before enrichment.');
-    yield* runLocalAiEnable(config, {});
+    yield* Console.log(
+      'Installing the pinned compatibility generation model before enrichment; the one-time download is 4.59 GB.',
+    );
+    yield* runModelInstall(config, 'gemma-4-e4b-it-q4', {});
+    yield* runModelSelect(config, 'generation', 'gemma-4-e4b-it-q4', {});
   }
   yield* Console.log(
     'Generating retrieval keywords locally. This can take a long time for a large corpus; progress will stream below.',
   );
 
-  const ov = yield* openVikingCliForMode(false);
+  const ov = NATIVE_RESOURCE_BACKEND;
   const fs = yield* FileSystem.FileSystem;
   let enriched = 0;
   let failed = 0;
@@ -475,8 +482,22 @@ export const runEnrichMemories = Effect.fn('runEnrichMemories')(function* (
               new Error(`Refusing to enrich shared memory ${candidate.uri}: possible ${scrub.blocker}.`),
             );
           }
+          const team = yield* resolveTeam(config, sharedTeam);
+          yield* assertSharedWorktreeFileReady(
+            team.config.worktree,
+            resourceUriToWorktreeRelative(config, candidate.uri, team.name),
+            currentContent,
+          );
         }
         yield* writeMemoryFile(config, ov, candidate.uri, content, 'replace', false, {quiet: true});
+        if (sharedTeam) {
+          const team = yield* resolveTeam(config, sharedTeam);
+          yield* writeSharedWorktreeFile(
+            team.config.worktree,
+            resourceUriToWorktreeRelative(config, candidate.uri, team.name),
+            content,
+          );
+        }
       }),
     );
     const written = yield* Effect.result(sharedTeam ? withSharedRepositoryLock(config, store) : store);
@@ -530,7 +551,7 @@ const memoryEnrichmentPlan = Effect.fn('memory.memoryEnrichmentPlan')(function* 
     const relative = path.relative(root, file.path).split(path.sep).join('/');
     return {
       path: file.path,
-      uri: `viking://user/${uriSegment(config.user)}/memories/${relative}`,
+      uri: `threadnote://user/${uriSegment(config.user)}/memories/${relative}`,
     };
   });
   const teams = yield* readTeamsFile(config);
@@ -550,7 +571,7 @@ const memoryEnrichmentPlan = Effect.fn('memory.memoryEnrichmentPlan')(function* 
           const relative = path.relative(settings.worktree, file.path).split(path.sep).join('/');
           return {
             path: file.path,
-            uri: `viking://user/${uriSegment(config.user)}/memories/shared/${team}/${relative}`,
+            uri: `threadnote://user/${uriSegment(config.user)}/memories/shared/${team}/${relative}`,
           };
         });
       }),
@@ -609,7 +630,7 @@ export const runMigrateLifecycle = Effect.fn('runMigrateLifecycle')(function* (
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const limit = options.limit ? parsePositiveInteger(options.limit, 'lifecycle migration limit') : undefined;
-  const ov = yield* openVikingCliForMode(dryRun);
+  const ov = NATIVE_RESOURCE_BACKEND;
   const candidates = yield* legacyLifecycleHandoffCandidates(config);
   const migrationPath = path.join(config.agentContextHome, 'lifecycle-memory-migration.txt');
   let existingCount = 0;
@@ -634,7 +655,7 @@ export const runMigrateLifecycle = Effect.fn('runMigrateLifecycle')(function* (
 
       yield* Console.log(`${dryRun ? 'Would migrate' : 'Migrating'} ${candidate.sourceUri} -> ${destinationUri}`);
       if (!dryRun) {
-        if (yield* vikingResourceExists(ov, config, destinationUri)) {
+        if (yield* resourceExists(ov, config, destinationUri)) {
           existingCount += 1;
           yield* Console.log(`Archived copy already exists; cleaning up legacy source: ${candidate.sourceUri}`);
         } else {
@@ -643,7 +664,7 @@ export const runMigrateLifecycle = Effect.fn('runMigrateLifecycle')(function* (
           yield* ensureMemoryDirectory(ov, config, memoryDirectoryUri(config, candidate.metadata));
           yield* writeDurableMemoryFile(ov, config, destinationUri, migrationPath, 'create');
         }
-        const removedOriginal = yield* removeVikingResourceWithRetry(ov, config, candidate.sourceUri, {
+        const removedOriginal = yield* removeResourceWithRetry(ov, config, candidate.sourceUri, {
           expectedContent: candidate.original,
         });
         if (!removedOriginal) {
@@ -706,7 +727,7 @@ export const runMigrateProjectNames = Effect.fn('runMigrateProjectNames')(functi
   let skippedCount = 0;
   const candidates = plans.flatMap(plan => [...plan.candidates]);
   if (candidates.length > 0) {
-    const ov = yield* openVikingCliForMode(dryRun);
+    const ov = NATIVE_RESOURCE_BACKEND;
     for (const candidate of candidates) {
       const action = candidate.destinationExistsWithSameContent
         ? dryRun
@@ -720,10 +741,10 @@ export const runMigrateProjectNames = Effect.fn('runMigrateProjectNames')(functi
         if (candidate.destinationExistsWithSameContent) {
           existingCount += 1;
         } else {
-          yield* ensureMemoryDirectory(ov, config, parentVikingUri(candidate.destinationUri));
+          yield* ensureMemoryDirectory(ov, config, parentResourceUri(candidate.destinationUri));
           yield* writeMemoryFile(config, ov, candidate.destinationUri, candidate.destinationContent, 'create', false);
         }
-        const removedOriginal = yield* removeVikingResourceWithRetry(ov, config, candidate.sourceUri, {
+        const removedOriginal = yield* removeResourceWithRetry(ov, config, candidate.sourceUri, {
           expectedContent: candidate.sourceContent,
         });
         if (!removedOriginal) {
@@ -839,7 +860,7 @@ const projectNameMigrationMemoryEvidence = Effect.fn('memory.projectNameMigratio
         if (!content) {
           continue;
         }
-        const sourceUri = `viking://user/${uriSegment(config.user)}/memories/${location.uriPath}/${oldSegment}/${memoryEntry}`;
+        const sourceUri = `threadnote://user/${uriSegment(config.user)}/memories/${location.uriPath}/${oldSegment}/${memoryEntry}`;
         const record = parseMemoryDocument(sourceUri, content);
         if (record?.metadata.project && uriSegment(record.metadata.project) === oldSegment) {
           projectEvidence.oldProject = record.metadata.project;
@@ -969,7 +990,7 @@ const projectNameMigrationCandidates = Effect.fn('memory.projectNameMigrationCan
       ...location.relativePath,
       context.oldSegment,
     );
-    const sourceDirectoryUri = `viking://user/${uriSegment(config.user)}/memories/${location.uriPath}/${context.oldSegment}`;
+    const sourceDirectoryUri = `threadnote://user/${uriSegment(config.user)}/memories/${location.uriPath}/${context.oldSegment}`;
     const entries = yield* fs.readDirectory(sourceDirectory).pipe(Effect.option);
     if (entries._tag === 'None') {
       continue;
@@ -1104,8 +1125,8 @@ const seedManifestProjectNameMigration = Effect.fn('memory.seedManifestProjectNa
       isSeedManifestProjectNameCandidate(
         project,
         candidate,
-        `viking://resources/repos/${candidate.oldSegment}`,
-        `viking://resources/repos/${candidate.newSegment}`,
+        `threadnote://resources/repos/${candidate.oldSegment}`,
+        `threadnote://resources/repos/${candidate.newSegment}`,
       ),
     );
     if (!context) {
@@ -1123,8 +1144,8 @@ const seedManifestProjectNameMigration = Effect.fn('memory.seedManifestProjectNa
       ...project,
       name: context.newProject,
       uri:
-        trimTrailingSlash(project.uri) === `viking://resources/repos/${context.oldSegment}`
-          ? `viking://resources/repos/${context.newSegment}`
+        trimTrailingSlash(project.uri) === `threadnote://resources/repos/${context.oldSegment}`
+          ? `threadnote://resources/repos/${context.newSegment}`
           : project.uri,
     };
   });
@@ -1252,28 +1273,17 @@ function projectMemoryLocations(): readonly ProjectMemoryLocation[] {
 export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig, options: RecallOptions) {
   if (options.dryRun !== true) {
     yield* syncSharedReposAndLog(config);
+    yield* syncObsidianSourcesAndLog(config);
   }
-  const ov = yield* openVikingCliForMode(options.dryRun === true);
   const workspaceOptions = options.callerCwd
     ? {cwd: options.callerCwd, includeProcessCwd: false}
     : {includeProcessCwd: true};
   const query = yield* enrichRecallQueryWithWorkspaceContext(options.query, workspaceOptions);
   const projectQuery = yield* enrichRecallQueryWithWorkspaceProjectContext(options.query, workspaceOptions);
-  const indexRepairMessages = yield* repairStaleRecallIndex(config, ov, {
-    dryRun: options.dryRun === true,
-    query: projectQuery,
-  }).pipe(
-    Effect.map(indexRepair => formatRecallIndexRepairMessages(indexRepair, {dryRun: options.dryRun === true})),
-    Effect.catch(error =>
-      Effect.succeed([`Auto-index repair warning: ${error instanceof Error ? error.message : String(error)}`]),
-    ),
-  );
-  for (const message of indexRepairMessages) {
-    yield* Console.log(message);
-  }
   const dryRun = options.dryRun === true;
+  const explicitUri = options.uri ? parseResourceId(options.uri).canonicalUri : undefined;
   const inferredUri =
-    options.uri ?? (options.inferScope === false ? undefined : yield* inferRecallUri(config, projectQuery));
+    explicitUri ?? (options.inferScope === false ? undefined : yield* inferRecallUri(config, projectQuery));
   const queryProject = yield* inferProjectFromQuery(config.manifestPath, options.project ?? options.query);
   const project = queryProject ?? (yield* inferProjectFromQuery(config.manifestPath, projectQuery));
   const projectMemoryName = yield* recallProjectMemoryName(options.project, workspaceOptions);
@@ -1283,49 +1293,39 @@ export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig
     : undefined;
   const explicitWorkset = options.workset ? yield* requireWorkset(config.manifestPath, options.workset!) : undefined;
   const recallThreshold = options.threshold ?? (yield* recallScoreThreshold());
-  const searchArgs = (searchQuery: string, scopeUri: string | undefined): readonly string[] => [
-    'search',
-    searchQuery,
-    '--threshold',
-    recallThreshold,
-    '--level',
-    '2',
-    ...(scopeUri ? ['--uri', scopeUri] : []),
-    ...(nodeLimit ? ['--node-limit', String(nodeLimit)] : []),
-  ];
-
-  // Run the global base pass plus any scoped passes, then merge into one
-  // deduped ranked list so resources/memories the base already surfaced are not
-  // repeated by the scoped passes (and multiple chunks of one document collapse
-  // to a single entry).
+  // Scope selection feeds the native postings/vector indexes directly. The
+  // passes array remains as a compatibility input to the existing explainable
+  // ranker; no background process or HTTP service is queried.
   if (inferredUri) {
     yield* Console.log(`Recall scope: ${inferredUri}`);
   }
   const includeArchived = options.includeArchived === true;
-  const searchedScopes: Array<string | undefined> = [inferredUri];
-  const passes: Array<readonly RecallHit[]> = [
-    yield* recallSearchHits(config, ov, searchArgs(query, inferredUri), {dryRun, includeArchived}),
-  ];
+  const passes: Array<readonly RecallHit[]> = [];
+  if (dryRun) {
+    yield* Console.log(
+      `Would search native recall index for ${JSON.stringify(query)}${inferredUri ? ` under ${inferredUri}` : ''}.`,
+    );
+  }
   const scopedRecallUris = new Set([inferredUri].filter((uri): uri is string => uri !== undefined));
   if (options.project && project) {
-    const projectMemoryUri = `viking://user/${uriSegment(config.user)}/memories/durable/projects/${uriSegment(project.name)}`;
+    const projectMemoryUri = `threadnote://user/${uriSegment(config.user)}/memories/durable/projects/${uriSegment(project.name)}`;
     if (!scopedRecallUris.has(projectMemoryUri)) {
       scopedRecallUris.add(projectMemoryUri);
-      searchedScopes.push(projectMemoryUri);
-      passes.push(yield* recallSearchHits(config, ov, searchArgs(query, projectMemoryUri), {dryRun, includeArchived}));
     }
   }
   for (const scope of projectMemoryScopeUris(config, recallProjectName, includeArchived)) {
     if (!scopedRecallUris.has(scope)) {
       scopedRecallUris.add(scope);
-      searchedScopes.push(scope);
-      passes.push(yield* recallSearchHits(config, ov, searchArgs(query, scope), {dryRun, includeArchived}));
     }
   }
   const seededUri = project ? trimTrailingSlash(project.uri) : undefined;
-  if (seededUri?.startsWith('viking://') && seededUri !== inferredUri && !options.uri && options.inferScope !== false) {
-    searchedScopes.push(seededUri);
-    passes.push(yield* recallSearchHits(config, ov, searchArgs(query, seededUri), {dryRun, includeArchived}));
+  if (
+    seededUri?.startsWith('threadnote://') &&
+    seededUri !== inferredUri &&
+    !options.uri &&
+    options.inferScope !== false
+  ) {
+    scopedRecallUris.add(seededUri);
   }
 
   // Workset expansion: a named set of manifest projects recalled as one working
@@ -1346,51 +1346,67 @@ export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig
       .filter(uri => !alreadyScoped.has(uri))
       .slice(0, MAX_WORKSET_PASSES);
     for (const scope of worksetScopes) {
-      searchedScopes.push(scope);
-      passes.push(yield* recallSearchHits(config, ov, searchArgs(query, scope), {dryRun, includeArchived}));
+      scopedRecallUris.add(scope);
+    }
+  }
+  if (dryRun) {
+    for (const scope of scopedRecallUris) {
+      yield* Console.log(`Would search native recall index --uri ${scope}`);
     }
   }
 
-  const exactMatches = yield* collectExactMemoryMatches(config, ov, query, {
-    dryRun,
-    includeArchived,
-    project,
-  });
+  const exactMatches = dryRun
+    ? []
+    : yield* collectNativeExactMemoryMatches(config, query, {
+        includeArchived,
+        project,
+      });
   const environment = (yield* SystemInfo).environment();
-  let effectAiWarning: string | undefined;
-  const effectAi = dryRun
-    ? undefined
-    : yield* resolveEffectAiConfiguration(config, environment).pipe(
-        Effect.catch(cause => {
-          effectAiWarning = cause instanceof Error ? cause.message : String(cause);
-          return Effect.succeed(undefined);
-        }),
-      );
-  if (effectAiWarning) {
-    yield* Console.log(`Local AI recall unavailable: ${effectAiWarning}. Deterministic recall continued.`);
-  }
+  const effectAi = dryRun ? undefined : yield* resolveEffectAiConfiguration(config, environment);
   let hybridMinimumScore = recallHybridMinimumScore(Number(recallThreshold), options.threshold !== undefined);
   const expansionQueries: string[] = [];
+  const recallLimit = nodeLimit ?? 12;
+  let semanticResult = dryRun
+    ? Option.none<RecallSemanticScoresResult>()
+    : Option.some(yield* loadRecallSemanticScoresResult(config, query, recallLimit));
+  const surfacedSemanticWarnings = new Set<string>();
+  const surfaceSemanticWarning = (result: RecallSemanticScoresResult) =>
+    Option.match(result.warning, {
+      onNone: () => Effect.void,
+      onSome: warning =>
+        surfacedSemanticWarnings.has(warning)
+          ? Effect.void
+          : Effect.sync(() => surfacedSemanticWarnings.add(warning)).pipe(Effect.andThen(Console.warn(warning))),
+    });
+  if (Option.isSome(semanticResult)) yield* surfaceSemanticWarning(semanticResult.value);
+  const rerankerCache = createRecallRerankerCache();
   const prepareSections = (candidateUris?: readonly string[]) =>
-    prepareRecallSections(config, {
-      allowExactRescue: options.threshold === undefined,
-      allowedUriScopes: options.uri ? [options.uri] : undefined,
-      candidateUris,
-      exactMatches,
-      feedbackQuery: options.query,
-      includeInactive: includeArchived,
-      limit: nodeLimit ?? 12,
-      minimumScore: hybridMinimumScore,
-      passes,
-      project: recallProjectName,
-      query,
-      queryVariants: expansionQueries,
-      readRecords: uris => readMemoryRecordsByUri(config, uris),
-      seedUris: [inferredUri, seededUri].filter((uri): uri is string => uri !== undefined),
+    Effect.gen(function* () {
+      const prepared = yield* prepareRecallSections(config, {
+        allowExactRescue: options.threshold === undefined,
+        allowedUriScopes: explicitUri ? [explicitUri] : undefined,
+        candidateUris,
+        exactMatches,
+        feedbackQuery: options.query,
+        includeInactive: includeArchived,
+        limit: recallLimit,
+        minimumScore: hybridMinimumScore,
+        passes,
+        preferredUriScopes: explicitUri ? undefined : [...scopedRecallUris],
+        project: recallProjectName,
+        query,
+        queryVariants: expansionQueries,
+        readRecords: uris => readMemoryRecordsByUri(config, uris),
+        rerankerCache,
+        seedUris: [inferredUri, seededUri].filter((uri): uri is string => uri !== undefined),
+        semanticResult,
+      });
+      semanticResult = Option.some(prepared.semanticResult);
+      yield* surfaceSemanticWarning(prepared.semanticResult);
+      return prepared;
     });
   let recallSections = yield* prepareSections();
-  const shouldAttemptAiExpansion =
-    !dryRun && localRecallAiEnabled(effectAi?.configuration) && shouldExpandRecall(recallSections.confidence);
+  const shouldAttemptAiExpansion = !dryRun && shouldExpandRecall(recallSections.confidence);
   const indexSelectionCandidates = shouldAttemptAiExpansion
     ? buildRecallIndexSelectionCandidates(recallSections.expansionCandidates, recallProjectName, 24)
     : [];
@@ -1419,11 +1435,9 @@ export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig
     shouldExpandRecall(recallSections.confidence) &&
     groundedExpansionQueries.length < recallRewriteLimitForConfidence(recallSections.confidence);
   const expansionVocabulary =
-    needsFallbackExpansion &&
-    localRecallAiEnabled(effectAi?.configuration) &&
-    shouldExpandRecall(recallSections.confidence)
+    needsFallbackExpansion && shouldExpandRecall(recallSections.confidence)
       ? yield* loadRecallExpansionVocabulary(config, {
-          allowedUriScopes: options.uri ? [options.uri] : undefined,
+          allowedUriScopes: explicitUri ? [explicitUri] : [...scopedRecallUris],
           includeInactive: includeArchived,
           project: recallProjectName,
           rankedCandidates: recallSections.expansionCandidates,
@@ -1449,13 +1463,6 @@ export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig
   );
   for (const expansionQuery of proposedExpansionQueries) {
     expansionQueries.push(expansionQuery);
-    for (const scope of boundedRecallExpansionScopes(searchedScopes)) {
-      const expandedHits = yield* recallSearchHits(config, ov, searchArgs(expansionQuery, scope), {
-        dryRun,
-        includeArchived,
-      });
-      passes.push(expandedHits);
-    }
     hybridMinimumScore = recallHybridMinimumScore(Number(recallThreshold), options.threshold !== undefined);
     recallSections = yield* prepareSections();
   }
@@ -1517,40 +1524,9 @@ const referencedContextSection = Effect.fn('memory.referencedContextSection')(fu
   if (referenced.length === 0) {
     return undefined;
   }
-  return formatReferencedContextPointers(referenced, MAX_REFERENCED_CONTEXT);
-});
-
-/**
- * Run one recall search pass with `--output json` and return parsed hits.
- * Falls back to a plain search (without --threshold/--level) on a non-zero
- * exit so an older ov does not fail the whole recall. The merge in `runRecall`
- * dedupes hits across passes, so scoped passes only contribute what the base
- * pass missed.
- */
-const recallSearchHits = Effect.fn('memory.recallSearchHits')(function* (
-  config: RuntimeConfig,
-  ov: string,
-  args: readonly string[],
-  options: {readonly dryRun: boolean; readonly includeArchived: boolean},
-) {
-  const jsonArgs = withIdentity(config, [...args, '--output', 'json']);
-  if (options.dryRun) {
-    yield* Console.log(`Would run: ${formatShellCommand(ov, jsonArgs)}`);
-    return [];
-  }
-  let result = yield* runCommand(ov, jsonArgs, {allowFailure: true});
-  if (result.exitCode !== 0) {
-    result = yield* runCommand(ov, withIdentity(config, [...stripAdvancedSearchFlags(args), '--output', 'json']), {
-      allowFailure: true,
-    });
-  }
-  if (result.exitCode !== 0) {
-    yield* Console.log(
-      `WARN recall search failed: ${result.stderr.trim() || result.stdout.trim() || 'ov search error'}`,
-    );
-    return [];
-  }
-  return parseRecallHits(result.stdout, {includeArchived: options.includeArchived});
+  const candidates = referenced.slice(0, MAX_REFERENCED_CONTEXT);
+  const existingRecords = yield* readMemoryRecordsByUri(config, candidates);
+  return formatReferencedContextPointers(existingReferencedUris(candidates, existingRecords), MAX_REFERENCED_CONTEXT);
 });
 
 export function stripAdvancedSearchFlags(args: readonly string[]): readonly string[] {
@@ -1566,23 +1542,16 @@ export function stripAdvancedSearchFlags(args: readonly string[]): readonly stri
 }
 
 export const runRead = Effect.fn('runRead')(function* (config: RuntimeConfig, uri: string, options: ReadOptions) {
-  yield* attemptSync(() => assertVikingUri(uri));
+  yield* attemptSync(() => assertResourceUri(uri));
   if (options.dryRun !== true) {
     yield* syncSharedReposAndLog(config);
   }
-  const ov = yield* openVikingCliForMode(options.dryRun === true);
-  const result = yield* maybeRunEffect(options.dryRun === true, ov, withIdentity(config, ['read', uri]));
-  if (
-    result &&
-    result.stdout.includes('[Directory overview is not ready]') &&
-    (uri.endsWith('/.overview.md') || uri.endsWith('/.abstract.md'))
-  ) {
-    const parentUri = parentVikingUri(uri);
-    yield* Console.log(
-      '\nThis is a generated summary placeholder. To read the underlying content, inspect leaf nodes:',
-    );
-    yield* Console.log(`  threadnote list ${parentUri} --all --recursive`);
+  if (options.dryRun === true) {
+    yield* Console.log(`Would read native resource: ${uri}`);
+    return;
   }
+  const store = yield* ResourceStore;
+  yield* writeFinalCliOutput(yield* store.read(resourceStoreLocation(config), uri));
 });
 
 const syncSharedReposAndLog = Effect.fn('memory.syncSharedReposAndLog')(function* (config: RuntimeConfig) {
@@ -1597,6 +1566,24 @@ const syncSharedReposAndLog = Effect.fn('memory.syncSharedReposAndLog')(function
   }
   if (syncResult.syncedTeams.length > 0) {
     yield* Console.error(`Auto-synced shared memories: ${syncResult.syncedTeams.join(', ')}`);
+  }
+  for (const warning of syncResult.warnings) {
+    yield* Console.error(`Auto-sync warning: ${warning}`);
+  }
+});
+
+const syncObsidianSourcesAndLog = Effect.fn('memory.syncObsidianSourcesAndLog')(function* (config: RuntimeConfig) {
+  const syncResult = yield* syncObsidianSourcesBeforeRecall(config).pipe(
+    Effect.catch(error => {
+      const message = error instanceof Error ? error.message : String(error);
+      return Console.error(`Auto-sync warning: Obsidian source refresh failed: ${message}`).pipe(Effect.as(undefined));
+    }),
+  );
+  if (!syncResult) {
+    return;
+  }
+  if (syncResult.syncedSources.length > 0) {
+    yield* Console.error(`Auto-synced Obsidian sources: ${syncResult.syncedSources.join(', ')}`);
   }
   for (const warning of syncResult.warnings) {
     yield* Console.error(`Auto-sync warning: ${warning}`);
@@ -1647,7 +1634,7 @@ export const runCompact = Effect.fn('runCompact')(function* (config: RuntimeConf
 
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const ov = yield* openVikingCliForMode(false);
+  const ov = NATIVE_RESOURCE_BACKEND;
   const updatePath = path.join(config.agentContextHome, 'compact-memory-update.txt');
   yield* Effect.gen(function* () {
     for (const action of plan.keepUpdates) {
@@ -1790,7 +1777,7 @@ const localMemoryDirectoryForCompact = Effect.fn('memory.localMemoryDirectoryFor
 });
 
 function memoryUriDirectoryForCompact(config: RuntimeConfig, kind: CompactableMemoryKind, project: string): string {
-  const base = `viking://user/${uriSegment(config.user)}/memories`;
+  const base = `threadnote://user/${uriSegment(config.user)}/memories`;
   const projectSegment = uriSegment(project);
   switch (kind) {
     case 'durable':
@@ -1803,7 +1790,7 @@ function memoryUriDirectoryForCompact(config: RuntimeConfig, kind: CompactableMe
 }
 
 const localMemoryPathForUri = Effect.fn('memory.localMemoryPathForUri')(function* (config: RuntimeConfig, uri: string) {
-  const prefix = `viking://user/${uriSegment(config.user)}/memories/`;
+  const prefix = `threadnote://user/${uriSegment(config.user)}/memories/`;
   if (!uri.startsWith(prefix)) {
     return undefined;
   }
@@ -1816,23 +1803,24 @@ const localMemoryPathForUri = Effect.fn('memory.localMemoryPathForUri')(function
 });
 
 export const runList = Effect.fn('runList')(function* (config: RuntimeConfig, uri: string, options: ListOptions) {
-  yield* attemptSync(() => assertVikingUri(uri));
-  const ov = yield* openVikingCliForMode(options.dryRun === true);
-  const args = ['ls', uri];
-  if (options.all === true) {
-    args.push('--all');
+  yield* attemptSync(() => assertResourceUri(uri));
+  const nodeLimit = options.nodeLimit
+    ? yield* attemptSync(() => parsePositiveInteger(options.nodeLimit!, 'node limit'))
+    : undefined;
+  if (options.dryRun === true) {
+    yield* Console.log(`Would list native resource: ${uri}${options.recursive ? ' recursively' : ''}`);
+    return;
   }
-  if (options.recursive === true) {
-    args.push('--recursive');
-  }
+  const store = yield* ResourceStore;
+  const allEntries = yield* store.list(resourceStoreLocation(config), uri, {
+    recursive: options.recursive === true,
+  });
+  const entries = nodeLimit === undefined ? allEntries : allEntries.slice(0, nodeLimit);
   if (options.simple === true) {
-    args.push('--simple');
+    yield* writeFinalCliOutput(entries.map(entry => entry.uri).join('\n'));
+    return;
   }
-  if (options.nodeLimit) {
-    const nodeLimit = yield* attemptSync(() => parsePositiveInteger(options.nodeLimit!, 'node limit'));
-    args.push('--node-limit', String(nodeLimit));
-  }
-  yield* maybeRunEffect(options.dryRun === true, ov, withIdentity(config, args));
+  yield* writeFinalCliOutput(JSON.stringify(entries, null, 2));
 });
 
 export const runHandoff = Effect.fn('runHandoff')(function* (config: RuntimeConfig, options: HandoffOptions) {
@@ -1861,10 +1849,10 @@ export const runArchive = Effect.fn('runArchive')(function* (
   uri: string,
   options: ArchiveOptions,
 ) {
-  yield* attemptSync(() => assertVikingUri(uri));
-  const ov = yield* openVikingCliForMode(options.dryRun === true);
-  const readResult = yield* maybeRunEffect(options.dryRun === true, ov, withIdentity(config, ['read', uri]));
-  const original = readResult?.stdout.trim();
+  yield* attemptSync(() => assertResourceUri(uri));
+  const ov = NATIVE_RESOURCE_BACKEND;
+  const store = yield* ResourceStore;
+  const original = options.dryRun === true ? undefined : (yield* store.read(resourceStoreLocation(config), uri)).trim();
   if (options.dryRun === true) {
     const fallbackMetadata: MemoryMetadata = {
       archivedFrom: uri,
@@ -1881,7 +1869,7 @@ export const runArchive = Effect.fn('runArchive')(function* (
       metadata: fallbackMetadata,
       title: 'MEMORY',
     });
-    yield* Console.log(formatShellCommand(ov, withIdentity(config, ['rm', uri])));
+    yield* Console.log(`Would remove archived native resource: ${uri}`);
     return;
   }
   const originalMemory = yield* requireValue(original, `Could not read ${uri} before archiving.`);
@@ -1904,7 +1892,7 @@ export const runArchive = Effect.fn('runArchive')(function* (
     metadata,
     title: 'MEMORY',
   });
-  const removedOriginal = yield* removeVikingResourceWithRetry(ov, config, uri, {
+  const removedOriginal = yield* removeResourceWithRetry(ov, config, uri, {
     expectedContent: originalLocalContent ?? originalMemory,
   });
   if (removedOriginal) {
@@ -1917,39 +1905,150 @@ export const runArchive = Effect.fn('runArchive')(function* (
 });
 
 export const runForget = Effect.fn('runForget')(function* (config: RuntimeConfig, uri: string, options: ForgetOptions) {
-  yield* attemptSync(() => assertVikingUri(uri));
-  const ov = yield* openVikingCliForMode(options.dryRun === true);
+  yield* attemptSync(() => assertResourceUri(uri));
   if (options.dryRun === true) {
-    yield* maybeRunEffect(true, ov, withIdentity(config, ['rm', uri]));
+    yield* Console.log(`Would remove native resource: ${uri}`);
     return;
   }
-  const removed = yield* removeVikingResourceWithRetry(ov, config, uri);
+  const removed = yield* removeResourceWithRetry(NATIVE_RESOURCE_BACKEND, config, uri);
   if (!removed) {
-    yield* Effect.fail(new Error(`Resource is still being processed; retry later: threadnote forget ${uri}`));
+    yield* Effect.fail(new Error(`Resource does not exist: ${uri}`));
   }
 });
 
 export const runExportPack = Effect.fn('runExportPack')(function* (config: RuntimeConfig, options: PackOptions) {
   const path = yield* Path.Path;
-  const ov = yield* openVikingCliForMode(options.dryRun === true);
-  const defaultPath = path.join(config.agentContextHome, `threadnote-${safeTimestamp()}.ovpack`);
+  const defaultPath = path.join(config.agentContextHome, `threadnote-${safeTimestamp()}.threadnote-pack.json`);
   const outputPath = yield* expandPath(options.path ?? defaultPath);
-  const sourceUri = options.uri ?? `viking://user/${uriSegment(config.user)}/memories`;
-  yield* maybeRunEffect(options.dryRun === true, ov, withIdentity(config, ['export', sourceUri, outputPath]));
+  const sourceUri = canonicalPackRoot(options.uri ?? `threadnote://user/${uriSegment(config.user)}/memories`);
+  if (options.dryRun === true) {
+    yield* Console.log(`Would export native resources under ${sourceUri} to ${outputPath}.`);
+    return;
+  }
+  const store = yield* ResourceStore;
+  const entries = yield* store.list(resourceStoreLocation(config), sourceUri, {recursive: true});
+  const resources = yield* Effect.forEach(
+    entries.filter(entry => entry.type === 'file'),
+    entry =>
+      store.read(resourceStoreLocation(config), entry.uri).pipe(
+        Effect.map(content => ({
+          content,
+          relativeUri: entry.uri.slice(sourceUri.replace(/\/+$/, '').length).replace(/^\/+/, ''),
+        })),
+      ),
+    {concurrency: 8},
+  );
+  const fs = yield* FileSystem.FileSystem;
+  const temporary = `${outputPath}.${(yield* SystemInfo).processId}.tmp`;
+  yield* fs.makeDirectory(path.dirname(outputPath), {recursive: true, mode: 0o700});
+  yield* fs.writeFileString(temporary, `${JSON.stringify({resources, sourceUri, version: 1}, undefined, 2)}\n`, {
+    mode: 0o600,
+  });
+  yield* fs.rename(temporary, outputPath);
+  yield* Console.log(`Exported ${resources.length} resource(s) to ${outputPath}.`);
 });
 
 export const runImportPack = Effect.fn('runImportPack')(function* (config: RuntimeConfig, options: PackOptions) {
   if (!options.path) {
     yield* Effect.fail(new Error('Provide --path for import-pack.'));
   }
-  const ov = yield* openVikingCliForMode(options.dryRun === true);
-  const targetUri = options.targetUri ?? `viking://user/${uriSegment(config.user)}`;
-  yield* maybeRunEffect(
-    options.dryRun === true,
-    ov,
-    withIdentity(config, ['import', yield* expandPath(options.path!), targetUri]),
+  const inputPath = yield* expandPath(options.path!);
+  const fs = yield* FileSystem.FileSystem;
+  const rawPack = yield* fs.readFileString(inputPath);
+  const pack = yield* Effect.try({
+    try: () => parseThreadnotePack(rawPack),
+    catch: cause => new Error(`Invalid Threadnote pack ${inputPath}: ${errorMessage(cause)}`, {cause}),
+  });
+  const targetUri = options.targetUri
+    ? canonicalPackRoot(options.targetUri)
+    : packTargetForCurrentUser(pack.sourceUri, config.user);
+  const planned = pack.resources.map(resource => ({
+    content: resource.content,
+    uri: canonicalPackRoot(`${targetUri.replace(/\/+$/, '')}/${resource.relativeUri}`),
+  }));
+  const destinations = new Set<string>();
+  for (const resource of planned) {
+    const collisionKey = resource.uri.normalize('NFC').toLocaleLowerCase();
+    if (destinations.has(collisionKey)) {
+      yield* Effect.fail(new Error(`Threadnote pack contains colliding destination URIs: ${resource.uri}.`));
+    }
+    destinations.add(collisionKey);
+  }
+  const store = yield* ResourceStore;
+  const mutations: ResourceStoreMutation[] = [];
+  for (const resource of planned) {
+    if (options.dryRun === true) {
+      yield* Console.log(`Would import native resource: ${resource.uri}`);
+      continue;
+    }
+    mutations.push({
+      content: resource.content,
+      options: {mode: 'upsert'},
+      type: 'write',
+      uri: resource.uri,
+    });
+  }
+  if (options.dryRun !== true) {
+    yield* store.mutate(resourceStoreLocation(config), mutations);
+  }
+  yield* Console.log(
+    `${options.dryRun === true ? 'Would import' : 'Imported'} ${pack.resources.length} resource(s) from ${inputPath}.`,
   );
 });
+
+function parseThreadnotePack(raw: string): {
+  readonly resources: readonly {readonly content: string; readonly relativeUri: string}[];
+  readonly sourceUri: string;
+  readonly version: 1;
+} {
+  const value = JSON.parse(raw) as unknown;
+  if (typeof value !== 'object' || value === null) throw new Error('Pack root must be an object.');
+  const pack = value as {
+    readonly resources?: unknown;
+    readonly sourceUri?: unknown;
+    readonly version?: unknown;
+  };
+  if (pack.version !== 1 || typeof pack.sourceUri !== 'string' || !Array.isArray(pack.resources)) {
+    throw new Error('Unsupported Threadnote pack version or shape.');
+  }
+  const resources = pack.resources.map(resource => {
+    if (
+      typeof resource !== 'object' ||
+      resource === null ||
+      typeof (resource as {content?: unknown}).content !== 'string' ||
+      typeof (resource as {relativeUri?: unknown}).relativeUri !== 'string'
+    ) {
+      throw new Error('Pack resource entry is invalid.');
+    }
+    const entry = resource as {readonly content: string; readonly relativeUri: string};
+    if (
+      !entry.relativeUri ||
+      entry.relativeUri.startsWith('/') ||
+      entry.relativeUri.split('/').some(segment => !segment || segment === '.' || segment === '..')
+    ) {
+      throw new Error(`Unsafe pack relative URI: ${entry.relativeUri}.`);
+    }
+    return entry;
+  });
+  return {resources, sourceUri: pack.sourceUri, version: 1};
+}
+
+function canonicalPackRoot(input: string): string {
+  const id = parseResourceId(input);
+  if (id.anchor) throw new Error(`Pack resource roots cannot contain anchors: ${input}.`);
+  return resourceIdWithoutAnchor(id).canonicalUri;
+}
+
+function packTargetForCurrentUser(sourceUri: string, user: string): string {
+  const source = resourceIdWithoutAnchor(parseResourceId(sourceUri));
+  if (source.namespace === 'resources') {
+    return source.canonicalUri;
+  }
+  if (source.namespace === 'user' && source.segments.length > 0) {
+    return canonicalResourceUri('user', [uriSegment(user), ...source.segments.slice(1)]);
+  }
+  throw new Error(`Unsupported Threadnote pack source URI: ${sourceUri}.`);
+}
 
 const inferRecallUri = Effect.fn('memory.inferRecallUri')(function* (config: RuntimeConfig, query: string) {
   // Only scope the base search when the query has an explicit "skills" intent —
@@ -1964,8 +2063,8 @@ const inferRecallUri = Effect.fn('memory.inferRecallUri')(function* (config: Run
   }
   const project = yield* inferProjectFromQuery(config.manifestPath, query);
   return project
-    ? `viking://resources/agent-skills/repo-local-${uriSegment(project.name)}`
-    : 'viking://resources/agent-skills';
+    ? `threadnote://resources/agent-skills/repo-local-${uriSegment(project.name)}`
+    : 'threadnote://resources/agent-skills';
 });
 
 export function hasAgentSkillCatalogIntent(query: string): boolean {
@@ -1985,38 +2084,26 @@ export function hasAgentSkillCatalogIntent(query: string): boolean {
   );
 }
 
-const collectExactMemoryMatches = Effect.fn('memory.collectExactMemoryMatches')(function* (
+const collectNativeExactMemoryMatches = Effect.fn('memory.collectNativeExactMemoryMatches')(function* (
   config: RuntimeConfig,
-  ov: string,
   query: string,
-  options: {readonly dryRun: boolean; readonly includeArchived: boolean; readonly project: ProjectManifest | undefined},
+  options: {readonly includeArchived: boolean; readonly project: ProjectManifest | undefined},
 ) {
   const terms = exactRecallTerms(query);
-  if (terms.length === 0) {
-    return [];
-  }
-  const scopes = exactMemoryScopes(config, options.includeArchived, query, options.project);
-  const grepArgs = (term: string, scope: string): readonly string[] =>
-    withIdentity(config, ['grep', term, '--uri', scope, '--node-limit', '5', '--output', 'json']);
-  if (options.dryRun) {
-    const planned = terms.flatMap(term => scopes.map(scope => formatShellCommand(ov, grepArgs(term, scope))));
-    yield* Console.log('\nExact memory/resource matches:');
-    yield* Console.log(planned.join('\n'));
-    return [];
-  }
-  return yield* collectExactMatches(terms, scopes, (term, scope) =>
-    runCommand(ov, grepArgs(term, scope), {allowFailure: true}).pipe(
-      Effect.map(result => (result.exitCode === 0 ? result.stdout : undefined)),
-    ),
-  );
+  if (terms.length === 0) return [];
+  return yield* loadRecallExactMatches(config, {
+    includeInactive: options.includeArchived,
+    limitPerTerm: 25,
+    terms,
+    uriScopes: exactMemoryScopes(config, options.includeArchived, query, options.project),
+  }).pipe(Effect.catch(() => Effect.succeed([])));
 });
 
 const storeMemory = Effect.fn('storeMemory')(function* (config: RuntimeConfig, options: StoreMemoryOptions) {
   if (options.replaceUri) {
-    yield* attemptSync(() => assertVikingUri(options.replaceUri as string));
+    yield* attemptSync(() => assertResourceUri(options.replaceUri as string));
   }
-  const path = yield* Path.Path;
-  const ov = yield* openVikingCliForMode(options.dryRun);
+  const ov = NATIVE_RESOURCE_BACKEND;
   if (options.replaceUri && isInSharedNamespace(config, options.replaceUri)) {
     if (options.dryRun) {
       yield* storeSharedMemoryReplacement(config, ov, options, options.replaceUri as string);
@@ -2034,8 +2121,6 @@ const storeMemory = Effect.fn('storeMemory')(function* (config: RuntimeConfig, o
     );
     return;
   }
-  const memoryPath = path.join(config.agentContextHome, 'last-memory.txt');
-
   // Two-pass formatting: assume the caller's replaceUri is a true supersede,
   // compute the destination URI, then drop the supersedes line if it points
   // at the URI we are about to write to (an in-place update). Without this,
@@ -2054,25 +2139,9 @@ const storeMemory = Effect.fn('storeMemory')(function* (config: RuntimeConfig, o
   if (options.dryRun) {
     const writeMode = yield* memoryWriteMode(ov, config, memoryUri, finalMetadata);
     yield* Console.log(memory);
-    yield* Console.log('\nWould run:');
-    yield* Console.log(
-      formatShellCommand(
-        ov,
-        withIdentity(config, [
-          'write',
-          memoryUri,
-          '--from-file',
-          memoryPath,
-          '--mode',
-          writeMode,
-          '--wait',
-          '--timeout',
-          '120',
-        ]),
-      ),
-    );
+    yield* Console.log(`\nWould ${writeMode} native resource: ${memoryUri}`);
     if (options.replaceUri && !isInPlaceUpdate) {
-      yield* Console.log(formatShellCommand(ov, withIdentity(config, ['rm', options.replaceUri])));
+      yield* Console.log(`Would remove superseded native resource: ${options.replaceUri}`);
     }
     return;
   }
@@ -2080,16 +2149,14 @@ const storeMemory = Effect.fn('storeMemory')(function* (config: RuntimeConfig, o
   yield* withMemoryUriLocks(
     fs,
     config.agentContextHome,
-    [LAST_MEMORY_STAGING_LOCK_URI, options.replaceUri, memoryUri],
+    [options.replaceUri, memoryUri],
     Effect.gen(function* () {
       const writeMode = yield* memoryWriteMode(ov, config, memoryUri, finalMetadata);
-      yield* fs.writeFileString(memoryPath, memory, {mode: 0o600});
-      yield* fs.chmod(memoryPath, 0o600);
       yield* ensureMemoryDirectory(ov, config, memoryDirectoryUri(config, finalMetadata));
-      yield* writeDurableMemoryFile(ov, config, memoryUri, memoryPath, writeMode);
+      yield* writeMemoryFile(config, ov, memoryUri, memory, writeMode, false);
       yield* Console.log(`Stored memory: ${memoryUri}`);
       if (options.replaceUri && !isInPlaceUpdate) {
-        const removedReplacedMemory = yield* removeVikingResourceWithRetry(ov, config, options.replaceUri, {
+        const removedReplacedMemory = yield* removeResourceWithRetry(ov, config, options.replaceUri, {
           alreadyLocked: true,
         });
         if (removedReplacedMemory) {
@@ -2164,14 +2231,21 @@ const storeSharedMemoryReplacement = Effect.fn('memory.storeSharedMemoryReplacem
     );
   }
   const memory = scrub.cleaned;
-  const relativePath = vikingUriToWorktreeRelative(config, targetUri, team.name);
+  const relativePath = resourceUriToWorktreeRelative(config, targetUri, team.name);
 
   if (options.dryRun) {
     yield* Console.log(memory);
     yield* Console.log('\nWould run:');
   }
+  const [existingTarget] = options.dryRun ? [] : yield* readMemoryRecordsByUri(config, [targetUri]);
+  if (!options.dryRun && !existingTarget) {
+    return yield* Effect.fail(new Error(`Shared memory ${targetUri} no longer exists.`));
+  }
+  const previousContent = existingTarget?.content;
+  yield* assertSharedWorktreeFileReady(team.config.worktree, relativePath, previousContent, options.dryRun);
   yield* ensureSharedDirectoryChain(config, ov, targetUri, options.dryRun);
   yield* writeMemoryFile(config, ov, targetUri, memory, 'replace', options.dryRun);
+  yield* writeSharedWorktreeFile(team.config.worktree, relativePath, memory, options.dryRun);
 
   const gitMessages = yield* publishShareGitChange(
     team.config.worktree,
@@ -2203,27 +2277,17 @@ const writeDurableMemoryFile = Effect.fn('memory.writeDurableMemoryFile')(functi
   yield* writeMemoryFile(config, ov, memoryUri, content, writeMode, false);
 });
 
-function removeVikingResourceWithRetry(
-  ov: string,
+function removeResourceWithRetry(
+  _ov: string,
   config: RuntimeConfig,
   uri: string,
   options: {readonly alreadyLocked?: boolean; readonly expectedContent?: string} = {},
 ) {
-  const args = withIdentity(config, ['rm', uri]);
-  const remove = Console.consoleWith(output =>
-    pipe(
-      removeOpenVikingResourceEffect(ov, args, {
-        isBusy: isResourceBusy,
-        onAttempt: attempt => output.log(`${attempt === 0 ? 'Running' : 'Retrying'}: ${formatShellCommand(ov, args)}`),
-      }),
-      Effect.map(result => {
-        if (!result) return false;
-        if (result.stdout.trim()) output.log(result.stdout.trim());
-        if (result.stderr.trim()) output.error(result.stderr.trim());
-        return true;
-      }),
-    ),
-  );
+  const remove = Effect.gen(function* () {
+    const store = yield* ResourceStore;
+    yield* store.remove(resourceStoreLocation(config), uri);
+    return true;
+  }).pipe(Effect.catchTag('ResourceNotFound', () => Effect.succeed(false)));
   if (options.alreadyLocked) {
     return remove;
   }
@@ -2249,13 +2313,12 @@ function removeVikingResourceWithRetry(
   });
 }
 
-const vikingResourceExists = Effect.fn('memory.vikingResourceExists')(function* (
-  ov: string,
-  config: RuntimeConfig,
-  uri: string,
-) {
-  const stat = yield* runCommand(ov, withIdentity(config, ['stat', uri]), {allowFailure: true});
-  return stat.exitCode === 0;
+const resourceExists = Effect.fn('memory.resourceExists')(function* (_ov: string, config: RuntimeConfig, uri: string) {
+  const store = yield* ResourceStore;
+  return yield* store.stat(resourceStoreLocation(config), uri).pipe(
+    Effect.as(true),
+    Effect.catchTag('ResourceNotFound', () => Effect.succeed(false)),
+  );
 });
 
 const ensureDurableMemoryDirectory = Effect.fn('memory.ensureDurableMemoryDirectory')(
@@ -2263,25 +2326,16 @@ const ensureDurableMemoryDirectory = Effect.fn('memory.ensureDurableMemoryDirect
 );
 
 const ensureMemoryDirectory = Effect.fn('memory.ensureMemoryDirectory')(function* (
-  ov: string,
+  _ov: string,
   config: RuntimeConfig,
   directoryUri: string,
 ) {
-  for (const uri of vikingDirectoryChain(directoryUri)) {
-    const statResult = yield* runCommand(ov, withIdentity(config, ['stat', uri]), {allowFailure: true});
-    if (statResult.exitCode === 0) {
-      continue;
-    }
-    yield* maybeRunEffect(
-      false,
-      ov,
-      withIdentity(config, ['mkdir', uri, '--description', 'Threadnote lifecycle-aware local memories.']),
-    );
-  }
+  const store = yield* ResourceStore;
+  yield* store.makeDirectory(resourceStoreLocation(config), directoryUri);
 });
 
 function durableMemoryDirectoryUri(config: RuntimeConfig): string {
-  return `viking://user/${uriSegment(config.user)}/memories/events`;
+  return `threadnote://user/${uriSegment(config.user)}/memories/events`;
 }
 
 function migratedDurableMemoryUri(config: RuntimeConfig, hash: string): string {
@@ -2354,9 +2408,9 @@ const MAX_WORKSET_PASSES = 12;
 function worksetScopeUris(config: RuntimeConfig, workset: ResolvedWorkset): readonly string[] {
   const scopes: string[] = [];
   for (const member of workset.projects) {
-    scopes.push(`viking://user/${uriSegment(config.user)}/memories/durable/projects/${uriSegment(member.name)}`);
+    scopes.push(`threadnote://user/${uriSegment(config.user)}/memories/durable/projects/${uriSegment(member.name)}`);
     const seeded = trimTrailingSlash(member.uri);
-    if (seeded.startsWith('viking://')) {
+    if (seeded.startsWith('threadnote://')) {
       scopes.push(seeded);
     }
   }
@@ -2378,7 +2432,7 @@ function projectMemoryScopeUris(
   if (!projectName) {
     return [];
   }
-  const base = `viking://user/${uriSegment(config.user)}/memories`;
+  const base = `threadnote://user/${uriSegment(config.user)}/memories`;
   const projectSegment = uriSegment(projectName);
   const scopes = [
     `${base}/durable/projects/${projectSegment}`,
@@ -2402,12 +2456,12 @@ function exactMemoryScopes(
   project: ProjectManifest | undefined,
 ): readonly string[] {
   return exactMemoryScopeUris({
-    agentMemoriesUri: `viking://agent/${uriSegment(config.agentId)}/memories`,
+    agentMemoriesUri: `threadnote://agent/${uriSegment(config.agentId)}/memories`,
     includeArchived,
     intents: exactRecallScopeIntents(query),
     projectName: project ? uriSegment(project.name) : undefined,
     projectResourceUri: project ? trimTrailingSlash(project.uri) : undefined,
-    userBase: `viking://user/${uriSegment(config.user)}/memories`,
+    userBase: `threadnote://user/${uriSegment(config.user)}/memories`,
   });
 }
 
@@ -2423,7 +2477,7 @@ const memoryUriFor = Effect.fn('memory.memoryUriFor')(function* (
 });
 
 function memoryDirectoryUri(config: RuntimeConfig, metadata: MemoryMetadata): string {
-  const baseUri = `viking://user/${uriSegment(config.user)}/memories`;
+  const baseUri = `threadnote://user/${uriSegment(config.user)}/memories`;
   const projectSegment = uriSegment(metadata.project ?? 'general');
   switch (metadata.kind) {
     case 'preference':
@@ -2448,7 +2502,7 @@ function shouldUseStableMemoryUri(metadata: MemoryMetadata): boolean {
 }
 
 const memoryWriteMode = Effect.fn('memory.memoryWriteMode')(function* (
-  ov: string,
+  _ov: string,
   config: RuntimeConfig,
   memoryUri: string,
   metadata: MemoryMetadata,
@@ -2456,21 +2510,15 @@ const memoryWriteMode = Effect.fn('memory.memoryWriteMode')(function* (
   if (!shouldUseStableMemoryUri(metadata)) {
     return 'create';
   }
-  return (yield* vikingResourceExists(ov, config, memoryUri)) ? 'replace' : 'create';
+  return (yield* resourceExists(NATIVE_RESOURCE_BACKEND, config, memoryUri)) ? 'replace' : 'create';
 });
 
-function vikingDirectoryChain(directoryUri: string): readonly string[] {
-  const prefix = 'viking://';
-  if (!directoryUri.startsWith(prefix)) {
-    return [directoryUri];
-  }
-  const parts = directoryUri.slice(prefix.length).split('/').filter(Boolean);
-  const startIndex = parts[0] === 'user' && parts.length > 2 ? 3 : 1;
-  const chain: string[] = [];
-  for (let index = startIndex; index <= parts.length; index += 1) {
-    chain.push(`${prefix}${parts.slice(0, index).join('/')}`);
-  }
-  return chain;
+function resourceStoreLocation(config: Pick<RuntimeConfig, 'account' | 'agentContextHome' | 'user'>) {
+  return {
+    account: config.account,
+    home: config.agentContextHome,
+    user: config.user,
+  };
 }
 
 function isClearLegacyHandoffMemory(memory: string): boolean {
@@ -2519,7 +2567,7 @@ const legacySourceAccounts = Effect.fn('memory.legacySourceAccounts')(function* 
     return uniqueStrings(explicitAccounts);
   }
   if (options.allAccounts === true) {
-    const accounts = yield* childDirectoryNames(yield* localVikingDataRoot(config));
+    const accounts = yield* childDirectoryNames(yield* localDataRoot(config));
     return accounts.filter(account => !account.startsWith('_'));
   }
   return [config.account];
@@ -2530,7 +2578,7 @@ const legacyMemoryCandidates = Effect.fn('memory.legacyMemoryCandidates')(functi
   sourceAccounts: readonly string[],
 ) {
   const path = yield* Path.Path;
-  const dataRoot = yield* localVikingDataRoot(config);
+  const dataRoot = yield* localDataRoot(config);
   const candidates: LegacyMemoryCandidate[] = [];
   for (const sourceAccount of sourceAccounts) {
     const sessionRoot = path.join(dataRoot, sourceAccount, 'session');
@@ -2602,7 +2650,7 @@ function isLegacyThreadnoteMemory(text: string): boolean {
 
 const existingDurableMemoryHashes = Effect.fn('memory.existingDurableMemoryHashes')(function* (config: RuntimeConfig) {
   const hashes = new Set<string>();
-  yield* collectDurableMemoryHashes(yield* localVikingDataRoot(config), hashes);
+  yield* collectDurableMemoryHashes(yield* localDataRoot(config), hashes);
   return hashes;
 });
 
@@ -2699,23 +2747,18 @@ function legacySourceLabel(candidate: LegacyMemoryCandidate): string {
   return `${candidate.sourceAccount}/${candidate.sourceSession}/${candidate.sourceArchive}`;
 }
 
-const localVikingDataRoot = Effect.fn('memory.localVikingDataRoot')(function* (config: RuntimeConfig) {
+const localDataRoot = Effect.fn('memory.localDataRoot')(function* (config: RuntimeConfig) {
   const path = yield* Path.Path;
-  return path.join(config.agentContextHome, 'data', 'viking');
+  return path.join(config.agentContextHome, 'data');
 });
 
 const localUserMemoriesRoot = Effect.fn('memory.localUserMemoriesRoot')(function* (config: RuntimeConfig) {
   const path = yield* Path.Path;
-  return path.join(yield* localVikingDataRoot(config), config.account, 'user', uriSegment(config.user), 'memories');
+  return path.join(yield* localDataRoot(config), config.account, 'user', uriSegment(config.user), 'memories');
 });
 
 function uniqueStrings(values: readonly string[]): readonly string[] {
   return [...new Set(values)].sort();
-}
-
-function isResourceBusy(stderr: string, stdout: string): boolean {
-  const output = `${stderr}\n${stdout}`.toLowerCase();
-  return output.includes('resource is busy') || output.includes('resource is being processed');
 }
 
 /**
@@ -2731,11 +2774,11 @@ function normalizeReferenceUris(references: readonly string[] | undefined): read
   const seen = new Set<string>();
   for (const raw of references) {
     const uri = raw.trim();
-    if (!uri || seen.has(uri)) {
+    if (!uri) {
       continue;
     }
-    assertVikingUri(uri);
-    seen.add(uri);
+    const canonicalUri = parseResourceId(uri).canonicalUri;
+    seen.add(canonicalUri);
   }
   return seen.size > 0 ? [...seen] : undefined;
 }

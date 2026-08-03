@@ -55,14 +55,14 @@ describe('project-name memory migration', () => {
         'projects:',
         '  - name: easy-to-type',
         `    path: ${repoRoot}`,
-        '    uri: viking://resources/repos/easy-to-type',
+        '    uri: threadnote://resources/repos/easy-to-type',
         '    seed: [README.md]',
         'worksets:',
         '  - name: local',
         '    projects: [easy-to-type]',
         'future_monorepo:',
         '  path_candidates: [/Users/denys/src/future]',
-        '  uri: viking://resources/repos/future',
+        '  uri: threadnote://resources/repos/future',
         '',
       ].join('\n'),
       'utf8',
@@ -106,14 +106,14 @@ describe('project-name memory migration', () => {
     const output = log.mock.calls.map(call => call.join(' ')).join('\n');
     expect(output).toContain('Would update seed manifest:');
     expect(output).toContain('name: threadnote');
-    expect(output).toContain('uri: viking://resources/repos/threadnote');
+    expect(output).toContain('uri: threadnote://resources/repos/threadnote');
     expect(output).toContain('- threadnote');
     expect(output).toContain('future_monorepo:');
     expect(output).toContain('path_candidates:');
     expect(output).not.toContain('futureMonorepo');
     expect(output).not.toContain('pathCandidates');
     expect(output).toContain(
-      'viking://user/denys/memories/durable/projects/easy-to-type/current.md -> viking://user/denys/memories/durable/projects/threadnote/current-from-easy-to-type.md',
+      'threadnote://user/denys/memories/durable/projects/easy-to-type/current.md -> threadnote://user/denys/memories/durable/projects/threadnote/current-from-easy-to-type.md',
     );
     expect(output).toContain(
       'Project-name migration summary: 1 memory would be migrated from easy-to-type to threadnote',
@@ -154,7 +154,7 @@ describe('project-name memory migration', () => {
     const output = log.mock.calls.map(call => call.join(' ')).join('\n');
     expect(output).not.toContain('Would update seed manifest:');
     expect(output).toContain(
-      'viking://user/denys/memories/handoffs/active/easy-to-type/current.md -> viking://user/denys/memories/handoffs/active/threadnote/current.md',
+      'threadnote://user/denys/memories/handoffs/active/easy-to-type/current.md -> threadnote://user/denys/memories/handoffs/active/threadnote/current.md',
     );
     expect(output).toContain(
       'Project-name migration summary: 1 memory would be migrated from easy-to-type to threadnote',
@@ -178,11 +178,11 @@ describe('project-name memory migration', () => {
         'projects:',
         '  - name: threadnote',
         `    path: ${currentRepo}`,
-        '    uri: viking://resources/repos/threadnote',
+        '    uri: threadnote://resources/repos/threadnote',
         '    seed: [README.md]',
         '  - name: ta',
         `    path: ${otherRepo}`,
-        '    uri: viking://resources/repos/ta',
+        '    uri: threadnote://resources/repos/ta',
         '    seed: [README.md]',
         'worksets:',
         '  - name: all',
@@ -215,10 +215,10 @@ describe('project-name memory migration', () => {
     const output = log.mock.calls.map(call => call.join(' ')).join('\n');
     expect(output).toContain('Would update seed manifest:');
     expect(output).toContain('name: igor-bot');
-    expect(output).toContain('uri: viking://resources/repos/igor-bot');
+    expect(output).toContain('uri: threadnote://resources/repos/igor-bot');
     expect(output).toContain('- igor-bot');
     expect(output).toContain(
-      'viking://user/denys/memories/durable/projects/ta/current.md -> viking://user/denys/memories/durable/projects/igor-bot/current.md',
+      'threadnote://user/denys/memories/durable/projects/ta/current.md -> threadnote://user/denys/memories/durable/projects/igor-bot/current.md',
     );
     expect(output).toContain('Project-name migration summary: 1 memory would be migrated from ta to igor-bot');
   });
@@ -229,10 +229,7 @@ function runtimeConfig(agentContextHome: string): RuntimeConfig {
     account: 'local',
     agentContextHome,
     agentId: 'threadnote',
-    host: '127.0.0.1',
     manifestPath: join(agentContextHome, 'seed-manifest.yaml'),
-    openVikingVersion: '0.0.0',
-    port: 1933,
     user: 'denys',
   };
 }
@@ -247,7 +244,6 @@ async function writeMemory(config: RuntimeConfig, relativePath: string, content:
   const path = join(
     config.agentContextHome,
     'data',
-    'viking',
     config.account,
     'user',
     config.user,

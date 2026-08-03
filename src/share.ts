@@ -3,8 +3,8 @@ import {CommandExecutor} from './effect/command.js';
 import {SystemInfo} from './effect/system.js';
 import {uriSegment} from './manifest.js';
 import {canonicalMemoryDocumentContent} from './memory_document.js';
-import {expireRecallIndexValidation} from './recall/index.js';
-import {withIdentity} from './runtime.js';
+import {ResourceStore} from './effect/resource-store.js';
+import {parseResourceId} from './storage/resource-id.js';
 import {applyScrubber, credentialScrubberBlocker, SCRUBBER_PATTERNS} from './scrubber.js';
 import type {
   ShareAgentArtifactAgent,
@@ -30,7 +30,7 @@ import type {
   ShareUnpublishOptions,
 } from './types.js';
 import {
-  assertVikingUri,
+  assertResourceUri,
   ensureDirectory,
   exists,
   expandPath,
@@ -38,19 +38,17 @@ import {
   isDirectory,
   isFile,
   maybeRun,
-  openVikingCliForMode,
   parseJsonConfigObject,
   portablePath,
   readFileIfExists,
-  reindexWaitTimeoutMs,
   removePath,
   requiredExecutable,
   runCommand,
   safeTimestamp,
   sha256,
-  sleep,
 } from './utils.js';
 
+const NATIVE_RESOURCE_BACKEND = 'threadnote-native';
 const TEAMS_FILE_VERSION = 1;
 const SHARED_SEGMENT = 'shared';
 const SHAREABLE_MEMORY_KIND_DIRS = ['durable'];
@@ -64,7 +62,7 @@ const BUNDLE_MANIFEST_VERSION = 1;
 // (BUNDLE_INSTALL_METADATA_FILE); neither is treated as skill content.
 const BUNDLE_MANIFEST_FILE = '.threadnote-bundle.json';
 const BUNDLE_INSTALL_METADATA_FILE = '.threadnote-bundle-install.json';
-// OpenViking writes these summaries into the worktree; they are gitignored and
+// native canonical store writes these summaries into the worktree; they are gitignored and
 // must never be packed as skill members.
 const OV_SUMMARY_FILES: readonly string[] = ['.abstract.md', '.overview.md'];
 // Directories and files that are skill runtime artifacts or local junk, never
@@ -80,7 +78,10 @@ const PACK_FILES_DIR = 'files';
 // back to the real install directory at install time so hardcoded paths resolve
 // on a teammate's machine.
 const PACK_ROOT_TOKEN = '${THREADNOTE_PACK_ROOT}';
+const AUTO_SHARE_GIT_TIMEOUT_MILLISECONDS = 5_000;
 export const SHARED_BACKGROUND_FETCH_INTERVAL_MILLISECONDS = 5 * 60 * 1000;
+const SHARE_FETCH_RECEIPT_VERSION = 1;
+const SHARE_FETCH_WARNING_MAXIMUM_LENGTH = 1_000;
 export const DEFAULT_GIT_REMOTE_NAME = 'origin';
 
 export {applyScrubber, scrubberBlocker} from './scrubber.js';
@@ -177,15 +178,6 @@ const mkdir = Effect.fn('share.mkdir')(function* (
 ) {
   const fs = yield* FileSystem.FileSystem;
   yield* fs.makeDirectory(target, options);
-});
-
-const mkdtemp = Effect.fn('share.mkdtemp')(function* (prefixPath: string) {
-  const fs = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
-  return yield* fs.makeTempDirectory({
-    directory: path.dirname(prefixPath),
-    prefix: path.basename(prefixPath),
-  });
 });
 
 function readdir(target: string): Effect.Effect<string[], unknown, FileSystem.FileSystem>;
@@ -326,6 +318,7 @@ export interface SharedMemoryUriParts {
 
 interface AutoShareState {
   behindTeams: ReadonlySet<string>;
+  forceNextCheck: boolean;
   lastCheckedAt: number;
   pendingReindexes: Map<string, readonly ChangedFile[]>;
 }
@@ -374,6 +367,17 @@ interface ShareUpdateStatus {
   readonly warning?: string;
 }
 
+interface ShareFetchReceipt {
+  readonly behind: number;
+  readonly checkedAt: number;
+  readonly remote: string;
+  readonly succeeded: boolean;
+  readonly team: string;
+  readonly version: number;
+  readonly warning?: string;
+  readonly worktree: string;
+}
+
 interface PendingReindexFile {
   readonly teams: Readonly<Record<string, readonly ChangedFile[]>>;
   readonly version: number;
@@ -381,6 +385,10 @@ interface PendingReindexFile {
 
 export function clearAutoShareStateForTest(): void {
   autoShareStates.clear();
+}
+
+export function markSharedAutoSyncDeferred(config: ShareRuntime): void {
+  autoShareState(config).forceNextCheck = true;
 }
 
 export const runShareInit = Effect.fn('share.runShareInit')(function* (
@@ -443,19 +451,19 @@ export const runShareInit = Effect.fn('share.runShareInit')(function* (
   if (!dryRun) {
     yield* ensureSharedGitignore(worktree, git, options.push !== false);
     const ingested = yield* ingestWorktreeFiles(config, newConfig, 'create');
-    yield* Console.log(`Ingested ${ingested} shared file(s) into OpenViking.`);
+    yield* Console.log(`Ingested ${ingested} shared file(s) into native canonical store.`);
   }
 });
 
 const SHARED_GITIGNORE_PATTERNS = ['**/.abstract.md', '**/.overview.md'];
-const SHARED_GITIGNORE_HEADER = '# Threadnote: ignore OpenViking-generated directory summaries.';
+const SHARED_GITIGNORE_HEADER = '# Threadnote: ignore native canonical store-generated directory summaries.';
 
 const ensureSharedGitignore = Effect.fn('share.ensureSharedGitignore')(function* (
   worktree: string,
   git: string,
   push: boolean,
 ) {
-  // Idempotently ensure the OpenViking-summary patterns are in the worktree's
+  // Idempotently ensure the native canonical store-summary patterns are in the worktree's
   // .gitignore. There's no opt-out: these two patterns describe files that OV
   // writes into every shared directory on every mkdir, are not memories, and
   // would only pollute git history if tracked. Users who insist on tracking
@@ -487,7 +495,7 @@ const ensureSharedGitignore = Effect.fn('share.ensureSharedGitignore')(function*
   yield* maybeRun(false, git, ['-C', worktree, 'add', '.gitignore']);
   const commitResult = yield* runCommand(
     git,
-    ['-C', worktree, 'commit', '-m', 'share: ignore OpenViking directory summaries'],
+    ['-C', worktree, 'commit', '-m', 'share: ignore native canonical store directory summaries'],
     {allowFailure: true},
   );
   if (commitResult.exitCode !== 0) {
@@ -556,6 +564,7 @@ export const syncSharedReposBeforeAgentRead = Effect.fn('share.syncSharedReposBe
         if (Result.isSuccess(syncResult)) {
           warnings.push(...syncResult.success.warnings);
           if (syncResult.success.synced) {
+            if (remainingBehind.has(team)) yield* recordShareTeamSynced(config, team);
             remainingBehind.delete(team);
             syncedTeams.push(team);
           }
@@ -577,7 +586,7 @@ function autoShareState(config: ShareRuntime): AutoShareState {
   const key = `${config.agentContextHome}:${config.account}:${config.user}`;
   let state = autoShareStates.get(key);
   if (!state) {
-    state = {behindTeams: new Set(), lastCheckedAt: 0, pendingReindexes: new Map()};
+    state = {behindTeams: new Set(), forceNextCheck: false, lastCheckedAt: 0, pendingReindexes: new Map()};
     autoShareStates.set(key, state);
   }
   return state;
@@ -677,11 +686,13 @@ const refreshShareUpdateStateLocked = Effect.fn('share.refreshShareUpdateStateLo
   const now = Date.now();
   if (
     !options.force &&
+    !state.forceNextCheck &&
     state.lastCheckedAt > 0 &&
     now - state.lastCheckedAt < SHARED_BACKGROUND_FETCH_INTERVAL_MILLISECONDS
   ) {
     return [];
   }
+  state.forceNextCheck = false;
   return yield* Effect.gen(function* () {
     const statuses = yield* fetchShareUpdateStatuses(config);
     const nextBehindTeams = new Set(state.behindTeams);
@@ -712,33 +723,172 @@ const fetchShareUpdateStatuses = Effect.fn('share.fetchShareUpdateStatuses')(fun
   if (teams.length === 0) {
     return [];
   }
-  const git = yield* requiredExecutable('git');
+  let git: string | undefined;
   const statuses: ShareUpdateStatus[] = [];
   for (const [name, team] of teams) {
+    const receipt = yield* readFreshShareFetchReceipt(config, name, team);
+    if (receipt) {
+      statuses.push({
+        behind: receipt.behind,
+        team: name,
+        ...(receipt.warning ? {warning: receipt.warning} : {}),
+      });
+      continue;
+    }
+    git ??= yield* requiredExecutable('git');
     const fetchResult = yield* runCommand(git, ['-C', team.worktree, 'fetch', DEFAULT_GIT_REMOTE_NAME], {
       allowFailure: true,
+      timeoutMs: AUTO_SHARE_GIT_TIMEOUT_MILLISECONDS,
     });
     if (fetchResult.exitCode !== 0) {
-      statuses.push({
+      const warning = boundedShareFetchWarning(
+        `Auto-sync check for shared team "${name}" failed: ${
+          fetchResult.stderr.trim() || fetchResult.stdout.trim() || 'unknown git fetch error'
+        }`,
+      );
+      yield* persistShareFetchReceipt(config, {
         behind: 0,
+        checkedAt: Date.now(),
+        remote: team.remote,
+        succeeded: false,
         team: name,
-        warning: `Auto-sync check for shared team "${name}" failed: ${fetchResult.stderr.trim() || fetchResult.stdout.trim() || 'unknown git fetch error'}`,
+        version: SHARE_FETCH_RECEIPT_VERSION,
+        warning,
+        worktree: team.worktree,
       });
+      statuses.push({behind: 0, team: name, warning});
       continue;
     }
-    const behind = yield* gitOutput(team.worktree, ['rev-list', '--count', 'HEAD..@{u}'], false);
+    const behind = yield* gitOutput(
+      team.worktree,
+      ['rev-list', '--count', 'HEAD..@{u}'],
+      false,
+      AUTO_SHARE_GIT_TIMEOUT_MILLISECONDS,
+    );
     if (behind === undefined) {
-      statuses.push({
+      const warning = `Auto-sync check for shared team "${name}" failed: could not read upstream behind count.`;
+      yield* persistShareFetchReceipt(config, {
         behind: 0,
+        checkedAt: Date.now(),
+        remote: team.remote,
+        succeeded: false,
         team: name,
-        warning: `Auto-sync check for shared team "${name}" failed: could not read upstream behind count.`,
+        version: SHARE_FETCH_RECEIPT_VERSION,
+        warning,
+        worktree: team.worktree,
       });
+      statuses.push({behind: 0, team: name, warning});
       continue;
     }
-    statuses.push({behind: Number.parseInt(behind, 10) || 0, team: name});
+    const behindCount = Number.parseInt(behind, 10) || 0;
+    yield* persistShareFetchReceipt(config, {
+      behind: behindCount,
+      checkedAt: Date.now(),
+      remote: team.remote,
+      succeeded: true,
+      team: name,
+      version: SHARE_FETCH_RECEIPT_VERSION,
+      worktree: team.worktree,
+    });
+    statuses.push({behind: behindCount, team: name});
   }
   return statuses;
 });
+
+const shareFetchReceiptPath = Effect.fn('share.fetchReceiptPath')(function* (config: ShareRuntime, team: string) {
+  return yield* pathJoin(config.agentContextHome, 'share', 'fetch-receipts', `${team}.json`);
+});
+
+const readFreshShareFetchReceipt = Effect.fn('share.readFreshFetchReceipt')(function* (
+  config: ShareRuntime,
+  teamName: string,
+  team: ShareTeamConfig,
+) {
+  const raw = yield* readFileIfExists(yield* shareFetchReceiptPath(config, teamName));
+  if (!raw) return undefined;
+  return parseFreshShareFetchReceipt(raw, teamName, team, Date.now());
+});
+
+const persistShareFetchReceipt = Effect.fn('share.persistFetchReceipt')(function* (
+  config: ShareRuntime,
+  receipt: ShareFetchReceipt,
+) {
+  const target = yield* shareFetchReceiptPath(config, receipt.team);
+  const parent = yield* pathDirname(target);
+  const system = yield* SystemInfo;
+  const temporary = `${target}.${system.processId}.tmp`;
+  const write = Effect.gen(function* () {
+    yield* mkdir(parent, {mode: 0o700, recursive: true});
+    yield* writeFile(temporary, `${JSON.stringify(receipt)}\n`, {encoding: 'utf8', mode: 0o600});
+    yield* rename(temporary, target);
+  }).pipe(Effect.ensuring(rm(temporary, {force: true}).pipe(Effect.catch(() => Effect.void))));
+  yield* write.pipe(
+    Effect.catch(error =>
+      Console.error(
+        `Could not persist the shared fetch receipt for team "${receipt.team}"; another process may fetch again: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      ),
+    ),
+  );
+});
+
+const recordShareTeamSynced = Effect.fn('share.recordTeamSynced')(function* (config: ShareRuntime, teamName: string) {
+  const team = yield* resolveTeam(config, teamName);
+  yield* persistShareFetchReceipt(config, {
+    behind: 0,
+    checkedAt: Date.now(),
+    remote: team.config.remote,
+    succeeded: true,
+    team: team.name,
+    version: SHARE_FETCH_RECEIPT_VERSION,
+    worktree: team.config.worktree,
+  });
+});
+
+function parseFreshShareFetchReceipt(
+  raw: string,
+  teamName: string,
+  team: ShareTeamConfig,
+  now: number,
+): ShareFetchReceipt | undefined {
+  const parsed = parseJsonConfigObject(raw);
+  if (
+    !parsed ||
+    parsed.version !== SHARE_FETCH_RECEIPT_VERSION ||
+    parsed.team !== teamName ||
+    parsed.remote !== team.remote ||
+    parsed.worktree !== team.worktree ||
+    typeof parsed.behind !== 'number' ||
+    !Number.isSafeInteger(parsed.behind) ||
+    parsed.behind < 0 ||
+    typeof parsed.checkedAt !== 'number' ||
+    !Number.isSafeInteger(parsed.checkedAt) ||
+    parsed.checkedAt <= 0 ||
+    parsed.checkedAt > now ||
+    now - parsed.checkedAt >= SHARED_BACKGROUND_FETCH_INTERVAL_MILLISECONDS ||
+    typeof parsed.succeeded !== 'boolean' ||
+    (parsed.succeeded === false && typeof parsed.warning !== 'string')
+  ) {
+    return undefined;
+  }
+  return {
+    behind: parsed.behind,
+    checkedAt: parsed.checkedAt,
+    remote: parsed.remote,
+    succeeded: parsed.succeeded,
+    team: parsed.team,
+    version: parsed.version,
+    ...(typeof parsed.warning === 'string' ? {warning: boundedShareFetchWarning(parsed.warning)} : {}),
+    worktree: parsed.worktree,
+  };
+}
+
+function boundedShareFetchWarning(warning: string): string {
+  return warning.length <= SHARE_FETCH_WARNING_MAXIMUM_LENGTH
+    ? warning
+    : `${warning.slice(0, SHARE_FETCH_WARNING_MAXIMUM_LENGTH - 1)}…`;
+}
 
 export const runShareSync = Effect.fn('share.runShareSync')(function* (
   config: ShareRuntime,
@@ -854,7 +1004,7 @@ const runShareSyncForTeam = Effect.fn('share.runShareSyncForTeam')(function* (
     } else {
       const result = yield* applyAndPersistChanges(config, team.config, state, combined);
       const succeeded = combined.length - result.failed.length;
-      yield* Console.log(`Reindexed ${succeeded} file change(s) into OpenViking.`);
+      yield* Console.log(`Reindexed ${succeeded} file change(s) into native canonical store.`);
       if (result.failed.length > 0) {
         yield* Console.warn(
           `share sync: ${result.failed.length} file(s) could not be ingested on this run; they are persisted and will be retried on the next sync or agent recall/read.`,
@@ -993,7 +1143,7 @@ export const resolveShareConflict = Effect.fn('share.resolveShareConflict')(func
   const conflict = yield* readPendingShareConflict(config, reference, options.team);
   const inspected = yield* inspectShareConflict(config, conflict.team, conflict.change);
   const dryRun = options.dryRun === true;
-  const ov = yield* openVikingCliForMode(dryRun);
+  const ov = NATIVE_RESOURCE_BACKEND;
   const messages: string[] = [];
   const gitMessages: string[] = [];
   const backupPath = dryRun ? undefined : yield* backupShareConflict(config, inspected);
@@ -1004,7 +1154,7 @@ export const resolveShareConflict = Effect.fn('share.resolveShareConflict')(func
         yield* removeMemoryUri(config, ov, inspected.uri, dryRun);
         messages.push(`Accepted shared deletion for ${inspected.uri}.`);
       } else {
-        messages.push(`Shared deletion was already reflected in OpenViking for ${inspected.uri}.`);
+        messages.push(`Shared deletion was already reflected in native canonical store for ${inspected.uri}.`);
       }
     } else {
       if (inspected.sharedContent === undefined) {
@@ -1042,7 +1192,7 @@ export const resolveShareConflict = Effect.fn('share.resolveShareConflict')(func
     );
     messages.push(
       take === 'local'
-        ? `Published local OpenViking content for ${inspected.uri}.`
+        ? `Published local native canonical store content for ${inspected.uri}.`
         : `Applied merged content for ${inspected.uri}.`,
     );
   }
@@ -1201,16 +1351,17 @@ const parseShareConflictReference = Effect.fn('share.parseShareConflictReference
 ) {
   const trimmed = reference.trim();
   if (!trimmed) {
-    throw new Error('Provide a conflict id, relative path, or viking:// shared memory URI.');
+    throw new Error('Provide a conflict id, relative path, or threadnote:// shared memory URI.');
   }
-  if (trimmed.startsWith('viking://')) {
-    const teamName = sharedTeamNameForUri(config, trimmed);
+  const canonicalReference = canonicalResourceInput(trimmed);
+  if (canonicalReference) {
+    const teamName = sharedTeamNameForUri(config, canonicalReference);
     if (!teamName) {
       throw new Error(`Shared memory URI does not include a configured team: ${trimmed}`);
     }
     const team = yield* resolveTeam(config, optionTeam ?? teamName);
     return {
-      relativePath: assertSafeShareRelativePath(vikingUriToWorktreeRelative(config, trimmed, team.name)),
+      relativePath: assertSafeShareRelativePath(resourceUriToWorktreeRelative(config, canonicalReference, team.name)),
       team,
     };
   }
@@ -1227,7 +1378,8 @@ function assertSafeShareRelativePath(relativePath: string): string {
   if (
     !relativePath ||
     relativePath.startsWith('/') ||
-    relativePath.split('/').some(segment => segment === '..' || segment.length === 0)
+    relativePath.includes('\\') ||
+    relativePath.split('/').some(segment => segment === '.' || segment === '..' || segment.length === 0)
   ) {
     throw new Error(`Invalid shared relative path: ${relativePath}`);
   }
@@ -1238,7 +1390,12 @@ const normalizePendingChange = Effect.fn('share.normalizePendingChange')(functio
   team: ResolvedTeam,
   change: ChangedFile,
 ) {
-  return {...change, path: yield* pathJoin(team.config.worktree, change.relativePath)};
+  const relativePath = assertSafeShareRelativePath(change.relativePath);
+  return {
+    ...change,
+    path: yield* pathJoin(team.config.worktree, ...relativePath.split('/')),
+    relativePath,
+  };
 });
 
 function isShareableMemoryChange(change: ChangedFile): boolean {
@@ -1270,8 +1427,8 @@ const inspectShareConflict = Effect.fn('share.inspectShareConflict')(function* (
   team: ResolvedTeam,
   change: ChangedFile,
 ) {
-  const ov = yield* openVikingCliForMode(false);
-  const uri = yield* workfileToVikingUri(config, team.config, change.path);
+  const ov = NATIVE_RESOURCE_BACKEND;
+  const uri = yield* workfileToResourceUri(config, team.config, change.path);
   const localContent = yield* readOptionalMemoryContent(config, ov, uri);
   const shared = yield* readOptionalSharedConflictContent(uri, change);
   const previous = yield* readOptionalPreviousConflictContent(team.config.worktree, uri, change);
@@ -1336,7 +1493,7 @@ const readOptionalMemoryContent = Effect.fn('share.readOptionalMemoryContent')(f
   ov: string,
   uri: string,
 ) {
-  if (!(yield* vikingResourceExistsStrict(ov, config, uri))) {
+  if (!(yield* resourceExistsStrict(ov, config, uri))) {
     return undefined;
   }
   return yield* readMemoryContent(config, ov, uri, false);
@@ -1358,35 +1515,35 @@ function shareConflictReason(
   }
   if (change.status === 'added') {
     if (localContent === undefined) {
-      return 'shared file is pending ingestion into OpenViking';
+      return 'shared file is pending ingestion into native canonical store';
     }
     if (sharedContent === undefined) {
       return 'shared file is missing or not readable';
     }
     return sharedMemoryContentsEquivalent(localContent, sharedContent)
-      ? 'pending replay is already reflected in OpenViking'
-      : 'local OpenViking content differs from the newly added shared file';
+      ? 'pending replay is already reflected in native canonical store'
+      : 'local native canonical store content differs from the newly added shared file';
   }
   if (change.status === 'modified') {
     if (localContent === undefined) {
-      return 'OpenViking resource is missing while a shared update is pending';
+      return 'native canonical store resource is missing while a shared update is pending';
     }
     if (previousContent === undefined) {
       return 'previous shared content is unavailable, so local edits cannot be distinguished from upstream edits';
     }
     return sharedMemoryContentsEquivalent(localContent, previousContent)
-      ? 'shared update is pending ingestion into OpenViking'
-      : 'local OpenViking content differs from the previous shared version';
+      ? 'shared update is pending ingestion into native canonical store'
+      : 'local native canonical store content differs from the previous shared version';
   }
   if (localContent === undefined) {
-    return 'shared deletion is already reflected in OpenViking';
+    return 'shared deletion is already reflected in native canonical store';
   }
   if (previousContent === undefined) {
     return 'previous shared content is unavailable, so local deletion cannot be verified safely';
   }
   return sharedMemoryContentsEquivalent(localContent, previousContent)
-    ? 'shared deletion is pending removal from OpenViking'
-    : 'local OpenViking content differs from the deleted shared version';
+    ? 'shared deletion is pending removal from native canonical store'
+    : 'local native canonical store content differs from the deleted shared version';
 }
 
 const conflictResolutionContent = Effect.fn('share.conflictResolutionContent')(function* (
@@ -1404,7 +1561,7 @@ const conflictResolutionContent = Effect.fn('share.conflictResolutionContent')(f
           ? conflict.localContent
           : undefined;
   if (raw === undefined) {
-    throw new Error(`Cannot resolve ${conflict.id}: local OpenViking content is unavailable.`);
+    throw new Error(`Cannot resolve ${conflict.id}: local native canonical store content is unavailable.`);
   }
   const scrub = applyScrubber(stripPersonalProvenance(raw), {redact: false});
   if (scrub.blocker) {
@@ -1514,10 +1671,17 @@ function formatShareConflictDiff(conflict: InspectedShareConflict): string {
   const parts: string[] = [];
   if (conflict.previousContent !== undefined) {
     parts.push(
-      formatTwoWayDiff('previous shared', conflict.previousContent, 'local OpenViking', conflict.localContent),
+      formatTwoWayDiff(
+        'previous shared',
+        conflict.previousContent,
+        'local native canonical store',
+        conflict.localContent,
+      ),
     );
   }
-  parts.push(formatTwoWayDiff('local OpenViking', conflict.localContent, 'shared file', conflict.sharedContent));
+  parts.push(
+    formatTwoWayDiff('local native canonical store', conflict.localContent, 'shared file', conflict.sharedContent),
+  );
   return parts.join('\n\n');
 }
 
@@ -1562,7 +1726,7 @@ const stageShareableChanges = Effect.fn('share.stageShareableChanges')(function*
   worktree: string,
 ) {
   // Stage repo guidance/metadata plus every shareable top-level dir.
-  // OpenViking-generated summaries (.abstract.md, .overview.md) are excluded
+  // native canonical store-generated summaries (.abstract.md, .overview.md) are excluded
   // via the repo's .gitignore (ensureSharedGitignore self-heals it on every
   // sync), so they never get staged even by an unscoped `git add`.
   // First drop any incomplete pack orphaned by a killed publish, so the blanket
@@ -1705,6 +1869,103 @@ export const publishShareGitChange = Effect.fn('share.publishShareGitChange')(fu
   return messages;
 });
 
+export const writeSharedWorktreeFile = Effect.fn('share.writeSharedWorktreeFile')(function* (
+  worktree: string,
+  relativePath: string,
+  content: string,
+  dryRun = false,
+) {
+  const safeRelativePath = assertSafeShareRelativePath(relativePath);
+  const targetPath = yield* pathJoin(worktree, ...safeRelativePath.split('/'));
+  if (dryRun) {
+    yield* Console.log(`Would write shared worktree file: ${targetPath}`);
+    return targetPath;
+  }
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const system = yield* SystemInfo;
+  const realWorktree = yield* fs.realPath(worktree);
+  let current = path.resolve(worktree);
+  for (const segment of safeRelativePath.split('/').slice(0, -1)) {
+    current = path.join(current, segment);
+    if (Option.isSome(yield* fs.readLink(current).pipe(Effect.option))) {
+      return yield* Effect.fail(new Error(`Refusing to write through a shared worktree symbolic link: ${current}`));
+    }
+    if (yield* fs.exists(current)) {
+      const info = yield* fs.stat(current);
+      if (info.type !== 'Directory') {
+        return yield* Effect.fail(new Error(`Shared worktree parent is not a directory: ${current}`));
+      }
+    } else {
+      yield* fs.makeDirectory(current, {mode: 0o700});
+    }
+    const expected = path.resolve(realWorktree, path.relative(path.resolve(worktree), current));
+    if ((yield* fs.realPath(current)) !== expected) {
+      return yield* Effect.fail(new Error(`Refusing to write through a shared worktree path alias: ${current}`));
+    }
+  }
+  if (Option.isSome(yield* fs.readLink(targetPath).pipe(Effect.option))) {
+    return yield* Effect.fail(new Error(`Refusing to replace a shared worktree symbolic link: ${targetPath}`));
+  }
+  const temporaryPath = `${targetPath}.${system.processId}.tmp`;
+  yield* fs.writeFileString(temporaryPath, content, {mode: 0o600});
+  yield* fs
+    .rename(temporaryPath, targetPath)
+    .pipe(Effect.ensuring(fs.remove(temporaryPath, {force: true}).pipe(Effect.catch(() => Effect.void))));
+  return targetPath;
+});
+
+export function assertSharedWorktreeFileReady(
+  worktree: string,
+  relativePath: string,
+  expectedContent: string | undefined,
+  dryRun = false,
+): Effect.Effect<void, unknown, CommandExecutor | FileSystem.FileSystem | Path.Path | SystemInfo> {
+  return Effect.gen(function* () {
+    if (dryRun) return;
+    const safeRelativePath = assertSafeShareRelativePath(relativePath);
+    const git = yield* requiredExecutable('git');
+    const unmerged = yield* runCommand(git, ['-C', worktree, 'ls-files', '-u', '--', safeRelativePath], {
+      allowFailure: true,
+    });
+    if (unmerged.exitCode !== 0) {
+      return yield* Effect.fail(
+        new Error(
+          `Could not verify shared worktree state for ${safeRelativePath}: ${unmerged.stderr.trim() || unmerged.stdout.trim() || 'git ls-files failed'}.`,
+        ),
+      );
+    }
+    if (unmerged.stdout.trim().length > 0) {
+      return yield* Effect.fail(
+        new Error(
+          `Refusing to overwrite unmerged shared worktree file: ${safeRelativePath}. Resolve the conflict first.`,
+        ),
+      );
+    }
+    const targetPath = yield* pathJoin(worktree, ...safeRelativePath.split('/'));
+    const fs = yield* FileSystem.FileSystem;
+    if (!(yield* fs.exists(targetPath))) return;
+    if (Option.isSome(yield* fs.readLink(targetPath).pipe(Effect.option))) {
+      return yield* Effect.fail(new Error(`Refusing to replace a shared worktree symbolic link: ${targetPath}`));
+    }
+    const info = yield* fs.stat(targetPath);
+    if (info.type !== 'File') {
+      return yield* Effect.fail(new Error(`Shared worktree target is not a regular file: ${targetPath}`));
+    }
+    const currentContent = yield* fs.readFileString(targetPath);
+    if (
+      expectedContent === undefined ||
+      canonicalMemoryDocumentContent(currentContent) !== canonicalMemoryDocumentContent(expectedContent)
+    ) {
+      return yield* Effect.fail(
+        new Error(
+          `Refusing to overwrite changed shared worktree file: ${safeRelativePath}. Sync or resolve the worktree conflict first.`,
+        ),
+      );
+    }
+  });
+}
+
 const runGitCommand = Effect.fn('share.runGitCommand')(function* (
   dryRun: boolean,
   git: string,
@@ -1727,16 +1988,16 @@ export const runSharePublish = Effect.fn('share.runSharePublish')(function* (
   sourceUri: string,
   options: SharePublishOptions,
 ) {
-  assertVikingUri(sourceUri);
+  assertResourceUri(sourceUri);
   const team = yield* resolveTeam(config, options.team);
   const dryRun = options.dryRun === true;
   const preview = options.preview === true;
   if (isInSharedNamespace(config, sourceUri)) {
     throw new Error(`Memory ${sourceUri} is already in the shared namespace.`);
   }
-  const ov = yield* openVikingCliForMode(dryRun);
+  const ov = NATIVE_RESOURCE_BACKEND;
   const rawContent = yield* readMemoryContent(config, ov, sourceUri, dryRun);
-  const stripped = stripPersonalProvenance(rawContent);
+  const stripped = setMemoryVisibility(stripPersonalProvenance(rawContent), 'shared');
   const scrub = applyScrubber(stripped, {redact: options.redact === true});
   const targetUri = sharedUriFor(config, sourceUri, team.name);
 
@@ -1764,11 +2025,11 @@ export const runSharePublish = Effect.fn('share.runSharePublish')(function* (
     );
   }
   const worktree = team.config.worktree;
-  const relativePath = vikingUriToWorktreeRelative(config, targetUri, team.name);
+  const relativePath = resourceUriToWorktreeRelative(config, targetUri, team.name);
   const message = options.message ?? `share: publish ${relativePath}`;
   const publish = Effect.fn('share.callback')(function* () {
     const currentRawContent = dryRun ? rawContent : yield* readMemoryContent(config, ov, sourceUri, false);
-    const currentScrub = applyScrubber(stripPersonalProvenance(currentRawContent), {
+    const currentScrub = applyScrubber(setMemoryVisibility(stripPersonalProvenance(currentRawContent), 'shared'), {
       redact: options.redact === true,
     });
     if (currentScrub.blocker) {
@@ -1776,19 +2037,36 @@ export const runSharePublish = Effect.fn('share.runSharePublish')(function* (
         `Refusing to publish ${sourceUri}: possible ${currentScrub.blocker}. Strip the sensitive value or pass --redact for soft-leak patterns.`,
       );
     }
-    if (!dryRun && (yield* vikingResourceExists(ov, config, targetUri))) {
+    const existingTarget =
+      !dryRun && (yield* resourceExists(ov, config, targetUri))
+        ? yield* readMemoryContent(config, ov, targetUri, false)
+        : undefined;
+    if (
+      existingTarget !== undefined &&
+      canonicalMemoryDocumentContent(setMemoryVisibility(existingTarget, 'shared')) !==
+        canonicalMemoryDocumentContent(currentScrub.cleaned)
+    ) {
       throw new Error(
-        `Refusing to publish: ${targetUri} already exists in the shared namespace. Inspect it via threadnote read; if it should be replaced, forget the existing shared copy first.`,
+        `Refusing to publish: ${targetUri} already exists with different content. Inspect it via threadnote read and resolve the conflict explicitly.`,
       );
     }
+    yield* assertSharedWorktreeFileReady(worktree, relativePath, currentScrub.cleaned, dryRun);
     yield* ensureSharedDirectoryChain(config, ov, targetUri, dryRun);
-    yield* writeMemoryFile(config, ov, targetUri, currentScrub.cleaned, 'create', dryRun);
+    yield* writeMemoryFile(
+      config,
+      ov,
+      targetUri,
+      currentScrub.cleaned,
+      existingTarget === undefined ? 'create' : 'replace',
+      dryRun,
+    );
     if (!dryRun) {
       const storedTarget = yield* readMemoryContent(config, ov, targetUri, false);
       if (canonicalMemoryDocumentContent(storedTarget) !== canonicalMemoryDocumentContent(currentScrub.cleaned)) {
         throw new Error(`Shared target verification failed after writing ${targetUri}; personal source preserved.`);
       }
     }
+    yield* writeSharedWorktreeFile(worktree, relativePath, currentScrub.cleaned, dryRun);
     const gitMessages = yield* publishShareGitChange(worktree, relativePath, message, {
       dryRun,
       push: options.push,
@@ -1865,7 +2143,7 @@ const shareSingleArtifact = Effect.fn('share.shareSingleArtifact')(function* (
   const scrub = applyScrubber(rawContent, {redact: options.redact === true});
   const relativePath = sharedArtifactRelativePath(artifact);
   const targetPath = yield* pathJoin(team.config.worktree, ...relativePath.split('/'));
-  const targetUri = yield* workfileToVikingUri(config, team.config, targetPath);
+  const targetUri = yield* workfileToResourceUri(config, team.config, targetPath);
   const messages: string[] = [
     `${preview ? 'Previewing' : dryRun ? 'Would share' : 'Sharing'} ${artifact.kind} ${artifact.agent}/${artifact.name}`,
     `Source: ${yield* portablePath(resolvedSourcePath)}`,
@@ -1918,10 +2196,11 @@ const shareSingleArtifact = Effect.fn('share.shareSingleArtifact')(function* (
     messages.push(`Would write shared artifact: ${yield* portablePath(targetPath)}`);
   }
 
-  const ov = yield* openVikingCliForMode(dryRun);
-  const ovHasResource = !dryRun && (yield* vikingResourceExists(ov, config, targetUri));
+  const ov = NATIVE_RESOURCE_BACKEND;
+  const ovHasResource = !dryRun && (yield* resourceExists(ov, config, targetUri));
   yield* ensureSharedDirectoryChain(config, ov, targetUri, dryRun, {quiet: true});
   yield* writeMemoryFile(config, ov, targetUri, content, ovHasResource ? 'replace' : 'create', dryRun, {quiet: true});
+  yield* writeSharedWorktreeFile(team.config.worktree, relativePath, content, dryRun);
 
   const message = options.message ?? `share: publish ${relativePath}`;
   const gitMessages = yield* publishShareGitChange(team.config.worktree, relativePath, message, {
@@ -1955,7 +2234,7 @@ const shareBundleArtifact = Effect.fn('share.shareBundleArtifact')(function* (
   const skillRootRelative = `${SHAREABLE_ARTIFACT_DIR}/skills/${artifact.agent}/${artifact.name}`;
   const skillRootTargetDir = yield* pathJoin(team.config.worktree, ...skillRootRelative.split('/'));
   const skillMdTargetPath = yield* pathJoin(skillRootTargetDir, 'SKILL.md');
-  const skillMdTargetUri = yield* workfileToVikingUri(config, team.config, skillMdTargetPath);
+  const skillMdTargetUri = yield* workfileToResourceUri(config, team.config, skillMdTargetPath);
   const skillRootTargetUri = parentUri(skillMdTargetUri);
   const skillMdSourcePath = yield* pathJoin(skillDir, 'SKILL.md');
 
@@ -2031,15 +2310,15 @@ const shareBundleArtifact = Effect.fn('share.shareBundleArtifact')(function* (
     };
   }
 
-  // Safety invariant: OpenViking-managed markdown is written first (SKILL.md
+  // Safety invariant: native canonical store-managed markdown is written first (SKILL.md
   // leading), so a failed OV write never leaves a worktree tree that a later
   // share sync would auto-commit without ingestion. Companion files and the
   // manifest are materialized only after every markdown write succeeds.
-  const ov = yield* openVikingCliForMode(dryRun);
+  const ov = NATIVE_RESOURCE_BACKEND;
   const markdownMembers = orderSkillMdFirst(prepared.filter(entry => entry.relativePath.endsWith('.md')));
   const otherMembers = prepared.filter(entry => !entry.relativePath.endsWith('.md'));
   for (const entry of markdownMembers) {
-    const ovHasResource = yield* vikingResourceExists(ov, config, entry.targetUri);
+    const ovHasResource = yield* resourceExists(ov, config, entry.targetUri);
     yield* ensureSharedDirectoryChain(config, ov, entry.targetUri, dryRun, {quiet: true});
     yield* writeMemoryFile(
       config,
@@ -2049,6 +2328,12 @@ const shareBundleArtifact = Effect.fn('share.shareBundleArtifact')(function* (
       ovHasResource ? 'replace' : 'create',
       dryRun,
       {quiet: true},
+    );
+    yield* writeSharedWorktreeFile(
+      team.config.worktree,
+      `${skillRootRelative}/${entry.relativePath}`,
+      entry.content as string,
+      dryRun,
     );
   }
   yield* ensureDirectory(skillRootTargetDir, false);
@@ -2090,7 +2375,7 @@ const prepareBundleMember = Effect.fn('share.prepareBundleMember')(function* (
 ) {
   const buffer = yield* readFile(member.absolutePath);
   const targetPath = yield* pathJoin(skillRootTargetDir, ...member.relativePath.split('/'));
-  const targetUri = yield* workfileToVikingUri(config, team.config, targetPath);
+  const targetUri = yield* workfileToResourceUri(config, team.config, targetPath);
   if (isProbablyBinary(buffer)) {
     const credential = detectBinaryCredential(buffer);
     const blocker =
@@ -2444,7 +2729,7 @@ const preparePackMember = Effect.fn('share.preparePackMember')(function* (
 ) {
   const buffer = yield* readFile(member.absolutePath);
   const targetPath = yield* pathJoin(filesTargetDir, ...member.relativePath.split('/'));
-  const targetUri = yield* workfileToVikingUri(config, team.config, targetPath);
+  const targetUri = yield* workfileToResourceUri(config, team.config, targetPath);
   if (isProbablyBinary(buffer)) {
     // Binary members cannot be tokenized or scrubbed, so an embedded credential
     // or machine-local path can never be neutralized — block rather than ship it
@@ -2606,7 +2891,7 @@ export const shareBundlePack = Effect.fn('share.shareBundlePack')(function* (
   const filesTargetDir = yield* pathJoin(team.config.worktree, ...filesRelative.split('/'));
   const packRootTargetDir = yield* pathJoin(team.config.worktree, ...packRootRelative.split('/'));
   const indexTargetPath = yield* pathJoin(team.config.worktree, ...indexRelative.split('/'));
-  const indexTargetUri = yield* workfileToVikingUri(config, team.config, indexTargetPath);
+  const indexTargetUri = yield* workfileToResourceUri(config, team.config, indexTargetPath);
 
   const prepared = yield* Effect.all(
     members.map(member => preparePackMember(config, team, member, filesTargetDir, rewriteRoots, options)),
@@ -2716,17 +3001,17 @@ export const shareBundlePack = Effect.fn('share.shareBundlePack')(function* (
     };
   }
 
-  // Safety invariant: OpenViking-managed markdown is written first (the index
+  // Safety invariant: native canonical store-managed markdown is written first (the index
   // leads), so a failed OV write never leaves a worktree tree that a later share
   // sync would auto-commit without ingestion.
-  const ov = yield* openVikingCliForMode(dryRun);
+  const ov = NATIVE_RESOURCE_BACKEND;
   // Restore-capable rollback: before overwriting any resource, snapshot its prior
   // bytes; on a mid-publish failure, undo in reverse — newly-created resources are
   // removed and replaced ones (a --force re-publish) are restored to their prior
   // content. This leaves the previously-published pack intact and nothing
   // inconsistent for a later share sync to auto-commit.
   const rollbacks: Array<
-    () => Effect.Effect<void, unknown, CommandExecutor | FileSystem.FileSystem | Path.Path | SystemInfo>
+    () => Effect.Effect<void, unknown, CommandExecutor | FileSystem.FileSystem | Path.Path | ResourceStore | SystemInfo>
   > = [];
   const manifestTargetPath = yield* pathJoin(team.config.worktree, ...manifestRelative.split('/'));
   const publishResult = yield* Effect.result(
@@ -2737,17 +3022,30 @@ export const shareBundlePack = Effect.fn('share.shareBundlePack')(function* (
         worktreePath: string,
       ) {
         const priorBytes = yield* readFileBytesIfExists(worktreePath);
-        const hadResource = yield* vikingResourceExists(ov, config, uri);
+        const hadResource = yield* resourceExists(ov, config, uri);
+        const worktreeRelativePath = (yield* pathRelative(team.config.worktree, worktreePath))
+          .split(yield* pathSeparator)
+          .join('/');
         yield* ensureSharedDirectoryChain(config, ov, uri, dryRun, {quiet: true});
         yield* writeMemoryFile(config, ov, uri, content, hadResource ? 'replace' : 'create', dryRun, {quiet: true});
+        yield* writeSharedWorktreeFile(team.config.worktree, worktreeRelativePath, content, dryRun);
         rollbacks.push(
           Effect.fn('share.callback')(function* () {
             if (priorBytes !== undefined) {
               yield* writeMemoryFile(config, ov, uri, new TextDecoder().decode(priorBytes), 'replace', false, {
                 quiet: true,
               });
-            } else if (yield* vikingResourceExists(ov, config, uri)) {
-              yield* removeMemoryUri(config, ov, uri, false, {quiet: true});
+              yield* writeSharedWorktreeFile(
+                team.config.worktree,
+                worktreeRelativePath,
+                new TextDecoder().decode(priorBytes),
+                false,
+              );
+            } else {
+              if (yield* resourceExists(ov, config, uri)) {
+                yield* removeMemoryUri(config, ov, uri, false, {quiet: true});
+              }
+              yield* rm(worktreePath, {force: true});
             }
           }),
         );
@@ -2807,19 +3105,19 @@ export const shareBundlePack = Effect.fn('share.shareBundlePack')(function* (
           allowFailure: true,
         });
         // Nested .md members are OV-ingested, so drop their resource too — keep the
-        // OpenViking index and the git tree in lockstep on the publisher's machine.
+        // native canonical store index and the git tree in lockstep on the publisher's machine.
         // Best-effort: the `git rm` deletion is already staged, so a single OV
         // removal failure must not abort the publish (which would leave a staged
         // deletion behind for a later sync); surface it as a warning instead.
         if (stale.endsWith('.md')) {
-          const staleUri = yield* workfileToVikingUri(
+          const staleUri = yield* workfileToResourceUri(
             config,
             team.config,
             yield* pathJoin(team.config.worktree, ...stale.split('/')),
           );
           const pruneResult = yield* Effect.result(
             Effect.gen(function* () {
-              if (yield* vikingResourceExists(ov, config, staleUri)) {
+              if (yield* resourceExists(ov, config, staleUri)) {
                 yield* removeMemoryUri(config, ov, staleUri, dryRun, {quiet: true});
               }
             }),
@@ -2827,7 +3125,7 @@ export const shareBundlePack = Effect.fn('share.shareBundlePack')(function* (
           if (Result.isFailure(pruneResult)) {
             const pruneErr = pruneResult.failure;
             messages.push(
-              `Warning: could not remove stale OpenViking resource ${staleUri}: ${pruneErr instanceof Error ? pruneErr.message : String(pruneErr)}`,
+              `Warning: could not remove stale native canonical store resource ${staleUri}: ${pruneErr instanceof Error ? pruneErr.message : String(pruneErr)}`,
             );
           }
         }
@@ -2980,16 +3278,16 @@ export const runShareUnpublish = Effect.fn('share.runShareUnpublish')(function* 
   sourceUri: string,
   options: ShareUnpublishOptions,
 ) {
-  assertVikingUri(sourceUri);
+  assertResourceUri(sourceUri);
   const team = yield* resolveTeam(config, options.team);
   const dryRun = options.dryRun === true;
   if (!isInTeamNamespace(config, sourceUri, team.name)) {
     throw new Error(`Memory ${sourceUri} is not in team "${team.name}" shared namespace.`);
   }
-  const ov = yield* openVikingCliForMode(dryRun);
-  const content = yield* readMemoryContent(config, ov, sourceUri, dryRun);
+  const ov = NATIVE_RESOURCE_BACKEND;
+  const content = setMemoryVisibility(yield* readMemoryContent(config, ov, sourceUri, dryRun), 'personal');
   const targetUri = personalUriFor(config, sourceUri, team.name);
-  if (!dryRun && (yield* vikingResourceExists(ov, config, targetUri))) {
+  if (!dryRun && (yield* resourceExists(ov, config, targetUri))) {
     throw new Error(
       `Refusing to unpublish: a personal memory already exists at ${targetUri}. Move or forget it first, then retry.`,
     );
@@ -2997,7 +3295,7 @@ export const runShareUnpublish = Effect.fn('share.runShareUnpublish')(function* 
   yield* writeMemoryFile(config, ov, targetUri, content, 'create', dryRun);
 
   const worktree = team.config.worktree;
-  const relativePath = vikingUriToWorktreeRelative(config, sourceUri, team.name);
+  const relativePath = resourceUriToWorktreeRelative(config, sourceUri, team.name);
   const message = options.message ?? `share: unpublish ${relativePath}`;
   const gitMessages = yield* publishShareGitChange(worktree, relativePath, message, {
     dryRun,
@@ -3012,7 +3310,7 @@ export const runShareUnpublish = Effect.fn('share.runShareUnpublish')(function* 
     const err = removeResult.failure;
     return yield* Effect.fail(
       new Error(
-        `Unpublished ${sourceUri} -> ${targetUri}, but could not remove the shared OpenViking source. Retry cleanup later with: threadnote forget ${sourceUri}\n${err instanceof Error ? err.message : String(err)}`,
+        `Unpublished ${sourceUri} -> ${targetUri}, but could not remove the shared native canonical store source. Retry cleanup later with: threadnote forget ${sourceUri}\n${err instanceof Error ? err.message : String(err)}`,
         {cause: err},
       ),
     );
@@ -3093,6 +3391,8 @@ export const runShareRename = Effect.fn('share.runShareRename')(function* (
   }
 
   const git = yield* requiredExecutable('git');
+  yield* mkdir(yield* pathDirname(newWorktree), {recursive: true});
+  yield* mkdir(yield* pathDirname(newGitdir), {recursive: true});
   // A clone made with --separate-git-dir has a .git file in the worktree that
   // points at the external gitdir. Moving both paths first leaves that pointer
   // aimed at the old location, so `git -C <new-worktree>` can no longer open
@@ -3131,11 +3431,11 @@ export const runShareRename = Effect.fn('share.runShareRename')(function* (
     return yield* Effect.fail(renameResult.failure);
   }
   const ingested = yield* ingestWorktreeFiles(config, updatedTeam, 'replace');
-  const ov = yield* openVikingCliForMode(false);
+  const ov = NATIVE_RESOURCE_BACKEND;
   yield* removeMemoryUri(
     config,
     ov,
-    `viking://user/${uriSegment(config.user)}/memories/${SHARED_SEGMENT}/${oldTeam.name}`,
+    `threadnote://user/${uriSegment(config.user)}/memories/${SHARED_SEGMENT}/${oldTeam.name}`,
     false,
   );
   yield* Console.log(`Renamed shared team "${oldTeam.name}" -> "${newName}".`);
@@ -3223,7 +3523,7 @@ const preserveSharedMemoriesLocally = Effect.fn('share.preserveSharedMemoriesLoc
   team: ShareTeamConfig,
   dryRun: boolean,
 ) {
-  const ov = yield* openVikingCliForMode(dryRun);
+  const ov = NATIVE_RESOURCE_BACKEND;
   const files = yield* walkMemoryFiles(team.worktree);
   let preserved = 0;
   for (const file of files) {
@@ -3231,7 +3531,7 @@ const preserveSharedMemoriesLocally = Effect.fn('share.preserveSharedMemoriesLoc
     if (!rel.startsWith('durable/')) {
       continue;
     }
-    const targetUri = `viking://user/${uriSegment(config.user)}/memories/${rel}`;
+    const targetUri = `threadnote://user/${uriSegment(config.user)}/memories/${rel}`;
     const content = yield* readFile(file, 'utf8');
     if (dryRun) {
       yield* Console.log(`Would preserve ${rel} -> ${targetUri}`);
@@ -3246,21 +3546,16 @@ const preserveSharedMemoriesLocally = Effect.fn('share.preserveSharedMemoriesLoc
 
 const ensurePersonalDirectoryChain = Effect.fn('share.ensurePersonalDirectoryChain')(function* (
   config: ShareRuntime,
-  ov: string,
+  _ov: string,
   directoryUri: string,
 ) {
-  const prefix = 'viking://';
+  const store = yield* ResourceStore;
+  const prefix = 'threadnote://';
   const parts = directoryUri.startsWith(prefix) ? directoryUri.slice(prefix.length).split('/').filter(Boolean) : [];
   const startIndex = parts[0] === 'user' && parts.length > 2 ? 3 : 1;
   for (let index = startIndex; index <= parts.length; index += 1) {
     const uri = `${prefix}${parts.slice(0, index).join('/')}`;
-    const statResult = yield* runCommand(ov, withIdentity(config, ['stat', uri]), {allowFailure: true});
-    if (statResult.exitCode !== 0) {
-      yield* runCommand(
-        ov,
-        withIdentity(config, ['mkdir', uri, '--description', 'Threadnote lifecycle-aware local memories.']),
-      );
-    }
+    yield* store.makeDirectory(resourceStoreLocation(config), uri);
   }
 });
 
@@ -3282,17 +3577,7 @@ const teamsFilePath = Effect.fn('share.teamsFilePath')(function* (config: ShareR
 });
 
 const teamWorktreePath = Effect.fn('share.teamWorktreePath')(function* (config: ShareRuntime, team: string) {
-  return yield* pathJoin(
-    config.agentContextHome,
-    'data',
-    'viking',
-    config.account,
-    'user',
-    uriSegment(config.user),
-    'memories',
-    SHARED_SEGMENT,
-    team,
-  );
+  return yield* pathJoin(config.agentContextHome, 'share', 'worktrees', team);
 });
 
 const teamGitdirPath = Effect.fn('share.teamGitdirPath')(function* (config: ShareRuntime, team: string) {
@@ -3397,10 +3682,10 @@ const ingestWorktreeFiles = Effect.fn('share.ingestWorktreeFiles')(function* (
   team: ShareTeamConfig,
   initialMode: 'create' | 'replace',
 ) {
-  const ov = yield* openVikingCliForMode(false);
+  const ov = NATIVE_RESOURCE_BACKEND;
   const files = yield* walkMemoryFiles(team.worktree);
   for (const file of files) {
-    const uri = yield* workfileToVikingUri(config, team, file);
+    const uri = yield* workfileToResourceUri(config, team, file);
     yield* ensureSharedDirectoryChain(config, ov, uri, false);
     yield* ingestSingleFile(ov, config, uri, file, initialMode);
   }
@@ -3448,13 +3733,13 @@ const walkMemoryFiles = Effect.fn('share.walkMemoryFiles')(function* (root: stri
   return out;
 });
 
-const workfileToVikingUri = Effect.fn('share.workfileToVikingUri')(function* (
+const workfileToResourceUri = Effect.fn('share.workfileToResourceUri')(function* (
   config: ShareRuntime,
   team: ShareTeamConfig,
   filePath: string,
 ) {
   const rel = (yield* pathRelative(team.worktree, filePath)).split(yield* pathSeparator).join('/');
-  return `viking://user/${uriSegment(config.user)}/memories/${SHARED_SEGMENT}/${team.name}/${rel}`;
+  return `threadnote://user/${uriSegment(config.user)}/memories/${SHARED_SEGMENT}/${team.name}/${rel}`;
 });
 
 export function isInSharedNamespace(config: ShareRuntime, uri: string): boolean {
@@ -3462,20 +3747,24 @@ export function isInSharedNamespace(config: ShareRuntime, uri: string): boolean 
 }
 
 export function sharedTeamNameForUri(config: ShareRuntime, uri: string): string | undefined {
-  const prefix = `viking://user/${uriSegment(config.user)}/memories/${SHARED_SEGMENT}/`;
-  if (!uri.startsWith(prefix)) {
+  const canonicalUri = canonicalResourceInput(uri);
+  if (!canonicalUri) return undefined;
+  const prefix = `threadnote://user/${uriSegment(config.user)}/memories/${SHARED_SEGMENT}/`;
+  if (!canonicalUri.startsWith(prefix)) {
     return undefined;
   }
-  const [team] = uri.slice(prefix.length).split('/');
+  const [team] = canonicalUri.slice(prefix.length).split('/');
   return team || undefined;
 }
 
 export function sharedMemoryUriParts(config: ShareRuntime, uri: string): SharedMemoryUriParts | undefined {
-  const prefix = `viking://user/${uriSegment(config.user)}/memories/${SHARED_SEGMENT}/`;
-  if (!uri.startsWith(prefix)) {
+  const canonicalUri = canonicalResourceInput(uri);
+  if (!canonicalUri) return undefined;
+  const prefix = `threadnote://user/${uriSegment(config.user)}/memories/${SHARED_SEGMENT}/`;
+  if (!canonicalUri.startsWith(prefix)) {
     return undefined;
   }
-  const [team, kind, scope, project, ...topicParts] = uri.slice(prefix.length).split('/');
+  const [team, kind, scope, project, ...topicParts] = canonicalUri.slice(prefix.length).split('/');
   if (!team) {
     return undefined;
   }
@@ -3492,33 +3781,40 @@ export function sharedMemoryUriParts(config: ShareRuntime, uri: string): SharedM
 }
 
 function isInTeamNamespace(config: ShareRuntime, uri: string, team: string): boolean {
-  return uri.startsWith(`viking://user/${uriSegment(config.user)}/memories/${SHARED_SEGMENT}/${team}/`);
+  return (
+    canonicalResourceInput(uri)?.startsWith(
+      `threadnote://user/${uriSegment(config.user)}/memories/${SHARED_SEGMENT}/${team}/`,
+    ) === true
+  );
 }
 
 export function sharedUriFor(config: ShareRuntime, personalUri: string, team: string): string {
-  const prefix = `viking://user/${uriSegment(config.user)}/memories/`;
-  if (!personalUri.startsWith(prefix)) {
+  const canonicalUri = parseResourceId(personalUri).canonicalUri;
+  const prefix = `threadnote://user/${uriSegment(config.user)}/memories/`;
+  if (!canonicalUri.startsWith(prefix)) {
     throw new Error(`Refusing to publish memory outside the current user namespace: ${personalUri}`);
   }
-  const rest = personalUri.slice(prefix.length);
+  const rest = canonicalUri.slice(prefix.length);
   return `${prefix}${SHARED_SEGMENT}/${team}/${rest}`;
 }
 
 function personalUriFor(config: ShareRuntime, sharedUri: string, team: string): string {
-  const prefix = `viking://user/${uriSegment(config.user)}/memories/${SHARED_SEGMENT}/${team}/`;
-  if (!sharedUri.startsWith(prefix)) {
+  const canonicalUri = parseResourceId(sharedUri).canonicalUri;
+  const prefix = `threadnote://user/${uriSegment(config.user)}/memories/${SHARED_SEGMENT}/${team}/`;
+  if (!canonicalUri.startsWith(prefix)) {
     throw new Error(`Refusing to unpublish a URI outside team "${team}" shared namespace: ${sharedUri}`);
   }
-  const rest = sharedUri.slice(prefix.length);
-  return `viking://user/${uriSegment(config.user)}/memories/${rest}`;
+  const rest = canonicalUri.slice(prefix.length);
+  return `threadnote://user/${uriSegment(config.user)}/memories/${rest}`;
 }
 
-export function vikingUriToWorktreeRelative(config: ShareRuntime, uri: string, team: string): string {
-  const prefix = `viking://user/${uriSegment(config.user)}/memories/${SHARED_SEGMENT}/${team}/`;
-  if (!uri.startsWith(prefix)) {
+export function resourceUriToWorktreeRelative(config: ShareRuntime, uri: string, team: string): string {
+  const canonicalUri = parseResourceId(uri).canonicalUri;
+  const prefix = `threadnote://user/${uriSegment(config.user)}/memories/${SHARED_SEGMENT}/${team}/`;
+  if (!canonicalUri.startsWith(prefix)) {
     throw new Error(`URI ${uri} is not inside team "${team}" shared subtree.`);
   }
-  return uri.slice(prefix.length);
+  return canonicalUri.slice(prefix.length);
 }
 
 const isRegularFileNoSymlink = Effect.fn('share.isRegularFileNoSymlink')(function* (path: string) {
@@ -4327,7 +4623,7 @@ const printShareArtifactResult = Effect.fn('share.printShareArtifactResult')(fun
 /**
  * Removes personal lifecycle, candidate, session, evidence, and relation
  * provenance from the header block before a memory is published to a team's
- * shared git repo. Personal viking:// URIs do not resolve for teammates, and
+ * shared git repo. Personal threadnote:// URIs do not resolve for teammates, and
  * candidate/session IDs are local workflow state rather than durable knowledge.
  * Defence-in-depth: even if a producer accidentally retains local provenance,
  * it stops here.
@@ -4360,49 +4656,65 @@ export function stripPersonalProvenance(content: string): string {
   return cleaned.join('\n');
 }
 
+export function setMemoryVisibility(content: string, visibility: 'personal' | 'shared'): string {
+  const lines = content.split('\n');
+  if (lines[0]?.trim() !== 'MEMORY' && lines[0]?.trim() !== 'HANDOFF') {
+    return content;
+  }
+  const headerEnd = lines.findIndex(line => line.trim() === '');
+  if (headerEnd === -1) {
+    return content;
+  }
+  const visibilityIndex = lines.slice(1, headerEnd).findIndex(line => line.startsWith('visibility:'));
+  if (visibilityIndex >= 0) {
+    lines[visibilityIndex + 1] = `visibility: ${visibility}`;
+    return lines.join('\n');
+  }
+  let insertionIndex = headerEnd;
+  for (let index = 1; index < headerEnd; index += 1) {
+    if (/^(?:created_at|timestamp|updated_at):/.test(lines[index] ?? '')) {
+      insertionIndex = index + 1;
+    }
+  }
+  lines.splice(insertionIndex, 0, `visibility: ${visibility}`);
+  return lines.join('\n');
+}
+
 const readMemoryContent = Effect.fn('share.readMemoryContent')(function* (
   config: ShareRuntime,
-  ov: string,
+  _ov: string,
   uri: string,
   dryRun: boolean,
 ) {
-  const args = withIdentity(config, ['read', uri]);
   if (dryRun) {
-    yield* Console.log(`Would run: ${formatShellCommand(ov, args)}`);
+    yield* Console.log(`Would read native resource: ${uri}`);
     return '<dry-run memory body>';
   }
-  const result = yield* runCommand(ov, args);
-  if (!result.stdout.trim()) {
+  const store = yield* ResourceStore;
+  const content = yield* store.read(resourceStoreLocation(config), uri);
+  if (!content.trim()) {
     throw new Error(`Refusing to publish empty memory at ${uri}`);
   }
-  return result.stdout;
+  return content;
 });
 
 export const ensureSharedDirectoryChain = Effect.fn('share.ensureSharedDirectoryChain')(function* (
   config: ShareRuntime,
-  ov: string,
+  _ov: string,
   memoryUri: string,
   dryRun: boolean,
   options: {readonly quiet?: boolean} = {},
 ) {
   const directoryUri = parentUri(memoryUri);
+  const store = yield* ResourceStore;
   for (const uri of sharedDirectoryChain(config, directoryUri)) {
-    const args = withIdentity(config, ['stat', uri]);
     if (dryRun) {
       if (options.quiet !== true) {
-        yield* Console.log(`Would run: ${formatShellCommand(ov, args)}`);
+        yield* Console.log(`Would create native resource directory if missing: ${uri}`);
       }
       continue;
     }
-    const statResult = yield* runCommand(ov, args, {allowFailure: true});
-    if (statResult.exitCode === 0) {
-      continue;
-    }
-    if (options.quiet === true) {
-      yield* runCommand(ov, withIdentity(config, ['mkdir', uri, '--description', 'Threadnote shared context.']));
-    } else {
-      yield* maybeRun(false, ov, withIdentity(config, ['mkdir', uri, '--description', 'Threadnote shared context.']));
-    }
+    yield* store.makeDirectory(resourceStoreLocation(config), uri);
   }
 });
 
@@ -4412,11 +4724,12 @@ export function parentUri(uri: string): string {
 }
 
 export function sharedDirectoryChain(config: ShareRuntime, directoryUri: string): readonly string[] {
-  const prefix = `viking://user/${uriSegment(config.user)}/memories/${SHARED_SEGMENT}/`;
-  if (!directoryUri.startsWith(prefix)) {
-    return [directoryUri];
+  const canonicalUri = parseResourceId(directoryUri).canonicalUri;
+  const prefix = `threadnote://user/${uriSegment(config.user)}/memories/${SHARED_SEGMENT}/`;
+  if (!canonicalUri.startsWith(prefix)) {
+    return [canonicalUri];
   }
-  const parts = directoryUri.slice(prefix.length).split('/').filter(Boolean);
+  const parts = canonicalUri.slice(prefix.length).split('/').filter(Boolean);
   const chain: string[] = [];
   for (let index = 1; index <= parts.length; index += 1) {
     chain.push(`${prefix}${parts.slice(0, index).join('/')}`);
@@ -4424,9 +4737,17 @@ export function sharedDirectoryChain(config: ShareRuntime, directoryUri: string)
   return chain;
 }
 
+function canonicalResourceInput(uri: string): string | undefined {
+  try {
+    return parseResourceId(uri).canonicalUri;
+  } catch {
+    return undefined;
+  }
+}
+
 export const writeMemoryFile = Effect.fn('share.writeMemoryFile')(function* (
   config: ShareRuntime,
-  ov: string,
+  _ov: string,
   uri: string,
   content: string,
   initialMode: 'create' | 'replace',
@@ -4434,217 +4755,23 @@ export const writeMemoryFile = Effect.fn('share.writeMemoryFile')(function* (
   options: {readonly quiet?: boolean} = {},
 ) {
   if (dryRun) {
-    const args = withIdentity(config, [
-      'write',
-      uri,
-      '--from-file',
-      '<staged temp file>',
-      '--mode',
-      initialMode,
-      '--wait',
-      '--timeout',
-      '120',
-    ]);
     if (options.quiet !== true) {
-      yield* Console.log(`Would run: ${formatShellCommand(ov, args)}`);
+      yield* Console.log(`Would write native resource: ${uri} --mode ${initialMode}`);
     }
     return;
   }
-  const system = yield* SystemInfo;
-  const stagingDir = yield* mkdtemp(yield* pathJoin(system.tempDirectory, 'threadnote-share-'));
-  const tempPath = yield* pathJoin(stagingDir, 'body.txt');
-  yield* Effect.gen(function* () {
-    yield* writeFile(tempPath, content, {encoding: 'utf8', mode: 0o600});
-    yield* writeOvFileWithRetry(config, ov, uri, tempPath, initialMode, options);
-    yield* Effect.all([
-      expireRecallIndexValidation(config.agentContextHome, false),
-      expireRecallIndexValidation(config.agentContextHome, true),
-    ]);
-    yield* refreshMemoryIndex(config, ov, uri, options);
-  }).pipe(Effect.ensuring(rm(stagingDir, {force: true, recursive: true}).pipe(Effect.ignore)));
+  const store = yield* ResourceStore;
+  yield* store.write(resourceStoreLocation(config), uri, content, {
+    mode: initialMode === 'replace' ? 'upsert' : 'create',
+  });
 });
 
-// Busy-retry backoff: read sequentially between attempts (between 0-1, 1-2, ...).
-// `ov wait` returns immediately when the queue is already drained, so without an
-// explicit sleep the 4 retries would burn in milliseconds. We need real elapsed
-// time to give the OV background indexer that's holding the per-URI lock a
-// chance to finish — the lock isn't observable via `ov wait`, only by actually
-// waiting.
-const BUSY_RETRY_BACKOFF_MS: readonly number[] = [2000, 5000, 10000, 20000, 30000];
-
-const writeOvFileWithRetry = Effect.fn('share.writeOvFileWithRetry')(function* (
-  config: ShareRuntime,
-  ov: string,
-  uri: string,
-  fromFile: string,
-  initialMode: 'create' | 'replace',
-  options: {readonly quiet?: boolean} = {},
-) {
-  const maxAttempts = BUSY_RETRY_BACKOFF_MS.length + 1;
-  // Snapshot existence ONCE before the first attempt so a teammate's
-  // concurrent publish landing between attempts can't trick us into flipping
-  // to 'replace' and silently overwriting their content. Only an exists-now-
-  // but-didn't-exist-before transition can be attributed to our own write.
-  const existedBeforeWrite = yield* vikingResourceExists(ov, config, uri);
-  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-    const existsNow = attempt === 0 ? existedBeforeWrite : yield* vikingResourceExists(ov, config, uri);
-    if (attempt > 0 && existsNow) {
-      if (yield* openVikingContentMatches(config, ov, uri, fromFile)) {
-        return;
-      }
-      if (initialMode === 'create' && !existedBeforeWrite) {
-        return yield* Effect.fail(
-          new Error(`Create conflict: ${uri} appeared with different content while the write was retrying.`),
-        );
-      }
-    }
-    // Preserve the caller's operation on every retry. In particular, a create
-    // must never flip to replace merely because some writer made the URI exist.
-    const mode = initialMode;
-    const args = withIdentity(config, [
-      'write',
-      uri,
-      '--from-file',
-      fromFile,
-      '--mode',
-      mode,
-      '--wait',
-      '--timeout',
-      '120',
-    ]);
-    if (options.quiet !== true) {
-      yield* Console.log(`${attempt === 0 ? 'Running' : 'Retrying'}: ${formatShellCommand(ov, args)}`);
-    }
-    const result = yield* runCommand(ov, args, {allowFailure: true});
-    if (result.exitCode === 0) {
-      if (options.quiet !== true && result.stdout.trim()) {
-        yield* Console.log(result.stdout.trim());
-      }
-      if (options.quiet !== true && result.stderr.trim()) {
-        yield* Console.error(result.stderr.trim());
-      }
-      return;
-    }
-    if (
-      isTransientOvFailure(result.stderr, result.stdout) &&
-      (yield* vikingResourceExists(ov, config, uri)) &&
-      (yield* openVikingContentMatches(config, ov, uri, fromFile))
-    ) {
-      // The write succeeded server-side (URI now exists where it didn't before
-      // this call started) even though OV returned an error before the --wait
-      // completed. Drain the queue and treat the write as durable.
-      if (options.quiet !== true) {
-        yield* Console.log(
-          'OpenViking accepted the write but returned an error before the wait completed; draining the queue.',
-        );
-      }
-      yield* waitForOvQueue(ov, config, options);
-      return;
-    }
-    if (initialMode === 'create' && !existedBeforeWrite && (yield* vikingResourceExists(ov, config, uri))) {
-      return yield* Effect.fail(
-        new Error(`Create conflict: ${uri} exists with content not written by this invocation.`),
-      );
-    }
-    if (!isTransientOvFailure(result.stderr, result.stdout) || attempt === maxAttempts - 1) {
-      return yield* Effect.fail(new Error(`${formatShellCommand(ov, args)} failed: ${result.stderr || result.stdout}`));
-    }
-    // Resource-busy / being-processed errors mean OV still holds the URI's
-    // per-resource lock from a background semantic/embedding indexer (e.g.,
-    // a prior share sync that pulled the previous version of the same URI).
-    // The lock isn't drained by `ov wait` because the worker has already
-    // pulled its task from the queue and is processing — `ov wait` would
-    // return immediately. Drain the queue first in case more work is
-    // pending, then sleep real time so the indexer has a chance to release.
-    // For network-class transients, fall back to the short fixed sleep
-    // since `ov wait` would hit the same connectivity issue.
-    if (isResourceBusyFailure(result.stderr, result.stdout)) {
-      yield* waitForOvQueue(ov, config, options);
-      yield* sleep(BUSY_RETRY_BACKOFF_MS[attempt] ?? 30000);
-    } else {
-      yield* sleep(1000 * (attempt + 1));
-    }
-  }
-});
-
-const openVikingContentMatches = Effect.fn('share.openVikingContentMatches')(function* (
-  config: ShareRuntime,
-  ov: string,
-  uri: string,
-  fromFile: string,
-) {
-  const [expected, actual] = yield* Effect.all([
-    readFile(fromFile, 'utf8'),
-    runCommand(ov, withIdentity(config, ['read', uri]), {allowFailure: true}),
-  ]);
-  return actual.exitCode === 0 && actual.stdout.trim() === expected.trim();
-});
-
-const refreshMemoryIndex = Effect.fn('share.refreshMemoryIndex')(function* (
-  config: ShareRuntime,
-  ov: string,
-  uri: string,
-  options: {readonly quiet?: boolean} = {},
-) {
-  // This runs after a successful file write. OpenViking's semantic memory
-  // reindex path expects a directory URI, but vectors_only supports memory
-  // files and refreshes the leaf recall records without poisoning the queue.
-  // `ov reindex` has no --timeout and --wait true blocks on the whole queue,
-  // so a stuck/poisoned semantic queue would otherwise hang this inline call
-  // for the full 10-min command timeout; reindexWaitTimeoutMs bounds it (the
-  // write already succeeded, so a timed-out refresh only defers freshness).
-  const result = yield* runCommand(
-    ov,
-    withIdentity(config, ['reindex', uri, '--mode', 'vectors_only', '--wait', 'true']),
-    {allowFailure: true, timeoutMs: yield* reindexWaitTimeoutMs()},
-  );
-  if (result.exitCode === 0) {
-    if (options.quiet !== true && result.stdout.trim()) {
-      yield* Console.log(result.stdout.trim());
-    }
-    if (options.quiet !== true && result.stderr.trim()) {
-      yield* Console.error(result.stderr.trim());
-    }
-    return;
-  }
-  if (options.quiet !== true) {
-    yield* Console.error(
-      `Memory stored, but index refresh failed for ${uri}: ${result.stderr.trim() || result.stdout.trim()}`,
-    );
-  }
-});
-
-const waitForOvQueue = Effect.fn('share.waitForOvQueue')(function* (
-  ov: string,
-  config: ShareRuntime,
-  options: {readonly quiet?: boolean} = {},
-) {
-  const result = yield* runCommand(ov, withIdentity(config, ['wait', '--timeout', '120']), {allowFailure: true});
-  if (options.quiet !== true && result.stdout.trim()) {
-    yield* Console.log(result.stdout.trim());
-  }
-  if (options.quiet !== true && result.stderr.trim()) {
-    yield* Console.error(result.stderr.trim());
-  }
-});
-
-export function isTransientOvFailure(stderr: string, stdout: string): boolean {
-  const output = `${stderr}\n${stdout}`.toLowerCase();
-  return (
-    output.includes('resource is busy') ||
-    output.includes('resource is being processed') ||
-    output.includes('network error') ||
-    output.includes('error sending request') ||
-    output.includes('http request failed') ||
-    output.includes('connection refused') ||
-    output.includes('connection reset') ||
-    output.includes('timed out')
-  );
-}
-
-export function isResourceBusyFailure(stderr: string, stdout: string): boolean {
-  const output = `${stderr}\n${stdout}`.toLowerCase();
-  return output.includes('resource is busy') || output.includes('resource is being processed');
+function resourceStoreLocation(config: ShareRuntime) {
+  return {
+    account: config.account,
+    home: config.agentContextHome,
+    user: config.user,
+  };
 }
 
 const ingestSingleFile = Effect.fn('share.ingestSingleFile')(function* (
@@ -4690,46 +4817,31 @@ function prepareSharedInboundContent(uri: string, rawContent: string): string {
 
 export const removeMemoryUri = Effect.fn('share.removeMemoryUri')(function* (
   config: ShareRuntime,
-  ov: string,
+  _ov: string,
   uri: string,
   dryRun: boolean,
   options: {readonly quiet?: boolean} = {},
 ) {
-  const args = withIdentity(config, ['rm', uri]);
   if (dryRun) {
     if (options.quiet !== true) {
-      yield* Console.log(`Would run: ${formatShellCommand(ov, args)}`);
+      yield* Console.log(`Would remove native resource: ${uri}`);
     }
     return;
   }
-  const maxAttempts = BUSY_RETRY_BACKOFF_MS.length + 1;
-  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-    const result = yield* runCommand(ov, args, {allowFailure: true});
-    if (result.exitCode === 0) {
-      if (options.quiet !== true && result.stdout.trim()) {
-        yield* Console.log(result.stdout.trim());
-      }
-      return;
-    }
-    if (!isTransientOvFailure(result.stderr, result.stdout) || attempt === maxAttempts - 1) {
-      throw new Error(`${formatShellCommand(ov, args)} failed: ${result.stderr || result.stdout}`);
-    }
-    if (isResourceBusyFailure(result.stderr, result.stdout)) {
-      yield* waitForOvQueue(ov, config, options);
-      yield* sleep(BUSY_RETRY_BACKOFF_MS[attempt] ?? 30000);
-    } else {
-      yield* sleep(1000 * (attempt + 1));
-    }
-  }
+  const store = yield* ResourceStore;
+  yield* store.remove(resourceStoreLocation(config), uri).pipe(Effect.catchTag('ResourceNotFound', () => Effect.void));
 });
 
-export const vikingResourceExists = Effect.fn('share.vikingResourceExists')(function* (
-  ov: string,
+export const resourceExists = Effect.fn('share.resourceExists')(function* (
+  _ov: string,
   config: ShareRuntime,
   uri: string,
 ) {
-  const result = yield* runCommand(ov, withIdentity(config, ['stat', uri]), {allowFailure: true});
-  return result.exitCode === 0;
+  const store = yield* ResourceStore;
+  return yield* store.stat(resourceStoreLocation(config), uri).pipe(
+    Effect.as(true),
+    Effect.catchTag('ResourceNotFound', () => Effect.succeed(false)),
+  );
 });
 
 const hasUncommittedChanges = Effect.fn('share.hasUncommittedChanges')(function* (worktree: string) {
@@ -4812,11 +4924,19 @@ const isShareGitOperationInProgress = Effect.fn('share.isShareGitOperationInProg
 });
 
 /** Returns the trimmed stdout of `git -C <worktree> <args>` on success, or `undefined` on dry-run / non-zero exit. */
-const gitOutput = Effect.fn('share.gitOutput')(function* (worktree: string, args: readonly string[], dryRun: boolean) {
+const gitOutput = Effect.fn('share.gitOutput')(function* (
+  worktree: string,
+  args: readonly string[],
+  dryRun: boolean,
+  timeoutMs?: number,
+) {
   if (dryRun) {
     return undefined;
   }
-  const result = yield* runCommand('git', ['-C', worktree, ...args], {allowFailure: true});
+  const result = yield* runCommand('git', ['-C', worktree, ...args], {
+    allowFailure: true,
+    ...(timeoutMs === undefined ? {} : {timeoutMs}),
+  });
   if (result.exitCode !== 0) {
     return undefined;
   }
@@ -4906,35 +5026,39 @@ const gitFileContent = Effect.fn('share.gitFileContent')(function* (
   return result.exitCode === 0 ? result.stdout : undefined;
 });
 
-// applyChangesToOpenViking only reflects changes to files under shareable
+// applyChangesToCanonicalStore only reflects changes to files under shareable
 // top-level directories. For renames that cross those directories
 // (e.g., handoffs/x.md -> durable/y.md), listChangedFiles emits a
 // 'removed' for the old path and an 'added' for the new path; both are
 // processed independently here. The 'removed' entry for a non-shareable path
 // is filtered out by the firstSegment check, which is the desired outcome
-// because non-shareable files are never reflected into OV's shared subtree.
+// because non-shareable files are never reflected into the shared subtree.
 //
 // Per-change failures are non-fatal: we log a warning and continue with the
 // other changes, returning the failed list so the caller can re-persist them
 // to pendingReindexes for the next sync attempt. A single stuck URI (e.g.,
-// OV holding a per-resource lock longer than our retry window) must not
+// a per-resource lock being held longer than our retry window) must not
 // cause a whole sync to lose all the other files it could have applied.
-const applyChangesToOpenViking = Effect.fn('share.applyChangesToOpenViking')(function* (
+const applyChangesToCanonicalStore = Effect.fn('share.applyChangesToCanonicalStore')(function* (
   config: ShareRuntime,
   team: ShareTeamConfig,
   changes: readonly ChangedFile[],
   options: {readonly quiet?: boolean} = {},
 ) {
-  const ov = yield* openVikingCliForMode(false);
+  const ov = NATIVE_RESOURCE_BACKEND;
   const failed: ChangedFile[] = [];
   for (const change of changes) {
     if (!isShareableMemoryChange(change)) {
       continue;
     }
-    const uri = yield* workfileToVikingUri(config, team, change.path);
+    let normalizedChange = change;
+    let changeLabel = conflictId(team.name, change.relativePath);
     const applyResult = yield* Effect.result(
       Effect.gen(function* () {
-        if (change.status === 'removed') {
+        normalizedChange = yield* normalizePendingChange({config: team, name: team.name}, change);
+        const uri = yield* workfileToResourceUri(config, team, normalizedChange.path);
+        changeLabel = uri;
+        if (normalizedChange.status === 'removed') {
           const currentContent = yield* readExistingMemoryContent(config, ov, uri);
           if (currentContent === undefined) {
             return;
@@ -4942,7 +5066,7 @@ const applyChangesToOpenViking = Effect.fn('share.applyChangesToOpenViking')(fun
           yield* removeMemoryUri(config, ov, uri, false, options);
           return;
         }
-        if (!(yield* isRegularFileNoSymlink(change.path))) {
+        if (!(yield* isRegularFileNoSymlink(normalizedChange.path))) {
           return;
         }
         // Either 'modified' or 'added' from git's perspective; the file on disk
@@ -4953,7 +5077,7 @@ const applyChangesToOpenViking = Effect.fn('share.applyChangesToOpenViking')(fun
         // ALREADY_EXISTS error). 'added' lands here when OV has the URI from an
         // earlier path — a prior share init/sync, or a local publish that wrote
         // the URI before the corresponding upstream commit landed in this clone.
-        const content = yield* readSharedInboundFileContent(uri, change.path);
+        const content = yield* readSharedInboundFileContent(uri, normalizedChange.path);
         const currentContent = yield* readExistingMemoryContent(config, ov, uri);
         if (currentContent !== undefined) {
           if (
@@ -4975,9 +5099,9 @@ const applyChangesToOpenViking = Effect.fn('share.applyChangesToOpenViking')(fun
       const err = applyResult.failure;
       const message = err instanceof Error ? err.message : String(err);
       if (options.quiet !== true) {
-        yield* Console.warn(`share sync: ${uri}: ingest failed — will retry on the next sync. ${message}`);
+        yield* Console.warn(`share sync: ${changeLabel}: ingest failed — will retry on the next sync. ${message}`);
       }
-      failed.push(change);
+      failed.push(normalizedChange);
     }
   }
   return {failed};
@@ -4988,32 +5112,21 @@ const readExistingMemoryContent = Effect.fn('share.readExistingMemoryContent')(f
   ov: string,
   uri: string,
 ) {
-  if (!(yield* vikingResourceExistsStrict(ov, config, uri))) {
+  if (!(yield* resourceExistsStrict(ov, config, uri))) {
     return undefined;
   }
   return yield* readMemoryContent(config, ov, uri, false);
 });
 
-const vikingResourceExistsStrict = Effect.fn('share.vikingResourceExistsStrict')(function* (
-  ov: string,
+const resourceExistsStrict = Effect.fn('share.resourceExistsStrict')(function* (
+  _ov: string,
   config: ShareRuntime,
   uri: string,
 ) {
-  const args = withIdentity(config, ['stat', uri]);
-  const result = yield* runCommand(ov, args, {allowFailure: true});
-  if (result.exitCode === 0) {
-    return true;
-  }
-  const detail = `${result.stderr}\n${result.stdout}`.trim();
-  if (
-    result.exitCode === 1 &&
-    (/\[NOT_FOUND\]/i.test(detail) ||
-      /\bresource (?:was )?(?:not[ _-]?found|does not exist)\b|no such resource/i.test(detail))
-  ) {
-    return false;
-  }
-  return yield* Effect.fail(
-    new Error(`${formatShellCommand(ov, args)} failed: ${detail || `exit code ${result.exitCode}`}`),
+  const store = yield* ResourceStore;
+  return yield* store.stat(resourceStoreLocation(config), uri).pipe(
+    Effect.as(true),
+    Effect.catchTag('ResourceNotFound', () => Effect.succeed(false)),
   );
 });
 
@@ -5052,7 +5165,7 @@ const applyAndPersistChanges = Effect.fn('share.applyAndPersistChanges')(functio
   // Persist intent BEFORE applying so a crash mid-apply doesn't lose state.
   state.pendingReindexes.set(team.name, changes);
   yield* writePendingReindexes(config, state);
-  const result = yield* applyChangesToOpenViking(config, team, changes, options);
+  const result = yield* applyChangesToCanonicalStore(config, team, changes, options);
   if (result.failed.length > 0) {
     const failed = yield* Effect.forEach(result.failed, change =>
       materializePreviousContentForPendingConflict(team.worktree, change),
