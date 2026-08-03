@@ -49,13 +49,13 @@
         "Threadnote 4 stores canonical resources, derived indexes, model files, and share metadata under ~/.threadnote.",
         "The migration inventories ~/.openviking without starting it, excludes runtime-only Python and server artifacts, copies into a sibling staging directory, validates hashes, and atomically promotes the result.",
         "The legacy ~/.openviking home is preserved unchanged as the rollback source and is never deleted automatically.",
-        "Threadnote 4 uses in-process node-llama-cpp for optional embeddings, reranking, and generation; no Python or background OpenViking service is required."
+        "Threadnote 4 uses in-process node-llama-cpp for core embeddings and optional reranking and generation; no Python or background OpenViking service is required."
       ],
       "commandArgs": ["migrate", "--apply"],
       "requiresLegacyHomeMigration": true,
       "instructions": [
         "Home migration finished. Run `threadnote doctor`, then `threadnote index status`.",
-        "Optional semantic recall starts with `threadnote models list`; install and select a measured embedding model before rebuilding the vector index."
+        "Threadnote automatically provisions and selects the core BGE Small embedding model; `threadnote repair` restores it if verification or index checks report a problem."
       ]
     },
     {

@@ -59,17 +59,18 @@ checksums but are not OS code-signed.
 4. Confirm immutable releases are enabled and the Apple signing secrets below are configured.
 5. Create and push the version tag matching both `package.json` and the release-notes filename, for example
    `v4.0.0-beta.9`.
-6. Wait for `Publish standalone release`. Do not create a GitHub Release manually; the workflow creates it only after
-   all four enabled archives and the exact-tag production-large evidence job are ready.
+6. Wait for `Publish standalone release`. Do not create a GitHub Release manually. Betas publish after all four enabled
+   archives are ready while their production-large evidence continues asynchronously; RC and stable releases publish
+   only after the exact-tag production-large evidence job succeeds.
 
 Every `v4.0.0-beta.*`, `v4.0.0-rc.*`, and final `v4.0.0` tag starts one production-large run on `ubuntu-24.04` inside
-the publishing workflow. Archive builds may proceed in parallel, but immutable publication waits for the evidence job
-to validate the exact source, production-shape attainment, parity, telemetry, and canonical artifact. A failed run or
-missing upload blocks publication; the benchmark workflow no longer starts duplicate work for the same tag. Aggregate,
-privacy-safe phase/materialization evidence, failure checkpoints, exact source commit, and upload digest are retained
-for 90 days. Treat a successful result as `n=1` same-runner release evidence, not as a portable p95. The heavy-tail job
-remains separate parser/cache coverage and must not be used as a substitute for production-scale materialization
-evidence.
+the publishing workflow. Archive builds may proceed in parallel. Beta publication does not wait for this asynchronous
+evidence, while RC and stable publication fail closed until it validates the exact source, production-shape attainment,
+parity, telemetry, and canonical artifact. A failed run or missing upload blocks RC and stable publication; the
+benchmark workflow no longer starts duplicate work for the same tag. Aggregate, privacy-safe phase/materialization
+evidence, failure checkpoints, exact source commit, and upload digest are retained for 90 days. Treat a successful
+result as `n=1` same-runner release evidence, not as a portable p95. The heavy-tail job remains separate parser/cache
+coverage and must not be used as a substitute for production-scale materialization evidence.
 
 The release-evidence validator fails closed: the artifact must name the Threadnote 4 tag and exact matching commit,
 the local checkout must resolve that tag through `ref^{commit}` to the same SHA, and the measured checkout must be
