@@ -9,8 +9,11 @@ interface WorkflowJob {
   readonly permissions?: Readonly<Record<string, string>>;
   readonly 'runs-on'?: string;
   readonly steps?: readonly {
+    readonly 'continue-on-error'?: boolean;
+    readonly id?: string;
     readonly if?: string;
     readonly env?: Readonly<Record<string, string>>;
+    readonly name?: string;
     readonly run?: string;
     readonly 'timeout-minutes'?: number;
     readonly uses?: string;
@@ -29,10 +32,16 @@ interface WorkflowJob {
 interface BenchmarkWorkflow {
   readonly jobs: Readonly<Record<string, WorkflowJob>>;
   readonly on: {
+    readonly push?: {
+      readonly tags?: readonly string[];
+    };
     readonly pull_request?: {
       readonly paths?: readonly string[];
     };
     readonly workflow_dispatch?: {
+      readonly inputs?: Readonly<Record<string, unknown>>;
+    };
+    readonly workflow_call?: {
       readonly inputs?: Readonly<Record<string, unknown>>;
     };
   };
@@ -96,7 +105,7 @@ describe('platform benchmark workflow', () => {
     }
   });
 
-  it('reuses one fail-closed production-large n=1 workflow for schedule, opt-in, and release evidence', () => {
+  it('bounds the shared production-large n=1 workflow for schedule, opt-in, and release evidence', () => {
     const workflow = load(readFileSync('.github/workflows/benchmarks.yml', 'utf8'), {
       schema: JSON_SCHEMA,
     }) as BenchmarkWorkflow;
@@ -108,13 +117,16 @@ describe('platform benchmark workflow', () => {
     const command = job.steps?.flatMap(step => (step.run ? [step.run] : [])).join('\n') ?? '';
     const capture = job.steps?.find(step => step.run?.includes('--profile production-large'));
     const upload = job.steps?.find(step => step.uses?.startsWith('actions/upload-artifact@'));
+    const summary = job.steps?.find(step => step.run?.includes('Production-large release evidence'));
+    const enforcement = job.steps?.find(step => step.name === 'Enforce strict evidence completion');
 
     expect(workflow.on.workflow_dispatch?.inputs).toHaveProperty('include_production_large');
     expect(caller.if).toContain("github.event_name == 'schedule'");
     expect(caller.if).toContain('inputs.include_production_large');
     expect(caller.uses).toBe('./.github/workflows/production-large-evidence.yml');
+    expect(evidence.on.workflow_call?.inputs?.strict).toMatchObject({default: true, type: 'boolean'});
     expect(job['runs-on']).toBe('ubuntu-24.04');
-    expect(job['timeout-minutes']).toBe(360);
+    expect(job['timeout-minutes']).toBe(30);
     expect(command).toContain('--profile production-large');
     expect(command).toContain('--samples 1');
     expect(command).toContain('--warmups 0');
@@ -127,57 +139,60 @@ describe('platform benchmark workflow', () => {
       THREADNOTE_BENCHMARK_RELEASE_SHA: '${{ inputs.release_sha }}',
     });
     const captureTimeout = capture?.['timeout-minutes'];
-    expect(captureTimeout).toBeDefined();
-    expect(job['timeout-minutes']! - (captureTimeout ?? 0)).toBeGreaterThanOrEqual(30);
+    expect(captureTimeout).toBe(20);
+    expect(capture?.['continue-on-error']).toBe(true);
+    expect(job['timeout-minutes']! - (captureTimeout ?? 0)).toBeGreaterThanOrEqual(10);
     expect(upload?.uses).toBe('actions/upload-artifact@v7');
     expect(upload?.if).toBe('always()');
-    expect(upload?.['timeout-minutes']).toBeLessThanOrEqual(10);
+    expect(upload?.['timeout-minutes']).toBeLessThanOrEqual(5);
     expect(upload?.with?.path).toBe('artifacts/code-graph-production-large-n1-*.json');
     expect(upload?.with?.['if-no-files-found']).toBe('error');
     expect(upload?.with?.['retention-days']).toBe(90);
+    expect(enforcement?.if).toContain('inputs.strict');
+    expect(enforcement?.if).toContain("steps.capture_production_large.outcome != 'success'");
+    expect(enforcement?.run).toContain('exit 1');
+    expect(job.steps?.indexOf(enforcement!)).toBeGreaterThan(job.steps?.indexOf(upload!) ?? -1);
+    expect(job.steps?.indexOf(enforcement!)).toBeGreaterThan(job.steps?.indexOf(summary!) ?? -1);
   });
 
-  it('publishes betas after platform artifacts while retaining independent exact-commit evidence', () => {
+  it('publishes every channel after platform artifacts while retaining independent exact-commit evidence', () => {
     const workflow = load(readFileSync('.github/workflows/publish.yml', 'utf8'), {
+      schema: JSON_SCHEMA,
+    }) as BenchmarkWorkflow;
+    const releaseEvidence = load(readFileSync('.github/workflows/release-evidence.yml', 'utf8'), {
       schema: JSON_SCHEMA,
     }) as BenchmarkWorkflow;
     const publisher = load(readFileSync('.github/workflows/publish-release-assets.yml', 'utf8'), {
       schema: JSON_SCHEMA,
     }) as BenchmarkWorkflow;
-    const evidence = workflow.jobs['production-large-evidence']!;
+    const evidence = releaseEvidence.jobs['production-large-evidence']!;
     const linux = workflow.jobs.linux!;
     const macos = workflow.jobs.macos!;
-    const beta = workflow.jobs['publish-beta']!;
-    const gated = workflow.jobs['publish-evidence-gated']!;
+    const publish = workflow.jobs['publish-release']!;
     const release = publisher.jobs.publish!;
     const releaseCommand = release.steps?.flatMap(step => (step.run ? [step.run] : [])).join('\n') ?? '';
 
     expect(evidence.needs).toBeUndefined();
-    expect(evidence.if).toContain("startsWith(github.ref, 'refs/tags/v4.0.0-beta.')");
-    expect(evidence.if).toContain("startsWith(github.ref, 'refs/tags/v4.0.0-rc.')");
-    expect(evidence.if).toContain("github.ref == 'refs/tags/v4.0.0'");
+    expect(releaseEvidence.on.push?.tags).toEqual(['v4.0.0-beta.*', 'v4.0.0-rc.*', 'v4.0.0']);
     expect(evidence.uses).toBe('./.github/workflows/production-large-evidence.yml');
     expect(evidence.with).toMatchObject({
-      gate_release: "${{ startsWith(github.ref, 'refs/tags/v4.0.0-rc.') || github.ref == 'refs/tags/v4.0.0' }}",
+      strict: false,
       release_ref: '${{ github.ref }}',
       release_sha: '${{ github.sha }}',
     });
     expect(linux.needs).toBeUndefined();
     expect(macos.needs).toBeUndefined();
 
-    expect(beta.needs).toEqual(['verify', 'linux', 'macos']);
-    expect(beta.if).toContain("startsWith(github.ref, 'refs/tags/v4.0.0-beta.')");
-    expect(beta.if).toContain("needs.verify.result == 'success'");
-    expect(beta.if).not.toContain('needs.production-large-evidence');
-    expect(beta.uses).toBe('./.github/workflows/publish-release-assets.yml');
-    expect(beta.permissions).toEqual({contents: 'write'});
-
-    expect(gated.needs).toEqual(['verify', 'linux', 'macos', 'production-large-evidence']);
-    expect(gated.if).toContain("startsWith(github.ref, 'refs/tags/v4.0.0-rc.')");
-    expect(gated.if).toContain("github.ref == 'refs/tags/v4.0.0'");
-    expect(gated.if).toContain("needs.production-large-evidence.result == 'success'");
-    expect(gated.uses).toBe('./.github/workflows/publish-release-assets.yml');
-    expect(gated.permissions).toEqual({contents: 'write'});
+    expect(publish.needs).toEqual(['verify', 'linux', 'macos']);
+    expect(publish.if).toContain("needs.verify.result == 'success'");
+    expect(publish.if).toContain("needs.linux.result == 'success'");
+    expect(publish.if).toContain("needs.macos.result == 'success'");
+    expect(publish.if).not.toContain('needs.production-large-evidence');
+    expect(publish.uses).toBe('./.github/workflows/publish-release-assets.yml');
+    expect(publish.permissions).toEqual({contents: 'write'});
+    expect(workflow.jobs['publish-beta']).toBeUndefined();
+    expect(workflow.jobs['publish-evidence-gated']).toBeUndefined();
+    expect(workflow.jobs['production-large-evidence']).toBeUndefined();
 
     expect(release['runs-on']).toBe('ubuntu-latest');
     expect(release.permissions).toEqual({contents: 'write'});
@@ -185,16 +200,19 @@ describe('platform benchmark workflow', () => {
     expect(releaseCommand).toContain('--json isImmutable');
   });
 
-  it('reports whether retained production-large evidence is blocking the release', () => {
+  it('reports bounded evidence outcome and strictness without coupling it to publication', () => {
     const evidence = load(readFileSync('.github/workflows/production-large-evidence.yml', 'utf8'), {
       schema: JSON_SCHEMA,
     }) as BenchmarkWorkflow;
     const job = evidence.jobs['code-graph-production-large']!;
     const summary = job.steps?.find(step => step.run?.includes('Production-large release evidence'));
 
-    expect(summary?.env).toMatchObject({RELEASE_GATE: '${{ inputs.gate_release }}'});
-    expect(summary?.run).toContain('required before publishing this RC or stable release');
-    expect(summary?.run).toContain('retained and reported without blocking beta publication');
+    expect(summary?.env).toMatchObject({
+      MEASUREMENT_OUTCOME: '${{ steps.capture_production_large.outcome }}',
+      STRICT_EVIDENCE: '${{ inputs.strict }}',
+    });
+    expect(summary?.run).toContain('must complete for this evidence workflow to pass');
+    expect(summary?.run).toContain('bounded observation retained without blocking release publication');
   });
 
   it('runs the large-monorepo heavy-tail regression only by schedule or explicit opt-in', () => {

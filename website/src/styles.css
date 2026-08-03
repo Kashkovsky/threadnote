@@ -144,10 +144,15 @@ p {
   color: var(--ink);
   background: var(--teal);
   border-radius: 6px;
-  transform: translateY(-150%);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(calc(-100% - 24px));
 }
 
-.skip-link:focus {
+.skip-link:focus,
+.skip-link:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
   transform: translateY(0);
 }
 
@@ -436,6 +441,7 @@ p {
 .hero__copy {
   position: relative;
   z-index: 2;
+  min-width: 0;
 }
 
 .hero__version {
@@ -486,12 +492,15 @@ p {
   display: flex;
   align-items: center;
   gap: 14px;
+  min-width: 0;
   margin-top: 24px;
   color: var(--muted);
   font-size: 11px;
 }
 
 .hero__install code {
+  display: block;
+  min-width: 0;
   max-width: 100%;
   overflow-x: auto;
   padding: 7px 9px;
@@ -504,6 +513,7 @@ p {
 
 .hero__visual {
   position: relative;
+  min-width: 0;
   min-height: 570px;
   isolation: isolate;
 }
@@ -4926,7 +4936,7 @@ p {
   }
 
   .hero {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
     padding-top: 95px;
   }
 
@@ -5257,7 +5267,8 @@ p {
   }
 
   .hero h1 {
-    font-size: clamp(45px, 14vw, 64px);
+    font-size: clamp(40px, 12.5vw, 56px);
+    line-height: 0.98;
   }
 
   .hero__lede {
@@ -5268,9 +5279,23 @@ p {
     display: grid;
   }
 
+  .hero__actions .button {
+    width: 100%;
+    min-width: 0;
+  }
+
   .hero__install {
     align-items: flex-start;
     flex-direction: column;
+    width: 100%;
+  }
+
+  .hero__install code {
+    width: 100%;
+    line-height: 1.6;
+    overflow-wrap: anywhere;
+    white-space: normal;
+    word-break: break-word;
   }
 
   .hero__visual {

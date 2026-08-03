@@ -16,21 +16,6 @@ env:
   BUN_VERSION: 1.3.14
 
 jobs:
-  # Verification, platform builds, and exact-commit evidence start together. Publication joins the required outcomes.
-  # Betas report production-large evidence asynchronously; RC and stable publication depend on it.
-  production-large-evidence:
-    name: Validate production-large release evidence
-    if: >-
-      github.event_name == 'push' &&
-      (startsWith(github.ref, 'refs/tags/v4.0.0-beta.') ||
-       startsWith(github.ref, 'refs/tags/v4.0.0-rc.') ||
-       github.ref == 'refs/tags/v4.0.0')
-    uses: ./.github/workflows/production-large-evidence.yml
-    with:
-      gate_release: ${{ startsWith(github.ref, 'refs/tags/v4.0.0-rc.') || github.ref == 'refs/tags/v4.0.0' }}
-      release_ref: ${{ github.ref }}
-      release_sha: ${{ github.sha }}
-
   verify:
     name: Verify release source
     runs-on: ubuntu-latest
@@ -392,39 +377,16 @@ jobs:
           path: artifacts/
           if-no-files-found: error
 
-  # Keep beta feedback fast: verified, signed platform artifacts are sufficient to publish the prerelease.
-  publish-beta:
-    name: Publish beta without waiting for production-large evidence
+  publish-release:
+    # Production-large evidence has a separate bounded tag workflow so release status reflects distribution only.
+    name: Publish complete immutable release
     if: >-
       always() &&
       github.event_name == 'push' &&
-      startsWith(github.ref, 'refs/tags/v4.0.0-beta.') &&
       needs.verify.result == 'success' &&
       needs.linux.result == 'success' &&
       needs.macos.result == 'success'
     needs: [verify, linux, macos]
-    permissions:
-      contents: write
-    uses: ./.github/workflows/publish-release-assets.yml
-    with:
-      release_tag: ${{ github.ref_name }}
-
-  publish-evidence-gated:
-    name: Publish release after required production-large evidence
-    if: >-
-      always() &&
-      github.event_name == 'push' &&
-      !startsWith(github.ref, 'refs/tags/v4.0.0-beta.') &&
-      needs.verify.result == 'success' &&
-      needs.linux.result == 'success' &&
-      needs.macos.result == 'success' &&
-      (((startsWith(github.ref, 'refs/tags/v4.0.0-rc.') ||
-         github.ref == 'refs/tags/v4.0.0') &&
-        needs.production-large-evidence.result == 'success') ||
-       (!(startsWith(github.ref, 'refs/tags/v4.0.0-rc.') ||
-          github.ref == 'refs/tags/v4.0.0') &&
-        needs.production-large-evidence.result == 'skipped'))
-    needs: [verify, linux, macos, production-large-evidence]
     permissions:
       contents: write
     uses: ./.github/workflows/publish-release-assets.yml
