@@ -1052,7 +1052,7 @@ describe('code graph release evidence', () => {
     }
   });
 
-  it('runs exact-tag production-large evidence once and gates immutable publication on it', () => {
+  it('runs exact-tag production-large evidence once and gates RC/stable publication on it', () => {
     const workflow = load(readFileSync('.github/workflows/benchmarks.yml', 'utf8')) as BenchmarkWorkflow;
     const evidence = load(readFileSync('.github/workflows/production-large-evidence.yml', 'utf8')) as BenchmarkWorkflow;
     const publish = load(readFileSync('.github/workflows/publish.yml', 'utf8')) as BenchmarkWorkflow;
@@ -1067,13 +1067,17 @@ describe('code graph release evidence', () => {
     expect(releaseGate.if).toContain("startsWith(github.ref, 'refs/tags/v4.0.0-beta.')");
     expect(releaseGate.if).toContain("startsWith(github.ref, 'refs/tags/v4.0.0-rc.')");
     expect(releaseGate.if).toContain("github.ref == 'refs/tags/v4.0.0'");
-    expect(releaseGate.needs).toBe('verify');
+    expect(releaseGate.needs).toBeUndefined();
     expect(releaseGate.uses).toBe('./.github/workflows/production-large-evidence.yml');
     expect(releaseGate.with).toMatchObject({
+      gate_release: "${{ startsWith(github.ref, 'refs/tags/v4.0.0-rc.') || github.ref == 'refs/tags/v4.0.0' }}",
       release_ref: '${{ github.ref }}',
       release_sha: '${{ github.sha }}',
     });
-    expect(publish.jobs.publish?.if).toContain("needs.production-large-evidence.result == 'success'");
+    expect(publish.jobs['publish-beta']?.if).not.toContain('needs.production-large-evidence');
+    expect(publish.jobs['publish-evidence-gated']?.if).toContain(
+      "needs.production-large-evidence.result == 'success'",
+    );
 
     const production = evidence.jobs['code-graph-production-large']!;
     const checkout = production.steps?.find(step => step.uses === 'actions/checkout@v7');

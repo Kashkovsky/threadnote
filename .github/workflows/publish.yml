@@ -16,6 +16,8 @@ env:
   BUN_VERSION: 1.3.14
 
 jobs:
+  # Verification, platform builds, and exact-commit evidence start together. Publication joins the required outcomes.
+  # Betas report production-large evidence asynchronously; RC and stable publication depend on it.
   production-large-evidence:
     name: Validate production-large release evidence
     if: >-
@@ -23,9 +25,9 @@ jobs:
       (startsWith(github.ref, 'refs/tags/v4.0.0-beta.') ||
        startsWith(github.ref, 'refs/tags/v4.0.0-rc.') ||
        github.ref == 'refs/tags/v4.0.0')
-    needs: verify
     uses: ./.github/workflows/production-large-evidence.yml
     with:
+      gate_release: ${{ startsWith(github.ref, 'refs/tags/v4.0.0-rc.') || github.ref == 'refs/tags/v4.0.0' }}
       release_ref: ${{ github.ref }}
       release_sha: ${{ github.sha }}
 
@@ -77,7 +79,6 @@ jobs:
   linux:
     name: Linux · ${{ matrix.architecture }}
     if: github.event_name == 'push'
-    needs: verify
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -136,7 +137,6 @@ jobs:
 
   macos:
     name: macOS · ${{ matrix.architecture }}
-    needs: verify
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -390,59 +390,41 @@ jobs:
           path: artifacts/
           if-no-files-found: error
 
-  publish:
-    name: Publish complete immutable release
+  # Keep beta feedback fast: verified, signed platform artifacts are sufficient to publish the prerelease.
+  publish-beta:
+    name: Publish beta without waiting for production-large evidence
     if: >-
       always() &&
       github.event_name == 'push' &&
+      startsWith(github.ref, 'refs/tags/v4.0.0-beta.') &&
+      needs.verify.result == 'success' &&
       needs.linux.result == 'success' &&
-      needs.macos.result == 'success' &&
-      (((startsWith(github.ref, 'refs/tags/v4.0.0-beta.') ||
-         startsWith(github.ref, 'refs/tags/v4.0.0-rc.') ||
-         github.ref == 'refs/tags/v4.0.0') &&
-        needs.production-large-evidence.result == 'success') ||
-       (!(startsWith(github.ref, 'refs/tags/v4.0.0-beta.') ||
-          startsWith(github.ref, 'refs/tags/v4.0.0-rc.') ||
-          github.ref == 'refs/tags/v4.0.0') &&
-        needs.production-large-evidence.result == 'skipped'))
-    needs: [linux, macos, production-large-evidence]
-    runs-on: ubuntu-latest
+      needs.macos.result == 'success'
+    needs: [verify, linux, macos]
     permissions:
       contents: write
+    uses: ./.github/workflows/publish-release-assets.yml
+    with:
+      release_tag: ${{ github.ref_name }}
 
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/download-artifact@v8
-        with:
-          pattern: release-*
-          path: artifacts
-          merge-multiple: true
-
-      - name: Create release only after every artifact is ready
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          release_notes_file=".github/release-notes/${RELEASE_TAG}.md"
-          release_notes="$(<"$release_notes_file")"
-          release_flags=(--verify-tag --generate-notes)
-          if [[ "$RELEASE_TAG" == *-* ]]; then
-            release_flags+=(--prerelease)
-          fi
-          gh release create "$RELEASE_TAG" artifacts/* "${release_flags[@]}" --notes "$release_notes"
-
-      - name: Verify release immutability
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          immutable="$(gh release view "$RELEASE_TAG" --json isImmutable --jq .isImmutable)"
-          if [ "$immutable" != "true" ]; then
-            echo "::error::Enable immutable releases in repository settings before publishing Threadnote."
-            exit 1
-          fi
+  publish-evidence-gated:
+    name: Publish release after required production-large evidence
+    if: >-
+      always() &&
+      github.event_name == 'push' &&
+      !startsWith(github.ref, 'refs/tags/v4.0.0-beta.') &&
+      needs.verify.result == 'success' &&
+      needs.linux.result == 'success' &&
+      needs.macos.result == 'success' &&
+      (((startsWith(github.ref, 'refs/tags/v4.0.0-rc.') ||
+         github.ref == 'refs/tags/v4.0.0') &&
+        needs.production-large-evidence.result == 'success') ||
+       (!(startsWith(github.ref, 'refs/tags/v4.0.0-rc.') ||
+          github.ref == 'refs/tags/v4.0.0') &&
+        needs.production-large-evidence.result == 'skipped'))
+    needs: [verify, linux, macos, production-large-evidence]
+    permissions:
+      contents: write
+    uses: ./.github/workflows/publish-release-assets.yml
+    with:
+      release_tag: ${{ github.ref_name }}

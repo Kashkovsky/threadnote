@@ -15,6 +15,17 @@ const projectFileExists = (path: string) =>
   );
 
 describe('standalone release workflows', () => {
+  it.effect('keeps internal architecture records and implementation plans out of the public docs tree', () =>
+    Effect.gen(function* () {
+      const ignore = yield* readProjectFile('.gitignore');
+
+      expect(ignore).toContain('docs/**/architecture.md');
+      expect(ignore).toContain('docs/**/*-architecture.md');
+      expect(ignore).toContain('docs/**/*-implementation-plan.md');
+      expect(ignore).toContain('docs/**/adr/');
+    }),
+  );
+
   it.effect('publishes macOS and Linux while retaining disabled Windows release definitions', () =>
     Effect.gen(function* () {
       const workflow = yield* readProjectFile('.github/workflows/publish.yml');
@@ -28,7 +39,8 @@ describe('standalone release workflows', () => {
       expect(workflow).toContain('bun-windows-arm64');
       expect(workflow).toContain('windows-11-arm');
       expect(workflow.match(/if: \$\{\{ false \}\}/g)).toHaveLength(2);
-      expect(workflow).toContain('needs: [linux, macos, production-large-evidence]');
+      expect(workflow).toContain('needs: [verify, linux, macos]');
+      expect(workflow).toContain('needs: [verify, linux, macos, production-large-evidence]');
       expect(workflow).not.toContain('needs: [linux, macos, windows-sign]');
       expect(workflow).not.toMatch(/\bnpm(?:\s|$)/);
     }),
@@ -56,6 +68,7 @@ describe('standalone release workflows', () => {
   it.effect('signs and notarizes Apple artifacts and keeps the deferred Authenticode sequence intact', () =>
     Effect.gen(function* () {
       const workflow = yield* readProjectFile('.github/workflows/publish.yml');
+      const publisher = yield* readProjectFile('.github/workflows/publish-release-assets.yml');
       const signing = workflow.indexOf('Sign nested native code and Bun executable');
       const notarization = workflow.indexOf('Notarize the exact release payload');
       const macArchive = workflow.indexOf('THREADNOTE_RELEASE_TARGET: darwin-');
@@ -70,8 +83,8 @@ describe('standalone release workflows', () => {
       expect(workflow).toContain('azure/artifact-signing-action@v2');
       expect(workflow).toContain('timestamp-rfc3161: http://timestamp.acs.microsoft.com');
       expect(windowsArchive).toBeGreaterThan(authenticode);
-      expect(workflow).toContain('gh release create');
-      expect(workflow).toContain('Verify release immutability');
+      expect(publisher).toContain('gh release create');
+      expect(publisher).toContain('Verify release immutability');
       expect(workflow).not.toContain('types: [published]');
     }),
   );
@@ -79,14 +92,15 @@ describe('standalone release workflows', () => {
   it.effect('requires curated versioned notes and prepends them to generated release notes', () =>
     Effect.gen(function* () {
       const workflow = yield* readProjectFile('.github/workflows/publish.yml');
+      const publisher = yield* readProjectFile('.github/workflows/publish-release-assets.yml');
       const manifest = JSON.parse(yield* readProjectFile('package.json')) as {readonly version: string};
       const notes = yield* readProjectFile(`.github/release-notes/v${manifest.version}.md`);
 
       expect(notes.trimStart()).toMatch(/^## What's new\s/);
       expect(workflow).toContain('Verify versioned release notes');
       expect(workflow).toContain('.github/release-notes/${{ github.ref_name }}.md');
-      expect(workflow).toContain('release_flags=(--verify-tag --generate-notes)');
-      expect(workflow).toContain('--notes "$release_notes"');
+      expect(publisher).toContain('release_flags=(--verify-tag --generate-notes)');
+      expect(publisher).toContain('--notes "$release_notes"');
     }),
   );
 

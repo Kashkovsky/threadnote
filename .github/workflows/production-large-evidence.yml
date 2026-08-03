@@ -3,6 +3,11 @@ name: Production-large code graph evidence
 on:
   workflow_call:
     inputs:
+      gate_release:
+        description: Whether this observation is a required release gate rather than non-blocking retained evidence
+        required: false
+        type: boolean
+        default: false
       release_ref:
         description: Optional exact Threadnote 4 release tag ref
         required: false
@@ -81,12 +86,19 @@ jobs:
           ARTIFACT_URL: ${{ steps.upload-production-large.outputs.artifact-url }}
           SOURCE_REF: ${{ inputs.release_ref || github.ref }}
           SOURCE_SHA: ${{ inputs.release_sha || github.sha }}
+          RELEASE_GATE: ${{ inputs.gate_release }}
         run: |
+          if [[ "$RELEASE_GATE" == "true" ]]; then
+            release_policy='required before publishing this RC or stable release'
+          else
+            release_policy='retained and reported without blocking beta publication'
+          fi
           {
             echo '## Production-large release evidence'
             echo
             echo "- Source ref: \`${SOURCE_REF}\`"
             echo "- Source commit: \`${SOURCE_SHA}\`"
+            echo "- Release policy: ${release_policy}"
             echo "- Retained artifact digest: \`${ARTIFACT_DIGEST:-not-produced}\`"
             echo "- Retained artifact: ${ARTIFACT_URL:-not-produced}"
             echo '- Scope: aggregate production-shaped scan, materialization, resolution, activation-stage, SQLite scratch, and one-file reindex telemetry.'
