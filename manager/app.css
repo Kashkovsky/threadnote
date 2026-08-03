@@ -1035,17 +1035,28 @@ dd {
 }
 
 .graph-toolbar {
-  align-items: end;
+  align-items: start;
   background: rgba(16, 21, 29, 0.82);
   border: 1px solid var(--line);
   border-radius: var(--radius);
   display: grid;
   gap: 10px;
   grid-row: 3;
-  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  grid-template-areas:
+    'scope scope scope stats'
+    'catalog node query stats';
+  grid-template-columns: repeat(3, minmax(0, 1fr)) auto;
   padding: 10px;
   position: relative;
   z-index: 4;
+}
+
+.graph-toolbar-scope {
+  display: grid;
+  gap: 10px;
+  grid-area: scope;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  min-width: 0;
 }
 
 .graph-filterbar {
@@ -1060,14 +1071,16 @@ dd {
   grid-row: 6;
 }
 
-.graph-toolbar label {
+.graph-toolbar label,
+.graph-control {
   display: grid;
   gap: 5px;
   min-width: 0;
   position: relative;
 }
 
-.graph-toolbar label > span {
+.graph-toolbar label > span,
+.graph-control > label {
   color: var(--muted);
   font-size: 10px;
   font-weight: 650;
@@ -1081,21 +1094,36 @@ dd {
 }
 
 .graph-catalog-continuation {
-  align-items: end;
-  display: grid;
-  gap: 6px;
-  grid-template-columns: minmax(180px, 1fr) auto;
-  min-width: 0;
+  grid-area: catalog;
 }
 
 .graph-catalog-continuation .quiet-button,
 .graph-catalog-continuation small {
-  grid-column: 1 / -1;
+  justify-self: start;
 }
 
 .graph-catalog-continuation small {
   color: var(--danger);
   font-size: 10px;
+}
+
+.graph-control-actions {
+  display: grid;
+  gap: 6px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  min-width: 0;
+}
+
+.graph-node-search {
+  grid-area: node;
+}
+
+.graph-code-query {
+  grid-area: query;
+}
+
+.graph-code-query > .quiet-button {
+  justify-self: start;
 }
 
 .graph-search-results {
@@ -1145,11 +1173,39 @@ dd {
   padding: 12px;
 }
 
+.graph-catalog-results {
+  max-height: min(420px, 55vh);
+}
+
+.graph-catalog-results > p:first-child {
+  border-bottom: 1px solid var(--line);
+  padding: 8px 10px;
+}
+
+.graph-catalog-result-group {
+  display: grid;
+  gap: 2px;
+}
+
+.graph-catalog-result-group > span {
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  padding: 8px 10px 3px;
+  text-transform: uppercase;
+}
+
 .graph-stats {
   align-items: center;
+  align-self: stretch;
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
+  grid-area: stats;
+  justify-content: flex-end;
   min-height: 34px;
+  max-width: 190px;
 }
 
 .graph-stats > span {
@@ -2201,13 +2257,31 @@ dd {
   color: var(--danger);
 }
 
+.sr-only {
+  border: 0;
+  clip: rect(0, 0, 0, 0);
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  padding: 0;
+  position: absolute;
+  white-space: nowrap;
+  width: 1px;
+}
+
 @media (max-width: 1180px) {
   .graph-toolbar {
+    grid-template-areas:
+      'scope scope'
+      'catalog node'
+      'query query'
+      'stats stats';
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .graph-stats {
     justify-content: flex-end;
+    max-width: none;
   }
 
   .graph-body {
@@ -2309,6 +2383,20 @@ dd {
   }
 
   .graph-toolbar {
+    grid-template-areas:
+      'scope'
+      'catalog'
+      'node'
+      'query'
+      'stats';
+    grid-template-columns: 1fr;
+  }
+
+  .graph-toolbar-scope {
+    grid-template-columns: 1fr;
+  }
+
+  .graph-control-actions {
     grid-template-columns: 1fr;
   }
 

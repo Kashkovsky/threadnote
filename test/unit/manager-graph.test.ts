@@ -7,6 +7,7 @@ import {
   graphAnalysisRequestIsCurrent,
   graphAnalysisCoverageLabel,
   graphAnalysisTopologyAvailable,
+  graphCatalogSearchOptions,
   graphCatalogPageOffsets,
   graphCatalogContinuationHasMore,
   graphCompletedBuildResultIdentity,
@@ -544,6 +545,42 @@ describe('manager graph focus', () => {
         viewId: baseRepository.id,
       }),
     ).toEqual({projectOffset: 64, viewOffset: 32, workspaceOffset: 48});
+  });
+
+  it('turns catalog search responses into visible actionable component and view options', () => {
+    const group = repositoryGroup('repo', ['view-current', 'view-match'], 'view-current');
+    const currentView = {
+      ...group.views[0]!,
+      projects: [
+        {
+          buildSystem: 'bazel',
+          id: 'cgp_checkout',
+          kind: 'target',
+          label: '//apps/checkout:library',
+          workspaceId: 'cgw_mobile',
+        },
+      ],
+      workspaces: [{buildSystem: 'bazel', id: 'cgw_mobile', name: 'mobile workspace', root: 'apps/mobile'}],
+    };
+    const matchingView = {...group.views[1]!, label: 'feature/mobile-auth'};
+
+    const result = graphCatalogSearchOptions(currentView, [{...group, views: [matchingView]}]);
+
+    expect(result.projects).toEqual([
+      expect.objectContaining({
+        description: expect.stringContaining('mobile workspace'),
+        id: 'cgp_checkout',
+        label: '//apps/checkout:library',
+        viewId: 'view-current',
+      }),
+    ]);
+    expect(result.views).toEqual([
+      expect.objectContaining({
+        id: 'view-match',
+        label: 'feature/mobile-auth',
+        repositoryId: 'repo',
+      }),
+    ]);
   });
 
   it('keeps the selected node anchored while separating highlighted node labels', () => {

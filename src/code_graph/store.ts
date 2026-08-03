@@ -10637,6 +10637,7 @@ const selectVisualizationCatalog = Effect.fn('codeGraph.selectVisualizationCatal
       const requestedComponentId = requestedProjectId?.startsWith('cgp_') ? requestedProjectId : undefined;
       const unscopedMatchesQuery =
         projectQuery.length === 0 || 'unscoped code and documentation'.includes(projectQuery.toLocaleLowerCase());
+      const componentQuery = visualizationCatalogComponentQueryPredicate(projectQuery);
       const includeUnscoped =
         (requestedProjectId === undefined && projectOffset === 0 && unscopedMatchesQuery) ||
         requestedProjectId === 'facet:unscoped';
@@ -10656,37 +10657,15 @@ const selectVisualizationCatalog = Effect.fn('codeGraph.selectVisualizationCatal
                 WHERE snapshot_id = ${row.id} AND id = ${requestedComponentId}
                 LIMIT ${componentLimit}
               `
-            : sql.unsafe<DeferredVisualizationComponentRow>(
-                `WITH dependency_degree AS (
-                   SELECT component_id, COUNT(*) AS degree
-                   FROM (
-                     SELECT source_component_id AS component_id
-                     FROM workspace_component_dependencies
-                     WHERE snapshot_id = ?
-                     UNION ALL
-                     SELECT target_component_id AS component_id
-                     FROM workspace_component_dependencies
-                     WHERE snapshot_id = ?
-                   )
-                   GROUP BY component_id
-                 )
-                 SELECT component.id, component.workspace_id, component.build_system, component.kind,
-                   component.name, component.provenance
-                 FROM workspace_components AS component
-                 LEFT JOIN dependency_degree ON dependency_degree.component_id = component.id
-                 WHERE component.snapshot_id = ?
-                   ${projectQuery.length === 0 ? '' : "AND instr(lower(component.name || ' ' || component.root || ' ' || component.id), lower(?)) > 0"}
-                 ORDER BY COALESCE(dependency_degree.degree, 0) DESC, component.name, component.root, component.id
-                 LIMIT ? OFFSET ?`,
-                [
+            : Effect.gen(function* () {
+                const statement = codeGraphVisualizationCatalogComponentStatement(
                   row.id,
-                  row.id,
-                  row.id,
-                  ...(projectQuery.length === 0 ? [] : [projectQuery]),
+                  projectQuery,
                   componentLimit,
                   projectOffset,
-                ],
-              );
+                );
+                return yield* sql.unsafe<DeferredVisualizationComponentRow>(statement.text, statement.parameters);
+              });
       const [workspaceCountRows, workspaces, componentCountRows, components] = yield* Effect.all(
         [
           sql.unsafe<{readonly count: number}>(
@@ -10713,8 +10692,8 @@ const selectVisualizationCatalog = Effect.fn('codeGraph.selectVisualizationCatal
           sql.unsafe<{readonly count: number}>(
             `SELECT COUNT(*) AS count FROM workspace_components AS component
              WHERE component.snapshot_id = ?
-               ${projectQuery.length === 0 ? '' : "AND instr(lower(component.name || ' ' || component.root || ' ' || component.id), lower(?)) > 0"}`,
-            [row.id, ...(projectQuery.length === 0 ? [] : [projectQuery])],
+               ${componentQuery.text}`,
+            [row.id, ...componentQuery.parameters],
           ),
           componentsEffect,
         ],
@@ -11318,6 +11297,91 @@ const selectVisualizationScopeEdgeSummary = Effect.fn('codeGraph.selectVisualiza
   if (ordered.length > safeLimit) truncated = true;
   return {edges: ordered.slice(0, safeLimit), sampledScopes, truncated};
 });
+
+export function codeGraphVisualizationCatalogComponentStatement(
+  snapshotId: string,
+  projectQuery: string,
+  limit: number,
+  offset: number,
+): CodeGraphSqlQueryStatement {
+  const query = projectQuery.trim();
+  const safeLimit = Math.max(1, Math.min(500, Math.floor(limit)));
+  const safeOffset = Math.max(0, Math.min(1_000_000, Math.floor(offset)));
+  const componentQuery = visualizationCatalogComponentQueryPredicate(query);
+  if (query.length === 0) {
+    return {
+      parameters: [snapshotId, snapshotId, snapshotId, safeLimit, safeOffset],
+      text: `WITH dependency_degree AS (
+          SELECT component_id, COUNT(*) AS degree
+          FROM (
+            SELECT source_component_id AS component_id
+            FROM workspace_component_dependencies
+            WHERE snapshot_id = ?
+            UNION ALL
+            SELECT target_component_id AS component_id
+            FROM workspace_component_dependencies
+            WHERE snapshot_id = ?
+          )
+          GROUP BY component_id
+        )
+        SELECT component.id, component.workspace_id, component.build_system, component.kind,
+          component.name, component.provenance
+        FROM workspace_components AS component
+        LEFT JOIN dependency_degree ON dependency_degree.component_id = component.id
+        WHERE component.snapshot_id = ?
+        ORDER BY COALESCE(dependency_degree.degree, 0) DESC, component.name, component.root, component.id
+        LIMIT ? OFFSET ?`,
+    };
+  }
+  return {
+    parameters: [snapshotId, ...componentQuery.parameters, snapshotId, snapshotId, safeLimit, safeOffset],
+    text: `WITH candidate_components AS MATERIALIZED (
+        SELECT component.id, component.workspace_id, component.build_system, component.kind,
+          component.name, component.root, component.provenance
+        FROM workspace_components AS component
+        WHERE component.snapshot_id = ?
+          ${componentQuery.text}
+      ), candidate_dependency_endpoints AS MATERIALIZED (
+        SELECT outgoing.source_component_id AS component_id
+        FROM candidate_components AS candidate
+        JOIN workspace_component_dependencies AS outgoing
+          ON outgoing.snapshot_id = ? AND outgoing.source_component_id = candidate.id
+        UNION ALL
+        SELECT incoming.target_component_id AS component_id
+        FROM workspace_component_dependencies AS incoming
+        JOIN candidate_components AS candidate ON candidate.id = incoming.target_component_id
+        WHERE incoming.snapshot_id = ?
+      ), dependency_degree AS MATERIALIZED (
+        SELECT component_id, COUNT(*) AS degree
+        FROM candidate_dependency_endpoints
+        GROUP BY component_id
+      )
+      SELECT component.id, component.workspace_id, component.build_system, component.kind,
+        component.name, component.provenance
+      FROM candidate_components AS component
+      LEFT JOIN dependency_degree ON dependency_degree.component_id = component.id
+      ORDER BY COALESCE(dependency_degree.degree, 0) DESC, component.name, component.root, component.id
+      LIMIT ? OFFSET ?`,
+  };
+}
+
+function visualizationCatalogComponentQueryPredicate(projectQuery: string): CodeGraphSqlQueryStatement {
+  return projectQuery.length === 0
+    ? {parameters: [], text: ''}
+    : {
+        parameters: [projectQuery, projectQuery],
+        text: `AND (
+          instr(lower(component.name || ' ' || component.root || ' ' || component.id), lower(?)) > 0
+          OR EXISTS (
+            SELECT 1
+            FROM workspace_scopes AS workspace
+            WHERE workspace.snapshot_id = component.snapshot_id
+              AND workspace.id = component.workspace_id
+              AND instr(lower(workspace.name || ' ' || workspace.root || ' ' || workspace.id), lower(?)) > 0
+          )
+        )`,
+      };
+}
 
 export function codeGraphVisualizationScopeSymbolSampleStatements(
   snapshotId: string,

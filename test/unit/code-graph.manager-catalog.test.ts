@@ -8,6 +8,7 @@ import {afterEach, describe, expect, it} from 'vitest';
 import {groupManagerGraphRepositories, managerGraphCatalog} from '../../src/code_graph/visualization.js';
 import {
   CodeGraphStore,
+  codeGraphVisualizationCatalogComponentStatement,
   codeGraphVisualizationScopeEdgeSampleStatements,
   codeGraphVisualizationScopeEndpointStatement,
   codeGraphVisualizationScopeSummaryStatementCount,
@@ -519,7 +520,7 @@ describe('Manager logical repository and workspace catalogs', () => {
         insertComponent.run(
           snapshot.id,
           `cgp_bazel_${suffix}`,
-          'cgw_bazel',
+          index === 129 ? 'cgw_bazel_129' : 'cgw_bazel',
           'bazel',
           'target',
           `//apps/service-${suffix}:library`,
@@ -608,6 +609,7 @@ describe('Manager logical repository and workspace catalogs', () => {
         });
       }).pipe(Effect.provide(storeLayer)),
     );
+    const catalogSearchStartedAt = performance.now();
     const catalogSearch = await Effect.runPromise(
       Effect.gen(function* () {
         const store = yield* CodeGraphStore;
@@ -620,6 +622,21 @@ describe('Manager logical repository and workspace catalogs', () => {
         });
       }).pipe(Effect.provide(storeLayer)),
     );
+    const catalogSearchElapsedMilliseconds = performance.now() - catalogSearchStartedAt;
+    const catalogWorkspaceSearchStartedAt = performance.now();
+    const catalogWorkspaceSearch = await Effect.runPromise(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        return yield* store.loadVisualizationCatalog(databasePath, 'deferred', {
+          projectLimit: 160,
+          projectQuery: Option.some('nested-workspace-129'),
+          snapshotId: Option.some(snapshot.id),
+          workspaceLimit: 64,
+          workspaceQuery: Option.some('nested-workspace-129'),
+        });
+      }).pipe(Effect.provide(storeLayer)),
+    );
+    const catalogWorkspaceSearchElapsedMilliseconds = performance.now() - catalogWorkspaceSearchStartedAt;
     const detailStartedAt = performance.now();
     const detailCatalog = await Effect.runPromise(
       Effect.gen(function* () {
@@ -663,6 +680,8 @@ describe('Manager logical repository and workspace catalogs', () => {
     expect(catalogContinuation?.workspaces[0]?.id).toBe('cgw_bazel_064');
     expect(catalogSearch?.projects.map(project => project.id)).toEqual(['cgp_bazel_04999']);
     expect(catalogSearch?.workspaces.map(workspace => workspace.id)).toEqual(['cgw_bazel_129']);
+    expect(catalogWorkspaceSearch?.projects.map(project => project.id)).toEqual(['cgp_bazel_00129']);
+    expect(catalogWorkspaceSearch?.workspaces.map(workspace => workspace.id)).toEqual(['cgw_bazel_129']);
     expect(sourceSummary).toMatchObject({sampledScopes: 500, truncated: true});
     expect(sourceSummary.edges.length).toBeGreaterThan(0);
     expect(sourceSummaryElapsedMilliseconds).toBeLessThan(1_500);
@@ -688,6 +707,12 @@ describe('Manager logical repository and workspace catalogs', () => {
       'symbol-bazel-00000',
       'symbol-bazel-00499',
     ]);
+    const catalogComponentStatement = codeGraphVisualizationCatalogComponentStatement(
+      snapshot.id,
+      'service-04999',
+      160,
+      0,
+    );
     expect(codeGraphVisualizationScopeSummaryStatementCount(500)).toBe(17);
     expect(symbolStatements).toHaveLength(8);
     expect(edgeStatements).toHaveLength(8);
@@ -701,6 +726,9 @@ describe('Manager logical repository and workspace catalogs', () => {
     const endpointPlan = planDatabase
       .query(`EXPLAIN QUERY PLAN ${endpointStatement.text}`)
       .all(...endpointStatement.parameters) as readonly {readonly detail: string}[];
+    const catalogComponentPlan = planDatabase
+      .query(`EXPLAIN QUERY PLAN ${catalogComponentStatement.text}`)
+      .all(...catalogComponentStatement.parameters) as readonly {readonly detail: string}[];
     planDatabase.close();
     expect(symbolPlan.some(row => row.detail.includes('symbols_visualization_scope_v2'))).toBe(true);
     expect(edgePlan.some(row => row.detail.includes('edges_source'))).toBe(true);
@@ -712,6 +740,18 @@ describe('Manager logical repository and workspace catalogs', () => {
           row.detail.includes('snapshot_id=? AND id=?'),
       ),
     ).toBe(true);
+    expect(catalogComponentStatement.text).toContain('candidate_components AS MATERIALIZED');
+    expect(catalogComponentStatement.text).toContain('FROM candidate_components AS candidate');
+    expect(catalogComponentStatement.text).toContain(
+      'JOIN candidate_components AS candidate ON candidate.id = incoming.target_component_id',
+    );
+    expect(catalogComponentPlan.some(row => row.detail.includes('MATERIALIZE candidate_components'))).toBe(true);
+    expect(catalogComponentPlan.map(row => row.detail)).toEqual(
+      expect.arrayContaining([expect.stringContaining('outgoing USING PRIMARY KEY')]),
+    );
+    expect(catalogComponentPlan.some(row => row.detail.includes('candidate_dependency_endpoints'))).toBe(true);
+    expect(catalogSearchElapsedMilliseconds).toBeLessThan(500);
+    expect(catalogWorkspaceSearchElapsedMilliseconds).toBeLessThan(500);
 
     const viewDatabase = new Database(databasePath);
     const insertSnapshot = viewDatabase.prepare(
