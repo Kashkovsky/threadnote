@@ -17,6 +17,7 @@ import {resolveRepositoryIdentity} from '../src/code_graph/repository.js';
 import type {CodeGraphActivationActivity, CodeGraphProgress, CodeGraphQueryResult} from '../src/code_graph/types.js';
 import {
   managerGraphCatalog,
+  ManagerGraphQueryLifecycle,
   managerGraphNodeDetail,
   managerGraphQuery,
   managerGraphVisualization,
@@ -45,8 +46,8 @@ import {
 } from '../src/evaluation/benchmark.js';
 import {
   EXTERNAL_REPOSITORY_REQUIRED_MEASUREMENTS,
+  isReviewedPublicBenchmarkRepository,
   projectExternalEvidenceMetadata,
-  reviewedPublicRepositoryVerification,
   validateExternalRepositoryEvidence,
   type ExternalRepositoryPublicVerification,
 } from '../src/evaluation/external_evidence.js';
@@ -88,6 +89,8 @@ const EXTERNAL_QUERY_CONTROL_TIMEOUT_MS = 120_000;
 const MANAGER_SEQUENCE_TIMEOUT_MS = 180_000;
 const WORKTREE_GIT_COMMAND_TIMEOUT_MS = 30_000;
 const WORKTREE_ISOLATION_TIMEOUT_MS = 300_000;
+const PUBLIC_REPOSITORY_PROOF_TIMEOUT_MS = 60_000;
+const TEST_PUBLIC_REPOSITORY_REMOTE_ENV = 'THREADNOTE_BENCHMARK_TEST_PUBLIC_REPOSITORY_REMOTE';
 export const PRODUCTION_LARGE_TARGET_ATTAINMENT_MINIMUM_PERCENT = 90;
 const CONFIG_NEUTRAL_GIT_STATUS_ARGUMENTS = [
   '-c',
@@ -424,6 +427,11 @@ const benchmarkCodeGraph = Effect.scoped(
       assertPerformanceControlSet(externalPrepared.externalControls ?? []);
       if (!externalPrepared.publicRepository) {
         return yield* Effect.fail(new Error('Release-bound external evidence requires a public GitHub repository.'));
+      }
+      if (!isReviewedPublicBenchmarkRepository(externalPrepared.publicRepository)) {
+        return yield* Effect.fail(
+          new Error('Release-bound external evidence requires a reviewed public benchmark repository.'),
+        );
       }
     }
     const externalPreflight = externalPrepared
@@ -1443,6 +1451,7 @@ const benchmarkCodeGraph = Effect.scoped(
           prepared.repository,
           prepared.publicRepository,
           prepared.publicRepositoryVerification,
+          prepared.externalCommit,
         );
       }
       yield* verifyBenchmarkSourceUnchanged(threadnoteSourceRoot, commit);
@@ -3454,37 +3463,57 @@ const benchmarkManagerPerformanceMeasured = Effect.fn('benchmarkCodeGraph.manage
       ),
       signal ? {signal} : undefined,
     ) as Promise<GraphQueryVisualization>;
-  const awaitRequestPair = <A, B>(left: Promise<A>, right: Promise<B>) =>
+  const awaitRequestPair = <A, B>(left: Promise<A>, right: Promise<B>, cancel: () => void) =>
     Effect.tryPromise({
-      try: () => Promise.all([left, right] as const),
+      try: signal => {
+        const cancelOnInterrupt = (): void => cancel();
+        signal.addEventListener('abort', cancelOnInterrupt, {once: true});
+        return Promise.all([left, right] as const).finally(() =>
+          signal.removeEventListener('abort', cancelOnInterrupt),
+        );
+      },
       catch: cause => (cause instanceof Error ? cause : new Error(String(cause))),
     });
 
   const cancellationGate = createGraphQueryRequestGate();
-  const cancellableQueryCompleted = yield* Deferred.make<void>();
+  const staleResponseGate = createGraphQueryRequestGate();
+  yield* Effect.addFinalizer(() =>
+    Effect.sync(() => {
+      cancellationGate.cancelCurrent();
+      staleResponseGate.cancelCurrent();
+    }),
+  );
+  const cancellableQueryStarted = yield* Deferred.make<void>();
+  const cancellableQueryInterrupted = yield* Deferred.make<void>();
   let cancelledSignal: AbortSignal | undefined;
   const cancelledRequest = cancellationGate.request(requestInput, signal => {
     cancelledSignal = signal;
     return Effect.runPromiseWith(services)(
-      Effect.gen(function* () {
-        yield* managerGraphQuery(
-          threadnoteHome,
-          indexedView.id,
-          queryText,
-          {edgeLimit: MANAGER_QUERY_EDGE_LIMIT, nodeLimit: MANAGER_QUERY_NODE_LIMIT},
-          expectedSnapshot,
-        );
-        yield* Deferred.succeed(cancellableQueryCompleted, undefined);
-        return yield* Effect.never;
-      }),
+      managerGraphQuery(
+        threadnoteHome,
+        indexedView.id,
+        queryText,
+        {edgeLimit: MANAGER_QUERY_EDGE_LIMIT, nodeLimit: MANAGER_QUERY_NODE_LIMIT},
+        expectedSnapshot,
+      ).pipe(
+        Effect.provideService(
+          ManagerGraphQueryLifecycle,
+          ManagerGraphQueryLifecycle.of({
+            beforeTraversal: Deferred.succeed(cancellableQueryStarted, undefined).pipe(Effect.andThen(Effect.never)),
+          }),
+        ),
+        Effect.onInterrupt(() => Deferred.succeed(cancellableQueryInterrupted, undefined).pipe(Effect.asVoid)),
+      ),
       {signal},
     );
   });
-  yield* Deferred.await(cancellableQueryCompleted);
+  yield* Deferred.await(cancellableQueryStarted);
   const acceptedAfterCancellation = cancellationGate.request(requestInput, runManagerQuery);
+  yield* Deferred.await(cancellableQueryInterrupted);
   const [cancelledOutcome, acceptedAfterCancellationOutcome] = yield* awaitRequestPair(
     cancelledRequest.result,
     acceptedAfterCancellation.result,
+    () => cancellationGate.cancelCurrent(),
   );
   const requestCancellationPassed =
     cancelledSignal?.aborted === true &&
@@ -3494,7 +3523,6 @@ const benchmarkManagerPerformanceMeasured = Effect.fn('benchmarkCodeGraph.manage
     return yield* Effect.fail(new Error('Manager benchmark request-cancellation control failed.'));
   }
 
-  const staleResponseGate = createGraphQueryRequestGate();
   const lateQueryCompleted = yield* Deferred.make<void>();
   const releaseLateResponse = yield* Deferred.make<void>();
   let lateSignal: AbortSignal | undefined;
@@ -3521,6 +3549,7 @@ const benchmarkManagerPerformanceMeasured = Effect.fn('benchmarkCodeGraph.manage
   const [lateOutcome, acceptedAfterLateResponseOutcome] = yield* awaitRequestPair(
     lateRequest.result,
     acceptedAfterLateResponse.result,
+    () => staleResponseGate.cancelCurrent(),
   );
   if (lateOutcome.state === 'stale') {
     assertManagerVisualizationBounds('rejected late query response', lateOutcome.graph, {
@@ -3575,13 +3604,15 @@ export const benchmarkManagerPerformance = Effect.fn('benchmarkCodeGraph.manager
   samples: number,
   warmups: number,
 ) {
-  return yield* benchmarkManagerPerformanceMeasured(
-    threadnoteHome,
-    expectedRepositoryId,
-    expectedSnapshotId,
-    queryText,
-    samples,
-    warmups,
+  return yield* Effect.scoped(
+    benchmarkManagerPerformanceMeasured(
+      threadnoteHome,
+      expectedRepositoryId,
+      expectedSnapshotId,
+      queryText,
+      samples,
+      warmups,
+    ),
   ).pipe(
     Effect.timeoutOrElse({
       duration: MANAGER_SEQUENCE_TIMEOUT_MS,
@@ -4448,9 +4479,11 @@ const prepareExternalCodeGraphFixture = Effect.fn('benchmarkCodeGraph.prepareExt
     return yield* Effect.fail(new Error('External repository benchmark requires a clean checkout.'));
   }
   const publicRepository = publicGitHubRepositoryEvidence(origin);
-  const publicRepositoryVerification =
-    reviewedPublicRepositoryVerification(publicRepository) ??
-    (yield* verifyAnonymousPublicGitHubRepository(publicRepository));
+  const publicRepositoryVerification = yield* verifyPublicRepositoryCommit(
+    publicRepository,
+    externalCommit,
+    process.env,
+  );
 
   const artifactPath = yield* canonicalizeProspectivePath(fs, path, options.outputPath);
   const artifactContainment = path.relative(repository, artifactPath);
@@ -4569,37 +4602,152 @@ export function publicGitHubRepositoryEvidence(remote: string): PublicGitHubRepo
 
 export {privacySafeExternalControlPath, privacySafeExternalControlQuery} from '../src/evaluation/public_controls.js';
 
+export function credentialsDisabledGitProofEnvironment(
+  environment: Readonly<Record<string, string | undefined>>,
+  home: string,
+  globalConfig: string,
+): Record<string, string | undefined> {
+  const sanitized = {...environment};
+  for (const key of Object.keys(sanitized)) {
+    if (
+      key.toUpperCase().startsWith('GIT_') ||
+      [
+        'GCM_CREDENTIAL_STORE',
+        'GCM_INTERACTIVE',
+        'GCM_PROVIDER',
+        'GH_TOKEN',
+        'GITHUB_TOKEN',
+        'NETRC',
+        'SSH_ASKPASS',
+        'SSH_ASKPASS_REQUIRE',
+      ].includes(key.toUpperCase())
+    ) {
+      delete sanitized[key];
+    }
+  }
+  return {
+    ...sanitized,
+    GCM_INTERACTIVE: 'never',
+    GIT_ASKPASS: '',
+    GIT_CONFIG_GLOBAL: globalConfig,
+    GIT_CONFIG_NOSYSTEM: '1',
+    GIT_TERMINAL_PROMPT: '0',
+    HOME: home,
+    SSH_ASKPASS: '',
+    SSH_ASKPASS_REQUIRE: 'never',
+    XDG_CONFIG_HOME: home,
+  };
+}
+
+const exactCommitProofRemote = Effect.fn('benchmarkCodeGraph.exactCommitProofRemote')(function* (
+  fs: FileSystem.FileSystem,
+  path: Path.Path,
+  repository: PublicGitHubRepositoryEvidence,
+  environment: Readonly<Record<string, string | undefined>>,
+) {
+  const testRemote = environment[TEST_PUBLIC_REPOSITORY_REMOTE_ENV]?.trim();
+  if (!testRemote) return repository.url;
+  if (
+    environment.NODE_ENV !== 'test' ||
+    environment.THREADNOTE_BENCHMARK_RELEASE_REF?.trim() ||
+    environment.THREADNOTE_BENCHMARK_RELEASE_SHA?.trim()
+  ) {
+    return yield* Effect.fail(
+      new Error('The local public-repository proof seam is test-only and unavailable for release evidence.'),
+    );
+  }
+  if (!path.isAbsolute(testRemote)) {
+    return yield* Effect.fail(new Error('The local public-repository proof seam requires an absolute Git path.'));
+  }
+  const resolved = yield* fs.realPath(testRemote);
+  const info = yield* fs.stat(resolved);
+  if (info.type !== 'Directory') {
+    return yield* Effect.fail(new Error('The local public-repository proof seam requires a Git directory.'));
+  }
+  return resolved;
+});
+
 export const verifyAnonymousPublicGitHubRepository = Effect.fn(
   'benchmarkCodeGraph.verifyAnonymousPublicGitHubRepository',
-)(function* (repository: PublicGitHubRepositoryEvidence) {
+)(function* (
+  repository: PublicGitHubRepositoryEvidence,
+  externalCommit: string,
+  environment: Readonly<Record<string, string | undefined>> = process.env,
+) {
+  if (!EXACT_GIT_COMMIT_PATTERN.test(externalCommit)) {
+    return yield* Effect.fail(new Error('External repository proof requires an exact Git commit.'));
+  }
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-public-repository-proof-'});
+  const home = path.join(root, 'home');
+  const templates = path.join(root, 'templates');
+  const proofRepository = path.join(root, 'proof.git');
   const emptyGitConfig = path.join(root, 'empty.gitconfig');
+  yield* fs.makeDirectory(home, {mode: 0o700, recursive: true});
+  yield* fs.makeDirectory(templates, {mode: 0o700, recursive: true});
   yield* fs.writeFileString(emptyGitConfig, '');
-  yield* runCommandEffect(
-    'git',
-    ['-c', 'credential.helper=', '-c', 'core.askPass=', 'ls-remote', '--exit-code', repository.url, 'HEAD'],
-    {
-      env: {
-        ...process.env,
-        GCM_INTERACTIVE: 'never',
-        GIT_ASKPASS: '',
-        GIT_CONFIG_GLOBAL: emptyGitConfig,
-        GIT_CONFIG_NOSYSTEM: '1',
-        GIT_TERMINAL_PROMPT: '0',
-        SSH_ASKPASS: '',
-      },
+  const proofEnvironment = credentialsDisabledGitProofEnvironment(environment, home, emptyGitConfig);
+  const commonArguments = [
+    '-c',
+    'credential.helper=',
+    '-c',
+    'core.askPass=',
+    '-c',
+    'http.extraHeader=',
+    '-c',
+    'protocol.version=2',
+  ] as const;
+  const remote = yield* exactCommitProofRemote(fs, path, repository, environment);
+  const protocolAllowance = remote === repository.url ? 'protocol.file.allow=never' : 'protocol.file.allow=always';
+  const runProofGit = (args: readonly string[]) =>
+    runCommandEffect('git', [...commonArguments, '-c', protocolAllowance, ...args], {
+      env: proofEnvironment,
       maxOutputBytes: 16 * 1_024,
-      timeoutMs: 30_000,
-    },
-  ).pipe(
+      timeoutMs: PUBLIC_REPOSITORY_PROOF_TIMEOUT_MS,
+    });
+  yield* runProofGit(['init', '--quiet', '--bare', `--template=${templates}`, proofRepository]).pipe(
+    Effect.andThen(
+      runProofGit([
+        `--git-dir=${proofRepository}`,
+        'fetch',
+        '--quiet',
+        '--force',
+        '--no-tags',
+        '--depth=1',
+        '--filter=tree:0',
+        remote,
+        externalCommit,
+      ]),
+    ),
     Effect.mapError(
       () =>
-        new Error('External benchmark repository could not be verified through credentials-disabled anonymous HTTPS.'),
+        new Error(
+          'External benchmark commit could not be fetched from the public repository through credentials-disabled anonymous HTTPS.',
+        ),
     ),
   );
-  return 'anonymous-https-ls-remote' as const;
+  const resolved = yield* runProofGit([
+    `--git-dir=${proofRepository}`,
+    'rev-parse',
+    '--verify',
+    'FETCH_HEAD^{commit}',
+  ]).pipe(
+    Effect.map(result => result.stdout.trim()),
+    Effect.mapError(() => new Error('External benchmark public-repository proof did not resolve the fetched commit.')),
+  );
+  if (resolved !== externalCommit) {
+    return yield* Effect.fail(new Error('External benchmark public-repository proof resolved a different commit.'));
+  }
+  return 'anonymous-https-exact-commit-fetch' as const;
+});
+
+export const verifyPublicRepositoryCommit = Effect.fn('benchmarkCodeGraph.verifyPublicRepositoryCommit')(function* (
+  repository: PublicGitHubRepositoryEvidence,
+  externalCommit: string,
+  environment: Readonly<Record<string, string | undefined>> = process.env,
+) {
+  return yield* verifyAnonymousPublicGitHubRepository(repository, externalCommit, environment);
 });
 
 const acquireFreshBenchmarkHome = Effect.fn('benchmarkCodeGraph.acquireFreshHome')(function* (
@@ -4730,14 +4878,14 @@ const verifyPublicRepositoryOrigin = Effect.fn('benchmarkCodeGraph.verifyPublicR
   repository: string,
   expected: PublicGitHubRepositoryEvidence,
   expectedVerification: ExternalRepositoryPublicVerification | undefined,
+  externalCommit: string,
 ) {
   const remote = (yield* repositoryGit(repository, ['remote', 'get-url', 'origin'])).stdout.trim();
   const actual = publicGitHubRepositoryEvidence(remote);
   if (actual.name !== expected.name || actual.url !== expected.url) {
     return yield* Effect.fail(new Error('External benchmark public repository identity changed during the run.'));
   }
-  const verification =
-    reviewedPublicRepositoryVerification(actual) ?? (yield* verifyAnonymousPublicGitHubRepository(actual));
+  const verification = yield* verifyPublicRepositoryCommit(actual, externalCommit, process.env);
   if (verification !== expectedVerification) {
     return yield* Effect.fail(new Error('External benchmark public repository verification changed during the run.'));
   }
@@ -5012,9 +5160,15 @@ function benchmarkRunnerLabel(
 ): string {
   const value = environment[name]?.trim();
   if (!value) return fallback;
-  if (/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(value)) return value;
+  if (name === 'THREADNOTE_BENCHMARK_RUNNER_CLASS') {
+    const normalized = value.toLowerCase();
+    if (normalized === 'local-unclassified') return normalized;
+    if (/^github-hosted-ubuntu-[a-z0-9.]+-x64$/.test(normalized)) return 'github-hosted-linux-x64';
+    if (/^github-hosted-ubuntu-[a-z0-9.]+-arm64$/.test(normalized)) return 'github-hosted-linux-arm64';
+    return 'other';
+  }
   const digest = new Bun.CryptoHasher('sha256').update(value).digest('hex');
-  return `redacted-${digest.slice(0, 16)}`;
+  return `runner-${digest.slice(0, 16)}`;
 }
 
 const validateExternalTrackedRegularPath = Effect.fn('benchmarkCodeGraph.validateExternalTrackedRegularPath')(

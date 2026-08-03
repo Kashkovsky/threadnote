@@ -1,4 +1,4 @@
-import {Effect, Option, Path} from 'effect';
+import {Context, Effect, Option, Path} from 'effect';
 import {codeGraphDatabasePaths} from './maintenance.js';
 import {CodeGraphEmbeddingIndex} from './embedding.js';
 import {codeGraphLayout} from './layout.js';
@@ -43,6 +43,17 @@ const MANAGER_CATALOG_SNAPSHOT_LEASE_MILLISECONDS = 60 * 60_000;
 const MANAGER_CATALOG_SNAPSHOT_RENEW_MILLISECONDS = MANAGER_CATALOG_SNAPSHOT_LEASE_MILLISECONDS / 2;
 const MANAGER_QUERY_DEFAULT_EDGE_LIMIT = 240;
 const MANAGER_QUERY_DEFAULT_NODE_LIMIT = 120;
+
+export interface ManagerGraphQueryLifecycleShape {
+  readonly beforeTraversal: Effect.Effect<void>;
+}
+
+/** Internal observation boundary used by deterministic cancellation controls. */
+export class ManagerGraphQueryLifecycle extends Context.Service<
+  ManagerGraphQueryLifecycle,
+  ManagerGraphQueryLifecycleShape
+>()('threadnote/codeGraph/ManagerGraphQueryLifecycle') {}
+
 const MANAGER_QUERY_MAX_EDGE_LIMIT = 500;
 const MANAGER_QUERY_MAX_NODE_LIMIT = 200;
 const MANAGER_QUERY_MAX_LENGTH = 512;
@@ -548,34 +559,40 @@ export const managerGraphQuery = Effect.fn('codeGraph.managerQuery')(function* (
     nodeLimit: Math.min(MANAGER_QUERY_MAX_NODE_LIMIT, requestedLimits.nodeLimit),
   };
   const layout = codeGraphLayout(path, threadnoteHome, checkoutId, catalog.viewWorktreeId);
-  const lease = yield* store.acquireSnapshotLease(database, catalog.snapshot.id, 2 * 60_000);
-  const selection = yield* store
-    .withSession(
-      database,
-      traversalQuery(
-        store,
-        database,
-        catalog.snapshot.id,
-        query,
-        'both',
-        limits.nodeLimit,
-        limits.edgeLimit,
-        1,
-        ['declared', 'resolved', 'syntactic'],
-        embedding,
-        threadnoteHome,
-        layout,
-        false,
-        undefined,
-        undefined,
-        {
-          semanticMilliseconds: MANAGER_QUERY_SEMANTIC_TIME_BUDGET_MILLISECONDS,
-          traversalMilliseconds: MANAGER_QUERY_TRAVERSAL_TIME_BUDGET_MILLISECONDS,
-        },
-      ),
-      {readOnly: true},
-    )
-    .pipe(Effect.ensuring(store.releaseSnapshotLease(database, lease).pipe(Effect.catch(() => Effect.void))));
+  const lifecycle = yield* Effect.serviceOption(ManagerGraphQueryLifecycle);
+  const selection = yield* Effect.acquireUseRelease(
+    store.acquireSnapshotLease(database, catalog.snapshot.id, 2 * 60_000),
+    () =>
+      Effect.gen(function* () {
+        yield* Option.match(lifecycle, {onNone: () => Effect.void, onSome: value => value.beforeTraversal});
+        return yield* store.withSession(
+          database,
+          traversalQuery(
+            store,
+            database,
+            catalog.snapshot.id,
+            query,
+            'both',
+            limits.nodeLimit,
+            limits.edgeLimit,
+            1,
+            ['declared', 'resolved', 'syntactic'],
+            embedding,
+            threadnoteHome,
+            layout,
+            false,
+            undefined,
+            undefined,
+            {
+              semanticMilliseconds: MANAGER_QUERY_SEMANTIC_TIME_BUDGET_MILLISECONDS,
+              traversalMilliseconds: MANAGER_QUERY_TRAVERSAL_TIME_BUDGET_MILLISECONDS,
+            },
+          ),
+          {readOnly: true},
+        );
+      }),
+    lease => store.releaseSnapshotLease(database, lease).pipe(Effect.catch(() => Effect.void)),
+  );
   const workingSet = managerGraphQueryWorkingSet(selection.nodes, selection.edges, limits);
   const {edges: visibleEdges, nodes} = workingSet;
   const warnings = selection.warnings.map(warning => boundedText(warning, 320));

@@ -1,8 +1,11 @@
 import {Effect, FileSystem, Path} from 'effect';
 import {describe, expect, it} from 'vitest';
 import {
+  credentialsDisabledGitProofEnvironment,
+  publicGitHubRepositoryEvidence,
   revalidateExternalBenchmarkPreflightState,
   validateBenchmarkRuntimeProvenance,
+  verifyPublicRepositoryCommit,
 } from '../../scripts/benchmark-code-graph.js';
 import {runCommandEffect} from '../../src/effect/command.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
@@ -75,6 +78,89 @@ describe('external code graph benchmark execution safety', () => {
     expect(result.externalFailure).toContain('External repository changed during the benchmark');
   });
 
+  it('binds anonymous proof to the exact published commit and strips Git credential configuration', async () => {
+    const result = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-public-commit-proof-test-'});
+          const repository = path.join(root, 'renamed-public-checkout');
+          const proofRemote = path.join(root, 'published.git');
+          yield* fs.makeDirectory(repository, {recursive: true});
+          yield* fs.writeFileString(path.join(repository, 'source.ts'), 'export const published = true;\n');
+          const publishedCommit = yield* initializeGitRepository(repository);
+          yield* runCommandEffect('git', ['clone', '--quiet', '--bare', repository, proofRemote], {
+            timeoutMs: 10_000,
+          });
+
+          const proofEnvironment = {
+            ...process.env,
+            GH_TOKEN: 'must-not-survive',
+            GIT_CONFIG_COUNT: '2',
+            GIT_CONFIG_KEY_0: 'url.file:///private/rewrite/.insteadOf',
+            GIT_CONFIG_KEY_1: 'http.https://github.com/.extraHeader',
+            GIT_CONFIG_VALUE_0: 'https://github.com/',
+            GIT_CONFIG_VALUE_1: 'Authorization: Bearer must-not-survive',
+            GITHUB_TOKEN: 'must-not-survive',
+            NODE_ENV: 'test',
+            THREADNOTE_BENCHMARK_TEST_PUBLIC_REPOSITORY_REMOTE: proofRemote,
+          };
+          const sanitized = credentialsDisabledGitProofEnvironment(
+            proofEnvironment,
+            path.join(root, 'isolated-home'),
+            path.join(root, 'empty.gitconfig'),
+          );
+          const publicRepository = publicGitHubRepositoryEvidence(
+            'https://github.com/JetBrains/intellij-community.git',
+          );
+          const verification = yield* verifyPublicRepositoryCommit(publicRepository, publishedCommit, proofEnvironment);
+
+          yield* fs.writeFileString(path.join(repository, 'source.ts'), 'export const unpublished = true;\n');
+          yield* runCommandEffect('git', ['-C', repository, 'add', 'source.ts']);
+          yield* runCommandEffect(
+            'git',
+            [
+              '-C',
+              repository,
+              '-c',
+              'user.name=Threadnote Benchmark',
+              '-c',
+              'user.email=benchmark@threadnote.invalid',
+              'commit',
+              '--quiet',
+              '-m',
+              'unpublished',
+            ],
+            {timeoutMs: 10_000},
+          );
+          const unpublishedCommit = (yield* runCommandEffect('git', [
+            '-C',
+            repository,
+            'rev-parse',
+            'HEAD',
+          ])).stdout.trim();
+          const unpublishedFailure = yield* verifyPublicRepositoryCommit(
+            publicRepository,
+            unpublishedCommit,
+            proofEnvironment,
+          ).pipe(Effect.flip);
+
+          return {sanitized, unpublishedFailure: String(unpublishedFailure), verification};
+        }),
+      ).pipe(Effect.provide(ApplicationLayer)),
+    );
+
+    expect(result.verification).toBe('anonymous-https-exact-commit-fetch');
+    expect(result.unpublishedFailure).toContain('could not be fetched from the public repository');
+    expect(result.sanitized).not.toHaveProperty('GH_TOKEN');
+    expect(result.sanitized).not.toHaveProperty('GITHUB_TOKEN');
+    expect(result.sanitized).not.toHaveProperty('GIT_CONFIG_COUNT');
+    expect(result.sanitized).not.toHaveProperty('GIT_CONFIG_KEY_0');
+    expect(result.sanitized).not.toHaveProperty('GIT_CONFIG_VALUE_0');
+    expect(JSON.stringify(result.sanitized)).not.toContain('must-not-survive');
+  });
+
   it.skipIf(process.platform !== 'darwin' && process.platform !== 'linux')(
     'preflights every run, sees config-hidden dirt, and releases prospective homes',
     async () => {
@@ -117,6 +203,10 @@ describe('external code graph benchmark execution safety', () => {
               ],
               {timeoutMs: 10_000},
             );
+            const publicProofRemote = path.join(root, 'public-proof.git');
+            yield* runCommandEffect('git', ['clone', '--quiet', '--bare', repository, publicProofRemote], {
+              timeoutMs: 10_000,
+            });
 
             const sourceDirty =
               (yield* runCommandEffect('git', [
@@ -148,27 +238,31 @@ describe('external code graph benchmark execution safety', () => {
               '--retain-homes',
             ] as const;
             const first = yield* Effect.promise(() =>
-              runBenchmark(script, [...common, '--minimum-free-gib', '1', '--preflight']),
+              runBenchmark(script, [...common, '--minimum-free-gib', '1', '--preflight'], publicProofRemote),
             );
             const firstHomesReleased = !(yield* fs.exists(home)) && !(yield* fs.exists(referenceHome));
             const second = yield* Effect.promise(() =>
-              runBenchmark(script, [...common, '--minimum-free-gib', '1', '--preflight']),
+              runBenchmark(script, [...common, '--minimum-free-gib', '1', '--preflight'], publicProofRemote),
             );
             const secondHomesReleased = !(yield* fs.exists(home)) && !(yield* fs.exists(referenceHome));
 
             yield* runCommandEffect('git', ['-C', repository, 'config', 'status.showUntrackedFiles', 'no']);
             yield* fs.writeFileString(path.join(repository, 'hidden-untracked.txt'), 'must still be detected\n');
             const dirty = yield* Effect.promise(() =>
-              runBenchmark(script, [...common, '--minimum-free-gib', '1', '--preflight']),
+              runBenchmark(script, [...common, '--minimum-free-gib', '1', '--preflight'], publicProofRemote),
             );
             yield* fs.remove(path.join(repository, 'hidden-untracked.txt'));
 
             const lowDisk = yield* Effect.promise(() =>
-              runBenchmark(script, [...common, '--minimum-free-gib', '8000000']),
+              runBenchmark(script, [...common, '--minimum-free-gib', '8000000'], publicProofRemote),
             );
             const lowDiskHomesReleased = !(yield* fs.exists(home)) && !(yield* fs.exists(referenceHome));
             const actual = yield* Effect.promise(() =>
-              runBenchmark(script, [...common, '--minimum-free-gib', '1', '--samples', '1', '--warmups', '0']),
+              runBenchmark(
+                script,
+                [...common, '--minimum-free-gib', '1', '--samples', '1', '--warmups', '0'],
+                publicProofRemote,
+              ),
             );
             const artifactExists = yield* fs.exists(output);
 
@@ -221,6 +315,7 @@ describe('external code graph benchmark execution safety', () => {
         expect(result.artifactExists).toBe(true);
         expect(result.artifact?.metadata).toMatchObject({
           externalRepositoryName: 'Example/benchmark-fixture',
+          externalRepositoryPublicVerification: 'anonymous-https-exact-commit-fetch',
           externalRepositoryUrl: 'https://github.com/Example/benchmark-fixture',
           managerRequestCancellationPassed: true,
           managerRequestLifecycleControl:
@@ -284,7 +379,7 @@ const initializeGitRepository = Effect.fn('benchmarkPreflightTest.initializeGitR
   return (yield* runCommandEffect('git', ['-C', repository, 'rev-parse', 'HEAD'])).stdout.trim();
 });
 
-async function runBenchmark(script: string, args: readonly string[]) {
+async function runBenchmark(script: string, args: readonly string[], publicProofRemote: string) {
   const sourceCommit = Bun.spawnSync({cmd: ['git', 'rev-parse', 'HEAD'], stderr: 'pipe', stdout: 'pipe'})
     .stdout.toString()
     .trim();
@@ -298,6 +393,8 @@ async function runBenchmark(script: string, args: readonly string[]) {
       GITHUB_RUN_ID: '1',
       GITHUB_SHA: sourceCommit,
       GITHUB_WORKSPACE: process.cwd(),
+      NODE_ENV: 'test',
+      THREADNOTE_BENCHMARK_TEST_PUBLIC_REPOSITORY_REMOTE: publicProofRemote,
     },
     stderr: 'pipe',
     stdout: 'pipe',

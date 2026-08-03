@@ -323,11 +323,11 @@ describe('code graph external benchmark harness', () => {
     expect(externalBenchmarkPlatformSupported('freebsd')).toBe(false);
   });
 
-  it('redacts path-valued and unsafe runner metadata while normalizing bounded controls', () => {
+  it('redacts path-valued and semantic runner metadata while normalizing bounded controls', () => {
     const provenance = sanitizedBenchmarkEnvironmentProvenance({
       SQLITE_TMPDIR: '/private/customer/repository/sqlite-temp',
-      THREADNOTE_BENCHMARK_RUNNER_CLASS: 'macos-arm64',
-      THREADNOTE_BENCHMARK_RUNNER_ID: '/Users/private/runner-42',
+      THREADNOTE_BENCHMARK_RUNNER_CLASS: 'denyskashkovskyi-macbook',
+      THREADNOTE_BENCHMARK_RUNNER_ID: 'denyskashkovskyi-macbook',
       THREADNOTE_CODE_GRAPH_PARSER_IDLE_TIMEOUT_MS: '99999999',
       THREADNOTE_CODE_GRAPH_PARSER_TIMEOUT_MS: '2500',
       THREADNOTE_CODE_GRAPH_PARSER_WORKERS: '99',
@@ -335,14 +335,27 @@ describe('code graph external benchmark harness', () => {
 
     expect(provenance).toMatchObject({
       SQLITE_TMPDIR: 'configured-path-redacted',
-      THREADNOTE_BENCHMARK_RUNNER_CLASS: 'macos-arm64',
+      THREADNOTE_BENCHMARK_RUNNER_CLASS: 'other',
       THREADNOTE_CODE_GRAPH_PARSER_IDLE_TIMEOUT_MS: '3600000',
       THREADNOTE_CODE_GRAPH_PARSER_TIMEOUT_MS: '2500',
       THREADNOTE_CODE_GRAPH_PARSER_WORKERS: '8',
     });
-    expect(provenance.THREADNOTE_BENCHMARK_RUNNER_ID).toMatch(/^redacted-[0-9a-f]{16}$/);
+    expect(provenance.THREADNOTE_BENCHMARK_RUNNER_ID).toMatch(/^runner-[0-9a-f]{16}$/);
+    expect(JSON.stringify(provenance)).not.toContain('denyskashkovskyi');
     expect(JSON.stringify(provenance)).not.toContain('/Users/private');
     expect(JSON.stringify(provenance)).not.toContain('/private/customer');
+  });
+
+  it('projects only coarse hosted runner classes and always pseudonymizes explicit runner ids', () => {
+    expect(
+      sanitizedBenchmarkEnvironmentProvenance({
+        THREADNOTE_BENCHMARK_RUNNER_CLASS: 'github-hosted-ubuntu-24.04-X64',
+        THREADNOTE_BENCHMARK_RUNNER_ID: 'safe-looking-hostname',
+      }),
+    ).toMatchObject({
+      THREADNOTE_BENCHMARK_RUNNER_CLASS: 'github-hosted-linux-x64',
+      THREADNOTE_BENCHMARK_RUNNER_ID: expect.stringMatching(/^runner-[0-9a-f]{16}$/),
+    });
   });
 
   it('applies and restores the overlay byte-for-byte while preserving concurrent edits', async () => {

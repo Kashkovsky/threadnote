@@ -36,7 +36,7 @@ export type RetainedPerformanceArtifact = Readonly<{
       url: string;
       commit: string;
       checkout: 'clean';
-      publicVerification: 'anonymous-https-ls-remote' | 'reviewed-release-allowlist';
+      publicVerification: 'anonymous-https-exact-commit-fetch';
     }>;
   }>;
   runner: Readonly<{
@@ -128,7 +128,7 @@ export type RetainedPerformanceArtifact = Readonly<{
     peakResidentBytes: number;
     peakWalBytes: number;
     peakTemporaryBytes: number;
-    peakDurableGrowthBytes: number;
+    durableFilesystemGrowthBytes: number;
     peakJournalBytes: number;
   }>;
   manager: Readonly<{
@@ -303,7 +303,7 @@ export const retainedPerformanceArtifactFieldPaths = [
   'storage.peakResidentBytes',
   'storage.peakWalBytes',
   'storage.peakTemporaryBytes',
-  'storage.peakDurableGrowthBytes',
+  'storage.durableFilesystemGrowthBytes',
   'storage.peakJournalBytes',
   'manager.catalogColdMilliseconds',
   'manager.catalogWarmMilliseconds',
@@ -474,7 +474,7 @@ function validateVerifiedArtifact(input: unknown): RetainedPerformanceArtifact {
   httpsUrlAt(repository, 'url', 'source.repository');
   digestAt(repository, 'commit', 'source.repository', sha40Pattern);
   literalAt(repository, 'checkout', 'source.repository', 'clean');
-  if (!['anonymous-https-ls-remote', 'reviewed-release-allowlist'].includes(String(repository.publicVerification))) {
+  if (repository.publicVerification !== 'anonymous-https-exact-commit-fetch') {
     throw new Error('Performance evidence source.repository.publicVerification is invalid.');
   }
 
@@ -623,13 +623,13 @@ function validateVerifiedArtifact(input: unknown): RetainedPerformanceArtifact {
     'peakResidentBytes',
     'peakWalBytes',
     'peakTemporaryBytes',
-    'peakDurableGrowthBytes',
+    'durableFilesystemGrowthBytes',
     'peakJournalBytes',
   ]);
   positiveNumberAt(storage, 'databaseGrowthBytes', 'storage', true);
   positiveNumberAt(storage, 'databaseBytes', 'storage', true);
   positiveNumberAt(storage, 'peakResidentBytes', 'storage', true);
-  for (const key of ['peakWalBytes', 'peakTemporaryBytes', 'peakDurableGrowthBytes', 'peakJournalBytes']) {
+  for (const key of ['peakWalBytes', 'peakTemporaryBytes', 'durableFilesystemGrowthBytes', 'peakJournalBytes']) {
     numberAt(storage, key, 'storage', true);
   }
 
@@ -1141,8 +1141,10 @@ export function retainedPerformanceArtifactFromHarness(
         url: metadataString(metadata, 'externalRepositoryUrl'),
         commit: metadataString(metadata, 'externalRepositoryCommit'),
         checkout: 'clean',
-        publicVerification: metadataString(metadata, 'externalRepositoryPublicVerification') as
-          'anonymous-https-ls-remote' | 'reviewed-release-allowlist',
+        publicVerification: metadataString(
+          metadata,
+          'externalRepositoryPublicVerification',
+        ) as 'anonymous-https-exact-commit-fetch',
       },
     },
     runner: {
@@ -1223,7 +1225,7 @@ export function retainedPerformanceArtifactFromHarness(
       peakResidentBytes: bytes('cold-process-peak-rss'),
       peakWalBytes: bytes('cold-sqlite-wal-peak-observed', false),
       peakTemporaryBytes: bytes('cold-sqlite-temp-peak-observed', false),
-      peakDurableGrowthBytes: bytes('cold-durable-filesystem-growth'),
+      durableFilesystemGrowthBytes: bytes('cold-durable-filesystem-growth'),
       peakJournalBytes: bytes('cold-sqlite-journal-peak-observed', false),
     },
     manager: {

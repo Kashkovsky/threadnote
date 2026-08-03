@@ -224,7 +224,8 @@ const EXTERNAL_PUBLIC_METADATA_KEY_SET = new Set<string>(EXTERNAL_PUBLIC_METADAT
 const EXACT_GIT_COMMIT_PATTERN = /^[0-9a-f]{40}$/;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const RELEASE_REF_PATTERN = /^refs\/tags\/v4\.0\.0(?:-(?:beta|rc)\.\d+)?$/;
-const SAFE_RUNNER_IDENTITY = /^[A-Za-z0-9_.-]{1,128}$/;
+const SAFE_RUNNER_CLASS = /^(?:github-hosted-linux-(?:arm64|x64)|local-unclassified|other)$/;
+const SAFE_RUNNER_IDENTITY = /^(?:local|runner-[0-9a-f]{16})$/;
 const LOCAL_PATH_PATTERN =
   /(?:^|[\s"'`])(?:\/Users\/|\/home\/|\/mnt\/[a-z]\/Users\/|\/[a-z]\/Users\/|[A-Za-z]:[\\/]|\\\\)/i;
 const INLINE_CREDENTIAL_PATTERN =
@@ -235,7 +236,7 @@ export interface PublicGitHubRepositoryEvidence {
   readonly url: string;
 }
 
-export type ExternalRepositoryPublicVerification = 'anonymous-https-ls-remote' | 'reviewed-release-allowlist';
+export type ExternalRepositoryPublicVerification = 'anonymous-https-exact-commit-fetch';
 
 export interface ExternalEvidenceValidationOptions {
   readonly expectedControlLanguages?: readonly string[];
@@ -269,12 +270,8 @@ export function publicGitHubRepositoryEvidence(origin: string): PublicGitHubRepo
   return {name, url: `https://github.com/${name}`};
 }
 
-export function reviewedPublicRepositoryVerification(
-  repository: PublicGitHubRepositoryEvidence,
-): ExternalRepositoryPublicVerification | undefined {
-  return (REVIEWED_PUBLIC_BENCHMARK_REPOSITORIES as readonly string[]).includes(repository.name)
-    ? 'reviewed-release-allowlist'
-    : undefined;
+export function isReviewedPublicBenchmarkRepository(repository: PublicGitHubRepositoryEvidence): boolean {
+  return (REVIEWED_PUBLIC_BENCHMARK_REPOSITORIES as readonly string[]).includes(repository.name);
 }
 
 export function projectExternalEvidenceMetadata(
@@ -394,7 +391,7 @@ export function validateExternalRepositoryEvidence(
     missing.push('at least two simultaneous worktrees');
   }
 
-  validateRepositoryIdentity(metadata, missing);
+  validateRepositoryIdentity(metadata, Boolean(options.releaseBound), missing);
   const controlLanguages = externalControlLanguages(metadata);
   if (controlLanguages.length === 0) missing.push('external query control languages');
   if (metadata.externalControlCount !== controlLanguages.length) missing.push('external query control count');
@@ -475,8 +472,8 @@ function assertPrivacySafeArtifact(artifact: BenchmarkArtifactV1): void {
       throw new Error(`External benchmark ${path} contains a local filesystem path.`);
     }
   }
-  if (!SAFE_RUNNER_IDENTITY.test(String(artifact.metadata.runnerClass ?? ''))) {
-    throw new Error('External benchmark runnerClass must be a privacy-safe explicit identifier.');
+  if (!SAFE_RUNNER_CLASS.test(String(artifact.metadata.runnerClass ?? ''))) {
+    throw new Error('External benchmark runnerClass must be a coarse privacy-safe class.');
   }
   if (!SAFE_RUNNER_IDENTITY.test(String(artifact.metadata.runnerIdentity ?? ''))) {
     throw new Error('External benchmark runnerIdentity must be a privacy-safe explicit identifier.');
@@ -535,20 +532,25 @@ function requireNonNegativeInteger(metadata: BenchmarkArtifactV1['metadata'], na
   if (!Number.isInteger(value) || (value as number) < 0) missing.push(`${name} non-negative integer metadata`);
 }
 
-function validateRepositoryIdentity(metadata: BenchmarkArtifactV1['metadata'], missing: string[]): void {
+function validateRepositoryIdentity(
+  metadata: BenchmarkArtifactV1['metadata'],
+  releaseBound: boolean,
+  missing: string[],
+): void {
   try {
     const repository = publicGitHubRepositoryEvidence(String(metadata.externalRepositoryUrl ?? ''));
     if (repository.name !== metadata.externalRepositoryName) throw new Error('name mismatch');
     const verification = metadata.externalRepositoryPublicVerification;
-    if (verification === 'reviewed-release-allowlist') {
-      if (!(REVIEWED_PUBLIC_BENCHMARK_REPOSITORIES as readonly string[]).includes(repository.name)) {
-        throw new Error('repository is not reviewed');
-      }
-    } else if (verification !== 'anonymous-https-ls-remote') {
+    if (verification !== 'anonymous-https-exact-commit-fetch') {
       throw new Error('public verification missing');
     }
+    if (releaseBound && !isReviewedPublicBenchmarkRepository(repository)) throw new Error('repository is not reviewed');
   } catch {
-    missing.push('verified public GitHub repository identity');
+    missing.push(
+      releaseBound
+        ? 'verified reviewed public GitHub repository identity'
+        : 'verified public GitHub repository identity',
+    );
   }
 }
 
