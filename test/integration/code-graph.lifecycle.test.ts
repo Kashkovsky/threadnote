@@ -2235,7 +2235,7 @@ describe('native code graph lifecycle', () => {
   );
 
   it.skipIf(process.platform === 'win32')(
-    'retains and resumes the exact interrupted clean build for the current worktree',
+    'atomically rolls back a killed grouped transaction and resumes the exact clean build',
     async () => {
       const root = createManySourceRepository(140);
       const home = join(root, '.threadnote-test-home');
@@ -2257,6 +2257,20 @@ describe('native code graph lifecycle', () => {
           child.once('exit', () => resolve());
         });
 
+        const markerProgress = JSON.parse(readFileSync(marker, 'utf8')) as {
+          readonly batchCompleted: number;
+          readonly batchesCompleted: number;
+          readonly batchesTotal: number;
+          readonly snapshotMode?: string;
+        };
+        expect(markerProgress).toMatchObject({
+          batchCompleted: expect.any(Number),
+          batchesCompleted: 0,
+          snapshotMode: 'direct-persistent',
+        });
+        expect(markerProgress.batchCompleted).toBeGreaterThanOrEqual(1);
+        expect(markerProgress.batchesTotal).toBeGreaterThan(1);
+
         const identity = await runEffect(resolveRepositoryIdentity(root));
         const databasePath = join(
           home,
@@ -2275,13 +2289,18 @@ describe('native code graph lifecycle', () => {
         expect(interrupted).toBeDefined();
         const interruptedId = interrupted!.id;
         const startedAt = interrupted!.started_at;
-        expect(
+        const rolledBackReceipts =
           interruptedDatabase
             .query<{readonly count: number}, [string]>(
               'SELECT COUNT(*) AS count FROM building_materialization_batches WHERE snapshot_id = ?',
             )
-            .get(interruptedId)?.count,
-        ).toBe(1);
+            .get(interruptedId)?.count ?? -1;
+        const rolledBackSymbols =
+          interruptedDatabase
+            .query<{readonly count: number}, [string]>('SELECT COUNT(*) AS count FROM symbols WHERE snapshot_id = ?')
+            .get(interruptedId)?.count ?? -1;
+        expect(rolledBackReceipts).toBe(0);
+        expect(rolledBackSymbols).toBe(0);
         interruptedDatabase.close();
 
         const resumed = await runEffect(
@@ -2437,7 +2456,7 @@ describe('native code graph lifecycle', () => {
       const marker = join(root, '.orphan-persistent-build');
       const helper = join(import.meta.dirname, '../helpers/code-graph-direct-interrupt-child.ts');
       const orphanIdentity = await runEffect(resolveRepositoryIdentity(orphanWorktree));
-      const child = spawn(process.execPath, [helper, orphanWorktree, home, marker], {
+      const child = spawn(process.execPath, [helper, orphanWorktree, home, marker, 'single'], {
         cwd: process.cwd(),
         env: {...process.env, NODE_ENV: 'test'},
         stdio: ['ignore', 'pipe', 'pipe'],

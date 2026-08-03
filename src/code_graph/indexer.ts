@@ -88,6 +88,8 @@ export interface CodeGraphIndexOptions extends CodeGraphInventoryOptions {
   readonly incrementalOverlay?: boolean;
   /** @internal Records read-back PRAGMA values for controlled benchmark evidence. */
   readonly onSqliteWriterConfigured?: (settings: CodeGraphSqliteWriterSettings) => Effect.Effect<void, never>;
+  /** @internal Benchmark-only physical transaction grouping; normal indexing uses four logical receipts. */
+  readonly persistentMaterializationTransactionBatchLimit?: 1 | 4;
   /** @internal Benchmark-only SQLite writer candidate; normal indexing leaves this unset. */
   readonly sqliteWriterTuning?: CodeGraphSqliteWriterTuning;
   readonly threadnoteHome: string;
@@ -379,6 +381,8 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                           layout,
                           logicalSnapshotId,
                           onProgress: options.onProgress,
+                          persistentMaterializationTransactionBatchLimit:
+                            options.persistentMaterializationTransactionBatchLimit,
                           startedAt,
                           store,
                           threadnoteHome: options.threadnoteHome,
@@ -476,6 +480,8 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                             languagePacks,
                             layout,
                             onProgress: options.onProgress,
+                            persistentMaterializationTransactionBatchLimit:
+                              options.persistentMaterializationTransactionBatchLimit,
                             startedAt,
                             store,
                             threadnoteHome: options.threadnoteHome,
@@ -584,6 +590,8 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                         languagePacks,
                         layout,
                         onProgress: options.onProgress,
+                        persistentMaterializationTransactionBatchLimit:
+                          options.persistentMaterializationTransactionBatchLimit,
                         persistentOwnerToken,
                         startedAt,
                         store,
@@ -715,6 +723,8 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                         languagePacks,
                         layout,
                         onProgress: options.onProgress,
+                        persistentMaterializationTransactionBatchLimit:
+                          options.persistentMaterializationTransactionBatchLimit,
                         startedAt: yield* Clock.currentTimeMillis,
                         store,
                         threadnoteHome: options.threadnoteHome,
@@ -981,6 +991,7 @@ const buildOwnedCleanSnapshot = Effect.fn('codeGraph.buildOwnedCleanSnapshot')(f
   readonly layout: CodeGraphLayout;
   readonly logicalSnapshotId: string;
   readonly onProgress?: (progress: CodeGraphProgress) => Effect.Effect<void, unknown>;
+  readonly persistentMaterializationTransactionBatchLimit?: 1 | 4;
   readonly startedAt: number;
   readonly store: CodeGraphStoreShape;
   readonly threadnoteHome: string;
@@ -1067,6 +1078,7 @@ const buildOwnedCleanSnapshot = Effect.fn('codeGraph.buildOwnedCleanSnapshot')(f
         languagePacks: input.languagePacks,
         layout: input.layout,
         onProgress: input.onProgress,
+        persistentMaterializationTransactionBatchLimit: input.persistentMaterializationTransactionBatchLimit,
         persistentOwnerToken: ownerToken,
         startedAt: input.startedAt,
         store: input.store,
@@ -1093,7 +1105,7 @@ const ensureCommittedBase = Effect.fn('codeGraph.ensureCommittedBase')(function*
   readonly languagePacks: CodeGraphLanguagePackRegistryShape;
   readonly layout: CodeGraphLayout;
   readonly onProgress?: (progress: CodeGraphProgress) => Effect.Effect<void, unknown>;
-  readonly persistentOwnerToken?: string;
+  readonly persistentMaterializationTransactionBatchLimit?: 1 | 4;
   readonly startedAt: number;
   readonly store: CodeGraphStoreShape;
   readonly threadnoteHome: string;
@@ -1218,6 +1230,7 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
   readonly languagePacks: CodeGraphLanguagePackRegistryShape;
   readonly layout: CodeGraphLayout;
   readonly onProgress?: (progress: CodeGraphProgress) => Effect.Effect<void, unknown>;
+  readonly persistentMaterializationTransactionBatchLimit?: 1 | 4;
   readonly persistentOwnerToken?: string;
   readonly startedAt: number;
   readonly store: CodeGraphStoreShape;
@@ -1439,6 +1452,125 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
     );
     yield* input.store.stageWorkspaceCatalog(input.layout.databasePath, workspace);
     let persistentBatchCursor = 0;
+    const persistentTransactionBatchLimit = input.persistentMaterializationTransactionBatchLimit ?? 4;
+    interface PendingMaterializationBatch extends PersistentMaterializationTransactionCandidate {
+      readonly attributionMilliseconds: number;
+      readonly batchCachedFactBytes: number;
+      readonly batchFiles: readonly CodeGraphInventoryFile[];
+      readonly batchIndex: number;
+      readonly edges: readonly CodeGraphEdge[];
+      readonly loadingMilliseconds: number;
+      readonly references: readonly CodeGraphReference[];
+      rows: CodeGraphMaterializationRows;
+      readonly stageMilliseconds: Map<string, number>;
+      readonly symbols: readonly CodeGraphSymbol[];
+    }
+    const pendingBatches: PendingMaterializationBatch[] = [];
+    const reportStagingProgress = (batch: PendingMaterializationBatch, progress: CodeGraphStagingProgress) => {
+      if (progress.temporaryDatabaseBytes !== undefined) {
+        temporaryDatabaseBytes = progress.temporaryDatabaseBytes;
+        temporaryDatabaseHighWaterBytes = Math.max(temporaryDatabaseHighWaterBytes, progress.temporaryDatabaseBytes);
+      }
+      if (progress.durableDatabaseBytes !== undefined) {
+        durableDatabaseBytes = progress.durableDatabaseBytes;
+        durableDatabaseHighWaterBytes = Math.max(durableDatabaseHighWaterBytes, progress.durableDatabaseBytes);
+      }
+      const activityStage = materializationStagingStage(progress);
+      const timingKey = progress.stage === 'committed' ? 'committing' : progress.stage;
+      const previousStageMilliseconds = batch.stageMilliseconds.get(timingKey) ?? 0;
+      const currentStageMilliseconds = progress.stageElapsedMilliseconds ?? 0;
+      const stageDeltaMilliseconds = Math.max(0, currentStageMilliseconds - previousStageMilliseconds);
+      batch.stageMilliseconds.set(timingKey, currentStageMilliseconds);
+      stageMilliseconds[activityStage] = (stageMilliseconds[activityStage] ?? 0) + stageDeltaMilliseconds;
+      batch.rows = materializationRowsWithStoreProgress(batch.rows, progress);
+      return refreshStorageFiles(progress.stage === 'committed').pipe(
+        Effect.andThen(
+          input.onProgress?.({
+            activity: {
+              batchCompleted: batch.batchIndex,
+              batchTotal: batchesTotal,
+              cachedFactBytes: batch.batchCachedFactBytes,
+              elapsedMilliseconds: progress.elapsedMilliseconds,
+              factsBytes: batch.factBytes,
+              rows: batch.rows,
+              sourceBytes: batch.sourceBytes,
+              stage: activityStage,
+              stageElapsedMilliseconds: currentStageMilliseconds,
+              transactionMilliseconds: progress.elapsedMilliseconds,
+            },
+            completed: materializedFiles,
+            metrics: metrics(),
+            phase: 'materializing',
+            reused: reusedFiles,
+            total: input.inventory.files.length,
+            unit: 'files',
+          }) ?? Effect.void,
+        ),
+        Effect.catch(() => Effect.void),
+      );
+    };
+    const flushPendingBatches = () =>
+      Effect.gen(function* () {
+        if (pendingBatches.length === 0) return;
+        const group = pendingBatches.splice(0, pendingBatches.length);
+        const groupByIndex = new Map(group.map(batch => [batch.batchIndex, batch]));
+        const transactionStartedAt = yield* Clock.currentTimeMillis;
+        if (directPersistentMaterialization) {
+          yield* input.store.stageActivationFactBatches(
+            input.layout.databasePath,
+            group.map(batch => ({
+              batchIndex: batch.batchIndex,
+              edges: batch.edges,
+              references: batch.references,
+              symbols: batch.symbols,
+            })),
+            (batchIndex, progress) => reportStagingProgress(groupByIndex.get(batchIndex)!, progress),
+          );
+        } else {
+          for (const batch of group) {
+            yield* input.store.stageActivationFacts(
+              input.layout.databasePath,
+              batch.symbols,
+              batch.edges,
+              batch.references,
+              progress => reportStagingProgress(batch, progress),
+              batch.batchIndex,
+            );
+          }
+        }
+        const groupTransactionMilliseconds = (yield* Clock.currentTimeMillis) - transactionStartedAt;
+        transactionMilliseconds += groupTransactionMilliseconds;
+        for (let index = 0; index < group.length; index += 1) {
+          const batch = group[index]!;
+          const accountedTransactionMilliseconds = index === group.length - 1 ? groupTransactionMilliseconds : 0;
+          materializedFiles += batch.fileCount;
+          batchesCompleted += 1;
+          sourceBytesCompleted += batch.sourceBytes;
+          cachedFactBytesCompleted += batch.batchCachedFactBytes;
+          factsBytesCompleted += batch.factBytes;
+          materializedRows = addMaterializationRows(materializedRows, batch.rows);
+          yield* input.onProgress?.({
+            activity: {
+              batchCompleted: batch.batchIndex,
+              batchTotal: batchesTotal,
+              cachedFactBytes: batch.batchCachedFactBytes,
+              elapsedMilliseconds:
+                batch.loadingMilliseconds + batch.attributionMilliseconds + accountedTransactionMilliseconds,
+              factsBytes: batch.factBytes,
+              rows: batch.rows,
+              sourceBytes: batch.sourceBytes,
+              stage: 'committing',
+              transactionMilliseconds: accountedTransactionMilliseconds,
+            },
+            completed: materializedFiles,
+            metrics: metrics(),
+            phase: 'materializing',
+            reused: reusedFiles,
+            total: input.inventory.files.length,
+            unit: 'files',
+          }) ?? Effect.void;
+        }
+      });
     for (const files of batches) {
       const sourceBytes = files.reduce((total, file) => total + file.size, 0);
       yield* input.onProgress?.({
@@ -1515,7 +1647,7 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
         );
         const edges = relationships.edges;
         const references = relationships.references;
-        let rows = materializationRows(symbols, edges.length, references, {
+        const rows = materializationRows(symbols, edges.length, references, {
           edges: relationships.duplicateEdges,
           references: relationships.duplicateReferences,
         });
@@ -1537,94 +1669,45 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
           total: input.inventory.files.length,
           unit: 'files',
         }) ?? Effect.void;
-        const transactionStartedAt = yield* Clock.currentTimeMillis;
-        const persistentBatchIndex = persistentBatchCursor;
-        const batchStageMilliseconds = new Map<string, number>();
-        yield* input.store.stageActivationFacts(
-          input.layout.databasePath,
-          symbols,
+        const candidate: PendingMaterializationBatch = {
+          attributionMilliseconds: finalBatchIndex === 0 ? batchAttributionMilliseconds : 0,
+          batchCachedFactBytes,
+          batchFiles,
+          batchIndex: persistentBatchCursor,
           edges,
+          factBytes: batchFinalFactBytes,
+          fileCount: batchFiles.length,
+          loadingMilliseconds: finalBatchIndex === 0 ? batchLoadingMilliseconds : 0,
           references,
-          progress => {
-            if (progress.temporaryDatabaseBytes !== undefined) {
-              temporaryDatabaseBytes = progress.temporaryDatabaseBytes;
-              temporaryDatabaseHighWaterBytes = Math.max(
-                temporaryDatabaseHighWaterBytes,
-                progress.temporaryDatabaseBytes,
-              );
-            }
-            if (progress.durableDatabaseBytes !== undefined) {
-              durableDatabaseBytes = progress.durableDatabaseBytes;
-              durableDatabaseHighWaterBytes = Math.max(durableDatabaseHighWaterBytes, progress.durableDatabaseBytes);
-            }
-            const activityStage = materializationStagingStage(progress);
-            const timingKey = progress.stage === 'committed' ? 'committing' : progress.stage;
-            const previousStageMilliseconds = batchStageMilliseconds.get(timingKey) ?? 0;
-            const currentStageMilliseconds = progress.stageElapsedMilliseconds ?? 0;
-            const stageDeltaMilliseconds = Math.max(0, currentStageMilliseconds - previousStageMilliseconds);
-            batchStageMilliseconds.set(timingKey, currentStageMilliseconds);
-            stageMilliseconds[activityStage] = (stageMilliseconds[activityStage] ?? 0) + stageDeltaMilliseconds;
-            rows = materializationRowsWithStoreProgress(rows, progress);
-            return refreshStorageFiles(progress.stage === 'committed').pipe(
-              Effect.andThen(
-                input.onProgress?.({
-                  activity: {
-                    batchCompleted: persistentBatchIndex,
-                    batchTotal: batchesTotal,
-                    cachedFactBytes: batchCachedFactBytes,
-                    elapsedMilliseconds: progress.elapsedMilliseconds,
-                    factsBytes: batchFinalFactBytes,
-                    rows,
-                    sourceBytes: batchSourceBytes,
-                    stage: activityStage,
-                    stageElapsedMilliseconds: currentStageMilliseconds,
-                    transactionMilliseconds: progress.elapsedMilliseconds,
-                  },
-                  completed: materializedFiles,
-                  metrics: metrics(),
-                  phase: 'materializing',
-                  reused: reusedFiles,
-                  total: input.inventory.files.length,
-                  unit: 'files',
-                }) ?? Effect.void,
-              ),
-              Effect.catch(() => Effect.void),
-            );
-          },
-          persistentBatchIndex,
-        );
-        const batchTransactionMilliseconds = (yield* Clock.currentTimeMillis) - transactionStartedAt;
-        transactionMilliseconds += batchTransactionMilliseconds;
-        materializedFiles += batchFiles.length;
-        batchesCompleted += 1;
+          rows,
+          sourceBytes: batchSourceBytes,
+          stageMilliseconds: new Map(),
+          symbols,
+        };
+        if (
+          directPersistentMaterialization &&
+          persistentMaterializationTransactionBatches([...pendingBatches, candidate], persistentTransactionBatchLimit)
+            .length > 1
+        ) {
+          yield* flushPendingBatches();
+        }
+        pendingBatches.push(candidate);
         persistentBatchCursor += 1;
-        sourceBytesCompleted += batchSourceBytes;
-        cachedFactBytesCompleted += batchCachedFactBytes;
-        factsBytesCompleted += batchFinalFactBytes;
-        materializedRows = addMaterializationRows(materializedRows, rows);
-        yield* input.onProgress?.({
-          activity: {
-            batchCompleted: persistentBatchIndex,
-            batchTotal: batchesTotal,
-            cachedFactBytes: batchCachedFactBytes,
-            elapsedMilliseconds:
-              (finalBatchIndex === 0 ? batchLoadingMilliseconds + batchAttributionMilliseconds : 0) +
-              batchTransactionMilliseconds,
-            factsBytes: batchFinalFactBytes,
-            rows,
-            sourceBytes: batchSourceBytes,
-            stage: 'committing',
-            transactionMilliseconds: batchTransactionMilliseconds,
-          },
-          completed: materializedFiles,
-          metrics: metrics(),
-          phase: 'materializing',
-          reused: reusedFiles,
-          total: input.inventory.files.length,
-          unit: 'files',
-        }) ?? Effect.void;
+        const pendingFactsBytes = pendingBatches.reduce((total, batch) => total + batch.factBytes, 0);
+        const pendingFiles = pendingBatches.reduce((total, batch) => total + batch.fileCount, 0);
+        const pendingSourceBytes = pendingBatches.reduce((total, batch) => total + batch.sourceBytes, 0);
+        if (
+          !directPersistentMaterialization ||
+          pendingBatches.length >= persistentTransactionBatchLimit ||
+          pendingFiles >= PERSISTENT_MATERIALIZATION_TRANSACTION_FILES ||
+          pendingSourceBytes >= PERSISTENT_MATERIALIZATION_TRANSACTION_SOURCE_BYTES ||
+          pendingFactsBytes >= PERSISTENT_MATERIALIZATION_TRANSACTION_FACT_BYTES
+        ) {
+          yield* flushPendingBatches();
+        }
       }
     }
+    yield* flushPendingBatches();
     batchesTotal = persistentBatchCursor;
     if (directPersistentMaterialization) {
       yield* input.store.finalizePersistentMaterializationPlan(input.layout.databasePath, persistentBatchCursor);
@@ -2496,6 +2579,10 @@ const CODE_GRAPH_ACTIVATION_LEASE_MILLISECONDS = 10 * 60_000;
 const FACT_MATERIALIZATION_BATCH_FILES = 128;
 const FACT_MATERIALIZATION_BATCH_SOURCE_BYTES = 16 * 1_048_576;
 const FACT_MATERIALIZATION_BATCH_CACHED_FACT_BYTES = CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM;
+const PERSISTENT_MATERIALIZATION_TRANSACTION_BATCHES = 4;
+const PERSISTENT_MATERIALIZATION_TRANSACTION_FILES = 512;
+const PERSISTENT_MATERIALIZATION_TRANSACTION_SOURCE_BYTES = 64 * 1_048_576;
+const PERSISTENT_MATERIALIZATION_TRANSACTION_FACT_BYTES = 32 * 1_048_576;
 // Conservative, warning-only planning factors informed by beta.30's observed
 // production-shaped live amplification. They cover indexed TEMP rows, the durable candidate
 // plus WAL, rollback/subjournals, and one concurrent worktree/repository build.
@@ -2673,6 +2760,51 @@ export function factMaterializationBatches<T extends {readonly path: string; rea
     batch.push(value);
     batchBytes += value.size;
     batchFactBytes += factBytes;
+  }
+  if (batch.length > 0) output.push(batch);
+  return output;
+}
+
+export interface PersistentMaterializationTransactionCandidate {
+  readonly factBytes: number;
+  readonly fileCount: number;
+  readonly sourceBytes: number;
+}
+
+/**
+ * Coalesces contiguous, already-bounded logical receipts into larger physical
+ * SQLite transactions. Logical receipt identities stay unchanged so an
+ * interrupted build from an older release resumes without replay or graph
+ * drift. A candidate over a physical ceiling remains an isolated singleton.
+ */
+export function persistentMaterializationTransactionBatches<T extends PersistentMaterializationTransactionCandidate>(
+  values: readonly T[],
+  maximumBatches = PERSISTENT_MATERIALIZATION_TRANSACTION_BATCHES,
+): readonly (readonly T[])[] {
+  const batchLimit = Math.max(1, Math.min(PERSISTENT_MATERIALIZATION_TRANSACTION_BATCHES, maximumBatches));
+  const output: T[][] = [];
+  let batch: T[] = [];
+  let factBytes = 0;
+  let fileCount = 0;
+  let sourceBytes = 0;
+  for (const value of values) {
+    if (
+      batch.length > 0 &&
+      (batch.length >= batchLimit ||
+        fileCount + value.fileCount > PERSISTENT_MATERIALIZATION_TRANSACTION_FILES ||
+        sourceBytes + value.sourceBytes > PERSISTENT_MATERIALIZATION_TRANSACTION_SOURCE_BYTES ||
+        factBytes + value.factBytes > PERSISTENT_MATERIALIZATION_TRANSACTION_FACT_BYTES)
+    ) {
+      output.push(batch);
+      batch = [];
+      factBytes = 0;
+      fileCount = 0;
+      sourceBytes = 0;
+    }
+    batch.push(value);
+    factBytes += value.factBytes;
+    fileCount += value.fileCount;
+    sourceBytes += value.sourceBytes;
   }
   if (batch.length > 0) output.push(batch);
   return output;

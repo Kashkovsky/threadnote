@@ -1,5 +1,6 @@
 import {describe, expect, it} from '@effect/vitest';
 import * as FC from 'effect/testing/FastCheck';
+import fc from 'fast-check';
 import {
   addMaterializationRows,
   compactCachedFileRelationships,
@@ -9,6 +10,7 @@ import {
   materializationRowsWithStoreProgress,
   materializationStoragePlan,
   materializationStorageShortfalls,
+  persistentMaterializationTransactionBatches,
   snapshotIdentity,
 } from '../../src/code_graph/indexer.js';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
@@ -52,6 +54,51 @@ describe('code graph indexer properties', () => {
       batches.every(batch => batch.reduce((total, file) => total + factBytes.get(file.path)!, 0) <= 8 * 1_048_576),
     ).toBe(true);
     expect(factMaterializationBatches(files, factBytes)).toEqual(batches);
+  });
+
+  it('coalesces logical receipts deterministically, contiguously, and exactly once within physical bounds', () => {
+    fc.assert(
+      fc.property(
+        fc.array(
+          fc.record({
+            factBytes: FC.integer({max: 40 * 1_048_576, min: 0}),
+            fileCount: FC.integer({max: 700, min: 0}),
+            id: FC.nat(),
+            sourceBytes: FC.integer({max: 80 * 1_048_576, min: 0}),
+          }),
+          {maxLength: 40},
+        ),
+        candidates => {
+          const groups = persistentMaterializationTransactionBatches(candidates);
+
+          expect(persistentMaterializationTransactionBatches(candidates)).toEqual(groups);
+          expect(groups.flat()).toEqual(candidates);
+          expect(groups.every(group => group.length > 0 && group.length <= 4)).toBe(true);
+          let cursor = 0;
+          for (const group of groups) {
+            expect(group).toEqual(candidates.slice(cursor, cursor + group.length));
+            cursor += group.length;
+            const factBytes = group.reduce((total, value) => total + value.factBytes, 0);
+            const fileCount = group.reduce((total, value) => total + value.fileCount, 0);
+            const sourceBytes = group.reduce((total, value) => total + value.sourceBytes, 0);
+            expect(
+              (factBytes <= 32 * 1_048_576 && fileCount <= 512 && sourceBytes <= 64 * 1_048_576) || group.length === 1,
+            ).toBe(true);
+          }
+          for (let index = 0; index < groups.length - 1; index += 1) {
+            const combined = [...groups[index]!, ...groups[index + 1]!];
+            const factBytes = combined.reduce((total, value) => total + value.factBytes, 0);
+            const fileCount = combined.reduce((total, value) => total + value.fileCount, 0);
+            const sourceBytes = combined.reduce((total, value) => total + value.sourceBytes, 0);
+            expect(
+              combined.length <= 4 && factBytes <= 32 * 1_048_576 && fileCount <= 512 && sourceBytes <= 64 * 1_048_576,
+            ).toBe(false);
+          }
+          expect(cursor).toBe(candidates.length);
+        },
+      ),
+      {numRuns: 250},
+    );
   });
 
   it('keeps a non-empty batch estimate at a zero-row SQLite stage boundary', () => {

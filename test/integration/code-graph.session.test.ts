@@ -143,9 +143,7 @@ describe('code graph SQLite session lifetime', () => {
   }, 60_000);
 
   it('uses one client for every store call across a multi-batch index', async () => {
-    const completedBatches = new Set<number>();
-    const activeClientsByBatch: number[] = [];
-    let reportedBatchTotal = 0;
+    const activeClientsByActivity: number[] = [];
     const indexed = await runEffect(
       Effect.gen(function* () {
         const indexer = yield* CodeGraphIndexer;
@@ -153,10 +151,8 @@ describe('code graph SQLite session lifetime', () => {
           cwd: repositoryRoot,
           onProgress: progress =>
             Effect.sync(() => {
-              if (progress.phase !== 'materializing' || progress.activity?.stage !== 'loading-cache') return;
-              completedBatches.add(progress.activity.batchCompleted);
-              reportedBatchTotal = Math.max(reportedBatchTotal, progress.activity.batchTotal);
-              activeClientsByBatch.push(sqliteSessions.active);
+              if (progress.phase !== 'materializing' || progress.activity === undefined) return;
+              activeClientsByActivity.push(sqliteSessions.active);
             }),
           threadnoteHome: join(repositoryRoot, '.threadnote-index-home'),
         });
@@ -164,9 +160,8 @@ describe('code graph SQLite session lifetime', () => {
     );
 
     expect(indexed.snapshot.fileCount).toBeGreaterThan(128);
-    expect(reportedBatchTotal).toBeGreaterThan(1);
-    expect(completedBatches.size).toBe(reportedBatchTotal);
-    expect(activeClientsByBatch).toEqual(Array.from({length: reportedBatchTotal}, () => 1));
+    expect(activeClientsByActivity.length).toBeGreaterThan(1);
+    expect(activeClientsByActivity.every(active => active === 1)).toBe(true);
     expectClosedSessions(2);
   }, 60_000);
 

@@ -256,6 +256,17 @@ describe('code graph external benchmark harness', () => {
     expect(() =>
       parseCodeGraphBenchmarkArguments(['--sqlite-writer-profile', 'cache-256m', '--fail-on-budget']),
     ).toThrow('cannot use production budgets');
+    expect(
+      parseCodeGraphBenchmarkArguments(['--materialization-transaction-batches', '1'])
+        .materializationTransactionBatchLimit,
+    ).toBe(1);
+    expect(
+      parseCodeGraphBenchmarkArguments(['--materialization-transaction-batches', '4'])
+        .materializationTransactionBatchLimit,
+    ).toBe(4);
+    expect(() => parseCodeGraphBenchmarkArguments(['--materialization-transaction-batches', '2'])).toThrow(
+      'must be 1 or 4',
+    );
   });
 
   it('requires effective PRAGMA readback and FULL-after-NORMAL publication ordering', () => {

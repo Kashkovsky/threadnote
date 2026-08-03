@@ -253,6 +253,18 @@ export interface CodeGraphStagingProgress {
 
 export type CodeGraphStagingProgressCallback = (progress: CodeGraphStagingProgress) => Effect.Effect<void, never>;
 
+export interface CodeGraphStagingBatch {
+  readonly batchIndex: number;
+  readonly edges: readonly CodeGraphEdge[];
+  readonly references: readonly CodeGraphReference[];
+  readonly symbols: readonly CodeGraphSymbol[];
+}
+
+export type CodeGraphStagingBatchProgressCallback = (
+  batchIndex: number,
+  progress: CodeGraphStagingProgress,
+) => Effect.Effect<void, never>;
+
 export type CodeGraphActivationStage =
   | 'checkpointing-snapshot'
   | 'committing-snapshot'
@@ -701,6 +713,11 @@ export interface CodeGraphStoreShape {
     references?: readonly CodeGraphReference[],
     onProgress?: CodeGraphStagingProgressCallback,
     batchIndex?: number,
+  ) => Effect.Effect<void, CodeGraphStoreError>;
+  readonly stageActivationFactBatches: (
+    databasePath: string,
+    batches: readonly CodeGraphStagingBatch[],
+    onProgress?: CodeGraphStagingBatchProgressCallback,
   ) => Effect.Effect<void, CodeGraphStoreError>;
   readonly stageWorkspaceCatalog: (
     databasePath: string,
@@ -1616,6 +1633,34 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
               ),
             ),
             Effect.mapError(cause => storeError('stage code graph facts', cause)),
+          ),
+        stageActivationFactBatches: (databasePath, batches, onProgress) =>
+          prepare(databasePath).pipe(
+            Effect.andThen(
+              useDatabase(
+                databasePath,
+                Effect.gen(function* () {
+                  const sql = yield* SqlClient.SqlClient;
+                  const mode = yield* activationMode(sql);
+                  if (mode?.mode !== 'persisted-full') {
+                    return yield* Effect.fail(
+                      new CodeGraphStoreError('Grouped fact staging requires a persistent full build.'),
+                    );
+                  }
+                  yield* withWriterGate(
+                    databasePath,
+                    stagePersistedFullFactBatches(sql, mode.snapshotId, mode.ownerToken, batches, batchIndex =>
+                      activationStagingObserver(
+                        sql,
+                        onProgress ? progress => onProgress(batchIndex, progress) : undefined,
+                        'main',
+                      ),
+                    ),
+                  );
+                }),
+              ),
+            ),
+            Effect.mapError(cause => storeError('stage grouped code graph facts', cause)),
           ),
         stageWorkspaceCatalog: (databasePath, workspace) =>
           prepare(databasePath).pipe(
@@ -7402,6 +7447,7 @@ const stagePersistedFullFacts = Effect.fn('codeGraph.stagePersistedFullFacts')(f
   edges: readonly CodeGraphEdge[],
   references: readonly CodeGraphReference[],
   observer: ActivationStagingObserver,
+  withinTransaction = false,
 ) {
   if (!Number.isSafeInteger(batchIndex) || batchIndex < 0) {
     return yield* Effect.fail(new CodeGraphStoreError('Persistent materialization batch identity is invalid.'));
@@ -7414,7 +7460,9 @@ const stagePersistedFullFacts = Effect.fn('codeGraph.stagePersistedFullFacts')(f
   let candidateCount = 0;
   let reexportCount = 0;
   let compactBatchCounts: CompactLexicalFormatReceipt = {postingCount: 0, symbolCount: 0, termCount: 0};
-  const resumed = yield* sql.withTransaction(
+  const runTransaction = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+    withinTransaction ? effect : sql.withTransaction(effect);
+  const resumed = yield* runTransaction(
     Effect.gen(function* () {
       yield* observer('validating', 0, true);
       yield* assertPersistentBuildOwner(sql, snapshotId, ownerToken);
@@ -7640,7 +7688,7 @@ const stagePersistedFullFacts = Effect.fn('codeGraph.stagePersistedFullFacts')(f
         );
       }
       yield* observer('receipt', 1, true);
-      yield* observer('committing', 0, true);
+      if (!withinTransaction) yield* observer('committing', 0, true);
       return undefined;
     }),
   );
@@ -7658,7 +7706,60 @@ const stagePersistedFullFacts = Effect.fn('codeGraph.stagePersistedFullFacts')(f
       yield* observer(stage, rows, true);
     }
   }
-  yield* observer('committed', 0, true);
+  if (!withinTransaction) yield* observer('committed', 0, true);
+});
+
+const stagePersistedFullFactBatches = Effect.fn('codeGraph.stagePersistedFullFactBatches')(function* (
+  sql: SqlClient.SqlClient,
+  snapshotId: string,
+  ownerToken: string,
+  batches: readonly CodeGraphStagingBatch[],
+  observerForBatch: (batchIndex: number) => ActivationStagingObserver,
+) {
+  if (batches.length === 0) return;
+  for (let index = 0; index < batches.length; index += 1) {
+    const batch = batches[index]!;
+    if (!Number.isSafeInteger(batch.batchIndex) || batch.batchIndex < 0) {
+      return yield* Effect.fail(new CodeGraphStoreError('Persistent materialization batch identity is invalid.'));
+    }
+    if (index > 0 && batch.batchIndex !== batches[index - 1]!.batchIndex + 1) {
+      return yield* Effect.fail(
+        new CodeGraphStoreError('Persistent materialization transaction batches must be contiguous.'),
+      );
+    }
+  }
+
+  const observers = new Map<number, ActivationStagingObserver>();
+  const observer = (batchIndex: number) => {
+    const existing = observers.get(batchIndex);
+    if (existing) return existing;
+    const created = observerForBatch(batchIndex);
+    observers.set(batchIndex, created);
+    return created;
+  };
+  const commitBatch = batches[batches.length - 1]!;
+  yield* sql.withTransaction(
+    Effect.gen(function* () {
+      for (const batch of batches) {
+        yield* stagePersistedFullFacts(
+          sql,
+          snapshotId,
+          ownerToken,
+          batch.batchIndex,
+          batch.symbols,
+          batch.edges,
+          batch.references,
+          observer(batch.batchIndex),
+          true,
+        );
+      }
+      // The physical commit belongs to the group, not to every logical
+      // receipt. Attach its timing to the final receipt so per-stage evidence
+      // cannot count later batch work once for every earlier observer.
+      yield* observer(commitBatch.batchIndex)('committing', 0, true);
+    }),
+  );
+  yield* observer(commitBatch.batchIndex)('committed', 0, true);
 });
 
 function normalizedReexportProvenance(reference: CodeGraphReference): readonly CodeGraphReusableReexport[] {

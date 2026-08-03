@@ -14,6 +14,7 @@ await Effect.runPromise(
     yield* indexer.index({
       cwd: repository,
       force: true,
+      persistentMaterializationTransactionBatchLimit: 1,
       onProgress: progress => {
         if (paused || progress.phase !== 'materializing' || progress.activity?.stage !== 'committing') {
           return Effect.void;

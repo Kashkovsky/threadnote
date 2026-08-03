@@ -538,15 +538,20 @@ const benchmarkCodeGraph = Effect.scoped(
       : undefined;
     let sqliteWriterEvidencePhase: SqliteWriterBenchmarkPhase = 'cold';
     const sqliteWriterSettingsEvidence: SqliteWriterSettingsEvidence[] = [];
-    const sqliteWriterIndexOptions = sqliteWriterProfile
-      ? {
-          onSqliteWriterConfigured: (settings: CodeGraphSqliteWriterSettings) =>
-            Effect.sync(() => {
-              sqliteWriterSettingsEvidence.push({...settings, benchmarkPhase: sqliteWriterEvidencePhase});
-            }),
-          sqliteWriterTuning: sqliteWriterProfile.tuning,
-        }
-      : {};
+    const sqliteWriterIndexOptions = {
+      ...(sqliteWriterProfile
+        ? {
+            onSqliteWriterConfigured: (settings: CodeGraphSqliteWriterSettings) =>
+              Effect.sync(() => {
+                sqliteWriterSettingsEvidence.push({...settings, benchmarkPhase: sqliteWriterEvidencePhase});
+              }),
+            sqliteWriterTuning: sqliteWriterProfile.tuning,
+          }
+        : {}),
+      ...(options.materializationTransactionBatchLimit === undefined
+        ? {}
+        : {persistentMaterializationTransactionBatchLimit: options.materializationTransactionBatchLimit}),
+    };
     const samplerRoot = path.join(prepared.home, 'benchmark-telemetry');
     const sqliteTemporaryRoot = path.join(samplerRoot, 'sqlite-temp');
     if (largeEvidenceRun) {
@@ -1310,6 +1315,9 @@ const benchmarkCodeGraph = Effect.scoped(
         sqliteTemporaryStorageMeasurement:
           'SQLite TEMP database allocated-page high-water from materialization progress; excludes rollback journals and subjournals and remains separate from the filesystem sampler',
         sqliteVersion,
+        ...(options.materializationTransactionBatchLimit === undefined
+          ? {}
+          : {materializationTransactionBatchLimit: options.materializationTransactionBatchLimit}),
         ...(options.sqliteWriterProfile && sqliteWriterProfile
           ? {
               sqliteWriterEffectiveSettings: JSON.stringify(sqliteWriterSettingsEvidence),
@@ -4263,6 +4271,7 @@ export interface CodeGraphBenchmarkOptions {
   readonly fixture: string;
   readonly homePath?: string;
   readonly incrementalPath?: string;
+  readonly materializationTransactionBatchLimit?: 1 | 4;
   readonly minimumFreeGiB: number;
   readonly modelHome?: string;
   readonly outputPath?: string;
@@ -4289,6 +4298,7 @@ export function parseCodeGraphBenchmarkArguments(args: readonly string[]): CodeG
   let fixture = 'code-graph-v1';
   let homePath: string | undefined;
   let incrementalPath: string | undefined;
+  let materializationTransactionBatchLimit: 1 | 4 | undefined;
   let minimumFreeGiB = 120;
   let modelHome: string | undefined;
   let outputPath: string | undefined;
@@ -4316,7 +4326,11 @@ export function parseCodeGraphBenchmarkArguments(args: readonly string[]): CodeG
     else if (argument === '--fixture') fixture = required(args[++index], argument);
     else if (argument === '--home') homePath = required(args[++index], argument);
     else if (argument === '--incremental-path') incrementalPath = required(args[++index], argument);
-    else if (argument === '--minimum-free-gib') minimumFreeGiB = integer(args[++index], argument, 1);
+    else if (argument === '--materialization-transaction-batches') {
+      const value = integer(args[++index], argument, 1);
+      if (value !== 1 && value !== 4) throw new Error(`${argument} must be 1 or 4.`);
+      materializationTransactionBatchLimit = value;
+    } else if (argument === '--minimum-free-gib') minimumFreeGiB = integer(args[++index], argument, 1);
     else if (argument === '--model-home') modelHome = required(args[++index], argument);
     else if (argument === '--query') queryText = required(args[++index], argument);
     else if (argument === '--reference-home') referenceHomePath = required(args[++index], argument);
@@ -4415,6 +4429,7 @@ export function parseCodeGraphBenchmarkArguments(args: readonly string[]): CodeG
     fixture,
     homePath,
     incrementalPath,
+    materializationTransactionBatchLimit,
     minimumFreeGiB,
     modelHome,
     outputPath,

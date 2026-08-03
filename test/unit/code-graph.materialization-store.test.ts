@@ -1856,7 +1856,7 @@ describe('code graph full-build materialization store', () => {
     expect(pages.page_count).toBeGreaterThan(freelist.freelist_count);
   });
 
-  it('cannot promote an interrupted attributed sub-batch plan and resumes to the full deterministic graph', async () => {
+  it('keeps interrupted logical plans compatible across grouped transactions and resumes deterministically', async () => {
     const interruptedFixture = await materializationFixture();
     const referenceFixture = await materializationFixture();
     const secondFile: CodeGraphInventoryFile = {
@@ -2012,6 +2012,10 @@ describe('code graph full-build materialization store', () => {
     );
     expect(mismatchedTakeover).toContain('materialization plan changed');
 
+    const progressByDatabase = new Map<
+      string,
+      {readonly batchIndex: number; readonly rows: number; readonly stage: string}[]
+    >();
     const build = (fixture: Awaited<ReturnType<typeof materializationFixture>>) =>
       runEffect(
         Effect.gen(function* () {
@@ -2030,16 +2034,16 @@ describe('code graph full-build materialization store', () => {
                 stagedBatches.length,
                 ownerToken,
               );
-              for (const [batchIndex, batch] of stagedBatches.entries()) {
-                yield* store.stageActivationFacts(
-                  fixture.databasePath,
-                  batch.symbols,
-                  batch.edges,
-                  batch.references,
-                  undefined,
-                  batchIndex,
-                );
-              }
+              yield* store.stageActivationFactBatches(
+                fixture.databasePath,
+                stagedBatches.map((batch, batchIndex) => ({batchIndex, ...batch})),
+                (batchIndex, progress) =>
+                  Effect.sync(() => {
+                    const events = progressByDatabase.get(fixture.databasePath) ?? [];
+                    events.push({batchIndex, rows: progress.rowsCompleted, stage: progress.stage});
+                    progressByDatabase.set(fixture.databasePath, events);
+                  }),
+              );
               yield* store.resolveStagedReferences(fixture.databasePath);
               yield* store.activateStaged(fixture.databasePath, fixture.identity, snapshot);
               return yield* store.loadGraph(fixture.databasePath, snapshot.id);
@@ -2059,6 +2063,15 @@ describe('code graph full-build materialization store', () => {
     expect(resumedEvidence.distinctFiles).toBe(files.length);
     expect(new Set(resumed.symbols.map(value => value.id)).size).toBe(symbolCount);
     expect(new Set(resumed.edges.map(value => value.id)).size).toBe(edgeCount);
+    const resumeProgress = progressByDatabase.get(interruptedFixture.databasePath) ?? [];
+    expect(resumeProgress.filter(event => event.stage === 'committing').map(event => event.batchIndex)).toEqual([1]);
+    expect(resumeProgress.filter(event => event.stage === 'committed').map(event => event.batchIndex)).toEqual([1]);
+    expect(
+      resumeProgress.some(
+        event =>
+          event.batchIndex === 1 && event.stage !== 'committed' && event.stage !== 'committing' && event.rows > 0,
+      ),
+    ).toBe(true);
   }, 30_000);
 
   it('prevents a replaced persistent owner from staging, activating, or failing the new owner build', async () => {
