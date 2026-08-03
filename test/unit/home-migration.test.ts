@@ -633,7 +633,23 @@ describe('OpenViking home migration', () => {
           ),
         ).toContain('Current beta handoff');
         expect(yield* fs.exists(path.join(targetHome, 'data', 'backend_meta.json'))).toBe(false);
-        expect(yield* fs.exists(path.join(targetHome, 'data', 'viking'))).toBe(false);
+        expect(
+          yield* fs.exists(
+            path.join(
+              targetHome,
+              'data',
+              'viking',
+              'local',
+              'user',
+              'tester',
+              'memories',
+              'durable',
+              'projects',
+              'threadnote',
+              'recovery.md',
+            ),
+          ),
+        ).toBe(false);
         expect(yield* fs.readFileString(source)).toContain('Recovered memory');
         expect(yield* fs.readFileString(path.join(legacyHome, 'update-check.json'))).toBe(legacyUpdateCache);
       }),

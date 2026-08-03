@@ -964,7 +964,7 @@ describe('post-update validation', () => {
             first: first.output,
             memory: yield* fs.readFileString(path.join(home, 'data', 'local', 'memory.md')),
             second: second.output,
-            sourceExists: yield* fs.exists(path.join(home, 'data', 'viking')),
+            sourceExists: yield* fs.exists(betaMemory),
           };
         }),
       ).pipe(Effect.provide(ApplicationLayer)),

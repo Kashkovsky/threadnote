@@ -10,7 +10,7 @@ import {
 import {validatePortableSegment} from '../storage/resource-id.js';
 import {SystemInfo, type SystemInfoShape} from '../effect/system.js';
 import {withSharedRepositoryHomeLock} from '../effect/share_lock.js';
-import {hasBoundedMigrationTreeContent} from './evidence.js';
+import {hasBoundedMigrationTreeContent, isIgnorableOperatingSystemMetadata} from './evidence.js';
 import {
   isThreadnoteStorageLayoutMigrationPending,
   migrateThreadnoteStorageLayout,
@@ -47,7 +47,6 @@ const EXCLUDED_LEGACY_THREADNOTE_PATHS = new Set([
   'threadnote/shared-repository.lock',
 ]);
 
-const EXCLUDED_OS_METADATA_FILENAMES = new Set(['.ds_store', 'desktop.ini', 'thumbs.db']);
 const TRANSIENT_SHARE_GIT_ROOT_FILENAMES = new Set(['COMMIT_EDITMSG', 'FETCH_HEAD', 'gc.log']);
 const TRANSIENT_SHARE_GIT_LOCK_ROOTS = new Set(['info', 'logs', 'objects', 'refs', 'reftable', 'worktrees']);
 
@@ -1668,9 +1667,8 @@ function shouldIncludeLegacyPath(relativePath: string): boolean {
   return (
     !EXCLUDED_LEGACY_PATHS.has(top) &&
     !EXCLUDED_LEGACY_THREADNOTE_PATHS.has(portable) &&
-    !EXCLUDED_OS_METADATA_FILENAMES.has(basename.toLowerCase()) &&
-    !isTransientShareGitPath(portable) &&
-    !basename.startsWith('._')
+    !isIgnorableOperatingSystemMetadata(basename) &&
+    !isTransientShareGitPath(portable)
   );
 }
 

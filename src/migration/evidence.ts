@@ -1,6 +1,11 @@
 import {Effect, FileSystem, Option, Path} from 'effect';
 
 const MAX_MIGRATION_EVIDENCE_DIRECTORIES = 256;
+const OPERATING_SYSTEM_METADATA_FILENAMES = new Set(['.ds_store', 'desktop.ini', 'thumbs.db']);
+
+export function isIgnorableOperatingSystemMetadata(name: string): boolean {
+  return OPERATING_SYSTEM_METADATA_FILENAMES.has(name.toLowerCase()) || name.startsWith('._');
+}
 
 /**
  * Distinguishes an empty directory scaffold from migration-worthy content
@@ -12,7 +17,7 @@ export const hasBoundedMigrationTreeContent = Effect.fn('migration.hasBoundedTre
   fs: FileSystem.FileSystem,
   path: Path.Path,
   root: string,
-  include: (candidate: string) => boolean = () => true,
+  include: (candidate: string, type: string) => boolean = () => true,
 ) {
   const directories = [root];
   for (let index = 0; index < directories.length; index += 1) {
@@ -20,10 +25,11 @@ export const hasBoundedMigrationTreeContent = Effect.fn('migration.hasBoundedTre
     const directory = directories[index]!;
     for (const name of yield* fs.readDirectory(directory)) {
       const candidate = path.join(directory, name);
-      if (!include(candidate)) continue;
       if (Option.isSome(yield* fs.readLink(candidate).pipe(Effect.option))) return true;
       const info = yield* fs.stat(candidate).pipe(Effect.option);
-      if (Option.isNone(info) || info.value.type !== 'Directory') return true;
+      if (Option.isNone(info)) return true;
+      if (!include(candidate, info.value.type)) continue;
+      if (info.value.type !== 'Directory') return true;
       directories.push(candidate);
       if (directories.length > MAX_MIGRATION_EVIDENCE_DIRECTORIES) return true;
     }

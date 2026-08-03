@@ -105,7 +105,7 @@ describe('Threadnote storage layout migration properties', () => {
             accounts: 1,
             action: 'migrated',
           });
-          expect(yield* fs.exists(path.join(home, 'data', 'viking'))).toBe(false);
+          expect(yield* fileTree(fs, path, sourceRoot)).toEqual({});
           expect(yield* fileTree(fs, path, targetRoot)).toEqual(expectedMergedFiles(tree));
           expect(JSON.parse(yield* fs.readFileString(path.join(home, 'layout.json')))).toEqual({
             createdBy: 'threadnote',

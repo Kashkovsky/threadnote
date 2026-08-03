@@ -2,6 +2,7 @@ import {Context, Crypto, Effect, FileSystem, Layer, Option, Path, Schema} from '
 import {uriSegment} from '../manifest.js';
 import {globToRegExp} from '../utils.js';
 import {withExclusiveFileLock} from './file_lock.js';
+import {resourceAccountMutationLockPath} from './resource_lock.js';
 import {SystemInfo} from './system.js';
 import {
   canonicalResourceUri,
@@ -213,8 +214,7 @@ function createResourceStoreOperations(
     id: ResourceId,
     effect: Effect.Effect<A, E, R>,
   ): Effect.Effect<A, E | ResourceIoFailed, Exclude<R, Crypto.Crypto | Path.Path | SystemInfo>> => {
-    const layout = threadnoteStorageLayout(path, location.home, location.account, uriSegment(location.user));
-    const lockPath = path.join(layout.locksRoot, 'resources', location.account, 'mutations.lock');
+    const lockPath = resourceAccountMutationLockPath(path, location.home, location.account);
     const event = {account: location.account, lockPath, uri: id.canonicalUri};
     const lockEffect = withExclusiveFileLock(
       fs,

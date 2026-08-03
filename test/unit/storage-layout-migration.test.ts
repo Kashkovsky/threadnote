@@ -19,6 +19,12 @@ describe('Threadnote storage layout migration', () => {
         const path = yield* Path.Path;
         const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-layout-empty-scaffold-'});
         yield* fs.makeDirectory(path.join(home, 'data', 'viking', 'local', 'user'), {recursive: true});
+        yield* fs.writeFileString(path.join(home, 'data', 'viking', 'backend_meta.json'), '{"runtime":true}\n');
+        yield* fs.writeFileString(path.join(home, 'data', 'viking', '.DS_Store'), 'Finder metadata');
+        yield* fs.writeFileString(path.join(home, 'data', 'viking', 'desktop.ini'), 'Windows metadata');
+        yield* fs.writeFileString(path.join(home, 'data', 'viking', 'Thumbs.db'), 'Windows thumbnails');
+        yield* fs.writeFileString(path.join(home, 'data', 'viking', 'local', '._memory.md'), 'AppleDouble metadata');
+        yield* fs.writeFileString(path.join(home, 'data', 'viking', 'local', 'user', '.DS_Store'), 'Finder metadata');
 
         expect(yield* isThreadnoteStorageLayoutMigrationPending({home})).toBe(false);
         expect(yield* migrateThreadnoteStorageLayout({home})).toEqual({
@@ -49,6 +55,148 @@ describe('Threadnote storage layout migration', () => {
     ).pipe(Effect.provide(ApplicationLayer)),
   );
 
+  it.effect('removes ignored metadata and empty account scaffolds while migrating real beta data', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-layout-metadata-cleanup-'});
+        const realMemory = path.join(home, 'data', 'viking', 'local', 'memory.md');
+        const emptyAccount = path.join(home, 'data', 'viking', 'empty-account', 'nested');
+        yield* fs.makeDirectory(path.dirname(realMemory), {recursive: true});
+        yield* fs.makeDirectory(emptyAccount, {recursive: true});
+        yield* fs.writeFileString(realMemory, 'real beta memory');
+        yield* fs.writeFileString(path.join(path.dirname(realMemory), '.DS_Store'), 'Finder metadata');
+        yield* fs.writeFileString(path.join(home, 'data', 'viking', 'backend_meta.json'), '{"runtime":true}\n');
+        yield* fs.writeFileString(path.join(emptyAccount, 'Thumbs.db'), 'Windows thumbnails');
+
+        expect(yield* isThreadnoteStorageLayoutMigrationPending({home})).toBe(true);
+        expect(yield* migrateThreadnoteStorageLayout({home})).toEqual({accounts: 1, action: 'dry_run'});
+        expect(yield* migrateThreadnoteStorageLayout({apply: true, home})).toEqual({
+          accounts: 1,
+          action: 'migrated',
+        });
+        expect(yield* fs.readFileString(path.join(home, 'data', 'local', 'memory.md'))).toBe('real beta memory');
+        expect(yield* fs.exists(path.join(home, 'data', 'empty-account'))).toBe(false);
+        expect(yield* fs.exists(path.join(home, 'data', 'viking'))).toBe(true);
+        expect(yield* fs.exists(path.join(home, 'data', 'local', '.DS_Store'))).toBe(false);
+        expect(yield* fs.exists(path.join(home, 'data', 'viking', 'local', '.DS_Store'))).toBe(true);
+      }),
+    ).pipe(Effect.provide(ApplicationLayer)),
+  );
+
+  it.effect('does not hide a material account directory that shares a runtime-metadata filename', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-layout-runtime-name-account-'});
+        const source = path.join(home, 'data', 'viking', 'backend_meta.json', 'memory.md');
+        yield* fs.makeDirectory(path.dirname(source), {recursive: true});
+        yield* fs.writeFileString(source, 'material account data');
+
+        expect(yield* isThreadnoteStorageLayoutMigrationPending({home})).toBe(true);
+        expect(yield* migrateThreadnoteStorageLayout({apply: true, home})).toEqual({
+          accounts: 1,
+          action: 'migrated',
+        });
+        expect(yield* fs.readFileString(path.join(home, 'data', 'backend_meta.json', 'memory.md'))).toBe(
+          'material account data',
+        );
+        expect(yield* fs.exists(source)).toBe(false);
+      }),
+    ).pipe(Effect.provide(ApplicationLayer)),
+  );
+
+  it.effect('accepts additive canonical writes that arrive after a source file moves', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-layout-additive-target-'});
+        const source = path.join(home, 'data', 'viking', 'local', 'memory.md');
+        const target = path.join(home, 'data', 'local', 'memory.md');
+        const additive = path.join(home, 'data', 'local', 'new-memory.md');
+        yield* fs.makeDirectory(path.dirname(source), {recursive: true});
+        yield* fs.writeFileString(source, 'planned beta memory');
+        let injected = false;
+        const racingFs: FileSystem.FileSystem = {
+          ...fs,
+          rename: (from, to) =>
+            fs.rename(from, to).pipe(
+              Effect.tap(() => {
+                if (injected || from !== source || to !== target) return Effect.void;
+                injected = true;
+                return fs.writeFileString(additive, 'concurrent canonical memory');
+              }),
+            ),
+        };
+
+        expect(
+          yield* migrateThreadnoteStorageLayout({apply: true, home}).pipe(
+            Effect.provideService(FileSystem.FileSystem, racingFs),
+          ),
+        ).toEqual({accounts: 1, action: 'migrated'});
+        expect(yield* fs.readFileString(target)).toBe('planned beta memory');
+        expect(yield* fs.readFileString(additive)).toBe('concurrent canonical memory');
+        expect(yield* isThreadnoteStorageLayoutMigrationPending({home})).toBe(false);
+      }),
+    ).pipe(Effect.provide(ApplicationLayer)),
+  );
+
+  it.effect('keeps a late legacy write and resumes it instead of deleting the source tree', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-layout-late-source-'});
+        const sourceRoot = path.join(home, 'data', 'viking', 'local');
+        const source = path.join(sourceRoot, 'memory.md');
+        const lateSource = path.join(sourceRoot, 'late-memory.md');
+        const targetRoot = path.join(home, 'data', 'local');
+        yield* fs.makeDirectory(sourceRoot, {recursive: true});
+        yield* fs.writeFileString(source, 'planned beta memory');
+        let moved = false;
+        let injected = false;
+        const racingFs: FileSystem.FileSystem = {
+          ...fs,
+          readDirectory: directory =>
+            fs.readDirectory(directory).pipe(
+              Effect.tap(entries => {
+                if (injected || !moved || directory !== sourceRoot || entries.length > 0) return Effect.void;
+                injected = true;
+                return fs.writeFileString(lateSource, 'late beta memory');
+              }),
+            ),
+          rename: (from, to) =>
+            fs.rename(from, to).pipe(
+              Effect.tap(() =>
+                Effect.sync(() => {
+                  if (from === source) moved = true;
+                }),
+              ),
+            ),
+        };
+
+        const interrupted = yield* migrateThreadnoteStorageLayout({apply: true, home}).pipe(
+          Effect.provideService(FileSystem.FileSystem, racingFs),
+          Effect.flip,
+        );
+        expect(interrupted).toBeInstanceOf(StorageLayoutMigrationConflict);
+        expect(yield* fs.readFileString(lateSource)).toBe('late beta memory');
+        expect(yield* fs.readFileString(path.join(targetRoot, 'memory.md'))).toBe('planned beta memory');
+
+        expect(yield* migrateThreadnoteStorageLayout({apply: true, home})).toEqual({
+          accounts: 1,
+          action: 'resumed',
+        });
+        expect(yield* fs.readFileString(path.join(targetRoot, 'late-memory.md'))).toBe('late beta memory');
+        expect(yield* fs.exists(lateSource)).toBe(false);
+        expect(yield* isThreadnoteStorageLayoutMigrationPending({home})).toBe(false);
+      }),
+    ).pipe(Effect.provide(ApplicationLayer)),
+  );
+
   it.effect('flattens beta.1 accounts into data and records a resumable migration', () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -71,7 +219,7 @@ describe('Threadnote storage layout migration', () => {
         expect(
           yield* fs.readFileString(path.join(home, 'data', 'local', 'resources', 'repos', 'threadnote', 'guide.md')),
         ).toContain('Guide');
-        expect(yield* fs.exists(path.join(home, 'data', 'viking'))).toBe(false);
+        expect(yield* fs.exists(source)).toBe(false);
         expect(yield* fs.exists(path.join(home, 'migration', `${STORAGE_LAYOUT_MIGRATION_ID}.json`))).toBe(true);
         expect(yield* isThreadnoteStorageLayoutMigrationPending({home})).toBe(false);
       }),
@@ -118,7 +266,7 @@ describe('Threadnote storage layout migration', () => {
         });
         expect(yield* fs.readFileString(path.join(home, 'data', 'local', 'current.md'))).toBe('current beta memory');
         expect(yield* fs.readFileString(target)).toBe('legacy memory');
-        expect(yield* fs.exists(path.join(home, 'data', 'viking'))).toBe(false);
+        expect(yield* fs.exists(source)).toBe(false);
       }),
     ).pipe(Effect.provide(ApplicationLayer)),
   );
@@ -140,7 +288,7 @@ describe('Threadnote storage layout migration', () => {
           action: 'migrated',
         });
         expect(yield* fs.readFileString(path.join(home, 'data', 'local', 'memory.md'))).toBe('beta memory');
-        expect(yield* fs.exists(path.join(home, 'data', 'viking'))).toBe(false);
+        expect(yield* fs.exists(source)).toBe(false);
         expect(yield* isThreadnoteStorageLayoutMigrationPending({home})).toBe(false);
       }),
     ).pipe(Effect.provide(ApplicationLayer)),
@@ -178,6 +326,85 @@ describe('Threadnote storage layout migration', () => {
         });
         expect(yield* fs.readFileString(target)).toBe('already moved');
         expect(yield* isThreadnoteStorageLayoutMigrationPending({home})).toBe(false);
+      }),
+    ).pipe(Effect.provide(ApplicationLayer)),
+  );
+
+  it.effect('upgrades an old pending receipt whose target digest included OS metadata', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-layout-legacy-metadata-digest-'});
+        const target = path.join(home, 'data', 'local', 'memory.md');
+        const metadata = path.join(home, 'data', 'local', '.DS_Store');
+        const memory = 'already moved';
+        const metadataContent = 'legacy Finder metadata';
+        yield* fs.makeDirectory(path.dirname(target), {recursive: true});
+        yield* fs.writeFileString(target, memory);
+        yield* fs.writeFileString(metadata, metadataContent);
+        const legacyTreeSha256 = yield* sha256Hex(
+          `file\0.DS_Store\0${metadataContent.length}\0${yield* sha256FileHex(metadata)}\n` +
+            `file\0memory.md\0${memory.length}\0${yield* sha256FileHex(target)}\n`,
+        );
+        const filteredTreeSha256 = yield* sha256Hex(
+          `file\0memory.md\0${memory.length}\0${yield* sha256FileHex(target)}\n`,
+        );
+        yield* fs.makeDirectory(path.join(home, 'migration'), {recursive: true});
+        yield* fs.writeFileString(
+          path.join(home, 'migration', `${STORAGE_LAYOUT_MIGRATION_ID}.json`),
+          `${JSON.stringify({
+            accounts: [{name: 'local', treeSha256: legacyTreeSha256}],
+            id: STORAGE_LAYOUT_MIGRATION_ID,
+            sourceLayoutVersion: 1,
+            status: 'pending',
+            targetLayoutVersion: 2,
+            version: 1,
+          })}\n`,
+        );
+
+        expect(yield* migrateThreadnoteStorageLayout({apply: true, home})).toEqual({
+          accounts: 1,
+          action: 'resumed',
+        });
+        const receipt = JSON.parse(
+          yield* fs.readFileString(path.join(home, 'migration', `${STORAGE_LAYOUT_MIGRATION_ID}.json`)),
+        ) as {readonly accounts: readonly {readonly treeSha256: string}[]; readonly status: string};
+        expect(receipt.status).toBe('completed');
+        expect(receipt.accounts[0]?.treeSha256).toBe(filteredTreeSha256);
+        expect(yield* fs.readFileString(metadata)).toBe(metadataContent);
+      }),
+    ).pipe(Effect.provide(ApplicationLayer)),
+  );
+
+  it.effect('rejects a source-absent resume when the canonical target does not match its receipt', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-layout-incomplete-resume-'});
+        yield* fs.makeDirectory(path.join(home, 'data', 'local'), {recursive: true});
+        yield* fs.makeDirectory(path.join(home, 'migration'), {recursive: true});
+        yield* fs.writeFileString(
+          path.join(home, 'migration', `${STORAGE_LAYOUT_MIGRATION_ID}.json`),
+          `${JSON.stringify({
+            accounts: [{name: 'local', treeSha256: 'a'.repeat(64)}],
+            id: STORAGE_LAYOUT_MIGRATION_ID,
+            sourceLayoutVersion: 1,
+            status: 'pending',
+            targetLayoutVersion: 2,
+            version: 1,
+          })}\n`,
+        );
+        yield* fs.writeFileString(path.join(home, 'layout.json'), '{"createdBy":"threadnote","version":2}\n');
+
+        const failure = yield* migrateThreadnoteStorageLayout({apply: true, home}).pipe(Effect.flip);
+        expect(failure).toBeInstanceOf(StorageLayoutMigrationConflict);
+        expect(
+          JSON.parse(yield* fs.readFileString(path.join(home, 'migration', `${STORAGE_LAYOUT_MIGRATION_ID}.json`)))
+            .status,
+        ).toBe('pending');
+        expect(yield* isThreadnoteStorageLayoutMigrationPending({home})).toBe(true);
       }),
     ).pipe(Effect.provide(ApplicationLayer)),
   );

@@ -23,6 +23,10 @@ pending receipt, flattens the short-lived `~/.threadnote/data/viking/<account>` 
 the earlier `~/.threadnote/threadnote/models/` layout. Completed receipts make each step idempotent. Lexical, vector,
 and code-graph SQLite stores are derived data: repair validates their schema, and incompatible or stale indexes rebuild
 from canonical files or current repository source instead of treating old database bytes as canonical migration input.
+Canonical account moves use the same per-account mutation lock as normal agent writes. Threadnote moves material files
+individually, keeps OS/runtime metadata out of canonical data, and never recursively deletes the old beta tree. Empty
+directories and ignored metadata may therefore remain under `data/viking` as a non-authoritative scaffold; eligibility
+ignores it, while any later material write there is preserved and reported as a conflict instead of being deleted.
 
 The migration:
 
@@ -39,7 +43,7 @@ The migration:
 9. records and verifies the transformed staging-tree hash;
 10. writes a checksummed migration receipt;
 11. atomically promotes the staging directory;
-12. flattens canonical content to `~/.threadnote/data/<account>`;
+12. flattens canonical content to `~/.threadnote/data/<account>` without recursively deleting the old beta scaffold;
 13. adopts any verified 3.x managed GGUF generation model into the role-aware model store and preserves its selection;
 14. installs and selects the core BGE embedding model if no valid embedding selection already exists;
 15. rebuilds the derived lexical SQLite and vector indexes from the migrated canonical content.

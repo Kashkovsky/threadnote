@@ -1,5 +1,7 @@
 import {Crypto, Effect, FileSystem, Option, Path, Schema} from 'effect';
 import {sha256FileHex, sha256Hex} from '../effect/digest.js';
+import {withExclusiveFileLock} from '../effect/file_lock.js';
+import {resourceAccountMutationLockPath} from '../effect/resource_lock.js';
 import {SystemInfo} from '../effect/system.js';
 import {
   LEGACY_THREADNOTE_DATA_DIRECTORY,
@@ -7,12 +9,14 @@ import {
   THREADNOTE_STORAGE_LAYOUT_VERSION,
 } from '../storage/layout.js';
 import {validatePortableSegment} from '../storage/resource-id.js';
-import {hasBoundedMigrationTreeContent} from './evidence.js';
+import {hasBoundedMigrationTreeContent, isIgnorableOperatingSystemMetadata} from './evidence.js';
 
 export const STORAGE_LAYOUT_MIGRATION_ID = 'threadnote-storage-layout-v2';
 const STORAGE_LAYOUT_MIGRATION_RECEIPT_VERSION = 1 as const;
 const MIGRATION_RECEIPT_RELATIVE_PATH = `migration/${STORAGE_LAYOUT_MIGRATION_ID}.json`;
 const LAYOUT_RECEIPT_RELATIVE_PATH = 'layout.json';
+const LEGACY_CANONICAL_RUNTIME_FILENAMES = new Set(['backend_meta.json']);
+const PRESERVED_DUPLICATES_RELATIVE_PATH = `migration/${STORAGE_LAYOUT_MIGRATION_ID}-preserved`;
 
 interface AccountMigration {
   readonly name: string;
@@ -68,7 +72,11 @@ export const isThreadnoteStorageLayoutMigrationPending = Effect.fn('storageLayou
   yield* assertLegacyStorageAncestors(fs, path, home);
   const legacyRoot = path.join(home, 'data', LEGACY_THREADNOTE_DATA_DIRECTORY);
   const hasLegacyRoot = (yield* inspectLegacyRoot(fs, legacyRoot)) === 'directory';
-  const hasMaterialLegacyRoot = hasLegacyRoot && (yield* hasBoundedMigrationTreeContent(fs, path, legacyRoot));
+  const hasMaterialLegacyRoot =
+    hasLegacyRoot &&
+    (yield* hasBoundedMigrationTreeContent(fs, path, legacyRoot, (candidate, type) =>
+      shouldIncludeLegacyCanonicalStorePath(path, legacyRoot, candidate, type),
+    ));
   const receipt = yield* readMigrationReceipt(fs, path.join(home, MIGRATION_RECEIPT_RELATIVE_PATH));
   if (hasMaterialLegacyRoot || receipt?.status === 'pending') return true;
 
@@ -79,9 +87,10 @@ export const isThreadnoteStorageLayoutMigrationPending = Effect.fn('storageLayou
 
 /**
  * Flattens the short-lived 4.0.0-beta.1 data/viking/<account> layout into
- * data/<account>. A pending receipt makes every account move/merge resumable,
- * and the expected merged tree is verified before the legacy directory is
- * removed.
+ * data/<account>. A pending receipt makes every account move/merge resumable.
+ * Account writes use the same mutation lock as the canonical resource store;
+ * ignored metadata and empty source scaffolds are retained instead of risking
+ * recursive deletion while another old-beta process may still be writing.
  */
 export const migrateThreadnoteStorageLayout = Effect.fn('storageLayoutMigration.migrate')(function* (
   options: StorageLayoutMigrationOptions,
@@ -93,7 +102,11 @@ export const migrateThreadnoteStorageLayout = Effect.fn('storageLayoutMigration.
   const dataRoot = path.join(home, 'data');
   const legacyRoot = path.join(dataRoot, LEGACY_THREADNOTE_DATA_DIRECTORY);
   const hasLegacyRoot = (yield* inspectLegacyRoot(fs, legacyRoot)) === 'directory';
-  const hasMaterialLegacyRoot = hasLegacyRoot && (yield* hasBoundedMigrationTreeContent(fs, path, legacyRoot));
+  const hasMaterialLegacyRoot =
+    hasLegacyRoot &&
+    (yield* hasBoundedMigrationTreeContent(fs, path, legacyRoot, (candidate, type) =>
+      shouldIncludeLegacyCanonicalStorePath(path, legacyRoot, candidate, type),
+    ));
   const receiptPath = path.join(home, MIGRATION_RECEIPT_RELATIVE_PATH);
   const existingReceipt = yield* readMigrationReceipt(fs, receiptPath);
   const currentLayoutVersion = yield* readLayoutVersion(fs, path.join(home, LAYOUT_RECEIPT_RELATIVE_PATH));
@@ -115,7 +128,7 @@ export const migrateThreadnoteStorageLayout = Effect.fn('storageLayoutMigration.
     });
   }
 
-  const receipt = existingReceipt ?? (yield* planMigration(fs, path, dataRoot, legacyRoot));
+  let receipt = existingReceipt ?? (yield* planMigration(fs, path, dataRoot, legacyRoot));
   if (receipt.status === 'completed') {
     if (currentLayoutVersion !== THREADNOTE_STORAGE_LAYOUT_VERSION) {
       if (options.apply === true) {
@@ -130,51 +143,87 @@ export const migrateThreadnoteStorageLayout = Effect.fn('storageLayoutMigration.
     return {accounts: receipt.accounts.length, action: 'dry_run'} satisfies StorageLayoutMigrationResult;
   }
 
-  if (!existingReceipt) {
-    yield* writeMigrationReceipt(fs, path, receiptPath, receipt);
+  if (existingReceipt && hasLegacyRoot) {
+    receipt = mergePendingMigrationPlans(receipt, yield* planMigration(fs, path, dataRoot, legacyRoot));
   }
-  let resumed = false;
+  yield* writeMigrationReceipt(fs, path, receiptPath, receipt);
+  let resumed = existingReceipt !== undefined;
   for (const account of receipt.accounts) {
-    yield* assertLegacyStorageAncestors(fs, path, home);
-    yield* inspectLegacyRoot(fs, legacyRoot);
-    const source = path.join(legacyRoot, account.name);
-    const target = path.join(dataRoot, account.name);
-    const sourceExists = yield* fs.exists(source);
-    const targetExists = yield* fs.exists(target);
-    if (sourceExists) {
-      yield* assertAccountDirectory(fs, source);
-    }
-    if (sourceExists && targetExists) {
-      yield* mergeDirectories(fs, path, source, target);
-    } else if (sourceExists) {
-      yield* fs.rename(source, target);
-    } else if (targetExists) {
-      resumed = true;
-    } else {
-      return yield* new StorageLayoutMigrationConflict({
-        message: `Account "${account.name}" disappeared during the storage layout migration.`,
-        path: source,
-      });
-    }
-    const actualDigest = yield* digestDirectory(fs, path, target);
-    if (actualDigest !== account.treeSha256) {
-      return yield* new StorageLayoutMigrationConflict({
-        message: `Canonical account "${account.name}" does not match the validated merged tree.`,
-        path: target,
-      });
-    }
+    yield* withAccountMutationLock(
+      fs,
+      path,
+      home,
+      account.name,
+      Effect.gen(function* () {
+        yield* assertLegacyStorageAncestors(fs, path, home);
+        const source = path.join(legacyRoot, account.name);
+        const target = path.join(dataRoot, account.name);
+        const sourceExists = yield* fs.exists(source);
+        const targetExists = yield* fs.exists(target);
+        if (sourceExists) yield* assertAccountDirectory(fs, source);
+        if (!sourceExists && !targetExists) {
+          return yield* new StorageLayoutMigrationConflict({
+            message: `Account "${account.name}" disappeared during the storage layout migration.`,
+            path: source,
+          });
+        }
+        if (!sourceExists) {
+          const targetDigest = yield* digestDirectory(fs, path, target, (candidate, type) =>
+            shouldIncludeLegacyCanonicalStorePath(path, legacyRoot, candidate, type),
+          );
+          if (targetDigest !== account.treeSha256) {
+            const legacyTargetDigest = yield* digestDirectory(fs, path, target);
+            if (legacyTargetDigest !== account.treeSha256) {
+              return yield* new StorageLayoutMigrationConflict({
+                message: `Canonical account "${account.name}" does not match the pending migration receipt.`,
+                path: target,
+              });
+            }
+            receipt = {
+              ...receipt,
+              accounts: receipt.accounts.map(current =>
+                current.name === account.name ? {...current, treeSha256: targetDigest} : current,
+              ),
+            };
+          }
+          resumed = true;
+          return;
+        }
+        if (!targetExists) yield* fs.makeDirectory(target, {recursive: true, mode: 0o700});
+        yield* mergeDirectories(
+          fs,
+          path,
+          source,
+          target,
+          (candidate, type) => shouldIncludeLegacyCanonicalStorePath(path, legacyRoot, candidate, type),
+          path.join(home, PRESERVED_DUPLICATES_RELATIVE_PATH, account.name),
+        );
+        if (
+          yield* hasBoundedMigrationTreeContent(fs, path, source, (candidate, type) =>
+            shouldIncludeLegacyCanonicalStorePath(path, legacyRoot, candidate, type),
+          )
+        ) {
+          return yield* new StorageLayoutMigrationConflict({
+            message: `Legacy account "${account.name}" changed while its storage migration was running.`,
+            path: source,
+          });
+        }
+      }),
+    );
   }
 
   yield* assertLegacyStorageAncestors(fs, path, home);
   if ((yield* inspectLegacyRoot(fs, legacyRoot)) === 'directory') {
-    const remaining = yield* fs.readDirectory(legacyRoot);
-    if (remaining.length > 0) {
+    if (
+      yield* hasBoundedMigrationTreeContent(fs, path, legacyRoot, (candidate, type) =>
+        shouldIncludeLegacyCanonicalStorePath(path, legacyRoot, candidate, type),
+      )
+    ) {
       return yield* new StorageLayoutMigrationConflict({
-        message: 'Unexpected entries remain in the legacy canonical-store directory.',
+        message: 'Material entries remain in the legacy canonical-store directory.',
         path: legacyRoot,
       });
     }
-    yield* fs.remove(legacyRoot, {recursive: true});
   }
   yield* writeCurrentLayoutReceipt(fs, path, home);
   yield* writeMigrationReceipt(fs, path, receiptPath, {...receipt, status: 'completed'});
@@ -201,15 +250,34 @@ function planMigration(
     const names = (yield* fs.readDirectory(legacyRoot)).sort();
     const accounts: AccountMigration[] = [];
     for (const name of names) {
-      validatePortableSegment(name, name);
       const source = path.join(legacyRoot, name);
+      if (Option.isSome(yield* fs.readLink(source).pipe(Effect.option))) {
+        return yield* new StorageLayoutMigrationConflict({
+          message: 'Symbolic links are not allowed as Threadnote account roots.',
+          path: source,
+        });
+      }
+      const sourceInfo = yield* fs.stat(source);
+      if (!shouldIncludeLegacyCanonicalStorePath(path, legacyRoot, source, sourceInfo.type)) continue;
+      validatePortableSegment(name, name);
       const target = path.join(dataRoot, name);
       yield* assertAccountDirectory(fs, source);
+      if (
+        !(yield* hasBoundedMigrationTreeContent(fs, path, source, (candidate, type) =>
+          shouldIncludeLegacyCanonicalStorePath(path, legacyRoot, candidate, type),
+        ))
+      ) {
+        continue;
+      }
       accounts.push({
         name,
         treeSha256: (yield* fs.exists(target))
-          ? yield* digestMergedDirectories(fs, path, source, target)
-          : yield* digestDirectory(fs, path, source),
+          ? yield* digestMergedDirectories(fs, path, source, target, (candidate, type) =>
+              shouldIncludeLegacyCanonicalStorePath(path, legacyRoot, candidate, type),
+            )
+          : yield* digestDirectory(fs, path, source, (candidate, type) =>
+              shouldIncludeLegacyCanonicalStorePath(path, legacyRoot, candidate, type),
+            ),
       });
     }
     return {
@@ -221,6 +289,50 @@ function planMigration(
       version: STORAGE_LAYOUT_MIGRATION_RECEIPT_VERSION,
     };
   });
+}
+
+function mergePendingMigrationPlans(
+  existing: StorageLayoutMigrationReceipt,
+  current: StorageLayoutMigrationReceipt,
+): StorageLayoutMigrationReceipt {
+  const accounts = new Map(existing.accounts.map(account => [account.name, account]));
+  for (const account of current.accounts) accounts.set(account.name, account);
+  return {...existing, accounts: [...accounts.values()].sort((left, right) => left.name.localeCompare(right.name))};
+}
+
+function shouldIncludeLegacyCanonicalStorePath(
+  path: Path.Path,
+  legacyRoot: string,
+  candidate: string,
+  type: string,
+): boolean {
+  if (type !== 'File') return true;
+  const name = path.basename(candidate);
+  if (isIgnorableOperatingSystemMetadata(name)) return false;
+  return (
+    path.resolve(path.dirname(candidate)) !== path.resolve(legacyRoot) ||
+    !LEGACY_CANONICAL_RUNTIME_FILENAMES.has(name.toLowerCase())
+  );
+}
+
+function withAccountMutationLock<A, E, R>(
+  fs: FileSystem.FileSystem,
+  path: Path.Path,
+  home: string,
+  account: string,
+  effect: Effect.Effect<A, E, R>,
+) {
+  return withExclusiveFileLock(
+    fs,
+    resourceAccountMutationLockPath(path, home, account),
+    {
+      heartbeatIntervalMilliseconds: 10_000,
+      retryIntervalMilliseconds: 25,
+      staleAfterMilliseconds: 30_000,
+      waitTimeoutMilliseconds: 30_000,
+    },
+    effect,
+  );
 }
 
 function assertLegacyStorageAncestors(fs: FileSystem.FileSystem, path: Path.Path, home: string) {
@@ -293,6 +405,7 @@ function digestDirectory(
   fs: FileSystem.FileSystem,
   path: Path.Path,
   root: string,
+  include: (candidate: string, type: string) => boolean = () => true,
 ): Effect.Effect<string, unknown, Crypto.Crypto> {
   return Effect.gen(function* () {
     const entries: string[] = [];
@@ -308,6 +421,7 @@ function digestDirectory(
             });
           }
           const info = yield* fs.stat(absolute);
+          if (!include(absolute, info.type)) continue;
           if (info.type === 'Directory') {
             entries.push(`directory\0${relative}\n`);
             yield* visit(absolute, relative);
@@ -335,6 +449,7 @@ function digestMergedDirectories(
   path: Path.Path,
   sourceRoot: string,
   targetRoot: string,
+  include: (candidate: string, type: string) => boolean = () => true,
 ): Effect.Effect<string, unknown, Crypto.Crypto> {
   return Effect.gen(function* () {
     if (
@@ -385,6 +500,7 @@ function digestMergedDirectories(
             });
           }
           const info = sourceInfo ?? targetInfo;
+          if (!include(sourcePath ?? targetPath!, info?.type ?? 'Unknown')) continue;
           if (info?.type === 'Directory') {
             entries.push(`directory\0${relative}\n`);
             yield* visit(sourcePath, targetPath, relative);
@@ -418,8 +534,19 @@ function digestMergedDirectories(
   });
 }
 
-function mergeDirectories(fs: FileSystem.FileSystem, path: Path.Path, sourceRoot: string, targetRoot: string) {
-  const visit = (sourceDirectory: string, targetDirectory: string): Effect.Effect<void, unknown, Crypto.Crypto> =>
+function mergeDirectories(
+  fs: FileSystem.FileSystem,
+  path: Path.Path,
+  sourceRoot: string,
+  targetRoot: string,
+  include: (candidate: string, type: string) => boolean,
+  preservedRoot: string,
+) {
+  const visit = (
+    sourceDirectory: string,
+    targetDirectory: string,
+    relativeDirectory: string,
+  ): Effect.Effect<void, unknown, Crypto.Crypto> =>
     Effect.gen(function* () {
       for (const name of (yield* fs.readDirectory(sourceDirectory)).sort()) {
         const source = path.join(sourceDirectory, name);
@@ -430,7 +557,15 @@ function mergeDirectories(fs: FileSystem.FileSystem, path: Path.Path, sourceRoot
             path: source,
           });
         }
-        if (!(yield* fs.exists(target))) {
+        const sourceInfo = yield* fs.stat(source);
+        if (!include(source, sourceInfo.type)) continue;
+        const targetExists = yield* fs.exists(target);
+        if (!targetExists && sourceInfo.type === 'Directory') {
+          yield* fs.makeDirectory(target, {recursive: true, mode: 0o700});
+          yield* visit(source, target, path.join(relativeDirectory, name));
+          continue;
+        }
+        if (!targetExists && sourceInfo.type === 'File') {
           yield* fs.rename(source, target);
           continue;
         }
@@ -440,17 +575,16 @@ function mergeDirectories(fs: FileSystem.FileSystem, path: Path.Path, sourceRoot
             path: target,
           });
         }
-        const sourceInfo = yield* fs.stat(source);
         const targetInfo = yield* fs.stat(target);
         if (sourceInfo.type === 'Directory' && targetInfo.type === 'Directory') {
-          yield* visit(source, target);
+          yield* visit(source, target, path.join(relativeDirectory, name));
           continue;
         }
         if (sourceInfo.type === 'File' && targetInfo.type === 'File') {
           const sourceDigest = yield* sha256FileHex(source).pipe(Effect.provideService(FileSystem.FileSystem, fs));
           const targetDigest = yield* sha256FileHex(target).pipe(Effect.provideService(FileSystem.FileSystem, fs));
           if (Number(sourceInfo.size) === Number(targetInfo.size) && sourceDigest === targetDigest) {
-            yield* fs.remove(source);
+            yield* preserveDuplicateFile(fs, path, source, path.join(relativeDirectory, name), preservedRoot);
             continue;
           }
         }
@@ -459,15 +593,26 @@ function mergeDirectories(fs: FileSystem.FileSystem, path: Path.Path, sourceRoot
           path: target,
         });
       }
-      if ((yield* fs.readDirectory(sourceDirectory)).length > 0) {
-        return yield* new StorageLayoutMigrationConflict({
-          message: 'The legacy account directory still contains unmerged entries.',
-          path: sourceDirectory,
-        });
-      }
-      yield* fs.remove(sourceDirectory, {recursive: true});
     });
-  return visit(sourceRoot, targetRoot);
+  return visit(sourceRoot, targetRoot, '');
+}
+
+function preserveDuplicateFile(
+  fs: FileSystem.FileSystem,
+  path: Path.Path,
+  source: string,
+  relative: string,
+  preservedRoot: string,
+): Effect.Effect<void, unknown> {
+  return Effect.gen(function* () {
+    for (let duplicate = 0; ; duplicate += 1) {
+      const candidate = path.join(preservedRoot, `duplicate-${duplicate}`, relative);
+      if (yield* fs.exists(candidate)) continue;
+      yield* fs.makeDirectory(path.dirname(candidate), {recursive: true, mode: 0o700});
+      yield* fs.rename(source, candidate);
+      return;
+    }
+  });
 }
 
 function readLayoutVersion(fs: FileSystem.FileSystem, receiptPath: string): Effect.Effect<number | undefined, unknown> {
