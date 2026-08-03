@@ -36,7 +36,7 @@ jobs:
       - run: bun run site:check
       - run: bun run site:build
 
-      - uses: actions/configure-pages@v5
+      - uses: actions/configure-pages@v6
 
       - uses: actions/upload-pages-artifact@v4
         with:
