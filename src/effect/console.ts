@@ -19,6 +19,17 @@ export function captureConsole<A, E, R>(
     const lines: string[] = [];
     const service = capturingConsole(parent, lines);
     const cliOutput = CliOutput.of({
+      drain: Effect.void,
+      enqueueError: output => {
+        lines.push(output);
+      },
+      enqueueOutput: output => {
+        lines.push(output);
+      },
+      writeError: output =>
+        Effect.sync(() => {
+          lines.push(output);
+        }),
       writeFinal: output =>
         Effect.sync(() => {
           lines.push(output);

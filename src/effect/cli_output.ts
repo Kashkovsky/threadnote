@@ -1,6 +1,10 @@
-import {Context, Effect, Layer} from 'effect';
+import {Console, Context, Effect, Layer} from 'effect';
 
 export interface CliOutputShape {
+  readonly drain: Effect.Effect<void, Error>;
+  readonly enqueueError: (output: string) => void;
+  readonly enqueueOutput: (output: string) => void;
+  readonly writeError: (output: string) => Effect.Effect<void, Error>;
   readonly writeFinal: (output: string) => Effect.Effect<void, Error>;
 }
 
@@ -13,29 +17,78 @@ export function makeFinalCliOutput(write: (output: string) => Promise<void>) {
   });
 }
 
-const writeBunStdout = async (output: string): Promise<void> => {
-  const stdout = Bun.stdout.writer({highWaterMark: 64 * 1024});
-  stdout.write(`${output}\n`);
-  await stdout.flush();
-  await stdout.end();
-};
-
-export class CliOutput extends Context.Service<CliOutput, CliOutputShape>()('threadnote/effect/CliOutput') {
-  static readonly layer = Layer.succeed(
-    CliOutput,
-    CliOutput.of({
-      writeFinal: makeFinalCliOutput(writeBunStdout),
-    }),
-  );
+function makeQueuedBunWriter(open: () => ReturnType<typeof Bun.stdout.writer>) {
+  let sink: ReturnType<typeof Bun.stdout.writer> | undefined;
+  let tail = Promise.resolve();
+  let failure: unknown;
+  let ended = false;
+  const write = (output: string): Promise<void> => {
+    const write = tail.then(async () => {
+      sink ??= open();
+      sink.write(`${output}\n`);
+      await sink.flush();
+    });
+    tail = write.catch(cause => {
+      failure ??= cause;
+    });
+    return write;
+  };
+  return {
+    drain: async (): Promise<void> => {
+      await tail;
+      if (failure !== undefined) throw failure;
+      if (sink !== undefined && !ended) {
+        ended = true;
+        await sink.end();
+      }
+    },
+    enqueue: (output: string): void => {
+      void write(output);
+    },
+    write,
+  };
 }
 
-/** Best-effort barrier for ordinary small Console output at one-shot CLI exit. */
-export const drainCliStdout = Effect.tryPromise({
-  try: async () => {
-    await Bun.write(Bun.stdout, '');
-  },
-  catch: cause => new Error('Failed to drain Threadnote CLI output.', {cause}),
-});
+const formatConsoleArguments = (arguments_: readonly unknown[]): string =>
+  arguments_.map(value => (typeof value === 'string' ? value : String(value))).join(' ');
+
+export class CliOutput extends Context.Service<CliOutput, CliOutputShape>()('threadnote/effect/CliOutput') {
+  static readonly layer = Layer.sync(CliOutput, () => {
+    const stdout = makeQueuedBunWriter(() => Bun.stdout.writer({highWaterMark: 64 * 1024}));
+    const stderr = makeQueuedBunWriter(() => Bun.stderr.writer({highWaterMark: 64 * 1024}));
+    return CliOutput.of({
+      drain: Effect.tryPromise({
+        try: () => Promise.all([stdout.drain(), stderr.drain()]).then(() => undefined),
+        catch: cause => new Error('Failed to drain Threadnote CLI output.', {cause}),
+      }),
+      enqueueError: stderr.enqueue,
+      enqueueOutput: stdout.enqueue,
+      writeError: makeFinalCliOutput(stderr.write),
+      writeFinal: makeFinalCliOutput(stdout.write),
+    });
+  });
+}
+
+/** Routes Effect Console output through the same awaited, backpressured sinks as final payloads. */
+export const withCliOutputConsole = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  Effect.gen(function* () {
+    const output = yield* CliOutput;
+    return yield* Console.consoleWith(parent =>
+      effect.pipe(
+        Effect.provideService(
+          Console.Console,
+          Object.assign(Object.create(parent) as Console.Console, {
+            debug: (...arguments_: readonly unknown[]) => output.enqueueOutput(formatConsoleArguments(arguments_)),
+            error: (...arguments_: readonly unknown[]) => output.enqueueError(formatConsoleArguments(arguments_)),
+            info: (...arguments_: readonly unknown[]) => output.enqueueOutput(formatConsoleArguments(arguments_)),
+            log: (...arguments_: readonly unknown[]) => output.enqueueOutput(formatConsoleArguments(arguments_)),
+            warn: (...arguments_: readonly unknown[]) => output.enqueueError(formatConsoleArguments(arguments_)),
+          }),
+        ),
+        Effect.ensuring(output.drain.pipe(Effect.orDie)),
+      ),
+    );
+  });
 
 export const writeFinalCliOutput = Effect.fn('cliOutput.writeFinalFromService')(function* (output: string) {
   const cliOutput = yield* CliOutput;

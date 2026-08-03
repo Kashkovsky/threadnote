@@ -9,6 +9,8 @@ import {SystemInfo} from '../src/effect/system.js';
 const ROOT_URL = new URL('..', import.meta.url);
 const COMMAND_TIMEOUT_MILLISECONDS = 300_000;
 const SMOKE_MARKER = 'QZ9-standalone-bun-smoke';
+const LARGE_OUTPUT_START = 'QZ9-standalone-large-output-start';
+const LARGE_OUTPUT_END = 'QZ9-standalone-large-output-end';
 
 const smokeSelfContained = Effect.scoped(
   Effect.gen(function* () {
@@ -80,6 +82,42 @@ const smokeSelfContained = Effect.scoped(
       return yield* Effect.fail(new Error(`Standalone lexical recall missed the stored memory:\n${recall}`));
     }
 
+    const storedMemoryPath = path.join(
+      threadnoteHome,
+      'data',
+      'local',
+      'user',
+      'standalone-smoke',
+      'memories',
+      'durable',
+      'projects',
+      'threadnote',
+      'standalone-bun-smoke.md',
+    );
+    const storedMemory = yield* fs.readFileString(storedMemoryPath);
+    yield* fs.writeFileString(
+      storedMemoryPath,
+      `${storedMemory.trimEnd()}\n\n${LARGE_OUTPUT_START}\n${'x'.repeat(96 * 1024)}\n${LARGE_OUTPUT_END}\n`,
+    );
+    const largeRead = yield* readLargeOutputThroughPlatformPipe({
+      consumer: path.join(root, 'test', 'fixtures', 'cli-output-consumer.ts'),
+      cwd: invocationDirectory,
+      environment,
+      executable,
+      fs,
+      path,
+      temporaryRoot,
+      uri: 'threadnote://user/standalone-smoke/memories/durable/projects/threadnote/standalone-bun-smoke.md',
+    });
+    if (largeRead.bytes <= 65_536 || largeRead.hasStart !== true || largeRead.hasEnd !== true) {
+      return yield* Effect.fail(
+        new Error(
+          `Standalone large memory read was truncated before stdout drained: ${largeRead.bytes} bytes; ` +
+            `start=${largeRead.hasStart}; end=${largeRead.hasEnd}.`,
+        ),
+      );
+    }
+
     const lexicalDatabase = path.join(threadnoteHome, 'indexes', 'lexical', 'active-v3.sqlite');
     const lexicalInfo = yield* fs.stat(lexicalDatabase);
     if (lexicalInfo.type !== 'File' || lexicalInfo.size <= 0) {
@@ -117,6 +155,51 @@ const smokeSelfContained = Effect.scoped(
       'Self-contained Bun executable smoke passed with polyglot CLI/MCP graph operations and Node/Bun absent from PATH.',
     );
   }),
+);
+
+interface LargeOutputPipeOptions {
+  readonly consumer: string;
+  readonly cwd: string;
+  readonly environment: NodeJS.ProcessEnv;
+  readonly executable: string;
+  readonly fs: FileSystem.FileSystem;
+  readonly path: Path.Path;
+  readonly temporaryRoot: string;
+  readonly uri: string;
+}
+
+const readLargeOutputThroughPlatformPipe = Effect.fn('smokeSelfContained.readLargeOutputThroughPlatformPipe')(
+  function* (options: LargeOutputPipeOptions) {
+    const windows = process.platform === 'win32';
+    const quote = (value: string): string =>
+      windows ? `"${value.replaceAll('%', '%%').replaceAll('"', '""')}"` : `'${value.replaceAll("'", `'\\''`)}'`;
+    const producer = [options.executable, 'read', options.uri].map(quote).join(' ');
+    const consumer = [process.execPath, options.consumer, 'text', LARGE_OUTPUT_START, LARGE_OUTPUT_END]
+      .map(quote)
+      .join(' ');
+    const scriptPath = options.path.join(options.temporaryRoot, windows ? 'large-output.cmd' : 'large-output.sh');
+    yield* options.fs.writeFileString(
+      scriptPath,
+      windows ? `@echo off\r\n${producer} | ${consumer}\r\n` : `set -eu\n${producer} | ${consumer}\n`,
+    );
+    const shell = windows ? (process.env.ComSpec ?? process.env.COMSPEC ?? 'cmd.exe') : '/bin/sh';
+    const shellArguments = windows ? ['/d', '/s', '/c', scriptPath] : [scriptPath];
+    const result = yield* runCommandEffect(shell, shellArguments, {
+      cwd: options.cwd,
+      env: options.environment,
+      maxOutputBytes: 128 * 1024,
+      timeoutMs: COMMAND_TIMEOUT_MILLISECONDS,
+    });
+    return yield* Effect.try({
+      try: () =>
+        JSON.parse(result.stdout) as {
+          readonly bytes: number;
+          readonly hasEnd: boolean;
+          readonly hasStart: boolean;
+        },
+      catch: cause => new Error('Standalone large-output pipe returned invalid JSON.', {cause}),
+    });
+  },
 );
 
 const writePolyglotRepository = Effect.fn('smokeSelfContained.writePolyglotRepository')(function* (

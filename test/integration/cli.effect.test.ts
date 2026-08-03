@@ -490,47 +490,7 @@ function runCli(args: readonly string[], environment: NodeJS.ProcessEnv = {}) {
 }
 
 async function runCliThroughJsonPipe(args: readonly string[]) {
-  const producer = Bun.spawn([process.execPath, 'src/standalone.ts', ...args], {
-    cwd: process.cwd(),
-    env: {...process.env, NO_COLOR: '1'},
-    stderr: 'pipe',
-    stdout: 'pipe',
-  });
-  const consumer = Bun.spawn(
-    [
-      process.execPath,
-      '-e',
-      [
-        '// Read immediately, matching common consumers such as jq.',
-        'const text = await new Response(Bun.stdin.stream()).text();',
-        'const value = JSON.parse(text);',
-        'const nodes = Array.isArray(value.nodes) ? value.nodes : [];',
-        'await Bun.write(Bun.stdout, JSON.stringify({',
-        '  allNamesMatched: nodes.every(node => node.name?.startsWith("pipedOutputSymbol")),',
-        '  bytes: new TextEncoder().encode(text).byteLength,',
-        '  nodeCount: nodes.length,',
-        '}) + "\\n");',
-      ].join('\n'),
-    ],
-    {
-      stdin: producer.stdout,
-      stderr: 'pipe',
-      stdout: 'pipe',
-    },
-  );
-  const [producerExit, consumerExit, producerError, consumerError, consumerOutput] = await Promise.all([
-    producer.exited,
-    consumer.exited,
-    new Response(producer.stderr).text(),
-    new Response(consumer.stderr).text(),
-    new Response(consumer.stdout).text(),
-  ]);
-  if (producerExit !== 0 || consumerExit !== 0) {
-    throw new Error(
-      `CLI JSON pipe failed (producer ${producerExit}, consumer ${consumerExit}).\n${producerError}${consumerError}`,
-    );
-  }
-  return JSON.parse(consumerOutput) as {
+  return (await runCliThroughPlatformPipe(args, 'json')) as {
     readonly allNamesMatched: boolean;
     readonly bytes: number;
     readonly nodeCount: number;
@@ -538,47 +498,50 @@ async function runCliThroughJsonPipe(args: readonly string[]) {
 }
 
 async function runCliThroughTextPipe(args: readonly string[], input: string) {
-  const producer = Bun.spawn([process.execPath, 'src/standalone.ts', ...args], {
-    cwd: process.cwd(),
-    env: {...process.env, NO_COLOR: '1'},
-    stdin: new Response(input),
-    stderr: 'pipe',
-    stdout: 'pipe',
-  });
-  const consumer = Bun.spawn(
-    [
-      process.execPath,
-      '-e',
-      [
-        'const text = await new Response(Bun.stdin.stream()).text();',
-        'await Bun.write(Bun.stdout, JSON.stringify({',
-        '  bytes: new TextEncoder().encode(text).byteLength,',
-        '  hasEnd: text.includes("generic-output-end"),',
-        '  hasStart: text.includes("generic-output-start"),',
-        '}) + "\\n");',
-      ].join('\n'),
-    ],
-    {
-      stdin: producer.stdout,
-      stderr: 'pipe',
-      stdout: 'pipe',
-    },
-  );
-  const [producerExit, consumerExit, producerError, consumerError, consumerOutput] = await Promise.all([
-    producer.exited,
-    consumer.exited,
-    new Response(producer.stderr).text(),
-    new Response(consumer.stderr).text(),
-    new Response(consumer.stdout).text(),
-  ]);
-  if (producerExit !== 0 || consumerExit !== 0) {
-    throw new Error(
-      `CLI text pipe failed (producer ${producerExit}, consumer ${consumerExit}).\n${producerError}${consumerError}`,
-    );
-  }
-  return JSON.parse(consumerOutput) as {
+  return (await runCliThroughPlatformPipe(args, 'text', input)) as {
     readonly bytes: number;
     readonly hasEnd: boolean;
     readonly hasStart: boolean;
   };
+}
+
+async function runCliThroughPlatformPipe(
+  args: readonly string[],
+  mode: 'json' | 'text',
+  input?: string,
+): Promise<unknown> {
+  const root = await mkdtemp(join(tmpdir(), 'threadnote-effect-cli-platform-pipe-'));
+  try {
+    const windows = process.platform === 'win32';
+    const scriptPath = join(root, windows ? 'pipeline.cmd' : 'pipeline.sh');
+    const inputPath = join(root, 'input.txt');
+    if (input !== undefined) await writeFile(inputPath, input);
+    const quote = (value: string): string =>
+      windows ? `"${value.replaceAll('%', '%%').replaceAll('"', '""')}"` : `'${value.replaceAll("'", `'\\''`)}'`;
+    const producer = [process.execPath, 'src/standalone.ts', ...args].map(quote).join(' ');
+    const consumer = [process.execPath, 'test/fixtures/cli-output-consumer.ts', mode].map(quote).join(' ');
+    const pipeline = `${producer}${input === undefined ? '' : ` < ${quote(inputPath)}`} | ${consumer}`;
+    await writeFile(scriptPath, windows ? `@echo off\r\n${pipeline}\r\n` : `set -eu\n${pipeline}\n`);
+
+    const shell = windows
+      ? [process.env.ComSpec ?? process.env.COMSPEC ?? 'cmd.exe', '/d', '/s', '/c', scriptPath]
+      : ['/bin/sh', scriptPath];
+    const child = Bun.spawn(shell, {
+      cwd: process.cwd(),
+      env: {...process.env, NO_COLOR: '1'},
+      stderr: 'pipe',
+      stdout: 'pipe',
+    });
+    const [exitCode, stderr, stdout] = await Promise.all([
+      child.exited,
+      new Response(child.stderr).text(),
+      new Response(child.stdout).text(),
+    ]);
+    if (exitCode !== 0) {
+      throw new Error(`CLI ${mode} platform pipe failed with ${exitCode}.\n${stderr}`);
+    }
+    return JSON.parse(stdout);
+  } finally {
+    await rm(root, {force: true, recursive: true});
+  }
 }
