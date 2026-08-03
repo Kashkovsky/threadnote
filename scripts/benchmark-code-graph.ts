@@ -78,6 +78,8 @@ const NANOSECONDS_PER_MILLISECOND = 1_000_000;
 const EXTERNAL_SAMPLER_READY_TIMEOUT_MS = 5_000;
 const EXTERNAL_SAMPLER_STOP_TIMEOUT_MS = 5_000;
 const EXTERNAL_SAMPLER_TERMINATE_TIMEOUT_MS = 1_000;
+const THREADNOTE_4_RELEASE_REF_PATTERN =
+  /^refs\/tags\/v4\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:beta|rc)\.(?:0|[1-9]\d*))?$/;
 const STRUCTURAL_DIGEST_SNAPSHOT_LEASE_MILLISECONDS = 60 * 60_000;
 const STRUCTURAL_DIGEST_SNAPSHOT_LEASE_RENEWAL_MILLISECONDS = 5 * 60_000;
 const STRUCTURAL_DIGEST_ROW_CHUNK_SIZE = 10_000;
@@ -4226,7 +4228,7 @@ export function resolvedReleaseEvidenceSource(
   dirty: boolean,
 ): {readonly ref: string; readonly resolvedSha: string; readonly sha: string} {
   if (
-    !/^refs\/tags\/v4\.0\.0(?:-(?:beta|rc)\.\d+)?$/.test(ref) ||
+    !THREADNOTE_4_RELEASE_REF_PATTERN.test(ref) ||
     !EXACT_GIT_COMMIT_PATTERN.test(sha) ||
     resolvedSha !== sha ||
     checkoutCommit !== sha ||
@@ -4248,7 +4250,7 @@ const validateReleaseEvidenceSource = Effect.fn('benchmarkCodeGraph.validateRele
   if (
     ref === undefined ||
     sha === undefined ||
-    !/^refs\/tags\/v4\.0\.0(?:-(?:beta|rc)\.\d+)?$/.test(ref) ||
+    !THREADNOTE_4_RELEASE_REF_PATTERN.test(ref) ||
     !EXACT_GIT_COMMIT_PATTERN.test(sha)
   ) {
     return yield* Effect.fail(
