@@ -3279,8 +3279,13 @@ export function graphFocusLayoutTargets(
     }
   }
 
-  for (let iteration = 0; iteration < 18; iteration += 1) {
-    for (const node of focusNodes.filter(node => !node.fixed)) {
+  // Preserve the full relaxation pass for ordinary neighborhoods while bounding
+  // maximum-cardinality focus work. Dense graphs benefit more from responsive
+  // interaction than from repeatedly refining already-overlapping offscreen labels.
+  const collisionIterations = Math.max(10, Math.min(18, Math.floor(5_000 / focusNodes.length)));
+  const movableFocusNodes = focusNodes.filter(node => !node.fixed);
+  for (let iteration = 0; iteration < collisionIterations; iteration += 1) {
+    for (const node of movableFocusNodes) {
       node.x += (node.anchorX - node.x) * 0.006;
       node.y += (node.anchorY - node.y) * 0.006;
     }
