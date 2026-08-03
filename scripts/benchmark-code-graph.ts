@@ -10,6 +10,7 @@ import {
   type CodeGraphSqliteWriterTuning,
 } from '../src/code_graph/store.js';
 import {CodeGraphAnalysis} from '../src/code_graph/analysis.js';
+import {codeGraphAnalysisLimitsForView} from '../src/code_graph/analysis_render.js';
 import {codeGraphLayout} from '../src/code_graph/layout.js';
 import {parserWorkerCapacity} from '../src/code_graph/parser_worker.js';
 import {CodeGraphQueryService, type CodeGraphInspectOptions} from '../src/code_graph/query.js';
@@ -931,7 +932,7 @@ const benchmarkCodeGraph = Effect.scoped(
     const storageEnvironment = prepared.externalCommit ? yield* benchmarkStorageEnvironment(prepared.home) : undefined;
     const analysisOptions = {
       databasePath: analysisStatus.databasePath,
-      limits: {communities: 0, components: 0, hubs: 0, memberships: 0, surprisingLinks: 0},
+      limits: codeGraphAnalysisLimitsForView('stats'),
       snapshot: analysisStatus.readySnapshot,
     } as const;
     for (let index = 0; index < Math.min(options.warmups, 1); index += 1) {
@@ -946,6 +947,11 @@ const benchmarkCodeGraph = Effect.scoped(
       const result = yield* analysis.analyze(analysisOptions);
       analysisDurations.push(Number((yield* Clock.currentTimeNanos) - started) / NANOSECONDS_PER_MILLISECOND);
       analysisCpuDurations.push(cpuMilliseconds(processStarted, processTelemetry()).total);
+      if (result.coverage.topology.state !== 'not-requested' || result.usage.edgeVisits !== 0) {
+        return yield* Effect.fail(
+          new Error('Code graph benchmark aggregate analysis unexpectedly executed a detail scan.'),
+        );
+      }
       analysisComplete = result.coverage.complete;
     }
     if (!analysisComplete) {

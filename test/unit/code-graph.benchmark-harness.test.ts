@@ -23,6 +23,7 @@ import {
   validateSqliteWriterSettingsEvidence,
 } from '../../scripts/benchmark-code-graph.js';
 import type {CodeGraphBenchmarkSamplerArtifact} from '../../scripts/code-graph-benchmark-sampler.js';
+import {codeGraphAnalysisLimitsForView} from '../../src/code_graph/analysis_render.js';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
 import type {RepositoryIdentity} from '../../src/code_graph/types.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
@@ -34,6 +35,24 @@ const CONTROL = JSON.stringify({
 });
 
 describe('code graph external benchmark harness', () => {
+  it('keeps whole-graph performance analysis on the persisted summary path', () => {
+    const source = readFileSync('scripts/benchmark-code-graph.ts', 'utf8');
+    expect(source).toContain("limits: codeGraphAnalysisLimitsForView('stats')");
+    expect(source).toContain("result.coverage.topology.state !== 'not-requested'");
+    expect(source).toContain('result.usage.edgeVisits !== 0');
+    expect(codeGraphAnalysisLimitsForView('stats')).toEqual({
+      communities: 0,
+      communityMembers: 0,
+      components: 0,
+      confidenceFindings: 0,
+      hubs: 0,
+      memberships: 0,
+      relationshipGroupMembers: 0,
+      relationshipGroups: 0,
+      surprisingLinks: 0,
+    });
+  });
+
   effectIt.effect('measures only index execution after setup and before cleanup', () =>
     Effect.gen(function* () {
       const events: string[] = [];

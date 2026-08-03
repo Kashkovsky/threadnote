@@ -1,8 +1,8 @@
 import type {
-  CodeGraphAnalysisLimits,
   CodeGraphAnalysisResult,
   CodeGraphCommunityDrillDown,
   CodeGraphConfidenceAudit,
+  ResolvedCodeGraphAnalysisLimits,
 } from './analysis.js';
 
 export type CodeGraphAnalysisView =
@@ -13,7 +13,7 @@ export type CodeGraphAnalysisRenderTarget = 'mcp' | 'standalone';
 export function codeGraphAnalysisLimitsForView(
   view: CodeGraphAnalysisView,
   communityMembers = 100,
-): CodeGraphAnalysisLimits {
+): ResolvedCodeGraphAnalysisLimits {
   return {
     communities: view === 'communities' || view === 'full' ? 100 : 0,
     communityMembers: view === 'community' ? communityMembers : 0,
