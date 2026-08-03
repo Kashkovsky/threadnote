@@ -15,7 +15,10 @@ import {
   resolvedReleaseEvidenceSource,
 } from '../../scripts/benchmark-code-graph.js';
 import {benchmarkMeasurement, type BenchmarkArtifactV1} from '../../src/evaluation/benchmark.js';
-import {validateRetainedPerformancePayload} from '../../website/src/content/performance.js';
+import {
+  retainedPerformanceArtifactFromHarness,
+  validateRetainedPerformancePayload,
+} from '../../website/src/content/performance.js';
 
 const CODE_GRAPH_BUDGETS = 'test/evaluation/baselines/code-graph-v1/budgets.json';
 const POLYGLOT_BUDGETS = 'test/evaluation/baselines/code-graph-polyglot-v1/budgets.json';
@@ -824,10 +827,12 @@ describe('code graph release evidence', () => {
       ['manager-overview-cold', 'milliseconds'],
       ['manager-overview-warm', 'milliseconds'],
       ['manager-detail-cold', 'milliseconds'],
+      ['manager-node-detail-cold', 'milliseconds'],
       ['manager-render-proxy', 'milliseconds'],
       ['manager-response-payload', 'bytes'],
       ['manager-bounded-query', 'milliseconds'],
       ['manager-bounded-query-payload', 'bytes'],
+      ['concurrent-worktree-isolation-duration', 'milliseconds'],
     ] as const) {
       if (!evidenceMeasurementNames.has(name)) evidenceMeasurements.push(benchmarkMeasurement(name, unit, [1]));
     }
@@ -885,6 +890,25 @@ describe('code graph release evidence', () => {
 
     expect(() => assertExternalPerformanceEvidence(artifact)).not.toThrow();
     expect(() => validateRetainedPerformancePayload(artifact)).not.toThrow();
+    const projected = retainedPerformanceArtifactFromHarness(artifact, {
+      artifactSha256: 'f'.repeat(64),
+      artifactUrl: '/performance/performance-evidence.json',
+      currentLockfileSha256: 'a'.repeat(64),
+      currentPackageManifestSha256: 'b'.repeat(64),
+      generatedAt: artifact.createdAt,
+    });
+    expect(projected.manager).toMatchObject({
+      edgeBudget: 1_500,
+      nodeBudget: 500,
+      nodeDetailColdMilliseconds: 1,
+    });
+    expect(projected.concurrency).toEqual({
+      durationMilliseconds: 1,
+      indexedFiles: 2,
+      isolationPassed: true,
+      simultaneousWorktrees: 2,
+      topology: 'bounded-synthetic-linked-worktrees-in-measured-primary-home',
+    });
     expect(() =>
       assertExternalPerformanceEvidence({
         ...artifact,
@@ -909,6 +933,24 @@ describe('code graph release evidence', () => {
         },
       }),
     ).toThrow(/privacy-safe external control evidence matching declared languages/);
+    expect(() =>
+      validateRetainedPerformancePayload({
+        ...artifact,
+        metadata: {...artifact.metadata, managerNodeBudget: 499},
+      }),
+    ).toThrow(/managerNodeBudget/);
+    expect(() =>
+      validateRetainedPerformancePayload({
+        ...artifact,
+        metadata: {...artifact.metadata, worktreeIsolationIndexedFiles: 3},
+      }),
+    ).toThrow(/worktreeIsolationIndexedFiles/);
+    expect(() =>
+      validateRetainedPerformancePayload({
+        ...artifact,
+        measurements: artifact.measurements.filter(measurement => measurement.name !== 'manager-node-detail-cold'),
+      }),
+    ).toThrow(/manager-node-detail-cold/);
   });
 
   it('keeps materialization ceilings reviewed for every checked graph profile', () => {

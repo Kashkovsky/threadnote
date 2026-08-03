@@ -1,5 +1,10 @@
 export const performanceControlLanguages = ['java', 'kotlin', 'typescript', 'bazel'] as const;
 
+const retainedManagerNodeBudget = 500;
+const retainedManagerEdgeBudget = 1_500;
+const retainedWorktreeIsolationTopology = 'bounded-synthetic-linked-worktrees-in-measured-primary-home';
+const retainedWorktreeIsolationIndexedFiles = 2;
+
 export type PerformanceControlLanguage = (typeof performanceControlLanguages)[number];
 
 type LanguageRecord<T> = Readonly<Record<PerformanceControlLanguage, T>>;
@@ -119,6 +124,7 @@ export type RetainedPerformanceArtifact = Readonly<{
     overviewColdMilliseconds: number;
     overviewWarmMilliseconds: number;
     detailColdMilliseconds: number;
+    nodeDetailColdMilliseconds: number;
     renderProxyMilliseconds: number;
     maxPayloadBytes: number;
     querySampleCount: number;
@@ -133,6 +139,9 @@ export type RetainedPerformanceArtifact = Readonly<{
   }>;
   concurrency: Readonly<{
     simultaneousWorktrees: number;
+    durationMilliseconds: number;
+    indexedFiles: 2;
+    topology: 'bounded-synthetic-linked-worktrees-in-measured-primary-home';
     isolationPassed: true;
   }>;
 }>;
@@ -276,6 +285,7 @@ export const retainedPerformanceArtifactFieldPaths = [
   'manager.overviewColdMilliseconds',
   'manager.overviewWarmMilliseconds',
   'manager.detailColdMilliseconds',
+  'manager.nodeDetailColdMilliseconds',
   'manager.renderProxyMilliseconds',
   'manager.maxPayloadBytes',
   'manager.querySampleCount',
@@ -288,6 +298,9 @@ export const retainedPerformanceArtifactFieldPaths = [
   'manager.snapshotBindingPassed',
   'manager.staleRequestCancellationPassed',
   'concurrency.simultaneousWorktrees',
+  'concurrency.durationMilliseconds',
+  'concurrency.indexedFiles',
+  'concurrency.topology',
   'concurrency.isolationPassed',
 ] as const;
 
@@ -577,6 +590,7 @@ function validateVerifiedArtifact(input: unknown): RetainedPerformanceArtifact {
     'overviewColdMilliseconds',
     'overviewWarmMilliseconds',
     'detailColdMilliseconds',
+    'nodeDetailColdMilliseconds',
     'renderProxyMilliseconds',
     'maxPayloadBytes',
     'querySampleCount',
@@ -595,6 +609,7 @@ function validateVerifiedArtifact(input: unknown): RetainedPerformanceArtifact {
     'overviewColdMilliseconds',
     'overviewWarmMilliseconds',
     'detailColdMilliseconds',
+    'nodeDetailColdMilliseconds',
     'renderProxyMilliseconds',
   ]) {
     positiveNumberAt(manager, key, 'manager');
@@ -610,12 +625,23 @@ function validateVerifiedArtifact(input: unknown): RetainedPerformanceArtifact {
   }
   literalAt(manager, 'snapshotBindingPassed', 'manager', true);
   literalAt(manager, 'staleRequestCancellationPassed', 'manager', true);
+  literalAt(manager, 'nodeBudget', 'manager', retainedManagerNodeBudget);
+  literalAt(manager, 'edgeBudget', 'manager', retainedManagerEdgeBudget);
 
-  const concurrency = recordAt(root.concurrency, 'concurrency', ['simultaneousWorktrees', 'isolationPassed']);
+  const concurrency = recordAt(root.concurrency, 'concurrency', [
+    'simultaneousWorktrees',
+    'durationMilliseconds',
+    'indexedFiles',
+    'topology',
+    'isolationPassed',
+  ]);
   const simultaneousWorktrees = positiveNumberAt(concurrency, 'simultaneousWorktrees', 'concurrency', true);
   if (simultaneousWorktrees < 2) {
     throw new Error('Performance evidence concurrency.simultaneousWorktrees must exercise concurrency.');
   }
+  positiveNumberAt(concurrency, 'durationMilliseconds', 'concurrency');
+  literalAt(concurrency, 'indexedFiles', 'concurrency', retainedWorktreeIsolationIndexedFiles);
+  literalAt(concurrency, 'topology', 'concurrency', retainedWorktreeIsolationTopology);
   literalAt(concurrency, 'isolationPassed', 'concurrency', true);
 
   return input as RetainedPerformanceArtifact;
@@ -767,10 +793,12 @@ function validateHarnessMeasurements(
     ['manager-overview-cold', 'milliseconds'],
     ['manager-overview-warm', 'milliseconds'],
     ['manager-detail-cold', 'milliseconds'],
+    ['manager-node-detail-cold', 'milliseconds'],
     ['manager-render-proxy', 'milliseconds'],
     ['manager-response-payload', 'bytes'],
     ['manager-bounded-query', 'milliseconds'],
     ['manager-bounded-query-payload', 'bytes'],
+    ['concurrent-worktree-isolation-duration', 'milliseconds'],
   ] as const) {
     requiredMeasurement(measurements, name, unit, positive);
   }
@@ -931,13 +959,21 @@ export function validateRetainedPerformancePayload(input: unknown): RetainedPerf
   metadataString(metadata, 'benchmarkDiskFilesystem');
   positiveNumberAt(metadata, 'benchmarkInventoryEligibleFiles', 'harness.metadata', true);
   metadataNumber(metadata, 'benchmarkInventoryExcludedFiles', true);
-  positiveNumberAt(metadata, 'managerNodeBudget', 'harness.metadata', true);
-  positiveNumberAt(metadata, 'managerEdgeBudget', 'harness.metadata', true);
+  literalAt(metadata, 'managerNodeBudget', 'harness.metadata', retainedManagerNodeBudget);
+  literalAt(metadata, 'managerEdgeBudget', 'harness.metadata', retainedManagerEdgeBudget);
   literalAt(metadata, 'managerSnapshotBindingPassed', 'harness.metadata', true);
   literalAt(metadata, 'managerStaleRequestCancellationPassed', 'harness.metadata', true);
+  literalAt(
+    metadata,
+    'managerStaleRequestControl',
+    'harness.metadata',
+    'overlapping real Manager queries; aborted stale result rejected by the GraphWorkspace request gate',
+  );
   const simultaneousWorktrees = positiveNumberAt(metadata, 'simultaneousWorktrees', 'harness.metadata', true);
   if (simultaneousWorktrees < 2) throw new Error('Performance harness must exercise concurrent worktrees.');
   literalAt(metadata, 'worktreeIsolationPassed', 'harness.metadata', true);
+  literalAt(metadata, 'worktreeIsolationTopology', 'harness.metadata', retainedWorktreeIsolationTopology);
+  literalAt(metadata, 'worktreeIsolationIndexedFiles', 'harness.metadata', retainedWorktreeIsolationIndexedFiles);
   for (const key of [
     'structuralGraphDigestCold',
     'structuralGraphDigestIncremental',
@@ -1103,6 +1139,7 @@ export function retainedPerformanceArtifactFromHarness(
       overviewColdMilliseconds: duration('manager-overview-cold'),
       overviewWarmMilliseconds: duration('manager-overview-warm'),
       detailColdMilliseconds: duration('manager-detail-cold'),
+      nodeDetailColdMilliseconds: duration('manager-node-detail-cold'),
       renderProxyMilliseconds: duration('manager-render-proxy'),
       maxPayloadBytes: bytes('manager-response-payload'),
       querySampleCount: managerQuery.samples,
@@ -1117,6 +1154,9 @@ export function retainedPerformanceArtifactFromHarness(
     },
     concurrency: {
       simultaneousWorktrees: metadataNumber(metadata, 'simultaneousWorktrees', true),
+      durationMilliseconds: duration('concurrent-worktree-isolation-duration'),
+      indexedFiles: retainedWorktreeIsolationIndexedFiles,
+      topology: retainedWorktreeIsolationTopology,
       isolationPassed: true,
     },
   });

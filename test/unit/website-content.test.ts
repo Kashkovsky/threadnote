@@ -156,6 +156,7 @@ function verifiedPerformanceFixture(): Record<string, unknown> {
     harnessMeasurement('manager-overview-cold', 'milliseconds', 20),
     harnessMeasurement('manager-overview-warm', 'milliseconds', 4),
     harnessMeasurement('manager-detail-cold', 'milliseconds', 10),
+    harnessMeasurement('manager-node-detail-cold', 'milliseconds', 8),
     harnessMeasurement('manager-render-proxy', 'milliseconds', 2),
     harnessMeasurement('manager-response-payload', 'bytes', 400_000),
     harnessMeasurement('manager-bounded-query', 'milliseconds', 10, {
@@ -166,6 +167,7 @@ function verifiedPerformanceFixture(): Record<string, unknown> {
       samples: 20,
     }),
     harnessMeasurement('manager-bounded-query-payload', 'bytes', 120_000),
+    harnessMeasurement('concurrent-worktree-isolation-duration', 'milliseconds', 250),
   ];
   for (const [language, files, duration] of [
     ['java', 20, 1],
@@ -228,16 +230,20 @@ function verifiedPerformanceFixture(): Record<string, unknown> {
       managerNodeBudget: 500,
       managerSnapshotBindingPassed: true,
       managerStaleRequestCancellationPassed: true,
+      managerStaleRequestControl:
+        'overlapping real Manager queries; aborted stale result rejected by the GraphWorkspace request gate',
       releaseEvidenceRef: 'refs/tags/v4.0.0-beta.31',
       releaseEvidenceResolvedSha: sourceCommit,
       releaseEvidenceSha: sourceCommit,
       retrievalMode: 'lexical-only',
-      simultaneousWorktrees: 3,
+      simultaneousWorktrees: 2,
       sqliteVersion: '3.54.0',
       structuralGraphDigestCold: 'e'.repeat(64),
       structuralGraphDigestIncremental: overlayDigest,
       structuralGraphDigestSameOverlayReference: overlayDigest,
+      worktreeIsolationIndexedFiles: 2,
       worktreeIsolationPassed: true,
+      worktreeIsolationTopology: 'bounded-synthetic-linked-worktrees-in-measured-primary-home',
     },
     suite: 'code-graph-external-repository-v1',
     version: 1,
