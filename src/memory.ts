@@ -16,6 +16,7 @@ import {
   isUnusableMemoryEnrichmentOutput,
 } from './effect/ai/enrichment.js';
 import {withMemoryUriLocks} from './effect/memory_lock.js';
+import {writeFinalCliOutput} from './effect/cli_output.js';
 import {scanFilesWithinBoundary} from './effect/safe_scan.js';
 import {syncSharedReposBeforeAgentRead} from './effect/share.js';
 import {withSharedRepositoryLock} from './effect/share_lock.js';
@@ -1550,7 +1551,7 @@ export const runRead = Effect.fn('runRead')(function* (config: RuntimeConfig, ur
     return;
   }
   const store = yield* ResourceStore;
-  yield* Console.log(yield* store.read(resourceStoreLocation(config), uri));
+  yield* writeFinalCliOutput(yield* store.read(resourceStoreLocation(config), uri));
 });
 
 const syncSharedReposAndLog = Effect.fn('memory.syncSharedReposAndLog')(function* (config: RuntimeConfig) {
@@ -1816,10 +1817,10 @@ export const runList = Effect.fn('runList')(function* (config: RuntimeConfig, ur
   });
   const entries = nodeLimit === undefined ? allEntries : allEntries.slice(0, nodeLimit);
   if (options.simple === true) {
-    yield* Console.log(entries.map(entry => entry.uri).join('\n'));
+    yield* writeFinalCliOutput(entries.map(entry => entry.uri).join('\n'));
     return;
   }
-  yield* Console.log(JSON.stringify(entries, null, 2));
+  yield* writeFinalCliOutput(JSON.stringify(entries, null, 2));
 });
 
 export const runHandoff = Effect.fn('runHandoff')(function* (config: RuntimeConfig, options: HandoffOptions) {

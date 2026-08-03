@@ -114,6 +114,106 @@ describe('Effect CLI', () => {
     }
   });
 
+  it('drains graph query JSON larger than the platform pipe buffer before exiting', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'threadnote-effect-cli-graph-large-output-'));
+    const home = join(root, '.threadnote-test-home');
+    try {
+      const declarations = Array.from({length: 80}, (_, index) => {
+        const name = `pipedOutputSymbol${'x'.repeat(1_500)}${index.toString().padStart(3, '0')}`;
+        return `export const ${name} = ${index};`;
+      }).join('\n');
+      await writeFile(join(root, 'package.json'), '{"name":"large-piped-output"}\n');
+      await writeFile(join(root, 'symbols.ts'), `${declarations}\n`);
+      await execFilePromise('git', ['-C', root, 'init', '-q']);
+      await execFilePromise('git', ['-C', root, 'add', '.']);
+      await execFilePromise('git', [
+        '-C',
+        root,
+        '-c',
+        'user.name=Threadnote Test',
+        '-c',
+        'user.email=test@threadnote.local',
+        'commit',
+        '-qm',
+        'fixture',
+      ]);
+
+      await runCli(['graph', 'index', '--home', home, '--cwd', root, '--json']);
+
+      const result = await runCliThroughJsonPipe([
+        'graph',
+        'query',
+        '--home',
+        home,
+        '--cwd',
+        root,
+        '--query',
+        'pipedOutputSymbol',
+        '--depth',
+        '0',
+        '--edge-limit',
+        '1',
+        '--node-limit',
+        '200',
+        '--json',
+      ]);
+
+      expect(result.bytes).toBeGreaterThan(65_536);
+      expect(result.nodeCount).toBeGreaterThan(0);
+      expect(result.allNamesMatched).toBe(true);
+    } finally {
+      await rm(root, {force: true, recursive: true});
+    }
+  }, 30_000);
+
+  it('drains a large final payload before one-shot runtime teardown', async () => {
+    const startedAt = performance.now();
+    const child = Bun.spawn([process.execPath, 'test/fixtures/cli-output-exit-race.ts'], {
+      cwd: process.cwd(),
+      lazy: true,
+      stderr: 'pipe',
+      stdout: 'pipe',
+    });
+    await Bun.sleep(250);
+    const [exitCode, stderr, stdout] = await Promise.all([
+      child.exited,
+      new Response(child.stderr).text(),
+      new Response(child.stdout).text(),
+    ]);
+
+    expect(exitCode, stderr).toBe(0);
+    expect(performance.now() - startedAt).toBeGreaterThanOrEqual(450);
+    expect(Buffer.byteLength(stdout)).toBeGreaterThan(65_536);
+    expect((JSON.parse(stdout) as {readonly value?: string}).value).toHaveLength(128 * 1024);
+  });
+
+  it('drains large generic CLI output through the application-wide safety net', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'threadnote-effect-cli-large-generic-output-'));
+    const memoryText = `generic-output-start\n${'x'.repeat(128 * 1024)}\ngeneric-output-end`;
+    try {
+      const result = await runCliThroughDelayedTextPipe(
+        [
+          'remember',
+          '--home',
+          home,
+          '--dry-run',
+          '--stdin',
+          '--project',
+          'threadnote',
+          '--topic',
+          'generic-cli-output',
+        ],
+        memoryText,
+      );
+
+      expect(result.bytes).toBeGreaterThan(65_536);
+      expect(result.hasStart).toBe(true);
+      expect(result.hasEnd).toBe(true);
+    } finally {
+      await rm(home, {force: true, recursive: true});
+    }
+  });
+
   it('includes eligible untracked files in Git-base impact analysis', async () => {
     const root = await mkdtemp(join(tmpdir(), 'threadnote-effect-cli-graph-'));
     const home = join(root, '.threadnote-test-home');
@@ -387,4 +487,100 @@ function runCli(args: readonly string[], environment: NodeJS.ProcessEnv = {}) {
     cwd: process.cwd(),
     env: {...process.env, ...environment, NO_COLOR: '1'},
   });
+}
+
+async function runCliThroughJsonPipe(args: readonly string[]) {
+  const producer = Bun.spawn([process.execPath, 'src/standalone.ts', ...args], {
+    cwd: process.cwd(),
+    env: {...process.env, NO_COLOR: '1'},
+    stderr: 'pipe',
+    stdout: 'pipe',
+  });
+  const consumer = Bun.spawn(
+    [
+      process.execPath,
+      '-e',
+      [
+        '// Let the producer fill the operating-system pipe before reading.',
+        'await Bun.sleep(2_000);',
+        'const text = await new Response(Bun.stdin.stream()).text();',
+        'const value = JSON.parse(text);',
+        'const nodes = Array.isArray(value.nodes) ? value.nodes : [];',
+        'console.log(JSON.stringify({',
+        '  allNamesMatched: nodes.every(node => node.name?.startsWith("pipedOutputSymbol")),',
+        '  bytes: new TextEncoder().encode(text).byteLength,',
+        '  nodeCount: nodes.length,',
+        '}));',
+      ].join('\n'),
+    ],
+    {
+      stdin: producer.stdout,
+      stderr: 'pipe',
+      stdout: 'pipe',
+    },
+  );
+  const [producerExit, consumerExit, producerError, consumerError, consumerOutput] = await Promise.all([
+    producer.exited,
+    consumer.exited,
+    new Response(producer.stderr).text(),
+    new Response(consumer.stderr).text(),
+    new Response(consumer.stdout).text(),
+  ]);
+  if (producerExit !== 0 || consumerExit !== 0) {
+    throw new Error(
+      `CLI JSON pipe failed (producer ${producerExit}, consumer ${consumerExit}).\n${producerError}${consumerError}`,
+    );
+  }
+  return JSON.parse(consumerOutput) as {
+    readonly allNamesMatched: boolean;
+    readonly bytes: number;
+    readonly nodeCount: number;
+  };
+}
+
+async function runCliThroughDelayedTextPipe(args: readonly string[], input: string) {
+  const producer = Bun.spawn([process.execPath, 'src/standalone.ts', ...args], {
+    cwd: process.cwd(),
+    env: {...process.env, NO_COLOR: '1'},
+    stdin: new Response(input),
+    stderr: 'pipe',
+    stdout: 'pipe',
+  });
+  const consumer = Bun.spawn(
+    [
+      process.execPath,
+      '-e',
+      [
+        'await Bun.sleep(500);',
+        'const text = await new Response(Bun.stdin.stream()).text();',
+        'console.log(JSON.stringify({',
+        '  bytes: new TextEncoder().encode(text).byteLength,',
+        '  hasEnd: text.includes("generic-output-end"),',
+        '  hasStart: text.includes("generic-output-start"),',
+        '}));',
+      ].join('\n'),
+    ],
+    {
+      stdin: producer.stdout,
+      stderr: 'pipe',
+      stdout: 'pipe',
+    },
+  );
+  const [producerExit, consumerExit, producerError, consumerError, consumerOutput] = await Promise.all([
+    producer.exited,
+    consumer.exited,
+    new Response(producer.stderr).text(),
+    new Response(consumer.stderr).text(),
+    new Response(consumer.stdout).text(),
+  ]);
+  if (producerExit !== 0 || consumerExit !== 0) {
+    throw new Error(
+      `CLI text pipe failed (producer ${producerExit}, consumer ${consumerExit}).\n${producerError}${consumerError}`,
+    );
+  }
+  return JSON.parse(consumerOutput) as {
+    readonly bytes: number;
+    readonly hasEnd: boolean;
+    readonly hasStart: boolean;
+  };
 }

@@ -1,5 +1,6 @@
 import {Console, Crypto, Effect, FileSystem, Option, Path} from 'effect';
 import {startProgress} from '../cli_ui.js';
+import {writeFinalCliOutput} from '../effect/cli_output.js';
 import {SystemInfo} from '../effect/system.js';
 import type {RuntimeConfig} from '../types.js';
 import {CodeGraphIndexer, materializationStorageShortfalls} from './indexer.js';
@@ -69,7 +70,7 @@ export const runCodeGraphStatus = Effect.fn('codeGraph.command.status')(function
     buildStatuses.find(status => status.observation.liveness === 'active');
   const queuedWorktreeIds = [...new Set(selection.waiters.map(status => status.identity.worktreeId))];
   if (options.json) {
-    yield* Console.log(
+    yield* writeFinalCliOutput(
       JSON.stringify({
         build: current ?? null,
         builds: buildStatuses,
@@ -455,7 +456,7 @@ export const runCodeGraphIndex = Effect.fn('codeGraph.command.index')(function* 
       onProgress: reportProgress,
       threadnoteHome: config.agentContextHome,
     });
-    yield* Console.log(JSON.stringify({type: 'code-graph-index', version: 1, ...summary}));
+    yield* writeFinalCliOutput(JSON.stringify({type: 'code-graph-index', version: 1, ...summary}));
     return;
   }
   yield* Console.log(`Indexing code graph: ${identity.displayName}`);
@@ -525,7 +526,7 @@ export const runCodeGraphAnalysis = Effect.fn('codeGraph.command.analysis')(func
     snapshot: status.snapshot,
   });
   if (options.json) {
-    yield* Console.log(
+    yield* writeFinalCliOutput(
       JSON.stringify({
         type: 'code-graph-analysis',
         repository: status.repository,
@@ -535,7 +536,7 @@ export const runCodeGraphAnalysis = Effect.fn('codeGraph.command.analysis')(func
     );
     return;
   }
-  yield* Console.log(renderCodeGraphAnalysis(result, options.view).trimEnd());
+  yield* writeFinalCliOutput(renderCodeGraphAnalysis(result, options.view).trimEnd());
 });
 
 export const runCodeGraphReport = Effect.fn('codeGraph.command.report')(function* (
@@ -619,7 +620,7 @@ export const runCodeGraphInspect = Effect.fn('codeGraph.command.inspect')(functi
           progress => progress.stop().pipe(Effect.catch(() => Effect.void)),
         )
       : yield* inspect();
-  yield* Console.log(options.json ? JSON.stringify(result) : renderCodeGraphResult(result).trimEnd());
+  yield* writeFinalCliOutput(options.json ? JSON.stringify(result) : renderCodeGraphResult(result).trimEnd());
 });
 
 export const runCodeGraphImpact = Effect.fn('codeGraph.command.impact')(function* (
@@ -701,7 +702,7 @@ export const runCodeGraphCompact = Effect.fn('codeGraph.command.compact')(functi
     force: options.force,
   });
   if (options.json) {
-    yield* Console.log(JSON.stringify({type: 'code-graph-compaction', version: 1, ...summary}));
+    yield* writeFinalCliOutput(JSON.stringify({type: 'code-graph-compaction', version: 1, ...summary}));
     return;
   }
   switch (summary.action) {

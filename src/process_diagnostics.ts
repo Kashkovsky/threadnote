@@ -1,4 +1,5 @@
 import {Console, Effect, Fiber, FileSystem, Option, Path, Semaphore} from 'effect';
+import {writeFinalCliOutput} from './effect/cli_output.js';
 import type {RuntimeConfig} from './types.js';
 import {SystemInfo} from './effect/system.js';
 import {readLiveStandaloneProcessLeases} from './standalone_process_lease.js';
@@ -270,7 +271,7 @@ export const runProcessDiagnostics = Effect.fn('processDiagnostics.run')(functio
     processes: observed.processes.filter(process => process.processId !== system.processId),
   };
   if (options.json) {
-    yield* Console.log(JSON.stringify(diagnostics));
+    yield* writeFinalCliOutput(JSON.stringify(diagnostics));
     return;
   }
   if (diagnostics.processes.length === 0) {

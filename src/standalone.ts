@@ -1,6 +1,7 @@
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {Effect} from 'effect';
+import {drainCliStdout} from './effect/cli_output.js';
 import {CODE_GRAPH_PARSER_WORKER_ARGUMENT, LOCAL_MODEL_WORKER_ARGUMENT} from './worker_protocol.js';
 
 const executableName = process.execPath.replaceAll('\\', '/').split('/').at(-1)?.toLowerCase();
@@ -107,7 +108,7 @@ async function applicationProgram(arguments_: readonly string[], isMcpServer: bo
         processDiagnostics.withThreadnoteProcessRegistration(
           home,
           processRole,
-          cliEffect(arguments_),
+          cliEffect(arguments_).pipe(Effect.ensuring(drainCliStdout.pipe(Effect.orDie))),
           processOperation,
         ),
       ),
