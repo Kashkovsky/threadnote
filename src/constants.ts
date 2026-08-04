@@ -11,15 +11,12 @@ export const SEED_STATE_FILE = 'seed-state.json';
 export const USER_AGENT_INSTRUCTION_TARGETS = [
   {kind: 'block', label: 'codex user instructions', path: '~/.codex/AGENTS.md'},
   {kind: 'block', label: 'claude user instructions', path: '~/.claude/CLAUDE.md'},
+  {kind: 'block', label: 'cursor user rule', path: '~/.cursor/rules/threadnote.md'},
   {
     kind: 'file',
     label: 'copilot user instructions',
     path: '~/.copilot/instructions/threadnote.instructions.md',
   },
-] as const;
-export const LEGACY_CURSOR_INSTRUCTION_PATHS = [
-  '~/.cursor/rules/threadnote.md',
-  '~/.cursor/rules/threadnote.mdc',
 ] as const;
 
 export const CLAUDE_SETTINGS_PATH = '~/.claude/settings.json';

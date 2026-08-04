@@ -12,9 +12,7 @@ describe('website and standalone release boundary', () => {
   it('keeps documentation and website trees out of the standalone build', async () => {
     const buildSource = await readFile(join(root, 'scripts', 'build.ts'), 'utf8');
 
-    expect(buildSource).toContain(
-      "const RELEASE_DIRECTORIES = ['assets', 'config', 'cursor-plugin', 'manager'] as const;",
-    );
+    expect(buildSource).toContain("const RELEASE_DIRECTORIES = ['assets', 'config', 'manager'] as const;");
     expect(buildSource).toContain(
       "const FORBIDDEN_RELEASE_DIRECTORIES = ['docs', 'training', 'website', 'site-dist'] as const;",
     );

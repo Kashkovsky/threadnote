@@ -62,30 +62,6 @@ describe('agent instruction lifecycle', () => {
             rerank: () => Effect.die(new Error('Unexpected reranking')),
           });
           const commandShim = path.join(userHome, '.local', 'bin', 'threadnote');
-          const legacyCursorRule = path.join(userHome, '.cursor', 'rules', 'threadnote.md');
-          const legacyCursorMdcRule = path.join(userHome, '.cursor', 'rules', 'threadnote.mdc');
-          yield* fs.makeDirectory(path.dirname(legacyCursorRule), {recursive: true});
-          yield* fs.writeFileString(
-            legacyCursorRule,
-            [
-              'Preserve this user-authored note.',
-              '',
-              '<!-- BEGIN THREADNOTE USER INSTRUCTIONS -->',
-              'Stale Threadnote instructions.',
-              '<!-- END THREADNOTE USER INSTRUCTIONS -->',
-            ].join('\n'),
-          );
-          yield* fs.writeFileString(
-            legacyCursorMdcRule,
-            [
-              '---',
-              'alwaysApply: true',
-              '---',
-              '<!-- BEGIN THREADNOTE USER INSTRUCTIONS -->',
-              'Stale Threadnote instructions.',
-              '<!-- END THREADNOTE USER INSTRUCTIONS -->',
-            ].join('\n'),
-          );
           if (system.platform !== 'win32') {
             yield* fs.makeDirectory(path.dirname(commandShim), {recursive: true});
             yield* fs.writeFileString(
@@ -133,12 +109,12 @@ describe('agent instruction lifecycle', () => {
           const generatedInstructions = yield* Effect.all([
             fs.readFileString(path.join(userHome, '.codex', 'AGENTS.md')),
             fs.readFileString(path.join(userHome, '.claude', 'CLAUDE.md')),
+            fs.readFileString(path.join(userHome, '.cursor', 'rules', 'threadnote.md')),
             fs.readFileString(path.join(userHome, '.copilot', 'instructions', 'threadnote.instructions.md')),
           ]);
           expect(generatedInstructions[1]).toContain('<!-- BEGIN THREADNOTE USER INSTRUCTIONS -->');
-          expect(generatedInstructions[2]).toContain('applyTo: "**"');
-          expect(yield* fs.readFileString(legacyCursorRule)).toBe('Preserve this user-authored note.\n');
-          expect(yield* fs.exists(legacyCursorMdcRule)).toBe(false);
+          expect(generatedInstructions[2]).toContain('threadnote://');
+          expect(generatedInstructions[3]).toContain('applyTo: "**"');
           expect(generatedInstructions.every(content => content.includes('`query` finds definitions'))).toBe(true);
           expect(generatedInstructions.every(content => content.includes('Git `base`'))).toBe(true);
           expect(
@@ -148,7 +124,7 @@ describe('agent instruction lifecycle', () => {
           ).toBe(true);
 
           const checks = yield* userAgentInstructionsChecks().pipe(Effect.provideService(SystemInfo, testSystem));
-          expect(checks).toHaveLength(3);
+          expect(checks).toHaveLength(4);
           expect(checks.every(check => check.status === 'ok')).toBe(true);
 
           if (system.platform !== 'win32') {
