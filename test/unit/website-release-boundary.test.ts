@@ -158,7 +158,11 @@ describe('website and standalone release boundary', () => {
     expect(workflow).toContain('bun run site:build');
     expect(workflow).toContain('fetch-depth: 0');
     const pushTrigger = workflow.slice(workflow.indexOf('  push:'), workflow.indexOf('  workflow_dispatch:'));
-    expect(pushTrigger).not.toContain('paths:');
+    expect(pushTrigger).toContain('paths:');
+    expect(pushTrigger).toContain("'website/**'");
+    expect(pushTrigger).toContain("'scripts/site-performance-evidence.ts'");
+    expect(pushTrigger).toContain("'src/evaluation/benchmark.ts'");
+    expect(pushTrigger).not.toContain("'src/**'");
     expect(workflow).toContain('path: site-dist');
     expect(workflow).toContain('actions/deploy-pages@');
     expect(workflow).toMatch(/^ {2}THREADNOTE_SITE_BASE: \/$/m);
