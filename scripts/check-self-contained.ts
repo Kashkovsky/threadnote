@@ -251,7 +251,9 @@ const validateCursorPlugin = Effect.fn('checkSelfContained.validateCursorPlugin'
   root: string,
   failures: string[],
 ) {
-  const instructions = (yield* fs.readFileString(path.join(root, 'config', 'agent-instructions.md'))).trim();
+  const instructions = normalizeNewlines(
+    yield* fs.readFileString(path.join(root, 'config', 'agent-instructions.md')),
+  ).trim();
   const rule = yield* fs.readFileString(path.join(root, 'cursor-plugin', 'rules', 'threadnote.mdc'));
   const marker = yield* parseJsonFile(fs, path.join(root, 'cursor-plugin', '.threadnote-managed.json'));
   if (!isRecord(marker) || marker.managedBy !== 'threadnote' || marker.schemaVersion !== 1) {
@@ -265,13 +267,17 @@ const validateCursorPlugin = Effect.fn('checkSelfContained.validateCursorPlugin'
     instructions,
     '<!-- END THREADNOTE USER INSTRUCTIONS -->',
   ].join('\n');
-  if (!rule.replaceAll('\r\n', '\n').includes(expectedBlock)) {
+  if (!normalizeNewlines(rule).includes(expectedBlock)) {
     failures.push('Cursor plugin rule is out of sync with config/agent-instructions.md');
   }
 });
 
 function normalizePath(value: string): string {
   return value.replaceAll('\\', '/');
+}
+
+function normalizeNewlines(value: string): string {
+  return value.replaceAll('\r\n', '\n');
 }
 
 const validateCodeGraphAssets = Effect.fn('checkSelfContained.validateCodeGraphAssets')(function* (
