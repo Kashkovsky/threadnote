@@ -4429,7 +4429,10 @@ function runNativeReadTool(
   // to derived graph/search evidence, never to user-authored memory content.
   // Keep the canonical bytes in MCP content only: repeating them in
   // structuredContent can make an otherwise valid read exceed a client's
-  // transport-frame policy.
+  // transport-frame policy, while metadata-only structuredContent can cause
+  // clients that prefer structured results to hide the canonical bytes. The
+  // URI-to-content association is implementation metadata, so keep it in the
+  // protocol-reserved _meta field instead of a model-facing result field.
   return Effect.gen(function* () {
     const store = yield* ResourceStore;
     const content: Array<{readonly text: string; readonly type: 'text'}> = [];
@@ -4440,8 +4443,10 @@ function runNativeReadTool(
       content.push({text, type: 'text'});
     }
     return {
+      _meta: {
+        'threadnote.io/canonical-read': {resources, type: 'threadnote-canonical-read', version: 1},
+      },
       content,
-      structuredContent: {resources, type: 'threadnote-canonical-read', version: 1},
     } satisfies CallToolResult;
   }).pipe(
     Effect.catch(error =>

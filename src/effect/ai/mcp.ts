@@ -26,6 +26,7 @@ interface ToolDefinition<Fields extends ToolFields> {
 }
 
 interface ToolResult {
+  readonly _meta?: Readonly<Record<string, unknown>>;
   readonly content: readonly unknown[];
   readonly isError?: boolean;
   readonly structuredContent?: unknown;
