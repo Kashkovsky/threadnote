@@ -39,7 +39,7 @@ const comparisonRows = [
   {
     topic: 'Git & worktrees',
     threadnote:
-      'Shares immutable commit snapshots across linked worktrees while isolating staged, unstaged, deleted, renamed, and untracked overlays',
+      'Aliases graph-equivalent commits, builds compatible clean deltas, and isolates staged, unstaged, deleted, renamed, and untracked overlays',
     graphify:
       'Uses content-hash caching, update/watch workflows, and a post-commit hook; docs and images may need a manual update',
   },
@@ -118,6 +118,16 @@ const questions = [
     question: 'Do large monorepos have a hard graph-size cap?',
     answer:
       'There is no repository-size admission cap. Threadnote 4 stores graph generations in SQLite instead of one monolithic JSON document; a bounded parser pool, one backpressured writer, generated-root pruning, and metadata-only snapshot data bound transient work. Individual query responses still honor explicit node, edge, and result limits so an agent receives a useful evidence set rather than an unbounded dump.',
+  },
+  {
+    question: 'Will every new worktree rebuild its graph from scratch?',
+    answer:
+      'No. Linked worktrees share one checkout graph store. Threadnote 4.0.1 can immediately alias a graph-equivalent commit, build a compatible clean commit as a bounded delta from a ready full anchor, or construct an already-dirty worktree directly from that anchor. Extractor, workspace, manifest, or unbounded resolution changes still fall back to a full build for correctness.',
+  },
+  {
+    question: 'Can agents query a graph while it is still indexing?',
+    answer:
+      'Agents never query partial rows from an unpromoted snapshot. A cold repository reports indexing and a retry delay until one consistent lexical snapshot is ready. After promotion, exact and lexical queries can use that snapshot while optional vectors and whole-graph summaries finish in the background; during later refreshes, bounded lookups may explicitly use the previous ready snapshot as stale.',
   },
   {
     question: 'Can I use Obsidian without giving it the whole memory store?',

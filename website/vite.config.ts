@@ -1,12 +1,16 @@
 import react from '@vitejs/plugin-react';
-import {defineConfig} from 'vite';
+import {defineConfig, type Plugin} from 'vite';
 import {loadRetainedPerformanceEvidence} from '../scripts/site-performance-evidence.ts';
+import {worktreeReadinessArtifactPath} from './src/content/worktreeReadiness.ts';
 
 const repositoryRoot = process.cwd();
 const siteRoot = `${repositoryRoot}/website`;
 const siteBase = process.env.THREADNOTE_SITE_BASE ?? '/';
 const virtualEvidenceId = 'virtual:threadnote-performance-evidence';
 const resolvedVirtualEvidenceId = `\0${virtualEvidenceId}`;
+const worktreeReadinessArtifactSource =
+  `${repositoryRoot}/test/evaluation/candidates/threadnote-4.0.1/benchmarks/` +
+  'darwin-arm64-m1-max/code-graph-worktree-readiness-2026-08-04.json';
 
 const performanceEvidencePlugin = {
   name: 'threadnote-performance-evidence',
@@ -20,10 +24,19 @@ const performanceEvidencePlugin = {
   },
 };
 
+const worktreeReadinessEvidencePlugin: Plugin = {
+  name: 'threadnote-worktree-readiness-evidence',
+  async generateBundle() {
+    const source = await Bun.file(worktreeReadinessArtifactSource).text();
+    JSON.parse(source);
+    this.emitFile({fileName: worktreeReadinessArtifactPath, source, type: 'asset'});
+  },
+};
+
 export default defineConfig({
   root: siteRoot,
   base: siteBase,
-  plugins: [react(), performanceEvidencePlugin],
+  plugins: [react(), performanceEvidencePlugin, worktreeReadinessEvidencePlugin],
   build: {
     outDir: `${siteRoot}/../site-dist`,
     emptyOutDir: true,

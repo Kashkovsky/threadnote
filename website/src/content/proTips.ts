@@ -156,6 +156,7 @@ export const proTips: ProTip[] = [
     why: 'Conductor-style orchestrators can run several agents against linked worktrees without one branch’s uncommitted files becoming another branch’s current-code evidence.',
     practice: [
       'Pass each agent’s absolute worktree path as callerCwd on recall and graph calls.',
+      'Let the first graph call start immediately: a graph-equivalent commit can reuse ready content, while a compatible clean commit builds a bounded delta.',
       'Use a distinct handoff topic for each independent task; share a topic only when agents intentionally update one record.',
       'Let Threadnote coordinate graph publication and maintenance—do not copy or share derived index files between worktrees.',
     ],
@@ -196,7 +197,7 @@ export const proTips: ProTip[] = [
         {
           kind: 'result',
           actor: 'Threadnote',
-          text: 'Both agents recalled one contract; each source result came from its own current worktree.',
+          text: 'Both agents recalled one contract; reusable committed graph work was shared, and each source result came from its own isolated worktree state.',
           evidence: ['apps/api/src/RefreshEndpoint.ts:38', 'apps/mobile/src/RefreshCoordinator.kt:52'],
         },
         {

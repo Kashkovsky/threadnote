@@ -4638,6 +4638,16 @@ p {
   font-size: 15px;
 }
 
+.performance-worktrees__copy .performance-worktrees__evidence {
+  margin-top: 24px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.performance-worktrees__evidence a {
+  color: var(--teal);
+}
+
 .performance-worktrees__copy ul {
   display: grid;
   gap: 12px;
@@ -5258,6 +5268,11 @@ p {
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 14px;
+  }
+
+  /* Prevent iOS focus zoom from narrowing the visual viewport around the fixed dialog. */
+  .search-dialog__panel input {
+    font-size: 16px;
   }
 
   .hero {

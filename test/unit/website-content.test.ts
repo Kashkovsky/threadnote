@@ -24,6 +24,12 @@ import {
 } from '../../website/src/content/performance.js';
 import {checkedInPerformanceEvidence} from '../../website/src/content/performanceHighlights.js';
 import {
+  checkedInWorktreeReadinessEvidence,
+  summarizeWorktreeReadinessDurations,
+  worktreeReadinessArtifactPath,
+  worktreeReadinessSpeedup,
+} from '../../website/src/content/worktreeReadiness.js';
+import {
   commitPreparedRoute,
   createSitePageModuleCache,
   isSameDocumentNavigation,
@@ -541,8 +547,8 @@ describe('Threadnote 4 website content', () => {
     expect(landingSource).toContain('JSON, GraphML, HTML, or SVG');
     expect(landingSource).toContain('Open the Manager demo');
     expect(landingSource).toContain("siteHref('performance/')");
-    expect(landingSource).toContain('real polyglot Bazel monorepo');
-    expect(landingSource).toContain('Checked-in public-repository evidence covers 232,750 files');
+    expect(landingSource).toContain('reuses a warm graph instead of rebuilding every new worktree');
+    expect(landingSource).toContain('same-machine, five-sample comparison measured 13.2× faster');
     expect(scenarios).toContain('current commit + isolated dirty overlay');
     expect(scenarios).toContain('paged SQLite analysis · no repository admission cap');
   });
@@ -631,8 +637,12 @@ describe('Threadnote 4 website content', () => {
     );
   });
 
-  it('keeps ranked docs search keyboard-navigable and screen-reader discoverable', async () => {
-    const docsPage = await readFile(join(root, 'website', 'src', 'pages', 'DocsPage.tsx'), 'utf8');
+  it('keeps ranked docs search accessible and safe from iOS focus overflow', async () => {
+    const [docsPage, styles] = await Promise.all([
+      readFile(join(root, 'website', 'src', 'pages', 'DocsPage.tsx'), 'utf8'),
+      readFile(join(root, 'website', 'src', 'styles.css'), 'utf8'),
+    ]);
+    const mobileStyles = styles.slice(styles.indexOf('@media (max-width: 680px)'));
 
     expect(docsPage).toContain('role="combobox"');
     expect(docsPage).toContain('role="listbox"');
@@ -643,6 +653,13 @@ describe('Threadnote 4 website content', () => {
     expect(docsPage).toContain('useDeferredValue(query)');
     expect(docsPage).toContain('maxLength={DOCS_SEARCH_MAXIMUM_LENGTH}');
     expect(docsPage).toContain('aria-busy={query !== deferredQuery}');
+    expect(docsPage).toContain("document.body.style.overflow = 'hidden'");
+    expect(styles).toMatch(
+      /\.search-dialog__panel\s*{[^}]*width: min\(calc\(100% - 32px\), 700px\);[^}]*overflow: hidden;/s,
+    );
+    expect(styles).toMatch(/\.search-dialog__panel input\s*{[^}]*min-width: 0;/s);
+    expect(mobileStyles).toMatch(/\.search-dialog__panel input\s*{[^}]*font-size: 16px;/s);
+    expect(styles).toMatch(/\.search-dialog__results\s*{[^}]*max-height: min\(60vh, 560px\);[^}]*overflow-y: auto;/s);
   });
 
   it('maps every public page under root and project-directory deployments', () => {
@@ -708,7 +725,7 @@ describe('Threadnote 4 website content', () => {
     }
     expect(performancePage).not.toMatch(/>Pending<|pending artifact|evidence pending/i);
     expect(performancePage).toContain('aria-label={`Open the pinned');
-    expect(landingPage).toContain('232,750 files, 2.67 million symbols, 7.34 million relationships');
+    expect(landingPage).toContain('public IntelliJ evidence still covers 232,750 files');
     expect(landingPage).not.toMatch(/values stay visibly pending|retained artifact is complete/i);
   });
 
@@ -1153,13 +1170,87 @@ describe('Threadnote 4 website content', () => {
     expect(pageSource).toContain('Repository size is never an admission test');
     expect(pageSource).toContain('bounded parser worker pool');
     expect(pageSource).toContain('one backpressured SQLite writer');
-    expect(pageSource).toContain('One commit graph. One truthful overlay per worktree');
+    expect(pageSource).toContain('A warm worktree is ready in seconds');
+    expect(pageSource).toContain('Graph-equivalent commit');
+    expect(pageSource).toContain('One-file clean commit');
     expect(pageSource).toContain('Graph responses stay deliberately bounded');
     expect(pageSource).toContain('returns the complete record');
     expect(pageSource).toContain('Your agents will love it');
     expect(pageSource).not.toMatch(/232_750|2_658_990|7_308_099|33_285_996_544/);
     expect(evidenceSource).toContain('derives every displayed measurement and provenance field from this one artifact');
     expect(evidenceSource).not.toContain('export function validateBoundRetainedPerformanceArtifact');
+  });
+
+  it('derives the v4.0.1 worktree speedups from retained raw samples and exact provenance', async () => {
+    const artifactFile = join(
+      root,
+      'test',
+      'evaluation',
+      'candidates',
+      'threadnote-4.0.1',
+      'benchmarks',
+      'darwin-arm64-m1-max',
+      'code-graph-worktree-readiness-2026-08-04.json',
+    );
+    const [artifactBytes, harnessBytes, viteConfig] = await Promise.all([
+      readFile(artifactFile),
+      readFile(join(root, 'scripts', 'benchmark-worktree-readiness.ts')),
+      readFile(join(root, 'website', 'vite.config.ts'), 'utf8'),
+    ]);
+    const artifact = JSON.parse(artifactBytes.toString('utf8')) as {
+      source: {candidate: {commit: string; ref: string}; baseline: {commit: string}; harness: {sha256: string}};
+      scenarios: {
+        graphEquivalentCommit: {candidate: {observations: Array<{stagedFiles: number}>}};
+        oneFileChange: {candidate: {observations: Array<{stagedFiles: number}>}};
+      };
+    };
+
+    expect(artifact.source).toMatchObject({
+      candidate: {commit: '55c4bf3f35c0d6ddd43a4d686f5e9d0c6b9a670b', ref: 'v4.0.1'},
+      baseline: {commit: '4c8911e868096bb0aa57b3dd8078bd339f396d92'},
+    });
+    expect(sha256Hex(harnessBytes)).toBe(artifact.source.harness.sha256);
+    expect(
+      artifact.scenarios.graphEquivalentCommit.candidate.observations.every(sample => sample.stagedFiles === 0),
+    ).toBe(true);
+    expect(artifact.scenarios.oneFileChange.candidate.observations.every(sample => sample.stagedFiles === 1)).toBe(
+      true,
+    );
+    expect(checkedInWorktreeReadinessEvidence).toMatchObject({
+      samples: 5,
+      scale: {edges: 90_807, files: 597, symbols: 30_793},
+      source: {candidate: {ref: 'v4.0.1'}},
+    });
+    expect(checkedInWorktreeReadinessEvidence.graphEquivalentCommit.medianSpeedup).toBeCloseTo(13.1702, 4);
+    expect(checkedInWorktreeReadinessEvidence.oneFileChange.medianSpeedup).toBeCloseTo(9.9441, 4);
+    expect(worktreeReadinessArtifactPath).toBe('evidence/code-graph-worktree-readiness-v4.0.1.json');
+    expect(viteConfig).toContain('fileName: worktreeReadinessArtifactPath');
+    expect(viteConfig).toContain('this.emitFile');
+  });
+
+  it('summarizes worktree-readiness samples independently of input order', () => {
+    fc.assert(
+      fc.property(fc.array(fc.integer({min: 1, max: 10_000_000}), {maxLength: 25, minLength: 1}), values => {
+        const summary = summarizeWorktreeReadinessDurations(values);
+        const reversed = summarizeWorktreeReadinessDurations([...values].reverse());
+        const sorted = [...values].sort((left, right) => left - right);
+        const middle = Math.floor(sorted.length / 2);
+        const expectedMedian = sorted.length % 2 === 1 ? sorted[middle]! : (sorted[middle - 1]! + sorted[middle]!) / 2;
+
+        expect(summary).toEqual(reversed);
+        expect(summary).toEqual({
+          maximumMilliseconds: sorted.at(-1),
+          medianMilliseconds: expectedMedian,
+          minimumMilliseconds: sorted[0],
+          samples: values.length,
+        });
+      }),
+    );
+    fc.assert(
+      fc.property(fc.integer({min: 1, max: 1_000_000}), fc.integer({min: 2, max: 100}), (candidate, multiplier) => {
+        expect(worktreeReadinessSpeedup(candidate * multiplier, candidate)).toBe(multiplier);
+      }),
+    );
   });
 
   it('documents the explicit publishing and supported hook boundaries', () => {
@@ -1208,6 +1299,9 @@ describe('Threadnote 4 website content', () => {
     expect(faqSource).toContain('per-artifact corpus safety budgets');
     expect(faqSource).toContain('searchable metadata-only nodes');
     expect(faqSource).toContain('semantic inputs require an assistant or configured model');
+    expect(faqSource).toContain('Will every new worktree rebuild its graph from scratch?');
+    expect(faqSource).toContain('Agents never query partial rows from an unpromoted snapshot');
+    expect(faqSource).toContain('optional vectors and whole-graph summaries finish in the background');
     expect(faqSource).toContain('analyze_code_graph');
     expect(faqSource).toContain('stable community drill-down, structural n-ary groups, hubs and god nodes');
     expect(faqSource).toContain('PDF text and links');
@@ -1244,7 +1338,12 @@ describe('Threadnote 4 website content', () => {
     expect(content).toContain('not repository or graph-size admission caps');
     expect(content).toContain('threadnote graph export --format graphml');
     expect(content).toContain('[Performance page](../performance/)');
-    expect(content).toContain('incremental-versus-independent-rebuild digest parity');
+    expect(content).toContain('graph-equivalent commit');
+    expect(content).toContain('materializes changed, renamed, and deleted paths');
+    expect(content).toContain('Agents cannot query partial rows from an unpromoted snapshot');
+    expect(content).toContain('optional vector enrichment and whole-graph summaries continue in the background');
+    expect(content).toContain('same-machine v4.0.1 worktree-readiness comparison');
+    expect(JSON.stringify(proTips)).toContain('a graph-equivalent commit can reuse ready content');
   });
 
   it('keeps the docs Performance link inside a configured Pages subpath', () => {
@@ -1279,6 +1378,24 @@ describe('Threadnote 4 website content', () => {
     expect(mobileStyles).toMatch(/\.hero__actions \.button\s*{[^}]*width: 100%;[^}]*min-width: 0;/s);
     expect(mobileStyles).toMatch(
       /\.hero__install code\s*{[^}]*width: 100%;[^}]*overflow-wrap: anywhere;[^}]*white-space: normal;/s,
+    );
+  });
+
+  it('stacks the worktree-readiness evidence without connector overflow on mobile', async () => {
+    const styles = await readFile(join(root, 'website', 'src', 'styles.css'), 'utf8');
+    const tabletStart = styles.indexOf('@media (max-width: 980px)');
+    const mobileStart = styles.indexOf('@media (max-width: 680px)', tabletStart);
+    const tabletStyles = styles.slice(tabletStart, mobileStart);
+    const mobileStyles = styles.slice(mobileStart);
+
+    expect(tabletStart).toBeGreaterThan(-1);
+    expect(mobileStart).toBeGreaterThan(tabletStart);
+    expect(tabletStyles).toMatch(
+      /\.performance-hero,\s*\.performance-worktrees,\s*\.performance-methodology\s*{[^}]*grid-template-columns: 1fr;/s,
+    );
+    expect(mobileStyles).toMatch(/\.performance-worktrees__branches\s*{[^}]*grid-template-columns: 1fr;/s);
+    expect(mobileStyles).toMatch(
+      /\.performance-worktrees__branches::before,\s*\.performance-worktrees__branches article::before,\s*\.performance-worktrees__base::after\s*{[^}]*display: none;/s,
     );
   });
 
