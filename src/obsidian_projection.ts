@@ -1,5 +1,5 @@
 import {Clock, Console, Crypto, Effect, FileSystem, Option, Path} from 'effect';
-import yaml from 'js-yaml';
+import * as yaml from 'js-yaml';
 import {sha256Hex} from './effect/digest.js';
 import {withExclusiveFileLock} from './effect/file_lock.js';
 import {ResourceStore} from './effect/resource-store.js';
