@@ -12,11 +12,13 @@ interface TextContent {
   readonly type: 'text';
 }
 
-interface CanonicalReadStructuredContent {
+interface CanonicalReadMetadata {
   readonly resources: readonly {readonly contentIndex: number; readonly uri: string}[];
   readonly type: 'threadnote-canonical-read';
   readonly version: 1;
 }
+
+const CANONICAL_READ_METADATA_KEY = 'threadnote.io/canonical-read';
 
 const CORE_TOOL_NAMES = [
   'recall_context',
@@ -252,12 +254,13 @@ describe('Threadnote MCP toolsets', () => {
         });
 
         const result = await client.callTool({arguments: {uri}, name: 'read_context'}, undefined, {timeout: 30_000});
-        const structured = result.structuredContent as CanonicalReadStructuredContent | undefined;
+        const metadata = result._meta?.[CANONICAL_READ_METADATA_KEY] as CanonicalReadMetadata | undefined;
         const content = Array.isArray(result.content) ? result.content : [];
         const text = (content[0] as TextContent | undefined)?.text;
 
         expect(result.isError, JSON.stringify(result)).not.toBe(true);
-        expect(structured).toEqual({
+        expect(result.structuredContent).toBeUndefined();
+        expect(metadata).toEqual({
           resources: [{contentIndex: 0, uri}],
           type: 'threadnote-canonical-read',
           version: 1,
@@ -280,7 +283,8 @@ describe('Threadnote MCP toolsets', () => {
 
         expect(result.isError, JSON.stringify(result)).not.toBe(true);
         expect(result.content).toEqual([{text: content, type: 'text'}]);
-        expect(result.structuredContent).toEqual({
+        expect(result.structuredContent).toBeUndefined();
+        expect(result._meta?.[CANONICAL_READ_METADATA_KEY]).toEqual({
           resources: [{contentIndex: 0, uri}],
           type: 'threadnote-canonical-read',
           version: 1,
@@ -306,7 +310,8 @@ describe('Threadnote MCP toolsets', () => {
         expect(result.isError, JSON.stringify(result)).not.toBe(true);
         expect(Buffer.byteLength(text ?? '')).toBeGreaterThan(10 * 1_024 * 1_024);
         expect(text).toBe(content);
-        expect(result.structuredContent).toEqual({
+        expect(result.structuredContent).toBeUndefined();
+        expect(result._meta?.[CANONICAL_READ_METADATA_KEY]).toEqual({
           resources: [{contentIndex: 0, uri}],
           type: 'threadnote-canonical-read',
           version: 1,
@@ -342,7 +347,8 @@ describe('Threadnote MCP toolsets', () => {
           {text: firstContent, type: 'text'},
           {text: secondContent, type: 'text'},
         ]);
-        expect(result.structuredContent).toEqual({
+        expect(result.structuredContent).toBeUndefined();
+        expect(result._meta?.[CANONICAL_READ_METADATA_KEY]).toEqual({
           resources: [
             {contentIndex: 0, uri: firstUri},
             {contentIndex: 1, uri: secondUri},
@@ -401,7 +407,8 @@ describe('Threadnote MCP toolsets', () => {
           expect(output).toHaveLength(1);
           expect(primary).toEqual({text: content, type: 'text'});
           expect(Buffer.byteLength(primary?.text ?? '')).toBeGreaterThan(1_024 * 1_024);
-          expect(result.structuredContent).toEqual({
+          expect(result.structuredContent).toBeUndefined();
+          expect(result._meta?.[CANONICAL_READ_METADATA_KEY]).toEqual({
             resources: [{contentIndex: 0, uri}],
             type: 'threadnote-canonical-read',
             version: 1,
