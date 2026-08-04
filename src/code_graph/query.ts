@@ -371,7 +371,7 @@ export const traversalQuery = Effect.fn('codeGraph.traversalQuery')(function* (
     : [...lexicalById.values()]
         .sort((left, right) => right.score - left.score || compareCodeUnits(left.id, right.id))
         .slice(0, seedLimit);
-  const semanticEligible = !timedOut && !(impact && seedQueries?.length);
+  const semanticEligible = !timedOut && !(impact && seedQueries?.length) && lexicalSeeds.length < seedLimit;
   const semanticResult = !semanticEligible
     ? {scores: new Map<string, number>(), timedOut: false}
     : yield* embedding.search(threadnoteHome, layout, snapshotId, query, Math.min(nodeLimit, 12)).pipe(

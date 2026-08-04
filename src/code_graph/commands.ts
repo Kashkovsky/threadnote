@@ -600,20 +600,27 @@ export const runCodeGraphInspect = Effect.fn('codeGraph.command.inspect')(functi
   const cwd = yield* commandCwd(options.cwd);
   const status = yield* service.status(config.agentContextHome, cwd);
   const strictFreshness = options.operation === 'impact' || options.operation === 'path';
+  const statusObservation = observationFromCodeGraphStatus(status);
+  // Preserve live-edit behavior, but do not make an ordinary read wait for a clean post-pull rebuild.
+  const staleAfterCleanCommitChange =
+    status.readySnapshot !== undefined &&
+    status.readySnapshot.commit !== status.identity.headCommit &&
+    statusObservation?.overlay.dirty === false;
+  const refresh = !status.readySnapshot || (status.stale && (strictFreshness || !staleAfterCleanCommitChange));
   const inspect = (onProgress?: (progress: CodeGraphProgress) => Effect.Effect<void>) =>
     service.inspect({
       ...options,
       cwd,
       onProgress,
-      refresh: true,
-      statusObservation: observationFromCodeGraphStatus(status),
+      refresh,
+      statusObservation,
       strictFreshness,
       threadnoteHome: config.agentContextHome,
     });
   const reportProgress = options.json ? yield* makeCodeGraphJsonProgressReporter() : undefined;
   const result = options.json
     ? yield* inspect(reportProgress)
-    : status.stale
+    : refresh
       ? yield* Effect.acquireUseRelease(
           startProgress('Scanning repository source from Git.'),
           progress => inspect(state => progress.update(progressMessage(state)).pipe(Effect.catch(() => Effect.void))),
