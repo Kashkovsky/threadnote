@@ -26,6 +26,8 @@ bun run bench:code-graph -- --scale-symbols 100000 --fail-on-budget
 bun run bench:code-graph -- --vectors --scale-symbols 10000 --model-home ~/.threadnote --fail-on-budget
 bun run bench:code-graph:dirty-overlay -- --scale-symbols 10000 --samples 3 \
   --output artifacts/code-graph-dirty-overlay.json
+bun run bench:worktree-readiness -- --candidate-ref v4.0.1 --samples 5 --warmups 1 \
+  --output artifacts/code-graph-worktree-readiness-v4.0.1.json
 
 # Opt-in/scheduled large-monorepo shape; expect substantial CPU, RAM, disk, and wall time.
 bun run bench:code-graph -- --profile production-large --samples 1 --warmups 0 \
@@ -102,6 +104,15 @@ one-file worktree overlay in the same SQLite session. It alternates the safe sta
 disabled full-materialization control, requires identical graph shape, and records both total and materialization
 time. The reviewed local 10k-symbol result is stored as `dirty-overlay-development.json`; it is comparative evidence
 on one hardware class, not a portable latency gate.
+
+`bench:worktree-readiness` compares an exact candidate ref with its immediate parent on one machine and one pinned
+public checkout. Each runtime gets an independent frozen dependency installation, Threadnote home, and fixture clone.
+After both runtimes build the same warm anchor, the harness alternates linked-worktree runs for graph-equivalent commits
+and committed one-file edits. It records raw wall times, requires the predecessor to use full materialization, requires
+v4.0.1 to use `reused-snapshot` or `incremental-clean` with zero or one staged file respectively, and checks graph-count
+and controlled-query parity after every pair. Cold anchor construction, dependency installation, and optional vector
+enrichment are outside the timing scope. Treat its median speedup as same-machine engineering evidence, not a portable
+latency promise.
 
 The general `bench:code-graph` suite separately labels its post-cold one-file edit as `one-file-reindex`. That path
 measures the normal cross-session cache reuse and records the observed materialization mode, staged-file count, and

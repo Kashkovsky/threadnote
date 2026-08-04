@@ -93,8 +93,8 @@ const graphCapabilities = [
   {
     number: '01',
     label: 'Current-worktree truth',
-    title: 'The graph follows the checkout you are editing.',
-    body: 'Committed Git objects form the reusable base. Staged, unstaged, renamed, deleted, and eligible untracked files become an isolated overlay for this linked worktree—even when an orchestrator is running other agents beside it.',
+    title: 'Reuse the graph work. Keep the checkout truth.',
+    body: 'Graph-equivalent commits reuse ready content, and compatible clean commits build a bounded delta. Staged, unstaged, renamed, deleted, and eligible untracked files still become an isolated overlay for this linked worktree—even when an orchestrator is running other agents beside it.',
   },
   {
     number: '02',
@@ -195,12 +195,12 @@ function GraphSearchShowcase() {
 
       <a className="graph-showcase__performance-cta" href={siteHref('performance/')}>
         <div>
-          <span className="eyebrow">Large-repository performance</span>
-          <h3>See how Threadnote is built and benchmarked for a real polyglot Bazel monorepo.</h3>
+          <span className="eyebrow">Large repositories · fast worktrees</span>
+          <h3>See how Threadnote 4.0.1 reuses a warm graph instead of rebuilding every new worktree.</h3>
         </div>
         <p>
-          Checked-in public-repository evidence covers 232,750 files, 2.67 million symbols, 7.34 million relationships,
-          and Java, Kotlin, TypeScript, and Bazel controls. Each number keeps its exact measurement scope and source.
+          A same-machine, five-sample comparison measured 13.2× faster graph-equivalent readiness and 9.9× faster
+          one-file readiness. The separate public IntelliJ evidence still covers 232,750 files and polyglot controls.
         </p>
         <Icon name="arrow" aria-hidden="true" />
       </a>

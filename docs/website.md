@@ -60,6 +60,22 @@ The binding command validates the exact payload, verifies its Threadnote source 
 tree, computes both SHA-256 digests, and writes `website/performance/evidence.binding.json`. Commit the public payload
 and generated sidecar together; never hand-edit the binding.
 
+The focused v4.0.1 worktree-readiness comparison is intentionally a separate same-machine engineering artifact, not a
+substitute for that comprehensive release-evidence contract. Its harness checks out exact candidate and predecessor
+commits, builds the same warm public fixture for both, alternates linked-worktree samples, asserts the expected
+materialization modes and staged-file counts, and requires graph-count plus controlled-query parity for every pair.
+Reproduce it with:
+
+```bash
+bun run bench:worktree-readiness -- \
+  --candidate-ref v4.0.1 --samples 5 --warmups 1 \
+  --output test/evaluation/candidates/threadnote-4.0.1/benchmarks/darwin-arm64-m1-max/code-graph-worktree-readiness-2026-08-04.json
+```
+
+The Performance page derives its rounded worktree values from that checked-in JSON. The Vite build also emits the
+unchanged raw artifact at `/evidence/code-graph-worktree-readiness-v4.0.1.json` so readers can inspect every sample and
+its provenance. Keep the source module, emitted path, tests, and artifact together when refreshing the comparison.
+
 ## Content and interaction contracts
 
 - Treat current source, CLI help, MCP schemas, checked-in user guides, tests, and shared durable design memories as
