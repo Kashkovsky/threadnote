@@ -1,9 +1,11 @@
 import {Console, Effect, FileSystem, Path, Result} from 'effect';
 import {
+  LEGACY_CURSOR_INSTRUCTION_PATHS,
   USER_AGENT_INSTRUCTION_TARGETS,
   USER_INSTRUCTIONS_END_MARKER,
   USER_INSTRUCTIONS_START_MARKER,
 } from './constants.js';
+import {cursorPluginDoctorChecks, installCursorPlugin, removeCursorPlugin} from './cursor-plugin.js';
 import {startProgress} from './cli_ui.js';
 import {commandShimCheck, installCommandShim, removeCommandShim} from './command-shim.js';
 import {sha256FileHex} from './effect/digest.js';
@@ -166,6 +168,7 @@ export const collectDoctorChecks = Effect.fn('lifecycle.collectDoctorChecks')(fu
     yield* safeDoctorCheck('memory project consistency', memoryProjectConsistencyCheck(config)),
   );
   checks.push(...(yield* safeDoctorChecks('agent instructions', userAgentInstructionsChecks())));
+  checks.push(...(yield* safeDoctorChecks('Cursor plugin', cursorPluginDoctorChecks())));
   if (config.agentContextHome.endsWith('.openviking')) {
     checks.push({
       detail: 'THREADNOTE_HOME still targets a legacy .openviking directory; run `threadnote migrate`',
@@ -289,6 +292,7 @@ export const runInstall = Effect.fn('lifecycle.install')(function* (config: Runt
     );
   }
   yield* installUserAgentInstructions(dryRun);
+  yield* withStandaloneInstallationLock(installCursorPlugin(dryRun, releaseRoot), dryRun);
   if (options.start !== false) {
     yield* Console.log(
       'Threadnote 4 uses local storage and a supervised on-demand inference worker; no background server is required.',
@@ -480,6 +484,7 @@ export const runUninstall = Effect.fn('lifecycle.uninstall')(function* (
   if (yield* hasManagedClaudeHooks()) {
     yield* runHooksInstall(config, 'claude', {apply: !dryRun, dryRun, remove: true});
   }
+  yield* withStandaloneInstallationLock(removeCursorPlugin(dryRun), dryRun);
   yield* removeCommandShim(dryRun);
   yield* removeUserAgentInstructions(dryRun);
   if (options.eraseMemories === true) {
@@ -777,6 +782,7 @@ const installUserAgentInstructions = Effect.fn('lifecycle.installUserAgentInstru
         : `Updated agent instructions: ${targetPath}`,
     );
   }
+  yield* removeLegacyCursorUserRules(dryRun);
 });
 
 const removeUserAgentInstructions = Effect.fn('lifecycle.removeUserAgentInstructions')(function* (dryRun: boolean) {
@@ -807,7 +813,43 @@ const removeUserAgentInstructions = Effect.fn('lifecycle.removeUserAgentInstruct
       yield* Console.log(`Updated ${targetPath}`);
     }
   }
+  yield* removeLegacyCursorUserRules(dryRun);
 });
+
+const removeLegacyCursorUserRules = Effect.fn('lifecycle.removeLegacyCursorUserRules')(function* (dryRun: boolean) {
+  const fs = yield* FileSystem.FileSystem;
+  for (const legacyPath of LEGACY_CURSOR_INSTRUCTION_PATHS) {
+    const targetPath = yield* expandPath(legacyPath);
+    const currentContent = yield* readFileIfExists(targetPath);
+    if (currentContent === undefined) continue;
+    const contentWithoutBlock = removeManagedBlock(currentContent);
+    if (contentWithoutBlock === undefined) {
+      yield* Console.log(`WARN ${targetPath} has partial Threadnote markers; not modifying it`);
+      continue;
+    }
+    const nextContent = isCursorRuleFrontmatterOnly(contentWithoutBlock) ? '' : contentWithoutBlock;
+    if (nextContent === currentContent) continue;
+    if (dryRun) {
+      yield* Console.log(
+        nextContent.trim().length === 0
+          ? `Would remove legacy Cursor user rule: ${targetPath}`
+          : `Would update ${targetPath} to remove legacy Threadnote instructions`,
+      );
+    } else if (nextContent.trim().length === 0) {
+      yield* fs.remove(targetPath);
+      yield* Console.log(`Removed legacy Cursor user rule: ${targetPath}`);
+    } else {
+      yield* fs.writeFileString(targetPath, nextContent, {mode: 0o644});
+      yield* Console.log(`Updated ${targetPath} to remove legacy Threadnote instructions`);
+    }
+  }
+});
+
+function isCursorRuleFrontmatterOnly(content: string): boolean {
+  const match = /^---\s*\r?\n([\s\S]*?)\r?\n---\s*$/.exec(content);
+  if (!match) return false;
+  return /^alwaysApply:\s*true\s*$/m.test(match[1] ?? '');
+}
 
 const renderUserAgentInstructions = Effect.fn('lifecycle.renderUserAgentInstructions')(function* (
   target: UserAgentInstructionTarget,

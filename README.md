@@ -73,6 +73,11 @@ threadnote mcp-install codex --apply # or claude / cursor / copilot
 threadnote doctor
 ```
 
+When Cursor is installed, Threadnote install, update, and repair copy the bundled **Threadnote** plugin to
+`~/.cursor/plugins/local/threadnote` so Cursor loads the always-on rule at user scope. Reload Cursor after the first
+install. The MCP command above remains required because it writes the user- and platform-specific server configuration.
+See the [Cursor plugin guide](./docs/cursor-plugin.md) for diagnostics and optional Marketplace publication.
+
 To opt into prerelease builds, install the Threadnote 4 beta channel on macOS or Linux:
 
 ```sh
