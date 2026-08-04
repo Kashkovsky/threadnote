@@ -1,5 +1,5 @@
 import {Clock, Console, Crypto, Effect, FileSystem, Path} from 'effect';
-import yaml from 'js-yaml';
+import * as yaml from 'js-yaml';
 import {
   buildCandidateReview,
   readActiveProjectMemories,

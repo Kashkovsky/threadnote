@@ -222,7 +222,7 @@ jobs:
       - run: bun install --frozen-lockfile
 
       - name: Restore pinned graph model
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           key: threadnote-code-graph-model-${{ env.CODE_GRAPH_EMBEDDING_MODEL_SHA256 }}
           path: artifacts/code-graph-model-home/models/embedding/${{ env.CODE_GRAPH_EMBEDDING_MODEL_ID }}
@@ -260,7 +260,7 @@ jobs:
       - run: bun install --frozen-lockfile
 
       - name: Restore pinned graph model
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           key: threadnote-code-graph-model-${{ env.CODE_GRAPH_EMBEDDING_MODEL_SHA256 }}
           path: artifacts/code-graph-model-home/models/embedding/${{ env.CODE_GRAPH_EMBEDDING_MODEL_ID }}
@@ -330,7 +330,7 @@ jobs:
       - run: bun install --frozen-lockfile
 
       - name: Restore pinned graph model
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           key: threadnote-code-graph-model-${{ env.CODE_GRAPH_EMBEDDING_MODEL_SHA256 }}
           path: artifacts/code-graph-model-home/models/embedding/${{ env.CODE_GRAPH_EMBEDDING_MODEL_ID }}

@@ -1,5 +1,5 @@
 import {Crypto, Effect, FileSystem, Path} from 'effect';
-import yaml from 'js-yaml';
+import * as yaml from 'js-yaml';
 import {withExclusiveFileLock} from './effect/file_lock.js';
 import {parseResourceId, resourceIdWithoutAnchor} from './storage/resource-id.js';
 import type {MemoryKind, MemoryStatus, RuntimeConfig} from './types.js';

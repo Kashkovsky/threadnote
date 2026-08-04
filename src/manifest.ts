@@ -1,5 +1,5 @@
 import {Effect, FileSystem} from 'effect';
-import yaml from 'js-yaml';
+import * as yaml from 'js-yaml';
 import type {JsonObject, ProjectManifest, ResolvedWorkset, SeedManifest, WorksetManifest} from './types.js';
 import {parseResourceId} from './storage/resource-id.js';
 import {escapeRegExp, isJsonObject} from './utils.js';

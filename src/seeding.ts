@@ -1,5 +1,5 @@
 import {Cause, Console, Effect, FileSystem, Option, Path, Result} from 'effect';
-import yaml from 'js-yaml';
+import * as yaml from 'js-yaml';
 import {DEFAULT_SEED_PATTERNS, SEED_STATE_FILE, USER_MANIFEST_NAME} from './constants.js';
 import {buildGraphDocument, type DependencyFacts, extractDependencyFacts, resolveGraphEdges} from './graph.js';
 import {applicationError} from './effect/errors.js';

@@ -16,8 +16,8 @@ describe('Bun distribution contract', () => {
     const allDependencies = {...manifest.dependencies, ...manifest.devDependencies};
 
     expect(manifest.packageManager).toMatch(/^bun@/);
-    expect(allDependencies['@effect/platform-bun']).toBe('4.0.0-beta.99');
-    expect(allDependencies['@effect/sql-sqlite-bun']).toBe('4.0.0-beta.99');
+    expect(allDependencies['@effect/platform-bun']).toBe('4.0.0-beta.102');
+    expect(allDependencies['@effect/sql-sqlite-bun']).toBe('4.0.0-beta.102');
     expect(allDependencies['@effect/platform-node']).toBeUndefined();
     expect(allDependencies['@effect/sql-sqlite-node']).toBeUndefined();
     expect(manifest.engines?.node).toBeUndefined();

@@ -1,4 +1,4 @@
-import yaml from 'js-yaml';
+import * as yaml from 'js-yaml';
 import {Clock, Console, Crypto, Effect, FileSystem, Option, Path, Result} from 'effect';
 import {
   expandWeakRecallQueryEffect,
