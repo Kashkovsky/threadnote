@@ -12,7 +12,12 @@ import {
   purgeObsoleteCodeGraphStores,
   type ObsoleteCodeGraphStoreInventory,
 } from './maintenance.js';
-import {CodeGraphQueryService, observationFromCodeGraphStatus, renderCodeGraphResult} from './query.js';
+import {
+  canUseReadySnapshotAfterCleanCommitChange,
+  CodeGraphQueryService,
+  observationFromCodeGraphStatus,
+  renderCodeGraphResult,
+} from './query.js';
 import {repositoryChangesSince, resolveRepositoryIdentity} from './repository.js';
 import {CodeGraphStore} from './store.js';
 import type {CodeGraphProgress, CodeGraphQueryOptions} from './types.js';
@@ -602,10 +607,7 @@ export const runCodeGraphInspect = Effect.fn('codeGraph.command.inspect')(functi
   const strictFreshness = options.operation === 'impact' || options.operation === 'path';
   const statusObservation = observationFromCodeGraphStatus(status);
   // Preserve live-edit behavior, but do not make an ordinary read wait for a clean post-pull rebuild.
-  const staleAfterCleanCommitChange =
-    status.readySnapshot !== undefined &&
-    status.readySnapshot.commit !== status.identity.headCommit &&
-    statusObservation?.overlay.dirty === false;
+  const staleAfterCleanCommitChange = canUseReadySnapshotAfterCleanCommitChange(status);
   const refresh = !status.readySnapshot || (status.stale && (strictFreshness || !staleAfterCleanCommitChange));
   const inspect = (onProgress?: (progress: CodeGraphProgress) => Effect.Effect<void>) =>
     service.inspect({

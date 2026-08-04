@@ -121,7 +121,12 @@ import {
   recallSelectionQueries,
   selectedRecallCandidateUris,
 } from './recall/runtime.js';
-import {CodeGraphQueryService, observationFromCodeGraphStatus, renderCodeGraphResult} from './code_graph/query.js';
+import {
+  canUseReadySnapshotAfterCleanCommitChange,
+  CodeGraphQueryService,
+  observationFromCodeGraphStatus,
+  renderCodeGraphResult,
+} from './code_graph/query.js';
 import {repositoryChangesSince, resolveRepositoryIdentity} from './code_graph/repository.js';
 import type {CodeGraphProgress, CodeGraphQueryResult} from './code_graph/types.js';
 import {
@@ -864,6 +869,7 @@ function registerCodeGraphTool(server: EffectMcpServerAdapter, config: RuntimeCo
         const service = yield* CodeGraphQueryService;
         const strictFreshness = operation === 'impact' || operation === 'path';
         let status = yield* service.statusForIdentity(config.agentContextHome, identity);
+        let staleAfterCleanCommitChange = canUseReadySnapshotAfterCleanCommitChange(status);
         let refreshStarted = false;
         if (status.stale) {
           refreshStarted = yield* watcher.refresh({
@@ -877,13 +883,14 @@ function registerCodeGraphTool(server: EffectMcpServerAdapter, config: RuntimeCo
           }
           identity = yield* resolveRepositoryIdentity(checkedCwd.value);
           status = yield* service.statusForIdentity(config.agentContextHome, identity);
+          staleAfterCleanCommitChange = canUseReadySnapshotAfterCleanCommitChange(status);
           if (!status.readySnapshot || (status.stale && strictFreshness)) {
             const refreshStatus = Option.getOrUndefined(yield* watcher.status(identity.worktreeId, refreshTarget));
             return codeGraphRefreshResult(operation, refreshStatus);
           }
         }
         const refreshStatus = Option.getOrUndefined(yield* watcher.status(identity.worktreeId, refreshTarget));
-        if (codeGraphRefreshBlocksReadyInspection(status, refreshStatus)) {
+        if (codeGraphRefreshBlocksReadyInspection(status, refreshStatus, staleAfterCleanCommitChange)) {
           return codeGraphRefreshResult(operation, refreshStatus);
         }
         const result = yield* service.inspect({
@@ -1809,9 +1816,10 @@ const waitForCodeGraphRefresh = Effect.fn('mcpServer.waitForCodeGraphRefresh')(f
 export function codeGraphRefreshBlocksReadyInspection(
   status: {readonly readySnapshot?: unknown; readonly stale: boolean},
   refreshStatus: CodeGraphRefreshStatus | undefined,
+  allowStaleReadySnapshot = false,
 ): boolean {
   if (refreshStatus?.state === 'failed') return true;
-  return refreshStatus?.state === 'indexing' && (!status.readySnapshot || status.stale);
+  return refreshStatus?.state === 'indexing' && (!status.readySnapshot || (status.stale && !allowStaleReadySnapshot));
 }
 
 function codeGraphRefreshResult(

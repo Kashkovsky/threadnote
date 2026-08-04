@@ -80,6 +80,16 @@ export function observationFromCodeGraphStatus(status: CodeGraphStatus): CodeGra
   return (status as ObservedCodeGraphStatus)[CODE_GRAPH_STATUS_OBSERVATION];
 }
 
+/** A ready snapshot from the previous commit remains safe for non-strict reads when the worktree itself is clean. */
+export function canUseReadySnapshotAfterCleanCommitChange(status: CodeGraphStatus): boolean {
+  const observation = observationFromCodeGraphStatus(status);
+  return (
+    status.readySnapshot !== undefined &&
+    status.readySnapshot.commit !== status.identity.headCommit &&
+    observation?.overlay.dirty === false
+  );
+}
+
 function attachCodeGraphStatusObservation(
   status: CodeGraphStatus,
   observation: CodeGraphStatusObservation | undefined,

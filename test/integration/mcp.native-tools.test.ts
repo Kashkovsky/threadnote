@@ -602,21 +602,14 @@ describe('Threadnote MCP toolsets', () => {
         execFileSync('git', ['add', '.'], {cwd: impactRepository});
         execFileSync('git', ['commit', '-qm', 'fixture change'], {cwd: impactRepository});
 
-        const impact = await client.callTool(
-          {
-            arguments: {
-              base: 'HEAD~1',
-              callerCwd: impactRepository,
-              nodeLimit: 5,
-              operation: 'impact',
-            },
-            name: 'inspect_code_graph',
-          },
-          undefined,
-          {timeout: 60_000},
-        );
+        const impact = await callCodeGraphUntilReady(client, {
+          base: 'HEAD~1',
+          callerCwd: impactRepository,
+          nodeLimit: 5,
+          operation: 'impact',
+        });
         expect(impact.isError).not.toBe(true);
-        expect(impact.structuredContent).toMatchObject({operation: 'impact'});
+        expect(impact.structuredContent).toMatchObject({freshness: 'current', operation: 'impact'});
 
         const beforeLookup = await callCodeGraphUntilReady(client, {
           callerCwd: impactRepository,
@@ -896,6 +889,93 @@ describe('Threadnote MCP toolsets', () => {
         expect(new TextEncoder().encode(JSON.stringify(ready?.content)).byteLength).toBeLessThan(20 * 1_024);
         expect(readyStructured).not.toContain('lookupKeys');
         expect(readyStructured).not.toContain('contentHash');
+      },
+      {toolset: 'core'},
+    );
+  }, 40_000);
+
+  it('returns a ready stale graph immediately after a clean checked-out commit change', async () => {
+    await withMcpClient(
+      async (client, fixture) => {
+        const repository = join(fixture.root, 'stale-ready-repository');
+        await mkdir(join(repository, 'src'), {recursive: true});
+        await writeFile(join(repository, 'package.json'), '{"name":"stale-ready-repository"}\n', 'utf8');
+        await writeFile(
+          join(repository, 'src', 'index.ts'),
+          'export function indexedBeforePull(): string { return "before"; }\n',
+          'utf8',
+        );
+        execFileSync('git', ['init', '-q'], {cwd: repository});
+        execFileSync('git', ['config', 'user.email', 'threadnote@example.test'], {cwd: repository});
+        execFileSync('git', ['config', 'user.name', 'Threadnote Test'], {cwd: repository});
+        execFileSync('git', ['add', '.'], {cwd: repository});
+        execFileSync('git', ['commit', '-qm', 'indexed commit'], {cwd: repository});
+        const indexedCommit = execFileSync('git', ['rev-parse', 'HEAD'], {
+          cwd: repository,
+          encoding: 'utf8',
+        }).trim();
+
+        const first = await callCodeGraphUntilReady(client, {
+          callerCwd: repository,
+          operation: 'query',
+          query: 'indexedBeforePull',
+        });
+        const firstSnapshotId = (first.structuredContent as {readonly snapshot?: {readonly id?: unknown}} | undefined)
+          ?.snapshot?.id;
+        expect(typeof firstSnapshotId).toBe('string');
+
+        const gitCommonDirectory = await realpath(
+          execFileSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], {
+            cwd: repository,
+            encoding: 'utf8',
+          }).trim(),
+        );
+        const checkoutId = createHash('sha256').update(`checkout-v1\n${gitCommonDirectory}`).digest('hex');
+        const worktreeId = createHash('sha256')
+          .update(`worktree-v1\n${await realpath(repository)}`)
+          .digest('hex');
+        const graphLock = join(
+          fixture.home,
+          'locks',
+          'indexes',
+          'code-graph',
+          'worktrees',
+          checkoutId,
+          `${worktreeId}.lock`,
+        );
+        await mkdir(join(graphLock, '..'), {recursive: true});
+        await writeFile(graphLock, `${process.pid}:stale-ready-test\n`, {encoding: 'utf8', mode: 0o600});
+
+        try {
+          await writeFile(
+            join(repository, 'src', 'after-pull.ts'),
+            'export function addedAfterPull(): string { return "after"; }\n',
+            'utf8',
+          );
+          execFileSync('git', ['add', '.'], {cwd: repository});
+          execFileSync('git', ['commit', '-qm', 'clean pulled commit'], {cwd: repository});
+
+          const startedAt = Date.now();
+          const stale = await client.callTool(
+            {
+              arguments: {callerCwd: repository, operation: 'query', query: 'indexedBeforePull'},
+              name: 'inspect_code_graph',
+            },
+            undefined,
+            {timeout: 5_000},
+          );
+          expect(Date.now() - startedAt).toBeLessThan(2_000);
+          expect(stale.isError).not.toBe(true);
+          expect(stale.structuredContent).toMatchObject({
+            freshness: 'stale',
+            nodes: expect.arrayContaining([expect.objectContaining({name: 'indexedBeforePull'})]),
+            operation: 'query',
+            snapshot: {commit: indexedCommit, id: firstSnapshotId},
+          });
+          expect((stale.structuredContent as {readonly state?: unknown} | undefined)?.state).toBeUndefined();
+        } finally {
+          await rm(graphLock, {force: true});
+        }
       },
       {toolset: 'core'},
     );

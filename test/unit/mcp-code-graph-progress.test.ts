@@ -19,11 +19,14 @@ import type {CodeGraphRefreshStatus} from '../../src/code_graph/watcher.js';
 import {analysisEdge, analysisSnapshot, analysisSymbol, pagedAnalysisStore} from '../helpers/code-graph-analysis.js';
 
 describe('MCP code graph indexing progress', () => {
-  it('allows a current ready graph to serve while optional enrichment continues', () => {
+  it('allows an explicitly safe ready graph to serve while background indexing continues', () => {
     const indexing = indexingStatus(60_000);
 
     expect(codeGraphRefreshBlocksReadyInspection({readySnapshot: {id: 'ready'}, stale: false}, indexing)).toBe(false);
     expect(codeGraphRefreshBlocksReadyInspection({readySnapshot: {id: 'stale'}, stale: true}, indexing)).toBe(true);
+    expect(codeGraphRefreshBlocksReadyInspection({readySnapshot: {id: 'stale'}, stale: true}, indexing, true)).toBe(
+      false,
+    );
     expect(codeGraphRefreshBlocksReadyInspection({stale: true}, indexing)).toBe(true);
     expect(
       codeGraphRefreshBlocksReadyInspection(
