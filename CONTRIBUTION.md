@@ -80,6 +80,24 @@ bun run test:smoke:self-contained
 
 `typecheck` intentionally uses TypeScript 7 for both source and test code.
 
+### CI changed-path routing
+
+Pull-request CI classifies the complete merge-base diff and enables checks by dependency scope. Scopes are monotonic:
+adding a changed path can only add checks, and an empty, invalid, or unrecognized path inventory enables every scope.
+
+| Change surface                                   | Required CI work                                                                              |
+| ------------------------------------------------ | --------------------------------------------------------------------------------------------- |
+| Documentation only                               | Formatting                                                                                    |
+| `website/**` only                                | Formatting, website contracts, and website build                                              |
+| Unit or integration tests only                   | Lint, typecheck, and coverage                                                                 |
+| Runtime and release inputs                       | General checks, standalone build, bytecode targets, platform release smoke, and Windows smoke |
+| Recall, vector, evaluation, or code-graph inputs | General checks plus recall/graph quality and the separately path-filtered benchmarks          |
+| Workflow files                                   | Actionlint plus the scopes owned by that workflow                                             |
+
+The classifier lives in `test/ci/ci-scopes.ts`, and its routing contract is covered by property and workflow tests.
+Website deployment has a separate path filter limited to site output inputs, so unrelated merges do not rebuild Pages.
+Documentation-only and website-only merges also avoid repeating pull-request CI on the resulting `main` push.
+
 ### Local distribution end-to-end tests
 
 Run the local-bin suite when a change affects any of the following:

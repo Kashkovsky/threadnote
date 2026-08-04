@@ -144,7 +144,7 @@ describe('standalone release workflows', () => {
 
       expect(ci).toContain('docker://rhysd/actionlint:1.7.8');
       expect(ci).toContain('args: -color');
-      expect(ci).not.toContain('-ignore');
+      expect(ci).not.toMatch(/^\s*args:[^\n]*-ignore/gm);
       expect(yield* projectFileExists('.github/actionlint.yaml')).toBe(false);
       expect(yield* projectFileExists('.github/actionlint.yml')).toBe(false);
       for (const runner of hostedReleaseRunners) {
