@@ -193,6 +193,8 @@ describe('standalone updater', () => {
           const temporaryRoot = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-local-update-test-'});
           const installRoot = path.join(temporaryRoot, 'install');
           const binRoot = path.join(temporaryRoot, 'bin');
+          const userHome = path.join(temporaryRoot, 'user-home');
+          yield* fs.makeDirectory(cursorApplicationDataPath(path, userHome, baseSystem.platform), {recursive: true});
           const oldReleaseRoot = path.join(installRoot, 'versions', activeVersion);
           yield* fs.makeDirectory(oldReleaseRoot, {recursive: true});
           yield* fs.writeFileString(
@@ -211,9 +213,13 @@ describe('standalone updater', () => {
             ...baseSystem,
             environment: () => ({
               ...baseSystem.environment(),
+              HOME: userHome,
               THREADNOTE_BIN_DIR: binRoot,
               THREADNOTE_INSTALL_ROOT: installRoot,
+              USERPROFILE: userHome,
+              XDG_CONFIG_HOME: path.join(userHome, '.config'),
             }),
+            homeDirectory: userHome,
           });
           yield* activateStandaloneRelease(oldReleaseRoot, false).pipe(Effect.provideService(SystemInfo, testSystem));
 
@@ -232,6 +238,9 @@ describe('standalone updater', () => {
               version: string;
             },
             captured,
+            cursorRule: yield* fs.readFileString(
+              path.join(userHome, '.cursor', 'plugins', 'local', 'threadnote', 'rules', 'threadnote.mdc'),
+            ),
             launcher: yield* fs.readFileString(launcher),
           };
         }),
@@ -240,7 +249,10 @@ describe('standalone updater', () => {
 
     expect(result.captured.output).toContain(`Current version: ${activeVersion}`);
     expect(result.captured.output).toContain(`Installed standalone Threadnote ${latestVersion}`);
+    expect(result.captured.output).toContain('Installed Cursor plugin:');
     expect(result.active.version).toBe(latestVersion);
+    expect(result.cursorRule).toContain('alwaysApply: true');
+    expect(result.cursorRule).toContain('<!-- BEGIN THREADNOTE USER INSTRUCTIONS -->');
     expect(result.launcher).toContain(latestVersion);
   });
 
@@ -256,6 +268,7 @@ describe('standalone updater', () => {
           const temporaryRoot = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-launcher-repair-test-'});
           const installRoot = path.join(temporaryRoot, 'install');
           const binRoot = path.join(temporaryRoot, 'bin');
+          const userHome = path.join(temporaryRoot, 'user-home');
           const releaseRoot = path.join(installRoot, 'versions', latestVersion);
           yield* fs.makeDirectory(releaseRoot, {recursive: true});
           yield* fs.writeFileString(
@@ -266,9 +279,12 @@ describe('standalone updater', () => {
             ...baseSystem,
             environment: () => ({
               ...baseSystem.environment(),
+              HOME: userHome,
               THREADNOTE_BIN_DIR: binRoot,
               THREADNOTE_INSTALL_ROOT: installRoot,
+              USERPROFILE: userHome,
             }),
+            homeDirectory: userHome,
           });
           yield* activateStandaloneRelease(releaseRoot, false).pipe(Effect.provideService(SystemInfo, testSystem));
           const launcher = path.join(binRoot, baseSystem.platform === 'win32' ? 'threadnote.cmd' : 'threadnote');
@@ -1266,6 +1282,22 @@ function writeReleaseArchive(
           ]),
         ),
       );
+      const cursorPluginPaths = [
+        '.threadnote-managed.json',
+        '.cursor-plugin/plugin.json',
+        'rules/threadnote.mdc',
+        'README.md',
+        'CHANGELOG.md',
+        'LICENSE',
+      ];
+      const cursorPluginAssets = Object.fromEntries(
+        await Promise.all(
+          cursorPluginPaths.map(async asset => [
+            `cursor-plugin/${asset}`,
+            await Bun.file(`cursor-plugin/${asset}`).bytes(),
+          ]),
+        ),
+      );
       if (options.tamperCodeGraphAsset) {
         assets['assets/code-graph/grammars/java.wasm'] = new TextEncoder().encode('tampered grammar');
       }
@@ -1273,6 +1305,7 @@ function writeReleaseArchive(
         archivePath,
         {
           ...assets,
+          ...cursorPluginAssets,
           [executableName]: '#!/usr/bin/env sh\nexit 0\n',
           'release.json': `${JSON.stringify({
             codeGraphAssets: {
@@ -1317,4 +1350,10 @@ async function codeGraphFixtureAsset(
 
 function pathSeparator(): string {
   return process.platform === 'win32' ? '\\' : '/';
+}
+
+function cursorApplicationDataPath(path: Path.Path, home: string, platform: NodeJS.Platform): string {
+  if (platform === 'darwin') return path.join(home, 'Library', 'Application Support', 'Cursor');
+  if (platform === 'win32') return path.join(home, 'AppData', 'Roaming', 'Cursor');
+  return path.join(home, '.config', 'Cursor');
 }
