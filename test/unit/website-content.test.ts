@@ -1381,6 +1381,16 @@ describe('Threadnote 4 website content', () => {
     );
   });
 
+  it('keeps every explicit site text size at or above the shared 12px minimum', async () => {
+    const styles = await readFile(join(root, 'website', 'src', 'styles.css'), 'utf8');
+    const explicitPixelSizes = [...styles.matchAll(/(?:font-size:\s*|font:\s*)(\d+(?:\.\d+)?)px/g)].map(match =>
+      Number(match[1]),
+    );
+
+    expect(styles).toContain('--font-size-min: 12px;');
+    expect(explicitPixelSizes.filter(size => size < 12)).toEqual([]);
+  });
+
   it('stacks the worktree-readiness evidence without connector overflow on mobile', async () => {
     const styles = await readFile(join(root, 'website', 'src', 'styles.css'), 'utf8');
     const tabletStart = styles.indexOf('@media (max-width: 980px)');
