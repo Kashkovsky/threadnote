@@ -114,6 +114,74 @@ describe('Effect CLI', () => {
     }
   });
 
+  it('returns a ready stale graph immediately after the checked-out commit changes', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'threadnote-effect-cli-graph-stale-query-'));
+    const home = join(root, '.threadnote-test-home');
+    try {
+      await writeFile(join(root, 'package.json'), '{"name":"stale-query"}\n');
+      await writeFile(join(root, 'index.ts'), 'export function indexedBeforePull(): number { return 1; }\n');
+      await execFilePromise('git', ['-C', root, 'init', '-q']);
+      await execFilePromise('git', ['-C', root, 'add', '.']);
+      await execFilePromise('git', [
+        '-C',
+        root,
+        '-c',
+        'user.name=Threadnote Test',
+        '-c',
+        'user.email=test@threadnote.local',
+        'commit',
+        '-qm',
+        'indexed commit',
+      ]);
+      const indexedCommit = (await execFilePromise('git', ['-C', root, 'rev-parse', 'HEAD'])).stdout.trim();
+      await runCli(['graph', 'index', '--home', home, '--cwd', root, '--json']);
+
+      await writeFile(join(root, 'after-pull.ts'), 'export function addedAfterPull(): number { return 2; }\n');
+      await execFilePromise('git', ['-C', root, 'add', 'after-pull.ts']);
+      await execFilePromise('git', [
+        '-C',
+        root,
+        '-c',
+        'user.name=Threadnote Test',
+        '-c',
+        'user.email=test@threadnote.local',
+        'commit',
+        '-qm',
+        'simulated pull',
+      ]);
+
+      const result = await runCli([
+        'graph',
+        'query',
+        '--home',
+        home,
+        '--cwd',
+        root,
+        '--query',
+        'indexedBeforePull',
+        '--node-limit',
+        '1',
+        '--depth',
+        '0',
+        '--edge-limit',
+        '1',
+        '--json',
+      ]);
+      const graph = JSON.parse(result.stdout) as {
+        readonly freshness?: string;
+        readonly nodes?: readonly {readonly name?: string}[];
+        readonly snapshot?: {readonly commit?: string};
+      };
+
+      expect(graph.freshness).toBe('stale');
+      expect(graph.snapshot?.commit).toBe(indexedCommit);
+      expect(graph.nodes?.some(node => node.name === 'indexedBeforePull')).toBe(true);
+      expect(result.stderr).toBe('');
+    } finally {
+      await rm(root, {force: true, recursive: true});
+    }
+  }, 30_000);
+
   it('drains graph query JSON larger than the platform pipe buffer before exiting', async () => {
     const root = await mkdtemp(join(tmpdir(), 'threadnote-effect-cli-graph-large-output-'));
     const home = join(root, '.threadnote-test-home');

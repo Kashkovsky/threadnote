@@ -229,6 +229,53 @@ describe('code graph query budgets', () => {
     }),
   );
 
+  it.effect('skips semantic search when lexical search fills the seed budget', () =>
+    Effect.gen(function* () {
+      const lexicalMatches = Array.from({length: 12}, (_, index) => ({
+        ...seed,
+        contentHash: `lexical-${index}-hash`,
+        id: `lexical-${index}`,
+        name: `lexical${index}`,
+        qualifiedName: `lexical${index}`,
+      }));
+      let semanticCalls = 0;
+      const store = {
+        edgesForNodes: () => Effect.succeed([]),
+        searchSymbolsMany: () => Effect.succeed([lexicalMatches]),
+        symbolsByIds: () => Effect.succeed([]),
+      } as unknown as CodeGraphStoreShape;
+      const unnecessaryEmbedding = {
+        search: () =>
+          Effect.sync(() => {
+            semanticCalls += 1;
+            return new Map<string, number>();
+          }),
+      } as unknown as CodeGraphEmbeddingIndexShape;
+
+      const result = yield* traversalQuery(
+        store,
+        layout.databasePath,
+        'snapshot',
+        'director dependency injection',
+        'both',
+        12,
+        1,
+        0,
+        ['resolved'],
+        unnecessaryEmbedding,
+        '/fixture/home',
+        layout,
+        false,
+      );
+
+      expect(result.nodes).toHaveLength(12);
+      expect(semanticCalls).toBe(0);
+      expect(result.warnings).not.toContain(
+        'Semantic graph search reached its elapsed-time budget; lexical graph results were returned.',
+      );
+    }),
+  );
+
   it.effect('accepts semantic evidence that takes longer than the traversal budget', () =>
     Effect.gen(function* () {
       const calls: string[] = [];
