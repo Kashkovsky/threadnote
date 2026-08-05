@@ -637,30 +637,43 @@ export const purgeCodeGraphIndex = Effect.fn('codeGraph.purgeIndex')(function* (
             threadnoteHome,
             checkoutId,
             Effect.gen(function* () {
-              const initial = yield* inspectCodeGraphIndexPurgeTarget(fs, path, threadnoteHome, checkoutId);
-              yield* options.interlock?.beforeVerification?.() ?? Effect.void;
-              const verified = yield* inspectCodeGraphIndexPurgeTarget(fs, path, threadnoteHome, checkoutId);
-              if (!sameCodeGraphIndexPurgeTarget(initial, verified)) {
-                return yield* Effect.fail(new Error('Code graph checkout target changed before purge.'));
-              }
-              if (verified !== undefined && !options.dryRun) {
-                yield* options.interlock?.beforeRemoval?.() ?? Effect.void;
-                const quarantine = path.join(
-                  path.dirname(verified.path),
-                  `.${checkoutId}.${yield* crypto.randomUUIDv4}.purging`,
-                );
-                yield* fs.rename(verified.path, quarantine);
-                const quarantined = yield* inspectQuarantinedCodeGraphIndexPurgeTarget(fs, quarantine);
-                if (!sameCodeGraphIndexPurgeTarget(verified, quarantined)) {
-                  yield* restoreQuarantinedCodeGraphIndexPurgeTarget(fs, quarantine, verified.path);
-                  return yield* Effect.fail(new Error('Code graph checkout target changed before purge.'));
-                }
-                yield* fs.remove(quarantine, {force: true, recursive: true});
+              const purgeTarget = yield* Effect.scoped(
+                Effect.gen(function* () {
+                  // Keep the original directory open until it has been moved into quarantine.
+                  // POSIX may recycle a deleted directory's inode immediately; the live handle
+                  // prevents that replacement from comparing equal to the planned target.
+                  const initial = yield* openCodeGraphIndexPurgeTarget(fs, path, threadnoteHome, checkoutId);
+                  yield* options.interlock?.beforeVerification?.() ?? Effect.void;
+                  const verified = yield* inspectCodeGraphIndexPurgeTarget(fs, path, threadnoteHome, checkoutId);
+                  if (!sameCodeGraphIndexPurgeTarget(initial, verified)) {
+                    return yield* Effect.fail(new Error('Code graph checkout target changed before purge.'));
+                  }
+                  if (verified === undefined || options.dryRun) {
+                    return {existed: verified !== undefined, quarantine: undefined};
+                  }
+
+                  yield* options.interlock?.beforeRemoval?.() ?? Effect.void;
+                  const quarantine = path.join(
+                    path.dirname(verified.path),
+                    `.${checkoutId}.${yield* crypto.randomUUIDv4}.purging`,
+                  );
+                  yield* fs.rename(verified.path, quarantine);
+                  const moved = yield* inspectQuarantinedCodeGraphIndexPurgeTarget(fs, quarantine);
+                  if (!sameCodeGraphIndexPurgeTarget(verified, moved)) {
+                    yield* restoreQuarantinedCodeGraphIndexPurgeTarget(fs, quarantine, verified.path);
+                    return yield* Effect.fail(new Error('Code graph checkout target changed before purge.'));
+                  }
+                  return {existed: true, quarantine};
+                }),
+              );
+              if (purgeTarget.quarantine !== undefined) {
+                // Close the directory handle before recursive deletion for Windows parity.
+                yield* fs.remove(purgeTarget.quarantine, {force: true, recursive: true});
               }
               return {
                 checkoutId,
                 dryRun: options.dryRun,
-                existed: verified !== undefined,
+                existed: purgeTarget.existed,
               } satisfies CodeGraphIndexPurgeSummary;
             }),
             waitTimeoutMilliseconds,
@@ -794,6 +807,31 @@ function obsoleteGraphFileName(
 
 function emptyObsoleteInventory(): ObsoleteCodeGraphStoreInventory {
   return {bytes: 0, checkouts: [], fileCount: 0, unsafeEntryCount: 0};
+}
+
+function openCodeGraphIndexPurgeTarget(
+  fs: FileSystem.FileSystem,
+  path: Path.Path,
+  threadnoteHome: string,
+  checkoutId: string,
+) {
+  return Effect.gen(function* () {
+    const planned = yield* inspectCodeGraphIndexPurgeTarget(fs, path, threadnoteHome, checkoutId);
+    if (planned === undefined) return undefined;
+
+    const opened = yield* fs.open(planned.path, {flag: 'r'});
+    const openedInfo = yield* opened.stat;
+    const openedIno = Option.getOrUndefined(openedInfo.ino);
+    if (openedInfo.type !== 'Directory' || openedIno === undefined) {
+      return yield* Effect.fail(new Error('Refusing code graph purge without stable checkout identity metadata.'));
+    }
+    const target = {dev: openedInfo.dev, ino: openedIno, path: planned.path} satisfies CodeGraphIndexPurgeTarget;
+    const current = yield* inspectCodeGraphIndexPurgeTarget(fs, path, threadnoteHome, checkoutId);
+    if (!sameCodeGraphIndexPurgeTarget(target, current)) {
+      return yield* Effect.fail(new Error('Code graph checkout target changed before purge.'));
+    }
+    return target;
+  });
 }
 
 function inspectCodeGraphIndexPurgeTarget(
