@@ -18,6 +18,7 @@ import {
 } from '../../scripts/development-runtime.js';
 import {
   activateLocalStandaloneRelease,
+  developmentRuntimeOwnershipConflict,
   parseLocalStandaloneInstallArguments,
 } from '../../scripts/install-local-standalone.js';
 import {commandLauncherPath, renderCommandShim} from '../../src/command-shim.js';
@@ -39,9 +40,123 @@ describe('exact-head development runtime', () => {
   it('parses only the explicit developer installer switches', () => {
     expect(parseLocalStandaloneInstallArguments(['--', '--terminate-superseded', '--json'])).toEqual({
       json: true,
+      takeOverGlobalRuntime: false,
       terminateSuperseded: true,
     });
+    expect(parseLocalStandaloneInstallArguments(['--take-over-global-runtime'])).toEqual({
+      json: false,
+      takeOverGlobalRuntime: true,
+      terminateSuperseded: false,
+    });
     expect(() => parseLocalStandaloneInstallArguments(['--force'])).toThrow('Unknown local standalone install option');
+  });
+
+  it('keeps global development runtime ownership stable across arbitrary checkout identities', () => {
+    fc.assert(
+      fc.property(sourceCommitArbitrary, sourceCommit => {
+        const activeVersion = developmentBuildVersion('4.0.3', sourceCommit);
+        const sourceCheckoutId = sourceCommit.padEnd(64, '0');
+        const otherSourceCheckoutId = `${sourceCheckoutId[0] === '0' ? '1' : '0'}${sourceCheckoutId.slice(1)}`;
+        const owner = {schemaVersion: 1 as const, sourceCheckoutId, version: activeVersion};
+
+        expect(developmentRuntimeOwnershipConflict(activeVersion, owner, sourceCheckoutId)).toBeUndefined();
+        expect(developmentRuntimeOwnershipConflict(activeVersion, owner, otherSourceCheckoutId)).toBe(
+          'different-source-checkout',
+        );
+        expect(
+          developmentRuntimeOwnershipConflict(
+            developmentBuildVersion('4.0.3', otherSourceCheckoutId.slice(0, 40)),
+            owner,
+            sourceCheckoutId,
+          ),
+        ).toBe('untracked-development-activation');
+        expect(developmentRuntimeOwnershipConflict(activeVersion, 'invalid', sourceCheckoutId)).toBe(
+          'invalid-ownership-record',
+        );
+        expect(developmentRuntimeOwnershipConflict('4.0.3', owner, otherSourceCheckoutId)).toBeUndefined();
+      }),
+      {numRuns: 200},
+    );
+  });
+
+  it('requires an explicit takeover before another checkout can replace an active development runtime', async () => {
+    const result = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const baseSystem = yield* SystemInfo;
+          const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-development-owner-'});
+          const installRoot = path.join(root, 'install');
+          const binRoot = path.join(root, 'bin');
+          const sourceCommit = '9'.repeat(40);
+          const version = developmentBuildVersion('4.0.3', sourceCommit);
+          const releaseRoot = path.join(installRoot, 'versions', version);
+          const executableName = baseSystem.platform === 'win32' ? 'threadnote.exe' : 'threadnote';
+          const firstCheckoutId = '1'.repeat(64);
+          const secondCheckoutId = '2'.repeat(64);
+          yield* writeDevelopmentReleaseFixture(
+            fs,
+            path,
+            releaseRoot,
+            version,
+            sourceCommit,
+            executableName,
+            'owned-development-release',
+          );
+          yield* fs.writeFileString(
+            path.join(installRoot, 'active-release.json'),
+            `${JSON.stringify({releaseRoot, version})}\n`,
+            {mode: 0o600},
+          );
+          const ownerFile = path.join(installRoot, 'development-runtime-owner.json');
+          yield* fs.writeFileString(
+            ownerFile,
+            `${JSON.stringify({schemaVersion: 1, sourceCheckoutId: firstCheckoutId, version})}\n`,
+            {mode: 0o600},
+          );
+          const testSystem = SystemInfo.of({
+            ...baseSystem,
+            environment: () => ({
+              ...baseSystem.environment(),
+              THREADNOTE_BIN_DIR: binRoot,
+              THREADNOTE_INSTALL_ROOT: installRoot,
+            }),
+          });
+          const canonicalInstallRoot = yield* fs.realPath(installRoot);
+          const canonicalVersionsRoot = yield* fs.realPath(path.join(installRoot, 'versions'));
+          const activation = (takeOverGlobalRuntime: boolean) =>
+            activateLocalStandaloneRelease({
+              canonicalInstallRoot,
+              canonicalVersionsRoot,
+              commit: sourceCommit,
+              executableName,
+              releaseRoot,
+              reused: true,
+              sourceCheckoutId: secondCheckoutId,
+              stagedRoot: Option.none(),
+              takeOverGlobalRuntime,
+              terminateSuperseded: false,
+              version,
+            }).pipe(
+              Effect.provideService(CommandExecutor, versionCommandExecutor(version)),
+              Effect.provideService(SystemInfo, testSystem),
+            );
+
+          const refusal = String(yield* activation(false).pipe(Effect.flip));
+          const ownerAfterRefusal = yield* fs.readFileString(ownerFile);
+          const installed = yield* activation(true);
+          const ownerAfterTakeover = yield* fs.readFileString(ownerFile);
+          return {installed, ownerAfterRefusal, ownerAfterTakeover, refusal, root};
+        }),
+      ).pipe(Effect.provide(ApplicationLayer)),
+    );
+
+    expect(result.refusal).toContain('another source checkout owns');
+    expect(JSON.parse(result.ownerAfterRefusal)).toMatchObject({sourceCheckoutId: '1'.repeat(64)});
+    expect(JSON.parse(result.ownerAfterTakeover)).toMatchObject({sourceCheckoutId: '2'.repeat(64)});
+    expect(result.ownerAfterTakeover).not.toContain(result.root);
+    expect(result.installed.active).toBe(true);
   });
 
   it('derives an unambiguous SHA-bound development version for valid release versions', () => {
@@ -527,7 +642,9 @@ describe('exact-head development runtime', () => {
             executableName,
             releaseRoot,
             reused: true,
+            sourceCheckoutId: 'a'.repeat(64),
             stagedRoot: Option.none(),
+            takeOverGlobalRuntime: false,
             terminateSuperseded: false,
             version,
           }).pipe(
@@ -596,7 +713,9 @@ describe('exact-head development runtime', () => {
             executableName,
             releaseRoot,
             reused: false,
+            sourceCheckoutId: 'a'.repeat(64),
             stagedRoot: Option.some(stagedRoot),
+            takeOverGlobalRuntime: false,
             terminateSuperseded: false,
             version,
           }).pipe(
@@ -682,7 +801,9 @@ describe('exact-head development runtime', () => {
               executableName: 'threadnote',
               releaseRoot,
               reused: true,
+              sourceCheckoutId: 'a'.repeat(64),
               stagedRoot: Option.none(),
+              takeOverGlobalRuntime: false,
               terminateSuperseded: false,
               version,
             }).pipe(Effect.provideService(CommandExecutor, executor), Effect.provideService(SystemInfo, testSystem));
@@ -759,7 +880,9 @@ describe('exact-head development runtime', () => {
             executableName: 'threadnote',
             releaseRoot,
             reused: true,
+            sourceCheckoutId: 'a'.repeat(64),
             stagedRoot: Option.none(),
+            takeOverGlobalRuntime: false,
             terminateSuperseded: false,
             version,
           }).pipe(Effect.provideService(SystemInfo, testSystem));
@@ -830,7 +953,9 @@ describe('exact-head development runtime', () => {
             executableName,
             releaseRoot,
             reused: true,
+            sourceCheckoutId: 'a'.repeat(64),
             stagedRoot: Option.none(),
+            takeOverGlobalRuntime: false,
             terminateSuperseded: false,
             version,
           }).pipe(
@@ -921,7 +1046,9 @@ describe('exact-head development runtime', () => {
             executableName,
             releaseRoot,
             reused: true,
+            sourceCheckoutId: 'a'.repeat(64),
             stagedRoot: Option.none(),
+            takeOverGlobalRuntime: false,
             terminateSuperseded: false,
             version,
           }).pipe(
@@ -1004,7 +1131,9 @@ describe('exact-head development runtime', () => {
             executableName,
             releaseRoot,
             reused: false,
+            sourceCheckoutId: 'a'.repeat(64),
             stagedRoot: Option.some(stagedRoot),
+            takeOverGlobalRuntime: false,
             terminateSuperseded: false,
             version,
           }).pipe(

@@ -70,6 +70,51 @@ describe('process diagnostics', () => {
     );
   });
 
+  it.prop(
+    'keeps every operation value under its header for arbitrary preceding column widths',
+    {
+      processes: FC.array(
+        FC.record({
+          ageMilliseconds: FC.integer({max: 14 * 24 * 60 * 60 * 1_000, min: 0}),
+          currentOperation: FC.option(
+            FC.constantFrom('diagnostics', 'index-repository', 'mcp-server', 'repair', 'repository-lock'),
+            {nil: undefined},
+          ),
+          parentProcessId: FC.integer({max: 9_999_999, min: 0}),
+          processId: FC.integer({max: 9_999_999, min: 1}),
+          releaseVersion: FC.option(
+            FC.constantFrom('4.0.3', '4.0.3-local.g0123456789abcdef0123456789abcdef01234567', 'unknown-build'),
+            {nil: undefined},
+          ),
+          role: FC.constantFrom(
+            'cli' as const,
+            'graph-builder' as const,
+            'graph-parser-worker' as const,
+            'graph-waiter' as const,
+            'legacy' as const,
+            'local-model-worker' as const,
+            'manager' as const,
+            'mcp' as const,
+          ),
+          rssBytes: FC.option(FC.integer({max: 8 * 1024 * 1024 * 1024, min: 0}), {nil: undefined}),
+          startedAt: FC.constant('2026-08-05T00:00:00.000Z'),
+        }),
+        {maxLength: 30, minLength: 1},
+      ),
+    },
+    ({processes}) => {
+      const lines = renderProcessDiagnosticsTable(processes).split('\n');
+      const operationColumn = lines[0]!.indexOf('OPERATION');
+
+      expect(operationColumn).toBeGreaterThan(0);
+      expect(lines).toHaveLength(processes.length + 1);
+      for (const [index, process] of processes.entries()) {
+        expect(lines[index + 1]!.slice(operationColumn)).toBe(process.currentOperation ?? '-');
+      }
+    },
+    {fastCheck: {numRuns: 200}},
+  );
+
   it.effect('reports a validated pre-registry release lease without exposing its private fields', () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
