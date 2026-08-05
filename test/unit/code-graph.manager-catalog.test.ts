@@ -5,7 +5,11 @@ import * as BunServices from '@effect/platform-bun/BunServices';
 import {Database} from 'bun:sqlite';
 import {Effect, Layer, Option} from 'effect';
 import {afterEach, describe, expect, it} from 'vitest';
-import {groupManagerGraphRepositories, managerGraphCatalog} from '../../src/code_graph/visualization.js';
+import {
+  groupManagerGraphRepositories,
+  managerGraphCatalog,
+  releaseManagerGraphSnapshotLeases,
+} from '../../src/code_graph/visualization.js';
 import {
   CodeGraphStore,
   codeGraphVisualizationCatalogComponentStatement,
@@ -848,6 +852,30 @@ describe('Manager logical repository and workspace catalogs', () => {
     expect(catalog.repositories).toEqual([]);
     expect(catalog.diagnostics).toEqual([expect.objectContaining({checkoutId, code: 'unreadable-database'})]);
     expect(catalog.diagnostics[0]?.message).not.toContain(home);
+  });
+
+  it('releases catalog snapshot leases when the Manager lifecycle ends', async () => {
+    const home = temporaryRoot('threadnote-manager-lease-lifecycle-');
+    const identity = repositoryIdentity(home, '9'.repeat(64));
+    const databasePath = join(home, 'indexes', 'code-graph', 'repositories', identity.checkoutId, 'graph-v3.sqlite');
+    const snapshot = readySnapshot(identity, 0, 0, 0, '2026-08-05T12:00:00.000Z');
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        yield* store.activate(databasePath, identity, snapshot, [], [], []);
+        yield* managerGraphCatalog(home);
+      }).pipe(Effect.provide(storeLayer)),
+    );
+    const leased = new Database(databasePath, {readonly: true});
+    expect(leased.query('SELECT COUNT(*) AS count FROM snapshot_leases').get()).toEqual({count: 1});
+    leased.close();
+
+    await Effect.runPromise(releaseManagerGraphSnapshotLeases().pipe(Effect.provide(storeLayer)));
+
+    const released = new Database(databasePath, {readonly: true});
+    expect(released.query('SELECT COUNT(*) AS count FROM snapshot_leases').get()).toEqual({count: 0});
+    released.close();
   });
 });
 

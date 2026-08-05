@@ -68,6 +68,7 @@ import {
   managerGraphCatalogPage,
   managerGraphNodeDetail,
   managerGraphQuery,
+  releaseManagerGraphSnapshotLeases,
   managerGraphVisualization,
   managerGraphViewsPage,
 } from './code_graph/visualization.js';
@@ -254,6 +255,7 @@ export function runManage(config: RuntimeConfig, options: ManageOptions) {
       const crypto = yield* Crypto.Crypto;
       const token = Encoding.encodeBase64Url(yield* crypto.randomBytes(24));
       const server = yield* HttpServer.HttpServer;
+      yield* Effect.addFinalizer(() => releaseManagerGraphSnapshotLeases());
       yield* server.serve(createManagerServer({config, jobs: new Map(), token}));
       const actualPort = server.address._tag === 'TcpAddress' ? server.address.port : (options.uiPort ?? 0);
       const url = `http://127.0.0.1:${actualPort}/?token=${encodeURIComponent(token)}`;
@@ -1496,12 +1498,21 @@ const runManagerGraphAction = Effect.fn('manager.runGraphAction')(function* (
   if (action === 'purge-all') {
     return yield* runCaptured(() => runCodeGraphPurge(config, {all: true, dryRun}), runEffect);
   }
-  const [checkoutId, worktreeId] = yield* Effect.try({
-    try: () =>
-      [
-        requireGraphIdentity(body.checkoutId, 'checkoutId'),
-        requireGraphIdentity(body.worktreeId, 'worktreeId'),
-      ] as const,
+  const checkoutId = yield* Effect.try({
+    try: () => requireGraphIdentity(body.checkoutId, 'checkoutId'),
+    catch: error => error,
+  });
+  if (action === 'purge') {
+    return yield* runCaptured(
+      () => runCodeGraphPurge(config, {checkoutId, dryRun, waitTimeoutMilliseconds: 0}),
+      runEffect,
+    );
+  }
+  if (action === 'purge-obsolete') {
+    return yield* runCaptured(() => runCodeGraphPurge(config, {checkoutId, dryRun, obsolete: true}), runEffect);
+  }
+  const worktreeId = yield* Effect.try({
+    try: () => requireGraphIdentity(body.worktreeId, 'worktreeId'),
     catch: error => error,
   });
   const cwd = yield* resolveManagerGraphActionCwd(
@@ -1518,10 +1529,6 @@ const runManagerGraphAction = Effect.fn('manager.runGraphAction')(function* (
       );
     case 'index':
       return yield* runCaptured(() => runCodeGraphIndex(config, {cwd, full: body.full === true}), runEffect);
-    case 'purge':
-      return yield* runCaptured(() => runCodeGraphPurge(config, {cwd, dryRun}), runEffect);
-    case 'purge-obsolete':
-      return yield* runCaptured(() => runCodeGraphPurge(config, {cwd, dryRun, obsolete: true}), runEffect);
     default:
       return yield* Effect.fail(new Error(`Unsupported graph Manager action: ${action}`));
   }

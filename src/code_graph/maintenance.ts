@@ -1,5 +1,5 @@
 import * as SqliteClient from '@effect/sql-sqlite-bun/SqliteClient';
-import {Effect, FileSystem, Path} from 'effect';
+import {Crypto, Effect, FileSystem, Option, Path} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import type {DoctorCheck} from '../types.js';
 import {isFileLockTimeout, withExclusiveFileLock} from '../effect/file_lock.js';
@@ -71,6 +71,23 @@ export interface ObsoleteCodeGraphStorePurgeSummary {
 
 export interface ObsoleteCodeGraphStorePurgeInterlock {
   readonly beforeVerification?: (inventory: ObsoleteCodeGraphStoreInventory) => Effect.Effect<void>;
+}
+
+export interface CodeGraphIndexPurgeSummary {
+  readonly checkoutId: string;
+  readonly dryRun: boolean;
+  readonly existed: boolean;
+}
+
+export interface CodeGraphIndexPurgeInterlock {
+  readonly beforeRemoval?: () => Effect.Effect<void>;
+  readonly beforeVerification?: () => Effect.Effect<void>;
+}
+
+interface CodeGraphIndexPurgeTarget {
+  readonly dev: number;
+  readonly ino: number;
+  readonly path: string;
 }
 
 export interface CodeGraphRepairCompletion {
@@ -581,6 +598,92 @@ export const purgeObsoleteCodeGraphStores = Effect.fn('codeGraph.purgeObsoleteSt
   );
 });
 
+/**
+ * Removes one checkout-local disposable graph store without resolving a source worktree.
+ * The checkout root is derived from a validated identity, checked twice under all graph
+ * maintenance locks, and must remain an immediate non-symbolic-link child of the graph
+ * repositories directory.
+ */
+export const purgeCodeGraphIndex = Effect.fn('codeGraph.purgeIndex')(function* (
+  threadnoteHome: string,
+  checkoutId: string,
+  options: {
+    readonly dryRun: boolean;
+    readonly interlock?: CodeGraphIndexPurgeInterlock;
+    readonly waitTimeoutMilliseconds?: number;
+  },
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const crypto = yield* Crypto.Crypto;
+  if (!/^[0-9a-f]{64}$/.test(checkoutId)) {
+    return yield* Effect.fail(new Error('Code graph checkout identity is invalid.'));
+  }
+  const waitTimeoutMilliseconds = options.waitTimeoutMilliseconds ?? 0;
+  const lockOptions = {...CODE_GRAPH_PURGE_LOCK_OPTIONS, waitTimeoutMilliseconds};
+  return yield* withExclusiveFileLock(
+    fs,
+    codeGraphMaintenanceLockPath(path, threadnoteHome),
+    lockOptions,
+    withCodeGraphMaintenanceIntent(
+      threadnoteHome,
+      withExclusiveFileLock(
+        fs,
+        codeGraphRepositoryLockPath(path, threadnoteHome, checkoutId),
+        lockOptions,
+        Effect.gen(function* () {
+          yield* awaitCodeGraphWorktreeBuilds(threadnoteHome, checkoutId, waitTimeoutMilliseconds);
+          return yield* withCodeGraphDatabaseWriteLock(
+            threadnoteHome,
+            checkoutId,
+            Effect.gen(function* () {
+              const purgeTarget = yield* Effect.scoped(
+                Effect.gen(function* () {
+                  // Keep the original directory open until it has been moved into quarantine.
+                  // POSIX may recycle a deleted directory's inode immediately; the live handle
+                  // prevents that replacement from comparing equal to the planned target.
+                  const initial = yield* openCodeGraphIndexPurgeTarget(fs, path, threadnoteHome, checkoutId);
+                  yield* options.interlock?.beforeVerification?.() ?? Effect.void;
+                  const verified = yield* inspectCodeGraphIndexPurgeTarget(fs, path, threadnoteHome, checkoutId);
+                  if (!sameCodeGraphIndexPurgeTarget(initial, verified)) {
+                    return yield* Effect.fail(new Error('Code graph checkout target changed before purge.'));
+                  }
+                  if (verified === undefined || options.dryRun) {
+                    return {existed: verified !== undefined, quarantine: undefined};
+                  }
+
+                  yield* options.interlock?.beforeRemoval?.() ?? Effect.void;
+                  const quarantine = path.join(
+                    path.dirname(verified.path),
+                    `.${checkoutId}.${yield* crypto.randomUUIDv4}.purging`,
+                  );
+                  yield* fs.rename(verified.path, quarantine);
+                  const moved = yield* inspectQuarantinedCodeGraphIndexPurgeTarget(fs, quarantine);
+                  if (!sameCodeGraphIndexPurgeTarget(verified, moved)) {
+                    yield* restoreQuarantinedCodeGraphIndexPurgeTarget(fs, quarantine, verified.path);
+                    return yield* Effect.fail(new Error('Code graph checkout target changed before purge.'));
+                  }
+                  return {existed: true, quarantine};
+                }),
+              );
+              if (purgeTarget.quarantine !== undefined) {
+                // Close the directory handle before recursive deletion for Windows parity.
+                yield* fs.remove(purgeTarget.quarantine, {force: true, recursive: true});
+              }
+              return {
+                checkoutId,
+                dryRun: options.dryRun,
+                existed: purgeTarget.existed,
+              } satisfies CodeGraphIndexPurgeSummary;
+            }),
+            waitTimeoutMilliseconds,
+          );
+        }),
+      ),
+    ),
+  );
+});
+
 export const purgeAllCodeGraphIndexes = Effect.fn('codeGraph.purgeAllIndexes')(function* (threadnoteHome: string) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -704,6 +807,107 @@ function obsoleteGraphFileName(
 
 function emptyObsoleteInventory(): ObsoleteCodeGraphStoreInventory {
   return {bytes: 0, checkouts: [], fileCount: 0, unsafeEntryCount: 0};
+}
+
+function openCodeGraphIndexPurgeTarget(
+  fs: FileSystem.FileSystem,
+  path: Path.Path,
+  threadnoteHome: string,
+  checkoutId: string,
+) {
+  return Effect.gen(function* () {
+    const planned = yield* inspectCodeGraphIndexPurgeTarget(fs, path, threadnoteHome, checkoutId);
+    if (planned === undefined) return undefined;
+
+    const opened = yield* fs.open(planned.path, {flag: 'r'});
+    const openedInfo = yield* opened.stat;
+    const openedIno = Option.getOrUndefined(openedInfo.ino);
+    if (openedInfo.type !== 'Directory' || openedIno === undefined) {
+      return yield* Effect.fail(new Error('Refusing code graph purge without stable checkout identity metadata.'));
+    }
+    const target = {dev: openedInfo.dev, ino: openedIno, path: planned.path} satisfies CodeGraphIndexPurgeTarget;
+    const current = yield* inspectCodeGraphIndexPurgeTarget(fs, path, threadnoteHome, checkoutId);
+    if (!sameCodeGraphIndexPurgeTarget(target, current)) {
+      return yield* Effect.fail(new Error('Code graph checkout target changed before purge.'));
+    }
+    return target;
+  });
+}
+
+function inspectCodeGraphIndexPurgeTarget(
+  fs: FileSystem.FileSystem,
+  path: Path.Path,
+  threadnoteHome: string,
+  checkoutId: string,
+): Effect.Effect<CodeGraphIndexPurgeTarget | undefined, Error | unknown> {
+  return Effect.gen(function* () {
+    const repositories = codeGraphRepositoriesRoot(path, threadnoteHome);
+    if (!(yield* fs.exists(repositories))) return undefined;
+    if (yield* isSymbolicLink(fs, repositories)) {
+      return yield* Effect.fail(new Error('Refusing code graph purge through a symbolic-link repositories root.'));
+    }
+    const repositoriesInfo = yield* fs.stat(repositories).pipe(Effect.option);
+    if (repositoriesInfo._tag === 'None' || repositoriesInfo.value.type !== 'Directory') {
+      return yield* Effect.fail(
+        new Error('Refusing code graph purge because the repositories root is not a directory.'),
+      );
+    }
+    const canonicalRepositories = yield* fs.realPath(repositories);
+    const repositoryRoot = codeGraphRepositoryRoot(path, threadnoteHome, checkoutId);
+    if (!(yield* fs.exists(repositoryRoot))) return undefined;
+    if (yield* isSymbolicLink(fs, repositoryRoot)) {
+      return yield* Effect.fail(new Error('Refusing code graph purge through a symbolic-link checkout root.'));
+    }
+    const repositoryInfo = yield* fs.stat(repositoryRoot).pipe(Effect.option);
+    if (repositoryInfo._tag === 'None' || repositoryInfo.value.type !== 'Directory') {
+      return yield* Effect.fail(new Error('Refusing code graph purge because the checkout root is not a directory.'));
+    }
+    const canonicalRepository = yield* fs.realPath(repositoryRoot);
+    if (
+      path.dirname(canonicalRepository) !== canonicalRepositories ||
+      path.basename(canonicalRepository) !== checkoutId ||
+      !isContained(path, canonicalRepositories, canonicalRepository)
+    ) {
+      return yield* Effect.fail(new Error('Refusing code graph purge outside the repositories root.'));
+    }
+    const ino = Option.getOrUndefined(repositoryInfo.value.ino);
+    if (ino === undefined) {
+      return yield* Effect.fail(new Error('Refusing code graph purge without stable checkout identity metadata.'));
+    }
+    return {dev: repositoryInfo.value.dev, ino, path: canonicalRepository};
+  });
+}
+
+function inspectQuarantinedCodeGraphIndexPurgeTarget(
+  fs: FileSystem.FileSystem,
+  quarantine: string,
+): Effect.Effect<CodeGraphIndexPurgeTarget | undefined, never> {
+  return Effect.gen(function* () {
+    if (yield* isSymbolicLink(fs, quarantine)) return undefined;
+    const info = yield* fs.stat(quarantine).pipe(Effect.option);
+    if (Option.isNone(info) || info.value.type !== 'Directory') return undefined;
+    const ino = Option.getOrUndefined(info.value.ino);
+    return ino === undefined ? undefined : {dev: info.value.dev, ino, path: quarantine};
+  }).pipe(Effect.catch(() => Effect.succeed(undefined)));
+}
+
+function sameCodeGraphIndexPurgeTarget(
+  left: CodeGraphIndexPurgeTarget | undefined,
+  right: CodeGraphIndexPurgeTarget | undefined,
+): boolean {
+  if (left === undefined || right === undefined) return left === right;
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+function restoreQuarantinedCodeGraphIndexPurgeTarget(
+  fs: FileSystem.FileSystem,
+  quarantine: string,
+  target: string,
+): Effect.Effect<void, never> {
+  return Effect.gen(function* () {
+    if (yield* fs.exists(target)) return;
+    yield* fs.rename(quarantine, target);
+  }).pipe(Effect.catch(() => Effect.void));
 }
 
 function isSymbolicLink(fs: FileSystem.FileSystem, candidate: string): Effect.Effect<boolean, never> {

@@ -59,7 +59,10 @@ const MANAGER_QUERY_MAX_NODE_LIMIT = 200;
 const MANAGER_QUERY_MAX_LENGTH = 512;
 const MANAGER_QUERY_SEMANTIC_TIME_BUDGET_MILLISECONDS = 750;
 const MANAGER_QUERY_TRAVERSAL_TIME_BUDGET_MILLISECONDS = 1_000;
-const managerSnapshotLeases = new Map<string, {readonly renewAfter: number; readonly token: string}>();
+const managerSnapshotLeases = new Map<
+  string,
+  {readonly database: string; readonly renewAfter: number; readonly token: string}
+>();
 const INDEXED_VIEW_ID = /^[0-9a-f]{64}(?:\.[0-9a-f]{64})?$/;
 const NODE_ID_MAX_LENGTH = 512;
 const NODE_DETAIL_PROVENANCES: readonly CodeGraphProvenance[] = [
@@ -359,14 +362,33 @@ const retainManagerSnapshot = Effect.fn('codeGraph.retainManagerSnapshot')(funct
       .pipe(Effect.match({onFailure: () => false, onSuccess: () => true}));
     if (renewed) {
       managerSnapshotLeases.set(key, {
+        database,
         renewAfter: now + MANAGER_CATALOG_SNAPSHOT_RENEW_MILLISECONDS,
         token: existing.token,
       });
       return;
     }
   }
-  const token = yield* store.acquireSnapshotLease(database, snapshotId, MANAGER_CATALOG_SNAPSHOT_LEASE_MILLISECONDS);
-  managerSnapshotLeases.set(key, {renewAfter: now + MANAGER_CATALOG_SNAPSHOT_RENEW_MILLISECONDS, token});
+  const token = yield* store.acquireSnapshotLease(database, snapshotId, MANAGER_CATALOG_SNAPSHOT_LEASE_MILLISECONDS, {
+    retireWhenInactive: true,
+  });
+  managerSnapshotLeases.set(key, {
+    database,
+    renewAfter: now + MANAGER_CATALOG_SNAPSHOT_RENEW_MILLISECONDS,
+    token,
+  });
+});
+
+/** Releases every catalog lease owned by the current Manager process. */
+export const releaseManagerGraphSnapshotLeases = Effect.fn('codeGraph.releaseManagerSnapshotLeases')(function* () {
+  const store = yield* CodeGraphStore;
+  const leases = [...managerSnapshotLeases.values()];
+  managerSnapshotLeases.clear();
+  yield* Effect.forEach(
+    leases,
+    lease => store.releaseSnapshotLease(lease.database, lease.token).pipe(Effect.catch(() => Effect.void)),
+    {concurrency: 1, discard: true},
+  );
 });
 
 export function groupManagerGraphRepositories(

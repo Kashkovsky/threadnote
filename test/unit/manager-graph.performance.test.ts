@@ -11,6 +11,10 @@ import {
   managerGraphVisualizationLimits,
 } from '../../src/manager_graph_limits.js';
 
+// Istanbul instruments every branch in the layout loop. Keep the production
+// budget unchanged while allowing the measured coverage build its known tax.
+const focusedLayoutBudgetMilliseconds = '__coverage__' in globalThis ? 350 : 250;
+
 describe('Manager graph production-shaped budgets', () => {
   it('clamps server working sets before querying or serializing them', () => {
     expect(managerGraphVisualizationLimits()).toEqual({edgeLimit: 640, nodeLimit: 240});
@@ -66,7 +70,7 @@ describe('Manager graph production-shaped budgets', () => {
     const elapsedMilliseconds = performance.now() - startedAt;
 
     expect(result.size).toBe(MANAGER_GRAPH_MAX_NODE_LIMIT);
-    expect(elapsedMilliseconds).toBeLessThan(250);
+    expect(elapsedMilliseconds).toBeLessThan(focusedLayoutBudgetMilliseconds);
   });
 });
 

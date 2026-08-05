@@ -906,6 +906,63 @@ dd {
   color: var(--accent);
 }
 
+.manager-autocomplete {
+  min-width: 0;
+  position: relative;
+  width: 100%;
+}
+
+.manager-autocomplete-menu {
+  background: #111821;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  box-shadow: var(--shadow);
+  display: grid;
+  left: 0;
+  max-height: min(280px, 36dvh);
+  overflow: auto;
+  padding: 5px;
+  position: absolute;
+  right: 0;
+  top: calc(100% + 5px);
+  z-index: 30;
+}
+
+.manager-autocomplete-menu button {
+  background: transparent;
+  border-color: transparent;
+  border-radius: 6px;
+  justify-content: flex-start;
+  min-height: 32px;
+  overflow: hidden;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  width: 100%;
+}
+
+.manager-autocomplete-menu button:hover,
+.manager-autocomplete-menu button.is-active {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+}
+
+.manager-autocomplete-menu button.is-create {
+  color: var(--accent);
+  font-weight: 650;
+}
+
+.manager-autocomplete-menu button.is-create span {
+  align-items: center;
+  border: 1px solid var(--accent-line);
+  border-radius: 5px;
+  display: inline-flex;
+  height: 18px;
+  justify-content: center;
+  margin-right: 8px;
+  width: 18px;
+}
+
 .inspector textarea {
   height: 220px;
   margin: 8px 0;
@@ -2425,6 +2482,160 @@ dd {
   width: 100%;
 }
 
+.manager-dialog {
+  background: transparent;
+  border: 0;
+  color: var(--text);
+  max-height: min(760px, calc(100dvh - 32px));
+  max-width: none;
+  overflow: visible;
+  padding: 0;
+  width: min(540px, calc(100vw - 32px));
+}
+
+.manager-dialog::backdrop {
+  backdrop-filter: blur(7px);
+  background: rgba(3, 6, 10, 0.72);
+}
+
+.manager-dialog-card {
+  background: radial-gradient(circle at 90% 0, rgba(103, 232, 199, 0.08), transparent 220px), var(--panel);
+  border: 1px solid var(--accent-line);
+  border-radius: 16px;
+  box-shadow: 0 28px 90px rgba(0, 0, 0, 0.56);
+  display: grid;
+  max-height: min(760px, calc(100dvh - 32px));
+  overflow: hidden;
+}
+
+.manager-dialog-card.is-danger {
+  background: radial-gradient(circle at 90% 0, rgba(255, 122, 122, 0.1), transparent 220px), var(--panel);
+  border-color: rgba(255, 122, 122, 0.42);
+}
+
+.manager-dialog-header {
+  align-items: flex-start;
+  border-bottom: 1px solid var(--line-soft);
+  display: flex;
+  gap: 13px;
+  padding: 20px 22px 17px;
+}
+
+.manager-dialog-mark {
+  align-items: center;
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-line);
+  border-radius: 9px;
+  color: var(--accent);
+  display: inline-flex;
+  flex: 0 0 auto;
+  font-size: 18px;
+  font-weight: 750;
+  height: 34px;
+  justify-content: center;
+  width: 34px;
+}
+
+.manager-dialog-card.is-danger .manager-dialog-mark {
+  background: var(--danger-soft);
+  border-color: rgba(255, 122, 122, 0.38);
+  color: var(--danger);
+}
+
+.manager-dialog-header p {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  margin: 0 0 3px;
+  text-transform: uppercase;
+}
+
+.manager-dialog-header h2 {
+  font-size: 21px;
+  line-height: 1.2;
+  margin: 0;
+}
+
+.manager-dialog-body {
+  overflow-y: auto;
+  padding: 18px 22px 20px;
+}
+
+.manager-dialog-body > p {
+  color: #c8d0db;
+  line-height: 1.5;
+  margin: 0;
+}
+
+.manager-dialog-detail {
+  background: var(--code-bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--muted);
+  display: block;
+  font-size: 12px;
+  line-height: 1.45;
+  margin-top: 13px;
+  max-height: 96px;
+  overflow: auto;
+  overflow-wrap: anywhere;
+  padding: 9px 10px;
+  white-space: pre-wrap;
+}
+
+.manager-dialog-fields {
+  display: grid;
+  gap: 14px;
+  margin-top: 18px;
+}
+
+.manager-dialog-field {
+  display: grid;
+  gap: 6px;
+}
+
+.manager-dialog-field > label {
+  align-items: center;
+  display: flex;
+  font-size: 13px;
+  font-weight: 650;
+  justify-content: space-between;
+}
+
+.manager-dialog-field > label em {
+  color: var(--muted);
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.manager-dialog-fields small {
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.manager-dialog-fields strong {
+  color: var(--danger);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.manager-dialog-actions {
+  background: rgba(8, 11, 16, 0.48);
+  border-top: 1px solid var(--line-soft);
+  display: flex;
+  gap: 9px;
+  justify-content: flex-end;
+  padding: 14px 22px 16px;
+}
+
+.manager-dialog-actions button {
+  min-width: 108px;
+}
+
 .toast {
   background: #050508;
   border: 1px solid var(--line);
@@ -2581,6 +2792,23 @@ dd {
 }
 
 @media (max-width: 640px) {
+  .manager-dialog {
+    width: min(100% - 20px, 540px);
+  }
+
+  .manager-dialog-header,
+  .manager-dialog-body {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
+  .manager-dialog-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
   .workspace-header {
     align-items: stretch;
     flex-direction: column;

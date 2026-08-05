@@ -481,6 +481,7 @@ export interface CodeGraphStoreShape {
     databasePath: string,
     snapshotId: string,
     durationMilliseconds: number,
+    options?: {readonly retireWhenInactive?: boolean},
   ) => Effect.Effect<string, CodeGraphStoreError>;
   readonly promote: (
     databasePath: string,
@@ -876,6 +877,7 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
           }
           if (matching) matching.schemaInitialized = true;
         });
+      const retiredSnapshotCleanupScheduled = new Set<string>();
       const scheduleCompletedBuildCleanup = (databasePath: string, snapshotId?: string) =>
         Effect.gen(function* () {
           const session = yield* Effect.serviceOption(CodeGraphDatabaseSession);
@@ -923,6 +925,56 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
               yield* Effect.sleep(CODE_GRAPH_CLEANUP_YIELD_MILLISECONDS);
             }
           });
+          yield* cleanup.pipe(Effect.ignore, Effect.forkIn(scope));
+        }).pipe(Effect.asVoid);
+      const scheduleRetiredSnapshotCleanup = (databasePath: string) =>
+        Effect.gen(function* () {
+          if (retiredSnapshotCleanupScheduled.has(databasePath)) return;
+          retiredSnapshotCleanupScheduled.add(databasePath);
+          const session = yield* Effect.serviceOption(CodeGraphDatabaseSession);
+          const options =
+            Option.isSome(session) && session.value.databasePath === databasePath ? session.value : undefined;
+          const writerLockPath = options?.writerLockPath ?? inferredCodeGraphWriterLockPath(path, databasePath);
+          const cleanupSweep = Effect.gen(function* () {
+            // Open SQLite only while holding the checkout writer gate. Purge
+            // owns the same gate, so a detached collector cannot retain a
+            // Windows handle or recreate a database after targeted deletion.
+            if (!(yield* fs.exists(databasePath))) return {deleted: 0, remaining: false};
+            return yield* useDatabaseDirect(
+              databasePath,
+              Effect.gen(function* () {
+                const sql = yield* SqlClient.SqlClient;
+                yield* configureConnection(sql);
+                return yield* pruneRetiredSnapshotRowsPage(sql);
+              }),
+            );
+          });
+          const runSweep =
+            writerLockPath === undefined
+              ? cleanupSweep.pipe(Effect.map(Option.some))
+              : withExclusiveFileLock(fs, writerLockPath, CODE_GRAPH_DETACHED_CLEANUP_LOCK_OPTIONS, cleanupSweep).pipe(
+                  Effect.map(Option.some),
+                  Effect.catch(error =>
+                    isFileLockTimeout(error) ? Effect.succeed(Option.none()) : Effect.fail(error),
+                  ),
+                  Effect.provideService(Crypto.Crypto, crypto),
+                  Effect.provideService(Path.Path, path),
+                  Effect.provideService(SystemInfo, system),
+                );
+          const cleanup = Effect.gen(function* () {
+            // Pointer publication and lease release stay latency-bounded. Give
+            // the foreground operation one polling window to finish before the
+            // opportunistic collector attempts its first page.
+            yield* Effect.sleep(CODE_GRAPH_CLEANUP_YIELD_MILLISECONDS);
+            for (;;) {
+              const result = yield* runSweep;
+              // This collector is opportunistic and bounded to one table page
+              // per writer-gate acquisition. Foreground work always wins; the
+              // next lease/index/maintenance pass resumes any remaining rows.
+              if (Option.isNone(result) || !result.value.remaining) return;
+              yield* Effect.sleep(CODE_GRAPH_CLEANUP_YIELD_MILLISECONDS);
+            }
+          }).pipe(Effect.ensuring(Effect.sync(() => retiredSnapshotCleanupScheduled.delete(databasePath))));
           yield* cleanup.pipe(Effect.ignore, Effect.forkIn(scope));
         }).pipe(Effect.asVoid);
       return CodeGraphStore.of({
@@ -979,18 +1031,32 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
               Effect.fail(storeError('use code graph database session', cause as SqlError.SqlError)),
             ),
           ),
-        acquireSnapshotLease: (databasePath, snapshotId, durationMilliseconds) =>
+        acquireSnapshotLease: (databasePath, snapshotId, durationMilliseconds, options) =>
           Effect.gen(function* () {
             const token = `${system.processId}:${yield* crypto.randomUUIDv4}`;
-            return yield* prepare(databasePath).pipe(
+            const acquired = yield* prepare(databasePath).pipe(
               Effect.andThen(
                 withWriterGate(
                   databasePath,
-                  useDatabase(databasePath, acquireSnapshotLease(snapshotId, durationMilliseconds, token)),
+                  useDatabase(
+                    databasePath,
+                    Effect.gen(function* () {
+                      const acquiredToken = yield* acquireSnapshotLease(
+                        snapshotId,
+                        durationMilliseconds,
+                        token,
+                        options?.retireWhenInactive === true,
+                      );
+                      const cleanup = yield* pruneRetiredSnapshotRowsPage();
+                      return {cleanup, token: acquiredToken};
+                    }),
+                  ),
                 ),
               ),
               Effect.mapError(cause => storeError('acquire code graph snapshot lease', cause)),
             );
+            if (acquired.cleanup.remaining) yield* scheduleRetiredSnapshotCleanup(databasePath);
+            return acquired.token;
           }).pipe(Effect.mapError(cause => storeError('acquire code graph snapshot lease', cause))),
         activate: (databasePath, identity, snapshot, files, symbols, edges) =>
           prepare(databasePath).pipe(
@@ -1140,6 +1206,8 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
                 useDatabase(databasePath, promoteSnapshot(identity, snapshotId, activeWorktreeIds)),
               ),
             ),
+            Effect.tap(retired => (retired > 0 ? scheduleRetiredSnapshotCleanup(databasePath) : Effect.void)),
+            Effect.asVoid,
             Effect.mapError(cause => storeError('promote code graph snapshot', cause)),
           ),
         initialize: databasePath =>
@@ -1613,9 +1681,12 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
                       Effect.gen(function* () {
                         const sql = yield* SqlClient.SqlClient;
                         yield* configureConnection(sql);
-                        yield* sql.withTransaction(reconcileActiveWorktrees(sql, activeWorktreeIds));
+                        return yield* sql.withTransaction(reconcileActiveWorktrees(sql, activeWorktreeIds));
                       }),
                     ),
+                  ).pipe(
+                    Effect.tap(retired => (retired > 0 ? scheduleRetiredSnapshotCleanup(databasePath) : Effect.void)),
+                    Effect.asVoid,
                   )
                 : Effect.void,
             ),
@@ -1660,7 +1731,21 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
           fs.exists(databasePath).pipe(
             Effect.flatMap(exists =>
               exists
-                ? withWriterGate(databasePath, useDatabase(databasePath, releaseSnapshotLease(token)))
+                ? withWriterGate(
+                    databasePath,
+                    useDatabase(
+                      databasePath,
+                      Effect.gen(function* () {
+                        yield* releaseSnapshotLease(token);
+                        return yield* pruneRetiredSnapshotRowsPage();
+                      }),
+                    ),
+                  ).pipe(
+                    Effect.tap(cleanup =>
+                      cleanup.remaining ? scheduleRetiredSnapshotCleanup(databasePath) : Effect.void,
+                    ),
+                    Effect.asVoid,
+                  )
                 : Effect.void,
             ),
             Effect.mapError(cause => storeError('release code graph snapshot lease', cause)),
@@ -1671,7 +1756,18 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
               exists
                 ? withWriterGate(
                     databasePath,
-                    useDatabase(databasePath, renewSnapshotLease(token, durationMilliseconds)),
+                    useDatabase(
+                      databasePath,
+                      Effect.gen(function* () {
+                        yield* renewSnapshotLease(token, durationMilliseconds);
+                        return yield* pruneRetiredSnapshotRowsPage();
+                      }),
+                    ),
+                  ).pipe(
+                    Effect.tap(cleanup =>
+                      cleanup.remaining ? scheduleRetiredSnapshotCleanup(databasePath) : Effect.void,
+                    ),
+                    Effect.asVoid,
                   )
                 : Effect.fail(new CodeGraphStoreError('The code graph database disappeared while renewing a lease.')),
             ),
@@ -2924,9 +3020,39 @@ const initializeSchema = Effect.fn('codeGraph.initializeSchema')(function* (sql:
     CREATE TABLE IF NOT EXISTS snapshot_leases (
       token TEXT PRIMARY KEY NOT NULL,
       snapshot_id TEXT NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
-      expires_at INTEGER NOT NULL
+      expires_at INTEGER NOT NULL,
+      retire_when_inactive INTEGER NOT NULL DEFAULT 0 CHECK (retire_when_inactive IN (0, 1))
     )
   `);
+  const addedLeaseRetirement = yield* ensureColumn(
+    sql,
+    'snapshot_leases',
+    'retire_when_inactive',
+    'INTEGER NOT NULL DEFAULT 0 CHECK (retire_when_inactive IN (0, 1))',
+  );
+  if (addedLeaseRetirement) {
+    const now = yield* Clock.currentTimeMillis;
+    // Existing runtimes did not record whether a lease pinned an active view.
+    // Preserve live non-active consumers, but migrate current pointers and
+    // already-expired displaced pointers so the upgrade can reclaim their
+    // abandoned history on the next lease sweep.
+    yield* sql`
+      UPDATE snapshot_leases AS lease
+      SET retire_when_inactive = 1
+      WHERE EXISTS (
+        SELECT 1 FROM active_snapshots AS active
+        WHERE active.snapshot_id = lease.snapshot_id
+      ) OR (
+        lease.expires_at <= ${now}
+        AND EXISTS (
+          SELECT 1
+          FROM snapshots AS candidate
+          JOIN active_snapshots AS active ON active.worktree_id = candidate.worktree_id
+          WHERE candidate.id = lease.snapshot_id
+        )
+      )
+    `;
+  }
   yield* sql.unsafe(`
     CREATE TABLE IF NOT EXISTS snapshot_files (
       snapshot_id TEXT NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
@@ -3295,8 +3421,9 @@ const ensureColumn = Effect.fn('codeGraph.ensureColumn')(function* (
   declaration: string,
 ) {
   const columns = yield* sql.unsafe<{readonly name: string}>(`PRAGMA table_info(${table})`);
-  if (columns.some(candidate => candidate.name === column)) return;
+  if (columns.some(candidate => candidate.name === column)) return false;
   yield* sql.unsafe(`ALTER TABLE ${table} ADD COLUMN ${column} ${declaration}`);
+  return true;
 });
 
 const diagnoseDatabase = Effect.fn('codeGraph.diagnoseDatabase')(function* () {
@@ -3396,10 +3523,74 @@ const repairDatabase = Effect.fn('codeGraph.repairDatabase')(function* (dryRun: 
   return {removedSnapshots} satisfies CodeGraphDatabaseRepair;
 });
 
+const reapExpiredSnapshotLeases = Effect.fn('codeGraph.reapExpiredSnapshotLeases')(function* (
+  sql: SqlClient.SqlClient,
+  now: number,
+) {
+  const expired = yield* sql<{readonly snapshot_id: string}>`
+    SELECT DISTINCT snapshot_id
+    FROM snapshot_leases
+    WHERE expires_at <= ${now} AND retire_when_inactive = 1
+    ORDER BY snapshot_id
+  `;
+  const candidates = expired.map(row => row.snapshot_id);
+  if (candidates.length > 0) {
+    // Carry the active-view provenance to any overlapping reader. The final
+    // lease release can then retire the displaced snapshot regardless of which
+    // token happened to outlive the original active-view lease.
+    yield* sql`UPDATE snapshot_leases SET retire_when_inactive = 1 WHERE ${sql.in('snapshot_id', candidates)}`;
+  }
+  yield* sql`DELETE FROM snapshot_leases WHERE expires_at <= ${now}`;
+  return candidates;
+});
+
+const retireLeaseCandidates = Effect.fn('codeGraph.retireLeaseCandidates')(function* (
+  sql: SqlClient.SqlClient,
+  snapshotIds: readonly string[],
+  now: number,
+) {
+  const candidateSet = new Set(snapshotIds);
+  let frontier = [...candidateSet];
+  while (frontier.length > 0) {
+    const bases = yield* sql<{readonly base_snapshot_id: string}>`
+      SELECT DISTINCT base_snapshot_id
+      FROM snapshots
+      WHERE ${sql.in('id', frontier)} AND base_snapshot_id IS NOT NULL
+    `;
+    frontier = [];
+    for (const row of bases) {
+      if (candidateSet.has(row.base_snapshot_id)) continue;
+      candidateSet.add(row.base_snapshot_id);
+      frontier.push(row.base_snapshot_id);
+    }
+  }
+  const candidates = [...candidateSet];
+  if (candidates.length === 0) return 0;
+  yield* sql`
+    UPDATE snapshots
+    SET state = 'retired'
+    WHERE ${sql.in('id', candidates)}
+      AND state = 'ready'
+      AND id NOT IN (SELECT snapshot_id FROM active_snapshots)
+      AND id NOT IN (SELECT snapshot_id FROM snapshot_leases WHERE expires_at > ${now})
+      AND id NOT IN (
+        SELECT base_snapshot_id FROM snapshots
+        WHERE base_snapshot_id IS NOT NULL
+          AND id IN (
+            SELECT snapshot_id FROM active_snapshots
+            UNION
+            SELECT snapshot_id FROM snapshot_leases WHERE expires_at > ${now}
+          )
+      )
+  `;
+  return yield* lastStatementChangeCount(sql);
+});
+
 const acquireSnapshotLease = Effect.fn('codeGraph.acquireSnapshotLease')(function* (
   snapshotId: string,
   durationMilliseconds: number,
   token: string,
+  retireWhenInactive: boolean,
 ) {
   const sql = yield* SqlClient.SqlClient;
   yield* configureConnection(sql);
@@ -3407,7 +3598,6 @@ const acquireSnapshotLease = Effect.fn('codeGraph.acquireSnapshotLease')(functio
   const duration = Math.max(1_000, Math.min(60 * 60_000, Math.floor(durationMilliseconds)));
   yield* sql.withTransaction(
     Effect.gen(function* () {
-      yield* sql`DELETE FROM snapshot_leases WHERE expires_at <= ${now}`;
       const ready = yield* sql<{readonly id: string}>`
         SELECT id FROM snapshots WHERE id = ${snapshotId} AND state = 'ready' LIMIT 1
       `;
@@ -3415,9 +3605,19 @@ const acquireSnapshotLease = Effect.fn('codeGraph.acquireSnapshotLease')(functio
         return yield* Effect.fail(new CodeGraphStoreError(`Ready snapshot ${snapshotId} is no longer available.`));
       }
       yield* sql`
-        INSERT INTO snapshot_leases (token, snapshot_id, expires_at)
-        VALUES (${token}, ${snapshotId}, ${now + duration})
+        INSERT INTO snapshot_leases (token, snapshot_id, expires_at, retire_when_inactive)
+        VALUES (
+          ${token}, ${snapshotId}, ${now + duration},
+          CASE WHEN ${retireWhenInactive ? 1 : 0} = 1 OR EXISTS (
+            SELECT 1 FROM active_snapshots WHERE snapshot_id = ${snapshotId}
+          ) THEN 1 ELSE 0 END
+        )
       `;
+      // The new lease protects its target before expired readers are reaped.
+      // This makes the next ordinary graph read self-heal snapshots left by a
+      // crashed process without racing a caller that is reacquiring that view.
+      const expired = yield* reapExpiredSnapshotLeases(sql, now);
+      yield* retireLeaseCandidates(sql, expired, now);
     }),
   );
   return token;
@@ -3426,7 +3626,28 @@ const acquireSnapshotLease = Effect.fn('codeGraph.acquireSnapshotLease')(functio
 const releaseSnapshotLease = Effect.fn('codeGraph.releaseSnapshotLease')(function* (token: string) {
   const sql = yield* SqlClient.SqlClient;
   yield* configureConnection(sql);
-  yield* sql`DELETE FROM snapshot_leases WHERE token = ${token}`;
+  yield* sql.withTransaction(
+    Effect.gen(function* () {
+      const released = yield* sql<{readonly snapshot_id: string}>`
+        SELECT snapshot_id
+        FROM snapshot_leases
+        WHERE token = ${token} AND retire_when_inactive = 1
+        LIMIT 1
+      `;
+      const releasedCandidates = released.map(row => row.snapshot_id);
+      if (releasedCandidates.length > 0) {
+        yield* sql`
+          UPDATE snapshot_leases
+          SET retire_when_inactive = 1
+          WHERE ${sql.in('snapshot_id', releasedCandidates)}
+        `;
+      }
+      yield* sql`DELETE FROM snapshot_leases WHERE token = ${token}`;
+      const now = yield* Clock.currentTimeMillis;
+      const expired = yield* reapExpiredSnapshotLeases(sql, now);
+      yield* retireLeaseCandidates(sql, [...releasedCandidates, ...expired], now);
+    }),
+  );
 });
 
 const renewSnapshotLease = Effect.fn('codeGraph.renewSnapshotLease')(function* (
@@ -3448,6 +3669,8 @@ const renewSnapshotLease = Effect.fn('codeGraph.renewSnapshotLease')(function* (
       yield* sql`
         UPDATE snapshot_leases SET expires_at = ${now + duration} WHERE token = ${token}
       `;
+      const expired = yield* reapExpiredSnapshotLeases(sql, now);
+      yield* retireLeaseCandidates(sql, expired, now);
     }),
   );
 });
@@ -9621,7 +9844,7 @@ const promoteSnapshot = Effect.fn('codeGraph.promoteSnapshot')(function* (
   yield* configureConnection(sql);
   yield* initializeSchema(sql);
   const retainedWorktreeIds = [...new Set([...activeWorktreeIds, identity.worktreeId])];
-  yield* sql.withTransaction(
+  return yield* sql.withTransaction(
     Effect.gen(function* () {
       const candidate = yield* sql<{
         readonly generation: number | null;
@@ -9658,7 +9881,15 @@ const promoteSnapshot = Effect.fn('codeGraph.promoteSnapshot')(function* (
           snapshot_id = excluded.snapshot_id,
           activated_at = excluded.activated_at
       `;
-      yield* markUnusedSnapshotsRetired(sql);
+      // A lease acquired by ID may precede promotion. Once its snapshot owns
+      // an active pointer, its final release must reclaim that view after it is
+      // displaced just like a lease acquired while the pointer was active.
+      yield* sql`
+        UPDATE snapshot_leases
+        SET retire_when_inactive = 1
+        WHERE snapshot_id = ${snapshotId}
+      `;
+      return yield* markUnusedSnapshotsRetired(sql);
     }),
   );
 });
@@ -9675,14 +9906,14 @@ const reconcileActiveWorktrees = Effect.fn('codeGraph.reconcileActiveWorktrees')
       WHERE NOT (${sql.in('worktree_id', retained)})
     `;
   }
-  yield* markUnusedSnapshotsRetired(sql);
+  return yield* markUnusedSnapshotsRetired(sql);
 });
 
 const markUnusedSnapshotsRetired = Effect.fn('codeGraph.markUnusedSnapshotsRetired')(function* (
   sql: SqlClient.SqlClient,
 ) {
   const now = yield* Clock.currentTimeMillis;
-  yield* sql`DELETE FROM snapshot_leases WHERE expires_at <= ${now}`;
+  yield* reapExpiredSnapshotLeases(sql, now);
   yield* sql`
     UPDATE snapshots
     SET state = 'retired'
@@ -9695,6 +9926,7 @@ const markUnusedSnapshotsRetired = Effect.fn('codeGraph.markUnusedSnapshotsRetir
           AND id IN (SELECT snapshot_id FROM active_snapshots UNION SELECT snapshot_id FROM snapshot_leases)
       )
   `;
+  return yield* lastStatementChangeCount(sql);
 });
 
 interface CompactLexicalCleanupSpec {
@@ -10110,6 +10342,126 @@ const clearSnapshotOwnedRows = Effect.fn('codeGraph.clearSnapshotOwnedRows')(fun
       yield* Effect.yieldNow;
     }
   }
+});
+
+interface RetiredSnapshotCleanupPage {
+  readonly deleted: number;
+  readonly remaining: boolean;
+}
+
+/**
+ * Reclaim at most one bounded table page. Lease acquire/release use this
+ * foreground step, while pointer promotion schedules the same state machine as
+ * a best-effort detached collector. Query completion therefore never cascades
+ * a repository-sized snapshot delete, while repeated ordinary use still makes
+ * durable progress if a short-lived CLI interrupts the detached fiber.
+ */
+const pruneRetiredSnapshotRowsPage = Effect.fn('codeGraph.pruneRetiredSnapshotRowsPage')(function* (
+  providedSql?: SqlClient.SqlClient,
+) {
+  const sql = providedSql ?? (yield* SqlClient.SqlClient);
+  const pending = yield* sql<{readonly present: number}>`
+    SELECT EXISTS(SELECT 1 FROM snapshots WHERE state = 'retired' LIMIT 1) AS present
+  `;
+  if (Number(pending[0]?.present ?? 0) === 0) {
+    return {deleted: 0, remaining: false} satisfies RetiredSnapshotCleanupPage;
+  }
+
+  const compactTargets = yield* sql<CompactLexicalSnapshotKeyRow & {readonly snapshot_id: string}>`
+    SELECT compact.snapshot_key, compact.snapshot_id
+    FROM lexical_compact_snapshots AS compact
+    JOIN snapshots AS snapshot ON snapshot.id = compact.snapshot_id
+    WHERE snapshot.state = 'retired'
+    ORDER BY compact.snapshot_id
+    LIMIT 1
+  `;
+  const compactTarget = compactTargets[0];
+  if (compactTarget !== undefined) {
+    const compactSnapshotKey = yield* validatedCompactLexicalCount(compactTarget.snapshot_key, 'cleanup snapshot key');
+    for (const spec of COMPACT_LEXICAL_CLEANUP_SPECS) {
+      const deleted = yield* sql.withTransaction(
+        Effect.gen(function* () {
+          const statement = compactLexicalCleanupPageStatement(
+            spec,
+            compactSnapshotKey,
+            spec.batchRows,
+            Option.some(compactTarget.snapshot_id),
+          );
+          yield* sql.unsafe(statement.text, statement.parameters);
+          return yield* lastStatementChangeCount(sql);
+        }),
+      );
+      if (!Number.isSafeInteger(deleted) || deleted < 0) {
+        return yield* Effect.fail(new CodeGraphStoreError('Retired snapshot cleanup returned an invalid row count.'));
+      }
+      if (deleted > 0) return {deleted, remaining: true} satisfies RetiredSnapshotCleanupPage;
+    }
+    const metadataDeleted = yield* sql.withTransaction(
+      Effect.gen(function* () {
+        yield* sql.unsafe(
+          `DELETE FROM lexical_storage_formats
+           WHERE snapshot_id = ?
+             AND EXISTS (SELECT 1 FROM snapshots WHERE id = ? AND state = 'retired')`,
+          [compactTarget.snapshot_id, compactTarget.snapshot_id],
+        );
+        const formatRows = yield* lastStatementChangeCount(sql);
+        yield* sql.unsafe(
+          `DELETE FROM lexical_compact_snapshots
+           WHERE snapshot_key = ? AND snapshot_id = ?
+             AND EXISTS (SELECT 1 FROM snapshots WHERE id = ? AND state = 'retired')`,
+          [compactSnapshotKey, compactTarget.snapshot_id, compactTarget.snapshot_id],
+        );
+        return formatRows + (yield* lastStatementChangeCount(sql));
+      }),
+    );
+    if (metadataDeleted > 0) {
+      return {deleted: metadataDeleted, remaining: true} satisfies RetiredSnapshotCleanupPage;
+    }
+  }
+
+  for (const spec of RETIRED_SNAPSHOT_CLEANUP_SPECS) {
+    if (spec.table === LEGACY_BUILDING_REFERENCES_V3_TABLE && !(yield* tableExists(sql, spec.table))) continue;
+    const deleted = yield* sql.withTransaction(
+      Effect.gen(function* () {
+        const key = `(${spec.keyColumns.join(', ')})`;
+        yield* sql.unsafe(
+          `DELETE FROM ${spec.table}
+           WHERE ${key} IN (
+             SELECT ${spec.keyColumns.map(column => `candidate.${column}`).join(', ')}
+             FROM ${spec.table} AS candidate
+             WHERE candidate.snapshot_id IN (SELECT id FROM snapshots WHERE state = 'retired')
+             ORDER BY ${spec.keyColumns.map(column => `candidate.${column}`).join(', ')}
+             LIMIT ?
+           )`,
+          [spec.batchRows],
+        );
+        return yield* lastStatementChangeCount(sql);
+      }),
+    );
+    if (!Number.isSafeInteger(deleted) || deleted < 0) {
+      return yield* Effect.fail(new CodeGraphStoreError('Retired snapshot cleanup returned an invalid row count.'));
+    }
+    if (deleted > 0) return {deleted, remaining: true} satisfies RetiredSnapshotCleanupPage;
+  }
+
+  const removed = yield* sql.withTransaction(
+    Effect.gen(function* () {
+      yield* sql`DELETE FROM snapshots WHERE id IN (
+        SELECT id FROM snapshots WHERE state = 'retired' ORDER BY id LIMIT 100
+      )`;
+      return yield* lastStatementChangeCount(sql);
+    }),
+  );
+  if (!Number.isSafeInteger(removed) || removed < 0) {
+    return yield* Effect.fail(new CodeGraphStoreError('Retired snapshot cleanup returned an invalid count.'));
+  }
+  const remaining = yield* sql<{readonly present: number}>`
+    SELECT EXISTS(SELECT 1 FROM snapshots WHERE state = 'retired' LIMIT 1) AS present
+  `;
+  return {
+    deleted: removed,
+    remaining: Number(remaining[0]?.present ?? 0) !== 0,
+  } satisfies RetiredSnapshotCleanupPage;
 });
 
 /**

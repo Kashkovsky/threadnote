@@ -3,6 +3,7 @@ import {createRoot} from 'react-dom/client';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type {CodeGraphDiagnosticsReport} from './code_graph/diagnostics.js';
+import {ManagerAutocompleteInput, ManagerDialogProvider, useManagerDialogs} from './manager_dialog.js';
 import {
   GraphWorkspace,
   graphBuildIsActive,
@@ -162,6 +163,7 @@ function loadSidebarWidth(): number {
 }
 
 function App(): React.ReactElement {
+  const dialogs = useManagerDialogs();
   const [panel, setPanel] = useState<PanelName>('graph');
   const [state, setState] = useState<StateResponse | undefined>();
   const [graphCatalog, setGraphCatalog] = useState<GraphCatalog | undefined>();
@@ -317,6 +319,11 @@ function App(): React.ReactElement {
   );
   const selectedList = useMemo(() => [...visibleSelectedUris], [visibleSelectedUris]);
   const outputUris = useMemo(() => resourceUrisFromText(output), [output]);
+  const projectOptions = useMemo(() => managerProjectOptions(tree), [tree]);
+  const teamOptions = useMemo(
+    () => uniqueSelectorValues(['default', ...shares.map(share => share.name), target.team]),
+    [shares, target.team],
+  );
 
   async function refreshAll(): Promise<void> {
     const [nextState, nextTree, nextShares, nextGraphs] = await Promise.all([
@@ -527,16 +534,27 @@ function App(): React.ReactElement {
   }
 
   async function archiveCurrent(): Promise<void> {
-    if (!selectedUri || !window.confirm(`Archive ${selectedUri}?`)) {
-      return;
-    }
+    if (!selectedUri) return;
+    const confirmed = await dialogs.confirm({
+      confirmLabel: 'Archive memory',
+      detail: selectedUri,
+      message: 'The memory stays available in the archive and can be restored later.',
+      title: 'Archive this memory?',
+    });
+    if (!confirmed) return;
     await runAction('Archived memory', () => api('/api/memory/archive', {confirm: true, uri: selectedUri}));
   }
 
   async function forgetCurrent(): Promise<void> {
-    if (!selectedUri || !window.confirm(`Forget ${selectedUri}? This removes it from local context.`)) {
-      return;
-    }
+    if (!selectedUri) return;
+    const confirmed = await dialogs.confirm({
+      confirmLabel: 'Forget memory',
+      detail: selectedUri,
+      message: 'This permanently removes the memory from local context.',
+      title: 'Forget this memory?',
+      tone: 'danger',
+    });
+    if (!confirmed) return;
     await runAction('Forgot memory', () => api('/api/memory/forget', {confirm: true, uri: selectedUri}));
     setSelectedUri(undefined);
   }
@@ -554,13 +572,14 @@ function App(): React.ReactElement {
       return;
     }
     const fileCount = countFiles(selectedNode);
-    if (
-      !window.confirm(
-        `Remove folder ${selectedNode.uri} and ${fileCount} file${fileCount === 1 ? '' : 's'}? This cannot be undone.`,
-      )
-    ) {
-      return;
-    }
+    const confirmed = await dialogs.confirm({
+      confirmLabel: 'Remove folder',
+      detail: selectedNode.uri,
+      message: `This permanently removes ${fileCount} memory file${fileCount === 1 ? '' : 's'} from local context.`,
+      title: 'Remove this folder?',
+      tone: 'danger',
+    });
+    if (!confirmed) return;
     try {
       const result = await api<{readonly output?: string}>('/api/folder/remove', {
         confirm: true,
@@ -581,60 +600,101 @@ function App(): React.ReactElement {
   }
 
   async function publishCurrent(): Promise<void> {
-    if (!selectedUri) {
-      return;
-    }
-    const team = window.prompt('Team name', target.team || 'default') ?? '';
-    if (!team) {
-      return;
-    }
-    await runAction('Published memory', () => api('/api/memory/publish', {confirm: true, team, uri: selectedUri}));
+    if (!selectedUri) return;
+    const values = await dialogs.prompt({
+      confirmLabel: 'Publish memory',
+      detail: selectedUri,
+      fields: [
+        {
+          id: 'team',
+          initialValue: target.team || 'default',
+          label: 'Team',
+          options: teamOptions,
+          required: true,
+        },
+      ],
+      message: 'Publish this personal durable memory to a configured shared repository.',
+      title: 'Publish memory',
+    });
+    if (!values) return;
+    await runAction('Published memory', () =>
+      api('/api/memory/publish', {confirm: true, team: values.team, uri: selectedUri}),
+    );
   }
 
   async function unpublishCurrent(): Promise<void> {
-    if (!selectedUri || !window.confirm(`Unpublish ${selectedUri}?`)) {
-      return;
-    }
+    if (!selectedUri) return;
+    const confirmed = await dialogs.confirm({
+      confirmLabel: 'Unpublish memory',
+      detail: selectedUri,
+      message: 'Remove this memory from its shared repository projection.',
+      title: 'Unpublish this memory?',
+      tone: 'danger',
+    });
+    if (!confirmed) return;
     await runAction('Unpublished memory', () =>
       api('/api/memory/unpublish', {confirm: true, team: target.team, uri: selectedUri}),
     );
   }
 
   async function moveCurrent(): Promise<void> {
-    if (!selectedUri) {
-      return;
-    }
-    const project = window.prompt('Project', target.project) ?? '';
-    const topic = window.prompt('Topic', target.topic) ?? '';
-    const team = window.prompt('Team for shared target, or blank for personal', target.team) ?? '';
-    if (!project || !topic || !window.confirm(`Move ${selectedUri}?`)) {
-      return;
-    }
+    if (!selectedUri) return;
+    const values = await dialogs.prompt({
+      confirmLabel: 'Move memory',
+      detail: selectedUri,
+      fields: [
+        {
+          allowCreate: true,
+          id: 'project',
+          initialValue: target.project,
+          label: 'Project',
+          options: projectOptions,
+          required: true,
+        },
+        {id: 'topic', initialValue: target.topic, label: 'Topic', required: true},
+        {
+          description: 'Leave blank to move it to personal memory.',
+          id: 'team',
+          initialValue: target.team,
+          label: 'Shared team',
+          options: teamOptions,
+        },
+      ],
+      message: 'Review the destination before moving this memory.',
+      title: 'Move memory',
+    });
+    if (!values) return;
     await runAction('Moved memory', () =>
       api('/api/memory/move', {
         confirm: true,
         kind: target.kind,
-        project,
+        project: values.project,
         status: target.status,
-        team,
-        topic,
+        team: values.team,
+        topic: values.topic,
         uri: selectedUri,
       }),
     );
   }
 
   async function bulk(action: 'archive' | 'forget' | 'publish'): Promise<void> {
-    if (
-      bulkAction ||
-      selectedList.length === 0 ||
-      !window.confirm(`${action} ${selectedList.length} selected memories?`)
-    ) {
-      return;
-    }
-    const team = action === 'publish' ? (window.prompt('Team name', 'default')?.trim() ?? '') : undefined;
-    if (action === 'publish' && !team) {
-      return;
-    }
+    if (bulkAction || selectedList.length === 0) return;
+    const title = `${bulkActionLabel(action)} ${selectedList.length} selected ${selectedList.length === 1 ? 'memory' : 'memories'}?`;
+    const values = await dialogs.prompt({
+      confirmLabel: bulkActionLabel(action),
+      fields:
+        action === 'publish'
+          ? [{id: 'team', initialValue: 'default', label: 'Team', options: teamOptions, required: true}]
+          : undefined,
+      message:
+        action === 'forget'
+          ? 'This permanently removes every selected memory from local context.'
+          : 'Only the currently selected memories will be changed.',
+      title,
+      tone: action === 'forget' ? 'danger' : 'default',
+    });
+    if (!values) return;
+    const team = action === 'publish' ? values.team : undefined;
     const currentSelectedUri = selectedUri;
     setBulkAction(action);
     try {
@@ -740,15 +800,13 @@ function App(): React.ReactElement {
   }
 
   async function applyConsolidation(): Promise<void> {
-    if (
-      draftingConsolidation ||
-      applyingConsolidation ||
-      !jobId ||
-      !draft ||
-      !window.confirm('Apply this consolidation and archive personal sources?')
-    ) {
-      return;
-    }
+    if (draftingConsolidation || applyingConsolidation || !jobId || !draft) return;
+    const confirmed = await dialogs.confirm({
+      confirmLabel: 'Apply consolidation',
+      message: `Store the consolidated memory and archive ${consolidationSourceUris.length} personal source${consolidationSourceUris.length === 1 ? '' : 's'}.`,
+      title: 'Apply this consolidation?',
+    });
+    if (!confirmed) return;
     const sourceUris = consolidationSourceUris;
     const currentSelectedUri = selectedUri;
     setApplyingConsolidation(true);
@@ -784,6 +842,81 @@ function App(): React.ReactElement {
     } finally {
       setApplyingConsolidation(false);
     }
+  }
+
+  async function removeSelectedShare(): Promise<void> {
+    if (!selectedShare) return;
+    const confirmed = await dialogs.confirm({
+      confirmLabel: 'Remove share',
+      detail: selectedShare,
+      message: keepShareFiles
+        ? 'Disconnect this shared repository and keep its local files.'
+        : 'Disconnect this shared repository and remove its managed local files.',
+      title: 'Remove this share?',
+      tone: 'danger',
+    });
+    if (!confirmed) return;
+    await runAction('Removed share', () =>
+      api('/api/shares/remove', {
+        confirm: true,
+        keepFiles: keepShareFiles,
+        preserveLocal: preserveShare,
+        team: selectedShare,
+      }),
+    );
+    await loadShares();
+  }
+
+  async function repairThreadnote(): Promise<void> {
+    const confirmed = await dialogs.confirm({
+      confirmLabel: 'Run repair',
+      message: 'Run Threadnote repair now and write the approved maintenance changes.',
+      title: 'Repair Threadnote?',
+    });
+    if (!confirmed) return;
+    await runDoctorAction('Repair complete', 'Running repair', () => api('/api/doctor/repair', {confirm: true}));
+  }
+
+  async function applyCompactPlan(): Promise<void> {
+    const confirmed = await dialogs.confirm({
+      confirmLabel: 'Apply compact plan',
+      message: 'Apply the current memory compaction plan and write its changes.',
+      title: 'Compact memories?',
+    });
+    if (!confirmed) return;
+    await runAction('Compact applied', () =>
+      api('/api/compact', {
+        apply: true,
+        confirm: true,
+        project: compactProject,
+        topic: compactTopic,
+      }).then(result => result as {output: string}),
+    );
+  }
+
+  async function importPack(): Promise<void> {
+    const confirmed = await dialogs.confirm({
+      confirmLabel: 'Import pack',
+      detail: packPath || 'No path entered',
+      message: 'Import memories and resources from this pack into local Threadnote storage.',
+      title: 'Import this pack?',
+    });
+    if (!confirmed) return;
+    await runAction('Import complete', () => api('/api/import-pack', {confirm: true, path: packPath}));
+  }
+
+  async function seedThreadnote(skills: boolean): Promise<void> {
+    const confirmed = await dialogs.confirm({
+      confirmLabel: skills ? 'Seed skills' : 'Seed resources',
+      message: skills
+        ? 'Write the configured Threadnote skills into their managed destinations.'
+        : 'Write the configured Threadnote resources into local storage.',
+      title: skills ? 'Run seed-skills?' : 'Run seed?',
+    });
+    if (!confirmed) return;
+    await runAction(skills ? 'Seed skills complete' : 'Seed complete', () =>
+      api('/api/seed', {confirm: true, ...(skills ? {skills: true} : {})}),
+    );
   }
 
   function selectTreeUri(uri: string): void {
@@ -1162,6 +1295,7 @@ function App(): React.ReactElement {
                   disabled={metadataFieldsDisabled}
                   onChange={setTarget}
                   openSelect={openSelect}
+                  projectOptions={projectOptions}
                   setOpenSelect={setOpenSelect}
                   target={target}
                 />
@@ -1218,18 +1352,7 @@ function App(): React.ReactElement {
             keepShareFiles={keepShareFiles}
             loadShares={loadShares}
             preserveShare={preserveShare}
-            removeShare={() =>
-              window.confirm(`Remove share ${selectedShare}?`)
-                ? runAction('Removed share', () =>
-                    api('/api/shares/remove', {
-                      confirm: true,
-                      keepFiles: keepShareFiles,
-                      preserveLocal: preserveShare,
-                      team: selectedShare,
-                    }),
-                  ).then(loadShares)
-                : undefined
-            }
+            removeShare={() => void removeSelectedShare()}
             renameShare={() =>
               runAction('Renamed share', () =>
                 api('/api/shares/rename', {confirm: true, team: selectedShare, to: renameShareTo}),
@@ -1285,16 +1408,7 @@ function App(): React.ReactElement {
                 >
                   Repair Dry Run
                 </button>
-                <button
-                  disabled={doctorBusy}
-                  onClick={() =>
-                    window.confirm('Run Threadnote repair and write changes?')
-                      ? void runDoctorAction('Repair complete', 'Running repair', () =>
-                          api('/api/doctor/repair', {confirm: true}),
-                        )
-                      : undefined
-                  }
-                >
+                <button disabled={doctorBusy} onClick={() => void repairThreadnote()}>
                   Repair
                 </button>
               </div>
@@ -1329,9 +1443,11 @@ function App(): React.ReactElement {
                     onChange={event => setRecallQuery(event.target.value)}
                     placeholder="Search memories and seeded resources"
                   />
-                  <input
+                  <ManagerAutocompleteInput
+                    allowCreate={false}
+                    onChange={setRecallProject}
+                    options={projectOptions}
                     value={recallProject}
-                    onChange={event => setRecallProject(event.target.value)}
                     placeholder="project scope (blank = all)"
                   />
                   <button
@@ -1373,9 +1489,11 @@ function App(): React.ReactElement {
               <aside className="form-pane">
                 <section className="form-section">
                   <h3>Hygiene</h3>
-                  <input
+                  <ManagerAutocompleteInput
+                    allowCreate={false}
+                    onChange={setCompactProject}
+                    options={projectOptions}
                     value={compactProject}
-                    onChange={event => setCompactProject(event.target.value)}
                     placeholder="project"
                   />
                   <input
@@ -1395,22 +1513,7 @@ function App(): React.ReactElement {
                     >
                       Dry Run
                     </button>
-                    <button
-                      onClick={() =>
-                        window.confirm('Apply compact plan?')
-                          ? void runAction('Compact applied', () =>
-                              api('/api/compact', {
-                                apply: true,
-                                confirm: true,
-                                project: compactProject,
-                                topic: compactTopic,
-                              }).then(result => result as {output: string}),
-                            )
-                          : undefined
-                      }
-                    >
-                      Apply
-                    </button>
+                    <button onClick={() => void applyCompactPlan()}>Apply</button>
                   </div>
                 </section>
                 <section className="form-section">
@@ -1426,42 +1529,14 @@ function App(): React.ReactElement {
                     >
                       Export
                     </button>
-                    <button
-                      onClick={() =>
-                        window.confirm(`Import ${packPath}?`)
-                          ? void runAction('Import complete', () =>
-                              api('/api/import-pack', {confirm: true, path: packPath}),
-                            )
-                          : undefined
-                      }
-                    >
-                      Import
-                    </button>
+                    <button onClick={() => void importPack()}>Import</button>
                   </div>
                 </section>
                 <section className="form-section">
                   <h3>Seed</h3>
                   <div className="button-row">
-                    <button
-                      onClick={() =>
-                        window.confirm('Run Threadnote seed and write resources?')
-                          ? void runAction('Seed complete', () => api('/api/seed', {confirm: true}))
-                          : undefined
-                      }
-                    >
-                      Seed
-                    </button>
-                    <button
-                      onClick={() =>
-                        window.confirm('Run Threadnote seed-skills and write resources?')
-                          ? void runAction('Seed skills complete', () =>
-                              api('/api/seed', {confirm: true, skills: true}),
-                            )
-                          : undefined
-                      }
-                    >
-                      Seed Skills
-                    </button>
+                    <button onClick={() => void seedThreadnote(false)}>Seed</button>
+                    <button onClick={() => void seedThreadnote(true)}>Seed Skills</button>
                   </div>
                 </section>
               </aside>
@@ -1605,6 +1680,7 @@ function TargetFields(props: {
   readonly disabled: boolean;
   readonly onChange: (value: TargetForm) => void;
   readonly openSelect?: SelectId;
+  readonly projectOptions: readonly string[];
   readonly setOpenSelect: (value: SelectId | undefined) => void;
   readonly target: TargetForm;
 }): React.ReactElement {
@@ -1637,11 +1713,13 @@ function TargetFields(props: {
         setOpenSelect={props.setOpenSelect}
         value={props.target.status}
       />
-      <input
+      <ManagerAutocompleteInput
+        allowCreate
         disabled={props.disabled}
-        value={props.target.project}
-        onChange={event => set({project: event.target.value})}
+        onChange={project => set({project})}
+        options={props.projectOptions}
         placeholder="project"
+        value={props.target.project}
       />
       <input
         disabled={props.disabled}
@@ -1733,6 +1811,10 @@ function SharesPanel(props: {
   readonly shareTeam: string;
   readonly syncShare: () => void;
 }): React.ReactElement {
+  const teamOptions = useMemo(
+    () => uniqueSelectorValues(['default', ...props.shares.map(share => share.name)]),
+    [props.shares],
+  );
   return (
     <section className="panel is-active">
       <div className="split">
@@ -1764,10 +1846,12 @@ function SharesPanel(props: {
         </section>
         <aside className="form-pane">
           <h3>Create Share</h3>
-          <input
-            value={props.shareTeam}
-            onChange={event => props.setShareTeam(event.target.value)}
+          <ManagerAutocompleteInput
+            allowCreate
+            onChange={props.setShareTeam}
+            options={teamOptions}
             placeholder="team name"
+            value={props.shareTeam}
           />
           <input
             value={props.shareRemote}
@@ -1776,15 +1860,18 @@ function SharesPanel(props: {
           />
           <button onClick={props.createShare}>Create</button>
           <h3>Selected Share</h3>
-          <input
-            value={props.selectedShare}
-            onChange={event => props.setSelectedShare(event.target.value)}
+          <ManagerAutocompleteInput
+            onChange={props.setSelectedShare}
+            options={teamOptions}
             placeholder="team"
+            value={props.selectedShare}
           />
-          <input
-            value={props.renameShareTo}
-            onChange={event => props.setRenameShareTo(event.target.value)}
+          <ManagerAutocompleteInput
+            allowCreate
+            onChange={props.setRenameShareTo}
+            options={teamOptions}
             placeholder="new team name"
+            value={props.renameShareTo}
           />
           <button onClick={props.renameShare}>Rename</button>
           <input
@@ -1961,6 +2048,27 @@ function findNodeInTrees(trees: readonly (TreeNode | undefined)[], uri: string):
   return undefined;
 }
 
+export function managerProjectOptions(tree: TreeNode | undefined): readonly string[] {
+  const projects: string[] = [];
+  const visit = (node: TreeNode): void => {
+    if (node.metadata?.project) projects.push(node.metadata.project);
+    for (const child of node.children ?? []) visit(child);
+  };
+  if (tree) visit(tree);
+  return uniqueSelectorValues(projects);
+}
+
+function uniqueSelectorValues(values: readonly string[]): readonly string[] {
+  const unique = new Map<string, string>();
+  for (const value of values) {
+    const trimmed = value.trim();
+    if (!trimmed) continue;
+    const normalized = trimmed.toLocaleLowerCase();
+    if (!unique.has(normalized)) unique.set(normalized, trimmed);
+  }
+  return [...unique.values()].sort((left, right) => left.localeCompare(right));
+}
+
 function treeItemClass(active: boolean, readOnly: boolean, base?: string): string | undefined {
   const classes = [base, active ? 'is-active' : undefined, readOnly ? 'is-readonly' : undefined].filter(
     (value): value is string => typeof value === 'string',
@@ -2055,6 +2163,17 @@ function formatBulkResults(action: string, results: readonly BulkItemResult[]): 
   ].join('\n');
 }
 
+function bulkActionLabel(action: 'archive' | 'forget' | 'publish'): string {
+  switch (action) {
+    case 'archive':
+      return 'Archive';
+    case 'forget':
+      return 'Forget';
+    case 'publish':
+      return 'Publish';
+  }
+}
+
 function actionProgressLabel(action: 'archive' | 'forget' | 'publish'): string {
   switch (action) {
     case 'archive':
@@ -2135,5 +2254,9 @@ if (typeof document !== 'undefined') {
   if (!root) {
     throw new Error('Missing #root');
   }
-  createRoot(root).render(<App />);
+  createRoot(root).render(
+    <ManagerDialogProvider>
+      <App />
+    </ManagerDialogProvider>,
+  );
 }
