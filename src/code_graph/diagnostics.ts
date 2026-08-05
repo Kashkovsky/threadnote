@@ -64,6 +64,7 @@ export interface CodeGraphDiagnosticsAnalysis {
 export interface CodeGraphDiagnosticsView {
   readonly activatedAt?: string;
   readonly analysis?: CodeGraphDiagnosticsAnalysis;
+  readonly managementAvailable: boolean;
   readonly metrics: CodeGraphVisualizationCatalog['metrics'];
   readonly model: CodeGraphVisualizationCatalog['model'];
   readonly projectCount: number;
@@ -221,6 +222,12 @@ export const inspectAllCodeGraphs = Effect.fn('codeGraph.inspectAllDiagnostics')
           views.push({
             ...(catalog.activatedAt ? {activatedAt: catalog.activatedAt} : {}),
             ...(analysis ? {analysis} : {}),
+            managementAvailable: [...buildSelection.builds, ...buildSelection.waiters].some(
+              status =>
+                status.identity.checkoutId === checkoutId &&
+                status.identity.worktreeId === catalog.viewWorktreeId &&
+                status.managerContext !== undefined,
+            ),
             metrics: catalog.metrics,
             model: catalog.model,
             projectCount: catalog.projectCount,

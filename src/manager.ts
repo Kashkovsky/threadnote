@@ -56,6 +56,11 @@ import {collectDoctorChecks, runRepair, runStart} from './lifecycle.js';
 import {runSeed, runSeedSkills} from './seeding.js';
 import {currentPackageVersion, fetchLatestVersion, releaseSource} from './update.js';
 import {selectUpdateChannel} from './update_channel.js';
+import {runCodeGraphCompact, runCodeGraphIndex, runCodeGraphPurge, runCodeGraphRepair} from './code_graph/commands.js';
+import {inspectAllCodeGraphs} from './code_graph/diagnostics.js';
+import {readAllCodeGraphBuildStatuses} from './code_graph/build_status.js';
+import {resolveRepositoryIdentity} from './code_graph/repository.js';
+import {codeGraphMaintenanceIntentActive} from './code_graph/maintenance_gate.js';
 import {
   managerGraphAnalysis,
   managerGraphBuildCatalog,
@@ -194,6 +199,8 @@ interface ManagerResponseSink {
 type ManagerOperation<A> = Effect.Effect<A, unknown, ApplicationServices>;
 type ManagerEffectPromise = undefined;
 const NATIVE_RESOURCE_BACKEND = 'threadnote-native';
+const GRAPH_MAINTENANCE_BUSY_MESSAGE =
+  'Native code graph repair or maintenance is in progress. Wait for it to finish before starting or using Threadnote Manager.';
 
 type ConsolidationStatus = 'completed' | 'failed' | 'running';
 
@@ -241,6 +248,9 @@ const STATIC_FILES: Readonly<
 export function runManage(config: RuntimeConfig, options: ManageOptions) {
   return Effect.scoped(
     Effect.gen(function* () {
+      if (yield* codeGraphMaintenanceIntentActive(config.agentContextHome)) {
+        return yield* Effect.fail(new Error(GRAPH_MAINTENANCE_BUSY_MESSAGE));
+      }
       const crypto = yield* Crypto.Crypto;
       const token = Encoding.encodeBase64Url(yield* crypto.randomBytes(24));
       const server = yield* HttpServer.HttpServer;
@@ -457,6 +467,10 @@ const handleRequestLegacy = Effect.fn('manager.handleRequestLegacy')(function* (
     writeJson(response, 401, {error: 'Unauthorized'});
     return;
   }
+  if (isGraphApiPath(url.pathname) && (yield* codeGraphMaintenanceIntentActive(context.config.agentContextHome))) {
+    writeJson(response, 409, {error: GRAPH_MAINTENANCE_BUSY_MESSAGE});
+    return;
+  }
 
   if (request.method === 'GET' && url.pathname === '/api/tree') {
     const [tree, resourceTree] = yield* Effect.all([memoryTree(context.config), resourcesTree(context.config)]);
@@ -469,6 +483,17 @@ const handleRequestLegacy = Effect.fn('manager.handleRequestLegacy')(function* (
   }
   if (request.method === 'GET' && url.pathname === '/api/graphs/status') {
     writeJson(response, 200, yield* managerGraphBuildCatalog(context.config.agentContextHome));
+    return;
+  }
+  if (request.method === 'GET' && url.pathname === '/api/graphs/diagnostics') {
+    writeJson(
+      response,
+      200,
+      yield* inspectAllCodeGraphs(context.config.agentContextHome, {
+        analyze: url.searchParams.get('analyze') === 'true',
+        deep: url.searchParams.get('deep') === 'true',
+      }),
+    );
     return;
   }
   if (request.method === 'GET' && url.pathname === '/api/graphs/page') {
@@ -602,6 +627,9 @@ const handleRequestLegacy = Effect.fn('manager.handleRequestLegacy')(function* (
 
   const body = yield* readJsonBody(request);
   switch (url.pathname) {
+    case '/api/graphs/action':
+      writeJson(response, 200, yield* runManagerGraphAction(context.config, body, context.runEffect));
+      return;
     case '/api/memory/archive':
       requireConfirm(body);
       writeJson(
@@ -1438,6 +1466,113 @@ const runCaptured = Effect.fn('manager.runCaptured')(function* (
   return {output: captured.output};
 });
 
+const runManagerGraphAction = Effect.fn('manager.runGraphAction')(function* (
+  config: RuntimeConfig,
+  body: Record<string, unknown>,
+  runEffect?: ManagerEffectPromise,
+) {
+  const action = yield* Effect.try({
+    try: () => requireString(body.action, 'action'),
+    catch: error => error,
+  });
+  const dryRun = body.dryRun === true;
+  if (!dryRun && ['compact', 'purge', 'purge-all', 'purge-obsolete', 'repair'].includes(action)) {
+    yield* Effect.try({
+      try: () => requireConfirm(body),
+      catch: error => error,
+    });
+  }
+  if (action === 'repair') {
+    return yield* runCaptured(
+      () =>
+        runCodeGraphRepair(config, {
+          all: true,
+          deep: body.deep === true,
+          dryRun,
+        }),
+      runEffect,
+    );
+  }
+  if (action === 'purge-all') {
+    return yield* runCaptured(() => runCodeGraphPurge(config, {all: true, dryRun}), runEffect);
+  }
+  const [checkoutId, worktreeId] = yield* Effect.try({
+    try: () =>
+      [
+        requireGraphIdentity(body.checkoutId, 'checkoutId'),
+        requireGraphIdentity(body.worktreeId, 'worktreeId'),
+      ] as const,
+    catch: error => error,
+  });
+  const cwd = yield* resolveManagerGraphActionCwd(
+    config.agentContextHome,
+    checkoutId,
+    worktreeId,
+    optionalString(body.cwd),
+  );
+  switch (action) {
+    case 'compact':
+      return yield* runCaptured(
+        () => runCodeGraphCompact(config, {cwd, dryRun, force: body.force === true}),
+        runEffect,
+      );
+    case 'index':
+      return yield* runCaptured(() => runCodeGraphIndex(config, {cwd, full: body.full === true}), runEffect);
+    case 'purge':
+      return yield* runCaptured(() => runCodeGraphPurge(config, {cwd, dryRun}), runEffect);
+    case 'purge-obsolete':
+      return yield* runCaptured(() => runCodeGraphPurge(config, {cwd, dryRun, obsolete: true}), runEffect);
+    default:
+      return yield* Effect.fail(new Error(`Unsupported graph Manager action: ${action}`));
+  }
+});
+
+const resolveManagerGraphActionCwd = Effect.fn('manager.resolveGraphActionCwd')(function* (
+  threadnoteHome: string,
+  checkoutId: string,
+  worktreeId: string,
+  suppliedCwd?: string,
+) {
+  if (suppliedCwd) {
+    const path = yield* Path.Path;
+    if (!path.isAbsolute(suppliedCwd)) {
+      return yield* Effect.fail(new Error('Supply cwd as an absolute local worktree path.'));
+    }
+    const identity = yield* resolveRepositoryIdentity(suppliedCwd);
+    if (identity.checkoutId !== checkoutId || identity.worktreeId !== worktreeId) {
+      return yield* Effect.fail(new Error('The supplied worktree path does not match the selected graph identity.'));
+    }
+    return identity.repoRoot;
+  }
+  const statuses = yield* readAllCodeGraphBuildStatuses(threadnoteHome);
+  for (const status of statuses) {
+    if (
+      status.identity.checkoutId !== checkoutId ||
+      status.identity.worktreeId !== worktreeId ||
+      status.managerContext === undefined
+    ) {
+      continue;
+    }
+    const identity = yield* resolveRepositoryIdentity(status.managerContext.worktreePath).pipe(Effect.option);
+    if (
+      Option.isSome(identity) &&
+      identity.value.checkoutId === checkoutId &&
+      identity.value.worktreeId === worktreeId
+    ) {
+      return status.managerContext.worktreePath;
+    }
+  }
+  return yield* Effect.fail(
+    new Error('The selected graph has no current local worktree target. Supply cwd and refresh graph diagnostics.'),
+  );
+});
+
+function requireGraphIdentity(value: unknown, name: string): string {
+  const identity = requireString(value, name);
+  if (!/^[0-9a-f]{64}$/.test(identity)) throw new Error(`Provide ${name} as a 64-character graph identity.`);
+  return identity;
+}
+
 const memoryUriFor = Effect.fn('manager.memoryUriFor')(function* (
   config: RuntimeConfig,
   metadata: {
@@ -1566,6 +1701,10 @@ function publicConfig(config: RuntimeConfig): Record<string, unknown> {
 function isAuthorized(context: ApiContext, request: ManagerRequest): boolean {
   const auth = request.headers.authorization;
   return auth === `Bearer ${context.token}` || request.headers['x-threadnote-token'] === context.token;
+}
+
+function isGraphApiPath(pathname: string): boolean {
+  return pathname === '/api/graph' || pathname.startsWith('/api/graph/') || pathname.startsWith('/api/graphs');
 }
 
 function isSystemMemoryName(name: string): boolean {

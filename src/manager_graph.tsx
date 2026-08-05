@@ -1,5 +1,6 @@
 import React, {useEffect, useMemo, useRef, useState} from 'react';
 import * as THREE from 'three';
+import type {CodeGraphDiagnosticsReport} from './code_graph/diagnostics.js';
 import {compareCodeUnits} from './code_graph/ordering.js';
 import {
   MANAGER_GRAPH_DEFAULT_EDGE_LIMIT,
@@ -85,6 +86,19 @@ export interface GraphCatalog {
   readonly waiterCount: number;
   readonly waiters: readonly GraphBuildStatus[];
 }
+
+export type GraphAdministrationAction =
+  | {
+      readonly action: 'compact' | 'index' | 'purge' | 'purge-obsolete';
+      readonly checkoutId: string;
+      readonly cwd?: string;
+      readonly dryRun?: boolean;
+      readonly force?: boolean;
+      readonly full?: boolean;
+      readonly worktreeId: string;
+    }
+  | {readonly action: 'purge-all'; readonly dryRun?: boolean}
+  | {readonly action: 'repair'; readonly deep?: boolean; readonly dryRun?: boolean};
 
 export interface GraphCatalogPage {
   readonly projectOffset: number;
@@ -1102,6 +1116,9 @@ export function graphOverviewSizeLabel(graph: GraphVisualization): string {
 }
 
 export function GraphWorkspace(props: {
+  readonly administration?: CodeGraphDiagnosticsReport;
+  readonly administrationBusy?: string;
+  readonly administrationOutput?: string;
   readonly catalog?: GraphCatalog;
   readonly loadAnalysis: (repositoryId: string, snapshotId: string, signal: AbortSignal) => Promise<GraphAnalysis>;
   readonly loadGraph: (
@@ -1138,6 +1155,8 @@ export function GraphWorkspace(props: {
     query: string,
     signal: AbortSignal,
   ) => Promise<GraphViewPage>;
+  readonly onAdministrationAction?: (action: GraphAdministrationAction) => void;
+  readonly onDiagnostics?: (options: {readonly analyze: boolean; readonly deep: boolean}) => void;
   readonly onRefresh: () => void;
 }): React.ReactElement {
   const [repositoryId, setRepositoryId] = useState('');
@@ -1689,6 +1708,13 @@ export function GraphWorkspace(props: {
       </header>
 
       <div className="graph-notices">
+        <GraphAdministration
+          busy={props.administrationBusy}
+          onAction={props.onAdministrationAction ?? (() => undefined)}
+          onDiagnostics={props.onDiagnostics ?? (() => undefined)}
+          output={props.administrationOutput}
+          report={props.administration}
+        />
         {activeBuilds.length > 0 ? (
           <div className="graph-build-status" aria-live="polite">
             {activeBuilds.map(build => (
@@ -3052,6 +3078,317 @@ function NodeInspector(props: {
   );
 }
 
+function GraphAdministration(props: {
+  readonly busy?: string;
+  readonly onAction: (action: GraphAdministrationAction) => void;
+  readonly onDiagnostics: (options: {readonly analyze: boolean; readonly deep: boolean}) => void;
+  readonly output?: string;
+  readonly report?: CodeGraphDiagnosticsReport;
+}): React.ReactElement {
+  const [analyze, setAnalyze] = useState(false);
+  const [deep, setDeep] = useState(false);
+  const [forceCompact, setForceCompact] = useState(false);
+  const blocked = props.busy !== undefined;
+  const confirmAction = (message: string, action: GraphAdministrationAction): void => {
+    if (window.confirm(message)) props.onAction(action);
+  };
+  const targetAction = (
+    managementAvailable: boolean,
+    action: Extract<GraphAdministrationAction, {readonly checkoutId: string}>,
+  ): GraphAdministrationAction | undefined => {
+    if (managementAvailable) return action;
+    const cwd = window.prompt(
+      'Threadnote has no current local path for this indexed view. Enter an absolute path to its worktree. The server will verify its graph identity before acting.',
+    );
+    return cwd?.trim() ? {...action, cwd: cwd.trim()} : undefined;
+  };
+  return (
+    <details className="graph-administration">
+      <summary>
+        <span>
+          <strong>Graph administration</strong>
+          <small>
+            {props.report
+              ? `${props.report.summary.databaseCount} databases · ${props.report.summary.readySnapshotCount} ready snapshots`
+              : 'Load home-wide status, diagnostics, and maintenance controls'}
+          </small>
+        </span>
+        {props.busy ? <em>{props.busy}…</em> : null}
+      </summary>
+      <div className="graph-administration-body">
+        <div className="graph-administration-toolbar">
+          <label className="check-row">
+            <input
+              checked={analyze}
+              disabled={blocked}
+              onChange={event => setAnalyze(event.target.checked)}
+              type="checkbox"
+            />
+            <span>Structural stats</span>
+          </label>
+          <label className="check-row">
+            <input
+              checked={deep}
+              disabled={blocked}
+              onChange={event => setDeep(event.target.checked)}
+              type="checkbox"
+            />
+            <span>Deep SQLite checks</span>
+          </label>
+          <button disabled={blocked} onClick={() => props.onDiagnostics({analyze, deep})} type="button">
+            Diagnose all
+          </button>
+          <button
+            disabled={blocked}
+            onClick={() => props.onAction({action: 'repair', deep, dryRun: true})}
+            type="button"
+          >
+            Preview repair
+          </button>
+          <button
+            disabled={blocked}
+            onClick={() =>
+              confirmAction(
+                deep
+                  ? 'Deep repair may discard corrupt disposable graph databases. Continue?'
+                  : 'Run immediate quick repair and pending graph schema migrations?',
+                {action: 'repair', deep},
+              )
+            }
+            type="button"
+          >
+            {deep ? 'Deep repair all' : 'Repair all'}
+          </button>
+          <button disabled={blocked} onClick={() => props.onAction({action: 'purge-all', dryRun: true})} type="button">
+            Preview purge all
+          </button>
+          <button
+            className="danger"
+            disabled={blocked}
+            onClick={() =>
+              confirmAction('Purge every local disposable native code graph index?', {action: 'purge-all'})
+            }
+            type="button"
+          >
+            Purge all
+          </button>
+        </div>
+        <label className="check-row graph-force-compact">
+          <input
+            checked={forceCompact}
+            disabled={blocked}
+            onChange={event => setForceCompact(event.target.checked)}
+            type="checkbox"
+          />
+          <span>Force compaction below the reviewed reclaimable-space threshold</span>
+        </label>
+        {props.report ? (
+          <div className="graph-database-grid">
+            {props.report.databases.map(database => {
+              const view = database.views.find(candidate => candidate.managementAvailable) ?? database.views[0];
+              const managementAvailable = view?.managementAvailable === true;
+              const repository = view?.repository.displayName ?? `Checkout ${database.checkoutId.slice(-8)}`;
+              const obsolete = props.report?.obsoleteStores.checkouts.find(
+                checkout => checkout.checkoutId === database.checkoutId,
+              );
+              const target = view ? {checkoutId: database.checkoutId, worktreeId: view.viewWorktreeId} : undefined;
+              return (
+                <article className="graph-database-card" key={database.checkoutId}>
+                  <header>
+                    <span>
+                      <strong>{repository}</strong>
+                      <small>{database.checkoutId.slice(-12)}</small>
+                    </span>
+                    <em className={`is-${database.health?.integrity ?? database.healthState}`}>
+                      {database.health?.integrity ?? database.healthState}
+                    </em>
+                  </header>
+                  <dl>
+                    <div>
+                      <dt>Snapshots</dt>
+                      <dd>{database.health?.readySnapshots ?? 0} ready</dd>
+                    </div>
+                    <div>
+                      <dt>Views</dt>
+                      <dd>{database.views.length}</dd>
+                    </div>
+                    <div>
+                      <dt>Storage</dt>
+                      <dd>
+                        {database.storage.state === 'available'
+                          ? formatGraphBytes(database.storage.totalBytes)
+                          : 'missing'}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>Jobs</dt>
+                      <dd>{database.builds.length + database.waiters.length}</dd>
+                    </div>
+                  </dl>
+                  <div className="graph-database-views">
+                    {database.views.map(candidate => (
+                      <div key={`${database.checkoutId}:${candidate.viewWorktreeId}`}>
+                        <strong>View {candidate.viewWorktreeId.slice(-8)}</strong>
+                        <span>
+                          {candidate.snapshot.fileCount.toLocaleString()} files ·{' '}
+                          {candidate.snapshot.symbolCount.toLocaleString()} symbols ·{' '}
+                          {candidate.snapshot.edgeCount.toLocaleString()} edges
+                        </span>
+                        {candidate.analysis ? (
+                          <small>
+                            {candidate.analysis.coverage.complete ? 'Complete' : 'Partial'} analysis ·{' '}
+                            {candidate.analysis.statistics.connectedComponentCount.toLocaleString()} components ·{' '}
+                            {candidate.analysis.statistics.communityCount.toLocaleString()} communities · average degree{' '}
+                            {candidate.analysis.statistics.averageDegree.toFixed(2)} · maximum{' '}
+                            {candidate.analysis.statistics.maximumDegree.toLocaleString()} ·{' '}
+                            {candidate.analysis.statistics.isolatedNodeCount.toLocaleString()} isolated
+                          </small>
+                        ) : null}
+                      </div>
+                    ))}
+                  </div>
+                  {[...database.builds, ...database.waiters].map(job => (
+                    <p className="graph-database-job" key={`${job.buildId}:${job.coordination?.role ?? 'build'}`}>
+                      {job.identity.worktreeId.slice(-8)} · {job.state} · {job.phase}
+                      {job.subphase ? `/${job.subphase}` : ''} · {job.observation.liveness}
+                    </p>
+                  ))}
+                  {database.issues.map(issue => (
+                    <p className="graph-database-issue" key={`${database.checkoutId}:${issue.code}`}>
+                      {issue.code}: {issue.message}
+                    </p>
+                  ))}
+                  <div className="graph-database-actions">
+                    <button
+                      disabled={blocked || !target}
+                      onClick={() => {
+                        if (!target) return;
+                        const action = targetAction(managementAvailable, {action: 'index', ...target});
+                        if (action) props.onAction(action);
+                      }}
+                      type="button"
+                    >
+                      Index
+                    </button>
+                    <button
+                      disabled={blocked || !target}
+                      onClick={() => {
+                        if (!target) return;
+                        const action = targetAction(managementAvailable, {action: 'index', full: true, ...target});
+                        if (action) props.onAction(action);
+                      }}
+                      type="button"
+                    >
+                      Reindex
+                    </button>
+                    <button
+                      disabled={blocked || !target}
+                      onClick={() => {
+                        if (!target) return;
+                        const action = targetAction(managementAvailable, {
+                          action: 'compact',
+                          dryRun: true,
+                          force: forceCompact,
+                          ...target,
+                        });
+                        if (action) props.onAction(action);
+                      }}
+                      type="button"
+                    >
+                      Preview compact
+                    </button>
+                    <button
+                      disabled={blocked || !target}
+                      onClick={() => {
+                        if (!target) return;
+                        const action = targetAction(managementAvailable, {
+                          action: 'compact',
+                          force: forceCompact,
+                          ...target,
+                        });
+                        if (action) confirmAction('Compact this verified graph database now?', action);
+                      }}
+                      type="button"
+                    >
+                      Compact
+                    </button>
+                    {obsolete ? (
+                      <>
+                        <button
+                          disabled={blocked || !target}
+                          onClick={() => {
+                            if (!target) return;
+                            const action = targetAction(managementAvailable, {
+                              action: 'purge-obsolete',
+                              dryRun: true,
+                              ...target,
+                            });
+                            if (action) props.onAction(action);
+                          }}
+                          type="button"
+                        >
+                          Preview obsolete
+                        </button>
+                        <button
+                          disabled={blocked || !target}
+                          onClick={() => {
+                            if (!target) return;
+                            const action = targetAction(managementAvailable, {
+                              action: 'purge-obsolete',
+                              ...target,
+                            });
+                            if (action) {
+                              confirmAction(`Purge ${obsolete.fileCount} verified obsolete graph file(s)?`, action);
+                            }
+                          }}
+                          type="button"
+                        >
+                          Purge obsolete
+                        </button>
+                      </>
+                    ) : null}
+                    <button
+                      disabled={blocked || !target}
+                      onClick={() => {
+                        if (!target) return;
+                        const action = targetAction(managementAvailable, {action: 'purge', dryRun: true, ...target});
+                        if (action) props.onAction(action);
+                      }}
+                      type="button"
+                    >
+                      Preview purge
+                    </button>
+                    <button
+                      className="danger"
+                      disabled={blocked || !target}
+                      onClick={() => {
+                        if (!target) return;
+                        const action = targetAction(managementAvailable, {action: 'purge', ...target});
+                        if (action) confirmAction('Purge this disposable native graph index?', action);
+                      }}
+                      type="button"
+                    >
+                      Purge graph
+                    </button>
+                  </div>
+                  {!managementAvailable ? (
+                    <small className="graph-management-unavailable">
+                      Enter the local worktree path when prompted; Threadnote verifies it against this graph identity.
+                    </small>
+                  ) : null}
+                </article>
+              );
+            })}
+          </div>
+        ) : (
+          <p>Load diagnostics to enumerate every local graph database.</p>
+        )}
+        {props.output ? <pre className="graph-administration-output">{props.output}</pre> : null}
+      </div>
+    </details>
+  );
+}
+
 function GraphBuildProgress(props: {
   readonly build: GraphBuildStatus;
   readonly repositories: readonly GraphRepositoryGroup[];
@@ -3420,8 +3757,15 @@ function formatGraphMilliseconds(milliseconds: number): string {
 function formatGraphBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes < 0) return 'unknown';
   if (bytes < 1_024) return `${Math.round(bytes)} B`;
-  if (bytes < 1_048_576) return `${(bytes / 1_024).toFixed(1)} KiB`;
-  return `${(bytes / 1_048_576).toFixed(bytes >= 10 * 1_048_576 ? 1 : 2)} MiB`;
+  const units = ['KiB', 'MiB', 'GiB', 'TiB'];
+  let value = bytes / 1_024;
+  let unit = units[0]!;
+  for (const candidate of units.slice(1)) {
+    if (value < 1_024) break;
+    value /= 1_024;
+    unit = candidate;
+  }
+  return `${value >= 10 ? value.toFixed(1) : value.toFixed(2)} ${unit}`;
 }
 
 function buildGraphLayout(

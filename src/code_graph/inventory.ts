@@ -56,6 +56,7 @@ const PRUNED_DIRECTORIES = new Set([
   'coverage',
   'deriveddata',
   'dist',
+  'graphify-out',
   'node_modules',
   'out',
   'pods',
@@ -68,6 +69,7 @@ const GENERATED_DIRECTORIES = new Set([
   'coverage',
   'deriveddata',
   'dist',
+  'graphify-out',
   'node_modules',
   'out',
 ]);
