@@ -1253,14 +1253,24 @@ describe('Threadnote 4 website content', () => {
     );
   });
 
-  it('documents the explicit publishing and supported hook boundaries', () => {
+  it('documents explicit publishing, Cursor Marketplace, and supported hook boundaries', () => {
     const content = JSON.stringify(docsSections);
+    const cursorPluginArticle = docsSections
+      .flatMap(section => section.articles)
+      .find(article => article.id === 'cursor-marketplace-plugin');
 
     expect(content).toContain('threadnote install-hooks claude --dry-run');
     expect(content).not.toContain('threadnote install-hooks codex --dry-run');
     expect(content).toContain('threadnote share publish');
     expect(content).toContain('--preview');
     expect(content).toContain('selected vector generation');
+    expect(cursorPluginArticle).toBeDefined();
+    expect(JSON.stringify(cursorPluginArticle)).toContain('threadnote mcp-install cursor --apply');
+    expect(JSON.stringify(cursorPluginArticle)).toContain('/add-plugin threadnote');
+    expect(JSON.stringify(cursorPluginArticle)).toContain('https://cursor.com/marketplace/publish');
+    expect(JSON.stringify(cursorPluginArticle)).toContain('never deletes it automatically');
+    expect(content).toContain('Threadnote never injects a Cursor plugin under ~/.cursor/plugins/local');
+    expect(content).not.toContain('Cursor, and Copilot rely on the user-level instructions Threadnote installs');
   });
 
   it('uses the real Manager labels and share status fields in the mock data', () => {
