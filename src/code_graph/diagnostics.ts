@@ -195,7 +195,7 @@ export const inspectAllCodeGraphs = Effect.fn('codeGraph.inspectAllDiagnostics')
                   database,
                   analyzeCodeGraph(store, {
                     databasePath: database,
-                    limits: codeGraphAnalysisLimitsForView('stats'),
+                    limits: codeGraphAnalysisLimitsForView('communities'),
                     snapshot: catalog.snapshot,
                   }),
                   {readOnly: true},

@@ -3237,11 +3237,18 @@ function GraphAdministration(props: {
                         {candidate.analysis ? (
                           <small>
                             {candidate.analysis.coverage.complete ? 'Complete' : 'Partial'} analysis ·{' '}
-                            {candidate.analysis.statistics.connectedComponentCount.toLocaleString()} components ·{' '}
-                            {candidate.analysis.statistics.communityCount.toLocaleString()} communities · average degree{' '}
-                            {candidate.analysis.statistics.averageDegree.toFixed(2)} · maximum{' '}
-                            {candidate.analysis.statistics.maximumDegree.toLocaleString()} ·{' '}
-                            {candidate.analysis.statistics.isolatedNodeCount.toLocaleString()} isolated
+                            {candidate.analysis.coverage.topology.state === 'complete' ||
+                            candidate.analysis.coverage.topology.state === 'partial' ? (
+                              <>
+                                {candidate.analysis.statistics.connectedComponentCount.toLocaleString()} components ·{' '}
+                                {candidate.analysis.statistics.communityCount.toLocaleString()} communities · average
+                                degree {candidate.analysis.statistics.averageDegree.toFixed(2)} · maximum{' '}
+                                {candidate.analysis.statistics.maximumDegree.toLocaleString()} ·{' '}
+                                {candidate.analysis.statistics.isolatedNodeCount.toLocaleString()} isolated
+                              </>
+                            ) : (
+                              <>topology {candidate.analysis.coverage.topology.state}</>
+                            )}
                           </small>
                         ) : null}
                       </div>

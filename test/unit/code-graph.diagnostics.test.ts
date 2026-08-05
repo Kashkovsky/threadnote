@@ -60,7 +60,7 @@ describe('all-code-graph diagnostics', () => {
       views: [
         {
           analysis: {
-            coverage: {complete: true},
+            coverage: {complete: true, topology: {state: 'complete'}},
             statistics: {snapshotEdgeCount: 0, snapshotNodeCount: 0},
           },
           repository: {displayName: 'acme/diagnostics'},
@@ -90,7 +90,7 @@ describe('all-code-graph diagnostics', () => {
       version: 1,
     });
     expect(commandReport.databases.find(database => database.checkoutId === healthyCheckoutId)).toMatchObject({
-      views: [{analysis: {coverage: {complete: true}}}],
+      views: [{analysis: {coverage: {complete: true, topology: {state: 'complete'}}}}],
     });
   });
 });
