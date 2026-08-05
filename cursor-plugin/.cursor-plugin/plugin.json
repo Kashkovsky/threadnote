@@ -13,7 +13,7 @@
   "homepage": "https://threadnote.io/",
   "repository": "https://github.com/Kashkovsky/threadnote",
   "license": "MIT",
-  "logo": "https://threadnote.io/threadnote-logo.svg",
+  "logo": "assets/logo.svg",
   "keywords": ["agent-memory", "context", "handoff", "knowledge-graph", "threadnote"],
   "category": "developer-tools",
   "tags": ["context", "memory", "rules"],

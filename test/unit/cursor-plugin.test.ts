@@ -23,6 +23,8 @@ describe('Cursor plugin package', () => {
       packageRaw,
       lifecycle,
       update,
+      marketplaceLogo,
+      canonicalLogo,
     ] = await Promise.all([
       readFile(join(root, '.cursor-plugin', 'marketplace.json'), 'utf8'),
       readFile(join(pluginRoot, '.cursor-plugin', 'plugin.json'), 'utf8'),
@@ -33,6 +35,8 @@ describe('Cursor plugin package', () => {
       readFile(join(root, 'package.json'), 'utf8'),
       readFile(join(root, 'src', 'lifecycle.ts'), 'utf8'),
       readFile(join(root, 'src', 'update.ts'), 'utf8'),
+      readFile(join(pluginRoot, 'assets', 'logo.svg'), 'utf8'),
+      readFile(join(root, 'assets', 'brand', 'threadnote-logo.svg'), 'utf8'),
     ]);
     const marketplace = JSON.parse(marketplaceRaw) as Record<string, unknown>;
     const manifest = JSON.parse(manifestRaw) as Record<string, unknown>;
@@ -69,6 +73,7 @@ describe('Cursor plugin package', () => {
     );
     expect(manifest).toMatchObject({
       license: 'MIT',
+      logo: 'assets/logo.svg',
       minClientVersions: {cursor: '2.5.0'},
       name: 'threadnote',
       rules: './rules/',
@@ -85,6 +90,11 @@ describe('Cursor plugin package', () => {
     expect(lifecycle).not.toContain('installCursorPlugin');
     expect(lifecycle).not.toContain('removeCursorPlugin');
     expect(update).not.toContain('installCursorPlugin');
+    expect(marketplaceLogo).toContain('viewBox="0 0 4267 4267"');
+    expect(marketplaceLogo).toContain('<rect width="4267" height="4267" rx="960" fill="#10151d"/>');
+    expect(marketplaceLogo).toContain('stroke="#26303d"');
+    expect(marketplaceLogo).toContain('fill="#67e8c7"');
+    expect(svgPathData(marketplaceLogo)).toBe(svgPathData(canonicalLogo));
   });
 
   it.effect('skips absent Cursor and verifies only Marketplace-managed plugin installs', () =>
@@ -160,4 +170,10 @@ async function pathExists(path: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+function svgPathData(svg: string): string {
+  const pathData = /<path\b[^>]*\bd="([^"]+)"/.exec(svg)?.[1];
+  if (!pathData) throw new Error('SVG does not contain a path with geometry data');
+  return pathData;
 }

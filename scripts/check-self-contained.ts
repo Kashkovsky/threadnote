@@ -180,6 +180,7 @@ const checkSelfContained = Effect.gen(function* () {
       path.join(root, 'dist', 'runtime', 'native'),
       path.join(root, 'dist', 'config', 'agent-instructions.md'),
       path.join(root, 'dist', 'cursor-plugin', '.cursor-plugin', 'plugin.json'),
+      path.join(root, 'dist', 'cursor-plugin', 'assets', 'logo.svg'),
       path.join(root, 'dist', 'cursor-plugin', 'rules', 'threadnote.mdc'),
       path.join(root, 'dist', 'cursor-plugin', 'LICENSE'),
       packagedLogo,

@@ -7,9 +7,10 @@ organization administrator own plugin installation, updates, and removal.
 
 The implementation follows Cursor's [plugin reference](https://cursor.com/docs/reference/plugins) and
 [rule anatomy](https://cursor.com/docs/rules). The root `.cursor-plugin/marketplace.json` points to `cursor-plugin/`,
-whose `.cursor-plugin/plugin.json` exposes `rules/threadnote.mdc`. The standalone Threadnote payload includes a copy of
-that source only so `threadnote doctor` can validate the installed Marketplace version; lifecycle commands never copy
-it into Cursor.
+whose `.cursor-plugin/plugin.json` exposes `rules/threadnote.mdc` and the self-contained `assets/logo.svg` Marketplace
+logo. The logo preserves the canonical mint Threadnote mark and adds a dark background plate for reliable contrast.
+The standalone Threadnote payload includes a copy of that source only so `threadnote doctor` can validate the installed
+Marketplace version; lifecycle commands never copy it into Cursor.
 
 The MCP server remains a separate global Cursor configuration because it contains the user's Threadnote home,
 identity, toolset, and platform-specific absolute launcher path. The plugin intentionally has no `mcp.json` and cannot

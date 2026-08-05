@@ -4,6 +4,9 @@ This plugin gives Cursor an always-applied `.mdc` rule for using Threadnote as s
 code-graph search, and agent handoffs. Plugin rules provide user- or team-level distribution without pretending that
 Cursor's documented project rule directory is a user-level rule location.
 
+The Marketplace logo is bundled at `assets/logo.svg`. It keeps the canonical Threadnote mark unchanged and places it
+on a dark plate so the mint geometry remains legible on both light and dark Marketplace surfaces.
+
 ## Prerequisites
 
 - Cursor 2.5 or newer

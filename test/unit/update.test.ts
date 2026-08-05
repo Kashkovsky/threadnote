@@ -1389,6 +1389,7 @@ function writeReleaseArchive(
       );
       const cursorPluginPaths = [
         '.cursor-plugin/plugin.json',
+        'assets/logo.svg',
         'rules/threadnote.mdc',
         'README.md',
         'CHANGELOG.md',
