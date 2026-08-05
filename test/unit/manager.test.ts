@@ -15,7 +15,12 @@ import {
   resourcesTree,
   runManage,
 } from '../../src/manager.js';
-import {pruneSelectedMemoryUris, selectableMemoryUris, type TreeNode} from '../../src/manager_ui.js';
+import {
+  managerProjectOptions,
+  pruneSelectedMemoryUris,
+  selectableMemoryUris,
+  type TreeNode,
+} from '../../src/manager_ui.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import * as lifecycle from '../../src/lifecycle.js';
 import * as memory from '../../src/memory.js';
@@ -496,6 +501,38 @@ describe('manager UI selection helpers', () => {
 
     const visibleOnly = new Set(['threadnote://user/denys/memories/durable/projects/threadnote/first.md']);
     expect(pruneSelectedMemoryUris(visibleOnly, tree, {filter: 'first', showSystem: false})).toBe(visibleOnly);
+  });
+
+  it('collects distinct project selector options from nested memory metadata', () => {
+    const first = fileNode('threadnote://user/denys/memories/durable/projects/threadnote/first.md', 'first.md');
+    const second = fileNode('threadnote://user/denys/memories/handoffs/other/second.md', 'second.md');
+    const tree: TreeNode = {
+      ...selectionTree(),
+      children: [
+        {
+          ...first,
+          metadata: {
+            kind: 'durable',
+            project: 'Threadnote',
+            sourceAgentClient: 'codex',
+            status: 'active',
+            timestamp: '2026-08-05T00:00:00.000Z',
+          },
+        },
+        {
+          ...second,
+          metadata: {
+            kind: 'handoff',
+            project: 'threadnote',
+            sourceAgentClient: 'codex',
+            status: 'active',
+            timestamp: '2026-08-05T00:00:00.000Z',
+          },
+        },
+      ],
+    };
+
+    expect(managerProjectOptions(tree)).toEqual(['Threadnote']);
   });
 });
 

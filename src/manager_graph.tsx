@@ -9,6 +9,7 @@ import {
   MANAGER_GRAPH_MAX_NODE_LIMIT,
   type ManagerGraphVisualizationLimits,
 } from './manager_graph_limits.js';
+import {type ManagerDialogOptions, useOptionalManagerDialogs} from './manager_dialog.js';
 
 interface GraphProject {
   readonly buildSystem?: string;
@@ -3090,22 +3091,45 @@ function GraphAdministration(props: {
   readonly output?: string;
   readonly report?: CodeGraphDiagnosticsReport;
 }): React.ReactElement {
+  const dialogs = useOptionalManagerDialogs();
   const [analyze, setAnalyze] = useState(false);
   const [deep, setDeep] = useState(false);
   const [forceCompact, setForceCompact] = useState(false);
   const blocked = props.busy !== undefined;
-  const confirmAction = (message: string, action: GraphAdministrationAction): void => {
-    if (window.confirm(message)) props.onAction(action);
+  const confirmAction = async (options: ManagerDialogOptions, action: GraphAdministrationAction): Promise<void> => {
+    if (await dialogs.confirm(options)) props.onAction(action);
   };
-  const targetAction = (
+  const targetAction = async (
     managementAvailable: boolean,
     action: Extract<GraphAdministrationAction, {readonly worktreeId: string}>,
-  ): GraphAdministrationAction | undefined => {
+  ): Promise<GraphAdministrationAction | undefined> => {
     if (managementAvailable) return action;
-    const cwd = window.prompt(
-      'Threadnote has no current local path for this indexed view. Enter an absolute path to its worktree. The server will verify its graph identity before acting.',
-    );
-    return cwd?.trim() ? {...action, cwd: cwd.trim()} : undefined;
+    const values = await dialogs.prompt({
+      confirmLabel: 'Use worktree',
+      detail: `Checkout ${action.checkoutId.slice(-12)} · view ${action.worktreeId.slice(-8)}`,
+      fields: [
+        {
+          description: 'Threadnote verifies this path against the indexed checkout and worktree before acting.',
+          id: 'cwd',
+          label: 'Absolute worktree path',
+          placeholder: '/absolute/path/to/worktree',
+          required: true,
+        },
+      ],
+      message: 'Threadnote has no current local path for this indexed view.',
+      title: 'Locate the indexed worktree',
+    });
+    return values ? {...action, cwd: values.cwd} : undefined;
+  };
+  const dispatchTargetAction = async (
+    managementAvailable: boolean,
+    action: Extract<GraphAdministrationAction, {readonly worktreeId: string}>,
+    confirmation?: ManagerDialogOptions,
+  ): Promise<void> => {
+    const targeted = await targetAction(managementAvailable, action);
+    if (!targeted) return;
+    if (confirmation && !(await dialogs.confirm(confirmation))) return;
+    props.onAction(targeted);
   };
   return (
     <details className="graph-administration">
@@ -3153,10 +3177,15 @@ function GraphAdministration(props: {
           <button
             disabled={blocked}
             onClick={() =>
-              confirmAction(
-                deep
-                  ? 'Deep repair may discard corrupt disposable graph databases. Continue?'
-                  : 'Run immediate quick repair and pending graph schema migrations?',
+              void confirmAction(
+                {
+                  confirmLabel: deep ? 'Run deep repair' : 'Run repair',
+                  message: deep
+                    ? 'Deep repair may discard corrupt disposable graph databases after integrity checks.'
+                    : 'Run immediate quick repair and pending graph schema migrations.',
+                  title: deep ? 'Repair every graph deeply?' : 'Repair every graph?',
+                  tone: deep ? 'danger' : 'default',
+                },
                 {action: 'repair', deep},
               )
             }
@@ -3171,7 +3200,15 @@ function GraphAdministration(props: {
             className="danger"
             disabled={blocked}
             onClick={() =>
-              confirmAction('Purge every local disposable native code graph index?', {action: 'purge-all'})
+              void confirmAction(
+                {
+                  confirmLabel: 'Purge every graph',
+                  message: 'Every local native code graph index will be removed and rebuilt on demand.',
+                  title: 'Purge all disposable graphs?',
+                  tone: 'danger',
+                },
+                {action: 'purge-all'},
+              )
             }
             type="button"
           >
@@ -3275,8 +3312,7 @@ function GraphAdministration(props: {
                       disabled={blocked || !target}
                       onClick={() => {
                         if (!target) return;
-                        const action = targetAction(managementAvailable, {action: 'index', ...target});
-                        if (action) props.onAction(action);
+                        void dispatchTargetAction(managementAvailable, {action: 'index', ...target});
                       }}
                       type="button"
                     >
@@ -3286,8 +3322,7 @@ function GraphAdministration(props: {
                       disabled={blocked || !target}
                       onClick={() => {
                         if (!target) return;
-                        const action = targetAction(managementAvailable, {action: 'index', full: true, ...target});
-                        if (action) props.onAction(action);
+                        void dispatchTargetAction(managementAvailable, {action: 'index', full: true, ...target});
                       }}
                       type="button"
                     >
@@ -3297,13 +3332,12 @@ function GraphAdministration(props: {
                       disabled={blocked || !target}
                       onClick={() => {
                         if (!target) return;
-                        const action = targetAction(managementAvailable, {
+                        void dispatchTargetAction(managementAvailable, {
                           action: 'compact',
                           dryRun: true,
                           force: forceCompact,
                           ...target,
                         });
-                        if (action) props.onAction(action);
                       }}
                       type="button"
                     >
@@ -3313,12 +3347,16 @@ function GraphAdministration(props: {
                       disabled={blocked || !target}
                       onClick={() => {
                         if (!target) return;
-                        const action = targetAction(managementAvailable, {
-                          action: 'compact',
-                          force: forceCompact,
-                          ...target,
-                        });
-                        if (action) confirmAction('Compact this verified graph database now?', action);
+                        void dispatchTargetAction(
+                          managementAvailable,
+                          {action: 'compact', force: forceCompact, ...target},
+                          {
+                            confirmLabel: 'Compact graph',
+                            detail: repository,
+                            message: 'Rewrite this verified graph database to reclaim reviewed free space.',
+                            title: 'Compact this graph?',
+                          },
+                        );
                       }}
                       type="button"
                     >
@@ -3342,10 +3380,16 @@ function GraphAdministration(props: {
                         <button
                           disabled={blocked}
                           onClick={() =>
-                            confirmAction(`Purge ${obsolete.fileCount} verified obsolete graph file(s)?`, {
-                              action: 'purge-obsolete',
-                              checkoutId: database.checkoutId,
-                            })
+                            void confirmAction(
+                              {
+                                confirmLabel: 'Purge obsolete files',
+                                detail: repository,
+                                message: `Remove ${obsolete.fileCount} verified obsolete graph file${obsolete.fileCount === 1 ? '' : 's'}.`,
+                                title: 'Purge obsolete graph files?',
+                                tone: 'danger',
+                              },
+                              {action: 'purge-obsolete', checkoutId: database.checkoutId},
+                            )
                           }
                           type="button"
                         >
@@ -3364,10 +3408,16 @@ function GraphAdministration(props: {
                       className="danger"
                       disabled={blocked}
                       onClick={() =>
-                        confirmAction('Purge this disposable native graph index?', {
-                          action: 'purge',
-                          checkoutId: database.checkoutId,
-                        })
+                        void confirmAction(
+                          {
+                            confirmLabel: 'Purge graph',
+                            detail: repository,
+                            message: 'Remove this disposable native graph index. It will rebuild on demand.',
+                            title: 'Purge this graph?',
+                            tone: 'danger',
+                          },
+                          {action: 'purge', checkoutId: database.checkoutId},
+                        )
                       }
                       type="button"
                     >
