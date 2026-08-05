@@ -17,6 +17,13 @@ export function compareVersions(leftVersion: string, rightVersion: string): numb
   return (left.suffix ?? '').localeCompare(right.suffix ?? '', 'en', {numeric: true});
 }
 
+const DEVELOPMENT_BUILD_VERSION_PATTERN =
+  /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)-(?:[0-9A-Za-z-]+\.)*local\.g[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
+
+export function isDevelopmentBuildVersion(version: string): boolean {
+  return DEVELOPMENT_BUILD_VERSION_PATTERN.test(version);
+}
+
 function suffixRank(suffix: string | undefined): number {
   if (suffix === undefined) return 0;
   return /^post/i.test(suffix) ? 1 : -1;

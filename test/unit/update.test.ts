@@ -24,6 +24,7 @@ vi.mock('../../src/utils.js', async importOriginal => {
 
 import {
   fetchLatestVersion,
+  maybeNotifyUpdate,
   maybeRunPostUpdateAfterRepair,
   parseReleaseChecksum,
   promoteReleaseDirectory,
@@ -176,6 +177,105 @@ describe('standalone release selection', () => {
     expect(codesignCommands.join('\n')).toContain('threadnote');
     expect(codesignCommands.join('\n')).not.toContain('metadata.txt');
     expect(commands.join('\n')).not.toContain('spctl');
+  });
+});
+
+describe('update notifications', () => {
+  it('revalidates a cached update before announcing a withdrawn release', async () => {
+    const result = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const baseSystem = yield* SystemInfo;
+          const temporaryRoot = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-update-notification-'});
+          const config = runtimeConfig(path.join(temporaryRoot, 'home'));
+          yield* writeUpdateCacheFixture(fs, path, config, '4.0.1');
+          let requests = 0;
+          const http = HttpService.of({
+            downloadToFile: () => Effect.die('not used'),
+            getJson: () =>
+              Effect.sync(() => {
+                requests += 1;
+                return {body: [releaseResponse(RELEASE_VERSION, false)], status: 200};
+              }),
+            getStatus: () => Effect.die('not used'),
+            getText: () => Effect.die('not used'),
+          });
+          const system = SystemInfo.of({...baseSystem, environment: () => ({})});
+          const captured = yield* captureConsole(
+            maybeNotifyUpdate(config, {dryRun: true}).pipe(
+              Effect.provideService(HttpService, http),
+              Effect.provideService(SystemInfo, system),
+            ),
+          );
+          return {output: captured.output, requests};
+        }),
+      ).pipe(Effect.provide(ApplicationLayer)),
+    );
+
+    expect(result).toEqual({output: '', requests: 1});
+  });
+
+  it('announces a cached update only after confirming that it is still published', async () => {
+    const result = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const baseSystem = yield* SystemInfo;
+          const temporaryRoot = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-update-notification-'});
+          const config = runtimeConfig(path.join(temporaryRoot, 'home'));
+          yield* writeUpdateCacheFixture(fs, path, config, '4.0.1');
+          let requests = 0;
+          const http = HttpService.of({
+            downloadToFile: () => Effect.die('not used'),
+            getJson: () =>
+              Effect.sync(() => {
+                requests += 1;
+                return {body: [releaseResponse('4.0.1', false)], status: 200};
+              }),
+            getStatus: () => Effect.die('not used'),
+            getText: () => Effect.die('not used'),
+          });
+          const system = SystemInfo.of({...baseSystem, environment: () => ({})});
+          const captured = yield* captureConsole(
+            maybeNotifyUpdate(config, {dryRun: true}).pipe(
+              Effect.provideService(HttpService, http),
+              Effect.provideService(SystemInfo, system),
+            ),
+          );
+          return {output: captured.output, requests};
+        }),
+      ).pipe(Effect.provide(ApplicationLayer)),
+    );
+
+    expect(result.requests).toBe(1);
+    expect(result.output).toContain('Update available: threadnote 4.0.0 -> 4.0.1');
+  });
+
+  it('does not check or announce updates for an exact local development build', async () => {
+    vi.mocked(utils.currentPackageVersion).mockReturnValue(Effect.succeed(`4.0.0-local.g${'a'.repeat(40)}`));
+    let requests = 0;
+    const http = HttpService.of({
+      downloadToFile: () => Effect.die('not used'),
+      getJson: () =>
+        Effect.sync(() => {
+          requests += 1;
+          return {body: [releaseResponse('4.0.1', false)], status: 200};
+        }),
+      getStatus: () => Effect.die('not used'),
+      getText: () => Effect.die('not used'),
+    });
+    const captured = await Effect.runPromise(
+      captureConsole(maybeNotifyUpdate(runtimeConfig('/tmp/threadnote-local-update-notification'))).pipe(
+        Effect.provideService(HttpService, http),
+        Effect.provide(ApplicationLayer),
+      ),
+    );
+
+    expect(captured.output).toBe('');
+    expect(requests).toBe(0);
   });
 });
 
@@ -1171,6 +1271,27 @@ function runtimeConfig(home: string): RuntimeConfig {
     manifestPath: `${home}/seed-manifest.yaml`,
     user: 'update-test',
   };
+}
+
+function writeUpdateCacheFixture(
+  fs: FileSystem.FileSystem,
+  path: Path.Path,
+  config: RuntimeConfig,
+  latestVersion: string,
+) {
+  return fs.makeDirectory(config.agentContextHome, {recursive: true}).pipe(
+    Effect.andThen(
+      fs.writeFileString(
+        path.join(config.agentContextHome, 'update-check.json'),
+        `${JSON.stringify({
+          channel: 'latest',
+          checkedAt: new Date().toISOString(),
+          latestVersion,
+          source: OFFICIAL_RELEASE_SOURCE,
+        })}\n`,
+      ),
+    ),
+  );
 }
 
 function fixtureMigration(
