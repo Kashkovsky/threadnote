@@ -1,8 +1,9 @@
 import {chmod, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {delimiter, join} from 'node:path';
+import {Effect} from 'effect';
 import {afterEach, describe, expect, it, vi} from 'vitest';
-import {resolveMcpClients, runMcpInstall} from '../../src/mcp.js';
+import {getMcpIntegrationStatus, resolveMcpClients, runMcpInstall} from '../../src/mcp.js';
 import {parseMcpToolset} from '../../src/mcp_toolset.js';
 import type {RuntimeConfig} from '../../src/types.js';
 
@@ -27,6 +28,7 @@ async function dryRunOutput(toolset?: 'core' | 'full'): Promise<string> {
 }
 
 const originalPath = process.env.PATH;
+const originalMcpAdapterCommand = process.env.THREADNOTE_MCP_ADAPTER_COMMAND;
 const temporaryDirectories: string[] = [];
 
 async function codexLauncher(script: string): Promise<string> {
@@ -45,6 +47,11 @@ afterEach(async () => {
   } else {
     process.env.PATH = originalPath;
   }
+  if (originalMcpAdapterCommand === undefined) {
+    delete process.env.THREADNOTE_MCP_ADAPTER_COMMAND;
+  } else {
+    process.env.THREADNOTE_MCP_ADAPTER_COMMAND = originalMcpAdapterCommand;
+  }
   await Promise.all(temporaryDirectories.splice(0).map(path => rm(path, {force: true, recursive: true})));
 });
 
@@ -60,9 +67,54 @@ describe('MCP toolsets', () => {
   it('rejects unsupported toolsets', () => {
     expect(() => parseMcpToolset('minimal')).toThrow('Invalid MCP toolset: minimal. Expected core or full.');
   });
+
+  it('uses an absolute app-managed MCP adapter command when configured', async () => {
+    process.env.THREADNOTE_MCP_ADAPTER_COMMAND =
+      '/Users/test/Library/Application Support/Threadnote/bin/threadnote-mcp-server';
+
+    await expect(dryRunOutput()).resolves.toContain("'<local-path> Support/Threadnote/bin/threadnote-mcp-server'");
+  });
+
+  it('rejects a relative app-managed MCP adapter command', async () => {
+    process.env.THREADNOTE_MCP_ADAPTER_COMMAND = 'bin/threadnote-mcp-server';
+
+    await expect(dryRunOutput()).rejects.toThrow('THREADNOTE_MCP_ADAPTER_COMMAND must be an absolute path');
+  });
 });
 
 describe('MCP agent executable resolution', () => {
+  it('reports whether the Codex integration is installed', async () => {
+    const installed = await codexLauncher(
+      `if [ "$1" = "--version" ]; then printf '%s\\n' 'codex-cli 1.0.0'; exit 0; fi\n` +
+        `if [ "$1 $2 $3 $4" = "mcp get threadnote --json" ]; then printf '%s\\n' '{}'; exit 0; fi\n` +
+        `exit 1`,
+    );
+    process.env.PATH = [join(installed, '..'), '/usr/bin', '/bin'].join(delimiter);
+
+    await expect(Effect.runPromise(getMcpIntegrationStatus('codex'))).resolves.toEqual({
+      agent: 'codex',
+      available: true,
+      detail: 'Configured in Codex',
+      installed: true,
+    });
+  });
+
+  it('removes only the selected integration', async () => {
+    const callsPath = join(tmpdir(), `threadnote-codex-remove-${process.pid}-${Date.now()}`);
+    const launcher = await codexLauncher(
+      `if [ "$1" = "--version" ]; then printf '%s\\n' 'codex-cli 1.0.0'; exit 0; fi\n` +
+        `printf '%s\\n' "$*" >> "${callsPath}"`,
+    );
+    process.env.PATH = [join(launcher, '..'), '/usr/bin', '/bin'].join(delimiter);
+
+    await runMcpInstall(runtime(), 'codex', {apply: true, remove: true});
+
+    const calls = await readFile(callsPath, 'utf8');
+    expect(calls).toContain('mcp remove threadnote');
+    expect(calls).not.toContain('mcp add');
+    await rm(callsPath, {force: true});
+  });
+
   it('uses a healthy later PATH entry when the first Codex launcher is stale', async () => {
     const broken = await codexLauncher("printf '%s\\n' 'missing native binary' >&2\nexit 1");
     const callsPath = join(tmpdir(), `threadnote-codex-calls-${process.pid}-${Date.now()}`);

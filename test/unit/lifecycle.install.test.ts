@@ -3,6 +3,7 @@ import {tmpdir} from 'node:os';
 import {delimiter, join} from 'node:path';
 import {afterEach, beforeEach, describe, expect, it} from 'vitest';
 import {
+  commandShimCheck,
   ensureSupportedUvExecutable,
   findSupportedUvExecutable,
   getInstallCommands,
@@ -20,6 +21,8 @@ const TOOL_PYTHON_ENV = 'THREADNOTE_OPENVIKING_PYTHON';
 const TEST_INDEX = 'https://wheels.example/whl/cpu';
 const METAL_INDEX = 'https://abetlen.github.io/llama-cpp-python/whl/metal';
 const originalPath = process.env.PATH;
+const originalAppManaged = process.env.THREADNOTE_APP_MANAGED;
+const originalBinDir = process.env.THREADNOTE_BIN_DIR;
 const temporaryDirectories: string[] = [];
 
 async function fakeUv(version: string, selfUpdateVersion?: string): Promise<string> {
@@ -63,7 +66,27 @@ function restoreEnv(name: string, original: string | undefined): void {
 
 afterEach(async () => {
   restoreEnv('PATH', originalPath);
+  restoreEnv('THREADNOTE_APP_MANAGED', originalAppManaged);
+  restoreEnv('THREADNOTE_BIN_DIR', originalBinDir);
   await Promise.all(temporaryDirectories.splice(0).map(directory => rm(directory, {force: true, recursive: true})));
+});
+
+describe('app-managed launcher', () => {
+  it('accepts the executable installed by the macOS app', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'threadnote-app-launcher-'));
+    temporaryDirectories.push(directory);
+    const launcher = join(directory, 'threadnote');
+    await writeFile(launcher, 'app launcher');
+    await chmod(launcher, 0o755);
+    process.env.THREADNOTE_APP_MANAGED = '1';
+    process.env.THREADNOTE_BIN_DIR = directory;
+
+    await expect(commandShimCheck()).resolves.toEqual({
+      name: 'threadnote launcher',
+      status: 'ok',
+      detail: `${launcher} (app-managed)`,
+    });
+  });
 });
 
 function runtime(): RuntimeConfig {

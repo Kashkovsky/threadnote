@@ -173,6 +173,7 @@ export interface McpInstallOptions {
   readonly bearerTokenEnvVar?: string;
   readonly name?: string;
   readonly nativeHttp?: boolean;
+  readonly remove?: boolean;
   readonly scope?: ClaudeMcpScope;
   readonly toolset?: McpToolset;
   readonly url?: string;

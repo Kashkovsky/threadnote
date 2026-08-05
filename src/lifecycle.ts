@@ -840,8 +840,13 @@ async function pythonSystemCertificatesCheck(): Promise<DoctorCheck> {
       };
 }
 
-async function commandShimCheck(): Promise<DoctorCheck> {
+export async function commandShimCheck(): Promise<DoctorCheck> {
   const shimPath = join(expandPath(process.env.THREADNOTE_BIN_DIR ?? '~/.local/bin'), 'threadnote');
+  if (process.env.THREADNOTE_APP_MANAGED === '1') {
+    return (await isExecutable(shimPath))
+      ? {name: 'threadnote launcher', status: 'ok', detail: `${shimPath} (app-managed)`}
+      : {name: 'threadnote launcher', status: 'fail', detail: `${shimPath} missing or not executable`};
+  }
   const content = await readFileIfExists(shimPath);
   if (content === undefined) {
     return {name: 'threadnote shim', status: 'warn', detail: `${shimPath} missing; repair will create it`};
@@ -1632,6 +1637,13 @@ async function writeTemplateIfMissing(options: {
 async function installCommandShim(dryRun: boolean): Promise<void> {
   const binDir = expandPath(process.env.THREADNOTE_BIN_DIR ?? '~/.local/bin');
   const shimPath = join(binDir, 'threadnote');
+  if (process.env.THREADNOTE_APP_MANAGED === '1') {
+    if (!(await isExecutable(shimPath))) {
+      throw new Error(`App-managed Threadnote launcher is missing or not executable: ${shimPath}`);
+    }
+    console.log(`${dryRun ? 'Would keep' : 'Using'} app-managed Threadnote launcher: ${shimPath}`);
+    return;
+  }
   const existingContent = await readFileIfExists(shimPath);
   if (existingContent && !isManagedCommandShim(existingContent)) {
     console.log(`WARN not overwriting existing command shim: ${shimPath}`);

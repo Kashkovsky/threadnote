@@ -18,7 +18,7 @@ import {
   runRecall,
   runRemember,
 } from '../memory.js';
-import {runMcpInstall} from '../mcp.js';
+import {getMcpIntegrationStatuses, runMcpInstall} from '../mcp.js';
 import {getRuntimeConfig} from '../runtime.js';
 import {runInitManifest, runSeed, runSeedSkills, runWorksetList, runWorksetShow} from '../seeding.js';
 import {
@@ -345,12 +345,22 @@ const mcpInstall = Command.make(
     bearerTokenEnvVar: optionalString('bearer-token-env-var', 'Environment variable containing the local API key'),
     name: defaultString('name', 'MCP server name', OPENVIKING_MCP_NAME),
     nativeHttp: boolean('native-http', 'Install OpenViking native HTTP MCP instead of the local stdio adapter'),
+    remove: boolean('remove', 'Remove only the selected Threadnote MCP integration'),
     scope: defaultChoice('scope', ['user', 'local', 'project'], 'Claude MCP config scope', 'user'),
     toolset: optionalChoice('toolset', ['core', 'full'], 'Stdio adapter toolset'),
     url: optionalString('url', 'OpenViking native HTTP MCP URL'),
   },
   ({agent, ...options}) => withRuntimePromise('mcp-install', config => runMcpInstall(config, agent, options)),
-).pipe(Command.withDescription('Install OpenViking MCP config for a supported agent'));
+).pipe(Command.withDescription('Install, reinstall, or remove Threadnote MCP config for a supported agent'));
+
+const mcpStatus = Command.make('mcp-status', {}, () =>
+  withRuntimeEffect(() =>
+    getMcpIntegrationStatuses().pipe(
+      Effect.tap(statuses => Effect.sync(() => console.log(JSON.stringify(statuses)))),
+      Effect.asVoid,
+    ),
+  ),
+).pipe(Command.withDescription('Print supported agent MCP integration status as JSON'));
 
 const installHooks = Command.make(
   'install-hooks',
@@ -757,6 +767,7 @@ export const threadnoteCommand = root.pipe(
     initManifest,
     seedSkills,
     mcpInstall,
+    mcpStatus,
     installHooks,
     preCompactHook,
     sessionStartHook,

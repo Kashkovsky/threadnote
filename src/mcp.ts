@@ -1,7 +1,8 @@
 import {statSync} from 'node:fs';
 import {writeFile} from 'node:fs/promises';
-import {dirname, join} from 'node:path';
+import {dirname, isAbsolute, join} from 'node:path';
 import {platform} from 'node:os';
+import {Effect} from 'effect';
 import {OPENVIKING_MCP_NAME} from './constants.js';
 import {DEFAULT_MCP_TOOLSET, MCP_TOOLSET_ENV, type McpToolset} from './mcp_toolset.js';
 import type {
@@ -26,8 +27,19 @@ import {
   readFileIfExists,
   readHttpStatus,
   removePathIfExists,
+  runCommand,
   toolRoot,
 } from './utils.js';
+
+export interface McpIntegrationStatus {
+  readonly agent: AgentClient;
+  readonly available: boolean;
+  readonly detail: string;
+  readonly installed: boolean;
+}
+
+const mcpAttempt = <A>(evaluate: () => Promise<A>): Effect.Effect<A, Error> =>
+  Effect.tryPromise({try: evaluate, catch: cause => (cause instanceof Error ? cause : new Error(String(cause)))});
 
 export async function runMcpInstall(
   config: RuntimeConfig,
@@ -39,6 +51,26 @@ export async function runMcpInstall(
   const apply = options.apply === true;
   const nativeHttp = options.nativeHttp === true;
   const toolset = options.toolset ?? DEFAULT_MCP_TOOLSET;
+
+  if (options.remove === true) {
+    if (agent === 'cursor') {
+      await removeCursorMcpConfig(name, !apply);
+      return;
+    }
+    if (agent === 'copilot') {
+      await removeCopilotMcpConfig(name, !apply);
+      return;
+    }
+    const agentExecutable = apply ? await requiredMcpAgentExecutable(agent) : agent;
+    const command = buildMcpRemoveCommand(agent, agentExecutable, name);
+    if (!apply) {
+      console.log('Dry run. Re-run with --remove --apply to remove the selected agent integration.');
+      console.log(formatShellCommand(command.executable, command.args));
+      return;
+    }
+    await maybeRun(false, command.executable, command.args, {cwd: command.cwd});
+    return;
+  }
 
   if (nativeHttp) {
     const mcpStatus = await readHttpStatus(url, 1200);
@@ -103,6 +135,77 @@ export async function runMcpInstall(
   });
   await maybeRun(false, command.executable, command.args, {cwd: command.cwd});
 }
+
+export const getMcpIntegrationStatuses = Effect.fn('getMcpIntegrationStatuses')(function* () {
+  return yield* Effect.all(
+    (['codex', 'claude', 'cursor', 'copilot'] as const).map(agent => getMcpIntegrationStatus(agent)),
+    {concurrency: 'unbounded'},
+  );
+});
+
+export const getMcpIntegrationStatus = Effect.fn('getMcpIntegrationStatus')(function* (
+  agent: AgentClient,
+  name = OPENVIKING_MCP_NAME,
+) {
+  if (agent === 'cursor') {
+    const [available, installed] = yield* Effect.all(
+      [mcpAttempt(isCursorAvailable), hasJsonMcpEntry(cursorMcpConfigPath(), 'mcpServers', name)],
+      {concurrency: 'unbounded'},
+    );
+    return {
+      agent,
+      available,
+      detail: installed ? 'Configured in Cursor' : available ? 'Not configured' : 'Cursor not found',
+      installed,
+    };
+  }
+  if (agent === 'copilot') {
+    const [available, installed] = yield* Effect.all(
+      [mcpAttempt(isCopilotAvailable), hasJsonMcpEntry(copilotMcpConfigPath(), 'servers', name)],
+      {concurrency: 'unbounded'},
+    );
+    return {
+      agent,
+      available,
+      detail: installed ? 'Configured in GitHub Copilot' : available ? 'Not configured' : 'VS Code not found',
+      installed,
+    };
+  }
+
+  const executable = yield* mcpAttempt(() => findMcpAgentExecutable(agent));
+  if (!executable) {
+    return {
+      agent,
+      available: false,
+      detail: `${agent === 'codex' ? 'Codex' : 'Claude'} command not found`,
+      installed: false,
+    };
+  }
+  const args = agent === 'codex' ? ['mcp', 'get', name, '--json'] : ['mcp', 'get', name];
+  const result = yield* mcpAttempt(() =>
+    runCommand(executable, args, {
+      allowFailure: true,
+      cwd: agent === 'claude' ? getInvocationCwd() : undefined,
+      timeoutMs: 5000,
+    }),
+  );
+  const label = agent === 'codex' ? 'Codex' : 'Claude';
+  return {
+    agent,
+    available: true,
+    detail: result.exitCode === 0 ? `Configured in ${label}` : 'Not configured',
+    installed: result.exitCode === 0,
+  };
+});
+
+const hasJsonMcpEntry = Effect.fn('hasJsonMcpEntry')(function* (path: string, collection: string, name: string) {
+  const content = yield* mcpAttempt(() => readFileIfExists(path));
+  if (isEmptyConfigContent(content)) {
+    return false;
+  }
+  const parsed = parseJsonConfigObject(content ?? '');
+  return parsed !== undefined && isJsonObject(parsed[collection]) && parsed[collection][name] !== undefined;
+});
 
 async function runCursorMcpInstall(
   config: RuntimeConfig,
@@ -294,6 +397,13 @@ function buildMcpInstallCommand(
 }
 
 function mcpAdapterCommand(): readonly string[] {
+  const override = process.env.THREADNOTE_MCP_ADAPTER_COMMAND?.trim();
+  if (override) {
+    if (!isAbsolute(override)) {
+      throw new Error('THREADNOTE_MCP_ADAPTER_COMMAND must be an absolute path.');
+    }
+    return [override];
+  }
   return [join(toolRoot(), 'bin', 'threadnote-mcp-server.cjs')];
 }
 
