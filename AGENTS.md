@@ -17,6 +17,19 @@ nearest checked-in guidance remain authoritative.
 - Prefer the Threadnote MCP tools. If they are unavailable, use the `threadnote` CLI as the fallback and treat the
   unavailability as a dogfooding issue under the policy below.
 
+## Seek property-based testing opportunities
+
+During development, always assess whether changed behavior has general properties that example tests alone would
+underspecify. Look especially for round trips, idempotence, determinism, ordering, monotonicity, parser and serializer
+boundaries, state-machine transitions, incremental-versus-clean equivalence, and non-mutation guarantees.
+
+- When a meaningful property exists, add a bounded Fast-check property to the normal Vitest suite. Prefer generators
+  that shrink well and assertions against an independent model or invariant rather than reimplementing production code.
+- Keep focused example-based regression tests for important concrete failures, even when a property test also covers the
+  broader contract.
+- Do not force property tests onto static copy, one-off wiring, or behavior with no useful input space or invariant.
+  Close out the task by stating which property-testing opportunity was added, or why none was appropriate.
+
 ## Install logic changes globally
 
 After changing runtime or product logic, do not stop after tests. This includes behavior under `src/`, runtime-facing
