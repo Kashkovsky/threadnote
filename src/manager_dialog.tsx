@@ -28,7 +28,7 @@ export type ManagerDialogValues = Readonly<Record<string, string>>;
 export type ManagerDialogValidation =
   {readonly fieldId: string; readonly ok: false} | {readonly ok: true; readonly values: ManagerDialogValues};
 
-interface ManagerDialogs {
+export interface ManagerDialogs {
   readonly confirm: (options: ManagerDialogOptions) => Promise<boolean>;
   readonly prompt: (options: ManagerDialogOptions) => Promise<ManagerDialogValues | undefined>;
 }
@@ -41,6 +41,11 @@ interface PendingDialog {
 export interface ManagerAutocompleteEntry {
   readonly kind: 'create' | 'existing';
   readonly label: string;
+  readonly value: string;
+}
+
+interface PreparedManagerAutocompleteOption {
+  readonly normalized: string;
   readonly value: string;
 }
 
@@ -69,8 +74,10 @@ export function managerAutocompleteEntries(
   query: string,
   allowCreate: boolean,
 ): readonly ManagerAutocompleteEntry[] {
-  const trimmedQuery = query.trim();
-  const normalizedQuery = trimmedQuery.toLocaleLowerCase();
+  return managerAutocompleteEntriesFromPrepared(prepareManagerAutocompleteOptions(options), query, allowCreate);
+}
+
+function prepareManagerAutocompleteOptions(options: readonly string[]): readonly PreparedManagerAutocompleteOption[] {
   const unique = new Map<string, string>();
   for (const option of options) {
     const trimmed = option.trim();
@@ -78,11 +85,22 @@ export function managerAutocompleteEntries(
     const normalized = trimmed.toLocaleLowerCase();
     if (!unique.has(normalized)) unique.set(normalized, trimmed);
   }
-  const existing = [...unique.entries()]
-    .filter(([normalized]) => normalized.includes(normalizedQuery))
-    .map(([, value]): ManagerAutocompleteEntry => ({kind: 'existing', label: value, value}))
+  return [...unique.entries()]
+    .map(([normalized, value]) => ({normalized, value}))
     .sort((left, right) => left.value.localeCompare(right.value));
-  if (!allowCreate || !trimmedQuery || unique.has(normalizedQuery)) return existing;
+}
+
+function managerAutocompleteEntriesFromPrepared(
+  options: readonly PreparedManagerAutocompleteOption[],
+  query: string,
+  allowCreate: boolean,
+): readonly ManagerAutocompleteEntry[] {
+  const trimmedQuery = query.trim();
+  const normalizedQuery = trimmedQuery.toLocaleLowerCase();
+  const existing = options
+    .filter(option => option.normalized.includes(normalizedQuery))
+    .map(({value}): ManagerAutocompleteEntry => ({kind: 'existing', label: value, value}));
+  if (!allowCreate || !trimmedQuery || options.some(option => option.normalized === normalizedQuery)) return existing;
   return [{kind: 'create', label: `Create “${trimmedQuery}”`, value: trimmedQuery}, ...existing];
 }
 
@@ -90,9 +108,10 @@ export function ManagerAutocompleteInput(props: ManagerAutocompleteInputProps): 
   const listboxId = `${useId()}-options`;
   const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(0);
+  const preparedOptions = useMemo(() => prepareManagerAutocompleteOptions(props.options), [props.options]);
   const entries = useMemo(
-    () => managerAutocompleteEntries(props.options, props.value, props.allowCreate === true),
-    [props.allowCreate, props.options, props.value],
+    () => managerAutocompleteEntriesFromPrepared(preparedOptions, props.value, props.allowCreate === true),
+    [preparedOptions, props.allowCreate, props.value],
   );
   const activeEntry = entries[activeIndex];
 

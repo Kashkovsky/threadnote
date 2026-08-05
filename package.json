@@ -95,6 +95,7 @@
     "@vscode/tree-sitter-wasm": "0.3.1",
     "effect": "4.0.0-beta.102",
     "fast-check": "4.9.0",
+    "happy-dom": "^20.11.1",
     "husky": "^9.1.7",
     "js-yaml": "^5.2.2",
     "mitata": "1.0.34",

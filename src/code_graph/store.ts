@@ -3543,7 +3543,22 @@ const retireLeaseCandidates = Effect.fn('codeGraph.retireLeaseCandidates')(funct
   snapshotIds: readonly string[],
   now: number,
 ) {
-  const candidates = [...new Set(snapshotIds)];
+  const candidateSet = new Set(snapshotIds);
+  let frontier = [...candidateSet];
+  while (frontier.length > 0) {
+    const bases = yield* sql<{readonly base_snapshot_id: string}>`
+      SELECT DISTINCT base_snapshot_id
+      FROM snapshots
+      WHERE ${sql.in('id', frontier)} AND base_snapshot_id IS NOT NULL
+    `;
+    frontier = [];
+    for (const row of bases) {
+      if (candidateSet.has(row.base_snapshot_id)) continue;
+      candidateSet.add(row.base_snapshot_id);
+      frontier.push(row.base_snapshot_id);
+    }
+  }
+  const candidates = [...candidateSet];
   if (candidates.length === 0) return 0;
   yield* sql`
     UPDATE snapshots
@@ -9859,6 +9874,14 @@ const promoteSnapshot = Effect.fn('codeGraph.promoteSnapshot')(function* (
           snapshot_id = excluded.snapshot_id,
           activated_at = excluded.activated_at
       `;
+      // A lease acquired by ID may precede promotion. Once its snapshot owns
+      // an active pointer, its final release must reclaim that view after it is
+      // displaced just like a lease acquired while the pointer was active.
+      yield* sql`
+        UPDATE snapshot_leases
+        SET retire_when_inactive = 1
+        WHERE snapshot_id = ${snapshotId}
+      `;
       return yield* markUnusedSnapshotsRetired(sql);
     }),
   );
@@ -9883,7 +9906,7 @@ const markUnusedSnapshotsRetired = Effect.fn('codeGraph.markUnusedSnapshotsRetir
   sql: SqlClient.SqlClient,
 ) {
   const now = yield* Clock.currentTimeMillis;
-  yield* sql`DELETE FROM snapshot_leases WHERE expires_at <= ${now}`;
+  yield* reapExpiredSnapshotLeases(sql, now);
   yield* sql`
     UPDATE snapshots
     SET state = 'retired'
@@ -10330,7 +10353,6 @@ const pruneRetiredSnapshotRowsPage = Effect.fn('codeGraph.pruneRetiredSnapshotRo
   providedSql?: SqlClient.SqlClient,
 ) {
   const sql = providedSql ?? (yield* SqlClient.SqlClient);
-  yield* initializeSchema(sql);
   const pending = yield* sql<{readonly present: number}>`
     SELECT EXISTS(SELECT 1 FROM snapshots WHERE state = 'retired' LIMIT 1) AS present
   `;

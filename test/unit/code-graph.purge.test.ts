@@ -1,4 +1,4 @@
-import {readFile, readlink, rm as nodeRm, symlink} from 'node:fs/promises';
+import {readFile, readlink, rename, rm as nodeRm, symlink} from 'node:fs/promises';
 import {Deferred, Effect, Fiber, FileSystem, Path} from 'effect';
 import fc from 'fast-check';
 import {afterEach, describe, expect, it} from 'vitest';
@@ -163,5 +163,61 @@ describe('targeted code graph purge', () => {
     ).rejects.toThrow('symbolic-link checkout root');
     await expect(readFile(join(external, 'keep.txt'), 'utf8')).resolves.toContain('must survive');
     await expect(readlink(repositoryRoot)).resolves.toBe(external);
+  });
+
+  it('refuses a same-path directory replacement and preserves its contents', async () => {
+    const home = await mkdtemp('threadnote-targeted-graph-purge-directory-race-');
+    homes.push(home);
+    const checkoutId = 'f'.repeat(64);
+    const repositoryRoot = join(home, 'indexes', 'code-graph', 'repositories', checkoutId);
+    const sentinel = join(repositoryRoot, 'replacement-must-survive.txt');
+    await mkdir(repositoryRoot, {recursive: true});
+    await writeFile(join(repositoryRoot, 'graph-v3.sqlite'), 'initial graph\n');
+
+    await expect(
+      runEffect(
+        purgeCodeGraphIndex(home, checkoutId, {
+          dryRun: false,
+          interlock: {
+            beforeVerification: () =>
+              Effect.promise(async () => {
+                await nodeRm(repositoryRoot, {recursive: true});
+                await mkdir(repositoryRoot, {recursive: true});
+                await writeFile(sentinel, 'replacement must survive\n');
+              }),
+          },
+        }),
+      ),
+    ).rejects.toThrow('checkout target changed before purge');
+    await expect(readFile(sentinel, 'utf8')).resolves.toContain('must survive');
+  });
+
+  it('quarantines atomically and restores a directory swapped after verification', async () => {
+    const home = await mkdtemp('threadnote-targeted-graph-purge-removal-race-');
+    homes.push(home);
+    const checkoutId = '1'.repeat(64);
+    const repositoryRoot = join(home, 'indexes', 'code-graph', 'repositories', checkoutId);
+    const displacedRoot = join(home, 'displaced-original-graph');
+    const sentinel = join(repositoryRoot, 'replacement-must-survive.txt');
+    await mkdir(repositoryRoot, {recursive: true});
+    await writeFile(join(repositoryRoot, 'graph-v3.sqlite'), 'initial graph\n');
+
+    await expect(
+      runEffect(
+        purgeCodeGraphIndex(home, checkoutId, {
+          dryRun: false,
+          interlock: {
+            beforeRemoval: () =>
+              Effect.promise(async () => {
+                await rename(repositoryRoot, displacedRoot);
+                await mkdir(repositoryRoot, {recursive: true});
+                await writeFile(sentinel, 'replacement must survive\n');
+              }),
+          },
+        }),
+      ),
+    ).rejects.toThrow('checkout target changed before purge');
+    await expect(readFile(sentinel, 'utf8')).resolves.toContain('must survive');
+    await expect(readFile(join(displacedRoot, 'graph-v3.sqlite'), 'utf8')).resolves.toContain('initial graph');
   });
 });

@@ -1,14 +1,48 @@
+// @vitest-environment happy-dom
+
 import {readFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import fc from 'fast-check';
-import {describe, expect, it} from 'vitest';
+import React, {useState} from 'react';
+import {act} from 'react';
+import {createRoot, type Root} from 'react-dom/client';
+import {afterEach, beforeEach, describe, expect, it} from 'vitest';
 import {
+  ManagerAutocompleteInput,
+  ManagerDialogProvider,
   managerAutocompleteEntries,
+  type ManagerDialogs,
   type ManagerDialogField,
+  useManagerDialogs,
   validateManagerDialogValues,
 } from '../../src/manager_dialog.js';
 
 const root = process.cwd();
+let reactRoot: Root | undefined;
+
+beforeEach(() => {
+  (globalThis as typeof globalThis & {IS_REACT_ACT_ENVIRONMENT: boolean}).IS_REACT_ACT_ENVIRONMENT = true;
+  Object.defineProperty(HTMLDialogElement.prototype, 'showModal', {
+    configurable: true,
+    value(this: HTMLDialogElement) {
+      this.open = true;
+    },
+  });
+  Object.defineProperty(HTMLDialogElement.prototype, 'close', {
+    configurable: true,
+    value(this: HTMLDialogElement) {
+      this.open = false;
+    },
+  });
+});
+
+afterEach(async () => {
+  if (reactRoot) {
+    await act(async () => reactRoot?.unmount());
+    reactRoot = undefined;
+  }
+  document.body.replaceChildren();
+});
 
 describe('manager dialogs', () => {
   it('trims every submitted field without dropping optional empty values', () => {
@@ -72,6 +106,97 @@ describe('manager dialogs', () => {
     ]);
   });
 
+  it('queues dialogs, resolves cancel and confirm, and focuses the safe danger action', async () => {
+    let dialogs: ManagerDialogs | undefined;
+    await render(
+      React.createElement(
+        ManagerDialogProvider,
+        undefined,
+        React.createElement(DialogCapture, {onReady: value => (dialogs = value)}),
+      ),
+    );
+
+    let first!: Promise<Readonly<Record<string, string>> | undefined>;
+    let second!: Promise<boolean>;
+    await act(async () => {
+      first = dialogs!.prompt({title: 'First prompt'});
+      second = dialogs!.confirm({title: 'Dangerous follow-up', tone: 'danger'});
+    });
+    expect(document.querySelector('h2')?.textContent).toBe('First prompt');
+
+    await clickButton('Cancel');
+    await expect(first).resolves.toBeUndefined();
+    expect(document.querySelector('h2')?.textContent).toBe('Dangerous follow-up');
+    expect(document.activeElement?.textContent).toBe('Cancel');
+
+    await clickButton('Continue');
+    await expect(second).resolves.toBe(true);
+    expect(document.querySelector('dialog')).toBeNull();
+  });
+
+  it('keeps a required prompt open, reports the error, and focuses the invalid field', async () => {
+    let dialogs: ManagerDialogs | undefined;
+    await render(
+      React.createElement(
+        ManagerDialogProvider,
+        undefined,
+        React.createElement(DialogCapture, {onReady: value => (dialogs = value)}),
+      ),
+    );
+
+    let result!: Promise<Readonly<Record<string, string>> | undefined>;
+    await act(async () => {
+      result = dialogs!.prompt({
+        fields: [{id: 'project', label: 'Project', required: true}],
+        title: 'Required project',
+      });
+    });
+    await clickButton('Continue');
+
+    const input = document.querySelector<HTMLInputElement>('input[name="project"]');
+    expect(document.querySelector('.manager-dialog-field strong')?.textContent).toBe('Enter a value to continue.');
+    expect(input?.getAttribute('aria-invalid')).toBe('true');
+    expect(document.activeElement).toBe(input);
+
+    await clickButton('Cancel');
+    await expect(result).resolves.toBeUndefined();
+  });
+
+  it('dismisses the active prompt with Escape', async () => {
+    let dialogs: ManagerDialogs | undefined;
+    await render(
+      React.createElement(
+        ManagerDialogProvider,
+        undefined,
+        React.createElement(DialogCapture, {onReady: value => (dialogs = value)}),
+      ),
+    );
+
+    let result!: Promise<Readonly<Record<string, string>> | undefined>;
+    await act(async () => {
+      result = dialogs!.prompt({title: 'Escape prompt'});
+    });
+    await act(async () => {
+      document.querySelector('dialog')?.dispatchEvent(new KeyboardEvent('keydown', {bubbles: true, key: 'Escape'}));
+    });
+
+    await expect(result).resolves.toBeUndefined();
+    expect(document.querySelector('dialog')).toBeNull();
+  });
+
+  it('supports keyboard selection in the autocomplete listbox', async () => {
+    await render(React.createElement(AutocompleteHarness));
+    const input = document.querySelector<HTMLInputElement>('input[role="combobox"]')!;
+
+    await act(async () => input.click());
+    expect(document.querySelectorAll('[role="option"]')).toHaveLength(2);
+    await act(async () => input.dispatchEvent(new KeyboardEvent('keydown', {bubbles: true, key: 'ArrowDown'})));
+    await act(async () => input.dispatchEvent(new KeyboardEvent('keydown', {bubbles: true, key: 'Enter'})));
+
+    expect(input.value).toBe('Beta');
+    expect(input.getAttribute('aria-expanded')).toBe('false');
+  });
+
   it('keeps native browser prompts out of every Manager surface', async () => {
     const sources = await Promise.all(
       ['src/manager_ui.tsx', 'src/manager_graph.tsx'].map(file => readFile(join(root, file), 'utf8')),
@@ -82,3 +207,30 @@ describe('manager dialogs', () => {
     }
   });
 });
+
+function DialogCapture(props: {readonly onReady: (dialogs: ManagerDialogs) => void}): null {
+  props.onReady(useManagerDialogs());
+  return null;
+}
+
+function AutocompleteHarness(): React.ReactElement {
+  const [value, setValue] = useState('');
+  return React.createElement(ManagerAutocompleteInput, {
+    onChange: setValue,
+    options: ['Alpha', 'Beta'],
+    value,
+  });
+}
+
+async function render(element: React.ReactElement): Promise<void> {
+  const container = document.createElement('div');
+  document.body.append(container);
+  reactRoot = createRoot(container);
+  await act(async () => reactRoot?.render(element));
+}
+
+async function clickButton(label: string): Promise<void> {
+  const button = [...document.querySelectorAll('button')].find(candidate => candidate.textContent === label);
+  expect(button).toBeDefined();
+  await act(async () => button?.click());
+}

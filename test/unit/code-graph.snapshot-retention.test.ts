@@ -82,6 +82,123 @@ describe('code graph ready snapshot retention', () => {
     }
   });
 
+  it('reclaims the detached base of a superseded leased overlay', async () => {
+    const root = await mkdtemp('threadnote-ready-retention-base-closure-');
+    temporaryRoots.push(root);
+    const databasePath = join(root, 'graph-v3.sqlite');
+    const identity = repositoryIdentity(root);
+    const base = snapshot(identity, 'detached-base', {dirty: false});
+    const superseded = snapshot(identity, 'leased-overlay', {baseSnapshotId: base.id});
+    const current = snapshot(identity, 'unrelated-current');
+
+    await runEffect(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        yield* store.initialize(databasePath);
+        yield* registerReadySnapshots(store, databasePath, identity, [base, superseded]);
+        yield* store.promote(databasePath, identity, superseded.id, new Set([identity.worktreeId]));
+        const lease = yield* store.acquireSnapshotLease(databasePath, superseded.id, 60_000);
+        yield* registerReadySnapshots(store, databasePath, identity, [current]);
+        yield* store.promote(databasePath, identity, current.id, new Set([identity.worktreeId]));
+
+        yield* store.releaseSnapshotLease(databasePath, lease);
+        yield* waitForSnapshotRemoval(databasePath, superseded.id);
+        yield* waitForSnapshotRemoval(databasePath, base.id);
+      }),
+    );
+
+    expect(readSnapshotState(databasePath, superseded.id)).toBeUndefined();
+    expect(readSnapshotState(databasePath, base.id)).toBeUndefined();
+    expect(readSnapshotState(databasePath, current.id)).toBe('ready');
+  });
+
+  it('keeps a displaced view until every overlapping lease is released', async () => {
+    const root = await mkdtemp('threadnote-ready-retention-overlapping-leases-');
+    temporaryRoots.push(root);
+    const databasePath = join(root, 'graph-v3.sqlite');
+    const identity = repositoryIdentity(root);
+    const displaced = snapshot(identity, 'overlap-displaced');
+    const current = snapshot(identity, 'overlap-current');
+
+    await runEffect(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        yield* store.initialize(databasePath);
+        yield* registerReadySnapshots(store, databasePath, identity, [displaced]);
+        yield* store.promote(databasePath, identity, displaced.id, new Set([identity.worktreeId]));
+        const first = yield* store.acquireSnapshotLease(databasePath, displaced.id, 60_000);
+        const second = yield* store.acquireSnapshotLease(databasePath, displaced.id, 60_000);
+        yield* registerReadySnapshots(store, databasePath, identity, [current]);
+        yield* store.promote(databasePath, identity, current.id, new Set([identity.worktreeId]));
+
+        yield* store.releaseSnapshotLease(databasePath, first);
+        expect(readSnapshotState(databasePath, displaced.id)).toBe('ready');
+        yield* store.releaseSnapshotLease(databasePath, second);
+        yield* waitForSnapshotRemoval(databasePath, displaced.id);
+      }),
+    );
+
+    expect(readSnapshotState(databasePath, displaced.id)).toBeUndefined();
+    expect(readSnapshotState(databasePath, current.id)).toBe('ready');
+  });
+
+  it('carries retirement provenance from an expired lease to a renewed overlapping lease', async () => {
+    const root = await mkdtemp('threadnote-ready-retention-renewed-overlap-');
+    temporaryRoots.push(root);
+    const databasePath = join(root, 'graph-v3.sqlite');
+    const identity = repositoryIdentity(root);
+    const displaced = snapshot(identity, 'renew-displaced');
+    const current = snapshot(identity, 'renew-current');
+
+    await runEffect(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        yield* store.initialize(databasePath);
+        yield* registerReadySnapshots(store, databasePath, identity, [displaced]);
+        yield* store.promote(databasePath, identity, displaced.id, new Set([identity.worktreeId]));
+        const expired = yield* store.acquireSnapshotLease(databasePath, displaced.id, 60_000);
+        const renewed = yield* store.acquireSnapshotLease(databasePath, displaced.id, 60_000);
+        yield* registerReadySnapshots(store, databasePath, identity, [current]);
+        yield* store.promote(databasePath, identity, current.id, new Set([identity.worktreeId]));
+        yield* Effect.sync(() => expireLease(databasePath, expired));
+
+        yield* store.renewSnapshotLease(databasePath, renewed, 60_000);
+        expect(readSnapshotState(databasePath, displaced.id)).toBe('ready');
+        yield* store.releaseSnapshotLease(databasePath, renewed);
+        yield* waitForSnapshotRemoval(databasePath, displaced.id);
+      }),
+    );
+
+    expect(readSnapshotState(databasePath, displaced.id)).toBeUndefined();
+  });
+
+  it('retires a lease acquired by ID when that snapshot is later promoted and displaced', async () => {
+    const root = await mkdtemp('threadnote-ready-retention-acquire-promote-');
+    temporaryRoots.push(root);
+    const databasePath = join(root, 'graph-v3.sqlite');
+    const identity = repositoryIdentity(root);
+    const acquired = snapshot(identity, 'acquired-before-promotion');
+    const current = snapshot(identity, 'after-acquired-promotion');
+
+    await runEffect(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        yield* store.initialize(databasePath);
+        yield* registerReadySnapshots(store, databasePath, identity, [acquired]);
+        const lease = yield* store.acquireSnapshotLease(databasePath, acquired.id, 60_000);
+        yield* store.promote(databasePath, identity, acquired.id, new Set([identity.worktreeId]));
+        yield* registerReadySnapshots(store, databasePath, identity, [current]);
+        yield* store.promote(databasePath, identity, current.id, new Set([identity.worktreeId]));
+
+        yield* store.releaseSnapshotLease(databasePath, lease);
+        yield* waitForSnapshotRemoval(databasePath, acquired.id);
+      }),
+    );
+
+    expect(readSnapshotState(databasePath, acquired.id)).toBeUndefined();
+    expect(readSnapshotState(databasePath, current.id)).toBe('ready');
+  });
+
   it('reaps an expired reader lease on the next ordinary acquire', async () => {
     const root = await mkdtemp('threadnote-ready-retention-expired-');
     temporaryRoots.push(root);
