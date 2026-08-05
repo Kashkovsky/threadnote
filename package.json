@@ -26,6 +26,7 @@
     "check:self-contained": "bun scripts/check-self-contained.ts",
     "clean": "bun scripts/clean.ts",
     "compile:targets": "bun scripts/compile-targets.ts",
+    "cursor-plugin:check": "bun --bun vitest run test/unit/cursor-plugin.test.ts",
     "dev": "bun src/standalone.ts",
     "dev:install-global": "bun scripts/install-local-standalone.ts",
     "dev:mcp-server": "bun src/standalone.ts mcp-server",

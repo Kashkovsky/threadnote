@@ -31,6 +31,7 @@ import {isLegacyHomeMigrationPending, isThreadnoteHomeMigrationPending} from './
 import {whatsNewLinesForVersionRange} from './release_notes.js';
 import type {JsonObject, PostUpdateOptions, RuntimeConfig, UpdateOptions} from './types.js';
 import {selectUpdateChannel, type UpdateChannel} from './update_channel.js';
+import {isDevelopmentBuildVersion} from './version_compare.js';
 import {
   compareVersions,
   ensureDirectory,
@@ -65,6 +66,7 @@ interface UpdateInfo {
   readonly isVersionUpgrade: boolean;
   readonly latestVersion: string | undefined;
   readonly source: string;
+  readonly usedCache: boolean;
 }
 
 interface UpdateCache {
@@ -121,16 +123,29 @@ export function maybeNotifyUpdate(config: RuntimeConfig, options: {readonly dryR
     if (isUpdateNotificationDisabled(system.environment())) {
       return;
     }
+    const packageVersion = yield* currentPackageVersion();
+    if (isDevelopmentBuildVersion(packageVersion)) {
+      return;
+    }
     const source = yield* fromSync('resolve release source', () =>
       resolveReleaseSource(undefined, false, system.environment()),
     );
-    const info = yield* getUpdateInfo(config, {
+    let info = yield* getUpdateInfo(config, {
       allowCacheWrite: options.dryRun !== true,
       preferFresh: false,
       preferInstalledVersion: false,
       source,
       requestedChannel: undefined,
     });
+    if (info.isUpdateAvailable && info.usedCache) {
+      info = yield* getUpdateInfo(config, {
+        allowCacheWrite: options.dryRun !== true,
+        preferFresh: true,
+        preferInstalledVersion: false,
+        source,
+        requestedChannel: undefined,
+      });
+    }
     if (info.isUpdateAvailable) {
       yield* Console.log('');
       yield* Console.log(warning(`Update available: threadnote ${info.currentVersion} -> ${info.latestVersion}`));
@@ -662,6 +677,7 @@ function getUpdateInfo(
       isVersionUpgrade,
       latestVersion,
       source: options.source,
+      usedCache: cached !== undefined,
     };
   });
 }

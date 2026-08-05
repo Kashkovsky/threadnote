@@ -12,6 +12,11 @@ local download path. Official installers and the built-in updater also require A
 Linux uses the immutable GitHub release as its publisher trust root; an offline project signing authority is not part
 of the Threadnote 4 release model.
 
+Cursor Marketplace publication is a separate reviewed workflow with its own permissive-license boundary and plugin
+version. A standalone release bundles the plugin source only as a read-only doctor reference; install, update, repair,
+and uninstall never place it into Cursor. Follow [the Cursor plugin publishing guide](./cursor-plugin.md); a Threadnote
+version tag does not submit or re-index the plugin automatically.
+
 ## Build matrix
 
 CI bytecode-compiles the exact standalone entrypoint for all eight Bun base targets:

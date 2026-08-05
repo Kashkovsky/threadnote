@@ -220,7 +220,8 @@ export const cliCommands: CliCommandReference[] = [
   },
   {
     command: 'update',
-    summary: 'Install a verified standalone release and repair local integrations while preserving owned data.',
+    summary:
+      'Install a verified standalone release and repair Threadnote-owned integrations while preserving owned data; Cursor Marketplace state remains Cursor-owned.',
     examples: ['threadnote update', 'threadnote update --beta', 'threadnote update --stable'],
   },
   {
@@ -463,7 +464,7 @@ threadnote doctor`,
           },
           {
             type: 'paragraph',
-            text: 'The bootstrap installer downloads an immutable GitHub release, verifies SHA-256, atomically promotes it, and invokes threadnote install. That lifecycle initializes ~/.threadnote, downloads and selects the core BGE Small embedding model, builds recall indexes, and writes user-level instructions. Existing verified models and canonical data are preserved during updates.',
+            text: "The bootstrap installer downloads an immutable GitHub release, verifies SHA-256, atomically promotes it, and invokes threadnote install. That lifecycle initializes ~/.threadnote, downloads and selects the core BGE Small embedding model, builds recall indexes, and writes supported user-level instructions for Codex, Claude Code, and Copilot. Cursor instructions are installed separately through Cursor's Marketplace. Existing verified models and canonical data are preserved during updates.",
           },
           {
             type: 'note',
@@ -526,7 +527,7 @@ threadnote doctor`,
         body: [
           {
             type: 'paragraph',
-            text: 'Install writes a bounded Threadnote instruction block into the supported user-level agent instruction file. Checked-in AGENTS.md, CLAUDE.md, and equivalent repository guidance remain authoritative and take precedence.',
+            text: 'Install writes a bounded Threadnote instruction block into supported user-level agent instruction files for Codex, Claude Code, and Copilot. Cursor receives the same instruction block through its separate Marketplace plugin; Threadnote does not write a supposed user rule under ~/.cursor/rules. Checked-in AGENTS.md, CLAUDE.md, and equivalent repository guidance remain authoritative and take precedence.',
           },
           {
             type: 'list',
@@ -549,7 +550,81 @@ threadnote install --with-hooks`,
           },
           {
             type: 'paragraph',
-            text: 'Managed SessionStart and PreCompact lifecycle hooks are currently available for Claude Code only. Codex, Cursor, and Copilot rely on the user-level instructions Threadnote installs because those clients do not expose equivalent managed hooks. Hooks do not replace agent judgment or start a Threadnote daemon.',
+            text: 'Managed SessionStart and PreCompact lifecycle hooks are currently available for Claude Code only. Codex and Copilot rely on their supported user-level instruction files; Cursor relies on the separately installed Marketplace plugin. Threadnote never injects a Cursor plugin under ~/.cursor/plugins/local. Hooks do not replace agent judgment or start a Threadnote daemon.',
+          },
+        ],
+      },
+      {
+        id: 'cursor-marketplace-plugin',
+        title: 'Cursor Marketplace plugin',
+        summary: "Install and verify Threadnote's always-applied Cursor rule without local-plugin injection.",
+        keywords: [
+          'Cursor plugin',
+          'Cursor Marketplace',
+          'team marketplace',
+          'enterprise Cursor',
+          'always-applied MDC rule',
+          'publish Cursor plugin',
+        ],
+        body: [
+          {
+            type: 'paragraph',
+            text: 'Cursor needs two independent pieces: the user-specific local MCP server configuration and the Threadnote Marketplace plugin containing the always-applied `.mdc` rule. The plugin intentionally has no `mcp.json`, so it cannot duplicate or replace the configuration owned by the Threadnote CLI.',
+          },
+          {
+            type: 'heading',
+            text: 'Install and verify',
+          },
+          {
+            type: 'code',
+            language: 'sh',
+            code: 'threadnote mcp-install cursor --apply',
+          },
+          {
+            type: 'list',
+            items: [
+              "After the public listing is approved, find **Threadnote** in Cursor's Marketplace or run `/add-plugin threadnote` in a Cursor agent chat.",
+              'On Teams or Enterprise, ask an administrator to allow the public plugin or add the Threadnote repository to a team marketplace. The administrator can make installation opt-in, default-on, or required.',
+              'Reload Cursor or open a new window, start a fresh agent chat, and confirm the Threadnote rule is active.',
+            ],
+          },
+          {
+            type: 'code',
+            language: 'sh',
+            code: 'threadnote doctor',
+          },
+          {
+            type: 'note',
+            text: 'The plugin check appears only when Threadnote detects Cursor and is read-only. Install, update, repair, and uninstall never create, refresh, or remove either `~/.cursor/plugins/local` or Cursor-managed Marketplace state.',
+          },
+          {
+            type: 'warning',
+            text: 'If doctor reports `~/.cursor/plugins/local/threadnote`, fully quit Cursor and move only that legacy local copy aside before installing through the Marketplace. The withdrawn local injection coincided with a managed Cursor installation losing access to every model; an administrator restriction is plausible but is not a proven root cause. Threadnote reports the condition and never deletes it automatically.',
+          },
+          {
+            type: 'heading',
+            text: 'Publisher checklist',
+          },
+          {
+            type: 'list',
+            items: [
+              'Keep `.cursor-plugin/marketplace.json`, `cursor-plugin/.cursor-plugin/plugin.json`, the `.mdc` rule, README, changelog, logo reference, and MIT license together on the public default branch.',
+              "Test that exact default-branch source through an administrator-controlled team marketplace. Do not copy it into Cursor's local-plugin directory.",
+              "Have an authorized publisher submit the public repository at [Cursor's publishing form](https://cursor.com/marketplace/publish) and review the [Marketplace Publisher Terms](https://cursor.com/marketplace-publisher-terms).",
+              'After approval, verify public discovery, `/add-plugin threadnote`, a fresh agent chat, and `threadnote doctor` on both unmanaged and administrator-managed Cursor accounts.',
+              'For updates, increment the plugin manifest version, add a matching changelog entry, merge the source, and request a re-index through Cursor. A Threadnote release does not publish the plugin.',
+            ],
+          },
+          {
+            type: 'code',
+            language: 'sh',
+            code: `bun run cursor-plugin:check
+bun run build
+bun run check:self-contained`,
+          },
+          {
+            type: 'note',
+            text: 'Cursor requires Marketplace plugins to use a permissive open-source license. The distributable plugin paths are MIT-licensed; the Threadnote runtime and the rest of the repository remain AGPL-3.0-or-later.',
           },
         ],
       },
@@ -1527,11 +1602,11 @@ threadnote repair`,
           },
           {
             type: 'paragraph',
-            text: 'Doctor checks the self-contained home, canonical layout, core model, recall indexes, code-graph integrity, configured MCP clients, and agent instructions. Strict mode exits non-zero when a check fails.',
+            text: 'Doctor checks the self-contained home, canonical layout, core model, recall indexes, code-graph integrity, configured MCP clients, and agent instructions. When Cursor is installed, it also performs a read-only check of the Marketplace plugin and rejects the legacy local injection path. Strict mode exits non-zero when a check fails.',
           },
           {
             type: 'paragraph',
-            text: 'Repair can reassert storage layout, provision the core embedding model, rebuild derived lexical/vector state, clean corrupt or abandoned code-graph databases, and repair hooks or MCP configuration. It does not modify repositories or delete canonical memories.',
+            text: 'Repair can reassert storage layout, provision the core embedding model, rebuild derived lexical/vector state, clean corrupt or abandoned code-graph databases, and repair hooks or MCP configuration. It does not install, update, remove, or repair Cursor plugins; Marketplace state remains Cursor-owned. It also does not modify repositories or delete canonical memories.',
           },
           {
             type: 'note',
@@ -1586,7 +1661,7 @@ threadnote update --check`,
           },
           {
             type: 'paragraph',
-            text: 'After opting into beta, ordinary version and update checks remain on the beta channel. Use --stable to return to stable even when that version is numerically lower. Updates verify immutable release assets, promote atomically, preserve ~/.threadnote data and verified model files, then repair integrations.',
+            text: "After opting into beta, ordinary version and update checks remain on the beta channel. Use --stable to return to stable even when that version is numerically lower. Updates verify immutable release assets, promote atomically, preserve ~/.threadnote data and verified model files, then repair Threadnote-owned integrations. Cursor Marketplace plugin updates remain owned by Cursor and the organization's policy.",
           },
           {
             type: 'paragraph',

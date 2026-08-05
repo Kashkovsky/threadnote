@@ -1,0 +1,163 @@
+import {access, readFile} from 'node:fs/promises';
+import {join} from 'node:path';
+import {expect, it} from '@effect/vitest';
+import {Effect, FileSystem, Path} from 'effect';
+import {describe} from 'vitest';
+import {USER_INSTRUCTIONS_END_MARKER, USER_INSTRUCTIONS_START_MARKER} from '../../src/constants.js';
+import {cursorPluginDoctorChecks} from '../../src/cursor-plugin.js';
+import {ApplicationLayer} from '../../src/effect/runtime.js';
+import {SystemInfo} from '../../src/effect/system.js';
+
+const root = process.cwd();
+const pluginRoot = join(root, 'cursor-plugin');
+
+describe('Cursor plugin package', () => {
+  it('matches Cursor manifest anatomy and the canonical Threadnote instructions', async () => {
+    const [
+      marketplaceRaw,
+      manifestRaw,
+      rule,
+      instructions,
+      pluginLicense,
+      licenseScope,
+      packageRaw,
+      lifecycle,
+      update,
+    ] = await Promise.all([
+      readFile(join(root, '.cursor-plugin', 'marketplace.json'), 'utf8'),
+      readFile(join(pluginRoot, '.cursor-plugin', 'plugin.json'), 'utf8'),
+      readFile(join(pluginRoot, 'rules', 'threadnote.mdc'), 'utf8'),
+      readFile(join(root, 'config', 'agent-instructions.md'), 'utf8'),
+      readFile(join(pluginRoot, 'LICENSE'), 'utf8'),
+      readFile(join(root, 'CURSOR_PLUGIN_LICENSE.md'), 'utf8'),
+      readFile(join(root, 'package.json'), 'utf8'),
+      readFile(join(root, 'src', 'lifecycle.ts'), 'utf8'),
+      readFile(join(root, 'src', 'update.ts'), 'utf8'),
+    ]);
+    const marketplace = JSON.parse(marketplaceRaw) as Record<string, unknown>;
+    const manifest = JSON.parse(manifestRaw) as Record<string, unknown>;
+
+    expect(Object.keys(marketplace).sort()).toEqual(['metadata', 'name', 'owner', 'plugins']);
+    expect(marketplace).toMatchObject({
+      name: 'threadnote',
+      plugins: [
+        {
+          minClientVersions: {cursor: '2.5.0'},
+          name: 'threadnote',
+          source: 'cursor-plugin',
+        },
+      ],
+    });
+    expect(Object.keys(manifest).sort()).toEqual(
+      [
+        'author',
+        'category',
+        'description',
+        'displayName',
+        'homepage',
+        'keywords',
+        'license',
+        'logo',
+        'minClientVersions',
+        'name',
+        'publisher',
+        'repository',
+        'rules',
+        'tags',
+        'version',
+      ].sort(),
+    );
+    expect(manifest).toMatchObject({
+      license: 'MIT',
+      minClientVersions: {cursor: '2.5.0'},
+      name: 'threadnote',
+      rules: './rules/',
+      version: '1.0.0',
+    });
+    expect(rule).toMatch(/^---\ndescription: .+\nalwaysApply: true\n---\n/);
+    expect(rule).toContain(
+      `${USER_INSTRUCTIONS_START_MARKER}\n${instructions.trim()}\n${USER_INSTRUCTIONS_END_MARKER}`,
+    );
+    expect(pluginLicense.startsWith('MIT License')).toBe(true);
+    expect(licenseScope).toContain('`.cursor-plugin/` and `cursor-plugin/`');
+    expect(JSON.parse(packageRaw)).toMatchObject({license: 'AGPL-3.0-or-later'});
+    expect(await pathExists(join(pluginRoot, '.threadnote-managed.json'))).toBe(false);
+    expect(lifecycle).not.toContain('installCursorPlugin');
+    expect(lifecycle).not.toContain('removeCursorPlugin');
+    expect(update).not.toContain('installCursorPlugin');
+  });
+
+  it.effect('skips absent Cursor and verifies only Marketplace-managed plugin installs', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const system = yield* SystemInfo;
+        const temporaryRoot = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-cursor-plugin-'});
+        const userHome = path.join(temporaryRoot, 'user');
+        const testSystem = SystemInfo.of({
+          ...system,
+          environment: () => ({...system.environment(), PATH: ''}),
+          homeDirectory: userHome,
+        });
+        const doctor = () =>
+          cursorPluginDoctorChecks({cursorInstalled: true}).pipe(Effect.provideService(SystemInfo, testSystem));
+
+        const skipped = yield* cursorPluginDoctorChecks({cursorInstalled: false}).pipe(
+          Effect.provideService(SystemInfo, testSystem),
+        );
+        expect(skipped).toEqual([]);
+
+        const missing = yield* doctor();
+        expect(missing).toMatchObject([{name: 'Cursor plugin', status: 'warn'}]);
+        expect(missing[0]?.detail).toContain('Cursor Marketplace');
+
+        const localRoot = path.join(userHome, '.cursor', 'plugins', 'local', 'threadnote');
+        yield* fs.makeDirectory(localRoot, {recursive: true});
+        const local = yield* doctor();
+        expect(local).toMatchObject([{name: 'Cursor plugin', status: 'fail'}]);
+        expect(local[0]?.detail).toContain('unsupported local installation');
+        expect(local[0]?.detail).toContain('team marketplace');
+        yield* fs.remove(localRoot, {recursive: true});
+
+        const cachedRoot = path.join(userHome, '.cursor', 'plugins', 'cache', 'threadnote', '1.0.0');
+        yield* fs.copy(pluginRoot, cachedRoot, {overwrite: true});
+        const cached = yield* doctor();
+        expect(cached).toMatchObject([{name: 'Cursor plugin', status: 'ok'}]);
+        expect(cached[0]?.detail).toContain(cachedRoot);
+
+        yield* fs.makeDirectory(localRoot, {recursive: true});
+        const localWithMarketplaceCopy = yield* doctor();
+        expect(localWithMarketplaceCopy).toMatchObject([{name: 'Cursor plugin', status: 'fail'}]);
+        expect(localWithMarketplaceCopy[0]?.detail).toContain('unsupported local installation');
+        yield* fs.remove(localRoot, {recursive: true});
+
+        const cachedManifest = path.join(cachedRoot, '.cursor-plugin', 'plugin.json');
+        yield* fs.writeFileString(
+          cachedManifest,
+          (yield* fs.readFileString(cachedManifest)).replace('"version": "1.0.0"', '"version": "0.9.0"'),
+        );
+        const outdated = yield* doctor();
+        expect(outdated).toMatchObject([{name: 'Cursor plugin', status: 'warn'}]);
+        expect(outdated[0]?.detail).toContain('is older than bundled v1.0.0');
+        expect(outdated[0]?.detail).toContain('Cursor Marketplace');
+
+        yield* fs.copy(pluginRoot, cachedRoot, {overwrite: true});
+        const cachedRule = path.join(cachedRoot, 'rules', 'threadnote.mdc');
+        yield* fs.writeFileString(cachedRule, (yield* fs.readFileString(cachedRule)).replace('alwaysApply: true', ''));
+        const invalid = yield* doctor();
+        expect(invalid).toMatchObject([{name: 'Cursor plugin', status: 'fail'}]);
+        expect(invalid[0]?.detail).toContain('Cursor Marketplace');
+      }),
+    ).pipe(Effect.provide(ApplicationLayer)),
+  );
+});
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
+}

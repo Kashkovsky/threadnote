@@ -67,6 +67,7 @@ const checkSelfContained = Effect.gen(function* () {
   const root = yield* path.fromFileUrl(ROOT_URL);
   const failures: string[] = [];
   yield* validateCodeGraphAssets(fs, path, path.join(root, 'assets', 'code-graph'), failures, root);
+  yield* validateCursorPlugin(fs, path, root, failures);
 
   for (const file of FORBIDDEN_LEGACY_FILES) {
     if (yield* fs.exists(path.join(root, file))) {
@@ -178,6 +179,9 @@ const checkSelfContained = Effect.gen(function* () {
       path.join(root, 'dist', 'runtime', 'node-llama-cpp.js'),
       path.join(root, 'dist', 'runtime', 'native'),
       path.join(root, 'dist', 'config', 'agent-instructions.md'),
+      path.join(root, 'dist', 'cursor-plugin', '.cursor-plugin', 'plugin.json'),
+      path.join(root, 'dist', 'cursor-plugin', 'rules', 'threadnote.mdc'),
+      path.join(root, 'dist', 'cursor-plugin', 'LICENSE'),
       packagedLogo,
       path.join(root, 'dist', 'assets', 'code-graph', 'manifest.json'),
       path.join(root, 'dist', 'assets', 'code-graph', 'runtime', 'web-tree-sitter.wasm'),
@@ -240,8 +244,35 @@ const sourceFiles = Effect.fn('checkSelfContained.sourceFiles')(function* (
   return output;
 });
 
+const validateCursorPlugin = Effect.fn('checkSelfContained.validateCursorPlugin')(function* (
+  fs: FileSystem.FileSystem,
+  path: Path.Path,
+  root: string,
+  failures: string[],
+) {
+  const instructions = normalizeNewlines(
+    yield* fs.readFileString(path.join(root, 'config', 'agent-instructions.md')),
+  ).trim();
+  const rule = yield* fs.readFileString(path.join(root, 'cursor-plugin', 'rules', 'threadnote.mdc'));
+  if (!/^---\r?\n[\s\S]*?^description:\s*\S.+$[\s\S]*?^alwaysApply:\s*true\s*$[\s\S]*?^---$/m.test(rule)) {
+    failures.push('Cursor plugin rule must have a description and alwaysApply: true MDC frontmatter');
+  }
+  const expectedBlock = [
+    '<!-- BEGIN THREADNOTE USER INSTRUCTIONS -->',
+    instructions,
+    '<!-- END THREADNOTE USER INSTRUCTIONS -->',
+  ].join('\n');
+  if (!normalizeNewlines(rule).includes(expectedBlock)) {
+    failures.push('Cursor plugin rule is out of sync with config/agent-instructions.md');
+  }
+});
+
 function normalizePath(value: string): string {
   return value.replaceAll('\\', '/');
+}
+
+function normalizeNewlines(value: string): string {
+  return value.replaceAll('\r\n', '\n');
 }
 
 const validateCodeGraphAssets = Effect.fn('checkSelfContained.validateCodeGraphAssets')(function* (

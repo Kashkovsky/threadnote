@@ -52,6 +52,21 @@ automatically; add that directory to `PATH` yourself or use its absolute launche
 Threadnote 4 owns no daemon. `threadnote start` verifies the on-demand runtime and `threadnote stop` is a compatibility
 no-op. Use `threadnote doctor` for storage, index, and model diagnostics.
 
+## Cursor does not load the Threadnote instructions
+
+Do not put a rule under `~/.cursor/rules`; Cursor documents `.cursor/rules/*.mdc` as project scope. Install **Threadnote**
+from Cursor's public Marketplace, or ask a Teams or Enterprise administrator to allow it or add it to a team
+marketplace. Configure the MCP server separately with `threadnote mcp-install cursor --apply`, then reload Cursor.
+
+Run `threadnote doctor` afterward. When Cursor is installed, doctor verifies the global MCP entry and the plugin's
+manifest, version, `.mdc` anatomy, and complete always-applied instruction block. When Cursor is not installed, the
+Cursor plugin check is omitted. Threadnote lifecycle commands never install or repair the plugin.
+
+If doctor reports `~/.cursor/plugins/local/threadnote`, fully quit Cursor and move only that unsupported local copy aside
+before installing through the Marketplace. Threadnote does not remove it automatically. If model access is affected on
+a managed device, preserve needed settings and coordinate with the Cursor administrator or Cursor support before
+clearing broader application state.
+
 ## Collect production logs for support
 
 Run `threadnote logs` to list the available files. Threadnote writes JSON Lines operational diagnostics under
