@@ -174,11 +174,10 @@ describe('active code graph storage', () => {
         yield* Deferred.succeed(release, undefined);
         yield* Effect.forEach(owners, Fiber.join, {concurrency: 2});
         const system = yield* SystemInfo;
-        const compacted = yield* compactCodeGraphStorage(
-          fixture.home,
-          fixture.checkoutId,
-          {dryRun: false, force: true},
-        ).pipe(
+        const compacted = yield* compactCodeGraphStorage(fixture.home, fixture.checkoutId, {
+          dryRun: false,
+          force: true,
+        }).pipe(
           Effect.provideService(
             SystemInfo,
             SystemInfo.of({...system, availableDiskBytes: () => Effect.succeed(Number.MAX_SAFE_INTEGER)}),
