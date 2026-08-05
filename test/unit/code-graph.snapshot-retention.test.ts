@@ -1,0 +1,283 @@
+import {Database} from 'bun:sqlite';
+import {Effect} from 'effect';
+import {afterEach, describe, expect, it} from 'vitest';
+import {CodeGraphStore, type CodeGraphStoreShape} from '../../src/code_graph/store.js';
+import type {CodeGraphSnapshot, RepositoryIdentity} from '../../src/code_graph/types.js';
+import {join, mkdtemp, rm} from '../helpers/effect-filesystem.js';
+import {runEffect} from '../helpers/effect-runtime.js';
+
+const temporaryRoots: string[] = [];
+
+afterEach(async () => {
+  await Promise.all(temporaryRoots.splice(0).map(root => rm(root, {force: true, recursive: true})));
+});
+
+describe('code graph ready snapshot retention', () => {
+  it('preserves a ready snapshot that was leased by ID without becoming an active worktree view', async () => {
+    const root = await mkdtemp('threadnote-ready-retention-non-active-');
+    temporaryRoots.push(root);
+    const databasePath = join(root, 'graph-v3.sqlite');
+    const identity = repositoryIdentity(root);
+    const exported = snapshot(identity, 'exported-by-id');
+
+    await runEffect(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        yield* store.initialize(databasePath);
+        yield* registerReadySnapshots(store, databasePath, identity, [exported]);
+        const lease = yield* store.acquireSnapshotLease(databasePath, exported.id, 60_000);
+        yield* store.releaseSnapshotLease(databasePath, lease);
+      }),
+    );
+
+    const database = new Database(databasePath, {readonly: true, strict: true});
+    try {
+      expect(database.query('SELECT state FROM snapshots WHERE id = ?').get(exported.id)).toEqual({state: 'ready'});
+      expect(database.query('SELECT COUNT(*) AS count FROM active_snapshots').get()).toEqual({count: 0});
+      expect(database.query('SELECT COUNT(*) AS count FROM snapshot_leases').get()).toEqual({count: 0});
+    } finally {
+      database.close(false);
+    }
+  });
+
+  it('reclaims a superseded snapshot when its last lease is released and preserves the active view and base', async () => {
+    const root = await mkdtemp('threadnote-ready-retention-release-');
+    temporaryRoots.push(root);
+    const databasePath = join(root, 'graph-v3.sqlite');
+    const identity = repositoryIdentity(root);
+    const base = snapshot(identity, 'base', {dirty: false});
+    const superseded = snapshot(identity, 'superseded', {baseSnapshotId: base.id});
+    const current = snapshot(identity, 'current', {baseSnapshotId: base.id});
+
+    await runEffect(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        yield* store.initialize(databasePath);
+        yield* registerReadySnapshots(store, databasePath, identity, [base, superseded]);
+        yield* store.promote(databasePath, identity, superseded.id, new Set([identity.worktreeId]));
+        const lease = yield* store.acquireSnapshotLease(databasePath, superseded.id, 60_000);
+        yield* registerReadySnapshots(store, databasePath, identity, [current]);
+        yield* store.promote(databasePath, identity, current.id, new Set([identity.worktreeId]));
+        yield* Effect.sync(() => seedSymbol(databasePath, superseded.id));
+
+        expect(readSnapshotState(databasePath, superseded.id)).toBe('ready');
+        yield* store.releaseSnapshotLease(databasePath, lease);
+        expect(readSnapshotState(databasePath, superseded.id)).not.toBe('ready');
+        yield* waitForSnapshotRemoval(databasePath, superseded.id);
+      }),
+    );
+
+    const database = new Database(databasePath, {readonly: true, strict: true});
+    try {
+      expect(database.query('SELECT state FROM snapshots WHERE id = ?').get(superseded.id)).toBeNull();
+      expect(database.query('SELECT state FROM snapshots WHERE id = ?').get(base.id)).toEqual({state: 'ready'});
+      expect(database.query('SELECT state FROM snapshots WHERE id = ?').get(current.id)).toEqual({state: 'ready'});
+      expect(
+        database.query('SELECT snapshot_id FROM active_snapshots WHERE worktree_id = ?').get(identity.worktreeId),
+      ).toEqual({snapshot_id: current.id});
+      expect(database.query('SELECT COUNT(*) AS count FROM snapshot_leases').get()).toEqual({count: 0});
+      expect(database.query('PRAGMA foreign_key_check').all()).toEqual([]);
+    } finally {
+      database.close(false);
+    }
+  });
+
+  it('reaps an expired reader lease on the next ordinary acquire', async () => {
+    const root = await mkdtemp('threadnote-ready-retention-expired-');
+    temporaryRoots.push(root);
+    const databasePath = join(root, 'graph-v3.sqlite');
+    const identity = repositoryIdentity(root);
+    const superseded = snapshot(identity, 'expired-reader');
+    const current = snapshot(identity, 'current');
+
+    await runEffect(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        yield* store.initialize(databasePath);
+        yield* registerReadySnapshots(store, databasePath, identity, [superseded]);
+        yield* store.promote(databasePath, identity, superseded.id, new Set([identity.worktreeId]));
+        const expiredLease = yield* store.acquireSnapshotLease(databasePath, superseded.id, 60_000);
+        yield* registerReadySnapshots(store, databasePath, identity, [current]);
+        yield* store.promote(databasePath, identity, current.id, new Set([identity.worktreeId]));
+        yield* Effect.sync(() => expireLease(databasePath, expiredLease));
+
+        const currentLease = yield* store.acquireSnapshotLease(databasePath, current.id, 60_000);
+        yield* waitForSnapshotRemoval(databasePath, superseded.id);
+        yield* store.releaseSnapshotLease(databasePath, currentLease);
+      }),
+    );
+
+    const database = new Database(databasePath, {readonly: true, strict: true});
+    try {
+      expect(database.query('SELECT state FROM snapshots WHERE id = ?').get(superseded.id)).toBeNull();
+      expect(database.query('SELECT state FROM snapshots WHERE id = ?').get(current.id)).toEqual({state: 'ready'});
+      expect(database.query('SELECT COUNT(*) AS count FROM snapshot_leases').get()).toEqual({count: 0});
+    } finally {
+      database.close(false);
+    }
+  });
+
+  it('migrates an expired displaced active-view lease from the pre-retention schema', async () => {
+    const root = await mkdtemp('threadnote-ready-retention-migration-');
+    temporaryRoots.push(root);
+    const databasePath = join(root, 'graph-v3.sqlite');
+    const identity = repositoryIdentity(root);
+    const superseded = snapshot(identity, 'legacy-expired-reader');
+    const current = snapshot(identity, 'current');
+
+    await runEffect(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        yield* store.initialize(databasePath);
+        yield* registerReadySnapshots(store, databasePath, identity, [superseded]);
+        yield* store.promote(databasePath, identity, superseded.id, new Set([identity.worktreeId]));
+        const expiredLease = yield* store.acquireSnapshotLease(databasePath, superseded.id, 60_000);
+        yield* registerReadySnapshots(store, databasePath, identity, [current]);
+        yield* store.promote(databasePath, identity, current.id, new Set([identity.worktreeId]));
+        yield* Effect.sync(() => {
+          expireLease(databasePath, expiredLease);
+          dropLeaseRetirementColumn(databasePath);
+        });
+
+        yield* store.initialize(databasePath);
+        const currentLease = yield* store.acquireSnapshotLease(databasePath, current.id, 60_000);
+        yield* waitForSnapshotRemoval(databasePath, superseded.id);
+        yield* store.releaseSnapshotLease(databasePath, currentLease);
+      }),
+    );
+
+    const database = new Database(databasePath, {readonly: true, strict: true});
+    try {
+      const columns = database.query("PRAGMA table_info('snapshot_leases')").all() as readonly {
+        readonly name: string;
+      }[];
+      expect(columns.map(column => column.name)).toContain('retire_when_inactive');
+      expect(database.query('SELECT state FROM snapshots WHERE id = ?').get(superseded.id)).toBeNull();
+      expect(database.query('SELECT state FROM snapshots WHERE id = ?').get(current.id)).toEqual({state: 'ready'});
+    } finally {
+      database.close(false);
+    }
+  });
+});
+
+function registerReadySnapshots(
+  store: CodeGraphStoreShape,
+  databasePath: string,
+  identity: RepositoryIdentity,
+  snapshots: readonly CodeGraphSnapshot[],
+) {
+  return Effect.gen(function* () {
+    for (const candidate of snapshots) yield* store.markBuilding(databasePath, identity, candidate);
+    yield* Effect.sync(() => {
+      const database = new Database(databasePath, {strict: true});
+      try {
+        const ready = database.prepare("UPDATE snapshots SET state = 'ready', completed_at = ? WHERE id = ?");
+        const generation = database.prepare(
+          "INSERT INTO snapshot_extractor_generations (snapshot_id, generation) SELECT ?, CAST(value AS INTEGER) FROM schema_metadata WHERE key = 'minimum_extractor_generation'",
+        );
+        database.transaction(() => {
+          for (const candidate of snapshots) {
+            ready.run(new Date().toISOString(), candidate.id);
+            generation.run(candidate.id);
+          }
+        })();
+      } finally {
+        database.close(false);
+      }
+    });
+  });
+}
+
+function repositoryIdentity(root: string): RepositoryIdentity {
+  return {
+    caseMode: 'sensitive',
+    checkoutId: 'c'.repeat(64),
+    displayName: 'snapshot-retention-fixture',
+    gitCommonDirectory: root,
+    headCommit: '1'.repeat(40),
+    objectFormat: 'sha1',
+    repoRoot: root,
+    repositoryId: 'r'.repeat(64),
+    worktreeId: 'w'.repeat(64),
+  };
+}
+
+function snapshot(
+  identity: RepositoryIdentity,
+  suffix: string,
+  options: {readonly baseSnapshotId?: string; readonly dirty?: boolean} = {},
+): CodeGraphSnapshot {
+  const dirty = options.dirty ?? true;
+  return {
+    ...(options.baseSnapshotId ? {baseSnapshotId: options.baseSnapshotId} : {}),
+    commit: identity.headCommit,
+    dirty,
+    edgeCount: 0,
+    extractorSet: 'extractor-set',
+    fileCount: 0,
+    id: `cgsn_${suffix}`,
+    ...(dirty ? {overlayFingerprint: `overlay-${suffix}`} : {}),
+    repositoryId: identity.repositoryId,
+    state: 'building',
+    symbolCount: 0,
+    worktreeId: identity.worktreeId,
+  };
+}
+
+function seedSymbol(databasePath: string, snapshotId: string): void {
+  const database = new Database(databasePath, {strict: true});
+  try {
+    database
+      .query(
+        `INSERT INTO symbols (
+           snapshot_id, id, content_hash, kind, name, qualified_name, path, language,
+           arity, lookup_keys_json, resolution_domain, resolution_scope_id, package_name,
+           exported, signature, documentation, span_json
+         ) VALUES (?, 'superseded-symbol', 'content', 'function', 'stale', 'stale',
+           'src/stale.ts', 'typescript', NULL, '[]', 'typescript', NULL, NULL, 0,
+           NULL, NULL, '{"startLine":1,"endLine":1}')`,
+      )
+      .run(snapshotId);
+  } finally {
+    database.close(false);
+  }
+}
+
+function expireLease(databasePath: string, token: string): void {
+  const database = new Database(databasePath, {strict: true});
+  try {
+    database.query('UPDATE snapshot_leases SET expires_at = ? WHERE token = ?').run(Date.now() - 1, token);
+  } finally {
+    database.close(false);
+  }
+}
+
+function dropLeaseRetirementColumn(databasePath: string): void {
+  const database = new Database(databasePath, {strict: true});
+  try {
+    database.run('ALTER TABLE snapshot_leases DROP COLUMN retire_when_inactive');
+  } finally {
+    database.close(false);
+  }
+}
+
+function readSnapshotState(databasePath: string, snapshotId: string): string | undefined {
+  const database = new Database(databasePath, {readonly: true, strict: true});
+  try {
+    return (
+      database.query('SELECT state FROM snapshots WHERE id = ?').get(snapshotId) as {readonly state: string} | undefined
+    )?.state;
+  } finally {
+    database.close(false);
+  }
+}
+
+function waitForSnapshotRemoval(databasePath: string, snapshotId: string) {
+  return Effect.gen(function* () {
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      if (readSnapshotState(databasePath, snapshotId) === undefined) return;
+      yield* Effect.sleep(10);
+    }
+    return yield* Effect.fail(new Error(`Timed out waiting for retired snapshot ${snapshotId} to be reclaimed.`));
+  });
+}

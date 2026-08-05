@@ -89,13 +89,18 @@ export interface GraphCatalog {
 
 export type GraphAdministrationAction =
   | {
-      readonly action: 'compact' | 'index' | 'purge' | 'purge-obsolete';
+      readonly action: 'compact' | 'index';
       readonly checkoutId: string;
       readonly cwd?: string;
       readonly dryRun?: boolean;
       readonly force?: boolean;
       readonly full?: boolean;
       readonly worktreeId: string;
+    }
+  | {
+      readonly action: 'purge' | 'purge-obsolete';
+      readonly checkoutId: string;
+      readonly dryRun?: boolean;
     }
   | {readonly action: 'purge-all'; readonly dryRun?: boolean}
   | {readonly action: 'repair'; readonly deep?: boolean; readonly dryRun?: boolean};
@@ -3094,7 +3099,7 @@ function GraphAdministration(props: {
   };
   const targetAction = (
     managementAvailable: boolean,
-    action: Extract<GraphAdministrationAction, {readonly checkoutId: string}>,
+    action: Extract<GraphAdministrationAction, {readonly worktreeId: string}>,
   ): GraphAdministrationAction | undefined => {
     if (managementAvailable) return action;
     const cwd = window.prompt(
@@ -3322,32 +3327,26 @@ function GraphAdministration(props: {
                     {obsolete ? (
                       <>
                         <button
-                          disabled={blocked || !target}
-                          onClick={() => {
-                            if (!target) return;
-                            const action = targetAction(managementAvailable, {
+                          disabled={blocked}
+                          onClick={() =>
+                            props.onAction({
                               action: 'purge-obsolete',
+                              checkoutId: database.checkoutId,
                               dryRun: true,
-                              ...target,
-                            });
-                            if (action) props.onAction(action);
-                          }}
+                            })
+                          }
                           type="button"
                         >
                           Preview obsolete
                         </button>
                         <button
-                          disabled={blocked || !target}
-                          onClick={() => {
-                            if (!target) return;
-                            const action = targetAction(managementAvailable, {
+                          disabled={blocked}
+                          onClick={() =>
+                            confirmAction(`Purge ${obsolete.fileCount} verified obsolete graph file(s)?`, {
                               action: 'purge-obsolete',
-                              ...target,
-                            });
-                            if (action) {
-                              confirmAction(`Purge ${obsolete.fileCount} verified obsolete graph file(s)?`, action);
-                            }
-                          }}
+                              checkoutId: database.checkoutId,
+                            })
+                          }
                           type="button"
                         >
                           Purge obsolete
@@ -3355,24 +3354,21 @@ function GraphAdministration(props: {
                       </>
                     ) : null}
                     <button
-                      disabled={blocked || !target}
-                      onClick={() => {
-                        if (!target) return;
-                        const action = targetAction(managementAvailable, {action: 'purge', dryRun: true, ...target});
-                        if (action) props.onAction(action);
-                      }}
+                      disabled={blocked}
+                      onClick={() => props.onAction({action: 'purge', checkoutId: database.checkoutId, dryRun: true})}
                       type="button"
                     >
                       Preview purge
                     </button>
                     <button
                       className="danger"
-                      disabled={blocked || !target}
-                      onClick={() => {
-                        if (!target) return;
-                        const action = targetAction(managementAvailable, {action: 'purge', ...target});
-                        if (action) confirmAction('Purge this disposable native graph index?', action);
-                      }}
+                      disabled={blocked}
+                      onClick={() =>
+                        confirmAction('Purge this disposable native graph index?', {
+                          action: 'purge',
+                          checkoutId: database.checkoutId,
+                        })
+                      }
                       type="button"
                     >
                       Purge graph
@@ -3380,7 +3376,8 @@ function GraphAdministration(props: {
                   </div>
                   {!managementAvailable ? (
                     <small className="graph-management-unavailable">
-                      Enter the local worktree path when prompted; Threadnote verifies it against this graph identity.
+                      Index, reindex, and compact require a verified local worktree path. Purge actions target this
+                      inventoried checkout directly.
                     </small>
                   ) : null}
                 </article>

@@ -553,10 +553,15 @@ describe('code graph external benchmark harness', () => {
             leaseRows: 0,
           };
           let leaseRenewals = 0;
+          let comparisonLease: string | undefined;
           const pinned = yield* sqliteStructuralGraphEvidence(databasePath, firstSnapshotId, {
             onReadTransactionStarted: Effect.gen(function* () {
               yield* store.promote(databasePath, identity, replacementSnapshotId, new Set([identity.worktreeId]));
               yield* store.pruneRetiredSnapshots(databasePath);
+              // Lease release now retires a superseded view automatically. Hold
+              // a second reader lease so this test can intentionally compare
+              // the post-write digest after the pinned read transaction ends.
+              comparisonLease = yield* store.acquireSnapshotLease(databasePath, firstSnapshotId, 60_000);
               const writer = new Database(databasePath, {strict: true});
               try {
                 writer.run('PRAGMA busy_timeout = 5000');
@@ -573,6 +578,8 @@ describe('code graph external benchmark harness', () => {
             snapshotLeaseRenewalMilliseconds: 100,
           });
           const after = yield* sqliteStructuralGraphEvidence(databasePath, firstSnapshotId);
+          if (comparisonLease === undefined) return yield* Effect.die(new Error('Comparison lease was not acquired.'));
+          yield* store.releaseSnapshotLease(databasePath, comparisonLease);
           const mismatch = codeGraphStructuralParityEvidence(before, after);
           const failureMessage = codeGraphStructuralParityFailureMessage(mismatch);
           yield* store.reconcileWorktrees(databasePath, new Set([identity.worktreeId]));
@@ -618,7 +625,7 @@ describe('code graph external benchmark harness', () => {
       baseFileRows: 1,
       baseState: 'ready',
       firstState: 'ready',
-      leaseRows: 1,
+      leaseRows: 2,
     });
     expect(result.mismatch.mismatchedStreams.map(stream => stream.name)).toEqual(['snapshot']);
     expect(result.leaseRenewals).toBeGreaterThanOrEqual(1);

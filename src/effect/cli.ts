@@ -791,6 +791,7 @@ const graphPurge = Command.make(
   'purge',
   {
     all: boolean('all', 'Remove every disposable native code graph index'),
+    checkoutId: optionalString('checkout-id', 'Target one inventoried checkout by its full 64-character identity'),
     cwd: graphBounds.cwd,
     dryRun: boolean('dry-run', 'Show the derived index path without removing it'),
     obsolete: boolean('obsolete', 'Remove only verified older graph-vN SQLite files for this checkout'),

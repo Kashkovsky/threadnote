@@ -10,6 +10,7 @@ import {
   repairCodeGraphIndexes,
   inspectObsoleteCodeGraphStores,
   purgeAllCodeGraphIndexes,
+  purgeCodeGraphIndex,
   purgeObsoleteCodeGraphStores,
   type CodeGraphMaintenanceProgress,
   type CodeGraphRepairCompletion,
@@ -746,16 +747,28 @@ export const runCodeGraphImpact = Effect.fn('codeGraph.command.impact')(function
 
 export const runCodeGraphPurge = Effect.fn('codeGraph.command.purge')(function* (
   config: RuntimeConfig,
-  options: CwdOption & {readonly all?: boolean; readonly dryRun?: boolean; readonly obsolete?: boolean},
+  options: CwdOption & {
+    readonly all?: boolean;
+    readonly checkoutId?: string;
+    readonly dryRun?: boolean;
+    readonly obsolete?: boolean;
+    readonly waitTimeoutMilliseconds?: number;
+  },
 ) {
   const path = yield* Path.Path;
-  if (options.all && options.obsolete) {
-    return yield* Effect.fail(new Error('Use either --all or --obsolete, not both.'));
+  if (options.all && (options.checkoutId !== undefined || options.obsolete)) {
+    return yield* Effect.fail(new Error('Use --all by itself, without --checkout-id or --obsolete.'));
+  }
+  if (options.checkoutId !== undefined && options.cwd !== undefined) {
+    return yield* Effect.fail(new Error('Use either --checkout-id or --cwd, not both.'));
   }
   if (options.obsolete) {
-    const cwd = yield* commandCwd(options.cwd);
-    const identity = yield* resolveRepositoryIdentity(cwd);
-    const summary = yield* purgeObsoleteCodeGraphStores(config.agentContextHome, identity.checkoutId, {
+    let checkoutId = options.checkoutId;
+    if (checkoutId === undefined) {
+      const cwd = yield* commandCwd(options.cwd);
+      checkoutId = (yield* resolveRepositoryIdentity(cwd)).checkoutId;
+    }
+    const summary = yield* purgeObsoleteCodeGraphStores(config.agentContextHome, checkoutId, {
       dryRun: options.dryRun === true,
     });
     const action = options.dryRun ? 'Would remove' : 'Removed';
@@ -775,6 +788,20 @@ export const runCodeGraphPurge = Effect.fn('codeGraph.command.purge')(function* 
     }
     const removed = yield* purgeAllCodeGraphIndexes(config.agentContextHome);
     yield* Console.log(`Removed derived code graph indexes: ${removed}`);
+    return;
+  }
+  if (options.checkoutId !== undefined) {
+    const summary = yield* purgeCodeGraphIndex(config.agentContextHome, options.checkoutId, {
+      dryRun: options.dryRun === true,
+      waitTimeoutMilliseconds: options.waitTimeoutMilliseconds,
+    });
+    if (!summary.existed) {
+      yield* Console.log(`No derived code graph index exists for checkout ${summary.checkoutId.slice(0, 12)}.`);
+      return;
+    }
+    yield* Console.log(
+      `${options.dryRun ? 'Would remove' : 'Removed'} derived code graph index for checkout ${summary.checkoutId.slice(0, 12)}.`,
+    );
     return;
   }
   const service = yield* CodeGraphQueryService;

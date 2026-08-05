@@ -231,9 +231,11 @@ with `--dry-run`.
 
 The local Manager exposes the same graph administration lifecycle from its Graph panel: home-wide quick or deep
 diagnostics, immediate repair, per-view status, index/reindex, compaction previews, obsolete-store pruning, and
-per-graph or all-graph purge. Destructive actions require an explicit browser confirmation. When an older indexed
-view has no live worktree association, Manager asks for a local path and verifies its checkout/worktree identity before
-acting.
+per-graph or all-graph purge. Destructive actions require an explicit browser confirmation. Per-graph purge targets the
+inventoried checkout directly, including incompatible or orphaned stores with no live worktree. Source-reading actions
+such as index and reindex, plus worktree-bound compaction, still ask for a local path when necessary and verify its checkout/worktree identity
+before acting. The CLI equivalent for an orphaned store is
+`threadnote graph purge --checkout-id <64-character-checkout-id>`; preview it first with `--dry-run`.
 
 `threadnote manage` fails fast when graph repair or another native graph maintenance operation is already active;
 an already-running Manager returns an explicit busy response for graph requests until maintenance finishes.

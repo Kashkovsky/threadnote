@@ -833,6 +833,8 @@ describe('manager http API', () => {
     const config = await makeRuntime();
     homes.push(config.agentContextHome);
     await seedManagerGraph(config);
+    const orphanedCheckoutId = 'd'.repeat(64);
+    const orphanedRoot = join(config.agentContextHome, 'indexes', 'code-graph', 'repositories', orphanedCheckoutId);
     const server = await startServer(config, 'secret');
     try {
       const headers = {authorization: 'Bearer secret', 'content-type': 'application/json'};
@@ -886,6 +888,38 @@ describe('manager http API', () => {
       });
       expect(relativeTarget.status).toBe(500);
       expect(await relativeTarget.json()).toMatchObject({error: 'Supply cwd as an absolute local worktree path.'});
+
+      await mkdir(orphanedRoot, {recursive: true});
+      await writeFile(join(orphanedRoot, 'graph-v3.sqlite'), 'incompatible disposable graph\n');
+      const targetedPreview = await fetch(`${server.url}/api/graphs/action`, {
+        body: JSON.stringify({action: 'purge', checkoutId: orphanedCheckoutId, dryRun: true}),
+        headers,
+        method: 'POST',
+      });
+      expect(targetedPreview.status).toBe(200);
+      expect(await targetedPreview.json()).toMatchObject({
+        output: `Would remove derived code graph index for checkout ${orphanedCheckoutId.slice(0, 12)}.`,
+      });
+      expect(existsSync(orphanedRoot)).toBe(true);
+
+      const refusedTargetedPurge = await fetch(`${server.url}/api/graphs/action`, {
+        body: JSON.stringify({action: 'purge', checkoutId: orphanedCheckoutId}),
+        headers,
+        method: 'POST',
+      });
+      expect(refusedTargetedPurge.status).toBe(500);
+      expect(await refusedTargetedPurge.json()).toMatchObject({error: 'Set confirm=true for this action.'});
+
+      const targetedPurge = await fetch(`${server.url}/api/graphs/action`, {
+        body: JSON.stringify({action: 'purge', checkoutId: orphanedCheckoutId, confirm: true}),
+        headers,
+        method: 'POST',
+      });
+      expect(targetedPurge.status).toBe(200);
+      expect(await targetedPurge.json()).toMatchObject({
+        output: `Removed derived code graph index for checkout ${orphanedCheckoutId.slice(0, 12)}.`,
+      });
+      expect(existsSync(orphanedRoot)).toBe(false);
     } finally {
       await server.close();
     }
