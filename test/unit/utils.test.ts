@@ -831,6 +831,37 @@ describe('parseRecallHits / mergeRecallHits / formatRecallHits', () => {
     );
   });
 
+  it('keeps vector-index semantic corroboration for a document promoted by the exact-match pass', () => {
+    const uri = 'threadnote://user/me/memories/shared/threadnote/durable/projects/threadnote/dogfood-issues.md';
+    const sections = buildRecallSections([], [{terms: ['dogfood-issues'], uri}], 12, {
+      indexedCandidates: [
+        {
+          authority: 'reviewed_shared',
+          fields: {
+            identifiers: ['dogfood-issues'],
+            project: 'threadnote',
+            title: 'Threadnote dogfooding issues',
+            topic: 'dogfood-issues',
+          },
+          kind: 'durable',
+          semantic: 0.72,
+          status: 'active',
+          text: 'dogfood issues ledger for threadnote',
+          trust: 'approved',
+          uri,
+        },
+      ],
+      project: 'threadnote',
+      query: 'dogfood-issues',
+    });
+
+    expect(sections.ranked[0]?.uri).toBe(uri);
+    expect(sections.ranked[0]?.rankSignals?.semantic).toBeCloseTo(0.72);
+    expect(sections.ranked[0]?.rankWarnings ?? []).not.toContain(
+      'lexical-only result; no semantic or graph corroboration',
+    );
+  });
+
   it('rescues an authoritative exact shared memory before hybrid reranking', () => {
     const uri =
       'threadnote://user/me/memories/shared/default/durable/projects/threadnote/windows-installation-support.md';

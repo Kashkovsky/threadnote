@@ -200,6 +200,7 @@ export class CodeGraphQueryService extends Context.Service<
               if (options.refresh !== false && (!existing || (stale && freshnessRequired))) {
                 yield* indexer.index({
                   cwd: options.cwd,
+                  ensureVectors: false,
                   onProgress: options.onProgress,
                   threadnoteHome: options.threadnoteHome,
                 });
@@ -223,6 +224,7 @@ export class CodeGraphQueryService extends Context.Service<
                   if (options.refresh !== false && freshnessRequired && result.freshness === 'stale') {
                     yield* indexer.index({
                       cwd: options.cwd,
+                      ensureVectors: false,
                       onProgress: options.onProgress,
                       threadnoteHome: options.threadnoteHome,
                     });

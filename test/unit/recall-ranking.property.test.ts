@@ -159,7 +159,67 @@ const recallMergeCaseArbitrary = recallDocumentsArbitrary.chain(documents => {
   }));
 });
 
+const MEMORY_AUTHORITIES = [
+  'agent_generated',
+  'canonical_repo',
+  'external',
+  'reviewed_shared',
+  'user_approved',
+] as const;
+const TRUSTED_LEVELS = ['approved', 'inferred'] as const;
+
+const trustDemotionCaseArbitrary = FC.record({
+  authority: FC.constantFrom(...MEMORY_AUTHORITIES),
+  feedbackPercent: FC.integer({max: 100, min: -100}),
+  kindIndex: FC.integer({max: MEMORY_KINDS.length - 1, min: 0}),
+  query: FC.constantFrom('code graph snapshot lease', 'alpha retry policy', 'worker lease renewal'),
+  rerankerPercent: FC.integer({max: 100, min: 0}),
+  semanticPercent: FC.integer({max: 100, min: 10}),
+  trustedIndex: FC.integer({max: TRUSTED_LEVELS.length - 1, min: 0}),
+});
+
 describe('recall ranking properties', () => {
+  it.prop(
+    'never lets an untrusted candidate outrank an otherwise identical trusted candidate',
+    {demotionCase: trustDemotionCaseArbitrary},
+    ({demotionCase}) => {
+      const candidate = (trust: RecallCandidate['trust'], uri: string): RecallCandidate => ({
+        authority: demotionCase.authority,
+        feedback: demotionCase.feedbackPercent / 100,
+        fields: {
+          project: 'threadnote',
+          title: 'Code graph snapshot lease',
+          topic: 'code-graph-snapshot-lease',
+        },
+        kind: MEMORY_KINDS[demotionCase.kindIndex]!,
+        reranker: demotionCase.rerankerPercent / 100,
+        semantic: demotionCase.semanticPercent / 100,
+        status: 'active',
+        text: 'Code graph snapshot lease retirement for alpha retry policy and worker lease renewal.',
+        timestamp: '2026-07-29T00:00:00.000Z',
+        trust,
+        uri,
+      });
+      const trusted = candidate(TRUSTED_LEVELS[demotionCase.trustedIndex]!, 'threadnote://a-trusted.md');
+      const untrusted = candidate('untrusted', 'threadnote://a-trusted.md');
+      const context = {now: FIXED_NOW, project: 'threadnote'};
+      const trustedAlone = rankRecallCandidates(demotionCase.query, [trusted], context).results[0];
+      const untrustedAlone = rankRecallCandidates(demotionCase.query, [untrusted], context).results[0];
+
+      expect(untrustedAlone?.finalScore ?? 0).toBeLessThanOrEqual(trustedAlone?.finalScore ?? 0);
+      expect(untrustedAlone?.finalScore ?? 0).toBeLessThanOrEqual(untrustedAlone?.relevanceScore ?? 0);
+
+      const together = rankRecallCandidates(
+        demotionCase.query,
+        [{...untrusted, uri: 'threadnote://a-untrusted.md'}, trusted],
+        context,
+      ).results.map(result => result.candidate.uri);
+
+      expect(together).toEqual(['threadnote://a-trusted.md', 'threadnote://a-untrusted.md']);
+    },
+    {fastCheck: {numRuns: 150}},
+  );
+
   it.prop(
     'keeps finite bounded ranking output stable across candidate permutations',
     {rankingCase: recallRankingCaseArbitrary},

@@ -12892,16 +12892,96 @@ export function codeGraphTermCandidateQueryStatement(
   };
 }
 
-function compareSearchSymbolRows(left: SearchSymbolRow, right: SearchSymbolRow): number {
-  return (
+export type CodeGraphSymbolPathClass = 'documentation' | 'implementation' | 'test';
+
+/**
+ * Product names such as MCP tool identifiers appear verbatim in test fixtures
+ * and agent-instruction documents as well as in the code that implements them.
+ * Those copies match a bare symbol query just as strongly, so they are demoted
+ * unless the query itself asks for a test or a document.
+ */
+const SYMBOL_PATH_CLASS_SCORE_MULTIPLIERS: Readonly<Record<CodeGraphSymbolPathClass, number>> = {
+  documentation: 0.55,
+  implementation: 1,
+  test: 0.7,
+};
+const DOCUMENTATION_PATH_DIRECTORIES = new Set(['doc', 'docs', 'documentation']);
+const DOCUMENTATION_PATH_EXTENSIONS = new Set(['.adoc', '.markdown', '.md', '.mdx', '.rst', '.txt']);
+const TEST_PATH_DIRECTORIES = new Set([
+  '__mocks__',
+  '__tests__',
+  'fixtures',
+  'spec',
+  'specs',
+  'test',
+  'testdata',
+  'tests',
+]);
+const DOCUMENTATION_QUERY_TERMS = new Set([
+  'adoc',
+  'doc',
+  'docs',
+  'documentation',
+  'guide',
+  'markdown',
+  'md',
+  'mdx',
+  'readme',
+  'rst',
+]);
+const TEST_QUERY_TERMS = new Set([
+  '__mocks__',
+  '__tests__',
+  'fixture',
+  'fixtures',
+  'mock',
+  'mocks',
+  'spec',
+  'specs',
+  'test',
+  'testdata',
+  'tests',
+]);
+const TEST_FILE_NAME_PATTERN = /(?:^|[._-])(?:spec|test)s?\.[^.]+$/;
+
+export function codeGraphSymbolPathClass(path: string): CodeGraphSymbolPathClass {
+  const segments = path.replaceAll('\\', '/').toLowerCase().split('/').filter(Boolean);
+  const fileName = segments.at(-1) ?? '';
+  const directories = segments.slice(0, -1);
+  const extensionIndex = fileName.lastIndexOf('.');
+  const extension = extensionIndex === -1 ? '' : fileName.slice(extensionIndex);
+  if (
+    DOCUMENTATION_PATH_EXTENSIONS.has(extension) ||
+    directories.some(segment => DOCUMENTATION_PATH_DIRECTORIES.has(segment))
+  ) {
+    return 'documentation';
+  }
+  if (directories.some(segment => TEST_PATH_DIRECTORIES.has(segment)) || TEST_FILE_NAME_PATTERN.test(fileName)) {
+    return 'test';
+  }
+  return 'implementation';
+}
+
+export function codeGraphSymbolPathScoreMultiplier(path: string, queryTerms: readonly string[]): number {
+  const pathClass = codeGraphSymbolPathClass(path);
+  if (pathClass === 'implementation') return 1;
+  const requestedTerms = pathClass === 'test' ? TEST_QUERY_TERMS : DOCUMENTATION_QUERY_TERMS;
+  return queryTerms.some(term => requestedTerms.has(term)) ? 1 : SYMBOL_PATH_CLASS_SCORE_MULTIPLIERS[pathClass];
+}
+
+function searchSymbolRowComparator(
+  queryTerms: readonly string[],
+): (left: SearchSymbolRow, right: SearchSymbolRow) => number {
+  return (left, right) =>
     right.exact_rank - left.exact_rank ||
+    codeGraphSymbolPathScoreMultiplier(right.path, queryTerms) -
+      codeGraphSymbolPathScoreMultiplier(left.path, queryTerms) ||
     right.score - left.score ||
     right.exported - left.exported ||
     searchSymbolKindOrder(left.kind) - searchSymbolKindOrder(right.kind) ||
     compareCodeUnits(left.name, right.name) ||
     compareCodeUnits(left.path, right.path) ||
-    compareCodeUnits(left.id, right.id)
-  );
+    compareCodeUnits(left.id, right.id);
 }
 
 function searchSymbolKindOrder(kind: string): number {
@@ -12994,6 +13074,11 @@ const selectSearchSymbolsWithSql = Effect.fn('codeGraph.selectSearchSymbolsWithS
 ) {
   const terms = normalizedTerms(query).slice(0, 24);
   const safeLimit = Math.max(1, Math.min(500, Math.floor(limit)));
+  const compareRows = searchSymbolRowComparator(terms);
+  const rankedNode = (row: SearchSymbolRow) => ({
+    ...symbolFromRow(row),
+    score: Math.max(0, Math.min(1, (row.score / 100) * codeGraphSymbolPathScoreMultiplier(row.path, terms))),
+  });
   const exactPath = normalizeExactSearchPath(query);
   const exactStatement = codeGraphExactSymbolQueryStatement(snapshotId, baseSnapshotId, exactPath ?? query, safeLimit);
   const exactRows = yield* sql.unsafe<SearchSymbolRow>(exactStatement.text, exactStatement.parameters);
@@ -13001,10 +13086,7 @@ const selectSearchSymbolsWithSql = Effect.fn('codeGraph.selectSearchSymbolsWithS
     exactPath !== undefined &&
     exactRows.some(row => normalizeExactSearchPath(row.path)?.toLocaleLowerCase() === exactPath.toLocaleLowerCase())
   ) {
-    return [...exactRows]
-      .sort(compareSearchSymbolRows)
-      .slice(0, safeLimit)
-      .map(row => ({...symbolFromRow(row), score: Math.max(0, Math.min(1, row.score / 100))}));
+    return [...exactRows].sort(compareRows).slice(0, safeLimit).map(rankedNode);
   }
   const candidateLimit = Math.min(2_000, Math.max(100, safeLimit * 20));
   const termStatement =
@@ -13028,12 +13110,9 @@ const selectSearchSymbolsWithSql = Effect.fn('codeGraph.selectSearchSymbolsWithS
   const byId = new Map<string, SearchSymbolRow>();
   for (const row of [...termRows.map(row => ({...row, exact_rank: 0})), ...exactRows]) {
     const current = byId.get(row.id);
-    if (!current || compareSearchSymbolRows(row, current) < 0) byId.set(row.id, row);
+    if (!current || compareRows(row, current) < 0) byId.set(row.id, row);
   }
-  return [...byId.values()]
-    .sort(compareSearchSymbolRows)
-    .slice(0, safeLimit)
-    .map(row => ({...symbolFromRow(row), score: Math.max(0, Math.min(1, row.score / 100))}));
+  return [...byId.values()].sort(compareRows).slice(0, safeLimit).map(rankedNode);
 });
 
 export function isCanonicalAbsoluteBazelLabel(value: string): boolean {

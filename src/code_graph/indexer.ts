@@ -85,6 +85,8 @@ export {
 
 export interface CodeGraphIndexOptions extends CodeGraphInventoryOptions {
   readonly cwd: string;
+  /** When false, skip blocking vector materialization after a ready structural snapshot. */
+  readonly ensureVectors?: boolean;
   readonly force?: boolean;
   /** Internal benchmark/correctness escape hatch; normal indexing keeps this enabled. */
   readonly incrementalOverlay?: boolean;
@@ -95,6 +97,10 @@ export interface CodeGraphIndexOptions extends CodeGraphInventoryOptions {
   /** @internal Benchmark-only SQLite writer candidate; normal indexing leaves this unset. */
   readonly sqliteWriterTuning?: CodeGraphSqliteWriterTuning;
   readonly threadnoteHome: string;
+}
+
+export function codeGraphIndexEnsuresVectors(options: {readonly ensureVectors?: boolean}): boolean {
+  return options.ensureVectors !== false;
 }
 
 interface CommittedBaseResult {
@@ -196,6 +202,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
               onProgress: progress =>
                 reporter.progress(progress).pipe(Effect.andThen(request.onProgress?.(progress) ?? Effect.void)),
             };
+            const ensureVectors = codeGraphIndexEnsuresVectors(options);
             return yield* withCodeGraphProcessLock(
               fs,
               layout.lockPath,
@@ -256,6 +263,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                           return yield* reuseReadySnapshot({
                             activeWorktreeIds,
                             embedding,
+                            ensureVectors,
                             identity,
                             layout,
                             onProgress: options.onProgress,
@@ -343,6 +351,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                         return yield* reuseReadySnapshot({
                           activeWorktreeIds,
                           embedding,
+                          ensureVectors,
                           identity,
                           layout,
                           onProgress: options.onProgress,
@@ -359,6 +368,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                         return yield* buildOwnedCleanSnapshot({
                           activeWorktreeIds,
                           embedding,
+                          ensureVectors,
                           existing,
                           fallbackSnapshotId: forcedSnapshotId,
                           force: options.force === true,
@@ -585,7 +595,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                         building,
                         existing,
                         embedding,
-                        ensureVectors: true,
+                        ensureVectors,
                         force: options.force === true,
                         fs,
                         identity,
@@ -892,6 +902,7 @@ const prepareReadyAnalysisSummary = Effect.fn('codeGraph.prepareReadyAnalysisSum
 const reuseReadySnapshot = Effect.fn('codeGraph.reuseReadySnapshot')(function* (input: {
   readonly activeWorktreeIds: ReadonlySet<string>;
   readonly embedding: CodeGraphEmbeddingIndexShape;
+  readonly ensureVectors: boolean;
   readonly identity: RepositoryIdentity;
   readonly layout: CodeGraphLayout;
   readonly onProgress?: (progress: CodeGraphProgress) => Effect.Effect<void, unknown>;
@@ -923,6 +934,29 @@ const reuseReadySnapshot = Effect.fn('codeGraph.reuseReadySnapshot')(function* (
     : analysisSummaryFailure
       ? [`Whole-graph analysis summary will be retried lazily: ${analysisSummaryFailure}`]
       : [];
+  if (!input.ensureVectors) {
+    const vectorCheck = yield* input.embedding
+      .check(input.threadnoteHome, input.layout, input.snapshot.id)
+      .pipe(Effect.catch(cause => Effect.succeed({reason: messageOf(cause), state: 'unavailable'} as const)));
+    if (vectorCheck.state !== 'ready') {
+      diagnostics.push(
+        `Vector graph retrieval unavailable: ${vectorCheck.reason ?? 'deferred until an explicit vector refresh'}`,
+      );
+    }
+    return {
+      diagnostics,
+      durationMs: (yield* Clock.currentTimeMillis) - input.startedAt,
+      identity: input.identity,
+      materialization: {
+        mode: 'reused-snapshot',
+        stagedFiles: 0,
+        totalFiles: input.totalFiles,
+      },
+      reusedFiles: input.reusedFiles,
+      skippedFiles: input.skippedFiles,
+      snapshot: input.snapshot,
+    } satisfies CodeGraphIndexSummary;
+  }
   const vectorCheck = yield* input.embedding
     .check(input.threadnoteHome, input.layout, input.snapshot.id)
     .pipe(Effect.catch(cause => Effect.succeed({reason: messageOf(cause), state: 'unavailable'} as const)));
@@ -999,6 +1033,7 @@ function sameOverlayState(
 const buildOwnedCleanSnapshot = Effect.fn('codeGraph.buildOwnedCleanSnapshot')(function* (input: {
   readonly activeWorktreeIds: ReadonlySet<string>;
   readonly embedding: CodeGraphEmbeddingIndexShape;
+  readonly ensureVectors: boolean;
   readonly existing: CodeGraphSnapshot | undefined;
   readonly fallbackSnapshotId: string;
   readonly force: boolean;
@@ -1042,6 +1077,7 @@ const buildOwnedCleanSnapshot = Effect.fn('codeGraph.buildOwnedCleanSnapshot')(f
           return yield* reuseReadySnapshot({
             activeWorktreeIds: input.activeWorktreeIds,
             embedding: input.embedding,
+            ensureVectors: input.ensureVectors,
             identity: input.identity,
             layout: input.layout,
             onProgress: input.onProgress,
@@ -1083,7 +1119,7 @@ const buildOwnedCleanSnapshot = Effect.fn('codeGraph.buildOwnedCleanSnapshot')(f
         activatePointer: true,
         building,
         embedding: input.embedding,
-        ensureVectors: true,
+        ensureVectors: input.ensureVectors,
         existing: input.existing,
         force: input.force,
         fs: input.fs,
@@ -1112,6 +1148,7 @@ const attemptReusableCleanSnapshot = Effect.fn('codeGraph.attemptReusableCleanSn
   input: {
     readonly activeWorktreeIds: ReadonlySet<string>;
     readonly embedding: CodeGraphEmbeddingIndexShape;
+    readonly ensureVectors: boolean;
     readonly existing: CodeGraphSnapshot | undefined;
     readonly fs: FileSystem.FileSystem;
     readonly identity: RepositoryIdentity;
@@ -1193,6 +1230,7 @@ const attemptReusableCleanSnapshot = Effect.fn('codeGraph.attemptReusableCleanSn
             yield* reuseReadySnapshot({
               activeWorktreeIds: input.activeWorktreeIds,
               embedding: input.embedding,
+              ensureVectors: input.ensureVectors,
               identity: input.identity,
               layout: input.layout,
               onProgress: input.onProgress,
@@ -1282,7 +1320,7 @@ const attemptReusableCleanSnapshot = Effect.fn('codeGraph.attemptReusableCleanSn
           building,
           committedBase,
           embedding: input.embedding,
-          ensureVectors: true,
+          ensureVectors: input.ensureVectors,
           existing: input.existing,
           force: false,
           fs: input.fs,

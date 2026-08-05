@@ -168,6 +168,12 @@ below that parent. Run `threadnote processes` to see a bounded privacy-safe inve
 current operation, and RSS. The output excludes command lines, working directories, repository names, prompts, and
 model input.
 
+`ROLE` is how the process was started and never changes: `mcp`, `cli`, `manager`, `graph-parser-worker`, or
+`local-model-worker`. While a process builds or waits for a code graph, the role it is temporarily acting as is
+appended, as in `cli (graph-builder)` for a dedicated `threadnote graph index` run or `mcp (graph-waiter)` for an MCP
+server queued behind another build. A process is therefore identifiable by its own identity and by the graph work it
+currently owns.
+
 An unused model worker unloads after five minutes by default. Set
 `THREADNOTE_LOCAL_MODEL_WORKER_IDLE_TIMEOUT_MS=<milliseconds>` before starting the client to use a different idle
 window; `0` disables idle eviction. Closing the stdio client closes both its MCP server and worker.

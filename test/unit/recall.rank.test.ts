@@ -88,6 +88,46 @@ describe('hybrid recall ranker', () => {
     );
   });
 
+  it('keeps an untrusted seeded resource below an active durable memory that owns the topic', () => {
+    const resourceUri = 'threadnote://resources/repos/threadnote/.graph.md/code-graph-snapshot-lease.md';
+    const memoryUri =
+      'threadnote://user/me/memories/shared/threadnote/durable/projects/threadnote/graph-administration.md';
+    const ranked = rankRecallCandidates(
+      'code graph snapshot lease',
+      [
+        {
+          authority: 'external',
+          fields: {
+            project: 'threadnote',
+            title: 'Code graph snapshot lease',
+            topic: 'code-graph-snapshot-lease',
+          },
+          status: 'active',
+          text: 'Generated notes about the code graph snapshot lease.',
+          trust: 'untrusted',
+          uri: resourceUri,
+        },
+        {
+          authority: 'reviewed_shared',
+          fields: {
+            project: 'threadnote',
+            title: 'Graph administration',
+            topic: 'graph-administration',
+          },
+          kind: 'durable',
+          status: 'active',
+          text: 'Snapshot lease retirement and code graph maintenance policy.',
+          trust: 'approved',
+          uri: memoryUri,
+        },
+      ],
+      {now: new Date('2026-08-05T00:00:00.000Z'), project: 'threadnote'},
+    );
+
+    expect(ranked.results[0]?.candidate.uri).toBe(memoryUri);
+    expect(ranked.results.map(result => result.candidate.uri)).toContain(resourceUri);
+  });
+
   it('uses native reranker evidence as a bounded, explained ranking signal', () => {
     const ranked = rankRecallCandidates(
       'worker lease timeout recovery',

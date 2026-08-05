@@ -7,6 +7,8 @@ import {
   codeGraphCompactLexicalCleanupPageStatement,
   codeGraphEffectiveSymbolTermsQueryStatement,
   codeGraphExactSymbolQueryStatement,
+  codeGraphSymbolPathClass,
+  codeGraphSymbolPathScoreMultiplier,
   codeGraphSymbolsByIdsQueryStatement,
   codeGraphTermCandidateQueryStatement,
   CodeGraphStore,
@@ -57,7 +59,55 @@ const bazelLabelSegment = FC.array(
   {maxLength: 16, minLength: 1},
 ).map(characters => characters.join(''));
 
+const symbolPathDirectory = FC.constantFrom(
+  '__tests__',
+  'app',
+  'docs',
+  'fixtures',
+  'integration',
+  'lib',
+  'spec',
+  'src',
+  'test',
+  'tests',
+);
+const symbolFileName = FC.constantFrom(
+  'AGENTS.md',
+  'guide.mdx',
+  'helpers.ts',
+  'mcp.native-tools.test.ts',
+  'mcp_server.ts',
+  'notes.rst',
+  'widget.spec.tsx',
+);
+const symbolQueryTerm = FC.constantFrom('docs', 'md', 'mcp', 'recall_context', 'spec', 'test');
+
 describe('code graph indexed query properties', () => {
+  it.prop(
+    'never scores a test or documentation symbol path above an implementation path',
+    {
+      directories: FC.array(symbolPathDirectory, {maxLength: 3}),
+      fileName: symbolFileName,
+      queryTerms: FC.array(symbolQueryTerm, {maxLength: 3}),
+    },
+    ({directories, fileName, queryTerms}) => {
+      const symbolPath = [...directories, fileName].join('/');
+      const pathClass = codeGraphSymbolPathClass(symbolPath);
+      const multiplier = codeGraphSymbolPathScoreMultiplier(symbolPath, queryTerms);
+
+      expect(multiplier).toBeGreaterThan(0);
+      expect(multiplier).toBeLessThanOrEqual(codeGraphSymbolPathScoreMultiplier('src/implementation.ts', queryTerms));
+      expect(codeGraphSymbolPathClass(symbolPath.replaceAll('/', '\\'))).toBe(pathClass);
+      expect(codeGraphSymbolPathClass(symbolPath.toUpperCase())).toBe(pathClass);
+      expect(codeGraphSymbolPathScoreMultiplier(symbolPath, [])).toBeLessThanOrEqual(multiplier);
+      expect(
+        codeGraphSymbolPathScoreMultiplier(symbolPath, [...queryTerms, pathClass === 'test' ? 'test' : 'docs']),
+      ).toBe(1);
+      if (pathClass === 'implementation') expect(multiplier).toBe(1);
+    },
+    {fastCheck: {numRuns: 200}},
+  );
+
   it.effect('treats a database file observed before schema publication as unavailable', () =>
     Effect.scoped(
       Effect.gen(function* () {

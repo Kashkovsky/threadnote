@@ -1506,7 +1506,7 @@ function hybridRankRecallHits(
       relations: record
         ? recallRelations(record, context.seedUris ?? [])
         : [...(indexed?.relations ?? []), ...containmentRelations(hit.uri, context.seedUris ?? [])],
-      semantic: hit.score,
+      semantic: Math.max(indexed?.semantic ?? 0, hit.score),
       status: record?.metadata.status ?? indexed?.status ?? memoryStatusFromUri(hit.uri),
       text: record?.body ?? indexed?.text ?? hit.snippet,
       timestamp: record?.metadata.timestamp ?? indexed?.timestamp,

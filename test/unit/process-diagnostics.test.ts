@@ -70,11 +70,58 @@ describe('process diagnostics', () => {
     );
   });
 
+  it('qualifies a process identity with the graph activity it is currently performing', () => {
+    expect(
+      renderProcessDiagnosticsTable([
+        {
+          activityRole: 'graph-builder',
+          ageMilliseconds: (5 * 60 * 60 + 3 * 60) * 1_000,
+          currentOperation: 'index-repository',
+          parentProcessId: 23_265,
+          processId: 27_543,
+          releaseVersion: '4.0.6',
+          role: 'cli',
+          rssBytes: 746.4 * 1024 * 1024,
+          startedAt: '2026-08-05T00:00:00.000Z',
+        },
+        {
+          activityRole: 'graph-waiter',
+          ageMilliseconds: 12 * 1_000,
+          currentOperation: 'repository-lock',
+          parentProcessId: 36_027,
+          processId: 37_407,
+          releaseVersion: '4.0.6',
+          role: 'mcp',
+          rssBytes: 685 * 1024 * 1024,
+          startedAt: '2026-08-05T00:00:01.000Z',
+        },
+        {
+          ageMilliseconds: 30 * 1_000,
+          currentOperation: 'embed-many',
+          parentProcessId: 27_543,
+          processId: 51_730,
+          releaseVersion: '4.0.6',
+          role: 'local-model-worker',
+          rssBytes: 634.1 * 1024 * 1024,
+          startedAt: '2026-08-05T00:00:02.000Z',
+        },
+      ]),
+    ).toBe(
+      [
+        'PID    PPID   ROLE                 VERSION  AGE   RSS        OPERATION',
+        '27543  23265  cli (graph-builder)  4.0.6    5h3m  746.4 MiB  index-repository',
+        '37407  36027  mcp (graph-waiter)   4.0.6    12s   685.0 MiB  repository-lock',
+        '51730  27543  local-model-worker   4.0.6    30s   634.1 MiB  embed-many',
+      ].join('\n'),
+    );
+  });
+
   it.prop(
     'keeps every operation value under its header for arbitrary preceding column widths',
     {
       processes: FC.array(
         FC.record({
+          activityRole: FC.option(FC.constantFrom('graph-builder' as const, 'graph-waiter' as const), {nil: undefined}),
           ageMilliseconds: FC.integer({max: 14 * 24 * 60 * 60 * 1_000, min: 0}),
           currentOperation: FC.option(
             FC.constantFrom('diagnostics', 'index-repository', 'mcp-server', 'repair', 'repository-lock'),
@@ -105,11 +152,14 @@ describe('process diagnostics', () => {
     ({processes}) => {
       const lines = renderProcessDiagnosticsTable(processes).split('\n');
       const operationColumn = lines[0]!.indexOf('OPERATION');
+      const roleColumn = lines[0]!.indexOf('ROLE');
 
       expect(operationColumn).toBeGreaterThan(0);
       expect(lines).toHaveLength(processes.length + 1);
       for (const [index, process] of processes.entries()) {
         expect(lines[index + 1]!.slice(operationColumn)).toBe(process.currentOperation ?? '-');
+        // A nested activity qualifies the identity it runs under; it never replaces it.
+        expect(lines[index + 1]!.slice(roleColumn)).toMatch(new RegExp(`^${process.role}(?: \\(|\\s|$)`));
       }
     },
     {fastCheck: {numRuns: 200}},
@@ -204,7 +254,7 @@ describe('process diagnostics', () => {
     }).pipe(Effect.provide(SystemInfo.layer), Effect.provide(BunServices.layer), Effect.scoped),
   );
 
-  it.effect('reports base and nested graph roles, then removes its owned registration', () =>
+  it.effect('keeps process identity as ROLE while nested activities update OPERATION and title', () =>
     Effect.gen(function* () {
       temporaryRoot = yield* Effect.promise(() => mkdtemp(join(tmpdir(), 'threadnote-process-diagnostics-')));
       const config = {agentContextHome: temporaryRoot};
@@ -234,6 +284,8 @@ describe('process diagnostics', () => {
           expect(privateRegistration).not.toContain(temporaryRoot);
           expect(privateRegistration).not.toContain(process.cwd());
 
+          expect(base.processes[0]).not.toHaveProperty('activityRole');
+
           yield* withThreadnoteProcessActivity(
             'graph-waiter',
             'repository-lock',
@@ -241,8 +293,9 @@ describe('process diagnostics', () => {
               expect(process.title).toBe('threadnote:graph-waiter');
               const waiting = yield* readThreadnoteProcessDiagnostics(config);
               expect(waiting.processes[0]).toMatchObject({
+                activityRole: 'graph-waiter',
                 currentOperation: 'repository-lock',
-                role: 'graph-waiter',
+                role: 'mcp',
               });
 
               yield* withThreadnoteProcessActivity(
@@ -252,8 +305,9 @@ describe('process diagnostics', () => {
                   expect(process.title).toBe('threadnote:graph-builder');
                   const building = yield* readThreadnoteProcessDiagnostics(config);
                   expect(building.processes[0]).toMatchObject({
+                    activityRole: 'graph-builder',
                     currentOperation: 'index-repository',
-                    role: 'graph-builder',
+                    role: 'mcp',
                   });
                 }),
               );
@@ -261,8 +315,9 @@ describe('process diagnostics', () => {
               const waitingAgain = yield* readThreadnoteProcessDiagnostics(config);
               expect(process.title).toBe('threadnote:graph-waiter');
               expect(waitingAgain.processes[0]).toMatchObject({
+                activityRole: 'graph-waiter',
                 currentOperation: 'repository-lock',
-                role: 'graph-waiter',
+                role: 'mcp',
               });
             }),
           );
@@ -272,6 +327,33 @@ describe('process diagnostics', () => {
       expect(process.title).toBe(originalTitle);
       expect((yield* readThreadnoteProcessDiagnostics(config)).processes).toEqual([]);
     }).pipe(Effect.provide(SystemInfo.layer), Effect.provide(BunServices.layer)),
+  );
+
+  it.effect('reports a dedicated CLI graph build as a graph activity owned by a CLI process', () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const home = yield* fileSystem.makeTempDirectoryScoped({prefix: 'threadnote-process-cli-builder-'});
+      const config = {agentContextHome: home};
+
+      yield* withThreadnoteProcessRegistration(
+        home,
+        'cli',
+        withThreadnoteProcessActivity(
+          'graph-builder',
+          'index-repository',
+          Effect.gen(function* () {
+            const diagnostics = yield* readThreadnoteProcessDiagnostics(config);
+            expect(diagnostics.processes[0]).toMatchObject({
+              activityRole: 'graph-builder',
+              currentOperation: 'index-repository',
+              role: 'cli',
+            });
+            expect(renderProcessDiagnosticsTable(diagnostics.processes)).toContain('cli (graph-builder)');
+          }),
+        ),
+        'graph',
+      );
+    }).pipe(Effect.provide(SystemInfo.layer), Effect.provide(BunServices.layer), Effect.scoped),
   );
 
   it.effect('resolves explicit process homes without leaking command arguments into diagnostics', () =>

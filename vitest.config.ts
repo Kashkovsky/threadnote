@@ -7,6 +7,8 @@ export default defineConfig({
     // Dedicated parser-pool and heavy-tail tests exercise parallel extraction.
     env: {THREADNOTE_CODE_GRAPH_PARSER_WORKERS: '1'},
     environment: 'node',
+    // Bound local parallelism so shared-machine dogfood hosts with long graph builds stay stable.
+    ...(process.env.CI ? {} : {maxWorkers: 2}),
     hookTimeout: 30_000,
     include: ['test/**/*.test.ts'],
     testTimeout: 30_000,

@@ -182,6 +182,18 @@ const TRUST_SCORES: Readonly<Record<MemoryTrust, number>> = {
   untrusted: 0.2,
 };
 
+/**
+ * Untrusted repository-derived resources are evidence, never an authority. They
+ * are seeded verbatim and therefore win narrow lexical/field contests against
+ * the curated memory that owns the same topic, so they are demoted after
+ * relevance is established rather than through the small authority weight.
+ */
+const TRUST_SCORE_MULTIPLIERS: Readonly<Record<MemoryTrust, number>> = {
+  approved: 1,
+  inferred: 1,
+  untrusted: 0.7,
+};
+
 const UNKNOWN_AUTHORITY_SCORE = 0.5;
 const UNKNOWN_TRUST_SCORE = 0.5;
 const AUTHORITY_BLEND_WEIGHT = 0.7;
@@ -345,7 +357,8 @@ function scoreCandidate(
   const temporalMultiplier = temporal === 0 ? TEMPORALLY_INVALID_SCORE_MULTIPLIER : 1;
   const lifecycleMultiplier = LIFECYCLE_SCORE_MULTIPLIERS[candidate.status ?? 'active'];
   const relevanceScore = passedRelevanceGate ? clamp(weightedScore(signals) * temporalMultiplier) : 0;
-  const finalScore = clamp(relevanceScore * lifecycleMultiplier);
+  const trustMultiplier = TRUST_SCORE_MULTIPLIERS[candidate.trust ?? 'inferred'];
+  const finalScore = clamp(relevanceScore * lifecycleMultiplier * trustMultiplier);
   const reasons = explainSignals(signals, candidate, context);
   const lexicalOnly =
     semantic <= SIGNAL_ABSENCE_MAXIMUM &&

@@ -2642,6 +2642,76 @@ describe('code graph full-build materialization store', () => {
     expect(rankedTermPlan.every(row => !/terms_symbol/i.test(row.detail))).toBe(true);
   });
 
+  it('prefers an implementation symbol over test and documentation copies of the same product name', async () => {
+    const fixture = await materializationFixture();
+    const registration = {
+      ...symbol('registration', 'recall_context', ['typescript:name:recall_context']),
+      path: 'src/mcp_server.ts',
+    };
+    const testLocal = {
+      ...symbol('test-local', 'recall_context', ['typescript:name:recall_context']),
+      path: 'test/integration/mcp.native-tools.test.ts',
+    };
+    const heading = {
+      ...symbol('agent-heading', 'recall_context', ['typescript:name:recall_context']),
+      path: 'AGENTS.md',
+    };
+
+    const search = await runEffect(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        return yield* store.withSession(
+          fixture.databasePath,
+          Effect.gen(function* () {
+            yield* store.prepareActivation(fixture.databasePath, [fixture.file]);
+            yield* store.stageActivationFacts(fixture.databasePath, [heading, testLocal, registration], []);
+            const snapshot = readySnapshot(fixture.identity, 3, 0);
+            yield* store.activateStaged(fixture.databasePath, fixture.identity, snapshot);
+            return yield* store.searchSymbols(fixture.databasePath, snapshot.id, 'recall_context', 10);
+          }),
+        );
+      }),
+    );
+
+    expect(search.map(node => node.path)).toEqual([
+      'src/mcp_server.ts',
+      'test/integration/mcp.native-tools.test.ts',
+      'AGENTS.md',
+    ]);
+    expect(search[0]?.score).toBeGreaterThan(search[1]!.score);
+    expect(search[1]?.score).toBeGreaterThan(search[2]!.score);
+  });
+
+  it('keeps test symbols undemoted when the query asks for a test path', async () => {
+    const fixture = await materializationFixture();
+    const registration = {
+      ...symbol('registration', 'recall_context', ['typescript:name:recall_context']),
+      path: 'src/mcp_server.ts',
+    };
+    const testLocal = {
+      ...symbol('test-local', 'recall_context', ['typescript:name:recall_context']),
+      path: 'test/integration/mcp.native-tools.test.ts',
+    };
+
+    const search = await runEffect(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        return yield* store.withSession(
+          fixture.databasePath,
+          Effect.gen(function* () {
+            yield* store.prepareActivation(fixture.databasePath, [fixture.file]);
+            yield* store.stageActivationFacts(fixture.databasePath, [testLocal, registration], []);
+            const snapshot = readySnapshot(fixture.identity, 2, 0);
+            yield* store.activateStaged(fixture.databasePath, fixture.identity, snapshot);
+            return yield* store.searchSymbols(fixture.databasePath, snapshot.id, 'recall_context test', 10);
+          }),
+        );
+      }),
+    );
+
+    expect(search.map(node => node.path)).toEqual(['test/integration/mcp.native-tools.test.ts', 'src/mcp_server.ts']);
+  });
+
   it('fails fast on duplicate full-build IDs without replacing already staged facts', async () => {
     const fixture = await materializationFixture();
     const original = symbol('stable-id', 'original', ['typescript:name:original']);

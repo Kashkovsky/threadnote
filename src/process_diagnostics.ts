@@ -36,6 +36,7 @@ interface ProcessRegistrationFile {
 }
 
 export interface ThreadnoteProcessDiagnostic {
+  readonly activityRole?: RegisteredThreadnoteProcessRole;
   readonly ageMilliseconds: number;
   readonly currentOperation?: string;
   readonly parentProcessId: number;
@@ -211,10 +212,14 @@ export const readThreadnoteProcessDiagnostics = Effect.fn('processDiagnostics.re
       };
     });
 
-  const roleByProcess = new Map(live.map(value => [value.processId, value.role] as const));
+  // ROLE stays the registered identity of the process. A nested activity is
+  // reported separately so a dedicated graph build is still obvious without an
+  // MCP or CLI process appearing to be a graph daemon it never was.
+  const roleByProcess = new Map(live.map(value => [value.processId, value.baseRole] as const));
   const current = live
     .sort((left, right) => left.startedAt.localeCompare(right.startedAt) || left.processId - right.processId)
     .map(value => ({
+      ...(value.role === value.baseRole ? {} : {activityRole: value.role}),
       ageMilliseconds: Math.max(0, now - Date.parse(value.startedAt)),
       ...(value.currentOperation === undefined ? {} : {currentOperation: value.currentOperation}),
       parentProcessId: value.parentProcessId,
@@ -225,7 +230,7 @@ export const readThreadnoteProcessDiagnostics = Effect.fn('processDiagnostics.re
       ...(releaseLeaseByProcess.get(value.processId) === undefined
         ? {}
         : {releaseVersion: releaseLeaseByProcess.get(value.processId)!.version}),
-      role: value.role,
+      role: value.baseRole,
       startedAt: value.startedAt,
     }));
   const candidates = [...current, ...legacy].sort(
@@ -293,7 +298,7 @@ export function renderProcessDiagnosticsTable(processes: readonly ThreadnoteProc
     ...processes.map(process => [
       String(process.processId),
       process.parentProcessId === 0 ? '-' : String(process.parentProcessId),
-      process.role,
+      process.activityRole === undefined ? process.role : `${process.role} (${process.activityRole})`,
       process.releaseVersion ?? '-',
       formatDuration(process.ageMilliseconds),
       process.rssBytes === undefined ? 'unknown' : formatBytes(process.rssBytes),
