@@ -1,15 +1,12 @@
-import {Console, Effect, FileSystem, Option, Path} from 'effect';
+import {Effect, FileSystem, Path} from 'effect';
 import {USER_INSTRUCTIONS_END_MARKER, USER_INSTRUCTIONS_START_MARKER} from './constants.js';
-import {sha256FileHex} from './effect/digest.js';
 import {SystemInfo} from './effect/system.js';
 import type {DoctorCheck} from './types.js';
 import {errorMessage, expandPath, findExecutable, readFileIfExists, toolRoot} from './utils.js';
 
 const CURSOR_PLUGIN_NAME = 'threadnote';
 const CURSOR_PLUGIN_MANIFEST = '.cursor-plugin/plugin.json';
-const CURSOR_PLUGIN_MARKER = '.threadnote-managed.json';
 const CURSOR_PLUGIN_RULE = 'rules/threadnote.mdc';
-const CURSOR_PLUGIN_MARKER_SCHEMA_VERSION = 1;
 
 interface CursorPluginManifest {
   readonly name: string;
@@ -26,106 +23,6 @@ export const cursorPluginDoctorChecks = Effect.fn('cursorPlugin.doctorChecks')(f
   const cursorInstalled = options.cursorInstalled ?? (yield* isCursorInstalled());
   if (!cursorInstalled) return [];
   return [yield* cursorPluginDoctorCheck()];
-});
-
-export const installCursorPlugin = Effect.fn('cursorPlugin.install')(function* (
-  dryRun: boolean,
-  releaseRoot?: string,
-  options: CursorAvailabilityOptions = {},
-) {
-  const cursorInstalled = options.cursorInstalled ?? (yield* isCursorInstalled());
-  if (!cursorInstalled) return;
-
-  const fs = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
-  const system = yield* SystemInfo;
-  const sourceRoot = path.join(releaseRoot ?? (yield* toolRoot()), 'cursor-plugin');
-  const targetRoot = yield* localCursorPluginRoot();
-  const targetExists = yield* fs.exists(targetRoot);
-  if (targetExists && (yield* isSymbolicLink(targetRoot))) {
-    yield* Console.warn(`WARN ${targetRoot} is a symlink; not replacing it with the managed Cursor plugin.`);
-    return;
-  }
-  if (targetExists && !(yield* hasManagedCursorPluginMarker(targetRoot))) {
-    yield* Console.warn(`WARN ${targetRoot} is not managed by Threadnote; not modifying it.`);
-    return;
-  }
-  if (dryRun) {
-    yield* Console.log(
-      targetExists
-        ? `Would refresh managed Cursor plugin: ${targetRoot}`
-        : `Would install Cursor plugin: ${targetRoot}`,
-    );
-    return;
-  }
-
-  yield* validateCursorPluginSource(sourceRoot);
-  if (targetExists && (yield* directoryTreesMatch(sourceRoot, targetRoot))) {
-    yield* Console.log(`Cursor plugin already current: ${targetRoot}`);
-    return;
-  }
-
-  const parent = path.dirname(targetRoot);
-  yield* fs.makeDirectory(parent, {recursive: true, mode: 0o700});
-  const operationId = `${system.processId}-${crypto.randomUUID()}`;
-  const temporaryRoot = path.join(parent, `.${CURSOR_PLUGIN_NAME}.${operationId}.installing`);
-  const backupRoot = path.join(parent, `.${CURSOR_PLUGIN_NAME}.${operationId}.backup`);
-  const cleanupTemporary = fs
-    .remove(temporaryRoot, {force: true, recursive: true})
-    .pipe(Effect.catch(() => Effect.void));
-  yield* Effect.gen(function* () {
-    yield* fs.copy(sourceRoot, temporaryRoot, {overwrite: false});
-    let movedExisting = false;
-    if (targetExists) {
-      yield* fs.rename(targetRoot, backupRoot);
-      movedExisting = true;
-    }
-    yield* fs.rename(temporaryRoot, targetRoot).pipe(
-      Effect.catch(cause =>
-        Effect.gen(function* () {
-          if (movedExisting && !(yield* fs.exists(targetRoot)) && (yield* fs.exists(backupRoot))) {
-            yield* fs.rename(backupRoot, targetRoot);
-          }
-          return yield* Effect.fail(cause);
-        }),
-      ),
-    );
-    if (movedExisting) {
-      yield* fs
-        .remove(backupRoot, {recursive: true})
-        .pipe(
-          Effect.catch(cause =>
-            Console.warn(
-              `WARN could not remove the previous Cursor plugin backup at ${backupRoot}: ${errorMessage(cause)}`,
-            ),
-          ),
-        );
-    }
-  }).pipe(Effect.ensuring(cleanupTemporary));
-  yield* Console.log(
-    targetExists ? `Refreshed managed Cursor plugin: ${targetRoot}` : `Installed Cursor plugin: ${targetRoot}`,
-  );
-  yield* Console.log('Reload Cursor or open a new Cursor window so the Threadnote plugin refreshes.');
-});
-
-export const removeCursorPlugin = Effect.fn('cursorPlugin.remove')(function* (dryRun: boolean) {
-  const fs = yield* FileSystem.FileSystem;
-  const targetRoot = yield* localCursorPluginRoot();
-  if (!(yield* fs.exists(targetRoot))) return;
-  if (yield* isSymbolicLink(targetRoot)) {
-    yield* Console.warn(`WARN ${targetRoot} is a symlink; not removing it.`);
-    return;
-  }
-  if (!(yield* hasManagedCursorPluginMarker(targetRoot))) {
-    yield* Console.warn(`WARN ${targetRoot} is not managed by Threadnote; not removing it.`);
-    return;
-  }
-  if (dryRun) {
-    yield* Console.log(`Would remove managed Cursor plugin: ${targetRoot}`);
-    return;
-  }
-  yield* fs.remove(targetRoot, {recursive: true});
-  yield* Console.log(`Removed managed Cursor plugin: ${targetRoot}. It can be restored with threadnote install.`);
 });
 
 export const isCursorInstalled = Effect.fn('cursorPlugin.isCursorInstalled')(function* () {
@@ -183,17 +80,13 @@ export const isCursorInstalled = Effect.fn('cursorPlugin.isCursorInstalled')(fun
 const cursorPluginDoctorCheck = Effect.fn('cursorPlugin.doctorCheck')(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const localRoot = yield* localCursorPluginRoot();
+  const localRoot = yield* expandPath(`~/.cursor/plugins/local/${CURSOR_PLUGIN_NAME}`);
   if (yield* fs.exists(localRoot)) {
-    const check = yield* inspectCursorPluginRoot(localRoot);
-    if (check.status === 'ok' && !(yield* hasManagedCursorPluginMarker(localRoot))) {
-      return {
-        detail: `${localRoot}; valid but not managed by Threadnote; repair will not overwrite it`,
-        name: 'Cursor plugin',
-        status: 'warn',
-      } satisfies DoctorCheck;
-    }
-    return check;
+    return {
+      detail: `unsupported local installation at ${localRoot}; remove it while Cursor is closed, then install Threadnote through the Cursor Marketplace or your team marketplace`,
+      name: 'Cursor plugin',
+      status: 'fail',
+    } satisfies DoctorCheck;
   }
 
   const cacheRoot = yield* expandPath('~/.cursor/plugins/cache');
@@ -215,7 +108,8 @@ const cursorPluginDoctorCheck = Effect.fn('cursorPlugin.doctorCheck')(function* 
   }
 
   return {
-    detail: 'not installed; run `threadnote repair` to install the managed local plugin',
+    detail:
+      'not installed through Cursor; install Threadnote from the Cursor Marketplace or ask your team administrator to add or allow it',
     name: 'Cursor plugin',
     status: 'warn',
   } satisfies DoctorCheck;
@@ -239,7 +133,7 @@ const inspectCursorPluginRoot = Effect.fn('cursorPlugin.inspectRoot')(function* 
   const rule = yield* readFileIfExists(rulePath);
   if (rule === undefined) {
     return {
-      detail: `${rulePath} missing; run \`threadnote repair\``,
+      detail: `${rulePath} missing; reinstall the plugin through the Cursor Marketplace`,
       name: 'Cursor plugin',
       status: 'fail',
     } satisfies DoctorCheck;
@@ -247,7 +141,7 @@ const inspectCursorPluginRoot = Effect.fn('cursorPlugin.inspectRoot')(function* 
   const ruleProblem = cursorRuleProblem(rule);
   if (ruleProblem) {
     return {
-      detail: `${rulePath} ${ruleProblem}; run \`threadnote repair\``,
+      detail: `${rulePath} ${ruleProblem}; reinstall the plugin through the Cursor Marketplace`,
       name: 'Cursor plugin',
       status: 'fail',
     } satisfies DoctorCheck;
@@ -262,14 +156,14 @@ const inspectCursorPluginRoot = Effect.fn('cursorPlugin.inspectRoot')(function* 
   const comparison = compareSemver(manifest.version, bundledManifest.version);
   if (comparison < 0) {
     return {
-      detail: `${pluginRoot}; v${manifest.version} is older than bundled v${bundledManifest.version}; run \`threadnote repair\``,
+      detail: `${pluginRoot}; v${manifest.version} is older than bundled v${bundledManifest.version}; update it through the Cursor Marketplace`,
       name: 'Cursor plugin',
       status: 'warn',
     } satisfies DoctorCheck;
   }
   if (comparison === 0 && normalizeNewlines(rule) !== normalizeNewlines(bundledRule)) {
     return {
-      detail: `${rulePath} differs from bundled v${bundledManifest.version}; run \`threadnote repair\``,
+      detail: `${rulePath} differs from bundled v${bundledManifest.version}; reinstall it through the Cursor Marketplace`,
       name: 'Cursor plugin',
       status: 'fail',
     } satisfies DoctorCheck;
@@ -279,21 +173,6 @@ const inspectCursorPluginRoot = Effect.fn('cursorPlugin.inspectRoot')(function* 
     name: 'Cursor plugin',
     status: 'ok',
   } satisfies DoctorCheck;
-});
-
-const validateCursorPluginSource = Effect.fn('cursorPlugin.validateSource')(function* (pluginRoot: string) {
-  const path = yield* Path.Path;
-  const manifest = yield* readCursorPluginManifest(path.join(pluginRoot, CURSOR_PLUGIN_MANIFEST));
-  if (manifest.name !== CURSOR_PLUGIN_NAME) {
-    return yield* Effect.fail(new Error(`Bundled Cursor plugin must be named ${CURSOR_PLUGIN_NAME}.`));
-  }
-  if (!(yield* hasManagedCursorPluginMarker(pluginRoot))) {
-    return yield* Effect.fail(new Error('Bundled Cursor plugin is missing its Threadnote ownership marker.'));
-  }
-  const rule = yield* readFileIfExists(path.join(pluginRoot, CURSOR_PLUGIN_RULE));
-  const problem = rule === undefined ? 'is missing' : cursorRuleProblem(rule);
-  if (problem) return yield* Effect.fail(new Error(`Bundled Cursor plugin rule ${problem}.`));
-  return manifest;
 });
 
 const readCursorPluginManifest = Effect.fn('cursorPlugin.readManifest')(function* (manifestPath: string) {
@@ -315,64 +194,6 @@ const readCursorPluginManifest = Effect.fn('cursorPlugin.readManifest')(function
   }
   return parsed as CursorPluginManifest;
 });
-
-const hasManagedCursorPluginMarker = Effect.fn('cursorPlugin.hasManagedMarker')(function* (pluginRoot: string) {
-  const path = yield* Path.Path;
-  const raw = yield* readFileIfExists(path.join(pluginRoot, CURSOR_PLUGIN_MARKER));
-  return isManagedCursorPluginMarker(raw);
-});
-
-const localCursorPluginRoot = Effect.fn('cursorPlugin.localRoot')(() =>
-  expandPath(`~/.cursor/plugins/local/${CURSOR_PLUGIN_NAME}`),
-);
-
-const isSymbolicLink = Effect.fn('cursorPlugin.isSymbolicLink')(function* (target: string) {
-  const fs = yield* FileSystem.FileSystem;
-  return Option.isSome(yield* fs.readLink(target).pipe(Effect.option));
-});
-
-const directoryTreesMatch = Effect.fn('cursorPlugin.directoryTreesMatch')(function* (
-  sourceRoot: string,
-  targetRoot: string,
-) {
-  const fs = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
-  const [sourceEntries, targetEntries] = yield* Effect.all([
-    fs.readDirectory(sourceRoot, {recursive: true}),
-    fs.readDirectory(targetRoot, {recursive: true}),
-  ]);
-  const sourceByNormalizedPath = new Map(sourceEntries.map(entry => [normalizePath(entry), entry]));
-  const targetByNormalizedPath = new Map(targetEntries.map(entry => [normalizePath(entry), entry]));
-  const sourcePaths = [...sourceByNormalizedPath.keys()].sort();
-  const targetPaths = [...targetByNormalizedPath.keys()].sort();
-  if (JSON.stringify(sourcePaths) !== JSON.stringify(targetPaths)) return false;
-  for (const relative of sourcePaths) {
-    const sourceEntry = path.join(sourceRoot, sourceByNormalizedPath.get(relative)!);
-    const targetEntry = path.join(targetRoot, targetByNormalizedPath.get(relative)!);
-    const [sourceInfo, targetInfo] = yield* Effect.all([fs.stat(sourceEntry), fs.stat(targetEntry)]);
-    if (sourceInfo.type !== targetInfo.type) return false;
-    if (sourceInfo.type === 'File' && (yield* sha256FileHex(sourceEntry)) !== (yield* sha256FileHex(targetEntry))) {
-      return false;
-    }
-  }
-  return true;
-});
-
-function isManagedCursorPluginMarker(content: string | undefined): boolean {
-  if (content === undefined) return false;
-  try {
-    const parsed = JSON.parse(content) as unknown;
-    return (
-      typeof parsed === 'object' &&
-      parsed !== null &&
-      !Array.isArray(parsed) &&
-      (parsed as Record<string, unknown>).managedBy === 'threadnote' &&
-      (parsed as Record<string, unknown>).schemaVersion === CURSOR_PLUGIN_MARKER_SCHEMA_VERSION
-    );
-  } catch {
-    return false;
-  }
-}
 
 function cursorRuleProblem(content: string): string | undefined {
   const normalized = normalizeNewlines(content);

@@ -5,7 +5,7 @@ import {
   USER_INSTRUCTIONS_END_MARKER,
   USER_INSTRUCTIONS_START_MARKER,
 } from './constants.js';
-import {cursorPluginDoctorChecks, installCursorPlugin, removeCursorPlugin} from './cursor-plugin.js';
+import {cursorPluginDoctorChecks} from './cursor-plugin.js';
 import {startProgress} from './cli_ui.js';
 import {commandShimCheck, installCommandShim, removeCommandShim} from './command-shim.js';
 import {sha256FileHex} from './effect/digest.js';
@@ -292,7 +292,6 @@ export const runInstall = Effect.fn('lifecycle.install')(function* (config: Runt
     );
   }
   yield* installUserAgentInstructions(dryRun);
-  yield* withStandaloneInstallationLock(installCursorPlugin(dryRun, releaseRoot), dryRun);
   if (options.start !== false) {
     yield* Console.log(
       'Threadnote 4 uses local storage and a supervised on-demand inference worker; no background server is required.',
@@ -484,7 +483,6 @@ export const runUninstall = Effect.fn('lifecycle.uninstall')(function* (
   if (yield* hasManagedClaudeHooks()) {
     yield* runHooksInstall(config, 'claude', {apply: !dryRun, dryRun, remove: true});
   }
-  yield* withStandaloneInstallationLock(removeCursorPlugin(dryRun), dryRun);
   yield* removeCommandShim(dryRun);
   yield* removeUserAgentInstructions(dryRun);
   if (options.eraseMemories === true) {

@@ -179,7 +179,6 @@ const checkSelfContained = Effect.gen(function* () {
       path.join(root, 'dist', 'runtime', 'node-llama-cpp.js'),
       path.join(root, 'dist', 'runtime', 'native'),
       path.join(root, 'dist', 'config', 'agent-instructions.md'),
-      path.join(root, 'dist', 'cursor-plugin', '.threadnote-managed.json'),
       path.join(root, 'dist', 'cursor-plugin', '.cursor-plugin', 'plugin.json'),
       path.join(root, 'dist', 'cursor-plugin', 'rules', 'threadnote.mdc'),
       path.join(root, 'dist', 'cursor-plugin', 'LICENSE'),
@@ -255,10 +254,6 @@ const validateCursorPlugin = Effect.fn('checkSelfContained.validateCursorPlugin'
     yield* fs.readFileString(path.join(root, 'config', 'agent-instructions.md')),
   ).trim();
   const rule = yield* fs.readFileString(path.join(root, 'cursor-plugin', 'rules', 'threadnote.mdc'));
-  const marker = yield* parseJsonFile(fs, path.join(root, 'cursor-plugin', '.threadnote-managed.json'));
-  if (!isRecord(marker) || marker.managedBy !== 'threadnote' || marker.schemaVersion !== 1) {
-    failures.push('Cursor plugin ownership marker is missing or invalid');
-  }
   if (!/^---\r?\n[\s\S]*?^description:\s*\S.+$[\s\S]*?^alwaysApply:\s*true\s*$[\s\S]*?^---$/m.test(rule)) {
     failures.push('Cursor plugin rule must have a description and alwaysApply: true MDC frontmatter');
   }

@@ -9,7 +9,6 @@ import {
   withSpinnerEffect,
 } from './cli_ui.js';
 import {installCommandShim} from './command-shim.js';
-import {installCursorPlugin} from './cursor-plugin.js';
 import {extractGzipTar} from './effect/archive.js';
 import {maybeRunEffect, runCommandEffect, runStreamingCommandEffect} from './effect/command.js';
 import {applicationError, fromSync} from './effect/errors.js';
@@ -200,22 +199,11 @@ export const runUpdate = Effect.fn('runUpdate')(function* (config: RuntimeConfig
   }
 
   if (!info.isUpdateAvailable && options.force !== true) {
-    const path = yield* Path.Path;
-    const activeReleaseRoot =
-      info.installedVersion === undefined
-        ? yield* toolRoot()
-        : path.join(installationRoot(path, system), 'versions', info.installedVersion);
     if (info.installedVersion !== undefined) {
+      const path = yield* Path.Path;
+      const activeReleaseRoot = path.join(installationRoot(path, system), 'versions', info.installedVersion);
       yield* withStandaloneInstallationLock(
-        Effect.gen(function* () {
-          yield* installCommandShim(options.dryRun === true, activeReleaseRoot);
-          yield* installCursorPlugin(options.dryRun === true, activeReleaseRoot);
-        }),
-        options.dryRun === true,
-      );
-    } else {
-      yield* withStandaloneInstallationLock(
-        installCursorPlugin(options.dryRun === true, activeReleaseRoot),
+        installCommandShim(options.dryRun === true, activeReleaseRoot),
         options.dryRun === true,
       );
     }
@@ -239,7 +227,6 @@ export const runUpdate = Effect.fn('runUpdate')(function* (config: RuntimeConfig
     }),
     dryRun,
   );
-  yield* withStandaloneInstallationLock(installCursorPlugin(dryRun, releaseRoot), dryRun);
   const path = yield* Path.Path;
   const threadnoteCommand = path.join(releaseRoot, system.platform === 'win32' ? 'threadnote.exe' : 'threadnote');
   const postUpdateArgs = [

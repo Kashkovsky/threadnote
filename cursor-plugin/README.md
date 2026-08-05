@@ -1,8 +1,8 @@
 # Threadnote for Cursor
 
 This plugin gives Cursor an always-applied `.mdc` rule for using Threadnote as shared local context, engineering memory,
-code-graph search, and agent handoffs. Plugin rules are a documented user-level integration, unlike writing a rule into
-the project-only `~/.cursor/rules` path.
+code-graph search, and agent handoffs. Plugin rules provide user- or team-level distribution without pretending that
+Cursor's documented project rule directory is a user-level rule location.
 
 ## Prerequisites
 
@@ -16,20 +16,17 @@ plugin cannot create a second, conflicting `threadnote` MCP server.
 
 ## Install
 
-When Threadnote detects Cursor, `threadnote install`, `threadnote update`, and `threadnote repair` install or refresh
-this directory at `~/.cursor/plugins/local/threadnote`. Reload the Cursor window after the first installation or an
-update.
+Once the plugin is publicly listed, find **Threadnote** in Cursor's Marketplace or run `/add-plugin threadnote` in a
+Cursor agent chat. On a managed Teams or Enterprise account, ask an administrator to allow the public plugin or add
+this repository to a team marketplace and choose the appropriate install policy.
 
-For source development before building a standalone release, this directory can also be copied to that location
-manually. The plugin should appear under Cursor Settings > Plugins > Installed.
+The Threadnote CLI does not copy, refresh, or remove this plugin under `~/.cursor/plugins/local`. Installation and
+updates remain owned by Cursor and the organization's Marketplace policy. Reload Cursor after installation, then run
+`threadnote doctor` to verify both the global Cursor MCP entry and the installed rule. The plugin check is omitted when
+Threadnote does not detect Cursor.
 
-After optional Marketplace publication, users can instead find **Threadnote** in Cursor Settings > Plugins or run
-`/add-plugin threadnote` in a Cursor agent chat. A Threadnote-managed local copy takes precedence and should be removed
-with `threadnote uninstall` before testing the Marketplace copy.
-
-Run `threadnote doctor` to verify both the global Cursor MCP entry and the installed plugin rule. Threadnote only runs
-the plugin check when it detects a Cursor installation. Threadnote refuses to overwrite or remove an unmarked local
-plugin directory at the same path.
+Contributors can validate the source with `bun run cursor-plugin:check`. Exercise an unpublished build through an
+administrator-controlled team marketplace; do not inject it into Cursor's local-plugin directory.
 
 ## License
 
