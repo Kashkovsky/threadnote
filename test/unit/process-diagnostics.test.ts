@@ -10,6 +10,7 @@ import {SystemInfo} from '../../src/effect/system.js';
 import {
   readThreadnoteProcessDiagnostics,
   legacyProcessDoctorCheck,
+  renderProcessDiagnosticsTable,
   threadnoteHomeForProcess,
   withThreadnoteProcessActivity,
   withThreadnoteProcessRegistration,
@@ -36,6 +37,39 @@ afterEach(async () => {
 });
 
 describe('process diagnostics', () => {
+  it('aligns operation values with their header when preceding cells have different widths', () => {
+    expect(
+      renderProcessDiagnosticsTable([
+        {
+          ageMilliseconds: (12 * 60 * 60 + 55 * 60) * 1_000,
+          currentOperation: 'mcp-server',
+          parentProcessId: 42_478,
+          processId: 79_155,
+          releaseVersion: '4.0.3',
+          role: 'mcp',
+          rssBytes: 138.2 * 1024 * 1024,
+          startedAt: '2026-08-04T00:00:00.000Z',
+        },
+        {
+          ageMilliseconds: (44 * 60 + 23) * 1_000,
+          currentOperation: 'repair',
+          parentProcessId: 1_100,
+          processId: 71_873,
+          releaseVersion: '4.0.3',
+          role: 'cli',
+          rssBytes: 78 * 1024 * 1024,
+          startedAt: '2026-08-05T00:00:00.000Z',
+        },
+      ]),
+    ).toBe(
+      [
+        'PID    PPID   ROLE  VERSION  AGE     RSS        OPERATION',
+        '79155  42478  mcp   4.0.3    12h55m  138.2 MiB  mcp-server',
+        '71873  1100   cli   4.0.3    44m23s  78.0 MiB   repair',
+      ].join('\n'),
+    );
+  });
+
   it.effect('reports a validated pre-registry release lease without exposing its private fields', () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
