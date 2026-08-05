@@ -179,10 +179,21 @@ rebuilt from canonical Markdown after corruption. Vector values are content-addr
 value already written. A changed active mapping is committed in one SQLite transaction only after every required
 vector is present; an interrupted embedding run leaves the previous mapping available.
 
-Repair and doctor also run a full SQLite integrity check over each derived native code graph. Large monorepo graphs can
-take time to scan; both commands print the current graph database and cleanup phase while they work. If a graph is
-reported as corrupt, run `threadnote repair`; repair discards unreadable derived graph databases, and the next graph
-query rebuilds them.
+`threadnote repair --deep` runs a full SQLite integrity check over each derived native code graph. Large monorepo
+graphs can take time to scan, and a pause at one database means SQLite is still reading that database's pages. Use the
+home-wide graph commands when the issue is isolated to native code graphs:
+
+```sh
+threadnote graph diagnostics --analyze --json
+threadnote graph repair --all --dry-run
+threadnote graph repair --all
+```
+
+`graph diagnostics` does not depend on the current directory. Its default health pass is quick; add `--deep` only when
+you need full SQLite integrity and foreign-key checks. `graph repair --all` immediately applies pending persistent
+schema migrations instead of waiting for a later graph query, while also keeping its default pass quick. Add `--deep`
+to discard an unreadable or corrupt derived graph database after the full check; its source repository and Threadnote
+memories are untouched, and the next graph query rebuilds the disposable graph.
 
 ```sh
 threadnote index verify

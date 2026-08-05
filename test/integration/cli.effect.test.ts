@@ -42,8 +42,10 @@ describe('Effect CLI', () => {
     const node = await runCli(['graph', 'node', '--help']);
     const neighbors = await runCli(['graph', 'neighbors', '--help']);
     const analyze = await runCli(['graph', 'analyze', '--help']);
+    const diagnostics = await runCli(['graph', 'diagnostics', '--help']);
     const exportHelp = await runCli(['graph', 'export', '--help']);
     const purge = await runCli(['graph', 'purge', '--help']);
+    const repair = await runCli(['graph', 'repair', '--help']);
 
     expect(graph.stdout).toContain('status');
     expect(graph.stdout).toContain('index');
@@ -54,8 +56,10 @@ describe('Effect CLI', () => {
     expect(graph.stdout).toContain('impact');
     expect(graph.stdout).toContain('communities');
     expect(graph.stdout).toContain('community');
+    expect(graph.stdout).toContain('diagnostics');
     expect(graph.stdout).toContain('groups');
     expect(graph.stdout).toContain('report');
+    expect(graph.stdout).toContain('repair');
     expect(query.stdout).toContain('--query string');
     expect(query.stdout).toContain('--cwd string');
     expect(node.stdout).toContain('--node-id string');
@@ -68,6 +72,9 @@ describe('Effect CLI', () => {
       'choices: stats, communities, community, groups, hubs, surprises, confidence, full',
     );
     expect(analyze.stdout).toContain('--community-id string');
+    expect(diagnostics.stdout).toContain('--analyze');
+    expect(diagnostics.stdout).toContain('--deep');
+    expect(diagnostics.stdout).not.toContain('--cwd');
     const community = await runCli(['graph', 'community', '--help']);
     expect(community.stdout).toContain('--community-id string');
     expect(community.stdout).toContain('--member-limit integer');
@@ -76,6 +83,9 @@ describe('Effect CLI', () => {
     expect(exportHelp.stdout).toContain('--node-limit string');
     expect(exportHelp.stdout).toContain('--edge-limit string');
     expect(purge.stdout).toContain('--obsolete');
+    expect(repair.stdout).toContain('--all');
+    expect(repair.stdout).toContain('--deep');
+    expect(repair.stdout).toContain('--dry-run');
   });
 
   it('keeps graph index JSON parseable while streaming structured progress to stderr', async () => {
