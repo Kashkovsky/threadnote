@@ -481,6 +481,7 @@ export interface CodeGraphStoreShape {
     databasePath: string,
     snapshotId: string,
     durationMilliseconds: number,
+    options?: {readonly retireWhenInactive?: boolean},
   ) => Effect.Effect<string, CodeGraphStoreError>;
   readonly promote: (
     databasePath: string,
@@ -1030,7 +1031,7 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
               Effect.fail(storeError('use code graph database session', cause as SqlError.SqlError)),
             ),
           ),
-        acquireSnapshotLease: (databasePath, snapshotId, durationMilliseconds) =>
+        acquireSnapshotLease: (databasePath, snapshotId, durationMilliseconds, options) =>
           Effect.gen(function* () {
             const token = `${system.processId}:${yield* crypto.randomUUIDv4}`;
             const acquired = yield* prepare(databasePath).pipe(
@@ -1040,7 +1041,12 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
                   useDatabase(
                     databasePath,
                     Effect.gen(function* () {
-                      const acquiredToken = yield* acquireSnapshotLease(snapshotId, durationMilliseconds, token);
+                      const acquiredToken = yield* acquireSnapshotLease(
+                        snapshotId,
+                        durationMilliseconds,
+                        token,
+                        options?.retireWhenInactive === true,
+                      );
                       const cleanup = yield* pruneRetiredSnapshotRowsPage();
                       return {cleanup, token: acquiredToken};
                     }),
@@ -3584,6 +3590,7 @@ const acquireSnapshotLease = Effect.fn('codeGraph.acquireSnapshotLease')(functio
   snapshotId: string,
   durationMilliseconds: number,
   token: string,
+  retireWhenInactive: boolean,
 ) {
   const sql = yield* SqlClient.SqlClient;
   yield* configureConnection(sql);
@@ -3601,7 +3608,7 @@ const acquireSnapshotLease = Effect.fn('codeGraph.acquireSnapshotLease')(functio
         INSERT INTO snapshot_leases (token, snapshot_id, expires_at, retire_when_inactive)
         VALUES (
           ${token}, ${snapshotId}, ${now + duration},
-          CASE WHEN EXISTS (
+          CASE WHEN ${retireWhenInactive ? 1 : 0} = 1 OR EXISTS (
             SELECT 1 FROM active_snapshots WHERE snapshot_id = ${snapshotId}
           ) THEN 1 ELSE 0 END
         )

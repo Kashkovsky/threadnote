@@ -68,6 +68,7 @@ import {
   managerGraphCatalogPage,
   managerGraphNodeDetail,
   managerGraphQuery,
+  releaseManagerGraphSnapshotLeases,
   managerGraphVisualization,
   managerGraphViewsPage,
 } from './code_graph/visualization.js';
@@ -254,6 +255,7 @@ export function runManage(config: RuntimeConfig, options: ManageOptions) {
       const crypto = yield* Crypto.Crypto;
       const token = Encoding.encodeBase64Url(yield* crypto.randomBytes(24));
       const server = yield* HttpServer.HttpServer;
+      yield* Effect.addFinalizer(() => releaseManagerGraphSnapshotLeases());
       yield* server.serve(createManagerServer({config, jobs: new Map(), token}));
       const actualPort = server.address._tag === 'TcpAddress' ? server.address.port : (options.uiPort ?? 0);
       const url = `http://127.0.0.1:${actualPort}/?token=${encodeURIComponent(token)}`;

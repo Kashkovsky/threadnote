@@ -40,6 +40,29 @@ describe('code graph ready snapshot retention', () => {
     }
   });
 
+  it('reclaims a non-active snapshot after an explicitly transient lease is released', async () => {
+    const root = await mkdtemp('threadnote-ready-retention-transient-');
+    temporaryRoots.push(root);
+    const databasePath = join(root, 'graph-v3.sqlite');
+    const identity = repositoryIdentity(root);
+    const transient = snapshot(identity, 'transient-by-id');
+
+    await runEffect(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        yield* store.initialize(databasePath);
+        yield* registerReadySnapshots(store, databasePath, identity, [transient]);
+        const lease = yield* store.acquireSnapshotLease(databasePath, transient.id, 60_000, {
+          retireWhenInactive: true,
+        });
+        yield* store.releaseSnapshotLease(databasePath, lease);
+        yield* waitForSnapshotRemoval(databasePath, transient.id);
+      }),
+    );
+
+    expect(readSnapshotState(databasePath, transient.id)).toBeUndefined();
+  });
+
   it('reclaims a superseded snapshot when its last lease is released and preserves the active view and base', async () => {
     const root = await mkdtemp('threadnote-ready-retention-release-');
     temporaryRoots.push(root);
