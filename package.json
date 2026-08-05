@@ -1,6 +1,6 @@
 {
   "name": "threadnote",
-  "version": "4.0.6",
+  "version": "4.0.7",
   "type": "module",
   "description": "Shared local context and handoffs for development agents",
   "license": "AGPL-3.0-or-later",
