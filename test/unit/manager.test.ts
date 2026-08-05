@@ -13,6 +13,7 @@ import {
   parseDoctorChecksFromOutput,
   readManagedMemory,
   resourcesTree,
+  runManage,
 } from '../../src/manager.js';
 import {pruneSelectedMemoryUris, selectableMemoryUris, type TreeNode} from '../../src/manager_ui.js';
 import type {RuntimeConfig} from '../../src/types.js';
@@ -23,6 +24,7 @@ import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {codeGraphLayout} from '../../src/code_graph/layout.js';
 import {makeCodeGraphBuildReporter} from '../../src/code_graph/build_status.js';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
+import {withCodeGraphMaintenanceIntent} from '../../src/code_graph/maintenance_gate.js';
 import type {CodeGraphWorkspace} from '../../src/code_graph/languages/types.js';
 import {
   CODE_GRAPH_EXTRACTOR_SET_VERSION,
@@ -377,6 +379,14 @@ describe('manager catalog', () => {
     vi.mocked(memory.runRecall)
       .mockReset()
       .mockImplementation((_config, options) => Console.log(`recall result: ${options.query}`));
+  });
+
+  it('refuses to start while native graph repair or maintenance is active', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    await expect(
+      runEffect(withCodeGraphMaintenanceIntent(config.agentContextHome, runManage(config, {open: false, uiPort: 0}))),
+    ).rejects.toThrow('Native code graph repair or maintenance is in progress');
   });
 
   it('maps local memory files into Threadnote URIs with parsed metadata', async () => {
@@ -814,6 +824,90 @@ describe('manager http API', () => {
       expect(analysisResponse.status).toBe(200);
       expect(analysis.statistics).toMatchObject({analyzedEdgeCount: 1_602, analyzedNodeCount: 523});
       expect(analysis.trust.classification).toBe('untrusted-repository-data');
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('serves home-wide graph diagnostics and safety-gated lifecycle actions', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    await seedManagerGraph(config);
+    const server = await startServer(config, 'secret');
+    try {
+      const headers = {authorization: 'Bearer secret', 'content-type': 'application/json'};
+      const diagnosticsResponse = await fetch(`${server.url}/api/graphs/diagnostics?analyze=true`, {headers});
+      const diagnostics = (await diagnosticsResponse.json()) as {
+        readonly databases: readonly {
+          readonly health: {readonly integrity: string};
+          readonly views: readonly unknown[];
+        }[];
+        readonly mode: {readonly analyze: boolean; readonly deep: boolean};
+        readonly summary: {readonly databaseCount: number; readonly readySnapshotCount: number};
+        readonly type: string;
+      };
+      expect(diagnosticsResponse.status).toBe(200);
+      expect(diagnostics).toMatchObject({
+        mode: {analyze: true, deep: false},
+        summary: {databaseCount: 1, readySnapshotCount: 1},
+        type: 'code-graph-diagnostics',
+      });
+      expect(diagnostics.databases[0]).toMatchObject({health: {integrity: 'ok'}});
+
+      const repairPreview = await fetch(`${server.url}/api/graphs/action`, {
+        body: JSON.stringify({action: 'repair', dryRun: true}),
+        headers,
+        method: 'POST',
+      });
+      const repairOutput = (await repairPreview.json()) as {readonly output: string};
+      expect(repairPreview.status).toBe(200);
+      expect(repairOutput.output).toContain('Would repair 1 native code graph database(s)');
+
+      const purgePreview = await fetch(`${server.url}/api/graphs/action`, {
+        body: JSON.stringify({action: 'purge-all', dryRun: true}),
+        headers,
+        method: 'POST',
+      });
+      expect(purgePreview.status).toBe(200);
+      expect(await purgePreview.json()).toMatchObject({output: expect.stringContaining('Would remove derived')});
+
+      const refusedPurge = await fetch(`${server.url}/api/graphs/action`, {
+        body: JSON.stringify({action: 'purge-all'}),
+        headers,
+        method: 'POST',
+      });
+      expect(refusedPurge.status).toBe(500);
+      expect(await refusedPurge.json()).toMatchObject({error: 'Set confirm=true for this action.'});
+
+      const relativeTarget = await fetch(`${server.url}/api/graphs/action`, {
+        body: JSON.stringify({action: 'index', checkoutId: 'a'.repeat(64), cwd: '.', worktreeId: 'c'.repeat(64)}),
+        headers,
+        method: 'POST',
+      });
+      expect(relativeTarget.status).toBe(500);
+      expect(await relativeTarget.json()).toMatchObject({error: 'Supply cwd as an absolute local worktree path.'});
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('returns a busy response for graph APIs when maintenance starts after Manager', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    const server = await startServer(config, 'secret');
+    try {
+      const response = await runEffect(
+        withCodeGraphMaintenanceIntent(
+          config.agentContextHome,
+          Effect.promise(() =>
+            fetch(`${server.url}/api/graphs/diagnostics`, {headers: {authorization: 'Bearer secret'}}),
+          ),
+        ),
+      );
+      expect(response.status).toBe(409);
+      expect(await response.json()).toMatchObject({
+        error: expect.stringContaining('Native code graph repair or maintenance is in progress'),
+      });
     } finally {
       await server.close();
     }

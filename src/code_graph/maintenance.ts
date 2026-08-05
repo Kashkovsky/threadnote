@@ -29,6 +29,7 @@ export interface CodeGraphRepairSummary {
   readonly databases: number;
   readonly deferredDatabases: number;
   readonly discarded: number;
+  readonly migratedDatabases: number;
   readonly obsoleteStoreBytes: number;
   readonly obsoleteStoreCheckouts: number;
   readonly obsoleteStoreFiles: number;
@@ -79,7 +80,8 @@ export interface CodeGraphRepairCompletion {
 
 export interface CodeGraphMaintenanceProgress {
   readonly current: number;
-  readonly phase: 'checking' | 'cleaning-snapshots' | 'cleaning-vectors' | 'deferred' | 'discarding';
+  readonly phase:
+    'checking' | 'cleaning-snapshots' | 'cleaning-vectors' | 'deferred' | 'discarding' | 'migrating-schema';
   readonly reason?: 'active-build' | 'deep-check-required' | 'schema-upgrade-on-use';
   readonly snapshots?: number;
   readonly total: number;
@@ -237,7 +239,7 @@ export const codeGraphDoctorCheck = Effect.fn('codeGraph.doctorCheck')(function*
   return codeGraphDoctorResult(databases.length, ready, incomplete, unhealthy, deferred, obsolete);
 });
 
-const diagnoseCodeGraphDatabaseReadOnly = Effect.fn('codeGraph.diagnoseDatabaseReadOnly')(function* (
+export const diagnoseCodeGraphDatabaseReadOnly = Effect.fn('codeGraph.diagnoseDatabaseReadOnly')(function* (
   databasePath: string,
   deep: boolean,
 ) {
@@ -308,7 +310,7 @@ export const repairCodeGraphIndexes = Effect.fn('codeGraph.repairIndexes')(funct
   dryRun: boolean,
   onProgress?: CodeGraphProgressHandler,
   onComplete?: CodeGraphRepairCompletionHandler<R>,
-  options: {readonly mode?: 'deep' | 'quick'} = {},
+  options: {readonly migrateSchema?: boolean; readonly mode?: 'deep' | 'quick'} = {},
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -325,6 +327,7 @@ export const repairCodeGraphIndexes = Effect.fn('codeGraph.repairIndexes')(funct
         const deep = options.mode !== 'quick';
         let deferredDatabases = 0;
         let discarded = 0;
+        let migratedDatabases = 0;
         let removedIncompleteSnapshots = 0;
         let remainingIncompleteSnapshots = 0;
         let removedTemporaryFiles = 0;
@@ -343,7 +346,7 @@ export const repairCodeGraphIndexes = Effect.fn('codeGraph.repairIndexes')(funct
               const decision = yield* store.withSession(
                 database,
                 Effect.gen(function* () {
-                  const diagnosed = deep
+                  let diagnosed = deep
                     ? yield* store.diagnose(database).pipe(Effect.option)
                     : yield* diagnoseCodeGraphDatabaseReadOnly(database, false).pipe(Effect.option);
                   if (
@@ -351,13 +354,23 @@ export const repairCodeGraphIndexes = Effect.fn('codeGraph.repairIndexes')(funct
                     diagnosed.value?.schemaVersion === CODE_GRAPH_SCHEMA_VERSION &&
                     diagnosed.value.integrity === 'incompatible'
                   ) {
-                    // Same-version beta databases with a missing revision or an
-                    // incompatible extension-table contract are recoverable on the
-                    // next ordinary writer open.
-                    // Never discard their ready snapshots as if the canonical graph
-                    // rows were corrupt merely because this maintenance pass is
-                    // deliberately read-only while holding the checkout gate.
-                    return 'schema-upgrade-on-use' as const;
+                    if (options.migrateSchema) {
+                      migratedDatabases += 1;
+                      yield* progress({phase: 'migrating-schema'});
+                      if (dryRun) return 'maintained' as const;
+                      yield* store.initialize(database);
+                      diagnosed = deep
+                        ? yield* store.diagnose(database).pipe(Effect.option)
+                        : yield* diagnoseCodeGraphDatabaseReadOnly(database, false).pipe(Effect.option);
+                    } else {
+                      // Same-version beta databases with a missing revision or an
+                      // incompatible extension-table contract are recoverable on the
+                      // next ordinary writer open.
+                      // Never discard their ready snapshots as if the canonical graph
+                      // rows were corrupt merely because this maintenance pass is
+                      // deliberately read-only while holding the checkout gate.
+                      return 'schema-upgrade-on-use' as const;
+                    }
                   }
                   if (diagnosed._tag === 'None' || diagnosed.value?.integrity !== 'ok') {
                     return deep ? ('discard' as const) : ('deep-check-required' as const);
@@ -423,6 +436,7 @@ export const repairCodeGraphIndexes = Effect.fn('codeGraph.repairIndexes')(funct
           databases: databases.length,
           deferredDatabases,
           discarded,
+          migratedDatabases,
           obsoleteStoreBytes: obsolete.bytes,
           obsoleteStoreCheckouts: obsolete.checkouts.length,
           obsoleteStoreFiles: obsolete.fileCount,
@@ -435,7 +449,7 @@ export const repairCodeGraphIndexes = Effect.fn('codeGraph.repairIndexes')(funct
             currentDatabases.length,
             readySnapshots,
             dryRun ? removedIncompleteSnapshots + remainingIncompleteSnapshots : remainingIncompleteSnapshots,
-            dryRun ? discarded : 0,
+            dryRun ? discarded + migratedDatabases : 0,
             deferredDatabases,
             obsolete,
           ),

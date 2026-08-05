@@ -4,10 +4,11 @@ import {Cause, Console, Crypto, Effect, Exit, FileSystem, Layer, Option, Path} f
 import {commandLauncherPath, installCommandShim, renderCommandShim} from '../src/command-shim.js';
 import {CommandExecutor, runCommandEffect} from '../src/effect/command.js';
 import {captureConsole} from '../src/effect/console.js';
-import {sha256FileHex} from '../src/effect/digest.js';
+import {sha256FileHex, sha256Hex} from '../src/effect/digest.js';
 import {SystemInfo, type SystemInfoShape} from '../src/effect/system.js';
 import {
   activateStandaloneRelease,
+  activeInstalledVersion,
   installationRoot,
   promoteStandaloneReleaseDirectory,
   pruneStandaloneReleases,
@@ -23,6 +24,7 @@ import {
   collectDevelopmentPayloadManifest,
   developmentBuildVersion,
   developmentPayloadManifestSha256,
+  isDevelopmentBuildVersion,
   prepareCanonicalDevelopmentInstallRoots,
   readDevelopmentReleaseEvidence,
   readManagedDevelopmentRuntimeEvidence,
@@ -34,6 +36,10 @@ import {
 const ROOT_URL = new URL('..', import.meta.url);
 const GIT_COMMIT_PATTERN = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
 const COMMAND_TIMEOUT_MILLISECONDS = 30 * 60_000;
+const DEVELOPMENT_RUNTIME_OWNER_FILE = 'development-runtime-owner.json';
+const DEVELOPMENT_RUNTIME_OWNER_SCHEMA_VERSION = 1 as const;
+const DEVELOPMENT_RUNTIME_OWNER_MAX_BYTES = 16 * 1024;
+const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const CLEAN_GIT_STATUS_ARGUMENTS = [
   '-c',
   'core.fsmonitor=false',
@@ -52,6 +58,7 @@ const CLEAN_GIT_STATUS_ARGUMENTS = [
 
 export interface LocalStandaloneInstallOptions {
   readonly json: boolean;
+  readonly takeOverGlobalRuntime: boolean;
   readonly terminateSuperseded: boolean;
 }
 
@@ -76,21 +83,47 @@ export interface LocalStandaloneActivationInput {
   readonly executableName: string;
   readonly releaseRoot: string;
   readonly reused: boolean;
+  readonly sourceCheckoutId: string;
   readonly stagedRoot: Option.Option<string>;
+  readonly takeOverGlobalRuntime: boolean;
   readonly terminateSuperseded: boolean;
   readonly version: string;
 }
 
+export interface DevelopmentRuntimeOwnerV1 {
+  readonly schemaVersion: typeof DEVELOPMENT_RUNTIME_OWNER_SCHEMA_VERSION;
+  readonly sourceCheckoutId: string;
+  readonly version: string;
+}
+
+export type DevelopmentRuntimeOwnershipState = DevelopmentRuntimeOwnerV1 | 'absent' | 'invalid';
+
+export type DevelopmentRuntimeOwnershipConflict =
+  'different-source-checkout' | 'invalid-ownership-record' | 'untracked-development-activation';
+
 export function parseLocalStandaloneInstallArguments(arguments_: readonly string[]): LocalStandaloneInstallOptions {
   let json = false;
+  let takeOverGlobalRuntime = false;
   let terminateSuperseded = false;
   for (const argument of arguments_) {
     if (argument === '--') continue;
     if (argument === '--json') json = true;
+    else if (argument === '--take-over-global-runtime') takeOverGlobalRuntime = true;
     else if (argument === '--terminate-superseded') terminateSuperseded = true;
     else throw new Error(`Unknown local standalone install option: ${argument}`);
   }
-  return {json, terminateSuperseded};
+  return {json, takeOverGlobalRuntime, terminateSuperseded};
+}
+
+export function developmentRuntimeOwnershipConflict(
+  activeVersion: string | undefined,
+  owner: DevelopmentRuntimeOwnershipState,
+  requestedSourceCheckoutId: string,
+): DevelopmentRuntimeOwnershipConflict | undefined {
+  if (activeVersion === undefined || !isDevelopmentBuildVersion(activeVersion) || owner === 'absent') return undefined;
+  if (owner === 'invalid') return 'invalid-ownership-record';
+  if (owner.version !== activeVersion) return 'untracked-development-activation';
+  return owner.sourceCheckoutId === requestedSourceCheckoutId ? undefined : 'different-source-checkout';
 }
 
 export const installLocalStandalone = Effect.fn('developmentInstall.run')(function* (
@@ -120,6 +153,8 @@ export const installLocalStandalone = Effect.fn('developmentInstall.run')(functi
   const manifest = yield* readPackageManifest(fs, path.join(sourceRoot, 'package.json'));
   const version = developmentBuildVersion(manifest.version, commit);
   const roots = yield* prepareCanonicalDevelopmentInstallRoots(installationRoot(path, system));
+  const sourceCheckoutId = yield* developmentSourceCheckoutId(sourceRoot);
+  yield* requireDevelopmentRuntimeOwnership(roots.installRoot, sourceCheckoutId, options.takeOverGlobalRuntime);
   const releaseRoot = path.join(roots.versionsRoot, version);
   const executableName = system.platform === 'win32' ? 'threadnote.exe' : 'threadnote';
   const releaseExists = yield* fs.exists(releaseRoot);
@@ -145,7 +180,9 @@ export const installLocalStandalone = Effect.fn('developmentInstall.run')(functi
     executableName,
     releaseRoot,
     reused: releaseExists,
+    sourceCheckoutId,
     stagedRoot,
+    takeOverGlobalRuntime: options.takeOverGlobalRuntime,
     terminateSuperseded: options.terminateSuperseded,
     version,
   });
@@ -194,6 +231,98 @@ const verifyCleanSourceState = Effect.fn('developmentInstall.verifyCleanSourceSt
   }
 });
 
+const developmentSourceCheckoutId = Effect.fn('developmentInstall.sourceCheckoutId')(function* (sourceRoot: string) {
+  const fs = yield* FileSystem.FileSystem;
+  const system = yield* SystemInfo;
+  const canonicalSourceRoot = yield* fs.realPath(sourceRoot);
+  const normalizedSourceRoot =
+    system.platform === 'win32' ? canonicalSourceRoot.toLocaleLowerCase('en-US') : canonicalSourceRoot;
+  return yield* sha256Hex(`threadnote-development-source-checkout-v1\0${normalizedSourceRoot}`);
+});
+
+const requireDevelopmentRuntimeOwnership = Effect.fn('developmentInstall.requireRuntimeOwnership')(function* (
+  installRoot: string,
+  requestedSourceCheckoutId: string,
+  takeOverGlobalRuntime: boolean,
+) {
+  if (!SHA256_PATTERN.test(requestedSourceCheckoutId)) {
+    return yield* Effect.fail(new Error('The development source checkout identity is invalid.'));
+  }
+  const [activeVersion, owner] = yield* Effect.all([
+    activeInstalledVersion(),
+    readDevelopmentRuntimeOwner(installRoot),
+  ]);
+  const conflict = developmentRuntimeOwnershipConflict(activeVersion, owner, requestedSourceCheckoutId);
+  if (conflict === undefined || takeOverGlobalRuntime) return;
+  const reason =
+    conflict === 'different-source-checkout'
+      ? 'another source checkout owns the active global development runtime'
+      : conflict === 'untracked-development-activation'
+        ? 'the active global development runtime changed outside its owning installer'
+        : 'the active global development runtime ownership record is invalid';
+  return yield* Effect.fail(
+    new Error(
+      `Refusing to replace the global Threadnote runtime because ${reason}. ` +
+        'Rerun with --take-over-global-runtime only after confirming the other development task has finished.',
+    ),
+  );
+});
+
+const readDevelopmentRuntimeOwner = Effect.fn('developmentInstall.readRuntimeOwner')(function* (installRoot: string) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const system = yield* SystemInfo;
+  const file = path.join(installRoot, DEVELOPMENT_RUNTIME_OWNER_FILE);
+  if (!(yield* fs.exists(file))) return 'absent';
+  const [link, info] = yield* Effect.all([fs.readLink(file).pipe(Effect.option), fs.stat(file).pipe(Effect.option)]);
+  if (
+    Option.isSome(link) ||
+    Option.isNone(info) ||
+    info.value.type !== 'File' ||
+    Number(info.value.size) > DEVELOPMENT_RUNTIME_OWNER_MAX_BYTES ||
+    (system.platform !== 'win32' && (info.value.mode & 0o7777) !== 0o600)
+  ) {
+    return 'invalid';
+  }
+  const source = yield* fs.readFileString(file).pipe(Effect.option);
+  if (Option.isNone(source)) return 'invalid';
+  const value = yield* Effect.sync(() => {
+    try {
+      return JSON.parse(source.value) as unknown;
+    } catch {
+      return undefined;
+    }
+  });
+  return value === undefined ? 'invalid' : parseDevelopmentRuntimeOwner(value);
+});
+
+function parseDevelopmentRuntimeOwner(value: unknown): DevelopmentRuntimeOwnershipState {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return 'invalid';
+  const candidate = value as Partial<DevelopmentRuntimeOwnerV1>;
+  return candidate.schemaVersion === DEVELOPMENT_RUNTIME_OWNER_SCHEMA_VERSION &&
+    typeof candidate.sourceCheckoutId === 'string' &&
+    SHA256_PATTERN.test(candidate.sourceCheckoutId) &&
+    typeof candidate.version === 'string' &&
+    isDevelopmentBuildVersion(candidate.version)
+    ? (candidate as DevelopmentRuntimeOwnerV1)
+    : 'invalid';
+}
+
+const writeDevelopmentRuntimeOwner = Effect.fn('developmentInstall.writeRuntimeOwner')(function* (
+  installRoot: string,
+  owner: DevelopmentRuntimeOwnerV1,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const crypto = yield* Crypto.Crypto;
+  const file = path.join(installRoot, DEVELOPMENT_RUNTIME_OWNER_FILE);
+  const temporary = path.join(installRoot, `.${DEVELOPMENT_RUNTIME_OWNER_FILE}.${yield* crypto.randomUUIDv4}.tmp`);
+  yield* Effect.gen(function* () {
+    yield* fs.writeFileString(temporary, `${JSON.stringify(owner, undefined, 2)}\n`, {flag: 'wx', mode: 0o600});
+    yield* fs.rename(temporary, file);
+  }).pipe(Effect.ensuring(fs.remove(temporary, {force: true}).pipe(Effect.catch(() => Effect.void))));
+});
+
 /**
  * The complete managed-release mutation is one installation-lock critical
  * section. This prevents a concurrent updater from pruning a reused release
@@ -216,6 +345,7 @@ export const activateLocalStandaloneRelease = Effect.fn('developmentInstall.acti
       input.stagedRoot,
     );
     const installRoot = roots.installRoot;
+    yield* requireDevelopmentRuntimeOwnership(installRoot, input.sourceCheckoutId, input.takeOverGlobalRuntime);
     let reused = input.reused;
     let promotedByThisInstall = false;
     if (Option.isSome(input.stagedRoot)) {
@@ -263,6 +393,12 @@ export const activateLocalStandaloneRelease = Effect.fn('developmentInstall.acti
         captureFileSnapshot(fs, yield* commandLauncherPath('cli'), 'CLI launcher', 0o755),
         captureFileSnapshot(fs, yield* commandLauncherPath('mcp'), 'MCP launcher', 0o755),
         captureFileSnapshot(fs, path.join(installRoot, 'active-release.json'), 'active release pointer', 0o600),
+        captureFileSnapshot(
+          fs,
+          path.join(installRoot, DEVELOPMENT_RUNTIME_OWNER_FILE),
+          'development runtime owner',
+          0o600,
+        ),
       ]);
     }).pipe(
       Effect.catchCause(validationCause =>
@@ -286,6 +422,11 @@ export const activateLocalStandaloneRelease = Effect.fn('developmentInstall.acti
       const evidence = yield* readManagedDevelopmentRuntimeEvidence(input.commit);
       yield* installCommandShim(false, input.releaseRoot);
       yield* verifyLaunchers(fs, input.releaseRoot, input.version);
+      yield* writeDevelopmentRuntimeOwner(installRoot, {
+        schemaVersion: DEVELOPMENT_RUNTIME_OWNER_SCHEMA_VERSION,
+        sourceCheckoutId: input.sourceCheckoutId,
+        version: input.version,
+      });
       return evidence;
     }).pipe(
       Effect.catchCause(activationCause =>

@@ -133,6 +133,11 @@ beta a launcher or editor process happened to start earlier. The exported fail-c
 `verifyManagedDevelopmentRuntimeForSource` verifier is the preflight for long benchmark harnesses; it returns the
 sanitized version, source commit, executable digest, target, and runtime evidence without recording local paths.
 
+The installer also records an opaque SHA-256 identity for the source checkout that owns the active global development
+runtime. A different worktree must not silently replace it. After confirming its task has finished, transfer ownership
+explicitly with `bun run dev:install-global -- --take-over-global-runtime`; the stored record never contains the local
+checkout path.
+
 ## Changing MCP tools
 
 Keep tool names and the default core toolset compact and backward-compatible. When adding or changing an input:

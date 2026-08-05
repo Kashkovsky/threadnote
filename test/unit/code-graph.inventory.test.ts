@@ -16,6 +16,7 @@ describe('native code graph inventory policy', () => {
     expect(acceptsRepositoryPath('packages/.cache/result.ts', ignore)).toBe(false);
     expect(acceptsRepositoryPath('packages/app/node_modules/library/index.ts', ignore)).toBe(false);
     expect(acceptsRepositoryPath('dist/generated.ts', ignore)).toBe(false);
+    expect(acceptsRepositoryPath('graphify-out/graph.json', ignore)).toBe(false);
     expect(acceptsRepositoryPath('fixtures/drop.ts', ignore)).toBe(false);
     expect(acceptsRepositoryPath('fixtures/keep.ts', ignore)).toBe(true);
     expect(acceptsRepositoryPath('../outside.ts', ignore)).toBe(false);
@@ -39,7 +40,16 @@ describe('native code graph inventory policy', () => {
   });
 
   it('does not let broad package source roots re-include nested build output', () => {
-    for (const directory of ['bazel-bin', 'bazel-out', 'bazel-testlogs', 'bazel-workspace', 'build', 'dist', 'out']) {
+    for (const directory of [
+      'bazel-bin',
+      'bazel-out',
+      'bazel-testlogs',
+      'bazel-workspace',
+      'build',
+      'dist',
+      'graphify-out',
+      'out',
+    ]) {
       expect(
         acceptsRepositoryPath(`packages/app/${directory}/generated.js`, '', ['packages/app'], ['packages/app']),
         directory,

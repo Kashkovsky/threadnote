@@ -10,6 +10,7 @@ import {SystemInfo} from '../../src/effect/system.js';
 import {
   readThreadnoteProcessDiagnostics,
   legacyProcessDoctorCheck,
+  renderProcessDiagnosticsTable,
   threadnoteHomeForProcess,
   withThreadnoteProcessActivity,
   withThreadnoteProcessRegistration,
@@ -36,6 +37,84 @@ afterEach(async () => {
 });
 
 describe('process diagnostics', () => {
+  it('aligns operation values with their header when preceding cells have different widths', () => {
+    expect(
+      renderProcessDiagnosticsTable([
+        {
+          ageMilliseconds: (12 * 60 * 60 + 55 * 60) * 1_000,
+          currentOperation: 'mcp-server',
+          parentProcessId: 42_478,
+          processId: 79_155,
+          releaseVersion: '4.0.3',
+          role: 'mcp',
+          rssBytes: 138.2 * 1024 * 1024,
+          startedAt: '2026-08-04T00:00:00.000Z',
+        },
+        {
+          ageMilliseconds: (44 * 60 + 23) * 1_000,
+          currentOperation: 'repair',
+          parentProcessId: 1_100,
+          processId: 71_873,
+          releaseVersion: '4.0.3',
+          role: 'cli',
+          rssBytes: 78 * 1024 * 1024,
+          startedAt: '2026-08-05T00:00:00.000Z',
+        },
+      ]),
+    ).toBe(
+      [
+        'PID    PPID   ROLE  VERSION  AGE     RSS        OPERATION',
+        '79155  42478  mcp   4.0.3    12h55m  138.2 MiB  mcp-server',
+        '71873  1100   cli   4.0.3    44m23s  78.0 MiB   repair',
+      ].join('\n'),
+    );
+  });
+
+  it.prop(
+    'keeps every operation value under its header for arbitrary preceding column widths',
+    {
+      processes: FC.array(
+        FC.record({
+          ageMilliseconds: FC.integer({max: 14 * 24 * 60 * 60 * 1_000, min: 0}),
+          currentOperation: FC.option(
+            FC.constantFrom('diagnostics', 'index-repository', 'mcp-server', 'repair', 'repository-lock'),
+            {nil: undefined},
+          ),
+          parentProcessId: FC.integer({max: 9_999_999, min: 0}),
+          processId: FC.integer({max: 9_999_999, min: 1}),
+          releaseVersion: FC.option(
+            FC.constantFrom('4.0.3', '4.0.3-local.g0123456789abcdef0123456789abcdef01234567', 'unknown-build'),
+            {nil: undefined},
+          ),
+          role: FC.constantFrom(
+            'cli' as const,
+            'graph-builder' as const,
+            'graph-parser-worker' as const,
+            'graph-waiter' as const,
+            'legacy' as const,
+            'local-model-worker' as const,
+            'manager' as const,
+            'mcp' as const,
+          ),
+          rssBytes: FC.option(FC.integer({max: 8 * 1024 * 1024 * 1024, min: 0}), {nil: undefined}),
+          startedAt: FC.constant('2026-08-05T00:00:00.000Z'),
+        }),
+        {maxLength: 30, minLength: 1},
+      ),
+    },
+    ({processes}) => {
+      const lines = renderProcessDiagnosticsTable(processes).split('\n');
+      const operationColumn = lines[0]!.indexOf('OPERATION');
+
+      expect(operationColumn).toBeGreaterThan(0);
+      expect(lines).toHaveLength(processes.length + 1);
+      for (const [index, process] of processes.entries()) {
+        expect(lines[index + 1]!.slice(operationColumn)).toBe(process.currentOperation ?? '-');
+      }
+    },
+    {fastCheck: {numRuns: 200}},
+  );
+
   it.effect('reports a validated pre-registry release lease without exposing its private fields', () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;

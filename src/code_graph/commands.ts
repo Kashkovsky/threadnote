@@ -7,9 +7,12 @@ import {CodeGraphIndexer, materializationStorageShortfalls} from './indexer.js';
 import {makeCodeGraphJsonProgressReporter} from './json_progress.js';
 import {codeGraphLayout} from './layout.js';
 import {
+  repairCodeGraphIndexes,
   inspectObsoleteCodeGraphStores,
   purgeAllCodeGraphIndexes,
   purgeObsoleteCodeGraphStores,
+  type CodeGraphMaintenanceProgress,
+  type CodeGraphRepairCompletion,
   type ObsoleteCodeGraphStoreInventory,
 } from './maintenance.js';
 import {
@@ -36,6 +39,7 @@ import {
   type ObservedCodeGraphBuildStatus,
 } from './build_status.js';
 import {compactCodeGraphStorage, inspectCodeGraphStorage, type CodeGraphStorage} from './storage.js';
+import {inspectAllCodeGraphs, renderCodeGraphDiagnostics} from './diagnostics.js';
 
 interface CwdOption {
   readonly cwd?: string;
@@ -45,6 +49,90 @@ export interface CodeGraphExportInterlock {
   readonly afterOutputCheck?: () => Effect.Effect<void>;
   readonly beforeLink?: (temporaryPath: string) => Effect.Effect<void>;
   readonly beforePublish?: (temporaryPath: string) => Effect.Effect<void>;
+}
+
+export const runCodeGraphRepair = Effect.fn('codeGraph.command.repair')(function* (
+  config: RuntimeConfig,
+  options: {readonly all?: boolean; readonly deep?: boolean; readonly dryRun?: boolean; readonly json?: boolean},
+) {
+  if (!options.all) {
+    return yield* Effect.fail(new Error('All-database graph repair requires --all.'));
+  }
+  let completion: CodeGraphRepairCompletion | undefined;
+  const summary = yield* repairCodeGraphIndexes(
+    config.agentContextHome,
+    options.dryRun === true,
+    options.json
+      ? undefined
+      : progress => Console.log(codeGraphRepairProgressMessage(progress, options.dryRun === true)),
+    result => Effect.sync(() => void (completion = result)),
+    {migrateSchema: true, mode: options.deep ? 'deep' : 'quick'},
+  );
+  if (options.json) {
+    yield* writeFinalCliOutput(
+      JSON.stringify({
+        doctor: completion?.doctorCheck ?? null,
+        dryRun: options.dryRun === true,
+        mode: options.deep ? 'deep' : 'quick',
+        summary,
+        type: 'code-graph-repair',
+        version: 1,
+      }),
+    );
+    return;
+  }
+  yield* Console.log(
+    `${options.dryRun ? 'Would repair' : 'Repaired'} ${summary.databases} native code graph database(s): ` +
+      `${summary.migratedDatabases} schema migration(s), ${summary.deferredDatabases} deferred, ` +
+      `${summary.discarded} disposable rebuild(s), ${summary.removedIncompleteSnapshots} incomplete snapshot(s), ` +
+      `${summary.removedTemporaryFiles} temporary vector file(s).`,
+  );
+  if (completion) {
+    yield* Console.log(
+      `${completion.doctorCheck.status.toUpperCase()} native code graph: ${completion.doctorCheck.detail}`,
+    );
+  }
+});
+
+export const runCodeGraphDiagnostics = Effect.fn('codeGraph.command.diagnostics')(function* (
+  config: RuntimeConfig,
+  options: {readonly analyze?: boolean; readonly deep?: boolean; readonly json?: boolean},
+) {
+  const report = yield* inspectAllCodeGraphs(config.agentContextHome, {
+    analyze: options.analyze,
+    deep: options.deep,
+    onProgress: options.json
+      ? undefined
+      : progress =>
+          Console.log(
+            `${progress.phase === 'analyzing' ? 'Analyzing' : options.deep ? 'Deep-checking' : 'Checking'} native code graph database ${progress.current}/${progress.total}.`,
+          ),
+  });
+  yield* writeFinalCliOutput(options.json ? JSON.stringify(report) : renderCodeGraphDiagnostics(report).trimEnd());
+});
+
+function codeGraphRepairProgressMessage(progress: CodeGraphMaintenanceProgress, dryRun: boolean): string {
+  const database = `native code graph database ${progress.current}/${progress.total}`;
+  switch (progress.phase) {
+    case 'checking':
+      return `Checking ${database}.`;
+    case 'migrating-schema':
+      return `${dryRun ? 'Would migrate' : 'Migrating'} the persistent schema for ${database}.`;
+    case 'cleaning-snapshots':
+      return `${dryRun ? 'Would clean' : 'Cleaning'} ${progress.snapshots ?? 0} incomplete snapshot(s) from ${database}.`;
+    case 'cleaning-vectors':
+      return `Checking temporary vector state for ${database}.`;
+    case 'discarding':
+      return `${dryRun ? 'Would discard' : 'Discarding'} unreadable derived ${database}.`;
+    case 'deferred':
+      if (progress.reason === 'active-build') {
+        return `Deferred ${database}: an active graph build owns the checkout.`;
+      }
+      if (progress.reason === 'schema-upgrade-on-use') {
+        return `Deferred ${database}: its persistent schema could not be migrated in this pass.`;
+      }
+      return `Deferred ${database}: rerun with --deep when a full derived-store check is convenient.`;
+  }
 }
 
 interface CodeGraphExportTemporaryIdentity {

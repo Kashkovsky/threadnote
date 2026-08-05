@@ -2,6 +2,7 @@ import React, {useEffect, useMemo, useRef, useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import type {CodeGraphDiagnosticsReport} from './code_graph/diagnostics.js';
 import {
   GraphWorkspace,
   graphBuildIsActive,
@@ -9,6 +10,7 @@ import {
   graphStatusPollDelay,
   graphStatusRequiresCatalogRefresh,
   type GraphAnalysis,
+  type GraphAdministrationAction,
   type GraphCatalog,
   type GraphCatalogPage,
   type GraphNodeDetail,
@@ -164,6 +166,9 @@ function App(): React.ReactElement {
   const [state, setState] = useState<StateResponse | undefined>();
   const [graphCatalog, setGraphCatalog] = useState<GraphCatalog | undefined>();
   const graphCatalogRef = useRef<GraphCatalog | undefined>(undefined);
+  const [graphDiagnostics, setGraphDiagnostics] = useState<CodeGraphDiagnosticsReport | undefined>();
+  const [graphAdministrationBusy, setGraphAdministrationBusy] = useState<string | undefined>();
+  const [graphAdministrationOutput, setGraphAdministrationOutput] = useState('');
   const [tree, setTree] = useState<TreeNode | undefined>();
   const [resourceTree, setResourceTree] = useState<TreeNode | undefined>();
   const [shares, setShares] = useState<readonly ShareSummary[]>([]);
@@ -217,6 +222,9 @@ function App(): React.ReactElement {
   useEffect(() => {
     if (panel === 'doctor') {
       void loadDoctor(false);
+    }
+    if (panel === 'graph' && !graphDiagnostics) {
+      void refreshGraphDiagnostics({analyze: false, deep: false}, false);
     }
   }, [panel]);
 
@@ -334,6 +342,49 @@ function App(): React.ReactElement {
       if (notify) toastMessage('Graph indexes refreshed');
     } catch (cause) {
       toastMessage(errorMessage(cause));
+    }
+  }
+
+  async function refreshGraphDiagnostics(
+    options: {readonly analyze: boolean; readonly deep: boolean},
+    notify = true,
+  ): Promise<void> {
+    setGraphAdministrationBusy(
+      options.deep ? 'Deep-checking graphs' : options.analyze ? 'Analyzing graphs' : 'Diagnosing graphs',
+    );
+    try {
+      const report = await api<CodeGraphDiagnosticsReport>(
+        `/api/graphs/diagnostics?analyze=${options.analyze}&deep=${options.deep}`,
+      );
+      setGraphDiagnostics(report);
+      setGraphAdministrationOutput('');
+      if (notify) toastMessage('Graph diagnostics refreshed');
+    } catch (cause) {
+      const message = errorMessage(cause);
+      setGraphAdministrationOutput(message);
+      toastMessage(message);
+    } finally {
+      setGraphAdministrationBusy(undefined);
+    }
+  }
+
+  async function runGraphAdministration(action: GraphAdministrationAction): Promise<void> {
+    const label = graphAdministrationActionLabel(action);
+    setGraphAdministrationBusy(label);
+    try {
+      const result = await api<{readonly output: string}>('/api/graphs/action', {
+        ...action,
+        confirm: action.dryRun !== true,
+      });
+      await Promise.all([refreshGraphCatalog(false), refreshGraphDiagnostics({analyze: false, deep: false}, false)]);
+      setGraphAdministrationOutput(result.output);
+      toastMessage(`${label} complete`);
+    } catch (cause) {
+      const message = errorMessage(cause);
+      setGraphAdministrationOutput(message);
+      toastMessage(message);
+    } finally {
+      setGraphAdministrationBusy(undefined);
     }
   }
 
@@ -1003,6 +1054,9 @@ function App(): React.ReactElement {
         {panel === 'graph' ? (
           <section className="panel graph-panel is-active">
             <GraphWorkspace
+              administration={graphDiagnostics}
+              administrationBusy={graphAdministrationBusy}
+              administrationOutput={graphAdministrationOutput}
               catalog={graphCatalog}
               loadAnalysis={loadManagerGraphAnalysis}
               loadCatalogPage={loadManagerGraphCatalogPage}
@@ -1010,6 +1064,8 @@ function App(): React.ReactElement {
               loadNodeDetail={loadManagerGraphNodeDetail}
               loadQuery={loadManagerGraphQuery}
               loadViewsPage={loadManagerGraphViewsPage}
+              onAdministrationAction={action => void runGraphAdministration(action)}
+              onDiagnostics={options => void refreshGraphDiagnostics(options)}
               onRefresh={() => void refreshGraphCatalog(true)}
             />
           </section>
@@ -1782,6 +1838,23 @@ async function api<T>(
     throw new Error(data.error ?? `HTTP ${response.status}`);
   }
   return data as T;
+}
+
+export function graphAdministrationActionLabel(action: GraphAdministrationAction): string {
+  switch (action.action) {
+    case 'compact':
+      return action.dryRun ? 'Compaction preview' : 'Graph compaction';
+    case 'index':
+      return action.full ? 'Graph reindex' : 'Graph index';
+    case 'purge':
+      return action.dryRun ? 'Graph purge preview' : 'Graph purge';
+    case 'purge-all':
+      return action.dryRun ? 'All-graph purge preview' : 'All-graph purge';
+    case 'purge-obsolete':
+      return action.dryRun ? 'Obsolete-store preview' : 'Obsolete-store purge';
+    case 'repair':
+      return action.dryRun ? 'Graph repair preview' : action.deep ? 'Deep graph repair' : 'Graph repair';
+  }
 }
 
 function loadManagerGraph(

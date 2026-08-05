@@ -92,11 +92,13 @@ import {runReportIssue} from '../report_issue.js';
 import {
   runCodeGraphAnalysis,
   runCodeGraphCompact,
+  runCodeGraphDiagnostics,
   runCodeGraphExport,
   runCodeGraphImpact,
   runCodeGraphIndex,
   runCodeGraphInspect,
   runCodeGraphPurge,
+  runCodeGraphRepair,
   runCodeGraphReport,
   runCodeGraphStatus,
   runCodeGraphWatch,
@@ -592,6 +594,27 @@ const graphStatus = Command.make(
   options => withRuntimeEffect(config => runCodeGraphStatus(config, options)),
 ).pipe(Command.withDescription('Show native code graph snapshot and freshness state'));
 
+const graphDiagnostics = Command.make(
+  'diagnostics',
+  {
+    analyze: boolean('analyze', 'Include bounded structural statistics for every ready indexed view'),
+    deep: boolean('deep', 'Run full SQLite integrity and foreign-key checks for every idle database'),
+    json: graphBounds.json,
+  },
+  options => withRuntimeEffect(config => runCodeGraphDiagnostics(config, options)),
+).pipe(Command.withDescription('Inspect health, storage, snapshots, builds, and statistics for every local graph'));
+
+const graphRepair = Command.make(
+  'repair',
+  {
+    all: boolean('all', 'Repair every local native code graph database'),
+    deep: boolean('deep', 'Run full SQLite integrity and foreign-key checks before destructive recovery'),
+    dryRun: boolean('dry-run', 'Print repair actions without modifying graph databases'),
+    json: graphBounds.json,
+  },
+  options => withRuntimeEffect(config => runCodeGraphRepair(config, options)),
+).pipe(Command.withDescription('Immediately migrate and repair native code graph databases'));
+
 const graphIndex = Command.make(
   'index',
   {
@@ -790,6 +813,8 @@ const graphCommand = Command.make('graph').pipe(
   Command.withDescription('Index and inspect the self-contained native code graph'),
   Command.withSubcommands([
     graphStatus,
+    graphDiagnostics,
+    graphRepair,
     graphIndex,
     graphQuery,
     graphNode,

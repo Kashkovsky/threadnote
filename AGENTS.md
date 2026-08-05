@@ -43,6 +43,10 @@ scripts, installer/updater behavior, MCP behavior, storage, indexing, plugin lif
 4. Exercise the affected flow through the globally installed `threadnote` command and record the smoke result in the
    task handoff.
 
+The development installer records an opaque checkout identity and refuses to replace a global development runtime
+owned by another worktree. Do not bypass that guard while its task is active. After confirming the other task has
+finished, an intentional handoff can use `bun run dev:install-global -- --take-over-global-runtime`.
+
 Documentation-only and test-only changes do not require a global binary reinstall unless they alter a packaged runtime
 contract or expose a suspected runtime problem.
 

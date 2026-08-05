@@ -278,20 +278,7 @@ export const runProcessDiagnostics = Effect.fn('processDiagnostics.run')(functio
     yield* Console.log('No live Threadnote processes found.');
     return;
   }
-  yield* Console.log('PID\tPPID\tROLE\tVERSION\tAGE\tRSS\tOPERATION');
-  for (const process of diagnostics.processes) {
-    yield* Console.log(
-      [
-        process.processId,
-        process.parentProcessId === 0 ? '-' : process.parentProcessId,
-        process.role,
-        process.releaseVersion ?? '-',
-        formatDuration(process.ageMilliseconds),
-        process.rssBytes === undefined ? 'unknown' : formatBytes(process.rssBytes),
-        process.currentOperation ?? '-',
-      ].join('\t'),
-    );
-  }
+  yield* Console.log(renderProcessDiagnosticsTable(diagnostics.processes));
   if (diagnostics.processes.some(process => process.role === 'legacy')) {
     yield* Console.log(
       'Legacy entries predate runtime registration; restart their owning agent sessions to retire old releases safely.',
@@ -299,6 +286,27 @@ export const runProcessDiagnostics = Effect.fn('processDiagnostics.run')(functio
   }
   if (diagnostics.truncated) yield* Console.log(`Showing the first ${PROCESS_DIAGNOSTICS_LIMIT} live processes.`);
 });
+
+export function renderProcessDiagnosticsTable(processes: readonly ThreadnoteProcessDiagnostic[]): string {
+  const rows = [
+    ['PID', 'PPID', 'ROLE', 'VERSION', 'AGE', 'RSS', 'OPERATION'],
+    ...processes.map(process => [
+      String(process.processId),
+      process.parentProcessId === 0 ? '-' : String(process.parentProcessId),
+      process.role,
+      process.releaseVersion ?? '-',
+      formatDuration(process.ageMilliseconds),
+      process.rssBytes === undefined ? 'unknown' : formatBytes(process.rssBytes),
+      process.currentOperation ?? '-',
+    ]),
+  ];
+  const widths = rows[0]!.map((_, column) => Math.max(...rows.map(row => row[column]!.length)));
+  return rows
+    .map(row =>
+      row.map((value, column) => (column === row.length - 1 ? value : value.padEnd(widths[column]! + 2))).join(''),
+    )
+    .join('\n');
+}
 
 export const legacyProcessDoctorCheck = Effect.fn('processDiagnostics.doctorCheck')(function* (
   config: Pick<RuntimeConfig, 'agentContextHome'>,

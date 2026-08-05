@@ -174,8 +174,8 @@ represented as assets rather than guessed. A corpus artifact over 64 MiB remains
 instead of being rejected or semantically decompressed. Selected OpenXML, OpenDocument, and EPUB text entries have
 bounded expansion. These are per-artifact extraction safety budgets, not repository or graph-size caps.
 
-Hidden directories and conventional generated roots such as `node_modules`, `dist`, `build`, `out`, `.nx`, and
-`bazel-*` are pruned before content is read, including when a broad package root contains them. Large unknown JSON,
+Hidden directories and conventional generated roots such as `node_modules`, `dist`, `build`, `out`, `.nx`,
+`graphify-out`, and `bazel-*` are pruned before content is read, including when a broad package root contains them. Large unknown JSON,
 JSONC, and YAML files keep only bounded structure, while recognized snapshots, golden files, fixtures, datasets, and
 animation payloads are fingerprinted with a streaming read and represented by their file/module metadata only. Package
 manifests, schemas, and configuration files keep their dedicated extraction paths.
@@ -210,6 +210,8 @@ threadnote graph surprises
 threadnote graph report --output architecture-report.md
 threadnote graph export --format graphml --output code-graph.graphml
 threadnote graph index --full
+threadnote graph diagnostics --analyze
+threadnote graph repair --all --dry-run
 threadnote graph compact --dry-run
 ```
 
@@ -218,6 +220,23 @@ When both 512 MiB and 20% of the database are reclaimable it recommends explicit
 zero-wait maintenance and checkout locks, verifies the active snapshot before and after SQLite's transactional
 `VACUUM`, and defers safely during a build. Preview it with `--dry-run`; `--force` is available below the reviewed
 threshold.
+
+`graph diagnostics` is home-wide and does not resolve a repository from the current directory. It reports every local
+graph database, ready snapshot, indexed view, active build, waiter, storage total, health issue, and obsolete store;
+add `--analyze` for bounded structural statistics per ready indexed view, `--deep` for full SQLite integrity checks,
+or `--json` for the versioned diagnostic document. `graph repair --all` immediately runs pending persistent-schema
+migrations instead of waiting for a later graph query. Its default quick pass avoids scanning every page of a large
+database; use `--deep` only when a full integrity check and destructive recovery are intended, and preview either mode
+with `--dry-run`.
+
+The local Manager exposes the same graph administration lifecycle from its Graph panel: home-wide quick or deep
+diagnostics, immediate repair, per-view status, index/reindex, compaction previews, obsolete-store pruning, and
+per-graph or all-graph purge. Destructive actions require an explicit browser confirmation. When an older indexed
+view has no live worktree association, Manager asks for a local path and verifies its checkout/worktree identity before
+acting.
+
+`threadnote manage` fails fast when graph repair or another native graph maintenance operation is already active;
+an already-running Manager returns an explicit busy response for graph requests until maintenance finishes.
 
 Maven, Gradle, Kotlin Multiplatform/Android conventions, SwiftPM, conservative Xcode metadata, and nested or integrated
 Bazel workspaces form a static workspace model; repository build scripts are never executed. Bazel `WORKSPACE`,

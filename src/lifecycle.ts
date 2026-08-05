@@ -421,6 +421,8 @@ function codeGraphMaintenanceProgressMessage(progress: CodeGraphMaintenanceProgr
         : `Deferred ${database}: run \`threadnote repair --deep\` when a full derived-store check is convenient.`;
     case 'discarding':
       return `${dryRun ? 'Would discard' : 'Discarding'} unreadable derived ${database}.`;
+    case 'migrating-schema':
+      return `${dryRun ? 'Would migrate' : 'Migrating'} the persistent schema for ${database}.`;
   }
 }
 
@@ -429,6 +431,7 @@ function codeGraphRepairSummaryMessage(
     readonly databases: number;
     readonly deferredDatabases: number;
     readonly discarded: number;
+    readonly migratedDatabases: number;
     readonly obsoleteStoreBytes: number;
     readonly obsoleteStoreCheckouts: number;
     readonly obsoleteStoreFiles: number;
@@ -441,6 +444,7 @@ function codeGraphRepairSummaryMessage(
   return (
     `${dryRun ? 'Would repair' : 'Repaired'} ${summary.databases} native code graph database(s): ` +
     (summary.deferredDatabases > 0 ? `${summary.deferredDatabases} deferred, ` : '') +
+    (summary.migratedDatabases > 0 ? `${summary.migratedDatabases} schema migration(s), ` : '') +
     `${summary.discarded} disposable rebuild(s), ` +
     `${summary.removedIncompleteSnapshots} incomplete snapshot(s), ` +
     `${summary.removedTemporaryFiles} temporary vector file(s).` +

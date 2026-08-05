@@ -934,6 +934,184 @@ dd {
   display: none;
 }
 
+.graph-administration {
+  background: rgba(16, 21, 29, 0.92);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.graph-administration > summary {
+  align-items: center;
+  cursor: pointer;
+  display: flex;
+  gap: 14px;
+  justify-content: space-between;
+  list-style-position: inside;
+  padding: 9px 12px;
+}
+
+.graph-administration > summary > span {
+  display: inline-grid;
+  gap: 2px;
+}
+
+.graph-administration > summary small,
+.graph-administration > summary em,
+.graph-management-unavailable {
+  color: var(--muted);
+  font-size: 10px;
+  font-style: normal;
+}
+
+.graph-administration-body {
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 10px;
+  max-height: min(460px, 56vh);
+  overflow: auto;
+  padding: 10px 12px 12px;
+}
+
+.graph-administration-toolbar,
+.graph-database-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.graph-administration-toolbar button,
+.graph-database-actions button {
+  font-size: 10px;
+  min-height: 30px;
+  padding: 5px 9px;
+}
+
+.graph-force-compact {
+  justify-self: start;
+}
+
+.graph-database-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+}
+
+.graph-database-card {
+  background: rgba(8, 11, 16, 0.58);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px;
+}
+
+.graph-database-card > header {
+  align-items: start;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+}
+
+.graph-database-card > header > span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.graph-database-card > header strong,
+.graph-database-card > header small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.graph-database-card > header em {
+  border: 1px solid var(--accent-line);
+  border-radius: 999px;
+  color: var(--accent);
+  font-size: 9px;
+  font-style: normal;
+  padding: 3px 7px;
+  text-transform: uppercase;
+}
+
+.graph-database-card > header em.is-corrupt,
+.graph-database-card > header em.is-incompatible,
+.graph-database-card > header em.is-unreadable {
+  border-color: rgba(255, 98, 120, 0.35);
+  color: var(--danger);
+}
+
+.graph-database-card dl {
+  display: grid;
+  gap: 6px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin: 0;
+}
+
+.graph-database-card dl > div {
+  display: grid;
+  gap: 2px;
+}
+
+.graph-database-card dt {
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.graph-database-card dd {
+  font-size: 11px;
+  margin: 0;
+}
+
+.graph-database-issue {
+  color: #f7d56b;
+  font-size: 10px;
+  margin: 0;
+}
+
+.graph-database-views {
+  display: grid;
+  gap: 5px;
+}
+
+.graph-database-views > div {
+  border-left: 2px solid var(--accent-line);
+  display: grid;
+  gap: 2px;
+  padding-left: 7px;
+}
+
+.graph-database-views strong,
+.graph-database-views span,
+.graph-database-views small,
+.graph-database-job {
+  font-size: 10px;
+}
+
+.graph-database-views small,
+.graph-database-job {
+  color: var(--muted);
+}
+
+.graph-database-job {
+  margin: 0;
+}
+
+.graph-administration-output {
+  background: rgba(4, 7, 11, 0.75);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-size: 10px;
+  margin: 0;
+  max-height: 180px;
+  overflow: auto;
+  padding: 9px;
+  white-space: pre-wrap;
+}
+
 .graph-build-status {
   display: grid;
   gap: 8px;

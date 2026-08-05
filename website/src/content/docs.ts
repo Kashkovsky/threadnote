@@ -1300,6 +1300,8 @@ threadnote share conflict resolve <id> --take shared`,
             type: 'code',
             language: 'sh',
             code: `threadnote graph status
+threadnote graph diagnostics --analyze
+threadnote graph repair --all --dry-run
 threadnote graph index
 threadnote graph index --full
 threadnote graph watch
@@ -1324,6 +1326,10 @@ threadnote graph compact --dry-run`,
           {
             type: 'paragraph',
             text: 'graph status reports exact active database, WAL, and SHM bytes and, when no build owns the checkout, page count, freelist pages, and reclaimable bytes. Threadnote recommends graph compact once at least 512 MiB and 20% are reclaimable. The explicit command uses zero-wait maintenance/build locks, pre/post verification, and SQLite transactional VACUUM; use --dry-run to preview or --force below the threshold.',
+          },
+          {
+            type: 'paragraph',
+            text: 'graph diagnostics is home-wide and does not depend on the current directory. It reports every local graph database, ready snapshot, indexed view, build, waiter, storage total, health issue, and obsolete store. Add --analyze for bounded structural statistics per indexed view, --deep for full SQLite integrity checks, or --json for the versioned diagnostic document. graph repair --all immediately performs pending persistent-schema migrations; its default pass is quick, while --deep opts into a full scan and destructive recovery of disposable corrupt stores. Both repair modes support --dry-run.',
           },
           {
             type: 'paragraph',
