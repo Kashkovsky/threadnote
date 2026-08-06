@@ -242,8 +242,8 @@ an already-running Manager returns an explicit busy response for graph requests 
 
 Maven, Gradle, Kotlin Multiplatform/Android conventions, SwiftPM, conservative Xcode metadata, and nested or integrated
 Bazel workspaces form a static workspace model; repository build scripts are never executed. Bazel `WORKSPACE`,
-`MODULE.bazel`, `BUILD`, `.bzl`, and `.bazelrc` files contribute declared targets, loads, and labels without invoking
-Bazel or evaluating macros. Nested workspaces remain distinct, while an app that is also integrated into the outer
+`MODULE.bazel`, `BUILD`, `.bzl`, `.axl` (typed Starlark / Aspect Extension Language), and `.bazelrc` files contribute
+declared targets, loads, and labels without invoking Bazel or evaluating macros. Nested workspaces remain distinct, while an app that is also integrated into the outer
 monorepo can resolve only its explicitly declared project dependencies. Ambiguous or dynamic relationships stay
 syntactic.
 

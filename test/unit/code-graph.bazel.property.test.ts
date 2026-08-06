@@ -71,7 +71,64 @@ describe('Bazel workspace properties', () => {
     },
     {fastCheck: {numRuns: 100}},
   );
+
+  it.prop(
+    'extracts equivalent Starlark structure from .axl and .bzl when typed annotations are stripped',
+    {
+      name: FC.stringMatching(/^[A-Za-z_][A-Za-z0-9_]{0,12}$/),
+      param: FC.stringMatching(/^[A-Za-z_][A-Za-z0-9_]{0,8}$/),
+      typeName: FC.stringMatching(/^[A-Za-z_][A-Za-z0-9_]{0,10}$/),
+      constant: FC.stringMatching(/^[A-Za-z_][A-Za-z0-9_]{0,10}$/),
+      callee: FC.stringMatching(/^[A-Za-z_][A-Za-z0-9_]{0,10}$/),
+    },
+    ({name, param, typeName, constant, callee}) => {
+      const typed = [
+        `def ${name}(${param}: ${typeName}) -> ${typeName}:`,
+        `    ${callee}(${param})`,
+        `    return ${param}`,
+        '',
+        `${constant} = ${callee}()`,
+      ].join('\n');
+      const untyped = [
+        `def ${name}(${param}):`,
+        `    ${callee}(${param})`,
+        `    return ${param}`,
+        '',
+        `${constant} = ${callee}()`,
+      ].join('\n');
+
+      const axl = extractBazelFacts(bazelFile(`lib/${name}.axl`, typed), {
+        packageName: Option.none(),
+        project: Option.none(),
+      });
+      const bzl = extractBazelFacts(bazelFile(`lib/${name}.bzl`, untyped), {
+        packageName: Option.none(),
+        project: Option.none(),
+      });
+
+      expect(normalizeStarlarkShape(axl)).toEqual(normalizeStarlarkShape(bzl));
+    },
+    {fastCheck: {numRuns: 100}},
+  );
 });
+
+function normalizeStarlarkShape(facts: ReturnType<typeof extractBazelFacts>) {
+  const symbolsById = new Map(facts.symbols.map(symbol => [symbol.id, symbol]));
+  return {
+    edges: facts.edges
+      .filter(edge => edge.relation !== 'contains')
+      .map(edge => {
+        const source = symbolsById.get(edge.sourceId);
+        const sourceKey = source?.kind === 'module' ? 'module' : (source?.name ?? edge.sourceName);
+        return [edge.relation, sourceKey, edge.targetName] as const;
+      })
+      .sort(),
+    symbols: facts.symbols
+      .filter(symbol => symbol.kind !== 'module')
+      .map(symbol => [symbol.kind, symbol.name] as const)
+      .sort(),
+  };
+}
 
 function bazelFile(path: string, content: string): CodeGraphInventoryFile {
   return {

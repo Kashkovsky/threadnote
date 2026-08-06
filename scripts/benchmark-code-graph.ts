@@ -1559,7 +1559,7 @@ export function semanticBenchmarkOverlay(filePath: string, source: string): stri
     return insertAfterBom(source, '#include <threadnote_benchmark_overlay.h>');
   }
   if (/\.py$/.test(normalized)) return appendStatement(source, '__import__("threadnote_benchmark_overlay")');
-  if (/(?:^|\/)(?:build(?:\.bazel)?|workspace(?:\.bazel)?|module\.bazel|[^/]+\.bzl)$/.test(normalized)) {
+  if (/(?:^|\/)(?:build(?:\.bazel)?|workspace(?:\.bazel)?|module\.bazel|[^/]+\.(?:bzl|axl))$/.test(normalized)) {
     return insertAfterBom(source, 'load("@threadnote_benchmark_overlay//:defs.bzl", "threadnote_benchmark_overlay")');
   }
   throw new Error('The incremental benchmark path must use a supported source language.');

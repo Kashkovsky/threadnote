@@ -11,6 +11,7 @@ const FILES = [
   {kind: 'basename', language: 'bazel-workspace', role: 'workspace', value: 'WORKSPACE.bazel'},
   {kind: 'basename', language: 'bazel-module', role: 'workspace', value: 'MODULE.bazel'},
   {kind: 'extension', language: 'starlark', role: 'source', value: '.bzl'},
+  {kind: 'extension', language: 'starlark', role: 'source', value: '.axl'},
   {kind: 'extension', language: 'bazelrc', role: 'workspace', value: '.bazelrc'},
 ] as const satisfies readonly CodeGraphFileMatcher[];
 
@@ -29,7 +30,7 @@ export const codeGraphLanguagePack: CodeGraphLanguagePack = {
   files: FILES,
   id: 'bazel',
   resolutionStrategy: {domain: 'bazel', version: 'bazel-labels-static-v1'},
-  version: '1.0.0',
+  version: '1.1.0',
   workspaceDetector: Option.some({
     contextFiles: FILES.filter(file => file.role === 'workspace' || file.role === 'manifest'),
     detect: files => Effect.succeed(discoverBazelWorkspace(files)),

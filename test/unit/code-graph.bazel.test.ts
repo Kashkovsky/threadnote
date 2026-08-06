@@ -17,6 +17,7 @@ describe('Bazel/Starlark code graph language pack', () => {
       ['app/BUILD', 'bazel-build'],
       ['app/BUILD.bazel', 'bazel-build'],
       ['tools/defs.bzl', 'starlark'],
+      ['.aspect/format.axl', 'starlark'],
       ['config/ci.bazelrc', 'bazelrc'],
     ]);
     for (const [path, language] of expected) {
@@ -26,6 +27,44 @@ describe('Bazel/Starlark code graph language pack', () => {
       _tag: 'Some',
       value: {language: 'typescript'},
     });
+  });
+
+  it('extracts typed AXL Starlark defs, loads, assignments, and calls like .bzl sources', async () => {
+    const facts = await runExtraction(
+      bazelFile(
+        '.aspect/mycmd.axl',
+        [
+          'load("//tools:defs.bzl", "helper")',
+          '',
+          'def impl(ctx: TaskContext) -> int:',
+          '    helper()',
+          '    return 0',
+          '',
+          'mycmd = task(',
+          '    implementation = impl,',
+          '    args = {',
+          '        "target_pattern": args.positional(default = ["..."]),',
+          '    },',
+          ')',
+        ].join('\n'),
+      ),
+      [],
+    );
+
+    expect(facts.symbols.map(symbol => [symbol.kind, symbol.qualifiedName])).toEqual(
+      expect.arrayContaining([
+        ['function', '//.aspect:mycmd.axl%impl'],
+        ['constant', '//.aspect:mycmd.axl%mycmd'],
+      ]),
+    );
+    expect(facts.edges.map(edge => [edge.relation, edge.targetName])).toEqual(
+      expect.arrayContaining([
+        ['imports', '//tools:defs.bzl'],
+        ['calls', 'helper'],
+        ['calls', 'task'],
+        ['calls', 'args.positional'],
+      ]),
+    );
   });
 
   it('extracts and resolves Starlark loads, calls, targets, local deps, cross-package deps, and external labels', async () => {
