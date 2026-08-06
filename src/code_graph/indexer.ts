@@ -319,11 +319,26 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                       const reusableExisting = existing
                         ? yield* store.currentLexicalReadySnapshotById(layout.databasePath, existing.id)
                         : undefined;
-                      const reusableReady = !options.force
+                      const reusableReadyById = !options.force
                         ? reusableExisting && readyCandidateIds.includes(reusableExisting.id)
                           ? reusableExisting
                           : yield* firstReadySnapshotById(store, layout.databasePath, readyCandidateIds)
                         : undefined;
+                      // Exact cgsn_* can miss when inventory source/provenance differs slightly
+                      // from the shared clean row while graph content is identical. Prefer promote
+                      // of a HEAD-matching clean ready snapshot over rematerializing.
+                      const reusableReady =
+                        reusableReadyById ??
+                        (!options.force && !inventory.dirty
+                          ? yield* reusableReadySnapshotForCleanCommit({
+                              databasePath: layout.databasePath,
+                              extractorSet,
+                              graphContentId,
+                              headCommit: identity.headCommit,
+                              repositoryId: identity.repositoryId,
+                              store,
+                            })
+                          : undefined);
                       // A ready candidate wins this request. Do not preserve an
                       // interrupted logical/direct sibling that cannot be used on
                       // the early-return path: a repository-sized persistent build
@@ -1084,6 +1099,41 @@ const buildOwnedCleanSnapshot = Effect.fn('codeGraph.buildOwnedCleanSnapshot')(f
             reusedFiles: input.inventory.files.length - input.inventory.parsedFiles,
             skippedFiles: input.inventory.skipped,
             snapshot: ready,
+            startedAt: input.startedAt,
+            store: input.store,
+            threadnoteHome: input.threadnoteHome,
+            totalFiles: input.inventory.files.length,
+          });
+        }
+        const extractorSet = extractorSetIdentity(input.inventory.files, input.languagePacks);
+        const graphContentId = graphContentIdentity(extractorSet, input.inventory.files);
+        const commitReady = yield* reusableReadySnapshotForCleanCommit({
+          databasePath: input.layout.databasePath,
+          extractorSet,
+          graphContentId,
+          headCommit: input.identity.headCommit,
+          repositoryId: input.identity.repositoryId,
+          store: input.store,
+        });
+        if (commitReady) {
+          if (input.existing?.id !== commitReady.id) {
+            yield* input.store.promote(
+              input.layout.databasePath,
+              input.identity,
+              commitReady.id,
+              input.activeWorktreeIds,
+            );
+          }
+          return yield* reuseReadySnapshot({
+            activeWorktreeIds: input.activeWorktreeIds,
+            embedding: input.embedding,
+            ensureVectors: input.ensureVectors,
+            identity: input.identity,
+            layout: input.layout,
+            onProgress: input.onProgress,
+            reusedFiles: input.inventory.files.length - input.inventory.parsedFiles,
+            skippedFiles: input.inventory.skipped,
+            snapshot: commitReady,
             startedAt: input.startedAt,
             store: input.store,
             threadnoteHome: input.threadnoteHome,
@@ -3117,6 +3167,57 @@ const firstReadySnapshotById = Effect.fn('codeGraph.firstReadySnapshotById')(fun
   }
   return undefined;
 });
+
+/**
+ * Decide whether a clean ready snapshot for HEAD is graph-equivalent to the
+ * current inventory and safe to promote without rematerializing.
+ *
+ * Requires an explicit graphContentId on the candidate so we never promote a
+ * same-commit row that merely shares extractor set but not inventory content.
+ */
+export function shouldReuseReadySnapshotForCleanCommit(input: {
+  readonly candidate?: {
+    readonly commit: string;
+    readonly dirty: boolean;
+    readonly graphContentId?: string;
+    readonly id: string;
+  };
+  readonly graphContentId: string;
+  readonly headCommit: string;
+}): boolean {
+  return (
+    input.candidate !== undefined &&
+    input.candidate.dirty === false &&
+    input.candidate.commit === input.headCommit &&
+    input.candidate.graphContentId !== undefined &&
+    input.candidate.graphContentId === input.graphContentId
+  );
+}
+
+const reusableReadySnapshotForCleanCommit = Effect.fn('codeGraph.reusableReadySnapshotForCleanCommit')(
+  function* (input: {
+    readonly databasePath: string;
+    readonly extractorSet: string;
+    readonly graphContentId: string;
+    readonly headCommit: string;
+    readonly repositoryId: string;
+    readonly store: CodeGraphStoreShape;
+  }) {
+    const candidate = yield* input.store.readySnapshotForCommit(
+      input.databasePath,
+      input.repositoryId,
+      input.headCommit,
+      input.extractorSet,
+    );
+    return shouldReuseReadySnapshotForCleanCommit({
+      candidate,
+      graphContentId: input.graphContentId,
+      headCommit: input.headCommit,
+    })
+      ? candidate
+      : undefined;
+  },
+);
 
 function embeddingSymbolSource(store: CodeGraphStoreShape, databasePath: string, snapshotId: string) {
   return {

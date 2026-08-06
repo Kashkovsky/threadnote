@@ -605,6 +605,99 @@ describe('native code graph lifecycle', () => {
     }
   });
 
+  it('attaches a shared clean ready snapshot to a new worktree without rematerializing', async () => {
+    const root = createFixtureRepository();
+    git(root, ['branch', 'graph-attach-a']);
+    git(root, ['branch', 'graph-attach-b']);
+    const worktreeRoot = temporaryDirectory('threadnote-code-graph-attach-worktrees-');
+    const worktreeA = join(worktreeRoot, 'worktree-a');
+    const worktreeB = join(worktreeRoot, 'worktree-b');
+    git(root, ['worktree', 'add', worktreeA, 'graph-attach-a']);
+    git(root, ['worktree', 'add', worktreeB, 'graph-attach-b']);
+    const home = join(root, '.threadnote-test-home');
+
+    const result = await runEffect(
+      Effect.gen(function* () {
+        const graph = yield* CodeGraphQueryService;
+        const indexer = yield* CodeGraphIndexer;
+        const first = yield* indexer.index({cwd: worktreeA, threadnoteHome: home});
+        const identityB = yield* resolveRepositoryIdentity(worktreeB);
+        const before = yield* graph.statusForIdentity(home, identityB);
+        const attached = yield* graph.attachSharedReadySnapshot(home, identityB);
+        const after = yield* graph.statusForIdentity(home, identityB);
+        const found = yield* graph.inspect({
+          cwd: worktreeB,
+          operation: 'query',
+          query: 'ensureVectorIndex',
+          refresh: false,
+          threadnoteHome: home,
+        });
+        return {after, attached, before, first, found, identityB};
+      }),
+    );
+
+    expect(result.before.readySnapshot).toBeUndefined();
+    expect(result.before.stale).toBe(true);
+    expect(result.attached.stale).toBe(false);
+    expect(result.attached.readySnapshot?.id).toBe(result.first.snapshot.id);
+    expect(result.attached.readySnapshot?.worktreeId).toBe(result.identityB.worktreeId);
+    expect(result.after.readySnapshot?.id).toBe(result.first.snapshot.id);
+    expect(result.after.stale).toBe(false);
+    expect(result.found.snapshot.id).toBe(result.first.snapshot.id);
+    expect(result.found.nodes.some(node => node.name === 'ensureVectorIndex')).toBe(true);
+  });
+
+  it('attaches a shared clean base while a sibling worktree keeps a dirty overlay', async () => {
+    const root = createFixtureRepository();
+    git(root, ['branch', 'graph-sibling-a']);
+    git(root, ['branch', 'graph-sibling-b']);
+    const worktreeRoot = temporaryDirectory('threadnote-code-graph-sibling-dirty-');
+    const worktreeA = join(worktreeRoot, 'worktree-a');
+    const worktreeB = join(worktreeRoot, 'worktree-b');
+    git(root, ['worktree', 'add', worktreeA, 'graph-sibling-a']);
+    git(root, ['worktree', 'add', worktreeB, 'graph-sibling-b']);
+    const home = join(root, '.threadnote-test-home');
+
+    const result = await runEffect(
+      Effect.gen(function* () {
+        const graph = yield* CodeGraphQueryService;
+        const indexer = yield* CodeGraphIndexer;
+        const clean = yield* indexer.index({cwd: worktreeA, threadnoteHome: home});
+        replaceFunction(worktreeA, 'ensureVectorIndex', 'ensureSiblingDirtyVectorIndex');
+        const dirty = yield* indexer.index({cwd: worktreeA, threadnoteHome: home});
+        const identityB = yield* resolveRepositoryIdentity(worktreeB);
+        const attached = yield* graph.attachSharedReadySnapshot(home, identityB);
+        const found = yield* graph.inspect({
+          cwd: worktreeB,
+          operation: 'query',
+          query: 'ensureVectorIndex',
+          refresh: false,
+          threadnoteHome: home,
+        });
+        const dirtyOnly = yield* graph.inspect({
+          cwd: worktreeA,
+          operation: 'query',
+          query: 'ensureSiblingDirtyVectorIndex',
+          refresh: false,
+          threadnoteHome: home,
+        });
+        return {attached, clean, dirty, dirtyOnly, found, identityB};
+      }),
+    );
+
+    expect(result.dirty.snapshot.dirty).toBe(true);
+    expect(result.dirty.snapshot.id).not.toBe(result.clean.snapshot.id);
+    expect(result.attached.stale).toBe(false);
+    expect(result.attached.readySnapshot?.dirty).toBe(false);
+    expect(result.attached.readySnapshot?.id).toBe(result.clean.snapshot.id);
+    expect(result.attached.readySnapshot?.worktreeId).toBe(result.identityB.worktreeId);
+    expect(result.found.snapshot.id).toBe(result.clean.snapshot.id);
+    expect(result.found.nodes.some(node => node.name === 'ensureVectorIndex')).toBe(true);
+    expect(result.found.nodes.some(node => node.name === 'ensureSiblingDirtyVectorIndex')).toBe(false);
+    expect(result.dirtyOnly.snapshot.id).toBe(result.dirty.snapshot.id);
+    expect(result.dirtyOnly.nodes.some(node => node.name === 'ensureSiblingDirtyVectorIndex')).toBe(true);
+  });
+
   it('aliases a graph-equivalent clean commit without reparsing or rematerializing files', async () => {
     const root = createManySourceRepository(12);
     const home = join(root, '.threadnote-test-home');

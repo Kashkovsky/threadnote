@@ -660,16 +660,27 @@ const prewarmLikelyCleanSnapshots = Effect.fn('codeGraph.prewarmLikelyCleanSnaps
 
 const indexRepository = (indexer: CodeGraphIndexerShape, options: CodeGraphWatchOptions) =>
   indexer
-    .index({
-      cwd: options.cwd,
-      onProgress: options.onProgress,
-      threadnoteHome: options.threadnoteHome,
-    })
+    .index(codeGraphWatcherRefreshIndexRequest(options))
     .pipe(
       Effect.tap(
         summary => options.onRefreshed?.(summary.snapshot.symbolCount, summary.snapshot.edgeCount) ?? Effect.void,
       ),
     );
+
+/** Watcher-driven refresh never owns embedding; explicit `graph index` still does. */
+export function codeGraphWatcherRefreshIndexRequest(options: CodeGraphWatchOptions): {
+  readonly cwd: string;
+  readonly ensureVectors: false;
+  readonly onProgress: CodeGraphWatchOptions['onProgress'];
+  readonly threadnoteHome: string;
+} {
+  return {
+    cwd: options.cwd,
+    ensureVectors: false,
+    onProgress: options.onProgress,
+    threadnoteHome: options.threadnoteHome,
+  };
+}
 
 const watchRepository = Effect.fn('codeGraph.watchRepository')(function* (
   fs: FileSystem.FileSystem,

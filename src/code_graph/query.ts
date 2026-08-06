@@ -17,7 +17,7 @@ import {
   withCodeGraphMaintenanceIntent,
 } from './maintenance_gate.js';
 import {compareCodeUnits} from './ordering.js';
-import {resolveRepositoryIdentity} from './repository.js';
+import {repositoryWorktreeIds, resolveRepositoryIdentity} from './repository.js';
 import {CodeGraphStore, type CodeGraphStoreShape} from './store.js';
 import {CodeGraphEmbeddingIndex, type CodeGraphEmbeddingIndexShape} from './embedding.js';
 import {
@@ -90,6 +90,25 @@ export function canUseReadySnapshotAfterCleanCommitChange(status: CodeGraphStatu
   );
 }
 
+/**
+ * Decide whether a shared clean ready snapshot can be promoted onto this worktree
+ * without inventory or rematerialization.
+ */
+export function shouldAttachSharedReadySnapshot(input: {
+  readonly candidate?: {readonly commit: string; readonly dirty: boolean; readonly id: string};
+  readonly overlayDirty: boolean;
+  readonly readySnapshot?: {readonly commit: string; readonly id: string};
+  readonly headCommit: string;
+}): boolean {
+  if (input.overlayDirty) return false;
+  return (
+    input.candidate !== undefined &&
+    input.candidate.dirty === false &&
+    input.candidate.commit === input.headCommit &&
+    input.candidate.id !== input.readySnapshot?.id
+  );
+}
+
 function attachCodeGraphStatusObservation(
   status: CodeGraphStatus,
   observation: CodeGraphStatusObservation | undefined,
@@ -107,6 +126,14 @@ function attachCodeGraphStatusObservation(
 export class CodeGraphQueryService extends Context.Service<
   CodeGraphQueryService,
   {
+    /**
+     * Promote a shared clean ready snapshot for HEAD onto this worktree when
+     * the worktree is clean and has no matching active pointer yet.
+     */
+    readonly attachSharedReadySnapshot: (
+      threadnoteHome: string,
+      identity: RepositoryIdentity,
+    ) => Effect.Effect<CodeGraphStatus, unknown>;
     readonly inspect: (options: CodeGraphInspectOptions) => Effect.Effect<CodeGraphQueryResult, unknown>;
     readonly purge: (threadnoteHome: string, cwd: string) => Effect.Effect<string, unknown>;
     readonly status: (
@@ -175,7 +202,38 @@ export class CodeGraphQueryService extends Context.Service<
           } satisfies CodeGraphStatus;
           return attachCodeGraphStatusObservation(status, overlay === undefined ? undefined : {identity, overlay});
         });
+      const attachSharedReadySnapshot = (threadnoteHome: string, identity: RepositoryIdentity) =>
+        Effect.gen(function* () {
+          // statusForIdentity already attaches a non-writable observation; never re-attach
+          // onto the same object (Object.defineProperty would throw).
+          const status = yield* statusForIdentity(threadnoteHome, identity);
+          if (!status.stale && status.readySnapshot?.commit === identity.headCommit) return status;
+          const overlay = observationFromCodeGraphStatus(status)?.overlay ?? (yield* worktreeOverlayState(identity));
+          if (overlay.dirty) return status;
+          const layout = codeGraphLayout(path, threadnoteHome, identity.checkoutId, identity.worktreeId);
+          const candidate = yield* store.readySnapshotForCommit(
+            layout.databasePath,
+            identity.repositoryId,
+            identity.headCommit,
+          );
+          if (
+            candidate === undefined ||
+            !shouldAttachSharedReadySnapshot({
+              candidate,
+              headCommit: identity.headCommit,
+              overlayDirty: overlay.dirty,
+              readySnapshot: status.readySnapshot,
+            })
+          ) {
+            return status;
+          }
+          const activeWorktreeIds = yield* repositoryWorktreeIds(identity);
+          yield* store.promote(layout.databasePath, identity, candidate.id, activeWorktreeIds);
+          return yield* statusForIdentity(threadnoteHome, identity);
+        });
       return CodeGraphQueryService.of({
+        attachSharedReadySnapshot: (threadnoteHome, identity) =>
+          withRepositoryServices(attachSharedReadySnapshot(threadnoteHome, identity)),
         inspect: options =>
           withRepositoryServices(
             Effect.gen(function* () {
