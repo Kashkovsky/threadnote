@@ -118,7 +118,7 @@ function normalizeStarlarkShape(facts: ReturnType<typeof extractBazelFacts>) {
     edges: facts.edges
       .filter(edge => edge.relation !== 'contains')
       .map(edge => {
-        const source = symbolsById.get(edge.sourceId);
+        const source = edge.sourceId === undefined ? undefined : symbolsById.get(edge.sourceId);
         const sourceKey = source?.kind === 'module' ? 'module' : (source?.name ?? edge.sourceName);
         return [edge.relation, sourceKey, edge.targetName] as const;
       })

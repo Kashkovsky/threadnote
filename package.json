@@ -33,7 +33,7 @@
     "lint": "bun --bun oxlint src test scripts website/src website/vite.config.ts",
     "lint:fix": "bun --bun oxlint --fix src test scripts website/src website/vite.config.ts",
     "prepare": "bun --bun husky",
-    "precommit": "bun run lint && bun run prettier:write && bun run test",
+    "precommit": "bun run lint && bun run prettier:write && bun run typecheck && bun run test",
     "prettier:check": "bun --bun prettier --check \"**/*.{ts,tsx,js,cjs,json,md,yaml,yml,css,html}\"",
     "prettier:write": "bun --bun prettier --write \"**/*.{ts,tsx,js,cjs,json,md,yaml,yml,css,html}\"",
     "test": "bun --bun vitest run",
