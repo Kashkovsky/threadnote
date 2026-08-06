@@ -14,6 +14,7 @@ describe('native code graph inventory policy', () => {
     expect(acceptsRepositoryPath('src/index.ts', ignore)).toBe(true);
     expect(acceptsRepositoryPath('.nx/cache/project.ts', ignore)).toBe(false);
     expect(acceptsRepositoryPath('packages/.cache/result.ts', ignore)).toBe(false);
+    expect(acceptsRepositoryPath('.aspect/mycmd.axl', ignore)).toBe(true);
     expect(acceptsRepositoryPath('packages/app/node_modules/library/index.ts', ignore)).toBe(false);
     expect(acceptsRepositoryPath('dist/generated.ts', ignore)).toBe(false);
     expect(acceptsRepositoryPath('graphify-out/graph.json', ignore)).toBe(false);

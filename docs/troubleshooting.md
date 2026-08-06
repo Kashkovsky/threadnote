@@ -234,7 +234,8 @@ the same `inspect_code_graph` call before making relationship-aware graph claims
 limit and no daemon to start. Nested Maven, Gradle, SwiftPM, and Xcode scopes are detected statically. Dynamic build
 logic and ambiguous dependencies remain syntactic rather than being guessed. Bazel workspaces, packages, targets,
 loads, and labels are also detected statically from `WORKSPACE*`, `MODULE.bazel`, `BUILD*`, `.bzl`, `.axl`, and
-`.bazelrc`; Threadnote never invokes Bazel or evaluates Starlark macros.
+`.bazelrc` (including Aspect CLI sources under `.aspect/`); Threadnote never invokes Bazel or evaluates Starlark
+macros.
 
 For whole-repository topology, call MCP `analyze_code_graph` or run `threadnote graph analyze --view full`. Analysis
 has no repository-size admission cap. The MCP surface independently caps topology retention at 100,000 symbols,

@@ -73,6 +73,7 @@ const GENERATED_DIRECTORIES = new Set([
   'node_modules',
   'out',
 ]);
+const AUTHORED_DOT_DIRECTORIES = new Set(['.aspect']);
 const CAT_FILE_BATCH_ENTRIES = 128;
 const CAT_FILE_BATCH_BYTES = 16 * 1_048_576;
 const COMPACT_RESOLUTION_CONTEXT_NAMES = new Set([
@@ -344,7 +345,7 @@ function acceptsRepositoryPathWithRules(
   const directories = segments.slice(0, -1);
   if (
     directories.some((directory, index) => {
-      if (directory.startsWith('.')) return true;
+      if (directory.startsWith('.') && !AUTHORED_DOT_DIRECTORIES.has(directory.toLowerCase())) return true;
       const normalizedDirectory = directory.toLowerCase();
       const bazelOutputLink = normalizedDirectory.startsWith('bazel-');
       if (!bazelOutputLink && !PRUNED_DIRECTORIES.has(normalizedDirectory)) return false;
