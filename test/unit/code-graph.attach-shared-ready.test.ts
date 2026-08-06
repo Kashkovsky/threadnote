@@ -202,6 +202,7 @@ describe('codeGraphWatcherRefreshIndexRequest', () => {
     expect(
       codeGraphWatcherRefreshIndexRequest({
         cwd: '/repo',
+        key: 'worktree',
         threadnoteHome: '/home',
       }),
     ).toEqual({
