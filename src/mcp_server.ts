@@ -869,6 +869,9 @@ function registerCodeGraphTool(server: EffectMcpServerAdapter, config: RuntimeCo
         const service = yield* CodeGraphQueryService;
         const strictFreshness = operation === 'impact' || operation === 'path';
         let status = yield* service.statusForIdentity(config.agentContextHome, identity);
+        if (status.stale || !status.readySnapshot) {
+          status = yield* service.attachSharedReadySnapshot(config.agentContextHome, identity);
+        }
         let staleAfterCleanCommitChange = canUseReadySnapshotAfterCleanCommitChange(status);
         let refreshStarted = false;
         if (status.stale) {
@@ -883,6 +886,9 @@ function registerCodeGraphTool(server: EffectMcpServerAdapter, config: RuntimeCo
           }
           identity = yield* resolveRepositoryIdentity(checkedCwd.value);
           status = yield* service.statusForIdentity(config.agentContextHome, identity);
+          if (status.stale || !status.readySnapshot) {
+            status = yield* service.attachSharedReadySnapshot(config.agentContextHome, identity);
+          }
           staleAfterCleanCommitChange = canUseReadySnapshotAfterCleanCommitChange(status);
           if (!status.readySnapshot || (status.stale && strictFreshness)) {
             const refreshStatus = Option.getOrUndefined(yield* watcher.status(identity.worktreeId, refreshTarget));
@@ -980,6 +986,9 @@ function registerCodeGraphTool(server: EffectMcpServerAdapter, config: RuntimeCo
         });
         const query = yield* CodeGraphQueryService;
         let status = yield* query.status(config.agentContextHome, checkedCwd.value);
+        if (status.stale || !status.readySnapshot) {
+          status = yield* query.attachSharedReadySnapshot(config.agentContextHome, identity);
+        }
         const refreshStarted = status.stale
           ? yield* watcher.refresh({
               cwd: identity.repoRoot,
@@ -994,6 +1003,9 @@ function registerCodeGraphTool(server: EffectMcpServerAdapter, config: RuntimeCo
           });
         }
         if (status.stale) status = yield* query.status(config.agentContextHome, checkedCwd.value);
+        if (status.stale || !status.readySnapshot) {
+          status = yield* query.attachSharedReadySnapshot(config.agentContextHome, identity);
+        }
         if (!status.readySnapshot || status.stale) {
           return codeGraphAnalysisRefreshResult(
             operation,

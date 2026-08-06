@@ -36,6 +36,13 @@ describe('MCP code graph indexing progress', () => {
     ).toBe(true);
   });
 
+  it('does not block inspection after a shared ready snapshot is attached to the worktree', () => {
+    const indexing = indexingStatus(60_000);
+    expect(codeGraphRefreshBlocksReadyInspection({readySnapshot: {id: 'cgsn_shared'}, stale: false}, indexing)).toBe(
+      false,
+    );
+  });
+
   it('derives a bounded adaptive poll interval from the phase estimate', () => {
     expect(codeGraphRetryAfterMilliseconds(undefined)).toBe(5_000);
     expect(codeGraphRetryAfterMilliseconds(indexingStatus(4_000))).toBe(3_000);
