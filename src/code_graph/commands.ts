@@ -692,7 +692,11 @@ export const runCodeGraphInspect = Effect.fn('codeGraph.command.inspect')(functi
 ) {
   const service = yield* CodeGraphQueryService;
   const cwd = yield* commandCwd(options.cwd);
-  const status = yield* service.status(config.agentContextHome, cwd);
+  const identity = yield* resolveRepositoryIdentity(cwd);
+  let status = yield* service.statusForIdentity(config.agentContextHome, identity);
+  if (status.stale || !status.readySnapshot) {
+    status = yield* service.attachSharedReadySnapshot(config.agentContextHome, identity);
+  }
   const strictFreshness = options.operation === 'impact' || options.operation === 'path';
   const statusObservation = observationFromCodeGraphStatus(status);
   // Preserve live-edit behavior, but do not make an ordinary read wait for a clean post-pull rebuild.
@@ -1091,12 +1095,17 @@ const ensureAnalysisSnapshot = Effect.fn('codeGraph.command.ensureAnalysisSnapsh
 ) {
   const query = yield* CodeGraphQueryService;
   const indexer = yield* CodeGraphIndexer;
-  let status = yield* query.status(config.agentContextHome, cwd);
+  const identity = yield* resolveRepositoryIdentity(cwd);
+  let status = yield* query.statusForIdentity(config.agentContextHome, identity);
+  if (status.stale || !status.readySnapshot) {
+    status = yield* query.attachSharedReadySnapshot(config.agentContextHome, identity);
+  }
   if (status.stale) {
     if (json) {
       const reportProgress = yield* makeCodeGraphJsonProgressReporter();
       yield* indexer.index({
         cwd,
+        ensureVectors: false,
         onProgress: reportProgress,
         threadnoteHome: config.agentContextHome,
       });
@@ -1106,6 +1115,7 @@ const ensureAnalysisSnapshot = Effect.fn('codeGraph.command.ensureAnalysisSnapsh
         progress =>
           indexer.index({
             cwd,
+            ensureVectors: false,
             onProgress: state => progress.update(progressMessage(state)).pipe(Effect.catch(() => Effect.void)),
             threadnoteHome: config.agentContextHome,
           }),
