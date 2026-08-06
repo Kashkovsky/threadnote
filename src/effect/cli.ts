@@ -621,6 +621,10 @@ const graphIndex = Command.make(
     cwd: graphBounds.cwd,
     full: boolean('full', 'Ignore reusable snapshot state and rebuild the graph'),
     json: graphBounds.json,
+    noVectors: boolean(
+      'no-vectors',
+      'Skip embedding materialization; matches watcher-driven refresh (ensureVectors: false)',
+    ),
   },
   options => withRuntimeEffect(config => runCodeGraphIndex(config, options)),
 ).pipe(Command.withDescription('Build and atomically activate a current native code graph snapshot'));

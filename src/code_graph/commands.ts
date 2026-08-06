@@ -534,11 +534,12 @@ function formatStatusDuration(milliseconds: number): string {
 
 export const runCodeGraphIndex = Effect.fn('codeGraph.command.index')(function* (
   config: RuntimeConfig,
-  options: CwdOption & {readonly full?: boolean; readonly json?: boolean},
+  options: CwdOption & {readonly full?: boolean; readonly json?: boolean; readonly noVectors?: boolean},
 ) {
   const indexer = yield* CodeGraphIndexer;
   const cwd = yield* commandCwd(options.cwd);
   const identity = yield* resolveRepositoryIdentity(cwd);
+  const ensureVectors = options.noVectors === true ? false : undefined;
   if (options.json) {
     const reportProgress = yield* makeCodeGraphJsonProgressReporter({
       displayName: identity.displayName,
@@ -546,6 +547,7 @@ export const runCodeGraphIndex = Effect.fn('codeGraph.command.index')(function* 
     });
     const summary = yield* indexer.index({
       cwd,
+      ...(ensureVectors === false ? {ensureVectors: false} : {}),
       force: options.full,
       onProgress: reportProgress,
       threadnoteHome: config.agentContextHome,
@@ -560,6 +562,7 @@ export const runCodeGraphIndex = Effect.fn('codeGraph.command.index')(function* 
       indexer
         .index({
           cwd,
+          ...(ensureVectors === false ? {ensureVectors: false} : {}),
           force: options.full,
           onProgress: state => progress.update(progressMessage(state)).pipe(Effect.catch(() => Effect.void)),
           threadnoteHome: config.agentContextHome,

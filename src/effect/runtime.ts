@@ -55,6 +55,8 @@ const codeGraphIndexerLayer = CodeGraphIndexer.layer.pipe(
   ),
 );
 const codeGraphQueryLayer = CodeGraphQueryService.layer.pipe(Layer.provideMerge(codeGraphIndexerLayer));
+// MCP hosts detect themselves inside CodeGraphWatcher and spawn CLI `graph index`
+// children so multi-hour builds cannot starve recall_context on the stdio process.
 const codeGraphWatcherLayer = CodeGraphWatcher.layer.pipe(Layer.provideMerge(codeGraphIndexerLayer));
 
 const ApplicationServicesLayer = Layer.mergeAll(

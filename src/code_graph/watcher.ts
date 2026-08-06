@@ -21,6 +21,7 @@ import {SystemInfo} from '../effect/system.js';
 import type {CommandResult} from '../types.js';
 import type {CodeGraphProgress} from './types.js';
 import {currentCodeGraphBuildStatus, type ObservedCodeGraphBuildStatus} from './build_status.js';
+import {isCodeGraphIsolatedBuilderHost, runIsolatedCodeGraphIndex} from './isolated_builder.js';
 import {codeGraphLayout} from './layout.js';
 import {
   codeGraphEtaMeasurement,
@@ -148,6 +149,10 @@ export class CodeGraphWatcher extends Context.Service<CodeGraphWatcher, CodeGrap
         initialRefresh: boolean,
         requestRefresh: () => Effect.Effect<void>,
       ) => watchRepository(fs, path, options, initialRefresh, requestRefresh);
+      // MCP stdio must not own multi-hour index-repository work; spawn CLI graph index instead.
+      // Prewarm stays in-process only for CLI watchers — MCP skips it so the stdio process
+      // does not take the repository lock for secondary ensureCommit work.
+      const isolateBuilder = isCodeGraphIsolatedBuilderHost(systemInfo);
       const schedulePrewarm = (options: CodeGraphWatchOptions) =>
         systemInfo.environment().THREADNOTE_CODE_GRAPH_PREWARM === '0'
           ? Effect.void
@@ -168,10 +173,24 @@ export class CodeGraphWatcher extends Context.Service<CodeGraphWatcher, CodeGrap
               Effect.asVoid,
             );
       const refresh = (options: CodeGraphWatchOptions) =>
-        indexRepository(indexer, options).pipe(
-          Effect.tap(() => schedulePrewarm(options)),
-          Effect.asVoid,
-        );
+        Effect.gen(function* () {
+          if (isolateBuilder) {
+            const summary = yield* runIsolatedCodeGraphIndex({
+              cwd: options.cwd,
+              onProgress: options.onProgress,
+              threadnoteHome: options.threadnoteHome,
+            }).pipe(
+              Effect.provideService(CommandExecutor, commandExecutor),
+              Effect.provideService(FileSystem.FileSystem, fs),
+              Effect.provideService(Path.Path, path),
+              Effect.provideService(SystemInfo, systemInfo),
+            );
+            yield* options.onRefreshed?.(summary.symbols, summary.edges) ?? Effect.void;
+            return;
+          }
+          yield* indexRepository(indexer, options);
+          yield* schedulePrewarm(options);
+        });
       const watcher = yield* makeCodeGraphWatcher(run, refresh);
       return CodeGraphWatcher.of({
         ...watcher,
