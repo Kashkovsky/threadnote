@@ -22,6 +22,7 @@ import {
   codeGraphEffectiveSymbolTermsQueryStatement,
   codeGraphPersistedEndpointValidationPageStatement,
   codeGraphTermCandidateQueryStatement,
+  materializedFileShardIdentity,
   nextPersistentActivationBatchRows,
   sanitizeCodeGraphStoreDiagnostic,
   type CodeGraphActivationProgress,
@@ -423,6 +424,97 @@ describe('code graph full-build materialization store', () => {
     expect(persisted.diagnostics[0]).toMatch(/^Cached code graph facts exceeded the per-file persistence budget/);
     expect(persisted.diagnostics[0]).not.toMatch(/private-cache-sentinel|materialization\.ts/);
   });
+
+  effectIt.effect('rejects and repairs materialized shard rows with inconsistent identities', () =>
+    Effect.gen(function* () {
+      const fixture = yield* Effect.promise(materializationFixture);
+      const secondFile: CodeGraphInventoryFile = {
+        ...fixture.file,
+        blobId: 'd'.repeat(40),
+        contentHash: 'i'.repeat(64),
+        path: 'src/other.ts',
+      };
+      const files = [fixture.file, secondFile];
+      const facts = files.map(
+        file => ({diagnostics: [], edges: [], path: file.path, symbols: []}) satisfies CodeGraphFileFacts,
+      );
+      const expectedPaths = files.map(file => file.path).sort();
+      const extractorSet = 'materialized-shard-identity';
+      const derivationIdentity = 'materialized-shard-derivation';
+      const store = yield* CodeGraphStore;
+      const load = () =>
+        store.loadMaterializedFileShards(fixture.databasePath, files, extractorSet, derivationIdentity);
+      const cache = () =>
+        store.cacheMaterializedFileShards(fixture.databasePath, files, facts, extractorSet, derivationIdentity);
+      const expectOnlySecondFile = (loaded: Effect.Success<ReturnType<typeof load>>) => {
+        expect([...loaded.facts.entries()].map(([path, value]) => [path, value.path])).toEqual([
+          [secondFile.path, secondFile.path],
+        ]);
+        expect(loaded.keys ? [...loaded.keys] : undefined).toEqual([secondFile.path]);
+        expect(loaded.bytesByPath ? [...loaded.bytesByPath.keys()] : undefined).toEqual([secondFile.path]);
+        expect(loaded.bytes).toBe(loaded.bytesByPath?.get(secondFile.path));
+        expect(loaded.bytes).toBeGreaterThan(0);
+      };
+
+      yield* cache();
+      yield* Effect.sync(() => {
+        const database = new Database(fixture.databasePath, {strict: true});
+        try {
+          database
+            .query(
+              `UPDATE materialized_file_shards
+               SET facts_json = (
+                 SELECT facts_json FROM materialized_file_shards WHERE path_hint = ?
+               )
+               WHERE path_hint = ?`,
+            )
+            .run(secondFile.path, fixture.file.path);
+        } finally {
+          database.close(false);
+        }
+      });
+
+      expectOnlySecondFile(yield* load());
+      yield* cache();
+      expect([...(yield* load()).facts.keys()].sort()).toEqual(expectedPaths);
+
+      const corruptedId = 'cgfs_corrupted-materialized-shard-identity';
+      yield* Effect.sync(() => {
+        const database = new Database(fixture.databasePath, {strict: true});
+        try {
+          database
+            .query('UPDATE materialized_file_shards SET id = ? WHERE path_hint = ?')
+            .run(corruptedId, fixture.file.path);
+        } finally {
+          database.close(false);
+        }
+      });
+
+      expectOnlySecondFile(yield* load());
+      yield* cache();
+      const repaired = yield* load();
+      expect([...repaired.facts.keys()].sort()).toEqual(expectedPaths);
+      yield* Effect.sync(() => {
+        const database = new Database(fixture.databasePath, {readonly: true, strict: true});
+        try {
+          expect(
+            database
+              .query<{readonly id: string}, [string]>('SELECT id FROM materialized_file_shards WHERE path_hint = ?')
+              .get(fixture.file.path),
+          ).toEqual({
+            id: materializedFileShardIdentity(
+              fixture.file.contentHash,
+              extractorSet,
+              derivationIdentity,
+              fixture.file.path,
+            ),
+          });
+        } finally {
+          database.close(false);
+        }
+      });
+    }).pipe(Effect.provide(ApplicationLayer)),
+  );
 
   it('adapts persistent copy pages toward a bounded three-second transaction', () => {
     expect(nextPersistentActivationBatchRows(10_000, 850, 50_000)).toBe(20_000);

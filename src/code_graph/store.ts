@@ -6779,23 +6779,38 @@ function storeMaterializedFileShards(
         );
       }
       const shardId = materializedFileShardIdentity(file.contentHash, extractorSet, derivationIdentity, file.path);
-      const stored = yield* sql<{readonly id: string}>`
-        INSERT INTO materialized_file_shards (
-          id, content_hash, extractor_set, derivation_identity, path_hint,
-          facts_json, created_at, last_used_at
-        ) VALUES (
-          ${shardId}, ${file.contentHash}, ${extractorSet}, ${derivationIdentity}, ${file.path},
-          ${bounded.json}, ${now}, ${now}
-        )
-        ON CONFLICT(id) DO UPDATE SET
-          facts_json = excluded.facts_json,
-          last_used_at = excluded.last_used_at
-        WHERE materialized_file_shards.content_hash = excluded.content_hash
-          AND materialized_file_shards.extractor_set = excluded.extractor_set
-          AND materialized_file_shards.derivation_identity = excluded.derivation_identity
-          AND materialized_file_shards.path_hint = excluded.path_hint
-        RETURNING id
-      `;
+      const upsert = () => sql<{readonly id: string}>`
+          INSERT INTO materialized_file_shards (
+            id, content_hash, extractor_set, derivation_identity, path_hint,
+            facts_json, created_at, last_used_at
+          ) VALUES (
+            ${shardId}, ${file.contentHash}, ${extractorSet}, ${derivationIdentity}, ${file.path},
+            ${bounded.json}, ${now}, ${now}
+          )
+          ON CONFLICT(id) DO UPDATE SET
+            facts_json = excluded.facts_json,
+            last_used_at = excluded.last_used_at
+          WHERE materialized_file_shards.content_hash = excluded.content_hash
+            AND materialized_file_shards.extractor_set = excluded.extractor_set
+            AND materialized_file_shards.derivation_identity = excluded.derivation_identity
+            AND materialized_file_shards.path_hint = excluded.path_hint
+          ON CONFLICT(content_hash, extractor_set, derivation_identity, path_hint) DO NOTHING
+          RETURNING id
+        `;
+      let stored = yield* upsert();
+      if (stored[0]?.id !== shardId) {
+        yield* sql`
+          DELETE FROM materialized_file_shards
+          WHERE id = ${shardId}
+             OR (
+               content_hash = ${file.contentHash}
+               AND extractor_set = ${extractorSet}
+               AND derivation_identity = ${derivationIdentity}
+               AND path_hint = ${file.path}
+             )
+        `;
+        stored = yield* upsert();
+      }
       if (stored[0]?.id !== shardId) {
         return yield* Effect.fail(new CodeGraphStoreError(`Materialized file shard identity collision: ${shardId}.`));
       }
@@ -12092,11 +12107,13 @@ const selectMaterializedFileShards = Effect.fn('codeGraph.selectMaterializedFile
   for (const batch of chunk(files, 200)) {
     if (batch.length === 0) continue;
     const rows = yield* sql.unsafe<{
+      readonly content_hash: string;
       readonly facts_bytes: number;
       readonly facts_json: string;
+      readonly id: string;
       readonly path_hint: string;
     }>(
-      `SELECT path_hint, facts_json, length(CAST(facts_json AS BLOB)) AS facts_bytes
+      `SELECT id, content_hash, path_hint, facts_json, length(CAST(facts_json AS BLOB)) AS facts_bytes
        FROM materialized_file_shards
        WHERE extractor_set = ? AND derivation_identity = ?
          AND (${batch.map(() => '(content_hash = ? AND path_hint = ?)').join(' OR ')})`,
@@ -12105,6 +12122,12 @@ const selectMaterializedFileShards = Effect.fn('codeGraph.selectMaterializedFile
     for (const row of rows) {
       try {
         const bounded = ensureBoundedCodeGraphFact(JSON.parse(row.facts_json) as CodeGraphFileFacts);
+        if (
+          bounded.facts.path !== row.path_hint ||
+          row.id !== materializedFileShardIdentity(row.content_hash, extractorSet, derivationIdentity, row.path_hint)
+        ) {
+          continue;
+        }
         output.set(row.path_hint, bounded.facts);
         keys.add(row.path_hint);
         const factBytes = Number(row.facts_bytes);

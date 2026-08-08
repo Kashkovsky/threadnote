@@ -19,6 +19,7 @@ import {execFileSync, spawn} from 'node:child_process';
 import {Database} from 'bun:sqlite';
 import {it as effectIt} from '@effect/vitest';
 import {Context, Deferred, Effect, Fiber, FileSystem, Layer, Path, Ref} from 'effect';
+import {TestClock} from 'effect/testing';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {afterEach, describe, expect, it} from 'vitest';
 import {runCodeGraphExport} from '../../src/code_graph/commands.js';
@@ -966,6 +967,59 @@ describe('native code graph lifecycle', () => {
     ).toBe(false);
     expect(normalizeStoredGraph(result.rebuiltGraph)).toEqual(normalizeStoredGraph(firstGraph));
   });
+
+  effectIt.effect('rebuilds a valid materialized shard payload stored under the wrong path', () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const root = createManySourceRepository(2);
+        const home = join(root, '.threadnote-test-home');
+        const indexer = yield* CodeGraphIndexer;
+        const store = yield* CodeGraphStore;
+        const first = yield* indexer.index({cwd: root, ensureVectors: false, threadnoteHome: home});
+        const databasePath = codeGraphDatabasePath(home, first);
+        const firstGraph = yield* store.loadGraph(databasePath, first.snapshot.id);
+        const database = new Database(databasePath);
+        try {
+          database.exec(`UPDATE materialized_file_shards
+                         SET facts_json = (
+                           SELECT facts_json FROM materialized_file_shards WHERE path_hint = 'src/file-001.ts'
+                         )
+                         WHERE path_hint = 'src/file-000.ts'`);
+        } finally {
+          database.close();
+        }
+
+        const rebuilt = yield* indexer.index({
+          cwd: root,
+          ensureVectors: false,
+          force: true,
+          threadnoteHome: home,
+        });
+        const rebuiltGraph = yield* store.loadGraph(databasePath, rebuilt.snapshot.id);
+        const repairedDatabase = new Database(databasePath, {readonly: true});
+        try {
+          const repaired = repairedDatabase
+            .query<{readonly payloadPath: string}, [string]>(
+              `SELECT json_extract(facts_json, '$.path') AS payloadPath
+               FROM materialized_file_shards
+               WHERE path_hint = ?`,
+            )
+            .get('src/file-000.ts');
+          expect(repaired).toEqual({payloadPath: 'src/file-000.ts'});
+        } finally {
+          repairedDatabase.close();
+        }
+
+        expect(rebuilt.materialization).toEqual({mode: 'full', stagedFiles: 2, totalFiles: 2});
+        expect(
+          rebuilt.diagnostics.some(diagnostic =>
+            diagnostic.startsWith('Reused content-addressed materialized shards for'),
+          ),
+        ).toBe(false);
+        expect(normalizeStoredGraph(rebuiltGraph)).toEqual(normalizeStoredGraph(firstGraph));
+      }).pipe(Effect.provide(ApplicationLayer)),
+    ),
+  );
 
   it('reuses a full anchor with a conservative graph-wide closure when a clean commit changes resolution', async () => {
     const root = createManySourceRepository(4);
