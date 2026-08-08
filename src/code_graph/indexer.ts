@@ -2,7 +2,7 @@ import {Clock, Context, Crypto, Effect, FileSystem, Layer, Option, Path} from 'e
 import {sha256HexSync} from '../crypto/sha256.js';
 import {CommandExecutor} from '../effect/command.js';
 import {withExclusiveFileLock} from '../effect/file_lock.js';
-import {SystemInfo} from '../effect/system.js';
+import {SystemInfo, type SystemInfoShape} from '../effect/system.js';
 import {withThreadnoteProcessActivity} from '../process_diagnostics.js';
 import type {CodeGraphBuildOwnerIdentity} from './build_owner.js';
 import {createRepositoryFactAttributor, extractRepositoryFileFacts} from './extractor.js';
@@ -27,17 +27,25 @@ import {
   type CodeGraphLanguagePackRegistryShape,
 } from './languages/registry.js';
 import {codeGraphLayout, codeGraphRequestBuildLockPath, codeGraphSnapshotBuildLockPath} from './layout.js';
-import {CodeGraphMaintenanceCoordinator} from './maintenance_coordinator.js';
+import {CodeGraphMaintenanceCoordinator, type CodeGraphMaintenanceCoordinatorShape} from './maintenance_coordinator.js';
 import {codeGraphMaintenanceIntentActive, withCodeGraphMaintenanceRegistration} from './maintenance_gate.js';
 import {resolveAndRecordCodeGraphLocalAssociation} from './local_provenance.js';
 import {compareCodeUnits} from './ordering.js';
 import {repositoryIdentityMatchesExpectation, resolveRepositoryIdentity} from './repository.js';
+import {
+  codeGraphDirectPersistentCapacityDemand,
+  codeGraphDiskCapacityFailure,
+  evaluateCodeGraphDiskCapacity,
+  isCodeGraphCapacityPause,
+  type CodeGraphDirectPersistentCapacityBoundary,
+} from './disk_capacity.js';
 import {
   CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION,
   CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION,
   CodeGraphStore,
   materializedShardDerivationIdentity,
   type CodeGraphRetiredSnapshotCleanupProgress,
+  type CodeGraphDirectPersistentCapacityGuard,
   type CodeGraphReusableCleanBase,
   type CodeGraphReusableReexport,
   type CodeGraphReusableReexportSeed,
@@ -46,6 +54,7 @@ import {
   type CodeGraphSqliteWriterSettings,
   type CodeGraphSqliteWriterTuning,
 } from './store.js';
+import {inspectCodeGraphStorage} from './storage.js';
 import {
   CODE_GRAPH_EXTRACTOR_SET_VERSION,
   type CodeGraphEdge,
@@ -102,7 +111,25 @@ export interface CodeGraphIndexOptions extends CodeGraphInventoryOptions {
   readonly persistentMaterializationTransactionBatchLimit?: 1 | 4;
   /** @internal Benchmark-only SQLite writer candidate; normal indexing leaves this unset. */
   readonly sqliteWriterTuning?: CodeGraphSqliteWriterTuning;
+  /** @internal Deterministic fresh-capacity probe used by lifecycle fault tests. */
+  readonly diskCapacityAvailableBytes?: (
+    path: string,
+    boundary: CodeGraphDirectPersistentCapacityBoundary,
+  ) => Effect.Effect<number | undefined, unknown>;
   readonly threadnoteHome: string;
+}
+
+interface DirectPersistentCapacityProtection {
+  readonly availableDiskBytes: (
+    path: string,
+    boundary: CodeGraphDirectPersistentCapacityBoundary,
+  ) => Effect.Effect<number | undefined, unknown>;
+  readonly crypto: Crypto.Crypto;
+  readonly maintenance: CodeGraphMaintenanceCoordinatorShape;
+  readonly path: Path.Path;
+  readonly system: SystemInfoShape;
+  readonly temporaryDirectory: string;
+  readonly walAutoCheckpointPages: number;
 }
 
 export function codeGraphIndexEnsuresVectors(options: {readonly ensureVectors?: boolean}): boolean {
@@ -214,6 +241,16 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
               ...request,
               onProgress: progress =>
                 reporter.progress(progress).pipe(Effect.andThen(request.onProgress?.(progress) ?? Effect.void)),
+            };
+            const capacityProtection: DirectPersistentCapacityProtection = {
+              availableDiskBytes:
+                options.diskCapacityAvailableBytes ?? ((target: string) => system.availableDiskBytes(target)),
+              crypto,
+              maintenance,
+              path,
+              system,
+              temporaryDirectory: system.tempDirectory,
+              walAutoCheckpointPages: options.sqliteWriterTuning?.walAutoCheckpointPages ?? 1_000,
             };
             const ensureVectors = codeGraphIndexEnsuresVectors(options);
             const summary = yield* withCodeGraphProcessLock(
@@ -405,6 +442,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                       if (!inventory.dirty) {
                         return yield* buildOwnedCleanSnapshot({
                           buildOwner: reporter.ownerIdentity,
+                          capacityProtection,
                           embedding,
                           ensureVectors,
                           existing,
@@ -520,6 +558,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                           if (preassessment.mode === 'compatible') {
                             committedBase = yield* ensureCommittedBase({
                               buildOwner: reporter.ownerIdentity,
+                              capacityProtection,
                               embedding,
                               force: false,
                               forceGeneration,
@@ -635,6 +674,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                       return yield* buildAndActivate({
                         activatePointer: true,
                         building,
+                        capacityProtection,
                         existing,
                         embedding,
                         ensureVectors,
@@ -658,9 +698,11 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                         workspace,
                       }).pipe(
                         Effect.catch(cause =>
-                          store
-                            .markFailed(layout.databasePath, building.id, messageOf(cause), persistentOwnerToken)
-                            .pipe(Effect.andThen(Effect.fail(cause))),
+                          persistentOwnerToken !== undefined && isCodeGraphCapacityPause(cause)
+                            ? Effect.fail(cause)
+                            : store
+                                .markFailed(layout.databasePath, building.id, messageOf(cause), persistentOwnerToken)
+                                .pipe(Effect.andThen(Effect.fail(cause))),
                         ),
                       );
                     }),
@@ -740,6 +782,16 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
               onProgress: (progress: CodeGraphProgress) =>
                 reporter.progress(progress).pipe(Effect.andThen(request.onProgress?.(progress) ?? Effect.void)),
             };
+            const capacityProtection: DirectPersistentCapacityProtection = {
+              availableDiskBytes:
+                options.diskCapacityAvailableBytes ?? ((target: string) => system.availableDiskBytes(target)),
+              crypto,
+              maintenance,
+              path,
+              system,
+              temporaryDirectory: system.tempDirectory,
+              walAutoCheckpointPages: options.sqliteWriterTuning?.walAutoCheckpointPages ?? 1_000,
+            };
             const lease = yield* withCodeGraphProcessLock(
               fs,
               layout.lockPath,
@@ -804,6 +856,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                       }).pipe(Effect.ensuring(parserPool.trimIdle()));
                       const committedBase = yield* ensureCommittedBase({
                         buildOwner: reporter.ownerIdentity,
+                        capacityProtection,
                         embedding,
                         force: false,
                         fs,
@@ -1113,6 +1166,7 @@ function sameOverlayState(
 
 const buildOwnedCleanSnapshot = Effect.fn('codeGraph.buildOwnedCleanSnapshot')(function* (input: {
   readonly buildOwner: CodeGraphBuildOwnerIdentity;
+  readonly capacityProtection: DirectPersistentCapacityProtection;
   readonly embedding: CodeGraphEmbeddingIndexShape;
   readonly ensureVectors: boolean;
   readonly existing: CodeGraphSnapshot | undefined;
@@ -1229,6 +1283,7 @@ const buildOwnedCleanSnapshot = Effect.fn('codeGraph.buildOwnedCleanSnapshot')(f
       return yield* buildAndActivate({
         activatePointer: true,
         building,
+        capacityProtection: input.capacityProtection,
         embedding: input.embedding,
         ensureVectors: input.ensureVectors,
         existing: input.existing,
@@ -1246,9 +1301,11 @@ const buildOwnedCleanSnapshot = Effect.fn('codeGraph.buildOwnedCleanSnapshot')(f
         threadnoteHome: input.threadnoteHome,
       }).pipe(
         Effect.catch(cause =>
-          input.store
-            .markFailed(input.layout.databasePath, building.id, messageOf(cause), ownerToken)
-            .pipe(Effect.andThen(Effect.fail(cause))),
+          isCodeGraphCapacityPause(cause)
+            ? Effect.fail(cause)
+            : input.store
+                .markFailed(input.layout.databasePath, building.id, messageOf(cause), ownerToken)
+                .pipe(Effect.andThen(Effect.fail(cause))),
         ),
       );
     }),
@@ -1537,6 +1594,7 @@ const attemptReusableDirtyBase = Effect.fn('codeGraph.attemptReusableDirtyBase')
 
 const ensureCommittedBase = Effect.fn('codeGraph.ensureCommittedBase')(function* (input: {
   readonly buildOwner: CodeGraphBuildOwnerIdentity;
+  readonly capacityProtection: DirectPersistentCapacityProtection;
   readonly embedding: CodeGraphEmbeddingIndexShape;
   readonly force: boolean;
   readonly forceGeneration?: string;
@@ -1639,9 +1697,11 @@ const ensureCommittedBase = Effect.fn('codeGraph.ensureCommittedBase')(function*
         persistentOwnerToken: ownerToken,
       }).pipe(
         Effect.catch(cause =>
-          input.store
-            .markFailed(input.layout.databasePath, building.id, messageOf(cause), ownerToken)
-            .pipe(Effect.andThen(Effect.fail(cause))),
+          isCodeGraphCapacityPause(cause)
+            ? Effect.fail(cause)
+            : input.store
+                .markFailed(input.layout.databasePath, building.id, messageOf(cause), ownerToken)
+                .pipe(Effect.andThen(Effect.fail(cause))),
         ),
       );
     }),
@@ -1660,6 +1720,7 @@ const ensureCommittedBase = Effect.fn('codeGraph.ensureCommittedBase')(function*
 const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (input: {
   readonly activatePointer: boolean;
   readonly building: CodeGraphSnapshot;
+  readonly capacityProtection?: DirectPersistentCapacityProtection;
   readonly committedBase?: CommittedBaseResult;
   readonly existing?: CodeGraphSnapshot;
   readonly embedding: CodeGraphEmbeddingIndexShape;
@@ -1682,6 +1743,33 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
   readonly workspace?: CodeGraphWorkspace;
 }) {
   const workspace = input.workspace ?? (yield* input.languagePacks.discoverWorkspace(input.inventory.files));
+  const directPersistentMaterialization = input.persistentOwnerToken !== undefined;
+  const protectDirectPersistentWrite: CodeGraphDirectPersistentCapacityGuard = boundary =>
+    input.capacityProtection
+      ? guardDirectPersistentCapacity({
+          boundary,
+          fs: input.fs,
+          identity: input.identity,
+          layout: input.layout,
+          protection: input.capacityProtection,
+          threadnoteHome: input.threadnoteHome,
+        }).pipe(
+          Effect.provideService(Crypto.Crypto, input.capacityProtection.crypto),
+          Effect.provideService(FileSystem.FileSystem, input.fs),
+          Effect.provideService(Path.Path, input.capacityProtection.path),
+          Effect.provideService(SystemInfo, input.capacityProtection.system),
+        )
+      : Effect.fail(
+          codeGraphDiskCapacityFailure(
+            {
+              calibrationIdentity: 'direct-persistent-capacity-unavailable',
+              reason: 'calibration-input-unknown',
+              state: 'unknown',
+            },
+            boundary.operation,
+          ),
+        );
+  const persistentCapacityGuard = directPersistentMaterialization ? protectDirectPersistentWrite : undefined;
   const attributeFacts = createCachedCodeGraphFactsAttributor(input.inventory.files, workspace);
   const shardDerivationIdentity = materializedShardDerivationIdentity(
     input.building.extractorSet,
@@ -1771,7 +1859,6 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
     }
     const batches = factMaterializationBatches(input.inventory.files, cachedMetadata.bytesByPath);
     const cachedFactBytesTotal = cachedMetadata.bytes;
-    const directPersistentMaterialization = input.persistentOwnerToken !== undefined;
     const storageEstimate = estimatedMaterializationStorageBytes(
       cachedFactBytesTotal,
       sourceBytesTotal,
@@ -1910,8 +1997,9 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
       directPersistentMaterialization ? input.building.id : undefined,
       undefined,
       input.persistentOwnerToken,
+      persistentCapacityGuard,
     );
-    yield* input.store.stageWorkspaceCatalog(input.layout.databasePath, workspace);
+    yield* input.store.stageWorkspaceCatalog(input.layout.databasePath, workspace, persistentCapacityGuard);
     let persistentBatchCursor = 0;
     const persistentTransactionBatchLimit = input.persistentMaterializationTransactionBatchLimit ?? 4;
     interface PendingMaterializationBatch extends PersistentMaterializationTransactionCandidate {
@@ -1982,10 +2070,12 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
             group.map(batch => ({
               batchIndex: batch.batchIndex,
               edges: batch.edges,
+              finalFactBytes: batch.factBytes,
               references: batch.references,
               symbols: batch.symbols,
             })),
             (batchIndex, progress) => reportStagingProgress(groupByIndex.get(batchIndex)!, progress),
+            persistentCapacityGuard,
           );
         } else {
           for (const batch of group) {
@@ -2193,7 +2283,11 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
     yield* flushPendingBatches();
     batchesTotal = persistentBatchCursor;
     if (directPersistentMaterialization) {
-      yield* input.store.finalizePersistentMaterializationPlan(input.layout.databasePath, persistentBatchCursor);
+      yield* input.store.finalizePersistentMaterializationPlan(
+        input.layout.databasePath,
+        persistentBatchCursor,
+        persistentCapacityGuard,
+      );
     }
     yield* input.onProgress?.({
       completed: materializedFiles,
@@ -2261,6 +2355,7 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
               snapshotId: ready.id,
             }) ?? Effect.void
           ).pipe(Effect.catch(() => Effect.void)),
+        persistentCapacityGuard,
       ),
       lease =>
         Option.match(lease, {
@@ -3284,6 +3379,97 @@ function embeddingSymbolSource(store: CodeGraphStoreShape, databasePath: string,
       store.loadEmbeddingSymbolPage(databasePath, snapshotId, cursor, limit),
   };
 }
+
+const guardDirectPersistentCapacity = Effect.fn('codeGraph.guardDirectPersistentCapacity')(function* (input: {
+  readonly boundary: CodeGraphDirectPersistentCapacityBoundary;
+  readonly fs: FileSystem.FileSystem;
+  readonly identity: RepositoryIdentity;
+  readonly layout: CodeGraphLayout;
+  readonly protection: DirectPersistentCapacityProtection;
+  readonly threadnoteHome: string;
+}) {
+  const observe = Effect.gen(function* () {
+    const [durableFilesystem, temporaryFilesystem] = yield* Effect.all(
+      [
+        input.fs.stat(input.layout.repositoryRoot).pipe(
+          Effect.map(info => info.dev),
+          Effect.option,
+        ),
+        input.fs.stat(input.protection.temporaryDirectory).pipe(
+          Effect.map(info => info.dev),
+          Effect.option,
+        ),
+      ] as const,
+      {concurrency: 2},
+    );
+    const filesystemsShared =
+      Option.isSome(durableFilesystem) && Option.isSome(temporaryFilesystem)
+        ? durableFilesystem.value === temporaryFilesystem.value
+        : undefined;
+    const probe = (target: string) =>
+      input.protection.availableDiskBytes(target, input.boundary).pipe(Effect.catch(() => Effect.succeed(undefined)));
+    const availability =
+      filesystemsShared === undefined
+        ? Effect.succeed([undefined, undefined] as const)
+        : filesystemsShared
+          ? probe(input.layout.repositoryRoot).pipe(Effect.map(available => [available, available] as const))
+          : Effect.all([probe(input.layout.repositoryRoot), probe(input.protection.temporaryDirectory)] as const, {
+              concurrency: 2,
+            });
+    const [[durableAvailableBytes, temporaryAvailableBytes], storage] = yield* Effect.all(
+      [
+        availability,
+        inspectCodeGraphStorage(input.threadnoteHome, input.identity.checkoutId, {openWhileLocked: true}).pipe(
+          Effect.option,
+        ),
+      ] as const,
+      {concurrency: 2},
+    );
+    const pageStorage =
+      Option.isSome(storage) && storage.value.state === 'available' && storage.value.pageStorage.state === 'available'
+        ? storage.value.pageStorage
+        : undefined;
+    const demand = codeGraphDirectPersistentCapacityDemand({
+      finalFactBytes: input.boundary.finalFactBytes,
+      lexicalFormatVersion: CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION,
+      pageSize: pageStorage?.pageSize ?? 0,
+      rowCount: input.boundary.rowCount,
+      walAutoCheckpointPages: input.protection.walAutoCheckpointPages,
+    });
+    return evaluateCodeGraphDiskCapacity({
+      demand,
+      durableAvailableBytes,
+      filesystemsShared,
+      freelistBytes: pageStorage?.reclaimableBytes ?? 0,
+      // E6a makes other-process reservations an explicit, fail-closed input to
+      // the pure model. Publishing the cross-process ledger is a separate
+      // follow-up; zero is not claimed as enforcement telemetry here.
+      reservedDurableBytes: 0,
+      reservedTemporaryBytes: 0,
+      temporaryAvailableBytes,
+    });
+  });
+
+  let decision = yield* observe;
+  if (decision.state === 'healthy') return;
+  if (decision.state === 'unknown') {
+    return yield* Effect.fail(codeGraphDiskCapacityFailure(decision, input.boundary.operation));
+  }
+  // Routine maintenance owns a zero-wait checkout writer gate and reclaims at
+  // most one existing page. Never VACUUM or loop while a foreground build is
+  // under pressure; one fresh re-observation decides this boundary.
+  yield* input.protection.maintenance
+    .tick({
+      checkoutId: input.layout.checkoutId,
+      databasePath: input.layout.databasePath,
+      threadnoteHome: input.threadnoteHome,
+      writerLockPath: input.layout.databaseWriteLockPath,
+    })
+    .pipe(Effect.catch(error => (['busy', 'no-space'].includes(error.code) ? Effect.void : Effect.fail(error))));
+  decision = yield* observe;
+  if (decision.state === 'healthy') return;
+  return yield* Effect.fail(codeGraphDiskCapacityFailure(decision, input.boundary.operation));
+});
 
 function messageOf(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);

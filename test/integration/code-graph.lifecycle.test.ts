@@ -17,12 +17,17 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {execFileSync, spawn} from 'node:child_process';
 import {Database} from 'bun:sqlite';
-import {Deferred, Effect, Fiber, FileSystem, Path, Ref} from 'effect';
+import {it as effectIt} from '@effect/vitest';
+import {Context, Deferred, Effect, Fiber, FileSystem, Layer, Path, Ref} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {afterEach, describe, expect, it} from 'vitest';
 import {runCodeGraphExport} from '../../src/code_graph/commands.js';
 import {readAllCodeGraphBuildStatuses, selectCodeGraphBuildStatuses} from '../../src/code_graph/build_status.js';
 import {CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM, CodeGraphIndexer} from '../../src/code_graph/indexer.js';
+import {
+  CodeGraphDiskCapacityObservationError,
+  CodeGraphDiskCapacityPressureError,
+} from '../../src/code_graph/disk_capacity.js';
 import {codeGraphLayout} from '../../src/code_graph/layout.js';
 import {readPersistedCodeGraphLocalAssociation} from '../../src/code_graph/local_provenance.js';
 import {
@@ -39,10 +44,11 @@ import {
 import {resolveRepositoryIdentity} from '../../src/code_graph/repository.js';
 import {compactCodeGraphStorage} from '../../src/code_graph/storage.js';
 import {CodeGraphStore, type StoredCodeGraph} from '../../src/code_graph/store.js';
-import type {CodeGraphMaterializationMetrics} from '../../src/code_graph/types.js';
+import {CodeGraphStoreNoSpaceError, type CodeGraphMaterializationMetrics} from '../../src/code_graph/types.js';
 import {captureConsole} from '../../src/effect/console.js';
 import {CommandExecutor} from '../../src/effect/command.js';
 import {SystemInfo} from '../../src/effect/system.js';
+import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {runDoctor, runRepair} from '../../src/lifecycle.js';
 import type {DoctorCheck, RuntimeConfig} from '../../src/types.js';
 import {runEffect} from '../helpers/effect-runtime.js';
@@ -2926,6 +2932,263 @@ describe('native code graph lifecycle', () => {
     90_000,
   );
 
+  effectIt.effect('pauses before an under-capacity persistent transaction and resumes its exact receipt prefix', () =>
+    Effect.gen(function* () {
+      const root = createManySourceRepository(130);
+      const home = join(root, '.threadnote-test-home');
+      const indexer = yield* CodeGraphIndexer;
+      const baseline = yield* indexer.index({cwd: root, threadnoteHome: home});
+      updateManySourceRepository(root, 130, 'updated');
+
+      const probes = new Map<string, number>();
+      const probesPerObservation = statSync(root).dev === statSync(tmpdir()).dev ? 1 : 2;
+      const failure = yield* indexer
+        .index({
+          cwd: root,
+          diskCapacityAvailableBytes: (_target, boundary) =>
+            Effect.sync(() => {
+              const count = (probes.get(boundary.operation) ?? 0) + 1;
+              probes.set(boundary.operation, count);
+              return boundary.operation !== 'stage persistent code graph facts' || count <= probesPerObservation
+                ? Number.MAX_SAFE_INTEGER
+                : 0;
+            }),
+          incrementalOverlay: false,
+          persistentMaterializationTransactionBatchLimit: 1,
+          threadnoteHome: home,
+        })
+        .pipe(Effect.flip);
+      expect(failure).toBeInstanceOf(CodeGraphDiskCapacityPressureError);
+      expect(failure).toBeInstanceOf(CodeGraphStoreNoSpaceError);
+      expect(failure).toMatchObject({code: 'no-space', recovery: 'free-space'});
+      // Inventory and workspace each observe once. Facts allow one transaction,
+      // then observe pressure and the one bounded cleanup retry. Shared storage
+      // never spawns duplicate df or PowerShell probes at a boundary.
+      expect(Object.fromEntries(probes)).toEqual({
+        'stage persistent code graph facts': probesPerObservation * 3,
+        'stage persistent code graph inventory': probesPerObservation,
+        'stage persistent code graph workspace': probesPerObservation,
+      });
+
+      const databasePath = codeGraphDatabasePath(home, baseline);
+      const pausedDatabase = new Database(databasePath, {readonly: true});
+      const paused = pausedDatabase
+        .query<{readonly failure_summary: string | null; readonly id: string}, [string]>(
+          "SELECT id, failure_summary FROM snapshots WHERE worktree_id = ? AND state = 'building' LIMIT 1",
+        )
+        .get(baseline.identity.worktreeId);
+      expect(paused).toBeDefined();
+      const pausedId = paused!.id;
+      expect(paused!.failure_summary).toBeNull();
+      expect(
+        pausedDatabase
+          .query<{readonly snapshot_id: string}, [string]>(
+            'SELECT snapshot_id FROM active_snapshots WHERE worktree_id = ?',
+          )
+          .get(baseline.identity.worktreeId),
+      ).toEqual({snapshot_id: baseline.snapshot.id});
+      expect(
+        pausedDatabase
+          .query<{readonly batch_index: number}, [string]>(
+            'SELECT batch_index FROM building_materialization_batches WHERE snapshot_id = ? ORDER BY batch_index',
+          )
+          .all(pausedId),
+      ).toEqual([{batch_index: 0}]);
+      expect(
+        pausedDatabase
+          .query<{readonly count: number}, [string]>(
+            'SELECT COUNT(*) AS count FROM snapshot_build_owners WHERE snapshot_id = ?',
+          )
+          .get(pausedId)?.count,
+      ).toBe(1);
+      pausedDatabase.close();
+
+      const resumed = yield* indexer.index({
+        cwd: root,
+        diskCapacityAvailableBytes: () => Effect.succeed(Number.MAX_SAFE_INTEGER),
+        incrementalOverlay: false,
+        persistentMaterializationTransactionBatchLimit: 1,
+        threadnoteHome: home,
+      });
+      expect(resumed.snapshot).toMatchObject({id: pausedId, state: 'ready'});
+
+      const resumedDatabase = new Database(databasePath, {readonly: true});
+      try {
+        expect(
+          resumedDatabase
+            .query<{readonly snapshot_id: string}, [string]>(
+              'SELECT snapshot_id FROM active_snapshots WHERE worktree_id = ?',
+            )
+            .get(baseline.identity.worktreeId),
+        ).toEqual({snapshot_id: pausedId});
+        expect(
+          resumedDatabase
+            .query<{readonly count: number}, [string]>(
+              'SELECT COUNT(*) AS count FROM snapshot_build_owners WHERE snapshot_id = ?',
+            )
+            .get(pausedId)?.count,
+        ).toBe(0);
+        expect(
+          resumedDatabase
+            .query<{readonly count: number}, [string]>(
+              'SELECT COUNT(*) AS count FROM building_materialization_batches WHERE snapshot_id = ?',
+            )
+            .get(pausedId)?.count,
+        ).toBe(0);
+        expect(resumedDatabase.query('PRAGMA foreign_key_check').all()).toEqual([]);
+      } finally {
+        resumedDatabase.close();
+      }
+    }).pipe(Effect.provide(ApplicationLayer)),
+  );
+
+  effectIt.effect('retains a resumable receipt prefix when fresh capacity observation is unavailable', () =>
+    Effect.gen(function* () {
+      const root = createManySourceRepository(130);
+      const home = join(root, '.threadnote-test-home');
+      const indexer = yield* CodeGraphIndexer;
+      const baseline = yield* indexer.index({cwd: root, threadnoteHome: home});
+      updateManySourceRepository(root, 130, 'unknownCapacity');
+
+      const probes = new Map<string, number>();
+      const probesPerObservation = statSync(root).dev === statSync(tmpdir()).dev ? 1 : 2;
+      const failure = yield* indexer
+        .index({
+          cwd: root,
+          diskCapacityAvailableBytes: (_target, boundary) =>
+            Effect.sync(() => {
+              const count = (probes.get(boundary.operation) ?? 0) + 1;
+              probes.set(boundary.operation, count);
+              return boundary.operation !== 'stage persistent code graph facts' || count <= probesPerObservation
+                ? Number.MAX_SAFE_INTEGER
+                : undefined;
+            }),
+          incrementalOverlay: false,
+          persistentMaterializationTransactionBatchLimit: 1,
+          threadnoteHome: home,
+        })
+        .pipe(Effect.flip);
+      expect(failure).toBeInstanceOf(CodeGraphDiskCapacityObservationError);
+      expect(failure).toMatchObject({
+        code: 'transient-io',
+        operation: 'observe code graph storage capacity',
+        recovery: 'retry-read-only',
+        retryable: true,
+      });
+      // The second fact boundary fails closed after one observation; unlike
+      // positive pressure it does not perform cleanup or a fresh re-observation.
+      expect(Object.fromEntries(probes)).toEqual({
+        'stage persistent code graph facts': probesPerObservation * 2,
+        'stage persistent code graph inventory': probesPerObservation,
+        'stage persistent code graph workspace': probesPerObservation,
+      });
+
+      const databasePath = codeGraphDatabasePath(home, baseline);
+      const pausedDatabase = new Database(databasePath, {readonly: true});
+      try {
+        const paused = pausedDatabase
+          .query<{readonly failure_summary: string | null; readonly id: string}, [string]>(
+            "SELECT id, failure_summary FROM snapshots WHERE worktree_id = ? AND state = 'building' LIMIT 1",
+          )
+          .get(baseline.identity.worktreeId);
+        expect(paused).toBeDefined();
+        expect(paused!.failure_summary).toBeNull();
+        expect(
+          pausedDatabase
+            .query<{readonly snapshot_id: string}, [string]>(
+              'SELECT snapshot_id FROM active_snapshots WHERE worktree_id = ?',
+            )
+            .get(baseline.identity.worktreeId),
+        ).toEqual({snapshot_id: baseline.snapshot.id});
+        expect(
+          pausedDatabase
+            .query<{readonly batch_index: number}, [string]>(
+              'SELECT batch_index FROM building_materialization_batches WHERE snapshot_id = ? ORDER BY batch_index',
+            )
+            .all(paused!.id),
+        ).toEqual([{batch_index: 0}]);
+        expect(
+          pausedDatabase
+            .query<{readonly count: number}, [string]>(
+              'SELECT COUNT(*) AS count FROM snapshot_build_owners WHERE snapshot_id = ?',
+            )
+            .get(paused!.id)?.count,
+        ).toBe(1);
+      } finally {
+        pausedDatabase.close();
+      }
+    }).pipe(Effect.provide(ApplicationLayer)),
+  );
+
+  effectIt.effect('marks a generic write-time no-space failure instead of preserving it as a preflight pause', () =>
+    Effect.gen(function* () {
+      const root = createManySourceRepository(3);
+      const home = join(root, '.threadnote-test-home');
+      const identity = yield* resolveRepositoryIdentity(root);
+      const markedFailed: Array<{
+        readonly ownerToken: string | undefined;
+        readonly snapshotId: string;
+        readonly summary: string;
+      }> = [];
+      const store = yield* CodeGraphStore;
+      const failingStore = CodeGraphStore.of({
+        ...store,
+        cacheMaterializedFileShards: () =>
+          Effect.fail(
+            new CodeGraphStoreNoSpaceError('Classified SQLite full during materialized-shard write.', {
+              operation: 'cache code graph materialized shards',
+            }),
+          ),
+        markFailed: (databasePath, snapshotId, summary, ownerToken) =>
+          Effect.sync(() => {
+            markedFailed.push({ownerToken, snapshotId, summary});
+          }).pipe(Effect.andThen(store.markFailed(databasePath, snapshotId, summary, ownerToken))),
+      });
+      const indexerLayer = Layer.fresh(CodeGraphIndexer.layer).pipe(
+        Layer.provide(Layer.succeed(CodeGraphStore, failingStore)),
+      );
+      const failure = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const context = yield* Layer.build(indexerLayer);
+          const indexer = Context.get(context, CodeGraphIndexer);
+          return yield* indexer
+            .index({
+              cwd: root,
+              diskCapacityAvailableBytes: () => Effect.succeed(Number.MAX_SAFE_INTEGER),
+              incrementalOverlay: false,
+              threadnoteHome: home,
+            })
+            .pipe(Effect.flip);
+        }),
+      );
+
+      expect(failure).toBeInstanceOf(CodeGraphStoreNoSpaceError);
+      expect(failure).not.toBeInstanceOf(CodeGraphDiskCapacityPressureError);
+      expect(markedFailed).toHaveLength(1);
+      expect(markedFailed[0]).toMatchObject({
+        ownerToken: expect.any(String),
+        summary: 'Classified SQLite full during materialized-shard write.',
+      });
+
+      const database = new Database(codeGraphDatabasePath(home, {identity}), {readonly: true});
+      try {
+        expect(
+          database
+            .query<{readonly count: number}, [string]>(
+              "SELECT COUNT(*) AS count FROM snapshots WHERE worktree_id = ? AND state = 'building'",
+            )
+            .get(identity.worktreeId)?.count,
+        ).toBe(0);
+        expect(
+          database.query<{readonly count: number}, []>('SELECT COUNT(*) AS count FROM snapshot_build_owners').get()
+            ?.count,
+        ).toBe(0);
+      } finally {
+        database.close();
+      }
+    }).pipe(Effect.provide(ApplicationLayer)),
+  );
+
   it('indexes linked worktrees concurrently across processes without mixing dirty overlays or waiters', async () => {
     const root = createFixtureRepository();
     git(root, ['branch', 'graph-process-a']);
@@ -3790,6 +4053,15 @@ function createManySourceRepository(count: number): string {
   git(root, ['add', '.']);
   git(root, ['-c', 'user.name=Threadnote Test', '-c', 'user.email=test@threadnote.local', 'commit', '-qm', 'fixture']);
   return root;
+}
+
+function updateManySourceRepository(root: string, count: number, prefix: string): void {
+  for (let index = 0; index < count; index += 1) {
+    writeFileSync(
+      join(root, `src/file-${String(index).padStart(3, '0')}.ts`),
+      `export function ${prefix}${index}(): number { return ${index + 1}; }\n`,
+    );
+  }
 }
 
 function createRationaleAmplifiedRepository(): string {

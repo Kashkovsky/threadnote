@@ -1,4 +1,5 @@
 import {Database} from 'bun:sqlite';
+import {it as effectIt} from '@effect/vitest';
 import {Deferred, Effect, Fiber, FileSystem, Option, Ref} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {afterEach, describe, expect, it} from 'vitest';
@@ -9,6 +10,11 @@ import {
   finalCodeGraphFactBatches,
 } from '../../src/code_graph/fact_budget.js';
 import {createCachedCodeGraphFactsAttributor, factMaterializationBatches} from '../../src/code_graph/indexer.js';
+import {
+  CodeGraphDiskCapacityPressureError,
+  type CodeGraphDirectPersistentCapacityBoundary,
+} from '../../src/code_graph/disk_capacity.js';
+import type {CodeGraphWorkspace} from '../../src/code_graph/languages/types.js';
 import {augmentRationaleFacts} from '../../src/code_graph/rationale.js';
 import {
   CodeGraphStore,
@@ -19,12 +25,14 @@ import {
   nextPersistentActivationBatchRows,
   sanitizeCodeGraphStoreDiagnostic,
   type CodeGraphActivationProgress,
+  type CodeGraphDirectPersistentCapacityGuard,
   type CodeGraphSqliteWriterSettings,
   type CodeGraphSqliteWriterTuning,
   type CodeGraphStagingProgress,
 } from '../../src/code_graph/store.js';
 import {
   CodeGraphStoreError,
+  CodeGraphStoreNoSpaceError,
   type CodeGraphEdge,
   type CodeGraphFileFacts,
   type CodeGraphInventoryFile,
@@ -35,6 +43,7 @@ import {
 } from '../../src/code_graph/types.js';
 import {discoverManifestWorkspace} from '../../src/code_graph/workspace.js';
 import {withExclusiveFileLock} from '../../src/effect/file_lock.js';
+import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {claimPersistentBuildForTest} from '../helpers/code-graph-build.js';
 import {join, mkdtemp, rm} from '../helpers/effect-filesystem.js';
 import {runEffect} from '../helpers/effect-runtime.js';
@@ -3294,6 +3303,364 @@ describe('code graph full-build materialization store', () => {
     expect(foreignKeyViolations).toEqual([]);
   });
 
+  effectIt.effect('guards each persistent inventory transaction and resumes an exact 2,500-row prefix', () =>
+    Effect.gen(function* () {
+      const fixture = yield* Effect.promise(materializationFixture);
+      const files = Array.from({length: 2_501}, (_, index): CodeGraphInventoryFile => ({
+        ...fixture.file,
+        blobId: index.toString(16).padStart(40, '0'),
+        contentHash: index.toString(16).padStart(64, '0'),
+        path: `src/capacity-${String(index).padStart(4, '0')}-🙂.ts`,
+      }));
+      const snapshot = {
+        ...readySnapshot(fixture.identity, 0, 0),
+        fileCount: files.length,
+        id: 'inventory-capacity-🙂',
+      };
+      const store = yield* CodeGraphStore;
+      const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
+        ...snapshot,
+        state: 'building',
+      });
+      const prepare = (guard: CodeGraphDirectPersistentCapacityGuard) =>
+        store.prepareActivation(fixture.databasePath, files, snapshot.id, 1, ownerToken, guard);
+
+      const planPause = capacityGuardProbe('register persistent code graph materialization plan');
+      const planFailure = yield* Effect.flip(prepare(planPause.guard));
+      expect(planFailure).toBeInstanceOf(CodeGraphStoreNoSpaceError);
+      expect(planPause.boundaries).toEqual([
+        {
+          finalFactBytes: 0,
+          operation: 'register persistent code graph materialization plan',
+          rowCount: 2,
+        },
+      ]);
+      expect(persistentPreparationEvidence(fixture.databasePath, snapshot.id)).toEqual({
+        distinctFiles: 0,
+        expectedBatchCount: null,
+        files: 0,
+        lexicalCounters: 0,
+      });
+
+      const secondInventoryPause = capacityGuardProbe('stage persistent code graph inventory', 2);
+      const inventoryFailure = yield* Effect.flip(prepare(secondInventoryPause.guard));
+      expect(inventoryFailure).toBeInstanceOf(CodeGraphStoreNoSpaceError);
+      expect(secondInventoryPause.boundaries).toEqual([
+        {
+          finalFactBytes: 0,
+          operation: 'register persistent code graph materialization plan',
+          rowCount: 2,
+        },
+        expectedPersistentInventoryBoundary(snapshot.id, files.slice(0, 2_500)),
+        expectedPersistentInventoryBoundary(snapshot.id, files.slice(2_500)),
+      ]);
+      expect(persistentPreparationEvidence(fixture.databasePath, snapshot.id)).toEqual({
+        distinctFiles: 2_500,
+        expectedBatchCount: 1,
+        files: 2_500,
+        lexicalCounters: 1,
+      });
+
+      const resumed = capacityGuardProbe();
+      yield* prepare(resumed.guard);
+      expect(resumed.boundaries).toEqual([
+        {
+          finalFactBytes: 0,
+          operation: 'register persistent code graph materialization plan',
+          rowCount: 2,
+        },
+        expectedPersistentInventoryBoundary(snapshot.id, files.slice(0, 2_500)),
+        expectedPersistentInventoryBoundary(snapshot.id, files.slice(2_500)),
+      ]);
+      expect(persistentPreparationEvidence(fixture.databasePath, snapshot.id)).toEqual({
+        distinctFiles: 2_501,
+        expectedBatchCount: 1,
+        files: 2_501,
+        lexicalCounters: 1,
+      });
+    }).pipe(Effect.provide(ApplicationLayer)),
+  );
+
+  effectIt.effect(
+    'guards exact workspace, conservative facts, plan finalization, and publication without partial mutation',
+    () =>
+      Effect.gen(function* () {
+        const fixture = yield* Effect.promise(materializationFixture);
+        const graphSymbol = symbol('capacity-symbol', 'capacitySymbol🙂', ['typescript:name:capacitySymbol🙂']);
+        const snapshot = {...readySnapshot(fixture.identity, 1, 0), id: 'persistent-boundaries'};
+        const workspace: CodeGraphWorkspace = {
+          diagnostics: ['top-level diagnostics are not persisted'],
+          fingerprint: 'workspace-capacity-fingerprint',
+          projects: [
+            {
+              buildSystem: 'node',
+              dependencies: ['cgp_dependency'],
+              dependencyDetails: [{evidence: 'package🙂.json', provenance: 'declared', targetId: 'cgp_dependency'}],
+              diagnostics: ['project🙂diagnostic'],
+              id: 'cgp_capacity',
+              kind: 'package',
+              languages: ['typescript', 'javascript🙂'],
+              name: 'capacity🙂project',
+              provenance: 'declared',
+              resolutionDomain: 'typescript',
+              root: 'packages/capacity🙂',
+              sourceRoots: ['packages/capacity🙂/src'],
+              workspaceId: 'cgw_capacity',
+              workspaceRoots: ['.'],
+            },
+          ],
+          workspaces: [
+            {
+              buildSystem: 'node',
+              diagnostics: ['workspace🙂diagnostic'],
+              id: 'cgw_capacity',
+              name: 'capacity🙂workspace',
+              provenance: 'declared',
+              root: '.',
+            },
+          ],
+        };
+        const finalFactBytes = 173;
+        const store = yield* CodeGraphStore;
+        const result = yield* store.withSession(
+          fixture.databasePath,
+          Effect.gen(function* () {
+            const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
+              ...snapshot,
+              state: 'building',
+            });
+            const preparation = capacityGuardProbe();
+            yield* store.prepareActivation(
+              fixture.databasePath,
+              [fixture.file],
+              snapshot.id,
+              1,
+              ownerToken,
+              preparation.guard,
+            );
+            const sql = yield* SqlClient.SqlClient;
+
+            const workspacePause = capacityGuardProbe('stage persistent code graph workspace');
+            const workspaceFailure = yield* store
+              .stageWorkspaceCatalog(fixture.databasePath, workspace, workspacePause.guard)
+              .pipe(
+                Effect.as(undefined as CodeGraphStoreError | undefined),
+                Effect.catch(error => Effect.succeed(error)),
+              );
+            const workspaceRowsAfterPause = yield* sql<{
+              readonly dependencies: number;
+              readonly projects: number;
+              readonly workspaces: number;
+            }>`
+              SELECT
+                (SELECT COUNT(*) FROM workspace_scopes WHERE snapshot_id = ${snapshot.id}) AS workspaces,
+                (SELECT COUNT(*) FROM workspace_components WHERE snapshot_id = ${snapshot.id}) AS projects,
+                (SELECT COUNT(*) FROM workspace_component_dependencies WHERE snapshot_id = ${snapshot.id}) AS dependencies
+            `;
+            const workspaceResume = capacityGuardProbe();
+            yield* store.stageWorkspaceCatalog(fixture.databasePath, workspace, workspaceResume.guard);
+
+            const invalidFactPause = capacityGuardProbe('stage persistent code graph facts');
+            const invalidFactFailure = yield* store
+              .stageActivationFactBatches(
+                fixture.databasePath,
+                [{batchIndex: 0, edges: [], references: [], symbols: [graphSymbol]}],
+                undefined,
+                invalidFactPause.guard,
+              )
+              .pipe(
+                Effect.as(undefined as CodeGraphStoreError | undefined),
+                Effect.catch(error => Effect.succeed(error)),
+              );
+            const factRowsAfterPause = yield* sql<{
+              readonly analysisReceipts: number;
+              readonly materializationReceipts: number;
+              readonly symbols: number;
+            }>`
+              SELECT
+                (SELECT COUNT(*) FROM symbols WHERE snapshot_id = ${snapshot.id}) AS symbols,
+                (SELECT COUNT(*) FROM building_analysis_batches WHERE snapshot_id = ${snapshot.id}) AS analysisReceipts,
+                (SELECT COUNT(*) FROM building_materialization_batches WHERE snapshot_id = ${snapshot.id}) AS materializationReceipts
+            `;
+
+            const factResume = capacityGuardProbe();
+            yield* store.stageActivationFactBatches(
+              fixture.databasePath,
+              [
+                {
+                  batchIndex: 0,
+                  edges: [],
+                  finalFactBytes,
+                  references: [],
+                  symbols: [graphSymbol],
+                },
+              ],
+              undefined,
+              factResume.guard,
+            );
+            const physicalFactRows = yield* sql<{
+              readonly analysisReceipts: number;
+              readonly analysisSymbols: number;
+              readonly compactPostings: number;
+              readonly compactSnapshots: number;
+              readonly compactSymbols: number;
+              readonly compactTerms: number;
+              readonly lexicalCounters: number;
+              readonly lookups: number;
+              readonly materializationReceipts: number;
+              readonly symbols: number;
+            }>`
+              SELECT
+                (SELECT COUNT(*) FROM symbols WHERE snapshot_id = ${snapshot.id}) AS symbols,
+                (SELECT COUNT(*) FROM snapshot_symbol_lookup WHERE snapshot_id = ${snapshot.id}) AS lookups,
+                (SELECT COUNT(*) FROM lexical_compact_snapshots WHERE snapshot_id = ${snapshot.id}) AS compactSnapshots,
+                (SELECT COUNT(*) FROM lexical_compact_symbols AS symbol
+                  JOIN lexical_compact_snapshots AS snapshot ON snapshot.snapshot_key = symbol.snapshot_key
+                  WHERE snapshot.snapshot_id = ${snapshot.id}) AS compactSymbols,
+                (SELECT COUNT(*) FROM lexical_compact_terms AS term
+                  JOIN lexical_compact_snapshots AS snapshot ON snapshot.snapshot_key = term.snapshot_key
+                  WHERE snapshot.snapshot_id = ${snapshot.id}) AS compactTerms,
+                (SELECT COUNT(*) FROM lexical_compact_postings AS posting
+                  JOIN lexical_compact_snapshots AS snapshot ON snapshot.snapshot_key = posting.snapshot_key
+                  WHERE snapshot.snapshot_id = ${snapshot.id}) AS compactPostings,
+                (SELECT COUNT(*) FROM snapshot_analysis_symbol_counts WHERE snapshot_id = ${snapshot.id}) AS analysisSymbols,
+                (SELECT COUNT(*) FROM building_analysis_batches WHERE snapshot_id = ${snapshot.id}) AS analysisReceipts,
+                (SELECT COUNT(*) FROM building_materialization_batches WHERE snapshot_id = ${snapshot.id}) AS materializationReceipts,
+                (SELECT COUNT(*) FROM building_lexical_counters WHERE snapshot_id = ${snapshot.id}) AS lexicalCounters
+            `;
+
+            const finalizePause = capacityGuardProbe('register persistent code graph materialization plan');
+            const finalizeFailure = yield* store
+              .finalizePersistentMaterializationPlan(fixture.databasePath, 1, finalizePause.guard)
+              .pipe(
+                Effect.as(undefined as CodeGraphStoreError | undefined),
+                Effect.catch(error => Effect.succeed(error)),
+              );
+            const finalizeResume = capacityGuardProbe();
+            yield* store.finalizePersistentMaterializationPlan(fixture.databasePath, 1, finalizeResume.guard);
+            yield* store.resolveStagedReferences(fixture.databasePath);
+
+            const publicationPause = capacityGuardProbe('publish persistent code graph snapshot');
+            const publicationFailure = yield* store
+              .activateStaged(
+                fixture.databasePath,
+                fixture.identity,
+                snapshot,
+                undefined,
+                undefined,
+                undefined,
+                publicationPause.guard,
+              )
+              .pipe(
+                Effect.as(undefined as CodeGraphStoreError | undefined),
+                Effect.catch(error => Effect.succeed(error)),
+              );
+            const publicationRowsAfterPause = yield* sql<{
+              readonly extractorGenerations: number;
+              readonly fileShards: number;
+              readonly lexicalFormats: number;
+              readonly owners: number;
+              readonly state: string;
+            }>`
+              SELECT snapshot.state,
+                (SELECT COUNT(*) FROM snapshot_build_owners WHERE snapshot_id = snapshot.id) AS owners,
+                (SELECT COUNT(*) FROM lexical_storage_formats WHERE snapshot_id = snapshot.id) AS lexicalFormats,
+                (SELECT COUNT(*) FROM snapshot_extractor_generations WHERE snapshot_id = snapshot.id) AS extractorGenerations,
+                (SELECT COUNT(*) FROM snapshot_file_shards WHERE snapshot_id = snapshot.id) AS fileShards
+              FROM snapshots AS snapshot WHERE snapshot.id = ${snapshot.id}
+            `;
+            const publicationResume = capacityGuardProbe();
+            yield* store.activateStaged(
+              fixture.databasePath,
+              fixture.identity,
+              snapshot,
+              undefined,
+              undefined,
+              undefined,
+              publicationResume.guard,
+            );
+            const published = yield* sql<{readonly owners: number; readonly state: string}>`
+              SELECT snapshot.state,
+                (SELECT COUNT(*) FROM snapshot_build_owners WHERE snapshot_id = snapshot.id) AS owners
+              FROM snapshots AS snapshot WHERE snapshot.id = ${snapshot.id}
+            `;
+            return {
+              factResume: factResume.boundaries,
+              factRowsAfterPause: factRowsAfterPause[0]!,
+              finalizeFailure,
+              finalizePause: finalizePause.boundaries,
+              finalizeResume: finalizeResume.boundaries,
+              invalidFactFailure,
+              invalidFactPause: invalidFactPause.boundaries,
+              physicalFactRows: physicalFactRows[0]!,
+              preparation: preparation.boundaries,
+              publicationFailure,
+              publicationPause: publicationPause.boundaries,
+              publicationResume: publicationResume.boundaries,
+              publicationRowsAfterPause: publicationRowsAfterPause[0]!,
+              published: published[0]!,
+              workspaceFailure,
+              workspacePause: workspacePause.boundaries,
+              workspaceResume: workspaceResume.boundaries,
+              workspaceRowsAfterPause: workspaceRowsAfterPause[0]!,
+            };
+          }),
+        );
+
+        expect(result.preparation).toEqual([
+          {finalFactBytes: 0, operation: 'register persistent code graph materialization plan', rowCount: 2},
+          expectedPersistentInventoryBoundary(snapshot.id, [fixture.file]),
+        ]);
+        expect(result.workspaceFailure).toBeInstanceOf(CodeGraphStoreNoSpaceError);
+        expect(result.workspaceRowsAfterPause).toEqual({dependencies: 0, projects: 0, workspaces: 0});
+        const expectedWorkspaceBoundary = expectedPersistentWorkspaceBoundary(snapshot.id, workspace);
+        expect(result.workspacePause).toEqual([expectedWorkspaceBoundary]);
+        expect(result.workspaceResume).toEqual([expectedWorkspaceBoundary]);
+
+        expect(result.invalidFactFailure).toBeInstanceOf(CodeGraphStoreNoSpaceError);
+        expect(result.invalidFactPause).toHaveLength(1);
+        expect(result.invalidFactPause[0]).toMatchObject({
+          operation: 'stage persistent code graph facts',
+        });
+        expect(Number.isNaN(result.invalidFactPause[0]!.finalFactBytes)).toBe(true);
+        expect(result.factRowsAfterPause).toEqual({analysisReceipts: 0, materializationReceipts: 0, symbols: 0});
+        expect(result.factResume).toHaveLength(1);
+        expect(result.factResume[0]).toMatchObject({
+          finalFactBytes,
+          operation: 'stage persistent code graph facts',
+        });
+        expect(result.factResume[0]!.rowCount).toBeGreaterThanOrEqual(
+          Object.values(result.physicalFactRows).reduce((total, value) => total + Number(value), 0),
+        );
+
+        const expectedPlanBoundary: CodeGraphDirectPersistentCapacityBoundary = {
+          finalFactBytes: 0,
+          operation: 'register persistent code graph materialization plan',
+          rowCount: 2,
+        };
+        expect(result.finalizeFailure).toBeInstanceOf(CodeGraphStoreNoSpaceError);
+        expect(result.finalizePause).toEqual([expectedPlanBoundary]);
+        expect(result.finalizeResume).toEqual([expectedPlanBoundary]);
+
+        expect(result.publicationFailure).toBeInstanceOf(CodeGraphStoreNoSpaceError);
+        expect(result.publicationRowsAfterPause).toEqual({
+          extractorGenerations: 0,
+          fileShards: 0,
+          lexicalFormats: 0,
+          owners: 1,
+          state: 'building',
+        });
+        const expectedPublicationBoundary: CodeGraphDirectPersistentCapacityBoundary = {
+          finalFactBytes: 0,
+          operation: 'publish persistent code graph snapshot',
+          rowCount: snapshot.fileCount + 6,
+        };
+        expect(result.publicationPause).toEqual([expectedPublicationBoundary]);
+        expect(result.publicationResume).toEqual([expectedPublicationBoundary]);
+        expect(result.published).toEqual({owners: 0, state: 'ready'});
+      }).pipe(Effect.provide(ApplicationLayer)),
+  );
+
   it.skipIf(process.platform === 'win32')(
     'survives SIGKILL after a committed activation chunk, repairs the abandoned build, and retries',
     async () => {
@@ -3436,6 +3803,125 @@ async function materializationFixture() {
     source: 'commit',
   };
   return {databasePath: join(root, 'graph-v3.sqlite'), file, identity, root};
+}
+
+function capacityGuardProbe(
+  pauseOperation?: CodeGraphDirectPersistentCapacityBoundary['operation'],
+  pauseOccurrence = 1,
+): {
+  readonly boundaries: CodeGraphDirectPersistentCapacityBoundary[];
+  readonly guard: CodeGraphDirectPersistentCapacityGuard;
+} {
+  const boundaries: CodeGraphDirectPersistentCapacityBoundary[] = [];
+  let operationOccurrences = 0;
+  const guard: CodeGraphDirectPersistentCapacityGuard = boundary =>
+    Effect.sync(() => {
+      boundaries.push({...boundary});
+      if (boundary.operation !== pauseOperation) return false;
+      operationOccurrences += 1;
+      return operationOccurrences === pauseOccurrence;
+    }).pipe(
+      Effect.flatMap(paused =>
+        paused ? Effect.fail(new CodeGraphDiskCapacityPressureError(boundary.operation)) : Effect.void,
+      ),
+    );
+  return {boundaries, guard};
+}
+
+function expectedPersistentInventoryBoundary(
+  snapshotId: string,
+  files: readonly CodeGraphInventoryFile[],
+): CodeGraphDirectPersistentCapacityBoundary {
+  return {
+    finalFactBytes: utf8PayloadBytes(
+      files.flatMap(file => [snapshotId, file.path, file.contentHash, file.language, file.mode, file.source]),
+    ),
+    operation: 'stage persistent code graph inventory',
+    rowCount: files.length,
+  };
+}
+
+function expectedPersistentWorkspaceBoundary(
+  snapshotId: string,
+  workspace: CodeGraphWorkspace,
+): CodeGraphDirectPersistentCapacityBoundary {
+  const values: string[] = [];
+  for (const scope of workspace.workspaces) {
+    values.push(
+      snapshotId,
+      scope.id,
+      scope.buildSystem,
+      scope.name,
+      scope.root,
+      scope.provenance,
+      JSON.stringify(scope.diagnostics),
+    );
+  }
+  let rowCount = workspace.workspaces.length;
+  for (const project of workspace.projects) {
+    values.push(
+      snapshotId,
+      project.id,
+      project.workspaceId,
+      project.buildSystem,
+      project.kind,
+      project.name,
+      project.root,
+      project.resolutionDomain,
+      JSON.stringify(project.languages),
+      JSON.stringify(project.sourceRoots),
+      JSON.stringify(project.workspaceRoots),
+      project.provenance,
+      JSON.stringify(project.diagnostics),
+    );
+    rowCount += 1;
+    for (const dependency of project.dependencyDetails) {
+      values.push(snapshotId, project.id, dependency.targetId, dependency.provenance);
+      if (dependency.evidence !== undefined) values.push(dependency.evidence);
+      rowCount += 1;
+    }
+  }
+  return {
+    finalFactBytes: utf8PayloadBytes(values),
+    operation: 'stage persistent code graph workspace',
+    rowCount,
+  };
+}
+
+function utf8PayloadBytes(values: readonly string[]): number {
+  const encoder = new TextEncoder();
+  return values.reduce((total, value) => total + encoder.encode(value).byteLength, 0);
+}
+
+function persistentPreparationEvidence(
+  databasePath: string,
+  snapshotId: string,
+): {
+  readonly distinctFiles: number;
+  readonly expectedBatchCount: number | null;
+  readonly files: number;
+  readonly lexicalCounters: number;
+} {
+  const database = new Database(databasePath, {readonly: true, strict: true});
+  try {
+    return database
+      .query(
+        `SELECT owner.expected_batch_count AS expectedBatchCount,
+           (SELECT COUNT(*) FROM snapshot_files WHERE snapshot_id = owner.snapshot_id) AS files,
+           (SELECT COUNT(DISTINCT path) FROM snapshot_files WHERE snapshot_id = owner.snapshot_id) AS distinctFiles,
+           (SELECT COUNT(*) FROM building_lexical_counters WHERE snapshot_id = owner.snapshot_id) AS lexicalCounters
+         FROM snapshot_build_owners AS owner
+         WHERE owner.snapshot_id = ?`,
+      )
+      .get(snapshotId) as {
+      readonly distinctFiles: number;
+      readonly expectedBatchCount: number | null;
+      readonly files: number;
+      readonly lexicalCounters: number;
+    };
+  } finally {
+    database.close(false);
+  }
 }
 
 interface CompletedBuildRows {
