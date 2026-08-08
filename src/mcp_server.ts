@@ -137,6 +137,7 @@ import type {CodeGraphProgress, CodeGraphQueryResult} from './code_graph/types.j
 import {
   CodeGraphWatcher,
   type CodeGraphProgressTiming,
+  type CodeGraphRefreshFailure,
   type CodeGraphRefreshStatus,
   type CodeGraphWatcherShape,
 } from './code_graph/watcher.js';
@@ -922,7 +923,9 @@ function registerCodeGraphTool(server: EffectMcpServerAdapter, config: RuntimeCo
           }
         }
         const refreshStatus = Option.getOrUndefined(yield* watcher.status(identity.worktreeId, refreshTarget));
-        if (codeGraphRefreshBlocksReadyInspection(status, refreshStatus, staleAfterCleanCommitChange)) {
+        if (
+          selectCodeGraphReadySnapshotForInspection(status, refreshStatus, staleAfterCleanCommitChange) === undefined
+        ) {
           return codeGraphRefreshResult(operation, refreshStatus);
         }
         const result = yield* service.inspect({
@@ -945,7 +948,7 @@ function registerCodeGraphTool(server: EffectMcpServerAdapter, config: RuntimeCo
           threadnoteHome: config.agentContextHome,
           to,
         });
-        const response = codeGraphMcpResponse(result);
+        const response = codeGraphMcpResponse(codeGraphResultWithRefreshContinuity(result, refreshStatus));
         return {
           content: [{type: 'text' as const, text: response.text}],
           structuredContent: response.structuredContent,
@@ -1782,23 +1785,28 @@ function compactMcpText(value: string, maximumLength: number): string {
   return value.length <= maximumLength ? value : `${value.slice(0, Math.max(0, maximumLength - 1))}…`;
 }
 
-function codeGraphAnalysisRefreshResult(
+export function codeGraphAnalysisRefreshResult(
   operation: CodeGraphAnalysisView,
   status: CodeGraphRefreshStatus | undefined,
 ): CallToolResult {
-  if (status?.state === 'failed') {
-    const message = status.message.slice(0, 1_000);
+  if (status?.state === 'deferred') {
+    const warning = codeGraphRefreshRecoveryWarning(status.failure);
     return {
       content: [
         {
           type: 'text',
           text:
-            `Code graph background indexing failed: ${message}\n` +
-            'Run `threadnote doctor --dry-run`, address the reported graph diagnostic, and retry analyze_code_graph.',
+            `Code graph refresh is deferred (${status.failure.code}). ${warning} ` +
+            'Whole-graph analysis requires a current ready snapshot; retry analyze_code_graph after recovery.',
         },
       ],
-      isError: true,
-      structuredContent: {message, operation, state: 'failed', type: 'code-graph-analysis-state', version: 1},
+      structuredContent: {
+        failure: status.failure,
+        operation,
+        state: 'deferred',
+        type: 'code-graph-analysis-state',
+        version: 2,
+      },
     };
   }
   const progress = status?.state === 'indexing' ? status.progress : undefined;
@@ -1858,32 +1866,76 @@ export function codeGraphRefreshBlocksReadyInspection(
   refreshStatus: CodeGraphRefreshStatus | undefined,
   allowStaleReadySnapshot = false,
 ): boolean {
-  const refreshBlocks = refreshStatus?.state === 'failed' || refreshStatus?.state === 'indexing';
+  const refreshBlocks = refreshStatus?.state === 'deferred' || refreshStatus?.state === 'indexing';
   return refreshBlocks && (!status.readySnapshot || (status.stale && !allowStaleReadySnapshot));
+}
+
+/** Retain the exact observed pointer; refresh status alone is never promotion authority. */
+export function selectCodeGraphReadySnapshotForInspection<T>(
+  status: {readonly readySnapshot?: T; readonly stale: boolean},
+  refreshStatus: CodeGraphRefreshStatus | undefined,
+  allowStaleReadySnapshot = false,
+): T | undefined {
+  return codeGraphRefreshBlocksReadyInspection(status, refreshStatus, allowStaleReadySnapshot)
+    ? undefined
+    : status.readySnapshot;
+}
+
+/** Add a finite recovery hint without copying a native error, path, or raw cause into MCP output. */
+export function codeGraphResultWithRefreshContinuity(
+  result: CodeGraphQueryResult,
+  refreshStatus: CodeGraphRefreshStatus | undefined,
+): CodeGraphQueryResult {
+  if (result.freshness !== 'stale' || refreshStatus?.state !== 'deferred') return result;
+  const warning =
+    `Serving the existing stale ready snapshot because code graph refresh is deferred ` +
+    `(${refreshStatus.failure.code}). ${codeGraphRefreshRecoveryWarning(refreshStatus.failure)}`;
+  const bounded = compactMcpText(warning, 320);
+  return result.warnings.includes(bounded) ? result : {...result, warnings: [...result.warnings, bounded]};
+}
+
+function codeGraphRefreshRecoveryWarning(failure: CodeGraphRefreshFailure): string {
+  switch (failure.recovery) {
+    case 'defer':
+      return 'Retry after the current code graph writer finishes.';
+    case 'free-space':
+      return 'Free storage space, then retry the refresh.';
+    case 'fix-permissions':
+      return 'Restore storage permissions, then retry the refresh.';
+    case 'retry-read-only':
+      return 'Retry the read-only refresh; run `threadnote doctor --dry-run` if the failure repeats.';
+    case 'migrate-additive':
+      return 'Run the preflight-proven additive migration before retrying.';
+    case 'manual-migration':
+      return 'Run `threadnote doctor --dry-run` and follow the schema migration guidance.';
+    case 'manual-rebuild':
+      return 'Run `threadnote doctor --dry-run` before any explicit rebuild.';
+    case 'diagnose':
+      return 'Run `threadnote doctor --dry-run`, then retry after addressing the bounded diagnostic.';
+  }
 }
 
 function codeGraphRefreshResult(
   operation: 'explain' | 'impact' | 'neighbors' | 'node' | 'path' | 'query',
   status: CodeGraphRefreshStatus | undefined,
 ): CallToolResult {
-  if (status?.state === 'failed') {
-    const message = status.message.slice(0, 1_000);
+  if (status?.state === 'deferred') {
+    const warning = codeGraphRefreshRecoveryWarning(status.failure);
     return {
       content: [
         {
           type: 'text',
           text:
-            `Code graph background indexing failed: ${message}\n` +
-            'Run `threadnote doctor --dry-run`, address the reported graph diagnostic, and retry inspect_code_graph.',
+            `Code graph refresh is deferred (${status.failure.code}). ${warning} ` +
+            'Non-strict query, node, neighbors, and explain operations may continue from an existing usable ready snapshot.',
         },
       ],
-      isError: true,
       structuredContent: {
-        message,
+        failure: status.failure,
         operation,
-        state: 'failed',
+        state: 'deferred',
         type: 'code-graph-index-state',
-        version: 3,
+        version: 4,
       },
     };
   }
@@ -1950,7 +2002,7 @@ export function codeGraphQueryTimeoutResult(
   operation: 'explain' | 'impact' | 'neighbors' | 'node' | 'path' | 'query',
   status?: CodeGraphRefreshStatus,
 ): CallToolResult {
-  if (status?.state === 'failed' || status?.state === 'indexing') {
+  if (status?.state === 'deferred' || status?.state === 'indexing') {
     return codeGraphRefreshResult(operation, status);
   }
   return {

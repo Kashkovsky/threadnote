@@ -1,5 +1,5 @@
 import {it as effectIt} from '@effect/vitest';
-import {Deferred, Effect, Ref} from 'effect';
+import {Deferred, Effect, Fiber, Logger, Ref, Stream} from 'effect';
 import {TestClock} from 'effect/testing';
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
@@ -7,7 +7,14 @@ import {
   makeCodeGraphWatcher,
   prewarmCandidatesFromRefOutput,
   type CodeGraphWatchOptions,
+  watchRepository,
 } from '../../src/code_graph/watcher.js';
+import {
+  CodeGraphStoreBusyError,
+  CodeGraphStoreNoSpaceError,
+  CodeGraphStorePermissionError,
+  CodeGraphStoreTransientIoError,
+} from '../../src/code_graph/types.js';
 
 const options: CodeGraphWatchOptions = {
   cwd: '/fixture/repository',
@@ -240,6 +247,201 @@ describe('CodeGraphWatcher', () => {
       _tag: 'Some',
       value: {edges: 400, state: 'ready', symbols: 200},
     });
+  });
+
+  it('returns promptly under held-writer load and publishes one typed deferred failure', async () => {
+    const logs: string[] = [];
+    const logger = Logger.make<unknown, void>(options => {
+      logs.push(String(options.message));
+    });
+    const result = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const starts = yield* Ref.make(0);
+          const started = yield* Deferred.make<void>();
+          const release = yield* Deferred.make<void>();
+          const watcher = yield* makeCodeGraphWatcher(
+            () => Effect.never,
+            () =>
+              Ref.update(starts, count => count + 1).pipe(
+                Effect.andThen(Deferred.succeed(started, undefined)),
+                Effect.andThen(Deferred.await(release)),
+                Effect.andThen(
+                  Effect.fail(
+                    new CodeGraphStoreBusyError('private writer detail /Users/private/graph.sqlite', {
+                      operation: 'load /Users/private/graph.sqlite',
+                    }),
+                  ),
+                ),
+              ),
+          );
+
+          yield* watcher.ensure(options);
+          const requests = yield* Effect.all(
+            Array.from({length: 128}, () => watcher.refresh(options)),
+            {concurrency: 'unbounded'},
+          );
+          yield* Deferred.await(started);
+          const whileHeld = yield* watcher.status(options.key);
+          yield* Deferred.succeed(release, undefined);
+          let settled = yield* watcher.status(options.key);
+          for (
+            let attempt = 0;
+            attempt < 16 && settled._tag === 'Some' && settled.value.state === 'indexing';
+            attempt += 1
+          ) {
+            yield* Effect.yieldNow;
+            settled = yield* watcher.status(options.key);
+          }
+          return {requests, settled, starts: yield* Ref.get(starts), whileHeld};
+        }),
+      ).pipe(Effect.provide(Logger.layer([logger]))),
+    );
+
+    expect(result.starts).toBe(1);
+    expect(result.requests.filter(Boolean)).toHaveLength(1);
+    expect(result.whileHeld).toMatchObject({_tag: 'Some', value: {state: 'indexing'}});
+    expect(result.settled).toMatchObject({
+      _tag: 'Some',
+      value: {
+        failure: {code: 'busy', operation: 'refresh code graph', recovery: 'defer', retryable: true},
+        state: 'deferred',
+      },
+    });
+    const serialized = JSON.stringify(result.settled);
+    expect(serialized).not.toContain('/Users/private');
+    expect(serialized).not.toContain('private writer detail');
+    expect(logs).toContain('Code graph background refresh deferred (busy; recovery: defer).');
+    expect(logs.join('\n')).not.toContain('/fixture/repository');
+    expect(logs.join('\n')).not.toContain('/Users/private');
+    expect(logs.join('\n')).not.toContain('private writer detail');
+  });
+
+  it('normalizes operational refresh failures without retaining native details', async () => {
+    const privateMarker = '/Volumes/private/native-graph.sqlite';
+    const failures = [
+      new CodeGraphStoreBusyError(`busy ${privateMarker}`),
+      new CodeGraphStoreNoSpaceError(`full ${privateMarker}`),
+      new CodeGraphStorePermissionError(`permission ${privateMarker}`),
+      new CodeGraphStoreTransientIoError(`io ${privateMarker}`),
+    ];
+
+    for (const failure of failures) {
+      const status = await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const watcher = yield* makeCodeGraphWatcher(
+              () => Effect.never,
+              () => Effect.fail(failure),
+            );
+            const failureOptions = {...options, key: `${options.key}:${failure.code}`};
+            yield* watcher.ensure(failureOptions);
+            yield* watcher.refresh(failureOptions);
+            let current = yield* watcher.status(failureOptions.key);
+            for (let attempt = 0; attempt < 16; attempt += 1) {
+              if (current._tag === 'Some' && current.value.state !== 'indexing') break;
+              yield* Effect.yieldNow;
+              current = yield* watcher.status(failureOptions.key);
+            }
+            return current;
+          }),
+        ),
+      );
+
+      expect(status).toMatchObject({
+        _tag: 'Some',
+        value: {failure: {code: failure.code, operation: 'refresh code graph'}, state: 'deferred'},
+      });
+      expect(JSON.stringify(status)).not.toContain(privateMarker);
+    }
+  });
+
+  it('turns a refresh defect into one bounded unknown status instead of stranding indexing', async () => {
+    const privateMarker = '/Users/private/defect.sqlite';
+    const logs: string[] = [];
+    const logger = Logger.make<unknown, void>(options => {
+      logs.push(String(options.message));
+    });
+    const status = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const watcher = yield* makeCodeGraphWatcher(
+            () => Effect.never,
+            () => Effect.die(new Error(`native defect ${privateMarker}`)),
+          );
+          yield* watcher.ensure(options);
+          yield* watcher.refresh(options);
+          let current = yield* watcher.status(options.key);
+          for (let attempt = 0; attempt < 16; attempt += 1) {
+            if (current._tag === 'Some' && current.value.state !== 'indexing') break;
+            yield* Effect.yieldNow;
+            current = yield* watcher.status(options.key);
+          }
+          return current;
+        }),
+      ).pipe(Effect.provide(Logger.layer([logger]))),
+    );
+
+    expect(status).toMatchObject({
+      _tag: 'Some',
+      value: {
+        failure: {code: 'unknown', operation: 'refresh code graph', recovery: 'diagnose', retryable: false},
+        state: 'deferred',
+      },
+    });
+    expect(logs).toContain('Code graph background refresh deferred (unknown; recovery: diagnose).');
+    expect(`${JSON.stringify(status)}\n${logs.join('\n')}`).not.toContain(privateMarker);
+  });
+
+  it('propagates refresh scope interruption without converting it into a deferred failure', async () => {
+    const logs: string[] = [];
+    const logger = Logger.make<unknown, void>(options => {
+      logs.push(String(options.message));
+    });
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const started = yield* Deferred.make<void>();
+          const watcher = yield* makeCodeGraphWatcher(
+            () => Effect.never,
+            () => Deferred.succeed(started, undefined).pipe(Effect.andThen(Effect.never)),
+          );
+          yield* watcher.ensure(options);
+          yield* watcher.refresh(options);
+          yield* Deferred.await(started);
+          expect(yield* watcher.status(options.key)).toMatchObject({_tag: 'Some', value: {state: 'indexing'}});
+        }),
+      ).pipe(Effect.provide(Logger.layer([logger]))),
+    );
+
+    expect(logs.some(message => message.includes('background refresh deferred'))).toBe(false);
+  });
+
+  effectIt.effect('keeps periodic reconciliation alive after a filesystem watch defect', () => {
+    const privateMarker = '/Users/private/watch-root';
+    const logs: string[] = [];
+    const logger = Logger.make<unknown, void>(options => {
+      logs.push(String(options.message));
+    });
+    return Effect.gen(function* () {
+      const refreshes = yield* Ref.make(0);
+      const fiber = yield* watchRepository(
+        {watch: () => Stream.die(new Error(`watch defect ${privateMarker}`))} as never,
+        {} as never,
+        options,
+        false,
+        () => Ref.update(refreshes, count => count + 1),
+      ).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+      const beforeReconciliation = yield* Ref.get(refreshes);
+      yield* TestClock.adjust('5 minutes');
+      yield* Effect.yieldNow;
+
+      expect(yield* Ref.get(refreshes)).toBeGreaterThan(beforeReconciliation);
+      expect(logs).toContain('Code graph filesystem watch stopped; periodic reconciliation remains active.');
+      expect(logs.join('\n')).not.toContain(privateMarker);
+      yield* Fiber.interrupt(fiber);
+    }).pipe(Effect.provide(Logger.layer([logger])), Effect.scoped);
   });
 
   it('serializes explicit and watch-triggered refreshes while coalescing a trailing run', async () => {

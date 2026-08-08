@@ -1,4 +1,5 @@
 import {
+  Cause,
   Clock,
   Context,
   Deferred,
@@ -19,10 +20,11 @@ import {CodeGraphStore, type CodeGraphStoreShape} from './store.js';
 import {CommandExecutor, type CommandOptions} from '../effect/command.js';
 import {SystemInfo} from '../effect/system.js';
 import type {CommandResult} from '../types.js';
-import type {CodeGraphProgress} from './types.js';
+import type {CodeGraphProgress, CodeGraphStoreFailureCode, CodeGraphStoreRecovery} from './types.js';
 import {currentCodeGraphBuildStatus, type ObservedCodeGraphBuildStatus} from './build_status.js';
 import {isCodeGraphIsolatedBuilderHost, runIsolatedCodeGraphIndex} from './isolated_builder.js';
 import {codeGraphLayout} from './layout.js';
+import {classifyCodeGraphStoreFailure} from './store_failure.js';
 import {
   codeGraphEtaMeasurement,
   makeCodeGraphEtaTracker,
@@ -52,6 +54,13 @@ export interface CodeGraphProgressTiming {
   readonly updatedAtMilliseconds: number;
 }
 
+export interface CodeGraphRefreshFailure {
+  readonly code: CodeGraphStoreFailureCode;
+  readonly operation: 'refresh code graph';
+  readonly recovery: CodeGraphStoreRecovery;
+  readonly retryable: boolean;
+}
+
 export type CodeGraphRefreshStatus =
   | {
       readonly progress?: CodeGraphProgress;
@@ -64,8 +73,8 @@ export type CodeGraphRefreshStatus =
       readonly symbols: number;
     }
   | {
-      readonly message: string;
-      readonly state: 'failed';
+      readonly failure: CodeGraphRefreshFailure;
+      readonly state: 'deferred';
     };
 
 export interface CodeGraphWatcherShape {
@@ -128,6 +137,32 @@ interface ProgressTracker {
 const DEFAULT_IDLE_TIMEOUT_MILLISECONDS = 30 * 60_000;
 const DEFAULT_MAXIMUM_WATCHERS = 32;
 const DEFAULT_SWEEP_INTERVAL_MILLISECONDS = 60_000;
+const CODE_GRAPH_REFRESH_OPERATION = 'refresh code graph' as const;
+const CODE_GRAPH_REFRESH_FAILURE_METADATA = {
+  busy: {recovery: 'defer', retryable: true},
+  'confirmed-corruption': {recovery: 'manual-rebuild', retryable: false},
+  'incompatible-schema': {recovery: 'manual-migration', retryable: false},
+  'no-space': {recovery: 'free-space', retryable: false},
+  permission: {recovery: 'fix-permissions', retryable: false},
+  'schema-additive': {recovery: 'migrate-additive', retryable: false},
+  'transient-io': {recovery: 'retry-read-only', retryable: true},
+  unknown: {recovery: 'diagnose', retryable: false},
+} as const satisfies Record<CodeGraphStoreFailureCode, Pick<CodeGraphRefreshFailure, 'recovery' | 'retryable'>>;
+
+/** Convert native/store failures into a bounded record that cannot retain paths or raw causes. */
+export function codeGraphRefreshFailure(cause: unknown): CodeGraphRefreshFailure {
+  const classified = classifyCodeGraphStoreFailure(CODE_GRAPH_REFRESH_OPERATION, cause);
+  const code = Object.hasOwn(CODE_GRAPH_REFRESH_FAILURE_METADATA, classified.code) ? classified.code : 'unknown';
+  return {
+    code,
+    operation: CODE_GRAPH_REFRESH_OPERATION,
+    ...CODE_GRAPH_REFRESH_FAILURE_METADATA[code],
+  };
+}
+
+function codeGraphRefreshFailureFromCause(cause: Cause.Cause<unknown>): CodeGraphRefreshFailure {
+  return codeGraphRefreshFailure(Option.getOrUndefined(Cause.findErrorOption(cause)));
+}
 
 export class CodeGraphWatcher extends Context.Service<CodeGraphWatcher, CodeGraphWatcherShape>()(
   'threadnote/codeGraph/CodeGraphWatcher',
@@ -302,10 +337,17 @@ export const makeCodeGraphWatcher = Effect.fn('codeGraph.makeWatcher')(function*
         lastFailure = undefined;
         yield* refreshSemaphore.withPermit(refreshRun(trackedRefreshOptions(options, tracker))).pipe(
           Effect.catchCause(cause => {
-            lastFailure = new Error(String(cause));
-            return setStatus(key, {message: lastFailure.message, state: 'failed'}).pipe(
+            if (Cause.hasInterruptsOnly(cause)) return Effect.failCause(cause);
+            const failure = codeGraphRefreshFailureFromCause(cause);
+            lastFailure = classifyCodeGraphStoreFailure(
+              CODE_GRAPH_REFRESH_OPERATION,
+              Option.getOrUndefined(Cause.findErrorOption(cause)),
+            );
+            return setStatus(key, {failure, state: 'deferred'}).pipe(
               Effect.andThen(
-                Effect.logWarning(`Code graph background refresh failed for ${options.cwd}: ${lastFailure.message}`),
+                Effect.logWarning(
+                  `Code graph background refresh deferred (${failure.code}; recovery: ${failure.recovery}).`,
+                ),
               ),
             );
           }),
@@ -558,12 +600,8 @@ function persistedRefreshStatus(status: ObservedCodeGraphBuildStatus): CodeGraph
   }
   if (status.observation.liveness === 'failed' || status.observation.liveness === 'abandoned') {
     return {
-      message:
-        status.error?.summary ??
-        (status.observation.reason === 'pid-reused'
-          ? 'Code graph build owner PID was reused; the abandoned build can be retried.'
-          : 'Code graph build owner exited before completion; retry the build.'),
-      state: 'failed',
+      failure: codeGraphRefreshFailure(undefined),
+      state: 'deferred',
     };
   }
   const startedAtMilliseconds = Date.parse(status.timestamps.startedAt);
@@ -657,19 +695,19 @@ const prewarmLikelyCleanSnapshots = Effect.fn('codeGraph.prewarmLikelyCleanSnaps
             })
             .pipe(
               Effect.flatMap(lease => input.store.releaseSnapshotLease(layout.databasePath, lease.leaseToken)),
-              Effect.catch(cause =>
-                SynchronizedRef.update(input.prewarmedCommits, current => {
+              Effect.catchCause(cause => {
+                if (Cause.hasInterruptsOnly(cause)) return Effect.failCause(cause);
+                const failure = codeGraphRefreshFailureFromCause(cause);
+                return SynchronizedRef.update(input.prewarmedCommits, current => {
                   const next = new Set(current);
                   next.delete(key);
                   return next;
                 }).pipe(
                   Effect.andThen(
-                    Effect.logDebug(
-                      `Code graph prewarm skipped ${commit}: ${cause instanceof Error ? cause.message : String(cause)}`,
-                    ),
+                    Effect.logDebug(`Code graph prewarm deferred (${failure.code}; recovery: ${failure.recovery}).`),
                   ),
-                ),
-              ),
+                );
+              }),
             );
         }),
       {concurrency: 1, discard: true},
@@ -701,7 +739,8 @@ export function codeGraphWatcherRefreshIndexRequest(options: CodeGraphWatchOptio
   };
 }
 
-const watchRepository = Effect.fn('codeGraph.watchRepository')(function* (
+/** @internal Exported for deterministic watch-failure/reconciliation tests. */
+export const watchRepository = Effect.fn('codeGraph.watchRepository')(function* (
   fs: FileSystem.FileSystem,
   path: Path.Path,
   options: CodeGraphWatchOptions,
@@ -713,7 +752,11 @@ const watchRepository = Effect.fn('codeGraph.watchRepository')(function* (
     Stream.debounce('750 millis'),
     Stream.map(() => undefined),
     Stream.catchCause(cause =>
-      Stream.fromEffect(Effect.logWarning(`Code graph filesystem watch failed for ${options.cwd}: ${String(cause)}`)),
+      Cause.hasInterruptsOnly(cause)
+        ? Stream.failCause(cause)
+        : Stream.fromEffect(
+            Effect.logWarning('Code graph filesystem watch stopped; periodic reconciliation remains active.'),
+          ),
     ),
   );
   const reconciliation = Stream.fromSchedule(Schedule.spaced('5 minutes')).pipe(Stream.map(() => undefined));
