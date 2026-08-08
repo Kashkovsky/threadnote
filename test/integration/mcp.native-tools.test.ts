@@ -19,6 +19,7 @@ interface CanonicalReadMetadata {
 }
 
 const CANONICAL_READ_METADATA_KEY = 'threadnote.io/canonical-read';
+const MCP_RESOURCE_READ_MAX_BYTES = 1_048_576;
 
 const CORE_TOOL_NAMES = [
   'recall_context',
@@ -182,6 +183,137 @@ describe('Threadnote MCP toolsets', () => {
         );
       },
       {toolset: null},
+    );
+  });
+
+  it('advertises bounded Threadnote resource discovery without enumerating private memories', async () => {
+    await withMcpClient(
+      async client => {
+        expect(client.getServerCapabilities()?.resources).toEqual({listChanged: true, subscribe: false});
+        await expect(client.listResources()).resolves.toEqual({resources: []});
+
+        const templates = await client.listResourceTemplates();
+        expect(templates.resourceTemplates).toEqual([
+          expect.objectContaining({
+            mimeType: 'text/plain; charset=utf-8',
+            name: 'Threadnote canonical resource',
+            uriTemplate: 'threadnote://{+resourcePath}',
+          }),
+        ]);
+        expect(templates.resourceTemplates[0]?._meta).toEqual({
+          'threadnote.io/max-resource-bytes': MCP_RESOURCE_READ_MAX_BYTES,
+        });
+      },
+      {toolset: 'core'},
+    );
+  });
+
+  it('reads one canonical Threadnote URI through the standard MCP resource protocol', async () => {
+    await withMcpClient(
+      async (client, fixture) => {
+        const uri = 'threadnote://user/test-user/memories/durable/projects/threadnote/protocol-resource.md';
+        const content = canonicalMemoryContent('protocol-resource', 'Protocol resource body.');
+        await writeCanonicalMemory(fixture.home, 'protocol-resource.md', content);
+
+        await expect(client.readResource({uri})).resolves.toEqual({
+          contents: [{mimeType: 'text/plain; charset=utf-8', text: content, uri}],
+        });
+      },
+      {toolset: 'core'},
+    );
+  });
+
+  it('rejects invalid, missing, and oversized protocol resources with bounded privacy-safe errors', async () => {
+    await withMcpClient(
+      async (client, fixture) => {
+        const missingUri =
+          'threadnote://user/test-user/memories/durable/projects/threadnote/missing-protocol-resource.md';
+        const crossUserUri =
+          'threadnote://user/other-user/memories/durable/projects/threadnote/private-protocol-resource.md';
+        const crossAccountUri = 'threadnote://resources/private-protocol-resource.txt';
+        const invalidUtf8Uri = 'threadnote://resources/invalid-utf8-protocol-resource.txt';
+        const oversizedUri =
+          'threadnote://user/test-user/memories/durable/projects/threadnote/oversized-protocol-resource.md';
+        await writeCanonicalMemory(
+          fixture.home,
+          'oversized-protocol-resource.md',
+          canonicalMemoryContent('oversized-protocol-resource', 'x'.repeat(MCP_RESOURCE_READ_MAX_BYTES)),
+        );
+        const foreignAccountResources = join(fixture.home, 'data', 'other-account', 'resources');
+        await mkdir(foreignAccountResources, {recursive: true});
+        await writeFile(
+          join(foreignAccountResources, 'private-protocol-resource.txt'),
+          'foreign account secret',
+          'utf8',
+        );
+        const activeAccountResources = join(fixture.home, 'data', 'local', 'resources');
+        await mkdir(activeAccountResources, {recursive: true});
+        await writeFile(join(activeAccountResources, 'invalid-utf8-protocol-resource.txt'), Uint8Array.of(0xc3, 0x28));
+
+        const invalidError = await client.readResource({uri: 'file:///tmp/private-memory.md'}).then(
+          () => undefined,
+          error => error as Error & {readonly code?: number; readonly data?: unknown},
+        );
+        expect(invalidError).toMatchObject({
+          code: -32602,
+          message: expect.stringContaining('canonical threadnote:// URI'),
+        });
+        expect(invalidError?.message).not.toContain('/tmp/private-memory.md');
+        expect(invalidError?.data).toBeUndefined();
+        await expect(client.readResource({uri: `${missingUri}/`})).rejects.toMatchObject({
+          code: -32602,
+          message: expect.stringContaining('canonical threadnote:// URI'),
+        });
+        await expect(
+          client.readResource({uri: missingUri.replace('threadnote://', 'viking://')}),
+        ).rejects.toMatchObject({
+          code: -32602,
+          message: expect.stringContaining('canonical threadnote:// URI'),
+        });
+        await expect(client.readResource({uri: missingUri})).rejects.toMatchObject({
+          code: -32002,
+          message: expect.stringContaining('Threadnote resource was not found.'),
+        });
+        const crossUserError = await client.readResource({uri: crossUserUri}).then(
+          () => undefined,
+          error => error as Error & {readonly code?: number; readonly data?: unknown},
+        );
+        expect(crossUserError).toMatchObject({
+          code: -32602,
+          message: expect.stringContaining('not readable in the active account'),
+        });
+        expect(crossUserError?.message).not.toContain('other-user');
+        expect(crossUserError?.data).toBeUndefined();
+        const crossAccountError = await client.readResource({uri: crossAccountUri}).then(
+          () => undefined,
+          error => error as Error & {readonly code?: number; readonly data?: unknown},
+        );
+        expect(crossAccountError).toMatchObject({
+          code: -32002,
+          message: expect.stringContaining('Threadnote resource was not found.'),
+        });
+        expect(crossAccountError?.message).not.toContain('other-account');
+        expect(crossAccountError?.message).not.toContain(fixture.root);
+        expect(crossAccountError?.data).toBeUndefined();
+        const invalidUtf8Error = await client.readResource({uri: invalidUtf8Uri}).then(
+          () => undefined,
+          error => error as Error & {readonly code?: number; readonly data?: unknown},
+        );
+        expect(invalidUtf8Error).toMatchObject({
+          code: -32603,
+          message: expect.stringContaining('Threadnote resource could not be read safely.'),
+        });
+        expect(invalidUtf8Error?.message).not.toContain('invalid-utf8-protocol-resource');
+        expect(invalidUtf8Error?.message).not.toContain(fixture.root);
+        expect(invalidUtf8Error?.data).toBeUndefined();
+        await expect(client.readResource({uri: oversizedUri})).rejects.toMatchObject({
+          code: -32602,
+          message: expect.stringContaining(
+            `Threadnote resource exceeds the ${MCP_RESOURCE_READ_MAX_BYTES}-byte resources/read limit; use read_context for a complete canonical read.`,
+          ),
+        });
+      },
+      {toolset: 'core'},
     );
   });
 

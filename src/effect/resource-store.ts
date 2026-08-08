@@ -41,6 +41,9 @@ export interface ResourceStoreEntry {
   readonly uri: string;
 }
 
+export type ResourceStoreBoundedRead =
+  {readonly content: string; readonly truncated: false} | {readonly truncated: true};
+
 export interface ResourceStoreWriteOptions {
   readonly expectedFingerprint?: string;
   readonly mode: 'create' | 'replace' | 'upsert';
@@ -144,6 +147,11 @@ export interface ResourceStoreShape {
     mutations: readonly ResourceStoreMutation[],
   ) => Effect.Effect<void, ResourceStoreError>;
   readonly read: (location: ResourceStoreLocation, uri: string) => Effect.Effect<string, ResourceStoreError>;
+  readonly readBounded: (
+    location: ResourceStoreLocation,
+    uri: string,
+    maximumBytes: number,
+  ) => Effect.Effect<ResourceStoreBoundedRead, ResourceStoreError>;
   readonly remove: (
     location: ResourceStoreLocation,
     uri: string,
@@ -393,6 +401,11 @@ function createResourceStoreOperations(
         yield* verifyExistingPath(fs, path, resolved, 'File');
         return yield* fs.readFileString(resolved.path);
       }).pipe(mapIoError('read', uri)),
+    readBounded: (location, uri, maximumBytes) =>
+      Effect.gen(function* () {
+        const resolved = yield* resolve(location, uri);
+        return yield* readResourceBounded(fs, path, resolved, maximumBytes);
+      }).pipe(mapIoError('read', uri)),
     remove: (location, uri, options) => removeResource(location, uri, options),
     stat: (location, uri) =>
       Effect.gen(function* () {
@@ -554,6 +567,102 @@ function verifyPathAtExpectedLocation(
     }
     return info;
   });
+}
+
+function readResourceBounded(
+  fs: FileSystem.FileSystem,
+  path: Path.Path,
+  resolved: ResolvedResourcePath,
+  maximumBytes: number,
+) {
+  return Effect.gen(function* () {
+    if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 0 || maximumBytes >= Number.MAX_SAFE_INTEGER) {
+      return yield* new ResourceIoFailed({
+        cause: new Error('invalid bounded resource read size'),
+        message: 'Resource read bound is invalid.',
+        operation: 'read',
+        uri: resolved.id.canonicalUri,
+      });
+    }
+    const pathInfoBefore = yield* verifyExistingPath(fs, path, resolved, 'File');
+    return yield* Effect.scoped(
+      Effect.gen(function* () {
+        const file = yield* fs.open(resolved.path, {flag: 'r'});
+        const openedInfoBefore = yield* file.stat;
+        const pathInfoOpened = yield* verifyExistingPath(fs, path, resolved, 'File');
+        if (!sameOpenedResourceFile(pathInfoBefore, pathInfoOpened, openedInfoBefore)) {
+          return yield* unsafe(resolved, 'Resource changed while opening it for a bounded read.');
+        }
+        if (openedInfoBefore.size > BigInt(maximumBytes)) {
+          return {truncated: true} as const;
+        }
+        const bytes = new Uint8Array(maximumBytes + 1);
+        let offset = 0;
+        while (offset < bytes.length) {
+          const count = Number(yield* file.read(bytes.subarray(offset)));
+          if (count <= 0) break;
+          offset += count;
+        }
+        if (offset < Number(openedInfoBefore.size)) {
+          return yield* unsafe(resolved, 'Resource ended before its bounded read completed.');
+        }
+        const openedInfoAfter = yield* file.stat;
+        const pathInfoAfter = yield* verifyExistingPath(fs, path, resolved, 'File');
+        if (
+          !sameOpenedResourceFile(pathInfoBefore, pathInfoAfter, openedInfoAfter) ||
+          !sameOpenedResourceState(openedInfoBefore, openedInfoAfter)
+        ) {
+          return yield* unsafe(resolved, 'Resource changed during a bounded read.');
+        }
+        if (offset > maximumBytes) return {truncated: true} as const;
+        const content = yield* Effect.try({
+          try: () => new TextDecoder('utf-8', {fatal: true, ignoreBOM: true}).decode(bytes.subarray(0, offset)),
+          catch: cause =>
+            new ResourceIoFailed({
+              cause,
+              message: 'Resource content is not valid UTF-8.',
+              operation: 'read',
+              uri: resolved.id.canonicalUri,
+            }),
+        });
+        return {content, truncated: false} as const;
+      }),
+    );
+  });
+}
+
+function sameOpenedResourceFile(
+  before: FileSystem.File.Info,
+  current: FileSystem.File.Info,
+  opened: FileSystem.File.Info,
+): boolean {
+  const beforeInode = Option.getOrUndefined(before.ino);
+  const currentInode = Option.getOrUndefined(current.ino);
+  const openedInode = Option.getOrUndefined(opened.ino);
+  // Threadnote's Bun FileSystem is backed by Node Stats, whose `ino` field is
+  // mandatory on every supported platform (including Windows), and Effect
+  // therefore wraps it in Some. Fail closed for custom FileSystem providers
+  // that omit inode identity instead of weakening the open/stat interlock.
+  return (
+    before.type === 'File' &&
+    current.type === 'File' &&
+    opened.type === 'File' &&
+    before.dev === current.dev &&
+    current.dev === opened.dev &&
+    beforeInode !== undefined &&
+    currentInode !== undefined &&
+    openedInode !== undefined &&
+    beforeInode === currentInode &&
+    currentInode === openedInode
+  );
+}
+
+function sameOpenedResourceState(before: FileSystem.File.Info, after: FileSystem.File.Info): boolean {
+  const beforeMtime = Option.getOrUndefined(before.mtime)?.getTime();
+  const afterMtime = Option.getOrUndefined(after.mtime)?.getTime();
+  return (
+    before.size === after.size && beforeMtime !== undefined && afterMtime !== undefined && beforeMtime === afterMtime
+  );
 }
 
 function assertCaseCompatible(fs: FileSystem.FileSystem, parent: string, desired: string, id: ResourceId) {

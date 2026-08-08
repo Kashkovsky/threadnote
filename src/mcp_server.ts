@@ -51,6 +51,11 @@ import {
 } from './utils.js';
 import {getRuntimeConfig as getApplicationRuntimeConfig} from './runtime.js';
 import {EffectMcpServerAdapter, McpInput} from './effect/ai/mcp.js';
+import {
+  MCP_RESOURCE_MIME_TYPE,
+  MCP_RESOURCE_READ_MAX_BYTES,
+  readThreadnoteMcpResource,
+} from './effect/ai/mcp_resource.js';
 import {LocalModelRuntime} from './effect/ai/local-model-runtime.js';
 import {
   expandWeakRecallQueryEffect,
@@ -270,6 +275,7 @@ export const mcpServerEffect = Effect.gen(function* () {
         config.agentContextHome,
       );
 
+      registerResources(server, config);
       registerTools(server, config, toolset);
       // Packaged lifecycle coverage uses runtime diagnostics to create the real
       // crash-isolated child without requiring an installed or selected model.
@@ -283,6 +289,24 @@ export const mcpServerEffect = Effect.gen(function* () {
     }),
   );
 });
+
+function registerResources(server: EffectMcpServerAdapter, config: RuntimeConfig): void {
+  server.registerResourceTemplate(
+    {
+      description:
+        'Read one canonical Threadnote URI already returned by recall_context or list_context. This template does not enumerate private memories; resources/read is bounded, while read_context remains the complete canonical read path.',
+      meta: {'threadnote.io/max-resource-bytes': MCP_RESOURCE_READ_MAX_BYTES},
+      mimeType: MCP_RESOURCE_MIME_TYPE,
+      name: 'Threadnote canonical resource',
+      // Effect's MCP registry uses find-my-way route syntax internally. A
+      // catch-all lets the handler return an explicit invalid-URI protocol
+      // error instead of the registry's ambiguous empty-content fallback.
+      routerPath: '*',
+      uriTemplate: 'threadnote://{+resourcePath}',
+    },
+    uri => readThreadnoteMcpResource(config, uri),
+  );
+}
 
 const getRuntimeConfig = Effect.fn('mcpServer.getRuntimeConfig')(function* () {
   return yield* getApplicationRuntimeConfig();

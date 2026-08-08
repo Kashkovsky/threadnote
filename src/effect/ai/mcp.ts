@@ -6,6 +6,9 @@ import type {ApplicationServices} from '../runtime.js';
 import {withProductionLogging} from '../production_log.js';
 
 const MCP_PRODUCTION_LOG_WRITE_TIMEOUT_MILLISECONDS = 50;
+const EFFECT_RPC_CAUSE_MARKER = new TextEncoder().encode('"_tag":"Cause"');
+const MCP_RESOURCE_ERROR_BRAND_KEY = 'threadnote.io/resource-read-error';
+export const MCP_RESOURCE_ERROR_DATA = Object.freeze({[MCP_RESOURCE_ERROR_BRAND_KEY]: 1});
 
 interface ToolAnnotations {
   readonly destructiveHint?: boolean;
@@ -40,7 +43,30 @@ interface RegisteredTool {
 
 type ToolHandlerResult = ToolResult | Effect.Effect<ToolResult, unknown, ApplicationServices> | PromiseLike<ToolResult>;
 
+interface ResourceTemplateDefinition {
+  readonly description?: string;
+  readonly meta?: Readonly<Record<string, boolean | number | string>>;
+  readonly mimeType?: string;
+  readonly name: string;
+  readonly routerPath: string;
+  readonly uriTemplate: string;
+}
+
+interface RegisteredResourceTemplate {
+  readonly definition: ResourceTemplateDefinition;
+  readonly handle: ResourceTemplateHandler;
+}
+
+type ResourceTemplateHandler = (
+  uri: string,
+) => Effect.Effect<
+  typeof McpSchema.ReadResourceResult.Type,
+  McpSchema.InternalError | McpSchema.InvalidParams | McpSchema.McpErrorBase,
+  ApplicationServices
+>;
+
 export class EffectMcpServerAdapter {
+  readonly #resourceTemplates: RegisteredResourceTemplate[] = [];
   readonly #tools: RegisteredTool[] = [];
 
   constructor(
@@ -62,13 +88,45 @@ export class EffectMcpServerAdapter {
     });
   }
 
+  registerResourceTemplate(definition: ResourceTemplateDefinition, handle: ResourceTemplateHandler): void {
+    this.#resourceTemplates.push({definition, handle});
+  }
+
   private registrationLayer(): Layer.Layer<never, never, McpServer.McpServer | ApplicationServices> {
+    const resourceTemplates = [...this.#resourceTemplates];
     const registrations = [...this.#tools];
     const productionLogHome = this.productionLogHome;
     return Layer.effectDiscard(
       Effect.gen(function* () {
         const server = yield* McpServer.McpServer;
         const applicationServices = yield* Effect.context<ApplicationServices>();
+        for (const registration of resourceTemplates) {
+          yield* server.addResourceTemplate({
+            annotations: Context.empty(),
+            completions: {},
+            handle: uri =>
+              // The negotiated Effect MCP revision accepts McpErrorBase on
+              // the wire, but addResourceTemplate's beta type only lists two
+              // concrete subclasses. Preserve the wider protocol error here.
+              registration
+                .handle(uri)
+                .pipe(
+                  Effect.provideContext(applicationServices),
+                  Effect.catchCause(mcpResourceFailureResult),
+                ) as Effect.Effect<
+                typeof McpSchema.ReadResourceResult.Type,
+                McpSchema.InternalError | McpSchema.InvalidParams
+              >,
+            routerPath: registration.definition.routerPath,
+            template: new McpSchema.ResourceTemplate({
+              _meta: registration.definition.meta,
+              description: registration.definition.description,
+              mimeType: registration.definition.mimeType,
+              name: registration.definition.name,
+              uriTemplate: registration.definition.uriTemplate,
+            }),
+          });
+        }
         for (const registration of registrations) {
           const input = Schema.Struct(registration.definition.inputSchema);
           const inputSchema =
@@ -125,6 +183,31 @@ export class EffectMcpServerAdapter {
       ),
     );
   }
+}
+
+export function mcpResourceFailureResult(
+  cause: Cause.Cause<unknown>,
+): Effect.Effect<never, McpSchema.InternalError | McpSchema.InvalidParams | McpSchema.McpErrorBase> {
+  if (Cause.hasInterrupts(cause)) {
+    return Effect.failCause(
+      cause as Cause.Cause<McpSchema.InternalError | McpSchema.InvalidParams | McpSchema.McpErrorBase>,
+    );
+  }
+  const error = Option.getOrUndefined(Cause.findErrorOption(cause));
+  if (
+    (error instanceof McpSchema.InvalidParams ||
+      error instanceof McpSchema.InternalError ||
+      error instanceof McpSchema.McpErrorBase) &&
+    hasMcpResourceErrorBrand(error)
+  ) {
+    return Effect.fail(error);
+  }
+  return Effect.fail(
+    new McpSchema.InternalError({
+      data: MCP_RESOURCE_ERROR_DATA,
+      message: 'Threadnote resource request failed.',
+    }),
+  );
 }
 
 export function mcpToolFailureResult(cause: Cause.Cause<unknown>): Effect.Effect<McpSchema.CallToolResult, never> {
@@ -255,12 +338,13 @@ export function makeInitializeInstructionsTransform(
 ): (input: string | Uint8Array) => string | Uint8Array {
   let initialized = false;
   return input => {
-    if (initialized) return input;
+    if (initialized && !couldContainEffectRpcCause(input)) return input;
     const text = typeof input === 'string' ? input : new TextDecoder().decode(input);
     const parsed = Option.getOrUndefined(
       Option.liftThrowable(
         (content: string) =>
           JSON.parse(content) as {
+            readonly error?: unknown;
             readonly result?: {
               readonly capabilities?: unknown;
               readonly protocolVersion?: unknown;
@@ -269,11 +353,106 @@ export function makeInitializeInstructionsTransform(
           },
       )(text),
     );
-    if (!parsed || parsed.result?.protocolVersion === undefined || parsed.result.serverInfo === undefined) {
+    if (!parsed) {
       return input;
     }
-    initialized = true;
-    const encoded = `${JSON.stringify({...parsed, result: {...parsed.result, instructions}})}\n`;
+    let transformed: Record<string, unknown> = parsed;
+    if (!initialized && parsed.result?.protocolVersion !== undefined && parsed.result.serverInfo !== undefined) {
+      initialized = true;
+      transformed = {...transformed, result: {...parsed.result, instructions}};
+    }
+    transformed = unwrapEffectRpcMcpError(transformed);
+    if (transformed === parsed) return input;
+    const encoded = `${JSON.stringify(transformed)}\n`;
     return typeof input === 'string' ? encoded : new TextEncoder().encode(encoded);
   };
+}
+
+function couldContainEffectRpcCause(input: string | Uint8Array): boolean {
+  if (typeof input === 'string') return input.includes('"_tag":"Cause"');
+  outer: for (let index = 0; index <= input.length - EFFECT_RPC_CAUSE_MARKER.length; index += 1) {
+    for (let offset = 0; offset < EFFECT_RPC_CAUSE_MARKER.length; offset += 1) {
+      if (input[index + offset] !== EFFECT_RPC_CAUSE_MARKER[offset]) continue outer;
+    }
+    return true;
+  }
+  return false;
+}
+
+// Effect 4.0.0-beta.102's JSON-RPC serializer reads `code` from the outer
+// Fail reason instead of its typed error, so native MCP failures reach clients
+// as code 0. Repair only the exact single-Fail envelopes and protocol error
+// types Threadnote emits; unrelated results, defects, and Cause values pass
+// through byte-for-byte.
+function unwrapEffectRpcMcpError(parsed: Record<string, unknown>): Record<string, unknown> {
+  const error = parsed.error;
+  if (
+    parsed.jsonrpc !== '2.0' ||
+    !('id' in parsed) ||
+    (typeof parsed.id !== 'number' && typeof parsed.id !== 'string') ||
+    'result' in parsed ||
+    typeof error !== 'object' ||
+    error === null ||
+    !('_tag' in error) ||
+    error._tag !== 'Cause' ||
+    !('code' in error) ||
+    error.code !== 0
+  ) {
+    return parsed;
+  }
+  if (!('data' in error) || !Array.isArray(error.data)) return parsed;
+  if (error.data.length !== 1) return parsed;
+  const failure = error.data[0];
+  if (
+    typeof failure !== 'object' ||
+    failure === null ||
+    !('_tag' in failure) ||
+    failure._tag !== 'Fail' ||
+    !('error' in failure)
+  ) {
+    return parsed;
+  }
+  const typed = failure.error;
+  if (
+    typeof typed !== 'object' ||
+    typed === null ||
+    !('code' in typed) ||
+    typeof typed.code !== 'number' ||
+    !('message' in typed) ||
+    typeof typed.message !== 'string' ||
+    !isRecognizedMcpError(typed) ||
+    !hasMcpResourceErrorBrand(typed)
+  ) {
+    return parsed;
+  }
+  return {
+    ...parsed,
+    error: {
+      code: typed.code,
+      message: typed.message,
+    },
+  };
+}
+
+function hasMcpResourceErrorBrand(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null || !('data' in error)) return false;
+  const data = error.data;
+  return (
+    typeof data === 'object' &&
+    data !== null &&
+    !Array.isArray(data) &&
+    Object.keys(data).length === 1 &&
+    MCP_RESOURCE_ERROR_BRAND_KEY in data &&
+    data[MCP_RESOURCE_ERROR_BRAND_KEY] === 1
+  );
+}
+
+function isRecognizedMcpError(error: {readonly code: number} & Record<PropertyKey, unknown>): boolean {
+  if (error.code === -32_002) {
+    return !('_tag' in error) || error._tag === 'McpErrorBase';
+  }
+  return (
+    (error.code === -32_602 && error._tag === 'InvalidParams') ||
+    (error.code === -32_603 && error._tag === 'InternalError')
+  );
 }
