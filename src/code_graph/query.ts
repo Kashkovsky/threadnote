@@ -3,6 +3,7 @@ import {CommandExecutor, runCommandEffect} from '../effect/command.js';
 import {withExclusiveFileLock} from '../effect/file_lock.js';
 import {SystemInfo} from '../effect/system.js';
 import {CodeGraphIndexer} from './indexer.js';
+import {CodeGraphMaintenanceCoordinator} from './maintenance_coordinator.js';
 import {worktreeOverlayState} from './inventory.js';
 import {CodeGraphLanguagePackRegistry} from './languages/registry.js';
 import {
@@ -176,6 +177,7 @@ export class CodeGraphQueryService extends Context.Service<
       const system = yield* SystemInfo;
       const store = yield* CodeGraphStore;
       const indexer = yield* CodeGraphIndexer;
+      const maintenance = yield* CodeGraphMaintenanceCoordinator;
       const embedding = yield* CodeGraphEmbeddingIndex;
       const languagePacks = yield* CodeGraphLanguagePackRegistry;
       const withRepositoryServices = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
@@ -186,6 +188,16 @@ export class CodeGraphQueryService extends Context.Service<
           Effect.provideService(Path.Path, path),
           Effect.provideService(SystemInfo, system),
         );
+      const requestMaintenance = (threadnoteHome: string, identity: RepositoryIdentity) => {
+        const layout = codeGraphLayout(path, threadnoteHome, identity.checkoutId, identity.worktreeId);
+        return maintenance.request({
+          anchorIdentity: identity,
+          checkoutId: identity.checkoutId,
+          databasePath: layout.databasePath,
+          threadnoteHome,
+          writerLockPath: layout.databaseWriteLockPath,
+        });
+      };
       const statusForIdentity = (
         threadnoteHome: string,
         identity: RepositoryIdentity,
@@ -329,7 +341,11 @@ export class CodeGraphQueryService extends Context.Service<
         });
       return CodeGraphQueryService.of({
         attachSharedReadySnapshot: (threadnoteHome, identity, observedStatus, interlock) =>
-          withRepositoryServices(attachSharedReadySnapshot(threadnoteHome, identity, observedStatus, interlock)),
+          withRepositoryServices(
+            attachSharedReadySnapshot(threadnoteHome, identity, observedStatus, interlock).pipe(
+              Effect.tap(status => requestMaintenance(threadnoteHome, status.identity)),
+            ),
+          ),
         inspect: options =>
           withRepositoryServices(
             Effect.gen(function* () {
@@ -397,7 +413,7 @@ export class CodeGraphQueryService extends Context.Service<
                   return result;
                 });
               if (options.operation === 'impact' && options.baseCommit) {
-                return yield* Effect.acquireUseRelease(
+                const result = yield* Effect.acquireUseRelease(
                   indexer.ensureCommit({
                     commit: options.baseCommit,
                     cwd: options.cwd,
@@ -410,8 +426,12 @@ export class CodeGraphQueryService extends Context.Service<
                       .releaseSnapshotLease(layout.databasePath, base.leaseToken)
                       .pipe(Effect.catch(() => Effect.void)),
                 );
+                yield* requestMaintenance(options.threadnoteHome, identity);
+                return result;
               }
-              return yield* inspect();
+              const result = yield* inspect();
+              yield* requestMaintenance(options.threadnoteHome, identity);
+              return result;
             }),
           ),
         purge: (threadnoteHome, cwd) =>
@@ -458,11 +478,17 @@ export class CodeGraphQueryService extends Context.Service<
             Effect.gen(function* () {
               const {identity} = yield* resolveAndRecordCodeGraphLocalAssociation(threadnoteHome, cwd);
               yield* options?.afterIdentityObserved?.(identity) ?? Effect.void;
-              return yield* statusForIdentity(threadnoteHome, identity, options, true);
+              const status = yield* statusForIdentity(threadnoteHome, identity, options, true);
+              yield* requestMaintenance(threadnoteHome, status.identity);
+              return status;
             }),
           ),
         statusForIdentity: (threadnoteHome, identity, options) =>
-          withRepositoryServices(statusForIdentity(threadnoteHome, identity, options)),
+          withRepositoryServices(
+            statusForIdentity(threadnoteHome, identity, options).pipe(
+              Effect.tap(status => requestMaintenance(threadnoteHome, status.identity)),
+            ),
+          ),
       });
     }),
   );

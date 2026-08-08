@@ -138,11 +138,11 @@ export const removeCodeGraphView = Effect.fn('codeGraph.removeViewAction')(funct
   );
 });
 
-type CodeGraphViewDatabaseTargetInspection =
+export type CodeGraphViewDatabaseTargetInspection =
   | {readonly state: 'missing'}
   | {readonly canonicalHome: string; readonly databasePath: string; readonly state: 'ready'};
 
-const inspectCodeGraphViewDatabaseTarget = Effect.fn('codeGraph.inspectViewDatabaseTarget')(function* (
+export const inspectCodeGraphViewDatabaseTarget = Effect.fn('codeGraph.inspectViewDatabaseTarget')(function* (
   threadnoteHome: string,
   checkoutId: string,
 ) {

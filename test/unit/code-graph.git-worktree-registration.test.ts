@@ -1,23 +1,49 @@
 import {execFileSync} from 'node:child_process';
-import {mkdirSync, mkdtempSync, renameSync, rmSync, symlinkSync, writeFileSync} from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {Effect} from 'effect';
+import * as BunServices from '@effect/platform-bun/BunServices';
+import {it as effectIt} from '@effect/vitest';
+import {Effect, Fiber, Layer} from 'effect';
+import {TestClock} from 'effect/testing';
 import {afterEach, describe, expect, it} from 'vitest';
 import {
   CODE_GRAPH_GIT_WORKTREE_REGISTRATION_LIMITS,
   captureCodeGraphGitWorktreeRegistration,
   codeGraphGitWorktreeAdminNameKeys,
+  observeCodeGraphRecordedWorktreePaths,
+  observeCodeGraphWorktreeReconciliationAuthority,
   parseBoundedGitDirectoryOutput,
+  parseCodeGraphRecordedWorktreePathBatchResponse,
+  parseCodeGraphWorktreeReconciliationAuthorityResponse,
   scanCodeGraphGitWorktreeRegistry,
+  scanCodeGraphGitWorktreeRegistryBatch,
+  validCodeGraphWorktreeAuthorityWorkerRequest,
   type CodeGraphGitWorktreeRegistryRequest,
+  type CodeGraphWorktreeReconciliationAuthorityRequest,
 } from '../../src/code_graph/git_worktree_registration.js';
 import {CommandExecutor} from '../../src/effect/command.js';
+import {SystemInfo} from '../../src/effect/system.js';
 import {resolveRepositoryIdentity} from '../../src/code_graph/repository.js';
+import {CODE_GRAPH_GIT_WORKTREE_REGISTRATION_WORKER_ARGUMENT} from '../../src/worker_protocol.js';
 import {runEffect} from '../helpers/effect-runtime.js';
 
 const roots: string[] = [];
 const CHECKOUT_ID = 'a'.repeat(64);
+const authorityWorkerLayer = CommandExecutor.layer.pipe(
+  Layer.provideMerge(SystemInfo.layer),
+  Layer.provideMerge(BunServices.layer),
+);
 
 afterEach(() => {
   for (const root of roots.splice(0).reverse()) rmSync(root, {force: true, recursive: true});
@@ -213,6 +239,242 @@ describe('code graph common-gitdir worktree authority', () => {
     expect(JSON.stringify(exact)).not.toContain('Solaris');
     expect(codeGraphGitWorktreeAdminNameKeys(CHECKOUT_ID, Uint8Array.of(0xff, 0xfe))).toHaveLength(1);
   });
+
+  effectIt.effect('classifies one bounded page of linked admin targets with a single stable scan', () =>
+    Effect.promise(async () => {
+      const common = commonDirectoryFixture();
+      mkdirSync(join(common, 'worktrees', 'present-directory'));
+      writeFileSync(join(common, 'worktrees', 'present-file'), 'partial registration');
+      const observation = await scanCodeGraphGitWorktreeRegistryBatch({
+        adminNameKeySets: ['absent', 'present-directory', 'present-file'].map(name =>
+          codeGraphGitWorktreeAdminNameKeys(CHECKOUT_ID, name),
+        ),
+        checkoutId: CHECKOUT_ID,
+        gitCommonDirectory: common,
+        protocol: 2,
+      });
+
+      expect(observation).toMatchObject({
+        entryCount: 2,
+        states: ['absent', 'present', 'present'],
+        state: 'complete',
+      });
+      expect(JSON.stringify(observation)).not.toContain(common);
+      expect(JSON.stringify(observation)).not.toContain('present-directory');
+    }),
+  );
+
+  effectIt.effect('runs the protocol-v3 authority boundary for thirty-two index-addressed targets', () =>
+    Effect.gen(function* () {
+      const common = commonDirectoryFixture();
+      const pathRoot = temporaryRoot('threadnote-authority-paths-');
+      const targets = Array.from({length: CODE_GRAPH_GIT_WORKTREE_REGISTRATION_LIMITS.maxBatchTargets}, (_, index) => {
+        const canonicalWorktreePath = join(pathRoot, `target-${index}`);
+        if (index % 2 === 0) mkdirSync(canonicalWorktreePath);
+        return {
+          adminNameKeys: codeGraphGitWorktreeAdminNameKeys(CHECKOUT_ID, `absent-${index}`),
+          canonicalWorktreePath,
+          evidenceToken: index.toString(16).padStart(64, '0'),
+        };
+      });
+
+      const observation = yield* observeCodeGraphWorktreeReconciliationAuthority(
+        {checkoutId: CHECKOUT_ID, gitCommonDirectory: common},
+        targets,
+      );
+
+      expect(observation).toMatchObject({entryCount: 0, registryRootKind: 'directory', state: 'complete'});
+      if (observation.state === 'complete') {
+        expect(observation.pathStates).toEqual(targets.map((_, index) => (index % 2 === 0 ? 'present' : 'missing')));
+        expect(observation.registryStates).toEqual(targets.map(() => 'absent'));
+      }
+      const serialized = JSON.stringify(observation);
+      expect(serialized).not.toContain(common);
+      expect(targets.every(target => !serialized.includes(target.canonicalWorktreePath))).toBe(true);
+    }).pipe(Effect.provide(authorityWorkerLayer)),
+  );
+
+  effectIt.effect('rejects over-page authority before spawning and strictly parses malformed responses', () =>
+    Effect.gen(function* () {
+      const command = yield* CommandExecutor;
+      let workerCalls = 0;
+      const recording = CommandExecutor.of({
+        ...command,
+        executeBytes: (executable, args, options) => {
+          workerCalls += 1;
+          return command.executeBytes!(executable, args, options);
+        },
+      });
+      const targets = Array.from(
+        {length: CODE_GRAPH_GIT_WORKTREE_REGISTRATION_LIMITS.maxBatchTargets + 1},
+        (_, index) => ({
+          adminNameKeys: ['b'.repeat(64)],
+          canonicalWorktreePath: `/private/authority-${String(index)}`,
+          evidenceToken: 'c'.repeat(64),
+        }),
+      );
+      const observation = yield* observeCodeGraphWorktreeReconciliationAuthority(
+        {checkoutId: CHECKOUT_ID, gitCommonDirectory: '/private/common'},
+        targets,
+      ).pipe(Effect.provideService(CommandExecutor, recording));
+      expect(observation).toEqual({reason: 'invalid', state: 'unknown'});
+      expect(workerCalls).toBe(0);
+
+      const validAuthority = `${JSON.stringify({
+        contentDigest: '1'.repeat(64),
+        entryCount: 0,
+        pathStates: ['missing'],
+        registryRootIdentity: '2'.repeat(64),
+        registryRootKind: 'missing',
+        registryStates: ['absent'],
+        state: 'complete',
+      })}\n`;
+      const malformed = [
+        validAuthority.slice(0, -1),
+        `${validAuthority}{}\n`,
+        `${JSON.stringify({pathStates: [], state: 'complete'})}\n`,
+        `${JSON.stringify({pathStates: ['missing', 'present'], state: 'complete'})}\n`,
+        'x'.repeat(CODE_GRAPH_GIT_WORKTREE_REGISTRATION_LIMITS.workerOutputBytes + 1),
+        `${JSON.stringify({
+          contentDigest: '1'.repeat(64),
+          entryCount: 0,
+          padding: 'x'.repeat(CODE_GRAPH_GIT_WORKTREE_REGISTRATION_LIMITS.workerOutputBytes),
+          pathStates: ['missing'],
+          registryRootIdentity: '2'.repeat(64),
+          registryRootKind: 'missing',
+          registryStates: ['absent'],
+          state: 'complete',
+        })}\n`,
+      ];
+      expect(
+        malformed.every(
+          output =>
+            parseCodeGraphWorktreeReconciliationAuthorityResponse(Buffer.from(output), 1).state === 'unknown' &&
+            parseCodeGraphRecordedWorktreePathBatchResponse(Buffer.from(output), 1).state === 'unknown',
+        ),
+      ).toBe(true);
+      expect(parseCodeGraphWorktreeReconciliationAuthorityResponse(Buffer.from(validAuthority), 1).state).toBe(
+        'complete',
+      );
+    }).pipe(Effect.provide(authorityWorkerLayer)),
+  );
+
+  effectIt.effect('accepts the maximally escaped valid page and rejects stdin beyond the hard cap', () =>
+    Effect.gen(function* () {
+      const prefix = process.platform === 'win32' ? 'C:\\' : '/';
+      const escapedPath = `${prefix}${'\u0001'.repeat(4_096 - Buffer.byteLength(prefix))}`;
+      const request = {
+        checkoutId: CHECKOUT_ID,
+        gitCommonDirectory: escapedPath,
+        kind: 'reconciliation-authority',
+        protocol: 3,
+        targets: Array.from({length: 32}, () => ({
+          adminNameKeys: ['b'.repeat(64)],
+          canonicalWorktreePath: escapedPath,
+          evidenceToken: 'c'.repeat(64),
+        })),
+      } satisfies CodeGraphWorktreeReconciliationAuthorityRequest;
+      const bytes = Buffer.byteLength(`${JSON.stringify(request)}\n`);
+      expect(bytes).toBeGreaterThan(320 * 1_024);
+      expect(bytes).toBeLessThanOrEqual(CODE_GRAPH_GIT_WORKTREE_REGISTRATION_LIMITS.authorityWorkerInputBytes);
+      expect(validCodeGraphWorktreeAuthorityWorkerRequest(request)).toBe(true);
+
+      const command = yield* CommandExecutor;
+      const system = yield* SystemInfo;
+      const oversized = new Uint8Array(CODE_GRAPH_GIT_WORKTREE_REGISTRATION_LIMITS.authorityWorkerInputBytes + 1);
+      oversized.fill(0x78);
+      const worker = yield* command.executeBytes!(
+        system.executablePath,
+        ['src/standalone.ts', CODE_GRAPH_GIT_WORKTREE_REGISTRATION_WORKER_ARGUMENT],
+        {
+          allowFailure: true,
+          env: {...system.environment(), THREADNOTE_CODE_GRAPH_GIT_WORKTREE_REGISTRATION_WORKER: '1'},
+          input: oversized,
+          maxOutputBytes: CODE_GRAPH_GIT_WORKTREE_REGISTRATION_LIMITS.workerOutputBytes,
+          timeoutMs: 2_000,
+        },
+      );
+      expect(worker.exitCode).toBe(0);
+      expect(new TextDecoder().decode(worker.stdout)).toBe('{"reason":"invalid","state":"unknown"}\n');
+
+      const invalidUtf8 = yield* command.executeBytes!(
+        system.executablePath,
+        ['src/standalone.ts', CODE_GRAPH_GIT_WORKTREE_REGISTRATION_WORKER_ARGUMENT],
+        {
+          allowFailure: true,
+          env: {...system.environment(), THREADNOTE_CODE_GRAPH_GIT_WORKTREE_REGISTRATION_WORKER: '1'},
+          input: Uint8Array.of(0xff, 0x0a),
+          maxOutputBytes: CODE_GRAPH_GIT_WORKTREE_REGISTRATION_LIMITS.workerOutputBytes,
+          timeoutMs: 2_000,
+        },
+      );
+      expect(invalidUtf8.exitCode).toBe(0);
+      expect(new TextDecoder().decode(invalidUtf8.stdout)).toBe('{"reason":"invalid","state":"unknown"}\n');
+      expect(invalidUtf8.stderr).toBe('');
+    }).pipe(Effect.provide(authorityWorkerLayer)),
+  );
+
+  effectIt.effect('classifies direct lstat states and fails closed for non-ENOENT path errors', () =>
+    Effect.gen(function* () {
+      const root = temporaryRoot('threadnote-authority-lstat-');
+      const present = join(root, 'present');
+      const dangling = join(root, 'dangling');
+      const missing = join(root, 'missing');
+      mkdirSync(present);
+      if (process.platform !== 'win32') symlinkSync(join(root, 'dangling-target'), dangling);
+      const paths = process.platform === 'win32' ? [present, missing] : [present, dangling, missing];
+      const observed = yield* observeCodeGraphRecordedWorktreePaths(paths);
+      expect(observed).toEqual({
+        pathStates: process.platform === 'win32' ? ['present', 'missing'] : ['present', 'present', 'missing'],
+        state: 'complete',
+      });
+
+      const parentFile = join(root, 'not-a-directory');
+      writeFileSync(parentFile, 'file');
+      expect(yield* observeCodeGraphRecordedWorktreePaths([join(parentFile, 'child')])).toEqual({
+        reason: 'unavailable',
+        state: 'unknown',
+      });
+      if (process.platform !== 'win32') {
+        const inaccessible = join(root, 'inaccessible');
+        mkdirSync(inaccessible);
+        chmodSync(inaccessible, 0o000);
+        const permission = yield* observeCodeGraphRecordedWorktreePaths([join(inaccessible, 'child')]);
+        chmodSync(inaccessible, 0o700);
+        expect(permission).toEqual({reason: 'unavailable', state: 'unknown'});
+      }
+    }).pipe(Effect.provide(authorityWorkerLayer)),
+  );
+
+  effectIt.effect('kills a hard-blocked lstat worker on deadline and interruption', () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const root = temporaryRoot('threadnote-authority-blocked-');
+        const timeoutPid = join(root, 'timeout.pid');
+        const timeoutFiber = yield* withBlockedLstatWorker(timeoutPid, () =>
+          observeCodeGraphRecordedWorktreePaths([join(root, 'missing')], {timeoutMilliseconds: 2_000}),
+        ).pipe(Effect.forkChild);
+        yield* Effect.promise(() => waitForFile(timeoutPid, 1_500));
+        const timeoutObservation = yield* Fiber.join(timeoutFiber);
+        expect(timeoutObservation).toEqual({reason: 'timeout', state: 'unknown'});
+        const timeoutProcess = Number(readFileSync(timeoutPid, 'utf8').trim());
+        yield* Effect.promise(() => waitForProcessExit(timeoutProcess, 2_000));
+
+        const interruptPid = join(root, 'interrupt.pid');
+        yield* withBlockedLstatWorker(interruptPid, () =>
+          Effect.gen(function* () {
+            const fiber = yield* observeCodeGraphRecordedWorktreePaths([join(root, 'missing')], {
+              timeoutMilliseconds: 10_000,
+            }).pipe(Effect.forkChild);
+            yield* Effect.promise(() => waitForFile(interruptPid, 2_000));
+            const childProcess = Number(readFileSync(interruptPid, 'utf8').trim());
+            yield* Fiber.interrupt(fiber);
+            yield* Effect.promise(() => waitForProcessExit(childProcess, 2_000));
+          }),
+        );
+      }).pipe(Effect.provide(authorityWorkerLayer)),
+    ),
+  );
 });
 
 function request(common: string, adminName: string): CodeGraphGitWorktreeRegistryRequest {
@@ -267,5 +529,57 @@ async function completesWithin<A>(promise: Promise<A>, milliseconds: number): Pr
     ]);
   } finally {
     if (timeout !== undefined) clearTimeout(timeout);
+  }
+}
+
+function withBlockedLstatWorker<A, E, R>(
+  pidFile: string,
+  operation: () => Effect.Effect<A, E, R>,
+): Effect.Effect<A, E, R> {
+  return Effect.acquireUseRelease(
+    Effect.sync(() => ({
+      block: process.env.THREADNOTE_CODE_GRAPH_TEST_BLOCK_WORKTREE_LSTAT,
+      pidFile: process.env.THREADNOTE_CODE_GRAPH_TEST_WORKTREE_LSTAT_PID_FILE,
+    })).pipe(
+      Effect.tap(() =>
+        Effect.sync(() => {
+          process.env.THREADNOTE_CODE_GRAPH_TEST_BLOCK_WORKTREE_LSTAT = '1';
+          process.env.THREADNOTE_CODE_GRAPH_TEST_WORKTREE_LSTAT_PID_FILE = pidFile;
+        }),
+      ),
+    ),
+    operation,
+    previous =>
+      Effect.sync(() => {
+        restoreEnvironment('THREADNOTE_CODE_GRAPH_TEST_BLOCK_WORKTREE_LSTAT', previous.block);
+        restoreEnvironment('THREADNOTE_CODE_GRAPH_TEST_WORKTREE_LSTAT_PID_FILE', previous.pidFile);
+      }),
+  );
+}
+
+function restoreEnvironment(name: string, value: string | undefined): void {
+  if (value === undefined) delete process.env[name];
+  else process.env[name] = value;
+}
+
+async function waitForFile(path: string, timeoutMilliseconds: number): Promise<void> {
+  const deadline = Date.now() + timeoutMilliseconds;
+  while (!existsSync(path)) {
+    if (Date.now() >= deadline) throw new Error('Worker did not publish its test PID before the deadline.');
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+}
+
+async function waitForProcessExit(pid: number, timeoutMilliseconds: number): Promise<void> {
+  const deadline = Date.now() + timeoutMilliseconds;
+  for (;;) {
+    try {
+      process.kill(pid, 0);
+    } catch (error) {
+      if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'ESRCH') return;
+      throw error;
+    }
+    if (Date.now() >= deadline) throw new Error(`Worker ${String(pid)} survived its bounded cancellation.`);
+    await new Promise(resolve => setTimeout(resolve, 5));
   }
 }

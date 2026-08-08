@@ -5,6 +5,7 @@ import {Clock, Crypto, Deferred, Effect, Fiber, FileSystem, Layer, Path} from 'e
 import {TestClock} from 'effect/testing';
 import {
   cleanupMissingCodeGraphLocalProvenance,
+  readMissingCodeGraphWorktreeReconciliationEvidence,
   recordVerifiedCodeGraphLocalAssociation,
   withCodeGraphLocalProvenanceLock,
   type CodeGraphLocalProvenanceRecordV2,
@@ -58,6 +59,62 @@ describe('code graph local provenance cleanup', () => {
           // still invalidates missing-path deletion authority.
           expect(result).toEqual({observedState: 'stale', state: 'preserved'});
           expect(yield* fixture.fs.exists(fixture.sidecar)).toBe(true);
+        }),
+      ),
+    );
+
+    layerIt.effect('never returns missing authority when the worktree reappears before its final path check', () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fixture = yield* provenanceCleanupFixture;
+          yield* fixture.fs.writeFileString(
+            fixture.sidecar,
+            `${JSON.stringify({
+              ...fixture.record,
+              registration: {adminNameKeys: ['4'.repeat(64)], kind: 'linked'},
+            })}\n`,
+            {flag: 'w', mode: 0o600},
+          );
+
+          const evidence = yield* readMissingCodeGraphWorktreeReconciliationEvidence(
+            fixture.home,
+            {checkoutId: CHECKOUT_ID, repositoryId: REPOSITORY_ID, worktreeId: WORKTREE_ID},
+            {beforeFinalMissingObservation: () => fixture.fs.makeDirectory(fixture.missingWorktree, {mode: 0o700})},
+          );
+
+          expect(evidence).toEqual({state: 'present'});
+          expect(JSON.stringify(evidence)).not.toContain(fixture.missingWorktree);
+        }),
+      ),
+    );
+
+    layerIt.effect('preserves a dangling symlink created between the two exact missing-path observations', () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fixture = yield* provenanceCleanupFixture;
+          yield* fixture.fs.writeFileString(
+            fixture.sidecar,
+            `${JSON.stringify({
+              ...fixture.record,
+              registration: {adminNameKeys: ['4'.repeat(64)], kind: 'linked'},
+            })}\n`,
+            {flag: 'w', mode: 0o600},
+          );
+
+          const evidence = yield* readMissingCodeGraphWorktreeReconciliationEvidence(
+            fixture.home,
+            {checkoutId: CHECKOUT_ID, repositoryId: REPOSITORY_ID, worktreeId: WORKTREE_ID},
+            {
+              beforeFinalMissingObservation: () =>
+                fixture.fs.symlink(`${fixture.missingWorktree}.dangling-target`, fixture.missingWorktree),
+            },
+          );
+
+          expect(evidence).toEqual({state: 'present'});
+          expect(yield* fixture.fs.readLink(fixture.missingWorktree)).toBe(
+            `${fixture.missingWorktree}.dangling-target`,
+          );
+          expect(JSON.stringify(evidence)).not.toContain(fixture.missingWorktree);
         }),
       ),
     );

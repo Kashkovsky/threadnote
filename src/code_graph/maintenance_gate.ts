@@ -10,7 +10,20 @@ import {
   codeGraphWorktreeLockRoot,
 } from './layout.js';
 import {classifyCodeGraphStoreFailure} from './store_failure.js';
-import {CodeGraphStoreBusyError} from './types.js';
+import {CodeGraphStoreBusyError, CodeGraphStoreError} from './types.js';
+
+export class CodeGraphMaintenanceActiveError extends CodeGraphStoreError {
+  override readonly name = 'CodeGraphMaintenanceActiveError';
+
+  constructor() {
+    super('Code graph maintenance is active.', {
+      code: 'busy',
+      operation: 'coordinate code graph maintenance',
+      recovery: 'defer',
+      retryable: true,
+    });
+  }
+}
 
 interface MaintenanceIntentOwner {
   readonly processId: number;

@@ -4,6 +4,7 @@ import {TestClock} from 'effect/testing';
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import {
+  codeGraphWatcherSnapshotStale,
   makeCodeGraphWatcher,
   prewarmCandidatesFromRefOutput,
   type CodeGraphWatchOptions,
@@ -443,6 +444,89 @@ describe('CodeGraphWatcher', () => {
       yield* Fiber.interrupt(fiber);
     }).pipe(Effect.provide(Logger.layer([logger])), Effect.scoped);
   });
+
+  effectIt.effect('requests initial maintenance and orders change maintenance before refresh', () =>
+    Effect.gen(function* () {
+      const events = yield* Ref.make<string[]>([]);
+      const fiber = yield* watchRepository(
+        {watch: () => Stream.make({path: 'source.ts'})} as never,
+        {
+          isAbsolute: (value: string) => value.startsWith('/'),
+          join: (...values: string[]) => values.join('/'),
+          relative: () => 'source.ts',
+          sep: '/',
+        } as never,
+        options,
+        false,
+        () => Ref.update(events, current => [...current, 'refresh']),
+        {
+          periodicRefreshRequired: () => Effect.succeed(false),
+          requestAfterChange: () =>
+            Ref.update(events, current => [...current, 'change-maintenance']).pipe(
+              Effect.andThen(Effect.fail(new Error('maintenance scheduling defect'))),
+            ),
+          requestInitial: () => Ref.update(events, current => [...current, 'initial-maintenance']),
+        },
+      ).pipe(Effect.forkScoped);
+
+      yield* TestClock.adjust('751 millis');
+      yield* Effect.yieldNow;
+
+      expect(yield* Ref.get(events)).toEqual(['initial-maintenance', 'change-maintenance', 'refresh']);
+      yield* Fiber.interrupt(fiber);
+    }).pipe(Effect.scoped),
+  );
+
+  effectIt.effect('refreshes on periodic positive staleness and preserves on current or unknown evidence', () =>
+    Effect.gen(function* () {
+      for (const testCase of [
+        {expectedRefreshes: 0, probe: Effect.succeed(false)},
+        {expectedRefreshes: 1, probe: Effect.succeed(true)},
+        {expectedRefreshes: 0, probe: Effect.fail(new Error('unknown freshness'))},
+      ] as const) {
+        const refreshes = yield* Ref.make(0);
+        const maintenanceRequests = yield* Ref.make(0);
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const fiber = yield* watchRepository(
+              {watch: () => Stream.never} as never,
+              {} as never,
+              options,
+              false,
+              () => Ref.update(refreshes, count => count + 1),
+              {
+                periodicRefreshRequired: () =>
+                  Ref.update(maintenanceRequests, count => count + 1).pipe(Effect.andThen(testCase.probe)),
+                requestAfterChange: () => Effect.void,
+                requestInitial: () => Effect.void,
+              },
+            ).pipe(Effect.forkScoped);
+            yield* TestClock.adjust('5 minutes');
+            yield* Effect.yieldNow;
+
+            expect(yield* Ref.get(maintenanceRequests)).toBe(1);
+            expect(yield* Ref.get(refreshes)).toBe(testCase.expectedRefreshes);
+            yield* Fiber.interrupt(fiber);
+          }),
+        );
+      }
+    }),
+  );
+
+  effectIt.effect('classifies unchanged and changed watcher evidence without full refresh work', () =>
+    Effect.sync(() => {
+      const cleanSnapshot = {commit: 'a', dirty: false};
+      expect(codeGraphWatcherSnapshotStale(cleanSnapshot, {headCommit: 'a'}, {dirty: false})).toBe(false);
+      expect(codeGraphWatcherSnapshotStale(cleanSnapshot, {headCommit: 'b'}, {dirty: false})).toBe(true);
+      expect(
+        codeGraphWatcherSnapshotStale(
+          {commit: 'a', dirty: true, overlayFingerprint: 'old'},
+          {headCommit: 'a'},
+          {dirty: true, fingerprint: 'new'},
+        ),
+      ).toBe(true);
+    }),
+  );
 
   it('serializes explicit and watch-triggered refreshes while coalescing a trailing run', async () => {
     const result = await Effect.runPromise(

@@ -1,4 +1,5 @@
 import {Database} from 'bun:sqlite';
+import {it as effectIt} from '@effect/vitest';
 import {Deferred, Effect, Fiber, FileSystem, Path, Ref} from 'effect';
 import fc from 'fast-check';
 import {afterEach, describe, expect, it} from 'vitest';
@@ -12,9 +13,11 @@ import {
 import {CodeGraphStore, type CodeGraphRoutineMaintenanceResult} from '../../src/code_graph/store.js';
 import {withCodeGraphMaintenanceIntent} from '../../src/code_graph/maintenance_gate.js';
 import {withExclusiveFileLock} from '../../src/effect/file_lock.js';
+import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import {
   CODE_GRAPH_EXTRACTOR_GENERATION,
+  CodeGraphStoreError,
   type CodeGraphSnapshot,
   type RepositoryIdentity,
 } from '../../src/code_graph/types.js';
@@ -587,81 +590,351 @@ describe('routine code graph maintenance', () => {
     }
   });
 
-  it('coalesces one database and rejects a second database in the same home', async () => {
-    const first = tick('/home', '/database/one');
-    const second = tick('/home', '/database/two');
-    const observed = await Effect.runPromise(
-      Effect.gen(function* () {
-        const calls = yield* Ref.make(0);
-        const started = yield* Deferred.make<void>();
-        const release = yield* Deferred.make<void>();
-        const coordinator = yield* makeCodeGraphMaintenanceCoordinator(() =>
-          Ref.updateAndGet(calls, count => count + 1).pipe(
-            Effect.tap(() => Deferred.succeed(started, undefined)),
-            Effect.andThen(Deferred.await(release)),
-            Effect.as(noWorkResult),
+  effectIt.effect('queues and fairly drains 64 distinct databases after an interrupted active owner', () =>
+    Effect.gen(function* () {
+      const first = tick('/home', '/database/000');
+      const calls = yield* Ref.make<string[]>([]);
+      const started = yield* Deferred.make<void>();
+      const drained = yield* Deferred.make<void>();
+      const coordinator = yield* makeCodeGraphMaintenanceCoordinator(input =>
+        Ref.updateAndGet(calls, current => [...current, input.databasePath]).pipe(
+          Effect.tap(current =>
+            current.length === 1
+              ? Deferred.succeed(started, undefined)
+              : current.length === 65
+                ? Deferred.succeed(drained, undefined)
+                : Effect.void,
           ),
-        );
-        const owner = yield* Effect.forkChild(coordinator.tick(first));
-        yield* Deferred.await(started);
-        const joined = yield* Effect.forkChild(coordinator.tick(first));
-        yield* Effect.sleep(5);
-        const competing = yield* coordinator.tick(second);
-        yield* Deferred.succeed(release, undefined);
-        const joinedResults = yield* Effect.all([Fiber.join(owner), Fiber.join(joined)]);
+          Effect.andThen(input.databasePath === first.databasePath ? Effect.never : Effect.void),
+          Effect.as(noWorkResult),
+        ),
+      );
+      const owner = yield* Effect.forkChild(coordinator.tick(first));
+      yield* Deferred.await(started);
+      const queued = Array.from({length: 64}, (_, index) =>
+        tick('/home', `/database/${String(index + 1).padStart(3, '0')}`),
+      );
+      const admissions: CodeGraphRoutineMaintenanceResult[] = [];
+      for (const input of queued) admissions.push(yield* coordinator.tick(input));
+      const duplicate = yield* coordinator.tick(queued[0]!);
+      yield* Fiber.interrupt(owner);
+      yield* Deferred.await(drained);
 
-        return {
-          calls: yield* Ref.get(calls),
-          competing,
-          joinedResults,
-        };
-      }),
-    );
+      expect(admissions).toEqual(queued.map(() => ({reason: 'home-tick-active', state: 'deferred'})));
+      expect(duplicate).toEqual({reason: 'home-tick-active', state: 'deferred'});
+      expect(yield* Ref.get(calls)).toEqual([first.databasePath, ...queued.map(input => input.databasePath)]);
+    }),
+  );
 
-    expect(observed.calls).toBe(1);
-    expect(observed.joinedResults).toEqual([noWorkResult, noWorkResult]);
-    expect(observed.competing).toEqual({reason: 'home-tick-active', state: 'deferred'});
-  });
+  effectIt.effect('preserves the initiating and joined callers exact store failure', () =>
+    Effect.gen(function* () {
+      const expected = new CodeGraphStoreError('Exact permission failure.', {
+        code: 'permission',
+        operation: 'routine maintenance test',
+        recovery: 'fix-permissions',
+      });
+      const started = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const coordinator = yield* makeCodeGraphMaintenanceCoordinator(() =>
+        Deferred.succeed(started, undefined).pipe(
+          Effect.andThen(Deferred.await(release)),
+          Effect.andThen(Effect.fail(expected)),
+        ),
+      );
+      const input = tick('/home', '/database/error');
+      const owner = yield* Effect.forkChild(coordinator.tick(input).pipe(Effect.exit));
+      yield* Deferred.await(started);
+      const joined = yield* Effect.forkChild(coordinator.tick(input).pipe(Effect.exit));
+      yield* Deferred.succeed(release, undefined);
+      const exits = yield* Effect.all([Fiber.join(owner), Fiber.join(joined)]);
 
-  it('single-flights every bounded number of concurrent callers for one database', async () => {
-    await fc.assert(
-      fc.asyncProperty(fc.integer({max: 16, min: 2}), async callers => {
-        const observed = await Effect.runPromise(
-          Effect.gen(function* () {
-            const calls = yield* Ref.make(0);
-            const started = yield* Deferred.make<void>();
-            const release = yield* Deferred.make<void>();
-            const coordinator = yield* makeCodeGraphMaintenanceCoordinator(() =>
-              Ref.updateAndGet(calls, count => count + 1).pipe(
-                Effect.tap(() => Deferred.succeed(started, undefined)),
-                Effect.andThen(Deferred.await(release)),
-                Effect.as(noWorkResult),
+      for (const exit of exits) {
+        expect(exit._tag).toBe('Failure');
+        if (exit._tag === 'Failure') {
+          expect(String(exit.cause)).toContain('Exact permission failure.');
+          expect(String(exit.cause)).not.toContain('writer-busy');
+        }
+      }
+    }),
+  );
+
+  effectIt.effect('merges authoritative and index-preparation capabilities monotonically in pending work', () =>
+    Effect.gen(function* () {
+      const first = tick('/home', '/database/active');
+      const anchor = routineMaintenanceAnchor();
+      const started = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const drained = yield* Deferred.make<void>();
+      const calls = yield* Ref.make<CodeGraphRoutineMaintenanceTick[]>([]);
+      const coordinator = yield* makeCodeGraphMaintenanceCoordinator(input =>
+        Ref.updateAndGet(calls, current => [...current, input]).pipe(
+          Effect.tap(current =>
+            current.length === 1
+              ? Deferred.succeed(started, undefined)
+              : current.length === 2
+                ? Deferred.succeed(drained, undefined)
+                : Effect.void,
+          ),
+          Effect.andThen(input.databasePath === first.databasePath ? Deferred.await(release) : Effect.void),
+          Effect.as(noWorkResult),
+        ),
+      );
+      const owner = yield* coordinator.tick(first).pipe(Effect.forkChild);
+      yield* Deferred.await(started);
+      const pending = {
+        ...tick('/home', '/database/pending'),
+        allowIndexPreparation: true as const,
+        anchorIdentity: anchor,
+      };
+      expect(yield* coordinator.tick(pending)).toEqual({reason: 'home-tick-active', state: 'deferred'});
+      expect(yield* coordinator.tick(tick('/home', '/database/pending'))).toEqual({
+        reason: 'home-tick-active',
+        state: 'deferred',
+      });
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(owner);
+      yield* Deferred.await(drained);
+
+      expect((yield* Ref.get(calls))[1]).toMatchObject({
+        allowIndexPreparation: true,
+        anchorIdentity: anchor,
+        databasePath: '/database/pending',
+      });
+    }),
+  );
+
+  effectIt.effect('reserves one trailing slot for same-database capability upgrades at full capacity', () =>
+    Effect.gen(function* () {
+      const first = tick('/home', '/database/active');
+      const anchor = routineMaintenanceAnchor();
+      const started = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const drained = yield* Deferred.make<void>();
+      const calls = yield* Ref.make<CodeGraphRoutineMaintenanceTick[]>([]);
+      const expectedOrdinary = Array.from({length: 127}, (_, index) =>
+        tick('/home', `/database/${String(index).padStart(3, '0')}`),
+      );
+      const expectedRunCount = 1 + expectedOrdinary.length + 1;
+      const coordinator = yield* makeCodeGraphMaintenanceCoordinator(input =>
+        Ref.updateAndGet(calls, current => [...current, input]).pipe(
+          Effect.tap(current =>
+            current.length === 1
+              ? Deferred.succeed(started, undefined)
+              : current.length === expectedRunCount
+                ? Deferred.succeed(drained, undefined)
+                : Effect.void,
+          ),
+          Effect.andThen(
+            input.databasePath === first.databasePath && input.anchorIdentity === undefined
+              ? Deferred.await(release)
+              : Effect.void,
+          ),
+          Effect.as(noWorkResult),
+        ),
+      );
+      const owner = yield* coordinator.tick(first).pipe(Effect.forkChild);
+      yield* Deferred.await(started);
+      for (const input of expectedOrdinary) {
+        expect(yield* coordinator.tick(input)).toEqual({reason: 'home-tick-active', state: 'deferred'});
+      }
+      const upgraded = {...first, allowIndexPreparation: true as const, anchorIdentity: anchor};
+      const joining = yield* coordinator.tick(upgraded).pipe(Effect.forkChild);
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(owner);
+      yield* Fiber.join(joining);
+      yield* Deferred.await(drained);
+
+      const observed = yield* Ref.get(calls);
+      expect(observed.map(input => input.databasePath)).toEqual([
+        first.databasePath,
+        ...expectedOrdinary.map(input => input.databasePath),
+        first.databasePath,
+      ]);
+      expect(observed.at(-1)).toMatchObject({allowIndexPreparation: true, anchorIdentity: anchor});
+    }),
+  );
+
+  effectIt.effect('request returns immediately, coalesces a flood to one trailing run, and cancels with scope', () =>
+    Effect.gen(function* () {
+      const started = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const trailing = yield* Deferred.make<void>();
+      const stopped = yield* Deferred.make<void>();
+      const calls = yield* Ref.make(0);
+      const stops = yield* Ref.make(0);
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const coordinator = yield* makeCodeGraphMaintenanceCoordinator(() =>
+            Ref.updateAndGet(calls, count => count + 1).pipe(
+              Effect.flatMap(count =>
+                (count === 1
+                  ? Deferred.succeed(started, undefined).pipe(Effect.andThen(Deferred.await(release)))
+                  : Deferred.succeed(trailing, undefined).pipe(Effect.andThen(Effect.never))
+                ).pipe(Effect.as(noWorkResult)),
               ),
-            );
-            const first = yield* Effect.forkChild(coordinator.tick(tick('/home', '/database')));
-            yield* Deferred.await(started);
-            const joined = yield* Effect.forkChild(
-              Effect.all(
-                Array.from({length: callers - 1}, () => coordinator.tick(tick('/home', '/database'))),
-                {
-                  concurrency: 'unbounded',
-                },
+              Effect.ensuring(
+                Ref.updateAndGet(stops, count => count + 1).pipe(
+                  Effect.flatMap(count => (count === 2 ? Deferred.succeed(stopped, undefined) : Effect.void)),
+                ),
               ),
-            );
-            yield* Effect.sleep(5);
-            yield* Deferred.succeed(release, undefined);
-            return {
-              calls: yield* Ref.get(calls),
-              results: [yield* Fiber.join(first), ...(yield* Fiber.join(joined))],
-            };
-          }),
+            ),
+          );
+          const input = tick('/home', '/database/request');
+          yield* coordinator.request(input);
+          yield* Deferred.await(started);
+          for (let index = 0; index < 10_000; index += 1) yield* coordinator.request(input);
+          expect(yield* Ref.get(calls)).toBe(1);
+          yield* Deferred.succeed(release, undefined);
+          yield* Deferred.await(trailing);
+          expect(yield* Ref.get(calls)).toBe(2);
+        }),
+      );
+      yield* Deferred.await(stopped);
+      expect(yield* Ref.get(calls)).toBe(2);
+    }),
+  );
+
+  effectIt.effect('hands an admitted request to the scoped child even when its caller is cancelled', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const admitted = yield* Deferred.make<void>();
+        const releaseAdmission = yield* Deferred.make<void>();
+        const firstStarted = yield* Deferred.make<void>();
+        const releaseFirst = yield* Deferred.make<void>();
+        const trailingStarted = yield* Deferred.make<void>();
+        const admissions = yield* Ref.make(0);
+        const calls = yield* Ref.make(0);
+        const coordinator = yield* makeCodeGraphMaintenanceCoordinator(
+          () =>
+            Ref.updateAndGet(calls, count => count + 1).pipe(
+              Effect.flatMap(count =>
+                count === 1
+                  ? Deferred.succeed(firstStarted, undefined).pipe(Effect.andThen(Deferred.await(releaseFirst)))
+                  : Deferred.succeed(trailingStarted, undefined),
+              ),
+              Effect.as(noWorkResult),
+            ),
+          undefined,
+          {
+            afterRequestAdmission: () =>
+              Ref.updateAndGet(admissions, count => count + 1).pipe(
+                Effect.flatMap(count =>
+                  count === 1
+                    ? Deferred.succeed(admitted, undefined).pipe(Effect.andThen(Deferred.await(releaseAdmission)))
+                    : Effect.void,
+                ),
+              ),
+          },
         );
-        expect(observed.calls).toBe(1);
-        expect(observed.results).toEqual(Array.from({length: callers}, () => noWorkResult));
+        const input = tick('/home', '/database/cancelled-request');
+        const requester = yield* coordinator.request(input).pipe(Effect.forkChild);
+        yield* Deferred.await(admitted);
+        const interruption = yield* Fiber.interrupt(requester).pipe(Effect.forkChild);
+        yield* Deferred.succeed(releaseAdmission, undefined);
+        yield* Fiber.join(interruption);
+        yield* Deferred.await(firstStarted);
+
+        yield* coordinator.request(input);
+        yield* Deferred.succeed(releaseFirst, undefined);
+        yield* Deferred.await(trailingStarted);
+
+        expect(yield* Ref.get(calls)).toBe(2);
       }),
-      {numRuns: 30},
-    );
-  });
+    ),
+  );
+
+  effectIt.effect('prepares one legacy reverse index per authoritative background tick before reconciling', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const temporaryHome = yield* fs.makeTempDirectory({prefix: 'threadnote-reconciliation-index-bootstrap-'});
+      const home = yield* fs.realPath(temporaryHome);
+      temporaryHomes.push(home);
+      const checkoutId = 'a'.repeat(64);
+      const repositoryRoot = join(home, 'indexes', 'code-graph', 'repositories', checkoutId);
+      const databasePath = join(repositoryRoot, 'graph-v3.sqlite');
+      const writerLockPath = join(home, 'locks', 'indexes', 'code-graph', 'database-writes', `${checkoutId}.lock`);
+      yield* fs.makeDirectory(repositoryRoot, {recursive: true});
+      const store = yield* CodeGraphStore;
+      yield* store.initialize(databasePath);
+      yield* Effect.sync(() => {
+        const database = new Database(databasePath, {strict: true});
+        try {
+          database.run('DROP INDEX active_snapshots_snapshot_worktree');
+          database.run('DROP INDEX snapshots_base_state_id');
+          database.run('DROP INDEX snapshot_leases_snapshot_expiry');
+        } finally {
+          database.close(false);
+        }
+      });
+      const coordinator = yield* CodeGraphMaintenanceCoordinator;
+      const input = {
+        allowIndexPreparation: true as const,
+        anchorIdentity: {...routineMaintenanceAnchor(), checkoutId},
+        checkoutId,
+        databasePath,
+        threadnoteHome: home,
+        writerLockPath,
+      };
+      const results = yield* Effect.forEach(Array.from({length: 4}), () => coordinator.tick(input), {
+        concurrency: 1,
+      });
+
+      expect(results.slice(0, 3)).toEqual(
+        Array.from({length: 3}, () => ({
+          cleanup: 'reconciliation-index',
+          expiredLeases: 0,
+          remaining: true,
+          retiredSnapshots: 0,
+          rowsDeleted: 0,
+          state: 'completed',
+        })),
+      );
+      expect(results[3]).toEqual(noWorkResult);
+      expect(readReconciliationIndexes(databasePath)).toEqual([
+        'active_snapshots_snapshot_worktree',
+        'snapshot_leases_snapshot_expiry',
+        'snapshots_base_state_id',
+      ]);
+    }).pipe(Effect.provide(ApplicationLayer)),
+  );
+
+  effectIt.effect.prop(
+    'single-flights every bounded number of concurrent callers for one database',
+    {callers: fc.integer({max: 16, min: 2})},
+    ({callers}) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const calls = yield* Ref.make(0);
+          const started = yield* Deferred.make<void>();
+          const release = yield* Deferred.make<void>();
+          const coordinator = yield* makeCodeGraphMaintenanceCoordinator(() =>
+            Ref.updateAndGet(calls, count => count + 1).pipe(
+              Effect.tap(() => Deferred.succeed(started, undefined)),
+              Effect.andThen(Deferred.await(release)),
+              Effect.as(noWorkResult),
+            ),
+          );
+          const first = yield* Effect.forkChild(coordinator.tick(tick('/home', '/database')));
+          yield* Deferred.await(started);
+          const joined = yield* Effect.forkChild(
+            Effect.all(
+              Array.from({length: callers - 1}, () => coordinator.tick(tick('/home', '/database'))),
+              {
+                concurrency: 'unbounded',
+              },
+            ),
+          );
+          yield* Effect.forEach(Array.from({length: callers}), () => Effect.yieldNow, {discard: true});
+          yield* Deferred.succeed(release, undefined);
+          const observed = {
+            calls: yield* Ref.get(calls),
+            results: [yield* Fiber.join(first), ...(yield* Fiber.join(joined))],
+          };
+          expect(observed.calls).toBe(1);
+          expect(observed.results).toEqual(Array.from({length: callers}, () => noWorkResult));
+        }),
+      ),
+  );
 });
 
 const noWorkResult = {
@@ -675,6 +948,42 @@ const noWorkResult = {
 
 function tick(threadnoteHome: string, databasePath: string): CodeGraphRoutineMaintenanceTick {
   return {checkoutId: 'a'.repeat(64), databasePath, threadnoteHome, writerLockPath: `${databasePath}.lock`};
+}
+
+function routineMaintenanceAnchor(): RepositoryIdentity {
+  return {
+    caseMode: 'sensitive',
+    checkoutId: 'a'.repeat(64),
+    displayName: 'routine-maintenance-anchor',
+    gitCommonDirectory: '/anchor/common',
+    headCommit: '1'.repeat(40),
+    objectFormat: 'sha1',
+    repositoryId: 'b'.repeat(64),
+    repoRoot: '/anchor/root',
+    worktreeId: 'c'.repeat(64),
+  };
+}
+
+function readReconciliationIndexes(databasePath: string): readonly string[] {
+  const database = new Database(databasePath, {readonly: true, strict: true});
+  try {
+    return (
+      database
+        .query(
+          `SELECT name FROM sqlite_master
+           WHERE type = 'index'
+             AND name IN (
+               'active_snapshots_snapshot_worktree',
+               'snapshots_base_state_id',
+               'snapshot_leases_snapshot_expiry'
+             )
+           ORDER BY name`,
+        )
+        .all() as readonly {readonly name: string}[]
+    ).map(row => row.name);
+  } finally {
+    database.close(false);
+  }
 }
 
 async function routineFixture(prefix: string, initialize = true) {

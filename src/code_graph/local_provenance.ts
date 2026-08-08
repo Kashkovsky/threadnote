@@ -4,6 +4,7 @@ import {withExclusiveFileLock} from '../effect/file_lock.js';
 import {SystemInfo} from '../effect/system.js';
 import {
   captureCodeGraphGitWorktreeRegistration,
+  observeCodeGraphRecordedWorktreePaths,
   parseCodeGraphGitWorktreeRegistration,
   sameCodeGraphGitWorktreeRegistration,
   type CodeGraphGitWorktreeRegistration,
@@ -72,6 +73,34 @@ export type CodeGraphLocalReconciliationEvidence =
       readonly worktreeId: string;
     };
 
+/** Path-free, exact v2 authority token for automatic missing-worktree reconciliation. */
+export type CodeGraphMissingWorktreeReconciliationEvidence =
+  | {readonly state: 'invalid' | 'legacy-unknown' | 'main' | 'present'}
+  | {
+      readonly checkoutId: string;
+      readonly recordDigest: string;
+      readonly recordIdentity: string;
+      readonly registration: Extract<CodeGraphGitWorktreeRegistration, {readonly kind: 'linked'}>;
+      readonly repositoryId: string;
+      readonly state: 'missing';
+      readonly worktreeId: string;
+    };
+
+/** Private path-bearing token used only as input to the killable authority worker. */
+export type CodeGraphWorktreeReconciliationEvidenceCandidate =
+  | {readonly state: 'invalid' | 'legacy-unknown' | 'main'}
+  | {
+      readonly canonicalWorktreePath: string;
+      readonly checkoutId: string;
+      readonly evidenceToken: string;
+      readonly recordDigest: string;
+      readonly recordIdentity: string;
+      readonly registration: Extract<CodeGraphGitWorktreeRegistration, {readonly kind: 'linked'}>;
+      readonly repositoryId: string;
+      readonly state: 'candidate';
+      readonly worktreeId: string;
+    };
+
 export interface CodeGraphLocalProvenanceObservationOptions {
   /** @internal Deterministic race seam used to verify the final pre-publication identity check. */
   readonly beforePublishValidation?: () => Effect.Effect<void, unknown>;
@@ -89,6 +118,11 @@ export interface CodeGraphLocalProvenanceCleanupOptions {
   readonly beforeRemove?: () => Effect.Effect<void, unknown>;
   /** @internal Deterministic seam after final identity proof while the shared provenance lock remains held. */
   readonly afterFinalValidation?: () => Effect.Effect<void, unknown>;
+}
+
+export interface CodeGraphMissingWorktreeReconciliationOptions {
+  /** @internal Deterministic race seam before the final missing-path observation. */
+  readonly beforeFinalMissingObservation?: () => Effect.Effect<void, unknown>;
 }
 
 export type CodeGraphLocalProvenanceCleanupResult =
@@ -309,6 +343,105 @@ export const readCodeGraphLocalReconciliationEvidence = Effect.fn('codeGraph.rea
 );
 
 /**
+ * Return missing authority only while the exact private v2 record is stable
+ * across the missing-path observation. This never resolves Git from the
+ * remembered path and never returns that path to the caller.
+ */
+export const readMissingCodeGraphWorktreeReconciliationEvidence = Effect.fn(
+  'codeGraph.readMissingWorktreeReconciliationEvidence',
+)(function* (
+  threadnoteHome: string,
+  target: CodeGraphLocalAssociationTarget,
+  options: CodeGraphMissingWorktreeReconciliationOptions = {},
+) {
+  const initial = yield* readCodeGraphWorktreeReconciliationEvidenceCandidate(threadnoteHome, target);
+  if (initial.state !== 'candidate') return initial;
+  yield* options.beforeFinalMissingObservation?.() ?? Effect.void;
+  const observed = yield* observeCodeGraphRecordedWorktreePaths([initial.canonicalWorktreePath]);
+  if (observed.state !== 'complete') {
+    return {state: 'invalid'} as const satisfies CodeGraphMissingWorktreeReconciliationEvidence;
+  }
+  if (observed.pathStates[0] !== 'missing') {
+    return {state: 'present'} as const satisfies CodeGraphMissingWorktreeReconciliationEvidence;
+  }
+  const final = yield* readCodeGraphWorktreeReconciliationEvidenceCandidate(threadnoteHome, target);
+  if (final.state !== 'candidate' || !sameCodeGraphWorktreeReconciliationEvidenceCandidate(initial, final)) {
+    return {state: 'invalid'} as const satisfies CodeGraphMissingWorktreeReconciliationEvidence;
+  }
+  return {
+    checkoutId: final.checkoutId,
+    recordDigest: final.recordDigest,
+    recordIdentity: final.recordIdentity,
+    registration: final.registration,
+    repositoryId: final.repositoryId,
+    state: 'missing',
+    worktreeId: final.worktreeId,
+  } satisfies CodeGraphMissingWorktreeReconciliationEvidence;
+});
+
+export const readCodeGraphWorktreeReconciliationEvidenceCandidate = Effect.fn(
+  'codeGraph.readWorktreeReconciliationEvidenceCandidate',
+)(function* (threadnoteHome: string, target: CodeGraphLocalAssociationTarget) {
+  if (!validTarget(target)) {
+    return {state: 'invalid'} as const satisfies CodeGraphWorktreeReconciliationEvidenceCandidate;
+  }
+  return yield* withCodeGraphLocalProvenanceLock(
+    threadnoteHome,
+    target.checkoutId,
+    target.worktreeId,
+    0,
+    Effect.gen(function* () {
+      const evidence = yield* readCodeGraphLocalReconciliationEvidenceUnchecked(threadnoteHome, target);
+      if (evidence.state !== 'verified') return evidence;
+      if (evidence.registration.kind !== 'linked') {
+        return {state: 'main'} as const satisfies CodeGraphWorktreeReconciliationEvidenceCandidate;
+      }
+      const initial = yield* readLocalProvenanceCleanupCandidate(threadnoteHome, target);
+      if (initial === undefined || !reconciliationEvidenceMatchesCandidate(evidence, initial)) {
+        return {state: 'invalid'} as const satisfies CodeGraphWorktreeReconciliationEvidenceCandidate;
+      }
+      const final = yield* readLocalProvenanceCleanupCandidate(threadnoteHome, target);
+      if (final === undefined || !sameLocalProvenanceCleanupCandidate(initial, final)) {
+        return {state: 'invalid'} as const satisfies CodeGraphWorktreeReconciliationEvidenceCandidate;
+      }
+      return {
+        canonicalWorktreePath: final.record.canonicalWorktreePath,
+        checkoutId: evidence.checkoutId,
+        evidenceToken: sha256HexSync(
+          `threadnote-worktree-reconciliation-evidence-v1\0${evidence.recordDigest}\0${evidence.recordIdentity}`,
+        ),
+        recordDigest: evidence.recordDigest,
+        recordIdentity: evidence.recordIdentity,
+        registration: evidence.registration,
+        repositoryId: evidence.repositoryId,
+        state: 'candidate',
+        worktreeId: evidence.worktreeId,
+      } satisfies CodeGraphWorktreeReconciliationEvidenceCandidate;
+    }),
+  ).pipe(
+    Effect.catch(() =>
+      Effect.succeed({state: 'invalid'} as const satisfies CodeGraphWorktreeReconciliationEvidenceCandidate),
+    ),
+  );
+});
+
+export function sameCodeGraphWorktreeReconciliationEvidenceCandidate(
+  left: Extract<CodeGraphWorktreeReconciliationEvidenceCandidate, {readonly state: 'candidate'}>,
+  right: Extract<CodeGraphWorktreeReconciliationEvidenceCandidate, {readonly state: 'candidate'}>,
+): boolean {
+  return (
+    left.canonicalWorktreePath === right.canonicalWorktreePath &&
+    left.checkoutId === right.checkoutId &&
+    left.evidenceToken === right.evidenceToken &&
+    left.recordDigest === right.recordDigest &&
+    left.recordIdentity === right.recordIdentity &&
+    left.repositoryId === right.repositoryId &&
+    left.worktreeId === right.worktreeId &&
+    sameCodeGraphGitWorktreeRegistration(left.registration, right.registration)
+  );
+}
+
+/**
  * Delete only a private derived provenance sidecar whose recorded worktree is
  * still missing and whose complete file/content identity has not changed.
  * Source, Git, and remembered worktree paths are observation-only.
@@ -449,13 +582,12 @@ const readLocalProvenanceCleanupCandidate = Effect.fn('codeGraph.readLocalProven
   } satisfies LocalProvenanceCleanupCandidate;
 });
 
-const recordedWorktreePathMissing = Effect.fn('codeGraph.recordedWorktreePathMissing')(function* (
-  canonicalWorktreePath: string,
-) {
-  const fs = yield* FileSystem.FileSystem;
-  if (Option.isSome(yield* fs.readLink(canonicalWorktreePath).pipe(Effect.option))) return false;
-  return Option.isNone(yield* optionOnNotFound(fs.stat(canonicalWorktreePath)));
-});
+const recordedWorktreePathMissing = Effect.fn('codeGraph.recordedWorktreePathMissing')(
+  (canonicalWorktreePath: string) =>
+    observeCodeGraphRecordedWorktreePaths([canonicalWorktreePath]).pipe(
+      Effect.map(observation => observation.state === 'complete' && observation.pathStates[0] === 'missing'),
+    ),
+);
 
 function sameLocalProvenanceCleanupCandidate(
   left: LocalProvenanceCleanupCandidate,
@@ -473,6 +605,20 @@ function sameLocalProvenanceCleanupCandidate(
     left.record.observedAt === right.record.observedAt &&
     left.record.headCommit === right.record.headCommit &&
     sameCodeGraphGitWorktreeRegistration(left.record.registration, right.record.registration)
+  );
+}
+
+function reconciliationEvidenceMatchesCandidate(
+  evidence: Extract<CodeGraphLocalReconciliationEvidence, {readonly state: 'verified'}>,
+  candidate: LocalProvenanceCleanupCandidate,
+): boolean {
+  return (
+    evidence.checkoutId === candidate.record.checkoutId &&
+    evidence.worktreeId === candidate.record.worktreeId &&
+    evidence.repositoryId === candidate.record.repositoryId &&
+    evidence.recordDigest === candidate.recordDigest &&
+    evidence.recordIdentity === candidate.recordIdentity &&
+    sameCodeGraphGitWorktreeRegistration(evidence.registration, candidate.record.registration)
   );
 }
 

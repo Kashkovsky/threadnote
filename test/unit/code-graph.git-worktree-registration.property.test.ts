@@ -1,11 +1,14 @@
 import {mkdirSync, mkdtempSync, rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
+import {it as effectIt} from '@effect/vitest';
+import {Effect} from 'effect';
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import {
   codeGraphGitWorktreeAdminNameKeys,
   scanCodeGraphGitWorktreeRegistry,
+  scanCodeGraphGitWorktreeRegistryBatch,
   type CodeGraphGitWorktreeRegistryRequest,
 } from '../../src/code_graph/git_worktree_registration.js';
 
@@ -45,6 +48,52 @@ describe('code graph common-gitdir authority properties', () => {
       {numRuns: 100},
     );
   });
+
+  effectIt.effect.prop(
+    'keeps batch target states index-addressed across target and registry permutations',
+    {
+      entries: fc.uniqueArray(fc.stringMatching(/^[A-Za-z0-9][A-Za-z0-9._-]{0,15}$/), {
+        maxLength: 10,
+        minLength: 1,
+        selector: value => value.toLowerCase(),
+      }),
+      generatedTargets: fc.uniqueArray(fc.stringMatching(/^[A-Za-z0-9][A-Za-z0-9._-]{0,15}$/), {
+        maxLength: 16,
+        minLength: 1,
+        selector: value => value.toLowerCase(),
+      }),
+      reverseTargets: fc.boolean(),
+    },
+    ({entries, generatedTargets, reverseTargets}) => {
+      const targets = (reverseTargets ? [...generatedTargets].reverse() : generatedTargets).slice(0, 16);
+      return Effect.acquireUseRelease(
+        Effect.sync(() => registryFixture(entries)),
+        registry =>
+          Effect.promise(() =>
+            scanCodeGraphGitWorktreeRegistryBatch({
+              adminNameKeySets: targets.map(target => codeGraphGitWorktreeAdminNameKeys(CHECKOUT_ID, target)),
+              checkoutId: CHECKOUT_ID,
+              gitCommonDirectory: registry,
+              protocol: 2,
+            }),
+          ).pipe(
+            Effect.tap(observation =>
+              Effect.sync(() => {
+                expect(observation.state).toBe('complete');
+                if (observation.state === 'complete') {
+                  const present = new Set(entries.map(entry => entry.toLowerCase()));
+                  expect(observation.states).toEqual(
+                    targets.map(target => (present.has(target.toLowerCase()) ? 'present' : 'absent')),
+                  );
+                }
+              }),
+            ),
+            Effect.asVoid,
+          ),
+        registry => Effect.sync(() => rmSync(registry, {force: true, recursive: true})),
+      );
+    },
+  );
 });
 
 function request(common: string, target: string): CodeGraphGitWorktreeRegistryRequest {

@@ -727,6 +727,8 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
               Effect.ensuring(
                 maintenance
                   .tick({
+                    allowIndexPreparation: true,
+                    anchorIdentity: initialIdentity,
                     checkoutId: layout.checkoutId,
                     databasePath: layout.databasePath,
                     threadnoteHome: request.threadnoteHome,
@@ -890,6 +892,8 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
               Effect.ensuring(
                 maintenance
                   .tick({
+                    allowIndexPreparation: true,
+                    anchorIdentity: initialIdentity,
                     checkoutId: layout.checkoutId,
                     databasePath: layout.databasePath,
                     threadnoteHome: request.threadnoteHome,

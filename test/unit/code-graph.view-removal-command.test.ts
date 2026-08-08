@@ -13,12 +13,13 @@ import {
 import {CodeGraphStore} from '../../src/code_graph/store.js';
 import {CODE_GRAPH_EXTRACTOR_GENERATION, CodeGraphStoreBusyError} from '../../src/code_graph/types.js';
 import {withExclusiveFileLock} from '../../src/effect/file_lock.js';
+import {CommandExecutor} from '../../src/effect/command.js';
 import {SystemInfo} from '../../src/effect/system.js';
 
 const CHECKOUT_ID = 'a'.repeat(64);
 const WORKTREE_ID = '1'.repeat(64);
 const SNAPSHOT_ID = `cgsn_${'c'.repeat(40)}-direct`;
-const ViewRemovalCommandTestLayer = CodeGraphStore.layer.pipe(
+const ViewRemovalCommandTestLayer = Layer.merge(CodeGraphStore.layer, CommandExecutor.layer).pipe(
   Layer.provideMerge(SystemInfo.layer),
   Layer.provideMerge(BunServices.layer),
 );

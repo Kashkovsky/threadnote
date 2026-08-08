@@ -227,7 +227,13 @@ export interface CodeGraphDatabaseRepair {
 
 export type CodeGraphRoutineMaintenanceResult =
   | {
-      readonly cleanup: 'abandoned-build' | 'completed-build' | 'none' | 'retired-snapshot';
+      readonly cleanup:
+        | 'abandoned-build'
+        | 'completed-build'
+        | 'none'
+        | 'reconciliation-index'
+        | 'removed-worktree-view'
+        | 'retired-snapshot';
       readonly expiredLeases: number;
       readonly remaining: boolean;
       readonly retiredSnapshots: number;
@@ -538,7 +544,25 @@ export type CodeGraphViewSnapshotLeaseValidationResult =
 export interface CodeGraphViewRemovalStoreOptions extends CodeGraphSnapshotLeaseWriterOptions {
   /** Final containment proof run while the checkout writer gate is held and immediately before SQLite is opened. */
   readonly beforeDatabaseOpen?: () => Effect.Effect<void, unknown>;
+  /** @internal Require the exact automatic-reconciliation schema again inside the final writer transaction. */
+  readonly requireReconciliationSchema?: true;
 }
+
+export interface CodeGraphWorktreeReconciliationClaimOptions extends CodeGraphSnapshotLeaseWriterOptions {
+  /** Final containment proof run under the writer gate immediately before SQLite is opened. */
+  readonly beforeDatabaseOpen?: () => Effect.Effect<void, unknown>;
+}
+
+export interface CodeGraphWorktreeReconciliationCandidate {
+  readonly repositoryId: string;
+  readonly snapshotId: string;
+  readonly worktreeId: string;
+}
+
+export type CodeGraphWorktreeReconciliationIndexPreparationResult =
+  | {readonly state: 'ready'}
+  | {readonly index: string; readonly state: 'prepared'}
+  | {readonly reason: 'incompatible-schema'; readonly state: 'deferred'};
 
 export type CodeGraphViewRemovalResult =
   | {
@@ -646,6 +670,15 @@ export interface CodeGraphStoreShape {
     worktreeId: string,
     expectedSnapshotId: string,
   ) => Effect.Effect<CodeGraphViewObservationResult, CodeGraphStoreError>;
+  readonly claimWorktreeReconciliationCandidates: (
+    databasePath: string,
+    limit: number,
+    options?: CodeGraphWorktreeReconciliationClaimOptions,
+  ) => Effect.Effect<readonly CodeGraphWorktreeReconciliationCandidate[], CodeGraphStoreError>;
+  readonly prepareWorktreeReconciliationIndexes: (
+    databasePath: string,
+    options?: CodeGraphWorktreeReconciliationClaimOptions,
+  ) => Effect.Effect<CodeGraphWorktreeReconciliationIndexPreparationResult, CodeGraphStoreError>;
   readonly removeView: (
     databasePath: string,
     worktreeId: string,
@@ -1496,6 +1529,55 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
               }),
             );
           }).pipe(Effect.mapError(cause => storeError('observe code graph view', cause))),
+        claimWorktreeReconciliationCandidates: (databasePath, limit, options) =>
+          withWriterGate(
+            databasePath,
+            Effect.gen(function* () {
+              yield* options?.beforeDatabaseOpen?.() ?? Effect.void;
+              if (!(yield* fs.exists(databasePath))) return [];
+              if (Option.isSome(yield* fs.readLink(databasePath).pipe(Effect.option))) {
+                return yield* Effect.fail(new CodeGraphStoreError('Code graph database target is a symbolic link.'));
+              }
+              if ((yield* fs.stat(databasePath)).type !== 'File') {
+                return yield* Effect.fail(new CodeGraphStoreError('Code graph database target is not a regular file.'));
+              }
+              return yield* useExistingDatabase(
+                databasePath,
+                Effect.gen(function* () {
+                  const sql = yield* SqlClient.SqlClient;
+                  yield* sql.unsafe('PRAGMA busy_timeout = 0');
+                  return yield* claimWorktreeReconciliationCandidates(sql, limit);
+                }),
+              );
+            }),
+            options?.waitTimeoutMilliseconds ?? 0,
+          ).pipe(Effect.mapError(cause => storeError('claim code graph reconciliation candidates', cause))),
+        prepareWorktreeReconciliationIndexes: (databasePath, options) =>
+          withWriterGate(
+            databasePath,
+            Effect.gen(function* () {
+              yield* options?.beforeDatabaseOpen?.() ?? Effect.void;
+              if (!(yield* fs.exists(databasePath))) {
+                return {reason: 'incompatible-schema', state: 'deferred'} as const;
+              }
+              if (Option.isSome(yield* fs.readLink(databasePath).pipe(Effect.option))) {
+                return yield* Effect.fail(new CodeGraphStoreError('Code graph database target is a symbolic link.'));
+              }
+              if ((yield* fs.stat(databasePath)).type !== 'File') {
+                return yield* Effect.fail(new CodeGraphStoreError('Code graph database target is not a regular file.'));
+              }
+              return yield* useExistingDatabase(
+                databasePath,
+                Effect.gen(function* () {
+                  const sql = yield* SqlClient.SqlClient;
+                  yield* sql.unsafe('PRAGMA foreign_keys = ON');
+                  yield* sql.unsafe('PRAGMA busy_timeout = 0');
+                  return yield* sql.withTransaction(prepareWorktreeReconciliationIndex(sql));
+                }),
+              );
+            }),
+            options?.waitTimeoutMilliseconds ?? 0,
+          ).pipe(Effect.mapError(cause => storeError('prepare code graph reconciliation indexes', cause))),
         removeView: (databasePath, worktreeId, expectedSnapshotId, options) =>
           withWriterGate(
             databasePath,
@@ -1510,14 +1592,24 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
               if ((yield* fs.stat(databasePath)).type !== 'File') {
                 return yield* Effect.fail(new CodeGraphStoreError('Code graph database target is not a regular file.'));
               }
-              const result = yield* useDatabase(
-                databasePath,
-                Effect.gen(function* () {
-                  const sql = yield* SqlClient.SqlClient;
+              const remove = Effect.gen(function* () {
+                const sql = yield* SqlClient.SqlClient;
+                if (options?.requireReconciliationSchema === true) {
+                  yield* sql.unsafe('PRAGMA foreign_keys = ON');
+                  yield* sql.unsafe('PRAGMA busy_timeout = 0');
+                } else {
                   yield* initializeSchema(sql);
-                  return yield* removeActiveView(sql, worktreeId, expectedSnapshotId);
-                }),
-              );
+                }
+                return yield* removeActiveView(
+                  sql,
+                  worktreeId,
+                  expectedSnapshotId,
+                  options?.requireReconciliationSchema === true,
+                );
+              });
+              const result = yield* options?.requireReconciliationSchema === true
+                ? useExistingDatabase(databasePath, remove)
+                : useDatabase(databasePath, remove);
               return result as CodeGraphViewRemovalResult;
             }),
             // View removal is opportunistic foreground maintenance. Never
@@ -1526,7 +1618,9 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
             options?.waitTimeoutMilliseconds ?? 0,
           ).pipe(
             Effect.tap(result =>
-              'retiredSnapshots' in result && result.retiredSnapshots > 0
+              options?.requireReconciliationSchema !== true &&
+              'retiredSnapshots' in result &&
+              result.retiredSnapshots > 0
                 ? scheduleRetiredSnapshotCleanup(databasePath)
                 : Effect.void,
             ),
@@ -2482,6 +2576,25 @@ function useReadOnlyDatabase<A, E, R>(
       Option.isSome(session) && session.value.databasePath === databasePath
         ? effect.pipe(Effect.provideService(SqlClient.SqlClient, session.value.sql))
         : useDatabaseDirect(databasePath, effect, true),
+    ),
+  ) as Effect.Effect<A, E, Exclude<R, SqlClient.SqlClient>>;
+}
+
+function useExistingDatabase<A, E, R>(
+  databasePath: string,
+  effect: Effect.Effect<A, E, R | SqlClient.SqlClient>,
+): Effect.Effect<A, E, Exclude<R, SqlClient.SqlClient>> {
+  return Effect.scoped(
+    effect.pipe(
+      Effect.provide(
+        SqliteClient.layer({
+          create: false,
+          disableWAL: true,
+          filename: databasePath,
+          readonly: false,
+          readwrite: true,
+        }),
+      ),
     ),
   ) as Effect.Effect<A, E, Exclude<R, SqlClient.SqlClient>>;
 }
@@ -3570,6 +3683,21 @@ const ensureSnapshotLeaseSchema = Effect.fn('codeGraph.ensureSnapshotLeaseSchema
   `;
 });
 
+const CODE_GRAPH_ACTIVE_SNAPSHOT_EXTRACTOR_TRIGGER_SQL = `CREATE TRIGGER active_snapshots_require_current_extractor
+  BEFORE INSERT ON active_snapshots
+  FOR EACH ROW
+  WHEN NOT EXISTS (
+    SELECT 1
+    FROM snapshot_extractor_generations AS generation
+    JOIN schema_metadata AS minimum
+      ON minimum.key = 'minimum_extractor_generation'
+    WHERE generation.snapshot_id = NEW.snapshot_id
+      AND generation.generation >= CAST(minimum.value AS INTEGER)
+  )
+  BEGIN
+    SELECT RAISE(ABORT, 'Code graph snapshot was built by an older extractor generation.');
+  END`;
+
 const initializeSchema = Effect.fn('codeGraph.initializeSchema')(function* (sql: SqlClient.SqlClient) {
   yield* configureConnection(sql);
   yield* sql.unsafe('PRAGMA journal_mode = WAL');
@@ -3649,22 +3777,9 @@ const initializeSchema = Effect.fn('codeGraph.initializeSchema')(function* (sql:
       removed_at TEXT NOT NULL
     ) WITHOUT ROWID
   `);
-  yield* sql.unsafe(`
-    CREATE TRIGGER IF NOT EXISTS active_snapshots_require_current_extractor
-    BEFORE INSERT ON active_snapshots
-    FOR EACH ROW
-    WHEN NOT EXISTS (
-      SELECT 1
-      FROM snapshot_extractor_generations AS generation
-      JOIN schema_metadata AS minimum
-        ON minimum.key = 'minimum_extractor_generation'
-      WHERE generation.snapshot_id = NEW.snapshot_id
-        AND generation.generation >= CAST(minimum.value AS INTEGER)
-    )
-    BEGIN
-      SELECT RAISE(ABORT, 'Code graph snapshot was built by an older extractor generation.');
-    END
-  `);
+  yield* sql.unsafe(
+    CODE_GRAPH_ACTIVE_SNAPSHOT_EXTRACTOR_TRIGGER_SQL.replace('CREATE TRIGGER', 'CREATE TRIGGER IF NOT EXISTS'),
+  );
   yield* ensureSnapshotLeaseSchema(sql);
   yield* sql.unsafe(`
     CREATE TABLE IF NOT EXISTS snapshot_files (
@@ -3943,10 +4058,17 @@ const initializeSchema = Effect.fn('codeGraph.initializeSchema')(function* (sql:
   `);
   yield* sql.unsafe('CREATE INDEX IF NOT EXISTS snapshots_worktree_state ON snapshots(worktree_id, state)');
   yield* sql.unsafe('CREATE INDEX IF NOT EXISTS snapshots_commit ON snapshots(repository_id, commit_id)');
+  yield* sql.unsafe('CREATE INDEX IF NOT EXISTS snapshots_base_state_id ON snapshots(base_snapshot_id, state, id)');
   yield* sql.unsafe(
     'CREATE INDEX IF NOT EXISTS snapshots_graph_content ON snapshots(repository_id, graph_content_id, state)',
   );
+  yield* sql.unsafe(
+    'CREATE INDEX IF NOT EXISTS active_snapshots_snapshot_worktree ON active_snapshots(snapshot_id, worktree_id)',
+  );
   yield* sql.unsafe('CREATE INDEX IF NOT EXISTS snapshot_leases_expiry ON snapshot_leases(expires_at)');
+  yield* sql.unsafe(
+    'CREATE INDEX IF NOT EXISTS snapshot_leases_snapshot_expiry ON snapshot_leases(snapshot_id, expires_at)',
+  );
   yield* sql.unsafe('CREATE INDEX IF NOT EXISTS snapshot_files_blob ON snapshot_files(path, content_hash)');
   yield* sql.unsafe('CREATE INDEX IF NOT EXISTS symbols_name ON symbols(snapshot_id, name)');
   yield* sql.unsafe('CREATE INDEX IF NOT EXISTS symbols_path ON symbols(snapshot_id, path)');
@@ -4417,26 +4539,7 @@ const retireRoutineLeaseCandidates = Effect.fn('codeGraph.retireRoutineLeaseCand
   if (candidates.length === 0) return 0;
   // Retire only the bounded lease targets. Their detached bases remain a safe
   // warm cache and can be reconsidered by ordinary pointer reconciliation.
-  yield* sql`
-    UPDATE snapshots
-    SET state = 'retired'
-    WHERE ${sql.in('id', candidates)}
-      AND state = 'ready'
-      AND id NOT IN (
-        WITH RECURSIVE protected(snapshot_id) AS (
-          SELECT snapshot_id FROM active_snapshots
-          UNION
-          SELECT snapshot_id FROM snapshot_leases WHERE expires_at > ${now}
-          UNION
-          SELECT snapshot.base_snapshot_id
-          FROM snapshots AS snapshot
-          JOIN protected ON protected.snapshot_id = snapshot.id
-          WHERE snapshot.base_snapshot_id IS NOT NULL
-        )
-        SELECT snapshot_id FROM protected
-      )
-  `;
-  return yield* lastStatementChangeCount(sql);
+  return yield* retireReadySnapshotsIfUnused(sql, candidates, now);
 });
 
 const runRoutineMaintenancePage = Effect.fn('codeGraph.runRoutineMaintenancePage')(function* () {
@@ -4530,31 +4633,7 @@ const retireLeaseCandidates = Effect.fn('codeGraph.retireLeaseCandidates')(funct
   }
   const candidates = [...candidateSet];
   if (candidates.length === 0) return 0;
-  yield* sql`
-    WITH RECURSIVE protected(snapshot_id) AS (
-      SELECT active.snapshot_id
-      FROM active_snapshots AS active
-      WHERE NOT EXISTS (
-        SELECT 1
-        FROM removed_views AS removed
-        WHERE removed.worktree_id = active.worktree_id
-          AND removed.expected_snapshot_id = active.snapshot_id
-      )
-      UNION
-      SELECT snapshot_id FROM snapshot_leases WHERE expires_at > ${now}
-      UNION
-      SELECT snapshot.base_snapshot_id
-      FROM snapshots AS snapshot
-      JOIN protected ON protected.snapshot_id = snapshot.id
-      WHERE snapshot.base_snapshot_id IS NOT NULL
-    )
-    UPDATE snapshots
-    SET state = 'retired'
-    WHERE ${sql.in('id', candidates)}
-      AND state = 'ready'
-      AND id NOT IN (SELECT snapshot_id FROM protected)
-  `;
-  return yield* lastStatementChangeCount(sql);
+  return yield* retireReadySnapshotsIfUnused(sql, candidates, now);
 });
 
 const acquireSnapshotLease = Effect.fn('codeGraph.acquireSnapshotLease')(function* (
@@ -11218,14 +11297,431 @@ const observeActiveView = Effect.fn('codeGraph.observeActiveView')(function* (
   return {expectedSnapshotId, state: 'not-found'} satisfies CodeGraphViewObservationResult;
 });
 
+const claimWorktreeReconciliationCandidates = Effect.fn('codeGraph.claimWorktreeReconciliationCandidates')(function* (
+  sql: SqlClient.SqlClient,
+  requestedLimit: number,
+) {
+  const limit = Number.isSafeInteger(requestedLimit) ? Math.max(1, Math.min(32, requestedLimit)) : 32;
+  return yield* sql.withTransaction(
+    Effect.gen(function* () {
+      if (!(yield* codeGraphWorktreeReconciliationSchemaCompatible(sql))) {
+        return yield* Effect.fail(new CodeGraphStoreError('Code graph reconciliation schema is unavailable.'));
+      }
+      const cursorRows = yield* sql<{readonly value: string}>`
+          SELECT value FROM schema_metadata WHERE key = 'worktree_reconciliation_cursor' LIMIT 1
+        `;
+      const recordedCursor = cursorRows[0]?.value;
+      if (recordedCursor !== undefined && !/^[0-9a-f]{64}$/.test(recordedCursor)) {
+        return yield* Effect.fail(new CodeGraphStoreError('Code graph reconciliation cursor is invalid.'));
+      }
+      const cursor = recordedCursor;
+      const selectPage = (boundary: 'after' | 'through', pageLimit: number) => {
+        const statement = codeGraphWorktreeReconciliationCandidatePageStatement(cursor, boundary, pageLimit);
+        return sql.unsafe<{
+          readonly repository_id: string | null;
+          readonly snapshot_id: string;
+          readonly snapshot_state: string;
+          readonly tombstoned: number;
+          readonly worktree_id: string;
+        }>(statement.text, statement.parameters);
+      };
+      const after = yield* selectPage('after', limit);
+      const rows =
+        cursor === undefined || after.length >= limit
+          ? after
+          : [...after, ...(yield* selectPage('through', limit - after.length))];
+      const nextCursor = rows.at(-1)?.worktree_id;
+      if (
+        rows.some(
+          row =>
+            typeof row.repository_id !== 'string' ||
+            !/^[0-9a-f]{64}$/.test(row.repository_id) ||
+            !/^[0-9a-f]{64}$/.test(row.worktree_id) ||
+            !/^cgsn_[0-9a-f]{40}(?:-direct|-full-[0-9a-f]{16})?$/.test(row.snapshot_id) ||
+            !['building', 'failed', 'ready', 'retired'].includes(row.snapshot_state) ||
+            (Number(row.tombstoned) !== 0 && Number(row.tombstoned) !== 1),
+        )
+      ) {
+        return yield* Effect.fail(new CodeGraphStoreError('Code graph reconciliation candidate is invalid.'));
+      }
+      if (nextCursor !== undefined) {
+        yield* sql`
+            INSERT INTO schema_metadata (key, value)
+            VALUES ('worktree_reconciliation_cursor', ${nextCursor})
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+          `;
+      }
+      return rows
+        .filter(row => row.snapshot_state === 'ready' && Number(row.tombstoned) === 0)
+        .map(row => ({
+          repositoryId: row.repository_id!,
+          snapshotId: row.snapshot_id,
+          worktreeId: row.worktree_id,
+        })) satisfies readonly CodeGraphWorktreeReconciliationCandidate[];
+    }),
+  );
+});
+
+/** @internal Indexed cursor-page statement retained for query-plan and high-cardinality regressions. */
+export function codeGraphWorktreeReconciliationCandidatePageStatement(
+  cursor: string | undefined,
+  boundary: 'after' | 'through',
+  requestedLimit: number,
+): CodeGraphSqlQueryStatement {
+  const limit = Number.isSafeInteger(requestedLimit) ? Math.max(1, Math.min(32, requestedLimit)) : 32;
+  const cursorPredicate =
+    cursor === undefined ? '' : boundary === 'after' ? 'WHERE worktree_id > ?' : 'WHERE worktree_id <= ?';
+  return {
+    parameters: cursor === undefined ? [limit] : [cursor, limit],
+    text: `WITH raw_page AS MATERIALIZED (
+        SELECT worktree_id, snapshot_id
+        FROM active_snapshots
+        ${cursorPredicate}
+        ORDER BY worktree_id
+        LIMIT ?
+      )
+      SELECT
+        snapshots.repository_id,
+        raw_page.snapshot_id,
+        snapshots.state AS snapshot_state,
+        CASE WHEN removed.worktree_id IS NULL THEN 0 ELSE 1 END AS tombstoned,
+        raw_page.worktree_id
+      FROM raw_page
+      LEFT JOIN snapshots ON snapshots.id = raw_page.snapshot_id
+      LEFT JOIN removed_views AS removed
+        ON removed.worktree_id = raw_page.worktree_id
+       AND removed.expected_snapshot_id = raw_page.snapshot_id
+      ORDER BY raw_page.worktree_id`,
+  };
+}
+
+interface CodeGraphReconciliationSchemaColumn {
+  readonly name: string;
+  readonly notNull: boolean;
+  readonly primaryKeyPosition: number;
+  readonly type: string;
+}
+
+const CODE_GRAPH_RECONCILIATION_TABLE_COLUMNS = {
+  active_snapshots: [
+    {name: 'worktree_id', notNull: true, primaryKeyPosition: 1, type: 'TEXT'},
+    {name: 'snapshot_id', notNull: true, primaryKeyPosition: 0, type: 'TEXT'},
+    {name: 'activated_at', notNull: true, primaryKeyPosition: 0, type: 'TEXT'},
+  ],
+  removed_views: [
+    {name: 'worktree_id', notNull: true, primaryKeyPosition: 1, type: 'TEXT'},
+    {name: 'expected_snapshot_id', notNull: true, primaryKeyPosition: 0, type: 'TEXT'},
+    {name: 'removed_at', notNull: true, primaryKeyPosition: 0, type: 'TEXT'},
+  ],
+  schema_metadata: [
+    {name: 'key', notNull: true, primaryKeyPosition: 1, type: 'TEXT'},
+    {name: 'value', notNull: true, primaryKeyPosition: 0, type: 'TEXT'},
+  ],
+  snapshots: [
+    {name: 'id', notNull: true, primaryKeyPosition: 1, type: 'TEXT'},
+    {name: 'repository_id', notNull: true, primaryKeyPosition: 0, type: 'TEXT'},
+    {name: 'worktree_id', notNull: true, primaryKeyPosition: 0, type: 'TEXT'},
+    {name: 'commit_id', notNull: true, primaryKeyPosition: 0, type: 'TEXT'},
+    {name: 'graph_content_id', notNull: false, primaryKeyPosition: 0, type: 'TEXT'},
+    {name: 'base_snapshot_id', notNull: false, primaryKeyPosition: 0, type: 'TEXT'},
+    {name: 'extractor_set', notNull: true, primaryKeyPosition: 0, type: 'TEXT'},
+    {name: 'dirty', notNull: true, primaryKeyPosition: 0, type: 'INTEGER'},
+    {name: 'overlay_fingerprint', notNull: false, primaryKeyPosition: 0, type: 'TEXT'},
+    {name: 'state', notNull: true, primaryKeyPosition: 0, type: 'TEXT'},
+    {name: 'file_count', notNull: true, primaryKeyPosition: 0, type: 'INTEGER'},
+    {name: 'symbol_count', notNull: true, primaryKeyPosition: 0, type: 'INTEGER'},
+    {name: 'edge_count', notNull: true, primaryKeyPosition: 0, type: 'INTEGER'},
+    {name: 'started_at', notNull: true, primaryKeyPosition: 0, type: 'TEXT'},
+    {name: 'completed_at', notNull: false, primaryKeyPosition: 0, type: 'TEXT'},
+    {name: 'failure_summary', notNull: false, primaryKeyPosition: 0, type: 'TEXT'},
+  ],
+  snapshot_leases: [
+    {name: 'token', notNull: true, primaryKeyPosition: 1, type: 'TEXT'},
+    {name: 'snapshot_id', notNull: true, primaryKeyPosition: 0, type: 'TEXT'},
+    {name: 'expires_at', notNull: true, primaryKeyPosition: 0, type: 'INTEGER'},
+    {name: 'retire_when_inactive', notNull: true, primaryKeyPosition: 0, type: 'INTEGER'},
+  ],
+} as const satisfies Record<string, readonly CodeGraphReconciliationSchemaColumn[]>;
+
+type CodeGraphReconciliationTable = keyof typeof CODE_GRAPH_RECONCILIATION_TABLE_COLUMNS;
+
+const CODE_GRAPH_RECONCILIATION_REQUIRED_INDEXES = [
+  {
+    columns: ['snapshot_id', 'worktree_id'],
+    definition: 'CREATE INDEX active_snapshots_snapshot_worktree ON active_snapshots(snapshot_id, worktree_id)',
+    name: 'active_snapshots_snapshot_worktree',
+    table: 'active_snapshots',
+  },
+  {
+    columns: ['base_snapshot_id', 'state', 'id'],
+    definition: 'CREATE INDEX snapshots_base_state_id ON snapshots(base_snapshot_id, state, id)',
+    name: 'snapshots_base_state_id',
+    table: 'snapshots',
+  },
+  {
+    columns: ['snapshot_id', 'expires_at'],
+    definition: 'CREATE INDEX snapshot_leases_snapshot_expiry ON snapshot_leases(snapshot_id, expires_at)',
+    name: 'snapshot_leases_snapshot_expiry',
+    table: 'snapshot_leases',
+  },
+] as const;
+
+const codeGraphWorktreeReconciliationSchemaCompatible = Effect.fn('codeGraph.worktreeReconciliationSchemaCompatible')(
+  function* (sql: SqlClient.SqlClient, requireIndexes = true) {
+    for (const table of Object.keys(CODE_GRAPH_RECONCILIATION_TABLE_COLUMNS) as CodeGraphReconciliationTable[]) {
+      const columns = yield* sql.unsafe<{
+        readonly hidden: number;
+        readonly name: string;
+        readonly notnull: number;
+        readonly pk: number;
+        readonly type: string;
+      }>(`PRAGMA table_xinfo("${table}")`);
+      const observed = columns
+        .map(column => ({
+          hidden: Number(column.hidden),
+          name: column.name,
+          notNull: Number(column.notnull) === 1,
+          primaryKeyPosition: Number(column.pk),
+          type: column.type.toUpperCase(),
+        }))
+        .sort((left, right) => left.name.localeCompare(right.name));
+      const expected = [...CODE_GRAPH_RECONCILIATION_TABLE_COLUMNS[table]].sort((left, right) =>
+        left.name.localeCompare(right.name),
+      );
+      if (
+        observed.length !== expected.length ||
+        observed.some((column, index) => {
+          const contract = expected[index];
+          return (
+            contract === undefined ||
+            column.hidden !== 0 ||
+            column.name !== contract.name ||
+            column.type !== contract.type ||
+            column.notNull !== contract.notNull ||
+            column.primaryKeyPosition !== contract.primaryKeyPosition
+          );
+        })
+      ) {
+        return false;
+      }
+    }
+    const schemaVersions = yield* sql<{readonly value: string}>`
+    SELECT value FROM schema_metadata WHERE key = 'schema_version'
+  `;
+    if (schemaVersions.length !== 1 || schemaVersions[0]?.value !== String(CODE_GRAPH_SCHEMA_VERSION)) return false;
+    const activeForeignKeys = yield* sql.unsafe<{
+      readonly from: string;
+      readonly match: string;
+      readonly on_delete: string;
+      readonly on_update: string;
+      readonly table: string;
+      readonly to: string;
+    }>('PRAGMA foreign_key_list("active_snapshots")');
+    if (
+      activeForeignKeys.length !== 1 ||
+      activeForeignKeys[0]?.from !== 'snapshot_id' ||
+      activeForeignKeys[0]?.to !== 'id' ||
+      activeForeignKeys[0]?.table !== 'snapshots' ||
+      activeForeignKeys[0]?.on_delete.toUpperCase() !== 'CASCADE' ||
+      activeForeignKeys[0]?.on_update.toUpperCase() !== 'NO ACTION' ||
+      activeForeignKeys[0]?.match.toUpperCase() !== 'NONE'
+    ) {
+      return false;
+    }
+    const removedForeignKeys = yield* sql.unsafe('PRAGMA foreign_key_list("removed_views")');
+    if (removedForeignKeys.length !== 0) return false;
+    const snapshotForeignKeys = yield* sql.unsafe<{
+      readonly from: string;
+      readonly match: string;
+      readonly on_delete: string;
+      readonly on_update: string;
+      readonly table: string;
+      readonly to: string;
+    }>('PRAGMA foreign_key_list("snapshots")');
+    if (
+      snapshotForeignKeys.length !== 1 ||
+      snapshotForeignKeys[0]?.from !== 'repository_id' ||
+      snapshotForeignKeys[0]?.to !== 'id' ||
+      snapshotForeignKeys[0]?.table !== 'repositories' ||
+      snapshotForeignKeys[0]?.on_delete.toUpperCase() !== 'CASCADE' ||
+      snapshotForeignKeys[0]?.on_update.toUpperCase() !== 'NO ACTION' ||
+      snapshotForeignKeys[0]?.match.toUpperCase() !== 'NONE'
+    ) {
+      return false;
+    }
+    const leaseForeignKeys = yield* sql.unsafe<{
+      readonly from: string;
+      readonly match: string;
+      readonly on_delete: string;
+      readonly on_update: string;
+      readonly table: string;
+      readonly to: string;
+    }>('PRAGMA foreign_key_list("snapshot_leases")');
+    if (
+      leaseForeignKeys.length !== 1 ||
+      leaseForeignKeys[0]?.from !== 'snapshot_id' ||
+      leaseForeignKeys[0]?.to !== 'id' ||
+      leaseForeignKeys[0]?.table !== 'snapshots' ||
+      leaseForeignKeys[0]?.on_delete.toUpperCase() !== 'CASCADE' ||
+      leaseForeignKeys[0]?.on_update.toUpperCase() !== 'NO ACTION' ||
+      leaseForeignKeys[0]?.match.toUpperCase() !== 'NONE'
+    ) {
+      return false;
+    }
+    const removedDefinitions = yield* sql<{readonly sql: string}>`
+    SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'removed_views'
+  `;
+    const schemaMetadataDefinitions = yield* sql<{readonly sql: string}>`
+      SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'schema_metadata'
+    `;
+    const leaseDefinitions = yield* sql<{readonly sql: string}>`
+      SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'snapshot_leases'
+    `;
+    const snapshotDefinitions = yield* sql<{readonly sql: string}>`
+      SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'snapshots'
+    `;
+    if (!(
+      removedDefinitions.length === 1 &&
+      /\bWITHOUT\s+ROWID\b/iu.test(removedDefinitions[0]?.sql ?? '') &&
+      /\bworktree_id\s+TEXT\s+PRIMARY\s+KEY\s+NOT\s+NULL\s*,\s*expected_snapshot_id\s+TEXT\s+NOT\s+NULL\s*,\s*removed_at\s+TEXT\s+NOT\s+NULL\b/iu.test(
+        removedDefinitions[0]?.sql ?? '',
+      ) &&
+      schemaMetadataDefinitions.length === 1 &&
+      /\bkey\s+TEXT\s+PRIMARY\s+KEY\s+NOT\s+NULL\s*,\s*value\s+TEXT\s+NOT\s+NULL\b/iu.test(
+        schemaMetadataDefinitions[0]?.sql ?? '',
+      ) &&
+      leaseDefinitions.length === 1 &&
+      /\bretire_when_inactive\s+INTEGER\s+NOT\s+NULL\s+DEFAULT\s+0\s+CHECK\s*\(\s*retire_when_inactive\s+IN\s*\(\s*0\s*,\s*1\s*\)\s*\)/iu.test(
+        leaseDefinitions[0]?.sql ?? '',
+      ) &&
+      snapshotDefinitions.length === 1 &&
+      exactCodeGraphSnapshotStateCheck(snapshotDefinitions[0]?.sql ?? '')
+    )) {
+      return false;
+    }
+    if (requireIndexes) {
+      for (const index of CODE_GRAPH_RECONCILIATION_REQUIRED_INDEXES) {
+        if ((yield* codeGraphReconciliationIndexState(sql, index)) !== 'ready') return false;
+      }
+    }
+    const triggers = yield* sql.unsafe<{
+      readonly name: string;
+      readonly sql: string;
+      readonly tbl_name: string;
+    }>(`SELECT name, tbl_name, sql
+        FROM sqlite_master
+        WHERE type = 'trigger'
+          AND tbl_name IN ('schema_metadata', 'active_snapshots', 'removed_views', 'snapshots', 'snapshot_leases')`);
+    if (
+      triggers.length !== 1 ||
+      triggers[0]?.name !== 'active_snapshots_require_current_extractor' ||
+      triggers[0]?.tbl_name !== 'active_snapshots' ||
+      normalizeSqlDefinition(triggers[0]?.sql ?? '') !==
+        normalizeSqlDefinition(CODE_GRAPH_ACTIVE_SNAPSHOT_EXTRACTOR_TRIGGER_SQL)
+    ) {
+      return false;
+    }
+    return true;
+  },
+);
+
+function exactCodeGraphSnapshotStateCheck(definition: string): boolean {
+  const match = /\bstate\s+TEXT\s+NOT\s+NULL\s+CHECK\s*\(\s*state\s+IN\s*\((?<values>[^)]*)\)\s*\)/iu.exec(definition);
+  const values = match?.groups?.values;
+  if (values === undefined || values.replace(/'[^']*'/gu, '').replace(/[\s,]/gu, '') !== '') return false;
+  return (
+    [...values.matchAll(/'([^']*)'/gu)].map(value => value[1]).join('\0') ===
+    ['building', 'ready', 'failed', 'retired'].join('\0')
+  );
+}
+
+const prepareWorktreeReconciliationIndex = Effect.fn('codeGraph.prepareWorktreeReconciliationIndex')(function* (
+  sql: SqlClient.SqlClient,
+) {
+  if (!(yield* codeGraphWorktreeReconciliationSchemaCompatible(sql, false))) {
+    return {reason: 'incompatible-schema', state: 'deferred'} as const;
+  }
+  const states = yield* Effect.forEach(
+    CODE_GRAPH_RECONCILIATION_REQUIRED_INDEXES,
+    index => codeGraphReconciliationIndexState(sql, index).pipe(Effect.map(state => ({index, state}))),
+    {concurrency: 1},
+  );
+  if (states.some(observation => observation.state === 'incompatible')) {
+    return {reason: 'incompatible-schema', state: 'deferred'} as const;
+  }
+  const missing = states.find(observation => observation.state === 'missing');
+  if (missing !== undefined) {
+    yield* sql.unsafe(missing.index.definition);
+    if ((yield* codeGraphReconciliationIndexState(sql, missing.index)) !== 'ready') {
+      return yield* Effect.fail(new CodeGraphStoreError('Code graph reconciliation index changed during setup.'));
+    }
+    return {index: missing.index.name, state: 'prepared'} as const;
+  }
+  return {state: 'ready'} as const;
+});
+
+type CodeGraphReconciliationRequiredIndex = (typeof CODE_GRAPH_RECONCILIATION_REQUIRED_INDEXES)[number];
+
+const codeGraphReconciliationIndexState = Effect.fn('codeGraph.reconciliationIndexState')(function* (
+  sql: SqlClient.SqlClient,
+  index: CodeGraphReconciliationRequiredIndex,
+) {
+  const definitions = yield* sql.unsafe<{readonly sql: string; readonly tbl_name: string}>(
+    `SELECT tbl_name, sql FROM sqlite_master WHERE type = 'index' AND name = ?`,
+    [index.name],
+  );
+  if (definitions.length === 0) return 'missing' as const;
+  if (
+    definitions.length !== 1 ||
+    definitions[0]?.tbl_name !== index.table ||
+    normalizeSqlDefinition(definitions[0]?.sql ?? '') !== normalizeSqlDefinition(index.definition)
+  ) {
+    return 'incompatible' as const;
+  }
+  const indexes = yield* sql.unsafe<{
+    readonly name: string;
+    readonly partial: number;
+    readonly unique: number;
+  }>(`PRAGMA index_list("${index.table}")`);
+  const observed = indexes.find(candidate => candidate.name === index.name);
+  if (observed === undefined || Number(observed.unique) !== 0 || Number(observed.partial) !== 0) {
+    return 'incompatible' as const;
+  }
+  const xinfo = yield* sql.unsafe<{
+    readonly coll: string;
+    readonly desc: number;
+    readonly key: number;
+    readonly name: string | null;
+    readonly seqno: number;
+  }>(`PRAGMA index_xinfo("${index.name}")`);
+  const keyColumns = xinfo.filter(column => Number(column.key) === 1).sort((left, right) => left.seqno - right.seqno);
+  return keyColumns.length === index.columns.length &&
+    keyColumns.every(
+      (column, columnIndex) =>
+        column.name === index.columns[columnIndex] &&
+        column.coll.toUpperCase() === 'BINARY' &&
+        Number(column.desc) === 0,
+    )
+    ? ('ready' as const)
+    : ('incompatible' as const);
+});
+
+function normalizeSqlDefinition(value: string): string {
+  return value.replace(/\s+/gu, ' ').trim().toLowerCase();
+}
+
 const removeActiveView = Effect.fn('codeGraph.removeActiveView')(function* (
   sql: SqlClient.SqlClient,
   worktreeId: string,
   expectedSnapshotId: string,
+  requireReconciliationSchema = false,
 ) {
   yield* validateViewRemovalTarget(worktreeId, expectedSnapshotId);
   return yield* sql.withTransaction(
     Effect.gen(function* () {
+      if (requireReconciliationSchema && !(yield* codeGraphWorktreeReconciliationSchemaCompatible(sql))) {
+        return yield* Effect.fail(new CodeGraphStoreError('Code graph reconciliation schema is unavailable.'));
+      }
       const active = yield* sql<{readonly snapshot_id: string}>`
         SELECT snapshot_id FROM active_snapshots WHERE worktree_id = ${worktreeId} LIMIT 1
       `;
@@ -11285,7 +11781,11 @@ const removeActiveView = Effect.fn('codeGraph.removeActiveView')(function* (
         SET retire_when_inactive = 1
         WHERE snapshot_id = ${expectedSnapshotId}
       `;
-      const retiredSnapshots = yield* markUnusedSnapshotsRetired(sql);
+      const retiredSnapshots = yield* requireReconciliationSchema
+        ? Clock.currentTimeMillis.pipe(
+            Effect.flatMap(now => retireReadySnapshotsIfUnused(sql, [expectedSnapshotId], now)),
+          )
+        : markUnusedSnapshotsRetired(sql);
       return {
         expectedSnapshotId,
         retiredSnapshots,
@@ -11294,6 +11794,95 @@ const removeActiveView = Effect.fn('codeGraph.removeActiveView')(function* (
     }),
   );
 });
+
+const retireReadySnapshotsIfUnused = Effect.fn('codeGraph.retireReadySnapshotsIfUnused')(function* (
+  sql: SqlClient.SqlClient,
+  snapshotIds: readonly string[],
+  now: number,
+) {
+  const candidates = [...new Set(snapshotIds)];
+  if (candidates.length === 0) return 0;
+  const statement = codeGraphExactSnapshotRetirementStatement(candidates, now);
+  yield* sql.unsafe(statement.text, statement.parameters);
+  return yield* lastStatementChangeCount(sql);
+});
+
+/** @internal Target-rooted exact retirement retained for deterministic query-plan regressions. */
+export function codeGraphExactSnapshotRetirementStatement(
+  snapshotIds: readonly string[],
+  now: number,
+): CodeGraphSqlQueryStatement {
+  const candidates = [...new Set(snapshotIds)];
+  const placeholders = candidates.map(() => '?').join(', ');
+  return {
+    parameters: [...candidates, now],
+    text: `WITH RECURSIVE candidate_set(id) AS (
+      SELECT id FROM snapshots WHERE id IN (${placeholders})
+    ), retirement_clock(now) AS (
+      VALUES (?)
+    ), descendant(root_id, snapshot_id, blocked) AS (
+      SELECT candidate_set.id, candidate_set.id,
+        CASE WHEN observed.state <> 'ready'
+          OR EXISTS (
+            SELECT 1
+            FROM active_snapshots AS active
+            WHERE active.snapshot_id = candidate_set.id
+              AND NOT EXISTS (
+                SELECT 1
+                FROM removed_views AS removed
+                WHERE removed.worktree_id = active.worktree_id
+                  AND removed.expected_snapshot_id = active.snapshot_id
+              )
+          )
+          OR EXISTS (
+            SELECT 1
+            FROM snapshot_leases AS lease
+            WHERE lease.snapshot_id = candidate_set.id
+              AND lease.expires_at > (SELECT now FROM retirement_clock)
+          )
+        THEN 1 ELSE 0 END
+      FROM candidate_set
+      JOIN snapshots AS observed ON observed.id = candidate_set.id
+      UNION
+      SELECT descendant.root_id, child.id,
+        CASE WHEN EXISTS (
+            SELECT 1
+            FROM active_snapshots AS active
+            WHERE active.snapshot_id = child.id
+              AND NOT EXISTS (
+                SELECT 1
+                FROM removed_views AS removed
+                WHERE removed.worktree_id = active.worktree_id
+                  AND removed.expected_snapshot_id = active.snapshot_id
+              )
+          )
+          OR EXISTS (
+            SELECT 1
+            FROM snapshot_leases AS lease
+            WHERE lease.snapshot_id = child.id
+              AND lease.expires_at > (SELECT now FROM retirement_clock)
+          )
+          OR (
+            child.state <> 'retired'
+            AND (
+              child.id NOT IN (SELECT id FROM candidate_set)
+              OR child.state <> 'ready'
+            )
+          )
+        THEN 1 ELSE 0 END
+      FROM descendant
+      JOIN snapshots AS child ON child.base_snapshot_id = descendant.snapshot_id
+      WHERE descendant.blocked = 0
+    ), protected(root_id) AS (
+      SELECT DISTINCT root_id FROM descendant WHERE blocked = 1
+    )
+    UPDATE snapshots AS candidate
+    SET state = 'retired'
+    WHERE candidate.id IN (SELECT id FROM candidate_set)
+      AND candidate.state = 'ready'
+      AND candidate.id NOT IN (SELECT root_id FROM protected)`,
+  };
+}
 
 const markUnusedSnapshotsRetired = Effect.fn('codeGraph.markUnusedSnapshotsRetired')(function* (
   sql: SqlClient.SqlClient,

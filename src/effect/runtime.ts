@@ -36,7 +36,7 @@ const localModelCatalogLayer = LocalModelCatalog.layer(BUILTIN_MODEL_MANIFESTS);
 const localModelRuntimeLayer = isolatedLocalModelRuntimeLayer().pipe(Layer.provideMerge(systemLayer));
 const codeGraphStoreLayer = CodeGraphStore.layer.pipe(Layer.provideMerge(systemLayer));
 const codeGraphMaintenanceCoordinatorLayer = CodeGraphMaintenanceCoordinator.layer.pipe(
-  Layer.provideMerge(codeGraphStoreLayer),
+  Layer.provideMerge(Layer.merge(codeGraphStoreLayer, commandLayer)),
 );
 const codeGraphAnalysisLayer = CodeGraphAnalysis.layer.pipe(Layer.provideMerge(codeGraphStoreLayer));
 const treeSitterRuntimeLayer = TreeSitterRuntime.layer.pipe(Layer.provide(systemLayer));

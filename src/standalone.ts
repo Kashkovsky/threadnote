@@ -29,7 +29,14 @@ BunRuntime.runMain(program, {
 });
 
 async function gitWorktreeRegistrationWorkerProgram() {
-  return (await import('./code_graph/git_worktree_registration_worker.js')).gitWorktreeRegistrationWorkerProgram;
+  const [worker, system] = await Promise.all([
+    import('./code_graph/git_worktree_registration_worker.js'),
+    import('./effect/system.js'),
+  ]);
+  return worker.gitWorktreeRegistrationWorkerProgram.pipe(
+    Effect.provide(system.SystemInfo.layer),
+    Effect.provide(BunServices.layer),
+  );
 }
 
 async function localModelWorkerProgram(arguments_: readonly string[]) {
