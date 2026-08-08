@@ -1227,6 +1227,175 @@ describe('Manager logical repository and workspace catalogs', () => {
   });
 
   effectIt.layer(managerGraphLayer)(layerIt => {
+    layerIt.effect('validates only the exact active view and exact live lease in one read-only snapshot', () =>
+      TestClock.withLive(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const home = temporaryRoot('threadnote-manager-lease-validation-');
+            const identity = repositoryIdentity(home, 'a'.repeat(64));
+            const databasePath = join(
+              home,
+              'indexes',
+              'code-graph',
+              'repositories',
+              identity.checkoutId,
+              'graph-v3.sqlite',
+            );
+            const snapshot = {
+              ...readySnapshot(identity, 0, 0, 0, '2026-08-08T12:00:00.000Z'),
+              id: `cgsn_${'a'.repeat(40)}-direct`,
+            };
+            const store = yield* CodeGraphStore;
+            yield* store.activate(databasePath, identity, snapshot, [], [], []);
+            yield* store.promote(databasePath, identity, snapshot.id);
+            yield* managerGraphCatalog(home);
+
+            const database = new Database(databasePath, {readonly: true});
+            const lease = database
+              .query('SELECT token FROM snapshot_leases WHERE snapshot_id = ? LIMIT 1')
+              .get(snapshot.id) as {readonly token: string};
+            database.close();
+
+            expect(
+              yield* store.validateViewSnapshotLease(databasePath, identity.worktreeId, snapshot.id, lease.token, 0),
+            ).toMatchObject({state: 'valid'});
+            expect(
+              yield* store.validateViewSnapshotLease(
+                databasePath,
+                identity.worktreeId,
+                snapshot.id,
+                `${lease.token}-wrong`,
+                0,
+              ),
+            ).toEqual({state: 'invalid'});
+            expect(
+              yield* store.validateViewSnapshotLease(
+                databasePath,
+                identity.worktreeId,
+                snapshot.id,
+                lease.token,
+                60 * 60_000,
+              ),
+            ).toEqual({state: 'invalid'});
+            expect(
+              yield* store.validateViewSnapshotLease(
+                `${databasePath}.missing`,
+                identity.worktreeId,
+                snapshot.id,
+                lease.token,
+                0,
+              ),
+            ).toEqual({state: 'invalid'});
+            expect(existsSync(`${databasePath}.missing`)).toBe(false);
+
+            expect((yield* store.removeView(databasePath, identity.worktreeId, snapshot.id)).state).toBe('removed');
+            expect(
+              yield* store.validateViewSnapshotLease(databasePath, identity.worktreeId, snapshot.id, lease.token, 0),
+            ).toEqual({state: 'invalid'});
+            yield* releaseManagerGraphSnapshotLeases();
+          }),
+        ),
+      ),
+    );
+
+    layerIt.effect('refuses stale cached lease reuse after external removal while the writer gate is busy', () =>
+      TestClock.withLive(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const home = temporaryRoot('threadnote-manager-external-removal-busy-');
+            const identity = repositoryIdentity(home, 'b'.repeat(64));
+            const databasePath = join(
+              home,
+              'indexes',
+              'code-graph',
+              'repositories',
+              identity.checkoutId,
+              'graph-v3.sqlite',
+            );
+            const writerLockPath = join(
+              home,
+              'locks',
+              'indexes',
+              'code-graph',
+              'database-writes',
+              `${identity.checkoutId}.lock`,
+            );
+            const snapshot = {
+              ...readySnapshot(identity, 0, 0, 0, '2026-08-08T12:00:00.000Z'),
+              id: `cgsn_${'b'.repeat(40)}-direct`,
+            };
+            const store = yield* CodeGraphStore;
+            yield* store.activate(databasePath, identity, snapshot, [], [], []);
+            yield* store.promote(databasePath, identity, snapshot.id);
+            yield* managerGraphCatalog(home);
+
+            const catalogLoaded = yield* Deferred.make<void>();
+            const resumeRetention = yield* Deferred.make<void>();
+            let pauseNextCatalog = true;
+            let validationCalls = 0;
+            let traversals = 0;
+            const interlockedStore = CodeGraphStore.of({
+              ...store,
+              loadVisualizationCatalog: (database, metrics, options) =>
+                store.loadVisualizationCatalog(database, metrics, options).pipe(
+                  Effect.tap(() => {
+                    if (!pauseNextCatalog) return Effect.void;
+                    pauseNextCatalog = false;
+                    return Deferred.succeed(catalogLoaded, undefined).pipe(
+                      Effect.andThen(Deferred.await(resumeRetention)),
+                    );
+                  }),
+                ),
+              validateViewSnapshotLease: (...arguments_) => {
+                validationCalls += 1;
+                return store.validateViewSnapshotLease(...arguments_);
+              },
+            });
+            const queryFiber = yield* managerGraphQuery(
+              home,
+              `${identity.checkoutId}.${identity.worktreeId}`,
+              'missing-symbol',
+              {},
+              Option.some(snapshot.id),
+            ).pipe(
+              Effect.provideService(CodeGraphStore, interlockedStore),
+              Effect.provideService(ManagerGraphQueryLifecycle, {
+                beforeTraversal: Effect.sync(() => {
+                  traversals += 1;
+                }),
+              }),
+              Effect.forkChild,
+            );
+            yield* Deferred.await(catalogLoaded);
+            expect((yield* store.removeView(databasePath, identity.worktreeId, snapshot.id)).state).toBe('removed');
+
+            const writerAcquired = yield* Deferred.make<void>();
+            const releaseWriter = yield* Deferred.make<void>();
+            const writer = yield* store
+              .withSession(databasePath, store.initialize(databasePath), {
+                onWriterAcquired: () =>
+                  Deferred.succeed(writerAcquired, undefined).pipe(Effect.andThen(Deferred.await(releaseWriter))),
+                writerLockPath,
+              })
+              .pipe(Effect.forkChild);
+            yield* Deferred.await(writerAcquired);
+            yield* Deferred.succeed(resumeRetention, undefined);
+            const failure = yield* Fiber.join(queryFiber).pipe(
+              Effect.flip,
+              Effect.ensuring(Deferred.succeed(releaseWriter, undefined).pipe(Effect.asVoid)),
+            );
+            yield* Fiber.join(writer);
+
+            expect(failure).toBeInstanceOf(ManagerGraphBusyError);
+            expect(String(failure)).not.toContain(home);
+            expect(validationCalls).toBe(1);
+            expect(traversals).toBe(0);
+            yield* releaseManagerGraphSnapshotLeases();
+          }),
+        ),
+      ),
+    );
+
     layerIt.effect('keeps an already-retained query coherent while its final view is removed', () =>
       TestClock.withLive(
         Effect.scoped(

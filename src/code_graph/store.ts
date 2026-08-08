@@ -532,6 +532,9 @@ export type CodeGraphViewSnapshotLeaseRetainResult =
       readonly state: 'view-unavailable';
     };
 
+export type CodeGraphViewSnapshotLeaseValidationResult =
+  {readonly expiresAt: number; readonly state: 'valid'} | {readonly state: 'invalid'};
+
 export interface CodeGraphViewRemovalStoreOptions extends CodeGraphSnapshotLeaseWriterOptions {
   /** Final containment proof run while the checkout writer gate is held and immediately before SQLite is opened. */
   readonly beforeDatabaseOpen?: () => Effect.Effect<void, unknown>;
@@ -625,6 +628,13 @@ export interface CodeGraphStoreShape {
     durationMilliseconds: number,
     options?: CodeGraphViewSnapshotLeaseRetainOptions,
   ) => Effect.Effect<CodeGraphViewSnapshotLeaseRetainResult, CodeGraphStoreError>;
+  readonly validateViewSnapshotLease: (
+    databasePath: string,
+    worktreeId: string,
+    snapshotId: string,
+    token: string,
+    minimumRemainingMilliseconds: number,
+  ) => Effect.Effect<CodeGraphViewSnapshotLeaseValidationResult, CodeGraphStoreError>;
   readonly promote: (
     databasePath: string,
     identity: RepositoryIdentity,
@@ -1282,6 +1292,34 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
               options?.waitTimeoutMilliseconds,
             );
           }).pipe(Effect.mapError(cause => storeError('retain code graph view snapshot lease', cause))),
+        validateViewSnapshotLease: (databasePath, worktreeId, snapshotId, token, minimumRemainingMilliseconds) =>
+          Effect.gen(function* () {
+            yield* validateViewRemovalTarget(worktreeId, snapshotId);
+            if (
+              token.length === 0 ||
+              token.length > 1_024 ||
+              token.includes('\0') ||
+              !Number.isSafeInteger(minimumRemainingMilliseconds) ||
+              minimumRemainingMilliseconds < 0 ||
+              minimumRemainingMilliseconds > 60 * 60_000
+            ) {
+              return {state: 'invalid'} as const satisfies CodeGraphViewSnapshotLeaseValidationResult;
+            }
+            if (!(yield* fs.exists(databasePath))) {
+              return {state: 'invalid'} as const satisfies CodeGraphViewSnapshotLeaseValidationResult;
+            }
+            if (Option.isSome(yield* fs.readLink(databasePath).pipe(Effect.option))) {
+              return {state: 'invalid'} as const satisfies CodeGraphViewSnapshotLeaseValidationResult;
+            }
+            if ((yield* fs.stat(databasePath)).type !== 'File') {
+              return {state: 'invalid'} as const satisfies CodeGraphViewSnapshotLeaseValidationResult;
+            }
+            return yield* useDatabaseDirect(
+              databasePath,
+              validateViewSnapshotLease(worktreeId, snapshotId, token, minimumRemainingMilliseconds),
+              true,
+            );
+          }).pipe(Effect.mapError(cause => storeError('validate code graph view snapshot lease', cause))),
         activate: (databasePath, identity, snapshot, files, symbols, edges) =>
           prepare(databasePath).pipe(
             Effect.andThen(
@@ -4634,6 +4672,62 @@ const retainViewSnapshotLease = Effect.fn('codeGraph.retainViewSnapshotLease')(f
         state: 'retained',
         token: candidateToken,
       } satisfies CodeGraphViewSnapshotLeaseRetainResult;
+    }),
+  );
+});
+
+/**
+ * Read-only linearization point for Manager's writer-busy fallback. A cached
+ * process token is reusable only while the exact active view and the exact
+ * unexpired lease coexist in one SQLite snapshot and no exact tombstone does.
+ */
+const validateViewSnapshotLease = Effect.fn('codeGraph.validateViewSnapshotLease')(function* (
+  worktreeId: string,
+  snapshotId: string,
+  token: string,
+  minimumRemainingMilliseconds: number,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql.unsafe('PRAGMA busy_timeout = 0');
+  yield* sql.unsafe('PRAGMA query_only = ON');
+  return yield* sql.withTransaction(
+    Effect.gen(function* () {
+      if (
+        !(yield* tableExists(sql, 'active_snapshots')) ||
+        !(yield* tableExists(sql, 'removed_views')) ||
+        !(yield* tableExists(sql, 'snapshot_leases')) ||
+        !(yield* tableExists(sql, 'snapshots')) ||
+        !(yield* routineMaintenanceColumnsAvailable(sql, 'active_snapshots', ['snapshot_id', 'worktree_id'])) ||
+        !(yield* routineMaintenanceColumnsAvailable(sql, 'removed_views', ['expected_snapshot_id', 'worktree_id'])) ||
+        !(yield* routineMaintenanceColumnsAvailable(sql, 'snapshot_leases', ['expires_at', 'snapshot_id', 'token'])) ||
+        !(yield* routineMaintenanceColumnsAvailable(sql, 'snapshots', ['id', 'state']))
+      ) {
+        return {state: 'invalid'} as const satisfies CodeGraphViewSnapshotLeaseValidationResult;
+      }
+      const now = yield* Clock.currentTimeMillis;
+      const rows = yield* sql<{readonly expires_at: number}>`
+        SELECT lease.expires_at
+        FROM active_snapshots AS active
+        JOIN snapshots AS snapshot
+          ON snapshot.id = active.snapshot_id
+         AND snapshot.state = 'ready'
+        JOIN snapshot_leases AS lease
+          ON lease.token = ${token}
+         AND lease.snapshot_id = active.snapshot_id
+        WHERE active.worktree_id = ${worktreeId}
+          AND active.snapshot_id = ${snapshotId}
+          AND lease.expires_at > ${now + minimumRemainingMilliseconds}
+          AND NOT EXISTS (
+            SELECT 1 FROM removed_views AS removed
+            WHERE removed.worktree_id = active.worktree_id
+              AND removed.expected_snapshot_id = active.snapshot_id
+          )
+        LIMIT 1
+      `;
+      const expiresAt = Number(rows[0]?.expires_at ?? 0);
+      return Number.isSafeInteger(expiresAt) && expiresAt > now + minimumRemainingMilliseconds
+        ? ({expiresAt, state: 'valid'} as const satisfies CodeGraphViewSnapshotLeaseValidationResult)
+        : ({state: 'invalid'} as const satisfies CodeGraphViewSnapshotLeaseValidationResult);
     }),
   );
 });

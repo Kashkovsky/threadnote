@@ -438,16 +438,27 @@ const retainManagerSnapshot = Effect.fn('codeGraph.retainManagerSnapshot')(funct
       );
       if (Result.isFailure(retained)) {
         if (retained.failure instanceof CodeGraphStoreBusyError) {
-          // A token that this process already validated for this exact view
-          // may continue protecting an in-flight/read-only operation while a
-          // writer is busy. Never add a new consumer through this fallback;
-          // the next successful atomic retention revalidates or evicts it.
+          // A process-local cache is not cross-process authority. Linearize
+          // every new reuse against the exact active pointer, tombstone and
+          // still-live token in one read-only SQLite transaction. If another
+          // process removed the view first, the stale catalog cannot revive it.
           if (existing?.worktreeIds.has(worktreeId) && existing.expiresAt > now + minimumRemainingMilliseconds) {
-            if (reader) existing.readers += 1;
-            return {
-              release: reader ? finishManagerSnapshotRead(store, database, key) : Effect.void,
-              state: 'retained',
-            } as const;
+            const validation = yield* Effect.result(
+              store.validateViewSnapshotLease(
+                database,
+                worktreeId,
+                snapshotId,
+                existing.token,
+                minimumRemainingMilliseconds,
+              ),
+            );
+            if (Result.isSuccess(validation) && validation.success.state === 'valid') {
+              if (reader) existing.readers += 1;
+              return {
+                release: reader ? finishManagerSnapshotRead(store, database, key) : Effect.void,
+                state: 'retained',
+              } as const;
+            }
           }
           return {state: 'busy'} as const;
         }
