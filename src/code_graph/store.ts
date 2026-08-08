@@ -498,6 +498,23 @@ export interface CodeGraphSnapshotLeaseAcquireOptions extends CodeGraphSnapshotL
   readonly retireWhenInactive?: boolean;
 }
 
+export type CodeGraphViewRemovalResult =
+  | {
+      readonly expectedSnapshotId: string;
+      readonly retiredSnapshots: number;
+      readonly state: 'already-removed' | 'removed';
+    }
+  | {
+      readonly expectedSnapshotId: string;
+      readonly observedSnapshotId: string;
+      readonly observedState: 'active' | 'removed';
+      readonly state: 'stale-target';
+    }
+  | {
+      readonly expectedSnapshotId: string;
+      readonly state: 'not-found';
+    };
+
 export interface CodeGraphStoreShape {
   readonly withSession: <A, E, R>(
     databasePath: string,
@@ -549,7 +566,14 @@ export interface CodeGraphStoreShape {
     databasePath: string,
     identity: RepositoryIdentity,
     snapshotId: string,
+    options?: CodeGraphSnapshotLeaseWriterOptions,
   ) => Effect.Effect<void, CodeGraphStoreError>;
+  readonly removeView: (
+    databasePath: string,
+    worktreeId: string,
+    expectedSnapshotId: string,
+    options?: CodeGraphSnapshotLeaseWriterOptions,
+  ) => Effect.Effect<CodeGraphViewRemovalResult, CodeGraphStoreError>;
   readonly initialize: (databasePath: string) => Effect.Effect<void, CodeGraphStoreError>;
   readonly prepareActivation: (
     databasePath: string,
@@ -1283,14 +1307,47 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
               }),
             );
           }).pipe(Effect.mapError(cause => storeError('cache materialized code graph file shards', cause))),
-        promote: (databasePath, identity, snapshotId) =>
+        promote: (databasePath, identity, snapshotId, options) =>
           prepare(databasePath).pipe(
             Effect.andThen(
-              withWriterGate(databasePath, useDatabase(databasePath, promoteSnapshot(identity, snapshotId))),
+              withWriterGate(
+                databasePath,
+                useDatabase(databasePath, promoteSnapshot(identity, snapshotId)),
+                options?.waitTimeoutMilliseconds,
+              ),
             ),
             Effect.tap(retired => (retired > 0 ? scheduleRetiredSnapshotCleanup(databasePath) : Effect.void)),
             Effect.asVoid,
             Effect.mapError(cause => storeError('promote code graph snapshot', cause)),
+          ),
+        removeView: (databasePath, worktreeId, expectedSnapshotId, options) =>
+          withWriterGate(
+            databasePath,
+            Effect.gen(function* () {
+              if (!(yield* fs.exists(databasePath))) {
+                return {expectedSnapshotId, state: 'not-found'} satisfies CodeGraphViewRemovalResult;
+              }
+              const result = yield* useDatabase(
+                databasePath,
+                Effect.gen(function* () {
+                  const sql = yield* SqlClient.SqlClient;
+                  yield* initializeSchema(sql);
+                  return yield* removeActiveView(sql, worktreeId, expectedSnapshotId);
+                }),
+              );
+              return result as CodeGraphViewRemovalResult;
+            }),
+            // View removal is opportunistic foreground maintenance. Never
+            // queue it behind a checkout writer unless an internal caller
+            // explicitly opts into a bounded wait.
+            options?.waitTimeoutMilliseconds ?? 0,
+          ).pipe(
+            Effect.tap(result =>
+              'retiredSnapshots' in result && result.retiredSnapshots > 0
+                ? scheduleRetiredSnapshotCleanup(databasePath)
+                : Effect.void,
+            ),
+            Effect.mapError(cause => storeError('remove code graph view', cause)),
           ),
         initialize: databasePath =>
           prepare(databasePath).pipe(
@@ -3257,6 +3314,33 @@ const ensureSnapshotLeaseSchema = Effect.fn('codeGraph.ensureSnapshotLeaseSchema
   // Preserve live non-active consumers, but migrate current pointers and
   // already-expired displaced pointers so the upgrade can reclaim their
   // abandoned history on the next lease sweep.
+  if (yield* tableExists(sql, 'removed_views')) {
+    yield* sql`
+      UPDATE snapshot_leases AS lease
+      SET retire_when_inactive = 1
+      WHERE EXISTS (
+        SELECT 1 FROM active_snapshots AS active
+        WHERE active.snapshot_id = lease.snapshot_id
+          AND NOT EXISTS (
+            SELECT 1 FROM removed_views AS removed
+            WHERE removed.worktree_id = active.worktree_id
+              AND removed.expected_snapshot_id = active.snapshot_id
+          )
+      ) OR (
+        lease.expires_at <= ${now}
+        AND EXISTS (
+          SELECT 1
+          FROM snapshots AS candidate
+          JOIN active_snapshots AS active ON active.worktree_id = candidate.worktree_id
+          WHERE candidate.id = lease.snapshot_id
+        )
+      )
+    `;
+    return;
+  }
+  // Partial and mixed-version schemas may not have the additive tombstone
+  // table yet. Keep the legacy active-pointer migration conservative without
+  // creating unrelated schema as a side effect of lease maintenance.
   yield* sql`
     UPDATE snapshot_leases AS lease
     SET retire_when_inactive = 1
@@ -3343,6 +3427,16 @@ const initializeSchema = Effect.fn('codeGraph.initializeSchema')(function* (sql:
       snapshot_id TEXT NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
       activated_at TEXT NOT NULL
     )
+  `);
+  // This intentionally has no snapshot foreign key. The removal evidence must
+  // survive bounded physical reclamation so an older runtime cannot resurrect
+  // a removed view by republishing its legacy active pointer.
+  yield* sql.unsafe(`
+    CREATE TABLE IF NOT EXISTS removed_views (
+      worktree_id TEXT PRIMARY KEY NOT NULL,
+      expected_snapshot_id TEXT NOT NULL,
+      removed_at TEXT NOT NULL
+    ) WITHOUT ROWID
   `);
   yield* sql.unsafe(`
     CREATE TRIGGER IF NOT EXISTS active_snapshots_require_current_extractor
@@ -4226,21 +4320,28 @@ const retireLeaseCandidates = Effect.fn('codeGraph.retireLeaseCandidates')(funct
   const candidates = [...candidateSet];
   if (candidates.length === 0) return 0;
   yield* sql`
+    WITH RECURSIVE protected(snapshot_id) AS (
+      SELECT active.snapshot_id
+      FROM active_snapshots AS active
+      WHERE NOT EXISTS (
+        SELECT 1
+        FROM removed_views AS removed
+        WHERE removed.worktree_id = active.worktree_id
+          AND removed.expected_snapshot_id = active.snapshot_id
+      )
+      UNION
+      SELECT snapshot_id FROM snapshot_leases WHERE expires_at > ${now}
+      UNION
+      SELECT snapshot.base_snapshot_id
+      FROM snapshots AS snapshot
+      JOIN protected ON protected.snapshot_id = snapshot.id
+      WHERE snapshot.base_snapshot_id IS NOT NULL
+    )
     UPDATE snapshots
     SET state = 'retired'
     WHERE ${sql.in('id', candidates)}
       AND state = 'ready'
-      AND id NOT IN (SELECT snapshot_id FROM active_snapshots)
-      AND id NOT IN (SELECT snapshot_id FROM snapshot_leases WHERE expires_at > ${now})
-      AND id NOT IN (
-        SELECT base_snapshot_id FROM snapshots
-        WHERE base_snapshot_id IS NOT NULL
-          AND id IN (
-            SELECT snapshot_id FROM active_snapshots
-            UNION
-            SELECT snapshot_id FROM snapshot_leases WHERE expires_at > ${now}
-          )
-      )
+      AND id NOT IN (SELECT snapshot_id FROM protected)
   `;
   return yield* lastStatementChangeCount(sql);
 });
@@ -4268,7 +4369,14 @@ const acquireSnapshotLease = Effect.fn('codeGraph.acquireSnapshotLease')(functio
         VALUES (
           ${token}, ${snapshotId}, ${now + duration},
           CASE WHEN ${retireWhenInactive ? 1 : 0} = 1 OR EXISTS (
-            SELECT 1 FROM active_snapshots WHERE snapshot_id = ${snapshotId}
+            SELECT 1
+            FROM active_snapshots AS active
+            WHERE active.snapshot_id = ${snapshotId}
+              AND NOT EXISTS (
+                SELECT 1 FROM removed_views AS removed
+                WHERE removed.worktree_id = active.worktree_id
+                  AND removed.expected_snapshot_id = active.snapshot_id
+              )
           ) THEN 1 ELSE 0 END
         )
       `;
@@ -10432,6 +10540,10 @@ const promoteSnapshot = Effect.fn('codeGraph.promoteSnapshot')(function* (
           snapshot_id = excluded.snapshot_id,
           activated_at = excluded.activated_at
       `;
+      // Only a current promotion contract may make this worktree visible
+      // again. Mixed-version writers can still publish active_snapshots, but
+      // the durable tombstone keeps those pointers hidden until this delete.
+      yield* sql`DELETE FROM removed_views WHERE worktree_id = ${identity.worktreeId}`;
       // A lease acquired by ID may precede promotion. Once its snapshot owns
       // an active pointer, its final release must reclaim that view after it is
       // displaced just like a lease acquired while the pointer was active.
@@ -10445,22 +10557,114 @@ const promoteSnapshot = Effect.fn('codeGraph.promoteSnapshot')(function* (
   );
 });
 
+const removeActiveView = Effect.fn('codeGraph.removeActiveView')(function* (
+  sql: SqlClient.SqlClient,
+  worktreeId: string,
+  expectedSnapshotId: string,
+) {
+  if (!/^[0-9a-f]{64}$/.test(worktreeId)) {
+    return yield* Effect.fail(new CodeGraphStoreError('Code graph worktree identity is invalid.'));
+  }
+  if (expectedSnapshotId.length === 0 || expectedSnapshotId.length > 1_024 || expectedSnapshotId.includes('\0')) {
+    return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot identity is invalid.'));
+  }
+  return yield* sql.withTransaction(
+    Effect.gen(function* () {
+      const active = yield* sql<{readonly snapshot_id: string}>`
+        SELECT snapshot_id FROM active_snapshots WHERE worktree_id = ${worktreeId} LIMIT 1
+      `;
+      const removed = yield* sql<{readonly expected_snapshot_id: string}>`
+        SELECT expected_snapshot_id FROM removed_views WHERE worktree_id = ${worktreeId} LIMIT 1
+      `;
+      const activeSnapshotId = active[0]?.snapshot_id;
+      const removedSnapshotId = removed[0]?.expected_snapshot_id;
+
+      if (activeSnapshotId !== undefined && activeSnapshotId !== expectedSnapshotId) {
+        return {
+          expectedSnapshotId,
+          observedSnapshotId: activeSnapshotId,
+          observedState: 'active',
+          state: 'stale-target',
+        } satisfies CodeGraphViewRemovalResult;
+      }
+      if (activeSnapshotId === undefined) {
+        if (removedSnapshotId === expectedSnapshotId) {
+          return {
+            expectedSnapshotId,
+            retiredSnapshots: 0,
+            state: 'already-removed',
+          } satisfies CodeGraphViewRemovalResult;
+        }
+        if (removedSnapshotId !== undefined) {
+          return {
+            expectedSnapshotId,
+            observedSnapshotId: removedSnapshotId,
+            observedState: 'removed',
+            state: 'stale-target',
+          } satisfies CodeGraphViewRemovalResult;
+        }
+        return {expectedSnapshotId, state: 'not-found'} satisfies CodeGraphViewRemovalResult;
+      }
+
+      const alreadyRemoved = removedSnapshotId === expectedSnapshotId;
+      yield* sql`
+        INSERT INTO removed_views (worktree_id, expected_snapshot_id, removed_at)
+        VALUES (${worktreeId}, ${expectedSnapshotId}, ${new Date().toISOString()})
+        ON CONFLICT(worktree_id) DO UPDATE SET
+          expected_snapshot_id = excluded.expected_snapshot_id,
+          removed_at = excluded.removed_at
+      `;
+      yield* sql`
+        DELETE FROM active_snapshots
+        WHERE worktree_id = ${worktreeId} AND snapshot_id = ${expectedSnapshotId}
+      `;
+      if ((yield* lastStatementChangeCount(sql)) !== 1) {
+        return yield* Effect.fail(new CodeGraphStoreError('Code graph view pointer changed during removal.'));
+      }
+      // Existing readers keep their rows. Their final release now participates
+      // in retirement even when this snapshot was shared by another view at
+      // removal time.
+      yield* sql`
+        UPDATE snapshot_leases
+        SET retire_when_inactive = 1
+        WHERE snapshot_id = ${expectedSnapshotId}
+      `;
+      const retiredSnapshots = yield* markUnusedSnapshotsRetired(sql);
+      return {
+        expectedSnapshotId,
+        retiredSnapshots,
+        state: alreadyRemoved ? 'already-removed' : 'removed',
+      } satisfies CodeGraphViewRemovalResult;
+    }),
+  );
+});
+
 const markUnusedSnapshotsRetired = Effect.fn('codeGraph.markUnusedSnapshotsRetired')(function* (
   sql: SqlClient.SqlClient,
 ) {
   const now = yield* Clock.currentTimeMillis;
   yield* reapExpiredSnapshotLeases(sql, now);
   yield* sql`
+    WITH RECURSIVE protected(snapshot_id) AS (
+      SELECT active.snapshot_id
+      FROM active_snapshots AS active
+      WHERE NOT EXISTS (
+        SELECT 1
+        FROM removed_views AS removed
+        WHERE removed.worktree_id = active.worktree_id
+          AND removed.expected_snapshot_id = active.snapshot_id
+      )
+      UNION
+      SELECT snapshot_id FROM snapshot_leases
+      UNION
+      SELECT snapshot.base_snapshot_id
+      FROM snapshots AS snapshot
+      JOIN protected ON protected.snapshot_id = snapshot.id
+      WHERE snapshot.base_snapshot_id IS NOT NULL
+    )
     UPDATE snapshots
     SET state = 'retired'
-    WHERE state = 'ready'
-      AND id NOT IN (SELECT snapshot_id FROM active_snapshots)
-      AND id NOT IN (SELECT snapshot_id FROM snapshot_leases)
-      AND id NOT IN (
-        SELECT base_snapshot_id FROM snapshots
-        WHERE base_snapshot_id IS NOT NULL
-          AND id IN (SELECT snapshot_id FROM active_snapshots UNION SELECT snapshot_id FROM snapshot_leases)
-      )
+    WHERE state = 'ready' AND id NOT IN (SELECT snapshot_id FROM protected)
   `;
   return yield* lastStatementChangeCount(sql);
 });
@@ -11154,14 +11358,25 @@ const selectReadySnapshot = Effect.fn('codeGraph.selectReadySnapshot')(function*
   const sql = yield* SqlClient.SqlClient;
   yield* configureConnection(sql);
   if (!(yield* tableExists(sql, 'active_snapshots')) || !(yield* tableExists(sql, 'snapshots'))) return undefined;
-  const rows = yield* sql<SnapshotRow>`
-    SELECT snapshots.*
-    FROM active_snapshots
-    JOIN snapshots ON snapshots.id = active_snapshots.snapshot_id
-    WHERE active_snapshots.worktree_id = ${worktreeId}
-      AND snapshots.state = 'ready'
-    LIMIT 1
-  `;
+  const removedViewsAvailable = yield* tableExists(sql, 'removed_views');
+  const rows = yield* sql.unsafe<SnapshotRow>(
+    `SELECT snapshots.*
+     FROM active_snapshots
+     JOIN snapshots ON snapshots.id = active_snapshots.snapshot_id
+     WHERE active_snapshots.worktree_id = ?
+       AND snapshots.state = 'ready'
+       ${
+         removedViewsAvailable
+           ? `AND NOT EXISTS (
+                SELECT 1 FROM removed_views AS removed
+                WHERE removed.worktree_id = active_snapshots.worktree_id
+                  AND removed.expected_snapshot_id = active_snapshots.snapshot_id
+              )`
+           : ''
+       }
+     LIMIT 1`,
+    [worktreeId],
+  );
   return rows[0] ? snapshotFromRow(rows[0]) : undefined;
 });
 
@@ -12145,25 +12360,31 @@ const selectVisualizationCatalog = Effect.fn('codeGraph.selectVisualizationCatal
   const workspaceQuery = boundedVisualizationCatalogQuery(options.workspaceQuery);
   const requestedProjectId = Option.getOrUndefined(options.projectId ?? Option.none());
   const requestedSnapshotId = Option.getOrUndefined(options.snapshotId ?? Option.none());
-  const rows = yield* sql<SnapshotRow & {readonly activated_at: unknown; readonly display_name: string}>`
-    SELECT snapshots.*, repositories.display_name, active_snapshots.activated_at
-     FROM snapshots
+  const removedViewsAvailable = yield* tableExists(sql, 'removed_views');
+  const rows = yield* sql.unsafe<
+    SnapshotRow & {readonly activated_at: unknown; readonly display_name: string; readonly view_worktree_id: string}
+  >(
+    `SELECT snapshots.*, repositories.display_name, active_snapshots.activated_at,
+       active_snapshots.worktree_id AS view_worktree_id
+     FROM active_snapshots
+     JOIN snapshots ON snapshots.id = active_snapshots.snapshot_id
      JOIN repositories ON repositories.id = snapshots.repository_id
-     LEFT JOIN active_snapshots ON active_snapshots.snapshot_id = snapshots.id
      WHERE snapshots.state = 'ready'
-       AND (${requestedSnapshotId ?? null} IS NULL OR snapshots.id = ${requestedSnapshotId ?? null})
-       AND (
-         ${viewWorktreeId ?? null} IS NULL
-         OR active_snapshots.worktree_id = ${viewWorktreeId ?? null}
-         OR (active_snapshots.worktree_id IS NULL AND snapshots.worktree_id = ${viewWorktreeId ?? null})
-       )
-     ORDER BY
-       CASE WHEN active_snapshots.snapshot_id IS NULL THEN 1 ELSE 0 END,
-       active_snapshots.activated_at DESC,
-       snapshots.completed_at DESC,
-       snapshots.id
-     LIMIT 1
-  `;
+       AND (? IS NULL OR snapshots.id = ?)
+       AND (? IS NULL OR active_snapshots.worktree_id = ?)
+       ${
+         removedViewsAvailable
+           ? `AND NOT EXISTS (
+                SELECT 1 FROM removed_views AS removed
+                WHERE removed.worktree_id = active_snapshots.worktree_id
+                  AND removed.expected_snapshot_id = active_snapshots.snapshot_id
+              )`
+           : ''
+       }
+     ORDER BY active_snapshots.activated_at DESC, snapshots.completed_at DESC, snapshots.id
+     LIMIT 1`,
+    [requestedSnapshotId ?? null, requestedSnapshotId ?? null, viewWorktreeId ?? null, viewWorktreeId ?? null],
+  );
   const row = rows[0];
   if (!row) return undefined;
   const baseSnapshotId = Option.getOrUndefined(sqlTextOption(row.base_snapshot_id));
@@ -12319,7 +12540,7 @@ const selectVisualizationCatalog = Effect.fn('codeGraph.selectVisualizationCatal
         projectsTruncated: projectOffset + components.length < componentCount,
         repository: {displayName: row.display_name, repositoryId: row.repository_id},
         snapshot: snapshotFromRow(row),
-        viewWorktreeId: viewWorktreeId ?? row.worktree_id,
+        viewWorktreeId: row.view_worktree_id,
         workspaceCount,
         workspaces: workspaces.map(workspace => ({
           buildSystem: workspace.build_system,
@@ -12363,7 +12584,7 @@ const selectVisualizationCatalog = Effect.fn('codeGraph.selectVisualizationCatal
       projectsTruncated: false,
       repository: {displayName: row.display_name, repositoryId: row.repository_id},
       snapshot: snapshotFromRow(row),
-      viewWorktreeId: viewWorktreeId ?? row.worktree_id,
+      viewWorktreeId: row.view_worktree_id,
       workspaceCount: 0,
       workspaces: [],
       workspacesTruncated: false,
@@ -12527,7 +12748,7 @@ const selectVisualizationCatalog = Effect.fn('codeGraph.selectVisualizationCatal
       projectsTruncated: false,
       repository: {displayName: row.display_name, repositoryId: row.repository_id},
       snapshot: snapshotFromRow(row),
-      viewWorktreeId: viewWorktreeId ?? row.worktree_id,
+      viewWorktreeId: row.view_worktree_id,
       workspaceCount: workspaces.length,
       workspaces: workspaces.map(workspace => ({
         buildSystem: workspace.build_system,
@@ -12596,7 +12817,7 @@ const selectVisualizationCatalog = Effect.fn('codeGraph.selectVisualizationCatal
       repositoryId: row.repository_id,
     },
     snapshot: snapshotFromRow(row),
-    viewWorktreeId: viewWorktreeId ?? row.worktree_id,
+    viewWorktreeId: row.view_worktree_id,
     workspaceCount: 0,
     workspaces: [],
     workspacesTruncated: false,
@@ -12612,32 +12833,28 @@ const selectVisualizationCatalogs = Effect.fn('codeGraph.selectVisualizationCata
   const viewLimit = boundedVisualizationCatalogLimit(options.viewLimit, 32, 64);
   const viewOffset = boundedVisualizationCatalogOffset(options.viewOffset);
   const viewQuery = boundedVisualizationCatalogQuery(options.viewQuery);
+  const removedViewsAvailable = yield* tableExists(sql, 'removed_views');
   const worktrees = yield* sql.unsafe<{readonly worktree_id: string}>(
-    `WITH ranked_views AS (
-       SELECT
-         COALESCE(active_snapshots.worktree_id, snapshots.worktree_id) AS worktree_id,
-         repositories.display_name,
-         snapshots.commit_id,
-         CASE WHEN active_snapshots.snapshot_id IS NULL THEN 0 ELSE 1 END AS is_active,
-         COALESCE(active_snapshots.activated_at, snapshots.completed_at, snapshots.started_at) AS freshness,
-         ROW_NUMBER() OVER (
-           PARTITION BY COALESCE(active_snapshots.worktree_id, snapshots.worktree_id)
-           ORDER BY
-             CASE WHEN active_snapshots.snapshot_id IS NULL THEN 1 ELSE 0 END,
-             active_snapshots.activated_at DESC,
-             snapshots.completed_at DESC,
-             snapshots.id
-         ) AS view_rank
-       FROM snapshots
-       JOIN repositories ON repositories.id = snapshots.repository_id
-       LEFT JOIN active_snapshots ON active_snapshots.snapshot_id = snapshots.id
-       WHERE snapshots.state = 'ready'
-     )
-     SELECT worktree_id
-     FROM ranked_views
-     WHERE view_rank = 1
-       ${viewQuery.length === 0 ? '' : "AND instr(lower(display_name || ' ' || commit_id || ' ' || worktree_id), lower(?)) > 0"}
-     ORDER BY is_active DESC, freshness DESC, worktree_id
+    `SELECT active_snapshots.worktree_id
+     FROM active_snapshots
+     JOIN snapshots ON snapshots.id = active_snapshots.snapshot_id
+     JOIN repositories ON repositories.id = snapshots.repository_id
+     WHERE snapshots.state = 'ready'
+       ${
+         removedViewsAvailable
+           ? `AND NOT EXISTS (
+                SELECT 1 FROM removed_views AS removed
+                WHERE removed.worktree_id = active_snapshots.worktree_id
+                  AND removed.expected_snapshot_id = active_snapshots.snapshot_id
+              )`
+           : ''
+       }
+       ${
+         viewQuery.length === 0
+           ? ''
+           : "AND instr(lower(repositories.display_name || ' ' || snapshots.commit_id || ' ' || active_snapshots.worktree_id), lower(?)) > 0"
+       }
+     ORDER BY active_snapshots.activated_at DESC, active_snapshots.worktree_id
      LIMIT ? OFFSET ?`,
     [...(viewQuery.length === 0 ? [] : [viewQuery]), viewLimit, viewOffset],
   );

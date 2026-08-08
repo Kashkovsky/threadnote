@@ -698,7 +698,9 @@ describe('native code graph lifecycle', () => {
     expect(result.attached.readySnapshot?.id).toBe(result.first.snapshot.id);
     expect(result.attached.readySnapshot?.worktreeId).toBe(result.identityB.worktreeId);
     expect(result.direct.readySnapshot?.id).toBe(result.first.snapshot.id);
-    expect(result.reusedIdentityResolutionCount).toBe(0);
+    // Shared attach spends exactly one full identity resolution immediately
+    // before promotion; final HEAD/cleanliness proof stays one bounded command.
+    expect(result.reusedIdentityResolutionCount).toBe(1);
     expect(result.directIdentityResolutionCount).toBe(1);
     expect(result.after.readySnapshot?.id).toBe(result.first.snapshot.id);
     expect(result.after.stale).toBe(false);

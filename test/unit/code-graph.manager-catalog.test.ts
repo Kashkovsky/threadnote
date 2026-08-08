@@ -856,10 +856,14 @@ describe('Manager logical repository and workspace catalogs', () => {
         );
       }).pipe(Effect.provide(storeLayer)),
     );
-    expect(firstViews).toHaveLength(33);
+    // Ready snapshot rows are reusable caches, not views. Only the explicit
+    // active pointer participates in view pagination or search.
+    expect(firstViews).toHaveLength(2);
     expect(firstViews[0]?.viewWorktreeId).toBe('0'.repeat(62) + '27');
-    expect(continuedViews.length).toBeGreaterThan(0);
-    expect(new Set([...firstViews, ...continuedViews].map(view => view.viewWorktreeId)).size).toBeGreaterThan(33);
+    expect(continuedViews).toEqual([]);
+    expect(new Set([...firstViews, ...continuedViews].map(view => view.viewWorktreeId))).toEqual(
+      new Set(['0'.repeat(62) + '27', identity.worktreeId]),
+    );
     expect(searchedViews.map(view => view.viewWorktreeId)).toEqual(['0'.repeat(62) + '27']);
     expect(historicalViews).toEqual([]);
   });
@@ -887,6 +891,7 @@ describe('Manager logical repository and workspace catalogs', () => {
       Effect.gen(function* () {
         const store = yield* CodeGraphStore;
         yield* store.activate(databasePath, identity, snapshot, [], [], []);
+        yield* store.promote(databasePath, identity, snapshot.id);
       }).pipe(Effect.provide(storeLayer)),
     );
     const legacy = new Database(databasePath);
@@ -926,6 +931,7 @@ describe('Manager logical repository and workspace catalogs', () => {
       Effect.gen(function* () {
         const store = yield* CodeGraphStore;
         yield* store.activate(databasePath, identity, snapshot, [], [], []);
+        yield* store.promote(databasePath, identity, snapshot.id);
         const writerAcquired = yield* Deferred.make<void>();
         const releaseWriter = yield* Deferred.make<void>();
         const writer = yield* store
@@ -964,6 +970,7 @@ describe('Manager logical repository and workspace catalogs', () => {
       Effect.gen(function* () {
         const store = yield* CodeGraphStore;
         yield* store.activate(databasePath, identity, snapshot, [], [], []);
+        yield* store.promote(databasePath, identity, snapshot.id);
         return yield* Effect.all([managerGraphCatalog(home), managerGraphCatalog(home)], {concurrency: 2});
       }).pipe(Effect.provide(storeLayer)),
     );
@@ -985,6 +992,7 @@ describe('Manager logical repository and workspace catalogs', () => {
       Effect.gen(function* () {
         const store = yield* CodeGraphStore;
         yield* store.activate(databasePath, identity, snapshot, [], [], []);
+        yield* store.promote(databasePath, identity, snapshot.id);
         const failingStore = CodeGraphStore.of({
           ...store,
           acquireSnapshotLease: () => Effect.fail(new CodeGraphStoreError(`synthetic failure at ${home}`)),
@@ -1019,6 +1027,7 @@ describe('Manager logical repository and workspace catalogs', () => {
       Effect.gen(function* () {
         const store = yield* CodeGraphStore;
         yield* store.activate(databasePath, identity, snapshot, [], [], []);
+        yield* store.promote(databasePath, identity, snapshot.id);
         const writerAcquired = yield* Deferred.make<void>();
         const releaseWriter = yield* Deferred.make<void>();
         const writer = yield* store
@@ -1067,6 +1076,7 @@ describe('Manager logical repository and workspace catalogs', () => {
       Effect.gen(function* () {
         const store = yield* CodeGraphStore;
         yield* store.activate(databasePath, identity, snapshot, [], [], []);
+        yield* store.promote(databasePath, identity, snapshot.id);
         const catalog = yield* managerGraphCatalog(home);
         if (catalog.repositories.length !== 1) return yield* Effect.die(new Error('catalog lease fixture failed'));
         const writerAcquired = yield* Deferred.make<void>();
@@ -1116,6 +1126,7 @@ describe('Manager logical repository and workspace catalogs', () => {
       Effect.gen(function* () {
         const store = yield* CodeGraphStore;
         yield* store.activate(databasePath, identity, snapshot, [], [], []);
+        yield* store.promote(databasePath, identity, snapshot.id);
         yield* managerGraphCatalog(home);
         const writerAcquired = yield* Deferred.make<void>();
         const releaseWriter = yield* Deferred.make<void>();
@@ -1162,6 +1173,7 @@ describe('Manager logical repository and workspace catalogs', () => {
       Effect.gen(function* () {
         const store = yield* CodeGraphStore;
         yield* store.activate(databasePath, identity, snapshot, [], [], []);
+        yield* store.promote(databasePath, identity, snapshot.id);
         yield* managerGraphCatalog(home);
         const writerAcquired = yield* Deferred.make<void>();
         const releaseWriter = yield* Deferred.make<void>();
@@ -1195,6 +1207,7 @@ describe('Manager logical repository and workspace catalogs', () => {
       Effect.gen(function* () {
         const store = yield* CodeGraphStore;
         yield* store.activate(databasePath, identity, snapshot, [], [], []);
+        yield* store.promote(databasePath, identity, snapshot.id);
         yield* managerGraphCatalog(home);
       }).pipe(Effect.provide(storeLayer)),
     );
