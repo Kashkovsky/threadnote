@@ -4,7 +4,8 @@ import {mkdir, mkdtemp, rm, stat, symlink, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {BunHttpServer} from '@effect/platform-bun';
-import {Console, Effect, Fiber, Path} from 'effect';
+import {it as effectIt} from '@effect/vitest';
+import {Console, Deferred, Effect, Fiber, Path} from 'effect';
 import {HttpServer} from 'effect/unstable/http';
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
 import {
@@ -31,7 +32,10 @@ import {codeGraphLayout} from '../../src/code_graph/layout.js';
 import {makeCodeGraphBuildReporter} from '../../src/code_graph/build_status.js';
 import {recordVerifiedCodeGraphLocalAssociation} from '../../src/code_graph/local_provenance.js';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
-import {withCodeGraphMaintenanceIntent} from '../../src/code_graph/maintenance_gate.js';
+import {
+  withCodeGraphMaintenanceIntent,
+  withCodeGraphTargetWorktreeLock,
+} from '../../src/code_graph/maintenance_gate.js';
 import {resolveRepositoryIdentity} from '../../src/code_graph/repository.js';
 import type {CodeGraphWorkspace} from '../../src/code_graph/languages/types.js';
 import {
@@ -103,7 +107,7 @@ async function makeRuntime(): Promise<RuntimeConfig> {
   };
 }
 
-async function seedManagerGraph(config: RuntimeConfig): Promise<string> {
+async function seedManagerGraph(config: RuntimeConfig, snapshotId = 'manager-graph-snapshot'): Promise<string> {
   const checkoutId = 'a'.repeat(64);
   const identity: RepositoryIdentity = {
     caseMode: 'sensitive',
@@ -204,7 +208,7 @@ async function seedManagerGraph(config: RuntimeConfig): Promise<string> {
     edgeCount: edges.length,
     extractorSet: CODE_GRAPH_EXTRACTOR_SET_VERSION,
     fileCount: files.length,
-    id: 'manager-graph-snapshot',
+    id: snapshotId,
     repositoryId: identity.repositoryId,
     state: 'ready',
     symbolCount: symbols.length,
@@ -1027,6 +1031,165 @@ describe('manager http API', () => {
     }
   });
 
+  it('previews and applies an exact authenticated graph view removal with an approval digest', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    const snapshotId = `cgsn_${'d'.repeat(40)}-direct`;
+    const checkoutId = await seedManagerGraph(config, snapshotId);
+    const worktreeId = 'c'.repeat(64);
+    const server = await startServer(config, 'secret');
+    try {
+      const headers = {authorization: 'Bearer secret', 'content-type': 'application/json'};
+      const target = {action: 'remove-view', checkoutId, expectedSnapshotId: snapshotId, worktreeId};
+      const unauthorized = await fetch(`${server.url}/api/graphs/action`, {
+        body: JSON.stringify({...target, dryRun: true}),
+        headers: {'content-type': 'application/json'},
+        method: 'POST',
+      });
+      expect(unauthorized.status).toBe(401);
+
+      const catalog = await fetch(`${server.url}/api/graphs`, {headers});
+      expect(catalog.status).toBe(200);
+      const preview = await fetch(`${server.url}/api/graphs/action`, {
+        body: JSON.stringify({...target, dryRun: true}),
+        headers,
+        method: 'POST',
+      });
+      const prepared = (await preview.json()) as {
+        readonly approvalDigest: string;
+        readonly output: string;
+        readonly result: {
+          readonly applied: boolean;
+          readonly state: string;
+          readonly type: string;
+          readonly version: number;
+        };
+      };
+      expect(preview.status).toBe(200);
+      expect(prepared).toMatchObject({
+        approvalDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
+        output: expect.stringContaining('Would remove native code graph view'),
+        result: {applied: false, state: 'ready', type: 'code-graph-view-removal', version: 1},
+      });
+      expect(JSON.stringify(prepared)).not.toContain(config.agentContextHome);
+
+      const refused = await fetch(`${server.url}/api/graphs/action`, {
+        body: JSON.stringify({...target, confirm: true}),
+        headers,
+        method: 'POST',
+      });
+      expect(refused.status).toBe(500);
+      expect(await refused.json()).toEqual({
+        error: 'Preview this exact graph view removal and provide its approval digest before applying.',
+      });
+
+      const applied = await fetch(`${server.url}/api/graphs/action`, {
+        body: JSON.stringify({...target, approvalDigest: prepared.approvalDigest, confirm: true}),
+        headers,
+        method: 'POST',
+      });
+      const result = (await applied.json()) as {
+        readonly approvalDigest: string;
+        readonly output: string;
+        readonly result: {readonly applied: boolean; readonly state: string};
+      };
+      expect(applied.status).toBe(200);
+      expect(result).toMatchObject({
+        approvalDigest: prepared.approvalDigest,
+        output: expect.stringContaining('Removed native code graph view'),
+        result: {applied: true, state: 'removed'},
+      });
+      expect(JSON.stringify(result)).not.toContain(config.agentContextHome);
+      const databasePath = join(
+        config.agentContextHome,
+        'indexes',
+        'code-graph',
+        'repositories',
+        checkoutId,
+        'graph-v3.sqlite',
+      );
+      const database = new (await import('bun:sqlite')).Database(databasePath, {readonly: true});
+      expect(database.query('SELECT COUNT(*) AS count FROM snapshot_leases').get()).toEqual({count: 0});
+      database.close();
+
+      const retried = await fetch(`${server.url}/api/graphs/action`, {
+        body: JSON.stringify({...target, approvalDigest: prepared.approvalDigest, confirm: true}),
+        headers,
+        method: 'POST',
+      });
+      expect(retried.status).toBe(200);
+      expect(await retried.json()).toMatchObject({result: {applied: true, state: 'already-removed'}});
+
+      const stalePreview = await fetch(`${server.url}/api/graphs/action`, {
+        body: JSON.stringify({...target, dryRun: true, expectedSnapshotId: `cgsn_${'e'.repeat(40)}-direct`}),
+        headers,
+        method: 'POST',
+      });
+      expect(stalePreview.status).toBe(200);
+      const stale = await stalePreview.json();
+      expect(stale).toMatchObject({result: {observedState: 'removed', state: 'stale-target'}});
+      expect(JSON.stringify(stale)).not.toContain(config.agentContextHome);
+    } finally {
+      await server.close();
+    }
+  });
+
+  effectIt.effect('maps a busy graph view target to a fixed path-free retry response', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const config = yield* Effect.promise(makeRuntime);
+        homes.push(config.agentContextHome);
+        const snapshotId = `cgsn_${'f'.repeat(40)}-direct`;
+        const checkoutId = yield* Effect.promise(() => seedManagerGraph(config, snapshotId));
+        const worktreeId = 'c'.repeat(64);
+        const server = yield* Effect.promise(() => startServer(config, 'secret'));
+        const acquired = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        const owner = yield* withCodeGraphTargetWorktreeLock(
+          config.agentContextHome,
+          checkoutId,
+          worktreeId,
+          Deferred.succeed(acquired, undefined).pipe(Effect.andThen(Deferred.await(release))),
+        ).pipe(Effect.provide(ApplicationLayer), Effect.forkScoped);
+        yield* Effect.gen(function* () {
+          const headers = {authorization: 'Bearer secret', 'content-type': 'application/json'};
+          const target = {action: 'remove-view', checkoutId, expectedSnapshotId: snapshotId, worktreeId};
+          const preview = yield* Effect.promise(() =>
+            fetch(`${server.url}/api/graphs/action`, {
+              body: JSON.stringify({...target, dryRun: true}),
+              headers,
+              method: 'POST',
+            }),
+          );
+          const prepared = (yield* Effect.promise(() => preview.json())) as {readonly approvalDigest: string};
+          yield* Deferred.await(acquired);
+          const response = yield* Effect.promise(() =>
+            fetch(`${server.url}/api/graphs/action`, {
+              body: JSON.stringify({...target, approvalDigest: prepared.approvalDigest, confirm: true}),
+              headers,
+              method: 'POST',
+            }),
+          );
+          expect(response.status).toBe(409);
+          const busy = yield* Effect.promise(() => response.json());
+          expect(busy).toEqual({
+            code: 'graph-view-busy',
+            error: 'The selected graph view is busy. Retry after the active graph operation completes.',
+            retryAfterMilliseconds: 1_000,
+          });
+          expect(JSON.stringify(busy)).not.toContain(config.agentContextHome);
+        }).pipe(
+          Effect.ensuring(
+            Deferred.succeed(release, undefined).pipe(
+              Effect.andThen(Fiber.await(owner)),
+              Effect.andThen(Effect.promise(() => server.close())),
+            ),
+          ),
+        );
+      }),
+    ),
+  );
+
   it('rejects mismatched Manager graph identities before a targeted action starts', async () => {
     const config = await makeRuntime();
     homes.push(config.agentContextHome);
@@ -1138,7 +1301,7 @@ describe('manager http API', () => {
     }
   });
 
-  it('pins graph, node detail, and analysis reads to the catalog snapshot across promotion', async () => {
+  it('rejects stale graph reads after promotion and serves the refreshed current view', async () => {
     const config = await makeRuntime();
     homes.push(config.agentContextHome);
     const checkoutId = await seedManagerGraph(config);
@@ -1155,64 +1318,22 @@ describe('manager http API', () => {
       const originalSnapshotId = view.snapshot.id;
       expect(originalSnapshotId).toBe('manager-graph-snapshot');
       const replacementSnapshotId = await promoteManagerGraphReplacement(config);
-
-      const pinnedGraphResponse = await fetch(
+      const staleUrls = [
         `${server.url}/api/graph?repository=${checkoutId}&snapshot=${originalSnapshotId}&project=cgp_app`,
-        {headers},
-      );
-      const pinnedGraph = (await pinnedGraphResponse.json()) as {
-        readonly nodes: readonly {readonly id: string}[];
-        readonly repository: {readonly snapshot: {readonly id: string}};
-      };
-      expect(pinnedGraphResponse.status).toBe(200);
-      expect(pinnedGraph.repository.snapshot.id).toBe(originalSnapshotId);
-      expect(pinnedGraph.nodes).toEqual(expect.arrayContaining([expect.objectContaining({id: 'app'})]));
-
-      const pinnedNodeResponse = await fetch(
         `${server.url}/api/graph/node?repository=${checkoutId}&snapshot=${originalSnapshotId}&node=app`,
-        {headers},
-      );
-      const pinnedNode = (await pinnedNodeResponse.json()) as {readonly snapshotId: string};
-      expect(pinnedNodeResponse.status).toBe(200);
-      expect(pinnedNode.snapshotId).toBe(originalSnapshotId);
-
-      const pinnedAnalysisResponse = await fetch(
         `${server.url}/api/graph/analysis?repository=${checkoutId}&snapshot=${originalSnapshotId}`,
-        {headers},
-      );
-      const pinnedAnalysis = (await pinnedAnalysisResponse.json()) as {
-        readonly statistics: {readonly analyzedNodeCount: number};
-      };
-      expect(pinnedAnalysisResponse.status).toBe(200);
-      expect(pinnedAnalysis.statistics.analyzedNodeCount).toBe(523);
-
-      const pinnedQueryResponse = await fetch(
         `${server.url}/api/graph/query?repository=${checkoutId}&snapshot=${originalSnapshotId}&query=App`,
-        {headers},
-      );
-      const pinnedQuery = (await pinnedQueryResponse.json()) as {
-        readonly nodes: readonly {readonly id: string}[];
-        readonly repository: {readonly snapshot: {readonly id: string}};
-      };
-      expect(pinnedQueryResponse.status).toBe(200);
-      expect(pinnedQuery.repository.snapshot.id).toBe(originalSnapshotId);
-      expect(pinnedQuery.nodes).toEqual(expect.arrayContaining([expect.objectContaining({id: 'app'})]));
-
-      const pinnedCatalogPageResponse = await fetch(
         `${server.url}/api/graphs/page?repository=${checkoutId}&snapshot=${originalSnapshotId}&query=app`,
-        {headers},
-      );
-      const pinnedCatalogPage = (await pinnedCatalogPageResponse.json()) as {
-        readonly repository: {
-          readonly projects: readonly {readonly id: string}[];
-          readonly snapshot: {readonly id: string};
-        };
-      };
-      expect(pinnedCatalogPageResponse.status).toBe(200);
-      expect(pinnedCatalogPage.repository.snapshot.id).toBe(originalSnapshotId);
-      expect(pinnedCatalogPage.repository.projects).toEqual(
-        expect.arrayContaining([expect.objectContaining({id: 'cgp_app'})]),
-      );
+      ];
+      for (const url of staleUrls) {
+        const stale = await fetch(url, {headers});
+        expect(stale.status, url).toBe(409);
+        expect(await stale.json(), url).toEqual({
+          code: 'graph-view-stale',
+          error: 'The selected graph view changed or was removed. Refresh the graph catalog.',
+          retryAfterMilliseconds: 0,
+        });
+      }
 
       const currentGraph = (await (
         await fetch(`${server.url}/api/graph?repository=${checkoutId}&project=all`, {headers})

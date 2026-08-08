@@ -64,8 +64,9 @@ import {
   resolveAndRecordCodeGraphLocalAssociation,
 } from './code_graph/local_provenance.js';
 import {repositoryIdentityMatchesExpectation} from './code_graph/repository.js';
-import type {RepositoryIdentityExpectation} from './code_graph/types.js';
+import {CodeGraphStoreBusyError, type RepositoryIdentityExpectation} from './code_graph/types.js';
 import {codeGraphMaintenanceIntentActive} from './code_graph/maintenance_gate.js';
+import {removeCodeGraphView, renderCodeGraphViewRemovalResult} from './code_graph/view_removal.js';
 import {
   managerGraphAnalysis,
   managerGraphBuildCatalog,
@@ -74,7 +75,9 @@ import {
   managerGraphNodeDetail,
   managerGraphQuery,
   ManagerGraphBusyError,
+  ManagerGraphViewUnavailableError,
   releaseManagerGraphSnapshotLeases,
+  withManagerGraphSnapshotLeaseInvalidated,
   managerGraphVisualization,
   managerGraphViewsPage,
 } from './code_graph/visualization.js';
@@ -190,6 +193,14 @@ interface ApiContext {
   readonly jobs: Map<string, ConsolidationJob>;
   readonly runEffect?: ManagerEffectPromise;
   readonly token: string;
+}
+
+class ManagerGraphViewActionBusyError extends Error {
+  override readonly name = 'ManagerGraphViewActionBusyError';
+}
+
+class ManagerGraphViewActionError extends Error {
+  override readonly name = 'ManagerGraphViewActionError';
 }
 
 interface ManagerRequest {
@@ -453,6 +464,18 @@ function handleRequestEffect(
       Effect.sync(() => {
         if (error instanceof ManagerGraphBusyError) {
           writeJson(response, 409, {error: error.message, retryAfterMilliseconds: 1_000});
+          return;
+        }
+        if (error instanceof ManagerGraphViewActionBusyError) {
+          writeJson(response, 409, {
+            code: 'graph-view-busy',
+            error: error.message,
+            retryAfterMilliseconds: 1_000,
+          });
+          return;
+        }
+        if (error instanceof ManagerGraphViewUnavailableError) {
+          writeJson(response, 409, {code: 'graph-view-stale', error: error.message, retryAfterMilliseconds: 0});
           return;
         }
         writeJson(response, 500, {error: errorMessage(error)});
@@ -1488,7 +1511,7 @@ const runManagerGraphAction = Effect.fn('manager.runGraphAction')(function* (
     catch: error => error,
   });
   const dryRun = body.dryRun === true;
-  if (!dryRun && ['compact', 'purge', 'purge-all', 'purge-obsolete', 'repair'].includes(action)) {
+  if (!dryRun && ['compact', 'purge', 'purge-all', 'purge-obsolete', 'remove-view', 'repair'].includes(action)) {
     yield* Effect.try({
       try: () => requireConfirm(body),
       catch: error => error,
@@ -1525,6 +1548,46 @@ const runManagerGraphAction = Effect.fn('manager.runGraphAction')(function* (
     try: () => requireGraphIdentity(body.worktreeId, 'worktreeId'),
     catch: error => error,
   });
+  if (action === 'remove-view') {
+    const expectedSnapshotId = yield* Effect.try({
+      try: () => requireGraphSnapshotIdentity(body.expectedSnapshotId),
+      catch: error => error,
+    });
+    const target = {checkoutId, snapshotId: expectedSnapshotId, worktreeId};
+    const approvalDigest = yield* managerGraphViewRemovalApprovalDigest(target);
+    if (!dryRun && body.approvalDigest !== approvalDigest) {
+      return yield* Effect.fail(
+        new Error('Preview this exact graph view removal and provide its approval digest before applying.'),
+      );
+    }
+    const actionEffect = removeCodeGraphView(config.agentContextHome, target, {apply: !dryRun}).pipe(
+      Effect.mapError(error =>
+        error instanceof CodeGraphStoreBusyError
+          ? new ManagerGraphViewActionBusyError(
+              'The selected graph view is busy. Retry after the active graph operation completes.',
+            )
+          : new ManagerGraphViewActionError(
+              'The selected graph view could not be inspected or removed safely. Run threadnote doctor --dry-run and retry.',
+            ),
+      ),
+    );
+    const applied = dryRun
+      ? {result: yield* actionEffect, warnings: [] as const}
+      : yield* withManagerGraphSnapshotLeaseInvalidated(
+          config.agentContextHome,
+          checkoutId,
+          worktreeId,
+          expectedSnapshotId,
+          actionEffect,
+        );
+    const warningOutput = applied.warnings.map(warning => `Warning [${warning.code}]: ${warning.message}`);
+    return {
+      approvalDigest,
+      output: [renderCodeGraphViewRemovalResult(applied.result), ...warningOutput].filter(Boolean).join('\n'),
+      result: applied.result,
+      warnings: applied.warnings,
+    };
+  }
   const repositoryId = yield* Effect.try({
     try: () => requireGraphIdentity(body.repositoryId, 'repositoryId'),
     catch: error => error,
@@ -1605,6 +1668,30 @@ function requireGraphIdentity(value: unknown, name: string): string {
   if (!/^[0-9a-f]{64}$/.test(identity)) throw new Error(`Provide ${name} as a 64-character graph identity.`);
   return identity;
 }
+
+function requireGraphSnapshotIdentity(value: unknown): string {
+  const identity = requireString(value, 'expectedSnapshotId');
+  if (!/^cgsn_[0-9a-f]{40}(?:-direct|-full-[0-9a-f]{16})?$/.test(identity)) {
+    throw new Error('Provide expectedSnapshotId as an exact code graph snapshot identity.');
+  }
+  return identity;
+}
+
+const managerGraphViewRemovalApprovalDigest = Effect.fn('manager.graphViewRemovalApprovalDigest')(function* (target: {
+  readonly checkoutId: string;
+  readonly snapshotId: string;
+  readonly worktreeId: string;
+}) {
+  return `sha256:${yield* sha256(
+    JSON.stringify({
+      action: 'remove-view',
+      checkoutId: target.checkoutId,
+      expectedSnapshotId: target.snapshotId,
+      version: 1,
+      worktreeId: target.worktreeId,
+    }),
+  )}`;
+});
 
 const memoryUriFor = Effect.fn('manager.memoryUriFor')(function* (
   config: RuntimeConfig,

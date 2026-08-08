@@ -28,6 +28,7 @@ import {
   graphRepositoryOptionLabel,
   graphStatusPollDelay,
   graphStatusRequiresCatalogRefresh,
+  graphViewRemovalTarget,
   graphWaiterCountForBuild,
   graphWheelZoomFactor,
   graphWithNodeNeighborhood,
@@ -50,6 +51,73 @@ describe('manager graph focus', () => {
         worktreeId: 'worktree',
       }),
     ).toEqual({checkoutId: 'checkout', repositoryId: 'repository', worktreeId: 'worktree'});
+    expect(
+      graphViewRemovalTarget('a'.repeat(64), {
+        snapshot: {id: `cgsn_${'c'.repeat(40)}-direct`},
+        worktreeId: 'b'.repeat(64),
+      }),
+    ).toEqual({
+      checkoutId: 'a'.repeat(64),
+      expectedSnapshotId: `cgsn_${'c'.repeat(40)}-direct`,
+      worktreeId: 'b'.repeat(64),
+    });
+  });
+
+  it('renders per-view preview and confirmed removal controls without requiring a local folder', () => {
+    const neverResolves = () => new Promise<never>(() => undefined);
+    const checkoutId = 'a'.repeat(64);
+    const worktreeId = 'b'.repeat(64);
+    const snapshotId = `cgsn_${'c'.repeat(40)}-direct`;
+    const markup = renderToStaticMarkup(
+      createElement(GraphWorkspace, {
+        administration: {
+          databases: [
+            {
+              builds: [],
+              checkoutId,
+              health: {integrity: 'ok', readySnapshots: 1},
+              healthState: 'checked',
+              issues: [],
+              storage: {state: 'available', totalBytes: 0},
+              views: [
+                {
+                  localAssociation: {available: false, state: 'legacy-unknown'},
+                  managementAvailable: false,
+                  metrics: 'complete',
+                  model: 'workspace',
+                  projectCount: 0,
+                  projectsTruncated: false,
+                  repository: {displayName: 'acme/platform', repositoryId: 'd'.repeat(64)},
+                  snapshot: {edgeCount: 0, fileCount: 0, id: snapshotId, symbolCount: 0},
+                  viewWorktreeId: worktreeId,
+                  workspaceCount: 0,
+                  workspacesTruncated: false,
+                },
+              ],
+              waiters: [],
+            },
+          ],
+          generatedAt: '2026-08-08T12:00:00.000Z',
+          mode: {analyze: false, deep: false},
+          obsoleteStores: {bytes: 0, checkouts: [], fileCount: 0, unsafeEntryCount: 0},
+          summary: {databaseCount: 1, readySnapshotCount: 1},
+          type: 'code-graph-diagnostics',
+          version: 2,
+        } as never,
+        loadAnalysis: neverResolves,
+        loadCatalogPage: neverResolves,
+        loadGraph: neverResolves,
+        loadNodeDetail: neverResolves,
+        loadQuery: neverResolves,
+        loadViewsPage: neverResolves,
+        onAdministrationAction: () => undefined,
+        onRefresh: () => undefined,
+      }),
+    );
+
+    expect(markup).toContain('Preview remove');
+    expect(markup).toContain('Remove view');
+    expect(markup).toContain('Index, reindex, and compact require a verified local worktree path.');
   });
 
   it('renders the graph workspace before its first catalog response', () => {

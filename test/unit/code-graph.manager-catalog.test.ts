@@ -1,17 +1,21 @@
-import {mkdirSync, mkdtempSync, rmSync, writeFileSync} from 'node:fs';
+import {existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import * as BunServices from '@effect/platform-bun/BunServices';
+import {it as effectIt} from '@effect/vitest';
 import {Database} from 'bun:sqlite';
-import {Deferred, Effect, Fiber, Layer, Option} from 'effect';
+import {Clock, Deferred, Effect, Fiber, Layer, Option} from 'effect';
+import {TestClock} from 'effect/testing';
 import {afterEach, describe, expect, it} from 'vitest';
 import {
   groupManagerGraphRepositories,
   ManagerGraphBusyError,
+  ManagerGraphQueryLifecycle,
   managerGraphAnalysis,
   managerGraphCatalog,
   managerGraphQuery,
   releaseManagerGraphSnapshotLeases,
+  withManagerGraphSnapshotLeaseInvalidated,
 } from '../../src/code_graph/visualization.js';
 import {CodeGraphEmbeddingIndex} from '../../src/code_graph/embedding.js';
 import {
@@ -995,7 +999,7 @@ describe('Manager logical repository and workspace catalogs', () => {
         yield* store.promote(databasePath, identity, snapshot.id);
         const failingStore = CodeGraphStore.of({
           ...store,
-          acquireSnapshotLease: () => Effect.fail(new CodeGraphStoreError(`synthetic failure at ${home}`)),
+          retainViewSnapshotLease: () => Effect.fail(new CodeGraphStoreError(`synthetic failure at ${home}`)),
         });
         return yield* managerGraphCatalog(home).pipe(Effect.provideService(CodeGraphStore, failingStore));
       }).pipe(Effect.provide(storeLayer)),
@@ -1220,6 +1224,320 @@ describe('Manager logical repository and workspace catalogs', () => {
     const released = new Database(databasePath, {readonly: true});
     expect(released.query('SELECT COUNT(*) AS count FROM snapshot_leases').get()).toEqual({count: 0});
     released.close();
+  });
+
+  effectIt.layer(managerGraphLayer)(layerIt => {
+    layerIt.effect('keeps an already-retained query coherent while its final view is removed', () =>
+      TestClock.withLive(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const home = temporaryRoot('threadnote-manager-inflight-removal-');
+            const identity = repositoryIdentity(home, '6'.repeat(64));
+            const databasePath = join(
+              home,
+              'indexes',
+              'code-graph',
+              'repositories',
+              identity.checkoutId,
+              'graph-v3.sqlite',
+            );
+            const symbols = [symbol('symbol-reader', 'src/reader.ts', 'Reader', 'typescript')];
+            const files = fileFixtures(symbols);
+            const snapshot = {
+              ...readySnapshot(identity, files.length, symbols.length, 0, '2026-08-08T12:00:00.000Z'),
+              id: `cgsn_${'6'.repeat(40)}-direct`,
+            };
+            const store = yield* CodeGraphStore;
+            yield* store.activate(databasePath, identity, snapshot, files, symbols, []);
+            yield* store.promote(databasePath, identity, snapshot.id);
+            yield* managerGraphCatalog(home);
+
+            const traversalReady = yield* Deferred.make<void>();
+            const resumeTraversal = yield* Deferred.make<void>();
+            const queryFiber = yield* managerGraphQuery(
+              home,
+              `${identity.checkoutId}.${identity.worktreeId}`,
+              'Reader',
+              {},
+              Option.some(snapshot.id),
+            ).pipe(
+              Effect.provideService(ManagerGraphQueryLifecycle, {
+                beforeTraversal: Deferred.succeed(traversalReady, undefined).pipe(
+                  Effect.andThen(Deferred.await(resumeTraversal)),
+                ),
+              }),
+              Effect.forkChild,
+            );
+            yield* Deferred.await(traversalReady);
+
+            const removed = yield* withManagerGraphSnapshotLeaseInvalidated(
+              home,
+              identity.checkoutId,
+              identity.worktreeId,
+              snapshot.id,
+              store.removeView(databasePath, identity.worktreeId, snapshot.id),
+            );
+            expect(removed.result.state).toBe('removed');
+            const protectedDatabase = new Database(databasePath, {readonly: true});
+            expect(protectedDatabase.query('SELECT COUNT(*) AS count FROM snapshot_leases').get()).toEqual({count: 1});
+            expect(protectedDatabase.query('SELECT state FROM snapshots WHERE id = ?').get(snapshot.id)).toEqual({
+              state: 'ready',
+            });
+            protectedDatabase.close();
+
+            yield* Deferred.succeed(resumeTraversal, undefined);
+            const result = yield* Fiber.join(queryFiber);
+            expect(result.repository.snapshot.id).toBe(snapshot.id);
+            expect(result.nodes.map(node => node.id)).toContain('symbol-reader');
+            const reclaimed = new Database(databasePath, {readonly: true});
+            expect(reclaimed.query('SELECT COUNT(*) AS count FROM snapshot_leases').get()).toEqual({count: 0});
+            reclaimed.close();
+          }),
+        ),
+      ),
+    );
+
+    layerIt.effect('serializes view observation and lease retention with cross-process removal', () =>
+      TestClock.withLive(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const home = temporaryRoot('threadnote-manager-atomic-retention-');
+            const identity = repositoryIdentity(home, '5'.repeat(64));
+            const databasePath = join(
+              home,
+              'indexes',
+              'code-graph',
+              'repositories',
+              identity.checkoutId,
+              'graph-v3.sqlite',
+            );
+            const snapshot = {
+              ...readySnapshot(identity, 0, 0, 0, '2026-08-08T12:00:00.000Z'),
+              id: `cgsn_${'5'.repeat(40)}-direct`,
+            };
+            const store = yield* CodeGraphStore;
+            yield* store.activate(databasePath, identity, snapshot, [], [], []);
+            yield* store.promote(databasePath, identity, snapshot.id);
+
+            const observed = yield* Deferred.make<void>();
+            const resumeRetention = yield* Deferred.make<void>();
+            const order: string[] = [];
+            const interlockedStore = CodeGraphStore.of({
+              ...store,
+              retainViewSnapshotLease: (database, worktreeId, snapshotId, duration, options) =>
+                store
+                  .retainViewSnapshotLease(database, worktreeId, snapshotId, duration, {
+                    ...options,
+                    afterViewObserved: () =>
+                      Effect.sync(() => order.push('observed')).pipe(
+                        Effect.andThen(Deferred.succeed(observed, undefined)),
+                        Effect.andThen(Deferred.await(resumeRetention)),
+                      ),
+                  })
+                  .pipe(Effect.tap(() => Effect.sync(() => order.push('retained')))),
+            });
+            const catalogFiber = yield* managerGraphCatalog(home).pipe(
+              Effect.provideService(CodeGraphStore, interlockedStore),
+              Effect.forkChild,
+            );
+            yield* Deferred.await(observed);
+            const removalFiber = yield* store
+              .removeView(databasePath, identity.worktreeId, snapshot.id, {
+                beforeDatabaseOpen: () => Effect.sync(() => order.push('remove-open')),
+                waitTimeoutMilliseconds: 5_000,
+              })
+              .pipe(Effect.forkChild);
+            yield* Effect.yieldNow;
+            expect(order).toEqual(['observed']);
+
+            yield* Deferred.succeed(resumeRetention, undefined);
+            const catalog = yield* Fiber.join(catalogFiber);
+            const removal = yield* Fiber.join(removalFiber);
+            expect(order).toEqual(['observed', 'retained', 'remove-open']);
+            expect(catalog.repositories.flatMap(repository => repository.views.map(view => view.worktreeId))).toEqual([
+              identity.worktreeId,
+            ]);
+            expect(removal.state).toBe('removed');
+
+            const refreshed = yield* managerGraphCatalog(home);
+            expect(refreshed.repositories).toEqual([]);
+            expect(refreshed.diagnostics).toEqual([
+              expect.objectContaining({checkoutId: identity.checkoutId, code: 'no-ready-snapshot'}),
+            ]);
+          }),
+        ),
+      ),
+    );
+
+    layerIt.effect('does not recreate a graph database purged before atomic retention acquires the writer gate', () =>
+      TestClock.withLive(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const home = temporaryRoot('threadnote-manager-retention-purge-race-');
+            const identity = repositoryIdentity(home, '4'.repeat(64));
+            const databasePath = join(
+              home,
+              'indexes',
+              'code-graph',
+              'repositories',
+              identity.checkoutId,
+              'graph-v3.sqlite',
+            );
+            const snapshot = {
+              ...readySnapshot(identity, 0, 0, 0, '2026-08-08T12:00:00.000Z'),
+              id: `cgsn_${'4'.repeat(40)}-direct`,
+            };
+            const store = yield* CodeGraphStore;
+            yield* store.activate(databasePath, identity, snapshot, [], [], []);
+            yield* store.promote(databasePath, identity, snapshot.id);
+
+            const purged = yield* Deferred.make<void>();
+            const releasePurge = yield* Deferred.make<void>();
+            const purgeFiber = yield* store
+              .removeView(databasePath, identity.worktreeId, snapshot.id, {
+                beforeDatabaseOpen: () =>
+                  Effect.sync(() => rmSync(databasePath, {force: true})).pipe(
+                    Effect.andThen(Deferred.succeed(purged, undefined)),
+                    Effect.andThen(Deferred.await(releasePurge)),
+                  ),
+                waitTimeoutMilliseconds: 5_000,
+              })
+              .pipe(Effect.forkChild);
+            yield* Deferred.await(purged);
+            const retentionFiber = yield* store
+              .retainViewSnapshotLease(databasePath, identity.worktreeId, snapshot.id, 60_000, {
+                waitTimeoutMilliseconds: 5_000,
+              })
+              .pipe(Effect.forkChild);
+            yield* Effect.yieldNow;
+            yield* Deferred.succeed(releasePurge, undefined);
+
+            expect((yield* Fiber.join(purgeFiber)).state).toBe('not-found');
+            expect(yield* Fiber.join(retentionFiber)).toEqual({
+              observation: {expectedSnapshotId: snapshot.id, state: 'not-found'},
+              state: 'view-unavailable',
+            });
+            expect(existsSync(databasePath)).toBe(false);
+          }),
+        ),
+      ),
+    );
+
+    layerIt.effect(
+      'serializes removal with stale catalogs and preserves the shared-view lease under concurrent load',
+      () =>
+        Effect.scoped(
+          Effect.gen(function* () {
+            const home = temporaryRoot('threadnote-manager-stale-catalog-');
+            const identity = repositoryIdentity(home, '7'.repeat(64));
+            const neighborWorktreeId = '8'.repeat(64);
+            const databasePath = join(
+              home,
+              'indexes',
+              'code-graph',
+              'repositories',
+              identity.checkoutId,
+              'graph-v3.sqlite',
+            );
+            const snapshot = {
+              ...readySnapshot(identity, 0, 0, 0, '2026-08-08T12:00:00.000Z'),
+              id: `cgsn_${'7'.repeat(40)}-direct`,
+            };
+            const store = yield* CodeGraphStore;
+            yield* store.activate(databasePath, identity, snapshot, [], [], []);
+            yield* store.promote(databasePath, identity, snapshot.id);
+            const shared = new Database(databasePath);
+            shared
+              .query('INSERT INTO active_snapshots (worktree_id, snapshot_id, activated_at) VALUES (?, ?, ?)')
+              .run(neighborWorktreeId, snapshot.id, '2026-08-08T12:00:01.000Z');
+            shared.close();
+
+            yield* managerGraphCatalog(home);
+            const initiallyLeased = new Database(databasePath, {readonly: true});
+            expect(initiallyLeased.query('SELECT COUNT(*) AS count FROM snapshot_leases').get()).toEqual({count: 1});
+            const initialLease = initiallyLeased
+              .query('SELECT token, snapshot_id AS snapshotId FROM snapshot_leases')
+              .get() as {readonly snapshotId: string; readonly token: string};
+            initiallyLeased.close();
+
+            const failedAction = yield* withManagerGraphSnapshotLeaseInvalidated(
+              home,
+              identity.checkoutId,
+              identity.worktreeId,
+              snapshot.id,
+              Effect.fail(new Error('fixture removal failed before its commit point')),
+            ).pipe(
+              Effect.match({
+                onFailure: error => error.message,
+                onSuccess: () => 'unexpected success',
+              }),
+            );
+            expect(failedAction).toBe('fixture removal failed before its commit point');
+            const afterFailure = new Database(databasePath, {readonly: true});
+            expect(afterFailure.query('SELECT token, snapshot_id AS snapshotId FROM snapshot_leases').get()).toEqual(
+              initialLease,
+            );
+            afterFailure.close();
+
+            const loaded = yield* Deferred.make<void>();
+            const resume = yield* Deferred.make<void>();
+            let pauseNextCatalog = true;
+            const interlockedStore = CodeGraphStore.of({
+              ...store,
+              loadVisualizationCatalogs: (database, metrics, options) =>
+                store.loadVisualizationCatalogs(database, metrics, options).pipe(
+                  Effect.tap(() => {
+                    if (!pauseNextCatalog) return Effect.void;
+                    pauseNextCatalog = false;
+                    return Deferred.succeed(loaded, undefined).pipe(Effect.andThen(Deferred.await(resume)));
+                  }),
+                ),
+            });
+            const staleCatalogFiber = yield* managerGraphCatalog(home).pipe(
+              Effect.provideService(CodeGraphStore, interlockedStore),
+              Effect.forkChild,
+            );
+            yield* Deferred.await(loaded);
+
+            const removed = yield* withManagerGraphSnapshotLeaseInvalidated(
+              home,
+              identity.checkoutId,
+              identity.worktreeId,
+              snapshot.id,
+              store.removeView(databasePath, identity.worktreeId, snapshot.id),
+            );
+            expect(removed.result.state).toBe('removed');
+            expect(removed.warnings).toEqual([]);
+            yield* Deferred.succeed(resume, undefined);
+            const catalog = yield* Fiber.join(staleCatalogFiber);
+            expect(catalog.repositories.flatMap(repository => repository.views.map(view => view.worktreeId))).toEqual([
+              neighborWorktreeId,
+            ]);
+
+            const startedAt = yield* TestClock.withLive(Clock.currentTimeMillis);
+            const catalogs = yield* Effect.all(
+              Array.from({length: 16}, () => managerGraphCatalog(home)),
+              {concurrency: 'unbounded'},
+            );
+            const elapsed = (yield* TestClock.withLive(Clock.currentTimeMillis)) - startedAt;
+            expect(elapsed).toBeLessThan(5_000);
+            expect(
+              catalogs.every(result =>
+                result.repositories.every(repository =>
+                  repository.views.every(view => view.worktreeId === neighborWorktreeId),
+                ),
+              ),
+            ).toBe(true);
+            const finallyLeased = new Database(databasePath, {readonly: true});
+            expect(finallyLeased.query('SELECT COUNT(*) AS count FROM snapshot_leases').get()).toEqual({count: 1});
+            expect(finallyLeased.query('SELECT token, snapshot_id AS snapshotId FROM snapshot_leases').get()).toEqual(
+              initialLease,
+            );
+            finallyLeased.close();
+            yield* releaseManagerGraphSnapshotLeases();
+          }),
+        ),
+    );
   });
 });
 

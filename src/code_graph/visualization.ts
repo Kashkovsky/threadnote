@@ -65,7 +65,14 @@ const MANAGER_QUERY_SEMANTIC_TIME_BUDGET_MILLISECONDS = 750;
 const MANAGER_QUERY_TRAVERSAL_TIME_BUDGET_MILLISECONDS = 1_000;
 const managerSnapshotLeases = new Map<
   string,
-  {readonly database: string; readonly expiresAt: number; readonly renewAfter: number; readonly token: string}
+  {
+    readonly database: string;
+    readonly expiresAt: number;
+    readers: number;
+    readonly renewAfter: number;
+    readonly token: string;
+    readonly worktreeIds: Set<string>;
+  }
 >();
 const managerSnapshotLeaseGates = new Map<string, ReturnType<typeof Semaphore.makeUnsafe>>();
 const INDEXED_VIEW_ID = /^[0-9a-f]{64}(?:\.[0-9a-f]{64})?$/;
@@ -134,6 +141,17 @@ export class ManagerGraphBusyError extends Error {
 
 export class ManagerGraphLeaseError extends Error {
   override readonly name = 'ManagerGraphLeaseError';
+}
+
+export class ManagerGraphViewUnavailableError extends Error {
+  override readonly name = 'ManagerGraphViewUnavailableError';
+}
+
+export interface ManagerGraphSnapshotLeaseWarning {
+  readonly code: 'manager-snapshot-lease-release-busy' | 'manager-snapshot-lease-release-failed';
+  readonly message: string;
+  readonly occurrences: 1;
+  readonly retryable: true;
 }
 
 export interface ManagerGraphCatalog {
@@ -305,15 +323,32 @@ export const managerGraphCatalog = Effect.fn('codeGraph.managerCatalog')(functio
           } as const;
         }
         const visible = catalogs.slice(0, MANAGER_CATALOG_VIEW_LIMIT);
-        const retained = yield* Effect.forEach(
+        const retention = yield* Effect.forEach(
           visible,
           catalog =>
-            retainManagerSnapshot(store, database, catalog.snapshot.id, MANAGER_OPERATION_LEASE_MINIMUM_MILLISECONDS),
+            retainManagerSnapshot(
+              store,
+              database,
+              catalog.viewWorktreeId,
+              catalog.snapshot.id,
+              MANAGER_OPERATION_LEASE_MINIMUM_MILLISECONDS,
+            ).pipe(Effect.map(result => ({catalog, result}))),
           {concurrency: 1},
         );
+        const current = retention.filter(entry => entry.result.state !== 'view-unavailable');
+        if (current.length === 0) {
+          return {
+            diagnostic: {
+              checkoutId,
+              code: 'no-ready-snapshot',
+              message: `Checkout ${shortIdentity(checkoutId)} has no ready graph snapshot.`,
+            } satisfies ManagerGraphCatalogDiagnostic,
+          } as const;
+        }
+        const retained = current.map(entry => entry.result);
         const observedCatalogs = yield* Effect.forEach(
-          visible,
-          catalog =>
+          current,
+          ({catalog}) =>
             managerGraphLocalAssociationForCatalog(threadnoteHome, checkoutId, catalog, [
               ...buildSelection.builds,
               ...buildSelection.waiters,
@@ -384,60 +419,99 @@ export const managerGraphCatalog = Effect.fn('codeGraph.managerCatalog')(functio
 const retainManagerSnapshot = Effect.fn('codeGraph.retainManagerSnapshot')(function* (
   store: CodeGraphStoreShape,
   database: string,
+  worktreeId: string,
   snapshotId: string,
   minimumRemainingMilliseconds = 0,
+  reader = false,
 ) {
   const key = `${database}\0${snapshotId}`;
   return yield* managerSnapshotLeaseGate(key).withPermit(
     Effect.gen(function* () {
       const existing = managerSnapshotLeases.get(key);
       const now = Date.now();
-      if (existing && existing.renewAfter > now && existing.expiresAt > now + minimumRemainingMilliseconds) {
-        return {state: 'retained'} as const;
-      }
-      if (existing) {
-        const renewed = yield* Effect.result(
-          store.renewSnapshotLease(database, existing.token, MANAGER_CATALOG_SNAPSHOT_LEASE_MILLISECONDS, {
-            waitTimeoutMilliseconds: MANAGER_LEASE_WRITER_WAIT_MILLISECONDS,
-          }),
-        );
-        if (Result.isSuccess(renewed)) {
-          managerSnapshotLeases.set(key, {
-            database,
-            expiresAt: now + MANAGER_CATALOG_SNAPSHOT_LEASE_MILLISECONDS,
-            renewAfter: now + MANAGER_CATALOG_SNAPSHOT_RENEW_MILLISECONDS,
-            token: existing.token,
-          });
-          return {state: 'retained'} as const;
-        }
-        if (renewed.failure instanceof CodeGraphStoreBusyError) {
-          return existing.expiresAt > now + minimumRemainingMilliseconds
-            ? ({state: 'retained'} as const)
-            : ({state: 'busy'} as const);
-        }
-        managerSnapshotLeases.delete(key);
-      }
-      const acquired = yield* Effect.result(
-        store.acquireSnapshotLease(database, snapshotId, MANAGER_CATALOG_SNAPSHOT_LEASE_MILLISECONDS, {
-          retireWhenInactive: true,
+      const retained = yield* Effect.result(
+        store.retainViewSnapshotLease(database, worktreeId, snapshotId, MANAGER_CATALOG_SNAPSHOT_LEASE_MILLISECONDS, {
+          ...(existing ? {existingToken: existing.token} : {}),
+          minimumRemainingMilliseconds,
           waitTimeoutMilliseconds: MANAGER_LEASE_WRITER_WAIT_MILLISECONDS,
         }),
       );
-      if (Result.isFailure(acquired)) {
-        return acquired.failure instanceof CodeGraphStoreBusyError
-          ? ({state: 'busy'} as const)
-          : ({error: acquired.failure, state: 'failed'} as const);
+      if (Result.isFailure(retained)) {
+        if (retained.failure instanceof CodeGraphStoreBusyError) {
+          // A token that this process already validated for this exact view
+          // may continue protecting an in-flight/read-only operation while a
+          // writer is busy. Never add a new consumer through this fallback;
+          // the next successful atomic retention revalidates or evicts it.
+          if (existing?.worktreeIds.has(worktreeId) && existing.expiresAt > now + minimumRemainingMilliseconds) {
+            if (reader) existing.readers += 1;
+            return {
+              release: reader ? finishManagerSnapshotRead(store, database, key) : Effect.void,
+              state: 'retained',
+            } as const;
+          }
+          return {state: 'busy'} as const;
+        }
+        return {error: retained.failure, state: 'failed'} as const;
       }
+      if (retained.success.state === 'view-unavailable') {
+        existing?.worktreeIds.delete(worktreeId);
+        yield* releaseUnusedManagerSnapshotLease(store, database, key).pipe(Effect.ignore);
+        return retained.success;
+      }
+      const worktreeIds = existing?.worktreeIds ?? new Set<string>();
+      worktreeIds.add(worktreeId);
       managerSnapshotLeases.set(key, {
         database,
-        expiresAt: now + MANAGER_CATALOG_SNAPSHOT_LEASE_MILLISECONDS,
-        renewAfter: now + MANAGER_CATALOG_SNAPSHOT_RENEW_MILLISECONDS,
-        token: acquired.success,
+        expiresAt: retained.success.expiresAt,
+        readers: (existing?.readers ?? 0) + (reader ? 1 : 0),
+        renewAfter:
+          existing?.token === retained.success.token && existing.renewAfter > now
+            ? existing.renewAfter
+            : now + MANAGER_CATALOG_SNAPSHOT_RENEW_MILLISECONDS,
+        token: retained.success.token,
+        worktreeIds,
       });
-      return {state: 'retained'} as const;
+      return {
+        release: reader ? finishManagerSnapshotRead(store, database, key) : Effect.void,
+        state: 'retained',
+      } as const;
     }),
   );
 });
+
+/**
+ * Keeps Manager lease-cache invalidation and the exact view CAS in the same
+ * database+snapshot critical section. A last lease with active readers stays
+ * live until their operation-scoped references drain; otherwise it is
+ * released immediately so ordinary retirement can reclaim the removed view.
+ */
+export function withManagerGraphSnapshotLeaseInvalidated<A, E, R>(
+  threadnoteHome: string,
+  checkoutId: string,
+  worktreeId: string,
+  snapshotId: string,
+  effect: Effect.Effect<A, E, R>,
+): Effect.Effect<
+  {readonly result: A; readonly warnings: readonly ManagerGraphSnapshotLeaseWarning[]},
+  E,
+  R | Path.Path | CodeGraphStore
+> {
+  return Effect.gen(function* () {
+    const path = yield* Path.Path;
+    const store = yield* CodeGraphStore;
+    const database = codeGraphLayout(path, threadnoteHome, checkoutId, worktreeId).databasePath;
+    const key = `${database}\0${snapshotId}`;
+    return yield* managerSnapshotLeaseGate(key).withPermit(
+      Effect.gen(function* () {
+        const result = yield* effect;
+        const existing = managerSnapshotLeases.get(key);
+        existing?.worktreeIds.delete(worktreeId);
+        const warnings = yield* releaseUnusedManagerSnapshotLease(store, database, key);
+        return {result, warnings};
+      }),
+    );
+  });
+}
 
 function managerSnapshotLeaseGate(key: string): ReturnType<typeof Semaphore.makeUnsafe> {
   const existing = managerSnapshotLeaseGates.get(key);
@@ -514,6 +588,56 @@ export const managerGraphBuildCatalog = Effect.fn('codeGraph.managerBuildCatalog
   } satisfies ManagerGraphBuildCatalog;
 });
 
+function managerSnapshotLeaseReleaseWarning(failure: unknown): ManagerGraphSnapshotLeaseWarning {
+  return failure instanceof CodeGraphStoreBusyError
+    ? {
+        code: 'manager-snapshot-lease-release-busy',
+        message: 'Manager snapshot lease release is busy; it will not be renewed and later cleanup will retry.',
+        occurrences: 1,
+        retryable: true,
+      }
+    : {
+        code: 'manager-snapshot-lease-release-failed',
+        message: 'Manager snapshot lease release failed; it will not be renewed and later cleanup will retry.',
+        occurrences: 1,
+        retryable: true,
+      };
+}
+
+const releaseUnusedManagerSnapshotLease = Effect.fn('codeGraph.releaseUnusedManagerSnapshotLease')(function* (
+  store: CodeGraphStoreShape,
+  database: string,
+  key: string,
+) {
+  const existing = managerSnapshotLeases.get(key);
+  if (!existing || existing.readers > 0 || existing.worktreeIds.size > 0) return [] as const;
+  const released = yield* Effect.result(
+    store.releaseSnapshotLease(database, existing.token, {
+      waitTimeoutMilliseconds: MANAGER_LEASE_WRITER_WAIT_MILLISECONDS,
+    }),
+  );
+  if (Result.isSuccess(released)) {
+    managerSnapshotLeases.delete(key);
+    return [] as const;
+  }
+  return [managerSnapshotLeaseReleaseWarning(released.failure)] as const;
+});
+
+const finishManagerSnapshotRead = Effect.fn('codeGraph.finishManagerSnapshotRead')(function* (
+  store: CodeGraphStoreShape,
+  database: string,
+  key: string,
+) {
+  yield* managerSnapshotLeaseGate(key).withPermit(
+    Effect.gen(function* () {
+      const existing = managerSnapshotLeases.get(key);
+      if (!existing) return;
+      existing.readers = Math.max(0, existing.readers - 1);
+      yield* releaseUnusedManagerSnapshotLease(store, database, key).pipe(Effect.ignore);
+    }),
+  );
+});
+
 export const managerGraphCatalogPage = Effect.fn('codeGraph.managerCatalogPage')(function* (
   threadnoteHome: string,
   indexedViewId: string,
@@ -526,22 +650,28 @@ export const managerGraphCatalogPage = Effect.fn('codeGraph.managerCatalogPage')
   const projectOffset = boundedCatalogOffset(request.offset);
   const workspaceOffset = boundedCatalogOffset(request.workspaceOffset);
   const query = boundedCatalogQuery(request.query);
-  const {catalog, checkoutId} = yield* resolveManagerGraphView(threadnoteHome, indexedViewId, {
-    expectedSnapshotId,
-    includeDependencies: false,
-    projectLimit: MANAGER_CATALOG_PROJECT_LIMIT,
-    projectOffset,
-    projectQuery: query.length === 0 ? Option.none() : Option.some(query),
-    workspaceOffset,
-    workspaceQuery: query.length === 0 ? Option.none() : Option.some(query),
-  });
-  const localAssociation = yield* managerGraphLocalAssociationForCatalog(threadnoteHome, checkoutId, catalog);
-  return {
-    projectOffset,
-    query,
-    repository: repositoryFromCatalog(checkoutId, catalog, localAssociation),
-    workspaceOffset,
-  } satisfies ManagerGraphCatalogPage;
+  return yield* Effect.acquireUseRelease(
+    resolveManagerGraphView(threadnoteHome, indexedViewId, {
+      expectedSnapshotId,
+      includeDependencies: false,
+      projectLimit: MANAGER_CATALOG_PROJECT_LIMIT,
+      projectOffset,
+      projectQuery: query.length === 0 ? Option.none() : Option.some(query),
+      workspaceOffset,
+      workspaceQuery: query.length === 0 ? Option.none() : Option.some(query),
+    }),
+    ({catalog, checkoutId}) =>
+      Effect.gen(function* () {
+        const localAssociation = yield* managerGraphLocalAssociationForCatalog(threadnoteHome, checkoutId, catalog);
+        return {
+          projectOffset,
+          query,
+          repository: repositoryFromCatalog(checkoutId, catalog, localAssociation),
+          workspaceOffset,
+        } satisfies ManagerGraphCatalogPage;
+      }),
+    resolved => resolved.release,
+  );
 });
 
 export const managerGraphViewsPage = Effect.fn('codeGraph.managerViewsPage')(function* (
@@ -567,14 +697,19 @@ export const managerGraphViewsPage = Effect.fn('codeGraph.managerViewsPage')(fun
     workspaceLimit: MANAGER_CATALOG_WORKSPACE_LIMIT,
   });
   const visible = catalogs.slice(0, MANAGER_CATALOG_VIEW_LIMIT);
-  yield* Effect.forEach(visible, catalog => retainManagerSnapshot(store, database, catalog.snapshot.id), {
-    concurrency: 1,
-    discard: true,
-  });
-  const buildStatuses = yield* readAllCodeGraphBuildStatuses(threadnoteHome);
-  const observed = yield* Effect.forEach(
+  const retention = yield* Effect.forEach(
     visible,
     catalog =>
+      retainManagerSnapshot(store, database, catalog.viewWorktreeId, catalog.snapshot.id).pipe(
+        Effect.map(result => ({catalog, result})),
+      ),
+    {concurrency: 1},
+  );
+  const current = retention.filter(entry => entry.result.state !== 'view-unavailable');
+  const buildStatuses = yield* readAllCodeGraphBuildStatuses(threadnoteHome);
+  const observed = yield* Effect.forEach(
+    current,
+    ({catalog}) =>
       managerGraphLocalAssociationForCatalog(threadnoteHome, checkoutId, catalog, buildStatuses).pipe(
         Effect.map(localAssociation => ({catalog, checkoutId, localAssociation})),
       ),
@@ -595,20 +730,24 @@ export const managerGraphAnalysis = Effect.fn('codeGraph.managerAnalysis')(funct
 ) {
   if (!INDEXED_VIEW_ID.test(indexedViewId)) return yield* Effect.fail(new Error('Graph view identity is invalid.'));
   const store = yield* CodeGraphStore;
-  const {catalog, database} = yield* resolveManagerGraphView(threadnoteHome, indexedViewId, {
-    expectedSnapshotId,
-    includeDependencies: false,
-    projectLimit: 1,
-  });
-  return yield* store.withSession(
-    database,
-    analyzeCodeGraph(store, {
-      budget: {maxDurationMilliseconds: 20_000},
-      databasePath: database,
-      limits: codeGraphAnalysisLimitsForView('full'),
-      snapshot: catalog.snapshot,
+  return yield* Effect.acquireUseRelease(
+    resolveManagerGraphView(threadnoteHome, indexedViewId, {
+      expectedSnapshotId,
+      includeDependencies: false,
+      projectLimit: 1,
     }),
-    {readOnly: true},
+    ({catalog, database}) =>
+      store.withSession(
+        database,
+        analyzeCodeGraph(store, {
+          budget: {maxDurationMilliseconds: 20_000},
+          databasePath: database,
+          limits: codeGraphAnalysisLimitsForView('full'),
+          snapshot: catalog.snapshot,
+        }),
+        {readOnly: true},
+      ),
+    resolved => resolved.release,
   );
 });
 
@@ -622,20 +761,26 @@ export const managerGraphVisualization = Effect.fn('codeGraph.managerVisualizati
   if (!INDEXED_VIEW_ID.test(indexedViewId)) return yield* Effect.fail(new Error('Graph view identity is invalid.'));
   const store = yield* CodeGraphStore;
   const projectId = requestedProjectId.trim() || 'all';
-  const {catalog, checkoutId, database} = yield* resolveManagerGraphView(threadnoteHome, indexedViewId, {
-    expectedSnapshotId,
-    includeDependencies: projectId === 'all',
-    projectId: projectId === 'all' ? Option.none() : Option.some(projectId),
-    projectLimit: projectId === 'all' ? MANAGER_OVERVIEW_PROJECT_LIMIT : 1,
-  });
-  const repository = repositoryFromCatalog(checkoutId, catalog);
-  const limits = managerGraphVisualizationLimits(requestedBudget);
-  if (projectId === 'all') {
-    return yield* overviewVisualization(store, database, repository, catalog, limits);
-  }
-  const project = catalog.projects.find(candidate => candidate.id === projectId);
-  if (!project) return yield* Effect.fail(new Error('Indexed graph project was not found.'));
-  return yield* detailVisualization(store, database, repository, project, limits);
+  return yield* Effect.acquireUseRelease(
+    resolveManagerGraphView(threadnoteHome, indexedViewId, {
+      expectedSnapshotId,
+      includeDependencies: projectId === 'all',
+      projectId: projectId === 'all' ? Option.none() : Option.some(projectId),
+      projectLimit: projectId === 'all' ? MANAGER_OVERVIEW_PROJECT_LIMIT : 1,
+    }),
+    ({catalog, checkoutId, database}) =>
+      Effect.gen(function* () {
+        const repository = repositoryFromCatalog(checkoutId, catalog);
+        const limits = managerGraphVisualizationLimits(requestedBudget);
+        if (projectId === 'all') {
+          return yield* overviewVisualization(store, database, repository, catalog, limits);
+        }
+        const project = catalog.projects.find(candidate => candidate.id === projectId);
+        if (!project) return yield* Effect.fail(new Error('Indexed graph project was not found.'));
+        return yield* detailVisualization(store, database, repository, project, limits);
+      }),
+    resolved => resolved.release,
+  );
 });
 
 export const managerGraphQuery = Effect.fn('codeGraph.managerQuery')(function* (
@@ -656,69 +801,80 @@ export const managerGraphQuery = Effect.fn('codeGraph.managerQuery')(function* (
   const path = yield* Path.Path;
   const store = yield* CodeGraphStore;
   const embedding = yield* CodeGraphEmbeddingIndex;
-  const {catalog, checkoutId, database} = yield* resolveManagerGraphView(threadnoteHome, indexedViewId, {
-    expectedSnapshotId,
-    includeDependencies: false,
-    projectLimit: 1,
-  });
-  const requestedLimits = managerGraphVisualizationLimits({
-    edgeLimit: requestedBudget.edgeLimit ?? MANAGER_QUERY_DEFAULT_EDGE_LIMIT,
-    nodeLimit: requestedBudget.nodeLimit ?? MANAGER_QUERY_DEFAULT_NODE_LIMIT,
-  });
-  const limits = {
-    edgeLimit: Math.min(MANAGER_QUERY_MAX_EDGE_LIMIT, requestedLimits.edgeLimit),
-    nodeLimit: Math.min(MANAGER_QUERY_MAX_NODE_LIMIT, requestedLimits.nodeLimit),
-  };
-  const layout = codeGraphLayout(path, threadnoteHome, checkoutId, catalog.viewWorktreeId);
-  const lifecycle = yield* Effect.serviceOption(ManagerGraphQueryLifecycle);
-  yield* Option.match(lifecycle, {onNone: () => Effect.void, onSome: value => value.beforeTraversal});
-  const selection = yield* store.withSession(
-    database,
-    traversalQuery(
-      store,
-      database,
-      catalog.snapshot.id,
-      query,
-      'both',
-      limits.nodeLimit,
-      limits.edgeLimit,
-      1,
-      ['declared', 'resolved', 'syntactic'],
-      embedding,
-      threadnoteHome,
-      layout,
-      false,
-      undefined,
-      undefined,
-      {
-        semanticMilliseconds: MANAGER_QUERY_SEMANTIC_TIME_BUDGET_MILLISECONDS,
-        traversalMilliseconds: MANAGER_QUERY_TRAVERSAL_TIME_BUDGET_MILLISECONDS,
-      },
-    ),
-    {readOnly: true},
+  return yield* Effect.acquireUseRelease(
+    resolveManagerGraphView(threadnoteHome, indexedViewId, {
+      expectedSnapshotId,
+      includeDependencies: false,
+      projectLimit: 1,
+    }),
+    ({catalog, checkoutId, database}) =>
+      Effect.gen(function* () {
+        const requestedLimits = managerGraphVisualizationLimits({
+          edgeLimit: requestedBudget.edgeLimit ?? MANAGER_QUERY_DEFAULT_EDGE_LIMIT,
+          nodeLimit: requestedBudget.nodeLimit ?? MANAGER_QUERY_DEFAULT_NODE_LIMIT,
+        });
+        const limits = {
+          edgeLimit: Math.min(MANAGER_QUERY_MAX_EDGE_LIMIT, requestedLimits.edgeLimit),
+          nodeLimit: Math.min(MANAGER_QUERY_MAX_NODE_LIMIT, requestedLimits.nodeLimit),
+        };
+        const layout = codeGraphLayout(path, threadnoteHome, checkoutId, catalog.viewWorktreeId);
+        const lifecycle = yield* Effect.serviceOption(ManagerGraphQueryLifecycle);
+        yield* Option.match(lifecycle, {onNone: () => Effect.void, onSome: value => value.beforeTraversal});
+        const selection = yield* store.withSession(
+          database,
+          traversalQuery(
+            store,
+            database,
+            catalog.snapshot.id,
+            query,
+            'both',
+            limits.nodeLimit,
+            limits.edgeLimit,
+            1,
+            ['declared', 'resolved', 'syntactic'],
+            embedding,
+            threadnoteHome,
+            layout,
+            false,
+            undefined,
+            undefined,
+            {
+              semanticMilliseconds: MANAGER_QUERY_SEMANTIC_TIME_BUDGET_MILLISECONDS,
+              traversalMilliseconds: MANAGER_QUERY_TRAVERSAL_TIME_BUDGET_MILLISECONDS,
+            },
+          ),
+          {readOnly: true},
+        );
+        const workingSet = managerGraphQueryWorkingSet(selection.nodes, selection.edges, limits);
+        const {edges: visibleEdges, nodes} = workingSet;
+        const warnings = selection.warnings.map(warning => boundedText(warning, 320));
+        const truncated = workingSet.truncated || warnings.some(warning => /partial|limit|budget/iu.test(warning));
+        const repository = repositoryFromCatalog(checkoutId, catalog);
+        return {
+          edges: visibleEdges,
+          mode: 'detail',
+          nodes,
+          paging: {...limits, hasMore: truncated},
+          projectId: 'query',
+          query: {
+            matchedNodes: nodes.length,
+            state: 'ready',
+            text: boundedText(query, MANAGER_QUERY_MAX_LENGTH),
+            warnings,
+          },
+          repository: visualizationRepository(repository),
+          scope: {id: 'query', label: `Query: ${boundedText(query, 120)}`},
+          stats: {
+            renderedEdges: visibleEdges.length,
+            renderedNodes: nodes.length,
+            totalEdges: repository.snapshot.edgeCount,
+            totalNodes: repository.snapshot.symbolCount,
+          },
+          warnings,
+        } satisfies ManagerGraphVisualization;
+      }),
+    resolved => resolved.release,
   );
-  const workingSet = managerGraphQueryWorkingSet(selection.nodes, selection.edges, limits);
-  const {edges: visibleEdges, nodes} = workingSet;
-  const warnings = selection.warnings.map(warning => boundedText(warning, 320));
-  const truncated = workingSet.truncated || warnings.some(warning => /partial|limit|budget/iu.test(warning));
-  const repository = repositoryFromCatalog(checkoutId, catalog);
-  return {
-    edges: visibleEdges,
-    mode: 'detail',
-    nodes,
-    paging: {...limits, hasMore: truncated},
-    projectId: 'query',
-    query: {matchedNodes: nodes.length, state: 'ready', text: boundedText(query, MANAGER_QUERY_MAX_LENGTH), warnings},
-    repository: visualizationRepository(repository),
-    scope: {id: 'query', label: `Query: ${boundedText(query, 120)}`},
-    stats: {
-      renderedEdges: visibleEdges.length,
-      renderedNodes: nodes.length,
-      totalEdges: repository.snapshot.edgeCount,
-      totalNodes: repository.snapshot.symbolCount,
-    },
-    warnings,
-  } satisfies ManagerGraphVisualization;
 });
 
 export const managerGraphNodeDetail = Effect.fn('codeGraph.managerNodeDetail')(function* (
@@ -733,83 +889,90 @@ export const managerGraphNodeDetail = Effect.fn('codeGraph.managerNodeDetail')(f
     return yield* Effect.fail(new Error('Graph node identity is invalid.'));
   }
   const store = yield* CodeGraphStore;
-  const {catalog, database} = yield* resolveManagerGraphView(threadnoteHome, indexedViewId, {
-    expectedSnapshotId,
-    includeDependencies: false,
-    projectLimit: 1,
-  });
-  const symbols = yield* store.symbolsByIds(database, catalog.snapshot.id, [nodeId]);
-  const symbol = symbols.find(candidate => candidate.id === nodeId);
-  if (!symbol) return yield* Effect.fail(new Error('Indexed graph node was not found.'));
+  return yield* Effect.acquireUseRelease(
+    resolveManagerGraphView(threadnoteHome, indexedViewId, {
+      expectedSnapshotId,
+      includeDependencies: false,
+      projectLimit: 1,
+    }),
+    ({catalog, database}) =>
+      Effect.gen(function* () {
+        const symbols = yield* store.symbolsByIds(database, catalog.snapshot.id, [nodeId]);
+        const symbol = symbols.find(candidate => candidate.id === nodeId);
+        if (!symbol) return yield* Effect.fail(new Error('Indexed graph node was not found.'));
 
-  const [edges, summary] = yield* Effect.all([
-    store.edgesForNodes(
-      database,
-      catalog.snapshot.id,
-      [nodeId],
-      'both',
-      NODE_DETAIL_EDGE_LIMIT,
-      NODE_DETAIL_PROVENANCES,
-    ),
-    store.relationshipSummaryForNode(
-      database,
-      catalog.snapshot.id,
-      nodeId,
-      NODE_DETAIL_PROVENANCES,
-      NODE_DETAIL_SUMMARY_LIMIT,
-    ),
-  ]);
-  const relatedIds = [
-    ...new Set(edges.map(edge => (edge.sourceId === nodeId ? edge.targetId : edge.sourceId)).filter(isString)),
-  ];
-  const relatedSymbols = yield* store.symbolsByIds(database, catalog.snapshot.id, relatedIds);
-  const relatedSymbolsById = new Map(relatedSymbols.map(candidate => [candidate.id, candidate]));
-  const relationships = edges.map(edge => {
-    const outgoing = edge.sourceId === nodeId;
-    const relatedId = outgoing ? edge.targetId : edge.sourceId;
-    const relatedSymbol = relatedId ? relatedSymbolsById.get(relatedId) : undefined;
-    return {
-      confidence: edge.confidence,
-      direction: outgoing ? ('outgoing' as const) : ('incoming' as const),
-      evidencePath: boundedText(edge.evidencePath, 512),
-      evidenceSpan: edge.evidenceSpan,
-      id: edge.id,
-      provenance: edge.provenance,
-      related: {
-        id: relatedSymbol?.id ?? relatedId,
-        kind: relatedSymbol?.kind,
-        label: boundedText(relatedSymbol?.name ?? (outgoing ? edge.targetName : edge.sourceName), 160),
-        path: relatedSymbol?.path ? boundedText(relatedSymbol.path, 512) : undefined,
-        projectId: relatedSymbol ? projectIdForSymbol(relatedSymbol) : undefined,
-        qualifiedName: relatedSymbol?.qualifiedName ? boundedText(relatedSymbol.qualifiedName, 320) : undefined,
-      },
-      relation: edge.relation,
-    };
-  });
-  return {
-    node: {
-      documentation: symbol.documentation ? boundedText(symbol.documentation, 4_000) : undefined,
-      exported: symbol.exported,
-      id: symbol.id,
-      kind: symbol.kind,
-      label: boundedText(symbol.name, 160),
-      language: boundedText(symbol.language, 64),
-      packageName: symbol.packageName ? boundedText(symbol.packageName, 256) : undefined,
-      path: boundedText(symbol.path, 512),
-      projectId: projectIdForSymbol(symbol),
-      qualifiedName: boundedText(symbol.qualifiedName, 320),
-      signature: symbol.signature ? boundedText(symbol.signature, 2_000) : undefined,
-      span: symbol.span,
-    },
-    relationships,
-    snapshotId: catalog.snapshot.id,
-    stats: {
-      ...summary,
-      summaryTruncated: summary.truncated,
-      truncated:
-        summary.truncated || summary.provenances.reduce((total, item) => total + item.count, 0) > relationships.length,
-    },
-  } satisfies ManagerGraphNodeDetail;
+        const [edges, summary] = yield* Effect.all([
+          store.edgesForNodes(
+            database,
+            catalog.snapshot.id,
+            [nodeId],
+            'both',
+            NODE_DETAIL_EDGE_LIMIT,
+            NODE_DETAIL_PROVENANCES,
+          ),
+          store.relationshipSummaryForNode(
+            database,
+            catalog.snapshot.id,
+            nodeId,
+            NODE_DETAIL_PROVENANCES,
+            NODE_DETAIL_SUMMARY_LIMIT,
+          ),
+        ]);
+        const relatedIds = [
+          ...new Set(edges.map(edge => (edge.sourceId === nodeId ? edge.targetId : edge.sourceId)).filter(isString)),
+        ];
+        const relatedSymbols = yield* store.symbolsByIds(database, catalog.snapshot.id, relatedIds);
+        const relatedSymbolsById = new Map(relatedSymbols.map(candidate => [candidate.id, candidate]));
+        const relationships = edges.map(edge => {
+          const outgoing = edge.sourceId === nodeId;
+          const relatedId = outgoing ? edge.targetId : edge.sourceId;
+          const relatedSymbol = relatedId ? relatedSymbolsById.get(relatedId) : undefined;
+          return {
+            confidence: edge.confidence,
+            direction: outgoing ? ('outgoing' as const) : ('incoming' as const),
+            evidencePath: boundedText(edge.evidencePath, 512),
+            evidenceSpan: edge.evidenceSpan,
+            id: edge.id,
+            provenance: edge.provenance,
+            related: {
+              id: relatedSymbol?.id ?? relatedId,
+              kind: relatedSymbol?.kind,
+              label: boundedText(relatedSymbol?.name ?? (outgoing ? edge.targetName : edge.sourceName), 160),
+              path: relatedSymbol?.path ? boundedText(relatedSymbol.path, 512) : undefined,
+              projectId: relatedSymbol ? projectIdForSymbol(relatedSymbol) : undefined,
+              qualifiedName: relatedSymbol?.qualifiedName ? boundedText(relatedSymbol.qualifiedName, 320) : undefined,
+            },
+            relation: edge.relation,
+          };
+        });
+        return {
+          node: {
+            documentation: symbol.documentation ? boundedText(symbol.documentation, 4_000) : undefined,
+            exported: symbol.exported,
+            id: symbol.id,
+            kind: symbol.kind,
+            label: boundedText(symbol.name, 160),
+            language: boundedText(symbol.language, 64),
+            packageName: symbol.packageName ? boundedText(symbol.packageName, 256) : undefined,
+            path: boundedText(symbol.path, 512),
+            projectId: projectIdForSymbol(symbol),
+            qualifiedName: boundedText(symbol.qualifiedName, 320),
+            signature: symbol.signature ? boundedText(symbol.signature, 2_000) : undefined,
+            span: symbol.span,
+          },
+          relationships,
+          snapshotId: catalog.snapshot.id,
+          stats: {
+            ...summary,
+            summaryTruncated: summary.truncated,
+            truncated:
+              summary.truncated ||
+              summary.provenances.reduce((total, item) => total + item.count, 0) > relationships.length,
+          },
+        } satisfies ManagerGraphNodeDetail;
+      }),
+    resolved => resolved.release,
+  );
 });
 
 function overviewVisualization(
@@ -1309,16 +1472,33 @@ const resolveManagerGraphView = Effect.fn('codeGraph.resolveManagerGraphView')(f
           candidate => candidate.viewWorktreeId === worktreeId,
         )
       : yield* store.loadVisualizationCatalog(database, 'deferred', catalogOptions);
-  if (!catalog) return yield* Effect.fail(new Error('Indexed graph view has no ready snapshot.'));
+  if (!catalog) {
+    return yield* Effect.fail(
+      Option.isSome(options.expectedSnapshotId)
+        ? new ManagerGraphViewUnavailableError(
+            'The selected graph view changed or was removed. Refresh the graph catalog.',
+          )
+        : new Error('Indexed graph view has no ready snapshot.'),
+    );
+  }
   if (worktreeId && catalog.viewWorktreeId !== worktreeId) {
     return yield* Effect.fail(new Error('Indexed graph snapshot does not belong to the requested view.'));
   }
   const retention = yield* retainManagerSnapshot(
     store,
     database,
+    catalog.viewWorktreeId,
     catalog.snapshot.id,
     MANAGER_OPERATION_LEASE_MINIMUM_MILLISECONDS,
+    true,
   );
+  if (retention.state === 'view-unavailable') {
+    return yield* Effect.fail(
+      new ManagerGraphViewUnavailableError(
+        'The selected graph view changed or was removed. Refresh the graph catalog.',
+      ),
+    );
+  }
   if (retention.state === 'busy') {
     return yield* Effect.fail(
       new ManagerGraphBusyError(
@@ -1333,7 +1513,7 @@ const resolveManagerGraphView = Effect.fn('codeGraph.resolveManagerGraphView')(f
       ),
     );
   }
-  return {catalog, checkoutId, database};
+  return {catalog, checkoutId, database, release: retention.release};
 });
 
 function boundedCatalogOffset(value: number | undefined): number {

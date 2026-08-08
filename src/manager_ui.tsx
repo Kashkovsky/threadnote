@@ -30,6 +30,14 @@ type AgentClient = 'claude' | 'codex' | 'copilot' | 'cursor' | 'effect-ai';
 type MemoryViewMode = 'edit' | 'preview';
 type SelectId = 'agent' | 'kind' | 'status';
 
+interface ManagerGraphViewRemovalResponse {
+  readonly approvalDigest: string;
+  readonly output: string;
+  readonly result: {
+    readonly state: 'already-removed' | 'not-found' | 'ready' | 'removed' | 'stale-target';
+  };
+}
+
 const SIDEBAR_WIDTH_KEY = 'threadnote.manager.sidebarWidth';
 const SIDEBAR_WIDTH_DEFAULT = 300;
 const SIDEBAR_WIDTH_MIN = 260;
@@ -402,10 +410,26 @@ function App(): React.ReactElement {
     const label = graphAdministrationActionLabel(action);
     setGraphAdministrationBusy(label);
     try {
-      const result = await api<{readonly output: string}>('/api/graphs/action', {
-        ...action,
-        confirm: action.dryRun !== true,
-      });
+      let result: {readonly output: string};
+      if (action.action === 'remove-view' && action.dryRun !== true) {
+        const preview = await api<ManagerGraphViewRemovalResponse>('/api/graphs/action', {
+          ...action,
+          dryRun: true,
+        });
+        result =
+          preview.result.state === 'ready' || preview.result.state === 'already-removed'
+            ? await api<ManagerGraphViewRemovalResponse>('/api/graphs/action', {
+                ...action,
+                approvalDigest: preview.approvalDigest,
+                confirm: true,
+              })
+            : preview;
+      } else {
+        result = await api<{readonly output: string}>('/api/graphs/action', {
+          ...action,
+          confirm: action.dryRun !== true,
+        });
+      }
       await Promise.all([refreshGraphCatalog(false), refreshGraphDiagnostics({analyze: false, deep: false}, false)]);
       setGraphAdministrationOutput(result.output);
       toastMessage(`${label} complete`);
@@ -1989,6 +2013,8 @@ export function graphAdministrationActionLabel(action: GraphAdministrationAction
       return action.dryRun ? 'All-graph purge preview' : 'All-graph purge';
     case 'purge-obsolete':
       return action.dryRun ? 'Obsolete-store preview' : 'Obsolete-store purge';
+    case 'remove-view':
+      return action.dryRun ? 'View removal preview' : 'View removal';
     case 'repair':
       return action.dryRun ? 'Graph repair preview' : action.deep ? 'Deep graph repair' : 'Graph repair';
   }

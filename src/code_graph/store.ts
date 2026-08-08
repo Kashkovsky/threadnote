@@ -512,6 +512,26 @@ export interface CodeGraphSnapshotLeaseAcquireOptions extends CodeGraphSnapshotL
   readonly retireWhenInactive?: boolean;
 }
 
+export interface CodeGraphViewSnapshotLeaseRetainOptions extends CodeGraphSnapshotLeaseWriterOptions {
+  /** Existing process-owned lease token to validate or renew under the same writer gate as the view observation. */
+  readonly existingToken?: string;
+  /** Minimum remaining lifetime required before an existing token may be reused without renewal. */
+  readonly minimumRemainingMilliseconds?: number;
+  /** Deterministic test interlock executed after observation while the cross-process writer gate remains held. */
+  readonly afterViewObserved?: () => Effect.Effect<void, unknown, never>;
+}
+
+export type CodeGraphViewSnapshotLeaseRetainResult =
+  | {
+      readonly expiresAt: number;
+      readonly state: 'retained';
+      readonly token: string;
+    }
+  | {
+      readonly observation: CodeGraphViewObservationResult;
+      readonly state: 'view-unavailable';
+    };
+
 export interface CodeGraphViewRemovalStoreOptions extends CodeGraphSnapshotLeaseWriterOptions {
   /** Final containment proof run while the checkout writer gate is held and immediately before SQLite is opened. */
   readonly beforeDatabaseOpen?: () => Effect.Effect<void, unknown>;
@@ -598,6 +618,13 @@ export interface CodeGraphStoreShape {
     durationMilliseconds: number,
     options?: CodeGraphSnapshotLeaseAcquireOptions,
   ) => Effect.Effect<string, CodeGraphStoreError>;
+  readonly retainViewSnapshotLease: (
+    databasePath: string,
+    worktreeId: string,
+    snapshotId: string,
+    durationMilliseconds: number,
+    options?: CodeGraphViewSnapshotLeaseRetainOptions,
+  ) => Effect.Effect<CodeGraphViewSnapshotLeaseRetainResult, CodeGraphStoreError>;
   readonly promote: (
     databasePath: string,
     identity: RepositoryIdentity,
@@ -1212,6 +1239,49 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
             if (acquired.cleanup.remaining) yield* scheduleRetiredSnapshotCleanup(databasePath);
             return acquired.token;
           }).pipe(Effect.mapError(cause => storeError('acquire code graph snapshot lease', cause))),
+        retainViewSnapshotLease: (databasePath, worktreeId, snapshotId, durationMilliseconds, options) =>
+          Effect.gen(function* () {
+            yield* validateViewRemovalTarget(worktreeId, snapshotId);
+            const candidateToken = `${system.processId}:${yield* crypto.randomUUIDv4}`;
+            return yield* withWriterGate(
+              databasePath,
+              Effect.gen(function* () {
+                // The writer gate also serializes whole-checkout quarantine.
+                // Recheck containment only after it is held so a purged store
+                // cannot be recreated by SQLite between an outer stat and open.
+                if (!(yield* fs.exists(databasePath))) {
+                  return {
+                    observation: {expectedSnapshotId: snapshotId, state: 'not-found'},
+                    state: 'view-unavailable',
+                  } satisfies CodeGraphViewSnapshotLeaseRetainResult;
+                }
+                if (Option.isSome(yield* fs.readLink(databasePath).pipe(Effect.option))) {
+                  return yield* Effect.fail(new CodeGraphStoreError('Code graph database target is a symbolic link.'));
+                }
+                if ((yield* fs.stat(databasePath)).type !== 'File') {
+                  return yield* Effect.fail(
+                    new CodeGraphStoreError('Code graph database target is not a regular file.'),
+                  );
+                }
+                return yield* useDatabase(
+                  databasePath,
+                  Effect.gen(function* () {
+                    const sql = yield* SqlClient.SqlClient;
+                    yield* ensureLeaseSchemaInitialized(databasePath, sql);
+                    return yield* retainViewSnapshotLease(
+                      sql,
+                      worktreeId,
+                      snapshotId,
+                      durationMilliseconds,
+                      candidateToken,
+                      options,
+                    );
+                  }),
+                );
+              }),
+              options?.waitTimeoutMilliseconds,
+            );
+          }).pipe(Effect.mapError(cause => storeError('retain code graph view snapshot lease', cause))),
         activate: (databasePath, identity, snapshot, files, symbols, edges) =>
           prepare(databasePath).pipe(
             Effect.andThen(
@@ -4491,6 +4561,81 @@ const acquireSnapshotLease = Effect.fn('codeGraph.acquireSnapshotLease')(functio
     }),
   );
   return token;
+});
+
+const retainViewSnapshotLease = Effect.fn('codeGraph.retainViewSnapshotLease')(function* (
+  sql: SqlClient.SqlClient,
+  worktreeId: string,
+  snapshotId: string,
+  durationMilliseconds: number,
+  candidateToken: string,
+  options?: CodeGraphViewSnapshotLeaseRetainOptions,
+) {
+  yield* configureConnection(sql);
+  const now = yield* Clock.currentTimeMillis;
+  const duration = Math.max(1_000, Math.min(60 * 60_000, Math.floor(durationMilliseconds)));
+  const minimumRemaining = Math.max(0, Math.min(duration, Math.floor(options?.minimumRemainingMilliseconds ?? 0)));
+  return yield* sql.withTransaction(
+    Effect.gen(function* () {
+      const observation = yield* observeActiveView(sql, worktreeId, snapshotId);
+      yield* options?.afterViewObserved?.() ?? Effect.void;
+      if (observation.state !== 'ready') {
+        return {observation, state: 'view-unavailable'} satisfies CodeGraphViewSnapshotLeaseRetainResult;
+      }
+
+      if (options?.existingToken) {
+        const existing = yield* sql<{
+          readonly expires_at: number;
+          readonly snapshot_id: string;
+          readonly token: string;
+        }>`
+          SELECT token, snapshot_id, expires_at
+          FROM snapshot_leases
+          WHERE token = ${options.existingToken}
+          LIMIT 1
+        `;
+        const row = existing[0];
+        const expiresAt = Number(row?.expires_at ?? 0);
+        if (row?.snapshot_id === snapshotId && expiresAt > now) {
+          if (expiresAt > now + minimumRemaining) {
+            return {
+              expiresAt,
+              state: 'retained',
+              token: row.token,
+            } satisfies CodeGraphViewSnapshotLeaseRetainResult;
+          }
+          const renewedUntil = now + duration;
+          yield* sql`
+            UPDATE snapshot_leases
+            SET expires_at = ${renewedUntil}, retire_when_inactive = 1
+            WHERE token = ${row.token} AND snapshot_id = ${snapshotId} AND expires_at > ${now}
+          `;
+          if ((yield* lastStatementChangeCount(sql)) === 1) {
+            const expired = yield* reapExpiredSnapshotLeases(sql, now);
+            yield* retireLeaseCandidates(sql, expired, now);
+            return {
+              expiresAt: renewedUntil,
+              state: 'retained',
+              token: row.token,
+            } satisfies CodeGraphViewSnapshotLeaseRetainResult;
+          }
+        }
+      }
+
+      const expiresAt = now + duration;
+      yield* sql`
+        INSERT INTO snapshot_leases (token, snapshot_id, expires_at, retire_when_inactive)
+        VALUES (${candidateToken}, ${snapshotId}, ${expiresAt}, 1)
+      `;
+      const expired = yield* reapExpiredSnapshotLeases(sql, now);
+      yield* retireLeaseCandidates(sql, expired, now);
+      return {
+        expiresAt,
+        state: 'retained',
+        token: candidateToken,
+      } satisfies CodeGraphViewSnapshotLeaseRetainResult;
+    }),
+  );
 });
 
 const releaseSnapshotLease = Effect.fn('codeGraph.releaseSnapshotLease')(function* (token: string) {

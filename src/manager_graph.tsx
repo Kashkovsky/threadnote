@@ -106,17 +106,33 @@ export type GraphAdministrationAction =
       readonly checkoutId: string;
       readonly dryRun?: boolean;
     }
+  | {
+      readonly action: 'remove-view';
+      readonly checkoutId: string;
+      readonly dryRun?: boolean;
+      readonly expectedSnapshotId: string;
+      readonly worktreeId: string;
+    }
   | {readonly action: 'purge-all'; readonly dryRun?: boolean}
   | {readonly action: 'repair'; readonly deep?: boolean; readonly dryRun?: boolean};
+
+type GraphWorktreeAdministrationAction = Extract<GraphAdministrationAction, {readonly action: 'compact' | 'index'}>;
 
 export function graphAdministrationTarget(
   checkoutId: string,
   view: {readonly repository: {readonly repositoryId: string}; readonly worktreeId: string},
-): Pick<
-  Extract<GraphAdministrationAction, {readonly worktreeId: string}>,
-  'checkoutId' | 'repositoryId' | 'worktreeId'
-> {
+): Pick<GraphWorktreeAdministrationAction, 'checkoutId' | 'repositoryId' | 'worktreeId'> {
   return {checkoutId, repositoryId: view.repository.repositoryId, worktreeId: view.worktreeId};
+}
+
+export function graphViewRemovalTarget(
+  checkoutId: string,
+  view: {readonly snapshot: {readonly id: string}; readonly worktreeId: string},
+): Pick<
+  Extract<GraphAdministrationAction, {readonly action: 'remove-view'}>,
+  'checkoutId' | 'expectedSnapshotId' | 'worktreeId'
+> {
+  return {checkoutId, expectedSnapshotId: view.snapshot.id, worktreeId: view.worktreeId};
 }
 
 export interface GraphCatalogPage {
@@ -3129,8 +3145,8 @@ function GraphAdministration(props: {
   };
   const targetAction = async (
     managementAvailable: boolean,
-    action: Extract<GraphAdministrationAction, {readonly worktreeId: string}>,
-  ): Promise<GraphAdministrationAction | undefined> => {
+    action: GraphWorktreeAdministrationAction,
+  ): Promise<GraphWorktreeAdministrationAction | undefined> => {
     if (managementAvailable) return action;
     const values = await dialogs.prompt({
       confirmLabel: 'Use worktree',
@@ -3151,7 +3167,7 @@ function GraphAdministration(props: {
   };
   const dispatchTargetAction = async (
     managementAvailable: boolean,
-    action: Extract<GraphAdministrationAction, {readonly worktreeId: string}>,
+    action: GraphWorktreeAdministrationAction,
     confirmation?: ManagerDialogOptions,
   ): Promise<void> => {
     const targeted = await targetAction(managementAvailable, action);
@@ -3307,37 +3323,72 @@ function GraphAdministration(props: {
                     </div>
                   </dl>
                   <div className="graph-database-views">
-                    {database.views.map(candidate => (
-                      <div key={`${database.checkoutId}:${candidate.viewWorktreeId}`}>
-                        <strong>View {candidate.viewWorktreeId.slice(-8)}</strong>
-                        <span>
-                          {candidate.snapshot.fileCount.toLocaleString()} files ·{' '}
-                          {candidate.snapshot.symbolCount.toLocaleString()} symbols ·{' '}
-                          {candidate.snapshot.edgeCount.toLocaleString()} edges
-                        </span>
-                        <small>
-                          Folder: {graphLocalAssociationText(candidate.localAssociation)} ·{' '}
-                          {candidate.localAssociation.state}
-                        </small>
-                        {candidate.analysis ? (
+                    {database.views.map(candidate => {
+                      const removalTarget = graphViewRemovalTarget(database.checkoutId, {
+                        snapshot: candidate.snapshot,
+                        worktreeId: candidate.viewWorktreeId,
+                      });
+                      return (
+                        <div key={`${database.checkoutId}:${candidate.viewWorktreeId}`}>
+                          <strong>View {candidate.viewWorktreeId.slice(-8)}</strong>
+                          <span>
+                            {candidate.snapshot.fileCount.toLocaleString()} files ·{' '}
+                            {candidate.snapshot.symbolCount.toLocaleString()} symbols ·{' '}
+                            {candidate.snapshot.edgeCount.toLocaleString()} edges
+                          </span>
                           <small>
-                            {candidate.analysis.coverage.complete ? 'Complete' : 'Partial'} analysis ·{' '}
-                            {candidate.analysis.coverage.topology.state === 'complete' ||
-                            candidate.analysis.coverage.topology.state === 'partial' ? (
-                              <>
-                                {candidate.analysis.statistics.connectedComponentCount.toLocaleString()} components ·{' '}
-                                {candidate.analysis.statistics.communityCount.toLocaleString()} communities · average
-                                degree {candidate.analysis.statistics.averageDegree.toFixed(2)} · maximum{' '}
-                                {candidate.analysis.statistics.maximumDegree.toLocaleString()} ·{' '}
-                                {candidate.analysis.statistics.isolatedNodeCount.toLocaleString()} isolated
-                              </>
-                            ) : (
-                              <>topology {candidate.analysis.coverage.topology.state}</>
-                            )}
+                            Folder: {graphLocalAssociationText(candidate.localAssociation)} ·{' '}
+                            {candidate.localAssociation.state}
                           </small>
-                        ) : null}
-                      </div>
-                    ))}
+                          {candidate.analysis ? (
+                            <small>
+                              {candidate.analysis.coverage.complete ? 'Complete' : 'Partial'} analysis ·{' '}
+                              {candidate.analysis.coverage.topology.state === 'complete' ||
+                              candidate.analysis.coverage.topology.state === 'partial' ? (
+                                <>
+                                  {candidate.analysis.statistics.connectedComponentCount.toLocaleString()} components ·{' '}
+                                  {candidate.analysis.statistics.communityCount.toLocaleString()} communities · average
+                                  degree {candidate.analysis.statistics.averageDegree.toFixed(2)} · maximum{' '}
+                                  {candidate.analysis.statistics.maximumDegree.toLocaleString()} ·{' '}
+                                  {candidate.analysis.statistics.isolatedNodeCount.toLocaleString()} isolated
+                                </>
+                              ) : (
+                                <>topology {candidate.analysis.coverage.topology.state}</>
+                              )}
+                            </small>
+                          ) : null}
+                          <div className="graph-view-actions">
+                            <button
+                              disabled={blocked}
+                              onClick={() => props.onAction({action: 'remove-view', dryRun: true, ...removalTarget})}
+                              type="button"
+                            >
+                              Preview remove
+                            </button>
+                            <button
+                              className="danger"
+                              disabled={blocked}
+                              onClick={() =>
+                                void confirmAction(
+                                  {
+                                    confirmLabel: 'Remove view',
+                                    detail: `Checkout ${removalTarget.checkoutId}\nWorktree ${removalTarget.worktreeId}\nSnapshot ${removalTarget.expectedSnapshotId}`,
+                                    message:
+                                      'Remove this exact active view. Snapshot data still referenced by another view remains available.',
+                                    title: 'Remove this indexed view?',
+                                    tone: 'danger',
+                                  },
+                                  {action: 'remove-view', ...removalTarget},
+                                )
+                              }
+                              type="button"
+                            >
+                              Remove view
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
                   {[...database.builds, ...database.waiters].map(job => (
                     <p className="graph-database-job" key={`${job.buildId}:${job.coordination?.role ?? 'build'}`}>
