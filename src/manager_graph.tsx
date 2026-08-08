@@ -76,7 +76,7 @@ export interface GraphRepositoryGroup {
 
 export interface GraphCatalogDiagnostic {
   readonly checkoutId: string;
-  readonly code: 'no-ready-snapshot' | 'unreadable-database';
+  readonly code: 'lease-deferred' | 'lease-failed' | 'no-ready-snapshot' | 'unreadable-database';
   readonly message: string;
 }
 
@@ -1126,6 +1126,7 @@ export function GraphWorkspace(props: {
   readonly administrationBusy?: string;
   readonly administrationOutput?: string;
   readonly catalog?: GraphCatalog;
+  readonly catalogError?: string;
   readonly loadAnalysis: (repositoryId: string, snapshotId: string, signal: AbortSignal) => Promise<GraphAnalysis>;
   readonly loadGraph: (
     repositoryId: string,
@@ -2083,7 +2084,16 @@ export function GraphWorkspace(props: {
 
       <div className="graph-body">
         <section className="graph-stage">
-          {!props.catalog ? (
+          {!props.catalog && props.catalogError ? (
+            <div className="graph-empty" role="status">
+              <span className="empty-orbit" aria-hidden="true" />
+              <h3>Indexed repositories unavailable</h3>
+              <p>{props.catalogError}</p>
+              <button onClick={props.onRefresh} type="button">
+                Try again
+              </button>
+            </div>
+          ) : !props.catalog ? (
             <div aria-live="polite" className="graph-loading" role="status">
               <span className="spinner" aria-hidden="true" />
               <span>Loading indexed repositories…</span>
@@ -3248,7 +3258,13 @@ function GraphAdministration(props: {
                   <dl>
                     <div>
                       <dt>Snapshots</dt>
-                      <dd>{database.health?.readySnapshots ?? 0} ready</dd>
+                      <dd>
+                        {database.health
+                          ? `${database.health.readySnapshots} ready`
+                          : database.healthState === 'deferred'
+                            ? 'health inspection deferred'
+                            : 'unavailable'}
+                      </dd>
                     </div>
                     <div>
                       <dt>Views</dt>

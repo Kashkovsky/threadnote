@@ -1,4 +1,4 @@
-import {Context, Effect, Option, Path} from 'effect';
+import {Context, Effect, Option, Path, Result, Semaphore} from 'effect';
 import {codeGraphDatabasePaths} from './maintenance.js';
 import {CodeGraphEmbeddingIndex} from './embedding.js';
 import {codeGraphLayout} from './layout.js';
@@ -20,7 +20,8 @@ import type {
   CodeGraphSpan,
   CodeGraphSymbol,
 } from './types.js';
-import {CodeGraphAnalysis} from './analysis.js';
+import {CodeGraphStoreBusyError} from './types.js';
+import {analyzeCodeGraph} from './analysis.js';
 import {codeGraphAnalysisLimitsForView} from './analysis_render.js';
 import {
   readAllCodeGraphBuildStatuses,
@@ -41,6 +42,8 @@ const MANAGER_CATALOG_WORKSPACE_LIMIT = 64;
 const MANAGER_CATALOG_VIEW_LIMIT = 32;
 const MANAGER_CATALOG_SNAPSHOT_LEASE_MILLISECONDS = 60 * 60_000;
 const MANAGER_CATALOG_SNAPSHOT_RENEW_MILLISECONDS = MANAGER_CATALOG_SNAPSHOT_LEASE_MILLISECONDS / 2;
+const MANAGER_OPERATION_LEASE_MINIMUM_MILLISECONDS = 2 * 60_000;
+const MANAGER_LEASE_WRITER_WAIT_MILLISECONDS = 0;
 const MANAGER_QUERY_DEFAULT_EDGE_LIMIT = 240;
 const MANAGER_QUERY_DEFAULT_NODE_LIMIT = 120;
 
@@ -61,8 +64,9 @@ const MANAGER_QUERY_SEMANTIC_TIME_BUDGET_MILLISECONDS = 750;
 const MANAGER_QUERY_TRAVERSAL_TIME_BUDGET_MILLISECONDS = 1_000;
 const managerSnapshotLeases = new Map<
   string,
-  {readonly database: string; readonly renewAfter: number; readonly token: string}
+  {readonly database: string; readonly expiresAt: number; readonly renewAfter: number; readonly token: string}
 >();
+const managerSnapshotLeaseGates = new Map<string, ReturnType<typeof Semaphore.makeUnsafe>>();
 const INDEXED_VIEW_ID = /^[0-9a-f]{64}(?:\.[0-9a-f]{64})?$/;
 const NODE_ID_MAX_LENGTH = 512;
 const NODE_DETAIL_PROVENANCES: readonly CodeGraphProvenance[] = [
@@ -118,8 +122,16 @@ export interface ManagerGraphIndexedView {
 
 export interface ManagerGraphCatalogDiagnostic {
   readonly checkoutId: string;
-  readonly code: 'no-ready-snapshot' | 'unreadable-database';
+  readonly code: 'lease-deferred' | 'lease-failed' | 'no-ready-snapshot' | 'unreadable-database';
   readonly message: string;
+}
+
+export class ManagerGraphBusyError extends Error {
+  override readonly name = 'ManagerGraphBusyError';
+}
+
+export class ManagerGraphLeaseError extends Error {
+  override readonly name = 'ManagerGraphLeaseError';
 }
 
 export interface ManagerGraphCatalog {
@@ -274,49 +286,58 @@ export const managerGraphCatalog = Effect.fn('codeGraph.managerCatalog')(functio
     databases,
     database => {
       const checkoutId = path.basename(path.dirname(database));
-      return store
-        .loadVisualizationCatalogs(database, 'deferred', {
+      return Effect.gen(function* () {
+        const catalogs = yield* store.loadVisualizationCatalogs(database, 'deferred', {
           includeDependencies: false,
           projectLimit: MANAGER_CATALOG_PROJECT_LIMIT,
           viewLimit: MANAGER_CATALOG_VIEW_LIMIT + 1,
           workspaceLimit: MANAGER_CATALOG_WORKSPACE_LIMIT,
-        })
-        .pipe(
-          Effect.tap(catalogs =>
-            Effect.forEach(
-              catalogs.slice(0, MANAGER_CATALOG_VIEW_LIMIT),
-              catalog => retainManagerSnapshot(store, database, catalog.snapshot.id),
-              {
-                concurrency: 1,
-                discard: true,
-              },
-            ),
-          ),
-          Effect.map(catalogs =>
-            catalogs.length > 0
-              ? ({
-                  checkoutId,
-                  catalogs: catalogs.slice(0, MANAGER_CATALOG_VIEW_LIMIT),
-                  viewsTruncated: catalogs.length > MANAGER_CATALOG_VIEW_LIMIT,
-                } as const)
-              : ({
-                  diagnostic: {
-                    checkoutId,
-                    code: 'no-ready-snapshot',
-                    message: `Checkout ${shortIdentity(checkoutId)} has no ready graph snapshot.`,
-                  } satisfies ManagerGraphCatalogDiagnostic,
-                } as const),
-          ),
-          Effect.catchCause(cause =>
-            Effect.succeed({
-              diagnostic: {
-                checkoutId,
-                code: 'unreadable-database',
-                message: `Checkout ${shortIdentity(checkoutId)} graph database is unreadable: ${privacySafeCatalogError(cause)}`,
-              } satisfies ManagerGraphCatalogDiagnostic,
-            } as const),
-          ),
+        });
+        if (catalogs.length === 0) {
+          return {
+            diagnostic: {
+              checkoutId,
+              code: 'no-ready-snapshot',
+              message: `Checkout ${shortIdentity(checkoutId)} has no ready graph snapshot.`,
+            } satisfies ManagerGraphCatalogDiagnostic,
+          } as const;
+        }
+        const visible = catalogs.slice(0, MANAGER_CATALOG_VIEW_LIMIT);
+        const retained = yield* Effect.forEach(
+          visible,
+          catalog =>
+            retainManagerSnapshot(store, database, catalog.snapshot.id, MANAGER_OPERATION_LEASE_MINIMUM_MILLISECONDS),
+          {concurrency: 1},
         );
+        return {
+          checkoutId,
+          catalogs: visible,
+          ...(retained.every(result => result.state === 'retained')
+            ? {}
+            : {
+                diagnostic: {
+                  checkoutId,
+                  code: retained.some(result => result.state === 'failed')
+                    ? ('lease-failed' as const)
+                    : ('lease-deferred' as const),
+                  message: retained.some(result => result.state === 'failed')
+                    ? `Checkout ${shortIdentity(checkoutId)} is readable, but snapshot retention failed. Run threadnote doctor --dry-run and retry.`
+                    : `Checkout ${shortIdentity(checkoutId)} is readable, but snapshot retention is deferred while another graph writer is active. Retry after the active build completes.`,
+                } satisfies ManagerGraphCatalogDiagnostic,
+              }),
+          viewsTruncated: catalogs.length > MANAGER_CATALOG_VIEW_LIMIT,
+        } as const;
+      }).pipe(
+        Effect.catchCause(cause =>
+          Effect.succeed({
+            diagnostic: {
+              checkoutId,
+              code: 'unreadable-database',
+              message: `Checkout ${shortIdentity(checkoutId)} graph database is unreadable: ${privacySafeCatalogError(cause)}`,
+            } satisfies ManagerGraphCatalogDiagnostic,
+          } as const),
+        ),
+      );
     },
     {concurrency: 2},
   );
@@ -351,42 +372,82 @@ const retainManagerSnapshot = Effect.fn('codeGraph.retainManagerSnapshot')(funct
   store: CodeGraphStoreShape,
   database: string,
   snapshotId: string,
+  minimumRemainingMilliseconds = 0,
 ) {
   const key = `${database}\0${snapshotId}`;
-  const existing = managerSnapshotLeases.get(key);
-  const now = Date.now();
-  if (existing && existing.renewAfter > now) return;
-  if (existing) {
-    const renewed = yield* store
-      .renewSnapshotLease(database, existing.token, MANAGER_CATALOG_SNAPSHOT_LEASE_MILLISECONDS)
-      .pipe(Effect.match({onFailure: () => false, onSuccess: () => true}));
-    if (renewed) {
+  return yield* managerSnapshotLeaseGate(key).withPermit(
+    Effect.gen(function* () {
+      const existing = managerSnapshotLeases.get(key);
+      const now = Date.now();
+      if (existing && existing.renewAfter > now && existing.expiresAt > now + minimumRemainingMilliseconds) {
+        return {state: 'retained'} as const;
+      }
+      if (existing) {
+        const renewed = yield* Effect.result(
+          store.renewSnapshotLease(database, existing.token, MANAGER_CATALOG_SNAPSHOT_LEASE_MILLISECONDS, {
+            waitTimeoutMilliseconds: MANAGER_LEASE_WRITER_WAIT_MILLISECONDS,
+          }),
+        );
+        if (Result.isSuccess(renewed)) {
+          managerSnapshotLeases.set(key, {
+            database,
+            expiresAt: now + MANAGER_CATALOG_SNAPSHOT_LEASE_MILLISECONDS,
+            renewAfter: now + MANAGER_CATALOG_SNAPSHOT_RENEW_MILLISECONDS,
+            token: existing.token,
+          });
+          return {state: 'retained'} as const;
+        }
+        if (renewed.failure instanceof CodeGraphStoreBusyError) {
+          return existing.expiresAt > now + minimumRemainingMilliseconds
+            ? ({state: 'retained'} as const)
+            : ({state: 'busy'} as const);
+        }
+        managerSnapshotLeases.delete(key);
+      }
+      const acquired = yield* Effect.result(
+        store.acquireSnapshotLease(database, snapshotId, MANAGER_CATALOG_SNAPSHOT_LEASE_MILLISECONDS, {
+          retireWhenInactive: true,
+          waitTimeoutMilliseconds: MANAGER_LEASE_WRITER_WAIT_MILLISECONDS,
+        }),
+      );
+      if (Result.isFailure(acquired)) {
+        return acquired.failure instanceof CodeGraphStoreBusyError
+          ? ({state: 'busy'} as const)
+          : ({error: acquired.failure, state: 'failed'} as const);
+      }
       managerSnapshotLeases.set(key, {
         database,
+        expiresAt: now + MANAGER_CATALOG_SNAPSHOT_LEASE_MILLISECONDS,
         renewAfter: now + MANAGER_CATALOG_SNAPSHOT_RENEW_MILLISECONDS,
-        token: existing.token,
+        token: acquired.success,
       });
-      return;
-    }
-  }
-  const token = yield* store.acquireSnapshotLease(database, snapshotId, MANAGER_CATALOG_SNAPSHOT_LEASE_MILLISECONDS, {
-    retireWhenInactive: true,
-  });
-  managerSnapshotLeases.set(key, {
-    database,
-    renewAfter: now + MANAGER_CATALOG_SNAPSHOT_RENEW_MILLISECONDS,
-    token,
-  });
+      return {state: 'retained'} as const;
+    }),
+  );
 });
+
+function managerSnapshotLeaseGate(key: string): ReturnType<typeof Semaphore.makeUnsafe> {
+  const existing = managerSnapshotLeaseGates.get(key);
+  if (existing) return existing;
+  const created = Semaphore.makeUnsafe(1);
+  managerSnapshotLeaseGates.set(key, created);
+  return created;
+}
 
 /** Releases every catalog lease owned by the current Manager process. */
 export const releaseManagerGraphSnapshotLeases = Effect.fn('codeGraph.releaseManagerSnapshotLeases')(function* () {
   const store = yield* CodeGraphStore;
   const leases = [...managerSnapshotLeases.values()];
   managerSnapshotLeases.clear();
+  managerSnapshotLeaseGates.clear();
   yield* Effect.forEach(
     leases,
-    lease => store.releaseSnapshotLease(lease.database, lease.token).pipe(Effect.catch(() => Effect.void)),
+    lease =>
+      store
+        .releaseSnapshotLease(lease.database, lease.token, {
+          waitTimeoutMilliseconds: MANAGER_LEASE_WRITER_WAIT_MILLISECONDS,
+        })
+        .pipe(Effect.catch(() => Effect.void)),
     {concurrency: 1, discard: true},
   );
 });
@@ -509,18 +570,22 @@ export const managerGraphAnalysis = Effect.fn('codeGraph.managerAnalysis')(funct
   expectedSnapshotId: Option.Option<string> = Option.none(),
 ) {
   if (!INDEXED_VIEW_ID.test(indexedViewId)) return yield* Effect.fail(new Error('Graph view identity is invalid.'));
-  const analysis = yield* CodeGraphAnalysis;
+  const store = yield* CodeGraphStore;
   const {catalog, database} = yield* resolveManagerGraphView(threadnoteHome, indexedViewId, {
     expectedSnapshotId,
     includeDependencies: false,
     projectLimit: 1,
   });
-  return yield* analysis.analyze({
-    budget: {maxDurationMilliseconds: 20_000},
-    databasePath: database,
-    limits: codeGraphAnalysisLimitsForView('full'),
-    snapshot: catalog.snapshot,
-  });
+  return yield* store.withSession(
+    database,
+    analyzeCodeGraph(store, {
+      budget: {maxDurationMilliseconds: 20_000},
+      databasePath: database,
+      limits: codeGraphAnalysisLimitsForView('full'),
+      snapshot: catalog.snapshot,
+    }),
+    {readOnly: true},
+  );
 });
 
 export const managerGraphVisualization = Effect.fn('codeGraph.managerVisualization')(function* (
@@ -582,38 +647,31 @@ export const managerGraphQuery = Effect.fn('codeGraph.managerQuery')(function* (
   };
   const layout = codeGraphLayout(path, threadnoteHome, checkoutId, catalog.viewWorktreeId);
   const lifecycle = yield* Effect.serviceOption(ManagerGraphQueryLifecycle);
-  const selection = yield* Effect.acquireUseRelease(
-    store.acquireSnapshotLease(database, catalog.snapshot.id, 2 * 60_000),
-    () =>
-      Effect.gen(function* () {
-        yield* Option.match(lifecycle, {onNone: () => Effect.void, onSome: value => value.beforeTraversal});
-        return yield* store.withSession(
-          database,
-          traversalQuery(
-            store,
-            database,
-            catalog.snapshot.id,
-            query,
-            'both',
-            limits.nodeLimit,
-            limits.edgeLimit,
-            1,
-            ['declared', 'resolved', 'syntactic'],
-            embedding,
-            threadnoteHome,
-            layout,
-            false,
-            undefined,
-            undefined,
-            {
-              semanticMilliseconds: MANAGER_QUERY_SEMANTIC_TIME_BUDGET_MILLISECONDS,
-              traversalMilliseconds: MANAGER_QUERY_TRAVERSAL_TIME_BUDGET_MILLISECONDS,
-            },
-          ),
-          {readOnly: true},
-        );
-      }),
-    lease => store.releaseSnapshotLease(database, lease).pipe(Effect.catch(() => Effect.void)),
+  yield* Option.match(lifecycle, {onNone: () => Effect.void, onSome: value => value.beforeTraversal});
+  const selection = yield* store.withSession(
+    database,
+    traversalQuery(
+      store,
+      database,
+      catalog.snapshot.id,
+      query,
+      'both',
+      limits.nodeLimit,
+      limits.edgeLimit,
+      1,
+      ['declared', 'resolved', 'syntactic'],
+      embedding,
+      threadnoteHome,
+      layout,
+      false,
+      undefined,
+      undefined,
+      {
+        semanticMilliseconds: MANAGER_QUERY_SEMANTIC_TIME_BUDGET_MILLISECONDS,
+        traversalMilliseconds: MANAGER_QUERY_TRAVERSAL_TIME_BUDGET_MILLISECONDS,
+      },
+    ),
+    {readOnly: true},
   );
   const workingSet = managerGraphQueryWorkingSet(selection.nodes, selection.edges, limits);
   const {edges: visibleEdges, nodes} = workingSet;
@@ -1200,6 +1258,26 @@ const resolveManagerGraphView = Effect.fn('codeGraph.resolveManagerGraphView')(f
   if (!catalog) return yield* Effect.fail(new Error('Indexed graph view has no ready snapshot.'));
   if (worktreeId && catalog.viewWorktreeId !== worktreeId) {
     return yield* Effect.fail(new Error('Indexed graph snapshot does not belong to the requested view.'));
+  }
+  const retention = yield* retainManagerSnapshot(
+    store,
+    database,
+    catalog.snapshot.id,
+    MANAGER_OPERATION_LEASE_MINIMUM_MILLISECONDS,
+  );
+  if (retention.state === 'busy') {
+    return yield* Effect.fail(
+      new ManagerGraphBusyError(
+        'The selected graph is temporarily busy with an active build. Retry after the writer completes.',
+      ),
+    );
+  }
+  if (retention.state === 'failed') {
+    return yield* Effect.fail(
+      new ManagerGraphLeaseError(
+        'The selected graph could not be retained safely. Run threadnote doctor --dry-run and retry.',
+      ),
+    );
   }
   return {catalog, checkoutId, database};
 });

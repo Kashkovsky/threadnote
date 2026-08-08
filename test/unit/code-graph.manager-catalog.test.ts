@@ -3,13 +3,17 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {Database} from 'bun:sqlite';
-import {Effect, Layer, Option} from 'effect';
+import {Deferred, Effect, Fiber, Layer, Option} from 'effect';
 import {afterEach, describe, expect, it} from 'vitest';
 import {
   groupManagerGraphRepositories,
+  ManagerGraphBusyError,
+  managerGraphAnalysis,
   managerGraphCatalog,
+  managerGraphQuery,
   releaseManagerGraphSnapshotLeases,
 } from '../../src/code_graph/visualization.js';
+import {CodeGraphEmbeddingIndex} from '../../src/code_graph/embedding.js';
 import {
   CodeGraphStore,
   codeGraphVisualizationCatalogComponentStatement,
@@ -22,6 +26,7 @@ import {
 } from '../../src/code_graph/store.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import type {CodeGraphWorkspace} from '../../src/code_graph/languages/types.js';
+import {CodeGraphStoreError} from '../../src/code_graph/types.js';
 import type {
   CodeGraphEdge,
   CodeGraphFileFacts,
@@ -36,6 +41,15 @@ const storeLayer = CodeGraphStore.layer.pipe(
   Layer.provideMerge(SystemInfo.layer),
   Layer.provideMerge(BunServices.layer),
 );
+const embeddingLayer = Layer.succeed(
+  CodeGraphEmbeddingIndex,
+  CodeGraphEmbeddingIndex.of({
+    check: () => Effect.succeed({reason: 'disabled for Manager catalog tests', state: 'unavailable'}),
+    ensure: () => Effect.succeed({embedded: 0, ready: false, reason: 'disabled for tests', reused: 0}),
+    search: () => Effect.succeed(new Map()),
+  }),
+);
+const managerGraphLayer = Layer.merge(storeLayer, embeddingLayer);
 
 afterEach(() => {
   for (const root of temporaryRoots.splice(0).reverse()) rmSync(root, {force: true, recursive: true});
@@ -852,6 +866,313 @@ describe('Manager logical repository and workspace catalogs', () => {
     expect(catalog.repositories).toEqual([]);
     expect(catalog.diagnostics).toEqual([expect.objectContaining({checkoutId, code: 'unreadable-database'})]);
     expect(catalog.diagnostics[0]?.message).not.toContain(home);
+  });
+
+  it('migrates a readable legacy lease table while retaining the Manager catalog', async () => {
+    const home = temporaryRoot('threadnote-manager-legacy-lease-');
+    const identity = repositoryIdentity(home, '8'.repeat(64));
+    const databasePath = join(home, 'indexes', 'code-graph', 'repositories', identity.checkoutId, 'graph-v3.sqlite');
+    const snapshot = readySnapshot(identity, 0, 0, 0, '2026-08-05T12:00:00.000Z');
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        yield* store.activate(databasePath, identity, snapshot, [], [], []);
+      }).pipe(Effect.provide(storeLayer)),
+    );
+    const legacy = new Database(databasePath);
+    legacy.run('ALTER TABLE snapshot_leases DROP COLUMN retire_when_inactive');
+    legacy.close();
+
+    const catalog = await Effect.runPromise(managerGraphCatalog(home).pipe(Effect.provide(storeLayer)));
+
+    expect(catalog.repositories).toHaveLength(1);
+    expect(catalog.diagnostics).toEqual([]);
+    const migrated = new Database(databasePath, {readonly: true});
+    expect(
+      migrated.query("SELECT name FROM pragma_table_info('snapshot_leases') WHERE name = 'retire_when_inactive'").get(),
+    ).toEqual({
+      name: 'retire_when_inactive',
+    });
+    expect(migrated.query('SELECT COUNT(*) AS count FROM snapshot_leases').get()).toEqual({count: 1});
+    migrated.close();
+    await Effect.runPromise(releaseManagerGraphSnapshotLeases().pipe(Effect.provide(storeLayer)));
+  });
+
+  it('returns readable catalogs promptly with a lease-deferred diagnostic while a writer is active', async () => {
+    const home = temporaryRoot('threadnote-manager-writer-busy-');
+    const identity = repositoryIdentity(home, '7'.repeat(64));
+    const databasePath = join(home, 'indexes', 'code-graph', 'repositories', identity.checkoutId, 'graph-v3.sqlite');
+    const writerLockPath = join(
+      home,
+      'locks',
+      'indexes',
+      'code-graph',
+      'database-writes',
+      `${identity.checkoutId}.lock`,
+    );
+    const snapshot = readySnapshot(identity, 0, 0, 0, '2026-08-05T12:00:00.000Z');
+
+    const {catalog, elapsed} = await Effect.runPromise(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        yield* store.activate(databasePath, identity, snapshot, [], [], []);
+        const writerAcquired = yield* Deferred.make<void>();
+        const releaseWriter = yield* Deferred.make<void>();
+        const writer = yield* store
+          .withSession(databasePath, store.initialize(databasePath), {
+            onWriterAcquired: () =>
+              Deferred.succeed(writerAcquired, undefined).pipe(Effect.andThen(Deferred.await(releaseWriter))),
+            writerLockPath,
+          })
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(writerAcquired);
+        const startedAt = Date.now();
+        const catalog = yield* managerGraphCatalog(home).pipe(
+          Effect.ensuring(Deferred.succeed(releaseWriter, undefined).pipe(Effect.asVoid)),
+        );
+        const elapsed = Date.now() - startedAt;
+        yield* Fiber.join(writer);
+        return {catalog, elapsed};
+      }).pipe(Effect.provide(storeLayer)),
+    );
+
+    expect(elapsed).toBeLessThan(1_000);
+    expect(catalog.repositories).toHaveLength(1);
+    expect(catalog.diagnostics).toEqual([
+      expect.objectContaining({checkoutId: identity.checkoutId, code: 'lease-deferred'}),
+    ]);
+    expect(catalog.diagnostics[0]?.message).not.toContain(home);
+  });
+
+  it('single-flights concurrent catalog retention without leaking snapshot leases', async () => {
+    const home = temporaryRoot('threadnote-manager-catalog-single-flight-');
+    const identity = repositoryIdentity(home, '3'.repeat(64));
+    const databasePath = join(home, 'indexes', 'code-graph', 'repositories', identity.checkoutId, 'graph-v3.sqlite');
+    const snapshot = readySnapshot(identity, 0, 0, 0, '2026-08-05T12:00:00.000Z');
+
+    const catalogs = await Effect.runPromise(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        yield* store.activate(databasePath, identity, snapshot, [], [], []);
+        return yield* Effect.all([managerGraphCatalog(home), managerGraphCatalog(home)], {concurrency: 2});
+      }).pipe(Effect.provide(storeLayer)),
+    );
+
+    expect(catalogs.map(catalog => catalog.diagnostics)).toEqual([[], []]);
+    const database = new Database(databasePath, {readonly: true});
+    expect(database.query('SELECT COUNT(*) AS count FROM snapshot_leases').get()).toEqual({count: 1});
+    database.close();
+    await Effect.runPromise(releaseManagerGraphSnapshotLeases().pipe(Effect.provide(storeLayer)));
+  });
+
+  it('keeps a readable catalog visible and classifies a non-busy retention failure accurately', async () => {
+    const home = temporaryRoot('threadnote-manager-catalog-lease-failure-');
+    const identity = repositoryIdentity(home, '2'.repeat(64));
+    const databasePath = join(home, 'indexes', 'code-graph', 'repositories', identity.checkoutId, 'graph-v3.sqlite');
+    const snapshot = readySnapshot(identity, 0, 0, 0, '2026-08-05T12:00:00.000Z');
+
+    const catalog = await Effect.runPromise(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        yield* store.activate(databasePath, identity, snapshot, [], [], []);
+        const failingStore = CodeGraphStore.of({
+          ...store,
+          acquireSnapshotLease: () => Effect.fail(new CodeGraphStoreError(`synthetic failure at ${home}`)),
+        });
+        return yield* managerGraphCatalog(home).pipe(Effect.provideService(CodeGraphStore, failingStore));
+      }).pipe(Effect.provide(storeLayer)),
+    );
+
+    expect(catalog.repositories).toHaveLength(1);
+    expect(catalog.diagnostics).toEqual([
+      expect.objectContaining({checkoutId: identity.checkoutId, code: 'lease-failed'}),
+    ]);
+    expect(catalog.diagnostics[0]?.message).not.toContain(home);
+    expect(catalog.diagnostics[0]?.message).toContain('threadnote doctor --dry-run');
+  });
+
+  it('returns a prompt privacy-safe busy error when a query cannot retain its selected snapshot', async () => {
+    const home = temporaryRoot('threadnote-manager-query-writer-busy-');
+    const identity = repositoryIdentity(home, '6'.repeat(64));
+    const databasePath = join(home, 'indexes', 'code-graph', 'repositories', identity.checkoutId, 'graph-v3.sqlite');
+    const writerLockPath = join(
+      home,
+      'locks',
+      'indexes',
+      'code-graph',
+      'database-writes',
+      `${identity.checkoutId}.lock`,
+    );
+    const snapshot = readySnapshot(identity, 0, 0, 0, '2026-08-05T12:00:00.000Z');
+
+    const {elapsed, failure} = await Effect.runPromise(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        yield* store.activate(databasePath, identity, snapshot, [], [], []);
+        const writerAcquired = yield* Deferred.make<void>();
+        const releaseWriter = yield* Deferred.make<void>();
+        const writer = yield* store
+          .withSession(databasePath, store.initialize(databasePath), {
+            onWriterAcquired: () =>
+              Deferred.succeed(writerAcquired, undefined).pipe(Effect.andThen(Deferred.await(releaseWriter))),
+            writerLockPath,
+          })
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(writerAcquired);
+        const startedAt = Date.now();
+        const failure = yield* managerGraphQuery(
+          home,
+          `${identity.checkoutId}.${identity.worktreeId}`,
+          'missing-symbol',
+          {},
+          Option.some(snapshot.id),
+        ).pipe(Effect.flip, Effect.ensuring(Deferred.succeed(releaseWriter, undefined).pipe(Effect.asVoid)));
+        const elapsed = Date.now() - startedAt;
+        yield* Fiber.join(writer);
+        return {elapsed, failure};
+      }).pipe(Effect.provide(managerGraphLayer)),
+    );
+
+    expect(elapsed).toBeLessThan(1_000);
+    expect(failure).toBeInstanceOf(ManagerGraphBusyError);
+    expect(String(failure)).toContain('temporarily busy');
+    expect(String(failure)).not.toContain(home);
+  });
+
+  it('reuses a live catalog lease for a query while a new writer is active', async () => {
+    const home = temporaryRoot('threadnote-manager-query-reuse-');
+    const identity = repositoryIdentity(home, '5'.repeat(64));
+    const databasePath = join(home, 'indexes', 'code-graph', 'repositories', identity.checkoutId, 'graph-v3.sqlite');
+    const writerLockPath = join(
+      home,
+      'locks',
+      'indexes',
+      'code-graph',
+      'database-writes',
+      `${identity.checkoutId}.lock`,
+    );
+    const snapshot = readySnapshot(identity, 0, 0, 0, '2026-08-05T12:00:00.000Z');
+
+    const {elapsed, result} = await Effect.runPromise(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        yield* store.activate(databasePath, identity, snapshot, [], [], []);
+        const catalog = yield* managerGraphCatalog(home);
+        if (catalog.repositories.length !== 1) return yield* Effect.die(new Error('catalog lease fixture failed'));
+        const writerAcquired = yield* Deferred.make<void>();
+        const releaseWriter = yield* Deferred.make<void>();
+        const writer = yield* store
+          .withSession(databasePath, store.initialize(databasePath), {
+            onWriterAcquired: () =>
+              Deferred.succeed(writerAcquired, undefined).pipe(Effect.andThen(Deferred.await(releaseWriter))),
+            writerLockPath,
+          })
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(writerAcquired);
+        const startedAt = Date.now();
+        const result = yield* managerGraphQuery(
+          home,
+          `${identity.checkoutId}.${identity.worktreeId}`,
+          'missing-symbol',
+          {},
+          Option.some(snapshot.id),
+        ).pipe(Effect.ensuring(Deferred.succeed(releaseWriter, undefined).pipe(Effect.asVoid)));
+        const elapsed = Date.now() - startedAt;
+        yield* Fiber.join(writer);
+        yield* releaseManagerGraphSnapshotLeases();
+        return {elapsed, result};
+      }).pipe(Effect.provide(managerGraphLayer)),
+    );
+
+    expect(elapsed).toBeLessThan(1_000);
+    expect(result.query).toMatchObject({state: 'ready', text: 'missing-symbol'});
+  });
+
+  it('reuses a live catalog lease for analysis while a new writer is active', async () => {
+    const home = temporaryRoot('threadnote-manager-analysis-reuse-');
+    const identity = repositoryIdentity(home, '1'.repeat(64));
+    const databasePath = join(home, 'indexes', 'code-graph', 'repositories', identity.checkoutId, 'graph-v3.sqlite');
+    const writerLockPath = join(
+      home,
+      'locks',
+      'indexes',
+      'code-graph',
+      'database-writes',
+      `${identity.checkoutId}.lock`,
+    );
+    const snapshot = readySnapshot(identity, 0, 0, 0, '2026-08-05T12:00:00.000Z');
+
+    const {elapsed, result} = await Effect.runPromise(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        yield* store.activate(databasePath, identity, snapshot, [], [], []);
+        yield* managerGraphCatalog(home);
+        const writerAcquired = yield* Deferred.make<void>();
+        const releaseWriter = yield* Deferred.make<void>();
+        const writer = yield* store
+          .withSession(databasePath, store.initialize(databasePath), {
+            onWriterAcquired: () =>
+              Deferred.succeed(writerAcquired, undefined).pipe(Effect.andThen(Deferred.await(releaseWriter))),
+            writerLockPath,
+          })
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(writerAcquired);
+        const startedAt = Date.now();
+        const result = yield* managerGraphAnalysis(
+          home,
+          `${identity.checkoutId}.${identity.worktreeId}`,
+          Option.some(snapshot.id),
+        ).pipe(Effect.ensuring(Deferred.succeed(releaseWriter, undefined).pipe(Effect.asVoid)));
+        const elapsed = Date.now() - startedAt;
+        yield* Fiber.join(writer);
+        yield* releaseManagerGraphSnapshotLeases();
+        return {elapsed, result};
+      }).pipe(Effect.provide(storeLayer)),
+    );
+
+    expect(elapsed).toBeLessThan(1_000);
+    expect(result.snapshot.id).toBe(snapshot.id);
+  });
+
+  it('does not block Manager shutdown while a graph writer owns lease cleanup', async () => {
+    const home = temporaryRoot('threadnote-manager-release-writer-busy-');
+    const identity = repositoryIdentity(home, '4'.repeat(64));
+    const databasePath = join(home, 'indexes', 'code-graph', 'repositories', identity.checkoutId, 'graph-v3.sqlite');
+    const writerLockPath = join(
+      home,
+      'locks',
+      'indexes',
+      'code-graph',
+      'database-writes',
+      `${identity.checkoutId}.lock`,
+    );
+    const snapshot = readySnapshot(identity, 0, 0, 0, '2026-08-05T12:00:00.000Z');
+
+    const elapsed = await Effect.runPromise(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        yield* store.activate(databasePath, identity, snapshot, [], [], []);
+        yield* managerGraphCatalog(home);
+        const writerAcquired = yield* Deferred.make<void>();
+        const releaseWriter = yield* Deferred.make<void>();
+        const writer = yield* store
+          .withSession(databasePath, store.initialize(databasePath), {
+            onWriterAcquired: () =>
+              Deferred.succeed(writerAcquired, undefined).pipe(Effect.andThen(Deferred.await(releaseWriter))),
+            writerLockPath,
+          })
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(writerAcquired);
+        const startedAt = Date.now();
+        yield* releaseManagerGraphSnapshotLeases();
+        const elapsed = Date.now() - startedAt;
+        yield* Deferred.succeed(releaseWriter, undefined);
+        yield* Fiber.join(writer);
+        return elapsed;
+      }).pipe(Effect.provide(managerGraphLayer)),
+    );
+
+    expect(elapsed).toBeLessThan(1_000);
   });
 
   it('releases catalog snapshot leases when the Manager lifecycle ends', async () => {

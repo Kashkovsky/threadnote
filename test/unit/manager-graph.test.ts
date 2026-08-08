@@ -60,6 +60,27 @@ describe('manager graph focus', () => {
     ).not.toThrow();
   });
 
+  it('renders a retry state when the initial catalog request fails', () => {
+    const neverResolves = () => new Promise<never>(() => undefined);
+    const markup = renderToStaticMarkup(
+      createElement(GraphWorkspace, {
+        catalogError: 'Graph catalog is temporarily busy.',
+        loadAnalysis: neverResolves,
+        loadCatalogPage: neverResolves,
+        loadGraph: neverResolves,
+        loadNodeDetail: neverResolves,
+        loadQuery: neverResolves,
+        loadViewsPage: neverResolves,
+        onRefresh: () => undefined,
+      }),
+    );
+
+    expect(markup).toContain('Indexed repositories unavailable');
+    expect(markup).toContain('Graph catalog is temporarily busy.');
+    expect(markup).toContain('Try again');
+    expect(markup).not.toContain('Loading indexed repositories');
+  });
+
   it('renders stale live owners with concrete repository, path, and status facts', () => {
     const neverResolves = () => new Promise<never>(() => undefined);
     const repository = {...repositoryGroup('repository', ['view-a'], 'view-a'), displayName: 'example/repository'};

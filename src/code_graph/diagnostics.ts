@@ -266,7 +266,7 @@ export const inspectAllCodeGraphs = Effect.fn('codeGraph.inspectAllDiagnostics')
       databaseCount: entries.length,
       deferredDatabaseCount: entries.filter(entry => entry.healthState === 'deferred').length,
       healthyDatabaseCount: entries.filter(entry => entry.health?.integrity === 'ok').length,
-      readySnapshotCount: entries.reduce((total, entry) => total + (entry.health?.readySnapshots ?? 0), 0),
+      readySnapshotCount: entries.reduce((total, entry) => total + knownReadySnapshotCount(entry), 0),
       totalStorageBytes: entries.reduce(
         (total, entry) => total + (entry.storage.state === 'available' ? entry.storage.totalBytes : 0),
         0,
@@ -293,11 +293,16 @@ export function renderCodeGraphDiagnostics(report: CodeGraphDiagnosticsReport): 
     const health = database.health
       ? `${database.health.integrity}; schema v${database.health.schemaVersion ?? 'unknown'}; extension ${database.health.persistentExtensionSchemaRevision ?? 'missing'}`
       : database.healthState;
+    const snapshotSummary = database.health
+      ? `Snapshots: ${database.health.readySnapshots} ready · ${(database.health.buildingSnapshots ?? 0) + (database.health.failedSnapshots ?? 0)} incomplete`
+      : database.healthState === 'deferred'
+        ? `Snapshots: health inspection deferred · ${knownReadySnapshotCount(database)} ready snapshot(s) represented by indexed views`
+        : 'Snapshots: unavailable';
     lines.push(
       '',
       `${repository} · checkout ${database.checkoutId.slice(-8)}`,
       `Health: ${health}`,
-      `Snapshots: ${database.health?.readySnapshots ?? 0} ready · ${(database.health?.buildingSnapshots ?? 0) + (database.health?.failedSnapshots ?? 0)} incomplete`,
+      snapshotSummary,
       `Storage: ${database.storage.state === 'available' ? formatBytes(database.storage.totalBytes) : 'missing'}`,
     );
     for (const view of database.views) {
@@ -319,6 +324,10 @@ export function renderCodeGraphDiagnostics(report: CodeGraphDiagnosticsReport): 
     );
   }
   return `${lines.join('\n')}\n`;
+}
+
+function knownReadySnapshotCount(database: CodeGraphDiagnosticsReport['databases'][number]): number {
+  return database.health?.readySnapshots ?? new Set(database.views.map(view => view.snapshot.id)).size;
 }
 
 const loadAllCatalogs = Effect.fn('codeGraph.loadAllDiagnosticCatalogs')(function* (

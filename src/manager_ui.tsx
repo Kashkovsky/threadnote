@@ -152,6 +152,8 @@ interface DropdownOption {
 
 const token = typeof window === 'undefined' ? '' : (new URLSearchParams(window.location.search).get('token') ?? '');
 const EMPTY_SELECTED_URIS: ReadonlySet<string> = new Set();
+const GRAPH_CATALOG_REQUEST_TIMEOUT_MILLISECONDS = 10_000;
+const GRAPH_DETAIL_REQUEST_TIMEOUT_MILLISECONDS = 30_000;
 
 function clampSidebarWidth(width: number): number {
   return Math.min(SIDEBAR_WIDTH_MAX, Math.max(SIDEBAR_WIDTH_MIN, Math.round(width)));
@@ -167,6 +169,7 @@ function App(): React.ReactElement {
   const [panel, setPanel] = useState<PanelName>('graph');
   const [state, setState] = useState<StateResponse | undefined>();
   const [graphCatalog, setGraphCatalog] = useState<GraphCatalog | undefined>();
+  const [graphCatalogError, setGraphCatalogError] = useState('');
   const graphCatalogRef = useRef<GraphCatalog | undefined>(undefined);
   const [graphDiagnostics, setGraphDiagnostics] = useState<CodeGraphDiagnosticsReport | undefined>();
   const [graphAdministrationBusy, setGraphAdministrationBusy] = useState<string | undefined>();
@@ -238,17 +241,24 @@ function App(): React.ReactElement {
     const acknowledgedCompletedResults = new Set<string>();
     const poll = async (): Promise<void> => {
       try {
-        const status = await api<Pick<GraphCatalog, 'builds' | 'waiterCount' | 'waiters'>>('/api/graphs/status');
+        const status = await api<Pick<GraphCatalog, 'builds' | 'waiterCount' | 'waiters'>>(
+          '/api/graphs/status',
+          undefined,
+          {timeoutMilliseconds: GRAPH_CATALOG_REQUEST_TIMEOUT_MILLISECONDS},
+        );
         if (cancelled) return;
         const active = status.builds.some(graphBuildIsActive);
         const refreshCatalog =
           (observedActiveBuild && !active) ||
           graphStatusRequiresCatalogRefresh(graphCatalogRef.current, status.builds, acknowledgedCompletedResults);
         if (refreshCatalog) {
-          const refreshed = await api<GraphCatalog>('/api/graphs');
+          const refreshed = await api<GraphCatalog>('/api/graphs', undefined, {
+            timeoutMilliseconds: GRAPH_CATALOG_REQUEST_TIMEOUT_MILLISECONDS,
+          });
           if (cancelled) return;
           graphCatalogRef.current = refreshed;
           setGraphCatalog(refreshed);
+          setGraphCatalogError('');
           for (const build of status.builds) {
             const identity = graphCompletedBuildResultIdentity(build);
             if (identity) acknowledgedCompletedResults.add(identity);
@@ -326,29 +336,42 @@ function App(): React.ReactElement {
   );
 
   async function refreshAll(): Promise<void> {
-    const [nextState, nextTree, nextShares, nextGraphs] = await Promise.all([
+    const graphRequest = api<GraphCatalog>('/api/graphs', undefined, {
+      timeoutMilliseconds: GRAPH_CATALOG_REQUEST_TIMEOUT_MILLISECONDS,
+    }).then(
+      catalog => {
+        graphCatalogRef.current = catalog;
+        setGraphCatalog(catalog);
+        setGraphCatalogError('');
+      },
+      cause => setGraphCatalogError(errorMessage(cause)),
+    );
+    const [nextState, nextTree, nextShares] = await Promise.all([
       api<StateResponse>('/api/state'),
       api<TreeResponse>('/api/tree'),
       api<{shares: readonly ShareSummary[]}>('/api/shares'),
-      api<GraphCatalog>('/api/graphs'),
     ]);
     setState(nextState);
     setTree(nextTree.tree);
     setResourceTree(nextTree.resourcesTree);
     setShares(nextShares.shares);
-    graphCatalogRef.current = nextGraphs;
-    setGraphCatalog(nextGraphs);
+    await graphRequest;
     toastMessage('Refreshed');
   }
 
   async function refreshGraphCatalog(notify = true): Promise<void> {
     try {
-      const next = await api<GraphCatalog>('/api/graphs');
+      const next = await api<GraphCatalog>('/api/graphs', undefined, {
+        timeoutMilliseconds: GRAPH_CATALOG_REQUEST_TIMEOUT_MILLISECONDS,
+      });
       graphCatalogRef.current = next;
       setGraphCatalog(next);
+      setGraphCatalogError('');
       if (notify) toastMessage('Graph indexes refreshed');
     } catch (cause) {
-      toastMessage(errorMessage(cause));
+      const message = errorMessage(cause);
+      setGraphCatalogError(message);
+      toastMessage(message);
     }
   }
 
@@ -1191,6 +1214,7 @@ function App(): React.ReactElement {
               administrationBusy={graphAdministrationBusy}
               administrationOutput={graphAdministrationOutput}
               catalog={graphCatalog}
+              catalogError={graphCatalogError}
               loadAnalysis={loadManagerGraphAnalysis}
               loadCatalogPage={loadManagerGraphCatalogPage}
               loadGraph={loadManagerGraph}
@@ -1909,22 +1933,48 @@ function SharesPanel(props: {
 async function api<T>(
   path: string,
   body?: Record<string, unknown>,
-  options: {readonly signal?: AbortSignal} = {},
+  options: {readonly signal?: AbortSignal; readonly timeoutMilliseconds?: number} = {},
 ): Promise<T> {
-  const response = await fetch(path, {
-    body: body ? JSON.stringify(body) : undefined,
-    headers: {
-      authorization: `Bearer ${token}`,
-      'content-type': 'application/json',
-    },
-    method: body ? 'POST' : 'GET',
-    signal: options.signal,
-  });
-  const data = (await response.json()) as {readonly error?: string};
-  if (!response.ok) {
-    throw new Error(data.error ?? `HTTP ${response.status}`);
+  const controller = options.timeoutMilliseconds === undefined ? undefined : new AbortController();
+  let timedOut = false;
+  const abortFromCaller = () => controller?.abort(options.signal?.reason);
+  if (controller && options.signal) {
+    if (options.signal.aborted) abortFromCaller();
+    else options.signal.addEventListener('abort', abortFromCaller, {once: true});
   }
-  return data as T;
+  const timeout =
+    controller && options.timeoutMilliseconds !== undefined
+      ? window.setTimeout(() => {
+          timedOut = true;
+          controller.abort();
+        }, options.timeoutMilliseconds)
+      : undefined;
+  try {
+    const response = await fetch(path, {
+      body: body ? JSON.stringify(body) : undefined,
+      headers: {
+        authorization: `Bearer ${token}`,
+        'content-type': 'application/json',
+      },
+      method: body ? 'POST' : 'GET',
+      signal: controller?.signal ?? options.signal,
+    });
+    const data = (await response.json()) as {readonly error?: string};
+    if (!response.ok) {
+      throw new Error(data.error ?? `HTTP ${response.status}`);
+    }
+    return data as T;
+  } catch (cause) {
+    if (timedOut) {
+      throw new Error(`Manager request timed out after ${options.timeoutMilliseconds} ms. Retry the operation.`, {
+        cause,
+      });
+    }
+    throw cause;
+  } finally {
+    if (timeout !== undefined) window.clearTimeout(timeout);
+    options.signal?.removeEventListener('abort', abortFromCaller);
+  }
 }
 
 export function graphAdministrationActionLabel(action: GraphAdministrationAction): string {
@@ -1954,7 +2004,7 @@ function loadManagerGraph(
   return api<GraphVisualization>(
     `/api/graph?repository=${encodeURIComponent(repositoryId)}&snapshot=${encodeURIComponent(snapshotId)}&project=${encodeURIComponent(projectId)}&nodeLimit=${limits.nodeLimit}&edgeLimit=${limits.edgeLimit}`,
     undefined,
-    {signal},
+    {signal, timeoutMilliseconds: GRAPH_DETAIL_REQUEST_TIMEOUT_MILLISECONDS},
   );
 }
 
@@ -1969,7 +2019,7 @@ function loadManagerGraphCatalogPage(
   return api<GraphCatalogPage>(
     `/api/graphs/page?repository=${encodeURIComponent(repositoryId)}&snapshot=${encodeURIComponent(snapshotId)}&offset=${projectOffset}&workspaceOffset=${workspaceOffset}${query ? `&query=${encodeURIComponent(query)}` : ''}`,
     undefined,
-    {signal},
+    {signal, timeoutMilliseconds: GRAPH_CATALOG_REQUEST_TIMEOUT_MILLISECONDS},
   );
 }
 
@@ -1982,7 +2032,7 @@ function loadManagerGraphViewsPage(
   return api<GraphViewPage>(
     `/api/graphs/views?repository=${encodeURIComponent(repositoryId)}&offset=${offset}${query ? `&query=${encodeURIComponent(query)}` : ''}`,
     undefined,
-    {signal},
+    {signal, timeoutMilliseconds: GRAPH_CATALOG_REQUEST_TIMEOUT_MILLISECONDS},
   );
 }
 
@@ -1994,7 +2044,7 @@ function loadManagerGraphAnalysis(
   return api<GraphAnalysis>(
     `/api/graph/analysis?repository=${encodeURIComponent(repositoryId)}&snapshot=${encodeURIComponent(snapshotId)}`,
     undefined,
-    {signal},
+    {signal, timeoutMilliseconds: GRAPH_DETAIL_REQUEST_TIMEOUT_MILLISECONDS},
   );
 }
 
@@ -2007,7 +2057,7 @@ function loadManagerGraphNodeDetail(
   return api<GraphNodeDetail>(
     `/api/graph/node?repository=${encodeURIComponent(repositoryId)}&snapshot=${encodeURIComponent(snapshotId)}&node=${encodeURIComponent(nodeId)}`,
     undefined,
-    {signal},
+    {signal, timeoutMilliseconds: GRAPH_DETAIL_REQUEST_TIMEOUT_MILLISECONDS},
   );
 }
 
@@ -2021,7 +2071,7 @@ function loadManagerGraphQuery(
   return api<GraphQueryVisualization>(
     `/api/graph/query?repository=${encodeURIComponent(repositoryId)}&snapshot=${encodeURIComponent(snapshotId)}&query=${encodeURIComponent(query)}&nodeLimit=${limits.nodeLimit}&edgeLimit=${limits.edgeLimit}`,
     undefined,
-    {signal},
+    {signal, timeoutMilliseconds: GRAPH_DETAIL_REQUEST_TIMEOUT_MILLISECONDS},
   );
 }
 

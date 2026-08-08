@@ -68,6 +68,7 @@ import {
   managerGraphCatalogPage,
   managerGraphNodeDetail,
   managerGraphQuery,
+  ManagerGraphBusyError,
   releaseManagerGraphSnapshotLeases,
   managerGraphVisualization,
   managerGraphViewsPage,
@@ -445,6 +446,10 @@ function handleRequestEffect(
   return requestEffect.pipe(
     Effect.catch(error =>
       Effect.sync(() => {
+        if (error instanceof ManagerGraphBusyError) {
+          writeJson(response, 409, {error: error.message, retryAfterMilliseconds: 1_000});
+          return;
+        }
         writeJson(response, 500, {error: errorMessage(error)});
       }),
     ),
