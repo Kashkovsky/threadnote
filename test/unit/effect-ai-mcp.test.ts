@@ -1,5 +1,7 @@
+import {it as effectIt} from '@effect/vitest';
+import {Cause, Effect, Exit, Fiber} from 'effect';
 import {describe, expect, it, vi} from 'vitest';
-import {makeInitializeInstructionsTransform} from '../../src/effect/ai/mcp.js';
+import {makeInitializeInstructionsTransform, mcpToolFailureResult} from '../../src/effect/ai/mcp.js';
 
 const initializeResponse = JSON.stringify({
   id: 1,
@@ -48,4 +50,29 @@ describe('Effect MCP initialization instructions', () => {
       result: {instructions: 'Use Threadnote context.'},
     });
   });
+});
+
+describe('Effect MCP tool interruption', () => {
+  effectIt.effect('re-fails transport cancellation instead of returning an isError payload', () =>
+    Effect.gen(function* () {
+      const fiber = yield* Effect.never.pipe(Effect.catchCause(mcpToolFailureResult), Effect.forkChild);
+      yield* Effect.yieldNow;
+
+      yield* Fiber.interrupt(fiber);
+      const exit = yield* Fiber.await(fiber);
+
+      expect(Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)).toBe(true);
+    }),
+  );
+
+  effectIt.effect('still converts ordinary tool failures into an isError payload', () =>
+    Effect.gen(function* () {
+      const result = yield* Effect.fail(new Error('bounded fixture failure')).pipe(
+        Effect.catchCause(mcpToolFailureResult),
+      );
+
+      expect(result.isError).toBe(true);
+      expect(result.content).toEqual([{type: 'text', text: 'bounded fixture failure'}]);
+    }),
+  );
 });

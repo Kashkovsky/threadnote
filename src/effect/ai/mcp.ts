@@ -87,24 +87,14 @@ export class EffectMcpServerAdapter {
               const handling = Schema.decodeUnknownEffect(input, {errors: 'all'})(payload).pipe(
                 Effect.flatMap(parsed =>
                   toolHandlerEffect(() => registration.handle(parsed), applicationServices).pipe(
-                    Effect.matchCause({
-                      onFailure: cause =>
-                        new McpSchema.CallToolResult({
-                          content: [{type: 'text', text: causeMessage(cause)}],
-                          isError: true,
-                        }),
-                      onSuccess: result => new McpSchema.CallToolResult(result as McpSchema.CallToolResult),
+                    Effect.matchCauseEffect({
+                      onFailure: mcpToolFailureResult,
+                      onSuccess: result =>
+                        Effect.succeed(new McpSchema.CallToolResult(result as McpSchema.CallToolResult)),
                     }),
                   ),
                 ),
-                Effect.catchCause(cause =>
-                  Effect.succeed(
-                    new McpSchema.CallToolResult({
-                      content: [{type: 'text', text: causeMessage(cause)}],
-                      isError: true,
-                    }),
-                  ),
-                ),
+                Effect.catchCause(mcpToolFailureResult),
               );
               return productionLogHome === undefined
                 ? handling
@@ -135,6 +125,18 @@ export class EffectMcpServerAdapter {
       ),
     );
   }
+}
+
+export function mcpToolFailureResult(cause: Cause.Cause<unknown>): Effect.Effect<McpSchema.CallToolResult, never> {
+  if (Cause.hasInterruptsOnly(cause)) {
+    return Effect.failCause(cause as Cause.Cause<never>);
+  }
+  return Effect.succeed(
+    new McpSchema.CallToolResult({
+      content: [{type: 'text', text: causeMessage(cause)}],
+      isError: true,
+    }),
+  );
 }
 
 function causeMessage(cause: Cause.Cause<unknown>): string {

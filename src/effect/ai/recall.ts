@@ -15,6 +15,7 @@ const MAX_RECALL_REWRITE_LENGTH = 512;
 const MAX_RECALL_EXPANSION_SCOPES = 1;
 const MAX_RECALL_EXPANSION_CACHE_ENTRIES = 128;
 const RECALL_EXPANSION_TIMEOUT_MILLISECONDS = 5_000;
+export const RECALL_SELECTION_TIMEOUT_MILLISECONDS = 5_000;
 const RECALL_VOCABULARY_DESCRIPTION_SEPARATOR = ' :: ';
 const DEFAULT_HYBRID_RECALL_MINIMUM_SCORE = 0.3;
 export const MAX_RECALL_SELECTION_CANDIDATES = 24;
@@ -233,28 +234,27 @@ export const selectExpandedRecallCandidatesEffect = Effect.fn('RecallCandidateSe
       return undefined;
     }
     const bounded = {...input, candidates: input.candidates.slice(0, MAX_RECALL_SELECTION_CANDIDATES)};
-    let selected: readonly string[] | undefined;
-    if (resolved && isLoopbackAiEndpoint(resolved.configuration.apiUrl)) {
-      const ready = yield* ensureEffectAiReady(runtimeConfig, resolved).pipe(
-        Effect.as(true),
-        Effect.timeoutOrElse({
-          duration: RECALL_EXPANSION_TIMEOUT_MILLISECONDS,
-          orElse: () => Effect.succeed(false),
-        }),
-        Effect.catch(() => Effect.succeed(false)),
-      );
-      selected = ready ? yield* runEffectAiRecallSelection(bounded, resolved.configuration) : undefined;
-    }
-    return yield* Effect.succeed(selected).pipe(
-      Effect.map(selected => selected as readonly string[] | undefined),
-      Effect.timeoutOrElse({
-        duration: RECALL_EXPANSION_TIMEOUT_MILLISECONDS,
-        orElse: () => Effect.succeed(undefined),
-      }),
-      Effect.catch(() => Effect.succeed(undefined)),
+    if (!resolved || !isLoopbackAiEndpoint(resolved.configuration.apiUrl)) return undefined;
+    return yield* boundedRecallCandidateSelection(
+      ensureEffectAiReady(runtimeConfig, resolved).pipe(
+        Effect.andThen(runEffectAiRecallSelection(bounded, resolved.configuration)),
+      ),
     );
   },
 );
+
+export function boundedRecallCandidateSelection<A, E, R>(
+  selection: Effect.Effect<A, E, R>,
+): Effect.Effect<A | undefined, never, R> {
+  return selection.pipe(
+    Effect.map(selected => selected as A | undefined),
+    Effect.timeoutOrElse({
+      duration: RECALL_SELECTION_TIMEOUT_MILLISECONDS,
+      orElse: () => Effect.succeed(undefined),
+    }),
+    Effect.catch(() => Effect.succeed(undefined)),
+  );
+}
 
 export {shouldExpandRecall};
 
