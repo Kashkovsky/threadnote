@@ -1,6 +1,7 @@
 import * as BunStdio from '@effect/platform-bun/BunStdio';
 import {Cause, Context, Effect, Layer, Logger, Option, Schema, Sink, Stdio} from 'effect';
 import {McpSchema, McpServer} from 'effect/unstable/ai';
+import {RpcMessage, RpcSerialization, RpcServer} from 'effect/unstable/rpc';
 import {fromPromiseError} from '../errors.js';
 import type {ApplicationServices} from '../runtime.js';
 import {omitProductionLogPhaseRecorder, withProductionLogging} from '../production_log.js';
@@ -9,6 +10,38 @@ const MCP_PRODUCTION_LOG_WRITE_TIMEOUT_MILLISECONDS = 50;
 const EFFECT_RPC_CAUSE_MARKER = new TextEncoder().encode('"_tag":"Cause"');
 const MCP_RESOURCE_ERROR_BRAND_KEY = 'threadnote.io/resource-read-error';
 export const MCP_RESOURCE_ERROR_DATA = Object.freeze({[MCP_RESOURCE_ERROR_BRAND_KEY]: 1});
+export const MCP_PROGRESS_HEARTBEAT_MILLISECONDS = 10_000;
+export const MCP_PROGRESS_MESSAGE_MAX_BYTES = 160;
+export const MCP_PROGRESS_METADATA_KEY = 'threadnote.io/progress';
+const MCP_PROGRESS_TEST_HEARTBEAT_ENV = 'THREADNOTE_TEST_MCP_PROGRESS_HEARTBEAT_MILLISECONDS';
+const MCP_PROGRESS_PHASE_MAX_CHARACTERS = 64;
+const MCP_PROGRESS_INTERVAL_MAX_MILLISECONDS = 300_000;
+const MCP_PROGRESS_ENCODER = new TextEncoder();
+const MCP_PROGRESS_DECODER = new TextDecoder();
+const MCP_PROGRESS_BRIDGED_SERVERS = new WeakSet<object>();
+const MCP_PROGRESS_GENERATION_METADATA_KEY = 'threadnote.io/private/progress-generation';
+
+export function mcpProgressHeartbeatMilliseconds(environment: NodeJS.ProcessEnv): number {
+  if (environment.NODE_ENV !== 'test') return MCP_PROGRESS_HEARTBEAT_MILLISECONDS;
+  const configured = Number(environment[MCP_PROGRESS_TEST_HEARTBEAT_ENV]);
+  return Number.isSafeInteger(configured) && configured > 0 ? configured : MCP_PROGRESS_HEARTBEAT_MILLISECONDS;
+}
+
+export function mcpRequestIdKey(value: string | number): string {
+  return `${typeof value === 'number' ? 'number' : 'string'}:${String(value)}`;
+}
+
+function mcpProgressTokenKey(progressToken: McpSchema.ProgressToken): string {
+  return mcpRequestIdKey(progressToken);
+}
+
+function callProgressToken(request: RpcMessage.RequestEncoded): McpSchema.ProgressToken | undefined {
+  if (request.tag !== 'tools/call' || typeof request.payload !== 'object' || request.payload === null) return undefined;
+  const metadata = '_meta' in request.payload ? request.payload._meta : undefined;
+  if (typeof metadata !== 'object' || metadata === null || !('progressToken' in metadata)) return undefined;
+  const progressToken = metadata.progressToken;
+  return typeof progressToken === 'number' || typeof progressToken === 'string' ? progressToken : undefined;
+}
 
 interface ToolAnnotations {
   readonly destructiveHint?: boolean;
@@ -35,9 +68,35 @@ interface ToolResult {
   readonly structuredContent?: unknown;
 }
 
+export interface McpProgressUpdate {
+  readonly message: string;
+  readonly phase: string;
+}
+
+export interface McpProgressNotificationPayload {
+  readonly _meta: Readonly<{
+    readonly [MCP_PROGRESS_METADATA_KEY]: Readonly<{
+      readonly phase: string;
+      readonly version: 1;
+    }>;
+  }>;
+  readonly message: string;
+  readonly progress: number;
+  readonly progressToken: McpSchema.ProgressToken;
+}
+
+export interface McpToolProgress {
+  readonly enabled: boolean;
+  readonly report: (update: McpProgressUpdate) => Effect.Effect<void, never>;
+}
+
+export interface McpToolCallContext {
+  readonly progress: McpToolProgress;
+}
+
 interface RegisteredTool {
   readonly definition: ToolDefinition<ToolFields>;
-  readonly handle: (args: Record<string, unknown>) => ToolHandlerResult;
+  readonly handle: (args: Record<string, unknown>, context: McpToolCallContext) => ToolHandlerResult;
   readonly name: string;
 }
 
@@ -65,6 +124,38 @@ type ResourceTemplateHandler = (
   ApplicationServices
 >;
 
+const DISABLED_MCP_TOOL_PROGRESS: McpToolProgress = Object.freeze({
+  enabled: false,
+  report: () => Effect.void,
+});
+
+const CurrentMcpToolProgress = Context.Reference<McpToolProgress>('threadnote/CurrentMcpToolProgress', {
+  defaultValue: () => DISABLED_MCP_TOOL_PROGRESS,
+});
+
+interface McpProgressRequestAssociation {
+  readonly generation: string;
+  readonly progressTokenKey: string;
+}
+
+const CurrentMcpProgressRequestAssociation = Context.Reference<McpProgressRequestAssociation | undefined>(
+  'threadnote/CurrentMcpProgressRequestAssociation',
+  {defaultValue: () => undefined},
+);
+
+export function mcpProgressNotificationForCurrentRequest(
+  notification: McpProgressNotificationPayload,
+): Effect.Effect<McpProgressNotificationPayload> {
+  return Effect.map(CurrentMcpProgressRequestAssociation, association =>
+    association === undefined || association.progressTokenKey !== mcpProgressTokenKey(notification.progressToken)
+      ? notification
+      : {
+          ...notification,
+          _meta: {...notification._meta, [MCP_PROGRESS_GENERATION_METADATA_KEY]: association.generation},
+        },
+  );
+}
+
 export class EffectMcpServerAdapter {
   readonly #resourceTemplates: RegisteredResourceTemplate[] = [];
   readonly #tools: RegisteredTool[] = [];
@@ -79,11 +170,11 @@ export class EffectMcpServerAdapter {
   registerTool<const Fields extends ToolFields>(
     name: string,
     definition: ToolDefinition<Fields>,
-    handle: (args: Schema.Struct.Type<Fields>) => ToolHandlerResult,
+    handle: (args: Schema.Struct.Type<Fields>, context: McpToolCallContext) => ToolHandlerResult,
   ): void {
     this.#tools.push({
       definition,
-      handle: args => handle(args as Schema.Struct.Type<Fields>),
+      handle: (args, context) => handle(args as Schema.Struct.Type<Fields>, context),
       name,
     });
   }
@@ -99,6 +190,7 @@ export class EffectMcpServerAdapter {
     return Layer.effectDiscard(
       Effect.gen(function* () {
         const server = yield* McpServer.McpServer;
+        installCallToolProgressBridge(server);
         const applicationServices = omitProductionLogPhaseRecorder(yield* Effect.context<ApplicationServices>());
         for (const registration of resourceTemplates) {
           yield* server.addResourceTemplate({
@@ -141,33 +233,34 @@ export class EffectMcpServerAdapter {
               inputSchema,
               name: registration.name,
             }),
-            handle: payload => {
-              const handling = Schema.decodeUnknownEffect(input, {errors: 'all'})(payload).pipe(
-                Effect.flatMap(parsed =>
-                  toolHandlerEffect(() => registration.handle(parsed), applicationServices).pipe(
-                    Effect.matchCauseEffect({
-                      onFailure: mcpToolFailureResult,
-                      onSuccess: result =>
-                        Effect.succeed(new McpSchema.CallToolResult(result as McpSchema.CallToolResult)),
-                    }),
+            handle: payload =>
+              Effect.flatMap(CurrentMcpToolProgress, progress => {
+                const handling = Schema.decodeUnknownEffect(input, {errors: 'all'})(payload).pipe(
+                  Effect.flatMap(parsed =>
+                    toolHandlerEffect(() => registration.handle(parsed, {progress}), applicationServices).pipe(
+                      Effect.matchCauseEffect({
+                        onFailure: mcpToolFailureResult,
+                        onSuccess: result =>
+                          Effect.succeed(new McpSchema.CallToolResult(result as McpSchema.CallToolResult)),
+                      }),
+                    ),
                   ),
-                ),
-                Effect.catchCause(mcpToolFailureResult),
-              );
-              return productionLogHome === undefined
-                ? handling
-                : withProductionLogging(
-                    productionLogHome,
-                    {
-                      component: 'mcp',
-                      operation: registration.name,
-                      reportedFailure: result => result.isError === true,
-                      reportedFailureType: 'McpToolError',
-                      writeTimeoutMilliseconds: MCP_PRODUCTION_LOG_WRITE_TIMEOUT_MILLISECONDS,
-                    },
-                    handling,
-                  ).pipe(Effect.provideContext(applicationServices));
-            },
+                  Effect.catchCause(mcpToolFailureResult),
+                );
+                return productionLogHome === undefined
+                  ? handling
+                  : withProductionLogging(
+                      productionLogHome,
+                      {
+                        component: 'mcp',
+                        operation: registration.name,
+                        reportedFailure: result => result.isError === true,
+                        reportedFailureType: 'McpToolError',
+                        writeTimeoutMilliseconds: MCP_PRODUCTION_LOG_WRITE_TIMEOUT_MILLISECONDS,
+                      },
+                      handling,
+                    ).pipe(Effect.provideContext(applicationServices));
+              }),
           });
         }
       }),
@@ -177,12 +270,443 @@ export class EffectMcpServerAdapter {
   run(): Effect.Effect<never, never, ApplicationServices> {
     return Layer.launch(
       this.registrationLayer().pipe(
-        Layer.provide(McpServer.layerStdio({name: this.name, version: this.version})),
+        Layer.provide(mcpStdioLayer({name: this.name, version: this.version})),
         Layer.provide(stdioWithInstructionsLayer(this.instructions)),
         Layer.provide(Layer.succeed(Logger.LogToStderr)(true)),
       ),
     );
   }
+}
+
+const MCP_CANCELLED_REQUEST_TOMBSTONE_LIMIT = 256;
+
+interface McpCancellationTombstone {
+  readonly progressTokenKey?: string;
+}
+
+interface McpActiveRequest {
+  readonly externalId: string | number;
+  readonly externalIdKey: string;
+  readonly internalId: string;
+  progressTokenKey?: string;
+}
+
+interface McpProtocolClientState {
+  readonly activeByExternalId: Map<string, McpActiveRequest>;
+  readonly activeByInternalId: Map<string, McpActiveRequest>;
+  readonly cancellationTombstones: Map<string, McpCancellationTombstone>;
+  nextRequestGeneration: number;
+  nextNotificationGeneration: number;
+}
+
+export function makeMcpCancellationCompatibleProtocol(
+  protocol: RpcServer.Protocol['Service'],
+): RpcServer.Protocol['Service'] {
+  const clients = new Map<number, McpProtocolClientState>();
+  const clientStateFor = (clientId: number) => {
+    let state = clients.get(clientId);
+    if (state === undefined) {
+      state = {
+        activeByExternalId: new Map(),
+        activeByInternalId: new Map(),
+        cancellationTombstones: new Map(),
+        nextNotificationGeneration: 0,
+        nextRequestGeneration: 0,
+      };
+      clients.set(clientId, state);
+    }
+    return state;
+  };
+  const activeRequestFor = (clientId: number, externalId: string | number) =>
+    clients.get(clientId)?.activeByExternalId.get(mcpRequestIdKey(externalId));
+  const registerRequest = (clientId: number, externalId: string | number) => {
+    const state = clientStateFor(clientId);
+    const externalIdKey = mcpRequestIdKey(externalId);
+    const existing = state.activeByExternalId.get(externalIdKey);
+    if (existing !== undefined) return existing;
+    state.nextRequestGeneration += 1;
+    const request: McpActiveRequest = {
+      externalId,
+      externalIdKey,
+      internalId: `threadnote:mcp-request:${clientId}:${state.nextRequestGeneration}:${externalIdKey}`,
+    };
+    state.activeByExternalId.set(externalIdKey, request);
+    state.activeByInternalId.set(request.internalId, request);
+    return request;
+  };
+  const notificationRequestId = (clientId: number) => {
+    const state = clientStateFor(clientId);
+    state.nextNotificationGeneration += 1;
+    return `threadnote:mcp-notification:${clientId}:${state.nextNotificationGeneration}`;
+  };
+  const unmatchedRequestId = (clientId: number, externalId: string | number) =>
+    `threadnote:mcp-unmatched:${clientId}:${mcpRequestIdKey(externalId)}`;
+  const forgetActiveRequest = (state: McpProtocolClientState, request: McpActiveRequest) => {
+    if (state.activeByExternalId.get(request.externalIdKey) === request) {
+      state.activeByExternalId.delete(request.externalIdKey);
+    }
+    state.activeByInternalId.delete(request.internalId);
+  };
+  const rememberCancellation = (clientId: number, request: McpActiveRequest) => {
+    const state = clientStateFor(clientId);
+    forgetActiveRequest(state, request);
+    state.cancellationTombstones.delete(request.internalId);
+    state.cancellationTombstones.set(request.internalId, {progressTokenKey: request.progressTokenKey});
+    while (state.cancellationTombstones.size > MCP_CANCELLED_REQUEST_TOMBSTONE_LIMIT) {
+      const oldest = state.cancellationTombstones.keys().next().value;
+      if (oldest === undefined) break;
+      state.cancellationTombstones.delete(oldest);
+    }
+  };
+  const isCancelledProgressToken = (clientId: number, progressToken: McpSchema.ProgressToken, generation: unknown) => {
+    const progressTokenKey = mcpProgressTokenKey(progressToken);
+    const tombstones = clients.get(clientId)?.cancellationTombstones;
+    if (tombstones === undefined) return false;
+    if (typeof generation === 'string') {
+      return tombstones.get(generation)?.progressTokenKey === progressTokenKey;
+    }
+    // Unassociated progress cannot be proven fresh. Fail closed while a
+    // matching bounded tombstone exists rather than re-admitting a queued old
+    // notification after token reuse.
+    for (const tombstone of tombstones.values()) {
+      if (tombstone.progressTokenKey === progressTokenKey) return true;
+    }
+    return false;
+  };
+  return RpcServer.Protocol.of({
+    ...protocol,
+    end: clientId => protocol.end(clientId).pipe(Effect.ensuring(Effect.sync(() => clients.delete(clientId)))),
+    run: handle =>
+      protocol.run((clientId, externalRequest) => {
+        let request = externalRequest;
+        let progressAssociation: McpProgressRequestAssociation | undefined;
+        if (externalRequest._tag === 'Request' && externalRequest.tag.startsWith('notifications/')) {
+          if (
+            externalRequest.tag === 'notifications/cancelled' &&
+            typeof externalRequest.payload === 'object' &&
+            externalRequest.payload !== null &&
+            'requestId' in externalRequest.payload &&
+            (typeof externalRequest.payload.requestId === 'number' ||
+              typeof externalRequest.payload.requestId === 'string')
+          ) {
+            const cancelledRequest = activeRequestFor(clientId, externalRequest.payload.requestId);
+            const internalRequestId =
+              cancelledRequest?.internalId ?? unmatchedRequestId(clientId, externalRequest.payload.requestId);
+            if (cancelledRequest !== undefined) rememberCancellation(clientId, cancelledRequest);
+            request = {
+              ...externalRequest,
+              id: notificationRequestId(clientId),
+              payload: {...externalRequest.payload, requestId: internalRequestId},
+            };
+          } else {
+            request = {...externalRequest, id: notificationRequestId(clientId)};
+          }
+        } else if (externalRequest._tag === 'Request') {
+          const activeRequest = registerRequest(clientId, externalRequest.id);
+          const progressToken = callProgressToken(externalRequest);
+          if (progressToken !== undefined && activeRequest.progressTokenKey === undefined) {
+            activeRequest.progressTokenKey = mcpProgressTokenKey(progressToken);
+          }
+          if (activeRequest.progressTokenKey !== undefined) {
+            progressAssociation = {
+              generation: activeRequest.internalId,
+              progressTokenKey: activeRequest.progressTokenKey,
+            };
+          }
+          request = {...externalRequest, id: activeRequest.internalId};
+        } else if (externalRequest._tag === 'Ack' || externalRequest._tag === 'Interrupt') {
+          const activeRequest = activeRequestFor(clientId, externalRequest.requestId);
+          request = {
+            ...externalRequest,
+            requestId: activeRequest?.internalId ?? unmatchedRequestId(clientId, externalRequest.requestId),
+          };
+        }
+        const handling = handle(clientId, request);
+        return progressAssociation === undefined
+          ? handling
+          : handling.pipe(Effect.provideService(CurrentMcpProgressRequestAssociation, progressAssociation));
+      }),
+    send: (clientId, response, transferables) => {
+      const mcpResponse = response as RpcMessage.FromServerEncoded | RpcMessage.RequestEncoded;
+      const outgoingProgressPayload =
+        mcpResponse._tag === 'Request' &&
+        mcpResponse.tag === 'notifications/progress' &&
+        typeof mcpResponse.payload === 'object' &&
+        mcpResponse.payload !== null
+          ? mcpResponse.payload
+          : undefined;
+      const outgoingProgressToken =
+        outgoingProgressPayload !== undefined && 'progressToken' in outgoingProgressPayload
+          ? outgoingProgressPayload.progressToken
+          : undefined;
+      const outgoingProgressMetadata: Readonly<Record<string, unknown>> | undefined =
+        outgoingProgressPayload !== undefined &&
+        '_meta' in outgoingProgressPayload &&
+        typeof outgoingProgressPayload._meta === 'object' &&
+        outgoingProgressPayload._meta !== null
+          ? (outgoingProgressPayload._meta as Readonly<Record<string, unknown>>)
+          : undefined;
+      const progressGeneration = outgoingProgressMetadata?.[MCP_PROGRESS_GENERATION_METADATA_KEY];
+      if (
+        (typeof outgoingProgressToken === 'number' || typeof outgoingProgressToken === 'string') &&
+        isCancelledProgressToken(clientId, outgoingProgressToken, progressGeneration)
+      ) {
+        return Effect.void;
+      }
+      let wireResponse = response;
+      if (outgoingProgressPayload !== undefined && outgoingProgressMetadata !== undefined) {
+        const {[MCP_PROGRESS_GENERATION_METADATA_KEY]: _generation, ...wireMetadata} = outgoingProgressMetadata;
+        if (MCP_PROGRESS_GENERATION_METADATA_KEY in outgoingProgressMetadata) {
+          wireResponse = {
+            ...mcpResponse,
+            payload: {...outgoingProgressPayload, _meta: wireMetadata},
+          } as unknown as typeof response;
+        }
+      }
+      if (response._tag !== 'Chunk' && response._tag !== 'Exit') {
+        return protocol.send(clientId, wireResponse, transferables);
+      }
+      const internalRequestId = String(response.requestId);
+      const state = clients.get(clientId);
+      if (state?.cancellationTombstones.has(internalRequestId) === true) {
+        return Effect.void;
+      }
+      const activeRequest = state?.activeByInternalId.get(internalRequestId);
+      const externalResponse =
+        activeRequest === undefined ? response : {...response, requestId: activeRequest.externalId};
+      const sending = protocol.send(clientId, externalResponse, transferables);
+      return response._tag === 'Exit' && state !== undefined && activeRequest !== undefined
+        ? sending.pipe(Effect.ensuring(Effect.sync(() => forgetActiveRequest(state, activeRequest))))
+        : sending;
+    },
+  });
+}
+
+const cancellationCompatibleProtocolLayer: Layer.Layer<RpcServer.Protocol, never, RpcServer.Protocol> = Layer.effect(
+  RpcServer.Protocol,
+  Effect.map(RpcServer.Protocol, makeMcpCancellationCompatibleProtocol),
+);
+
+function mcpStdioLayer(options: {
+  readonly name: string;
+  readonly version: string;
+}): Layer.Layer<McpServer.McpServer | McpSchema.McpServerClient, never, Stdio.Stdio> {
+  // Effect beta.102 stringifies notifications/cancelled.requestId before
+  // looking up the running RPC fiber. Move every external request id into a
+  // private type-tagged namespace at the transport boundary so cancellation
+  // addresses the same fiber without aliasing numeric and string twins. The
+  // wrapper restores the original id type on ordinary responses and drops
+  // terminal/chunk/progress frames after cancellation because the client has
+  // already retired that request.
+  return McpServer.layer(options).pipe(
+    Layer.provide(cancellationCompatibleProtocolLayer),
+    Layer.provide(RpcServer.layerProtocolStdio),
+    Layer.provide(RpcSerialization.layerNdJsonRpc()),
+  );
+}
+
+export type EffectMcpServer = Context.Service.Shape<typeof McpServer.McpServer>;
+
+export function installCallToolProgressBridge(server: EffectMcpServer): boolean {
+  // Effect 4.0.0-beta.102 decodes CallTool._meta, but callTool forwards only
+  // request.arguments to addTool handlers. Keep the extension at that exact
+  // boundary so the request-local token follows the handler fiber and its
+  // canonical cancellation without changing the transport or timing out the
+  // mutating work performed by some tools.
+  if (MCP_PROGRESS_BRIDGED_SERVERS.has(server)) return true;
+  const callToolDescriptor = Object.getOwnPropertyDescriptor(server, 'callTool');
+  const clientsDescriptor = Object.getOwnPropertyDescriptor(server, 'initializedClients');
+  if (
+    Object.isFrozen(server) ||
+    !isWritableDataProperty(callToolDescriptor) ||
+    !isWritableDataProperty(clientsDescriptor) ||
+    clientsDescriptor.configurable !== true ||
+    server.initializedClients.size > 1
+  ) {
+    return false;
+  }
+  const originalCallToolMethod = server.callTool;
+  const originalInitializedClients = server.initializedClients;
+  const stdioInitializedClients = new StdioSingleClientSet(originalInitializedClients);
+  const writableServer = server as unknown as {callTool: EffectMcpServer['callTool']};
+  const wrappedCallTool: EffectMcpServer['callTool'] = request =>
+    Effect.gen(function* () {
+      // McpServerClient middleware rejects non-initialize requests before
+      // providing this service, so reaching this point cannot promote a
+      // pre-initialize request into an authorized progress sender.
+      const client = yield* McpSchema.McpServerClient;
+      // A successfully dispatched tool request has the initialized
+      // McpServerClient middleware, so admit that exact client only when the
+      // request opted into progress.
+      const progressToken = admitMcpProgressToken(
+        request._meta?.progressToken,
+        client.clientId,
+        server.initializedClients,
+      );
+      const progress = makeMcpToolProgress(progressToken, notification =>
+        mcpProgressNotificationForCurrentRequest(notification).pipe(
+          Effect.flatMap(outgoingNotification =>
+            mcpProgressCanRouteToClient(server.initializedClients, client.clientId)
+              ? server.notifications['notifications/progress'](outgoingNotification)
+              : Effect.void,
+          ),
+        ),
+      );
+      return yield* originalCallToolMethod
+        .call(server, request)
+        .pipe(Effect.provideService(CurrentMcpToolProgress, progress));
+    });
+  try {
+    // beta.102's canonical notification queue broadcasts at drain time. This
+    // adapter is permanently backed by layerStdio, so replace its recipient
+    // registry with a non-replaceable lifetime-single-client set before any
+    // request can enqueue progress. A late foreign add is ignored even if the
+    // first client disconnected, closing the enqueue-to-drain token leak.
+    Object.defineProperty(server, 'initializedClients', {
+      configurable: false,
+      enumerable: clientsDescriptor.enumerable,
+      value: stdioInitializedClients,
+      writable: false,
+    });
+    writableServer.callTool = wrappedCallTool;
+    if (server.callTool !== wrappedCallTool) throw new Error('Effect MCP callTool bridge was not installed.');
+  } catch {
+    try {
+      writableServer.callTool = originalCallToolMethod;
+    } catch {
+      // The stdio recipient invariant is installed before the handler wrapper,
+      // so even a hostile setter that prevents restoration cannot turn this
+      // failure into a cross-client notification path.
+    }
+    return false;
+  }
+  MCP_PROGRESS_BRIDGED_SERVERS.add(server);
+  return true;
+}
+
+export function admitMcpProgressToken(
+  progressToken: McpSchema.ProgressToken | undefined,
+  clientId: number,
+  initializedClients: Set<number>,
+): McpSchema.ProgressToken | undefined {
+  if (progressToken === undefined || !mcpProgressCanRouteToClient(initializedClients, clientId)) return undefined;
+  initializedClients.add(clientId);
+  return initializedClients.has(clientId) ? progressToken : undefined;
+}
+
+export class StdioSingleClientSet extends Set<number> {
+  #clientId: number | undefined;
+
+  constructor(initializedClients: ReadonlySet<number> = new Set()) {
+    super();
+    for (const clientId of initializedClients) this.add(clientId);
+  }
+
+  override add(clientId: number): this {
+    this.#clientId ??= clientId;
+    if (clientId === this.#clientId) super.add(clientId);
+    return this;
+  }
+}
+
+function isWritableDataProperty(descriptor: PropertyDescriptor | undefined): descriptor is PropertyDescriptor {
+  return descriptor !== undefined && 'value' in descriptor && descriptor.writable === true;
+}
+
+function mcpProgressCanRouteToClient(initializedClients: ReadonlySet<number>, clientId: number): boolean {
+  // Effect beta.102's canonical outgoing notification queue broadcasts to the
+  // complete initialized-client set. Threadnote's adapter is stdio-only, but
+  // fail closed if the service is ever reused with another client so an opaque
+  // request token cannot cross client boundaries.
+  for (const initializedClientId of initializedClients) {
+    if (initializedClientId !== clientId) return false;
+  }
+  return true;
+}
+
+export function makeMcpToolProgress(
+  progressToken: McpSchema.ProgressToken | undefined,
+  notify: (notification: McpProgressNotificationPayload) => Effect.Effect<void, unknown>,
+): McpToolProgress {
+  if (progressToken === undefined) return DISABLED_MCP_TOOL_PROGRESS;
+  let sequence = 0;
+  return {
+    enabled: true,
+    report: update =>
+      Effect.suspend(() => {
+        sequence += 1;
+        return notify(mcpProgressNotification(progressToken, sequence, update)).pipe(
+          // Effect's notification client queues canonical notifications on a
+          // transport fiber. Give that fiber two bounded scheduler turns so a
+          // fast phase does not race its response ahead of the progress frame.
+          Effect.andThen(Effect.yieldNow),
+          Effect.andThen(Effect.yieldNow),
+          Effect.catchCause(cause =>
+            Cause.hasInterrupts(cause) ? Effect.failCause(cause as Cause.Cause<never>) : Effect.void,
+          ),
+        );
+      }),
+  };
+}
+
+export function mcpProgressNotification(
+  progressToken: McpSchema.ProgressToken,
+  progress: number,
+  update: McpProgressUpdate,
+): McpProgressNotificationPayload {
+  const phase = boundedMcpProgressPhase(update.phase);
+  return {
+    _meta: {
+      [MCP_PROGRESS_METADATA_KEY]: {
+        phase,
+        version: 1,
+      },
+    },
+    message: boundedMcpProgressMessage(update.message),
+    progress: Number.isSafeInteger(progress) && progress > 0 ? progress : 1,
+    progressToken,
+  };
+}
+
+export function withMcpProgressHeartbeat<A, E, R>(
+  progress: McpToolProgress,
+  update: McpProgressUpdate,
+  effect: Effect.Effect<A, E, R>,
+  intervalMilliseconds = MCP_PROGRESS_HEARTBEAT_MILLISECONDS,
+): Effect.Effect<A, E, R> {
+  if (!progress.enabled) return effect;
+  const interval = Number.isFinite(intervalMilliseconds)
+    ? Math.max(1, Math.min(MCP_PROGRESS_INTERVAL_MAX_MILLISECONDS, Math.floor(intervalMilliseconds)))
+    : MCP_PROGRESS_HEARTBEAT_MILLISECONDS;
+  return Effect.scoped(
+    Effect.gen(function* () {
+      yield* progress.report(update);
+      yield* Effect.sleep(interval).pipe(Effect.andThen(progress.report(update)), Effect.forever, Effect.forkScoped);
+      return yield* effect;
+    }),
+  );
+}
+
+function boundedMcpProgressPhase(value: string): string {
+  const bounded = value.trim().slice(0, MCP_PROGRESS_PHASE_MAX_CHARACTERS);
+  return /^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/u.test(bounded) ? bounded : 'working';
+}
+
+function boundedMcpProgressMessage(value: string): string {
+  const normalized = [...value.slice(0, MCP_PROGRESS_MESSAGE_MAX_BYTES)]
+    .map(character => {
+      const codePoint = character.codePointAt(0) ?? 0;
+      return codePoint <= 31 || codePoint === 127 ? ' ' : character;
+    })
+    .join('')
+    .replace(/\s+/gu, ' ')
+    .trim();
+  const fallback = normalized || 'Threadnote is working.';
+  const encoded = MCP_PROGRESS_ENCODER.encode(fallback);
+  if (encoded.byteLength <= MCP_PROGRESS_MESSAGE_MAX_BYTES) return fallback;
+  let end = MCP_PROGRESS_MESSAGE_MAX_BYTES;
+  while (end > 0 && (encoded[end] & 0xc0) === 0x80) end -= 1;
+  return MCP_PROGRESS_DECODER.decode(encoded.subarray(0, end)).trimEnd();
 }
 
 export function mcpResourceFailureResult(

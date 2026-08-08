@@ -12,6 +12,13 @@ interface TextContent {
   readonly type: 'text';
 }
 
+interface ThreadnoteProgress {
+  readonly _meta?: Readonly<Record<string, unknown>>;
+  readonly message?: string;
+  readonly progress: number;
+  readonly total?: number;
+}
+
 interface CanonicalReadMetadata {
   readonly resources: readonly {readonly contentIndex: number; readonly uri: string}[];
   readonly type: 'threadnote-canonical-read';
@@ -20,6 +27,13 @@ interface CanonicalReadMetadata {
 
 const CANONICAL_READ_METADATA_KEY = 'threadnote.io/canonical-read';
 const MCP_RESOURCE_READ_MAX_BYTES = 1_048_576;
+const RECALL_PROGRESS_PHASES = [
+  'recall.shared-sync',
+  'recall.obsidian-sync',
+  'recall.workspace-context',
+  'recall.semantic-retrieval',
+  'recall.lexical-ranking',
+] as const;
 
 const CORE_TOOL_NAMES = [
   'recall_context',
@@ -60,7 +74,11 @@ const ADVANCED_TOOL_NAMES = [
 
 async function withMcpClient<T>(
   fn: (client: Client, fixture: {readonly home: string; readonly root: string}) => Promise<T>,
-  options: {readonly maxBufferSize?: number; readonly toolset?: 'core' | 'full' | null} = {},
+  options: {
+    readonly environment?: Readonly<Record<string, string>>;
+    readonly maxBufferSize?: number;
+    readonly toolset?: 'core' | 'full' | null;
+  } = {},
 ): Promise<T> {
   const root = await mkdtemp(join(tmpdir(), 'threadnote-mcp-native-'));
   const home = join(root, 'home');
@@ -68,6 +86,7 @@ async function withMcpClient<T>(
   const repoRoot = process.cwd();
   const environment = {
     ...process.env,
+    ...options.environment,
     THREADNOTE_ACCOUNT: 'local',
     THREADNOTE_AGENT_ID: 'threadnote',
     THREADNOTE_HOME: home,
@@ -144,6 +163,29 @@ async function writeCanonicalMemory(home: string, filename: string, content: str
   const directory = join(home, 'data', 'local', 'user', 'test-user', 'memories', 'durable', 'projects', 'threadnote');
   await mkdir(directory, {recursive: true});
   await writeFile(join(directory, filename), content, 'utf8');
+}
+
+function recallProgressPhases(updates: readonly ThreadnoteProgress[]): string[] {
+  return updates.map(update => {
+    const metadata = update._meta?.['threadnote.io/progress'] as
+      {readonly phase?: unknown; readonly version?: unknown} | undefined;
+    expect(metadata?.version).toBe(1);
+    expect(metadata).not.toHaveProperty('retryAfterMilliseconds');
+    expect(typeof metadata?.phase).toBe('string');
+    return metadata?.phase as string;
+  });
+}
+
+function collapseConsecutive<T>(values: readonly T[]): T[] {
+  return values.filter((value, index) => index === 0 || value !== values[index - 1]);
+}
+
+function expectOrderedRecallProgress(updates: readonly ThreadnoteProgress[]): string[] {
+  expect(updates.length).toBeGreaterThanOrEqual(RECALL_PROGRESS_PHASES.length);
+  expect(updates.map(update => update.progress)).toEqual(Array.from({length: updates.length}, (_, index) => index + 1));
+  const phases = recallProgressPhases(updates);
+  expect(collapseConsecutive(phases)).toEqual(RECALL_PROGRESS_PHASES);
+  return phases;
 }
 
 describe('Threadnote MCP toolsets', () => {
@@ -367,10 +409,28 @@ describe('Threadnote MCP toolsets', () => {
     );
   });
 
+  it('keeps progress opt-in and leaves unrelated tool handlers unchanged', async () => {
+    await withMcpClient(
+      async client => {
+        const progressUpdates: ThreadnoteProgress[] = [];
+        const result = await client.callTool({arguments: {}, name: 'list_context'}, undefined, {
+          onprogress: update => progressUpdates.push(update),
+          resetTimeoutOnProgress: true,
+          timeout: 5000,
+        });
+
+        expect(result.isError).not.toBe(true);
+        expect(progressUpdates).toEqual([]);
+      },
+      {toolset: 'core'},
+    );
+  });
+
   it('records one-time recall pre-sync and read-only retrieval phases without private inputs', async () => {
     await withMcpClient(
       async (client, fixture) => {
         const privateQuery = 'private-phase-timing-query-7788';
+        const progressUpdates: ThreadnoteProgress[] = [];
         await writeFile(
           join(fixture.home, 'layout.json'),
           `${JSON.stringify({createdBy: 'threadnote', version: 2})}\n`,
@@ -385,9 +445,16 @@ describe('Threadnote MCP toolsets', () => {
         const result = await client.callTool(
           {arguments: {project: 'threadnote', query: privateQuery}, name: 'recall_context'},
           undefined,
-          {timeout: 5000},
+          {
+            onprogress: update => progressUpdates.push(update),
+            resetTimeoutOnProgress: true,
+            timeout: 5000,
+          },
         );
         expect(result.isError).not.toBe(true);
+
+        expectOrderedRecallProgress(progressUpdates);
+        expect(JSON.stringify(progressUpdates)).not.toContain(privateQuery);
 
         const productionLog = await readFile(join(fixture.home, 'logs', 'threadnote.log'), 'utf8');
         const entries = productionLog
@@ -410,6 +477,118 @@ describe('Threadnote MCP toolsets', () => {
         expect(productionLog).not.toContain(privateQuery);
       },
       {toolset: 'core'},
+    );
+  });
+
+  it('keeps eight concurrent recall progress streams request-local under load', async () => {
+    await withMcpClient(
+      async client => {
+        const calls = await Promise.all(
+          Array.from({length: 8}, async (_, index) => {
+            const privateQuery = `private-concurrent-progress-${index}-7788`;
+            const progressUpdates: ThreadnoteProgress[] = [];
+            const result = await client.callTool(
+              {arguments: {project: 'threadnote', query: privateQuery}, name: 'recall_context'},
+              undefined,
+              {
+                onprogress: update => progressUpdates.push(update),
+                resetTimeoutOnProgress: true,
+                timeout: 10_000,
+              },
+            );
+            return {privateQuery, progressUpdates, result};
+          }),
+        );
+
+        for (const {privateQuery, progressUpdates, result} of calls) {
+          expect(result.isError).not.toBe(true);
+          expectOrderedRecallProgress(progressUpdates);
+          expect(JSON.stringify(progressUpdates)).not.toContain(privateQuery);
+        }
+      },
+      {toolset: 'core'},
+    );
+  });
+
+  it('repeats real stdio heartbeats until response or cancellation without reordering phases', async () => {
+    await withMcpClient(
+      async (client, fixture) => {
+        const privateQuery = 'private-short-heartbeat-query-7788';
+        await Promise.all(
+          Array.from({length: 128}, (_, index) =>
+            writeCanonicalMemory(
+              fixture.home,
+              `short-heartbeat-${index.toString().padStart(3, '0')}.md`,
+              canonicalMemoryContent(
+                `short-heartbeat-${index}`,
+                `${privateQuery} bounded lexical corpus entry ${index}.`,
+              ),
+            ),
+          ),
+        );
+
+        const protocolErrors: Error[] = [];
+        const originalOnError = client.onerror;
+        client.onerror = error => protocolErrors.push(error);
+        try {
+          const completedUpdates: ThreadnoteProgress[] = [];
+          const completed = await client.callTool(
+            {arguments: {project: 'threadnote', query: privateQuery}, name: 'recall_context'},
+            undefined,
+            {
+              maxTotalTimeout: 10_000,
+              onprogress: update => completedUpdates.push(update),
+              resetTimeoutOnProgress: true,
+              timeout: 5_000,
+            },
+          );
+          expect(completed.isError).not.toBe(true);
+          const completedPhases = expectOrderedRecallProgress(completedUpdates);
+          expect(completedPhases.some((phase, index) => index > 0 && phase === completedPhases[index - 1])).toBe(true);
+          expect(JSON.stringify(completedUpdates)).not.toContain(privateQuery);
+          await new Promise(resolve => setTimeout(resolve, 150));
+          expect(protocolErrors).toEqual([]);
+
+          const controller = new AbortController();
+          const cancelledUpdates: ThreadnoteProgress[] = [];
+          const cancelled = client.callTool(
+            {arguments: {project: 'threadnote', query: privateQuery}, name: 'recall_context'},
+            undefined,
+            {
+              maxTotalTimeout: 10_000,
+              onprogress: update => {
+                cancelledUpdates.push(update);
+                if (!controller.signal.aborted) controller.abort();
+              },
+              resetTimeoutOnProgress: true,
+              signal: controller.signal,
+              timeout: 5_000,
+            },
+          );
+
+          await expect(cancelled).rejects.toMatchObject({
+            code: -32_001,
+            message: expect.stringContaining('AbortError'),
+          });
+          expect(controller.signal.aborted).toBe(true);
+          expect(recallProgressPhases(cancelledUpdates)).toEqual(['recall.shared-sync']);
+          await new Promise(resolve => setTimeout(resolve, 400));
+          expect(protocolErrors).toEqual([]);
+
+          const followUp = await client.callTool({arguments: {}, name: 'list_context'}, undefined, {timeout: 5_000});
+          expect(followUp.isError).not.toBe(true);
+        } finally {
+          client.onerror = originalOnError;
+        }
+      },
+      {
+        environment: {
+          NODE_ENV: 'test',
+          THREADNOTE_TEST_MCP_PROGRESS_HEARTBEAT_MILLISECONDS: '100',
+          THREADNOTE_TEST_MCP_PROGRESS_SHARED_SYNC_DELAY_MILLISECONDS: '300',
+        },
+        toolset: 'core',
+      },
     );
   });
 
