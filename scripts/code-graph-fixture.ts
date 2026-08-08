@@ -10,32 +10,93 @@ export interface PreparedCodeGraphFixture {
   readonly root: string;
 }
 
+export interface ProductionCodeGraphFixtureClassMix {
+  readonly duplicateHeavyJsonFiles: number;
+  readonly generatedSvgFiles: number;
+  readonly nxProjectFiles: number;
+  readonly packageManifestFiles: number;
+  readonly supportMarkdownFiles: number;
+  readonly tsconfigFiles: number;
+  readonly tsxSourceFiles: number;
+  readonly typescriptSourceFiles: number;
+  readonly workspaceManifestFiles: number;
+}
+
+export interface ProductionCodeGraphFixtureDuplicateBlobs {
+  readonly generatedSvgVariants: number;
+  readonly heavyJsonPayloadBytes: number;
+  readonly heavyJsonVariants: number;
+}
+
 export interface ProductionCodeGraphFixtureProfile {
+  readonly activeWorkspaceExcludedPackageCount: number;
+  readonly activeWorkspaceExcludedSourceFiles: number;
+  readonly classMix: ProductionCodeGraphFixtureClassMix;
   readonly declarationSymbols: number;
+  readonly duplicateBlobs: ProductionCodeGraphFixtureDuplicateBlobs;
+  readonly highSignalConfigHardCapBytes: number;
   readonly id: 'production-large';
+  readonly lowSignalJsonExclusionThresholdBytes: number;
+  readonly maxCallsPerDeclaration: number;
   readonly sourceFiles: number;
+  readonly surrogate: 'threadnote-4.0.10-public-monorepo';
   readonly targetEligibleFiles: number;
   readonly targetGraphEdges: number;
   readonly targetGraphSymbols: number;
   readonly targetLexicalTermRows: number;
-  readonly version: 1;
+  readonly targetRepositoryFiles: number;
+  readonly version: 2;
   readonly workspaceCount: number;
+  readonly worktreeChurnScenarioCount: 6;
 }
 
 /**
- * Opt-in/nightly shape based on the beta.27 investigation repository. `declarationSymbols` deliberately excludes the
- * compiler-emitted file/module symbol so the resulting stored graph lands near `targetGraphSymbols`.
+ * Public, deterministic surrogate for the current Threadnote 4.0.10 monorepo evidence. The profile records shape
+ * targets rather than portable latency claims; its full materialization remains opt-in/nightly.
  */
+export const PRODUCTION_WORKTREE_CHURN_SCENARIOS = [
+  'concurrent-linked-worktree-builds',
+  'catalog-read-during-active-writer',
+  'dirty-overlay-worktree-isolation',
+  'linked-head-moves-during-build',
+  'interrupted-linked-build-resume',
+  'removed-worktree-reclaim',
+] as const;
+
 export const PRODUCTION_LARGE_CODE_GRAPH_PROFILE = {
-  declarationSymbols: 752_000,
+  activeWorkspaceExcludedPackageCount: 24,
+  activeWorkspaceExcludedSourceFiles: 3_000,
+  classMix: {
+    duplicateHeavyJsonFiles: 64,
+    generatedSvgFiles: 13_000,
+    nxProjectFiles: 105,
+    packageManifestFiles: 996,
+    supportMarkdownFiles: 13_263,
+    tsconfigFiles: 571,
+    tsxSourceFiles: 15_000,
+    typescriptSourceFiles: 30_000,
+    workspaceManifestFiles: 1,
+  },
+  declarationSymbols: 2_128_000,
+  duplicateBlobs: {
+    generatedSvgVariants: 64,
+    heavyJsonPayloadBytes: 1_048_576,
+    heavyJsonVariants: 8,
+  },
+  highSignalConfigHardCapBytes: 1_048_576,
   id: 'production-large',
-  sourceFiles: 47_880,
-  targetEligibleFiles: 48_000,
-  targetGraphEdges: 2_700_000,
-  targetGraphSymbols: 800_000,
-  targetLexicalTermRows: 12_000_000,
-  version: 1,
-  workspaceCount: 24,
+  lowSignalJsonExclusionThresholdBytes: 256 * 1_024,
+  maxCallsPerDeclaration: 1,
+  sourceFiles: 45_000,
+  surrogate: 'threadnote-4.0.10-public-monorepo',
+  targetEligibleFiles: 59_936,
+  targetGraphEdges: 4_340_000,
+  targetGraphSymbols: 2_200_000,
+  targetLexicalTermRows: 32_250_000,
+  targetRepositoryFiles: 73_000,
+  version: 2,
+  workspaceCount: 995,
+  worktreeChurnScenarioCount: 6,
 } as const satisfies ProductionCodeGraphFixtureProfile;
 
 export const GENERATED_VECTOR_CONTROL_PATH = 'docs/vector-semantic-control.md';
@@ -149,7 +210,9 @@ export const prepareProductionCodeGraphFixture = Effect.fn('codeGraphFixture.pre
   yield* fs.makeDirectory(repository, {recursive: true});
   yield* fs.makeDirectory(home, {recursive: true, mode: 0o700});
 
-  const workspaces = productionWorkspaceRoots(profile.workspaceCount);
+  const workspaces = productionWorkspaceRoots(profile.workspaceCount, profile.activeWorkspaceExcludedPackageCount);
+  const includedWorkspaces = workspaces.filter(workspace => !isActiveWorkspaceExcludedRoot(workspace));
+  const excludedWorkspaces = workspaces.filter(isActiveWorkspaceExcludedRoot);
   yield* fs.writeFileString(
     path.join(repository, 'package.json'),
     `${JSON.stringify(
@@ -157,7 +220,6 @@ export const prepareProductionCodeGraphFixture = Effect.fn('codeGraphFixture.pre
         name: '@threadnote/production-large-fixture',
         private: true,
         version: '1.0.0',
-        workspaces: ['apps/*', 'apps/integrated/modules/*', 'libs/*', 'services/*', 'tools/*'],
       },
       undefined,
       2,
@@ -168,76 +230,87 @@ export const prepareProductionCodeGraphFixture = Effect.fn('codeGraphFixture.pre
     `${JSON.stringify(
       {
         files: [],
-        references: workspaces.map(workspace => ({path: workspace})),
+        references: workspaces.slice(0, profile.classMix.tsconfigFiles - 1).map(workspace => ({path: workspace})),
       },
       undefined,
       2,
     )}\n`,
+  );
+  yield* fs.writeFileString(
+    path.join(repository, 'pnpm-workspace.yaml'),
+    [
+      'packages:',
+      "  - 'apps/**'",
+      "  - 'libs/**'",
+      "  - 'services/**'",
+      "  - 'tools/**'",
+      "  - 'packages/**'",
+      "  - '!packages/active-excluded-*'",
+      '',
+    ].join('\n'),
   );
 
   yield* Effect.forEach(
     workspaces,
-    (workspace, workspaceIndex) =>
-      Effect.gen(function* () {
-        const workspaceRoot = path.join(repository, workspace);
-        yield* fs.makeDirectory(path.join(workspaceRoot, 'src'), {recursive: true});
-        yield* fs.writeFileString(
-          path.join(workspaceRoot, 'package.json'),
-          `${JSON.stringify(
-            {
-              dependencies: workspaceIndex === 0 ? {} : {[productionPackageName(workspaceIndex - 1)]: 'workspace:*'},
-              name: productionPackageName(workspaceIndex),
-              private: true,
-              version: '1.0.0',
-            },
-            undefined,
-            2,
-          )}\n`,
-        );
-        yield* fs.writeFileString(
-          path.join(workspaceRoot, 'tsconfig.json'),
-          `${JSON.stringify(
-            {
-              compilerOptions: {composite: true, strict: true},
-              include: ['src/**/*.ts'],
-            },
-            undefined,
-            2,
-          )}\n`,
-        );
-      }),
+    workspace => fs.makeDirectory(path.join(repository, workspace, 'src'), {recursive: true}),
     {concurrency: 16, discard: true},
   );
 
-  const integratedRoot = path.join(repository, 'apps', 'integrated');
-  const isolatedRoot = path.join(repository, 'apps', 'isolated');
-  yield* fs.makeDirectory(integratedRoot, {recursive: true});
-  yield* fs.makeDirectory(isolatedRoot, {recursive: true});
-  yield* fs.writeFileString(
-    path.join(integratedRoot, 'package.json'),
-    `${JSON.stringify(
-      {
-        name: '@threadnote/integrated-application',
-        private: true,
-        version: '1.0.0',
-        workspaces: ['modules/*'],
-      },
-      undefined,
-      2,
-    )}\n`,
-  );
-  yield* fs.writeFileString(
-    path.join(isolatedRoot, 'package.json'),
-    `${JSON.stringify(
-      {
-        name: '@threadnote/isolated-application',
-        private: true,
-        version: '1.0.0',
-        workspaces: ['packages/*'],
-      },
-      undefined,
-      2,
-    )}\n`,
+  yield* Effect.all(
+    [
+      Effect.forEach(
+        workspaces,
+        (workspace, workspaceIndex) =>
+          fs.writeFileString(
+            path.join(repository, workspace, 'package.json'),
+            `${JSON.stringify(
+              {
+                dependencies: workspaceIndex === 0 ? {} : {[productionPackageName(workspaceIndex - 1)]: 'workspace:*'},
+                name: productionPackageName(workspaceIndex),
+                private: true,
+                version: '1.0.0',
+              },
+              undefined,
+              2,
+            )}\n`,
+          ),
+        {concurrency: 16, discard: true},
+      ),
+      Effect.forEach(
+        workspaces.slice(0, profile.classMix.tsconfigFiles - 1),
+        workspace =>
+          fs.writeFileString(
+            path.join(repository, workspace, 'tsconfig.json'),
+            `${JSON.stringify(
+              {
+                compilerOptions: {composite: true, strict: true},
+                include: ['src/**/*.ts', 'src/**/*.tsx'],
+              },
+              undefined,
+              2,
+            )}\n`,
+          ),
+        {concurrency: 16, discard: true},
+      ),
+      Effect.forEach(
+        workspaces.slice(0, profile.classMix.nxProjectFiles),
+        (workspace, workspaceIndex) =>
+          fs.writeFileString(
+            path.join(repository, workspace, 'project.json'),
+            `${JSON.stringify(
+              {
+                name: `production-project-${String(workspaceIndex).padStart(4, '0')}`,
+                projectType: workspaceIndex % 5 === 0 ? 'application' : 'library',
+                sourceRoot: `${workspace}/src`,
+              },
+              undefined,
+              2,
+            )}\n`,
+          ),
+        {concurrency: 16, discard: true},
+      ),
+    ],
+    {concurrency: 3, discard: true},
   );
 
   if (includeVectorControl) {
@@ -250,35 +323,58 @@ export const prepareProductionCodeGraphFixture = Effect.fn('codeGraphFixture.pre
     );
   }
 
+  const workspaceIndexes = new Map(workspaces.map((workspace, index) => [workspace, index]));
+  const sourceOrdinals = new Map<string, number>();
+  const sourceLocations = Array.from({length: profile.sourceFiles}, (_, fileIndex) => {
+    const excluded = fileIndex < profile.activeWorkspaceExcludedSourceFiles;
+    const roots = excluded ? excludedWorkspaces : includedWorkspaces;
+    const relativeIndex = excluded ? fileIndex : fileIndex - profile.activeWorkspaceExcludedSourceFiles;
+    const workspace = roots[relativeIndex % roots.length]!;
+    const extension = fileIndex < profile.classMix.tsxSourceFiles ? 'tsx' : 'ts';
+    const ordinalKey = `${workspace}\0${extension}`;
+    const ordinal = sourceOrdinals.get(ordinalKey) ?? 0;
+    sourceOrdinals.set(ordinalKey, ordinal + 1);
+    return {
+      extension,
+      fileIndex,
+      ordinal,
+      workspace,
+      workspaceIndex: workspaceIndexes.get(workspace)!,
+    };
+  });
   const baseDeclarations = Math.floor(profile.declarationSymbols / profile.sourceFiles);
   const declarationRemainder = profile.declarationSymbols % profile.sourceFiles;
-  yield* Effect.forEach(
-    Array.from({length: profile.sourceFiles}, (_, fileIndex) => fileIndex),
-    fileIndex => {
-      const workspaceIndex = fileIndex % workspaces.length;
-      const workspaceFileIndex = Math.floor(fileIndex / workspaces.length);
-      const declarationCount = baseDeclarations + (fileIndex < declarationRemainder ? 1 : 0);
-      const firstSymbol = fileIndex * baseDeclarations + Math.min(fileIndex, declarationRemainder);
-      const declarations = Array.from({length: declarationCount}, (_, offset) => {
-        const symbolIndex = firstSymbol + offset;
-        const name = productionSymbolName(symbolIndex, workspaceIndex);
-        const calls = Array.from({length: Math.min(3, offset)}, (_, callOffset) =>
-          productionSymbolName(symbolIndex - callOffset - 1, workspaceIndex),
-        );
-        const body = calls.length === 0 ? `${symbolIndex}` : calls.map(call => `${call}()`).join(' + ');
-        return '/** Account workflow feature operation. */\n' + `export function ${name}(): number { return ${body}; }`;
-      });
-      return fs.writeFileString(
-        path.join(
-          repository,
-          workspaces[workspaceIndex]!,
-          'src',
-          `module-${String(workspaceFileIndex).padStart(5, '0')}.ts`,
-        ),
-        `${declarations.join('\n')}\n`,
-      );
-    },
-    {concurrency: 16, discard: true},
+  yield* Effect.all(
+    [
+      Effect.forEach(
+        sourceLocations,
+        location => {
+          const {extension, fileIndex, ordinal, workspace, workspaceIndex} = location;
+          const declarationCount = baseDeclarations + (fileIndex < declarationRemainder ? 1 : 0);
+          const firstSymbol = fileIndex * baseDeclarations + Math.min(fileIndex, declarationRemainder);
+          const declarations = Array.from({length: declarationCount}, (_, offset) => {
+            const symbolIndex = firstSymbol + offset;
+            const name = productionSymbolName(symbolIndex, workspaceIndex);
+            const calls = Array.from({length: Math.min(profile.maxCallsPerDeclaration, offset)}, (_, callOffset) =>
+              productionSymbolName(symbolIndex - callOffset - 1, workspaceIndex),
+            );
+            const body = calls.length === 0 ? `${symbolIndex}` : calls.map(call => `${call}()`).join(' + ');
+            return (
+              '/** Account workflow feature operation. */\n' + `export function ${name}(): number { return ${body}; }`
+            );
+          });
+          return fs.writeFileString(
+            path.join(repository, workspace, 'src', `module-${String(ordinal).padStart(5, '0')}.${extension}`),
+            `${declarations.join('\n')}\n`,
+          );
+        },
+        {concurrency: 16, discard: true},
+      ),
+      writeProductionSvgFiles(fs, path, repository, profile),
+      writeProductionHeavyJsonFiles(fs, path, repository, profile),
+      writeProductionSupportFiles(fs, path, repository, profile),
+    ],
+    {concurrency: 4, discard: true},
   );
 
   yield* git(repository, ['init', '-q'], 120_000);
@@ -296,12 +392,19 @@ export const prepareProductionCodeGraphFixture = Effect.fn('codeGraphFixture.pre
     ],
     15 * 60_000,
   );
-  const incrementalSourcePath = path.join(workspaces[0]!, 'src', `module-${String(0).padStart(5, '0')}.ts`);
+  const incremental =
+    sourceLocations.find(location => !isActiveWorkspaceExcludedRoot(location.workspace)) ?? sourceLocations[0]!;
+  const lastSource = sourceLocations.at(-1)!;
+  const incrementalSourcePath = path.join(
+    incremental.workspace,
+    'src',
+    `module-${String(incremental.ordinal).padStart(5, '0')}.${incremental.extension}`,
+  );
   return {
     home,
     incrementalSourcePath,
     profile,
-    queryText: productionSymbolName(profile.declarationSymbols - 1, (profile.sourceFiles - 1) % workspaces.length),
+    queryText: productionSymbolName(profile.declarationSymbols - 1, lastSource.workspaceIndex),
     repository,
     root,
   } satisfies PreparedCodeGraphFixture;
@@ -318,8 +421,15 @@ export function productionSymbolName(index: number, workspaceIndex: number): str
   );
 }
 
-export function productionWorkspaceRoots(count: number): readonly string[] {
-  const candidates = [
+export function productionWorkspaceRoots(count: number, activeExcludedCount = 0): readonly string[] {
+  if (!Number.isSafeInteger(count) || count < 1) {
+    throw new Error('Production code graph workspace count must be a positive safe integer.');
+  }
+  if (!Number.isSafeInteger(activeExcludedCount) || activeExcludedCount < 0 || activeExcludedCount >= count) {
+    throw new Error('Production code graph active workspace-excluded package count must leave one included package.');
+  }
+  const includedCount = count - activeExcludedCount;
+  const fixedCandidates = [
     ...Array.from({length: 6}, (_, index) => `apps/application-${String(index).padStart(2, '0')}`),
     ...Array.from({length: 6}, (_, index) => `libs/library-${String(index).padStart(2, '0')}`),
     ...Array.from({length: 4}, (_, index) => `services/service-${String(index).padStart(2, '0')}`),
@@ -327,27 +437,234 @@ export function productionWorkspaceRoots(count: number): readonly string[] {
     ...Array.from({length: 3}, (_, index) => `apps/integrated/modules/module-${String(index).padStart(2, '0')}`),
     ...Array.from({length: 3}, (_, index) => `apps/isolated/packages/package-${String(index).padStart(2, '0')}`),
   ];
-  if (!Number.isSafeInteger(count) || count < 1 || count > candidates.length) {
-    throw new Error(`Production code graph workspace count must be between 1 and ${candidates.length}.`);
-  }
-  return candidates.slice(0, count);
+  const generatedCandidates = Array.from({length: Math.max(0, includedCount - fixedCandidates.length)}, (_, index) => {
+    const ordinal = String(index).padStart(4, '0');
+    switch (index % 5) {
+      case 0:
+        return `apps/surrogate-application-${ordinal}`;
+      case 1:
+        return `libs/surrogate-library-${ordinal}`;
+      case 2:
+        return `services/surrogate-service-${ordinal}`;
+      case 3:
+        return `tools/surrogate-tool-${ordinal}`;
+      default:
+        return `packages/surrogate-package-${ordinal}`;
+    }
+  });
+  return [
+    ...fixedCandidates.slice(0, includedCount),
+    ...generatedCandidates,
+    ...Array.from(
+      {length: activeExcludedCount},
+      (_, index) => `packages/active-excluded-${String(index).padStart(3, '0')}`,
+    ),
+  ];
 }
 
-function validateProductionProfile(profile: ProductionCodeGraphFixtureProfile): ProductionCodeGraphFixtureProfile {
-  for (const [name, value] of Object.entries(profile)) {
-    if (name === 'id') continue;
+export function validateProductionProfile(
+  profile: ProductionCodeGraphFixtureProfile,
+): ProductionCodeGraphFixtureProfile {
+  const scalarCounts = {
+    activeWorkspaceExcludedPackageCount: profile.activeWorkspaceExcludedPackageCount,
+    activeWorkspaceExcludedSourceFiles: profile.activeWorkspaceExcludedSourceFiles,
+    declarationSymbols: profile.declarationSymbols,
+    highSignalConfigHardCapBytes: profile.highSignalConfigHardCapBytes,
+    lowSignalJsonExclusionThresholdBytes: profile.lowSignalJsonExclusionThresholdBytes,
+    maxCallsPerDeclaration: profile.maxCallsPerDeclaration,
+    sourceFiles: profile.sourceFiles,
+    targetEligibleFiles: profile.targetEligibleFiles,
+    targetGraphEdges: profile.targetGraphEdges,
+    targetGraphSymbols: profile.targetGraphSymbols,
+    targetLexicalTermRows: profile.targetLexicalTermRows,
+    targetRepositoryFiles: profile.targetRepositoryFiles,
+    workspaceCount: profile.workspaceCount,
+    worktreeChurnScenarioCount: profile.worktreeChurnScenarioCount,
+  };
+  for (const [name, value] of Object.entries(scalarCounts)) {
     if (!Number.isSafeInteger(value) || value < 1) {
       throw new Error(`Production code graph profile ${name} must be a positive safe integer.`);
     }
   }
-  if (profile.id !== 'production-large' || profile.version !== 1) {
+  for (const [name, value] of Object.entries(profile.classMix)) {
+    if (!Number.isSafeInteger(value) || value < 1) {
+      throw new Error(`Production code graph profile class mix ${name} must be a positive safe integer.`);
+    }
+  }
+  for (const [name, value] of Object.entries(profile.duplicateBlobs)) {
+    if (!Number.isSafeInteger(value) || value < 1) {
+      throw new Error(`Production code graph profile duplicate blob ${name} must be a positive safe integer.`);
+    }
+  }
+  if (
+    profile.id !== 'production-large' ||
+    profile.version !== 2 ||
+    profile.surrogate !== 'threadnote-4.0.10-public-monorepo'
+  ) {
     throw new Error('Unsupported production code graph fixture profile.');
+  }
+  if (profile.worktreeChurnScenarioCount !== PRODUCTION_WORKTREE_CHURN_SCENARIOS.length) {
+    throw new Error('Production code graph fixture must declare the reviewed six-scenario worktree churn matrix.');
   }
   if (profile.declarationSymbols < profile.sourceFiles) {
     throw new Error('Production code graph fixture requires at least one declaration per source file.');
   }
-  productionWorkspaceRoots(profile.workspaceCount);
+  if (profile.classMix.typescriptSourceFiles + profile.classMix.tsxSourceFiles !== profile.sourceFiles) {
+    throw new Error('Production code graph source class counts must equal sourceFiles.');
+  }
+  if (productionRepositoryFileCount(profile.classMix) !== profile.targetRepositoryFiles) {
+    throw new Error('Production code graph class mix must equal targetRepositoryFiles.');
+  }
+  if (productionEligibleFileCount(profile.classMix) !== profile.targetEligibleFiles) {
+    throw new Error('Production code graph eligible class mix must equal targetEligibleFiles.');
+  }
+  if (profile.classMix.packageManifestFiles !== profile.workspaceCount + 1) {
+    throw new Error('Production code graph package manifest count must cover the root and every package.');
+  }
+  if (profile.classMix.workspaceManifestFiles !== 1) {
+    throw new Error('Production code graph fixture requires exactly one pnpm workspace manifest.');
+  }
+  if (profile.classMix.tsconfigFiles > profile.workspaceCount + 1) {
+    throw new Error('Production code graph tsconfig count exceeds the root and package count.');
+  }
+  if (profile.classMix.nxProjectFiles > profile.workspaceCount) {
+    throw new Error('Production code graph Nx project count exceeds the package count.');
+  }
+  if (profile.activeWorkspaceExcludedSourceFiles >= profile.sourceFiles) {
+    throw new Error('Production code graph active workspace-excluded source count must leave included sourceFiles.');
+  }
+  if (profile.duplicateBlobs.generatedSvgVariants > profile.classMix.generatedSvgFiles) {
+    throw new Error('Production code graph generated SVG variants exceed generated SVG files.');
+  }
+  if (profile.duplicateBlobs.heavyJsonVariants > profile.classMix.duplicateHeavyJsonFiles) {
+    throw new Error('Production code graph heavy JSON variants exceed duplicate heavy JSON files.');
+  }
+  if (profile.duplicateBlobs.heavyJsonPayloadBytes > 16 * 1_048_576) {
+    throw new Error('Production code graph heavy JSON payload exceeds the bounded surrogate limit.');
+  }
+  if (profile.duplicateBlobs.heavyJsonPayloadBytes < profile.lowSignalJsonExclusionThresholdBytes) {
+    throw new Error('Production code graph heavy JSON payload must reach its declared exclusion threshold.');
+  }
+  if (profile.lowSignalJsonExclusionThresholdBytes >= profile.highSignalConfigHardCapBytes) {
+    throw new Error('Production code graph low-signal threshold must remain below the high-signal config hard cap.');
+  }
+  productionWorkspaceRoots(profile.workspaceCount, profile.activeWorkspaceExcludedPackageCount);
   return profile;
+}
+
+export function productionEligibleFileCount(classMix: ProductionCodeGraphFixtureClassMix): number {
+  return productionRepositoryFileCount(classMix) - classMix.generatedSvgFiles - classMix.duplicateHeavyJsonFiles;
+}
+
+export function productionRepositoryFileCount(classMix: ProductionCodeGraphFixtureClassMix): number {
+  return Object.values(classMix).reduce((total, count) => total + count, 0);
+}
+
+export function productionExcludedByteDistribution(profile: ProductionCodeGraphFixtureProfile): {
+  readonly generatedSvgBytes: number;
+  readonly heavyJsonBytes: number;
+  readonly totalBytes: number;
+} {
+  const variantBytes = Array.from(
+    {length: profile.duplicateBlobs.generatedSvgVariants},
+    (_, index) => new TextEncoder().encode(productionSvgBlob(index)).byteLength,
+  );
+  const completeVariantCycles = Math.floor(
+    profile.classMix.generatedSvgFiles / profile.duplicateBlobs.generatedSvgVariants,
+  );
+  const remainingVariants = profile.classMix.generatedSvgFiles % profile.duplicateBlobs.generatedSvgVariants;
+  const generatedSvgBytes =
+    completeVariantCycles * variantBytes.reduce((total, bytes) => total + bytes, 0) +
+    variantBytes.slice(0, remainingVariants).reduce((total, bytes) => total + bytes, 0);
+  const heavyJsonBytes = profile.classMix.duplicateHeavyJsonFiles * profile.duplicateBlobs.heavyJsonPayloadBytes;
+  return {generatedSvgBytes, heavyJsonBytes, totalBytes: generatedSvgBytes + heavyJsonBytes};
+}
+
+function isActiveWorkspaceExcludedRoot(workspace: string): boolean {
+  return workspace.startsWith('packages/active-excluded-');
+}
+
+function writeProductionSvgFiles(
+  fs: FileSystem.FileSystem,
+  path: Path.Path,
+  repository: string,
+  profile: ProductionCodeGraphFixtureProfile,
+) {
+  const root = path.join(repository, 'gen', 'svg');
+  return fs.makeDirectory(root, {recursive: true}).pipe(
+    Effect.andThen(
+      Effect.forEach(
+        Array.from({length: profile.classMix.generatedSvgFiles}, (_, index) => index),
+        index =>
+          fs.writeFileString(
+            path.join(root, `generated-${String(index).padStart(5, '0')}.svg`),
+            productionSvgBlob(index % profile.duplicateBlobs.generatedSvgVariants),
+          ),
+        {concurrency: 16, discard: true},
+      ),
+    ),
+  );
+}
+
+function writeProductionHeavyJsonFiles(
+  fs: FileSystem.FileSystem,
+  path: Path.Path,
+  repository: string,
+  profile: ProductionCodeGraphFixtureProfile,
+) {
+  const root = path.join(repository, 'test', 'golden-data');
+  const variants = Array.from({length: profile.duplicateBlobs.heavyJsonVariants}, (_, index) =>
+    productionHeavyJsonBlob(index, profile.duplicateBlobs.heavyJsonPayloadBytes),
+  );
+  return fs.makeDirectory(root, {recursive: true}).pipe(
+    Effect.andThen(
+      Effect.forEach(
+        Array.from({length: profile.classMix.duplicateHeavyJsonFiles}, (_, index) => index),
+        index =>
+          fs.writeFileString(
+            path.join(root, `payload-${String(index).padStart(4, '0')}.json`),
+            variants[index % variants.length]!,
+          ),
+        {concurrency: 8, discard: true},
+      ),
+    ),
+  );
+}
+
+function writeProductionSupportFiles(
+  fs: FileSystem.FileSystem,
+  path: Path.Path,
+  repository: string,
+  profile: ProductionCodeGraphFixtureProfile,
+) {
+  const root = path.join(repository, 'docs', 'support');
+  return fs.makeDirectory(root, {recursive: true}).pipe(
+    Effect.andThen(
+      Effect.forEach(
+        Array.from({length: profile.classMix.supportMarkdownFiles}, (_, index) => index),
+        index =>
+          fs.writeFileString(
+            path.join(root, `support-${String(index).padStart(5, '0')}.md`),
+            `# Public monorepo surrogate support record ${index}\n`,
+          ),
+        {concurrency: 16, discard: true},
+      ),
+    ),
+  );
+}
+
+function productionSvgBlob(variant: number): string {
+  return (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">' +
+    `<path d="M${variant % 12} 2h${(variant % 7) + 1}v${(variant % 9) + 1}H2z"/>` +
+    '</svg>\n'
+  );
+}
+
+function productionHeavyJsonBlob(variant: number, targetBytes: number): string {
+  const prefix = `{"fixture":"threadnote-public-monorepo","variant":${variant},"payload":"`;
+  const suffix = '"}\n';
+  return `${prefix}${'x'.repeat(Math.max(0, targetBytes - prefix.length - suffix.length))}${suffix}`;
 }
 
 function productionPackageName(index: number): string {

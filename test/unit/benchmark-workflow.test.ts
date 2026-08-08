@@ -119,8 +119,13 @@ describe('platform benchmark workflow', () => {
     const upload = job.steps?.find(step => step.uses?.startsWith('actions/upload-artifact@'));
     const summary = job.steps?.find(step => step.run?.includes('Production-large release evidence'));
     const enforcement = job.steps?.find(step => step.name === 'Enforce strict evidence completion');
+    const productionInput = workflow.on.workflow_dispatch?.inputs?.include_production_large as
+      {readonly description?: string} | undefined;
 
     expect(workflow.on.workflow_dispatch?.inputs).toHaveProperty('include_production_large');
+    expect(productionInput?.description).toContain('73k-repository/59,936-eligible');
+    expect(productionInput?.description).toContain('profile target');
+    expect(productionInput?.description).toContain('4.0.10 surrogate');
     expect(caller.if).toContain("github.event_name == 'schedule'");
     expect(caller.if).toContain('inputs.include_production_large');
     expect(caller.uses).toBe('./.github/workflows/production-large-evidence.yml');
@@ -153,6 +158,9 @@ describe('platform benchmark workflow', () => {
     expect(enforcement?.run).toContain('exit 1');
     expect(job.steps?.indexOf(enforcement!)).toBeGreaterThan(job.steps?.indexOf(upload!) ?? -1);
     expect(job.steps?.indexOf(enforcement!)).toBeGreaterThan(job.steps?.indexOf(summary!) ?? -1);
+    expect(summary?.run).toContain('six declared linked-worktree churn scenarios');
+    expect(summary?.run).toContain('actual-versus-target counts');
+    expect(summary?.run).toContain('package-manager exclusion never removes active source');
   });
 
   it('publishes every channel after platform artifacts while retaining independent exact-commit evidence', () => {

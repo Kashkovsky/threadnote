@@ -41,7 +41,7 @@ on:
         type: boolean
         default: false
       include_production_large:
-        description: Run the n=1 48k-file production-large graph profile on the pinned Linux runner class
+        description: Run the n=1 73k-repository/59,936-eligible profile target for the 4.0.10 surrogate
         required: false
         type: boolean
         default: false
