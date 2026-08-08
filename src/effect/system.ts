@@ -1,3 +1,4 @@
+import * as NodeFileSystemPromises from 'node:fs/promises';
 import {Context, Effect, Layer} from 'effect';
 import {effectiveLinuxMemoryBytes, linuxCgroupMemoryFiles} from './linux_cgroup.js';
 import {readWindowsHardwareInfo, readWindowsProcessStartIdentity} from './windows_system.js';
@@ -149,8 +150,73 @@ export class SystemInfo extends Context.Service<SystemInfo, SystemInfoShape>()('
 const DISK_QUERY_TIMEOUT_MS = 10_000;
 const KIBIBYTE_BYTES = 1024;
 const PROCESS_IDENTITY_QUERY_TIMEOUT_MS = 5_000;
+const MAXIMUM_SAFE_BYTE_COUNT = BigInt(Number.MAX_SAFE_INTEGER);
+const NATIVE_STATFS_UNAVAILABLE_CODES = new Set([
+  'ENOSYS',
+  'ENOTSUP',
+  'EOPNOTSUPP',
+  'ERR_METHOD_NOT_IMPLEMENTED',
+  'ERR_NOT_IMPLEMENTED',
+]);
+
+export interface DiskCapacityProbeAdapters {
+  readonly fallback: (
+    path: string,
+    platform: NodeJS.Platform,
+    environment: NodeJS.ProcessEnv,
+  ) => Effect.Effect<number | undefined, unknown>;
+  readonly statfs: (path: string) => Effect.Effect<unknown, unknown>;
+}
+
+class NativeStatfsUnavailableError {
+  readonly _tag = 'NativeStatfsUnavailableError';
+}
 
 function availableDiskBytes(path: string, platform: NodeJS.Platform, environment: NodeJS.ProcessEnv) {
+  return probeAvailableDiskBytes(path, platform, environment, defaultDiskCapacityProbeAdapters);
+}
+
+export function probeAvailableDiskBytes(
+  path: string,
+  platform: NodeJS.Platform,
+  environment: NodeJS.ProcessEnv,
+  adapters: DiskCapacityProbeAdapters,
+  timeoutMilliseconds = DISK_QUERY_TIMEOUT_MS,
+) {
+  return adapters.statfs(path).pipe(
+    Effect.matchEffect({
+      onFailure: cause =>
+        isNativeStatfsUnavailable(cause) ? adapters.fallback(path, platform, environment) : Effect.succeed(undefined),
+      onSuccess: statistics => Effect.succeed(availableDiskBytesFromStatfs(statistics)),
+    }),
+    Effect.timeoutOrElse({
+      duration: timeoutMilliseconds,
+      orElse: () => Effect.succeed(undefined),
+    }),
+  );
+}
+
+export function availableDiskBytesFromStatfs(statistics: unknown): number | undefined {
+  if (typeof statistics !== 'object' || statistics === null) return undefined;
+  const fields = statistics as {readonly bavail?: unknown; readonly bsize?: unknown};
+  const availableBlocks = nonNegativeIntegerBigInt(fields.bavail);
+  const blockSize = positiveIntegerBigInt(fields.bsize);
+  if (availableBlocks === undefined || blockSize === undefined) return undefined;
+  const availableBytes = availableBlocks * blockSize;
+  return Number(availableBytes > MAXIMUM_SAFE_BYTE_COUNT ? MAXIMUM_SAFE_BYTE_COUNT : availableBytes);
+}
+
+function nativeStatfs(path: string) {
+  if (typeof NodeFileSystemPromises.statfs !== 'function') {
+    return Effect.fail(new NativeStatfsUnavailableError());
+  }
+  return Effect.tryPromise({
+    try: () => NodeFileSystemPromises.statfs(path, {bigint: true}),
+    catch: cause => cause,
+  });
+}
+
+function legacyAvailableDiskBytes(path: string, platform: NodeJS.Platform, environment: NodeJS.ProcessEnv) {
   return Effect.try({
     try: () => {
       const result =
@@ -183,6 +249,28 @@ function availableDiskBytes(path: string, platform: NodeJS.Platform, environment
     },
     catch: () => undefined,
   });
+}
+
+const defaultDiskCapacityProbeAdapters: DiskCapacityProbeAdapters = {
+  fallback: legacyAvailableDiskBytes,
+  statfs: nativeStatfs,
+};
+
+function isNativeStatfsUnavailable(cause: unknown): boolean {
+  if (cause instanceof NativeStatfsUnavailableError) return true;
+  if (typeof cause !== 'object' || cause === null || !('code' in cause)) return false;
+  const code = (cause as {readonly code?: unknown}).code;
+  return typeof code === 'string' && NATIVE_STATFS_UNAVAILABLE_CODES.has(code);
+}
+
+function nonNegativeIntegerBigInt(value: unknown): bigint | undefined {
+  if (typeof value === 'bigint') return value >= 0n ? value : undefined;
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? BigInt(value) : undefined;
+}
+
+function positiveIntegerBigInt(value: unknown): bigint | undefined {
+  const integer = nonNegativeIntegerBigInt(value);
+  return integer !== undefined && integer > 0n ? integer : undefined;
 }
 
 export function parsePosixAvailableDiskBytes(output: string): number | undefined {

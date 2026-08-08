@@ -1,7 +1,8 @@
 import {it as effectIt} from '@effect/vitest';
-import {Effect} from 'effect';
+import {Effect, Fiber} from 'effect';
+import {TestClock} from 'effect/testing';
 import * as FC from 'effect/testing/FastCheck';
-import {describe, expect, it} from 'vitest';
+import {describe, expect, it, vi} from 'vitest';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {
   effectiveLinuxMemoryBytes,
@@ -9,10 +10,12 @@ import {
   parseLinuxCgroupMemoryLimitBytes,
 } from '../../src/effect/linux_cgroup.js';
 import {
+  availableDiskBytesFromStatfs,
   parsePosixAvailableDiskBytes,
   parseLinuxProcessStartIdentity,
   parseProcessStartIdentityOutput,
   parseWindowsAvailableDiskBytes,
+  probeAvailableDiskBytes,
   resolveHomeDirectory,
   SystemInfo,
 } from '../../src/effect/system.js';
@@ -58,6 +61,206 @@ describe('SystemInfo disk capacity parsing', () => {
     expect(parseWindowsAvailableDiskBytes('987654321\r\n')).toBe(987_654_321);
     expect(parseWindowsAvailableDiskBytes('not-a-size')).toBeUndefined();
   });
+
+  effectIt.effect.prop(
+    'converts native statfs values to a conservative safe integer monotonically',
+    {
+      availableBlocks: FC.integer({max: Number.MAX_SAFE_INTEGER, min: 0}),
+      blockSize: FC.integer({max: 1_048_576, min: 1}),
+      fewerAvailableBlocks: FC.integer({max: Number.MAX_SAFE_INTEGER, min: 0}),
+    },
+    ({availableBlocks, blockSize, fewerAvailableBlocks}) =>
+      Effect.sync(() => {
+        const lowerBlocks = Math.min(availableBlocks, fewerAvailableBlocks);
+        const higherBlocks = Math.max(availableBlocks, fewerAvailableBlocks);
+        const exactBytes = BigInt(higherBlocks) * BigInt(blockSize);
+        const expected = Number(
+          exactBytes > BigInt(Number.MAX_SAFE_INTEGER) ? BigInt(Number.MAX_SAFE_INTEGER) : exactBytes,
+        );
+        const lower = availableDiskBytesFromStatfs({bavail: BigInt(lowerBlocks), bsize: BigInt(blockSize)});
+        const higher = availableDiskBytesFromStatfs({bavail: BigInt(higherBlocks), bsize: BigInt(blockSize)});
+        if (lower === undefined || higher === undefined) {
+          throw new Error('Valid native statfs values must produce a safe capacity.');
+        }
+
+        expect(higher).toBe(expected);
+        expect(lower).toBeLessThanOrEqual(higher);
+        expect(Number.isSafeInteger(lower)).toBe(true);
+        expect(Number.isSafeInteger(higher)).toBe(true);
+      }),
+    {fastCheck: {numRuns: 100}},
+  );
+
+  effectIt.effect('uses native asynchronous statistics on supported POSIX platforms without falling back', () =>
+    Effect.gen(function* () {
+      for (const platform of ['darwin', 'linux'] as const) {
+        let fallbackInvocations = 0;
+        let nativeInvocations = 0;
+        const available = yield* probeAvailableDiskBytes(
+          '/private/native-statfs-fixture',
+          platform,
+          {},
+          {
+            fallback: () =>
+              Effect.sync(() => {
+                fallbackInvocations += 1;
+                return 1;
+              }),
+            statfs: () =>
+              Effect.sync(() => {
+                nativeInvocations += 1;
+                return {bavail: 256n, bsize: 4096n};
+              }),
+          },
+        );
+
+        expect(available).toBe(1_048_576);
+        expect(nativeInvocations).toBe(1);
+        expect(fallbackInvocations).toBe(0);
+      }
+    }),
+  );
+
+  effectIt.effect('falls back only for structured native-statfs unavailability', () =>
+    Effect.gen(function* () {
+      const unavailableCodes = ['ENOSYS', 'ENOTSUP', 'EOPNOTSUPP', 'ERR_NOT_IMPLEMENTED', 'ERR_METHOD_NOT_IMPLEMENTED'];
+      let fallbackInvocations = 0;
+      for (const code of unavailableCodes) {
+        const available = yield* probeAvailableDiskBytes(
+          '/private/unavailable-statfs-fixture',
+          'linux',
+          {},
+          {
+            fallback: () =>
+              Effect.sync(() => {
+                fallbackInvocations += 1;
+                return 42;
+              }),
+            statfs: () => Effect.fail(Object.assign(new Error('Native statfs unavailable.'), {code})),
+          },
+        );
+        expect(available).toBe(42);
+      }
+
+      for (const code of ['EACCES', 'EIO', 'ENOENT']) {
+        const available = yield* probeAvailableDiskBytes(
+          '/private/ordinary-statfs-failure',
+          'linux',
+          {},
+          {
+            fallback: () =>
+              Effect.sync(() => {
+                fallbackInvocations += 1;
+                return 99;
+              }),
+            statfs: () => Effect.fail(Object.assign(new Error(`/private/ordinary-statfs-failure: ${code}`), {code})),
+          },
+        );
+        expect(available).toBeUndefined();
+      }
+
+      expect(fallbackInvocations).toBe(unavailableCodes.length);
+    }),
+  );
+
+  effectIt.effect('bounds a stalled native probe without launching the fallback', () =>
+    Effect.gen(function* () {
+      let fallbackInvocations = 0;
+      let nativeInvocations = 0;
+      const fiber = yield* probeAvailableDiskBytes(
+        '/private/stalled-statfs-fixture',
+        'linux',
+        {},
+        {
+          fallback: () =>
+            Effect.sync(() => {
+              fallbackInvocations += 1;
+              return 99;
+            }),
+          statfs: () =>
+            Effect.sync(() => {
+              nativeInvocations += 1;
+            }).pipe(Effect.andThen(Effect.never)),
+        },
+        25,
+      ).pipe(Effect.forkChild);
+      yield* Effect.yieldNow;
+
+      yield* TestClock.adjust(25);
+
+      expect(yield* Fiber.join(fiber)).toBeUndefined();
+      expect(nativeInvocations).toBe(1);
+      expect(fallbackInvocations).toBe(0);
+    }),
+  );
+
+  effectIt.effect('shares one total deadline between unavailable native detection and fallback work', () =>
+    Effect.gen(function* () {
+      let fallbackInterruptions = 0;
+      let fallbackInvocations = 0;
+      let nativeInvocations = 0;
+      const fiber = yield* probeAvailableDiskBytes(
+        '/private/total-statfs-deadline-fixture',
+        'linux',
+        {},
+        {
+          fallback: () =>
+            Effect.sync(() => {
+              fallbackInvocations += 1;
+            }).pipe(
+              Effect.andThen(Effect.sleep(60)),
+              Effect.as(99),
+              Effect.onInterrupt(() =>
+                Effect.sync(() => {
+                  fallbackInterruptions += 1;
+                }),
+              ),
+            ),
+          statfs: () =>
+            Effect.sync(() => {
+              nativeInvocations += 1;
+            }).pipe(
+              Effect.andThen(Effect.sleep(60)),
+              Effect.andThen(Effect.fail(Object.assign(new Error('Native statfs unavailable.'), {code: 'ENOSYS'}))),
+            ),
+        },
+        100,
+      ).pipe(Effect.forkChild);
+      yield* Effect.yieldNow;
+
+      yield* TestClock.adjust(60);
+      yield* Effect.yieldNow;
+      expect(nativeInvocations).toBe(1);
+      expect(fallbackInvocations).toBe(1);
+
+      yield* TestClock.adjust(40);
+
+      expect(yield* Fiber.join(fiber)).toBeUndefined();
+      expect(fallbackInterruptions).toBe(1);
+    }),
+  );
+
+  effectIt.effect('launches no subprocesses across a bounded supported-host probe load', () =>
+    Effect.acquireUseRelease(
+      Effect.sync(() => vi.spyOn(Bun, 'spawnSync')),
+      spawnSyncSpy =>
+        Effect.gen(function* () {
+          if (process.platform !== 'darwin' && process.platform !== 'linux') return;
+          const system = yield* SystemInfo;
+          const capacities = yield* Effect.all(
+            Array.from({length: 128}, () => system.availableDiskBytes(process.cwd())),
+            {concurrency: 16},
+          );
+
+          expect(capacities).toHaveLength(128);
+          expect(capacities.every(value => value !== undefined && Number.isSafeInteger(value) && value >= 0)).toBe(
+            true,
+          );
+          expect(spawnSyncSpy).not.toHaveBeenCalled();
+        }).pipe(Effect.provide(SystemInfo.layer)),
+      spawnSyncSpy => Effect.sync(() => spawnSyncSpy.mockRestore()),
+    ),
+  );
 });
 
 describe('Linux cgroup effective memory', () => {
