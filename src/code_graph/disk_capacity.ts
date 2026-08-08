@@ -9,7 +9,10 @@ export const CODE_GRAPH_DISK_CAPACITY_MODEL_VERSION = 1 as const;
 
 export type CodeGraphDirectPersistentCapacityOperation =
   | 'publish persistent code graph snapshot'
+  | 'promote ready code graph snapshot'
   | 'register persistent code graph materialization plan'
+  | 'resolve persistent code graph reexport aliases'
+  | 'resolve persistent code graph references'
   | 'stage persistent code graph facts'
   | 'stage persistent code graph inventory'
   | 'stage persistent code graph workspace';
@@ -71,6 +74,25 @@ export interface CodeGraphUnknownDiskCapacityDemand {
 }
 
 export type CodeGraphDiskCapacityDemand = CodeGraphMeasuredDiskCapacityDemand | CodeGraphUnknownDiskCapacityDemand;
+
+export interface CodeGraphDiskCapacityReservationProjectionInput {
+  readonly demand: CodeGraphDiskCapacityDemand;
+  readonly durableFilesystemKey: string;
+  readonly freelistBytes: number;
+  readonly temporaryFilesystemKey: string;
+}
+
+export type CodeGraphDiskCapacityReservationProjection =
+  | {
+      readonly calibrationIdentity: string;
+      readonly filesystems: readonly {readonly bytes: number; readonly key: string}[];
+      readonly state: 'measured';
+    }
+  | {
+      readonly calibrationIdentity: string;
+      readonly reason: CodeGraphUnknownDiskCapacityDemand['reason'] | 'filesystem-topology-unknown';
+      readonly state: 'unknown';
+    };
 
 export interface CodeGraphDiskCapacityInput {
   readonly demand: CodeGraphDiskCapacityDemand;
@@ -180,8 +202,15 @@ export function codeGraphDirectPersistentCapacityDemand(
   };
 }
 
-/** Pure capacity decision. Unknown topology or measurements always fail closed. */
-export function evaluateCodeGraphDiskCapacity(input: CodeGraphDiskCapacityInput): CodeGraphDiskCapacityDecision {
+/**
+ * Projects one bounded transaction onto the exact filesystems that must carry
+ * its durable and transient high-water allocations. The receipt ledger and
+ * the independent admission oracle share this helper so shared filesystems
+ * cannot be counted twice by one of those paths.
+ */
+export function codeGraphDiskCapacityReservationProjection(
+  input: CodeGraphDiskCapacityReservationProjectionInput,
+): CodeGraphDiskCapacityReservationProjection {
   const calibrationIdentity = input.demand.calibrationIdentity;
   if (input.demand.state === 'unknown') {
     return {calibrationIdentity, reason: input.demand.reason, state: 'unknown'};
@@ -193,6 +222,56 @@ export function evaluateCodeGraphDiskCapacity(input: CodeGraphDiskCapacityInput)
   ) {
     return {calibrationIdentity, reason: 'calibration-input-unknown', state: 'unknown'};
   }
+  if (!validFilesystemKey(input.durableFilesystemKey) || !validFilesystemKey(input.temporaryFilesystemKey)) {
+    return {calibrationIdentity, reason: 'filesystem-topology-unknown', state: 'unknown'};
+  }
+
+  const mainHighWaterBytes = capacityBytes(input.demand.mainHighWaterBytes);
+  const freelistBytes = Math.min(mainHighWaterBytes, capacityBytes(input.freelistBytes));
+  const externalMainBytes = mainHighWaterBytes - freelistBytes;
+  const transientHighWaterBytes = capacityBytes(input.demand.transientHighWaterBytes);
+  const recoveryFloorBytes = capacityBytes(input.demand.recoveryFloorBytes);
+  if (input.durableFilesystemKey === input.temporaryFilesystemKey) {
+    return {
+      calibrationIdentity,
+      filesystems: [
+        {
+          bytes: saturatingCapacityAdd(externalMainBytes, transientHighWaterBytes, recoveryFloorBytes),
+          key: input.durableFilesystemKey,
+        },
+      ],
+      state: 'measured',
+    };
+  }
+
+  const transientOnDurable = input.demand.transientFilesystem === 'durable';
+  const filesystems = [
+    {
+      bytes: saturatingCapacityAdd(
+        externalMainBytes,
+        transientOnDurable ? transientHighWaterBytes : 0,
+        transientOnDurable ? recoveryFloorBytes : 0,
+      ),
+      key: input.durableFilesystemKey,
+    },
+    ...(!transientOnDurable
+      ? [
+          {
+            bytes: saturatingCapacityAdd(transientHighWaterBytes, recoveryFloorBytes),
+            key: input.temporaryFilesystemKey,
+          },
+        ]
+      : []),
+  ].filter(value => value.bytes > 0);
+  return {calibrationIdentity, filesystems, state: 'measured'};
+}
+
+/** Pure capacity decision. Unknown topology or measurements always fail closed. */
+export function evaluateCodeGraphDiskCapacity(input: CodeGraphDiskCapacityInput): CodeGraphDiskCapacityDecision {
+  const calibrationIdentity = input.demand.calibrationIdentity;
+  if (input.demand.state === 'unknown') {
+    return {calibrationIdentity, reason: input.demand.reason, state: 'unknown'};
+  }
   if (!nonNegativeSafeInteger(input.reservedDurableBytes) || !nonNegativeSafeInteger(input.reservedTemporaryBytes)) {
     return {calibrationIdentity, reason: 'reservation-input-unknown', state: 'unknown'};
   }
@@ -201,16 +280,19 @@ export function evaluateCodeGraphDiskCapacity(input: CodeGraphDiskCapacityInput)
   }
   const durableAvailableBytes = availableCapacityBytes(input.durableAvailableBytes);
   const temporaryAvailableBytes = availableCapacityBytes(input.temporaryAvailableBytes);
-  const mainHighWaterBytes = capacityBytes(input.demand.mainHighWaterBytes);
-  // Invalid freelist evidence safely degrades to zero reuse: it can only make
-  // the decision more conservative. Reservations are different because
-  // coercing an unknown reservation to zero could overcommit the filesystem.
-  const freelistBytes = Math.min(mainHighWaterBytes, capacityBytes(input.freelistBytes));
-  const externalMainBytes = mainHighWaterBytes - freelistBytes;
-  const transientHighWaterBytes = capacityBytes(input.demand.transientHighWaterBytes);
-  const recoveryFloorBytes = capacityBytes(input.demand.recoveryFloorBytes);
   const reservedDurableBytes = capacityBytes(input.reservedDurableBytes);
   const reservedTemporaryBytes = capacityBytes(input.reservedTemporaryBytes);
+  const durableKey = 'd'.repeat(64);
+  const temporaryKey = input.filesystemsShared ? durableKey : 'e'.repeat(64);
+  const projection = codeGraphDiskCapacityReservationProjection({
+    demand: input.demand,
+    durableFilesystemKey: durableKey,
+    freelistBytes: input.freelistBytes,
+    temporaryFilesystemKey: temporaryKey,
+  });
+  if (projection.state === 'unknown') {
+    return {calibrationIdentity, reason: projection.reason, state: 'unknown'};
+  }
 
   if (input.filesystemsShared) {
     const availableBytes = minimumDefined(durableAvailableBytes, temporaryAvailableBytes);
@@ -221,9 +303,7 @@ export function evaluateCodeGraphDiskCapacity(input: CodeGraphDiskCapacityInput)
       {
         availableBytes,
         requiredBytes: saturatingCapacityAdd(
-          externalMainBytes,
-          transientHighWaterBytes,
-          recoveryFloorBytes,
+          projection.filesystems[0]?.bytes ?? 0,
           reservedDurableBytes,
           reservedTemporaryBytes,
         ),
@@ -240,18 +320,9 @@ export function evaluateCodeGraphDiskCapacity(input: CodeGraphDiskCapacityInput)
   if (durableAvailableBytes === undefined) {
     return {calibrationIdentity, reason: 'available-space-unknown', state: 'unknown'};
   }
-  const transientOnDurable = input.demand.transientFilesystem === 'durable';
-  const durableRequiredBytes = saturatingCapacityAdd(
-    externalMainBytes,
-    transientOnDurable ? transientHighWaterBytes : 0,
-    transientOnDurable ? recoveryFloorBytes : 0,
-    reservedDurableBytes,
-  );
-  const temporaryRequiredBytes = saturatingCapacityAdd(
-    transientOnDurable ? 0 : transientHighWaterBytes,
-    transientOnDurable ? 0 : recoveryFloorBytes,
-    reservedTemporaryBytes,
-  );
+  const ownerBytes = new Map(projection.filesystems.map(value => [value.key, value.bytes]));
+  const durableRequiredBytes = saturatingCapacityAdd(ownerBytes.get(durableKey) ?? 0, reservedDurableBytes);
+  const temporaryRequiredBytes = saturatingCapacityAdd(ownerBytes.get(temporaryKey) ?? 0, reservedTemporaryBytes);
   if (temporaryRequiredBytes > 0 && temporaryAvailableBytes === undefined) {
     return {calibrationIdentity, reason: 'available-space-unknown', state: 'unknown'};
   }
@@ -342,7 +413,10 @@ function availableCapacityBytes(value: number | undefined): number | undefined {
 function capacityOperation(operation: string): CodeGraphCapacityFailureOperation {
   switch (operation) {
     case 'publish persistent code graph snapshot':
+    case 'promote ready code graph snapshot':
     case 'register persistent code graph materialization plan':
+    case 'resolve persistent code graph reexport aliases':
+    case 'resolve persistent code graph references':
     case 'stage persistent code graph facts':
     case 'stage persistent code graph inventory':
     case 'stage persistent code graph workspace':
@@ -358,6 +432,10 @@ function nonNegativeSafeInteger(value: number): boolean {
 
 function positiveSafeInteger(value: number): boolean {
   return Number.isSafeInteger(value) && value > 0;
+}
+
+function validFilesystemKey(value: string): boolean {
+  return /^[0-9a-f]{64}$/.test(value);
 }
 
 function minimumDefined(left: number | undefined, right: number | undefined): number | undefined {

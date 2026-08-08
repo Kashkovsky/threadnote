@@ -115,6 +115,7 @@ export function codeGraphProgressFromBuildStatus(
       return {
         phase: 'waiting',
         ...(status.subphase === 'database-writer' ||
+        status.subphase === 'disk-capacity' ||
         status.subphase === 'repository-lock' ||
         status.subphase === 'request-lock' ||
         status.subphase === 'snapshot-build'

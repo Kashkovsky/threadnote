@@ -336,9 +336,10 @@ export interface CodeGraphStagingBatch {
   readonly symbols: readonly CodeGraphSymbol[];
 }
 
-export type CodeGraphDirectPersistentCapacityGuard = (
+export type CodeGraphDirectPersistentCapacityProtector = <A, E, R>(
   boundary: CodeGraphDirectPersistentCapacityBoundary,
-) => Effect.Effect<void, CodeGraphStoreError>;
+  transaction: Effect.Effect<A, E, R>,
+) => Effect.Effect<A, E | CodeGraphStoreError, R>;
 
 export type CodeGraphStagingBatchProgressCallback = (
   batchIndex: number,
@@ -514,6 +515,11 @@ export interface CodeGraphSnapshotLeaseWriterOptions {
   readonly waitTimeoutMilliseconds?: number;
 }
 
+export interface CodeGraphSnapshotPromotionOptions extends CodeGraphSnapshotLeaseWriterOptions {
+  /** @internal Capacity reservation wrapped outside the checkout writer gate. */
+  readonly persistentCapacityProtector?: CodeGraphDirectPersistentCapacityProtector;
+}
+
 export interface CodeGraphSnapshotLeaseAcquireOptions extends CodeGraphSnapshotLeaseWriterOptions {
   readonly retireWhenInactive?: boolean;
 }
@@ -618,7 +624,7 @@ export interface CodeGraphStoreShape {
     reusableBaseReceipt?: CodeGraphReusableBaseReceiptInput,
     promotionLeaseDurationMilliseconds?: number,
     onProgress?: CodeGraphActivationProgressCallback,
-    persistentCapacityGuard?: CodeGraphDirectPersistentCapacityGuard,
+    persistentCapacityProtector?: CodeGraphDirectPersistentCapacityProtector,
   ) => Effect.Effect<Option.Option<string>, CodeGraphStoreError>;
   readonly activateCleanSnapshotAlias?: (
     databasePath: string,
@@ -663,7 +669,7 @@ export interface CodeGraphStoreShape {
     databasePath: string,
     identity: RepositoryIdentity,
     snapshotId: string,
-    options?: CodeGraphSnapshotLeaseWriterOptions,
+    options?: CodeGraphSnapshotPromotionOptions,
   ) => Effect.Effect<void, CodeGraphStoreError>;
   readonly observeView: (
     databasePath: string,
@@ -692,12 +698,12 @@ export interface CodeGraphStoreShape {
     persistentSnapshotId?: string,
     persistentBatchCount?: number,
     persistentOwnerToken?: string,
-    persistentCapacityGuard?: CodeGraphDirectPersistentCapacityGuard,
+    persistentCapacityProtector?: CodeGraphDirectPersistentCapacityProtector,
   ) => Effect.Effect<void, CodeGraphStoreError>;
   readonly finalizePersistentMaterializationPlan: (
     databasePath: string,
     expectedBatchCount: number,
-    persistentCapacityGuard?: CodeGraphDirectPersistentCapacityGuard,
+    persistentCapacityProtector?: CodeGraphDirectPersistentCapacityProtector,
   ) => Effect.Effect<void, CodeGraphStoreError>;
   readonly preparePersistedIncrementalActivation: (
     databasePath: string,
@@ -960,16 +966,17 @@ export interface CodeGraphStoreShape {
     databasePath: string,
     batches: readonly CodeGraphStagingBatch[],
     onProgress?: CodeGraphStagingBatchProgressCallback,
-    persistentCapacityGuard?: CodeGraphDirectPersistentCapacityGuard,
+    persistentCapacityProtector?: CodeGraphDirectPersistentCapacityProtector,
   ) => Effect.Effect<void, CodeGraphStoreError>;
   readonly stageWorkspaceCatalog: (
     databasePath: string,
     workspace: CodeGraphWorkspace,
-    persistentCapacityGuard?: CodeGraphDirectPersistentCapacityGuard,
+    persistentCapacityProtector?: CodeGraphDirectPersistentCapacityProtector,
   ) => Effect.Effect<void, CodeGraphStoreError>;
   readonly resolveStagedReferences: (
     databasePath: string,
     onProgress?: CodeGraphResolutionProgressCallback,
+    persistentCapacityProtector?: CodeGraphDirectPersistentCapacityProtector,
   ) => Effect.Effect<CodeGraphResolutionSummary, CodeGraphStoreError>;
   readonly stagedFactCounts: (
     databasePath: string,
@@ -1025,6 +1032,10 @@ interface CodeGraphDatabaseSessionShape extends CodeGraphDatabaseSessionOptions 
 class CodeGraphDatabaseSession extends Context.Service<CodeGraphDatabaseSession, CodeGraphDatabaseSessionShape>()(
   'threadnote/codeGraph/CodeGraphDatabaseSession',
 ) {}
+
+class CodeGraphPromotionCapacityPlanChanged extends Error {
+  override readonly name = 'CodeGraphPromotionCapacityPlanChanged';
+}
 
 export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphStoreShape>()(
   'threadnote/codeGraph/CodeGraphStore',
@@ -1382,7 +1393,7 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
           reusableBaseReceipt,
           promotionLeaseDurationMilliseconds,
           onProgress,
-          persistentCapacityGuard,
+          persistentCapacityProtector,
         ) =>
           Effect.gen(function* () {
             const promotionLease =
@@ -1428,7 +1439,7 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
                     promotionLease,
                     onProgress,
                     effect => withWriterGate(databasePath, effect),
-                    persistentCapacityGuard,
+                    persistentCapacityProtector,
                   );
                   return snapshot.id;
                 }
@@ -1496,18 +1507,44 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
             );
           }).pipe(Effect.mapError(cause => storeError('cache materialized code graph file shards', cause))),
         promote: (databasePath, identity, snapshotId, options) =>
-          prepare(databasePath).pipe(
-            Effect.andThen(
-              withWriterGate(
+          Effect.gen(function* () {
+            yield* prepare(databasePath);
+            yield* useDatabase(
+              databasePath,
+              Effect.gen(function* () {
+                const sql = yield* SqlClient.SqlClient;
+                yield* ensureSchemaInitialized(databasePath, sql);
+              }),
+            );
+            let retired = 0;
+            for (;;) {
+              const plan = yield* useDatabase(databasePath, prepareSnapshotPromotionCapacity(identity, snapshotId));
+              const transaction = withWriterGate(
                 databasePath,
-                useDatabase(databasePath, promoteSnapshot(identity, snapshotId)),
+                useDatabase(databasePath, promoteSnapshot(identity, snapshotId, plan)),
                 options?.waitTimeoutMilliseconds,
-              ),
-            ),
-            Effect.tap(retired => (retired > 0 ? scheduleRetiredSnapshotCleanup(databasePath) : Effect.void)),
-            Effect.asVoid,
-            Effect.mapError(cause => storeError('promote code graph snapshot', cause)),
-          ),
+              );
+              const attempted = yield* (
+                options?.persistentCapacityProtector
+                  ? options.persistentCapacityProtector(plan.boundary, transaction)
+                  : transaction
+              ).pipe(
+                Effect.map(value => ({state: 'completed' as const, value})),
+                Effect.catch(error =>
+                  error instanceof CodeGraphPromotionCapacityPlanChanged
+                    ? Effect.succeed({state: 'retry' as const})
+                    : Effect.fail(error),
+                ),
+              );
+              if (attempted.state === 'retry') {
+                yield* Effect.yieldNow;
+                continue;
+              }
+              retired = attempted.value;
+              break;
+            }
+            if (retired > 0) yield* scheduleRetiredSnapshotCleanup(databasePath);
+          }).pipe(Effect.mapError(cause => storeError('promote code graph snapshot', cause))),
         observeView: (databasePath, worktreeId, expectedSnapshotId) =>
           Effect.gen(function* () {
             yield* validateViewRemovalTarget(worktreeId, expectedSnapshotId);
@@ -1645,7 +1682,7 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
           persistentSnapshotId,
           persistentBatchCount,
           persistentOwnerToken,
-          persistentCapacityGuard,
+          persistentCapacityProtector,
         ) =>
           prepare(databasePath).pipe(
             Effect.andThen(
@@ -1665,7 +1702,7 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
                       persistentBatchCount,
                       persistentOwnerToken,
                       effect => withWriterGate(databasePath, effect),
-                      persistentCapacityGuard,
+                      persistentCapacityProtector,
                     );
                   }
                 }),
@@ -1673,7 +1710,7 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
             ),
             Effect.mapError(cause => storeError('prepare staged code graph activation', cause)),
           ),
-        finalizePersistentMaterializationPlan: (databasePath, expectedBatchCount, persistentCapacityGuard) =>
+        finalizePersistentMaterializationPlan: (databasePath, expectedBatchCount, persistentCapacityProtector) =>
           prepare(databasePath).pipe(
             Effect.andThen(
               useDatabase(
@@ -1686,16 +1723,17 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
                       new CodeGraphStoreError('Persistent full-build materialization is not active.'),
                     );
                   }
-                  yield* persistentCapacityGuard?.({
+                  const boundary: CodeGraphDirectPersistentCapacityBoundary = {
                     finalFactBytes: 0,
                     operation: 'register persistent code graph materialization plan',
                     // Owner plan registration and the lexical counter receipt.
                     rowCount: 2,
-                  }) ?? Effect.void;
-                  yield* withWriterGate(
+                  };
+                  const transaction = withWriterGate(
                     databasePath,
                     finalizePersistentMaterializationPlan(sql, mode.snapshotId, mode.ownerToken, expectedBatchCount),
                   );
+                  yield* persistentCapacityProtector ? persistentCapacityProtector(boundary, transaction) : transaction;
                 }),
               ),
             ),
@@ -2440,7 +2478,7 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
             ),
             Effect.mapError(cause => storeError('stage code graph facts', cause)),
           ),
-        stageActivationFactBatches: (databasePath, batches, onProgress, persistentCapacityGuard) =>
+        stageActivationFactBatches: (databasePath, batches, onProgress, persistentCapacityProtector) =>
           prepare(databasePath).pipe(
             Effect.andThen(
               useDatabase(
@@ -2454,10 +2492,27 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
                     );
                   }
                   let prepared: readonly PreparedPersistedFullFactBatch[] | undefined;
-                  if (persistentCapacityGuard) {
+                  if (persistentCapacityProtector) {
                     const preparation = preparePersistedFullFactCapacity(batches);
                     prepared = preparation.batches;
-                    yield* persistentCapacityGuard(preparation.capacity);
+                    const transaction = withWriterGate(
+                      databasePath,
+                      stagePersistedFullFactBatches(
+                        sql,
+                        mode.snapshotId,
+                        mode.ownerToken,
+                        batches,
+                        batchIndex =>
+                          activationStagingObserver(
+                            sql,
+                            onProgress ? progress => onProgress(batchIndex, progress) : undefined,
+                            'main',
+                          ),
+                        prepared,
+                      ),
+                    );
+                    yield* persistentCapacityProtector(preparation.capacity, transaction);
+                    return;
                   }
                   yield* withWriterGate(
                     databasePath,
@@ -2480,7 +2535,7 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
             ),
             Effect.mapError(cause => storeError('stage grouped code graph facts', cause)),
           ),
-        stageWorkspaceCatalog: (databasePath, workspace, persistentCapacityGuard) =>
+        stageWorkspaceCatalog: (databasePath, workspace, persistentCapacityProtector) =>
           prepare(databasePath).pipe(
             Effect.andThen(
               useDatabase(
@@ -2490,11 +2545,13 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
                   const mode = yield* activationMode(sql);
                   if (mode?.mode === 'persisted-full') {
                     const prepared = preparePersistedFullWorkspace(mode.snapshotId, workspace);
-                    yield* persistentCapacityGuard?.(prepared.capacity) ?? Effect.void;
-                    yield* withWriterGate(
+                    const transaction = withWriterGate(
                       databasePath,
                       stagePersistedFullWorkspace(sql, mode.snapshotId, mode.ownerToken, prepared),
                     );
+                    yield* persistentCapacityProtector
+                      ? persistentCapacityProtector(prepared.capacity, transaction)
+                      : transaction;
                   } else {
                     yield* stageActivationWorkspace(workspace);
                   }
@@ -2503,12 +2560,16 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
             ),
             Effect.mapError(cause => storeError('stage code graph workspace catalog', cause)),
           ),
-        resolveStagedReferences: (databasePath, onProgress) =>
+        resolveStagedReferences: (databasePath, onProgress, persistentCapacityProtector) =>
           prepare(databasePath).pipe(
             Effect.andThen(
               useDatabase(
                 databasePath,
-                resolveActivationReferences(onProgress, effect => withWriterGate(databasePath, effect)),
+                resolveActivationReferences(
+                  onProgress,
+                  effect => withWriterGate(databasePath, effect),
+                  persistentCapacityProtector,
+                ),
               ),
             ),
             Effect.mapError(cause => storeError('resolve staged code graph references', cause)),
@@ -6402,7 +6463,7 @@ const activatePersistedFullSnapshot = Effect.fn('codeGraph.activatePersistedFull
   promotionLease: Option.Option<CodeGraphActivationLease> = Option.none(),
   onProgress?: CodeGraphActivationProgressCallback,
   writerGate?: CodeGraphWriterGate,
-  persistentCapacityGuard?: CodeGraphDirectPersistentCapacityGuard,
+  persistentCapacityProtector?: CodeGraphDirectPersistentCapacityProtector,
 ) {
   const runWrite: CodeGraphWriterGate = writerGate ?? (effect => effect);
   const observe = activationProgressObserver(onProgress);
@@ -6479,7 +6540,7 @@ const activatePersistedFullSnapshot = Effect.fn('codeGraph.activatePersistedFull
   yield* configurePublicationDurability(sql);
   yield* observe('recording-completion', 'started');
   yield* observe('committing-snapshot', 'started');
-  yield* persistentCapacityGuard?.({
+  const publicationCapacity: CodeGraphDirectPersistentCapacityBoundary = {
     finalFactBytes: 0,
     operation: 'publish persistent code graph snapshot',
     // File-shard association can publish one row per inventory file. The six
@@ -6489,18 +6550,20 @@ const activatePersistedFullSnapshot = Effect.fn('codeGraph.activatePersistedFull
       Number.isSafeInteger(snapshot.fileCount) && snapshot.fileCount >= 0
         ? saturatingCapacityAdd(snapshot.fileCount, 6)
         : Number.NaN,
-  }) ?? Effect.void;
-  const readyTransactionStartedAt = performance.now();
-  yield* runWrite(
-    sql.withTransaction(
-      Effect.gen(function* () {
-        yield* assertPersistentBuildOwner(sql, snapshot.id, ownerToken);
-        yield* assertPersistentMaterializationComplete(sql, snapshot.id, ownerToken);
-        yield* publishCompactLexicalFormat(sql, snapshot.id, compactLexicalReceipt);
-        yield* associateSnapshotFileShards(sql, snapshot.id, snapshot.extractorSet, reusableBaseReceipt);
-        yield* recordSnapshotExtractorGeneration(sql, snapshot.id);
-        if (reusableBaseReceipt) {
-          yield* sql`
+  };
+  let readyTransactionStartedAt = 0;
+  const readyTransaction = Effect.suspend(() => {
+    readyTransactionStartedAt = performance.now();
+    return runWrite(
+      sql.withTransaction(
+        Effect.gen(function* () {
+          yield* assertPersistentBuildOwner(sql, snapshot.id, ownerToken);
+          yield* assertPersistentMaterializationComplete(sql, snapshot.id, ownerToken);
+          yield* publishCompactLexicalFormat(sql, snapshot.id, compactLexicalReceipt);
+          yield* associateSnapshotFileShards(sql, snapshot.id, snapshot.extractorSet, reusableBaseReceipt);
+          yield* recordSnapshotExtractorGeneration(sql, snapshot.id);
+          if (reusableBaseReceipt) {
+            yield* sql`
           INSERT INTO snapshot_reuse_receipts (
             snapshot_id, format_version, resolution_surface_version, extractor_set,
             workspace_fingerprint, file_set_fingerprint, lookup_count, alias_count,
@@ -6512,9 +6575,9 @@ const activatePersistedFullSnapshot = Effect.fn('codeGraph.activatePersistedFull
             ${new Date().toISOString()}
           )
         `;
-        }
-        yield* insertActivationLease(sql, snapshot.id, promotionLease);
-        const completed = yield* sql<{readonly id: string}>`
+          }
+          yield* insertActivationLease(sql, snapshot.id, promotionLease);
+          const completed = yield* sql<{readonly id: string}>`
         UPDATE snapshots
         SET state = 'ready', file_count = ${snapshot.fileCount}, symbol_count = ${snapshot.symbolCount},
           edge_count = ${snapshot.edgeCount}, completed_at = ${new Date().toISOString()}, failure_summary = NULL
@@ -6527,16 +6590,20 @@ const activatePersistedFullSnapshot = Effect.fn('codeGraph.activatePersistedFull
           )
         RETURNING id
       `;
-        if (!completed[0]) {
-          return yield* Effect.fail(new CodeGraphStoreError('Persistent full-build promotion lost ownership.'));
-        }
-        yield* sql`
+          if (!completed[0]) {
+            return yield* Effect.fail(new CodeGraphStoreError('Persistent full-build promotion lost ownership.'));
+          }
+          yield* sql`
         DELETE FROM snapshot_build_owners
         WHERE snapshot_id = ${snapshot.id} AND owner_token = ${ownerToken}
       `;
-      }),
-    ),
-  );
+        }),
+      ),
+    );
+  });
+  yield* persistentCapacityProtector
+    ? persistentCapacityProtector(publicationCapacity, readyTransaction)
+    : readyTransaction;
   const readyTransactionMilliseconds = Math.max(0, performance.now() - readyTransactionStartedAt);
   yield* observe('recording-completion', 'completed', 1, readyTransactionMilliseconds);
   yield* observe('committing-snapshot', 'completed', undefined, readyTransactionMilliseconds);
@@ -7844,7 +7911,7 @@ const preparePersistedFullActivation = Effect.fn('codeGraph.preparePersistedFull
   expectedBatchCount?: number,
   ownerToken?: string,
   writerGate?: CodeGraphWriterGate,
-  persistentCapacityGuard?: CodeGraphDirectPersistentCapacityGuard,
+  persistentCapacityProtector?: CodeGraphDirectPersistentCapacityProtector,
 ) {
   const runWrite: CodeGraphWriterGate = writerGate ?? (effect => effect);
   if (ownerToken === undefined) {
@@ -7889,12 +7956,12 @@ const preparePersistedFullActivation = Effect.fn('codeGraph.preparePersistedFull
     if (!Number.isSafeInteger(expectedBatchCount) || expectedBatchCount < 0) {
       return yield* Effect.fail(new CodeGraphStoreError('Persistent materialization batch count is invalid.'));
     }
-    yield* persistentCapacityGuard?.({
+    const planCapacity: CodeGraphDirectPersistentCapacityBoundary = {
       finalFactBytes: 0,
       operation: 'register persistent code graph materialization plan',
       rowCount: 2,
-    }) ?? Effect.void;
-    yield* runWrite(
+    };
+    const planTransaction = runWrite(
       sql.withTransaction(
         Effect.gen(function* () {
           yield* assertPersistentBuildOwner(sql, snapshotId, ownerToken);
@@ -7902,6 +7969,7 @@ const preparePersistedFullActivation = Effect.fn('codeGraph.preparePersistedFull
         }),
       ),
     );
+    yield* persistentCapacityProtector ? persistentCapacityProtector(planCapacity, planTransaction) : planTransaction;
     const stale = yield* sql<{readonly count: number}>`
       SELECT COUNT(*) AS count
       FROM building_materialization_batches
@@ -7918,8 +7986,8 @@ const preparePersistedFullActivation = Effect.fn('codeGraph.preparePersistedFull
     sortedBy(files, file => file.path),
     ACTIVATION_FILE_BATCH_ROWS,
   )) {
-    yield* persistentCapacityGuard?.(persistentFullInventoryCapacityBoundary(snapshotId, batch)) ?? Effect.void;
-    yield* runWrite(
+    const inventoryCapacity = persistentFullInventoryCapacityBoundary(snapshotId, batch);
+    const inventoryTransaction = runWrite(
       sql.withTransaction(
         Effect.gen(function* () {
           yield* assertPersistentBuildOwner(sql, snapshotId, ownerToken);
@@ -7970,6 +8038,9 @@ const preparePersistedFullActivation = Effect.fn('codeGraph.preparePersistedFull
         }),
       ),
     );
+    yield* persistentCapacityProtector
+      ? persistentCapacityProtector(inventoryCapacity, inventoryTransaction)
+      : inventoryTransaction;
     yield* Effect.yieldNow;
   }
   const fileCounts = yield* sql<{readonly count: number}>`
@@ -10262,6 +10333,13 @@ interface ReexportClosureRow {
   readonly target_path: string;
 }
 
+interface PersistentReexportAliasRow {
+  readonly evidence_path: string;
+  readonly exported: number;
+  readonly lookup_key: string;
+  readonly symbol_id: string;
+}
+
 /**
  * Resolves TypeScript barrel topology once from durable provenance, then seeds
  * exact scoped aliases before the general reference scan. Deep chains therefore
@@ -10278,6 +10356,7 @@ const expandTransitiveReexportAliases = Effect.fn('codeGraph.expandTransitiveRee
     | {readonly mode: 'persisted-full'; readonly ownerToken: string; readonly snapshotId: string}
     | undefined,
   writerGate?: CodeGraphWriterGate,
+  persistentCapacityProtector?: CodeGraphDirectPersistentCapacityProtector,
   onProgress?: (aliasesDiscovered: number) => Effect.Effect<void, never>,
 ) {
   if (mode?.mode === 'persisted-delta') return 0;
@@ -10369,44 +10448,34 @@ const expandTransitiveReexportAliases = Effect.fn('codeGraph.expandTransitiveRee
       yield* Effect.yieldNow;
       continue;
     }
-    const transaction = sql.withTransaction(
-      Effect.gen(function* () {
-        if (persistent) yield* assertPersistentBuildOwner(sql, mode.snapshotId, mode.ownerToken);
-        yield* sql.unsafe('DELETE FROM activation_reexport_closure_page');
-        for (const batch of chunk(encoded, 400)) {
-          yield* sql.unsafe(
-            `INSERT INTO activation_reexport_closure_page (
-               source_path, local_name, target_path, imported_name,
-               source_key_component, target_key_component
-             ) VALUES ${batch.map(() => '(?, ?, ?, ?, ?, ?)').join(', ')}`,
-            batch.flatMap(row => [
-              row.source_path,
-              row.local_name,
-              row.target_path,
-              row.imported_name,
-              row.sourceKeyComponent,
-              row.targetKeyComponent,
-            ]),
-          );
-        }
-        const symbolTable = persistent ? 'symbols' : 'activation_symbols';
-        const lookupTable = persistent ? 'snapshot_symbol_lookup' : 'activation_symbol_lookup';
-        const symbolSnapshotPredicate = persistent ? 'symbol.snapshot_id = ? AND' : '';
-        const targetSnapshotPredicate = persistent ? 'target.snapshot_id = ? AND' : '';
-        const symbolPathIndex = persistent ? 'INDEXED BY symbols_path' : '';
-        const lookupSnapshotPredicate = persistent ? 'lookup.snapshot_id = candidate.snapshot_id AND' : '';
-        const insert = persistent
-          ? `INSERT OR IGNORE INTO snapshot_symbol_lookup (
-               snapshot_id, lookup_key, symbol_id, resolution_domain, exported,
-               provenance, evidence_edge_id, evidence_path
-             )
-             SELECT ?, lookup_key, symbol_id, 'typescript', exported, 'alias', NULL, evidence_path`
-          : `INSERT OR IGNORE INTO activation_symbol_lookup (
-               lookup_key, symbol_id, resolution_domain, exported, provenance, evidence_edge_id, evidence_path
-             )
-             SELECT lookup_key, symbol_id, 'typescript', exported, 'alias', NULL, evidence_path`;
-        yield* sql.unsafe(
-          `
+    yield* sql.unsafe('DELETE FROM activation_reexport_closure_page');
+    for (const batch of chunk(encoded, 400)) {
+      yield* sql.unsafe(
+        `INSERT INTO activation_reexport_closure_page (
+           source_path, local_name, target_path, imported_name,
+           source_key_component, target_key_component
+         ) VALUES ${batch.map(() => '(?, ?, ?, ?, ?, ?)').join(', ')}`,
+        batch.flatMap(row => [
+          row.source_path,
+          row.local_name,
+          row.target_path,
+          row.imported_name,
+          row.sourceKeyComponent,
+          row.targetKeyComponent,
+        ]),
+      );
+    }
+    const symbolTable = persistent ? 'symbols' : 'activation_symbols';
+    const lookupTable = persistent ? 'snapshot_symbol_lookup' : 'activation_symbol_lookup';
+    const symbolSnapshotPredicate = persistent ? 'symbol.snapshot_id = ? AND' : '';
+    const targetSnapshotPredicate = persistent ? 'target.snapshot_id = ? AND' : '';
+    const symbolPathIndex = persistent ? 'INDEXED BY symbols_path' : '';
+    const lookupSnapshotPredicate = persistent ? 'lookup.snapshot_id = candidate.snapshot_id AND' : '';
+    // Freeze the exact rows before capacity admission. The guarded transaction
+    // inserts only this immutable page, so no writer that arrives between the
+    // preflight read and receipt acquisition can expand its physical demand.
+    const aliasRows = yield* sql.unsafe<PersistentReexportAliasRow>(
+      `
           WITH
           source_scopes AS (
             SELECT closure.source_path, closure.local_name,
@@ -10504,23 +10573,97 @@ const expandTransitiveReexportAliases = Effect.fn('codeGraph.expandTransitiveRee
             JOIN unique_targets AS target
               ON target.source_path = closure.source_path AND target.local_name = closure.local_name
           )
-          ${insert}
+          SELECT lookup_key, symbol_id, exported, evidence_path
           FROM alias_rows
           ORDER BY lookup_key, symbol_id
         `,
-          persistent ? [mode.snapshotId, mode.snapshotId, mode.snapshotId] : [],
-        );
-        const changed = yield* sql.unsafe<{readonly count: number}>('SELECT changes() AS count');
-        return Number(changed[0]?.count ?? 0);
+      persistent ? [mode.snapshotId, mode.snapshotId] : [],
+    );
+    if (aliasRows.length === 0) {
+      yield* onProgress?.(aliases) ?? Effect.void;
+      yield* Effect.yieldNow;
+      continue;
+    }
+    const transaction = sql.withTransaction(
+      Effect.gen(function* () {
+        if (persistent) yield* assertPersistentBuildOwner(sql, mode.snapshotId, mode.ownerToken);
+        let inserted = 0;
+        for (const batch of chunk(aliasRows, 500)) {
+          if (persistent) {
+            yield* sql.unsafe(
+              `INSERT OR IGNORE INTO snapshot_symbol_lookup (
+                 snapshot_id, lookup_key, symbol_id, resolution_domain, exported,
+                 provenance, evidence_edge_id, evidence_path
+               ) VALUES ${batch.map(() => '(?, ?, ?, ?, ?, ?, ?, ?)').join(', ')}`,
+              batch.flatMap(row => [
+                mode.snapshotId,
+                row.lookup_key,
+                row.symbol_id,
+                'typescript',
+                row.exported,
+                'alias',
+                null,
+                row.evidence_path,
+              ]),
+            );
+          } else {
+            yield* sql.unsafe(
+              `INSERT OR IGNORE INTO activation_symbol_lookup (
+                 lookup_key, symbol_id, resolution_domain, exported,
+                 provenance, evidence_edge_id, evidence_path
+               ) VALUES ${batch.map(() => '(?, ?, ?, ?, ?, ?, ?)').join(', ')}`,
+              batch.flatMap(row => [
+                row.lookup_key,
+                row.symbol_id,
+                'typescript',
+                row.exported,
+                'alias',
+                null,
+                row.evidence_path,
+              ]),
+            );
+          }
+          const changed = yield* sql.unsafe<{readonly count: number}>('SELECT changes() AS count');
+          inserted = saturatingCapacityAdd(inserted, Number(changed[0]?.count ?? 0));
+        }
+        return inserted;
       }),
     );
-    aliases += yield* persistent && writerGate ? writerGate(transaction) : transaction;
+    const gatedTransaction = persistent && writerGate ? writerGate(transaction) : transaction;
+    aliases += yield* persistent && persistentCapacityProtector
+      ? persistentCapacityProtector(
+          persistentReexportAliasCapacityBoundary(mode.snapshotId, aliasRows),
+          gatedTransaction,
+        )
+      : gatedTransaction;
     yield* onProgress?.(aliases) ?? Effect.void;
     yield* Effect.yieldNow;
   }
   yield* sql.unsafe('DELETE FROM activation_reexport_closure_page');
   return aliases;
 });
+
+function persistentReexportAliasCapacityBoundary(
+  snapshotId: string,
+  rows: readonly PersistentReexportAliasRow[],
+): CodeGraphDirectPersistentCapacityBoundary {
+  let finalFactBytes = 0;
+  for (const row of rows) {
+    finalFactBytes = persistentBoundTextBytes(finalFactBytes, [
+      snapshotId,
+      row.lookup_key,
+      row.symbol_id,
+      'typescript',
+      'alias',
+      row.evidence_path,
+    ]);
+  }
+  return {
+    finalFactBytes,
+    operation: 'resolve persistent code graph reexport aliases',
+    rowCount: rows.length,
+  };
+}
 
 const capturePersistedAnalysisResolutionEdges = Effect.fn('codeGraph.capturePersistedAnalysisResolutionEdges')(
   function* (sql: SqlClient.SqlClient, snapshotId: string) {
@@ -10604,6 +10747,7 @@ const adjustPersistedAnalysisResolutionEdges = Effect.fn('codeGraph.adjustPersis
 const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationReferences')(function* (
   onProgress?: CodeGraphResolutionProgressCallback,
   writerGate?: CodeGraphWriterGate,
+  persistentCapacityProtector?: CodeGraphDirectPersistentCapacityProtector,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const startedAt = yield* Clock.currentTimeMillis;
@@ -10669,6 +10813,7 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
     sql,
     mode,
     writerGate,
+    persistentCapacityProtector,
     onProgress === undefined ? undefined : aliases => reportPreparation(aliases),
   );
   matchingMilliseconds += (yield* Clock.currentTimeMillis) - aliasExpansionStartedAt;
@@ -11099,7 +11244,13 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
             }
           }),
         );
-        yield* mode?.mode === 'persisted-full' && writerGate ? writerGate(transaction) : transaction;
+        const gatedTransaction = mode?.mode === 'persisted-full' && writerGate ? writerGate(transaction) : transaction;
+        yield* mode?.mode === 'persisted-full' && persistentCapacityProtector
+          ? persistentCapacityProtector(
+              persistentReferenceResolutionCapacityBoundary(mode.snapshotId, rows, resolutions, aliases),
+              gatedTransaction,
+            )
+          : gatedTransaction;
         transactionMilliseconds += (yield* Clock.currentTimeMillis) - transactionStartedAt;
       }
       resolvedInPass += rows.length;
@@ -11147,6 +11298,60 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
   } satisfies CodeGraphResolutionSummary;
 });
 
+function persistentReferenceResolutionCapacityBoundary(
+  snapshotId: string,
+  rows: readonly ResolvableActivationReferenceRow[],
+  resolutions: readonly ActivationResolutionRow[],
+  aliases: readonly (readonly [string, string, string, number, 'alias', string, string])[],
+): CodeGraphDirectPersistentCapacityBoundary {
+  let finalFactBytes = 0;
+  for (const [index, resolution] of resolutions.entries()) {
+    const row = rows[index];
+    if (row === undefined)
+      return {finalFactBytes: Number.NaN, operation: 'resolve persistent code graph references', rowCount: Number.NaN};
+    finalFactBytes = persistentBoundTextBytes(finalFactBytes, [
+      snapshotId,
+      resolution.newEdgeId,
+      typeof row.source_id === 'string' ? row.source_id : undefined,
+      row.source_name,
+      resolution.relation,
+      resolution.targetId,
+      resolution.targetName,
+      resolution.provenance,
+      row.evidence_path,
+      row.evidence_span_json,
+      // Both the before and after analysis histogram updates carry this
+      // snapshot/group identity. Counting them per resolution is deliberately
+      // conservative when many edges collapse into one aggregate row.
+      snapshotId,
+      row.provenance,
+      row.relation,
+      snapshotId,
+      resolution.provenance,
+      resolution.relation,
+    ]);
+  }
+  for (const alias of aliases) {
+    finalFactBytes = persistentBoundTextBytes(finalFactBytes, [
+      snapshotId,
+      alias[0],
+      alias[1],
+      alias[2],
+      alias[4],
+      alias[5],
+      alias[6],
+    ]);
+  }
+  return {
+    finalFactBytes,
+    operation: 'resolve persistent code graph references',
+    // Per resolved edge: replacement insert, old-edge delete, reference
+    // delete, two histogram upserts, bounded zero-group cleanup, and ample
+    // headroom for SQLite replace/index row work. Alias attempts are exact.
+    rowCount: saturatingCapacityAdd(saturatingCapacityMultiply(resolutions.length, 10), aliases.length),
+  };
+}
+
 const identifyChangedSymbols = Effect.fn('codeGraph.identifyChangedSymbols')(function* (
   sql: SqlClient.SqlClient,
   baseSnapshotId: string | undefined,
@@ -11180,15 +11385,75 @@ const identifyChangedSymbols = Effect.fn('codeGraph.identifyChangedSymbols')(fun
   `;
 });
 
-const promoteSnapshot = Effect.fn('codeGraph.promoteSnapshot')(function* (
+interface SnapshotPromotionCapacityPlan {
+  readonly activatedAt: string;
+  readonly boundary: CodeGraphDirectPersistentCapacityBoundary;
+  readonly maximumLeaseFactBytes: number;
+  readonly maximumLeaseRows: number;
+}
+
+const snapshotPromotionLeaseCapacity = Effect.fn('codeGraph.snapshotPromotionLeaseCapacity')(function* (
+  sql: SqlClient.SqlClient,
+  snapshotId: string,
+) {
+  const leaseRows = yield* sql<{readonly count: number; readonly token_bytes: number}>`
+    SELECT COUNT(*) AS count,
+      COALESCE(SUM(length(CAST(token AS BLOB))), 0) AS token_bytes
+    FROM snapshot_leases
+    WHERE snapshot_id = ${snapshotId}
+  `;
+  const rows = Number(leaseRows[0]?.count ?? Number.NaN);
+  const tokenBytes = Number(leaseRows[0]?.token_bytes ?? Number.NaN);
+  if (!Number.isSafeInteger(rows) || rows < 0 || !Number.isSafeInteger(tokenBytes) || tokenBytes < 0) {
+    return yield* Effect.fail(new CodeGraphStoreError('Ready snapshot promotion lease capacity is invalid.'));
+  }
+  return {
+    factBytes: saturatingCapacityAdd(tokenBytes, saturatingCapacityMultiply(codeGraphUtf8ByteLength(snapshotId), rows)),
+    rows,
+  };
+});
+
+const prepareSnapshotPromotionCapacity = Effect.fn('codeGraph.prepareSnapshotPromotionCapacity')(function* (
   identity: RepositoryIdentity,
   snapshotId: string,
 ) {
   const sql = yield* SqlClient.SqlClient;
   yield* configureConnection(sql);
-  yield* initializeSchema(sql);
+  const leaseCapacity = yield* snapshotPromotionLeaseCapacity(sql, snapshotId);
+  const activatedAt = new Date().toISOString();
+  const fixedFactBytes = persistentBoundTextBytes(0, [identity.worktreeId, snapshotId, activatedAt, 'retired']);
+  return {
+    activatedAt,
+    boundary: {
+      finalFactBytes: saturatingCapacityAdd(fixedFactBytes, leaseCapacity.factBytes),
+      operation: 'promote ready code graph snapshot',
+      // One pointer upsert, one exact tombstone delete, every currently
+      // observed lease flag, and at most one exact displaced-leaf retirement.
+      // Non-leaf history remains routine maintenance because proving a whole
+      // descendant closure is not transaction-bounded.
+      rowCount: saturatingCapacityAdd(leaseCapacity.rows, 3),
+    },
+    maximumLeaseFactBytes: leaseCapacity.factBytes,
+    maximumLeaseRows: leaseCapacity.rows,
+  } satisfies SnapshotPromotionCapacityPlan;
+});
+
+const promoteSnapshot = Effect.fn('codeGraph.promoteSnapshot')(function* (
+  identity: RepositoryIdentity,
+  snapshotId: string,
+  capacity: SnapshotPromotionCapacityPlan,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* configureConnection(sql);
   return yield* sql.withTransaction(
     Effect.gen(function* () {
+      const observedLeaseCapacity = yield* snapshotPromotionLeaseCapacity(sql, snapshotId);
+      if (
+        observedLeaseCapacity.rows > capacity.maximumLeaseRows ||
+        observedLeaseCapacity.factBytes > capacity.maximumLeaseFactBytes
+      ) {
+        return yield* Effect.fail(new CodeGraphPromotionCapacityPlanChanged());
+      }
       const candidate = yield* sql<{
         readonly generation: number | null;
         readonly id: string;
@@ -11213,9 +11478,13 @@ const promoteSnapshot = Effect.fn('codeGraph.promoteSnapshot')(function* (
           new CodeGraphStoreError(`Ready snapshot ${snapshotId} was built by an incompatible extractor generation.`),
         );
       }
+      const active = yield* sql<{readonly snapshot_id: string}>`
+        SELECT snapshot_id FROM active_snapshots WHERE worktree_id = ${identity.worktreeId} LIMIT 1
+      `;
+      const displacedSnapshotId = active[0]?.snapshot_id;
       yield* sql`
         INSERT INTO active_snapshots (worktree_id, snapshot_id, activated_at)
-        VALUES (${identity.worktreeId}, ${snapshotId}, ${new Date().toISOString()})
+        VALUES (${identity.worktreeId}, ${snapshotId}, ${capacity.activatedAt})
         ON CONFLICT(worktree_id) DO UPDATE SET
           snapshot_id = excluded.snapshot_id,
           activated_at = excluded.activated_at
@@ -11232,7 +11501,31 @@ const promoteSnapshot = Effect.fn('codeGraph.promoteSnapshot')(function* (
         SET retire_when_inactive = 1
         WHERE snapshot_id = ${snapshotId}
       `;
-      return yield* markUnusedSnapshotsRetired(sql);
+      if (displacedSnapshotId === undefined || displacedSnapshotId === snapshotId) return 0;
+      const now = yield* Clock.currentTimeMillis;
+      yield* sql`
+        UPDATE snapshots AS candidate
+        SET state = 'retired'
+        WHERE candidate.id = ${displacedSnapshotId}
+          AND candidate.state = 'ready'
+          AND NOT EXISTS (
+            SELECT 1 FROM active_snapshots AS active
+            WHERE active.snapshot_id = candidate.id
+              AND NOT EXISTS (
+                SELECT 1 FROM removed_views AS removed
+                WHERE removed.worktree_id = active.worktree_id
+                  AND removed.expected_snapshot_id = active.snapshot_id
+              )
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM snapshot_leases AS lease
+            WHERE lease.snapshot_id = candidate.id AND lease.expires_at > ${now}
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM snapshots AS child WHERE child.base_snapshot_id = candidate.id
+          )
+      `;
+      return yield* lastStatementChangeCount(sql);
     }),
   );
 });

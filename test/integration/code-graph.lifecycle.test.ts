@@ -3096,6 +3096,80 @@ describe('native code graph lifecycle', () => {
     }).pipe(Effect.provide(ApplicationLayer)),
   );
 
+  effectIt.effect('reprotects the exact ready snapshot when a paused promotion resumes', () =>
+    Effect.gen(function* () {
+      const root = createManySourceRepository(8);
+      const home = join(root, '.threadnote-test-home');
+      const indexer = yield* CodeGraphIndexer;
+      const baseline = yield* indexer.index({cwd: root, threadnoteHome: home});
+      updateManySourceRepository(root, 8, 'promotionPaused');
+      const probesPerObservation = statSync(root).dev === statSync(tmpdir()).dev ? 1 : 2;
+      const firstProbes = new Map<string, number>();
+
+      const failure = yield* indexer
+        .index({
+          cwd: root,
+          diskCapacityAvailableBytes: (_target, boundary) =>
+            Effect.sync(() => {
+              firstProbes.set(boundary.operation, (firstProbes.get(boundary.operation) ?? 0) + 1);
+              return boundary.operation === 'promote ready code graph snapshot' ? 0 : Number.MAX_SAFE_INTEGER;
+            }),
+          incrementalOverlay: false,
+          threadnoteHome: home,
+        })
+        .pipe(Effect.flip);
+      expect(failure).toBeInstanceOf(CodeGraphDiskCapacityPressureError);
+      expect(firstProbes.get('promote ready code graph snapshot')).toBe(probesPerObservation * 2);
+
+      const databasePath = codeGraphDatabasePath(home, baseline);
+      const pausedDatabase = new Database(databasePath, {readonly: true});
+      const pausedRows = pausedDatabase
+        .query<{readonly id: string}, [string, string]>(
+          "SELECT id FROM snapshots WHERE worktree_id = ? AND state = 'ready' AND id <> ? ORDER BY id",
+        )
+        .all(baseline.identity.worktreeId, baseline.snapshot.id);
+      expect(pausedRows).toHaveLength(1);
+      const pausedId = pausedRows[0]!.id;
+      expect(
+        pausedDatabase
+          .query<{readonly snapshot_id: string}, [string]>(
+            'SELECT snapshot_id FROM active_snapshots WHERE worktree_id = ?',
+          )
+          .get(baseline.identity.worktreeId),
+      ).toEqual({snapshot_id: baseline.snapshot.id});
+      pausedDatabase.close();
+
+      const resumedProbes = new Map<string, number>();
+      const resumed = yield* indexer.index({
+        cwd: root,
+        diskCapacityAvailableBytes: (_target, boundary) =>
+          Effect.sync(() => {
+            resumedProbes.set(boundary.operation, (resumedProbes.get(boundary.operation) ?? 0) + 1);
+            return Number.MAX_SAFE_INTEGER;
+          }),
+        incrementalOverlay: false,
+        threadnoteHome: home,
+      });
+
+      expect(resumed.snapshot).toMatchObject({id: pausedId, state: 'ready'});
+      expect(Object.fromEntries(resumedProbes)).toEqual({
+        'promote ready code graph snapshot': probesPerObservation,
+      });
+      const resumedDatabase = new Database(databasePath, {readonly: true});
+      try {
+        expect(
+          resumedDatabase
+            .query<{readonly snapshot_id: string}, [string]>(
+              'SELECT snapshot_id FROM active_snapshots WHERE worktree_id = ?',
+            )
+            .get(baseline.identity.worktreeId),
+        ).toEqual({snapshot_id: pausedId});
+      } finally {
+        resumedDatabase.close();
+      }
+    }).pipe(Effect.provide(ApplicationLayer)),
+  );
+
   effectIt.effect('retains a resumable receipt prefix when fresh capacity observation is unavailable', () =>
     Effect.gen(function* () {
       const root = createManySourceRepository(130);

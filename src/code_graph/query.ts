@@ -2,7 +2,12 @@ import {Clock, Context, Crypto, Effect, FileSystem, Layer, Option, Path} from 'e
 import {CommandExecutor, runCommandEffect} from '../effect/command.js';
 import {withExclusiveFileLock} from '../effect/file_lock.js';
 import {SystemInfo} from '../effect/system.js';
-import {CodeGraphIndexer} from './indexer.js';
+import {
+  codeGraphDirectPersistentCapacityProtector,
+  CodeGraphIndexer,
+  type DirectPersistentCapacityProtection,
+} from './indexer.js';
+import type {CodeGraphDirectPersistentCapacityBoundary} from './disk_capacity.js';
 import {CodeGraphMaintenanceCoordinator} from './maintenance_coordinator.js';
 import {worktreeOverlayState} from './inventory.js';
 import {CodeGraphLanguagePackRegistry} from './languages/registry.js';
@@ -83,6 +88,11 @@ export interface CodeGraphSharedReadyAttachInterlock {
   readonly afterOptimisticCandidate?: () => Effect.Effect<void>;
   /** @internal Deterministic barrier after promotion and before final identity validation. */
   readonly afterPromotion?: () => Effect.Effect<void>;
+  /** @internal Deterministic fresh-capacity probe used by promotion fault tests. */
+  readonly diskCapacityAvailableBytes?: (
+    path: string,
+    boundary: CodeGraphDirectPersistentCapacityBoundary,
+  ) => Effect.Effect<number | undefined, unknown>;
 }
 
 const CODE_GRAPH_STATUS_OBSERVATION = Symbol('threadnote/codeGraph/statusObservation');
@@ -309,7 +319,24 @@ export class CodeGraphQueryService extends Context.Service<
               if (!sameRepositoryIdentity(promotionIdentity.value, identity)) {
                 return yield* statusForIdentity(threadnoteHome, promotionIdentity.value);
               }
+              const capacityProtection: DirectPersistentCapacityProtection = {
+                availableDiskBytes:
+                  interlock?.diskCapacityAvailableBytes ?? ((target: string) => system.availableDiskBytes(target)),
+                crypto,
+                maintenance,
+                path,
+                system,
+                temporaryDirectory: system.tempDirectory,
+                walAutoCheckpointPages: 1_000,
+              };
               yield* store.promote(layout.databasePath, promotionIdentity.value, lockedCandidate.id, {
+                persistentCapacityProtector: codeGraphDirectPersistentCapacityProtector({
+                  capacityProtection,
+                  fs,
+                  identity: promotionIdentity.value,
+                  layout,
+                  threadnoteHome,
+                }),
                 waitTimeoutMilliseconds: 0,
               });
               yield* interlock?.afterPromotion?.() ?? Effect.void;

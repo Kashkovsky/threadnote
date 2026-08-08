@@ -202,6 +202,11 @@ describe('codeGraphProgressFromBuildStatus', () => {
       input: {counters: {completed: 3, reused: 1, total: 9}, phase: 'materializing' as const},
       expected: {completed: 3, phase: 'materializing', reused: 1, total: 9, unit: 'files'},
     },
+    {
+      description: 'disk-capacity waiting',
+      input: {counters: {}, phase: 'waiting' as const, subphase: 'disk-capacity'},
+      expected: {phase: 'waiting', reason: 'disk-capacity'},
+    },
   ] as const;
 
   for (const testCase of cases) {
@@ -221,7 +226,13 @@ describe('codeGraphProgressFromBuildStatus', () => {
       'activating',
       'embedding',
     ] as const;
-    const allowedWaiting = new Set(['database-writer', 'repository-lock', 'request-lock', 'snapshot-build']);
+    const allowedWaiting = new Set([
+      'database-writer',
+      'disk-capacity',
+      'repository-lock',
+      'request-lock',
+      'snapshot-build',
+    ]);
     fc.assert(
       fc.property(
         fc.constantFrom(...phases),

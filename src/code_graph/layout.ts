@@ -21,6 +21,16 @@ export function codeGraphMaintenanceIntentPath(path: Path.Path, threadnoteHome: 
   return path.join(threadnoteHome, 'locks', 'indexes', 'code-graph', 'maintenance.intent');
 }
 
+/** Home-global receipts coordinate capacity before any checkout writer is acquired. */
+export function codeGraphDiskReservationRoot(path: Path.Path, threadnoteHome: string): string {
+  return path.join(threadnoteHome, 'locks', 'indexes', 'code-graph', 'disk-capacity-reservations');
+}
+
+/** The ledger lock is a sibling so scanning the receipt directory has a closed grammar. */
+export function codeGraphDiskReservationLockPath(path: Path.Path, threadnoteHome: string): string {
+  return path.join(threadnoteHome, 'locks', 'indexes', 'code-graph', 'disk-capacity-reservations.lock');
+}
+
 export function codeGraphRepositoriesRoot(path: Path.Path, threadnoteHome: string): string {
   return path.join(threadnoteHome, 'indexes', 'code-graph', 'repositories');
 }

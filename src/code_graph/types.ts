@@ -306,7 +306,7 @@ export type CodeGraphProgress =
     }
   | {
       readonly phase: 'waiting';
-      readonly reason?: 'database-writer' | 'repository-lock' | 'request-lock' | 'snapshot-build';
+      readonly reason?: 'database-writer' | 'disk-capacity' | 'repository-lock' | 'request-lock' | 'snapshot-build';
     }
   | {
       readonly completed: number;

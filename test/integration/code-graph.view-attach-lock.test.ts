@@ -3,7 +3,9 @@ import {mkdtempSync, rmSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {Deferred, Effect, Fiber, FileSystem, Path} from 'effect';
+import {it as effectIt} from '@effect/vitest';
 import {afterEach, describe, expect, it} from 'vitest';
+import {CodeGraphDiskCapacityPressureError} from '../../src/code_graph/disk_capacity.js';
 import {codeGraphLayout} from '../../src/code_graph/layout.js';
 import {CodeGraphQueryService} from '../../src/code_graph/query.js';
 import {resolveRepositoryIdentity} from '../../src/code_graph/repository.js';
@@ -11,6 +13,7 @@ import {CodeGraphStore} from '../../src/code_graph/store.js';
 import type {CodeGraphSnapshot, RepositoryIdentity} from '../../src/code_graph/types.js';
 import {CommandExecutor} from '../../src/effect/command.js';
 import {withExclusiveFileLock} from '../../src/effect/file_lock.js';
+import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {runEffect} from '../helpers/effect-runtime.js';
 
 const temporaryRoots: string[] = [];
@@ -20,6 +23,45 @@ afterEach(() => {
 });
 
 describe('shared ready view attachment locking', () => {
+  effectIt.effect('protects shared-ready promotion and retries the exact candidate after capacity returns', () =>
+    Effect.gen(function* () {
+      const root = temporaryRepository();
+      const repositoryRoot = join(root, 'repository');
+      const threadnoteHome = join(root, 'threadnote-home');
+      const path = yield* Path.Path;
+      const graph = yield* CodeGraphQueryService;
+      const store = yield* CodeGraphStore;
+      const identity = yield* resolveRepositoryIdentity(repositoryRoot);
+      const layout = codeGraphLayout(path, threadnoteHome, identity.checkoutId, identity.worktreeId);
+      const snapshot = readySnapshot(identity);
+      yield* store.activate(layout.databasePath, identity, snapshot, [], [], []);
+      const before = yield* graph.statusForIdentity(threadnoteHome, identity);
+      let promotionProbes = 0;
+
+      const paused = yield* graph
+        .attachSharedReadySnapshot(threadnoteHome, identity, before, {
+          diskCapacityAvailableBytes: (_target, boundary) =>
+            Effect.sync(() => {
+              if (boundary.operation === 'promote ready code graph snapshot') promotionProbes += 1;
+              return 0;
+            }),
+        })
+        .pipe(Effect.flip);
+      const pointerWhilePaused = yield* store.readySnapshot(layout.databasePath, identity.worktreeId);
+
+      expect(paused).toBeInstanceOf(CodeGraphDiskCapacityPressureError);
+      expect(promotionProbes).toBeGreaterThan(0);
+      expect(pointerWhilePaused).toBeUndefined();
+
+      const attached = yield* graph.attachSharedReadySnapshot(threadnoteHome, identity, before, {
+        diskCapacityAvailableBytes: () => Effect.succeed(Number.MAX_SAFE_INTEGER),
+      });
+      const pointer = yield* store.readySnapshot(layout.databasePath, identity.worktreeId);
+      expect(attached.readySnapshot?.id).toBe(snapshot.id);
+      expect(pointer?.id).toBe(snapshot.id);
+    }).pipe(Effect.provide(ApplicationLayer)),
+  );
+
   it('defers without mutation when the target builder is active, then attaches after release', async () => {
     const root = temporaryRepository();
     const repositoryRoot = join(root, 'repository');

@@ -26,7 +26,13 @@ import {
   packDerivationIdentity,
   type CodeGraphLanguagePackRegistryShape,
 } from './languages/registry.js';
-import {codeGraphLayout, codeGraphRequestBuildLockPath, codeGraphSnapshotBuildLockPath} from './layout.js';
+import {
+  codeGraphDiskReservationLockPath,
+  codeGraphDiskReservationRoot,
+  codeGraphLayout,
+  codeGraphRequestBuildLockPath,
+  codeGraphSnapshotBuildLockPath,
+} from './layout.js';
 import {CodeGraphMaintenanceCoordinator, type CodeGraphMaintenanceCoordinatorShape} from './maintenance_coordinator.js';
 import {codeGraphMaintenanceIntentActive, withCodeGraphMaintenanceRegistration} from './maintenance_gate.js';
 import {resolveAndRecordCodeGraphLocalAssociation} from './local_provenance.js';
@@ -35,17 +41,17 @@ import {repositoryIdentityMatchesExpectation, resolveRepositoryIdentity} from '.
 import {
   codeGraphDirectPersistentCapacityDemand,
   codeGraphDiskCapacityFailure,
-  evaluateCodeGraphDiskCapacity,
   isCodeGraphCapacityPause,
   type CodeGraphDirectPersistentCapacityBoundary,
 } from './disk_capacity.js';
+import {codeGraphDiskReservationFilesystemKey, withCodeGraphDiskReservation} from './disk_reservation.js';
 import {
   CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION,
   CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION,
   CodeGraphStore,
   materializedShardDerivationIdentity,
   type CodeGraphRetiredSnapshotCleanupProgress,
-  type CodeGraphDirectPersistentCapacityGuard,
+  type CodeGraphDirectPersistentCapacityProtector,
   type CodeGraphReusableCleanBase,
   type CodeGraphReusableReexport,
   type CodeGraphReusableReexportSeed,
@@ -119,7 +125,7 @@ export interface CodeGraphIndexOptions extends CodeGraphInventoryOptions {
   readonly threadnoteHome: string;
 }
 
-interface DirectPersistentCapacityProtection {
+export interface DirectPersistentCapacityProtection {
   readonly availableDiskBytes: (
     path: string,
     boundary: CodeGraphDirectPersistentCapacityBoundary,
@@ -322,7 +328,18 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                             new Set(),
                             retiredSnapshotCleanupReporter(options.onProgress),
                           );
-                          yield* store.promote(layout.databasePath, identity, completedByOwner.id);
+                          yield* promoteReadySnapshotWithCapacity(
+                            {
+                              capacityProtection,
+                              fs,
+                              identity,
+                              layout,
+                              onProgress: options.onProgress,
+                              store,
+                              threadnoteHome: options.threadnoteHome,
+                            },
+                            completedByOwner.id,
+                          );
                           return yield* reuseReadySnapshot({
                             embedding,
                             ensureVectors,
@@ -422,7 +439,18 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                       );
                       if (reusableReady) {
                         if (existing?.id !== reusableReady.id) {
-                          yield* store.promote(layout.databasePath, identity, reusableReady.id);
+                          yield* promoteReadySnapshotWithCapacity(
+                            {
+                              capacityProtection,
+                              fs,
+                              identity,
+                              layout,
+                              onProgress: options.onProgress,
+                              store,
+                              threadnoteHome: options.threadnoteHome,
+                            },
+                            reusableReady.id,
+                          );
                         }
                         return yield* reuseReadySnapshot({
                           embedding,
@@ -1211,7 +1239,7 @@ const buildOwnedCleanSnapshot = Effect.fn('codeGraph.buildOwnedCleanSnapshot')(f
         );
         if (ready) {
           if (input.existing?.id !== ready.id) {
-            yield* input.store.promote(input.layout.databasePath, input.identity, ready.id);
+            yield* promoteReadySnapshotWithCapacity(input, ready.id);
           }
           return yield* reuseReadySnapshot({
             embedding: input.embedding,
@@ -1240,7 +1268,7 @@ const buildOwnedCleanSnapshot = Effect.fn('codeGraph.buildOwnedCleanSnapshot')(f
         });
         if (commitReady) {
           if (input.existing?.id !== commitReady.id) {
-            yield* input.store.promote(input.layout.databasePath, input.identity, commitReady.id);
+            yield* promoteReadySnapshotWithCapacity(input, commitReady.id);
           }
           return yield* reuseReadySnapshot({
             embedding: input.embedding,
@@ -1318,6 +1346,7 @@ const buildOwnedCleanSnapshot = Effect.fn('codeGraph.buildOwnedCleanSnapshot')(f
 
 const attemptReusableCleanSnapshot = Effect.fn('codeGraph.attemptReusableCleanSnapshot')(function* (
   input: {
+    readonly capacityProtection: DirectPersistentCapacityProtection;
     readonly embedding: CodeGraphEmbeddingIndexShape;
     readonly ensureVectors: boolean;
     readonly existing: CodeGraphSnapshot | undefined;
@@ -1395,7 +1424,7 @@ const attemptReusableCleanSnapshot = Effect.fn('codeGraph.attemptReusableCleanSn
             candidate.snapshot.id,
           );
           yield* verifyIndexInput(input.identity, input.inventory, true);
-          yield* input.store.promote(input.layout.databasePath, input.identity, alias.id);
+          yield* promoteReadySnapshotWithCapacity(input, alias.id);
           yield* verifyIndexInput(input.identity, input.inventory, true);
           return Option.some<CodeGraphIndexSummary>(
             yield* reuseReadySnapshot({
@@ -1721,6 +1750,76 @@ const ensureCommittedBase = Effect.fn('codeGraph.ensureCommittedBase')(function*
   } satisfies CommittedBaseResult;
 });
 
+export interface DirectPersistentCapacityContext {
+  readonly capacityProtection?: DirectPersistentCapacityProtection;
+  readonly fs: FileSystem.FileSystem;
+  readonly identity: RepositoryIdentity;
+  readonly layout: CodeGraphLayout;
+  readonly onProgress?: (progress: CodeGraphProgress) => Effect.Effect<void, unknown>;
+  readonly threadnoteHome: string;
+}
+
+export function codeGraphDirectPersistentCapacityProtector(
+  input: DirectPersistentCapacityContext,
+): CodeGraphDirectPersistentCapacityProtector {
+  return (boundary, transaction) =>
+    input.capacityProtection
+      ? withCodeGraphDiskReservation(
+          {
+            boundary,
+            ledgerLockPath: codeGraphDiskReservationLockPath(input.capacityProtection.path, input.threadnoteHome),
+            ledgerRoot: codeGraphDiskReservationRoot(input.capacityProtection.path, input.threadnoteHome),
+            maintenance: input.capacityProtection.maintenance
+              .tick({
+                checkoutId: input.layout.checkoutId,
+                databasePath: input.layout.databasePath,
+                threadnoteHome: input.threadnoteHome,
+                writerLockPath: input.layout.databaseWriteLockPath,
+              })
+              .pipe(
+                Effect.catch(error => (['busy', 'no-space'].includes(error.code) ? Effect.void : Effect.fail(error))),
+              ),
+            observe: observeDirectPersistentCapacity({
+              boundary,
+              fs: input.fs,
+              identity: input.identity,
+              layout: input.layout,
+              protection: input.capacityProtection,
+              threadnoteHome: input.threadnoteHome,
+            }),
+            onDiagnostic: diagnostic => Effect.logWarning(diagnostic),
+            onWaiting: (input.onProgress?.({phase: 'waiting', reason: 'disk-capacity'}) ?? Effect.void).pipe(
+              Effect.catch(() => Effect.void),
+            ),
+          },
+          transaction,
+        ).pipe(
+          Effect.provideService(Crypto.Crypto, input.capacityProtection.crypto),
+          Effect.provideService(FileSystem.FileSystem, input.fs),
+          Effect.provideService(Path.Path, input.capacityProtection.path),
+          Effect.provideService(SystemInfo, input.capacityProtection.system),
+        )
+      : Effect.fail(
+          codeGraphDiskCapacityFailure(
+            {
+              calibrationIdentity: 'direct-persistent-capacity-unavailable',
+              reason: 'calibration-input-unknown',
+              state: 'unknown',
+            },
+            boundary.operation,
+          ),
+        );
+}
+
+function promoteReadySnapshotWithCapacity(
+  input: DirectPersistentCapacityContext & {readonly store: CodeGraphStoreShape},
+  snapshotId: string,
+) {
+  return input.store.promote(input.layout.databasePath, input.identity, snapshotId, {
+    persistentCapacityProtector: codeGraphDirectPersistentCapacityProtector(input),
+  });
+}
+
 const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (input: {
   readonly activatePointer: boolean;
   readonly building: CodeGraphSnapshot;
@@ -1748,31 +1847,7 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
 }) {
   const workspace = input.workspace ?? (yield* input.languagePacks.discoverWorkspace(input.inventory.files));
   const directPersistentMaterialization = input.persistentOwnerToken !== undefined;
-  const protectDirectPersistentWrite: CodeGraphDirectPersistentCapacityGuard = boundary =>
-    input.capacityProtection
-      ? guardDirectPersistentCapacity({
-          boundary,
-          fs: input.fs,
-          identity: input.identity,
-          layout: input.layout,
-          protection: input.capacityProtection,
-          threadnoteHome: input.threadnoteHome,
-        }).pipe(
-          Effect.provideService(Crypto.Crypto, input.capacityProtection.crypto),
-          Effect.provideService(FileSystem.FileSystem, input.fs),
-          Effect.provideService(Path.Path, input.capacityProtection.path),
-          Effect.provideService(SystemInfo, input.capacityProtection.system),
-        )
-      : Effect.fail(
-          codeGraphDiskCapacityFailure(
-            {
-              calibrationIdentity: 'direct-persistent-capacity-unavailable',
-              reason: 'calibration-input-unknown',
-              state: 'unknown',
-            },
-            boundary.operation,
-          ),
-        );
+  const protectDirectPersistentWrite = codeGraphDirectPersistentCapacityProtector(input);
   const persistentCapacityGuard = directPersistentMaterialization ? protectDirectPersistentWrite : undefined;
   const attributeFacts = createCachedCodeGraphFactsAttributor(input.inventory.files, workspace);
   const shardDerivationIdentity = materializedShardDerivationIdentity(
@@ -2303,17 +2378,20 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
     }) ?? Effect.void;
   }
   yield* input.onProgress?.({phase: 'resolving', subphase: 'references'}) ?? Effect.void;
-  const resolution = yield* input.store.resolveStagedReferences(input.layout.databasePath, activity =>
-    (
-      input.onProgress?.({
-        activity,
-        phase: 'resolving',
-        subphase: 'references',
-      }) ?? Effect.void
-    ).pipe(
-      Effect.catch(() => Effect.void),
-      Effect.andThen(Effect.yieldNow),
-    ),
+  const resolution = yield* input.store.resolveStagedReferences(
+    input.layout.databasePath,
+    activity =>
+      (
+        input.onProgress?.({
+          activity,
+          phase: 'resolving',
+          subphase: 'references',
+        }) ?? Effect.void
+      ).pipe(
+        Effect.catch(() => Effect.void),
+        Effect.andThen(Effect.yieldNow),
+      ),
+    persistentCapacityGuard,
   );
   const stagedCounts = yield* input.store.stagedFactCounts(input.layout.databasePath);
   yield* input.onProgress?.({
@@ -2379,7 +2457,9 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
       // the worktree to change. Revalidate on both sides of pointer promotion so a
       // mutation observed in this window triggers the bounded retry.
       yield* verifyIndexInput(input.identity, input.inventory, input.activatePointer);
-      yield* input.store.promote(input.layout.databasePath, input.identity, activated.id);
+      yield* input.store.promote(input.layout.databasePath, input.identity, activated.id, {
+        persistentCapacityProtector: protectDirectPersistentWrite,
+      });
       yield* verifyIndexInput(input.identity, input.inventory, input.activatePointer);
       if (Option.isSome(activationLease)) {
         yield* input.store.releaseSnapshotLease(input.layout.databasePath, activationLease.value);
@@ -3384,7 +3464,7 @@ function embeddingSymbolSource(store: CodeGraphStoreShape, databasePath: string,
   };
 }
 
-const guardDirectPersistentCapacity = Effect.fn('codeGraph.guardDirectPersistentCapacity')(function* (input: {
+const observeDirectPersistentCapacity = Effect.fn('codeGraph.observeDirectPersistentCapacity')(function* (input: {
   readonly boundary: CodeGraphDirectPersistentCapacityBoundary;
   readonly fs: FileSystem.FileSystem;
   readonly identity: RepositoryIdentity;
@@ -3392,87 +3472,67 @@ const guardDirectPersistentCapacity = Effect.fn('codeGraph.guardDirectPersistent
   readonly protection: DirectPersistentCapacityProtection;
   readonly threadnoteHome: string;
 }) {
-  const observe = Effect.gen(function* () {
-    const [durableFilesystem, temporaryFilesystem] = yield* Effect.all(
-      [
-        input.fs.stat(input.layout.repositoryRoot).pipe(
-          Effect.map(info => info.dev),
-          Effect.option,
-        ),
-        input.fs.stat(input.protection.temporaryDirectory).pipe(
-          Effect.map(info => info.dev),
-          Effect.option,
-        ),
-      ] as const,
-      {concurrency: 2},
-    );
-    const filesystemsShared =
-      Option.isSome(durableFilesystem) && Option.isSome(temporaryFilesystem)
-        ? durableFilesystem.value === temporaryFilesystem.value
-        : undefined;
-    const probe = (target: string) =>
-      input.protection.availableDiskBytes(target, input.boundary).pipe(Effect.catch(() => Effect.succeed(undefined)));
-    const availability =
-      filesystemsShared === undefined
-        ? Effect.succeed([undefined, undefined] as const)
-        : filesystemsShared
-          ? probe(input.layout.repositoryRoot).pipe(Effect.map(available => [available, available] as const))
-          : Effect.all([probe(input.layout.repositoryRoot), probe(input.protection.temporaryDirectory)] as const, {
-              concurrency: 2,
-            });
-    const [[durableAvailableBytes, temporaryAvailableBytes], storage] = yield* Effect.all(
-      [
-        availability,
-        inspectCodeGraphStorage(input.threadnoteHome, input.identity.checkoutId, {openWhileLocked: true}).pipe(
-          Effect.option,
-        ),
-      ] as const,
-      {concurrency: 2},
-    );
-    const pageStorage =
-      Option.isSome(storage) && storage.value.state === 'available' && storage.value.pageStorage.state === 'available'
-        ? storage.value.pageStorage
-        : undefined;
-    const demand = codeGraphDirectPersistentCapacityDemand({
-      finalFactBytes: input.boundary.finalFactBytes,
-      lexicalFormatVersion: CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION,
-      pageSize: pageStorage?.pageSize ?? 0,
-      rowCount: input.boundary.rowCount,
-      walAutoCheckpointPages: input.protection.walAutoCheckpointPages,
-    });
-    return evaluateCodeGraphDiskCapacity({
-      demand,
-      durableAvailableBytes,
-      filesystemsShared,
-      freelistBytes: pageStorage?.reclaimableBytes ?? 0,
-      // E6a makes other-process reservations an explicit, fail-closed input to
-      // the pure model. Publishing the cross-process ledger is a separate
-      // follow-up; zero is not claimed as enforcement telemetry here.
-      reservedDurableBytes: 0,
-      reservedTemporaryBytes: 0,
-      temporaryAvailableBytes,
-    });
+  const [durableFilesystem, temporaryFilesystem] = yield* Effect.all(
+    [
+      input.fs.stat(input.layout.repositoryRoot).pipe(
+        Effect.map(info => info.dev),
+        Effect.option,
+      ),
+      input.fs.stat(input.protection.temporaryDirectory).pipe(
+        Effect.map(info => info.dev),
+        Effect.option,
+      ),
+    ] as const,
+    {concurrency: 2},
+  );
+  const filesystemsShared =
+    Option.isSome(durableFilesystem) && Option.isSome(temporaryFilesystem)
+      ? durableFilesystem.value === temporaryFilesystem.value
+      : undefined;
+  const probe = (target: string) =>
+    input.protection.availableDiskBytes(target, input.boundary).pipe(Effect.catch(() => Effect.succeed(undefined)));
+  const availability =
+    filesystemsShared === undefined
+      ? Effect.succeed([undefined, undefined] as const)
+      : filesystemsShared
+        ? probe(input.layout.repositoryRoot).pipe(Effect.map(available => [available, available] as const))
+        : Effect.all([probe(input.layout.repositoryRoot), probe(input.protection.temporaryDirectory)] as const, {
+            concurrency: 2,
+          });
+  const [[durableAvailableBytes, temporaryAvailableBytes], storage] = yield* Effect.all(
+    [
+      availability,
+      inspectCodeGraphStorage(input.threadnoteHome, input.identity.checkoutId, {openWhileLocked: true}).pipe(
+        Effect.option,
+      ),
+    ] as const,
+    {concurrency: 2},
+  );
+  const pageStorage =
+    Option.isSome(storage) && storage.value.state === 'available' && storage.value.pageStorage.state === 'available'
+      ? storage.value.pageStorage
+      : undefined;
+  const demand = codeGraphDirectPersistentCapacityDemand({
+    finalFactBytes: input.boundary.finalFactBytes,
+    lexicalFormatVersion: CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION,
+    pageSize: pageStorage?.pageSize ?? 0,
+    rowCount: input.boundary.rowCount,
+    walAutoCheckpointPages: input.protection.walAutoCheckpointPages,
   });
-
-  let decision = yield* observe;
-  if (decision.state === 'healthy') return;
-  if (decision.state === 'unknown') {
-    return yield* Effect.fail(codeGraphDiskCapacityFailure(decision, input.boundary.operation));
-  }
-  // Routine maintenance owns a zero-wait checkout writer gate and reclaims at
-  // most one existing page. Never VACUUM or loop while a foreground build is
-  // under pressure; one fresh re-observation decides this boundary.
-  yield* input.protection.maintenance
-    .tick({
-      checkoutId: input.layout.checkoutId,
-      databasePath: input.layout.databasePath,
-      threadnoteHome: input.threadnoteHome,
-      writerLockPath: input.layout.databaseWriteLockPath,
-    })
-    .pipe(Effect.catch(error => (['busy', 'no-space'].includes(error.code) ? Effect.void : Effect.fail(error))));
-  decision = yield* observe;
-  if (decision.state === 'healthy') return;
-  return yield* Effect.fail(codeGraphDiskCapacityFailure(decision, input.boundary.operation));
+  return {
+    demand,
+    durableAvailableBytes,
+    durableFilesystemKey: Option.isSome(durableFilesystem)
+      ? (codeGraphDiskReservationFilesystemKey(input.protection.system.platform, durableFilesystem.value) ??
+        'durable-filesystem-unknown')
+      : 'durable-filesystem-unknown',
+    freelistBytes: pageStorage?.reclaimableBytes ?? 0,
+    temporaryAvailableBytes,
+    temporaryFilesystemKey: Option.isSome(temporaryFilesystem)
+      ? (codeGraphDiskReservationFilesystemKey(input.protection.system.platform, temporaryFilesystem.value) ??
+        'temporary-filesystem-unknown')
+      : 'temporary-filesystem-unknown',
+  };
 });
 
 function messageOf(cause: unknown): string {
