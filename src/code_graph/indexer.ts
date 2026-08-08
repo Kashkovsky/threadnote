@@ -15,6 +15,14 @@ import {
   type BoundedCodeGraphFact,
 } from './fact_budget.js';
 import {
+  assessProjectClosureSeeds,
+  planProjectIncrementalClosure,
+  PROJECT_INCREMENTAL_CLOSURE_MAX_CACHED_FACT_BYTES,
+  PROJECT_INCREMENTAL_CLOSURE_MAX_FILES,
+  PROJECT_INCREMENTAL_CLOSURE_MAX_SOURCE_BYTES,
+  selectProjectIncrementalClosure,
+} from './incremental_closure.js';
+import {
   inventoryRepository,
   worktreeOverlayState,
   type CodeGraphContentBatchContext,
@@ -153,9 +161,10 @@ type IncrementalOverlayAssessment =
   | {
       readonly facts: readonly CodeGraphFileFacts[];
       readonly files: readonly CodeGraphInventoryFile[];
+      readonly closureProjects?: number;
       readonly mode: 'eligible';
       readonly deletedPaths?: readonly string[];
-      readonly resolutionClosure?: 'changed' | 'full';
+      readonly resolutionClosure?: 'changed' | 'full' | 'project';
       readonly reuse: 'persisted-base' | 'staged-base';
     }
   | {
@@ -168,9 +177,20 @@ type IncrementalOverlayPreassessment =
       readonly committedWorkspace: CodeGraphWorkspace;
       readonly facts: readonly CodeGraphFileFacts[];
       readonly files: readonly CodeGraphInventoryFile[];
+      readonly closureProjects?: number;
       readonly mode: 'compatible';
       readonly deletedPaths?: readonly string[];
-      readonly resolutionClosure?: 'changed' | 'full';
+      readonly resolutionClosure?: 'changed' | 'full' | 'project';
+    }
+  | {
+      readonly mode: 'fallback';
+      readonly reason: CodeGraphOverlayFallbackReason;
+    };
+
+type ReusableCleanSnapshotAttempt =
+  | {
+      readonly mode: 'complete';
+      readonly summary: CodeGraphIndexSummary;
     }
   | {
       readonly mode: 'fallback';
@@ -1232,6 +1252,7 @@ const buildOwnedCleanSnapshot = Effect.fn('codeGraph.buildOwnedCleanSnapshot')(f
         ),
     },
     Effect.gen(function* () {
+      let cleanFallbackAssessment: IncrementalOverlayAssessment | undefined;
       if (!input.force) {
         const ready = yield* input.store.currentLexicalReadySnapshotById(
           input.layout.databasePath,
@@ -1287,7 +1308,10 @@ const buildOwnedCleanSnapshot = Effect.fn('codeGraph.buildOwnedCleanSnapshot')(f
         }
         const workspace = yield* input.languagePacks.discoverWorkspace(input.inventory.files);
         const reused = yield* attemptReusableCleanSnapshot(input, workspace);
-        if (Option.isSome(reused)) return reused.value;
+        if (Option.isSome(reused)) {
+          if (reused.value.mode === 'complete') return reused.value.summary;
+          cleanFallbackAssessment = {mode: 'fallback', reason: reused.value.reason};
+        }
       }
       const resumed = input.force
         ? yield* input.store.resumableForcedBuild(input.layout.databasePath, input.logicalSnapshotId)
@@ -1322,6 +1346,7 @@ const buildOwnedCleanSnapshot = Effect.fn('codeGraph.buildOwnedCleanSnapshot')(f
         force: input.force,
         fs: input.fs,
         identity: input.identity,
+        incrementalAssessment: cleanFallbackAssessment,
         inventory: input.inventory,
         languagePacks: input.languagePacks,
         layout: input.layout,
@@ -1365,7 +1390,7 @@ const attemptReusableCleanSnapshot = Effect.fn('codeGraph.attemptReusableCleanSn
   workspace: CodeGraphWorkspace,
 ) {
   if (!input.store.reusableCleanBase || !input.store.activateCleanSnapshotAlias) {
-    return Option.none<CodeGraphIndexSummary>();
+    return Option.none<ReusableCleanSnapshotAttempt>();
   }
   const extractorSet = extractorSetIdentity(input.inventory.files, input.languagePacks);
   const candidate = yield* input.store.reusableCleanBase(
@@ -1376,15 +1401,16 @@ const attemptReusableCleanSnapshot = Effect.fn('codeGraph.attemptReusableCleanSn
     reusableBaseFileSetFingerprint(input.inventory.files),
     graphContentIdentity(extractorSet, input.inventory.files),
   );
-  if (!candidate || candidate.snapshot.id === input.logicalSnapshotId) return Option.none<CodeGraphIndexSummary>();
+  if (!candidate || candidate.snapshot.id === input.logicalSnapshotId)
+    return Option.none<ReusableCleanSnapshotAttempt>();
   const baseByPath = new Map(candidate.files.map(file => [file.path, file]));
   if (input.inventory.files.some(file => file.source !== 'commit')) {
-    return Option.none<CodeGraphIndexSummary>();
+    return Option.none<ReusableCleanSnapshotAttempt>();
   }
   const lease = yield* input.store
     .acquireSnapshotLease(input.layout.databasePath, candidate.snapshot.id, CODE_GRAPH_ACTIVATION_LEASE_MILLISECONDS)
     .pipe(Effect.option);
-  if (Option.isNone(lease)) return Option.none<CodeGraphIndexSummary>();
+  if (Option.isNone(lease)) return Option.none<ReusableCleanSnapshotAttempt>();
   return yield* Effect.acquireUseRelease(
     Effect.succeed(lease.value),
     () =>
@@ -1426,8 +1452,9 @@ const attemptReusableCleanSnapshot = Effect.fn('codeGraph.attemptReusableCleanSn
           yield* verifyIndexInput(input.identity, input.inventory, true);
           yield* promoteReadySnapshotWithCapacity(input, alias.id);
           yield* verifyIndexInput(input.identity, input.inventory, true);
-          return Option.some<CodeGraphIndexSummary>(
-            yield* reuseReadySnapshot({
+          return Option.some<ReusableCleanSnapshotAttempt>({
+            mode: 'complete',
+            summary: yield* reuseReadySnapshot({
               embedding: input.embedding,
               ensureVectors: input.ensureVectors,
               identity: input.identity,
@@ -1441,7 +1468,7 @@ const attemptReusableCleanSnapshot = Effect.fn('codeGraph.attemptReusableCleanSn
               threadnoteHome: input.threadnoteHome,
               totalFiles: input.inventory.files.length,
             }),
-          );
+          });
         }
         const assessmentInput = {
           candidate,
@@ -1454,11 +1481,10 @@ const attemptReusableCleanSnapshot = Effect.fn('codeGraph.attemptReusableCleanSn
         const boundedAssessment = sameFileSet
           ? yield* assessReusableCleanBaseCompatibility(assessmentInput, workspace, modifiedFiles)
           : ({mode: 'fallback', reason: 'file-set-changed'} as const);
-        const preassessment =
-          boundedAssessment.mode === 'compatible'
-            ? boundedAssessment
-            : yield* assessReusableCleanBaseFullClosure(assessmentInput, workspace, deletedPaths);
-        if (preassessment.mode === 'fallback') return Option.none<CodeGraphIndexSummary>();
+        if (boundedAssessment.mode === 'fallback') {
+          return Option.some<ReusableCleanSnapshotAttempt>(boundedAssessment);
+        }
+        const preassessment = boundedAssessment;
         const committedBase: CommittedBaseResult = {
           diagnostics: [],
           leaseToken: Option.none(),
@@ -1493,7 +1519,9 @@ const attemptReusableCleanSnapshot = Effect.fn('codeGraph.attemptReusableCleanSn
           workspace,
           preassessment,
         );
-        if (incrementalAssessment.mode === 'fallback') return Option.none<CodeGraphIndexSummary>();
+        if (incrementalAssessment.mode === 'fallback') {
+          return Option.some<ReusableCleanSnapshotAttempt>(incrementalAssessment);
+        }
         yield* input.onProgress?.({
           completed: 0,
           phase: 'materializing',
@@ -1511,7 +1539,9 @@ const attemptReusableCleanSnapshot = Effect.fn('codeGraph.attemptReusableCleanSn
             resolutionClosure: incrementalAssessment.resolutionClosure,
           },
         );
-        if (!prepared) return Option.none<CodeGraphIndexSummary>();
+        if (!prepared) {
+          return Option.some<ReusableCleanSnapshotAttempt>({mode: 'fallback', reason: 'staging-identity-mismatch'});
+        }
         yield* input.store.markBuilding(input.layout.databasePath, input.identity, building);
         const summary = yield* buildAndActivate({
           activatePointer: true,
@@ -1543,7 +1573,7 @@ const attemptReusableCleanSnapshot = Effect.fn('codeGraph.attemptReusableCleanSn
               .pipe(Effect.andThen(Effect.fail(cause))),
           ),
         );
-        return Option.some<CodeGraphIndexSummary>(summary);
+        return Option.some<ReusableCleanSnapshotAttempt>({mode: 'complete', summary});
       }),
     token => input.store.releaseSnapshotLease(input.layout.databasePath, token).pipe(Effect.catch(() => Effect.void)),
   );
@@ -1608,11 +1638,8 @@ const attemptReusableDirtyBase = Effect.fn('codeGraph.attemptReusableDirtyBase')
   const boundedAssessment = sameFileSet
     ? yield* assessReusableCleanBaseCompatibility(assessmentInput, workspace, modifiedFiles)
     : ({mode: 'fallback', reason: 'file-set-changed'} as const);
-  const preassessment =
-    boundedAssessment.mode === 'compatible'
-      ? boundedAssessment
-      : yield* assessReusableCleanBaseFullClosure(assessmentInput, workspace, deletedPaths);
-  if (preassessment.mode === 'fallback') return Option.none();
+  if (boundedAssessment.mode === 'fallback') return Option.none();
+  const preassessment = boundedAssessment;
   return Option.some({
     committedBase: {
       diagnostics: [
@@ -2540,6 +2567,16 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
     durationMs: (yield* Clock.currentTimeMillis) - input.startedAt,
     identity: input.identity,
     materialization: {
+      ...(incrementalApplied && incrementalAssessment?.mode === 'eligible'
+        ? {
+            ...(incrementalAssessment.closureProjects === undefined
+              ? {}
+              : {closureProjects: incrementalAssessment.closureProjects}),
+            ...(incrementalAssessment.resolutionClosure === undefined
+              ? {}
+              : {resolutionClosure: incrementalAssessment.resolutionClosure}),
+          }
+        : {}),
       ...(fallbackReason ? {fallbackReason} : {}),
       mode: incrementalApplied ? (input.inventory.dirty ? 'incremental-overlay' : 'incremental-clean') : 'full',
       stagedFiles: materializedFiles,
@@ -2604,17 +2641,34 @@ const assessIncrementalOverlay = Effect.fn('codeGraph.assessIncrementalOverlay')
   }
   let reusableFacts = preassessment.facts;
   if (reuse === 'persisted-base' && preassessment.resolutionClosure !== 'full') {
-    const seeds = reusableReexportSeeds(preassessment.facts);
+    const affectedPaths =
+      preassessment.resolutionClosure === 'project' ? new Set(preassessment.files.map(file => file.path)) : undefined;
+    const seeds = reusableReexportSeeds(preassessment.facts).filter(seed => !affectedPaths?.has(seed.path));
     if (seeds.length > 0) {
       const reexports = yield* input.store.reusableReexports(
         input.layout.databasePath,
         input.committedBase.snapshot.id,
         seeds,
+        {maxRows: 10_000},
       );
       if (reexports === undefined) {
         return {mode: 'fallback', reason: 'staging-unavailable'} satisfies IncrementalOverlayAssessment;
       }
-      reusableFacts = enrichPersistedTypeScriptReexports(preassessment.facts, reexports);
+      if (reexports.length > 10_000) {
+        return {mode: 'fallback', reason: 'reexport-closure-unbounded'} satisfies IncrementalOverlayAssessment;
+      }
+      if (preassessment.resolutionClosure === 'project') {
+        if (
+          reexports.some(reexport => affectedPaths!.has(reexport.sourcePath) || affectedPaths!.has(reexport.targetPath))
+        ) {
+          return {mode: 'fallback', reason: 'project-closure-incomplete'} satisfies IncrementalOverlayAssessment;
+        }
+      }
+      const enrichedFacts = enrichPersistedTypeScriptReexports(preassessment.facts, reexports);
+      if (!enrichedFacts) {
+        return {mode: 'fallback', reason: 'reexport-closure-unbounded'} satisfies IncrementalOverlayAssessment;
+      }
+      reusableFacts = enrichedFacts;
     }
   }
   const finalBatches = finalCodeGraphFactBatches(reusableFacts);
@@ -2622,6 +2676,7 @@ const assessIncrementalOverlay = Effect.fn('codeGraph.assessIncrementalOverlay')
     return {mode: 'fallback', reason: 'fact-budget-expanded'} satisfies IncrementalOverlayAssessment;
   }
   return {
+    closureProjects: preassessment.closureProjects,
     deletedPaths: preassessment.deletedPaths,
     facts: finalBatches.flatMap(batch => batch.map(value => value.facts)),
     files: preassessment.files,
@@ -2670,6 +2725,14 @@ const assessIncrementalOverlayCompatibility = Effect.fn('codeGraph.assessIncreme
     return {mode: 'fallback', reason: 'no-materialized-changes'} satisfies IncrementalOverlayPreassessment;
   }
   const committedFiles = modifiedFiles.map(file => committedByPath.get(file.path)!);
+  const changedDecodeBudget = yield* assessProjectClosureChangedDecodeBudget({
+    baseFiles: committedFiles,
+    currentFiles: modifiedFiles,
+    databasePath: input.layout.databasePath,
+    languagePacks: input.languagePacks,
+    store: input.store,
+  });
+  if (changedDecodeBudget.mode === 'fallback') return changedDecodeBudget;
   const [committedCache, effectiveCache] = yield* Effect.all(
     [
       loadCachedFacts(input.store, input.layout.databasePath, committedFiles, input.languagePacks),
@@ -2683,37 +2746,42 @@ const assessIncrementalOverlayCompatibility = Effect.fn('codeGraph.assessIncreme
   ) {
     return {mode: 'fallback', reason: 'cache-incomplete'} satisfies IncrementalOverlayPreassessment;
   }
-  const committedFacts = attributeInventoryFacts(
-    input.inventory.committedFiles,
-    committedWorkspace,
-    committedFiles.map(file => input.languagePacks.postprocessFile(file, committedCache.facts.get(file.path)!)),
+  const committedRawFacts = committedFiles.map(file =>
+    input.languagePacks.postprocessFile(file, committedCache.facts.get(file.path)!),
   );
-  const effectiveFacts = attributeInventoryFacts(
-    input.inventory.files,
-    workspace,
-    modifiedFiles.map(file => input.languagePacks.postprocessFile(file, effectiveCache.facts.get(file.path)!)),
+  const effectiveRawFacts = modifiedFiles.map(file =>
+    input.languagePacks.postprocessFile(file, effectiveCache.facts.get(file.path)!),
   );
-  if (hasDynamicAliases(committedFacts) || hasDynamicAliases(effectiveFacts)) {
-    return {mode: 'fallback', reason: 'dynamic-aliases'} satisfies IncrementalOverlayPreassessment;
-  }
+  const committedFacts = attributeInventoryFacts(input.inventory.committedFiles, committedWorkspace, committedRawFacts);
+  const effectiveFacts = attributeInventoryFacts(input.inventory.files, workspace, effectiveRawFacts);
   const committedFactsByPath = new Map(committedFacts.map(file => [file.path, file]));
-  if (
-    effectiveFacts.some(file => {
-      const committed = committedFactsByPath.get(file.path);
-      return !committed || !hasSameCodeGraphResolutionSurface(committed.symbols, file.symbols);
-    })
-  ) {
-    return {mode: 'fallback', reason: 'resolution-surface-changed'} satisfies IncrementalOverlayPreassessment;
+  const resolutionSurfaceChanged = effectiveFacts.some(file => {
+    const committed = committedFactsByPath.get(file.path);
+    return !committed || !hasSameCodeGraphResolutionSurface(committed.symbols, file.symbols);
+  });
+  const dynamicAliases = hasDynamicAliases(committedFacts) || hasDynamicAliases(effectiveFacts);
+  if (!dynamicAliases && !resolutionSurfaceChanged) {
+    if (finalCodeGraphFactBatches(effectiveFacts).length !== 1) {
+      return {mode: 'fallback', reason: 'fact-budget-expanded'} satisfies IncrementalOverlayPreassessment;
+    }
+    return {
+      committedWorkspace,
+      facts: effectiveFacts,
+      files: modifiedFiles,
+      mode: 'compatible',
+    } satisfies IncrementalOverlayPreassessment;
   }
-  if (finalCodeGraphFactBatches(effectiveFacts).length !== 1) {
-    return {mode: 'fallback', reason: 'fact-budget-expanded'} satisfies IncrementalOverlayPreassessment;
-  }
-  return {
-    committedWorkspace,
-    facts: effectiveFacts,
-    files: modifiedFiles,
-    mode: 'compatible',
-  } satisfies IncrementalOverlayPreassessment;
+  return yield* assessProjectIncrementalClosureCompatibility({
+    baseWorkspace: committedWorkspace,
+    changedBaseFacts: committedFacts,
+    changedCurrentFacts: effectiveFacts,
+    currentChangedFiles: modifiedFiles,
+    currentFiles: input.inventory.files,
+    currentWorkspace: workspace,
+    languagePacks: input.languagePacks,
+    layout: input.layout,
+    store: input.store,
+  });
 });
 
 const assessReusableCleanBaseCompatibility = Effect.fn('codeGraph.assessReusableCleanBaseCompatibility')(function* (
@@ -2738,6 +2806,14 @@ const assessReusableCleanBaseCompatibility = Effect.fn('codeGraph.assessReusable
   }
   const baseByPath = new Map(input.candidate.files.map(file => [file.path, file]));
   const baseFiles = modifiedFiles.map(file => baseByPath.get(file.path)!);
+  const changedDecodeBudget = yield* assessProjectClosureChangedDecodeBudget({
+    baseFiles,
+    currentFiles: modifiedFiles,
+    databasePath: input.layout.databasePath,
+    languagePacks: input.languagePacks,
+    store: input.store,
+  });
+  if (changedDecodeBudget.mode === 'fallback') return changedDecodeBudget;
   const [baseCache, currentCache] = yield* Effect.all(
     [
       loadCachedFacts(input.store, input.layout.databasePath, baseFiles, input.languagePacks),
@@ -2751,27 +2827,32 @@ const assessReusableCleanBaseCompatibility = Effect.fn('codeGraph.assessReusable
   ) {
     return {mode: 'fallback', reason: 'cache-incomplete'} satisfies IncrementalOverlayPreassessment;
   }
-  const baseFacts = attributeInventoryFacts(
-    input.candidate.files,
-    workspace,
-    baseFiles.map(file => input.languagePacks.postprocessFile(file, baseCache.facts.get(file.path)!)),
+  const baseRawFacts = baseFiles.map(file =>
+    input.languagePacks.postprocessFile(file, baseCache.facts.get(file.path)!),
   );
-  const currentFacts = attributeInventoryFacts(
-    input.inventory.files,
-    workspace,
-    modifiedFiles.map(file => input.languagePacks.postprocessFile(file, currentCache.facts.get(file.path)!)),
+  const currentRawFacts = modifiedFiles.map(file =>
+    input.languagePacks.postprocessFile(file, currentCache.facts.get(file.path)!),
   );
-  if (hasDynamicAliases(baseFacts) || hasDynamicAliases(currentFacts)) {
-    return {mode: 'fallback', reason: 'dynamic-aliases'} satisfies IncrementalOverlayPreassessment;
-  }
+  const baseFacts = attributeInventoryFacts(input.candidate.files, workspace, baseRawFacts);
+  const currentFacts = attributeInventoryFacts(input.inventory.files, workspace, currentRawFacts);
   const baseFactsByPath = new Map(baseFacts.map(file => [file.path, file]));
-  if (
-    currentFacts.some(file => {
-      const base = baseFactsByPath.get(file.path);
-      return !base || !hasSameCodeGraphResolutionSurface(base.symbols, file.symbols);
-    })
-  ) {
-    return {mode: 'fallback', reason: 'resolution-surface-changed'} satisfies IncrementalOverlayPreassessment;
+  const resolutionSurfaceChanged = currentFacts.some(file => {
+    const base = baseFactsByPath.get(file.path);
+    return !base || !hasSameCodeGraphResolutionSurface(base.symbols, file.symbols);
+  });
+  const dynamicAliases = hasDynamicAliases(baseFacts) || hasDynamicAliases(currentFacts);
+  if (dynamicAliases || resolutionSurfaceChanged) {
+    return yield* assessProjectIncrementalClosureCompatibility({
+      baseWorkspace: workspace,
+      changedBaseFacts: baseFacts,
+      changedCurrentFacts: currentFacts,
+      currentChangedFiles: modifiedFiles,
+      currentFiles: input.inventory.files,
+      currentWorkspace: workspace,
+      languagePacks: input.languagePacks,
+      layout: input.layout,
+      store: input.store,
+    });
   }
   if (finalCodeGraphFactBatches(currentFacts).length !== 1) {
     return {mode: 'fallback', reason: 'fact-budget-expanded'} satisfies IncrementalOverlayPreassessment;
@@ -2795,68 +2876,131 @@ const assessReusableCleanBaseCompatibility = Effect.fn('codeGraph.assessReusable
   } satisfies IncrementalOverlayPreassessment;
 });
 
-/**
- * File additions, deletions, renames, and exported-surface changes can affect
- * references anywhere in the graph. Reuse the persisted full anchor, but stage
- * and re-resolve the complete current inventory as a conservative bounded
- * closure instead of first materializing another full anchor.
- */
-const assessReusableCleanBaseFullClosure = Effect.fn('codeGraph.assessReusableCleanBaseFullClosure')(function* (
-  input: {
-    readonly candidate: CodeGraphReusableCleanBase;
-    readonly inventory: CodeGraphInventory;
-    readonly languagePacks: CodeGraphLanguagePackRegistryShape;
-    readonly layout: CodeGraphLayout;
-    readonly store: CodeGraphStoreShape;
-  },
-  workspace: CodeGraphWorkspace,
-  deletedPaths: readonly string[],
-) {
-  if (input.candidate.snapshot.extractorSet !== extractorSetIdentity(input.inventory.files, input.languagePacks)) {
-    return {mode: 'fallback', reason: 'extractor-context-changed'} satisfies IncrementalOverlayPreassessment;
+const assessProjectIncrementalClosureCompatibility = Effect.fn(
+  'codeGraph.assessProjectIncrementalClosureCompatibility',
+)(function* (input: {
+  readonly baseWorkspace: CodeGraphWorkspace;
+  readonly changedBaseFacts: readonly CodeGraphFileFacts[];
+  readonly changedCurrentFacts: readonly CodeGraphFileFacts[];
+  readonly currentChangedFiles: readonly CodeGraphInventoryFile[];
+  readonly currentFiles: readonly CodeGraphInventoryFile[];
+  readonly currentWorkspace: CodeGraphWorkspace;
+  readonly languagePacks: CodeGraphLanguagePackRegistryShape;
+  readonly layout: CodeGraphLayout;
+  readonly store: CodeGraphStoreShape;
+}) {
+  const seeds = assessProjectClosureSeeds({
+    committedFacts: input.changedBaseFacts,
+    effectiveFacts: input.changedCurrentFacts,
+    projects: input.currentWorkspace.projects,
+  });
+  if (seeds.mode === 'fallback') {
+    return seeds satisfies IncrementalOverlayPreassessment;
   }
-  if (input.candidate.receipt.workspaceFingerprint !== workspace.fingerprint) {
-    return {mode: 'fallback', reason: 'workspace-changed'} satisfies IncrementalOverlayPreassessment;
+  const selection = selectProjectIncrementalClosure({
+    files: input.currentFiles,
+    modifiedPaths: input.currentChangedFiles.map(file => file.path),
+    projects: input.currentWorkspace.projects,
+    seedProjectIds: seeds.seedProjectIds,
+    workspaceDiagnostics: input.currentWorkspace.diagnostics,
+  });
+  if (selection.mode === 'fallback') {
+    return selection satisfies IncrementalOverlayPreassessment;
   }
-  const cache = yield* loadCachedFacts(
+  const currentByPath = new Map(input.currentFiles.map(file => [file.path, file]));
+  const affectedFiles = selection.affectedPaths.map(path => currentByPath.get(path)!);
+  const metadata = yield* cachedFactsMetadata(
     input.store,
     input.layout.databasePath,
-    input.inventory.files,
+    affectedFiles,
     input.languagePacks,
   );
-  if (input.inventory.files.some(file => !cache.facts.has(file.path))) {
+  const plan = planProjectIncrementalClosure({
+    cachedFactBytesByPath: metadata.bytesByPath,
+    files: input.currentFiles,
+    modifiedPaths: input.currentChangedFiles.map(file => file.path),
+    projects: input.currentWorkspace.projects,
+    seedProjectIds: seeds.seedProjectIds,
+    workspaceDiagnostics: input.currentWorkspace.diagnostics,
+  });
+  if (plan.mode === 'fallback') {
+    return plan satisfies IncrementalOverlayPreassessment;
+  }
+  if (metadata.files !== affectedFiles.length || plan.affectedPaths.length !== affectedFiles.length) {
     return {mode: 'fallback', reason: 'cache-incomplete'} satisfies IncrementalOverlayPreassessment;
   }
-  const facts = attributeInventoryFacts(
-    input.inventory.files,
-    workspace,
-    input.inventory.files.map(file => input.languagePacks.postprocessFile(file, cache.facts.get(file.path)!)),
-  );
-  yield* input.store.cacheMaterializedFileShards(
+  const currentCache = yield* loadCachedFacts(
+    input.store,
     input.layout.databasePath,
-    input.inventory.files,
-    facts.map(fact => serializeBoundedCodeGraphFact(fact)),
-    input.candidate.snapshot.extractorSet,
-    materializedShardDerivationIdentity(
-      input.candidate.snapshot.extractorSet,
-      workspace.fingerprint,
-      reusableBaseFileSetFingerprint(input.inventory.files),
-    ),
+    affectedFiles,
+    input.languagePacks,
   );
+  if (affectedFiles.some(file => !currentCache.facts.has(file.path))) {
+    return {mode: 'fallback', reason: 'cache-incomplete'} satisfies IncrementalOverlayPreassessment;
+  }
+  const currentRawFacts = affectedFiles.map(file =>
+    input.languagePacks.postprocessFile(file, currentCache.facts.get(file.path)!),
+  );
+  const currentFacts = attributeInventoryFacts(input.currentFiles, input.currentWorkspace, currentRawFacts);
+  if (finalCodeGraphFactBatches(currentFacts).length !== 1) {
+    return {mode: 'fallback', reason: 'fact-budget-expanded'} satisfies IncrementalOverlayPreassessment;
+  }
   return {
-    committedWorkspace: workspace,
-    deletedPaths,
-    facts,
-    files: input.inventory.files,
+    closureProjects: plan.projectIds.length,
+    committedWorkspace: input.baseWorkspace,
+    facts: currentFacts,
+    files: affectedFiles,
     mode: 'compatible',
-    resolutionClosure: 'full',
+    resolutionClosure: 'project',
   } satisfies IncrementalOverlayPreassessment;
 });
+
+const assessProjectClosureChangedDecodeBudget = Effect.fn('codeGraph.assessProjectClosureChangedDecodeBudget')(
+  function* (input: {
+    readonly baseFiles: readonly CodeGraphInventoryFile[];
+    readonly currentFiles: readonly CodeGraphInventoryFile[];
+    readonly databasePath: string;
+    readonly languagePacks: CodeGraphLanguagePackRegistryShape;
+    readonly store: CodeGraphStoreShape;
+  }) {
+    if (!projectClosureSourceBudgetFits(input.baseFiles) || !projectClosureSourceBudgetFits(input.currentFiles)) {
+      return {mode: 'fallback', reason: 'project-closure-unbounded'} satisfies IncrementalOverlayPreassessment;
+    }
+    const [baseMetadata, currentMetadata] = yield* Effect.all(
+      [
+        cachedFactsMetadata(input.store, input.databasePath, input.baseFiles, input.languagePacks),
+        cachedFactsMetadata(input.store, input.databasePath, input.currentFiles, input.languagePacks),
+      ],
+      {concurrency: 1},
+    );
+    if (baseMetadata.files !== input.baseFiles.length || currentMetadata.files !== input.currentFiles.length) {
+      return {mode: 'fallback', reason: 'cache-incomplete'} satisfies IncrementalOverlayPreassessment;
+    }
+    if (
+      baseMetadata.bytes > PROJECT_INCREMENTAL_CLOSURE_MAX_CACHED_FACT_BYTES ||
+      currentMetadata.bytes > PROJECT_INCREMENTAL_CLOSURE_MAX_CACHED_FACT_BYTES
+    ) {
+      return {mode: 'fallback', reason: 'project-closure-unbounded'} satisfies IncrementalOverlayPreassessment;
+    }
+    return {mode: 'eligible'} as const;
+  },
+);
+
+function projectClosureSourceBudgetFits(files: readonly CodeGraphInventoryFile[]): boolean {
+  if (files.length > PROJECT_INCREMENTAL_CLOSURE_MAX_FILES) return false;
+  let sourceBytes = 0;
+  for (const file of files) {
+    if (!Number.isSafeInteger(file.size) || file.size < 0) return false;
+    if (file.size > PROJECT_INCREMENTAL_CLOSURE_MAX_SOURCE_BYTES - sourceBytes) return false;
+    sourceBytes += file.size;
+  }
+  return true;
+}
 
 function reusableReexportSeeds(facts: readonly CodeGraphFileFacts[]): readonly CodeGraphReusableReexportSeed[] {
   const seeds = facts.flatMap(file =>
     (file.references ?? []).flatMap(reference =>
-      reference.resolutionDomain === 'typescript'
+      reference.resolutionDomain === 'typescript' && isPersistedReexportEnrichableRelation(reference.relation)
         ? reference.lookupTiers.flatMap(tier => tier.flatMap(parseTypeScriptPathNameLookupKey))
         : [],
     ),
@@ -2867,7 +3011,7 @@ function reusableReexportSeeds(facts: readonly CodeGraphFileFacts[]): readonly C
 function enrichPersistedTypeScriptReexports(
   facts: readonly CodeGraphFileFacts[],
   reexports: readonly CodeGraphReusableReexport[],
-): readonly CodeGraphFileFacts[] {
+): readonly CodeGraphFileFacts[] | undefined {
   if (reexports.length === 0) return facts;
   const provenance = new Map<string, CodeGraphReusableReexport[]>();
   for (const reexport of reexports) {
@@ -2876,23 +3020,25 @@ function enrichPersistedTypeScriptReexports(
     values.push(reexport);
     provenance.set(key, values);
   }
-  return facts.map(file => {
+  const terminalResolver = createPersistedReexportTerminalResolver(provenance);
+  const enriched = facts.map(file => {
     if (!file.references) return file;
     return {
       ...file,
-      references: file.references.map(reference => enrichPersistedTypeScriptReference(reference, provenance)),
+      references: file.references.map(reference =>
+        enrichPersistedTypeScriptReference(reference, provenance, terminalResolver),
+      ),
     };
   });
+  return terminalResolver.exhausted() ? undefined : enriched;
 }
 
 function enrichPersistedTypeScriptReference(
   reference: CodeGraphReference,
   provenance: ReadonlyMap<string, readonly CodeGraphReusableReexport[]>,
+  terminalResolver: PersistedReexportTerminalResolver,
 ): CodeGraphReference {
-  if (
-    reference.resolutionDomain !== 'typescript' ||
-    !['calls', 'constructs', 'exports', 'extends', 'implements', 'overrides', 'references'].includes(reference.relation)
-  ) {
+  if (reference.resolutionDomain !== 'typescript' || !isPersistedReexportEnrichableRelation(reference.relation)) {
     return reference;
   }
   const parsedTargets = reference.lookupTiers.flatMap(tier => tier.flatMap(parseTypeScriptPathNameLookupTarget));
@@ -2906,7 +3052,7 @@ function enrichPersistedTypeScriptReference(
             const parsed = parseTypeScriptPathNameLookupTarget(key);
             if (parsed.length === 0) return [key];
             return parsed.flatMap(target =>
-              terminalPersistedReexportTargets(target, provenance).map(
+              (terminalResolver.resolve(target) ?? []).map(
                 terminal =>
                   `${target.lookupPrefix}path:${encodeURIComponent(terminal.path)}:name:${encodeURIComponent(terminal.name)}${target.lookupSuffix}`,
               ),
@@ -2918,21 +3064,118 @@ function enrichPersistedTypeScriptReference(
   };
 }
 
-function terminalPersistedReexportTargets(
+function isPersistedReexportEnrichableRelation(relation: CodeGraphEdge['relation']): boolean {
+  return ['calls', 'constructs', 'exports', 'extends', 'implements', 'overrides', 'references'].includes(relation);
+}
+
+const PERSISTED_REEXPORT_ENRICHMENT_MAX_OPERATIONS = 40_000;
+const PERSISTED_REEXPORT_ENRICHMENT_MAX_TERMINALS = 10_000;
+
+type PersistedReexportTerminalTraversal =
+  | {
+      readonly mode: 'complete';
+      readonly operations: number;
+      readonly targets: readonly CodeGraphReusableReexportSeed[];
+    }
+  | {
+      readonly mode: 'fallback';
+      readonly reason: 'reexport-closure-unbounded';
+    };
+
+interface PersistedReexportTerminalResolver {
+  readonly exhausted: () => boolean;
+  readonly resolve: (target: CodeGraphReusableReexportSeed) => readonly CodeGraphReusableReexportSeed[] | undefined;
+}
+
+function createPersistedReexportTerminalResolver(
+  provenance: ReadonlyMap<string, readonly CodeGraphReusableReexport[]>,
+): PersistedReexportTerminalResolver {
+  const cache = new Map<string, readonly CodeGraphReusableReexportSeed[]>();
+  let operationsRemaining = PERSISTED_REEXPORT_ENRICHMENT_MAX_OPERATIONS;
+  let traversalExhausted = false;
+  return {
+    exhausted: () => traversalExhausted,
+    resolve: target => {
+      const key = reusableReexportSeedKey(target);
+      const cached = cache.get(key);
+      if (cached) return cached;
+      if (traversalExhausted) return undefined;
+      const traversal = resolvePersistedReexportTerminals(target, provenance, {
+        maxOperations: operationsRemaining,
+        maxTerminals: PERSISTED_REEXPORT_ENRICHMENT_MAX_TERMINALS,
+      });
+      if (traversal.mode === 'fallback') {
+        traversalExhausted = true;
+        return undefined;
+      }
+      operationsRemaining -= traversal.operations;
+      cache.set(key, traversal.targets);
+      return traversal.targets;
+    },
+  };
+}
+
+export function resolvePersistedReexportTerminals(
   target: CodeGraphReusableReexportSeed,
   provenance: ReadonlyMap<string, readonly CodeGraphReusableReexport[]>,
-  visited: ReadonlySet<string> = new Set(),
-): readonly CodeGraphReusableReexportSeed[] {
-  const key = `${target.path}\0${target.name}`;
-  if (visited.has(key)) return [];
-  const next = provenance.get(key) ?? [];
-  if (next.length === 0) return [target];
-  const nextVisited = new Set(visited);
-  nextVisited.add(key);
-  const terminals = next.flatMap(reexport =>
-    terminalPersistedReexportTargets({name: reexport.importedName, path: reexport.targetPath}, provenance, nextVisited),
-  );
-  return terminals.length > 0 ? terminals : [target];
+  options: {readonly maxOperations?: number; readonly maxTerminals?: number} = {},
+): PersistedReexportTerminalTraversal {
+  const maxOperations = options.maxOperations ?? PERSISTED_REEXPORT_ENRICHMENT_MAX_OPERATIONS;
+  const maxTerminals = options.maxTerminals ?? PERSISTED_REEXPORT_ENRICHMENT_MAX_TERMINALS;
+  if (
+    !Number.isSafeInteger(maxOperations) ||
+    maxOperations < 0 ||
+    !Number.isSafeInteger(maxTerminals) ||
+    maxTerminals < 0
+  ) {
+    return {mode: 'fallback', reason: 'reexport-closure-unbounded'};
+  }
+  const discovered = new Set([reusableReexportSeedKey(target)]);
+  const pending = [target];
+  const terminals = new Map<string, CodeGraphReusableReexportSeed>();
+  let operations = 0;
+  const consumeOperation = (): boolean => {
+    if (operations >= maxOperations) return false;
+    operations += 1;
+    return true;
+  };
+  while (pending.length > 0) {
+    if (!consumeOperation()) return {mode: 'fallback', reason: 'reexport-closure-unbounded'};
+    const current = pending.pop()!;
+    const next = [...(provenance.get(reusableReexportSeedKey(current)) ?? [])].sort((left, right) =>
+      compareCodeUnits(reusableReexportKey(left), reusableReexportKey(right)),
+    );
+    if (next.length === 0) {
+      terminals.set(reusableReexportSeedKey(current), current);
+      if (terminals.size > maxTerminals) return {mode: 'fallback', reason: 'reexport-closure-unbounded'};
+      continue;
+    }
+    for (let index = next.length - 1; index >= 0; index -= 1) {
+      if (!consumeOperation()) return {mode: 'fallback', reason: 'reexport-closure-unbounded'};
+      const reexport = next[index]!;
+      const candidate = {name: reexport.importedName, path: reexport.targetPath};
+      const key = reusableReexportSeedKey(candidate);
+      if (discovered.has(key)) continue;
+      discovered.add(key);
+      pending.push(candidate);
+    }
+  }
+  if (terminals.size === 0) terminals.set(reusableReexportSeedKey(target), target);
+  return {
+    mode: 'complete',
+    operations,
+    targets: [...terminals.values()].sort((left, right) =>
+      compareCodeUnits(reusableReexportSeedKey(left), reusableReexportSeedKey(right)),
+    ),
+  };
+}
+
+function reusableReexportSeedKey(value: CodeGraphReusableReexportSeed): string {
+  return `${value.path}\0${value.name}`;
+}
+
+function reusableReexportKey(value: CodeGraphReusableReexport): string {
+  return `${value.sourcePath}\0${value.localName}\0${value.targetPath}\0${value.importedName}`;
 }
 
 function parseTypeScriptPathNameLookupKey(value: string): readonly CodeGraphReusableReexportSeed[] {
@@ -3074,6 +3317,12 @@ function overlayFallbackDescription(reason: CodeGraphOverlayFallbackReason): str
       return 'a full rebuild was requested';
     case 'no-materialized-changes':
       return 'no graph-eligible file content changed';
+    case 'project-closure-incomplete':
+      return 'the declared project dependency closure was incomplete or ambiguous';
+    case 'project-closure-unbounded':
+      return 'the project dependency closure exceeded one bounded materialization batch';
+    case 'reexport-closure-unbounded':
+      return 'persisted reexport provenance exceeded the bounded project-closure lookup';
     case 'resolution-surface-changed':
       return 'a declaration or lookup surface changed';
     case 'staging-identity-mismatch':
@@ -4059,9 +4308,7 @@ function cachedFactsMetadata(
   ).pipe(
     Effect.map(groups => {
       const bytesByPath = new Map(
-        groups
-          .flatMap(group => [...group.bytesByPath])
-          .map(([path, bytes]) => [path, Math.min(bytes, CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM)] as const),
+        groups.flatMap(group => [...group.bytesByPath]).map(([path, bytes]) => [path, bytes] as const),
       );
       return {
         bytes: [...bytesByPath.values()].reduce((total, bytes) => total + bytes, 0),

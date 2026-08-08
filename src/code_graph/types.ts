@@ -387,8 +387,10 @@ export interface CodeGraphIndexSummary {
   readonly durationMs: number;
   readonly identity: RepositoryIdentity;
   readonly materialization?: {
+    readonly closureProjects?: number;
     readonly fallbackReason?: CodeGraphOverlayFallbackReason;
     readonly mode: 'full' | 'incremental-clean' | 'incremental-overlay' | 'reused-snapshot';
+    readonly resolutionClosure?: 'changed' | 'full' | 'project';
     readonly stagedFiles: number;
     readonly totalFiles: number;
   };
@@ -406,6 +408,9 @@ export type CodeGraphOverlayFallbackReason =
   | 'file-set-changed'
   | 'forced-full-rebuild'
   | 'no-materialized-changes'
+  | 'project-closure-incomplete'
+  | 'project-closure-unbounded'
+  | 'reexport-closure-unbounded'
   | 'resolution-surface-changed'
   | 'staging-identity-mismatch'
   | 'staging-unavailable'

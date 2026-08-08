@@ -1026,100 +1026,92 @@ describe('native code graph lifecycle', () => {
     ),
   );
 
-  it('reuses a full anchor with a conservative graph-wide closure when a clean commit changes resolution', async () => {
-    const root = createManySourceRepository(4);
-    const home = join(root, '.threadnote-test-home');
-    const first = await runEffect(
-      Effect.gen(function* () {
-        const indexer = yield* CodeGraphIndexer;
-        return yield* indexer.index({cwd: root, threadnoteHome: home});
-      }),
-    );
-    const changedPath = join(root, 'src/file-000.ts');
-    writeFileSync(changedPath, readFileSync(changedPath, 'utf8').replace('original0', 'renamed0'));
-    git(root, ['add', 'src/file-000.ts']);
-    git(root, [
-      '-c',
-      'user.name=Threadnote Test',
-      '-c',
-      'user.email=test@threadnote.local',
-      'commit',
-      '-qm',
-      'rename declaration',
-    ]);
+  effectIt.effect('falls back to bounded full materialization when a clean commit changes global resolution', () =>
+    Effect.gen(function* () {
+      const root = createManySourceRepository(4);
+      const home = join(root, '.threadnote-test-home');
+      const indexer = yield* CodeGraphIndexer;
+      const query = yield* CodeGraphQueryService;
+      const first = yield* indexer.index({cwd: root, threadnoteHome: home});
+      yield* Effect.sync(() => {
+        const changedPath = join(root, 'src/file-000.ts');
+        writeFileSync(changedPath, readFileSync(changedPath, 'utf8').replace('original0', 'renamed0'));
+        git(root, ['add', 'src/file-000.ts']);
+        git(root, [
+          '-c',
+          'user.name=Threadnote Test',
+          '-c',
+          'user.email=test@threadnote.local',
+          'commit',
+          '-qm',
+          'rename declaration',
+        ]);
+      });
+      const indexed = yield* indexer.index({cwd: root, threadnoteHome: home});
+      const found = yield* query.inspect({
+        cwd: root,
+        operation: 'query',
+        query: 'renamed0',
+        refresh: false,
+        threadnoteHome: home,
+      });
 
-    const result = await runEffect(
-      Effect.gen(function* () {
-        const indexer = yield* CodeGraphIndexer;
-        const query = yield* CodeGraphQueryService;
-        const indexed = yield* indexer.index({cwd: root, threadnoteHome: home});
-        const found = yield* query.inspect({
-          cwd: root,
-          operation: 'query',
-          query: 'renamed0',
-          refresh: false,
-          threadnoteHome: home,
-        });
-        return {found, indexed};
-      }),
-    );
+      expect(indexed.materialization).toEqual({
+        fallbackReason: 'resolution-surface-changed',
+        mode: 'full',
+        stagedFiles: 4,
+        totalFiles: 4,
+      });
+      expect(indexed.snapshot.baseSnapshotId).toBeUndefined();
+      expect(indexed.snapshot.id).not.toBe(first.snapshot.id);
+      expect(found.nodes.some(node => node.name === 'renamed0')).toBe(true);
+    }).pipe(Effect.provide(ApplicationLayer)),
+  );
 
-    expect(result.indexed.materialization).toEqual({mode: 'incremental-clean', stagedFiles: 4, totalFiles: 4});
-    expect(result.indexed.snapshot).toMatchObject({baseSnapshotId: first.snapshot.id, dirty: false});
-    expect(result.found.nodes.some(node => node.name === 'renamed0')).toBe(true);
-  });
+  effectIt.effect('falls back to bounded full materialization when a clean commit adds or deletes a file', () =>
+    Effect.forEach(
+      [
+        {
+          fileCount: 5,
+          label: 'adds',
+          mutate: (root: string) =>
+            writeFileSync(join(root, 'src/added.ts'), 'export function added(): number { return 5; }\n'),
+        },
+        {fileCount: 3, label: 'deletes', mutate: (root: string) => rmSync(join(root, 'src/file-000.ts'))},
+      ] as const,
+      ({fileCount, label, mutate}) =>
+        Effect.gen(function* () {
+          const root = createManySourceRepository(4);
+          const home = join(root, `.threadnote-test-home-${label}`);
+          const indexer = yield* CodeGraphIndexer;
+          const first = yield* indexer.index({cwd: root, threadnoteHome: home});
+          yield* Effect.sync(() => {
+            mutate(root);
+            git(root, label === 'adds' ? ['add', 'src/added.ts'] : ['add', '-u', 'src/file-000.ts']);
+            git(root, [
+              '-c',
+              'user.name=Threadnote Test',
+              '-c',
+              'user.email=test@threadnote.local',
+              'commit',
+              '-qm',
+              `${label} eligible file`,
+            ]);
+          });
+          const fallback = yield* indexer.index({cwd: root, threadnoteHome: home});
 
-  it.each([
-    [
-      'adds',
-      (root: string) => writeFileSync(join(root, 'src/added.ts'), 'export function added(): number { return 5; }\n'),
-      5,
-    ],
-    ['deletes', (root: string) => rmSync(join(root, 'src/file-000.ts')), 3],
-  ] as const)('reuses a full anchor when a clean commit %s an eligible file', async (_label, mutate, fileCount) => {
-    const root = createManySourceRepository(4);
-    const home = join(root, '.threadnote-test-home');
-    const first = await runEffect(
-      Effect.gen(function* () {
-        const indexer = yield* CodeGraphIndexer;
-        return yield* indexer.index({cwd: root, threadnoteHome: home});
-      }),
-    );
-    mutate(root);
-    git(root, _label === 'adds' ? ['add', 'src/added.ts'] : ['add', '-u', 'src/file-000.ts']);
-    git(root, [
-      '-c',
-      'user.name=Threadnote Test',
-      '-c',
-      'user.email=test@threadnote.local',
-      'commit',
-      '-qm',
-      `${_label} eligible file`,
-    ]);
-
-    const result = await runEffect(
-      Effect.gen(function* () {
-        const indexer = yield* CodeGraphIndexer;
-        const store = yield* CodeGraphStore;
-        const incremental = yield* indexer.index({cwd: root, threadnoteHome: home});
-        const incrementalGraph = yield* store.loadGraph(
-          codeGraphDatabasePath(home, incremental),
-          incremental.snapshot.id,
-        );
-        const full = yield* indexer.index({cwd: root, force: true, threadnoteHome: home});
-        const fullGraph = yield* store.loadGraph(codeGraphDatabasePath(home, full), full.snapshot.id);
-        return {fullGraph, incremental, incrementalGraph};
-      }),
-    );
-
-    expect(result.incremental.materialization).toEqual({
-      mode: 'incremental-clean',
-      stagedFiles: fileCount,
-      totalFiles: fileCount,
-    });
-    expect(result.incremental.snapshot).toMatchObject({baseSnapshotId: first.snapshot.id, dirty: false});
-    expect(normalizeStoredGraph(result.incrementalGraph)).toEqual(normalizeStoredGraph(result.fullGraph));
-  });
+          expect(fallback.materialization).toEqual({
+            fallbackReason: 'file-set-changed',
+            mode: 'full',
+            stagedFiles: fileCount,
+            totalFiles: fileCount,
+          });
+          expect(fallback.snapshot.baseSnapshotId).toBeUndefined();
+          expect(fallback.snapshot.id).not.toBe(first.snapshot.id);
+        }),
+      {concurrency: 1},
+    ).pipe(Effect.provide(ApplicationLayer)),
+  );
 
   it('builds an immediately dirty worktree directly from the prior compatible anchor', async () => {
     const root = createManySourceRepository(6);

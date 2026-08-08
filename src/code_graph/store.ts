@@ -712,7 +712,7 @@ export interface CodeGraphStoreShape {
     facts: readonly CodeGraphFileFacts[],
     options?: {
       readonly deletedPaths?: readonly string[];
-      readonly resolutionClosure?: 'changed' | 'full';
+      readonly resolutionClosure?: 'changed' | 'full' | 'project';
     },
   ) => Effect.Effect<boolean, CodeGraphStoreError>;
   readonly replaceStagedModifiedFiles: (
@@ -906,6 +906,7 @@ export interface CodeGraphStoreShape {
     databasePath: string,
     snapshotId: string,
     seeds: readonly CodeGraphReusableReexportSeed[],
+    options?: {readonly maxRows?: number},
   ) => Effect.Effect<readonly CodeGraphReusableReexport[] | undefined, CodeGraphStoreError>;
   readonly pruneCachedFacts: (
     databasePath: string,
@@ -2093,11 +2094,11 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
             ),
             Effect.mapError(cause => storeError('load reusable clean code graph base', cause)),
           ),
-        reusableReexports: (databasePath, snapshotId, seeds) =>
+        reusableReexports: (databasePath, snapshotId, seeds, options) =>
           fs.exists(databasePath).pipe(
             Effect.flatMap(exists =>
               exists
-                ? useReadOnlyDatabase(databasePath, selectReusableReexports(snapshotId, seeds))
+                ? useReadOnlyDatabase(databasePath, selectReusableReexports(snapshotId, seeds, options?.maxRows))
                 : Effect.succeed(undefined),
             ),
             Effect.mapError(cause => storeError('load reusable code graph reexport provenance', cause)),
@@ -6825,9 +6826,15 @@ const activatePersistedIncrementalSnapshot = Effect.fn('codeGraph.activatePersis
       const closureRows = yield* sql<{readonly value: string}>`
         SELECT value FROM activation_state WHERE key = 'resolution_closure' LIMIT 1
       `;
-      const fullResolutionClosure = closureRows[0]?.value === 'full';
-      if (!fullResolutionClosure && !(yield* persistedIncrementalSurfaceMatches(sql, baseSnapshotId))) {
+      const resolutionClosure = closureRows[0]?.value;
+      if (!isPersistedIncrementalResolutionClosure(resolutionClosure)) {
+        return yield* Effect.fail(new CodeGraphStoreError('Persisted incremental resolution closure is invalid.'));
+      }
+      if (resolutionClosure === 'changed' && !(yield* persistedIncrementalSurfaceMatches(sql, baseSnapshotId))) {
         return yield* Effect.fail(new CodeGraphStoreError('Persisted incremental resolution surface changed.'));
+      }
+      if (resolutionClosure === 'project' && !(yield* persistedIncrementalProjectFilesMatch(sql, baseSnapshotId))) {
+        return yield* Effect.fail(new CodeGraphStoreError('Persisted project closure changed the base file set.'));
       }
       const changedPathsOnly = yield* sql<{readonly id: string}>`
         SELECT edge.id
@@ -9851,11 +9858,12 @@ const preparePersistedIncrementalActivation = Effect.fn('codeGraph.preparePersis
   facts: readonly CodeGraphFileFacts[],
   options: {
     readonly deletedPaths?: readonly string[];
-    readonly resolutionClosure?: 'changed' | 'full';
+    readonly resolutionClosure?: 'changed' | 'full' | 'project';
   } = {},
 ) {
   const sql = yield* SqlClient.SqlClient;
   const resolutionClosure = options.resolutionClosure ?? 'changed';
+  if (!isPersistedIncrementalResolutionClosure(resolutionClosure)) return false;
   const deletedPaths = [...new Set(options.deletedPaths ?? [])];
   if (
     (files.length === 0 && (resolutionClosure !== 'full' || deletedPaths.length === 0)) ||
@@ -9864,7 +9872,15 @@ const preparePersistedIncrementalActivation = Effect.fn('codeGraph.preparePersis
     return false;
   }
   const paths = new Set(files.map(file => file.path));
-  if (paths.size !== files.length || facts.some(file => !paths.has(file.path))) return false;
+  const factPaths = new Set(facts.map(file => file.path));
+  if (
+    paths.size !== files.length ||
+    factPaths.size !== facts.length ||
+    factPaths.size !== paths.size ||
+    [...paths].some(path => !factPaths.has(path))
+  ) {
+    return false;
+  }
   if (deletedPaths.some(path => paths.has(path))) return false;
   if (!(yield* selectReusableBaseReceipt(baseSnapshotId))) return false;
 
@@ -9889,7 +9905,12 @@ const preparePersistedIncrementalActivation = Effect.fn('codeGraph.preparePersis
     sql,
     facts.flatMap(file => file.references ?? []),
   );
-  const safe = resolutionClosure === 'full' || (yield* persistedIncrementalSurfaceMatches(sql, baseSnapshotId));
+  const safe =
+    resolutionClosure === 'changed'
+      ? yield* persistedIncrementalSurfaceMatches(sql, baseSnapshotId)
+      : resolutionClosure === 'project'
+        ? yield* persistedIncrementalProjectFilesMatch(sql, baseSnapshotId)
+        : true;
   if (!safe) {
     yield* prepareActivationTables(sql);
     return false;
@@ -9948,6 +9969,32 @@ const persistedIncrementalSurfaceMatches = Effect.fn('codeGraph.persistedIncreme
   `;
   return Number(mismatches[0]?.count ?? 0) === 0;
 });
+
+const persistedIncrementalProjectFilesMatch = Effect.fn('codeGraph.persistedIncrementalProjectFilesMatch')(function* (
+  sql: SqlClient.SqlClient,
+  baseSnapshotId: string,
+) {
+  const invalid = yield* sql<{readonly path: string}>`
+      SELECT changed.path
+      FROM activation_incremental_paths AS changed
+      LEFT JOIN activation_files AS current ON current.path = changed.path
+      WHERE current.path IS NULL
+      UNION ALL
+      SELECT current.path
+      FROM activation_files AS current
+      LEFT JOIN snapshot_files AS base
+        ON base.snapshot_id = ${baseSnapshotId} AND base.path = current.path
+      WHERE base.path IS NULL
+         OR base.language IS NOT current.language
+         OR base.mode IS NOT current.mode
+      LIMIT 1
+    `;
+  return invalid.length === 0;
+});
+
+function isPersistedIncrementalResolutionClosure(value: unknown): value is 'changed' | 'full' | 'project' {
+  return value === 'changed' || value === 'project' || value === 'full';
+}
 
 const replaceStagedModifiedFiles = Effect.fn('codeGraph.replaceStagedModifiedFiles')(function* (
   baseSnapshotId: string,
@@ -13121,14 +13168,18 @@ const selectReusableBaseReceipt = Effect.fn('codeGraph.selectReusableBaseReceipt
 const selectReusableReexports = Effect.fn('codeGraph.selectReusableReexports')(function* (
   snapshotId: string,
   seeds: readonly CodeGraphReusableReexportSeed[],
+  maxRows = Number.MAX_SAFE_INTEGER,
 ) {
   const sql = yield* SqlClient.SqlClient;
   yield* configureConnection(sql);
   if (!(yield* selectReusableBaseReceipt(snapshotId))) return undefined;
   const uniqueSeeds = uniqueBy(seeds, seed => `${seed.path}\0${seed.name}`);
   if (uniqueSeeds.length === 0) return [];
+  if (!Number.isSafeInteger(maxRows) || maxRows < 0) return undefined;
   const output = new Map<string, CodeGraphReusableReexport>();
   for (const batch of chunk(uniqueSeeds, 200)) {
+    if (output.size > maxRows) return undefined;
+    const queryLimit = maxRows === Number.MAX_SAFE_INTEGER ? maxRows : maxRows + 1;
     const rows = yield* sql.unsafe<{
       readonly imported_name: string;
       readonly local_name: string;
@@ -13152,12 +13203,22 @@ const selectReusableReexports = Effect.fn('codeGraph.selectReusableReexports')(f
            ON closure.target_path = provenance.source_path
           AND closure.imported_name = provenance.local_name
          WHERE provenance.snapshot_id = ?
+         LIMIT ?
        )
        SELECT source_path, local_name, target_path, imported_name
        FROM closure
-       ORDER BY source_path, local_name, target_path, imported_name`,
-      [...batch.flatMap(seed => [seed.path, seed.name]), snapshotId, snapshotId],
+       ORDER BY source_path, local_name, target_path, imported_name
+       LIMIT ?`,
+      [...batch.flatMap(seed => [seed.path, seed.name]), snapshotId, snapshotId, queryLimit, queryLimit],
     );
+    if (rows.length > maxRows) {
+      return rows.map(row => ({
+        importedName: row.imported_name,
+        localName: row.local_name,
+        sourcePath: row.source_path,
+        targetPath: row.target_path,
+      }));
+    }
     for (const row of rows) {
       const value = {
         importedName: row.imported_name,
@@ -13166,6 +13227,7 @@ const selectReusableReexports = Effect.fn('codeGraph.selectReusableReexports')(f
         targetPath: row.target_path,
       } satisfies CodeGraphReusableReexport;
       output.set(`${value.sourcePath}\0${value.localName}\0${value.targetPath}\0${value.importedName}`, value);
+      if (output.size > maxRows) return [...output.values()];
     }
   }
   return [...output.values()].sort((left, right) =>
@@ -13201,7 +13263,9 @@ const selectCachedFacts = Effect.fn('codeGraph.selectCachedFacts')(function* (
     const rows = yield* selectFileBlobBatch(sql, batch, extractorSet);
     for (const row of rows) {
       try {
-        output.set(row.path_hint, JSON.parse(row.facts_json) as CodeGraphFileFacts);
+        const facts = JSON.parse(row.facts_json) as CodeGraphFileFacts;
+        if (facts.path !== row.path_hint) continue;
+        output.set(row.path_hint, facts);
         keys.add(row.path_hint);
         const factBytes = Number(row.facts_bytes);
         bytes += factBytes;
@@ -13305,7 +13369,10 @@ const selectCachedCommittedFileKeys = Effect.fn('codeGraph.selectCachedCommitted
     SELECT content_hash, path_hint
     FROM file_blobs
     WHERE extractor_set = ${extractorSet}
-      AND json_valid(facts_json)
+      AND CASE
+        WHEN json_valid(facts_json) THEN json_extract(facts_json, '$.path')
+        ELSE NULL
+      END = path_hint
   `;
   return new Set(rows.map(row => `${row.path_hint}\0${row.content_hash}\0${extractorSet}`));
 });
