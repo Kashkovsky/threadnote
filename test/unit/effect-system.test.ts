@@ -14,12 +14,15 @@ import {
 import {
   availableDiskBytesFromStatfs,
   legacyAvailableDiskBytes,
+  parseCanonicalProcessStartIdentityOutput,
   parsePosixAvailableDiskBytes,
   parseLinuxProcessStartIdentity,
   parseProcessStartIdentityOutput,
   parseWindowsAvailableDiskBytes,
   platformPathFor,
   probeAvailableDiskBytes,
+  readCanonicalProcessStartIdentity,
+  readProcessStartIdentity,
   resolveHomeDirectory,
   makeCachedProcessStartIdentityResolver,
   SystemInfo,
@@ -479,14 +482,237 @@ describe('SystemInfo process identity', () => {
     ).toBeUndefined();
   });
 
-  it('normalizes macOS and Windows process-start command output', () => {
+  it('preserves the legacy macOS and Windows process-start formats', () => {
     expect(parseProcessStartIdentityOutput('darwin', ' Tue Jul 28 18:57:16 2026\n')).toBe(
       'darwin:Tue Jul 28 18:57:16 2026',
+    );
+    expect(parseProcessStartIdentityOutput('darwin', ' sob sie  8 23:04:27 2026\n')).toBe(
+      'darwin:sob sie  8 23:04:27 2026',
     );
     expect(parseProcessStartIdentityOutput('win32', '638893834360000000\r\n')).toBe('win32:638893834360000000');
     expect(parseProcessStartIdentityOutput('linux', '123')).toBeUndefined();
     expect(parseProcessStartIdentityOutput('darwin', '   ')).toBeUndefined();
   });
+
+  it('normalizes canonical Darwin output to a versioned format', () => {
+    expect(parseCanonicalProcessStartIdentityOutput('darwin', ' Tue Jul 28 18:57:16 2026\n')).toBe(
+      'darwin-v2:Tue Jul 28 18:57:16 2026',
+    );
+    expect(parseCanonicalProcessStartIdentityOutput('darwin', 'Sat Aug  8 23:04:27 2026    \n')).toBe(
+      'darwin-v2:Sat Aug  8 23:04:27 2026',
+    );
+    expect(parseCanonicalProcessStartIdentityOutput('win32', '638893834360000000\r\n')).toBe(
+      'win32:638893834360000000',
+    );
+  });
+
+  it('rejects localized, path-bearing, control-bearing, or unbounded process-start output', () => {
+    for (const output of [
+      'sob sie  8 23:04:27 2026',
+      'Sat Aug  8 23:04:27 /private/tmp',
+      'Sat Aug  8 23:04:27 2026\nextra',
+      '\tSat Aug  8 23:04:27 2026',
+      '\u001bSat Aug  8 23:04:27 2026',
+      'Sat Aug 32 23:04:27 2026',
+      'Sat Aug  8 24:04:27 2026',
+      `Sat Aug  8 23:04:27 ${'2'.repeat(64)}`,
+    ]) {
+      expect(parseCanonicalProcessStartIdentityOutput('darwin', output)).toBeUndefined();
+    }
+    for (const output of [
+      '0638893834360000000',
+      '638893834360000000/path',
+      '638893834360000000\nextra',
+      '\t638893834360000000',
+      '1'.repeat(21),
+    ]) {
+      expect(parseCanonicalProcessStartIdentityOutput('win32', output)).toBeUndefined();
+    }
+  });
+
+  effectIt.prop(
+    'emits only bounded path-free canonical process-start identities',
+    {
+      output: FC.string({maxLength: 96}),
+      platform: FC.constantFrom('darwin' as const, 'win32' as const),
+    },
+    ({output, platform}) => {
+      const identity = parseCanonicalProcessStartIdentityOutput(platform, output);
+      if (identity === undefined) return;
+
+      expect(identity.length).toBeLessThanOrEqual(34);
+      expect(
+        Array.from(identity).every(character => {
+          const codePoint = character.codePointAt(0);
+          return (
+            character !== '/' && character !== '\\' && codePoint !== undefined && codePoint >= 32 && codePoint !== 127
+          );
+        }),
+      ).toBe(true);
+    },
+    {fastCheck: {numRuns: 200}},
+  );
+
+  effectIt.effect('preserves hostile Darwin legacy observations while canonicalizing the explicit v2 channel', () =>
+    process.platform === 'win32'
+      ? Effect.void
+      : Effect.acquireUseRelease(
+          Effect.sync(() => {
+            const root = mkdtempSync(join(tmpdir(), 'threadnote-process-identity-channel-'));
+            writeFileSync(
+              join(root, 'ps'),
+              '#!/bin/sh\nif [ "$THREADNOTE_PROCESS_IDENTITY_MODE" = legacy ]; then\n  [ "$LC_ALL" = pl_PL.UTF-8 ] || exit 70\n  [ "$LANG" = pl_PL.UTF-8 ] || exit 71\n  [ "$TZ" = Pacific/Kiritimati ] || exit 72\n  printf \'sob sie  8 23:04:27 2026\\n\'\nelse\n  [ "$LC_ALL" = C ] || exit 73\n  [ "$LANG" = C ] || exit 74\n  [ "$TZ" = UTC ] || exit 75\n  printf \'Sat Aug  8 23:04:27 2026    \\n\'\nfi\n',
+              {mode: 0o700},
+            );
+            return root;
+          }),
+          root =>
+            Effect.gen(function* () {
+              const hostileEnvironment = {
+                ...process.env,
+                LANG: 'pl_PL.UTF-8',
+                LC_ALL: 'pl_PL.UTF-8',
+                PATH: '',
+                TZ: 'Pacific/Kiritimati',
+              };
+              const command = join(root, 'ps');
+
+              expect(
+                yield* readProcessStartIdentity(
+                  10_000,
+                  'darwin',
+                  {...hostileEnvironment, THREADNOTE_PROCESS_IDENTITY_MODE: 'legacy'},
+                  1_000,
+                  command,
+                ),
+              ).toBe('darwin:sob sie  8 23:04:27 2026');
+              expect(
+                yield* readCanonicalProcessStartIdentity(
+                  10_000,
+                  'darwin',
+                  {...hostileEnvironment, THREADNOTE_PROCESS_IDENTITY_MODE: 'canonical'},
+                  1_000,
+                  command,
+                ),
+              ).toBe('darwin-v2:Sat Aug  8 23:04:27 2026');
+            }),
+          root => Effect.sync(() => rmSync(root, {force: true, recursive: true})),
+        ),
+  );
+
+  effectIt.effect('bounds concurrent Darwin probes and kills every timed-out or interrupted ps child', () =>
+    process.platform === 'win32'
+      ? Effect.void
+      : TestClock.withLive(
+          Effect.acquireUseRelease(
+            Effect.sync(() => {
+              const root = mkdtempSync(join(tmpdir(), 'threadnote-process-identity-'));
+              writeFileSync(
+                join(root, 'ps'),
+                '#!/bin/sh\n[ "$LC_ALL" = C ] || exit 70\n[ "$LANG" = C ] || exit 71\n[ "$TZ" = UTC ] || exit 72\nprintf \'%s\\n\' "$$" >> "$THREADNOTE_PROCESS_IDENTITY_PIDS"\nexec /bin/sleep 30\n',
+                {mode: 0o700},
+              );
+              return {root};
+            }),
+            fixture =>
+              Effect.gen(function* () {
+                const timedOutProcessIdsPath = join(fixture.root, 'timed-out-pids');
+                const timedOutEnvironment = {
+                  ...process.env,
+                  LANG: 'pl_PL.UTF-8',
+                  LC_ALL: 'pl_PL.UTF-8',
+                  PATH: '',
+                  THREADNOTE_PROCESS_IDENTITY_PIDS: timedOutProcessIdsPath,
+                  TZ: 'Pacific/Kiritimati',
+                };
+                const timedOutStartedAt = yield* Clock.currentTimeMillis;
+                const identities = yield* Effect.all(
+                  Array.from({length: 4}, (_, index) =>
+                    readCanonicalProcessStartIdentity(
+                      10_000 + index,
+                      'darwin',
+                      timedOutEnvironment,
+                      350,
+                      join(fixture.root, 'ps'),
+                    ),
+                  ),
+                  {concurrency: 'unbounded'},
+                );
+                const timedOutElapsed = (yield* Clock.currentTimeMillis) - timedOutStartedAt;
+                const timedOutProcessIds = yield* waitForRecordedProcessIds(timedOutProcessIdsPath, 4, 1_000);
+
+                expect(identities).toEqual([undefined, undefined, undefined, undefined]);
+                expect(timedOutElapsed).toBeLessThan(2_000);
+                expect(new Set(timedOutProcessIds).size).toBe(4);
+                yield* Effect.forEach(timedOutProcessIds, processId => waitForProcessExit(processId, 2_000), {
+                  concurrency: 'unbounded',
+                });
+
+                const interruptedProcessIdsPath = join(fixture.root, 'interrupted-pids');
+                const interruptedEnvironment = {
+                  ...process.env,
+                  LANG: 'pl_PL.UTF-8',
+                  LC_ALL: 'pl_PL.UTF-8',
+                  PATH: '',
+                  THREADNOTE_PROCESS_IDENTITY_PIDS: interruptedProcessIdsPath,
+                  TZ: 'Pacific/Kiritimati',
+                };
+                const interrupted = yield* Effect.all(
+                  Array.from({length: 4}, (_, index) =>
+                    readCanonicalProcessStartIdentity(
+                      20_000 + index,
+                      'darwin',
+                      interruptedEnvironment,
+                      30_000,
+                      join(fixture.root, 'ps'),
+                    ),
+                  ),
+                  {concurrency: 'unbounded'},
+                ).pipe(Effect.forkChild({startImmediately: true}));
+                const interruptedProcessIds = yield* waitForRecordedProcessIds(interruptedProcessIdsPath, 4, 1_000);
+                const interruptedAt = yield* Clock.currentTimeMillis;
+
+                yield* Fiber.interrupt(interrupted);
+
+                expect((yield* Clock.currentTimeMillis) - interruptedAt).toBeLessThan(2_000);
+                expect(new Set(interruptedProcessIds).size).toBe(4);
+                yield* Effect.forEach(interruptedProcessIds, processId => waitForProcessExit(processId, 2_000), {
+                  concurrency: 'unbounded',
+                });
+              }),
+            fixture => Effect.sync(() => rmSync(fixture.root, {force: true, recursive: true})),
+          ),
+        ),
+  );
+
+  effectIt.effect('caches legacy and canonical own-process identities independently', () =>
+    Effect.gen(function* () {
+      let legacyProbeCount = 0;
+      let canonicalProbeCount = 0;
+      const legacy = yield* makeCachedProcessStartIdentityResolver(42, () =>
+        Effect.sync(() => {
+          legacyProbeCount += 1;
+          return 'darwin:legacy-observation';
+        }),
+      );
+      const canonical = yield* makeCachedProcessStartIdentityResolver(42, () =>
+        Effect.sync(() => {
+          canonicalProbeCount += 1;
+          return 'darwin-v2:canonical-observation';
+        }),
+      );
+
+      expect(yield* legacy(42)).toBe('darwin:legacy-observation');
+      expect(yield* legacy(42)).toBe('darwin:legacy-observation');
+      expect(legacyProbeCount).toBe(1);
+      expect(canonicalProbeCount).toBe(0);
+
+      expect(yield* canonical(42)).toBe('darwin-v2:canonical-observation');
+      expect(yield* canonical(42)).toBe('darwin-v2:canonical-observation');
+      expect(legacyProbeCount).toBe(1);
+      expect(canonicalProbeCount).toBe(1);
+    }),
+  );
 
   effectIt.effect('shares and caches an exact five-second unavailable own-process probe', () =>
     Effect.gen(function* () {
@@ -590,16 +816,49 @@ describe('SystemInfo process identity', () => {
   effectIt.effect('reports a stable identity for the current process on the host adapter', () =>
     Effect.gen(function* () {
       const system = yield* SystemInfo;
+      const canonicalProcessStartIdentity = system.canonicalProcessStartIdentity;
+      if (canonicalProcessStartIdentity === undefined) {
+        return yield* Effect.fail(new Error('The production SystemInfo layer must provide the canonical channel.'));
+      }
       const identities = [
         yield* system.processStartIdentity(system.processId),
         yield* system.processStartIdentity(system.processId),
       ] as const;
+      const canonicalIdentities = [
+        yield* canonicalProcessStartIdentity(system.processId),
+        yield* canonicalProcessStartIdentity(system.processId),
+      ] as const;
 
       expect(identities[0]).toBeTruthy();
       expect(identities[1]).toBe(identities[0]);
+      expect(canonicalIdentities[0]).toBeTruthy();
+      expect(canonicalIdentities[1]).toBe(canonicalIdentities[0]);
+      if (system.platform === 'darwin') {
+        expect(identities[0]).toMatch(/^darwin:/);
+        expect(canonicalIdentities[0]).toMatch(/^darwin-v2:/);
+      } else {
+        expect(canonicalIdentities[0]).toBe(identities[0]);
+      }
     }).pipe(Effect.provide(SystemInfo.layer)),
   );
 });
+
+function waitForRecordedProcessIds(path: string, expectedCount: number, timeoutMilliseconds: number) {
+  return Effect.gen(function* () {
+    const deadline = (yield* Clock.currentTimeMillis) + timeoutMilliseconds;
+    while ((yield* Clock.currentTimeMillis) < deadline) {
+      if (existsSync(path)) {
+        const processIds = readFileSync(path, 'utf8')
+          .split(/\r?\n/)
+          .map(value => Number(value.trim()))
+          .filter(processId => Number.isSafeInteger(processId) && processId > 0);
+        if (processIds.length >= expectedCount) return processIds.slice(0, expectedCount);
+      }
+      yield* Effect.sleep(10);
+    }
+    return yield* Effect.fail(new Error(`Timed out waiting for ${expectedCount} process identity probes to start.`));
+  });
+}
 
 describe('SystemInfo benchmark metadata', () => {
   effectIt.effect('reports real CPU, memory, and operating-system values', () =>

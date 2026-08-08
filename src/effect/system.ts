@@ -116,6 +116,8 @@ export function runtimeTextDirectoryNamePage(
 export interface SystemInfoShape {
   readonly architecture: string;
   readonly availableDiskBytes: (path: string) => Effect.Effect<number | undefined, unknown>;
+  /** Versioned cross-observer identity; optional for legacy injected SystemInfo adapters. */
+  readonly canonicalProcessStartIdentity?: (processId: number) => Effect.Effect<string | undefined>;
   readonly currentDirectory: () => string;
   readonly environment: () => NodeJS.ProcessEnv;
   readonly executablePath: string;
@@ -229,9 +231,13 @@ export class SystemInfo extends Context.Service<SystemInfo, SystemInfoShape>()('
       const processStartIdentity = yield* makeCachedProcessStartIdentityResolver(process.pid, processId =>
         readProcessStartIdentity(processId, runtimePlatform, process.env),
       );
+      const canonicalProcessStartIdentity = yield* makeCachedProcessStartIdentityResolver(process.pid, processId =>
+        readCanonicalProcessStartIdentity(processId, runtimePlatform, process.env),
+      );
       return SystemInfo.of({
         architecture: runtimeArchitecture,
         availableDiskBytes: path => availableDiskBytes(path, runtimePlatform, process.env),
+        canonicalProcessStartIdentity,
         currentDirectory: () => process.cwd(),
         environment: () => process.env,
         executablePath: process.execPath,
@@ -319,7 +325,11 @@ export class SystemInfo extends Context.Service<SystemInfo, SystemInfoShape>()('
 const DISK_QUERY_TIMEOUT_MS = 10_000;
 const DISK_QUERY_OUTPUT_LIMIT_BYTES = 64 * 1_024;
 const KIBIBYTE_BYTES = 1024;
+const DARWIN_PROCESS_START_OUTPUT_PATTERN =
+  /^ {0,4}((?:Sun|Mon|Tue|Wed|Thu|Fri|Sat) (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) (?: [1-9]|[12][0-9]|3[01]) (?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9] [0-9]{4}) {0,4}\n?$/;
+const PROCESS_IDENTITY_QUERY_OUTPUT_LIMIT_BYTES = 4 * 1_024;
 const PROCESS_IDENTITY_QUERY_TIMEOUT_MS = 5_000;
+const WINDOWS_PROCESS_START_OUTPUT_PATTERN = /^(0|[1-9][0-9]{0,19})(?:\r?\n)?$/;
 const MAXIMUM_SAFE_BYTE_COUNT = BigInt(Number.MAX_SAFE_INTEGER);
 const NATIVE_STATFS_UNAVAILABLE_CODES = new Set([
   'ENOSYS',
@@ -550,10 +560,13 @@ function spawnText(command: readonly string[], environment: NodeJS.ProcessEnv): 
   return output;
 }
 
-function readProcessStartIdentity(
+/** @internal Exported for real-process deadline and cancellation regressions. */
+export function readProcessStartIdentity(
   processId: number,
   platform: NodeJS.Platform,
   environment: NodeJS.ProcessEnv,
+  timeoutMilliseconds = PROCESS_IDENTITY_QUERY_TIMEOUT_MS,
+  darwinProcessCommand = '/bin/ps',
 ): Effect.Effect<string | undefined> {
   if (!Number.isSafeInteger(processId) || processId <= 0) return Effect.succeed(undefined);
   if (platform === 'linux') {
@@ -568,23 +581,75 @@ function readProcessStartIdentity(
   if (platform === 'win32') {
     return readWindowsProcessStartIdentity(processId);
   }
-  return Effect.sync(() => {
-    try {
-      const command = platform === 'darwin' ? ['ps', '-o', 'lstart=', '-p', String(processId)] : undefined;
-      if (!command) return undefined;
-      const result = Bun.spawnSync({
-        cmd: command,
-        env: environment,
-        stderr: 'pipe',
-        stdout: 'pipe',
-        timeout: PROCESS_IDENTITY_QUERY_TIMEOUT_MS,
-      });
-      if (result.exitCode !== 0) return undefined;
-      return parseProcessStartIdentityOutput(platform, result.stdout.toString());
-    } catch {
-      return undefined;
-    }
-  });
+  if (platform !== 'darwin') return Effect.succeed(undefined);
+  return readDarwinProcessStartIdentity(processId, environment, timeoutMilliseconds, darwinProcessCommand, output =>
+    parseProcessStartIdentityOutput('darwin', output),
+  );
+}
+
+/** @internal Exported for the canonical channel's real-process regressions. */
+export function readCanonicalProcessStartIdentity(
+  processId: number,
+  platform: NodeJS.Platform,
+  environment: NodeJS.ProcessEnv,
+  timeoutMilliseconds = PROCESS_IDENTITY_QUERY_TIMEOUT_MS,
+  darwinProcessCommand = '/bin/ps',
+): Effect.Effect<string | undefined> {
+  if (platform !== 'darwin') {
+    return readProcessStartIdentity(processId, platform, environment, timeoutMilliseconds, darwinProcessCommand);
+  }
+  if (!Number.isSafeInteger(processId) || processId <= 0) return Effect.succeed(undefined);
+  return readDarwinProcessStartIdentity(
+    processId,
+    {...environment, LANG: 'C', LC_ALL: 'C', TZ: 'UTC'},
+    timeoutMilliseconds,
+    darwinProcessCommand,
+    output => parseCanonicalProcessStartIdentityOutput('darwin', output),
+  );
+}
+
+function readDarwinProcessStartIdentity(
+  processId: number,
+  environment: NodeJS.ProcessEnv,
+  timeoutMilliseconds: number,
+  command: string,
+  parseOutput: (output: string) => string | undefined,
+): Effect.Effect<string | undefined> {
+  return Effect.acquireUseRelease(
+    Effect.try({
+      try: () =>
+        Bun.spawn({
+          cmd: [command, '-o', 'lstart=', '-p', String(processId)],
+          env: environment,
+          killSignal: 'SIGKILL',
+          maxBuffer: PROCESS_IDENTITY_QUERY_OUTPUT_LIMIT_BYTES,
+          stderr: 'ignore',
+          stdin: 'ignore',
+          stdout: 'pipe',
+        }),
+      catch: cause => cause,
+    }),
+    child =>
+      Effect.tryPromise({
+        try: async () => {
+          const [exitCode, output] = await Promise.all([child.exited, new Response(child.stdout).text()]);
+          return exitCode === 0 ? parseOutput(output) : undefined;
+        },
+        catch: cause => cause,
+      }),
+    child =>
+      Effect.sync(() => {
+        if (child.exitCode !== null) return;
+        try {
+          child.kill('SIGKILL');
+        } catch {
+          // The process may exit while its finalizer runs.
+        }
+      }),
+  ).pipe(
+    Effect.timeoutOrElse({duration: timeoutMilliseconds, orElse: () => Effect.succeed(undefined)}),
+    Effect.catch(() => Effect.succeed(undefined)),
+  );
 }
 
 export function parseLinuxProcessStartIdentity(stat: string): string | undefined {
@@ -602,6 +667,21 @@ export function parseProcessStartIdentityOutput(platform: NodeJS.Platform, outpu
   if (platform !== 'darwin' && platform !== 'win32') return undefined;
   const identity = output.trim();
   return identity ? `${platform}:${identity}` : undefined;
+}
+
+export function parseCanonicalProcessStartIdentityOutput(
+  platform: NodeJS.Platform,
+  output: string,
+): string | undefined {
+  if (platform === 'darwin') {
+    const identity = DARWIN_PROCESS_START_OUTPUT_PATTERN.exec(output)?.[1];
+    return identity ? `darwin-v2:${identity}` : undefined;
+  }
+  if (platform === 'win32') {
+    const identity = WINDOWS_PROCESS_START_OUTPUT_PATTERN.exec(output)?.[1];
+    return identity ? `win32:${identity}` : undefined;
+  }
+  return undefined;
 }
 
 export function resolveHomeDirectory(environment: NodeJS.ProcessEnv, platform: NodeJS.Platform): string {
