@@ -3992,7 +3992,7 @@ function missingReleaseSourceProvenance(artifact: BenchmarkArtifactV1): readonly
   const resolvedSha = artifact.metadata.releaseEvidenceResolvedSha;
   const sha = artifact.metadata.releaseEvidenceSha;
   return typeof ref === 'string' &&
-    /^refs\/tags\/v4\.0\.0(?:-(?:beta|rc)\.\d+)?$/.test(ref) &&
+    THREADNOTE_4_RELEASE_REF_PATTERN.test(ref) &&
     typeof sha === 'string' &&
     EXACT_GIT_COMMIT_PATTERN.test(sha) &&
     resolvedSha === sha &&

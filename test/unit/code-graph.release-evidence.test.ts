@@ -197,6 +197,28 @@ describe('code graph release evidence', () => {
     ).toThrow(/clean exact release source provenance/);
   });
 
+  it('accepts only exact Threadnote 4 release tags in completed evidence', () => {
+    const artifact = benchmarkArtifact(
+      requiredReleaseMeasurements(PRODUCTION_RELEASE_EVIDENCE_MEASUREMENTS),
+      {
+        coldMaterializationStorageMode: 'direct-persistent',
+        oneFileReindexMaterializationMode: 'incremental-overlay',
+        sameOverlayReferenceMaterializationMode: 'full',
+        sqliteVersion: '3.49.1',
+      },
+      'code-graph-production-large-v1',
+    );
+    const withRef = (releaseEvidenceRef: string): BenchmarkArtifactV1 => ({
+      ...artifact,
+      metadata: {...artifact.metadata, releaseEvidenceRef},
+    });
+
+    expect(() => assertProductionReleaseEvidence(withRef('refs/tags/v4.0.10'))).not.toThrow();
+    for (const ref of ['refs/tags/v4.0.10-beta', 'refs/tags/v3.0.10', 'refs/tags/v5.0.10', 'refs/heads/v4.0.10']) {
+      expect(() => assertProductionReleaseEvidence(withRef(ref))).toThrow(/clean exact release source provenance/);
+    }
+  });
+
   it('requires the declared release ref to resolve to the measured checkout commit', () => {
     const commit = '0123456789abcdef0123456789abcdef01234567';
     expect(resolvedReleaseEvidenceSource('refs/tags/v4.0.0-beta.30', commit, commit, commit, false)).toEqual({
