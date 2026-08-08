@@ -1,4 +1,5 @@
 import {readFile, readdir} from 'node:fs/promises';
+import {builtinModules} from 'node:module';
 import {dirname, join, relative} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {describe, expect, it} from 'vitest';
@@ -21,6 +22,26 @@ async function codeFiles(path: string): Promise<readonly string[]> {
 }
 
 const sourceFiles = () => codeFiles(sourceRoot);
+const nodeBuiltinModules = new Set(
+  builtinModules.filter(module => !module.startsWith('bun:')).map(module => module.replace(/^node:/, '')),
+);
+const moduleSpecifierScanners = {
+  js: new Bun.Transpiler({loader: 'js', logLevel: 'error'}),
+  jsx: new Bun.Transpiler({loader: 'jsx', logLevel: 'error', tsconfig: {compilerOptions: {jsx: 'react'}}}),
+  ts: new Bun.Transpiler({loader: 'ts', logLevel: 'error'}),
+  tsx: new Bun.Transpiler({loader: 'tsx', logLevel: 'error', tsconfig: {compilerOptions: {jsx: 'react'}}}),
+};
+
+function importedModuleSpecifiers(path: string, source: string): readonly string[] {
+  const loader = path.endsWith('.tsx') ? 'tsx' : path.endsWith('.ts') ? 'ts' : path.endsWith('.jsx') ? 'jsx' : 'js';
+  return moduleSpecifierScanners[loader].scanImports(source).map(imported => imported.path);
+}
+
+function isNodeBuiltinSpecifier(specifier: string): boolean {
+  if (specifier.startsWith('node:')) return true;
+  const root = specifier.split('/', 1)[0]!;
+  return nodeBuiltinModules.has(specifier) || nodeBuiltinModules.has(root);
+}
 
 describe('Effect architecture boundaries', () => {
   it('keeps the CLI free of generic Promise workflow bridges', async () => {
@@ -68,13 +89,68 @@ describe('Effect architecture boundaries', () => {
     }
   });
 
-  it('does not depend on Node built-ins in production source', async () => {
+  it('does not import or require Node built-ins in production source', async () => {
+    const importShapes = [
+      "import 'node:fs';",
+      "import {readFile} from 'fs/promises';",
+      "export {join} from 'path';",
+      "void import('node:url');",
+      "const os = require('os');",
+      "import fs = require('fs');",
+      "import external from 'external-package';",
+      "const ignored = `require('fs') ${`nested ${value}`}`;",
+      "import 'node:crypto';",
+    ].join('\n');
+    expect(importedModuleSpecifiers('builtin-shapes.ts', importShapes).filter(isNodeBuiltinSpecifier)).toEqual([
+      'node:fs',
+      'fs/promises',
+      'path',
+      'node:url',
+      'os',
+      'fs',
+      'node:crypto',
+    ]);
+
     for (const path of await sourceFiles()) {
       const source = await readFile(path, 'utf8');
-      expect(source, relative(repoRoot, path)).not.toMatch(
-        /(?:from\s+['"]node:|import\s*\(\s*['"]node:|require\s*\(\s*['"]node:)/,
+      expect(importedModuleSpecifiers(path, source).filter(isNodeBuiltinSpecifier), relative(repoRoot, path)).toEqual(
+        [],
       );
     }
+  });
+
+  it('keeps Bun structural built-ins inside the exact SystemInfo adapters', async () => {
+    const accesses: {module: string; path: string}[] = [];
+    for (const path of await sourceFiles()) {
+      const source = await readFile(path, 'utf8');
+      const relativePath = relative(repoRoot, path);
+      const mentions = source.match(/\bgetBuiltinModule\b/g)?.length ?? 0;
+      expect(mentions, relativePath).toBe(relativePath === 'src/effect/system.ts' ? 2 : 0);
+      const calls = [...source.matchAll(/process\.getBuiltinModule\(\s*['"]([^'"]+)['"]\s*\)/g)];
+      accesses.push(...calls.map(match => ({module: match[1]!, path: relativePath})));
+    }
+    expect(accesses).toEqual([
+      {module: 'fs', path: 'src/effect/system.ts'},
+      {module: 'path', path: 'src/effect/system.ts'},
+    ]);
+
+    const system = await readFile(join(sourceRoot, 'effect', 'system.ts'), 'utf8');
+    const nativeStatfsStart = system.indexOf('function nativeStatfs');
+    const fallbackStart = system.indexOf('export function legacyAvailableDiskBytes');
+    const defaultAdaptersStart = system.indexOf('const defaultDiskCapacityProbeAdapters');
+    expect(nativeStatfsStart).toBeGreaterThanOrEqual(0);
+    expect(fallbackStart).toBeGreaterThan(nativeStatfsStart);
+    expect(defaultAdaptersStart).toBeGreaterThan(fallbackStart);
+    const nativeStatfs = system.slice(nativeStatfsStart, fallbackStart);
+    const fallback = system.slice(fallbackStart, defaultAdaptersStart);
+    expect(nativeStatfs).toContain('Effect.tryPromise({');
+    expect(nativeStatfs).toContain('nativeFileSystemPromises.statfs!(path, {bigint: true})');
+    expect(nativeStatfs).not.toContain('Effect.try({');
+    expect(fallback).toContain('Effect.acquireUseRelease(');
+    expect(fallback).toContain('Bun.spawn({');
+    expect(fallback).toContain('maxBuffer: DISK_QUERY_OUTPUT_LIMIT_BYTES');
+    expect(fallback).toContain("child.kill('SIGKILL')");
+    expect(fallback).not.toContain('Bun.spawnSync(');
   });
 
   it('uses only Bun Effect platform adapters in production source', async () => {

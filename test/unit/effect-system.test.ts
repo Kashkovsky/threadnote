@@ -1,5 +1,8 @@
 import {it as effectIt} from '@effect/vitest';
-import {Deferred, Effect, Fiber} from 'effect';
+import {existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join, posix as posixPath, win32 as windowsPath} from 'node:path';
+import {Clock, Deferred, Effect, Fiber} from 'effect';
 import {TestClock} from 'effect/testing';
 import * as FC from 'effect/testing/FastCheck';
 import {describe, expect, it, vi} from 'vitest';
@@ -10,15 +13,46 @@ import {
 } from '../../src/effect/linux_cgroup.js';
 import {
   availableDiskBytesFromStatfs,
+  legacyAvailableDiskBytes,
   parsePosixAvailableDiskBytes,
   parseLinuxProcessStartIdentity,
   parseProcessStartIdentityOutput,
   parseWindowsAvailableDiskBytes,
+  platformPathFor,
   probeAvailableDiskBytes,
   resolveHomeDirectory,
   makeCachedProcessStartIdentityResolver,
   SystemInfo,
 } from '../../src/effect/system.js';
+
+describe('SystemInfo structural path adapter', () => {
+  effectIt.effect.prop(
+    'matches the platform path contract across drives, UNC roots, separators, dots, and trailing separators',
+    {
+      child: FC.stringMatching(/^[A-Za-z0-9._-]{0,12}$/),
+      platform: FC.constantFrom('linux' as const, 'win32' as const),
+      prefix: FC.constantFrom('', '/', '//', '\\', 'C:\\', 'c:/', '\\\\server\\share\\', '//server/share/'),
+      segments: FC.array(FC.constantFrom('.', '..', 'a', 'B', 'space name', 'é', '_'), {
+        maxLength: 8,
+      }),
+      separator: FC.constantFrom('/', '\\', '//', '\\\\'),
+      trailing: FC.constantFrom('', '/', '\\'),
+    },
+    ({child, platform, prefix, segments, separator, trailing}) =>
+      Effect.sync(() => {
+        const candidate = `${prefix}${segments.join(separator)}${trailing}`;
+        const actual = platformPathFor(platform);
+        const expected = platform === 'win32' ? windowsPath : posixPath;
+
+        expect(actual.normalize(candidate)).toBe(expected.normalize(candidate));
+        expect(actual.isAbsolute(candidate)).toBe(expected.isAbsolute(candidate));
+        expect(actual.basename(candidate)).toBe(expected.basename(candidate));
+        expect(actual.dirname(candidate)).toBe(expected.dirname(candidate));
+        expect(actual.join(candidate, child)).toBe(expected.join(candidate, child));
+      }),
+    {fastCheck: {numRuns: 200}},
+  );
+});
 
 describe('SystemInfo home directory resolution', () => {
   it('ignores empty Windows home variables', () => {
@@ -240,10 +274,50 @@ describe('SystemInfo disk capacity parsing', () => {
     }),
   );
 
+  effectIt.effect('preempts and kills the real asynchronous fallback at the shared deadline', () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        if (process.platform === 'win32') return;
+        yield* Effect.acquireUseRelease(
+          Effect.sync(() => {
+            const root = mkdtempSync(join(tmpdir(), 'threadnote-disk-fallback-'));
+            const processIdPath = join(root, 'process.pid');
+            writeFileSync(
+              join(root, 'df'),
+              '#!/bin/sh\nprintf \'%s\' "$$" > "$THREADNOTE_DISK_PROBE_PID"\nexec /bin/sleep 30\n',
+              {mode: 0o700},
+            );
+            return {processIdPath, root};
+          }),
+          fixture =>
+            Effect.gen(function* () {
+              const startedAt = yield* Clock.currentTimeMillis;
+              const fiber = yield* probeAvailableDiskBytes(
+                '/private/blocked-fallback-fixture',
+                process.platform,
+                {...process.env, PATH: fixture.root, THREADNOTE_DISK_PROBE_PID: fixture.processIdPath},
+                {
+                  fallback: legacyAvailableDiskBytes,
+                  statfs: () => Effect.fail(Object.assign(new Error('Native statfs unavailable.'), {code: 'ENOSYS'})),
+                },
+                750,
+              ).pipe(Effect.forkChild({startImmediately: true}));
+              const processId = yield* waitForRecordedProcessId(fixture.processIdPath, 500);
+
+              expect(yield* Fiber.join(fiber)).toBeUndefined();
+              expect((yield* Clock.currentTimeMillis) - startedAt).toBeLessThan(2_000);
+              yield* waitForProcessExit(processId, 2_000);
+            }),
+          fixture => Effect.sync(() => rmSync(fixture.root, {force: true, recursive: true})),
+        );
+      }),
+    ),
+  );
+
   effectIt.effect('launches no subprocesses across a bounded supported-host probe load', () =>
     Effect.acquireUseRelease(
-      Effect.sync(() => vi.spyOn(Bun, 'spawnSync')),
-      spawnSyncSpy =>
+      Effect.sync(() => ({spawn: vi.spyOn(Bun, 'spawn'), spawnSync: vi.spyOn(Bun, 'spawnSync')})),
+      spies =>
         Effect.gen(function* () {
           if (process.platform !== 'darwin' && process.platform !== 'linux') return;
           const system = yield* SystemInfo;
@@ -256,12 +330,51 @@ describe('SystemInfo disk capacity parsing', () => {
           expect(capacities.every(value => value !== undefined && Number.isSafeInteger(value) && value >= 0)).toBe(
             true,
           );
-          expect(spawnSyncSpy).not.toHaveBeenCalled();
+          expect(spies.spawn).not.toHaveBeenCalled();
+          expect(spies.spawnSync).not.toHaveBeenCalled();
         }).pipe(Effect.provide(SystemInfo.layer)),
-      spawnSyncSpy => Effect.sync(() => spawnSyncSpy.mockRestore()),
+      spies =>
+        Effect.sync(() => {
+          spies.spawn.mockRestore();
+          spies.spawnSync.mockRestore();
+        }),
     ),
   );
 });
+
+function waitForRecordedProcessId(path: string, timeoutMilliseconds: number) {
+  return Effect.gen(function* () {
+    const deadline = (yield* Clock.currentTimeMillis) + timeoutMilliseconds;
+    while ((yield* Clock.currentTimeMillis) < deadline) {
+      if (existsSync(path)) {
+        const processId = Number(readFileSync(path, 'utf8').trim());
+        if (Number.isSafeInteger(processId) && processId > 0) return processId;
+      }
+      yield* Effect.sleep(10);
+    }
+    return yield* Effect.fail(new Error('Timed out waiting for the fallback process to start.'));
+  });
+}
+
+function waitForProcessExit(processId: number, timeoutMilliseconds: number) {
+  return Effect.gen(function* () {
+    const deadline = (yield* Clock.currentTimeMillis) + timeoutMilliseconds;
+    while ((yield* Clock.currentTimeMillis) < deadline) {
+      if (!isProcessRunning(processId)) return;
+      yield* Effect.sleep(10);
+    }
+    return yield* Effect.fail(new Error('Timed out waiting for the fallback process to exit.'));
+  });
+}
+
+function isProcessRunning(processId: number): boolean {
+  try {
+    process.kill(processId, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 describe('Linux cgroup effective memory', () => {
   effectIt.prop(

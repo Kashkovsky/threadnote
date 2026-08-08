@@ -1,10 +1,15 @@
-import {opendir, lstat} from 'node:fs/promises';
-import {isAbsolute, join, normalize} from 'node:path';
-import type {BigIntStats, Dirent} from 'node:fs';
 import {Effect, FileSystem, Option, Path} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {CommandTimedOut, runBinaryCommandEffect} from '../effect/command.js';
-import {SystemInfo, type SystemInfoShape} from '../effect/system.js';
+import {
+  platformPathFor,
+  runtimeDirectoryNamePage,
+  runtimeLstat,
+  runtimePlatform,
+  SystemInfo,
+  type RuntimeBigIntStats,
+  type SystemInfoShape,
+} from '../effect/system.js';
 import {CODE_GRAPH_GIT_WORKTREE_REGISTRATION_WORKER_ARGUMENT} from '../worker_protocol.js';
 import type {RepositoryIdentity} from './types.js';
 
@@ -427,11 +432,12 @@ async function scanCodeGraphGitWorktreeRegistryTargetSets(
   adminNameKeySets: readonly (readonly string[])[],
 ): Promise<CodeGraphGitWorktreeRegistryBatchObservation> {
   try {
+    const path = platformPathFor(runtimePlatform);
     const commonBefore = await lstatStableDirectory(gitCommonDirectory);
-    const registryRoot = join(gitCommonDirectory, 'worktrees');
-    let rootBefore: BigIntStats;
+    const registryRoot = path.join(gitCommonDirectory, 'worktrees');
+    let rootBefore: RuntimeBigIntStats;
     try {
-      rootBefore = await lstat(registryRoot, {bigint: true});
+      rootBefore = await runtimeLstat(registryRoot);
     } catch (cause) {
       if (!isNotFound(cause)) return {reason: 'unavailable', state: 'unknown'};
       const commonAfter = await lstatStableDirectory(gitCommonDirectory);
@@ -445,7 +451,9 @@ async function scanCodeGraphGitWorktreeRegistryTargetSets(
         state: 'complete',
       };
     }
-    if (!rootBefore.isDirectory() || rootBefore.isSymbolicLink()) return {reason: 'ambiguous', state: 'unknown'};
+    if (!rootBefore.isDirectory() || rootBefore.isSymbolicLink()) {
+      return {reason: 'ambiguous', state: 'unknown'};
+    }
 
     const exactEntryKeys: string[] = [];
     let entryCount = 0;
@@ -455,17 +463,12 @@ async function scanCodeGraphGitWorktreeRegistryTargetSets(
     for (const [index, keys] of adminNameKeySets.entries()) {
       for (const key of keys) targetIndexesByKey.set(key, [...(targetIndexesByKey.get(key) ?? []), index]);
     }
-    const directory = await opendir(registryRoot, {
-      bufferSize: 32,
-      // Node and Bun both support the documented buffer sentinel at runtime;
-      // the generic Node declaration narrows this field to text encodings.
-      encoding: (process.platform === 'win32' ? 'utf8' : 'buffer') as BufferEncoding,
-    });
-    for await (const entry of directory as AsyncIterable<Dirent<string | Buffer> | Uint8Array>) {
-      // Bun 1.3 yields the raw Uint8Array directly for encoding:'buffer'; Node
-      // yields a Dirent whose name is a Buffer. Accept both without decoding.
-      const name = entry instanceof Uint8Array ? entry : entry.name;
-      const nameBytes = typeof name === 'string' ? UTF8.encode(name) : new Uint8Array(name);
+    const entries = await runtimeDirectoryNamePage(
+      registryRoot,
+      CODE_GRAPH_GIT_WORKTREE_REGISTRATION_LIMITS.maxAdminNames,
+    );
+    if (entries.overflow) return {reason: 'ambiguous', state: 'unknown'};
+    for (const nameBytes of entries.names) {
       entryCount += 1;
       totalNameBytes += nameBytes.byteLength;
       if (
@@ -484,7 +487,7 @@ async function scanCodeGraphGitWorktreeRegistryTargetSets(
     }
 
     const [rootAfter, commonAfter] = await Promise.all([
-      lstat(registryRoot, {bigint: true}),
+      runtimeLstat(registryRoot),
       lstatStableDirectory(gitCommonDirectory),
     ]);
     if (!sameStableStats(rootBefore, rootAfter) || !sameStableStats(commonBefore, commonAfter)) {
@@ -858,8 +861,8 @@ function inspectCanonicalDirectory(fs: FileSystem.FileSystem, candidate: string)
   });
 }
 
-async function lstatStableDirectory(candidate: string): Promise<BigIntStats> {
-  const info = await lstat(candidate, {bigint: true});
+async function lstatStableDirectory(candidate: string): Promise<RuntimeBigIntStats> {
+  const info = await runtimeLstat(candidate);
   if (!info.isDirectory() || info.isSymbolicLink() || info.dev === 0n || info.ino === 0n) {
     throw new Error('unavailable');
   }
@@ -868,14 +871,14 @@ async function lstatStableDirectory(candidate: string): Promise<BigIntStats> {
 
 async function directWorktreePathState(candidate: string): Promise<'missing' | 'present' | 'unknown'> {
   try {
-    await lstat(candidate);
+    await runtimeLstat(candidate);
     return 'present';
   } catch (cause) {
     return isNotFound(cause) ? 'missing' : 'unknown';
   }
 }
 
-function sameStableStats(left: BigIntStats, right: BigIntStats): boolean {
+function sameStableStats(left: RuntimeBigIntStats, right: RuntimeBigIntStats): boolean {
   return (
     left.isDirectory() &&
     right.isDirectory() &&
@@ -890,7 +893,7 @@ function sameStableStats(left: BigIntStats, right: BigIntStats): boolean {
   );
 }
 
-function statsIdentity(kind: 'directory' | 'missing', checkoutId: string, stats: BigIntStats): string {
+function statsIdentity(kind: 'directory' | 'missing', checkoutId: string, stats: RuntimeBigIntStats): string {
   return hashParts(`threadnote-git-worktree-registry-${kind}-identity-v1`, [
     checkoutId,
     String(stats.dev),
@@ -912,12 +915,13 @@ function hashParts(domain: string, parts: readonly string[]): string {
 }
 
 function isSafeAbsolutePath(value: unknown): value is string {
+  const path = platformPathFor(runtimePlatform);
   return (
     typeof value === 'string' &&
     value.length > 0 &&
     UTF8.encode(value).byteLength <= 4_096 &&
-    isAbsolute(value) &&
-    normalize(value) === value &&
+    path.isAbsolute(value) &&
+    path.normalize(value) === value &&
     !value.includes('\0') &&
     !value.includes('\r') &&
     !value.includes('\n')

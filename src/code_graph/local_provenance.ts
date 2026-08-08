@@ -988,19 +988,14 @@ function inspectPrivateContainedDirectory(
   canonicalParent: string,
   directory: string,
 ) {
-  return inspectContainedDirectory(fs, path, canonicalParent, directory).pipe(
-    Effect.flatMap(canonical =>
-      fs
-        .stat(canonical)
-        .pipe(
-          Effect.flatMap(info =>
-            (yieldPlatformMode(info.mode) & 0o777) === 0o700
-              ? Effect.succeed(canonical)
-              : Effect.fail(new Error('Code graph local provenance directory permissions are not private.')),
-          ),
-        ),
-    ),
-  );
+  return Effect.gen(function* () {
+    const canonical = yield* inspectContainedDirectory(fs, path, canonicalParent, directory);
+    const info = yield* fs.stat(canonical);
+    const system = yield* SystemInfo;
+    const mode = system.platform === 'win32' ? 0o700 : info.mode;
+    if ((mode & 0o777) === 0o700) return canonical;
+    return yield* Effect.fail(new Error('Code graph local provenance directory permissions are not private.'));
+  });
 }
 
 function inspectContainedDirectory(
@@ -1023,10 +1018,6 @@ function inspectContainedDirectory(
     }
     return canonical;
   });
-}
-
-function yieldPlatformMode(mode: number): number {
-  return process.platform === 'win32' ? 0o700 : mode;
 }
 
 function associationForRecord(path: Path.Path, record: CodeGraphLocalProvenanceRecord, state: 'missing' | 'verified') {

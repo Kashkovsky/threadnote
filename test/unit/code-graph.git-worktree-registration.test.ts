@@ -33,7 +33,7 @@ import {
   type CodeGraphWorktreeReconciliationAuthorityRequest,
 } from '../../src/code_graph/git_worktree_registration.js';
 import {CommandExecutor} from '../../src/effect/command.js';
-import {SystemInfo} from '../../src/effect/system.js';
+import {runtimeDirectoryNamePage, SystemInfo} from '../../src/effect/system.js';
 import {resolveRepositoryIdentity} from '../../src/code_graph/repository.js';
 import {CODE_GRAPH_GIT_WORKTREE_REGISTRATION_WORKER_ARGUMENT} from '../../src/worker_protocol.js';
 import {runEffect} from '../helpers/effect-runtime.js';
@@ -175,18 +175,24 @@ describe('code graph common-gitdir worktree authority', () => {
     },
   );
 
-  it.skipIf(process.platform !== 'linux')(
-    'enumerates unrelated invalid UTF-8 POSIX names without decoding or opening them',
-    async () => {
+  effectIt.effect('enumerates unrelated invalid UTF-8 POSIX names without decoding or opening them', () =>
+    Effect.gen(function* () {
+      if (process.platform !== 'linux') return;
       const common = commonDirectoryFixture();
       const root = Buffer.from(join(common, 'worktrees'));
       const invalidChild = Buffer.concat([root, Buffer.from('/'), Buffer.from([0xff, 0xfe])]);
       mkdirSync(invalidChild);
 
-      const observation = await scanCodeGraphGitWorktreeRegistry(request(common, 'absent-target'));
+      const page = yield* Effect.promise(() => runtimeDirectoryNamePage(join(common, 'worktrees'), 1));
+      expect(page).toMatchObject({overflow: false});
+      expect(page.names.map(name => [...name])).toEqual([[0xff, 0xfe]]);
+
+      const observation = yield* Effect.promise(() =>
+        scanCodeGraphGitWorktreeRegistry(request(common, 'absent-target')),
+      );
 
       expect(observation).toMatchObject({entryCount: 1, state: 'absent'});
-    },
+    }),
   );
 
   it('treats a stably missing registry root as complete-empty', async () => {
@@ -214,6 +220,20 @@ describe('code graph common-gitdir worktree authority', () => {
 
     expect(observation).toEqual({reason: 'ambiguous', state: 'unknown'});
   });
+
+  effectIt.effect('materializes at most the requested raw-name page before reporting overflow', () =>
+    Effect.gen(function* () {
+      const common = commonDirectoryFixture();
+      for (let index = 0; index < 16; index += 1) {
+        writeFileSync(join(common, 'worktrees', `bounded-${String(index).padStart(2, '0')}`), '');
+      }
+
+      const page = yield* Effect.promise(() => runtimeDirectoryNamePage(join(common, 'worktrees'), 4));
+
+      expect(page.overflow).toBe(true);
+      expect(page.names).toHaveLength(4);
+    }),
+  );
 
   it('parses one bounded exact git-dir record without trimming path bytes', () => {
     expect(parseBoundedGitDirectoryOutput(Buffer.from('/private/worktree admin \n'))).toBe('/private/worktree admin ');

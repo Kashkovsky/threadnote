@@ -1,7 +1,117 @@
-import * as NodeFileSystemPromises from 'node:fs/promises';
 import {Context, Deferred, Effect, Exit, Layer, Ref} from 'effect';
 import {effectiveLinuxMemoryBytes, linuxCgroupMemoryFiles} from './linux_cgroup.js';
 import {readWindowsHardwareInfo, readWindowsProcessStartIdentity} from './windows_system.js';
+
+export interface PlatformPathShape {
+  readonly basename: (path: string) => string;
+  readonly dirname: (path: string) => string;
+  readonly isAbsolute: (path: string) => boolean;
+  readonly join: (...paths: readonly string[]) => string;
+  readonly normalize: (path: string) => string;
+}
+
+interface NativeFileSystemPromisesShape {
+  readonly lstat: (path: string, options: {readonly bigint: true}) => Promise<RuntimeBigIntStats>;
+  readonly opendir: (
+    path: string,
+    options: {readonly bufferSize: number; readonly encoding: 'buffer' | 'utf8'},
+  ) => Promise<RuntimeDirectoryHandle>;
+  readonly statfs?: (path: string, options: {readonly bigint: true}) => Promise<unknown>;
+}
+
+interface NativePathModuleShape {
+  readonly posix: PlatformPathShape;
+  readonly win32: PlatformPathShape;
+}
+
+export interface RuntimeBigIntStats {
+  readonly ctimeNs: bigint;
+  readonly dev: bigint;
+  readonly ino: bigint;
+  readonly mode: bigint;
+  readonly mtimeNs: bigint;
+  readonly size: bigint;
+  readonly isDirectory: () => boolean;
+  readonly isSymbolicLink: () => boolean;
+}
+
+interface RuntimeDirectoryEntry {
+  readonly name: string | Uint8Array;
+}
+
+interface RuntimeDirectoryHandle extends AsyncIterable<RuntimeDirectoryEntry | Uint8Array> {
+  readonly close: () => Promise<void> | void;
+}
+
+export interface RuntimeDirectoryNamePage {
+  readonly names: readonly Uint8Array[];
+  readonly overflow: boolean;
+}
+
+export interface RuntimeTextDirectoryNamePage {
+  readonly names: readonly string[];
+  readonly overflow: boolean;
+}
+
+/** Host facts and Bun's Node-compatible structural adapters stay inside SystemInfo's runtime boundary. */
+export const runtimeArchitecture = process.arch;
+export const runtimePlatform = process.platform;
+const nativeFileSystemPromises = (process.getBuiltinModule('fs') as {readonly promises: NativeFileSystemPromisesShape})
+  .promises;
+const nativePathModule = process.getBuiltinModule('path') as NativePathModuleShape;
+
+export function platformPathFor(platform: NodeJS.Platform): PlatformPathShape {
+  return platform === 'win32' ? nativePathModule.win32 : nativePathModule.posix;
+}
+
+export function runtimeLstat(path: string): Promise<RuntimeBigIntStats> {
+  return nativeFileSystemPromises.lstat(path, {bigint: true});
+}
+
+/** Raw POSIX directory names stay bytes; enumeration stops immediately after the first over-limit entry. */
+export async function runtimeDirectoryNamePage(path: string, entryLimit: number): Promise<RuntimeDirectoryNamePage> {
+  if (!Number.isSafeInteger(entryLimit) || entryLimit < 0) throw new Error('Runtime directory entry limit is invalid.');
+  const directory = await nativeFileSystemPromises.opendir(path, {
+    bufferSize: 32,
+    encoding: runtimePlatform === 'win32' ? 'utf8' : 'buffer',
+  });
+  const names: Uint8Array[] = [];
+  try {
+    for await (const entry of directory) {
+      const name = entry instanceof Uint8Array ? entry : entry.name;
+      if (names.length === entryLimit) return {names, overflow: true};
+      names.push(typeof name === 'string' ? new TextEncoder().encode(name) : Uint8Array.from(name));
+    }
+  } finally {
+    try {
+      await directory.close();
+    } catch {
+      // A fully consumed async directory iterator is already closed.
+    }
+  }
+  return {names, overflow: false};
+}
+
+/** Effect-native UTF-8 view for bounded application ledgers that reject non-text names. */
+export function runtimeTextDirectoryNamePage(
+  path: string,
+  entryLimit: number,
+): Effect.Effect<RuntimeTextDirectoryNamePage, unknown> {
+  return Effect.tryPromise({
+    try: () => runtimeDirectoryNamePage(path, entryLimit),
+    catch: cause => cause,
+  }).pipe(
+    Effect.flatMap(page =>
+      Effect.try({
+        try: () => {
+          const decoder = new TextDecoder('utf-8', {fatal: true, ignoreBOM: true});
+          return {names: page.names.map(name => decoder.decode(name)), overflow: page.overflow};
+        },
+        catch: cause => cause,
+      }),
+    ),
+  );
+}
 
 export interface SystemInfoShape {
   readonly architecture: string;
@@ -115,17 +225,17 @@ export class SystemInfo extends Context.Service<SystemInfo, SystemInfoShape>()('
   static readonly layer = Layer.effect(
     SystemInfo,
     Effect.gen(function* () {
-      const homeDirectory = resolveHomeDirectory(process.env, process.platform);
+      const homeDirectory = resolveHomeDirectory(process.env, runtimePlatform);
       const processStartIdentity = yield* makeCachedProcessStartIdentityResolver(process.pid, processId =>
-        readProcessStartIdentity(processId, process.platform, process.env),
+        readProcessStartIdentity(processId, runtimePlatform, process.env),
       );
       return SystemInfo.of({
-        architecture: process.arch,
-        availableDiskBytes: path => availableDiskBytes(path, process.platform, process.env),
+        architecture: runtimeArchitecture,
+        availableDiskBytes: path => availableDiskBytes(path, runtimePlatform, process.env),
         currentDirectory: () => process.cwd(),
         environment: () => process.env,
         executablePath: process.execPath,
-        hardwareInfo: () => readSystemHardwareInfo(process.platform, process.env),
+        hardwareInfo: () => readSystemHardwareInfo(runtimePlatform, process.env),
         homeDirectory,
         isProcessRunning: processId => {
           try {
@@ -150,8 +260,8 @@ export class SystemInfo extends Context.Service<SystemInfo, SystemInfoShape>()('
         },
         processStartIdentity,
         runtimeVersion: Bun.version,
-        pathDelimiter: process.platform === 'win32' ? ';' : ':',
-        platform: process.platform,
+        pathDelimiter: runtimePlatform === 'win32' ? ';' : ':',
+        platform: runtimePlatform,
         processId: process.pid,
         processArguments: process.argv,
         readLine: (prompt, onLine) => {
@@ -198,7 +308,7 @@ export class SystemInfo extends Context.Service<SystemInfo, SystemInfoShape>()('
           process.env.TMPDIR ??
           process.env.TEMP ??
           process.env.TMP ??
-          (process.platform === 'win32' ? process.cwd() : '/tmp'),
+          (runtimePlatform === 'win32' ? process.cwd() : '/tmp'),
         userId: process.getuid?.(),
         userName: process.env.USER ?? process.env.USERNAME ?? 'unknown',
       });
@@ -207,6 +317,7 @@ export class SystemInfo extends Context.Service<SystemInfo, SystemInfoShape>()('
 }
 
 const DISK_QUERY_TIMEOUT_MS = 10_000;
+const DISK_QUERY_OUTPUT_LIMIT_BYTES = 64 * 1_024;
 const KIBIBYTE_BYTES = 1024;
 const PROCESS_IDENTITY_QUERY_TIMEOUT_MS = 5_000;
 const MAXIMUM_SAFE_BYTE_COUNT = BigInt(Number.MAX_SAFE_INTEGER);
@@ -266,48 +377,64 @@ export function availableDiskBytesFromStatfs(statistics: unknown): number | unde
 }
 
 function nativeStatfs(path: string) {
-  if (typeof NodeFileSystemPromises.statfs !== 'function') {
+  if (typeof nativeFileSystemPromises.statfs !== 'function') {
     return Effect.fail(new NativeStatfsUnavailableError());
   }
   return Effect.tryPromise({
-    try: () => NodeFileSystemPromises.statfs(path, {bigint: true}),
+    try: () => nativeFileSystemPromises.statfs!(path, {bigint: true}),
     catch: cause => cause,
   });
 }
 
-function legacyAvailableDiskBytes(path: string, platform: NodeJS.Platform, environment: NodeJS.ProcessEnv) {
-  return Effect.try({
-    try: () => {
-      const result =
-        platform === 'win32'
-          ? Bun.spawnSync({
-              cmd: [
-                'powershell.exe',
-                '-NoProfile',
-                '-NonInteractive',
-                '-Command',
-                '$root=[IO.Path]::GetPathRoot($env:THREADNOTE_DISK_PATH); ' +
-                  'if (-not $root) { exit 2 }; ' +
-                  '[Console]::Out.Write((Get-PSDrive -Name $root.Substring(0,1)).Free)',
-              ],
-              env: {...environment, THREADNOTE_DISK_PATH: path},
-              stderr: 'pipe',
-              stdout: 'pipe',
-              timeout: DISK_QUERY_TIMEOUT_MS,
-            })
-          : Bun.spawnSync({
-              cmd: ['df', '-Pk', path],
-              env: environment,
-              stderr: 'pipe',
-              stdout: 'pipe',
-              timeout: DISK_QUERY_TIMEOUT_MS,
-            });
-      if (result.exitCode !== 0) return undefined;
-      const output = result.stdout.toString().trim();
-      return platform === 'win32' ? parseWindowsAvailableDiskBytes(output) : parsePosixAvailableDiskBytes(output);
-    },
-    catch: () => undefined,
-  });
+/** @internal Exported for a real-process cancellation regression. */
+export function legacyAvailableDiskBytes(path: string, platform: NodeJS.Platform, environment: NodeJS.ProcessEnv) {
+  const command =
+    platform === 'win32'
+      ? [
+          'powershell.exe',
+          '-NoProfile',
+          '-NonInteractive',
+          '-Command',
+          '$root=[IO.Path]::GetPathRoot($env:THREADNOTE_DISK_PATH); ' +
+            'if (-not $root) { exit 2 }; ' +
+            '[Console]::Out.Write((Get-PSDrive -Name $root.Substring(0,1)).Free)',
+        ]
+      : ['df', '-Pk', path];
+  const childEnvironment = platform === 'win32' ? {...environment, THREADNOTE_DISK_PATH: path} : environment;
+  return Effect.acquireUseRelease(
+    Effect.try({
+      try: () =>
+        Bun.spawn({
+          cmd: command,
+          env: childEnvironment,
+          killSignal: 'SIGKILL',
+          maxBuffer: DISK_QUERY_OUTPUT_LIMIT_BYTES,
+          stderr: 'ignore',
+          stdin: 'ignore',
+          stdout: 'pipe',
+        }),
+      catch: cause => cause,
+    }),
+    child =>
+      Effect.tryPromise({
+        try: async () => {
+          const [exitCode, output] = await Promise.all([child.exited, new Response(child.stdout).text()]);
+          if (exitCode !== 0) return undefined;
+          const text = output.trim();
+          return platform === 'win32' ? parseWindowsAvailableDiskBytes(text) : parsePosixAvailableDiskBytes(text);
+        },
+        catch: cause => cause,
+      }),
+    child =>
+      Effect.sync(() => {
+        if (child.exitCode !== null) return;
+        try {
+          child.kill('SIGKILL');
+        } catch {
+          // The process may exit while its finalizer runs.
+        }
+      }),
+  );
 }
 
 const defaultDiskCapacityProbeAdapters: DiskCapacityProbeAdapters = {

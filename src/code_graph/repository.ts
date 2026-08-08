@@ -1,8 +1,7 @@
-import {posix as posixPath, win32 as windowsPath} from 'node:path';
 import {Effect, FileSystem, Path} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {runBinaryCommandEffect, runCommandEffect} from '../effect/command.js';
-import {SystemInfo} from '../effect/system.js';
+import {platformPathFor, SystemInfo} from '../effect/system.js';
 import {CodeGraphRepositoryError, type RepositoryIdentity, type RepositoryIdentityExpectation} from './types.js';
 
 const IDENTITY_FORMAT_VERSION = 1;
@@ -142,7 +141,7 @@ function parseRegisteredRepositoryWorktrees(
   if (body.length === 0) throw invalid();
   const records = body.split('\0\0');
   if (records.length > CODE_GRAPH_WORKTREE_REGISTRY_LIMITS.maxRecords) throw invalid();
-  const path = platform === 'win32' ? windowsPath : posixPath;
+  const path = platformPathFor(platform);
   const seen = new Set<string>();
   return records.map(record => {
     const fields = record.split('\0');
