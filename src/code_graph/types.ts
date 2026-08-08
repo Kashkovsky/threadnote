@@ -484,10 +484,101 @@ export class CodeGraphSnapshotUnavailable extends Error {
   override readonly name = 'CodeGraphSnapshotUnavailable';
 }
 
+export type CodeGraphStoreFailureCode =
+  | 'busy'
+  | 'confirmed-corruption'
+  | 'incompatible-schema'
+  | 'no-space'
+  | 'permission'
+  | 'schema-additive'
+  | 'transient-io'
+  | 'unknown';
+
+export type CodeGraphStoreRecovery =
+  | 'defer'
+  | 'diagnose'
+  | 'fix-permissions'
+  | 'free-space'
+  | 'manual-migration'
+  | 'manual-rebuild'
+  | 'migrate-additive'
+  | 'retry-read-only';
+
+export interface CodeGraphStoreErrorMetadata {
+  readonly code?: CodeGraphStoreFailureCode;
+  readonly operation?: string;
+  readonly recovery?: CodeGraphStoreRecovery;
+  readonly retryable?: boolean;
+}
+
 export class CodeGraphStoreError extends Error {
   override readonly name: string = 'CodeGraphStoreError';
+  readonly code: CodeGraphStoreFailureCode;
+  readonly operation: string;
+  readonly recovery: CodeGraphStoreRecovery;
+  readonly retryable: boolean;
+
+  constructor(message: string, metadata: CodeGraphStoreErrorMetadata = {}) {
+    super(message);
+    this.code = metadata.code ?? 'unknown';
+    this.operation = metadata.operation ?? 'code graph storage';
+    this.recovery = metadata.recovery ?? 'diagnose';
+    this.retryable = metadata.retryable ?? false;
+  }
 }
 
 export class CodeGraphStoreBusyError extends CodeGraphStoreError {
   override readonly name = 'CodeGraphStoreBusyError';
+
+  constructor(message: string, metadata: Pick<CodeGraphStoreErrorMetadata, 'operation'> = {}) {
+    super(message, {...metadata, code: 'busy', recovery: 'defer', retryable: true});
+  }
+}
+
+export class CodeGraphStoreSchemaAdditiveError extends CodeGraphStoreError {
+  override readonly name = 'CodeGraphStoreSchemaAdditiveError';
+
+  constructor(message: string, metadata: Pick<CodeGraphStoreErrorMetadata, 'operation'> = {}) {
+    super(message, {...metadata, code: 'schema-additive', recovery: 'migrate-additive', retryable: false});
+  }
+}
+
+export class CodeGraphStoreNoSpaceError extends CodeGraphStoreError {
+  override readonly name = 'CodeGraphStoreNoSpaceError';
+
+  constructor(message: string, metadata: Pick<CodeGraphStoreErrorMetadata, 'operation'> = {}) {
+    super(message, {...metadata, code: 'no-space', recovery: 'free-space', retryable: false});
+  }
+}
+
+export class CodeGraphStorePermissionError extends CodeGraphStoreError {
+  override readonly name = 'CodeGraphStorePermissionError';
+
+  constructor(message: string, metadata: Pick<CodeGraphStoreErrorMetadata, 'operation'> = {}) {
+    super(message, {...metadata, code: 'permission', recovery: 'fix-permissions', retryable: false});
+  }
+}
+
+export class CodeGraphStoreTransientIoError extends CodeGraphStoreError {
+  override readonly name = 'CodeGraphStoreTransientIoError';
+
+  constructor(message: string, metadata: Pick<CodeGraphStoreErrorMetadata, 'operation'> = {}) {
+    super(message, {...metadata, code: 'transient-io', recovery: 'retry-read-only', retryable: true});
+  }
+}
+
+export class CodeGraphStoreCorruptionError extends CodeGraphStoreError {
+  override readonly name = 'CodeGraphStoreCorruptionError';
+
+  constructor(message: string, metadata: Pick<CodeGraphStoreErrorMetadata, 'operation'> = {}) {
+    super(message, {...metadata, code: 'confirmed-corruption', recovery: 'manual-rebuild', retryable: false});
+  }
+}
+
+export class CodeGraphStoreIncompatibleSchemaError extends CodeGraphStoreError {
+  override readonly name = 'CodeGraphStoreIncompatibleSchemaError';
+
+  constructor(message: string, metadata: Pick<CodeGraphStoreErrorMetadata, 'operation'> = {}) {
+    super(message, {...metadata, code: 'incompatible-schema', recovery: 'manual-migration', retryable: false});
+  }
 }

@@ -23,14 +23,15 @@ import {
   type CodeGraphSqliteWriterTuning,
   type CodeGraphStagingProgress,
 } from '../../src/code_graph/store.js';
-import type {
-  CodeGraphEdge,
-  CodeGraphFileFacts,
-  CodeGraphInventoryFile,
-  CodeGraphReference,
-  CodeGraphSnapshot,
-  CodeGraphSymbol,
-  RepositoryIdentity,
+import {
+  CodeGraphStoreError,
+  type CodeGraphEdge,
+  type CodeGraphFileFacts,
+  type CodeGraphInventoryFile,
+  type CodeGraphReference,
+  type CodeGraphSnapshot,
+  type CodeGraphSymbol,
+  type RepositoryIdentity,
 } from '../../src/code_graph/types.js';
 import {discoverManifestWorkspace} from '../../src/code_graph/workspace.js';
 import {withExclusiveFileLock} from '../../src/effect/file_lock.js';
@@ -43,6 +44,17 @@ const temporaryRoots: string[] = [];
 afterEach(async () => {
   await Promise.all(temporaryRoots.splice(0).map(root => rm(root, {force: true, recursive: true})));
 });
+
+function observedStoreFailure(cause: unknown) {
+  if (!(cause instanceof CodeGraphStoreError)) throw cause;
+  return {
+    code: cause.code,
+    message: cause.message,
+    operation: cause.operation,
+    recovery: cause.recovery,
+    retryable: cause.retryable,
+  };
+}
 
 describe('code graph full-build materialization store', () => {
   it('uses bounded in-memory pager surfaces for a persistent full-build writer', async () => {
@@ -996,14 +1008,22 @@ describe('code graph full-build materialization store', () => {
 
     expect(ready?.state).toBe('ready');
     expect(readCompletedBuildRows(fixture.databasePath, snapshot.id).batches).toBe(1);
-    await expect(
-      runEffect(
+    const cleanupFailure = await runEffect(
+      Effect.match(
         Effect.gen(function* () {
           const store = yield* CodeGraphStore;
           yield* store.pruneRetiredSnapshots(fixture.databasePath);
         }),
+        {onFailure: observedStoreFailure, onSuccess: () => undefined},
       ),
-    ).rejects.toThrow(/injected post-ready cleanup failure/);
+    );
+    expect(cleanupFailure).toMatchObject({
+      code: 'unknown',
+      message: 'prune retired code graph snapshots failed with an unclassified storage error.',
+      recovery: 'diagnose',
+      retryable: false,
+    });
+    expect(cleanupFailure?.message).not.toContain(fixture.databasePath);
 
     const database = new Database(fixture.databasePath, {strict: true});
     database.exec('DROP TRIGGER reject_completed_receipt_cleanup');
@@ -2730,7 +2750,7 @@ describe('code graph full-build materialization store', () => {
             yield* store.stageActivationFacts(fixture.databasePath, [original], []);
             const duplicateFailure = yield* store.stageActivationFacts(fixture.databasePath, [duplicate], []).pipe(
               Effect.as(undefined),
-              Effect.catch(cause => Effect.succeed(cause instanceof Error ? cause.message : String(cause))),
+              Effect.catch(cause => Effect.succeed(observedStoreFailure(cause))),
             );
             const snapshot = readySnapshot(fixture.identity, 1, 0);
             yield* store.activateStaged(fixture.databasePath, fixture.identity, snapshot);
@@ -2743,10 +2763,13 @@ describe('code graph full-build materialization store', () => {
       }),
     );
 
-    expect(result.duplicateFailure).toContain('ConstraintError');
-    expect(result.duplicateFailure).toContain('SQLITE_CONSTRAINT');
-    expect(result.duplicateFailure).toContain('activation_symbols.id');
-    expect(result.duplicateFailure).not.toContain(fixture.databasePath);
+    expect(result.duplicateFailure).toMatchObject({
+      code: 'unknown',
+      message: 'stage code graph facts failed with an unclassified storage error.',
+      recovery: 'diagnose',
+      retryable: false,
+    });
+    expect(result.duplicateFailure?.message).not.toContain(fixture.databasePath);
     expect(result.graph.symbols).toEqual([original]);
   });
 
@@ -2915,13 +2938,13 @@ describe('code graph full-build materialization store', () => {
             );
             const edgeFailure = yield* store.stageActivationFacts(fixture.databasePath, [], [conflictingEdge]).pipe(
               Effect.as(undefined),
-              Effect.catch(cause => Effect.succeed(cause instanceof Error ? cause.message : String(cause))),
+              Effect.catch(cause => Effect.succeed(observedStoreFailure(cause))),
             );
             const referenceFailure = yield* store
               .stageActivationFacts(fixture.databasePath, [], [], [conflictingReference])
               .pipe(
                 Effect.as(undefined),
-                Effect.catch(cause => Effect.succeed(cause instanceof Error ? cause.message : String(cause))),
+                Effect.catch(cause => Effect.succeed(observedStoreFailure(cause))),
               );
             const resolution = yield* store.resolveStagedReferences(fixture.databasePath);
             const counts = yield* store.stagedFactCounts(fixture.databasePath);
@@ -2938,12 +2961,16 @@ describe('code graph full-build materialization store', () => {
       }),
     );
 
-    expect(result.edgeFailure).toContain('ConstraintError');
-    expect(result.edgeFailure).toContain('SQLITE_CONSTRAINT');
-    expect(result.edgeFailure).toContain('activation_edges.id');
-    expect(result.referenceFailure).toContain('ConstraintError');
-    expect(result.referenceFailure).toContain('SQLITE_CONSTRAINT');
-    expect(result.referenceFailure).toContain('activation_references.edge_id');
+    expect(result.edgeFailure).toMatchObject({
+      code: 'unknown',
+      message: 'stage code graph facts failed with an unclassified storage error.',
+    });
+    expect(result.referenceFailure).toMatchObject({
+      code: 'unknown',
+      message: 'stage code graph facts failed with an unclassified storage error.',
+    });
+    expect(result.edgeFailure?.message).not.toContain(fixture.databasePath);
+    expect(result.referenceFailure?.message).not.toContain(fixture.databasePath);
     expect(result.resolution.resolved).toBe(1);
     expect(result.graph.edges).toHaveLength(1);
     expect(result.graph.edges[0]).toMatchObject({sourceId: caller.id, targetId: target.id, targetName: target.name});

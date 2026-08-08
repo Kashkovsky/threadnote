@@ -22,6 +22,11 @@ import {
 import {compareCodeUnits} from './ordering.js';
 import {codeGraphMaintenanceIntentActive} from './maintenance_gate.js';
 import {codeGraphLayout, codeGraphSnapshotBuildLockPath} from './layout.js';
+import {
+  classifyCodeGraphStoreFailure,
+  codeGraphStoreBusyFailure,
+  sanitizeCodeGraphStoreDiagnostic as sanitizeStoreDiagnostic,
+} from './store_failure.js';
 import type {
   CodeGraphEdge,
   CodeGraphFileFacts,
@@ -34,12 +39,7 @@ import type {
   CodeGraphQueryNode,
   RepositoryIdentity,
 } from './types.js';
-import {
-  CODE_GRAPH_EXTRACTOR_GENERATION,
-  CODE_GRAPH_SCHEMA_VERSION,
-  CodeGraphStoreBusyError,
-  CodeGraphStoreError,
-} from './types.js';
+import {CODE_GRAPH_EXTRACTOR_GENERATION, CODE_GRAPH_SCHEMA_VERSION, CodeGraphStoreError} from './types.js';
 import type {
   CodeGraphWorkspace,
   CodeGraphWorkspaceBuildSystem,
@@ -14238,54 +14238,12 @@ function activationEdgeId(
 
 function storeError(operation: string, cause: unknown): CodeGraphStoreError {
   if (cause instanceof CodeGraphStoreError) return cause;
-  if (isFileLockTimeout(cause)) {
-    return new CodeGraphStoreBusyError(`${operation} deferred because another code graph writer owns this checkout.`);
-  }
-  return new CodeGraphStoreError(`${operation} failed: ${storeCauseSummary(cause)}`);
-}
-
-function storeCauseSummary(cause: unknown): string {
-  if (!SqlError.isSqlError(cause)) {
-    return sanitizeCodeGraphStoreDiagnostic(cause instanceof Error ? cause.message : String(cause));
-  }
-  const native = cause.reason.cause;
-  const code = sqliteCauseCode(native);
-  const nativeMessage =
-    native instanceof Error
-      ? native.message
-      : typeof native === 'object' && native !== null && 'message' in native && typeof native.message === 'string'
-        ? native.message
-        : undefined;
-  const detail = [
-    cause.reason._tag,
-    code,
-    nativeMessage === undefined ? undefined : sanitizeCodeGraphStoreDiagnostic(nativeMessage),
-  ]
-    .filter((value): value is string => value !== undefined && value.length > 0)
-    .join('; ');
-  return detail.length === 0
-    ? sanitizeCodeGraphStoreDiagnostic(cause.message)
-    : `${sanitizeCodeGraphStoreDiagnostic(cause.message)} (${detail})`;
-}
-
-function sqliteCauseCode(cause: unknown): string | undefined {
-  if (typeof cause !== 'object' || cause === null || !('code' in cause)) return undefined;
-  const code = cause.code;
-  const normalized = typeof code === 'string' || typeof code === 'number' ? String(code) : undefined;
-  return normalized !== undefined && /^[A-Z0-9_:-]{1,80}$/u.test(normalized) ? normalized : undefined;
+  return isFileLockTimeout(cause)
+    ? codeGraphStoreBusyFailure(operation)
+    : classifyCodeGraphStoreFailure(operation, cause);
 }
 
 /** Keep SQLite diagnostics useful without persisting paths, statement values, or unbounded native output. */
 export function sanitizeCodeGraphStoreDiagnostic(value: string): string {
-  return (
-    value
-      .replace(/[\r\n\t]+/g, ' ')
-      // Native database errors do not reliably quote paths. Once an absolute
-      // path starts, conservatively consume through the next quote/delimiter (or
-      // the end) so a literal-space suffix can never survive redaction.
-      .replace(/(?:[A-Za-z]:[\\/]|\\\\|\/)[^'"`<>\r\n]*/g, '<local-path>')
-      .replace(/\s+/g, ' ')
-      .trim()
-      .slice(0, 300)
-  );
+  return sanitizeStoreDiagnostic(value);
 }
