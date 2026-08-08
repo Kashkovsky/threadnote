@@ -25,6 +25,7 @@ import {
   type CodeGraphVisualizationCatalog,
 } from '../../src/code_graph/store.js';
 import {SystemInfo} from '../../src/effect/system.js';
+import {CommandExecutor} from '../../src/effect/command.js';
 import type {CodeGraphWorkspace} from '../../src/code_graph/languages/types.js';
 import {CodeGraphStoreError} from '../../src/code_graph/types.js';
 import type {
@@ -37,7 +38,7 @@ import type {
 } from '../../src/code_graph/types.js';
 
 const temporaryRoots: string[] = [];
-const storeLayer = CodeGraphStore.layer.pipe(
+const storeLayer = Layer.merge(CodeGraphStore.layer, CommandExecutor.layer).pipe(
   Layer.provideMerge(SystemInfo.layer),
   Layer.provideMerge(BunServices.layer),
 );
@@ -448,7 +449,16 @@ describe('Manager logical repository and workspace catalogs', () => {
     const collision = catalogFixture('logical-b', 'Same display', '2026-07-29T10:00:00.000Z', 100_000, '3'.repeat(64));
     const groups = groupManagerGraphRepositories([
       {catalog: older, checkoutId: 'a'.repeat(64)},
-      {catalog: newer, checkoutId: 'b'.repeat(64)},
+      {
+        catalog: newer,
+        checkoutId: 'b'.repeat(64),
+        localAssociation: {
+          available: true,
+          displayPath: '~/src/current',
+          path: '/home/tester/src/current',
+          state: 'verified',
+        },
+      },
       {catalog: collision, checkoutId: 'c'.repeat(64)},
     ]);
 
@@ -463,6 +473,11 @@ describe('Manager logical repository and workspace catalogs', () => {
       `${'a'.repeat(64)}.${'1'.repeat(64)}`,
     ]);
     expect(groups[0]?.views[0]?.label).toMatch(/abcdef01 · clean · 2026-07-31 10:00Z · checkout b{8} · worktree 2{8}/);
+    expect(groups[0]?.views[0]?.localAssociation).toMatchObject({
+      displayPath: '~/src/current',
+      path: '/home/tester/src/current',
+      state: 'verified',
+    });
   });
 
   it('bounds a production-shaped Bazel catalog without loading dependency evidence', async () => {

@@ -24,6 +24,7 @@ import {runCodeGraphExport} from '../../src/code_graph/commands.js';
 import {readAllCodeGraphBuildStatuses, selectCodeGraphBuildStatuses} from '../../src/code_graph/build_status.js';
 import {CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM, CodeGraphIndexer} from '../../src/code_graph/indexer.js';
 import {codeGraphLayout} from '../../src/code_graph/layout.js';
+import {readPersistedCodeGraphLocalAssociation} from '../../src/code_graph/local_provenance.js';
 import {
   inventoryRepository,
   readContainedStableRegularFile,
@@ -40,6 +41,7 @@ import {compactCodeGraphStorage} from '../../src/code_graph/storage.js';
 import {CodeGraphStore, type StoredCodeGraph} from '../../src/code_graph/store.js';
 import type {CodeGraphMaterializationMetrics} from '../../src/code_graph/types.js';
 import {captureConsole} from '../../src/effect/console.js';
+import {CommandExecutor} from '../../src/effect/command.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import {runDoctor, runRepair} from '../../src/lifecycle.js';
 import type {DoctorCheck, RuntimeConfig} from '../../src/types.js';
@@ -65,6 +67,22 @@ describe('native code graph lifecycle', () => {
     expect(indexed.snapshot.state).toBe('ready');
     expect(indexed.snapshot.fileCount).toBeGreaterThanOrEqual(10);
     expect(indexed.snapshot.symbolCount).toBeGreaterThanOrEqual(7);
+    expect(await runEffect(readPersistedCodeGraphLocalAssociation(home, indexed.identity))).toMatchObject({
+      available: true,
+      path: indexed.identity.repoRoot,
+      state: 'verified',
+    });
+    const sidecar = join(
+      home,
+      'indexes',
+      'code-graph',
+      'repositories',
+      indexed.identity.checkoutId,
+      'local-context',
+      'worktrees',
+      `${indexed.identity.worktreeId}.json`,
+    );
+    rmSync(sidecar);
 
     const [definition, path, impact, missing] = await runEffect(
       Effect.gen(function* () {
@@ -116,6 +134,11 @@ describe('native code graph lifecycle', () => {
       expect.arrayContaining(['ensureVectorIndex', 'refreshRecallIndex', 'runApplication']),
     );
     expect(missing.nodes).toEqual([]);
+    expect(await runEffect(readPersistedCodeGraphLocalAssociation(home, indexed.identity))).toMatchObject({
+      available: true,
+      path: indexed.identity.repoRoot,
+      state: 'verified',
+    });
   });
 
   it('serves parallel ready-snapshot queries without contending on SQLite connection bootstrap', async () => {
@@ -620,10 +643,37 @@ describe('native code graph lifecycle', () => {
       Effect.gen(function* () {
         const graph = yield* CodeGraphQueryService;
         const indexer = yield* CodeGraphIndexer;
+        const command = yield* CommandExecutor;
         const first = yield* indexer.index({cwd: worktreeA, threadnoteHome: home});
         const identityB = yield* resolveRepositoryIdentity(worktreeB);
         const before = yield* graph.statusForIdentity(home, identityB);
-        const attached = yield* graph.attachSharedReadySnapshot(home, identityB);
+        const mutableCommand = command as {execute: typeof command.execute};
+        const execute = command.execute;
+        let phase: 'direct' | 'reused' = 'reused';
+        let directIdentityResolutionCount = 0;
+        let reusedIdentityResolutionCount = 0;
+        const [attached, direct] = yield* Effect.acquireUseRelease(
+          Effect.sync(() => {
+            mutableCommand.execute = (executable, args, options) => {
+              if (executable === 'git' && args[2] === 'rev-parse' && args[3] === '--show-toplevel') {
+                if (phase === 'reused') reusedIdentityResolutionCount += 1;
+                else directIdentityResolutionCount += 1;
+              }
+              return execute(executable, args, options);
+            };
+          }),
+          () =>
+            Effect.gen(function* () {
+              const attached = yield* graph.attachSharedReadySnapshot(home, identityB, before);
+              phase = 'direct';
+              const direct = yield* graph.attachSharedReadySnapshot(home, identityB);
+              return [attached, direct] as const;
+            }),
+          () =>
+            Effect.sync(() => {
+              mutableCommand.execute = execute;
+            }),
+        );
         const after = yield* graph.statusForIdentity(home, identityB);
         const found = yield* graph.inspect({
           cwd: worktreeB,
@@ -632,7 +682,17 @@ describe('native code graph lifecycle', () => {
           refresh: false,
           threadnoteHome: home,
         });
-        return {after, attached, before, first, found, identityB};
+        return {
+          after,
+          attached,
+          before,
+          direct,
+          directIdentityResolutionCount,
+          first,
+          found,
+          identityB,
+          reusedIdentityResolutionCount,
+        };
       }),
     );
 
@@ -641,6 +701,9 @@ describe('native code graph lifecycle', () => {
     expect(result.attached.stale).toBe(false);
     expect(result.attached.readySnapshot?.id).toBe(result.first.snapshot.id);
     expect(result.attached.readySnapshot?.worktreeId).toBe(result.identityB.worktreeId);
+    expect(result.direct.readySnapshot?.id).toBe(result.first.snapshot.id);
+    expect(result.reusedIdentityResolutionCount).toBe(0);
+    expect(result.directIdentityResolutionCount).toBe(1);
     expect(result.after.readySnapshot?.id).toBe(result.first.snapshot.id);
     expect(result.after.stale).toBe(false);
     expect(result.found.snapshot.id).toBe(result.first.snapshot.id);
@@ -2440,6 +2503,63 @@ describe('native code graph lifecycle', () => {
     );
 
     expect(summary.snapshot.state).toBe('ready');
+  });
+
+  it('rejects an origin change while an expected graph target waits for the repository lock', async () => {
+    const root = createFixtureRepository();
+    const home = join(root, '.threadnote-test-home');
+    const identity = await runEffect(resolveRepositoryIdentity(root));
+    const lock = await runEffect(
+      Effect.gen(function* () {
+        const path = yield* Path.Path;
+        return codeGraphLayout(path, home, identity.checkoutId, identity.worktreeId).lockPath;
+      }),
+    );
+    mkdirSync(join(lock, '..'), {recursive: true});
+    writeFileSync(lock, `${process.pid}:active-code-graph-build\n`, {mode: 0o600});
+
+    await expect(
+      runEffect(
+        Effect.gen(function* () {
+          const indexer = yield* CodeGraphIndexer;
+          const waiting = yield* Deferred.make<void>();
+          const indexing = yield* Effect.forkChild(
+            indexer.index({
+              cwd: root,
+              expectedIdentity: identity,
+              onProgress: progress =>
+                progress.phase === 'waiting' ? Deferred.succeed(waiting, undefined).pipe(Effect.asVoid) : Effect.void,
+              threadnoteHome: home,
+            }),
+          );
+          yield* Deferred.await(waiting);
+          git(root, ['remote', 'add', 'origin', 'https://example.com/changed.git']);
+          rmSync(lock, {force: true});
+          return yield* Fiber.join(indexing);
+        }),
+      ),
+    ).rejects.toThrow('Repository identity changed while waiting for the graph lock.');
+  });
+
+  it('rejects each mismatched expected graph target component before indexing', async () => {
+    const root = createFixtureRepository();
+    const home = join(root, '.threadnote-test-home');
+    const identity = await runEffect(resolveRepositoryIdentity(root));
+    for (const component of ['checkoutId', 'repositoryId', 'worktreeId'] as const) {
+      const expectedIdentity = {
+        ...identity,
+        [component]: `${identity[component].startsWith('f') ? 'e' : 'f'}${identity[component].slice(1)}`,
+      };
+      await expect(
+        runEffect(
+          Effect.gen(function* () {
+            const indexer = yield* CodeGraphIndexer;
+            return yield* indexer.index({cwd: root, expectedIdentity, threadnoteHome: home});
+          }),
+        ),
+        component,
+      ).rejects.toThrow('Repository identity does not match the requested graph target.');
+    }
   });
 
   it('coalesces ten independent runtimes after lock contention without sequential inventory passes', async () => {

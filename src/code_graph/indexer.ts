@@ -28,8 +28,9 @@ import {
 import {codeGraphLayout, codeGraphRequestBuildLockPath, codeGraphSnapshotBuildLockPath} from './layout.js';
 import {CodeGraphMaintenanceCoordinator} from './maintenance_coordinator.js';
 import {codeGraphMaintenanceIntentActive, withCodeGraphMaintenanceRegistration} from './maintenance_gate.js';
+import {resolveAndRecordCodeGraphLocalAssociation} from './local_provenance.js';
 import {compareCodeUnits} from './ordering.js';
-import {repositoryWorktreeIds, resolveRepositoryIdentity} from './repository.js';
+import {repositoryIdentityMatchesExpectation, repositoryWorktreeIds, resolveRepositoryIdentity} from './repository.js';
 import {
   CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION,
   CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION,
@@ -59,6 +60,7 @@ import {
   type CodeGraphSnapshot,
   type CodeGraphSymbol,
   type RepositoryIdentity,
+  type RepositoryIdentityExpectation,
 } from './types.js';
 import type {CodeGraphInventory} from './inventory.js';
 import type {CodeGraphLayout} from './layout.js';
@@ -88,6 +90,8 @@ export interface CodeGraphIndexOptions extends CodeGraphInventoryOptions {
   readonly cwd: string;
   /** When false, skip blocking vector materialization after a ready structural snapshot. */
   readonly ensureVectors?: boolean;
+  /** Exact graph target supplied by a trusted local administration surface. */
+  readonly expectedIdentity?: RepositoryIdentityExpectation;
   readonly force?: boolean;
   /** Internal benchmark/correctness escape hatch; normal indexing keeps this enabled. */
   readonly incrementalOverlay?: boolean;
@@ -172,6 +176,12 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
         Effect.scoped(
           Effect.gen(function* () {
             const initialIdentity = yield* resolveRepositoryIdentity(request.cwd);
+            if (
+              request.expectedIdentity &&
+              !repositoryIdentityMatchesExpectation(initialIdentity, request.expectedIdentity)
+            ) {
+              return yield* Effect.fail(new Error('Repository identity does not match the requested graph target.'));
+            }
             const layout = codeGraphLayout(
               path,
               request.threadnoteHome,
@@ -227,17 +237,32 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                   .withSession(
                     layout.databasePath,
                     Effect.gen(function* () {
-                      yield* store.initialize(layout.databasePath);
                       const startedAt = yield* Clock.currentTimeMillis;
-                      const identity = yield* resolveRepositoryIdentity(options.cwd);
-                      if (identity.repositoryId !== initialIdentity.repositoryId) {
-                        return yield* Effect.fail(
-                          new Error('Repository identity changed while waiting for the graph lock.'),
-                        );
-                      }
-                      if (identity.headCommit !== initialIdentity.headCommit) {
-                        return yield* Effect.fail(new WorktreeChangedDuringIndex());
-                      }
+                      const {identity} = yield* resolveAndRecordCodeGraphLocalAssociation(
+                        options.threadnoteHome,
+                        options.cwd,
+                        {
+                          validateIdentity: identity => {
+                            if (!repositoryIdentityMatchesExpectation(identity, initialIdentity)) {
+                              return Effect.fail(
+                                new Error('Repository identity changed while waiting for the graph lock.'),
+                              );
+                            }
+                            if (
+                              options.expectedIdentity &&
+                              !repositoryIdentityMatchesExpectation(identity, options.expectedIdentity)
+                            ) {
+                              return Effect.fail(
+                                new Error('Repository identity does not match the requested graph target.'),
+                              );
+                            }
+                            return identity.headCommit === initialIdentity.headCommit
+                              ? Effect.void
+                              : Effect.fail(new WorktreeChangedDuringIndex());
+                          },
+                        },
+                      );
+                      yield* store.initialize(layout.databasePath);
                       const activeWorktreeIds = yield* repositoryWorktreeIds(identity);
                       if (requestKey && requestedOverlay) {
                         const currentOverlay = yield* worktreeOverlayState(identity);
@@ -683,6 +708,12 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
         Effect.scoped(
           Effect.gen(function* () {
             const initialIdentity = yield* resolveRepositoryIdentity(request.cwd);
+            if (
+              request.expectedIdentity &&
+              !repositoryIdentityMatchesExpectation(initialIdentity, request.expectedIdentity)
+            ) {
+              return yield* Effect.fail(new Error('Repository identity does not match the requested graph target.'));
+            }
             const layout = codeGraphLayout(
               path,
               request.threadnoteHome,
@@ -727,16 +758,29 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                   .withSession(
                     layout.databasePath,
                     Effect.gen(function* () {
+                      const {identity: currentIdentity} = yield* resolveAndRecordCodeGraphLocalAssociation(
+                        options.threadnoteHome,
+                        options.cwd,
+                        {
+                          validateIdentity: identity => {
+                            if (!repositoryIdentityMatchesExpectation(identity, initialIdentity)) {
+                              return Effect.fail(
+                                new Error('Repository identity changed while waiting for the graph lock.'),
+                              );
+                            }
+                            if (
+                              options.expectedIdentity &&
+                              !repositoryIdentityMatchesExpectation(identity, options.expectedIdentity)
+                            ) {
+                              return Effect.fail(
+                                new Error('Repository identity does not match the requested graph target.'),
+                              );
+                            }
+                            return Effect.void;
+                          },
+                        },
+                      );
                       yield* store.initialize(layout.databasePath);
-                      const currentIdentity = yield* resolveRepositoryIdentity(options.cwd);
-                      if (
-                        currentIdentity.repositoryId !== initialIdentity.repositoryId ||
-                        currentIdentity.worktreeId !== initialIdentity.worktreeId
-                      ) {
-                        return yield* Effect.fail(
-                          new Error('Repository identity changed while waiting for the graph lock.'),
-                        );
-                      }
                       const identity = {...currentIdentity, headCommit: options.commit};
                       const activeWorktreeIds = yield* repositoryWorktreeIds(currentIdentity);
                       const cachedCommittedFileKeys = yield* cachedFileKeys(store, layout.databasePath, languagePacks);
@@ -3066,8 +3110,7 @@ const verifyIndexInput = Effect.fn('codeGraph.verifyIndexInput')(function* (
 ) {
   const verifiedIdentity = yield* resolveRepositoryIdentity(identity.repoRoot);
   if (
-    verifiedIdentity.repositoryId !== identity.repositoryId ||
-    verifiedIdentity.worktreeId !== identity.worktreeId ||
+    !repositoryIdentityMatchesExpectation(verifiedIdentity, identity) ||
     (verifyOverlay && verifiedIdentity.headCommit !== identity.headCommit)
   ) {
     return yield* Effect.fail(new WorktreeChangedDuringIndex());

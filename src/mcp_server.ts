@@ -132,7 +132,7 @@ import {
   observationFromCodeGraphStatus,
   renderCodeGraphResult,
 } from './code_graph/query.js';
-import {repositoryChangesSince, resolveRepositoryIdentity} from './code_graph/repository.js';
+import {repositoryChangesSince} from './code_graph/repository.js';
 import type {CodeGraphProgress, CodeGraphQueryResult} from './code_graph/types.js';
 import {
   CodeGraphWatcher,
@@ -879,22 +879,24 @@ function registerCodeGraphTool(server: EffectMcpServerAdapter, config: RuntimeCo
           operation === 'impact' && !requestedQuery
             ? yield* repositoryChangesSince(checkedCwd.value, base?.trim() || 'HEAD~1')
             : undefined;
-        let identity = yield* resolveRepositoryIdentity(checkedCwd.value);
         const watcher = yield* CodeGraphWatcher;
-        const refreshTarget = {
-          cwd: identity.repoRoot,
+        const service = yield* CodeGraphQueryService;
+        let refreshTarget = {
+          cwd: checkedCwd.value,
           threadnoteHome: config.agentContextHome,
         };
-        timeoutContext = Option.some({key: identity.worktreeId, target: refreshTarget, watcher});
-        yield* watcher.ensure({
-          ...refreshTarget,
-          key: identity.worktreeId,
+        let status = yield* service.status(config.agentContextHome, checkedCwd.value, {
+          afterIdentityObserved: identity =>
+            Effect.gen(function* () {
+              refreshTarget = {cwd: identity.repoRoot, threadnoteHome: config.agentContextHome};
+              timeoutContext = Option.some({key: identity.worktreeId, target: refreshTarget, watcher});
+              yield* watcher.ensure({...refreshTarget, key: identity.worktreeId});
+            }),
         });
-        const service = yield* CodeGraphQueryService;
+        let identity = status.identity;
         const strictFreshness = operation === 'impact' || operation === 'path';
-        let status = yield* service.statusForIdentity(config.agentContextHome, identity);
         if (status.stale || !status.readySnapshot) {
-          status = yield* service.attachSharedReadySnapshot(config.agentContextHome, identity);
+          status = yield* service.attachSharedReadySnapshot(config.agentContextHome, identity, status);
         }
         let staleAfterCleanCommitChange = canUseReadySnapshotAfterCleanCommitChange(status);
         let refreshStarted = false;
@@ -908,10 +910,10 @@ function registerCodeGraphTool(server: EffectMcpServerAdapter, config: RuntimeCo
           if (refreshStarted) {
             yield* waitForCodeGraphRefresh(watcher, identity.worktreeId, refreshTarget);
           }
-          identity = yield* resolveRepositoryIdentity(checkedCwd.value);
-          status = yield* service.statusForIdentity(config.agentContextHome, identity);
+          status = yield* service.status(config.agentContextHome, checkedCwd.value);
+          identity = status.identity;
           if (status.stale || !status.readySnapshot) {
-            status = yield* service.attachSharedReadySnapshot(config.agentContextHome, identity);
+            status = yield* service.attachSharedReadySnapshot(config.agentContextHome, identity, status);
           }
           staleAfterCleanCommitChange = canUseReadySnapshotAfterCleanCommitChange(status);
           if (!status.readySnapshot || (status.stale && strictFreshness)) {
@@ -1001,17 +1003,19 @@ function registerCodeGraphTool(server: EffectMcpServerAdapter, config: RuntimeCo
         if (!path.isAbsolute(checkedCwd.value)) {
           return argumentError('analyze_code_graph callerCwd must be an absolute workspace path.');
         }
-        const identity = yield* resolveRepositoryIdentity(checkedCwd.value);
         const watcher = yield* CodeGraphWatcher;
-        yield* watcher.ensure({
-          cwd: identity.repoRoot,
-          key: identity.worktreeId,
-          threadnoteHome: config.agentContextHome,
-        });
         const query = yield* CodeGraphQueryService;
-        let status = yield* query.status(config.agentContextHome, checkedCwd.value);
+        let status = yield* query.status(config.agentContextHome, checkedCwd.value, {
+          afterIdentityObserved: identity =>
+            watcher.ensure({
+              cwd: identity.repoRoot,
+              key: identity.worktreeId,
+              threadnoteHome: config.agentContextHome,
+            }),
+        });
+        const identity = status.identity;
         if (status.stale || !status.readySnapshot) {
-          status = yield* query.attachSharedReadySnapshot(config.agentContextHome, identity);
+          status = yield* query.attachSharedReadySnapshot(config.agentContextHome, identity, status);
         }
         const refreshStarted = status.stale
           ? yield* watcher.refresh({
@@ -1028,7 +1032,7 @@ function registerCodeGraphTool(server: EffectMcpServerAdapter, config: RuntimeCo
         }
         if (status.stale) status = yield* query.status(config.agentContextHome, checkedCwd.value);
         if (status.stale || !status.readySnapshot) {
-          status = yield* query.attachSharedReadySnapshot(config.agentContextHome, identity);
+          status = yield* query.attachSharedReadySnapshot(config.agentContextHome, status.identity, status);
         }
         if (!status.readySnapshot || status.stale) {
           return codeGraphAnalysisRefreshResult(

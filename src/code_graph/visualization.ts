@@ -28,6 +28,7 @@ import {
   selectCodeGraphBuildStatuses,
   type ObservedCodeGraphBuildStatus,
 } from './build_status.js';
+import {readCodeGraphLocalAssociation, type CodeGraphLocalAssociation} from './local_provenance.js';
 import {
   managerGraphVisualizationLimits,
   type ManagerGraphVisualizationBudget,
@@ -93,6 +94,7 @@ export interface ManagerGraphIndexedView {
   readonly displayName: string;
   readonly id: string;
   readonly label: string;
+  readonly localAssociation: CodeGraphLocalAssociation;
   readonly metrics: CodeGraphVisualizationCatalog['metrics'];
   readonly model: CodeGraphVisualizationCatalog['model'];
   readonly projects: readonly {
@@ -309,9 +311,18 @@ export const managerGraphCatalog = Effect.fn('codeGraph.managerCatalog')(functio
             retainManagerSnapshot(store, database, catalog.snapshot.id, MANAGER_OPERATION_LEASE_MINIMUM_MILLISECONDS),
           {concurrency: 1},
         );
+        const observedCatalogs = yield* Effect.forEach(
+          visible,
+          catalog =>
+            managerGraphLocalAssociationForCatalog(threadnoteHome, checkoutId, catalog, [
+              ...buildSelection.builds,
+              ...buildSelection.waiters,
+            ]).pipe(Effect.map(localAssociation => ({catalog, localAssociation}))),
+          {concurrency: 4},
+        );
         return {
           checkoutId,
-          catalogs: visible,
+          catalogs: observedCatalogs,
           ...(retained.every(result => result.state === 'retained')
             ? {}
             : {
@@ -344,15 +355,17 @@ export const managerGraphCatalog = Effect.fn('codeGraph.managerCatalog')(functio
   const catalogEntries: Array<{
     catalog: CodeGraphVisualizationCatalog;
     checkoutId: string;
+    localAssociation: CodeGraphLocalAssociation;
     viewsTruncated?: boolean;
   }> = [];
   const diagnostics: ManagerGraphCatalogDiagnostic[] = [];
   for (const entry of entries) {
     if ('catalogs' in entry && entry.catalogs) {
       catalogEntries.push(
-        ...entry.catalogs.map(catalog => ({
-          catalog,
+        ...entry.catalogs.map(observed => ({
+          catalog: observed.catalog,
           checkoutId: entry.checkoutId,
+          localAssociation: observed.localAssociation,
           viewsTruncated: entry.viewsTruncated,
         })),
       );
@@ -456,6 +469,7 @@ export function groupManagerGraphRepositories(
   entries: readonly {
     readonly catalog: CodeGraphVisualizationCatalog;
     readonly checkoutId: string;
+    readonly localAssociation?: CodeGraphLocalAssociation;
     readonly viewsTruncated?: boolean;
   }[],
 ): readonly ManagerGraphRepository[] {
@@ -467,7 +481,7 @@ export function groupManagerGraphRepositories(
       views: [],
       viewsTruncated: false,
     };
-    group.views.push(repositoryFromCatalog(entry.checkoutId, entry.catalog));
+    group.views.push(repositoryFromCatalog(entry.checkoutId, entry.catalog, entry.localAssociation));
     group.viewsTruncated ||= entry.viewsTruncated === true;
     groups.set(repositoryId, group);
   }
@@ -521,10 +535,11 @@ export const managerGraphCatalogPage = Effect.fn('codeGraph.managerCatalogPage')
     workspaceOffset,
     workspaceQuery: query.length === 0 ? Option.none() : Option.some(query),
   });
+  const localAssociation = yield* managerGraphLocalAssociationForCatalog(threadnoteHome, checkoutId, catalog);
   return {
     projectOffset,
     query,
-    repository: repositoryFromCatalog(checkoutId, catalog),
+    repository: repositoryFromCatalog(checkoutId, catalog, localAssociation),
     workspaceOffset,
   } satisfies ManagerGraphCatalogPage;
 });
@@ -556,11 +571,20 @@ export const managerGraphViewsPage = Effect.fn('codeGraph.managerViewsPage')(fun
     concurrency: 1,
     discard: true,
   });
+  const buildStatuses = yield* readAllCodeGraphBuildStatuses(threadnoteHome);
+  const observed = yield* Effect.forEach(
+    visible,
+    catalog =>
+      managerGraphLocalAssociationForCatalog(threadnoteHome, checkoutId, catalog, buildStatuses).pipe(
+        Effect.map(localAssociation => ({catalog, checkoutId, localAssociation})),
+      ),
+    {concurrency: 4},
+  );
   return {
     hasMore: catalogs.length > MANAGER_CATALOG_VIEW_LIMIT,
     offset,
     query,
-    repositories: groupManagerGraphRepositories(visible.map(catalog => ({catalog, checkoutId}))),
+    repositories: groupManagerGraphRepositories(observed),
   } satisfies ManagerGraphViewPage;
 });
 
@@ -1170,7 +1194,11 @@ export function managerGraphQueryWorkingSet(
   };
 }
 
-function repositoryFromCatalog(checkoutId: string, catalog: CodeGraphVisualizationCatalog): ManagerGraphIndexedView {
+function repositoryFromCatalog(
+  checkoutId: string,
+  catalog: CodeGraphVisualizationCatalog,
+  localAssociation: CodeGraphLocalAssociation = {available: false, state: 'legacy-unknown'},
+): ManagerGraphIndexedView {
   const viewId = `${checkoutId}.${catalog.viewWorktreeId}`;
   return {
     accounting: catalog.accounting,
@@ -1179,6 +1207,7 @@ function repositoryFromCatalog(checkoutId: string, catalog: CodeGraphVisualizati
     displayName: catalog.repository.displayName,
     id: viewId,
     label: indexedViewLabel(checkoutId, catalog),
+    localAssociation,
     metrics: catalog.metrics,
     model: catalog.model,
     projectCount: catalog.projectCount,
@@ -1206,6 +1235,31 @@ function repositoryFromCatalog(checkoutId: string, catalog: CodeGraphVisualizati
     workspacesTruncated: catalog.workspacesTruncated,
   };
 }
+
+const managerGraphLocalAssociationForCatalog = Effect.fn('codeGraph.managerLocalAssociationForCatalog')(function* (
+  threadnoteHome: string,
+  checkoutId: string,
+  catalog: CodeGraphVisualizationCatalog,
+  knownStatuses?: readonly ObservedCodeGraphBuildStatus[],
+) {
+  const statuses = knownStatuses ?? (yield* readAllCodeGraphBuildStatuses(threadnoteHome));
+  const liveStatus = statuses.find(
+    status =>
+      status.identity.checkoutId === checkoutId &&
+      status.identity.worktreeId === catalog.viewWorktreeId &&
+      status.identity.repositoryId === catalog.repository.repositoryId &&
+      status.managerContext !== undefined,
+  );
+  return yield* readCodeGraphLocalAssociation(
+    threadnoteHome,
+    {
+      checkoutId,
+      repositoryId: catalog.repository.repositoryId,
+      worktreeId: catalog.viewWorktreeId,
+    },
+    liveStatus?.managerContext?.worktreePath,
+  );
+});
 
 function visualizationRepository(repository: ManagerGraphIndexedView): ManagerGraphVisualization['repository'] {
   return {

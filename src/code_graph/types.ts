@@ -36,6 +36,12 @@ export interface RepositoryIdentity {
   readonly worktreeId: string;
 }
 
+export interface RepositoryIdentityExpectation {
+  readonly checkoutId: string;
+  readonly repositoryId: string;
+  readonly worktreeId: string;
+}
+
 export interface CodeGraphInventoryFile {
   readonly blobId: string;
   /** Binary source bytes are retained only for the extraction batch that requested them. */

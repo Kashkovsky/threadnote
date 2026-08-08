@@ -7,6 +7,7 @@ import {
   graphAnalysisRequestIsCurrent,
   graphAnalysisCoverageLabel,
   graphAnalysisTopologyAvailable,
+  graphAdministrationTarget,
   graphBuildIsActive,
   graphBuildShouldDisplay,
   graphBuildTarget,
@@ -42,6 +43,15 @@ import {
 } from '../../src/manager_graph.js';
 
 describe('manager graph focus', () => {
+  it('carries the complete selected graph identity into administration actions', () => {
+    expect(
+      graphAdministrationTarget('checkout', {
+        repository: {repositoryId: 'repository'},
+        worktreeId: 'worktree',
+      }),
+    ).toEqual({checkoutId: 'checkout', repositoryId: 'repository', worktreeId: 'worktree'});
+  });
+
   it('renders the graph workspace before its first catalog response', () => {
     const neverResolves = () => new Promise<never>(() => undefined);
 
@@ -81,9 +91,22 @@ describe('manager graph focus', () => {
     expect(markup).not.toContain('Loading indexed repositories');
   });
 
-  it('renders stale live owners with concrete repository, path, and status facts', () => {
+  it('renders stale live owners with a home-abbreviated repository path and status facts', () => {
     const neverResolves = () => new Promise<never>(() => undefined);
-    const repository = {...repositoryGroup('repository', ['view-a'], 'view-a'), displayName: 'example/repository'};
+    const baseRepository = repositoryGroup('repository', ['view-a'], 'view-a');
+    const repository = {
+      ...baseRepository,
+      displayName: 'example/repository',
+      views: baseRepository.views.map(view => ({
+        ...view,
+        localAssociation: {
+          available: true,
+          displayPath: '~/jobs/repository-task-17',
+          path: '/tmp/jobs/repository-task-17',
+          state: 'verified' as const,
+        },
+      })),
+    };
     const build = {
       ...graphBuildStatus('running'),
       coordination: {lockVerified: true, progressSilent: true, role: 'owner' as const},
@@ -103,7 +126,8 @@ describe('manager graph focus', () => {
     );
 
     expect(markup).toContain('example/repository');
-    expect(markup).toContain('/tmp/jobs/repository-task-17');
+    expect(markup).toContain('~/jobs/repository-task-17');
+    expect(markup).not.toContain('/tmp/jobs/repository-task-17');
     expect(markup).toContain('Indexing status is stale');
     expect(markup).toContain('Manager cannot determine whether its current operation is advancing.');
     expect(markup).not.toContain('Phase ETA paused');
@@ -249,8 +273,20 @@ describe('manager graph focus', () => {
     expect(graphRepositoryOptionLabel(second, [first, second])).toBe('mobile-native · 22222222');
   });
 
-  it('labels build banners with their global repository and live worktree path', () => {
-    const repository = repositoryGroup('repo-a', ['view-a'], 'view-a');
+  it('labels build banners with their global repository and home-abbreviated worktree path', () => {
+    const baseRepository = repositoryGroup('repo-a', ['view-a'], 'view-a');
+    const repository = {
+      ...baseRepository,
+      views: baseRepository.views.map(view => ({
+        ...view,
+        localAssociation: {
+          available: true,
+          displayPath: '~/jobs/repo-a-task-17',
+          path: '/tmp/jobs/repo-a-task-17',
+          state: 'verified' as const,
+        },
+      })),
+    };
     const build = {
       ...graphBuildStatus('running'),
       identity: {
@@ -264,9 +300,9 @@ describe('manager graph focus', () => {
     };
     expect(graphBuildTarget(build, [repository])).toEqual({
       repositoryLabel: 'repo-a',
-      worktreeLabel: '/tmp/jobs/repo-a-task-17',
+      worktreeLabel: '~/jobs/repo-a-task-17',
     });
-    expect(graphBuildTarget({...build, managerContext: undefined}, [repository])).toEqual({
+    expect(graphBuildTarget({...build, managerContext: undefined}, [baseRepository])).toEqual({
       repositoryLabel: 'repo-a',
       worktreeLabel: 'view-a',
     });
@@ -658,7 +694,16 @@ describe('manager graph focus', () => {
       ],
       workspaces: [{buildSystem: 'bazel', id: 'cgw_mobile', name: 'mobile workspace', root: 'apps/mobile'}],
     };
-    const matchingView = {...group.views[1]!, label: 'feature/mobile-auth'};
+    const matchingView = {
+      ...group.views[1]!,
+      label: 'feature/mobile-auth',
+      localAssociation: {
+        available: true,
+        displayPath: '~/src/mobile-auth',
+        path: '/home/tester/src/mobile-auth',
+        state: 'verified' as const,
+      },
+    };
 
     const result = graphCatalogSearchOptions(currentView, [{...group, views: [matchingView]}]);
 
@@ -672,6 +717,7 @@ describe('manager graph focus', () => {
     ]);
     expect(result.views).toEqual([
       expect.objectContaining({
+        description: expect.stringContaining('folder ~/src/mobile-auth'),
         id: 'view-match',
         label: 'feature/mobile-auth',
         repositoryId: 'repo',
@@ -944,6 +990,7 @@ function repositoryGroup(id: string, viewIds: readonly string[], defaultViewId: 
       displayName: id,
       id: viewId,
       label: viewId,
+      localAssociation: {available: false, state: 'legacy-unknown'},
       metrics: 'complete',
       model: 'workspace',
       projectCount: 0,

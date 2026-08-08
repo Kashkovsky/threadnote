@@ -57,9 +57,14 @@ import {runSeed, runSeedSkills} from './seeding.js';
 import {currentPackageVersion, fetchLatestVersion, releaseSource} from './update.js';
 import {selectUpdateChannel} from './update_channel.js';
 import {runCodeGraphCompact, runCodeGraphIndex, runCodeGraphPurge, runCodeGraphRepair} from './code_graph/commands.js';
-import {inspectAllCodeGraphs} from './code_graph/diagnostics.js';
+import {inspectAllCodeGraphsLocal} from './code_graph/diagnostics.js';
 import {readAllCodeGraphBuildStatuses} from './code_graph/build_status.js';
-import {resolveRepositoryIdentity} from './code_graph/repository.js';
+import {
+  readCodeGraphLocalAssociation,
+  resolveAndRecordCodeGraphLocalAssociation,
+} from './code_graph/local_provenance.js';
+import {repositoryIdentityMatchesExpectation} from './code_graph/repository.js';
+import type {RepositoryIdentityExpectation} from './code_graph/types.js';
 import {codeGraphMaintenanceIntentActive} from './code_graph/maintenance_gate.js';
 import {
   managerGraphAnalysis,
@@ -496,7 +501,7 @@ const handleRequestLegacy = Effect.fn('manager.handleRequestLegacy')(function* (
     writeJson(
       response,
       200,
-      yield* inspectAllCodeGraphs(context.config.agentContextHome, {
+      yield* inspectAllCodeGraphsLocal(context.config.agentContextHome, {
         analyze: url.searchParams.get('analyze') === 'true',
         deep: url.searchParams.get('deep') === 'true',
       }),
@@ -1520,20 +1525,23 @@ const runManagerGraphAction = Effect.fn('manager.runGraphAction')(function* (
     try: () => requireGraphIdentity(body.worktreeId, 'worktreeId'),
     catch: error => error,
   });
-  const cwd = yield* resolveManagerGraphActionCwd(
-    config.agentContextHome,
-    checkoutId,
-    worktreeId,
-    optionalString(body.cwd),
-  );
+  const repositoryId = yield* Effect.try({
+    try: () => requireGraphIdentity(body.repositoryId, 'repositoryId'),
+    catch: error => error,
+  });
+  const expectedIdentity = {checkoutId, repositoryId, worktreeId} satisfies RepositoryIdentityExpectation;
+  const cwd = yield* resolveManagerGraphActionCwd(config.agentContextHome, expectedIdentity, optionalString(body.cwd));
   switch (action) {
     case 'compact':
       return yield* runCaptured(
-        () => runCodeGraphCompact(config, {cwd, dryRun, force: body.force === true}),
+        () => runCodeGraphCompact(config, {cwd, dryRun, expectedIdentity, force: body.force === true}),
         runEffect,
       );
     case 'index':
-      return yield* runCaptured(() => runCodeGraphIndex(config, {cwd, full: body.full === true}), runEffect);
+      return yield* runCaptured(
+        () => runCodeGraphIndex(config, {cwd, expectedIdentity, full: body.full === true}),
+        runEffect,
+      );
     default:
       return yield* Effect.fail(new Error(`Unsupported graph Manager action: ${action}`));
   }
@@ -1541,8 +1549,7 @@ const runManagerGraphAction = Effect.fn('manager.runGraphAction')(function* (
 
 const resolveManagerGraphActionCwd = Effect.fn('manager.resolveGraphActionCwd')(function* (
   threadnoteHome: string,
-  checkoutId: string,
-  worktreeId: string,
+  expectedIdentity: RepositoryIdentityExpectation,
   suppliedCwd?: string,
 ) {
   if (suppliedCwd) {
@@ -1550,29 +1557,43 @@ const resolveManagerGraphActionCwd = Effect.fn('manager.resolveGraphActionCwd')(
     if (!path.isAbsolute(suppliedCwd)) {
       return yield* Effect.fail(new Error('Supply cwd as an absolute local worktree path.'));
     }
-    const identity = yield* resolveRepositoryIdentity(suppliedCwd);
-    if (identity.checkoutId !== checkoutId || identity.worktreeId !== worktreeId) {
-      return yield* Effect.fail(new Error('The supplied worktree path does not match the selected graph identity.'));
-    }
+    const {identity} = yield* resolveAndRecordCodeGraphLocalAssociation(threadnoteHome, suppliedCwd, {
+      validateIdentity: identity =>
+        repositoryIdentityMatchesExpectation(identity, expectedIdentity)
+          ? Effect.void
+          : Effect.fail(new Error('The supplied worktree path does not match the selected graph identity.')),
+    });
     return identity.repoRoot;
+  }
+  const persisted = yield* readCodeGraphLocalAssociation(threadnoteHome, expectedIdentity);
+  if (persisted.state === 'verified' && persisted.path !== undefined) {
+    const observed = yield* resolveAndRecordCodeGraphLocalAssociation(threadnoteHome, persisted.path, {
+      validateIdentity: identity =>
+        repositoryIdentityMatchesExpectation(identity, expectedIdentity)
+          ? Effect.void
+          : Effect.fail(new Error('The persisted worktree path no longer matches the selected graph identity.')),
+    }).pipe(Effect.option);
+    if (Option.isSome(observed)) return observed.value.identity.repoRoot;
   }
   const statuses = yield* readAllCodeGraphBuildStatuses(threadnoteHome);
   for (const status of statuses) {
     if (
-      status.identity.checkoutId !== checkoutId ||
-      status.identity.worktreeId !== worktreeId ||
+      !repositoryIdentityMatchesExpectation(status.identity, expectedIdentity) ||
       status.managerContext === undefined
     ) {
       continue;
     }
-    const identity = yield* resolveRepositoryIdentity(status.managerContext.worktreePath).pipe(Effect.option);
-    if (
-      Option.isSome(identity) &&
-      identity.value.checkoutId === checkoutId &&
-      identity.value.worktreeId === worktreeId
-    ) {
-      return status.managerContext.worktreePath;
-    }
+    const observed = yield* resolveAndRecordCodeGraphLocalAssociation(
+      threadnoteHome,
+      status.managerContext.worktreePath,
+      {
+        validateIdentity: identity =>
+          repositoryIdentityMatchesExpectation(identity, expectedIdentity)
+            ? Effect.void
+            : Effect.fail(new Error('Manager graph context no longer matches the selected graph identity.')),
+      },
+    ).pipe(Effect.option);
+    if (Option.isSome(observed)) return observed.value.identity.repoRoot;
   }
   return yield* Effect.fail(
     new Error('The selected graph has no current local worktree target. Supply cwd and refresh graph diagnostics.'),

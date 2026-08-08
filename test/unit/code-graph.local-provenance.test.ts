@@ -1,0 +1,788 @@
+import {execFileSync} from 'node:child_process';
+import {
+  chmodSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import {homedir, tmpdir} from 'node:os';
+import {basename, dirname, join, sep} from 'node:path';
+import {afterEach} from 'vitest';
+import {describe, expect, it} from '@effect/vitest';
+import {Effect, FileSystem, Option, PlatformError} from 'effect';
+import * as FC from 'effect/testing/FastCheck';
+import {CommandExecutor} from '../../src/effect/command.js';
+import {
+  parseCodeGraphLocalProvenanceRecordJson,
+  privacySafeCodeGraphLocalAssociation,
+  readPersistedCodeGraphLocalAssociation,
+  recordVerifiedCodeGraphLocalAssociation,
+  type CodeGraphLocalProvenanceRecord,
+} from '../../src/code_graph/local_provenance.js';
+import {CodeGraphQueryService} from '../../src/code_graph/query.js';
+import {resolveRepositoryIdentity} from '../../src/code_graph/repository.js';
+import type {RepositoryIdentity} from '../../src/code_graph/types.js';
+import {runEffect} from '../helpers/effect-runtime.js';
+
+const temporaryRoots: string[] = [];
+
+afterEach(() => {
+  for (const root of temporaryRoots.splice(0).reverse()) rmSync(root, {force: true, recursive: true});
+});
+
+describe('code graph private local provenance', () => {
+  it('atomically records a verified association with private modes and cadence-bounded refresh', async () => {
+    const fixture = await provenanceFixture();
+
+    const first = await runEffect(recordVerifiedCodeGraphLocalAssociation(fixture.home, fixture.identity));
+    const firstStat = statSync(fixture.sidecar);
+    const firstRecord = readRecord(fixture.sidecar);
+    let publicationValidationCount = 0;
+    const repeated = await runEffect(
+      recordVerifiedCodeGraphLocalAssociation(fixture.home, fixture.identity, {
+        beforePublishValidation: () =>
+          Effect.sync(() => {
+            publicationValidationCount += 1;
+          }),
+      }),
+    );
+    const repeatedStat = statSync(fixture.sidecar);
+
+    expect(first).toMatchObject({available: true, path: fixture.root, state: 'verified'});
+    expect(repeated).toMatchObject({available: true, path: fixture.root, state: 'verified'});
+    expect(firstStat.mode & 0o777).toBe(process.platform === 'win32' ? firstStat.mode & 0o777 : 0o600);
+    if (process.platform !== 'win32') {
+      expect(statSync(dirname(fixture.sidecar)).mode & 0o777).toBe(0o700);
+      expect(statSync(dirname(dirname(fixture.sidecar))).mode & 0o777).toBe(0o700);
+    }
+    expect(repeatedStat.ino).toBe(firstStat.ino);
+    expect(publicationValidationCount).toBe(0);
+    expect(readRecord(fixture.sidecar)).toEqual(firstRecord);
+    expect(readdirSync(dirname(fixture.sidecar)).filter(name => name.endsWith('.tmp'))).toEqual([]);
+
+    git(fixture.root, [
+      '-c',
+      'user.name=Threadnote Test',
+      '-c',
+      'user.email=test@threadnote.local',
+      'commit',
+      '--allow-empty',
+      '-qm',
+      'refresh',
+    ]);
+    const refreshedIdentity = await runEffect(resolveRepositoryIdentity(fixture.root));
+    await runEffect(recordVerifiedCodeGraphLocalAssociation(fixture.home, refreshedIdentity));
+    const refreshedRecord = readRecord(fixture.sidecar);
+    expect(refreshedRecord.headCommit).toBe(refreshedIdentity.headCommit);
+    expect(refreshedRecord.headCommit).not.toBe(firstRecord.headCommit);
+  });
+
+  it('rejects stale and fabricated complete Git identities before writing', async () => {
+    const fixture = await provenanceFixture();
+    const staleIdentity = fixture.identity;
+    git(fixture.root, [
+      '-c',
+      'user.name=Threadnote Test',
+      '-c',
+      'user.email=test@threadnote.local',
+      'commit',
+      '--allow-empty',
+      '-qm',
+      'identity-drift',
+    ]);
+
+    expect(await runEffect(recordVerifiedCodeGraphLocalAssociation(fixture.home, staleIdentity))).toEqual({
+      available: false,
+      state: 'invalid',
+    });
+    expect(existsSync(fixture.sidecar)).toBe(false);
+
+    const currentIdentity = await runEffect(resolveRepositoryIdentity(fixture.root));
+    const otherRoot = localRepository();
+    const otherIdentity = await runEffect(resolveRepositoryIdentity(otherRoot));
+    const mismatchedGitCommon = {
+      ...currentIdentity,
+      checkoutId: otherIdentity.checkoutId,
+      gitCommonDirectory: otherIdentity.gitCommonDirectory,
+    };
+    expect(await runEffect(recordVerifiedCodeGraphLocalAssociation(fixture.home, mismatchedGitCommon))).toEqual({
+      available: false,
+      state: 'invalid',
+    });
+  });
+
+  it('revalidates the complete Git identity immediately before atomic publication', async () => {
+    const fixture = await provenanceFixture();
+    let interlockReached = false;
+
+    const association = await runEffect(
+      recordVerifiedCodeGraphLocalAssociation(fixture.home, fixture.identity, {
+        beforePublishValidation: () =>
+          Effect.sync(() => {
+            interlockReached = true;
+            git(fixture.root, ['remote', 'add', 'origin', 'https://example.com/rebound/repository.git']);
+          }),
+      }),
+    );
+
+    expect(interlockReached).toBe(true);
+    expect(association).toEqual({available: false, state: 'invalid'});
+    expect(existsSync(fixture.sidecar)).toBe(false);
+    expect(readdirSync(dirname(fixture.sidecar)).filter(name => name.endsWith('.tmp'))).toEqual([]);
+  });
+
+  it('home-abbreviates human display while preserving the canonical trusted-local path', async () => {
+    const fixture = await provenanceFixture(homedir());
+
+    const association = await runEffect(recordVerifiedCodeGraphLocalAssociation(fixture.home, fixture.identity));
+
+    expect('path' in association ? association.path : undefined).toBe(fixture.root);
+    expect('displayPath' in association ? association.displayPath : undefined).toMatch(
+      new RegExp(`^~${escapeRegularExpression(sep)}`),
+    );
+  });
+
+  it('keeps a valid atomic record under bounded concurrent observations', async () => {
+    const fixture = await provenanceFixture();
+
+    const associations = await runEffect(
+      Effect.all(
+        Array.from({length: 32}, () => recordVerifiedCodeGraphLocalAssociation(fixture.home, fixture.identity)),
+        {concurrency: 'unbounded'},
+      ),
+    );
+
+    expect(associations).toHaveLength(32);
+    expect(
+      Object.fromEntries(
+        [...new Set(associations.map(association => association.state))].map(state => [
+          state,
+          associations.filter(association => association.state === state).length,
+        ]),
+      ),
+    ).toEqual({verified: 32});
+    expect(parseCodeGraphLocalProvenanceRecordJson(readFileSync(fixture.sidecar, 'utf8'))).toMatchObject({
+      checkoutId: fixture.identity.checkoutId,
+      repositoryId: fixture.identity.repositoryId,
+      worktreeId: fixture.identity.worktreeId,
+    });
+    expect(readdirSync(dirname(fixture.sidecar)).filter(name => name.endsWith('.tmp'))).toEqual([]);
+  });
+
+  it('uses one complete Git resolution per concurrent cadence-hit status observation', async () => {
+    const fixture = await provenanceFixture();
+    await runEffect(recordVerifiedCodeGraphLocalAssociation(fixture.home, fixture.identity));
+    let gitInvocationCount = 0;
+    let interlockCount = 0;
+
+    const statuses = await runEffect(
+      Effect.gen(function* () {
+        const command = yield* CommandExecutor;
+        const query = yield* CodeGraphQueryService;
+        const mutableCommand = command as {execute: typeof command.execute};
+        const execute = command.execute;
+        return yield* Effect.acquireUseRelease(
+          Effect.sync(() => {
+            mutableCommand.execute = (executable, args, options) => {
+              if (executable === 'git') gitInvocationCount += 1;
+              return execute(executable, args, options);
+            };
+          }),
+          () =>
+            Effect.all(
+              Array.from({length: 16}, () =>
+                query.status(fixture.home, fixture.root, {
+                  afterIdentityObserved: () =>
+                    Effect.sync(() => {
+                      interlockCount += 1;
+                    }),
+                  observeWorktree: false,
+                }),
+              ),
+              {concurrency: 'unbounded'},
+            ),
+          () =>
+            Effect.sync(() => {
+              mutableCommand.execute = execute;
+            }),
+        );
+      }),
+    );
+
+    expect(statuses).toHaveLength(16);
+    expect(statuses.every(status => status.identity.repositoryId === fixture.identity.repositoryId)).toBe(true);
+    expect(interlockCount).toBe(16);
+    expect(gitInvocationCount).toBe(16 * 6);
+  });
+
+  it('distinguishes a legacy checkout, an absent exact record, and a moved worktree', async () => {
+    const fixture = await provenanceFixture();
+    const checkoutRoot = join(fixture.home, 'indexes', 'code-graph', 'repositories', fixture.identity.checkoutId);
+    mkdirSync(checkoutRoot, {recursive: true});
+
+    expect(await runEffect(readPersistedCodeGraphLocalAssociation(fixture.home, fixture.identity))).toEqual({
+      available: false,
+      state: 'legacy-unknown',
+    });
+
+    await runEffect(recordVerifiedCodeGraphLocalAssociation(fixture.home, fixture.identity));
+    unlinkSync(fixture.sidecar);
+    expect(await runEffect(readPersistedCodeGraphLocalAssociation(fixture.home, fixture.identity))).toEqual({
+      available: false,
+      state: 'legacy-unknown',
+    });
+
+    await runEffect(recordVerifiedCodeGraphLocalAssociation(fixture.home, fixture.identity));
+    const beforeMove = readRecord(fixture.sidecar);
+    const movedRoot = `${fixture.root}-moved`;
+    renameSync(fixture.root, movedRoot);
+    temporaryRoots.push(movedRoot);
+    const moved = await runEffect(readPersistedCodeGraphLocalAssociation(fixture.home, fixture.identity));
+    expect(moved).toMatchObject({
+      available: false,
+      displayPath: fixture.root,
+      observedAt: beforeMove.observedAt,
+      path: fixture.root,
+      state: 'missing',
+    });
+  });
+
+  it('treats an exact sidecar disappearing before or during bounded open as legacy-unknown', async () => {
+    const fixture = await provenanceFixture();
+    await runEffect(recordVerifiedCodeGraphLocalAssociation(fixture.home, fixture.identity));
+
+    for (const disappearance of ['initial-stat', 'bounded-open'] as const) {
+      const association = await runEffect(
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          let sidecarStatCount = 0;
+          const disappearingFileSystem = FileSystem.FileSystem.of({
+            ...fileSystem,
+            stat: target => {
+              if (basename(String(target)) !== `${fixture.identity.worktreeId}.json`) {
+                return fileSystem.stat(target);
+              }
+              sidecarStatCount += 1;
+              const disappearAt = disappearance === 'initial-stat' ? 1 : 2;
+              return sidecarStatCount === disappearAt
+                ? Effect.fail(
+                    PlatformError.systemError({
+                      _tag: 'NotFound',
+                      description: 'injected atomic sidecar disappearance',
+                      method: 'stat',
+                      module: 'FileSystem',
+                      pathOrDescriptor: String(target),
+                    }),
+                  )
+                : fileSystem.stat(target);
+            },
+          });
+          return yield* readPersistedCodeGraphLocalAssociation(fixture.home, fixture.identity).pipe(
+            Effect.provideService(FileSystem.FileSystem, disappearingFileSystem),
+          );
+        }),
+      );
+
+      expect(association, disappearance).toEqual({available: false, state: 'legacy-unknown'});
+    }
+  });
+
+  it('hides an existing path whose repository identity no longer matches the persisted tuple', async () => {
+    const fixture = await provenanceFixture();
+    await runEffect(recordVerifiedCodeGraphLocalAssociation(fixture.home, fixture.identity));
+    writeFileSync(
+      fixture.sidecar,
+      `${JSON.stringify({...readRecord(fixture.sidecar), observedAt: '2020-01-01T00:00:00.000Z'})}\n`,
+      {mode: 0o600},
+    );
+    git(fixture.root, ['remote', 'add', 'origin', 'https://example.com/replaced/repository.git']);
+
+    const stale = await runEffect(readPersistedCodeGraphLocalAssociation(fixture.home, fixture.identity));
+
+    expect(stale).toEqual({available: false, state: 'stale'});
+    expect(JSON.stringify(stale)).not.toContain(fixture.root);
+  });
+
+  it('uses the fresh display cadence without Git while still requiring a canonical directory', async () => {
+    const fixture = await provenanceFixture();
+    await runEffect(recordVerifiedCodeGraphLocalAssociation(fixture.home, fixture.identity));
+    let gitInvocationCount = 0;
+
+    const read = () =>
+      runEffect(
+        Effect.gen(function* () {
+          const command = yield* CommandExecutor;
+          const mutableCommand = command as {execute: typeof command.execute};
+          const execute = command.execute;
+          return yield* Effect.acquireUseRelease(
+            Effect.sync(() => {
+              mutableCommand.execute = (executable, args, options) => {
+                if (executable === 'git') gitInvocationCount += 1;
+                return execute(executable, args, options);
+              };
+            }),
+            () => readPersistedCodeGraphLocalAssociation(fixture.home, fixture.identity),
+            () =>
+              Effect.sync(() => {
+                mutableCommand.execute = execute;
+              }),
+          );
+        }),
+      );
+
+    expect(await read()).toMatchObject({available: true, path: fixture.root, state: 'verified'});
+    expect(await read()).toMatchObject({available: true, path: fixture.root, state: 'verified'});
+    expect(gitInvocationCount).toBe(0);
+
+    const regularPath = join(temporaryRoot(), 'not-a-directory');
+    writeFileSync(regularPath, 'not a worktree');
+    writeFileSync(
+      fixture.sidecar,
+      `${JSON.stringify({...readRecord(fixture.sidecar), canonicalWorktreePath: realpathSync(regularPath)})}\n`,
+      {mode: 0o600},
+    );
+    const notDirectory = await read();
+    expect(notDirectory).toEqual({available: false, state: 'stale'});
+    expect(JSON.stringify(notDirectory)).not.toContain(regularPath);
+    expect(gitInvocationCount).toBe(0);
+  });
+
+  it('refreshes an expired display observation once and reuses the newly published cadence', async () => {
+    const fixture = await provenanceFixture();
+    await runEffect(recordVerifiedCodeGraphLocalAssociation(fixture.home, fixture.identity));
+    const expiredObservedAt = '2020-01-01T00:00:00.000Z';
+    writeFileSync(
+      fixture.sidecar,
+      `${JSON.stringify({...readRecord(fixture.sidecar), observedAt: expiredObservedAt})}\n`,
+      {mode: 0o600},
+    );
+    let identityResolutionCount = 0;
+
+    const result = await runEffect(
+      Effect.gen(function* () {
+        const command = yield* CommandExecutor;
+        const mutableCommand = command as {execute: typeof command.execute};
+        const execute = command.execute;
+        return yield* Effect.acquireUseRelease(
+          Effect.sync(() => {
+            mutableCommand.execute = (executable, args, options) => {
+              if (executable === 'git' && args[2] === 'rev-parse' && args[3] === '--show-toplevel') {
+                identityResolutionCount += 1;
+              }
+              return execute(executable, args, options);
+            };
+          }),
+          () =>
+            Effect.gen(function* () {
+              const first = yield* readPersistedCodeGraphLocalAssociation(fixture.home, fixture.identity);
+              const afterFirstResolutionCount = identityResolutionCount;
+              const second = yield* readPersistedCodeGraphLocalAssociation(fixture.home, fixture.identity);
+              return {afterFirstResolutionCount, first, second};
+            }),
+          () =>
+            Effect.sync(() => {
+              mutableCommand.execute = execute;
+            }),
+        );
+      }),
+    );
+
+    expect(result.first).toMatchObject({available: true, path: fixture.root, state: 'verified'});
+    expect(result.second).toMatchObject({available: true, path: fixture.root, state: 'verified'});
+    expect('observedAt' in result.first ? result.first.observedAt : undefined).not.toBe(expiredObservedAt);
+    expect(result.afterFirstResolutionCount).toBe(2);
+    expect(identityResolutionCount).toBe(2);
+  });
+
+  it('rejects permissive, malformed, non-absolute, and mismatched records without displaying their paths', async () => {
+    const fixture = await provenanceFixture();
+    await runEffect(recordVerifiedCodeGraphLocalAssociation(fixture.home, fixture.identity));
+    const valid = readRecord(fixture.sidecar);
+
+    chmodSync(fixture.sidecar, 0o644);
+    expect(await runEffect(readPersistedCodeGraphLocalAssociation(fixture.home, fixture.identity))).toEqual({
+      available: false,
+      state: 'invalid',
+    });
+
+    chmodSync(fixture.sidecar, 0o600);
+    writeFileSync(fixture.sidecar, '{not-json}\n', {mode: 0o600});
+    expect(await runEffect(readPersistedCodeGraphLocalAssociation(fixture.home, fixture.identity))).toEqual({
+      available: false,
+      state: 'invalid',
+    });
+
+    writeFileSync(fixture.sidecar, `${JSON.stringify({...valid, canonicalWorktreePath: 'relative/private'})}\n`, {
+      mode: 0o600,
+    });
+    const nonAbsolute = await runEffect(readPersistedCodeGraphLocalAssociation(fixture.home, fixture.identity));
+    expect(nonAbsolute).toEqual({available: false, state: 'invalid'});
+    expect(JSON.stringify(nonAbsolute)).not.toContain('relative/private');
+
+    writeFileSync(fixture.sidecar, `${JSON.stringify({...valid, checkoutId: 'f'.repeat(64)})}\n`, {mode: 0o600});
+    expect(await runEffect(readPersistedCodeGraphLocalAssociation(fixture.home, fixture.identity))).toEqual({
+      available: false,
+      state: 'invalid',
+    });
+  });
+
+  it('rejects bounded invalid UTF-8 sidecars without displaying their recorded path', async () => {
+    const fixture = await provenanceFixture();
+    await runEffect(recordVerifiedCodeGraphLocalAssociation(fixture.home, fixture.identity));
+    writeFileSync(fixture.sidecar, Uint8Array.of(0xc3, 0x28), {mode: 0o600});
+
+    const association = await runEffect(readPersistedCodeGraphLocalAssociation(fixture.home, fixture.identity));
+
+    expect(association).toEqual({available: false, state: 'invalid'});
+    expect(JSON.stringify(association)).not.toContain(fixture.root);
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'refuses a symlinked target without following or modifying its external record',
+    async () => {
+      const fixture = await provenanceFixture();
+      await runEffect(recordVerifiedCodeGraphLocalAssociation(fixture.home, fixture.identity));
+      const external = join(temporaryRoot(), 'external-record.json');
+      const content = readFileSync(fixture.sidecar, 'utf8');
+      writeFileSync(external, content, {mode: 0o600});
+      unlinkSync(fixture.sidecar);
+      symlinkSync(external, fixture.sidecar);
+
+      expect(await runEffect(readPersistedCodeGraphLocalAssociation(fixture.home, fixture.identity))).toEqual({
+        available: false,
+        state: 'invalid',
+      });
+      expect(await runEffect(recordVerifiedCodeGraphLocalAssociation(fixture.home, fixture.identity))).toEqual({
+        available: false,
+        state: 'invalid',
+      });
+      expect(lstatSync(fixture.sidecar).isSymbolicLink()).toBe(true);
+      expect(readFileSync(external, 'utf8')).toBe(content);
+    },
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'rejects a symlinked sidecar ancestor before writing outside home',
+    async () => {
+      const fixture = await provenanceFixture();
+      const external = temporaryRoot();
+      symlinkSync(external, join(fixture.home, 'indexes'));
+
+      const association = await runEffect(recordVerifiedCodeGraphLocalAssociation(fixture.home, fixture.identity));
+
+      expect(association).toEqual({available: false, state: 'invalid'});
+      expect(existsSync(join(external, 'code-graph'))).toBe(false);
+    },
+  );
+
+  it('fails closed without an unbounded read when a regular sidecar grows during a persisted read', async () => {
+    const fixture = await provenanceFixture();
+    await runEffect(recordVerifiedCodeGraphLocalAssociation(fixture.home, fixture.identity));
+    let grew = false;
+    let maximumBufferBytes = 0;
+
+    const raced = await runEffect(
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const adversarialFileSystem = FileSystem.FileSystem.of({
+          ...fileSystem,
+          open: (target, options) =>
+            fileSystem.open(target, options).pipe(
+              Effect.map(opened =>
+                basename(String(target)) === `${fixture.identity.worktreeId}.json`
+                  ? mapOpenedFile(opened, buffer => {
+                      maximumBufferBytes = Math.max(maximumBufferBytes, buffer.byteLength);
+                      return opened.read(buffer).pipe(
+                        Effect.flatMap(count => {
+                          if (Number(count) > 0 || grew) return Effect.succeed(count);
+                          grew = true;
+                          buffer.fill('x'.charCodeAt(0));
+                          return Effect.succeed(FileSystem.Size(buffer.byteLength));
+                        }),
+                      );
+                    })
+                  : opened,
+              ),
+            ),
+        });
+        return yield* readPersistedCodeGraphLocalAssociation(fixture.home, fixture.identity).pipe(
+          Effect.provideService(FileSystem.FileSystem, adversarialFileSystem),
+        );
+      }),
+    );
+
+    expect(grew).toBe(true);
+    expect(maximumBufferBytes).toBeLessThanOrEqual(8 * 1_024 + 1);
+    expect(raced).toEqual({available: false, state: 'invalid'});
+  });
+
+  it('fails closed when a regular sidecar is atomically replaced during a persisted read', async () => {
+    const fixture = await provenanceFixture();
+    await runEffect(recordVerifiedCodeGraphLocalAssociation(fixture.home, fixture.identity));
+    const record = readRecord(fixture.sidecar);
+
+    const raced = await runEffect(
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        let replaced = false;
+        const adversarialFileSystem = FileSystem.FileSystem.of({
+          ...fileSystem,
+          open: (target, options) =>
+            fileSystem.open(target, options).pipe(
+              Effect.map(opened =>
+                basename(String(target)) === `${fixture.identity.worktreeId}.json`
+                  ? mapOpenedFile(opened, buffer =>
+                      opened.read(buffer).pipe(
+                        Effect.tap(() =>
+                          Effect.sync(() => {
+                            if (replaced) return;
+                            replaced = true;
+                            const replacement = join(dirname(fixture.sidecar), '.replacement.tmp');
+                            const {headCommit: _headCommit, ...replacementRecord} = record;
+                            writeFileSync(replacement, `${JSON.stringify(replacementRecord)}\n`, {mode: 0o600});
+                            renameSync(replacement, fixture.sidecar);
+                          }),
+                        ),
+                      ),
+                    )
+                  : opened,
+              ),
+            ),
+        });
+        return yield* readPersistedCodeGraphLocalAssociation(fixture.home, fixture.identity).pipe(
+          Effect.provideService(FileSystem.FileSystem, adversarialFileSystem),
+        );
+      }),
+    );
+
+    expect(raced).toEqual({available: false, state: 'invalid'});
+  });
+
+  it('fails closed when a custom filesystem omits sidecar inode or modification time', async () => {
+    const fixture = await provenanceFixture();
+    await runEffect(recordVerifiedCodeGraphLocalAssociation(fixture.home, fixture.identity));
+
+    for (const omitted of ['inode', 'mtime'] as const) {
+      const association = await runEffect(
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const withoutIdentity = (info: FileSystem.File.Info): FileSystem.File.Info => ({
+            ...info,
+            ...(omitted === 'inode' ? {ino: Option.none()} : {mtime: Option.none()}),
+          });
+          const isSidecar = (target: string) => basename(target) === `${fixture.identity.worktreeId}.json`;
+          const customFileSystem = FileSystem.FileSystem.of({
+            ...fileSystem,
+            open: (target, options) =>
+              fileSystem
+                .open(target, options)
+                .pipe(
+                  Effect.map(opened =>
+                    isSidecar(String(target))
+                      ? mapOpenedFile(opened, buffer => opened.read(buffer), withoutIdentity)
+                      : opened,
+                  ),
+                ),
+            stat: target =>
+              fileSystem
+                .stat(target)
+                .pipe(Effect.map(info => (isSidecar(String(target)) ? withoutIdentity(info) : info))),
+          });
+          return yield* readPersistedCodeGraphLocalAssociation(fixture.home, fixture.identity).pipe(
+            Effect.provideService(FileSystem.FileSystem, customFileSystem),
+          );
+        }),
+      );
+
+      expect(association, omitted).toEqual({available: false, state: 'invalid'});
+    }
+  });
+
+  it('turns filesystem failures into path-free invalid state at the supplemental boundary', async () => {
+    const fixture = await provenanceFixture();
+    await runEffect(recordVerifiedCodeGraphLocalAssociation(fixture.home, fixture.identity));
+
+    for (const method of ['exists', 'stat', 'stat-after-read', 'read', 'realPath'] as const) {
+      const association = await readWithInjectedFileSystemFailure(fixture, method);
+      expect(association, method).toEqual({available: false, state: 'invalid'});
+      expect(JSON.stringify(association), method).not.toContain(fixture.root);
+    }
+  });
+
+  it.prop(
+    'round-trips bounded records and strips every local path from privacy-safe projections',
+    {
+      segment: FC.array(FC.constantFrom(...'abcdefghijklmnopqrstuvwxyz0123456789'), {maxLength: 32, minLength: 1}).map(
+        characters => characters.join(''),
+      ),
+    },
+    ({segment}) => {
+      const record = {
+        canonicalWorktreePath: `/private/tmp/${segment}`,
+        checkoutId: 'a'.repeat(64),
+        headCommit: 'b'.repeat(40),
+        observedAt: '2026-08-08T12:00:00.000Z',
+        repositoryId: 'c'.repeat(64),
+        schemaVersion: 1,
+        worktreeId: 'd'.repeat(64),
+      } satisfies CodeGraphLocalProvenanceRecord;
+      expect(parseCodeGraphLocalProvenanceRecordJson(JSON.stringify(record))).toEqual(record);
+
+      const safe = privacySafeCodeGraphLocalAssociation({
+        available: true,
+        displayPath: `~/${segment}`,
+        observedAt: record.observedAt,
+        path: record.canonicalWorktreePath,
+        state: 'verified',
+      });
+      expect(safe).toEqual({available: true, state: 'verified'});
+      expect(JSON.stringify(safe)).not.toContain(record.canonicalWorktreePath);
+      expect(JSON.stringify(safe)).not.toContain(`~/${segment}`);
+    },
+    {fastCheck: {numRuns: 200}},
+  );
+});
+
+async function provenanceFixture(parent?: string): Promise<{
+  readonly home: string;
+  readonly identity: RepositoryIdentity;
+  readonly root: string;
+  readonly sidecar: string;
+}> {
+  const home = temporaryRoot();
+  const root = localRepository(parent);
+  const identity = await runEffect(resolveRepositoryIdentity(root));
+  return {
+    home,
+    identity,
+    root,
+    sidecar: join(
+      home,
+      'indexes',
+      'code-graph',
+      'repositories',
+      identity.checkoutId,
+      'local-context',
+      'worktrees',
+      `${identity.worktreeId}.json`,
+    ),
+  };
+}
+
+function localRepository(parent = tmpdir()): string {
+  const root = mkdtempSync(join(parent, '.threadnote-code-graph-provenance-'));
+  temporaryRoots.push(root);
+  git(root, ['init', '-q']);
+  git(root, [
+    '-c',
+    'user.name=Threadnote Test',
+    '-c',
+    'user.email=test@threadnote.local',
+    'commit',
+    '--allow-empty',
+    '-qm',
+    'fixture',
+  ]);
+  return realpathSync(root);
+}
+
+function temporaryRoot(): string {
+  const root = mkdtempSync(join(tmpdir(), 'threadnote-code-graph-provenance-home-'));
+  temporaryRoots.push(root);
+  return root;
+}
+
+function git(cwd: string, args: readonly string[]): void {
+  execFileSync('git', ['-C', cwd, ...args], {stdio: 'pipe'});
+}
+
+function readRecord(file: string): CodeGraphLocalProvenanceRecord {
+  return JSON.parse(readFileSync(file, 'utf8')) as CodeGraphLocalProvenanceRecord;
+}
+
+function readWithInjectedFileSystemFailure(
+  fixture: Awaited<ReturnType<typeof provenanceFixture>>,
+  method: 'exists' | 'read' | 'realPath' | 'stat' | 'stat-after-read',
+) {
+  return runEffect(
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      let sidecarStatCount = 0;
+      const isSidecar = (target: string) => basename(target) === `${fixture.identity.worktreeId}.json`;
+      const failure = (operation: string, target: string) =>
+        Effect.fail(
+          PlatformError.systemError({
+            _tag: 'PermissionDenied',
+            description: 'injected local provenance failure',
+            method: operation,
+            module: 'FileSystem',
+            pathOrDescriptor: target,
+          }),
+        );
+      const failingFileSystem = FileSystem.FileSystem.of({
+        ...fileSystem,
+        exists: target =>
+          method === 'exists' && target === fixture.root
+            ? failure('exists', String(target))
+            : fileSystem.exists(target),
+        open: (target, options) =>
+          fileSystem
+            .open(target, options)
+            .pipe(
+              Effect.map(opened =>
+                method === 'read' && isSidecar(String(target))
+                  ? mapOpenedFile(opened, () => failure('read', String(target)))
+                  : opened,
+              ),
+            ),
+        realPath: target =>
+          method === 'realPath' && target === fixture.root
+            ? failure('realPath', String(target))
+            : fileSystem.realPath(target),
+        stat: target => {
+          if (!isSidecar(String(target))) return fileSystem.stat(target);
+          sidecarStatCount += 1;
+          return method === 'stat' || (method === 'stat-after-read' && sidecarStatCount === 3)
+            ? failure('stat', String(target))
+            : fileSystem.stat(target);
+        },
+      });
+      return yield* readPersistedCodeGraphLocalAssociation(fixture.home, fixture.identity).pipe(
+        Effect.provideService(FileSystem.FileSystem, failingFileSystem),
+      );
+    }),
+  );
+}
+
+function mapOpenedFile(
+  opened: FileSystem.File,
+  read: FileSystem.File['read'],
+  mapInfo: (info: FileSystem.File.Info) => FileSystem.File.Info = info => info,
+): FileSystem.File {
+  return {
+    [FileSystem.FileTypeId]: FileSystem.FileTypeId,
+    fd: opened.fd,
+    read,
+    readAlloc: size => opened.readAlloc(size),
+    seek: (offset, from) => opened.seek(offset, from),
+    stat: opened.stat.pipe(Effect.map(mapInfo)),
+    sync: opened.sync,
+    truncate: length => opened.truncate(length),
+    write: buffer => opened.write(buffer),
+    writeAll: buffer => opened.writeAll(buffer),
+  };
+}
+
+function escapeRegularExpression(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}

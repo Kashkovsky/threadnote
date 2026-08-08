@@ -2,7 +2,7 @@ import React, {useEffect, useMemo, useRef, useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import type {CodeGraphDiagnosticsReport} from './code_graph/diagnostics.js';
+import type {CodeGraphLocalDiagnosticsReport} from './code_graph/diagnostics.js';
 import {ManagerAutocompleteInput, ManagerDialogProvider, useManagerDialogs} from './manager_dialog.js';
 import {
   GraphWorkspace,
@@ -171,7 +171,7 @@ function App(): React.ReactElement {
   const [graphCatalog, setGraphCatalog] = useState<GraphCatalog | undefined>();
   const [graphCatalogError, setGraphCatalogError] = useState('');
   const graphCatalogRef = useRef<GraphCatalog | undefined>(undefined);
-  const [graphDiagnostics, setGraphDiagnostics] = useState<CodeGraphDiagnosticsReport | undefined>();
+  const [graphDiagnostics, setGraphDiagnostics] = useState<CodeGraphLocalDiagnosticsReport | undefined>();
   const [graphAdministrationBusy, setGraphAdministrationBusy] = useState<string | undefined>();
   const [graphAdministrationOutput, setGraphAdministrationOutput] = useState('');
   const [tree, setTree] = useState<TreeNode | undefined>();
@@ -383,7 +383,7 @@ function App(): React.ReactElement {
       options.deep ? 'Deep-checking graphs' : options.analyze ? 'Analyzing graphs' : 'Diagnosing graphs',
     );
     try {
-      const report = await api<CodeGraphDiagnosticsReport>(
+      const report = await api<CodeGraphLocalDiagnosticsReport>(
         `/api/graphs/diagnostics?analyze=${options.analyze}&deep=${options.deep}`,
       );
       setGraphDiagnostics(report);

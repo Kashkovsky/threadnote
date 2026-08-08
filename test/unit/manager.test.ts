@@ -1,3 +1,4 @@
+import {execFileSync} from 'node:child_process';
 import {existsSync} from 'node:fs';
 import {mkdir, mkdtemp, rm, stat, symlink, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
@@ -28,8 +29,10 @@ import * as seeding from '../../src/seeding.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {codeGraphLayout} from '../../src/code_graph/layout.js';
 import {makeCodeGraphBuildReporter} from '../../src/code_graph/build_status.js';
+import {recordVerifiedCodeGraphLocalAssociation} from '../../src/code_graph/local_provenance.js';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
 import {withCodeGraphMaintenanceIntent} from '../../src/code_graph/maintenance_gate.js';
+import {resolveRepositoryIdentity} from '../../src/code_graph/repository.js';
 import type {CodeGraphWorkspace} from '../../src/code_graph/languages/types.js';
 import {
   CODE_GRAPH_EXTRACTOR_SET_VERSION,
@@ -374,6 +377,30 @@ async function startServer(
   };
 }
 
+function initializeGitRepository(root: string): void {
+  execFileSync('git', ['init', '-q', root], {stdio: 'pipe'});
+  execFileSync(
+    'git',
+    [
+      '-C',
+      root,
+      '-c',
+      'user.name=Threadnote Test',
+      '-c',
+      'user.email=test@threadnote.local',
+      'commit',
+      '--allow-empty',
+      '-qm',
+      'fixture',
+    ],
+    {stdio: 'pipe'},
+  );
+}
+
+function differentGraphIdentity(value: string): string {
+  return `${value.startsWith('f') ? 'e' : 'f'}${value.slice(1)}`;
+}
+
 describe('manager catalog', () => {
   const homes: string[] = [];
 
@@ -635,6 +662,7 @@ describe('manager http API', () => {
           readonly id: string;
           readonly views: readonly {
             readonly id: string;
+            readonly localAssociation: {readonly available: boolean; readonly state: string};
             readonly projects: readonly {readonly id: string; readonly symbolCount: number}[];
           }[];
         }[];
@@ -648,6 +676,7 @@ describe('manager http API', () => {
       });
       expect(catalog.repositories[0]?.views[0]).toMatchObject({
         checkoutId: repositoryId,
+        localAssociation: {available: false, state: 'legacy-unknown'},
         worktreeId: 'c'.repeat(64),
       });
       expect(catalog.repositories[0]?.views[0]?.projects).toEqual(
@@ -661,12 +690,14 @@ describe('manager http API', () => {
       const catalogPage = (await catalogPageResponse.json()) as {
         readonly query: string;
         readonly repository: {
+          readonly localAssociation: {readonly available: boolean; readonly state: string};
           readonly projects: readonly {readonly id: string}[];
           readonly snapshot: {readonly id: string};
         };
       };
       expect(catalogPageResponse.status).toBe(200);
       expect(catalogPage.query).toBe('core');
+      expect(catalogPage.repository.localAssociation).toEqual({available: false, state: 'legacy-unknown'});
       expect(catalogPage.repository.snapshot.id).toBe('manager-graph-snapshot');
       expect(catalogPage.repository.projects.map(project => project.id)).toEqual(['cgp_core']);
 
@@ -675,11 +706,20 @@ describe('manager http API', () => {
       });
       const viewsPage = (await viewsPageResponse.json()) as {
         readonly hasMore: boolean;
-        readonly repositories: readonly {readonly views: readonly {readonly id: string}[]}[];
+        readonly repositories: readonly {
+          readonly views: readonly {
+            readonly id: string;
+            readonly localAssociation: {readonly available: boolean; readonly state: string};
+          }[];
+        }[];
       };
       expect(viewsPageResponse.status).toBe(200);
       expect(viewsPage.hasMore).toBe(false);
       expect(viewsPage.repositories[0]?.views[0]?.id).toBe(`${repositoryId}.${'c'.repeat(64)}`);
+      expect(viewsPage.repositories[0]?.views[0]?.localAssociation).toEqual({
+        available: false,
+        state: 'legacy-unknown',
+      });
 
       const unpinnedCatalogPage = await fetch(`${server.url}/api/graphs/page?repository=${repositoryId}`, {headers});
       expect(unpinnedCatalogPage.status).toBe(500);
@@ -879,19 +919,25 @@ describe('manager http API', () => {
       const diagnostics = (await diagnosticsResponse.json()) as {
         readonly databases: readonly {
           readonly health: {readonly integrity: string};
-          readonly views: readonly unknown[];
+          readonly views: readonly {readonly localAssociation: {readonly available: boolean; readonly state: string}}[];
         }[];
         readonly mode: {readonly analyze: boolean; readonly deep: boolean};
         readonly summary: {readonly databaseCount: number; readonly readySnapshotCount: number};
         readonly type: string;
+        readonly version: number;
       };
       expect(diagnosticsResponse.status).toBe(200);
       expect(diagnostics).toMatchObject({
         mode: {analyze: true, deep: false},
         summary: {databaseCount: 1, readySnapshotCount: 1},
         type: 'code-graph-diagnostics',
+        version: 2,
       });
       expect(diagnostics.databases[0]).toMatchObject({health: {integrity: 'ok'}});
+      expect(diagnostics.databases[0]?.views[0]?.localAssociation).toEqual({
+        available: false,
+        state: 'legacy-unknown',
+      });
 
       const repairPreview = await fetch(`${server.url}/api/graphs/action`, {
         body: JSON.stringify({action: 'repair', dryRun: true}),
@@ -919,12 +965,31 @@ describe('manager http API', () => {
       expect(await refusedPurge.json()).toMatchObject({error: 'Set confirm=true for this action.'});
 
       const relativeTarget = await fetch(`${server.url}/api/graphs/action`, {
-        body: JSON.stringify({action: 'index', checkoutId: 'a'.repeat(64), cwd: '.', worktreeId: 'c'.repeat(64)}),
+        body: JSON.stringify({
+          action: 'index',
+          checkoutId: 'a'.repeat(64),
+          cwd: '.',
+          repositoryId: 'b'.repeat(64),
+          worktreeId: 'c'.repeat(64),
+        }),
         headers,
         method: 'POST',
       });
       expect(relativeTarget.status).toBe(500);
       expect(await relativeTarget.json()).toMatchObject({error: 'Supply cwd as an absolute local worktree path.'});
+
+      const missingRepositoryIdentity = await fetch(`${server.url}/api/graphs/action`, {
+        body: JSON.stringify({
+          action: 'index',
+          checkoutId: 'a'.repeat(64),
+          cwd: config.agentContextHome,
+          worktreeId: 'c'.repeat(64),
+        }),
+        headers,
+        method: 'POST',
+      });
+      expect(missingRepositoryIdentity.status).toBe(500);
+      expect(await missingRepositoryIdentity.json()).toMatchObject({error: 'Provide repositoryId.'});
 
       await mkdir(orphanedRoot, {recursive: true});
       await writeFile(join(orphanedRoot, 'graph-v3.sqlite'), 'incompatible disposable graph\n');
@@ -957,6 +1022,95 @@ describe('manager http API', () => {
         output: `Removed derived code graph index for checkout ${orphanedCheckoutId.slice(0, 12)}.`,
       });
       expect(existsSync(orphanedRoot)).toBe(false);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('rejects mismatched Manager graph identities before a targeted action starts', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    const root = join(config.agentContextHome, 'manager-action-worktree');
+    initializeGitRepository(root);
+    const identity = await runEffect(resolveRepositoryIdentity(root));
+    const server = await startServer(config, 'secret');
+    try {
+      const headers = {authorization: 'Bearer secret', 'content-type': 'application/json'};
+      const expected = {
+        checkoutId: identity.checkoutId,
+        repositoryId: identity.repositoryId,
+        worktreeId: identity.worktreeId,
+      };
+      for (const component of ['checkoutId', 'repositoryId', 'worktreeId'] as const) {
+        const response = await fetch(`${server.url}/api/graphs/action`, {
+          body: JSON.stringify({
+            ...expected,
+            [component]: differentGraphIdentity(expected[component]),
+            action: 'index',
+            cwd: root,
+          }),
+          headers,
+          method: 'POST',
+        });
+        expect(response.status, component).toBe(500);
+        expect(await response.json(), component).toEqual({
+          error: 'The supplied worktree path does not match the selected graph identity.',
+        });
+      }
+
+      execFileSync('git', ['-C', root, 'remote', 'add', 'origin', 'https://example.com/changed.git'], {
+        stdio: 'pipe',
+      });
+      const changedOrigin = await fetch(`${server.url}/api/graphs/action`, {
+        body: JSON.stringify({...expected, action: 'compact', cwd: root, dryRun: true}),
+        headers,
+        method: 'POST',
+      });
+      expect(changedOrigin.status).toBe(500);
+      expect(await changedOrigin.json()).toEqual({
+        error: 'The supplied worktree path does not match the selected graph identity.',
+      });
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('live-revalidates fresh persisted and Manager graph target fallbacks after origin drift', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    const root = join(config.agentContextHome, 'manager-fallback-worktree');
+    initializeGitRepository(root);
+    const identity = await runEffect(resolveRepositoryIdentity(root));
+    await runEffect(
+      Effect.gen(function* () {
+        const path = yield* Path.Path;
+        const layout = codeGraphLayout(path, config.agentContextHome, identity.checkoutId, identity.worktreeId);
+        yield* recordVerifiedCodeGraphLocalAssociation(config.agentContextHome, identity);
+        const reporter = yield* makeCodeGraphBuildReporter(identity, layout);
+        yield* reporter.progress({phase: 'waiting'});
+      }),
+    );
+    execFileSync('git', ['-C', root, 'remote', 'add', 'origin', 'https://example.com/changed.git'], {
+      stdio: 'pipe',
+    });
+
+    const server = await startServer(config, 'secret');
+    try {
+      const response = await fetch(`${server.url}/api/graphs/action`, {
+        body: JSON.stringify({
+          action: 'compact',
+          checkoutId: identity.checkoutId,
+          dryRun: true,
+          repositoryId: identity.repositoryId,
+          worktreeId: identity.worktreeId,
+        }),
+        headers: {authorization: 'Bearer secret', 'content-type': 'application/json'},
+        method: 'POST',
+      });
+      expect(response.status).toBe(500);
+      expect(await response.json()).toEqual({
+        error: 'The selected graph has no current local worktree target. Supply cwd and refresh graph diagnostics.',
+      });
     } finally {
       await server.close();
     }

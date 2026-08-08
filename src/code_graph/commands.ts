@@ -22,9 +22,9 @@ import {
   observationFromCodeGraphStatus,
   renderCodeGraphResult,
 } from './query.js';
-import {repositoryChangesSince, resolveRepositoryIdentity} from './repository.js';
+import {repositoryChangesSince, repositoryIdentityMatchesExpectation, resolveRepositoryIdentity} from './repository.js';
 import {CodeGraphStore} from './store.js';
-import type {CodeGraphProgress, CodeGraphQueryOptions} from './types.js';
+import type {CodeGraphProgress, CodeGraphQueryOptions, RepositoryIdentityExpectation} from './types.js';
 import {CodeGraphWatcher} from './watcher.js';
 import {CodeGraphAnalysis} from './analysis.js';
 import {
@@ -40,10 +40,14 @@ import {
   type ObservedCodeGraphBuildStatus,
 } from './build_status.js';
 import {compactCodeGraphStorage, inspectCodeGraphStorage, type CodeGraphStorage} from './storage.js';
-import {inspectAllCodeGraphs, renderCodeGraphDiagnostics} from './diagnostics.js';
+import {inspectAllCodeGraphsLocal, renderCodeGraphDiagnostics} from './diagnostics.js';
 
 interface CwdOption {
   readonly cwd?: string;
+}
+
+interface ExpectedRepositoryIdentityOption {
+  readonly expectedIdentity?: RepositoryIdentityExpectation;
 }
 
 export interface CodeGraphExportInterlock {
@@ -99,7 +103,7 @@ export const runCodeGraphDiagnostics = Effect.fn('codeGraph.command.diagnostics'
   config: RuntimeConfig,
   options: {readonly analyze?: boolean; readonly deep?: boolean; readonly json?: boolean},
 ) {
-  const report = yield* inspectAllCodeGraphs(config.agentContextHome, {
+  const report = yield* inspectAllCodeGraphsLocal(config.agentContextHome, {
     analyze: options.analyze,
     deep: options.deep,
     onProgress: options.json
@@ -151,14 +155,14 @@ export const runCodeGraphStatus = Effect.fn('codeGraph.command.status')(function
 ) {
   const cwd = yield* commandCwd(options.cwd);
   const path = yield* Path.Path;
-  const identity = yield* resolveRepositoryIdentity(cwd);
+  const query = yield* CodeGraphQueryService;
+  const ready = yield* query.status(config.agentContextHome, cwd);
+  const identity = ready.identity;
   const layout = codeGraphLayout(path, config.agentContextHome, identity.checkoutId, identity.worktreeId);
   const obsoleteStores = yield* inspectObsoleteCodeGraphStores(config.agentContextHome, identity.checkoutId);
   const storage = yield* inspectCodeGraphStorage(config.agentContextHome, identity.checkoutId);
   const selection = selectCodeGraphBuildStatuses(yield* readCodeGraphBuildStatuses(layout));
   const buildStatuses = selection.builds;
-  const query = yield* CodeGraphQueryService;
-  const ready = yield* query.statusForIdentity(config.agentContextHome, identity);
   const current =
     buildStatuses.find(status => status.identity.worktreeId === identity.worktreeId) ??
     buildStatuses.find(status => status.observation.liveness === 'active');
@@ -534,11 +538,15 @@ function formatStatusDuration(milliseconds: number): string {
 
 export const runCodeGraphIndex = Effect.fn('codeGraph.command.index')(function* (
   config: RuntimeConfig,
-  options: CwdOption & {readonly full?: boolean; readonly json?: boolean; readonly noVectors?: boolean},
+  options: CwdOption &
+    ExpectedRepositoryIdentityOption & {readonly full?: boolean; readonly json?: boolean; readonly noVectors?: boolean},
 ) {
   const indexer = yield* CodeGraphIndexer;
   const cwd = yield* commandCwd(options.cwd);
   const identity = yield* resolveRepositoryIdentity(cwd);
+  if (options.expectedIdentity && !repositoryIdentityMatchesExpectation(identity, options.expectedIdentity)) {
+    return yield* Effect.fail(new Error('Repository identity does not match the requested graph target.'));
+  }
   const ensureVectors = options.noVectors === true ? false : undefined;
   if (options.json) {
     const reportProgress = yield* makeCodeGraphJsonProgressReporter({
@@ -548,6 +556,7 @@ export const runCodeGraphIndex = Effect.fn('codeGraph.command.index')(function* 
     const summary = yield* indexer.index({
       cwd,
       ...(ensureVectors === false ? {ensureVectors: false} : {}),
+      ...(options.expectedIdentity ? {expectedIdentity: options.expectedIdentity} : {}),
       force: options.full,
       onProgress: reportProgress,
       threadnoteHome: config.agentContextHome,
@@ -563,6 +572,7 @@ export const runCodeGraphIndex = Effect.fn('codeGraph.command.index')(function* 
         .index({
           cwd,
           ...(ensureVectors === false ? {ensureVectors: false} : {}),
+          ...(options.expectedIdentity ? {expectedIdentity: options.expectedIdentity} : {}),
           force: options.full,
           onProgress: state => progress.update(progressMessage(state)).pipe(Effect.catch(() => Effect.void)),
           threadnoteHome: config.agentContextHome,
@@ -695,10 +705,10 @@ export const runCodeGraphInspect = Effect.fn('codeGraph.command.inspect')(functi
 ) {
   const service = yield* CodeGraphQueryService;
   const cwd = yield* commandCwd(options.cwd);
-  const identity = yield* resolveRepositoryIdentity(cwd);
-  let status = yield* service.statusForIdentity(config.agentContextHome, identity);
+  let status = yield* service.status(config.agentContextHome, cwd);
+  const identity = status.identity;
   if (status.stale || !status.readySnapshot) {
-    status = yield* service.attachSharedReadySnapshot(config.agentContextHome, identity);
+    status = yield* service.attachSharedReadySnapshot(config.agentContextHome, identity, status);
   }
   const strictFreshness = options.operation === 'impact' || options.operation === 'path';
   const statusObservation = observationFromCodeGraphStatus(status);
@@ -824,10 +834,14 @@ export const runCodeGraphPurge = Effect.fn('codeGraph.command.purge')(function* 
 
 export const runCodeGraphCompact = Effect.fn('codeGraph.command.compact')(function* (
   config: RuntimeConfig,
-  options: CwdOption & {readonly dryRun?: boolean; readonly force?: boolean; readonly json?: boolean},
+  options: CwdOption &
+    ExpectedRepositoryIdentityOption & {readonly dryRun?: boolean; readonly force?: boolean; readonly json?: boolean},
 ) {
   const cwd = yield* commandCwd(options.cwd);
   const identity = yield* resolveRepositoryIdentity(cwd);
+  if (options.expectedIdentity && !repositoryIdentityMatchesExpectation(identity, options.expectedIdentity)) {
+    return yield* Effect.fail(new Error('Repository identity does not match the requested graph target.'));
+  }
   const summary = yield* compactCodeGraphStorage(config.agentContextHome, identity.checkoutId, {
     dryRun: options.dryRun === true,
     force: options.force,
@@ -1098,10 +1112,10 @@ const ensureAnalysisSnapshot = Effect.fn('codeGraph.command.ensureAnalysisSnapsh
 ) {
   const query = yield* CodeGraphQueryService;
   const indexer = yield* CodeGraphIndexer;
-  const identity = yield* resolveRepositoryIdentity(cwd);
-  let status = yield* query.statusForIdentity(config.agentContextHome, identity);
+  let status = yield* query.status(config.agentContextHome, cwd);
+  const identity = status.identity;
   if (status.stale || !status.readySnapshot) {
-    status = yield* query.attachSharedReadySnapshot(config.agentContextHome, identity);
+    status = yield* query.attachSharedReadySnapshot(config.agentContextHome, identity, status);
   }
   if (status.stale) {
     if (json) {

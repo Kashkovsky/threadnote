@@ -16,6 +16,10 @@ import {
   withCodeGraphDatabaseWriteLock,
   withCodeGraphMaintenanceIntent,
 } from './maintenance_gate.js';
+import {
+  recordVerifiedCodeGraphLocalAssociation,
+  resolveAndRecordCodeGraphLocalAssociation,
+} from './local_provenance.js';
 import {compareCodeUnits} from './ordering.js';
 import {repositoryWorktreeIds, resolveRepositoryIdentity} from './repository.js';
 import {CodeGraphStore, type CodeGraphStoreShape} from './store.js';
@@ -48,6 +52,8 @@ export interface CodeGraphInspectOptions extends CodeGraphQueryOptions {
 }
 
 export interface CodeGraphStatusOptions {
+  /** @internal Run after the owned identity resolution and before reading graph status. */
+  readonly afterIdentityObserved?: (identity: RepositoryIdentity) => Effect.Effect<void, unknown>;
   readonly observeWorktree?: boolean;
 }
 
@@ -133,6 +139,8 @@ export class CodeGraphQueryService extends Context.Service<
     readonly attachSharedReadySnapshot: (
       threadnoteHome: string,
       identity: RepositoryIdentity,
+      /** @internal Fresh status returned for this exact identity avoids repeating its Git observation. */
+      observedStatus?: CodeGraphStatus,
     ) => Effect.Effect<CodeGraphStatus, unknown>;
     readonly inspect: (options: CodeGraphInspectOptions) => Effect.Effect<CodeGraphQueryResult, unknown>;
     readonly purge: (threadnoteHome: string, cwd: string) => Effect.Effect<string, unknown>;
@@ -172,8 +180,10 @@ export class CodeGraphQueryService extends Context.Service<
         threadnoteHome: string,
         identity: RepositoryIdentity,
         options?: CodeGraphStatusOptions,
+        identityAlreadyObserved = false,
       ) =>
         Effect.gen(function* () {
+          if (!identityAlreadyObserved) yield* recordVerifiedCodeGraphLocalAssociation(threadnoteHome, identity);
           const layout = codeGraphLayout(path, threadnoteHome, identity.checkoutId, identity.worktreeId);
           const readySnapshot = yield* store.readySnapshot(layout.databasePath, identity.worktreeId);
           const overlay = options?.observeWorktree === false ? undefined : yield* worktreeOverlayState(identity);
@@ -202,11 +212,23 @@ export class CodeGraphQueryService extends Context.Service<
           } satisfies CodeGraphStatus;
           return attachCodeGraphStatusObservation(status, overlay === undefined ? undefined : {identity, overlay});
         });
-      const attachSharedReadySnapshot = (threadnoteHome: string, identity: RepositoryIdentity) =>
+      const attachSharedReadySnapshot = (
+        threadnoteHome: string,
+        identity: RepositoryIdentity,
+        observedStatus?: CodeGraphStatus,
+      ) =>
         Effect.gen(function* () {
           // statusForIdentity already attaches a non-writable observation; never re-attach
           // onto the same object (Object.defineProperty would throw).
-          const status = yield* statusForIdentity(threadnoteHome, identity);
+          const observation = observedStatus && observationFromCodeGraphStatus(observedStatus);
+          const reusableStatus =
+            observedStatus !== undefined &&
+            observation !== undefined &&
+            sameRepositoryIdentity(observedStatus.identity, identity) &&
+            sameRepositoryIdentity(observation.identity, identity)
+              ? observedStatus
+              : undefined;
+          const status = reusableStatus ?? (yield* statusForIdentity(threadnoteHome, identity));
           if (!status.stale && status.readySnapshot?.commit === identity.headCommit) return status;
           const overlay = observationFromCodeGraphStatus(status)?.overlay ?? (yield* worktreeOverlayState(identity));
           if (overlay.dirty) return status;
@@ -229,16 +251,18 @@ export class CodeGraphQueryService extends Context.Service<
           }
           const activeWorktreeIds = yield* repositoryWorktreeIds(identity);
           yield* store.promote(layout.databasePath, identity, candidate.id, activeWorktreeIds);
-          return yield* statusForIdentity(threadnoteHome, identity);
+          return yield* statusForIdentity(threadnoteHome, identity, undefined, reusableStatus !== undefined);
         });
       return CodeGraphQueryService.of({
-        attachSharedReadySnapshot: (threadnoteHome, identity) =>
-          withRepositoryServices(attachSharedReadySnapshot(threadnoteHome, identity)),
+        attachSharedReadySnapshot: (threadnoteHome, identity, observedStatus) =>
+          withRepositoryServices(attachSharedReadySnapshot(threadnoteHome, identity, observedStatus)),
         inspect: options =>
           withRepositoryServices(
             Effect.gen(function* () {
               const statusObservation = options.statusObservation;
-              const identity = statusObservation?.identity ?? (yield* resolveRepositoryIdentity(options.cwd));
+              const identity =
+                statusObservation?.identity ??
+                (yield* resolveAndRecordCodeGraphLocalAssociation(options.threadnoteHome, options.cwd)).identity;
               const layout = codeGraphLayout(path, options.threadnoteHome, identity.checkoutId, identity.worktreeId);
               const existing = yield* store.readySnapshot(layout.databasePath, identity.worktreeId);
               const strictFreshness =
@@ -358,8 +382,9 @@ export class CodeGraphQueryService extends Context.Service<
         status: (threadnoteHome, cwd, options) =>
           withRepositoryServices(
             Effect.gen(function* () {
-              const identity = yield* resolveRepositoryIdentity(cwd);
-              return yield* statusForIdentity(threadnoteHome, identity, options);
+              const {identity} = yield* resolveAndRecordCodeGraphLocalAssociation(threadnoteHome, cwd);
+              yield* options?.afterIdentityObserved?.(identity) ?? Effect.void;
+              return yield* statusForIdentity(threadnoteHome, identity, options, true);
             }),
           ),
         statusForIdentity: (threadnoteHome, identity, options) =>
@@ -1353,6 +1378,18 @@ export function renderCodeGraphResult(
     lines.push('', ...result.warnings.map(warning => `Warning: ${warning}`));
   }
   return `${lines.join('\n')}\n`;
+}
+
+function sameRepositoryIdentity(left: RepositoryIdentity, right: RepositoryIdentity): boolean {
+  return (
+    left.repoRoot === right.repoRoot &&
+    left.gitCommonDirectory === right.gitCommonDirectory &&
+    left.checkoutId === right.checkoutId &&
+    left.worktreeId === right.worktreeId &&
+    left.repositoryId === right.repositoryId &&
+    left.headCommit === right.headCommit &&
+    left.objectFormat === right.objectFormat
+  );
 }
 
 function snapshotMatches(

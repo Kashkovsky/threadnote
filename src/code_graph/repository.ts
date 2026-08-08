@@ -2,7 +2,7 @@ import {Effect, FileSystem, Path} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {runCommandEffect} from '../effect/command.js';
 import {SystemInfo} from '../effect/system.js';
-import {CodeGraphRepositoryError, type RepositoryIdentity} from './types.js';
+import {CodeGraphRepositoryError, type RepositoryIdentity, type RepositoryIdentityExpectation} from './types.js';
 
 const IDENTITY_FORMAT_VERSION = 1;
 
@@ -41,7 +41,7 @@ export const resolveRepositoryIdentity = Effect.fn('codeGraph.resolveRepositoryI
       ignoreCaseResult.exitCode === 0 && ignoreCaseResult.stdout.trim().toLowerCase() === 'true'
         ? 'insensitive'
         : 'sensitive',
-    checkoutId: sha256HexSync(`checkout-v${IDENTITY_FORMAT_VERSION}\n${gitCommonDirectory}`),
+    checkoutId: checkoutIdForGitCommonDirectory(gitCommonDirectory),
     displayName,
     gitCommonDirectory,
     headCommit,
@@ -110,6 +110,21 @@ export const repositoryChangesSince = Effect.fn('codeGraph.repositoryChangesSinc
 
 export function worktreeIdForRoot(repoRoot: string): string {
   return sha256HexSync(`worktree-v${IDENTITY_FORMAT_VERSION}\n${repoRoot}`);
+}
+
+function checkoutIdForGitCommonDirectory(gitCommonDirectory: string): string {
+  return sha256HexSync(`checkout-v${IDENTITY_FORMAT_VERSION}\n${gitCommonDirectory}`);
+}
+
+export function repositoryIdentityMatchesExpectation(
+  identity: RepositoryIdentityExpectation,
+  expected: RepositoryIdentityExpectation,
+): boolean {
+  return (
+    identity.checkoutId === expected.checkoutId &&
+    identity.repositoryId === expected.repositoryId &&
+    identity.worktreeId === expected.worktreeId
+  );
 }
 
 function runGit(cwd: string, args: readonly string[], allowFailure = false) {

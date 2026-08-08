@@ -1,6 +1,7 @@
 import React, {useEffect, useMemo, useRef, useState} from 'react';
 import * as THREE from 'three';
-import type {CodeGraphDiagnosticsReport} from './code_graph/diagnostics.js';
+import type {CodeGraphLocalDiagnosticsReport} from './code_graph/diagnostics.js';
+import type {CodeGraphLocalAssociation} from './code_graph/local_provenance.js';
 import {compareCodeUnits} from './code_graph/ordering.js';
 import {
   MANAGER_GRAPH_DEFAULT_EDGE_LIMIT,
@@ -53,6 +54,7 @@ export interface GraphRepository {
   readonly displayName: string;
   readonly id: string;
   readonly label: string;
+  readonly localAssociation: CodeGraphLocalAssociation;
   readonly metrics: 'complete' | 'deferred';
   readonly model: 'legacy-fallback' | 'workspace';
   readonly projectCount: number;
@@ -96,6 +98,7 @@ export type GraphAdministrationAction =
       readonly dryRun?: boolean;
       readonly force?: boolean;
       readonly full?: boolean;
+      readonly repositoryId: string;
       readonly worktreeId: string;
     }
   | {
@@ -105,6 +108,16 @@ export type GraphAdministrationAction =
     }
   | {readonly action: 'purge-all'; readonly dryRun?: boolean}
   | {readonly action: 'repair'; readonly deep?: boolean; readonly dryRun?: boolean};
+
+export function graphAdministrationTarget(
+  checkoutId: string,
+  view: {readonly repository: {readonly repositoryId: string}; readonly worktreeId: string},
+): Pick<
+  Extract<GraphAdministrationAction, {readonly worktreeId: string}>,
+  'checkoutId' | 'repositoryId' | 'worktreeId'
+> {
+  return {checkoutId, repositoryId: view.repository.repositoryId, worktreeId: view.worktreeId};
+}
 
 export interface GraphCatalogPage {
   readonly projectOffset: number;
@@ -356,7 +369,7 @@ export function graphBuildTarget(
   return {
     repositoryLabel,
     worktreeLabel:
-      build.managerContext?.worktreePath ??
+      view?.localAssociation.displayPath ??
       view?.label ??
       `Checkout ${shortGraphIdentity(build.identity.checkoutId)} · worktree ${shortGraphIdentity(
         build.identity.worktreeId,
@@ -940,7 +953,7 @@ export function graphCatalogSearchOptions(
   for (const group of repositories) {
     for (const view of group.views) {
       viewsById.set(view.id, {
-        description: `${group.displayName} · ${view.snapshot.commit.slice(0, 8)}${view.snapshot.dirty ? ' · dirty' : ''}`,
+        description: `${group.displayName} · ${view.snapshot.commit.slice(0, 8)}${view.snapshot.dirty ? ' · dirty' : ''} · folder ${graphLocalAssociationText(view.localAssociation)}`,
         id: view.id,
         label: view.label,
         repositoryId: group.id,
@@ -1122,7 +1135,7 @@ export function graphOverviewSizeLabel(graph: GraphVisualization): string {
 }
 
 export function GraphWorkspace(props: {
-  readonly administration?: CodeGraphDiagnosticsReport;
+  readonly administration?: CodeGraphLocalDiagnosticsReport;
   readonly administrationBusy?: string;
   readonly administrationOutput?: string;
   readonly catalog?: GraphCatalog;
@@ -1772,11 +1785,16 @@ export function GraphWorkspace(props: {
               >
                 {repositoryGroup.views.map(view => (
                   <option key={view.id} value={view.id}>
-                    {view.label}
+                    {view.label} · folder {graphLocalAssociationText(view.localAssociation)}
                   </option>
                 ))}
               </select>
             </label>
+          ) : null}
+          {repository ? (
+            <small className="graph-local-association">
+              Folder: {graphLocalAssociationText(repository.localAssociation)} · {repository.localAssociation.state}
+            </small>
           ) : null}
           <label>
             <span>Component</span>
@@ -3099,7 +3117,7 @@ function GraphAdministration(props: {
   readonly onAction: (action: GraphAdministrationAction) => void;
   readonly onDiagnostics: (options: {readonly analyze: boolean; readonly deep: boolean}) => void;
   readonly output?: string;
-  readonly report?: CodeGraphDiagnosticsReport;
+  readonly report?: CodeGraphLocalDiagnosticsReport;
 }): React.ReactElement {
   const dialogs = useOptionalManagerDialogs();
   const [analyze, setAnalyze] = useState(false);
@@ -3243,7 +3261,12 @@ function GraphAdministration(props: {
               const obsolete = props.report?.obsoleteStores.checkouts.find(
                 checkout => checkout.checkoutId === database.checkoutId,
               );
-              const target = view ? {checkoutId: database.checkoutId, worktreeId: view.viewWorktreeId} : undefined;
+              const target = view
+                ? graphAdministrationTarget(database.checkoutId, {
+                    repository: view.repository,
+                    worktreeId: view.viewWorktreeId,
+                  })
+                : undefined;
               return (
                 <article className="graph-database-card" key={database.checkoutId}>
                   <header>
@@ -3292,6 +3315,10 @@ function GraphAdministration(props: {
                           {candidate.snapshot.symbolCount.toLocaleString()} symbols ·{' '}
                           {candidate.snapshot.edgeCount.toLocaleString()} edges
                         </span>
+                        <small>
+                          Folder: {graphLocalAssociationText(candidate.localAssociation)} ·{' '}
+                          {candidate.localAssociation.state}
+                        </small>
                         {candidate.analysis ? (
                           <small>
                             {candidate.analysis.coverage.complete ? 'Complete' : 'Partial'} analysis ·{' '}
@@ -3457,6 +3484,10 @@ function GraphAdministration(props: {
       </div>
     </details>
   );
+}
+
+export function graphLocalAssociationText(association: CodeGraphLocalAssociation): string {
+  return association.displayPath ?? association.state.replaceAll('-', ' ');
 }
 
 function GraphBuildProgress(props: {
