@@ -13,7 +13,11 @@ import {CodeGraphStore, type CodeGraphRoutineMaintenanceResult} from '../../src/
 import {withCodeGraphMaintenanceIntent} from '../../src/code_graph/maintenance_gate.js';
 import {withExclusiveFileLock} from '../../src/effect/file_lock.js';
 import {SystemInfo} from '../../src/effect/system.js';
-import type {CodeGraphSnapshot, RepositoryIdentity} from '../../src/code_graph/types.js';
+import {
+  CODE_GRAPH_EXTRACTOR_GENERATION,
+  type CodeGraphSnapshot,
+  type RepositoryIdentity,
+} from '../../src/code_graph/types.js';
 import {join, mkdir, mkdtemp, rm, writeFile} from '../helpers/effect-filesystem.js';
 import {runEffect} from '../helpers/effect-runtime.js';
 
@@ -775,8 +779,8 @@ function protectRoutineSnapshot(
   try {
     if (protection === 'active') {
       database
-        .query('INSERT INTO snapshot_extractor_generations (snapshot_id, generation) VALUES (?, 10)')
-        .run(snapshot.id);
+        .query('INSERT INTO snapshot_extractor_generations (snapshot_id, generation) VALUES (?, ?)')
+        .run(snapshot.id, CODE_GRAPH_EXTRACTOR_GENERATION);
       database
         .query('INSERT INTO active_snapshots (worktree_id, snapshot_id, activated_at) VALUES (?, ?, ?)')
         .run(snapshot.worktreeId, snapshot.id, new Date().toISOString());
@@ -923,8 +927,8 @@ function seedProtectedBaseClosure(databasePath: string): void {
     insertSnapshot(database, 'base-alias', 'ready', 'base-root');
     insertSnapshot(database, 'active-overlay', 'ready', 'base-alias');
     database
-      .query('INSERT INTO snapshot_extractor_generations (snapshot_id, generation) VALUES (?, 10)')
-      .run('active-overlay');
+      .query('INSERT INTO snapshot_extractor_generations (snapshot_id, generation) VALUES (?, ?)')
+      .run('active-overlay', CODE_GRAPH_EXTRACTOR_GENERATION);
     database
       .query('INSERT INTO active_snapshots (worktree_id, snapshot_id, activated_at) VALUES (?, ?, ?)')
       .run('active-worktree', 'active-overlay', new Date().toISOString());
