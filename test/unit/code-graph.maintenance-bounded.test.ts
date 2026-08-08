@@ -118,6 +118,51 @@ describe('bounded code graph maintenance', () => {
     await expect(Bun.file(lockPath).exists()).resolves.toBe(false);
   });
 
+  it('defers deep repair when database diagnosis is unreadable instead of discarding it', async () => {
+    const home = await mkdtemp('threadnote-graph-maintenance-unreadable-');
+    homes.push(home);
+    const checkoutId = 'b'.repeat(64);
+    const repositoryRoot = join(home, 'indexes', 'code-graph', 'repositories', checkoutId);
+    const databasePath = join(repositoryRoot, `graph-v${CODE_GRAPH_SCHEMA_VERSION}.sqlite`);
+    await runEffect(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        yield* store.initialize(databasePath);
+      }),
+    );
+    const unreadable = new Database(databasePath, {strict: true});
+    try {
+      unreadable.exec('ALTER TABLE schema_metadata RENAME TO unreadable_schema_metadata_fixture');
+    } finally {
+      unreadable.close(false);
+    }
+    const progress: string[] = [];
+
+    const repair = await runEffect(
+      repairCodeGraphIndexes(
+        home,
+        false,
+        state => Effect.sync(() => progress.push(`${state.phase}:${state.reason ?? 'none'}`)),
+        undefined,
+        {mode: 'deep'},
+      ),
+    );
+
+    expect(repair).toMatchObject({databases: 1, deferredDatabases: 1, discarded: 0});
+    expect(progress).toEqual(['checking:none', 'deferred:unreadable-database']);
+    await expect(Bun.file(databasePath).exists()).resolves.toBe(true);
+    const preserved = new Database(databasePath, {readonly: true, strict: true});
+    try {
+      expect(
+        preserved
+          .query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'unreadable_schema_metadata_fixture'")
+          .get(),
+      ).toEqual({name: 'unreadable_schema_metadata_fixture'});
+    } finally {
+      preserved.close(false);
+    }
+  });
+
   it('reports an interrupted extension revision and never discards the recoverable database', async () => {
     const home = await mkdtemp('threadnote-graph-maintenance-extension-revision-');
     homes.push(home);

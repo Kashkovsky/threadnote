@@ -99,7 +99,7 @@ export interface CodeGraphMaintenanceProgress {
   readonly current: number;
   readonly phase:
     'checking' | 'cleaning-snapshots' | 'cleaning-vectors' | 'deferred' | 'discarding' | 'migrating-schema';
-  readonly reason?: 'active-build' | 'deep-check-required' | 'schema-upgrade-on-use';
+  readonly reason?: 'active-build' | 'deep-check-required' | 'schema-upgrade-on-use' | 'unreadable-database';
   readonly snapshots?: number;
   readonly total: number;
 }
@@ -389,7 +389,13 @@ export const repairCodeGraphIndexes = Effect.fn('codeGraph.repairIndexes')(funct
                       return 'schema-upgrade-on-use' as const;
                     }
                   }
-                  if (diagnosed._tag === 'None' || diagnosed.value?.integrity !== 'ok') {
+                  // A failed diagnostic is not evidence of corruption. In particular,
+                  // transient I/O, permissions, or an unreadable schema must never turn
+                  // an explicit deep check into recursive deletion of the graph store.
+                  if (diagnosed._tag === 'None' || diagnosed.value === undefined) {
+                    return deep ? ('unreadable-database' as const) : ('deep-check-required' as const);
+                  }
+                  if (diagnosed.value.integrity !== 'ok') {
                     return deep ? ('discard' as const) : ('deep-check-required' as const);
                   }
                   const incomplete = diagnosed.value.buildingSnapshots + diagnosed.value.failedSnapshots;
