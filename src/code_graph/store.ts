@@ -10714,7 +10714,9 @@ const selectReadySnapshotForCommit = Effect.fn('codeGraph.selectReadySnapshotFor
 ) {
   const sql = yield* SqlClient.SqlClient;
   yield* configureConnection(sql);
-  if (!(yield* tableExists(sql, 'snapshots'))) return undefined;
+  if (!(yield* tableExists(sql, 'snapshots')) || !(yield* tableExists(sql, 'lexical_storage_formats'))) {
+    return undefined;
+  }
   const rows = yield* sql<SnapshotRow>`
     SELECT *
     FROM snapshots

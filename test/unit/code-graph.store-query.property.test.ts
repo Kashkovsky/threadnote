@@ -108,7 +108,7 @@ describe('code graph indexed query properties', () => {
     {fastCheck: {numRuns: 200}},
   );
 
-  it.effect('treats a database file observed before schema publication as unavailable', () =>
+  it.effect('treats a database observed during partial schema publication as unavailable', () =>
     Effect.scoped(
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
@@ -127,6 +127,14 @@ describe('code graph indexed query properties', () => {
         expect(active).toBeUndefined();
         expect(byId).toBeUndefined();
         expect(byCommit).toBeUndefined();
+
+        yield* Effect.sync(() => {
+          const partial = new Database(databasePath);
+          partial.exec('CREATE TABLE snapshots (id TEXT PRIMARY KEY)');
+          partial.close(false);
+        });
+
+        expect(yield* store.readySnapshotForCommit(databasePath, repositoryId, 'commit')).toBeUndefined();
       }),
     ).pipe(Effect.provide(ApplicationLayer)),
   );
