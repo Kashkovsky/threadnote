@@ -7,6 +7,7 @@ import {
   listSharedAgentArtifacts as listSharedAgentArtifactsEffect,
   listShareConflicts as listShareConflictsEffect,
   markSharedAutoSyncDeferred,
+  personalUriFor,
   removeMemoryUri as removeMemoryUriEffect,
   refreshSharedReposInBackground as refreshSharedReposInBackgroundEffect,
   resolveShareConflict as resolveShareConflictEffect,
@@ -148,8 +149,24 @@ export const shareBundlePack = (config: ShareRuntime, manifestPath: string, opti
   withSharedRepositoryLock(config, shareBundlePackEffect(config, manifestPath, options));
 export const runShareInstallArtifacts = (config: ShareRuntime, options: ShareInstallArtifactsOptions) =>
   withSharedRepositoryLock(config, runShareInstallArtifactsEffect(config, options));
-export const runShareUnpublish = (config: ShareRuntime, sourceUri: string, options: ShareUnpublishOptions) =>
-  withSharedRepositoryLock(config, runShareUnpublishEffect(config, sourceUri, options));
+export const runShareUnpublish = Effect.fn('share.unpublish')(function* (
+  config: ShareRuntime,
+  sourceUri: string,
+  options: ShareUnpublishOptions,
+) {
+  const unpublish = runShareUnpublishEffect(config, sourceUri, options);
+  if (options.dryRun === true) return yield* unpublish;
+  return yield* withSharedRepositoryLock(
+    config,
+    Effect.gen(function* () {
+      const team = yield* resolveTeamEffect(config, options.team);
+      const targetUri = personalUriFor(config, sourceUri, team.name);
+      const fs = yield* FileSystem.FileSystem;
+      const resolvedUnpublish = runShareUnpublishEffect(config, sourceUri, {...options, team: team.name});
+      return yield* withMemoryUriLocks(fs, config.agentContextHome, [sourceUri, targetUri], resolvedUnpublish);
+    }),
+  );
+});
 export const runShareList = (config: ShareRuntime, options: ShareListOptions) => runShareListEffect(config, options);
 export const runShareRename = (config: ShareRuntime, options: ShareRenameOptions) =>
   withSharedRepositoryLock(config, runShareRenameEffect(config, options));
