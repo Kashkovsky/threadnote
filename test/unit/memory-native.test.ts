@@ -229,6 +229,11 @@ describe('native memory workflow', () => {
         );
         expect(String(collectionFailure)).toContain('collection root');
 
+        const resourceCollectionFailure = yield* Effect.flip(
+          runForget(config, 'threadnote://resources/repos', {dryRun: true}),
+        );
+        expect(String(resourceCollectionFailure)).toContain('collection root');
+
         const anchorFailure = yield* Effect.flip(
           runForget(config, 'threadnote://user/tester/memories/durable/note.md#section', {dryRun: true}),
         );

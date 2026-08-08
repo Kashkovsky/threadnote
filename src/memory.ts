@@ -1934,8 +1934,8 @@ function assertSafeForgetTarget(id: ReturnType<typeof parseResourceId>): void {
   if (id.anchor) {
     throw new Error('Refusing to forget an anchored resource; address the containing resource URI instead.');
   }
-  if (id.namespace === 'resources' && id.segments.length === 0) {
-    throw new Error('Refusing to forget the resources namespace root. Address a narrower resource subtree.');
+  if (id.namespace === 'resources' && id.segments.length < 2) {
+    throw new Error('Refusing to forget a resources collection root. Address a narrower resource subtree.');
   }
   if (id.namespace === 'user' && id.segments.length <= 3) {
     throw new Error('Refusing to forget a user or memory collection root. Address a narrower resource subtree.');
