@@ -14,6 +14,8 @@ concurrency:
 
 env:
   BUN_VERSION: 1.3.14
+  E2E_EMBEDDING_MODEL_ID: bge-small-en-v1.5-q8
+  E2E_EMBEDDING_MODEL_SHA256: f046db1dc724cf4f6f0a0c5917e922823b73eb1d27b8f9a9c2797f7866974804
 
 jobs:
   verify:
@@ -63,9 +65,52 @@ jobs:
       - run: bun run typecheck
       - run: bun run test
 
+  prepare-release-model:
+    name: Prepare pinned release model
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - run: bun install --frozen-lockfile
+
+      - name: Restore verified model cache
+        id: release-model-cache
+        uses: actions/cache@v6
+        with:
+          key: threadnote-e2e-model-${{ env.E2E_EMBEDDING_MODEL_SHA256 }}
+          path: artifacts/e2e-model-home/models/embedding/${{ env.E2E_EMBEDDING_MODEL_ID }}
+
+      - name: Download pinned model on cache miss
+        if: steps.release-model-cache.outputs.cache-hit != 'true'
+        run: >-
+          bun src/standalone.ts
+          --home artifacts/e2e-model-home
+          models install ${{ env.E2E_EMBEDDING_MODEL_ID }}
+
+      # A restored Actions cache is untrusted input; publish an artifact only after manifest checksum validation.
+      - name: Verify pinned model checksum
+        run: >-
+          bun src/standalone.ts
+          --home artifacts/e2e-model-home
+          models verify ${{ env.E2E_EMBEDDING_MODEL_ID }}
+
+      - name: Share pinned model with release jobs
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-core-embedding-model
+          path: artifacts/e2e-model-home/models/embedding/${{ env.E2E_EMBEDDING_MODEL_ID }}/${{ env.E2E_EMBEDDING_MODEL_SHA256 }}.gguf
+          if-no-files-found: error
+          retention-days: 1
+
   linux:
     name: Linux · ${{ matrix.architecture }}
     if: github.event_name == 'push'
+    needs: prepare-release-model
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -90,6 +135,11 @@ jobs:
         env:
           THREADNOTE_BUILD_TARGET: ${{ matrix.target }}
       - run: ./dist/threadnote --version
+      - name: Download pinned release model
+        uses: actions/download-artifact@v8
+        with:
+          name: release-core-embedding-model
+          path: ${{ runner.temp }}/threadnote-release-home/models/embedding/${{ env.E2E_EMBEDDING_MODEL_ID }}
       - name: Prepare strict doctor fixture
         shell: bash
         env:
@@ -112,6 +162,8 @@ jobs:
         run: ./dist/threadnote --home "$THREADNOTE_HOME" doctor --dry-run --strict
       - name: Produce a real embedding with the release payload
         run: bun --bun vitest run --config vitest.e2e.config.ts test/e2e/local-bins.e2e.ts
+        env:
+          THREADNOTE_E2E_MODEL_PATH: ${{ runner.temp }}/threadnote-release-home/models/embedding/${{ env.E2E_EMBEDDING_MODEL_ID }}/${{ env.E2E_EMBEDDING_MODEL_SHA256 }}.gguf
       - run: bun run archive:release
         env:
           THREADNOTE_RELEASE_TARGET: linux-${{ matrix.architecture }}
@@ -124,6 +176,7 @@ jobs:
 
   macos:
     name: macOS · ${{ matrix.architecture }}
+    needs: prepare-release-model
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -148,6 +201,11 @@ jobs:
         env:
           THREADNOTE_BUILD_TARGET: ${{ matrix.target }}
       - run: ./dist/threadnote --version
+      - name: Download pinned release model
+        uses: actions/download-artifact@v8
+        with:
+          name: release-core-embedding-model
+          path: ${{ runner.temp }}/threadnote-release-home/models/embedding/${{ env.E2E_EMBEDDING_MODEL_ID }}
       - name: Prepare strict doctor fixture
         shell: bash
         env:
@@ -170,6 +228,8 @@ jobs:
         run: ./dist/threadnote --home "$THREADNOTE_HOME" doctor --dry-run --strict
       - name: Produce a real embedding with the release payload
         run: bun --bun vitest run --config vitest.e2e.config.ts test/e2e/local-bins.e2e.ts
+        env:
+          THREADNOTE_E2E_MODEL_PATH: ${{ runner.temp }}/threadnote-release-home/models/embedding/${{ env.E2E_EMBEDDING_MODEL_ID }}/${{ env.E2E_EMBEDDING_MODEL_SHA256 }}.gguf
 
       - name: Import and select Developer ID certificate
         shell: bash
@@ -256,7 +316,7 @@ jobs:
     name: Windows build · ${{ matrix.architecture }} · disabled
     # Windows 4 release artifacts stay unavailable until Authenticode signing is approved and verified.
     if: ${{ false }}
-    needs: verify
+    needs: [verify, prepare-release-model]
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -280,6 +340,11 @@ jobs:
       - run: bun run build
         env:
           THREADNOTE_BUILD_TARGET: ${{ matrix.target }}
+      - name: Download pinned release model
+        uses: actions/download-artifact@v8
+        with:
+          name: release-core-embedding-model
+          path: ${{ runner.temp }}/threadnote-release-home/models/embedding/${{ env.E2E_EMBEDDING_MODEL_ID }}
       - name: Prepare fixture and verify with strict read-only doctor
         shell: pwsh
         env:
@@ -299,6 +364,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Produce a real embedding with the release payload
         run: bun --bun vitest run --config vitest.e2e.config.ts test/e2e/local-bins.e2e.ts
+        env:
+          THREADNOTE_E2E_MODEL_PATH: ${{ runner.temp }}/threadnote-release-home/models/embedding/${{ env.E2E_EMBEDDING_MODEL_ID }}/${{ env.E2E_EMBEDDING_MODEL_SHA256 }}.gguf
 
       - uses: actions/upload-artifact@v7
         with:
