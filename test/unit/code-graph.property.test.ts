@@ -2,7 +2,16 @@ import {describe, expect, it} from '@effect/vitest';
 import * as FC from 'effect/testing/FastCheck';
 import {Effect} from 'effect';
 import type {CodeGraphEmbeddingIndexShape} from '../../src/code_graph/embedding.js';
-import {parseGitCatFileBatch, parseGitTree, parseNameStatus} from '../../src/code_graph/inventory.js';
+import {
+  codeGraphInventoryExclusionReason,
+  parseGitCatFileBatch,
+  parseGitTree,
+  parseNameStatus,
+} from '../../src/code_graph/inventory.js';
+import {
+  CODE_GRAPH_GENERIC_JSON_EXCLUSION_BYTES,
+  CODE_GRAPH_HIGH_SIGNAL_JSON_HARD_CAP_BYTES,
+} from '../../src/code_graph/inventory_policy.js';
 import type {CodeGraphLayout} from '../../src/code_graph/layout.js';
 import {neighborQuery, traversalQuery} from '../../src/code_graph/query.js';
 import type {CodeGraphStoreShape} from '../../src/code_graph/store.js';
@@ -90,6 +99,43 @@ const emptyEmbedding = {
 
 describe('native code graph parser properties', () => {
   it.prop(
+    'matches the independent low-meaning admission model across size and path case',
+    {
+      kind: FC.constantFrom(
+        'svg',
+        'low-signal-json',
+        'wrapped-fixture-json',
+        'generated-json',
+        'overlapping-low-signal-json',
+        'generic-json',
+        'high-signal-json',
+        'source',
+      ),
+      size: FC.integer({max: CODE_GRAPH_HIGH_SIGNAL_JSON_HARD_CAP_BYTES + 1, min: 0}),
+      uppercase: FC.boolean(),
+    },
+    ({kind, size, uppercase}) => {
+      const path = inventoryPolicyPath(kind, uppercase);
+      const expected =
+        kind === 'svg'
+          ? 'svg'
+          : kind === 'low-signal-json' ||
+              kind === 'wrapped-fixture-json' ||
+              kind === 'generated-json' ||
+              kind === 'overlapping-low-signal-json'
+            ? 'low-signal-json'
+            : kind === 'generic-json' && size >= CODE_GRAPH_GENERIC_JSON_EXCLUSION_BYTES
+              ? 'generic-json-size'
+              : kind === 'high-signal-json' && size >= CODE_GRAPH_HIGH_SIGNAL_JSON_HARD_CAP_BYTES
+                ? 'high-signal-json-hard-cap'
+                : undefined;
+
+      expect(codeGraphInventoryExclusionReason(path, size)).toBe(expected);
+    },
+    {fastCheck: {numRuns: 300}},
+  );
+
+  it.prop(
     'round-trips ordinary Git tree records without interpreting repository filenames',
     {
       entries: FC.array(gitTreeEntryArbitrary, {maxLength: 24}),
@@ -144,6 +190,37 @@ describe('native code graph parser properties', () => {
     {fastCheck: {numRuns: 200}},
   );
 });
+
+function inventoryPolicyPath(
+  kind:
+    | 'generated-json'
+    | 'generic-json'
+    | 'high-signal-json'
+    | 'low-signal-json'
+    | 'overlapping-low-signal-json'
+    | 'source'
+    | 'svg'
+    | 'wrapped-fixture-json',
+  uppercase: boolean,
+): string {
+  const path =
+    kind === 'svg'
+      ? 'assets/icons/generated.svg'
+      : kind === 'low-signal-json'
+        ? 'test/golden-data/payload.json'
+        : kind === 'wrapped-fixture-json'
+          ? 'test/__fixtures__/payload.json'
+          : kind === 'generated-json'
+            ? 'config/generated/runtime-config.json'
+            : kind === 'overlapping-low-signal-json'
+              ? 'configs/fixtures/runtime-config.json'
+              : kind === 'generic-json'
+                ? 'data/application.jsonc'
+                : kind === 'high-signal-json'
+                  ? 'apps/mobile/project.json'
+                  : 'src/application.ts';
+  return uppercase ? path.toUpperCase() : path;
+}
 
 describe('native code graph traversal properties', () => {
   it.effect.prop(
@@ -269,7 +346,9 @@ function modelNameStatus(changes: readonly NameStatusChange[]): {
   for (const change of changes) {
     if ('from' in change) {
       if (change.kind === 'R') deleted.add(normalizeRepositoryPath(change.from));
-      changed.add(normalizeRepositoryPath(change.to));
+      const destination = normalizeRepositoryPath(change.to);
+      added.add(destination);
+      changed.add(destination);
       continue;
     }
     if (change.kind === 'D') {

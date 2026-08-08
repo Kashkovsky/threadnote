@@ -120,7 +120,7 @@ describe('code graph inventory cache rehydration', () => {
     ).toBe(true);
   });
 
-  it('does not retain malformed padded JSON context after its extraction batch', async () => {
+  it('excludes an oversized high-signal manifest before its extraction batch', async () => {
     const root = mkdtempSync(join(tmpdir(), 'threadnote-inventory-invalid-context-'));
     roots.push(root);
     execFileSync('git', ['-C', root, 'init', '-q']);
@@ -152,12 +152,23 @@ describe('code graph inventory cache rehydration', () => {
         });
       }),
     );
-    const manifest = inventory.files.find(file => file.path === 'package.json');
-
-    expect(extractedBytes).toBeGreaterThan(2 * 1_048_576);
-    expect(manifest).toMatchObject({path: 'package.json', size: Buffer.byteLength(manifestContent), source: 'commit'});
-    expect(manifest?.content).toBeUndefined();
-    expect(manifest?.contentHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(extractedBytes).toBe(Buffer.byteLength('export const source = 1;\n'));
+    expect(inventory.files.map(file => file.path)).toEqual(['source.ts']);
+    expect(inventory.skipped).toBe(1);
+    expect(inventory.policyExclusions).toMatchObject({
+      bytes: Buffer.byteLength(manifestContent),
+      files: 1,
+      reasons: [
+        {bytes: 0, files: 0, reason: 'svg'},
+        {bytes: 0, files: 0, reason: 'low-signal-json'},
+        {bytes: 0, files: 0, reason: 'generic-json-size'},
+        {
+          bytes: Buffer.byteLength(manifestContent),
+          files: 1,
+          reason: 'high-signal-json-hard-cap',
+        },
+      ],
+    });
   });
 
   it('rehydrates cached manifests during a new-commit rebuild without losing attribution or resolution', async () => {

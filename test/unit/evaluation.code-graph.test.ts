@@ -17,6 +17,10 @@ import {
   type ProductionCodeGraphFixtureProfile,
 } from '../../scripts/code-graph-fixture.js';
 import {inventoryRepository} from '../../src/code_graph/inventory.js';
+import {
+  CODE_GRAPH_GENERIC_JSON_EXCLUSION_BYTES,
+  CODE_GRAPH_HIGH_SIGNAL_JSON_HARD_CAP_BYTES,
+} from '../../src/code_graph/inventory_policy.js';
 import {resolveRepositoryIdentity} from '../../src/code_graph/repository.js';
 import {discoverManifestWorkspace} from '../../src/code_graph/workspace.js';
 import {
@@ -418,12 +422,12 @@ describe('code graph evaluation contract', () => {
             declarationSymbols: 24,
             duplicateBlobs: {
               generatedSvgVariants: 2,
-              heavyJsonPayloadBytes: 1_024,
+              heavyJsonPayloadBytes: CODE_GRAPH_GENERIC_JSON_EXCLUSION_BYTES,
               heavyJsonVariants: 2,
             },
-            highSignalConfigHardCapBytes: 4_096,
+            highSignalConfigHardCapBytes: CODE_GRAPH_HIGH_SIGNAL_JSON_HARD_CAP_BYTES,
             id: 'production-large',
-            lowSignalJsonExclusionThresholdBytes: 512,
+            lowSignalJsonExclusionThresholdBytes: CODE_GRAPH_GENERIC_JSON_EXCLUSION_BYTES,
             maxCallsPerDeclaration: 1,
             sourceFiles: 12,
             surrogate: 'threadnote-4.0.10-public-monorepo',
@@ -476,7 +480,10 @@ describe('code graph evaluation contract', () => {
       /^packages\/active-excluded-[^/]+\/src\/.*\.tsx?$/.test(file.path),
     );
     expect(activeExcludedSources).toHaveLength(4);
-    expect(observed.inventory.files).toHaveLength(45);
+    expect(observed.inventory.files).toHaveLength(35);
+    expect(observed.inventory.skipped).toBe(10);
+    expect(observed.inventory.files.some(file => /\.svg$/i.test(file.path))).toBe(false);
+    expect(observed.inventory.files.some(file => /^test\/golden-data\/.*\.json$/i.test(file.path))).toBe(false);
     const excludedProject = observed.workspace.projects.find(project =>
       project.root.startsWith('packages/active-excluded-'),
     );
@@ -502,6 +509,16 @@ describe('code graph evaluation contract', () => {
     const excludedBytes = productionExcludedByteDistribution(observed.profile);
     expect(treeBytes(/\.svg$/)).toBe(excludedBytes.generatedSvgBytes);
     expect(treeBytes(/^test\/golden-data\/.*\.json$/)).toBe(excludedBytes.heavyJsonBytes);
+    expect(observed.inventory.policyExclusions).toMatchObject({
+      bytes: excludedBytes.totalBytes,
+      files: 10,
+      reasons: [
+        {bytes: excludedBytes.generatedSvgBytes, files: 6, reason: 'svg'},
+        {bytes: excludedBytes.heavyJsonBytes, files: 4, reason: 'low-signal-json'},
+        {bytes: 0, files: 0, reason: 'generic-json-size'},
+        {bytes: 0, files: 0, reason: 'high-signal-json-hard-cap'},
+      ],
+    });
   });
 
   it('validates the production profile class-accounting property and rejects contract drift', () => {
@@ -572,6 +589,18 @@ describe('code graph evaluation contract', () => {
         activeWorkspaceExcludedSourceFiles: PRODUCTION_LARGE_CODE_GRAPH_PROFILE.sourceFiles,
       }),
     ).toThrow(/active workspace-excluded source/i);
+    expect(() =>
+      validateProductionProfile({
+        ...PRODUCTION_LARGE_CODE_GRAPH_PROFILE,
+        lowSignalJsonExclusionThresholdBytes: CODE_GRAPH_GENERIC_JSON_EXCLUSION_BYTES + 1,
+      }),
+    ).toThrow(/runtime inventory admission policy/i);
+    expect(() =>
+      validateProductionProfile({
+        ...PRODUCTION_LARGE_CODE_GRAPH_PROFILE,
+        highSignalConfigHardCapBytes: CODE_GRAPH_HIGH_SIGNAL_JSON_HARD_CAP_BYTES + 1,
+      }),
+    ).toThrow(/runtime inventory admission policy/i);
   });
 
   it('stores a passing Java, Kotlin, Swift, and compiler-backed TypeScript baseline and performance gate', () => {
@@ -649,12 +678,12 @@ function productionProfileForTest(
     declarationSymbols: values.sourceFiles * 2,
     duplicateBlobs: {
       generatedSvgVariants: 1,
-      heavyJsonPayloadBytes: 1_024,
+      heavyJsonPayloadBytes: CODE_GRAPH_GENERIC_JSON_EXCLUSION_BYTES,
       heavyJsonVariants: 1,
     },
-    highSignalConfigHardCapBytes: 4_096,
+    highSignalConfigHardCapBytes: CODE_GRAPH_HIGH_SIGNAL_JSON_HARD_CAP_BYTES,
     id: 'production-large',
-    lowSignalJsonExclusionThresholdBytes: 512,
+    lowSignalJsonExclusionThresholdBytes: CODE_GRAPH_GENERIC_JSON_EXCLUSION_BYTES,
     maxCallsPerDeclaration: 1,
     surrogate: 'threadnote-4.0.10-public-monorepo',
     targetGraphEdges: values.sourceFiles * 4,

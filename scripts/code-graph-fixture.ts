@@ -1,4 +1,8 @@
 import {Effect, FileSystem, Path} from 'effect';
+import {
+  CODE_GRAPH_GENERIC_JSON_EXCLUSION_BYTES,
+  CODE_GRAPH_HIGH_SIGNAL_JSON_HARD_CAP_BYTES,
+} from '../src/code_graph/inventory_policy.js';
 import {runCommandEffect} from '../src/effect/command.js';
 
 export interface PreparedCodeGraphFixture {
@@ -83,9 +87,9 @@ export const PRODUCTION_LARGE_CODE_GRAPH_PROFILE = {
     heavyJsonPayloadBytes: 1_048_576,
     heavyJsonVariants: 8,
   },
-  highSignalConfigHardCapBytes: 1_048_576,
+  highSignalConfigHardCapBytes: CODE_GRAPH_HIGH_SIGNAL_JSON_HARD_CAP_BYTES,
   id: 'production-large',
-  lowSignalJsonExclusionThresholdBytes: 256 * 1_024,
+  lowSignalJsonExclusionThresholdBytes: CODE_GRAPH_GENERIC_JSON_EXCLUSION_BYTES,
   maxCallsPerDeclaration: 1,
   sourceFiles: 45_000,
   surrogate: 'threadnote-4.0.10-public-monorepo',
@@ -547,6 +551,12 @@ export function validateProductionProfile(
   }
   if (profile.lowSignalJsonExclusionThresholdBytes >= profile.highSignalConfigHardCapBytes) {
     throw new Error('Production code graph low-signal threshold must remain below the high-signal config hard cap.');
+  }
+  if (
+    profile.lowSignalJsonExclusionThresholdBytes !== CODE_GRAPH_GENERIC_JSON_EXCLUSION_BYTES ||
+    profile.highSignalConfigHardCapBytes !== CODE_GRAPH_HIGH_SIGNAL_JSON_HARD_CAP_BYTES
+  ) {
+    throw new Error('Production code graph eligibility targets must match the runtime inventory admission policy.');
   }
   productionWorkspaceRoots(profile.workspaceCount, profile.activeWorkspaceExcludedPackageCount);
   return profile;
