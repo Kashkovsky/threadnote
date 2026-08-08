@@ -119,6 +119,17 @@ Threadnote package, the Threadnote-owned OpenViking uv/pipx/user-pip tool, and t
 `io.threadnote.openviking` LaunchAgent. It never deletes `~/.openviking`; run `threadnote migrate --apply` to import
 that source into the native Threadnote 4 home.
 
+## Forget cannot remove a resource subtree
+
+`threadnote forget --dry-run <uri>` inspects the same exact target as apply. A directory preview says it will remove a
+resource subtree; apply then removes that directory and its descendants recursively while preserving siblings.
+Anchored resources and broad namespace or collection roots are refused, so use the unanchored URI of the narrowest
+directory you intend to remove.
+
+A genuine mutation-lock failure identifies the local owner PID when available. Wait for that operation, inspect
+`threadnote processes`, and run `threadnote doctor --dry-run` if the owner is stale or unknown. Filesystem removal
+errors are reported as removal errors rather than being mislabeled as lock failures.
+
 ## Seed is slow or skips files
 
 Threadnote applies `.threadnoteignore` while walking the filesystem, before entering ignored directories. The default
@@ -236,6 +247,17 @@ logic and ambiguous dependencies remain syntactic rather than being guessed. Baz
 loads, and labels are also detected statically from `WORKSPACE*`, `MODULE.bazel`, `BUILD*`, `.bzl`, `.axl`, and
 `.bazelrc` (including Aspect CLI sources under `.aspect/`); Threadnote never invokes Bazel or evaluates Starlark
 macros.
+
+Manager keeps ready graph views readable while another process owns the graph writer. A `lease-deferred` notice means
+snapshot retention was postponed by that active build, not that the database or ready snapshot is unhealthy; retry
+after the build completes. A graph detail request that cannot safely retain its snapshot returns HTTP 409 with
+`retryAfterMilliseconds`, and Manager exposes a bounded request failure with a **Try again** action instead of waiting
+indefinitely. A `lease-failed` notice indicates a non-contention storage problem; run `threadnote doctor --dry-run`
+before retrying.
+
+Likewise, `threadnote graph diagnostics` reports an actively owned checkout as `Health: deferred`: inspection was
+skipped for that pass, rather than finding the database unhealthy. Its ready-snapshot and indexed-view counts continue
+to describe the inventoried graph state, so `0 ready` is not inferred merely because health inspection was deferred.
 
 For whole-repository topology, call MCP `analyze_code_graph` or run `threadnote graph analyze --view full`. Analysis
 has no repository-size admission cap. The MCP surface independently caps topology retention at 100,000 symbols,
