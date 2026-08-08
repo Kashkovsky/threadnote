@@ -89,8 +89,20 @@ export type CodeGraphRefreshStatus =
       readonly state: 'deferred';
     };
 
+export interface CodeGraphWatcherMetrics {
+  readonly activeRefreshKeys: number;
+  readonly activeWatches: number;
+  readonly executingRefreshes: number;
+  readonly executingRefreshHighWater: number;
+  readonly idleSweepFibers: 0 | 1;
+  readonly maximumWatchers: number;
+  readonly pendingTrailingRefreshes: number;
+  readonly retainedStatuses: number;
+}
+
 export interface CodeGraphWatcherShape {
   readonly ensure: (options: CodeGraphWatchOptions) => Effect.Effect<void>;
+  readonly metrics: () => Effect.Effect<CodeGraphWatcherMetrics>;
   readonly refresh: (options: CodeGraphWatchOptions) => Effect.Effect<boolean>;
   readonly status: (
     key: string,
@@ -169,6 +181,11 @@ interface ProgressTracker {
   phaseStartedAtMilliseconds: number;
   startedAtMilliseconds: number;
   updatedAtMilliseconds: number;
+}
+
+interface RefreshExecutionMetrics {
+  readonly executing: number;
+  readonly highWater: number;
 }
 
 const DEFAULT_IDLE_TIMEOUT_MILLISECONDS = 30 * 60_000;
@@ -372,6 +389,7 @@ export const makeCodeGraphWatcher = Effect.fn('codeGraph.makeWatcher')(function*
   const activeRefreshes = yield* SynchronizedRef.make(new Map<string, ActiveRefresh>());
   const refreshStatuses = yield* SynchronizedRef.make(new Map<string, CodeGraphRefreshStatus>());
   const refreshSemaphore = yield* Semaphore.make(1);
+  const refreshExecutionMetrics = yield* Ref.make<RefreshExecutionMetrics>({executing: 0, highWater: 0});
   const refreshSequence = yield* Ref.make(0);
   const sweepStarted = yield* Ref.make(false);
   const setStatus = (key: string, status: CodeGraphRefreshStatus) =>
@@ -437,36 +455,53 @@ export const makeCodeGraphWatcher = Effect.fn('codeGraph.makeWatcher')(function*
           timing: progressTiming(tracker, startedAtMilliseconds),
         });
         lastFailure = undefined;
-        yield* refreshSemaphore.withPermit(refreshRun(trackedRefreshOptions(options, tracker))).pipe(
-          Effect.catchCause(cause => {
-            if (Cause.hasInterruptsOnly(cause)) return Effect.failCause(cause);
-            const failure = codeGraphRefreshFailureFromCause(cause);
-            lastFailure = classifyCodeGraphStoreFailure(
-              CODE_GRAPH_REFRESH_OPERATION,
-              Option.getOrUndefined(Cause.findErrorOption(cause)),
-            );
-            return setStatus(key, {failure, state: 'deferred'}).pipe(
-              Effect.andThen(
-                Effect.logWarning(
-                  `Code graph background refresh deferred (${failure.code}; recovery: ${failure.recovery}).`,
+        yield* refreshSemaphore
+          .withPermit(
+            Effect.uninterruptibleMask(restore =>
+              Ref.update(refreshExecutionMetrics, current => {
+                const executing = current.executing + 1;
+                return {executing, highWater: Math.max(current.highWater, executing)};
+              }).pipe(
+                Effect.andThen(restore(refreshRun(trackedRefreshOptions(options, tracker)))),
+                Effect.ensuring(
+                  Ref.update(refreshExecutionMetrics, current => ({
+                    ...current,
+                    executing: current.executing - 1,
+                  })),
                 ),
               ),
-              Effect.andThen(
-                recoverRun(options, failure).pipe(
-                  Effect.catchCause(recoveryCause =>
-                    Cause.hasInterruptsOnly(recoveryCause)
-                      ? Effect.failCause(recoveryCause)
-                      : Effect.logWarning(
-                          'Code graph automatic recovery scheduling failed (unknown; recovery: diagnose).',
-                        ),
+            ),
+          )
+          .pipe(
+            Effect.catchCause(cause => {
+              if (Cause.hasInterruptsOnly(cause)) return Effect.failCause(cause);
+              const failure = codeGraphRefreshFailureFromCause(cause);
+              lastFailure = classifyCodeGraphStoreFailure(
+                CODE_GRAPH_REFRESH_OPERATION,
+                Option.getOrUndefined(Cause.findErrorOption(cause)),
+              );
+              return setStatus(key, {failure, state: 'deferred'}).pipe(
+                Effect.andThen(
+                  Effect.logWarning(
+                    `Code graph background refresh deferred (${failure.code}; recovery: ${failure.recovery}).`,
                   ),
-                  Effect.forkIn(scope),
-                  Effect.asVoid,
                 ),
-              ),
-            );
-          }),
-        );
+                Effect.andThen(
+                  recoverRun(options, failure).pipe(
+                    Effect.catchCause(recoveryCause =>
+                      Cause.hasInterruptsOnly(recoveryCause)
+                        ? Effect.failCause(recoveryCause)
+                        : Effect.logWarning(
+                            'Code graph automatic recovery scheduling failed (unknown; recovery: diagnose).',
+                          ),
+                    ),
+                    Effect.forkIn(scope),
+                    Effect.asVoid,
+                  ),
+                ),
+              );
+            }),
+          );
         const nextOptions = yield* SynchronizedRef.modify(activeRefreshes, current => {
           const active = current.get(key);
           if (!active || active.completion !== completion) return [undefined, current] as const;
@@ -598,6 +633,28 @@ export const makeCodeGraphWatcher = Effect.fn('codeGraph.makeWatcher')(function*
 
   return CodeGraphWatcher.of({
     ensure: startSessionWatch,
+    metrics: () =>
+      Effect.gen(function* () {
+        const watches = yield* SynchronizedRef.get(activeWatches);
+        const refreshes = yield* SynchronizedRef.get(activeRefreshes);
+        const statuses = yield* SynchronizedRef.get(refreshStatuses);
+        const execution = yield* Ref.get(refreshExecutionMetrics);
+        const idleSweepStarted = yield* Ref.get(sweepStarted);
+        let pendingTrailingRefreshes = 0;
+        for (const refresh of refreshes.values()) {
+          if (refresh.pending) pendingTrailingRefreshes += 1;
+        }
+        return {
+          activeRefreshKeys: refreshes.size,
+          activeWatches: watches.size,
+          executingRefreshes: execution.executing,
+          executingRefreshHighWater: execution.highWater,
+          idleSweepFibers: idleSweepStarted ? 1 : 0,
+          maximumWatchers,
+          pendingTrailingRefreshes,
+          retainedStatuses: statuses.size,
+        };
+      }),
     refresh: options =>
       Effect.gen(function* () {
         yield* touchWatch(options.key);
