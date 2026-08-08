@@ -209,6 +209,29 @@ export interface CodeGraphDatabaseRepair {
   readonly removedSnapshots: number;
 }
 
+export type CodeGraphRoutineMaintenanceResult =
+  | {
+      readonly cleanup: 'completed-build' | 'none' | 'retired-snapshot';
+      readonly expiredLeases: number;
+      readonly remaining: boolean;
+      readonly retiredSnapshots: number;
+      readonly rowsDeleted: number;
+      readonly state: 'completed';
+    }
+  | {
+      readonly reason: 'external-maintenance' | 'home-tick-active' | 'writer-busy';
+      readonly state: 'deferred';
+    }
+  | {
+      readonly reason: 'database-missing' | 'schema-unavailable' | 'writer-lock-unavailable';
+      readonly state: 'skipped';
+    };
+
+export interface CodeGraphRoutineMaintenanceOptions {
+  /** Checkout-wide writer gate. Production callers pass the path from CodeGraphLayout. */
+  readonly writerLockPath?: string;
+}
+
 export interface CodeGraphRetiredSnapshotCleanupProgress {
   readonly pagesCompleted: number;
   readonly rowsDeleted: number;
@@ -730,6 +753,10 @@ export interface CodeGraphStoreShape {
     databasePath: string,
     dryRun?: boolean,
   ) => Effect.Effect<CodeGraphDatabaseRepair | undefined, CodeGraphStoreError>;
+  readonly runRoutineMaintenance: (
+    databasePath: string,
+    options?: CodeGraphRoutineMaintenanceOptions,
+  ) => Effect.Effect<CodeGraphRoutineMaintenanceResult, CodeGraphStoreError>;
   readonly releaseSnapshotLease: (
     databasePath: string,
     token: string,
@@ -1765,6 +1792,40 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
             ),
             Effect.mapError(cause => storeError('repair code graph database', cause)),
           ),
+        runRoutineMaintenance: (databasePath, options) =>
+          Effect.gen(function* () {
+            const writerLockPath = options?.writerLockPath ?? inferredCodeGraphWriterLockPath(path, databasePath);
+            if (writerLockPath === undefined) {
+              return {reason: 'writer-lock-unavailable', state: 'skipped'} as const;
+            }
+            if (!(yield* fs.exists(databasePath))) {
+              return {reason: 'database-missing', state: 'skipped'} as const;
+            }
+            const page = Effect.gen(function* () {
+              // Purge owns the same checkout gate. Re-check only after acquiring
+              // it and open SQLite within the critical section, so maintenance
+              // cannot recreate a removed database or retain a Windows handle.
+              if (!(yield* fs.exists(databasePath))) {
+                return {reason: 'database-missing', state: 'skipped'} as const;
+              }
+              return yield* useDatabaseDirect(databasePath, runRoutineMaintenancePage());
+            });
+            return yield* withExclusiveFileLock(
+              fs,
+              writerLockPath,
+              CODE_GRAPH_DETACHED_CLEANUP_LOCK_OPTIONS,
+              page,
+            ).pipe(
+              Effect.catch(error =>
+                isFileLockTimeout(error)
+                  ? Effect.succeed({reason: 'writer-busy', state: 'deferred'} as const)
+                  : Effect.fail(error),
+              ),
+              Effect.provideService(Crypto.Crypto, crypto),
+              Effect.provideService(Path.Path, path),
+              Effect.provideService(SystemInfo, system),
+            );
+          }).pipe(Effect.mapError(cause => storeError('run routine code graph maintenance', cause))),
         releaseSnapshotLease: (databasePath, token, options) =>
           fs.exists(databasePath).pipe(
             Effect.flatMap(exists =>
@@ -2983,6 +3044,47 @@ const validatePersistentExtensionTables = Effect.fn('codeGraph.validatePersisten
   }
 });
 
+const ensureSnapshotLeaseSchema = Effect.fn('codeGraph.ensureSnapshotLeaseSchema')(function* (
+  sql: SqlClient.SqlClient,
+) {
+  yield* sql.unsafe(`
+    CREATE TABLE IF NOT EXISTS snapshot_leases (
+      token TEXT PRIMARY KEY NOT NULL,
+      snapshot_id TEXT NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
+      expires_at INTEGER NOT NULL,
+      retire_when_inactive INTEGER NOT NULL DEFAULT 0 CHECK (retire_when_inactive IN (0, 1))
+    )
+  `);
+  const addedLeaseRetirement = yield* ensureColumn(
+    sql,
+    'snapshot_leases',
+    'retire_when_inactive',
+    'INTEGER NOT NULL DEFAULT 0 CHECK (retire_when_inactive IN (0, 1))',
+  );
+  if (!addedLeaseRetirement) return;
+  const now = yield* Clock.currentTimeMillis;
+  // Existing runtimes did not record whether a lease pinned an active view.
+  // Preserve live non-active consumers, but migrate current pointers and
+  // already-expired displaced pointers so the upgrade can reclaim their
+  // abandoned history on the next lease sweep.
+  yield* sql`
+    UPDATE snapshot_leases AS lease
+    SET retire_when_inactive = 1
+    WHERE EXISTS (
+      SELECT 1 FROM active_snapshots AS active
+      WHERE active.snapshot_id = lease.snapshot_id
+    ) OR (
+      lease.expires_at <= ${now}
+      AND EXISTS (
+        SELECT 1
+        FROM snapshots AS candidate
+        JOIN active_snapshots AS active ON active.worktree_id = candidate.worktree_id
+        WHERE candidate.id = lease.snapshot_id
+      )
+    )
+  `;
+});
+
 const initializeSchema = Effect.fn('codeGraph.initializeSchema')(function* (sql: SqlClient.SqlClient) {
   yield* configureConnection(sql);
   yield* sql.unsafe('PRAGMA journal_mode = WAL');
@@ -3068,43 +3170,7 @@ const initializeSchema = Effect.fn('codeGraph.initializeSchema')(function* (sql:
       SELECT RAISE(ABORT, 'Code graph snapshot was built by an older extractor generation.');
     END
   `);
-  yield* sql.unsafe(`
-    CREATE TABLE IF NOT EXISTS snapshot_leases (
-      token TEXT PRIMARY KEY NOT NULL,
-      snapshot_id TEXT NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
-      expires_at INTEGER NOT NULL,
-      retire_when_inactive INTEGER NOT NULL DEFAULT 0 CHECK (retire_when_inactive IN (0, 1))
-    )
-  `);
-  const addedLeaseRetirement = yield* ensureColumn(
-    sql,
-    'snapshot_leases',
-    'retire_when_inactive',
-    'INTEGER NOT NULL DEFAULT 0 CHECK (retire_when_inactive IN (0, 1))',
-  );
-  if (addedLeaseRetirement) {
-    const now = yield* Clock.currentTimeMillis;
-    // Existing runtimes did not record whether a lease pinned an active view.
-    // Preserve live non-active consumers, but migrate current pointers and
-    // already-expired displaced pointers so the upgrade can reclaim their
-    // abandoned history on the next lease sweep.
-    yield* sql`
-      UPDATE snapshot_leases AS lease
-      SET retire_when_inactive = 1
-      WHERE EXISTS (
-        SELECT 1 FROM active_snapshots AS active
-        WHERE active.snapshot_id = lease.snapshot_id
-      ) OR (
-        lease.expires_at <= ${now}
-        AND EXISTS (
-          SELECT 1
-          FROM snapshots AS candidate
-          JOIN active_snapshots AS active ON active.worktree_id = candidate.worktree_id
-          WHERE candidate.id = lease.snapshot_id
-        )
-      )
-    `;
-  }
+  yield* ensureSnapshotLeaseSchema(sql);
   yield* sql.unsafe(`
     CREATE TABLE IF NOT EXISTS snapshot_files (
       snapshot_id TEXT NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
@@ -3573,6 +3639,167 @@ const repairDatabase = Effect.fn('codeGraph.repairDatabase')(function* (dryRun: 
   yield* pruneRetiredSnapshotRows();
   yield* sql.withTransaction(pruneUnreferencedFileBlobs(sql));
   return {removedSnapshots} satisfies CodeGraphDatabaseRepair;
+});
+
+const CODE_GRAPH_ROUTINE_EXPIRED_LEASE_PAGE_SIZE = 100;
+
+interface RoutineExpiredLeasePage {
+  readonly candidates: readonly string[];
+  readonly deleted: number;
+  readonly remaining: boolean;
+}
+
+const routineMaintenanceColumnsAvailable = Effect.fn('codeGraph.routineMaintenanceColumnsAvailable')(function* (
+  sql: SqlClient.SqlClient,
+  table: string,
+  required: readonly string[],
+) {
+  if (!/^[a-z_]+$/u.test(table)) return false;
+  const columns = yield* sql.unsafe<{readonly name: string}>(`PRAGMA table_info("${table}")`);
+  const available = new Set(columns.map(column => column.name));
+  return required.every(column => available.has(column));
+});
+
+const initializeRoutineMaintenanceSchema = Effect.fn('codeGraph.initializeRoutineMaintenanceSchema')(function* (
+  sql: SqlClient.SqlClient,
+) {
+  yield* configureConnection(sql);
+  // Routine maintenance may repair the additive lease surface, but it must not
+  // publish a partially initialized graph or run the replacement migrations
+  // owned by an index/explicit repair session.
+  if (!(yield* tableExists(sql, 'snapshots')) || !(yield* tableExists(sql, 'active_snapshots'))) return false;
+  if (
+    !(yield* routineMaintenanceColumnsAvailable(sql, 'snapshots', [
+      'base_snapshot_id',
+      'id',
+      'state',
+      'worktree_id',
+    ])) ||
+    !(yield* routineMaintenanceColumnsAvailable(sql, 'active_snapshots', ['snapshot_id', 'worktree_id']))
+  ) {
+    return false;
+  }
+  if (
+    (yield* tableExists(sql, 'snapshot_leases')) &&
+    !(yield* routineMaintenanceColumnsAvailable(sql, 'snapshot_leases', ['expires_at', 'snapshot_id', 'token']))
+  ) {
+    return false;
+  }
+  yield* ensureSnapshotLeaseSchema(sql);
+  return true;
+});
+
+const reapExpiredSnapshotLeasesPage = Effect.fn('codeGraph.reapExpiredSnapshotLeasesPage')(function* (
+  sql: SqlClient.SqlClient,
+  now: number,
+) {
+  const rows = yield* sql<{
+    readonly retire_when_inactive: number;
+    readonly snapshot_id: string;
+    readonly token: string;
+  }>`
+    SELECT token, snapshot_id, retire_when_inactive
+    FROM snapshot_leases
+    WHERE expires_at <= ${now}
+    ORDER BY expires_at, token
+    LIMIT ${CODE_GRAPH_ROUTINE_EXPIRED_LEASE_PAGE_SIZE}
+  `;
+  if (rows.length === 0) {
+    return {candidates: [], deleted: 0, remaining: false} satisfies RoutineExpiredLeasePage;
+  }
+  const candidates = [...new Set(rows.filter(row => row.retire_when_inactive === 1).map(row => row.snapshot_id))];
+  if (candidates.length > 0) {
+    // Preserve active-view retirement provenance across overlapping readers.
+    yield* sql`UPDATE snapshot_leases SET retire_when_inactive = 1 WHERE ${sql.in('snapshot_id', candidates)}`;
+  }
+  const tokens = rows.map(row => row.token);
+  yield* sql`DELETE FROM snapshot_leases WHERE ${sql.in('token', tokens)}`;
+  return {
+    candidates,
+    deleted: yield* lastStatementChangeCount(sql),
+    // A full page is conservatively reported as remaining. The next ordinary
+    // tick cheaply proves whether another page exists.
+    remaining: rows.length === CODE_GRAPH_ROUTINE_EXPIRED_LEASE_PAGE_SIZE,
+  } satisfies RoutineExpiredLeasePage;
+});
+
+const retireRoutineLeaseCandidates = Effect.fn('codeGraph.retireRoutineLeaseCandidates')(function* (
+  sql: SqlClient.SqlClient,
+  snapshotIds: readonly string[],
+  now: number,
+) {
+  const candidates = [...new Set(snapshotIds)].slice(0, CODE_GRAPH_ROUTINE_EXPIRED_LEASE_PAGE_SIZE);
+  if (candidates.length === 0) return 0;
+  // Retire only the bounded lease targets. Their detached bases remain a safe
+  // warm cache and can be reconsidered by ordinary pointer reconciliation.
+  yield* sql`
+    UPDATE snapshots
+    SET state = 'retired'
+    WHERE ${sql.in('id', candidates)}
+      AND state = 'ready'
+      AND id NOT IN (
+        WITH RECURSIVE protected(snapshot_id) AS (
+          SELECT snapshot_id FROM active_snapshots
+          UNION
+          SELECT snapshot_id FROM snapshot_leases WHERE expires_at > ${now}
+          UNION
+          SELECT snapshot.base_snapshot_id
+          FROM snapshots AS snapshot
+          JOIN protected ON protected.snapshot_id = snapshot.id
+          WHERE snapshot.base_snapshot_id IS NOT NULL
+        )
+        SELECT snapshot_id FROM protected
+      )
+  `;
+  return yield* lastStatementChangeCount(sql);
+});
+
+const runRoutineMaintenancePage = Effect.fn('codeGraph.runRoutineMaintenancePage')(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  if (!(yield* initializeRoutineMaintenanceSchema(sql))) {
+    return {reason: 'schema-unavailable', state: 'skipped'} as const;
+  }
+  const now = yield* Clock.currentTimeMillis;
+  const leasePage = yield* sql.withTransaction(
+    Effect.gen(function* () {
+      const expired = yield* reapExpiredSnapshotLeasesPage(sql, now);
+      const retiredSnapshots = yield* retireRoutineLeaseCandidates(sql, expired.candidates, now);
+      return {...expired, retiredSnapshots};
+    }),
+  );
+  // The expired-token batch is itself this tick's bounded page. Leave all
+  // physical row reclamation for the next trigger so one tick never combines
+  // independent cleanup pages behind a single writer-gate acquisition.
+  if (leasePage.deleted > 0) {
+    return {
+      cleanup: 'none',
+      expiredLeases: leasePage.deleted,
+      remaining: true,
+      retiredSnapshots: leasePage.retiredSnapshots,
+      rowsDeleted: 0,
+      state: 'completed',
+    } satisfies CodeGraphRoutineMaintenanceResult;
+  }
+  const completed = yield* drainCompletedPersistentBuildRowsPage(sql);
+  if (completed.deleted > 0) {
+    return {
+      cleanup: 'completed-build',
+      expiredLeases: leasePage.deleted,
+      remaining: true,
+      retiredSnapshots: leasePage.retiredSnapshots,
+      rowsDeleted: completed.deleted,
+      state: 'completed',
+    } satisfies CodeGraphRoutineMaintenanceResult;
+  }
+  const retired = yield* pruneRetiredSnapshotRowsPage(sql);
+  return {
+    cleanup: retired.deleted > 0 ? 'retired-snapshot' : 'none',
+    expiredLeases: leasePage.deleted,
+    remaining: leasePage.remaining || retired.remaining,
+    retiredSnapshots: leasePage.retiredSnapshots,
+    rowsDeleted: retired.deleted,
+    state: 'completed',
+  } satisfies CodeGraphRoutineMaintenanceResult;
 });
 
 const reapExpiredSnapshotLeases = Effect.fn('codeGraph.reapExpiredSnapshotLeases')(function* (
@@ -5142,6 +5369,44 @@ const COMPLETED_PERSISTENT_BUILD_DRAIN_SPECS = [
     table: 'building_lexical_counters',
   },
 ] as const;
+
+interface CompletedBuildCleanupPage {
+  readonly deleted: number;
+}
+
+/** Reclaim exactly one bounded build-only table page, if one is available. */
+const drainCompletedPersistentBuildRowsPage = Effect.fn('codeGraph.drainCompletedPersistentBuildRowsPage')(function* (
+  sql: SqlClient.SqlClient,
+) {
+  for (const spec of COMPLETED_PERSISTENT_BUILD_DRAIN_SPECS) {
+    // A killed schema publisher can leave an additive extension absent. A
+    // routine tick skips it; ordinary indexing owns extension publication.
+    if (!(yield* tableExists(sql, spec.table))) continue;
+    const key = `(${spec.keyColumns.join(', ')})`;
+    const deleted = yield* sql.withTransaction(
+      Effect.gen(function* () {
+        yield* sql.unsafe(
+          `DELETE FROM ${spec.table}
+             WHERE ${key} IN (
+               SELECT ${spec.keyColumns.map(column => `candidate.${column}`).join(', ')}
+               FROM ${spec.table} AS candidate
+               JOIN snapshots AS snapshot ON snapshot.id = candidate.snapshot_id
+               WHERE snapshot.state <> 'building'
+               ORDER BY ${spec.keyColumns.map(column => `candidate.${column}`).join(', ')}
+               LIMIT ?
+             )`,
+          [spec.batchRows],
+        );
+        return yield* lastStatementChangeCount(sql);
+      }),
+    );
+    if (!Number.isSafeInteger(deleted) || deleted < 0) {
+      return yield* Effect.fail(new CodeGraphStoreError('Completed build cleanup returned an invalid count.'));
+    }
+    if (deleted > 0) return {deleted} satisfies CompletedBuildCleanupPage;
+  }
+  return {deleted: 0} satisfies CompletedBuildCleanupPage;
+});
 
 /**
  * Durable build-only rows are unreachable as soon as a snapshot is ready,
@@ -10419,18 +10684,23 @@ const pruneRetiredSnapshotRowsPage = Effect.fn('codeGraph.pruneRetiredSnapshotRo
     return {deleted: 0, remaining: false} satisfies RetiredSnapshotCleanupPage;
   }
 
-  const compactTargets = yield* sql<CompactLexicalSnapshotKeyRow & {readonly snapshot_id: string}>`
-    SELECT compact.snapshot_key, compact.snapshot_id
-    FROM lexical_compact_snapshots AS compact
-    JOIN snapshots AS snapshot ON snapshot.id = compact.snapshot_id
-    WHERE snapshot.state = 'retired'
-    ORDER BY compact.snapshot_id
-    LIMIT 1
-  `;
+  const compactSchemaAvailable =
+    (yield* tableExists(sql, 'lexical_compact_snapshots')) && (yield* tableExists(sql, 'lexical_storage_formats'));
+  const compactTargets = compactSchemaAvailable
+    ? yield* sql<CompactLexicalSnapshotKeyRow & {readonly snapshot_id: string}>`
+        SELECT compact.snapshot_key, compact.snapshot_id
+        FROM lexical_compact_snapshots AS compact
+        JOIN snapshots AS snapshot ON snapshot.id = compact.snapshot_id
+        WHERE snapshot.state = 'retired'
+        ORDER BY compact.snapshot_id
+        LIMIT 1
+      `
+    : [];
   const compactTarget = compactTargets[0];
   if (compactTarget !== undefined) {
     const compactSnapshotKey = yield* validatedCompactLexicalCount(compactTarget.snapshot_key, 'cleanup snapshot key');
     for (const spec of COMPACT_LEXICAL_CLEANUP_SPECS) {
+      if (!(yield* tableExists(sql, spec.table))) continue;
       const deleted = yield* sql.withTransaction(
         Effect.gen(function* () {
           const statement = compactLexicalCleanupPageStatement(
@@ -10472,7 +10742,7 @@ const pruneRetiredSnapshotRowsPage = Effect.fn('codeGraph.pruneRetiredSnapshotRo
   }
 
   for (const spec of RETIRED_SNAPSHOT_CLEANUP_SPECS) {
-    if (spec.table === LEGACY_BUILDING_REFERENCES_V3_TABLE && !(yield* tableExists(sql, spec.table))) continue;
+    if (!(yield* tableExists(sql, spec.table))) continue;
     const deleted = yield* sql.withTransaction(
       Effect.gen(function* () {
         const key = `(${spec.keyColumns.join(', ')})`;

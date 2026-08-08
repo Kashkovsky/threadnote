@@ -26,6 +26,7 @@ import {
   type CodeGraphLanguagePackRegistryShape,
 } from './languages/registry.js';
 import {codeGraphLayout, codeGraphRequestBuildLockPath, codeGraphSnapshotBuildLockPath} from './layout.js';
+import {CodeGraphMaintenanceCoordinator} from './maintenance_coordinator.js';
 import {codeGraphMaintenanceIntentActive, withCodeGraphMaintenanceRegistration} from './maintenance_gate.js';
 import {compareCodeUnits} from './ordering.js';
 import {repositoryWorktreeIds, resolveRepositoryIdentity} from './repository.js';
@@ -159,6 +160,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const store = yield* CodeGraphStore;
+      const maintenance = yield* CodeGraphMaintenanceCoordinator;
       const embedding = yield* CodeGraphEmbeddingIndex;
       const languagePacks = yield* CodeGraphLanguagePackRegistry;
       const treeSitter = yield* TreeSitterRuntime;
@@ -203,7 +205,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                 reporter.progress(progress).pipe(Effect.andThen(request.onProgress?.(progress) ?? Effect.void)),
             };
             const ensureVectors = codeGraphIndexEnsuresVectors(options);
-            return yield* withCodeGraphProcessLock(
+            const summary = yield* withCodeGraphProcessLock(
               fs,
               layout.lockPath,
               () =>
@@ -655,6 +657,14 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                 });
               }),
             );
+            yield* maintenance
+              .tick({
+                databasePath: layout.databasePath,
+                threadnoteHome: request.threadnoteHome,
+                writerLockPath: layout.databaseWriteLockPath,
+              })
+              .pipe(Effect.ignore);
+            return summary;
           }),
         ).pipe(
           Effect.provideService(CommandExecutor, command),
@@ -695,7 +705,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
               onProgress: (progress: CodeGraphProgress) =>
                 reporter.progress(progress).pipe(Effect.andThen(request.onProgress?.(progress) ?? Effect.void)),
             };
-            return yield* withCodeGraphProcessLock(
+            const lease = yield* withCodeGraphProcessLock(
               fs,
               layout.lockPath,
               () =>
@@ -777,6 +787,14 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                   );
               }),
             );
+            yield* maintenance
+              .tick({
+                databasePath: layout.databasePath,
+                threadnoteHome: request.threadnoteHome,
+                writerLockPath: layout.databaseWriteLockPath,
+              })
+              .pipe(Effect.ignore);
+            return lease;
           }),
         ).pipe(
           Effect.provideService(CommandExecutor, command),
