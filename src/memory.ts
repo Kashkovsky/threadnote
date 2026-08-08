@@ -1905,16 +1905,42 @@ export const runArchive = Effect.fn('runArchive')(function* (
 });
 
 export const runForget = Effect.fn('runForget')(function* (config: RuntimeConfig, uri: string, options: ForgetOptions) {
-  yield* attemptSync(() => assertResourceUri(uri));
+  const id = yield* attemptSync(() => {
+    assertResourceUri(uri);
+    const parsed = parseResourceId(uri);
+    assertSafeForgetTarget(parsed);
+    return parsed;
+  });
+  const canonicalUri = id.canonicalUri;
+  const store = yield* ResourceStore;
+  const entry = yield* store.stat(resourceStoreLocation(config), canonicalUri);
   if (options.dryRun === true) {
-    yield* Console.log(`Would remove native resource: ${uri}`);
+    yield* Console.log(
+      entry.type === 'directory'
+        ? `Would remove native resource subtree: ${canonicalUri}`
+        : `Would remove native resource: ${canonicalUri}`,
+    );
     return;
   }
-  const removed = yield* removeResourceWithRetry(NATIVE_RESOURCE_BACKEND, config, uri);
+  const removed = yield* removeResourceWithRetry(NATIVE_RESOURCE_BACKEND, config, canonicalUri, {
+    recursive: entry.type === 'directory',
+  });
   if (!removed) {
-    yield* Effect.fail(new Error(`Resource does not exist: ${uri}`));
+    yield* Effect.fail(new Error(`Resource does not exist: ${canonicalUri}`));
   }
 });
+
+function assertSafeForgetTarget(id: ReturnType<typeof parseResourceId>): void {
+  if (id.anchor) {
+    throw new Error('Refusing to forget an anchored resource; address the containing resource URI instead.');
+  }
+  if (id.namespace === 'resources' && id.segments.length === 0) {
+    throw new Error('Refusing to forget the resources namespace root. Address a narrower resource subtree.');
+  }
+  if (id.namespace === 'user' && id.segments.length <= 3) {
+    throw new Error('Refusing to forget a user or memory collection root. Address a narrower resource subtree.');
+  }
+}
 
 export const runExportPack = Effect.fn('runExportPack')(function* (config: RuntimeConfig, options: PackOptions) {
   const path = yield* Path.Path;
@@ -2281,11 +2307,11 @@ function removeResourceWithRetry(
   _ov: string,
   config: RuntimeConfig,
   uri: string,
-  options: {readonly alreadyLocked?: boolean; readonly expectedContent?: string} = {},
+  options: {readonly alreadyLocked?: boolean; readonly expectedContent?: string; readonly recursive?: boolean} = {},
 ) {
   const remove = Effect.gen(function* () {
     const store = yield* ResourceStore;
-    yield* store.remove(resourceStoreLocation(config), uri);
+    yield* store.remove(resourceStoreLocation(config), uri, {recursive: options.recursive === true});
     return true;
   }).pipe(Effect.catchTag('ResourceNotFound', () => Effect.succeed(false)));
   if (options.alreadyLocked) {

@@ -173,6 +173,70 @@ describe('native memory workflow', () => {
     ).pipe(Effect.provide(ApplicationLayer)),
   );
 
+  it.effect('previews and recursively forgets an exact shared team subtree while preserving siblings', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-native-forget-subtree-'});
+        const manifestPath = path.join(home, 'seed-manifest.yaml');
+        yield* fs.writeFileString(manifestPath, 'version: 1\nprojects: []\n');
+        const config: RuntimeConfig = {
+          account: 'local',
+          agentContextHome: home,
+          agentId: 'threadnote',
+          manifestPath,
+          user: 'tester',
+        };
+        const store = yield* ResourceStore;
+        const location = {account: config.account, home: config.agentContextHome, user: config.user};
+        const retired = 'threadnote://user/tester/memories/shared/retired';
+        const nested = `${retired}/durable/projects/app/memory.md`;
+        const sibling = 'threadnote://user/tester/memories/shared/active/durable/projects/app/memory.md';
+        yield* store.write(location, nested, 'retired', {mode: 'create'});
+        yield* store.write(location, sibling, 'active', {mode: 'create'});
+
+        const preview = yield* captureConsole(runForget(config, retired, {dryRun: true}));
+        expect(preview.output).toContain(`Would remove native resource subtree: ${retired}`);
+        expect(yield* store.read(location, nested)).toBe('retired');
+
+        yield* runForget(config, retired, {});
+
+        expect(Option.isNone(yield* Effect.option(store.stat(location, retired)))).toBe(true);
+        expect(yield* store.read(location, sibling)).toBe('active');
+      }),
+    ).pipe(Effect.provide(ApplicationLayer)),
+  );
+
+  it.effect('rejects anchored and broad collection targets before forget mutation', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-native-forget-guard-'});
+        const manifestPath = path.join(home, 'seed-manifest.yaml');
+        yield* fs.writeFileString(manifestPath, 'version: 1\nprojects: []\n');
+        const config: RuntimeConfig = {
+          account: 'local',
+          agentContextHome: home,
+          agentId: 'threadnote',
+          manifestPath,
+          user: 'tester',
+        };
+
+        const collectionFailure = yield* Effect.flip(
+          runForget(config, 'threadnote://user/tester/memories/shared', {dryRun: true}),
+        );
+        expect(String(collectionFailure)).toContain('collection root');
+
+        const anchorFailure = yield* Effect.flip(
+          runForget(config, 'threadnote://user/tester/memories/durable/note.md#section', {dryRun: true}),
+        );
+        expect(String(anchorFailure)).toContain('anchored resource');
+      }),
+    ).pipe(Effect.provide(ApplicationLayer)),
+  );
+
   it.effect('uses the SQLite exact index for a production no-hit recall instead of canonical grep scans', () =>
     Effect.scoped(
       Effect.gen(function* () {

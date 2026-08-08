@@ -1,7 +1,7 @@
-import {Context, Crypto, Effect, FileSystem, Layer, Option, Path, Schema} from 'effect';
+import {Context, Crypto, Effect, FileSystem, Layer, Option, Path, Result, Schema} from 'effect';
 import {uriSegment} from '../manifest.js';
 import {globToRegExp} from '../utils.js';
-import {withExclusiveFileLock} from './file_lock.js';
+import {readExclusiveFileLockOwner, withExclusiveFileLock} from './file_lock.js';
 import {resourceAccountMutationLockPath} from './resource_lock.js';
 import {SystemInfo} from './system.js';
 import {
@@ -232,18 +232,29 @@ function createResourceStoreOperations(
         staleAfterMilliseconds: 30_000,
         waitTimeoutMilliseconds: 30_000,
       },
-      effect,
+      Effect.result(effect),
     );
     return provideLockServices(lockEffect).pipe(
-      Effect.mapError(error =>
-        isResourceStoreError(error)
-          ? error
-          : new ResourceIoFailed({
-              cause: error,
-              message: `Resource lock failed for ${id.canonicalUri}.`,
-              operation: 'lock',
-              uri: id.canonicalUri,
-            }),
+      Effect.catch(error =>
+        readExclusiveFileLockOwner(fs, lockPath).pipe(
+          Effect.flatMap(owner => {
+            const processId = Option.getOrUndefined(owner)?.processId;
+            return Effect.fail(
+              new ResourceIoFailed({
+                cause: error,
+                message: resourceMutationLockFailureMessage(id.canonicalUri, processId),
+                operation: 'lock',
+                uri: id.canonicalUri,
+              }),
+            );
+          }),
+        ),
+      ),
+      Effect.flatMap(
+        Result.match({
+          onFailure: error => Effect.fail(error),
+          onSuccess: value => Effect.succeed(value),
+        }),
       ),
     ) as Effect.Effect<A, E | ResourceIoFailed, Exclude<R, Crypto.Crypto | Path.Path | SystemInfo>>;
   };
@@ -391,6 +402,11 @@ function createResourceStoreOperations(
       }).pipe(mapIoError('stat', uri)),
     write: (location, uri, content, options) => writeResource(location, uri, content, options),
   };
+}
+
+export function resourceMutationLockFailureMessage(uri: string, processId?: number): string {
+  const ownerMessage = processId === undefined ? '' : ` Local process ${processId} currently owns the lock.`;
+  return `Resource lock failed for ${uri}.${ownerMessage} Retry after the active operation completes; use threadnote processes and threadnote doctor --dry-run for recovery guidance.`;
 }
 
 interface ResolvedResourcePath {

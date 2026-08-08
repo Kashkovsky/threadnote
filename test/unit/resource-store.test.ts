@@ -6,8 +6,10 @@ import {Effect} from 'effect';
 import {
   ResourceAlreadyExists,
   ResourceConflict,
+  ResourceIoFailed,
   ResourcePathUnsafe,
   ResourceStore,
+  resourceMutationLockFailureMessage,
 } from '../../src/effect/resource-store.js';
 import {loadRecallExactMatches, loadRecallIndex} from '../../src/recall/index.js';
 import {InvalidResourceId, parseResourceId} from '../../src/storage/resource-id.js';
@@ -71,6 +73,18 @@ describe('ResourceId', () => {
 
 describe('native ResourceStore', () => {
   const location = (home: string) => ({account: 'local', home, user: 'test-user'});
+
+  it('reports privacy-safe lock ownership and bounded recovery guidance', () => {
+    const uri = 'threadnote://resources/repos/threadnote/locked.md';
+    const message = resourceMutationLockFailureMessage(uri, 4242);
+
+    expect(message).toContain(uri);
+    expect(message).toContain('Local process 4242');
+    expect(message).toContain('threadnote processes');
+    expect(message).toContain('threadnote doctor --dry-run');
+    expect(message).not.toContain('/locks/');
+    expect(message).not.toContain('token');
+  });
 
   it('atomically creates, reads, compares, replaces, lists, greps, and removes resources', async () => {
     const home = await mkdtemp('threadnote-resource-store-');
@@ -251,6 +265,28 @@ describe('native ResourceStore', () => {
     }
   });
 
+  it('classifies a protected remove failure as a remove error instead of lock contention', async () => {
+    const home = await mkdtemp('threadnote-resource-remove-error-');
+    try {
+      await runEffect(
+        Effect.gen(function* () {
+          const store = yield* ResourceStore;
+          const parentUri = 'threadnote://resources/repos/threadnote/non-empty';
+          yield* store.write(location(home), `${parentUri}/child.md`, 'child', {mode: 'create'});
+
+          const failure = yield* Effect.flip(store.remove(location(home), parentUri));
+
+          expect(failure).toBeInstanceOf(ResourceIoFailed);
+          expect(failure).toMatchObject({operation: 'remove', uri: parentUri});
+          expect(failure.message).toBe(`Resource remove failed for ${parentUri}.`);
+          expect(failure.message).not.toContain('lock');
+        }),
+      );
+    } finally {
+      await rm(home, {force: true, recursive: true});
+    }
+  });
+
   it('applies a bulk mutation set behind one public invalidation boundary', async () => {
     const home = await mkdtemp('threadnote-resource-batch-');
     try {
@@ -376,6 +412,35 @@ describe('native ResourceStore', () => {
       await rm(outside, {force: true, recursive: true});
     }
   });
+
+  it.runIf(process.platform !== 'win32')(
+    'recursively removes a subtree without following descendant symlinks',
+    async () => {
+      const home = await mkdtemp('threadnote-resource-recursive-symlink-');
+      const outside = await mkdtemp('threadnote-resource-recursive-outside-');
+      try {
+        const subtree = join(home, 'data', 'local', 'resources', 'repos', 'threadnote', 'retired');
+        const outsideFile = join(outside, 'keep.md');
+        await mkdir(subtree, {recursive: true});
+        await writeFile(join(subtree, 'inside.md'), 'inside');
+        await writeFile(outsideFile, 'outside');
+        await symlink(outside, join(subtree, 'external'));
+
+        await runEffect(
+          Effect.gen(function* () {
+            const store = yield* ResourceStore;
+            yield* store.remove(location(home), 'threadnote://resources/repos/threadnote/retired', {recursive: true});
+          }),
+        );
+
+        await expect(readFile(outsideFile, 'utf8')).resolves.toBe('outside');
+        await expect(stat(subtree)).rejects.toThrow();
+      } finally {
+        await rm(home, {force: true, recursive: true});
+        await rm(outside, {force: true, recursive: true});
+      }
+    },
+  );
 
   it.runIf(process.platform !== 'win32')('rejects a symlinked account storage root', async () => {
     const home = await mkdtemp('threadnote-resource-account-symlink-');
