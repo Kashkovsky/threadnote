@@ -16,7 +16,8 @@ import {
   SynchronizedRef,
 } from 'effect';
 import {CodeGraphIndexer, type CodeGraphIndexerShape} from './indexer.js';
-import {CodeGraphStore, type CodeGraphStoreShape} from './store.js';
+import {CodeGraphMaintenanceCoordinator} from './maintenance_coordinator.js';
+import {CodeGraphStore, type CodeGraphRoutineMaintenanceResult, type CodeGraphStoreShape} from './store.js';
 import {CommandExecutor, type CommandOptions} from '../effect/command.js';
 import {SystemInfo} from '../effect/system.js';
 import type {CommandResult} from '../types.js';
@@ -32,6 +33,11 @@ import {
   type CodeGraphEtaTracker,
 } from './progress_eta.js';
 import {resolveRepositoryIdentity} from './repository.js';
+import {
+  makeCodeGraphAutomaticRecoveryCoordinator,
+  type CodeGraphAutomaticRecoveryAdmission,
+  type CodeGraphAutomaticRecoveryCoordinatorShape,
+} from './recovery_coordinator.js';
 
 export interface CodeGraphWatchOptions {
   readonly cwd: string;
@@ -100,6 +106,25 @@ export type CodeGraphWatchRun = (
 ) => Effect.Effect<void, unknown>;
 
 export type CodeGraphRefreshRun = (options: CodeGraphWatchOptions) => Effect.Effect<void, unknown>;
+
+export type CodeGraphRecoveryRun = (
+  options: CodeGraphWatchOptions,
+  failure: CodeGraphRefreshFailure,
+) => Effect.Effect<void, unknown>;
+
+export interface CodeGraphAutomaticRecoveryIdentity {
+  readonly checkoutId: string;
+  readonly worktreeId: string;
+}
+
+export interface CodeGraphAutomaticRecoveryDependencies {
+  readonly coordinator: CodeGraphAutomaticRecoveryCoordinatorShape;
+  readonly resolveIdentity: (cwd: string) => Effect.Effect<CodeGraphAutomaticRecoveryIdentity, unknown>;
+  readonly routineMaintenance: (
+    options: CodeGraphWatchOptions,
+    identity: CodeGraphAutomaticRecoveryIdentity,
+  ) => Effect.Effect<CodeGraphRoutineMaintenanceResult, unknown>;
+}
 
 interface ActiveRefresh {
   readonly completion: Deferred.Deferred<void, Error>;
@@ -175,8 +200,10 @@ export class CodeGraphWatcher extends Context.Service<CodeGraphWatcher, CodeGrap
       const commandExecutor = yield* CommandExecutor;
       const systemInfo = yield* SystemInfo;
       const indexer = yield* CodeGraphIndexer;
+      const maintenance = yield* CodeGraphMaintenanceCoordinator;
       const store = yield* CodeGraphStore;
       const scope = yield* Effect.scope;
+      const automaticRecovery = yield* makeCodeGraphAutomaticRecoveryCoordinator();
       const prewarmSemaphore = yield* Semaphore.make(1);
       const prewarmedCommits = yield* SynchronizedRef.make(new Set<string>());
       const run = (
@@ -226,7 +253,37 @@ export class CodeGraphWatcher extends Context.Service<CodeGraphWatcher, CodeGrap
           yield* indexRepository(indexer, options);
           yield* schedulePrewarm(options);
         });
-      const watcher = yield* makeCodeGraphWatcher(run, refresh);
+      const resolveRecoveryIdentity = (cwd: string) =>
+        resolveRepositoryIdentity(cwd).pipe(
+          Effect.provideService(CommandExecutor, commandExecutor),
+          Effect.provideService(FileSystem.FileSystem, fs),
+          Effect.provideService(Path.Path, path),
+          Effect.provideService(SystemInfo, systemInfo),
+        );
+      const recover = (options: CodeGraphWatchOptions, failure: CodeGraphRefreshFailure) =>
+        requestCodeGraphAutomaticRecovery(
+          {
+            coordinator: automaticRecovery,
+            resolveIdentity: resolveRecoveryIdentity,
+            routineMaintenance: (recoveryOptions, identity) => {
+              const layout = codeGraphLayout(
+                path,
+                recoveryOptions.threadnoteHome,
+                identity.checkoutId,
+                identity.worktreeId,
+              );
+              return maintenance.tick({
+                checkoutId: layout.checkoutId,
+                databasePath: layout.databasePath,
+                threadnoteHome: recoveryOptions.threadnoteHome,
+                writerLockPath: layout.databaseWriteLockPath,
+              });
+            },
+          },
+          options,
+          failure,
+        ).pipe(Effect.asVoid);
+      const watcher = yield* makeCodeGraphWatcher(run, refresh, {}, recover);
       return CodeGraphWatcher.of({
         ...watcher,
         status: (key, target) =>
@@ -255,6 +312,7 @@ export const makeCodeGraphWatcher = Effect.fn('codeGraph.makeWatcher')(function*
   run: CodeGraphWatchRun,
   refreshRun: CodeGraphRefreshRun,
   lifecycleOptions: CodeGraphWatcherLifecycleOptions = {},
+  recoverRun: CodeGraphRecoveryRun = () => Effect.void,
 ) {
   const scope = yield* Effect.scope;
   const idleTimeoutMilliseconds = positiveInteger(
@@ -347,6 +405,19 @@ export const makeCodeGraphWatcher = Effect.fn('codeGraph.makeWatcher')(function*
               Effect.andThen(
                 Effect.logWarning(
                   `Code graph background refresh deferred (${failure.code}; recovery: ${failure.recovery}).`,
+                ),
+              ),
+              Effect.andThen(
+                recoverRun(options, failure).pipe(
+                  Effect.catchCause(recoveryCause =>
+                    Cause.hasInterruptsOnly(recoveryCause)
+                      ? Effect.failCause(recoveryCause)
+                      : Effect.logWarning(
+                          'Code graph automatic recovery scheduling failed (unknown; recovery: diagnose).',
+                        ),
+                  ),
+                  Effect.forkIn(scope),
+                  Effect.asVoid,
                 ),
               ),
             );
@@ -503,6 +574,45 @@ export const makeCodeGraphWatcher = Effect.fn('codeGraph.makeWatcher')(function*
       ),
   });
 });
+
+/** @internal Keep identity resolution inside the already-detached failure hook. */
+export const requestCodeGraphAutomaticRecovery = Effect.fn('codeGraph.requestAutomaticRecovery')(function* (
+  dependencies: CodeGraphAutomaticRecoveryDependencies,
+  options: CodeGraphWatchOptions,
+  failure: CodeGraphRefreshFailure,
+) {
+  if (failure.code !== 'schema-additive') {
+    return yield* dependencies.coordinator.request({failureCode: failure.code, recoveryKey: options.key});
+  }
+  if (/^[0-9a-f]{64}$/u.test(options.key)) {
+    const routineMaintenance = dependencies
+      .resolveIdentity(options.cwd)
+      .pipe(
+        Effect.flatMap(identity =>
+          identity.worktreeId === options.key
+            ? dependencies.routineMaintenance(options, identity)
+            : Effect.fail(new Error('Code graph recovery identity changed before maintenance admission.')),
+        ),
+      );
+    return yield* dependencies.coordinator
+      .request({failureCode: failure.code, recoveryKey: options.key, routineMaintenance})
+      .pipe(Effect.tap(logAutomaticRecoveryAdmission));
+  }
+  const identity = yield* dependencies.resolveIdentity(options.cwd);
+  return yield* dependencies.coordinator
+    .request({
+      failureCode: failure.code,
+      recoveryKey: identity.worktreeId,
+      routineMaintenance: dependencies.routineMaintenance(options, identity),
+    })
+    .pipe(Effect.tap(logAutomaticRecoveryAdmission));
+});
+
+function logAutomaticRecoveryAdmission(admission: CodeGraphAutomaticRecoveryAdmission): Effect.Effect<void> {
+  return admission.state === 'scheduled'
+    ? Effect.logInfo('Code graph automatic recovery maintenance scheduled (schema-additive).')
+    : Effect.void;
+}
 
 function oldestWatch(watches: ReadonlyMap<string, ActiveWatch>): [string, ActiveWatch] | undefined {
   let oldest: [string, ActiveWatch] | undefined;
