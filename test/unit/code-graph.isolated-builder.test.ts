@@ -1,8 +1,11 @@
+import {it as effectIt} from '@effect/vitest';
 import {describe, expect, it} from 'vitest';
 import fc from 'fast-check';
-import {Effect} from 'effect';
+import {Effect, Fiber} from 'effect';
+import {TestClock} from 'effect/testing';
 import {
   assertIsolatedBuilderPlan,
+  awaitOwnedIsolatedBuilderResult,
   codeGraphIsolatedBuilderSpawnPlan,
   codeGraphProgressFromBuildStatus,
   isCodeGraphIsolatedBuilderHost,
@@ -282,12 +285,23 @@ describe('shouldAwaitExistingBuilder and statusBelongsToChild', () => {
       buildId: 'old-build',
       owner: {processId: 7, runtime: 'bun' as const, runtimeVersion: '1'},
     } as ObservedCodeGraphBuildStatus;
-    expect(statusBelongsToChild(status, 7, 'old-build')).toBe(true);
+    expect(statusBelongsToChild(status, 7, 'old-build')).toBe(false);
+    expect(
+      statusBelongsToChild({...status, buildId: 'new-build'} as ObservedCodeGraphBuildStatus, 7, 'old-build'),
+    ).toBe(true);
     expect(
       statusBelongsToChild({...status, buildId: 'old-build'} as ObservedCodeGraphBuildStatus, 8, 'old-build'),
     ).toBe(false);
     expect(
       statusBelongsToChild({...status, buildId: 'new-build'} as ObservedCodeGraphBuildStatus, 8, 'old-build'),
+    ).toBe(false);
+    expect(
+      statusBelongsToChild(
+        {...status, buildId: 'other-build'} as ObservedCodeGraphBuildStatus,
+        7,
+        'old-build',
+        'new-build',
+      ),
     ).toBe(false);
   });
 });
@@ -309,6 +323,129 @@ describe('isolated builder exit contracts', () => {
     ).resolves.toEqual({edges: 4, symbols: 2});
     await expect(Effect.runPromise(isolatedBuilderResultFromCompletedStatus(undefined))).rejects.toThrow(
       /finished without writing a build result/,
+    );
+  });
+
+  effectIt.effect('waits for the exact owned result during a bounded post-exit grace', () =>
+    Effect.gen(function* () {
+      const ownedPending = {
+        buildId: 'owned-build',
+        owner: {processId: 7, runtime: 'bun' as const, runtimeVersion: '1'},
+      } as ObservedCodeGraphBuildStatus;
+      const ownedCompleted = {
+        ...ownedPending,
+        result: {dirty: false, edges: 41, files: 3, snapshotId: 'snapshot', symbols: 29},
+      } as ObservedCodeGraphBuildStatus;
+      const statuses = [undefined, ownedPending, ownedCompleted] as const;
+      let reads = 0;
+      const result = yield* awaitOwnedIsolatedBuilderResult(
+        Effect.sync(() => statuses[Math.min(reads++, statuses.length - 1)]),
+        7,
+        'prior-build',
+        undefined,
+        {pollMilliseconds: 100, timeoutMilliseconds: 500},
+      ).pipe(Effect.forkChild);
+
+      yield* TestClock.adjust(200);
+
+      expect(yield* Fiber.join(result)).toEqual({edges: 41, symbols: 29});
+      expect(reads).toBe(3);
+    }),
+  );
+
+  effectIt.effect('fails at the grace deadline when only unrelated results are visible', () =>
+    Effect.gen(function* () {
+      let reads = 0;
+      const unrelated = {
+        buildId: 'other-build',
+        owner: {processId: 8, runtime: 'bun' as const, runtimeVersion: '1'},
+        result: {dirty: false, edges: 999, files: 1, snapshotId: 'other', symbols: 999},
+      } as ObservedCodeGraphBuildStatus;
+      const outcome = yield* awaitOwnedIsolatedBuilderResult(
+        Effect.sync(() => {
+          reads += 1;
+          return unrelated;
+        }),
+        7,
+        'prior-build',
+        'owned-build',
+        {pollMilliseconds: 100, timeoutMilliseconds: 300},
+      ).pipe(
+        Effect.match({
+          onFailure: error => (error instanceof Error ? error.message : String(error)),
+          onSuccess: () => 'unexpected success',
+        }),
+        Effect.forkChild,
+      );
+
+      yield* TestClock.adjust(300);
+
+      expect(yield* Fiber.join(outcome)).toMatch(/finished without writing a build result/);
+      expect(reads).toBe(4);
+    }),
+  );
+
+  effectIt.effect('remains interruptible while awaiting the result sidecar', () =>
+    Effect.gen(function* () {
+      let reads = 0;
+      const result = yield* awaitOwnedIsolatedBuilderResult(
+        Effect.sync(() => {
+          reads += 1;
+          return undefined;
+        }),
+        7,
+        'prior-build',
+        'owned-build',
+        {pollMilliseconds: 100, timeoutMilliseconds: 2_000},
+      ).pipe(Effect.forkChild);
+
+      yield* TestClock.adjust(100);
+      expect(reads).toBe(2);
+      yield* Fiber.interrupt(result);
+      yield* TestClock.adjust(2_000);
+      expect(reads).toBe(2);
+    }),
+  );
+
+  it('never accepts a foreign, prior, or different-build result while polling (property)', async () => {
+    const invalidStatus = fc.constantFrom('absent', 'foreign', 'prior', 'different-build', 'owned-pending');
+    await fc.assert(
+      fc.asyncProperty(fc.array(invalidStatus, {maxLength: 12}), async sequence => {
+        const statusFor = (kind: (typeof sequence)[number]): ObservedCodeGraphBuildStatus | undefined => {
+          if (kind === 'absent') return undefined;
+          const buildId =
+            kind === 'prior' ? 'prior-build' : kind === 'different-build' ? 'different-build' : 'owned-build';
+          const processId = kind === 'foreign' ? 8 : 7;
+          return {
+            buildId,
+            owner: {processId, runtime: 'bun' as const, runtimeVersion: '1'},
+            ...(kind === 'owned-pending'
+              ? {}
+              : {result: {dirty: false, edges: 999, files: 1, snapshotId: kind, symbols: 999}}),
+          } as ObservedCodeGraphBuildStatus;
+        };
+        const ownedCompleted = {
+          buildId: 'owned-build',
+          owner: {processId: 7, runtime: 'bun' as const, runtimeVersion: '1'},
+          result: {dirty: false, edges: 41, files: 3, snapshotId: 'owned', symbols: 29},
+        } as ObservedCodeGraphBuildStatus;
+        const statuses = [...sequence.map(statusFor), ownedCompleted];
+        let reads = 0;
+
+        await expect(
+          Effect.runPromise(
+            awaitOwnedIsolatedBuilderResult(
+              Effect.sync(() => statuses[Math.min(reads++, statuses.length - 1)]),
+              7,
+              'prior-build',
+              'owned-build',
+              {pollMilliseconds: 0, timeoutMilliseconds: 10_000},
+            ),
+          ),
+        ).resolves.toEqual({edges: 41, symbols: 29});
+        expect(reads).toBe(statuses.length);
+      }),
+      {numRuns: 60},
     );
   });
 });
