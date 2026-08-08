@@ -33,7 +33,34 @@ describe('MCP code graph indexing progress', () => {
         {readySnapshot: {id: 'ready'}, stale: false},
         {message: 'fixture failed', state: 'failed'},
       ),
+    ).toBe(false);
+    expect(
+      codeGraphRefreshBlocksReadyInspection(
+        {readySnapshot: {id: 'stale'}, stale: true},
+        {message: 'fixture failed', state: 'failed'},
+      ),
     ).toBe(true);
+    expect(
+      codeGraphRefreshBlocksReadyInspection(
+        {readySnapshot: {id: 'stale'}, stale: true},
+        {message: 'fixture failed', state: 'failed'},
+        true,
+      ),
+    ).toBe(false);
+  });
+
+  it('never lets a failed or active refresh hide a usable ready snapshot', () => {
+    const refreshStatuses = [{message: 'bounded fixture failure', state: 'failed'} as const, indexingStatus(60_000)];
+    for (const refresh of refreshStatuses) {
+      for (const stale of [false, true]) {
+        for (const allowStale of [false, true]) {
+          const usable = !stale || allowStale;
+          expect(
+            codeGraphRefreshBlocksReadyInspection({readySnapshot: {id: 'ready'}, stale}, refresh, allowStale),
+          ).toBe(!usable);
+        }
+      }
+    }
   });
 
   it('does not block inspection after a shared ready snapshot is attached to the worktree', () => {

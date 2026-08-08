@@ -26,7 +26,12 @@ import type {
   CodeGraphQueryNode,
   RepositoryIdentity,
 } from './types.js';
-import {CODE_GRAPH_EXTRACTOR_GENERATION, CODE_GRAPH_SCHEMA_VERSION, CodeGraphStoreError} from './types.js';
+import {
+  CODE_GRAPH_EXTRACTOR_GENERATION,
+  CODE_GRAPH_SCHEMA_VERSION,
+  CodeGraphStoreBusyError,
+  CodeGraphStoreError,
+} from './types.js';
 import type {
   CodeGraphWorkspace,
   CodeGraphWorkspaceBuildSystem,
@@ -436,6 +441,15 @@ export type CodeGraphVisualizationScope =
   | {readonly type: 'path'; readonly value: string}
   | {readonly type: 'unscoped'};
 
+export interface CodeGraphSnapshotLeaseWriterOptions {
+  /** Maximum time to wait for another checkout writer. Omit to preserve the unbounded background-worker contract. */
+  readonly waitTimeoutMilliseconds?: number;
+}
+
+export interface CodeGraphSnapshotLeaseAcquireOptions extends CodeGraphSnapshotLeaseWriterOptions {
+  readonly retireWhenInactive?: boolean;
+}
+
 export interface CodeGraphStoreShape {
   readonly withSession: <A, E, R>(
     databasePath: string,
@@ -481,7 +495,7 @@ export interface CodeGraphStoreShape {
     databasePath: string,
     snapshotId: string,
     durationMilliseconds: number,
-    options?: {readonly retireWhenInactive?: boolean},
+    options?: CodeGraphSnapshotLeaseAcquireOptions,
   ) => Effect.Effect<string, CodeGraphStoreError>;
   readonly promote: (
     databasePath: string,
@@ -716,11 +730,16 @@ export interface CodeGraphStoreShape {
     databasePath: string,
     dryRun?: boolean,
   ) => Effect.Effect<CodeGraphDatabaseRepair | undefined, CodeGraphStoreError>;
-  readonly releaseSnapshotLease: (databasePath: string, token: string) => Effect.Effect<void, CodeGraphStoreError>;
+  readonly releaseSnapshotLease: (
+    databasePath: string,
+    token: string,
+    options?: CodeGraphSnapshotLeaseWriterOptions,
+  ) => Effect.Effect<void, CodeGraphStoreError>;
   readonly renewSnapshotLease: (
     databasePath: string,
     token: string,
     durationMilliseconds: number,
+    options?: CodeGraphSnapshotLeaseWriterOptions,
   ) => Effect.Effect<void, CodeGraphStoreError>;
   readonly searchSymbols: (
     databasePath: string,
@@ -836,7 +855,11 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
         fs
           .makeDirectory(path.dirname(databasePath), {recursive: true, mode: 0o700})
           .pipe(Effect.mapError(cause => storeError('prepare code graph database', cause)));
-      const withWriterGate = <A, E, R>(databasePath: string, effect: Effect.Effect<A, E, R>) =>
+      const withWriterGate = <A, E, R>(
+        databasePath: string,
+        effect: Effect.Effect<A, E, R>,
+        waitTimeoutMilliseconds?: number,
+      ) =>
         Effect.serviceOption(CodeGraphDatabaseSession).pipe(
           Effect.flatMap(session => {
             const options =
@@ -849,6 +872,7 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
               writerLockPath,
               {
                 ...CODE_GRAPH_SQL_WRITER_LOCK_OPTIONS,
+                waitTimeoutMilliseconds: normalizedWriterGateWaitTimeout(waitTimeoutMilliseconds),
                 onAcquired: () => options?.onWriterAcquired?.() ?? Effect.void,
                 onContention: () => options?.onWriterContention?.() ?? Effect.void,
               },
@@ -860,6 +884,17 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
             );
           }),
         );
+      const leaseSchemasInitialized = new Set<string>();
+      const ensureLeaseSchemaInitialized = (databasePath: string, sql: SqlClient.SqlClient) => {
+        if (leaseSchemasInitialized.has(databasePath)) return Effect.void;
+        return initializeSchema(sql).pipe(
+          Effect.tap(() =>
+            Effect.sync(() => {
+              leaseSchemasInitialized.add(databasePath);
+            }),
+          ),
+        );
+      };
       const ensureSchemaInitialized = (databasePath: string, sql: SqlClient.SqlClient) =>
         Effect.gen(function* () {
           const session = yield* Effect.serviceOption(CodeGraphDatabaseSession);
@@ -1041,6 +1076,8 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
                   useDatabase(
                     databasePath,
                     Effect.gen(function* () {
+                      const sql = yield* SqlClient.SqlClient;
+                      yield* ensureLeaseSchemaInitialized(databasePath, sql);
                       const acquiredToken = yield* acquireSnapshotLease(
                         snapshotId,
                         durationMilliseconds,
@@ -1051,6 +1088,7 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
                       return {cleanup, token: acquiredToken};
                     }),
                   ),
+                  options?.waitTimeoutMilliseconds,
                 ),
               ),
               Effect.mapError(cause => storeError('acquire code graph snapshot lease', cause)),
@@ -1727,7 +1765,7 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
             ),
             Effect.mapError(cause => storeError('repair code graph database', cause)),
           ),
-        releaseSnapshotLease: (databasePath, token) =>
+        releaseSnapshotLease: (databasePath, token, options) =>
           fs.exists(databasePath).pipe(
             Effect.flatMap(exists =>
               exists
@@ -1736,10 +1774,13 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
                     useDatabase(
                       databasePath,
                       Effect.gen(function* () {
+                        const sql = yield* SqlClient.SqlClient;
+                        yield* ensureLeaseSchemaInitialized(databasePath, sql);
                         yield* releaseSnapshotLease(token);
                         return yield* pruneRetiredSnapshotRowsPage();
                       }),
                     ),
+                    options?.waitTimeoutMilliseconds,
                   ).pipe(
                     Effect.tap(cleanup =>
                       cleanup.remaining ? scheduleRetiredSnapshotCleanup(databasePath) : Effect.void,
@@ -1750,7 +1791,7 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
             ),
             Effect.mapError(cause => storeError('release code graph snapshot lease', cause)),
           ),
-        renewSnapshotLease: (databasePath, token, durationMilliseconds) =>
+        renewSnapshotLease: (databasePath, token, durationMilliseconds, options) =>
           fs.exists(databasePath).pipe(
             Effect.flatMap(exists =>
               exists
@@ -1759,10 +1800,13 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
                     useDatabase(
                       databasePath,
                       Effect.gen(function* () {
+                        const sql = yield* SqlClient.SqlClient;
+                        yield* ensureLeaseSchemaInitialized(databasePath, sql);
                         yield* renewSnapshotLease(token, durationMilliseconds);
                         return yield* pruneRetiredSnapshotRowsPage();
                       }),
                     ),
+                    options?.waitTimeoutMilliseconds,
                   ).pipe(
                     Effect.tap(cleanup =>
                       cleanup.remaining ? scheduleRetiredSnapshotCleanup(databasePath) : Effect.void,
@@ -2114,6 +2158,14 @@ const CODE_GRAPH_DETACHED_CLEANUP_LOCK_OPTIONS = {
 
 const CODE_GRAPH_CLEANUP_YIELD_MILLISECONDS = CODE_GRAPH_SQL_WRITER_LOCK_OPTIONS.retryIntervalMilliseconds * 2;
 const CODE_GRAPH_ORPHANED_UNOWNED_BUILD_MINIMUM_AGE_MILLISECONDS = 15 * 60_000;
+
+function normalizedWriterGateWaitTimeout(waitTimeoutMilliseconds: number | undefined): number {
+  if (waitTimeoutMilliseconds === undefined || waitTimeoutMilliseconds === Number.POSITIVE_INFINITY) {
+    return Number.POSITIVE_INFINITY;
+  }
+  if (!Number.isFinite(waitTimeoutMilliseconds)) return 0;
+  return Math.max(0, Math.floor(waitTimeoutMilliseconds));
+}
 
 function inferredCodeGraphWriterLockPath(path: Path.Path, databasePath: string): string | undefined {
   if (path.basename(databasePath) !== `graph-v${CODE_GRAPH_SCHEMA_VERSION}.sqlite`) return undefined;
@@ -13695,6 +13747,9 @@ function activationEdgeId(
 
 function storeError(operation: string, cause: unknown): CodeGraphStoreError {
   if (cause instanceof CodeGraphStoreError) return cause;
+  if (isFileLockTimeout(cause)) {
+    return new CodeGraphStoreBusyError(`${operation} deferred because another code graph writer owns this checkout.`);
+  }
   return new CodeGraphStoreError(`${operation} failed: ${storeCauseSummary(cause)}`);
 }
 

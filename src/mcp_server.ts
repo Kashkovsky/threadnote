@@ -1830,8 +1830,8 @@ export function codeGraphRefreshBlocksReadyInspection(
   refreshStatus: CodeGraphRefreshStatus | undefined,
   allowStaleReadySnapshot = false,
 ): boolean {
-  if (refreshStatus?.state === 'failed') return true;
-  return refreshStatus?.state === 'indexing' && (!status.readySnapshot || (status.stale && !allowStaleReadySnapshot));
+  const refreshBlocks = refreshStatus?.state === 'failed' || refreshStatus?.state === 'indexing';
+  return refreshBlocks && (!status.readySnapshot || (status.stale && !allowStaleReadySnapshot));
 }
 
 function codeGraphRefreshResult(

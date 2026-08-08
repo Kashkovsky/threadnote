@@ -479,5 +479,9 @@ export class CodeGraphSnapshotUnavailable extends Error {
 }
 
 export class CodeGraphStoreError extends Error {
-  override readonly name = 'CodeGraphStoreError';
+  override readonly name: string = 'CodeGraphStoreError';
+}
+
+export class CodeGraphStoreBusyError extends CodeGraphStoreError {
+  override readonly name = 'CodeGraphStoreBusyError';
 }

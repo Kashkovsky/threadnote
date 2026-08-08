@@ -1,8 +1,8 @@
 import {Database} from 'bun:sqlite';
-import {Effect} from 'effect';
+import {Deferred, Effect, Fiber} from 'effect';
 import {afterEach, describe, expect, it} from 'vitest';
 import {CodeGraphStore, type CodeGraphStoreShape} from '../../src/code_graph/store.js';
-import type {CodeGraphSnapshot, RepositoryIdentity} from '../../src/code_graph/types.js';
+import {CodeGraphStoreBusyError, type CodeGraphSnapshot, type RepositoryIdentity} from '../../src/code_graph/types.js';
 import {join, mkdtemp, rm} from '../helpers/effect-filesystem.js';
 import {runEffect} from '../helpers/effect-runtime.js';
 
@@ -278,8 +278,14 @@ describe('code graph ready snapshot retention', () => {
           expireLease(databasePath, expiredLease);
           dropLeaseRetirementColumn(databasePath);
         });
+      }),
+    );
 
-        yield* store.initialize(databasePath);
+    await runEffect(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        // Lease acquisition is the first writer in this process. It must apply
+        // the additive schema migration before executing lease SQL.
         const currentLease = yield* store.acquireSnapshotLease(databasePath, current.id, 60_000);
         yield* waitForSnapshotRemoval(databasePath, superseded.id);
         yield* store.releaseSnapshotLease(databasePath, currentLease);
@@ -297,6 +303,121 @@ describe('code graph ready snapshot retention', () => {
     } finally {
       database.close(false);
     }
+  });
+
+  it('migrates the lease schema before releasing a lease', async () => {
+    const root = await mkdtemp('threadnote-ready-retention-release-migration-');
+    temporaryRoots.push(root);
+    const databasePath = join(root, 'graph-v3.sqlite');
+    const identity = repositoryIdentity(root);
+    const ready = snapshot(identity, 'release-migration');
+    const token = await runEffect(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        yield* store.initialize(databasePath);
+        yield* registerReadySnapshots(store, databasePath, identity, [ready]);
+        return yield* store.acquireSnapshotLease(databasePath, ready.id, 60_000);
+      }),
+    );
+    dropLeaseRetirementColumn(databasePath);
+
+    await runEffect(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        yield* store.releaseSnapshotLease(databasePath, token);
+      }),
+    );
+
+    const database = new Database(databasePath, {readonly: true, strict: true});
+    try {
+      expect(leaseColumns(database)).toContain('retire_when_inactive');
+      expect(database.query('SELECT COUNT(*) AS count FROM snapshot_leases').get()).toEqual({count: 0});
+    } finally {
+      database.close(false);
+    }
+  });
+
+  it('migrates the lease schema before renewing a lease', async () => {
+    const root = await mkdtemp('threadnote-ready-retention-renew-migration-');
+    temporaryRoots.push(root);
+    const databasePath = join(root, 'graph-v3.sqlite');
+    const identity = repositoryIdentity(root);
+    const ready = snapshot(identity, 'renew-migration');
+    const token = await runEffect(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        yield* store.initialize(databasePath);
+        yield* registerReadySnapshots(store, databasePath, identity, [ready]);
+        return yield* store.acquireSnapshotLease(databasePath, ready.id, 60_000);
+      }),
+    );
+    const before = readLeaseExpiration(databasePath, token);
+    dropLeaseRetirementColumn(databasePath);
+
+    await runEffect(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        yield* store.renewSnapshotLease(databasePath, token, 10 * 60_000);
+      }),
+    );
+    const after = readLeaseExpiration(databasePath, token);
+    await runEffect(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        yield* store.releaseSnapshotLease(databasePath, token);
+      }),
+    );
+
+    const database = new Database(databasePath, {readonly: true, strict: true});
+    try {
+      expect(leaseColumns(database)).toContain('retire_when_inactive');
+      expect(readLeaseExpiration(databasePath, token)).toBeUndefined();
+      expect(before).toBeDefined();
+      expect(after).toBeGreaterThan(before ?? 0);
+    } finally {
+      database.close(false);
+    }
+  });
+
+  it('returns a typed privacy-safe error when a bounded lease writer wait expires', async () => {
+    const home = await mkdtemp('threadnote-ready-retention-writer-busy-');
+    temporaryRoots.push(home);
+    const checkoutId = 'c'.repeat(64);
+    const databasePath = join(home, 'indexes', 'code-graph', 'repositories', checkoutId, 'graph-v3.sqlite');
+    const writerLockPath = join(home, 'locks', 'indexes', 'code-graph', 'database-writes', `${checkoutId}.lock`);
+    const identity = {
+      ...repositoryIdentity(home),
+      checkoutId,
+      worktreeId: 'd'.repeat(64),
+    };
+    const ready = snapshot(identity, 'bounded-writer-wait');
+
+    const error = await runEffect(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        yield* store.initialize(databasePath);
+        yield* registerReadySnapshots(store, databasePath, identity, [ready]);
+        const writerAcquired = yield* Deferred.make<void>();
+        const releaseWriter = yield* Deferred.make<void>();
+        const writer = yield* store
+          .withSession(databasePath, store.initialize(databasePath), {
+            onWriterAcquired: () =>
+              Deferred.succeed(writerAcquired, undefined).pipe(Effect.andThen(Deferred.await(releaseWriter))),
+            writerLockPath,
+          })
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(writerAcquired);
+        const busy = yield* store
+          .acquireSnapshotLease(databasePath, ready.id, 60_000, {waitTimeoutMilliseconds: 0})
+          .pipe(Effect.flip, Effect.ensuring(Deferred.succeed(releaseWriter, undefined).pipe(Effect.asVoid)));
+        yield* Fiber.join(writer);
+        return busy;
+      }),
+    );
+
+    expect(error).toBeInstanceOf(CodeGraphStoreBusyError);
+    expect(error.message).toContain('another code graph writer owns this checkout');
+    expect(error.message).not.toContain(home);
   });
 });
 
@@ -396,6 +517,26 @@ function dropLeaseRetirementColumn(databasePath: string): void {
   const database = new Database(databasePath, {strict: true});
   try {
     database.run('ALTER TABLE snapshot_leases DROP COLUMN retire_when_inactive');
+  } finally {
+    database.close(false);
+  }
+}
+
+function leaseColumns(database: Database): readonly string[] {
+  return (
+    database.query("PRAGMA table_info('snapshot_leases')").all() as readonly {
+      readonly name: string;
+    }[]
+  ).map(column => column.name);
+}
+
+function readLeaseExpiration(databasePath: string, token: string): number | undefined {
+  const database = new Database(databasePath, {readonly: true, strict: true});
+  try {
+    return (
+      database.query('SELECT expires_at FROM snapshot_leases WHERE token = ?').get(token) as
+        {readonly expires_at: number} | undefined
+    )?.expires_at;
   } finally {
     database.close(false);
   }
