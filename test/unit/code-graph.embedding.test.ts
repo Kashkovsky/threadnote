@@ -1,4 +1,5 @@
 import * as BunServices from '@effect/platform-bun/BunServices';
+import {Database} from 'bun:sqlite';
 import {Effect, Fiber, FileSystem, Layer, Path} from 'effect';
 import {describe, expect, it} from 'vitest';
 import {CodeGraphEmbeddingIndex, selectGraphEmbeddingSymbols} from '../../src/code_graph/embedding.js';
@@ -23,7 +24,7 @@ describe('native code graph vector generations', () => {
     expect(selectGraphEmbeddingSymbols(symbols)).toHaveLength(20_001);
   });
 
-  it('reuses unchanged symbol vectors, embeds changed symbols, and serves semantic scores', async () => {
+  it('reuses unchanged vectors, preserves sibling pointers, and serves semantic scores', async () => {
     const home = await mkdtemp('threadnote-code-graph-vectors-');
     const embeddedBatches: number[] = [];
     try {
@@ -64,10 +65,8 @@ describe('native code graph vector generations', () => {
             'alpha deployment',
             2,
           );
-          yield* vectors.ensure(home, layout, snapshot('snapshot-three'), [duplicate], {
-            activeWorktreeIds: new Set([layout.worktreeId]),
-          });
-          const removedInactivePointer = yield* vectors.check(home, otherWorktreeLayout, 'snapshot-one');
+          yield* vectors.ensure(home, layout, snapshot('snapshot-three'), [duplicate]);
+          const preservedUnavailablePointer = yield* vectors.check(home, otherWorktreeLayout, 'snapshot-one');
           return {
             changed,
             checked,
@@ -76,7 +75,7 @@ describe('native code graph vector generations', () => {
             first,
             forced,
             preservedScores,
-            removedInactivePointer,
+            preservedUnavailablePointer,
             scores,
             shared,
             unchanged,
@@ -99,9 +98,78 @@ describe('native code graph vector generations', () => {
       expect(result.databaseReady).toBe(true);
       expect(result.scores.get('alpha')).toBeCloseTo(1);
       expect(result.preservedScores.get('alpha')).toBeCloseTo(1);
-      expect(result.removedInactivePointer).toMatchObject({state: 'stale'});
+      expect(result.preservedUnavailablePointer).toMatchObject({state: 'ready'});
       expect(result.scores.has('beta')).toBe(false);
       expect(embeddedBatches).toEqual([2, 1, 1, 1, 1, 1]);
+    } finally {
+      await rm(home, {force: true, recursive: true});
+    }
+  });
+
+  it('migrates the generation lookup index and prunes many generations without scanning every pointer', async () => {
+    const home = await mkdtemp('threadnote-code-graph-vector-pointer-index-');
+    const pointerCount = 4_096;
+    const orphanCount = 512;
+    try {
+      const result = await Effect.runPromise(
+        Effect.gen(function* () {
+          const path = yield* Path.Path;
+          const catalog = yield* LocalModelCatalog;
+          yield* selectLocalModel(home, catalog, 'embedding', manifest.id);
+          const vectors = yield* CodeGraphEmbeddingIndex;
+          const layout = codeGraphLayout(path, home, 'a'.repeat(64), 'b'.repeat(64));
+          const target = snapshot('snapshot-pointer-load');
+          yield* vectors.ensure(home, layout, target, [
+            symbol('pointer-load', 'PointerLoad', 'Exercises pointer pruning.'),
+          ]);
+          const databasePath = path.join(layout.vectorRoot, manifest.id, 'vectors-v2.sqlite');
+          yield* Effect.sync(() => seedVectorPointerLoad(databasePath, pointerCount, orphanCount));
+          const refreshed = yield* vectors.ensure(home, layout, target, []);
+          return {databasePath, refreshed};
+        }).pipe(
+          Effect.provide(Layer.merge(testEmbeddingLayer([]), LocalModelCatalog.layer(BUILTIN_MODEL_MANIFESTS))),
+          Effect.provide(BunServices.layer),
+        ),
+      );
+
+      const database = new Database(result.databasePath, {readonly: true, strict: true});
+      try {
+        const indexes = database.query("PRAGMA index_list('vector_pointers')").all() as readonly {
+          readonly name: string;
+        }[];
+        const plan = database
+          .query(
+            `EXPLAIN QUERY PLAN
+             DELETE FROM vector_generations
+             WHERE state <> 'ready'
+                OR NOT EXISTS (
+                  SELECT 1 FROM vector_pointers
+                  WHERE vector_pointers.generation = vector_generations.generation
+                )`,
+          )
+          .all() as readonly {readonly detail: string}[];
+        const details = plan.map(row => row.detail);
+
+        expect(result.refreshed).toMatchObject({embedded: 0, ready: true, reused: 1});
+        expect(indexes.map(index => index.name)).toContain('vector_pointer_generation_lookup');
+        expect(details).toContainEqual(
+          expect.stringContaining(
+            'SEARCH vector_pointers USING COVERING INDEX vector_pointer_generation_lookup (generation=?)',
+          ),
+        );
+        expect(details.some(detail => detail.includes('SCAN vector_pointers'))).toBe(false);
+        expect(database.query('SELECT COUNT(*) AS count FROM vector_pointers').get()).toEqual({
+          count: pointerCount + 1,
+        });
+        expect(database.query('SELECT COUNT(*) AS count FROM vector_generations').get()).toEqual({
+          count: pointerCount + 1,
+        });
+        expect(
+          database.query("SELECT COUNT(*) AS count FROM vector_generations WHERE generation LIKE 'orphan-%'").get(),
+        ).toEqual({count: 0});
+      } finally {
+        database.close(false);
+      }
     } finally {
       await rm(home, {force: true, recursive: true});
     }
@@ -266,6 +334,65 @@ function testEmbeddingLayer(embeddedBatches: number[], runtimeOverride?: LocalMo
       Layer.mergeAll(LocalModelCatalog.layer(BUILTIN_MODEL_MANIFESTS), modelStoreLayer, runtimeLayer, SystemInfo.layer),
     ),
   );
+}
+
+function seedVectorPointerLoad(databasePath: string, pointerCount: number, orphanCount: number): void {
+  const database = new Database(databasePath, {strict: true});
+  try {
+    database.run('DROP INDEX IF EXISTS vector_pointer_generation_lookup');
+    const template = database
+      .query<
+        {
+          readonly created_at: string;
+          readonly dimensions: number;
+          readonly model_id: string;
+          readonly model_sha256: string;
+          readonly template_version: number;
+        },
+        []
+      >(
+        `SELECT created_at, dimensions, model_id, model_sha256, template_version
+         FROM vector_generations
+         LIMIT 1`,
+      )
+      .get();
+    if (!template) throw new Error('Vector pointer load fixture has no generation template.');
+    const insertGeneration = database.prepare(
+      `INSERT INTO vector_generations (
+         generation, snapshot_id, model_id, model_sha256, dimensions,
+         template_version, count, state, created_at
+       ) VALUES (?, ?, ?, ?, ?, ?, 0, 'ready', ?)`,
+    );
+    const insertPointer = database.prepare('INSERT INTO vector_pointers (worktree_id, generation) VALUES (?, ?)');
+    database.transaction(() => {
+      for (let index = 0; index < pointerCount; index += 1) {
+        const generation = `referenced-${index.toString().padStart(4, '0')}`;
+        insertGeneration.run(
+          generation,
+          `snapshot-${index}`,
+          template.model_id,
+          template.model_sha256,
+          template.dimensions,
+          template.template_version,
+          template.created_at,
+        );
+        insertPointer.run(index.toString(16).padStart(64, '0'), generation);
+      }
+      for (let index = 0; index < orphanCount; index += 1) {
+        insertGeneration.run(
+          `orphan-${index.toString().padStart(4, '0')}`,
+          `orphan-snapshot-${index}`,
+          template.model_id,
+          template.model_sha256,
+          template.dimensions,
+          template.template_version,
+          template.created_at,
+        );
+      }
+    })();
+  } finally {
+    database.close(false);
+  }
 }
 
 function symbol(id: string, name: string, documentation: string): CodeGraphSymbol {

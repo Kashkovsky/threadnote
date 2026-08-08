@@ -1,10 +1,28 @@
+import {posix as posixPath, win32 as windowsPath} from 'node:path';
 import {Effect, FileSystem, Path} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
-import {runCommandEffect} from '../effect/command.js';
+import {runBinaryCommandEffect, runCommandEffect} from '../effect/command.js';
 import {SystemInfo} from '../effect/system.js';
 import {CodeGraphRepositoryError, type RepositoryIdentity, type RepositoryIdentityExpectation} from './types.js';
 
 const IDENTITY_FORMAT_VERSION = 1;
+
+export const CODE_GRAPH_WORKTREE_REGISTRY_LIMITS = {
+  maxOutputBytes: 8 * 1_048_576,
+  maxPathBytes: 4_096,
+  maxRecords: 4_096,
+  timeoutMs: 10_000,
+} as const;
+
+export interface RepositoryWorktreeRegistryIdentity {
+  readonly locked: boolean;
+  readonly prunable: boolean;
+  readonly worktreeId: string;
+}
+
+interface RegisteredRepositoryWorktree extends RepositoryWorktreeRegistryIdentity {
+  readonly root: string;
+}
 
 export const resolveRepositoryIdentity = Effect.fn('codeGraph.resolveRepositoryIdentity')(function* (cwd: string) {
   const fs = yield* FileSystem.FileSystem;
@@ -53,26 +71,82 @@ export const resolveRepositoryIdentity = Effect.fn('codeGraph.resolveRepositoryI
   } satisfies RepositoryIdentity;
 });
 
-export const repositoryWorktreeIds = Effect.fn('codeGraph.repositoryWorktreeIds')(function* (
+/**
+ * Return a bounded, pathless diagnostic observation from Git's porcelain output.
+ *
+ * This is not deletion authority: Git may probe registered worktree paths while
+ * producing the listing, so timeout/failure/absence must remain non-destructive.
+ * F1/E4 reconciliation requires a separate bounded common-gitdir observation.
+ */
+export const repositoryWorktreeRegistry = Effect.fn('codeGraph.repositoryWorktreeRegistry')(function* (
   identity: RepositoryIdentity,
 ) {
-  const fs = yield* FileSystem.FileSystem;
-  const result = yield* runCommandEffect('git', ['-C', identity.repoRoot, 'worktree', 'list', '--porcelain', '-z'], {
-    maxOutputBytes: 0,
-    timeoutMs: 0,
+  const system = yield* SystemInfo;
+  const result = yield* runBinaryCommandEffect(
+    'git',
+    ['-C', identity.repoRoot, 'worktree', 'list', '--porcelain', '-z'],
+    {
+      maxOutputBytes: CODE_GRAPH_WORKTREE_REGISTRY_LIMITS.maxOutputBytes,
+      timeoutMs: CODE_GRAPH_WORKTREE_REGISTRY_LIMITS.timeoutMs,
+    },
+  ).pipe(Effect.mapError(() => new CodeGraphRepositoryError('Unable to read the Git worktree registry.')));
+  const output = yield* Effect.try({
+    catch: () => new CodeGraphRepositoryError('Git worktree registry output is invalid.'),
+    try: () => new TextDecoder('utf-8', {fatal: true}).decode(result.stdout),
   });
-  const roots = result.stdout.split('\0\0').flatMap(record => {
-    const field = record.split('\0').find(value => value.startsWith('worktree '));
-    return field ? [field.slice('worktree '.length)] : [];
+  return yield* Effect.try({
+    catch: () => new CodeGraphRepositoryError('Git worktree registry output is invalid.'),
+    try: () => parseRepositoryWorktreeRegistryOutput(output, system.platform),
   });
-  const ids = new Set<string>([identity.worktreeId]);
-  for (const root of roots) {
-    if (!(yield* fs.exists(root))) continue;
-    const canonical = yield* fs.realPath(root).pipe(Effect.option);
-    if (canonical._tag === 'Some') ids.add(worktreeIdForRoot(canonical.value));
-  }
-  return ids;
 });
+
+export function parseRepositoryWorktreeRegistryOutput(
+  output: string,
+  platform: NodeJS.Platform,
+): readonly RepositoryWorktreeRegistryIdentity[] {
+  return parseRegisteredRepositoryWorktrees(output, platform)
+    .map(({locked, prunable, worktreeId}) => ({locked, prunable, worktreeId}))
+    .sort((left, right) => compareCodeUnits(left.worktreeId, right.worktreeId));
+}
+
+function parseRegisteredRepositoryWorktrees(
+  output: string,
+  platform: NodeJS.Platform,
+): readonly RegisteredRepositoryWorktree[] {
+  const invalid = () => new CodeGraphRepositoryError('Git worktree registry output is invalid.');
+  if (
+    byteLength(output) > CODE_GRAPH_WORKTREE_REGISTRY_LIMITS.maxOutputBytes ||
+    output.length === 0 ||
+    !output.endsWith('\0\0')
+  ) {
+    throw invalid();
+  }
+  const body = output.slice(0, -2);
+  if (body.length === 0) throw invalid();
+  const records = body.split('\0\0');
+  if (records.length > CODE_GRAPH_WORKTREE_REGISTRY_LIMITS.maxRecords) throw invalid();
+  const path = platform === 'win32' ? windowsPath : posixPath;
+  const seen = new Set<string>();
+  return records.map(record => {
+    const fields = record.split('\0');
+    if (fields.some(field => field.length === 0)) throw invalid();
+    const worktreeFields = fields.filter(field => field.startsWith('worktree '));
+    if (worktreeFields.length !== 1) throw invalid();
+    const rawRoot = worktreeFields[0]!.slice('worktree '.length);
+    if (!rawRoot || byteLength(rawRoot) > CODE_GRAPH_WORKTREE_REGISTRY_LIMITS.maxPathBytes) throw invalid();
+    const root = path.normalize(rawRoot);
+    if (!path.isAbsolute(rawRoot) || !path.isAbsolute(root)) throw invalid();
+    const key = platform === 'win32' ? root.toLowerCase() : root;
+    if (seen.has(key)) throw invalid();
+    seen.add(key);
+    return {
+      locked: fields.some(field => field === 'locked' || field.startsWith('locked ')),
+      prunable: fields.some(field => field === 'prunable' || field.startsWith('prunable ')),
+      root,
+      worktreeId: worktreeIdForRoot(root),
+    };
+  });
+}
 
 export const repositoryChangesSince = Effect.fn('codeGraph.repositoryChangesSince')(function* (
   cwd: string,
@@ -178,4 +252,12 @@ function repositoryDisplayName(remoteIdentity: string | undefined, repoRoot: str
 
 function zeroObjectId(format: 'sha1' | 'sha256'): string {
   return '0'.repeat(format === 'sha256' ? 64 : 40);
+}
+
+function byteLength(value: string): number {
+  return new TextEncoder().encode(value).byteLength;
+}
+
+function compareCodeUnits(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }

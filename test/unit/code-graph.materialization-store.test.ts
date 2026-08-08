@@ -1691,12 +1691,7 @@ describe('code graph full-build materialization store', () => {
             yield* store.stageActivationFacts(fixture.databasePath, [original], [], [], undefined, 0);
             yield* store.resolveStagedReferences(fixture.databasePath);
             yield* store.activateStaged(fixture.databasePath, fixture.identity, snapshot);
-            yield* store.promote(
-              fixture.databasePath,
-              fixture.identity,
-              snapshot.id,
-              new Set([fixture.identity.worktreeId]),
-            );
+            yield* store.promote(fixture.databasePath, fixture.identity, snapshot.id);
           }),
         );
       }),
@@ -1722,12 +1717,7 @@ describe('code graph full-build materialization store', () => {
             yield* store.stageActivationFacts(fixture.databasePath, [replacement], [], [], undefined, 0);
             yield* store.resolveStagedReferences(fixture.databasePath);
             yield* store.activateStaged(fixture.databasePath, fixture.identity, snapshot);
-            yield* store.promote(
-              fixture.databasePath,
-              fixture.identity,
-              snapshot.id,
-              new Set([fixture.identity.worktreeId]),
-            );
+            yield* store.promote(fixture.databasePath, fixture.identity, snapshot.id);
             return {
               active: yield* store.readySnapshot(fixture.databasePath, fixture.identity.worktreeId),
               current: yield* store.currentLexicalReadySnapshotById(fixture.databasePath, snapshot.id),
@@ -2977,12 +2967,7 @@ describe('code graph full-build materialization store', () => {
             yield* store.prepareActivation(fixture.databasePath, [fixture.file]);
             yield* store.stageActivationFacts(fixture.databasePath, [original], []);
             yield* store.activateStaged(fixture.databasePath, fixture.identity, originalSnapshot);
-            yield* store.promote(
-              fixture.databasePath,
-              fixture.identity,
-              originalSnapshot.id,
-              new Set([fixture.identity.worktreeId]),
-            );
+            yield* store.promote(fixture.databasePath, fixture.identity, originalSnapshot.id);
             yield* store.markBuilding(fixture.databasePath, fixture.identity, {
               ...interruptedSnapshot,
               state: 'building',
@@ -3232,21 +3217,11 @@ describe('code graph full-build materialization store', () => {
             yield* store.prepareActivation(fixture.databasePath, [fixture.file]);
             yield* store.stageActivationFacts(fixture.databasePath, [firstSymbol], []);
             yield* store.activateStaged(fixture.databasePath, fixture.identity, firstSnapshot);
-            yield* store.promote(
-              fixture.databasePath,
-              fixture.identity,
-              firstSnapshot.id,
-              new Set([fixture.identity.worktreeId]),
-            );
+            yield* store.promote(fixture.databasePath, fixture.identity, firstSnapshot.id);
             yield* store.prepareActivation(fixture.databasePath, [fixture.file]);
             yield* store.stageActivationFacts(fixture.databasePath, [currentSymbol], []);
             yield* store.activateStaged(fixture.databasePath, fixture.identity, currentSnapshot);
-            yield* store.promote(
-              fixture.databasePath,
-              fixture.identity,
-              currentSnapshot.id,
-              new Set([fixture.identity.worktreeId]),
-            );
+            yield* store.promote(fixture.databasePath, fixture.identity, currentSnapshot.id);
           }),
         );
       }),
@@ -3356,12 +3331,7 @@ describe('code graph full-build materialization store', () => {
               yield* store.prepareActivation(fixture.databasePath, [fixture.file]);
               yield* store.stageActivationFacts(fixture.databasePath, replacementSymbols, []);
               yield* store.activateStaged(fixture.databasePath, fixture.identity, interruptedSnapshot);
-              yield* store.promote(
-                fixture.databasePath,
-                fixture.identity,
-                interruptedSnapshot.id,
-                new Set([fixture.identity.worktreeId]),
-              );
+              yield* store.promote(fixture.databasePath, fixture.identity, interruptedSnapshot.id);
             }),
           );
           const activeAfterRetry = yield* store.readySnapshot(fixture.databasePath, fixture.identity.worktreeId);

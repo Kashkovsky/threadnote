@@ -535,7 +535,7 @@ describe('code graph external benchmark harness', () => {
             replacementSnapshotId,
             privatePath,
           );
-          yield* store.promote(databasePath, identity, firstSnapshotId, new Set([identity.worktreeId]));
+          yield* store.promote(databasePath, identity, firstSnapshotId);
           const before = yield* sqliteStructuralGraphEvidence(databasePath, firstSnapshotId);
           const replacementWriter = new Database(databasePath, {strict: true});
           try {
@@ -556,7 +556,7 @@ describe('code graph external benchmark harness', () => {
           let comparisonLease: string | undefined;
           const pinned = yield* sqliteStructuralGraphEvidence(databasePath, firstSnapshotId, {
             onReadTransactionStarted: Effect.gen(function* () {
-              yield* store.promote(databasePath, identity, replacementSnapshotId, new Set([identity.worktreeId]));
+              yield* store.promote(databasePath, identity, replacementSnapshotId);
               yield* store.pruneRetiredSnapshots(databasePath);
               // Lease release now retires a superseded view automatically. Hold
               // a second reader lease so this test can intentionally compare
@@ -582,7 +582,6 @@ describe('code graph external benchmark harness', () => {
           yield* store.releaseSnapshotLease(databasePath, comparisonLease);
           const mismatch = codeGraphStructuralParityEvidence(before, after);
           const failureMessage = codeGraphStructuralParityFailureMessage(mismatch);
-          yield* store.reconcileWorktrees(databasePath, new Set([identity.worktreeId]));
           yield* store.pruneRetiredSnapshots(databasePath);
           const finalDatabase = new Database(databasePath, {readonly: true, strict: true});
           try {

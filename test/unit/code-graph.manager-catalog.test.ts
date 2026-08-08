@@ -204,14 +204,9 @@ describe('Manager logical repository and workspace catalogs', () => {
       Effect.gen(function* () {
         const store = yield* CodeGraphStore;
         yield* store.activate(databasePath, firstIdentity, first, [], [], []);
-        yield* store.promote(databasePath, firstIdentity, first.id, new Set([firstIdentity.worktreeId]));
+        yield* store.promote(databasePath, firstIdentity, first.id);
         yield* store.activate(databasePath, secondIdentity, second, [], [], []);
-        yield* store.promote(
-          databasePath,
-          secondIdentity,
-          second.id,
-          new Set([firstIdentity.worktreeId, secondIdentity.worktreeId]),
-        );
+        yield* store.promote(databasePath, secondIdentity, second.id);
         return yield* store.loadVisualizationCatalogs(databasePath);
       }).pipe(Effect.provide(storeLayer)),
     );
@@ -243,7 +238,7 @@ describe('Manager logical repository and workspace catalogs', () => {
             yield* store.stageWorkspaceCatalog(databasePath, workspace);
             yield* store.stageActivationFacts(databasePath, symbols, edges);
             yield* store.activateStaged(databasePath, identity, snapshot);
-            yield* store.promote(databasePath, identity, snapshot.id, new Set([identity.worktreeId]));
+            yield* store.promote(databasePath, identity, snapshot.id);
           }),
         );
         const highFanStartedAt = performance.now();
@@ -496,7 +491,7 @@ describe('Manager logical repository and workspace catalogs', () => {
           [],
           [],
         );
-        yield* store.promote(databasePath, identity, snapshot.id, new Set([identity.worktreeId]));
+        yield* store.promote(databasePath, identity, snapshot.id);
       }).pipe(Effect.provide(storeLayer)),
     );
     const database = new Database(databasePath);

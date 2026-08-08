@@ -440,7 +440,7 @@ describe('native code graph lifecycle', () => {
     expect(observations).toBe(4);
   });
 
-  it('keeps dirty overlays isolated between linked Git worktrees', async () => {
+  it('keeps dirty overlays isolated and preserves sibling views until authoritative reconciliation', async () => {
     const root = createFixtureRepository();
     git(root, ['branch', 'graph-a']);
     git(root, ['branch', 'graph-b']);
@@ -483,24 +483,20 @@ describe('native code graph lifecycle', () => {
     expect(resultA.snapshot.id).toMatch(/-direct$/);
     expect(resultB.snapshot.id).toMatch(/-direct$/);
 
+    const offlineWorktreeB = `${worktreeB}-offline`;
+    const identityA = await runEffect(resolveRepositoryIdentity(worktreeA));
+    const databasePath = codeGraphDatabasePath(home, {identity: identityA});
+    renameSync(worktreeB, offlineWorktreeB);
+    try {
+      expect(await graphHealthAfterIndex(worktreeA, home)).toMatchObject({activeSnapshots: 2, readySnapshots: 2});
+      expect(activeSnapshotId(databasePath, resultB.snapshot.worktreeId)).toBe(resultB.snapshot.id);
+    } finally {
+      renameSync(offlineWorktreeB, worktreeB);
+    }
+
     git(root, ['worktree', 'remove', '--force', worktreeB]);
-    const health = await runEffect(
-      Effect.gen(function* () {
-        const indexer = yield* CodeGraphIndexer;
-        const store = yield* CodeGraphStore;
-        const indexed = yield* indexer.index({cwd: worktreeA, threadnoteHome: home});
-        const database = join(
-          home,
-          'indexes',
-          'code-graph',
-          'repositories',
-          indexed.identity.checkoutId,
-          'graph-v3.sqlite',
-        );
-        return yield* store.diagnose(database);
-      }),
-    );
-    expect(health).toMatchObject({activeSnapshots: 1, readySnapshots: 1});
+    expect(await graphHealthAfterIndex(worktreeA, home)).toMatchObject({activeSnapshots: 2, readySnapshots: 2});
+    expect(activeSnapshotId(databasePath, resultB.snapshot.worktreeId)).toBe(resultB.snapshot.id);
   });
 
   it('shares immutable clean snapshots without coupling worktree activation', async () => {
@@ -3959,6 +3955,17 @@ function snapshotLeaseCount(databasePath: string): number {
   }
 }
 
+function activeSnapshotId(databasePath: string, worktreeId: string): string | undefined {
+  const database = new Database(databasePath, {readonly: true});
+  try {
+    return database
+      .query<{readonly snapshot_id: string}, [string]>('SELECT snapshot_id FROM active_snapshots WHERE worktree_id = ?')
+      .get(worktreeId)?.snapshot_id;
+  } finally {
+    database.close();
+  }
+}
+
 function normalizeStoredGraph(graph: StoredCodeGraph): Pick<StoredCodeGraph, 'edges' | 'symbols'> {
   return {
     edges: [...graph.edges].sort((left, right) => left.id.localeCompare(right.id)),
@@ -4062,6 +4069,17 @@ function codeGraphProcessSummary(output: string): {
     readonly materialization?: {readonly mode: string; readonly stagedFiles: number};
     readonly snapshot: {readonly id: string};
   };
+}
+
+async function graphHealthAfterIndex(cwd: string, threadnoteHome: string) {
+  return runEffect(
+    Effect.gen(function* () {
+      const indexer = yield* CodeGraphIndexer;
+      const store = yield* CodeGraphStore;
+      const indexed = yield* indexer.index({cwd, threadnoteHome});
+      return yield* store.diagnose(codeGraphDatabasePath(threadnoteHome, indexed));
+    }),
+  );
 }
 
 function git(cwd: string, args: readonly string[]): void {

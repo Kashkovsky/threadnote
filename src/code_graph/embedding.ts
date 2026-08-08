@@ -83,7 +83,6 @@ export interface CodeGraphEmbeddingIndexShape {
     snapshot: CodeGraphSnapshot,
     symbols: CodeGraphEmbeddingSymbolSource,
     options?: {
-      readonly activeWorktreeIds?: ReadonlySet<string>;
       readonly force?: boolean;
       readonly onProgress?: (progress: CodeGraphProgress) => Effect.Effect<void, unknown>;
     },
@@ -118,7 +117,6 @@ export class CodeGraphEmbeddingIndex extends Context.Service<CodeGraphEmbeddingI
           ),
         ensure: (threadnoteHome, layout, snapshot, symbols, options) =>
           ensureGraphVectors({
-            activeWorktreeIds: options?.activeWorktreeIds,
             catalog,
             force: options?.force === true,
             fs,
@@ -199,7 +197,6 @@ const checkGraphVectors = Effect.fn('codeGraph.checkVectors')(function* (input: 
 });
 
 const ensureGraphVectors = Effect.fn('codeGraph.ensureVectors')(function* (input: {
-  readonly activeWorktreeIds?: ReadonlySet<string>;
   readonly catalog: LocalModelCatalogShape;
   readonly force: boolean;
   readonly fs: FileSystem.FileSystem;
@@ -240,10 +237,6 @@ const ensureGraphVectors = Effect.fn('codeGraph.ensureVectors')(function* (input
         // owner exited. Deleting it while holding this lock cannot invalidate a
         // live linked-worktree writer.
         yield* sql`DELETE FROM vector_generations WHERE state = 'building'`;
-        if (input.activeWorktreeIds) {
-          yield* reconcileVectorPointers(sql, new Set([...input.activeWorktreeIds, worktreeId]));
-        }
-
         const active = yield* selectActiveGeneration(sql, worktreeId);
         if (
           !input.force &&
@@ -728,6 +721,7 @@ const initializeVectorDatabase = Effect.fn('codeGraph.initializeVectorDatabase')
       generation TEXT NOT NULL REFERENCES vector_generations(generation) ON DELETE CASCADE
     )
   `);
+  yield* sql.unsafe('CREATE INDEX IF NOT EXISTS vector_pointer_generation_lookup ON vector_pointers (generation)');
   yield* sql.unsafe(`
     CREATE TABLE IF NOT EXISTS vectors (
       generation TEXT NOT NULL REFERENCES vector_generations(generation) ON DELETE CASCADE,
@@ -799,29 +793,6 @@ function activateVectorGeneration(sql: SqlClient.SqlClient, worktreeId: string, 
     ON CONFLICT(worktree_id) DO UPDATE SET generation = excluded.generation
   `;
 }
-
-const reconcileVectorPointers = Effect.fn('codeGraph.reconcileVectorPointers')(function* (
-  sql: SqlClient.SqlClient,
-  activeWorktreeIds: ReadonlySet<string>,
-) {
-  yield* sql.unsafe('CREATE TEMP TABLE IF NOT EXISTS retained_vector_worktrees (id TEXT PRIMARY KEY)');
-  yield* sql.unsafe('DELETE FROM retained_vector_worktrees');
-  const values = [...activeWorktreeIds].sort();
-  for (let start = 0; start < values.length; start += 400) {
-    const batch = values.slice(start, start + 400);
-    yield* sql.unsafe(
-      `INSERT OR IGNORE INTO retained_vector_worktrees (id)
-       VALUES ${batch.map(() => '(?)').join(', ')}`,
-      batch,
-    );
-  }
-  yield* sql.unsafe(
-    `DELETE FROM vector_pointers
-     WHERE NOT EXISTS (
-       SELECT 1 FROM retained_vector_worktrees WHERE id = vector_pointers.worktree_id
-     )`,
-  );
-});
 
 function pruneVectorGenerations(sql: SqlClient.SqlClient) {
   return sql.unsafe(

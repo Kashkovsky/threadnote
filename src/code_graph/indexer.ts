@@ -31,7 +31,7 @@ import {CodeGraphMaintenanceCoordinator} from './maintenance_coordinator.js';
 import {codeGraphMaintenanceIntentActive, withCodeGraphMaintenanceRegistration} from './maintenance_gate.js';
 import {resolveAndRecordCodeGraphLocalAssociation} from './local_provenance.js';
 import {compareCodeUnits} from './ordering.js';
-import {repositoryIdentityMatchesExpectation, repositoryWorktreeIds, resolveRepositoryIdentity} from './repository.js';
+import {repositoryIdentityMatchesExpectation, resolveRepositoryIdentity} from './repository.js';
 import {
   CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION,
   CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION,
@@ -264,7 +264,6 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                         },
                       );
                       yield* store.initialize(layout.databasePath);
-                      const activeWorktreeIds = yield* repositoryWorktreeIds(identity);
                       if (requestKey && requestedOverlay) {
                         const currentOverlay = yield* worktreeOverlayState(identity);
                         if (!sameOverlayState(currentOverlay, requestedOverlay)) {
@@ -286,9 +285,8 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                             new Set(),
                             retiredSnapshotCleanupReporter(options.onProgress),
                           );
-                          yield* store.promote(layout.databasePath, identity, completedByOwner.id, activeWorktreeIds);
+                          yield* store.promote(layout.databasePath, identity, completedByOwner.id);
                           return yield* reuseReadySnapshot({
-                            activeWorktreeIds,
                             embedding,
                             ensureVectors,
                             identity,
@@ -387,10 +385,9 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                       );
                       if (reusableReady) {
                         if (existing?.id !== reusableReady.id) {
-                          yield* store.promote(layout.databasePath, identity, reusableReady.id, activeWorktreeIds);
+                          yield* store.promote(layout.databasePath, identity, reusableReady.id);
                         }
                         return yield* reuseReadySnapshot({
-                          activeWorktreeIds,
                           embedding,
                           ensureVectors,
                           identity,
@@ -407,7 +404,6 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                       }
                       if (!inventory.dirty) {
                         return yield* buildOwnedCleanSnapshot({
-                          activeWorktreeIds,
                           buildOwner: reporter.ownerIdentity,
                           embedding,
                           ensureVectors,
@@ -523,7 +519,6 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                           );
                           if (preassessment.mode === 'compatible') {
                             committedBase = yield* ensureCommittedBase({
-                              activeWorktreeIds,
                               buildOwner: reporter.ownerIdentity,
                               embedding,
                               force: false,
@@ -638,7 +633,6 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                         }
                       }
                       return yield* buildAndActivate({
-                        activeWorktreeIds,
                         activatePointer: true,
                         building,
                         existing,
@@ -792,7 +786,6 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                       );
                       yield* store.initialize(layout.databasePath);
                       const identity = {...currentIdentity, headCommit: options.commit};
-                      const activeWorktreeIds = yield* repositoryWorktreeIds(currentIdentity);
                       const cachedCommittedFileKeys = yield* cachedFileKeys(store, layout.databasePath, languagePacks);
                       const inventory = yield* inventoryRepository(identity, {
                         ...options,
@@ -810,7 +803,6 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                         }),
                       }).pipe(Effect.ensuring(parserPool.trimIdle()));
                       const committedBase = yield* ensureCommittedBase({
-                        activeWorktreeIds,
                         buildOwner: reporter.ownerIdentity,
                         embedding,
                         force: false,
@@ -992,7 +984,6 @@ const prepareReadyAnalysisSummary = Effect.fn('codeGraph.prepareReadyAnalysisSum
 });
 
 const reuseReadySnapshot = Effect.fn('codeGraph.reuseReadySnapshot')(function* (input: {
-  readonly activeWorktreeIds: ReadonlySet<string>;
   readonly embedding: CodeGraphEmbeddingIndexShape;
   readonly ensureVectors: boolean;
   readonly identity: RepositoryIdentity;
@@ -1020,7 +1011,6 @@ const reuseReadySnapshot = Effect.fn('codeGraph.reuseReadySnapshot')(function* (
       }),
     ),
   );
-  yield* input.store.reconcileWorktrees(input.layout.databasePath, input.activeWorktreeIds);
   const diagnostics: string[] = analysisSummaryBackfilled
     ? ['Built the persisted whole-graph analysis summary for this reused snapshot.']
     : analysisSummaryFailure
@@ -1058,7 +1048,6 @@ const reuseReadySnapshot = Effect.fn('codeGraph.reuseReadySnapshot')(function* (
       : embeddingSymbolSource(input.store, input.layout.databasePath, input.snapshot.id);
   const repaired = yield* input.embedding
     .ensure(input.threadnoteHome, input.layout, input.snapshot, symbols, {
-      activeWorktreeIds: input.activeWorktreeIds,
       onProgress: input.onProgress,
     })
     .pipe(
@@ -1123,7 +1112,6 @@ function sameOverlayState(
 }
 
 const buildOwnedCleanSnapshot = Effect.fn('codeGraph.buildOwnedCleanSnapshot')(function* (input: {
-  readonly activeWorktreeIds: ReadonlySet<string>;
   readonly buildOwner: CodeGraphBuildOwnerIdentity;
   readonly embedding: CodeGraphEmbeddingIndexShape;
   readonly ensureVectors: boolean;
@@ -1165,10 +1153,9 @@ const buildOwnedCleanSnapshot = Effect.fn('codeGraph.buildOwnedCleanSnapshot')(f
         );
         if (ready) {
           if (input.existing?.id !== ready.id) {
-            yield* input.store.promote(input.layout.databasePath, input.identity, ready.id, input.activeWorktreeIds);
+            yield* input.store.promote(input.layout.databasePath, input.identity, ready.id);
           }
           return yield* reuseReadySnapshot({
-            activeWorktreeIds: input.activeWorktreeIds,
             embedding: input.embedding,
             ensureVectors: input.ensureVectors,
             identity: input.identity,
@@ -1195,15 +1182,9 @@ const buildOwnedCleanSnapshot = Effect.fn('codeGraph.buildOwnedCleanSnapshot')(f
         });
         if (commitReady) {
           if (input.existing?.id !== commitReady.id) {
-            yield* input.store.promote(
-              input.layout.databasePath,
-              input.identity,
-              commitReady.id,
-              input.activeWorktreeIds,
-            );
+            yield* input.store.promote(input.layout.databasePath, input.identity, commitReady.id);
           }
           return yield* reuseReadySnapshot({
-            activeWorktreeIds: input.activeWorktreeIds,
             embedding: input.embedding,
             ensureVectors: input.ensureVectors,
             identity: input.identity,
@@ -1246,7 +1227,6 @@ const buildOwnedCleanSnapshot = Effect.fn('codeGraph.buildOwnedCleanSnapshot')(f
         owner: input.buildOwner,
       });
       return yield* buildAndActivate({
-        activeWorktreeIds: input.activeWorktreeIds,
         activatePointer: true,
         building,
         embedding: input.embedding,
@@ -1277,7 +1257,6 @@ const buildOwnedCleanSnapshot = Effect.fn('codeGraph.buildOwnedCleanSnapshot')(f
 
 const attemptReusableCleanSnapshot = Effect.fn('codeGraph.attemptReusableCleanSnapshot')(function* (
   input: {
-    readonly activeWorktreeIds: ReadonlySet<string>;
     readonly embedding: CodeGraphEmbeddingIndexShape;
     readonly ensureVectors: boolean;
     readonly existing: CodeGraphSnapshot | undefined;
@@ -1355,11 +1334,10 @@ const attemptReusableCleanSnapshot = Effect.fn('codeGraph.attemptReusableCleanSn
             candidate.snapshot.id,
           );
           yield* verifyIndexInput(input.identity, input.inventory, true);
-          yield* input.store.promote(input.layout.databasePath, input.identity, alias.id, input.activeWorktreeIds);
+          yield* input.store.promote(input.layout.databasePath, input.identity, alias.id);
           yield* verifyIndexInput(input.identity, input.inventory, true);
           return Option.some<CodeGraphIndexSummary>(
             yield* reuseReadySnapshot({
-              activeWorktreeIds: input.activeWorktreeIds,
               embedding: input.embedding,
               ensureVectors: input.ensureVectors,
               identity: input.identity,
@@ -1446,7 +1424,6 @@ const attemptReusableCleanSnapshot = Effect.fn('codeGraph.attemptReusableCleanSn
         if (!prepared) return Option.none<CodeGraphIndexSummary>();
         yield* input.store.markBuilding(input.layout.databasePath, input.identity, building);
         const summary = yield* buildAndActivate({
-          activeWorktreeIds: input.activeWorktreeIds,
           activatePointer: true,
           building,
           committedBase,
@@ -1559,7 +1536,6 @@ const attemptReusableDirtyBase = Effect.fn('codeGraph.attemptReusableDirtyBase')
 });
 
 const ensureCommittedBase = Effect.fn('codeGraph.ensureCommittedBase')(function* (input: {
-  readonly activeWorktreeIds: ReadonlySet<string>;
   readonly buildOwner: CodeGraphBuildOwnerIdentity;
   readonly embedding: CodeGraphEmbeddingIndexShape;
   readonly force: boolean;
@@ -1682,7 +1658,6 @@ const ensureCommittedBase = Effect.fn('codeGraph.ensureCommittedBase')(function*
 });
 
 const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (input: {
-  readonly activeWorktreeIds: ReadonlySet<string>;
   readonly activatePointer: boolean;
   readonly building: CodeGraphSnapshot;
   readonly committedBase?: CommittedBaseResult;
@@ -2305,7 +2280,7 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
       // the worktree to change. Revalidate on both sides of pointer promotion so a
       // mutation observed in this window triggers the bounded retry.
       yield* verifyIndexInput(input.identity, input.inventory, input.activatePointer);
-      yield* input.store.promote(input.layout.databasePath, input.identity, activated.id, input.activeWorktreeIds);
+      yield* input.store.promote(input.layout.databasePath, input.identity, activated.id);
       yield* verifyIndexInput(input.identity, input.inventory, input.activatePointer);
       if (Option.isSome(activationLease)) {
         yield* input.store.releaseSnapshotLease(input.layout.databasePath, activationLease.value);
@@ -2341,7 +2316,6 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
           activatedReady,
           embeddingSymbolSource(input.store, input.layout.databasePath, activatedReady.id),
           {
-            activeWorktreeIds: input.activeWorktreeIds,
             force: input.force,
             onProgress: input.onProgress,
           },

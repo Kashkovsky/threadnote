@@ -21,7 +21,7 @@ import {
   resolveAndRecordCodeGraphLocalAssociation,
 } from './local_provenance.js';
 import {compareCodeUnits} from './ordering.js';
-import {repositoryWorktreeIds, resolveRepositoryIdentity} from './repository.js';
+import {resolveRepositoryIdentity} from './repository.js';
 import {CodeGraphStore, type CodeGraphStoreShape} from './store.js';
 import {CodeGraphEmbeddingIndex, type CodeGraphEmbeddingIndexShape} from './embedding.js';
 import {
@@ -249,8 +249,7 @@ export class CodeGraphQueryService extends Context.Service<
           ) {
             return status;
           }
-          const activeWorktreeIds = yield* repositoryWorktreeIds(identity);
-          yield* store.promote(layout.databasePath, identity, candidate.id, activeWorktreeIds);
+          yield* store.promote(layout.databasePath, identity, candidate.id);
           return yield* statusForIdentity(threadnoteHome, identity, undefined, reusableStatus !== undefined);
         });
       return CodeGraphQueryService.of({

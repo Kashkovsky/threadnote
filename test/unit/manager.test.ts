@@ -225,7 +225,7 @@ async function seedManagerGraph(config: RuntimeConfig): Promise<string> {
           yield* store.activateStaged(layout.databasePath, identity, snapshot);
         }),
       );
-      yield* store.promote(layout.databasePath, identity, snapshot.id, new Set([identity.worktreeId]));
+      yield* store.promote(layout.databasePath, identity, snapshot.id);
     }),
   );
   return checkoutId;
@@ -266,7 +266,7 @@ async function promoteManagerGraphReplacement(config: RuntimeConfig): Promise<st
       const store = yield* CodeGraphStore;
       const layout = codeGraphLayout(path, config.agentContextHome, identity.checkoutId, identity.worktreeId);
       yield* store.activate(layout.databasePath, identity, snapshot, [file], [symbol], []);
-      yield* store.promote(layout.databasePath, identity, snapshot.id, new Set([identity.worktreeId]));
+      yield* store.promote(layout.databasePath, identity, snapshot.id);
     }),
   );
   return snapshot.id;

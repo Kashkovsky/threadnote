@@ -48,7 +48,7 @@ await runEffect(
         yield* store.prepareActivation(databasePath, [file]);
         yield* store.stageActivationFacts(databasePath, [original], []);
         yield* store.activateStaged(databasePath, identity, originalSnapshot);
-        yield* store.promote(databasePath, identity, originalSnapshot.id, new Set([identity.worktreeId]));
+        yield* store.promote(databasePath, identity, originalSnapshot.id);
 
         yield* store.prepareActivation(databasePath, [file]);
         yield* store.stageActivationFacts(databasePath, replacements, []);

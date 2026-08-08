@@ -70,12 +70,7 @@ describe('code graph persistent schema migration', () => {
             yield* store.prepareActivation(fixture.databasePath, [fixture.file]);
             yield* store.stageActivationFacts(fixture.databasePath, [preserved], []);
             yield* store.activateStaged(fixture.databasePath, fixture.identity, ready);
-            yield* store.promote(
-              fixture.databasePath,
-              fixture.identity,
-              ready.id,
-              new Set([fixture.identity.worktreeId]),
-            );
+            yield* store.promote(fixture.databasePath, fixture.identity, ready.id);
           }),
         );
       }),
@@ -155,12 +150,7 @@ describe('code graph persistent schema migration', () => {
             yield* store.prepareActivation(fixture.databasePath, [fixture.file]);
             yield* store.stageActivationFacts(fixture.databasePath, [preserved], []);
             yield* store.activateStaged(fixture.databasePath, fixture.identity, ready);
-            yield* store.promote(
-              fixture.databasePath,
-              fixture.identity,
-              ready.id,
-              new Set([fixture.identity.worktreeId]),
-            );
+            yield* store.promote(fixture.databasePath, fixture.identity, ready.id);
           }),
         );
       }),
@@ -218,12 +208,7 @@ describe('code graph persistent schema migration', () => {
             yield* store.prepareActivation(fixture.databasePath, [fixture.file]);
             yield* store.stageActivationFacts(fixture.databasePath, [preserved], []);
             yield* store.activateStaged(fixture.databasePath, fixture.identity, ready);
-            yield* store.promote(
-              fixture.databasePath,
-              fixture.identity,
-              ready.id,
-              new Set([fixture.identity.worktreeId]),
-            );
+            yield* store.promote(fixture.databasePath, fixture.identity, ready.id);
           }),
         );
       }),
@@ -270,12 +255,7 @@ describe('code graph persistent schema migration', () => {
             yield* store.prepareActivation(fixture.databasePath, [fixture.file]);
             yield* store.stageActivationFacts(fixture.databasePath, [graphSymbol('compact-unique-drift')], []);
             yield* store.activateStaged(fixture.databasePath, fixture.identity, ready);
-            yield* store.promote(
-              fixture.databasePath,
-              fixture.identity,
-              ready.id,
-              new Set([fixture.identity.worktreeId]),
-            );
+            yield* store.promote(fixture.databasePath, fixture.identity, ready.id);
           }),
         );
       }),
@@ -372,12 +352,7 @@ describe('code graph persistent schema migration', () => {
               [],
             );
             yield* store.activateStaged(fixture.databasePath, fixture.identity, ready);
-            yield* store.promote(
-              fixture.databasePath,
-              fixture.identity,
-              ready.id,
-              new Set([fixture.identity.worktreeId]),
-            );
+            yield* store.promote(fixture.databasePath, fixture.identity, ready.id);
           }),
         );
       }),
@@ -444,12 +419,7 @@ describe('code graph persistent schema migration', () => {
             yield* store.prepareActivation(fixture.databasePath, [fixture.file]);
             yield* store.stageActivationFacts(fixture.databasePath, [preserved], []);
             yield* store.activateStaged(fixture.databasePath, fixture.identity, ready);
-            yield* store.promote(
-              fixture.databasePath,
-              fixture.identity,
-              ready.id,
-              new Set([fixture.identity.worktreeId]),
-            );
+            yield* store.promote(fixture.databasePath, fixture.identity, ready.id);
           }),
         );
         yield* store.withSession(

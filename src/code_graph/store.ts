@@ -549,7 +549,6 @@ export interface CodeGraphStoreShape {
     databasePath: string,
     identity: RepositoryIdentity,
     snapshotId: string,
-    activeWorktreeIds: ReadonlySet<string>,
   ) => Effect.Effect<void, CodeGraphStoreError>;
   readonly initialize: (databasePath: string) => Effect.Effect<void, CodeGraphStoreError>;
   readonly prepareActivation: (
@@ -765,10 +764,6 @@ export interface CodeGraphStoreShape {
     snapshotId: string,
     seeds: readonly CodeGraphReusableReexportSeed[],
   ) => Effect.Effect<readonly CodeGraphReusableReexport[] | undefined, CodeGraphStoreError>;
-  readonly reconcileWorktrees: (
-    databasePath: string,
-    activeWorktreeIds: ReadonlySet<string>,
-  ) => Effect.Effect<void, CodeGraphStoreError>;
   readonly pruneCachedFacts: (
     databasePath: string,
     acceptedExtractorSets?: readonly string[],
@@ -1288,13 +1283,10 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
               }),
             );
           }).pipe(Effect.mapError(cause => storeError('cache materialized code graph file shards', cause))),
-        promote: (databasePath, identity, snapshotId, activeWorktreeIds) =>
+        promote: (databasePath, identity, snapshotId) =>
           prepare(databasePath).pipe(
             Effect.andThen(
-              withWriterGate(
-                databasePath,
-                useDatabase(databasePath, promoteSnapshot(identity, snapshotId, activeWorktreeIds)),
-              ),
+              withWriterGate(databasePath, useDatabase(databasePath, promoteSnapshot(identity, snapshotId))),
             ),
             Effect.tap(retired => (retired > 0 ? scheduleRetiredSnapshotCleanup(databasePath) : Effect.void)),
             Effect.asVoid,
@@ -1733,28 +1725,6 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
               ),
             ),
             Effect.mapError(cause => storeError('summarize code graph relationships', cause)),
-          ),
-        reconcileWorktrees: (databasePath, activeWorktreeIds) =>
-          fs.exists(databasePath).pipe(
-            Effect.flatMap(exists =>
-              exists
-                ? withWriterGate(
-                    databasePath,
-                    useDatabase(
-                      databasePath,
-                      Effect.gen(function* () {
-                        const sql = yield* SqlClient.SqlClient;
-                        yield* configureConnection(sql);
-                        return yield* sql.withTransaction(reconcileActiveWorktrees(sql, activeWorktreeIds));
-                      }),
-                    ),
-                  ).pipe(
-                    Effect.tap(retired => (retired > 0 ? scheduleRetiredSnapshotCleanup(databasePath) : Effect.void)),
-                    Effect.asVoid,
-                  )
-                : Effect.void,
-            ),
-            Effect.mapError(cause => storeError('reconcile code graph worktrees', cause)),
           ),
         pruneCachedFacts: (databasePath, acceptedExtractorSets) =>
           fs.exists(databasePath).pipe(
@@ -10425,12 +10395,10 @@ const identifyChangedSymbols = Effect.fn('codeGraph.identifyChangedSymbols')(fun
 const promoteSnapshot = Effect.fn('codeGraph.promoteSnapshot')(function* (
   identity: RepositoryIdentity,
   snapshotId: string,
-  activeWorktreeIds: ReadonlySet<string>,
 ) {
   const sql = yield* SqlClient.SqlClient;
   yield* configureConnection(sql);
   yield* initializeSchema(sql);
-  const retainedWorktreeIds = [...new Set([...activeWorktreeIds, identity.worktreeId])];
   return yield* sql.withTransaction(
     Effect.gen(function* () {
       const candidate = yield* sql<{
@@ -10458,10 +10426,6 @@ const promoteSnapshot = Effect.fn('codeGraph.promoteSnapshot')(function* (
         );
       }
       yield* sql`
-        DELETE FROM active_snapshots
-        WHERE NOT (${sql.in('worktree_id', retainedWorktreeIds)})
-      `;
-      yield* sql`
         INSERT INTO active_snapshots (worktree_id, snapshot_id, activated_at)
         VALUES (${identity.worktreeId}, ${snapshotId}, ${new Date().toISOString()})
         ON CONFLICT(worktree_id) DO UPDATE SET
@@ -10479,21 +10443,6 @@ const promoteSnapshot = Effect.fn('codeGraph.promoteSnapshot')(function* (
       return yield* markUnusedSnapshotsRetired(sql);
     }),
   );
-});
-
-const reconcileActiveWorktrees = Effect.fn('codeGraph.reconcileActiveWorktrees')(function* (
-  sql: SqlClient.SqlClient,
-  activeWorktreeIds: ReadonlySet<string>,
-) {
-  const retained = [...activeWorktreeIds];
-  if (retained.length === 0) yield* sql`DELETE FROM active_snapshots`;
-  else {
-    yield* sql`
-      DELETE FROM active_snapshots
-      WHERE NOT (${sql.in('worktree_id', retained)})
-    `;
-  }
-  return yield* markUnusedSnapshotsRetired(sql);
 });
 
 const markUnusedSnapshotsRetired = Effect.fn('codeGraph.markUnusedSnapshotsRetired')(function* (

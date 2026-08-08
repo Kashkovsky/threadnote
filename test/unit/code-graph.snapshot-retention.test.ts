@@ -13,6 +13,52 @@ afterEach(async () => {
 });
 
 describe('code graph ready snapshot retention', () => {
+  it('keeps every sibling view and its graph rows during concurrent promotion load', async () => {
+    const root = await mkdtemp('threadnote-ready-retention-many-worktrees-');
+    temporaryRoots.push(root);
+    const databasePath = join(root, 'graph-v3.sqlite');
+    const baseIdentity = repositoryIdentity(root);
+    const fixtures = Array.from({length: 64}, (_, index) => {
+      const identity = {...baseIdentity, worktreeId: index.toString(16).padStart(64, '0')};
+      return {identity, snapshot: snapshot(identity, `registered-${index}`)};
+    });
+
+    await runEffect(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        yield* store.initialize(databasePath);
+        yield* Effect.forEach(
+          fixtures,
+          fixture =>
+            registerReadySnapshots(store, databasePath, fixture.identity, [fixture.snapshot]).pipe(
+              Effect.andThen(store.promote(databasePath, fixture.identity, fixture.snapshot.id)),
+            ),
+          {concurrency: 1, discard: true},
+        );
+        yield* Effect.sync(() => seedSymbol(databasePath, fixtures[0]!.snapshot.id));
+        yield* Effect.forEach(
+          Array.from({length: 128}, (_, index) => fixtures[index % fixtures.length]!),
+          fixture => store.promote(databasePath, fixture.identity, fixture.snapshot.id),
+          {concurrency: 8, discard: true},
+        );
+      }),
+    );
+
+    const database = new Database(databasePath, {readonly: true, strict: true});
+    try {
+      expect(database.query('SELECT COUNT(*) AS count FROM active_snapshots').get()).toEqual({count: fixtures.length});
+      expect(database.query("SELECT COUNT(*) AS count FROM snapshots WHERE state = 'ready'").get()).toEqual({
+        count: fixtures.length,
+      });
+      expect(
+        database.query('SELECT COUNT(*) AS count FROM symbols WHERE snapshot_id = ?').get(fixtures[0]!.snapshot.id),
+      ).toEqual({count: 1});
+      expect(database.query('PRAGMA foreign_key_check').all()).toEqual([]);
+    } finally {
+      database.close(false);
+    }
+  });
+
   it('preserves a ready snapshot that was leased by ID without becoming an active worktree view', async () => {
     const root = await mkdtemp('threadnote-ready-retention-non-active-');
     temporaryRoots.push(root);
@@ -77,10 +123,10 @@ describe('code graph ready snapshot retention', () => {
         const store = yield* CodeGraphStore;
         yield* store.initialize(databasePath);
         yield* registerReadySnapshots(store, databasePath, identity, [base, superseded]);
-        yield* store.promote(databasePath, identity, superseded.id, new Set([identity.worktreeId]));
+        yield* store.promote(databasePath, identity, superseded.id);
         const lease = yield* store.acquireSnapshotLease(databasePath, superseded.id, 60_000);
         yield* registerReadySnapshots(store, databasePath, identity, [current]);
-        yield* store.promote(databasePath, identity, current.id, new Set([identity.worktreeId]));
+        yield* store.promote(databasePath, identity, current.id);
         yield* Effect.sync(() => seedSymbol(databasePath, superseded.id));
 
         expect(readSnapshotState(databasePath, superseded.id)).toBe('ready');
@@ -119,10 +165,10 @@ describe('code graph ready snapshot retention', () => {
         const store = yield* CodeGraphStore;
         yield* store.initialize(databasePath);
         yield* registerReadySnapshots(store, databasePath, identity, [base, superseded]);
-        yield* store.promote(databasePath, identity, superseded.id, new Set([identity.worktreeId]));
+        yield* store.promote(databasePath, identity, superseded.id);
         const lease = yield* store.acquireSnapshotLease(databasePath, superseded.id, 60_000);
         yield* registerReadySnapshots(store, databasePath, identity, [current]);
-        yield* store.promote(databasePath, identity, current.id, new Set([identity.worktreeId]));
+        yield* store.promote(databasePath, identity, current.id);
 
         yield* store.releaseSnapshotLease(databasePath, lease);
         yield* waitForSnapshotRemoval(databasePath, superseded.id);
@@ -148,11 +194,11 @@ describe('code graph ready snapshot retention', () => {
         const store = yield* CodeGraphStore;
         yield* store.initialize(databasePath);
         yield* registerReadySnapshots(store, databasePath, identity, [displaced]);
-        yield* store.promote(databasePath, identity, displaced.id, new Set([identity.worktreeId]));
+        yield* store.promote(databasePath, identity, displaced.id);
         const first = yield* store.acquireSnapshotLease(databasePath, displaced.id, 60_000);
         const second = yield* store.acquireSnapshotLease(databasePath, displaced.id, 60_000);
         yield* registerReadySnapshots(store, databasePath, identity, [current]);
-        yield* store.promote(databasePath, identity, current.id, new Set([identity.worktreeId]));
+        yield* store.promote(databasePath, identity, current.id);
 
         yield* store.releaseSnapshotLease(databasePath, first);
         expect(readSnapshotState(databasePath, displaced.id)).toBe('ready');
@@ -178,11 +224,11 @@ describe('code graph ready snapshot retention', () => {
         const store = yield* CodeGraphStore;
         yield* store.initialize(databasePath);
         yield* registerReadySnapshots(store, databasePath, identity, [displaced]);
-        yield* store.promote(databasePath, identity, displaced.id, new Set([identity.worktreeId]));
+        yield* store.promote(databasePath, identity, displaced.id);
         const expired = yield* store.acquireSnapshotLease(databasePath, displaced.id, 60_000);
         const renewed = yield* store.acquireSnapshotLease(databasePath, displaced.id, 60_000);
         yield* registerReadySnapshots(store, databasePath, identity, [current]);
-        yield* store.promote(databasePath, identity, current.id, new Set([identity.worktreeId]));
+        yield* store.promote(databasePath, identity, current.id);
         yield* Effect.sync(() => expireLease(databasePath, expired));
 
         yield* store.renewSnapshotLease(databasePath, renewed, 60_000);
@@ -209,9 +255,9 @@ describe('code graph ready snapshot retention', () => {
         yield* store.initialize(databasePath);
         yield* registerReadySnapshots(store, databasePath, identity, [acquired]);
         const lease = yield* store.acquireSnapshotLease(databasePath, acquired.id, 60_000);
-        yield* store.promote(databasePath, identity, acquired.id, new Set([identity.worktreeId]));
+        yield* store.promote(databasePath, identity, acquired.id);
         yield* registerReadySnapshots(store, databasePath, identity, [current]);
-        yield* store.promote(databasePath, identity, current.id, new Set([identity.worktreeId]));
+        yield* store.promote(databasePath, identity, current.id);
 
         yield* store.releaseSnapshotLease(databasePath, lease);
         yield* waitForSnapshotRemoval(databasePath, acquired.id);
@@ -235,10 +281,10 @@ describe('code graph ready snapshot retention', () => {
         const store = yield* CodeGraphStore;
         yield* store.initialize(databasePath);
         yield* registerReadySnapshots(store, databasePath, identity, [superseded]);
-        yield* store.promote(databasePath, identity, superseded.id, new Set([identity.worktreeId]));
+        yield* store.promote(databasePath, identity, superseded.id);
         const expiredLease = yield* store.acquireSnapshotLease(databasePath, superseded.id, 60_000);
         yield* registerReadySnapshots(store, databasePath, identity, [current]);
-        yield* store.promote(databasePath, identity, current.id, new Set([identity.worktreeId]));
+        yield* store.promote(databasePath, identity, current.id);
         yield* Effect.sync(() => expireLease(databasePath, expiredLease));
 
         const currentLease = yield* store.acquireSnapshotLease(databasePath, current.id, 60_000);
@@ -270,10 +316,10 @@ describe('code graph ready snapshot retention', () => {
         const store = yield* CodeGraphStore;
         yield* store.initialize(databasePath);
         yield* registerReadySnapshots(store, databasePath, identity, [superseded]);
-        yield* store.promote(databasePath, identity, superseded.id, new Set([identity.worktreeId]));
+        yield* store.promote(databasePath, identity, superseded.id);
         const expiredLease = yield* store.acquireSnapshotLease(databasePath, superseded.id, 60_000);
         yield* registerReadySnapshots(store, databasePath, identity, [current]);
-        yield* store.promote(databasePath, identity, current.id, new Set([identity.worktreeId]));
+        yield* store.promote(databasePath, identity, current.id);
         yield* Effect.sync(() => {
           expireLease(databasePath, expiredLease);
           dropLeaseRetirementColumn(databasePath);
