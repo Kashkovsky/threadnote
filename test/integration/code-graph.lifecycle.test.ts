@@ -833,52 +833,57 @@ describe('native code graph lifecycle', () => {
     }
   });
 
-  it('materializes only body-changed files for a compatible clean commit', async () => {
-    const root = createManySourceRepository(24);
-    const home = join(root, '.threadnote-test-home');
-    const first = await runEffect(
-      Effect.gen(function* () {
-        const indexer = yield* CodeGraphIndexer;
-        return yield* indexer.index({cwd: root, threadnoteHome: home});
-      }),
-    );
-    const changedPath = join(root, 'src/file-000.ts');
-    writeFileSync(changedPath, readFileSync(changedPath, 'utf8').replace('return 0;', 'return 1000;'));
-    git(root, ['add', 'src/file-000.ts']);
-    git(root, [
-      '-c',
-      'user.name=Threadnote Test',
-      '-c',
-      'user.email=test@threadnote.local',
-      'commit',
-      '-qm',
-      'body-only change',
-    ]);
+  effectIt.effect('materializes only body-changed files for a compatible clean commit', () =>
+    Effect.gen(function* () {
+      const root = createManySourceRepository(24);
+      const home = join(root, '.threadnote-test-home');
+      const indexer = yield* CodeGraphIndexer;
+      const store = yield* CodeGraphStore;
+      const first = yield* indexer.index({cwd: root, threadnoteHome: home});
+      const changedPath = join(root, 'src/file-000.ts');
+      writeFileSync(changedPath, readFileSync(changedPath, 'utf8').replace('return 0;', 'return 1000;'));
+      git(root, ['add', 'src/file-000.ts']);
+      git(root, [
+        '-c',
+        'user.name=Threadnote Test',
+        '-c',
+        'user.email=test@threadnote.local',
+        'commit',
+        '-qm',
+        'body-only change',
+      ]);
 
-    const result = await runEffect(
-      Effect.gen(function* () {
-        const indexer = yield* CodeGraphIndexer;
-        const store = yield* CodeGraphStore;
-        const incremental = yield* indexer.index({cwd: root, threadnoteHome: home});
-        const incrementalGraph = yield* store.loadGraph(
-          codeGraphDatabasePath(home, incremental),
-          incremental.snapshot.id,
-        );
-        const full = yield* indexer.index({cwd: root, force: true, threadnoteHome: home});
-        const fullGraph = yield* store.loadGraph(codeGraphDatabasePath(home, full), full.snapshot.id);
-        return {fullGraph, incremental, incrementalGraph};
-      }),
-    );
+      const probes = new Map<string, number>();
+      const incremental = yield* indexer.index({
+        cwd: root,
+        diskCapacityAvailableBytes: (_target, boundary) =>
+          Effect.sync(() => {
+            probes.set(boundary.operation, (probes.get(boundary.operation) ?? 0) + 1);
+            return Number.MAX_SAFE_INTEGER;
+          }),
+        threadnoteHome: home,
+      });
+      const incrementalGraph = yield* store.loadGraph(
+        codeGraphDatabasePath(home, incremental),
+        incremental.snapshot.id,
+      );
+      const full = yield* indexer.index({cwd: root, force: true, threadnoteHome: home});
+      const fullGraph = yield* store.loadGraph(codeGraphDatabasePath(home, full), full.snapshot.id);
 
-    expect(result.incremental.snapshot).toMatchObject({baseSnapshotId: first.snapshot.id, dirty: false});
-    expect(result.incremental.materialization).toEqual({
-      mode: 'incremental-clean',
-      stagedFiles: 1,
-      totalFiles: 24,
-    });
-    expect(result.incremental.diagnostics).toContain('Clean snapshot reused persisted base for 1 modified file(s).');
-    expect(normalizeStoredGraph(result.incrementalGraph)).toEqual(normalizeStoredGraph(result.fullGraph));
-  });
+      expect(incremental.snapshot).toMatchObject({baseSnapshotId: first.snapshot.id, dirty: false});
+      expect(incremental.materialization).toEqual({
+        mode: 'incremental-clean',
+        stagedFiles: 1,
+        totalFiles: 24,
+      });
+      expect(incremental.diagnostics).toContain('Clean snapshot reused persisted base for 1 modified file(s).');
+      expect(normalizeStoredGraph(incrementalGraph)).toEqual(normalizeStoredGraph(fullGraph));
+      const probesPerObservation = statSync(root).dev === statSync(tmpdir()).dev ? 1 : 2;
+      expect(Object.fromEntries(probes)).toEqual({
+        'promote ready code graph snapshot': probesPerObservation,
+      });
+    }).pipe(Effect.provide(ApplicationLayer)),
+  );
 
   it('reuses content-addressed materialized file shards during a forced clean rebuild', async () => {
     const root = createManySourceRepository(12);

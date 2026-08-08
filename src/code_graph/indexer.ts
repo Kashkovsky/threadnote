@@ -1516,6 +1516,7 @@ const attemptReusableCleanSnapshot = Effect.fn('codeGraph.attemptReusableCleanSn
         const summary = yield* buildAndActivate({
           activatePointer: true,
           building,
+          capacityProtection: input.capacityProtection,
           committedBase,
           embedding: input.embedding,
           ensureVectors: input.ensureVectors,
@@ -1823,7 +1824,7 @@ function promoteReadySnapshotWithCapacity(
 const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (input: {
   readonly activatePointer: boolean;
   readonly building: CodeGraphSnapshot;
-  readonly capacityProtection?: DirectPersistentCapacityProtection;
+  readonly capacityProtection: DirectPersistentCapacityProtection;
   readonly committedBase?: CommittedBaseResult;
   readonly existing?: CodeGraphSnapshot;
   readonly embedding: CodeGraphEmbeddingIndexShape;
