@@ -1,9 +1,8 @@
 import {it as effectIt} from '@effect/vitest';
-import {Effect, Fiber} from 'effect';
+import {Deferred, Effect, Fiber} from 'effect';
 import {TestClock} from 'effect/testing';
 import * as FC from 'effect/testing/FastCheck';
 import {describe, expect, it, vi} from 'vitest';
-import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {
   effectiveLinuxMemoryBytes,
   linuxCgroupMemoryFiles,
@@ -17,6 +16,7 @@ import {
   parseWindowsAvailableDiskBytes,
   probeAvailableDiskBytes,
   resolveHomeDirectory,
+  makeCachedProcessStartIdentityResolver,
   SystemInfo,
 } from '../../src/effect/system.js';
 
@@ -375,34 +375,129 @@ describe('SystemInfo process identity', () => {
     expect(parseProcessStartIdentityOutput('darwin', '   ')).toBeUndefined();
   });
 
-  it('reports a stable identity for the current process on the host adapter', async () => {
-    const identities = await Effect.runPromise(
-      Effect.gen(function* () {
-        const system = yield* SystemInfo;
-        return [
-          yield* system.processStartIdentity(system.processId),
-          yield* system.processStartIdentity(system.processId),
-        ] as const;
-      }).pipe(Effect.provide(ApplicationLayer)),
-    );
+  effectIt.effect('shares and caches an exact five-second unavailable own-process probe', () =>
+    Effect.gen(function* () {
+      let probeCount = 0;
+      const resolve = yield* makeCachedProcessStartIdentityResolver(42, () =>
+        Effect.sync(() => {
+          probeCount += 1;
+        }).pipe(Effect.andThen(Effect.sleep(5_000)), Effect.as(undefined)),
+      );
+      const fiber = yield* Effect.all(
+        Array.from({length: 32}, () => resolve(42)),
+        {
+          concurrency: 'unbounded',
+        },
+      ).pipe(Effect.forkChild({startImmediately: true}));
+      yield* Effect.yieldNow;
 
-    expect(identities[0]).toBeTruthy();
-    expect(identities[1]).toBe(identities[0]);
-  });
+      expect(probeCount).toBe(1);
+      yield* TestClock.adjust(4_999);
+      expect(fiber.pollUnsafe()).toBeUndefined();
+
+      yield* TestClock.adjust(1);
+      expect(yield* Fiber.join(fiber)).toEqual(Array.from({length: 32}, () => undefined));
+      expect(probeCount).toBe(1);
+      expect(yield* resolve(42)).toBeUndefined();
+      expect(probeCount).toBe(1);
+    }),
+  );
+
+  effectIt.effect('re-elects one owner after interruption so pending callers converge on the retry', () =>
+    Effect.gen(function* () {
+      const firstProbeStarted = yield* Deferred.make<void>();
+      let probeCount = 0;
+      const resolve = yield* makeCachedProcessStartIdentityResolver(42, () =>
+        Effect.suspend(() => {
+          probeCount += 1;
+          return probeCount === 1
+            ? Deferred.succeed(firstProbeStarted, undefined).pipe(Effect.andThen(Effect.never))
+            : Effect.succeed('fixture-process-start');
+        }),
+      );
+      const firstOwner = yield* resolve(42).pipe(Effect.forkChild({startImmediately: true}));
+      yield* Deferred.await(firstProbeStarted);
+      const waiters = yield* Effect.forEach(Array.from({length: 31}), () =>
+        resolve(42).pipe(Effect.forkChild({startImmediately: true})),
+      );
+
+      yield* Fiber.interrupt(firstOwner);
+
+      expect(yield* Effect.forEach(waiters, Fiber.join)).toEqual(
+        Array.from({length: 31}, () => 'fixture-process-start'),
+      );
+      expect(yield* resolve(42)).toBe('fixture-process-start');
+      expect(probeCount).toBe(2);
+    }),
+  );
+
+  effectIt.effect('cannot strand pending callers when interrupted immediately after ownership acquisition', () =>
+    Effect.gen(function* () {
+      const firstOwnerClaimed = yield* Deferred.make<void>();
+      const releaseFirstOwner = yield* Deferred.make<void>();
+      let ownerClaimCount = 0;
+      let probeCount = 0;
+      const resolve = yield* makeCachedProcessStartIdentityResolver(
+        42,
+        () =>
+          Effect.sync(() => {
+            probeCount += 1;
+            return 'fixture-process-start';
+          }),
+        Effect.suspend(() => {
+          ownerClaimCount += 1;
+          return ownerClaimCount === 1
+            ? Deferred.succeed(firstOwnerClaimed, undefined).pipe(
+                Effect.andThen(Deferred.await(releaseFirstOwner)),
+                Effect.asVoid,
+              )
+            : Effect.void;
+        }),
+      );
+      const firstOwner = yield* resolve(42).pipe(Effect.forkChild({startImmediately: true}));
+      yield* Deferred.await(firstOwnerClaimed);
+      const waiters = yield* Effect.forEach(Array.from({length: 31}), () =>
+        resolve(42).pipe(Effect.forkChild({startImmediately: true})),
+      );
+      const interruption = yield* Fiber.interrupt(firstOwner).pipe(Effect.forkChild({startImmediately: true}));
+      yield* Effect.yieldNow;
+
+      yield* Deferred.succeed(releaseFirstOwner, undefined);
+      yield* Fiber.join(interruption);
+
+      expect(yield* Effect.forEach(waiters, Fiber.join)).toEqual(
+        Array.from({length: 31}, () => 'fixture-process-start'),
+      );
+      expect(yield* resolve(42)).toBe('fixture-process-start');
+      expect(ownerClaimCount).toBe(2);
+      expect(probeCount).toBe(1);
+    }),
+  );
+
+  effectIt.effect('reports a stable identity for the current process on the host adapter', () =>
+    Effect.gen(function* () {
+      const system = yield* SystemInfo;
+      const identities = [
+        yield* system.processStartIdentity(system.processId),
+        yield* system.processStartIdentity(system.processId),
+      ] as const;
+
+      expect(identities[0]).toBeTruthy();
+      expect(identities[1]).toBe(identities[0]);
+    }).pipe(Effect.provide(SystemInfo.layer)),
+  );
 });
 
 describe('SystemInfo benchmark metadata', () => {
-  it('reports real CPU, memory, and operating-system values', async () => {
-    const hardware = await Effect.runPromise(
-      Effect.gen(function* () {
-        return yield* (yield* SystemInfo).hardwareInfo();
-      }).pipe(Effect.provide(ApplicationLayer)),
-    );
+  effectIt.effect('reports real CPU, memory, and operating-system values', () =>
+    Effect.gen(function* () {
+      const hardware = yield* (yield* SystemInfo).hardwareInfo();
 
-    expect(hardware.cpuModel.trim().length).toBeGreaterThan(0);
-    expect(hardware.memoryBytes).toBeGreaterThan(0);
-    expect(hardware.effectiveMemoryBytes).toBeGreaterThan(0);
-    expect(hardware.effectiveMemoryBytes).toBeLessThanOrEqual(hardware.memoryBytes);
-    expect(hardware.operatingSystem.trim().length).toBeGreaterThan(0);
-  });
+      expect(hardware.cpuModel.trim().length).toBeGreaterThan(0);
+      expect(hardware.memoryBytes).toBeGreaterThan(0);
+      expect(hardware.effectiveMemoryBytes).toBeGreaterThan(0);
+      expect(hardware.effectiveMemoryBytes).toBeLessThanOrEqual(hardware.memoryBytes);
+      expect(hardware.operatingSystem.trim().length).toBeGreaterThan(0);
+    }).pipe(Effect.provide(SystemInfo.layer)),
+  );
 });

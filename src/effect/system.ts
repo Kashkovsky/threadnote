@@ -1,5 +1,5 @@
 import * as NodeFileSystemPromises from 'node:fs/promises';
-import {Context, Effect, Layer} from 'effect';
+import {Context, Deferred, Effect, Exit, Layer, Ref} from 'effect';
 import {effectiveLinuxMemoryBytes, linuxCgroupMemoryFiles} from './linux_cgroup.js';
 import {readWindowsHardwareInfo, readWindowsProcessStartIdentity} from './windows_system.js';
 
@@ -43,108 +43,167 @@ export interface SystemHardwareInfo {
   readonly operatingSystem: string;
 }
 
-export class SystemInfo extends Context.Service<SystemInfo, SystemInfoShape>()('threadnote/effect/SystemInfo') {
-  static readonly layer = Layer.sync(SystemInfo, () => {
-    const homeDirectory = resolveHomeDirectory(process.env, process.platform);
-    let ownProcessStartIdentity: string | undefined;
-    let ownProcessStartIdentityLoaded = false;
-    const processStartIdentity = (processId: number) =>
-      processId === process.pid && ownProcessStartIdentityLoaded
-        ? Effect.succeed(ownProcessStartIdentity)
-        : readProcessStartIdentity(processId, process.platform, process.env).pipe(
-            Effect.tap(identity =>
-              processId === process.pid
-                ? Effect.sync(() => {
-                    ownProcessStartIdentity = identity;
-                    ownProcessStartIdentityLoaded = identity !== undefined;
-                  })
-                : Effect.void,
+type ProcessStartIdentityCacheState =
+  | {readonly _tag: 'empty'}
+  | {readonly _tag: 'pending'; readonly deferred: Deferred.Deferred<ProcessStartIdentityCacheSignal>}
+  | {readonly _tag: 'complete'; readonly identity: string | undefined};
+
+type ProcessStartIdentityCacheDecision =
+  | {readonly _tag: 'owner'; readonly deferred: Deferred.Deferred<ProcessStartIdentityCacheSignal>}
+  | {readonly _tag: 'pending'; readonly deferred: Deferred.Deferred<ProcessStartIdentityCacheSignal>}
+  | {readonly _tag: 'complete'; readonly identity: string | undefined};
+
+type ProcessStartIdentityCacheSignal =
+  {readonly _tag: 'complete'; readonly identity: string | undefined} | {readonly _tag: 'retry'};
+
+export function makeCachedProcessStartIdentityResolver(
+  ownProcessId: number,
+  resolve: (processId: number) => Effect.Effect<string | undefined>,
+  ownerClaimed?: Effect.Effect<void>,
+): Effect.Effect<(processId: number) => Effect.Effect<string | undefined>> {
+  return Effect.gen(function* () {
+    const state = yield* Ref.make<ProcessStartIdentityCacheState>({_tag: 'empty'});
+    const resolveOwnProcessStartIdentity: Effect.Effect<string | undefined> = Effect.suspend(() =>
+      Effect.uninterruptibleMask(restore =>
+        Effect.gen(function* () {
+          const candidate = yield* Deferred.make<ProcessStartIdentityCacheSignal>();
+          const decision = yield* Ref.modify(
+            state,
+            (current): readonly [ProcessStartIdentityCacheDecision, ProcessStartIdentityCacheState] => {
+              if (current._tag === 'complete') {
+                return [{_tag: 'complete', identity: current.identity} as const, current];
+              }
+              if (current._tag === 'pending') {
+                return [{_tag: 'pending', deferred: current.deferred} as const, current];
+              }
+              const pending = {_tag: 'pending', deferred: candidate} as const;
+              return [{_tag: 'owner', deferred: candidate} as const, pending];
+            },
+          );
+          if (decision._tag === 'complete') return decision.identity;
+          if (decision._tag === 'pending') {
+            const signal = yield* restore(Deferred.await(decision.deferred));
+            return signal._tag === 'complete' ? signal.identity : yield* restore(resolveOwnProcessStartIdentity);
+          }
+          if (ownerClaimed !== undefined) yield* ownerClaimed;
+
+          // Cache both a defined identity and completed absence, but never cache
+          // an interrupted/defective owner. Pending callers receive a neutral
+          // retry signal so exactly one becomes the next owner instead of
+          // inheriting another fiber's interruption cause.
+          return yield* restore(resolve(ownProcessId)).pipe(
+            Effect.onExit(exit =>
+              Exit.isSuccess(exit)
+                ? Ref.set(state, {_tag: 'complete', identity: exit.value}).pipe(
+                    Effect.andThen(Deferred.succeed(decision.deferred, {_tag: 'complete', identity: exit.value})),
+                    Effect.asVoid,
+                  )
+                : Ref.set(state, {_tag: 'empty'}).pipe(
+                    Effect.andThen(Deferred.succeed(decision.deferred, {_tag: 'retry'})),
+                    Effect.asVoid,
+                  ),
             ),
           );
-    return SystemInfo.of({
-      architecture: process.arch,
-      availableDiskBytes: path => availableDiskBytes(path, process.platform, process.env),
-      currentDirectory: () => process.cwd(),
-      environment: () => process.env,
-      executablePath: process.execPath,
-      hardwareInfo: () => readSystemHardwareInfo(process.platform, process.env),
-      homeDirectory,
-      isProcessRunning: processId => {
-        try {
-          process.kill(processId, 0);
-          return true;
-        } catch (cause: unknown) {
-          return !(
-            typeof cause === 'object' &&
-            cause !== null &&
-            'code' in cause &&
-            (cause as {readonly code?: unknown}).code === 'ESRCH'
-          );
-        }
-      },
-      memoryUsage: () => {
-        const usage = process.memoryUsage();
-        return {
-          external: usage.external,
-          heapUsed: usage.heapUsed,
-          rss: usage.rss,
-        };
-      },
-      processStartIdentity,
-      runtimeVersion: Bun.version,
-      pathDelimiter: process.platform === 'win32' ? ';' : ':',
-      platform: process.platform,
-      processId: process.pid,
-      processArguments: process.argv,
-      readLine: (prompt, onLine) => {
-        const input = process.stdin;
-        let buffered = '';
-        let settled = false;
-        const cleanup = () => {
-          input.off('data', onData);
-          input.off('end', onEnd);
-          input.pause();
-        };
-        const finish = (line: string) => {
-          if (settled) return;
-          settled = true;
-          cleanup();
-          onLine(line);
-        };
-        const onData = (chunk: string | Uint8Array) => {
-          buffered += String(chunk);
-          const newline = buffered.search(/[\r\n]/);
-          if (newline >= 0) {
-            finish(buffered.slice(0, newline));
-          }
-        };
-        const onEnd = () => finish(buffered);
-        process.stdout.write(prompt);
-        input.on('data', onData);
-        input.once('end', onEnd);
-        input.resume();
-        return cleanup;
-      },
-      signalProcess: (processId, signal) => {
-        process.kill(processId, signal);
-      },
-      setExitCode: code => {
-        process.exitCode = code;
-      },
-      setEnvironmentVariable: (name, value) => {
-        process.env[name] = value;
-      },
-      stdinIsTTY: process.stdin.isTTY === true,
-      stdoutIsTTY: process.stdout.isTTY === true,
-      tempDirectory:
-        process.env.TMPDIR ??
-        process.env.TEMP ??
-        process.env.TMP ??
-        (process.platform === 'win32' ? process.cwd() : '/tmp'),
-      userId: process.getuid?.(),
-      userName: process.env.USER ?? process.env.USERNAME ?? 'unknown',
-    });
+        }),
+      ),
+    );
+    return (processId: number) => (processId === ownProcessId ? resolveOwnProcessStartIdentity : resolve(processId));
   });
+}
+
+export class SystemInfo extends Context.Service<SystemInfo, SystemInfoShape>()('threadnote/effect/SystemInfo') {
+  static readonly layer = Layer.effect(
+    SystemInfo,
+    Effect.gen(function* () {
+      const homeDirectory = resolveHomeDirectory(process.env, process.platform);
+      const processStartIdentity = yield* makeCachedProcessStartIdentityResolver(process.pid, processId =>
+        readProcessStartIdentity(processId, process.platform, process.env),
+      );
+      return SystemInfo.of({
+        architecture: process.arch,
+        availableDiskBytes: path => availableDiskBytes(path, process.platform, process.env),
+        currentDirectory: () => process.cwd(),
+        environment: () => process.env,
+        executablePath: process.execPath,
+        hardwareInfo: () => readSystemHardwareInfo(process.platform, process.env),
+        homeDirectory,
+        isProcessRunning: processId => {
+          try {
+            process.kill(processId, 0);
+            return true;
+          } catch (cause: unknown) {
+            return !(
+              typeof cause === 'object' &&
+              cause !== null &&
+              'code' in cause &&
+              (cause as {readonly code?: unknown}).code === 'ESRCH'
+            );
+          }
+        },
+        memoryUsage: () => {
+          const usage = process.memoryUsage();
+          return {
+            external: usage.external,
+            heapUsed: usage.heapUsed,
+            rss: usage.rss,
+          };
+        },
+        processStartIdentity,
+        runtimeVersion: Bun.version,
+        pathDelimiter: process.platform === 'win32' ? ';' : ':',
+        platform: process.platform,
+        processId: process.pid,
+        processArguments: process.argv,
+        readLine: (prompt, onLine) => {
+          const input = process.stdin;
+          let buffered = '';
+          let settled = false;
+          const cleanup = () => {
+            input.off('data', onData);
+            input.off('end', onEnd);
+            input.pause();
+          };
+          const finish = (line: string) => {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            onLine(line);
+          };
+          const onData = (chunk: string | Uint8Array) => {
+            buffered += String(chunk);
+            const newline = buffered.search(/[\r\n]/);
+            if (newline >= 0) {
+              finish(buffered.slice(0, newline));
+            }
+          };
+          const onEnd = () => finish(buffered);
+          process.stdout.write(prompt);
+          input.on('data', onData);
+          input.once('end', onEnd);
+          input.resume();
+          return cleanup;
+        },
+        signalProcess: (processId, signal) => {
+          process.kill(processId, signal);
+        },
+        setExitCode: code => {
+          process.exitCode = code;
+        },
+        setEnvironmentVariable: (name, value) => {
+          process.env[name] = value;
+        },
+        stdinIsTTY: process.stdin.isTTY === true,
+        stdoutIsTTY: process.stdout.isTTY === true,
+        tempDirectory:
+          process.env.TMPDIR ??
+          process.env.TEMP ??
+          process.env.TMP ??
+          (process.platform === 'win32' ? process.cwd() : '/tmp'),
+        userId: process.getuid?.(),
+        userName: process.env.USER ?? process.env.USERNAME ?? 'unknown',
+      });
+    }),
+  );
 }
 
 const DISK_QUERY_TIMEOUT_MS = 10_000;

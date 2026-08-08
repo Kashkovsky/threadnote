@@ -1,5 +1,6 @@
 import {Clock, Crypto, Effect, FileSystem, Option, Path, PlatformError} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
+import {withExclusiveFileLock} from '../effect/file_lock.js';
 import {SystemInfo} from '../effect/system.js';
 import {
   captureCodeGraphGitWorktreeRegistration,
@@ -8,6 +9,7 @@ import {
   type CodeGraphGitWorktreeRegistration,
 } from './git_worktree_registration.js';
 import {resolveRepositoryIdentityDetail} from './repository.js';
+import {codeGraphLocalProvenanceLockPath} from './layout.js';
 import type {RepositoryIdentity} from './types.js';
 
 const LOCAL_CONTEXT_DIRECTORY = 'local-context';
@@ -80,6 +82,22 @@ export interface ResolveCodeGraphLocalAssociationOptions extends CodeGraphLocalP
   readonly validateIdentity?: (identity: RepositoryIdentity) => Effect.Effect<void, unknown>;
 }
 
+export interface CodeGraphLocalProvenanceCleanupOptions {
+  /** @internal Deterministic race seam before the required final missing-path observation. */
+  readonly beforeFinalObservation?: () => Effect.Effect<void, unknown>;
+  /** @internal Deterministic race seam before the final identity check and exact derived-file removal. */
+  readonly beforeRemove?: () => Effect.Effect<void, unknown>;
+  /** @internal Deterministic seam after final identity proof while the shared provenance lock remains held. */
+  readonly afterFinalValidation?: () => Effect.Effect<void, unknown>;
+}
+
+export type CodeGraphLocalProvenanceCleanupResult =
+  | {readonly state: 'not-found' | 'removed' | 'unavailable'}
+  | {
+      readonly observedState: CodeGraphLocalAssociationState;
+      readonly state: 'preserved';
+    };
+
 /**
  * Persist a path only after the caller resolved the complete Git identity. Failures are represented
  * as a path-free state so provenance remains supplemental and cannot break graph reads or builds.
@@ -115,97 +133,135 @@ export const resolveAndRecordCodeGraphLocalAssociation = Effect.fn('codeGraph.re
   },
 );
 
+export const withCodeGraphLocalProvenanceLock = Effect.fn('codeGraph.withLocalProvenanceLock')(function* <A, E, R>(
+  threadnoteHome: string,
+  checkoutId: string,
+  worktreeId: string,
+  waitTimeoutMilliseconds: number,
+  effect: Effect.Effect<A, E, R>,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  return yield* withExclusiveFileLock(
+    fs,
+    codeGraphLocalProvenanceLockPath(path, threadnoteHome, checkoutId, worktreeId),
+    {
+      retryIntervalMilliseconds: 10,
+      staleAfterMilliseconds: 120_000,
+      waitTimeoutMilliseconds,
+    },
+    effect,
+  );
+});
+
 const recordResolvedCodeGraphLocalAssociation = Effect.fn('codeGraph.recordResolvedLocalAssociation')(function* (
   threadnoteHome: string,
   identity: RepositoryIdentity,
   options: CodeGraphLocalProvenanceObservationOptions,
   observedGitDirectory?: string,
 ) {
-  const fs = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
-  const crypto = yield* Crypto.Crypto;
-
-  const directory = yield* ensureLocalWorktreeDirectory(fs, path, threadnoteHome, identity.checkoutId).pipe(
-    Effect.option,
-  );
-  if (Option.isNone(directory)) return unavailableAssociation('invalid');
-  const target = path.join(directory.value, `${identity.worktreeId}.json`);
-  if (Option.isSome(yield* fs.readLink(target).pipe(Effect.option))) return unavailableAssociation('invalid');
-  const existing = yield* readObservedRecordWithoutResolution(fs, target, {
-    checkoutId: identity.checkoutId,
-    repositoryId: identity.repositoryId,
-    worktreeId: identity.worktreeId,
-  });
-  const now = yield* Clock.currentTimeMillis;
-  const registration = yield* captureCodeGraphGitWorktreeRegistration(identity, observedGitDirectory).pipe(
-    Effect.option,
-  );
-  if (Option.isNone(registration)) return unavailableAssociation('invalid');
-  if (
-    existing?.canonicalWorktreePath === identity.repoRoot &&
-    existing.headCommit === identity.headCommit &&
-    existing.schemaVersion === LOCAL_PROVENANCE_SCHEMA_VERSION &&
-    sameCodeGraphGitWorktreeRegistration(existing.registration, registration.value) &&
-    now - Date.parse(existing.observedAt) >= 0 &&
-    now - Date.parse(existing.observedAt) < LOCAL_PROVENANCE_REFRESH_MILLISECONDS
-  ) {
-    return yield* associationForRecord(path, existing, 'verified');
-  }
-
-  const record = {
-    canonicalWorktreePath: identity.repoRoot,
-    checkoutId: identity.checkoutId,
-    headCommit: identity.headCommit,
-    observedAt: new Date(now).toISOString(),
-    registration: registration.value,
-    repositoryId: identity.repositoryId,
-    schemaVersion: LOCAL_PROVENANCE_SCHEMA_VERSION,
-    worktreeId: identity.worktreeId,
-  } satisfies CodeGraphLocalProvenanceRecord;
-  const content = `${JSON.stringify(record)}\n`;
-  if (new TextEncoder().encode(content).byteLength > LOCAL_PROVENANCE_BYTES_LIMIT) {
-    return unavailableAssociation('invalid');
-  }
-
-  const temporary = path.join(
-    directory.value,
-    `.${identity.worktreeId}.${(yield* crypto.randomUUIDv4).replaceAll('-', '')}.tmp`,
-  );
-  const written = yield* Effect.gen(function* () {
-    yield* fs.writeFileString(temporary, content, {flag: 'wx', mode: 0o600});
-    yield* fs.chmod(temporary, 0o600);
-    yield* syncFile(fs, temporary);
-    const revalidated = yield* inspectPrivateContainedDirectory(
-      fs,
-      path,
-      path.dirname(directory.value),
-      directory.value,
-    );
-    if (revalidated !== directory.value) {
-      return yield* Effect.fail(new Error('Code graph local provenance directory changed during observation.'));
-    }
-    if (Option.isSome(yield* fs.readLink(target).pipe(Effect.option))) {
-      return yield* Effect.fail(new Error('Code graph local provenance target is a symbolic link.'));
-    }
-    yield* options.beforePublishValidation?.() ?? Effect.void;
-    const finalIdentity = yield* resolveMatchingRepositoryIdentity(identity);
-    const finalRegistration = yield* captureCodeGraphGitWorktreeRegistration(
-      finalIdentity.identity,
-      finalIdentity.gitDirectory,
-    );
-    if (!sameCodeGraphGitWorktreeRegistration(record.registration, finalRegistration)) {
-      return yield* Effect.fail(new Error('Code graph local provenance registration changed during observation.'));
-    }
-    yield* fs.rename(temporary, target);
-    yield* syncDirectory(fs, directory.value);
-  }).pipe(
-    Effect.onError(() => fs.remove(temporary, {force: true}).pipe(Effect.catch(() => Effect.void))),
-    Effect.option,
-  );
-  return Option.isSome(written)
-    ? yield* associationForRecord(path, record, 'verified')
-    : unavailableAssociation('invalid');
+  return yield* withCodeGraphLocalProvenanceLock(
+    threadnoteHome,
+    identity.checkoutId,
+    identity.worktreeId,
+    5_000,
+    recordResolvedCodeGraphLocalAssociationUnlocked(threadnoteHome, identity, options, observedGitDirectory),
+  ).pipe(Effect.catch(() => Effect.succeed(unavailableAssociation('invalid'))));
 });
+
+const recordResolvedCodeGraphLocalAssociationUnlocked = Effect.fn('codeGraph.recordResolvedLocalAssociationUnlocked')(
+  function* (
+    threadnoteHome: string,
+    identity: RepositoryIdentity,
+    options: CodeGraphLocalProvenanceObservationOptions,
+    observedGitDirectory?: string,
+  ) {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const crypto = yield* Crypto.Crypto;
+
+    const directory = yield* ensureLocalWorktreeDirectory(fs, path, threadnoteHome, identity.checkoutId).pipe(
+      Effect.option,
+    );
+    if (Option.isNone(directory)) return unavailableAssociation('invalid');
+    const target = path.join(directory.value, `${identity.worktreeId}.json`);
+    if (Option.isSome(yield* fs.readLink(target).pipe(Effect.option))) return unavailableAssociation('invalid');
+    const existing = yield* readObservedRecordWithoutResolution(fs, target, {
+      checkoutId: identity.checkoutId,
+      repositoryId: identity.repositoryId,
+      worktreeId: identity.worktreeId,
+    });
+    const now = yield* Clock.currentTimeMillis;
+    const registration = yield* captureCodeGraphGitWorktreeRegistration(identity, observedGitDirectory).pipe(
+      Effect.option,
+    );
+    if (Option.isNone(registration)) return unavailableAssociation('invalid');
+    if (
+      existing?.canonicalWorktreePath === identity.repoRoot &&
+      existing.headCommit === identity.headCommit &&
+      existing.schemaVersion === LOCAL_PROVENANCE_SCHEMA_VERSION &&
+      sameCodeGraphGitWorktreeRegistration(existing.registration, registration.value) &&
+      now - Date.parse(existing.observedAt) >= 0 &&
+      now - Date.parse(existing.observedAt) < LOCAL_PROVENANCE_REFRESH_MILLISECONDS
+    ) {
+      return yield* associationForRecord(path, existing, 'verified');
+    }
+
+    const record = {
+      canonicalWorktreePath: identity.repoRoot,
+      checkoutId: identity.checkoutId,
+      headCommit: identity.headCommit,
+      observedAt: new Date(now).toISOString(),
+      registration: registration.value,
+      repositoryId: identity.repositoryId,
+      schemaVersion: LOCAL_PROVENANCE_SCHEMA_VERSION,
+      worktreeId: identity.worktreeId,
+    } satisfies CodeGraphLocalProvenanceRecord;
+    const content = `${JSON.stringify(record)}\n`;
+    if (new TextEncoder().encode(content).byteLength > LOCAL_PROVENANCE_BYTES_LIMIT) {
+      return unavailableAssociation('invalid');
+    }
+
+    const temporary = path.join(
+      directory.value,
+      `.${identity.worktreeId}.${(yield* crypto.randomUUIDv4).replaceAll('-', '')}.tmp`,
+    );
+    const written = yield* Effect.gen(function* () {
+      yield* fs.writeFileString(temporary, content, {flag: 'wx', mode: 0o600});
+      yield* fs.chmod(temporary, 0o600);
+      yield* syncFile(fs, temporary);
+      const revalidated = yield* inspectPrivateContainedDirectory(
+        fs,
+        path,
+        path.dirname(directory.value),
+        directory.value,
+      );
+      if (revalidated !== directory.value) {
+        return yield* Effect.fail(new Error('Code graph local provenance directory changed during observation.'));
+      }
+      if (Option.isSome(yield* fs.readLink(target).pipe(Effect.option))) {
+        return yield* Effect.fail(new Error('Code graph local provenance target is a symbolic link.'));
+      }
+      yield* options.beforePublishValidation?.() ?? Effect.void;
+      const finalIdentity = yield* resolveMatchingRepositoryIdentity(identity);
+      const finalRegistration = yield* captureCodeGraphGitWorktreeRegistration(
+        finalIdentity.identity,
+        finalIdentity.gitDirectory,
+      );
+      if (!sameCodeGraphGitWorktreeRegistration(record.registration, finalRegistration)) {
+        return yield* Effect.fail(new Error('Code graph local provenance registration changed during observation.'));
+      }
+      yield* fs.rename(temporary, target);
+      yield* syncDirectory(fs, directory.value);
+    }).pipe(
+      Effect.onError(() => fs.remove(temporary, {force: true}).pipe(Effect.catch(() => Effect.void))),
+      Effect.option,
+    );
+    return Option.isSome(written)
+      ? yield* associationForRecord(path, record, 'verified')
+      : unavailableAssociation('invalid');
+  },
+);
 
 /**
  * Read and re-resolve one private association. A live Manager context may repair only the exact
@@ -251,6 +307,174 @@ export const readCodeGraphLocalReconciliationEvidence = Effect.fn('codeGraph.rea
     );
   },
 );
+
+/**
+ * Delete only a private derived provenance sidecar whose recorded worktree is
+ * still missing and whose complete file/content identity has not changed.
+ * Source, Git, and remembered worktree paths are observation-only.
+ */
+const cleanupMissingCodeGraphLocalProvenanceUnsafe = Effect.fn('codeGraph.cleanupMissingLocalProvenanceUnsafe')(
+  function* (
+    threadnoteHome: string,
+    target: CodeGraphLocalAssociationTarget,
+    options: CodeGraphLocalProvenanceCleanupOptions = {},
+  ) {
+    if (!validTarget(target)) return {state: 'unavailable'} as const satisfies CodeGraphLocalProvenanceCleanupResult;
+    const evidence = yield* readCodeGraphLocalReconciliationEvidence(threadnoteHome, target);
+    if (evidence.state !== 'verified') {
+      return {
+        observedState: evidence.state,
+        state: 'preserved',
+      } as const satisfies CodeGraphLocalProvenanceCleanupResult;
+    }
+    const initial = yield* readLocalProvenanceCleanupCandidate(threadnoteHome, target);
+    if (initial === undefined) {
+      return {state: 'not-found'} as const satisfies CodeGraphLocalProvenanceCleanupResult;
+    }
+    if (!(yield* recordedWorktreePathMissing(initial.record.canonicalWorktreePath))) {
+      return {observedState: 'stale', state: 'preserved'} as const satisfies CodeGraphLocalProvenanceCleanupResult;
+    }
+
+    yield* options.beforeFinalObservation?.() ?? Effect.void;
+    const observed = yield* readLocalProvenanceCleanupCandidate(threadnoteHome, target);
+    if (observed === undefined) {
+      return {state: 'not-found'} as const satisfies CodeGraphLocalProvenanceCleanupResult;
+    }
+    if (!sameLocalProvenanceCleanupCandidate(initial, observed)) {
+      return {observedState: 'stale', state: 'preserved'} as const satisfies CodeGraphLocalProvenanceCleanupResult;
+    }
+    if (!(yield* recordedWorktreePathMissing(observed.record.canonicalWorktreePath))) {
+      return {observedState: 'stale', state: 'preserved'} as const satisfies CodeGraphLocalProvenanceCleanupResult;
+    }
+
+    yield* options.beforeRemove?.() ?? Effect.void;
+    const final = yield* readLocalProvenanceCleanupCandidate(threadnoteHome, target);
+    if (final === undefined) {
+      return {state: 'not-found'} as const satisfies CodeGraphLocalProvenanceCleanupResult;
+    }
+    if (
+      !sameLocalProvenanceCleanupCandidate(initial, final) ||
+      !(yield* recordedWorktreePathMissing(final.record.canonicalWorktreePath))
+    ) {
+      return {observedState: 'stale', state: 'preserved'} as const satisfies CodeGraphLocalProvenanceCleanupResult;
+    }
+    const fs = yield* FileSystem.FileSystem;
+    if (Option.isSome(yield* fs.readLink(final.file).pipe(Effect.option))) {
+      return {observedState: 'invalid', state: 'preserved'} as const satisfies CodeGraphLocalProvenanceCleanupResult;
+    }
+    yield* options.afterFinalValidation?.() ?? Effect.void;
+    const owned = yield* readLocalProvenanceCleanupCandidate(threadnoteHome, target);
+    if (
+      owned === undefined ||
+      !sameLocalProvenanceCleanupCandidate(initial, owned) ||
+      !(yield* recordedWorktreePathMissing(owned.record.canonicalWorktreePath))
+    ) {
+      return {observedState: 'stale', state: 'preserved'} as const satisfies CodeGraphLocalProvenanceCleanupResult;
+    }
+    yield* fs.remove(final.file, {force: false});
+    return {state: 'removed'} as const satisfies CodeGraphLocalProvenanceCleanupResult;
+  },
+);
+
+export const cleanupMissingCodeGraphLocalProvenance = Effect.fn('codeGraph.cleanupMissingLocalProvenance')(function* (
+  threadnoteHome: string,
+  target: CodeGraphLocalAssociationTarget,
+  options: CodeGraphLocalProvenanceCleanupOptions = {},
+) {
+  if (!validTarget(target)) return {state: 'unavailable'} as const satisfies CodeGraphLocalProvenanceCleanupResult;
+  return yield* withCodeGraphLocalProvenanceLock(
+    threadnoteHome,
+    target.checkoutId,
+    target.worktreeId,
+    0,
+    cleanupMissingCodeGraphLocalProvenanceUnsafe(threadnoteHome, target, options),
+  ).pipe(
+    Effect.catch(() => Effect.succeed({state: 'unavailable'} as const satisfies CodeGraphLocalProvenanceCleanupResult)),
+  );
+});
+
+interface LocalProvenanceCleanupCandidate {
+  readonly content: string;
+  readonly file: string;
+  readonly record: CodeGraphLocalProvenanceRecordV2;
+  readonly recordDigest: string;
+  readonly recordIdentity: string;
+}
+
+const readLocalProvenanceCleanupCandidate = Effect.fn('codeGraph.readLocalProvenanceCleanupCandidate')(function* (
+  threadnoteHome: string,
+  target: CodeGraphLocalAssociationTarget,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const system = yield* SystemInfo;
+  const checkoutRoot = yield* inspectCheckoutRoot(fs, path, threadnoteHome, target.checkoutId);
+  if (checkoutRoot === undefined) return undefined;
+  const localContext = path.join(checkoutRoot, LOCAL_CONTEXT_DIRECTORY);
+  if (Option.isSome(yield* fs.readLink(localContext).pipe(Effect.option)) || !(yield* fs.exists(localContext))) {
+    return undefined;
+  }
+  const canonicalContext = yield* inspectPrivateContainedDirectory(fs, path, checkoutRoot, localContext);
+  const worktrees = path.join(canonicalContext, LOCAL_WORKTREES_DIRECTORY);
+  if (Option.isSome(yield* fs.readLink(worktrees).pipe(Effect.option)) || !(yield* fs.exists(worktrees))) {
+    return undefined;
+  }
+  const canonicalWorktrees = yield* inspectPrivateContainedDirectory(fs, path, canonicalContext, worktrees);
+  const file = path.join(canonicalWorktrees, `${target.worktreeId}.json`);
+  if (Option.isSome(yield* fs.readLink(file).pipe(Effect.option)) || !(yield* fs.exists(file))) return undefined;
+  const info = yield* fs.stat(file);
+  if (
+    info.type !== 'File' ||
+    Number(info.size) > LOCAL_PROVENANCE_BYTES_LIMIT ||
+    (system.platform !== 'win32' && (info.mode & 0o777) !== 0o600)
+  ) {
+    return yield* Effect.fail(new Error('Code graph local provenance cleanup target is invalid.'));
+  }
+  const content = yield* readBoundedObservedRegularFile(fs, file, info);
+  if (Option.isSome(yield* fs.readLink(file).pipe(Effect.option))) {
+    return yield* Effect.fail(new Error('Code graph local provenance cleanup target changed.'));
+  }
+  const record = parseCodeGraphLocalProvenanceRecordJson(content, target);
+  if (record?.schemaVersion !== LOCAL_PROVENANCE_SCHEMA_VERSION) return undefined;
+  if (!isCanonicalAbsolutePath(path, record.canonicalWorktreePath)) {
+    return yield* Effect.fail(new Error('Code graph local provenance cleanup record is invalid.'));
+  }
+  const recordDigest = sha256HexSync(content);
+  return {
+    content,
+    file,
+    record,
+    recordDigest,
+    recordIdentity: localProvenanceRecordIdentity(info, recordDigest),
+  } satisfies LocalProvenanceCleanupCandidate;
+});
+
+const recordedWorktreePathMissing = Effect.fn('codeGraph.recordedWorktreePathMissing')(function* (
+  canonicalWorktreePath: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  if (Option.isSome(yield* fs.readLink(canonicalWorktreePath).pipe(Effect.option))) return false;
+  return Option.isNone(yield* optionOnNotFound(fs.stat(canonicalWorktreePath)));
+});
+
+function sameLocalProvenanceCleanupCandidate(
+  left: LocalProvenanceCleanupCandidate,
+  right: LocalProvenanceCleanupCandidate,
+): boolean {
+  return (
+    left.file === right.file &&
+    left.content === right.content &&
+    left.recordDigest === right.recordDigest &&
+    left.recordIdentity === right.recordIdentity &&
+    left.record.checkoutId === right.record.checkoutId &&
+    left.record.worktreeId === right.record.worktreeId &&
+    left.record.repositoryId === right.record.repositoryId &&
+    left.record.canonicalWorktreePath === right.record.canonicalWorktreePath &&
+    left.record.observedAt === right.record.observedAt &&
+    left.record.headCommit === right.record.headCommit &&
+    sameCodeGraphGitWorktreeRegistration(left.record.registration, right.record.registration)
+  );
+}
 
 const readCodeGraphLocalReconciliationEvidenceUnchecked = Effect.fn(
   'codeGraph.readLocalReconciliationEvidenceUnchecked',

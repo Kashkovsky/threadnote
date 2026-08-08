@@ -98,6 +98,7 @@ import {
   runCodeGraphIndex,
   runCodeGraphInspect,
   runCodeGraphPurge,
+  runCodeGraphRemoveView,
   runCodeGraphRepair,
   runCodeGraphReport,
   runCodeGraphStatus,
@@ -811,6 +812,18 @@ const graphPurge = Command.make(
   options => withRuntimeEffect(config => runCodeGraphPurge(config, options)),
 ).pipe(Command.withDescription('Remove disposable native code graph data without touching repositories or memories'));
 
+const graphRemoveView = Command.make(
+  'remove-view',
+  {
+    apply: boolean('apply', 'Apply the exact selected-view removal; the default is a non-mutating preview'),
+    checkoutId: requiredString('checkout-id', 'Full 64-character checkout identity'),
+    json: graphBounds.json,
+    snapshotId: requiredString('snapshot-id', 'Exact snapshot identity currently selected by the view'),
+    worktreeId: requiredString('worktree-id', 'Full 64-character worktree identity'),
+  },
+  options => withRuntimeEffect(config => runCodeGraphRemoveView(config, options)),
+).pipe(Command.withDescription('Preview or remove one exact active code graph view'));
+
 const graphCompact = Command.make(
   'compact',
   {
@@ -847,6 +860,7 @@ const graphCommand = Command.make('graph').pipe(
     graphWatch,
     graphExport,
     graphCompact,
+    graphRemoveView,
     graphPurge,
   ]),
 );

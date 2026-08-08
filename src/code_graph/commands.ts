@@ -41,6 +41,12 @@ import {
 } from './build_status.js';
 import {compactCodeGraphStorage, inspectCodeGraphStorage, type CodeGraphStorage} from './storage.js';
 import {inspectAllCodeGraphsLocal, renderCodeGraphDiagnostics} from './diagnostics.js';
+import {
+  codeGraphViewRemovalTargetFailure,
+  removeCodeGraphView,
+  renderCodeGraphViewRemovalResult,
+  serializeCodeGraphViewRemovalResult,
+} from './view_removal.js';
 
 interface CwdOption {
   readonly cwd?: string;
@@ -830,6 +836,32 @@ export const runCodeGraphPurge = Effect.fn('codeGraph.command.purge')(function* 
   }
   const repositoryRoot = yield* service.purge(config.agentContextHome, cwd);
   yield* Console.log(`Removed derived code graph indexes: ${repositoryRoot}`);
+});
+
+export const runCodeGraphRemoveView = Effect.fn('codeGraph.command.removeView')(function* (
+  config: RuntimeConfig,
+  options: {
+    readonly apply?: boolean;
+    readonly checkoutId: string;
+    readonly json?: boolean;
+    readonly snapshotId: string;
+    readonly worktreeId: string;
+  },
+) {
+  const result = yield* removeCodeGraphView(
+    config.agentContextHome,
+    {
+      checkoutId: options.checkoutId,
+      snapshotId: options.snapshotId,
+      worktreeId: options.worktreeId,
+    },
+    {apply: options.apply === true},
+  );
+  yield* writeFinalCliOutput(
+    options.json ? serializeCodeGraphViewRemovalResult(result) : renderCodeGraphViewRemovalResult(result),
+  );
+  const targetFailure = codeGraphViewRemovalTargetFailure(result);
+  if (targetFailure) return yield* Effect.fail(targetFailure);
 });
 
 export const runCodeGraphCompact = Effect.fn('codeGraph.command.compact')(function* (

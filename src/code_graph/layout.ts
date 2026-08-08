@@ -88,6 +88,25 @@ export function codeGraphVectorWriteLockPath(
   return path.join(threadnoteHome, 'locks', 'indexes', 'code-graph', 'vector-writes', checkoutId, `${modelKey}.lock`);
 }
 
+export function codeGraphLocalProvenanceLockPath(
+  path: Path.Path,
+  threadnoteHome: string,
+  checkoutId: string,
+  worktreeId: string,
+): string {
+  assertCheckoutId(checkoutId);
+  assertWorktreeId(worktreeId);
+  return path.join(
+    threadnoteHome,
+    'locks',
+    'indexes',
+    'code-graph',
+    'local-provenance',
+    checkoutId,
+    `${worktreeId}.lock`,
+  );
+}
+
 export function codeGraphWorktreeLockPath(
   path: Path.Path,
   threadnoteHome: string,

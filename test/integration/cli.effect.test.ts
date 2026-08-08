@@ -48,6 +48,7 @@ describe('Effect CLI', () => {
     const diagnostics = await runCli(['graph', 'diagnostics', '--help']);
     const exportHelp = await runCli(['graph', 'export', '--help']);
     const purge = await runCli(['graph', 'purge', '--help']);
+    const removeView = await runCli(['graph', 'remove-view', '--help']);
     const repair = await runCli(['graph', 'repair', '--help']);
 
     expect(graph.stdout).toContain('status');
@@ -89,10 +90,126 @@ describe('Effect CLI', () => {
     expect(exportHelp.stdout).toContain('--node-limit, --limit string');
     expect(exportHelp.stdout).toContain('--edge-limit string');
     expect(purge.stdout).toContain('--obsolete');
+    expect(removeView.stdout).toContain('--checkout-id string');
+    expect(removeView.stdout).toContain('--worktree-id string');
+    expect(removeView.stdout).toContain('--snapshot-id string');
+    expect(removeView.stdout).toContain('--apply');
+    expect(removeView.stdout).toContain('--json');
     expect(repair.stdout).toContain('--all');
     expect(repair.stdout).toContain('--deep');
     expect(repair.stdout).toContain('--dry-run');
   });
+
+  it('previews and applies an exact selected graph view through path-free JSON', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'threadnote-effect-cli-remove-view-'));
+    const home = join(root, '.threadnote-test-home');
+    try {
+      await writeFile(join(root, 'package.json'), '{"name":"remove-view"}\n');
+      await writeFile(join(root, 'index.ts'), 'export function selectedView(): number { return 1; }\n');
+      await execFilePromise('git', ['-C', root, 'init', '-q']);
+      await execFilePromise('git', ['-C', root, 'add', '.']);
+      await execFilePromise('git', [
+        '-C',
+        root,
+        '-c',
+        'user.name=Threadnote Test',
+        '-c',
+        'user.email=test@threadnote.local',
+        'commit',
+        '-qm',
+        'fixture',
+      ]);
+      const indexed = JSON.parse(
+        (await runCli(['graph', 'index', '--home', home, '--cwd', root, '--no-vectors', '--json'])).stdout,
+      ) as {
+        readonly identity: {readonly checkoutId: string; readonly worktreeId: string};
+        readonly snapshot: {readonly id: string};
+      };
+      const target = [
+        '--home',
+        home,
+        '--checkout-id',
+        indexed.identity.checkoutId,
+        '--worktree-id',
+        indexed.identity.worktreeId,
+        '--snapshot-id',
+        indexed.snapshot.id,
+        '--json',
+      ];
+
+      const staleFailure = await runCli([
+        'graph',
+        'remove-view',
+        '--home',
+        home,
+        '--checkout-id',
+        indexed.identity.checkoutId,
+        '--worktree-id',
+        indexed.identity.worktreeId,
+        '--snapshot-id',
+        `cgsn_${'e'.repeat(40)}-direct`,
+        '--json',
+      ]).catch(cause => cause as NodeJS.ErrnoException & {readonly stderr?: string; readonly stdout?: string});
+      const notFoundFailure = await runCli([
+        'graph',
+        'remove-view',
+        '--home',
+        home,
+        '--checkout-id',
+        indexed.identity.checkoutId,
+        '--worktree-id',
+        'f'.repeat(64),
+        '--snapshot-id',
+        indexed.snapshot.id,
+        '--json',
+      ]).catch(cause => cause as NodeJS.ErrnoException & {readonly stderr?: string; readonly stdout?: string});
+      expect(staleFailure).toMatchObject({code: 1});
+      expect(notFoundFailure).toMatchObject({code: 1});
+      const stale = JSON.parse(String(staleFailure.stdout)) as {readonly applied: boolean; readonly state: string};
+      const notFound = JSON.parse(String(notFoundFailure.stdout)) as {
+        readonly applied: boolean;
+        readonly state: string;
+      };
+      expect(stale).toMatchObject({applied: false, state: 'stale-target'});
+      expect(notFound).toMatchObject({applied: false, state: 'not-found'});
+      for (const failure of [staleFailure, notFoundFailure]) {
+        expect(String(failure.stdout)).not.toContain(root);
+        expect(String(failure.stdout)).not.toContain(home);
+        expect(String(failure.stdout)).not.toContain('databasePath');
+        expect(String(failure.stderr)).not.toContain(root);
+      }
+
+      const preview = JSON.parse((await runCli(['graph', 'remove-view', ...target])).stdout) as {
+        readonly applied: boolean;
+        readonly state: string;
+      };
+      const applied = JSON.parse((await runCli(['graph', 'remove-view', ...target, '--apply'])).stdout) as {
+        readonly applied: boolean;
+        readonly state: string;
+        readonly type: string;
+        readonly version: number;
+      };
+      const retry = JSON.parse((await runCli(['graph', 'remove-view', ...target, '--apply'])).stdout) as {
+        readonly state: string;
+      };
+
+      expect(preview).toMatchObject({applied: false, state: 'ready'});
+      expect(applied).toMatchObject({
+        applied: true,
+        state: 'removed',
+        type: 'code-graph-view-removal',
+        version: 1,
+      });
+      expect(retry.state).toBe('already-removed');
+      expect(JSON.stringify(applied)).not.toContain(root);
+      expect(JSON.stringify(applied)).not.toContain('databasePath');
+      await expect(
+        runCli(['graph', 'remove-view', '--checkout-id', indexed.identity.checkoutId]),
+      ).rejects.toMatchObject({code: 1});
+    } finally {
+      await rm(root, {force: true, recursive: true});
+    }
+  }, 30_000);
 
   it('keeps graph index JSON parseable while streaming structured progress to stderr', async () => {
     const root = await mkdtemp(join(tmpdir(), 'threadnote-effect-cli-graph-json-progress-'));

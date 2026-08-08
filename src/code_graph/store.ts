@@ -512,11 +512,32 @@ export interface CodeGraphSnapshotLeaseAcquireOptions extends CodeGraphSnapshotL
   readonly retireWhenInactive?: boolean;
 }
 
+export interface CodeGraphViewRemovalStoreOptions extends CodeGraphSnapshotLeaseWriterOptions {
+  /** Final containment proof run while the checkout writer gate is held and immediately before SQLite is opened. */
+  readonly beforeDatabaseOpen?: () => Effect.Effect<void, unknown>;
+}
+
 export type CodeGraphViewRemovalResult =
   | {
       readonly expectedSnapshotId: string;
       readonly retiredSnapshots: number;
       readonly state: 'already-removed' | 'removed';
+    }
+  | {
+      readonly expectedSnapshotId: string;
+      readonly observedSnapshotId: string;
+      readonly observedState: 'active' | 'removed';
+      readonly state: 'stale-target';
+    }
+  | {
+      readonly expectedSnapshotId: string;
+      readonly state: 'not-found';
+    };
+
+export type CodeGraphViewObservationResult =
+  | {
+      readonly expectedSnapshotId: string;
+      readonly state: 'already-removed' | 'ready';
     }
   | {
       readonly expectedSnapshotId: string;
@@ -583,11 +604,16 @@ export interface CodeGraphStoreShape {
     snapshotId: string,
     options?: CodeGraphSnapshotLeaseWriterOptions,
   ) => Effect.Effect<void, CodeGraphStoreError>;
+  readonly observeView: (
+    databasePath: string,
+    worktreeId: string,
+    expectedSnapshotId: string,
+  ) => Effect.Effect<CodeGraphViewObservationResult, CodeGraphStoreError>;
   readonly removeView: (
     databasePath: string,
     worktreeId: string,
     expectedSnapshotId: string,
-    options?: CodeGraphSnapshotLeaseWriterOptions,
+    options?: CodeGraphViewRemovalStoreOptions,
   ) => Effect.Effect<CodeGraphViewRemovalResult, CodeGraphStoreError>;
   readonly initialize: (databasePath: string) => Effect.Effect<void, CodeGraphStoreError>;
   readonly prepareActivation: (
@@ -1341,12 +1367,40 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
             Effect.asVoid,
             Effect.mapError(cause => storeError('promote code graph snapshot', cause)),
           ),
+        observeView: (databasePath, worktreeId, expectedSnapshotId) =>
+          Effect.gen(function* () {
+            yield* validateViewRemovalTarget(worktreeId, expectedSnapshotId);
+            if (!(yield* fs.exists(databasePath))) {
+              return {expectedSnapshotId, state: 'not-found'} satisfies CodeGraphViewObservationResult;
+            }
+            if (Option.isSome(yield* fs.readLink(databasePath).pipe(Effect.option))) {
+              return yield* Effect.fail(new CodeGraphStoreError('Code graph database target is a symbolic link.'));
+            }
+            if ((yield* fs.stat(databasePath)).type !== 'File') {
+              return yield* Effect.fail(new CodeGraphStoreError('Code graph database target is not a regular file.'));
+            }
+            return yield* useReadOnlyDatabase(
+              databasePath,
+              Effect.gen(function* () {
+                const sql = yield* SqlClient.SqlClient;
+                yield* sql.unsafe('PRAGMA busy_timeout = 0');
+                return yield* sql.withTransaction(observeActiveView(sql, worktreeId, expectedSnapshotId));
+              }),
+            );
+          }).pipe(Effect.mapError(cause => storeError('observe code graph view', cause))),
         removeView: (databasePath, worktreeId, expectedSnapshotId, options) =>
           withWriterGate(
             databasePath,
             Effect.gen(function* () {
+              yield* options?.beforeDatabaseOpen?.() ?? Effect.void;
               if (!(yield* fs.exists(databasePath))) {
                 return {expectedSnapshotId, state: 'not-found'} satisfies CodeGraphViewRemovalResult;
+              }
+              if (Option.isSome(yield* fs.readLink(databasePath).pipe(Effect.option))) {
+                return yield* Effect.fail(new CodeGraphStoreError('Code graph database target is a symbolic link.'));
+              }
+              if ((yield* fs.stat(databasePath)).type !== 'File') {
+                return yield* Effect.fail(new CodeGraphStoreError('Code graph database target is not a regular file.'));
               }
               const result = yield* useDatabase(
                 databasePath,
@@ -10850,8 +10904,7 @@ const promoteSnapshot = Effect.fn('codeGraph.promoteSnapshot')(function* (
   );
 });
 
-const removeActiveView = Effect.fn('codeGraph.removeActiveView')(function* (
-  sql: SqlClient.SqlClient,
+const validateViewRemovalTarget = Effect.fn('codeGraph.validateViewRemovalTarget')(function* (
   worktreeId: string,
   expectedSnapshotId: string,
 ) {
@@ -10861,6 +10914,62 @@ const removeActiveView = Effect.fn('codeGraph.removeActiveView')(function* (
   if (expectedSnapshotId.length === 0 || expectedSnapshotId.length > 1_024 || expectedSnapshotId.includes('\0')) {
     return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot identity is invalid.'));
   }
+});
+
+const observeActiveView = Effect.fn('codeGraph.observeActiveView')(function* (
+  sql: SqlClient.SqlClient,
+  worktreeId: string,
+  expectedSnapshotId: string,
+) {
+  const activeViewsAvailable = yield* tableExists(sql, 'active_snapshots');
+  const removedViewsAvailable = yield* tableExists(sql, 'removed_views');
+  const active = activeViewsAvailable
+    ? yield* sql<{readonly snapshot_id: string}>`
+        SELECT snapshot_id FROM active_snapshots WHERE worktree_id = ${worktreeId} LIMIT 1
+      `
+    : [];
+  const removed = removedViewsAvailable
+    ? yield* sql<{readonly expected_snapshot_id: string}>`
+        SELECT expected_snapshot_id FROM removed_views WHERE worktree_id = ${worktreeId} LIMIT 1
+      `
+    : [];
+  const activeSnapshotId = active[0]?.snapshot_id;
+  const removedSnapshotId = removed[0]?.expected_snapshot_id;
+
+  if (activeSnapshotId !== undefined && activeSnapshotId !== expectedSnapshotId) {
+    return {
+      expectedSnapshotId,
+      observedSnapshotId: activeSnapshotId,
+      observedState: 'active',
+      state: 'stale-target',
+    } satisfies CodeGraphViewObservationResult;
+  }
+  if (activeSnapshotId === expectedSnapshotId) {
+    return {
+      expectedSnapshotId,
+      state: removedSnapshotId === expectedSnapshotId ? 'already-removed' : 'ready',
+    } satisfies CodeGraphViewObservationResult;
+  }
+  if (removedSnapshotId === expectedSnapshotId) {
+    return {expectedSnapshotId, state: 'already-removed'} satisfies CodeGraphViewObservationResult;
+  }
+  if (removedSnapshotId !== undefined) {
+    return {
+      expectedSnapshotId,
+      observedSnapshotId: removedSnapshotId,
+      observedState: 'removed',
+      state: 'stale-target',
+    } satisfies CodeGraphViewObservationResult;
+  }
+  return {expectedSnapshotId, state: 'not-found'} satisfies CodeGraphViewObservationResult;
+});
+
+const removeActiveView = Effect.fn('codeGraph.removeActiveView')(function* (
+  sql: SqlClient.SqlClient,
+  worktreeId: string,
+  expectedSnapshotId: string,
+) {
+  yield* validateViewRemovalTarget(worktreeId, expectedSnapshotId);
   return yield* sql.withTransaction(
     Effect.gen(function* () {
       const active = yield* sql<{readonly snapshot_id: string}>`
