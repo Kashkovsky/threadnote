@@ -9,7 +9,7 @@ import {LocalModelCatalog} from '../../src/models/catalog.js';
 import {selectLocalModel} from '../../src/models/selection.js';
 import {LocalModelStore, type LocalModelStoreShape} from '../../src/models/store.js';
 import {loadRecallIndexData} from '../../src/recall/index.js';
-import {loadRecallSemanticScores} from '../../src/recall/runtime.js';
+import {loadMcpRecallSemanticScoresResult, loadRecallSemanticScores} from '../../src/recall/runtime.js';
 import {
   ensureVectorIndex,
   purgeVectorIndex,
@@ -296,6 +296,51 @@ describe('vector index generations', () => {
         });
       } finally {
         repaired.close();
+      }
+    } finally {
+      await rm(home, {force: true, recursive: true});
+    }
+  });
+
+  it('keeps MCP semantic retrieval read-only when the active vector is corrupt', async () => {
+    const home = await mkdtemp('threadnote-vector-mcp-read-only-');
+    const config = {account: 'local', agentContextHome: home, user: 'me'};
+    const resourcePath = join(home, 'data', 'local', 'resources', 'repos', 'threadnote', 'alpha.md');
+    const embeddedBatches: number[] = [];
+    const runtimeLayer = fakeRuntimeLayer(
+      () => 0,
+      inputs => embeddedBatches.push(inputs.length),
+    );
+    try {
+      await mkdir(join(resourcePath, '..'), {recursive: true});
+      await writeFile(resourcePath, '# Alpha\n\nRead-only semantic fallback content.', 'utf8');
+      await runEffect(
+        Effect.gen(function* () {
+          const catalog = yield* LocalModelCatalog;
+          yield* selectLocalModel(home, catalog, 'embedding', manifest.id);
+          const index = yield* loadRecallIndexData(config, {forceRefresh: true, includeInactive: false});
+          yield* rebuildVectorIndex(config, manifest, index.candidates, {corpusGeneration: index.generation});
+        }).pipe(Effect.provide(runtimeLayer), Effect.provide(modelStoreLayer)),
+      );
+      const corrupted = new Database(vectorDatabasePath(home));
+      corrupted.exec('UPDATE vector_values SET vector = zeroblob(4)');
+      corrupted.close();
+
+      const result = await runEffect(
+        loadMcpRecallSemanticScoresResult(config, 'alpha read-only fallback', 5).pipe(
+          Effect.provide(runtimeLayer),
+          Effect.provide(modelStoreLayer),
+        ),
+      );
+
+      expect(result.status).toBe('failed');
+      expect(Option.getOrUndefined(result.result.warning)).toContain('deterministic lexical recall continued');
+      expect(embeddedBatches).toEqual([1, 1]);
+      const unchanged = new Database(vectorDatabasePath(home), {readonly: true});
+      try {
+        expect(unchanged.query('SELECT length(vector) AS bytes FROM vector_values').get()).toEqual({bytes: 4});
+      } finally {
+        unchanged.close();
       }
     } finally {
       await rm(home, {force: true, recursive: true});

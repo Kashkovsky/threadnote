@@ -2,6 +2,7 @@ import {
   Cause,
   Clock,
   Console,
+  Context,
   Crypto,
   Effect,
   Exit,
@@ -40,6 +41,7 @@ const PRODUCTION_LOG_REPORTED_ERROR_TYPE = 'ReportedError';
 const PRODUCTION_LOG_DIAGNOSTIC_LABEL_MAX_CHARACTERS = 80;
 const PRODUCTION_LOG_ERROR_CAUSE_MAX_DEPTH = 4;
 const PRODUCTION_LOG_IDENTIFIER_MAX_CHARACTERS = 100;
+const PRODUCTION_LOG_PHASE_TIMING_MAX_COUNT = 32;
 const PRODUCTION_LOG_SUPPORT_FILE_READ_MAX_BYTES = 256 * 1024;
 const PRODUCTION_LOG_SUPPORT_UTF8_BYTES_PER_CHARACTER = 4;
 const PRODUCTION_LOG_SUPPORT_LINE_SLACK_BYTES = 4 * 1024;
@@ -50,6 +52,44 @@ const PRODUCTION_LOG_LOCK_OPTIONS = {
   waitTimeoutMilliseconds: PRODUCTION_LOG_LOCK_WAIT_MILLISECONDS,
 } as const;
 const processProductionLogGates = new Map<string, {readonly semaphore: Semaphore.Semaphore; users: number}>();
+
+export const PRODUCTION_LOG_PHASES = [
+  'recall.shared-sync',
+  'recall.obsidian-sync',
+  'recall.semantic-retrieval',
+  'recall.lexical-ranking',
+] as const;
+
+export type ProductionLogPhase = (typeof PRODUCTION_LOG_PHASES)[number];
+export type ProductionLogPhaseOutcome = 'failure' | 'interrupted' | 'success' | 'timed-out' | 'unavailable';
+
+export interface ProductionLogPhaseTiming {
+  readonly durationMilliseconds: number;
+  readonly errorType?: string;
+  readonly outcome: ProductionLogPhaseOutcome;
+  readonly phase: ProductionLogPhase;
+}
+
+interface ProductionLogPhaseRecorderShape {
+  readonly time: <A, E, R>(
+    phase: ProductionLogPhase,
+    effect: Effect.Effect<A, E, R>,
+    successOutcome?: (value: A) => ProductionLogPhaseOutcome,
+  ) => Effect.Effect<A, E, R>;
+}
+
+class ProductionLogPhaseRecorder extends Context.Service<ProductionLogPhaseRecorder, ProductionLogPhaseRecorderShape>()(
+  'threadnote/effect/ProductionLogPhaseRecorder',
+) {}
+
+/**
+ * Removes invocation-local phase instrumentation from a context captured for
+ * later application-service provision. Without this boundary, a long-lived
+ * outer invocation can overwrite the recorder of a nested logged invocation.
+ */
+export function omitProductionLogPhaseRecorder<R>(context: Context.Context<R>): Context.Context<R> {
+  return Context.omit(ProductionLogPhaseRecorder)(context) as Context.Context<R>;
+}
 
 export interface ProductionLogPolicy {
   readonly maxBytes: number;
@@ -81,6 +121,7 @@ interface ProductionLogEntry {
   readonly level: 'error' | 'info' | 'warn';
   readonly operation: string;
   readonly outcome?: 'failure' | 'interrupted' | 'success';
+  readonly phaseTimings?: readonly ProductionLogPhaseTiming[];
   readonly platform: string;
   readonly processId: number;
   readonly runtime: string;
@@ -127,6 +168,7 @@ export function withProductionLogging<A, E, R>(
       schemaVersion: PRODUCTION_LOG_SCHEMA_VERSION,
       version,
     } as const;
+    const phaseTimings: ProductionLogPhaseTiming[] = [];
 
     const startedEntry = {
       ...base,
@@ -140,7 +182,37 @@ export function withProductionLogging<A, E, R>(
       options.writeTimeoutMilliseconds,
     );
 
+    const phaseRecorder = ProductionLogPhaseRecorder.of({
+      time: <PhaseValue, PhaseError, PhaseRequirements>(
+        phase: ProductionLogPhase,
+        phaseEffect: Effect.Effect<PhaseValue, PhaseError, PhaseRequirements>,
+        successOutcome?: (value: PhaseValue) => ProductionLogPhaseOutcome,
+      ) =>
+        Effect.gen(function* () {
+          const phaseStartedAt = yield* Clock.currentTimeMillis;
+          return yield* phaseEffect.pipe(
+            Effect.onExit(exit =>
+              Effect.gen(function* () {
+                const phaseFinishedAt = yield* Clock.currentTimeMillis;
+                const timing = phaseTimingFromExit(
+                  phase,
+                  exit,
+                  successOutcome,
+                  Math.max(0, phaseFinishedAt - phaseStartedAt),
+                );
+                yield* Effect.sync(() => {
+                  if (phaseTimings.length < PRODUCTION_LOG_PHASE_TIMING_MAX_COUNT) {
+                    phaseTimings.push(timing);
+                  }
+                });
+              }),
+            ),
+          );
+        }),
+    });
+
     return yield* effect.pipe(
+      Effect.provideService(ProductionLogPhaseRecorder, phaseRecorder),
       Effect.onExit(exit =>
         Effect.gen(function* () {
           const finishedAt = yield* Clock.currentTimeMillis;
@@ -150,6 +222,7 @@ export function withProductionLogging<A, E, R>(
             ...completion,
             durationMilliseconds: Math.max(0, finishedAt - startedAt),
             event: 'invocation.finished',
+            ...(phaseTimings.length === 0 ? {} : {phaseTimings: [...phaseTimings]}),
             timestamp: timestamp(finishedAt),
           } satisfies ProductionLogEntry;
           yield* boundedInvocationLogWrite(
@@ -160,6 +233,27 @@ export function withProductionLogging<A, E, R>(
       ),
     );
   });
+}
+
+/**
+ * Records a bounded, typed phase duration when an invocation logger is in
+ * scope. Timings are batched into the existing invocation-finished write so
+ * instrumentation does not add production-log lock pressure. Outside a logged
+ * invocation this preserves the original Effect exactly.
+ */
+export function withProductionPhaseTiming<A, E, R>(
+  phase: ProductionLogPhase,
+  effect: Effect.Effect<A, E, R>,
+  successOutcome?: (value: A) => ProductionLogPhaseOutcome,
+): Effect.Effect<A, E, R> {
+  return Effect.serviceOption(ProductionLogPhaseRecorder).pipe(
+    Effect.flatMap(recorder =>
+      Option.match(recorder, {
+        onNone: () => effect,
+        onSome: service => service.time(phase, effect, successOutcome),
+      }),
+    ),
+  );
 }
 
 export const runProductionLogs = Effect.fn('productionLog.runProductionLogs')(function* (config: RuntimeConfig) {
@@ -627,6 +721,29 @@ function completionFromExit<A, E>(
   };
 }
 
+function phaseTimingFromExit<A, E>(
+  phase: ProductionLogPhase,
+  exit: Exit.Exit<A, E>,
+  successOutcome: ((value: A) => ProductionLogPhaseOutcome) | undefined,
+  durationMilliseconds: number,
+): ProductionLogPhaseTiming {
+  if (Exit.isSuccess(exit)) {
+    const classified = Result.try(() => successOutcome?.(exit.value) ?? 'success');
+    const outcome = Result.isSuccess(classified) ? classified.success : 'success';
+    return {durationMilliseconds, outcome, phase};
+  }
+  if (Cause.hasInterruptsOnly(exit.cause)) {
+    return {durationMilliseconds, outcome: 'interrupted', phase};
+  }
+  const diagnostic = Result.try(() => diagnosticErrorType(Cause.squash(exit.cause)));
+  return {
+    durationMilliseconds,
+    errorType: Result.isSuccess(diagnostic) ? diagnostic.success : PRODUCTION_LOG_UNKNOWN_ERROR_TYPE,
+    outcome: 'failure',
+    phase,
+  };
+}
+
 function diagnosticErrorType(error: unknown, depth = 0): string {
   if (
     depth < PRODUCTION_LOG_ERROR_CAUSE_MAX_DEPTH &&
@@ -667,6 +784,7 @@ function parseProductionLogEntry(line: string): ProductionLogEntry | undefined {
   const event = oneOf(value.event, ['invocation.finished', 'invocation.started'] as const);
   const level = oneOf(value.level, ['error', 'info', 'warn'] as const);
   const outcome = optionalOneOf(value.outcome, ['failure', 'interrupted', 'success'] as const);
+  const phaseTimings = parseProductionLogPhaseTimings(value.phaseTimings);
   const architecture = safeParsedLabel(value.architecture);
   const invocationId = safeParsedIdentifier(value.invocationId);
   const operation = safeParsedLabel(value.operation);
@@ -685,6 +803,7 @@ function parseProductionLogEntry(line: string): ProductionLogEntry | undefined {
     event === undefined ||
     level === undefined ||
     outcome === false ||
+    phaseTimings === false ||
     architecture === undefined ||
     invocationId === undefined ||
     operation === undefined ||
@@ -695,7 +814,8 @@ function parseProductionLogEntry(line: string): ProductionLogEntry | undefined {
     timestampValue === undefined ||
     processId === false ||
     durationMilliseconds === false ||
-    errorType === false
+    errorType === false ||
+    (event === 'invocation.started' && phaseTimings !== undefined)
   ) {
     return undefined;
   }
@@ -709,6 +829,7 @@ function parseProductionLogEntry(line: string): ProductionLogEntry | undefined {
     level,
     operation,
     ...(outcome === undefined ? {} : {outcome}),
+    ...(phaseTimings === undefined ? {} : {phaseTimings}),
     platform,
     processId,
     runtime,
@@ -717,6 +838,30 @@ function parseProductionLogEntry(line: string): ProductionLogEntry | undefined {
     timestamp: timestampValue,
     version,
   };
+}
+
+function parseProductionLogPhaseTimings(value: unknown): readonly ProductionLogPhaseTiming[] | undefined | false {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length > PRODUCTION_LOG_PHASE_TIMING_MAX_COUNT) return false;
+  const timings: ProductionLogPhaseTiming[] = [];
+  for (const entry of value) {
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) return false;
+    const record = entry as Record<string, unknown>;
+    const durationMilliseconds = safeNonNegativeInteger(record.durationMilliseconds);
+    const errorType = optionalSafeParsedLabel(record.errorType);
+    const outcome = oneOf(record.outcome, ['failure', 'interrupted', 'success', 'timed-out', 'unavailable'] as const);
+    const phase = oneOf(record.phase, PRODUCTION_LOG_PHASES);
+    if (durationMilliseconds === false || errorType === false || outcome === undefined || phase === undefined) {
+      return false;
+    }
+    timings.push({
+      durationMilliseconds,
+      ...(errorType === undefined ? {} : {errorType}),
+      outcome,
+      phase,
+    });
+  }
+  return timings;
 }
 
 function safeParsedLabel(value: unknown): string | undefined {

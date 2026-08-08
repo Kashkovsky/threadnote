@@ -1,7 +1,10 @@
 import {mkdir, mkdtemp, rm, utimes, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {Effect, Layer, Option} from 'effect';
+import {it as effectIt} from '@effect/vitest';
+import {Cause, Effect, Exit, Fiber, Layer, Option, Semaphore} from 'effect';
+import * as FC from 'effect/testing/FastCheck';
+import {TestClock} from 'effect/testing';
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
 
 const inference = vi.hoisted(() => ({rerank: vi.fn()}));
@@ -20,8 +23,10 @@ import {selectLocalModel} from '../../src/models/selection.js';
 import {LocalModelStore, type LocalModelStoreShape} from '../../src/models/store.js';
 import {loadRecallIndex, loadRecallIndexData} from '../../src/recall/index.js';
 import {
+  boundedRecallSemanticRetrieval,
   createRecallRerankerCache,
   loadRecallExpansionVocabulary,
+  MCP_RECALL_SEMANTIC_RETRIEVAL_TIMEOUT_MILLISECONDS,
   prepareRecallSections,
 } from '../../src/recall/runtime.js';
 import type {RuntimeConfig} from '../../src/types.js';
@@ -37,6 +42,127 @@ describe('recall runtime orchestration', () => {
   afterEach(async () => {
     await Promise.all(homes.splice(0).map(home => rm(home, {force: true, recursive: true})));
   });
+
+  effectIt.effect('bounds one semantic retrieval attempt and interrupts only the timed-out work', () =>
+    Effect.gen(function* () {
+      let interrupted = 0;
+      let invocations = 0;
+      const retrieval = Effect.sync(() => {
+        invocations += 1;
+      }).pipe(
+        Effect.andThen(Effect.sleep(MCP_RECALL_SEMANTIC_RETRIEVAL_TIMEOUT_MILLISECONDS + 1)),
+        Effect.as('semantic-result'),
+        Effect.onInterrupt(() => Effect.sync(() => (interrupted += 1))),
+      );
+      const fiber = yield* boundedRecallSemanticRetrieval(retrieval).pipe(Effect.forkChild);
+
+      yield* TestClock.adjust(MCP_RECALL_SEMANTIC_RETRIEVAL_TIMEOUT_MILLISECONDS);
+
+      expect(yield* Fiber.join(fiber)).toEqual({status: 'timed-out'});
+      expect(invocations).toBe(1);
+      expect(interrupted).toBe(1);
+    }),
+  );
+
+  effectIt.effect('reports the first semantic failure without retrying it', () =>
+    Effect.gen(function* () {
+      const firstFailure = new Error('first semantic failure');
+      let invocations = 0;
+
+      const result = yield* boundedRecallSemanticRetrieval(
+        Effect.sync(() => {
+          invocations += 1;
+        }).pipe(Effect.andThen(Effect.fail(firstFailure))),
+      );
+
+      expect(result.status).toBe('failed');
+      expect(result.status === 'failed' ? Cause.squash(result.cause) : undefined).toBe(firstFailure);
+      expect(invocations).toBe(1);
+    }),
+  );
+
+  effectIt.effect('preserves external semantic-retrieval cancellation', () =>
+    Effect.gen(function* () {
+      let invocations = 0;
+      const fiber = yield* boundedRecallSemanticRetrieval(
+        Effect.sync(() => {
+          invocations += 1;
+        }).pipe(Effect.andThen(Effect.never)),
+      ).pipe(Effect.forkChild);
+      yield* Effect.yieldNow;
+
+      yield* Fiber.interrupt(fiber);
+      const exit = yield* Fiber.await(fiber);
+
+      expect(Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)).toBe(true);
+      expect(invocations).toBe(1);
+    }),
+  );
+
+  effectIt.effect.prop(
+    'returns semantic work exactly when an arbitrary delay finishes inside the total budget',
+    {
+      delayMilliseconds: FC.oneof(
+        FC.integer({max: MCP_RECALL_SEMANTIC_RETRIEVAL_TIMEOUT_MILLISECONDS - 1, min: 0}),
+        FC.integer({
+          max: MCP_RECALL_SEMANTIC_RETRIEVAL_TIMEOUT_MILLISECONDS * 2,
+          min: MCP_RECALL_SEMANTIC_RETRIEVAL_TIMEOUT_MILLISECONDS + 1,
+        }),
+      ),
+    },
+    ({delayMilliseconds}) =>
+      Effect.gen(function* () {
+        let interrupted = 0;
+        let invocations = 0;
+        const retrieval = Effect.sync(() => {
+          invocations += 1;
+        }).pipe(
+          Effect.andThen(Effect.sleep(delayMilliseconds)),
+          Effect.as('semantic-result'),
+          Effect.onInterrupt(() => Effect.sync(() => (interrupted += 1))),
+        );
+        const fiber = yield* boundedRecallSemanticRetrieval(retrieval).pipe(Effect.forkChild);
+
+        yield* TestClock.adjust(Math.max(delayMilliseconds, MCP_RECALL_SEMANTIC_RETRIEVAL_TIMEOUT_MILLISECONDS));
+
+        const completedInsideBudget = delayMilliseconds < MCP_RECALL_SEMANTIC_RETRIEVAL_TIMEOUT_MILLISECONDS;
+        expect(yield* Fiber.join(fiber)).toEqual(
+          completedInsideBudget ? {status: 'completed', value: 'semantic-result'} : {status: 'timed-out'},
+        );
+        expect(invocations).toBe(1);
+        expect(interrupted).toBe(completedInsideBudget ? 0 : 1);
+      }),
+    {fastCheck: {numRuns: 40}},
+  );
+
+  effectIt.effect('falls back predictably when serialized model work is contended', () =>
+    Effect.gen(function* () {
+      const inferencePermit = yield* Semaphore.make(1);
+      let interrupted = 0;
+      let invocations = 0;
+      const retrievals = Array.from({length: 8}, (_unused, index) =>
+        boundedRecallSemanticRetrieval(
+          Effect.sync(() => {
+            invocations += 1;
+          }).pipe(
+            Effect.andThen(inferencePermit.withPermit(Effect.sleep(4_000).pipe(Effect.as(index)))),
+            Effect.onInterrupt(() => Effect.sync(() => (interrupted += 1))),
+          ),
+        ),
+      );
+      const fiber = yield* Effect.all(retrievals, {concurrency: 'unbounded'}).pipe(Effect.forkChild);
+      yield* Effect.yieldNow;
+
+      yield* TestClock.adjust(MCP_RECALL_SEMANTIC_RETRIEVAL_TIMEOUT_MILLISECONDS);
+
+      const results = yield* Fiber.join(fiber);
+      expect(results.filter(result => result.status === 'completed')).toHaveLength(3);
+      expect(results.filter(result => result.status === 'timed-out')).toHaveLength(5);
+      expect(invocations).toBe(8);
+      expect(interrupted).toBe(5);
+      expect(yield* inferencePermit.withPermit(Effect.succeed('permit-released'))).toBe('permit-released');
+    }),
+  );
 
   it('reuses reranker scores across repeated prepare passes in one top-level recall', async () => {
     const home = await mkdtemp(join(tmpdir(), 'threadnote-recall-runtime-'));

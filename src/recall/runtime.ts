@@ -49,6 +49,7 @@ interface PrepareRecallSectionsInput<R> {
   readonly rerankerCache?: RecallRerankerCache;
   readonly seedUris?: readonly string[];
   readonly semanticResult?: Option.Option<RecallSemanticScoresResult>;
+  readonly semanticGenerationMismatchPolicy?: 'fallback' | 'reload';
 }
 
 const INDEX_CANDIDATE_MULTIPLIER = 10;
@@ -64,6 +65,7 @@ const MINIMUM_QUERY_VARIANT_TERMS = 2;
 const NATIVE_RERANK_CANDIDATE_LIMIT = 32;
 const NATIVE_RERANK_DOCUMENT_LIMIT = 4_000;
 const SEMANTIC_GENERATION_RETRY_LIMIT = 2;
+export const MCP_RECALL_SEMANTIC_RETRIEVAL_TIMEOUT_MILLISECONDS = 15_000;
 
 export interface RecallRerankerCache {
   readonly scores: Map<string, number>;
@@ -119,7 +121,7 @@ export const prepareRecallSections = Effect.fn('recall.prepareSections')(functio
     if (yield* semanticResultMatchesLexicalSnapshot(config, semanticResult, prepared.generations)) {
       return {...prepared.sections, semanticResult};
     }
-    if (retry >= SEMANTIC_GENERATION_RETRY_LIMIT) {
+    if (input.semanticGenerationMismatchPolicy === 'fallback' || retry >= SEMANTIC_GENERATION_RETRY_LIMIT) {
       const lexicalOnly = yield* prepareRecallSectionsAttempt(
         config,
         input,
@@ -223,6 +225,16 @@ export interface RecallSemanticScoresResult {
   readonly warning: Option.Option<string>;
 }
 
+export type BoundedRecallSemanticRetrieval<A> =
+  | {readonly status: 'completed'; readonly value: A}
+  | {readonly cause: Cause.Cause<unknown>; readonly status: 'failed'}
+  | {readonly status: 'timed-out'};
+
+export interface McpRecallSemanticScoresResult {
+  readonly result: RecallSemanticScoresResult;
+  readonly status: 'available' | 'failed' | 'timed-out' | 'unavailable';
+}
+
 function emptyRecallSemanticScoresResult(warning: Option.Option<string> = Option.none()): RecallSemanticScoresResult {
   return {
     corpusGeneration: Option.none(),
@@ -230,6 +242,88 @@ function emptyRecallSemanticScoresResult(warning: Option.Option<string> = Option
     warning,
   };
 }
+
+export function boundedRecallSemanticRetrieval<A, E, R>(
+  retrieval: Effect.Effect<A, E, R>,
+): Effect.Effect<BoundedRecallSemanticRetrieval<A>, never, R> {
+  return retrieval.pipe(
+    Effect.map(value => ({status: 'completed' as const, value})),
+    Effect.catchCause(cause =>
+      Cause.hasInterrupts(cause)
+        ? Effect.failCause(cause as Cause.Cause<never>)
+        : Effect.succeed({cause: cause as Cause.Cause<unknown>, status: 'failed' as const}),
+    ),
+    Effect.timeoutOrElse({
+      duration: MCP_RECALL_SEMANTIC_RETRIEVAL_TIMEOUT_MILLISECONDS,
+      orElse: () => Effect.succeed({status: 'timed-out' as const}),
+    }),
+  );
+}
+
+/**
+ * MCP recall uses only the already-active lexical/vector generations. It never
+ * builds, repairs, or retries derived storage while a client request is open.
+ */
+export const loadMcpRecallSemanticScoresResult = Effect.fn('recall.loadMcpSemanticScoresResult')(function* (
+  config: RecallRuntimeConfig,
+  query: string,
+  limit: number,
+) {
+  const semanticLimit = Math.max(INDEX_CANDIDATE_MINIMUM, limit * INDEX_CANDIDATE_MULTIPLIER);
+  const attempt = yield* boundedRecallSemanticRetrieval(
+    loadReadOnlySemanticScoresAttempt(config, query, semanticLimit),
+  );
+  if (attempt.status === 'timed-out') {
+    return {
+      result: emptyRecallSemanticScoresResult(Option.some(semanticRecallTimeoutWarning())),
+      status: 'timed-out',
+    } satisfies McpRecallSemanticScoresResult;
+  }
+  if (attempt.status === 'failed') {
+    return {
+      result: emptyRecallSemanticScoresResult(Option.some(semanticRecallFailureWarning(attempt.cause))),
+      status: 'failed',
+    } satisfies McpRecallSemanticScoresResult;
+  }
+  if (attempt.value === undefined || attempt.value.scores === undefined) {
+    return {result: emptyRecallSemanticScoresResult(), status: 'unavailable'} satisfies McpRecallSemanticScoresResult;
+  }
+  return {
+    result: {
+      corpusGeneration: Option.some(attempt.value.corpusGeneration),
+      scores: Option.fromNullishOr(attempt.value.scores),
+      warning: Option.none(),
+    },
+    status: 'available',
+  } satisfies McpRecallSemanticScoresResult;
+});
+
+const loadReadOnlySemanticScoresAttempt = Effect.fn('recall.loadReadOnlySemanticScoresAttempt')(function* (
+  config: RecallRuntimeConfig,
+  query: string,
+  limit: number,
+) {
+  const selection = yield* readModelSelection(config.agentContextHome);
+  const modelId = selection.roles.embedding;
+  if (!modelId) return undefined;
+  const catalog = yield* LocalModelCatalog;
+  const manifest = yield* catalog.get(modelId);
+  if (manifest.role !== 'embedding') return undefined;
+  const store = yield* LocalModelStore;
+  const installed = yield* store.status(config.agentContextHome, manifest);
+  if (!installed.installed) return undefined;
+  const corpusGeneration = yield* currentRecallCorpusGeneration(config);
+  if (Option.isNone(corpusGeneration)) return undefined;
+  if (!(yield* vectorIndexMatchesGeneration(config.agentContextHome, manifest, corpusGeneration.value))) {
+    return undefined;
+  }
+  const scores = yield* selectedSemanticScores(config, query, {
+    corpusGeneration: corpusGeneration.value,
+    currentCorpusGeneration: () => currentRecallCorpusGeneration(config),
+    limit,
+  });
+  return {corpusGeneration: corpusGeneration.value, scores};
+});
 
 const semanticResultMatchesLexicalSnapshot = Effect.fn('recall.semanticResultMatchesLexicalSnapshot')(function* (
   config: RecallRuntimeConfig,
@@ -370,6 +464,13 @@ function semanticRecallFailureWarning(cause: Cause.Cause<unknown>): string {
   return (
     `Local AI recall warning: semantic retrieval failed (${failureType}); deterministic lexical recall continued. ` +
     'Run threadnote doctor --dry-run if this repeats.'
+  );
+}
+
+function semanticRecallTimeoutWarning(): string {
+  return (
+    `Local AI recall warning: semantic retrieval timed out after ${MCP_RECALL_SEMANTIC_RETRIEVAL_TIMEOUT_MILLISECONDS}ms; ` +
+    'deterministic lexical recall continued. Run threadnote doctor --dry-run if this repeats.'
   );
 }
 

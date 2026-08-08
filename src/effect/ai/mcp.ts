@@ -3,7 +3,7 @@ import {Cause, Context, Effect, Layer, Logger, Option, Schema, Sink, Stdio} from
 import {McpSchema, McpServer} from 'effect/unstable/ai';
 import {fromPromiseError} from '../errors.js';
 import type {ApplicationServices} from '../runtime.js';
-import {withProductionLogging} from '../production_log.js';
+import {omitProductionLogPhaseRecorder, withProductionLogging} from '../production_log.js';
 
 const MCP_PRODUCTION_LOG_WRITE_TIMEOUT_MILLISECONDS = 50;
 const EFFECT_RPC_CAUSE_MARKER = new TextEncoder().encode('"_tag":"Cause"');
@@ -99,7 +99,7 @@ export class EffectMcpServerAdapter {
     return Layer.effectDiscard(
       Effect.gen(function* () {
         const server = yield* McpServer.McpServer;
-        const applicationServices = yield* Effect.context<ApplicationServices>();
+        const applicationServices = omitProductionLogPhaseRecorder(yield* Effect.context<ApplicationServices>());
         for (const registration of resourceTemplates) {
           yield* server.addResourceTemplate({
             annotations: Context.empty(),

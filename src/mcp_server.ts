@@ -114,13 +114,13 @@ import {RECALL_RANKER_VERSION} from './recall/rank.js';
 import {canonicalResourceUri, parseResourceId, resourceIdWithoutAnchor} from './storage/resource-id.js';
 import {runObsidianProjectionPublish} from './obsidian_projection.js';
 import {syncObsidianSourcesBeforeRecall} from './obsidian_source.js';
-import {withProductionLogging} from './effect/production_log.js';
+import {withProductionLogging, withProductionPhaseTiming} from './effect/production_log.js';
 import {
   buildRecallIndexSelectionCandidates,
   buildRecallSelectionCandidates,
   createRecallRerankerCache,
   loadRecallExpansionVocabulary,
-  loadRecallSemanticScoresResult,
+  loadMcpRecallSemanticScoresResult,
   prepareRecallSections,
   recallSelectionAnchorIds,
   recallSelectionQueries,
@@ -2611,7 +2611,10 @@ interface RecallToolParams {
 function runRecallTool(config: RuntimeConfig, params: RecallToolParams) {
   return Effect.gen(function* () {
     const syncWarnings: string[] = [];
-    const syncedTeams = yield* syncSharedReposBeforeAgentRead(config).pipe(
+    const syncedTeams = yield* withProductionPhaseTiming(
+      'recall.shared-sync',
+      syncSharedReposBeforeAgentRead(config),
+    ).pipe(
       Effect.map(syncResult => {
         syncWarnings.push(...syncResult.warnings);
         return syncResult.syncedTeams;
@@ -2622,7 +2625,10 @@ function runRecallTool(config: RuntimeConfig, params: RecallToolParams) {
       }),
     );
     const obsidianSyncWarnings: string[] = [];
-    const syncedObsidianSources = yield* syncObsidianSourcesBeforeRecall(config).pipe(
+    const syncedObsidianSources = yield* withProductionPhaseTiming(
+      'recall.obsidian-sync',
+      syncObsidianSourcesBeforeRecall(config),
+    ).pipe(
       Effect.map(syncResult => {
         obsidianSyncWarnings.push(...syncResult.warnings);
         return syncResult.syncedSources;
@@ -2704,7 +2710,19 @@ function runRecallTool(config: RuntimeConfig, params: RecallToolParams) {
     let hybridMinimumScore = recallHybridMinimumScore(Number(threshold), params.threshold !== undefined);
     const expansionQueries: string[] = [];
     const recallLimit = params.nodeLimit ?? 12;
-    let semanticResult = yield* loadRecallSemanticScoresResult(config, query, recallLimit);
+    const semanticRetrieval = yield* withProductionPhaseTiming(
+      'recall.semantic-retrieval',
+      loadMcpRecallSemanticScoresResult(config, query, recallLimit),
+      result =>
+        result.status === 'available'
+          ? 'success'
+          : result.status === 'unavailable'
+            ? 'unavailable'
+            : result.status === 'timed-out'
+              ? 'timed-out'
+              : 'failure',
+    );
+    let semanticResult = semanticRetrieval.result;
     const surfacedSemanticWarnings = new Set<string>();
     const appendSemanticWarning = (result: typeof semanticResult) => {
       if (Option.isNone(result.warning) || surfacedSemanticWarnings.has(result.warning.value)) return;
@@ -2714,30 +2732,34 @@ function runRecallTool(config: RuntimeConfig, params: RecallToolParams) {
     appendSemanticWarning(semanticResult);
     const rerankerCache = createRecallRerankerCache();
     const prepareSections = (candidateUris?: readonly string[]) =>
-      Effect.gen(function* () {
-        const prepared = yield* prepareRecallSections(config, {
-          allowExactRescue: params.threshold === undefined,
-          allowedUriScopes: params.pinnedUri ? [params.pinnedUri] : undefined,
-          candidateUris,
-          exactMatches,
-          feedbackQuery: params.query,
-          includeInactive: params.includeArchived,
-          limit: recallLimit,
-          minimumScore: hybridMinimumScore,
-          passes,
-          preferredUriScopes: params.pinnedUri ? undefined : [...scopedRecallUris],
-          project: recallProjectName,
-          query,
-          queryVariants: expansionQueries,
-          readRecords: uris => readMemoryRecordsByUri(config, uris),
-          rerankerCache,
-          seedUris: [params.pinnedUri, seededUri].filter((uri): uri is string => uri !== undefined),
-          semanticResult: Option.some(semanticResult),
-        });
-        semanticResult = prepared.semanticResult;
-        appendSemanticWarning(semanticResult);
-        return prepared;
-      });
+      withProductionPhaseTiming(
+        'recall.lexical-ranking',
+        Effect.gen(function* () {
+          const prepared = yield* prepareRecallSections(config, {
+            allowExactRescue: params.threshold === undefined,
+            allowedUriScopes: params.pinnedUri ? [params.pinnedUri] : undefined,
+            candidateUris,
+            exactMatches,
+            feedbackQuery: params.query,
+            includeInactive: params.includeArchived,
+            limit: recallLimit,
+            minimumScore: hybridMinimumScore,
+            passes,
+            preferredUriScopes: params.pinnedUri ? undefined : [...scopedRecallUris],
+            project: recallProjectName,
+            query,
+            queryVariants: expansionQueries,
+            readRecords: uris => readMemoryRecordsByUri(config, uris),
+            rerankerCache,
+            seedUris: [params.pinnedUri, seededUri].filter((uri): uri is string => uri !== undefined),
+            semanticGenerationMismatchPolicy: 'fallback',
+            semanticResult: Option.some(semanticResult),
+          });
+          semanticResult = prepared.semanticResult;
+          appendSemanticWarning(semanticResult);
+          return prepared;
+        }),
+      );
     let recallSections = yield* prepareSections();
     const shouldAttemptAiExpansion = shouldExpandRecall(recallSections.confidence);
     const indexSelectionCandidates = shouldAttemptAiExpansion

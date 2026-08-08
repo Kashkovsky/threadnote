@@ -367,6 +367,52 @@ describe('Threadnote MCP toolsets', () => {
     );
   });
 
+  it('records one-time recall pre-sync and read-only retrieval phases without private inputs', async () => {
+    await withMcpClient(
+      async (client, fixture) => {
+        const privateQuery = 'private-phase-timing-query-7788';
+        await writeFile(
+          join(fixture.home, 'layout.json'),
+          `${JSON.stringify({createdBy: 'threadnote', version: 2})}\n`,
+          'utf8',
+        );
+        await writeCanonicalMemory(
+          fixture.home,
+          'phase-timing.md',
+          canonicalMemoryContent('phase-timing', `Lexical anchor ${privateQuery}.`),
+        );
+
+        const result = await client.callTool(
+          {arguments: {project: 'threadnote', query: privateQuery}, name: 'recall_context'},
+          undefined,
+          {timeout: 5000},
+        );
+        expect(result.isError).not.toBe(true);
+
+        const productionLog = await readFile(join(fixture.home, 'logs', 'threadnote.log'), 'utf8');
+        const entries = productionLog
+          .trim()
+          .split('\n')
+          .map(line => JSON.parse(line) as Record<string, unknown>);
+        const finished = entries
+          .filter(entry => entry.event === 'invocation.finished' && entry.operation === 'recall_context')
+          .at(-1);
+        const phaseTimings = finished?.phaseTimings as
+          readonly {readonly outcome: string; readonly phase: string}[] | undefined;
+
+        expect(phaseTimings?.filter(timing => timing.phase === 'recall.shared-sync')).toHaveLength(1);
+        expect(phaseTimings?.filter(timing => timing.phase === 'recall.obsidian-sync')).toHaveLength(1);
+        expect(phaseTimings?.filter(timing => timing.phase === 'recall.semantic-retrieval')).toHaveLength(1);
+        expect(phaseTimings?.filter(timing => timing.phase === 'recall.lexical-ranking').length).toBeGreaterThanOrEqual(
+          1,
+        );
+        expect(phaseTimings?.find(timing => timing.phase === 'recall.semantic-retrieval')?.outcome).toBe('unavailable');
+        expect(productionLog).not.toContain(privateQuery);
+      },
+      {toolset: 'core'},
+    );
+  });
+
   it('returns complete large canonical memories without applying graph response budgets', async () => {
     await withMcpClient(
       async client => {

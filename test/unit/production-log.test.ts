@@ -1,11 +1,13 @@
 import {it as effectIt} from '@effect/vitest';
-import {Cause, Effect, Exit, FileSystem, Path} from 'effect';
+import {Cause, Effect, Exit, Fiber, FileSystem, Path} from 'effect';
+import {TestClock} from 'effect/testing';
 import {describe, expect} from 'vitest';
 import {
   PRODUCTION_LOG_FILE_NAME,
   productionLogSupportExcerpt,
   runProductionLogs,
   withProductionLogging,
+  withProductionPhaseTiming,
 } from '../../src/effect/production_log.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import type {RuntimeConfig} from '../../src/types.js';
@@ -19,6 +21,11 @@ interface ParsedProductionLogEntry {
   readonly invocationId: string;
   readonly operation: string;
   readonly outcome?: string;
+  readonly phaseTimings?: readonly {
+    readonly durationMilliseconds: number;
+    readonly outcome: string;
+    readonly phase: string;
+  }[];
   readonly schemaVersion: number;
 }
 
@@ -195,6 +202,41 @@ describe('production log writer', () => {
           outcome: 'failure',
         });
         expect(content).not.toContain(responseText);
+      }),
+    ).pipe(Effect.provide(ApplicationLayer)),
+  );
+
+  effectIt.effect('batches typed phase timings into the existing finished entry without application content', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const {fs, home, path} = yield* ownedTestHome('phase-timings');
+        const privateQuery = 'customer-query-must-not-appear';
+
+        yield* withProductionLogging(
+          home,
+          {component: 'mcp', operation: 'recall_context'},
+          Effect.gen(function* () {
+            const syncFiber = yield* withProductionPhaseTiming('recall.shared-sync', Effect.sleep(25)).pipe(
+              Effect.forkChild,
+            );
+            yield* TestClock.adjust(25);
+            yield* Fiber.join(syncFiber);
+            yield* withProductionPhaseTiming(
+              'recall.semantic-retrieval',
+              Effect.succeed({privateQuery, status: 'timed-out' as const}),
+              result => result.status,
+            );
+          }),
+        );
+
+        const content = yield* fs.readFileString(productionLogPath(path, home));
+        const entries = parseEntries(content);
+        expect(entries).toHaveLength(2);
+        expect(entries[1]?.phaseTimings).toEqual([
+          {durationMilliseconds: 25, outcome: 'success', phase: 'recall.shared-sync'},
+          {durationMilliseconds: 0, outcome: 'timed-out', phase: 'recall.semantic-retrieval'},
+        ]);
+        expect(content).not.toContain(privateQuery);
       }),
     ).pipe(Effect.provide(ApplicationLayer)),
   );
