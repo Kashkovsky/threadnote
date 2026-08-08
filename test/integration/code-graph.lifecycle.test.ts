@@ -1601,6 +1601,29 @@ describe('native code graph lifecycle', () => {
     expect(result.diagnostics.some(diagnostic => diagnostic.includes('src/broken.ts'))).toBe(true);
   });
 
+  it('treats changes to graph-ineligible tracked content as freshness-clean', async () => {
+    const root = createNoMaterializedChangesRepository();
+    const home = join(root, '.threadnote-test-home');
+    const result = await runEffect(
+      Effect.gen(function* () {
+        const indexer = yield* CodeGraphIndexer;
+        const query = yield* CodeGraphQueryService;
+        const indexed = yield* indexer.index({cwd: root, threadnoteHome: home});
+        const status = yield* query.status(home, root);
+        return {indexed, status};
+      }),
+    );
+
+    expect(result.indexed.snapshot.dirty).toBe(false);
+    expect(result.indexed.materialization).toMatchObject({mode: 'full'});
+    expect(result.indexed.materialization?.fallbackReason).toBeUndefined();
+    expect(
+      result.indexed.diagnostics.some(message => message.startsWith('Dirty overlay used full materialization:')),
+    ).toBe(false);
+    expect(result.status).toMatchObject({freshness: 'current', stale: false});
+    expect(result.status.readySnapshot?.id).toBe(result.indexed.snapshot.id);
+  });
+
   it.each([
     ['a renamed declaration', createRenamedDeclarationRepository, 'resolution-surface-changed'],
     ['a changed lookup signature', createChangedSignatureRepository, 'resolution-surface-changed'],
@@ -1609,7 +1632,6 @@ describe('native code graph lifecycle', () => {
     ['dynamic re-export aliases', createDynamicAliasRepository, 'dynamic-aliases'],
     ['an added eligible file', createAddedFileRepository, 'file-set-changed'],
     ['a deleted eligible file', createDeletedFileRepository, 'file-set-changed'],
-    ['only changed graph-ineligible content', createNoMaterializedChangesRepository, 'no-materialized-changes'],
     ['an expanded changed-fact batch', createFactBudgetExpandedRepository, 'fact-budget-expanded'],
   ] as const)('fails closed to full materialization for %s', async (_label, createRepository, fallbackReason) => {
     const root = createRepository();
@@ -3001,7 +3023,7 @@ describe('native code graph lifecycle', () => {
   });
 
   it.skipIf(process.platform === 'win32')(
-    'reclaims an interrupted persistent build after its linked worktree is removed',
+    'resumes an interrupted persistent build after its linked worktree is removed',
     async () => {
       const root = createManySourceRepository(140);
       git(root, ['branch', 'graph-orphan']);
@@ -3061,32 +3083,30 @@ describe('native code graph lifecycle', () => {
         interruptedDatabase.close();
 
         git(root, ['worktree', 'remove', '--force', orphanWorktree]);
-        const reclamationProgress: Array<{readonly completed: number; readonly total: number}> = [];
         const survivor = await runEffect(
           Effect.gen(function* () {
             const indexer = yield* CodeGraphIndexer;
             return yield* indexer.index({
               cwd: root,
-              onProgress: progress =>
-                progress.phase === 'reclaiming'
-                  ? Effect.sync(() => reclamationProgress.push({completed: progress.completed, total: progress.total}))
-                  : Effect.void,
               threadnoteHome: home,
             });
           }),
         );
 
-        expect(reclamationProgress[0]).toEqual({completed: 0, total: 1});
-        expect(reclamationProgress.at(-1)).toEqual({completed: 1, total: 1});
         const reclaimedDatabase = new Database(databasePath, {readonly: true});
         try {
           expect(
             reclaimedDatabase
-              .query<{readonly state: string; readonly worktree_id: string}, [string]>(
-                'SELECT state, worktree_id FROM snapshots WHERE id = ?',
-              )
+              .query<{readonly state: string}, [string]>('SELECT state FROM snapshots WHERE id = ?')
               .get(interruptedId),
-          ).toEqual({state: 'ready', worktree_id: survivor.identity.worktreeId});
+          ).toEqual({state: 'ready'});
+          expect(
+            reclaimedDatabase
+              .query<{readonly snapshot_id: string}, [string]>(
+                'SELECT snapshot_id FROM active_snapshots WHERE worktree_id = ?',
+              )
+              .get(survivor.identity.worktreeId),
+          ).toEqual({snapshot_id: interruptedId});
           expect(survivor.snapshot.id).toBe(interruptedId);
           for (const table of ['snapshot_build_owners', 'building_materialization_batches'] as const) {
             expect(
