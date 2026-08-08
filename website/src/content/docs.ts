@@ -711,6 +711,10 @@ threadnote index status`,
             text: 'Threadnote stores canonical resources as ordinary files below ~/.threadnote/data/<account> and addresses them with stable threadnote:// URIs. The URI is the durable pointer; internal filesystem layout and derived index formats may evolve independently.',
           },
           {
+            type: 'paragraph',
+            text: 'MCP clients can read one canonical threadnote:// URI through the standard resources/read protocol without enumerating private memories. Protocol reads are UTF-8 text capped at 1 MiB and authorize the active account and user; use read_context when a returned canonical memory needs a complete, larger read.',
+          },
+          {
             type: 'table',
             headers: ['Data', 'Role', 'Authority'],
             rows: [
@@ -1333,6 +1337,14 @@ threadnote graph compact --dry-run`,
           },
           {
             type: 'paragraph',
+            text: 'Trusted local diagnostics associate each indexed view with its worktree folder when Threadnote can verify the repository, checkout, and worktree identity. Human output and JSON v2 distinguish verified, missing, stale, invalid, and legacy-unknown associations: missing is reserved for a previously validated folder that is now absent, while legacy-unknown means no private association has been recorded yet. Every graph action revalidates the complete identity before using a saved folder.',
+          },
+          {
+            type: 'note',
+            text: 'Folder associations are local-only operational data. The authenticated loopback Manager may display them, but MCP responses, production logs, issue-report diagnostics, and portable graph output remain path-free.',
+          },
+          {
+            type: 'paragraph',
             text: 'A cold MCP call in a large repository may return state=indexing with a phase and retryAfterMilliseconds while one session-scoped build continues. Agents cannot query partial rows from an unpromoted snapshot; retry the same inspect_code_graph call after the requested delay. Once a consistent lexical snapshot is promoted, query, node, neighbors, and explain can use it while optional vector enrichment and whole-graph summaries continue in the background. During a source refresh those operations may disclose the previous ready snapshot as stale; path and impact wait for current state.',
           },
           {
@@ -1486,6 +1498,10 @@ threadnote manage --no-open`,
           {
             type: 'paragraph',
             text: 'Manager starts a temporary local HTTP server only for the foreground session, binds to loopback, and uses a per-process bearer token. It is not a daemon and never exposes a model or memory server.',
+          },
+          {
+            type: 'paragraph',
+            text: 'Manager chooses a free ephemeral loopback port by default. Pass --ui-port 0 to request one explicitly, or --ui-port <port> to require a fixed local port; the printed URL always contains the selected port. Manager never falls back to a wildcard interface.',
           },
           {
             type: 'list',
