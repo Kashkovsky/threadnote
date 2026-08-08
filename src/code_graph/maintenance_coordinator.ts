@@ -5,6 +5,7 @@ import {codeGraphMaintenanceIntentActive} from './maintenance_gate.js';
 import {CodeGraphStoreError} from './types.js';
 
 export interface CodeGraphRoutineMaintenanceTick {
+  readonly checkoutId: string;
   readonly databasePath: string;
   readonly threadnoteHome: string;
   readonly writerLockPath: string;
@@ -46,7 +47,12 @@ export class CodeGraphMaintenanceCoordinator extends Context.Service<
       const path = yield* Path.Path;
       const system = yield* SystemInfo;
       return yield* makeCodeGraphMaintenanceCoordinator(
-        input => store.runRoutineMaintenance(input.databasePath, {writerLockPath: input.writerLockPath}),
+        input =>
+          store.runRoutineMaintenance(input.databasePath, {
+            checkoutId: input.checkoutId,
+            threadnoteHome: input.threadnoteHome,
+            writerLockPath: input.writerLockPath,
+          }),
         threadnoteHome =>
           codeGraphMaintenanceIntentActive(threadnoteHome).pipe(
             Effect.provideService(FileSystem.FileSystem, fs),

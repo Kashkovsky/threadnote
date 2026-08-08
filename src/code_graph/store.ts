@@ -6,6 +6,12 @@ import {sha256HexSync} from '../crypto/sha256.js';
 import {isFileLockTimeout, withExclusiveFileLock} from '../effect/file_lock.js';
 import {SystemInfo} from '../effect/system.js';
 import {
+  classifyCodeGraphBuildOwner,
+  type CodeGraphBuildOwnerIdentity,
+  type CodeGraphBuildOwnerLiveness,
+} from './build_owner.js';
+import {corroborateCodeGraphBuildOwnerStatus} from './build_status.js';
+import {
   areCodeGraphLookupTiersWithinCandidateBudget,
   CODE_GRAPH_REFERENCE_CANDIDATES_PER_REFERENCE_MAXIMUM,
   ensureBoundedCodeGraphFact,
@@ -14,6 +20,8 @@ import {
   type CodeGraphCacheFactInput,
 } from './fact_budget.js';
 import {compareCodeUnits} from './ordering.js';
+import {codeGraphMaintenanceIntentActive} from './maintenance_gate.js';
+import {codeGraphLayout, codeGraphSnapshotBuildLockPath} from './layout.js';
 import type {
   CodeGraphEdge,
   CodeGraphFileFacts,
@@ -211,7 +219,7 @@ export interface CodeGraphDatabaseRepair {
 
 export type CodeGraphRoutineMaintenanceResult =
   | {
-      readonly cleanup: 'completed-build' | 'none' | 'retired-snapshot';
+      readonly cleanup: 'abandoned-build' | 'completed-build' | 'none' | 'retired-snapshot';
       readonly expiredLeases: number;
       readonly remaining: boolean;
       readonly retiredSnapshots: number;
@@ -219,7 +227,14 @@ export type CodeGraphRoutineMaintenanceResult =
       readonly state: 'completed';
     }
   | {
-      readonly reason: 'external-maintenance' | 'home-tick-active' | 'writer-busy';
+      readonly reason:
+        | 'external-maintenance'
+        | 'home-tick-active'
+        | 'owner-changed'
+        | 'owner-protected'
+        | 'snapshot-busy'
+        | 'worktree-busy'
+        | 'writer-busy';
       readonly state: 'deferred';
     }
   | {
@@ -228,6 +243,10 @@ export type CodeGraphRoutineMaintenanceResult =
     };
 
 export interface CodeGraphRoutineMaintenanceOptions {
+  /** Stable checkout identity required for exact abandoned-owner reconciliation. */
+  readonly checkoutId?: string;
+  /** Threadnote home required to derive target worktree and logical-snapshot locks. */
+  readonly threadnoteHome?: string;
   /** Checkout-wide writer gate. Production callers pass the path from CodeGraphLayout. */
   readonly writerLockPath?: string;
 }
@@ -243,11 +262,17 @@ export type CodeGraphRetiredSnapshotCleanupProgressCallback = (
   progress: CodeGraphRetiredSnapshotCleanupProgress,
 ) => Effect.Effect<void, never>;
 
-interface OrphanedIncompleteSnapshotCandidate {
-  readonly id: string;
-  readonly ownerToken: Option.Option<string>;
-  readonly startedAt: string;
-  readonly state: 'building' | 'failed' | 'retired';
+export interface CodeGraphPersistentBuildClaim {
+  readonly logicalSnapshotId: string;
+  readonly owner: CodeGraphBuildOwnerIdentity;
+}
+
+interface PersistentBuildOwnerCandidate extends CodeGraphBuildOwnerIdentity {
+  readonly evidenceValid: boolean;
+  readonly logicalSnapshotId: string;
+  readonly ownerToken: string;
+  readonly snapshotId: string;
+  readonly worktreeId: string;
 }
 
 export interface LoadedCodeGraphFacts {
@@ -682,6 +707,7 @@ export interface CodeGraphStoreShape {
     databasePath: string,
     identity: RepositoryIdentity,
     snapshot: CodeGraphSnapshot,
+    claim: CodeGraphPersistentBuildClaim,
   ) => Effect.Effect<string, CodeGraphStoreError>;
   readonly resumableForcedBuild: (
     databasePath: string,
@@ -697,7 +723,6 @@ export interface CodeGraphStoreShape {
     worktreeId: string,
     retainedSnapshotIds: ReadonlySet<string>,
     onProgress?: CodeGraphRetiredSnapshotCleanupProgressCallback,
-    activeWorktreeIds?: ReadonlySet<string>,
   ) => Effect.Effect<number, CodeGraphStoreError>;
   readonly markFailed: (
     databasePath: string,
@@ -1569,12 +1594,15 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
             ),
             Effect.mapError(cause => storeError('start code graph snapshot', cause)),
           ),
-        claimPersistentBuild: (databasePath, identity, snapshot) =>
+        claimPersistentBuild: (databasePath, identity, snapshot, claim) =>
           Effect.gen(function* () {
             const ownerToken = `${system.processId}:${yield* crypto.randomUUIDv4}`;
             const writerGate: CodeGraphWriterGate = effect => withWriterGate(databasePath, effect);
             yield* prepare(databasePath);
-            yield* useDatabase(databasePath, claimPersistentSnapshotBuild(identity, snapshot, ownerToken, writerGate));
+            yield* useDatabase(
+              databasePath,
+              claimPersistentSnapshotBuild(identity, snapshot, ownerToken, claim, writerGate),
+            );
             return ownerToken;
           }).pipe(Effect.mapError(cause => storeError('claim persistent code graph snapshot', cause))),
         resumableForcedBuild: (databasePath, logicalSnapshotId) =>
@@ -1595,29 +1623,9 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
             ),
             Effect.mapError(cause => storeError('load resumable code graph snapshot by identity', cause)),
           ),
-        retireIncompleteWorktreeSnapshots: (
-          databasePath,
-          repositoryId,
-          worktreeId,
-          retainedSnapshotIds,
-          onProgress,
-          activeWorktreeIds,
-        ) =>
+        retireIncompleteWorktreeSnapshots: (databasePath, repositoryId, worktreeId, retainedSnapshotIds, onProgress) =>
           Effect.gen(function* () {
             yield* prepare(databasePath);
-            const orphaned =
-              activeWorktreeIds === undefined
-                ? []
-                : yield* useDatabase(
-                    databasePath,
-                    Effect.gen(function* () {
-                      const now = yield* Clock.currentTimeMillis;
-                      const candidates = yield* selectOrphanedIncompleteSnapshots(repositoryId, activeWorktreeIds, now);
-                      return candidates.filter(candidate =>
-                        orphanedIncompleteSnapshotSafeToReclaim(candidate, now, system.isProcessRunning),
-                      );
-                    }),
-                  );
             return yield* useDatabase(
               databasePath,
               retireIncompleteWorktreeSnapshots(
@@ -1626,7 +1634,6 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
                 retainedSnapshotIds,
                 effect => withWriterGate(databasePath, effect),
                 onProgress,
-                orphaned,
               ),
             );
           }).pipe(Effect.mapError(cause => storeError('retire incomplete code graph snapshots', cause))),
@@ -1635,15 +1642,7 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
             Effect.andThen(
               useDatabase(
                 databasePath,
-                Effect.gen(function* () {
-                  const changed = yield* withWriterGate(
-                    databasePath,
-                    failBuildingSnapshot(snapshotId, summary, ownerToken),
-                  );
-                  if (ownerToken !== undefined && changed > 0) {
-                    yield* pruneRetiredSnapshotRows(effect => withWriterGate(databasePath, effect));
-                  }
-                }),
+                withWriterGate(databasePath, failBuildingSnapshot(snapshotId, summary, ownerToken)).pipe(Effect.asVoid),
               ),
             ),
             Effect.mapError(cause => storeError('fail code graph snapshot', cause)),
@@ -1801,7 +1800,7 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
             if (!(yield* fs.exists(databasePath))) {
               return {reason: 'database-missing', state: 'skipped'} as const;
             }
-            const page = Effect.gen(function* () {
+            const runPage = Effect.gen(function* () {
               // Purge owns the same checkout gate. Re-check only after acquiring
               // it and open SQLite within the critical section, so maintenance
               // cannot recreate a removed database or retain a Windows handle.
@@ -1810,22 +1809,201 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
               }
               return yield* useDatabaseDirect(databasePath, runRoutineMaintenancePage());
             });
-            return yield* withExclusiveFileLock(
-              fs,
-              writerLockPath,
-              CODE_GRAPH_DETACHED_CLEANUP_LOCK_OPTIONS,
-              page,
+            const withWriterLock = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+              withExclusiveFileLock(fs, writerLockPath, CODE_GRAPH_DETACHED_CLEANUP_LOCK_OPTIONS, effect);
+            const ownerReconciliationAvailable =
+              options?.threadnoteHome !== undefined &&
+              options.checkoutId !== undefined &&
+              /^[0-9a-f]{64}$/u.test(options.checkoutId);
+            if (!ownerReconciliationAvailable) {
+              return yield* withWriterLock(runPage).pipe(
+                Effect.catch(error =>
+                  isFileLockTimeout(error)
+                    ? Effect.succeed({reason: 'writer-busy', state: 'deferred'} as const)
+                    : Effect.fail(error),
+                ),
+                Effect.provideService(Crypto.Crypto, crypto),
+                Effect.provideService(Path.Path, path),
+                Effect.provideService(SystemInfo, system),
+              );
+            }
+
+            const probe = yield* withWriterLock(
+              Effect.gen(function* () {
+                if (!(yield* fs.exists(databasePath))) {
+                  return {kind: 'result', result: {reason: 'database-missing', state: 'skipped'} as const} as const;
+                }
+                return yield* useDatabaseDirect(
+                  databasePath,
+                  Effect.gen(function* () {
+                    const sql = yield* SqlClient.SqlClient;
+                    if (!(yield* initializeRoutineMaintenanceSchema(sql))) {
+                      return {
+                        kind: 'result',
+                        result: {reason: 'schema-unavailable', state: 'skipped'} as const,
+                      } as const;
+                    }
+                    const candidates = yield* selectPersistentBuildOwnerCandidates(sql);
+                    return candidates.length > 0
+                      ? ({candidates, kind: 'candidates'} as const)
+                      : ({kind: 'result', result: yield* runRoutineMaintenancePage()} as const);
+                  }),
+                );
+              }),
             ).pipe(
               Effect.catch(error =>
                 isFileLockTimeout(error)
-                  ? Effect.succeed({reason: 'writer-busy', state: 'deferred'} as const)
+                  ? Effect.succeed({
+                      kind: 'result',
+                      result: {reason: 'writer-busy', state: 'deferred'} as const,
+                    } as const)
                   : Effect.fail(error),
               ),
               Effect.provideService(Crypto.Crypto, crypto),
               Effect.provideService(Path.Path, path),
               Effect.provideService(SystemInfo, system),
             );
-          }).pipe(Effect.mapError(cause => storeError('run routine code graph maintenance', cause))),
+            if (probe.kind === 'result') return probe.result;
+
+            const validCandidates = probe.candidates.filter(persistentBuildOwnerCandidateValid);
+            let candidate = validCandidates.find(owner => !system.isProcessRunning(owner.processId));
+            if (candidate === undefined) {
+              const selected = validCandidates[0];
+              if (selected !== undefined && (yield* observePersistentBuildOwner(selected)) === 'dead') {
+                candidate = selected;
+              }
+            }
+            if (candidate === undefined) {
+              return yield* withWriterLock(runPage).pipe(
+                Effect.catch(error =>
+                  isFileLockTimeout(error)
+                    ? Effect.succeed({reason: 'writer-busy', state: 'deferred'} as const)
+                    : Effect.fail(error),
+                ),
+                Effect.provideService(Crypto.Crypto, crypto),
+                Effect.provideService(Path.Path, path),
+                Effect.provideService(SystemInfo, system),
+              );
+            }
+
+            const ownerLayout = codeGraphLayout(
+              path,
+              options.threadnoteHome!,
+              options.checkoutId!,
+              candidate.worktreeId,
+            );
+            if (ownerLayout.databasePath !== databasePath || ownerLayout.databaseWriteLockPath !== writerLockPath) {
+              return {reason: 'writer-lock-unavailable', state: 'skipped'} as const;
+            }
+            const worktreeLockPath = ownerLayout.lockPath;
+            const snapshotLockPath = codeGraphSnapshotBuildLockPath(
+              path,
+              options.threadnoteHome!,
+              options.checkoutId!,
+              candidate.logicalSnapshotId,
+            );
+            const retire = withExclusiveFileLock(
+              fs,
+              worktreeLockPath,
+              CODE_GRAPH_ABANDONED_BUILD_LOCK_OPTIONS,
+              withExclusiveFileLock(
+                fs,
+                snapshotLockPath,
+                CODE_GRAPH_ABANDONED_BUILD_LOCK_OPTIONS,
+                Effect.gen(function* () {
+                  if (yield* codeGraphMaintenanceIntentActive(options.threadnoteHome!)) {
+                    return {reason: 'external-maintenance', state: 'deferred'} as const;
+                  }
+                  if (
+                    (yield* corroborateCodeGraphBuildOwnerStatus(ownerLayout, candidate.worktreeId, candidate)) ===
+                    'mismatch'
+                  ) {
+                    return {reason: 'owner-changed', state: 'deferred'} as const;
+                  }
+                  // The liveness proof must still hold after both target locks.
+                  // A PID that appeared in the interval without an exact start
+                  // identity changes the observation to unknown and refuses.
+                  const liveness: CodeGraphBuildOwnerLiveness = yield* observePersistentBuildOwner(candidate);
+                  if (liveness !== 'dead') return {reason: 'owner-changed', state: 'deferred'} as const;
+                  return yield* withExclusiveFileLock(
+                    fs,
+                    writerLockPath,
+                    CODE_GRAPH_ABANDONED_BUILD_LOCK_OPTIONS,
+                    Effect.gen(function* () {
+                      if (!(yield* fs.exists(databasePath))) {
+                        return {reason: 'database-missing', state: 'skipped'} as const;
+                      }
+                      const outcome = yield* useDatabaseDirect(databasePath, retireAbandonedPersistentBuild(candidate));
+                      if (outcome === 'retired') {
+                        return {
+                          cleanup: 'abandoned-build',
+                          expiredLeases: 0,
+                          remaining: true,
+                          retiredSnapshots: 1,
+                          rowsDeleted: 0,
+                          state: 'completed',
+                        } as const;
+                      }
+                      return {
+                        reason: outcome === 'protected' ? ('owner-protected' as const) : ('owner-changed' as const),
+                        state: 'deferred',
+                      } as const;
+                    }),
+                  ).pipe(
+                    Effect.catch(error =>
+                      isFileLockTimeout(error)
+                        ? Effect.succeed({reason: 'writer-busy', state: 'deferred'} as const)
+                        : Effect.fail(error),
+                    ),
+                  );
+                }),
+              ).pipe(
+                Effect.catch(error =>
+                  isFileLockTimeout(error)
+                    ? Effect.succeed({reason: 'snapshot-busy', state: 'deferred'} as const)
+                    : Effect.fail(error),
+                ),
+              ),
+            ).pipe(
+              Effect.catch(error =>
+                isFileLockTimeout(error)
+                  ? Effect.succeed({reason: 'worktree-busy', state: 'deferred'} as const)
+                  : Effect.fail(error),
+              ),
+              Effect.provideService(Crypto.Crypto, crypto),
+              Effect.provideService(Path.Path, path),
+              Effect.provideService(SystemInfo, system),
+            );
+            const ownerResult = yield* retire;
+            if (
+              ownerResult.state === 'deferred' &&
+              ['owner-changed', 'owner-protected', 'snapshot-busy', 'worktree-busy'].includes(ownerResult.reason)
+            ) {
+              const ordinary = yield* withWriterLock(runPage).pipe(
+                Effect.catch(error =>
+                  isFileLockTimeout(error)
+                    ? Effect.succeed({reason: 'writer-busy', state: 'deferred'} as const)
+                    : Effect.fail(error),
+                ),
+              );
+              if (
+                ordinary.state === 'completed' &&
+                (ordinary.cleanup !== 'none' ||
+                  ordinary.expiredLeases > 0 ||
+                  ordinary.retiredSnapshots > 0 ||
+                  ordinary.rowsDeleted > 0)
+              ) {
+                return ordinary;
+              }
+            }
+            return ownerResult;
+          }).pipe(
+            Effect.provideService(Crypto.Crypto, crypto),
+            Effect.provideService(FileSystem.FileSystem, fs),
+            Effect.provideService(Path.Path, path),
+            Effect.provideService(SystemInfo, system),
+            Effect.mapError(cause => storeError('run routine code graph maintenance', cause)),
+          ),
         releaseSnapshotLease: (databasePath, token, options) =>
           fs.exists(databasePath).pipe(
             Effect.flatMap(exists =>
@@ -2217,8 +2395,15 @@ const CODE_GRAPH_DETACHED_CLEANUP_LOCK_OPTIONS = {
   waitTimeoutMilliseconds: 0,
 } as const;
 
+const CODE_GRAPH_ABANDONED_BUILD_LOCK_OPTIONS = {
+  ...CODE_GRAPH_DETACHED_CLEANUP_LOCK_OPTIONS,
+  recoverReusedProcessIdImmediately: true,
+} as const;
+
+const CODE_GRAPH_ABANDONED_BUILD_CANDIDATE_LIMIT = 64;
+const CODE_GRAPH_ABANDONED_BUILD_CURSOR_KEY = 'routine_abandoned_build_owner_cursor';
+
 const CODE_GRAPH_CLEANUP_YIELD_MILLISECONDS = CODE_GRAPH_SQL_WRITER_LOCK_OPTIONS.retryIntervalMilliseconds * 2;
-const CODE_GRAPH_ORPHANED_UNOWNED_BUILD_MINIMUM_AGE_MILLISECONDS = 15 * 60_000;
 
 function normalizedWriterGateWaitTimeout(waitTimeoutMilliseconds: number | undefined): number {
   if (waitTimeoutMilliseconds === undefined || waitTimeoutMilliseconds === Number.POSITIVE_INFINITY) {
@@ -2256,6 +2441,7 @@ function inferredCodeGraphWriterLockPath(path: Path.Path, databasePath: string):
 type PersistentExtensionGroup = 'analysis' | 'build' | 'lexical' | 'shards';
 
 export type CodeGraphPersistentSchemaMigrationPhase =
+  | 'added-build-owner-instance'
   | 'added-materialization-plan'
   | 'created-extensions'
   | 'dropped-incompatible'
@@ -2360,6 +2546,27 @@ const PERSISTENT_EXTENSION_TABLES = [
     ) WITHOUT ROWID`,
     group: 'build',
     name: 'snapshot_build_owners',
+  },
+  {
+    columns: [
+      requiredColumn('snapshot_id', 'TEXT', 1),
+      requiredColumn('owner_token', 'TEXT'),
+      requiredColumn('build_id', 'TEXT'),
+      requiredColumn('process_id', 'INTEGER'),
+      optionalColumn('process_start_identity', 'TEXT'),
+      requiredColumn('logical_snapshot_id', 'TEXT'),
+    ],
+    createSql: `CREATE TABLE IF NOT EXISTS snapshot_build_owner_instances (
+      snapshot_id TEXT PRIMARY KEY NOT NULL REFERENCES snapshot_build_owners(snapshot_id) ON DELETE CASCADE,
+      owner_token TEXT NOT NULL,
+      build_id TEXT NOT NULL,
+      process_id INTEGER NOT NULL CHECK (process_id > 0),
+      process_start_identity TEXT,
+      logical_snapshot_id TEXT NOT NULL
+    ) WITHOUT ROWID`,
+    foreignKeys: [{from: 'snapshot_id', onDelete: 'CASCADE', table: 'snapshot_build_owners', to: 'snapshot_id'}],
+    group: 'build',
+    name: 'snapshot_build_owner_instances',
   },
   {
     columns: [
@@ -2751,7 +2958,7 @@ const LEGACY_BUILDING_REFERENCES_V3_CONTRACT = {
 
 const REMOVED_BETA30_INDEXES = ['snapshot_symbol_lookup_key', 'terms_lookup', 'terms_symbol'] as const;
 export const CODE_GRAPH_PERSISTENT_EXTENSION_TABLE_NAMES = PERSISTENT_EXTENSION_TABLES.map(table => table.name);
-export const CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION = 6;
+export const CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION = 7;
 
 function persistentExtensionTableInspection(
   sql: SqlClient.SqlClient,
@@ -2887,6 +3094,22 @@ const migratePersistentExtensionTables = Effect.fn('codeGraph.migratePersistentE
           ),
         );
       }
+      if (recordedRevision === 6) {
+        const ownerInstances = PERSISTENT_EXTENSION_TABLES.find(
+          table => table.name === 'snapshot_build_owner_instances',
+        );
+        if (ownerInstances === undefined) {
+          return yield* Effect.fail(new CodeGraphStoreError('Persistent build owner instance schema is unavailable.'));
+        }
+        const inspection = yield* persistentExtensionTableInspection(sql, ownerInstances);
+        if (!inspection.exists) {
+          // Revision 7 adds only exact owner-instance evidence. Never infer it
+          // from legacy PID-bearing tokens: an old writer may still replace the
+          // parent row, and the strict token join must then fail closed.
+          yield* sql.unsafe(ownerInstances.createSql);
+          yield* observe?.('added-build-owner-instance') ?? Effect.void;
+        }
+      }
       const legacyBuildOwners = yield* persistentExtensionTableInspection(sql, LEGACY_SNAPSHOT_BUILD_OWNERS_CONTRACT);
       if (legacyBuildOwners.compatible) {
         const completedAt = new Date().toISOString();
@@ -2986,10 +3209,7 @@ const migratePersistentExtensionTables = Effect.fn('codeGraph.migratePersistentE
       // pointer atomically and let the normal snapshot-identity path rebuild it.
       // Revision 4 snapshots remain readable from legacy symbol_terms while the
       // new compact tables are introduced alongside them.
-      if (
-        recordedRevision === CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION &&
-        (incompatibleGroups.has('lexical') || lexicalReadSurfaceMissing)
-      ) {
+      if (recordedRevision >= 5 && (incompatibleGroups.has('lexical') || lexicalReadSurfaceMissing)) {
         if (yield* tableExists(sql, 'active_snapshots')) {
           yield* sql`
             DELETE FROM active_snapshots
@@ -3687,6 +3907,196 @@ const initializeRoutineMaintenanceSchema = Effect.fn('codeGraph.initializeRoutin
   }
   yield* ensureSnapshotLeaseSchema(sql);
   return true;
+});
+
+const selectPersistentBuildOwnerCandidates = Effect.fn('codeGraph.selectPersistentBuildOwnerCandidates')(function* (
+  sql: SqlClient.SqlClient,
+) {
+  if (
+    !(yield* tableExists(sql, 'schema_metadata')) ||
+    !(yield* tableExists(sql, 'snapshot_build_owners')) ||
+    !(yield* tableExists(sql, 'snapshot_build_owner_instances')) ||
+    !(yield* routineMaintenanceColumnsAvailable(sql, 'snapshot_build_owners', ['owner_token', 'snapshot_id'])) ||
+    !(yield* routineMaintenanceColumnsAvailable(sql, 'snapshot_build_owner_instances', [
+      'build_id',
+      'logical_snapshot_id',
+      'owner_token',
+      'process_id',
+      'process_start_identity',
+      'snapshot_id',
+    ]))
+  ) {
+    // Legacy and partially migrated writers provide no exact process-instance
+    // evidence. Keep their builds untouched until a current writer reclaims
+    // them through an ordinary explicit build.
+    return [];
+  }
+  const rows = yield* sql.withTransaction(
+    Effect.gen(function* () {
+      const cursors = yield* sql<{readonly value: string}>`
+        SELECT value FROM schema_metadata WHERE key = ${CODE_GRAPH_ABANDONED_BUILD_CURSOR_KEY} LIMIT 1
+      `;
+      const cursor = cursors[0]?.value ?? '';
+      const candidates = yield* sql<{
+        readonly build_id: string;
+        readonly logical_snapshot_id: string;
+        readonly owner_token: string;
+        readonly process_id: number;
+        readonly process_start_identity: unknown;
+        readonly snapshot_id: string;
+        readonly worktree_id: string;
+      }>`
+        SELECT
+          instance.snapshot_id,
+          instance.owner_token,
+          instance.build_id,
+          instance.process_id,
+          instance.process_start_identity,
+          instance.logical_snapshot_id,
+          snapshot.worktree_id
+        FROM snapshot_build_owner_instances AS instance
+        JOIN snapshot_build_owners AS owner
+          ON owner.snapshot_id = instance.snapshot_id
+         AND owner.owner_token = instance.owner_token
+        JOIN snapshots AS snapshot ON snapshot.id = instance.snapshot_id
+        WHERE snapshot.state IN ('building', 'failed')
+        ORDER BY CASE WHEN instance.snapshot_id > ${cursor} THEN 0 ELSE 1 END, instance.snapshot_id
+        LIMIT ${CODE_GRAPH_ABANDONED_BUILD_CANDIDATE_LIMIT}
+      `;
+      const examined = candidates[0]?.snapshot_id;
+      if (examined !== undefined) {
+        yield* sql`
+          INSERT INTO schema_metadata (key, value)
+          VALUES (${CODE_GRAPH_ABANDONED_BUILD_CURSOR_KEY}, ${examined})
+          ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        `;
+      }
+      return candidates;
+    }),
+  );
+  return rows.map(
+    row =>
+      ({
+        buildId: row.build_id,
+        evidenceValid:
+          row.process_start_identity == null ||
+          (typeof row.process_start_identity === 'string' &&
+            row.process_start_identity.length > 0 &&
+            row.process_start_identity.length <= 256),
+        logicalSnapshotId: row.logical_snapshot_id,
+        ownerToken: row.owner_token,
+        processId: Number(row.process_id),
+        ...(typeof row.process_start_identity === 'string' ? {processStartIdentity: row.process_start_identity} : {}),
+        snapshotId: row.snapshot_id,
+        worktreeId: row.worktree_id,
+      }) satisfies PersistentBuildOwnerCandidate,
+  );
+});
+
+const retireAbandonedPersistentBuild = Effect.fn('codeGraph.retireAbandonedPersistentBuild')(function* (
+  candidate: PersistentBuildOwnerCandidate,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  if (!(yield* initializeRoutineMaintenanceSchema(sql))) return 'changed' as const;
+  const now = yield* Clock.currentTimeMillis;
+  const completedAt = new Date(now).toISOString();
+  const retired = yield* sql.withTransaction(
+    Effect.gen(function* () {
+      const rows = yield* sql<{readonly id: string}>`
+        UPDATE snapshots
+        SET state = 'retired',
+            completed_at = COALESCE(completed_at, ${completedAt}),
+            failure_summary = COALESCE(
+              failure_summary,
+              'Automatic maintenance retired a build whose exact owner process exited.'
+            )
+        WHERE id = ${candidate.snapshotId}
+          AND worktree_id = ${candidate.worktreeId}
+          AND state IN ('building', 'failed')
+          AND EXISTS (
+            SELECT 1
+            FROM snapshot_build_owners AS owner
+            JOIN snapshot_build_owner_instances AS instance ON instance.snapshot_id = owner.snapshot_id
+            WHERE owner.snapshot_id = snapshots.id
+              AND owner.owner_token = ${candidate.ownerToken}
+              AND instance.owner_token = owner.owner_token
+              AND instance.build_id = ${candidate.buildId}
+              AND instance.process_id = ${candidate.processId}
+              AND instance.process_start_identity IS ${candidate.processStartIdentity ?? null}
+              AND instance.logical_snapshot_id = ${candidate.logicalSnapshotId}
+          )
+          AND NOT EXISTS (SELECT 1 FROM active_snapshots WHERE snapshot_id = snapshots.id)
+          AND NOT EXISTS (
+            SELECT 1 FROM snapshot_leases WHERE snapshot_id = snapshots.id AND expires_at > ${now}
+          )
+          AND NOT EXISTS (
+            SELECT 1
+            FROM snapshots AS dependent
+            WHERE dependent.base_snapshot_id = snapshots.id AND dependent.state <> 'retired'
+          )
+        RETURNING id
+      `;
+      if (rows.length === 0) return false;
+      yield* sql`
+        DELETE FROM snapshot_build_owners
+        WHERE snapshot_id = ${candidate.snapshotId} AND owner_token = ${candidate.ownerToken}
+      `;
+      return true;
+    }),
+  );
+  if (retired) return 'retired' as const;
+  const exact = yield* sql<{readonly count: number}>`
+    SELECT COUNT(*) AS count
+    FROM snapshot_build_owners AS owner
+    JOIN snapshot_build_owner_instances AS instance ON instance.snapshot_id = owner.snapshot_id
+    JOIN snapshots AS snapshot ON snapshot.id = owner.snapshot_id
+    WHERE owner.snapshot_id = ${candidate.snapshotId}
+      AND owner.owner_token = ${candidate.ownerToken}
+      AND instance.owner_token = owner.owner_token
+      AND instance.build_id = ${candidate.buildId}
+      AND instance.process_id = ${candidate.processId}
+      AND instance.process_start_identity IS ${candidate.processStartIdentity ?? null}
+      AND instance.logical_snapshot_id = ${candidate.logicalSnapshotId}
+      AND snapshot.worktree_id = ${candidate.worktreeId}
+      AND snapshot.state IN ('building', 'failed')
+  `;
+  return Number(exact[0]?.count ?? 0) === 1 ? ('protected' as const) : ('changed' as const);
+});
+
+function persistentBuildOwnerCandidateValid(candidate: PersistentBuildOwnerCandidate): boolean {
+  return (
+    candidate.evidenceValid &&
+    /^cgsn_[0-9a-f]{40}$/u.test(candidate.logicalSnapshotId) &&
+    /^[0-9a-f]{64}$/u.test(candidate.worktreeId) &&
+    /^[0-9a-f-]{16,64}$/u.test(candidate.buildId) &&
+    Number.isSafeInteger(candidate.processId) &&
+    candidate.processId > 0 &&
+    candidate.ownerToken.length > 0 &&
+    candidate.ownerToken.length <= 256 &&
+    persistentSnapshotMatchesLogicalIdentity(candidate.snapshotId, candidate.logicalSnapshotId) &&
+    (candidate.processStartIdentity === undefined ||
+      (candidate.processStartIdentity.length > 0 && candidate.processStartIdentity.length <= 256))
+  );
+}
+
+function persistentSnapshotMatchesLogicalIdentity(snapshotId: string, logicalSnapshotId: string): boolean {
+  return (
+    snapshotId === logicalSnapshotId ||
+    snapshotId === `${logicalSnapshotId}-direct` ||
+    new RegExp(`^${logicalSnapshotId}-full-[0-9a-f]{16}$`, 'u').test(snapshotId)
+  );
+}
+
+const observePersistentBuildOwner = Effect.fn('codeGraph.observePersistentBuildOwner')(function* (
+  candidate: PersistentBuildOwnerCandidate,
+) {
+  const system = yield* SystemInfo;
+  const isRunning = system.isProcessRunning(candidate.processId);
+  const processStartIdentity =
+    isRunning && candidate.processStartIdentity !== undefined
+      ? yield* system.processStartIdentity(candidate.processId)
+      : undefined;
+  return classifyCodeGraphBuildOwner(candidate, {isRunning, processStartIdentity});
 });
 
 const reapExpiredSnapshotLeasesPage = Effect.fn('codeGraph.reapExpiredSnapshotLeasesPage')(function* (
@@ -6216,10 +6626,23 @@ const claimPersistentSnapshotBuild = Effect.fn('codeGraph.claimPersistentSnapsho
   identity: RepositoryIdentity,
   snapshot: CodeGraphSnapshot,
   ownerToken: string,
+  claim: CodeGraphPersistentBuildClaim,
   writerGate?: CodeGraphWriterGate,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const runWrite: CodeGraphWriterGate = writerGate ?? (effect => effect);
+  if (
+    !/^[0-9a-f-]{16,64}$/u.test(claim.owner.buildId) ||
+    !Number.isSafeInteger(claim.owner.processId) ||
+    claim.owner.processId <= 0 ||
+    (claim.owner.processStartIdentity !== undefined &&
+      (claim.owner.processStartIdentity.length === 0 || claim.owner.processStartIdentity.length > 256)) ||
+    !/^cgsn_[0-9a-f]{40}$/u.test(claim.logicalSnapshotId) ||
+    (/^cgsn_[0-9a-f]{40}/u.test(snapshot.id) &&
+      !persistentSnapshotMatchesLogicalIdentity(snapshot.id, claim.logicalSnapshotId))
+  ) {
+    return yield* Effect.fail(new CodeGraphStoreError('Persistent build owner identity is invalid.'));
+  }
   yield* runWrite(initializeSchema(sql));
   const retiredUnusableReady = yield* runWrite(
     sql.withTransaction(
@@ -6300,12 +6723,26 @@ const claimPersistentSnapshotBuild = Effect.fn('codeGraph.claimPersistentSnapsho
         `;
         }
         yield* sql`
-        INSERT INTO snapshot_build_owners (snapshot_id, owner_token, claimed_at)
-        VALUES (${snapshot.id}, ${ownerToken}, ${new Date().toISOString()})
-        ON CONFLICT(snapshot_id) DO UPDATE SET
-          owner_token = excluded.owner_token,
-          claimed_at = excluded.claimed_at
-      `;
+          INSERT INTO snapshot_build_owners (snapshot_id, owner_token, claimed_at)
+          VALUES (${snapshot.id}, ${ownerToken}, ${new Date().toISOString()})
+          ON CONFLICT(snapshot_id) DO UPDATE SET
+            owner_token = excluded.owner_token,
+            claimed_at = excluded.claimed_at
+        `;
+        yield* sql`
+          INSERT INTO snapshot_build_owner_instances (
+            snapshot_id, owner_token, build_id, process_id, process_start_identity, logical_snapshot_id
+          ) VALUES (
+            ${snapshot.id}, ${ownerToken}, ${claim.owner.buildId}, ${claim.owner.processId},
+            ${claim.owner.processStartIdentity ?? null}, ${claim.logicalSnapshotId}
+          )
+          ON CONFLICT(snapshot_id) DO UPDATE SET
+            owner_token = excluded.owner_token,
+            build_id = excluded.build_id,
+            process_id = excluded.process_id,
+            process_start_identity = excluded.process_start_identity,
+            logical_snapshot_id = excluded.logical_snapshot_id
+        `;
       }),
     ),
   );
@@ -6341,168 +6778,12 @@ const selectResumableBuildById = Effect.fn('codeGraph.selectResumableBuildById')
   return rows[0] ? snapshotFromRow(rows[0]) : undefined;
 });
 
-const selectOrphanedIncompleteSnapshots = Effect.fn('codeGraph.selectOrphanedIncompleteSnapshots')(function* (
-  repositoryId: string,
-  activeWorktreeIds: ReadonlySet<string>,
-  now: number,
-) {
-  const sql = yield* SqlClient.SqlClient;
-  yield* configureConnection(sql);
-  if (!(yield* tableExists(sql, 'snapshots'))) return [];
-  const rows = yield* sql<{
-    readonly id: string;
-    readonly owner_token: unknown;
-    readonly started_at: string;
-    readonly state: OrphanedIncompleteSnapshotCandidate['state'];
-    readonly worktree_id: string;
-  }>`
-    SELECT snapshot.id, snapshot.started_at, snapshot.state, snapshot.worktree_id, owner.owner_token
-    FROM snapshots AS snapshot
-    LEFT JOIN snapshot_build_owners AS owner ON owner.snapshot_id = snapshot.id
-    WHERE snapshot.repository_id = ${repositoryId}
-      AND snapshot.state IN ('building', 'failed', 'retired')
-      AND snapshot.id NOT IN (SELECT snapshot_id FROM active_snapshots)
-      AND snapshot.id NOT IN (SELECT snapshot_id FROM snapshot_leases WHERE expires_at > ${now})
-      AND snapshot.id NOT IN (
-        SELECT base_snapshot_id
-        FROM snapshots
-        WHERE base_snapshot_id IS NOT NULL
-          AND id IN (
-            SELECT snapshot_id FROM active_snapshots
-            UNION
-            SELECT snapshot_id FROM snapshot_leases WHERE expires_at > ${now}
-          )
-      )
-    ORDER BY snapshot.id
-  `;
-  return rows
-    .filter(row => !activeWorktreeIds.has(row.worktree_id))
-    .map(row => ({
-      id: row.id,
-      ownerToken: sqlTextOption(row.owner_token),
-      startedAt: row.started_at,
-      state: row.state,
-    }));
-});
-
-function orphanedIncompleteSnapshotSafeToReclaim(
-  candidate: OrphanedIncompleteSnapshotCandidate,
-  now: number,
-  isProcessRunning: (processId: number) => boolean,
-): boolean {
-  if (candidate.state === 'failed' || candidate.state === 'retired') return true;
-  const processId = Option.flatMap(candidate.ownerToken, persistentBuildOwnerProcessId);
-  if (Option.isSome(processId)) return !isProcessRunning(processId.value);
-  const startedAt = Date.parse(candidate.startedAt);
-  return Number.isFinite(startedAt) && now - startedAt >= CODE_GRAPH_ORPHANED_UNOWNED_BUILD_MINIMUM_AGE_MILLISECONDS;
-}
-
-function persistentBuildOwnerProcessId(ownerToken: string): Option.Option<number> {
-  const separator = ownerToken.indexOf(':');
-  if (separator <= 0) return Option.none();
-  const processId = Number(ownerToken.slice(0, separator));
-  return Number.isSafeInteger(processId) && processId > 0 ? Option.some(processId) : Option.none();
-}
-
-const retireOrphanedIncompleteSnapshot = Effect.fn('codeGraph.retireOrphanedIncompleteSnapshot')(function* (
-  sql: SqlClient.SqlClient,
-  repositoryId: string,
-  candidate: OrphanedIncompleteSnapshotCandidate,
-  now: number,
-) {
-  if (candidate.state === 'retired') return 0;
-  const completedAt = new Date(now).toISOString();
-  const rows = yield* Option.match(candidate.ownerToken, {
-    onNone: () =>
-      sql<{readonly id: string}>`
-        UPDATE snapshots
-        SET state = 'retired', completed_at = COALESCE(completed_at, ${completedAt})
-        WHERE id = ${candidate.id}
-          AND repository_id = ${repositoryId}
-          AND state IN ('building', 'failed')
-          AND NOT EXISTS (
-            SELECT 1 FROM snapshot_build_owners AS owner WHERE owner.snapshot_id = snapshots.id
-          )
-          AND id NOT IN (SELECT snapshot_id FROM active_snapshots)
-          AND id NOT IN (SELECT snapshot_id FROM snapshot_leases WHERE expires_at > ${now})
-          AND id NOT IN (
-            SELECT base_snapshot_id
-            FROM snapshots
-            WHERE base_snapshot_id IS NOT NULL
-              AND id IN (
-                SELECT snapshot_id FROM active_snapshots
-                UNION
-                SELECT snapshot_id FROM snapshot_leases WHERE expires_at > ${now}
-              )
-          )
-        RETURNING id
-      `,
-    onSome: ownerToken =>
-      sql<{readonly id: string}>`
-        UPDATE snapshots
-        SET state = 'retired', completed_at = COALESCE(completed_at, ${completedAt})
-        WHERE id = ${candidate.id}
-          AND repository_id = ${repositoryId}
-          AND state IN ('building', 'failed')
-          AND EXISTS (
-            SELECT 1
-            FROM snapshot_build_owners AS owner
-            WHERE owner.snapshot_id = snapshots.id AND owner.owner_token = ${ownerToken}
-          )
-          AND id NOT IN (SELECT snapshot_id FROM active_snapshots)
-          AND id NOT IN (SELECT snapshot_id FROM snapshot_leases WHERE expires_at > ${now})
-          AND id NOT IN (
-            SELECT base_snapshot_id
-            FROM snapshots
-            WHERE base_snapshot_id IS NOT NULL
-              AND id IN (
-                SELECT snapshot_id FROM active_snapshots
-                UNION
-                SELECT snapshot_id FROM snapshot_leases WHERE expires_at > ${now}
-              )
-          )
-        RETURNING id
-      `,
-  });
-  return rows.length;
-});
-
-const selectExactReclaimableSnapshot = Effect.fn('codeGraph.selectExactReclaimableSnapshot')(function* (
-  sql: SqlClient.SqlClient,
-  repositoryId: string,
-  snapshotId: string,
-  now: number,
-) {
-  const rows = yield* sql<{readonly id: string}>`
-    SELECT id
-    FROM snapshots AS candidate
-    WHERE candidate.id = ${snapshotId}
-      AND candidate.repository_id = ${repositoryId}
-      AND candidate.state = 'retired'
-      AND candidate.id NOT IN (SELECT snapshot_id FROM active_snapshots)
-      AND candidate.id NOT IN (SELECT snapshot_id FROM snapshot_leases WHERE expires_at > ${now})
-      AND candidate.id NOT IN (
-        SELECT base_snapshot_id
-        FROM snapshots
-        WHERE base_snapshot_id IS NOT NULL
-          AND id IN (
-            SELECT snapshot_id FROM active_snapshots
-            UNION
-            SELECT snapshot_id FROM snapshot_leases WHERE expires_at > ${now}
-          )
-      )
-    LIMIT 1
-  `;
-  return rows[0]?.id;
-});
-
 const retireIncompleteWorktreeSnapshots = Effect.fn('codeGraph.retireIncompleteWorktreeSnapshots')(function* (
   repositoryId: string,
   worktreeId: string,
   retainedSnapshotIds: ReadonlySet<string>,
   writerGate?: CodeGraphWriterGate,
   onProgress?: CodeGraphRetiredSnapshotCleanupProgressCallback,
-  orphaned: readonly OrphanedIncompleteSnapshotCandidate[] = [],
 ) {
   const sql = yield* SqlClient.SqlClient;
   yield* configureConnection(sql);
@@ -6556,10 +6837,6 @@ const retireIncompleteWorktreeSnapshots = Effect.fn('codeGraph.retireIncompleteW
                 RETURNING id
               `;
         const retired = yield* retire();
-        let orphanedRetired = 0;
-        for (const candidate of orphaned) {
-          orphanedRetired += yield* retireOrphanedIncompleteSnapshot(sql, repositoryId, candidate, now);
-        }
         // Retention only protects resumable building/failed identities above.
         // A ready snapshot may have retired the logical or direct sibling that
         // appears in the next run's candidate set; keeping that already-retired
@@ -6584,18 +6861,11 @@ const retireIncompleteWorktreeSnapshots = Effect.fn('codeGraph.retireIncompleteW
             )
           ORDER BY id
         `;
-        const orphanedReclaimable: string[] = [];
-        for (const candidate of orphaned) {
-          const snapshotId = yield* selectExactReclaimableSnapshot(sql, repositoryId, candidate.id, now);
-          if (snapshotId !== undefined) orphanedReclaimable.push(snapshotId);
-        }
-        const reclaimableIds = [...new Set([...reclaimable.map(snapshot => snapshot.id), ...orphanedReclaimable])].sort(
-          compareCodeUnits,
-        );
+        const reclaimableIds = [...new Set(reclaimable.map(snapshot => snapshot.id))].sort(compareCodeUnits);
         for (const snapshotIds of chunk(reclaimableIds, 100)) {
           yield* sql`DELETE FROM snapshot_build_owners WHERE ${sql.in('snapshot_id', snapshotIds)}`;
         }
-        return {reclaimable: reclaimableIds, retired: retired.length + orphanedRetired};
+        return {reclaimable: reclaimableIds, retired: retired.length};
       }),
     ),
   );
@@ -7015,7 +7285,7 @@ const failBuildingSnapshot = Effect.fn('codeGraph.failBuildingSnapshot')(functio
     Effect.gen(function* () {
       yield* sql`
         UPDATE snapshots
-        SET state = ${targetState}, failure_summary = ${summary.slice(0, 2_000)},
+        SET state = ${targetState}, failure_summary = COALESCE(failure_summary, ${summary.slice(0, 2_000)}),
           completed_at = ${new Date().toISOString()}
         WHERE id = ${snapshotId}
           AND state = 'building'

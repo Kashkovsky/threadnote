@@ -11,6 +11,7 @@ import type {
   CodeGraphSymbol,
   RepositoryIdentity,
 } from '../../src/code_graph/types.js';
+import {claimPersistentBuildForTest} from '../helpers/code-graph-build.js';
 import {join, mkdtemp, rm} from '../helpers/effect-filesystem.js';
 import {runEffect} from '../helpers/effect-runtime.js';
 
@@ -108,7 +109,7 @@ describe('code graph reference-resolution progress', () => {
         return yield* store.withSession(
           fixture.databasePath,
           Effect.gen(function* () {
-            const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+            const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
               ...snapshot,
               state: 'building',
             });
@@ -175,7 +176,7 @@ describe('code graph reference-resolution progress', () => {
         return yield* store.withSession(
           fixture.databasePath,
           Effect.gen(function* () {
-            const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+            const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
               ...snapshot,
               state: 'building',
             });

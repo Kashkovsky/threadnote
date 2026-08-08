@@ -4,6 +4,7 @@ import {CommandExecutor} from '../effect/command.js';
 import {withExclusiveFileLock} from '../effect/file_lock.js';
 import {SystemInfo} from '../effect/system.js';
 import {withThreadnoteProcessActivity} from '../process_diagnostics.js';
+import type {CodeGraphBuildOwnerIdentity} from './build_owner.js';
 import {createRepositoryFactAttributor, extractRepositoryFileFacts} from './extractor.js';
 import {
   budgetCachedCodeGraphFacts,
@@ -284,7 +285,6 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                             identity.worktreeId,
                             new Set(),
                             retiredSnapshotCleanupReporter(options.onProgress),
-                            activeWorktreeIds,
                           );
                           yield* store.promote(layout.databasePath, identity, completedByOwner.id, activeWorktreeIds);
                           return yield* reuseReadySnapshot({
@@ -384,7 +384,6 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                         identity.worktreeId,
                         retainedSnapshotIds,
                         retiredSnapshotCleanupReporter(options.onProgress),
-                        activeWorktreeIds,
                       );
                       if (reusableReady) {
                         if (existing?.id !== reusableReady.id) {
@@ -409,6 +408,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                       if (!inventory.dirty) {
                         return yield* buildOwnedCleanSnapshot({
                           activeWorktreeIds,
+                          buildOwner: reporter.ownerIdentity,
                           embedding,
                           ensureVectors,
                           existing,
@@ -447,6 +447,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                           layout.databasePath,
                           identity,
                           building,
+                          {logicalSnapshotId, owner: reporter.ownerIdentity},
                         );
                       } else if (resumableDirectBuild) {
                         building = resumableDirectBuild;
@@ -458,6 +459,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                           layout.databasePath,
                           identity,
                           building,
+                          {logicalSnapshotId, owner: reporter.ownerIdentity},
                         );
                       } else if (!inventory.dirty && !options.force) {
                         building = {
@@ -477,6 +479,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                           layout.databasePath,
                           identity,
                           building,
+                          {logicalSnapshotId, owner: reporter.ownerIdentity},
                         );
                       } else if (!canAttemptIncrementalOverlay) {
                         building = {
@@ -501,6 +504,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                           layout.databasePath,
                           identity,
                           building,
+                          {logicalSnapshotId, owner: reporter.ownerIdentity},
                         );
                       } else {
                         const reusableDirtyBase = yield* attemptReusableDirtyBase(
@@ -520,6 +524,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                           if (preassessment.mode === 'compatible') {
                             committedBase = yield* ensureCommittedBase({
                               activeWorktreeIds,
+                              buildOwner: reporter.ownerIdentity,
                               embedding,
                               force: false,
                               forceGeneration,
@@ -628,6 +633,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                             layout.databasePath,
                             identity,
                             building,
+                            {logicalSnapshotId, owner: reporter.ownerIdentity},
                           );
                         }
                       }
@@ -681,14 +687,18 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                   threadnoteHome: options.threadnoteHome,
                 });
               }),
+            ).pipe(
+              Effect.ensuring(
+                maintenance
+                  .tick({
+                    checkoutId: layout.checkoutId,
+                    databasePath: layout.databasePath,
+                    threadnoteHome: request.threadnoteHome,
+                    writerLockPath: layout.databaseWriteLockPath,
+                  })
+                  .pipe(Effect.ignore),
+              ),
             );
-            yield* maintenance
-              .tick({
-                databasePath: layout.databasePath,
-                threadnoteHome: request.threadnoteHome,
-                writerLockPath: layout.databaseWriteLockPath,
-              })
-              .pipe(Effect.ignore);
             return summary;
           }),
         ).pipe(
@@ -801,6 +811,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                       }).pipe(Effect.ensuring(parserPool.trimIdle()));
                       const committedBase = yield* ensureCommittedBase({
                         activeWorktreeIds,
+                        buildOwner: reporter.ownerIdentity,
                         embedding,
                         force: false,
                         fs,
@@ -830,14 +841,18 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                     Effect.tapError(cause => reporter.fail(cause)),
                   );
               }),
+            ).pipe(
+              Effect.ensuring(
+                maintenance
+                  .tick({
+                    checkoutId: layout.checkoutId,
+                    databasePath: layout.databasePath,
+                    threadnoteHome: request.threadnoteHome,
+                    writerLockPath: layout.databaseWriteLockPath,
+                  })
+                  .pipe(Effect.ignore),
+              ),
             );
-            yield* maintenance
-              .tick({
-                databasePath: layout.databasePath,
-                threadnoteHome: request.threadnoteHome,
-                writerLockPath: layout.databaseWriteLockPath,
-              })
-              .pipe(Effect.ignore);
             return lease;
           }),
         ).pipe(
@@ -1109,6 +1124,7 @@ function sameOverlayState(
 
 const buildOwnedCleanSnapshot = Effect.fn('codeGraph.buildOwnedCleanSnapshot')(function* (input: {
   readonly activeWorktreeIds: ReadonlySet<string>;
+  readonly buildOwner: CodeGraphBuildOwnerIdentity;
   readonly embedding: CodeGraphEmbeddingIndexShape;
   readonly ensureVectors: boolean;
   readonly existing: CodeGraphSnapshot | undefined;
@@ -1225,7 +1241,10 @@ const buildOwnedCleanSnapshot = Effect.fn('codeGraph.buildOwnedCleanSnapshot')(f
         symbolCount: 0,
         worktreeId: input.identity.worktreeId,
       };
-      const ownerToken = yield* input.store.claimPersistentBuild(input.layout.databasePath, input.identity, building);
+      const ownerToken = yield* input.store.claimPersistentBuild(input.layout.databasePath, input.identity, building, {
+        logicalSnapshotId: input.logicalSnapshotId,
+        owner: input.buildOwner,
+      });
       return yield* buildAndActivate({
         activeWorktreeIds: input.activeWorktreeIds,
         activatePointer: true,
@@ -1541,6 +1560,7 @@ const attemptReusableDirtyBase = Effect.fn('codeGraph.attemptReusableDirtyBase')
 
 const ensureCommittedBase = Effect.fn('codeGraph.ensureCommittedBase')(function* (input: {
   readonly activeWorktreeIds: ReadonlySet<string>;
+  readonly buildOwner: CodeGraphBuildOwnerIdentity;
   readonly embedding: CodeGraphEmbeddingIndexShape;
   readonly force: boolean;
   readonly forceGeneration?: string;
@@ -1629,7 +1649,10 @@ const ensureCommittedBase = Effect.fn('codeGraph.ensureCommittedBase')(function*
         symbolCount: 0,
         worktreeId: input.identity.worktreeId,
       };
-      const ownerToken = yield* input.store.claimPersistentBuild(input.layout.databasePath, input.identity, building);
+      const ownerToken = yield* input.store.claimPersistentBuild(input.layout.databasePath, input.identity, building, {
+        logicalSnapshotId,
+        owner: input.buildOwner,
+      });
       return yield* buildAndActivate({
         ...input,
         activatePointer: false,

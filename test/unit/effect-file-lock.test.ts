@@ -141,6 +141,86 @@ describe('Effect file lock', () => {
     ).resolves.toBe('acquired');
   });
 
+  it('can recover a fresh PID-reused lock immediately only for an opted-in reconciler', async () => {
+    await mkdir(join(lockPath, '..'), {recursive: true});
+    await writeFile(
+      lockPath,
+      `${JSON.stringify({
+        processId: process.pid,
+        processStartIdentity: 'original-process',
+        token: 'orphaned-lock',
+        version: 1,
+      })}\n`,
+      {mode: 0o600},
+    );
+
+    await expect(
+      run(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const system = yield* SystemInfo;
+          return yield* withExclusiveFileLock(
+            fs,
+            lockPath,
+            {...TEST_LOCK_OPTIONS, recoverReusedProcessIdImmediately: true},
+            Effect.succeed('acquired'),
+          ).pipe(
+            Effect.provideService(
+              SystemInfo,
+              SystemInfo.of({
+                ...system,
+                isProcessRunning: () => true,
+                processStartIdentity: () => Effect.succeed('replacement-process'),
+              }),
+            ),
+          );
+        }),
+      ),
+    ).resolves.toBe('acquired');
+  });
+
+  it('refuses immediate PID-reuse recovery when the current process start is unknown', async () => {
+    await mkdir(join(lockPath, '..'), {recursive: true});
+    await writeFile(
+      lockPath,
+      `${JSON.stringify({
+        processId: process.pid,
+        processStartIdentity: 'original-process',
+        token: 'live-or-unknown-lock',
+        version: 1,
+      })}\n`,
+      {mode: 0o600},
+    );
+
+    await expect(
+      run(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const system = yield* SystemInfo;
+          return yield* withExclusiveFileLock(
+            fs,
+            lockPath,
+            {
+              ...TEST_LOCK_OPTIONS,
+              recoverReusedProcessIdImmediately: true,
+              waitTimeoutMilliseconds: 10,
+            },
+            Effect.void,
+          ).pipe(
+            Effect.provideService(
+              SystemInfo,
+              SystemInfo.of({
+                ...system,
+                isProcessRunning: () => true,
+                processStartIdentity: () => Effect.succeed(undefined),
+              }),
+            ),
+          );
+        }),
+      ),
+    ).rejects.toBeInstanceOf(FileLockTimeout);
+  });
+
   it('does not inspect process identity while a live lock lease is fresh', async () => {
     await mkdir(join(lockPath, '..'), {recursive: true});
     await writeFile(

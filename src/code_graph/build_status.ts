@@ -1,6 +1,7 @@
 import {Clock, Crypto, Effect, FileSystem, Option, Path, Ref, Semaphore} from 'effect';
 import {readExclusiveFileLockOwner, type FileLockOwner} from '../effect/file_lock.js';
 import {SystemInfo} from '../effect/system.js';
+import type {CodeGraphBuildOwnerIdentity} from './build_owner.js';
 import {codeGraphRepositoriesRoot, codeGraphWorktreeLockPath, type CodeGraphLayout} from './layout.js';
 import {
   codeGraphEtaMeasurement,
@@ -161,8 +162,12 @@ export interface CodeGraphBuildReporter {
   readonly completeSnapshot: (snapshot: CodeGraphSnapshot) => Effect.Effect<void, never>;
   readonly fail: (cause: unknown) => Effect.Effect<void, never>;
   readonly heartbeat: Effect.Effect<void, never>;
+  /** Exact privacy-safe owner instance persisted with resumable build state. */
+  readonly ownerIdentity: CodeGraphBuildOwnerIdentity;
   readonly progress: (progress: CodeGraphProgress) => Effect.Effect<void, never>;
 }
+
+export type CodeGraphBuildOwnerStatusCorroboration = 'absent' | 'matches' | 'mismatch';
 
 interface ReporterState {
   readonly etaTracker: CodeGraphEtaTracker;
@@ -373,6 +378,11 @@ export const makeCodeGraphBuildReporter = Effect.fn('codeGraph.buildStatus.makeR
         }, true);
       }
     }).pipe(Effect.catch(() => Effect.void)),
+    ownerIdentity: {
+      buildId,
+      processId: system.processId,
+      ...(processStartIdentity ? {processStartIdentity} : {}),
+    },
     progress: progress =>
       persist(
         (current, now) => observeProgress(current, progress, now),
@@ -407,6 +417,36 @@ export const readCodeGraphBuildStatuses = Effect.fn('codeGraph.buildStatus.readC
   const path = yield* Path.Path;
   const statuses = yield* readBuildStatusesBelow(fs, path, path.join(layout.repositoryRoot, STATUS_DIRECTORY));
   return yield* annotateCheckoutBuildCoordination(fs, path, layout, statuses);
+});
+
+/**
+ * Corroborate an exact durable owner tuple when its local status document is
+ * present. Missing history is allowed; malformed or mismatching present state
+ * refuses automatic reclamation.
+ */
+export const corroborateCodeGraphBuildOwnerStatus = Effect.fn('codeGraph.buildStatus.corroborateOwner')(function* (
+  layout: CodeGraphLayout,
+  worktreeId: string,
+  owner: CodeGraphBuildOwnerIdentity,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const file = codeGraphBuildStatusPath(path, layout, worktreeId, owner.buildId);
+  if (!(yield* fs.exists(file))) return 'absent' as const;
+  const parsed = yield* Effect.gen(function* () {
+    if (Option.isSome(yield* fs.readLink(file).pipe(Effect.option))) return undefined;
+    const info = yield* fs.stat(file);
+    if (info.type !== 'File' || Number(info.size) > STATUS_FILE_BYTES_LIMIT) return undefined;
+    return parseCodeGraphBuildStatus(JSON.parse(yield* fs.readFileString(file)));
+  }).pipe(Effect.catch(() => Effect.succeed(undefined)));
+  if (parsed === undefined) return 'mismatch' as const;
+  return parsed.buildId === owner.buildId &&
+    parsed.identity.checkoutId === layout.checkoutId &&
+    parsed.identity.worktreeId === worktreeId &&
+    parsed.owner.processId === owner.processId &&
+    parsed.owner.processStartIdentity === owner.processStartIdentity
+    ? ('matches' as const)
+    : ('mismatch' as const);
 });
 
 export const readAllCodeGraphBuildStatuses = Effect.fn('codeGraph.buildStatus.readAll')(function* (

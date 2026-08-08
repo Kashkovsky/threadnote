@@ -10,6 +10,7 @@ import type {
   CodeGraphSymbol,
   RepositoryIdentity,
 } from '../../src/code_graph/types.js';
+import {claimPersistentBuildForTest} from '../helpers/code-graph-build.js';
 import {join, mkdtemp, rm} from '../helpers/effect-filesystem.js';
 import {runEffect} from '../helpers/effect-runtime.js';
 
@@ -182,7 +183,7 @@ async function resolveWithPersistentActivation(databasePath: string, fixture: Re
       return yield* store.withSession(
         databasePath,
         Effect.gen(function* () {
-          const ownerToken = yield* store.claimPersistentBuild(databasePath, fixture.identity, {
+          const ownerToken = yield* claimPersistentBuildForTest(store, databasePath, fixture.identity, {
             ...fixture.snapshot,
             state: 'building',
           });

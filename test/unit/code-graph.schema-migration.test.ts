@@ -12,6 +12,7 @@ import type {
   CodeGraphSymbol,
   RepositoryIdentity,
 } from '../../src/code_graph/types.js';
+import {claimPersistentBuildForTest} from '../helpers/code-graph-build.js';
 import {join, mkdtemp, rm} from '../helpers/effect-filesystem.js';
 import {runEffect} from '../helpers/effect-runtime.js';
 
@@ -454,7 +455,7 @@ describe('code graph persistent schema migration', () => {
         yield* store.withSession(
           fixture.databasePath,
           Effect.gen(function* () {
-            const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+            const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
               ...interrupted,
               state: 'building',
             });
@@ -480,7 +481,7 @@ describe('code graph persistent schema migration', () => {
             yield* store.ensureAnalysisSummary(fixture.databasePath, ready.id);
             const preservedSummary = yield* store.loadAnalysisSummary(fixture.databasePath, ready.id);
 
-            const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+            const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
               ...replacement,
               state: 'building',
             });
@@ -723,6 +724,102 @@ describe('code graph persistent schema migration', () => {
       ).toEqual({value: String(CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION)});
     } finally {
       healed.close(false);
+    }
+  });
+
+  it('adds revision 7 owner instances without retiring revision 6 builds or staging rows', async () => {
+    const fixture = await migrationFixture();
+    const ready = snapshot(fixture.identity, 'ready-before-owner-instance-upgrade');
+    const interrupted = snapshot(fixture.identity, 'interrupted-before-owner-instance-upgrade');
+    await seedReadyAndInterruptedMigration(fixture, ready, interrupted);
+    const prepared = new Database(fixture.databasePath, {strict: true});
+    try {
+      prepared.exec('DROP TABLE snapshot_build_owner_instances');
+      prepared.query("UPDATE schema_metadata SET value = '6' WHERE key = 'persistent_extension_schema_revision'").run();
+    } finally {
+      prepared.close(false);
+    }
+    const phases: CodeGraphPersistentSchemaMigrationPhase[] = [];
+
+    await runEffect(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        yield* store.withSession(fixture.databasePath, store.initialize(fixture.databasePath), {
+          onPersistentSchemaMigrationPhase: phase => Effect.sync(() => phases.push(phase)),
+        });
+      }),
+    );
+
+    const database = new Database(fixture.databasePath, {readonly: true, strict: true});
+    try {
+      expect(phases).toContain('added-build-owner-instance');
+      expect(database.query('SELECT state FROM snapshots WHERE id = ?').get(interrupted.id)).toEqual({
+        state: 'building',
+      });
+      expect(
+        database
+          .query('SELECT COUNT(*) AS count FROM building_materialization_batches WHERE snapshot_id = ?')
+          .get(interrupted.id),
+      ).toEqual({count: 1});
+      expect(
+        database.query('SELECT COUNT(*) AS count FROM snapshot_build_owners WHERE snapshot_id = ?').get(interrupted.id),
+      ).toEqual({count: 1});
+      expect(database.query('SELECT COUNT(*) AS count FROM snapshot_build_owner_instances').get()).toEqual({count: 0});
+      expect(
+        database.query("SELECT value FROM schema_metadata WHERE key = 'persistent_extension_schema_revision'").get(),
+      ).toEqual({value: '7'});
+    } finally {
+      database.close(false);
+    }
+  });
+
+  it('atomically rolls back a fault after adding revision 7 owner instances', async () => {
+    const fixture = await migrationFixture();
+    const ready = snapshot(fixture.identity, 'ready-before-owner-instance-fault');
+    const interrupted = snapshot(fixture.identity, 'interrupted-before-owner-instance-fault');
+    await seedReadyAndInterruptedMigration(fixture, ready, interrupted);
+    const prepared = new Database(fixture.databasePath, {strict: true});
+    try {
+      prepared.exec('DROP TABLE snapshot_build_owner_instances');
+      prepared.query("UPDATE schema_metadata SET value = '6' WHERE key = 'persistent_extension_schema_revision'").run();
+    } finally {
+      prepared.close(false);
+    }
+
+    await expect(
+      runEffect(
+        Effect.gen(function* () {
+          const store = yield* CodeGraphStore;
+          yield* store.withSession(fixture.databasePath, store.initialize(fixture.databasePath), {
+            onPersistentSchemaMigrationPhase: phase =>
+              phase === 'added-build-owner-instance'
+                ? Effect.die(new Error('fault after owner instance creation'))
+                : Effect.void,
+          });
+        }),
+      ),
+    ).rejects.toThrow('fault after owner instance creation');
+
+    const database = new Database(fixture.databasePath, {readonly: true, strict: true});
+    try {
+      expect(
+        database
+          .query("SELECT COUNT(*) AS count FROM sqlite_master WHERE name = 'snapshot_build_owner_instances'")
+          .get(),
+      ).toEqual({count: 0});
+      expect(database.query('SELECT state FROM snapshots WHERE id = ?').get(interrupted.id)).toEqual({
+        state: 'building',
+      });
+      expect(
+        database
+          .query('SELECT COUNT(*) AS count FROM building_materialization_batches WHERE snapshot_id = ?')
+          .get(interrupted.id),
+      ).toEqual({count: 1});
+      expect(
+        database.query("SELECT value FROM schema_metadata WHERE key = 'persistent_extension_schema_revision'").get(),
+      ).toEqual({value: '6'});
+    } finally {
+      database.close(false);
     }
   });
 
@@ -1063,7 +1160,7 @@ async function seedReadyAndInterruptedMigration(
       yield* store.withSession(
         fixture.databasePath,
         Effect.gen(function* () {
-          const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+          const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
             ...interrupted,
             state: 'building',
           });

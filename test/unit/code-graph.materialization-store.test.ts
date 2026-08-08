@@ -34,6 +34,7 @@ import type {
 } from '../../src/code_graph/types.js';
 import {discoverManifestWorkspace} from '../../src/code_graph/workspace.js';
 import {withExclusiveFileLock} from '../../src/effect/file_lock.js';
+import {claimPersistentBuildForTest} from '../helpers/code-graph-build.js';
 import {join, mkdtemp, rm} from '../helpers/effect-filesystem.js';
 import {runEffect} from '../helpers/effect-runtime.js';
 
@@ -53,7 +54,7 @@ describe('code graph full-build materialization store', () => {
           fixture.databasePath,
           Effect.gen(function* () {
             const snapshot = {...readySnapshot(fixture.identity, 0, 0), id: 'pager-configuration'};
-            const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+            const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
               ...snapshot,
               state: 'building',
             });
@@ -87,7 +88,7 @@ describe('code graph full-build materialization store', () => {
             yield* store.initialize(fixture.databasePath);
             const stored = symbol('sqlite-tuning-symbol', 'sqliteTuningSymbol', ['typescript:name:sqliteTuningSymbol']);
             const snapshot = {...readySnapshot(fixture.identity, 1, 0), id: 'sqlite-tuning-publication'};
-            const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+            const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
               ...snapshot,
               state: 'building',
             });
@@ -183,7 +184,7 @@ describe('code graph full-build materialization store', () => {
             fixture.databasePath,
             Effect.gen(function* () {
               yield* store.initialize(fixture.databasePath);
-              const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+              const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
                 ...snapshot,
                 state: 'building',
               });
@@ -320,7 +321,7 @@ describe('code graph full-build materialization store', () => {
           return yield* store.withSession(
             fixture.databasePath,
             Effect.gen(function* () {
-              const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+              const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
                 ...snapshot,
                 state: 'building',
               });
@@ -425,7 +426,7 @@ describe('code graph full-build materialization store', () => {
         return yield* store.withSession(
           fixture.databasePath,
           Effect.gen(function* () {
-            const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+            const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
               ...snapshot,
               state: 'building',
             });
@@ -458,7 +459,7 @@ describe('code graph full-build materialization store', () => {
         return yield* store.withSession(
           fixture.databasePath,
           Effect.gen(function* () {
-            const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+            const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
               ...snapshot,
               state: 'building',
             });
@@ -486,7 +487,7 @@ describe('code graph full-build materialization store', () => {
         return yield* store.withSession(
           fixture.databasePath,
           Effect.gen(function* () {
-            const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+            const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
               ...snapshot,
               state: 'building',
             });
@@ -632,7 +633,7 @@ describe('code graph full-build materialization store', () => {
         return yield* store.withSession(
           fixture.databasePath,
           Effect.gen(function* () {
-            const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+            const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
               ...snapshot,
               state: 'building',
             });
@@ -714,7 +715,7 @@ describe('code graph full-build materialization store', () => {
         return yield* store.withSession(
           fixture.databasePath,
           Effect.gen(function* () {
-            const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+            const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
               ...snapshot,
               state: 'building',
             });
@@ -790,7 +791,7 @@ describe('code graph full-build materialization store', () => {
         return yield* store.withSession(
           fixture.databasePath,
           Effect.gen(function* () {
-            const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+            const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
               ...snapshot,
               state: 'building',
             });
@@ -858,7 +859,7 @@ describe('code graph full-build materialization store', () => {
         return yield* store.withSession(
           fixture.databasePath,
           Effect.gen(function* () {
-            const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+            const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
               ...snapshot,
               state: 'building',
             });
@@ -967,7 +968,7 @@ describe('code graph full-build materialization store', () => {
         return yield* store.withSession(
           fixture.databasePath,
           Effect.gen(function* () {
-            const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+            const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
               ...snapshot,
               state: 'building',
             });
@@ -1043,7 +1044,7 @@ describe('code graph full-build materialization store', () => {
           store.withSession(
             fixture.databasePath,
             Effect.gen(function* () {
-              const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+              const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
                 ...snapshot,
                 state: 'building',
               });
@@ -1224,7 +1225,7 @@ describe('code graph full-build materialization store', () => {
         yield* store.withSession(
           fixture.databasePath,
           Effect.gen(function* () {
-            const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+            const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
               ...snapshot,
               state: 'building',
             });
@@ -1271,7 +1272,7 @@ describe('code graph full-build materialization store', () => {
         return yield* store.withSession(
           fixture.databasePath,
           Effect.gen(function* () {
-            const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+            const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
               ...snapshot,
               state: 'building',
             });
@@ -1317,7 +1318,7 @@ describe('code graph full-build materialization store', () => {
         return yield* store.withSession(
           fixture.databasePath,
           Effect.gen(function* () {
-            const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+            const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
               ...snapshot,
               state: 'building',
             });
@@ -1365,7 +1366,7 @@ describe('code graph full-build materialization store', () => {
         yield* store.withSession(
           fixture.databasePath,
           Effect.gen(function* () {
-            const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+            const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
               ...snapshot,
               state: 'building',
             });
@@ -1388,7 +1389,7 @@ describe('code graph full-build materialization store', () => {
           yield* store.withSession(
             fixture.databasePath,
             Effect.gen(function* () {
-              const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+              const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
                 ...snapshot,
                 state: 'building',
               });
@@ -1442,7 +1443,7 @@ describe('code graph full-build materialization store', () => {
           yield* store.withSession(
             fixture.databasePath,
             Effect.gen(function* () {
-              const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, identity, {
+              const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, identity, {
                 ...snapshot,
                 state: 'building',
               });
@@ -1494,7 +1495,7 @@ describe('code graph full-build materialization store', () => {
           return yield* store.withSession(
             fixture.databasePath,
             Effect.gen(function* () {
-              const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, identity, {
+              const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, identity, {
                 ...snapshot,
                 state: 'building',
               });
@@ -1561,7 +1562,7 @@ describe('code graph full-build materialization store', () => {
         yield* store.withSession(
           fixture.databasePath,
           Effect.gen(function* () {
-            const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+            const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
               ...snapshot,
               state: 'building',
             });
@@ -1578,10 +1579,15 @@ describe('code graph full-build materialization store', () => {
         return yield* store.withSession(
           fixture.databasePath,
           Effect.gen(function* () {
-            const resumedOwnerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
-              ...snapshot,
-              state: 'building',
-            });
+            const resumedOwnerToken = yield* claimPersistentBuildForTest(
+              store,
+              fixture.databasePath,
+              fixture.identity,
+              {
+                ...snapshot,
+                state: 'building',
+              },
+            );
             yield* store.prepareActivation(fixture.databasePath, [fixture.file], snapshot.id, 1, resumedOwnerToken);
             yield* store.stageActivationFacts(fixture.databasePath, [original], [], [], undefined, 0);
             const resumedCounts = yield* store.stagedFactCounts(fixture.databasePath);
@@ -1607,10 +1613,15 @@ describe('code graph full-build materialization store', () => {
               mismatch ?? 'expected mismatch',
               resumedOwnerToken,
             );
-            const replacementOwnerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
-              ...snapshot,
-              state: 'building',
-            });
+            const replacementOwnerToken = yield* claimPersistentBuildForTest(
+              store,
+              fixture.databasePath,
+              fixture.identity,
+              {
+                ...snapshot,
+                state: 'building',
+              },
+            );
             yield* store.prepareActivation(fixture.databasePath, [fixture.file], snapshot.id, 1, replacementOwnerToken);
             yield* store.stageActivationFacts(fixture.databasePath, [replacement], [], [], undefined, 0);
             yield* store.resolveStagedReferences(fixture.databasePath);
@@ -1672,7 +1683,7 @@ describe('code graph full-build materialization store', () => {
         yield* store.withSession(
           fixture.databasePath,
           Effect.gen(function* () {
-            const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+            const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
               ...snapshot,
               state: 'building',
             });
@@ -1703,7 +1714,7 @@ describe('code graph full-build materialization store', () => {
         return yield* store.withSession(
           fixture.databasePath,
           Effect.gen(function* () {
-            const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+            const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
               ...snapshot,
               state: 'building',
             });
@@ -1750,7 +1761,7 @@ describe('code graph full-build materialization store', () => {
         yield* store.withSession(
           fixture.databasePath,
           Effect.gen(function* () {
-            const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+            const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
               ...snapshot,
               state: 'building',
             });
@@ -1829,7 +1840,7 @@ describe('code graph full-build materialization store', () => {
         return yield* store.withSession(
           fixture.databasePath,
           Effect.gen(function* () {
-            const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+            const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
               ...snapshot,
               state: 'building',
             });
@@ -1925,7 +1936,8 @@ describe('code graph full-build materialization store', () => {
         return yield* store.withSession(
           interruptedFixture.databasePath,
           Effect.gen(function* () {
-            const ownerToken = yield* store.claimPersistentBuild(
+            const ownerToken = yield* claimPersistentBuildForTest(
+              store,
               interruptedFixture.databasePath,
               interruptedFixture.identity,
               {
@@ -1986,7 +1998,8 @@ describe('code graph full-build materialization store', () => {
         return yield* store.withSession(
           interruptedFixture.databasePath,
           Effect.gen(function* () {
-            const ownerToken = yield* store.claimPersistentBuild(
+            const ownerToken = yield* claimPersistentBuildForTest(
+              store,
               interruptedFixture.databasePath,
               interruptedFixture.identity,
               {
@@ -2023,7 +2036,7 @@ describe('code graph full-build materialization store', () => {
           return yield* store.withSession(
             fixture.databasePath,
             Effect.gen(function* () {
-              const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+              const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
                 ...snapshot,
                 state: 'building',
               });
@@ -2100,7 +2113,7 @@ describe('code graph full-build materialization store', () => {
         return yield* store.withSession(
           fixture.databasePath,
           Effect.gen(function* () {
-            const staleOwnerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+            const staleOwnerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
               ...snapshot,
               state: 'building',
             });
@@ -2152,7 +2165,7 @@ describe('code graph full-build materialization store', () => {
         return yield* store.withSession(
           fixture.databasePath,
           Effect.gen(function* () {
-            replacementOwnerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+            replacementOwnerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
               ...snapshot,
               state: 'building',
             });
@@ -2234,7 +2247,7 @@ describe('code graph full-build materialization store', () => {
         return yield* store.withSession(
           fixture.databasePath,
           Effect.gen(function* () {
-            const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+            const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
               ...snapshot,
               state: 'building',
             });
@@ -2276,7 +2289,7 @@ describe('code graph full-build materialization store', () => {
         return yield* store.withSession(
           fixture.databasePath,
           Effect.gen(function* () {
-            const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+            const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
               ...snapshot,
               state: 'building',
             });
@@ -2324,7 +2337,7 @@ describe('code graph full-build materialization store', () => {
         return yield* store.withSession(
           fixture.databasePath,
           Effect.gen(function* () {
-            const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+            const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
               ...snapshot,
               state: 'building',
             });
@@ -2390,7 +2403,7 @@ describe('code graph full-build materialization store', () => {
               const snapshot = readySnapshot(fixture.identity, 2, 1);
               let ownerToken: string | undefined;
               if (direct) {
-                ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+                ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
                   ...snapshot,
                   state: 'building',
                 });
@@ -3142,7 +3155,7 @@ describe('code graph full-build materialization store', () => {
         yield* store.withSession(
           fixture.databasePath,
           Effect.gen(function* () {
-            const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+            const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
               ...snapshot,
               state: 'building',
             });

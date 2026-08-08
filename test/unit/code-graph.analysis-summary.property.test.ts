@@ -12,6 +12,7 @@ import type {
   RepositoryIdentity,
 } from '../../src/code_graph/types.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
+import {claimPersistentBuildForTest} from '../helpers/code-graph-build.js';
 import {runEffect} from '../helpers/effect-runtime.js';
 
 const edgeSpec = FC.record({
@@ -243,7 +244,7 @@ describe('persisted code graph analysis summaries', () => {
         yield* store.withSession(
           databasePath,
           Effect.gen(function* () {
-            const owner = yield* store.claimPersistentBuild(databasePath, identity, ready);
+            const owner = yield* claimPersistentBuildForTest(store, databasePath, identity, ready);
             yield* store.prepareActivation(databasePath, [inventoryFile('direct')], ready.id, 1, owner);
             yield* store.stageActivationFacts(databasePath, symbols, edges, [], undefined, 0);
             yield* store.stageActivationFacts(databasePath, symbols, edges, [], undefined, 0);
@@ -293,7 +294,7 @@ describe('persisted code graph analysis summaries', () => {
         yield* store.withSession(
           databasePath,
           Effect.gen(function* () {
-            const owner = yield* store.claimPersistentBuild(databasePath, identity, ready);
+            const owner = yield* claimPersistentBuildForTest(store, databasePath, identity, ready);
             yield* store.prepareActivation(databasePath, [inventoryFile('direct-resolution')], ready.id, 1, owner);
             yield* store.stageActivationFacts(
               databasePath,

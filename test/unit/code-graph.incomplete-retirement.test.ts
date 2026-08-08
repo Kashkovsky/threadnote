@@ -3,6 +3,7 @@ import {afterEach, describe, expect, it} from 'vitest';
 import {Deferred, Effect, Fiber, Ref} from 'effect';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
 import type {CodeGraphSnapshot, RepositoryIdentity} from '../../src/code_graph/types.js';
+import {claimPersistentBuildForTest} from '../helpers/code-graph-build.js';
 import {join, mkdtemp, rm} from '../helpers/effect-filesystem.js';
 import {runEffect} from '../helpers/effect-runtime.js';
 
@@ -77,8 +78,8 @@ describe('code graph incomplete snapshot retirement', () => {
       Effect.gen(function* () {
         const store = yield* CodeGraphStore;
         yield* store.initialize(databasePath);
-        yield* store.claimPersistentBuild(databasePath, identity, snapshots.old);
-        yield* store.claimPersistentBuild(databasePath, identity, snapshots.cleanOld);
+        yield* claimPersistentBuildForTest(store, databasePath, identity, snapshots.old);
+        yield* claimPersistentBuildForTest(store, databasePath, identity, snapshots.cleanOld);
         yield* store.markBuilding(databasePath, identity, snapshots.failed);
         yield* store.markFailed(databasePath, snapshots.failed.id, 'expected test failure');
         yield* store.markBuilding(databasePath, identity, snapshots.retained);
@@ -157,7 +158,7 @@ describe('code graph incomplete snapshot retirement', () => {
       Effect.gen(function* () {
         const store = yield* CodeGraphStore;
         yield* store.initialize(databasePath);
-        yield* store.claimPersistentBuild(databasePath, identity, stale);
+        yield* claimPersistentBuildForTest(store, databasePath, identity, stale);
       }),
     );
     seedLargeInterruptedBuild(databasePath, stale.id);
@@ -271,7 +272,7 @@ describe('code graph incomplete snapshot retirement', () => {
     }
   }, 15_000);
 
-  it('reclaims interrupted builds owned by removed worktrees without touching live or active worktrees', async () => {
+  it('never reclaims another worktree from PID, age, or failed-state hints alone', async () => {
     const root = await mkdtemp('threadnote-incomplete-orphan-reclaim-');
     temporaryRoots.push(root);
     const databasePath = join(root, 'graph-v3.sqlite');
@@ -295,8 +296,8 @@ describe('code graph incomplete snapshot retirement', () => {
         const store = yield* CodeGraphStore;
         yield* store.initialize(databasePath);
         yield* store.markBuilding(databasePath, survivor, survivorSnapshot);
-        yield* store.claimPersistentBuild(databasePath, removedDead, deadSnapshot);
-        yield* store.claimPersistentBuild(databasePath, removedLive, liveSnapshot);
+        yield* claimPersistentBuildForTest(store, databasePath, removedDead, deadSnapshot);
+        yield* claimPersistentBuildForTest(store, databasePath, removedLive, liveSnapshot);
         yield* store.markBuilding(databasePath, removedFailed, failedSnapshot);
         yield* store.markFailed(databasePath, failedSnapshot.id, 'expected removed-worktree failure');
         yield* Effect.sync(() => {
@@ -317,23 +318,20 @@ describe('code graph incomplete snapshot retirement', () => {
           survivor.worktreeId,
           new Set([survivorSnapshot.id]),
           update => Effect.sync(() => progress.push(update)),
-          new Set([survivor.worktreeId]),
         );
       }),
     );
 
-    expect(retired).toBe(2);
-    expect(progress[0]).toEqual({
-      pagesCompleted: 0,
-      rowsDeleted: 0,
-      snapshotsCompleted: 0,
-      snapshotsTotal: 2,
-    });
-    expect(progress.at(-1)).toMatchObject({snapshotsCompleted: 2, snapshotsTotal: 2});
+    expect(retired).toBe(0);
+    expect(progress).toEqual([]);
     const database = new Database(databasePath, {readonly: true});
     try {
-      expect(database.query('SELECT state FROM snapshots WHERE id = ?').get(deadSnapshot.id)).toBeNull();
-      expect(database.query('SELECT state FROM snapshots WHERE id = ?').get(failedSnapshot.id)).toBeNull();
+      expect(database.query('SELECT state FROM snapshots WHERE id = ?').get(deadSnapshot.id)).toEqual({
+        state: 'building',
+      });
+      expect(database.query('SELECT state FROM snapshots WHERE id = ?').get(failedSnapshot.id)).toEqual({
+        state: 'failed',
+      });
       expect(
         database
           .query<{readonly state: string}, [string]>('SELECT state FROM snapshots WHERE id = ?')
@@ -357,7 +355,7 @@ describe('code graph incomplete snapshot retirement', () => {
             'SELECT COUNT(*) AS count FROM symbols WHERE snapshot_id IN (?, ?)',
           )
           .get(deadSnapshot.id, failedSnapshot.id)?.count,
-      ).toBe(0);
+      ).toBe(2);
       expect(database.query('PRAGMA foreign_key_check').all()).toEqual([]);
     } finally {
       database.close();
