@@ -41,6 +41,9 @@ describe('Effect CLI', () => {
     const query = await runCli(['graph', 'query', '--help']);
     const node = await runCli(['graph', 'node', '--help']);
     const neighbors = await runCli(['graph', 'neighbors', '--help']);
+    const explain = await runCli(['graph', 'explain', '--help']);
+    const path = await runCli(['graph', 'path', '--help']);
+    const impact = await runCli(['graph', 'impact', '--help']);
     const analyze = await runCli(['graph', 'analyze', '--help']);
     const diagnostics = await runCli(['graph', 'diagnostics', '--help']);
     const exportHelp = await runCli(['graph', 'export', '--help']);
@@ -67,6 +70,9 @@ describe('Effect CLI', () => {
     expect(neighbors.stdout).toContain('--direction choice');
     expect(neighbors.stdout).toContain('choices: both, incoming, outgoing');
     expect(neighbors.stdout).toContain('--depth integer');
+    for (const command of [query, neighbors, explain, path, impact]) {
+      expect(command.stdout).toContain('--node-limit, --limit integer');
+    }
     expect(analyze.stdout).toContain('--view choice');
     expect(analyze.stdout).toContain(
       'choices: stats, communities, community, groups, hubs, surprises, confidence, full',
@@ -80,7 +86,7 @@ describe('Effect CLI', () => {
     expect(community.stdout).toContain('--member-limit integer');
     expect(exportHelp.stdout).toContain('--format choice');
     expect(exportHelp.stdout).toContain('choices: json, graphml, html, svg');
-    expect(exportHelp.stdout).toContain('--node-limit string');
+    expect(exportHelp.stdout).toContain('--node-limit, --limit string');
     expect(exportHelp.stdout).toContain('--edge-limit string');
     expect(purge.stdout).toContain('--obsolete');
     expect(repair.stdout).toContain('--all');
@@ -169,7 +175,7 @@ describe('Effect CLI', () => {
         root,
         '--query',
         'indexedBeforePull',
-        '--node-limit',
+        '--limit',
         '1',
         '--depth',
         '0',
@@ -506,6 +512,45 @@ describe('Effect CLI', () => {
     expect(result.stdout).toContain('current repo latest handoff');
     expect(result.stdout).toContain('threadnote');
     expect(result.stdout).toContain('threadnote://user/');
+  });
+
+  it('accepts compatibility aliases for memory command options', async () => {
+    const durableUri = 'threadnote://user/compat/memories/durable/projects/threadnote/previous.md';
+    const handoffUri = 'threadnote://user/compat/memories/handoffs/active/threadnote/previous.md';
+    const [recallResult, rememberResult, handoffResult, listResult] = await Promise.all([
+      runCli(['recall', '--dry-run', '--cwd', process.cwd(), '--limit', '1', '--query', 'compatibility aliases']),
+      runCli([
+        'remember',
+        '--dry-run',
+        '--text',
+        'compatibility aliases',
+        '--project',
+        'threadnote',
+        '--topic',
+        'compatibility-aliases',
+        `--replace-uri=${durableUri}`,
+      ]),
+      runCli([
+        'handoff',
+        '--dry-run',
+        '--task',
+        'compatibility aliases',
+        '--project',
+        'threadnote',
+        '--topic',
+        'compatibility-aliases',
+        `--replace-uri=${handoffUri}`,
+      ]),
+      runCli(['list', '--dry-run', '--limit', '1', 'threadnote://user/compat/memories']),
+    ]);
+
+    expect(recallResult.stdout).toContain('Would search native recall index for "compatibility aliases"');
+    expect(recallResult.stdout).toContain('/memories/durable/projects/threadnote');
+    expect(rememberResult.stdout).toContain(`supersedes: ${durableUri}`);
+    expect(rememberResult.stdout).toContain(`Would remove superseded native resource: ${durableUri}`);
+    expect(handoffResult.stdout).toContain(`supersedes: ${handoffUri}`);
+    expect(handoffResult.stdout).toContain(`Would remove superseded native resource: ${handoffUri}`);
+    expect(listResult.stdout).toContain('Would list native resource: threadnote://user/compat/memories');
   });
 
   it('rejects retired daemon port flags', async () => {

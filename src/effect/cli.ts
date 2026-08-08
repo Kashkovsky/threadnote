@@ -129,7 +129,7 @@ const stringFlag = (name: string): Flag.Flag<string> =>
 const integerFlag = (name: string): Flag.Flag<number> => valueFlag(name, Flag.integer(name), 'other');
 
 const withValueAlias = <A>(flag: Flag.Flag<A>, alias: string, kind: 'other' | 'string'): Flag.Flag<A> => {
-  valueFlagKinds.set(`-${alias}`, kind);
+  valueFlagKinds.set(alias.length === 1 ? `-${alias}` : `--${alias}`, kind);
   return flag.pipe(Flag.withAlias(alias));
 };
 
@@ -577,11 +577,15 @@ const graphBounds = {
   includeHeuristic: boolean('include-heuristic', 'Include lower-confidence heuristic relationships'),
   includeModelAssociations: boolean('include-model-associations', 'Include model-derived semantic associations'),
   json: boolean('json', 'Emit versioned machine-readable JSON'),
-  nodeLimit: optional(
-    describeFlag(
-      integerFlag('node-limit').pipe(Flag.withSchema(Schema.Int.check(Schema.isBetween({minimum: 1, maximum: 200})))),
-      'Maximum returned nodes',
+  nodeLimit: withValueAlias(
+    optional(
+      describeFlag(
+        integerFlag('node-limit').pipe(Flag.withSchema(Schema.Int.check(Schema.isBetween({minimum: 1, maximum: 200})))),
+        'Maximum returned nodes',
+      ),
     ),
+    'limit',
+    'other',
   ),
 } as const;
 
@@ -785,7 +789,11 @@ const graphExport = Command.make(
     cwd: graphBounds.cwd,
     edgeLimit: optionalString('edge-limit', 'Maximum relationships to export, or all; defaults by format'),
     format: defaultChoice('format', ['json', 'graphml', 'html', 'svg'], 'Explicit export format', 'json'),
-    nodeLimit: optionalString('node-limit', 'Maximum nodes to export, or all; defaults by format'),
+    nodeLimit: withValueAlias(
+      optionalString('node-limit', 'Maximum nodes to export, or all; defaults by format'),
+      'limit',
+      'string',
+    ),
     output: requiredString('output', 'New output file; existing files are never overwritten'),
   },
   options => withRuntimeEffect(config => runCodeGraphExport(config, options)),
@@ -1075,7 +1083,11 @@ const remember = Command.make(
       'durable',
     ),
     project: optionalString('project', 'Project/repo/topic namespace for lifecycle-aware storage'),
-    replace: optionalString('replace', 'Supersede an existing threadnote:// memory after storing the new memory'),
+    replace: withValueAlias(
+      optionalString('replace', 'Supersede an existing threadnote:// memory after storing the new memory'),
+      'replace-uri',
+      'string',
+    ),
     sourceAgentClient: defaultString('source-agent-client', 'Originating agent client name', 'codex'),
     status: defaultChoice('status', ['active', 'archived', 'superseded'], 'Memory lifecycle status', 'active'),
     stdin: boolean('stdin', 'Read memory text from stdin'),
@@ -1152,11 +1164,19 @@ const enrichMemories = Command.make(
 const recall = Command.make(
   'recall',
   {
-    callerCwd: optionalString('caller-cwd', 'Absolute caller workspace path for current repo/branch resolution'),
+    callerCwd: withValueAlias(
+      optionalString('caller-cwd', 'Absolute caller workspace path for current repo/branch resolution'),
+      'cwd',
+      'string',
+    ),
     dryRun: boolean('dry-run', 'Print the native query without searching'),
     includeArchived: boolean('include-archived', 'Include archived memories in recall results'),
     inferScope: negatedBoolean('infer-scope', 'Disable query-based scope inference'),
-    nodeLimit: withValueAlias(optionalString('node-limit', 'Maximum number of search results'), 'n', 'string'),
+    nodeLimit: withValueAlias(
+      withValueAlias(optionalString('node-limit', 'Maximum number of search results'), 'n', 'string'),
+      'limit',
+      'string',
+    ),
     project: optionalString('project', 'Add a scoped project memory pass alongside global search'),
     query: requiredString('query', 'Search query'),
     threshold: optionalString('threshold', 'Minimum relevance score 0-1'),
@@ -1205,7 +1225,11 @@ const list = Command.make(
   {
     all: boolean('all', 'Show hidden files such as .abstract.md and .overview.md').pipe(Flag.withAlias('a')),
     dryRun: boolean('dry-run', 'Print the native listing operation without running it'),
-    nodeLimit: withValueAlias(optionalString('node-limit', 'Maximum number of nodes to list'), 'n', 'string'),
+    nodeLimit: withValueAlias(
+      withValueAlias(optionalString('node-limit', 'Maximum number of nodes to list'), 'n', 'string'),
+      'limit',
+      'string',
+    ),
     recursive: boolean('recursive', 'List subdirectories recursively').pipe(Flag.withAlias('r')),
     simple: boolean('simple', 'Print only paths').pipe(Flag.withAlias('s')),
     uri: optionalArgument('uri', 'threadnote:// directory URI', 'threadnote://'),
@@ -1224,7 +1248,11 @@ const handoff = Command.make(
     pr: optionalString('pr', 'Related pull request reference'),
     project: optionalString('project', 'Project/repo namespace; defaults to current repo'),
     reference: repeatedString('reference', 'Prior threadnote:// context URI; repeat for multiple'),
-    replace: optionalString('replace', 'Supersede an existing memory after storing the handoff'),
+    replace: withValueAlias(
+      optionalString('replace', 'Supersede an existing memory after storing the handoff'),
+      'replace-uri',
+      'string',
+    ),
     sourceAgentClient: defaultString('source-agent-client', 'Originating agent client name', 'codex'),
     task: optionalString('task', 'Current task summary'),
     tests: optionalString('tests', 'Tests or checks run'),
