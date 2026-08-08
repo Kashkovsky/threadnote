@@ -25,6 +25,7 @@ import {CommandExecutor} from '../../src/effect/command.js';
 import {
   parseCodeGraphLocalProvenanceRecordJson,
   privacySafeCodeGraphLocalAssociation,
+  readCodeGraphLocalReconciliationEvidence,
   readPersistedCodeGraphLocalAssociation,
   recordVerifiedCodeGraphLocalAssociation,
   type CodeGraphLocalProvenanceRecord,
@@ -68,6 +69,7 @@ describe('code graph private local provenance', () => {
     expect(repeatedStat.ino).toBe(firstStat.ino);
     expect(publicationValidationCount).toBe(0);
     expect(readRecord(fixture.sidecar)).toEqual(firstRecord);
+    expect(firstRecord).toMatchObject({registration: {kind: 'main'}, schemaVersion: 2});
     expect(readdirSync(dirname(fixture.sidecar)).filter(name => name.endsWith('.tmp'))).toEqual([]);
 
     git(fixture.root, [
@@ -85,6 +87,86 @@ describe('code graph private local provenance', () => {
     const refreshedRecord = readRecord(fixture.sidecar);
     expect(refreshedRecord.headCommit).toBe(refreshedIdentity.headCommit);
     expect(refreshedRecord.headCommit).not.toBe(firstRecord.headCommit);
+  });
+
+  it('upgrades a fresh v1 display record before it can become reconciliation evidence', async () => {
+    const fixture = await provenanceFixture();
+    await runEffect(recordVerifiedCodeGraphLocalAssociation(fixture.home, fixture.identity));
+    const current = readRecord(fixture.sidecar);
+    expect(current.schemaVersion).toBe(2);
+    if (current.schemaVersion !== 2) throw new Error('fixture did not publish v2 provenance');
+    const {registration: _registration, ...base} = current;
+    writeFileSync(fixture.sidecar, `${JSON.stringify({...base, schemaVersion: 1})}\n`, {mode: 0o600});
+    const legacyInode = statSync(fixture.sidecar).ino;
+
+    expect(await runEffect(readCodeGraphLocalReconciliationEvidence(fixture.home, fixture.identity))).toEqual({
+      state: 'legacy-unknown',
+    });
+    const association = await runEffect(recordVerifiedCodeGraphLocalAssociation(fixture.home, fixture.identity));
+    const upgraded = readRecord(fixture.sidecar);
+
+    expect(association).toMatchObject({available: true, state: 'verified'});
+    expect(upgraded).toMatchObject({registration: {kind: 'main'}, schemaVersion: 2});
+    expect(statSync(fixture.sidecar).ino).not.toBe(legacyInode);
+    expect(await runEffect(readCodeGraphLocalReconciliationEvidence(fixture.home, fixture.identity))).toMatchObject({
+      checkoutId: fixture.identity.checkoutId,
+      recordDigest: expect.stringMatching(/^[0-9a-f]{64}$/),
+      recordIdentity: expect.stringMatching(/^[0-9a-f]{64}$/),
+      registration: {kind: 'main'},
+      state: 'verified',
+      worktreeId: fixture.identity.worktreeId,
+    });
+  });
+
+  it('reads v2 reconciliation evidence without probing an unavailable remembered worktree', async () => {
+    const fixture = await provenanceFixture();
+    await runEffect(recordVerifiedCodeGraphLocalAssociation(fixture.home, fixture.identity));
+    let rememberedWorktreeProbeCount = 0;
+    const observed = await runEffect(
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const probesRememberedWorktree = (target: unknown) => {
+          const candidate = String(target);
+          if (candidate === fixture.root || candidate.startsWith(`${fixture.root}${sep}`)) {
+            rememberedWorktreeProbeCount += 1;
+          }
+        };
+        const guardedFileSystem = FileSystem.FileSystem.of({
+          ...fileSystem,
+          exists: target => {
+            probesRememberedWorktree(target);
+            return fileSystem.exists(target);
+          },
+          open: (target, options) => {
+            probesRememberedWorktree(target);
+            return fileSystem.open(target, options);
+          },
+          readLink: target => {
+            probesRememberedWorktree(target);
+            return fileSystem.readLink(target);
+          },
+          realPath: target => {
+            probesRememberedWorktree(target);
+            return fileSystem.realPath(target);
+          },
+          stat: target => {
+            probesRememberedWorktree(target);
+            return fileSystem.stat(target);
+          },
+        });
+        return yield* readCodeGraphLocalReconciliationEvidence(fixture.home, fixture.identity).pipe(
+          Effect.provideService(FileSystem.FileSystem, guardedFileSystem),
+        );
+      }),
+    );
+    rmSync(fixture.root, {force: true, recursive: true});
+    const missing = await runEffect(readCodeGraphLocalReconciliationEvidence(fixture.home, fixture.identity));
+
+    expect(observed).toMatchObject({registration: {kind: 'main'}, state: 'verified'});
+    expect(missing).toMatchObject({registration: {kind: 'main'}, state: 'verified'});
+    expect(rememberedWorktreeProbeCount).toBe(0);
+    expect(JSON.stringify(observed)).not.toContain(fixture.root);
+    expect(JSON.stringify(missing)).not.toContain(fixture.root);
   });
 
   it('rejects stale and fabricated complete Git identities before writing', async () => {
@@ -141,6 +223,48 @@ describe('code graph private local provenance', () => {
     expect(readdirSync(dirname(fixture.sidecar)).filter(name => name.endsWith('.tmp'))).toEqual([]);
   });
 
+  it('revalidates the linked admin registration immediately before atomic publication', async () => {
+    const root = localRepository();
+    git(root, ['branch', 'linked-registration']);
+    const linkedParent = temporaryRoot();
+    const linked = join(linkedParent, 'linked-registration');
+    git(root, ['worktree', 'add', linked, 'linked-registration']);
+    const identity = await runEffect(resolveRepositoryIdentity(linked));
+    const home = temporaryRoot();
+    const sidecar = join(
+      home,
+      'indexes',
+      'code-graph',
+      'repositories',
+      identity.checkoutId,
+      'local-context',
+      'worktrees',
+      `${identity.worktreeId}.json`,
+    );
+    let changed = false;
+
+    const association = await runEffect(
+      recordVerifiedCodeGraphLocalAssociation(home, identity, {
+        beforePublishValidation: () =>
+          Effect.sync(() => {
+            const originalAdmin = execFileSync(
+              'git',
+              ['-C', linked, 'rev-parse', '--path-format=absolute', '--git-dir'],
+              {encoding: 'utf8'},
+            ).replace(/\n$/, '');
+            const renamedAdmin = `${originalAdmin}-changed`;
+            renameSync(originalAdmin, renamedAdmin);
+            writeFileSync(join(linked, '.git'), `gitdir: ${renamedAdmin}\n`);
+            changed = true;
+          }),
+      }),
+    );
+
+    expect(changed).toBe(true);
+    expect(association).toEqual({available: false, state: 'invalid'});
+    expect(existsSync(sidecar)).toBe(false);
+  });
+
   it('home-abbreviates human display while preserving the canonical trusted-local path', async () => {
     const fixture = await provenanceFixture(homedir());
 
@@ -189,13 +313,22 @@ describe('code graph private local provenance', () => {
       Effect.gen(function* () {
         const command = yield* CommandExecutor;
         const query = yield* CodeGraphQueryService;
-        const mutableCommand = command as {execute: typeof command.execute};
+        const executeBytes = command.executeBytes;
+        if (executeBytes === undefined) return yield* Effect.fail(new Error('binary command adapter is unavailable'));
+        const mutableCommand = command as {
+          execute: typeof command.execute;
+          executeBytes: typeof executeBytes;
+        };
         const execute = command.execute;
         return yield* Effect.acquireUseRelease(
           Effect.sync(() => {
             mutableCommand.execute = (executable, args, options) => {
               if (executable === 'git') gitInvocationCount += 1;
               return execute(executable, args, options);
+            };
+            mutableCommand.executeBytes = (executable, args, options) => {
+              if (executable === 'git') gitInvocationCount += 1;
+              return executeBytes(executable, args, options);
             };
           }),
           () =>
@@ -214,6 +347,7 @@ describe('code graph private local provenance', () => {
           () =>
             Effect.sync(() => {
               mutableCommand.execute = execute;
+              mutableCommand.executeBytes = executeBytes;
             }),
         );
       }),

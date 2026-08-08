@@ -1,11 +1,19 @@
 import {Clock, Crypto, Effect, FileSystem, Option, Path, PlatformError} from 'effect';
+import {sha256HexSync} from '../crypto/sha256.js';
 import {SystemInfo} from '../effect/system.js';
-import {resolveRepositoryIdentity} from './repository.js';
+import {
+  captureCodeGraphGitWorktreeRegistration,
+  parseCodeGraphGitWorktreeRegistration,
+  sameCodeGraphGitWorktreeRegistration,
+  type CodeGraphGitWorktreeRegistration,
+} from './git_worktree_registration.js';
+import {resolveRepositoryIdentityDetail} from './repository.js';
 import type {RepositoryIdentity} from './types.js';
 
 const LOCAL_CONTEXT_DIRECTORY = 'local-context';
 const LOCAL_WORKTREES_DIRECTORY = 'worktrees';
-const LOCAL_PROVENANCE_SCHEMA_VERSION = 1 as const;
+const LOCAL_PROVENANCE_LEGACY_SCHEMA_VERSION = 1 as const;
+const LOCAL_PROVENANCE_SCHEMA_VERSION = 2 as const;
 const LOCAL_PROVENANCE_BYTES_LIMIT = 8 * 1_024;
 const LOCAL_PATH_LENGTH_LIMIT = 4_096;
 const LOCAL_PROVENANCE_REFRESH_MILLISECONDS = 5 * 60_000;
@@ -30,15 +38,37 @@ export interface CodeGraphLocalAssociationTarget {
   readonly worktreeId: string;
 }
 
-export interface CodeGraphLocalProvenanceRecord {
+interface CodeGraphLocalProvenanceRecordBase {
   readonly canonicalWorktreePath: string;
   readonly checkoutId: string;
   readonly headCommit?: string;
   readonly observedAt: string;
   readonly repositoryId: string;
-  readonly schemaVersion: typeof LOCAL_PROVENANCE_SCHEMA_VERSION;
   readonly worktreeId: string;
 }
+
+export interface CodeGraphLocalProvenanceRecordV1 extends CodeGraphLocalProvenanceRecordBase {
+  readonly schemaVersion: typeof LOCAL_PROVENANCE_LEGACY_SCHEMA_VERSION;
+}
+
+export interface CodeGraphLocalProvenanceRecordV2 extends CodeGraphLocalProvenanceRecordBase {
+  readonly registration: CodeGraphGitWorktreeRegistration;
+  readonly schemaVersion: typeof LOCAL_PROVENANCE_SCHEMA_VERSION;
+}
+
+export type CodeGraphLocalProvenanceRecord = CodeGraphLocalProvenanceRecordV1 | CodeGraphLocalProvenanceRecordV2;
+
+export type CodeGraphLocalReconciliationEvidence =
+  | {readonly state: 'invalid' | 'legacy-unknown'}
+  | {
+      readonly checkoutId: string;
+      readonly recordDigest: string;
+      readonly recordIdentity: string;
+      readonly registration: CodeGraphGitWorktreeRegistration;
+      readonly repositoryId: string;
+      readonly state: 'verified';
+      readonly worktreeId: string;
+    };
 
 export interface CodeGraphLocalProvenanceObservationOptions {
   /** @internal Deterministic race seam used to verify the final pre-publication identity check. */
@@ -61,15 +91,26 @@ export const recordVerifiedCodeGraphLocalAssociation = Effect.fn('codeGraph.reco
 ) {
   const verified = yield* resolveMatchingRepositoryIdentity(identity).pipe(Effect.option);
   if (Option.isNone(verified)) return unavailableAssociation('invalid');
-  return yield* recordResolvedCodeGraphLocalAssociation(threadnoteHome, verified.value, options);
+  return yield* recordResolvedCodeGraphLocalAssociation(
+    threadnoteHome,
+    verified.value.identity,
+    options,
+    verified.value.gitDirectory,
+  );
 });
 
 /** Resolve and observe in one effect so cadence hits execute only one complete Git identity resolution. */
 export const resolveAndRecordCodeGraphLocalAssociation = Effect.fn('codeGraph.resolveAndRecordLocalAssociation')(
   function* (threadnoteHome: string, cwd: string, options: ResolveCodeGraphLocalAssociationOptions = {}) {
-    const identity = yield* resolveRepositoryIdentity(cwd);
+    const resolved = yield* resolveRepositoryIdentityDetail(cwd);
+    const identity = resolved.identity;
     yield* options.validateIdentity?.(identity) ?? Effect.void;
-    const association = yield* recordResolvedCodeGraphLocalAssociation(threadnoteHome, identity, options);
+    const association = yield* recordResolvedCodeGraphLocalAssociation(
+      threadnoteHome,
+      identity,
+      options,
+      resolved.gitDirectory,
+    );
     return {association, identity};
   },
 );
@@ -78,6 +119,7 @@ const recordResolvedCodeGraphLocalAssociation = Effect.fn('codeGraph.recordResol
   threadnoteHome: string,
   identity: RepositoryIdentity,
   options: CodeGraphLocalProvenanceObservationOptions,
+  observedGitDirectory?: string,
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -95,9 +137,15 @@ const recordResolvedCodeGraphLocalAssociation = Effect.fn('codeGraph.recordResol
     worktreeId: identity.worktreeId,
   });
   const now = yield* Clock.currentTimeMillis;
+  const registration = yield* captureCodeGraphGitWorktreeRegistration(identity, observedGitDirectory).pipe(
+    Effect.option,
+  );
+  if (Option.isNone(registration)) return unavailableAssociation('invalid');
   if (
     existing?.canonicalWorktreePath === identity.repoRoot &&
     existing.headCommit === identity.headCommit &&
+    existing.schemaVersion === LOCAL_PROVENANCE_SCHEMA_VERSION &&
+    sameCodeGraphGitWorktreeRegistration(existing.registration, registration.value) &&
     now - Date.parse(existing.observedAt) >= 0 &&
     now - Date.parse(existing.observedAt) < LOCAL_PROVENANCE_REFRESH_MILLISECONDS
   ) {
@@ -109,6 +157,7 @@ const recordResolvedCodeGraphLocalAssociation = Effect.fn('codeGraph.recordResol
     checkoutId: identity.checkoutId,
     headCommit: identity.headCommit,
     observedAt: new Date(now).toISOString(),
+    registration: registration.value,
     repositoryId: identity.repositoryId,
     schemaVersion: LOCAL_PROVENANCE_SCHEMA_VERSION,
     worktreeId: identity.worktreeId,
@@ -139,7 +188,14 @@ const recordResolvedCodeGraphLocalAssociation = Effect.fn('codeGraph.recordResol
       return yield* Effect.fail(new Error('Code graph local provenance target is a symbolic link.'));
     }
     yield* options.beforePublishValidation?.() ?? Effect.void;
-    yield* resolveMatchingRepositoryIdentity(identity);
+    const finalIdentity = yield* resolveMatchingRepositoryIdentity(identity);
+    const finalRegistration = yield* captureCodeGraphGitWorktreeRegistration(
+      finalIdentity.identity,
+      finalIdentity.gitDirectory,
+    );
+    if (!sameCodeGraphGitWorktreeRegistration(record.registration, finalRegistration)) {
+      return yield* Effect.fail(new Error('Code graph local provenance registration changed during observation.'));
+    }
     yield* fs.rename(temporary, target);
     yield* syncDirectory(fs, directory.value);
   }).pipe(
@@ -182,6 +238,103 @@ export const readPersistedCodeGraphLocalAssociation = Effect.fn('codeGraph.readP
   return yield* readPersistedCodeGraphLocalAssociationUnchecked(threadnoteHome, target).pipe(
     Effect.catch(() => Effect.succeed(unavailableAssociation('invalid'))),
   );
+});
+
+/**
+ * Read private registration evidence without probing the remembered worktree path. Legacy records
+ * remain valid for trusted display, but are deliberately unusable as automatic deletion evidence.
+ */
+export const readCodeGraphLocalReconciliationEvidence = Effect.fn('codeGraph.readLocalReconciliationEvidence')(
+  function* (threadnoteHome: string, target: CodeGraphLocalAssociationTarget) {
+    return yield* readCodeGraphLocalReconciliationEvidenceUnchecked(threadnoteHome, target).pipe(
+      Effect.catch(() => Effect.succeed({state: 'invalid'} as const satisfies CodeGraphLocalReconciliationEvidence)),
+    );
+  },
+);
+
+const readCodeGraphLocalReconciliationEvidenceUnchecked = Effect.fn(
+  'codeGraph.readLocalReconciliationEvidenceUnchecked',
+)(function* (threadnoteHome: string, target: CodeGraphLocalAssociationTarget) {
+  if (!validTarget(target)) return {state: 'invalid'} as const satisfies CodeGraphLocalReconciliationEvidence;
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const system = yield* SystemInfo;
+  const checkoutRoot = yield* inspectCheckoutRoot(fs, path, threadnoteHome, target.checkoutId).pipe(Effect.option);
+  if (Option.isNone(checkoutRoot)) return {state: 'invalid'} as const satisfies CodeGraphLocalReconciliationEvidence;
+  if (checkoutRoot.value === undefined) {
+    return {state: 'legacy-unknown'} as const satisfies CodeGraphLocalReconciliationEvidence;
+  }
+
+  const localContext = path.join(checkoutRoot.value, LOCAL_CONTEXT_DIRECTORY);
+  if (Option.isSome(yield* fs.readLink(localContext).pipe(Effect.option))) {
+    return {state: 'invalid'} as const satisfies CodeGraphLocalReconciliationEvidence;
+  }
+  if (!(yield* fs.exists(localContext))) {
+    return {state: 'legacy-unknown'} as const satisfies CodeGraphLocalReconciliationEvidence;
+  }
+  const canonicalContext = yield* inspectPrivateContainedDirectory(fs, path, checkoutRoot.value, localContext).pipe(
+    Effect.option,
+  );
+  if (Option.isNone(canonicalContext)) {
+    return {state: 'invalid'} as const satisfies CodeGraphLocalReconciliationEvidence;
+  }
+  const worktrees = path.join(canonicalContext.value, LOCAL_WORKTREES_DIRECTORY);
+  if (Option.isSome(yield* fs.readLink(worktrees).pipe(Effect.option))) {
+    return {state: 'invalid'} as const satisfies CodeGraphLocalReconciliationEvidence;
+  }
+  if (!(yield* fs.exists(worktrees))) {
+    return {state: 'legacy-unknown'} as const satisfies CodeGraphLocalReconciliationEvidence;
+  }
+  const canonicalWorktrees = yield* inspectPrivateContainedDirectory(fs, path, canonicalContext.value, worktrees).pipe(
+    Effect.option,
+  );
+  if (Option.isNone(canonicalWorktrees)) {
+    return {state: 'invalid'} as const satisfies CodeGraphLocalReconciliationEvidence;
+  }
+
+  const file = path.join(canonicalWorktrees.value, `${target.worktreeId}.json`);
+  if (Option.isSome(yield* fs.readLink(file).pipe(Effect.option))) {
+    return {state: 'invalid'} as const satisfies CodeGraphLocalReconciliationEvidence;
+  }
+  if (!(yield* fs.exists(file))) {
+    return {state: 'legacy-unknown'} as const satisfies CodeGraphLocalReconciliationEvidence;
+  }
+  const info = yield* optionOnNotFound(fs.stat(file));
+  if (Option.isNone(info)) {
+    return {state: 'legacy-unknown'} as const satisfies CodeGraphLocalReconciliationEvidence;
+  }
+  if (
+    info.value.type !== 'File' ||
+    Number(info.value.size) > LOCAL_PROVENANCE_BYTES_LIMIT ||
+    (system.platform !== 'win32' && (info.value.mode & 0o777) !== 0o600)
+  ) {
+    return {state: 'invalid'} as const satisfies CodeGraphLocalReconciliationEvidence;
+  }
+  const content = yield* optionOnNotFound(readBoundedObservedRegularFile(fs, file, info.value));
+  if (Option.isNone(content)) {
+    return {state: 'legacy-unknown'} as const satisfies CodeGraphLocalReconciliationEvidence;
+  }
+  if (Option.isSome(yield* fs.readLink(file).pipe(Effect.option))) {
+    return {state: 'invalid'} as const satisfies CodeGraphLocalReconciliationEvidence;
+  }
+  const record = parseCodeGraphLocalProvenanceRecordJson(content.value, target);
+  if (record === undefined) return {state: 'invalid'} as const satisfies CodeGraphLocalReconciliationEvidence;
+  if (!isCanonicalAbsolutePath(path, record.canonicalWorktreePath)) {
+    return {state: 'invalid'} as const satisfies CodeGraphLocalReconciliationEvidence;
+  }
+  if (record.schemaVersion !== LOCAL_PROVENANCE_SCHEMA_VERSION) {
+    return {state: 'legacy-unknown'} as const satisfies CodeGraphLocalReconciliationEvidence;
+  }
+  const recordDigest = sha256HexSync(content.value);
+  return {
+    checkoutId: record.checkoutId,
+    recordDigest,
+    recordIdentity: localProvenanceRecordIdentity(info.value, recordDigest),
+    registration: record.registration,
+    repositoryId: record.repositoryId,
+    state: 'verified',
+    worktreeId: record.worktreeId,
+  } as const satisfies CodeGraphLocalReconciliationEvidence;
 });
 
 const readPersistedCodeGraphLocalAssociationUnchecked = Effect.fn('codeGraph.readPersistedLocalAssociationUnchecked')(
@@ -249,17 +402,22 @@ const readPersistedCodeGraphLocalAssociationUnchecked = Effect.fn('codeGraph.rea
     if (age >= 0 && age < LOCAL_PROVENANCE_REFRESH_MILLISECONDS) {
       return yield* associationForRecord(path, parsed, 'verified');
     }
-    const resolved = yield* resolveRepositoryIdentity(parsed.canonicalWorktreePath).pipe(Effect.option);
+    const resolved = yield* resolveRepositoryIdentityDetail(parsed.canonicalWorktreePath).pipe(Effect.option);
     if (
       Option.isNone(resolved) ||
-      resolved.value.repoRoot !== parsed.canonicalWorktreePath ||
-      resolved.value.checkoutId !== parsed.checkoutId ||
-      resolved.value.worktreeId !== parsed.worktreeId ||
-      resolved.value.repositoryId !== parsed.repositoryId
+      resolved.value.identity.repoRoot !== parsed.canonicalWorktreePath ||
+      resolved.value.identity.checkoutId !== parsed.checkoutId ||
+      resolved.value.identity.worktreeId !== parsed.worktreeId ||
+      resolved.value.identity.repositoryId !== parsed.repositoryId
     ) {
       return unavailableAssociation('stale');
     }
-    return yield* recordResolvedCodeGraphLocalAssociation(threadnoteHome, resolved.value, {});
+    return yield* recordResolvedCodeGraphLocalAssociation(
+      threadnoteHome,
+      resolved.value.identity,
+      {},
+      resolved.value.gitDirectory,
+    );
   },
 );
 
@@ -281,7 +439,8 @@ export function parseCodeGraphLocalProvenanceRecord(
 ): CodeGraphLocalProvenanceRecord | undefined {
   if (!isRecord(value)) return undefined;
   if (
-    value.schemaVersion !== LOCAL_PROVENANCE_SCHEMA_VERSION ||
+    (value.schemaVersion !== LOCAL_PROVENANCE_LEGACY_SCHEMA_VERSION &&
+      value.schemaVersion !== LOCAL_PROVENANCE_SCHEMA_VERSION) ||
     !isHash(value.checkoutId) ||
     !isHash(value.worktreeId) ||
     !isHash(value.repositoryId) ||
@@ -291,6 +450,11 @@ export function parseCodeGraphLocalProvenanceRecord(
   ) {
     return undefined;
   }
+  const registration =
+    value.schemaVersion === LOCAL_PROVENANCE_SCHEMA_VERSION
+      ? parseCodeGraphGitWorktreeRegistration(value.registration)
+      : undefined;
+  if (value.schemaVersion === LOCAL_PROVENANCE_SCHEMA_VERSION && registration === undefined) return undefined;
   if (
     target !== undefined &&
     (value.checkoutId !== target.checkoutId ||
@@ -299,15 +463,17 @@ export function parseCodeGraphLocalProvenanceRecord(
   ) {
     return undefined;
   }
-  return {
+  const base = {
     canonicalWorktreePath: value.canonicalWorktreePath,
     checkoutId: value.checkoutId,
     ...(value.headCommit === undefined ? {} : {headCommit: value.headCommit}),
     observedAt: value.observedAt,
     repositoryId: value.repositoryId,
-    schemaVersion: LOCAL_PROVENANCE_SCHEMA_VERSION,
     worktreeId: value.worktreeId,
   };
+  return value.schemaVersion === LOCAL_PROVENANCE_SCHEMA_VERSION
+    ? {...base, registration: registration!, schemaVersion: LOCAL_PROVENANCE_SCHEMA_VERSION}
+    : {...base, schemaVersion: LOCAL_PROVENANCE_LEGACY_SCHEMA_VERSION};
 }
 
 export function privacySafeCodeGraphLocalAssociation(
@@ -333,7 +499,8 @@ function resolveMatchingRepositoryIdentity(identity: RepositoryIdentity) {
     if (!validTarget(identity) || !COMMIT_ID.test(identity.headCommit)) {
       return yield* Effect.fail(new Error('Code graph local provenance identity is invalid.'));
     }
-    const resolved = yield* resolveRepositoryIdentity(identity.repoRoot);
+    const resolvedDetail = yield* resolveRepositoryIdentityDetail(identity.repoRoot);
+    const resolved = resolvedDetail.identity;
     if (
       resolved.repoRoot !== identity.repoRoot ||
       resolved.gitCommonDirectory !== identity.gitCommonDirectory ||
@@ -344,7 +511,7 @@ function resolveMatchingRepositoryIdentity(identity: RepositoryIdentity) {
     ) {
       return yield* Effect.fail(new Error('Code graph local provenance identity changed before observation.'));
     }
-    return resolved;
+    return resolvedDetail;
   });
 }
 
@@ -563,6 +730,20 @@ function sameObservedRegularFile(before: FileSystem.File.Info, after: FileSystem
     beforeMtime !== undefined &&
     afterMtime !== undefined &&
     beforeMtime === afterMtime
+  );
+}
+
+function localProvenanceRecordIdentity(info: FileSystem.File.Info, recordDigest: string): string {
+  return sha256HexSync(
+    [
+      'threadnote-code-graph-local-provenance-file-v1',
+      recordDigest,
+      String(info.dev),
+      String(Option.getOrUndefined(info.ino)),
+      String(info.size),
+      String(info.mode),
+      String(Option.getOrUndefined(info.mtime)?.getTime()),
+    ].join('\0'),
   );
 }
 

@@ -1,7 +1,7 @@
 import {execFileSync} from 'node:child_process';
 import {mkdtempSync} from 'node:fs';
 import {tmpdir} from 'node:os';
-import {basename, join} from 'node:path';
+import {basename, isAbsolute, join} from 'node:path';
 import {Effect} from 'effect';
 import {describe, expect, it} from 'vitest';
 import {runCodeGraphCompact, runCodeGraphIndex} from '../../src/code_graph/commands.js';
@@ -9,7 +9,9 @@ import {
   normalizeCredentialFreeRemote,
   repositoryIdentityMatchesExpectation,
   resolveRepositoryIdentity,
+  resolveRepositoryIdentityDetail,
 } from '../../src/code_graph/repository.js';
+import {CommandExecutor} from '../../src/effect/command.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import {runEffect} from '../helpers/effect-runtime.js';
 
@@ -34,6 +36,37 @@ describe('code graph repository identity', () => {
 
     expect(identity.displayName).toBe(basename(root));
     expect(identity.remoteIdentity).toBeUndefined();
+  });
+
+  it('shares one bounded directory command without serializing git-dir into public identity', async () => {
+    const root = localRepository();
+    const detail = await runEffect(resolveRepositoryIdentityDetail(root));
+
+    expect(isAbsolute(detail.gitDirectory)).toBe(true);
+    expect(detail.gitDirectory).toBe(detail.identity.gitCommonDirectory);
+    expect(detail.identity).not.toHaveProperty('gitDirectory');
+
+    const failure = await runEffect(
+      Effect.gen(function* () {
+        const command = yield* CommandExecutor;
+        const executeBytes = command.executeBytes;
+        if (executeBytes === undefined) return yield* Effect.fail(new Error('binary command adapter is unavailable'));
+        const malformed = CommandExecutor.of({
+          ...command,
+          executeBytes: (executable, args, options) =>
+            executable === 'git' && args.includes('--git-common-dir')
+              ? Effect.succeed({exitCode: 0, stderr: '', stdout: new TextEncoder().encode(`${root}/.git\n`)})
+              : executeBytes(executable, args, options),
+        });
+        return yield* resolveRepositoryIdentityDetail(root).pipe(
+          Effect.provideService(CommandExecutor, malformed),
+          Effect.flip,
+        );
+      }),
+    );
+
+    expect(failure.message).toBe('Git repository directory metadata is invalid.');
+    expect(JSON.stringify(failure)).not.toContain(root);
   });
 
   it('shares repository identity but isolates linked worktree identity', async () => {

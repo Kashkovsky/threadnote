@@ -6,6 +6,7 @@ import {SystemInfo} from '../effect/system.js';
 import {CodeGraphRepositoryError, type RepositoryIdentity, type RepositoryIdentityExpectation} from './types.js';
 
 const IDENTITY_FORMAT_VERSION = 1;
+const GIT_DIRECTORY_OUTPUT_BYTES_MAXIMUM = 16 * 1_024;
 
 export const CODE_GRAPH_WORKTREE_REGISTRY_LIMITS = {
   maxOutputBytes: 8 * 1_048_576,
@@ -24,7 +25,10 @@ interface RegisteredRepositoryWorktree extends RepositoryWorktreeRegistryIdentit
   readonly root: string;
 }
 
-export const resolveRepositoryIdentity = Effect.fn('codeGraph.resolveRepositoryIdentity')(function* (cwd: string) {
+/** @internal Complete live observation used when a caller also needs the non-serializing git-dir detail. */
+export const resolveRepositoryIdentityDetail = Effect.fn('codeGraph.resolveRepositoryIdentityDetail')(function* (
+  cwd: string,
+) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const system = yield* SystemInfo;
@@ -32,9 +36,13 @@ export const resolveRepositoryIdentity = Effect.fn('codeGraph.resolveRepositoryI
     Effect.mapError(cause => new CodeGraphRepositoryError(`Not a Git repository: ${cause.message}`)),
   );
   const repoRoot = yield* fs.realPath(rootResult.stdout.trim());
-  const [commonResult, formatResult, commitResult, ignoreCaseResult, remoteResult] = yield* Effect.all(
+  const [directoryResult, formatResult, commitResult, ignoreCaseResult, remoteResult] = yield* Effect.all(
     [
-      runGit(repoRoot, ['rev-parse', '--path-format=absolute', '--git-common-dir']),
+      runBinaryCommandEffect(
+        'git',
+        ['-C', repoRoot, 'rev-parse', '--path-format=absolute', '--git-common-dir', '--git-dir'],
+        {maxOutputBytes: GIT_DIRECTORY_OUTPUT_BYTES_MAXIMUM, timeoutMs: 30_000},
+      ),
       runGit(repoRoot, ['rev-parse', '--show-object-format']),
       runGit(repoRoot, ['rev-parse', 'HEAD'], true),
       runGit(repoRoot, ['config', '--bool', 'core.ignorecase'], true),
@@ -42,7 +50,11 @@ export const resolveRepositoryIdentity = Effect.fn('codeGraph.resolveRepositoryI
     ],
     {concurrency: 5},
   );
-  const commonRaw = commonResult.stdout.trim();
+  const directories = parseGitDirectoryOutput(directoryResult.stdout);
+  if (directories === undefined) {
+    return yield* Effect.fail(new CodeGraphRepositoryError('Git repository directory metadata is invalid.'));
+  }
+  const commonRaw = directories.commonDirectory;
   const commonAbsolute = path.isAbsolute(commonRaw) ? commonRaw : path.resolve(repoRoot, commonRaw);
   const gitCommonDirectory = yield* fs.realPath(commonAbsolute);
   const objectFormat = formatResult.stdout.trim();
@@ -54,7 +66,7 @@ export const resolveRepositoryIdentity = Effect.fn('codeGraph.resolveRepositoryI
   const repositorySource = remoteIdentity ?? `local:${normalizeLocalIdentity(gitCommonDirectory, system.platform)}`;
   const headCommit = commitResult.exitCode === 0 ? commitResult.stdout.trim() : zeroObjectId(objectFormat);
   const displayName = repositoryDisplayName(remoteIdentity, repoRoot);
-  return {
+  const identity = {
     caseMode:
       ignoreCaseResult.exitCode === 0 && ignoreCaseResult.stdout.trim().toLowerCase() === 'true'
         ? 'insensitive'
@@ -69,6 +81,11 @@ export const resolveRepositoryIdentity = Effect.fn('codeGraph.resolveRepositoryI
     repositoryId: sha256HexSync(`repository-v${IDENTITY_FORMAT_VERSION}\n${repositorySource}`),
     worktreeId: worktreeIdForRoot(repoRoot),
   } satisfies RepositoryIdentity;
+  return {gitDirectory: directories.gitDirectory, identity};
+});
+
+export const resolveRepositoryIdentity = Effect.fn('codeGraph.resolveRepositoryIdentity')(function* (cwd: string) {
+  return (yield* resolveRepositoryIdentityDetail(cwd)).identity;
 });
 
 /**
@@ -260,4 +277,24 @@ function byteLength(value: string): number {
 
 function compareCodeUnits(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function parseGitDirectoryOutput(
+  output: Uint8Array,
+): {readonly commonDirectory: string; readonly gitDirectory: string} | undefined {
+  if (output.byteLength === 0 || output.byteLength > GIT_DIRECTORY_OUTPUT_BYTES_MAXIMUM) return undefined;
+  try {
+    const decoded = new TextDecoder('utf-8', {fatal: true, ignoreBOM: true}).decode(output);
+    if (!decoded.endsWith('\n')) return undefined;
+    const records = decoded.slice(0, -1).split('\n');
+    if (
+      records.length !== 2 ||
+      records.some(record => record.length === 0 || record.includes('\0') || record.includes('\r'))
+    ) {
+      return undefined;
+    }
+    return {commonDirectory: records[0]!, gitDirectory: records[1]!};
+  } catch {
+    return undefined;
+  }
 }
