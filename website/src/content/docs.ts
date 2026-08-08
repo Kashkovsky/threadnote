@@ -1309,7 +1309,13 @@ threadnote graph repair --all --dry-run
 threadnote graph index
 threadnote graph index --full
 threadnote graph watch
-threadnote graph compact --dry-run`,
+threadnote graph compact --dry-run
+
+# Preview removal of one exact indexed view; add --apply only after review.
+threadnote graph remove-view \\
+  --checkout-id <checkout-id> \\
+  --worktree-id <worktree-id> \\
+  --snapshot-id <snapshot-id>`,
           },
           {
             type: 'paragraph',
@@ -1338,6 +1344,10 @@ threadnote graph compact --dry-run`,
           {
             type: 'paragraph',
             text: 'Trusted local diagnostics associate each indexed view with its worktree folder when Threadnote can verify the repository, checkout, and worktree identity. Human output and JSON v2 distinguish verified, missing, stale, invalid, and legacy-unknown associations: missing is reserved for a previously validated folder that is now absent, while legacy-unknown means no private association has been recorded yet. Every graph action revalidates the complete identity before using a saved folder.',
+          },
+          {
+            type: 'paragraph',
+            text: 'graph remove-view targets the exact checkout, worktree, and selected snapshot identity; it previews by default and requires --apply for the compare-and-swap removal. The worktree folder does not need to exist. Threadnote refuses a stale target or busy build, preserves shared snapshots and required bases, lets existing leased readers finish, and removes only derived pointers and private provenance that still match the approved target. Repeating an applied removal is idempotent.',
           },
           {
             type: 'note',
@@ -1508,7 +1518,7 @@ threadnote manage --no-open`,
             items: [
               'Doctor: installation, integration, model, index, and storage health.',
               'Memory: browse lifecycle-aware canonical records and pending candidates.',
-              'Knowledge graph: explore current symbols and relationships visually, then request topology signals such as communities, hubs, and surprising links on demand.',
+              'Knowledge graph: explore current symbols and relationships, request topology signals, and preview or remove one exact indexed view without requiring its local folder. Removal refreshes the target, asks for explicit confirmation, and reports busy or stale state without force-bypassing shared readers and bases.',
               'Shares: inspect configured teams, synchronization, and conflicts.',
               'Tools: discover operational surfaces without memorizing every command.',
             ],
