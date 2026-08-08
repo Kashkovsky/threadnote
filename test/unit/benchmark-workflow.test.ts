@@ -180,8 +180,8 @@ describe('platform benchmark workflow', () => {
       release_ref: '${{ github.ref }}',
       release_sha: '${{ github.sha }}',
     });
-    expect(linux.needs).toBeUndefined();
-    expect(macos.needs).toBeUndefined();
+    expect(linux.needs).toBe('prepare-release-model');
+    expect(macos.needs).toBe('prepare-release-model');
 
     expect(publish.needs).toEqual(['verify', 'linux', 'macos']);
     expect(publish.if).toContain("needs.verify.result == 'success'");
