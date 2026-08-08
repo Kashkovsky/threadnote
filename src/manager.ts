@@ -267,7 +267,7 @@ export function runManage(config: RuntimeConfig, options: ManageOptions) {
       }
       return yield* Effect.never;
     }),
-  ).pipe(Effect.provide(BunHttpServer.layerTest));
+  ).pipe(Effect.provide(BunHttpServer.layer({hostname: '127.0.0.1', port: options.uiPort ?? 0})));
 }
 
 type ManagerRequestEffect = Effect.Effect<void, never, ApplicationServices>;
