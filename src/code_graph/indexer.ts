@@ -1938,7 +1938,7 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
   const shardDerivationIdentity = materializedShardDerivationIdentity(
     input.building.extractorSet,
     workspace.fingerprint,
-    reusableBaseFileSetFingerprint(input.inventory.files),
+    graphContentIdentity(input.building.extractorSet, input.inventory.files),
   );
   const extractionDiagnostics: string[] = [...workspace.diagnostics];
   let materializedFiles = 0;
@@ -2924,7 +2924,7 @@ const assessReusableCleanBaseCompatibility = Effect.fn('codeGraph.assessReusable
     materializedShardDerivationIdentity(
       input.candidate.snapshot.extractorSet,
       workspace.fingerprint,
-      reusableBaseFileSetFingerprint(input.inventory.files),
+      graphContentIdentity(input.candidate.snapshot.extractorSet, input.inventory.files),
     ),
     input.persistentCapacityProtector,
   );

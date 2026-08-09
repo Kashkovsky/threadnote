@@ -78,13 +78,15 @@ describe('code graph indexer properties', () => {
 
   it('makes materialized shard identity content-addressed and derivation-context sensitive', () => {
     fc.assert(
-      fc.property(fc.string(), fc.string(), fc.string(), fc.string(), (extractor, workspace, fileSet, path) => {
-        const derivation = materializedShardDerivationIdentity(extractor, workspace, fileSet);
+      fc.property(fc.string(), fc.string(), fc.string(), fc.string(), (extractor, workspace, graphContent, path) => {
+        const derivation = materializedShardDerivationIdentity(extractor, workspace, graphContent);
         const shard = materializedFileShardIdentity('content-hash', extractor, derivation, path);
         expect(materializedFileShardIdentity('content-hash', extractor, derivation, path)).toBe(shard);
         expect(materializedFileShardIdentity('changed-content', extractor, derivation, path)).not.toBe(shard);
         expect(materializedFileShardIdentity('content-hash', extractor, derivation, `${path}/changed`)).not.toBe(shard);
-        expect(materializedShardDerivationIdentity(extractor, workspace, `${fileSet}/changed`)).not.toBe(derivation);
+        expect(materializedShardDerivationIdentity(extractor, workspace, `${graphContent}/changed`)).not.toBe(
+          derivation,
+        );
       }),
       {numRuns: 250},
     );

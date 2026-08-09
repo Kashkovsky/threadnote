@@ -1255,6 +1255,17 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
       const crypto = yield* Crypto.Crypto;
       const system = yield* SystemInfo;
       const scope = yield* Effect.scope;
+      const detachedCleanupCounts = new Map<string, number>();
+      const scheduleDetachedCleanup = (databasePath: string, cleanup: Effect.Effect<void>) =>
+        Effect.gen(function* () {
+          detachedCleanupCounts.set(databasePath, (detachedCleanupCounts.get(databasePath) ?? 0) + 1);
+          const release = Effect.sync(() => {
+            const remaining = (detachedCleanupCounts.get(databasePath) ?? 1) - 1;
+            if (remaining <= 0) detachedCleanupCounts.delete(databasePath);
+            else detachedCleanupCounts.set(databasePath, remaining);
+          });
+          yield* cleanup.pipe(Effect.ensuring(release), Effect.forkIn(scope));
+        }).pipe(Effect.asVoid);
       const prepare = (databasePath: string) =>
         fs
           .makeDirectory(path.dirname(databasePath), {recursive: true, mode: 0o700})
@@ -1271,12 +1282,17 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
             if (options?.writerGateHeld) return effect;
             const writerLockPath = options?.writerLockPath ?? inferredCodeGraphWriterLockPath(path, databasePath);
             if (!writerLockPath) return effect;
+            const requestedWaitTimeout = normalizedWriterGateWaitTimeout(waitTimeoutMilliseconds);
+            const effectiveWaitTimeout =
+              requestedWaitTimeout === 0 && (detachedCleanupCounts.get(databasePath) ?? 0) > 0
+                ? CODE_GRAPH_INTERNAL_CLEANUP_FOREGROUND_WAIT_MILLISECONDS
+                : requestedWaitTimeout;
             return withExclusiveFileLock(
               fs,
               writerLockPath,
               {
                 ...CODE_GRAPH_SQL_WRITER_LOCK_OPTIONS,
-                waitTimeoutMilliseconds: normalizedWriterGateWaitTimeout(waitTimeoutMilliseconds),
+                waitTimeoutMilliseconds: effectiveWaitTimeout,
                 onAcquired: () => options?.onWriterAcquired?.() ?? Effect.void,
                 onContention: () => options?.onWriterContention?.() ?? Effect.void,
               },
@@ -1364,7 +1380,7 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
               yield* Effect.sleep(CODE_GRAPH_CLEANUP_YIELD_MILLISECONDS);
             }
           });
-          yield* cleanup.pipe(Effect.ignore, Effect.forkIn(scope));
+          yield* scheduleDetachedCleanup(databasePath, cleanup.pipe(Effect.ignore));
         }).pipe(Effect.asVoid);
       const scheduleRoutinePhysicalCleanup = (databasePath: string) =>
         Effect.gen(function* () {
@@ -1414,7 +1430,7 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
               yield* Effect.sleep(CODE_GRAPH_CLEANUP_YIELD_MILLISECONDS);
             }
           }).pipe(Effect.ensuring(Effect.sync(() => routinePhysicalCleanupScheduled.delete(databasePath))));
-          yield* cleanup.pipe(Effect.ignore, Effect.forkIn(scope));
+          yield* scheduleDetachedCleanup(databasePath, cleanup.pipe(Effect.ignore));
         }).pipe(Effect.asVoid);
       return CodeGraphStore.of({
         withSession: (databasePath, effect, options) =>
@@ -3196,6 +3212,8 @@ const CODE_GRAPH_ABANDONED_BUILD_CANDIDATE_LIMIT = 64;
 const CODE_GRAPH_ABANDONED_BUILD_CURSOR_KEY = 'routine_abandoned_build_owner_cursor';
 
 const CODE_GRAPH_CLEANUP_YIELD_MILLISECONDS = CODE_GRAPH_SQL_WRITER_LOCK_OPTIONS.retryIntervalMilliseconds * 2;
+/** Same-process opportunistic cleanup yields before a foreground zero-wait action reports external contention. */
+const CODE_GRAPH_INTERNAL_CLEANUP_FOREGROUND_WAIT_MILLISECONDS = 250;
 
 function normalizedWriterGateWaitTimeout(waitTimeoutMilliseconds: number | undefined): number {
   if (waitTimeoutMilliseconds === undefined || waitTimeoutMilliseconds === Number.POSITIVE_INFINITY) {
@@ -7735,7 +7753,7 @@ const activateCleanStagedSnapshot = Effect.fn('codeGraph.activateCleanStagedSnap
   yield* sql.withTransaction(
     Effect.gen(function* () {
       yield* recordCompactLexicalFormat(sql, snapshot.id, copiedTerms, copiedTerms.postingCount, snapshot.symbolCount);
-      yield* associateSnapshotFileShards(sql, snapshot.id, snapshot.extractorSet, reusableBaseReceipt);
+      yield* associateSnapshotFileShards(sql, snapshot, reusableBaseReceipt);
       yield* recordSnapshotExtractorGeneration(sql, snapshot.id);
       if (!snapshot.dirty && reusableBaseReceipt) {
         yield* sql`
@@ -8067,7 +8085,7 @@ const activateStagedSnapshot = Effect.fn('codeGraph.activateStagedSnapshot')(fun
           expectedCompactSymbols,
         );
         if (baseSnapshotId) yield* inheritSnapshotFileShards(sql, snapshot.id, baseSnapshotId);
-        yield* associateSnapshotFileShards(sql, snapshot.id, snapshot.extractorSet, reusableBaseReceipt);
+        yield* associateSnapshotFileShards(sql, snapshot, reusableBaseReceipt);
       }
       yield* recordSnapshotExtractorGeneration(sql, snapshot.id);
       if (activated && !baseSnapshotId && !snapshot.dirty && reusableBaseReceipt) {
@@ -8646,7 +8664,7 @@ const activatePersistedFullSnapshot = Effect.fn('codeGraph.activatePersistedFull
           yield* assertPersistentBuildOwner(sql, snapshot.id, ownerToken);
           yield* assertPersistentMaterializationComplete(sql, snapshot.id, ownerToken);
           yield* publishCompactLexicalFormat(sql, snapshot.id, compactLexicalReceipt);
-          yield* associateSnapshotFileShards(sql, snapshot.id, snapshot.extractorSet, reusableBaseReceipt);
+          yield* associateSnapshotFileShards(sql, snapshot, reusableBaseReceipt);
           yield* recordSnapshotExtractorGeneration(sql, snapshot.id);
           if (reusableBaseReceipt) {
             yield* sql`
@@ -9109,7 +9127,7 @@ const activatePersistedIncrementalSnapshot = Effect.fn('codeGraph.activatePersis
           Number(staged.symbols),
         );
         yield* inheritSnapshotFileShards(sql, snapshot.id, baseSnapshotId);
-        yield* associateSnapshotFileShards(sql, snapshot.id, snapshot.extractorSet, reusableBaseReceipt);
+        yield* associateSnapshotFileShards(sql, snapshot, reusableBaseReceipt);
       }
       yield* recordSnapshotExtractorGeneration(sql, snapshot.id);
       yield* insertActivationLease(sql, snapshot.id, promotionLease);
@@ -9210,10 +9228,10 @@ function storeFreshFactRows(sql: SqlClient.SqlClient, rows: readonly PlannedFres
 export function materializedShardDerivationIdentity(
   extractorSet: string,
   workspaceFingerprint: string,
-  fileSetFingerprint: string,
+  graphContentId: string,
 ): string {
   return `cgfd_${sha256HexSync(
-    `materialized-file-derivation-v1\n${extractorSet}\n${workspaceFingerprint}\n${fileSetFingerprint}`,
+    `materialized-file-derivation-v2\n${extractorSet}\n${workspaceFingerprint}\n${graphContentId}`,
   ).slice(0, 40)}`;
 }
 
@@ -9230,26 +9248,25 @@ export function materializedFileShardIdentity(
 
 const associateSnapshotFileShards = Effect.fn('codeGraph.associateSnapshotFileShards')(function* (
   sql: SqlClient.SqlClient,
-  snapshotId: string,
-  extractorSet: string,
+  snapshot: Pick<CodeGraphSnapshot, 'extractorSet' | 'graphContentId' | 'id'>,
   receipt: CodeGraphReusableBaseReceiptInput | undefined,
 ) {
   if (!receipt) return;
   const derivationIdentity = materializedShardDerivationIdentity(
-    extractorSet,
+    snapshot.extractorSet,
     receipt.workspaceFingerprint,
-    receipt.fileSetFingerprint,
+    snapshot.graphContentId ?? snapshot.id,
   );
   yield* sql`
     INSERT INTO snapshot_file_shards (snapshot_id, path, shard_id)
-    SELECT ${snapshotId}, file.path, shard.id
+    SELECT ${snapshot.id}, file.path, shard.id
     FROM snapshot_files AS file
     JOIN materialized_file_shards AS shard
       ON shard.content_hash = file.content_hash
      AND shard.path_hint = file.path
-     AND shard.extractor_set = ${extractorSet}
+     AND shard.extractor_set = ${snapshot.extractorSet}
      AND shard.derivation_identity = ${derivationIdentity}
-    WHERE file.snapshot_id = ${snapshotId}
+    WHERE file.snapshot_id = ${snapshot.id}
     ON CONFLICT(snapshot_id, path) DO UPDATE SET shard_id = excluded.shard_id
   `;
 });

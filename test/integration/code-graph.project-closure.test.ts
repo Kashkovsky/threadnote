@@ -7,7 +7,7 @@ import {describe, expect, it} from '@effect/vitest';
 import {TestClock} from 'effect/testing';
 import * as FC from 'effect/testing/FastCheck';
 import {Effect, Path} from 'effect';
-import {CodeGraphIndexer} from '../../src/code_graph/indexer.js';
+import {CodeGraphIndexer, graphContentIdentity} from '../../src/code_graph/indexer.js';
 import {inventoryRepository} from '../../src/code_graph/inventory.js';
 import {codeGraphLayout} from '../../src/code_graph/layout.js';
 import {CodeGraphQueryService} from '../../src/code_graph/query.js';
@@ -50,8 +50,14 @@ describe('project-closure incremental indexing', () => {
           const poisonDerivation = materializedShardDerivationIdentity(
             base.snapshot.extractorSet,
             receipt!.workspaceFingerprint,
-            receipt!.fileSetFingerprint,
+            base.snapshot.graphContentId ?? base.snapshot.id,
           );
+          const currentDerivation = materializedShardDerivationIdentity(
+            base.snapshot.extractorSet,
+            receipt!.workspaceFingerprint,
+            graphContentIdentity(base.snapshot.extractorSet, currentInventory.files),
+          );
+          expect(currentDerivation).not.toBe(poisonDerivation);
           yield* store.cacheMaterializedFileShards(
             incrementalLayout.databasePath,
             [currentBarrel],
@@ -97,6 +103,7 @@ describe('project-closure incremental indexing', () => {
             stagedFiles: 4,
             totalFiles: 11,
           });
+          expect(incremental.diagnostics).not.toContain('poisoned final shard');
           expect(normalizeGraph(incrementalGraph)).toEqual(normalizeGraph(fullGraph));
           expect(normalizeCatalog(incrementalCatalog)).toEqual(normalizeCatalog(fullCatalog));
           expect(incrementalHealth).toMatchObject({foreignKeyViolations: 0, integrity: 'ok'});
@@ -114,8 +121,9 @@ describe('project-closure incremental indexing', () => {
             'packages/barrel/index.ts',
             'packages/barrel/package.json',
           ]);
-          // The incompatible shard is neither consumed nor retained once routine cache reclamation observes
-          // that no snapshot references its derivation.
+          // The old full-graph shard is neither consumed nor eligible for the
+          // current graph-content identity. It remains protected by the fresh
+          // pre-claim grace until later routine reclamation.
           expect(
             (yield* store.loadMaterializedFileShards(
               incrementalLayout.databasePath,
@@ -123,6 +131,14 @@ describe('project-closure incremental indexing', () => {
               base.snapshot.extractorSet,
               poisonDerivation,
             )).facts.get(currentBarrel.path)?.diagnostics,
+          ).toEqual(['poisoned final shard']);
+          expect(
+            (yield* store.loadMaterializedFileShards(
+              incrementalLayout.databasePath,
+              [currentBarrel],
+              base.snapshot.extractorSet,
+              currentDerivation,
+            )).facts.get(currentBarrel.path),
           ).toBeUndefined();
         }),
       root => Effect.sync(() => rmSync(root, {force: true, recursive: true})),
