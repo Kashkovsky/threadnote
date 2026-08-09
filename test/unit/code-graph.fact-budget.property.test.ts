@@ -229,7 +229,7 @@ describe('cached code graph fact persistence budget', () => {
     const pack = identityTestPack();
     const current = packCacheIdentity(pack);
 
-    expect(CODE_GRAPH_PARSER_FACTS_VERSION).toBe('parser-facts-v4-bounded-reference-candidates');
+    expect(CODE_GRAPH_PARSER_FACTS_VERSION).toBe('parser-facts-v5-source-byte-budget');
     expect(current).toBe(testPackCacheIdentity(pack, CODE_GRAPH_PARSER_FACTS_VERSION));
     expect(current).not.toBe(testPackCacheIdentity(pack, 'parser-facts-v1'));
   });

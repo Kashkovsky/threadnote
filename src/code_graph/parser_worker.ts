@@ -14,6 +14,7 @@ export const CODE_GRAPH_PARSER_WORKERS_ENV = 'THREADNOTE_CODE_GRAPH_PARSER_WORKE
 export const CODE_GRAPH_PARSER_TIMEOUT_ENV = 'THREADNOTE_CODE_GRAPH_PARSER_TIMEOUT_MS';
 export const CODE_GRAPH_PARSER_IDLE_TIMEOUT_ENV = 'THREADNOTE_CODE_GRAPH_PARSER_IDLE_TIMEOUT_MS';
 export const CODE_GRAPH_PARSER_WORKER_RESPONSE_BYTES_MAXIMUM = CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM + 4 * 1_024;
+export const CODE_GRAPH_PARSER_SOURCE_BYTES_MAXIMUM = 16 * 1_048_576;
 
 const PROTOCOL_VERSION = 1;
 const DEFAULT_REQUEST_TIMEOUT_MILLISECONDS = 60_000;
@@ -27,12 +28,22 @@ const PARSER_WORKER_MEMORY_BYTES_PER_SLOT = 8 * 1_024 * 1_024 * 1_024;
 
 type ParserWorkerEnvironment = Readonly<Record<string, string | undefined>>;
 
-type ParserWorkerFailureReason = 'abort' | 'exit' | 'operation' | 'protocol' | 'spawn' | 'timeout' | 'write';
+type ParserWorkerFailureReason =
+  'abort' | 'exit' | 'operation' | 'protocol' | 'source-bytes' | 'spawn' | 'timeout' | 'write';
+
+export interface ParserWorkerSourceByteBudget {
+  readonly exceeded: boolean;
+  readonly maximumBytes: number;
+  readonly observedBytes: number;
+}
 
 class ParserWorkerError extends Error {
   override readonly name = 'ParserWorkerError';
 
-  constructor(readonly reason: ParserWorkerFailureReason) {
+  constructor(
+    readonly reason: ParserWorkerFailureReason,
+    readonly sourceByteBudget?: ParserWorkerSourceByteBudget,
+  ) {
     super(parserWorkerFailureSummary(reason));
   }
 }
@@ -60,6 +71,8 @@ export interface CodeGraphParserPoolOptions {
   readonly capacity?: number;
   readonly idleTimeoutMilliseconds?: number;
   readonly maxProtocolLineBytes?: number;
+  /** Test and internal callers may lower, but never raise, the production source budget. */
+  readonly maxSourceBytes?: number;
   readonly maxStderrBytes?: number;
   readonly requestTimeoutMilliseconds?: number;
   readonly spawnWorker?: ParserWorkerSpawner;
@@ -152,6 +165,10 @@ export function codeGraphParserPoolLayer(
           parserWorkerIdleTimeout(environment),
         );
         const maxProtocolLineBytes = positiveInteger(options.maxProtocolLineBytes, MAX_PROTOCOL_LINE_BYTES);
+        const maxSourceBytes = Math.min(
+          CODE_GRAPH_PARSER_SOURCE_BYTES_MAXIMUM,
+          positiveInteger(options.maxSourceBytes, CODE_GRAPH_PARSER_SOURCE_BYTES_MAXIMUM),
+        );
         const maxStderrBytes = positiveInteger(options.maxStderrBytes, STDERR_BYTES_LIMIT);
         const spawnWorker = options.spawnWorker ?? spawnBunParserWorker;
         const slots = Array.from(
@@ -173,8 +190,16 @@ export function codeGraphParserPoolLayer(
         return {
           service: CodeGraphParserPool.of({
             capacity,
-            extract: (file, threadnoteHome) =>
-              Effect.acquireUseRelease(
+            extract: (file, threadnoteHome) => {
+              const sourceByteBudget = parserWorkerSourceByteBudget(file, maxSourceBytes);
+              if (sourceByteBudget.exceeded) {
+                return Effect.succeed({
+                  degraded: true,
+                  facts: degradedFacts(file, new ParserWorkerError('source-bytes', sourceByteBudget)),
+                  parseMilliseconds: 0,
+                });
+              }
+              return Effect.acquireUseRelease(
                 Queue.take(available),
                 slot =>
                   withGlobalParserSlot(
@@ -196,7 +221,8 @@ export function codeGraphParserPoolLayer(
                     ),
                   ),
                 slot => Queue.offer(available, slot),
-              ),
+              );
+            },
             trimIdle: () =>
               Effect.acquireUseRelease(
                 Queue.clear(available),
@@ -877,7 +903,11 @@ function isStringArray(value: unknown): value is readonly string[] {
 
 function degradedFacts(file: CodeGraphInventoryFile, cause: unknown): CodeGraphFileFacts {
   const reason = cause instanceof ParserWorkerError ? cause.reason : 'protocol';
-  const diagnostic = `${file.path}: parser worker degraded this file to searchable metadata (${parserWorkerFailureSummary(reason)})`;
+  const budgetDiagnostic =
+    cause instanceof ParserWorkerError && cause.sourceByteBudget !== undefined
+      ? ` [code-graph-budget code=source-bytes status=exhausted observed-bytes=${cause.sourceByteBudget.observedBytes} maximum-bytes=${cause.sourceByteBudget.maximumBytes}]`
+      : '';
+  const diagnostic = `${file.path}: parser worker degraded this file to searchable metadata (${parserWorkerFailureSummary(reason)})${budgetDiagnostic}`;
   const symbol: CodeGraphSymbol = {
     contentHash: file.contentHash,
     documentation: diagnostic,
@@ -898,6 +928,22 @@ function degradedFacts(file: CodeGraphInventoryFile, cause: unknown): CodeGraphF
 
 export function budgetParserWorkerFacts(facts: CodeGraphFileFacts): CodeGraphFileFacts {
   return serializeBoundedCodeGraphFact(facts).facts;
+}
+
+export function parserWorkerSourceByteBudget(
+  file: CodeGraphInventoryFile,
+  maximumBytes = CODE_GRAPH_PARSER_SOURCE_BYTES_MAXIMUM,
+): ParserWorkerSourceByteBudget {
+  const effectiveMaximumBytes = positiveInteger(maximumBytes, CODE_GRAPH_PARSER_SOURCE_BYTES_MAXIMUM);
+  if (file.content === undefined) {
+    return {exceeded: false, maximumBytes: effectiveMaximumBytes, observedBytes: 0};
+  }
+  const observedBytes = Math.max(file.size, Buffer.byteLength(file.content, 'utf8'));
+  return {
+    exceeded: observedBytes > effectiveMaximumBytes,
+    maximumBytes: effectiveMaximumBytes,
+    observedBytes,
+  };
 }
 
 export function parserWorkerSuccessResponseBytes(
@@ -971,6 +1017,8 @@ function parserWorkerFailureSummary(reason: ParserWorkerFailureReason): string {
       return 'language extraction failed';
     case 'protocol':
       return 'parser worker protocol failed';
+    case 'source-bytes':
+      return 'source exceeded its per-file byte budget';
     case 'spawn':
       return 'parser worker could not start';
     case 'timeout':

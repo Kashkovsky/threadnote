@@ -10,7 +10,7 @@ import type {
 
 export const CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM = 8 * 1_048_576;
 export const CODE_GRAPH_REFERENCE_CANDIDATES_PER_REFERENCE_MAXIMUM = 100_000;
-export const CODE_GRAPH_PARSER_FACTS_VERSION = 'parser-facts-v4-bounded-reference-candidates' as const;
+export const CODE_GRAPH_PARSER_FACTS_VERSION = 'parser-facts-v5-source-byte-budget' as const;
 
 const CACHED_FACT_BUDGET_DIAGNOSTIC =
   'Cached code graph facts exceeded the per-file persistence budget; lower-priority relationships and documentation were omitted.';

@@ -11,11 +11,13 @@ import {
 } from '../../src/code_graph/fact_budget.js';
 import {BUILTIN_LANGUAGE_PACK_REGISTRY} from '../../src/code_graph/languages/registry.js';
 import {
+  CODE_GRAPH_PARSER_SOURCE_BYTES_MAXIMUM,
   CODE_GRAPH_PARSER_WORKER_RESPONSE_BYTES_MAXIMUM,
   CODE_GRAPH_PARSER_WORKER_ARGUMENT,
   CodeGraphParserPool,
   codeGraphParserPoolLayer,
   parserWorkerCapacity,
+  parserWorkerSourceByteBudget,
   parserWorkerSuccessResponseBytes,
   type ParserWorkerProcess,
   type ParserWorkerSpawner,
@@ -109,6 +111,81 @@ describe('code graph parser worker pool', () => {
       }),
     ).toBe(1);
   });
+
+  it.effect('degrades oversized source before acquiring or launching a parser worker', () => {
+    const launches: ParserWorkerSpawnOptions[] = [];
+    const spawn: ParserWorkerSpawner = options => {
+      launches.push(options);
+      return echoProcess();
+    };
+    return Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-parser-worker-source-budget-'});
+      const pool = yield* CodeGraphParserPool;
+      const file = {...inventoryFile('src/oversized.ts', 'é'.repeat(9)), size: 1};
+      const result = yield* pool.extract(file, home);
+
+      expect(result.degraded).toBe(true);
+      expect(result.parseMilliseconds).toBe(0);
+      expect(result.facts.symbols).toHaveLength(1);
+      expect(result.facts.symbols[0]).toMatchObject({kind: 'module', path: file.path});
+      expect(result.facts.edges).toEqual([]);
+      expect(result.facts.diagnostics).toEqual([
+        expect.stringContaining(
+          '[code-graph-budget code=source-bytes status=exhausted observed-bytes=18 maximum-bytes=16]',
+        ),
+      ]);
+      expect(launches).toEqual([]);
+    }).pipe(Effect.provide(parserLayer({capacity: 1, maxSourceBytes: 16, spawnWorker: spawn})), Effect.scoped);
+  });
+
+  it.effect('admits source exactly at the byte boundary and leaves omitted content metadata-only', () => {
+    const processes: ScriptedParserWorkerProcess[] = [];
+    const spawn: ParserWorkerSpawner = () => {
+      const process = echoProcess();
+      processes.push(process);
+      return process;
+    };
+    return Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-parser-worker-source-boundary-'});
+      const pool = yield* CodeGraphParserPool;
+      const admitted = yield* pool.extract(inventoryFile('src/boundary.ts', 'é'.repeat(8)), home);
+
+      expect(admitted.degraded).toBe(false);
+      expect(processes).toHaveLength(1);
+      expect(
+        parserWorkerSourceByteBudget(
+          {
+            ...inventoryFile('src/omitted.ts', ''),
+            content: undefined,
+            contentOmittedReason: 'size-budget',
+            size: CODE_GRAPH_PARSER_SOURCE_BYTES_MAXIMUM + 1,
+          },
+          16,
+        ),
+      ).toEqual({exceeded: false, maximumBytes: 16, observedBytes: 0});
+    }).pipe(Effect.provide(parserLayer({capacity: 1, maxSourceBytes: 16, spawnWorker: spawn})), Effect.scoped);
+  });
+
+  it.prop(
+    'classifies source bytes from UTF-8 content and declared size without undercounting either',
+    {
+      content: FC.string({maxLength: 128}),
+      declaredSize: FC.integer({max: 256, min: 0}),
+      maximumBytes: FC.integer({max: 256, min: 1}),
+    },
+    ({content, declaredSize, maximumBytes}) => {
+      const file = {...inventoryFile('src/property.ts', content), size: declaredSize};
+      const observedBytes = Math.max(declaredSize, encoder.encode(content).byteLength);
+      expect(parserWorkerSourceByteBudget(file, maximumBytes)).toEqual({
+        exceeded: observedBytes > maximumBytes,
+        maximumBytes,
+        observedBytes,
+      });
+    },
+    {fastCheck: {numRuns: 100}},
+  );
 
   it.effect('launches the real source worker and extracts TypeScript outside the caller process', () =>
     Effect.gen(function* () {
