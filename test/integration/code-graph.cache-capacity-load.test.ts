@@ -204,8 +204,11 @@ describe('code graph cache capacity load calibration', () => {
               ).toBe(true);
               expect(measured.absoluteMainHighWaterBytes).toBeGreaterThan(0);
               expect(measured.absoluteMainHighWaterBytes).toBeLessThan(256 * 1_048_576);
-              expect(measured.absoluteWalHighWaterBytes).toBeGreaterThan(0);
               expect(measured.absoluteWalHighWaterBytes).toBeLessThan(32 * 1_048_576);
+              // A connection close may checkpoint and remove the WAL before
+              // the post-transaction sample. Require positive combined
+              // durable growth while retaining the independent WAL ceiling.
+              expect(measured.incrementalSharedHighWaterBytes).toBeGreaterThan(0);
               yield* logLoadEvidence({
                 absoluteMainHighWaterBytes: measured.absoluteMainHighWaterBytes,
                 absoluteWalHighWaterBytes: measured.absoluteWalHighWaterBytes,

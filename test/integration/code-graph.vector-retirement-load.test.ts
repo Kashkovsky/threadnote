@@ -125,9 +125,11 @@ function runVectorLoadCase(options: {
       let pending: PendingMeasurement | undefined;
       let pointerRetired = !options.withPointer;
       let finalState: 'complete' | 'deferred' | 'progress' | undefined;
+      let deferredUnits = 0;
       const runStartedAt = performance.now();
       for (let unit = 0; unit < options.maximumUnits; unit += 1) {
         const startedAt = performance.now();
+        const beforeUnit = readVectorCounts(databasePath);
         const result = yield* runCodeGraphOrdinaryVectorMaintenanceUnit(input, {
           afterModelCommitBeforeFinalCursorCas: () =>
             Effect.gen(function* () {
@@ -206,6 +208,15 @@ function runVectorLoadCase(options: {
         });
         finalState = result.state;
         expect(yield* activeReceiptOperations(fs, path, home)).toEqual([]);
+        if (result.state === 'deferred') {
+          // The public unit is deliberately bounded by a 250 ms nonblocking
+          // deadline. A constrained runner may defer before the model commit;
+          // retrying must preserve the exact database prefix and converge.
+          expect(readVectorCounts(databasePath)).toEqual(beforeUnit);
+          pending = undefined;
+          deferredUnits += 1;
+          continue;
+        }
         if (!pointerRetired && readVectorCounts(databasePath).retirementReady) {
           const beforePointer = readVectorCounts(databasePath);
           const protector = yield* makeCodeGraphVectorRetirementCapacityProtector({
@@ -267,6 +278,7 @@ function runVectorLoadCase(options: {
       yield* Effect.logInfo(
         JSON.stringify({
           admissionTransactions: admissionMeasurements.length,
+          deferredUnits,
           event: options.event,
           maximumBoundaryBytes: Math.max(...measurements.map(measurement => measurement.boundary.finalFactBytes)),
           maximumBoundaryRows: Math.max(...measurements.map(measurement => measurement.boundary.rowCount)),
