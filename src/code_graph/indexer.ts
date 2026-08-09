@@ -102,7 +102,12 @@ import {TreeSitterRuntime, type TreeSitterRuntimeShape} from './tree_sitter/runt
 import {createWorkspaceAttributor} from './workspace.js';
 import {makeCodeGraphBuildReporter, readCodeGraphBuildStatuses} from './build_status.js';
 import type {CodeGraphWorkspace} from './languages/types.js';
-import {CodeGraphParserPool, type CodeGraphParserPoolShape, type CodeGraphParserResult} from './parser_worker.js';
+import {
+  budgetParserWorkerFacts,
+  CodeGraphParserPool,
+  type CodeGraphParserPoolShape,
+  type CodeGraphParserResult,
+} from './parser_worker.js';
 
 export {
   budgetCachedCodeGraphFacts,
@@ -3657,9 +3662,10 @@ function extractParserFacts(
     const facts = yield* options.languagePacks
       .extractRawFile(file)
       .pipe(Effect.provideService(TreeSitterRuntime, options.treeSitter));
+    const bounded = budgetParserWorkerFacts(file, facts);
     return {
-      degraded: false,
-      facts,
+      degraded: bounded.degraded,
+      facts: bounded.facts,
       parseMilliseconds: Math.max(0, performance.now() - startedAt),
     };
   });

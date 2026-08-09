@@ -3,18 +3,14 @@ import {describe, expect, it} from '@effect/vitest';
 import * as FC from 'effect/testing/FastCheck';
 import {TestClock} from 'effect/testing';
 import {Effect, FileSystem, Fiber, Layer} from 'effect';
-import {sha256HexSync} from '../../src/crypto/sha256.js';
-import {
-  cachedCodeGraphFactBytes,
-  CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM,
-  serializeBoundedCodeGraphFact,
-} from '../../src/code_graph/fact_budget.js';
+import {cachedCodeGraphFactBytes, CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM} from '../../src/code_graph/fact_budget.js';
 import {BUILTIN_LANGUAGE_PACK_REGISTRY} from '../../src/code_graph/languages/registry.js';
 import {
   CODE_GRAPH_PARSER_SOURCE_BYTES_MAXIMUM,
   CODE_GRAPH_PARSER_WORKER_RESPONSE_BYTES_MAXIMUM,
   CODE_GRAPH_PARSER_WORKER_ARGUMENT,
   CodeGraphParserPool,
+  budgetParserWorkerFacts,
   codeGraphParserPoolLayer,
   parserWorkerCapacity,
   parserWorkerSourceByteBudget,
@@ -61,6 +57,71 @@ describe('code graph parser worker pool', () => {
       expect(capacity(memoryGiB)).toBeGreaterThanOrEqual(1);
       expect(capacity(memoryGiB)).toBeLessThanOrEqual(4);
       expect(capacity(memoryGiB + 1)).toBeGreaterThanOrEqual(capacity(memoryGiB));
+    },
+    {fastCheck: {numRuns: 100}},
+  );
+
+  it('degrades emitted symbol and fact-byte exhaustion to one searchable module', () => {
+    const file = inventoryFile('src/emission-budget.ts', 'export const emissionBudget = true;');
+    const root = factsFor(file).symbols[0]!;
+    const symbolHeavyFacts: CodeGraphFileFacts = {
+      diagnostics: [],
+      edges: [],
+      path: file.path,
+      symbols: [root, {...root, id: `${root.id}-child`, kind: 'variable', name: 'child'}],
+    };
+    const symbolHeavy = budgetParserWorkerFacts(file, symbolHeavyFacts, {maximumSymbols: 1});
+
+    expect(symbolHeavy.degraded).toBe(true);
+    expect(symbolHeavy.facts.symbols).toHaveLength(1);
+    expect(symbolHeavy.facts.edges).toEqual([]);
+    expect(symbolHeavy.facts.diagnostics[0]).toContain(
+      '[code-graph-budget code=symbols status=exhausted observed-symbols=2 maximum-symbols=1]',
+    );
+
+    const maximumFactBytes = 2_048;
+    const byteHeavyFacts: CodeGraphFileFacts = {
+      diagnostics: [],
+      edges: [],
+      path: file.path,
+      symbols: [{...root, documentation: 'x'.repeat(maximumFactBytes * 2)}],
+    };
+    const observedBytes = cachedCodeGraphFactBytes(byteHeavyFacts);
+    const byteHeavy = budgetParserWorkerFacts(file, byteHeavyFacts, {maximumFactBytes});
+
+    expect(byteHeavy.degraded).toBe(true);
+    expect(byteHeavy.facts.symbols).toHaveLength(1);
+    expect(byteHeavy.facts.edges).toEqual([]);
+    expect(byteHeavy.facts.diagnostics[0]).toContain(
+      `[code-graph-budget code=fact-bytes status=exhausted observed-bytes=${observedBytes} maximum-bytes=${maximumFactBytes}]`,
+    );
+    expect(cachedCodeGraphFactBytes(byteHeavy.facts)).toBeLessThanOrEqual(maximumFactBytes);
+  });
+
+  it.prop(
+    'enforces an inclusive emitted-symbol boundary',
+    {
+      maximumSymbols: FC.integer({max: 16, min: 1}),
+      symbolCount: FC.integer({max: 24, min: 1}),
+    },
+    ({maximumSymbols, symbolCount}) => {
+      const file = inventoryFile('src/symbol-property.ts', 'export const symbolProperty = true;');
+      const root = factsFor(file).symbols[0]!;
+      const facts: CodeGraphFileFacts = {
+        diagnostics: [],
+        edges: [],
+        path: file.path,
+        symbols: Array.from({length: symbolCount}, (_, index) => ({
+          ...root,
+          id: `${root.id}-${index}`,
+          kind: index === 0 ? 'module' : 'variable',
+          name: `symbol-${index}`,
+        })),
+      };
+      const result = budgetParserWorkerFacts(file, facts, {maximumSymbols});
+
+      expect(result.degraded).toBe(symbolCount > maximumSymbols);
+      expect(result.facts.symbols).toHaveLength(symbolCount > maximumSymbols ? 1 : symbolCount);
     },
     {fastCheck: {numRuns: 100}},
   );
@@ -212,7 +273,7 @@ describe('code graph parser worker pool', () => {
     }).pipe(Effect.provide(parserLayer({capacity: 1})), Effect.scoped),
   );
 
-  it.effect('budgets pathological facts in the real worker with exact parent and digest parity', () =>
+  it.effect('degrades pathological emitted facts in the real worker before response serialization', () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-parser-worker-budget-'});
@@ -221,17 +282,15 @@ describe('code graph parser worker pool', () => {
       const raw = yield* BUILTIN_LANGUAGE_PACK_REGISTRY.extractRawFile(file).pipe(
         Effect.provide(TreeSitterRuntime.layer),
       );
-      const parent = serializeBoundedCodeGraphFact(raw);
       const worker = yield* CodeGraphParserPool;
       const result = yield* worker.extract(file, home);
 
       expect(cachedCodeGraphFactBytes(raw)).toBeGreaterThan(CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM);
-      expect(result.degraded).toBe(false);
-      expect(result.facts).toEqual(parent.facts);
-      expect(JSON.stringify(result.facts)).toBe(parent.json);
-      expect(sha256HexSync(JSON.stringify(result.facts))).toBe(sha256HexSync(parent.json));
-      expect(cachedCodeGraphFactBytes(result.facts)).toBe(parent.bytes);
-      expect(parent.bytes).toBeLessThanOrEqual(CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM);
+      expect(result.degraded).toBe(true);
+      expect(result.facts.symbols).toHaveLength(1);
+      expect(result.facts.edges).toEqual([]);
+      expect(result.facts.diagnostics[0]).toContain('code-graph-budget code=fact-bytes status=exhausted');
+      expect(cachedCodeGraphFactBytes(result.facts)).toBeLessThanOrEqual(CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM);
       expect(parserWorkerSuccessResponseBytes(result.facts, 'x'.repeat(100))).toBeLessThanOrEqual(
         CODE_GRAPH_PARSER_WORKER_RESPONSE_BYTES_MAXIMUM,
       );
@@ -641,7 +700,7 @@ class ScriptedParserWorkerProcess implements ParserWorkerProcess {
 
   respond(request: WireRequest, facts: CodeGraphFileFacts): void {
     this.stdoutFeed.push(
-      `${JSON.stringify({facts, id: request.id, ok: true, parseMilliseconds: 1, protocol: request.protocol})}\n`,
+      `${JSON.stringify({degraded: false, facts, id: request.id, ok: true, parseMilliseconds: 1, protocol: request.protocol})}\n`,
     );
   }
 
