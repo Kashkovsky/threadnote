@@ -21,6 +21,7 @@ export const ciLongRunningTestGroups = {
   'heavy-integration': [
     'test/integration/cli.effect.test.ts',
     'test/integration/mcp.native-tools.test.ts',
+    'test/integration/code-graph.performance-evidence.test.ts',
     'test/integration/code-graph.snapshot-repair.property.test.ts',
     'test/integration/code-graph.cross-session-incremental.test.ts',
     'test/integration/code-graph.session.test.ts',

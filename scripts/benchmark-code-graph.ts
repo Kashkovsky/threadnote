@@ -18,6 +18,7 @@ import {resolveRepositoryIdentity} from '../src/code_graph/repository.js';
 import type {CodeGraphActivationActivity, CodeGraphProgress, CodeGraphQueryResult} from '../src/code_graph/types.js';
 import {
   managerGraphCatalog,
+  ManagerGraphBusyError,
   ManagerGraphQueryLifecycle,
   managerGraphNodeDetail,
   managerGraphQuery,
@@ -95,6 +96,8 @@ const MANAGER_QUERY_NODE_LIMIT = 200;
 const MANAGER_QUERY_EDGE_LIMIT = 500;
 const EXTERNAL_QUERY_CONTROL_TIMEOUT_MS = 120_000;
 const MANAGER_SEQUENCE_TIMEOUT_MS = 180_000;
+const MANAGER_BUSY_RETRY_MILLISECONDS = 100;
+const MANAGER_BUSY_RETRY_ATTEMPTS = 20;
 const WORKTREE_GIT_COMMAND_TIMEOUT_MS = 30_000;
 const WORKTREE_ISOLATION_TIMEOUT_MS = 300_000;
 const PUBLIC_REPOSITORY_PROOF_TIMEOUT_MS = 60_000;
@@ -3629,14 +3632,16 @@ export const benchmarkManagerPerformance = Effect.fn('benchmarkCodeGraph.manager
   samples: number,
   warmups: number,
 ) {
-  return yield* Effect.scoped(
-    benchmarkManagerPerformanceMeasured(
-      threadnoteHome,
-      expectedRepositoryId,
-      expectedSnapshotId,
-      queryText,
-      samples,
-      warmups,
+  return yield* retryManagerBenchmarkBusy(() =>
+    Effect.scoped(
+      benchmarkManagerPerformanceMeasured(
+        threadnoteHome,
+        expectedRepositoryId,
+        expectedSnapshotId,
+        queryText,
+        samples,
+        warmups,
+      ),
     ),
   ).pipe(
     Effect.timeoutOrElse({
@@ -3648,6 +3653,23 @@ export const benchmarkManagerPerformance = Effect.fn('benchmarkCodeGraph.manager
     }),
   );
 });
+
+/** @internal Models the Manager HTTP client's documented retry-after contract in benchmark callers. */
+export function retryManagerBenchmarkBusy<A, E, R>(
+  operation: () => Effect.Effect<A, E, R>,
+  remainingAttempts = MANAGER_BUSY_RETRY_ATTEMPTS,
+  retryDelayMilliseconds = MANAGER_BUSY_RETRY_MILLISECONDS,
+): Effect.Effect<A, E, R> {
+  return Effect.suspend(operation).pipe(
+    Effect.catch(error =>
+      error instanceof ManagerGraphBusyError && remainingAttempts > 0
+        ? Effect.sleep(retryDelayMilliseconds).pipe(
+            Effect.andThen(retryManagerBenchmarkBusy(operation, remainingAttempts - 1, retryDelayMilliseconds)),
+          )
+        : Effect.fail(error),
+    ),
+  );
+}
 
 function mcpOperationMatrixMeasurements(
   results: readonly McpOperationBenchmarkResult[],
