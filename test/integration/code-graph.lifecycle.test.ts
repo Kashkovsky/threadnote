@@ -624,31 +624,30 @@ describe('native code graph lifecycle', () => {
         const before = yield* graph.statusForIdentity(home, identityB);
         const mutableCommand = command as {execute: typeof command.execute};
         const execute = command.execute;
-        let phase: 'direct' | 'reused' = 'reused';
-        let directIdentityResolutionCount = 0;
-        let reusedIdentityResolutionCount = 0;
-        const [attached, direct] = yield* Effect.acquireUseRelease(
+        let identityResolutionCount = 0;
+        let identityResolutionCountAtPromotion: number | undefined;
+        const attached = yield* Effect.acquireUseRelease(
           Effect.sync(() => {
             mutableCommand.execute = (executable, args, options) => {
               if (executable === 'git' && args[2] === 'rev-parse' && args[3] === '--show-toplevel') {
-                if (phase === 'reused') reusedIdentityResolutionCount += 1;
-                else directIdentityResolutionCount += 1;
+                identityResolutionCount += 1;
               }
               return execute(executable, args, options);
             };
           }),
           () =>
-            Effect.gen(function* () {
-              const attached = yield* graph.attachSharedReadySnapshot(home, identityB, before);
-              phase = 'direct';
-              const direct = yield* graph.attachSharedReadySnapshot(home, identityB);
-              return [attached, direct] as const;
+            graph.attachSharedReadySnapshot(home, identityB, before, {
+              afterPromotion: () =>
+                Effect.sync(() => {
+                  identityResolutionCountAtPromotion = identityResolutionCount;
+                }),
             }),
           () =>
             Effect.sync(() => {
               mutableCommand.execute = execute;
             }),
         );
+        const direct = yield* graph.attachSharedReadySnapshot(home, identityB);
         const after = yield* graph.statusForIdentity(home, identityB);
         const found = yield* graph.inspect({
           cwd: worktreeB,
@@ -662,11 +661,10 @@ describe('native code graph lifecycle', () => {
           attached,
           before,
           direct,
-          directIdentityResolutionCount,
           first,
           found,
           identityB,
-          reusedIdentityResolutionCount,
+          identityResolutionCountAtPromotion,
         };
       }),
     );
@@ -678,9 +676,9 @@ describe('native code graph lifecycle', () => {
     expect(result.attached.readySnapshot?.worktreeId).toBe(result.identityB.worktreeId);
     expect(result.direct.readySnapshot?.id).toBe(result.first.snapshot.id);
     // Shared attach spends exactly one full identity resolution immediately
-    // before promotion; final HEAD/cleanliness proof stays one bounded command.
-    expect(result.reusedIdentityResolutionCount).toBe(1);
-    expect(result.directIdentityResolutionCount).toBe(1);
+    // before promotion. Measure at the promotion interlock so the asynchronous
+    // maintenance kick cannot be mistaken for work performed by this path.
+    expect(result.identityResolutionCountAtPromotion).toBe(1);
     expect(result.after.readySnapshot?.id).toBe(result.first.snapshot.id);
     expect(result.after.stale).toBe(false);
     expect(result.found.snapshot.id).toBe(result.first.snapshot.id);
