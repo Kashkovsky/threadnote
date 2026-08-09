@@ -5795,6 +5795,8 @@ const repairDatabase = Effect.fn('codeGraph.repairDatabase')(function* (dryRun: 
 
 const CODE_GRAPH_ROUTINE_EXPIRED_LEASE_PAGE_SIZE = 100;
 const CODE_GRAPH_ROUTINE_CACHE_PAGE_SIZE = 100;
+/** Fresh facts are written before the durable building snapshot owns its inventory. */
+const CODE_GRAPH_ROUTINE_CACHE_MINIMUM_AGE_MILLISECONDS = 24 * 60 * 60_000;
 
 const CODE_GRAPH_SNAPSHOT_FILE_BLOB_REFERENCE_INDEX = {
   columns: ['path', 'content_hash'],
@@ -5823,7 +5825,10 @@ interface RoutineFileBlobCacheKey {
   readonly path: string;
 }
 
-export function codeGraphRoutineFileBlobCleanupPageStatement(candidates: readonly RoutineFileBlobCacheKey[]): {
+export function codeGraphRoutineFileBlobCleanupPageStatement(
+  candidates: readonly RoutineFileBlobCacheKey[],
+  eligibleBefore: string,
+): {
   readonly parameters: readonly string[];
   readonly text: string;
 } {
@@ -5831,9 +5836,18 @@ export function codeGraphRoutineFileBlobCleanupPageStatement(candidates: readonl
     throw new CodeGraphStoreError('File fact cache cleanup candidates are invalid.');
   }
   return {
-    parameters: candidates.flatMap(candidate => [candidate.contentHash, candidate.extractorSet, candidate.path]),
+    parameters: [
+      ...candidates.flatMap(candidate => [candidate.contentHash, candidate.extractorSet, candidate.path]),
+      eligibleBefore,
+    ],
     text: `DELETE FROM file_blobs
       WHERE (content_hash, extractor_set, path_hint) IN (${candidates.map(() => '(?, ?, ?)').join(', ')})
+        AND created_at <= ?
+        AND NOT EXISTS (
+          SELECT 1
+          FROM snapshots AS build
+          WHERE build.state = 'building'
+        )
         AND NOT EXISTS (
           SELECT 1
           FROM snapshot_files AS file
@@ -5852,7 +5866,10 @@ export function codeGraphRoutineFileBlobCleanupPageStatement(candidates: readonl
   };
 }
 
-export function codeGraphRoutineMaterializedShardCleanupPageStatement(candidates: readonly string[]): {
+export function codeGraphRoutineMaterializedShardCleanupPageStatement(
+  candidates: readonly string[],
+  eligibleBefore: string,
+): {
   readonly parameters: readonly string[];
   readonly text: string;
 } {
@@ -5860,9 +5877,15 @@ export function codeGraphRoutineMaterializedShardCleanupPageStatement(candidates
     throw new CodeGraphStoreError('Materialized shard cache cleanup candidates are invalid.');
   }
   return {
-    parameters: candidates,
+    parameters: [...candidates, eligibleBefore],
     text: `DELETE FROM materialized_file_shards
       WHERE id IN (${candidates.map(() => '?').join(', ')})
+        AND last_used_at <= ?
+        AND NOT EXISTS (
+          SELECT 1
+          FROM snapshots AS build
+          WHERE build.state = 'building'
+        )
         AND NOT EXISTS (
           SELECT 1
           FROM snapshot_file_shards AS association
@@ -6569,7 +6592,10 @@ const deleteRoutineFileBlobCacheCandidates = Effect.fn('codeGraph.deleteRoutineF
   candidates: readonly RoutineFileBlobCacheKey[],
 ) {
   if (candidates.length === 0) return 0;
-  const statement = codeGraphRoutineFileBlobCleanupPageStatement(candidates);
+  const eligibleBefore = new Date(
+    (yield* Clock.currentTimeMillis) - CODE_GRAPH_ROUTINE_CACHE_MINIMUM_AGE_MILLISECONDS,
+  ).toISOString();
+  const statement = codeGraphRoutineFileBlobCleanupPageStatement(candidates, eligibleBefore);
   yield* sql.unsafe(statement.text, statement.parameters);
   const deleted = yield* lastStatementChangeCount(sql);
   if (!Number.isSafeInteger(deleted) || deleted < 0 || deleted > candidates.length) {
@@ -6582,7 +6608,10 @@ const deleteRoutineMaterializedShardCacheCandidates = Effect.fn(
   'codeGraph.deleteRoutineMaterializedShardCacheCandidates',
 )(function* (sql: SqlClient.SqlClient, candidates: readonly string[]) {
   if (candidates.length === 0) return 0;
-  const statement = codeGraphRoutineMaterializedShardCleanupPageStatement(candidates);
+  const eligibleBefore = new Date(
+    (yield* Clock.currentTimeMillis) - CODE_GRAPH_ROUTINE_CACHE_MINIMUM_AGE_MILLISECONDS,
+  ).toISOString();
+  const statement = codeGraphRoutineMaterializedShardCleanupPageStatement(candidates, eligibleBefore);
   yield* sql.unsafe(statement.text, statement.parameters);
   const deleted = yield* lastStatementChangeCount(sql);
   if (!Number.isSafeInteger(deleted) || deleted < 0 || deleted > candidates.length) {
@@ -6616,6 +6645,15 @@ const pruneRoutineCacheRowsPage = Effect.fn('codeGraph.pruneRoutineCacheRowsPage
   }
   return yield* sql.withTransaction(
     Effect.gen(function* () {
+      const activeBuild = yield* sql.unsafe<{readonly id: string}>(
+        "SELECT id FROM snapshots WHERE state = 'building' LIMIT 1",
+      );
+      // Fresh parser facts and materialized shards are written before their
+      // snapshot associations. A checkout-wide building row is therefore the
+      // durable interlock that prevents routine cleanup from racing that gap.
+      if (activeBuild.length > 0) {
+        return {cleanup: 'none', deleted: 0, remaining: false} satisfies RoutinePhysicalCleanupPage;
+      }
       const state = yield* selectRoutineCacheCleanupState(sql);
       if (state.phase === 'materialized-shards') {
         return yield* pruneRoutineMaterializedShardCacheRowsPage(sql, state.cursor);
@@ -17481,7 +17519,6 @@ function selectFileBlobMetadataBatch(
     `SELECT path_hint, length(CAST(facts_json AS BLOB)) AS facts_bytes
      FROM file_blobs
      WHERE extractor_set = ?
-       AND CASE WHEN json_valid(facts_json) THEN json_extract(facts_json, '$.path') ELSE NULL END = path_hint
        AND (${files.map(() => '(content_hash = ? AND path_hint = ?)').join(' OR ')})`,
     [extractorSet, ...files.flatMap(file => [file.contentHash, file.path])],
   );
