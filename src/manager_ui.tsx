@@ -4,6 +4,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type {CodeGraphLocalDiagnosticsReport} from './code_graph/diagnostics.js';
 import {ManagerAutocompleteInput, ManagerDialogProvider, useManagerDialogs} from './manager_dialog.js';
+import {graphViewRemovalApprovalDialog, type ManagerGraphViewRemovalResponse} from './manager_graph_removal.js';
 import {
   GraphWorkspace,
   graphBuildIsActive,
@@ -30,14 +31,6 @@ type MemoryStatus = 'active' | 'archived' | 'superseded';
 type AgentClient = 'claude' | 'codex' | 'copilot' | 'cursor' | 'effect-ai';
 type MemoryViewMode = 'edit' | 'preview';
 type SelectId = 'agent' | 'kind' | 'status';
-
-interface ManagerGraphViewRemovalResponse {
-  readonly approvalDigest: string;
-  readonly output: string;
-  readonly result: {
-    readonly state: 'already-removed' | 'not-found' | 'ready' | 'removed' | 'stale-target';
-  };
-}
 
 const SIDEBAR_WIDTH_KEY = 'threadnote.manager.sidebarWidth';
 const SIDEBAR_WIDTH_DEFAULT = 300;
@@ -422,14 +415,18 @@ function App(): React.ReactElement {
           ...action,
           dryRun: true,
         });
-        result =
-          preview.result.state === 'ready' || preview.result.state === 'already-removed'
-            ? await api<ManagerGraphViewRemovalResponse>('/api/graphs/action', {
-                ...action,
-                approvalDigest: preview.approvalDigest,
-                confirm: true,
-              })
-            : preview;
+        const approvalDialog = graphViewRemovalApprovalDialog(preview);
+        if (approvalDialog && !(await dialogs.confirm(approvalDialog))) {
+          setGraphAdministrationOutput(preview.output);
+          return;
+        }
+        result = approvalDialog
+          ? await api<ManagerGraphViewRemovalResponse>('/api/graphs/action', {
+              ...action,
+              approvalDigest: preview.approvalDigest,
+              confirm: true,
+            })
+          : preview;
       } else {
         result = await api<{readonly output: string}>('/api/graphs/action', {
           ...action,

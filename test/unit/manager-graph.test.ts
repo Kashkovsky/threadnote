@@ -7,6 +7,7 @@ import {
   graphAnalysisRequestIsCurrent,
   graphAnalysisCoverageLabel,
   graphAnalysisTopologyAvailable,
+  graphAdministrationJobSelection,
   graphAdministrationTarget,
   graphBuildConcurrencyState,
   graphBuildIsActive,
@@ -65,7 +66,7 @@ describe('manager graph focus', () => {
     });
   });
 
-  it('renders per-view preview and confirmed removal controls without requiring a local folder', () => {
+  it('renders one preview-bound removal icon without requiring a local folder', () => {
     const neverResolves = () => new Promise<never>(() => undefined);
     const checkoutId = 'a'.repeat(64);
     const worktreeId = 'b'.repeat(64);
@@ -117,8 +118,9 @@ describe('manager graph focus', () => {
       }),
     );
 
-    expect(markup).toContain('Preview remove');
-    expect(markup).toContain('Remove view');
+    expect(markup.match(/aria-label="Remove indexed view bbbbbbbb"/g)).toHaveLength(1);
+    expect(markup).toContain('title="Remove indexed view"');
+    expect(markup).not.toContain('Preview remove');
     expect(markup).toContain('Index, reindex, and compact require a verified local worktree path.');
   });
 
@@ -217,6 +219,11 @@ describe('manager graph focus', () => {
     const build = {
       ...graphBuildStatus('running'),
       coordination: {lockVerified: true, progressSilent: true, role: 'owner' as const},
+      identity: {
+        ...graphBuildStatus('running').identity,
+        checkoutId: 'view-a',
+        worktreeId: 'view-a',
+      },
       managerContext: {worktreePath: '/tmp/jobs/repository-task-17'},
     };
     const markup = renderToStaticMarkup(
@@ -397,6 +404,25 @@ describe('manager graph focus', () => {
     };
     expect(graphBuildIsActive(staleOwner)).toBe(true);
     expect(graphBuildShouldDisplay(staleOwner)).toBe(true);
+  });
+
+  it('shows only a bounded actionable administration job summary', () => {
+    const builds = [
+      {...graphBuildStatus('completed'), buildId: 'completed'},
+      {...graphBuildStatus('running'), buildId: 'running'},
+      {...graphBuildStatus('failed'), buildId: 'failed'},
+    ];
+    const waiters = Array.from({length: 5}, (_, index) => ({
+      ...graphBuildStatus('queued'),
+      buildId: `waiter-${index}`,
+    }));
+    const selected = graphAdministrationJobSelection(builds, waiters);
+
+    expect(selected.jobs).toHaveLength(4);
+    expect(selected.total).toBe(7);
+    expect(selected.hiddenCount).toBe(3);
+    expect(selected.jobs.map(job => job.state)).not.toContain('completed');
+    expect(selected.jobs[0]?.buildId).toBe('running');
   });
 
   it('refreshes a terminal snapshot missing from the catalog and scopes waiters to their build', () => {

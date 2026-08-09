@@ -1138,7 +1138,31 @@ dd {
   border-left: 2px solid var(--accent-line);
   display: grid;
   gap: 2px;
-  padding-left: 7px;
+  padding: 0 34px 2px 7px;
+  position: relative;
+}
+
+.graph-view-remove {
+  align-items: center;
+  display: inline-flex;
+  height: 26px;
+  justify-content: center;
+  min-height: 26px;
+  padding: 0;
+  position: absolute;
+  right: 0;
+  top: 0;
+  width: 26px;
+}
+
+.graph-view-remove svg {
+  fill: none;
+  height: 14px;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+  width: 14px;
 }
 
 .graph-database-views strong,
@@ -1305,7 +1329,8 @@ dd {
   grid-row: 3;
   grid-template-areas:
     'scope scope scope stats'
-    'catalog node query stats';
+    'catalog node node stats'
+    'query query query query';
   grid-template-columns: repeat(3, minmax(0, 1fr)) auto;
   padding: 10px;
   position: relative;

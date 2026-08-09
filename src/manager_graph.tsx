@@ -392,6 +392,37 @@ export function graphBuildShouldDisplay(build: GraphBuildStatus): boolean {
   return build.state === 'failed' || graphBuildIsActive(build);
 }
 
+const GRAPH_ADMINISTRATION_JOB_LIMIT = 4;
+
+export interface GraphAdministrationJobSelection {
+  readonly hiddenCount: number;
+  readonly jobs: readonly GraphBuildStatus[];
+  readonly total: number;
+}
+
+/** Keep administration cards focused on bounded, actionable build state. */
+export function graphAdministrationJobSelection(
+  builds: readonly GraphBuildStatus[],
+  waiters: readonly GraphBuildStatus[],
+): GraphAdministrationJobSelection {
+  const unique = new Map<string, GraphBuildStatus>();
+  for (const job of [...builds, ...waiters]) {
+    if (graphBuildShouldDisplay(job) && !unique.has(job.buildId)) unique.set(job.buildId, job);
+  }
+  const relevant = [...unique.values()].sort(compareGraphAdministrationJob);
+  const jobs = relevant.slice(0, GRAPH_ADMINISTRATION_JOB_LIMIT);
+  return {hiddenCount: relevant.length - jobs.length, jobs, total: relevant.length};
+}
+
+function compareGraphAdministrationJob(left: GraphBuildStatus, right: GraphBuildStatus): number {
+  const priority = (job: GraphBuildStatus) => (job.state === 'running' ? 0 : job.state === 'queued' ? 1 : 2);
+  return (
+    priority(left) - priority(right) ||
+    (Date.parse(right.timestamps.lastProgressAt) || 0) - (Date.parse(left.timestamps.lastProgressAt) || 0) ||
+    compareCodeUnits(left.buildId, right.buildId)
+  );
+}
+
 export interface GraphBuildTarget {
   readonly repositoryLabel: string;
   readonly worktreeLabel: string;
@@ -1906,11 +1937,6 @@ export function GraphWorkspace(props: {
               </select>
             </label>
           ) : null}
-          {repository ? (
-            <small className="graph-local-association">
-              Folder: {graphLocalAssociationText(repository.localAssociation)} · {repository.localAssociation.state}
-            </small>
-          ) : null}
           <label>
             <span>Component</span>
             <select
@@ -3373,6 +3399,7 @@ function GraphAdministration(props: {
               const view = database.views.find(candidate => candidate.managementAvailable) ?? database.views[0];
               const managementAvailable = view?.managementAvailable === true;
               const repository = view?.repository.displayName ?? `Checkout ${database.checkoutId.slice(-8)}`;
+              const jobs = graphAdministrationJobSelection(database.builds, database.waiters);
               const obsolete = props.report?.obsoleteStores.checkouts.find(
                 checkout => checkout.checkoutId === database.checkoutId,
               );
@@ -3418,7 +3445,7 @@ function GraphAdministration(props: {
                     </div>
                     <div>
                       <dt>Jobs</dt>
-                      <dd>{database.builds.length + database.waiters.length}</dd>
+                      <dd>{jobs.total === 0 ? 'None' : `${jobs.total} actionable`}</dd>
                     </div>
                   </dl>
                   <div className="graph-database-views">
@@ -3456,45 +3483,33 @@ function GraphAdministration(props: {
                               )}
                             </small>
                           ) : null}
-                          <div className="graph-view-actions">
-                            <button
-                              disabled={blocked}
-                              onClick={() => props.onAction({action: 'remove-view', dryRun: true, ...removalTarget})}
-                              type="button"
-                            >
-                              Preview remove
-                            </button>
-                            <button
-                              className="danger"
-                              disabled={blocked}
-                              onClick={() =>
-                                void confirmAction(
-                                  {
-                                    confirmLabel: 'Remove view',
-                                    detail: `Checkout ${removalTarget.checkoutId}\nWorktree ${removalTarget.worktreeId}\nSnapshot ${removalTarget.expectedSnapshotId}`,
-                                    message:
-                                      'Remove this exact active view. Snapshot data still referenced by another view remains available.',
-                                    title: 'Remove this indexed view?',
-                                    tone: 'danger',
-                                  },
-                                  {action: 'remove-view', ...removalTarget},
-                                )
-                              }
-                              type="button"
-                            >
-                              Remove view
-                            </button>
-                          </div>
+                          <button
+                            aria-label={`Remove indexed view ${candidate.viewWorktreeId.slice(-8)}`}
+                            className="danger graph-view-remove"
+                            disabled={blocked}
+                            onClick={() => props.onAction({action: 'remove-view', ...removalTarget})}
+                            title="Remove indexed view"
+                            type="button"
+                          >
+                            <svg aria-hidden="true" viewBox="0 0 24 24">
+                              <path d="M4 6h16M9 6V4h6v2m3 0-1 14H7L6 6m4 4v6m4-6v6" />
+                            </svg>
+                          </button>
                         </div>
                       );
                     })}
                   </div>
-                  {[...database.builds, ...database.waiters].map(job => (
+                  {jobs.jobs.map(job => (
                     <p className="graph-database-job" key={`${job.buildId}:${job.coordination?.role ?? 'build'}`}>
-                      {job.identity.worktreeId.slice(-8)} · {job.state} · {job.phase}
+                      View {job.identity.worktreeId.slice(-8)} · {job.state === 'running' ? 'active' : job.state} ·{' '}
+                      {job.phase}
                       {job.subphase ? `/${job.subphase}` : ''} · {job.observation.liveness}
+                      {job.error ? ` · ${job.error.summary}` : ''}
                     </p>
                   ))}
+                  {jobs.hiddenCount > 0 ? (
+                    <p className="graph-database-job">+{jobs.hiddenCount} more active or failed jobs</p>
+                  ) : null}
                   {database.issues.map(issue => (
                     <p className="graph-database-issue" key={`${database.checkoutId}:${issue.code}`}>
                       {issue.code}: {issue.message}

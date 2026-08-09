@@ -1,6 +1,7 @@
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import {
+  graphAdministrationJobSelection,
   graphBuildConcurrencyState,
   graphFocusTarget,
   graphWheelZoomFactor,
@@ -22,6 +23,44 @@ import {
 } from '../../src/manager_graph_limits.js';
 
 describe('Manager graph properties', () => {
+  it('keeps actionable administration jobs deterministic, unique, and bounded', () => {
+    fc.assert(
+      fc.property(
+        fc.uniqueArray(
+          fc.record({
+            buildNumber: fc.integer({min: 0, max: 1_000_000}),
+            startedAt: fc.integer({min: 0, max: 2_000_000_000}),
+            state: fc.constantFrom('completed' as const, 'failed' as const, 'queued' as const, 'running' as const),
+          }),
+          {maxLength: 80, selector: item => item.buildNumber},
+        ),
+        records => {
+          const statuses = records.map(record =>
+            graphBuildStatus(
+              `build-${record.buildNumber}`,
+              record.buildNumber.toString(16).padStart(12, '0'),
+              record.startedAt,
+              record.state,
+            ),
+          );
+          const builds = statuses.filter((_, index) => index % 2 === 0);
+          const waiters = statuses.filter((_, index) => index % 2 === 1);
+          const forward = graphAdministrationJobSelection(builds, waiters);
+          const reverse = graphAdministrationJobSelection([...builds].reverse(), [...waiters].reverse());
+          const expectedTotal = statuses.filter(status => status.state !== 'completed').length;
+
+          expect(forward).toEqual(reverse);
+          expect(forward.jobs.length).toBeLessThanOrEqual(4);
+          expect(forward.jobs.length + forward.hiddenCount).toBe(forward.total);
+          expect(forward.total).toBe(expectedTotal);
+          expect(new Set(forward.jobs.map(job => job.buildId)).size).toBe(forward.jobs.length);
+          expect(forward.jobs.every(job => job.state !== 'completed')).toBe(true);
+        },
+      ),
+      {numRuns: 120},
+    );
+  });
+
   it('selects the latest observed queued target independently of waiter order', () => {
     fc.assert(
       fc.property(
@@ -214,7 +253,7 @@ function graphBuildStatus(
   buildId: string,
   commit: string,
   startedAtMilliseconds: number,
-  state: 'queued' | 'running',
+  state: 'completed' | 'failed' | 'queued' | 'running',
 ): GraphBuildStatus {
   const startedAt = new Date(startedAtMilliseconds).toISOString();
   return {
@@ -226,7 +265,10 @@ function graphBuildStatus(
       repositoryId: 'repository',
       worktreeId: 'worktree',
     },
-    observation: {heartbeatAgeMilliseconds: 0, liveness: 'active'},
+    observation: {
+      heartbeatAgeMilliseconds: 0,
+      liveness: state === 'completed' ? 'completed' : state === 'failed' ? 'failed' : 'active',
+    },
     owner: {processId: 42},
     phase: state === 'queued' ? 'waiting' : 'scanning',
     state,
