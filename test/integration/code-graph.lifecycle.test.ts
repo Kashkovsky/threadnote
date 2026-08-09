@@ -47,7 +47,6 @@ import {compactCodeGraphStorage} from '../../src/code_graph/storage.js';
 import {CodeGraphStore, type StoredCodeGraph} from '../../src/code_graph/store.js';
 import {CodeGraphStoreNoSpaceError, type CodeGraphMaterializationMetrics} from '../../src/code_graph/types.js';
 import {captureConsole} from '../../src/effect/console.js';
-import {CommandExecutor} from '../../src/effect/command.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {runDoctor, runRepair} from '../../src/lifecycle.js';
@@ -618,35 +617,21 @@ describe('native code graph lifecycle', () => {
       Effect.gen(function* () {
         const graph = yield* CodeGraphQueryService;
         const indexer = yield* CodeGraphIndexer;
-        const command = yield* CommandExecutor;
         const first = yield* indexer.index({cwd: worktreeA, threadnoteHome: home});
         const identityB = yield* resolveRepositoryIdentity(worktreeB);
         const before = yield* graph.statusForIdentity(home, identityB);
-        const mutableCommand = command as {execute: typeof command.execute};
-        const execute = command.execute;
         let identityResolutionCount = 0;
         let identityResolutionCountAtPromotion: number | undefined;
-        const attached = yield* Effect.acquireUseRelease(
-          Effect.sync(() => {
-            mutableCommand.execute = (executable, args, options) => {
-              if (executable === 'git' && args[2] === 'rev-parse' && args[3] === '--show-toplevel') {
-                identityResolutionCount += 1;
-              }
-              return execute(executable, args, options);
-            };
-          }),
-          () =>
-            graph.attachSharedReadySnapshot(home, identityB, before, {
-              afterPromotion: () =>
-                Effect.sync(() => {
-                  identityResolutionCountAtPromotion = identityResolutionCount;
-                }),
-            }),
-          () =>
+        const attached = yield* graph.attachSharedReadySnapshot(home, identityB, before, {
+          afterPromotion: () =>
             Effect.sync(() => {
-              mutableCommand.execute = execute;
+              identityResolutionCountAtPromotion = identityResolutionCount;
             }),
-        );
+          beforeIdentityResolution: () =>
+            Effect.sync(() => {
+              identityResolutionCount += 1;
+            }),
+        });
         const direct = yield* graph.attachSharedReadySnapshot(home, identityB);
         const after = yield* graph.statusForIdentity(home, identityB);
         const found = yield* graph.inspect({

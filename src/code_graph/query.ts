@@ -88,6 +88,8 @@ export interface CodeGraphSharedReadyAttachInterlock {
   readonly afterOptimisticCandidate?: () => Effect.Effect<void>;
   /** @internal Deterministic barrier after promotion and before final identity validation. */
   readonly afterPromotion?: () => Effect.Effect<void>;
+  /** @internal Deterministic observer before each full identity resolution owned by shared attachment. */
+  readonly beforeIdentityResolution?: () => Effect.Effect<void>;
   /** @internal Deterministic fresh-capacity probe used by promotion fault tests. */
   readonly diskCapacityAvailableBytes?: (
     path: string,
@@ -314,6 +316,7 @@ export class CodeGraphQueryService extends Context.Service<
               ) {
                 return lockedStatus;
               }
+              yield* interlock?.beforeIdentityResolution?.() ?? Effect.void;
               const promotionIdentity = yield* resolveRepositoryIdentity(identity.repoRoot).pipe(Effect.option);
               if (Option.isNone(promotionIdentity)) return lockedStatus;
               if (!sameRepositoryIdentity(promotionIdentity.value, identity)) {
@@ -346,6 +349,7 @@ export class CodeGraphQueryService extends Context.Service<
               yield* interlock?.afterPromotion?.() ?? Effect.void;
               const published = yield* postPromotionObservation(promotionIdentity.value);
               if (published.headCommit !== promotionIdentity.value.headCommit) {
+                yield* interlock?.beforeIdentityResolution?.() ?? Effect.void;
                 const publishedIdentity = yield* resolveRepositoryIdentity(identity.repoRoot).pipe(Effect.option);
                 return Option.isSome(publishedIdentity)
                   ? yield* statusForIdentity(threadnoteHome, publishedIdentity.value)
