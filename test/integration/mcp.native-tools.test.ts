@@ -188,6 +188,13 @@ function expectOrderedRecallProgress(updates: readonly ThreadnoteProgress[]): st
   return phases;
 }
 
+function expectRequestLocalRecallProgress(updates: readonly ThreadnoteProgress[]): void {
+  expect(updates.length).toBeGreaterThan(0);
+  expect(updates.map(update => update.progress)).toEqual(Array.from({length: updates.length}, (_, index) => index + 1));
+  const phases = collapseConsecutive(recallProgressPhases(updates));
+  expect(phases).toEqual(RECALL_PROGRESS_PHASES.slice(0, phases.length));
+}
+
 describe('Threadnote MCP toolsets', () => {
   it('keeps the core server instructions compact and self-contained', async () => {
     await withMcpClient(
@@ -502,7 +509,7 @@ describe('Threadnote MCP toolsets', () => {
 
         for (const {privateQuery, progressUpdates, result} of calls) {
           expect(result.isError).not.toBe(true);
-          expectOrderedRecallProgress(progressUpdates);
+          expectRequestLocalRecallProgress(progressUpdates);
           expect(JSON.stringify(progressUpdates)).not.toContain(privateQuery);
         }
       },

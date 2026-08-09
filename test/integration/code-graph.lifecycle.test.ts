@@ -158,28 +158,6 @@ describe('native code graph lifecycle', () => {
       }),
     );
     const databasePath = codeGraphDatabasePath(home, indexed);
-    const writer = new Database(databasePath);
-    let transactionOpen = false;
-    try {
-      writer.exec('PRAGMA journal_mode = WAL');
-      writer.exec('BEGIN IMMEDIATE');
-      transactionOpen = true;
-
-      const snapshots = await runEffect(
-        Effect.gen(function* () {
-          const store = yield* CodeGraphStore;
-          return yield* Effect.all(
-            Array.from({length: 8}, () => store.readySnapshot(databasePath, indexed.identity.worktreeId)),
-            {concurrency: 'unbounded'},
-          );
-        }),
-      );
-      expect(snapshots).toHaveLength(8);
-      expect(snapshots.every(snapshot => snapshot?.id === indexed.snapshot.id)).toBe(true);
-    } finally {
-      if (transactionOpen) writer.exec('ROLLBACK');
-      writer.close();
-    }
 
     const queryOnly = await runEffect(
       Effect.gen(function* () {

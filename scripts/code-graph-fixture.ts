@@ -106,6 +106,21 @@ export const PRODUCTION_LARGE_CODE_GRAPH_PROFILE = {
 export const GENERATED_VECTOR_CONTROL_PATH = 'docs/vector-semantic-control.md';
 export const VECTOR_SEMANTIC_CONTROL_QUERY = 'serialize concurrent tasks via mutual exclusion';
 
+const makeOwnedTempDirectoryScoped = Effect.fn('codeGraphFixture.makeOwnedTempDirectoryScoped')(function* (
+  prefix: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  return yield* Effect.acquireRelease(fs.makeTempDirectory({prefix}), root =>
+    fs.remove(root, {force: true, recursive: true}).pipe(
+      Effect.catchIf(
+        error => error.reason._tag === 'NotFound',
+        () => Effect.void,
+      ),
+      Effect.orDie,
+    ),
+  );
+});
+
 export const prepareCodeGraphFixture = Effect.fn('codeGraphFixture.prepare')(function* (fixture = 'code-graph-v1') {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -115,7 +130,7 @@ export const prepareCodeGraphFixture = Effect.fn('codeGraphFixture.prepare')(fun
   const source = yield* path.fromFileUrl(
     new URL(`../test/evaluation/fixtures/${fixture}/repository/`, import.meta.url),
   );
-  const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-code-graph-evaluation-'});
+  const root = yield* makeOwnedTempDirectoryScoped('threadnote-code-graph-evaluation-');
   const repository = path.join(root, 'repository');
   const home = path.join(root, 'home');
   yield* fs.copy(source, repository, {overwrite: true});
@@ -143,7 +158,7 @@ export const prepareGeneratedCodeGraphFixture = Effect.fn('codeGraphFixture.prep
   if (!Number.isSafeInteger(targetSymbols) || targetSymbols < 1) {
     return yield* Effect.fail(new Error('Generated code graph target must be a positive safe integer.'));
   }
-  const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-code-graph-scale-'});
+  const root = yield* makeOwnedTempDirectoryScoped('threadnote-code-graph-scale-');
   const repository = path.join(root, 'repository');
   const source = path.join(repository, 'src');
   const home = path.join(root, 'home');
@@ -208,7 +223,7 @@ export const prepareProductionCodeGraphFixture = Effect.fn('codeGraphFixture.pre
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const profile = validateProductionProfile(requested);
-  const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-code-graph-production-scale-'});
+  const root = yield* makeOwnedTempDirectoryScoped('threadnote-code-graph-production-scale-');
   const repository = path.join(root, 'repository');
   const home = path.join(root, 'home');
   yield* fs.makeDirectory(repository, {recursive: true});

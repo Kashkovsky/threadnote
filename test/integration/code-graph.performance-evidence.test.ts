@@ -222,4 +222,16 @@ describe('external performance evidence', () => {
       readySnapshotId: evidence.baselineSnapshotId,
     });
   }, 60_000);
+
+  it('treats an already-removed owned fixture root as a completed teardown', async () => {
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const fixture = yield* prepareCodeGraphFixture('code-graph-v1');
+          yield* fs.remove(fixture.root, {force: true, recursive: true});
+        }),
+      ).pipe(Effect.provide(ApplicationLayer)),
+    );
+  });
 });
