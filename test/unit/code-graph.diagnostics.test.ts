@@ -75,6 +75,9 @@ describe('all-code-graph diagnostics', () => {
       const unreadable = report.databases.find(database => database.checkoutId === unreadableCheckoutId);
       expect(unreadable?.healthState).toBe('unreadable');
       expect(unreadable?.issues.map(issue => issue.code)).toContain('health-check-failed');
+      expect(unreadable?.lifecycle).toContainEqual(
+        expect.objectContaining({action: 'retry-observation', disposition: 'observe', state: 'unreadable-store'}),
+      );
       const ordinaryStorage = report.databases.find(database => database.checkoutId === healthyCheckoutId)?.storage;
       if (ordinaryStorage?.state !== 'available') throw new Error('missing ordinary storage diagnostics');
       expect(ordinaryStorage.pageStorage).not.toHaveProperty('attribution');

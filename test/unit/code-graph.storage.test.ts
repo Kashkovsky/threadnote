@@ -34,7 +34,8 @@ describe('active code graph storage', () => {
     const before = await runEffect(inspectCodeGraphStorage(fixture.home, fixture.checkoutId, {attributeObjects: true}));
     expect(before).toMatchObject({state: 'available'});
     if (before.state !== 'available' || before.pageStorage.state !== 'available') throw new Error('missing storage');
-    expect(before.totalBytes).toBe(before.databaseBytes + before.walBytes + before.shmBytes);
+    expect(before.filesystemBytes).toBe(before.databaseBytes + before.walBytes + before.journalBytes + before.shmBytes);
+    expect(before.totalBytes).toBe(before.filesystemBytes + before.temporaryBytes);
     expect(before.pageStorage.freelistPages).toBeGreaterThan(0);
     expect(before.pageStorage.reclaimableBytes).toBe(before.pageStorage.pageSize * before.pageStorage.freelistPages);
     const attribution = before.pageStorage.attribution;

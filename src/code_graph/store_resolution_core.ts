@@ -608,6 +608,7 @@ interface ReexportClosureRow {
 function persistentReexportAliasCapacityBoundary(
   snapshotId: string,
   rows: readonly PersistentReexportAliasRow[],
+  temporary = false,
 ): CodeGraphDirectPersistentCapacityBoundary {
   let finalFactBytes = 0;
   for (const row of rows) {
@@ -622,8 +623,11 @@ function persistentReexportAliasCapacityBoundary(
   }
   return {
     finalFactBytes,
-    operation: 'resolve persistent code graph reexport aliases',
+    operation: temporary
+      ? 'resolve temporary code graph reexport aliases'
+      : 'resolve persistent code graph reexport aliases',
     rowCount: rows.length,
+    ...(temporary ? {mainFilesystem: 'temporary' as const, transientFilesystem: 'temporary' as const} : {}),
   };
 }
 
@@ -711,6 +715,7 @@ function persistentReferenceResolutionCapacityBoundary(
   rows: readonly ResolvableActivationReferenceRow[],
   resolutions: readonly ActivationResolutionRow[],
   aliases: readonly (readonly [string, string, string, number, 'alias', string, string])[],
+  temporary = false,
 ): CodeGraphDirectPersistentCapacityBoundary {
   let finalFactBytes = 0;
   for (const [index, resolution] of resolutions.entries()) {
@@ -752,11 +757,12 @@ function persistentReferenceResolutionCapacityBoundary(
   }
   return {
     finalFactBytes,
-    operation: 'resolve persistent code graph references',
+    operation: temporary ? 'resolve temporary code graph references' : 'resolve persistent code graph references',
     // Per resolved edge: replacement insert, old-edge delete, reference
     // delete, two histogram upserts, bounded zero-group cleanup, and ample
     // headroom for SQLite replace/index row work. Alias attempts are exact.
     rowCount: saturatingCapacityAdd(saturatingCapacityMultiply(resolutions.length, 10), aliases.length),
+    ...(temporary ? {mainFilesystem: 'temporary' as const, transientFilesystem: 'temporary' as const} : {}),
   };
 }
 

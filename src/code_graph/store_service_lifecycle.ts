@@ -66,6 +66,7 @@ import {prepareSnapshotPromotionCapacity} from './store_build_preparation.js';
 import {promoteSnapshot} from './store_resolution.js';
 import {type CodeGraphStoreRuntime} from './store_runtime.js';
 import {type CodeGraphStoreShape} from './store_shape.js';
+import {temporaryActivationPublicationCapacity} from './store_temporary_capacity.js';
 
 type CodeGraphStoreLifecycleMethods = Pick<
   CodeGraphStoreShape,
@@ -333,7 +334,7 @@ export function makeCodeGraphStoreLifecycleMethods(runtime: CodeGraphStoreRuntim
             const sql = yield* SqlClient.SqlClient;
             const mode = yield* activationMode(sql);
             if (mode?.mode === 'persisted-delta') {
-              yield* withWriterGate(
+              const publication = withWriterGate(
                 databasePath,
                 activatePersistedIncrementalSnapshot(
                   sql,
@@ -345,6 +346,8 @@ export function makeCodeGraphStoreLifecycleMethods(runtime: CodeGraphStoreRuntim
                   onProgress,
                 ),
               );
+              const capacity = yield* temporaryPublicationCapacity(sql);
+              yield* persistentCapacityProtector ? persistentCapacityProtector(capacity, publication) : publication;
               return undefined;
             }
             if (mode?.mode === 'persisted-full') {
@@ -366,10 +369,12 @@ export function makeCodeGraphStoreLifecycleMethods(runtime: CodeGraphStoreRuntim
               );
               return snapshot.id;
             }
-            yield* withWriterGate(
+            const publication = withWriterGate(
               databasePath,
               activateStagedSnapshot(sql, identity, snapshot, reusableBaseReceipt, promotionLease, onProgress),
             );
+            const capacity = yield* temporaryPublicationCapacity(sql);
+            yield* persistentCapacityProtector ? persistentCapacityProtector(capacity, publication) : publication;
             return undefined;
           }),
         );
@@ -748,3 +753,38 @@ export function makeCodeGraphStoreLifecycleMethods(runtime: CodeGraphStoreRuntim
       ).pipe(Effect.mapError(cause => storeError('update removed code graph view cleanup', cause))),
   } as const;
 }
+
+const temporaryPublicationCapacity = Effect.fn('codeGraph.temporaryPublicationCapacity')(function* (
+  sql: SqlClient.SqlClient,
+) {
+  const rows = yield* sql.unsafe<{
+    readonly edges: unknown;
+    readonly files: unknown;
+    readonly lookup_keys: unknown;
+    readonly reexports: unknown;
+    readonly symbols: unknown;
+    readonly terms: unknown;
+    readonly workspace_rows: unknown;
+  }>(`
+    SELECT
+      (SELECT COUNT(*) FROM activation_edges) AS edges,
+      (SELECT COUNT(*) FROM activation_files) AS files,
+      (SELECT COUNT(*) FROM activation_symbol_lookup) AS lookup_keys,
+      (SELECT COUNT(*) FROM activation_reexport_provenance) AS reexports,
+      (SELECT COUNT(*) FROM activation_symbols) AS symbols,
+      (SELECT COUNT(*) FROM activation_symbol_terms) AS terms,
+      (SELECT COUNT(*) FROM activation_workspace_scopes)
+        + (SELECT COUNT(*) FROM activation_workspace_components)
+        + (SELECT COUNT(*) FROM activation_workspace_dependencies) AS workspace_rows
+  `);
+  const counts = rows[0];
+  return temporaryActivationPublicationCapacity({
+    edges: Number(counts?.edges ?? Number.NaN),
+    files: Number(counts?.files ?? Number.NaN),
+    lookupKeys: Number(counts?.lookup_keys ?? Number.NaN),
+    reexports: Number(counts?.reexports ?? Number.NaN),
+    symbols: Number(counts?.symbols ?? Number.NaN),
+    terms: Number(counts?.terms ?? Number.NaN),
+    workspaceRows: Number(counts?.workspace_rows ?? Number.NaN),
+  });
+});

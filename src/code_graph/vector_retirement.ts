@@ -9,6 +9,7 @@ import {
 } from './disk_capacity.js';
 import {codeGraphDiskReservationFilesystemKey, withCodeGraphDiskReservation} from './disk_reservation.js';
 import {codeGraphDiskReservationLockPath, codeGraphDiskReservationRoot} from './layout.js';
+import {classifyCodeGraphLifecycle} from './lifecycle_classification.js';
 
 export const CODE_GRAPH_VECTOR_RETIREMENT_PAGE_ROWS = 1_000;
 export const CODE_GRAPH_VECTOR_RETIREMENT_PAGE_BYTES = 32 * 1_024 * 1_024;
@@ -1558,7 +1559,12 @@ export const planCodeGraphVectorRetirementPage = Effect.fn('codeGraph.planVector
          WHERE generation = ? LIMIT 1`,
         [marker.generation],
       );
-      if (pointers.length !== 0) {
+      const lifecycle = classifyCodeGraphLifecycle({
+        authority: marker.deleteAuthorized ? 'unproven' : 'proven-disposable',
+        protections: pointers.length === 0 ? [] : ['active-pin'],
+        state: 'retired-generation',
+      });
+      if (lifecycle.disposition !== 'reclaim') {
         return yield* Effect.fail(new Error('Code graph vector retirement still has a live pointer.'));
       }
       const generationManifest = yield* inspectBoundedVectorGenerationManifest(sql, marker.generation);
@@ -1625,7 +1631,12 @@ export const commitCodeGraphVectorRetirementPage = Effect.fn('codeGraph.commitVe
              WHERE generation = ? LIMIT 1`,
             [marker.generation],
           );
-          if (pointers.length !== 0) {
+          const lifecycle = classifyCodeGraphLifecycle({
+            authority: marker.deleteAuthorized ? 'unproven' : 'proven-disposable',
+            protections: pointers.length === 0 ? [] : ['active-pin'],
+            state: 'retired-generation',
+          });
+          if (lifecycle.disposition !== 'reclaim') {
             return yield* Effect.fail(new Error('Code graph vector retirement still has a live pointer.'));
           }
           const generationManifest = yield* inspectBoundedVectorGenerationManifest(sql, marker.generation);

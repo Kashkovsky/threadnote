@@ -68,6 +68,10 @@ import {CodeGraphStoreBusyError, type RepositoryIdentityExpectation} from './cod
 import {codeGraphMaintenanceIntentActive} from './code_graph/maintenance_gate.js';
 import {codeGraphLayout} from './code_graph/layout.js';
 import {CodeGraphMaintenanceCoordinator} from './code_graph/maintenance_coordinator.js';
+import {
+  observeCodeGraphLifecycleOpportunityTargets,
+  runCodeGraphLifecycleOpportunity,
+} from './code_graph/lifecycle_opportunity.js';
 import {removeCodeGraphView, renderCodeGraphViewRemovalResult} from './code_graph/view_removal.js';
 import {
   managerGraphAnalysis,
@@ -272,6 +276,14 @@ export function runManage(config: RuntimeConfig, options: ManageOptions) {
         return yield* Effect.fail(new Error(GRAPH_MAINTENANCE_BUSY_MESSAGE));
       }
       const crypto = yield* Crypto.Crypto;
+      const lifecycleMaintenance = yield* CodeGraphMaintenanceCoordinator;
+      const lifecycleTargets = yield* observeCodeGraphLifecycleOpportunityTargets(config.agentContextHome);
+      yield* runCodeGraphLifecycleOpportunity({
+        maintenance: lifecycleMaintenance,
+        opportunity: 'startup',
+        targets: lifecycleTargets,
+        threadnoteHome: config.agentContextHome,
+      }).pipe(Effect.catch(() => Effect.void));
       const token = Encoding.encodeBase64Url(yield* crypto.randomBytes(24));
       const server = yield* HttpServer.HttpServer;
       yield* Effect.addFinalizer(() => releaseManagerGraphSnapshotLeases());

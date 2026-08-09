@@ -95,13 +95,19 @@ export interface CodeGraphUnavailablePageStorage {
 }
 
 export interface CodeGraphActiveStorage {
+  readonly availableBytes?: number;
   readonly checkoutId: string;
   readonly databaseBytes: number;
   readonly databasePath: string;
+  /** Exact DB, rollback journal, WAL, and SHM bytes visible on the durable filesystem. */
+  readonly filesystemBytes: number;
+  readonly journalBytes: number;
   readonly pageStorage: CodeGraphDeferredPageStorage | CodeGraphPageStorage | CodeGraphUnavailablePageStorage;
   readonly shmBytes: number;
   readonly state: 'available';
+  /** Filesystem bytes plus currently reported SQLite TEMP database bytes. */
   readonly totalBytes: number;
+  readonly temporaryBytes: number;
   readonly walBytes: number;
 }
 
@@ -156,19 +162,30 @@ const STORAGE_LOCK_OPTIONS = {
 export const inspectCodeGraphStorage = Effect.fn('codeGraph.inspectStorage')(function* (
   threadnoteHome: string,
   checkoutId: string,
-  options: {readonly attributeObjects?: boolean; readonly openWhileLocked?: boolean} = {},
+  options: {
+    readonly attributeObjects?: boolean;
+    readonly openWhileLocked?: boolean;
+    /** Current TEMP database bytes reported by an active build status. */
+    readonly temporaryBytes?: number;
+  } = {},
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
+  const system = yield* SystemInfo;
   const repositoryRoot = codeGraphRepositoryRoot(path, threadnoteHome, checkoutId);
   const databasePath = path.join(repositoryRoot, `graph-v${CODE_GRAPH_SCHEMA_VERSION}.sqlite`);
   const database = yield* regularFileBytes(fs, databasePath);
   if (database.state === 'missing') {
     return {checkoutId, databasePath, state: 'missing'} satisfies CodeGraphMissingStorage;
   }
-  const [wal, shm] = yield* Effect.all(
-    [regularFileBytes(fs, `${databasePath}-wal`), regularFileBytes(fs, `${databasePath}-shm`)],
-    {concurrency: 2},
+  const [wal, shm, journal, availableBytes] = yield* Effect.all(
+    [
+      regularFileBytes(fs, `${databasePath}-wal`),
+      regularFileBytes(fs, `${databasePath}-shm`),
+      regularFileBytes(fs, `${databasePath}-journal`),
+      system.availableDiskBytes(repositoryRoot).pipe(Effect.catch(() => Effect.succeed(undefined))),
+    ],
+    {concurrency: 4},
   );
   const locked =
     !options.openWhileLocked &&
@@ -189,18 +206,30 @@ export const inspectCodeGraphStorage = Effect.fn('codeGraph.inspectStorage')(fun
           } satisfies CodeGraphUnavailablePageStorage),
         ),
       );
+  const walBytes = wal.state === 'available' ? wal.bytes : 0;
+  const shmBytes = shm.state === 'available' ? shm.bytes : 0;
+  const journalBytes = journal.state === 'available' ? journal.bytes : 0;
+  const temporaryBytes = nonNegativeSafeBytes(options.temporaryBytes) ? options.temporaryBytes : 0;
+  const filesystemBytes = database.bytes + walBytes + shmBytes + journalBytes;
   return {
+    ...(nonNegativeSafeBytes(availableBytes) ? {availableBytes} : {}),
     checkoutId,
     databaseBytes: database.bytes,
     databasePath,
+    filesystemBytes,
+    journalBytes,
     pageStorage,
-    shmBytes: shm.state === 'available' ? shm.bytes : 0,
+    shmBytes,
     state: 'available',
-    totalBytes:
-      database.bytes + (wal.state === 'available' ? wal.bytes : 0) + (shm.state === 'available' ? shm.bytes : 0),
-    walBytes: wal.state === 'available' ? wal.bytes : 0,
+    temporaryBytes,
+    totalBytes: filesystemBytes + temporaryBytes,
+    walBytes,
   } satisfies CodeGraphActiveStorage;
 });
+
+function nonNegativeSafeBytes(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
 
 /**
  * Explicit compaction uses SQLite's transactional VACUUM implementation. SQLite

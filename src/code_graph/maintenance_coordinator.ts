@@ -28,6 +28,7 @@ import {
 } from './vector_maintenance.js';
 import {makeLiveCodeGraphWorktreeReconciler} from './worktree_reconciliation.js';
 import {inspectCodeGraphViewDatabaseTarget} from './view_removal.js';
+import {type CodeGraphStoragePressure} from './storage_pressure.js';
 
 export const CODE_GRAPH_MAINTENANCE_PENDING_DATABASE_LIMIT = 128;
 export const CODE_GRAPH_MAINTENANCE_AUTOMATIC_TAIL_MILLISECONDS = 250;
@@ -35,14 +36,24 @@ export const CODE_GRAPH_MAINTENANCE_AUTOMATIC_TAIL_UNITS = 8;
 export const CODE_GRAPH_MAINTENANCE_LANES = ['residual', 'reconciliation', 'ordinary'] as const;
 
 export type CodeGraphMaintenanceLane = (typeof CODE_GRAPH_MAINTENANCE_LANES)[number];
+export type {CodeGraphStoragePressure} from './storage_pressure.js';
+type CodeGraphMaintenanceStoragePressure = Extract<CodeGraphStoragePressure, 'critical' | 'elevated'>;
 
 const CODE_GRAPH_MAINTENANCE_TRAILING = Symbol('codeGraphMaintenanceTrailing');
 
 export interface CodeGraphRoutineMaintenanceTick {
   readonly allowIndexPreparation?: true;
   readonly anchorIdentity?: RepositoryIdentity;
+  /** Trusted local path resolved only after a missing-view candidate is observed. */
+  readonly anchorPath?: string;
+  /** One-shot foreground work can suppress the detached automatic tail. Defaults to true. */
+  readonly automaticTail?: boolean;
   readonly checkoutId: string;
   readonly databasePath: string;
+  /** Foreground probes can defer instead of joining an already-running unit. Defaults to true. */
+  readonly joinActive?: boolean;
+  /** Start the bounded lane cycle with physical reclaim under observed pressure. */
+  readonly pressure?: CodeGraphMaintenanceStoragePressure;
   readonly threadnoteHome: string;
   readonly writerLockPath: string;
 }
@@ -308,7 +319,9 @@ export class CodeGraphMaintenanceCoordinator extends Context.Service<
           ),
         );
       const runReconciliationOrPreparationWithoutHistory: CodeGraphRoutineMaintenanceRun = input => {
-        if (input.anchorIdentity === undefined) return Effect.succeed(emptyMaintenanceResult());
+        if (input.anchorIdentity === undefined && input.anchorPath === undefined) {
+          return Effect.succeed(emptyMaintenanceResult());
+        }
         if (input.allowIndexPreparation !== true) return runReconciliation(input);
         return store
           .prepareWorktreeReconciliationIndexes(input.databasePath, {
@@ -604,7 +617,10 @@ function selectMaintenanceLane(
     homeNextLaneIndexes.delete(inactiveHome);
   }
 
-  const laneIndex = homeNextLaneIndexes.get(input.threadnoteHome) ?? 0;
+  const laneIndex =
+    input.pressure === undefined
+      ? (homeNextLaneIndexes.get(input.threadnoteHome) ?? 0)
+      : CODE_GRAPH_MAINTENANCE_LANES.indexOf('ordinary');
   homeNextLaneIndexes.delete(input.threadnoteHome);
   homeNextLaneIndexes.set(input.threadnoteHome, (laneIndex + 1) % CODE_GRAPH_MAINTENANCE_LANES.length);
   databaseStates.delete(databaseKey);
@@ -674,6 +690,7 @@ export const makeCodeGraphMaintenanceCoordinator = Effect.fn('codeGraph.makeMain
         ).pipe(Effect.exit);
         const completedBudget = {...budget, units: budget.units + 1};
         const shouldTail =
+          input.automaticTail !== false &&
           Exit.isSuccess(exit) &&
           automaticTailBudgetAvailable(completedBudget, monotonicMilliseconds()) &&
           ((exit.value as CodeGraphRoutineMaintenanceResult & {[CODE_GRAPH_MAINTENANCE_TRAILING]?: true})[
@@ -736,7 +753,7 @@ export const makeCodeGraphMaintenanceCoordinator = Effect.fn('codeGraph.makeMain
             if (home !== undefined) {
               const pending = new Map(home.pending);
               const decision: MaintenanceTickDecision =
-                home.active.databasePath === input.databasePath
+                home.active.databasePath === input.databasePath && input.joinActive !== false
                   ? {completion: home.active.completion, state: 'join'}
                   : {state: 'deferred'};
               const existingPending = pending.get(input.databasePath);
@@ -876,5 +893,14 @@ function mergeMaintenanceTick(
     allowIndexPreparation:
       incoming.allowIndexPreparation === true || existing.allowIndexPreparation === true ? true : undefined,
     anchorIdentity: incoming.anchorIdentity ?? existing.anchorIdentity,
+    anchorPath: incoming.anchorPath ?? existing.anchorPath,
+    pressure: strongestStoragePressure(existing.pressure, incoming.pressure),
   };
+}
+
+function strongestStoragePressure(
+  left: CodeGraphMaintenanceStoragePressure | undefined,
+  right: CodeGraphMaintenanceStoragePressure | undefined,
+): CodeGraphMaintenanceStoragePressure | undefined {
+  return left === 'critical' || right === 'critical' ? 'critical' : (left ?? right);
 }

@@ -4291,6 +4291,250 @@ describe('code graph full-build materialization store', () => {
     }).pipe(Effect.provide(ApplicationLayer)),
   );
 
+  effectIt.effect('stops temporary staging and publication before mutation while preserving the prior ready view', () =>
+    Effect.gen(function* () {
+      const fixture = yield* Effect.promise(materializationFixture);
+      const store = yield* CodeGraphStore;
+      const result = yield* store.withSession(
+        fixture.databasePath,
+        Effect.gen(function* () {
+          yield* store.initialize(fixture.databasePath);
+          const original = symbol('temporary-capacity-original', 'temporaryCapacityOriginal', []);
+          const base = {...readySnapshot(fixture.identity, 1, 0), id: 'temporary-capacity-base'};
+          yield* store.prepareActivation(fixture.databasePath, [fixture.file]);
+          yield* store.stageActivationFacts(fixture.databasePath, [original], []);
+          yield* store.resolveStagedReferences(fixture.databasePath);
+          yield* store.activateStaged(fixture.databasePath, fixture.identity, base);
+          yield* store.promote(fixture.databasePath, fixture.identity, base.id, {
+            persistentCapacityProtector: unprotectedCacheWrite,
+          });
+
+          const replacement = symbol('temporary-capacity-replacement', 'temporaryCapacityReplacement', []);
+          const overlay: CodeGraphSnapshot = {
+            ...readySnapshot(fixture.identity, 1, 0),
+            baseSnapshotId: base.id,
+            dirty: true,
+            id: 'temporary-capacity-overlay',
+          };
+          const inventoryPause = capacityGuardProbe('stage temporary code graph inventory');
+          const inventoryFailure = yield* store
+            .prepareActivation(
+              fixture.databasePath,
+              [fixture.file],
+              undefined,
+              undefined,
+              undefined,
+              inventoryPause.guard,
+            )
+            .pipe(Effect.flip);
+          const sql = yield* SqlClient.SqlClient;
+          const afterInventoryPause = yield* sql<{
+            readonly active: string;
+            readonly base_state: string;
+            readonly staged_files: number;
+          }>`
+            SELECT
+              (SELECT snapshot_id FROM active_snapshots
+               WHERE worktree_id = ${fixture.identity.worktreeId}) AS active,
+              (SELECT state FROM snapshots WHERE id = ${base.id}) AS base_state,
+              (SELECT COUNT(*) FROM activation_files) AS staged_files
+          `;
+
+          const inventoryResume = capacityGuardProbe();
+          yield* store.prepareActivation(
+            fixture.databasePath,
+            [fixture.file],
+            undefined,
+            undefined,
+            undefined,
+            inventoryResume.guard,
+          );
+          const factsPause = capacityGuardProbe('stage temporary code graph facts');
+          const factsFailure = yield* store
+            .stageActivationFacts(fixture.databasePath, [replacement], [], [], undefined, 0, factsPause.guard)
+            .pipe(Effect.flip);
+          const afterFactsPause = yield* sql<{readonly symbols: number}>`
+            SELECT COUNT(*) AS symbols FROM activation_symbols
+          `;
+          const factsResume = capacityGuardProbe();
+          yield* store.stageActivationFacts(
+            fixture.databasePath,
+            [replacement],
+            [],
+            [],
+            undefined,
+            0,
+            factsResume.guard,
+          );
+          yield* store.resolveStagedReferences(fixture.databasePath, undefined, factsResume.guard);
+
+          const publicationPause = capacityGuardProbe('publish temporary code graph snapshot');
+          const publicationFailure = yield* store
+            .activateStaged(
+              fixture.databasePath,
+              fixture.identity,
+              overlay,
+              undefined,
+              undefined,
+              undefined,
+              publicationPause.guard,
+            )
+            .pipe(Effect.flip);
+          const afterPublicationPause = yield* sql<{
+            readonly active: string;
+            readonly base_state: string;
+            readonly overlay_rows: number;
+          }>`
+            SELECT
+              (SELECT snapshot_id FROM active_snapshots
+               WHERE worktree_id = ${fixture.identity.worktreeId}) AS active,
+              (SELECT state FROM snapshots WHERE id = ${base.id}) AS base_state,
+              (SELECT COUNT(*) FROM snapshots WHERE id = ${overlay.id}) AS overlay_rows
+          `;
+          const publicationResume = capacityGuardProbe();
+          yield* store.activateStaged(
+            fixture.databasePath,
+            fixture.identity,
+            overlay,
+            undefined,
+            undefined,
+            undefined,
+            publicationResume.guard,
+          );
+          const resumed = yield* sql<{readonly state: string}>`
+            SELECT state FROM snapshots WHERE id = ${overlay.id}
+          `;
+          return {
+            afterFactsPause: afterFactsPause[0]!,
+            afterInventoryPause: afterInventoryPause[0]!,
+            afterPublicationPause: afterPublicationPause[0]!,
+            factsFailure,
+            factsPause: factsPause.boundaries,
+            factsResume: factsResume.boundaries,
+            inventoryFailure,
+            inventoryPause: inventoryPause.boundaries,
+            inventoryResume: inventoryResume.boundaries,
+            publicationFailure,
+            publicationPause: publicationPause.boundaries,
+            publicationResume: publicationResume.boundaries,
+            resumed: resumed[0]!,
+          };
+        }),
+      );
+
+      expect(result.inventoryFailure).toBeInstanceOf(CodeGraphStoreNoSpaceError);
+      expect(result.inventoryPause).toEqual([
+        expect.objectContaining({
+          mainFilesystem: 'temporary',
+          operation: 'stage temporary code graph inventory',
+          transientFilesystem: 'temporary',
+        }),
+      ]);
+      expect(result.inventoryResume).toEqual(result.inventoryPause);
+      // Admission happens before clearing the prior connection-private stage,
+      // so a pause is non-mutating as well as preserving the durable view.
+      expect(result.afterInventoryPause).toEqual({
+        active: 'temporary-capacity-base',
+        base_state: 'ready',
+        staged_files: 1,
+      });
+
+      expect(result.factsFailure).toBeInstanceOf(CodeGraphStoreNoSpaceError);
+      expect(result.factsPause).toEqual([
+        expect.objectContaining({
+          mainFilesystem: 'temporary',
+          operation: 'stage temporary code graph facts',
+          transientFilesystem: 'temporary',
+        }),
+      ]);
+      expect(result.factsResume).toEqual(result.factsPause);
+      expect(result.afterFactsPause).toEqual({symbols: 0});
+
+      expect(result.publicationFailure).toBeInstanceOf(CodeGraphStoreNoSpaceError);
+      expect(result.publicationPause).toEqual([
+        expect.objectContaining({operation: 'publish temporary code graph snapshot', transientFilesystem: 'durable'}),
+      ]);
+      expect(result.publicationResume).toEqual(result.publicationPause);
+      expect(result.afterPublicationPause).toEqual({
+        active: 'temporary-capacity-base',
+        base_state: 'ready',
+        overlay_rows: 0,
+      });
+      expect(result.resumed).toEqual({state: 'ready'});
+    }).pipe(Effect.provide(ApplicationLayer)),
+  );
+
+  effectIt.effect('reserves every temporary reference page before mutating its resumable stage', () =>
+    Effect.gen(function* () {
+      const fixture = yield* Effect.promise(materializationFixture);
+      const store = yield* CodeGraphStore;
+      const result = yield* store.withSession(
+        fixture.databasePath,
+        Effect.gen(function* () {
+          yield* store.initialize(fixture.databasePath);
+          const lookupKey = 'typescript:name:temporaryCapacityTarget';
+          const source = symbol('temporary-capacity-source', 'temporaryCapacitySource', []);
+          const target = symbol('temporary-capacity-target', 'temporaryCapacityTarget', [lookupKey]);
+          const unresolved = edge('temporary-capacity-edge', source, target.name);
+          const reference: CodeGraphReference = {
+            edgeId: unresolved.id,
+            evidencePath: unresolved.evidencePath,
+            evidenceSpan: unresolved.evidenceSpan,
+            exportedOnly: false,
+            lookupTiers: [[lookupKey]],
+            provenance: unresolved.provenance,
+            relation: unresolved.relation,
+            resolutionDomain: 'typescript',
+            sourceId: source.id,
+            sourceName: source.name,
+            targetName: target.name,
+          };
+          yield* store.prepareActivation(fixture.databasePath, [fixture.file]);
+          yield* store.stageActivationFacts(fixture.databasePath, [source, target], [unresolved], [reference]);
+
+          const pause = capacityGuardProbe('resolve temporary code graph references');
+          const failure = yield* store
+            .resolveStagedReferences(fixture.databasePath, undefined, pause.guard)
+            .pipe(Effect.flip);
+          const sql = yield* SqlClient.SqlClient;
+          const afterPause = yield* sql<{readonly remaining: number; readonly resolved: number}>`
+            SELECT
+              (SELECT COUNT(*) FROM activation_references) AS remaining,
+              (SELECT COUNT(*) FROM activation_edges WHERE target_id IS NOT NULL) AS resolved
+          `;
+          const resume = capacityGuardProbe();
+          const resolution = yield* store.resolveStagedReferences(fixture.databasePath, undefined, resume.guard);
+          const afterResume = yield* sql<{readonly remaining: number; readonly resolved: number}>`
+            SELECT
+              (SELECT COUNT(*) FROM activation_references) AS remaining,
+              (SELECT COUNT(*) FROM activation_edges WHERE target_id IS NOT NULL) AS resolved
+          `;
+          return {
+            afterPause: afterPause[0]!,
+            afterResume: afterResume[0]!,
+            failure,
+            pause: pause.boundaries,
+            resolution,
+            resume: resume.boundaries,
+          };
+        }),
+      );
+
+      expect(result.failure).toBeInstanceOf(CodeGraphStoreNoSpaceError);
+      expect(result.pause).toEqual([
+        expect.objectContaining({
+          mainFilesystem: 'temporary',
+          operation: 'resolve temporary code graph references',
+          transientFilesystem: 'temporary',
+        }),
+      ]);
+      expect(result.afterPause).toEqual({remaining: 1, resolved: 0});
+      expect(result.resume).toEqual(result.pause);
+      expect(result.resolution.resolved).toBe(1);
+      expect(result.afterResume).toEqual({remaining: 0, resolved: 1});
+    }).pipe(Effect.provide(ApplicationLayer)),
+  );
+
   effectIt.effect('guards both persistent resolution transaction families and resumes their committed prefix', () =>
     Effect.gen(function* () {
       const fixture = yield* Effect.promise(materializationFixture);

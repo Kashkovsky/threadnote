@@ -624,9 +624,15 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
           }),
         );
         const gatedTransaction = mode?.mode === 'persisted-full' && writerGate ? writerGate(transaction) : transaction;
-        yield* mode?.mode === 'persisted-full' && persistentCapacityProtector
+        yield* persistentCapacityProtector
           ? persistentCapacityProtector(
-              persistentReferenceResolutionCapacityBoundary(mode.snapshotId, rows, resolutions, aliases),
+              persistentReferenceResolutionCapacityBoundary(
+                mode?.mode === 'persisted-full' ? mode.snapshotId : (persistedBaseSnapshotId ?? 'temporary'),
+                rows,
+                resolutions,
+                aliases,
+                mode?.mode !== 'persisted-full',
+              ),
               gatedTransaction,
             )
           : gatedTransaction;

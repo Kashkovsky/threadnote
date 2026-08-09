@@ -63,6 +63,10 @@ import {
 } from './store_relationship_queries.js';
 import {type CodeGraphStoreRuntime} from './store_runtime.js';
 import {type CodeGraphStoreShape} from './store_shape.js';
+import {
+  temporaryActivationInventoryCapacity,
+  temporaryIncrementalActivationCapacity,
+} from './store_temporary_capacity.js';
 
 type CodeGraphStoreDataMethods = Pick<
   CodeGraphStoreShape,
@@ -145,8 +149,13 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
               const sql = yield* SqlClient.SqlClient;
               yield* ensureSchemaInitialized(databasePath, sql);
               if (persistentSnapshotId === undefined) {
-                yield* prepareActivationTables(sql);
-                yield* stageActivationFiles(sql, files, 'insert');
+                const staging = Effect.gen(function* () {
+                  yield* prepareActivationTables(sql);
+                  yield* stageActivationFiles(sql, files, 'insert');
+                });
+                yield* persistentCapacityProtector
+                  ? persistentCapacityProtector(temporaryActivationInventoryCapacity(files), staging)
+                  : staging;
               } else {
                 yield* preparePersistedFullActivation(
                   sql,
@@ -192,7 +201,14 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
         ),
         Effect.mapError(cause => storeError('finalize persistent code graph materialization plan', cause)),
       ),
-    preparePersistedIncrementalActivation: (databasePath, baseSnapshotId, files, facts, options) =>
+    preparePersistedIncrementalActivation: (
+      databasePath,
+      baseSnapshotId,
+      files,
+      facts,
+      options,
+      persistentCapacityProtector,
+    ) =>
       prepare(databasePath).pipe(
         Effect.andThen(
           useDatabase(
@@ -200,15 +216,31 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
             Effect.gen(function* () {
               const sql = yield* SqlClient.SqlClient;
               yield* ensureSchemaInitialized(databasePath, sql);
-              return yield* preparePersistedIncrementalActivation(baseSnapshotId, files, facts, options);
+              const preparation = preparePersistedIncrementalActivation(baseSnapshotId, files, facts, options);
+              return yield* persistentCapacityProtector
+                ? persistentCapacityProtector(
+                    temporaryIncrementalActivationCapacity(files, facts, options?.deletedPaths),
+                    preparation,
+                  )
+                : preparation;
             }),
           ),
         ),
         Effect.mapError(cause => storeError('prepare persisted incremental code graph activation', cause)),
       ),
-    replaceStagedModifiedFiles: (databasePath, baseSnapshotId, files, facts) =>
+    replaceStagedModifiedFiles: (databasePath, baseSnapshotId, files, facts, persistentCapacityProtector) =>
       prepare(databasePath).pipe(
-        Effect.andThen(useDatabase(databasePath, replaceStagedModifiedFiles(baseSnapshotId, files, facts))),
+        Effect.andThen(
+          useDatabase(
+            databasePath,
+            persistentCapacityProtector
+              ? persistentCapacityProtector(
+                  temporaryIncrementalActivationCapacity(files, facts),
+                  replaceStagedModifiedFiles(baseSnapshotId, files, facts),
+                )
+              : replaceStagedModifiedFiles(baseSnapshotId, files, facts),
+          ),
+        ),
         Effect.mapError(cause => storeError('replace staged modified code graph files', cause)),
       ),
     diagnose: databasePath =>

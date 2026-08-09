@@ -44,6 +44,7 @@ import {
   codeGraphSnapshotBuildLockPath,
 } from './layout.js';
 import {CodeGraphMaintenanceCoordinator, type CodeGraphMaintenanceCoordinatorShape} from './maintenance_coordinator.js';
+import {runCodeGraphLifecycleOpportunity} from './lifecycle_opportunity.js';
 import {codeGraphMaintenanceIntentActive, withCodeGraphMaintenanceRegistration} from './maintenance_gate.js';
 import {resolveAndRecordCodeGraphLocalAssociation} from './local_provenance.js';
 import {compareCodeUnits} from './ordering.js';
@@ -704,6 +705,14 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                             );
                           }
                           const incrementalReusedFiles = inventory.files.length - incrementalAssessment.files.length;
+                          const incrementalCapacityProtector = codeGraphDirectPersistentCapacityProtector({
+                            capacityProtection,
+                            fs,
+                            identity,
+                            layout,
+                            onProgress: options.onProgress,
+                            threadnoteHome: options.threadnoteHome,
+                          });
                           yield* options.onProgress?.({
                             completed: 0,
                             phase: 'materializing',
@@ -722,12 +731,14 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                                     deletedPaths: incrementalAssessment.deletedPaths,
                                     resolutionClosure: incrementalAssessment.resolutionClosure,
                                   },
+                                  incrementalCapacityProtector,
                                 )
                               : yield* store.replaceStagedModifiedFiles(
                                   layout.databasePath,
                                   committedBase.snapshot.id,
                                   incrementalAssessment.files,
                                   incrementalAssessment.facts,
+                                  incrementalCapacityProtector,
                                 );
                           if (!incrementalPrepared) {
                             incrementalAssessment = {mode: 'fallback', reason: 'staging-identity-mismatch'};
@@ -813,16 +824,14 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
               }),
             ).pipe(
               Effect.ensuring(
-                maintenance
-                  .request({
-                    allowIndexPreparation: true,
-                    anchorIdentity: initialIdentity,
-                    checkoutId: layout.checkoutId,
-                    databasePath: layout.databasePath,
-                    threadnoteHome: request.threadnoteHome,
-                    writerLockPath: layout.databaseWriteLockPath,
-                  })
-                  .pipe(Effect.ignore),
+                runCodeGraphLifecycleOpportunity({
+                  maintenance,
+                  opportunity: 'index-completion',
+                  targets: [
+                    {anchorIdentity: initialIdentity, checkoutId: layout.checkoutId, databasePath: layout.databasePath},
+                  ],
+                  threadnoteHome: request.threadnoteHome,
+                }).pipe(Effect.ignore),
               ),
             );
             return summary;
@@ -990,16 +999,14 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
               }),
             ).pipe(
               Effect.ensuring(
-                maintenance
-                  .request({
-                    allowIndexPreparation: true,
-                    anchorIdentity: initialIdentity,
-                    checkoutId: layout.checkoutId,
-                    databasePath: layout.databasePath,
-                    threadnoteHome: request.threadnoteHome,
-                    writerLockPath: layout.databaseWriteLockPath,
-                  })
-                  .pipe(Effect.ignore),
+                runCodeGraphLifecycleOpportunity({
+                  maintenance,
+                  opportunity: 'index-completion',
+                  targets: [
+                    {anchorIdentity: initialIdentity, checkoutId: layout.checkoutId, databasePath: layout.databasePath},
+                  ],
+                  threadnoteHome: request.threadnoteHome,
+                }).pipe(Effect.ignore),
               ),
             );
             return lease;
@@ -1591,6 +1598,7 @@ const attemptReusableCleanSnapshot = Effect.fn('codeGraph.attemptReusableCleanSn
             deletedPaths: incrementalAssessment.deletedPaths,
             resolutionClosure: incrementalAssessment.resolutionClosure,
           },
+          assessmentInput.persistentCapacityProtector,
         );
         if (!prepared) {
           return Option.some<ReusableCleanSnapshotAttempt>({mode: 'fallback', reason: 'staging-identity-mismatch'});
@@ -1855,9 +1863,14 @@ export function codeGraphDirectPersistentCapacityProtector(
             ledgerLockPath: codeGraphDiskReservationLockPath(input.capacityProtection.path, input.threadnoteHome),
             ledgerRoot: codeGraphDiskReservationRoot(input.capacityProtection.path, input.threadnoteHome),
             maintenance: input.capacityProtection.maintenance
-              .kickOrdinary({
+              .tick({
+                allowIndexPreparation: true,
+                anchorIdentity: input.identity,
+                automaticTail: false,
                 checkoutId: input.layout.checkoutId,
                 databasePath: input.layout.databasePath,
+                joinActive: false,
+                pressure: 'critical',
                 threadnoteHome: input.threadnoteHome,
                 writerLockPath: input.layout.databaseWriteLockPath,
               })
@@ -1933,7 +1946,7 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
   const workspace = input.workspace ?? (yield* input.languagePacks.discoverWorkspace(input.inventory.files));
   const directPersistentMaterialization = input.persistentOwnerToken !== undefined;
   const protectDirectPersistentWrite = codeGraphDirectPersistentCapacityProtector(input);
-  const persistentCapacityGuard = directPersistentMaterialization ? protectDirectPersistentWrite : undefined;
+  const persistentCapacityGuard = protectDirectPersistentWrite;
   const attributeFacts = createCachedCodeGraphFactsAttributor(input.inventory.files, workspace);
   const shardDerivationIdentity = materializedShardDerivationIdentity(
     input.building.extractorSet,
@@ -1974,12 +1987,14 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
                 deletedPaths: incrementalAssessment.deletedPaths,
                 resolutionClosure: incrementalAssessment.resolutionClosure,
               },
+              protectDirectPersistentWrite,
             )
           : yield* input.store.replaceStagedModifiedFiles(
               input.layout.databasePath,
               input.committedBase!.snapshot.id,
               incrementalAssessment.files,
               incrementalAssessment.facts,
+              protectDirectPersistentWrite,
             );
     if (incrementalApplied) {
       materializedFiles = incrementalAssessment.files.length;
@@ -2250,6 +2265,7 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
               batch.references,
               progress => reportStagingProgress(batch, progress),
               batch.batchIndex,
+              persistentCapacityGuard,
             );
           }
         }

@@ -26,7 +26,14 @@ export type CodeGraphDirectPersistentCapacityOperation =
   | 'retire code graph vector pointer'
   | 'stage persistent code graph facts'
   | 'stage persistent code graph inventory'
-  | 'stage persistent code graph workspace';
+  | 'stage persistent code graph workspace'
+  | 'prepare temporary incremental code graph activation'
+  | 'publish temporary code graph snapshot'
+  | 'resolve temporary code graph reexport aliases'
+  | 'resolve temporary code graph references'
+  | 'stage temporary code graph facts'
+  | 'stage temporary code graph inventory'
+  | 'stage temporary code graph workspace';
 
 type CodeGraphCapacityFailureOperation = CodeGraphDirectPersistentCapacityOperation | 'protect code graph storage';
 
@@ -34,8 +41,12 @@ export interface CodeGraphDirectPersistentCapacityBoundary {
   /** Exact UTF-8 bytes of the bounded logical payload when that evidence is available. */
   readonly finalFactBytes: number;
   readonly operation: CodeGraphDirectPersistentCapacityOperation;
+  /** Main pager allocation target; omitted for the durable graph database. */
+  readonly mainFilesystem?: 'durable' | 'temporary';
   /** Conservative maximum rows written by the bounded transaction. */
   readonly rowCount: number;
+  /** SQLite TEMP writes consume the runtime temporary filesystem, not necessarily the durable graph filesystem. */
+  readonly transientFilesystem?: 'durable' | 'temporary';
 }
 
 /**
@@ -128,11 +139,13 @@ export const CODE_GRAPH_VECTOR_RETIREMENT_POINTER_CAPACITY_CALIBRATION = {
 export interface CodeGraphDirectPersistentCapacityDemandInput {
   readonly finalFactBytes: number;
   readonly lexicalFormatVersion: number;
+  readonly mainFilesystem?: 'durable' | 'temporary';
   readonly observedMainHighWaterBytes?: number;
   readonly observedTransientHighWaterBytes?: number;
   readonly operation?: CodeGraphDirectPersistentCapacityOperation;
   readonly pageSize: number;
   readonly rowCount: number;
+  readonly transientFilesystem?: 'durable' | 'temporary';
   readonly walAutoCheckpointPages: number;
 }
 
@@ -145,6 +158,7 @@ export interface CodeGraphPersistentCapacityDemandInput extends Omit<
 
 export interface CodeGraphMeasuredDiskCapacityDemand {
   readonly calibrationIdentity: string;
+  readonly mainFilesystem?: 'durable' | 'temporary';
   readonly mainHighWaterBytes: number;
   readonly recoveryFloorBytes: number;
   readonly state: 'measured';
@@ -247,7 +261,13 @@ export function codeGraphPersistentCapacityDemand(
       ? CODE_GRAPH_CACHE_PERSISTENT_CAPACITY_CALIBRATION
       : CODE_GRAPH_DIRECT_PERSISTENT_CAPACITY_CALIBRATION;
   return codeGraphPersistentCapacityDemandForCalibration(
-    {...input, finalFactBytes: input.boundary.finalFactBytes, rowCount: input.boundary.rowCount},
+    {
+      ...input,
+      finalFactBytes: input.boundary.finalFactBytes,
+      mainFilesystem: input.boundary.mainFilesystem,
+      rowCount: input.boundary.rowCount,
+      transientFilesystem: input.boundary.transientFilesystem,
+    },
     calibration,
   );
 }
@@ -326,12 +346,13 @@ function codeGraphPersistentCapacityDemandForCalibration(
       `${calibration.identityBase}:` +
       `lexical-${input.lexicalFormatVersion}:page-${pageSize}:wal-${input.walAutoCheckpointPages}`,
     mainHighWaterBytes,
+    ...(input.mainFilesystem === undefined ? {} : {mainFilesystem: input.mainFilesystem}),
     recoveryFloorBytes: Math.max(
       transientHighWaterBytes,
       sqliteWalCapacityBytes(pageSize, input.walAutoCheckpointPages),
     ),
     state: 'measured',
-    transientFilesystem: 'durable',
+    transientFilesystem: input.transientFilesystem ?? 'durable',
     transientHighWaterBytes,
   };
 }
@@ -369,7 +390,8 @@ export function codeGraphDiskCapacityReservationProjection(
   }
 
   const mainHighWaterBytes = capacityBytes(input.demand.mainHighWaterBytes);
-  const freelistBytes = Math.min(mainHighWaterBytes, capacityBytes(input.freelistBytes));
+  const mainOnDurable = input.demand.mainFilesystem !== 'temporary';
+  const freelistBytes = mainOnDurable ? Math.min(mainHighWaterBytes, capacityBytes(input.freelistBytes)) : 0;
   const externalMainBytes = mainHighWaterBytes - freelistBytes;
   const transientHighWaterBytes = capacityBytes(input.demand.transientHighWaterBytes);
   const recoveryFloorBytes = capacityBytes(input.demand.recoveryFloorBytes);
@@ -390,16 +412,20 @@ export function codeGraphDiskCapacityReservationProjection(
   const filesystems = [
     {
       bytes: saturatingCapacityAdd(
-        externalMainBytes,
+        mainOnDurable ? externalMainBytes : 0,
         transientOnDurable ? transientHighWaterBytes : 0,
         transientOnDurable ? recoveryFloorBytes : 0,
       ),
       key: input.durableFilesystemKey,
     },
-    ...(!transientOnDurable
+    ...(!mainOnDurable || !transientOnDurable
       ? [
           {
-            bytes: saturatingCapacityAdd(transientHighWaterBytes, recoveryFloorBytes),
+            bytes: saturatingCapacityAdd(
+              mainOnDurable ? 0 : externalMainBytes,
+              transientOnDurable ? 0 : transientHighWaterBytes,
+              transientOnDurable ? 0 : recoveryFloorBytes,
+            ),
             key: input.temporaryFilesystemKey,
           },
         ]
@@ -569,6 +595,13 @@ function capacityOperation(operation: string): CodeGraphCapacityFailureOperation
     case 'stage persistent code graph facts':
     case 'stage persistent code graph inventory':
     case 'stage persistent code graph workspace':
+    case 'prepare temporary incremental code graph activation':
+    case 'publish temporary code graph snapshot':
+    case 'resolve temporary code graph reexport aliases':
+    case 'resolve temporary code graph references':
+    case 'stage temporary code graph facts':
+    case 'stage temporary code graph inventory':
+    case 'stage temporary code graph workspace':
       return operation;
     default:
       return 'protect code graph storage';

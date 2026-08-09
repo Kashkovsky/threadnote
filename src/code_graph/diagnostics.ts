@@ -20,11 +20,15 @@ import {
   type CodeGraphVisualizationCatalog,
 } from './store.js';
 import {inspectCodeGraphStorage, type CodeGraphStorage} from './storage.js';
+import {codeGraphStorageAccounting, type CodeGraphStorageAccounting} from './storage_pressure.js';
 import {
   codeGraphLocalAssociationLabel,
   readCodeGraphLocalAssociation,
   type CodeGraphLocalAssociation,
 } from './local_provenance.js';
+import {classifyCodeGraphLifecycle, type CodeGraphLifecycleClassification} from './lifecycle_classification.js';
+import {runCodeGraphLifecycleOpportunity} from './lifecycle_opportunity.js';
+import {CodeGraphMaintenanceCoordinator} from './maintenance_coordinator.js';
 
 const DIAGNOSTIC_CATALOG_PAGE_SIZE = 64;
 
@@ -82,11 +86,13 @@ export interface CodeGraphDiagnosticsView {
 }
 
 export interface CodeGraphDatabaseDiagnostics {
+  readonly accounting?: CodeGraphStorageAccounting;
   readonly builds: readonly Omit<ObservedCodeGraphBuildStatus, 'managerContext'>[];
   readonly checkoutId: string;
   readonly health?: CodeGraphDatabaseHealth;
   readonly healthState: 'checked' | 'deferred' | 'unreadable';
   readonly issues: readonly CodeGraphDiagnosticsIssue[];
+  readonly lifecycle: readonly CodeGraphLifecycleClassification[];
   readonly storage: PrivacySafeStorage;
   readonly views: readonly CodeGraphDiagnosticsView[];
   readonly waiters: readonly Omit<ObservedCodeGraphBuildStatus, 'managerContext'>[];
@@ -164,6 +170,7 @@ export const inspectAllCodeGraphs = Effect.fn('codeGraph.inspectAllDiagnostics')
           (yield* codeGraphRepositoryLockActive(threadnoteHome, checkoutId)) ||
           (yield* codeGraphWorktreeBuildActive(threadnoteHome, checkoutId));
         const issues: CodeGraphDiagnosticsIssue[] = [];
+        const lifecycle: CodeGraphLifecycleClassification[] = [];
         let health: CodeGraphDatabaseHealth | undefined;
         let healthState: CodeGraphDatabaseDiagnostics['healthState'];
         if (active) {
@@ -181,21 +188,47 @@ export const inspectAllCodeGraphs = Effect.fn('codeGraph.inspectAllDiagnostics')
             healthState = 'checked';
           } else {
             healthState = 'unreadable';
+            lifecycle.push(classifyCodeGraphLifecycle({authority: 'unproven', state: 'unreadable-store'}));
             issues.push({
               code: 'health-check-failed',
               message: privacySafeDiagnostic(diagnosed.cause),
             });
           }
         }
+        if (health?.integrity === 'corrupt') {
+          lifecycle.push(classifyCodeGraphLifecycle({authority: 'unproven', state: 'corrupt-store'}));
+        }
+        for (const build of builds) {
+          if (build.observation.liveness === 'abandoned') {
+            lifecycle.push(classifyCodeGraphLifecycle({authority: 'unproven', state: 'abandoned-build'}));
+          }
+        }
         const storage = privacySafeStorage(
-          yield* inspectCodeGraphStorage(threadnoteHome, checkoutId, {attributeObjects: options.deep === true}),
+          yield* inspectCodeGraphStorage(threadnoteHome, checkoutId, {
+            attributeObjects: options.deep === true,
+            temporaryBytes: currentTemporaryDatabaseBytes(builds),
+          }),
         );
+        const accounting = storage.state === 'available' ? codeGraphStorageAccounting(storage) : undefined;
         const catalogResult = yield* loadAllCatalogs(store, database).pipe(
           Effect.match({onFailure: cause => ({cause}) as const, onSuccess: value => ({value}) as const}),
         );
         const catalogs = 'value' in catalogResult ? catalogResult.value : [];
         if ('cause' in catalogResult) {
           issues.push({code: 'catalog-unavailable', message: privacySafeDiagnostic(catalogResult.cause)});
+        }
+        for (const _baseSnapshotId of new Set(
+          catalogs.flatMap(catalog =>
+            catalog.snapshot.baseSnapshotId === undefined ? [] : [catalog.snapshot.baseSnapshotId],
+          ),
+        )) {
+          lifecycle.push(
+            classifyCodeGraphLifecycle({
+              authority: 'not-applicable',
+              protections: ['required-base'],
+              state: 'required-clean-base',
+            }),
+          );
         }
         const analysisBySnapshot = new Map<string, CodeGraphDiagnosticsAnalysis | CodeGraphDiagnosticsIssue>();
         const views: CodeGraphDiagnosticsView[] = [];
@@ -260,7 +293,7 @@ export const inspectAllCodeGraphs = Effect.fn('codeGraph.inspectAllDiagnostics')
             workspacesTruncated: catalog.workspacesTruncated,
           });
         }
-        return {builds, checkoutId, health, healthState, issues, storage, views, waiters};
+        return {accounting, builds, checkoutId, health, healthState, issues, lifecycle, storage, views, waiters};
       }),
     {concurrency: options.analyze || options.deep ? 1 : 2},
   );
@@ -308,6 +341,7 @@ export const inspectAllCodeGraphsLocal = Effect.fn('codeGraph.inspectAllDiagnost
   threadnoteHome: string,
   options: CodeGraphDiagnosticsOptions = {},
 ) {
+  const lifecycleMaintenance = yield* Effect.serviceOption(CodeGraphMaintenanceCoordinator);
   const [report, buildStatuses] = yield* Effect.all(
     [inspectAllCodeGraphs(threadnoteHome, options), readAllCodeGraphBuildStatuses(threadnoteHome)],
     {concurrency: 2},
@@ -344,10 +378,43 @@ export const inspectAllCodeGraphsLocal = Effect.fn('codeGraph.inspectAllDiagnost
           },
           {concurrency: 4},
         );
-        return {...database, views};
+        const lifecycle = [
+          ...database.lifecycle,
+          ...views
+            .filter(view => view.localAssociation.state === 'missing')
+            .map(() => classifyCodeGraphLifecycle({authority: 'unproven', state: 'missing-view'})),
+        ];
+        return {...database, lifecycle, views};
       }),
     {concurrency: 2},
   );
+  const path = yield* Path.Path;
+  const databasePaths = yield* codeGraphDatabasePaths(threadnoteHome);
+  if (lifecycleMaintenance._tag === 'Some') {
+    yield* runCodeGraphLifecycleOpportunity({
+      opportunity: 'diagnostics',
+      targets: databases.flatMap(database => {
+        const databasePath = databasePaths.find(
+          candidate => path.basename(path.dirname(candidate)) === database.checkoutId,
+        );
+        if (databasePath === undefined) return [];
+        const association = database.views.find(view => view.localAssociation.state === 'verified')?.localAssociation;
+        const anchor = association !== undefined && 'path' in association ? association.path : undefined;
+        return [
+          {
+            ...(anchor === undefined ? {} : {anchorPath: anchor}),
+            checkoutId: database.checkoutId,
+            databasePath,
+            ...(database.accounting?.pressure === 'critical' || database.accounting?.pressure === 'elevated'
+              ? {pressure: database.accounting.pressure}
+              : {}),
+          },
+        ];
+      }),
+      maintenance: lifecycleMaintenance.value,
+      threadnoteHome,
+    }).pipe(Effect.catch(() => Effect.void));
+  }
   return {...report, databases, version: 2} satisfies CodeGraphLocalDiagnosticsReport;
 });
 
@@ -376,6 +443,14 @@ export function renderCodeGraphDiagnostics(
       snapshotSummary,
       `Storage: ${database.storage.state === 'available' ? formatBytes(database.storage.totalBytes) : 'missing'}`,
     );
+    if (database.accounting) {
+      lines.push(
+        `Storage detail: filesystem ${formatBytes(database.accounting.filesystemBytes)} · ` +
+          `WAL ${formatBytes(database.accounting.walBytes)} · TEMP ${formatBytes(database.accounting.temporaryBytes)} · ` +
+          `reclaimable pages ${formatBytes(database.accounting.reclaimablePageBytes)} · ` +
+          `logical rows deleted ${database.accounting.logicalRowsDeleted} · pressure ${database.accounting.pressure}`,
+      );
+    }
     for (const view of database.views) {
       lines.push(
         `View ${view.viewWorktreeId.slice(-8)}: ${view.snapshot.fileCount} files · ${view.snapshot.symbolCount} symbols · ${view.snapshot.edgeCount} edges`,
@@ -390,6 +465,9 @@ export function renderCodeGraphDiagnostics(
       }
     }
     for (const issue of database.issues) lines.push(`Warning: ${issue.code}: ${issue.message}`);
+    for (const lifecycle of database.lifecycle) {
+      lines.push(`Lifecycle: ${lifecycle.state} · ${lifecycle.disposition} · ${lifecycle.action}`);
+    }
   }
   if (report.obsoleteStores.fileCount > 0 || report.obsoleteStores.unsafeEntryCount > 0) {
     lines.push(
@@ -404,6 +482,18 @@ function knownReadySnapshotCount(
   database: CodeGraphDiagnosticsReport['databases'][number] | CodeGraphLocalDiagnosticsReport['databases'][number],
 ): number {
   return database.health?.readySnapshots ?? new Set(database.views.map(view => view.snapshot.id)).size;
+}
+
+function currentTemporaryDatabaseBytes(
+  builds: readonly Omit<ObservedCodeGraphBuildStatus, 'managerContext'>[],
+): number {
+  let maximum = 0;
+  for (const build of builds) {
+    if (build.observation.liveness !== 'active' && build.observation.liveness !== 'stalled') continue;
+    const bytes = build.materialization?.metrics?.storage?.temporaryDatabaseBytes;
+    if (bytes !== undefined && Number.isSafeInteger(bytes) && bytes >= 0) maximum = Math.max(maximum, bytes);
+  }
+  return maximum;
 }
 
 const loadAllCatalogs = Effect.fn('codeGraph.loadAllDiagnosticCatalogs')(function* (

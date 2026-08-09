@@ -2,6 +2,8 @@ import {Context, Effect, Option, Path, Result, Semaphore} from 'effect';
 import {codeGraphDatabasePaths} from './maintenance.js';
 import {CodeGraphEmbeddingIndex} from './embedding.js';
 import {codeGraphLayout} from './layout.js';
+import {runCodeGraphLifecycleOpportunity} from './lifecycle_opportunity.js';
+import {CodeGraphMaintenanceCoordinator} from './maintenance_coordinator.js';
 import {observeCodeGraphMaintenanceStatus, type CodeGraphMaintenanceStatus} from './maintenance_gate.js';
 import {compareCodeUnits} from './ordering.js';
 import {
@@ -310,6 +312,7 @@ export interface ManagerGraphNodeDetail {
 export const managerGraphCatalog = Effect.fn('codeGraph.managerCatalog')(function* (threadnoteHome: string) {
   const path = yield* Path.Path;
   const store = yield* CodeGraphStore;
+  const lifecycleMaintenance = yield* Effect.serviceOption(CodeGraphMaintenanceCoordinator);
   const buildSelection = selectCodeGraphBuildStatuses(yield* readAllCodeGraphBuildStatuses(threadnoteHome));
   const databases = yield* codeGraphDatabasePaths(threadnoteHome);
   const entries = yield* Effect.forEach(
@@ -325,6 +328,8 @@ export const managerGraphCatalog = Effect.fn('codeGraph.managerCatalog')(functio
         });
         if (catalogs.length === 0) {
           return {
+            checkoutId,
+            databasePath: database,
             diagnostic: {
               checkoutId,
               code: 'no-ready-snapshot',
@@ -348,6 +353,8 @@ export const managerGraphCatalog = Effect.fn('codeGraph.managerCatalog')(functio
         const current = retention.filter(entry => entry.result.state !== 'view-unavailable');
         if (current.length === 0) {
           return {
+            checkoutId,
+            databasePath: database,
             diagnostic: {
               checkoutId,
               code: 'no-ready-snapshot',
@@ -368,6 +375,7 @@ export const managerGraphCatalog = Effect.fn('codeGraph.managerCatalog')(functio
         return {
           checkoutId,
           catalogs: observedCatalogs,
+          databasePath: database,
           ...(retained.every(result => result.state === 'retained')
             ? {}
             : {
@@ -386,6 +394,8 @@ export const managerGraphCatalog = Effect.fn('codeGraph.managerCatalog')(functio
       }).pipe(
         Effect.catchCause(cause =>
           Effect.succeed({
+            checkoutId,
+            databasePath: database,
             diagnostic: {
               checkoutId,
               code: 'unreadable-database',
@@ -417,6 +427,25 @@ export const managerGraphCatalog = Effect.fn('codeGraph.managerCatalog')(functio
     }
     if ('diagnostic' in entry && entry.diagnostic) diagnostics.push(entry.diagnostic);
   }
+  if (Option.isSome(lifecycleMaintenance)) {
+    yield* runCodeGraphLifecycleOpportunity({
+      opportunity: 'catalog',
+      targets: entries.map(entry => {
+        const association =
+          'catalogs' in entry
+            ? entry.catalogs.find(observed => observed.localAssociation.state === 'verified')?.localAssociation
+            : undefined;
+        const anchor = association !== undefined && 'path' in association ? association.path : undefined;
+        return {
+          ...(anchor === undefined ? {} : {anchorPath: anchor}),
+          checkoutId: entry.checkoutId,
+          databasePath: entry.databasePath,
+        };
+      }),
+      maintenance: lifecycleMaintenance.value,
+      threadnoteHome,
+    }).pipe(Effect.catch(() => Effect.void));
+  }
   const maintenance = yield* observeCodeGraphMaintenanceStatus(threadnoteHome).pipe(
     Effect.catch(() => Effect.succeed(undefined)),
   );
@@ -424,7 +453,7 @@ export const managerGraphCatalog = Effect.fn('codeGraph.managerCatalog')(functio
     entries.map(entry => {
       const catalogs = 'catalogs' in entry && entry.catalogs ? entry.catalogs : [];
       return {
-        checkoutId: 'checkoutId' in entry ? entry.checkoutId : entry.diagnostic.checkoutId,
+        checkoutId: entry.checkoutId,
         state:
           'diagnostic' in entry && entry.diagnostic?.code === 'unreadable-database'
             ? ('unavailable' as const)

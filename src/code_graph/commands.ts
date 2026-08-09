@@ -514,7 +514,9 @@ function renderActiveStorageStatus(storage: CodeGraphStorage): Effect.Effect<voi
   return Effect.gen(function* () {
     yield* Console.log(
       `Storage: ${formatBytes(storage.databaseBytes)} database · ${formatBytes(storage.walBytes)} WAL · ` +
-        `${formatBytes(storage.shmBytes)} SHM · ${formatBytes(storage.totalBytes)} total`,
+        `${formatBytes(storage.journalBytes)} journal · ${formatBytes(storage.shmBytes)} SHM · ` +
+        `${formatBytes(storage.temporaryBytes)} TEMP · ${formatBytes(storage.filesystemBytes)} filesystem · ` +
+        `${formatBytes(storage.totalBytes)} observed total`,
     );
     if (storage.pageStorage.state === 'deferred') {
       yield* Console.log('Page storage: deferred while an active graph build owns the checkout lock.');

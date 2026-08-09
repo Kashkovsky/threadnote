@@ -16,6 +16,7 @@ import {
   CodeGraphMaintenanceActiveError,
   withCodeGraphTargetWorktreeLock,
 } from './maintenance_gate.js';
+import {classifyCodeGraphLifecycle, type CodeGraphLifecycleProtection} from './lifecycle_classification.js';
 import {resolveRepositoryIdentity} from './repository.js';
 import {
   CodeGraphStore,
@@ -44,20 +45,27 @@ export interface CodeGraphWorktreeReconciliationAuthorityInput {
 export function codeGraphWorktreeReconciliationAuthorized(
   input: CodeGraphWorktreeReconciliationAuthorityInput,
 ): boolean {
-  return (
+  const authorityProven =
     input.anchorMatches &&
     input.evidenceStable &&
     input.finalRegistryState === 'absent' &&
     input.initialRegistryState === 'absent' &&
-    !input.maintenanceActive &&
     input.missingEvidence &&
     input.registrationKind === 'linked' &&
-    input.registryRootStable
+    input.registryRootStable;
+  const protections: CodeGraphLifecycleProtection[] = input.maintenanceActive ? ['active-maintenance'] : [];
+  return (
+    classifyCodeGraphLifecycle({
+      authority: authorityProven ? 'proven-disposable' : 'unproven',
+      protections,
+      state: 'missing-view',
+    }).disposition === 'reclaim'
   );
 }
 
 export interface CodeGraphWorktreeReconciliationTick {
   readonly anchorIdentity?: RepositoryIdentity;
+  readonly anchorPath?: string;
   readonly checkoutId: string;
   readonly databasePath: string;
   readonly threadnoteHome: string;
@@ -136,8 +144,8 @@ export const makeCodeGraphWorktreeReconciler = Effect.fn('codeGraph.makeWorktree
     Effect.sync(() => {
       const tick = (input: CodeGraphWorktreeReconciliationTick) =>
         Effect.gen(function* () {
-          const expectedAnchor = input.anchorIdentity;
-          if (expectedAnchor === undefined || expectedAnchor.checkoutId !== input.checkoutId) {
+          let expectedAnchor = input.anchorIdentity;
+          if (expectedAnchor !== undefined && expectedAnchor.checkoutId !== input.checkoutId) {
             return {reason: 'no-anchor', state: 'preserved'} as const;
           }
           const candidates = yield* dependencies
@@ -162,26 +170,40 @@ export const makeCodeGraphWorktreeReconciler = Effect.fn('codeGraph.makeWorktree
           }
           if (candidates.value.length === 0) return {reason: 'no-candidates', state: 'preserved'} as const;
           const nextCursor = candidates.value.at(-1)!.worktreeId;
-          const evidenceCandidates = yield* Effect.forEach(
+          const observedEvidence = yield* Effect.forEach(
             candidates.value,
             candidate =>
-              candidate.worktreeId === expectedAnchor.worktreeId ||
-              candidate.repositoryId !== expectedAnchor.repositoryId
-                ? Effect.succeed(undefined)
-                : dependencies
-                    .readEvidenceCandidate(input.threadnoteHome, {
-                      checkoutId: input.checkoutId,
-                      repositoryId: candidate.repositoryId,
-                      worktreeId: candidate.worktreeId,
-                    })
-                    .pipe(
-                      Effect.map(evidence =>
-                        evidence.state === 'candidate' ? ({candidate, evidence} satisfies MissingCandidate) : undefined,
-                      ),
-                      Effect.catch(() => Effect.succeed(undefined)),
-                    ),
+              dependencies
+                .readEvidenceCandidate(input.threadnoteHome, {
+                  checkoutId: input.checkoutId,
+                  repositoryId: candidate.repositoryId,
+                  worktreeId: candidate.worktreeId,
+                })
+                .pipe(
+                  Effect.map(evidence =>
+                    evidence.state === 'candidate' ? ({candidate, evidence} satisfies MissingCandidate) : undefined,
+                  ),
+                  Effect.catch(() => Effect.succeed(undefined)),
+                ),
             {concurrency: 1},
           ).pipe(Effect.map(values => values.filter((value): value is MissingCandidate => value !== undefined)));
+          if (observedEvidence.length === 0) {
+            return {nextCursor, reason: 'no-missing-candidates', state: 'preserved'} as const;
+          }
+
+          if (expectedAnchor === undefined) {
+            if (input.anchorPath === undefined) return {nextCursor, reason: 'no-anchor', state: 'preserved'} as const;
+            const resolved = yield* dependencies.resolveAnchor(input.anchorPath).pipe(Effect.option);
+            if (resolved._tag === 'None' || resolved.value.checkoutId !== input.checkoutId) {
+              return {nextCursor, reason: 'anchor-unavailable', state: 'preserved'} as const;
+            }
+            expectedAnchor = resolved.value;
+          }
+          const evidenceCandidates = observedEvidence.filter(
+            entry =>
+              entry.candidate.worktreeId !== expectedAnchor.worktreeId &&
+              entry.candidate.repositoryId === expectedAnchor.repositoryId,
+          );
           if (evidenceCandidates.length === 0) {
             return {nextCursor, reason: 'no-missing-candidates', state: 'preserved'} as const;
           }

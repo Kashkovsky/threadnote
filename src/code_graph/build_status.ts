@@ -3,6 +3,7 @@ import {sha256HexSync} from '../crypto/sha256.js';
 import {readExclusiveFileLockOwner, type FileLockOwner} from '../effect/file_lock.js';
 import {runtimeTextDirectoryNamePage, SystemInfo, type SystemInfoShape} from '../effect/system.js';
 import type {CodeGraphBuildOwnerIdentity} from './build_owner.js';
+import {classifyCodeGraphLifecycle, type CodeGraphLifecycleProtection} from './lifecycle_classification.js';
 import {codeGraphRepositoriesRoot, codeGraphWorktreeLockPath, type CodeGraphLayout} from './layout.js';
 import {
   codeGraphEtaMeasurement,
@@ -692,12 +693,17 @@ export function codeGraphAbandonedBuildStatusRemovable(
   lockOwner: FileLockOwner | undefined,
   protectedBuildId?: string,
 ): boolean {
+  const protections: CodeGraphLifecycleProtection[] = [];
+  if (status.buildId === protectedBuildId) protections.push('active-pin');
+  if (lockOwner !== undefined && sameProcessOwner(status, lockOwner)) protections.push('active-writer');
+  const authorityProven =
+    status.state !== 'completed' && status.state !== 'failed' && status.observation.liveness === 'abandoned';
   return (
-    status.buildId !== protectedBuildId &&
-    status.state !== 'completed' &&
-    status.state !== 'failed' &&
-    status.observation.liveness === 'abandoned' &&
-    (lockOwner === undefined || !sameProcessOwner(status, lockOwner))
+    classifyCodeGraphLifecycle({
+      authority: authorityProven ? 'proven-disposable' : 'unproven',
+      protections,
+      state: 'abandoned-build',
+    }).disposition === 'reclaim'
   );
 }
 

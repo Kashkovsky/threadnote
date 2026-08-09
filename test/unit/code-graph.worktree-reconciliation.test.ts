@@ -291,6 +291,24 @@ describe('automatic missing-worktree reconciliation', () => {
     }),
   );
 
+  effectIt.effect('resolves a foreground anchor path only after a missing candidate is observed', () =>
+    Effect.gen(function* () {
+      const anchorCalls = yield* Ref.make(0);
+      const dependencies = successfulDependencies({
+        resolveAnchor: () => Ref.update(anchorCalls, count => count + 1).pipe(Effect.as(anchor)),
+      });
+      const {anchorIdentity: _anchorIdentity, ...withoutAnchor} = tick();
+
+      const result = yield* (yield* makeCodeGraphWorktreeReconciler(dependencies)).tick({
+        ...withoutAnchor,
+        anchorPath: anchor.repoRoot,
+      });
+
+      expect(result).toMatchObject({state: 'removed', worktreeId: targetWorktreeId});
+      expect(yield* Ref.get(anchorCalls)).toBe(4);
+    }),
+  );
+
   effectIt.effect('requires the final missing record to be byte-for-byte the initially admitted evidence', () =>
     Effect.gen(function* () {
       const changedEvidence = [

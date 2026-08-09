@@ -32,6 +32,7 @@ import {CodeGraphRuntimeReconnectRequiredError} from './types.js';
 import {currentCodeGraphBuildStatus, type ObservedCodeGraphBuildStatus} from './build_status.js';
 import {isCodeGraphIsolatedBuilderHost, runIsolatedCodeGraphIndex} from './isolated_builder.js';
 import {codeGraphLayout} from './layout.js';
+import {runCodeGraphLifecycleOpportunity} from './lifecycle_opportunity.js';
 import {classifyCodeGraphStoreFailure} from './store_failure.js';
 import {
   codeGraphEtaMeasurement,
@@ -338,12 +339,31 @@ export class CodeGraphWatcher extends Context.Service<CodeGraphWatcher, CodeGrap
                 identity.checkoutId,
                 identity.worktreeId,
               );
-              return maintenance.tick({
-                checkoutId: layout.checkoutId,
-                databasePath: layout.databasePath,
+              return runCodeGraphLifecycleOpportunity({
+                maintenance,
+                opportunity: 'critical-error',
+                targets: [
+                  {
+                    // This production dependency is wired directly to
+                    // resolveRepositoryIdentity above; test seams may retain
+                    // the intentionally smaller recovery identity shape.
+                    anchorIdentity: identity as RepositoryIdentity,
+                    checkoutId: layout.checkoutId,
+                    databasePath: layout.databasePath,
+                  },
+                ],
                 threadnoteHome: recoveryOptions.threadnoteHome,
-                writerLockPath: layout.databaseWriteLockPath,
-              });
+              }).pipe(
+                Effect.map(result =>
+                  result.state === 'completed'
+                    ? result.result
+                    : ({reason: 'schema-unavailable', state: 'skipped'} as const),
+                ),
+                Effect.provideService(CommandExecutor, commandExecutor),
+                Effect.provideService(FileSystem.FileSystem, fs),
+                Effect.provideService(Path.Path, path),
+                Effect.provideService(SystemInfo, systemInfo),
+              );
             },
           },
           options,

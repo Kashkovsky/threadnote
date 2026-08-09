@@ -216,12 +216,14 @@ export interface CodeGraphStoreShape {
       readonly deletedPaths?: readonly string[];
       readonly resolutionClosure?: 'changed' | 'full' | 'project';
     },
+    persistentCapacityProtector?: CodeGraphDirectPersistentCapacityProtector,
   ) => Effect.Effect<boolean, CodeGraphStoreError>;
   readonly replaceStagedModifiedFiles: (
     databasePath: string,
     baseSnapshotId: string,
     files: readonly CodeGraphInventoryFile[],
     facts: readonly CodeGraphFileFacts[],
+    persistentCapacityProtector?: CodeGraphDirectPersistentCapacityProtector,
   ) => Effect.Effect<boolean, CodeGraphStoreError>;
   readonly diagnose: (databasePath: string) => Effect.Effect<CodeGraphDatabaseHealth | undefined, CodeGraphStoreError>;
   readonly cachedCommittedFileKeys: (
@@ -468,6 +470,7 @@ export interface CodeGraphStoreShape {
     references?: readonly CodeGraphReference[],
     onProgress?: CodeGraphStagingProgressCallback,
     batchIndex?: number,
+    persistentCapacityProtector?: CodeGraphDirectPersistentCapacityProtector,
   ) => Effect.Effect<void, CodeGraphStoreError>;
   readonly stageActivationFactBatches: (
     databasePath: string,

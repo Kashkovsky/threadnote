@@ -28,6 +28,7 @@ import {resolveActivationReferences} from './store_resolution.js';
 import {selectSymbolsByPaths} from './store_relationship_queries.js';
 import {type CodeGraphStoreRuntime} from './store_runtime.js';
 import {type CodeGraphStoreShape} from './store_shape.js';
+import {temporaryActivationFactsCapacity, temporaryActivationWorkspaceCapacity} from './store_temporary_capacity.js';
 
 type CodeGraphStoreStagingMethods = Pick<
   CodeGraphStoreShape,
@@ -65,7 +66,15 @@ export function makeCodeGraphStoreStagingMethods(runtime: CodeGraphStoreRuntime)
         Effect.andThen(useReadOnlyDatabase(databasePath, selectSymbolsByIds(snapshotId, ids))),
         Effect.mapError(cause => storeError('load code graph symbols', cause)),
       ),
-    stageActivationFacts: (databasePath, symbols, edges, references = [], onProgress, batchIndex) =>
+    stageActivationFacts: (
+      databasePath,
+      symbols,
+      edges,
+      references = [],
+      onProgress,
+      batchIndex,
+      persistentCapacityProtector,
+    ) =>
       prepare(databasePath).pipe(
         Effect.andThen(
           useDatabase(
@@ -94,7 +103,7 @@ export function makeCodeGraphStoreStagingMethods(runtime: CodeGraphStoreRuntime)
                 );
                 return;
               }
-              yield* sql.withTransaction(
+              const transaction = sql.withTransaction(
                 Effect.gen(function* () {
                   yield* stageActivationSymbols(sql, symbols, 'insert', observer);
                   yield* stageActivationSymbolTerms(sql, symbols, 'insert', observer);
@@ -103,6 +112,9 @@ export function makeCodeGraphStoreStagingMethods(runtime: CodeGraphStoreRuntime)
                   yield* observer('committing', 0, true);
                 }),
               );
+              yield* persistentCapacityProtector
+                ? persistentCapacityProtector(temporaryActivationFactsCapacity(symbols, edges, references), transaction)
+                : transaction;
               yield* observer('committed', 0, true);
             }),
           ),
@@ -184,7 +196,10 @@ export function makeCodeGraphStoreStagingMethods(runtime: CodeGraphStoreRuntime)
                   ? persistentCapacityProtector(prepared.capacity, transaction)
                   : transaction;
               } else {
-                yield* stageActivationWorkspace(workspace);
+                const staging = stageActivationWorkspace(workspace);
+                yield* persistentCapacityProtector
+                  ? persistentCapacityProtector(temporaryActivationWorkspaceCapacity(workspace), staging)
+                  : staging;
               }
             }),
           ),

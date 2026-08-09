@@ -811,9 +811,9 @@ const expandTransitiveReexportAliases = Effect.fn('codeGraph.expandTransitiveRee
       }),
     );
     const gatedTransaction = persistent && writerGate ? writerGate(transaction) : transaction;
-    aliases += yield* persistent && persistentCapacityProtector
+    aliases += yield* persistentCapacityProtector
       ? persistentCapacityProtector(
-          persistentReexportAliasCapacityBoundary(mode.snapshotId, aliasRows),
+          persistentReexportAliasCapacityBoundary(persistent ? mode.snapshotId : 'temporary', aliasRows, !persistent),
           gatedTransaction,
         )
       : gatedTransaction;
