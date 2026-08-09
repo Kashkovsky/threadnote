@@ -102,9 +102,9 @@ describe('dependency-aware CI workflow', () => {
       needs: 'changes',
       if: "needs.changes.outputs.code == 'true'",
     });
-    expect(long.strategy?.matrix?.group).toHaveLength(39);
+    expect(long.strategy?.matrix?.group).toHaveLength(42);
     expect(long.steps?.find(step => step.uses?.startsWith('actions/checkout@'))?.with?.['fetch-depth']).toBe(0);
-    expect(stepForRun(long, 'bun run test:coverage').env).toEqual({
+    expect(stepForRun(long, 'bun --bun vitest run').env).toEqual({
       THREADNOTE_VITEST_LONG_GROUP: '${{ matrix.group }}',
     });
   });
