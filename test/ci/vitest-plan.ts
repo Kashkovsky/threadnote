@@ -4,7 +4,10 @@ export const ciLongRunningTestGroups = {
   'lifecycle-gamma': ['test/integration/code-graph.lifecycle.test.ts'],
   'lifecycle-delta': ['test/integration/code-graph.lifecycle.test.ts'],
   'project-closure': ['test/integration/code-graph.project-closure.test.ts'],
-  'incremental-property': ['test/integration/code-graph.incremental.property.test.ts'],
+  'incremental-property': [
+    'test/integration/code-graph.incremental.property.test.ts',
+    'test/unit/code-graph.resolution-summary.property.test.ts',
+  ],
   'load-evidence': [
     'test/integration/code-graph.removed-view-cleanup-load.test.ts',
     'test/integration/code-graph.vector-retirement-load.test.ts',
@@ -17,6 +20,7 @@ export const ciLongRunningTestGroups = {
     'test/integration/code-graph.removed-view-cleanup-os.test.ts',
     'test/integration/code-graph.cache-capacity-os.test.ts',
     'test/integration/code-graph.disk-reservation.test.ts',
+    'test/unit/code-graph.maintenance-residual-live.test.ts',
   ],
   'heavy-integration': [
     'test/integration/cli.effect.test.ts',
