@@ -1,7 +1,7 @@
 import {Clock, Crypto, Effect, FileSystem, Option, Path, PlatformError, Ref, Semaphore} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {readExclusiveFileLockOwner, type FileLockOwner} from '../effect/file_lock.js';
-import {runtimeTextDirectoryNamePage, SystemInfo} from '../effect/system.js';
+import {runtimeTextDirectoryNamePage, SystemInfo, type SystemInfoShape} from '../effect/system.js';
 import type {CodeGraphBuildOwnerIdentity} from './build_owner.js';
 import {codeGraphRepositoriesRoot, codeGraphWorktreeLockPath, type CodeGraphLayout} from './layout.js';
 import {
@@ -237,7 +237,7 @@ const VALID_STATES = new Set<CodeGraphBuildState>(['completed', 'failed', 'queue
 
 export type CodeGraphBuildHistoryPruneResult =
   | {readonly state: 'complete'}
-  | {readonly cursorToken: string; readonly state: 'progress'}
+  | {readonly cursorToken: string; readonly removedAbandoned?: true; readonly state: 'progress'}
   | {
       readonly blockedCode: 'invalid-sidecar' | 'io-error' | 'permission-denied';
       readonly retryAfterMilliseconds: number;
@@ -389,6 +389,7 @@ export const makeCodeGraphBuildReporter = Effect.fn('codeGraph.buildStatus.makeR
         pruneCodeGraphBuildHistory(
           fs,
           path,
+          system,
           layout,
           identity.worktreeId,
           buildId,
@@ -434,6 +435,7 @@ export const makeCodeGraphBuildReporter = Effect.fn('codeGraph.buildStatus.makeR
           pruneCodeGraphBuildHistory(
             fs,
             path,
+            system,
             layout,
             identity.worktreeId,
             buildId,
@@ -543,9 +545,9 @@ export function codeGraphBuildHistoryInventory(page: {
 }
 
 /**
- * Inspect one bounded history page and remove at most one exact terminal
- * status/context pair. Progress cursors let ordinary maintenance advance when
- * a page contains no safe terminal candidate.
+ * Inspect one bounded history page and remove at most one exact terminal or
+ * abandoned status/context pair. Progress cursors let ordinary maintenance
+ * advance when a page contains no safe candidate.
  */
 export const pruneCodeGraphBuildHistoryUnit = Effect.fn('codeGraph.buildStatus.pruneHistoryUnit')(function* (
   layout: CodeGraphLayout,
@@ -565,6 +567,7 @@ export const pruneCodeGraphBuildHistoryUnit = Effect.fn('codeGraph.buildStatus.p
   }
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
+  const system = yield* SystemInfo;
   return yield* Effect.gen(function* () {
     const authority = yield* inspectBuildHistoryDirectory(fs, path, layout, worktreeId);
     if (authority === undefined) {
@@ -573,10 +576,42 @@ export const pruneCodeGraphBuildHistoryUnit = Effect.fn('codeGraph.buildStatus.p
     return yield* pruneCodeGraphBuildHistoryUnitWithServices(
       fs,
       path,
+      system,
       layout,
       worktreeId,
       protectedBuildId,
       cursorToken,
+      options,
+      authority,
+    );
+  }).pipe(Effect.catch(cause => Effect.succeed(classifyBuildHistoryFailure(cause))));
+});
+
+/**
+ * Run one cursor-backed history page without requiring a successor reporter.
+ * Ordinary maintenance uses this to converge abandoned nonterminal sidecars.
+ */
+export const maintainCodeGraphBuildHistoryUnit = Effect.fn('codeGraph.buildStatus.maintainHistoryUnit')(function* (
+  layout: CodeGraphLayout,
+  worktreeId: string,
+  options: CodeGraphBuildHistoryPruneOptions = {},
+) {
+  if (!HASH_ID.test(layout.checkoutId) || !HASH_ID.test(worktreeId) || layout.worktreeId !== worktreeId) {
+    return invalidBuildHistoryResult();
+  }
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const system = yield* SystemInfo;
+  return yield* Effect.gen(function* () {
+    const authority = yield* inspectBuildHistoryDirectory(fs, path, layout, worktreeId);
+    if (authority === undefined) return {state: 'complete'} as const satisfies CodeGraphBuildHistoryPruneResult;
+    return yield* runPersistedCodeGraphBuildHistoryUnit(
+      fs,
+      path,
+      system,
+      layout,
+      worktreeId,
+      undefined,
       options,
       authority,
     );
@@ -649,6 +684,37 @@ export function observeCodeGraphBuildStatus(
     };
   }
   return {...status, observation: {heartbeatAgeMilliseconds, liveness: 'active'}};
+}
+
+/** @internal Pure destructive-admission boundary for nonterminal build-status cleanup. */
+export function codeGraphAbandonedBuildStatusRemovable(
+  status: ObservedCodeGraphBuildStatus,
+  lockOwner: FileLockOwner | undefined,
+  protectedBuildId?: string,
+): boolean {
+  return (
+    status.buildId !== protectedBuildId &&
+    status.state !== 'completed' &&
+    status.state !== 'failed' &&
+    status.observation.liveness === 'abandoned' &&
+    (lockOwner === undefined || !sameProcessOwner(status, lockOwner))
+  );
+}
+
+function observeBuildHistoryCandidate(system: SystemInfoShape, status: CodeGraphBuildStatus, nowMilliseconds: number) {
+  if (status.state === 'completed' || status.state === 'failed') {
+    return Effect.succeed(observeCodeGraphBuildStatus(status, {isRunning: false, nowMilliseconds}));
+  }
+  const isRunning = system.isProcessRunning(status.owner.processId);
+  return (isRunning ? system.processStartIdentity(status.owner.processId) : Effect.succeed(undefined)).pipe(
+    Effect.map(processStartIdentity =>
+      observeCodeGraphBuildStatus(status, {
+        isRunning,
+        nowMilliseconds,
+        ...(processStartIdentity === undefined ? {} : {processStartIdentity}),
+      }),
+    ),
+  );
 }
 
 function observeProgress(
@@ -1817,35 +1883,61 @@ function parseResult(value: unknown): CodeGraphBuildStatus['result'] | undefined
 function pruneCodeGraphBuildHistory(
   fs: FileSystem.FileSystem,
   path: Path.Path,
+  system: SystemInfoShape,
   layout: CodeGraphLayout,
   worktreeId: string,
   protectedBuildId: string,
   options: CodeGraphBuildHistoryPruneOptions,
   authority: BuildHistoryDirectoryAuthority | undefined,
 ) {
-  return Effect.gen(function* () {
-    if (authority === undefined) return;
-    yield* revalidateBuildHistoryDirectoryAuthority(fs, authority);
-    if (options.beforeCursorRecovery !== undefined) yield* options.beforeCursorRecovery();
-    const persistedCursor = yield* recoverPersistedBuildHistoryCursor(fs, path, authority);
-    const result = yield* pruneCodeGraphBuildHistoryUnitWithServices(
-      fs,
-      path,
-      layout,
-      worktreeId,
-      protectedBuildId,
-      persistedCursor?.cursorToken,
-      {},
-      authority,
-    );
-    if (options.beforeCursorMutation !== undefined) yield* options.beforeCursorMutation();
-    if (result.state !== 'progress' || parseBuildHistoryCursor(result.cursorToken)?.mode !== 'scan') {
-      yield* removePersistedBuildHistoryCursor(fs, authority, persistedCursor);
-      return;
-    }
-    yield* writePersistedBuildHistoryCursor(fs, path, authority, persistedCursor, result.cursorToken);
-  }).pipe(Effect.catch(() => Effect.void));
+  if (authority === undefined) return Effect.void;
+  return runPersistedCodeGraphBuildHistoryUnit(
+    fs,
+    path,
+    system,
+    layout,
+    worktreeId,
+    protectedBuildId,
+    options,
+    authority,
+  ).pipe(
+    Effect.catch(() => Effect.void),
+    Effect.asVoid,
+  );
 }
+
+const runPersistedCodeGraphBuildHistoryUnit = Effect.fn('codeGraph.buildStatus.runPersistedHistoryUnit')(function* (
+  fs: FileSystem.FileSystem,
+  path: Path.Path,
+  system: SystemInfoShape,
+  layout: CodeGraphLayout,
+  worktreeId: string,
+  protectedBuildId: string | undefined,
+  options: CodeGraphBuildHistoryPruneOptions,
+  authority: BuildHistoryDirectoryAuthority,
+) {
+  yield* revalidateBuildHistoryDirectoryAuthority(fs, authority);
+  if (options.beforeCursorRecovery !== undefined) yield* options.beforeCursorRecovery();
+  const persistedCursor = yield* recoverPersistedBuildHistoryCursor(fs, path, authority);
+  const result = yield* pruneCodeGraphBuildHistoryUnitWithServices(
+    fs,
+    path,
+    system,
+    layout,
+    worktreeId,
+    protectedBuildId,
+    persistedCursor?.cursorToken,
+    options,
+    authority,
+  );
+  if (options.beforeCursorMutation !== undefined) yield* options.beforeCursorMutation();
+  if (result.state !== 'progress' || parseBuildHistoryCursor(result.cursorToken)?.mode !== 'scan') {
+    yield* removePersistedBuildHistoryCursor(fs, authority, persistedCursor);
+    return result;
+  }
+  yield* writePersistedBuildHistoryCursor(fs, path, authority, persistedCursor, result.cursorToken);
+  return result;
+});
 
 interface ObservedBuildHistorySidecar {
   readonly content: string;
@@ -1856,6 +1948,11 @@ interface ObservedBuildHistorySidecar {
 interface BuildHistoryCandidate extends ObservedBuildHistorySidecar {
   readonly status: CodeGraphBuildStatus;
 }
+
+type BuildHistoryLockObservation =
+  | {readonly state: 'absent'}
+  | {readonly owner: FileLockOwner; readonly state: 'present'}
+  | {readonly state: 'unavailable'};
 
 interface PersistedBuildHistoryCursor extends ObservedBuildHistorySidecar {
   readonly cursorToken: string;
@@ -1880,6 +1977,7 @@ class InvalidBuildHistorySidecarError extends Error {}
 const pruneCodeGraphBuildHistoryUnitWithServices = Effect.fn('codeGraph.buildStatus.pruneHistoryUnitUnsafe')(function* (
   fs: FileSystem.FileSystem,
   path: Path.Path,
+  system: SystemInfoShape,
   layout: CodeGraphLayout,
   worktreeId: string,
   protectedBuildId: string | undefined,
@@ -1903,10 +2001,6 @@ const pruneCodeGraphBuildHistoryUnitWithServices = Effect.fn('codeGraph.buildSta
   if (statusNames === undefined) {
     return yield* Effect.fail(new InvalidBuildHistorySidecarError('Build history inventory exceeded its limit.'));
   }
-  if (statusNames.length <= STATUS_HISTORY_PER_WORKTREE) {
-    return {state: 'complete'} as const satisfies CodeGraphBuildHistoryPruneResult;
-  }
-
   const parsedCursor = cursorToken === undefined ? undefined : parseBuildHistoryCursor(cursorToken);
   const afterBuildId = parsedCursor?.mode === 'scan' ? parsedCursor.afterBuildId : undefined;
   if (afterBuildId !== undefined && !statusNames.includes(`${afterBuildId}.json`)) {
@@ -1928,22 +2022,53 @@ const pruneCodeGraphBuildHistoryUnitWithServices = Effect.fn('codeGraph.buildSta
   if (candidates.some(candidate => candidate === undefined)) {
     return yield* Effect.fail(new InvalidBuildHistorySidecarError('Build history changed during its bounded page.'));
   }
-  const ranked = [...(candidates as readonly BuildHistoryCandidate[])].sort(compareBuildHistoryCandidate);
-  const candidate = ranked
-    .slice(STATUS_HISTORY_PER_WORKTREE)
-    .reverse()
-    .find(
-      observed =>
-        observed.status.buildId !== protectedBuildId &&
-        (observed.status.state === 'completed' || observed.status.state === 'failed'),
-    );
-  if (candidate === undefined) {
+  const lockPath = path.join(layout.worktreeLockRoot, `${worktreeId}.lock`);
+  const initialLock = yield* inspectBuildHistoryLock(fs, lockPath);
+  const nowMilliseconds = yield* Clock.currentTimeMillis;
+  const observedCandidates = yield* Effect.forEach(
+    candidates as readonly BuildHistoryCandidate[],
+    candidate =>
+      observeBuildHistoryCandidate(system, candidate.status, nowMilliseconds).pipe(
+        Effect.map(status => ({candidate, status})),
+      ),
+    {concurrency: 4},
+  );
+  const ranked = [...observedCandidates].sort((left, right) =>
+    compareBuildHistoryCandidate(left.candidate, right.candidate),
+  );
+  const abandoned =
+    initialLock.state === 'unavailable'
+      ? undefined
+      : [...ranked]
+          .reverse()
+          .find(observed =>
+            codeGraphAbandonedBuildStatusRemovable(
+              observed.status,
+              initialLock.state === 'present' ? initialLock.owner : undefined,
+              protectedBuildId,
+            ),
+          );
+  const terminal =
+    statusNames.length <= STATUS_HISTORY_PER_WORKTREE
+      ? undefined
+      : ranked
+          .slice(STATUS_HISTORY_PER_WORKTREE)
+          .reverse()
+          .find(
+            observed =>
+              observed.status.buildId !== protectedBuildId &&
+              (observed.status.state === 'completed' || observed.status.state === 'failed'),
+          );
+  const selected = abandoned ?? terminal;
+  if (selected === undefined) {
     const hasMore = remainingNames.length > pageNames.length;
     const lastBuildId = pageNames.at(-1)?.slice(0, -'.json'.length);
     return hasMore && lastBuildId !== undefined
       ? ({cursorToken: buildHistoryScanCursor(lastBuildId), state: 'progress'} as const)
       : ({state: 'complete'} as const);
   }
+  const candidate = selected.candidate;
+  const removalKind = abandoned === selected ? ('abandoned' as const) : ('terminal' as const);
 
   const contextFile = codeGraphManagerContextPath(path, candidate.file, candidate.status.buildId);
   const initialContext = yield* readBuildHistoryManagerContext(fs, contextFile, candidate.status.buildId);
@@ -1958,6 +2083,24 @@ const pruneCodeGraphBuildHistoryUnitWithServices = Effect.fn('codeGraph.buildSta
   ) {
     return yield* Effect.fail(new InvalidBuildHistorySidecarError('Build history authority changed.'));
   }
+  if (removalKind === 'abandoned') {
+    const finalLock = yield* inspectBuildHistoryLock(fs, lockPath);
+    const finalObserved = yield* observeBuildHistoryCandidate(
+      system,
+      finalStatus.status,
+      yield* Clock.currentTimeMillis,
+    );
+    if (
+      finalLock.state === 'unavailable' ||
+      !codeGraphAbandonedBuildStatusRemovable(
+        finalObserved,
+        finalLock.state === 'present' ? finalLock.owner : undefined,
+        protectedBuildId,
+      )
+    ) {
+      return yield* Effect.fail(new InvalidBuildHistorySidecarError('Build history owner changed.'));
+    }
+  }
 
   if (finalContext !== undefined) {
     yield* revalidateBuildHistoryDirectoryAuthority(fs, authority);
@@ -1970,9 +2113,31 @@ const pruneCodeGraphBuildHistoryUnitWithServices = Effect.fn('codeGraph.buildSta
   if (ownedStatus === undefined || !sameBuildHistorySidecar(candidate, ownedStatus) || remainingContext !== undefined) {
     return yield* Effect.fail(new InvalidBuildHistorySidecarError('Build history changed before removal.'));
   }
+  if (removalKind === 'abandoned') {
+    const ownedLock = yield* inspectBuildHistoryLock(fs, lockPath);
+    const ownedObserved = yield* observeBuildHistoryCandidate(
+      system,
+      ownedStatus.status,
+      yield* Clock.currentTimeMillis,
+    );
+    if (
+      ownedLock.state === 'unavailable' ||
+      !codeGraphAbandonedBuildStatusRemovable(
+        ownedObserved,
+        ownedLock.state === 'present' ? ownedLock.owner : undefined,
+        protectedBuildId,
+      )
+    ) {
+      return yield* Effect.fail(new InvalidBuildHistorySidecarError('Build history owner changed before removal.'));
+    }
+  }
   yield* revalidateBuildHistoryDirectoryAuthority(fs, authority);
   yield* fs.remove(candidate.file, {force: false});
-  return {cursorToken: buildHistoryResetCursor(), state: 'progress'} as const;
+  return {
+    cursorToken: buildHistoryResetCursor(),
+    ...(removalKind === 'abandoned' ? {removedAbandoned: true as const} : {}),
+    state: 'progress',
+  } as const;
 });
 
 const inspectBuildHistoryDirectory = Effect.fn('codeGraph.buildStatus.inspectHistoryDirectory')(function* (
@@ -2056,6 +2221,18 @@ const readBuildHistoryCandidate = Effect.fn('codeGraph.buildStatus.readHistoryCa
     return yield* Effect.fail(new InvalidBuildHistorySidecarError('Build history status authority is invalid.'));
   }
   return {...observed, status} satisfies BuildHistoryCandidate;
+});
+
+const inspectBuildHistoryLock = Effect.fn('codeGraph.buildStatus.inspectHistoryLock')(function* (
+  fs: FileSystem.FileSystem,
+  lockPath: string,
+) {
+  if (!(yield* fs.exists(lockPath))) return {state: 'absent'} as const satisfies BuildHistoryLockObservation;
+  const owner = yield* readExclusiveFileLockOwner(fs, lockPath);
+  return Option.match(owner, {
+    onNone: () => ({state: 'unavailable'}) as const,
+    onSome: value => ({owner: value, state: 'present'}) as const,
+  });
 });
 
 const readBuildHistoryManagerContext = Effect.fn('codeGraph.buildStatus.readHistoryManagerContext')(function* (

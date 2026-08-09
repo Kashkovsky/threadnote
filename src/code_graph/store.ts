@@ -253,6 +253,7 @@ export type CodeGraphRoutineMaintenanceResult =
   | {
       readonly cleanup:
         | 'abandoned-build'
+        | 'build-status-history'
         | 'completed-build'
         | 'file-blob-cache'
         | 'materialized-shard-cache'
@@ -273,6 +274,7 @@ export type CodeGraphRoutineMaintenanceResult =
         | 'owner-changed'
         | 'owner-protected'
         | 'snapshot-busy'
+        | 'status-sidecar-unavailable'
         | 'worktree-busy'
         | 'writer-busy';
       readonly state: 'deferred';

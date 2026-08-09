@@ -4,6 +4,7 @@ import {
   CODE_GRAPH_BUILD_STALE_AFTER_MILLISECONDS,
   type CodeGraphBuildState,
   type CodeGraphBuildStatus,
+  codeGraphAbandonedBuildStatusRemovable,
   observeCodeGraphBuildStatus,
   parseCodeGraphBuildStatus,
 } from '../../src/code_graph/build_status.js';
@@ -77,6 +78,48 @@ describe('code graph build-status properties', () => {
       } else {
         expect(observed.observation).toMatchObject({liveness: 'active'});
       }
+    },
+    {fastCheck: {numRuns: 250}},
+  );
+
+  it.prop(
+    'admits abandoned nonterminal cleanup only without an exact protected build or matching lock owner',
+    {
+      liveness: FC.constantFrom(
+        'abandoned' as const,
+        'active' as const,
+        'completed' as const,
+        'failed' as const,
+        'stalled' as const,
+      ),
+      lock: FC.constantFrom('absent' as const, 'matching' as const, 'replacement' as const),
+      protectedBuild: FC.boolean(),
+      state: FC.constantFrom<CodeGraphBuildState>('completed', 'failed', 'queued', 'running'),
+    },
+    ({liveness, lock, protectedBuild, state}) => {
+      const status = {
+        ...buildStatus(state, true),
+        observation: {heartbeatAgeMilliseconds: 60_000, liveness},
+      };
+      const lockOwner =
+        lock === 'absent'
+          ? undefined
+          : {
+              processId: status.owner.processId,
+              processStartIdentity: lock === 'matching' ? 'original-owner' : 'replacement-owner',
+              token: 'owner-token',
+              version: 1 as const,
+            };
+
+      expect(
+        codeGraphAbandonedBuildStatusRemovable(status, lockOwner, protectedBuild ? status.buildId : undefined),
+      ).toBe(
+        liveness === 'abandoned' &&
+          state !== 'completed' &&
+          state !== 'failed' &&
+          !protectedBuild &&
+          lock !== 'matching',
+      );
     },
     {fastCheck: {numRuns: 250}},
   );

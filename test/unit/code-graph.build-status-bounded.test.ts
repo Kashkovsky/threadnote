@@ -9,6 +9,7 @@ import {
   type CodeGraphBuildState,
   type CodeGraphBuildStatus,
   codeGraphBuildHistoryInventory,
+  maintainCodeGraphBuildHistoryUnit,
   makeCodeGraphBuildReporter,
   pruneCodeGraphBuildHistoryUnit,
   readAllCodeGraphBuildStatuses,
@@ -54,6 +55,85 @@ describe('bounded code graph build-status maintenance', () => {
           expect(observed[0]?.observation).toMatchObject({liveness: 'abandoned', reason: 'owner-exited'});
           expect(observed[0]?.managerContext).toBeUndefined();
           expect(yield* fs.exists(path.join(directory, contextName))).toBe(true);
+        }),
+      ),
+    );
+
+    it.effect('removes one exact abandoned waiter pair without requiring a successor reporter', () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-build-history-abandoned-'});
+          const identity = fixtureIdentity(home);
+          const layout = codeGraphLayout(path, home, identity.checkoutId, identity.worktreeId);
+          const directory = path.join(layout.repositoryRoot, 'build-status', identity.worktreeId);
+          yield* fs.makeDirectory(directory, {recursive: true, mode: 0o700});
+          const status = {
+            ...fixtureStatus(identity, 'a'.repeat(32), 0, 'queued'),
+            owner: {
+              processId: 2_147_483_647,
+              processStartIdentity: 'dead-process-instance',
+              runtime: 'bun' as const,
+              runtimeVersion: '1.3.14',
+            },
+          };
+          yield* writeStatusPair(fs, path, directory, status);
+
+          expect(yield* maintainCodeGraphBuildHistoryUnit(layout, identity.worktreeId)).toEqual({
+            cursorToken: 'bh1:r',
+            removedAbandoned: true,
+            state: 'progress',
+          });
+          expect(yield* fs.exists(path.join(directory, `${status.buildId}.json`))).toBe(false);
+          expect(yield* fs.exists(path.join(directory, `${status.buildId}.manager-context`))).toBe(false);
+        }),
+      ),
+    );
+
+    it.effect('preserves a heartbeat-stalled live waiter and an abandoned status with an exact lock owner', () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-build-history-protected-'});
+          const identity = fixtureIdentity(home);
+          const layout = codeGraphLayout(path, home, identity.checkoutId, identity.worktreeId);
+          const directory = path.join(layout.repositoryRoot, 'build-status', identity.worktreeId);
+          yield* fs.makeDirectory(directory, {recursive: true, mode: 0o700});
+          const live = fixtureStatus(identity, 'b'.repeat(32), 0, 'queued');
+          yield* writeStatusPair(fs, path, directory, live);
+
+          expect(yield* maintainCodeGraphBuildHistoryUnit(layout, identity.worktreeId)).toEqual({state: 'complete'});
+          expect(yield* fs.exists(path.join(directory, `${live.buildId}.json`))).toBe(true);
+
+          yield* fs.remove(path.join(directory, `${live.buildId}.json`));
+          yield* fs.remove(path.join(directory, `${live.buildId}.manager-context`));
+          const locked = {
+            ...fixtureStatus(identity, 'c'.repeat(32), 1, 'queued'),
+            owner: {
+              processId: 2_147_483_647,
+              processStartIdentity: 'locked-process-instance',
+              runtime: 'bun' as const,
+              runtimeVersion: '1.3.14',
+            },
+          };
+          yield* writeStatusPair(fs, path, directory, locked);
+          yield* fs.makeDirectory(layout.worktreeLockRoot, {recursive: true});
+          yield* fs.writeFileString(
+            path.join(layout.worktreeLockRoot, `${identity.worktreeId}.lock`),
+            `${JSON.stringify({
+              processId: locked.owner.processId,
+              processStartIdentity: locked.owner.processStartIdentity,
+              token: 'exact-owner-token',
+              version: 1,
+            })}\n`,
+            {flag: 'wx', mode: 0o600},
+          );
+
+          expect(yield* maintainCodeGraphBuildHistoryUnit(layout, identity.worktreeId)).toEqual({state: 'complete'});
+          expect(yield* fs.exists(path.join(directory, `${locked.buildId}.json`))).toBe(true);
+          expect(yield* fs.exists(path.join(directory, `${locked.buildId}.manager-context`))).toBe(true);
         }),
       ),
     );
@@ -511,7 +591,7 @@ function fixtureStatus(
       repositoryId: identity.repositoryId,
       worktreeId: identity.worktreeId,
     },
-    owner: {processId: 42, runtime: 'bun', runtimeVersion: '1.3.14'},
+    owner: {processId: process.pid, runtime: 'bun', runtimeVersion: '1.3.14'},
     phase: state === 'queued' ? 'waiting' : 'materializing',
     schemaVersion: 1,
     state,

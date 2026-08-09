@@ -4,7 +4,7 @@ import {Deferred, Effect, Fiber, FileSystem, Path, Ref} from 'effect';
 import {TestClock} from 'effect/testing';
 import fc from 'fast-check';
 import {afterEach, describe, expect, it} from 'vitest';
-import {makeCodeGraphBuildReporter} from '../../src/code_graph/build_status.js';
+import {makeCodeGraphBuildReporter, type CodeGraphBuildStatus} from '../../src/code_graph/build_status.js';
 import {codeGraphLayout, codeGraphSnapshotBuildLockPath} from '../../src/code_graph/layout.js';
 import {
   CodeGraphMaintenanceCoordinator,
@@ -99,6 +99,62 @@ describe('routine code graph maintenance', () => {
     expect(result).toEqual({reason: 'external-maintenance', state: 'deferred'});
     await expect(Bun.file(fixture.databasePath).text()).resolves.toContain('must not be opened');
   });
+
+  effectIt.effect('automatically prunes an abandoned waiter sidecar without a successor build', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const temporaryHome = yield* fs.makeTempDirectory({prefix: 'threadnote-routine-abandoned-status-'});
+      const home = yield* fs.realPath(temporaryHome);
+      temporaryHomes.push(home);
+      const checkoutId = 'a'.repeat(64);
+      const identity = {...routineMaintenanceAnchor(), checkoutId, repoRoot: home};
+      const layout = codeGraphLayout(path, home, checkoutId, identity.worktreeId);
+      yield* fs.makeDirectory(path.dirname(layout.databasePath), {recursive: true});
+      const store = yield* CodeGraphStore;
+      yield* store.initialize(layout.databasePath);
+      const reporter = yield* makeCodeGraphBuildReporter(identity, layout);
+      const statusPath = path.join(
+        layout.repositoryRoot,
+        'build-status',
+        identity.worktreeId,
+        `${reporter.ownerIdentity.buildId}.json`,
+      );
+      const status = JSON.parse(yield* fs.readFileString(statusPath)) as CodeGraphBuildStatus;
+      yield* fs.writeFileString(
+        statusPath,
+        `${JSON.stringify({
+          ...status,
+          owner: {...status.owner, processId: 2_147_483_647, processStartIdentity: 'dead-process-instance'},
+        })}\n`,
+        {flag: 'w', mode: 0o600},
+      );
+
+      const coordinator = yield* CodeGraphMaintenanceCoordinator;
+      yield* coordinator.tick({
+        anchorIdentity: identity,
+        checkoutId,
+        databasePath: layout.databasePath,
+        threadnoteHome: home,
+        writerLockPath: layout.databaseWriteLockPath,
+      });
+      for (let attempt = 0; attempt < 50 && (yield* fs.exists(statusPath)); attempt += 1) {
+        yield* Effect.sleep(5);
+      }
+
+      expect(yield* fs.exists(statusPath)).toBe(false);
+      expect(
+        yield* fs.exists(
+          path.join(
+            layout.repositoryRoot,
+            'build-status',
+            identity.worktreeId,
+            `${reporter.ownerIdentity.buildId}.manager-context`,
+          ),
+        ),
+      ).toBe(false);
+    }).pipe(Effect.provide(ApplicationLayer), TestClock.withLive),
+  );
 
   it('reclaims exactly one physical table page per tick and becomes idempotent', async () => {
     const fixture = await routineFixture('threadnote-routine-maintenance-page-');

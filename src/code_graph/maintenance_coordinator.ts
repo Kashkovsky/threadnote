@@ -1,6 +1,7 @@
 import {Clock, Context, Crypto, Deferred, Effect, Exit, FileSystem, Layer, Path, SynchronizedRef} from 'effect';
 import {CommandExecutor} from '../effect/command.js';
 import {SystemInfo} from '../effect/system.js';
+import {maintainCodeGraphBuildHistoryUnit} from './build_status.js';
 import {
   cleanupMissingCodeGraphLocalProvenance,
   type CodeGraphLocalProvenanceCleanupResult,
@@ -11,6 +12,7 @@ import {
   type CodeGraphRemovedViewCleanupWorkerResult,
 } from './removed_view_cleanup.js';
 import {cleanupCodeGraphRemovedViewBuildStatusUnit} from './removed_view_build_cleanup.js';
+import {codeGraphLayout} from './layout.js';
 import {CodeGraphStore, type CodeGraphRoutineMaintenanceResult} from './store.js';
 import {
   codeGraphMaintenanceIntentActive,
@@ -160,6 +162,30 @@ export class CodeGraphMaintenanceCoordinator extends Context.Service<
           threadnoteHome: input.threadnoteHome,
           writerLockPath: input.writerLockPath,
         });
+      const runBuildHistoryMaintenance: CodeGraphRoutineMaintenanceRun = input => {
+        const identity = input.anchorIdentity;
+        if (identity === undefined || identity.checkoutId !== input.checkoutId) {
+          return Effect.succeed(emptyMaintenanceResult());
+        }
+        const layout = codeGraphLayout(path, input.threadnoteHome, input.checkoutId, identity.worktreeId);
+        if (layout.databasePath !== input.databasePath) return Effect.succeed(emptyMaintenanceResult());
+        return maintainCodeGraphBuildHistoryUnit(layout, identity.worktreeId).pipe(
+          Effect.map(result => {
+            if (result.state === 'complete') return emptyMaintenanceResult();
+            if (result.state === 'deferred') {
+              return {reason: 'status-sidecar-unavailable', state: 'deferred'} as const;
+            }
+            return {
+              ...emptyMaintenanceResult(),
+              cleanup: result.removedAbandoned === true ? ('build-status-history' as const) : ('none' as const),
+              remaining: true,
+            };
+          }),
+          Effect.provideService(FileSystem.FileSystem, fs),
+          Effect.provideService(Path.Path, path),
+          Effect.provideService(SystemInfo, system),
+        );
+      };
       const revalidateResidualTarget = (input: {
         readonly checkoutId: string;
         readonly databasePath: string;
@@ -281,7 +307,7 @@ export class CodeGraphMaintenanceCoordinator extends Context.Service<
                     : Effect.succeed(emptyMaintenanceResult()),
           ),
         );
-      const runReconciliationOrPreparation: CodeGraphRoutineMaintenanceRun = input => {
+      const runReconciliationOrPreparationWithoutHistory: CodeGraphRoutineMaintenanceRun = input => {
         if (input.anchorIdentity === undefined) return Effect.succeed(emptyMaintenanceResult());
         if (input.allowIndexPreparation !== true) return runReconciliation(input);
         return store
@@ -326,6 +352,17 @@ export class CodeGraphMaintenanceCoordinator extends Context.Service<
             ),
           );
       };
+      const runReconciliationOrPreparation: CodeGraphRoutineMaintenanceRun = input =>
+        runBuildHistoryMaintenance(input).pipe(
+          Effect.flatMap(history => {
+            if (history.state === 'completed' && history.remaining) return Effect.succeed(history);
+            return runReconciliationOrPreparationWithoutHistory(input).pipe(
+              Effect.map(reconciliation =>
+                history.state === 'deferred' && maintenanceResultIsEmpty(reconciliation) ? history : reconciliation,
+              ),
+            );
+          }),
+        );
       const runVectorMaintenance: CodeGraphOrdinaryMaintenanceRuns['vector'] = input =>
         Effect.sync(() => performance.now()).pipe(
           Effect.flatMap(startedAt =>
@@ -599,6 +636,10 @@ function emptyMaintenanceResult(): CodeGraphRoutineMaintenanceResult {
     rowsDeleted: 0,
     state: 'completed',
   };
+}
+
+function maintenanceResultIsEmpty(result: CodeGraphRoutineMaintenanceResult): boolean {
+  return result.state === 'completed' && result.cleanup === 'none' && !result.remaining;
 }
 
 /**
