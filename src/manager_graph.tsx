@@ -272,7 +272,7 @@ export interface GraphBuildStatus {
       readonly transactionMilliseconds?: number;
     };
   };
-  readonly owner: {readonly processId: number};
+  readonly owner: {readonly processId: number; readonly processStartIdentity?: string};
   readonly phase: string;
   readonly request?: {readonly key: string};
   readonly resolution?: {
@@ -397,6 +397,14 @@ export interface GraphBuildTarget {
   readonly worktreeLabel: string;
 }
 
+export interface GraphBuildConcurrencyState {
+  readonly activeTargetCommit?: string;
+  readonly latestTargetCommit: string;
+  readonly queuedRequests: number;
+  readonly readySnapshotCommit?: string;
+  readonly staleReady: boolean;
+}
+
 export function graphBuildTarget(
   build: GraphBuildStatus,
   repositories: readonly GraphRepositoryGroup[],
@@ -421,6 +429,49 @@ export function graphBuildTarget(
         build.identity.worktreeId,
       )}`,
   };
+}
+
+/**
+ * Summarize only observed concurrency facts. File locks do not promise FIFO, so
+ * waiters are counted without claiming an execution position. The most recent
+ * request is the latest requested target, independent of input ordering.
+ */
+export function graphBuildConcurrencyState(
+  build: GraphBuildStatus,
+  waiters: readonly GraphBuildStatus[],
+  repositories: readonly GraphRepositoryGroup[],
+): GraphBuildConcurrencyState {
+  const matchingWaiters = waiters.filter(
+    waiter =>
+      waiter.buildId !== build.buildId &&
+      waiter.identity.checkoutId === build.identity.checkoutId &&
+      waiter.identity.worktreeId === build.identity.worktreeId,
+  );
+  const latest = [build, ...matchingWaiters].sort(compareGraphBuildRequest)[matchingWaiters.length]!;
+  const repository = repositories.find(candidate => candidate.repositoryId === build.identity.repositoryId);
+  const ready = repository?.views.find(
+    candidate =>
+      candidate.checkoutId === build.identity.checkoutId && candidate.worktreeId === build.identity.worktreeId,
+  );
+  const queuedRequests = matchingWaiters.length + (build.state === 'queued' ? 1 : 0);
+  const readySnapshotCommit = ready?.snapshot.commit;
+  return {
+    ...(build.state === 'running' ? {activeTargetCommit: build.identity.commit} : {}),
+    latestTargetCommit: latest.identity.commit,
+    queuedRequests,
+    ...(readySnapshotCommit === undefined ? {} : {readySnapshotCommit}),
+    staleReady: readySnapshotCommit !== undefined && !graphCommitMatches(readySnapshotCommit, latest.identity.commit),
+  };
+}
+
+function compareGraphBuildRequest(left: GraphBuildStatus, right: GraphBuildStatus): number {
+  const leftStartedAt = Date.parse(left.timestamps.startedAt) || 0;
+  const rightStartedAt = Date.parse(right.timestamps.startedAt) || 0;
+  return leftStartedAt - rightStartedAt || compareCodeUnits(left.buildId, right.buildId);
+}
+
+function graphCommitMatches(left: string, right: string): boolean {
+  return left === right || left.startsWith(right) || right.startsWith(left);
 }
 
 export function graphStatusPollDelay(
@@ -1806,7 +1857,7 @@ export function GraphWorkspace(props: {
                 build={build}
                 key={`${build.identity.checkoutId}:${build.identity.worktreeId}:${build.buildId}`}
                 repositories={repositories}
-                waiterCount={graphWaiterCountForBuild(build, props.catalog?.waiters ?? [])}
+                waiters={props.catalog?.waiters ?? []}
               />
             ))}
           </div>
@@ -3633,7 +3684,7 @@ function GraphMaintenanceProgress(props: {readonly status: CodeGraphMaintenanceS
 function GraphBuildProgress(props: {
   readonly build: GraphBuildStatus;
   readonly repositories: readonly GraphRepositoryGroup[];
-  readonly waiterCount: number;
+  readonly waiters: readonly GraphBuildStatus[];
 }): React.ReactElement {
   const {build} = props;
   const completed = build.counters.completed;
@@ -3647,6 +3698,8 @@ function GraphBuildProgress(props: {
   const progressSilent = build.coordination?.progressSilent === true;
   const eta = progressSilent ? undefined : build.eta;
   const target = graphBuildTarget(build, props.repositories);
+  const concurrency = graphBuildConcurrencyState(build, props.waiters, props.repositories);
+  const waiterCount = graphWaiterCountForBuild(build, props.waiters);
   const statusLabel =
     build.state === 'failed'
       ? 'Indexing failed'
@@ -3667,6 +3720,27 @@ function GraphBuildProgress(props: {
       <p className="graph-build-phase">
         {statusLabel} · {build.phase}/{build.subphase ?? 'working'} · commit {build.identity.commit}
       </p>
+      <p className="graph-build-concurrency">
+        {build.state === 'running'
+          ? `Active target ${graphCommitLabel(build.identity.commit)}`
+          : build.state === 'queued'
+            ? `Queued target ${graphCommitLabel(build.identity.commit)}`
+            : build.state === 'failed'
+              ? `Failed target ${graphCommitLabel(build.identity.commit)}`
+              : `Completed target ${graphCommitLabel(build.identity.commit)}`}
+        {concurrency.latestTargetCommit === build.identity.commit
+          ? ''
+          : ` · latest target ${graphCommitLabel(concurrency.latestTargetCommit)} queued`}
+        {concurrency.queuedRequests === 0
+          ? ''
+          : ` · ${concurrency.queuedRequests.toLocaleString()} queued request${concurrency.queuedRequests === 1 ? '' : 's'}`}
+      </p>
+      {concurrency.staleReady && concurrency.readySnapshotCommit !== undefined ? (
+        <p className="graph-build-attention">
+          Ready snapshot {graphCommitLabel(concurrency.readySnapshotCommit)} remains queryable · stale for latest target{' '}
+          {graphCommitLabel(concurrency.latestTargetCommit)}
+        </p>
+      ) : null}
       {percentage === undefined ? null : (
         <div className="graph-build-meter" aria-label={`${Math.round(percentage)}% complete`}>
           <i style={{width: `${percentage}%`}} />
@@ -3870,7 +3944,12 @@ function GraphBuildProgress(props: {
         </p>
       ) : null}
       <footer>
-        <span>Process {build.owner.processId}</span>
+        <span title={build.owner.processStartIdentity}>
+          Process {build.owner.processId}
+          {build.owner.processStartIdentity
+            ? ` · owner instance ${shortGraphIdentity(build.owner.processStartIdentity)}`
+            : ''}
+        </span>
         {eta && eta.confidence !== 'low' ? (
           <span>
             Estimated time remaining in this phase: {formatBuildDuration(eta.remainingMilliseconds)} · {eta.confidence}{' '}
@@ -3878,11 +3957,15 @@ function GraphBuildProgress(props: {
             {eta.basis ? ` · ${graphEtaBasisLabel(eta.basis)}` : ''}
           </span>
         ) : null}
-        {props.waiterCount > 0 ? <span>{props.waiterCount} waiting process(es)</span> : null}
+        {waiterCount > 0 ? <span>{waiterCount} waiting process(es) for this exact target</span> : null}
         {build.error ? <span className="graph-build-error">{build.error.summary}</span> : null}
       </footer>
     </article>
   );
+}
+
+function graphCommitLabel(commit: string): string {
+  return commit.slice(0, 12) || 'unknown';
 }
 
 function graphActiveBatchNumber(completed: number, total: number): number {

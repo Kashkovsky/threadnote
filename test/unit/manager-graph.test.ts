@@ -8,6 +8,7 @@ import {
   graphAnalysisCoverageLabel,
   graphAnalysisTopologyAvailable,
   graphAdministrationTarget,
+  graphBuildConcurrencyState,
   graphBuildIsActive,
   graphBuildShouldDisplay,
   graphBuildTarget,
@@ -285,6 +286,66 @@ describe('manager graph focus', () => {
     expect(markup).toContain('21 relations');
     expect(markup).toContain('Extraction telemetry: 7 files completed');
     expect(markup).toContain('2 at or above 1.00s');
+  });
+
+  it('shows the active owner, latest queued target, and stale queryable snapshot without claiming FIFO order', () => {
+    const neverResolves = () => new Promise<never>(() => undefined);
+    const baseRepository = repositoryGroup('repository', ['worktree'], 'worktree');
+    const repository = {
+      ...baseRepository,
+      views: baseRepository.views.map(view => ({
+        ...view,
+        checkoutId: 'checkout',
+        snapshot: {...view.snapshot, commit: '1111111111111111111111111111111111111111'},
+        worktreeId: 'worktree',
+      })),
+    };
+    const build = {
+      ...graphBuildStatus('running'),
+      buildId: 'active-build',
+      coordination: {lockVerified: true, role: 'owner' as const},
+      identity: {...graphBuildStatus('running').identity, commit: '222222222222'},
+      owner: {processId: 42, processStartIdentity: 'opaque-process-start-00000042'},
+    };
+    const waiter = {
+      ...graphBuildStatus('queued'),
+      buildId: 'latest-waiter',
+      identity: {...build.identity, commit: '333333333333'},
+      request: {key: 'latest-request'},
+      timestamps: {
+        ...graphBuildStatus('queued').timestamps,
+        startedAt: '2026-07-31T12:01:00.000Z',
+      },
+    };
+
+    expect(graphBuildConcurrencyState(build, [waiter], [repository])).toEqual({
+      activeTargetCommit: '222222222222',
+      latestTargetCommit: '333333333333',
+      queuedRequests: 1,
+      readySnapshotCommit: '1111111111111111111111111111111111111111',
+      staleReady: true,
+    });
+
+    const markup = renderToStaticMarkup(
+      createElement(GraphWorkspace, {
+        catalog: {builds: [build], diagnostics: [], repositories: [repository], waiterCount: 1, waiters: [waiter]},
+        loadAnalysis: neverResolves,
+        loadCatalogPage: neverResolves,
+        loadGraph: neverResolves,
+        loadNodeDetail: neverResolves,
+        loadQuery: neverResolves,
+        loadViewsPage: neverResolves,
+        onRefresh: () => undefined,
+      }),
+    );
+
+    expect(markup).toContain('Active target 222222222222');
+    expect(markup).toContain('latest target 333333333333 queued');
+    expect(markup).toContain('1 queued request');
+    expect(markup).toContain('Ready snapshot 111111111111 remains queryable');
+    expect(markup).toContain('stale for latest target 333333333333');
+    expect(markup).toContain('Process 42 · owner instance 00000042');
+    expect(markup).not.toContain('queue position');
   });
 
   it('uses catalog fallbacks before either a view or continuation exists', () => {

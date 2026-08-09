@@ -1,9 +1,11 @@
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import {
+  graphBuildConcurrencyState,
   graphFocusTarget,
   graphWheelZoomFactor,
   graphWithNodeNeighborhood,
+  type GraphBuildStatus,
   type GraphNodeDetail,
   type GraphVisualization,
 } from '../../src/manager_graph.js';
@@ -20,6 +22,47 @@ import {
 } from '../../src/manager_graph_limits.js';
 
 describe('Manager graph properties', () => {
+  it('selects the latest observed queued target independently of waiter order', () => {
+    fc.assert(
+      fc.property(
+        fc.uniqueArray(fc.integer({min: 1, max: 1_000_000}), {minLength: 1, maxLength: 80}),
+        startedAtValues => {
+          const owner = graphBuildStatus('owner', '000000000000', 0, 'running');
+          const waiters = startedAtValues.map(startedAt =>
+            graphBuildStatus(
+              `waiter-${startedAt.toString().padStart(7, '0')}`,
+              startedAt.toString(16).padStart(12, '0'),
+              startedAt,
+              'queued',
+            ),
+          );
+          const unrelated = {
+            ...graphBuildStatus('unrelated', 'ffffffffffff', 2_000_000, 'queued'),
+            identity: {
+              ...owner.identity,
+              checkoutId: 'other-checkout',
+              worktreeId: 'other-worktree',
+            },
+          };
+          const expected = Math.max(...startedAtValues)
+            .toString(16)
+            .padStart(12, '0');
+          const forward = graphBuildConcurrencyState(owner, [...waiters, unrelated], []);
+          const reverse = graphBuildConcurrencyState(owner, [unrelated, ...waiters].reverse(), []);
+
+          expect(forward).toEqual(reverse);
+          expect(forward).toEqual({
+            activeTargetCommit: '000000000000',
+            latestTargetCommit: expected,
+            queuedRequests: waiters.length,
+            staleReady: false,
+          });
+        },
+      ),
+      {numRuns: 160},
+    );
+  });
+
   it('always normalizes arbitrary requested budgets into positive hard bounds', () => {
     fc.assert(
       fc.property(
@@ -166,6 +209,30 @@ describe('Manager graph properties', () => {
     );
   });
 });
+
+function graphBuildStatus(
+  buildId: string,
+  commit: string,
+  startedAtMilliseconds: number,
+  state: 'queued' | 'running',
+): GraphBuildStatus {
+  const startedAt = new Date(startedAtMilliseconds).toISOString();
+  return {
+    buildId,
+    counters: {},
+    identity: {
+      checkoutId: 'checkout',
+      commit,
+      repositoryId: 'repository',
+      worktreeId: 'worktree',
+    },
+    observation: {heartbeatAgeMilliseconds: 0, liveness: 'active'},
+    owner: {processId: 42},
+    phase: state === 'queued' ? 'waiting' : 'scanning',
+    state,
+    timestamps: {heartbeatAt: startedAt, lastProgressAt: startedAt, startedAt},
+  };
+}
 
 function codeGraphSymbol(id: string, resolutionScopeId: string | undefined): CodeGraphSymbol {
   return {
