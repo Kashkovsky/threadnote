@@ -189,8 +189,7 @@ describe('shared ready view attachment locking', () => {
     const root = temporaryRepository();
     const repositoryRoot = join(root, 'repository');
     const threadnoteHome = join(root, 'threadnote-home');
-    const nextCommit = createNextCommit(repositoryRoot);
-    git(repositoryRoot, ['reset', '--hard', 'HEAD~1']);
+    let nextCommit: string | undefined;
 
     const observed = await runEffect(
       Effect.gen(function* () {
@@ -203,13 +202,17 @@ describe('shared ready view attachment locking', () => {
         yield* store.activate(layout.databasePath, identity, snapshot, [], [], []);
         const before = yield* graph.statusForIdentity(threadnoteHome, identity);
         const attached = yield* graph.attachSharedReadySnapshot(threadnoteHome, identity, before, {
-          afterPromotion: () => Effect.sync(() => git(repositoryRoot, ['reset', '--hard', nextCommit])),
+          afterPromotion: () =>
+            Effect.sync(() => {
+              nextCommit = createNextCommit(repositoryRoot);
+            }),
         });
         const pointer = yield* store.readySnapshot(layout.databasePath, identity.worktreeId);
         return {attached, pointer, snapshot};
       }),
     );
 
+    expect(nextCommit).toBeDefined();
     expect(observed.attached.identity.headCommit).toBe(nextCommit);
     expect(observed.attached.readySnapshot?.id).toBe(observed.snapshot.id);
     expect(observed.attached.stale).toBe(true);
