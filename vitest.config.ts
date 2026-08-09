@@ -46,9 +46,12 @@ export default defineConfig({
     // Dedicated parser-pool and heavy-tail tests exercise parallel extraction.
     env: {THREADNOTE_CODE_GRAPH_PARSER_WORKERS: '1'},
     environment: 'node',
-    // Bound local shared-machine dogfood runs. CI uses Vitest's available worker
-    // pool inside each isolated matrix runner instead of serializing 240+ files.
+    // Bound local shared-machine dogfood runs. Ordinary CI shards use the
+    // runner's available pool; long-test matrix jobs stay at two workers so a
+    // handful of CPU-heavy parsers cannot inflate a neighboring test from
+    // seconds to the per-test timeout on a two-core hosted runner.
     ...(process.env.CI ? {} : {maxWorkers: 2}),
+    ...(ciLongRunningGroupName && !ciSerializedLongGroup ? {maxWorkers: 2} : {}),
     ...(ciSerializedLongGroup ? {fileParallelism: false, maxWorkers: 1} : {}),
     hookTimeout: 30_000,
     include: ciLongRunningGroup ? [...ciLongRunningGroup] : ['test/**/*.test.ts'],

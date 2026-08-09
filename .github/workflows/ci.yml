@@ -146,7 +146,7 @@ jobs:
 
       - run: bun install --frozen-lockfile
 
-      - name: Run isolated long-running group with all available Vitest workers
+      - name: Run isolated long-running group with bounded Vitest workers
         run: bun --bun vitest run
         env:
           THREADNOTE_VITEST_LONG_GROUP: ${{ matrix.group }}

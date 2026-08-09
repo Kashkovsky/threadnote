@@ -36,6 +36,7 @@ describe('shared ready view attachment locking', () => {
       const layout = codeGraphLayout(path, threadnoteHome, identity.checkoutId, identity.worktreeId);
       const snapshot = readySnapshot(identity);
       yield* store.activate(layout.databasePath, identity, snapshot, [], [], []);
+      yield* store.acquireSnapshotLease(layout.databasePath, snapshot.id, 60_000);
       const before = yield* graph.statusForIdentity(threadnoteHome, identity);
       let promotionProbes = 0;
 
@@ -79,6 +80,7 @@ describe('shared ready view attachment locking', () => {
         const layout = codeGraphLayout(path, threadnoteHome, identity.checkoutId, identity.worktreeId);
         const snapshot = readySnapshot(identity);
         yield* store.activate(layout.databasePath, identity, snapshot, [], [], []);
+        yield* store.acquireSnapshotLease(layout.databasePath, snapshot.id, 60_000);
         const before = yield* graph.statusForIdentity(threadnoteHome, identity);
 
         const acquired = yield* Deferred.make<void>();
@@ -169,6 +171,7 @@ describe('shared ready view attachment locking', () => {
         const layout = codeGraphLayout(path, threadnoteHome, identity.checkoutId, identity.worktreeId);
         const snapshot = readySnapshot(identity);
         yield* store.activate(layout.databasePath, identity, snapshot, [], [], []);
+        yield* store.acquireSnapshotLease(layout.databasePath, snapshot.id, 60_000);
         const before = yield* graph.statusForIdentity(threadnoteHome, identity);
         const attached = yield* graph.attachSharedReadySnapshot(threadnoteHome, identity, before, {
           afterOptimisticCandidate: () => Effect.sync(() => git(repositoryRoot, ['reset', '--hard', nextCommit])),
@@ -200,6 +203,7 @@ describe('shared ready view attachment locking', () => {
         const layout = codeGraphLayout(path, threadnoteHome, identity.checkoutId, identity.worktreeId);
         const snapshot = readySnapshot(identity);
         yield* store.activate(layout.databasePath, identity, snapshot, [], [], []);
+        yield* store.acquireSnapshotLease(layout.databasePath, snapshot.id, 60_000);
         const before = yield* graph.statusForIdentity(threadnoteHome, identity);
         const attached = yield* graph.attachSharedReadySnapshot(threadnoteHome, identity, before, {
           afterPromotion: () =>
@@ -233,6 +237,7 @@ describe('shared ready view attachment locking', () => {
         const layout = codeGraphLayout(path, threadnoteHome, identity.checkoutId, identity.worktreeId);
         const snapshot = readySnapshot(identity);
         yield* store.activate(layout.databasePath, identity, snapshot, [], [], []);
+        yield* store.acquireSnapshotLease(layout.databasePath, snapshot.id, 60_000);
         const before = yield* graph.statusForIdentity(threadnoteHome, identity);
         const attached = yield* graph.attachSharedReadySnapshot(threadnoteHome, identity, before, {
           afterPromotion: () =>
