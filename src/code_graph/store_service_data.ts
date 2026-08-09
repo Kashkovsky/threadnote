@@ -555,6 +555,7 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
       workspaceFingerprint,
       fileSetFingerprint,
       graphContentId,
+      preferredCommitGroups,
     ) =>
       fs.exists(databasePath).pipe(
         Effect.flatMap(exists =>
@@ -567,6 +568,7 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
                   workspaceFingerprint,
                   fileSetFingerprint,
                   graphContentId,
+                  preferredCommitGroups,
                 ),
               )
             : Effect.succeed(undefined),

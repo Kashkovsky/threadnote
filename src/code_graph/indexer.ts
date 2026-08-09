@@ -24,6 +24,12 @@ import {
   PROJECT_INCREMENTAL_CLOSURE_MAX_SOURCE_BYTES,
   selectProjectIncrementalClosure,
 } from './incremental_closure.js';
+import {preferredIncrementalBaseCommitGroups} from './incremental_base_selection.js';
+import {
+  codeGraphIncrementalWorkFitsBudget,
+  measureCodeGraphIncrementalWork,
+  type CodeGraphIncrementalWork,
+} from './incremental_work.js';
 import {
   inventoryRepository,
   worktreeOverlayState,
@@ -180,6 +186,7 @@ type IncrementalOverlayAssessment =
       readonly deletedPaths?: readonly string[];
       readonly resolutionClosure?: 'changed' | 'full' | 'project';
       readonly reuse: 'persisted-base' | 'staged-base';
+      readonly work: CodeGraphIncrementalWork;
     }
   | {
       readonly mode: 'fallback';
@@ -1452,6 +1459,10 @@ const attemptReusableCleanSnapshot = Effect.fn('codeGraph.attemptReusableCleanSn
     return Option.none<ReusableCleanSnapshotAttempt>();
   }
   const extractorSet = extractorSetIdentity(input.inventory.files, input.languagePacks);
+  const preferredCommitGroups = yield* preferredIncrementalBaseCommitGroups(
+    input.identity.repoRoot,
+    input.identity.headCommit,
+  );
   const candidate = yield* input.store.reusableCleanBase(
     input.layout.databasePath,
     input.identity.repositoryId,
@@ -1459,6 +1470,7 @@ const attemptReusableCleanSnapshot = Effect.fn('codeGraph.attemptReusableCleanSn
     workspace.fingerprint,
     reusableBaseFileSetFingerprint(input.inventory.files),
     graphContentIdentity(extractorSet, input.inventory.files),
+    preferredCommitGroups,
   );
   if (!candidate || candidate.snapshot.id === input.logicalSnapshotId)
     return Option.none<ReusableCleanSnapshotAttempt>();
@@ -1658,6 +1670,10 @@ const attemptReusableDirtyBase = Effect.fn('codeGraph.attemptReusableDirtyBase')
       readonly preassessment: Extract<IncrementalOverlayPreassessment, {readonly mode: 'compatible'}>;
     }>();
   }
+  const preferredCommitGroups = yield* preferredIncrementalBaseCommitGroups(
+    input.identity.repoRoot,
+    input.identity.headCommit,
+  );
   const candidate = yield* input.store.reusableCleanBase(
     input.layout.databasePath,
     input.identity.repositoryId,
@@ -1665,6 +1681,7 @@ const attemptReusableDirtyBase = Effect.fn('codeGraph.attemptReusableDirtyBase')
     workspace.fingerprint,
     reusableBaseFileSetFingerprint(input.inventory.files),
     graphContentIdentity(input.extractorSet, input.inventory.files),
+    preferredCommitGroups,
   );
   if (!candidate) return Option.none();
   const lease = yield* input.store
@@ -2640,6 +2657,9 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
     ].slice(0, 100),
     durationMs: (yield* Clock.currentTimeMillis) - input.startedAt,
     identity: input.identity,
+    ...(incrementalApplied && incrementalAssessment?.mode === 'eligible'
+      ? {incrementalWork: incrementalAssessment.work}
+      : {}),
     materialization: {
       ...(incrementalApplied && incrementalAssessment?.mode === 'eligible'
         ? {
@@ -2749,14 +2769,25 @@ const assessIncrementalOverlay = Effect.fn('codeGraph.assessIncrementalOverlay')
   if (finalBatches.length !== 1 && preassessment.resolutionClosure !== 'full') {
     return {mode: 'fallback', reason: 'fact-budget-expanded'} satisfies IncrementalOverlayAssessment;
   }
+  const facts = finalBatches.flatMap(batch => batch.map(value => value.facts));
+  const work = measureCodeGraphIncrementalWork({
+    deletedPaths: preassessment.deletedPaths,
+    facts,
+    files: preassessment.files,
+    totalFiles: input.inventory.files.length,
+  });
+  if (!codeGraphIncrementalWorkFitsBudget(work)) {
+    return {mode: 'fallback', reason: 'incremental-rewrite-unbounded'} satisfies IncrementalOverlayAssessment;
+  }
   return {
     closureProjects: preassessment.closureProjects,
     deletedPaths: preassessment.deletedPaths,
-    facts: finalBatches.flatMap(batch => batch.map(value => value.facts)),
+    facts,
     files: preassessment.files,
     mode: 'eligible',
     resolutionClosure: preassessment.resolutionClosure,
     reuse,
+    work,
   } satisfies IncrementalOverlayAssessment;
 });
 
@@ -3391,6 +3422,8 @@ function overlayFallbackDescription(reason: CodeGraphOverlayFallbackReason): str
       return 'eligible files were added or deleted';
     case 'forced-full-rebuild':
       return 'a full rebuild was requested';
+    case 'incremental-rewrite-unbounded':
+      return 'the changed closure exceeded the bounded incremental rewrite budget';
     case 'no-materialized-changes':
       return 'no graph-eligible file content changed';
     case 'project-closure-incomplete':

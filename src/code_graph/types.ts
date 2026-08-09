@@ -393,6 +393,7 @@ export interface CodeGraphIndexSummary {
   readonly diagnostics: readonly string[];
   readonly durationMs: number;
   readonly identity: RepositoryIdentity;
+  readonly incrementalWork?: import('./incremental_work.js').CodeGraphIncrementalWork;
   readonly materialization?: {
     readonly closureProjects?: number;
     readonly fallbackReason?: CodeGraphOverlayFallbackReason;
@@ -414,6 +415,7 @@ export type CodeGraphOverlayFallbackReason =
   | 'fact-budget-expanded'
   | 'file-set-changed'
   | 'forced-full-rebuild'
+  | 'incremental-rewrite-unbounded'
   | 'no-materialized-changes'
   | 'project-closure-incomplete'
   | 'project-closure-unbounded'

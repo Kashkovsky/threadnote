@@ -381,6 +381,7 @@ describe('manager graph focus', () => {
     expect(graphStatusPollDelay([graphBuildStatus('running')])).toBe(1_000);
     expect(graphStatusPollDelay([graphBuildStatus('queued')])).toBe(1_000);
     expect(graphStatusPollDelay([graphBuildStatus('completed')])).toBe(5_000);
+    expect(graphStatusPollDelay([], undefined, true)).toBe(1_000);
     const maintenance = {
       checkoutId: 'a'.repeat(64),
       completed: 3,

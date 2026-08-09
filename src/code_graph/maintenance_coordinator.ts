@@ -59,7 +59,7 @@ export interface CodeGraphRoutineMaintenanceTick {
 }
 
 export interface CodeGraphMaintenanceCoordinatorShape {
-  /** Run exactly one nonblocking ordinary Store/vector unit without entering a target-worktree lane. */
+  /** Run exactly one nonblocking Store routine unit without entering a target-worktree lane. */
   readonly kickOrdinary: (
     input: CodeGraphRoutineMaintenanceTick,
   ) => Effect.Effect<CodeGraphRoutineMaintenanceResult, CodeGraphStoreError>;
@@ -414,7 +414,7 @@ export class CodeGraphMaintenanceCoordinator extends Context.Service<
           ),
         {},
         runResidualCleanup,
-        runOrdinaryMaintenance,
+        runRoutineMaintenance,
       );
     }),
   );

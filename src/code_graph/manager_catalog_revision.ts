@@ -1,9 +1,11 @@
 import {Effect, Path} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {codeGraphDatabasePaths} from './maintenance.js';
+import {readCodeGraphLocalAssociation} from './local_provenance.js';
 import {compareCodeUnits} from './ordering.js';
 import {CodeGraphStore} from './store.js';
 import {type CodeGraphActiveViewIdentity} from './store_models.js';
+import type {CodeGraphLifecycleOpportunityTarget} from './lifecycle_opportunity.js';
 
 export const MANAGER_CATALOG_REVISION_VISIBLE_VIEW_LIMIT = 32;
 
@@ -12,6 +14,12 @@ export interface ManagerGraphCatalogRevisionDatabase {
   readonly state: 'ready' | 'unavailable';
   readonly views: readonly CodeGraphActiveViewIdentity[];
   readonly viewsTruncated: boolean;
+}
+
+export interface ManagerGraphCatalogStatusObservation {
+  readonly catalogRevision: string;
+  readonly lifecyclePending: boolean;
+  readonly lifecycleTargets: readonly CodeGraphLifecycleOpportunityTarget[];
 }
 
 /** Stable, path-free and order-independent revision for visible active pointers. */
@@ -34,8 +42,8 @@ export function managerGraphCatalogRevision(databases: readonly ManagerGraphCata
   return sha256HexSync(`threadnote-manager-graph-catalog-revision-v1\n${JSON.stringify(canonical)}`);
 }
 
-/** Read only the first visible active-pointer identities from each local graph. */
-export const observeManagerGraphCatalogRevision = Effect.fn('codeGraph.observeManagerCatalogRevision')(function* (
+/** Read the visible active pointers and path-free missing-view status in one bounded pass. */
+export const observeManagerGraphCatalogStatus = Effect.fn('codeGraph.observeManagerCatalogStatus')(function* (
   threadnoteHome: string,
 ) {
   const path = yield* Path.Path;
@@ -43,28 +51,68 @@ export const observeManagerGraphCatalogRevision = Effect.fn('codeGraph.observeMa
   const databases = yield* codeGraphDatabasePaths(threadnoteHome);
   const observations = yield* Effect.forEach(
     databases,
-    database => {
-      const checkoutId = path.basename(path.dirname(database));
-      return store.loadActiveViewIdentities(database, MANAGER_CATALOG_REVISION_VISIBLE_VIEW_LIMIT + 1).pipe(
-        Effect.map(views => ({
-          checkoutId,
-          state: 'ready' as const,
-          views: views.slice(0, MANAGER_CATALOG_REVISION_VISIBLE_VIEW_LIMIT),
-          viewsTruncated: views.length > MANAGER_CATALOG_REVISION_VISIBLE_VIEW_LIMIT,
-        })),
-        Effect.catch(() =>
-          Effect.succeed({
+    database =>
+      Effect.gen(function* () {
+        const checkoutId = path.basename(path.dirname(database));
+        const loaded = yield* store
+          .loadActiveViewIdentities(database, MANAGER_CATALOG_REVISION_VISIBLE_VIEW_LIMIT + 1)
+          .pipe(Effect.option);
+        if (loaded._tag === 'None') {
+          return {
+            database: {
+              checkoutId,
+              state: 'unavailable' as const,
+              views: [],
+              viewsTruncated: false,
+            },
+          };
+        }
+        const views = loaded.value.slice(0, MANAGER_CATALOG_REVISION_VISIBLE_VIEW_LIMIT);
+        const associations = yield* Effect.forEach(
+          views,
+          view =>
+            readCodeGraphLocalAssociation(threadnoteHome, {
+              checkoutId,
+              repositoryId: view.repositoryId,
+              worktreeId: view.worktreeId,
+            }).pipe(Effect.catch(() => Effect.succeed({available: false, state: 'invalid'} as const))),
+          {concurrency: 2},
+        );
+        const anchor = associations.find(association => association.state === 'verified' && 'path' in association);
+        const anchorPath = anchor !== undefined && 'path' in anchor ? anchor.path : undefined;
+        const reconciliationPending = associations.some(association => association.state === 'missing');
+        return {
+          database: {
             checkoutId,
-            state: 'unavailable' as const,
-            views: [],
-            viewsTruncated: false,
-          }),
-        ),
-      );
-    },
+            state: 'ready' as const,
+            views,
+            viewsTruncated: loaded.value.length > MANAGER_CATALOG_REVISION_VISIBLE_VIEW_LIMIT,
+          },
+          target: {
+            ...(anchorPath === undefined ? {} : {anchorPath}),
+            checkoutId,
+            databasePath: database,
+            reconciliationPending,
+          } satisfies CodeGraphLifecycleOpportunityTarget,
+        };
+      }),
     {concurrency: 2},
   );
-  return managerGraphCatalogRevision(observations);
+  const lifecycleTargets = observations.flatMap(observation =>
+    observation.target === undefined ? [] : [observation.target],
+  );
+  return {
+    catalogRevision: managerGraphCatalogRevision(observations.map(observation => observation.database)),
+    lifecyclePending: lifecycleTargets.some(target => target.reconciliationPending === true),
+    lifecycleTargets,
+  } satisfies ManagerGraphCatalogStatusObservation;
+});
+
+/** Read only the first visible active-pointer identities from each local graph. */
+export const observeManagerGraphCatalogRevision = Effect.fn('codeGraph.observeManagerCatalogRevision')(function* (
+  threadnoteHome: string,
+) {
+  return (yield* observeManagerGraphCatalogStatus(threadnoteHome)).catalogRevision;
 });
 
 function compareRevisionViews(

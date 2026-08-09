@@ -91,6 +91,7 @@ export interface GraphCatalog {
   readonly builds: readonly GraphBuildStatus[];
   readonly catalogRevision?: string;
   readonly diagnostics: readonly GraphCatalogDiagnostic[];
+  readonly lifecyclePending?: boolean;
   readonly maintenance?: CodeGraphMaintenanceStatus;
   readonly repositories: readonly GraphRepositoryGroup[];
   readonly waiterCount: number;
@@ -509,8 +510,9 @@ function graphCommitMatches(left: string, right: string): boolean {
 export function graphStatusPollDelay(
   builds: readonly GraphBuildStatus[],
   maintenance?: CodeGraphMaintenanceStatus,
+  lifecyclePending = false,
 ): number {
-  return builds.some(graphBuildIsActive) || maintenance !== undefined ? 1_000 : 5_000;
+  return builds.some(graphBuildIsActive) || maintenance !== undefined || lifecyclePending ? 1_000 : 5_000;
 }
 
 export function graphMaintenanceStatusLabel(status: CodeGraphMaintenanceStatus): string {

@@ -245,7 +245,10 @@ function App(): React.ReactElement {
     const poll = async (): Promise<void> => {
       try {
         const status = await api<
-          Pick<GraphCatalog, 'builds' | 'catalogRevision' | 'maintenance' | 'waiterCount' | 'waiters'>
+          Pick<
+            GraphCatalog,
+            'builds' | 'catalogRevision' | 'lifecyclePending' | 'maintenance' | 'waiterCount' | 'waiters'
+          >
         >('/api/graphs/status', undefined, {timeoutMilliseconds: GRAPH_CATALOG_REQUEST_TIMEOUT_MILLISECONDS});
         if (cancelled) return;
         const active = status.builds.some(graphBuildIsActive);
@@ -280,7 +283,10 @@ function App(): React.ReactElement {
         }
         observedActiveBuild = active;
         observedActiveMaintenance = activeMaintenance;
-        timer = window.setTimeout(() => void poll(), graphStatusPollDelay(status.builds, status.maintenance));
+        timer = window.setTimeout(
+          () => void poll(),
+          graphStatusPollDelay(status.builds, status.maintenance, status.lifecyclePending),
+        );
       } catch {
         if (!cancelled) timer = window.setTimeout(() => void poll(), 15_000);
       }
@@ -1248,7 +1254,11 @@ function App(): React.ReactElement {
               administration={graphDiagnostics}
               administrationBusy={
                 graphAdministrationBusy ??
-                (graphCatalog?.maintenance ? graphMaintenanceStatusLabel(graphCatalog.maintenance) : undefined)
+                (graphCatalog?.maintenance
+                  ? graphMaintenanceStatusLabel(graphCatalog.maintenance)
+                  : graphCatalog?.lifecyclePending
+                    ? 'Reconciling indexed views'
+                    : undefined)
               }
               administrationOutput={graphAdministrationOutput}
               catalog={graphCatalog}

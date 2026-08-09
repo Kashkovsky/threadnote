@@ -132,15 +132,15 @@ describe('routine code graph maintenance', () => {
       );
 
       const coordinator = yield* CodeGraphMaintenanceCoordinator;
-      yield* coordinator.tick({
-        anchorIdentity: identity,
-        checkoutId,
-        databasePath: layout.databasePath,
-        threadnoteHome: home,
-        writerLockPath: layout.databaseWriteLockPath,
-      });
-      for (let attempt = 0; attempt < 50 && (yield* fs.exists(statusPath)); attempt += 1) {
-        yield* Effect.sleep(5);
+      for (let attempt = 0; attempt < 3 && (yield* fs.exists(statusPath)); attempt += 1) {
+        yield* coordinator.tick({
+          anchorIdentity: identity,
+          automaticTail: false,
+          checkoutId,
+          databasePath: layout.databasePath,
+          threadnoteHome: home,
+          writerLockPath: layout.databaseWriteLockPath,
+        });
       }
 
       expect(yield* fs.exists(statusPath)).toBe(false);

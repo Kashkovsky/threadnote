@@ -14,6 +14,7 @@ export const CODE_GRAPH_LIFECYCLE_OPPORTUNITIES = [
   'startup',
   'catalog',
   'diagnostics',
+  'status',
   'index-completion',
   'critical-error',
 ] as const;
@@ -27,6 +28,8 @@ export interface CodeGraphLifecycleOpportunityTarget {
   readonly checkoutId: string;
   readonly databasePath: string;
   readonly pressure?: Extract<CodeGraphStoragePressure, 'critical' | 'elevated'>;
+  /** Path-free signal used by long-lived status polling to keep reconciliation cadence responsive. */
+  readonly reconciliationPending?: boolean;
 }
 
 export type CodeGraphLifecycleOpportunityResult =
@@ -83,6 +86,7 @@ export const observeCodeGraphLifecycleOpportunityTargets = Effect.fn('codeGraph.
             checkoutId,
             databasePath,
             ...(pressure === 'critical' || pressure === 'elevated' ? {pressure} : {}),
+            reconciliationPending: associations.some(association => association.state === 'missing'),
           } satisfies CodeGraphLifecycleOpportunityTarget;
         }),
       {concurrency: 2},
@@ -116,21 +120,22 @@ export const runCodeGraphLifecycleOpportunity = Effect.fn('codeGraph.runLifecycl
     }
   }
   const pressure = target.pressure ?? input.pressure;
-  const observed = yield* input.maintenance
-    .tick({
-      ...(anchorIdentity === undefined ? {} : {allowIndexPreparation: true as const, anchorIdentity}),
-      ...(anchorIdentity === undefined && target.anchorPath !== undefined
-        ? {allowIndexPreparation: true as const, anchorPath: target.anchorPath}
-        : {}),
-      automaticTail: false,
-      checkoutId: target.checkoutId,
-      databasePath: target.databasePath,
-      joinActive: false,
-      ...(pressure === undefined ? {} : {pressure}),
-      threadnoteHome: input.threadnoteHome,
-      writerLockPath: codeGraphDatabaseWriteLockPath(path, input.threadnoteHome, target.checkoutId),
-    })
-    .pipe(Effect.timeoutOption(CODE_GRAPH_LIFECYCLE_OPPORTUNITY_UNIT_MILLISECONDS));
+  const tick = {
+    ...(anchorIdentity === undefined ? {} : {allowIndexPreparation: true as const, anchorIdentity}),
+    ...(anchorIdentity === undefined && target.anchorPath !== undefined
+      ? {allowIndexPreparation: true as const, anchorPath: target.anchorPath}
+      : {}),
+    automaticTail: false,
+    checkoutId: target.checkoutId,
+    databasePath: target.databasePath,
+    joinActive: false,
+    ...(pressure === undefined ? {} : {pressure}),
+    threadnoteHome: input.threadnoteHome,
+    writerLockPath: codeGraphDatabaseWriteLockPath(path, input.threadnoteHome, target.checkoutId),
+  } as const;
+  const observed = yield* (
+    input.opportunity === 'index-completion' ? input.maintenance.kickOrdinary(tick) : input.maintenance.tick(tick)
+  ).pipe(Effect.timeoutOption(CODE_GRAPH_LIFECYCLE_OPPORTUNITY_UNIT_MILLISECONDS));
   if (Option.isNone(observed)) {
     return {opportunity: input.opportunity, reason: 'deadline', state: 'deferred'} as const;
   }

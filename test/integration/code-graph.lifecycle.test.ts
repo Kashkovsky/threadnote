@@ -837,8 +837,125 @@ describe('native code graph lifecycle', () => {
       expect(Object.fromEntries(probes)).toEqual({
         'cache code graph file facts': probesPerObservation,
         'cache materialized code graph file shards': probesPerObservation,
+        'prepare temporary incremental code graph activation': probesPerObservation,
         'promote ready code graph snapshot': probesPerObservation,
+        'publish temporary code graph snapshot': probesPerObservation,
       });
+    }).pipe(Effect.provide(ApplicationLayer), TestClock.withLive),
+  );
+
+  effectIt.effect('selects the nearest compatible ancestor instead of a newer sibling commit', () =>
+    Effect.gen(function* () {
+      const root = createManySourceRepository(12);
+      const home = join(root, '.threadnote-test-home');
+      const indexer = yield* CodeGraphIndexer;
+      const first = yield* indexer.index({cwd: root, threadnoteHome: home});
+      const baseCommit = execFileSync('git', ['-C', root, 'rev-parse', 'HEAD'], {encoding: 'utf8'}).trim();
+      const siblingRoot = `${root}-sibling`;
+      temporaryRoots.push(siblingRoot);
+
+      git(root, ['worktree', 'add', '-qb', 'sibling', siblingRoot, baseCommit]);
+      writeFileSync(
+        join(siblingRoot, 'src/file-001.ts'),
+        readFileSync(join(siblingRoot, 'src/file-001.ts'), 'utf8').replace('return 1;', 'return 101;'),
+      );
+      git(siblingRoot, ['add', 'src/file-001.ts']);
+      git(siblingRoot, [
+        '-c',
+        'user.name=Threadnote Test',
+        '-c',
+        'user.email=test@threadnote.local',
+        'commit',
+        '-qm',
+        'newer sibling',
+      ]);
+      const sibling = yield* indexer.index({cwd: siblingRoot, force: true, threadnoteHome: home});
+
+      git(root, ['checkout', '-qb', 'target']);
+      writeFileSync(
+        join(root, 'src/file-000.ts'),
+        readFileSync(join(root, 'src/file-000.ts'), 'utf8').replace('return 0;', 'return 100;'),
+      );
+      git(root, ['add', 'src/file-000.ts']);
+      git(root, [
+        '-c',
+        'user.name=Threadnote Test',
+        '-c',
+        'user.email=test@threadnote.local',
+        'commit',
+        '-qm',
+        'target child',
+      ]);
+      const target = yield* indexer.index({cwd: root, threadnoteHome: home});
+
+      expect(sibling.snapshot.baseSnapshotId).toBeUndefined();
+      expect(target.snapshot.baseSnapshotId).toBe(first.snapshot.id);
+      expect(target.snapshot.baseSnapshotId).not.toBe(sibling.snapshot.id);
+      expect(target.materialization).toEqual({mode: 'incremental-clean', stagedFiles: 1, totalFiles: 12});
+      expect(target.incrementalWork).toMatchObject({changedFiles: 1, deletedFiles: 0, totalFiles: 12});
+      expect(target.incrementalWork?.factBytes).toBeGreaterThan(0);
+      expect(target.incrementalWork?.plannedRows).toBeGreaterThan(0);
+      expect(target.incrementalWork?.sourceBytes).toBeLessThan(1_024);
+    }).pipe(Effect.provide(ApplicationLayer), TestClock.withLive),
+  );
+
+  effectIt.effect('falls back when equally near merge parents are both reusable clean bases', () =>
+    Effect.gen(function* () {
+      const root = createManySourceRepository(4);
+      const home = join(root, '.threadnote-test-home');
+      const indexer = yield* CodeGraphIndexer;
+      yield* indexer.index({cwd: root, threadnoteHome: home});
+      const baseCommit = execFileSync('git', ['-C', root, 'rev-parse', 'HEAD'], {encoding: 'utf8'}).trim();
+      const rightRoot = `${root}-right`;
+      temporaryRoots.push(rightRoot);
+
+      git(root, ['checkout', '-qb', 'left']);
+      writeFileSync(
+        join(root, 'src/file-000.ts'),
+        readFileSync(join(root, 'src/file-000.ts'), 'utf8').replace('return 0;', 'return 10;'),
+      );
+      git(root, ['add', 'src/file-000.ts']);
+      git(root, [
+        '-c',
+        'user.name=Threadnote Test',
+        '-c',
+        'user.email=test@threadnote.local',
+        'commit',
+        '-qm',
+        'left change',
+      ]);
+      yield* indexer.index({cwd: root, force: true, threadnoteHome: home});
+
+      git(root, ['worktree', 'add', '-qb', 'right', rightRoot, baseCommit]);
+      writeFileSync(
+        join(rightRoot, 'src/file-001.ts'),
+        readFileSync(join(rightRoot, 'src/file-001.ts'), 'utf8').replace('return 1;', 'return 11;'),
+      );
+      git(rightRoot, ['add', 'src/file-001.ts']);
+      git(rightRoot, [
+        '-c',
+        'user.name=Threadnote Test',
+        '-c',
+        'user.email=test@threadnote.local',
+        'commit',
+        '-qm',
+        'right change',
+      ]);
+      yield* indexer.index({cwd: rightRoot, force: true, threadnoteHome: home});
+
+      git(root, [
+        '-c',
+        'user.name=Threadnote Test',
+        '-c',
+        'user.email=test@threadnote.local',
+        'merge',
+        '--no-edit',
+        'right',
+      ]);
+      const merged = yield* indexer.index({cwd: root, threadnoteHome: home});
+
+      expect(merged.snapshot.baseSnapshotId).toBeUndefined();
+      expect(merged.materialization).toEqual({mode: 'full', stagedFiles: 4, totalFiles: 4});
     }).pipe(Effect.provide(ApplicationLayer), TestClock.withLive),
   );
 
@@ -928,6 +1045,79 @@ describe('native code graph lifecycle', () => {
       ),
     ).toBe(false);
     expect(normalizeStoredGraph(result.rebuiltGraph)).toEqual(normalizeStoredGraph(firstGraph));
+  });
+
+  it('reextracts one invalid parser-cache item without discarding valid peers', async () => {
+    const root = createManySourceRepository(12);
+    const home = join(root, '.threadnote-test-home');
+    const first = await runEffect(
+      Effect.gen(function* () {
+        const indexer = yield* CodeGraphIndexer;
+        return yield* indexer.index({cwd: root, threadnoteHome: home});
+      }),
+    );
+    const databasePath = codeGraphDatabasePath(home, first);
+    const database = new Database(databasePath);
+    try {
+      expect(
+        database.query("UPDATE file_blobs SET facts_json = '{' WHERE path_hint = ?").run('src/file-000.ts').changes,
+      ).toBeGreaterThan(0);
+    } finally {
+      database.close();
+    }
+    git(root, [
+      '-c',
+      'user.name=Threadnote Test',
+      '-c',
+      'user.email=test@threadnote.local',
+      'commit',
+      '--allow-empty',
+      '-qm',
+      'cache recovery target',
+    ]);
+
+    const extractionCompletions: string[] = [];
+    const result = await runEffect(
+      Effect.gen(function* () {
+        const indexer = yield* CodeGraphIndexer;
+        const store = yield* CodeGraphStore;
+        const recovered = yield* indexer.index({
+          cwd: root,
+          onProgress: progress =>
+            Effect.sync(() => {
+              if (
+                progress.phase === 'scanning' &&
+                progress.activity?.stage === 'extracting' &&
+                progress.activity.parseMilliseconds !== undefined
+              ) {
+                extractionCompletions.push(progress.activity.path);
+              }
+            }),
+          threadnoteHome: home,
+        });
+        return {
+          firstGraph: yield* store.loadGraph(databasePath, first.snapshot.id),
+          recovered,
+          recoveredGraph: yield* store.loadGraph(databasePath, recovered.snapshot.id),
+        };
+      }),
+    );
+
+    expect(result.recovered.materialization).toEqual({mode: 'reused-snapshot', stagedFiles: 0, totalFiles: 12});
+    expect(extractionCompletions).toEqual(['src/file-000.ts']);
+    expect(normalizeStoredGraph(result.recoveredGraph)).toEqual(normalizeStoredGraph(result.firstGraph));
+    const repaired = new Database(databasePath, {readonly: true});
+    try {
+      expect(
+        repaired
+          .query<{readonly path: string}, [string]>(
+            "SELECT json_extract(facts_json, '$.path') AS path FROM file_blobs WHERE path_hint = ?",
+          )
+          .get('src/file-000.ts'),
+      ).toEqual({path: 'src/file-000.ts'});
+    } finally {
+      repaired.close();
+    }
   });
 
   effectIt.effect('rebuilds a valid materialized shard payload stored under the wrong path', () =>
@@ -1764,35 +1954,51 @@ describe('native code graph lifecycle', () => {
   it('retries when the worktree changes after activation but before pointer promotion', async () => {
     const root = createFixtureRepository();
     const home = join(root, '.threadnote-test-home');
+    const initialCommit = execFileSync('git', ['-C', root, 'rev-parse', 'HEAD'], {encoding: 'utf8'}).trim();
     let changed = false;
+    let staleSnapshotId: string | undefined;
 
-    const indexed = await runEffect(
+    const result = await runEffect(
       Effect.gen(function* () {
         const indexer = yield* CodeGraphIndexer;
         const query = yield* CodeGraphQueryService;
-        yield* indexer.index({
+        const store = yield* CodeGraphStore;
+        const current = yield* indexer.index({
           cwd: root,
           onProgress: progress =>
             Effect.sync(() => {
               if (!changed && progress.phase === 'activating' && progress.subphase === 'promoting') {
+                staleSnapshotId = progress.snapshotId;
                 changed = true;
                 replaceFunction(root, 'ensureVectorIndex', 'ensureRacedVectorIndex');
               }
             }),
           threadnoteHome: home,
         });
-        return yield* query.inspect({
+        const inspected = yield* query.inspect({
           cwd: root,
           operation: 'query',
           query: 'ensureRacedVectorIndex',
           refresh: false,
           threadnoteHome: home,
         });
+        const databasePath = codeGraphDatabasePath(home, current);
+        const stale = staleSnapshotId
+          ? yield* store.currentLexicalReadySnapshotById(databasePath, staleSnapshotId)
+          : undefined;
+        const staleGraph = stale ? yield* store.loadGraph(databasePath, stale.id) : undefined;
+        const active = yield* store.readySnapshot(databasePath, current.identity.worktreeId);
+        return {active, current, inspected, stale, staleGraph};
       }),
     );
 
-    expect(indexed.freshness).toBe('deferred');
-    expect(indexed.nodes.some(node => node.name === 'ensureRacedVectorIndex')).toBe(true);
+    expect(result.inspected.freshness).toBe('deferred');
+    expect(result.inspected.nodes.some(node => node.name === 'ensureRacedVectorIndex')).toBe(true);
+    expect(result.stale).toMatchObject({commit: initialCommit, id: staleSnapshotId, state: 'ready'});
+    expect(result.stale?.id).not.toBe(result.current.snapshot.id);
+    expect(result.staleGraph?.symbols.some(symbol => symbol.name === 'ensureVectorIndex')).toBe(true);
+    expect(result.staleGraph?.symbols.some(symbol => symbol.name === 'ensureRacedVectorIndex')).toBe(false);
+    expect(result.active?.id).toBe(result.current.snapshot.id);
   });
 
   it('removes stale committed facts when a changed source becomes ineligible', async () => {

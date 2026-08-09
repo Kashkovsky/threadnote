@@ -138,10 +138,90 @@ const selectReusableCleanBase = Effect.fn('codeGraph.selectReusableCleanBase')(f
   workspaceFingerprint: string,
   fileSetFingerprint: string,
   graphContentId?: string,
+  preferredCommitGroups?: readonly (readonly string[])[],
 ) {
   const sql = yield* SqlClient.SqlClient;
   yield* configureConnection(sql);
-  const candidates = yield* sql<SnapshotRow>`
+  if (graphContentId !== undefined) {
+    const exactCandidates = yield* sql<SnapshotRow>`
+      SELECT snapshot.*
+      FROM snapshots AS snapshot
+      JOIN snapshot_reuse_receipts AS receipt ON receipt.snapshot_id = snapshot.id
+      WHERE snapshot.repository_id = ${repositoryId}
+        AND snapshot.extractor_set = ${extractorSet}
+        AND snapshot.state = 'ready'
+        AND snapshot.dirty = 0
+        AND snapshot.base_snapshot_id IS NULL
+        AND snapshot.graph_content_id = ${graphContentId}
+        AND receipt.format_version = ${CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION}
+        AND receipt.resolution_surface_version = 1
+        AND receipt.workspace_fingerprint = ${workspaceFingerprint}
+      ORDER BY
+        CASE WHEN receipt.file_set_fingerprint = ${fileSetFingerprint} THEN 0 ELSE 1 END,
+        snapshot.completed_at DESC,
+        snapshot.id
+      LIMIT 8
+    `;
+    const exact = yield* loadFirstReusableCleanBase(exactCandidates);
+    if (exact !== undefined) return exact;
+  }
+
+  if (preferredCommitGroups !== undefined) {
+    const seen = new Set<string>();
+    const normalizedGroups = preferredCommitGroups.slice(0, 512).map(group =>
+      group.filter(commit => {
+        if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(commit) || seen.has(commit)) return false;
+        seen.add(commit);
+        return true;
+      }),
+    );
+    const candidateCommits = normalizedGroups.flat();
+    if (candidateCommits.length === 0) return undefined;
+    const availableRows = yield* sql<{readonly commit_id: string}>`
+      SELECT DISTINCT snapshot.commit_id
+      FROM snapshots AS snapshot
+      JOIN snapshot_reuse_receipts AS receipt ON receipt.snapshot_id = snapshot.id
+      WHERE snapshot.repository_id = ${repositoryId}
+        AND snapshot.extractor_set = ${extractorSet}
+        AND snapshot.state = 'ready'
+        AND snapshot.dirty = 0
+        AND snapshot.base_snapshot_id IS NULL
+        AND receipt.format_version = ${CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION}
+        AND receipt.resolution_surface_version = 1
+        AND receipt.workspace_fingerprint = ${workspaceFingerprint}
+        AND ${sql.in('commit_id', candidateCommits)}
+    `;
+    const available = new Set(availableRows.map(row => row.commit_id));
+    for (const group of normalizedGroups) {
+      const matches = group.filter(commit => available.has(commit));
+      if (matches.length === 0) continue;
+      // Equally near commits on different merge branches are not interchangeable evidence.
+      if (matches.length !== 1) return undefined;
+      const candidates = yield* sql<SnapshotRow>`
+        SELECT snapshot.*
+        FROM snapshots AS snapshot
+        JOIN snapshot_reuse_receipts AS receipt ON receipt.snapshot_id = snapshot.id
+        WHERE snapshot.repository_id = ${repositoryId}
+          AND snapshot.extractor_set = ${extractorSet}
+          AND snapshot.state = 'ready'
+          AND snapshot.dirty = 0
+          AND snapshot.base_snapshot_id IS NULL
+          AND snapshot.commit_id = ${matches[0]!}
+          AND receipt.format_version = ${CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION}
+          AND receipt.resolution_surface_version = 1
+          AND receipt.workspace_fingerprint = ${workspaceFingerprint}
+        ORDER BY
+          CASE WHEN receipt.file_set_fingerprint = ${fileSetFingerprint} THEN 0 ELSE 1 END,
+          snapshot.completed_at DESC,
+          snapshot.id
+        LIMIT 8
+      `;
+      return yield* loadFirstReusableCleanBase(candidates);
+    }
+    return undefined;
+  }
+
+  const legacyCandidates = yield* sql<SnapshotRow>`
     SELECT snapshot.*
     FROM snapshots AS snapshot
     JOIN snapshot_reuse_receipts AS receipt ON receipt.snapshot_id = snapshot.id
@@ -154,43 +234,50 @@ const selectReusableCleanBase = Effect.fn('codeGraph.selectReusableCleanBase')(f
       AND receipt.resolution_surface_version = 1
       AND receipt.workspace_fingerprint = ${workspaceFingerprint}
     ORDER BY
-      CASE WHEN snapshot.graph_content_id = ${graphContentId ?? null} THEN 0 ELSE 1 END,
       CASE WHEN receipt.file_set_fingerprint = ${fileSetFingerprint} THEN 0 ELSE 1 END,
       snapshot.completed_at DESC,
       snapshot.id
-    LIMIT 1
+    LIMIT 8
   `;
-  const row = candidates[0];
-  if (!row) return undefined;
-  const receipt = yield* selectReusableBaseReceipt(row.id);
-  if (!receipt) return undefined;
-  const files = yield* sql<{
-    readonly content_hash: string;
-    readonly language: string;
-    readonly mode: string;
-    readonly path: string;
-    readonly size: number;
-    readonly source: string;
-  }>`
+  return yield* loadFirstReusableCleanBase(legacyCandidates);
+});
+
+const loadFirstReusableCleanBase = Effect.fn('codeGraph.loadFirstReusableCleanBase')(function* (
+  candidates: readonly SnapshotRow[],
+) {
+  const sql = yield* SqlClient.SqlClient;
+  for (const row of candidates) {
+    const receipt = yield* selectReusableBaseReceipt(row.id);
+    if (!receipt) continue;
+    const files = yield* sql<{
+      readonly content_hash: string;
+      readonly language: string;
+      readonly mode: string;
+      readonly path: string;
+      readonly size: number;
+      readonly source: string;
+    }>`
     SELECT content_hash, language, mode, path, size, source
     FROM snapshot_files
     WHERE snapshot_id = ${row.id}
     ORDER BY path
   `;
-  if (files.length !== Number(row.file_count) || files.some(file => file.source !== 'commit')) return undefined;
-  return {
-    files: files.map(file => ({
-      blobId: `snapshot:${file.content_hash}`,
-      contentHash: file.content_hash,
-      language: file.language,
-      mode: file.mode,
-      path: file.path,
-      size: Number(file.size),
-      source: 'commit' as const,
-    })),
-    receipt,
-    snapshot: snapshotFromRow(row),
-  } satisfies CodeGraphReusableCleanBase;
+    if (files.length !== Number(row.file_count) || files.some(file => file.source !== 'commit')) continue;
+    return {
+      files: files.map(file => ({
+        blobId: `snapshot:${file.content_hash}`,
+        contentHash: file.content_hash,
+        language: file.language,
+        mode: file.mode,
+        path: file.path,
+        size: Number(file.size),
+        source: 'commit' as const,
+      })),
+      receipt,
+      snapshot: snapshotFromRow(row),
+    } satisfies CodeGraphReusableCleanBase;
+  }
+  return undefined;
 });
 
 const selectReusableBaseReceipt = Effect.fn('codeGraph.selectReusableBaseReceipt')(function* (snapshotId: string) {

@@ -6,11 +6,7 @@ import {runCodeGraphLifecycleOpportunity} from './lifecycle_opportunity.js';
 import {CodeGraphMaintenanceCoordinator} from './maintenance_coordinator.js';
 import {observeCodeGraphMaintenanceStatus, type CodeGraphMaintenanceStatus} from './maintenance_gate.js';
 import {compareCodeUnits} from './ordering.js';
-import {
-  managerGraphCatalogRevision,
-  observeManagerGraphCatalogRevision,
-  type ManagerGraphCatalogRevisionDatabase,
-} from './manager_catalog_revision.js';
+import {managerGraphCatalogRevision, type ManagerGraphCatalogRevisionDatabase} from './manager_catalog_revision.js';
 import {traversalQuery} from './query.js';
 import {
   CodeGraphStore,
@@ -42,6 +38,8 @@ import {
   type ManagerGraphVisualizationBudget,
   type ManagerGraphVisualizationLimits,
 } from '../manager_graph_limits.js';
+
+export {managerGraphBuildCatalog, type ManagerGraphBuildCatalog} from './manager_status.js';
 
 const NODE_DETAIL_EDGE_LIMIT = 160;
 const NODE_DETAIL_SUMMARY_LIMIT = 2_000;
@@ -184,15 +182,6 @@ export interface ManagerGraphViewPage {
   readonly offset: number;
   readonly query: string;
   readonly repositories: readonly ManagerGraphRepository[];
-}
-
-export interface ManagerGraphBuildCatalog {
-  readonly builds: readonly ObservedCodeGraphBuildStatus[];
-  readonly catalogRevision?: string;
-  readonly maintenance?: CodeGraphMaintenanceStatus;
-  readonly queuedWorktreeIds: readonly string[];
-  readonly waiterCount: number;
-  readonly waiters: readonly ObservedCodeGraphBuildStatus[];
 }
 
 export interface ManagerGraphNode {
@@ -651,28 +640,6 @@ export function groupManagerGraphRepositories(
         compareCodeUnits(left.repositoryId, right.repositoryId),
     );
 }
-
-export const managerGraphBuildCatalog = Effect.fn('codeGraph.managerBuildCatalog')(function* (threadnoteHome: string) {
-  const selection = selectCodeGraphBuildStatuses(yield* readAllCodeGraphBuildStatuses(threadnoteHome));
-  const maintenance = yield* observeCodeGraphMaintenanceStatus(threadnoteHome).pipe(
-    Effect.catch(() => Effect.succeed(undefined)),
-  );
-  const active = [...selection.builds, ...selection.waiters].some(
-    status => status.state === 'queued' || status.state === 'running',
-  );
-  const catalogRevision =
-    active || maintenance !== undefined
-      ? undefined
-      : yield* observeManagerGraphCatalogRevision(threadnoteHome).pipe(Effect.catch(() => Effect.succeed(undefined)));
-  return {
-    builds: selection.builds,
-    ...(catalogRevision === undefined ? {} : {catalogRevision}),
-    ...(maintenance === undefined ? {} : {maintenance}),
-    queuedWorktreeIds: [...new Set(selection.waiters.map(status => status.identity.worktreeId))],
-    waiterCount: selection.waiters.length,
-    waiters: selection.waiters,
-  } satisfies ManagerGraphBuildCatalog;
-});
 
 function managerSnapshotLeaseReleaseWarning(failure: unknown): ManagerGraphSnapshotLeaseWarning {
   return failure instanceof CodeGraphStoreBusyError
