@@ -40,22 +40,26 @@ describe('active code graph storage', () => {
     const attribution = before.pageStorage.attribution;
     expect(attribution).toBeDefined();
     if (!attribution) throw new Error('missing deep storage attribution');
-    expect(attribution.allocatedBytes).toBe(before.pageStorage.pageCount * before.pageStorage.pageSize);
-    expect(attribution.freelistBytes).toBe(before.pageStorage.reclaimableBytes);
-    expect(attribution.attributedBytes + attribution.freelistBytes + attribution.unattributedBytes).toBe(
-      attribution.allocatedBytes,
-    );
-    expect(attribution.objectsTruncated).toBe(false);
-    expect(attribution.objects).toHaveLength(attribution.objectCount);
-    expect(attribution.objects.reduce((total, object) => total + object.bytes, 0)).toBe(attribution.attributedBytes);
-    expect(attribution.objects).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({kind: 'internal', name: 'sqlite_schema'}),
-        expect.objectContaining({kind: 'table', name: 'payload'}),
-      ]),
-    );
-    for (const object of attribution.objects) {
-      expect(object.bytes).toBe(object.pages * before.pageStorage.pageSize);
+    if (attribution.state === 'unavailable') {
+      expect(attribution.reason).toBe('sqlite-dbstat-unavailable');
+    } else {
+      expect(attribution.allocatedBytes).toBe(before.pageStorage.pageCount * before.pageStorage.pageSize);
+      expect(attribution.freelistBytes).toBe(before.pageStorage.reclaimableBytes);
+      expect(attribution.attributedBytes + attribution.freelistBytes + attribution.unattributedBytes).toBe(
+        attribution.allocatedBytes,
+      );
+      expect(attribution.objectsTruncated).toBe(false);
+      expect(attribution.objects).toHaveLength(attribution.objectCount);
+      expect(attribution.objects.reduce((total, object) => total + object.bytes, 0)).toBe(attribution.attributedBytes);
+      expect(attribution.objects).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({kind: 'internal', name: 'sqlite_schema'}),
+          expect.objectContaining({kind: 'table', name: 'payload'}),
+        ]),
+      );
+      for (const object of attribution.objects) {
+        expect(object.bytes).toBe(object.pages * before.pageStorage.pageSize);
+      }
     }
 
     const dryRun = await runEffect(

@@ -84,12 +84,10 @@ describe('all-code-graph diagnostics', () => {
       const deepReport = yield* inspectAllCodeGraphs(home, {deep: true});
       const deepStorage = deepReport.databases.find(database => database.checkoutId === healthyCheckoutId)?.storage;
       if (deepStorage?.state !== 'available') throw new Error('missing deep storage diagnostics');
-      expect(deepStorage.pageStorage).toMatchObject({
-        attribution: {
-          state: 'available',
-        },
-        state: 'available',
-      });
+      expect(deepStorage.pageStorage).toMatchObject({state: 'available'});
+      if (deepStorage.pageStorage.state !== 'available') throw new Error('missing deep page diagnostics');
+      expect(deepStorage.pageStorage.attribution).toBeDefined();
+      expect(['available', 'unavailable']).toContain(deepStorage.pageStorage.attribution?.state);
       expect(JSON.stringify(deepReport)).not.toContain(home);
 
       const config: RuntimeConfig = {

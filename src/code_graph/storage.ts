@@ -42,7 +42,9 @@ export interface CodeGraphStorageObjectAttribution {
   readonly pages: number;
 }
 
-export interface CodeGraphStorageAttribution {
+export type CodeGraphStorageAttribution = CodeGraphStorageAttributionAvailable | CodeGraphStorageAttributionUnavailable;
+
+export interface CodeGraphStorageAttributionAvailable {
   /** Logical allocated bytes represented by page_count * page_size. */
   readonly allocatedBytes: number;
   /** Bytes assigned by SQLite dbstat to named B-trees. */
@@ -54,6 +56,11 @@ export interface CodeGraphStorageAttribution {
   readonly state: 'available';
   /** Pointer-map or other pages not assigned to a named B-tree or freelist. */
   readonly unattributedBytes: number;
+}
+
+export interface CodeGraphStorageAttributionUnavailable {
+  readonly reason: 'sqlite-dbstat-unavailable';
+  readonly state: 'unavailable';
 }
 
 /** @internal Exact remainder after assigning allocated SQLite pages to objects and the freelist. */
@@ -429,6 +436,12 @@ function readStorageAttribution(
   pageSize: number,
   freelistBytes: number,
 ): CodeGraphStorageAttribution {
+  const dbstat = database.query("SELECT sqlite_compileoption_used('ENABLE_DBSTAT_VTAB') AS enabled").get() as {
+    readonly enabled: bigint | number;
+  } | null;
+  if (safeCount(dbstat?.enabled ?? 0, 'dbstat availability') !== 1) {
+    return {reason: 'sqlite-dbstat-unavailable', state: 'unavailable'};
+  }
   const rows = database
     .query(
       `SELECT dbstat.name AS name,

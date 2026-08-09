@@ -114,6 +114,8 @@ describe('project-closure incremental indexing', () => {
             'packages/barrel/index.ts',
             'packages/barrel/package.json',
           ]);
+          // The incompatible shard is neither consumed nor retained once routine cache reclamation observes
+          // that no snapshot references its derivation.
           expect(
             (yield* store.loadMaterializedFileShards(
               incrementalLayout.databasePath,
@@ -121,7 +123,7 @@ describe('project-closure incremental indexing', () => {
               base.snapshot.extractorSet,
               poisonDerivation,
             )).facts.get(currentBarrel.path)?.diagnostics,
-          ).toEqual(['poisoned final shard']);
+          ).toBeUndefined();
         }),
       root => Effect.sync(() => rmSync(root, {force: true, recursive: true})),
     ).pipe(Effect.provide(ApplicationLayer), TestClock.withLive),

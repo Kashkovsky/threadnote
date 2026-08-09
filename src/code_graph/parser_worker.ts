@@ -734,9 +734,10 @@ async function completesBeforeDeadline(promise: Promise<unknown>, timeoutMillise
   }
 }
 
-export const codeGraphParserWorkerServer: Effect.Effect<void, never, Stdio.Stdio | TreeSitterRuntime> = Effect.gen(
-  function* () {
+export const codeGraphParserWorkerServer: Effect.Effect<void, never, Stdio.Stdio | SystemInfo | TreeSitterRuntime> =
+  Effect.gen(function* () {
     const stdio = yield* Stdio.Stdio;
+    const system = yield* SystemInfo;
     const treeSitter = yield* TreeSitterRuntime;
     const decoder = new TextDecoder();
     const encoder = new TextEncoder();
@@ -746,7 +747,8 @@ export const codeGraphParserWorkerServer: Effect.Effect<void, never, Stdio.Stdio
     const writeResponse = (response: ParserWorkerResponse) =>
       Stream.run(Stream.make(encodeParserWorkerResponse(response)), stdio.stdout({endOnDone: false}));
 
-    const processLine = (line: string) => handleParserWorkerLine(line, treeSitter).pipe(Effect.flatMap(writeResponse));
+    const processLine = (line: string) =>
+      handleParserWorkerLine(line, treeSitter, system).pipe(Effect.flatMap(writeResponse));
 
     yield* stdio.stdin.pipe(
       Stream.runForEach(chunk =>
@@ -777,21 +779,25 @@ export const codeGraphParserWorkerServer: Effect.Effect<void, never, Stdio.Stdio
       return yield* Effect.fail(new ParserWorkerError('protocol'));
     }
     if (buffered.trim()) yield* processLine(buffered.trim());
-  },
-).pipe(Effect.catch(() => Effect.void));
+  }).pipe(Effect.catch(() => Effect.void));
 
 function handleParserWorkerLine(
   line: string,
   treeSitter: TreeSitterRuntimeShape,
+  system: SystemInfoShape,
 ): Effect.Effect<ParserWorkerResponse, never> {
   const request = decodeRequest(line);
   if (request === undefined) return Effect.succeed(protocolFailure('invalid', 'Invalid parser worker request.'));
   const startedAt = performance.now();
-  const resourceBefore = parserWorkerResourceSnapshot();
-  const resourceOptions = parserWorkerResourceOptions(process.env);
+  const resourceBefore = parserWorkerResourceSnapshot(system);
+  const resourceOptions = parserWorkerResourceOptions(system.environment());
   const completedResponse = (facts: CodeGraphFileFacts | undefined): ParserWorkerResponse => {
     const parseMilliseconds = Math.max(0, performance.now() - startedAt);
-    const resourceBudget = parserWorkerResourceBudget(resourceBefore, parserWorkerResourceSnapshot(), resourceOptions);
+    const resourceBudget = parserWorkerResourceBudget(
+      resourceBefore,
+      parserWorkerResourceSnapshot(system),
+      resourceOptions,
+    );
     if (resourceBudget !== undefined) {
       return {
         degraded: true,
@@ -1182,13 +1188,11 @@ function parserWorkerByteMaximum(environment: ParserWorkerEnvironment, name: str
   return Number.isSafeInteger(configured) && configured > 0 ? Math.min(fallback, configured) : fallback;
 }
 
-function parserWorkerResourceSnapshot(): ParserWorkerResourceSnapshot {
-  const rssBytes = process.memoryUsage.rss();
-  const peak = process.resourceUsage().maxRSS;
-  const peakRssBytes = 'bun' in process.versions ? peak : peak * 1_024;
+function parserWorkerResourceSnapshot(system: SystemInfoShape): ParserWorkerResourceSnapshot {
+  const usage = system.memoryUsage();
   return {
-    peakRssBytes: nonNegativeSafeInteger(peakRssBytes, rssBytes),
-    rssBytes: nonNegativeSafeInteger(rssBytes, 0),
+    peakRssBytes: nonNegativeSafeInteger(usage.peakRss ?? usage.rss, usage.rss),
+    rssBytes: nonNegativeSafeInteger(usage.rss, 0),
   };
 }
 
