@@ -205,7 +205,17 @@ describe('native code graph lifecycle', () => {
         const afterSnapshotSelected = () =>
           Ref.updateAndGet(selected, count => count + 1).pipe(
             Effect.flatMap(count => (count === 8 ? Deferred.succeed(allSelected, undefined) : Effect.void)),
-            Effect.andThen(Deferred.await(allSelected)),
+            Effect.andThen(
+              Effect.raceFirst(
+                Deferred.await(allSelected),
+                Effect.sleep(5_000).pipe(
+                  Effect.andThen(Ref.get(selected)),
+                  Effect.flatMap(count =>
+                    Effect.die(new Error(`Only ${count} of 8 parallel queries selected the ready snapshot.`)),
+                  ),
+                ),
+              ),
+            ),
           );
         return yield* Effect.all(
           Array.from({length: 8}, () =>

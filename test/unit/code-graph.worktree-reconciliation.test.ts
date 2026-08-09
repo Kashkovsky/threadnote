@@ -618,7 +618,10 @@ describe('automatic missing-worktree reconciliation', () => {
           (worktreeId, index) =>
             store.removeView(databasePath, worktreeId, snapshotIds[index]!, {
               requireReconciliationSchema: true,
-              waitTimeoutMilliseconds: 0,
+              // Each committed removal may schedule bounded detached cleanup.
+              // This sequential authority test waits through that legitimate
+              // writer handoff; dedicated contention tests retain zero-wait.
+              waitTimeoutMilliseconds: 5_000,
             }),
           {concurrency: 1},
         );

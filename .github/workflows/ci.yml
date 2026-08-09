@@ -51,8 +51,8 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: bun test/ci/ci-scopes.ts --base "$BASE_SHA" --head "$HEAD_SHA"
 
-  test:
-    name: Unit and integration tests
+  quality:
+    name: Static checks and build
     needs: changes
     runs-on: ubuntu-latest
 
@@ -96,17 +96,101 @@ jobs:
       - run: bun run check:self-contained
         if: needs.changes.outputs.release == 'true'
 
-      - run: bun run test:coverage
-        if: needs.changes.outputs.code == 'true'
+  standard_tests:
+    name: Tests · standard ${{ matrix.shard }}/4
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - run: bun install --frozen-lockfile
+
+      - name: Run ordinary tests with all available Vitest workers
+        run: bun --bun vitest run --coverage --shard=${{ matrix.shard }}/4
+        env:
+          THREADNOTE_VITEST_STANDARD_SHARD: '1'
 
       - name: Upload coverage
-        if: needs.changes.outputs.code == 'true'
         uses: actions/upload-artifact@v7
         with:
-          name: coverage
+          name: coverage-standard-${{ matrix.shard }}
           path: coverage/
           if-no-files-found: ignore
           retention-days: 14
+
+  long_tests:
+    name: Tests · long · ${{ matrix.group }}
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        group:
+          - lifecycle
+          - project-closure
+          - incremental-cleanup-load
+          - cli-native-tools
+          - vector-retirement
+          - parser-languages
+          - graph-integration
+          - stores-retention
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - run: bun install --frozen-lockfile
+
+      - name: Run isolated long-running coverage group
+        run: bun run test:coverage
+        env:
+          THREADNOTE_VITEST_LONG_GROUP: ${{ matrix.group }}
+
+      - name: Upload coverage
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-long-${{ matrix.group }}
+          path: coverage/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  test:
+    name: Unit and integration tests
+    needs: [changes, quality, standard_tests, long_tests]
+    if: always()
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Require every applicable test shard
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          QUALITY_RESULT: ${{ needs.quality.result }}
+          CODE_CHANGED: ${{ needs.changes.outputs.code }}
+          STANDARD_RESULT: ${{ needs.standard_tests.result }}
+          LONG_RESULT: ${{ needs.long_tests.result }}
+        run: |
+          test "$CHANGES_RESULT" = success
+          test "$QUALITY_RESULT" = success
+          if [ "$CODE_CHANGED" = true ]; then
+            test "$STANDARD_RESULT" = success
+            test "$LONG_RESULT" = success
+          fi
 
   recall-quality:
     name: Recall quality and non-inferiority

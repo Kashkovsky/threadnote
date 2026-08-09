@@ -17,6 +17,10 @@ interface WorkflowJob {
   readonly if?: string;
   readonly needs?: string | readonly string[];
   readonly outputs?: Readonly<Record<string, string>>;
+  readonly strategy?: {
+    readonly 'fail-fast'?: boolean;
+    readonly matrix?: Readonly<Record<string, readonly unknown[]>>;
+  };
   readonly steps?: readonly WorkflowStep[];
 }
 
@@ -60,23 +64,47 @@ describe('dependency-aware CI workflow', () => {
     });
   });
 
-  it('keeps the stable primary check while gating its expensive steps by scope', () => {
+  it('keeps the stable primary check while parallelizing scoped tests and quality gates', () => {
     const ci = workflow('.github/workflows/ci.yml');
-    const job = ci.jobs.test!;
-    const actionlint = job.steps?.find(step => step.uses === 'docker://rhysd/actionlint:1.7.8');
+    const primary = ci.jobs.test!;
+    const quality = ci.jobs.quality!;
+    const standard = ci.jobs.standard_tests!;
+    const long = ci.jobs.long_tests!;
+    const actionlint = quality.steps?.find(step => step.uses === 'docker://rhysd/actionlint:1.7.8');
 
-    expect(job.needs).toBe('changes');
+    expect(primary.needs).toEqual(['changes', 'quality', 'standard_tests', 'long_tests']);
+    expect(primary.if).toBe('always()');
+    expect(primary.steps?.some(step => step.name === 'Require every applicable test shard')).toBe(true);
+
+    expect(quality.needs).toBe('changes');
     expect(actionlint?.if).toBe("needs.changes.outputs.actions == 'true'");
-    expect(stepForRun(job, 'bun run prettier:check').if).toBeUndefined();
-    expect(stepForRun(job, 'bun run lint').if).toBe("needs.changes.outputs.code == 'true'");
-    expect(stepForRun(job, 'bun run typecheck').if).toBe("needs.changes.outputs.code == 'true'");
-    expect(stepForRun(job, 'bun run site:check').if).toBe(
+    expect(stepForRun(quality, 'bun run prettier:check').if).toBeUndefined();
+    expect(stepForRun(quality, 'bun run lint').if).toBe("needs.changes.outputs.code == 'true'");
+    expect(stepForRun(quality, 'bun run typecheck').if).toBe("needs.changes.outputs.code == 'true'");
+    expect(stepForRun(quality, 'bun run site:check').if).toBe(
       "needs.changes.outputs.site_check == 'true' && needs.changes.outputs.code != 'true'",
     );
-    expect(stepForRun(job, 'bun run site:build').if).toBe("needs.changes.outputs.site_build == 'true'");
-    expect(stepForRun(job, 'bun run build').if).toBe("needs.changes.outputs.release == 'true'");
-    expect(stepForRun(job, 'bun run check:self-contained').if).toBe("needs.changes.outputs.release == 'true'");
-    expect(stepForRun(job, 'bun run test:coverage').if).toBe("needs.changes.outputs.code == 'true'");
+    expect(stepForRun(quality, 'bun run site:build').if).toBe("needs.changes.outputs.site_build == 'true'");
+    expect(stepForRun(quality, 'bun run build').if).toBe("needs.changes.outputs.release == 'true'");
+    expect(stepForRun(quality, 'bun run check:self-contained').if).toBe("needs.changes.outputs.release == 'true'");
+
+    expect(standard).toMatchObject({
+      needs: 'changes',
+      if: "needs.changes.outputs.code == 'true'",
+      strategy: {matrix: {shard: [1, 2, 3, 4]}},
+    });
+    expect(stepForRun(standard, 'bun --bun vitest run --coverage --shard=${{ matrix.shard }}/4').env).toEqual({
+      THREADNOTE_VITEST_STANDARD_SHARD: '1',
+    });
+
+    expect(long).toMatchObject({
+      needs: 'changes',
+      if: "needs.changes.outputs.code == 'true'",
+    });
+    expect(long.strategy?.matrix?.group).toHaveLength(8);
+    expect(stepForRun(long, 'bun run test:coverage').env).toEqual({
+      THREADNOTE_VITEST_LONG_GROUP: '${{ matrix.group }}',
+    });
   });
 
   it('gates quality, Windows, bytecode, model, and release matrices independently', () => {

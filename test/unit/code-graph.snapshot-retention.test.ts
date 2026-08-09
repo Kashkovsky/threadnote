@@ -575,10 +575,10 @@ function dropLeaseRetirementColumn(databasePath: string): void {
   const database = new Database(databasePath, {strict: true});
   try {
     database.run('BEGIN IMMEDIATE');
-    database.run('ALTER TABLE snapshot_leases DROP COLUMN retire_when_inactive');
     database.run('DROP TRIGGER IF EXISTS removed_views_cleanup_revoke_delete');
     database.run('DROP TRIGGER IF EXISTS removed_views_cleanup_revoke_insert');
     database.run('DROP TRIGGER IF EXISTS removed_views_cleanup_revoke_update');
+    database.run('ALTER TABLE snapshot_leases DROP COLUMN retire_when_inactive');
     database.run('DROP TABLE IF EXISTS removed_view_cleanup');
     database.run('DROP TABLE IF EXISTS snapshot_build_owner_instances');
     database.run(
