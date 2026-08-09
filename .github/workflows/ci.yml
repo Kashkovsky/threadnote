@@ -121,7 +121,7 @@ jobs:
       - name: Run ordinary tests with all available Vitest workers
         run: bun --bun vitest run --coverage --shard=${{ matrix.shard }}/4
         env:
-          THREADNOTE_VITEST_STANDARD_SHARD: '1'
+          THREADNOTE_VITEST_STANDARD_SHARD: ${{ matrix.shard }}
 
       - name: Upload coverage
         uses: actions/upload-artifact@v7
@@ -141,17 +141,44 @@ jobs:
       fail-fast: false
       matrix:
         group:
-          - lifecycle
-          - project-closure
-          - incremental-property
+          - lifecycle-serves
+          - lifecycle-shares
+          - lifecycle-materializes
+          - lifecycle-global-resolution
+          - lifecycle-file-set-change
+          - lifecycle-core-a
+          - lifecycle-core-b
+          - lifecycle-core-c
+          - lifecycle-core-d
+          - lifecycle-core-e
+          - lifecycle-core-f
+          - lifecycle-core-g
+          - project-closure-reattribution
+          - project-closure-clean-base
+          - project-closure-cache-tuple
+          - project-closure-loss
+          - project-closure-fail-closed
+          - project-closure-overflow
+          - project-closure-property
+          - incremental-body-property
+          - incremental-clean-property
+          - incremental-surface-property
+          - incremental-recovery
+          - incremental-barrel-property
           - removed-view-cleanup-load
+          - removed-view-cleanup-property
+          - view-removal-property
+          - worktree-reconciliation
           - cli-native-tools
           - view-attach-lock
           - vector-retirement
           - parser-languages
           - graph-integration
           - benchmark-preflight
-          - os-recovery
+          - vector-retirement-os
+          - removed-view-cleanup-os
+          - cache-capacity-os
+          - disk-reservation
           - stores-retention
 
     steps:
