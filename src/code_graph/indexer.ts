@@ -47,6 +47,7 @@ import {CodeGraphMaintenanceCoordinator, type CodeGraphMaintenanceCoordinatorSha
 import {codeGraphMaintenanceIntentActive, withCodeGraphMaintenanceRegistration} from './maintenance_gate.js';
 import {resolveAndRecordCodeGraphLocalAssociation} from './local_provenance.js';
 import {compareCodeUnits} from './ordering.js';
+import {codeGraphSourceSizeBucket} from './progress_telemetry.js';
 import {relocateStructuredSchemaFacts} from './languages/schemas/extractor.js';
 import {repositoryIdentityMatchesExpectation, resolveRepositoryIdentity} from './repository.js';
 import {
@@ -3415,6 +3416,18 @@ export interface CodeGraphCacheContentCoalescer {
 
 const CODE_GRAPH_CACHE_TIMESTAMP_CAPACITY_PLACEHOLDER = '1970-01-01T00:00:00.000Z';
 
+function codeGraphFileProgressDimensions(
+  file: CodeGraphInventoryFile,
+  languagePacks: CodeGraphLanguagePackRegistryShape,
+) {
+  const matched = Option.getOrUndefined(languagePacks.match(file.path));
+  return {
+    classifier: matched?.pack.id ?? 'unmatched',
+    role: matched?.role ?? 'unmatched',
+    sizeBucket: codeGraphSourceSizeBucket(file.size),
+  } as const;
+}
+
 /** @internal Exposed for cache coalescing/cancellation contract tests. */
 export function cacheContentBatch(options: {
   readonly databasePath: string;
@@ -3460,9 +3473,11 @@ export function cacheContentBatch(options: {
           batchCompleted: 0,
           batchTotal: group.files.length,
           bytes: groupBytes,
+          ...codeGraphFileProgressDimensions(representative, options.languagePacks),
           factsBytes: groupFactBytes,
           language: representative.language,
           path: representative.path,
+          sizeBucket: codeGraphSourceSizeBucket(groupBytes),
           stage: 'persisting',
         },
         extractionMilliseconds,
@@ -3488,11 +3503,13 @@ export function cacheContentBatch(options: {
           batchCompleted: group.files.length,
           batchTotal: group.files.length,
           bytes: groupBytes,
+          ...codeGraphFileProgressDimensions(representative, options.languagePacks),
           factsBytes: groupFactBytes,
           language: representative.language,
           path: representative.path,
           persistMilliseconds: elapsed,
           relations: group.facts.reduce((total, fact) => total + fact.facts.edges.length, 0),
+          sizeBucket: codeGraphSourceSizeBucket(groupBytes),
           stage: 'persisting',
           symbols: group.facts.reduce((total, fact) => total + fact.facts.symbols.length, 0),
         },
@@ -3598,6 +3615,7 @@ export function cacheContentBatch(options: {
                       batchCompleted: parsedCompleted,
                       batchTotal: files.length,
                       bytes: file.size,
+                      ...codeGraphFileProgressDimensions(file, options.languagePacks),
                       language: file.language,
                       path: file.path,
                       stage: 'extracting',
@@ -3617,6 +3635,7 @@ export function cacheContentBatch(options: {
                         batchCompleted: parsedCompleted + windowCompleted,
                         batchTotal: files.length,
                         bytes: file.size,
+                        ...codeGraphFileProgressDimensions(file, options.languagePacks),
                         degraded: false,
                         factsBytes: reused.cacheFact.bytes,
                         language: file.language,
@@ -3650,6 +3669,7 @@ export function cacheContentBatch(options: {
                       batchCompleted: parsedCompleted + windowCompleted,
                       batchTotal: files.length,
                       bytes: file.size,
+                      ...codeGraphFileProgressDimensions(file, options.languagePacks),
                       degraded: result.degraded,
                       factsBytes: result.cacheFact.bytes,
                       language: file.language,

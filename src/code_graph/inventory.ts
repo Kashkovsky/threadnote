@@ -14,6 +14,7 @@ import {
   type CodeGraphInventoryExclusionReason,
 } from './inventory_policy.js';
 import {compareCodeUnits} from './ordering.js';
+import {codeGraphSourceSizeBucket} from './progress_telemetry.js';
 import {type CodeGraphInventoryFile, type CodeGraphProgress, type RepositoryIdentity} from './types.js';
 
 export {codeGraphInventoryExclusionReason} from './inventory_policy.js';
@@ -1009,19 +1010,22 @@ const readCommittedFiles = Effect.fn('codeGraph.readCommittedFiles')(function* (
   }) ?? Effect.void;
   for (const batch of chunkTreeEntries(orderedNeedsContent)) {
     const first = batch[0]!;
-    const batchLanguages = new Set(
-      batch.map(entry =>
-        Option.match(languagePacks.match(entry.path), {onNone: () => 'text', onSome: value => value.language}),
-      ),
-    );
+    const matches = batch.map(entry => Option.getOrUndefined(languagePacks.match(entry.path)));
+    const batchLanguages = new Set(matches.map(value => value?.language ?? 'text'));
+    const batchClassifiers = new Set(matches.map(value => value?.pack.id ?? 'unmatched'));
+    const batchRoles = new Set(matches.map(value => value?.role ?? 'unmatched'));
+    const batchBytes = batch.reduce((total, entry) => total + entry.size, 0);
     yield* onProgress?.({
       accepted: files.length,
       activity: {
         batchCompleted: 0,
         batchTotal: batch.length,
-        bytes: batch.reduce((total, entry) => total + entry.size, 0),
+        bytes: batchBytes,
+        classifier: batchClassifiers.size === 1 ? [...batchClassifiers][0]! : 'mixed',
         language: batchLanguages.size === 1 ? [...batchLanguages][0]! : 'mixed',
         path: first.path,
+        role: batchRoles.size === 1 ? [...batchRoles][0]! : 'mixed',
+        sizeBucket: codeGraphSourceSizeBucket(batchBytes),
         stage: 'reading',
       },
       completed,

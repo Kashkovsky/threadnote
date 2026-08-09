@@ -240,6 +240,53 @@ describe('manager graph focus', () => {
     expect(markup).not.toContain('progress is silent');
   });
 
+  it('streams path-free extraction dimensions and slow-file telemetry for active builds', () => {
+    const neverResolves = () => new Promise<never>(() => undefined);
+    const build = {
+      ...graphBuildStatus('running'),
+      activity: {
+        batchCompleted: 7,
+        batchTotal: 12,
+        bytes: 70 * 1_024,
+        classifier: 'typescript',
+        factsBytes: 18 * 1_024,
+        language: 'typescript',
+        parseMilliseconds: 1_250,
+        relations: 21,
+        role: 'source',
+        sizeBucket: '64-256KiB' as const,
+        stage: 'extracting' as const,
+        symbols: 9,
+      },
+      counters: {completed: 7, total: 12, unit: 'files'},
+      extraction: {
+        completedFiles: 7,
+        slowFiles: 2,
+        topSlowFiles: [],
+      },
+    };
+    const markup = renderToStaticMarkup(
+      createElement(GraphWorkspace, {
+        catalog: {builds: [build], diagnostics: [], repositories: [], waiterCount: 0, waiters: []},
+        loadAnalysis: neverResolves,
+        loadCatalogPage: neverResolves,
+        loadGraph: neverResolves,
+        loadNodeDetail: neverResolves,
+        loadQuery: neverResolves,
+        loadViewsPage: neverResolves,
+        onRefresh: () => undefined,
+      }),
+    );
+
+    expect(markup).toContain('64-256KiB source bucket');
+    expect(markup).toContain('source/typescript');
+    expect(markup).toContain('18.0 KiB emitted facts');
+    expect(markup).toContain('9 symbols');
+    expect(markup).toContain('21 relations');
+    expect(markup).toContain('Extraction telemetry: 7 files completed');
+    expect(markup).toContain('2 at or above 1.00s');
+  });
+
   it('uses catalog fallbacks before either a view or continuation exists', () => {
     expect(graphCatalogContinuationHasMore(undefined, undefined, 'projectHasMore', false)).toBe(false);
     expect(graphCatalogContinuationHasMore(undefined, undefined, 'workspaceHasMore', true)).toBe(true);

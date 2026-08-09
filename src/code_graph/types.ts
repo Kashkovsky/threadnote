@@ -1,3 +1,5 @@
+import type {CodeGraphSourceSizeBucket} from './progress_telemetry.js';
+
 export const CODE_GRAPH_SCHEMA_VERSION = 3 as const;
 /** Additive persistent surfaces that preserve the public graph-v3 row contract. */
 export const CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION = 8 as const;
@@ -325,6 +327,7 @@ export type CodeGraphProgress =
         readonly batchCompleted: number;
         readonly batchTotal: number;
         readonly bytes: number;
+        readonly classifier?: string;
         readonly degraded?: boolean;
         readonly factsBytes?: number;
         readonly language: string;
@@ -332,6 +335,8 @@ export type CodeGraphProgress =
         readonly path: string;
         readonly persistMilliseconds?: number;
         readonly relations?: number;
+        readonly role?: string;
+        readonly sizeBucket?: CodeGraphSourceSizeBucket;
         readonly stage: 'extracting' | 'persisting' | 'reading';
         readonly symbols?: number;
       };

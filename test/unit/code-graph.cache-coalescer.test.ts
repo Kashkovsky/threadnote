@@ -260,6 +260,64 @@ describe('code graph parser cache coalescer', () => {
     }),
   );
 
+  effectIt.effect('publishes extraction dimensions for path-free persisted build status', () =>
+    Effect.gen(function* () {
+      const observed: Parameters<NonNullable<Parameters<typeof cacheContentBatch>[0]['onProgress']>>[0][] = [];
+      const file = {...cacheFile(0, 'src/telemetry'), size: 70 * 1_024};
+      const harness = coalescerHarness({
+        capacity: 1,
+        facts: candidate => ({
+          degraded: false,
+          facts: {
+            ...emptyFacts(candidate.path),
+            symbols: [
+              {
+                contentHash: candidate.contentHash,
+                exported: true,
+                id: 'cgs_telemetry',
+                kind: 'module',
+                language: 'typescript',
+                name: 'telemetry',
+                path: candidate.path,
+                qualifiedName: candidate.path,
+                span: {column: 1, endColumn: 1, endLine: 1, line: 1},
+              },
+            ],
+          },
+          parseMilliseconds: 1_250,
+        }),
+        onProgress: value =>
+          Effect.sync(() => {
+            observed.push(value);
+          }),
+      });
+
+      yield* harness.run([file], cacheContext(1));
+      yield* harness.flush();
+
+      const completed = observed.find(
+        value =>
+          value.phase === 'scanning' &&
+          value.activity?.stage === 'extracting' &&
+          value.activity.parseMilliseconds !== undefined,
+      );
+      expect(completed).toMatchObject({
+        activity: {
+          bytes: 70 * 1_024,
+          classifier: 'typescript',
+          factsBytes: expect.any(Number),
+          language: 'typescript',
+          parseMilliseconds: 1_250,
+          role: 'source',
+          sizeBucket: '64-256KiB',
+          symbols: 1,
+        },
+        phase: 'scanning',
+      });
+      expect(JSON.stringify(completed)).toContain(file.path);
+    }),
+  );
+
   effectIt.effect('never reuses or publishes blob metadata for a degraded extraction', () =>
     Effect.gen(function* () {
       const content = '{"nested":{"enabled":true}}';
@@ -377,6 +435,13 @@ function coalescerHarness(options: {
     databasePath: '/bounded/cache.sqlite',
     languagePacks: {
       cacheIdentityForPath: path => Option.some(cacheIdentityForPath(path)),
+      match: path =>
+        Option.some({
+          cacheIdentity: cacheIdentityForPath(path),
+          language: path.endsWith('.json') ? 'json' : 'typescript',
+          pack: {id: path.endsWith('.json') ? 'schemas' : 'typescript'},
+          role: 'source',
+        }),
     } as CodeGraphLanguagePackRegistryShape,
     onProgress: options.onProgress,
     parserPool,

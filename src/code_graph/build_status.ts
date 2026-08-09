@@ -1,4 +1,5 @@
 import {Clock, Crypto, Effect, FileSystem, Option, Path, PlatformError, Ref, Semaphore} from 'effect';
+import {sha256HexSync} from '../crypto/sha256.js';
 import {readExclusiveFileLockOwner, type FileLockOwner} from '../effect/file_lock.js';
 import {runtimeTextDirectoryNamePage, SystemInfo} from '../effect/system.js';
 import type {CodeGraphBuildOwnerIdentity} from './build_owner.js';
@@ -11,6 +12,16 @@ import {
   type CodeGraphEtaTracker,
 } from './progress_eta.js';
 export {calibratedCodeGraphEtaConfidence} from './progress_eta.js';
+import {
+  CODE_GRAPH_SLOW_FILE_THRESHOLD_MILLISECONDS,
+  CODE_GRAPH_TOP_SLOW_FILE_LIMIT,
+  codeGraphPathExtension,
+  codeGraphSourceSizeBucket,
+  isCodeGraphSourceSizeBucket,
+  retainCodeGraphSlowFileTelemetry,
+  type CodeGraphSlowFileTelemetry,
+  type CodeGraphSourceSizeBucket,
+} from './progress_telemetry.js';
 import type {
   CodeGraphActivationActivity,
   CodeGraphIndexSummary,
@@ -51,13 +62,23 @@ export interface CodeGraphBuildActivity {
   readonly batchCompleted: number;
   readonly batchTotal: number;
   readonly bytes: number;
+  readonly classifier?: string;
   readonly degraded?: boolean;
+  readonly factsBytes?: number;
   readonly language: string;
   readonly parseMilliseconds?: number;
   readonly persistMilliseconds?: number;
   readonly relations?: number;
+  readonly role?: string;
+  readonly sizeBucket?: CodeGraphSourceSizeBucket;
   readonly stage: 'extracting' | 'persisting' | 'reading';
   readonly symbols?: number;
+}
+
+export interface CodeGraphBuildExtraction {
+  readonly completedFiles: number;
+  readonly slowFiles: number;
+  readonly topSlowFiles: readonly CodeGraphSlowFileTelemetry[];
 }
 
 export interface CodeGraphBuildTimings {
@@ -92,6 +113,7 @@ export interface CodeGraphBuildStatus {
     readonly remainingMilliseconds: number;
     readonly scope: 'phase';
   };
+  readonly extraction?: CodeGraphBuildExtraction;
   readonly identity: {
     readonly checkoutId: string;
     readonly commit: string;
@@ -244,6 +266,7 @@ export const makeCodeGraphBuildReporter = Effect.fn('codeGraph.buildStatus.makeR
   const path = yield* Path.Path;
   const system = yield* SystemInfo;
   const buildId = (yield* crypto.randomUUIDv4).toLowerCase();
+  const pathHashSalt = (yield* crypto.randomUUIDv4).toLowerCase();
   const startedAtMilliseconds = yield* Clock.currentTimeMillis;
   const startedAt = new Date(startedAtMilliseconds).toISOString();
   const processStartIdentity = yield* system.processStartIdentity(system.processId);
@@ -445,7 +468,7 @@ export const makeCodeGraphBuildReporter = Effect.fn('codeGraph.buildStatus.makeR
     },
     progress: progress =>
       persist(
-        (current, now) => observeProgress(current, progress, now),
+        (current, now) => observeProgress(current, progress, now, pathHashSalt),
         current => {
           const measured = Option.getOrUndefined(codeGraphEtaMeasurement(progress));
           const persistedCompleted = current.status.counters.completed ?? -1;
@@ -628,7 +651,12 @@ export function observeCodeGraphBuildStatus(
   return {...status, observation: {heartbeatAgeMilliseconds, liveness: 'active'}};
 }
 
-function observeProgress(current: ReporterState, progress: CodeGraphProgress, now: number): ReporterState {
+function observeProgress(
+  current: ReporterState,
+  progress: CodeGraphProgress,
+  now: number,
+  pathHashSalt: string,
+): ReporterState {
   const timestamp = new Date(now).toISOString();
   const phaseChanged = current.status.phase !== progress.phase;
   const etaObservation = observeCodeGraphEta(current.etaTracker, codeGraphEtaMeasurement(progress), now);
@@ -644,6 +672,7 @@ function observeProgress(current: ReporterState, progress: CodeGraphProgress, no
       activity: progressActivity(progress),
       counters: progressCounters(progress),
       eta,
+      extraction: progressExtraction(current.status.extraction, progress, pathHashSalt),
       materialization: progressMaterialization(current.status.materialization, progress, timestamp),
       phase: progress.phase,
       resolution: progressResolution(current.status.resolution, progress, timestamp),
@@ -747,13 +776,59 @@ function progressActivity(progress: CodeGraphProgress): CodeGraphBuildActivity |
     batchCompleted: activity.batchCompleted,
     batchTotal: activity.batchTotal,
     bytes: activity.bytes,
+    ...(activity.classifier === undefined ? {} : {classifier: boundedText(activity.classifier, 64)}),
     ...(activity.degraded === undefined ? {} : {degraded: activity.degraded}),
+    ...(activity.factsBytes === undefined ? {} : {factsBytes: activity.factsBytes}),
     language: boundedText(activity.language, 64),
     ...(activity.parseMilliseconds === undefined ? {} : {parseMilliseconds: activity.parseMilliseconds}),
     ...(activity.persistMilliseconds === undefined ? {} : {persistMilliseconds: activity.persistMilliseconds}),
     ...(activity.relations === undefined ? {} : {relations: activity.relations}),
+    ...(activity.role === undefined ? {} : {role: boundedText(activity.role, 64)}),
+    ...(activity.sizeBucket === undefined ? {} : {sizeBucket: activity.sizeBucket}),
     stage: activity.stage,
     ...(activity.symbols === undefined ? {} : {symbols: activity.symbols}),
+  };
+}
+
+function progressExtraction(
+  current: CodeGraphBuildExtraction | undefined,
+  progress: CodeGraphProgress,
+  pathHashSalt: string,
+): CodeGraphBuildExtraction | undefined {
+  if (progress.phase !== 'scanning' || progress.activity?.stage !== 'extracting') {
+    return current;
+  }
+  const activity = progress.activity;
+  const durationMilliseconds = activity.parseMilliseconds;
+  if (durationMilliseconds === undefined) return current;
+  const currentTop = current?.topSlowFiles ?? [];
+  const slowestRetained = currentTop.at(-1)?.durationMilliseconds;
+  const retainCandidate =
+    durationMilliseconds > 0 &&
+    (currentTop.length < CODE_GRAPH_TOP_SLOW_FILE_LIMIT ||
+      slowestRetained === undefined ||
+      durationMilliseconds >= slowestRetained);
+  const topSlowFiles = retainCandidate
+    ? retainCodeGraphSlowFileTelemetry(currentTop, {
+        classifier: boundedText(activity.classifier ?? 'unmatched', 64),
+        ...(activity.degraded === undefined ? {} : {degraded: activity.degraded}),
+        durationMilliseconds,
+        extension: codeGraphPathExtension(activity.path),
+        ...(activity.factsBytes === undefined ? {} : {factsBytes: activity.factsBytes}),
+        language: boundedText(activity.language, 64),
+        pathHash: sha256HexSync(`code-graph-slow-file-v1\n${pathHashSalt}\n${activity.path}`),
+        ...(activity.relations === undefined ? {} : {relations: activity.relations}),
+        role: boundedText(activity.role ?? 'unmatched', 64),
+        sizeBucket: activity.sizeBucket ?? codeGraphSourceSizeBucket(activity.bytes),
+        sourceBytes: activity.bytes,
+        ...(activity.symbols === undefined ? {} : {symbols: activity.symbols}),
+      })
+    : currentTop;
+  return {
+    completedFiles: (current?.completedFiles ?? 0) + 1,
+    slowFiles:
+      (current?.slowFiles ?? 0) + (durationMilliseconds >= CODE_GRAPH_SLOW_FILE_THRESHOLD_MILLISECONDS ? 1 : 0),
+    topSlowFiles,
   };
 }
 
@@ -1047,6 +1122,8 @@ export function parseCodeGraphBuildStatus(value: unknown): CodeGraphBuildStatus 
   if (value.error !== undefined && !error) return undefined;
   const eta = parseEta(value.eta);
   if (value.eta !== undefined && !eta) return undefined;
+  const extraction = parseExtraction(value.extraction);
+  if (value.extraction !== undefined && !extraction) return undefined;
   const result = parseResult(value.result);
   if (value.result !== undefined && !result) return undefined;
   const request = parseRequest(value.request);
@@ -1062,6 +1139,7 @@ export function parseCodeGraphBuildStatus(value: unknown): CodeGraphBuildStatus 
     counters,
     ...(error ? {error} : {}),
     ...(eta ? {eta} : {}),
+    ...(extraction ? {extraction} : {}),
     identity: {
       checkoutId: value.identity.checkoutId,
       commit: value.identity.commit,
@@ -1551,11 +1629,14 @@ function parseActivity(value: unknown): CodeGraphBuildActivity | undefined {
     Number(value.bytes) < 0 ||
     !isText(value.language, 64) ||
     !['extracting', 'persisting', 'reading'].includes(String(value.stage)) ||
-    (value.degraded !== undefined && typeof value.degraded !== 'boolean')
+    (value.classifier !== undefined && !isText(value.classifier, 64)) ||
+    (value.degraded !== undefined && typeof value.degraded !== 'boolean') ||
+    (value.role !== undefined && !isText(value.role, 64)) ||
+    (value.sizeBucket !== undefined && !isCodeGraphSourceSizeBucket(value.sizeBucket))
   ) {
     return undefined;
   }
-  for (const key of ['relations', 'symbols'] as const) {
+  for (const key of ['factsBytes', 'relations', 'symbols'] as const) {
     if (value[key] !== undefined && (!Number.isSafeInteger(value[key]) || Number(value[key]) < 0)) return undefined;
   }
   for (const key of ['parseMilliseconds', 'persistMilliseconds'] as const) {
@@ -1565,12 +1646,83 @@ function parseActivity(value: unknown): CodeGraphBuildActivity | undefined {
     batchCompleted: Number(value.batchCompleted),
     batchTotal: Number(value.batchTotal),
     bytes: Number(value.bytes),
+    ...(value.classifier === undefined ? {} : {classifier: value.classifier}),
     ...(typeof value.degraded === 'boolean' ? {degraded: value.degraded} : {}),
+    ...(value.factsBytes === undefined ? {} : {factsBytes: Number(value.factsBytes)}),
     language: value.language,
     ...(value.parseMilliseconds === undefined ? {} : {parseMilliseconds: Number(value.parseMilliseconds)}),
     ...(value.persistMilliseconds === undefined ? {} : {persistMilliseconds: Number(value.persistMilliseconds)}),
     ...(value.relations === undefined ? {} : {relations: Number(value.relations)}),
+    ...(value.role === undefined ? {} : {role: value.role}),
+    ...(value.sizeBucket === undefined ? {} : {sizeBucket: value.sizeBucket}),
     stage: value.stage as CodeGraphBuildActivity['stage'],
+    ...(value.symbols === undefined ? {} : {symbols: Number(value.symbols)}),
+  };
+}
+
+function parseExtraction(value: unknown): CodeGraphBuildExtraction | undefined {
+  if (
+    !isRecord(value) ||
+    !isNonNegativeSafeInteger(value.completedFiles) ||
+    !isNonNegativeSafeInteger(value.slowFiles) ||
+    Number(value.slowFiles) > Number(value.completedFiles) ||
+    !Array.isArray(value.topSlowFiles) ||
+    value.topSlowFiles.length > CODE_GRAPH_TOP_SLOW_FILE_LIMIT
+  ) {
+    return undefined;
+  }
+  const topSlowFiles = value.topSlowFiles.map(parseSlowFileTelemetry);
+  if (topSlowFiles.some(sample => sample === undefined)) return undefined;
+  const samples = topSlowFiles as CodeGraphSlowFileTelemetry[];
+  if (
+    samples.some(
+      (sample, index) =>
+        index > 0 &&
+        (sample.durationMilliseconds > samples[index - 1]!.durationMilliseconds ||
+          (sample.durationMilliseconds === samples[index - 1]!.durationMilliseconds &&
+            sample.pathHash.localeCompare(samples[index - 1]!.pathHash) < 0)),
+    )
+  ) {
+    return undefined;
+  }
+  return {
+    completedFiles: Number(value.completedFiles),
+    slowFiles: Number(value.slowFiles),
+    topSlowFiles: samples,
+  };
+}
+
+function parseSlowFileTelemetry(value: unknown): CodeGraphSlowFileTelemetry | undefined {
+  if (
+    !isRecord(value) ||
+    !isText(value.classifier, 64) ||
+    !isNonNegativeFinite(value.durationMilliseconds) ||
+    !isText(value.extension, 16) ||
+    !isText(value.language, 64) ||
+    typeof value.pathHash !== 'string' ||
+    !/^[a-f0-9]{64}$/.test(value.pathHash) ||
+    !isText(value.role, 64) ||
+    !isCodeGraphSourceSizeBucket(value.sizeBucket) ||
+    !isNonNegativeSafeInteger(value.sourceBytes) ||
+    (value.degraded !== undefined && typeof value.degraded !== 'boolean')
+  ) {
+    return undefined;
+  }
+  for (const key of ['factsBytes', 'relations', 'symbols'] as const) {
+    if (value[key] !== undefined && !isNonNegativeSafeInteger(value[key])) return undefined;
+  }
+  return {
+    classifier: value.classifier,
+    ...(value.degraded === undefined ? {} : {degraded: value.degraded}),
+    durationMilliseconds: Number(value.durationMilliseconds),
+    extension: value.extension,
+    ...(value.factsBytes === undefined ? {} : {factsBytes: Number(value.factsBytes)}),
+    language: value.language,
+    pathHash: value.pathHash,
+    ...(value.relations === undefined ? {} : {relations: Number(value.relations)}),
+    role: value.role,
+    sizeBucket: value.sizeBucket,
+    sourceBytes: Number(value.sourceBytes),
     ...(value.symbols === undefined ? {} : {symbols: Number(value.symbols)}),
   };
 }

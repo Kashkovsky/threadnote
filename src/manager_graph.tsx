@@ -5,6 +5,10 @@ import type {CodeGraphLocalAssociation} from './code_graph/local_provenance.js';
 import type {CodeGraphMaintenanceStatus} from './code_graph/maintenance_gate.js';
 import {compareCodeUnits} from './code_graph/ordering.js';
 import {
+  CODE_GRAPH_SLOW_FILE_THRESHOLD_MILLISECONDS,
+  CODE_GRAPH_TOP_SLOW_FILE_LIMIT,
+} from './code_graph/progress_telemetry.js';
+import {
   MANAGER_GRAPH_DEFAULT_EDGE_LIMIT,
   MANAGER_GRAPH_DEFAULT_NODE_LIMIT,
   MANAGER_GRAPH_MAX_EDGE_LIMIT,
@@ -167,11 +171,17 @@ export interface GraphBuildStatus {
     readonly batchCompleted: number;
     readonly batchTotal: number;
     readonly bytes: number;
+    readonly classifier?: string;
     readonly degraded?: boolean;
+    readonly factsBytes?: number;
     readonly language: string;
     readonly parseMilliseconds?: number;
     readonly persistMilliseconds?: number;
+    readonly relations?: number;
+    readonly role?: string;
+    readonly sizeBucket?: '0-16KiB' | '16-64KiB' | '64-256KiB' | '256KiB-1MiB' | '>1MiB';
     readonly stage: 'extracting' | 'persisting' | 'reading';
+    readonly symbols?: number;
   };
   readonly buildId: string;
   readonly coordination?: {
@@ -198,6 +208,24 @@ export interface GraphBuildStatus {
     readonly basis?: 'cached-fact-bytes' | 'files' | 'final-fact-bytes' | 'source-bytes';
     readonly confidence: 'high' | 'low' | 'medium';
     readonly remainingMilliseconds: number;
+  };
+  readonly extraction?: {
+    readonly completedFiles: number;
+    readonly slowFiles: number;
+    readonly topSlowFiles: readonly {
+      readonly classifier: string;
+      readonly degraded?: boolean;
+      readonly durationMilliseconds: number;
+      readonly extension: string;
+      readonly factsBytes?: number;
+      readonly language: string;
+      readonly pathHash: string;
+      readonly relations?: number;
+      readonly role: string;
+      readonly sizeBucket: '0-16KiB' | '16-64KiB' | '64-256KiB' | '256KiB-1MiB' | '>1MiB';
+      readonly sourceBytes: number;
+      readonly symbols?: number;
+    }[];
   };
   readonly identity: {
     readonly checkoutId: string;
@@ -3665,6 +3693,14 @@ function GraphBuildProgress(props: {
           Current reported step: {build.activity.stage} {build.activity.language} ·{' '}
           {formatGraphBytes(build.activity.bytes)} · batch {build.activity.batchCompleted.toLocaleString()}/
           {build.activity.batchTotal.toLocaleString()}
+          {build.activity.sizeBucket === undefined ? '' : ` · ${build.activity.sizeBucket} source bucket`}
+          {build.activity.role === undefined ? '' : ` · ${build.activity.role}`}
+          {build.activity.classifier === undefined ? '' : `/${build.activity.classifier}`}
+          {build.activity.factsBytes === undefined
+            ? ''
+            : ` · ${formatGraphBytes(build.activity.factsBytes)} emitted facts`}
+          {build.activity.symbols === undefined ? '' : ` · ${build.activity.symbols.toLocaleString()} symbols`}
+          {build.activity.relations === undefined ? '' : ` · ${build.activity.relations.toLocaleString()} relations`}
           {build.activity.parseMilliseconds === undefined
             ? ''
             : ` · parse ${formatGraphMilliseconds(build.activity.parseMilliseconds)}`}
@@ -3672,6 +3708,14 @@ function GraphBuildProgress(props: {
             ? ''
             : ` · persist ${formatGraphMilliseconds(build.activity.persistMilliseconds)}`}
           {build.activity.degraded ? ' · metadata fallback; retry scheduled' : ''}
+        </p>
+      ) : null}
+      {build.extraction ? (
+        <p>
+          Extraction telemetry: {build.extraction.completedFiles.toLocaleString()} files completed ·{' '}
+          {build.extraction.slowFiles.toLocaleString()} at or above{' '}
+          {formatGraphMilliseconds(CODE_GRAPH_SLOW_FILE_THRESHOLD_MILLISECONDS)} · bounded top-slow evidence{' '}
+          {build.extraction.topSlowFiles.length.toLocaleString()}/{CODE_GRAPH_TOP_SLOW_FILE_LIMIT.toLocaleString()}
         </p>
       ) : null}
       {build.materialization?.activity ? (

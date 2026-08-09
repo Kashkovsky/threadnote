@@ -259,17 +259,23 @@ describe('code graph cross-process build status', () => {
             batchCompleted: 1,
             batchTotal: 8,
             bytes: 4_096,
+            classifier: 'typescript',
+            factsBytes: 2_048,
             language: 'typescript',
-            parseMilliseconds: 12.5,
+            parseMilliseconds: 1_250,
             path: secretPath,
+            relations: 7,
+            role: 'source',
+            sizeBucket: '0-16KiB',
             stage: 'extracting',
+            symbols: 3,
           },
           completed: 0,
           excluded: 2,
           phase: 'scanning',
           skipped: 0,
           timings: {
-            extractionMilliseconds: 12.5,
+            extractionMilliseconds: 1_250,
             persistenceMilliseconds: 0,
             readingMilliseconds: 1.5,
           },
@@ -290,6 +296,25 @@ describe('code graph cross-process build status', () => {
     );
 
     expect(status.counters).toMatchObject({completed: 8, total: 10});
+    expect(status.extraction).toMatchObject({
+      completedFiles: 1,
+      slowFiles: 1,
+      topSlowFiles: [
+        {
+          classifier: 'typescript',
+          durationMilliseconds: 1_250,
+          extension: '.ts',
+          factsBytes: 2_048,
+          language: 'typescript',
+          relations: 7,
+          role: 'source',
+          sizeBucket: '0-16KiB',
+          sourceBytes: 4_096,
+          symbols: 3,
+        },
+      ],
+    });
+    expect(status.extraction?.topSlowFiles[0]?.pathHash).toMatch(/^[a-f0-9]{64}$/);
     expect(JSON.stringify(status)).not.toContain(secretPath);
   });
 
