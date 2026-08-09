@@ -7,6 +7,7 @@ import {
   parseGitCatFileBatch,
   parseGitTree,
   parseNameStatus,
+  summarizeCodeGraphInventoryPreview,
 } from '../../src/code_graph/inventory.js';
 import {
   CODE_GRAPH_GENERIC_JSON_EXCLUSION_BYTES,
@@ -37,6 +38,20 @@ const gitTreeEntryArbitrary = FC.record({
   mode: FC.constantFrom('100644', '100755'),
   path: repositoryPathArbitrary,
   size: FC.integer({max: 16 * 1_048_576, min: 0}),
+});
+
+const inventoryPreviewEntryArbitrary = FC.record({
+  path: FC.constantFrom(
+    'src/application.ts',
+    'package.json',
+    'tsconfig.json',
+    'assets/icon.svg',
+    'test/__fixtures__/payload.json',
+    'data/payload.json',
+    'dist/generated.ts',
+    'artifact.bin',
+  ),
+  size: FC.integer({max: CODE_GRAPH_HIGH_SIGNAL_JSON_HARD_CAP_BYTES + 1, min: 0}),
 });
 
 type NameStatusChange =
@@ -172,6 +187,28 @@ describe('native code graph parser properties', () => {
       expect(parseGitCatFileBatch(concatenateBytes(chunks), entries)).toEqual(blobs);
     },
     {fastCheck: {numRuns: 150}},
+  );
+
+  it.prop(
+    'conserves files and bytes while inventory aggregation remains order-independent',
+    {
+      entries: FC.array(inventoryPreviewEntryArbitrary, {maxLength: 80}),
+    },
+    ({entries}) => {
+      const forward = summarizeCodeGraphInventoryPreview(entries, {threadnoteIgnore: 'src/application.ts\n'});
+      const reverse = summarizeCodeGraphInventoryPreview([...entries].reverse(), {
+        threadnoteIgnore: 'src/application.ts\n',
+      });
+      const expectedBytes = entries.reduce((total, entry) => total + entry.size, 0);
+
+      expect(reverse).toEqual(forward);
+      expect(forward.totals.repository).toEqual({bytes: expectedBytes, files: entries.length});
+      expect(forward.totals.eligible.files + forward.totals.skipped.files).toBe(entries.length);
+      expect(forward.totals.eligible.bytes + forward.totals.skipped.bytes).toBe(expectedBytes);
+      expect(forward.groups.reduce((total, group) => total + group.files, 0)).toBe(entries.length);
+      expect(forward.groups.reduce((total, group) => total + group.bytes, 0)).toBe(expectedBytes);
+    },
+    {fastCheck: {numRuns: 200}},
   );
 
   it.prop(

@@ -5,6 +5,7 @@ import {SystemInfo} from '../effect/system.js';
 import {BUILTIN_LANGUAGE_PACK_REGISTRY, type CodeGraphLanguagePackRegistryShape} from './languages/registry.js';
 import {CORPUS_EXTRACTION_SOURCE_BYTES_LIMIT} from './languages/corpus/policy.js';
 import {isLowSignalStructuredPath} from './languages/schemas/policy.js';
+import type {CodeGraphFileRole} from './languages/types.js';
 import {
   codeGraphInventoryExclusionReason,
   CODE_GRAPH_INVENTORY_ADMISSION_POLICY_VERSION,
@@ -52,6 +53,73 @@ export interface CodeGraphInventoryPolicyExclusionReasonSummary {
   readonly bytes: number;
   readonly files: number;
   readonly reason: CodeGraphInventoryExclusionReason;
+}
+
+export const CODE_GRAPH_INVENTORY_PREVIEW_VERSION = 1 as const;
+
+export type CodeGraphInventoryPreviewDisposition = 'eligible' | 'skipped';
+export type CodeGraphInventoryPreviewReason =
+  | CodeGraphInventoryExclusionReason
+  | 'admitted'
+  | 'generated-directory'
+  | 'git-ignore'
+  | 'hidden-directory'
+  | 'invalid-path'
+  | 'threadnote-ignore'
+  | 'unsupported-language'
+  | 'vendor-directory';
+
+export interface CodeGraphInventoryPreviewEntry {
+  readonly path: string;
+  readonly size: number;
+}
+
+export interface CodeGraphInventoryPreviewGroup {
+  /** Stable language-pack identifier, or `unmatched` when no pack accepts the path. */
+  readonly classifier: string;
+  readonly disposition: CodeGraphInventoryPreviewDisposition;
+  readonly bytes: number;
+  readonly files: number;
+  readonly language: string;
+  readonly reason: CodeGraphInventoryPreviewReason;
+  readonly role: CodeGraphFileRole | 'unmatched';
+}
+
+export interface CodeGraphInventoryPreviewCount {
+  readonly bytes: number;
+  readonly files: number;
+}
+
+export interface CodeGraphInventoryPreview {
+  readonly commit: string;
+  readonly dirty: boolean;
+  readonly groups: readonly CodeGraphInventoryPreviewGroup[];
+  /** Changed paths that were not stable contained regular files and are absent from aggregate byte totals. */
+  readonly omittedUnsafeWorktreeFiles: number;
+  readonly policyVersion: typeof CODE_GRAPH_INVENTORY_ADMISSION_POLICY_VERSION;
+  readonly repositoryId: string;
+  readonly scope: 'head-and-worktree';
+  readonly totals: {
+    readonly eligible: CodeGraphInventoryPreviewCount;
+    readonly repository: CodeGraphInventoryPreviewCount;
+    readonly skipped: CodeGraphInventoryPreviewCount;
+  };
+  readonly type: 'code-graph-inventory-preview';
+  readonly version: typeof CODE_GRAPH_INVENTORY_PREVIEW_VERSION;
+  readonly worktreeId: string;
+}
+
+export interface CodeGraphInventoryPreviewSummaryOptions {
+  readonly declaredProjectRoots?: readonly string[];
+  readonly declaredSourceRoots?: readonly string[];
+  readonly gitIgnoredPaths?: ReadonlySet<string>;
+  readonly languagePacks?: CodeGraphLanguagePackRegistryShape;
+  readonly threadnoteIgnore?: string;
+}
+
+export interface CodeGraphInventoryPreviewOptions {
+  readonly includeOverlay?: boolean;
+  readonly languagePacks?: CodeGraphLanguagePackRegistryShape;
 }
 
 interface PolicyExclusionEntry {
@@ -118,6 +186,88 @@ const COMPACT_RESOLUTION_CONTEXT_NAMES = new Set([
   'settings.gradle.kts',
   'tsconfig.json',
 ]);
+
+/**
+ * Aggregate path/size metadata through the same admission rules used by the
+ * inventory reader. The result is deliberately path-free and content-free.
+ */
+export function summarizeCodeGraphInventoryPreview(
+  entries: readonly CodeGraphInventoryPreviewEntry[],
+  options: CodeGraphInventoryPreviewSummaryOptions = {},
+): Pick<CodeGraphInventoryPreview, 'groups' | 'policyVersion' | 'totals'> {
+  const languagePacks = options.languagePacks ?? BUILTIN_LANGUAGE_PACK_REGISTRY;
+  const ignoreRules = compileThreadnoteIgnore(options.threadnoteIgnore ?? '');
+  const gitIgnoredPaths = options.gitIgnoredPaths ?? new Set<string>();
+  const groups = new Map<string, CodeGraphInventoryPreviewGroup>();
+  let eligibleBytes = 0;
+  let eligibleFiles = 0;
+  let repositoryBytes = 0;
+
+  for (const entry of entries) {
+    if (!Number.isSafeInteger(entry.size) || entry.size < 0) continue;
+    const path = normalizeRepositoryPath(entry.path);
+    const matched = languagePacks.match(path);
+    const dimensions = Option.match(matched, {
+      onNone: () => ({classifier: 'unmatched', language: 'unmatched', role: 'unmatched' as const}),
+      onSome: value => ({classifier: value.pack.id, language: value.language, role: value.role}),
+    });
+    const policyReason = codeGraphInventoryExclusionReason(path, entry.size);
+    const pathReason =
+      policyReason === undefined
+        ? repositoryPathExclusionReason(
+            path,
+            ignoreRules,
+            languagePacks,
+            options.declaredProjectRoots ?? [],
+            options.declaredSourceRoots ?? [],
+          )
+        : undefined;
+    const reason = policyReason ?? pathReason ?? (gitIgnoredPaths.has(path) ? 'git-ignore' : 'admitted');
+    const disposition: CodeGraphInventoryPreviewDisposition = reason === 'admitted' ? 'eligible' : 'skipped';
+    const key = [disposition, dimensions.language, dimensions.role, dimensions.classifier, reason].join('\0');
+    const current = groups.get(key);
+    groups.set(key, {
+      ...dimensions,
+      bytes: (current?.bytes ?? 0) + entry.size,
+      disposition,
+      files: (current?.files ?? 0) + 1,
+      reason,
+    });
+    repositoryBytes += entry.size;
+    if (disposition === 'eligible') {
+      eligibleBytes += entry.size;
+      eligibleFiles += 1;
+    }
+  }
+
+  const repositoryFiles = [...groups.values()].reduce((total, group) => total + group.files, 0);
+  const sortedGroups = [...groups.values()].sort((left, right) => {
+    const leftKey = [
+      left.disposition === 'eligible' ? '0' : '1',
+      left.language,
+      left.role,
+      left.classifier,
+      left.reason,
+    ];
+    const rightKey = [
+      right.disposition === 'eligible' ? '0' : '1',
+      right.language,
+      right.role,
+      right.classifier,
+      right.reason,
+    ];
+    return compareCodeUnits(leftKey.join('\0'), rightKey.join('\0'));
+  });
+  return {
+    groups: sortedGroups,
+    policyVersion: CODE_GRAPH_INVENTORY_ADMISSION_POLICY_VERSION,
+    totals: {
+      eligible: {bytes: eligibleBytes, files: eligibleFiles},
+      repository: {bytes: repositoryBytes, files: repositoryFiles},
+      skipped: {bytes: repositoryBytes - eligibleBytes, files: repositoryFiles - eligibleFiles},
+    },
+  };
+}
 
 export const inventoryRepository = Effect.fn('codeGraph.inventoryRepository')(function* (
   identity: RepositoryIdentity,
@@ -229,6 +379,168 @@ export const inventoryRepository = Effect.fn('codeGraph.inventoryRepository')(fu
     policyExclusions,
     skipped,
   } satisfies CodeGraphInventory;
+});
+
+/**
+ * Preview the current admission inventory without hydrating ordinary source
+ * blobs. Only small resolution-context manifests may be read so declared
+ * source roots match a real index operation.
+ */
+export const previewCodeGraphInventory = Effect.fn('codeGraph.previewInventory')(function* (
+  identity: RepositoryIdentity,
+  options: CodeGraphInventoryPreviewOptions = {},
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const languagePacks = options.languagePacks ?? BUILTIN_LANGUAGE_PACK_REGISTRY;
+  const committedEntries = isZeroObjectId(identity.headCommit)
+    ? []
+    : parseGitTree(
+        (yield* runCommandEffect('git', ['-C', identity.repoRoot, 'ls-tree', '-r', '-l', '-z', identity.headCommit], {
+          maxOutputBytes: 0,
+          timeoutMs: 0,
+        })).stdout,
+      );
+  const policyAdmittedEntries = committedEntries.filter(
+    entry => codeGraphInventoryExclusionReason(entry.path, entry.size) === undefined,
+  );
+  const declaredWorkspace = yield* discoverDeclaredSourceRoots(identity, policyAdmittedEntries, languagePacks);
+  const threadnoteIgnore = yield* readOptionalText(fs, path.join(identity.repoRoot, '.threadnoteignore'));
+  const ignoreRules = compileThreadnoteIgnore(threadnoteIgnore);
+  const tree = yield* readInventoryPreviewTree(identity, path, committedEntries, options.includeOverlay !== false);
+  const threadnoteIgnoredChangedPaths = new Set(
+    [...tree.changes.changed].filter(relative => isIgnoredByThreadnote(relative, ignoreRules)),
+  );
+  const changedContextCandidates = [...tree.changes.changed].filter(
+    relative =>
+      languagePacks.isResolutionContext(relative) &&
+      !threadnoteIgnoredChangedPaths.has(relative) &&
+      codeGraphInventoryExclusionReason(relative, tree.changedMetadata.get(relative)?.size ?? -1) === undefined,
+  );
+  const ignoredChangedContexts = yield* ignoredPaths(identity.repoRoot, changedContextCandidates);
+  const effectiveRoots =
+    options.includeOverlay === false
+      ? {projectRoots: declaredWorkspace.projectRoots, sourceRoots: declaredWorkspace.sourceRoots}
+      : yield* discoverOverlaySourceRoots(
+          identity,
+          path,
+          tree.changes.changed,
+          tree.changedMetadata,
+          ignoredChangedContexts,
+          threadnoteIgnoredChangedPaths,
+          languagePacks,
+          declaredWorkspace.projectRoots,
+          declaredWorkspace.sourceRoots,
+        );
+  const gitIgnoreCandidates = tree.entries
+    .filter(
+      entry =>
+        codeGraphInventoryExclusionReason(entry.path, entry.size) === undefined &&
+        repositoryPathExclusionReason(
+          entry.path,
+          ignoreRules,
+          languagePacks,
+          effectiveRoots.projectRoots,
+          effectiveRoots.sourceRoots,
+        ) === undefined,
+    )
+    .map(entry => entry.path);
+  const gitIgnoredPaths = yield* ignoredPaths(identity.repoRoot, gitIgnoreCandidates);
+  const summary = summarizeCodeGraphInventoryPreview(tree.entries, {
+    declaredProjectRoots: effectiveRoots.projectRoots,
+    declaredSourceRoots: effectiveRoots.sourceRoots,
+    gitIgnoredPaths,
+    languagePacks,
+    threadnoteIgnore,
+  });
+  return {
+    commit: identity.headCommit,
+    dirty: tree.dirty,
+    groups: summary.groups,
+    omittedUnsafeWorktreeFiles: tree.omittedUnsafeWorktreeFiles,
+    policyVersion: summary.policyVersion,
+    repositoryId: identity.repositoryId,
+    scope: 'head-and-worktree',
+    totals: summary.totals,
+    type: 'code-graph-inventory-preview',
+    version: CODE_GRAPH_INVENTORY_PREVIEW_VERSION,
+    worktreeId: identity.worktreeId,
+  } satisfies CodeGraphInventoryPreview;
+});
+
+const readInventoryPreviewTree = Effect.fn('codeGraph.readInventoryPreviewTree')(function* (
+  identity: RepositoryIdentity,
+  path: Path.Path,
+  committedEntries: readonly GitTreeEntry[],
+  includeOverlay: boolean,
+) {
+  const emptyChanges = {added: new Set<string>(), changed: new Set<string>(), deleted: new Set<string>()};
+  if (!includeOverlay) {
+    return {
+      changedMetadata: new Map<string, StableContainedRegularFileMetadata>(),
+      changes: emptyChanges,
+      dirty: false,
+      entries: committedEntries,
+      omittedUnsafeWorktreeFiles: 0,
+    };
+  }
+  const fs = yield* FileSystem.FileSystem;
+  const repositoryRoot = yield* fs.realPath(identity.repoRoot);
+  const unborn = isZeroObjectId(identity.headCommit);
+  const [diffOutput, untrackedOutput] = unborn
+    ? [
+        '',
+        (yield* runCommandEffect(
+          'git',
+          ['-C', identity.repoRoot, 'ls-files', '-z', '--cached', '--others', '--exclude-standard'],
+          {maxOutputBytes: 0, timeoutMs: 0},
+        )).stdout,
+      ]
+    : yield* Effect.all(
+        [
+          runCommandEffect(
+            'git',
+            ['-C', identity.repoRoot, 'diff', '--name-status', '-z', '--find-renames', identity.headCommit, '--'],
+            {maxOutputBytes: 0, timeoutMs: 0},
+          ).pipe(Effect.map(result => result.stdout)),
+          runCommandEffect('git', ['-C', identity.repoRoot, 'ls-files', '-z', '--others', '--exclude-standard'], {
+            maxOutputBytes: 0,
+            timeoutMs: 0,
+          }).pipe(Effect.map(result => result.stdout)),
+        ],
+        {concurrency: 2},
+      );
+  const changes = parseNameStatus(diffOutput);
+  for (const relative of untrackedOutput.split('\0').filter(Boolean).map(normalizeRepositoryPath)) {
+    changes.added.add(relative);
+    changes.changed.add(relative);
+  }
+  const entries = new Map(committedEntries.map(entry => [entry.path, entry]));
+  for (const relative of changes.deleted) entries.delete(relative);
+  const changedMetadata = new Map<string, StableContainedRegularFileMetadata>();
+  let omittedUnsafeWorktreeFiles = 0;
+  for (const relative of [...changes.changed].sort(compareCodeUnits)) {
+    entries.delete(relative);
+    const inspected = yield* inspectContainedStableRegularFile(fs, path, repositoryRoot, relative).pipe(Effect.option);
+    if (inspected._tag === 'None') {
+      omittedUnsafeWorktreeFiles += 1;
+      continue;
+    }
+    changedMetadata.set(relative, inspected.value);
+    entries.set(relative, {
+      blobId: 'worktree',
+      mode: '100644',
+      path: relative,
+      size: inspected.value.size,
+    });
+  }
+  return {
+    changedMetadata,
+    changes,
+    dirty: changes.changed.size > 0 || changes.deleted.size > 0,
+    entries: [...entries.values()].sort((left, right) => compareCodeUnits(left.path, right.path)),
+    omittedUnsafeWorktreeFiles,
+  };
 });
 
 export const worktreeOverlayState = Effect.fn('codeGraph.worktreeOverlayState')(function* (
@@ -400,6 +712,73 @@ const discoverDeclaredSourceRoots = Effect.fn('codeGraph.discoverDeclaredSourceR
   return {files: new Map(files.map(file => [file.path, file])), projectRoots, sourceRoots};
 });
 
+const discoverOverlaySourceRoots = Effect.fn('codeGraph.discoverOverlaySourceRoots')(function* (
+  identity: RepositoryIdentity,
+  path: Path.Path,
+  changedPaths: ReadonlySet<string>,
+  changedMetadata: ReadonlyMap<string, StableContainedRegularFileMetadata>,
+  ignoredChangedPaths: ReadonlySet<string>,
+  threadnoteIgnoredChangedPaths: ReadonlySet<string>,
+  languagePacks: CodeGraphLanguagePackRegistryShape,
+  declaredProjectRoots: readonly string[],
+  declaredSourceRoots: readonly string[],
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const repositoryRoot = yield* fs.realPath(identity.repoRoot);
+  const overlayContextFiles: CodeGraphInventoryFile[] = [];
+  for (const relative of [...changedPaths].sort(compareCodeUnits)) {
+    if (!languagePacks.isResolutionContext(relative)) continue;
+    if (ignoredChangedPaths.has(relative) || threadnoteIgnoredChangedPaths.has(relative)) continue;
+    const directories = relative.split('/').slice(0, -1);
+    if (directories.some(directory => directory.startsWith('.') || directory.toLowerCase() === 'node_modules')) {
+      continue;
+    }
+    const metadata = changedMetadata.get(relative);
+    if (metadata === undefined || codeGraphInventoryExclusionReason(relative, metadata.size) !== undefined) continue;
+    const opened = yield* materializeContainedStableRegularFile(
+      fs,
+      path,
+      repositoryRoot,
+      relative,
+      size => size > CORPUS_EXTRACTION_SOURCE_BYTES_LIMIT,
+      metadata.size,
+    ).pipe(Effect.option);
+    if (opened._tag === 'None' || opened.value.bytes === undefined) continue;
+    if (appearsGitLfsPointer(opened.value.bytes) || appearsBinary(opened.value.bytes)) continue;
+    const matched = languagePacks.match(relative);
+    overlayContextFiles.push(
+      retainResolutionContext(
+        {
+          blobId: `worktree:${opened.value.contentHash}`,
+          content: decodeUtf8(opened.value.bytes),
+          contentHash: opened.value.contentHash,
+          language: Option.match(matched, {onNone: () => 'text', onSome: value => value.language}),
+          mode: '100644',
+          path: relative,
+          size: opened.value.size,
+          source: 'worktree',
+        },
+        languagePacks,
+      ),
+    );
+  }
+  const overlayWorkspace =
+    overlayContextFiles.length === 0 ? undefined : yield* languagePacks.discoverWorkspace(overlayContextFiles);
+  const projectRoots = [
+    ...new Set([...declaredProjectRoots, ...(overlayWorkspace?.projects.map(project => project.root) ?? [])]),
+  ]
+    .map(normalizeRepositoryPath)
+    .filter(root => root.length > 0 && !root.split('/').some(segment => segment === '..' || segment === ''))
+    .sort(compareCodeUnits);
+  const sourceRoots = [
+    ...new Set([...declaredSourceRoots, ...(overlayWorkspace?.projects.flatMap(project => project.sourceRoots) ?? [])]),
+  ]
+    .map(normalizeRepositoryPath)
+    .filter(root => root.length > 0 && !root.split('/').some(segment => segment === '..' || segment === ''))
+    .sort(compareCodeUnits);
+  return {projectRoots, sourceRoots};
+});
+
 export function acceptsRepositoryPath(
   value: string,
   threadnoteIgnore = '',
@@ -451,33 +830,47 @@ function acceptsRepositoryPathWithRules(
   declaredProjectRoots: readonly string[] = [],
   declaredSourceRoots: readonly string[] = [],
 ): boolean {
+  return (
+    repositoryPathExclusionReason(value, ignoreRules, languagePacks, declaredProjectRoots, declaredSourceRoots) ===
+    undefined
+  );
+}
+
+function repositoryPathExclusionReason(
+  value: string,
+  ignoreRules: readonly CompiledIgnoreRule[],
+  languagePacks: CodeGraphLanguagePackRegistryShape,
+  declaredProjectRoots: readonly string[] = [],
+  declaredSourceRoots: readonly string[] = [],
+): Exclude<CodeGraphInventoryPreviewReason, CodeGraphInventoryExclusionReason | 'admitted' | 'git-ignore'> | undefined {
   const path = normalizeRepositoryPath(value);
   if (!path || path.startsWith('/') || path.split('/').some(segment => segment === '..' || segment === '')) {
-    return false;
+    return 'invalid-path';
   }
-  const segments = path.split('/');
-  const directories = segments.slice(0, -1);
-  if (
-    directories.some((directory, index) => {
-      if (directory.startsWith('.') && !AUTHORED_DOT_DIRECTORIES.has(directory.toLowerCase())) return true;
-      const normalizedDirectory = directory.toLowerCase();
-      const bazelOutputLink = normalizedDirectory.startsWith('bazel-');
-      if (!bazelOutputLink && !PRUNED_DIRECTORIES.has(normalizedDirectory)) return false;
-      const prefix = directories.slice(0, index + 1).join('/');
-      // A generated-looking directory is authored source only when a manifest
-      // declares that directory itself (or one of its descendants) as a
-      // project/source root. A broad source root must not re-include nested
-      // output such as packages/app/dist or packages/app/build.
-      const declaredRoots = [...declaredProjectRoots, ...declaredSourceRoots];
-      if (declaredRoots.some(root => root === prefix || root.startsWith(`${prefix}/`))) return false;
-      if (bazelOutputLink || GENERATED_DIRECTORIES.has(normalizedDirectory)) return true;
-      return !declaredSourceRoots.some(root => prefix.startsWith(`${root}/`));
-    }) ||
-    isIgnoredByThreadnote(path, ignoreRules)
-  ) {
-    return false;
+  const directories = path.split('/').slice(0, -1);
+  const declaredRoots = [...declaredProjectRoots, ...declaredSourceRoots];
+  for (let index = 0; index < directories.length; index += 1) {
+    const directory = directories[index]!;
+    const normalizedDirectory = directory.toLowerCase();
+    if (directory.startsWith('.') && !AUTHORED_DOT_DIRECTORIES.has(normalizedDirectory)) {
+      return 'hidden-directory';
+    }
+    const bazelOutputLink = normalizedDirectory.startsWith('bazel-');
+    if (!bazelOutputLink && !PRUNED_DIRECTORIES.has(normalizedDirectory)) continue;
+    const prefix = directories.slice(0, index + 1).join('/');
+    // A generated-looking directory is authored source only when a manifest
+    // declares that directory itself (or one of its descendants) as a
+    // project/source root. A broad source root must not re-include nested
+    // output such as packages/app/dist or packages/app/build.
+    if (declaredRoots.some(root => root === prefix || root.startsWith(`${prefix}/`))) continue;
+    if (!bazelOutputLink && !GENERATED_DIRECTORIES.has(normalizedDirectory)) {
+      if (declaredSourceRoots.some(root => prefix.startsWith(`${root}/`))) continue;
+      return 'vendor-directory';
+    }
+    return normalizedDirectory === 'node_modules' ? 'vendor-directory' : 'generated-directory';
   }
-  return Option.isSome(languagePacks.match(path));
+  if (isIgnoredByThreadnote(path, ignoreRules)) return 'threadnote-ignore';
+  return Option.isSome(languagePacks.match(path)) ? undefined : 'unsupported-language';
 }
 
 function compileThreadnoteIgnore(content: string): readonly CompiledIgnoreRule[] {
@@ -816,59 +1209,19 @@ const readDirtyOverlay = Effect.fn('codeGraph.readDirtyOverlay')(function* (
     const inspected = yield* inspectContainedStableRegularFile(fs, path, repositoryRoot, relative).pipe(Effect.option);
     if (inspected._tag === 'Some') changedMetadata.set(relative, inspected.value);
   }
-  const overlayContextFiles: CodeGraphInventoryFile[] = [];
-  for (const relative of [...changes.changed].sort()) {
-    if (!languagePacks.isResolutionContext(relative)) continue;
-    if (ignoredChangedPaths.has(relative) || threadnoteIgnoredChangedPaths.has(relative)) continue;
-    const directories = relative.split('/').slice(0, -1);
-    if (directories.some(directory => directory.startsWith('.') || directory.toLowerCase() === 'node_modules')) {
-      continue;
-    }
-    const metadata = changedMetadata.get(relative);
-    if (metadata === undefined || codeGraphInventoryExclusionReason(relative, metadata.size) !== undefined) {
-      continue;
-    }
-    const opened = yield* materializeContainedStableRegularFile(
-      fs,
-      path,
-      repositoryRoot,
-      relative,
-      size => size > CORPUS_EXTRACTION_SOURCE_BYTES_LIMIT,
-      metadata.size,
-    ).pipe(Effect.option);
-    if (opened._tag === 'None' || opened.value.bytes === undefined) continue;
-    if (appearsGitLfsPointer(opened.value.bytes) || appearsBinary(opened.value.bytes)) continue;
-    const matched = languagePacks.match(relative);
-    overlayContextFiles.push(
-      retainResolutionContext(
-        {
-          blobId: `worktree:${opened.value.contentHash}`,
-          content: decodeUtf8(opened.value.bytes),
-          contentHash: opened.value.contentHash,
-          language: Option.match(matched, {onNone: () => 'text', onSome: value => value.language}),
-          mode: '100644',
-          path: relative,
-          size: opened.value.size,
-          source: 'worktree',
-        },
-        languagePacks,
-      ),
-    );
-  }
-  const overlayWorkspace =
-    overlayContextFiles.length === 0 ? undefined : yield* languagePacks.discoverWorkspace(overlayContextFiles);
-  const effectiveDeclaredProjectRoots = [
-    ...new Set([...declaredProjectRoots, ...(overlayWorkspace?.projects.map(project => project.root) ?? [])]),
-  ]
-    .map(normalizeRepositoryPath)
-    .filter(root => root.length > 0 && !root.split('/').some(segment => segment === '..' || segment === ''))
-    .sort(compareCodeUnits);
-  const effectiveDeclaredSourceRoots = [
-    ...new Set([...declaredSourceRoots, ...(overlayWorkspace?.projects.flatMap(project => project.sourceRoots) ?? [])]),
-  ]
-    .map(normalizeRepositoryPath)
-    .filter(root => root.length > 0 && !root.split('/').some(segment => segment === '..' || segment === ''))
-    .sort(compareCodeUnits);
+  const overlayRoots = yield* discoverOverlaySourceRoots(
+    identity,
+    path,
+    changes.changed,
+    changedMetadata,
+    ignoredChangedPaths,
+    threadnoteIgnoredChangedPaths,
+    languagePacks,
+    declaredProjectRoots,
+    declaredSourceRoots,
+  );
+  const effectiveDeclaredProjectRoots = overlayRoots.projectRoots;
+  const effectiveDeclaredSourceRoots = overlayRoots.sourceRoots;
   const files: CodeGraphInventoryFile[] = [];
   let skipped = 0;
   const parsedPaths = new Set<string>();

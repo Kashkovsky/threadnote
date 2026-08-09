@@ -42,6 +42,7 @@ import {
 } from './build_status.js';
 import {compactCodeGraphStorage, inspectCodeGraphStorage, type CodeGraphStorage} from './storage.js';
 import {inspectAllCodeGraphsLocal, renderCodeGraphDiagnostics} from './diagnostics.js';
+import {previewCodeGraphInventory, type CodeGraphInventoryPreview} from './inventory.js';
 import {
   codeGraphViewRemovalTargetFailure,
   removeCodeGraphView,
@@ -437,6 +438,41 @@ export const runCodeGraphStatus = Effect.fn('codeGraph.command.status')(function
     }`,
   );
 });
+
+export const runCodeGraphInventory = Effect.fn('codeGraph.command.inventory')(function* (
+  _config: RuntimeConfig,
+  options: CwdOption & {readonly json?: boolean},
+) {
+  const identity = yield* resolveRepositoryIdentity(yield* commandCwd(options.cwd));
+  const preview = yield* previewCodeGraphInventory(identity);
+  yield* writeFinalCliOutput(options.json ? JSON.stringify(preview) : renderCodeGraphInventoryPreview(preview));
+});
+
+function renderCodeGraphInventoryPreview(preview: CodeGraphInventoryPreview): string {
+  const source = `${preview.commit.slice(0, 12)}${preview.dirty ? ' + worktree changes' : ' (clean)'}`;
+  const lines = [
+    'Code graph inventory admission preview',
+    `Source: ${source}`,
+    `Policy: v${preview.policyVersion} · aggregate metadata only · repository paths and content omitted`,
+    `Repository: ${preview.totals.repository.files} file(s) · ${preview.totals.repository.bytes} bytes (${formatBytes(preview.totals.repository.bytes)})`,
+    `Eligible: ${preview.totals.eligible.files} file(s) · ${preview.totals.eligible.bytes} bytes (${formatBytes(preview.totals.eligible.bytes)})`,
+    `Skipped: ${preview.totals.skipped.files} file(s) · ${preview.totals.skipped.bytes} bytes (${formatBytes(preview.totals.skipped.bytes)})`,
+  ];
+  if (preview.omittedUnsafeWorktreeFiles > 0) {
+    lines.push(
+      `Omitted: ${preview.omittedUnsafeWorktreeFiles} changed unsafe/non-regular worktree path(s) are outside byte totals.`,
+    );
+  }
+  lines.push('', 'DISPOSITION\tLANGUAGE\tROLE\tCLASSIFIER\tREASON\tFILES\tBYTES');
+  for (const group of preview.groups) {
+    lines.push(
+      [group.disposition, group.language, group.role, group.classifier, group.reason, group.files, group.bytes].join(
+        '\t',
+      ),
+    );
+  }
+  return `${lines.join('\n')}\n`;
+}
 
 function renderReadySnapshotStatus(status: {
   readonly readySnapshot?: {

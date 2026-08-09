@@ -96,6 +96,7 @@ import {
   runCodeGraphExport,
   runCodeGraphImpact,
   runCodeGraphIndex,
+  runCodeGraphInventory,
   runCodeGraphInspect,
   runCodeGraphPurge,
   runCodeGraphRemoveView,
@@ -599,6 +600,15 @@ const graphStatus = Command.make(
   options => withRuntimeEffect(config => runCodeGraphStatus(config, options)),
 ).pipe(Command.withDescription('Show native code graph snapshot and freshness state'));
 
+const graphInventory = Command.make(
+  'inventory',
+  {
+    cwd: graphBounds.cwd,
+    json: graphBounds.json,
+  },
+  options => withRuntimeEffect(config => runCodeGraphInventory(config, options)),
+).pipe(Command.withDescription('Preview aggregate graph eligibility by language, role, classifier, and policy reason'));
+
 const graphDiagnostics = Command.make(
   'diagnostics',
   {
@@ -843,6 +853,7 @@ const graphCommand = Command.make('graph').pipe(
   Command.withDescription('Index and inspect the self-contained native code graph'),
   Command.withSubcommands([
     graphStatus,
+    graphInventory,
     graphDiagnostics,
     graphRepair,
     graphIndex,

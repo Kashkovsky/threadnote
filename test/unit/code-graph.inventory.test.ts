@@ -5,6 +5,7 @@ import {
   parseGitTree,
   parseNameStatus,
   shouldOmitRepositoryContent,
+  summarizeCodeGraphInventoryPreview,
 } from '../../src/code_graph/inventory.js';
 import {
   CODE_GRAPH_GENERIC_JSON_EXCLUSION_BYTES,
@@ -218,5 +219,67 @@ describe('native code graph inventory policy', () => {
     }
     expect(acceptsRepositoryPath('src/readme.txt')).toBe(true);
     expect(acceptsRepositoryPath('src/archive.bin')).toBe(false);
+  });
+
+  it('explains eligible and skipped bytes without repository paths', () => {
+    const entries = [
+      {path: 'src/active.ts', size: 10},
+      {path: 'package.json', size: 20},
+      {path: 'apps/mobile/project.json', size: 30},
+      {path: 'tsconfig.json', size: 40},
+      {path: 'assets/icon.svg', size: 50},
+      {path: 'test/__fixtures__/payload.json', size: 60},
+      {path: 'data/heavy.json', size: CODE_GRAPH_GENERIC_JSON_EXCLUSION_BYTES},
+      {path: 'src/ignored.ts', size: 70},
+      {path: 'dist/generated.ts', size: 80},
+      {path: 'artifact.bin', size: 90},
+    ] as const;
+
+    const preview = summarizeCodeGraphInventoryPreview(entries, {threadnoteIgnore: 'src/ignored.ts\n'});
+    const group = (reason: string, language: string) =>
+      preview.groups.find(candidate => candidate.reason === reason && candidate.language === language);
+
+    expect(preview.totals).toEqual({
+      eligible: {bytes: 100, files: 4},
+      repository: {
+        bytes: entries.reduce((total, entry) => total + entry.size, 0),
+        files: entries.length,
+      },
+      skipped: {
+        bytes: entries.reduce((total, entry) => total + entry.size, 0) - 100,
+        files: 6,
+      },
+    });
+    expect(group('admitted', 'typescript')).toMatchObject({
+      classifier: 'typescript',
+      disposition: 'eligible',
+      role: 'source',
+    });
+    expect(group('admitted', 'npm-manifest')).toMatchObject({
+      classifier: 'manifests',
+      disposition: 'eligible',
+      role: 'manifest',
+    });
+    expect(group('admitted', 'typescript-config')).toMatchObject({
+      classifier: 'manifests',
+      disposition: 'eligible',
+      role: 'workspace',
+    });
+    expect(group('admitted', 'json')).toMatchObject({classifier: 'schemas', disposition: 'eligible'});
+    expect(group('svg', 'document')).toMatchObject({classifier: 'corpus', disposition: 'skipped'});
+    expect(group('low-signal-json', 'json')).toMatchObject({classifier: 'schemas', disposition: 'skipped'});
+    expect(group('generic-json-size', 'json')).toMatchObject({classifier: 'schemas', disposition: 'skipped'});
+    expect(group('threadnote-ignore', 'typescript')).toMatchObject({
+      classifier: 'typescript',
+      disposition: 'skipped',
+    });
+    expect(group('generated-directory', 'typescript')).toMatchObject({disposition: 'skipped'});
+    expect(group('unsupported-language', 'unmatched')).toMatchObject({
+      classifier: 'unmatched',
+      disposition: 'skipped',
+      role: 'unmatched',
+    });
+    expect(JSON.stringify(preview)).not.toContain('src/active.ts');
+    expect(JSON.stringify(preview)).not.toContain('package.json');
   });
 });

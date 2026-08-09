@@ -1,5 +1,5 @@
 import {execFile} from 'node:child_process';
-import {mkdtemp, rm, writeFile} from 'node:fs/promises';
+import {mkdir, mkdtemp, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {promisify} from 'node:util';
@@ -44,6 +44,7 @@ describe('Effect CLI', () => {
     const explain = await runCli(['graph', 'explain', '--help']);
     const path = await runCli(['graph', 'path', '--help']);
     const impact = await runCli(['graph', 'impact', '--help']);
+    const inventory = await runCli(['graph', 'inventory', '--help']);
     const analyze = await runCli(['graph', 'analyze', '--help']);
     const diagnostics = await runCli(['graph', 'diagnostics', '--help']);
     const exportHelp = await runCli(['graph', 'export', '--help']);
@@ -58,6 +59,7 @@ describe('Effect CLI', () => {
     expect(graph.stdout).toContain('neighbors');
     expect(graph.stdout).toContain('path');
     expect(graph.stdout).toContain('impact');
+    expect(graph.stdout).toContain('inventory');
     expect(graph.stdout).toContain('communities');
     expect(graph.stdout).toContain('community');
     expect(graph.stdout).toContain('diagnostics');
@@ -82,6 +84,8 @@ describe('Effect CLI', () => {
     expect(diagnostics.stdout).toContain('--analyze');
     expect(diagnostics.stdout).toContain('--deep');
     expect(diagnostics.stdout).not.toContain('--cwd');
+    expect(inventory.stdout).toContain('--cwd string');
+    expect(inventory.stdout).toContain('--json');
     const community = await runCli(['graph', 'community', '--help']);
     expect(community.stdout).toContain('--community-id string');
     expect(community.stdout).toContain('--member-limit integer');
@@ -102,6 +106,74 @@ describe('Effect CLI', () => {
     expect(repair.stdout).toContain('--all');
     expect(repair.stdout).toContain('--deep');
     expect(repair.stdout).toContain('--dry-run');
+  });
+
+  it('emits a path-free aggregate graph inventory preview', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'threadnote-effect-cli-inventory-'));
+    try {
+      await mkdir(join(root, 'assets'), {recursive: true});
+      await mkdir(join(root, 'src'), {recursive: true});
+      await mkdir(join(root, 'test', '__fixtures__'), {recursive: true});
+      await writeFile(join(root, 'package.json'), '{"name":"inventory-preview"}\n');
+      await writeFile(join(root, 'src', 'active.ts'), 'export const active = true;\n');
+      await writeFile(join(root, 'src', 'ignored.ts'), 'export const ignored = true;\n');
+      await writeFile(join(root, '.threadnoteignore'), 'src/ignored.ts\n');
+      await writeFile(join(root, 'assets', 'icon.svg'), '<svg/>');
+      await writeFile(join(root, 'test', '__fixtures__', 'payload.json'), '{}\n');
+      await execFilePromise('git', ['-C', root, 'init', '-q']);
+      await execFilePromise('git', ['-C', root, 'add', '.']);
+      await execFilePromise('git', [
+        '-C',
+        root,
+        '-c',
+        'user.name=Threadnote Test',
+        '-c',
+        'user.email=test@threadnote.local',
+        'commit',
+        '-qm',
+        'fixture',
+      ]);
+
+      const output = await runCli(['graph', 'inventory', '--cwd', root, '--json']);
+      const preview = JSON.parse(output.stdout) as {
+        readonly groups: ReadonlyArray<{
+          readonly classifier: string;
+          readonly disposition: string;
+          readonly language: string;
+          readonly reason: string;
+          readonly role: string;
+        }>;
+        readonly totals: {readonly eligible: {readonly files: number}; readonly skipped: {readonly files: number}};
+        readonly type: string;
+        readonly version: number;
+      };
+
+      expect(preview).toMatchObject({type: 'code-graph-inventory-preview', version: 1});
+      expect(preview.totals.eligible.files).toBe(2);
+      expect(preview.totals.skipped.files).toBe(4);
+      expect(preview.groups).toContainEqual(
+        expect.objectContaining({
+          classifier: 'corpus',
+          disposition: 'skipped',
+          language: 'document',
+          reason: 'svg',
+          role: 'corpus',
+        }),
+      );
+      expect(preview.groups).toContainEqual(
+        expect.objectContaining({
+          classifier: 'typescript',
+          disposition: 'skipped',
+          reason: 'threadnote-ignore',
+        }),
+      );
+      expect(output.stdout).not.toContain(root);
+      for (const repositoryPath of ['src/active.ts', 'src/ignored.ts', 'assets/icon.svg']) {
+        expect(output.stdout).not.toContain(repositoryPath);
+      }
+    } finally {
+      await rm(root, {force: true, recursive: true});
+    }
   });
 
   it('previews and applies an exact selected graph view through path-free JSON', async () => {
