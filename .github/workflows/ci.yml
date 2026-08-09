@@ -119,17 +119,9 @@ jobs:
       - run: bun install --frozen-lockfile
 
       - name: Run ordinary tests with all available Vitest workers
-        run: bun --bun vitest run --coverage --shard=${{ matrix.shard }}/4
+        run: bun --bun vitest run --shard=${{ matrix.shard }}/4
         env:
           THREADNOTE_VITEST_STANDARD_SHARD: ${{ matrix.shard }}
-
-      - name: Upload coverage
-        uses: actions/upload-artifact@v7
-        with:
-          name: coverage-standard-${{ matrix.shard }}
-          path: coverage/
-          if-no-files-found: ignore
-          retention-days: 14
 
   long_tests:
     name: Tests · long · ${{ matrix.group }}

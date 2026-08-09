@@ -94,9 +94,10 @@ describe('dependency-aware CI workflow', () => {
       strategy: {matrix: {shard: [1, 2, 3, 4]}},
     });
     expect(standard.steps?.find(step => step.uses?.startsWith('actions/checkout@'))?.with?.['fetch-depth']).toBe(0);
-    expect(stepForRun(standard, 'bun --bun vitest run --coverage --shard=${{ matrix.shard }}/4').env).toEqual({
+    expect(stepForRun(standard, 'bun --bun vitest run --shard=${{ matrix.shard }}/4').env).toEqual({
       THREADNOTE_VITEST_STANDARD_SHARD: '${{ matrix.shard }}',
     });
+    expect(standard.steps?.some(step => step.uses?.startsWith('actions/upload-artifact@'))).toBe(false);
 
     expect(long).toMatchObject({
       needs: 'changes',
@@ -107,6 +108,7 @@ describe('dependency-aware CI workflow', () => {
     expect(stepForRun(long, 'bun --bun vitest run').env).toEqual({
       THREADNOTE_VITEST_LONG_GROUP: '${{ matrix.group }}',
     });
+    expect(long.steps?.some(step => step.uses?.startsWith('actions/upload-artifact@'))).toBe(false);
   });
 
   it('gates quality, Windows, bytecode, model, and release matrices independently', () => {

@@ -93,7 +93,6 @@ const ciLongRunningTestPatterns: Partial<Record<string, RegExp>> = {
 
 const ciLongRunningGroupName = process.env.THREADNOTE_VITEST_LONG_GROUP;
 const ciLongRunningGroup = ciLongRunningGroupName ? ciLongRunningTestGroups[ciLongRunningGroupName] : undefined;
-const ciStandardShard = process.env.THREADNOTE_VITEST_STANDARD_SHARD;
 
 if (ciLongRunningGroupName && !ciLongRunningGroup) {
   throw new Error(`Unknown CI long-running test group: ${ciLongRunningGroupName}`);
@@ -121,11 +120,6 @@ export default defineConfig({
     coverage: {
       provider: 'istanbul',
       reporter: ['text', 'html', 'lcov'],
-      reportsDirectory: ciLongRunningGroupName
-        ? `coverage/long-${ciLongRunningGroupName}`
-        : ciStandardShard
-          ? `coverage/standard-${ciStandardShard}`
-          : 'coverage',
       include: ['src/**/*.ts'],
       exclude: [
         'src/types.ts',
