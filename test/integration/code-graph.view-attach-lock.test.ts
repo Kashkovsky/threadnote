@@ -3,6 +3,7 @@ import {mkdtempSync, rmSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {Deferred, Effect, Fiber, FileSystem, Path} from 'effect';
+import {TestClock} from 'effect/testing';
 import {it as effectIt} from '@effect/vitest';
 import {afterEach, describe, expect, it} from 'vitest';
 import {CodeGraphDiskCapacityPressureError} from '../../src/code_graph/disk_capacity.js';
@@ -59,7 +60,7 @@ describe('shared ready view attachment locking', () => {
       const pointer = yield* store.readySnapshot(layout.databasePath, identity.worktreeId);
       expect(attached.readySnapshot?.id).toBe(snapshot.id);
       expect(pointer?.id).toBe(snapshot.id);
-    }).pipe(Effect.provide(ApplicationLayer)),
+    }).pipe(Effect.provide(ApplicationLayer), TestClock.withLive),
   );
 
   it('defers without mutation when the target builder is active, then attaches after release', async () => {

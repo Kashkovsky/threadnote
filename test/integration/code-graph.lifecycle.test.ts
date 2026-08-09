@@ -622,7 +622,7 @@ describe('native code graph lifecycle', () => {
           database.close();
         }
       });
-    }).pipe(Effect.provide(ApplicationLayer)),
+    }).pipe(Effect.provide(ApplicationLayer), TestClock.withLive),
   );
 
   it('attaches a shared clean ready snapshot to a new worktree without rematerializing', async () => {
@@ -878,7 +878,7 @@ describe('native code graph lifecycle', () => {
         'cache materialized code graph file shards': probesPerObservation,
         'promote ready code graph snapshot': probesPerObservation,
       });
-    }).pipe(Effect.provide(ApplicationLayer)),
+    }).pipe(Effect.provide(ApplicationLayer), TestClock.withLive),
   );
 
   it('reuses content-addressed materialized file shards during a forced clean rebuild', async () => {
@@ -1061,7 +1061,7 @@ describe('native code graph lifecycle', () => {
       expect(indexed.snapshot.baseSnapshotId).toBeUndefined();
       expect(indexed.snapshot.id).not.toBe(first.snapshot.id);
       expect(found.nodes.some(node => node.name === 'renamed0')).toBe(true);
-    }).pipe(Effect.provide(ApplicationLayer)),
+    }).pipe(Effect.provide(ApplicationLayer), TestClock.withLive),
   );
 
   effectIt.effect('falls back to bounded full materialization when a clean commit adds or deletes a file', () =>
@@ -1106,7 +1106,7 @@ describe('native code graph lifecycle', () => {
           expect(fallback.snapshot.id).not.toBe(first.snapshot.id);
         }),
       {concurrency: 1},
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(Effect.provide(ApplicationLayer), TestClock.withLive),
   );
 
   it('builds an immediately dirty worktree directly from the prior compatible anchor', async () => {

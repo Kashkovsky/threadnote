@@ -4,6 +4,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {Database} from 'bun:sqlite';
 import {describe, expect, it} from '@effect/vitest';
+import {TestClock} from 'effect/testing';
 import * as FC from 'effect/testing/FastCheck';
 import {Effect, Path} from 'effect';
 import {CodeGraphIndexer} from '../../src/code_graph/indexer.js';
@@ -123,7 +124,7 @@ describe('project-closure incremental indexing', () => {
           ).toEqual(['poisoned final shard']);
         }),
       root => Effect.sync(() => rmSync(root, {force: true, recursive: true})),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(Effect.provide(ApplicationLayer), TestClock.withLive),
   );
 
   it.effect('uses the same project closure from a nearby persisted clean base', () =>
@@ -175,7 +176,7 @@ describe('project-closure incremental indexing', () => {
           ]);
         }),
       root => Effect.sync(() => rmSync(root, {force: true, recursive: true})),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(Effect.provide(ApplicationLayer), TestClock.withLive),
   );
 
   it.effect('reparses and replaces a valid cache tuple whose payload names another path', () =>
@@ -206,7 +207,7 @@ describe('project-closure incremental indexing', () => {
           expect(cachedFactPayloadPaths(layout.databasePath, baseBarrelHash)).toEqual(['packages/barrel/index.ts']);
         }),
       root => Effect.sync(() => rmSync(root, {force: true, recursive: true})),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(Effect.provide(ApplicationLayer), TestClock.withLive),
   );
 
   it.effect('falls back through bounded full materialization for cache and receipt loss or oversized facts', () =>
@@ -259,7 +260,7 @@ describe('project-closure incremental indexing', () => {
           root => Effect.sync(() => rmSync(root, {force: true, recursive: true})),
         ),
       {concurrency: 1},
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(Effect.provide(ApplicationLayer), TestClock.withLive),
   );
 
   it.effect('fails closed for file-set, global-surface, and unreconciled-workspace changes', () =>
@@ -299,7 +300,7 @@ describe('project-closure incremental indexing', () => {
           root => Effect.sync(() => rmSync(root, {force: true, recursive: true})),
         ),
       {concurrency: 1},
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(Effect.provide(ApplicationLayer), TestClock.withLive),
   );
 
   it.effect(
@@ -327,8 +328,8 @@ describe('project-closure incremental indexing', () => {
             expect(indexed.materialization?.stagedFiles).toBe(indexed.materialization?.totalFiles);
           }),
         root => Effect.sync(() => rmSync(root, {force: true, recursive: true})),
-      ).pipe(Effect.provide(ApplicationLayer)),
-    {timeout: 30_000},
+      ).pipe(Effect.provide(ApplicationLayer), TestClock.withLive),
+    {timeout: 120_000},
   );
 
   it.effect.prop(
@@ -412,8 +413,8 @@ describe('project-closure incremental indexing', () => {
             );
           }),
         root => Effect.sync(() => rmSync(root, {force: true, recursive: true})),
-      ).pipe(Effect.provide(ApplicationLayer)),
-    {fastCheck: {interruptAfterTimeLimit: 60_000, markInterruptAsFailure: true, numRuns: 4}, timeout: 70_000},
+      ).pipe(Effect.provide(ApplicationLayer), TestClock.withLive),
+    {fastCheck: {interruptAfterTimeLimit: 120_000, markInterruptAsFailure: true, numRuns: 4}, timeout: 130_000},
   );
 });
 

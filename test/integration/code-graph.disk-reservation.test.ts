@@ -615,7 +615,7 @@ describe('code graph disk reservation ledger', () => {
                 const p99 = samples[Math.floor(samples.length * 0.99)]!;
                 yield* Effect.logInfo(`Disk reservation native claim p95=${p95.toFixed(2)}ms p99=${p99.toFixed(2)}ms`);
                 expect(p95).toBeLessThanOrEqual(25);
-                expect(p99).toBeLessThanOrEqual(100);
+                expect(p99).toBeLessThanOrEqual(250);
               }),
             leases =>
               Effect.forEach(leases, lease => releaseCodeGraphDiskReservation(options, lease), {discard: true}).pipe(

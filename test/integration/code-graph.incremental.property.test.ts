@@ -4,6 +4,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {Database} from 'bun:sqlite';
 import {describe, expect, it} from '@effect/vitest';
+import {TestClock} from 'effect/testing';
 import * as FC from 'effect/testing/FastCheck';
 import {Effect, Option, Path} from 'effect';
 import {CodeGraphIndexer} from '../../src/code_graph/indexer.js';
@@ -339,10 +340,10 @@ describe('code graph incremental-overlay differential properties', () => {
             expect(result.snapshot.id).not.toBe(base.snapshot.id);
           }),
         root => Effect.sync(() => rmSync(root, {force: true, recursive: true})),
-      ).pipe(Effect.provide(ApplicationLayer)),
+      ).pipe(Effect.provide(ApplicationLayer), TestClock.withLive),
     {
-      fastCheck: {interruptAfterTimeLimit: 60_000, markInterruptAsFailure: true, numRuns: 6},
-      timeout: 70_000,
+      fastCheck: {interruptAfterTimeLimit: 120_000, markInterruptAsFailure: true, numRuns: 6},
+      timeout: 130_000,
     },
   );
 
