@@ -804,10 +804,14 @@ const graphPurge = Command.make(
   'purge',
   {
     all: boolean('all', 'Remove every disposable native code graph index'),
+    apply: boolean('apply', 'Apply an exact selected-snapshot purge after preview approval'),
+    approval: optionalString('approval', 'Exact sha256 approval digest emitted by a fresh snapshot preview'),
     checkoutId: optionalString('checkout-id', 'Target one inventoried checkout by its full 64-character identity'),
     cwd: graphBounds.cwd,
     dryRun: boolean('dry-run', 'Show the derived index path without removing it'),
+    json: graphBounds.json,
     obsolete: boolean('obsolete', 'Remove only verified older graph-vN SQLite files for this checkout'),
+    snapshotId: optionalString('snapshot-id', 'Expert action targeting one exact isolated ready/retired snapshot'),
   },
   options => withRuntimeEffect(config => runCodeGraphPurge(config, options)),
 ).pipe(Command.withDescription('Remove disposable native code graph data without touching repositories or memories'));

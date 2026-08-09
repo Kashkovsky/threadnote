@@ -1315,7 +1315,18 @@ threadnote graph compact --dry-run
 threadnote graph remove-view \\
   --checkout-id <checkout-id> \\
   --worktree-id <worktree-id> \\
-  --snapshot-id <snapshot-id>`,
+  --snapshot-id <snapshot-id>
+
+# Expert-only physical deletion: preview, then repeat with the exact approval.
+threadnote graph purge \\
+  --checkout-id <checkout-id> \\
+  --snapshot-id <snapshot-id> \\
+  --json
+threadnote graph purge \\
+  --checkout-id <checkout-id> \\
+  --snapshot-id <snapshot-id> \\
+  --apply \\
+  --approval <sha256-digest>`,
           },
           {
             type: 'paragraph',
@@ -1348,6 +1359,10 @@ threadnote graph remove-view \\
           {
             type: 'paragraph',
             text: 'graph remove-view targets the exact checkout, worktree, and selected snapshot identity; it previews by default and requires --apply for the compare-and-swap removal. The worktree folder does not need to exist. Threadnote refuses a stale target or busy build, preserves shared snapshots and required bases, lets existing leased readers finish, and removes only derived pointers and private provenance that still match the approved target. Repeating an applied removal is idempotent.',
+          },
+          {
+            type: 'paragraph',
+            text: 'graph purge --snapshot-id is the expert follow-up for an already isolated ready or retired snapshot. It previews by default and emits an approval digest bound to the exact graph and vector evidence; --apply also requires --approval with that digest. Threadnote rechecks the evidence under zero-wait maintenance, build, vector-writer, and graph-writer gates, and refuses active views, live leases, required bases, aliases, build owners, pending cleanup, active vector pointers, unsafe sidecars, or any state change. It never implicitly removes a view, tombstone, provenance record, source, or worktree. Foreground physical cleanup advances only one bounded page and reports whether retirement cleanup remains.',
           },
           {
             type: 'note',

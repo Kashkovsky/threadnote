@@ -2,6 +2,7 @@ import {Context, Effect, Option, Path, Result, Semaphore} from 'effect';
 import {codeGraphDatabasePaths} from './maintenance.js';
 import {CodeGraphEmbeddingIndex} from './embedding.js';
 import {codeGraphLayout} from './layout.js';
+import {observeCodeGraphMaintenanceStatus, type CodeGraphMaintenanceStatus} from './maintenance_gate.js';
 import {compareCodeUnits} from './ordering.js';
 import {traversalQuery} from './query.js';
 import {
@@ -157,6 +158,7 @@ export interface ManagerGraphSnapshotLeaseWarning {
 export interface ManagerGraphCatalog {
   readonly builds: readonly ObservedCodeGraphBuildStatus[];
   readonly diagnostics: readonly ManagerGraphCatalogDiagnostic[];
+  readonly maintenance?: CodeGraphMaintenanceStatus;
   readonly repositories: readonly ManagerGraphRepository[];
   readonly waiterCount: number;
   readonly waiters: readonly ObservedCodeGraphBuildStatus[];
@@ -178,6 +180,7 @@ export interface ManagerGraphViewPage {
 
 export interface ManagerGraphBuildCatalog {
   readonly builds: readonly ObservedCodeGraphBuildStatus[];
+  readonly maintenance?: CodeGraphMaintenanceStatus;
   readonly queuedWorktreeIds: readonly string[];
   readonly waiterCount: number;
   readonly waiters: readonly ObservedCodeGraphBuildStatus[];
@@ -407,9 +410,13 @@ export const managerGraphCatalog = Effect.fn('codeGraph.managerCatalog')(functio
     }
     if ('diagnostic' in entry && entry.diagnostic) diagnostics.push(entry.diagnostic);
   }
+  const maintenance = yield* observeCodeGraphMaintenanceStatus(threadnoteHome).pipe(
+    Effect.catch(() => Effect.succeed(undefined)),
+  );
   return {
     builds: buildSelection.builds,
     diagnostics,
+    ...(maintenance === undefined ? {} : {maintenance}),
     repositories: groupManagerGraphRepositories(catalogEntries),
     waiterCount: buildSelection.waiters.length,
     waiters: buildSelection.waiters,
@@ -591,8 +598,12 @@ export function groupManagerGraphRepositories(
 
 export const managerGraphBuildCatalog = Effect.fn('codeGraph.managerBuildCatalog')(function* (threadnoteHome: string) {
   const selection = selectCodeGraphBuildStatuses(yield* readAllCodeGraphBuildStatuses(threadnoteHome));
+  const maintenance = yield* observeCodeGraphMaintenanceStatus(threadnoteHome).pipe(
+    Effect.catch(() => Effect.succeed(undefined)),
+  );
   return {
     builds: selection.builds,
+    ...(maintenance === undefined ? {} : {maintenance}),
     queuedWorktreeIds: [...new Set(selection.waiters.map(status => status.identity.worktreeId))],
     waiterCount: selection.waiters.length,
     waiters: selection.waiters,

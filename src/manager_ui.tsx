@@ -8,6 +8,7 @@ import {
   GraphWorkspace,
   graphBuildIsActive,
   graphCompletedBuildResultIdentity,
+  graphMaintenanceStatusLabel,
   graphStatusPollDelay,
   graphStatusRequiresCatalogRefresh,
   type GraphAnalysis,
@@ -246,19 +247,23 @@ function App(): React.ReactElement {
     let cancelled = false;
     let timer: number | undefined;
     let observedActiveBuild = false;
+    let observedActiveMaintenance = false;
     const acknowledgedCompletedResults = new Set<string>();
     const poll = async (): Promise<void> => {
       try {
-        const status = await api<Pick<GraphCatalog, 'builds' | 'waiterCount' | 'waiters'>>(
+        const status = await api<Pick<GraphCatalog, 'builds' | 'maintenance' | 'waiterCount' | 'waiters'>>(
           '/api/graphs/status',
           undefined,
           {timeoutMilliseconds: GRAPH_CATALOG_REQUEST_TIMEOUT_MILLISECONDS},
         );
         if (cancelled) return;
         const active = status.builds.some(graphBuildIsActive);
+        const activeMaintenance = status.maintenance !== undefined;
         const refreshCatalog =
-          (observedActiveBuild && !active) ||
-          graphStatusRequiresCatalogRefresh(graphCatalogRef.current, status.builds, acknowledgedCompletedResults);
+          !activeMaintenance &&
+          ((observedActiveBuild && !active) ||
+            (observedActiveMaintenance && !activeMaintenance) ||
+            graphStatusRequiresCatalogRefresh(graphCatalogRef.current, status.builds, acknowledgedCompletedResults));
         if (refreshCatalog) {
           const refreshed = await api<GraphCatalog>('/api/graphs', undefined, {
             timeoutMilliseconds: GRAPH_CATALOG_REQUEST_TIMEOUT_MILLISECONDS,
@@ -277,7 +282,8 @@ function App(): React.ReactElement {
           setGraphCatalog(merged);
         }
         observedActiveBuild = active;
-        timer = window.setTimeout(() => void poll(), graphStatusPollDelay(status.builds));
+        observedActiveMaintenance = activeMaintenance;
+        timer = window.setTimeout(() => void poll(), graphStatusPollDelay(status.builds, status.maintenance));
       } catch {
         if (!cancelled) timer = window.setTimeout(() => void poll(), 15_000);
       }
@@ -1235,7 +1241,10 @@ function App(): React.ReactElement {
           <section className="panel graph-panel is-active">
             <GraphWorkspace
               administration={graphDiagnostics}
-              administrationBusy={graphAdministrationBusy}
+              administrationBusy={
+                graphAdministrationBusy ??
+                (graphCatalog?.maintenance ? graphMaintenanceStatusLabel(graphCatalog.maintenance) : undefined)
+              }
               administrationOutput={graphAdministrationOutput}
               catalog={graphCatalog}
               catalogError={graphCatalogError}

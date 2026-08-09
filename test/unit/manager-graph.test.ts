@@ -18,6 +18,7 @@ import {
   graphDisplayEdges,
   graphFocusLayoutTargets,
   graphFocusTarget,
+  graphMaintenanceStatusLabel,
   graphNodeDetailRequestIsCurrent,
   graphNodeSizeValues,
   graphOverviewSizeLabel,
@@ -138,6 +139,43 @@ describe('manager graph focus', () => {
     ).not.toThrow();
   });
 
+  it('renders selected snapshot purge progress alongside graph build progress', () => {
+    const neverResolves = () => new Promise<never>(() => undefined);
+    const markup = renderToStaticMarkup(
+      createElement(GraphWorkspace, {
+        catalog: {
+          builds: [],
+          diagnostics: [],
+          maintenance: {
+            checkoutId: 'a'.repeat(64),
+            completed: 3,
+            operation: 'selected-snapshot-purge',
+            phase: 'verifying-graph',
+            snapshotId: `cgsn_${'b'.repeat(40)}-direct`,
+            startedAt: '2026-08-09T12:00:00.000Z',
+            total: 5,
+            updatedAt: '2026-08-09T12:00:01.000Z',
+          },
+          repositories: [],
+          waiterCount: 0,
+          waiters: [],
+        },
+        loadAnalysis: neverResolves,
+        loadCatalogPage: neverResolves,
+        loadGraph: neverResolves,
+        loadNodeDetail: neverResolves,
+        loadQuery: neverResolves,
+        loadViewsPage: neverResolves,
+        onRefresh: () => undefined,
+      }),
+    );
+
+    expect(markup).toContain('Selected snapshot purge');
+    expect(markup).toContain('rechecking graph safety evidence');
+    expect(markup).toContain('3 / 5 safety phases');
+    expect(markup).toContain('aria-label="60% complete"');
+  });
+
   it('renders a retry state when the initial catalog request fails', () => {
     const neverResolves = () => new Promise<never>(() => undefined);
     const markup = renderToStaticMarkup(
@@ -228,6 +266,16 @@ describe('manager graph focus', () => {
     expect(graphStatusPollDelay([graphBuildStatus('running')])).toBe(1_000);
     expect(graphStatusPollDelay([graphBuildStatus('queued')])).toBe(1_000);
     expect(graphStatusPollDelay([graphBuildStatus('completed')])).toBe(15_000);
+    const maintenance = {
+      checkoutId: 'a'.repeat(64),
+      completed: 3,
+      operation: 'selected-snapshot-purge' as const,
+      phase: 'verifying-graph' as const,
+      snapshotId: `cgsn_${'b'.repeat(40)}-direct`,
+      total: 5,
+    };
+    expect(graphStatusPollDelay([], maintenance)).toBe(1_000);
+    expect(graphMaintenanceStatusLabel(maintenance)).toBe('Selected snapshot purge · rechecking graph safety evidence');
     const abandoned = {
       ...graphBuildStatus('running'),
       observation: {heartbeatAgeMilliseconds: 60_000, liveness: 'abandoned' as const},

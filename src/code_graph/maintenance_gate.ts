@@ -1,10 +1,12 @@
 import {Clock, Crypto, Effect, FileSystem, Option, Path} from 'effect';
+import {sha256HexSync} from '../crypto/sha256.js';
 import {isFileLockTimeout, withExclusiveFileLock} from '../effect/file_lock.js';
 import {SystemInfo} from '../effect/system.js';
 import {
   codeGraphDatabaseWriteLockPath,
   codeGraphMaintenanceIntentPath,
   codeGraphMaintenanceLockPath,
+  codeGraphMaintenanceStatusPath,
   codeGraphRepositoryLockPath,
   codeGraphWorktreeLockPath,
   codeGraphWorktreeLockRoot,
@@ -28,20 +30,68 @@ export class CodeGraphMaintenanceActiveError extends CodeGraphStoreError {
 interface MaintenanceIntentOwner {
   readonly processId: number;
   readonly processStartIdentity: string;
+  readonly startedAt?: string;
   readonly token: string;
 }
+
+export const CODE_GRAPH_MAINTENANCE_PROGRESS_PHASES = [
+  'acquiring-gates',
+  'waiting-builders',
+  'verifying-vectors',
+  'verifying-graph',
+  'retiring-and-cleaning',
+] as const;
+
+export type CodeGraphMaintenanceProgressPhase = (typeof CODE_GRAPH_MAINTENANCE_PROGRESS_PHASES)[number];
+
+export interface CodeGraphMaintenanceProgress {
+  readonly completed: number;
+  readonly phase: CodeGraphMaintenanceProgressPhase;
+  readonly total: number;
+}
+
+export interface CodeGraphMaintenanceStatus {
+  readonly checkoutId?: string;
+  readonly completed?: number;
+  readonly operation: 'graph-maintenance' | 'selected-snapshot-purge';
+  readonly phase: CodeGraphMaintenanceProgressPhase | 'status-unavailable' | 'working';
+  readonly snapshotId?: string;
+  readonly startedAt?: string;
+  readonly total?: number;
+  readonly updatedAt?: string;
+}
+
+export interface CodeGraphMaintenanceProgressReporter {
+  readonly progress: (progress: CodeGraphMaintenanceProgress) => Effect.Effect<void>;
+}
+
+export interface CodeGraphReportedMaintenanceTarget {
+  readonly checkoutId: string;
+  readonly operation: 'selected-snapshot-purge';
+  readonly snapshotId: string;
+}
+
+interface StoredCodeGraphMaintenanceStatus extends CodeGraphMaintenanceStatus {
+  readonly ownerDigest: string;
+  readonly schemaVersion: 1;
+}
+
+const CODE_GRAPH_MAINTENANCE_STATUS_BYTES = 4_096;
 
 export const withCodeGraphMaintenanceRegistration = Effect.fn('codeGraph.withMaintenanceRegistration')(function* <
   A,
   E,
   R,
->(threadnoteHome: string, effect: Effect.Effect<A, E, R>) {
+>(threadnoteHome: string, effect: Effect.Effect<A, E, R>, waitTimeoutMilliseconds?: number) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   return yield* withExclusiveFileLock(
     fs,
     codeGraphMaintenanceLockPath(path, threadnoteHome),
-    CODE_GRAPH_GATE_LOCK_OPTIONS,
+    {
+      ...CODE_GRAPH_GATE_LOCK_OPTIONS,
+      ...(waitTimeoutMilliseconds === undefined ? {} : {waitTimeoutMilliseconds}),
+    },
     effect,
   );
 });
@@ -49,6 +99,48 @@ export const withCodeGraphMaintenanceRegistration = Effect.fn('codeGraph.withMai
 export const withCodeGraphMaintenanceIntent = Effect.fn('codeGraph.withMaintenanceIntent')(function* <A, E, R>(
   threadnoteHome: string,
   effect: Effect.Effect<A, E, R>,
+) {
+  return yield* withCodeGraphMaintenanceIntentOwner(threadnoteHome, () => effect);
+});
+
+export const withCodeGraphReportedMaintenanceIntent = Effect.fn('codeGraph.withReportedMaintenanceIntent')(function* <
+  A,
+  E,
+  R,
+>(
+  threadnoteHome: string,
+  target: CodeGraphReportedMaintenanceTarget,
+  initialProgress: CodeGraphMaintenanceProgress,
+  use: (reporter: CodeGraphMaintenanceProgressReporter) => Effect.Effect<A, E, R>,
+) {
+  yield* validateReportedMaintenance(target, initialProgress);
+  return yield* withCodeGraphMaintenanceIntentOwner(threadnoteHome, (owner, ownerToken) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const statusPath = codeGraphMaintenanceStatusPath(path, threadnoteHome);
+      const intentPath = codeGraphMaintenanceIntentPath(path, threadnoteHome);
+      let sequence = 0;
+      const reporter: CodeGraphMaintenanceProgressReporter = {
+        progress: progress =>
+          validateReportedMaintenance(target, progress).pipe(
+            Effect.andThen(
+              writeMaintenanceStatus(fs, path, intentPath, statusPath, owner, ownerToken, target, progress, sequence++),
+            ),
+            Effect.ignore,
+          ),
+      };
+      yield* reporter.progress(initialProgress);
+      return yield* use(reporter).pipe(
+        Effect.ensuring(removeOwnedMaintenanceStatus(fs, statusPath, sha256HexSync(ownerToken))),
+      );
+    }),
+  );
+});
+
+const withCodeGraphMaintenanceIntentOwner = Effect.fn('codeGraph.withMaintenanceIntentOwner')(function* <A, E, R>(
+  threadnoteHome: string,
+  use: (owner: MaintenanceIntentOwner, ownerToken: string) => Effect.Effect<A, E, R>,
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -59,35 +151,55 @@ export const withCodeGraphMaintenanceIntent = Effect.fn('codeGraph.withMaintenan
   if (!processStartIdentity) {
     return yield* Effect.fail(new Error('Could not identify the maintenance process instance.'));
   }
-  const token = JSON.stringify({
+  const owner = {
     processId: system.processId,
     processStartIdentity,
+    startedAt: new Date(yield* Clock.currentTimeMillis).toISOString(),
     token: yield* crypto.randomUUIDv4,
-  } satisfies MaintenanceIntentOwner);
+  } satisfies MaintenanceIntentOwner;
+  const token = JSON.stringify(owner);
   yield* fs.makeDirectory(path.dirname(intent), {recursive: true, mode: 0o700});
   yield* fs.writeFileString(intent, `${token}\n`, {flag: 'w', mode: 0o600});
-  return yield* effect.pipe(Effect.ensuring(removeOwnedIntent(fs, intent, token)));
+  return yield* use(owner, token).pipe(Effect.ensuring(removeOwnedIntent(fs, intent, token)));
 });
 
 export const codeGraphMaintenanceIntentActive = Effect.fn('codeGraph.maintenanceIntentActive')(function* (
   threadnoteHome: string,
 ) {
+  return (yield* observeMaintenanceIntentOwner(threadnoteHome)) !== undefined;
+});
+
+export const observeCodeGraphMaintenanceStatus = Effect.fn('codeGraph.observeMaintenanceStatus')(function* (
+  threadnoteHome: string,
+) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const system = yield* SystemInfo;
-  const intent = codeGraphMaintenanceIntentPath(path, threadnoteHome);
-  if (!(yield* fs.exists(intent))) return false;
-  const token = (yield* fs.readFileString(intent)).trim();
-  const owner = parseMaintenanceIntentOwner(token);
-  if (
-    owner &&
-    system.isProcessRunning(owner.processId) &&
-    (yield* system.processStartIdentity(owner.processId)) === owner.processStartIdentity
-  ) {
-    return true;
+  const observedOwner = yield* observeMaintenanceIntentOwner(threadnoteHome);
+  const statusPath = codeGraphMaintenanceStatusPath(path, threadnoteHome);
+  if (observedOwner === undefined) {
+    yield* fs.remove(statusPath, {force: true}).pipe(Effect.catch(() => Effect.void));
+    return undefined;
   }
-  yield* removeOwnedIntent(fs, intent, token);
-  return false;
+  const generic = genericMaintenanceStatus(observedOwner.owner);
+  if (!(yield* fs.exists(statusPath))) return generic;
+  if (Option.isSome(yield* fs.readLink(statusPath).pipe(Effect.option))) return generic;
+  const info = yield* fs.stat(statusPath).pipe(Effect.option);
+  if (
+    Option.isNone(info) ||
+    info.value.type !== 'File' ||
+    Number(info.value.size) > CODE_GRAPH_MAINTENANCE_STATUS_BYTES
+  ) {
+    return {...generic, phase: 'status-unavailable'} as const;
+  }
+  const content = yield* fs.readFileString(statusPath).pipe(Effect.option);
+  if (
+    Option.isNone(content) ||
+    new TextEncoder().encode(content.value).byteLength > CODE_GRAPH_MAINTENANCE_STATUS_BYTES
+  ) {
+    return {...generic, phase: 'status-unavailable'} as const;
+  }
+  const parsed = parseMaintenanceStatus(content.value.trim(), sha256HexSync(observedOwner.token));
+  return parsed ?? ({...generic, phase: 'status-unavailable'} as const);
 });
 
 /**
@@ -240,6 +352,145 @@ function codeGraphFileLockActive(
   });
 }
 
+const observeMaintenanceIntentOwner = Effect.fn('codeGraph.observeMaintenanceIntentOwner')(function* (
+  threadnoteHome: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const system = yield* SystemInfo;
+  const intent = codeGraphMaintenanceIntentPath(path, threadnoteHome);
+  if (!(yield* fs.exists(intent))) return undefined;
+  const token = (yield* fs.readFileString(intent)).trim();
+  const owner = parseMaintenanceIntentOwner(token);
+  if (
+    owner &&
+    system.isProcessRunning(owner.processId) &&
+    (yield* system.processStartIdentity(owner.processId)) === owner.processStartIdentity
+  ) {
+    return {owner, token};
+  }
+  yield* removeOwnedIntent(fs, intent, token);
+  return undefined;
+});
+
+const validateReportedMaintenance = Effect.fn('codeGraph.validateReportedMaintenance')(function* (
+  target: CodeGraphReportedMaintenanceTarget,
+  progress: CodeGraphMaintenanceProgress,
+) {
+  if (
+    !/^[0-9a-f]{64}$/u.test(target.checkoutId) ||
+    !/^cgsn_[0-9a-f]{40}(?:-direct|-full-[0-9a-f]{16})?$/u.test(target.snapshotId) ||
+    target.operation !== 'selected-snapshot-purge' ||
+    !CODE_GRAPH_MAINTENANCE_PROGRESS_PHASES.includes(progress.phase) ||
+    !Number.isSafeInteger(progress.completed) ||
+    !Number.isSafeInteger(progress.total) ||
+    progress.completed < 0 ||
+    progress.total <= 0 ||
+    progress.completed > progress.total
+  ) {
+    return yield* Effect.fail(new Error('Code graph maintenance progress is invalid.'));
+  }
+});
+
+const writeMaintenanceStatus = Effect.fn('codeGraph.writeMaintenanceStatus')(function* (
+  fs: FileSystem.FileSystem,
+  path: Path.Path,
+  intentPath: string,
+  statusPath: string,
+  owner: MaintenanceIntentOwner,
+  ownerToken: string,
+  target: CodeGraphReportedMaintenanceTarget,
+  progress: CodeGraphMaintenanceProgress,
+  sequence: number,
+) {
+  const ownerDigest = sha256HexSync(ownerToken);
+  const now = new Date(yield* Clock.currentTimeMillis).toISOString();
+  const status = {
+    checkoutId: target.checkoutId,
+    completed: progress.completed,
+    operation: target.operation,
+    ownerDigest,
+    phase: progress.phase,
+    schemaVersion: 1,
+    snapshotId: target.snapshotId,
+    startedAt: owner.startedAt ?? now,
+    total: progress.total,
+    updatedAt: now,
+  } satisfies StoredCodeGraphMaintenanceStatus;
+  const content = `${JSON.stringify(status)}\n`;
+  if (new TextEncoder().encode(content).byteLength > CODE_GRAPH_MAINTENANCE_STATUS_BYTES) {
+    return yield* Effect.fail(new Error('Code graph maintenance progress exceeded its bounded size.'));
+  }
+  if (Option.isSome(yield* fs.readLink(statusPath).pipe(Effect.option))) {
+    return yield* Effect.fail(new Error('Code graph maintenance status is a symbolic link.'));
+  }
+  const temporary = path.join(
+    path.dirname(statusPath),
+    `.maintenance-status-${ownerDigest.slice(0, 16)}-${sequence}.tmp`,
+  );
+  yield* fs.writeFileString(temporary, content, {flag: 'wx', mode: 0o600});
+  yield* Effect.gen(function* () {
+    if ((yield* fs.readFileString(intentPath)).trim() !== ownerToken) {
+      return yield* Effect.fail(new Error('Code graph maintenance owner changed before progress publication.'));
+    }
+    if (Option.isSome(yield* fs.readLink(statusPath).pipe(Effect.option))) {
+      return yield* Effect.fail(new Error('Code graph maintenance status changed before publication.'));
+    }
+    yield* fs.rename(temporary, statusPath);
+  }).pipe(Effect.onError(() => fs.remove(temporary, {force: true}).pipe(Effect.catch(() => Effect.void))));
+});
+
+function genericMaintenanceStatus(owner: MaintenanceIntentOwner): CodeGraphMaintenanceStatus {
+  return {
+    operation: 'graph-maintenance',
+    phase: 'working',
+    ...(owner.startedAt === undefined ? {} : {startedAt: owner.startedAt}),
+  };
+}
+
+function parseMaintenanceStatus(value: string, expectedOwnerDigest: string): CodeGraphMaintenanceStatus | undefined {
+  try {
+    const parsed = JSON.parse(value) as Partial<StoredCodeGraphMaintenanceStatus>;
+    if (
+      parsed.schemaVersion !== 1 ||
+      parsed.ownerDigest !== expectedOwnerDigest ||
+      parsed.operation !== 'selected-snapshot-purge' ||
+      typeof parsed.checkoutId !== 'string' ||
+      !/^[0-9a-f]{64}$/u.test(parsed.checkoutId) ||
+      typeof parsed.snapshotId !== 'string' ||
+      !/^cgsn_[0-9a-f]{40}(?:-direct|-full-[0-9a-f]{16})?$/u.test(parsed.snapshotId) ||
+      !CODE_GRAPH_MAINTENANCE_PROGRESS_PHASES.includes(parsed.phase as CodeGraphMaintenanceProgressPhase) ||
+      !Number.isSafeInteger(parsed.completed) ||
+      !Number.isSafeInteger(parsed.total) ||
+      parsed.completed! < 0 ||
+      parsed.total! <= 0 ||
+      parsed.completed! > parsed.total! ||
+      !validMaintenanceTimestamp(parsed.startedAt) ||
+      !validMaintenanceTimestamp(parsed.updatedAt)
+    ) {
+      return undefined;
+    }
+    return {
+      checkoutId: parsed.checkoutId,
+      completed: parsed.completed,
+      operation: parsed.operation,
+      phase: parsed.phase as CodeGraphMaintenanceProgressPhase,
+      snapshotId: parsed.snapshotId,
+      startedAt: parsed.startedAt,
+      total: parsed.total,
+      updatedAt: parsed.updatedAt,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function validMaintenanceTimestamp(value: unknown): value is string {
+  if (typeof value !== 'string' || value.length < 20 || value.length > 32) return false;
+  const milliseconds = Date.parse(value);
+  return Number.isFinite(milliseconds) && new Date(milliseconds).toISOString() === value;
+}
+
 function parseMaintenanceIntentOwner(value: string): MaintenanceIntentOwner | undefined {
   try {
     const parsed = JSON.parse(value) as Partial<MaintenanceIntentOwner>;
@@ -247,8 +498,11 @@ function parseMaintenanceIntentOwner(value: string): MaintenanceIntentOwner | un
       parsed.processId! > 0 &&
       typeof parsed.processStartIdentity === 'string' &&
       parsed.processStartIdentity.length > 0 &&
+      parsed.processStartIdentity.length <= 1_024 &&
+      (parsed.startedAt === undefined || validMaintenanceTimestamp(parsed.startedAt)) &&
       typeof parsed.token === 'string' &&
-      parsed.token.length > 0
+      parsed.token.length > 0 &&
+      parsed.token.length <= 256
       ? (parsed as MaintenanceIntentOwner)
       : undefined;
   } catch {
@@ -262,6 +516,22 @@ function removeOwnedIntent(fs: FileSystem.FileSystem, intent: string, token: str
     if ((yield* fs.readFileString(intent)).trim() === token) {
       yield* fs.remove(intent, {force: true});
     }
+  }).pipe(Effect.catch(() => Effect.void));
+}
+
+function removeOwnedMaintenanceStatus(
+  fs: FileSystem.FileSystem,
+  statusPath: string,
+  ownerDigest: string,
+): Effect.Effect<void, never> {
+  return Effect.gen(function* () {
+    if (!(yield* fs.exists(statusPath))) return;
+    if (Option.isSome(yield* fs.readLink(statusPath).pipe(Effect.option))) return;
+    const info = yield* fs.stat(statusPath);
+    if (info.type !== 'File' || Number(info.size) > CODE_GRAPH_MAINTENANCE_STATUS_BYTES) return;
+    const content = yield* fs.readFileString(statusPath);
+    const parsed = JSON.parse(content) as Partial<StoredCodeGraphMaintenanceStatus>;
+    if (parsed.ownerDigest === ownerDigest) yield* fs.remove(statusPath, {force: true});
   }).pipe(Effect.catch(() => Effect.void));
 }
 

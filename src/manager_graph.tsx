@@ -2,6 +2,7 @@ import React, {useEffect, useMemo, useRef, useState} from 'react';
 import * as THREE from 'three';
 import type {CodeGraphLocalDiagnosticsReport} from './code_graph/diagnostics.js';
 import type {CodeGraphLocalAssociation} from './code_graph/local_provenance.js';
+import type {CodeGraphMaintenanceStatus} from './code_graph/maintenance_gate.js';
 import {compareCodeUnits} from './code_graph/ordering.js';
 import {
   MANAGER_GRAPH_DEFAULT_EDGE_LIMIT,
@@ -85,6 +86,7 @@ export interface GraphCatalogDiagnostic {
 export interface GraphCatalog {
   readonly builds: readonly GraphBuildStatus[];
   readonly diagnostics: readonly GraphCatalogDiagnostic[];
+  readonly maintenance?: CodeGraphMaintenanceStatus;
   readonly repositories: readonly GraphRepositoryGroup[];
   readonly waiterCount: number;
   readonly waiters: readonly GraphBuildStatus[];
@@ -393,8 +395,25 @@ export function graphBuildTarget(
   };
 }
 
-export function graphStatusPollDelay(builds: readonly GraphBuildStatus[]): number {
-  return builds.some(graphBuildIsActive) ? 1_000 : 15_000;
+export function graphStatusPollDelay(
+  builds: readonly GraphBuildStatus[],
+  maintenance?: CodeGraphMaintenanceStatus,
+): number {
+  return builds.some(graphBuildIsActive) || maintenance !== undefined ? 1_000 : 15_000;
+}
+
+export function graphMaintenanceStatusLabel(status: CodeGraphMaintenanceStatus): string {
+  const operation = status.operation === 'selected-snapshot-purge' ? 'Selected snapshot purge' : 'Graph maintenance';
+  const phases: Record<CodeGraphMaintenanceStatus['phase'], string> = {
+    'acquiring-gates': 'acquiring safety gates',
+    'retiring-and-cleaning': 'retiring snapshot and advancing cleanup',
+    'status-unavailable': 'working; detailed status unavailable',
+    'verifying-graph': 'rechecking graph safety evidence',
+    'verifying-vectors': 'rechecking vector safety evidence',
+    'waiting-builders': 'waiting for graph builders',
+    working: 'working',
+  };
+  return `${operation} · ${phases[status.phase]}`;
 }
 
 export function graphCompletedBuildResultIdentity(build: GraphBuildStatus): string | undefined {
@@ -1751,6 +1770,7 @@ export function GraphWorkspace(props: {
           output={props.administrationOutput}
           report={props.administration}
         />
+        {props.catalog?.maintenance ? <GraphMaintenanceProgress status={props.catalog.maintenance} /> : null}
         {activeBuilds.length > 0 ? (
           <div className="graph-build-status" aria-live="polite">
             {activeBuilds.map(build => (
@@ -3539,6 +3559,47 @@ function GraphAdministration(props: {
 
 export function graphLocalAssociationText(association: CodeGraphLocalAssociation): string {
   return association.displayPath ?? association.state.replaceAll('-', ' ');
+}
+
+function GraphMaintenanceProgress(props: {readonly status: CodeGraphMaintenanceStatus}): React.ReactElement {
+  const {status} = props;
+  const elapsed = status.startedAt === undefined ? undefined : Math.max(0, Date.now() - Date.parse(status.startedAt));
+  const lastUpdate =
+    status.updatedAt === undefined ? undefined : Math.max(0, Date.now() - Date.parse(status.updatedAt));
+  const percentage =
+    status.completed !== undefined && status.total !== undefined && status.total > 0
+      ? Math.max(0, Math.min(100, (status.completed / status.total) * 100))
+      : undefined;
+  return (
+    <div className="graph-build-status graph-maintenance-status" aria-live="polite">
+      <article className="graph-build-card is-running is-active">
+        <header>
+          <div className="graph-build-target">
+            <strong>
+              {status.operation === 'selected-snapshot-purge' ? 'Selected snapshot purge' : 'Graph maintenance'}
+            </strong>
+            <span>
+              {status.checkoutId ? `Checkout ${shortGraphIdentity(status.checkoutId)}` : 'Home-wide maintenance'}
+              {status.snapshotId ? ` · snapshot ${status.snapshotId}` : ''}
+            </span>
+          </div>
+          {elapsed === undefined ? null : <span>Elapsed {formatBuildDuration(elapsed)}</span>}
+        </header>
+        <p className="graph-build-phase">{graphMaintenanceStatusLabel(status)}</p>
+        {percentage === undefined ? null : (
+          <div className="graph-build-meter" aria-label={`${Math.round(percentage)}% complete`}>
+            <i style={{width: `${percentage}%`}} />
+          </div>
+        )}
+        <p>
+          {status.completed === undefined || status.total === undefined
+            ? 'Waiting for the next maintenance phase update'
+            : `${status.completed.toLocaleString()} / ${status.total.toLocaleString()} safety phases`}
+          {lastUpdate === undefined ? '' : ` · last update ${formatBuildDuration(lastUpdate)} ago`}
+        </p>
+      </article>
+    </div>
+  );
 }
 
 function GraphBuildProgress(props: {

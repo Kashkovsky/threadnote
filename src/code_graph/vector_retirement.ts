@@ -1,6 +1,7 @@
 import * as SqliteClient from '@effect/sql-sqlite-bun/SqliteClient';
 import {Crypto, Effect, FileSystem, Option, Path} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
+import {sha256HexSync} from '../crypto/sha256.js';
 import {SystemInfo, type SystemInfoShape} from '../effect/system.js';
 import {
   codeGraphVectorRetirementCapacityDemand,
@@ -2100,6 +2101,130 @@ export function codeGraphVectorRetirementCleanRevisionProbeStatement() {
 
 export type CodeGraphVectorRetirementWorkInspection =
   {readonly state: 'admission'} | {readonly generation: string; readonly state: 'marker'} | {readonly state: 'clean'};
+
+export interface CodeGraphVectorSnapshotUsage {
+  readonly activePointerCount: number;
+  /** Canonical path-free digest of every matching generation manifest and active pointer. */
+  readonly evidenceDigest: string;
+  readonly generationCount: number;
+}
+
+const CODE_GRAPH_VECTOR_SNAPSHOT_USAGE_LIMIT = 1_024;
+
+/**
+ * Read-only bounded evidence for selected snapshot deletion. An inactive
+ * generation is retained for ordinary paged vector retirement, while any
+ * pointer still joined to the snapshot makes physical graph deletion unsafe.
+ */
+export const inspectCodeGraphVectorSnapshotUsage = Effect.fn('codeGraph.inspectVectorSnapshotUsage')(function* (
+  databasePath: string,
+  snapshotId: string,
+) {
+  if (!validBoundedText(snapshotId, VECTOR_SNAPSHOT_BYTES)) {
+    return yield* Effect.fail(new Error('Code graph vector snapshot identity is invalid.'));
+  }
+  return yield* useReadOnlyVectorDatabase(
+    databasePath,
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql.unsafe('PRAGMA busy_timeout = 0');
+      if (
+        !(yield* codeGraphVectorCoreSchemaCurrent(sql)) ||
+        (yield* codeGraphVectorRetirementSchemaState(sql)) !== 'ready'
+      ) {
+        return yield* Effect.fail(new Error('Code graph vector retirement schema is incompatible.'));
+      }
+      const boundedLimit = CODE_GRAPH_VECTOR_SNAPSHOT_USAGE_LIMIT + 1;
+      const generationRows = yield* sql.unsafe<{
+        readonly count: unknown;
+        readonly created_at: unknown;
+        readonly dimensions: unknown;
+        readonly generation: unknown;
+        readonly model_id: unknown;
+        readonly model_sha256: unknown;
+        readonly state: unknown;
+        readonly template_version: unknown;
+      }>(
+        `SELECT generation, model_id, model_sha256, dimensions, template_version, count, state, created_at
+         FROM vector_generations
+         WHERE snapshot_id = ?
+         ORDER BY generation
+         LIMIT ?`,
+        [snapshotId, boundedLimit],
+      );
+      const pointerRows = yield* sql.unsafe<{
+        readonly generation: unknown;
+        readonly worktree_id: unknown;
+      }>(
+        `SELECT pointer.generation, pointer.worktree_id
+         FROM vector_pointers AS pointer
+         JOIN vector_generations AS generation ON generation.generation = pointer.generation
+         WHERE generation.snapshot_id = ?
+         ORDER BY pointer.generation, pointer.worktree_id
+         LIMIT ?`,
+        [snapshotId, boundedLimit],
+      );
+      if (
+        generationRows.length > CODE_GRAPH_VECTOR_SNAPSHOT_USAGE_LIMIT ||
+        pointerRows.length > CODE_GRAPH_VECTOR_SNAPSHOT_USAGE_LIMIT
+      ) {
+        return yield* Effect.fail(new Error('Code graph vector snapshot evidence exceeded its bound.'));
+      }
+      const generations = generationRows.map(row => {
+        if (
+          typeof row.generation !== 'string' ||
+          !validBoundedText(row.generation, VECTOR_GENERATION_BYTES) ||
+          typeof row.model_id !== 'string' ||
+          !validBoundedText(row.model_id, VECTOR_MODEL_ID_BYTES) ||
+          typeof row.model_sha256 !== 'string' ||
+          !/^[0-9a-f]{64}$/u.test(row.model_sha256) ||
+          !Number.isSafeInteger(row.dimensions) ||
+          Number(row.dimensions) <= 0 ||
+          !Number.isSafeInteger(row.template_version) ||
+          Number(row.template_version) < 0 ||
+          !Number.isSafeInteger(row.count) ||
+          Number(row.count) < 0 ||
+          (row.state !== 'building' && row.state !== 'ready') ||
+          typeof row.created_at !== 'string' ||
+          !validBoundedText(row.created_at, VECTOR_CREATED_AT_BYTES)
+        ) {
+          return undefined;
+        }
+        return [
+          row.generation,
+          row.model_id,
+          row.model_sha256,
+          Number(row.dimensions),
+          Number(row.template_version),
+          Number(row.count),
+          row.state,
+          row.created_at,
+        ] as const;
+      });
+      const pointers = pointerRows.map(row => {
+        if (
+          typeof row.generation !== 'string' ||
+          !validBoundedText(row.generation, VECTOR_GENERATION_BYTES) ||
+          typeof row.worktree_id !== 'string' ||
+          !/^[0-9a-f]{64}$/u.test(row.worktree_id)
+        ) {
+          return undefined;
+        }
+        return [row.generation, row.worktree_id] as const;
+      });
+      if (generations.some(row => row === undefined) || pointers.some(row => row === undefined)) {
+        return yield* Effect.fail(new Error('Code graph vector snapshot evidence is invalid.'));
+      }
+      return {
+        activePointerCount: pointers.length,
+        evidenceDigest: sha256HexSync(
+          `code-graph-vector-snapshot-usage-v1\n${JSON.stringify({generations, pointers, snapshotId})}`,
+        ),
+        generationCount: generations.length,
+      } satisfies CodeGraphVectorSnapshotUsage;
+    }),
+  );
+});
 
 /** @internal Bounded read-only clean predicate for a fully locked model. */
 export const inspectCodeGraphVectorRetirementWork = Effect.fn('codeGraph.inspectVectorRetirementWork')(function* (

@@ -1298,17 +1298,30 @@ describe('manager http API', () => {
     homes.push(config.agentContextHome);
     const server = await startServer(config, 'secret');
     try {
-      const response = await runEffect(
+      const [response, statusResponse] = await runEffect(
         withCodeGraphMaintenanceIntent(
           config.agentContextHome,
-          Effect.promise(() =>
-            fetch(`${server.url}/api/graphs/diagnostics`, {headers: {authorization: 'Bearer secret'}}),
+          Effect.all(
+            [
+              Effect.promise(() =>
+                fetch(`${server.url}/api/graphs/diagnostics`, {headers: {authorization: 'Bearer secret'}}),
+              ),
+              Effect.promise(() =>
+                fetch(`${server.url}/api/graphs/status`, {headers: {authorization: 'Bearer secret'}}),
+              ),
+            ] as const,
+            {concurrency: 'unbounded'},
           ),
         ),
       );
       expect(response.status).toBe(409);
       expect(await response.json()).toMatchObject({
         error: expect.stringContaining('Native code graph repair or maintenance is in progress'),
+      });
+      expect(statusResponse.status).toBe(200);
+      expect(await statusResponse.json()).toMatchObject({
+        builds: [],
+        maintenance: {operation: 'graph-maintenance', phase: 'working'},
       });
     } finally {
       await server.close();

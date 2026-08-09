@@ -504,7 +504,11 @@ const handleRequestLegacy = Effect.fn('manager.handleRequestLegacy')(function* (
     writeJson(response, 401, {error: 'Unauthorized'});
     return;
   }
-  if (isGraphApiPath(url.pathname) && (yield* codeGraphMaintenanceIntentActive(context.config.agentContextHome))) {
+  if (
+    isGraphApiPath(url.pathname) &&
+    url.pathname !== '/api/graphs/status' &&
+    (yield* codeGraphMaintenanceIntentActive(context.config.agentContextHome))
+  ) {
     writeJson(response, 409, {error: GRAPH_MAINTENANCE_BUSY_MESSAGE});
     return;
   }

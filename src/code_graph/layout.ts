@@ -21,6 +21,10 @@ export function codeGraphMaintenanceIntentPath(path: Path.Path, threadnoteHome: 
   return path.join(threadnoteHome, 'locks', 'indexes', 'code-graph', 'maintenance.intent');
 }
 
+export function codeGraphMaintenanceStatusPath(path: Path.Path, threadnoteHome: string): string {
+  return path.join(threadnoteHome, 'locks', 'indexes', 'code-graph', 'maintenance-status-v1.json');
+}
+
 /** Home-global receipts coordinate capacity before any checkout writer is acquired. */
 export function codeGraphDiskReservationRoot(path: Path.Path, threadnoteHome: string): string {
   return path.join(threadnoteHome, 'locks', 'indexes', 'code-graph', 'disk-capacity-reservations');

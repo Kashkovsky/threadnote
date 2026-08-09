@@ -90,6 +90,10 @@ describe('Effect CLI', () => {
     expect(exportHelp.stdout).toContain('--node-limit, --limit string');
     expect(exportHelp.stdout).toContain('--edge-limit string');
     expect(purge.stdout).toContain('--obsolete');
+    expect(purge.stdout).toContain('--snapshot-id string');
+    expect(purge.stdout).toContain('--approval string');
+    expect(purge.stdout).toContain('--apply');
+    expect(purge.stdout).toContain('--json');
     expect(removeView.stdout).toContain('--checkout-id string');
     expect(removeView.stdout).toContain('--worktree-id string');
     expect(removeView.stdout).toContain('--snapshot-id string');

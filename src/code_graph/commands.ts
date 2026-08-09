@@ -48,6 +48,12 @@ import {
   renderCodeGraphViewRemovalResult,
   serializeCodeGraphViewRemovalResult,
 } from './view_removal.js';
+import {
+  codeGraphSnapshotPurgeTargetFailure,
+  purgeCodeGraphSnapshot,
+  renderCodeGraphSnapshotPurgeResult,
+  serializeCodeGraphSnapshotPurgeResult,
+} from './snapshot_purge.js';
 
 interface CwdOption {
   readonly cwd?: string;
@@ -773,18 +779,46 @@ export const runCodeGraphPurge = Effect.fn('codeGraph.command.purge')(function* 
   config: RuntimeConfig,
   options: CwdOption & {
     readonly all?: boolean;
+    readonly apply?: boolean;
+    readonly approval?: string;
     readonly checkoutId?: string;
     readonly dryRun?: boolean;
+    readonly json?: boolean;
     readonly obsolete?: boolean;
+    readonly snapshotId?: string;
     readonly waitTimeoutMilliseconds?: number;
   },
 ) {
   const path = yield* Path.Path;
-  if (options.all && (options.checkoutId !== undefined || options.obsolete)) {
-    return yield* Effect.fail(new Error('Use --all by itself, without --checkout-id or --obsolete.'));
+  if (options.all && (options.checkoutId !== undefined || options.obsolete || options.snapshotId !== undefined)) {
+    return yield* Effect.fail(new Error('Use --all by itself, without --checkout-id, --obsolete, or --snapshot-id.'));
   }
   if (options.checkoutId !== undefined && options.cwd !== undefined) {
     return yield* Effect.fail(new Error('Use either --checkout-id or --cwd, not both.'));
+  }
+  if (options.snapshotId !== undefined) {
+    if (options.obsolete || options.all || options.dryRun) {
+      return yield* Effect.fail(new Error('Use --snapshot-id without --all, --obsolete, or --dry-run.'));
+    }
+    let checkoutId = options.checkoutId;
+    if (checkoutId === undefined) {
+      const cwd = yield* commandCwd(options.cwd);
+      checkoutId = (yield* resolveRepositoryIdentity(cwd)).checkoutId;
+    }
+    const result = yield* purgeCodeGraphSnapshot(
+      config.agentContextHome,
+      {checkoutId, snapshotId: options.snapshotId},
+      {apply: options.apply === true, approvalDigest: options.approval},
+    );
+    yield* writeFinalCliOutput(
+      options.json ? serializeCodeGraphSnapshotPurgeResult(result) : renderCodeGraphSnapshotPurgeResult(result),
+    );
+    const failure = codeGraphSnapshotPurgeTargetFailure(result);
+    if (failure) return yield* Effect.fail(failure);
+    return;
+  }
+  if (options.apply || options.approval !== undefined || options.json) {
+    return yield* Effect.fail(new Error('Use --apply, --approval, or --json only with --snapshot-id.'));
   }
   if (options.obsolete) {
     let checkoutId = options.checkoutId;

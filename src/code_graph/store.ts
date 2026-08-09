@@ -691,6 +691,59 @@ export type CodeGraphViewObservationResult =
       readonly state: 'not-found';
     };
 
+export const CODE_GRAPH_SNAPSHOT_PURGE_GRAPH_BLOCKER_CODES = [
+  'active-view',
+  'alias-snapshot',
+  'base-required',
+  'build-owned',
+  'cleanup-pending',
+  'live-lease',
+  'unsupported-state',
+] as const;
+
+export type CodeGraphSnapshotPurgeGraphBlockerCode = (typeof CODE_GRAPH_SNAPSHOT_PURGE_GRAPH_BLOCKER_CODES)[number];
+
+export interface CodeGraphSnapshotPurgeLeaseEvidence {
+  readonly expiresAt: number;
+  /** SHA-256 of the private lease token; the token itself never leaves Store. */
+  readonly identity: string;
+}
+
+export interface CodeGraphSnapshotPurgeGraphEvidence {
+  readonly activeViewIds: readonly string[];
+  readonly blockers: readonly CodeGraphSnapshotPurgeGraphBlockerCode[];
+  readonly buildOwnerIds: readonly string[];
+  readonly childSnapshotIds: readonly string[];
+  readonly cleanupEpochs: readonly string[];
+  readonly graphEvidenceDigest: string;
+  readonly liveLeases: readonly CodeGraphSnapshotPurgeLeaseEvidence[];
+  readonly snapshot: CodeGraphSnapshot;
+}
+
+export type CodeGraphSnapshotPurgeObservationResult =
+  | {readonly snapshotId: string; readonly state: 'not-found'}
+  | {readonly evidence: CodeGraphSnapshotPurgeGraphEvidence; readonly snapshotId: string; readonly state: 'observed'};
+
+export type CodeGraphSnapshotPurgeStoreResult =
+  | {readonly snapshotId: string; readonly state: 'not-found'}
+  | {
+      readonly evidence: CodeGraphSnapshotPurgeGraphEvidence;
+      readonly snapshotId: string;
+      readonly state: 'blocked' | 'state-changed';
+    }
+  | {
+      readonly cleanupState: 'completed' | 'deferred';
+      readonly remaining: boolean;
+      readonly rowsDeleted: number;
+      readonly snapshotId: string;
+      readonly state: 'purged' | 'retired';
+    };
+
+export interface CodeGraphSnapshotPurgeStoreOptions extends CodeGraphSnapshotLeaseWriterOptions {
+  /** Final containment proof while the checkout writer gate is held and before SQLite opens. */
+  readonly beforeDatabaseOpen?: () => Effect.Effect<void, unknown>;
+}
+
 export interface CodeGraphStoreShape {
   readonly withSession: <A, E, R>(
     databasePath: string,
@@ -781,6 +834,18 @@ export interface CodeGraphStoreShape {
     expectedSnapshotId: string,
     options?: CodeGraphViewRemovalStoreOptions,
   ) => Effect.Effect<CodeGraphViewRemovalResult, CodeGraphStoreError>;
+  readonly observeSnapshotPurge: (
+    databasePath: string,
+    snapshotId: string,
+    nowMilliseconds: number,
+  ) => Effect.Effect<CodeGraphSnapshotPurgeObservationResult, CodeGraphStoreError>;
+  readonly purgeSnapshot: (
+    databasePath: string,
+    snapshotId: string,
+    expectedGraphEvidenceDigest: string,
+    nowMilliseconds: number,
+    options?: CodeGraphSnapshotPurgeStoreOptions,
+  ) => Effect.Effect<CodeGraphSnapshotPurgeStoreResult, CodeGraphStoreError>;
   readonly claimRemovedViewCleanupCandidates: (
     databasePath: string,
     nowMilliseconds: number,
@@ -1718,6 +1783,27 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
               }),
             );
           }).pipe(Effect.mapError(cause => storeError('observe code graph view', cause))),
+        observeSnapshotPurge: (databasePath, snapshotId, nowMilliseconds) =>
+          Effect.gen(function* () {
+            yield* validateSnapshotPurgeInput(snapshotId, nowMilliseconds);
+            if (!(yield* fs.exists(databasePath))) {
+              return {snapshotId, state: 'not-found'} satisfies CodeGraphSnapshotPurgeObservationResult;
+            }
+            if (Option.isSome(yield* fs.readLink(databasePath).pipe(Effect.option))) {
+              return yield* Effect.fail(new CodeGraphStoreError('Code graph database target is a symbolic link.'));
+            }
+            if ((yield* fs.stat(databasePath)).type !== 'File') {
+              return yield* Effect.fail(new CodeGraphStoreError('Code graph database target is not a regular file.'));
+            }
+            return yield* useReadOnlyDatabase(
+              databasePath,
+              Effect.gen(function* () {
+                const sql = yield* SqlClient.SqlClient;
+                yield* sql.unsafe('PRAGMA busy_timeout = 0');
+                return yield* observeSnapshotPurge(sql, snapshotId, nowMilliseconds);
+              }),
+            );
+          }).pipe(Effect.mapError(cause => storeError('observe code graph snapshot purge', cause))),
         claimWorktreeReconciliationCandidates: (databasePath, limit, options) =>
           withWriterGate(
             databasePath,
@@ -1816,6 +1902,36 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
             ),
             Effect.mapError(cause => storeError('remove code graph view', cause)),
           ),
+        purgeSnapshot: (databasePath, snapshotId, expectedGraphEvidenceDigest, nowMilliseconds, options) =>
+          withWriterGate(
+            databasePath,
+            Effect.gen(function* () {
+              yield* validateSnapshotPurgeInput(snapshotId, nowMilliseconds);
+              if (!/^[0-9a-f]{64}$/u.test(expectedGraphEvidenceDigest)) {
+                return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot purge approval is invalid.'));
+              }
+              yield* options?.beforeDatabaseOpen?.() ?? Effect.void;
+              if (!(yield* fs.exists(databasePath))) {
+                return {snapshotId, state: 'not-found'} satisfies CodeGraphSnapshotPurgeStoreResult;
+              }
+              if (Option.isSome(yield* fs.readLink(databasePath).pipe(Effect.option))) {
+                return yield* Effect.fail(new CodeGraphStoreError('Code graph database target is a symbolic link.'));
+              }
+              if ((yield* fs.stat(databasePath)).type !== 'File') {
+                return yield* Effect.fail(new CodeGraphStoreError('Code graph database target is not a regular file.'));
+              }
+              return yield* useExistingDatabase(
+                databasePath,
+                Effect.gen(function* () {
+                  const sql = yield* SqlClient.SqlClient;
+                  yield* sql.unsafe('PRAGMA foreign_keys = ON');
+                  yield* sql.unsafe('PRAGMA busy_timeout = 0');
+                  return yield* purgeSelectedSnapshot(sql, snapshotId, expectedGraphEvidenceDigest, nowMilliseconds);
+                }),
+              );
+            }),
+            options?.waitTimeoutMilliseconds ?? 0,
+          ).pipe(Effect.mapError(cause => storeError('purge selected code graph snapshot', cause))),
         claimRemovedViewCleanupCandidates: (databasePath, nowMilliseconds, limit, options) =>
           withWriterGate(
             databasePath,
@@ -15113,6 +15229,298 @@ const updateRemovedViewCleanup = Effect.fn('codeGraph.updateRemovedViewCleanup')
   );
 });
 
+const CODE_GRAPH_SNAPSHOT_PURGE_EVIDENCE_LIMIT = 1_024;
+
+const validateSnapshotPurgeInput = Effect.fn('codeGraph.validateSnapshotPurgeInput')(function* (
+  snapshotId: string,
+  nowMilliseconds: number,
+) {
+  if (!CODE_GRAPH_SNAPSHOT_ID.test(snapshotId)) {
+    return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot purge identity is invalid.'));
+  }
+  if (
+    !Number.isSafeInteger(nowMilliseconds) ||
+    nowMilliseconds < 0 ||
+    nowMilliseconds > MAXIMUM_CANONICAL_DATE_MILLISECONDS
+  ) {
+    return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot purge observation time is invalid.'));
+  }
+});
+
+const observeSnapshotPurge = Effect.fn('codeGraph.observeSnapshotPurge')(function* (
+  sql: SqlClient.SqlClient,
+  snapshotId: string,
+  nowMilliseconds: number,
+) {
+  yield* validateSnapshotPurgeInput(snapshotId, nowMilliseconds);
+  const snapshots = yield* sql.unsafe<SnapshotRow>('SELECT * FROM snapshots WHERE id = ? LIMIT 2', [snapshotId]);
+  if (snapshots.length === 0) {
+    return {snapshotId, state: 'not-found'} satisfies CodeGraphSnapshotPurgeObservationResult;
+  }
+  if (snapshots.length !== 1) {
+    return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot purge target is ambiguous.'));
+  }
+  const snapshot = snapshotFromRow(snapshots[0]!);
+  const boundedLimit = CODE_GRAPH_SNAPSHOT_PURGE_EVIDENCE_LIMIT + 1;
+  const [activeRows, childRows, leaseRows, ownerRows, cleanupRows] = yield* Effect.all(
+    [
+      sql.unsafe<{readonly worktree_id: unknown}>(
+        `SELECT CASE
+           WHEN typeof(worktree_id) = 'text' AND length(CAST(worktree_id AS BLOB)) = 64
+             AND worktree_id NOT GLOB '*[^0-9a-f]*'
+           THEN worktree_id ELSE NULL END AS worktree_id
+         FROM active_snapshots WHERE snapshot_id = ? ORDER BY worktree_id LIMIT ?`,
+        [snapshotId, boundedLimit],
+      ),
+      sql.unsafe<{readonly id: unknown}>(
+        `SELECT CASE
+           WHEN typeof(id) = 'text' AND length(CAST(id AS BLOB)) BETWEEN 45 AND 67
+           THEN id ELSE NULL END AS id
+         FROM snapshots WHERE base_snapshot_id = ? ORDER BY id LIMIT ?`,
+        [snapshotId, boundedLimit],
+      ),
+      sql.unsafe<{readonly expires_at: unknown; readonly token: unknown}>(
+        `SELECT
+           CASE WHEN typeof(token) = 'text' AND length(CAST(token AS BLOB)) BETWEEN 1 AND 4096
+             AND instr(token, char(0)) = 0 THEN token ELSE NULL END AS token,
+           CASE WHEN typeof(expires_at) = 'integer' AND expires_at BETWEEN 0 AND ${MAXIMUM_CANONICAL_DATE_MILLISECONDS}
+             THEN expires_at ELSE NULL END AS expires_at
+         FROM snapshot_leases INDEXED BY snapshot_leases_snapshot_expiry
+         WHERE snapshot_id = ? AND expires_at > ?
+         ORDER BY expires_at, token LIMIT ?`,
+        [snapshotId, nowMilliseconds, boundedLimit],
+      ),
+      sql.unsafe<{
+        readonly build_id: unknown;
+        readonly claimed_at: unknown;
+        readonly logical_snapshot_id: unknown;
+        readonly owner_token: unknown;
+        readonly process_id: unknown;
+        readonly process_start_identity: unknown;
+      }>(
+        `SELECT
+           CASE WHEN typeof(owner.owner_token) = 'text'
+                  AND length(CAST(owner.owner_token AS BLOB)) BETWEEN 1 AND 4096
+                THEN owner.owner_token ELSE NULL END AS owner_token,
+           CASE WHEN typeof(owner.claimed_at) = 'text'
+                  AND length(CAST(owner.claimed_at AS BLOB)) BETWEEN 1 AND 64
+                THEN owner.claimed_at ELSE NULL END AS claimed_at,
+           CASE WHEN typeof(instance.build_id) = 'text'
+                  AND length(CAST(instance.build_id AS BLOB)) BETWEEN 1 AND 1024
+                THEN instance.build_id ELSE NULL END AS build_id,
+           CASE WHEN typeof(instance.process_id) = 'integer' AND instance.process_id > 0
+                THEN instance.process_id ELSE NULL END AS process_id,
+           CASE WHEN instance.process_start_identity IS NULL THEN NULL
+                WHEN typeof(instance.process_start_identity) = 'text'
+                  AND length(CAST(instance.process_start_identity AS BLOB)) BETWEEN 1 AND 1024
+                THEN instance.process_start_identity ELSE 0 END AS process_start_identity,
+           CASE WHEN typeof(instance.logical_snapshot_id) = 'text'
+                  AND length(CAST(instance.logical_snapshot_id AS BLOB)) BETWEEN 45 AND 67
+                THEN instance.logical_snapshot_id ELSE NULL END AS logical_snapshot_id
+         FROM snapshot_build_owners AS owner
+         LEFT JOIN snapshot_build_owner_instances AS instance ON instance.snapshot_id = owner.snapshot_id
+         WHERE owner.snapshot_id = ? LIMIT 2`,
+        [snapshotId],
+      ),
+      sql.unsafe<{
+        readonly epoch: unknown;
+        readonly phase: unknown;
+        readonly revision: unknown;
+        readonly worktree_id: unknown;
+      }>(
+        `SELECT
+           CASE WHEN typeof(worktree_id) = 'text' AND length(CAST(worktree_id AS BLOB)) = 64
+             AND worktree_id NOT GLOB '*[^0-9a-f]*' THEN worktree_id ELSE NULL END AS worktree_id,
+           CASE WHEN typeof(epoch) = 'integer' AND epoch BETWEEN 1 AND ${Number.MAX_SAFE_INTEGER}
+             THEN epoch ELSE NULL END AS epoch,
+           CASE WHEN typeof(revision) = 'integer' AND revision BETWEEN 0 AND ${Number.MAX_SAFE_INTEGER}
+             THEN revision ELSE NULL END AS revision,
+           CASE WHEN typeof(phase) = 'text' AND phase IN ('vector-pointers', 'build-status', 'provenance', 'complete')
+             THEN phase ELSE NULL END AS phase
+         FROM removed_view_cleanup
+         WHERE expected_snapshot_id = ? AND phase <> 'complete'
+         ORDER BY worktree_id, epoch LIMIT ?`,
+        [snapshotId, boundedLimit],
+      ),
+    ] as const,
+    {concurrency: 1},
+  );
+  if (
+    activeRows.length > CODE_GRAPH_SNAPSHOT_PURGE_EVIDENCE_LIMIT ||
+    childRows.length > CODE_GRAPH_SNAPSHOT_PURGE_EVIDENCE_LIMIT ||
+    leaseRows.length > CODE_GRAPH_SNAPSHOT_PURGE_EVIDENCE_LIMIT ||
+    ownerRows.length > 1 ||
+    cleanupRows.length > CODE_GRAPH_SNAPSHOT_PURGE_EVIDENCE_LIMIT
+  ) {
+    return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot purge evidence exceeded its bound.'));
+  }
+  const activeViewIds = activeRows.map(row => row.worktree_id);
+  const childSnapshotIds = childRows.map(row => row.id);
+  const liveLeases = leaseRows.map(row => {
+    if (typeof row.token !== 'string' || !Number.isSafeInteger(row.expires_at)) return undefined;
+    return {expiresAt: Number(row.expires_at), identity: sha256HexSync(`snapshot-purge-lease\n${row.token}`)};
+  });
+  const buildOwnerIds = ownerRows.map(row => {
+    if (
+      typeof row.owner_token !== 'string' ||
+      typeof row.claimed_at !== 'string' ||
+      (row.build_id !== null && typeof row.build_id !== 'string') ||
+      (row.process_id !== null && !Number.isSafeInteger(row.process_id)) ||
+      (row.process_start_identity !== null && typeof row.process_start_identity !== 'string') ||
+      (row.logical_snapshot_id !== null && typeof row.logical_snapshot_id !== 'string')
+    ) {
+      return undefined;
+    }
+    return sha256HexSync(
+      `snapshot-purge-owner\n${JSON.stringify([
+        row.owner_token,
+        row.claimed_at,
+        row.build_id,
+        row.process_id,
+        row.process_start_identity,
+        row.logical_snapshot_id,
+      ])}`,
+    );
+  });
+  const cleanupEpochs = cleanupRows.map(row => {
+    if (
+      typeof row.worktree_id !== 'string' ||
+      !Number.isSafeInteger(row.epoch) ||
+      !Number.isSafeInteger(row.revision) ||
+      typeof row.phase !== 'string'
+    ) {
+      return undefined;
+    }
+    return sha256HexSync(
+      `snapshot-purge-cleanup\n${JSON.stringify([row.worktree_id, row.epoch, row.revision, row.phase])}`,
+    );
+  });
+  if (
+    activeViewIds.some(value => typeof value !== 'string' || !/^[0-9a-f]{64}$/u.test(value)) ||
+    childSnapshotIds.some(value => typeof value !== 'string' || !CODE_GRAPH_SNAPSHOT_ID.test(value)) ||
+    liveLeases.some(value => value === undefined) ||
+    buildOwnerIds.some(value => value === undefined) ||
+    cleanupEpochs.some(value => value === undefined)
+  ) {
+    return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot purge evidence is invalid.'));
+  }
+  const blockers: CodeGraphSnapshotPurgeGraphBlockerCode[] = [];
+  if (activeViewIds.length > 0) blockers.push('active-view');
+  if (snapshot.baseSnapshotId !== undefined) blockers.push('alias-snapshot');
+  if (childSnapshotIds.length > 0) blockers.push('base-required');
+  if (buildOwnerIds.length > 0) blockers.push('build-owned');
+  if (cleanupEpochs.length > 0) blockers.push('cleanup-pending');
+  if (liveLeases.length > 0) blockers.push('live-lease');
+  if (snapshot.state !== 'ready' && snapshot.state !== 'retired') blockers.push('unsupported-state');
+  blockers.sort(compareCodeUnits);
+  const evidenceWithoutDigest = {
+    activeViewIds: [...(activeViewIds as readonly string[])].sort(compareCodeUnits),
+    blockers,
+    buildOwnerIds: [...(buildOwnerIds as readonly string[])].sort(compareCodeUnits),
+    childSnapshotIds: [...(childSnapshotIds as readonly string[])].sort(compareCodeUnits),
+    cleanupEpochs: [...(cleanupEpochs as readonly string[])].sort(compareCodeUnits),
+    liveLeases: [...(liveLeases as readonly CodeGraphSnapshotPurgeLeaseEvidence[])].sort(
+      (left, right) => left.expiresAt - right.expiresAt || compareCodeUnits(left.identity, right.identity),
+    ),
+    snapshot,
+  };
+  const graphEvidenceDigest = sha256HexSync(
+    `code-graph-snapshot-purge-graph-v1\n${JSON.stringify(snapshotPurgeGraphProjection(evidenceWithoutDigest))}`,
+  );
+  return {
+    evidence: {...evidenceWithoutDigest, graphEvidenceDigest},
+    snapshotId,
+    state: 'observed',
+  } satisfies CodeGraphSnapshotPurgeObservationResult;
+});
+
+function snapshotPurgeGraphProjection(evidence: Omit<CodeGraphSnapshotPurgeGraphEvidence, 'graphEvidenceDigest'>) {
+  return {
+    activeViewIds: evidence.activeViewIds,
+    blockers: evidence.blockers,
+    buildOwnerIds: evidence.buildOwnerIds,
+    childSnapshotIds: evidence.childSnapshotIds,
+    cleanupEpochs: evidence.cleanupEpochs,
+    liveLeases: evidence.liveLeases,
+    snapshot: {
+      baseSnapshotId: evidence.snapshot.baseSnapshotId ?? null,
+      commit: evidence.snapshot.commit,
+      completedAt: evidence.snapshot.completedAt ?? null,
+      dirty: evidence.snapshot.dirty,
+      edgeCount: evidence.snapshot.edgeCount,
+      extractorSet: evidence.snapshot.extractorSet,
+      fileCount: evidence.snapshot.fileCount,
+      graphContentId: evidence.snapshot.graphContentId ?? null,
+      id: evidence.snapshot.id,
+      overlayFingerprint: evidence.snapshot.overlayFingerprint ?? null,
+      repositoryId: evidence.snapshot.repositoryId,
+      state: evidence.snapshot.state,
+      symbolCount: evidence.snapshot.symbolCount,
+      worktreeId: evidence.snapshot.worktreeId,
+    },
+  };
+}
+
+const purgeSelectedSnapshot = Effect.fn('codeGraph.purgeSelectedSnapshot')(function* (
+  sql: SqlClient.SqlClient,
+  snapshotId: string,
+  expectedGraphEvidenceDigest: string,
+  nowMilliseconds: number,
+) {
+  const core = yield* sql.withTransaction(
+    Effect.gen(function* () {
+      const observed = yield* observeSnapshotPurge(sql, snapshotId, nowMilliseconds);
+      if (observed.state === 'not-found') return observed satisfies CodeGraphSnapshotPurgeStoreResult;
+      if (observed.evidence.graphEvidenceDigest !== expectedGraphEvidenceDigest) {
+        return {
+          evidence: observed.evidence,
+          snapshotId,
+          state: 'state-changed',
+        } satisfies CodeGraphSnapshotPurgeStoreResult;
+      }
+      if (observed.evidence.blockers.length > 0) {
+        return {
+          evidence: observed.evidence,
+          snapshotId,
+          state: 'blocked',
+        } satisfies CodeGraphSnapshotPurgeStoreResult;
+      }
+      if (observed.evidence.snapshot.state === 'ready') {
+        yield* sql.unsafe("UPDATE snapshots SET state = 'retired' WHERE id = ? AND state = 'ready'", [snapshotId]);
+        if ((yield* lastStatementChangeCount(sql)) !== 1) {
+          return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot purge target changed.'));
+        }
+      }
+      return {state: 'retired-core' as const};
+    }),
+  );
+  if (core.state !== 'retired-core') return core;
+  const cleanup = yield* pruneRetiredSnapshotRowsPage(sql, snapshotId).pipe(
+    Effect.map(page => ({cleanupState: 'completed' as const, ...page})),
+    Effect.catch(() =>
+      Effect.succeed({cleanupState: 'deferred' as const, deleted: 0, remaining: true} satisfies {
+        readonly cleanupState: 'deferred';
+        readonly deleted: number;
+        readonly remaining: boolean;
+      }),
+    ),
+  );
+  const present = yield* sql.unsafe<{readonly present: unknown}>(
+    'SELECT EXISTS(SELECT 1 FROM snapshots WHERE id = ? LIMIT 1) AS present',
+    [snapshotId],
+  );
+  if (present.length !== 1 || (present[0]?.present !== 0 && present[0]?.present !== 1)) {
+    return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot purge completion is invalid.'));
+  }
+  return {
+    cleanupState: cleanup.cleanupState,
+    remaining: cleanup.remaining,
+    rowsDeleted: cleanup.deleted,
+    snapshotId,
+    state: present[0].present === 0 ? 'purged' : 'retired',
+  } satisfies CodeGraphSnapshotPurgeStoreResult;
+});
+
 const removeActiveView = Effect.fn('codeGraph.removeActiveView')(function* (
   sql: SqlClient.SqlClient,
   worktreeId: string,
@@ -15738,11 +16146,18 @@ interface RetiredSnapshotCleanupPage {
  */
 const pruneRetiredSnapshotRowsPage = Effect.fn('codeGraph.pruneRetiredSnapshotRowsPage')(function* (
   providedSql?: SqlClient.SqlClient,
+  snapshotId?: string,
 ) {
   const sql = providedSql ?? (yield* SqlClient.SqlClient);
-  const pending = yield* sql<{readonly present: number}>`
-    SELECT EXISTS(SELECT 1 FROM snapshots WHERE state = 'retired' LIMIT 1) AS present
-  `;
+  const targetSnapshotId = snapshotId ?? null;
+  const pending = yield* sql.unsafe<{readonly present: number}>(
+    `SELECT EXISTS(
+       SELECT 1 FROM snapshots
+       WHERE state = 'retired' AND (? IS NULL OR id = ?)
+       LIMIT 1
+     ) AS present`,
+    [targetSnapshotId, targetSnapshotId],
+  );
   if (Number(pending[0]?.present ?? 0) === 0) {
     return {deleted: 0, remaining: false} satisfies RetiredSnapshotCleanupPage;
   }
@@ -15750,14 +16165,17 @@ const pruneRetiredSnapshotRowsPage = Effect.fn('codeGraph.pruneRetiredSnapshotRo
   const compactSchemaAvailable =
     (yield* tableExists(sql, 'lexical_compact_snapshots')) && (yield* tableExists(sql, 'lexical_storage_formats'));
   const compactTargets = compactSchemaAvailable
-    ? yield* sql<CompactLexicalSnapshotKeyRow & {readonly snapshot_id: string}>`
+    ? yield* sql.unsafe<CompactLexicalSnapshotKeyRow & {readonly snapshot_id: string}>(
+        `
         SELECT compact.snapshot_key, compact.snapshot_id
         FROM lexical_compact_snapshots AS compact
         JOIN snapshots AS snapshot ON snapshot.id = compact.snapshot_id
-        WHERE snapshot.state = 'retired'
+        WHERE snapshot.state = 'retired' AND (? IS NULL OR snapshot.id = ?)
         ORDER BY compact.snapshot_id
         LIMIT 1
-      `
+        `,
+        [targetSnapshotId, targetSnapshotId],
+      )
     : [];
   const compactTarget = compactTargets[0];
   if (compactTarget !== undefined) {
@@ -15814,11 +16232,14 @@ const pruneRetiredSnapshotRowsPage = Effect.fn('codeGraph.pruneRetiredSnapshotRo
            WHERE ${key} IN (
              SELECT ${spec.keyColumns.map(column => `candidate.${column}`).join(', ')}
              FROM ${spec.table} AS candidate
-             WHERE candidate.snapshot_id IN (SELECT id FROM snapshots WHERE state = 'retired')
+             WHERE candidate.snapshot_id IN (
+               SELECT id FROM snapshots
+               WHERE state = 'retired' AND (? IS NULL OR id = ?)
+             )
              ORDER BY ${spec.keyColumns.map(column => `candidate.${column}`).join(', ')}
              LIMIT ?
            )`,
-          [spec.batchRows],
+          [targetSnapshotId, targetSnapshotId, spec.batchRows],
         );
         return yield* lastStatementChangeCount(sql);
       }),
@@ -15831,18 +16252,28 @@ const pruneRetiredSnapshotRowsPage = Effect.fn('codeGraph.pruneRetiredSnapshotRo
 
   const removed = yield* sql.withTransaction(
     Effect.gen(function* () {
-      yield* sql`DELETE FROM snapshots WHERE id IN (
-        SELECT id FROM snapshots WHERE state = 'retired' ORDER BY id LIMIT 100
-      )`;
+      yield* sql.unsafe(
+        `DELETE FROM snapshots WHERE id IN (
+           SELECT id FROM snapshots
+           WHERE state = 'retired' AND (? IS NULL OR id = ?)
+           ORDER BY id LIMIT 100
+         )`,
+        [targetSnapshotId, targetSnapshotId],
+      );
       return yield* lastStatementChangeCount(sql);
     }),
   );
   if (!Number.isSafeInteger(removed) || removed < 0) {
     return yield* Effect.fail(new CodeGraphStoreError('Retired snapshot cleanup returned an invalid count.'));
   }
-  const remaining = yield* sql<{readonly present: number}>`
-    SELECT EXISTS(SELECT 1 FROM snapshots WHERE state = 'retired' LIMIT 1) AS present
-  `;
+  const remaining = yield* sql.unsafe<{readonly present: number}>(
+    `SELECT EXISTS(
+       SELECT 1 FROM snapshots
+       WHERE state = 'retired' AND (? IS NULL OR id = ?)
+       LIMIT 1
+     ) AS present`,
+    [targetSnapshotId, targetSnapshotId],
+  );
   return {
     deleted: removed,
     remaining: Number(remaining[0]?.present ?? 0) !== 0,
