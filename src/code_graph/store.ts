@@ -52,7 +52,6 @@ import {
   CODE_GRAPH_REMOVED_VIEW_CLEANUP_PAGE_ROWS,
   CODE_GRAPH_REMOVED_VIEW_CLEANUP_PHASES,
   CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION,
-  codeGraphRuntimeSchemaRequiresReconnect,
   type CodeGraphActivationStage,
   type CodeGraphActivationProgressCallback,
   type CodeGraphAnalysisEdgeAggregate,
@@ -111,6 +110,31 @@ export type {
   CodeGraphStoreShape,
 } from './store_shape.js';
 import {
+  LEGACY_BUILDING_REFERENCES_V3_CONTRACT,
+  LEGACY_BUILDING_REFERENCES_V3_TABLE,
+  LEGACY_SNAPSHOT_BUILD_OWNERS_CONTRACT,
+  PERSISTENT_EXTENSION_TABLES,
+  REMOVED_BETA30_INDEXES,
+  type PersistentExtensionTableContract,
+  type PersistentExtensionTableInspection,
+  type SqliteForeignKeyRow,
+  type SqliteIndexInfoRow,
+  type SqliteIndexListRow,
+  type SqliteTableColumnRow,
+} from './store_schema_contracts.js';
+export {
+  CODE_GRAPH_PERSISTENT_EXTENSION_TABLE_NAMES,
+  type CodeGraphPersistentSchemaMigrationPhase,
+} from './store_schema_contracts.js';
+import {
+  REMOVED_VIEW_CLEANUP_CURRENT_MAXIMUM_METADATA_ROWS,
+  REMOVED_VIEW_CLEANUP_LEGACY_MAXIMUM_METADATA_ROWS,
+  SCHEMA_METADATA_TABLE_SQL,
+  assertCodeGraphRuntimeSchemaCompatible,
+  inspectBoundedSchemaMetadataRowCount,
+  inspectBoundedSchemaMetadataValue,
+} from './store_schema_metadata.js';
+import {
   CODE_GRAPH_ABANDONED_BUILD_CANDIDATE_LIMIT,
   CODE_GRAPH_ABANDONED_BUILD_CURSOR_KEY,
   CODE_GRAPH_ABANDONED_BUILD_LOCK_OPTIONS,
@@ -128,6 +152,7 @@ import {
   configureSqliteWriterConnection,
   inferredCodeGraphWriterLockPath,
   normalizedWriterGateWaitTimeout,
+  tableExists,
   useDatabase,
   useDatabaseDirect,
   useExistingDatabase,
@@ -148,7 +173,6 @@ import {
   CODE_GRAPH_EXTRACTOR_GENERATION,
   CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION,
   CODE_GRAPH_SCHEMA_VERSION,
-  CodeGraphRuntimeReconnectRequiredError,
   CodeGraphStoreError,
 } from './types.js';
 export {CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION} from './types.js';
@@ -2076,531 +2100,8 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
   );
 }
 
-type PersistentExtensionGroup = 'analysis' | 'build' | 'lexical' | 'shards';
-
-export type CodeGraphPersistentSchemaMigrationPhase =
-  | 'added-build-owner-instance'
-  | 'added-materialization-plan'
-  | 'added-removed-view-cleanup'
-  | 'created-extensions'
-  | 'dropped-incompatible'
-  | 'dropped-obsolete-indexes'
-  | 'recorded-revision'
-  | 'retired-incompatible-ready'
-  | 'retired-incomplete'
-  | 'validated';
-
-interface PersistentExtensionColumnContract {
-  readonly name: string;
-  readonly notNull: boolean;
-  readonly primaryKeyPosition: number;
-  readonly type: string;
-}
-
-interface PersistentExtensionTableContract {
-  readonly columns: readonly PersistentExtensionColumnContract[];
-  readonly createSql: string;
-  readonly foreignKeys?: readonly PersistentExtensionForeignKeyContract[];
-  readonly group: PersistentExtensionGroup;
-  readonly name: string;
-  readonly requiredDefinitionPatterns?: readonly RegExp[];
-  readonly uniqueKeys?: readonly (readonly string[])[];
-  readonly withoutRowid?: boolean;
-}
-
-interface PersistentExtensionForeignKeyContract {
-  readonly from: string;
-  readonly onDelete: string;
-  readonly table: string;
-  readonly to: string;
-}
-
-interface PersistentExtensionTableInspection {
-  readonly compatible: boolean;
-  readonly exists: boolean;
-  readonly group: PersistentExtensionGroup;
-  readonly name: string;
-}
-
-interface SqliteTableColumnRow {
-  readonly cid: number;
-  readonly dflt_value: unknown;
-  readonly name: string;
-  readonly notnull: number;
-  readonly pk: number;
-  readonly type: string;
-}
-
-interface SqliteForeignKeyRow {
-  readonly from: string;
-  readonly on_delete: string;
-  readonly table: string;
-  readonly to: string;
-}
-
-interface SqliteIndexListRow {
-  readonly name: string;
-  readonly partial: number;
-  readonly unique: number;
-}
-
-interface SqliteIndexInfoRow {
-  readonly name: string;
-  readonly seqno: number;
-}
-
-const requiredColumn = (name: string, type: string, primaryKeyPosition = 0): PersistentExtensionColumnContract => ({
-  name,
-  notNull: true,
-  primaryKeyPosition,
-  type,
-});
-
-const optionalColumn = (name: string, type: string): PersistentExtensionColumnContract => ({
-  name,
-  notNull: false,
-  primaryKeyPosition: 0,
-  type,
-});
-
-/**
- * Complete persistent schema delta from beta.30. These tables deliberately do
- * not change the public graph schema version: beta databases can retain ready
- * snapshots while derived summaries are created and interrupted full builds
- * are restarted against the current resumable-build contract.
- */
-const PERSISTENT_EXTENSION_TABLES = [
-  {
-    columns: [
-      requiredColumn('snapshot_id', 'TEXT', 1),
-      requiredColumn('owner_token', 'TEXT'),
-      requiredColumn('claimed_at', 'TEXT'),
-      optionalColumn('expected_batch_count', 'INTEGER'),
-    ],
-    createSql: `CREATE TABLE IF NOT EXISTS snapshot_build_owners (
-      snapshot_id TEXT PRIMARY KEY NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
-      owner_token TEXT NOT NULL,
-      claimed_at TEXT NOT NULL,
-      expected_batch_count INTEGER CHECK (expected_batch_count IS NULL OR expected_batch_count >= 0)
-    ) WITHOUT ROWID`,
-    group: 'build',
-    name: 'snapshot_build_owners',
-  },
-  {
-    columns: [
-      requiredColumn('snapshot_id', 'TEXT', 1),
-      requiredColumn('owner_token', 'TEXT'),
-      requiredColumn('build_id', 'TEXT'),
-      requiredColumn('process_id', 'INTEGER'),
-      optionalColumn('process_start_identity', 'TEXT'),
-      requiredColumn('logical_snapshot_id', 'TEXT'),
-    ],
-    createSql: `CREATE TABLE IF NOT EXISTS snapshot_build_owner_instances (
-      snapshot_id TEXT PRIMARY KEY NOT NULL REFERENCES snapshot_build_owners(snapshot_id) ON DELETE CASCADE,
-      owner_token TEXT NOT NULL,
-      build_id TEXT NOT NULL,
-      process_id INTEGER NOT NULL CHECK (process_id > 0),
-      process_start_identity TEXT,
-      logical_snapshot_id TEXT NOT NULL
-    ) WITHOUT ROWID`,
-    foreignKeys: [{from: 'snapshot_id', onDelete: 'CASCADE', table: 'snapshot_build_owners', to: 'snapshot_id'}],
-    group: 'build',
-    name: 'snapshot_build_owner_instances',
-  },
-  {
-    columns: [
-      requiredColumn('snapshot_id', 'TEXT', 1),
-      requiredColumn('language', 'TEXT', 2),
-      requiredColumn('kind', 'TEXT', 3),
-      requiredColumn('count', 'INTEGER'),
-    ],
-    createSql: `CREATE TABLE IF NOT EXISTS snapshot_analysis_symbol_counts (
-      snapshot_id TEXT NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
-      language TEXT NOT NULL,
-      kind TEXT NOT NULL,
-      count INTEGER NOT NULL,
-      PRIMARY KEY (snapshot_id, language, kind)
-    ) WITHOUT ROWID`,
-    group: 'analysis',
-    name: 'snapshot_analysis_symbol_counts',
-  },
-  {
-    columns: [
-      requiredColumn('snapshot_id', 'TEXT', 1),
-      requiredColumn('provenance', 'TEXT', 2),
-      requiredColumn('relation', 'TEXT', 3),
-      requiredColumn('confidence', 'REAL', 4),
-      requiredColumn('endpoint_state', 'INTEGER', 5),
-      requiredColumn('count', 'INTEGER'),
-    ],
-    createSql: `CREATE TABLE IF NOT EXISTS snapshot_analysis_edge_histogram (
-      snapshot_id TEXT NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
-      provenance TEXT NOT NULL,
-      relation TEXT NOT NULL,
-      confidence REAL NOT NULL,
-      endpoint_state INTEGER NOT NULL CHECK (endpoint_state IN (0, 1, 2)),
-      count INTEGER NOT NULL,
-      PRIMARY KEY (snapshot_id, provenance, relation, confidence, endpoint_state)
-    ) WITHOUT ROWID`,
-    group: 'analysis',
-    name: 'snapshot_analysis_edge_histogram',
-  },
-  {
-    columns: [
-      requiredColumn('snapshot_id', 'TEXT', 1),
-      requiredColumn('provenance', 'TEXT', 2),
-      requiredColumn('relation', 'TEXT', 3),
-      requiredColumn('count', 'INTEGER'),
-      requiredColumn('confidence_invalid', 'INTEGER'),
-      requiredColumn('confidence_total', 'REAL'),
-      requiredColumn('lowest_confidence', 'REAL'),
-      requiredColumn('confidence_high', 'INTEGER'),
-      requiredColumn('confidence_medium', 'INTEGER'),
-      requiredColumn('confidence_low', 'INTEGER'),
-      requiredColumn('unresolved_endpoint_count', 'INTEGER'),
-      requiredColumn('self_loop_count', 'INTEGER'),
-      requiredColumn('review_finding_count', 'INTEGER'),
-    ],
-    createSql: `CREATE TABLE IF NOT EXISTS snapshot_analysis_edge_counts (
-      snapshot_id TEXT NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
-      provenance TEXT NOT NULL,
-      relation TEXT NOT NULL,
-      count INTEGER NOT NULL CHECK (count >= 0),
-      confidence_invalid INTEGER NOT NULL CHECK (confidence_invalid >= 0),
-      confidence_total REAL NOT NULL,
-      lowest_confidence REAL NOT NULL,
-      confidence_high INTEGER NOT NULL CHECK (confidence_high >= 0),
-      confidence_medium INTEGER NOT NULL CHECK (confidence_medium >= 0),
-      confidence_low INTEGER NOT NULL CHECK (confidence_low >= 0),
-      unresolved_endpoint_count INTEGER NOT NULL CHECK (unresolved_endpoint_count >= 0),
-      self_loop_count INTEGER NOT NULL CHECK (self_loop_count >= 0),
-      review_finding_count INTEGER NOT NULL CHECK (review_finding_count >= 0),
-      PRIMARY KEY (snapshot_id, provenance, relation)
-    ) WITHOUT ROWID`,
-    group: 'analysis',
-    name: 'snapshot_analysis_edge_counts',
-  },
-  {
-    columns: [
-      requiredColumn('snapshot_id', 'TEXT', 1),
-      requiredColumn('version', 'INTEGER'),
-      requiredColumn('symbol_count', 'INTEGER'),
-      requiredColumn('edge_count', 'INTEGER'),
-      requiredColumn('digest', 'TEXT'),
-      requiredColumn('created_at', 'TEXT'),
-    ],
-    createSql: `CREATE TABLE IF NOT EXISTS snapshot_analysis_summary_receipts (
-      snapshot_id TEXT PRIMARY KEY NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
-      version INTEGER NOT NULL CHECK (version = 1),
-      symbol_count INTEGER NOT NULL CHECK (symbol_count >= 0),
-      edge_count INTEGER NOT NULL CHECK (edge_count >= 0),
-      digest TEXT NOT NULL,
-      created_at TEXT NOT NULL
-    ) WITHOUT ROWID`,
-    group: 'analysis',
-    name: 'snapshot_analysis_summary_receipts',
-  },
-  {
-    columns: [
-      requiredColumn('snapshot_id', 'TEXT', 1),
-      requiredColumn('batch_index', 'INTEGER', 2),
-      requiredColumn('batch_fingerprint', 'TEXT'),
-      requiredColumn('symbol_count', 'INTEGER'),
-      requiredColumn('edge_count', 'INTEGER'),
-      requiredColumn('completed_at', 'TEXT'),
-    ],
-    createSql: `CREATE TABLE IF NOT EXISTS building_analysis_batches (
-      snapshot_id TEXT NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
-      batch_index INTEGER NOT NULL CHECK (batch_index >= 0),
-      batch_fingerprint TEXT NOT NULL,
-      symbol_count INTEGER NOT NULL CHECK (symbol_count >= 0),
-      edge_count INTEGER NOT NULL CHECK (edge_count >= 0),
-      completed_at TEXT NOT NULL,
-      PRIMARY KEY (snapshot_id, batch_index)
-    ) WITHOUT ROWID`,
-    group: 'build',
-    name: 'building_analysis_batches',
-  },
-  {
-    columns: [
-      requiredColumn('snapshot_id', 'TEXT', 1),
-      requiredColumn('edge_id', 'TEXT', 2),
-      requiredColumn('resolution_domain', 'TEXT'),
-      requiredColumn('exported_only', 'INTEGER'),
-      requiredColumn('alias_lookup_keys_json', 'TEXT'),
-      requiredColumn('lookup_tiers_json', 'TEXT'),
-      requiredColumn('candidate_count', 'INTEGER'),
-      requiredColumn('candidate_payload_bytes', 'INTEGER'),
-    ],
-    createSql: `CREATE TABLE IF NOT EXISTS building_references (
-      snapshot_id TEXT NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
-      edge_id TEXT NOT NULL,
-      resolution_domain TEXT NOT NULL,
-      exported_only INTEGER NOT NULL CHECK (exported_only IN (0, 1)),
-      alias_lookup_keys_json TEXT NOT NULL,
-      lookup_tiers_json TEXT NOT NULL,
-      candidate_count INTEGER NOT NULL CHECK (candidate_count >= 0),
-      candidate_payload_bytes INTEGER NOT NULL CHECK (candidate_payload_bytes >= 0),
-      PRIMARY KEY (snapshot_id, edge_id)
-    ) WITHOUT ROWID`,
-    group: 'build',
-    name: 'building_references',
-  },
-  {
-    columns: [
-      requiredColumn('snapshot_id', 'TEXT', 1),
-      requiredColumn('edge_id', 'TEXT', 2),
-      requiredColumn('tier', 'INTEGER', 3),
-      requiredColumn('lookup_key', 'TEXT', 4),
-    ],
-    createSql: `CREATE TABLE IF NOT EXISTS building_reference_candidates (
-      snapshot_id TEXT NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
-      edge_id TEXT NOT NULL,
-      tier INTEGER NOT NULL,
-      lookup_key TEXT NOT NULL,
-      PRIMARY KEY (snapshot_id, edge_id, tier, lookup_key)
-    ) WITHOUT ROWID`,
-    group: 'build',
-    name: 'building_reference_candidates',
-  },
-  {
-    columns: [
-      requiredColumn('snapshot_id', 'TEXT', 1),
-      requiredColumn('batch_index', 'INTEGER', 2),
-      requiredColumn('batch_fingerprint', 'TEXT'),
-      requiredColumn('symbol_count', 'INTEGER'),
-      requiredColumn('edge_count', 'INTEGER'),
-      requiredColumn('term_count', 'INTEGER'),
-      requiredColumn('lookup_count', 'INTEGER'),
-      requiredColumn('reference_count', 'INTEGER'),
-      requiredColumn('candidate_count', 'INTEGER'),
-      requiredColumn('reexport_count', 'INTEGER'),
-      requiredColumn('completed_at', 'TEXT'),
-    ],
-    createSql: `CREATE TABLE IF NOT EXISTS building_materialization_batches (
-      snapshot_id TEXT NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
-      batch_index INTEGER NOT NULL CHECK (batch_index >= 0),
-      batch_fingerprint TEXT NOT NULL,
-      symbol_count INTEGER NOT NULL CHECK (symbol_count >= 0),
-      edge_count INTEGER NOT NULL CHECK (edge_count >= 0),
-      term_count INTEGER NOT NULL CHECK (term_count >= 0),
-      lookup_count INTEGER NOT NULL CHECK (lookup_count >= 0),
-      reference_count INTEGER NOT NULL CHECK (reference_count >= 0),
-      candidate_count INTEGER NOT NULL CHECK (candidate_count >= 0),
-      reexport_count INTEGER NOT NULL CHECK (reexport_count >= 0),
-      completed_at TEXT NOT NULL,
-      PRIMARY KEY (snapshot_id, batch_index)
-    ) WITHOUT ROWID`,
-    group: 'build',
-    name: 'building_materialization_batches',
-  },
-  {
-    columns: [
-      requiredColumn('snapshot_id', 'TEXT', 1),
-      requiredColumn('completed_batch_count', 'INTEGER'),
-      requiredColumn('posting_count', 'INTEGER'),
-      requiredColumn('symbol_count', 'INTEGER'),
-      requiredColumn('term_count', 'INTEGER'),
-    ],
-    createSql: `CREATE TABLE IF NOT EXISTS building_lexical_counters (
-      snapshot_id TEXT PRIMARY KEY NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
-      completed_batch_count INTEGER NOT NULL CHECK (completed_batch_count >= 0),
-      posting_count INTEGER NOT NULL CHECK (posting_count >= 0),
-      symbol_count INTEGER NOT NULL CHECK (symbol_count >= 0),
-      term_count INTEGER NOT NULL CHECK (term_count >= 0)
-    ) WITHOUT ROWID`,
-    group: 'build',
-    name: 'building_lexical_counters',
-    requiredDefinitionPatterns: [
-      /CHECK\s*\(\s*completed_batch_count\s*>=\s*0\s*\)/i,
-      /CHECK\s*\(\s*posting_count\s*>=\s*0\s*\)/i,
-      /CHECK\s*\(\s*symbol_count\s*>=\s*0\s*\)/i,
-      /CHECK\s*\(\s*term_count\s*>=\s*0\s*\)/i,
-    ],
-  },
-  {
-    columns: [requiredColumn('snapshot_key', 'INTEGER', 1), requiredColumn('snapshot_id', 'TEXT')],
-    createSql: `CREATE TABLE IF NOT EXISTS lexical_compact_snapshots (
-      snapshot_key INTEGER PRIMARY KEY NOT NULL,
-      snapshot_id TEXT UNIQUE NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE
-    )`,
-    foreignKeys: [{from: 'snapshot_id', onDelete: 'CASCADE', table: 'snapshots', to: 'id'}],
-    group: 'lexical',
-    name: 'lexical_compact_snapshots',
-    uniqueKeys: [['snapshot_id']],
-    withoutRowid: false,
-  },
-  {
-    columns: [
-      requiredColumn('term_key', 'INTEGER', 1),
-      requiredColumn('snapshot_key', 'INTEGER'),
-      requiredColumn('term', 'TEXT'),
-    ],
-    createSql: `CREATE TABLE IF NOT EXISTS lexical_compact_terms (
-      term_key INTEGER PRIMARY KEY NOT NULL,
-      snapshot_key INTEGER NOT NULL REFERENCES lexical_compact_snapshots(snapshot_key) ON DELETE CASCADE,
-      term TEXT NOT NULL,
-      UNIQUE (snapshot_key, term)
-    )`,
-    foreignKeys: [{from: 'snapshot_key', onDelete: 'CASCADE', table: 'lexical_compact_snapshots', to: 'snapshot_key'}],
-    group: 'lexical',
-    name: 'lexical_compact_terms',
-    uniqueKeys: [['snapshot_key', 'term']],
-    withoutRowid: false,
-  },
-  {
-    columns: [
-      requiredColumn('symbol_key', 'INTEGER', 1),
-      requiredColumn('snapshot_key', 'INTEGER'),
-      requiredColumn('symbol_id', 'TEXT'),
-    ],
-    createSql: `CREATE TABLE IF NOT EXISTS lexical_compact_symbols (
-      symbol_key INTEGER PRIMARY KEY NOT NULL,
-      snapshot_key INTEGER NOT NULL REFERENCES lexical_compact_snapshots(snapshot_key) ON DELETE CASCADE,
-      symbol_id TEXT NOT NULL,
-      UNIQUE (snapshot_key, symbol_id)
-    )`,
-    foreignKeys: [{from: 'snapshot_key', onDelete: 'CASCADE', table: 'lexical_compact_snapshots', to: 'snapshot_key'}],
-    group: 'lexical',
-    name: 'lexical_compact_symbols',
-    uniqueKeys: [['snapshot_key', 'symbol_id']],
-    withoutRowid: false,
-  },
-  {
-    columns: [
-      requiredColumn('snapshot_key', 'INTEGER', 1),
-      requiredColumn('term_key', 'INTEGER', 2),
-      requiredColumn('symbol_key', 'INTEGER', 3),
-      requiredColumn('weight', 'INTEGER'),
-    ],
-    createSql: `CREATE TABLE IF NOT EXISTS lexical_compact_postings (
-      snapshot_key INTEGER NOT NULL REFERENCES lexical_compact_snapshots(snapshot_key) ON DELETE CASCADE,
-      term_key INTEGER NOT NULL,
-      symbol_key INTEGER NOT NULL,
-      weight INTEGER NOT NULL CHECK (weight BETWEEN 1 AND 5),
-      PRIMARY KEY (snapshot_key, term_key, symbol_key)
-    ) WITHOUT ROWID`,
-    foreignKeys: [{from: 'snapshot_key', onDelete: 'CASCADE', table: 'lexical_compact_snapshots', to: 'snapshot_key'}],
-    group: 'lexical',
-    name: 'lexical_compact_postings',
-    requiredDefinitionPatterns: [/CHECK\s*\(\s*weight\s+BETWEEN\s+1\s+AND\s+5\s*\)/i],
-  },
-  {
-    columns: [
-      requiredColumn('snapshot_id', 'TEXT', 1),
-      requiredColumn('format_version', 'INTEGER'),
-      requiredColumn('posting_count', 'INTEGER'),
-      requiredColumn('symbol_count', 'INTEGER'),
-      requiredColumn('term_count', 'INTEGER'),
-      requiredColumn('created_at', 'TEXT'),
-    ],
-    createSql: `CREATE TABLE IF NOT EXISTS lexical_storage_formats (
-      snapshot_id TEXT PRIMARY KEY NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
-      format_version INTEGER NOT NULL CHECK (format_version = 1),
-      posting_count INTEGER NOT NULL CHECK (posting_count >= 0),
-      symbol_count INTEGER NOT NULL CHECK (symbol_count >= 0),
-      term_count INTEGER NOT NULL CHECK (term_count >= 0),
-      created_at TEXT NOT NULL
-    ) WITHOUT ROWID`,
-    group: 'lexical',
-    name: 'lexical_storage_formats',
-    requiredDefinitionPatterns: [
-      /CHECK\s*\(\s*format_version\s*=\s*1\s*\)/i,
-      /CHECK\s*\(\s*posting_count\s*>=\s*0\s*\)/i,
-      /CHECK\s*\(\s*symbol_count\s*>=\s*0\s*\)/i,
-      /CHECK\s*\(\s*term_count\s*>=\s*0\s*\)/i,
-    ],
-  },
-  {
-    columns: [
-      requiredColumn('id', 'TEXT', 1),
-      requiredColumn('content_hash', 'TEXT'),
-      requiredColumn('extractor_set', 'TEXT'),
-      requiredColumn('derivation_identity', 'TEXT'),
-      requiredColumn('path_hint', 'TEXT'),
-      requiredColumn('facts_json', 'TEXT'),
-      requiredColumn('created_at', 'TEXT'),
-      requiredColumn('last_used_at', 'TEXT'),
-    ],
-    createSql: `CREATE TABLE IF NOT EXISTS materialized_file_shards (
-      id TEXT PRIMARY KEY NOT NULL,
-      content_hash TEXT NOT NULL,
-      extractor_set TEXT NOT NULL,
-      derivation_identity TEXT NOT NULL,
-      path_hint TEXT NOT NULL,
-      facts_json TEXT NOT NULL,
-      created_at TEXT NOT NULL,
-      last_used_at TEXT NOT NULL,
-      UNIQUE (content_hash, extractor_set, derivation_identity, path_hint)
-    ) WITHOUT ROWID`,
-    foreignKeys: [],
-    group: 'shards',
-    name: 'materialized_file_shards',
-    uniqueKeys: [['content_hash', 'extractor_set', 'derivation_identity', 'path_hint']],
-  },
-  {
-    columns: [
-      requiredColumn('snapshot_id', 'TEXT', 1),
-      requiredColumn('path', 'TEXT', 2),
-      requiredColumn('shard_id', 'TEXT'),
-    ],
-    createSql: `CREATE TABLE IF NOT EXISTS snapshot_file_shards (
-      snapshot_id TEXT NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
-      path TEXT NOT NULL,
-      shard_id TEXT NOT NULL REFERENCES materialized_file_shards(id) ON DELETE CASCADE,
-      PRIMARY KEY (snapshot_id, path)
-    ) WITHOUT ROWID`,
-    foreignKeys: [
-      {from: 'snapshot_id', onDelete: 'CASCADE', table: 'snapshots', to: 'id'},
-      {from: 'shard_id', onDelete: 'CASCADE', table: 'materialized_file_shards', to: 'id'},
-    ],
-    group: 'shards',
-    name: 'snapshot_file_shards',
-  },
-] as const satisfies readonly PersistentExtensionTableContract[];
-
-const LEGACY_SNAPSHOT_BUILD_OWNERS_CONTRACT = {
-  columns: [
-    requiredColumn('snapshot_id', 'TEXT', 1),
-    requiredColumn('owner_token', 'TEXT'),
-    requiredColumn('claimed_at', 'TEXT'),
-  ],
-  createSql: `CREATE TABLE snapshot_build_owners (
-    snapshot_id TEXT PRIMARY KEY NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
-    owner_token TEXT NOT NULL,
-    claimed_at TEXT NOT NULL
-  ) WITHOUT ROWID`,
-  group: 'build',
-  name: 'snapshot_build_owners',
-} as const satisfies PersistentExtensionTableContract;
-
-const LEGACY_BUILDING_REFERENCES_V3_TABLE = 'legacy_building_references_v3';
-const LEGACY_BUILDING_REFERENCES_V3_CONTRACT = {
-  columns: [
-    requiredColumn('snapshot_id', 'TEXT', 1),
-    requiredColumn('edge_id', 'TEXT', 2),
-    requiredColumn('resolution_domain', 'TEXT'),
-    requiredColumn('exported_only', 'INTEGER'),
-    requiredColumn('alias_lookup_keys_json', 'TEXT'),
-  ],
-  createSql: `CREATE TABLE building_references (
-    snapshot_id TEXT NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
-    edge_id TEXT NOT NULL,
-    resolution_domain TEXT NOT NULL,
-    exported_only INTEGER NOT NULL CHECK (exported_only IN (0, 1)),
-    alias_lookup_keys_json TEXT NOT NULL,
-    PRIMARY KEY (snapshot_id, edge_id)
-  ) WITHOUT ROWID`,
-  group: 'build',
-  name: 'building_references',
-} as const satisfies PersistentExtensionTableContract;
-
-const REMOVED_BETA30_INDEXES = ['snapshot_symbol_lookup_key', 'terms_lookup', 'terms_symbol'] as const;
-export const CODE_GRAPH_PERSISTENT_EXTENSION_TABLE_NAMES = PERSISTENT_EXTENSION_TABLES.map(table => table.name);
 const REMOVED_VIEW_CLEANUP_ADMISSION_CURSOR_KEY = 'removed_view_cleanup_admission_cursor';
 const REMOVED_VIEW_CLEANUP_EPOCH_SEQUENCE_KEY = 'removed_view_cleanup_epoch_sequence';
-const REMOVED_VIEW_CLEANUP_LEGACY_MAXIMUM_METADATA_ROWS = 64;
-const REMOVED_VIEW_CLEANUP_CURRENT_MAXIMUM_METADATA_ROWS = 66;
 const MAXIMUM_CANONICAL_DATE_MILLISECONDS = 253_402_300_799_999;
 
 const REMOVED_VIEWS_TABLE_SQL = `CREATE TABLE IF NOT EXISTS removed_views (
@@ -2905,150 +2406,6 @@ const REMOVED_VIEW_CLEANUP_COLUMNS = [
   {name: 'blocked_code', notNull: false, primaryKeyPosition: 0, type: 'TEXT'},
   {name: 'updated_at', notNull: true, primaryKeyPosition: 0, type: 'TEXT'},
 ] as const;
-
-const SCHEMA_METADATA_TABLE_SQL = `CREATE TABLE IF NOT EXISTS schema_metadata (
-  key TEXT PRIMARY KEY NOT NULL,
-  value TEXT NOT NULL
-)`;
-
-const inspectBoundedSchemaMetadataRowCount = Effect.fn('codeGraph.inspectBoundedSchemaMetadataRowCount')(function* (
-  sql: SqlClient.SqlClient,
-) {
-  const rows = yield* sql.unsafe(
-    `SELECT 1 FROM schema_metadata LIMIT ${REMOVED_VIEW_CLEANUP_CURRENT_MAXIMUM_METADATA_ROWS + 1}`,
-  );
-  return rows.length > REMOVED_VIEW_CLEANUP_CURRENT_MAXIMUM_METADATA_ROWS ? undefined : rows.length;
-});
-
-const inspectBoundedSchemaMetadataValue = Effect.fn('codeGraph.inspectBoundedSchemaMetadataValue')(function* (
-  sql: SqlClient.SqlClient,
-  key: string,
-  maximumValueBytes: number,
-) {
-  if ((yield* inspectBoundedSchemaMetadataRowCount(sql)) === undefined) {
-    return {state: 'invalid'} as const;
-  }
-  const rows = yield* sql.unsafe<{
-    readonly bounded_key: unknown;
-    readonly bounded_value: unknown;
-    readonly key_bytes: unknown;
-    readonly key_type: unknown;
-    readonly value_bytes: unknown;
-    readonly value_type: unknown;
-  }>(
-    `SELECT
-       CASE
-         WHEN typeof(key) = 'text' AND length(CAST(key AS BLOB)) <= ? THEN key
-         ELSE NULL
-       END AS bounded_key,
-       CASE
-         WHEN typeof(value) = 'text' AND length(CAST(value AS BLOB)) <= ? THEN value
-         ELSE NULL
-       END AS bounded_value,
-       typeof(key) AS key_type,
-       length(CAST(key AS BLOB)) AS key_bytes,
-       typeof(value) AS value_type,
-       length(CAST(value AS BLOB)) AS value_bytes
-     FROM schema_metadata
-     WHERE key = ? COLLATE NOCASE
-     LIMIT 3`,
-    [key.length, maximumValueBytes, key],
-  );
-  if (rows.length === 0) return {state: 'missing'} as const;
-  const row = rows[0];
-  if (
-    rows.length !== 1 ||
-    row?.bounded_key !== key ||
-    row.key_type !== 'text' ||
-    row.key_bytes !== key.length ||
-    row.value_type !== 'text' ||
-    typeof row.value_bytes !== 'number' ||
-    !Number.isSafeInteger(row.value_bytes) ||
-    row.value_bytes < 0 ||
-    row.value_bytes > maximumValueBytes ||
-    typeof row.bounded_value !== 'string'
-  ) {
-    return {state: 'invalid'} as const;
-  }
-  return {state: 'recorded', value: row.bounded_value} as const;
-});
-
-const inspectRuntimeSchemaMetadataVersion = Effect.fn('codeGraph.inspectRuntimeSchemaMetadataVersion')(function* (
-  sql: SqlClient.SqlClient,
-  key: 'persistent_extension_schema_revision' | 'schema_version',
-) {
-  const rows = yield* sql.unsafe<{
-    readonly bounded_key: unknown;
-    readonly bounded_value: unknown;
-    readonly key_bytes: unknown;
-    readonly key_type: unknown;
-    readonly value_bytes: unknown;
-    readonly value_type: unknown;
-  }>(
-    `SELECT
-       CASE
-         WHEN typeof(key) = 'text' AND length(CAST(key AS BLOB)) <= ? THEN key
-         ELSE NULL
-       END AS bounded_key,
-       CASE
-         WHEN typeof(value) = 'text' AND length(CAST(value AS BLOB)) <= 16 THEN value
-         ELSE NULL
-       END AS bounded_value,
-       typeof(key) AS key_type,
-       length(CAST(key AS BLOB)) AS key_bytes,
-       typeof(value) AS value_type,
-       length(CAST(value AS BLOB)) AS value_bytes
-     FROM schema_metadata
-     WHERE key = ? COLLATE NOCASE
-     LIMIT 3`,
-    [key.length, key],
-  );
-  if (rows.length === 0) return undefined;
-  const row = rows[0];
-  if (
-    rows.length !== 1 ||
-    row?.bounded_key !== key ||
-    row.key_type !== 'text' ||
-    row.key_bytes !== key.length ||
-    row.value_type !== 'text' ||
-    typeof row.value_bytes !== 'number' ||
-    !Number.isSafeInteger(row.value_bytes) ||
-    row.value_bytes < 1 ||
-    row.value_bytes > 16 ||
-    typeof row.bounded_value !== 'string' ||
-    !/^(?:0|[1-9][0-9]{0,14})$/u.test(row.bounded_value)
-  ) {
-    return yield* Effect.fail(
-      new CodeGraphStoreError('Code graph runtime schema metadata is invalid.', {
-        operation: 'check code graph runtime compatibility',
-      }),
-    );
-  }
-  const version = Number(row.bounded_value);
-  if (!Number.isSafeInteger(version) || version < 0) {
-    return yield* Effect.fail(
-      new CodeGraphStoreError('Code graph runtime schema metadata is invalid.', {
-        operation: 'check code graph runtime compatibility',
-      }),
-    );
-  }
-  return version;
-});
-
-const assertCodeGraphRuntimeSchemaCompatible = Effect.fn('codeGraph.assertRuntimeSchemaCompatible')(function* () {
-  const sql = yield* SqlClient.SqlClient;
-  if (!(yield* tableExists(sql, 'schema_metadata'))) return;
-  const schemaVersion = yield* inspectRuntimeSchemaMetadataVersion(sql, 'schema_version');
-  const persistentExtensionRevision = yield* inspectRuntimeSchemaMetadataVersion(
-    sql,
-    'persistent_extension_schema_revision',
-  );
-  if (codeGraphRuntimeSchemaRequiresReconnect(schemaVersion, persistentExtensionRevision)) {
-    return yield* Effect.fail(
-      new CodeGraphRuntimeReconnectRequiredError({operation: 'check code graph runtime compatibility'}),
-    );
-  }
-});
 
 const removedViewAuthorityTableState = Effect.fn('codeGraph.removedViewAuthorityTableState')(function* (
   sql: SqlClient.SqlClient,
@@ -19200,12 +18557,6 @@ function parseStringArray(value: string): readonly string[] {
   } catch {
     return [];
   }
-}
-
-function tableExists(sql: SqlClient.SqlClient, table: string): Effect.Effect<boolean, SqlError.SqlError> {
-  return sql<{readonly name: string}>`
-    SELECT name FROM sqlite_master WHERE type = 'table' AND name = ${table} LIMIT 1
-  `.pipe(Effect.map(rows => rows.length > 0));
 }
 
 function lookupDomain(key: string, fallback: string | undefined): string {

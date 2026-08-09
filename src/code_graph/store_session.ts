@@ -1,6 +1,7 @@
 import * as SqliteClient from '@effect/sql-sqlite-bun/SqliteClient';
 import {Context, Effect, Option, Path} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
+import * as SqlError from 'effect/unstable/sql/SqlError';
 import type {
   CodeGraphDatabaseSessionOptions,
   CodeGraphSqliteWriterSettings,
@@ -261,4 +262,10 @@ export function inferredCodeGraphWriterLockPath(path: Path.Path, databasePath: s
     'database-writes',
     `${checkoutId}.lock`,
   );
+}
+
+export function tableExists(sql: SqlClient.SqlClient, table: string): Effect.Effect<boolean, SqlError.SqlError> {
+  return sql<{readonly name: string}>`
+    SELECT name FROM sqlite_master WHERE type = 'table' AND name = ${table} LIMIT 1
+  `.pipe(Effect.map(rows => rows.length > 0));
 }

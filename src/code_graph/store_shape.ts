@@ -57,7 +57,7 @@ import type {
   LoadedCodeGraphFacts,
   StoredCodeGraph,
 } from './store_models.js';
-import type {CodeGraphPersistentSchemaMigrationPhase} from './store.js';
+import type {CodeGraphPersistentSchemaMigrationPhase} from './store_schema_contracts.js';
 import type {
   CodeGraphEdge,
   CodeGraphFileFacts,
