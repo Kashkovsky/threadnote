@@ -1,0 +1,880 @@
+import {Effect, Option} from 'effect';
+import * as SqlClient from 'effect/unstable/sql/SqlClient';
+import {type CodeGraphBlobReuseFile} from './blob_reuse.js';
+import {codeGraphUtf8ByteLength} from './disk_capacity.js';
+import {ensureBoundedCodeGraphFact} from './fact_budget.js';
+import {compareCodeUnits} from './ordering.js';
+import {relocateStructuredSchemaFacts} from './languages/schemas/extractor.js';
+import {
+  CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION,
+  type CodeGraphEdgeCursor,
+  type CodeGraphReusableBaseReceipt,
+  type CodeGraphReusableCleanBase,
+  type CodeGraphReusableReexport,
+  type CodeGraphReusableReexportSeed,
+  type LoadedCodeGraphFacts,
+  type StoredCodeGraph,
+} from './store_models.js';
+import {configureConnection, tableExists} from './store_session.js';
+import {
+  type CodeGraphFileFacts,
+  type CodeGraphInventoryFile,
+  type CodeGraphProvenance,
+  CodeGraphStoreError,
+} from './types.js';
+import {type EdgeRow, type FileBlobRow, type SnapshotRow, type SymbolRow} from './store_internal_models.js';
+import {edgeFromRow, snapshotFromRow, symbolFromRow} from './store_rows.js';
+import {CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION} from './store_build_core.js';
+import {boundedPageLimit, chunk, normalizedTerms, sqlTextOption, uniqueBy} from './store_utilities.js';
+import {
+  codeGraphAdjacencyQueryStatement,
+  codeGraphExactSymbolQueryStatement,
+  codeGraphSymbolPathScoreMultiplier,
+  codeGraphSymbolsByIdsQueryStatement,
+  effectiveEdgesCte,
+  effectiveSnapshotParameters,
+  effectiveSymbolsCte,
+  legacyLexicalTermBranch,
+  normalizeExactSearchPath,
+  reusableFileBlobTargets,
+  searchSymbolKindOrder,
+  selectBaseSnapshotId,
+  selectFileBlobMetadataBatch,
+  selectReusableFileBlobBatch,
+  selectReusableFileBlobMetadataBatch,
+} from './store_query_core.js';
+import {materializedFileShardIdentity} from './store_cache.js';
+import {type CodeGraphSqlQueryStatement} from './store_visualization_sql.js';
+
+const selectReadySnapshot = Effect.fn('codeGraph.selectReadySnapshot')(function* (worktreeId: string) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* configureConnection(sql);
+  if (!(yield* tableExists(sql, 'active_snapshots')) || !(yield* tableExists(sql, 'snapshots'))) return undefined;
+  const removedViewsAvailable = yield* tableExists(sql, 'removed_views');
+  const rows = yield* sql.unsafe<SnapshotRow>(
+    `SELECT snapshots.*
+     FROM active_snapshots
+     JOIN snapshots ON snapshots.id = active_snapshots.snapshot_id
+     WHERE active_snapshots.worktree_id = ?
+       AND snapshots.state = 'ready'
+       ${
+         removedViewsAvailable
+           ? `AND NOT EXISTS (
+                SELECT 1 FROM removed_views AS removed
+                WHERE removed.worktree_id = active_snapshots.worktree_id
+                  AND removed.expected_snapshot_id = active_snapshots.snapshot_id
+              )`
+           : ''
+       }
+     LIMIT 1`,
+    [worktreeId],
+  );
+  return rows[0] ? snapshotFromRow(rows[0]) : undefined;
+});
+
+const selectReadySnapshotById = Effect.fn('codeGraph.selectReadySnapshotById')(function* (snapshotId: string) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* configureConnection(sql);
+  if (!(yield* tableExists(sql, 'snapshots'))) return undefined;
+  const rows = yield* sql<SnapshotRow>`
+    SELECT * FROM snapshots WHERE id = ${snapshotId} AND state = 'ready' LIMIT 1
+  `;
+  return rows[0] ? snapshotFromRow(rows[0]) : undefined;
+});
+
+const selectCurrentLexicalReadySnapshotById = Effect.fn('codeGraph.selectCurrentLexicalReadySnapshotById')(function* (
+  snapshotId: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* configureConnection(sql);
+  if (!(yield* tableExists(sql, 'snapshots')) || !(yield* tableExists(sql, 'lexical_storage_formats'))) {
+    return undefined;
+  }
+  const rows = yield* sql<SnapshotRow>`
+    SELECT * FROM snapshots
+    WHERE id = ${snapshotId} AND state = 'ready'
+      AND EXISTS (
+        SELECT 1 FROM lexical_storage_formats AS lexical
+        WHERE lexical.snapshot_id = snapshots.id
+          AND lexical.format_version = ${CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION}
+      )
+    LIMIT 1
+  `;
+  return rows[0] ? snapshotFromRow(rows[0]) : undefined;
+});
+
+const selectReadySnapshotForCommit = Effect.fn('codeGraph.selectReadySnapshotForCommit')(function* (
+  repositoryId: string,
+  commit: string,
+  extractorSet?: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* configureConnection(sql);
+  if (!(yield* tableExists(sql, 'snapshots')) || !(yield* tableExists(sql, 'lexical_storage_formats'))) {
+    return undefined;
+  }
+  const rows = yield* sql<SnapshotRow>`
+    SELECT *
+    FROM snapshots
+    WHERE repository_id = ${repositoryId}
+      AND commit_id = ${commit}
+      AND dirty = 0
+      AND (${extractorSet ?? null} IS NULL OR extractor_set = ${extractorSet ?? null})
+      AND state = 'ready'
+      AND EXISTS (
+        SELECT 1 FROM lexical_storage_formats AS lexical
+        WHERE lexical.snapshot_id = snapshots.id
+          AND lexical.format_version = ${CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION}
+      )
+    ORDER BY completed_at DESC, id
+    LIMIT 1
+  `;
+  return rows[0] ? snapshotFromRow(rows[0]) : undefined;
+});
+
+const selectReusableCleanBase = Effect.fn('codeGraph.selectReusableCleanBase')(function* (
+  repositoryId: string,
+  extractorSet: string,
+  workspaceFingerprint: string,
+  fileSetFingerprint: string,
+  graphContentId?: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* configureConnection(sql);
+  const candidates = yield* sql<SnapshotRow>`
+    SELECT snapshot.*
+    FROM snapshots AS snapshot
+    JOIN snapshot_reuse_receipts AS receipt ON receipt.snapshot_id = snapshot.id
+    WHERE snapshot.repository_id = ${repositoryId}
+      AND snapshot.extractor_set = ${extractorSet}
+      AND snapshot.state = 'ready'
+      AND snapshot.dirty = 0
+      AND snapshot.base_snapshot_id IS NULL
+      AND receipt.format_version = ${CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION}
+      AND receipt.resolution_surface_version = 1
+      AND receipt.workspace_fingerprint = ${workspaceFingerprint}
+    ORDER BY
+      CASE WHEN snapshot.graph_content_id = ${graphContentId ?? null} THEN 0 ELSE 1 END,
+      CASE WHEN receipt.file_set_fingerprint = ${fileSetFingerprint} THEN 0 ELSE 1 END,
+      snapshot.completed_at DESC,
+      snapshot.id
+    LIMIT 1
+  `;
+  const row = candidates[0];
+  if (!row) return undefined;
+  const receipt = yield* selectReusableBaseReceipt(row.id);
+  if (!receipt) return undefined;
+  const files = yield* sql<{
+    readonly content_hash: string;
+    readonly language: string;
+    readonly mode: string;
+    readonly path: string;
+    readonly size: number;
+    readonly source: string;
+  }>`
+    SELECT content_hash, language, mode, path, size, source
+    FROM snapshot_files
+    WHERE snapshot_id = ${row.id}
+    ORDER BY path
+  `;
+  if (files.length !== Number(row.file_count) || files.some(file => file.source !== 'commit')) return undefined;
+  return {
+    files: files.map(file => ({
+      blobId: `snapshot:${file.content_hash}`,
+      contentHash: file.content_hash,
+      language: file.language,
+      mode: file.mode,
+      path: file.path,
+      size: Number(file.size),
+      source: 'commit' as const,
+    })),
+    receipt,
+    snapshot: snapshotFromRow(row),
+  } satisfies CodeGraphReusableCleanBase;
+});
+
+const selectReusableBaseReceipt = Effect.fn('codeGraph.selectReusableBaseReceipt')(function* (snapshotId: string) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* configureConnection(sql);
+  const rows = yield* sql<{
+    readonly alias_count: number;
+    readonly file_set_fingerprint: string;
+    readonly format_version: number;
+    readonly lookup_count: number;
+    readonly reexport_count: number;
+    readonly resolution_surface_version: number;
+    readonly snapshot_id: string;
+    readonly workspace_fingerprint: string;
+  }>`
+    SELECT receipt.*
+    FROM snapshot_reuse_receipts AS receipt
+    JOIN snapshots AS snapshot ON snapshot.id = receipt.snapshot_id
+    WHERE receipt.snapshot_id = ${snapshotId}
+      AND receipt.format_version = ${CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION}
+      AND receipt.resolution_surface_version = 1
+      AND receipt.extractor_set = snapshot.extractor_set
+      AND snapshot.state = 'ready'
+      AND snapshot.dirty = 0
+      AND snapshot.base_snapshot_id IS NULL
+      AND EXISTS (
+        SELECT 1 FROM lexical_storage_formats AS lexical
+        WHERE lexical.snapshot_id = receipt.snapshot_id
+          AND lexical.format_version = ${CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION}
+      )
+      AND (
+        receipt.lookup_count = 0 OR EXISTS (
+          SELECT 1 FROM snapshot_symbol_lookup AS lookup
+          WHERE lookup.snapshot_id = receipt.snapshot_id
+        )
+      )
+      AND (
+        receipt.alias_count = 0 OR EXISTS (
+          SELECT 1 FROM snapshot_symbol_lookup AS lookup
+          WHERE lookup.snapshot_id = receipt.snapshot_id AND lookup.provenance = 'alias'
+        )
+      )
+      AND (
+        receipt.reexport_count = 0 OR EXISTS (
+          SELECT 1 FROM snapshot_reexport_provenance AS provenance
+          WHERE provenance.snapshot_id = receipt.snapshot_id
+        )
+      )
+    LIMIT 1
+  `;
+  const row = rows[0];
+  if (!row) return undefined;
+  const lookupCount = Number(row.lookup_count);
+  const aliasCount = Number(row.alias_count);
+  const reexportCount = Number(row.reexport_count);
+  // Receipt rows and their lookup/provenance rows are committed in one SQLite
+  // transaction. Avoid recounting the repository-wide lookup tables on every
+  // one-file overlay; integrity checks belong to doctor/repair, not the hot path.
+  if (
+    !Number.isSafeInteger(lookupCount) ||
+    lookupCount < 0 ||
+    !Number.isSafeInteger(aliasCount) ||
+    aliasCount < 0 ||
+    aliasCount > lookupCount ||
+    !Number.isSafeInteger(reexportCount) ||
+    reexportCount < 0
+  ) {
+    return undefined;
+  }
+  return {
+    aliasCount,
+    fileSetFingerprint: row.file_set_fingerprint,
+    formatVersion: Number(row.format_version),
+    lookupCount,
+    reexportCount,
+    resolutionSurfaceVersion: Number(row.resolution_surface_version),
+    snapshotId: row.snapshot_id,
+    workspaceFingerprint: row.workspace_fingerprint,
+  } satisfies CodeGraphReusableBaseReceipt;
+});
+
+const selectReusableReexports = Effect.fn('codeGraph.selectReusableReexports')(function* (
+  snapshotId: string,
+  seeds: readonly CodeGraphReusableReexportSeed[],
+  maxRows = Number.MAX_SAFE_INTEGER,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* configureConnection(sql);
+  if (!(yield* selectReusableBaseReceipt(snapshotId))) return undefined;
+  const uniqueSeeds = uniqueBy(seeds, seed => `${seed.path}\0${seed.name}`);
+  if (uniqueSeeds.length === 0) return [];
+  if (!Number.isSafeInteger(maxRows) || maxRows < 0) return undefined;
+  const output = new Map<string, CodeGraphReusableReexport>();
+  for (const batch of chunk(uniqueSeeds, 200)) {
+    if (output.size > maxRows) return undefined;
+    const queryLimit = maxRows === Number.MAX_SAFE_INTEGER ? maxRows : maxRows + 1;
+    const rows = yield* sql.unsafe<{
+      readonly imported_name: string;
+      readonly local_name: string;
+      readonly source_path: string;
+      readonly target_path: string;
+    }>(
+      `WITH RECURSIVE
+       requested(path, name) AS (VALUES ${batch.map(() => '(?, ?)').join(', ')}),
+       closure(source_path, local_name, target_path, imported_name) AS (
+         SELECT provenance.source_path, provenance.local_name,
+           provenance.target_path, provenance.imported_name
+         FROM snapshot_reexport_provenance AS provenance
+         JOIN requested
+           ON requested.path = provenance.source_path AND requested.name = provenance.local_name
+         WHERE provenance.snapshot_id = ?
+         UNION
+         SELECT provenance.source_path, provenance.local_name,
+           provenance.target_path, provenance.imported_name
+         FROM snapshot_reexport_provenance AS provenance
+         JOIN closure
+           ON closure.target_path = provenance.source_path
+          AND closure.imported_name = provenance.local_name
+         WHERE provenance.snapshot_id = ?
+         LIMIT ?
+       )
+       SELECT source_path, local_name, target_path, imported_name
+       FROM closure
+       ORDER BY source_path, local_name, target_path, imported_name
+       LIMIT ?`,
+      [...batch.flatMap(seed => [seed.path, seed.name]), snapshotId, snapshotId, queryLimit, queryLimit],
+    );
+    if (rows.length > maxRows) {
+      return rows.map(row => ({
+        importedName: row.imported_name,
+        localName: row.local_name,
+        sourcePath: row.source_path,
+        targetPath: row.target_path,
+      }));
+    }
+    for (const row of rows) {
+      const value = {
+        importedName: row.imported_name,
+        localName: row.local_name,
+        sourcePath: row.source_path,
+        targetPath: row.target_path,
+      } satisfies CodeGraphReusableReexport;
+      output.set(`${value.sourcePath}\0${value.localName}\0${value.targetPath}\0${value.importedName}`, value);
+      if (output.size > maxRows) return [...output.values()];
+    }
+  }
+  return [...output.values()].sort((left, right) =>
+    compareCodeUnits(
+      `${left.sourcePath}\0${left.localName}\0${left.targetPath}\0${left.importedName}`,
+      `${right.sourcePath}\0${right.localName}\0${right.targetPath}\0${right.importedName}`,
+    ),
+  );
+});
+
+const selectCachedFacts = Effect.fn('codeGraph.selectCachedFacts')(function* (
+  files: readonly CodeGraphBlobReuseFile[],
+  extractorSet: string,
+  decode: boolean,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* configureConnection(sql);
+  const output = new Map<string, CodeGraphFileFacts>();
+  const bytesByPath = new Map<string, number>();
+  const keys = new Set<string>();
+  let bytes = 0;
+  for (const batch of chunk(files, 300)) {
+    if (!decode) {
+      const rows = yield* selectFileBlobMetadataBatch(sql, batch, extractorSet);
+      for (const row of rows) {
+        keys.add(row.path_hint);
+        const factBytes = Number(row.facts_bytes);
+        bytes += factBytes;
+        bytesByPath.set(row.path_hint, factBytes);
+      }
+      const missing = batch.filter(file => !keys.has(file.path));
+      const reusableRows = yield* selectReusableFileBlobMetadataBatch(sql, missing, extractorSet);
+      for (const row of reusableRows) {
+        if (keys.has(row.target_path)) continue;
+        keys.add(row.target_path);
+        const factBytes = Number(row.facts_bytes);
+        bytes += factBytes;
+        bytesByPath.set(row.target_path, factBytes);
+      }
+      continue;
+    }
+    const rows = yield* selectFileBlobBatch(sql, batch, extractorSet);
+    for (const row of rows) {
+      try {
+        const facts = JSON.parse(row.facts_json) as CodeGraphFileFacts;
+        if (facts.path !== row.path_hint) continue;
+        output.set(row.path_hint, facts);
+        keys.add(row.path_hint);
+        const factBytes = Number(row.facts_bytes);
+        bytes += factBytes;
+        bytesByPath.set(row.path_hint, factBytes);
+      } catch {
+        // A malformed cache row is disposable and will be replaced after extraction.
+      }
+    }
+    const missing = batch.filter(file => !keys.has(file.path));
+    const reusableRows = yield* selectReusableFileBlobBatch(sql, missing, extractorSet);
+    const filesByPath = new Map(reusableFileBlobTargets(missing).map(file => [file.path, file]));
+    for (const row of reusableRows) {
+      if (keys.has(row.target_path)) continue;
+      const file = filesByPath.get(row.target_path);
+      if (file === undefined) continue;
+      try {
+        const facts = JSON.parse(row.facts_json) as CodeGraphFileFacts;
+        if (facts.path !== row.path_hint) continue;
+        const relocated = relocateStructuredSchemaFacts(file, facts);
+        if (relocated === undefined) continue;
+        const factBytes = codeGraphUtf8ByteLength(JSON.stringify(relocated));
+        output.set(row.target_path, relocated);
+        keys.add(row.target_path);
+        bytes += factBytes;
+        bytesByPath.set(row.target_path, factBytes);
+      } catch {
+        // A malformed or incompatible donor is disposable and cannot satisfy this target path.
+      }
+    }
+  }
+  return {bytes, bytesByPath, facts: output, keys} satisfies LoadedCodeGraphFacts;
+});
+
+const selectMaterializedFileShards = Effect.fn('codeGraph.selectMaterializedFileShards')(function* (
+  files: readonly Pick<CodeGraphInventoryFile, 'contentHash' | 'path'>[],
+  extractorSet: string,
+  derivationIdentity: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* configureConnection(sql);
+  const output = new Map<string, CodeGraphFileFacts>();
+  const bytesByPath = new Map<string, number>();
+  const keys = new Set<string>();
+  let bytes = 0;
+  for (const batch of chunk(files, 200)) {
+    if (batch.length === 0) continue;
+    const rows = yield* sql.unsafe<{
+      readonly content_hash: string;
+      readonly facts_bytes: number;
+      readonly facts_json: string;
+      readonly id: string;
+      readonly path_hint: string;
+    }>(
+      `SELECT id, content_hash, path_hint, facts_json, length(CAST(facts_json AS BLOB)) AS facts_bytes
+       FROM materialized_file_shards
+       WHERE extractor_set = ? AND derivation_identity = ?
+         AND (${batch.map(() => '(content_hash = ? AND path_hint = ?)').join(' OR ')})`,
+      [extractorSet, derivationIdentity, ...batch.flatMap(file => [file.contentHash, file.path])],
+    );
+    for (const row of rows) {
+      try {
+        const bounded = ensureBoundedCodeGraphFact(JSON.parse(row.facts_json) as CodeGraphFileFacts);
+        if (
+          bounded.facts.path !== row.path_hint ||
+          row.id !== materializedFileShardIdentity(row.content_hash, extractorSet, derivationIdentity, row.path_hint)
+        ) {
+          continue;
+        }
+        output.set(row.path_hint, bounded.facts);
+        keys.add(row.path_hint);
+        const factBytes = Number(row.facts_bytes);
+        bytes += factBytes;
+        bytesByPath.set(row.path_hint, factBytes);
+      } catch {
+        // Materialized shards are disposable; malformed rows are ignored and rebuilt.
+      }
+    }
+  }
+  return {bytes, bytesByPath, facts: output, keys} satisfies LoadedCodeGraphFacts;
+});
+
+function selectFileBlobBatch(sql: SqlClient.SqlClient, files: readonly CodeGraphBlobReuseFile[], extractorSet: string) {
+  if (files.length === 0) {
+    return Effect.succeed([] as readonly (FileBlobRow & {readonly facts_bytes: number; readonly path_hint: string})[]);
+  }
+  return sql.unsafe<FileBlobRow & {readonly facts_bytes: number; readonly path_hint: string}>(
+    `SELECT blob_id, content_hash, path_hint, reuse_class, facts_json,
+            length(CAST(facts_json AS BLOB)) AS facts_bytes
+     FROM file_blobs
+     WHERE extractor_set = ?
+       AND (${files.map(() => '(content_hash = ? AND path_hint = ?)').join(' OR ')})`,
+    [extractorSet, ...files.flatMap(file => [file.contentHash, file.path])],
+  );
+}
+
+const selectStoredGraph = Effect.fn('codeGraph.selectStoredGraph')(function* (snapshotId: string) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* configureConnection(sql);
+  const snapshots = yield* sql<SnapshotRow>`
+    SELECT * FROM snapshots WHERE id = ${snapshotId} AND state = 'ready'
+  `;
+  const snapshot = snapshots[0];
+  if (!snapshot) return yield* Effect.fail(new CodeGraphStoreError(`Ready snapshot ${snapshotId} was not found.`));
+  const baseSnapshotId = Option.getOrUndefined(sqlTextOption(snapshot.base_snapshot_id));
+  const [symbolRows, edgeRows] = yield* Effect.all(
+    [
+      selectAllEffectiveSymbols(sql, snapshotId, baseSnapshotId),
+      selectAllEffectiveEdges(sql, snapshotId, baseSnapshotId),
+    ],
+    {concurrency: 1},
+  );
+  return {
+    edges: edgeRows.map(edgeFromRow),
+    snapshot: snapshotFromRow(snapshot),
+    symbols: symbolRows.map(symbolFromRow),
+  } satisfies StoredCodeGraph;
+});
+
+const selectStoredSymbols = Effect.fn('codeGraph.selectStoredSymbols')(function* (snapshotId: string) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* configureConnection(sql);
+  const baseSnapshotId = yield* selectBaseSnapshotId(sql, snapshotId);
+  return (yield* selectAllEffectiveSymbols(sql, snapshotId, baseSnapshotId)).map(symbolFromRow);
+});
+
+function selectAllEffectiveSymbols(sql: SqlClient.SqlClient, snapshotId: string, baseSnapshotId: string | undefined) {
+  return sql.unsafe<SymbolRow>(
+    `${effectiveSymbolsCte()}
+     SELECT * FROM effective_symbols
+     ORDER BY path, qualified_name, id`,
+    effectiveSnapshotParameters(snapshotId, baseSnapshotId),
+  );
+}
+
+function selectAllEffectiveEdges(sql: SqlClient.SqlClient, snapshotId: string, baseSnapshotId: string | undefined) {
+  return sql.unsafe<EdgeRow>(
+    `${effectiveEdgesCte()}
+     SELECT * FROM effective_edges
+     ORDER BY source_name, relation, target_name, id`,
+    effectiveSnapshotParameters(snapshotId, baseSnapshotId),
+  );
+}
+
+const selectEdgePage = Effect.fn('codeGraph.selectEdgePage')(function* (
+  snapshotId: string,
+  cursor: CodeGraphEdgeCursor | undefined,
+  limit: number,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* configureConnection(sql);
+  const baseSnapshotId = yield* selectBaseSnapshotId(sql, snapshotId);
+  const rows = cursor
+    ? yield* sql.unsafe<EdgeRow>(
+        `${effectiveEdgesCte()}
+         SELECT * FROM effective_edges
+         WHERE (source_name, relation, target_name, id) > (?, ?, ?, ?)
+         ORDER BY source_name, relation, target_name, id
+         LIMIT ?`,
+        [
+          ...effectiveSnapshotParameters(snapshotId, baseSnapshotId),
+          cursor.sourceName,
+          cursor.relation,
+          cursor.targetName,
+          cursor.id,
+          boundedPageLimit(limit),
+        ],
+      )
+    : yield* sql.unsafe<EdgeRow>(
+        `${effectiveEdgesCte()}
+         SELECT * FROM effective_edges
+         ORDER BY source_name, relation, target_name, id
+         LIMIT ?`,
+        [...effectiveSnapshotParameters(snapshotId, baseSnapshotId), boundedPageLimit(limit)],
+      );
+  return rows.map(edgeFromRow);
+});
+
+const selectSearchSymbols = Effect.fn('codeGraph.selectSearchSymbols')(function* (
+  snapshotId: string,
+  query: string,
+  limit: number,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* configureConnection(sql);
+  const baseSnapshotId = yield* selectBaseSnapshotId(sql, snapshotId);
+  return yield* selectSearchSymbolsWithSql(sql, snapshotId, baseSnapshotId, query, limit);
+});
+
+interface SearchSymbolRow extends SymbolRow {
+  readonly exact_rank: number;
+  readonly score: number;
+}
+
+/**
+ * Build exact-match candidates with the equality predicate inside every
+ * current/base branch. Keeping the predicate outside effectiveSymbolsCte()
+ * makes SQLite scan every symbol in a large snapshot before applying LIMIT.
+ */
+
+function compactLexicalTermBranch(alias: string, placeholders: string, base: boolean): string {
+  const suppression = base
+    ? `AND NOT EXISTS (
+         SELECT 1 FROM symbols AS overrides
+         WHERE overrides.snapshot_id = ? AND overrides.id = ${alias}_symbols.symbol_id
+       )
+       AND NOT EXISTS (
+         SELECT 1 FROM snapshot_symbol_deletions AS deletions
+         WHERE deletions.snapshot_id = ? AND deletions.symbol_id = ${alias}_symbols.symbol_id
+       )`
+    : '';
+  const termPredicate = placeholders.length === 0 ? '' : `AND ${alias}_terms.term IN (${placeholders})`;
+  return `SELECT ${alias}_terms.term, ${alias}_symbols.symbol_id, ${alias}_postings.weight
+    FROM lexical_compact_snapshots AS ${alias}_snapshot
+    JOIN lexical_storage_formats AS ${alias}_format
+      ON ${alias}_format.snapshot_id = ${alias}_snapshot.snapshot_id
+     AND ${alias}_format.format_version = ${CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION}
+    JOIN lexical_compact_terms AS ${alias}_terms INDEXED BY sqlite_autoindex_lexical_compact_terms_1
+      ON ${alias}_terms.snapshot_key = ${alias}_snapshot.snapshot_key
+    CROSS JOIN lexical_compact_postings AS ${alias}_postings
+    CROSS JOIN lexical_compact_symbols AS ${alias}_symbols
+    WHERE ${alias}_snapshot.snapshot_id = ?
+      AND ${alias}_postings.snapshot_key = ${alias}_snapshot.snapshot_key
+      AND ${alias}_postings.term_key = ${alias}_terms.term_key
+      AND ${alias}_symbols.snapshot_key = ${alias}_snapshot.snapshot_key
+      AND ${alias}_symbols.symbol_key = ${alias}_postings.symbol_key
+      ${termPredicate}
+      ${suppression}`;
+}
+
+export function codeGraphEffectiveSymbolTermsQueryStatement(
+  snapshotId: string,
+  baseSnapshotId: string | undefined,
+): CodeGraphSqlQueryStatement {
+  const baseId = baseSnapshotId ?? '';
+  return {
+    parameters: [snapshotId, snapshotId, baseId, snapshotId, snapshotId, baseId, snapshotId, snapshotId],
+    text: `WITH effective_terms AS (
+      ${legacyLexicalTermBranch('current_legacy_terms', '', false)}
+      UNION ALL
+      ${compactLexicalTermBranch('current_compact', '', false)}
+      UNION ALL
+      ${legacyLexicalTermBranch('base_legacy_terms', '', true)}
+      UNION ALL
+      ${compactLexicalTermBranch('base_compact', '', true)}
+    )
+    SELECT term, symbol_id, weight FROM effective_terms
+    ORDER BY term, symbol_id`,
+  };
+}
+
+/** Build lexical candidates across independently versioned current/base snapshots. */
+export function codeGraphTermCandidateQueryStatement(
+  snapshotId: string,
+  baseSnapshotId: string | undefined,
+  terms: readonly string[],
+  limit: number,
+): CodeGraphSqlQueryStatement {
+  const uniqueTerms = [...new Set(terms)].slice(0, 24);
+  const placeholders = uniqueTerms.map(() => '?').join(', ');
+  const baseId = baseSnapshotId ?? '';
+  return {
+    parameters: [
+      snapshotId,
+      ...uniqueTerms,
+      snapshotId,
+      ...uniqueTerms,
+      baseId,
+      ...uniqueTerms,
+      snapshotId,
+      snapshotId,
+      baseId,
+      ...uniqueTerms,
+      snapshotId,
+      snapshotId,
+      Math.max(1, Math.min(2_000, Math.floor(limit))),
+    ],
+    text: `WITH effective_terms AS (
+      ${legacyLexicalTermBranch('current_legacy_terms', placeholders, false)}
+      UNION ALL
+      ${compactLexicalTermBranch('current_compact', placeholders, false)}
+      UNION ALL
+      ${legacyLexicalTermBranch('base_legacy_terms', placeholders, true)}
+      UNION ALL
+      ${compactLexicalTermBranch('base_compact', placeholders, true)}
+    )
+    SELECT symbol_id, SUM(weight) AS score
+    FROM effective_terms
+    GROUP BY symbol_id
+    ORDER BY score DESC, symbol_id
+    LIMIT ?`,
+  };
+}
+
+/**
+ * Product names such as MCP tool identifiers appear verbatim in test fixtures
+ * and agent-instruction documents as well as in the code that implements them.
+ * Those copies match a bare symbol query just as strongly, so they are demoted
+ * unless the query itself asks for a test or a document.
+ */
+
+function searchSymbolRowComparator(
+  queryTerms: readonly string[],
+): (left: SearchSymbolRow, right: SearchSymbolRow) => number {
+  return (left, right) =>
+    right.exact_rank - left.exact_rank ||
+    codeGraphSymbolPathScoreMultiplier(right.path, queryTerms) -
+      codeGraphSymbolPathScoreMultiplier(left.path, queryTerms) ||
+    right.score - left.score ||
+    right.exported - left.exported ||
+    searchSymbolKindOrder(left.kind) - searchSymbolKindOrder(right.kind) ||
+    compareCodeUnits(left.name, right.name) ||
+    compareCodeUnits(left.path, right.path) ||
+    compareCodeUnits(left.id, right.id);
+}
+
+const selectSymbolsByIdsWithSql = Effect.fn('codeGraph.selectSymbolsByIdsWithSql')(function* (
+  sql: SqlClient.SqlClient,
+  snapshotId: string,
+  baseSnapshotId: string | undefined,
+  ids: readonly string[],
+) {
+  const output: SymbolRow[] = [];
+  for (const values of chunk([...new Set(ids)], 400)) {
+    const statement = codeGraphSymbolsByIdsQueryStatement(snapshotId, baseSnapshotId, values);
+    const rows = yield* sql.unsafe<SymbolRow>(statement.text, statement.parameters);
+    output.push(...rows);
+  }
+  return output;
+});
+
+const selectSearchSymbolsWithSql = Effect.fn('codeGraph.selectSearchSymbolsWithSql')(function* (
+  sql: SqlClient.SqlClient,
+  snapshotId: string,
+  baseSnapshotId: string | undefined,
+  query: string,
+  limit: number,
+) {
+  const terms = normalizedTerms(query).slice(0, 24);
+  const safeLimit = Math.max(1, Math.min(500, Math.floor(limit)));
+  const compareRows = searchSymbolRowComparator(terms);
+  const rankedNode = (row: SearchSymbolRow) => ({
+    ...symbolFromRow(row),
+    score: Math.max(0, Math.min(1, (row.score / 100) * codeGraphSymbolPathScoreMultiplier(row.path, terms))),
+  });
+  const exactPath = normalizeExactSearchPath(query);
+  const exactStatement = codeGraphExactSymbolQueryStatement(snapshotId, baseSnapshotId, exactPath ?? query, safeLimit);
+  const exactRows = yield* sql.unsafe<SearchSymbolRow>(exactStatement.text, exactStatement.parameters);
+  if (
+    exactPath !== undefined &&
+    exactRows.some(row => normalizeExactSearchPath(row.path)?.toLocaleLowerCase() === exactPath.toLocaleLowerCase())
+  ) {
+    return [...exactRows].sort(compareRows).slice(0, safeLimit).map(rankedNode);
+  }
+  const candidateLimit = Math.min(2_000, Math.max(100, safeLimit * 20));
+  const termStatement =
+    terms.length === 0
+      ? undefined
+      : codeGraphTermCandidateQueryStatement(snapshotId, baseSnapshotId, terms, candidateLimit);
+  const termCandidates =
+    termStatement === undefined
+      ? []
+      : yield* sql.unsafe<{readonly score: number; readonly symbol_id: string}>(
+          termStatement.text,
+          termStatement.parameters,
+        );
+  const termScores = new Map(termCandidates.map(candidate => [candidate.symbol_id, Number(candidate.score)]));
+  const termRows = (yield* selectSymbolsByIdsWithSql(
+    sql,
+    snapshotId,
+    baseSnapshotId,
+    termCandidates.map(candidate => candidate.symbol_id),
+  )).map(row => ({...row, score: termScores.get(row.id) ?? 0}));
+  const byId = new Map<string, SearchSymbolRow>();
+  for (const row of [...termRows.map(row => ({...row, exact_rank: 0})), ...exactRows]) {
+    const current = byId.get(row.id);
+    if (!current || compareRows(row, current) < 0) byId.set(row.id, row);
+  }
+  return [...byId.values()].sort(compareRows).slice(0, safeLimit).map(rankedNode);
+});
+
+const selectSearchSymbolsMany = Effect.fn('codeGraph.selectSearchSymbolsMany')(function* (
+  snapshotId: string,
+  queries: readonly string[],
+  limit: number,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* configureConnection(sql);
+  const baseSnapshotId = yield* selectBaseSnapshotId(sql, snapshotId);
+  return yield* Effect.forEach(
+    queries,
+    query => selectSearchSymbolsWithSql(sql, snapshotId, baseSnapshotId, query, limit),
+    {concurrency: 1},
+  );
+});
+
+const selectSymbolsByIds = Effect.fn('codeGraph.selectSymbolsByIds')(function* (
+  snapshotId: string,
+  ids: readonly string[],
+) {
+  if (ids.length === 0) return [];
+  const sql = yield* SqlClient.SqlClient;
+  yield* configureConnection(sql);
+  const baseSnapshotId = yield* selectBaseSnapshotId(sql, snapshotId);
+  return (yield* selectSymbolsByIdsWithSql(sql, snapshotId, baseSnapshotId, ids)).map(symbolFromRow);
+});
+
+/** Build bounded adjacency SQL whose branches seek the directional indexes. */
+
+const selectEdgesForNodes = Effect.fn('codeGraph.selectEdgesForNodes')(function* (
+  snapshotId: string,
+  nodeIds: readonly string[],
+  direction: 'both' | 'incoming' | 'outgoing',
+  limit: number,
+  allowedProvenances: readonly CodeGraphProvenance[],
+) {
+  if (nodeIds.length === 0 || limit <= 0 || allowedProvenances.length === 0) return [];
+  const sql = yield* SqlClient.SqlClient;
+  yield* configureConnection(sql);
+  const baseSnapshotId = yield* selectBaseSnapshotId(sql, snapshotId);
+  const ids = [...new Set(nodeIds)].slice(0, 500);
+  const statement = codeGraphAdjacencyQueryStatement(
+    snapshotId,
+    baseSnapshotId,
+    ids,
+    direction,
+    limit,
+    allowedProvenances,
+  );
+  const rows = yield* sql.unsafe<EdgeRow>(statement.text, statement.parameters);
+  return rows.map(edgeFromRow);
+});
+
+function representativeEdgeRows(
+  pages: readonly {readonly nodeId: string; readonly rows: readonly EdgeRow[]}[],
+  limit: number,
+): readonly EdgeRow[] {
+  const output = new Map<string, EdgeRow>();
+  const coveredNodes = new Set<string>();
+  for (const page of pages) {
+    const representative = page.rows[0];
+    if (!representative) continue;
+    coveredNodes.add(page.nodeId);
+    if (!output.has(representative.id) && output.size < limit) output.set(representative.id, representative);
+  }
+  if (output.size >= limit) return [...output.values()];
+  const remaining = pages
+    .flatMap(page => page.rows.slice(coveredNodes.has(page.nodeId) ? 1 : 0))
+    .sort(compareEdgeRowsByPriority);
+  for (const row of remaining) {
+    if (!output.has(row.id)) output.set(row.id, row);
+    if (output.size >= limit) break;
+  }
+  return [...output.values()];
+}
+
+function compareEdgeRowsByPriority(left: EdgeRow, right: EdgeRow): number {
+  const provenanceRank = (value: CodeGraphProvenance): number =>
+    value === 'declared' ? 0 : value === 'resolved' ? 1 : value === 'syntactic' ? 2 : 3;
+  return (
+    provenanceRank(left.provenance) - provenanceRank(right.provenance) ||
+    Number(right.confidence) - Number(left.confidence) ||
+    compareCodeUnits(left.source_name, right.source_name) ||
+    compareCodeUnits(left.relation, right.relation) ||
+    compareCodeUnits(left.target_name, right.target_name) ||
+    compareCodeUnits(left.id, right.id)
+  );
+}
+
+export {
+  selectReusableBaseReceipt,
+  selectAllEffectiveSymbols,
+  SearchSymbolRow,
+  compactLexicalTermBranch,
+  selectSymbolsByIdsWithSql,
+  selectFileBlobBatch,
+  selectAllEffectiveEdges,
+  searchSymbolRowComparator,
+  selectSearchSymbolsWithSql,
+  compareEdgeRowsByPriority,
+  representativeEdgeRows,
+  selectReadySnapshot,
+  selectReadySnapshotById,
+  selectCurrentLexicalReadySnapshotById,
+  selectReadySnapshotForCommit,
+  selectReusableCleanBase,
+  selectReusableReexports,
+  selectCachedFacts,
+  selectMaterializedFileShards,
+  selectStoredGraph,
+  selectStoredSymbols,
+  selectEdgePage,
+  selectSearchSymbols,
+  selectSearchSymbolsMany,
+  selectSymbolsByIds,
+  selectEdgesForNodes,
+};
