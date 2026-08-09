@@ -1060,8 +1060,13 @@ dd {
   border-radius: 9px;
   display: grid;
   gap: 8px;
+  grid-template-columns: minmax(0, 1fr);
   min-width: 0;
   padding: 10px;
+}
+
+.graph-database-card > * {
+  min-width: 0;
 }
 
 .graph-database-card > header {
@@ -1138,6 +1143,7 @@ dd {
   border-left: 2px solid var(--accent-line);
   display: grid;
   gap: 2px;
+  min-width: 0;
   padding: 0 34px 2px 7px;
   position: relative;
 }
@@ -1175,6 +1181,10 @@ dd {
 .graph-database-views small,
 .graph-database-job {
   color: var(--muted);
+}
+
+.graph-database-views small {
+  overflow-wrap: anywhere;
 }
 
 .graph-database-job {
