@@ -1,5 +1,8 @@
 import {Effect, FileSystem, Option, Path, PlatformError} from 'effect';
-import {cleanupMissingCodeGraphLocalProvenance} from './local_provenance.js';
+import {
+  captureCodeGraphLocalProvenanceCleanupEvidence,
+  cleanupMissingCodeGraphLocalProvenance,
+} from './local_provenance.js';
 import {withCodeGraphTargetWorktreeLock} from './maintenance_gate.js';
 import {
   CodeGraphStore,
@@ -57,7 +60,13 @@ export interface CodeGraphViewRemovalTarget {
 export const removeCodeGraphView = Effect.fn('codeGraph.removeViewAction')(function* (
   threadnoteHome: string,
   target: CodeGraphViewRemovalTarget,
-  options: {readonly apply?: boolean} = {},
+  options: {
+    readonly apply?: boolean;
+    /** @internal Deterministic seam after the short provenance lock is released. */
+    readonly afterProvenanceEvidenceCapture?: () => Effect.Effect<void, unknown>;
+    /** @internal Deterministic replacement seam after core removal and before cleanup. */
+    readonly beforeProvenanceCleanup?: () => Effect.Effect<void, unknown>;
+  } = {},
 ) {
   yield* validateCodeGraphViewRemovalTarget(target);
   const fs = yield* FileSystem.FileSystem;
@@ -83,6 +92,11 @@ export const removeCodeGraphView = Effect.fn('codeGraph.removeViewAction')(funct
     target.checkoutId,
     target.worktreeId,
     Effect.gen(function* () {
+      const provenanceEvidence = yield* captureCodeGraphLocalProvenanceCleanupEvidence(inspected.canonicalHome, {
+        checkoutId: target.checkoutId,
+        worktreeId: target.worktreeId,
+      });
+      yield* options.afterProvenanceEvidenceCapture?.() ?? Effect.void;
       const core = yield* store.removeView(inspected.databasePath, target.worktreeId, target.snapshotId, {
         beforeDatabaseOpen: () =>
           inspectCodeGraphViewDatabaseTarget(inspected.canonicalHome, target.checkoutId).pipe(
@@ -95,6 +109,15 @@ export const removeCodeGraphView = Effect.fn('codeGraph.removeViewAction')(funct
             Effect.provideService(Path.Path, path),
           ),
         waitTimeoutMilliseconds: 0,
+        ...(provenanceEvidence === undefined
+          ? {}
+          : {
+              cleanupEvidence: {
+                recordDigest: provenanceEvidence.recordDigest,
+                recordIdentity: provenanceEvidence.recordIdentity,
+                repositoryId: provenanceEvidence.repositoryId,
+              },
+            }),
       });
       if (core.state !== 'removed' && core.state !== 'already-removed') {
         return actionResult(target, true, core, {provenance: null, vectors: null}, []);
@@ -106,10 +129,17 @@ export const removeCodeGraphView = Effect.fn('codeGraph.removeViewAction')(funct
         target.worktreeId,
         target.snapshotId,
       );
-      const provenance = yield* cleanupMissingCodeGraphLocalProvenance(inspected.canonicalHome, {
-        checkoutId: target.checkoutId,
-        worktreeId: target.worktreeId,
-      });
+      yield* options.beforeProvenanceCleanup?.() ?? Effect.void;
+      const provenance =
+        core.state === 'already-removed'
+          ? ({observedState: 'stale', state: 'preserved'} as const)
+          : provenanceEvidence === undefined
+            ? ({observedState: 'invalid', state: 'preserved'} as const)
+            : yield* cleanupMissingCodeGraphLocalProvenance(
+                inspected.canonicalHome,
+                {checkoutId: target.checkoutId, worktreeId: target.worktreeId},
+                {expectedEvidence: provenanceEvidence},
+              );
       const warnings: CodeGraphViewRemovalWarning[] = vectors.warnings.map(warning => ({...warning}));
       if (provenance.state === 'unavailable') {
         warnings.push({

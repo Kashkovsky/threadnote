@@ -1,5 +1,6 @@
 import {
   CODE_GRAPH_EXTRACTOR_SET_VERSION,
+  CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION,
   CODE_GRAPH_SCHEMA_VERSION,
   CodeGraphStoreNoSpaceError,
   CodeGraphStoreTransientIoError,
@@ -42,7 +43,7 @@ export interface CodeGraphDirectPersistentCapacityBoundary {
 export const CODE_GRAPH_DIRECT_PERSISTENT_CAPACITY_CALIBRATION = {
   identityBase:
     `graph-v${CODE_GRAPH_SCHEMA_VERSION}:${CODE_GRAPH_EXTRACTOR_SET_VERSION}:direct-persistent:` +
-    `capacity-v${CODE_GRAPH_DISK_CAPACITY_MODEL_VERSION}`,
+    `capacity-v${CODE_GRAPH_DISK_CAPACITY_MODEL_VERSION}:extension-r${CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION}`,
   mainFactAmplification: 5,
   // The beta.30 production-shaped audit observed roughly 100 bytes of both
   // main-DB growth and WAL high-water per staged primary row. Round that
@@ -61,7 +62,7 @@ export const CODE_GRAPH_DIRECT_PERSISTENT_CAPACITY_CALIBRATION = {
 export const CODE_GRAPH_CACHE_PERSISTENT_CAPACITY_CALIBRATION = {
   identityBase:
     `graph-v${CODE_GRAPH_SCHEMA_VERSION}:${CODE_GRAPH_EXTRACTOR_SET_VERSION}:cache-payload:` +
-    `capacity-v${CODE_GRAPH_DISK_CAPACITY_MODEL_VERSION}`,
+    `capacity-v${CODE_GRAPH_DISK_CAPACITY_MODEL_VERSION}:extension-r${CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION}`,
   mainFactAmplification: 5,
   mainRowBytes: 256,
   transientFactAmplification: 3,

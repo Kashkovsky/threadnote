@@ -20,6 +20,7 @@ import {
   CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION,
   CodeGraphStore,
   codeGraphPersistentExtensionSchemaCompatible,
+  codeGraphRemovedViewCleanupSchemaAdmission,
   type CodeGraphDatabaseHealth,
 } from './store.js';
 import {CODE_GRAPH_SCHEMA_VERSION, type CodeGraphSnapshot} from './types.js';
@@ -271,14 +272,13 @@ export const diagnoseCodeGraphDatabaseReadOnly = Effect.fn('codeGraph.diagnoseDa
       const schemaRows = yield* sql<{readonly value: string}>`
         SELECT value FROM schema_metadata WHERE key = 'schema_version'
       `;
-      const extensionRevisionRows = yield* sql<{readonly value: string}>`
-        SELECT value FROM schema_metadata WHERE key = 'persistent_extension_schema_revision'
-      `;
       const schemaVersion = Number.parseInt(schemaRows[0]?.value ?? '', 10);
-      const persistentExtensionSchemaRevision = Number.parseInt(extensionRevisionRows[0]?.value ?? '', 10);
+      const cleanupAdmission = yield* codeGraphRemovedViewCleanupSchemaAdmission(sql);
+      const persistentExtensionSchemaRevision = cleanupAdmission.persistentExtensionSchemaRevision;
       const persistentExtensionCurrent =
         persistentExtensionSchemaRevision === CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION &&
-        (yield* codeGraphPersistentExtensionSchemaCompatible(sql));
+        (yield* codeGraphPersistentExtensionSchemaCompatible(sql)) &&
+        cleanupAdmission.current;
       const stateRows = yield* sql<{readonly count: number; readonly state: CodeGraphSnapshot['state']}>`
         SELECT state, COUNT(*) AS count FROM snapshots GROUP BY state
       `;
@@ -303,9 +303,7 @@ export const diagnoseCodeGraphDatabaseReadOnly = Effect.fn('codeGraph.diagnoseDa
               ? 'ok'
               : 'corrupt',
         readySnapshots: counts.get('ready') ?? 0,
-        persistentExtensionSchemaRevision: Number.isSafeInteger(persistentExtensionSchemaRevision)
-          ? persistentExtensionSchemaRevision
-          : undefined,
+        persistentExtensionSchemaRevision,
         schemaVersion: Number.isSafeInteger(schemaVersion) ? schemaVersion : undefined,
       } satisfies CodeGraphDatabaseHealth;
     }).pipe(

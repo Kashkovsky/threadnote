@@ -48,6 +48,9 @@ import {
 } from '../../src/code_graph/types.js';
 import {runEffect} from '../helpers/effect-runtime.js';
 
+const MANAGER_GRAPH_SNAPSHOT_ID = `cgsn_${'1'.repeat(40)}`;
+const MANAGER_GRAPH_REPLACEMENT_SNAPSHOT_ID = `cgsn_${'2'.repeat(40)}`;
+
 vi.mock('../../src/lifecycle.js', async importOriginal => {
   const actual = await importOriginal<typeof import('../../src/lifecycle.js')>();
   return {
@@ -107,7 +110,7 @@ async function makeRuntime(): Promise<RuntimeConfig> {
   };
 }
 
-async function seedManagerGraph(config: RuntimeConfig, snapshotId = 'manager-graph-snapshot'): Promise<string> {
+async function seedManagerGraph(config: RuntimeConfig, snapshotId = MANAGER_GRAPH_SNAPSHOT_ID): Promise<string> {
   const checkoutId = 'a'.repeat(64);
   const identity: RepositoryIdentity = {
     caseMode: 'sensitive',
@@ -258,7 +261,7 @@ async function promoteManagerGraphReplacement(config: RuntimeConfig): Promise<st
     edgeCount: 0,
     extractorSet: CODE_GRAPH_EXTRACTOR_SET_VERSION,
     fileCount: 1,
-    id: 'manager-graph-snapshot-replacement',
+    id: MANAGER_GRAPH_REPLACEMENT_SNAPSHOT_ID,
     repositoryId: identity.repositoryId,
     state: 'ready',
     symbolCount: 1,
@@ -688,7 +691,7 @@ describe('manager http API', () => {
       );
 
       const catalogPageResponse = await fetch(
-        `${server.url}/api/graphs/page?repository=${repositoryId}&snapshot=manager-graph-snapshot&offset=0&workspaceOffset=0&query=core`,
+        `${server.url}/api/graphs/page?repository=${repositoryId}&snapshot=${MANAGER_GRAPH_SNAPSHOT_ID}&offset=0&workspaceOffset=0&query=core`,
         {headers},
       );
       const catalogPage = (await catalogPageResponse.json()) as {
@@ -702,7 +705,7 @@ describe('manager http API', () => {
       expect(catalogPageResponse.status).toBe(200);
       expect(catalogPage.query).toBe('core');
       expect(catalogPage.repository.localAssociation).toEqual({available: false, state: 'legacy-unknown'});
-      expect(catalogPage.repository.snapshot.id).toBe('manager-graph-snapshot');
+      expect(catalogPage.repository.snapshot.id).toBe(MANAGER_GRAPH_SNAPSHOT_ID);
       expect(catalogPage.repository.projects.map(project => project.id)).toEqual(['cgp_core']);
 
       const viewsPageResponse = await fetch(`${server.url}/api/graphs/views?repository=${repositoryId}&offset=0`, {
@@ -808,7 +811,7 @@ describe('manager http API', () => {
 
       const queryStartedAt = performance.now();
       const queryResponse = await fetch(
-        `${server.url}/api/graph/query?repository=${repositoryId}&snapshot=manager-graph-snapshot&query=${encodeURIComponent('App')}&nodeLimit=999999&edgeLimit=999999`,
+        `${server.url}/api/graph/query?repository=${repositoryId}&snapshot=${MANAGER_GRAPH_SNAPSHOT_ID}&query=${encodeURIComponent('App')}&nodeLimit=999999&edgeLimit=999999`,
         {headers},
       );
       const queryElapsedMilliseconds = performance.now() - queryStartedAt;
@@ -822,7 +825,7 @@ describe('manager http API', () => {
       };
       expect(queryResponse.status).toBe(200);
       expect(query.query).toMatchObject({matchedNodes: query.nodes.length, state: 'ready', text: 'App'});
-      expect(query.repository.snapshot.id).toBe('manager-graph-snapshot');
+      expect(query.repository.snapshot.id).toBe(MANAGER_GRAPH_SNAPSHOT_ID);
       expect(query.nodes).toEqual(expect.arrayContaining([expect.objectContaining({id: 'app'})]));
       expect(query.nodes.some(node => typeof node.score === 'number')).toBe(true);
       const queryNodeIds = new Set(query.nodes.map(node => node.id));
@@ -1316,7 +1319,7 @@ describe('manager http API', () => {
       };
       const view = catalog.repositories[0]!.views[0]!;
       const originalSnapshotId = view.snapshot.id;
-      expect(originalSnapshotId).toBe('manager-graph-snapshot');
+      expect(originalSnapshotId).toBe(MANAGER_GRAPH_SNAPSHOT_ID);
       const replacementSnapshotId = await promoteManagerGraphReplacement(config);
       const staleUrls = [
         `${server.url}/api/graph?repository=${checkoutId}&snapshot=${originalSnapshotId}&project=cgp_app`,

@@ -1,9 +1,12 @@
 import {mkdtempSync, rmSync, writeFileSync} from 'node:fs';
+import {createHash} from 'node:crypto';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {Database} from 'bun:sqlite';
+import {it as effectIt} from '@effect/vitest';
 import {Deferred, Effect, Fiber, FileSystem, Option, Ref} from 'effect';
-import {afterEach, describe, expect, it} from 'vitest';
+import {TestClock} from 'effect/testing';
+import {afterEach, describe, expect} from 'vitest';
 import {withCodeGraphTargetWorktreeLock} from '../../src/code_graph/maintenance_gate.js';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
 import {withExclusiveFileLock} from '../../src/effect/file_lock.js';
@@ -13,143 +16,157 @@ import {
   CodeGraphStoreError,
 } from '../../src/code_graph/types.js';
 import type {RepositoryIdentity} from '../../src/code_graph/types.js';
-import {runEffect} from '../helpers/effect-runtime.js';
+import {ApplicationLayer} from '../../src/effect/runtime.js';
 
 const temporaryRoots: string[] = [];
+
+function snapshotId(label: string): string {
+  return `cgsn_${createHash('sha1').update(label).digest('hex')}`;
+}
 
 afterEach(() => {
   for (const root of temporaryRoots.splice(0).reverse()) rmSync(root, {force: true, recursive: true});
 });
 
 describe('code graph view removal core', () => {
-  it('returns not-found without recreating a missing checkout database', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'threadnote-view-missing-'));
-    temporaryRoots.push(root);
-    const databasePath = join(root, 'indexes', 'code-graph', 'repositories', 'a'.repeat(64), 'graph-v3.sqlite');
-
-    const result = await runEffect(
+  effectIt.effect('returns not-found without recreating a missing checkout database', () =>
+    TestClock.withLive(
       Effect.gen(function* () {
+        const root = mkdtempSync(join(tmpdir(), 'threadnote-view-missing-'));
+        temporaryRoots.push(root);
+        const databasePath = join(root, 'indexes', 'code-graph', 'repositories', 'a'.repeat(64), 'graph-v3.sqlite');
         const store = yield* CodeGraphStore;
-        return yield* store.removeView(databasePath, '1'.repeat(64), 'snapshot-missing');
+        const result = yield* store.removeView(databasePath, '1'.repeat(64), snapshotId('missing'));
+        expect(result).toEqual({expectedSnapshotId: snapshotId('missing'), state: 'not-found'});
+        expect(yield* Effect.promise(() => Bun.file(databasePath).exists())).toBe(false);
       }),
-    );
+    ).pipe(Effect.provide(ApplicationLayer)),
+  );
 
-    expect(result).toEqual({expectedSnapshotId: 'snapshot-missing', state: 'not-found'});
-    await expect(Bun.file(databasePath).exists()).resolves.toBe(false);
-  });
-
-  it('adds durable non-cascading removal evidence without replacing v3 data', async () => {
-    const fixture = await viewFixture('threadnote-view-schema-');
-    const before = new Database(fixture.databasePath);
-    before.run('DROP TABLE removed_views');
-    before.run("INSERT INTO schema_metadata (key, value) VALUES ('view_fixture_marker', 'preserve-me')");
-    before.close(false);
-
-    await runEffect(
+  effectIt.effect('adds durable non-cascading removal evidence without replacing v3 data', () =>
+    TestClock.withLive(
       Effect.gen(function* () {
+        const fixture = yield* viewFixture('threadnote-view-schema-');
+        yield* Effect.sync(() => {
+          const before = new Database(fixture.databasePath);
+          before.exec(`
+            DROP TRIGGER removed_views_cleanup_revoke_delete;
+            DROP TRIGGER removed_views_cleanup_revoke_insert;
+            DROP TRIGGER removed_views_cleanup_revoke_update;
+            DROP TABLE removed_view_cleanup;
+            DROP TABLE removed_views;
+          `);
+          before.run("DELETE FROM schema_metadata WHERE key = 'removed_view_cleanup_epoch_sequence'");
+          before.run("UPDATE schema_metadata SET value = '7' WHERE key = 'persistent_extension_schema_revision'");
+          before.run("INSERT INTO schema_metadata (key, value) VALUES ('view_fixture_marker', 'preserve-me')");
+          before.close(false);
+        });
         const store = yield* CodeGraphStore;
         yield* store.initialize(fixture.databasePath);
+        yield* Effect.sync(() => {
+          const after = new Database(fixture.databasePath, {readonly: true, strict: true});
+          try {
+            expect(after.query("SELECT value FROM schema_metadata WHERE key = 'view_fixture_marker'").get()).toEqual({
+              value: 'preserve-me',
+            });
+            expect(
+              after.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'removed_views'").get(),
+            ).toEqual({name: 'removed_views'});
+            expect(after.query("SELECT COUNT(*) AS count FROM pragma_foreign_key_list('removed_views')").get()).toEqual(
+              {
+                count: 0,
+              },
+            );
+          } finally {
+            after.close(false);
+          }
+        });
       }),
-    );
+    ).pipe(Effect.provide(ApplicationLayer)),
+  );
 
-    const after = new Database(fixture.databasePath, {readonly: true, strict: true});
-    try {
-      expect(after.query("SELECT value FROM schema_metadata WHERE key = 'view_fixture_marker'").get()).toEqual({
-        value: 'preserve-me',
-      });
-      expect(
-        after.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'removed_views'").get(),
-      ).toEqual({name: 'removed_views'});
-      expect(after.query("SELECT COUNT(*) AS count FROM pragma_foreign_key_list('removed_views')").get()).toEqual({
-        count: 0,
-      });
-    } finally {
-      after.close(false);
-    }
-  });
-
-  it('performs an exact idempotent CAS and preserves stale or missing targets without mutation', async () => {
-    const fixture = await viewFixture('threadnote-view-cas-');
-    seedGraph(
-      fixture,
-      [{id: 'snapshot-current', worktreeId: fixture.worktrees[0]!}],
-      [{snapshotId: 'snapshot-current', worktreeId: fixture.worktrees[0]!}],
-    );
-
-    const observed = await runEffect(
+  effectIt.effect('performs an exact idempotent CAS and preserves stale or missing targets without mutation', () =>
+    TestClock.withLive(
       Effect.gen(function* () {
+        const fixture = yield* viewFixture('threadnote-view-cas-');
+        seedGraph(
+          fixture,
+          [{id: snapshotId('current'), worktreeId: fixture.worktrees[0]!}],
+          [{snapshotId: snapshotId('current'), worktreeId: fixture.worktrees[0]!}],
+        );
         const store = yield* CodeGraphStore;
-        const staleActive = yield* store.removeView(fixture.databasePath, fixture.worktrees[0]!, 'snapshot-other');
-        const removed = yield* store.removeView(fixture.databasePath, fixture.worktrees[0]!, 'snapshot-current');
-        const retry = yield* store.removeView(fixture.databasePath, fixture.worktrees[0]!, 'snapshot-current');
-        const staleRemoved = yield* store.removeView(fixture.databasePath, fixture.worktrees[0]!, 'snapshot-other');
-        const missing = yield* store.removeView(fixture.databasePath, fixture.worktrees[1]!, 'snapshot-current');
-        return {missing, removed, retry, staleActive, staleRemoved};
+        const staleActive = yield* store.removeView(fixture.databasePath, fixture.worktrees[0]!, snapshotId('other'));
+        const removed = yield* store.removeView(fixture.databasePath, fixture.worktrees[0]!, snapshotId('current'));
+        const retry = yield* store.removeView(fixture.databasePath, fixture.worktrees[0]!, snapshotId('current'));
+        const staleRemoved = yield* store.removeView(fixture.databasePath, fixture.worktrees[0]!, snapshotId('other'));
+        const missing = yield* store.removeView(fixture.databasePath, fixture.worktrees[1]!, snapshotId('current'));
+        const observed = {missing, removed, retry, staleActive, staleRemoved};
+
+        expect(observed.staleActive).toEqual({
+          expectedSnapshotId: snapshotId('other'),
+          observedSnapshotId: snapshotId('current'),
+          observedState: 'active',
+          state: 'stale-target',
+        });
+        expect(observed.removed).toEqual({
+          expectedSnapshotId: snapshotId('current'),
+          retiredSnapshots: 1,
+          state: 'removed',
+        });
+        expect(observed.retry).toEqual({
+          expectedSnapshotId: snapshotId('current'),
+          retiredSnapshots: 0,
+          state: 'already-removed',
+        });
+        expect(observed.staleRemoved).toEqual({
+          expectedSnapshotId: snapshotId('other'),
+          observedSnapshotId: snapshotId('current'),
+          observedState: 'removed',
+          state: 'stale-target',
+        });
+        expect(observed.missing).toEqual({expectedSnapshotId: snapshotId('current'), state: 'not-found'});
+
+        yield* Effect.sync(() => {
+          const database = new Database(fixture.databasePath, {readonly: true, strict: true});
+          try {
+            expect(database.query('SELECT * FROM active_snapshots').all()).toEqual([]);
+            expect(database.query('SELECT worktree_id, expected_snapshot_id FROM removed_views').all()).toEqual([
+              {expected_snapshot_id: snapshotId('current'), worktree_id: fixture.worktrees[0]},
+            ]);
+          } finally {
+            database.close(false);
+          }
+        });
       }),
-    );
+    ).pipe(Effect.provide(ApplicationLayer)),
+  );
 
-    expect(observed.staleActive).toEqual({
-      expectedSnapshotId: 'snapshot-other',
-      observedSnapshotId: 'snapshot-current',
-      observedState: 'active',
-      state: 'stale-target',
-    });
-    expect(observed.removed).toEqual({
-      expectedSnapshotId: 'snapshot-current',
-      retiredSnapshots: 1,
-      state: 'removed',
-    });
-    expect(observed.retry).toEqual({
-      expectedSnapshotId: 'snapshot-current',
-      retiredSnapshots: 0,
-      state: 'already-removed',
-    });
-    expect(observed.staleRemoved).toEqual({
-      expectedSnapshotId: 'snapshot-other',
-      observedSnapshotId: 'snapshot-current',
-      observedState: 'removed',
-      state: 'stale-target',
-    });
-    expect(observed.missing).toEqual({expectedSnapshotId: 'snapshot-current', state: 'not-found'});
-
-    const database = new Database(fixture.databasePath, {readonly: true, strict: true});
-    try {
-      expect(database.query('SELECT * FROM active_snapshots').all()).toEqual([]);
-      expect(database.query('SELECT worktree_id, expected_snapshot_id FROM removed_views').all()).toEqual([
-        {expected_snapshot_id: 'snapshot-current', worktree_id: fixture.worktrees[0]},
-      ]);
-    } finally {
-      database.close(false);
-    }
-  });
-
-  it('preserves shared views, readers, and every recursively required base while retiring unrelated dirty history', async () => {
-    const fixture = await viewFixture('threadnote-view-protection-');
-    const [sharedA, dependent, sharedB, target] = fixture.worktrees;
-    seedGraph(
-      fixture,
-      [
-        {id: 'snapshot-base-root', worktreeId: target!},
-        {baseSnapshotId: 'snapshot-base-root', dirty: true, id: 'snapshot-base-middle', worktreeId: target!},
-        {baseSnapshotId: 'snapshot-base-middle', dirty: true, id: 'snapshot-target', worktreeId: target!},
-        {baseSnapshotId: 'snapshot-target', dirty: true, id: 'snapshot-dependent', worktreeId: dependent!},
-        {id: 'snapshot-shared', worktreeId: sharedA!},
-        {dirty: true, id: 'snapshot-unrelated-dirty', worktreeId: 'e'.repeat(64)},
-      ],
-      [
-        {snapshotId: 'snapshot-shared', worktreeId: sharedA!},
-        {snapshotId: 'snapshot-dependent', worktreeId: dependent!},
-        {snapshotId: 'snapshot-shared', worktreeId: sharedB!},
-        {snapshotId: 'snapshot-target', worktreeId: target!},
-      ],
-    );
-
-    const observed = await runEffect(
+  effectIt.effect('preserves shared views, readers, recursively required bases, and unrelated dirty history', () =>
+    TestClock.withLive(
       Effect.gen(function* () {
+        const fixture = yield* viewFixture('threadnote-view-protection-');
+        const [sharedA, dependent, sharedB, target] = fixture.worktrees;
+        seedGraph(
+          fixture,
+          [
+            {id: snapshotId('base-root'), worktreeId: target!},
+            {baseSnapshotId: snapshotId('base-root'), dirty: true, id: snapshotId('base-middle'), worktreeId: target!},
+            {baseSnapshotId: snapshotId('base-middle'), dirty: true, id: snapshotId('target'), worktreeId: target!},
+            {baseSnapshotId: snapshotId('target'), dirty: true, id: snapshotId('dependent'), worktreeId: dependent!},
+            {id: snapshotId('shared'), worktreeId: sharedA!},
+            {dirty: true, id: snapshotId('unrelated-dirty'), worktreeId: 'e'.repeat(64)},
+          ],
+          [
+            {snapshotId: snapshotId('shared'), worktreeId: sharedA!},
+            {snapshotId: snapshotId('dependent'), worktreeId: dependent!},
+            {snapshotId: snapshotId('shared'), worktreeId: sharedB!},
+            {snapshotId: snapshotId('target'), worktreeId: target!},
+          ],
+        );
         const store = yield* CodeGraphStore;
-        const targetLease = yield* store.acquireSnapshotLease(fixture.databasePath, 'snapshot-target', 60_000);
-        const sharedRemoval = yield* store.removeView(fixture.databasePath, sharedA!, 'snapshot-shared');
-        const targetRemoval = yield* store.removeView(fixture.databasePath, target!, 'snapshot-target');
+        const targetLease = yield* store.acquireSnapshotLease(fixture.databasePath, snapshotId('target'), 60_000);
+        const sharedRemoval = yield* store.removeView(fixture.databasePath, sharedA!, snapshotId('shared'));
+        const targetRemoval = yield* store.removeView(fixture.databasePath, target!, snapshotId('target'));
         const leaseFlag = yield* Effect.sync(() => {
           const database = new Database(fixture.databasePath, {readonly: true, strict: true});
           try {
@@ -165,135 +182,119 @@ describe('code graph view removal core', () => {
         yield* store.releaseSnapshotLease(fixture.databasePath, targetLease);
         const protectedSnapshots = yield* Effect.all(
           [
-            'snapshot-shared',
-            'snapshot-dependent',
-            'snapshot-target',
-            'snapshot-base-middle',
-            'snapshot-base-root',
+            snapshotId('shared'),
+            snapshotId('dependent'),
+            snapshotId('target'),
+            snapshotId('base-middle'),
+            snapshotId('base-root'),
+            snapshotId('unrelated-dirty'),
           ].map(snapshotId => store.readySnapshotById(fixture.databasePath, snapshotId)),
           {concurrency: 1},
         );
-        return {leaseFlag, protectedSnapshots, sharedRemoval, targetRemoval};
+        expect(sharedRemoval).toEqual({
+          expectedSnapshotId: snapshotId('shared'),
+          retiredSnapshots: 0,
+          state: 'removed',
+        });
+        expect(targetRemoval).toEqual({
+          expectedSnapshotId: snapshotId('target'),
+          retiredSnapshots: 0,
+          state: 'removed',
+        });
+        expect(leaseFlag).toBe(1);
+        expect(protectedSnapshots.map(snapshot => snapshot?.id)).toEqual([
+          snapshotId('shared'),
+          snapshotId('dependent'),
+          snapshotId('target'),
+          snapshotId('base-middle'),
+          snapshotId('base-root'),
+          snapshotId('unrelated-dirty'),
+        ]);
       }),
-    );
+    ).pipe(Effect.provide(ApplicationLayer)),
+  );
 
-    expect(observed.sharedRemoval).toEqual({
-      expectedSnapshotId: 'snapshot-shared',
-      retiredSnapshots: 1,
-      state: 'removed',
-    });
-    expect(observed.targetRemoval).toEqual({
-      expectedSnapshotId: 'snapshot-target',
-      retiredSnapshots: 0,
-      state: 'removed',
-    });
-    expect(observed.leaseFlag).toBe(1);
-    expect(observed.protectedSnapshots.map(snapshot => snapshot?.id)).toEqual([
-      'snapshot-shared',
-      'snapshot-dependent',
-      'snapshot-target',
-      'snapshot-base-middle',
-      'snapshot-base-root',
-    ]);
-  });
-
-  it('never resurrects builder history and suppresses only the same mixed-version pointer', async () => {
-    const fixture = await viewFixture('threadnote-view-catalog-');
-    const worktreeId = fixture.worktrees[0]!;
-    seedGraph(
-      fixture,
-      [
-        {id: 'snapshot-original', worktreeId},
-        {id: 'snapshot-new', worktreeId: fixture.worktrees[1]!},
-        {id: 'snapshot-builder-cache', worktreeId: fixture.worktrees[2]!},
-      ],
-      [{snapshotId: 'snapshot-original', worktreeId}],
-    );
-
-    const observed = await runEffect(
+  effectIt.effect('never resurrects builder history and suppresses only the same mixed-version pointer', () =>
+    TestClock.withLive(
       Effect.gen(function* () {
+        const fixture = yield* viewFixture('threadnote-view-catalog-');
+        const worktreeId = fixture.worktrees[0]!;
+        seedGraph(
+          fixture,
+          [
+            {id: snapshotId('original'), worktreeId},
+            {id: snapshotId('new'), worktreeId: fixture.worktrees[1]!},
+            {id: snapshotId('builder-cache'), worktreeId: fixture.worktrees[2]!},
+          ],
+          [{snapshotId: snapshotId('original'), worktreeId}],
+        );
         const store = yield* CodeGraphStore;
-        const lease = yield* store.acquireSnapshotLease(fixture.databasePath, 'snapshot-original', 60_000);
-        const newLease = yield* store.acquireSnapshotLease(fixture.databasePath, 'snapshot-new', 60_000);
-        yield* store.removeView(fixture.databasePath, worktreeId, 'snapshot-original');
-        legacyPromote(fixture.databasePath, worktreeId, 'snapshot-original');
+        const lease = yield* store.acquireSnapshotLease(fixture.databasePath, snapshotId('original'), 60_000);
+        const newLease = yield* store.acquireSnapshotLease(fixture.databasePath, snapshotId('new'), 60_000);
+        yield* store.removeView(fixture.databasePath, worktreeId, snapshotId('original'));
+        legacyPromote(fixture.databasePath, worktreeId, snapshotId('original'));
         const sameReady = yield* store.readySnapshot(fixture.databasePath, worktreeId);
         const sameCatalogs = yield* store.loadVisualizationCatalogs(fixture.databasePath, 'deferred');
         const sameCatalog = yield* store.loadVisualizationCatalog(fixture.databasePath, 'deferred');
         const builderCatalog = yield* store.loadVisualizationCatalog(fixture.databasePath, 'deferred', {
-          snapshotId: Option.some('snapshot-builder-cache'),
+          snapshotId: Option.some(snapshotId('builder-cache')),
         });
-        const reconciledRetry = yield* store.removeView(fixture.databasePath, worktreeId, 'snapshot-original');
+        const reconciledRetry = yield* store.removeView(fixture.databasePath, worktreeId, snapshotId('original'));
 
-        legacyPromote(fixture.databasePath, worktreeId, 'snapshot-new');
+        legacyPromote(fixture.databasePath, worktreeId, snapshotId('new'));
         const differentReady = yield* store.readySnapshot(fixture.databasePath, worktreeId);
         const differentCatalogs = yield* store.loadVisualizationCatalogs(fixture.databasePath, 'deferred');
         const tombstoneBeforeCurrentPromotion = removedView(fixture.databasePath, worktreeId);
-        yield* store.promote(fixture.databasePath, identityFor(fixture, worktreeId), 'snapshot-new');
+        yield* store.promote(fixture.databasePath, identityFor(fixture, worktreeId), snapshotId('new'));
         const tombstoneAfterCurrentPromotion = removedView(fixture.databasePath, worktreeId);
         yield* store.releaseSnapshotLease(fixture.databasePath, lease);
         yield* store.releaseSnapshotLease(fixture.databasePath, newLease);
-        return {
-          builderCatalog,
-          differentCatalogs,
-          differentReady,
-          reconciledRetry,
-          sameCatalog,
-          sameCatalogs,
-          sameReady,
-          tombstoneAfterCurrentPromotion,
-          tombstoneBeforeCurrentPromotion,
-        };
+        expect(sameReady).toBeUndefined();
+        expect(sameCatalogs).toEqual([]);
+        expect(sameCatalog).toBeUndefined();
+        expect(builderCatalog).toBeUndefined();
+        expect(reconciledRetry).toEqual({
+          expectedSnapshotId: snapshotId('original'),
+          retiredSnapshots: 0,
+          state: 'already-removed',
+        });
+        expect(differentReady?.id).toBe(snapshotId('new'));
+        expect(differentCatalogs.map(catalog => [catalog.viewWorktreeId, catalog.snapshot.id])).toEqual([
+          [worktreeId, snapshotId('new')],
+        ]);
+        expect(tombstoneBeforeCurrentPromotion).toBe(snapshotId('original'));
+        expect(tombstoneAfterCurrentPromotion).toBeUndefined();
       }),
-    );
+    ).pipe(Effect.provide(ApplicationLayer)),
+  );
 
-    expect(observed.sameReady).toBeUndefined();
-    expect(observed.sameCatalogs).toEqual([]);
-    expect(observed.sameCatalog).toBeUndefined();
-    expect(observed.builderCatalog).toBeUndefined();
-    expect(observed.reconciledRetry).toEqual({
-      expectedSnapshotId: 'snapshot-original',
-      retiredSnapshots: 0,
-      state: 'already-removed',
-    });
-    expect(observed.differentReady?.id).toBe('snapshot-new');
-    expect(observed.differentCatalogs.map(catalog => [catalog.viewWorktreeId, catalog.snapshot.id])).toEqual([
-      [worktreeId, 'snapshot-new'],
-    ]);
-    expect(observed.tombstoneBeforeCurrentPromotion).toBe('snapshot-original');
-    expect(observed.tombstoneAfterCurrentPromotion).toBeUndefined();
-  });
-
-  it('serializes bounded concurrent retries without losing removal evidence', async () => {
-    const fixture = await viewFixture('threadnote-view-load-');
-    const worktreeId = fixture.worktrees[0]!;
-    seedGraph(fixture, [{id: 'snapshot-load', worktreeId}], [{snapshotId: 'snapshot-load', worktreeId}]);
-
-    const results = await runEffect(
+  effectIt.effect('serializes bounded concurrent retries without losing removal evidence', () =>
+    TestClock.withLive(
       Effect.gen(function* () {
+        const fixture = yield* viewFixture('threadnote-view-load-');
+        const worktreeId = fixture.worktrees[0]!;
+        seedGraph(fixture, [{id: snapshotId('load'), worktreeId}], [{snapshotId: snapshotId('load'), worktreeId}]);
         const store = yield* CodeGraphStore;
-        yield* store.acquireSnapshotLease(fixture.databasePath, 'snapshot-load', 60_000);
-        return yield* Effect.all(
+        yield* store.acquireSnapshotLease(fixture.databasePath, snapshotId('load'), 60_000);
+        const results = yield* Effect.all(
           Array.from({length: 16}, () =>
-            store.removeView(fixture.databasePath, worktreeId, 'snapshot-load', {waitTimeoutMilliseconds: 5_000}),
+            store.removeView(fixture.databasePath, worktreeId, snapshotId('load'), {waitTimeoutMilliseconds: 5_000}),
           ),
           {concurrency: 'unbounded'},
         );
+        expect(results.filter(result => result.state === 'removed')).toHaveLength(1);
+        expect(results.filter(result => result.state === 'already-removed')).toHaveLength(15);
+        expect(removedView(fixture.databasePath, worktreeId)).toBe(snapshotId('load'));
       }),
-    );
+    ).pipe(Effect.provide(ApplicationLayer)),
+  );
 
-    expect(results.filter(result => result.state === 'removed')).toHaveLength(1);
-    expect(results.filter(result => result.state === 'already-removed')).toHaveLength(15);
-    expect(removedView(fixture.databasePath, worktreeId)).toBe('snapshot-load');
-  });
-
-  it('fails fast and path-free on held writer or target-worktree locks without running the mutation', async () => {
-    const fixture = await viewFixture('threadnote-view-busy-');
-    const worktreeId = fixture.worktrees[0]!;
-    seedGraph(fixture, [{id: 'snapshot-busy', worktreeId}], [{snapshotId: 'snapshot-busy', worktreeId}]);
-
-    const observed = await runEffect(
+  effectIt.effect('fails fast and path-free on held writer or target-worktree locks without running the mutation', () =>
+    TestClock.withLive(
       Effect.gen(function* () {
+        const fixture = yield* viewFixture('threadnote-view-busy-');
+        const worktreeId = fixture.worktrees[0]!;
+        seedGraph(fixture, [{id: snapshotId('busy'), worktreeId}], [{snapshotId: snapshotId('busy'), worktreeId}]);
         const fs = yield* FileSystem.FileSystem;
         const store = yield* CodeGraphStore;
         const writerAcquired = yield* Deferred.make<void>();
@@ -308,7 +309,7 @@ describe('code graph view removal core', () => {
         );
         yield* Deferred.await(writerAcquired);
         const writerStartedAt = performance.now();
-        const writerResult = yield* store.removeView(fixture.databasePath, worktreeId, 'snapshot-busy').pipe(
+        const writerResult = yield* store.removeView(fixture.databasePath, worktreeId, snapshotId('busy')).pipe(
           Effect.match({
             onFailure: error => ({error, success: false as const}),
             onSuccess: result => ({result, success: true as const}),
@@ -345,56 +346,56 @@ describe('code graph view removal core', () => {
         const targetElapsedMilliseconds = performance.now() - targetStartedAt;
         yield* Deferred.succeed(releaseTarget, undefined);
         yield* Fiber.join(targetOwner);
-        return {
+        const observed = {
           calls: yield* Ref.get(calls),
           targetElapsedMilliseconds,
           targetResult,
           writerElapsedMilliseconds,
           writerResult,
         };
+
+        expect(observed.writerResult.success).toBe(false);
+        expect(observed.targetResult.success).toBe(false);
+        if (!observed.writerResult.success) {
+          expect(observed.writerResult.error).toBeInstanceOf(CodeGraphStoreBusyError);
+          expect(observed.writerResult.error.message).not.toContain(fixture.root);
+        }
+        if (!observed.targetResult.success) {
+          expect(observed.targetResult.error).toBeInstanceOf(CodeGraphStoreBusyError);
+          expect(String(observed.targetResult.error)).not.toContain(fixture.root);
+        }
+        expect(observed.writerElapsedMilliseconds).toBeLessThan(500);
+        expect(observed.targetElapsedMilliseconds).toBeLessThan(500);
+        expect(observed.calls).toBe(0);
+        expect(activeView(fixture.databasePath, worktreeId)).toBe(snapshotId('busy'));
+        expect(removedView(fixture.databasePath, worktreeId)).toBeUndefined();
       }),
-    );
+    ).pipe(Effect.provide(ApplicationLayer)),
+  );
 
-    expect(observed.writerResult.success).toBe(false);
-    expect(observed.targetResult.success).toBe(false);
-    if (!observed.writerResult.success) {
-      expect(observed.writerResult.error).toBeInstanceOf(CodeGraphStoreBusyError);
-      expect(observed.writerResult.error.message).not.toContain(fixture.root);
-    }
-    if (!observed.targetResult.success) {
-      expect(observed.targetResult.error).toBeInstanceOf(CodeGraphStoreBusyError);
-      expect(String(observed.targetResult.error)).not.toContain(fixture.root);
-    }
-    expect(observed.writerElapsedMilliseconds).toBeLessThan(500);
-    expect(observed.targetElapsedMilliseconds).toBeLessThan(500);
-    expect(observed.calls).toBe(0);
-    expect(activeView(fixture.databasePath, worktreeId)).toBe('snapshot-busy');
-    expect(removedView(fixture.databasePath, worktreeId)).toBeUndefined();
-  });
-
-  it('classifies target-lock filesystem failures without exposing the lock root', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'threadnote-view-lock-error-'));
-    temporaryRoots.push(root);
-    writeFileSync(join(root, 'locks'), 'not-a-directory\n');
-
-    const observed = await runEffect(
-      withCodeGraphTargetWorktreeLock(root, 'a'.repeat(64), '1'.repeat(64), Effect.void).pipe(
-        Effect.match({
-          onFailure: error => ({error, success: false as const}),
-          onSuccess: () => ({success: true as const}),
-        }),
-      ),
-    );
-
-    expect(observed.success).toBe(false);
-    if (!observed.success) {
-      expect(observed.error).toBeInstanceOf(CodeGraphStoreError);
-      expect(observed.error).not.toBeInstanceOf(CodeGraphStoreBusyError);
-      expect(observed.error.operation).toBe('mutate graph view');
-      expect(observed.error.message).not.toContain(root);
-      expect(String(observed.error)).not.toContain(root);
-    }
-  });
+  effectIt.effect('classifies target-lock filesystem failures without exposing the lock root', () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const root = mkdtempSync(join(tmpdir(), 'threadnote-view-lock-error-'));
+        temporaryRoots.push(root);
+        writeFileSync(join(root, 'locks'), 'not-a-directory\n');
+        const observed = yield* withCodeGraphTargetWorktreeLock(root, 'a'.repeat(64), '1'.repeat(64), Effect.void).pipe(
+          Effect.match({
+            onFailure: error => ({error, success: false as const}),
+            onSuccess: () => ({success: true as const}),
+          }),
+        );
+        expect(observed.success).toBe(false);
+        if (!observed.success) {
+          expect(observed.error).toBeInstanceOf(CodeGraphStoreError);
+          expect(observed.error).not.toBeInstanceOf(CodeGraphStoreBusyError);
+          expect(observed.error.operation).toBe('mutate graph view');
+          expect(observed.error.message).not.toContain(root);
+          expect(String(observed.error)).not.toContain(root);
+        }
+      }),
+    ).pipe(Effect.provide(ApplicationLayer)),
+  );
 });
 
 interface SeedSnapshot {
@@ -419,27 +420,25 @@ interface ViewFixture {
   readonly writerLockPath: string;
 }
 
-async function viewFixture(prefix: string): Promise<ViewFixture> {
-  const root = mkdtempSync(join(tmpdir(), prefix));
-  temporaryRoots.push(root);
-  const checkoutId = 'a'.repeat(64);
-  const worktrees = ['1', '2', '3', '4'].map(digit => digit.repeat(64));
-  const databasePath = join(root, 'indexes', 'code-graph', 'repositories', checkoutId, 'graph-v3.sqlite');
-  await runEffect(
-    Effect.gen(function* () {
-      const store = yield* CodeGraphStore;
-      yield* store.initialize(databasePath);
-    }),
-  );
-  return {
-    checkoutId,
-    databasePath,
-    repositoryId: 'b'.repeat(64),
-    root,
-    worktreeLockPath: join(root, 'locks', 'indexes', 'code-graph', 'worktrees', checkoutId, `${worktrees[0]}.lock`),
-    worktrees,
-    writerLockPath: join(root, 'locks', 'indexes', 'code-graph', 'database-writes', `${checkoutId}.lock`),
-  };
+function viewFixture(prefix: string) {
+  return Effect.gen(function* () {
+    const root = mkdtempSync(join(tmpdir(), prefix));
+    temporaryRoots.push(root);
+    const checkoutId = 'a'.repeat(64);
+    const worktrees = ['1', '2', '3', '4'].map(digit => digit.repeat(64));
+    const databasePath = join(root, 'indexes', 'code-graph', 'repositories', checkoutId, 'graph-v3.sqlite');
+    const store = yield* CodeGraphStore;
+    yield* store.initialize(databasePath);
+    return {
+      checkoutId,
+      databasePath,
+      repositoryId: 'b'.repeat(64),
+      root,
+      worktreeLockPath: join(root, 'locks', 'indexes', 'code-graph', 'worktrees', checkoutId, `${worktrees[0]}.lock`),
+      worktrees,
+      writerLockPath: join(root, 'locks', 'indexes', 'code-graph', 'database-writes', `${checkoutId}.lock`),
+    } satisfies ViewFixture;
+  });
 }
 
 function seedGraph(fixture: ViewFixture, snapshots: readonly SeedSnapshot[], views: readonly SeedView[]): void {

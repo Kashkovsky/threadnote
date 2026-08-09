@@ -113,6 +113,7 @@ describe('automatic missing-worktree reconciliation', () => {
       const authorityReads = yield* Ref.make(0);
       const evidenceReads = yield* Ref.make(0);
       const intentReads = yield* Ref.make(0);
+      const removalEvidence = yield* Ref.make<unknown>(undefined);
       const dependencies = successfulDependencies({
         maintenanceIntentActive: () =>
           Ref.updateAndGet(intentReads, count => count + 1).pipe(
@@ -131,7 +132,11 @@ describe('automatic missing-worktree reconciliation', () => {
             ),
             Effect.as(linkedEvidence),
           ),
-        removeView: () => append(events, 'remove').pipe(Effect.as(removedResult())),
+        removeView: (_input, _candidate, cleanupEvidence) =>
+          Ref.set(removalEvidence, cleanupEvidence).pipe(
+            Effect.andThen(append(events, 'remove')),
+            Effect.as(removedResult()),
+          ),
         resolveAnchor: () =>
           Ref.updateAndGet(anchorReads, count => count + 1).pipe(
             Effect.flatMap(count =>
@@ -165,6 +170,11 @@ describe('automatic missing-worktree reconciliation', () => {
         'remove',
         'lock-exit',
       ]);
+      expect(yield* Ref.get(removalEvidence)).toEqual({
+        recordDigest: linkedEvidence.recordDigest,
+        recordIdentity: linkedEvidence.recordIdentity,
+        repositoryId: linkedEvidence.repositoryId,
+      });
     }),
   );
 
@@ -304,6 +314,26 @@ describe('automatic missing-worktree reconciliation', () => {
         expect(yield* Ref.get(reads)).toBe(2);
         expect(yield* Ref.get(removals)).toBe(0);
       }
+    }),
+  );
+
+  effectIt.effect('does not remove when the post-authority evidence re-read changes', () =>
+    Effect.gen(function* () {
+      const reads = yield* Ref.make(0);
+      const removals = yield* Ref.make(0);
+      const dependencies = successfulDependencies({
+        readEvidenceCandidate: () =>
+          Ref.updateAndGet(reads, count => count + 1).pipe(
+            Effect.map(count => (count === 3 ? {...linkedEvidence, recordDigest: '8'.repeat(64)} : linkedEvidence)),
+          ),
+        removeView: () => Ref.update(removals, count => count + 1).pipe(Effect.as(removedResult())),
+      });
+
+      const result = yield* (yield* makeCodeGraphWorktreeReconciler(dependencies)).tick(tick());
+
+      expect(result).toMatchObject({reason: 'evidence-changed', state: 'preserved'});
+      expect(yield* Ref.get(reads)).toBe(3);
+      expect(yield* Ref.get(removals)).toBe(0);
     }),
   );
 
@@ -713,7 +743,9 @@ describe('automatic missing-worktree reconciliation', () => {
         const statement = codeGraphExactSnapshotRetirementStatement([rootSnapshotId], Date.now());
         const plan = yield* Effect.sync(() => queryPlan(databasePath, statement));
         expect(plan.some(row => row.detail.includes('snapshots_base_state_id'))).toBe(true);
-        expect(statement.text).toMatch(/WHERE descendant\.blocked = 0/u);
+        expect(plan.some(row => /USE TEMP B-TREE|SCAN child/u.test(row.detail))).toBe(false);
+        expect(statement.text).not.toMatch(/WITH RECURSIVE|descendant/iu);
+        expect(statement.text).toMatch(/child\.base_snapshot_id = candidate\.id/u);
 
         const removed = yield* store.removeView(databasePath, targetWorktreeId, rootSnapshotId, {
           requireReconciliationSchema: true,
@@ -777,7 +809,6 @@ describe('automatic missing-worktree reconciliation', () => {
             {
               name: 'generated column',
               setup: (databasePath: string) => {
-                seedStrictCoreDatabase(databasePath);
                 executeDatabaseSql(
                   databasePath,
                   'ALTER TABLE active_snapshots ADD COLUMN generated_extra TEXT GENERATED ALWAYS AS (worktree_id) VIRTUAL',
@@ -786,32 +817,74 @@ describe('automatic missing-worktree reconciliation', () => {
             },
             {
               name: 'snapshot self foreign key',
-              setup: (databasePath: string) => seedStrictCoreDatabase(databasePath, {baseSnapshotForeignKey: true}),
+              setup: (databasePath: string) =>
+                rebuildCanonicalTableDefinition(databasePath, 'snapshots', definition =>
+                  definition.replace(
+                    /\n\s*\)$/u,
+                    ',\n      FOREIGN KEY (base_snapshot_id) REFERENCES snapshots(id) ON DELETE CASCADE\n    )',
+                  ),
+                ),
             },
             {
               name: 'altered lifecycle state check',
-              setup: (databasePath: string) => seedStrictCoreDatabase(databasePath, {omitRetiredState: true}),
+              setup: (databasePath: string) =>
+                rebuildCanonicalTableDefinition(databasePath, 'snapshots', definition =>
+                  definition.replace(
+                    "state IN ('building', 'ready', 'failed', 'retired')",
+                    "state IN ('building', 'ready', 'failed')",
+                  ),
+                ),
             },
             {
               name: 'uppercase lifecycle state literals',
-              setup: (databasePath: string) => seedStrictCoreDatabase(databasePath, {uppercaseStates: true}),
+              setup: (databasePath: string) =>
+                rebuildCanonicalTableDefinition(databasePath, 'snapshots', definition =>
+                  definition.replace(
+                    "state IN ('building', 'ready', 'failed', 'retired')",
+                    "state IN ('BUILDING', 'READY', 'FAILED', 'RETIRED')",
+                  ),
+                ),
             },
             {
               name: 'case-folded schema metadata key',
-              setup: (databasePath: string) => seedStrictCoreDatabase(databasePath, {schemaMetadataNoCase: true}),
+              setup: (databasePath: string) =>
+                rebuildCanonicalTableDefinition(databasePath, 'schema_metadata', definition =>
+                  definition.replace('key TEXT PRIMARY KEY NOT NULL', 'key TEXT PRIMARY KEY NOT NULL COLLATE NOCASE'),
+                ),
             },
             {
               name: 'case-folded tombstone equality',
-              setup: (databasePath: string) => seedStrictCoreDatabase(databasePath, {removedNoCase: true}),
+              setup: (databasePath: string) =>
+                rebuildCanonicalTableDefinition(databasePath, 'removed_views', definition =>
+                  definition.replace(
+                    'expected_snapshot_id TEXT NOT NULL',
+                    'expected_snapshot_id TEXT NOT NULL COLLATE NOCASE',
+                  ),
+                ),
             },
             {
               name: 'case-folded required index',
-              setup: (databasePath: string) => seedStrictCoreDatabase(databasePath, {activeSnapshotNoCase: true}),
+              setup: (databasePath: string) =>
+                executeDatabaseSql(
+                  databasePath,
+                  `DROP INDEX active_snapshots_snapshot_worktree;
+                   CREATE INDEX active_snapshots_snapshot_worktree
+                   ON active_snapshots(snapshot_id COLLATE NOCASE, worktree_id);`,
+                ),
+            },
+            {
+              name: 'case-folded lease capability key',
+              setup: (databasePath: string) =>
+                rebuildCanonicalTableDefinition(databasePath, 'snapshot_leases', definition =>
+                  definition.replace(
+                    'token TEXT PRIMARY KEY NOT NULL',
+                    'token TEXT COLLATE NOCASE PRIMARY KEY NOT NULL',
+                  ),
+                ),
             },
             {
               name: 'unexpected delete trigger',
               setup: (databasePath: string) => {
-                seedStrictCoreDatabase(databasePath);
                 executeDatabaseSql(
                   databasePath,
                   `CREATE TRIGGER reconciliation_delete_side_effect
@@ -828,6 +901,13 @@ describe('automatic missing-worktree reconciliation', () => {
             const databasePath = join(root, 'indexes', 'code-graph', 'repositories', checkoutId, 'graph-v3.sqlite');
             const store = yield* CodeGraphStore;
             const snapshotId = `cgsn_${'0'.repeat(40)}`;
+            yield* store.initialize(databasePath);
+            yield* Effect.sync(() => seedCandidateViews(databasePath, [targetWorktreeId], false));
+            expect(yield* store.prepareWorktreeReconciliationIndexes(databasePath), `${mutation.name} control`).toEqual(
+              {
+                state: 'ready',
+              },
+            );
             yield* Effect.sync(() => mutation.setup(databasePath));
             const before = yield* Effect.sync(() => readExactRetirementState(databasePath, snapshotId));
             expect(
@@ -1730,131 +1810,61 @@ function executeDatabaseSql(databasePath: string, sql: string): void {
   }
 }
 
-function seedStrictCoreDatabase(
+function rebuildCanonicalTableDefinition(
   databasePath: string,
-  options: {
-    readonly activeSnapshotNoCase?: true;
-    readonly baseSnapshotForeignKey?: true;
-    readonly omitRetiredState?: true;
-    readonly removedNoCase?: true;
-    readonly schemaMetadataNoCase?: true;
-    readonly uppercaseStates?: true;
-  } = {},
+  tableName: string,
+  mutate: (definition: string) => string,
 ): void {
-  mkdirSync(dirname(databasePath), {recursive: true});
   const database = new Database(databasePath, {strict: true});
   try {
-    database.run('PRAGMA foreign_keys = ON');
-    database.run(
-      `CREATE TABLE schema_metadata (key TEXT${
-        options.schemaMetadataNoCase ? ' COLLATE NOCASE' : ''
-      } PRIMARY KEY NOT NULL, value TEXT NOT NULL)`,
+    const row = database.query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?").get(tableName) as {
+      readonly sql: string;
+    } | null;
+    if (row === null) throw new Error(`missing canonical table ${tableName}`);
+    const changed = mutate(row.sql);
+    if (changed === row.sql) throw new Error(`canonical table mutation did not change ${tableName}`);
+    const temporaryTable = `${tableName}_drift_fixture`;
+    const temporaryDefinition = changed.replace(
+      new RegExp(`^CREATE TABLE(?: IF NOT EXISTS)? "?${tableName}"?`, 'u'),
+      `CREATE TABLE ${temporaryTable}`,
     );
-    database.run(`CREATE TABLE repositories (
-      id TEXT PRIMARY KEY NOT NULL,
-      display_name TEXT NOT NULL,
-      object_format TEXT NOT NULL,
-      created_at TEXT NOT NULL,
-      last_used_at TEXT NOT NULL
-    )`);
-    database.run(`CREATE TABLE snapshots (
-      id TEXT PRIMARY KEY NOT NULL,
-      repository_id TEXT NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
-      worktree_id TEXT NOT NULL,
-      commit_id TEXT NOT NULL,
-      graph_content_id TEXT,
-      base_snapshot_id TEXT,
-      extractor_set TEXT NOT NULL,
-      dirty INTEGER NOT NULL CHECK (dirty IN (0, 1)),
-      overlay_fingerprint TEXT,
-      state TEXT NOT NULL CHECK (state IN (${
-        options.uppercaseStates ? "'BUILDING', 'READY', 'FAILED'" : "'building', 'ready', 'failed'"
-      }${options.omitRetiredState ? '' : options.uppercaseStates ? ", 'RETIRED'" : ", 'retired'"})),
-      file_count INTEGER NOT NULL CHECK (file_count >= 0),
-      symbol_count INTEGER NOT NULL CHECK (symbol_count >= 0),
-      edge_count INTEGER NOT NULL CHECK (edge_count >= 0),
-      started_at TEXT NOT NULL,
-      completed_at TEXT,
-      failure_summary TEXT${
-        options.baseSnapshotForeignKey
-          ? ', FOREIGN KEY (base_snapshot_id) REFERENCES snapshots(id) ON DELETE CASCADE'
-          : ''
-      }
-    )`);
-    database.run(`CREATE TABLE snapshot_extractor_generations (
-      snapshot_id TEXT PRIMARY KEY NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
-      generation INTEGER NOT NULL CHECK (generation > 0)
-    ) WITHOUT ROWID`);
-    database.run(`CREATE TABLE active_snapshots (
-      worktree_id TEXT PRIMARY KEY NOT NULL,
-      snapshot_id TEXT${options.activeSnapshotNoCase ? ' COLLATE NOCASE' : ''} NOT NULL
-        REFERENCES snapshots(id) ON DELETE CASCADE,
-      activated_at TEXT NOT NULL
-    )`);
-    database.run(`CREATE TABLE removed_views (
-      worktree_id TEXT PRIMARY KEY NOT NULL,
-      expected_snapshot_id TEXT${options.removedNoCase ? ' COLLATE NOCASE' : ''} NOT NULL,
-      removed_at TEXT NOT NULL
-    ) WITHOUT ROWID`);
-    database.run(`CREATE TABLE snapshot_leases (
-      token TEXT PRIMARY KEY NOT NULL,
-      snapshot_id TEXT NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
-      expires_at INTEGER NOT NULL,
-      retire_when_inactive INTEGER NOT NULL DEFAULT 0 CHECK (retire_when_inactive IN (0, 1))
-    )`);
-    database.run(`CREATE TRIGGER active_snapshots_require_current_extractor
-      BEFORE INSERT ON active_snapshots
-      FOR EACH ROW
-      WHEN NOT EXISTS (
-        SELECT 1
-        FROM snapshot_extractor_generations AS generation
-        JOIN schema_metadata AS minimum
-          ON minimum.key = 'minimum_extractor_generation'
-        WHERE generation.snapshot_id = NEW.snapshot_id
-          AND generation.generation >= CAST(minimum.value AS INTEGER)
+    if (temporaryDefinition === changed) throw new Error(`cannot derive temporary table for ${tableName}`);
+    const columns = (
+      database.query(`PRAGMA table_xinfo('${tableName}')`).all() as readonly {
+        readonly hidden: number;
+        readonly name: string;
+      }[]
+    )
+      .filter(column => column.hidden === 0)
+      .map(column => `"${column.name.replaceAll('"', '""')}"`)
+      .join(', ');
+    const dependentDefinitions = database
+      .query<{readonly sql: string}, [string]>(
+        `SELECT sql FROM sqlite_master
+         WHERE tbl_name = ? AND type IN ('index', 'trigger') AND sql IS NOT NULL
+         ORDER BY type, name`,
       )
-      BEGIN
-        SELECT RAISE(ABORT, 'Code graph snapshot was built by an older extractor generation.');
-      END`);
-    database.run('CREATE INDEX active_snapshots_snapshot_worktree ON active_snapshots(snapshot_id, worktree_id)');
-    database.run('CREATE INDEX snapshots_base_state_id ON snapshots(base_snapshot_id, state, id)');
-    database.run('CREATE INDEX snapshot_leases_snapshot_expiry ON snapshot_leases(snapshot_id, expires_at)');
-    database.transaction(() => {
-      database.query('INSERT INTO schema_metadata (key, value) VALUES (?, ?)').run('schema_version', '3');
-      database
-        .query('INSERT INTO schema_metadata (key, value) VALUES (?, ?)')
-        .run('minimum_extractor_generation', String(CODE_GRAPH_EXTRACTOR_GENERATION));
-      database
-        .query(
-          `INSERT INTO repositories (id, display_name, object_format, created_at, last_used_at)
-           VALUES (?, 'threadnote/strict-core', 'sha1', ?, ?)`,
-        )
-        .run(repositoryId, '2026-08-08T00:00:00.000Z', '2026-08-08T00:00:00.000Z');
-      const snapshotId = `cgsn_${'0'.repeat(40)}`;
-      database
-        .query(
-          `INSERT INTO snapshots (
-             id, repository_id, worktree_id, commit_id, graph_content_id, base_snapshot_id, extractor_set,
-             dirty, overlay_fingerprint, state, file_count, symbol_count, edge_count, started_at, completed_at,
-             failure_summary
-           ) VALUES (?, ?, ?, ?, 'strict-content', NULL, 'strict-test', 0, NULL, ?, 0, 0, 0, ?, ?, NULL)`,
-        )
-        .run(
-          snapshotId,
-          repositoryId,
-          targetWorktreeId,
-          '1'.repeat(40),
-          options.uppercaseStates ? 'READY' : 'ready',
-          '2026-08-08T00:00:00.000Z',
-          '2026-08-08T00:00:01.000Z',
-        );
-      database
-        .query('INSERT INTO snapshot_extractor_generations (snapshot_id, generation) VALUES (?, ?)')
-        .run(snapshotId, CODE_GRAPH_EXTRACTOR_GENERATION);
-      database
-        .query('INSERT INTO active_snapshots (worktree_id, snapshot_id, activated_at) VALUES (?, ?, ?)')
-        .run(targetWorktreeId, snapshotId, '2026-08-08T00:00:02.000Z');
-    })();
+      .all(tableName)
+      .map(dependent => dependent.sql);
+    database.run('PRAGMA foreign_keys = OFF');
+    database.run('PRAGMA ignore_check_constraints = ON');
+    database.run('BEGIN IMMEDIATE');
+    try {
+      database.run(temporaryDefinition);
+      database.run(`INSERT INTO "${temporaryTable}" (${columns}) SELECT ${columns} FROM "${tableName}"`);
+      database.run(`DROP TABLE "${tableName}"`);
+      database.run(changed);
+      database.run(`INSERT INTO "${tableName}" (${columns}) SELECT ${columns} FROM "${temporaryTable}"`);
+      database.run(`DROP TABLE "${temporaryTable}"`);
+      for (const dependent of dependentDefinitions) database.run(dependent);
+      database.run('COMMIT');
+    } catch (error) {
+      if (database.inTransaction) database.run('ROLLBACK');
+      throw error;
+    } finally {
+      database.run('PRAGMA ignore_check_constraints = OFF');
+      database.run('PRAGMA foreign_keys = ON');
+    }
   } finally {
     database.close(false);
   }

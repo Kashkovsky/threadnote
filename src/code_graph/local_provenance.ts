@@ -118,6 +118,16 @@ export interface CodeGraphLocalProvenanceCleanupOptions {
   readonly beforeRemove?: () => Effect.Effect<void, unknown>;
   /** @internal Deterministic seam after final identity proof while the shared provenance lock remains held. */
   readonly afterFinalValidation?: () => Effect.Effect<void, unknown>;
+  /** Exact path-free token captured before the caller's destructive core operation. */
+  readonly expectedEvidence?: CodeGraphLocalProvenanceCleanupEvidence;
+}
+
+export interface CodeGraphLocalProvenanceCleanupEvidence {
+  readonly checkoutId: string;
+  readonly recordDigest: string;
+  readonly recordIdentity: string;
+  readonly repositoryId: string;
+  readonly worktreeId: string;
 }
 
 export interface CodeGraphMissingWorktreeReconciliationOptions {
@@ -442,6 +452,43 @@ export function sameCodeGraphWorktreeReconciliationEvidenceCandidate(
 }
 
 /**
+ * Capture one exact path-free cleanup token while holding the provenance lock.
+ * Callers must release this lock before entering the database writer gate.
+ */
+export const captureCodeGraphLocalProvenanceCleanupEvidence = Effect.fn(
+  'codeGraph.captureLocalProvenanceCleanupEvidence',
+)(function* (threadnoteHome: string, target: CodeGraphLocalAssociationTarget) {
+  if (!validTarget(target)) return undefined;
+  return yield* withCodeGraphLocalProvenanceLock(
+    threadnoteHome,
+    target.checkoutId,
+    target.worktreeId,
+    0,
+    Effect.gen(function* () {
+      const evidence = yield* readCodeGraphLocalReconciliationEvidenceUnchecked(threadnoteHome, target);
+      if (evidence.state !== 'verified') return undefined;
+      const initial = yield* readLocalProvenanceCleanupCandidate(threadnoteHome, target);
+      const final = yield* readLocalProvenanceCleanupCandidate(threadnoteHome, target);
+      if (
+        initial === undefined ||
+        final === undefined ||
+        !reconciliationEvidenceMatchesCandidate(evidence, initial) ||
+        !sameLocalProvenanceCleanupCandidate(initial, final)
+      ) {
+        return undefined;
+      }
+      return {
+        checkoutId: evidence.checkoutId,
+        recordDigest: evidence.recordDigest,
+        recordIdentity: evidence.recordIdentity,
+        repositoryId: evidence.repositoryId,
+        worktreeId: evidence.worktreeId,
+      } satisfies CodeGraphLocalProvenanceCleanupEvidence;
+    }),
+  ).pipe(Effect.catch(() => Effect.succeed(undefined)));
+});
+
+/**
  * Delete only a private derived provenance sidecar whose recorded worktree is
  * still missing and whose complete file/content identity has not changed.
  * Source, Git, and remembered worktree paths are observation-only.
@@ -463,6 +510,12 @@ const cleanupMissingCodeGraphLocalProvenanceUnsafe = Effect.fn('codeGraph.cleanu
     const initial = yield* readLocalProvenanceCleanupCandidate(threadnoteHome, target);
     if (initial === undefined) {
       return {state: 'not-found'} as const satisfies CodeGraphLocalProvenanceCleanupResult;
+    }
+    if (
+      options.expectedEvidence !== undefined &&
+      !localProvenanceCleanupEvidenceMatchesCandidate(options.expectedEvidence, initial)
+    ) {
+      return {observedState: 'stale', state: 'preserved'} as const satisfies CodeGraphLocalProvenanceCleanupResult;
     }
     if (!(yield* recordedWorktreePathMissing(initial.record.canonicalWorktreePath))) {
       return {observedState: 'stale', state: 'preserved'} as const satisfies CodeGraphLocalProvenanceCleanupResult;
@@ -605,6 +658,19 @@ function sameLocalProvenanceCleanupCandidate(
     left.record.observedAt === right.record.observedAt &&
     left.record.headCommit === right.record.headCommit &&
     sameCodeGraphGitWorktreeRegistration(left.record.registration, right.record.registration)
+  );
+}
+
+function localProvenanceCleanupEvidenceMatchesCandidate(
+  evidence: CodeGraphLocalProvenanceCleanupEvidence,
+  candidate: LocalProvenanceCleanupCandidate,
+): boolean {
+  return (
+    evidence.checkoutId === candidate.record.checkoutId &&
+    evidence.worktreeId === candidate.record.worktreeId &&
+    evidence.repositoryId === candidate.record.repositoryId &&
+    evidence.recordDigest === candidate.recordDigest &&
+    evidence.recordIdentity === candidate.recordIdentity
   );
 }
 

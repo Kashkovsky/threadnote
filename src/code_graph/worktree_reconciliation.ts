@@ -19,6 +19,7 @@ import {
 import {resolveRepositoryIdentity} from './repository.js';
 import {
   CodeGraphStore,
+  type CodeGraphRemovedViewCleanupEvidence,
   type CodeGraphViewRemovalResult,
   type CodeGraphWorktreeReconciliationCandidate,
 } from './store.js';
@@ -109,6 +110,7 @@ export interface CodeGraphWorktreeReconciliationDependencies {
   readonly removeView: (
     input: CodeGraphWorktreeReconciliationTick,
     candidate: CodeGraphWorktreeReconciliationCandidate,
+    cleanupEvidence: CodeGraphRemovedViewCleanupEvidence,
   ) => Effect.Effect<CodeGraphViewRemovalResult, unknown>;
   readonly resolveAnchor: (cwd: string) => Effect.Effect<RepositoryIdentity, unknown>;
   readonly withTargetLock: <A, E>(
@@ -328,24 +330,30 @@ export const makeCodeGraphWorktreeReconciler = Effect.fn('codeGraph.makeWorktree
                 if (postAuthorityMaintenanceIntent.value) {
                   return {nextCursor, reason: 'external-maintenance', state: 'preserved'} as const;
                 }
-                return yield* dependencies.removeView(input, target.candidate).pipe(
-                  Effect.match({
-                    onFailure: cause => {
-                      if (cause instanceof CodeGraphMaintenanceActiveError) {
-                        return {nextCursor, reason: 'external-maintenance', state: 'preserved'} as const;
-                      }
-                      return {
-                        nextCursor,
-                        reason:
-                          cause instanceof CodeGraphStoreBusyError
-                            ? ('writer-busy' as const)
-                            : ('catalog-unavailable' as const),
-                        state: 'deferred',
-                      } as const;
-                    },
-                    onSuccess: removed => removalResult(nextCursor, target.candidate, removed),
-                  }),
-                );
+                return yield* dependencies
+                  .removeView(input, target.candidate, {
+                    recordDigest: postAuthorityEvidence.value.recordDigest,
+                    recordIdentity: postAuthorityEvidence.value.recordIdentity,
+                    repositoryId: postAuthorityEvidence.value.repositoryId,
+                  })
+                  .pipe(
+                    Effect.match({
+                      onFailure: cause => {
+                        if (cause instanceof CodeGraphMaintenanceActiveError) {
+                          return {nextCursor, reason: 'external-maintenance', state: 'preserved'} as const;
+                        }
+                        return {
+                          nextCursor,
+                          reason:
+                            cause instanceof CodeGraphStoreBusyError
+                              ? ('writer-busy' as const)
+                              : ('catalog-unavailable' as const),
+                          state: 'deferred',
+                        } as const;
+                      },
+                      onSuccess: removed => removalResult(nextCursor, target.candidate, removed),
+                    }),
+                  );
               }),
             )
             .pipe(
@@ -404,9 +412,10 @@ export const makeLiveCodeGraphWorktreeReconciler = Effect.fn('codeGraph.makeLive
       provideLive(observeCodeGraphWorktreeReconciliationAuthority(identity, targets)),
     readEvidenceCandidate: (threadnoteHome, target) =>
       provideLive(readCodeGraphWorktreeReconciliationEvidenceCandidate(threadnoteHome, target)),
-    removeView: (input, candidate) =>
+    removeView: (input, candidate, cleanupEvidence) =>
       store.removeView(input.databasePath, candidate.worktreeId, candidate.snapshotId, {
         beforeDatabaseOpen: () => verifyDatabaseAuthority(input, 'reconciliation'),
+        cleanupEvidence,
         requireReconciliationSchema: true,
         waitTimeoutMilliseconds: 0,
       }),

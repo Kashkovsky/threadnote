@@ -886,36 +886,55 @@ describe('Manager logical repository and workspace catalogs', () => {
     expect(catalog.diagnostics[0]?.message).not.toContain(home);
   });
 
-  it('migrates a readable legacy lease table while retaining the Manager catalog', async () => {
-    const home = temporaryRoot('threadnote-manager-legacy-lease-');
-    const identity = repositoryIdentity(home, '8'.repeat(64));
-    const databasePath = join(home, 'indexes', 'code-graph', 'repositories', identity.checkoutId, 'graph-v3.sqlite');
-    const snapshot = readySnapshot(identity, 0, 0, 0, '2026-08-05T12:00:00.000Z');
-    await Effect.runPromise(
-      Effect.gen(function* () {
-        const store = yield* CodeGraphStore;
-        yield* store.activate(databasePath, identity, snapshot, [], [], []);
-        yield* store.promote(databasePath, identity, snapshot.id);
-      }).pipe(Effect.provide(storeLayer)),
-    );
-    const legacy = new Database(databasePath);
-    legacy.run('ALTER TABLE snapshot_leases DROP COLUMN retire_when_inactive');
-    legacy.close();
+  effectIt.effect('migrates a readable legacy lease table while retaining the Manager catalog', () =>
+    Effect.gen(function* () {
+      const home = temporaryRoot('threadnote-manager-legacy-lease-');
+      const identity = repositoryIdentity(home, '8'.repeat(64));
+      const databasePath = join(home, 'indexes', 'code-graph', 'repositories', identity.checkoutId, 'graph-v3.sqlite');
+      const snapshot = readySnapshot(identity, 0, 0, 0, '2026-08-05T12:00:00.000Z');
+      const store = yield* CodeGraphStore;
+      yield* store.activate(databasePath, identity, snapshot, [], [], []);
+      yield* store.promote(databasePath, identity, snapshot.id);
+      yield* Effect.sync(() => {
+        const legacy = new Database(databasePath);
+        try {
+          legacy.transaction(() => {
+            legacy.run('DROP TRIGGER removed_views_cleanup_revoke_delete');
+            legacy.run('DROP TRIGGER removed_views_cleanup_revoke_insert');
+            legacy.run('DROP TRIGGER removed_views_cleanup_revoke_update');
+            legacy.run('DROP TABLE removed_view_cleanup');
+            legacy.run(
+              `DELETE FROM schema_metadata
+               WHERE key IN ('removed_view_cleanup_epoch_sequence', 'removed_view_cleanup_admission_cursor')`,
+            );
+            legacy.run("UPDATE schema_metadata SET value = '6' WHERE key = 'persistent_extension_schema_revision'");
+            legacy.run('ALTER TABLE snapshot_leases DROP COLUMN retire_when_inactive');
+          })();
+        } finally {
+          legacy.close();
+        }
+      });
 
-    const catalog = await Effect.runPromise(managerGraphCatalog(home).pipe(Effect.provide(storeLayer)));
+      const catalog = yield* managerGraphCatalog(home);
 
-    expect(catalog.repositories).toHaveLength(1);
-    expect(catalog.diagnostics).toEqual([]);
-    const migrated = new Database(databasePath, {readonly: true});
-    expect(
-      migrated.query("SELECT name FROM pragma_table_info('snapshot_leases') WHERE name = 'retire_when_inactive'").get(),
-    ).toEqual({
-      name: 'retire_when_inactive',
-    });
-    expect(migrated.query('SELECT COUNT(*) AS count FROM snapshot_leases').get()).toEqual({count: 1});
-    migrated.close();
-    await Effect.runPromise(releaseManagerGraphSnapshotLeases().pipe(Effect.provide(storeLayer)));
-  });
+      expect(catalog.repositories).toHaveLength(1);
+      expect(catalog.diagnostics).toEqual([]);
+      yield* Effect.sync(() => {
+        const migrated = new Database(databasePath, {readonly: true});
+        try {
+          expect(
+            migrated
+              .query("SELECT name FROM pragma_table_info('snapshot_leases') WHERE name = 'retire_when_inactive'")
+              .get(),
+          ).toEqual({name: 'retire_when_inactive'});
+          expect(migrated.query('SELECT COUNT(*) AS count FROM snapshot_leases').get()).toEqual({count: 1});
+        } finally {
+          migrated.close();
+        }
+      });
+      yield* releaseManagerGraphSnapshotLeases();
+    }).pipe(Effect.provide(storeLayer)),
+  );
 
   it('returns readable catalogs promptly with a lease-deferred diagnostic while a writer is active', async () => {
     const home = temporaryRoot('threadnote-manager-writer-busy-');
@@ -1859,6 +1878,7 @@ function readySnapshot(
   edges: number,
   completedAt: string,
 ): CodeGraphSnapshot {
+  const timestampId = completedAt.replaceAll(/\D/g, '').padEnd(40, '0').slice(0, 40);
   return {
     commit: identity.headCommit,
     completedAt,
@@ -1866,7 +1886,7 @@ function readySnapshot(
     edgeCount: edges,
     extractorSet: 'workspace-test',
     fileCount: files,
-    id: `cgsn_${completedAt.replaceAll(/\D/g, '')}`,
+    id: `cgsn_${timestampId}`,
     repositoryId: identity.repositoryId,
     state: 'ready',
     symbolCount: symbols,

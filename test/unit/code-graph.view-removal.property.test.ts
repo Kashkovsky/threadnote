@@ -1,18 +1,22 @@
 import {mkdtempSync, rmSync} from 'node:fs';
+import {createHash} from 'node:crypto';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {Database} from 'bun:sqlite';
+import {it as effectIt} from '@effect/vitest';
 import {Effect} from 'effect';
+import {TestClock} from 'effect/testing';
 import fc from 'fast-check';
-import {describe, expect, it} from 'vitest';
+import {describe, expect} from 'vitest';
 import {CodeGraphStore, type CodeGraphViewRemovalResult} from '../../src/code_graph/store.js';
 import {CODE_GRAPH_EXTRACTOR_GENERATION} from '../../src/code_graph/types.js';
 import type {RepositoryIdentity} from '../../src/code_graph/types.js';
-import {runEffect} from '../helpers/effect-runtime.js';
+import {ApplicationLayer} from '../../src/effect/runtime.js';
 
 const WORKTREE_IDS = ['1', '2', '3'].map(digit => digit.repeat(64));
-const SNAPSHOT_IDS = ['snapshot-model-0', 'snapshot-model-1', 'snapshot-model-2'];
-const MISSING_SNAPSHOT_ID = 'snapshot-model-missing';
+const snapshotId = (label: string) => `cgsn_${createHash('sha1').update(label).digest('hex')}`;
+const SNAPSHOT_IDS = ['model-0', 'model-1', 'model-2'].map(snapshotId);
+const MISSING_SNAPSHOT_ID = snapshotId('model-missing');
 
 const eventArbitrary = fc.record({
   kind: fc.constantFrom<'legacy-promote' | 'promote' | 'remove'>('legacy-promote', 'promote', 'remove'),
@@ -21,73 +25,73 @@ const eventArbitrary = fc.record({
 });
 
 describe('code graph view removal state-machine properties', () => {
-  it('matches the pointer/tombstone model and never mutates unrelated shared views', async () => {
-    await fc.assert(
-      fc.asyncProperty(fc.array(eventArbitrary, {maxLength: 20}), async events => {
-        const root = mkdtempSync(join(tmpdir(), 'threadnote-view-removal-property-'));
-        const checkoutId = 'a'.repeat(64);
-        const repositoryId = 'b'.repeat(64);
-        const databasePath = join(root, 'indexes', 'code-graph', 'repositories', checkoutId, 'graph-v3.sqlite');
-        const pointers = new Map(WORKTREE_IDS.map((worktreeId, index) => [worktreeId, SNAPSHOT_IDS[index]!]));
-        const tombstones = new Map<string, string>();
-        try {
-          await runEffect(
-            Effect.gen(function* () {
-              const store = yield* CodeGraphStore;
-              yield* store.initialize(databasePath);
-              yield* Effect.sync(() => seedModel(databasePath, repositoryId));
-              yield* Effect.forEach(
-                SNAPSHOT_IDS,
-                snapshotId => store.acquireSnapshotLease(databasePath, snapshotId, 60 * 60_000),
-                {concurrency: 1},
-              );
+  effectIt.effect.prop(
+    'matches the pointer/tombstone model and never mutates unrelated shared views',
+    {events: fc.array(eventArbitrary, {maxLength: 20})},
+    ({events}) =>
+      TestClock.withLive(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const root = yield* Effect.acquireRelease(
+              Effect.sync(() => mkdtempSync(join(tmpdir(), 'threadnote-view-removal-property-'))),
+              path => Effect.sync(() => rmSync(path, {force: true, recursive: true})),
+            );
+            const checkoutId = 'a'.repeat(64);
+            const repositoryId = 'b'.repeat(64);
+            const databasePath = join(root, 'indexes', 'code-graph', 'repositories', checkoutId, 'graph-v3.sqlite');
+            const pointers = new Map(WORKTREE_IDS.map((worktreeId, index) => [worktreeId, SNAPSHOT_IDS[index]!]));
+            const tombstones = new Map<string, string>();
+            const store = yield* CodeGraphStore;
+            yield* store.initialize(databasePath);
+            yield* Effect.sync(() => seedModel(databasePath, repositoryId));
+            yield* Effect.forEach(
+              SNAPSHOT_IDS,
+              snapshotId => store.acquireSnapshotLease(databasePath, snapshotId, 60 * 60_000),
+              {concurrency: 1},
+            );
 
-              for (const event of events) {
-                const worktreeId = WORKTREE_IDS[event.worktree]!;
-                const snapshotId = SNAPSHOT_IDS[event.snapshot] ?? MISSING_SNAPSHOT_ID;
-                if (event.kind === 'promote' && snapshotId !== MISSING_SNAPSHOT_ID) {
-                  yield* store.promote(databasePath, identity(root, checkoutId, repositoryId, worktreeId), snapshotId);
-                  pointers.set(worktreeId, snapshotId);
-                  tombstones.delete(worktreeId);
-                } else if (event.kind === 'legacy-promote' && snapshotId !== MISSING_SNAPSHOT_ID) {
-                  yield* Effect.sync(() => legacyPromote(databasePath, worktreeId, snapshotId));
-                  pointers.set(worktreeId, snapshotId);
-                } else {
-                  const expected = modelRemove(pointers, tombstones, worktreeId, snapshotId);
-                  const actual = yield* store.removeView(databasePath, worktreeId, snapshotId);
-                  expect(actual).toEqual(expected);
-                }
-
-                const databaseState = yield* Effect.sync(() => readModel(databasePath));
-                expect(databaseState.pointers).toEqual(sortedEntries(pointers));
-                expect(databaseState.tombstones).toEqual(sortedEntries(tombstones));
-                expect(databaseState.readySnapshots).toEqual(SNAPSHOT_IDS);
-
-                const expectedVisible = [...pointers]
-                  .filter(([worktreeId, snapshotId]) => tombstones.get(worktreeId) !== snapshotId)
-                  .sort(([left], [right]) => left.localeCompare(right));
-                const catalogs = yield* store.loadVisualizationCatalogs(databasePath, 'deferred', {viewLimit: 64});
-                expect(
-                  catalogs
-                    .map(catalog => [catalog.viewWorktreeId, catalog.snapshot.id] as const)
-                    .sort(([left], [right]) => left.localeCompare(right)),
-                ).toEqual(expectedVisible);
-                for (const worktree of WORKTREE_IDS) {
-                  const pointer = pointers.get(worktree);
-                  const expectedReady =
-                    pointer !== undefined && tombstones.get(worktree) !== pointer ? pointer : undefined;
-                  expect((yield* store.readySnapshot(databasePath, worktree))?.id).toBe(expectedReady);
-                }
+            for (const event of events) {
+              const worktreeId = WORKTREE_IDS[event.worktree]!;
+              const snapshotId = SNAPSHOT_IDS[event.snapshot] ?? MISSING_SNAPSHOT_ID;
+              if (event.kind === 'promote' && snapshotId !== MISSING_SNAPSHOT_ID) {
+                yield* store.promote(databasePath, identity(root, checkoutId, repositoryId, worktreeId), snapshotId);
+                pointers.set(worktreeId, snapshotId);
+                tombstones.delete(worktreeId);
+              } else if (event.kind === 'legacy-promote' && snapshotId !== MISSING_SNAPSHOT_ID) {
+                yield* Effect.sync(() => legacyPromote(databasePath, worktreeId, snapshotId));
+                pointers.set(worktreeId, snapshotId);
+              } else {
+                const expected = modelRemove(pointers, tombstones, worktreeId, snapshotId);
+                const actual = yield* store.removeView(databasePath, worktreeId, snapshotId);
+                expect(actual).toEqual(expected);
               }
-            }),
-          );
-        } finally {
-          rmSync(root, {force: true, recursive: true});
-        }
-      }),
-      {numRuns: 40},
-    );
-  });
+
+              const databaseState = yield* Effect.sync(() => readModel(databasePath));
+              expect(databaseState.pointers).toEqual(sortedEntries(pointers));
+              expect(databaseState.tombstones).toEqual(sortedEntries(tombstones));
+              expect(databaseState.readySnapshots).toEqual([...SNAPSHOT_IDS].sort());
+
+              const expectedVisible = [...pointers]
+                .filter(([worktreeId, snapshotId]) => tombstones.get(worktreeId) !== snapshotId)
+                .sort(([left], [right]) => left.localeCompare(right));
+              const catalogs = yield* store.loadVisualizationCatalogs(databasePath, 'deferred', {viewLimit: 64});
+              expect(
+                catalogs
+                  .map(catalog => [catalog.viewWorktreeId, catalog.snapshot.id] as const)
+                  .sort(([left], [right]) => left.localeCompare(right)),
+              ).toEqual(expectedVisible);
+              for (const worktree of WORKTREE_IDS) {
+                const pointer = pointers.get(worktree);
+                const expectedReady =
+                  pointer !== undefined && tombstones.get(worktree) !== pointer ? pointer : undefined;
+                expect((yield* store.readySnapshot(databasePath, worktree))?.id).toBe(expectedReady);
+              }
+            }
+          }),
+        ),
+      ).pipe(Effect.provide(ApplicationLayer)),
+    {fastCheck: {numRuns: 40}},
+  );
 });
 
 function modelRemove(

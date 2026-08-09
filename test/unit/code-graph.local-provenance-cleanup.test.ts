@@ -4,6 +4,7 @@ import {describe, expect, it as effectIt} from '@effect/vitest';
 import {Clock, Crypto, Deferred, Effect, Fiber, FileSystem, Layer, Path} from 'effect';
 import {TestClock} from 'effect/testing';
 import {
+  captureCodeGraphLocalProvenanceCleanupEvidence,
   cleanupMissingCodeGraphLocalProvenance,
   readMissingCodeGraphWorktreeReconciliationEvidence,
   recordVerifiedCodeGraphLocalAssociation,
@@ -59,6 +60,36 @@ describe('code graph local provenance cleanup', () => {
           // still invalidates missing-path deletion authority.
           expect(result).toEqual({observedState: 'stale', state: 'preserved'});
           expect(yield* fixture.fs.exists(fixture.sidecar)).toBe(true);
+        }),
+      ),
+    );
+
+    layerIt.effect('preserves a replacement that does not match the exact pre-core cleanup token', () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fixture = yield* provenanceCleanupFixture;
+          const expectedEvidence = yield* captureCodeGraphLocalProvenanceCleanupEvidence(fixture.home, {
+            checkoutId: CHECKOUT_ID,
+            worktreeId: WORKTREE_ID,
+          });
+          expect(expectedEvidence).toBeDefined();
+          const replacement = {
+            ...fixture.record,
+            observedAt: new Date(Date.parse(fixture.record.observedAt) + 1).toISOString(),
+          };
+          yield* fixture.fs.writeFileString(fixture.sidecar, `${JSON.stringify(replacement)}\n`, {
+            flag: 'w',
+            mode: 0o600,
+          });
+
+          const result = yield* cleanupMissingCodeGraphLocalProvenance(
+            fixture.home,
+            {checkoutId: CHECKOUT_ID, worktreeId: WORKTREE_ID},
+            {expectedEvidence: expectedEvidence!},
+          );
+
+          expect(result).toEqual({observedState: 'stale', state: 'preserved'});
+          expect(JSON.parse(yield* fixture.fs.readFileString(fixture.sidecar))).toEqual(replacement);
         }),
       ),
     );

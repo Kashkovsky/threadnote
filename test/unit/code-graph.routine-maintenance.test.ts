@@ -1,6 +1,7 @@
 import {Database} from 'bun:sqlite';
 import {it as effectIt} from '@effect/vitest';
 import {Deferred, Effect, Fiber, FileSystem, Path, Ref} from 'effect';
+import {TestClock} from 'effect/testing';
 import fc from 'fast-check';
 import {afterEach, describe, expect, it} from 'vitest';
 import {makeCodeGraphBuildReporter} from '../../src/code_graph/build_status.js';
@@ -465,55 +466,196 @@ describe('routine code graph maintenance', () => {
     expect(results[2]).toMatchObject({cleanup: 'completed-build', expiredLeases: 0, rowsDeleted: 1});
   });
 
-  it('adds only the lease column on a partial schema and skips absent cleanup tables', async () => {
-    const fixture = await routineFixture('threadnote-routine-maintenance-partial-', false);
-    const database = new Database(fixture.databasePath, {create: true, strict: true});
-    try {
-      database.exec(`
-        CREATE TABLE snapshots (
-          id TEXT PRIMARY KEY NOT NULL,
-          worktree_id TEXT NOT NULL,
-          state TEXT NOT NULL,
-          base_snapshot_id TEXT
-        );
-        CREATE TABLE active_snapshots (
-          worktree_id TEXT PRIMARY KEY NOT NULL,
-          snapshot_id TEXT NOT NULL
-        );
-        CREATE TABLE snapshot_leases (
-          token TEXT PRIMARY KEY NOT NULL,
-          snapshot_id TEXT NOT NULL,
-          expires_at INTEGER NOT NULL
-        );
-      `);
-    } finally {
-      database.close(false);
-    }
-
-    const result = await runEffect(
-      Effect.gen(function* () {
-        const store = yield* CodeGraphStore;
-        return yield* store.runRoutineMaintenance(fixture.databasePath, {
-          writerLockPath: fixture.writerLockPath,
-        });
-      }),
-    );
-
-    expect(result).toMatchObject({cleanup: 'none', state: 'completed'});
-    const reopened = new Database(fixture.databasePath, {readonly: true, strict: true});
-    try {
-      expect(
-        reopened
-          .query("SELECT COUNT(*) AS count FROM pragma_table_info('snapshot_leases') WHERE name = ?")
-          .get('retire_when_inactive'),
-      ).toEqual({count: 1});
-      expect(reopened.query("SELECT name FROM sqlite_master WHERE type = 'table'").all()).not.toContainEqual({
-        name: 'symbols',
+  effectIt.effect('adds only the lease column and immutable expiry index on an empty partial schema', () =>
+    Effect.gen(function* () {
+      const fixture = yield* Effect.promise(() => routineFixture('threadnote-routine-maintenance-partial-', false));
+      yield* Effect.sync(() => {
+        const database = new Database(fixture.databasePath, {create: true, strict: true});
+        try {
+          database.exec(`
+            CREATE TABLE snapshots (
+              id TEXT PRIMARY KEY NOT NULL,
+              worktree_id TEXT NOT NULL,
+              state TEXT NOT NULL,
+              base_snapshot_id TEXT
+            );
+            CREATE TABLE active_snapshots (
+              worktree_id TEXT PRIMARY KEY NOT NULL,
+              snapshot_id TEXT NOT NULL
+            );
+            CREATE TABLE snapshot_leases (
+              token TEXT PRIMARY KEY NOT NULL,
+              snapshot_id TEXT NOT NULL,
+              expires_at INTEGER NOT NULL
+            );
+          `);
+        } finally {
+          database.close(false);
+        }
       });
-    } finally {
-      reopened.close(false);
-    }
-  });
+
+      const store = yield* CodeGraphStore;
+      const result = yield* store.runRoutineMaintenance(fixture.databasePath, {
+        writerLockPath: fixture.writerLockPath,
+      });
+
+      expect(result).toMatchObject({cleanup: 'none', state: 'completed'});
+      yield* Effect.sync(() => {
+        const reopened = new Database(fixture.databasePath, {readonly: true, strict: true});
+        try {
+          expect(
+            reopened
+              .query("SELECT COUNT(*) AS count FROM pragma_table_info('snapshot_leases') WHERE name = ?")
+              .get('retire_when_inactive'),
+          ).toEqual({count: 1});
+          expect(
+            reopened
+              .query("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'snapshot_leases_expiry'")
+              .get(),
+          ).toEqual({sql: 'CREATE INDEX snapshot_leases_expiry ON snapshot_leases(expires_at)'});
+          expect(reopened.query("SELECT name FROM sqlite_master WHERE type = 'table'").all()).not.toContainEqual({
+            name: 'symbols',
+          });
+        } finally {
+          reopened.close(false);
+        }
+      });
+    }).pipe(Effect.provide(ApplicationLayer)),
+  );
+
+  effectIt.effect('does not mutate a populated unversioned lease table that lost its expiry index', () =>
+    Effect.gen(function* () {
+      const fixture = yield* Effect.promise(() =>
+        routineFixture('threadnote-routine-maintenance-missing-expiry-', false),
+      );
+      yield* Effect.sync(() => {
+        const database = new Database(fixture.databasePath, {create: true, strict: true});
+        try {
+          database.exec(`
+            CREATE TABLE snapshots (
+              id TEXT PRIMARY KEY NOT NULL,
+              worktree_id TEXT NOT NULL,
+              state TEXT NOT NULL,
+              base_snapshot_id TEXT
+            );
+            CREATE TABLE active_snapshots (
+              worktree_id TEXT PRIMARY KEY NOT NULL,
+              snapshot_id TEXT NOT NULL
+            );
+            CREATE TABLE snapshot_leases (
+              token TEXT PRIMARY KEY NOT NULL,
+              snapshot_id TEXT NOT NULL,
+              expires_at INTEGER NOT NULL
+            );
+            INSERT INTO snapshot_leases (token, snapshot_id, expires_at)
+            VALUES ('preserved', 'legacy-snapshot', 0);
+          `);
+        } finally {
+          database.close(false);
+        }
+      });
+
+      const store = yield* CodeGraphStore;
+      expect(
+        yield* store.runRoutineMaintenance(fixture.databasePath, {
+          writerLockPath: fixture.writerLockPath,
+        }),
+      ).toEqual({reason: 'schema-unavailable', state: 'skipped'});
+
+      yield* Effect.sync(() => {
+        const reopened = new Database(fixture.databasePath, {readonly: true, strict: true});
+        try {
+          expect(
+            reopened
+              .query("SELECT COUNT(*) AS count FROM pragma_table_info('snapshot_leases') WHERE name = ?")
+              .get('retire_when_inactive'),
+          ).toEqual({count: 0});
+          expect(
+            reopened.query("SELECT name FROM sqlite_master WHERE name = 'snapshot_leases_expiry'").get(),
+          ).toBeNull();
+          expect(reopened.query('SELECT token, snapshot_id, expires_at FROM snapshot_leases').all()).toEqual([
+            {expires_at: 0, snapshot_id: 'legacy-snapshot', token: 'preserved'},
+          ]);
+        } finally {
+          reopened.close(false);
+        }
+      });
+    }).pipe(Effect.provide(ApplicationLayer)),
+  );
+
+  effectIt.effect('preserves a flagged expiry baton when the bounded successor index is unavailable', () =>
+    Effect.gen(function* () {
+      const fixture = yield* Effect.promise(() =>
+        routineFixture('threadnote-routine-maintenance-missing-successor-index-'),
+      );
+      yield* Effect.sync(() => {
+        const database = new Database(fixture.databasePath, {strict: true});
+        try {
+          seedRepository(database);
+          insertSnapshot(database, 'legacy-baton-target', 'ready');
+          database.run('DROP TRIGGER removed_views_cleanup_revoke_delete');
+          database.run('DROP TRIGGER removed_views_cleanup_revoke_insert');
+          database.run('DROP TRIGGER removed_views_cleanup_revoke_update');
+          database.run('DROP TABLE removed_view_cleanup');
+          database.run(
+            `DELETE FROM schema_metadata
+             WHERE key IN ('removed_view_cleanup_epoch_sequence', 'removed_view_cleanup_admission_cursor')`,
+          );
+          database.run("UPDATE schema_metadata SET value = '7' WHERE key = 'persistent_extension_schema_revision'");
+          database.run('DROP INDEX snapshot_leases_snapshot_expiry');
+          const insert = database.query(
+            `INSERT INTO snapshot_leases (token, snapshot_id, expires_at, retire_when_inactive)
+             VALUES (?, 'legacy-baton-target', ?, ?)`,
+          );
+          insert.run('flagged-baton', 0, 1);
+          database.transaction(() => {
+            for (let index = 0; index < 100; index += 1) {
+              insert.run(`unflagged-${index.toString().padStart(3, '0')}`, 1, 0);
+            }
+          })();
+        } finally {
+          database.close(false);
+        }
+      });
+
+      yield* TestClock.adjust(2);
+      const store = yield* CodeGraphStore;
+      expect(
+        yield* store.runRoutineMaintenance(fixture.databasePath, {
+          writerLockPath: fixture.writerLockPath,
+        }),
+      ).toMatchObject({cleanup: 'none', expiredLeases: 99, remaining: true, retiredSnapshots: 0});
+
+      yield* Effect.sync(() => {
+        const reopened = new Database(fixture.databasePath, {readonly: true, strict: true});
+        try {
+          expect(
+            reopened.query('SELECT token, retire_when_inactive FROM snapshot_leases ORDER BY token').all(),
+          ).toEqual([
+            {retire_when_inactive: 1, token: 'flagged-baton'},
+            {retire_when_inactive: 0, token: 'unflagged-099'},
+          ]);
+          expect(
+            reopened.query("SELECT name FROM sqlite_master WHERE name = 'snapshot_leases_snapshot_expiry'").get(),
+          ).toBeNull();
+          const plan = reopened
+            .query(
+              `EXPLAIN QUERY PLAN
+               SELECT token
+               FROM snapshot_leases
+               WHERE expires_at <= ?
+               ORDER BY expires_at
+               LIMIT 100`,
+            )
+            .all(Date.now()) as readonly {readonly detail: string}[];
+          expect(plan.some(row => row.detail.includes('snapshot_leases_expiry'))).toBe(true);
+          expect(plan.some(row => /SCAN|TEMP B-TREE/iu.test(row.detail))).toBe(false);
+        } finally {
+          reopened.close(false);
+        }
+      });
+    }).pipe(Effect.provide(ApplicationLayer)),
+  );
 
   it('skips an incomplete base schema before applying the additive lease migration', async () => {
     const fixture = await routineFixture('threadnote-routine-maintenance-incomplete-', false);
@@ -859,6 +1001,15 @@ describe('routine code graph maintenance', () => {
       yield* Effect.sync(() => {
         const database = new Database(databasePath, {strict: true});
         try {
+          database.run('DROP TRIGGER IF EXISTS removed_views_cleanup_revoke_delete');
+          database.run('DROP TRIGGER IF EXISTS removed_views_cleanup_revoke_insert');
+          database.run('DROP TRIGGER IF EXISTS removed_views_cleanup_revoke_update');
+          database.run('DROP TABLE removed_view_cleanup');
+          database.run(
+            `DELETE FROM schema_metadata
+             WHERE key IN ('removed_view_cleanup_epoch_sequence', 'removed_view_cleanup_admission_cursor')`,
+          );
+          database.run("UPDATE schema_metadata SET value = '7' WHERE key = 'persistent_extension_schema_revision'");
           database.run('DROP INDEX active_snapshots_snapshot_worktree');
           database.run('DROP INDEX snapshots_base_state_id');
           database.run('DROP INDEX snapshot_leases_snapshot_expiry');
@@ -875,12 +1026,12 @@ describe('routine code graph maintenance', () => {
         threadnoteHome: home,
         writerLockPath,
       };
-      const results = yield* Effect.forEach(Array.from({length: 4}), () => coordinator.tick(input), {
+      const results = yield* Effect.forEach(Array.from({length: 5}), () => coordinator.tick(input), {
         concurrency: 1,
       });
 
-      expect(results.slice(0, 3)).toEqual(
-        Array.from({length: 3}, () => ({
+      expect(results.slice(0, 4)).toEqual(
+        Array.from({length: 4}, () => ({
           cleanup: 'reconciliation-index',
           expiredLeases: 0,
           remaining: true,
@@ -889,7 +1040,7 @@ describe('routine code graph maintenance', () => {
           state: 'completed',
         })),
       );
-      expect(results[3]).toEqual(noWorkResult);
+      expect(results[4]).toEqual(noWorkResult);
       expect(readReconciliationIndexes(databasePath)).toEqual([
         'active_snapshots_snapshot_worktree',
         'snapshot_leases_snapshot_expiry',

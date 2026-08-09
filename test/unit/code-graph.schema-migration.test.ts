@@ -1,5 +1,6 @@
 import {Database} from 'bun:sqlite';
-import {Effect, Option} from 'effect';
+import {it as effectIt} from '@effect/vitest';
+import {Deferred, Effect, Fiber, Option} from 'effect';
 import {afterEach, describe, expect, it} from 'vitest';
 import {
   CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION,
@@ -12,6 +13,7 @@ import type {
   CodeGraphSymbol,
   RepositoryIdentity,
 } from '../../src/code_graph/types.js';
+import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {claimPersistentBuildForTest} from '../helpers/code-graph-build.js';
 import {join, mkdtemp, rm} from '../helpers/effect-filesystem.js';
 import {runEffect} from '../helpers/effect-runtime.js';
@@ -697,101 +699,227 @@ describe('code graph persistent schema migration', () => {
     }
   });
 
-  it('adds revision 7 owner instances without retiring revision 6 builds or staging rows', async () => {
-    const fixture = await migrationFixture();
-    const ready = snapshot(fixture.identity, 'ready-before-owner-instance-upgrade');
-    const interrupted = snapshot(fixture.identity, 'interrupted-before-owner-instance-upgrade');
-    await seedReadyAndInterruptedMigration(fixture, ready, interrupted);
-    const prepared = new Database(fixture.databasePath, {strict: true});
-    try {
-      prepared.exec('DROP TABLE snapshot_build_owner_instances');
-      prepared.query("UPDATE schema_metadata SET value = '6' WHERE key = 'persistent_extension_schema_revision'").run();
-    } finally {
-      prepared.close(false);
-    }
-    const phases: CodeGraphPersistentSchemaMigrationPhase[] = [];
-
-    await runEffect(
-      Effect.gen(function* () {
-        const store = yield* CodeGraphStore;
-        yield* store.withSession(fixture.databasePath, store.initialize(fixture.databasePath), {
-          onPersistentSchemaMigrationPhase: phase => Effect.sync(() => phases.push(phase)),
-        });
-      }),
-    );
-
-    const database = new Database(fixture.databasePath, {readonly: true, strict: true});
-    try {
-      expect(phases).toContain('added-build-owner-instance');
-      expect(database.query('SELECT state FROM snapshots WHERE id = ?').get(interrupted.id)).toEqual({
-        state: 'building',
+  effectIt.effect('adds revision 7 owner instances without retiring revision 6 builds or staging rows', () =>
+    Effect.gen(function* () {
+      const fixture = yield* Effect.promise(() => migrationFixture());
+      const ready = snapshot(fixture.identity, 'ready-before-owner-instance-upgrade');
+      const interrupted = snapshot(fixture.identity, 'interrupted-before-owner-instance-upgrade');
+      yield* seedReadyAndInterruptedMigrationEffect(fixture, ready, interrupted);
+      yield* Effect.sync(() => {
+        const prepared = new Database(fixture.databasePath, {strict: true});
+        try {
+          prepared.exec('DROP TABLE snapshot_build_owner_instances');
+          removeRemovedViewCleanupRevision8(prepared);
+          prepared
+            .query("UPDATE schema_metadata SET value = '6' WHERE key = 'persistent_extension_schema_revision'")
+            .run();
+        } finally {
+          prepared.close(false);
+        }
       });
-      expect(
-        database
-          .query('SELECT COUNT(*) AS count FROM building_materialization_batches WHERE snapshot_id = ?')
-          .get(interrupted.id),
-      ).toEqual({count: 1});
-      expect(
-        database.query('SELECT COUNT(*) AS count FROM snapshot_build_owners WHERE snapshot_id = ?').get(interrupted.id),
-      ).toEqual({count: 1});
-      expect(database.query('SELECT COUNT(*) AS count FROM snapshot_build_owner_instances').get()).toEqual({count: 0});
-      expect(
-        database.query("SELECT value FROM schema_metadata WHERE key = 'persistent_extension_schema_revision'").get(),
-      ).toEqual({value: '7'});
-    } finally {
-      database.close(false);
-    }
-  });
+      const phases: CodeGraphPersistentSchemaMigrationPhase[] = [];
+      const store = yield* CodeGraphStore;
+      yield* store.withSession(fixture.databasePath, store.initialize(fixture.databasePath), {
+        onPersistentSchemaMigrationPhase: phase => Effect.sync(() => phases.push(phase)),
+      });
 
-  it('atomically rolls back a fault after adding revision 7 owner instances', async () => {
-    const fixture = await migrationFixture();
-    const ready = snapshot(fixture.identity, 'ready-before-owner-instance-fault');
-    const interrupted = snapshot(fixture.identity, 'interrupted-before-owner-instance-fault');
-    await seedReadyAndInterruptedMigration(fixture, ready, interrupted);
-    const prepared = new Database(fixture.databasePath, {strict: true});
-    try {
-      prepared.exec('DROP TABLE snapshot_build_owner_instances');
-      prepared.query("UPDATE schema_metadata SET value = '6' WHERE key = 'persistent_extension_schema_revision'").run();
-    } finally {
-      prepared.close(false);
-    }
-
-    await expect(
-      runEffect(
-        Effect.gen(function* () {
-          const store = yield* CodeGraphStore;
-          yield* store.withSession(fixture.databasePath, store.initialize(fixture.databasePath), {
-            onPersistentSchemaMigrationPhase: phase =>
-              phase === 'added-build-owner-instance'
-                ? Effect.die(new Error('fault after owner instance creation'))
-                : Effect.void,
+      yield* Effect.sync(() => {
+        const database = new Database(fixture.databasePath, {readonly: true, strict: true});
+        try {
+          expect(phases).toContain('added-build-owner-instance');
+          expect(database.query('SELECT state FROM snapshots WHERE id = ?').get(interrupted.id)).toEqual({
+            state: 'building',
           });
-        }),
-      ),
-    ).rejects.toThrow('fault after owner instance creation');
-
-    const database = new Database(fixture.databasePath, {readonly: true, strict: true});
-    try {
-      expect(
-        database
-          .query("SELECT COUNT(*) AS count FROM sqlite_master WHERE name = 'snapshot_build_owner_instances'")
-          .get(),
-      ).toEqual({count: 0});
-      expect(database.query('SELECT state FROM snapshots WHERE id = ?').get(interrupted.id)).toEqual({
-        state: 'building',
+          expect(
+            database
+              .query('SELECT COUNT(*) AS count FROM building_materialization_batches WHERE snapshot_id = ?')
+              .get(interrupted.id),
+          ).toEqual({count: 1});
+          expect(
+            database
+              .query('SELECT COUNT(*) AS count FROM snapshot_build_owners WHERE snapshot_id = ?')
+              .get(interrupted.id),
+          ).toEqual({count: 1});
+          expect(database.query('SELECT COUNT(*) AS count FROM snapshot_build_owner_instances').get()).toEqual({
+            count: 0,
+          });
+          expect(
+            database
+              .query("SELECT value FROM schema_metadata WHERE key = 'persistent_extension_schema_revision'")
+              .get(),
+          ).toEqual({value: String(CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION)});
+        } finally {
+          database.close(false);
+        }
       });
-      expect(
-        database
-          .query('SELECT COUNT(*) AS count FROM building_materialization_batches WHERE snapshot_id = ?')
-          .get(interrupted.id),
-      ).toEqual({count: 1});
-      expect(
-        database.query("SELECT value FROM schema_metadata WHERE key = 'persistent_extension_schema_revision'").get(),
-      ).toEqual({value: '6'});
-    } finally {
-      database.close(false);
-    }
-  });
+    }).pipe(Effect.provide(ApplicationLayer)),
+  );
+
+  effectIt.effect('atomically rolls back revision 8 cleanup publication and converges on retry', () =>
+    Effect.gen(function* () {
+      const fixture = yield* Effect.promise(() => migrationFixture());
+      const ready = snapshot(fixture.identity, 'ready-before-cleanup-publication-fault');
+      const interrupted = snapshot(fixture.identity, 'interrupted-before-cleanup-publication-fault');
+      yield* seedReadyAndInterruptedMigrationEffect(fixture, ready, interrupted);
+      yield* Effect.sync(() => {
+        const prepared = new Database(fixture.databasePath, {strict: true});
+        try {
+          removeRemovedViewCleanupRevision8(prepared);
+          prepared
+            .query("UPDATE schema_metadata SET value = '7' WHERE key = 'persistent_extension_schema_revision'")
+            .run();
+        } finally {
+          prepared.close(false);
+        }
+      });
+      const before = yield* Effect.sync(() => readRemovedViewCleanupMigrationSurface(fixture.databasePath));
+      expect(before.revision).toEqual({value: '7'});
+      expect(before.objects).toEqual([]);
+      expect(before.sequence).toBeNull();
+
+      const store = yield* CodeGraphStore;
+      const failed = yield* store
+        .withSession(fixture.databasePath, store.initialize(fixture.databasePath), {
+          onPersistentSchemaMigrationPhase: phase =>
+            phase === 'added-removed-view-cleanup'
+              ? Effect.die(new Error('fault after cleanup publication'))
+              : Effect.void,
+        })
+        .pipe(Effect.exit);
+      expect(failed._tag).toBe('Failure');
+      expect(yield* Effect.sync(() => readRemovedViewCleanupMigrationSurface(fixture.databasePath))).toEqual(before);
+
+      const phases: CodeGraphPersistentSchemaMigrationPhase[] = [];
+      yield* store.withSession(fixture.databasePath, store.initialize(fixture.databasePath), {
+        onPersistentSchemaMigrationPhase: phase => Effect.sync(() => phases.push(phase)),
+      });
+      const healed = yield* Effect.sync(() => readRemovedViewCleanupMigrationSurface(fixture.databasePath));
+      expect(phases).toEqual(['added-removed-view-cleanup', 'recorded-revision']);
+      expect(healed.revision).toEqual({value: String(CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION)});
+      expect(healed.sequence).toEqual({value: '0'});
+      expect(healed.queueRows).toEqual({count: 0});
+      expect(healed.objects.map(object => object.name)).toEqual([
+        'removed_view_cleanup_due',
+        'removed_view_cleanup',
+        'removed_views_cleanup_revoke_delete',
+        'removed_views_cleanup_revoke_insert',
+        'removed_views_cleanup_revoke_update',
+      ]);
+      expect(healed.snapshots).toEqual(before.snapshots);
+      expect(healed.active).toEqual(before.active);
+      expect(healed.tombstones).toEqual(before.tombstones);
+    }).pipe(Effect.provide(ApplicationLayer)),
+  );
+
+  effectIt.effect('rolls back revision 8 cleanup publication when the migration Effect is interrupted', () =>
+    Effect.gen(function* () {
+      const fixture = yield* Effect.promise(() => migrationFixture());
+      const ready = snapshot(fixture.identity, 'ready-before-cleanup-publication-interrupt');
+      const interrupted = snapshot(fixture.identity, 'interrupted-before-cleanup-publication-interrupt');
+      yield* seedReadyAndInterruptedMigrationEffect(fixture, ready, interrupted);
+      yield* Effect.sync(() => {
+        const prepared = new Database(fixture.databasePath, {strict: true});
+        try {
+          removeRemovedViewCleanupRevision8(prepared);
+          prepared
+            .query("UPDATE schema_metadata SET value = '7' WHERE key = 'persistent_extension_schema_revision'")
+            .run();
+        } finally {
+          prepared.close(false);
+        }
+      });
+      const before = yield* Effect.sync(() => readRemovedViewCleanupMigrationSurface(fixture.databasePath));
+      const reachedCleanupPublication = yield* Deferred.make<void>();
+      const keepTransactionOpen = yield* Deferred.make<void>();
+      const store = yield* CodeGraphStore;
+      const migration = yield* store
+        .withSession(fixture.databasePath, store.initialize(fixture.databasePath), {
+          onPersistentSchemaMigrationPhase: phase =>
+            phase === 'added-removed-view-cleanup'
+              ? Deferred.succeed(reachedCleanupPublication, undefined).pipe(
+                  Effect.andThen(Deferred.await(keepTransactionOpen)),
+                )
+              : Effect.void,
+        })
+        .pipe(Effect.forkChild({startImmediately: true}));
+      yield* Deferred.await(reachedCleanupPublication);
+      yield* Fiber.interrupt(migration);
+
+      expect(yield* Effect.sync(() => readRemovedViewCleanupMigrationSurface(fixture.databasePath))).toEqual(before);
+
+      const phases: CodeGraphPersistentSchemaMigrationPhase[] = [];
+      yield* store.withSession(fixture.databasePath, store.initialize(fixture.databasePath), {
+        onPersistentSchemaMigrationPhase: phase => Effect.sync(() => phases.push(phase)),
+      });
+      const healed = yield* Effect.sync(() => readRemovedViewCleanupMigrationSurface(fixture.databasePath));
+      expect(phases).toEqual(['added-removed-view-cleanup', 'recorded-revision']);
+      expect(healed.revision).toEqual({value: String(CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION)});
+      expect(healed.sequence).toEqual({value: '0'});
+      expect(healed.queueRows).toEqual({count: 0});
+      expect(healed.snapshots).toEqual(before.snapshots);
+      expect(healed.active).toEqual(before.active);
+      expect(healed.tombstones).toEqual(before.tombstones);
+    }).pipe(Effect.provide(ApplicationLayer)),
+  );
+
+  effectIt.effect('atomically rolls back a fault after adding revision 7 owner instances', () =>
+    Effect.gen(function* () {
+      const fixture = yield* Effect.promise(() => migrationFixture());
+      const ready = snapshot(fixture.identity, 'ready-before-owner-instance-fault');
+      const interrupted = snapshot(fixture.identity, 'interrupted-before-owner-instance-fault');
+      yield* seedReadyAndInterruptedMigrationEffect(fixture, ready, interrupted);
+      yield* Effect.sync(() => {
+        const prepared = new Database(fixture.databasePath, {strict: true});
+        try {
+          prepared.exec('DROP TABLE snapshot_build_owner_instances');
+          removeRemovedViewCleanupRevision8(prepared);
+          prepared
+            .query("UPDATE schema_metadata SET value = '6' WHERE key = 'persistent_extension_schema_revision'")
+            .run();
+        } finally {
+          prepared.close(false);
+        }
+      });
+
+      const store = yield* CodeGraphStore;
+      const failed = yield* store
+        .withSession(fixture.databasePath, store.initialize(fixture.databasePath), {
+          onPersistentSchemaMigrationPhase: phase =>
+            phase === 'added-build-owner-instance'
+              ? Effect.die(new Error('fault after owner instance creation'))
+              : Effect.void,
+        })
+        .pipe(Effect.exit);
+      expect(failed._tag).toBe('Failure');
+      if (failed._tag === 'Failure') expect(String(failed.cause)).toContain('fault after owner instance creation');
+
+      yield* Effect.sync(() => {
+        const database = new Database(fixture.databasePath, {readonly: true, strict: true});
+        try {
+          expect(
+            database
+              .query("SELECT COUNT(*) AS count FROM sqlite_master WHERE name = 'snapshot_build_owner_instances'")
+              .get(),
+          ).toEqual({count: 0});
+          expect(database.query('SELECT state FROM snapshots WHERE id = ?').get(interrupted.id)).toEqual({
+            state: 'building',
+          });
+          expect(
+            database
+              .query('SELECT COUNT(*) AS count FROM building_materialization_batches WHERE snapshot_id = ?')
+              .get(interrupted.id),
+          ).toEqual({count: 1});
+          expect(
+            database
+              .query("SELECT value FROM schema_metadata WHERE key = 'persistent_extension_schema_revision'")
+              .get(),
+          ).toEqual({value: '6'});
+        } finally {
+          database.close(false);
+        }
+      });
+    }).pipe(Effect.provide(ApplicationLayer)),
+  );
 
   it('atomically rolls back an interrupted additive materialization-plan migration', async () => {
     const fixture = await migrationFixture();
@@ -1109,37 +1237,81 @@ function readMigrationState(databasePath: string) {
   }
 }
 
-async function seedReadyAndInterruptedMigration(
+function readRemovedViewCleanupMigrationSurface(databasePath: string) {
+  const database = new Database(databasePath, {readonly: true, strict: true});
+  try {
+    const queueExists = database
+      .query("SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'removed_view_cleanup'")
+      .get();
+    return {
+      active: database
+        .query('SELECT worktree_id, snapshot_id, activated_at FROM active_snapshots ORDER BY worktree_id')
+        .all(),
+      objects: database
+        .query<{readonly name: string; readonly type: string}, []>(
+          `SELECT type, name FROM sqlite_master
+           WHERE name IN (
+             'removed_view_cleanup', 'removed_view_cleanup_due',
+             'removed_views_cleanup_revoke_delete', 'removed_views_cleanup_revoke_insert',
+             'removed_views_cleanup_revoke_update'
+           )
+           ORDER BY type, name`,
+        )
+        .all(),
+      queueRows: queueExists ? database.query('SELECT COUNT(*) AS count FROM removed_view_cleanup').get() : null,
+      revision: database
+        .query("SELECT value FROM schema_metadata WHERE key = 'persistent_extension_schema_revision'")
+        .get(),
+      sequence: database
+        .query("SELECT value FROM schema_metadata WHERE key = 'removed_view_cleanup_epoch_sequence'")
+        .get(),
+      snapshots: database.query('SELECT id, state, completed_at, failure_summary FROM snapshots ORDER BY id').all(),
+      tombstones: database
+        .query('SELECT worktree_id, expected_snapshot_id, removed_at FROM removed_views ORDER BY worktree_id')
+        .all(),
+    };
+  } finally {
+    database.close(false);
+  }
+}
+
+function seedReadyAndInterruptedMigrationEffect(
   fixture: Awaited<ReturnType<typeof migrationFixture>>,
   ready: CodeGraphSnapshot,
   interrupted: CodeGraphSnapshot,
 ) {
   const preserved = graphSymbol(`preserved-${ready.id.slice('ready-before-'.length)}`);
   const partial = graphSymbol(`partial-${interrupted.id.slice('interrupted-before-'.length)}`);
-  await runEffect(
-    Effect.gen(function* () {
-      const store = yield* CodeGraphStore;
-      yield* store.withSession(
-        fixture.databasePath,
-        Effect.gen(function* () {
-          yield* store.prepareActivation(fixture.databasePath, [fixture.file]);
-          yield* store.stageActivationFacts(fixture.databasePath, [preserved], []);
-          yield* store.activateStaged(fixture.databasePath, fixture.identity, ready);
-        }),
-      );
-      yield* store.withSession(
-        fixture.databasePath,
-        Effect.gen(function* () {
-          const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
-            ...interrupted,
-            state: 'building',
-          });
-          yield* store.prepareActivation(fixture.databasePath, [fixture.file], interrupted.id, 1, ownerToken);
-          yield* store.stageActivationFacts(fixture.databasePath, [partial], [], [], undefined, 0);
-        }),
-      );
-    }),
-  );
+  return Effect.gen(function* () {
+    const store = yield* CodeGraphStore;
+    yield* store.withSession(
+      fixture.databasePath,
+      Effect.gen(function* () {
+        yield* store.prepareActivation(fixture.databasePath, [fixture.file]);
+        yield* store.stageActivationFacts(fixture.databasePath, [preserved], []);
+        yield* store.activateStaged(fixture.databasePath, fixture.identity, ready);
+      }),
+    );
+    yield* store.withSession(
+      fixture.databasePath,
+      Effect.gen(function* () {
+        const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
+          ...interrupted,
+          state: 'building',
+        });
+        yield* store.prepareActivation(fixture.databasePath, [fixture.file], interrupted.id, 1, ownerToken);
+        yield* store.stageActivationFacts(fixture.databasePath, [partial], [], [], undefined, 0);
+      }),
+    );
+  });
+}
+
+async function seedReadyAndInterruptedMigration(
+  fixture: Awaited<ReturnType<typeof migrationFixture>>,
+  ready: CodeGraphSnapshot,
+  interrupted: CodeGraphSnapshot,
+) {
+  await runEffect(seedReadyAndInterruptedMigrationEffect(fixture, ready, interrupted));
 }
 
 function recreateCompactTermsWithoutUniqueConstraint(databasePath: string): void {
@@ -1176,6 +1348,7 @@ function downgradePersistentExtensionSchema(
   try {
     database.exec('PRAGMA foreign_keys = OFF');
     database.exec('BEGIN IMMEDIATE');
+    removeRemovedViewCleanupRevision8(database);
     database.exec("DELETE FROM schema_metadata WHERE key = 'persistent_extension_schema_revision'");
     for (const table of [
       'building_materialization_batches',
@@ -1186,6 +1359,7 @@ function downgradePersistentExtensionSchema(
       'snapshot_analysis_edge_counts',
       'snapshot_analysis_edge_histogram',
       'snapshot_analysis_symbol_counts',
+      'snapshot_build_owner_instances',
       'snapshot_build_owners',
     ]) {
       database.exec(`DROP TABLE IF EXISTS "${table}"`);
@@ -1245,6 +1419,7 @@ function downgradeLexicalExtensionToRevision4(databasePath: string, snapshotId: 
   try {
     database.exec('PRAGMA foreign_keys = OFF');
     database.exec('BEGIN IMMEDIATE');
+    removeRemovedViewCleanupRevision8(database);
     database
       .query(
         `INSERT INTO symbol_terms (snapshot_id, term, symbol_id, weight)
@@ -1283,6 +1458,7 @@ function downgradeBuildOwnerPlanColumnOnly(databasePath: string, interruptedSnap
       .get(interruptedSnapshotId) as {readonly claimed_at: string; readonly owner_token: string};
     database.exec('PRAGMA foreign_keys = OFF');
     database.exec('BEGIN IMMEDIATE');
+    removeRemovedViewCleanupRevision8(database);
     database.exec(`
       DROP TABLE snapshot_build_owners;
       CREATE TABLE snapshot_build_owners (
@@ -1323,6 +1499,7 @@ function downgradeReferenceCandidatesToRevision3(databasePath: string, interrupt
   try {
     database.exec('PRAGMA foreign_keys = OFF');
     database.exec('BEGIN IMMEDIATE');
+    removeRemovedViewCleanupRevision8(database);
     database.exec(`
       DROP TABLE building_references;
       CREATE TABLE building_references (
@@ -1355,6 +1532,21 @@ function downgradeReferenceCandidatesToRevision3(databasePath: string, interrupt
   } finally {
     database.close(false);
   }
+}
+
+function removeRemovedViewCleanupRevision8(database: Database): void {
+  database.exec(`
+    DROP TRIGGER IF EXISTS removed_views_cleanup_revoke_delete;
+    DROP TRIGGER IF EXISTS removed_views_cleanup_revoke_insert;
+    DROP TRIGGER IF EXISTS removed_views_cleanup_revoke_update;
+    DROP TABLE IF EXISTS removed_view_cleanup;
+  `);
+  database
+    .query(
+      `DELETE FROM schema_metadata
+       WHERE key IN ('removed_view_cleanup_epoch_sequence', 'removed_view_cleanup_admission_cursor')`,
+    )
+    .run();
 }
 
 async function migrationFixture() {

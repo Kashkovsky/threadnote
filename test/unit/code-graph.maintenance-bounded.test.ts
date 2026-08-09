@@ -1,8 +1,13 @@
 import {Database} from 'bun:sqlite';
+import {it as effectIt} from '@effect/vitest';
 import {Clock, Deferred, Effect, Fiber, FileSystem, Path} from 'effect';
 import {afterEach, describe, expect, it} from 'vitest';
 import {runCodeGraphRepair} from '../../src/code_graph/commands.js';
-import {codeGraphDoctorCheck, repairCodeGraphIndexes} from '../../src/code_graph/maintenance.js';
+import {
+  codeGraphDoctorCheck,
+  diagnoseCodeGraphDatabaseReadOnly,
+  repairCodeGraphIndexes,
+} from '../../src/code_graph/maintenance.js';
 import {codeGraphRepositoryLockPath, codeGraphWorktreeLockPath} from '../../src/code_graph/layout.js';
 import {CODE_GRAPH_SCHEMA_VERSION} from '../../src/code_graph/types.js';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
@@ -11,6 +16,7 @@ import {withExclusiveFileLock} from '../../src/effect/file_lock.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import {join, mkdir, mkdtemp, rm, writeFile} from '../helpers/effect-filesystem.js';
 import {runEffect} from '../helpers/effect-runtime.js';
+import {ApplicationLayer} from '../../src/effect/runtime.js';
 
 describe('bounded code graph maintenance', () => {
   const homes: string[] = [];
@@ -118,6 +124,73 @@ describe('bounded code graph maintenance', () => {
     await expect(Bun.file(lockPath).exists()).resolves.toBe(false);
   });
 
+  effectIt.effect('reports revision-8 cleanup authority drift as incompatible without mutating it', () =>
+    Effect.gen(function* () {
+      const cases = [
+        {
+          mutate: (database: Database) => database.run('DROP TABLE removed_view_cleanup'),
+          name: 'missing-table',
+        },
+        {
+          mutate: (database: Database) => {
+            database.run('DROP INDEX removed_view_cleanup_due');
+            database.run('CREATE INDEX removed_view_cleanup_due ON removed_view_cleanup(phase)');
+          },
+          name: 'wrong-index',
+        },
+        {
+          mutate: (database: Database) =>
+            database.run(
+              "UPDATE schema_metadata SET key = 'PERSISTENT_EXTENSION_SCHEMA_REVISION' WHERE key = 'persistent_extension_schema_revision'",
+            ),
+          name: 'uppercase-revision',
+        },
+        {
+          mutate: (database: Database) =>
+            database.run(
+              "INSERT INTO schema_metadata (key, value) VALUES ('removed_view_cleanup_admission_cursor', 'invalid')",
+            ),
+          name: 'malformed-cursor',
+        },
+      ] as const;
+      const store = yield* CodeGraphStore;
+      for (const testCase of cases) {
+        const home = yield* Effect.promise(() => mkdtemp(`threadnote-graph-health-${testCase.name}-`));
+        homes.push(home);
+        const databasePath = join(
+          home,
+          'indexes',
+          'code-graph',
+          'repositories',
+          'f'.repeat(64),
+          `graph-v${CODE_GRAPH_SCHEMA_VERSION}.sqlite`,
+        );
+        yield* store.initialize(databasePath);
+        const before = yield* Effect.sync(() => {
+          const database = new Database(databasePath, {strict: true});
+          try {
+            testCase.mutate(database);
+            return readCleanupHealthSurface(database);
+          } finally {
+            database.close(false);
+          }
+        });
+
+        expect((yield* diagnoseCodeGraphDatabaseReadOnly(databasePath, false)).integrity).toBe('incompatible');
+        expect(
+          yield* Effect.sync(() => {
+            const database = new Database(databasePath, {readonly: true, strict: true});
+            try {
+              return readCleanupHealthSurface(database);
+            } finally {
+              database.close(false);
+            }
+          }),
+        ).toEqual(before);
+      }
+    }).pipe(Effect.provide(ApplicationLayer)),
+  );
+
   it('defers deep repair when database diagnosis is unreadable instead of discarding it', async () => {
     const home = await mkdtemp('threadnote-graph-maintenance-unreadable-');
     homes.push(home);
@@ -163,53 +236,36 @@ describe('bounded code graph maintenance', () => {
     }
   });
 
-  it('reports an interrupted extension revision and never discards the recoverable database', async () => {
-    const home = await mkdtemp('threadnote-graph-maintenance-extension-revision-');
-    homes.push(home);
-    const checkoutId = 'd'.repeat(64);
-    const repositoryRoot = join(home, 'indexes', 'code-graph', 'repositories', checkoutId);
-    const databasePath = join(repositoryRoot, `graph-v${CODE_GRAPH_SCHEMA_VERSION}.sqlite`);
-    await runEffect(
-      Effect.gen(function* () {
-        const store = yield* CodeGraphStore;
-        yield* store.initialize(databasePath);
-      }),
-    );
-    const interrupted = new Database(databasePath, {strict: true});
-    try {
-      interrupted.exec(`
-        DELETE FROM schema_metadata WHERE key = 'persistent_extension_schema_revision';
-        DROP TABLE building_materialization_batches;
-      `);
-    } finally {
-      interrupted.close(false);
-    }
+  effectIt.effect('reports an interrupted extension revision and never discards the recoverable database', () =>
+    Effect.gen(function* () {
+      const home = yield* Effect.promise(() => mkdtemp('threadnote-graph-maintenance-extension-revision-'));
+      homes.push(home);
+      const checkoutId = 'd'.repeat(64);
+      const repositoryRoot = join(home, 'indexes', 'code-graph', 'repositories', checkoutId);
+      const databasePath = join(repositoryRoot, `graph-v${CODE_GRAPH_SCHEMA_VERSION}.sqlite`);
+      const store = yield* CodeGraphStore;
+      yield* store.initialize(databasePath);
+      yield* Effect.sync(() => makeRecoverableInterruptedExtension(databasePath));
 
-    const progress: string[] = [];
-    const doctorBefore = await runEffect(codeGraphDoctorCheck(home));
-    const repair = await runEffect(
-      repairCodeGraphIndexes(
+      const progress: string[] = [];
+      const doctorBefore = yield* codeGraphDoctorCheck(home);
+      const repair = yield* repairCodeGraphIndexes(
         home,
         false,
         state => Effect.sync(() => progress.push(`${state.phase}:${state.reason ?? 'none'}`)),
         undefined,
         {mode: 'deep'},
-      ),
-    );
+      );
 
-    expect(doctorBefore).toMatchObject({status: 'fail'});
-    expect(repair).toMatchObject({databases: 1, deferredDatabases: 1, discarded: 0});
-    expect(progress).toEqual(['checking:none', 'deferred:schema-upgrade-on-use']);
-    await expect(Bun.file(databasePath).exists()).resolves.toBe(true);
+      expect(doctorBefore).toMatchObject({status: 'fail'});
+      expect(repair).toMatchObject({databases: 1, deferredDatabases: 1, discarded: 0});
+      expect(progress).toEqual(['checking:none', 'deferred:schema-upgrade-on-use']);
+      expect(yield* Effect.promise(() => Bun.file(databasePath).exists())).toBe(true);
 
-    await runEffect(
-      Effect.gen(function* () {
-        const store = yield* CodeGraphStore;
-        yield* store.initialize(databasePath);
-      }),
-    );
-    await expect(runEffect(codeGraphDoctorCheck(home))).resolves.toMatchObject({status: 'ok'});
-  });
+      yield* store.initialize(databasePath);
+      expect(yield* codeGraphDoctorCheck(home)).toMatchObject({status: 'ok'});
+    }).pipe(Effect.provide(ApplicationLayer)),
+  );
 
   it('reports exact extension contract drift with a current receipt and preserves the database for self-healing', async () => {
     const home = await mkdtemp('threadnote-graph-maintenance-extension-contract-');
@@ -254,96 +310,139 @@ describe('bounded code graph maintenance', () => {
     await expect(runEffect(codeGraphDoctorCheck(home))).resolves.toMatchObject({status: 'ok'});
   });
 
-  it('explicitly migrates recoverable schemas without waiting for a graph query', async () => {
-    const home = await mkdtemp('threadnote-graph-maintenance-explicit-migration-');
-    homes.push(home);
-    const checkoutId = 'f'.repeat(64);
-    const repositoryRoot = join(home, 'indexes', 'code-graph', 'repositories', checkoutId);
-    const databasePath = join(repositoryRoot, `graph-v${CODE_GRAPH_SCHEMA_VERSION}.sqlite`);
-    await runEffect(
-      Effect.gen(function* () {
-        const store = yield* CodeGraphStore;
-        yield* store.initialize(databasePath);
-      }),
-    );
-    const interrupted = new Database(databasePath, {strict: true});
-    try {
-      interrupted.exec(`
-        DELETE FROM schema_metadata WHERE key = 'persistent_extension_schema_revision';
-        DROP TABLE building_materialization_batches;
-      `);
-    } finally {
-      interrupted.close(false);
-    }
+  effectIt.effect('explicitly migrates recoverable schemas without waiting for a graph query', () =>
+    Effect.gen(function* () {
+      const home = yield* Effect.promise(() => mkdtemp('threadnote-graph-maintenance-explicit-migration-'));
+      homes.push(home);
+      const checkoutId = 'f'.repeat(64);
+      const repositoryRoot = join(home, 'indexes', 'code-graph', 'repositories', checkoutId);
+      const databasePath = join(repositoryRoot, `graph-v${CODE_GRAPH_SCHEMA_VERSION}.sqlite`);
+      const store = yield* CodeGraphStore;
+      yield* store.initialize(databasePath);
+      yield* Effect.sync(() => makeRecoverableInterruptedExtension(databasePath));
 
-    const previewProgress: string[] = [];
-    const preview = await runEffect(
-      repairCodeGraphIndexes(home, true, state => Effect.sync(() => previewProgress.push(state.phase)), undefined, {
-        migrateSchema: true,
+      const previewProgress: string[] = [];
+      const preview = yield* repairCodeGraphIndexes(
+        home,
+        true,
+        state => Effect.sync(() => previewProgress.push(state.phase)),
+        undefined,
+        {migrateSchema: true, mode: 'quick'},
+      );
+      expect(preview).toMatchObject({deferredDatabases: 0, migratedDatabases: 1});
+      expect(previewProgress).toEqual(['checking', 'migrating-schema']);
+      expect(yield* codeGraphDoctorCheck(home)).toMatchObject({status: 'fail'});
+
+      const repairProgress: string[] = [];
+      const repair = yield* repairCodeGraphIndexes(
+        home,
+        false,
+        state => Effect.sync(() => repairProgress.push(state.phase)),
+        undefined,
+        {migrateSchema: true, mode: 'quick'},
+      );
+      expect(repair).toMatchObject({deferredDatabases: 0, migratedDatabases: 1});
+      expect(repairProgress).toEqual(['checking', 'migrating-schema']);
+      expect(yield* codeGraphDoctorCheck(home)).toMatchObject({status: 'ok'});
+    }).pipe(Effect.provide(ApplicationLayer)),
+  );
+
+  effectIt.effect('exposes foreground schema migration through graph repair --all', () =>
+    Effect.gen(function* () {
+      const home = yield* Effect.promise(() => mkdtemp('threadnote-graph-repair-command-'));
+      homes.push(home);
+      const checkoutId = '1'.repeat(64);
+      const databasePath = join(
+        home,
+        'indexes',
+        'code-graph',
+        'repositories',
+        checkoutId,
+        `graph-v${CODE_GRAPH_SCHEMA_VERSION}.sqlite`,
+      );
+      const store = yield* CodeGraphStore;
+      yield* store.initialize(databasePath);
+      yield* Effect.sync(() => makeRecoverableInterruptedExtension(databasePath));
+      const config: RuntimeConfig = {
+        account: 'local',
+        agentContextHome: home,
+        agentId: 'threadnote',
+        manifestPath: join(home, 'manifest.yaml'),
+        user: 'tester',
+      };
+
+      const output = yield* captureConsole(runCodeGraphRepair(config, {all: true, json: true}));
+
+      expect(JSON.parse(output.output)).toMatchObject({
+        doctor: {status: 'ok'},
+        dryRun: false,
         mode: 'quick',
-      }),
-    );
-    expect(preview).toMatchObject({deferredDatabases: 0, migratedDatabases: 1});
-    expect(previewProgress).toEqual(['checking', 'migrating-schema']);
-    await expect(runEffect(codeGraphDoctorCheck(home))).resolves.toMatchObject({status: 'fail'});
-
-    const repairProgress: string[] = [];
-    const repair = await runEffect(
-      repairCodeGraphIndexes(home, false, state => Effect.sync(() => repairProgress.push(state.phase)), undefined, {
-        migrateSchema: true,
-        mode: 'quick',
-      }),
-    );
-    expect(repair).toMatchObject({deferredDatabases: 0, migratedDatabases: 1});
-    expect(repairProgress).toEqual(['checking', 'migrating-schema']);
-    await expect(runEffect(codeGraphDoctorCheck(home))).resolves.toMatchObject({status: 'ok'});
-  });
-
-  it('exposes foreground schema migration through graph repair --all', async () => {
-    const home = await mkdtemp('threadnote-graph-repair-command-');
-    homes.push(home);
-    const checkoutId = '1'.repeat(64);
-    const databasePath = join(
-      home,
-      'indexes',
-      'code-graph',
-      'repositories',
-      checkoutId,
-      `graph-v${CODE_GRAPH_SCHEMA_VERSION}.sqlite`,
-    );
-    await runEffect(
-      Effect.gen(function* () {
-        const store = yield* CodeGraphStore;
-        yield* store.initialize(databasePath);
-      }),
-    );
-    const interrupted = new Database(databasePath, {strict: true});
-    try {
-      interrupted.exec(`
-        DELETE FROM schema_metadata WHERE key = 'persistent_extension_schema_revision';
-        DROP TABLE building_materialization_batches;
-      `);
-    } finally {
-      interrupted.close(false);
-    }
-    const config: RuntimeConfig = {
-      account: 'local',
-      agentContextHome: home,
-      agentId: 'threadnote',
-      manifestPath: join(home, 'manifest.yaml'),
-      user: 'tester',
-    };
-
-    const output = await runEffect(captureConsole(runCodeGraphRepair(config, {all: true, json: true})));
-
-    expect(JSON.parse(output.output)).toMatchObject({
-      doctor: {status: 'ok'},
-      dryRun: false,
-      mode: 'quick',
-      summary: {deferredDatabases: 0, migratedDatabases: 1},
-      type: 'code-graph-repair',
-      version: 1,
-    });
-    await expect(runEffect(codeGraphDoctorCheck(home))).resolves.toMatchObject({status: 'ok'});
-  });
+        summary: {deferredDatabases: 0, migratedDatabases: 1},
+        type: 'code-graph-repair',
+        version: 1,
+      });
+      expect(yield* codeGraphDoctorCheck(home)).toMatchObject({status: 'ok'});
+    }).pipe(Effect.provide(ApplicationLayer)),
+  );
 });
+
+function readCleanupHealthSurface(database: Database): {
+  readonly metadata: readonly unknown[];
+  readonly objects: readonly unknown[];
+} {
+  return {
+    metadata: database
+      .query(
+        `SELECT key, value
+         FROM schema_metadata
+         WHERE key COLLATE NOCASE IN (
+           'persistent_extension_schema_revision',
+           'removed_view_cleanup_admission_cursor',
+           'removed_view_cleanup_epoch_sequence'
+         )
+         ORDER BY key`,
+      )
+      .all(),
+    objects: database
+      .query(
+        `SELECT name, type, sql
+         FROM sqlite_master
+         WHERE name LIKE 'removed_view_cleanup%'
+            OR name LIKE 'removed_views_cleanup_revoke_%'
+         ORDER BY name`,
+      )
+      .all(),
+  };
+}
+
+function makeRecoverableInterruptedExtension(databasePath: string): void {
+  const database = new Database(databasePath, {strict: true});
+  try {
+    database.run('PRAGMA foreign_keys = OFF');
+    database.run('BEGIN IMMEDIATE');
+    try {
+      database.exec(`
+        DROP TRIGGER IF EXISTS removed_views_cleanup_revoke_delete;
+        DROP TRIGGER IF EXISTS removed_views_cleanup_revoke_insert;
+        DROP TRIGGER IF EXISTS removed_views_cleanup_revoke_update;
+        DROP TABLE IF EXISTS removed_view_cleanup;
+        DROP TABLE IF EXISTS snapshot_build_owner_instances;
+        DROP TABLE IF EXISTS building_materialization_batches;
+        DELETE FROM schema_metadata
+        WHERE key IN (
+          'persistent_extension_schema_revision',
+          'removed_view_cleanup_admission_cursor',
+          'removed_view_cleanup_epoch_sequence'
+        );
+      `);
+      database.run('COMMIT');
+    } catch (error) {
+      if (database.inTransaction) database.run('ROLLBACK');
+      throw error;
+    } finally {
+      database.run('PRAGMA foreign_keys = ON');
+    }
+  } finally {
+    database.close(false);
+  }
+}

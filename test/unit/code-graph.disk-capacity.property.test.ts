@@ -1,6 +1,8 @@
 import fc from 'fast-check';
 import {describe, expect, it} from '@effect/vitest';
 import {
+  CODE_GRAPH_CACHE_PERSISTENT_CAPACITY_CALIBRATION,
+  CODE_GRAPH_DIRECT_PERSISTENT_CAPACITY_CALIBRATION,
   codeGraphDirectPersistentCapacityDemand,
   codeGraphPersistentCapacityDemand,
   CodeGraphDiskCapacityObservationError,
@@ -14,7 +16,11 @@ import {
   sqliteWalCapacityBytes,
   type CodeGraphDiskCapacityInput,
 } from '../../src/code_graph/disk_capacity.js';
-import {CodeGraphStoreNoSpaceError, CodeGraphStoreTransientIoError} from '../../src/code_graph/types.js';
+import {
+  CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION,
+  CodeGraphStoreNoSpaceError,
+  CodeGraphStoreTransientIoError,
+} from '../../src/code_graph/types.js';
 
 const boundedBytes = fc.integer({max: 2 ** 42, min: 0});
 const capacityMagnitude = fc.oneof(
@@ -25,6 +31,17 @@ const capacityMagnitude = fc.oneof(
 );
 
 describe('code graph disk capacity properties', () => {
+  it('binds persistent-extension revision 8 into both calibration identities', () => {
+    for (const calibration of [
+      CODE_GRAPH_DIRECT_PERSISTENT_CAPACITY_CALIBRATION,
+      CODE_GRAPH_CACHE_PERSISTENT_CAPACITY_CALIBRATION,
+    ]) {
+      const revisionIdentity = `extension-r${CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION}`;
+      expect(calibration.identityBase).toContain(`:${revisionIdentity}`);
+      expect(calibration.identityBase.replace(revisionIdentity, 'extension-r7')).not.toBe(calibration.identityBase);
+    }
+  });
+
   it('uses an independently versioned cache-payload calibration for both cache operations', () => {
     for (const operation of [
       'cache code graph file facts' as const,

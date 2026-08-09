@@ -7,8 +7,8 @@ import {CodeGraphStore, type CodeGraphViewObservationResult} from '../../src/cod
 import {SystemInfo} from '../../src/effect/system.js';
 
 const WORKTREE_ID = '1'.repeat(64);
-const EXPECTED = 'snapshot-expected';
-const OTHER = 'snapshot-other';
+const EXPECTED = `cgsn_${'1'.repeat(40)}`;
+const OTHER = `cgsn_${'2'.repeat(40)}`;
 
 const observationCase = FC.record({
   active: FC.constantFrom<string | undefined>(undefined, EXPECTED, OTHER),

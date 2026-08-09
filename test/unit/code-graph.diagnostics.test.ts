@@ -275,7 +275,7 @@ function readySnapshot(identity: RepositoryIdentity): CodeGraphSnapshot {
     edgeCount: 0,
     extractorSet: 'diagnostics-test',
     fileCount: 0,
-    id: 'cgsn_diagnostics',
+    id: `cgsn_${'d'.repeat(40)}`,
     repositoryId: identity.repositoryId,
     state: 'ready',
     symbolCount: 0,

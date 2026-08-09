@@ -1,0 +1,274 @@
+import {it as effectIt} from '@effect/vitest';
+import {Database} from 'bun:sqlite';
+import {Deferred, Effect, Fiber, FileSystem, Path} from 'effect';
+import {TestClock} from 'effect/testing';
+import {describe, expect} from 'vitest';
+import {CODE_GRAPH_REMOVED_VIEW_CLEANUP_CLAIM_LEASE_MILLISECONDS, CodeGraphStore} from '../../src/code_graph/store.js';
+import {ApplicationLayer} from '../../src/effect/runtime.js';
+
+const CHECKOUT_ID = 'a'.repeat(64);
+const REMOVED_AT = new Date(0).toISOString();
+const OS_ROWS = 64;
+
+interface CleanupChildProcess {
+  readonly exited: Promise<number>;
+  readonly exitCode: number | null;
+  readonly stderr: ReadableStream<Uint8Array>;
+  readonly stdout: ReadableStream<Uint8Array>;
+  readonly kill: (signal?: NodeJS.Signals | number) => void;
+}
+
+interface CleanupChildMarker {
+  readonly event: 'claim-committed';
+  readonly processId: number;
+  readonly revisions: readonly number[];
+  readonly worktreeIds: readonly string[];
+}
+
+describe('removed code graph view cleanup OS crash coordination', () => {
+  effectIt.effect(
+    'keeps a killed post-commit claim leased, advances a disjoint page, and reclaims it at exact TTL',
+    () =>
+      TestClock.withLive(
+        withFixture('threadnote-removed-cleanup-os-', ({databasePath, markerPath}) =>
+          Effect.gen(function* () {
+            const fs = yield* FileSystem.FileSystem;
+            const store = yield* CodeGraphStore;
+            yield* store.initialize(databasePath);
+            yield* Effect.sync(() => seedDueRows(databasePath, OS_ROWS));
+            const now = Date.parse('2026-03-01T00:00:00.000Z');
+
+            yield* Effect.acquireUseRelease(
+              startCleanupChild(databasePath, now, markerPath),
+              child =>
+                Effect.gen(function* () {
+                  yield* waitForMarker(fs, markerPath);
+                  const marker = yield* readMarker(fs, markerPath);
+                  const expectedKilled = Array.from({length: 32}, (_, index) => worktreeId(index));
+                  expect(child.exitCode).toBeNull();
+                  expect(marker).toMatchObject({event: 'claim-committed', revisions: Array(32).fill(1)});
+                  expect(marker.worktreeIds).toEqual(expectedKilled);
+                  expect(readLeasedRows(databasePath, expectedKilled)).toEqual(
+                    expectedKilled.map(worktreeId => ({
+                      next_attempt_at: now + 30_000,
+                      revision: 1,
+                      worktree_id: worktreeId,
+                    })),
+                  );
+
+                  child.kill('SIGKILL');
+                  yield* Effect.promise(() => child.exited);
+                  expect(readLeasedRows(databasePath, expectedKilled)).toEqual(
+                    expectedKilled.map(worktreeId => ({
+                      next_attempt_at: now + 30_000,
+                      revision: 1,
+                      worktree_id: worktreeId,
+                    })),
+                  );
+
+                  const successor = yield* store.claimRemovedViewCleanupCandidates(databasePath, now, 32, {
+                    waitTimeoutMilliseconds: 30_000,
+                  });
+                  const expectedSuccessor = Array.from({length: 32}, (_, index) => worktreeId(index + 32));
+                  expect(successor.map(entry => entry.worktreeId)).toEqual(expectedSuccessor);
+                  expect(new Set([...marker.worktreeIds, ...expectedSuccessor])).toHaveLength(OS_ROWS);
+                  expect(yield* store.claimRemovedViewCleanupCandidates(databasePath, now, 32)).toEqual([]);
+                  expect(
+                    yield* store.claimRemovedViewCleanupCandidates(
+                      databasePath,
+                      now + CODE_GRAPH_REMOVED_VIEW_CLEANUP_CLAIM_LEASE_MILLISECONDS - 1,
+                      32,
+                    ),
+                  ).toEqual([]);
+
+                  const reclaimed = yield* store.claimRemovedViewCleanupCandidates(
+                    databasePath,
+                    now + CODE_GRAPH_REMOVED_VIEW_CLEANUP_CLAIM_LEASE_MILLISECONDS,
+                    32,
+                  );
+                  expect(reclaimed.map(entry => entry.worktreeId)).toEqual(expectedKilled);
+                  expect(reclaimed.map(entry => entry.revision)).toEqual(Array(32).fill(2));
+                }),
+              terminateCleanupChild,
+            );
+          }),
+        ),
+      ).pipe(Effect.provide(ApplicationLayer)),
+    30_000,
+  );
+
+  effectIt.effect('interrupts before SQLite open without consuming a cleanup prefix', () =>
+    TestClock.withLive(
+      withFixture('threadnote-removed-cleanup-interrupt-', ({databasePath}) =>
+        Effect.gen(function* () {
+          const store = yield* CodeGraphStore;
+          yield* store.initialize(databasePath);
+          yield* Effect.sync(() => seedDueRows(databasePath, 32));
+          const entered = yield* Deferred.make<void>();
+          const neverOpen = Deferred.succeed(entered, undefined).pipe(Effect.andThen(Effect.never));
+          const fiber = yield* store
+            .claimRemovedViewCleanupCandidates(databasePath, Date.now(), 32, {
+              beforeDatabaseOpen: () => neverOpen,
+              waitTimeoutMilliseconds: 30_000,
+            })
+            .pipe(Effect.forkChild);
+          yield* Deferred.await(entered);
+          yield* Fiber.interrupt(fiber);
+          expect(readQueueProgress(databasePath)).toEqual({cursor: undefined, leased: 0, revisions: 0, rows: 32});
+
+          const claimed = yield* store.claimRemovedViewCleanupCandidates(databasePath, Date.now(), 32);
+          expect(claimed).toHaveLength(32);
+          expect(claimed.map(entry => entry.revision)).toEqual(Array(32).fill(1));
+        }),
+      ),
+    ).pipe(Effect.provide(ApplicationLayer)),
+  );
+});
+
+function withFixture<A, E, R>(
+  prefix: string,
+  use: (fixture: {readonly databasePath: string; readonly markerPath: string}) => Effect.Effect<A, E, R>,
+) {
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.makeTempDirectoryScoped({prefix});
+      return yield* use({
+        databasePath: path.join(root, 'indexes', 'code-graph', 'repositories', CHECKOUT_ID, 'graph-v3.sqlite'),
+        markerPath: path.join(root, 'claim-committed.json'),
+      });
+    }),
+  );
+}
+
+function seedDueRows(databasePath: string, count: number): void {
+  const database = new Database(databasePath, {strict: true});
+  try {
+    const tombstone = database.prepare(
+      'INSERT INTO removed_views (worktree_id, expected_snapshot_id, removed_at) VALUES (?, ?, ?)',
+    );
+    const cleanup = database.prepare(
+      `INSERT INTO removed_view_cleanup (
+         worktree_id, expected_snapshot_id, removed_at, epoch, repository_id,
+         provenance_record_digest, provenance_record_identity, phase, cursor_token,
+         revision, attempts, next_attempt_at, blocked_code, updated_at
+       ) VALUES (?, ?, ?, ?, NULL, NULL, NULL, 'vector-pointers', NULL, 0, 0, 0, NULL, ?)`,
+    );
+    database.transaction(() => {
+      for (let index = 0; index < count; index += 1) {
+        const worktree = worktreeId(index);
+        const snapshot = snapshotId(index);
+        tombstone.run(worktree, snapshot, REMOVED_AT);
+        cleanup.run(worktree, snapshot, REMOVED_AT, index + 1, REMOVED_AT);
+      }
+      database
+        .query("UPDATE schema_metadata SET value = ? WHERE key = 'removed_view_cleanup_epoch_sequence'")
+        .run(String(count));
+    })();
+  } finally {
+    database.close(false);
+  }
+}
+
+function startCleanupChild(databasePath: string, now: number, markerPath: string): Effect.Effect<CleanupChildProcess> {
+  return Effect.sync(
+    () =>
+      Bun.spawn({
+        cmd: [
+          process.execPath,
+          'run',
+          `${process.cwd()}/test/helpers/code-graph-removed-view-cleanup-child.ts`,
+          databasePath,
+          String(now),
+          markerPath,
+        ],
+        stderr: 'pipe',
+        stdout: 'pipe',
+      }) as CleanupChildProcess,
+  );
+}
+
+function terminateCleanupChild(child: CleanupChildProcess): Effect.Effect<void, never> {
+  return Effect.gen(function* () {
+    if (child.exitCode === null) child.kill('SIGKILL');
+    yield* Effect.promise(() => child.exited).pipe(Effect.catch(() => Effect.void));
+  });
+}
+
+function waitForMarker(fs: FileSystem.FileSystem, markerPath: string) {
+  return Effect.gen(function* () {
+    const deadline = Date.now() + 15_000;
+    while (!(yield* fs.exists(markerPath))) {
+      if (Date.now() >= deadline) return yield* Effect.fail(new Error('Cleanup child missed its commit marker.'));
+      yield* Effect.sleep(10);
+    }
+  });
+}
+
+function readMarker(fs: FileSystem.FileSystem, markerPath: string) {
+  return fs.readFileString(markerPath).pipe(
+    Effect.flatMap(content =>
+      Effect.try({
+        try: () => JSON.parse(content) as CleanupChildMarker,
+        catch: cause => new Error('Cleanup child marker was invalid.', {cause}),
+      }),
+    ),
+    Effect.filterOrFail(
+      marker =>
+        marker.event === 'claim-committed' &&
+        Number.isSafeInteger(marker.processId) &&
+        marker.worktreeIds.length === 32 &&
+        marker.revisions.length === 32 &&
+        marker.worktreeIds.every(value => /^[0-9a-f]{64}$/u.test(value)) &&
+        marker.revisions.every(value => Number.isSafeInteger(value)),
+      () => new Error('Cleanup child marker shape was invalid.'),
+    ),
+  );
+}
+
+function readLeasedRows(databasePath: string, worktreeIds: readonly string[]) {
+  const database = new Database(databasePath, {readonly: true, strict: true});
+  try {
+    const select = database.prepare<
+      {readonly next_attempt_at: number; readonly revision: number; readonly worktree_id: string},
+      [string]
+    >(
+      `SELECT worktree_id, revision, next_attempt_at
+       FROM removed_view_cleanup WHERE worktree_id = ?`,
+    );
+    return worktreeIds.map(worktreeId => select.get(worktreeId)!);
+  } finally {
+    database.close(false);
+  }
+}
+
+function readQueueProgress(databasePath: string) {
+  const database = new Database(databasePath, {readonly: true, strict: true});
+  try {
+    const aggregate = database
+      .query<{readonly leased: number; readonly revisions: number; readonly rows: number}, []>(
+        `SELECT COUNT(*) AS rows,
+                SUM(CASE WHEN next_attempt_at > 0 THEN 1 ELSE 0 END) AS leased,
+                SUM(revision) AS revisions
+         FROM removed_view_cleanup`,
+      )
+      .get()!;
+    const cursor = database
+      .query<{readonly value: string}, []>(
+        "SELECT value FROM schema_metadata WHERE key = 'removed_view_cleanup_admission_cursor'",
+      )
+      .get()?.value;
+    return {...aggregate, cursor};
+  } finally {
+    database.close(false);
+  }
+}
+
+function worktreeId(index: number): string {
+  return index.toString(16).padStart(64, '0');
+}
+
+function snapshotId(index: number): string {
+  return `cgsn_${index.toString(16).padStart(40, '0')}`;
+}

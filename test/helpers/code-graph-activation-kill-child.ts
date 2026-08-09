@@ -87,7 +87,7 @@ function activationSnapshot(repository: RepositoryIdentity, symbolCount: number)
     edgeCount: 0,
     extractorSet: 'materialization-kill-test',
     fileCount: 1,
-    id: `kill-snapshot-${symbolCount}`,
+    id: `cgsn_${'0'.repeat(40)}-full-${symbolCount.toString(16).padStart(16, '0')}`,
     repositoryId: repository.repositoryId,
     state: 'ready',
     symbolCount,

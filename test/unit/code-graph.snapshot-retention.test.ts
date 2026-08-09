@@ -1,10 +1,14 @@
 import {Database} from 'bun:sqlite';
+import {createHash} from 'node:crypto';
+import {it as effectIt} from '@effect/vitest';
 import {Deferred, Effect, Fiber} from 'effect';
+import {TestClock} from 'effect/testing';
 import {afterEach, describe, expect, it} from 'vitest';
 import {CodeGraphStore, type CodeGraphStoreShape} from '../../src/code_graph/store.js';
 import {CodeGraphStoreBusyError, type CodeGraphSnapshot, type RepositoryIdentity} from '../../src/code_graph/types.js';
 import {join, mkdtemp, rm} from '../helpers/effect-filesystem.js';
 import {runEffect} from '../helpers/effect-runtime.js';
+import {ApplicationLayer} from '../../src/effect/runtime.js';
 
 const temporaryRoots: string[] = [];
 
@@ -13,18 +17,24 @@ afterEach(async () => {
 });
 
 describe('code graph ready snapshot retention', () => {
-  it('keeps every sibling view and its graph rows during concurrent promotion load', async () => {
-    const root = await mkdtemp('threadnote-ready-retention-many-worktrees-');
-    temporaryRoots.push(root);
-    const databasePath = join(root, 'graph-v3.sqlite');
-    const baseIdentity = repositoryIdentity(root);
-    const fixtures = Array.from({length: 64}, (_, index) => {
-      const identity = {...baseIdentity, worktreeId: index.toString(16).padStart(64, '0')};
-      return {identity, snapshot: snapshot(identity, `registered-${index}`)};
-    });
-
-    await runEffect(
+  effectIt.effect('keeps every sibling view and its graph rows during concurrent promotion load', () =>
+    TestClock.withLive(
       Effect.gen(function* () {
+        const root = yield* Effect.promise(() => mkdtemp('threadnote-ready-retention-many-worktrees-'));
+        temporaryRoots.push(root);
+        const baseIdentity = repositoryIdentity(root);
+        const databasePath = join(
+          root,
+          'indexes',
+          'code-graph',
+          'repositories',
+          baseIdentity.checkoutId,
+          'graph-v3.sqlite',
+        );
+        const fixtures = Array.from({length: 64}, (_, index) => {
+          const identity = {...baseIdentity, worktreeId: index.toString(16).padStart(64, '0')};
+          return {identity, snapshot: snapshot(identity, `registered-${index}`)};
+        });
         const store = yield* CodeGraphStore;
         yield* store.initialize(databasePath);
         yield* Effect.forEach(
@@ -41,23 +51,28 @@ describe('code graph ready snapshot retention', () => {
           fixture => store.promote(databasePath, fixture.identity, fixture.snapshot.id),
           {concurrency: 8, discard: true},
         );
-      }),
-    );
-
-    const database = new Database(databasePath, {readonly: true, strict: true});
-    try {
-      expect(database.query('SELECT COUNT(*) AS count FROM active_snapshots').get()).toEqual({count: fixtures.length});
-      expect(database.query("SELECT COUNT(*) AS count FROM snapshots WHERE state = 'ready'").get()).toEqual({
-        count: fixtures.length,
-      });
-      expect(
-        database.query('SELECT COUNT(*) AS count FROM symbols WHERE snapshot_id = ?').get(fixtures[0]!.snapshot.id),
-      ).toEqual({count: 1});
-      expect(database.query('PRAGMA foreign_key_check').all()).toEqual([]);
-    } finally {
-      database.close(false);
-    }
-  });
+        yield* Effect.sync(() => {
+          const database = new Database(databasePath, {readonly: true, strict: true});
+          try {
+            expect(database.query('SELECT COUNT(*) AS count FROM active_snapshots').get()).toEqual({
+              count: fixtures.length,
+            });
+            expect(database.query("SELECT COUNT(*) AS count FROM snapshots WHERE state = 'ready'").get()).toEqual({
+              count: fixtures.length,
+            });
+            expect(
+              database
+                .query('SELECT COUNT(*) AS count FROM symbols WHERE snapshot_id = ?')
+                .get(fixtures[0]!.snapshot.id),
+            ).toEqual({count: 1});
+            expect(database.query('PRAGMA foreign_key_check').all()).toEqual([]);
+          } finally {
+            database.close(false);
+          }
+        });
+      }).pipe(Effect.provide(ApplicationLayer)),
+    ),
+  );
 
   it('preserves a ready snapshot that was leased by ID without becoming an active worktree view', async () => {
     const root = await mkdtemp('threadnote-ready-retention-non-active-');
@@ -151,17 +166,16 @@ describe('code graph ready snapshot retention', () => {
     }
   });
 
-  it('reclaims the detached base of a superseded leased overlay', async () => {
-    const root = await mkdtemp('threadnote-ready-retention-base-closure-');
-    temporaryRoots.push(root);
-    const databasePath = join(root, 'graph-v3.sqlite');
-    const identity = repositoryIdentity(root);
-    const base = snapshot(identity, 'detached-base', {dirty: false});
-    const superseded = snapshot(identity, 'leased-overlay', {baseSnapshotId: base.id});
-    const current = snapshot(identity, 'unrelated-current');
-
-    await runEffect(
+  effectIt.effect('reclaims a superseded leased overlay while retaining its detached base as a warm leaf', () =>
+    TestClock.withLive(
       Effect.gen(function* () {
+        const root = yield* Effect.promise(() => mkdtemp('threadnote-ready-retention-base-closure-'));
+        temporaryRoots.push(root);
+        const databasePath = join(root, 'graph-v3.sqlite');
+        const identity = repositoryIdentity(root);
+        const base = snapshot(identity, 'detached-base', {dirty: false});
+        const superseded = snapshot(identity, 'leased-overlay', {baseSnapshotId: base.id});
+        const current = snapshot(identity, 'unrelated-current');
         const store = yield* CodeGraphStore;
         yield* store.initialize(databasePath);
         yield* registerReadySnapshots(store, databasePath, identity, [base, superseded]);
@@ -172,14 +186,12 @@ describe('code graph ready snapshot retention', () => {
 
         yield* store.releaseSnapshotLease(databasePath, lease);
         yield* waitForSnapshotRemoval(databasePath, superseded.id);
-        yield* waitForSnapshotRemoval(databasePath, base.id);
-      }),
-    );
-
-    expect(readSnapshotState(databasePath, superseded.id)).toBeUndefined();
-    expect(readSnapshotState(databasePath, base.id)).toBeUndefined();
-    expect(readSnapshotState(databasePath, current.id)).toBe('ready');
-  });
+        expect(readSnapshotState(databasePath, superseded.id)).toBeUndefined();
+        expect(readSnapshotState(databasePath, base.id)).toBe('ready');
+        expect(readSnapshotState(databasePath, current.id)).toBe('ready');
+      }).pipe(Effect.provide(ApplicationLayer)),
+    ),
+  );
 
   it('keeps a displaced view until every overlapping lease is released', async () => {
     const root = await mkdtemp('threadnote-ready-retention-overlapping-leases-');
@@ -522,7 +534,7 @@ function snapshot(
     edgeCount: 0,
     extractorSet: 'extractor-set',
     fileCount: 0,
-    id: `cgsn_${suffix}`,
+    id: `cgsn_${createHash('sha1').update(suffix).digest('hex')}`,
     ...(dirty ? {overlayFingerprint: `overlay-${suffix}`} : {}),
     repositoryId: identity.repositoryId,
     state: 'building',
@@ -562,7 +574,22 @@ function expireLease(databasePath: string, token: string): void {
 function dropLeaseRetirementColumn(databasePath: string): void {
   const database = new Database(databasePath, {strict: true});
   try {
+    database.run('BEGIN IMMEDIATE');
     database.run('ALTER TABLE snapshot_leases DROP COLUMN retire_when_inactive');
+    database.run('DROP TRIGGER IF EXISTS removed_views_cleanup_revoke_delete');
+    database.run('DROP TRIGGER IF EXISTS removed_views_cleanup_revoke_insert');
+    database.run('DROP TRIGGER IF EXISTS removed_views_cleanup_revoke_update');
+    database.run('DROP TABLE IF EXISTS removed_view_cleanup');
+    database.run('DROP TABLE IF EXISTS snapshot_build_owner_instances');
+    database.run(
+      `DELETE FROM schema_metadata
+       WHERE key IN ('removed_view_cleanup_epoch_sequence', 'removed_view_cleanup_admission_cursor')`,
+    );
+    database.run("UPDATE schema_metadata SET value = '6' WHERE key = 'persistent_extension_schema_revision'");
+    database.run('COMMIT');
+  } catch (error) {
+    if (database.inTransaction) database.run('ROLLBACK');
+    throw error;
   } finally {
     database.close(false);
   }

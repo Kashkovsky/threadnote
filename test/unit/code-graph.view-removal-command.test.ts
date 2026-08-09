@@ -1,10 +1,16 @@
 import {Database} from 'bun:sqlite';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {describe, expect, it as effectIt} from '@effect/vitest';
-import {Clock, Deferred, Effect, Fiber, FileSystem, Layer, Path} from 'effect';
+import {Clock, Crypto, Deferred, Effect, Fiber, FileSystem, Layer, Path} from 'effect';
 import {TestClock} from 'effect/testing';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
 import {codeGraphVectorWriteLockPath} from '../../src/code_graph/layout.js';
+import {
+  captureCodeGraphLocalProvenanceCleanupEvidence,
+  withCodeGraphLocalProvenanceLock,
+  type CodeGraphLocalProvenanceCleanupEvidence,
+  type CodeGraphLocalProvenanceRecordV2,
+} from '../../src/code_graph/local_provenance.js';
 import {
   codeGraphViewRemovalTargetFailure,
   removeCodeGraphView,
@@ -103,6 +109,188 @@ describe('code graph remove-view command core', () => {
           expect(retry.cleanup.vectors?.pointersRemoved).toBe(1);
           expect(retry.warnings).toEqual([]);
           expect(readVectorPointer(vectorDatabase)).toBeUndefined();
+        }),
+      ),
+    );
+
+    layerIt.effect('binds a short pre-core provenance token to the fresh epoch and deletes only an exact match', () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fixture = yield* viewActionFixture;
+          const provenance = yield* seedLocalProvenance(fixture.home, new Date(0).toISOString());
+          const crypto = yield* Crypto.Crypto;
+          const path = yield* Path.Path;
+          const system = yield* SystemInfo;
+          const lockReacquired = yield* Deferred.make<void>();
+          const target = {checkoutId: CHECKOUT_ID, snapshotId: SNAPSHOT_ID, worktreeId: WORKTREE_ID};
+          const evidence = yield* captureCodeGraphLocalProvenanceCleanupEvidence(fixture.home, target);
+          if (evidence === undefined) throw new Error('expected exact provenance evidence');
+
+          const result = yield* removeCodeGraphView(fixture.home, target, {
+            afterProvenanceEvidenceCapture: () =>
+              withCodeGraphLocalProvenanceLock(
+                fixture.home,
+                CHECKOUT_ID,
+                WORKTREE_ID,
+                0,
+                Deferred.succeed(lockReacquired, undefined).pipe(Effect.asVoid),
+              ).pipe(
+                Effect.provideService(Crypto.Crypto, crypto),
+                Effect.provideService(FileSystem.FileSystem, provenance.fs),
+                Effect.provideService(Path.Path, path),
+                Effect.provideService(SystemInfo, system),
+              ),
+            apply: true,
+          });
+
+          expect(result.cleanup.provenance).toEqual({state: 'removed'});
+          expect(yield* Deferred.isDone(lockReacquired)).toBe(true);
+          expect(yield* provenance.fs.exists(provenance.sidecar)).toBe(false);
+          expect(readCleanupEvidence(fixture.databasePath)).toEqual(cleanupEvidenceRow(evidence));
+        }),
+      ),
+    );
+
+    layerIt.effect('preserves both a post-core replacement and a sidecar first published after capture', () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const replacementFixture = yield* viewActionFixture;
+          const original = yield* seedLocalProvenance(replacementFixture.home, new Date(0).toISOString());
+          const replacement = localProvenanceRecord(original.missingWorktree, new Date(1).toISOString());
+          const target = {checkoutId: CHECKOUT_ID, snapshotId: SNAPSHOT_ID, worktreeId: WORKTREE_ID};
+          const originalEvidence = yield* captureCodeGraphLocalProvenanceCleanupEvidence(
+            replacementFixture.home,
+            target,
+          );
+          if (originalEvidence === undefined) throw new Error('expected exact provenance evidence');
+          const replaced = yield* removeCodeGraphView(replacementFixture.home, target, {
+            apply: true,
+            beforeProvenanceCleanup: () =>
+              original.fs.writeFileString(original.sidecar, `${JSON.stringify(replacement)}\n`, {
+                flag: 'w',
+                mode: 0o600,
+              }),
+          });
+          expect(replaced.cleanup.provenance).toEqual({observedState: 'stale', state: 'preserved'});
+          expect(JSON.parse(yield* original.fs.readFileString(original.sidecar))).toEqual(replacement);
+          expect(readCleanupEvidence(replacementFixture.databasePath)).toEqual(cleanupEvidenceRow(originalEvidence));
+
+          const absentFixture = yield* viewActionFixture;
+          const absent = yield* localProvenancePaths(absentFixture.home);
+          const published = localProvenanceRecord(absent.missingWorktree, new Date(2).toISOString());
+          const absentResult = yield* removeCodeGraphView(absentFixture.home, target, {
+            apply: true,
+            beforeProvenanceCleanup: () =>
+              absent.fs.writeFileString(absent.sidecar, `${JSON.stringify(published)}\n`, {
+                flag: 'w',
+                mode: 0o600,
+              }),
+          });
+          expect(absentResult.cleanup.provenance).toEqual({observedState: 'invalid', state: 'preserved'});
+          expect(JSON.parse(yield* absent.fs.readFileString(absent.sidecar))).toEqual(published);
+          expect(readCleanupEvidence(absentFixture.databasePath).repository_id).toBeNull();
+        }),
+      ),
+    );
+
+    layerIt.effect(
+      'binds the captured epoch evidence while preserving a replacement published before core removal',
+      () =>
+        Effect.scoped(
+          Effect.gen(function* () {
+            const fixture = yield* viewActionFixture;
+            const original = yield* seedLocalProvenance(fixture.home, new Date(0).toISOString());
+            const target = {checkoutId: CHECKOUT_ID, snapshotId: SNAPSHOT_ID, worktreeId: WORKTREE_ID};
+            const originalEvidence = yield* captureCodeGraphLocalProvenanceCleanupEvidence(fixture.home, target);
+            if (originalEvidence === undefined) throw new Error('expected exact provenance evidence');
+            const replacement = localProvenanceRecord(original.missingWorktree, new Date(1).toISOString());
+
+            const result = yield* removeCodeGraphView(fixture.home, target, {
+              afterProvenanceEvidenceCapture: () =>
+                original.fs.writeFileString(original.sidecar, `${JSON.stringify(replacement)}\n`, {
+                  flag: 'w',
+                  mode: 0o600,
+                }),
+              apply: true,
+            });
+
+            expect(result.state).toBe('removed');
+            expect(result.cleanup.provenance).toEqual({observedState: 'stale', state: 'preserved'});
+            expect(JSON.parse(yield* original.fs.readFileString(original.sidecar))).toEqual(replacement);
+            expect(readCleanupEvidence(fixture.databasePath)).toEqual(cleanupEvidenceRow(originalEvidence));
+          }),
+        ),
+    );
+
+    layerIt.effect('never reuses retry provenance after a post-core interruption', () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const unchangedFixture = yield* viewActionFixture;
+          const unchanged = yield* seedLocalProvenance(unchangedFixture.home, new Date(0).toISOString());
+          const target = {checkoutId: CHECKOUT_ID, snapshotId: SNAPSHOT_ID, worktreeId: WORKTREE_ID};
+          const unchangedEvidence = yield* captureCodeGraphLocalProvenanceCleanupEvidence(
+            unchangedFixture.home,
+            target,
+          );
+          if (unchangedEvidence === undefined) throw new Error('expected exact provenance evidence');
+          const unchangedInterrupted = yield* removeCodeGraphView(unchangedFixture.home, target, {
+            apply: true,
+            beforeProvenanceCleanup: () => Effect.fail(new Error('simulated post-core interruption')),
+          }).pipe(Effect.exit);
+          expect(unchangedInterrupted._tag).toBe('Failure');
+          const unchangedRetry = yield* removeCodeGraphView(unchangedFixture.home, target, {apply: true});
+          expect(unchangedRetry.state).toBe('already-removed');
+          expect(unchangedRetry.cleanup.provenance).toEqual({observedState: 'stale', state: 'preserved'});
+          expect(yield* unchanged.fs.exists(unchanged.sidecar)).toBe(true);
+          expect(readCleanupEvidence(unchangedFixture.databasePath)).toEqual(cleanupEvidenceRow(unchangedEvidence));
+
+          const fixture = yield* viewActionFixture;
+          const original = yield* seedLocalProvenance(fixture.home, new Date(0).toISOString());
+          const originalEvidence = yield* captureCodeGraphLocalProvenanceCleanupEvidence(fixture.home, target);
+          if (originalEvidence === undefined) throw new Error('expected exact provenance evidence');
+          const interrupted = yield* removeCodeGraphView(fixture.home, target, {
+            apply: true,
+            beforeProvenanceCleanup: () => Effect.fail(new Error('simulated post-core interruption')),
+          }).pipe(Effect.exit);
+          expect(interrupted._tag).toBe('Failure');
+          expect(removedView(fixture.databasePath)).toBe(SNAPSHOT_ID);
+
+          const replacement = localProvenanceRecord(original.missingWorktree, new Date(1).toISOString());
+          yield* original.fs.writeFileString(original.sidecar, `${JSON.stringify(replacement)}\n`, {
+            flag: 'w',
+            mode: 0o600,
+          });
+          const retry = yield* removeCodeGraphView(fixture.home, target, {apply: true});
+
+          expect(retry.state).toBe('already-removed');
+          expect(retry.cleanup.provenance).toEqual({observedState: 'stale', state: 'preserved'});
+          expect(JSON.parse(yield* original.fs.readFileString(original.sidecar))).toEqual(replacement);
+          expect(readCleanupEvidence(fixture.databasePath)).toEqual(cleanupEvidenceRow(originalEvidence));
+        }),
+      ),
+    );
+
+    layerIt.effect('keeps a legacy unbound epoch unbound on an already-removed retry', () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fixture = yield* viewActionFixture;
+          const store = yield* CodeGraphStore;
+          const target = {checkoutId: CHECKOUT_ID, snapshotId: SNAPSHOT_ID, worktreeId: WORKTREE_ID};
+          expect(yield* store.removeView(fixture.databasePath, WORKTREE_ID, SNAPSHOT_ID)).toMatchObject({
+            state: 'removed',
+          });
+          const provenance = yield* seedLocalProvenance(fixture.home, new Date(0).toISOString());
+
+          const retry = yield* removeCodeGraphView(fixture.home, target, {apply: true});
+
+          expect(retry.state).toBe('already-removed');
+          expect(retry.cleanup.provenance).toEqual({observedState: 'stale', state: 'preserved'});
+          expect(yield* provenance.fs.exists(provenance.sidecar)).toBe(true);
+          expect(readCleanupEvidence(fixture.databasePath)).toEqual({
+            provenance_record_digest: null,
+            provenance_record_identity: null,
+            repository_id: null,
+          });
         }),
       ),
     );
@@ -295,4 +483,89 @@ function readVectorPointer(databasePath: string): string | undefined {
   } finally {
     database.close(false);
   }
+}
+
+function localProvenancePaths(home: string) {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const worktrees = path.join(
+      home,
+      'indexes',
+      'code-graph',
+      'repositories',
+      CHECKOUT_ID,
+      'local-context',
+      'worktrees',
+    );
+    yield* fs.makeDirectory(worktrees, {recursive: true, mode: 0o700});
+    if (process.platform !== 'win32') {
+      yield* fs.chmod(path.dirname(worktrees), 0o700);
+      yield* fs.chmod(worktrees, 0o700);
+    }
+    return {
+      fs,
+      missingWorktree: path.join(home, 'missing-worktree'),
+      sidecar: path.join(worktrees, `${WORKTREE_ID}.json`),
+    };
+  });
+}
+
+function seedLocalProvenance(home: string, observedAt: string) {
+  return Effect.gen(function* () {
+    const paths = yield* localProvenancePaths(home);
+    yield* paths.fs.writeFileString(
+      paths.sidecar,
+      `${JSON.stringify(localProvenanceRecord(paths.missingWorktree, observedAt))}\n`,
+      {mode: 0o600},
+    );
+    return paths;
+  });
+}
+
+function localProvenanceRecord(canonicalWorktreePath: string, observedAt: string): CodeGraphLocalProvenanceRecordV2 {
+  return {
+    canonicalWorktreePath,
+    checkoutId: CHECKOUT_ID,
+    headCommit: 'f'.repeat(40),
+    observedAt,
+    registration: {kind: 'main'},
+    repositoryId: 'b'.repeat(64),
+    schemaVersion: 2,
+    worktreeId: WORKTREE_ID,
+  };
+}
+
+function readCleanupEvidence(databasePath: string): {
+  readonly provenance_record_digest: string | null;
+  readonly provenance_record_identity: string | null;
+  readonly repository_id: string | null;
+} {
+  const database = new Database(databasePath, {readonly: true, strict: true});
+  try {
+    return database
+      .query<
+        {
+          readonly provenance_record_digest: string | null;
+          readonly provenance_record_identity: string | null;
+          readonly repository_id: string | null;
+        },
+        []
+      >(
+        `SELECT repository_id, provenance_record_digest, provenance_record_identity
+         FROM removed_view_cleanup
+         WHERE worktree_id = '${WORKTREE_ID}' AND expected_snapshot_id = '${SNAPSHOT_ID}'`,
+      )
+      .get()!;
+  } finally {
+    database.close(false);
+  }
+}
+
+function cleanupEvidenceRow(evidence: CodeGraphLocalProvenanceCleanupEvidence) {
+  return {
+    provenance_record_digest: evidence.recordDigest,
+    provenance_record_identity: evidence.recordIdentity,
+    repository_id: evidence.repositoryId,
+  };
 }

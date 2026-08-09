@@ -501,9 +501,9 @@ describe('code graph external benchmark harness', () => {
     );
   });
 
-  it('holds a real snapshot lease and one WAL read snapshot across promotion and cleanup', async () => {
-    const result = await Effect.runPromise(
-      Effect.scoped(
+  effectIt.effect('holds a real snapshot lease and one WAL read snapshot across promotion and cleanup', () =>
+    Effect.gen(function* () {
+      const result = yield* Effect.scoped(
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
@@ -613,30 +613,30 @@ describe('code graph external benchmark harness', () => {
             finalDatabase.close(false);
           }
         }),
-      ).pipe(Effect.provide(ApplicationLayer)),
-    );
+      ).pipe(Effect.provide(ApplicationLayer));
 
-    expect(result.pinned).toEqual(result.before);
-    expect(result.before.streams.find(stream => stream.name === 'symbol-terms')?.rowCount).toBe(1);
-    expect(result.after.digest).not.toBe(result.before.digest);
-    expect(result.during).toEqual({
-      activeSnapshotId: `cgsn_${'2'.repeat(40)}`,
-      baseFileRows: 1,
-      baseState: 'ready',
-      firstState: 'ready',
-      leaseRows: 2,
-    });
-    expect(result.mismatch.mismatchedStreams.map(stream => stream.name)).toEqual(['snapshot']);
-    expect(result.leaseRenewals).toBeGreaterThanOrEqual(1);
-    expect(result.failureMessage).toMatch(
-      /^Structural graph digest parity failed: snapshot incremental\(count=1,sha256=[0-9a-f]{64}\) same-overlay-full\(count=1,sha256=[0-9a-f]{64}\)\.$/,
-    );
-    expect(result.privacySafeEvidence).not.toContain(result.privatePath);
-    expect(result.privacySafeEvidence).not.toContain('3'.repeat(40));
-    expect(result.failureMessage).not.toContain(result.privatePath);
-    expect(result.protectedSnapshotRows).toBe(0);
-    expect(result.leaseRows).toBe(0);
-  });
+      expect(result.pinned).toEqual(result.before);
+      expect(result.before.streams.find(stream => stream.name === 'symbol-terms')?.rowCount).toBe(1);
+      expect(result.after.digest).not.toBe(result.before.digest);
+      expect(result.during).toEqual({
+        activeSnapshotId: `cgsn_${'2'.repeat(40)}`,
+        baseFileRows: 1,
+        baseState: 'ready',
+        firstState: 'ready',
+        leaseRows: 2,
+      });
+      expect(result.mismatch.mismatchedStreams.map(stream => stream.name)).toEqual(['snapshot']);
+      expect(result.leaseRenewals).toBeGreaterThanOrEqual(1);
+      expect(result.failureMessage).toMatch(
+        /^Structural graph digest parity failed: snapshot incremental\(count=1,sha256=[0-9a-f]{64}\) same-overlay-full\(count=1,sha256=[0-9a-f]{64}\)\.$/,
+      );
+      expect(result.privacySafeEvidence).not.toContain(result.privatePath);
+      expect(result.privacySafeEvidence).not.toContain('3'.repeat(40));
+      expect(result.failureMessage).not.toContain(result.privatePath);
+      expect(result.protectedSnapshotRows).toBe(1);
+      expect(result.leaseRows).toBe(0);
+    }).pipe(TestClock.withLive),
+  );
 });
 
 const LOOKUP_PATHS = ['src/a.ts', 'src/b.ts', 'src/c.ts'] as const;

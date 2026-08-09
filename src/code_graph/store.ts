@@ -54,7 +54,13 @@ import type {
   CodeGraphQueryNode,
   RepositoryIdentity,
 } from './types.js';
-import {CODE_GRAPH_EXTRACTOR_GENERATION, CODE_GRAPH_SCHEMA_VERSION, CodeGraphStoreError} from './types.js';
+import {
+  CODE_GRAPH_EXTRACTOR_GENERATION,
+  CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION,
+  CODE_GRAPH_SCHEMA_VERSION,
+  CodeGraphStoreError,
+} from './types.js';
+export {CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION} from './types.js';
 import type {
   CodeGraphBuildWorkspace,
   CodeGraphWorkspace,
@@ -559,6 +565,8 @@ export type CodeGraphViewSnapshotLeaseValidationResult =
 export interface CodeGraphViewRemovalStoreOptions extends CodeGraphSnapshotLeaseWriterOptions {
   /** Final containment proof run while the checkout writer gate is held and immediately before SQLite is opened. */
   readonly beforeDatabaseOpen?: () => Effect.Effect<void, unknown>;
+  /** Exact path-free provenance evidence captured before the core removal CAS. */
+  readonly cleanupEvidence?: CodeGraphRemovedViewCleanupEvidence;
   /** @internal Require the exact automatic-reconciliation schema again inside the final writer transaction. */
   readonly requireReconciliationSchema?: true;
 }
@@ -572,6 +580,77 @@ export interface CodeGraphWorktreeReconciliationCandidate {
   readonly repositoryId: string;
   readonly snapshotId: string;
   readonly worktreeId: string;
+}
+
+export const CODE_GRAPH_REMOVED_VIEW_CLEANUP_PHASES = [
+  'vector-pointers',
+  'build-status',
+  'provenance',
+  'complete',
+] as const;
+
+export type CodeGraphRemovedViewCleanupPhase = (typeof CODE_GRAPH_REMOVED_VIEW_CLEANUP_PHASES)[number];
+
+export const CODE_GRAPH_REMOVED_VIEW_CLEANUP_BLOCKED_CODES = [
+  'busy',
+  'evidence-unavailable',
+  'invalid-sidecar',
+  'io-error',
+  'permission-denied',
+  'schema-incompatible',
+] as const;
+
+export type CodeGraphRemovedViewCleanupBlockedCode = (typeof CODE_GRAPH_REMOVED_VIEW_CLEANUP_BLOCKED_CODES)[number];
+
+export const CODE_GRAPH_REMOVED_VIEW_CLEANUP_CLAIM_LEASE_MILLISECONDS = 30_000;
+export const CODE_GRAPH_REMOVED_VIEW_CLEANUP_PAGE_ROWS = 32;
+
+export interface CodeGraphRemovedViewCleanupEvidence {
+  readonly recordDigest: string;
+  readonly recordIdentity: string;
+  readonly repositoryId: string;
+}
+
+/** Path-free durable cleanup epoch selected from one immutable tombstone. */
+export interface CodeGraphRemovedViewCleanupEntry {
+  readonly attempts: number;
+  readonly blockedCode?: CodeGraphRemovedViewCleanupBlockedCode;
+  readonly cursorToken?: string;
+  readonly epoch: number;
+  readonly expectedSnapshotId: string;
+  readonly nextAttemptAt: number;
+  readonly phase: CodeGraphRemovedViewCleanupPhase;
+  readonly provenanceRecordDigest?: string;
+  readonly provenanceRecordIdentity?: string;
+  readonly removedAt: string;
+  readonly repositoryId?: string;
+  readonly revision: number;
+  readonly updatedAt: string;
+  readonly worktreeId: string;
+}
+
+export interface CodeGraphRemovedViewCleanupUpdate {
+  readonly attempts: number;
+  readonly blockedCode?: CodeGraphRemovedViewCleanupBlockedCode;
+  readonly cursorToken?: string;
+  readonly nextAttemptAt: number;
+  readonly phase: CodeGraphRemovedViewCleanupPhase;
+  readonly updatedAt: string;
+}
+
+export type CodeGraphRemovedViewCleanupAuthorizationResult =
+  | {readonly entry: CodeGraphRemovedViewCleanupEntry; readonly state: 'authorized'}
+  | {readonly observedSnapshotId: string; readonly state: 'active-pointer-changed'}
+  | {readonly state: 'stale'};
+
+export type CodeGraphRemovedViewCleanupUpdateResult =
+  | {readonly entry: CodeGraphRemovedViewCleanupEntry; readonly state: 'updated'}
+  | {readonly observedSnapshotId: string; readonly state: 'active-pointer-changed'}
+  | {readonly state: 'stale'};
+
+export interface CodeGraphRemovedViewCleanupStoreOptions extends CodeGraphSnapshotLeaseWriterOptions {
+  /** Final containment proof run under the checkout writer gate immediately before SQLite is opened. */
+  readonly beforeDatabaseOpen?: () => Effect.Effect<void, unknown>;
 }
 
 export type CodeGraphWorktreeReconciliationIndexPreparationResult =
@@ -702,6 +781,23 @@ export interface CodeGraphStoreShape {
     expectedSnapshotId: string,
     options?: CodeGraphViewRemovalStoreOptions,
   ) => Effect.Effect<CodeGraphViewRemovalResult, CodeGraphStoreError>;
+  readonly claimRemovedViewCleanupCandidates: (
+    databasePath: string,
+    nowMilliseconds: number,
+    limit: number,
+    options?: CodeGraphRemovedViewCleanupStoreOptions,
+  ) => Effect.Effect<readonly CodeGraphRemovedViewCleanupEntry[], CodeGraphStoreError>;
+  readonly authorizeRemovedViewCleanup: (
+    databasePath: string,
+    entry: CodeGraphRemovedViewCleanupEntry,
+    options?: CodeGraphRemovedViewCleanupStoreOptions,
+  ) => Effect.Effect<CodeGraphRemovedViewCleanupAuthorizationResult, CodeGraphStoreError>;
+  readonly updateRemovedViewCleanup: (
+    databasePath: string,
+    entry: CodeGraphRemovedViewCleanupEntry,
+    update: CodeGraphRemovedViewCleanupUpdate,
+    options?: CodeGraphRemovedViewCleanupStoreOptions,
+  ) => Effect.Effect<CodeGraphRemovedViewCleanupUpdateResult, CodeGraphStoreError>;
   readonly initialize: (databasePath: string) => Effect.Effect<void, CodeGraphStoreError>;
   readonly prepareActivation: (
     databasePath: string,
@@ -1262,6 +1358,7 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
                 // therefore self-heals on the next ordinary index without
                 // making graph queries pay cleanup latency.
                 if (options?.cleanupCompletedBuildRows && (yield* tableExists(sql, 'snapshots'))) {
+                  yield* preflightRemovedViewCleanupSchema(sql);
                   yield* drainCompletedPersistentBuildRows(
                     sql,
                     undefined,
@@ -1697,6 +1794,7 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
                   worktreeId,
                   expectedSnapshotId,
                   options?.requireReconciliationSchema === true,
+                  options?.cleanupEvidence,
                 );
               });
               const result = yield* options?.requireReconciliationSchema === true
@@ -1718,6 +1816,78 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
             ),
             Effect.mapError(cause => storeError('remove code graph view', cause)),
           ),
+        claimRemovedViewCleanupCandidates: (databasePath, nowMilliseconds, limit, options) =>
+          withWriterGate(
+            databasePath,
+            Effect.gen(function* () {
+              yield* options?.beforeDatabaseOpen?.() ?? Effect.void;
+              if (!(yield* fs.exists(databasePath))) return [];
+              if (Option.isSome(yield* fs.readLink(databasePath).pipe(Effect.option))) {
+                return yield* Effect.fail(new CodeGraphStoreError('Code graph database target is a symbolic link.'));
+              }
+              if ((yield* fs.stat(databasePath)).type !== 'File') {
+                return yield* Effect.fail(new CodeGraphStoreError('Code graph database target is not a regular file.'));
+              }
+              return yield* useExistingDatabase(
+                databasePath,
+                Effect.gen(function* () {
+                  const sql = yield* SqlClient.SqlClient;
+                  yield* sql.unsafe('PRAGMA foreign_keys = ON');
+                  yield* sql.unsafe('PRAGMA busy_timeout = 0');
+                  return yield* claimRemovedViewCleanupCandidates(sql, nowMilliseconds, limit);
+                }),
+              );
+            }),
+            options?.waitTimeoutMilliseconds ?? 0,
+          ).pipe(Effect.mapError(cause => storeError('claim removed code graph view cleanup', cause))),
+        authorizeRemovedViewCleanup: (databasePath, entry, options) =>
+          withWriterGate(
+            databasePath,
+            Effect.gen(function* () {
+              yield* options?.beforeDatabaseOpen?.() ?? Effect.void;
+              if (!(yield* fs.exists(databasePath))) return {state: 'stale'} as const;
+              if (Option.isSome(yield* fs.readLink(databasePath).pipe(Effect.option))) {
+                return yield* Effect.fail(new CodeGraphStoreError('Code graph database target is a symbolic link.'));
+              }
+              if ((yield* fs.stat(databasePath)).type !== 'File') {
+                return yield* Effect.fail(new CodeGraphStoreError('Code graph database target is not a regular file.'));
+              }
+              return yield* useExistingDatabase(
+                databasePath,
+                Effect.gen(function* () {
+                  const sql = yield* SqlClient.SqlClient;
+                  yield* sql.unsafe('PRAGMA foreign_keys = ON');
+                  yield* sql.unsafe('PRAGMA busy_timeout = 0');
+                  return yield* authorizeRemovedViewCleanup(sql, entry);
+                }),
+              );
+            }),
+            options?.waitTimeoutMilliseconds ?? 0,
+          ).pipe(Effect.mapError(cause => storeError('authorize removed code graph view cleanup', cause))),
+        updateRemovedViewCleanup: (databasePath, entry, update, options) =>
+          withWriterGate(
+            databasePath,
+            Effect.gen(function* () {
+              yield* options?.beforeDatabaseOpen?.() ?? Effect.void;
+              if (!(yield* fs.exists(databasePath))) return {state: 'stale'} as const;
+              if (Option.isSome(yield* fs.readLink(databasePath).pipe(Effect.option))) {
+                return yield* Effect.fail(new CodeGraphStoreError('Code graph database target is a symbolic link.'));
+              }
+              if ((yield* fs.stat(databasePath)).type !== 'File') {
+                return yield* Effect.fail(new CodeGraphStoreError('Code graph database target is not a regular file.'));
+              }
+              return yield* useExistingDatabase(
+                databasePath,
+                Effect.gen(function* () {
+                  const sql = yield* SqlClient.SqlClient;
+                  yield* sql.unsafe('PRAGMA foreign_keys = ON');
+                  yield* sql.unsafe('PRAGMA busy_timeout = 0');
+                  return yield* updateRemovedViewCleanup(sql, entry, update);
+                }),
+              );
+            }),
+            options?.waitTimeoutMilliseconds ?? 0,
+          ).pipe(Effect.mapError(cause => storeError('update removed code graph view cleanup', cause))),
         initialize: databasePath =>
           prepare(databasePath).pipe(
             Effect.andThen(
@@ -2728,7 +2898,7 @@ function useDatabaseDirect<A, E, R>(
         readonly: true,
         readwrite: false,
       })
-    : SqliteClient.layer({filename: databasePath});
+    : SqliteClient.layer({disableWAL: true, filename: databasePath});
   return Effect.scoped(effect.pipe(Effect.provide(layer))) as Effect.Effect<A, E, Exclude<R, SqlClient.SqlClient>>;
 }
 
@@ -2910,6 +3080,7 @@ type PersistentExtensionGroup = 'analysis' | 'build' | 'lexical' | 'shards';
 export type CodeGraphPersistentSchemaMigrationPhase =
   | 'added-build-owner-instance'
   | 'added-materialization-plan'
+  | 'added-removed-view-cleanup'
   | 'created-extensions'
   | 'dropped-incompatible'
   | 'dropped-obsolete-indexes'
@@ -3425,8 +3596,949 @@ const LEGACY_BUILDING_REFERENCES_V3_CONTRACT = {
 
 const REMOVED_BETA30_INDEXES = ['snapshot_symbol_lookup_key', 'terms_lookup', 'terms_symbol'] as const;
 export const CODE_GRAPH_PERSISTENT_EXTENSION_TABLE_NAMES = PERSISTENT_EXTENSION_TABLES.map(table => table.name);
-export const CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION = 7;
+const REMOVED_VIEW_CLEANUP_ADMISSION_CURSOR_KEY = 'removed_view_cleanup_admission_cursor';
+const REMOVED_VIEW_CLEANUP_EPOCH_SEQUENCE_KEY = 'removed_view_cleanup_epoch_sequence';
+const REMOVED_VIEW_CLEANUP_LEGACY_MAXIMUM_METADATA_ROWS = 64;
+const REMOVED_VIEW_CLEANUP_CURRENT_MAXIMUM_METADATA_ROWS = 66;
+const MAXIMUM_CANONICAL_DATE_MILLISECONDS = 253_402_300_799_999;
 
+const REMOVED_VIEWS_TABLE_SQL = `CREATE TABLE IF NOT EXISTS removed_views (
+  worktree_id TEXT PRIMARY KEY NOT NULL,
+  expected_snapshot_id TEXT NOT NULL,
+  removed_at TEXT NOT NULL
+) WITHOUT ROWID`;
+
+const REMOVED_VIEW_CLEANUP_TABLE_SQL = `CREATE TABLE IF NOT EXISTS removed_view_cleanup (
+  worktree_id TEXT NOT NULL CHECK (
+    typeof(worktree_id) = 'text' AND length(CAST(worktree_id AS BLOB)) = 64
+  ),
+  expected_snapshot_id TEXT NOT NULL CHECK (
+    typeof(expected_snapshot_id) = 'text'
+    AND length(CAST(expected_snapshot_id AS BLOB)) BETWEEN 45 AND 67
+  ),
+  removed_at TEXT NOT NULL CHECK (
+    typeof(removed_at) = 'text' AND length(CAST(removed_at AS BLOB)) = 24
+  ),
+  epoch INTEGER NOT NULL CHECK (
+    typeof(epoch) = 'integer' AND epoch BETWEEN 1 AND 9007199254740991
+  ),
+  repository_id TEXT CHECK (
+    repository_id IS NULL
+    OR (typeof(repository_id) = 'text' AND length(CAST(repository_id AS BLOB)) = 64)
+  ),
+  provenance_record_digest TEXT CHECK (
+    provenance_record_digest IS NULL
+    OR (
+      typeof(provenance_record_digest) = 'text'
+      AND length(CAST(provenance_record_digest AS BLOB)) = 64
+    )
+  ),
+  provenance_record_identity TEXT CHECK (
+    provenance_record_identity IS NULL
+    OR (
+      typeof(provenance_record_identity) = 'text'
+      AND length(CAST(provenance_record_identity AS BLOB)) = 64
+    )
+  ),
+  phase TEXT NOT NULL CHECK (
+    typeof(phase) = 'text'
+    AND length(CAST(phase AS BLOB)) <= 15
+    AND phase IN ('vector-pointers', 'build-status', 'provenance', 'complete')
+  ),
+  cursor_token TEXT CHECK (
+    cursor_token IS NULL
+    OR (typeof(cursor_token) = 'text' AND length(CAST(cursor_token AS BLOB)) BETWEEN 1 AND 512)
+  ),
+  revision INTEGER NOT NULL CHECK (
+    typeof(revision) = 'integer' AND revision BETWEEN 0 AND 9007199254740991
+  ),
+  attempts INTEGER NOT NULL CHECK (
+    typeof(attempts) = 'integer' AND attempts BETWEEN 0 AND 9007199254740991
+  ),
+  next_attempt_at INTEGER NOT NULL CHECK (
+    typeof(next_attempt_at) = 'integer' AND next_attempt_at BETWEEN 0 AND 253402300799999
+  ),
+  blocked_code TEXT CHECK (
+    blocked_code IS NULL
+    OR (
+      typeof(blocked_code) = 'text'
+      AND length(CAST(blocked_code AS BLOB)) BETWEEN 1 AND 32
+      AND blocked_code IN (
+        'busy', 'evidence-unavailable', 'invalid-sidecar',
+        'io-error', 'permission-denied', 'schema-incompatible'
+      )
+    )
+  ),
+  updated_at TEXT NOT NULL CHECK (
+    typeof(updated_at) = 'text' AND length(CAST(updated_at AS BLOB)) = 24
+  ),
+  PRIMARY KEY (worktree_id, expected_snapshot_id),
+  CHECK (phase <> 'complete' OR (cursor_token IS NULL AND blocked_code IS NULL)),
+  CHECK (
+    (repository_id IS NULL AND provenance_record_digest IS NULL AND provenance_record_identity IS NULL)
+    OR (
+      repository_id IS NOT NULL
+      AND provenance_record_digest IS NOT NULL
+      AND provenance_record_identity IS NOT NULL
+    )
+  )
+) WITHOUT ROWID`;
+
+const REMOVED_VIEW_CLEANUP_STORED_TABLE_SQL = REMOVED_VIEW_CLEANUP_TABLE_SQL.replace(
+  'CREATE TABLE IF NOT EXISTS',
+  'CREATE TABLE',
+);
+const REMOVED_VIEW_CLEANUP_STORED_TABLE_SQL_LITERAL = `'${REMOVED_VIEW_CLEANUP_STORED_TABLE_SQL.replaceAll("'", "''")}'`;
+
+const REMOVED_VIEW_CLEANUP_DUE_INDEX_SQL = `CREATE INDEX IF NOT EXISTS removed_view_cleanup_due
+  ON removed_view_cleanup (next_attempt_at, worktree_id, expected_snapshot_id)
+  WHERE phase <> 'complete'`;
+
+const REMOVED_VIEW_CLEANUP_PRIMARY_KEY_TRIGGER_GUARD_SQL = `SELECT CASE
+      WHEN (
+        SELECT COUNT(*)
+        FROM (
+          SELECT name, type, tbl_name,
+                 CASE WHEN typeof(sql) = 'text' AND length(CAST(sql AS BLOB)) <= 8192 THEN sql ELSE NULL END AS sql
+          FROM sqlite_master
+          WHERE name = 'removed_view_cleanup' COLLATE NOCASE
+          LIMIT 2
+        )
+      ) <> 1
+      OR NOT EXISTS (
+        SELECT 1
+        FROM (
+          SELECT name, type, tbl_name,
+                 CASE WHEN typeof(sql) = 'text' AND length(CAST(sql AS BLOB)) <= 8192 THEN sql ELSE NULL END AS sql
+          FROM sqlite_master
+          WHERE name = 'removed_view_cleanup' COLLATE NOCASE
+          LIMIT 2
+        )
+        WHERE name = 'removed_view_cleanup'
+          AND type = 'table'
+          AND tbl_name = 'removed_view_cleanup'
+          AND sql = ${REMOVED_VIEW_CLEANUP_STORED_TABLE_SQL_LITERAL}
+      )
+      OR (
+        SELECT COUNT(*)
+        FROM (
+          SELECT seqno, cid, name, "desc", coll, "key"
+          FROM pragma_index_xinfo('sqlite_autoindex_removed_view_cleanup_1')
+          LIMIT 3
+        )
+        WHERE (
+          seqno = 0 AND cid = 0 AND name = 'worktree_id'
+            AND "desc" = 0 AND coll = 'BINARY' AND "key" = 1
+        ) OR (
+          seqno = 1 AND cid = 1 AND name = 'expected_snapshot_id'
+            AND "desc" = 0 AND coll = 'BINARY' AND "key" = 1
+        ) OR (
+          seqno = 2 AND cid = 2 AND name = 'removed_at'
+            AND "desc" = 0 AND coll = 'BINARY' AND "key" = 0
+        )
+      ) <> 3
+      THEN RAISE(ABORT, 'code graph removed view cleanup authority is incompatible')
+    END;`;
+
+const REMOVED_VIEW_CLEANUP_REVOKE_DELETE_TRIGGER_SQL = `CREATE TRIGGER IF NOT EXISTS removed_views_cleanup_revoke_delete
+  AFTER DELETE ON removed_views
+  BEGIN
+    ${REMOVED_VIEW_CLEANUP_PRIMARY_KEY_TRIGGER_GUARD_SQL}
+    DELETE FROM removed_view_cleanup
+    WHERE worktree_id = OLD.worktree_id
+      AND expected_snapshot_id = OLD.expected_snapshot_id
+      AND removed_at = OLD.removed_at;
+  END`;
+
+const SNAPSHOT_LEASE_BATON_INDEX_TRIGGER_GUARD_SQL = `SELECT CASE
+      WHEN (
+        SELECT COUNT(*)
+        FROM (
+          SELECT name, type, tbl_name,
+                 CASE WHEN typeof(sql) = 'text' AND length(CAST(sql AS BLOB)) <= 1024 THEN sql ELSE NULL END AS sql
+          FROM sqlite_master
+          WHERE name = 'snapshot_leases_snapshot_expiry' COLLATE NOCASE
+          LIMIT 2
+        )
+      ) <> 1
+      OR NOT EXISTS (
+        SELECT 1
+        FROM (
+          SELECT name, type, tbl_name,
+                 CASE WHEN typeof(sql) = 'text' AND length(CAST(sql AS BLOB)) <= 1024 THEN sql ELSE NULL END AS sql
+          FROM sqlite_master
+          WHERE name = 'snapshot_leases_snapshot_expiry' COLLATE NOCASE
+          LIMIT 2
+        )
+        WHERE name = 'snapshot_leases_snapshot_expiry'
+          AND type = 'index'
+          AND tbl_name = 'snapshot_leases'
+          AND typeof(sql) = 'text'
+          AND length(CAST(sql AS BLOB)) <= 1024
+          AND sql = 'CREATE INDEX snapshot_leases_snapshot_expiry ON snapshot_leases(snapshot_id, expires_at)'
+      )
+      OR (
+        SELECT COUNT(*)
+        FROM (
+          SELECT seqno, cid, name, "desc", coll, "key"
+          FROM pragma_index_xinfo('snapshot_leases_snapshot_expiry')
+          LIMIT 4
+        )
+      ) <> 3
+      OR (
+        SELECT COUNT(*)
+        FROM (
+          SELECT seqno, cid, name, "desc", coll, "key"
+          FROM pragma_index_xinfo('snapshot_leases_snapshot_expiry')
+          LIMIT 4
+        )
+        WHERE (
+          seqno = 0 AND name = 'snapshot_id' AND "desc" = 0 AND coll = 'BINARY' AND "key" = 1
+        ) OR (
+          seqno = 1 AND name = 'expires_at' AND "desc" = 0 AND coll = 'BINARY' AND "key" = 1
+        ) OR (
+          seqno = 2 AND cid = -1 AND name IS NULL AND "desc" = 0 AND coll = 'BINARY' AND "key" = 0
+        )
+      ) <> 3
+      OR EXISTS (
+        SELECT 1
+        FROM (
+          SELECT
+            typeof(token) AS token_type,
+            length(CAST(token AS BLOB)) AS token_bytes,
+            typeof(snapshot_id) AS snapshot_type,
+            length(CAST(snapshot_id AS BLOB)) AS snapshot_bytes,
+            CASE
+              WHEN typeof(expires_at) = 'integer' AND expires_at BETWEEN 0 AND 253402300799999
+              THEN 1 ELSE 0
+            END AS expires_valid,
+            CASE
+              WHEN typeof(retire_when_inactive) = 'integer' AND retire_when_inactive IN (0, 1)
+              THEN 1 ELSE 0
+            END AS retire_valid
+          FROM snapshot_leases INDEXED BY snapshot_leases_snapshot_expiry
+          WHERE snapshot_id = NEW.expected_snapshot_id
+            AND expires_at > CAST(strftime('%s', 'now') AS INTEGER) * 1000
+          ORDER BY expires_at
+          LIMIT 1
+        )
+        WHERE token_type <> 'text'
+          OR token_bytes NOT BETWEEN 1 AND 1024
+          OR snapshot_type <> 'text'
+          OR snapshot_bytes NOT BETWEEN 1 AND 1024
+          OR expires_valid <> 1
+          OR retire_valid <> 1
+      )
+      THEN RAISE(ABORT, 'code graph snapshot lease baton index is incompatible')
+    END;`
+  .replace(/\s+/gu, ' ')
+  .trim();
+
+const REMOVED_VIEW_CLEANUP_REVOKE_INSERT_TRIGGER_SQL = `CREATE TRIGGER IF NOT EXISTS removed_views_cleanup_revoke_insert
+  AFTER INSERT ON removed_views
+  BEGIN
+    ${REMOVED_VIEW_CLEANUP_PRIMARY_KEY_TRIGGER_GUARD_SQL}
+    ${SNAPSHOT_LEASE_BATON_INDEX_TRIGGER_GUARD_SQL}
+    DELETE FROM removed_view_cleanup
+    WHERE worktree_id = NEW.worktree_id
+      AND expected_snapshot_id = NEW.expected_snapshot_id;
+    UPDATE snapshot_leases
+    SET retire_when_inactive = 1
+    WHERE rowid = (
+      SELECT rowid
+      FROM snapshot_leases INDEXED BY snapshot_leases_snapshot_expiry
+      WHERE snapshot_id = NEW.expected_snapshot_id
+        AND expires_at > CAST(strftime('%s', 'now') AS INTEGER) * 1000
+      ORDER BY expires_at
+      LIMIT 1
+    );
+  END`;
+
+const REMOVED_VIEW_CLEANUP_REVOKE_UPDATE_TRIGGER_SQL = `CREATE TRIGGER IF NOT EXISTS removed_views_cleanup_revoke_update
+  AFTER UPDATE OF worktree_id, expected_snapshot_id, removed_at ON removed_views
+  WHEN OLD.worktree_id <> NEW.worktree_id
+    OR OLD.expected_snapshot_id <> NEW.expected_snapshot_id
+    OR OLD.removed_at <> NEW.removed_at
+  BEGIN
+    ${REMOVED_VIEW_CLEANUP_PRIMARY_KEY_TRIGGER_GUARD_SQL}
+    ${SNAPSHOT_LEASE_BATON_INDEX_TRIGGER_GUARD_SQL}
+    DELETE FROM removed_view_cleanup
+    WHERE worktree_id = OLD.worktree_id
+      AND expected_snapshot_id = OLD.expected_snapshot_id
+      AND removed_at = OLD.removed_at
+      AND phase <> 'complete';
+    DELETE FROM removed_view_cleanup
+    WHERE worktree_id = NEW.worktree_id
+      AND expected_snapshot_id = NEW.expected_snapshot_id;
+    UPDATE snapshot_leases
+    SET retire_when_inactive = 1
+    WHERE rowid = (
+      SELECT rowid
+      FROM snapshot_leases INDEXED BY snapshot_leases_snapshot_expiry
+      WHERE snapshot_id = NEW.expected_snapshot_id
+        AND expires_at > CAST(strftime('%s', 'now') AS INTEGER) * 1000
+      ORDER BY expires_at
+      LIMIT 1
+    );
+  END`;
+
+const REMOVED_VIEW_CLEANUP_TRIGGER_DEFINITIONS = [
+  {name: 'removed_views_cleanup_revoke_delete', sql: REMOVED_VIEW_CLEANUP_REVOKE_DELETE_TRIGGER_SQL},
+  {name: 'removed_views_cleanup_revoke_insert', sql: REMOVED_VIEW_CLEANUP_REVOKE_INSERT_TRIGGER_SQL},
+  {name: 'removed_views_cleanup_revoke_update', sql: REMOVED_VIEW_CLEANUP_REVOKE_UPDATE_TRIGGER_SQL},
+] as const;
+
+const REMOVED_VIEW_CLEANUP_COLUMNS = [
+  {name: 'worktree_id', notNull: true, primaryKeyPosition: 1, type: 'TEXT'},
+  {name: 'expected_snapshot_id', notNull: true, primaryKeyPosition: 2, type: 'TEXT'},
+  {name: 'removed_at', notNull: true, primaryKeyPosition: 0, type: 'TEXT'},
+  {name: 'epoch', notNull: true, primaryKeyPosition: 0, type: 'INTEGER'},
+  {name: 'repository_id', notNull: false, primaryKeyPosition: 0, type: 'TEXT'},
+  {name: 'provenance_record_digest', notNull: false, primaryKeyPosition: 0, type: 'TEXT'},
+  {name: 'provenance_record_identity', notNull: false, primaryKeyPosition: 0, type: 'TEXT'},
+  {name: 'phase', notNull: true, primaryKeyPosition: 0, type: 'TEXT'},
+  {name: 'cursor_token', notNull: false, primaryKeyPosition: 0, type: 'TEXT'},
+  {name: 'revision', notNull: true, primaryKeyPosition: 0, type: 'INTEGER'},
+  {name: 'attempts', notNull: true, primaryKeyPosition: 0, type: 'INTEGER'},
+  {name: 'next_attempt_at', notNull: true, primaryKeyPosition: 0, type: 'INTEGER'},
+  {name: 'blocked_code', notNull: false, primaryKeyPosition: 0, type: 'TEXT'},
+  {name: 'updated_at', notNull: true, primaryKeyPosition: 0, type: 'TEXT'},
+] as const;
+
+const SCHEMA_METADATA_TABLE_SQL = `CREATE TABLE IF NOT EXISTS schema_metadata (
+  key TEXT PRIMARY KEY NOT NULL,
+  value TEXT NOT NULL
+)`;
+
+const inspectBoundedSchemaMetadataRowCount = Effect.fn('codeGraph.inspectBoundedSchemaMetadataRowCount')(function* (
+  sql: SqlClient.SqlClient,
+) {
+  const rows = yield* sql.unsafe(
+    `SELECT 1 FROM schema_metadata LIMIT ${REMOVED_VIEW_CLEANUP_CURRENT_MAXIMUM_METADATA_ROWS + 1}`,
+  );
+  return rows.length > REMOVED_VIEW_CLEANUP_CURRENT_MAXIMUM_METADATA_ROWS ? undefined : rows.length;
+});
+
+const inspectBoundedSchemaMetadataValue = Effect.fn('codeGraph.inspectBoundedSchemaMetadataValue')(function* (
+  sql: SqlClient.SqlClient,
+  key: string,
+  maximumValueBytes: number,
+) {
+  if ((yield* inspectBoundedSchemaMetadataRowCount(sql)) === undefined) {
+    return {state: 'invalid'} as const;
+  }
+  const rows = yield* sql.unsafe<{
+    readonly bounded_key: unknown;
+    readonly bounded_value: unknown;
+    readonly key_bytes: unknown;
+    readonly key_type: unknown;
+    readonly value_bytes: unknown;
+    readonly value_type: unknown;
+  }>(
+    `SELECT
+       CASE
+         WHEN typeof(key) = 'text' AND length(CAST(key AS BLOB)) <= ? THEN key
+         ELSE NULL
+       END AS bounded_key,
+       CASE
+         WHEN typeof(value) = 'text' AND length(CAST(value AS BLOB)) <= ? THEN value
+         ELSE NULL
+       END AS bounded_value,
+       typeof(key) AS key_type,
+       length(CAST(key AS BLOB)) AS key_bytes,
+       typeof(value) AS value_type,
+       length(CAST(value AS BLOB)) AS value_bytes
+     FROM schema_metadata
+     WHERE key = ? COLLATE NOCASE
+     LIMIT 3`,
+    [key.length, maximumValueBytes, key],
+  );
+  if (rows.length === 0) return {state: 'missing'} as const;
+  const row = rows[0];
+  if (
+    rows.length !== 1 ||
+    row?.bounded_key !== key ||
+    row.key_type !== 'text' ||
+    row.key_bytes !== key.length ||
+    row.value_type !== 'text' ||
+    typeof row.value_bytes !== 'number' ||
+    !Number.isSafeInteger(row.value_bytes) ||
+    row.value_bytes < 0 ||
+    row.value_bytes > maximumValueBytes ||
+    typeof row.bounded_value !== 'string'
+  ) {
+    return {state: 'invalid'} as const;
+  }
+  return {state: 'recorded', value: row.bounded_value} as const;
+});
+
+const removedViewAuthorityTableState = Effect.fn('codeGraph.removedViewAuthorityTableState')(function* (
+  sql: SqlClient.SqlClient,
+) {
+  const objects = yield* sql.unsafe<{
+    readonly name: unknown;
+    readonly sql: unknown;
+    readonly sql_bytes: unknown;
+    readonly tbl_name: unknown;
+    readonly type: unknown;
+  }>(
+    `SELECT name, type, tbl_name,
+            CASE
+              WHEN typeof(sql) = 'text' AND length(CAST(sql AS BLOB)) <= 512 THEN sql
+              ELSE NULL
+            END AS sql,
+            length(CAST(sql AS BLOB)) AS sql_bytes
+     FROM sqlite_master
+     WHERE name = 'removed_views' COLLATE NOCASE
+     LIMIT 2`,
+  );
+  if (objects.length === 0) return 'absent' as const;
+  const object = objects[0];
+  if (
+    objects.length !== 1 ||
+    object?.name !== 'removed_views' ||
+    object.type !== 'table' ||
+    object.tbl_name !== 'removed_views' ||
+    typeof object.sql_bytes !== 'number' ||
+    !Number.isSafeInteger(object.sql_bytes) ||
+    object.sql_bytes > 512 ||
+    typeof object.sql !== 'string' ||
+    normalizeSchemaDefinition(object.sql) !== normalizeSchemaDefinition(REMOVED_VIEWS_TABLE_SQL)
+  ) {
+    return 'incompatible' as const;
+  }
+  const columns = yield* sql.unsafe<{
+    readonly dflt_value: unknown;
+    readonly hidden: unknown;
+    readonly name: unknown;
+    readonly notnull: unknown;
+    readonly pk: unknown;
+    readonly type: unknown;
+  }>(`SELECT * FROM pragma_table_xinfo('removed_views') LIMIT 4`);
+  const expected = [
+    {name: 'worktree_id', pk: 1},
+    {name: 'expected_snapshot_id', pk: 0},
+    {name: 'removed_at', pk: 0},
+  ] as const;
+  if (
+    columns.length !== expected.length ||
+    columns.some((column, index) => {
+      const contract = expected[index];
+      return (
+        contract === undefined ||
+        column.name !== contract.name ||
+        column.type !== 'TEXT' ||
+        column.notnull !== 1 ||
+        column.pk !== contract.pk ||
+        column.hidden !== 0 ||
+        column.dflt_value !== null
+      );
+    }) ||
+    (yield* sql.unsafe(`SELECT 1 FROM pragma_foreign_key_list('removed_views') LIMIT 1`)).length !== 0
+  ) {
+    return 'incompatible' as const;
+  }
+  const indexes = yield* sql.unsafe<{
+    readonly name: unknown;
+    readonly origin: unknown;
+    readonly partial: unknown;
+    readonly unique: unknown;
+  }>(`SELECT name, origin, partial, "unique" AS "unique" FROM pragma_index_list('removed_views') LIMIT 2`);
+  if (
+    indexes.length !== 1 ||
+    indexes[0]?.name !== 'sqlite_autoindex_removed_views_1' ||
+    indexes[0]?.origin !== 'pk' ||
+    indexes[0]?.unique !== 1 ||
+    indexes[0]?.partial !== 0
+  ) {
+    return 'incompatible' as const;
+  }
+  const primary = yield* sql.unsafe<{
+    readonly cid: unknown;
+    readonly coll: unknown;
+    readonly desc: unknown;
+    readonly key: unknown;
+    readonly name: unknown;
+    readonly seqno: unknown;
+  }>(`SELECT * FROM pragma_index_xinfo('sqlite_autoindex_removed_views_1') LIMIT 4`);
+  return primary.length === 3 &&
+    primary[0]?.seqno === 0 &&
+    primary[0]?.cid === 0 &&
+    primary[0]?.name === 'worktree_id' &&
+    primary[0]?.desc === 0 &&
+    primary[0]?.coll === 'BINARY' &&
+    primary[0]?.key === 1 &&
+    primary
+      .slice(1)
+      .every(
+        (column, index) =>
+          column.seqno === index + 1 &&
+          column.cid === index + 1 &&
+          column.name === expected[index + 1]?.name &&
+          column.desc === 0 &&
+          column.coll === 'BINARY' &&
+          column.key === 0,
+      )
+    ? ('compatible' as const)
+    : ('incompatible' as const);
+});
+
+const removedViewCleanupSchemaState = Effect.fn('codeGraph.removedViewCleanupSchemaState')(function* (
+  sql: SqlClient.SqlClient,
+) {
+  const objects = yield* sql.unsafe<{
+    readonly name: string;
+    readonly sql: string | null;
+    readonly sql_bytes: number | null;
+    readonly tbl_name: string;
+    readonly type: string;
+  }>(
+    `SELECT type, name, tbl_name,
+            CASE
+              WHEN typeof(sql) = 'text' AND length(CAST(sql AS BLOB)) <= 8192 THEN sql
+              ELSE NULL
+            END AS sql,
+            length(CAST(sql AS BLOB)) AS sql_bytes
+     FROM sqlite_master
+     WHERE lower(name) IN ('removed_view_cleanup', 'removed_view_cleanup_due')
+        OR (type = 'trigger' AND tbl_name = 'removed_views' COLLATE NOCASE)
+     ORDER BY name, type
+     LIMIT 6`,
+  );
+  const expectedNames = new Set([
+    'removed_view_cleanup',
+    'removed_view_cleanup_due',
+    ...REMOVED_VIEW_CLEANUP_TRIGGER_DEFINITIONS.map(trigger => trigger.name),
+  ]);
+  if (
+    objects.some(
+      object =>
+        object.name !== object.name.toLowerCase() ||
+        !expectedNames.has(object.name) ||
+        typeof object.sql_bytes !== 'number' ||
+        !Number.isSafeInteger(object.sql_bytes) ||
+        object.sql_bytes > 8192,
+    )
+  ) {
+    return 'incompatible' as const;
+  }
+  const tables = objects.filter(object => object.name === 'removed_view_cleanup');
+  const dueObjects = objects.filter(object => object.name === 'removed_view_cleanup_due');
+  const triggerObjects = objects.filter(object =>
+    REMOVED_VIEW_CLEANUP_TRIGGER_DEFINITIONS.some(trigger => trigger.name === object.name),
+  );
+  if (tables.length === 0) {
+    return dueObjects.length === 0 && triggerObjects.length === 0 ? ('absent' as const) : ('incompatible' as const);
+  }
+  if (
+    tables.length !== 1 ||
+    tables[0]?.type !== 'table' ||
+    tables[0]?.tbl_name !== 'removed_view_cleanup' ||
+    typeof tables[0]?.sql !== 'string' ||
+    dueObjects.some(object => object.type !== 'index' || object.tbl_name !== 'removed_view_cleanup') ||
+    triggerObjects.length !== REMOVED_VIEW_CLEANUP_TRIGGER_DEFINITIONS.length ||
+    REMOVED_VIEW_CLEANUP_TRIGGER_DEFINITIONS.some(expected => {
+      const observed = triggerObjects.find(object => object.name === expected.name);
+      return (
+        observed?.type !== 'trigger' ||
+        observed.tbl_name !== 'removed_views' ||
+        typeof observed.sql !== 'string' ||
+        normalizeSchemaDefinition(observed.sql) !== normalizeSchemaDefinition(expected.sql)
+      );
+    })
+  ) {
+    return 'incompatible' as const;
+  }
+  const columns = yield* sql.unsafe<{
+    readonly hidden: number;
+    readonly name: string;
+    readonly notnull: number;
+    readonly pk: number;
+    readonly type: string;
+  }>(`SELECT * FROM pragma_table_xinfo('removed_view_cleanup') LIMIT ${REMOVED_VIEW_CLEANUP_COLUMNS.length + 1}`);
+  const compatibleColumns =
+    columns.length === REMOVED_VIEW_CLEANUP_COLUMNS.length &&
+    columns.every((column, index) => {
+      const expected = REMOVED_VIEW_CLEANUP_COLUMNS[index];
+      return (
+        expected !== undefined &&
+        Number(column.hidden) === 0 &&
+        column.name === expected.name &&
+        column.type.toUpperCase() === expected.type &&
+        Number(column.notnull) === Number(expected.notNull) &&
+        Number(column.pk) === expected.primaryKeyPosition
+      );
+    });
+  const compatibleDefinition =
+    normalizeSchemaDefinition(tables[0].sql) === normalizeSchemaDefinition(REMOVED_VIEW_CLEANUP_TABLE_SQL);
+  const foreignKeys = yield* sql.unsafe(`SELECT 1 FROM pragma_foreign_key_list('removed_view_cleanup') LIMIT 1`);
+  const triggers = yield* sql.unsafe(
+    `SELECT name FROM sqlite_master
+     WHERE type = 'trigger' AND tbl_name = 'removed_view_cleanup' COLLATE NOCASE
+     LIMIT 1`,
+  );
+  if (!compatibleColumns || !compatibleDefinition || foreignKeys.length !== 0 || triggers.length !== 0) {
+    return 'incompatible' as const;
+  }
+
+  const indexes = yield* sql.unsafe<{
+    readonly name: string;
+    readonly origin: string;
+    readonly partial: number;
+    readonly unique: number;
+  }>(`SELECT name, origin, partial, "unique" AS "unique"
+      FROM pragma_index_list('removed_view_cleanup') LIMIT 3`);
+  const primary = indexes.find(index => index.origin === 'pk');
+  const due = indexes.find(index => index.name === 'removed_view_cleanup_due');
+  if (due === undefined) {
+    // Building this index over an existing queue would be unbounded startup
+    // work. Revision 8 creates the empty table and index atomically instead.
+    return 'incompatible' as const;
+  }
+  if (primary?.name !== 'sqlite_autoindex_removed_view_cleanup_1') return 'incompatible' as const;
+  const primaryColumns = yield* sql.unsafe<{
+    readonly coll: unknown;
+    readonly desc: unknown;
+    readonly key: unknown;
+    readonly name: unknown;
+    readonly seqno: unknown;
+  }>(
+    `SELECT seqno, name, desc, coll, key
+     FROM pragma_index_xinfo('sqlite_autoindex_removed_view_cleanup_1')
+     LIMIT ${REMOVED_VIEW_CLEANUP_COLUMNS.length + 1}`,
+  );
+  if (
+    primaryColumns.length !== REMOVED_VIEW_CLEANUP_COLUMNS.length ||
+    primaryColumns.some(
+      (column, index) =>
+        column.seqno !== index ||
+        column.name !== REMOVED_VIEW_CLEANUP_COLUMNS[index]?.name ||
+        column.desc !== 0 ||
+        column.coll !== 'BINARY' ||
+        column.key !== (index < 2 ? 1 : 0),
+    )
+  ) {
+    return 'incompatible' as const;
+  }
+  return dueObjects.length === 1 &&
+    indexes.length === 2 &&
+    primary !== undefined &&
+    Number(primary.unique) === 1 &&
+    Number(primary.partial) === 0 &&
+    Number(due.unique) === 0 &&
+    due.origin === 'c' &&
+    Number(due.partial) === 1 &&
+    normalizeSchemaDefinition(dueObjects[0]?.sql ?? '') ===
+      normalizeSchemaDefinition(REMOVED_VIEW_CLEANUP_DUE_INDEX_SQL)
+    ? ('compatible' as const)
+    : ('incompatible' as const);
+});
+
+const removedViewCleanupRecordedRevision = Effect.fn('codeGraph.removedViewCleanupRecordedRevision')(function* (
+  sql: SqlClient.SqlClient,
+) {
+  const metadataObjects = yield* sql.unsafe<{
+    readonly name: unknown;
+    readonly sql: unknown;
+    readonly sql_bytes: unknown;
+    readonly sql_type: unknown;
+    readonly tbl_name: unknown;
+    readonly type: unknown;
+  }>(
+    `SELECT name, type, tbl_name,
+            CASE
+              WHEN typeof(sql) = 'text' AND length(CAST(sql AS BLOB)) <= 256 THEN sql
+              ELSE NULL
+            END AS sql,
+            typeof(sql) AS sql_type,
+            length(CAST(sql AS BLOB)) AS sql_bytes
+     FROM sqlite_master
+     WHERE name = 'schema_metadata' COLLATE NOCASE
+     ORDER BY type
+     LIMIT 2`,
+  );
+  if (metadataObjects.length === 0) return {metadataPresent: false, state: 'missing'};
+  if (
+    metadataObjects.length !== 1 ||
+    metadataObjects[0]?.name !== 'schema_metadata' ||
+    metadataObjects[0]?.type !== 'table' ||
+    metadataObjects[0]?.tbl_name !== 'schema_metadata' ||
+    metadataObjects[0]?.sql_type !== 'text' ||
+    typeof metadataObjects[0]?.sql_bytes !== 'number' ||
+    !Number.isSafeInteger(metadataObjects[0].sql_bytes) ||
+    metadataObjects[0].sql_bytes > 256 ||
+    typeof metadataObjects[0]?.sql !== 'string' ||
+    normalizeSchemaDefinition(metadataObjects[0].sql) !== normalizeSchemaDefinition(SCHEMA_METADATA_TABLE_SQL)
+  ) {
+    return {state: 'invalid'};
+  }
+  const columns = yield* sql.unsafe<{
+    readonly dflt_value: unknown;
+    readonly hidden: unknown;
+    readonly name: unknown;
+    readonly notnull: unknown;
+    readonly pk: unknown;
+    readonly type: unknown;
+  }>(`SELECT * FROM pragma_table_xinfo('schema_metadata') LIMIT 3`);
+  if (
+    columns.length !== 2 ||
+    columns[0]?.name !== 'key' ||
+    columns[0]?.type !== 'TEXT' ||
+    Number(columns[0]?.notnull) !== 1 ||
+    Number(columns[0]?.pk) !== 1 ||
+    Number(columns[0]?.hidden) !== 0 ||
+    columns[0]?.dflt_value !== null ||
+    columns[1]?.name !== 'value' ||
+    columns[1]?.type !== 'TEXT' ||
+    Number(columns[1]?.notnull) !== 1 ||
+    Number(columns[1]?.pk) !== 0 ||
+    Number(columns[1]?.hidden) !== 0 ||
+    columns[1]?.dflt_value !== null
+  ) {
+    return {state: 'invalid'};
+  }
+  const indexes = yield* sql.unsafe<{
+    readonly name: unknown;
+    readonly origin: unknown;
+    readonly partial: unknown;
+    readonly unique: unknown;
+  }>(`SELECT name, origin, partial, "unique" AS "unique" FROM pragma_index_list('schema_metadata') LIMIT 2`);
+  if (
+    indexes.length !== 1 ||
+    indexes[0]?.name !== 'sqlite_autoindex_schema_metadata_1' ||
+    indexes[0]?.origin !== 'pk' ||
+    Number(indexes[0]?.unique) !== 1 ||
+    Number(indexes[0]?.partial) !== 0
+  ) {
+    return {state: 'invalid'};
+  }
+  const keyIndex = yield* sql.unsafe<{
+    readonly cid: unknown;
+    readonly coll: unknown;
+    readonly desc: unknown;
+    readonly key: unknown;
+    readonly name: unknown;
+    readonly seqno: unknown;
+  }>(`SELECT * FROM pragma_index_xinfo('sqlite_autoindex_schema_metadata_1') LIMIT 3`);
+  if (
+    keyIndex.length !== 2 ||
+    Number(keyIndex[0]?.seqno) !== 0 ||
+    Number(keyIndex[0]?.cid) !== 0 ||
+    keyIndex[0]?.name !== 'key' ||
+    Number(keyIndex[0]?.desc) !== 0 ||
+    keyIndex[0]?.coll !== 'BINARY' ||
+    Number(keyIndex[0]?.key) !== 1 ||
+    Number(keyIndex[1]?.seqno) !== 1 ||
+    Number(keyIndex[1]?.cid) !== -1 ||
+    keyIndex[1]?.name !== null ||
+    Number(keyIndex[1]?.desc) !== 0 ||
+    keyIndex[1]?.coll !== 'BINARY' ||
+    Number(keyIndex[1]?.key) !== 0
+  ) {
+    return {state: 'invalid'};
+  }
+  const foreignKeys = yield* sql.unsafe(`SELECT 1 FROM pragma_foreign_key_list('schema_metadata') LIMIT 1`);
+  const triggers = yield* sql.unsafe(
+    "SELECT name FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'schema_metadata' COLLATE NOCASE LIMIT 1",
+  );
+  if (foreignKeys.length !== 0 || triggers.length !== 0) return {state: 'invalid'};
+
+  const revision = yield* inspectBoundedSchemaMetadataValue(sql, 'persistent_extension_schema_revision', 16);
+  if (revision.state === 'missing') return {metadataPresent: true, state: 'missing'};
+  if (
+    revision.state === 'invalid' ||
+    !/^(?:0|[1-9][0-9]*)$/u.test(revision.value) ||
+    !Number.isSafeInteger(Number(revision.value))
+  ) {
+    return {state: 'invalid'};
+  }
+  return {state: 'recorded', value: Number(revision.value)};
+});
+
+const preflightRemovedViewCleanupSchema = Effect.fn('codeGraph.preflightRemovedViewCleanupSchema')(function* (
+  sql: SqlClient.SqlClient,
+) {
+  const removedViewAuthority = yield* removedViewAuthorityTableState(sql);
+  if (removedViewAuthority === 'incompatible') {
+    return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view authority schema is incompatible.'));
+  }
+  const schema = yield* removedViewCleanupSchemaState(sql);
+  if (schema === 'incompatible') {
+    return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view cleanup schema is incompatible.'));
+  }
+  const revision = yield* removedViewCleanupRecordedRevision(sql);
+  const recordedRevision = revision.state === 'recorded' ? revision.value : undefined;
+  if (recordedRevision !== undefined && recordedRevision > CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION) {
+    return yield* Effect.fail(
+      new CodeGraphStoreError(
+        `Code graph persistent extension schema ${recordedRevision} is newer than ${CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION}.`,
+      ),
+    );
+  }
+  const leaseObjects = yield* sql.unsafe<{readonly name: unknown; readonly type: unknown}>(
+    `SELECT name, type
+     FROM sqlite_master
+     WHERE name = 'snapshot_leases' COLLATE NOCASE
+     LIMIT 2`,
+  );
+  if (
+    leaseObjects.length > 1 ||
+    (leaseObjects.length === 1 && (leaseObjects[0]?.name !== 'snapshot_leases' || leaseObjects[0]?.type !== 'table'))
+  ) {
+    return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot lease schema is incompatible.'));
+  }
+  if (leaseObjects.length === 1) {
+    const expiryIndexState = yield* codeGraphReconciliationIndexState(sql, CODE_GRAPH_SNAPSHOT_LEASE_EXPIRY_INDEX);
+    if (expiryIndexState === 'incompatible') {
+      return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot lease expiry index is incompatible.'));
+    }
+    if (expiryIndexState === 'missing') {
+      const rows = yield* sql.unsafe('SELECT 1 FROM snapshot_leases LIMIT 1');
+      if (revision.state !== 'missing' || rows.length !== 0) {
+        return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot lease expiry index is unavailable.'));
+      }
+    }
+  }
+  const metadataPresent = revision.state === 'recorded' || (revision.state === 'missing' && revision.metadataPresent);
+  const metadataRowCount = metadataPresent ? yield* inspectBoundedSchemaMetadataRowCount(sql) : 0;
+  const epochSequence = metadataPresent
+    ? yield* inspectBoundedSchemaMetadataValue(sql, REMOVED_VIEW_CLEANUP_EPOCH_SEQUENCE_KEY, 16)
+    : ({state: 'missing'} as const);
+  const admissionCursor = metadataPresent
+    ? yield* inspectBoundedSchemaMetadataValue(sql, REMOVED_VIEW_CLEANUP_ADMISSION_CURSOR_KEY, 64)
+    : ({state: 'missing'} as const);
+  const epochSequenceCurrent =
+    epochSequence.state === 'recorded' &&
+    /^(?:0|[1-9][0-9]*)$/u.test(epochSequence.value) &&
+    Number.isSafeInteger(Number(epochSequence.value));
+  const cursorCurrent =
+    admissionCursor.state === 'missing' ||
+    (admissionCursor.state === 'recorded' && /^[0-9a-f]{64}$/u.test(admissionCursor.value));
+  const ownerInstanceMarkerObjects =
+    schema === 'absent' && revision.state === 'missing'
+      ? yield* sql.unsafe(
+          `SELECT name FROM sqlite_master
+           WHERE name = 'snapshot_build_owner_instances' COLLATE NOCASE
+           LIMIT 1`,
+        )
+      : [];
+  const coreAuthorityCurrent =
+    recordedRevision !== undefined && recordedRevision >= 7
+      ? yield* codeGraphWorktreeReconciliationSchemaCompatible(
+          sql,
+          schema === 'compatible',
+          false,
+          removedViewAuthority === 'compatible',
+        )
+      : true;
+  if (
+    revision.state === 'invalid' ||
+    metadataRowCount === undefined ||
+    epochSequence.state === 'invalid' ||
+    (epochSequence.state === 'recorded' && !epochSequenceCurrent) ||
+    !cursorCurrent ||
+    (schema === 'absent' &&
+      recordedRevision !== undefined &&
+      recordedRevision >= CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION) ||
+    (schema === 'absent' && (epochSequence.state !== 'missing' || admissionCursor.state !== 'missing')) ||
+    (schema === 'absent' &&
+      metadataRowCount >
+        REMOVED_VIEW_CLEANUP_LEGACY_MAXIMUM_METADATA_ROWS -
+          (revision.state === 'missing' && revision.metadataPresent ? 1 : 0)) ||
+    (schema === 'compatible' &&
+      (recordedRevision !== CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION || !epochSequenceCurrent)) ||
+    (schema === 'compatible' && removedViewAuthority !== 'compatible') ||
+    (schema === 'compatible' &&
+      metadataRowCount >
+        (admissionCursor.state === 'missing'
+          ? REMOVED_VIEW_CLEANUP_CURRENT_MAXIMUM_METADATA_ROWS - 1
+          : REMOVED_VIEW_CLEANUP_CURRENT_MAXIMUM_METADATA_ROWS)) ||
+    ownerInstanceMarkerObjects.length > 0 ||
+    !coreAuthorityCurrent
+  ) {
+    return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view cleanup schema is incompatible.'));
+  }
+  // Table and index creation plus r8 recording are one transaction. A partial
+  // state is drift, not a recovery surface, and must never be self-healed.
+});
+
+const removedViewCleanupSchemaCurrent = Effect.fn('codeGraph.removedViewCleanupSchemaCurrent')(function* (
+  sql: SqlClient.SqlClient,
+) {
+  return (yield* removedViewCleanupSchemaState(sql)) === 'compatible';
+});
+
+const inspectRemovedViewCleanupAdmissionCursor = Effect.fn('codeGraph.inspectRemovedViewCleanupAdmissionCursor')(
+  function* (sql: SqlClient.SqlClient) {
+    const inspection = yield* inspectBoundedSchemaMetadataValue(sql, REMOVED_VIEW_CLEANUP_ADMISSION_CURSOR_KEY, 64);
+    if (inspection.state === 'missing') return {current: true, cursor: undefined} as const;
+    if (inspection.state === 'invalid' || !/^[0-9a-f]{64}$/u.test(inspection.value)) {
+      return {current: false, cursor: undefined} as const;
+    }
+    return {current: true, cursor: inspection.value} as const;
+  },
+);
+
+const removedViewCleanupEpochSequenceCurrent = Effect.fn('codeGraph.removedViewCleanupEpochSequenceCurrent')(function* (
+  sql: SqlClient.SqlClient,
+) {
+  const inspection = yield* inspectBoundedSchemaMetadataValue(sql, REMOVED_VIEW_CLEANUP_EPOCH_SEQUENCE_KEY, 16);
+  return (
+    inspection.state === 'recorded' &&
+    /^(?:0|[1-9][0-9]*)$/u.test(inspection.value) &&
+    Number.isSafeInteger(Number(inspection.value))
+  );
+});
+
+interface CodeGraphRemovedViewCleanupSchemaAdmission {
+  readonly current: boolean;
+  readonly persistentExtensionSchemaRevision: number | undefined;
+}
+
+/** Exact read-only admission shared by cleanup writers and both health paths. */
+export const codeGraphRemovedViewCleanupSchemaAdmission: (
+  sql: SqlClient.SqlClient,
+) => Effect.Effect<CodeGraphRemovedViewCleanupSchemaAdmission, SqlError.SqlError> = Effect.fn(
+  'codeGraph.removedViewCleanupSchemaAdmission',
+)(function* (sql: SqlClient.SqlClient) {
+  const revision = yield* removedViewCleanupRecordedRevision(sql);
+  const persistentExtensionSchemaRevision = revision.state === 'recorded' ? revision.value : undefined;
+  if (persistentExtensionSchemaRevision !== CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION) {
+    return {current: false, persistentExtensionSchemaRevision} as const;
+  }
+  if (!(yield* removedViewCleanupEpochSequenceCurrent(sql))) {
+    return {current: false, persistentExtensionSchemaRevision} as const;
+  }
+  const metadataRowCount = yield* inspectBoundedSchemaMetadataRowCount(sql);
+  if (metadataRowCount === undefined) {
+    return {current: false, persistentExtensionSchemaRevision} as const;
+  }
+  const admissionCursor = yield* inspectRemovedViewCleanupAdmissionCursor(sql);
+  return {
+    current:
+      admissionCursor.current &&
+      metadataRowCount <=
+        (admissionCursor.cursor === undefined
+          ? REMOVED_VIEW_CLEANUP_CURRENT_MAXIMUM_METADATA_ROWS - 1
+          : REMOVED_VIEW_CLEANUP_CURRENT_MAXIMUM_METADATA_ROWS) &&
+      (yield* removedViewAuthorityTableState(sql)) === 'compatible' &&
+      (yield* removedViewCleanupSchemaCurrent(sql)) &&
+      (yield* codeGraphWorktreeReconciliationSchemaCompatible(sql, true, false)),
+    persistentExtensionSchemaRevision,
+  } as const;
+});
+
+const ensureRemovedViewCleanupSchema = Effect.fn('codeGraph.ensureRemovedViewCleanupSchema')(function* (
+  sql: SqlClient.SqlClient,
+) {
+  yield* preflightRemovedViewCleanupSchema(sql);
+  yield* sql.unsafe(REMOVED_VIEW_CLEANUP_TABLE_SQL);
+  yield* sql.unsafe(REMOVED_VIEW_CLEANUP_DUE_INDEX_SQL);
+  for (const trigger of REMOVED_VIEW_CLEANUP_TRIGGER_DEFINITIONS) yield* sql.unsafe(trigger.sql);
+  if (!(yield* removedViewCleanupSchemaCurrent(sql))) {
+    return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view cleanup schema is incompatible.'));
+  }
+});
 function persistentExtensionTableInspection(
   sql: SqlClient.SqlClient,
   contract: PersistentExtensionTableContract,
@@ -3561,6 +4673,18 @@ const migratePersistentExtensionTables = Effect.fn('codeGraph.migratePersistentE
           ),
         );
       }
+      if (!(yield* codeGraphWorktreeReconciliationSchemaCompatible(sql, true, false))) {
+        return yield* Effect.fail(new CodeGraphStoreError('Code graph cleanup authority schema is incompatible.'));
+      }
+      const cleanupSchemaState = yield* removedViewCleanupSchemaState(sql);
+      yield* ensureRemovedViewCleanupSchema(sql);
+      if (cleanupSchemaState === 'absent') {
+        yield* sql`
+          INSERT INTO schema_metadata (key, value)
+          VALUES (${REMOVED_VIEW_CLEANUP_EPOCH_SEQUENCE_KEY}, '0')
+        `;
+        yield* observe?.('added-removed-view-cleanup') ?? Effect.void;
+      }
       if (recordedRevision === 6) {
         const ownerInstances = PERSISTENT_EXTENSION_TABLES.find(
           table => table.name === 'snapshot_build_owner_instances',
@@ -3633,7 +4757,18 @@ const migratePersistentExtensionTables = Effect.fn('codeGraph.migratePersistentE
       }
       const inspections = yield* inspectPersistentExtensionTables(sql);
       const extensionSchemaCompatible = inspections.every(inspection => inspection.exists && inspection.compatible);
-      if (revision[0]?.value === String(CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION) && extensionSchemaCompatible) {
+      if ((recordedRevision === 7 || recordedRevision === 8) && extensionSchemaCompatible) {
+        if (recordedRevision !== CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION) {
+          yield* sql`
+            INSERT INTO schema_metadata (key, value)
+            VALUES ('persistent_extension_schema_revision', ${String(CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION)})
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+          `;
+          yield* observe?.('recorded-revision') ?? Effect.void;
+        }
+        if (!(yield* codeGraphRemovedViewCleanupSchemaAdmission(sql)).current) {
+          return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view cleanup schema is unavailable.'));
+        }
         return;
       }
       const incompatibleGroups = new Set(
@@ -3713,6 +4848,9 @@ const migratePersistentExtensionTables = Effect.fn('codeGraph.migratePersistentE
         ON CONFLICT(key) DO UPDATE SET value = excluded.value
       `;
       yield* observe?.('recorded-revision') ?? Effect.void;
+      if (!(yield* codeGraphRemovedViewCleanupSchemaAdmission(sql)).current) {
+        return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view cleanup schema is unavailable.'));
+      }
     }),
   );
 });
@@ -3816,6 +4954,10 @@ const CODE_GRAPH_ACTIVE_SNAPSHOT_EXTRACTOR_TRIGGER_SQL = `CREATE TRIGGER active_
 
 const initializeSchema = Effect.fn('codeGraph.initializeSchema')(function* (sql: SqlClient.SqlClient) {
   yield* configureConnection(sql);
+  // Refuse a drifted cleanup authority surface before any initialization DDL
+  // or graph-row mutation. Unlike reconstructible build extensions, this
+  // queue is coupled to immutable removal tombstones and is never dropped.
+  yield* preflightRemovedViewCleanupSchema(sql);
   yield* sql.unsafe('PRAGMA journal_mode = WAL');
   // Explicit whole-WAL checkpoints can monopolize the synchronous SQLite
   // connection for longer than the build heartbeat. Committed WAL records are
@@ -3828,6 +4970,19 @@ const initializeSchema = Effect.fn('codeGraph.initializeSchema')(function* (sql:
       value TEXT NOT NULL
     )
   `);
+  yield* sql`
+    INSERT INTO schema_metadata (key, value)
+    VALUES ('schema_version', ${String(CODE_GRAPH_SCHEMA_VERSION)})
+    ON CONFLICT(key) DO NOTHING
+  `;
+  const admittedSchemaVersion = yield* inspectBoundedSchemaMetadataValue(sql, 'schema_version', 16);
+  if (admittedSchemaVersion.state !== 'recorded' || admittedSchemaVersion.value !== String(CODE_GRAPH_SCHEMA_VERSION)) {
+    return yield* Effect.fail(
+      new CodeGraphStoreError(
+        `Code graph schema ${admittedSchemaVersion.state === 'recorded' ? admittedSchemaVersion.value : 'unknown'} is incompatible with ${CODE_GRAPH_SCHEMA_VERSION}.`,
+      ),
+    );
+  }
   yield* sql.unsafe(`
     CREATE TABLE IF NOT EXISTS repositories (
       id TEXT PRIMARY KEY NOT NULL,
@@ -3862,18 +5017,14 @@ const initializeSchema = Effect.fn('codeGraph.initializeSchema')(function* (sql:
   // ID is a collision-safe migration sentinel; freshly observed snapshots use
   // the commit-independent cgc_ identity generated by the indexer.
   yield* sql.unsafe('UPDATE snapshots SET graph_content_id = id WHERE graph_content_id IS NULL');
-  yield* migratePersistentExtensionTables(sql);
+  // The cleanup extension installs bounded revocation triggers on this durable
+  // tombstone authority, so the core table must exist before the atomic r8
+  // table/index/trigger/sequence publication transaction begins.
+  yield* sql.unsafe(REMOVED_VIEWS_TABLE_SQL);
   yield* sql.unsafe(`
     CREATE TABLE IF NOT EXISTS snapshot_extractor_generations (
       snapshot_id TEXT PRIMARY KEY NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
       generation INTEGER NOT NULL CHECK (generation > 0)
-    ) WITHOUT ROWID
-  `);
-  yield* sql.unsafe(`
-    CREATE TABLE IF NOT EXISTS snapshot_build_owners (
-      snapshot_id TEXT PRIMARY KEY NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
-      owner_token TEXT NOT NULL,
-      claimed_at TEXT NOT NULL
     ) WITHOUT ROWID
   `);
   yield* sql.unsafe(`
@@ -3886,17 +5037,13 @@ const initializeSchema = Effect.fn('codeGraph.initializeSchema')(function* (sql:
   // This intentionally has no snapshot foreign key. The removal evidence must
   // survive bounded physical reclamation so an older runtime cannot resurrect
   // a removed view by republishing its legacy active pointer.
-  yield* sql.unsafe(`
-    CREATE TABLE IF NOT EXISTS removed_views (
-      worktree_id TEXT PRIMARY KEY NOT NULL,
-      expected_snapshot_id TEXT NOT NULL,
-      removed_at TEXT NOT NULL
-    ) WITHOUT ROWID
-  `);
+  yield* sql.unsafe(REMOVED_VIEWS_TABLE_SQL);
   yield* sql.unsafe(
     CODE_GRAPH_ACTIVE_SNAPSHOT_EXTRACTOR_TRIGGER_SQL.replace('CREATE TRIGGER', 'CREATE TRIGGER IF NOT EXISTS'),
   );
   yield* ensureSnapshotLeaseSchema(sql);
+  yield* ensureInitialReconciliationIndexes(sql);
+  yield* migratePersistentExtensionTables(sql);
   yield* sql.unsafe(`
     CREATE TABLE IF NOT EXISTS snapshot_files (
       snapshot_id TEXT NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
@@ -4285,14 +5432,13 @@ const diagnoseDatabase = Effect.fn('codeGraph.diagnoseDatabase')(function* () {
   const schemaRows = yield* sql<{readonly value: string}>`
     SELECT value FROM schema_metadata WHERE key = 'schema_version'
   `;
-  const extensionRevisionRows = yield* sql<{readonly value: string}>`
-    SELECT value FROM schema_metadata WHERE key = 'persistent_extension_schema_revision'
-  `;
   const schemaVersion = Number.parseInt(schemaRows[0]?.value ?? '', 10);
-  const persistentExtensionSchemaRevision = Number.parseInt(extensionRevisionRows[0]?.value ?? '', 10);
+  const cleanupAdmission = yield* codeGraphRemovedViewCleanupSchemaAdmission(sql);
+  const persistentExtensionSchemaRevision = cleanupAdmission.persistentExtensionSchemaRevision;
   const persistentExtensionCurrent =
     persistentExtensionSchemaRevision === CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION &&
-    (yield* codeGraphPersistentExtensionSchemaCompatible(sql));
+    (yield* codeGraphPersistentExtensionSchemaCompatible(sql)) &&
+    cleanupAdmission.current;
   const stateRows = yield* sql<{readonly count: number; readonly state: CodeGraphSnapshot['state']}>`
     SELECT state, COUNT(*) AS count FROM snapshots GROUP BY state
   `;
@@ -4315,9 +5461,7 @@ const diagnoseDatabase = Effect.fn('codeGraph.diagnoseDatabase')(function* () {
           ? 'ok'
           : 'corrupt',
     readySnapshots: counts.get('ready') ?? 0,
-    persistentExtensionSchemaRevision: Number.isSafeInteger(persistentExtensionSchemaRevision)
-      ? persistentExtensionSchemaRevision
-      : undefined,
+    persistentExtensionSchemaRevision,
     schemaVersion: Number.isSafeInteger(schemaVersion) ? schemaVersion : undefined,
   } satisfies CodeGraphDatabaseHealth;
 });
@@ -4418,7 +5562,38 @@ const initializeRoutineMaintenanceSchema = Effect.fn('codeGraph.initializeRoutin
   ) {
     return false;
   }
+  const leaseTableExists = yield* tableExists(sql, 'snapshot_leases');
+  const revision = yield* removedViewCleanupRecordedRevision(sql);
+  if (revision.state === 'invalid') return false;
+  const recordedRevision = revision.state === 'recorded' ? revision.value : undefined;
+  const successorIndexState = leaseTableExists
+    ? yield* codeGraphReconciliationIndexState(sql, CODE_GRAPH_RECONCILIATION_REQUIRED_INDEXES[2])
+    : ('missing' as const);
+  if (
+    successorIndexState === 'incompatible' ||
+    (recordedRevision !== undefined &&
+      recordedRevision >= CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION &&
+      successorIndexState !== 'ready')
+  ) {
+    return false;
+  }
+  let createExpiryIndex = !leaseTableExists;
+  if (leaseTableExists) {
+    const expiryIndexState = yield* codeGraphReconciliationIndexState(sql, CODE_GRAPH_SNAPSHOT_LEASE_EXPIRY_INDEX);
+    if (expiryIndexState === 'incompatible') return false;
+    if (expiryIndexState === 'missing') {
+      const rows = yield* sql.unsafe('SELECT 1 FROM snapshot_leases LIMIT 1');
+      if (revision.state !== 'missing' || rows.length !== 0) return false;
+      createExpiryIndex = true;
+    }
+  }
   yield* ensureSnapshotLeaseSchema(sql);
+  if (createExpiryIndex) {
+    yield* sql.unsafe(CODE_GRAPH_SNAPSHOT_LEASE_EXPIRY_INDEX.definition);
+  }
+  if ((yield* codeGraphReconciliationIndexState(sql, CODE_GRAPH_SNAPSHOT_LEASE_EXPIRY_INDEX)) !== 'ready') {
+    return false;
+  }
   return true;
 });
 
@@ -4612,38 +5787,153 @@ const observePersistentBuildOwner = Effect.fn('codeGraph.observePersistentBuildO
   return classifyCodeGraphBuildOwner(candidate, {isRunning, processStartIdentity});
 });
 
+interface BoundedSnapshotLeaseRow {
+  readonly expires_at: unknown;
+  readonly retire_when_inactive: unknown;
+  readonly snapshot_id: unknown;
+  readonly token: unknown;
+}
+
+interface SnapshotLeaseManifest {
+  readonly expiresAt: number;
+  readonly retireWhenInactive: 0 | 1;
+  readonly snapshotId: string;
+  readonly token: string;
+}
+
+function boundedSnapshotLeaseProjection(alias: string): string {
+  return `CASE
+      WHEN typeof(${alias}.token) = 'text'
+        AND length(CAST(${alias}.token AS BLOB)) BETWEEN 1 AND 1024
+      THEN ${alias}.token ELSE NULL END AS token,
+    CASE
+      WHEN typeof(${alias}.snapshot_id) = 'text'
+        AND length(CAST(${alias}.snapshot_id AS BLOB)) BETWEEN 1 AND 1024
+      THEN ${alias}.snapshot_id ELSE NULL END AS snapshot_id,
+    CASE
+      WHEN typeof(${alias}.expires_at) = 'integer'
+        AND ${alias}.expires_at BETWEEN 0 AND ${MAXIMUM_CANONICAL_DATE_MILLISECONDS}
+      THEN ${alias}.expires_at ELSE NULL END AS expires_at,
+    CASE
+      WHEN typeof(${alias}.retire_when_inactive) = 'integer'
+        AND ${alias}.retire_when_inactive IN (0, 1)
+      THEN ${alias}.retire_when_inactive ELSE NULL END AS retire_when_inactive`;
+}
+
+function decodeSnapshotLeaseManifest(row: BoundedSnapshotLeaseRow): SnapshotLeaseManifest | undefined {
+  if (
+    typeof row.token !== 'string' ||
+    row.token.length === 0 ||
+    row.token.length > 1_024 ||
+    row.token.includes('\0') ||
+    typeof row.snapshot_id !== 'string' ||
+    row.snapshot_id.length === 0 ||
+    row.snapshot_id.length > 1_024 ||
+    row.snapshot_id.includes('\0') ||
+    typeof row.expires_at !== 'number' ||
+    !Number.isSafeInteger(row.expires_at) ||
+    row.expires_at < 0 ||
+    row.expires_at > MAXIMUM_CANONICAL_DATE_MILLISECONDS ||
+    (row.retire_when_inactive !== 0 && row.retire_when_inactive !== 1)
+  ) {
+    return undefined;
+  }
+  return {
+    expiresAt: row.expires_at,
+    retireWhenInactive: row.retire_when_inactive,
+    snapshotId: row.snapshot_id,
+    token: row.token,
+  };
+}
+
 const reapExpiredSnapshotLeasesPage = Effect.fn('codeGraph.reapExpiredSnapshotLeasesPage')(function* (
   sql: SqlClient.SqlClient,
   now: number,
 ) {
-  const rows = yield* sql<{
-    readonly retire_when_inactive: number;
-    readonly snapshot_id: string;
-    readonly token: string;
-  }>`
-    SELECT token, snapshot_id, retire_when_inactive
-    FROM snapshot_leases
-    WHERE expires_at <= ${now}
-    ORDER BY expires_at, token
-    LIMIT ${CODE_GRAPH_ROUTINE_EXPIRED_LEASE_PAGE_SIZE}
-  `;
+  if (!(yield* authorityPrimaryKeyBinary(sql, 'snapshot_leases', 'token'))) {
+    return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot lease capability schema is invalid.'));
+  }
+  if ((yield* codeGraphReconciliationIndexState(sql, CODE_GRAPH_SNAPSHOT_LEASE_EXPIRY_INDEX)) !== 'ready') {
+    return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot lease expiry index is invalid.'));
+  }
+  const rows = yield* sql.unsafe<BoundedSnapshotLeaseRow>(
+    `SELECT ${boundedSnapshotLeaseProjection('lease')}
+     FROM snapshot_leases AS lease
+     WHERE lease.expires_at <= ?
+     ORDER BY lease.expires_at
+     LIMIT ?`,
+    [now, CODE_GRAPH_ROUTINE_EXPIRED_LEASE_PAGE_SIZE],
+  );
   if (rows.length === 0) {
     return {candidates: [], deleted: 0, remaining: false} satisfies RoutineExpiredLeasePage;
   }
-  const candidates = [...new Set(rows.filter(row => row.retire_when_inactive === 1).map(row => row.snapshot_id))];
-  if (candidates.length > 0) {
-    // Preserve active-view retirement provenance across overlapping readers.
-    yield* sql`UPDATE snapshot_leases SET retire_when_inactive = 1 WHERE ${sql.in('snapshot_id', candidates)}`;
+  const leases = rows.map(decodeSnapshotLeaseManifest);
+  if (leases.some(lease => lease === undefined)) {
+    return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot lease manifest is invalid.'));
   }
-  const tokens = rows.map(row => row.token);
-  yield* sql`DELETE FROM snapshot_leases WHERE ${sql.in('token', tokens)}`;
+  const decodedLeases = leases as readonly SnapshotLeaseManifest[];
+  const retirementAuthorityCurrent = yield* codeGraphWorktreeReconciliationSchemaCompatible(sql);
+  const successorIndexReady =
+    (yield* codeGraphReconciliationIndexState(sql, CODE_GRAPH_RECONCILIATION_REQUIRED_INDEXES[2])) === 'ready';
+  const flaggedSnapshotIds = [
+    ...new Set(decodedLeases.filter(lease => lease.retireWhenInactive === 1).map(lease => lease.snapshotId)),
+  ];
+  const candidates: string[] = [];
+  const preservedTokens = new Set<string>();
+  if (!successorIndexReady) {
+    for (const lease of decodedLeases) {
+      if (lease.retireWhenInactive === 1) preservedTokens.add(lease.token);
+    }
+  }
+  for (const snapshotId of flaggedSnapshotIds) {
+    if (!successorIndexReady) continue;
+    const successorRows = yield* sql.unsafe<BoundedSnapshotLeaseRow>(
+      `SELECT ${boundedSnapshotLeaseProjection('lease')}
+       FROM snapshot_leases AS lease
+       WHERE lease.snapshot_id = ? AND lease.expires_at > ?
+       ORDER BY lease.expires_at
+       LIMIT 1`,
+      [snapshotId, now],
+    );
+    const successor = successorRows[0] === undefined ? undefined : decodeSnapshotLeaseManifest(successorRows[0]);
+    if (successorRows[0] !== undefined && successor === undefined) {
+      return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot lease manifest is invalid.'));
+    }
+    if (successor === undefined) {
+      if (retirementAuthorityCurrent) {
+        candidates.push(snapshotId);
+      } else {
+        const carrier = decodedLeases.find(lease => lease.snapshotId === snapshotId && lease.retireWhenInactive === 1);
+        if (carrier !== undefined) preservedTokens.add(carrier.token);
+      }
+      continue;
+    }
+    yield* sql`
+      UPDATE snapshot_leases
+      SET retire_when_inactive = 1
+      WHERE token = ${successor.token}
+    `;
+  }
+  const tokens = decodedLeases.filter(lease => !preservedTokens.has(lease.token)).map(lease => lease.token);
+  if (tokens.length > 0) {
+    yield* sql`DELETE FROM snapshot_leases WHERE ${sql.in('token', tokens)}`;
+  }
   return {
     candidates,
-    deleted: yield* lastStatementChangeCount(sql),
+    deleted: tokens.length > 0 ? yield* lastStatementChangeCount(sql) : 0,
     // A full page is conservatively reported as remaining. The next ordinary
     // tick cheaply proves whether another page exists.
-    remaining: rows.length === CODE_GRAPH_ROUTINE_EXPIRED_LEASE_PAGE_SIZE,
+    remaining: preservedTokens.size > 0 || rows.length === CODE_GRAPH_ROUTINE_EXPIRED_LEASE_PAGE_SIZE,
   } satisfies RoutineExpiredLeasePage;
+});
+
+const reapAndRetireExpiredSnapshotLeasesPage = Effect.fn('codeGraph.reapAndRetireExpiredSnapshotLeasesPage')(function* (
+  sql: SqlClient.SqlClient,
+  now: number,
+) {
+  const expired = yield* reapExpiredSnapshotLeasesPage(sql, now);
+  yield* retireRoutineLeaseCandidates(sql, expired.candidates, now);
+  return expired;
 });
 
 const retireRoutineLeaseCandidates = Effect.fn('codeGraph.retireRoutineLeaseCandidates')(function* (
@@ -4674,7 +5964,7 @@ const runRoutineMaintenancePage = Effect.fn('codeGraph.runRoutineMaintenancePage
   // The expired-token batch is itself this tick's bounded page. Leave all
   // physical row reclamation for the next trigger so one tick never combines
   // independent cleanup pages behind a single writer-gate acquisition.
-  if (leasePage.deleted > 0) {
+  if (leasePage.deleted > 0 || leasePage.remaining) {
     return {
       cleanup: 'none',
       expiredLeases: leasePage.deleted,
@@ -4706,52 +5996,6 @@ const runRoutineMaintenancePage = Effect.fn('codeGraph.runRoutineMaintenancePage
   } satisfies CodeGraphRoutineMaintenanceResult;
 });
 
-const reapExpiredSnapshotLeases = Effect.fn('codeGraph.reapExpiredSnapshotLeases')(function* (
-  sql: SqlClient.SqlClient,
-  now: number,
-) {
-  const expired = yield* sql<{readonly snapshot_id: string}>`
-    SELECT DISTINCT snapshot_id
-    FROM snapshot_leases
-    WHERE expires_at <= ${now} AND retire_when_inactive = 1
-    ORDER BY snapshot_id
-  `;
-  const candidates = expired.map(row => row.snapshot_id);
-  if (candidates.length > 0) {
-    // Carry the active-view provenance to any overlapping reader. The final
-    // lease release can then retire the displaced snapshot regardless of which
-    // token happened to outlive the original active-view lease.
-    yield* sql`UPDATE snapshot_leases SET retire_when_inactive = 1 WHERE ${sql.in('snapshot_id', candidates)}`;
-  }
-  yield* sql`DELETE FROM snapshot_leases WHERE expires_at <= ${now}`;
-  return candidates;
-});
-
-const retireLeaseCandidates = Effect.fn('codeGraph.retireLeaseCandidates')(function* (
-  sql: SqlClient.SqlClient,
-  snapshotIds: readonly string[],
-  now: number,
-) {
-  const candidateSet = new Set(snapshotIds);
-  let frontier = [...candidateSet];
-  while (frontier.length > 0) {
-    const bases = yield* sql<{readonly base_snapshot_id: string}>`
-      SELECT DISTINCT base_snapshot_id
-      FROM snapshots
-      WHERE ${sql.in('id', frontier)} AND base_snapshot_id IS NOT NULL
-    `;
-    frontier = [];
-    for (const row of bases) {
-      if (candidateSet.has(row.base_snapshot_id)) continue;
-      candidateSet.add(row.base_snapshot_id);
-      frontier.push(row.base_snapshot_id);
-    }
-  }
-  const candidates = [...candidateSet];
-  if (candidates.length === 0) return 0;
-  return yield* retireReadySnapshotsIfUnused(sql, candidates, now);
-});
-
 const acquireSnapshotLease = Effect.fn('codeGraph.acquireSnapshotLease')(function* (
   snapshotId: string,
   durationMilliseconds: number,
@@ -4764,6 +6008,9 @@ const acquireSnapshotLease = Effect.fn('codeGraph.acquireSnapshotLease')(functio
   const duration = Math.max(1_000, Math.min(60 * 60_000, Math.floor(durationMilliseconds)));
   yield* sql.withTransaction(
     Effect.gen(function* () {
+      if (!(yield* codeGraphWorktreeReconciliationSchemaCompatible(sql))) {
+        return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot lease authority schema is invalid.'));
+      }
       const ready = yield* sql<{readonly id: string}>`
         SELECT id FROM snapshots WHERE id = ${snapshotId} AND state = 'ready' LIMIT 1
       `;
@@ -4789,8 +6036,7 @@ const acquireSnapshotLease = Effect.fn('codeGraph.acquireSnapshotLease')(functio
       // The new lease protects its target before expired readers are reaped.
       // This makes the next ordinary graph read self-heal snapshots left by a
       // crashed process without racing a caller that is reacquiring that view.
-      const expired = yield* reapExpiredSnapshotLeases(sql, now);
-      yield* retireLeaseCandidates(sql, expired, now);
+      yield* reapAndRetireExpiredSnapshotLeasesPage(sql, now);
     }),
   );
   return token;
@@ -4810,6 +6056,9 @@ const retainViewSnapshotLease = Effect.fn('codeGraph.retainViewSnapshotLease')(f
   const minimumRemaining = Math.max(0, Math.min(duration, Math.floor(options?.minimumRemainingMilliseconds ?? 0)));
   return yield* sql.withTransaction(
     Effect.gen(function* () {
+      if (!(yield* codeGraphWorktreeReconciliationSchemaCompatible(sql))) {
+        return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot lease authority schema is invalid.'));
+      }
       const observation = yield* observeActiveView(sql, worktreeId, snapshotId);
       yield* options?.afterViewObserved?.() ?? Effect.void;
       if (observation.state !== 'ready') {
@@ -4817,19 +6066,19 @@ const retainViewSnapshotLease = Effect.fn('codeGraph.retainViewSnapshotLease')(f
       }
 
       if (options?.existingToken) {
-        const existing = yield* sql<{
-          readonly expires_at: number;
-          readonly snapshot_id: string;
-          readonly token: string;
-        }>`
-          SELECT token, snapshot_id, expires_at
-          FROM snapshot_leases
-          WHERE token = ${options.existingToken}
-          LIMIT 1
-        `;
-        const row = existing[0];
-        const expiresAt = Number(row?.expires_at ?? 0);
-        if (row?.snapshot_id === snapshotId && expiresAt > now) {
+        const existing = yield* sql.unsafe<BoundedSnapshotLeaseRow>(
+          `SELECT ${boundedSnapshotLeaseProjection('lease')}
+           FROM snapshot_leases AS lease
+           WHERE lease.token = ?
+           LIMIT 1`,
+          [options.existingToken],
+        );
+        const row = existing[0] === undefined ? undefined : decodeSnapshotLeaseManifest(existing[0]);
+        if (existing[0] !== undefined && row === undefined) {
+          return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot lease manifest is invalid.'));
+        }
+        const expiresAt = row?.expiresAt ?? 0;
+        if (row?.snapshotId === snapshotId && expiresAt > now) {
           if (expiresAt > now + minimumRemaining) {
             return {
               expiresAt,
@@ -4844,8 +6093,7 @@ const retainViewSnapshotLease = Effect.fn('codeGraph.retainViewSnapshotLease')(f
             WHERE token = ${row.token} AND snapshot_id = ${snapshotId} AND expires_at > ${now}
           `;
           if ((yield* lastStatementChangeCount(sql)) === 1) {
-            const expired = yield* reapExpiredSnapshotLeases(sql, now);
-            yield* retireLeaseCandidates(sql, expired, now);
+            yield* reapAndRetireExpiredSnapshotLeasesPage(sql, now);
             return {
               expiresAt: renewedUntil,
               state: 'retained',
@@ -4860,8 +6108,7 @@ const retainViewSnapshotLease = Effect.fn('codeGraph.retainViewSnapshotLease')(f
         INSERT INTO snapshot_leases (token, snapshot_id, expires_at, retire_when_inactive)
         VALUES (${candidateToken}, ${snapshotId}, ${expiresAt}, 1)
       `;
-      const expired = yield* reapExpiredSnapshotLeases(sql, now);
-      yield* retireLeaseCandidates(sql, expired, now);
+      yield* reapAndRetireExpiredSnapshotLeasesPage(sql, now);
       return {
         expiresAt,
         state: 'retained',
@@ -4887,21 +6134,15 @@ const validateViewSnapshotLease = Effect.fn('codeGraph.validateViewSnapshotLease
   yield* sql.unsafe('PRAGMA query_only = ON');
   return yield* sql.withTransaction(
     Effect.gen(function* () {
-      if (
-        !(yield* tableExists(sql, 'active_snapshots')) ||
-        !(yield* tableExists(sql, 'removed_views')) ||
-        !(yield* tableExists(sql, 'snapshot_leases')) ||
-        !(yield* tableExists(sql, 'snapshots')) ||
-        !(yield* routineMaintenanceColumnsAvailable(sql, 'active_snapshots', ['snapshot_id', 'worktree_id'])) ||
-        !(yield* routineMaintenanceColumnsAvailable(sql, 'removed_views', ['expected_snapshot_id', 'worktree_id'])) ||
-        !(yield* routineMaintenanceColumnsAvailable(sql, 'snapshot_leases', ['expires_at', 'snapshot_id', 'token'])) ||
-        !(yield* routineMaintenanceColumnsAvailable(sql, 'snapshots', ['id', 'state']))
-      ) {
+      if (!(yield* codeGraphWorktreeReconciliationSchemaCompatible(sql))) {
         return {state: 'invalid'} as const satisfies CodeGraphViewSnapshotLeaseValidationResult;
       }
       const now = yield* Clock.currentTimeMillis;
       const rows = yield* sql<{readonly expires_at: number}>`
-        SELECT lease.expires_at
+        SELECT CASE
+          WHEN typeof(lease.expires_at) = 'integer'
+            AND lease.expires_at BETWEEN 0 AND ${MAXIMUM_CANONICAL_DATE_MILLISECONDS}
+          THEN lease.expires_at ELSE NULL END AS expires_at
         FROM active_snapshots AS active
         JOIN snapshots AS snapshot
           ON snapshot.id = active.snapshot_id
@@ -4932,24 +6173,55 @@ const releaseSnapshotLease = Effect.fn('codeGraph.releaseSnapshotLease')(functio
   yield* configureConnection(sql);
   yield* sql.withTransaction(
     Effect.gen(function* () {
-      const released = yield* sql<{readonly snapshot_id: string}>`
-        SELECT snapshot_id
-        FROM snapshot_leases
-        WHERE token = ${token} AND retire_when_inactive = 1
-        LIMIT 1
-      `;
-      const releasedCandidates = released.map(row => row.snapshot_id);
-      if (releasedCandidates.length > 0) {
+      if (!(yield* codeGraphWorktreeReconciliationSchemaCompatible(sql))) {
+        return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot lease authority schema is invalid.'));
+      }
+      const now = yield* Clock.currentTimeMillis;
+      const releasedRows = yield* sql.unsafe<BoundedSnapshotLeaseRow>(
+        `SELECT ${boundedSnapshotLeaseProjection('lease')}
+         FROM snapshot_leases AS lease
+         WHERE lease.token = ?
+         LIMIT 1`,
+        [token],
+      );
+      const releasedCandidates: string[] = [];
+      const row = releasedRows[0] === undefined ? undefined : decodeSnapshotLeaseManifest(releasedRows[0]);
+      if (releasedRows[0] !== undefined && row === undefined) {
+        return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot lease manifest is invalid.'));
+      }
+      if (row?.retireWhenInactive === 1) {
+        const successorRows = yield* sql.unsafe<BoundedSnapshotLeaseRow>(
+          `SELECT ${boundedSnapshotLeaseProjection('lease')}
+           FROM snapshot_leases AS lease
+           WHERE lease.snapshot_id = ?
+             AND lease.token <> ?
+             AND lease.expires_at > ?
+           ORDER BY lease.expires_at
+           LIMIT 1`,
+          [row.snapshotId, token, now],
+        );
+        const successor = successorRows[0] === undefined ? undefined : decodeSnapshotLeaseManifest(successorRows[0]);
+        if (successorRows[0] !== undefined && successor === undefined) {
+          return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot lease manifest is invalid.'));
+        }
+        if (successor === undefined) {
+          releasedCandidates.push(row.snapshotId);
+        } else {
+          yield* sql`
+            UPDATE snapshot_leases
+            SET retire_when_inactive = 1
+            WHERE token = ${successor.token}
+          `;
+        }
+      }
+      if (row !== undefined) {
         yield* sql`
-          UPDATE snapshot_leases
-          SET retire_when_inactive = 1
-          WHERE ${sql.in('snapshot_id', releasedCandidates)}
+          DELETE FROM snapshot_leases
+          WHERE token = ${token}
         `;
       }
-      yield* sql`DELETE FROM snapshot_leases WHERE token = ${token}`;
-      const now = yield* Clock.currentTimeMillis;
-      const expired = yield* reapExpiredSnapshotLeases(sql, now);
-      yield* retireLeaseCandidates(sql, [...releasedCandidates, ...expired], now);
+      yield* retireRoutineLeaseCandidates(sql, releasedCandidates, now);
+      yield* reapAndRetireExpiredSnapshotLeasesPage(sql, now);
     }),
   );
 });
@@ -4964,8 +6236,11 @@ const renewSnapshotLease = Effect.fn('codeGraph.renewSnapshotLease')(function* (
   const duration = Math.max(1_000, Math.min(60 * 60_000, Math.floor(durationMilliseconds)));
   yield* sql.withTransaction(
     Effect.gen(function* () {
-      const active = yield* sql<{readonly token: string}>`
-        SELECT token FROM snapshot_leases WHERE token = ${token} AND expires_at > ${now} LIMIT 1
+      if (!(yield* codeGraphWorktreeReconciliationSchemaCompatible(sql))) {
+        return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot lease authority schema is invalid.'));
+      }
+      const active = yield* sql<{readonly present: number}>`
+        SELECT 1 AS present FROM snapshot_leases WHERE token = ${token} AND expires_at > ${now} LIMIT 1
       `;
       if (!active[0]) {
         return yield* Effect.fail(new CodeGraphStoreError('The code graph snapshot lease expired before renewal.'));
@@ -4973,8 +6248,7 @@ const renewSnapshotLease = Effect.fn('codeGraph.renewSnapshotLease')(function* (
       yield* sql`
         UPDATE snapshot_leases SET expires_at = ${now + duration} WHERE token = ${token}
       `;
-      const expired = yield* reapExpiredSnapshotLeases(sql, now);
-      yield* retireLeaseCandidates(sql, expired, now);
+      yield* reapAndRetireExpiredSnapshotLeasesPage(sql, now);
     }),
   );
 });
@@ -12032,23 +13306,67 @@ interface SnapshotPromotionCapacityPlan {
 
 const snapshotPromotionLeaseCapacity = Effect.fn('codeGraph.snapshotPromotionLeaseCapacity')(function* (
   sql: SqlClient.SqlClient,
-  snapshotId: string,
+  snapshotIds: readonly string[],
+  now: number,
 ) {
-  const leaseRows = yield* sql<{readonly count: number; readonly token_bytes: number}>`
-    SELECT COUNT(*) AS count,
-      COALESCE(SUM(length(CAST(token AS BLOB))), 0) AS token_bytes
-    FROM snapshot_leases
-    WHERE snapshot_id = ${snapshotId}
-  `;
-  const rows = Number(leaseRows[0]?.count ?? Number.NaN);
-  const tokenBytes = Number(leaseRows[0]?.token_bytes ?? Number.NaN);
-  if (!Number.isSafeInteger(rows) || rows < 0 || !Number.isSafeInteger(tokenBytes) || tokenBytes < 0) {
-    return yield* Effect.fail(new CodeGraphStoreError('Ready snapshot promotion lease capacity is invalid.'));
+  const candidates = [...new Set(snapshotIds)];
+  let factBytes = 0;
+  let rows = 0;
+  for (const candidate of candidates) {
+    const leaseRows = yield* sql.unsafe<BoundedSnapshotLeaseRow & {readonly lease_rowid: unknown}>(
+      `SELECT
+         CASE WHEN typeof(lease.rowid) = 'integer' AND lease.rowid BETWEEN 1 AND 9007199254740991
+           THEN lease.rowid ELSE NULL END AS lease_rowid,
+         ${boundedSnapshotLeaseProjection('lease')}
+       FROM snapshot_leases AS lease INDEXED BY snapshot_leases_snapshot_expiry
+       WHERE lease.snapshot_id = ? AND lease.expires_at > ?
+       ORDER BY lease.expires_at
+       LIMIT 1`,
+      [candidate, now],
+    );
+    if (leaseRows.length === 0) continue;
+    const lease = decodeSnapshotLeaseManifest(leaseRows[0]!);
+    if (
+      lease === undefined ||
+      lease.snapshotId !== candidate ||
+      typeof leaseRows[0]?.lease_rowid !== 'number' ||
+      !Number.isSafeInteger(leaseRows[0].lease_rowid) ||
+      leaseRows[0].lease_rowid <= 0
+    ) {
+      return yield* Effect.fail(new CodeGraphStoreError('Ready snapshot promotion lease capacity is invalid.'));
+    }
+    rows += 1;
+    factBytes = saturatingCapacityAdd(
+      factBytes,
+      saturatingCapacityAdd(codeGraphUtf8ByteLength(lease.token), codeGraphUtf8ByteLength(candidate)),
+    );
   }
-  return {
-    factBytes: saturatingCapacityAdd(tokenBytes, saturatingCapacityMultiply(codeGraphUtf8ByteLength(snapshotId), rows)),
-    rows,
-  };
+  return {factBytes, rows};
+});
+
+const promotionRemovedSnapshotId = Effect.fn('codeGraph.promotionRemovedSnapshotId')(function* (
+  sql: SqlClient.SqlClient,
+  worktreeId: string,
+) {
+  const rows = yield* sql.unsafe<{readonly expected_snapshot_id: unknown}>(
+    `SELECT CASE
+       WHEN typeof(expected_snapshot_id) = 'text'
+            AND length(CAST(expected_snapshot_id AS BLOB)) BETWEEN 45 AND 67
+       THEN expected_snapshot_id ELSE NULL END AS expected_snapshot_id
+     FROM removed_views
+     WHERE worktree_id = ?
+     LIMIT 2`,
+    [worktreeId],
+  );
+  if (rows.length === 0) return undefined;
+  if (
+    rows.length !== 1 ||
+    typeof rows[0]?.expected_snapshot_id !== 'string' ||
+    !CODE_GRAPH_SNAPSHOT_ID.test(rows[0].expected_snapshot_id)
+  ) {
+    return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view authority is invalid.'));
+  }
+  return rows[0].expected_snapshot_id;
 });
 
 const prepareSnapshotPromotionCapacity = Effect.fn('codeGraph.prepareSnapshotPromotionCapacity')(function* (
@@ -12057,7 +13375,13 @@ const prepareSnapshotPromotionCapacity = Effect.fn('codeGraph.prepareSnapshotPro
 ) {
   const sql = yield* SqlClient.SqlClient;
   yield* configureConnection(sql);
-  const leaseCapacity = yield* snapshotPromotionLeaseCapacity(sql, snapshotId);
+  const now = yield* Clock.currentTimeMillis;
+  const removedSnapshotId = yield* promotionRemovedSnapshotId(sql, identity.worktreeId);
+  const leaseCapacity = yield* snapshotPromotionLeaseCapacity(
+    sql,
+    removedSnapshotId === undefined ? [snapshotId] : [snapshotId, removedSnapshotId],
+    now,
+  );
   const activatedAt = new Date().toISOString();
   const fixedFactBytes = persistentBoundTextBytes(0, [identity.worktreeId, snapshotId, activatedAt, 'retired']);
   return {
@@ -12065,11 +13389,13 @@ const prepareSnapshotPromotionCapacity = Effect.fn('codeGraph.prepareSnapshotPro
     boundary: {
       finalFactBytes: saturatingCapacityAdd(fixedFactBytes, leaseCapacity.factBytes),
       operation: 'promote ready code graph snapshot',
-      // One pointer upsert, one exact tombstone delete, every currently
-      // observed lease flag, and at most one exact displaced-leaf retirement.
+      // One pointer upsert, one exact tombstone delete, one cleanup-epoch
+      // delete, every currently observed incoming lease flag, at most one
+      // removed-view lease baton, and at most one exact
+      // displaced-leaf retirement.
       // Non-leaf history remains routine maintenance because proving a whole
       // descendant closure is not transaction-bounded.
-      rowCount: saturatingCapacityAdd(leaseCapacity.rows, 3),
+      rowCount: saturatingCapacityAdd(leaseCapacity.rows, 4),
     },
     maximumLeaseFactBytes: leaseCapacity.factBytes,
     maximumLeaseRows: leaseCapacity.rows,
@@ -12085,12 +13411,8 @@ const promoteSnapshot = Effect.fn('codeGraph.promoteSnapshot')(function* (
   yield* configureConnection(sql);
   return yield* sql.withTransaction(
     Effect.gen(function* () {
-      const observedLeaseCapacity = yield* snapshotPromotionLeaseCapacity(sql, snapshotId);
-      if (
-        observedLeaseCapacity.rows > capacity.maximumLeaseRows ||
-        observedLeaseCapacity.factBytes > capacity.maximumLeaseFactBytes
-      ) {
-        return yield* Effect.fail(new CodeGraphPromotionCapacityPlanChanged());
+      if (!(yield* codeGraphWorktreeReconciliationSchemaCompatible(sql))) {
+        return yield* Effect.fail(new CodeGraphStoreError('Code graph promotion authority schema is unavailable.'));
       }
       const candidate = yield* sql<{
         readonly generation: number | null;
@@ -12116,10 +13438,58 @@ const promoteSnapshot = Effect.fn('codeGraph.promoteSnapshot')(function* (
           new CodeGraphStoreError(`Ready snapshot ${snapshotId} was built by an incompatible extractor generation.`),
         );
       }
-      const active = yield* sql<{readonly snapshot_id: string}>`
-        SELECT snapshot_id FROM active_snapshots WHERE worktree_id = ${identity.worktreeId} LIMIT 1
-      `;
+      const active = yield* sql.unsafe<{readonly snapshot_id: unknown}>(
+        `SELECT CASE
+           WHEN typeof(snapshot_id) = 'text' AND length(CAST(snapshot_id AS BLOB)) BETWEEN 45 AND 67
+           THEN snapshot_id ELSE NULL END AS snapshot_id
+         FROM active_snapshots WHERE worktree_id = ? LIMIT 2`,
+        [identity.worktreeId],
+      );
       const displacedSnapshotId = active[0]?.snapshot_id;
+      if (
+        active.length > 1 ||
+        (displacedSnapshotId !== undefined &&
+          (typeof displacedSnapshotId !== 'string' || !CODE_GRAPH_SNAPSHOT_ID.test(displacedSnapshotId)))
+      ) {
+        return yield* Effect.fail(new CodeGraphStoreError('Code graph active view authority is invalid.'));
+      }
+      const removed = yield* sql.unsafe<{
+        readonly expected_snapshot_id: unknown;
+        readonly removed_at: unknown;
+      }>(
+        `SELECT
+           CASE WHEN typeof(expected_snapshot_id) = 'text'
+                      AND length(CAST(expected_snapshot_id AS BLOB)) BETWEEN 45 AND 67
+             THEN expected_snapshot_id ELSE NULL END AS expected_snapshot_id,
+           CASE WHEN typeof(removed_at) = 'text' AND length(CAST(removed_at AS BLOB)) = 24
+             THEN removed_at ELSE NULL END AS removed_at
+         FROM removed_views WHERE worktree_id = ? LIMIT 2`,
+        [identity.worktreeId],
+      );
+      const removedSnapshotId = removed[0]?.expected_snapshot_id;
+      const removedAt = removed[0]?.removed_at;
+      if (
+        removed.length > 1 ||
+        (removedSnapshotId !== undefined &&
+          (typeof removedSnapshotId !== 'string' ||
+            !CODE_GRAPH_SNAPSHOT_ID.test(removedSnapshotId) ||
+            typeof removedAt !== 'string' ||
+            !validCanonicalTimestamp(removedAt)))
+      ) {
+        return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view authority is invalid.'));
+      }
+      const observedLeaseCapacity = yield* snapshotPromotionLeaseCapacity(
+        sql,
+        typeof removedSnapshotId === 'string' ? [snapshotId, removedSnapshotId] : [snapshotId],
+        yield* Clock.currentTimeMillis,
+      );
+      if (
+        observedLeaseCapacity.rows > capacity.maximumLeaseRows ||
+        observedLeaseCapacity.factBytes > capacity.maximumLeaseFactBytes
+      ) {
+        return yield* Effect.fail(new CodeGraphPromotionCapacityPlanChanged());
+      }
+      const now = yield* Clock.currentTimeMillis;
       yield* sql`
         INSERT INTO active_snapshots (worktree_id, snapshot_id, activated_at)
         VALUES (${identity.worktreeId}, ${snapshotId}, ${capacity.activatedAt})
@@ -12130,17 +13500,31 @@ const promoteSnapshot = Effect.fn('codeGraph.promoteSnapshot')(function* (
       // Only a current promotion contract may make this worktree visible
       // again. Mixed-version writers can still publish active_snapshots, but
       // the durable tombstone keeps those pointers hidden until this delete.
-      yield* sql`DELETE FROM removed_views WHERE worktree_id = ${identity.worktreeId}`;
+      if (typeof removedSnapshotId === 'string') {
+        if (removedSnapshotId !== snapshotId) {
+          yield* markSnapshotLeaseRetirementBaton(sql, removedSnapshotId, now);
+        }
+        yield* sql`
+          DELETE FROM removed_view_cleanup
+          WHERE worktree_id = ${identity.worktreeId}
+            AND expected_snapshot_id = ${removedSnapshotId}
+            AND removed_at = ${removedAt as string}
+        `;
+        yield* sql`
+          DELETE FROM removed_views
+          WHERE worktree_id = ${identity.worktreeId}
+            AND expected_snapshot_id = ${removedSnapshotId}
+            AND removed_at = ${removedAt as string}
+        `;
+        if ((yield* lastStatementChangeCount(sql)) !== 1) {
+          return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view authority changed.'));
+        }
+      }
       // A lease acquired by ID may precede promotion. Once its snapshot owns
       // an active pointer, its final release must reclaim that view after it is
       // displaced just like a lease acquired while the pointer was active.
-      yield* sql`
-        UPDATE snapshot_leases
-        SET retire_when_inactive = 1
-        WHERE snapshot_id = ${snapshotId}
-      `;
+      yield* markSnapshotLeaseRetirementBaton(sql, snapshotId, now);
       if (displacedSnapshotId === undefined || displacedSnapshotId === snapshotId) return 0;
-      const now = yield* Clock.currentTimeMillis;
       yield* sql`
         UPDATE snapshots AS candidate
         SET state = 'retired'
@@ -12175,7 +13559,7 @@ const validateViewRemovalTarget = Effect.fn('codeGraph.validateViewRemovalTarget
   if (!/^[0-9a-f]{64}$/.test(worktreeId)) {
     return yield* Effect.fail(new CodeGraphStoreError('Code graph worktree identity is invalid.'));
   }
-  if (expectedSnapshotId.length === 0 || expectedSnapshotId.length > 1_024 || expectedSnapshotId.includes('\0')) {
+  if (!CODE_GRAPH_SNAPSHOT_ID.test(expectedSnapshotId)) {
     return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot identity is invalid.'));
   }
 });
@@ -12188,17 +13572,37 @@ const observeActiveView = Effect.fn('codeGraph.observeActiveView')(function* (
   const activeViewsAvailable = yield* tableExists(sql, 'active_snapshots');
   const removedViewsAvailable = yield* tableExists(sql, 'removed_views');
   const active = activeViewsAvailable
-    ? yield* sql<{readonly snapshot_id: string}>`
-        SELECT snapshot_id FROM active_snapshots WHERE worktree_id = ${worktreeId} LIMIT 1
-      `
+    ? yield* sql.unsafe<{readonly snapshot_id: unknown}>(
+        `SELECT CASE
+           WHEN typeof(snapshot_id) = 'text' AND length(CAST(snapshot_id AS BLOB)) BETWEEN 45 AND 67
+           THEN snapshot_id ELSE NULL END AS snapshot_id
+         FROM active_snapshots WHERE worktree_id = ? LIMIT 2`,
+        [worktreeId],
+      )
     : [];
   const removed = removedViewsAvailable
-    ? yield* sql<{readonly expected_snapshot_id: string}>`
-        SELECT expected_snapshot_id FROM removed_views WHERE worktree_id = ${worktreeId} LIMIT 1
-      `
+    ? yield* sql.unsafe<{readonly expected_snapshot_id: unknown}>(
+        `SELECT CASE
+           WHEN typeof(expected_snapshot_id) = 'text'
+                AND length(CAST(expected_snapshot_id AS BLOB)) BETWEEN 45 AND 67
+           THEN expected_snapshot_id ELSE NULL END AS expected_snapshot_id
+         FROM removed_views WHERE worktree_id = ? LIMIT 2`,
+        [worktreeId],
+      )
     : [];
   const activeSnapshotId = active[0]?.snapshot_id;
   const removedSnapshotId = removed[0]?.expected_snapshot_id;
+
+  if (
+    active.length > 1 ||
+    removed.length > 1 ||
+    (activeSnapshotId !== undefined &&
+      (typeof activeSnapshotId !== 'string' || !CODE_GRAPH_SNAPSHOT_ID.test(activeSnapshotId))) ||
+    (removedSnapshotId !== undefined &&
+      (typeof removedSnapshotId !== 'string' || !CODE_GRAPH_SNAPSHOT_ID.test(removedSnapshotId)))
+  ) {
+    return yield* Effect.fail(new CodeGraphStoreError('Code graph view authority is invalid.'));
+  }
 
   if (activeSnapshotId !== undefined && activeSnapshotId !== expectedSnapshotId) {
     return {
@@ -12327,6 +13731,7 @@ export function codeGraphWorktreeReconciliationCandidatePageStatement(
 }
 
 interface CodeGraphReconciliationSchemaColumn {
+  readonly defaultValue?: string;
   readonly name: string;
   readonly notNull: boolean;
   readonly primaryKeyPosition: number;
@@ -12344,6 +13749,7 @@ const CODE_GRAPH_RECONCILIATION_TABLE_COLUMNS = {
     {name: 'expected_snapshot_id', notNull: true, primaryKeyPosition: 0, type: 'TEXT'},
     {name: 'removed_at', notNull: true, primaryKeyPosition: 0, type: 'TEXT'},
   ],
+  removed_view_cleanup: REMOVED_VIEW_CLEANUP_COLUMNS,
   schema_metadata: [
     {name: 'key', notNull: true, primaryKeyPosition: 1, type: 'TEXT'},
     {name: 'value', notNull: true, primaryKeyPosition: 0, type: 'TEXT'},
@@ -12370,7 +13776,7 @@ const CODE_GRAPH_RECONCILIATION_TABLE_COLUMNS = {
     {name: 'token', notNull: true, primaryKeyPosition: 1, type: 'TEXT'},
     {name: 'snapshot_id', notNull: true, primaryKeyPosition: 0, type: 'TEXT'},
     {name: 'expires_at', notNull: true, primaryKeyPosition: 0, type: 'INTEGER'},
-    {name: 'retire_when_inactive', notNull: true, primaryKeyPosition: 0, type: 'INTEGER'},
+    {defaultValue: '0', name: 'retire_when_inactive', notNull: true, primaryKeyPosition: 0, type: 'INTEGER'},
   ],
 } as const satisfies Record<string, readonly CodeGraphReconciliationSchemaColumn[]>;
 
@@ -12397,19 +13803,131 @@ const CODE_GRAPH_RECONCILIATION_REQUIRED_INDEXES = [
   },
 ] as const;
 
-const codeGraphWorktreeReconciliationSchemaCompatible = Effect.fn('codeGraph.worktreeReconciliationSchemaCompatible')(
-  function* (sql: SqlClient.SqlClient, requireIndexes = true) {
+const CODE_GRAPH_SNAPSHOT_LEASE_EXPIRY_INDEX = {
+  columns: ['expires_at'],
+  definition: 'CREATE INDEX snapshot_leases_expiry ON snapshot_leases(expires_at)',
+  name: 'snapshot_leases_expiry',
+  table: 'snapshot_leases',
+} as const;
+
+const authorityPrimaryKeyBinary = Effect.fn('codeGraph.authorityPrimaryKeyBinary')(function* (
+  sql: SqlClient.SqlClient,
+  table: 'active_snapshots' | 'snapshot_leases' | 'snapshots',
+  column: 'id' | 'token' | 'worktree_id',
+) {
+  const expectedName = `sqlite_autoindex_${table}_1`;
+  const indexes = yield* sql.unsafe<{
+    readonly name: unknown;
+    readonly tbl_name: unknown;
+    readonly type: unknown;
+  }>(
+    `SELECT name, tbl_name, type
+     FROM sqlite_master
+     WHERE name = ? COLLATE NOCASE
+     LIMIT 2`,
+    [expectedName],
+  );
+  const name = indexes[0]?.name;
+  if (
+    indexes.length !== 1 ||
+    typeof name !== 'string' ||
+    name !== expectedName ||
+    indexes[0]?.tbl_name !== table ||
+    indexes[0]?.type !== 'index'
+  ) {
+    return false;
+  }
+  const columns = yield* sql.unsafe<{
+    readonly cid: unknown;
+    readonly coll: unknown;
+    readonly desc: unknown;
+    readonly key: unknown;
+    readonly name: unknown;
+    readonly seqno: unknown;
+  }>(`SELECT * FROM pragma_index_xinfo(?) LIMIT 3`, [name]);
+  return (
+    columns.length === 2 &&
+    columns[0]?.seqno === 0 &&
+    columns[0]?.name === column &&
+    columns[0]?.desc === 0 &&
+    columns[0]?.coll === 'BINARY' &&
+    columns[0]?.key === 1 &&
+    columns[1]?.seqno === 1 &&
+    columns[1]?.cid === -1 &&
+    columns[1]?.name === null &&
+    columns[1]?.desc === 0 &&
+    columns[1]?.coll === 'BINARY' &&
+    columns[1]?.key === 0
+  );
+});
+
+const boundedAuthorityTableDefinition = Effect.fn('codeGraph.boundedAuthorityTableDefinition')(function* (
+  sql: SqlClient.SqlClient,
+  table: 'snapshot_leases' | 'snapshots',
+) {
+  const definitions = yield* sql.unsafe<{
+    readonly bounded_sql: unknown;
+    readonly name: unknown;
+    readonly sql_bytes: unknown;
+    readonly tbl_name: unknown;
+    readonly type: unknown;
+  }>(
+    `SELECT name, type, tbl_name,
+            CASE
+              WHEN typeof(sql) = 'text' AND length(CAST(sql AS BLOB)) <= 8192 THEN sql
+              ELSE NULL
+            END AS bounded_sql,
+            length(CAST(sql AS BLOB)) AS sql_bytes
+     FROM sqlite_master
+     WHERE name = ? COLLATE NOCASE
+     LIMIT 2`,
+    [table],
+  );
+  const definition = definitions[0];
+  return definitions.length === 1 &&
+    definition?.name === table &&
+    definition.type === 'table' &&
+    definition.tbl_name === table &&
+    typeof definition.sql_bytes === 'number' &&
+    Number.isSafeInteger(definition.sql_bytes) &&
+    definition.sql_bytes <= 8192 &&
+    typeof definition.bounded_sql === 'string'
+    ? definition.bounded_sql
+    : undefined;
+});
+
+const codeGraphWorktreeReconciliationSchemaCompatible: (
+  sql: SqlClient.SqlClient,
+  requireIndexes?: boolean,
+  requireCleanup?: boolean,
+  requireRemovedViewAuthority?: boolean,
+) => Effect.Effect<boolean, SqlError.SqlError> = Effect.fn('codeGraph.worktreeReconciliationSchemaCompatible')(
+  function* (
+    sql: SqlClient.SqlClient,
+    requireIndexes = true,
+    requireCleanup = true,
+    requireRemovedViewAuthority = true,
+  ) {
+    const extensionRevision = yield* removedViewCleanupRecordedRevision(sql);
+    if (extensionRevision.state === 'invalid') return false;
     for (const table of Object.keys(CODE_GRAPH_RECONCILIATION_TABLE_COLUMNS) as CodeGraphReconciliationTable[]) {
+      if (table === 'removed_view_cleanup' && !requireCleanup) continue;
+      if (table === 'removed_views' && !requireRemovedViewAuthority) continue;
       const columns = yield* sql.unsafe<{
+        readonly dflt_value: unknown;
         readonly hidden: number;
         readonly name: string;
         readonly notnull: number;
         readonly pk: number;
         readonly type: string;
-      }>(`PRAGMA table_xinfo("${table}")`);
+      }>(
+        `SELECT * FROM pragma_table_xinfo('${table}')
+         LIMIT ${CODE_GRAPH_RECONCILIATION_TABLE_COLUMNS[table].length + 1}`,
+      );
       const observed = columns
         .map(column => ({
           hidden: Number(column.hidden),
+          defaultValue: column.dflt_value,
           name: column.name,
           notNull: Number(column.notnull) === 1,
           primaryKeyPosition: Number(column.pk),
@@ -12426,6 +13944,7 @@ const codeGraphWorktreeReconciliationSchemaCompatible = Effect.fn('codeGraph.wor
           return (
             contract === undefined ||
             column.hidden !== 0 ||
+            column.defaultValue !== ('defaultValue' in contract ? contract.defaultValue : null) ||
             column.name !== contract.name ||
             column.type !== contract.type ||
             column.notNull !== contract.notNull ||
@@ -12436,10 +13955,18 @@ const codeGraphWorktreeReconciliationSchemaCompatible = Effect.fn('codeGraph.wor
         return false;
       }
     }
-    const schemaVersions = yield* sql<{readonly value: string}>`
-    SELECT value FROM schema_metadata WHERE key = 'schema_version'
-  `;
-    if (schemaVersions.length !== 1 || schemaVersions[0]?.value !== String(CODE_GRAPH_SCHEMA_VERSION)) return false;
+    if (
+      !(yield* authorityPrimaryKeyBinary(sql, 'active_snapshots', 'worktree_id')) ||
+      !(yield* authorityPrimaryKeyBinary(sql, 'snapshot_leases', 'token')) ||
+      !(yield* authorityPrimaryKeyBinary(sql, 'snapshots', 'id')) ||
+      (yield* codeGraphReconciliationIndexState(sql, CODE_GRAPH_SNAPSHOT_LEASE_EXPIRY_INDEX)) !== 'ready'
+    ) {
+      return false;
+    }
+    const schemaVersion = yield* inspectBoundedSchemaMetadataValue(sql, 'schema_version', 16);
+    if (schemaVersion.state !== 'recorded' || schemaVersion.value !== String(CODE_GRAPH_SCHEMA_VERSION)) {
+      if (!(extensionRevision.state === 'missing' && schemaVersion.state === 'missing')) return false;
+    }
     const activeForeignKeys = yield* sql.unsafe<{
       readonly from: string;
       readonly match: string;
@@ -12447,7 +13974,7 @@ const codeGraphWorktreeReconciliationSchemaCompatible = Effect.fn('codeGraph.wor
       readonly on_update: string;
       readonly table: string;
       readonly to: string;
-    }>('PRAGMA foreign_key_list("active_snapshots")');
+    }>(`SELECT * FROM pragma_foreign_key_list('active_snapshots') LIMIT 2`);
     if (
       activeForeignKeys.length !== 1 ||
       activeForeignKeys[0]?.from !== 'snapshot_id' ||
@@ -12459,8 +13986,9 @@ const codeGraphWorktreeReconciliationSchemaCompatible = Effect.fn('codeGraph.wor
     ) {
       return false;
     }
-    const removedForeignKeys = yield* sql.unsafe('PRAGMA foreign_key_list("removed_views")');
+    const removedForeignKeys = yield* sql.unsafe(`SELECT 1 FROM pragma_foreign_key_list('removed_views') LIMIT 1`);
     if (removedForeignKeys.length !== 0) return false;
+    if (requireCleanup && !(yield* codeGraphRemovedViewCleanupSchemaAdmission(sql)).current) return false;
     const snapshotForeignKeys = yield* sql.unsafe<{
       readonly from: string;
       readonly match: string;
@@ -12468,7 +13996,7 @@ const codeGraphWorktreeReconciliationSchemaCompatible = Effect.fn('codeGraph.wor
       readonly on_update: string;
       readonly table: string;
       readonly to: string;
-    }>('PRAGMA foreign_key_list("snapshots")');
+    }>(`SELECT * FROM pragma_foreign_key_list('snapshots') LIMIT 2`);
     if (
       snapshotForeignKeys.length !== 1 ||
       snapshotForeignKeys[0]?.from !== 'repository_id' ||
@@ -12487,7 +14015,7 @@ const codeGraphWorktreeReconciliationSchemaCompatible = Effect.fn('codeGraph.wor
       readonly on_update: string;
       readonly table: string;
       readonly to: string;
-    }>('PRAGMA foreign_key_list("snapshot_leases")');
+    }>(`SELECT * FROM pragma_foreign_key_list('snapshot_leases') LIMIT 2`);
     if (
       leaseForeignKeys.length !== 1 ||
       leaseForeignKeys[0]?.from !== 'snapshot_id' ||
@@ -12499,34 +14027,16 @@ const codeGraphWorktreeReconciliationSchemaCompatible = Effect.fn('codeGraph.wor
     ) {
       return false;
     }
-    const removedDefinitions = yield* sql<{readonly sql: string}>`
-    SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'removed_views'
-  `;
-    const schemaMetadataDefinitions = yield* sql<{readonly sql: string}>`
-      SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'schema_metadata'
-    `;
-    const leaseDefinitions = yield* sql<{readonly sql: string}>`
-      SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'snapshot_leases'
-    `;
-    const snapshotDefinitions = yield* sql<{readonly sql: string}>`
-      SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'snapshots'
-    `;
+    const leaseDefinition = yield* boundedAuthorityTableDefinition(sql, 'snapshot_leases');
+    const snapshotDefinition = yield* boundedAuthorityTableDefinition(sql, 'snapshots');
     if (!(
-      removedDefinitions.length === 1 &&
-      /\bWITHOUT\s+ROWID\b/iu.test(removedDefinitions[0]?.sql ?? '') &&
-      /\bworktree_id\s+TEXT\s+PRIMARY\s+KEY\s+NOT\s+NULL\s*,\s*expected_snapshot_id\s+TEXT\s+NOT\s+NULL\s*,\s*removed_at\s+TEXT\s+NOT\s+NULL\b/iu.test(
-        removedDefinitions[0]?.sql ?? '',
-      ) &&
-      schemaMetadataDefinitions.length === 1 &&
-      /\bkey\s+TEXT\s+PRIMARY\s+KEY\s+NOT\s+NULL\s*,\s*value\s+TEXT\s+NOT\s+NULL\b/iu.test(
-        schemaMetadataDefinitions[0]?.sql ?? '',
-      ) &&
-      leaseDefinitions.length === 1 &&
+      (!requireRemovedViewAuthority || (yield* removedViewAuthorityTableState(sql)) === 'compatible') &&
+      leaseDefinition !== undefined &&
       /\bretire_when_inactive\s+INTEGER\s+NOT\s+NULL\s+DEFAULT\s+0\s+CHECK\s*\(\s*retire_when_inactive\s+IN\s*\(\s*0\s*,\s*1\s*\)\s*\)/iu.test(
-        leaseDefinitions[0]?.sql ?? '',
+        leaseDefinition,
       ) &&
-      snapshotDefinitions.length === 1 &&
-      exactCodeGraphSnapshotStateCheck(snapshotDefinitions[0]?.sql ?? '')
+      snapshotDefinition !== undefined &&
+      exactCodeGraphSnapshotStateCheck(snapshotDefinition)
     )) {
       return false;
     }
@@ -12536,19 +14046,57 @@ const codeGraphWorktreeReconciliationSchemaCompatible = Effect.fn('codeGraph.wor
       }
     }
     const triggers = yield* sql.unsafe<{
-      readonly name: string;
-      readonly sql: string;
-      readonly tbl_name: string;
-    }>(`SELECT name, tbl_name, sql
+      readonly bounded_sql: unknown;
+      readonly name: unknown;
+      readonly sql_bytes: unknown;
+      readonly tbl_name: unknown;
+    }>(`SELECT name, tbl_name,
+               CASE
+                 WHEN typeof(sql) = 'text' AND length(CAST(sql AS BLOB)) <= 8192 THEN sql
+                 ELSE NULL
+               END AS bounded_sql,
+               length(CAST(sql AS BLOB)) AS sql_bytes
         FROM sqlite_master
         WHERE type = 'trigger'
-          AND tbl_name IN ('schema_metadata', 'active_snapshots', 'removed_views', 'snapshots', 'snapshot_leases')`);
+          AND (tbl_name = 'schema_metadata' COLLATE NOCASE
+            OR tbl_name = 'active_snapshots' COLLATE NOCASE
+            OR tbl_name = 'removed_views' COLLATE NOCASE
+            OR tbl_name = 'snapshots' COLLATE NOCASE
+            OR tbl_name = 'snapshot_leases' COLLATE NOCASE)
+        ORDER BY name
+        LIMIT 5`);
+    const activeTrigger = triggers.filter(trigger => trigger.name === 'active_snapshots_require_current_extractor');
+    const cleanupTriggers = triggers.filter(trigger =>
+      REMOVED_VIEW_CLEANUP_TRIGGER_DEFINITIONS.some(expected => expected.name === trigger.name),
+    );
+    const expectedTriggerCount = 1 + cleanupTriggers.length;
     if (
-      triggers.length !== 1 ||
-      triggers[0]?.name !== 'active_snapshots_require_current_extractor' ||
-      triggers[0]?.tbl_name !== 'active_snapshots' ||
-      normalizeSqlDefinition(triggers[0]?.sql ?? '') !==
-        normalizeSqlDefinition(CODE_GRAPH_ACTIVE_SNAPSHOT_EXTRACTOR_TRIGGER_SQL)
+      triggers.length !== expectedTriggerCount ||
+      triggers.some(
+        trigger =>
+          typeof trigger.name !== 'string' ||
+          trigger.name !== trigger.name.toLowerCase() ||
+          typeof trigger.tbl_name !== 'string' ||
+          trigger.tbl_name !== trigger.tbl_name.toLowerCase() ||
+          typeof trigger.sql_bytes !== 'number' ||
+          !Number.isSafeInteger(trigger.sql_bytes) ||
+          trigger.sql_bytes > 8192 ||
+          typeof trigger.bounded_sql !== 'string',
+      ) ||
+      activeTrigger.length !== 1 ||
+      activeTrigger[0]?.tbl_name !== 'active_snapshots' ||
+      normalizeSchemaDefinition((activeTrigger[0]?.bounded_sql as string) ?? '') !==
+        normalizeSchemaDefinition(CODE_GRAPH_ACTIVE_SNAPSHOT_EXTRACTOR_TRIGGER_SQL) ||
+      (cleanupTriggers.length !== 0 && cleanupTriggers.length !== REMOVED_VIEW_CLEANUP_TRIGGER_DEFINITIONS.length) ||
+      (requireCleanup && cleanupTriggers.length !== REMOVED_VIEW_CLEANUP_TRIGGER_DEFINITIONS.length) ||
+      cleanupTriggers.some(trigger => {
+        const expected = REMOVED_VIEW_CLEANUP_TRIGGER_DEFINITIONS.find(candidate => candidate.name === trigger.name);
+        return (
+          expected === undefined ||
+          trigger.tbl_name !== 'removed_views' ||
+          normalizeSchemaDefinition((trigger.bounded_sql as string) ?? '') !== normalizeSchemaDefinition(expected.sql)
+        );
+      })
     ) {
       return false;
     }
@@ -12566,11 +14114,65 @@ function exactCodeGraphSnapshotStateCheck(definition: string): boolean {
   );
 }
 
+const prepareRemovedViewCleanupExtension = Effect.fn('codeGraph.prepareRemovedViewCleanupExtension')(function* (
+  sql: SqlClient.SqlClient,
+) {
+  const preflightReady = yield* preflightRemovedViewCleanupSchema(sql).pipe(
+    Effect.as(true),
+    Effect.catch(error => (error instanceof CodeGraphStoreError ? Effect.succeed(false) : Effect.fail(error))),
+  );
+  if (!preflightReady) return {reason: 'incompatible-schema', state: 'deferred'} as const;
+  if (!(yield* codeGraphWorktreeReconciliationSchemaCompatible(sql, true, false))) {
+    return {reason: 'incompatible-schema', state: 'deferred'} as const;
+  }
+  const revisions = yield* sql<{readonly value: string}>`
+    SELECT value FROM schema_metadata WHERE key = 'persistent_extension_schema_revision'
+  `;
+  if (revisions.length !== 1 || (revisions[0]?.value !== '7' && revisions[0]?.value !== '8')) {
+    return {reason: 'incompatible-schema', state: 'deferred'} as const;
+  }
+  if (!(yield* codeGraphPersistentExtensionSchemaCompatible(sql))) {
+    return {reason: 'incompatible-schema', state: 'deferred'} as const;
+  }
+  const wasCurrent = yield* removedViewCleanupSchemaCurrent(sql);
+  yield* ensureRemovedViewCleanupSchema(sql);
+  if (!wasCurrent) {
+    yield* sql`
+      INSERT INTO schema_metadata (key, value)
+      VALUES (${REMOVED_VIEW_CLEANUP_EPOCH_SEQUENCE_KEY}, '0')
+    `;
+  }
+  if (revisions[0]?.value !== String(CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION)) {
+    yield* sql`
+      UPDATE schema_metadata
+      SET value = ${String(CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION)}
+      WHERE key = 'persistent_extension_schema_revision' AND value = ${revisions[0]!.value}
+    `;
+    if ((yield* lastStatementChangeCount(sql)) !== 1) {
+      return yield* Effect.fail(new CodeGraphStoreError('Code graph cleanup schema revision changed during setup.'));
+    }
+  }
+  if (!(yield* codeGraphRemovedViewCleanupSchemaAdmission(sql)).current) {
+    return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view cleanup schema is unavailable.'));
+  }
+  return wasCurrent && revisions[0]?.value === String(CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION)
+    ? ({state: 'ready'} as const)
+    : ({index: 'removed_view_cleanup_due', state: 'prepared'} as const);
+});
+
 const prepareWorktreeReconciliationIndex = Effect.fn('codeGraph.prepareWorktreeReconciliationIndex')(function* (
   sql: SqlClient.SqlClient,
 ) {
-  if (!(yield* codeGraphWorktreeReconciliationSchemaCompatible(sql, false))) {
+  const preflightReady = yield* preflightRemovedViewCleanupSchema(sql).pipe(
+    Effect.as(true),
+    Effect.catch(error => (error instanceof CodeGraphStoreError ? Effect.succeed(false) : Effect.fail(error))),
+  );
+  if (!preflightReady || !(yield* codeGraphWorktreeReconciliationSchemaCompatible(sql, false, false))) {
     return {reason: 'incompatible-schema', state: 'deferred'} as const;
+  }
+  if (!(yield* codeGraphWorktreeReconciliationSchemaCompatible(sql, false))) {
+    const cleanupState = yield* removedViewCleanupSchemaState(sql);
+    if (cleanupState !== 'absent') return {reason: 'incompatible-schema', state: 'deferred'} as const;
   }
   const states = yield* Effect.forEach(
     CODE_GRAPH_RECONCILIATION_REQUIRED_INDEXES,
@@ -12588,34 +14190,48 @@ const prepareWorktreeReconciliationIndex = Effect.fn('codeGraph.prepareWorktreeR
     }
     return {index: missing.index.name, state: 'prepared'} as const;
   }
+  const cleanup = yield* prepareRemovedViewCleanupExtension(sql);
+  if (cleanup.state !== 'ready') return cleanup;
   return {state: 'ready'} as const;
 });
 
-type CodeGraphReconciliationRequiredIndex = (typeof CODE_GRAPH_RECONCILIATION_REQUIRED_INDEXES)[number];
+type CodeGraphReconciliationRequiredIndex =
+  (typeof CODE_GRAPH_RECONCILIATION_REQUIRED_INDEXES)[number] | typeof CODE_GRAPH_SNAPSHOT_LEASE_EXPIRY_INDEX;
 
 const codeGraphReconciliationIndexState = Effect.fn('codeGraph.reconciliationIndexState')(function* (
   sql: SqlClient.SqlClient,
   index: CodeGraphReconciliationRequiredIndex,
 ) {
-  const definitions = yield* sql.unsafe<{readonly sql: string; readonly tbl_name: string}>(
-    `SELECT tbl_name, sql FROM sqlite_master WHERE type = 'index' AND name = ?`,
+  const definitions = yield* sql.unsafe<{
+    readonly bounded_sql: unknown;
+    readonly name: unknown;
+    readonly sql_bytes: unknown;
+    readonly tbl_name: unknown;
+    readonly type: unknown;
+  }>(
+    `SELECT name, type, tbl_name,
+            CASE
+              WHEN typeof(sql) = 'text' AND length(CAST(sql AS BLOB)) <= 1024 THEN sql
+              ELSE NULL
+            END AS bounded_sql,
+            length(CAST(sql AS BLOB)) AS sql_bytes
+     FROM sqlite_master
+     WHERE name = ? COLLATE NOCASE
+     LIMIT 2`,
     [index.name],
   );
   if (definitions.length === 0) return 'missing' as const;
   if (
     definitions.length !== 1 ||
+    definitions[0]?.name !== index.name ||
+    definitions[0]?.type !== 'index' ||
     definitions[0]?.tbl_name !== index.table ||
-    normalizeSqlDefinition(definitions[0]?.sql ?? '') !== normalizeSqlDefinition(index.definition)
+    typeof definitions[0]?.sql_bytes !== 'number' ||
+    !Number.isSafeInteger(definitions[0].sql_bytes) ||
+    definitions[0].sql_bytes > 1024 ||
+    typeof definitions[0]?.bounded_sql !== 'string' ||
+    normalizeSchemaDefinition(definitions[0].bounded_sql) !== normalizeSchemaDefinition(index.definition)
   ) {
-    return 'incompatible' as const;
-  }
-  const indexes = yield* sql.unsafe<{
-    readonly name: string;
-    readonly partial: number;
-    readonly unique: number;
-  }>(`PRAGMA index_list("${index.table}")`);
-  const observed = indexes.find(candidate => candidate.name === index.name);
-  if (observed === undefined || Number(observed.unique) !== 0 || Number(observed.partial) !== 0) {
     return 'incompatible' as const;
   }
   const xinfo = yield* sql.unsafe<{
@@ -12624,9 +14240,10 @@ const codeGraphReconciliationIndexState = Effect.fn('codeGraph.reconciliationInd
     readonly key: number;
     readonly name: string | null;
     readonly seqno: number;
-  }>(`PRAGMA index_xinfo("${index.name}")`);
+  }>(`SELECT * FROM pragma_index_xinfo(?) LIMIT ${index.columns.length + 2}`, [index.name]);
   const keyColumns = xinfo.filter(column => Number(column.key) === 1).sort((left, right) => left.seqno - right.seqno);
-  return keyColumns.length === index.columns.length &&
+  return xinfo.length === index.columns.length + 1 &&
+    keyColumns.length === index.columns.length &&
     keyColumns.every(
       (column, columnIndex) =>
         column.name === index.columns[columnIndex] &&
@@ -12637,30 +14254,923 @@ const codeGraphReconciliationIndexState = Effect.fn('codeGraph.reconciliationInd
     : ('incompatible' as const);
 });
 
-function normalizeSqlDefinition(value: string): string {
-  return value.replace(/\s+/gu, ' ').trim().toLowerCase();
+const ensureInitialReconciliationIndexes = Effect.fn('codeGraph.ensureInitialReconciliationIndexes')(function* (
+  sql: SqlClient.SqlClient,
+) {
+  const revision = yield* removedViewCleanupRecordedRevision(sql);
+  const expiryIndexState = yield* codeGraphReconciliationIndexState(sql, CODE_GRAPH_SNAPSHOT_LEASE_EXPIRY_INDEX);
+  if (expiryIndexState !== 'ready') {
+    if (expiryIndexState === 'incompatible') {
+      return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot lease expiry index is incompatible.'));
+    }
+    const rows = yield* sql.unsafe('SELECT 1 FROM snapshot_leases LIMIT 1');
+    if (revision.state !== 'missing' || rows.length !== 0) {
+      return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot lease expiry index is unavailable.'));
+    }
+    yield* sql.unsafe(CODE_GRAPH_SNAPSHOT_LEASE_EXPIRY_INDEX.definition);
+    if ((yield* codeGraphReconciliationIndexState(sql, CODE_GRAPH_SNAPSHOT_LEASE_EXPIRY_INDEX)) !== 'ready') {
+      return yield* Effect.fail(
+        new CodeGraphStoreError('Code graph snapshot lease expiry index changed during setup.'),
+      );
+    }
+  }
+  for (const index of CODE_GRAPH_RECONCILIATION_REQUIRED_INDEXES) {
+    const state = yield* codeGraphReconciliationIndexState(sql, index);
+    if (state === 'ready') continue;
+    if (state === 'incompatible') {
+      return yield* Effect.fail(new CodeGraphStoreError('Code graph reconciliation index is incompatible.'));
+    }
+    // Only an empty, not-yet-versioned core database may create all required
+    // indexes synchronously. Existing databases prepare one missing index per
+    // bounded maintenance tick before publishing revision 8.
+    if (revision.state !== 'missing') {
+      return yield* Effect.fail(new CodeGraphStoreError('Code graph reconciliation index is unavailable.'));
+    }
+    const rows = yield* sql.unsafe(`SELECT 1 FROM "${index.table}" LIMIT 1`);
+    if (rows.length !== 0) {
+      return yield* Effect.fail(new CodeGraphStoreError('Code graph reconciliation index requires preparation.'));
+    }
+    yield* sql.unsafe(index.definition);
+    if ((yield* codeGraphReconciliationIndexState(sql, index)) !== 'ready') {
+      return yield* Effect.fail(new CodeGraphStoreError('Code graph reconciliation index changed during setup.'));
+    }
+  }
+});
+
+function normalizeSchemaDefinition(value: string): string {
+  const quoted: string[] = [];
+  let unquoted = '';
+  for (let index = 0; index < value.length; index += 1) {
+    const opener = value[index]!;
+    const closer = opener === '[' ? ']' : opener;
+    if (opener !== "'" && opener !== '"' && opener !== '`' && opener !== '[') {
+      unquoted += opener;
+      continue;
+    }
+    const start = index;
+    for (index += 1; index < value.length; index += 1) {
+      if (value[index] !== closer) continue;
+      if (closer !== ']' && value[index + 1] === closer) {
+        index += 1;
+        continue;
+      }
+      break;
+    }
+    quoted.push(value.slice(start, Math.min(index + 1, value.length)));
+    unquoted += `\u0000${quoted.length - 1}\u0000`;
+  }
+  return unquoted
+    .toLowerCase()
+    .replace(/\bif not exists\b/gu, '')
+    .replace(/\s+/gu, ' ')
+    .replace(/\s*([(),])\s*/gu, '$1')
+    .trim()
+    .split('\u0000')
+    .map((segment, index) => (index % 2 === 1 ? (quoted[Number(segment)] ?? '') : segment))
+    .join('');
 }
+
+interface RemovedViewCleanupRow {
+  readonly attempts: unknown;
+  readonly blocked_code: unknown;
+  readonly cursor_token: unknown;
+  readonly epoch: unknown;
+  readonly expected_snapshot_id: unknown;
+  readonly next_attempt_at: unknown;
+  readonly phase: unknown;
+  readonly provenance_record_digest: unknown;
+  readonly provenance_record_identity: unknown;
+  readonly removed_at: unknown;
+  readonly repository_id: unknown;
+  readonly revision: unknown;
+  readonly updated_at: unknown;
+  readonly worktree_id: unknown;
+}
+
+const REMOVED_VIEW_CLEANUP_BOUNDED_ROW_PROJECTION = `
+  CASE WHEN typeof(worktree_id) = 'text' AND length(CAST(worktree_id AS BLOB)) = 64
+    THEN worktree_id ELSE NULL END AS worktree_id,
+  CASE WHEN typeof(expected_snapshot_id) = 'text'
+         AND length(CAST(expected_snapshot_id AS BLOB)) BETWEEN 45 AND 67
+    THEN expected_snapshot_id ELSE NULL END AS expected_snapshot_id,
+  CASE WHEN typeof(removed_at) = 'text' AND length(CAST(removed_at AS BLOB)) = 24
+    THEN removed_at ELSE NULL END AS removed_at,
+  CASE WHEN typeof(epoch) = 'integer' AND epoch BETWEEN 1 AND 9007199254740991
+    THEN epoch ELSE NULL END AS epoch,
+  CASE WHEN repository_id IS NULL OR (
+         typeof(repository_id) = 'text' AND length(CAST(repository_id AS BLOB)) = 64
+       ) THEN repository_id ELSE 0 END AS repository_id,
+  CASE WHEN provenance_record_digest IS NULL OR (
+         typeof(provenance_record_digest) = 'text'
+         AND length(CAST(provenance_record_digest AS BLOB)) = 64
+       ) THEN provenance_record_digest ELSE 0 END AS provenance_record_digest,
+  CASE WHEN provenance_record_identity IS NULL OR (
+         typeof(provenance_record_identity) = 'text'
+         AND length(CAST(provenance_record_identity AS BLOB)) = 64
+       ) THEN provenance_record_identity ELSE 0 END AS provenance_record_identity,
+  CASE WHEN typeof(phase) = 'text' AND length(CAST(phase AS BLOB)) <= 15
+    THEN phase ELSE NULL END AS phase,
+  CASE WHEN cursor_token IS NULL OR (
+         typeof(cursor_token) = 'text' AND length(CAST(cursor_token AS BLOB)) BETWEEN 1 AND 512
+       ) THEN cursor_token ELSE 0 END AS cursor_token,
+  CASE WHEN typeof(revision) = 'integer' AND revision BETWEEN 0 AND 9007199254740991
+    THEN revision ELSE NULL END AS revision,
+  CASE WHEN typeof(attempts) = 'integer' AND attempts BETWEEN 0 AND 9007199254740991
+    THEN attempts ELSE NULL END AS attempts,
+  CASE WHEN typeof(next_attempt_at) = 'integer' AND next_attempt_at BETWEEN 0 AND 253402300799999
+    THEN next_attempt_at ELSE NULL END AS next_attempt_at,
+  CASE WHEN blocked_code IS NULL OR (
+         typeof(blocked_code) = 'text' AND length(CAST(blocked_code AS BLOB)) BETWEEN 1 AND 32
+       ) THEN blocked_code ELSE 0 END AS blocked_code,
+  CASE WHEN typeof(updated_at) = 'text' AND length(CAST(updated_at AS BLOB)) = 24
+    THEN updated_at ELSE NULL END AS updated_at`;
+
+const CLEANUP_TOKEN = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,511}$/u;
+const CODE_GRAPH_SNAPSHOT_ID = /^cgsn_[0-9a-f]{40}(?:-direct|-full-[0-9a-f]{16})?$/u;
+
+function validRemovedViewCleanupBlockedCode(value: string): value is CodeGraphRemovedViewCleanupBlockedCode {
+  return CODE_GRAPH_REMOVED_VIEW_CLEANUP_BLOCKED_CODES.includes(value as CodeGraphRemovedViewCleanupBlockedCode);
+}
+
+function validCanonicalTimestamp(value: string): boolean {
+  const milliseconds = Date.parse(value);
+  return (
+    value.length === 24 &&
+    Number.isFinite(milliseconds) &&
+    milliseconds <= MAXIMUM_CANONICAL_DATE_MILLISECONDS &&
+    new Date(milliseconds).toISOString() === value
+  );
+}
+
+function validRemovedViewCleanupEvidence(evidence: CodeGraphRemovedViewCleanupEvidence): boolean {
+  return (
+    /^[0-9a-f]{64}$/u.test(evidence.repositoryId) &&
+    /^[0-9a-f]{64}$/u.test(evidence.recordDigest) &&
+    /^[0-9a-f]{64}$/u.test(evidence.recordIdentity)
+  );
+}
+
+function decodeRemovedViewCleanupRow(row: RemovedViewCleanupRow): CodeGraphRemovedViewCleanupEntry | undefined {
+  if (
+    typeof row.worktree_id !== 'string' ||
+    !/^[0-9a-f]{64}$/u.test(row.worktree_id) ||
+    typeof row.expected_snapshot_id !== 'string' ||
+    !CODE_GRAPH_SNAPSHOT_ID.test(row.expected_snapshot_id) ||
+    typeof row.removed_at !== 'string' ||
+    !validCanonicalTimestamp(row.removed_at) ||
+    typeof row.epoch !== 'number' ||
+    !Number.isSafeInteger(row.epoch) ||
+    row.epoch <= 0 ||
+    (row.repository_id !== null &&
+      (typeof row.repository_id !== 'string' || !/^[0-9a-f]{64}$/u.test(row.repository_id))) ||
+    (row.provenance_record_digest !== null &&
+      (typeof row.provenance_record_digest !== 'string' || !/^[0-9a-f]{64}$/u.test(row.provenance_record_digest))) ||
+    (row.provenance_record_identity !== null &&
+      (typeof row.provenance_record_identity !== 'string' ||
+        !/^[0-9a-f]{64}$/u.test(row.provenance_record_identity))) ||
+    !(
+      (row.repository_id === null &&
+        row.provenance_record_digest === null &&
+        row.provenance_record_identity === null) ||
+      (typeof row.repository_id === 'string' &&
+        typeof row.provenance_record_digest === 'string' &&
+        typeof row.provenance_record_identity === 'string')
+    ) ||
+    typeof row.phase !== 'string' ||
+    !CODE_GRAPH_REMOVED_VIEW_CLEANUP_PHASES.includes(row.phase as CodeGraphRemovedViewCleanupPhase) ||
+    (row.cursor_token !== null && (typeof row.cursor_token !== 'string' || !CLEANUP_TOKEN.test(row.cursor_token))) ||
+    (row.phase === 'complete' && (row.cursor_token !== null || row.blocked_code !== null)) ||
+    typeof row.revision !== 'number' ||
+    !Number.isSafeInteger(row.revision) ||
+    row.revision < 0 ||
+    typeof row.attempts !== 'number' ||
+    !Number.isSafeInteger(row.attempts) ||
+    row.attempts < 0 ||
+    typeof row.next_attempt_at !== 'number' ||
+    !Number.isSafeInteger(row.next_attempt_at) ||
+    row.next_attempt_at < 0 ||
+    row.next_attempt_at > MAXIMUM_CANONICAL_DATE_MILLISECONDS ||
+    (row.blocked_code !== null &&
+      (typeof row.blocked_code !== 'string' || !validRemovedViewCleanupBlockedCode(row.blocked_code))) ||
+    typeof row.updated_at !== 'string' ||
+    !validCanonicalTimestamp(row.updated_at)
+  ) {
+    return undefined;
+  }
+  return {
+    attempts: row.attempts,
+    ...(typeof row.blocked_code === 'string' ? {blockedCode: row.blocked_code} : {}),
+    ...(typeof row.cursor_token === 'string' ? {cursorToken: row.cursor_token} : {}),
+    epoch: row.epoch,
+    expectedSnapshotId: row.expected_snapshot_id,
+    nextAttemptAt: row.next_attempt_at,
+    phase: row.phase as CodeGraphRemovedViewCleanupPhase,
+    ...(typeof row.provenance_record_digest === 'string' ? {provenanceRecordDigest: row.provenance_record_digest} : {}),
+    ...(typeof row.provenance_record_identity === 'string'
+      ? {provenanceRecordIdentity: row.provenance_record_identity}
+      : {}),
+    removedAt: row.removed_at,
+    ...(typeof row.repository_id === 'string' ? {repositoryId: row.repository_id} : {}),
+    revision: row.revision,
+    updatedAt: row.updated_at,
+    worktreeId: row.worktree_id,
+  };
+}
+
+function sameRemovedViewCleanupEntry(
+  left: CodeGraphRemovedViewCleanupEntry,
+  right: CodeGraphRemovedViewCleanupEntry,
+): boolean {
+  return (
+    left.worktreeId === right.worktreeId &&
+    left.expectedSnapshotId === right.expectedSnapshotId &&
+    left.removedAt === right.removedAt &&
+    left.epoch === right.epoch &&
+    left.repositoryId === right.repositoryId &&
+    left.provenanceRecordDigest === right.provenanceRecordDigest &&
+    left.provenanceRecordIdentity === right.provenanceRecordIdentity &&
+    left.phase === right.phase &&
+    left.cursorToken === right.cursorToken &&
+    left.revision === right.revision &&
+    left.attempts === right.attempts &&
+    left.nextAttemptAt === right.nextAttemptAt &&
+    left.blockedCode === right.blockedCode &&
+    left.updatedAt === right.updatedAt
+  );
+}
+
+const selectRemovedViewCleanupEntry = Effect.fn('codeGraph.selectRemovedViewCleanupEntry')(function* (
+  sql: SqlClient.SqlClient,
+  worktreeId: string,
+  expectedSnapshotId: string,
+) {
+  const rows = yield* sql.unsafe<RemovedViewCleanupRow>(
+    `SELECT ${REMOVED_VIEW_CLEANUP_BOUNDED_ROW_PROJECTION}
+     FROM removed_view_cleanup
+     WHERE worktree_id = ? AND expected_snapshot_id = ?
+     LIMIT 1`,
+    [worktreeId, expectedSnapshotId],
+  );
+  if (rows.length === 0) return undefined;
+  const entry = decodeRemovedViewCleanupRow(rows[0]!);
+  if (entry === undefined) {
+    return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view cleanup row is invalid.'));
+  }
+  return entry;
+});
+
+const validateRemovedViewSnapshotAuthority = Effect.fn('codeGraph.validateRemovedViewSnapshotAuthority')(function* (
+  sql: SqlClient.SqlClient,
+  expectedSnapshotId: string,
+  requireSnapshot: boolean,
+  evidence?: CodeGraphRemovedViewCleanupEvidence,
+) {
+  const snapshots = yield* sql.unsafe<{
+    readonly id: unknown;
+    readonly repository_id: unknown;
+    readonly worktree_id: unknown;
+  }>(
+    `SELECT
+       CASE WHEN typeof(id) = 'text' AND length(CAST(id AS BLOB)) BETWEEN 45 AND 67
+         THEN id ELSE NULL END AS id,
+       CASE WHEN typeof(repository_id) = 'text' AND length(CAST(repository_id AS BLOB)) = 64
+         THEN repository_id ELSE NULL END AS repository_id,
+       CASE WHEN typeof(worktree_id) = 'text' AND length(CAST(worktree_id AS BLOB)) = 64
+         THEN worktree_id ELSE NULL END AS worktree_id
+     FROM snapshots WHERE id = ? LIMIT 2`,
+    [expectedSnapshotId],
+  );
+  if (snapshots.length === 0) {
+    if (!requireSnapshot) return;
+    return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view snapshot authority is unavailable.'));
+  }
+  const snapshot = snapshots[0]!;
+  if (
+    snapshots.length !== 1 ||
+    snapshot.id !== expectedSnapshotId ||
+    typeof snapshot.id !== 'string' ||
+    !CODE_GRAPH_SNAPSHOT_ID.test(snapshot.id) ||
+    typeof snapshot.repository_id !== 'string' ||
+    !/^[0-9a-f]{64}$/u.test(snapshot.repository_id) ||
+    typeof snapshot.worktree_id !== 'string' ||
+    !/^[0-9a-f]{64}$/u.test(snapshot.worktree_id) ||
+    (evidence !== undefined && evidence.repositoryId !== snapshot.repository_id)
+  ) {
+    return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view snapshot authority is invalid.'));
+  }
+});
+
+const allocateRemovedViewCleanupEpoch = Effect.fn('codeGraph.allocateRemovedViewCleanupEpoch')(function* (
+  sql: SqlClient.SqlClient,
+) {
+  const sequence = yield* inspectBoundedSchemaMetadataValue(sql, REMOVED_VIEW_CLEANUP_EPOCH_SEQUENCE_KEY, 16);
+  if (
+    sequence.state !== 'recorded' ||
+    !/^(?:0|[1-9][0-9]*)$/u.test(sequence.value) ||
+    !Number.isSafeInteger(Number(sequence.value)) ||
+    Number(sequence.value) >= Number.MAX_SAFE_INTEGER
+  ) {
+    return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view cleanup epoch sequence is invalid.'));
+  }
+  const epoch = Number(sequence.value) + 1;
+  yield* sql`
+    UPDATE schema_metadata
+    SET value = ${String(epoch)}
+    WHERE key = ${REMOVED_VIEW_CLEANUP_EPOCH_SEQUENCE_KEY}
+      AND value = ${sequence.value}
+  `;
+  if ((yield* lastStatementChangeCount(sql)) !== 1) {
+    return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view cleanup epoch sequence changed.'));
+  }
+  return epoch;
+});
+
+const markSnapshotLeaseRetirementBaton = Effect.fn('codeGraph.markSnapshotLeaseRetirementBaton')(function* (
+  sql: SqlClient.SqlClient,
+  snapshotId: string,
+  now: number,
+) {
+  const rows = yield* sql.unsafe<BoundedSnapshotLeaseRow & {readonly lease_rowid: unknown}>(
+    `SELECT
+       CASE WHEN typeof(lease.rowid) = 'integer' AND lease.rowid BETWEEN 1 AND 9007199254740991
+         THEN lease.rowid ELSE NULL END AS lease_rowid,
+       ${boundedSnapshotLeaseProjection('lease')}
+     FROM snapshot_leases AS lease INDEXED BY snapshot_leases_snapshot_expiry
+     WHERE lease.snapshot_id = ? AND lease.expires_at > ?
+     ORDER BY lease.expires_at
+     LIMIT 1`,
+    [snapshotId, now],
+  );
+  if (rows.length === 0) return 0;
+  const lease = decodeSnapshotLeaseManifest(rows[0]!);
+  const rowid = rows[0]?.lease_rowid;
+  if (
+    lease === undefined ||
+    lease.snapshotId !== snapshotId ||
+    typeof rowid !== 'number' ||
+    !Number.isSafeInteger(rowid) ||
+    rowid <= 0
+  ) {
+    return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot lease baton is invalid.'));
+  }
+  yield* sql`
+    UPDATE snapshot_leases
+    SET retire_when_inactive = 1
+    WHERE rowid = ${rowid}
+  `;
+  return yield* lastStatementChangeCount(sql);
+});
+
+const ensureRemovedViewCleanupEpoch = Effect.fn('codeGraph.ensureRemovedViewCleanupEpoch')(function* (
+  sql: SqlClient.SqlClient,
+  worktreeId: string,
+  expectedSnapshotId: string,
+  updatedAt: string,
+  bindNewEpochEvidence: boolean,
+  evidence?: CodeGraphRemovedViewCleanupEvidence,
+  requireExistingEvidenceMatch = false,
+) {
+  const existing = yield* selectRemovedViewCleanupEntry(sql, worktreeId, expectedSnapshotId);
+  if (existing !== undefined) {
+    if (existing.removedAt !== updatedAt) {
+      yield* sql`
+        DELETE FROM removed_view_cleanup
+        WHERE worktree_id = ${worktreeId}
+          AND expected_snapshot_id = ${expectedSnapshotId}
+          AND removed_at = ${existing.removedAt}
+          AND epoch = ${existing.epoch}
+          AND revision = ${existing.revision}
+      `;
+      if ((yield* lastStatementChangeCount(sql)) !== 1) {
+        return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view cleanup epoch changed.'));
+      }
+    } else {
+      if (
+        (bindNewEpochEvidence || requireExistingEvidenceMatch) &&
+        existing.repositoryId !== undefined &&
+        evidence !== undefined &&
+        (existing.repositoryId !== evidence.repositoryId ||
+          existing.provenanceRecordDigest !== evidence.recordDigest ||
+          existing.provenanceRecordIdentity !== evidence.recordIdentity)
+      ) {
+        return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view cleanup evidence changed.'));
+      }
+      // Epoch evidence is immutable. A later retry cannot attach current
+      // sidecar evidence to a legacy tombstone that predates that evidence.
+      if (!bindNewEpochEvidence) {
+        yield* markSnapshotLeaseRetirementBaton(sql, expectedSnapshotId, yield* Clock.currentTimeMillis);
+      }
+      return;
+    }
+  }
+
+  const boundEvidence = bindNewEpochEvidence ? evidence : undefined;
+  const epoch = yield* allocateRemovedViewCleanupEpoch(sql);
+  yield* sql`
+    INSERT INTO removed_view_cleanup (
+      worktree_id, expected_snapshot_id, removed_at, epoch, repository_id,
+      provenance_record_digest, provenance_record_identity,
+      phase, cursor_token, revision, attempts, next_attempt_at,
+      blocked_code, updated_at
+    ) VALUES (
+      ${worktreeId}, ${expectedSnapshotId}, ${updatedAt}, ${epoch}, ${boundEvidence?.repositoryId ?? null},
+      ${boundEvidence?.recordDigest ?? null}, ${boundEvidence?.recordIdentity ?? null},
+      'vector-pointers', NULL, 0, 0, 0, NULL, ${updatedAt}
+    )
+  `;
+  if (!bindNewEpochEvidence) {
+    yield* markSnapshotLeaseRetirementBaton(sql, expectedSnapshotId, yield* Clock.currentTimeMillis);
+  }
+});
+
+function validRemovedViewCleanupUpdate(
+  entry: CodeGraphRemovedViewCleanupEntry,
+  update: CodeGraphRemovedViewCleanupUpdate,
+): boolean {
+  const currentPhase = CODE_GRAPH_REMOVED_VIEW_CLEANUP_PHASES.indexOf(entry.phase);
+  const nextPhase = CODE_GRAPH_REMOVED_VIEW_CLEANUP_PHASES.indexOf(update.phase);
+  const samePhase = nextPhase === currentPhase;
+  const advancesPhase = nextPhase === currentPhase + 1;
+  const progress =
+    samePhase &&
+    update.blockedCode === undefined &&
+    update.cursorToken !== undefined &&
+    update.cursorToken !== entry.cursorToken;
+  const deferred = samePhase && update.blockedCode !== undefined;
+  return (
+    currentPhase >= 0 &&
+    currentPhase < CODE_GRAPH_REMOVED_VIEW_CLEANUP_PHASES.length - 1 &&
+    (samePhase || advancesPhase) &&
+    entry.revision < Number.MAX_SAFE_INTEGER &&
+    Number.isSafeInteger(update.attempts) &&
+    Number.isSafeInteger(update.nextAttemptAt) &&
+    update.nextAttemptAt >= 0 &&
+    update.nextAttemptAt <= MAXIMUM_CANONICAL_DATE_MILLISECONDS &&
+    (update.cursorToken === undefined || CLEANUP_TOKEN.test(update.cursorToken)) &&
+    (update.blockedCode === undefined || validRemovedViewCleanupBlockedCode(update.blockedCode)) &&
+    validCanonicalTimestamp(update.updatedAt) &&
+    Date.parse(update.updatedAt) >= Date.parse(entry.updatedAt) &&
+    ((progress && update.attempts === entry.attempts) ||
+      (deferred &&
+        entry.attempts < Number.MAX_SAFE_INTEGER &&
+        update.attempts === entry.attempts + 1 &&
+        update.cursorToken === entry.cursorToken &&
+        update.nextAttemptAt > entry.nextAttemptAt) ||
+      (advancesPhase &&
+        update.attempts === 0 &&
+        update.cursorToken === undefined &&
+        update.blockedCode === undefined)) &&
+    (update.phase !== 'complete' || (update.cursorToken === undefined && update.blockedCode === undefined))
+  );
+}
+
+function validRemovedViewCleanupEntry(entry: CodeGraphRemovedViewCleanupEntry): boolean {
+  const decoded = decodeRemovedViewCleanupRow({
+    attempts: entry.attempts,
+    blocked_code: entry.blockedCode ?? null,
+    cursor_token: entry.cursorToken ?? null,
+    epoch: entry.epoch,
+    expected_snapshot_id: entry.expectedSnapshotId,
+    next_attempt_at: entry.nextAttemptAt,
+    phase: entry.phase,
+    provenance_record_digest: entry.provenanceRecordDigest ?? null,
+    provenance_record_identity: entry.provenanceRecordIdentity ?? null,
+    removed_at: entry.removedAt,
+    repository_id: entry.repositoryId ?? null,
+    revision: entry.revision,
+    updated_at: entry.updatedAt,
+    worktree_id: entry.worktreeId,
+  });
+  return decoded !== undefined && sameRemovedViewCleanupEntry(decoded, entry);
+}
+
+/** @internal Bounded keyset page retained for admission query-plan and load regressions. */
+export function codeGraphRemovedViewCleanupAdmissionPageStatement(
+  cursor: string | undefined,
+  boundary: 'after' | 'through',
+  requestedLimit = CODE_GRAPH_REMOVED_VIEW_CLEANUP_PAGE_ROWS,
+): CodeGraphSqlQueryStatement {
+  const limit = Number.isSafeInteger(requestedLimit)
+    ? Math.max(1, Math.min(CODE_GRAPH_REMOVED_VIEW_CLEANUP_PAGE_ROWS, requestedLimit))
+    : CODE_GRAPH_REMOVED_VIEW_CLEANUP_PAGE_ROWS;
+  const predicate =
+    cursor === undefined
+      ? ''
+      : boundary === 'after'
+        ? 'WHERE removed.worktree_id > ?'
+        : 'WHERE removed.worktree_id <= ?';
+  return {
+    parameters: cursor === undefined ? [limit] : [cursor, limit],
+    text: `SELECT
+        CASE WHEN typeof(worktree_id) = 'text' AND length(CAST(worktree_id AS BLOB)) = 64
+          THEN worktree_id ELSE NULL END AS worktree_id,
+        CASE WHEN typeof(expected_snapshot_id) = 'text'
+               AND length(CAST(expected_snapshot_id AS BLOB)) BETWEEN 45 AND 67
+          THEN expected_snapshot_id ELSE NULL END AS expected_snapshot_id,
+        CASE WHEN typeof(removed_at) = 'text' AND length(CAST(removed_at AS BLOB)) = 24
+          THEN removed_at ELSE NULL END AS removed_at
+      FROM removed_views AS removed
+      ${predicate}
+      ORDER BY removed.worktree_id
+      LIMIT ?`,
+  };
+}
+
+/** @internal Indexed due page retained for query-plan and crash-fairness regressions. */
+export function codeGraphRemovedViewCleanupDuePageStatement(
+  nowMilliseconds: number,
+  requestedLimit = CODE_GRAPH_REMOVED_VIEW_CLEANUP_PAGE_ROWS,
+): CodeGraphSqlQueryStatement {
+  const limit = Number.isSafeInteger(requestedLimit)
+    ? Math.max(1, Math.min(CODE_GRAPH_REMOVED_VIEW_CLEANUP_PAGE_ROWS, requestedLimit))
+    : CODE_GRAPH_REMOVED_VIEW_CLEANUP_PAGE_ROWS;
+  return {
+    parameters: [nowMilliseconds, limit],
+    text: `SELECT ${REMOVED_VIEW_CLEANUP_BOUNDED_ROW_PROJECTION}
+      FROM removed_view_cleanup AS cleanup INDEXED BY removed_view_cleanup_due
+      WHERE cleanup.phase <> 'complete' AND cleanup.next_attempt_at <= ?
+      ORDER BY cleanup.next_attempt_at, cleanup.worktree_id, cleanup.expected_snapshot_id
+      LIMIT ?`,
+  };
+}
+
+const admitRemovedViewCleanupEpoch = Effect.fn('codeGraph.admitRemovedViewCleanupEpoch')(function* (
+  sql: SqlClient.SqlClient,
+) {
+  const cursorInspection = yield* inspectRemovedViewCleanupAdmissionCursor(sql);
+  if (!cursorInspection.current) {
+    return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view cleanup admission cursor is invalid.'));
+  }
+  const cursor = cursorInspection.cursor;
+  const selectPage = (boundary: 'after' | 'through', limit: number) => {
+    const statement = codeGraphRemovedViewCleanupAdmissionPageStatement(cursor, boundary, limit);
+    return sql.unsafe<{
+      readonly expected_snapshot_id: unknown;
+      readonly removed_at: unknown;
+      readonly worktree_id: unknown;
+    }>(statement.text, statement.parameters);
+  };
+  const after = yield* selectPage('after', CODE_GRAPH_REMOVED_VIEW_CLEANUP_PAGE_ROWS);
+  const rows =
+    cursor === undefined || after.length >= CODE_GRAPH_REMOVED_VIEW_CLEANUP_PAGE_ROWS
+      ? after
+      : [...after, ...(yield* selectPage('through', CODE_GRAPH_REMOVED_VIEW_CLEANUP_PAGE_ROWS - after.length))];
+  const tombstones = rows.map(row => {
+    if (
+      typeof row.worktree_id !== 'string' ||
+      !/^[0-9a-f]{64}$/u.test(row.worktree_id) ||
+      typeof row.expected_snapshot_id !== 'string' ||
+      !CODE_GRAPH_SNAPSHOT_ID.test(row.expected_snapshot_id) ||
+      typeof row.removed_at !== 'string' ||
+      !validCanonicalTimestamp(row.removed_at)
+    ) {
+      return undefined;
+    }
+    return {
+      expectedSnapshotId: row.expected_snapshot_id,
+      removedAt: row.removed_at,
+      worktreeId: row.worktree_id,
+    };
+  });
+  if (tombstones.some(tombstone => tombstone === undefined)) {
+    return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view cleanup admission row is invalid.'));
+  }
+
+  let nextCursor = tombstones.at(-1)?.worktreeId;
+  for (const tombstone of tombstones as readonly {
+    readonly expectedSnapshotId: string;
+    readonly removedAt: string;
+    readonly worktreeId: string;
+  }[]) {
+    const existing = yield* selectRemovedViewCleanupEntry(sql, tombstone.worktreeId, tombstone.expectedSnapshotId);
+    if (existing !== undefined && existing.removedAt === tombstone.removedAt) continue;
+    yield* validateRemovedViewSnapshotAuthority(sql, tombstone.expectedSnapshotId, false);
+    yield* ensureRemovedViewCleanupEpoch(
+      sql,
+      tombstone.worktreeId,
+      tombstone.expectedSnapshotId,
+      tombstone.removedAt,
+      false,
+    );
+    nextCursor = tombstone.worktreeId;
+    break;
+  }
+  if (nextCursor !== undefined) {
+    yield* sql`
+      INSERT INTO schema_metadata (key, value)
+      VALUES (${REMOVED_VIEW_CLEANUP_ADMISSION_CURSOR_KEY}, ${nextCursor})
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value
+    `;
+  }
+});
+
+const REMOVED_VIEW_CLEANUP_FULL_ENTRY_PREDICATE = `worktree_id = ?
+  AND expected_snapshot_id = ?
+  AND removed_at = ?
+  AND epoch = ?
+  AND repository_id IS ?
+  AND provenance_record_digest IS ?
+  AND provenance_record_identity IS ?
+  AND phase = ?
+  AND cursor_token IS ?
+  AND revision = ?
+  AND attempts = ?
+  AND next_attempt_at = ?
+  AND blocked_code IS ?
+  AND updated_at = ?`;
+
+function removedViewCleanupEntryCasParameters(entry: CodeGraphRemovedViewCleanupEntry): readonly unknown[] {
+  return [
+    entry.worktreeId,
+    entry.expectedSnapshotId,
+    entry.removedAt,
+    entry.epoch,
+    entry.repositoryId ?? null,
+    entry.provenanceRecordDigest ?? null,
+    entry.provenanceRecordIdentity ?? null,
+    entry.phase,
+    entry.cursorToken ?? null,
+    entry.revision,
+    entry.attempts,
+    entry.nextAttemptAt,
+    entry.blockedCode ?? null,
+    entry.updatedAt,
+  ];
+}
+
+const revokeRemovedViewCleanupEntry = Effect.fn('codeGraph.revokeRemovedViewCleanupEntry')(function* (
+  sql: SqlClient.SqlClient,
+  entry: CodeGraphRemovedViewCleanupEntry,
+) {
+  yield* sql.unsafe(
+    `DELETE FROM removed_view_cleanup WHERE ${REMOVED_VIEW_CLEANUP_FULL_ENTRY_PREDICATE}`,
+    removedViewCleanupEntryCasParameters(entry),
+  );
+  if ((yield* lastStatementChangeCount(sql)) !== 1) {
+    return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view cleanup revocation changed.'));
+  }
+});
+
+const claimRemovedViewCleanupCandidates = Effect.fn('codeGraph.claimRemovedViewCleanupCandidates')(function* (
+  sql: SqlClient.SqlClient,
+  nowMilliseconds: number,
+  requestedLimit: number,
+) {
+  if (
+    !Number.isSafeInteger(nowMilliseconds) ||
+    nowMilliseconds < 0 ||
+    nowMilliseconds > MAXIMUM_CANONICAL_DATE_MILLISECONDS - CODE_GRAPH_REMOVED_VIEW_CLEANUP_CLAIM_LEASE_MILLISECONDS ||
+    !Number.isSafeInteger(requestedLimit) ||
+    requestedLimit <= 0
+  ) {
+    return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view cleanup claim time is invalid.'));
+  }
+  const nextAttemptAt = nowMilliseconds + CODE_GRAPH_REMOVED_VIEW_CLEANUP_CLAIM_LEASE_MILLISECONDS;
+  return yield* sql.withTransaction(
+    Effect.gen(function* () {
+      if (!(yield* codeGraphWorktreeReconciliationSchemaCompatible(sql))) {
+        return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view cleanup schema is unavailable.'));
+      }
+      yield* admitRemovedViewCleanupEpoch(sql);
+      const statement = codeGraphRemovedViewCleanupDuePageStatement(nowMilliseconds, requestedLimit);
+      const rows = yield* sql.unsafe<RemovedViewCleanupRow>(statement.text, statement.parameters);
+      const entries = rows.map(decodeRemovedViewCleanupRow);
+      if (
+        entries.some(entry => entry === undefined) ||
+        entries.some(entry => entry !== undefined && entry.revision >= Number.MAX_SAFE_INTEGER)
+      ) {
+        return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view cleanup claim row is invalid.'));
+      }
+      const claimed: CodeGraphRemovedViewCleanupEntry[] = [];
+      for (const entry of entries as readonly CodeGraphRemovedViewCleanupEntry[]) {
+        const claimedAt = new Date(Math.max(nowMilliseconds, Date.parse(entry.updatedAt))).toISOString();
+        yield* sql.unsafe(
+          `UPDATE removed_view_cleanup
+           SET revision = ?, next_attempt_at = ?, updated_at = ?
+           WHERE ${REMOVED_VIEW_CLEANUP_FULL_ENTRY_PREDICATE}`,
+          [entry.revision + 1, nextAttemptAt, claimedAt, ...removedViewCleanupEntryCasParameters(entry)],
+        );
+        if ((yield* lastStatementChangeCount(sql)) !== 1) {
+          return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view cleanup claim changed.'));
+        }
+        claimed.push({...entry, nextAttemptAt, revision: entry.revision + 1, updatedAt: claimedAt});
+      }
+      return claimed as readonly CodeGraphRemovedViewCleanupEntry[];
+    }),
+  );
+});
+
+const observeRemovedViewCleanupAuthority = Effect.fn('codeGraph.observeRemovedViewCleanupAuthority')(function* (
+  sql: SqlClient.SqlClient,
+  entry: CodeGraphRemovedViewCleanupEntry,
+) {
+  const removed = yield* sql.unsafe<{
+    readonly expected_snapshot_id: unknown;
+    readonly removed_at: unknown;
+  }>(
+    `SELECT
+       CASE WHEN typeof(expected_snapshot_id) = 'text'
+                  AND length(CAST(expected_snapshot_id AS BLOB)) BETWEEN 45 AND 67
+         THEN expected_snapshot_id ELSE NULL END AS expected_snapshot_id,
+       CASE WHEN typeof(removed_at) = 'text' AND length(CAST(removed_at AS BLOB)) = 24
+         THEN removed_at ELSE NULL END AS removed_at
+     FROM removed_views WHERE worktree_id = ? LIMIT 2`,
+    [entry.worktreeId],
+  );
+  if (removed.length === 0) return {state: 'stale'} as const;
+  if (
+    removed.length !== 1 ||
+    typeof removed[0]?.expected_snapshot_id !== 'string' ||
+    !CODE_GRAPH_SNAPSHOT_ID.test(removed[0].expected_snapshot_id) ||
+    typeof removed[0]?.removed_at !== 'string' ||
+    !validCanonicalTimestamp(removed[0].removed_at)
+  ) {
+    return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view authority is invalid.'));
+  }
+  if (removed[0].expected_snapshot_id !== entry.expectedSnapshotId || removed[0].removed_at !== entry.removedAt) {
+    return {state: 'stale'} as const;
+  }
+  const evidence =
+    entry.repositoryId !== undefined &&
+    entry.provenanceRecordDigest !== undefined &&
+    entry.provenanceRecordIdentity !== undefined
+      ? {
+          recordDigest: entry.provenanceRecordDigest,
+          recordIdentity: entry.provenanceRecordIdentity,
+          repositoryId: entry.repositoryId,
+        }
+      : undefined;
+  yield* validateRemovedViewSnapshotAuthority(sql, entry.expectedSnapshotId, false, evidence);
+  const active = yield* sql.unsafe<{readonly snapshot_id: unknown}>(
+    `SELECT CASE
+       WHEN typeof(snapshot_id) = 'text' AND length(CAST(snapshot_id AS BLOB)) BETWEEN 45 AND 67
+       THEN snapshot_id ELSE NULL END AS snapshot_id
+     FROM active_snapshots WHERE worktree_id = ? LIMIT 2`,
+    [entry.worktreeId],
+  );
+  const activeSnapshotId = active[0]?.snapshot_id;
+  if (
+    active.length > 1 ||
+    (activeSnapshotId !== undefined &&
+      (typeof activeSnapshotId !== 'string' || !CODE_GRAPH_SNAPSHOT_ID.test(activeSnapshotId)))
+  ) {
+    return yield* Effect.fail(new CodeGraphStoreError('Code graph active view authority is invalid.'));
+  }
+  return activeSnapshotId === undefined || activeSnapshotId === entry.expectedSnapshotId
+    ? ({matchingActivePointer: activeSnapshotId === entry.expectedSnapshotId, state: 'authorized'} as const)
+    : ({observedSnapshotId: activeSnapshotId, state: 'active-pointer-changed'} as const);
+});
+
+const removeMatchingLegacyCleanupPointer = Effect.fn('codeGraph.removeMatchingLegacyCleanupPointer')(function* (
+  sql: SqlClient.SqlClient,
+  entry: CodeGraphRemovedViewCleanupEntry,
+  matchingActivePointer: boolean,
+) {
+  if (matchingActivePointer) {
+    yield* sql`
+      DELETE FROM active_snapshots
+      WHERE worktree_id = ${entry.worktreeId} AND snapshot_id = ${entry.expectedSnapshotId}
+    `;
+    if ((yield* lastStatementChangeCount(sql)) !== 1) {
+      return yield* Effect.fail(new CodeGraphStoreError('Code graph active view pointer changed.'));
+    }
+  }
+});
+
+const authorizeRemovedViewCleanup = Effect.fn('codeGraph.authorizeRemovedViewCleanup')(function* (
+  sql: SqlClient.SqlClient,
+  entry: CodeGraphRemovedViewCleanupEntry,
+) {
+  if (!validRemovedViewCleanupEntry(entry) || entry.phase === 'complete') {
+    return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view cleanup candidate is invalid.'));
+  }
+  return yield* sql.withTransaction(
+    Effect.gen(function* () {
+      if (!(yield* codeGraphWorktreeReconciliationSchemaCompatible(sql))) {
+        return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view cleanup schema is unavailable.'));
+      }
+      const current = yield* selectRemovedViewCleanupEntry(sql, entry.worktreeId, entry.expectedSnapshotId);
+      if (current === undefined || !sameRemovedViewCleanupEntry(current, entry)) return {state: 'stale'} as const;
+      const authority = yield* observeRemovedViewCleanupAuthority(sql, entry);
+      if (authority.state === 'stale') {
+        yield* revokeRemovedViewCleanupEntry(sql, entry);
+        return authority;
+      }
+      if (authority.state !== 'authorized') return authority;
+      yield* removeMatchingLegacyCleanupPointer(sql, entry, authority.matchingActivePointer);
+      return {entry, state: 'authorized'} as const;
+    }),
+  );
+});
+
+const updateRemovedViewCleanup = Effect.fn('codeGraph.updateRemovedViewCleanup')(function* (
+  sql: SqlClient.SqlClient,
+  entry: CodeGraphRemovedViewCleanupEntry,
+  update: CodeGraphRemovedViewCleanupUpdate,
+) {
+  if (!validRemovedViewCleanupEntry(entry) || !validRemovedViewCleanupUpdate(entry, update)) {
+    return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view cleanup update is invalid.'));
+  }
+  return yield* sql.withTransaction(
+    Effect.gen(function* () {
+      if (!(yield* codeGraphWorktreeReconciliationSchemaCompatible(sql))) {
+        return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view cleanup schema is unavailable.'));
+      }
+      const current = yield* selectRemovedViewCleanupEntry(sql, entry.worktreeId, entry.expectedSnapshotId);
+      if (current === undefined || !sameRemovedViewCleanupEntry(current, entry)) return {state: 'stale'} as const;
+      const authority = yield* observeRemovedViewCleanupAuthority(sql, entry);
+      if (authority.state === 'stale') {
+        yield* revokeRemovedViewCleanupEntry(sql, entry);
+        return authority;
+      }
+      if (authority.state !== 'authorized') return authority;
+      yield* sql.unsafe(
+        `UPDATE removed_view_cleanup
+         SET phase = ?, cursor_token = ?, revision = ?, attempts = ?,
+             next_attempt_at = ?, blocked_code = ?, updated_at = ?
+         WHERE ${REMOVED_VIEW_CLEANUP_FULL_ENTRY_PREDICATE}`,
+        [
+          update.phase,
+          update.cursorToken ?? null,
+          entry.revision + 1,
+          update.attempts,
+          update.nextAttemptAt,
+          update.blockedCode ?? null,
+          update.updatedAt,
+          ...removedViewCleanupEntryCasParameters(entry),
+        ],
+      );
+      if ((yield* lastStatementChangeCount(sql)) !== 1) {
+        return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view cleanup update changed.'));
+      }
+      yield* removeMatchingLegacyCleanupPointer(sql, entry, authority.matchingActivePointer);
+      const updated = yield* selectRemovedViewCleanupEntry(sql, entry.worktreeId, entry.expectedSnapshotId);
+      if (updated === undefined) {
+        return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view cleanup update disappeared.'));
+      }
+      return {entry: updated, state: 'updated'} as const;
+    }),
+  );
+});
 
 const removeActiveView = Effect.fn('codeGraph.removeActiveView')(function* (
   sql: SqlClient.SqlClient,
   worktreeId: string,
   expectedSnapshotId: string,
   requireReconciliationSchema = false,
+  cleanupEvidence?: CodeGraphRemovedViewCleanupEvidence,
 ) {
   yield* validateViewRemovalTarget(worktreeId, expectedSnapshotId);
+  if (cleanupEvidence !== undefined && !validRemovedViewCleanupEvidence(cleanupEvidence)) {
+    return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view cleanup evidence is invalid.'));
+  }
   return yield* sql.withTransaction(
     Effect.gen(function* () {
-      if (requireReconciliationSchema && !(yield* codeGraphWorktreeReconciliationSchemaCompatible(sql))) {
-        return yield* Effect.fail(new CodeGraphStoreError('Code graph reconciliation schema is unavailable.'));
+      if (!(yield* codeGraphWorktreeReconciliationSchemaCompatible(sql))) {
+        return yield* Effect.fail(
+          new CodeGraphStoreError(
+            requireReconciliationSchema
+              ? 'Code graph reconciliation schema is unavailable.'
+              : 'Code graph removal authority schema is unavailable.',
+          ),
+        );
       }
-      const active = yield* sql<{readonly snapshot_id: string}>`
-        SELECT snapshot_id FROM active_snapshots WHERE worktree_id = ${worktreeId} LIMIT 1
-      `;
-      const removed = yield* sql<{readonly expected_snapshot_id: string}>`
-        SELECT expected_snapshot_id FROM removed_views WHERE worktree_id = ${worktreeId} LIMIT 1
-      `;
+      const active = yield* sql.unsafe<{readonly snapshot_id: unknown}>(
+        `SELECT CASE
+           WHEN typeof(snapshot_id) = 'text' AND length(CAST(snapshot_id AS BLOB)) BETWEEN 45 AND 67
+           THEN snapshot_id ELSE NULL END AS snapshot_id
+         FROM active_snapshots WHERE worktree_id = ? LIMIT 2`,
+        [worktreeId],
+      );
+      const removed = yield* sql.unsafe<{
+        readonly expected_snapshot_id: unknown;
+        readonly removed_at: unknown;
+      }>(
+        `SELECT
+           CASE WHEN typeof(expected_snapshot_id) = 'text'
+                      AND length(CAST(expected_snapshot_id AS BLOB)) BETWEEN 45 AND 67
+             THEN expected_snapshot_id ELSE NULL END AS expected_snapshot_id,
+           CASE WHEN typeof(removed_at) = 'text' AND length(CAST(removed_at AS BLOB)) = 24
+             THEN removed_at ELSE NULL END AS removed_at
+         FROM removed_views WHERE worktree_id = ? LIMIT 2`,
+        [worktreeId],
+      );
       const activeSnapshotId = active[0]?.snapshot_id;
       const removedSnapshotId = removed[0]?.expected_snapshot_id;
+      const removedAtValue = removed[0]?.removed_at;
+
+      if (
+        active.length > 1 ||
+        (activeSnapshotId !== undefined &&
+          (typeof activeSnapshotId !== 'string' || !CODE_GRAPH_SNAPSHOT_ID.test(activeSnapshotId))) ||
+        removed.length > 1 ||
+        (removedSnapshotId !== undefined &&
+          (typeof removedSnapshotId !== 'string' || !CODE_GRAPH_SNAPSHOT_ID.test(removedSnapshotId))) ||
+        (removedAtValue !== undefined &&
+          (typeof removedAtValue !== 'string' || !validCanonicalTimestamp(removedAtValue)))
+      ) {
+        return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view authority is invalid.'));
+      }
 
       if (activeSnapshotId !== undefined && activeSnapshotId !== expectedSnapshotId) {
         return {
@@ -12672,6 +15182,19 @@ const removeActiveView = Effect.fn('codeGraph.removeActiveView')(function* (
       }
       if (activeSnapshotId === undefined) {
         if (removedSnapshotId === expectedSnapshotId) {
+          if (typeof removedAtValue !== 'string') {
+            return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view authority is invalid.'));
+          }
+          yield* validateRemovedViewSnapshotAuthority(sql, expectedSnapshotId, false);
+          yield* ensureRemovedViewCleanupEpoch(
+            sql,
+            worktreeId,
+            expectedSnapshotId,
+            removedAtValue,
+            false,
+            cleanupEvidence,
+            requireReconciliationSchema,
+          );
           return {
             expectedSnapshotId,
             retiredSnapshots: 0,
@@ -12690,9 +15213,19 @@ const removeActiveView = Effect.fn('codeGraph.removeActiveView')(function* (
       }
 
       const alreadyRemoved = removedSnapshotId === expectedSnapshotId;
+      if (alreadyRemoved && typeof removedAtValue !== 'string') {
+        return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view authority is invalid.'));
+      }
+      yield* validateRemovedViewSnapshotAuthority(
+        sql,
+        expectedSnapshotId,
+        true,
+        alreadyRemoved ? undefined : cleanupEvidence,
+      );
+      const removedAt = alreadyRemoved ? removedAtValue! : new Date().toISOString();
       yield* sql`
         INSERT INTO removed_views (worktree_id, expected_snapshot_id, removed_at)
-        VALUES (${worktreeId}, ${expectedSnapshotId}, ${new Date().toISOString()})
+        VALUES (${worktreeId}, ${expectedSnapshotId}, ${removedAt})
         ON CONFLICT(worktree_id) DO UPDATE SET
           expected_snapshot_id = excluded.expected_snapshot_id,
           removed_at = excluded.removed_at
@@ -12704,19 +15237,18 @@ const removeActiveView = Effect.fn('codeGraph.removeActiveView')(function* (
       if ((yield* lastStatementChangeCount(sql)) !== 1) {
         return yield* Effect.fail(new CodeGraphStoreError('Code graph view pointer changed during removal.'));
       }
-      // Existing readers keep their rows. Their final release now participates
-      // in retirement even when this snapshot was shared by another view at
-      // removal time.
-      yield* sql`
-        UPDATE snapshot_leases
-        SET retire_when_inactive = 1
-        WHERE snapshot_id = ${expectedSnapshotId}
-      `;
-      const retiredSnapshots = yield* requireReconciliationSchema
-        ? Clock.currentTimeMillis.pipe(
-            Effect.flatMap(now => retireReadySnapshotsIfUnused(sql, [expectedSnapshotId], now)),
-          )
-        : markUnusedSnapshotsRetired(sql);
+      yield* ensureRemovedViewCleanupEpoch(
+        sql,
+        worktreeId,
+        expectedSnapshotId,
+        removedAt,
+        !alreadyRemoved,
+        cleanupEvidence,
+        requireReconciliationSchema,
+      );
+      const retiredSnapshots = yield* Clock.currentTimeMillis.pipe(
+        Effect.flatMap(now => retireReadySnapshotsIfUnused(sql, [expectedSnapshotId], now)),
+      );
       return {
         expectedSnapshotId,
         retiredSnapshots,
@@ -12747,103 +15279,35 @@ export function codeGraphExactSnapshotRetirementStatement(
   const placeholders = candidates.map(() => '?').join(', ');
   return {
     parameters: [...candidates, now],
-    text: `WITH RECURSIVE candidate_set(id) AS (
-      SELECT id FROM snapshots WHERE id IN (${placeholders})
-    ), retirement_clock(now) AS (
-      VALUES (?)
-    ), descendant(root_id, snapshot_id, blocked) AS (
-      SELECT candidate_set.id, candidate_set.id,
-        CASE WHEN observed.state <> 'ready'
-          OR EXISTS (
-            SELECT 1
-            FROM active_snapshots AS active
-            WHERE active.snapshot_id = candidate_set.id
-              AND NOT EXISTS (
-                SELECT 1
-                FROM removed_views AS removed
-                WHERE removed.worktree_id = active.worktree_id
-                  AND removed.expected_snapshot_id = active.snapshot_id
-              )
-          )
-          OR EXISTS (
-            SELECT 1
-            FROM snapshot_leases AS lease
-            WHERE lease.snapshot_id = candidate_set.id
-              AND lease.expires_at > (SELECT now FROM retirement_clock)
-          )
-        THEN 1 ELSE 0 END
-      FROM candidate_set
-      JOIN snapshots AS observed ON observed.id = candidate_set.id
-      UNION
-      SELECT descendant.root_id, child.id,
-        CASE WHEN EXISTS (
-            SELECT 1
-            FROM active_snapshots AS active
-            WHERE active.snapshot_id = child.id
-              AND NOT EXISTS (
-                SELECT 1
-                FROM removed_views AS removed
-                WHERE removed.worktree_id = active.worktree_id
-                  AND removed.expected_snapshot_id = active.snapshot_id
-              )
-          )
-          OR EXISTS (
-            SELECT 1
-            FROM snapshot_leases AS lease
-            WHERE lease.snapshot_id = child.id
-              AND lease.expires_at > (SELECT now FROM retirement_clock)
-          )
-          OR (
-            child.state <> 'retired'
-            AND (
-              child.id NOT IN (SELECT id FROM candidate_set)
-              OR child.state <> 'ready'
-            )
-          )
-        THEN 1 ELSE 0 END
-      FROM descendant
-      JOIN snapshots AS child ON child.base_snapshot_id = descendant.snapshot_id
-      WHERE descendant.blocked = 0
-    ), protected(root_id) AS (
-      SELECT DISTINCT root_id FROM descendant WHERE blocked = 1
-    )
-    UPDATE snapshots AS candidate
+    text: `UPDATE snapshots AS candidate
     SET state = 'retired'
-    WHERE candidate.id IN (SELECT id FROM candidate_set)
+    WHERE candidate.id IN (${placeholders})
       AND candidate.state = 'ready'
-      AND candidate.id NOT IN (SELECT root_id FROM protected)`,
+      AND NOT EXISTS (
+        SELECT 1
+        FROM active_snapshots AS active
+        WHERE active.snapshot_id = candidate.id
+          AND NOT EXISTS (
+            SELECT 1
+            FROM removed_views AS removed
+            WHERE removed.worktree_id = active.worktree_id
+              AND removed.expected_snapshot_id = active.snapshot_id
+          )
+      )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM snapshot_leases AS lease
+        WHERE lease.snapshot_id = candidate.id
+          AND lease.expires_at > ?
+      )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM snapshots AS child INDEXED BY snapshots_base_state_id
+        WHERE child.base_snapshot_id = candidate.id
+        LIMIT 1
+      )`,
   };
 }
-
-const markUnusedSnapshotsRetired = Effect.fn('codeGraph.markUnusedSnapshotsRetired')(function* (
-  sql: SqlClient.SqlClient,
-) {
-  const now = yield* Clock.currentTimeMillis;
-  yield* reapExpiredSnapshotLeases(sql, now);
-  yield* sql`
-    WITH RECURSIVE protected(snapshot_id) AS (
-      SELECT active.snapshot_id
-      FROM active_snapshots AS active
-      WHERE NOT EXISTS (
-        SELECT 1
-        FROM removed_views AS removed
-        WHERE removed.worktree_id = active.worktree_id
-          AND removed.expected_snapshot_id = active.snapshot_id
-      )
-      UNION
-      SELECT snapshot_id FROM snapshot_leases
-      UNION
-      SELECT snapshot.base_snapshot_id
-      FROM snapshots AS snapshot
-      JOIN protected ON protected.snapshot_id = snapshot.id
-      WHERE snapshot.base_snapshot_id IS NOT NULL
-    )
-    UPDATE snapshots
-    SET state = 'retired'
-    WHERE state = 'ready' AND id NOT IN (SELECT snapshot_id FROM protected)
-  `;
-  return yield* lastStatementChangeCount(sql);
-});
 
 interface CompactLexicalCleanupSpec {
   readonly batchRows: number;

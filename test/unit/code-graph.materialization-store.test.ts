@@ -2554,82 +2554,85 @@ describe('code graph full-build materialization store', () => {
     });
   });
 
-  it('retires and rebuilds a same-identity ready snapshot whose compact receipt is missing', async () => {
-    const fixture = await materializationFixture();
-    const original = symbol('same-id-original', 'sameIdOriginal', ['typescript:name:sameIdOriginal']);
-    const replacement = symbol('same-id-replacement', 'sameIdReplacement', ['typescript:name:sameIdReplacement']);
-    const snapshot = readySnapshot(fixture.identity, 1, 0);
-
-    await runEffect(
+  effectIt.effect('retires and rebuilds a same-identity ready snapshot whose compact receipt is missing', () =>
+    TestClock.withLive(
       Effect.gen(function* () {
-        const store = yield* CodeGraphStore;
-        yield* store.withSession(
-          fixture.databasePath,
-          Effect.gen(function* () {
-            const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
-              ...snapshot,
-              state: 'building',
-            });
-            yield* store.prepareActivation(fixture.databasePath, [fixture.file], snapshot.id, 1, ownerToken);
-            yield* store.stageActivationFacts(fixture.databasePath, [original], [], [], undefined, 0);
-            yield* store.resolveStagedReferences(fixture.databasePath);
-            yield* store.activateStaged(fixture.databasePath, fixture.identity, snapshot);
-            yield* store.promote(fixture.databasePath, fixture.identity, snapshot.id);
-          }),
-        );
-      }),
-    );
+        const fixture = yield* Effect.promise(materializationFixture);
+        const writerLockPath = join(fixture.root, 'same-identity-writer.lock');
+        const original = symbol('same-id-original', 'sameIdOriginal', ['typescript:name:sameIdOriginal']);
+        const replacement = symbol('same-id-replacement', 'sameIdReplacement', ['typescript:name:sameIdReplacement']);
+        const snapshot = {...readySnapshot(fixture.identity, 1, 0), id: testSnapshotId(101)};
 
-    const damaged = new Database(fixture.databasePath, {strict: true});
-    damaged.query('DELETE FROM lexical_storage_formats WHERE snapshot_id = ?').run(snapshot.id);
-    damaged.close(false);
+        yield* Effect.gen(function* () {
+          const store = yield* CodeGraphStore;
+          yield* store.withSession(
+            fixture.databasePath,
+            Effect.gen(function* () {
+              const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
+                ...snapshot,
+                state: 'building',
+              });
+              yield* store.prepareActivation(fixture.databasePath, [fixture.file], snapshot.id, 1, ownerToken);
+              yield* store.stageActivationFacts(fixture.databasePath, [original], [], [], undefined, 0);
+              yield* store.resolveStagedReferences(fixture.databasePath);
+              yield* store.activateStaged(fixture.databasePath, fixture.identity, snapshot);
+              yield* store.promote(fixture.databasePath, fixture.identity, snapshot.id);
+            }),
+            {writerLockPath},
+          );
+        });
 
-    const rebuilt = await runEffect(
-      Effect.gen(function* () {
-        const store = yield* CodeGraphStore;
-        const literalReady = yield* store.readySnapshotById(fixture.databasePath, snapshot.id);
-        const reusableReady = yield* store.currentLexicalReadySnapshotById(fixture.databasePath, snapshot.id);
-        return yield* store.withSession(
-          fixture.databasePath,
-          Effect.gen(function* () {
-            const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
-              ...snapshot,
-              state: 'building',
-            });
-            yield* store.prepareActivation(fixture.databasePath, [fixture.file], snapshot.id, 1, ownerToken);
-            yield* store.stageActivationFacts(fixture.databasePath, [replacement], [], [], undefined, 0);
-            yield* store.resolveStagedReferences(fixture.databasePath);
-            yield* store.activateStaged(fixture.databasePath, fixture.identity, snapshot);
-            yield* store.promote(fixture.databasePath, fixture.identity, snapshot.id);
-            return {
-              active: yield* store.readySnapshot(fixture.databasePath, fixture.identity.worktreeId),
-              current: yield* store.currentLexicalReadySnapshotById(fixture.databasePath, snapshot.id),
-              graph: yield* store.loadGraph(fixture.databasePath, snapshot.id),
-              literalReady,
-              reusableReady,
-            };
-          }),
-        );
-      }),
-    );
+        const damaged = new Database(fixture.databasePath, {strict: true});
+        damaged.query('DELETE FROM lexical_storage_formats WHERE snapshot_id = ?').run(snapshot.id);
+        damaged.close(false);
 
-    expect(rebuilt.literalReady?.id).toBe(snapshot.id);
-    expect(rebuilt.reusableReady).toBeUndefined();
-    expect(rebuilt.current?.id).toBe(snapshot.id);
-    expect(rebuilt.active?.id).toBe(snapshot.id);
-    expect(rebuilt.graph.symbols.map(entry => entry.id)).toEqual([replacement.id]);
-  });
+        const rebuilt = yield* Effect.gen(function* () {
+          const store = yield* CodeGraphStore;
+          const literalReady = yield* store.readySnapshotById(fixture.databasePath, snapshot.id);
+          const reusableReady = yield* store.currentLexicalReadySnapshotById(fixture.databasePath, snapshot.id);
+          return yield* store.withSession(
+            fixture.databasePath,
+            Effect.gen(function* () {
+              const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
+                ...snapshot,
+                state: 'building',
+              });
+              yield* store.prepareActivation(fixture.databasePath, [fixture.file], snapshot.id, 1, ownerToken);
+              yield* store.stageActivationFacts(fixture.databasePath, [replacement], [], [], undefined, 0);
+              yield* store.resolveStagedReferences(fixture.databasePath);
+              yield* store.activateStaged(fixture.databasePath, fixture.identity, snapshot);
+              yield* store.promote(fixture.databasePath, fixture.identity, snapshot.id);
+              return {
+                active: yield* store.readySnapshot(fixture.databasePath, fixture.identity.worktreeId),
+                current: yield* store.currentLexicalReadySnapshotById(fixture.databasePath, snapshot.id),
+                graph: yield* store.loadGraph(fixture.databasePath, snapshot.id),
+                literalReady,
+                reusableReady,
+              };
+            }),
+            {writerLockPath},
+          );
+        });
 
-  it('reclaims a deterministic snapshot retired at the failure-cleanup crash boundary', async () => {
-    const fixture = await materializationFixture();
-    const stale = symbol('crash-boundary-stale', 'crashBoundaryStale', ['typescript:name:crashBoundaryStale']);
-    const replacement = symbol('crash-boundary-replacement', 'crashBoundaryReplacement', [
-      'typescript:name:crashBoundaryReplacement',
-    ]);
-    const snapshot = readySnapshot(fixture.identity, 1, 0);
+        expect(rebuilt.literalReady?.id).toBe(snapshot.id);
+        expect(rebuilt.reusableReady).toBeUndefined();
+        expect(rebuilt.current?.id).toBe(snapshot.id);
+        expect(rebuilt.active?.id).toBe(snapshot.id);
+        expect(rebuilt.graph.symbols.map(entry => entry.id)).toEqual([replacement.id]);
+      }).pipe(Effect.provide(ApplicationLayer)),
+    ),
+  );
 
-    await runEffect(
-      Effect.gen(function* () {
+  effectIt.effect('reclaims a deterministic snapshot retired at the failure-cleanup crash boundary', () =>
+    Effect.gen(function* () {
+      const fixture = yield* Effect.promise(materializationFixture);
+      const stale = symbol('crash-boundary-stale', 'crashBoundaryStale', ['typescript:name:crashBoundaryStale']);
+      const replacement = symbol('crash-boundary-replacement', 'crashBoundaryReplacement', [
+        'typescript:name:crashBoundaryReplacement',
+      ]);
+      const snapshot = {...readySnapshot(fixture.identity, 1, 0), id: testSnapshotId(102)};
+
+      yield* Effect.gen(function* () {
         const store = yield* CodeGraphStore;
         yield* store.withSession(
           fixture.databasePath,
@@ -2642,73 +2645,71 @@ describe('code graph full-build materialization store', () => {
             yield* store.stageActivationFacts(fixture.databasePath, [stale], [], [], undefined, 0);
           }),
         );
-      }),
-    );
+      });
 
-    const interrupted = new Database(fixture.databasePath, {strict: true});
-    interrupted.transaction(() => {
-      const compact = interrupted
-        .query('SELECT snapshot_key FROM lexical_compact_snapshots WHERE snapshot_id = ?')
-        .get(snapshot.id) as {readonly snapshot_key: number};
-      const compactSymbol = interrupted
-        .query('SELECT symbol_key FROM lexical_compact_symbols WHERE snapshot_key = ? LIMIT 1')
-        .get(compact.snapshot_key) as {readonly symbol_key: number};
-      interrupted
-        .query(
-          `WITH RECURSIVE sequence(value) AS (
+      const interrupted = new Database(fixture.databasePath, {strict: true});
+      interrupted.transaction(() => {
+        const compact = interrupted
+          .query('SELECT snapshot_key FROM lexical_compact_snapshots WHERE snapshot_id = ?')
+          .get(snapshot.id) as {readonly snapshot_key: number};
+        const compactSymbol = interrupted
+          .query('SELECT symbol_key FROM lexical_compact_symbols WHERE snapshot_key = ? LIMIT 1')
+          .get(compact.snapshot_key) as {readonly symbol_key: number};
+        interrupted
+          .query(
+            `WITH RECURSIVE sequence(value) AS (
              SELECT 0
              UNION ALL
              SELECT value + 1 FROM sequence WHERE value < 6000
            )
            INSERT INTO lexical_compact_terms (snapshot_key, term)
            SELECT ?, 'cleanup-extra-' || printf('%05d', value) FROM sequence`,
-        )
-        .run(compact.snapshot_key);
-      interrupted
-        .query(
-          `INSERT INTO lexical_compact_postings (snapshot_key, term_key, symbol_key, weight)
+          )
+          .run(compact.snapshot_key);
+        interrupted
+          .query(
+            `INSERT INTO lexical_compact_postings (snapshot_key, term_key, symbol_key, weight)
            SELECT ?, term_key, ?, 1
            FROM lexical_compact_terms
            WHERE snapshot_key = ? AND term LIKE 'cleanup-extra-%'`,
-        )
-        .run(compact.snapshot_key, compactSymbol.symbol_key, compact.snapshot_key);
-      interrupted.query("UPDATE snapshots SET state = 'retired' WHERE id = ? AND state = 'building'").run(snapshot.id);
-      interrupted.query('DELETE FROM snapshot_build_owners WHERE snapshot_id = ?').run(snapshot.id);
-      interrupted.exec(`
+          )
+          .run(compact.snapshot_key, compactSymbol.symbol_key, compact.snapshot_key);
+        interrupted
+          .query("UPDATE snapshots SET state = 'retired' WHERE id = ? AND state = 'building'")
+          .run(snapshot.id);
+        interrupted.query('DELETE FROM snapshot_build_owners WHERE snapshot_id = ?').run(snapshot.id);
+        interrupted.exec(`
         CREATE TRIGGER reject_compact_snapshot_cascade
-        BEFORE DELETE ON snapshots
-        WHEN OLD.id = '${snapshot.id}' AND EXISTS (
-          SELECT 1
-          FROM lexical_compact_snapshots AS compact
-          JOIN lexical_compact_postings AS posting ON posting.snapshot_key = compact.snapshot_key
-          WHERE compact.snapshot_id = OLD.id
+        BEFORE DELETE ON lexical_compact_snapshots
+        WHEN OLD.snapshot_id = '${snapshot.id}' AND EXISTS (
+          SELECT 1 FROM lexical_compact_postings AS posting
+          WHERE posting.snapshot_key = OLD.snapshot_key
         )
         BEGIN
           SELECT RAISE(ABORT, 'compact children must be paged before snapshot deletion');
         END
       `);
-    })();
-    const retiredState = interrupted.query('SELECT state FROM snapshots WHERE id = ?').get(snapshot.id) as {
-      readonly state: string;
-    };
-    const staleRows = interrupted
-      .query('SELECT COUNT(*) AS count FROM symbols WHERE snapshot_id = ?')
-      .get(snapshot.id) as {readonly count: number};
-    const stalePostings = interrupted
-      .query(
-        `SELECT COUNT(*) AS count
+      })();
+      const retiredState = interrupted.query('SELECT state FROM snapshots WHERE id = ?').get(snapshot.id) as {
+        readonly state: string;
+      };
+      const staleRows = interrupted
+        .query('SELECT COUNT(*) AS count FROM symbols WHERE snapshot_id = ?')
+        .get(snapshot.id) as {readonly count: number};
+      const stalePostings = interrupted
+        .query(
+          `SELECT COUNT(*) AS count
          FROM lexical_compact_postings AS posting
          JOIN lexical_compact_snapshots AS compact ON compact.snapshot_key = posting.snapshot_key
          WHERE compact.snapshot_id = ?`,
-      )
-      .get(snapshot.id) as {readonly count: number};
-    interrupted.close(false);
-    expect(retiredState.state).toBe('retired');
-    expect(staleRows.count).toBe(1);
-    expect(stalePostings.count).toBeGreaterThan(5_000);
+        )
+        .get(snapshot.id) as {readonly count: number};
+      interrupted.close(false);
+      expect(retiredState.state).toBe('retired');
+      expect(staleRows.count).toBe(1);
+      expect(stalePostings.count).toBeGreaterThan(5_000);
 
-    const graph = await runEffect(
-      Effect.gen(function* () {
+      const graph = yield* Effect.gen(function* () {
         const store = yield* CodeGraphStore;
         return yield* store.withSession(
           fixture.databasePath,
@@ -2724,21 +2725,21 @@ describe('code graph full-build materialization store', () => {
             return yield* store.loadGraph(fixture.databasePath, snapshot.id);
           }),
         );
-      }),
-    );
+      });
 
-    expect(graph.snapshot.state).toBe('ready');
-    expect(graph.symbols.map(entry => entry.id)).toEqual([replacement.id]);
-    expect(graph.symbols.some(entry => entry.id === stale.id)).toBe(false);
-    const storage = new Database(fixture.databasePath, {readonly: true, strict: true});
-    const freelist = storage.query('PRAGMA freelist_count').get() as {readonly freelist_count: number};
-    const pages = storage.query('PRAGMA page_count').get() as {readonly page_count: number};
-    storage.close(false);
-    // Logical reclamation stays bounded; physical file compaction remains an
-    // explicit, disk-preflighted `graph compact` operation.
-    expect(freelist.freelist_count).toBeGreaterThan(0);
-    expect(pages.page_count).toBeGreaterThan(freelist.freelist_count);
-  });
+      expect(graph.snapshot.state).toBe('ready');
+      expect(graph.symbols.map(entry => entry.id)).toEqual([replacement.id]);
+      expect(graph.symbols.some(entry => entry.id === stale.id)).toBe(false);
+      const storage = new Database(fixture.databasePath, {readonly: true, strict: true});
+      const freelist = storage.query('PRAGMA freelist_count').get() as {readonly freelist_count: number};
+      const pages = storage.query('PRAGMA page_count').get() as {readonly page_count: number};
+      storage.close(false);
+      // Logical reclamation stays bounded; physical file compaction remains an
+      // explicit, disk-preflighted `graph compact` operation.
+      expect(freelist.freelist_count).toBeGreaterThan(0);
+      expect(pages.page_count).toBeGreaterThan(freelist.freelist_count);
+    }).pipe(Effect.provide(ApplicationLayer)),
+  );
 
   it('keeps interrupted logical plans compatible across grouped transactions and resumes deterministically', async () => {
     const interruptedFixture = await materializationFixture();
@@ -4066,15 +4067,15 @@ describe('code graph full-build materialization store', () => {
     }).pipe(Effect.provide(ApplicationLayer)),
   );
 
-  it('defers retired snapshot deletion until bounded maintenance cleanup', async () => {
-    const fixture = await materializationFixture();
-    const firstSymbol = symbol('retired-symbol', 'retiredSymbol', ['typescript:name:retiredSymbol']);
-    const currentSymbol = symbol('current-symbol', 'currentSymbol', ['typescript:name:currentSymbol']);
-    const firstSnapshot = {...readySnapshot(fixture.identity, 1, 0), id: 'retired-snapshot'};
-    const currentSnapshot = {...readySnapshot(fixture.identity, 1, 0), id: 'current-snapshot'};
+  effectIt.effect('defers retired snapshot deletion until bounded maintenance cleanup', () =>
+    Effect.gen(function* () {
+      const fixture = yield* Effect.promise(materializationFixture);
+      const firstSymbol = symbol('retired-symbol', 'retiredSymbol', ['typescript:name:retiredSymbol']);
+      const currentSymbol = symbol('current-symbol', 'currentSymbol', ['typescript:name:currentSymbol']);
+      const firstSnapshot = {...readySnapshot(fixture.identity, 1, 0), id: testSnapshotId(103)};
+      const currentSnapshot = {...readySnapshot(fixture.identity, 1, 0), id: testSnapshotId(104)};
 
-    await runEffect(
-      Effect.gen(function* () {
+      yield* Effect.gen(function* () {
         const store = yield* CodeGraphStore;
         yield* store.withSession(
           fixture.databasePath,
@@ -4089,48 +4090,46 @@ describe('code graph full-build materialization store', () => {
             yield* store.promote(fixture.databasePath, fixture.identity, currentSnapshot.id);
           }),
         );
-      }),
-    );
+      });
 
-    const before = new Database(fixture.databasePath, {readonly: true, strict: true});
-    const retiredBefore = before.query('SELECT state FROM snapshots WHERE id = ?').get(firstSnapshot.id) as {
-      readonly state: string;
-    };
-    const retiredSymbolsBefore = before
-      .query('SELECT COUNT(*) AS count FROM symbols WHERE snapshot_id = ?')
-      .get(firstSnapshot.id) as {readonly count: number};
-    const retiredTermsBefore = readLexicalTerms(before, firstSnapshot.id);
-    before.close(false);
-    expect(retiredBefore.state).toBe('retired');
-    expect(retiredSymbolsBefore.count).toBe(1);
-    expect(retiredTermsBefore.length).toBeGreaterThan(0);
+      const before = new Database(fixture.databasePath, {readonly: true, strict: true});
+      const retiredBefore = before.query('SELECT state FROM snapshots WHERE id = ?').get(firstSnapshot.id) as {
+        readonly state: string;
+      };
+      const retiredSymbolsBefore = before
+        .query('SELECT COUNT(*) AS count FROM symbols WHERE snapshot_id = ?')
+        .get(firstSnapshot.id) as {readonly count: number};
+      const retiredTermsBefore = readLexicalTerms(before, firstSnapshot.id);
+      before.close(false);
+      expect(retiredBefore.state).toBe('retired');
+      expect(retiredSymbolsBefore.count).toBe(1);
+      expect(retiredTermsBefore.length).toBeGreaterThan(0);
 
-    await runEffect(
-      Effect.gen(function* () {
+      yield* Effect.gen(function* () {
         const store = yield* CodeGraphStore;
         yield* store.pruneRetiredSnapshots(fixture.databasePath);
-      }),
-    );
+      });
 
-    const after = new Database(fixture.databasePath, {readonly: true, strict: true});
-    const retiredAfter = after.query('SELECT state FROM snapshots WHERE id = ?').get(firstSnapshot.id);
-    const currentAfter = after.query('SELECT state FROM snapshots WHERE id = ?').get(currentSnapshot.id) as {
-      readonly state: string;
-    };
-    const activeAfter = after
-      .query('SELECT snapshot_id FROM active_snapshots WHERE worktree_id = ?')
-      .get(fixture.identity.worktreeId) as {readonly snapshot_id: string};
-    const retiredTermsAfter = readLexicalTerms(after, firstSnapshot.id);
-    const currentTermsAfter = readLexicalTerms(after, currentSnapshot.id);
-    const foreignKeyViolations = after.query('PRAGMA foreign_key_check').all();
-    after.close(false);
-    expect(retiredAfter).toBeNull();
-    expect(currentAfter.state).toBe('ready');
-    expect(activeAfter.snapshot_id).toBe(currentSnapshot.id);
-    expect(retiredTermsAfter).toEqual([]);
-    expect(currentTermsAfter.length).toBeGreaterThan(0);
-    expect(foreignKeyViolations).toEqual([]);
-  });
+      const after = new Database(fixture.databasePath, {readonly: true, strict: true});
+      const retiredAfter = after.query('SELECT state FROM snapshots WHERE id = ?').get(firstSnapshot.id);
+      const currentAfter = after.query('SELECT state FROM snapshots WHERE id = ?').get(currentSnapshot.id) as {
+        readonly state: string;
+      };
+      const activeAfter = after
+        .query('SELECT snapshot_id FROM active_snapshots WHERE worktree_id = ?')
+        .get(fixture.identity.worktreeId) as {readonly snapshot_id: string};
+      const retiredTermsAfter = readLexicalTerms(after, firstSnapshot.id);
+      const currentTermsAfter = readLexicalTerms(after, currentSnapshot.id);
+      const foreignKeyViolations = after.query('PRAGMA foreign_key_check').all();
+      after.close(false);
+      expect(retiredAfter).toBeNull();
+      expect(currentAfter.state).toBe('ready');
+      expect(activeAfter.snapshot_id).toBe(currentSnapshot.id);
+      expect(retiredTermsAfter).toEqual([]);
+      expect(currentTermsAfter.length).toBeGreaterThan(0);
+      expect(foreignKeyViolations).toEqual([]);
+    }).pipe(Effect.provide(ApplicationLayer)),
+  );
 
   effectIt.effect('guards each persistent inventory transaction and resumes an exact 2,500-row prefix', () =>
     Effect.gen(function* () {
@@ -4384,7 +4383,7 @@ describe('code graph full-build materialization store', () => {
       const snapshot: CodeGraphSnapshot = {
         ...readySnapshot(fixture.identity, 0, 0),
         fileCount: 0,
-        id: 'capacity-protected-ready-promotion',
+        id: testSnapshotId(105),
       };
       const leaseCount = 512;
       const store = yield* CodeGraphStore;
@@ -4399,7 +4398,7 @@ describe('code graph full-build materialization store', () => {
           yield* store.resolveStagedReferences(fixture.databasePath);
           yield* store.activateStaged(fixture.databasePath, fixture.identity, snapshot);
           const sql = yield* SqlClient.SqlClient;
-          const unrelatedSnapshotId = 'capacity-unrelated-ready-history';
+          const unrelatedSnapshotId = testSnapshotId(106);
           yield* sql`
             INSERT INTO snapshots (
               id, repository_id, worktree_id, commit_id, graph_content_id, base_snapshot_id, extractor_set,
@@ -4496,23 +4495,23 @@ describe('code graph full-build materialization store', () => {
       expect(result.pause).toHaveLength(1);
       expect(result.pause[0]).toMatchObject({
         operation: 'promote ready code graph snapshot',
-        rowCount: leaseCount + 3,
+        rowCount: 5,
       });
-      expect(result.pause[0]!.finalFactBytes).toBeGreaterThan(leaseCount * snapshot.id.length);
+      expect(result.pause[0]!.finalFactBytes).toBeLessThan(leaseCount * snapshot.id.length);
       expect(result.afterPause).toEqual({active: 0, flags: 0, state: 'ready'});
       expect(result.resumed).toHaveLength(2);
       expect(result.resumed[0]).toMatchObject({
         operation: 'promote ready code graph snapshot',
-        rowCount: leaseCount + 3,
+        rowCount: 5,
       });
       expect(result.resumed[1]).toMatchObject({
         operation: 'promote ready code graph snapshot',
-        rowCount: leaseCount + 4,
+        rowCount: 5,
       });
       expect(result.resumed[1]!.finalFactBytes).toBeGreaterThan(result.resumed[0]!.finalFactBytes);
       expect(result.afterResume).toEqual({
         active: 1,
-        flags: leaseCount + 1,
+        flags: 1,
         state: 'ready',
         unrelatedLeases: leaseCount,
         unrelatedState: 'ready',
@@ -4800,95 +4799,99 @@ describe('code graph full-build materialization store', () => {
       }).pipe(Effect.provide(ApplicationLayer)),
   );
 
-  it.skipIf(process.platform === 'win32')(
+  effectIt.effect.skipIf(process.platform === 'win32')(
     'survives SIGKILL after a committed activation chunk, repairs the abandoned build, and retries',
-    async () => {
-      const fixture = await materializationFixture();
-      const child = Bun.spawn({
-        cmd: [
-          process.execPath,
-          'run',
-          join(process.cwd(), 'test/helpers/code-graph-activation-kill-child.ts'),
-          fixture.databasePath,
-        ],
-        stderr: 'pipe',
-        stdout: 'pipe',
-      });
-
-      let marker: {readonly event?: string; readonly rows?: number};
-      try {
-        marker = await readJsonLine(child.stdout as ReadableStream<Uint8Array>, 30_000);
-      } catch (error) {
-        child.kill('SIGKILL');
-        const stderr = await new Response(child.stderr).text();
-        throw new Error(`Activation kill child failed before its committed-chunk marker: ${stderr}`, {cause: error});
-      }
-      expect(marker).toEqual({event: 'activation-chunk-committed', rows: 5_000});
-
-      child.kill('SIGKILL');
-      await child.exited;
-
-      const interruptedDatabase = new Database(fixture.databasePath, {readonly: true, strict: true});
-      const interruptedRows = interruptedDatabase
-        .query('SELECT COUNT(*) AS count FROM symbols WHERE snapshot_id = ?')
-        .get('kill-snapshot-5100') as {readonly count: number};
-      const interruptedState = interruptedDatabase
-        .query('SELECT state FROM snapshots WHERE id = ?')
-        .get('kill-snapshot-5100') as {readonly state: string};
-      interruptedDatabase.close(false);
-      expect(interruptedRows.count).toBe(5_000);
-      expect(interruptedState.state).toBe('building');
-
-      const replacementSymbols = Array.from({length: 5_100}, (_, index) => {
-        const id = `replacement-${String(index).padStart(5, '0')}`;
-        return symbol(id, id, [`typescript:name:${id}`]);
-      });
-      const originalSnapshot = {...readySnapshot(fixture.identity, 1, 0), id: 'kill-snapshot-1'};
-      const interruptedSnapshot = {
-        ...readySnapshot(fixture.identity, replacementSymbols.length, 0),
-        id: `kill-snapshot-${replacementSymbols.length}`,
-      };
-      const recovered = await runEffect(
+    () =>
+      TestClock.withLive(
         Effect.gen(function* () {
-          const store = yield* CodeGraphStore;
-          const activeBeforeRepair = yield* store.readySnapshot(fixture.databasePath, fixture.identity.worktreeId);
-          const graphBeforeRepair = activeBeforeRepair
-            ? yield* store.loadGraph(fixture.databasePath, activeBeforeRepair.id)
-            : undefined;
-          const healthBeforeRepair = yield* store.diagnose(fixture.databasePath);
-          const repaired = yield* store.repair(fixture.databasePath);
+          const fixture = yield* Effect.promise(materializationFixture);
+          const child = Bun.spawn({
+            cmd: [
+              process.execPath,
+              'run',
+              join(process.cwd(), 'test/helpers/code-graph-activation-kill-child.ts'),
+              fixture.databasePath,
+            ],
+            stderr: 'pipe',
+            stdout: 'pipe',
+          });
 
-          yield* store.withSession(
-            fixture.databasePath,
-            Effect.gen(function* () {
-              yield* store.prepareActivation(fixture.databasePath, [fixture.file]);
-              yield* store.stageActivationFacts(fixture.databasePath, replacementSymbols, []);
-              yield* store.activateStaged(fixture.databasePath, fixture.identity, interruptedSnapshot);
-              yield* store.promote(fixture.databasePath, fixture.identity, interruptedSnapshot.id);
-            }),
-          );
-          const activeAfterRetry = yield* store.readySnapshot(fixture.databasePath, fixture.identity.worktreeId);
-          const graphAfterRetry = activeAfterRetry
-            ? yield* store.loadGraph(fixture.databasePath, activeAfterRetry.id)
-            : undefined;
-          return {
-            activeAfterRetry,
-            activeBeforeRepair,
-            graphAfterRetry,
-            graphBeforeRepair,
-            healthBeforeRepair,
-            repaired,
+          const marker = yield* Effect.promise(async () => {
+            try {
+              return await readJsonLine(child.stdout as ReadableStream<Uint8Array>, 30_000);
+            } catch (error) {
+              child.kill('SIGKILL');
+              const stderr = await new Response(child.stderr).text();
+              throw new Error(`Activation kill child failed before its committed-chunk marker: ${stderr}`, {
+                cause: error,
+              });
+            }
+          });
+          expect(marker).toEqual({event: 'activation-chunk-committed', rows: 5_000});
+
+          child.kill('SIGKILL');
+          yield* Effect.promise(() => child.exited);
+
+          const interruptedDatabase = new Database(fixture.databasePath, {readonly: true, strict: true});
+          const interruptedRows = interruptedDatabase
+            .query('SELECT COUNT(*) AS count FROM symbols WHERE snapshot_id = ?')
+            .get(testSnapshotId(5_100)) as {readonly count: number};
+          const interruptedState = interruptedDatabase
+            .query('SELECT state FROM snapshots WHERE id = ?')
+            .get(testSnapshotId(5_100)) as {readonly state: string};
+          interruptedDatabase.close(false);
+          expect(interruptedRows.count).toBe(5_000);
+          expect(interruptedState.state).toBe('building');
+
+          const replacementSymbols = Array.from({length: 5_100}, (_, index) => {
+            const id = `replacement-${String(index).padStart(5, '0')}`;
+            return symbol(id, id, [`typescript:name:${id}`]);
+          });
+          const originalSnapshot = {...readySnapshot(fixture.identity, 1, 0), id: testSnapshotId(1)};
+          const interruptedSnapshot = {
+            ...readySnapshot(fixture.identity, replacementSymbols.length, 0),
+            id: testSnapshotId(replacementSymbols.length),
           };
-        }),
-      );
+          const recovered = yield* Effect.gen(function* () {
+            const store = yield* CodeGraphStore;
+            const activeBeforeRepair = yield* store.readySnapshot(fixture.databasePath, fixture.identity.worktreeId);
+            const graphBeforeRepair = activeBeforeRepair
+              ? yield* store.loadGraph(fixture.databasePath, activeBeforeRepair.id)
+              : undefined;
+            const healthBeforeRepair = yield* store.diagnose(fixture.databasePath);
+            const repaired = yield* store.repair(fixture.databasePath);
 
-      expect(recovered.activeBeforeRepair?.id).toBe(originalSnapshot.id);
-      expect(recovered.graphBeforeRepair?.symbols.map(entry => entry.id)).toEqual(['original']);
-      expect(recovered.healthBeforeRepair?.buildingSnapshots).toBe(1);
-      expect(recovered.repaired?.removedSnapshots).toBe(1);
-      expect(recovered.activeAfterRetry?.id).toBe(interruptedSnapshot.id);
-      expect(recovered.graphAfterRetry?.symbols).toHaveLength(replacementSymbols.length);
-    },
+            yield* store.withSession(
+              fixture.databasePath,
+              Effect.gen(function* () {
+                yield* store.prepareActivation(fixture.databasePath, [fixture.file]);
+                yield* store.stageActivationFacts(fixture.databasePath, replacementSymbols, []);
+                yield* store.activateStaged(fixture.databasePath, fixture.identity, interruptedSnapshot);
+                yield* store.promote(fixture.databasePath, fixture.identity, interruptedSnapshot.id);
+              }),
+            );
+            const activeAfterRetry = yield* store.readySnapshot(fixture.databasePath, fixture.identity.worktreeId);
+            const graphAfterRetry = activeAfterRetry
+              ? yield* store.loadGraph(fixture.databasePath, activeAfterRetry.id)
+              : undefined;
+            return {
+              activeAfterRetry,
+              activeBeforeRepair,
+              graphAfterRetry,
+              graphBeforeRepair,
+              healthBeforeRepair,
+              repaired,
+            };
+          });
+
+          expect(recovered.activeBeforeRepair?.id).toBe(originalSnapshot.id);
+          expect(recovered.graphBeforeRepair?.symbols.map(entry => entry.id)).toEqual(['original']);
+          expect(recovered.healthBeforeRepair?.buildingSnapshots).toBe(1);
+          expect(recovered.repaired?.removedSnapshots).toBe(1);
+          expect(recovered.activeAfterRetry?.id).toBe(interruptedSnapshot.id);
+          expect(recovered.graphAfterRetry?.symbols).toHaveLength(replacementSymbols.length);
+        }).pipe(Effect.provide(ApplicationLayer)),
+      ),
     60_000,
   );
 });
@@ -5268,4 +5271,8 @@ function readySnapshot(identity: RepositoryIdentity, symbolCount: number, edgeCo
     symbolCount,
     worktreeId: identity.worktreeId,
   };
+}
+
+function testSnapshotId(value: number): string {
+  return `cgsn_${'0'.repeat(40)}-full-${value.toString(16).padStart(16, '0')}`;
 }
