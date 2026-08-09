@@ -95,11 +95,37 @@ describe('code graph view removal core', () => {
           [{snapshotId: snapshotId('current'), worktreeId: fixture.worktrees[0]!}],
         );
         const store = yield* CodeGraphStore;
-        const staleActive = yield* store.removeView(fixture.databasePath, fixture.worktrees[0]!, snapshotId('other'));
-        const removed = yield* store.removeView(fixture.databasePath, fixture.worktrees[0]!, snapshotId('current'));
-        const retry = yield* store.removeView(fixture.databasePath, fixture.worktrees[0]!, snapshotId('current'));
-        const staleRemoved = yield* store.removeView(fixture.databasePath, fixture.worktrees[0]!, snapshotId('other'));
-        const missing = yield* store.removeView(fixture.databasePath, fixture.worktrees[1]!, snapshotId('current'));
+        const retryOptions = {waitTimeoutMilliseconds: 5_000} as const;
+        const staleActive = yield* store.removeView(
+          fixture.databasePath,
+          fixture.worktrees[0]!,
+          snapshotId('other'),
+          retryOptions,
+        );
+        const removed = yield* store.removeView(
+          fixture.databasePath,
+          fixture.worktrees[0]!,
+          snapshotId('current'),
+          retryOptions,
+        );
+        const retry = yield* store.removeView(
+          fixture.databasePath,
+          fixture.worktrees[0]!,
+          snapshotId('current'),
+          retryOptions,
+        );
+        const staleRemoved = yield* store.removeView(
+          fixture.databasePath,
+          fixture.worktrees[0]!,
+          snapshotId('other'),
+          retryOptions,
+        );
+        const missing = yield* store.removeView(
+          fixture.databasePath,
+          fixture.worktrees[1]!,
+          snapshotId('current'),
+          retryOptions,
+        );
         const observed = {missing, removed, retry, staleActive, staleRemoved};
 
         expect(observed.staleActive).toEqual({

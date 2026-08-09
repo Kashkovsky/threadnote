@@ -7,8 +7,10 @@ export default defineConfig({
     // Dedicated parser-pool and heavy-tail tests exercise parallel extraction.
     env: {THREADNOTE_CODE_GRAPH_PARSER_WORKERS: '1'},
     environment: 'node',
-    // Bound local parallelism so shared-machine dogfood hosts with long graph builds stay stable.
-    ...(process.env.CI ? {} : {maxWorkers: 2}),
+    // Bound parallelism so shared-machine dogfood hosts do not overcommit parser,
+    // SQLite, and child-process work. Instrumented CI coverage is serialized because
+    // even two workers can push long lifecycle fixtures past their 30-second contract.
+    maxWorkers: process.env.CI ? 1 : 2,
     hookTimeout: 30_000,
     include: ['test/**/*.test.ts'],
     testTimeout: 30_000,
