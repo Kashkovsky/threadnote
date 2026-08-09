@@ -1,0 +1,264 @@
+import * as SqliteClient from '@effect/sql-sqlite-bun/SqliteClient';
+import {Context, Effect, Option, Path} from 'effect';
+import * as SqlClient from 'effect/unstable/sql/SqlClient';
+import type {
+  CodeGraphDatabaseSessionOptions,
+  CodeGraphSqliteWriterSettings,
+  CodeGraphSqliteWriterTuning,
+} from './store_shape.js';
+import {CODE_GRAPH_SCHEMA_VERSION, CodeGraphStoreError} from './types.js';
+
+export interface CodeGraphDatabaseSessionShape extends CodeGraphDatabaseSessionOptions {
+  readonly databasePath: string;
+  readonly detachedCleanupRequest: {
+    completedBuild: boolean;
+    completedSnapshotId: string | undefined;
+    routinePhysical: boolean;
+  };
+  schemaInitialized: boolean;
+  readonly sql: SqlClient.SqlClient;
+}
+
+export class CodeGraphDatabaseSession extends Context.Service<
+  CodeGraphDatabaseSession,
+  CodeGraphDatabaseSessionShape
+>()('threadnote/codeGraph/CodeGraphDatabaseSession') {}
+
+export function useDatabase<A, E, R>(
+  databasePath: string,
+  effect: Effect.Effect<A, E, R | SqlClient.SqlClient>,
+): Effect.Effect<A, E, Exclude<R, SqlClient.SqlClient>> {
+  return Effect.serviceOption(CodeGraphDatabaseSession).pipe(
+    Effect.flatMap(session =>
+      Option.isSome(session) && session.value.databasePath === databasePath
+        ? effect.pipe(Effect.provideService(SqlClient.SqlClient, session.value.sql))
+        : useDatabaseDirect(databasePath, effect),
+    ),
+  ) as Effect.Effect<A, E, Exclude<R, SqlClient.SqlClient>>;
+}
+
+export function useReadOnlyDatabase<A, E, R>(
+  databasePath: string,
+  effect: Effect.Effect<A, E, R | SqlClient.SqlClient>,
+): Effect.Effect<A, E, Exclude<R, SqlClient.SqlClient>> {
+  return Effect.serviceOption(CodeGraphDatabaseSession).pipe(
+    Effect.flatMap(session =>
+      Option.isSome(session) && session.value.databasePath === databasePath
+        ? effect.pipe(Effect.provideService(SqlClient.SqlClient, session.value.sql))
+        : useDatabaseDirect(databasePath, effect, true),
+    ),
+  ) as Effect.Effect<A, E, Exclude<R, SqlClient.SqlClient>>;
+}
+
+export function useExistingDatabase<A, E, R>(
+  databasePath: string,
+  effect: Effect.Effect<A, E, R | SqlClient.SqlClient>,
+): Effect.Effect<A, E, Exclude<R, SqlClient.SqlClient>> {
+  return Effect.scoped(
+    effect.pipe(
+      Effect.provide(
+        SqliteClient.layer({
+          create: false,
+          disableWAL: true,
+          filename: databasePath,
+          readonly: false,
+          readwrite: true,
+        }),
+      ),
+    ),
+  ) as Effect.Effect<A, E, Exclude<R, SqlClient.SqlClient>>;
+}
+
+export function useDatabaseDirect<A, E, R>(
+  databasePath: string,
+  effect: Effect.Effect<A, E, R | SqlClient.SqlClient>,
+  readOnly = false,
+): Effect.Effect<A, E, Exclude<R, SqlClient.SqlClient>> {
+  const layer = readOnly
+    ? SqliteClient.layer({
+        create: false,
+        disableWAL: true,
+        filename: databasePath,
+        readonly: true,
+        readwrite: false,
+      })
+    : SqliteClient.layer({disableWAL: true, filename: databasePath});
+  return Effect.scoped(effect.pipe(Effect.provide(layer))) as Effect.Effect<A, E, Exclude<R, SqlClient.SqlClient>>;
+}
+
+export const configureConnection = Effect.fn('codeGraph.configureConnection')(function* (sql: SqlClient.SqlClient) {
+  yield* sql.unsafe('PRAGMA foreign_keys = ON');
+  yield* sql.unsafe('PRAGMA busy_timeout = 5000');
+});
+
+export const configureReadConnection = Effect.fn('codeGraph.configureReadConnection')(function* (
+  sql: SqlClient.SqlClient,
+) {
+  yield* sql.unsafe('PRAGMA busy_timeout = 5000');
+  yield* sql.unsafe('PRAGMA query_only = ON');
+});
+
+export const CODE_GRAPH_WRITER_MAIN_CACHE_KIB = 64 * 1_024;
+const CODE_GRAPH_SQLITE_WRITER_CACHE_KIB_MAXIMUM = 4 * 1_024 * 1_024;
+const CODE_GRAPH_SQLITE_WRITER_MMAP_BYTES_MAXIMUM = 64 * 1_024 * 1_024 * 1_024;
+const CODE_GRAPH_SQLITE_WRITER_WAL_CHECKPOINT_PAGES_MAXIMUM = 1_000_000;
+
+export const configureSqliteWriterConnection = Effect.fn('codeGraph.configureSqliteWriterConnection')(function* (
+  sql: SqlClient.SqlClient,
+  tuning: CodeGraphSqliteWriterTuning,
+  phase: CodeGraphSqliteWriterSettings['phase'],
+  observe?: (settings: CodeGraphSqliteWriterSettings) => Effect.Effect<void, never>,
+) {
+  if (tuning.mainCacheKiB !== undefined) {
+    const value = sqlitePragmaInteger(
+      tuning.mainCacheKiB,
+      'SQLite writer cache KiB',
+      1,
+      CODE_GRAPH_SQLITE_WRITER_CACHE_KIB_MAXIMUM,
+    );
+    yield* sql.unsafe(`PRAGMA main.cache_size = -${value}`);
+  }
+  if (tuning.mmapSizeBytes !== undefined) {
+    const value = sqlitePragmaInteger(
+      tuning.mmapSizeBytes,
+      'SQLite writer mmap bytes',
+      0,
+      CODE_GRAPH_SQLITE_WRITER_MMAP_BYTES_MAXIMUM,
+    );
+    yield* sql.unsafe(`PRAGMA main.mmap_size = ${value}`);
+  }
+  if (tuning.walAutoCheckpointPages !== undefined) {
+    const value = sqlitePragmaInteger(
+      tuning.walAutoCheckpointPages,
+      'SQLite writer WAL auto-checkpoint pages',
+      0,
+      CODE_GRAPH_SQLITE_WRITER_WAL_CHECKPOINT_PAGES_MAXIMUM,
+    );
+    yield* sql.unsafe(`PRAGMA wal_autocheckpoint = ${value}`);
+  }
+  yield* reportSqliteWriterSettings(sql, phase, observe);
+});
+
+export const configureReconstructibleBuildDurability = Effect.fn('codeGraph.configureReconstructibleBuildDurability')(
+  function* (sql: SqlClient.SqlClient) {
+    const session = yield* Effect.serviceOption(CodeGraphDatabaseSession);
+    if (
+      Option.isNone(session) ||
+      session.value.sql !== sql ||
+      session.value.sqliteWriterTuning?.reconstructibleBuildSynchronous !== 'normal'
+    ) {
+      return;
+    }
+    // Only unpublished full-build rows use NORMAL. They are ignored by readers,
+    // fingerprinted by batch, and can be resumed or reconstructed after a crash.
+    yield* sql.unsafe('PRAGMA synchronous = NORMAL');
+    yield* reportSqliteWriterSettings(sql, 'building', session.value.onSqliteWriterConfigured);
+  },
+);
+
+export const configurePublicationDurability = Effect.fn('codeGraph.configurePublicationDurability')(function* (
+  sql: SqlClient.SqlClient,
+) {
+  const session = yield* Effect.serviceOption(CodeGraphDatabaseSession);
+  if (
+    Option.isNone(session) ||
+    session.value.sql !== sql ||
+    session.value.sqliteWriterTuning?.reconstructibleBuildSynchronous !== 'normal'
+  ) {
+    return;
+  }
+  // The ready-state CAS is the publication boundary. FULL makes that commit
+  // sync the WAL containing every earlier NORMAL full-build transaction before
+  // readers can observe the snapshot as ready.
+  yield* sql.unsafe('PRAGMA synchronous = FULL');
+  yield* reportSqliteWriterSettings(sql, 'publication', session.value.onSqliteWriterConfigured);
+});
+
+const reportSqliteWriterSettings = Effect.fn('codeGraph.reportSqliteWriterSettings')(function* (
+  sql: SqlClient.SqlClient,
+  phase: CodeGraphSqliteWriterSettings['phase'],
+  observe?: (settings: CodeGraphSqliteWriterSettings) => Effect.Effect<void, never>,
+) {
+  if (!observe) return;
+  const [cache, journal, mmap, synchronous, wal] = yield* Effect.all(
+    [
+      sql.unsafe<{readonly cache_size: number}>('PRAGMA main.cache_size'),
+      sql.unsafe<{readonly journal_mode: string}>('PRAGMA main.journal_mode'),
+      sql.unsafe<{readonly mmap_size: number}>('PRAGMA main.mmap_size'),
+      sql.unsafe<{readonly synchronous: number}>('PRAGMA main.synchronous'),
+      sql.unsafe<{readonly wal_autocheckpoint: number}>('PRAGMA wal_autocheckpoint'),
+    ] as const,
+    {concurrency: 1},
+  );
+  yield* observe({
+    cacheSizePragma: Number(cache[0]?.cache_size ?? 0),
+    journalMode: String(journal[0]?.journal_mode ?? 'unknown'),
+    mmapSizeBytes: Number(mmap[0]?.mmap_size ?? 0),
+    phase,
+    synchronous: Number(synchronous[0]?.synchronous ?? -1),
+    walAutoCheckpointPages: Number(wal[0]?.wal_autocheckpoint ?? 0),
+  });
+});
+
+function sqlitePragmaInteger(value: number, label: string, minimum: number, maximum: number): number {
+  if (!Number.isSafeInteger(value) || value < minimum || value > maximum) {
+    throw new CodeGraphStoreError(`${label} must be an integer from ${minimum} to ${maximum}.`);
+  }
+  return value;
+}
+
+export const CODE_GRAPH_SQL_WRITER_LOCK_OPTIONS = {
+  retryIntervalMilliseconds: 25,
+  staleAfterMilliseconds: 120_000,
+  waitTimeoutMilliseconds: Number.POSITIVE_INFINITY,
+} as const;
+
+export const CODE_GRAPH_DETACHED_CLEANUP_LOCK_OPTIONS = {
+  ...CODE_GRAPH_SQL_WRITER_LOCK_OPTIONS,
+  waitTimeoutMilliseconds: 0,
+} as const;
+
+export const CODE_GRAPH_ABANDONED_BUILD_LOCK_OPTIONS = {
+  ...CODE_GRAPH_DETACHED_CLEANUP_LOCK_OPTIONS,
+  recoverReusedProcessIdImmediately: true,
+} as const;
+
+export const CODE_GRAPH_ABANDONED_BUILD_CANDIDATE_LIMIT = 64;
+export const CODE_GRAPH_ABANDONED_BUILD_CURSOR_KEY = 'routine_abandoned_build_owner_cursor';
+
+export const CODE_GRAPH_CLEANUP_YIELD_MILLISECONDS = CODE_GRAPH_SQL_WRITER_LOCK_OPTIONS.retryIntervalMilliseconds * 2;
+/** Same-process opportunistic cleanup yields before a foreground zero-wait action reports external contention. */
+export const CODE_GRAPH_INTERNAL_CLEANUP_FOREGROUND_WAIT_MILLISECONDS = 250;
+
+export function normalizedWriterGateWaitTimeout(waitTimeoutMilliseconds: number | undefined): number {
+  if (waitTimeoutMilliseconds === undefined || waitTimeoutMilliseconds === Number.POSITIVE_INFINITY) {
+    return Number.POSITIVE_INFINITY;
+  }
+  if (!Number.isFinite(waitTimeoutMilliseconds)) return 0;
+  return Math.max(0, Math.floor(waitTimeoutMilliseconds));
+}
+
+export function inferredCodeGraphWriterLockPath(path: Path.Path, databasePath: string): string | undefined {
+  if (path.basename(databasePath) !== `graph-v${CODE_GRAPH_SCHEMA_VERSION}.sqlite`) return undefined;
+  const repositoryRoot = path.dirname(databasePath);
+  const checkoutId = path.basename(repositoryRoot);
+  const repositoriesRoot = path.dirname(repositoryRoot);
+  const codeGraphRoot = path.dirname(repositoriesRoot);
+  const indexesRoot = path.dirname(codeGraphRoot);
+  if (
+    !/^[0-9a-f]{64}$/.test(checkoutId) ||
+    path.basename(repositoriesRoot) !== 'repositories' ||
+    path.basename(codeGraphRoot) !== 'code-graph' ||
+    path.basename(indexesRoot) !== 'indexes'
+  ) {
+    return undefined;
+  }
+  return path.join(
+    path.dirname(indexesRoot),
+    'locks',
+    'indexes',
+    'code-graph',
+    'database-writes',
+    `${checkoutId}.lock`,
+  );
+}
