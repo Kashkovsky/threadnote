@@ -332,6 +332,10 @@ export class CodeGraphQueryService extends Context.Service<
               yield* store.promote(layout.databasePath, promotionIdentity.value, lockedCandidate.id, {
                 persistentCapacityProtector: codeGraphDirectPersistentCapacityProtector({
                   capacityProtection,
+                  // The target-worktree lock is already held here. Never wait
+                  // for capacity or recursively run maintenance while holding
+                  // that authority; a later request can retry the attach.
+                  claimMode: 'nonblocking-one-attempt',
                   fs,
                   identity: promotionIdentity.value,
                   layout,

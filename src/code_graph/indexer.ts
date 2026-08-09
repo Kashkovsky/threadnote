@@ -53,7 +53,11 @@ import {
   isCodeGraphCapacityPause,
   type CodeGraphDirectPersistentCapacityBoundary,
 } from './disk_capacity.js';
-import {codeGraphDiskReservationFilesystemKey, withCodeGraphDiskReservation} from './disk_reservation.js';
+import {
+  codeGraphDiskReservationFilesystemKey,
+  type CodeGraphDiskReservationOptions,
+  withCodeGraphDiskReservation,
+} from './disk_reservation.js';
 import {
   CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION,
   CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION,
@@ -1823,6 +1827,7 @@ const ensureCommittedBase = Effect.fn('codeGraph.ensureCommittedBase')(function*
 
 export interface DirectPersistentCapacityContext {
   readonly capacityProtection?: DirectPersistentCapacityProtection;
+  readonly claimMode?: CodeGraphDiskReservationOptions['claimMode'];
   readonly fs: FileSystem.FileSystem;
   readonly identity: RepositoryIdentity;
   readonly layout: CodeGraphLayout;
@@ -1838,6 +1843,7 @@ export function codeGraphDirectPersistentCapacityProtector(
       ? withCodeGraphDiskReservation(
           {
             boundary,
+            claimMode: input.claimMode,
             ledgerLockPath: codeGraphDiskReservationLockPath(input.capacityProtection.path, input.threadnoteHome),
             ledgerRoot: codeGraphDiskReservationRoot(input.capacityProtection.path, input.threadnoteHome),
             maintenance: input.capacityProtection.maintenance
