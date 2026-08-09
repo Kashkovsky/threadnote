@@ -172,8 +172,7 @@ describe('shared ready view attachment locking', () => {
         const snapshot = readySnapshot(identity);
         yield* store.activate(layout.databasePath, identity, snapshot, [], [], []);
         yield* store.acquireSnapshotLease(layout.databasePath, snapshot.id, 60_000);
-        const before = yield* graph.statusForIdentity(threadnoteHome, identity);
-        const attached = yield* graph.attachSharedReadySnapshot(threadnoteHome, identity, before, {
+        const attached = yield* graph.attachSharedReadySnapshot(threadnoteHome, identity, undefined, {
           afterOptimisticCandidate: () => Effect.sync(() => git(repositoryRoot, ['reset', '--hard', nextCommit])),
         });
         const pointer = yield* store.readySnapshot(layout.databasePath, identity.worktreeId);
@@ -204,8 +203,7 @@ describe('shared ready view attachment locking', () => {
         const snapshot = readySnapshot(identity);
         yield* store.activate(layout.databasePath, identity, snapshot, [], [], []);
         yield* store.acquireSnapshotLease(layout.databasePath, snapshot.id, 60_000);
-        const before = yield* graph.statusForIdentity(threadnoteHome, identity);
-        const attached = yield* graph.attachSharedReadySnapshot(threadnoteHome, identity, before, {
+        const attached = yield* graph.attachSharedReadySnapshot(threadnoteHome, identity, undefined, {
           afterPromotion: () =>
             Effect.sync(() => {
               nextCommit = createNextCommit(repositoryRoot);
@@ -238,8 +236,7 @@ describe('shared ready view attachment locking', () => {
         const snapshot = readySnapshot(identity);
         yield* store.activate(layout.databasePath, identity, snapshot, [], [], []);
         yield* store.acquireSnapshotLease(layout.databasePath, snapshot.id, 60_000);
-        const before = yield* graph.statusForIdentity(threadnoteHome, identity);
-        const attached = yield* graph.attachSharedReadySnapshot(threadnoteHome, identity, before, {
+        const attached = yield* graph.attachSharedReadySnapshot(threadnoteHome, identity, undefined, {
           afterPromotion: () =>
             Effect.sync(() => writeFileSync(join(repositoryRoot, 'main.ts'), 'export const attached = "dirty";\n')),
         });

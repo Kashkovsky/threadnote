@@ -1,7 +1,7 @@
 import {readFileSync} from 'node:fs';
 import {it as effectIt} from '@effect/vitest';
 import {Database} from 'bun:sqlite';
-import {Clock, Effect, FileSystem, Path} from 'effect';
+import {Clock, Effect, FileSystem, Path, Schedule} from 'effect';
 import {TestClock} from 'effect/testing';
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
@@ -25,7 +25,7 @@ import {
 import type {CodeGraphBenchmarkSamplerArtifact} from '../../scripts/code-graph-benchmark-sampler.js';
 import {codeGraphAnalysisLimitsForView} from '../../src/code_graph/analysis_render.js';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
-import type {RepositoryIdentity} from '../../src/code_graph/types.js';
+import {CodeGraphStoreBusyError, type RepositoryIdentity} from '../../src/code_graph/types.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 
 const CONTROL = JSON.stringify({
@@ -554,10 +554,18 @@ describe('code graph external benchmark harness', () => {
           };
           let leaseRenewals = 0;
           let comparisonLease: string | undefined;
+          const pruneRetiredSnapshots = () =>
+            store.pruneRetiredSnapshots(databasePath).pipe(
+              Effect.retry({
+                schedule: Schedule.spaced(25),
+                times: 20,
+                while: error => error instanceof CodeGraphStoreBusyError,
+              }),
+            );
           const pinned = yield* sqliteStructuralGraphEvidence(databasePath, firstSnapshotId, {
             onReadTransactionStarted: Effect.gen(function* () {
               yield* store.promote(databasePath, identity, replacementSnapshotId);
-              yield* store.pruneRetiredSnapshots(databasePath);
+              yield* pruneRetiredSnapshots();
               // Lease release now retires a superseded view automatically. Hold
               // a second reader lease so this test can intentionally compare
               // the post-write digest after the pinned read transaction ends.
@@ -582,7 +590,7 @@ describe('code graph external benchmark harness', () => {
           yield* store.releaseSnapshotLease(databasePath, comparisonLease);
           const mismatch = codeGraphStructuralParityEvidence(before, after);
           const failureMessage = codeGraphStructuralParityFailureMessage(mismatch);
-          yield* store.pruneRetiredSnapshots(databasePath);
+          yield* pruneRetiredSnapshots();
           const finalDatabase = new Database(databasePath, {readonly: true, strict: true});
           try {
             const protectedSnapshotRows = Number(
