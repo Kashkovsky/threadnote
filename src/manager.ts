@@ -66,6 +66,8 @@ import {
 import {repositoryIdentityMatchesExpectation} from './code_graph/repository.js';
 import {CodeGraphStoreBusyError, type RepositoryIdentityExpectation} from './code_graph/types.js';
 import {codeGraphMaintenanceIntentActive} from './code_graph/maintenance_gate.js';
+import {codeGraphLayout} from './code_graph/layout.js';
+import {CodeGraphMaintenanceCoordinator} from './code_graph/maintenance_coordinator.js';
 import {removeCodeGraphView, renderCodeGraphViewRemovalResult} from './code_graph/view_removal.js';
 import {
   managerGraphAnalysis,
@@ -1560,7 +1562,21 @@ const runManagerGraphAction = Effect.fn('manager.runGraphAction')(function* (
         new Error('Preview this exact graph view removal and provide its approval digest before applying.'),
       );
     }
-    const actionEffect = removeCodeGraphView(config.agentContextHome, target, {apply: !dryRun}).pipe(
+    const path = yield* Path.Path;
+    const maintenance = yield* CodeGraphMaintenanceCoordinator;
+    const layout = codeGraphLayout(path, config.agentContextHome, checkoutId, worktreeId);
+    const actionEffect = removeCodeGraphView(config.agentContextHome, target, {
+      afterRemoval: input =>
+        maintenance
+          .kickResidual({
+            checkoutId: input.checkoutId,
+            databasePath: input.databasePath,
+            threadnoteHome: input.threadnoteHome,
+            writerLockPath: layout.databaseWriteLockPath,
+          })
+          .pipe(Effect.asVoid),
+      apply: !dryRun,
+    }).pipe(
       Effect.mapError(error =>
         error instanceof CodeGraphStoreBusyError
           ? new ManagerGraphViewActionBusyError(

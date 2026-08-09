@@ -12,13 +12,18 @@ const SQLITE_WAL_HEADER_BYTES = 32;
 const SQLITE_WAL_FRAME_HEADER_BYTES = 24;
 
 export type CodeGraphDirectPersistentCapacityOperation =
+  | 'admit code graph vector retirement'
   | 'cache code graph file facts'
   | 'cache materialized code graph file shards'
+  | 'prepare code graph vector retirement schema'
+  | 'maintain code graph vector retirement'
   | 'publish persistent code graph snapshot'
   | 'promote ready code graph snapshot'
   | 'register persistent code graph materialization plan'
   | 'resolve persistent code graph reexport aliases'
   | 'resolve persistent code graph references'
+  | 'retire code graph vector generation'
+  | 'retire code graph vector pointer'
   | 'stage persistent code graph facts'
   | 'stage persistent code graph inventory'
   | 'stage persistent code graph workspace';
@@ -69,11 +74,63 @@ export const CODE_GRAPH_CACHE_PERSISTENT_CAPACITY_CALIBRATION = {
   transientRowBytes: 256,
 } as const;
 
+/**
+ * Vector-v2 retirement mutates a separate SQLite database with a different
+ * row and index shape from the repository graph. Keep its conservative
+ * envelope independently versioned so vector cleanup cannot silently inherit
+ * a calibration for normalized lexical facts.
+ */
+export const CODE_GRAPH_VECTOR_RETIREMENT_SCHEMA_CAPACITY_CALIBRATION = {
+  identityBase: `vector-v2:retirement-r1:index-publication:capacity-v${CODE_GRAPH_DISK_CAPACITY_MODEL_VERSION}`,
+  mainFactAmplification: 6,
+  mainRowBytes: 1_024,
+  transientFactAmplification: 6,
+  transientRowBytes: 1_024,
+} as const;
+
+export const CODE_GRAPH_VECTOR_RETIREMENT_PAGE_CAPACITY_CALIBRATION = {
+  identityBase: `vector-v2:retirement-r1:vector-page:capacity-v${CODE_GRAPH_DISK_CAPACITY_MODEL_VERSION}`,
+  mainFactAmplification: 8,
+  mainRowBytes: 1_024,
+  transientFactAmplification: 8,
+  transientRowBytes: 1_024,
+} as const;
+
+export const CODE_GRAPH_VECTOR_RETIREMENT_ADMISSION_CAPACITY_CALIBRATION = {
+  identityBase: `vector-v2:retirement-r1:admission:capacity-v${CODE_GRAPH_DISK_CAPACITY_MODEL_VERSION}`,
+  mainFactAmplification: 8,
+  mainRowBytes: 1_024,
+  transientFactAmplification: 8,
+  transientRowBytes: 1_024,
+} as const;
+
+/**
+ * Conservative pre-telemetry envelope for an ordinary retirement unit. The
+ * unit combines one exact schema/admission/page plan with two bounded atomic
+ * cursor publications, so it must not inherit any single DB-only calibration.
+ */
+export const CODE_GRAPH_VECTOR_RETIREMENT_ORDINARY_UNIT_CAPACITY_CALIBRATION = {
+  identityBase: `vector-v2:retirement-r1:ordinary-unit:capacity-v${CODE_GRAPH_DISK_CAPACITY_MODEL_VERSION}`,
+  mainFactAmplification: 12,
+  mainRowBytes: 2_048,
+  transientFactAmplification: 12,
+  transientRowBytes: 2_048,
+} as const;
+
+export const CODE_GRAPH_VECTOR_RETIREMENT_POINTER_CAPACITY_CALIBRATION = {
+  identityBase: `vector-v2:retirement-r1:pointer-transition:capacity-v${CODE_GRAPH_DISK_CAPACITY_MODEL_VERSION}`,
+  mainFactAmplification: 8,
+  mainRowBytes: 1_024,
+  transientFactAmplification: 8,
+  transientRowBytes: 1_024,
+} as const;
+
 export interface CodeGraphDirectPersistentCapacityDemandInput {
   readonly finalFactBytes: number;
   readonly lexicalFormatVersion: number;
   readonly observedMainHighWaterBytes?: number;
   readonly observedTransientHighWaterBytes?: number;
+  readonly operation?: CodeGraphDirectPersistentCapacityOperation;
   readonly pageSize: number;
   readonly rowCount: number;
   readonly walAutoCheckpointPages: number;
@@ -195,10 +252,40 @@ export function codeGraphPersistentCapacityDemand(
   );
 }
 
+export function codeGraphVectorRetirementCapacityDemand(
+  input: CodeGraphDirectPersistentCapacityDemandInput,
+): CodeGraphDiskCapacityDemand {
+  const calibration =
+    input.operation === 'prepare code graph vector retirement schema'
+      ? CODE_GRAPH_VECTOR_RETIREMENT_SCHEMA_CAPACITY_CALIBRATION
+      : input.operation === 'retire code graph vector generation'
+        ? CODE_GRAPH_VECTOR_RETIREMENT_PAGE_CAPACITY_CALIBRATION
+        : input.operation === 'admit code graph vector retirement'
+          ? CODE_GRAPH_VECTOR_RETIREMENT_ADMISSION_CAPACITY_CALIBRATION
+          : input.operation === 'maintain code graph vector retirement'
+            ? CODE_GRAPH_VECTOR_RETIREMENT_ORDINARY_UNIT_CAPACITY_CALIBRATION
+            : input.operation === 'retire code graph vector pointer'
+              ? CODE_GRAPH_VECTOR_RETIREMENT_POINTER_CAPACITY_CALIBRATION
+              : undefined;
+  return calibration === undefined
+    ? {
+        calibrationIdentity: 'vector-v2:retirement-r1:operation-unknown',
+        reason: 'calibration-input-unknown',
+        state: 'unknown',
+      }
+    : codeGraphPersistentCapacityDemandForCalibration(input, calibration);
+}
+
 function codeGraphPersistentCapacityDemandForCalibration(
   input: CodeGraphDirectPersistentCapacityDemandInput,
   calibration:
-    typeof CODE_GRAPH_DIRECT_PERSISTENT_CAPACITY_CALIBRATION | typeof CODE_GRAPH_CACHE_PERSISTENT_CAPACITY_CALIBRATION,
+    | typeof CODE_GRAPH_DIRECT_PERSISTENT_CAPACITY_CALIBRATION
+    | typeof CODE_GRAPH_CACHE_PERSISTENT_CAPACITY_CALIBRATION
+    | typeof CODE_GRAPH_VECTOR_RETIREMENT_ADMISSION_CAPACITY_CALIBRATION
+    | typeof CODE_GRAPH_VECTOR_RETIREMENT_ORDINARY_UNIT_CAPACITY_CALIBRATION
+    | typeof CODE_GRAPH_VECTOR_RETIREMENT_POINTER_CAPACITY_CALIBRATION
+    | typeof CODE_GRAPH_VECTOR_RETIREMENT_SCHEMA_CAPACITY_CALIBRATION
+    | typeof CODE_GRAPH_VECTOR_RETIREMENT_PAGE_CAPACITY_CALIBRATION,
 ): CodeGraphDiskCapacityDemand {
   const unknown = (reason: CodeGraphUnknownDiskCapacityDemand['reason']): CodeGraphUnknownDiskCapacityDemand => ({
     calibrationIdentity: `${calibration.identityBase}:unmeasured`,
@@ -467,13 +554,18 @@ function availableCapacityBytes(value: number | undefined): number | undefined {
 
 function capacityOperation(operation: string): CodeGraphCapacityFailureOperation {
   switch (operation) {
+    case 'admit code graph vector retirement':
     case 'cache code graph file facts':
     case 'cache materialized code graph file shards':
+    case 'maintain code graph vector retirement':
+    case 'prepare code graph vector retirement schema':
     case 'publish persistent code graph snapshot':
     case 'promote ready code graph snapshot':
     case 'register persistent code graph materialization plan':
     case 'resolve persistent code graph reexport aliases':
     case 'resolve persistent code graph references':
+    case 'retire code graph vector generation':
+    case 'retire code graph vector pointer':
     case 'stage persistent code graph facts':
     case 'stage persistent code graph inventory':
     case 'stage persistent code graph workspace':

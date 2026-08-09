@@ -6,6 +6,7 @@ import type {RuntimeConfig} from '../types.js';
 import {CodeGraphIndexer, materializationStorageShortfalls} from './indexer.js';
 import {makeCodeGraphJsonProgressReporter} from './json_progress.js';
 import {codeGraphLayout} from './layout.js';
+import {CodeGraphMaintenanceCoordinator} from './maintenance_coordinator.js';
 import {
   repairCodeGraphIndexes,
   inspectObsoleteCodeGraphStores,
@@ -848,6 +849,9 @@ export const runCodeGraphRemoveView = Effect.fn('codeGraph.command.removeView')(
     readonly worktreeId: string;
   },
 ) {
+  const path = yield* Path.Path;
+  const maintenance = yield* CodeGraphMaintenanceCoordinator;
+  const layout = codeGraphLayout(path, config.agentContextHome, options.checkoutId, options.worktreeId);
   const result = yield* removeCodeGraphView(
     config.agentContextHome,
     {
@@ -855,7 +859,18 @@ export const runCodeGraphRemoveView = Effect.fn('codeGraph.command.removeView')(
       snapshotId: options.snapshotId,
       worktreeId: options.worktreeId,
     },
-    {apply: options.apply === true},
+    {
+      afterRemoval: input =>
+        maintenance
+          .kickResidual({
+            checkoutId: input.checkoutId,
+            databasePath: input.databasePath,
+            threadnoteHome: input.threadnoteHome,
+            writerLockPath: layout.databaseWriteLockPath,
+          })
+          .pipe(Effect.asVoid),
+      apply: options.apply === true,
+    },
   );
   yield* writeFinalCliOutput(
     options.json ? serializeCodeGraphViewRemovalResult(result) : renderCodeGraphViewRemovalResult(result),

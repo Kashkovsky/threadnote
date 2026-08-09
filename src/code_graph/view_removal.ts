@@ -10,7 +10,6 @@ import {
   type CodeGraphViewRemovalResult as CodeGraphStoreViewRemovalResult,
 } from './store.js';
 import {
-  cleanupCodeGraphVectorPointers,
   type CodeGraphVectorCleanupWarningCode,
   type CodeGraphVectorPointerCleanupResult,
 } from './vector_maintenance.js';
@@ -57,16 +56,25 @@ export interface CodeGraphViewRemovalTarget {
   readonly worktreeId: string;
 }
 
+export interface CodeGraphViewRemovalOptions {
+  readonly apply?: boolean;
+  /** @internal Deterministic seam after the short provenance lock is released. */
+  readonly afterProvenanceEvidenceCapture?: () => Effect.Effect<void, unknown>;
+  /** Best-effort residual-maintenance kick, always invoked after the target lock is released. */
+  readonly afterRemoval?: (input: {
+    readonly checkoutId: string;
+    readonly databasePath: string;
+    readonly threadnoteHome: string;
+    readonly worktreeId: string;
+  }) => Effect.Effect<void, unknown>;
+  /** @internal Deterministic replacement seam after core removal and before cleanup. */
+  readonly beforeProvenanceCleanup?: () => Effect.Effect<void, unknown>;
+}
+
 export const removeCodeGraphView = Effect.fn('codeGraph.removeViewAction')(function* (
   threadnoteHome: string,
   target: CodeGraphViewRemovalTarget,
-  options: {
-    readonly apply?: boolean;
-    /** @internal Deterministic seam after the short provenance lock is released. */
-    readonly afterProvenanceEvidenceCapture?: () => Effect.Effect<void, unknown>;
-    /** @internal Deterministic replacement seam after core removal and before cleanup. */
-    readonly beforeProvenanceCleanup?: () => Effect.Effect<void, unknown>;
-  } = {},
+  options: CodeGraphViewRemovalOptions = {},
 ) {
   yield* validateCodeGraphViewRemovalTarget(target);
   const fs = yield* FileSystem.FileSystem;
@@ -87,7 +95,7 @@ export const removeCodeGraphView = Effect.fn('codeGraph.removeViewAction')(funct
     return actionResult(target, false, observation, {provenance: null, vectors: null}, []);
   }
 
-  return yield* withCodeGraphTargetWorktreeLock(
+  const result = yield* withCodeGraphTargetWorktreeLock(
     inspected.canonicalHome,
     target.checkoutId,
     target.worktreeId,
@@ -123,12 +131,6 @@ export const removeCodeGraphView = Effect.fn('codeGraph.removeViewAction')(funct
         return actionResult(target, true, core, {provenance: null, vectors: null}, []);
       }
 
-      const vectors = yield* cleanupCodeGraphVectorPointers(
-        inspected.canonicalHome,
-        target.checkoutId,
-        target.worktreeId,
-        target.snapshotId,
-      );
       yield* options.beforeProvenanceCleanup?.() ?? Effect.void;
       const provenance =
         core.state === 'already-removed'
@@ -140,7 +142,7 @@ export const removeCodeGraphView = Effect.fn('codeGraph.removeViewAction')(funct
                 {checkoutId: target.checkoutId, worktreeId: target.worktreeId},
                 {expectedEvidence: provenanceEvidence},
               );
-      const warnings: CodeGraphViewRemovalWarning[] = vectors.warnings.map(warning => ({...warning}));
+      const warnings: CodeGraphViewRemovalWarning[] = [];
       if (provenance.state === 'unavailable') {
         warnings.push({
           code: 'provenance-cleanup-unavailable',
@@ -156,16 +158,26 @@ export const removeCodeGraphView = Effect.fn('codeGraph.removeViewAction')(funct
         core,
         {
           provenance,
-          vectors: {
-            databasesInspected: vectors.databasesInspected,
-            databasesProcessed: vectors.databasesProcessed,
-            pointersRemoved: vectors.pointersRemoved,
-          },
+          // Durable residual cleanup owns vector retirement so capacity is
+          // acquired before the target worktree lock. Foreground removal must
+          // never enter that reservation protocol while already holding it.
+          vectors: null,
         },
         warnings,
       );
     }),
   );
+  if (result.state === 'removed' || result.state === 'already-removed') {
+    yield* (
+      options.afterRemoval?.({
+        checkoutId: target.checkoutId,
+        databasePath: inspected.databasePath,
+        threadnoteHome: inspected.canonicalHome,
+        worktreeId: target.worktreeId,
+      }) ?? Effect.void
+    ).pipe(Effect.ignore);
+  }
+  return result;
 });
 
 export type CodeGraphViewDatabaseTargetInspection =
@@ -247,13 +259,15 @@ export function renderCodeGraphViewRemovalResult(result: CodeGraphViewRemovalAct
             ? `Refusing to remove native code graph view: the selected target is stale.`
             : `Refusing to remove native code graph view: the selected target was not found.`;
   const cleanup =
-    result.cleanup.vectors === null
-      ? []
-      : [
+    result.cleanup.vectors !== null
+      ? [
           `Derived cleanup: ${result.cleanup.vectors.pointersRemoved} vector pointer(s) removed across ` +
             `${result.cleanup.vectors.databasesProcessed}/${result.cleanup.vectors.databasesInspected} store(s); ` +
             `provenance ${result.cleanup.provenance?.state ?? 'not-run'}.`,
-        ];
+        ]
+      : result.applied && (result.state === 'removed' || result.state === 'already-removed')
+        ? [`Derived cleanup: vector retirement queued; provenance ${result.cleanup.provenance?.state ?? 'not-run'}.`]
+        : [];
   return [
     headline,
     ...cleanup,

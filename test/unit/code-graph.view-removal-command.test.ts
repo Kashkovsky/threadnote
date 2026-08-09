@@ -14,6 +14,7 @@ import {
 import {
   codeGraphViewRemovalTargetFailure,
   removeCodeGraphView,
+  renderCodeGraphViewRemovalResult,
   serializeCodeGraphViewRemovalResult,
 } from '../../src/code_graph/view_removal.js';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
@@ -21,6 +22,7 @@ import {CODE_GRAPH_EXTRACTOR_GENERATION, CodeGraphStoreBusyError} from '../../sr
 import {withExclusiveFileLock} from '../../src/effect/file_lock.js';
 import {CommandExecutor} from '../../src/effect/command.js';
 import {SystemInfo} from '../../src/effect/system.js';
+import {withCodeGraphTargetWorktreeLock} from '../../src/code_graph/maintenance_gate.js';
 
 const CHECKOUT_ID = 'a'.repeat(64);
 const WORKTREE_ID = '1'.repeat(64);
@@ -63,54 +65,78 @@ describe('code graph remove-view command core', () => {
           expect(JSON.parse(serialized)).toEqual(first);
           expect(serialized).not.toContain(fixture.home);
           expect(serialized).not.toContain('databasePath');
+          expect(renderCodeGraphViewRemovalResult(first)).toContain(
+            'Derived cleanup: vector retirement queued; provenance',
+          );
         }),
       ),
     );
 
-    layerIt.effect('keeps core success when a vector writer is busy and converges on an already-removed retry', () =>
-      Effect.scoped(
-        Effect.gen(function* () {
-          const fixture = yield* viewActionFixture;
-          const fs = yield* FileSystem.FileSystem;
-          const path = yield* Path.Path;
-          const vectorDatabase = yield* seedVectorDatabase(fixture.home);
-          const acquired = yield* Deferred.make<void>();
-          const release = yield* Deferred.make<void>();
-          const owner = yield* withExclusiveFileLock(
-            fs,
-            codeGraphVectorWriteLockPath(path, fixture.home, CHECKOUT_ID, sha256HexSync('model-command')),
-            {
-              onAcquired: () => Deferred.succeed(acquired, undefined).pipe(Effect.asVoid),
-              retryIntervalMilliseconds: 5,
-              staleAfterMilliseconds: 120_000,
-              waitTimeoutMilliseconds: 5_000,
-            },
-            Deferred.await(release),
-          ).pipe(Effect.forkChild);
-          yield* Deferred.await(acquired);
+    layerIt.effect(
+      'keeps core removal independent of a busy vector writer and leaves cleanup to the durable worker',
+      () =>
+        Effect.scoped(
+          Effect.gen(function* () {
+            const fixture = yield* viewActionFixture;
+            const crypto = yield* Crypto.Crypto;
+            const fs = yield* FileSystem.FileSystem;
+            const path = yield* Path.Path;
+            const system = yield* SystemInfo;
+            const vectorDatabase = yield* seedVectorDatabase(fixture.home);
+            const acquired = yield* Deferred.make<void>();
+            const release = yield* Deferred.make<void>();
+            const owner = yield* withExclusiveFileLock(
+              fs,
+              codeGraphVectorWriteLockPath(path, fixture.home, CHECKOUT_ID, sha256HexSync('model-command')),
+              {
+                onAcquired: () => Deferred.succeed(acquired, undefined).pipe(Effect.asVoid),
+                retryIntervalMilliseconds: 5,
+                staleAfterMilliseconds: 120_000,
+                waitTimeoutMilliseconds: 5_000,
+              },
+              Deferred.await(release),
+            ).pipe(Effect.forkChild);
+            yield* Deferred.await(acquired);
 
-          const target = {checkoutId: CHECKOUT_ID, snapshotId: SNAPSHOT_ID, worktreeId: WORKTREE_ID};
-          const first = yield* removeCodeGraphView(fixture.home, target, {apply: true});
-          expect(first.state).toBe('removed');
-          expect(first.warnings).toEqual([
-            {
-              code: 'vector-store-busy',
-              message: 'A vector store is busy; rerun the command to retry residual cleanup.',
-              occurrences: 1,
-              retryable: true,
-            },
-          ]);
-          expect(readVectorPointer(vectorDatabase)).toBe(SNAPSHOT_ID);
+            const target = {checkoutId: CHECKOUT_ID, snapshotId: SNAPSHOT_ID, worktreeId: WORKTREE_ID};
+            let kickedAfterTargetUnlock = false;
+            const first = yield* removeCodeGraphView(fixture.home, target, {
+              afterRemoval: () =>
+                withCodeGraphTargetWorktreeLock(
+                  fixture.home,
+                  CHECKOUT_ID,
+                  WORKTREE_ID,
+                  Effect.sync(() => void (kickedAfterTargetUnlock = true)),
+                ).pipe(
+                  Effect.provideService(Crypto.Crypto, crypto),
+                  Effect.provideService(FileSystem.FileSystem, fs),
+                  Effect.provideService(Path.Path, path),
+                  Effect.provideService(SystemInfo, system),
+                ),
+              apply: true,
+            });
+            expect(first.state).toBe('removed');
+            expect(first.cleanup.vectors).toBeNull();
+            expect(first.warnings).toEqual([]);
+            expect(kickedAfterTargetUnlock).toBe(true);
+            expect(readCleanupQueueState(fixture.databasePath)).toEqual({
+              attempts: 0,
+              blocked_code: null,
+              cursor_token: null,
+              phase: 'vector-pointers',
+              revision: 0,
+            });
+            expect(readVectorPointer(vectorDatabase)).toBe(SNAPSHOT_ID);
 
-          yield* Deferred.succeed(release, undefined);
-          yield* Fiber.join(owner);
-          const retry = yield* removeCodeGraphView(fixture.home, target, {apply: true});
-          expect(retry.state).toBe('already-removed');
-          expect(retry.cleanup.vectors?.pointersRemoved).toBe(1);
-          expect(retry.warnings).toEqual([]);
-          expect(readVectorPointer(vectorDatabase)).toBeUndefined();
-        }),
-      ),
+            yield* Deferred.succeed(release, undefined);
+            yield* Fiber.join(owner);
+            const retry = yield* removeCodeGraphView(fixture.home, target, {apply: true});
+            expect(retry.state).toBe('already-removed');
+            expect(retry.cleanup.vectors).toBeNull();
+            expect(retry.warnings).toEqual([]);
+            expect(readVectorPointer(vectorDatabase)).toBe(SNAPSHOT_ID);
+          }),
+        ),
     );
 
     layerIt.effect('binds a short pre-core provenance token to the fresh epoch and deletes only an exact match', () =>
@@ -553,6 +579,36 @@ function readCleanupEvidence(databasePath: string): {
         []
       >(
         `SELECT repository_id, provenance_record_digest, provenance_record_identity
+         FROM removed_view_cleanup
+         WHERE worktree_id = '${WORKTREE_ID}' AND expected_snapshot_id = '${SNAPSHOT_ID}'`,
+      )
+      .get()!;
+  } finally {
+    database.close(false);
+  }
+}
+
+function readCleanupQueueState(databasePath: string): {
+  readonly attempts: number;
+  readonly blocked_code: string | null;
+  readonly cursor_token: string | null;
+  readonly phase: string;
+  readonly revision: number;
+} {
+  const database = new Database(databasePath, {readonly: true, strict: true});
+  try {
+    return database
+      .query<
+        {
+          readonly attempts: number;
+          readonly blocked_code: string | null;
+          readonly cursor_token: string | null;
+          readonly phase: string;
+          readonly revision: number;
+        },
+        []
+      >(
+        `SELECT attempts, blocked_code, cursor_token, phase, revision
          FROM removed_view_cleanup
          WHERE worktree_id = '${WORKTREE_ID}' AND expected_snapshot_id = '${SNAPSHOT_ID}'`,
       )

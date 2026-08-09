@@ -802,7 +802,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
             ).pipe(
               Effect.ensuring(
                 maintenance
-                  .tick({
+                  .request({
                     allowIndexPreparation: true,
                     anchorIdentity: initialIdentity,
                     checkoutId: layout.checkoutId,
@@ -979,7 +979,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
             ).pipe(
               Effect.ensuring(
                 maintenance
-                  .tick({
+                  .request({
                     allowIndexPreparation: true,
                     anchorIdentity: initialIdentity,
                     checkoutId: layout.checkoutId,
@@ -1841,7 +1841,7 @@ export function codeGraphDirectPersistentCapacityProtector(
             ledgerLockPath: codeGraphDiskReservationLockPath(input.capacityProtection.path, input.threadnoteHome),
             ledgerRoot: codeGraphDiskReservationRoot(input.capacityProtection.path, input.threadnoteHome),
             maintenance: input.capacityProtection.maintenance
-              .tick({
+              .kickOrdinary({
                 checkoutId: input.layout.checkoutId,
                 databasePath: input.layout.databasePath,
                 threadnoteHome: input.threadnoteHome,

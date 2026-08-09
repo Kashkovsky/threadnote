@@ -1026,26 +1026,30 @@ describe('routine code graph maintenance', () => {
         threadnoteHome: home,
         writerLockPath,
       };
-      const results = yield* Effect.forEach(Array.from({length: 5}), () => coordinator.tick(input), {
-        concurrency: 1,
-      });
-
-      expect(results.slice(0, 4)).toEqual(
-        Array.from({length: 4}, () => ({
-          cleanup: 'reconciliation-index',
-          expiredLeases: 0,
-          remaining: true,
-          retiredSnapshots: 0,
-          rowsDeleted: 0,
-          state: 'completed',
-        })),
+      const results = yield* Effect.forEach(
+        Array.from({length: 16}),
+        () => coordinator.tick(input).pipe(Effect.tap(() => Effect.yieldNow)),
+        {concurrency: 1},
       );
-      expect(results[4]).toEqual(noWorkResult);
+
+      expect(
+        results.filter(result => result.state === 'completed' && result.cleanup === 'reconciliation-index').length,
+      ).toBe(4);
+      expect(
+        results
+          .filter(result => result.state !== 'completed' || result.cleanup !== 'reconciliation-index')
+          .every(
+            result =>
+              (result.state === 'deferred' && result.reason === 'writer-busy') ||
+              (result.state === 'completed' && result.cleanup === 'none'),
+          ),
+      ).toBe(true);
       expect(readReconciliationIndexes(databasePath)).toEqual([
         'active_snapshots_snapshot_worktree',
         'snapshot_leases_snapshot_expiry',
         'snapshots_base_state_id',
       ]);
+      expect(yield* store.prepareWorktreeReconciliationIndexes(databasePath)).toEqual({state: 'ready'});
     }).pipe(Effect.provide(ApplicationLayer)),
   );
 

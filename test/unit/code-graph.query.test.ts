@@ -127,6 +127,8 @@ describe('code graph query budgets', () => {
         const maintenanceLayer = Layer.succeed(
           CodeGraphMaintenanceCoordinator,
           CodeGraphMaintenanceCoordinator.of({
+            kickOrdinary: () => Effect.die(new Error('query trigger test must not kick ordinary maintenance')),
+            kickResidual: () => Effect.die(new Error('query trigger test must not kick residual maintenance')),
             request: input =>
               Ref.update(requests, current => [
                 ...current,

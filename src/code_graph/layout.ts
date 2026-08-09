@@ -98,6 +98,16 @@ export function codeGraphVectorWriteLockPath(
   return path.join(threadnoteHome, 'locks', 'indexes', 'code-graph', 'vector-writes', checkoutId, `${modelKey}.lock`);
 }
 
+/** Durable ordinary-retirement cursor serialization outside the replaceable vector root. */
+export function codeGraphVectorRetirementCursorLockPath(
+  path: Path.Path,
+  threadnoteHome: string,
+  checkoutId: string,
+): string {
+  assertCheckoutId(checkoutId);
+  return path.join(threadnoteHome, 'locks', 'indexes', 'code-graph', 'vector-retirement-cursors', `${checkoutId}.lock`);
+}
+
 export function codeGraphLocalProvenanceLockPath(
   path: Path.Path,
   threadnoteHome: string,

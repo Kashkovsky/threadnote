@@ -48,13 +48,18 @@ const RUNTIME_PLATFORMS = new Set<NodeJS.Platform>([
   'win32',
 ]);
 const OPERATIONS = new Set<CodeGraphDirectPersistentCapacityOperation>([
+  'admit code graph vector retirement',
   'cache code graph file facts',
   'cache materialized code graph file shards',
+  'maintain code graph vector retirement',
+  'prepare code graph vector retirement schema',
   'publish persistent code graph snapshot',
   'promote ready code graph snapshot',
   'register persistent code graph materialization plan',
   'resolve persistent code graph reexport aliases',
   'resolve persistent code graph references',
+  'retire code graph vector generation',
+  'retire code graph vector pointer',
   'stage persistent code graph facts',
   'stage persistent code graph inventory',
   'stage persistent code graph workspace',
@@ -93,6 +98,8 @@ export interface CodeGraphDiskReservationOptions<R = never> {
   /** @internal Deterministic release fault boundary for lifecycle tests. */
   readonly beforeReleaseAttempt?: Effect.Effect<void, unknown, R>;
   readonly boundary: CodeGraphDirectPersistentCapacityBoundary;
+  /** A worker tick gets one zero-wait claim and never sleeps or runs maintenance. */
+  readonly claimMode?: 'nonblocking-one-attempt' | 'wait';
   readonly ledgerLockPath: string;
   readonly ledgerRoot: string;
   readonly maintenance: Effect.Effect<void, unknown, R>;
@@ -236,6 +243,14 @@ export const acquireCodeGraphDiskReservation = Effect.fn('codeGraph.diskReservat
       );
     }
     if (attempt.state === 'physical-pressure') {
+      if (options.claimMode === 'nonblocking-one-attempt') {
+        return yield* Effect.fail(
+          codeGraphDiskCapacityFailure(
+            {calibrationIdentity: 'disk-reservation-physical-pressure', filesystems: [], state: 'pressure'},
+            options.boundary.operation,
+          ),
+        );
+      }
       if (maintenanceAttempted) {
         return yield* Effect.fail(
           codeGraphDiskCapacityFailure(
@@ -260,6 +275,14 @@ export const acquireCodeGraphDiskReservation = Effect.fn('codeGraph.diskReservat
         ),
       );
       continue;
+    }
+    if (options.claimMode === 'nonblocking-one-attempt') {
+      return yield* Effect.fail(
+        codeGraphDiskCapacityFailure(
+          {calibrationIdentity: 'disk-reservation-contention', filesystems: [], state: 'pressure'},
+          options.boundary.operation,
+        ),
+      );
     }
     if (!waitingReported) {
       yield* options.onWaiting ?? Effect.void;
@@ -351,6 +374,14 @@ export function withCodeGraphDiskReservation<A, E, R, R2>(
         return yield* Effect.fail(unknownReservationFailure(options, 'disk-reservation-observation-unavailable'));
       }
       if (attempted.state === 'physical-pressure') {
+        if (options.claimMode === 'nonblocking-one-attempt') {
+          return yield* Effect.fail(
+            codeGraphDiskCapacityFailure(
+              {calibrationIdentity: 'disk-reservation-physical-pressure', filesystems: [], state: 'pressure'},
+              options.boundary.operation,
+            ),
+          );
+        }
         if (maintenanceAttempted) {
           return yield* Effect.fail(
             codeGraphDiskCapacityFailure(
@@ -366,6 +397,14 @@ export function withCodeGraphDiskReservation<A, E, R, R2>(
           ),
         );
         continue;
+      }
+      if (options.claimMode === 'nonblocking-one-attempt') {
+        return yield* Effect.fail(
+          codeGraphDiskCapacityFailure(
+            {calibrationIdentity: 'disk-reservation-contention', filesystems: [], state: 'pressure'},
+            options.boundary.operation,
+          ),
+        );
       }
       if (!waitingReported) {
         yield* options.onWaiting ?? Effect.void;
@@ -518,10 +557,16 @@ const claimAttempt = Effect.fn('codeGraph.diskReservation.claimAttempt')(functio
       activeReservationReceipts.set(receiptPath, canonicalReceipt);
       return {lease: {canonicalReceipt, receiptPath, token}, state: 'claimed'} as const;
     }),
+    options.claimMode === 'nonblocking-one-attempt' ? 0 : CODE_GRAPH_DISK_RESERVATION_LIMITS.lockWaitMilliseconds,
   );
 });
 
-function withLedgerLock<A, E, R>(fs: FileSystem.FileSystem, lockPath: string, effect: Effect.Effect<A, E, R>) {
+function withLedgerLock<A, E, R>(
+  fs: FileSystem.FileSystem,
+  lockPath: string,
+  effect: Effect.Effect<A, E, R>,
+  waitTimeoutMilliseconds: number = CODE_GRAPH_DISK_RESERVATION_LIMITS.lockWaitMilliseconds,
+) {
   return withExclusiveFileLock(
     fs,
     lockPath,
@@ -531,7 +576,7 @@ function withLedgerLock<A, E, R>(fs: FileSystem.FileSystem, lockPath: string, ef
       retryIntervalMilliseconds: CODE_GRAPH_DISK_RESERVATION_LIMITS.lockRetryMilliseconds,
       staleAfterMilliseconds: CODE_GRAPH_DISK_RESERVATION_LIMITS.lockStaleMilliseconds,
       useCanonicalProcessStartIdentity: true,
-      waitTimeoutMilliseconds: CODE_GRAPH_DISK_RESERVATION_LIMITS.lockWaitMilliseconds,
+      waitTimeoutMilliseconds,
     },
     effect,
   );
