@@ -3031,6 +3031,7 @@ describe('native code graph lifecycle', () => {
         threadnoteHome: home,
       });
       expect(resumed.snapshot).toMatchObject({id: pausedId, state: 'ready'});
+      yield* Effect.promise(() => awaitCompletedBuildCleanup(databasePath, pausedId));
 
       const resumedDatabase = new Database(databasePath, {readonly: true});
       try {
@@ -4344,6 +4345,29 @@ function snapshotLeaseCount(databasePath: string): number {
     return Number(row?.count ?? 0);
   } finally {
     database.close();
+  }
+}
+
+async function awaitCompletedBuildCleanup(databasePath: string, snapshotId: string): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  for (;;) {
+    const database = new Database(databasePath, {readonly: true});
+    try {
+      const rows = database
+        .query<{readonly batches: number; readonly owners: number}, [string, string]>(
+          `SELECT
+             (SELECT COUNT(*) FROM snapshot_build_owners WHERE snapshot_id = ?) AS owners,
+             (SELECT COUNT(*) FROM building_materialization_batches WHERE snapshot_id = ?) AS batches`,
+        )
+        .get(snapshotId, snapshotId);
+      if ((rows?.owners ?? 0) === 0 && (rows?.batches ?? 0) === 0) return;
+      if (Date.now() >= deadline) {
+        throw new Error(`Timed out waiting for completed build cleanup: ${JSON.stringify(rows)}.`);
+      }
+    } finally {
+      database.close();
+    }
+    await new Promise(resolve => setTimeout(resolve, 10));
   }
 }
 

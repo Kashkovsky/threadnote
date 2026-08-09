@@ -1710,7 +1710,7 @@ describe('code graph full-build materialization store', () => {
     const staging = await runEffect(
       Effect.gen(function* () {
         const store = yield* CodeGraphStore;
-        return yield* store.withSession(
+        yield* store.withSession(
           fixture.databasePath,
           Effect.gen(function* () {
             const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
@@ -1732,9 +1732,9 @@ describe('code graph full-build materialization store', () => {
               undefined,
               progress => Effect.sync(() => activation.push(progress)),
             );
-            return yield* Effect.promise(() => awaitCompletedBuildCleanup(fixture.databasePath, snapshot.id));
           }),
         );
+        return yield* Effect.promise(() => awaitCompletedBuildCleanup(fixture.databasePath, snapshot.id));
       }),
     );
 
