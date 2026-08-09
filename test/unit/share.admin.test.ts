@@ -1,4 +1,4 @@
-import {access, mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises';
+import {access, mkdir, mkdtemp, readFile, rm, symlink, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {Effect} from 'effect';
@@ -13,6 +13,7 @@ import {
 import type {CommandResult, ShareRuntime, ShareTeamsFile} from '../../src/types.js';
 import * as utils from '../../src/utils.js';
 import {runEffect} from '../helpers/effect-runtime.js';
+import {captureConsole} from '../../src/effect/console.js';
 
 const runShareRemove = (...args: Parameters<typeof runShareRemoveEffect>) => runEffect(runShareRemoveEffect(...args));
 const runShareRename = (...args: Parameters<typeof runShareRenameEffect>) => runEffect(runShareRenameEffect(...args));
@@ -29,6 +30,7 @@ vi.mock('../../src/utils.js', async importOriginal => {
 });
 
 const ok = (stdout = ''): CommandResult => ({exitCode: 0, stderr: '', stdout});
+const sharedMemory = 'MEMORY\nkind: durable\nstatus: active\nvisibility: shared\n\nBody\n';
 
 async function makeRuntime(): Promise<ShareRuntime> {
   const home = await mkdtemp(join(tmpdir(), 'threadnote-share-admin-'));
@@ -36,10 +38,22 @@ async function makeRuntime(): Promise<ShareRuntime> {
   const gitdir = join(home, 'share', 'teams', 'default.gitdir');
   await mkdir(join(worktree, 'durable', 'projects', 'threadnote'), {recursive: true});
   await mkdir(gitdir, {recursive: true});
-  await writeFile(
-    join(worktree, 'durable', 'projects', 'threadnote', 'manager.md'),
-    'MEMORY\nkind: durable\nstatus: active\n\nBody\n',
+  await writeFile(join(worktree, 'durable', 'projects', 'threadnote', 'manager.md'), sharedMemory);
+  const canonical = join(
+    home,
+    'data',
+    'local',
+    'user',
+    'denys',
+    'memories',
+    'shared',
+    'default',
+    'durable',
+    'projects',
+    'threadnote',
   );
+  await mkdir(canonical, {recursive: true});
+  await writeFile(join(canonical, 'manager.md'), sharedMemory);
   await mkdir(join(home, 'share'), {recursive: true});
   await writeFile(
     join(home, 'share', 'teams.json'),
@@ -98,7 +112,28 @@ describe('share administration', () => {
     expect(teams.teams.default).toBeUndefined();
     await access(join(config.agentContextHome, 'share', 'worktrees', 'friends'));
     await access(join(config.agentContextHome, 'data', 'local', 'user', 'denys', 'memories', 'shared', 'friends'));
+    await expect(
+      access(join(config.agentContextHome, 'data', 'local', 'user', 'denys', 'memories', 'shared', 'default')),
+    ).rejects.toThrow();
     await access(join(config.agentContextHome, 'share', 'teams', 'friends.gitdir'));
+  });
+
+  it('reports a committed rename with a recovery warning when post-commit reindex fails', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    await writeFile(
+      join(config.agentContextHome, 'share', 'worktrees', 'default', 'durable', 'projects', 'threadnote', 'manager.md'),
+      `${sharedMemory}\nAKIAABCDEFGHIJKLMNOP\n`,
+    );
+
+    const result = await runEffect(captureConsole(runShareRenameEffect(config, {team: 'default', to: 'friends'})));
+
+    const teams = await readTeams(config);
+    expect(teams.teams.friends?.name).toBe('friends');
+    expect(teams.teams.default).toBeUndefined();
+    await access(join(config.agentContextHome, 'data', 'local', 'user', 'denys', 'memories', 'shared', 'default'));
+    expect(result.output).toContain('The rename is committed, but shared-context reindex did not complete');
+    expect(result.output).toContain('threadnote share sync --team friends');
   });
 
   it('changes the configured remote URL and verifies it with fetch', async () => {
@@ -249,25 +284,115 @@ describe('share administration', () => {
 
     const teams = await readTeams(config);
     expect(teams.teams.default).toBeUndefined();
-    await expect(
-      readFile(
-        join(
-          config.agentContextHome,
-          'data',
-          'local',
-          'user',
-          'denys',
-          'memories',
-          'durable',
-          'projects',
-          'threadnote',
-          'manager.md',
-        ),
-        'utf8',
+    const personal = await readFile(
+      join(
+        config.agentContextHome,
+        'data',
+        'local',
+        'user',
+        'denys',
+        'memories',
+        'durable',
+        'projects',
+        'threadnote',
+        'manager.md',
       ),
-    ).resolves.toContain('Body');
+      'utf8',
+    );
+    expect(personal).toContain('Body');
+    expect(personal).toContain('visibility: personal');
+    expect(personal).not.toContain('visibility: shared');
     await expect(
       access(join(config.agentContextHome, 'data', 'local', 'user', 'denys', 'memories', 'shared', 'default')),
     ).rejects.toThrow();
   });
+
+  it('removes canonical shared context by default and still removes it with keep-files', async () => {
+    for (const keepFiles of [false, true]) {
+      const config = await makeRuntime();
+      homes.push(config.agentContextHome);
+      const worktree = join(config.agentContextHome, 'share', 'worktrees', 'default');
+      const gitdir = join(config.agentContextHome, 'share', 'teams', 'default.gitdir');
+      const canonical = join(
+        config.agentContextHome,
+        'data',
+        'local',
+        'user',
+        'denys',
+        'memories',
+        'shared',
+        'default',
+      );
+
+      await runShareRemove(config, {keepFiles, team: 'default'});
+
+      await expect(access(canonical)).rejects.toThrow();
+      if (keepFiles) {
+        await access(worktree);
+        await access(gitdir);
+      } else {
+        await expect(access(worktree)).rejects.toThrow();
+        await expect(access(gitdir)).rejects.toThrow();
+      }
+    }
+  });
+
+  it('refuses differing preserve-local collisions in dry-run and apply before changing configuration', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    const personalPath = join(
+      config.agentContextHome,
+      'data',
+      'local',
+      'user',
+      'denys',
+      'memories',
+      'durable',
+      'projects',
+      'threadnote',
+      'manager.md',
+    );
+    await mkdir(join(personalPath, '..'), {recursive: true});
+    await writeFile(personalPath, 'MEMORY\nkind: durable\nstatus: active\nvisibility: personal\n\nNewer body\n');
+
+    await expect(runShareRemove(config, {dryRun: true, preserveLocal: true, team: 'default'})).rejects.toThrow(
+      'a different personal memory already exists',
+    );
+    expect((await readTeams(config)).teams.default).toBeDefined();
+    await expect(runShareRemove(config, {preserveLocal: true, team: 'default'})).rejects.toThrow(
+      'a different personal memory already exists',
+    );
+    expect((await readTeams(config)).teams.default).toBeDefined();
+    await expect(readFile(personalPath, 'utf8')).resolves.toContain('Newer body');
+  });
+
+  it.runIf(process.platform !== 'win32')(
+    'keeps a committed team removal successful when canonical cleanup fails',
+    async () => {
+      const config = await makeRuntime();
+      homes.push(config.agentContextHome);
+      const canonical = join(
+        config.agentContextHome,
+        'data',
+        'local',
+        'user',
+        'denys',
+        'memories',
+        'shared',
+        'default',
+      );
+      const outside = await mkdtemp(join(tmpdir(), 'threadnote-share-remove-outside-'));
+      homes.push(outside);
+      await writeFile(join(outside, 'keep.md'), 'outside');
+      await rm(canonical, {recursive: true});
+      await symlink(outside, canonical);
+
+      const result = await runEffect(captureConsole(runShareRemoveEffect(config, {team: 'default'})));
+
+      expect((await readTeams(config)).teams.default).toBeUndefined();
+      await expect(readFile(join(outside, 'keep.md'), 'utf8')).resolves.toBe('outside');
+      expect(result.output).toContain('removed from configuration, but its canonical shared-context cleanup');
+      expect(result.output).toContain('threadnote forget');
+    },
+  );
 });

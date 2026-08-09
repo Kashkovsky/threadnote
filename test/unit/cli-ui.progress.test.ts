@@ -1,12 +1,45 @@
 import {Console, Effect, Terminal} from 'effect';
 import {describe, expect, it} from 'vitest';
 import {promptForSelection, startProgress} from '../../src/cli_ui.js';
-import {CliOutput, withCliOutputConsole} from '../../src/effect/cli_output.js';
+import {CliOutput, makeQueuedCliWriter, withCliOutputConsole} from '../../src/effect/cli_output.js';
 import {captureConsole} from '../../src/effect/console.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {SystemInfo} from '../../src/effect/system.js';
 
 describe('CLI progress indicator', () => {
+  it('waits for a backpressured pipe write before flushing or closing it', async () => {
+    const events: string[] = [];
+    let releaseWrite: (() => void) | undefined;
+    const pendingWrite = new Promise<void>(resolve => {
+      releaseWrite = resolve;
+    });
+    const writer = makeQueuedCliWriter(() => ({
+      end: () => {
+        events.push('end');
+        return 0;
+      },
+      flush: () => {
+        events.push('flush');
+        return 0;
+      },
+      write: async output => {
+        events.push(`write:${output}`);
+        await pendingWrite;
+        events.push('written');
+        return output.length;
+      },
+    }));
+
+    const write = writer.write('complete-json');
+    await Promise.resolve();
+    expect(events).toEqual(['write:complete-json\n']);
+    releaseWrite?.();
+    await write;
+    await writer.drain();
+
+    expect(events).toEqual(['write:complete-json\n', 'written', 'flush', 'end']);
+  });
+
   it('renders each explicit milestone immediately in an interactive terminal', async () => {
     const displays: string[] = [];
     const system = await Effect.runPromise(SystemInfo.pipe(Effect.provide(ApplicationLayer)));

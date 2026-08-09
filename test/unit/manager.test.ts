@@ -1,9 +1,11 @@
+import {execFileSync} from 'node:child_process';
 import {existsSync} from 'node:fs';
 import {mkdir, mkdtemp, rm, stat, symlink, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {BunHttpServer} from '@effect/platform-bun';
-import {Console, Effect, Fiber, Path} from 'effect';
+import {it as effectIt} from '@effect/vitest';
+import {Console, Deferred, Effect, Fiber, Path} from 'effect';
 import {HttpServer} from 'effect/unstable/http';
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
 import {
@@ -28,8 +30,13 @@ import * as seeding from '../../src/seeding.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {codeGraphLayout} from '../../src/code_graph/layout.js';
 import {makeCodeGraphBuildReporter} from '../../src/code_graph/build_status.js';
+import {recordVerifiedCodeGraphLocalAssociation} from '../../src/code_graph/local_provenance.js';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
-import {withCodeGraphMaintenanceIntent} from '../../src/code_graph/maintenance_gate.js';
+import {
+  withCodeGraphMaintenanceIntent,
+  withCodeGraphTargetWorktreeLock,
+} from '../../src/code_graph/maintenance_gate.js';
+import {resolveRepositoryIdentity} from '../../src/code_graph/repository.js';
 import type {CodeGraphWorkspace} from '../../src/code_graph/languages/types.js';
 import {
   CODE_GRAPH_EXTRACTOR_SET_VERSION,
@@ -40,6 +47,9 @@ import {
   type RepositoryIdentity,
 } from '../../src/code_graph/types.js';
 import {runEffect} from '../helpers/effect-runtime.js';
+
+const MANAGER_GRAPH_SNAPSHOT_ID = `cgsn_${'1'.repeat(40)}`;
+const MANAGER_GRAPH_REPLACEMENT_SNAPSHOT_ID = `cgsn_${'2'.repeat(40)}`;
 
 vi.mock('../../src/lifecycle.js', async importOriginal => {
   const actual = await importOriginal<typeof import('../../src/lifecycle.js')>();
@@ -100,7 +110,7 @@ async function makeRuntime(): Promise<RuntimeConfig> {
   };
 }
 
-async function seedManagerGraph(config: RuntimeConfig): Promise<string> {
+async function seedManagerGraph(config: RuntimeConfig, snapshotId = MANAGER_GRAPH_SNAPSHOT_ID): Promise<string> {
   const checkoutId = 'a'.repeat(64);
   const identity: RepositoryIdentity = {
     caseMode: 'sensitive',
@@ -201,7 +211,7 @@ async function seedManagerGraph(config: RuntimeConfig): Promise<string> {
     edgeCount: edges.length,
     extractorSet: CODE_GRAPH_EXTRACTOR_SET_VERSION,
     fileCount: files.length,
-    id: 'manager-graph-snapshot',
+    id: snapshotId,
     repositoryId: identity.repositoryId,
     state: 'ready',
     symbolCount: symbols.length,
@@ -222,7 +232,7 @@ async function seedManagerGraph(config: RuntimeConfig): Promise<string> {
           yield* store.activateStaged(layout.databasePath, identity, snapshot);
         }),
       );
-      yield* store.promote(layout.databasePath, identity, snapshot.id, new Set([identity.worktreeId]));
+      yield* store.promote(layout.databasePath, identity, snapshot.id);
     }),
   );
   return checkoutId;
@@ -251,7 +261,7 @@ async function promoteManagerGraphReplacement(config: RuntimeConfig): Promise<st
     edgeCount: 0,
     extractorSet: CODE_GRAPH_EXTRACTOR_SET_VERSION,
     fileCount: 1,
-    id: 'manager-graph-snapshot-replacement',
+    id: MANAGER_GRAPH_REPLACEMENT_SNAPSHOT_ID,
     repositoryId: identity.repositoryId,
     state: 'ready',
     symbolCount: 1,
@@ -263,7 +273,7 @@ async function promoteManagerGraphReplacement(config: RuntimeConfig): Promise<st
       const store = yield* CodeGraphStore;
       const layout = codeGraphLayout(path, config.agentContextHome, identity.checkoutId, identity.worktreeId);
       yield* store.activate(layout.databasePath, identity, snapshot, [file], [symbol], []);
-      yield* store.promote(layout.databasePath, identity, snapshot.id, new Set([identity.worktreeId]));
+      yield* store.promote(layout.databasePath, identity, snapshot.id);
     }),
   );
   return snapshot.id;
@@ -372,6 +382,41 @@ async function startServer(
     close: () => Effect.runPromise(Fiber.interrupt(fiber)).then(() => undefined),
     url: await address,
   };
+}
+
+async function fetchManagerGraphActionWhenAvailable(url: string, init: RequestInit): Promise<Response> {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const response = await fetch(url, init);
+    if (response.status !== 409) return response;
+    const body = (await response.clone().json()) as {readonly code?: string; readonly retryAfterMilliseconds?: number};
+    if (body.code !== 'graph-view-busy' || attempt === 2) return response;
+    await new Promise(resolve => setTimeout(resolve, body.retryAfterMilliseconds ?? 1_000));
+  }
+  throw new Error('Manager graph action retry budget was exhausted.');
+}
+
+function initializeGitRepository(root: string): void {
+  execFileSync('git', ['init', '-q', root], {stdio: 'pipe'});
+  execFileSync(
+    'git',
+    [
+      '-C',
+      root,
+      '-c',
+      'user.name=Threadnote Test',
+      '-c',
+      'user.email=test@threadnote.local',
+      'commit',
+      '--allow-empty',
+      '-qm',
+      'fixture',
+    ],
+    {stdio: 'pipe'},
+  );
+}
+
+function differentGraphIdentity(value: string): string {
+  return `${value.startsWith('f') ? 'e' : 'f'}${value.slice(1)}`;
 }
 
 describe('manager catalog', () => {
@@ -635,6 +680,7 @@ describe('manager http API', () => {
           readonly id: string;
           readonly views: readonly {
             readonly id: string;
+            readonly localAssociation: {readonly available: boolean; readonly state: string};
             readonly projects: readonly {readonly id: string; readonly symbolCount: number}[];
           }[];
         }[];
@@ -648,6 +694,7 @@ describe('manager http API', () => {
       });
       expect(catalog.repositories[0]?.views[0]).toMatchObject({
         checkoutId: repositoryId,
+        localAssociation: {available: false, state: 'legacy-unknown'},
         worktreeId: 'c'.repeat(64),
       });
       expect(catalog.repositories[0]?.views[0]?.projects).toEqual(
@@ -655,19 +702,21 @@ describe('manager http API', () => {
       );
 
       const catalogPageResponse = await fetch(
-        `${server.url}/api/graphs/page?repository=${repositoryId}&snapshot=manager-graph-snapshot&offset=0&workspaceOffset=0&query=core`,
+        `${server.url}/api/graphs/page?repository=${repositoryId}&snapshot=${MANAGER_GRAPH_SNAPSHOT_ID}&offset=0&workspaceOffset=0&query=core`,
         {headers},
       );
       const catalogPage = (await catalogPageResponse.json()) as {
         readonly query: string;
         readonly repository: {
+          readonly localAssociation: {readonly available: boolean; readonly state: string};
           readonly projects: readonly {readonly id: string}[];
           readonly snapshot: {readonly id: string};
         };
       };
       expect(catalogPageResponse.status).toBe(200);
       expect(catalogPage.query).toBe('core');
-      expect(catalogPage.repository.snapshot.id).toBe('manager-graph-snapshot');
+      expect(catalogPage.repository.localAssociation).toEqual({available: false, state: 'legacy-unknown'});
+      expect(catalogPage.repository.snapshot.id).toBe(MANAGER_GRAPH_SNAPSHOT_ID);
       expect(catalogPage.repository.projects.map(project => project.id)).toEqual(['cgp_core']);
 
       const viewsPageResponse = await fetch(`${server.url}/api/graphs/views?repository=${repositoryId}&offset=0`, {
@@ -675,11 +724,20 @@ describe('manager http API', () => {
       });
       const viewsPage = (await viewsPageResponse.json()) as {
         readonly hasMore: boolean;
-        readonly repositories: readonly {readonly views: readonly {readonly id: string}[]}[];
+        readonly repositories: readonly {
+          readonly views: readonly {
+            readonly id: string;
+            readonly localAssociation: {readonly available: boolean; readonly state: string};
+          }[];
+        }[];
       };
       expect(viewsPageResponse.status).toBe(200);
       expect(viewsPage.hasMore).toBe(false);
       expect(viewsPage.repositories[0]?.views[0]?.id).toBe(`${repositoryId}.${'c'.repeat(64)}`);
+      expect(viewsPage.repositories[0]?.views[0]?.localAssociation).toEqual({
+        available: false,
+        state: 'legacy-unknown',
+      });
 
       const unpinnedCatalogPage = await fetch(`${server.url}/api/graphs/page?repository=${repositoryId}`, {headers});
       expect(unpinnedCatalogPage.status).toBe(500);
@@ -764,7 +822,7 @@ describe('manager http API', () => {
 
       const queryStartedAt = performance.now();
       const queryResponse = await fetch(
-        `${server.url}/api/graph/query?repository=${repositoryId}&snapshot=manager-graph-snapshot&query=${encodeURIComponent('App')}&nodeLimit=999999&edgeLimit=999999`,
+        `${server.url}/api/graph/query?repository=${repositoryId}&snapshot=${MANAGER_GRAPH_SNAPSHOT_ID}&query=${encodeURIComponent('App')}&nodeLimit=999999&edgeLimit=999999`,
         {headers},
       );
       const queryElapsedMilliseconds = performance.now() - queryStartedAt;
@@ -778,7 +836,7 @@ describe('manager http API', () => {
       };
       expect(queryResponse.status).toBe(200);
       expect(query.query).toMatchObject({matchedNodes: query.nodes.length, state: 'ready', text: 'App'});
-      expect(query.repository.snapshot.id).toBe('manager-graph-snapshot');
+      expect(query.repository.snapshot.id).toBe(MANAGER_GRAPH_SNAPSHOT_ID);
       expect(query.nodes).toEqual(expect.arrayContaining([expect.objectContaining({id: 'app'})]));
       expect(query.nodes.some(node => typeof node.score === 'number')).toBe(true);
       const queryNodeIds = new Set(query.nodes.map(node => node.id));
@@ -879,19 +937,25 @@ describe('manager http API', () => {
       const diagnostics = (await diagnosticsResponse.json()) as {
         readonly databases: readonly {
           readonly health: {readonly integrity: string};
-          readonly views: readonly unknown[];
+          readonly views: readonly {readonly localAssociation: {readonly available: boolean; readonly state: string}}[];
         }[];
         readonly mode: {readonly analyze: boolean; readonly deep: boolean};
         readonly summary: {readonly databaseCount: number; readonly readySnapshotCount: number};
         readonly type: string;
+        readonly version: number;
       };
       expect(diagnosticsResponse.status).toBe(200);
       expect(diagnostics).toMatchObject({
         mode: {analyze: true, deep: false},
         summary: {databaseCount: 1, readySnapshotCount: 1},
         type: 'code-graph-diagnostics',
+        version: 2,
       });
       expect(diagnostics.databases[0]).toMatchObject({health: {integrity: 'ok'}});
+      expect(diagnostics.databases[0]?.views[0]?.localAssociation).toEqual({
+        available: false,
+        state: 'legacy-unknown',
+      });
 
       const repairPreview = await fetch(`${server.url}/api/graphs/action`, {
         body: JSON.stringify({action: 'repair', dryRun: true}),
@@ -919,12 +983,31 @@ describe('manager http API', () => {
       expect(await refusedPurge.json()).toMatchObject({error: 'Set confirm=true for this action.'});
 
       const relativeTarget = await fetch(`${server.url}/api/graphs/action`, {
-        body: JSON.stringify({action: 'index', checkoutId: 'a'.repeat(64), cwd: '.', worktreeId: 'c'.repeat(64)}),
+        body: JSON.stringify({
+          action: 'index',
+          checkoutId: 'a'.repeat(64),
+          cwd: '.',
+          repositoryId: 'b'.repeat(64),
+          worktreeId: 'c'.repeat(64),
+        }),
         headers,
         method: 'POST',
       });
       expect(relativeTarget.status).toBe(500);
       expect(await relativeTarget.json()).toMatchObject({error: 'Supply cwd as an absolute local worktree path.'});
+
+      const missingRepositoryIdentity = await fetch(`${server.url}/api/graphs/action`, {
+        body: JSON.stringify({
+          action: 'index',
+          checkoutId: 'a'.repeat(64),
+          cwd: config.agentContextHome,
+          worktreeId: 'c'.repeat(64),
+        }),
+        headers,
+        method: 'POST',
+      });
+      expect(missingRepositoryIdentity.status).toBe(500);
+      expect(await missingRepositoryIdentity.json()).toMatchObject({error: 'Provide repositoryId.'});
 
       await mkdir(orphanedRoot, {recursive: true});
       await writeFile(join(orphanedRoot, 'graph-v3.sqlite'), 'incompatible disposable graph\n');
@@ -962,6 +1045,254 @@ describe('manager http API', () => {
     }
   });
 
+  it('previews and applies an exact authenticated graph view removal with an approval digest', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    const snapshotId = `cgsn_${'d'.repeat(40)}-direct`;
+    const checkoutId = await seedManagerGraph(config, snapshotId);
+    const worktreeId = 'c'.repeat(64);
+    const server = await startServer(config, 'secret');
+    try {
+      const headers = {authorization: 'Bearer secret', 'content-type': 'application/json'};
+      const target = {action: 'remove-view', checkoutId, expectedSnapshotId: snapshotId, worktreeId};
+      const unauthorized = await fetch(`${server.url}/api/graphs/action`, {
+        body: JSON.stringify({...target, dryRun: true}),
+        headers: {'content-type': 'application/json'},
+        method: 'POST',
+      });
+      expect(unauthorized.status).toBe(401);
+
+      const catalog = await fetch(`${server.url}/api/graphs`, {headers});
+      expect(catalog.status).toBe(200);
+      const preview = await fetch(`${server.url}/api/graphs/action`, {
+        body: JSON.stringify({...target, dryRun: true}),
+        headers,
+        method: 'POST',
+      });
+      const prepared = (await preview.json()) as {
+        readonly approvalDigest: string;
+        readonly output: string;
+        readonly result: {
+          readonly applied: boolean;
+          readonly state: string;
+          readonly type: string;
+          readonly version: number;
+        };
+      };
+      expect(preview.status).toBe(200);
+      expect(prepared).toMatchObject({
+        approvalDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
+        output: expect.stringContaining('Would remove native code graph view'),
+        result: {applied: false, state: 'ready', type: 'code-graph-view-removal', version: 1},
+      });
+      expect(JSON.stringify(prepared)).not.toContain(config.agentContextHome);
+
+      const refused = await fetch(`${server.url}/api/graphs/action`, {
+        body: JSON.stringify({...target, confirm: true}),
+        headers,
+        method: 'POST',
+      });
+      expect(refused.status).toBe(500);
+      expect(await refused.json()).toEqual({
+        error: 'Preview this exact graph view removal and provide its approval digest before applying.',
+      });
+
+      const applied = await fetch(`${server.url}/api/graphs/action`, {
+        body: JSON.stringify({...target, approvalDigest: prepared.approvalDigest, confirm: true}),
+        headers,
+        method: 'POST',
+      });
+      const result = (await applied.json()) as {
+        readonly approvalDigest: string;
+        readonly output: string;
+        readonly result: {readonly applied: boolean; readonly state: string};
+      };
+      expect(applied.status).toBe(200);
+      expect(result).toMatchObject({
+        approvalDigest: prepared.approvalDigest,
+        output: expect.stringContaining('Removed native code graph view'),
+        result: {applied: true, state: 'removed'},
+      });
+      expect(JSON.stringify(result)).not.toContain(config.agentContextHome);
+      const databasePath = join(
+        config.agentContextHome,
+        'indexes',
+        'code-graph',
+        'repositories',
+        checkoutId,
+        'graph-v3.sqlite',
+      );
+      const database = new (await import('bun:sqlite')).Database(databasePath, {readonly: true});
+      expect(database.query('SELECT COUNT(*) AS count FROM snapshot_leases').get()).toEqual({count: 0});
+      database.close();
+
+      const retried = await fetchManagerGraphActionWhenAvailable(`${server.url}/api/graphs/action`, {
+        body: JSON.stringify({...target, approvalDigest: prepared.approvalDigest, confirm: true}),
+        headers,
+        method: 'POST',
+      });
+      expect(retried.status).toBe(200);
+      expect(await retried.json()).toMatchObject({result: {applied: true, state: 'already-removed'}});
+
+      const stalePreview = await fetch(`${server.url}/api/graphs/action`, {
+        body: JSON.stringify({...target, dryRun: true, expectedSnapshotId: `cgsn_${'e'.repeat(40)}-direct`}),
+        headers,
+        method: 'POST',
+      });
+      expect(stalePreview.status).toBe(200);
+      const stale = await stalePreview.json();
+      expect(stale).toMatchObject({result: {observedState: 'removed', state: 'stale-target'}});
+      expect(JSON.stringify(stale)).not.toContain(config.agentContextHome);
+    } finally {
+      await server.close();
+    }
+  });
+
+  effectIt.effect('maps a busy graph view target to a fixed path-free retry response', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const config = yield* Effect.promise(makeRuntime);
+        homes.push(config.agentContextHome);
+        const snapshotId = `cgsn_${'f'.repeat(40)}-direct`;
+        const checkoutId = yield* Effect.promise(() => seedManagerGraph(config, snapshotId));
+        const worktreeId = 'c'.repeat(64);
+        const server = yield* Effect.promise(() => startServer(config, 'secret'));
+        const acquired = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        const owner = yield* withCodeGraphTargetWorktreeLock(
+          config.agentContextHome,
+          checkoutId,
+          worktreeId,
+          Deferred.succeed(acquired, undefined).pipe(Effect.andThen(Deferred.await(release))),
+        ).pipe(Effect.provide(ApplicationLayer), Effect.forkScoped);
+        yield* Effect.gen(function* () {
+          const headers = {authorization: 'Bearer secret', 'content-type': 'application/json'};
+          const target = {action: 'remove-view', checkoutId, expectedSnapshotId: snapshotId, worktreeId};
+          const preview = yield* Effect.promise(() =>
+            fetch(`${server.url}/api/graphs/action`, {
+              body: JSON.stringify({...target, dryRun: true}),
+              headers,
+              method: 'POST',
+            }),
+          );
+          const prepared = (yield* Effect.promise(() => preview.json())) as {readonly approvalDigest: string};
+          yield* Deferred.await(acquired);
+          const response = yield* Effect.promise(() =>
+            fetch(`${server.url}/api/graphs/action`, {
+              body: JSON.stringify({...target, approvalDigest: prepared.approvalDigest, confirm: true}),
+              headers,
+              method: 'POST',
+            }),
+          );
+          expect(response.status).toBe(409);
+          const busy = yield* Effect.promise(() => response.json());
+          expect(busy).toEqual({
+            code: 'graph-view-busy',
+            error: 'The selected graph view is busy. Retry after the active graph operation completes.',
+            retryAfterMilliseconds: 1_000,
+          });
+          expect(JSON.stringify(busy)).not.toContain(config.agentContextHome);
+        }).pipe(
+          Effect.ensuring(
+            Deferred.succeed(release, undefined).pipe(
+              Effect.andThen(Fiber.await(owner)),
+              Effect.andThen(Effect.promise(() => server.close())),
+            ),
+          ),
+        );
+      }),
+    ),
+  );
+
+  it('rejects mismatched Manager graph identities before a targeted action starts', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    const root = join(config.agentContextHome, 'manager-action-worktree');
+    initializeGitRepository(root);
+    const identity = await runEffect(resolveRepositoryIdentity(root));
+    const server = await startServer(config, 'secret');
+    try {
+      const headers = {authorization: 'Bearer secret', 'content-type': 'application/json'};
+      const expected = {
+        checkoutId: identity.checkoutId,
+        repositoryId: identity.repositoryId,
+        worktreeId: identity.worktreeId,
+      };
+      for (const component of ['checkoutId', 'repositoryId', 'worktreeId'] as const) {
+        const response = await fetch(`${server.url}/api/graphs/action`, {
+          body: JSON.stringify({
+            ...expected,
+            [component]: differentGraphIdentity(expected[component]),
+            action: 'index',
+            cwd: root,
+          }),
+          headers,
+          method: 'POST',
+        });
+        expect(response.status, component).toBe(500);
+        expect(await response.json(), component).toEqual({
+          error: 'The supplied worktree path does not match the selected graph identity.',
+        });
+      }
+
+      execFileSync('git', ['-C', root, 'remote', 'add', 'origin', 'https://example.com/changed.git'], {
+        stdio: 'pipe',
+      });
+      const changedOrigin = await fetch(`${server.url}/api/graphs/action`, {
+        body: JSON.stringify({...expected, action: 'compact', cwd: root, dryRun: true}),
+        headers,
+        method: 'POST',
+      });
+      expect(changedOrigin.status).toBe(500);
+      expect(await changedOrigin.json()).toEqual({
+        error: 'The supplied worktree path does not match the selected graph identity.',
+      });
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('live-revalidates fresh persisted and Manager graph target fallbacks after origin drift', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    const root = join(config.agentContextHome, 'manager-fallback-worktree');
+    initializeGitRepository(root);
+    const identity = await runEffect(resolveRepositoryIdentity(root));
+    await runEffect(
+      Effect.gen(function* () {
+        const path = yield* Path.Path;
+        const layout = codeGraphLayout(path, config.agentContextHome, identity.checkoutId, identity.worktreeId);
+        yield* recordVerifiedCodeGraphLocalAssociation(config.agentContextHome, identity);
+        const reporter = yield* makeCodeGraphBuildReporter(identity, layout);
+        yield* reporter.progress({phase: 'waiting'});
+      }),
+    );
+    execFileSync('git', ['-C', root, 'remote', 'add', 'origin', 'https://example.com/changed.git'], {
+      stdio: 'pipe',
+    });
+
+    const server = await startServer(config, 'secret');
+    try {
+      const response = await fetch(`${server.url}/api/graphs/action`, {
+        body: JSON.stringify({
+          action: 'compact',
+          checkoutId: identity.checkoutId,
+          dryRun: true,
+          repositoryId: identity.repositoryId,
+          worktreeId: identity.worktreeId,
+        }),
+        headers: {authorization: 'Bearer secret', 'content-type': 'application/json'},
+        method: 'POST',
+      });
+      expect(response.status).toBe(500);
+      expect(await response.json()).toEqual({
+        error: 'The selected graph has no current local worktree target. Supply cwd and refresh graph diagnostics.',
+      });
+    } finally {
+      await server.close();
+    }
+  });
+
   it('returns a busy response for graph APIs when maintenance starts after Manager', async () => {
     const config = await makeRuntime();
     homes.push(config.agentContextHome);
@@ -984,7 +1315,7 @@ describe('manager http API', () => {
     }
   });
 
-  it('pins graph, node detail, and analysis reads to the catalog snapshot across promotion', async () => {
+  it('rejects stale graph reads after promotion and serves the refreshed current view', async () => {
     const config = await makeRuntime();
     homes.push(config.agentContextHome);
     const checkoutId = await seedManagerGraph(config);
@@ -999,66 +1330,24 @@ describe('manager http API', () => {
       };
       const view = catalog.repositories[0]!.views[0]!;
       const originalSnapshotId = view.snapshot.id;
-      expect(originalSnapshotId).toBe('manager-graph-snapshot');
+      expect(originalSnapshotId).toBe(MANAGER_GRAPH_SNAPSHOT_ID);
       const replacementSnapshotId = await promoteManagerGraphReplacement(config);
-
-      const pinnedGraphResponse = await fetch(
+      const staleUrls = [
         `${server.url}/api/graph?repository=${checkoutId}&snapshot=${originalSnapshotId}&project=cgp_app`,
-        {headers},
-      );
-      const pinnedGraph = (await pinnedGraphResponse.json()) as {
-        readonly nodes: readonly {readonly id: string}[];
-        readonly repository: {readonly snapshot: {readonly id: string}};
-      };
-      expect(pinnedGraphResponse.status).toBe(200);
-      expect(pinnedGraph.repository.snapshot.id).toBe(originalSnapshotId);
-      expect(pinnedGraph.nodes).toEqual(expect.arrayContaining([expect.objectContaining({id: 'app'})]));
-
-      const pinnedNodeResponse = await fetch(
         `${server.url}/api/graph/node?repository=${checkoutId}&snapshot=${originalSnapshotId}&node=app`,
-        {headers},
-      );
-      const pinnedNode = (await pinnedNodeResponse.json()) as {readonly snapshotId: string};
-      expect(pinnedNodeResponse.status).toBe(200);
-      expect(pinnedNode.snapshotId).toBe(originalSnapshotId);
-
-      const pinnedAnalysisResponse = await fetch(
         `${server.url}/api/graph/analysis?repository=${checkoutId}&snapshot=${originalSnapshotId}`,
-        {headers},
-      );
-      const pinnedAnalysis = (await pinnedAnalysisResponse.json()) as {
-        readonly statistics: {readonly analyzedNodeCount: number};
-      };
-      expect(pinnedAnalysisResponse.status).toBe(200);
-      expect(pinnedAnalysis.statistics.analyzedNodeCount).toBe(523);
-
-      const pinnedQueryResponse = await fetch(
         `${server.url}/api/graph/query?repository=${checkoutId}&snapshot=${originalSnapshotId}&query=App`,
-        {headers},
-      );
-      const pinnedQuery = (await pinnedQueryResponse.json()) as {
-        readonly nodes: readonly {readonly id: string}[];
-        readonly repository: {readonly snapshot: {readonly id: string}};
-      };
-      expect(pinnedQueryResponse.status).toBe(200);
-      expect(pinnedQuery.repository.snapshot.id).toBe(originalSnapshotId);
-      expect(pinnedQuery.nodes).toEqual(expect.arrayContaining([expect.objectContaining({id: 'app'})]));
-
-      const pinnedCatalogPageResponse = await fetch(
         `${server.url}/api/graphs/page?repository=${checkoutId}&snapshot=${originalSnapshotId}&query=app`,
-        {headers},
-      );
-      const pinnedCatalogPage = (await pinnedCatalogPageResponse.json()) as {
-        readonly repository: {
-          readonly projects: readonly {readonly id: string}[];
-          readonly snapshot: {readonly id: string};
-        };
-      };
-      expect(pinnedCatalogPageResponse.status).toBe(200);
-      expect(pinnedCatalogPage.repository.snapshot.id).toBe(originalSnapshotId);
-      expect(pinnedCatalogPage.repository.projects).toEqual(
-        expect.arrayContaining([expect.objectContaining({id: 'cgp_app'})]),
-      );
+      ];
+      for (const url of staleUrls) {
+        const stale = await fetch(url, {headers});
+        expect(stale.status, url).toBe(409);
+        expect(await stale.json(), url).toEqual({
+          code: 'graph-view-stale',
+          error: 'The selected graph view changed or was removed. Refresh the graph catalog.',
+          retryAfterMilliseconds: 0,
+        });
+      }
 
       const currentGraph = (await (
         await fetch(`${server.url}/api/graph?repository=${checkoutId}&project=all`, {headers})

@@ -1,7 +1,9 @@
 import {Database} from 'bun:sqlite';
+import {it as effectIt} from '@effect/vitest';
 import {Deferred, Effect, Fiber, FileSystem, Option, Ref} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {afterEach, describe, expect, it} from 'vitest';
+import {TestClock} from 'effect/testing';
 import {
   cachedCodeGraphFactBytes,
   CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM,
@@ -9,39 +11,63 @@ import {
   finalCodeGraphFactBatches,
 } from '../../src/code_graph/fact_budget.js';
 import {createCachedCodeGraphFactsAttributor, factMaterializationBatches} from '../../src/code_graph/indexer.js';
+import {
+  CodeGraphDiskCapacityPressureError,
+  type CodeGraphDirectPersistentCapacityBoundary,
+} from '../../src/code_graph/disk_capacity.js';
+import type {CodeGraphWorkspace} from '../../src/code_graph/languages/types.js';
 import {augmentRationaleFacts} from '../../src/code_graph/rationale.js';
 import {
   CodeGraphStore,
+  codeGraphMaterializedShardAssociationPageStatement,
   codeGraphCompactLexicalDeepAuditStatement,
   codeGraphEffectiveSymbolTermsQueryStatement,
   codeGraphPersistedEndpointValidationPageStatement,
   codeGraphTermCandidateQueryStatement,
+  materializedFileShardIdentity,
   nextPersistentActivationBatchRows,
   sanitizeCodeGraphStoreDiagnostic,
   type CodeGraphActivationProgress,
+  type CodeGraphDirectPersistentCapacityProtector,
   type CodeGraphSqliteWriterSettings,
   type CodeGraphSqliteWriterTuning,
   type CodeGraphStagingProgress,
 } from '../../src/code_graph/store.js';
-import type {
-  CodeGraphEdge,
-  CodeGraphFileFacts,
-  CodeGraphInventoryFile,
-  CodeGraphReference,
-  CodeGraphSnapshot,
-  CodeGraphSymbol,
-  RepositoryIdentity,
+import {
+  CodeGraphStoreError,
+  CodeGraphStoreNoSpaceError,
+  type CodeGraphEdge,
+  type CodeGraphFileFacts,
+  type CodeGraphInventoryFile,
+  type CodeGraphReference,
+  type CodeGraphSnapshot,
+  type CodeGraphSymbol,
+  type RepositoryIdentity,
 } from '../../src/code_graph/types.js';
 import {discoverManifestWorkspace} from '../../src/code_graph/workspace.js';
 import {withExclusiveFileLock} from '../../src/effect/file_lock.js';
+import {ApplicationLayer} from '../../src/effect/runtime.js';
+import {claimPersistentBuildForTest} from '../helpers/code-graph-build.js';
 import {join, mkdtemp, rm} from '../helpers/effect-filesystem.js';
 import {runEffect} from '../helpers/effect-runtime.js';
 
 const temporaryRoots: string[] = [];
+const unprotectedCacheWrite: CodeGraphDirectPersistentCapacityProtector = (_boundary, transaction) => transaction;
 
 afterEach(async () => {
   await Promise.all(temporaryRoots.splice(0).map(root => rm(root, {force: true, recursive: true})));
 });
+
+function observedStoreFailure(cause: unknown) {
+  if (!(cause instanceof CodeGraphStoreError)) throw cause;
+  return {
+    code: cause.code,
+    message: cause.message,
+    operation: cause.operation,
+    recovery: cause.recovery,
+    retryable: cause.retryable,
+  };
+}
 
 describe('code graph full-build materialization store', () => {
   it('uses bounded in-memory pager surfaces for a persistent full-build writer', async () => {
@@ -53,7 +79,7 @@ describe('code graph full-build materialization store', () => {
           fixture.databasePath,
           Effect.gen(function* () {
             const snapshot = {...readySnapshot(fixture.identity, 0, 0), id: 'pager-configuration'};
-            const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+            const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
               ...snapshot,
               state: 'building',
             });
@@ -87,7 +113,7 @@ describe('code graph full-build materialization store', () => {
             yield* store.initialize(fixture.databasePath);
             const stored = symbol('sqlite-tuning-symbol', 'sqliteTuningSymbol', ['typescript:name:sqliteTuningSymbol']);
             const snapshot = {...readySnapshot(fixture.identity, 1, 0), id: 'sqlite-tuning-publication'};
-            const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+            const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
               ...snapshot,
               state: 'building',
             });
@@ -183,7 +209,7 @@ describe('code graph full-build materialization store', () => {
             fixture.databasePath,
             Effect.gen(function* () {
               yield* store.initialize(fixture.databasePath);
-              const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+              const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
                 ...snapshot,
                 state: 'building',
               });
@@ -320,7 +346,7 @@ describe('code graph full-build materialization store', () => {
           return yield* store.withSession(
             fixture.databasePath,
             Effect.gen(function* () {
-              const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+              const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
                 ...snapshot,
                 state: 'building',
               });
@@ -349,58 +375,885 @@ describe('code graph full-build materialization store', () => {
     },
   );
 
-  it('bounds raw alternate cache callers before SQLite persistence', async () => {
-    const fixture = await materializationFixture();
-    const root = {
-      ...symbol('cache-budget-module', 'cacheBudgetModule', ['typescript:name:cacheBudgetModule']),
-      documentation: `private-cache-sentinel ${'漢'.repeat(2_850_000)}`,
-      kind: 'module',
-    } satisfies CodeGraphSymbol;
-    const declaration = symbol('cache-budget-declaration', 'cacheBudgetDeclaration', [
-      'typescript:name:cacheBudgetDeclaration',
-    ]);
-    const declares = {
-      ...edge('cache-budget-declares', root, declaration.name),
-      relation: 'declares',
-      targetId: declaration.id,
-    } satisfies CodeGraphEdge;
-    const raw: CodeGraphFileFacts = {
-      diagnostics: [],
-      edges: [declares],
-      path: fixture.file.path,
-      symbols: [root, declaration],
-    };
+  effectIt.effect('bounds raw alternate cache callers before SQLite persistence', () =>
+    Effect.gen(function* () {
+      const fixture = yield* Effect.promise(materializationFixture);
+      const root = {
+        ...symbol('cache-budget-module', 'cacheBudgetModule', ['typescript:name:cacheBudgetModule']),
+        documentation: `private-cache-sentinel ${'漢'.repeat(2_850_000)}`,
+        kind: 'module',
+      } satisfies CodeGraphSymbol;
+      const declaration = symbol('cache-budget-declaration', 'cacheBudgetDeclaration', [
+        'typescript:name:cacheBudgetDeclaration',
+      ]);
+      const declares = {
+        ...edge('cache-budget-declares', root, declaration.name),
+        relation: 'declares',
+        targetId: declaration.id,
+      } satisfies CodeGraphEdge;
+      const raw: CodeGraphFileFacts = {
+        diagnostics: [],
+        edges: [declares],
+        path: fixture.file.path,
+        symbols: [root, declaration],
+      };
 
-    expect(new TextEncoder().encode(JSON.stringify(raw)).byteLength).toBeGreaterThan(
-      CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM,
-    );
-    await runEffect(
-      Effect.gen(function* () {
+      expect(new TextEncoder().encode(JSON.stringify(raw)).byteLength).toBeGreaterThan(
+        CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM,
+      );
+      {
         const store = yield* CodeGraphStore;
         // Deliberately bypass the indexer's branded fast path: the public store
         // boundary must budget an ordinary raw fact object on its own.
-        yield* store.cacheFacts(fixture.databasePath, [fixture.file], [raw], 'alternate-caller-cache');
-      }),
-    );
+        yield* store.cacheFacts(
+          fixture.databasePath,
+          [fixture.file],
+          [raw],
+          'alternate-caller-cache',
+          unprotectedCacheWrite,
+        );
+      }
 
-    const database = new Database(fixture.databasePath, {readonly: true, strict: true});
-    const row = database
-      .query(
-        `SELECT facts_json, length(CAST(facts_json AS BLOB)) AS facts_bytes
-         FROM file_blobs WHERE extractor_set = ? AND path_hint = ?`,
-      )
-      .get('alternate-caller-cache', fixture.file.path) as {readonly facts_bytes: number; readonly facts_json: string};
-    database.close(false);
-    const persisted = JSON.parse(row.facts_json) as CodeGraphFileFacts;
+      const row = yield* Effect.sync(() => {
+        const database = new Database(fixture.databasePath, {readonly: true, strict: true});
+        try {
+          return database
+            .query(
+              `SELECT facts_json, length(CAST(facts_json AS BLOB)) AS facts_bytes
+               FROM file_blobs WHERE extractor_set = ? AND path_hint = ?`,
+            )
+            .get('alternate-caller-cache', fixture.file.path) as {
+            readonly facts_bytes: number;
+            readonly facts_json: string;
+          };
+        } finally {
+          database.close(false);
+        }
+      });
+      const persisted = JSON.parse(row.facts_json) as CodeGraphFileFacts;
 
-    expect(row.facts_bytes).toBeLessThanOrEqual(CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM);
-    expect(row.facts_bytes).toBe(new TextEncoder().encode(row.facts_json).byteLength);
-    expect(persisted.symbols.map(value => value.id)).toEqual([root.id, declaration.id]);
-    expect(persisted.symbols.every(value => value.documentation === undefined)).toBe(true);
-    expect(persisted.edges).toEqual([declares]);
-    expect(persisted.diagnostics[0]).toMatch(/^Cached code graph facts exceeded the per-file persistence budget/);
-    expect(persisted.diagnostics[0]).not.toMatch(/private-cache-sentinel|materialization\.ts/);
-  });
+      expect(row.facts_bytes).toBeLessThanOrEqual(CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM);
+      expect(row.facts_bytes).toBe(new TextEncoder().encode(row.facts_json).byteLength);
+      expect(persisted.symbols.map(value => value.id)).toEqual([root.id, declaration.id]);
+      expect(persisted.symbols.every(value => value.documentation === undefined)).toBe(true);
+      expect(persisted.edges).toEqual([declares]);
+      expect(persisted.diagnostics[0]).toMatch(/^Cached code graph facts exceeded the per-file persistence budget/);
+      expect(persisted.diagnostics[0]).not.toMatch(/private-cache-sentinel|materialization\.ts/);
+    }).pipe(Effect.provide(ApplicationLayer)),
+  );
+
+  effectIt.effect(
+    'rejects mismatched and oversized cache plans before a receipt or writer starts',
+    () =>
+      Effect.gen(function* () {
+        const fixture = yield* Effect.promise(materializationFixture);
+        const store = yield* CodeGraphStore;
+        yield* store.initialize(fixture.databasePath);
+        let receipts = 0;
+        let writers = 0;
+        const protector: CodeGraphDirectPersistentCapacityProtector = (_boundary, transaction) => {
+          receipts += 1;
+          return transaction;
+        };
+        const mismatch = yield* store
+          .withSession(
+            fixture.databasePath,
+            store.cacheFacts(
+              fixture.databasePath,
+              [fixture.file],
+              [{diagnostics: [], edges: [], path: 'src/mismatch.ts', symbols: []}],
+              'mismatched-cache-plan',
+              protector,
+            ),
+            {
+              onWriterAcquired: () =>
+                Effect.sync(() => {
+                  writers += 1;
+                }),
+              writerLockPath: join(fixture.root, 'cache-plan-writer.lock'),
+            },
+          )
+          .pipe(Effect.flip);
+        expect(mismatch).toBeInstanceOf(CodeGraphStoreError);
+        expect(mismatch.message).toMatch(/inputs are inconsistent/u);
+
+        const oversizedExtractor = 'x'.repeat(32 * 1_048_576 + 1);
+        const oversized = yield* store
+          .withSession(
+            fixture.databasePath,
+            store.cacheFacts(
+              fixture.databasePath,
+              [fixture.file],
+              [{diagnostics: [], edges: [], path: fixture.file.path, symbols: []}],
+              oversizedExtractor,
+              protector,
+            ),
+            {
+              onWriterAcquired: () =>
+                Effect.sync(() => {
+                  writers += 1;
+                }),
+              writerLockPath: join(fixture.root, 'cache-plan-writer.lock'),
+            },
+          )
+          .pipe(Effect.flip);
+        expect(oversized).toBeInstanceOf(CodeGraphStoreError);
+        expect(oversized.message).toMatch(/payload ceiling/u);
+        expect(oversized.message).not.toContain(fixture.file.path);
+        expect(oversized.message.length).toBeLessThan(512);
+        expect(receipts).toBe(0);
+        expect(writers).toBe(0);
+      }).pipe(Effect.provide(ApplicationLayer)),
+    30_000,
+  );
+
+  effectIt.effect('fails closed on non-text shard repair metadata before a receipt or writer starts', () =>
+    Effect.gen(function* () {
+      const fixture = yield* Effect.promise(materializationFixture);
+      const store = yield* CodeGraphStore;
+      const extractorSet = 'materialized-shard-corrupt-metadata';
+      const derivationIdentity = 'materialized-shard-corrupt-metadata-v1';
+      const canonicalId = materializedFileShardIdentity(
+        fixture.file.contentHash,
+        extractorSet,
+        derivationIdentity,
+        fixture.file.path,
+      );
+      const requested = {
+        diagnostics: ['requested after corrupt metadata'],
+        edges: [],
+        path: fixture.file.path,
+        symbols: [],
+      } satisfies CodeGraphFileFacts;
+      const snapshotId = 'corrupt-shard-association-snapshot';
+      yield* store.initialize(fixture.databasePath);
+      let receipts = 0;
+      let writers = 0;
+      const protector: CodeGraphDirectPersistentCapacityProtector = (_boundary, transaction) => {
+        receipts += 1;
+        return transaction;
+      };
+      const cache = () =>
+        store.withSession(
+          fixture.databasePath,
+          Effect.gen(function* () {
+            yield* store.initialize(fixture.databasePath);
+            writers = 0;
+            return yield* store.cacheMaterializedFileShards(
+              fixture.databasePath,
+              [fixture.file],
+              [requested],
+              extractorSet,
+              derivationIdentity,
+              protector,
+            );
+          }),
+          {
+            onWriterAcquired: () =>
+              Effect.sync(() => {
+                writers += 1;
+              }),
+            writerLockPath: join(fixture.root, 'corrupt-shard-writer.lock'),
+          },
+        );
+
+      yield* Effect.sync(() => {
+        const database = new Database(fixture.databasePath, {strict: true});
+        try {
+          database
+            .query(
+              `INSERT INTO materialized_file_shards (
+                 id, content_hash, extractor_set, derivation_identity, path_hint,
+                 facts_json, created_at, last_used_at
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            )
+            .run(
+              canonicalId,
+              'x'.repeat(64),
+              `${extractorSet}-wrong`,
+              `${derivationIdentity}-wrong`,
+              'corrupt/canonical-id.ts',
+              JSON.stringify(requested),
+              new Uint8Array([1, 2, 3]),
+              '2026-08-09T00:00:00.000Z',
+            );
+        } finally {
+          database.close(false);
+        }
+      });
+      const corruptMetadata = yield* cache().pipe(Effect.flip);
+      expect(corruptMetadata).toBeInstanceOf(CodeGraphStoreError);
+      expect(corruptMetadata.message).toBe('Materialized file shard metadata is invalid.');
+      expect(corruptMetadata.message).not.toContain(fixture.file.path);
+      expect(receipts).toBe(0);
+      expect(writers).toBe(0);
+
+      yield* store.markBuilding(fixture.databasePath, fixture.identity, {
+        ...readySnapshot(fixture.identity, 0, 0),
+        id: snapshotId,
+        state: 'building',
+      });
+      yield* Effect.sync(() => {
+        const database = new Database(fixture.databasePath, {strict: true});
+        try {
+          database.query('DELETE FROM materialized_file_shards WHERE id = ?').run(canonicalId);
+          const conflictId = 'cgfs_corrupt-association-conflict';
+          database
+            .query(
+              `INSERT INTO materialized_file_shards (
+                 id, content_hash, extractor_set, derivation_identity, path_hint,
+                 facts_json, created_at, last_used_at
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            )
+            .run(
+              conflictId,
+              fixture.file.contentHash,
+              extractorSet,
+              derivationIdentity,
+              fixture.file.path,
+              JSON.stringify(requested),
+              '2026-08-09T00:00:00.000Z',
+              '2026-08-09T00:00:00.000Z',
+            );
+          database
+            .query('INSERT INTO snapshot_file_shards (snapshot_id, path, shard_id) VALUES (?, ?, ?)')
+            .run(snapshotId, new Uint8Array([4, 5, 6]), conflictId);
+        } finally {
+          database.close(false);
+        }
+      });
+      const corruptAssociation = yield* cache().pipe(Effect.flip);
+      expect(corruptAssociation).toBeInstanceOf(CodeGraphStoreError);
+      expect(corruptAssociation.message).toBe('Materialized file shard association metadata is invalid.');
+      expect(corruptAssociation.message).not.toContain(fixture.file.path);
+      expect(receipts).toBe(0);
+      expect(writers).toBe(0);
+    }).pipe(Effect.provide(ApplicationLayer)),
+  );
+
+  effectIt.effect('rejects and repairs materialized shard rows with inconsistent identities', () =>
+    Effect.gen(function* () {
+      const fixture = yield* Effect.promise(materializationFixture);
+      const secondFile: CodeGraphInventoryFile = {
+        ...fixture.file,
+        blobId: 'd'.repeat(40),
+        contentHash: 'i'.repeat(64),
+        path: 'src/other.ts',
+      };
+      const files = [fixture.file, secondFile];
+      const facts = files.map(
+        file => ({diagnostics: [], edges: [], path: file.path, symbols: []}) satisfies CodeGraphFileFacts,
+      );
+      const expectedPaths = files.map(file => file.path).sort();
+      const extractorSet = 'materialized-shard-identity';
+      const derivationIdentity = 'materialized-shard-derivation';
+      const store = yield* CodeGraphStore;
+      const load = () =>
+        store.loadMaterializedFileShards(fixture.databasePath, files, extractorSet, derivationIdentity);
+      const cache = () =>
+        store.cacheMaterializedFileShards(
+          fixture.databasePath,
+          files,
+          facts,
+          extractorSet,
+          derivationIdentity,
+          unprotectedCacheWrite,
+        );
+      const expectOnlySecondFile = (loaded: Effect.Success<ReturnType<typeof load>>) => {
+        expect([...loaded.facts.entries()].map(([path, value]) => [path, value.path])).toEqual([
+          [secondFile.path, secondFile.path],
+        ]);
+        expect(loaded.keys ? [...loaded.keys] : undefined).toEqual([secondFile.path]);
+        expect(loaded.bytesByPath ? [...loaded.bytesByPath.keys()] : undefined).toEqual([secondFile.path]);
+        expect(loaded.bytes).toBe(loaded.bytesByPath?.get(secondFile.path));
+        expect(loaded.bytes).toBeGreaterThan(0);
+      };
+
+      yield* cache();
+      yield* Effect.sync(() => {
+        const database = new Database(fixture.databasePath, {strict: true});
+        try {
+          database
+            .query(
+              `UPDATE materialized_file_shards
+               SET facts_json = (
+                 SELECT facts_json FROM materialized_file_shards WHERE path_hint = ?
+               )
+               WHERE path_hint = ?`,
+            )
+            .run(secondFile.path, fixture.file.path);
+        } finally {
+          database.close(false);
+        }
+      });
+
+      expectOnlySecondFile(yield* load());
+      yield* cache();
+      expect([...(yield* load()).facts.keys()].sort()).toEqual(expectedPaths);
+
+      const corruptedId = 'cgfs_corrupted-materialized-shard-identity';
+      yield* Effect.sync(() => {
+        const database = new Database(fixture.databasePath, {strict: true});
+        try {
+          database
+            .query('UPDATE materialized_file_shards SET id = ? WHERE path_hint = ?')
+            .run(corruptedId, fixture.file.path);
+        } finally {
+          database.close(false);
+        }
+      });
+
+      expectOnlySecondFile(yield* load());
+      yield* cache();
+      const repaired = yield* load();
+      expect([...repaired.facts.keys()].sort()).toEqual(expectedPaths);
+      yield* Effect.sync(() => {
+        const database = new Database(fixture.databasePath, {readonly: true, strict: true});
+        try {
+          expect(
+            database
+              .query<{readonly id: string}, [string]>('SELECT id FROM materialized_file_shards WHERE path_hint = ?')
+              .get(fixture.file.path),
+          ).toEqual({
+            id: materializedFileShardIdentity(
+              fixture.file.contentHash,
+              extractorSet,
+              derivationIdentity,
+              fixture.file.path,
+            ),
+          });
+        } finally {
+          database.close(false);
+        }
+      });
+    }).pipe(Effect.provide(ApplicationLayer)),
+  );
+
+  effectIt.effect('replans a normal shard upsert when a tuple collision arrives before the writer', () =>
+    Effect.gen(function* () {
+      const fixture = yield* Effect.promise(materializationFixture);
+      const store = yield* CodeGraphStore;
+      const extractorSet = 'materialized-shard-normal-race';
+      const derivationIdentity = 'materialized-shard-normal-race-v1';
+      const requested = {
+        diagnostics: ['requested canonical payload'],
+        edges: [],
+        path: fixture.file.path,
+        symbols: [],
+      } satisfies CodeGraphFileFacts;
+      const wrongId = 'cgfs_normal-race-wrong-id';
+      let reservations = 0;
+      const protector: CodeGraphDirectPersistentCapacityProtector = (_boundary, transaction) =>
+        Effect.gen(function* () {
+          reservations += 1;
+          if (reservations === 1) {
+            yield* Effect.sync(() => {
+              const database = new Database(fixture.databasePath, {strict: true});
+              try {
+                database
+                  .query(
+                    `INSERT INTO materialized_file_shards (
+                       id, content_hash, extractor_set, derivation_identity, path_hint,
+                       facts_json, created_at, last_used_at
+                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+                  )
+                  .run(
+                    wrongId,
+                    fixture.file.contentHash,
+                    extractorSet,
+                    derivationIdentity,
+                    fixture.file.path,
+                    JSON.stringify({...requested, diagnostics: ['racing collision']}),
+                    '2026-08-09T00:00:00.000Z',
+                    '2026-08-09T00:00:00.000Z',
+                  );
+              } finally {
+                database.close(false);
+              }
+            });
+          }
+          return yield* transaction;
+        });
+
+      yield* store.cacheMaterializedFileShards(
+        fixture.databasePath,
+        [fixture.file],
+        [requested],
+        extractorSet,
+        derivationIdentity,
+        protector,
+      );
+
+      const loaded = yield* store.loadMaterializedFileShards(
+        fixture.databasePath,
+        [fixture.file],
+        extractorSet,
+        derivationIdentity,
+      );
+      expect(reservations).toBe(2);
+      expect(loaded.facts.get(fixture.file.path)?.diagnostics).toEqual(['requested canonical payload']);
+      yield* Effect.sync(() => {
+        const database = new Database(fixture.databasePath, {readonly: true, strict: true});
+        try {
+          expect(
+            database.query('SELECT COUNT(*) AS count FROM materialized_file_shards WHERE id = ?').get(wrongId),
+          ).toEqual({count: 0});
+        } finally {
+          database.close(false);
+        }
+      });
+    }).pipe(Effect.provide(ApplicationLayer)),
+  );
+
+  effectIt.effect('still writes requested facts when a competing repair makes the frozen collision normal', () =>
+    Effect.gen(function* () {
+      const fixture = yield* Effect.promise(materializationFixture);
+      const store = yield* CodeGraphStore;
+      const extractorSet = 'materialized-shard-repair-race';
+      const derivationIdentity = 'materialized-shard-repair-race-v1';
+      const canonicalId = materializedFileShardIdentity(
+        fixture.file.contentHash,
+        extractorSet,
+        derivationIdentity,
+        fixture.file.path,
+      );
+      const wrongId = 'cgfs_repair-race-wrong-id';
+      const requested = {
+        diagnostics: ['requested after competing repair'],
+        edges: [],
+        path: fixture.file.path,
+        symbols: [],
+      } satisfies CodeGraphFileFacts;
+      yield* store.initialize(fixture.databasePath);
+      yield* Effect.sync(() => {
+        const database = new Database(fixture.databasePath, {strict: true});
+        try {
+          database
+            .query(
+              `INSERT INTO materialized_file_shards (
+                 id, content_hash, extractor_set, derivation_identity, path_hint,
+                 facts_json, created_at, last_used_at
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            )
+            .run(
+              wrongId,
+              fixture.file.contentHash,
+              extractorSet,
+              derivationIdentity,
+              fixture.file.path,
+              JSON.stringify({...requested, diagnostics: ['initial collision']}),
+              '2026-08-09T00:00:00.000Z',
+              '2026-08-09T00:00:00.000Z',
+            );
+        } finally {
+          database.close(false);
+        }
+      });
+      let reservations = 0;
+      const protector: CodeGraphDirectPersistentCapacityProtector = (_boundary, transaction) =>
+        Effect.gen(function* () {
+          reservations += 1;
+          if (reservations === 1) {
+            yield* Effect.sync(() => {
+              const database = new Database(fixture.databasePath, {strict: true});
+              try {
+                database.query('DELETE FROM materialized_file_shards WHERE id = ?').run(wrongId);
+                database
+                  .query(
+                    `INSERT INTO materialized_file_shards (
+                       id, content_hash, extractor_set, derivation_identity, path_hint,
+                       facts_json, created_at, last_used_at
+                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+                  )
+                  .run(
+                    canonicalId,
+                    fixture.file.contentHash,
+                    extractorSet,
+                    derivationIdentity,
+                    fixture.file.path,
+                    JSON.stringify({...requested, diagnostics: ['competing stale payload']}),
+                    '2026-08-09T00:00:00.000Z',
+                    '2026-08-09T00:00:00.000Z',
+                  );
+              } finally {
+                database.close(false);
+              }
+            });
+          }
+          return yield* transaction;
+        });
+
+      yield* store.cacheMaterializedFileShards(
+        fixture.databasePath,
+        [fixture.file],
+        [requested],
+        extractorSet,
+        derivationIdentity,
+        protector,
+      );
+
+      const loaded = yield* store.loadMaterializedFileShards(
+        fixture.databasePath,
+        [fixture.file],
+        extractorSet,
+        derivationIdentity,
+      );
+      expect(reservations).toBe(2);
+      expect(loaded.facts.get(fixture.file.path)?.diagnostics).toEqual(['requested after competing repair']);
+    }).pipe(Effect.provide(ApplicationLayer)),
+  );
+
+  effectIt.effect(
+    'drains high-cardinality two-row shard collisions in exact bounded transactions',
+    () =>
+      Effect.gen(function* () {
+        const fixture = yield* Effect.promise(materializationFixture);
+        const store = yield* CodeGraphStore;
+        const extractorSet = 'materialized-shard-high-cardinality';
+        const derivationIdentity = 'materialized-shard-high-cardinality-v1';
+        const canonicalId = materializedFileShardIdentity(
+          fixture.file.contentHash,
+          extractorSet,
+          derivationIdentity,
+          fixture.file.path,
+        );
+        const tupleConflictId = 'cgfs_high-cardinality-tuple-conflict';
+        const unrelatedShardId = 'cgfs_high-cardinality-unrelated';
+        const targetSnapshotId = 'high-cardinality-target-snapshot';
+        const unrelatedSnapshotId = 'high-cardinality-unrelated-snapshot';
+        const requested = {
+          diagnostics: ['canonical after bounded drain'],
+          edges: [],
+          path: fixture.file.path,
+          symbols: [],
+        } satisfies CodeGraphFileFacts;
+        yield* store.initialize(fixture.databasePath);
+        yield* store.markBuilding(fixture.databasePath, fixture.identity, {
+          ...readySnapshot(fixture.identity, 0, 0),
+          id: targetSnapshotId,
+          state: 'building',
+        });
+        yield* store.markBuilding(fixture.databasePath, fixture.identity, {
+          ...readySnapshot(fixture.identity, 0, 0),
+          id: unrelatedSnapshotId,
+          state: 'building',
+        });
+        yield* Effect.sync(() => {
+          const database = new Database(fixture.databasePath, {strict: true});
+          const insertShard = database.prepare(
+            `INSERT INTO materialized_file_shards (
+             id, content_hash, extractor_set, derivation_identity, path_hint,
+             facts_json, created_at, last_used_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          );
+          const insertAssociation = database.prepare(
+            'INSERT INTO snapshot_file_shards (snapshot_id, path, shard_id) VALUES (?, ?, ?)',
+          );
+          try {
+            database.transaction(() => {
+              insertShard.run(
+                canonicalId,
+                'x'.repeat(64),
+                `${extractorSet}-wrong`,
+                `${derivationIdentity}-wrong`,
+                'corrupt/canonical-id.ts',
+                JSON.stringify({...requested, path: 'corrupt/canonical-id.ts'}),
+                '2026-08-09T00:00:00.000Z',
+                '2026-08-09T00:00:00.000Z',
+              );
+              insertShard.run(
+                tupleConflictId,
+                fixture.file.contentHash,
+                extractorSet,
+                derivationIdentity,
+                fixture.file.path,
+                JSON.stringify({...requested, diagnostics: ['tuple conflict']}),
+                '2026-08-09T00:00:00.000Z',
+                '2026-08-09T00:00:00.000Z',
+              );
+              insertShard.run(
+                unrelatedShardId,
+                'u'.repeat(64),
+                extractorSet,
+                derivationIdentity,
+                'src/unrelated.ts',
+                JSON.stringify({...requested, path: 'src/unrelated.ts'}),
+                '2026-08-09T00:00:00.000Z',
+                '2026-08-09T00:00:00.000Z',
+              );
+              for (let index = 0; index < 1_025; index += 1) {
+                insertAssociation.run(
+                  targetSnapshotId,
+                  `target/${index.toString().padStart(4, '0')}.ts`,
+                  index % 2 === 0 ? canonicalId : tupleConflictId,
+                );
+                insertAssociation.run(
+                  unrelatedSnapshotId,
+                  `unrelated/${index.toString().padStart(4, '0')}.ts`,
+                  unrelatedShardId,
+                );
+              }
+            })();
+            database.exec('CREATE TABLE cache_capacity_mutations (kind TEXT NOT NULL)');
+            database.exec(
+              `CREATE TRIGGER cache_capacity_association_delete
+             AFTER DELETE ON snapshot_file_shards
+             BEGIN INSERT INTO cache_capacity_mutations(kind) VALUES ('association-delete'); END`,
+            );
+            database.exec(
+              `CREATE TRIGGER cache_capacity_shard_delete
+             AFTER DELETE ON materialized_file_shards
+             BEGIN INSERT INTO cache_capacity_mutations(kind) VALUES ('shard-delete'); END`,
+            );
+            database.exec(
+              `CREATE TRIGGER cache_capacity_shard_insert
+             AFTER INSERT ON materialized_file_shards
+             BEGIN INSERT INTO cache_capacity_mutations(kind) VALUES ('shard-insert'); END`,
+            );
+          } finally {
+            database.close(false);
+          }
+        });
+        const boundaries: CodeGraphDirectPersistentCapacityBoundary[] = [];
+        const protector: CodeGraphDirectPersistentCapacityProtector = (boundary, transaction) =>
+          Effect.gen(function* () {
+            const before = yield* Effect.sync(() => mutationCount(fixture.databasePath));
+            const result = yield* transaction;
+            const after = yield* Effect.sync(() => mutationCount(fixture.databasePath));
+            boundaries.push(boundary);
+            expect(after - before).toBe(boundary.rowCount);
+            return result;
+          });
+
+        yield* store.cacheMaterializedFileShards(
+          fixture.databasePath,
+          [fixture.file],
+          [requested],
+          extractorSet,
+          derivationIdentity,
+          protector,
+        );
+
+        expect(boundaries.map(boundary => boundary.rowCount)).toEqual([512, 512, 1, 3]);
+        expect(
+          boundaries.every(
+            boundary =>
+              boundary.operation === 'cache materialized code graph file shards' &&
+              boundary.rowCount <= 512 &&
+              boundary.finalFactBytes <= 32 * 1_048_576,
+          ),
+        ).toBe(true);
+        const loaded = yield* store.loadMaterializedFileShards(
+          fixture.databasePath,
+          [fixture.file],
+          extractorSet,
+          derivationIdentity,
+        );
+        expect(loaded.facts.get(fixture.file.path)?.diagnostics).toEqual(['canonical after bounded drain']);
+        yield* Effect.sync(() => {
+          const database = new Database(fixture.databasePath, {readonly: true, strict: true});
+          try {
+            expect(
+              database
+                .query('SELECT COUNT(*) AS count FROM snapshot_file_shards WHERE snapshot_id = ?')
+                .get(targetSnapshotId),
+            ).toEqual({count: 0});
+            expect(
+              database
+                .query('SELECT COUNT(*) AS count FROM snapshot_file_shards WHERE snapshot_id = ?')
+                .get(unrelatedSnapshotId),
+            ).toEqual({count: 1_025});
+            expect(
+              database
+                .query('SELECT COUNT(*) AS count FROM materialized_file_shards WHERE id = ?')
+                .get(unrelatedShardId),
+            ).toEqual({count: 1});
+          } finally {
+            database.close(false);
+          }
+        });
+      }).pipe(Effect.provide(ApplicationLayer)),
+    30_000,
+  );
+
+  effectIt.effect('replans a frozen shard association drain when its targeted set grows', () =>
+    Effect.gen(function* () {
+      const fixture = yield* Effect.promise(materializationFixture);
+      const store = yield* CodeGraphStore;
+      const extractorSet = 'materialized-shard-association-race';
+      const derivationIdentity = 'materialized-shard-association-race-v1';
+      const conflictId = 'cgfs_association-race-conflict';
+      const snapshotId = 'association-race-snapshot';
+      const requested = {
+        diagnostics: ['canonical after association replan'],
+        edges: [],
+        path: fixture.file.path,
+        symbols: [],
+      } satisfies CodeGraphFileFacts;
+      yield* store.initialize(fixture.databasePath);
+      yield* store.markBuilding(fixture.databasePath, fixture.identity, {
+        ...readySnapshot(fixture.identity, 0, 0),
+        id: snapshotId,
+        state: 'building',
+      });
+      yield* Effect.sync(() => {
+        const database = new Database(fixture.databasePath, {strict: true});
+        try {
+          database
+            .query(
+              `INSERT INTO materialized_file_shards (
+                 id, content_hash, extractor_set, derivation_identity, path_hint,
+                 facts_json, created_at, last_used_at
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            )
+            .run(
+              conflictId,
+              fixture.file.contentHash,
+              extractorSet,
+              derivationIdentity,
+              fixture.file.path,
+              JSON.stringify({...requested, diagnostics: ['collision']}),
+              '2026-08-09T00:00:00.000Z',
+              '2026-08-09T00:00:00.000Z',
+            );
+          database
+            .query('INSERT INTO snapshot_file_shards (snapshot_id, path, shard_id) VALUES (?, ?, ?)')
+            .run(snapshotId, 'target/a.ts', conflictId);
+          database.exec('CREATE TABLE association_race_deletes (path TEXT NOT NULL)');
+          database.exec(
+            `CREATE TRIGGER association_race_delete
+             AFTER DELETE ON snapshot_file_shards
+             BEGIN INSERT INTO association_race_deletes(path) VALUES (old.path); END`,
+          );
+        } finally {
+          database.close(false);
+        }
+      });
+      const boundaries: CodeGraphDirectPersistentCapacityBoundary[] = [];
+      const protector: CodeGraphDirectPersistentCapacityProtector = (boundary, transaction) =>
+        Effect.gen(function* () {
+          boundaries.push(boundary);
+          if (boundaries.length === 1) {
+            yield* Effect.sync(() => {
+              const database = new Database(fixture.databasePath, {strict: true});
+              try {
+                database
+                  .query('INSERT INTO snapshot_file_shards (snapshot_id, path, shard_id) VALUES (?, ?, ?)')
+                  .run(snapshotId, 'target/b.ts', conflictId);
+              } finally {
+                database.close(false);
+              }
+            });
+          }
+          return yield* transaction;
+        });
+
+      yield* store.cacheMaterializedFileShards(
+        fixture.databasePath,
+        [fixture.file],
+        [requested],
+        extractorSet,
+        derivationIdentity,
+        protector,
+      );
+
+      expect(boundaries.map(boundary => boundary.rowCount)).toEqual([1, 2, 2]);
+      yield* Effect.sync(() => {
+        const database = new Database(fixture.databasePath, {readonly: true, strict: true});
+        try {
+          expect(database.query('SELECT COUNT(*) AS count FROM association_race_deletes').get()).toEqual({count: 2});
+          expect(
+            database.query('SELECT COUNT(*) AS count FROM snapshot_file_shards WHERE snapshot_id = ?').get(snapshotId),
+          ).toEqual({count: 0});
+        } finally {
+          database.close(false);
+        }
+      });
+      const loaded = yield* store.loadMaterializedFileShards(
+        fixture.databasePath,
+        [fixture.file],
+        extractorSet,
+        derivationIdentity,
+      );
+      expect(loaded.facts.get(fixture.file.path)?.diagnostics).toEqual(['canonical after association replan']);
+    }).pipe(Effect.provide(ApplicationLayer)),
+  );
+
+  effectIt.effect('reads a repair association count and page from one frozen SQLite snapshot', () =>
+    Effect.gen(function* () {
+      const fixture = yield* Effect.promise(materializationFixture);
+      const store = yield* CodeGraphStore;
+      const snapshotId = 'association-page-snapshot';
+      const shardId = 'cgfs_association-page-conflict';
+      yield* store.initialize(fixture.databasePath);
+      yield* store.markBuilding(fixture.databasePath, fixture.identity, {
+        ...readySnapshot(fixture.identity, 0, 0),
+        id: snapshotId,
+        state: 'building',
+      });
+      yield* Effect.sync(() => {
+        const seeded = new Database(fixture.databasePath, {strict: true});
+        try {
+          seeded
+            .query(
+              `INSERT INTO materialized_file_shards (
+                 id, content_hash, extractor_set, derivation_identity, path_hint,
+                 facts_json, created_at, last_used_at
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            )
+            .run(
+              shardId,
+              fixture.file.contentHash,
+              'association-page-extractor',
+              'association-page-derivation',
+              fixture.file.path,
+              JSON.stringify({diagnostics: [], edges: [], path: fixture.file.path, symbols: []}),
+              '2026-08-09T00:00:00.000Z',
+              '2026-08-09T00:00:00.000Z',
+            );
+          const insert = seeded.prepare(
+            'INSERT INTO snapshot_file_shards (snapshot_id, path, shard_id) VALUES (?, ?, ?)',
+          );
+          insert.run(snapshotId, 'target/a.ts', shardId);
+          insert.run(snapshotId, 'target/b.ts', shardId);
+        } finally {
+          seeded.close(false);
+        }
+      });
+
+      yield* Effect.sync(() => {
+        const reader = new Database(fixture.databasePath, {readonly: true, strict: true});
+        const competingWriter = new Database(fixture.databasePath, {strict: true});
+        try {
+          const statement = codeGraphMaterializedShardAssociationPageStatement([shardId], 512);
+          const iterator = reader
+            .query<
+              {
+                readonly association_count: number;
+                readonly path: string;
+                readonly shard_id: string;
+                readonly snapshot_id: string;
+              },
+              [string, number]
+            >(statement.text)
+            .iterate(...statement.parameters);
+          const first = iterator.next();
+          expect(first.done).toBe(false);
+
+          competingWriter.query('DELETE FROM snapshot_file_shards WHERE shard_id = ?').run(shardId);
+          const frozenPage = [first.value!, ...iterator];
+          expect(frozenPage.map(row => row.association_count)).toEqual([2, 2]);
+          expect(frozenPage.map(row => row.path)).toEqual(['target/a.ts', 'target/b.ts']);
+          expect(
+            competingWriter.query('SELECT COUNT(*) AS count FROM snapshot_file_shards WHERE shard_id = ?').get(shardId),
+          ).toEqual({count: 0});
+        } finally {
+          reader.close(false);
+          competingWriter.close(false);
+        }
+      });
+    }).pipe(Effect.provide(ApplicationLayer)),
+  );
 
   it('adapts persistent copy pages toward a bounded three-second transaction', () => {
     expect(nextPersistentActivationBatchRows(10_000, 850, 50_000)).toBe(20_000);
@@ -425,7 +1278,7 @@ describe('code graph full-build materialization store', () => {
         return yield* store.withSession(
           fixture.databasePath,
           Effect.gen(function* () {
-            const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+            const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
               ...snapshot,
               state: 'building',
             });
@@ -458,7 +1311,7 @@ describe('code graph full-build materialization store', () => {
         return yield* store.withSession(
           fixture.databasePath,
           Effect.gen(function* () {
-            const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+            const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
               ...snapshot,
               state: 'building',
             });
@@ -486,7 +1339,7 @@ describe('code graph full-build materialization store', () => {
         return yield* store.withSession(
           fixture.databasePath,
           Effect.gen(function* () {
-            const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+            const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
               ...snapshot,
               state: 'building',
             });
@@ -632,7 +1485,7 @@ describe('code graph full-build materialization store', () => {
         return yield* store.withSession(
           fixture.databasePath,
           Effect.gen(function* () {
-            const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+            const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
               ...snapshot,
               state: 'building',
             });
@@ -714,7 +1567,7 @@ describe('code graph full-build materialization store', () => {
         return yield* store.withSession(
           fixture.databasePath,
           Effect.gen(function* () {
-            const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+            const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
               ...snapshot,
               state: 'building',
             });
@@ -790,7 +1643,7 @@ describe('code graph full-build materialization store', () => {
         return yield* store.withSession(
           fixture.databasePath,
           Effect.gen(function* () {
-            const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+            const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
               ...snapshot,
               state: 'building',
             });
@@ -858,7 +1711,7 @@ describe('code graph full-build materialization store', () => {
         return yield* store.withSession(
           fixture.databasePath,
           Effect.gen(function* () {
-            const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+            const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
               ...snapshot,
               state: 'building',
             });
@@ -949,76 +1802,95 @@ describe('code graph full-build materialization store', () => {
     expect(receipts.count).toBe(0);
   });
 
-  it('keeps readiness successful across cleanup faults and self-heals on the next writer session', async () => {
-    const fixture = await materializationFixture();
-    const writerLockPath = join(fixture.root, 'checkout-writer.lock');
-    const snapshot = readySnapshot(fixture.identity, 1, 0);
-    const stored = symbol('cleanup-fault', 'cleanupFault', ['typescript:name:cleanupFault']);
-    const nextIndexFacts: CodeGraphFileFacts = {
-      diagnostics: [],
-      edges: [],
-      path: fixture.file.path,
-      symbols: [],
-    };
-
-    const ready = await runEffect(
+  effectIt.effect('keeps readiness successful across cleanup faults and self-heals on the next writer session', () =>
+    TestClock.withLive(
       Effect.gen(function* () {
-        const store = yield* CodeGraphStore;
-        return yield* store.withSession(
-          fixture.databasePath,
-          Effect.gen(function* () {
-            const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
-              ...snapshot,
-              state: 'building',
-            });
-            yield* store.prepareActivation(fixture.databasePath, [fixture.file], snapshot.id, 1, ownerToken);
-            yield* store.stageActivationFacts(fixture.databasePath, [stored], [], [], undefined, 0);
-            yield* store.resolveStagedReferences(fixture.databasePath);
-            yield* Effect.sync(() => {
-              const database = new Database(fixture.databasePath, {strict: true});
-              database.exec(`
-                CREATE TRIGGER reject_completed_receipt_cleanup
-                BEFORE DELETE ON building_materialization_batches
-                WHEN OLD.snapshot_id = '${snapshot.id}'
-                BEGIN
-                  SELECT RAISE(FAIL, 'injected post-ready cleanup failure');
-                END
-              `);
-              database.close(false);
-            });
-            yield* store.activateStaged(fixture.databasePath, fixture.identity, snapshot);
-            return yield* store.readySnapshotById(fixture.databasePath, snapshot.id);
-          }),
-        );
-      }),
-    );
-
-    expect(ready?.state).toBe('ready');
-    expect(readCompletedBuildRows(fixture.databasePath, snapshot.id).batches).toBe(1);
-    await expect(
-      runEffect(
-        Effect.gen(function* () {
+        const fixture = yield* Effect.promise(materializationFixture);
+        const writerLockPath = join(fixture.root, 'checkout-writer.lock');
+        const snapshot = readySnapshot(fixture.identity, 1, 0);
+        const stored = symbol('cleanup-fault', 'cleanupFault', ['typescript:name:cleanupFault']);
+        const nextIndexFacts: CodeGraphFileFacts = {
+          diagnostics: [],
+          edges: [],
+          path: fixture.file.path,
+          symbols: [],
+        };
+        const ready = yield* Effect.gen(function* () {
           const store = yield* CodeGraphStore;
-          yield* store.pruneRetiredSnapshots(fixture.databasePath);
-        }),
-      ),
-    ).rejects.toThrow(/injected post-ready cleanup failure/);
+          return yield* store.withSession(
+            fixture.databasePath,
+            Effect.gen(function* () {
+              const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
+                ...snapshot,
+                state: 'building',
+              });
+              yield* store.prepareActivation(fixture.databasePath, [fixture.file], snapshot.id, 1, ownerToken);
+              yield* store.stageActivationFacts(fixture.databasePath, [stored], [], [], undefined, 0);
+              yield* store.resolveStagedReferences(fixture.databasePath);
+              yield* Effect.sync(() => {
+                const database = new Database(fixture.databasePath, {strict: true});
+                database.exec(`
+              CREATE TRIGGER reject_completed_receipt_cleanup
+              BEFORE DELETE ON building_materialization_batches
+              WHEN OLD.snapshot_id = '${snapshot.id}'
+              BEGIN
+                SELECT RAISE(FAIL, 'injected post-ready cleanup failure');
+              END
+            `);
+                database.close(false);
+              });
+              yield* store.activateStaged(fixture.databasePath, fixture.identity, snapshot);
+              return yield* store.readySnapshotById(fixture.databasePath, snapshot.id);
+            }),
+          );
+        }).pipe(Effect.provide(ApplicationLayer));
 
-    const database = new Database(fixture.databasePath, {strict: true});
-    database.exec('DROP TRIGGER reject_completed_receipt_cleanup');
-    database.close(false);
-    await runEffect(
-      Effect.gen(function* () {
-        const store = yield* CodeGraphStore;
-        yield* store.withSession(
-          fixture.databasePath,
-          store.cacheFacts(fixture.databasePath, [fixture.file], [nextIndexFacts], 'next-index-cache'),
-          {cleanupCompletedBuildRows: true, writerLockPath},
-        );
+        expect(ready?.state).toBe('ready');
+        expect(readCompletedBuildRows(fixture.databasePath, snapshot.id).batches).toBe(1);
+        const cleanupFailure = yield* Effect.gen(function* () {
+          const store = yield* CodeGraphStore;
+          return yield* Effect.match(
+            Effect.gen(function* () {
+              yield* store.pruneRetiredSnapshots(fixture.databasePath);
+            }),
+            {onFailure: observedStoreFailure, onSuccess: () => undefined},
+          );
+        }).pipe(Effect.provide(ApplicationLayer));
+        expect(cleanupFailure).toMatchObject({
+          code: 'unknown',
+          message: 'prune retired code graph snapshots failed with an unclassified storage error.',
+          recovery: 'diagnose',
+          retryable: false,
+        });
+        expect(cleanupFailure?.message).not.toContain(fixture.databasePath);
+
+        yield* Effect.sync(() => {
+          const database = new Database(fixture.databasePath, {strict: true});
+          database.exec('DROP TRIGGER reject_completed_receipt_cleanup');
+          database.close(false);
+        });
+        yield* Effect.gen(function* () {
+          const store = yield* CodeGraphStore;
+          yield* store.withSession(
+            fixture.databasePath,
+            store.cacheFacts(
+              fixture.databasePath,
+              [fixture.file],
+              [nextIndexFacts],
+              'next-index-cache',
+              unprotectedCacheWrite,
+            ),
+            {cleanupCompletedBuildRows: true, writerLockPath},
+          );
+        }).pipe(Effect.provide(ApplicationLayer));
+        expect(readCompletedBuildRows(fixture.databasePath, snapshot.id)).toEqual({
+          batches: 0,
+          candidates: 0,
+          refs: 0,
+        });
       }),
-    );
-    expect(readCompletedBuildRows(fixture.databasePath, snapshot.id)).toEqual({batches: 0, candidates: 0, refs: 0});
-  });
+    ),
+  );
 
   it('opens detached completed-build cleanup only while holding the checkout writer gate', async () => {
     const fixture = await materializationFixture();
@@ -1043,7 +1915,7 @@ describe('code graph full-build materialization store', () => {
           store.withSession(
             fixture.databasePath,
             Effect.gen(function* () {
-              const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+              const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
                 ...snapshot,
                 state: 'building',
               });
@@ -1086,116 +1958,128 @@ describe('code graph full-build materialization store', () => {
     expect(readCompletedBuildRows(fixture.databasePath, snapshot.id)).toEqual({batches: 0, candidates: 0, refs: 0});
   });
 
-  it('gives a waiting foreground writer priority between detached cleanup sweeps', async () => {
-    const fixture = await materializationFixture();
-    const writerLockPath = join(fixture.root, 'checkout-writer.lock');
-    const snapshot = readySnapshot(fixture.identity, 1, 0);
-    const stored = symbol('cleanup-priority', 'cleanupPriority', ['typescript:name:cleanupPriority']);
-    const foregroundFacts: CodeGraphFileFacts = {
-      diagnostics: [],
-      edges: [],
-      path: fixture.file.path,
-      symbols: [],
-    };
-
-    await runEffect(
+  effectIt.effect('gives a waiting foreground writer priority between detached cleanup sweeps', () =>
+    TestClock.withLive(
       Effect.gen(function* () {
-        const store = yield* CodeGraphStore;
-        yield* store.withSession(
-          fixture.databasePath,
-          Effect.gen(function* () {
-            yield* store.prepareActivation(fixture.databasePath, [fixture.file]);
-            yield* store.stageActivationFacts(fixture.databasePath, [stored], []);
-            yield* store.activateStaged(fixture.databasePath, fixture.identity, snapshot);
-          }),
-        );
-      }),
-    );
-
-    const seeded = new Database(fixture.databasePath, {strict: true});
-    const insertReceipt = seeded.prepare(
-      `INSERT INTO building_materialization_batches (
-         snapshot_id, batch_index, batch_fingerprint, symbol_count, edge_count, term_count,
-         lookup_count, reference_count, candidate_count, reexport_count, completed_at
-       ) VALUES (?, ?, ?, 1, 0, 0, 0, 0, 0, 0, ?)`,
-    );
-    seeded.transaction(() => {
-      for (let index = 0; index < 3_100; index += 1) {
-        insertReceipt.run(snapshot.id, index, `cleanup-priority-${index}`, new Date().toISOString());
-      }
-    })();
-    seeded.close(false);
-
-    const result = await runEffect(
-      Effect.gen(function* () {
-        const store = yield* CodeGraphStore;
-        const cleanupConnections = yield* Ref.make(0);
-        const firstCleanupEntered = yield* Deferred.make<void>();
-        const releaseFirstCleanup = yield* Deferred.make<void>();
-        const secondCleanupEntered = yield* Deferred.make<void>();
-        const foregroundContended = yield* Deferred.make<void>();
-        const foregroundAcquired = yield* Deferred.make<void>();
-        const releaseForeground = yield* Deferred.make<void>();
-
-        yield* store.withSession(fixture.databasePath, Effect.void, {
-          cleanupCompletedBuildRows: true,
-          onCompletedBuildCleanupConnection: () =>
-            Ref.updateAndGet(cleanupConnections, count => count + 1).pipe(
-              Effect.flatMap(sweep =>
-                sweep === 1
-                  ? Deferred.succeed(firstCleanupEntered, undefined).pipe(
-                      Effect.andThen(Deferred.await(releaseFirstCleanup)),
-                    )
-                  : sweep === 2
-                    ? Deferred.succeed(secondCleanupEntered, undefined).pipe(Effect.asVoid)
-                    : Effect.void,
-              ),
-            ),
-          writerLockPath,
-        });
-        yield* Deferred.await(firstCleanupEntered);
-
-        const foreground = yield* store
-          .withSession(
-            fixture.databasePath,
-            store.cacheFacts(fixture.databasePath, [fixture.file], [foregroundFacts], 'foreground-priority'),
-            {
-              onWriterAcquired: () =>
-                Deferred.succeed(foregroundAcquired, undefined).pipe(Effect.andThen(Deferred.await(releaseForeground))),
-              onWriterContention: () => Deferred.succeed(foregroundContended, undefined).pipe(Effect.asVoid),
-              writerLockPath,
-            },
-          )
-          .pipe(Effect.forkChild);
-        yield* Deferred.await(foregroundContended);
-        yield* Deferred.succeed(releaseFirstCleanup, undefined);
-        yield* Deferred.await(foregroundAcquired);
-        yield* Effect.sleep('100 millis');
-
-        const cleanupConnectionsBeforeForeground = yield* Ref.get(cleanupConnections);
-        const secondSweepStartedBeforeForeground = yield* Deferred.isDone(secondCleanupEntered);
-        yield* Deferred.succeed(releaseForeground, undefined);
-        yield* Fiber.join(foreground);
-        const remainingAfterForeground = readCompletedBuildRows(fixture.databasePath, snapshot.id).batches;
-        yield* store.withSession(fixture.databasePath, Effect.void, {
-          cleanupCompletedBuildRows: true,
-          writerLockPath,
-        });
-        const cleaned = yield* Effect.promise(() => awaitCompletedBuildCleanup(fixture.databasePath, snapshot.id));
-        return {
-          cleaned,
-          cleanupConnectionsBeforeForeground,
-          remainingAfterForeground,
-          secondSweepStartedBeforeForeground,
+        const fixture = yield* Effect.promise(materializationFixture);
+        const writerLockPath = join(fixture.root, 'checkout-writer.lock');
+        const snapshot = readySnapshot(fixture.identity, 1, 0);
+        const stored = symbol('cleanup-priority', 'cleanupPriority', ['typescript:name:cleanupPriority']);
+        const foregroundFacts: CodeGraphFileFacts = {
+          diagnostics: [],
+          edges: [],
+          path: fixture.file.path,
+          symbols: [],
         };
-      }),
-    );
+        yield* Effect.gen(function* () {
+          const store = yield* CodeGraphStore;
+          yield* store.withSession(
+            fixture.databasePath,
+            Effect.gen(function* () {
+              yield* store.prepareActivation(fixture.databasePath, [fixture.file]);
+              yield* store.stageActivationFacts(fixture.databasePath, [stored], []);
+              yield* store.activateStaged(fixture.databasePath, fixture.identity, snapshot);
+            }),
+          );
+        }).pipe(Effect.provide(ApplicationLayer));
 
-    expect(result.cleanupConnectionsBeforeForeground).toBe(1);
-    expect(result.secondSweepStartedBeforeForeground).toBe(false);
-    expect(result.remainingAfterForeground).toBeGreaterThan(1_000);
-    expect(result.cleaned).toEqual({batches: 0, candidates: 0, refs: 0});
-  });
+        yield* Effect.sync(() => {
+          const seeded = new Database(fixture.databasePath, {strict: true});
+          try {
+            const insertReceipt = seeded.prepare(
+              `INSERT INTO building_materialization_batches (
+               snapshot_id, batch_index, batch_fingerprint, symbol_count, edge_count, term_count,
+               lookup_count, reference_count, candidate_count, reexport_count, completed_at
+             ) VALUES (?, ?, ?, 1, 0, 0, 0, 0, 0, 0, ?)`,
+            );
+            seeded.transaction(() => {
+              for (let index = 0; index < 3_100; index += 1) {
+                insertReceipt.run(snapshot.id, index, `cleanup-priority-${index}`, new Date().toISOString());
+              }
+            })();
+          } finally {
+            seeded.close(false);
+          }
+        });
+
+        const result = yield* Effect.gen(function* () {
+          const cleanupConnections = yield* Ref.make(0);
+          const firstCleanupEntered = yield* Deferred.make<void>();
+          const releaseFirstCleanup = yield* Deferred.make<void>();
+          const secondCleanupEntered = yield* Deferred.make<void>();
+          const foregroundContended = yield* Deferred.make<void>();
+          const foregroundAcquired = yield* Deferred.make<void>();
+          const releaseForeground = yield* Deferred.make<void>();
+          const store = yield* CodeGraphStore;
+
+          yield* store.withSession(fixture.databasePath, Effect.void, {
+            cleanupCompletedBuildRows: true,
+            onCompletedBuildCleanupConnection: () =>
+              Ref.updateAndGet(cleanupConnections, count => count + 1).pipe(
+                Effect.flatMap(sweep =>
+                  sweep === 1
+                    ? Deferred.succeed(firstCleanupEntered, undefined).pipe(
+                        Effect.andThen(Deferred.await(releaseFirstCleanup)),
+                      )
+                    : sweep === 2
+                      ? Deferred.succeed(secondCleanupEntered, undefined).pipe(Effect.asVoid)
+                      : Effect.void,
+                ),
+              ),
+            writerLockPath,
+          });
+          yield* Deferred.await(firstCleanupEntered);
+
+          const foreground = yield* store
+            .withSession(
+              fixture.databasePath,
+              store.cacheFacts(
+                fixture.databasePath,
+                [fixture.file],
+                [foregroundFacts],
+                'foreground-priority',
+                unprotectedCacheWrite,
+              ),
+              {
+                onWriterAcquired: () =>
+                  Deferred.succeed(foregroundAcquired, undefined).pipe(
+                    Effect.andThen(Deferred.await(releaseForeground)),
+                  ),
+                onWriterContention: () => Deferred.succeed(foregroundContended, undefined).pipe(Effect.asVoid),
+                writerLockPath,
+              },
+            )
+            .pipe(Effect.forkChild);
+          yield* Deferred.await(foregroundContended);
+          yield* Deferred.succeed(releaseFirstCleanup, undefined);
+          yield* Deferred.await(foregroundAcquired);
+          yield* Effect.sleep('100 millis');
+
+          const cleanupConnectionsBeforeForeground = yield* Ref.get(cleanupConnections);
+          const secondSweepStartedBeforeForeground = yield* Deferred.isDone(secondCleanupEntered);
+          yield* Deferred.succeed(releaseForeground, undefined);
+          yield* Fiber.join(foreground);
+          const remainingAfterForeground = readCompletedBuildRows(fixture.databasePath, snapshot.id).batches;
+          yield* store.withSession(fixture.databasePath, Effect.void, {
+            cleanupCompletedBuildRows: true,
+            writerLockPath,
+          });
+          const cleaned = yield* Effect.promise(() => awaitCompletedBuildCleanup(fixture.databasePath, snapshot.id));
+          return {
+            cleaned,
+            cleanupConnectionsBeforeForeground,
+            remainingAfterForeground,
+            secondSweepStartedBeforeForeground,
+          };
+        }).pipe(Effect.provide(ApplicationLayer));
+
+        expect(result.cleanupConnectionsBeforeForeground).toBe(1);
+        expect(result.secondSweepStartedBeforeForeground).toBe(false);
+        expect(result.remainingAfterForeground).toBeGreaterThan(1_000);
+        expect(result.cleaned).toEqual({batches: 0, candidates: 0, refs: 0});
+      }),
+    ),
+  );
 
   it('resumes compacted reference payloads without durable candidate rows', async () => {
     const fixture = await materializationFixture();
@@ -1224,7 +2108,7 @@ describe('code graph full-build materialization store', () => {
         yield* store.withSession(
           fixture.databasePath,
           Effect.gen(function* () {
-            const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+            const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
               ...snapshot,
               state: 'building',
             });
@@ -1271,7 +2155,7 @@ describe('code graph full-build materialization store', () => {
         return yield* store.withSession(
           fixture.databasePath,
           Effect.gen(function* () {
-            const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+            const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
               ...snapshot,
               state: 'building',
             });
@@ -1317,7 +2201,7 @@ describe('code graph full-build materialization store', () => {
         return yield* store.withSession(
           fixture.databasePath,
           Effect.gen(function* () {
-            const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+            const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
               ...snapshot,
               state: 'building',
             });
@@ -1365,7 +2249,7 @@ describe('code graph full-build materialization store', () => {
         yield* store.withSession(
           fixture.databasePath,
           Effect.gen(function* () {
-            const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+            const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
               ...snapshot,
               state: 'building',
             });
@@ -1388,7 +2272,7 @@ describe('code graph full-build materialization store', () => {
           yield* store.withSession(
             fixture.databasePath,
             Effect.gen(function* () {
-              const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+              const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
                 ...snapshot,
                 state: 'building',
               });
@@ -1442,7 +2326,7 @@ describe('code graph full-build materialization store', () => {
           yield* store.withSession(
             fixture.databasePath,
             Effect.gen(function* () {
-              const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, identity, {
+              const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, identity, {
                 ...snapshot,
                 state: 'building',
               });
@@ -1494,7 +2378,7 @@ describe('code graph full-build materialization store', () => {
           return yield* store.withSession(
             fixture.databasePath,
             Effect.gen(function* () {
-              const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, identity, {
+              const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, identity, {
                 ...snapshot,
                 state: 'building',
               });
@@ -1561,7 +2445,7 @@ describe('code graph full-build materialization store', () => {
         yield* store.withSession(
           fixture.databasePath,
           Effect.gen(function* () {
-            const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+            const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
               ...snapshot,
               state: 'building',
             });
@@ -1578,10 +2462,15 @@ describe('code graph full-build materialization store', () => {
         return yield* store.withSession(
           fixture.databasePath,
           Effect.gen(function* () {
-            const resumedOwnerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
-              ...snapshot,
-              state: 'building',
-            });
+            const resumedOwnerToken = yield* claimPersistentBuildForTest(
+              store,
+              fixture.databasePath,
+              fixture.identity,
+              {
+                ...snapshot,
+                state: 'building',
+              },
+            );
             yield* store.prepareActivation(fixture.databasePath, [fixture.file], snapshot.id, 1, resumedOwnerToken);
             yield* store.stageActivationFacts(fixture.databasePath, [original], [], [], undefined, 0);
             const resumedCounts = yield* store.stagedFactCounts(fixture.databasePath);
@@ -1607,10 +2496,15 @@ describe('code graph full-build materialization store', () => {
               mismatch ?? 'expected mismatch',
               resumedOwnerToken,
             );
-            const replacementOwnerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
-              ...snapshot,
-              state: 'building',
-            });
+            const replacementOwnerToken = yield* claimPersistentBuildForTest(
+              store,
+              fixture.databasePath,
+              fixture.identity,
+              {
+                ...snapshot,
+                state: 'building',
+              },
+            );
             yield* store.prepareActivation(fixture.databasePath, [fixture.file], snapshot.id, 1, replacementOwnerToken);
             yield* store.stageActivationFacts(fixture.databasePath, [replacement], [], [], undefined, 0);
             yield* store.resolveStagedReferences(fixture.databasePath);
@@ -1660,97 +2554,90 @@ describe('code graph full-build materialization store', () => {
     });
   });
 
-  it('retires and rebuilds a same-identity ready snapshot whose compact receipt is missing', async () => {
-    const fixture = await materializationFixture();
-    const original = symbol('same-id-original', 'sameIdOriginal', ['typescript:name:sameIdOriginal']);
-    const replacement = symbol('same-id-replacement', 'sameIdReplacement', ['typescript:name:sameIdReplacement']);
-    const snapshot = readySnapshot(fixture.identity, 1, 0);
-
-    await runEffect(
+  effectIt.effect('retires and rebuilds a same-identity ready snapshot whose compact receipt is missing', () =>
+    TestClock.withLive(
       Effect.gen(function* () {
+        const fixture = yield* Effect.promise(materializationFixture);
+        const writerLockPath = join(fixture.root, 'same-identity-writer.lock');
+        const original = symbol('same-id-original', 'sameIdOriginal', ['typescript:name:sameIdOriginal']);
+        const replacement = symbol('same-id-replacement', 'sameIdReplacement', ['typescript:name:sameIdReplacement']);
+        const snapshot = {...readySnapshot(fixture.identity, 1, 0), id: testSnapshotId(101)};
+
+        yield* Effect.gen(function* () {
+          const store = yield* CodeGraphStore;
+          yield* store.withSession(
+            fixture.databasePath,
+            Effect.gen(function* () {
+              const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
+                ...snapshot,
+                state: 'building',
+              });
+              yield* store.prepareActivation(fixture.databasePath, [fixture.file], snapshot.id, 1, ownerToken);
+              yield* store.stageActivationFacts(fixture.databasePath, [original], [], [], undefined, 0);
+              yield* store.resolveStagedReferences(fixture.databasePath);
+              yield* store.activateStaged(fixture.databasePath, fixture.identity, snapshot);
+              yield* store.promote(fixture.databasePath, fixture.identity, snapshot.id);
+            }),
+            {writerLockPath},
+          );
+        });
+
+        const damaged = new Database(fixture.databasePath, {strict: true});
+        damaged.query('DELETE FROM lexical_storage_formats WHERE snapshot_id = ?').run(snapshot.id);
+        damaged.close(false);
+
+        const rebuilt = yield* Effect.gen(function* () {
+          const store = yield* CodeGraphStore;
+          const literalReady = yield* store.readySnapshotById(fixture.databasePath, snapshot.id);
+          const reusableReady = yield* store.currentLexicalReadySnapshotById(fixture.databasePath, snapshot.id);
+          return yield* store.withSession(
+            fixture.databasePath,
+            Effect.gen(function* () {
+              const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
+                ...snapshot,
+                state: 'building',
+              });
+              yield* store.prepareActivation(fixture.databasePath, [fixture.file], snapshot.id, 1, ownerToken);
+              yield* store.stageActivationFacts(fixture.databasePath, [replacement], [], [], undefined, 0);
+              yield* store.resolveStagedReferences(fixture.databasePath);
+              yield* store.activateStaged(fixture.databasePath, fixture.identity, snapshot);
+              yield* store.promote(fixture.databasePath, fixture.identity, snapshot.id);
+              return {
+                active: yield* store.readySnapshot(fixture.databasePath, fixture.identity.worktreeId),
+                current: yield* store.currentLexicalReadySnapshotById(fixture.databasePath, snapshot.id),
+                graph: yield* store.loadGraph(fixture.databasePath, snapshot.id),
+                literalReady,
+                reusableReady,
+              };
+            }),
+            {writerLockPath},
+          );
+        });
+
+        expect(rebuilt.literalReady?.id).toBe(snapshot.id);
+        expect(rebuilt.reusableReady).toBeUndefined();
+        expect(rebuilt.current?.id).toBe(snapshot.id);
+        expect(rebuilt.active?.id).toBe(snapshot.id);
+        expect(rebuilt.graph.symbols.map(entry => entry.id)).toEqual([replacement.id]);
+      }).pipe(Effect.provide(ApplicationLayer)),
+    ),
+  );
+
+  effectIt.effect('reclaims a deterministic snapshot retired at the failure-cleanup crash boundary', () =>
+    Effect.gen(function* () {
+      const fixture = yield* Effect.promise(materializationFixture);
+      const stale = symbol('crash-boundary-stale', 'crashBoundaryStale', ['typescript:name:crashBoundaryStale']);
+      const replacement = symbol('crash-boundary-replacement', 'crashBoundaryReplacement', [
+        'typescript:name:crashBoundaryReplacement',
+      ]);
+      const snapshot = {...readySnapshot(fixture.identity, 1, 0), id: testSnapshotId(102)};
+
+      yield* Effect.gen(function* () {
         const store = yield* CodeGraphStore;
         yield* store.withSession(
           fixture.databasePath,
           Effect.gen(function* () {
-            const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
-              ...snapshot,
-              state: 'building',
-            });
-            yield* store.prepareActivation(fixture.databasePath, [fixture.file], snapshot.id, 1, ownerToken);
-            yield* store.stageActivationFacts(fixture.databasePath, [original], [], [], undefined, 0);
-            yield* store.resolveStagedReferences(fixture.databasePath);
-            yield* store.activateStaged(fixture.databasePath, fixture.identity, snapshot);
-            yield* store.promote(
-              fixture.databasePath,
-              fixture.identity,
-              snapshot.id,
-              new Set([fixture.identity.worktreeId]),
-            );
-          }),
-        );
-      }),
-    );
-
-    const damaged = new Database(fixture.databasePath, {strict: true});
-    damaged.query('DELETE FROM lexical_storage_formats WHERE snapshot_id = ?').run(snapshot.id);
-    damaged.close(false);
-
-    const rebuilt = await runEffect(
-      Effect.gen(function* () {
-        const store = yield* CodeGraphStore;
-        const literalReady = yield* store.readySnapshotById(fixture.databasePath, snapshot.id);
-        const reusableReady = yield* store.currentLexicalReadySnapshotById(fixture.databasePath, snapshot.id);
-        return yield* store.withSession(
-          fixture.databasePath,
-          Effect.gen(function* () {
-            const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
-              ...snapshot,
-              state: 'building',
-            });
-            yield* store.prepareActivation(fixture.databasePath, [fixture.file], snapshot.id, 1, ownerToken);
-            yield* store.stageActivationFacts(fixture.databasePath, [replacement], [], [], undefined, 0);
-            yield* store.resolveStagedReferences(fixture.databasePath);
-            yield* store.activateStaged(fixture.databasePath, fixture.identity, snapshot);
-            yield* store.promote(
-              fixture.databasePath,
-              fixture.identity,
-              snapshot.id,
-              new Set([fixture.identity.worktreeId]),
-            );
-            return {
-              active: yield* store.readySnapshot(fixture.databasePath, fixture.identity.worktreeId),
-              current: yield* store.currentLexicalReadySnapshotById(fixture.databasePath, snapshot.id),
-              graph: yield* store.loadGraph(fixture.databasePath, snapshot.id),
-              literalReady,
-              reusableReady,
-            };
-          }),
-        );
-      }),
-    );
-
-    expect(rebuilt.literalReady?.id).toBe(snapshot.id);
-    expect(rebuilt.reusableReady).toBeUndefined();
-    expect(rebuilt.current?.id).toBe(snapshot.id);
-    expect(rebuilt.active?.id).toBe(snapshot.id);
-    expect(rebuilt.graph.symbols.map(entry => entry.id)).toEqual([replacement.id]);
-  });
-
-  it('reclaims a deterministic snapshot retired at the failure-cleanup crash boundary', async () => {
-    const fixture = await materializationFixture();
-    const stale = symbol('crash-boundary-stale', 'crashBoundaryStale', ['typescript:name:crashBoundaryStale']);
-    const replacement = symbol('crash-boundary-replacement', 'crashBoundaryReplacement', [
-      'typescript:name:crashBoundaryReplacement',
-    ]);
-    const snapshot = readySnapshot(fixture.identity, 1, 0);
-
-    await runEffect(
-      Effect.gen(function* () {
-        const store = yield* CodeGraphStore;
-        yield* store.withSession(
-          fixture.databasePath,
-          Effect.gen(function* () {
-            const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+            const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
               ...snapshot,
               state: 'building',
             });
@@ -1758,78 +2645,76 @@ describe('code graph full-build materialization store', () => {
             yield* store.stageActivationFacts(fixture.databasePath, [stale], [], [], undefined, 0);
           }),
         );
-      }),
-    );
+      });
 
-    const interrupted = new Database(fixture.databasePath, {strict: true});
-    interrupted.transaction(() => {
-      const compact = interrupted
-        .query('SELECT snapshot_key FROM lexical_compact_snapshots WHERE snapshot_id = ?')
-        .get(snapshot.id) as {readonly snapshot_key: number};
-      const compactSymbol = interrupted
-        .query('SELECT symbol_key FROM lexical_compact_symbols WHERE snapshot_key = ? LIMIT 1')
-        .get(compact.snapshot_key) as {readonly symbol_key: number};
-      interrupted
-        .query(
-          `WITH RECURSIVE sequence(value) AS (
+      const interrupted = new Database(fixture.databasePath, {strict: true});
+      interrupted.transaction(() => {
+        const compact = interrupted
+          .query('SELECT snapshot_key FROM lexical_compact_snapshots WHERE snapshot_id = ?')
+          .get(snapshot.id) as {readonly snapshot_key: number};
+        const compactSymbol = interrupted
+          .query('SELECT symbol_key FROM lexical_compact_symbols WHERE snapshot_key = ? LIMIT 1')
+          .get(compact.snapshot_key) as {readonly symbol_key: number};
+        interrupted
+          .query(
+            `WITH RECURSIVE sequence(value) AS (
              SELECT 0
              UNION ALL
              SELECT value + 1 FROM sequence WHERE value < 6000
            )
            INSERT INTO lexical_compact_terms (snapshot_key, term)
            SELECT ?, 'cleanup-extra-' || printf('%05d', value) FROM sequence`,
-        )
-        .run(compact.snapshot_key);
-      interrupted
-        .query(
-          `INSERT INTO lexical_compact_postings (snapshot_key, term_key, symbol_key, weight)
+          )
+          .run(compact.snapshot_key);
+        interrupted
+          .query(
+            `INSERT INTO lexical_compact_postings (snapshot_key, term_key, symbol_key, weight)
            SELECT ?, term_key, ?, 1
            FROM lexical_compact_terms
            WHERE snapshot_key = ? AND term LIKE 'cleanup-extra-%'`,
-        )
-        .run(compact.snapshot_key, compactSymbol.symbol_key, compact.snapshot_key);
-      interrupted.query("UPDATE snapshots SET state = 'retired' WHERE id = ? AND state = 'building'").run(snapshot.id);
-      interrupted.query('DELETE FROM snapshot_build_owners WHERE snapshot_id = ?').run(snapshot.id);
-      interrupted.exec(`
+          )
+          .run(compact.snapshot_key, compactSymbol.symbol_key, compact.snapshot_key);
+        interrupted
+          .query("UPDATE snapshots SET state = 'retired' WHERE id = ? AND state = 'building'")
+          .run(snapshot.id);
+        interrupted.query('DELETE FROM snapshot_build_owners WHERE snapshot_id = ?').run(snapshot.id);
+        interrupted.exec(`
         CREATE TRIGGER reject_compact_snapshot_cascade
-        BEFORE DELETE ON snapshots
-        WHEN OLD.id = '${snapshot.id}' AND EXISTS (
-          SELECT 1
-          FROM lexical_compact_snapshots AS compact
-          JOIN lexical_compact_postings AS posting ON posting.snapshot_key = compact.snapshot_key
-          WHERE compact.snapshot_id = OLD.id
+        BEFORE DELETE ON lexical_compact_snapshots
+        WHEN OLD.snapshot_id = '${snapshot.id}' AND EXISTS (
+          SELECT 1 FROM lexical_compact_postings AS posting
+          WHERE posting.snapshot_key = OLD.snapshot_key
         )
         BEGIN
           SELECT RAISE(ABORT, 'compact children must be paged before snapshot deletion');
         END
       `);
-    })();
-    const retiredState = interrupted.query('SELECT state FROM snapshots WHERE id = ?').get(snapshot.id) as {
-      readonly state: string;
-    };
-    const staleRows = interrupted
-      .query('SELECT COUNT(*) AS count FROM symbols WHERE snapshot_id = ?')
-      .get(snapshot.id) as {readonly count: number};
-    const stalePostings = interrupted
-      .query(
-        `SELECT COUNT(*) AS count
+      })();
+      const retiredState = interrupted.query('SELECT state FROM snapshots WHERE id = ?').get(snapshot.id) as {
+        readonly state: string;
+      };
+      const staleRows = interrupted
+        .query('SELECT COUNT(*) AS count FROM symbols WHERE snapshot_id = ?')
+        .get(snapshot.id) as {readonly count: number};
+      const stalePostings = interrupted
+        .query(
+          `SELECT COUNT(*) AS count
          FROM lexical_compact_postings AS posting
          JOIN lexical_compact_snapshots AS compact ON compact.snapshot_key = posting.snapshot_key
          WHERE compact.snapshot_id = ?`,
-      )
-      .get(snapshot.id) as {readonly count: number};
-    interrupted.close(false);
-    expect(retiredState.state).toBe('retired');
-    expect(staleRows.count).toBe(1);
-    expect(stalePostings.count).toBeGreaterThan(5_000);
+        )
+        .get(snapshot.id) as {readonly count: number};
+      interrupted.close(false);
+      expect(retiredState.state).toBe('retired');
+      expect(staleRows.count).toBe(1);
+      expect(stalePostings.count).toBeGreaterThan(5_000);
 
-    const graph = await runEffect(
-      Effect.gen(function* () {
+      const graph = yield* Effect.gen(function* () {
         const store = yield* CodeGraphStore;
         return yield* store.withSession(
           fixture.databasePath,
           Effect.gen(function* () {
-            const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+            const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
               ...snapshot,
               state: 'building',
             });
@@ -1840,21 +2725,21 @@ describe('code graph full-build materialization store', () => {
             return yield* store.loadGraph(fixture.databasePath, snapshot.id);
           }),
         );
-      }),
-    );
+      });
 
-    expect(graph.snapshot.state).toBe('ready');
-    expect(graph.symbols.map(entry => entry.id)).toEqual([replacement.id]);
-    expect(graph.symbols.some(entry => entry.id === stale.id)).toBe(false);
-    const storage = new Database(fixture.databasePath, {readonly: true, strict: true});
-    const freelist = storage.query('PRAGMA freelist_count').get() as {readonly freelist_count: number};
-    const pages = storage.query('PRAGMA page_count').get() as {readonly page_count: number};
-    storage.close(false);
-    // Logical reclamation stays bounded; physical file compaction remains an
-    // explicit, disk-preflighted `graph compact` operation.
-    expect(freelist.freelist_count).toBeGreaterThan(0);
-    expect(pages.page_count).toBeGreaterThan(freelist.freelist_count);
-  });
+      expect(graph.snapshot.state).toBe('ready');
+      expect(graph.symbols.map(entry => entry.id)).toEqual([replacement.id]);
+      expect(graph.symbols.some(entry => entry.id === stale.id)).toBe(false);
+      const storage = new Database(fixture.databasePath, {readonly: true, strict: true});
+      const freelist = storage.query('PRAGMA freelist_count').get() as {readonly freelist_count: number};
+      const pages = storage.query('PRAGMA page_count').get() as {readonly page_count: number};
+      storage.close(false);
+      // Logical reclamation stays bounded; physical file compaction remains an
+      // explicit, disk-preflighted `graph compact` operation.
+      expect(freelist.freelist_count).toBeGreaterThan(0);
+      expect(pages.page_count).toBeGreaterThan(freelist.freelist_count);
+    }).pipe(Effect.provide(ApplicationLayer)),
+  );
 
   it('keeps interrupted logical plans compatible across grouped transactions and resumes deterministically', async () => {
     const interruptedFixture = await materializationFixture();
@@ -1925,7 +2810,8 @@ describe('code graph full-build materialization store', () => {
         return yield* store.withSession(
           interruptedFixture.databasePath,
           Effect.gen(function* () {
-            const ownerToken = yield* store.claimPersistentBuild(
+            const ownerToken = yield* claimPersistentBuildForTest(
+              store,
               interruptedFixture.databasePath,
               interruptedFixture.identity,
               {
@@ -1986,7 +2872,8 @@ describe('code graph full-build materialization store', () => {
         return yield* store.withSession(
           interruptedFixture.databasePath,
           Effect.gen(function* () {
-            const ownerToken = yield* store.claimPersistentBuild(
+            const ownerToken = yield* claimPersistentBuildForTest(
+              store,
               interruptedFixture.databasePath,
               interruptedFixture.identity,
               {
@@ -2023,7 +2910,7 @@ describe('code graph full-build materialization store', () => {
           return yield* store.withSession(
             fixture.databasePath,
             Effect.gen(function* () {
-              const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+              const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
                 ...snapshot,
                 state: 'building',
               });
@@ -2100,7 +2987,7 @@ describe('code graph full-build materialization store', () => {
         return yield* store.withSession(
           fixture.databasePath,
           Effect.gen(function* () {
-            const staleOwnerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+            const staleOwnerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
               ...snapshot,
               state: 'building',
             });
@@ -2152,7 +3039,7 @@ describe('code graph full-build materialization store', () => {
         return yield* store.withSession(
           fixture.databasePath,
           Effect.gen(function* () {
-            replacementOwnerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+            replacementOwnerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
               ...snapshot,
               state: 'building',
             });
@@ -2234,7 +3121,7 @@ describe('code graph full-build materialization store', () => {
         return yield* store.withSession(
           fixture.databasePath,
           Effect.gen(function* () {
-            const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+            const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
               ...snapshot,
               state: 'building',
             });
@@ -2276,7 +3163,7 @@ describe('code graph full-build materialization store', () => {
         return yield* store.withSession(
           fixture.databasePath,
           Effect.gen(function* () {
-            const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+            const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
               ...snapshot,
               state: 'building',
             });
@@ -2324,7 +3211,7 @@ describe('code graph full-build materialization store', () => {
         return yield* store.withSession(
           fixture.databasePath,
           Effect.gen(function* () {
-            const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+            const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
               ...snapshot,
               state: 'building',
             });
@@ -2390,7 +3277,7 @@ describe('code graph full-build materialization store', () => {
               const snapshot = readySnapshot(fixture.identity, 2, 1);
               let ownerToken: string | undefined;
               if (direct) {
-                ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+                ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
                   ...snapshot,
                   state: 'building',
                 });
@@ -2727,7 +3614,7 @@ describe('code graph full-build materialization store', () => {
             yield* store.stageActivationFacts(fixture.databasePath, [original], []);
             const duplicateFailure = yield* store.stageActivationFacts(fixture.databasePath, [duplicate], []).pipe(
               Effect.as(undefined),
-              Effect.catch(cause => Effect.succeed(cause instanceof Error ? cause.message : String(cause))),
+              Effect.catch(cause => Effect.succeed(observedStoreFailure(cause))),
             );
             const snapshot = readySnapshot(fixture.identity, 1, 0);
             yield* store.activateStaged(fixture.databasePath, fixture.identity, snapshot);
@@ -2740,10 +3627,13 @@ describe('code graph full-build materialization store', () => {
       }),
     );
 
-    expect(result.duplicateFailure).toContain('ConstraintError');
-    expect(result.duplicateFailure).toContain('SQLITE_CONSTRAINT');
-    expect(result.duplicateFailure).toContain('activation_symbols.id');
-    expect(result.duplicateFailure).not.toContain(fixture.databasePath);
+    expect(result.duplicateFailure).toMatchObject({
+      code: 'unknown',
+      message: 'stage code graph facts failed with an unclassified storage error.',
+      recovery: 'diagnose',
+      retryable: false,
+    });
+    expect(result.duplicateFailure?.message).not.toContain(fixture.databasePath);
     expect(result.graph.symbols).toEqual([original]);
   });
 
@@ -2912,13 +3802,13 @@ describe('code graph full-build materialization store', () => {
             );
             const edgeFailure = yield* store.stageActivationFacts(fixture.databasePath, [], [conflictingEdge]).pipe(
               Effect.as(undefined),
-              Effect.catch(cause => Effect.succeed(cause instanceof Error ? cause.message : String(cause))),
+              Effect.catch(cause => Effect.succeed(observedStoreFailure(cause))),
             );
             const referenceFailure = yield* store
               .stageActivationFacts(fixture.databasePath, [], [], [conflictingReference])
               .pipe(
                 Effect.as(undefined),
-                Effect.catch(cause => Effect.succeed(cause instanceof Error ? cause.message : String(cause))),
+                Effect.catch(cause => Effect.succeed(observedStoreFailure(cause))),
               );
             const resolution = yield* store.resolveStagedReferences(fixture.databasePath);
             const counts = yield* store.stagedFactCounts(fixture.databasePath);
@@ -2935,12 +3825,16 @@ describe('code graph full-build materialization store', () => {
       }),
     );
 
-    expect(result.edgeFailure).toContain('ConstraintError');
-    expect(result.edgeFailure).toContain('SQLITE_CONSTRAINT');
-    expect(result.edgeFailure).toContain('activation_edges.id');
-    expect(result.referenceFailure).toContain('ConstraintError');
-    expect(result.referenceFailure).toContain('SQLITE_CONSTRAINT');
-    expect(result.referenceFailure).toContain('activation_references.edge_id');
+    expect(result.edgeFailure).toMatchObject({
+      code: 'unknown',
+      message: 'stage code graph facts failed with an unclassified storage error.',
+    });
+    expect(result.referenceFailure).toMatchObject({
+      code: 'unknown',
+      message: 'stage code graph facts failed with an unclassified storage error.',
+    });
+    expect(result.edgeFailure?.message).not.toContain(fixture.databasePath);
+    expect(result.referenceFailure?.message).not.toContain(fixture.databasePath);
     expect(result.resolution.resolved).toBe(1);
     expect(result.graph.edges).toHaveLength(1);
     expect(result.graph.edges[0]).toMatchObject({sourceId: caller.id, targetId: target.id, targetName: target.name});
@@ -2964,12 +3858,7 @@ describe('code graph full-build materialization store', () => {
             yield* store.prepareActivation(fixture.databasePath, [fixture.file]);
             yield* store.stageActivationFacts(fixture.databasePath, [original], []);
             yield* store.activateStaged(fixture.databasePath, fixture.identity, originalSnapshot);
-            yield* store.promote(
-              fixture.databasePath,
-              fixture.identity,
-              originalSnapshot.id,
-              new Set([fixture.identity.worktreeId]),
-            );
+            yield* store.promote(fixture.databasePath, fixture.identity, originalSnapshot.id);
             yield* store.markBuilding(fixture.databasePath, fixture.identity, {
               ...interruptedSnapshot,
               state: 'building',
@@ -3039,33 +3928,26 @@ describe('code graph full-build materialization store', () => {
     expect(recovered.healthAfterRepair?.buildingSnapshots).toBe(0);
   });
 
-  it('releases the SQLite writer between persistent chunks so a cache writer can interleave', async () => {
-    const fixture = await materializationFixture();
-    const symbols = Array.from({length: 5_100}, (_, index) => {
-      const id = `batch-${String(index).padStart(5, '0')}`;
-      return symbol(id, id, [`typescript:name:${id}`]);
-    });
-    const snapshot = readySnapshot(fixture.identity, symbols.length, 0);
-    const cachedFacts: CodeGraphFileFacts = {
-      diagnostics: [],
-      edges: [],
-      path: fixture.file.path,
-      symbols: [],
-    };
-    let releaseChunk!: () => void;
-    const chunkMayContinue = new Promise<void>(resolve => {
-      releaseChunk = resolve;
-    });
-    let announceChunk!: () => void;
-    const chunkCommitted = new Promise<void>(resolve => {
-      announceChunk = resolve;
-    });
-    let paused = false;
-
-    const activation = runEffect(
-      Effect.gen(function* () {
-        const store = yield* CodeGraphStore;
-        yield* store.withSession(
+  effectIt.effect('releases the SQLite writer between persistent chunks so a cache writer can interleave', () =>
+    Effect.gen(function* () {
+      const fixture = yield* Effect.promise(materializationFixture);
+      const symbols = Array.from({length: 5_100}, (_, index) => {
+        const id = `batch-${String(index).padStart(5, '0')}`;
+        return symbol(id, id, [`typescript:name:${id}`]);
+      });
+      const snapshot = readySnapshot(fixture.identity, symbols.length, 0);
+      const cachedFacts: CodeGraphFileFacts = {
+        diagnostics: [],
+        edges: [],
+        path: fixture.file.path,
+        symbols: [],
+      };
+      const chunkMayContinue = yield* Deferred.make<void>();
+      const chunkCommitted = yield* Deferred.make<void>();
+      let paused = false;
+      const store = yield* CodeGraphStore;
+      const activation = yield* store
+        .withSession(
           fixture.databasePath,
           Effect.gen(function* () {
             yield* store.prepareActivation(fixture.databasePath, [fixture.file]);
@@ -3081,68 +3963,57 @@ describe('code graph full-build materialization store', () => {
                   return Effect.void;
                 }
                 paused = true;
-                announceChunk();
-                return Effect.promise(() => chunkMayContinue);
+                return Deferred.succeed(chunkCommitted, undefined).pipe(
+                  Effect.andThen(Deferred.await(chunkMayContinue)),
+                );
               },
             );
           }),
-        );
-      }),
-    );
+        )
+        .pipe(Effect.forkChild);
 
-    await chunkCommitted;
-    await runEffect(
-      Effect.gen(function* () {
-        const store = yield* CodeGraphStore;
-        yield* store.cacheFacts(fixture.databasePath, [fixture.file], [cachedFacts], 'concurrent-cache');
-      }),
-    );
-    releaseChunk();
-    await activation;
+      yield* Deferred.await(chunkCommitted);
+      yield* store.cacheFacts(
+        fixture.databasePath,
+        [fixture.file],
+        [cachedFacts],
+        'concurrent-cache',
+        unprotectedCacheWrite,
+      );
+      yield* Deferred.succeed(chunkMayContinue, undefined);
+      yield* Fiber.join(activation);
 
-    const cached = await runEffect(
-      Effect.gen(function* () {
-        const store = yield* CodeGraphStore;
-        const key = [{contentHash: fixture.file.contentHash, path: fixture.file.path}];
-        const decoded = yield* store.loadCachedFacts(fixture.databasePath, key, 'concurrent-cache');
-        const metadata = yield* store.loadCachedFacts(fixture.databasePath, key, 'concurrent-cache', {decode: false});
-        return {decoded, metadata};
-      }),
-    );
-    expect(cached.decoded.facts.get(fixture.file.path)).toEqual(cachedFacts);
-    expect(cached.metadata.facts.size).toBe(0);
-    expect(cached.metadata.keys).toEqual(new Set([fixture.file.path]));
-    expect(cached.metadata.bytes).toBe(cached.decoded.bytes);
-  });
+      const key = [{contentHash: fixture.file.contentHash, path: fixture.file.path}];
+      const decoded = yield* store.loadCachedFacts(fixture.databasePath, key, 'concurrent-cache');
+      const metadata = yield* store.loadCachedFacts(fixture.databasePath, key, 'concurrent-cache', {decode: false});
+      expect(decoded.facts.get(fixture.file.path)).toEqual(cachedFacts);
+      expect(metadata.facts.size).toBe(0);
+      expect(metadata.keys).toEqual(new Set([fixture.file.path]));
+      expect(metadata.bytes).toBe(decoded.bytes);
+    }).pipe(Effect.provide(ApplicationLayer)),
+  );
 
-  it('does not hold the checkout writer lock while a direct build validates repository-scale input', async () => {
-    const fixture = await materializationFixture();
-    const writerLockPath = join(fixture.root, 'checkout-writer.lock');
-    const stored = symbol('direct-validation', 'directValidation', ['typescript:name:directValidation']);
-    const snapshot = readySnapshot(fixture.identity, 1, 0);
-    const cachedFacts: CodeGraphFileFacts = {
-      diagnostics: [],
-      edges: [],
-      path: fixture.file.path,
-      symbols: [],
-    };
-    let releaseValidation!: () => void;
-    const validationMayContinue = new Promise<void>(resolve => {
-      releaseValidation = resolve;
-    });
-    let announceValidation!: () => void;
-    const validationStarted = new Promise<void>(resolve => {
-      announceValidation = resolve;
-    });
-    let paused = false;
-
-    const activation = runEffect(
-      Effect.gen(function* () {
-        const store = yield* CodeGraphStore;
-        yield* store.withSession(
+  effectIt.effect('does not hold the checkout writer lock while a direct build validates repository-scale input', () =>
+    Effect.gen(function* () {
+      const fixture = yield* Effect.promise(materializationFixture);
+      const writerLockPath = join(fixture.root, 'checkout-writer.lock');
+      const stored = symbol('direct-validation', 'directValidation', ['typescript:name:directValidation']);
+      const snapshot = readySnapshot(fixture.identity, 1, 0);
+      const cachedFacts: CodeGraphFileFacts = {
+        diagnostics: [],
+        edges: [],
+        path: fixture.file.path,
+        symbols: [],
+      };
+      const validationMayContinue = yield* Deferred.make<void>();
+      const validationStarted = yield* Deferred.make<void>();
+      let paused = false;
+      const store = yield* CodeGraphStore;
+      const activation = yield* store
+        .withSession(
           fixture.databasePath,
           Effect.gen(function* () {
-            const ownerToken = yield* store.claimPersistentBuild(fixture.databasePath, fixture.identity, {
+            const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
               ...snapshot,
               state: 'building',
             });
@@ -3158,60 +4029,53 @@ describe('code graph full-build materialization store', () => {
               progress => {
                 if (paused || progress.stage !== 'validating-input' || progress.state !== 'started') return Effect.void;
                 paused = true;
-                announceValidation();
-                return Effect.promise(() => validationMayContinue);
+                return Deferred.succeed(validationStarted, undefined).pipe(
+                  Effect.andThen(Deferred.await(validationMayContinue)),
+                );
               },
             );
           }),
           {writerLockPath},
-        );
-      }),
-    );
+        )
+        .pipe(Effect.forkChild);
 
-    await validationStarted;
-    try {
-      await Promise.race([
-        runEffect(
-          Effect.gen(function* () {
-            const store = yield* CodeGraphStore;
-            yield* store.withSession(
-              fixture.databasePath,
-              store.cacheFacts(fixture.databasePath, [fixture.file], [cachedFacts], 'linked-worktree-cache'),
-              {writerLockPath},
-            );
-          }),
-        ),
-        Bun.sleep(2_000).then(() => {
-          throw new Error('Linked-worktree writer remained blocked by direct-build validation.');
-        }),
-      ]);
-    } finally {
-      releaseValidation();
-    }
-    await activation;
-
-    const cached = await runEffect(
-      Effect.gen(function* () {
-        const store = yield* CodeGraphStore;
-        return yield* store.loadCachedFacts(
+      yield* Deferred.await(validationStarted);
+      yield* Effect.race(
+        store.withSession(
           fixture.databasePath,
-          [{contentHash: fixture.file.contentHash, path: fixture.file.path}],
-          'linked-worktree-cache',
-        );
-      }),
-    );
-    expect(cached.facts.get(fixture.file.path)).toEqual(cachedFacts);
-  });
+          store.cacheFacts(
+            fixture.databasePath,
+            [fixture.file],
+            [cachedFacts],
+            'linked-worktree-cache',
+            unprotectedCacheWrite,
+          ),
+          {writerLockPath},
+        ),
+        Effect.sleep('2 seconds').pipe(
+          Effect.andThen(Effect.fail(new Error('Linked-worktree writer remained blocked by direct-build validation.'))),
+        ),
+      ).pipe(Effect.ensuring(Deferred.succeed(validationMayContinue, undefined)));
+      yield* Fiber.join(activation);
 
-  it('defers retired snapshot deletion until bounded maintenance cleanup', async () => {
-    const fixture = await materializationFixture();
-    const firstSymbol = symbol('retired-symbol', 'retiredSymbol', ['typescript:name:retiredSymbol']);
-    const currentSymbol = symbol('current-symbol', 'currentSymbol', ['typescript:name:currentSymbol']);
-    const firstSnapshot = {...readySnapshot(fixture.identity, 1, 0), id: 'retired-snapshot'};
-    const currentSnapshot = {...readySnapshot(fixture.identity, 1, 0), id: 'current-snapshot'};
+      const cached = yield* store.loadCachedFacts(
+        fixture.databasePath,
+        [{contentHash: fixture.file.contentHash, path: fixture.file.path}],
+        'linked-worktree-cache',
+      );
+      expect(cached.facts.get(fixture.file.path)).toEqual(cachedFacts);
+    }).pipe(Effect.provide(ApplicationLayer)),
+  );
 
-    await runEffect(
-      Effect.gen(function* () {
+  effectIt.effect('defers retired snapshot deletion until bounded maintenance cleanup', () =>
+    Effect.gen(function* () {
+      const fixture = yield* Effect.promise(materializationFixture);
+      const firstSymbol = symbol('retired-symbol', 'retiredSymbol', ['typescript:name:retiredSymbol']);
+      const currentSymbol = symbol('current-symbol', 'currentSymbol', ['typescript:name:currentSymbol']);
+      const firstSnapshot = {...readySnapshot(fixture.identity, 1, 0), id: testSnapshotId(103)};
+      const currentSnapshot = {...readySnapshot(fixture.identity, 1, 0), id: testSnapshotId(104)};
+
+      yield* Effect.gen(function* () {
         const store = yield* CodeGraphStore;
         yield* store.withSession(
           fixture.databasePath,
@@ -3219,160 +4083,815 @@ describe('code graph full-build materialization store', () => {
             yield* store.prepareActivation(fixture.databasePath, [fixture.file]);
             yield* store.stageActivationFacts(fixture.databasePath, [firstSymbol], []);
             yield* store.activateStaged(fixture.databasePath, fixture.identity, firstSnapshot);
-            yield* store.promote(
-              fixture.databasePath,
-              fixture.identity,
-              firstSnapshot.id,
-              new Set([fixture.identity.worktreeId]),
-            );
+            yield* store.promote(fixture.databasePath, fixture.identity, firstSnapshot.id);
             yield* store.prepareActivation(fixture.databasePath, [fixture.file]);
             yield* store.stageActivationFacts(fixture.databasePath, [currentSymbol], []);
             yield* store.activateStaged(fixture.databasePath, fixture.identity, currentSnapshot);
-            yield* store.promote(
-              fixture.databasePath,
-              fixture.identity,
-              currentSnapshot.id,
-              new Set([fixture.identity.worktreeId]),
-            );
+            yield* store.promote(fixture.databasePath, fixture.identity, currentSnapshot.id);
           }),
         );
-      }),
-    );
+      });
 
-    const before = new Database(fixture.databasePath, {readonly: true, strict: true});
-    const retiredBefore = before.query('SELECT state FROM snapshots WHERE id = ?').get(firstSnapshot.id) as {
-      readonly state: string;
-    };
-    const retiredSymbolsBefore = before
-      .query('SELECT COUNT(*) AS count FROM symbols WHERE snapshot_id = ?')
-      .get(firstSnapshot.id) as {readonly count: number};
-    const retiredTermsBefore = readLexicalTerms(before, firstSnapshot.id);
-    before.close(false);
-    expect(retiredBefore.state).toBe('retired');
-    expect(retiredSymbolsBefore.count).toBe(1);
-    expect(retiredTermsBefore.length).toBeGreaterThan(0);
+      const before = new Database(fixture.databasePath, {readonly: true, strict: true});
+      const retiredBefore = before.query('SELECT state FROM snapshots WHERE id = ?').get(firstSnapshot.id) as {
+        readonly state: string;
+      };
+      const retiredSymbolsBefore = before
+        .query('SELECT COUNT(*) AS count FROM symbols WHERE snapshot_id = ?')
+        .get(firstSnapshot.id) as {readonly count: number};
+      const retiredTermsBefore = readLexicalTerms(before, firstSnapshot.id);
+      before.close(false);
+      expect(retiredBefore.state).toBe('retired');
+      expect(retiredSymbolsBefore.count).toBe(1);
+      expect(retiredTermsBefore.length).toBeGreaterThan(0);
 
-    await runEffect(
-      Effect.gen(function* () {
+      yield* Effect.gen(function* () {
         const store = yield* CodeGraphStore;
         yield* store.pruneRetiredSnapshots(fixture.databasePath);
-      }),
-    );
-
-    const after = new Database(fixture.databasePath, {readonly: true, strict: true});
-    const retiredAfter = after.query('SELECT state FROM snapshots WHERE id = ?').get(firstSnapshot.id);
-    const currentAfter = after.query('SELECT state FROM snapshots WHERE id = ?').get(currentSnapshot.id) as {
-      readonly state: string;
-    };
-    const activeAfter = after
-      .query('SELECT snapshot_id FROM active_snapshots WHERE worktree_id = ?')
-      .get(fixture.identity.worktreeId) as {readonly snapshot_id: string};
-    const retiredTermsAfter = readLexicalTerms(after, firstSnapshot.id);
-    const currentTermsAfter = readLexicalTerms(after, currentSnapshot.id);
-    const foreignKeyViolations = after.query('PRAGMA foreign_key_check').all();
-    after.close(false);
-    expect(retiredAfter).toBeNull();
-    expect(currentAfter.state).toBe('ready');
-    expect(activeAfter.snapshot_id).toBe(currentSnapshot.id);
-    expect(retiredTermsAfter).toEqual([]);
-    expect(currentTermsAfter.length).toBeGreaterThan(0);
-    expect(foreignKeyViolations).toEqual([]);
-  });
-
-  it.skipIf(process.platform === 'win32')(
-    'survives SIGKILL after a committed activation chunk, repairs the abandoned build, and retries',
-    async () => {
-      const fixture = await materializationFixture();
-      const child = Bun.spawn({
-        cmd: [
-          process.execPath,
-          'run',
-          join(process.cwd(), 'test/helpers/code-graph-activation-kill-child.ts'),
-          fixture.databasePath,
-        ],
-        stderr: 'pipe',
-        stdout: 'pipe',
       });
 
-      let marker: {readonly event?: string; readonly rows?: number};
-      try {
-        marker = await readJsonLine(child.stdout as ReadableStream<Uint8Array>, 30_000);
-      } catch (error) {
-        child.kill('SIGKILL');
-        const stderr = await new Response(child.stderr).text();
-        throw new Error(`Activation kill child failed before its committed-chunk marker: ${stderr}`, {cause: error});
-      }
-      expect(marker).toEqual({event: 'activation-chunk-committed', rows: 5_000});
-
-      child.kill('SIGKILL');
-      await child.exited;
-
-      const interruptedDatabase = new Database(fixture.databasePath, {readonly: true, strict: true});
-      const interruptedRows = interruptedDatabase
-        .query('SELECT COUNT(*) AS count FROM symbols WHERE snapshot_id = ?')
-        .get('kill-snapshot-5100') as {readonly count: number};
-      const interruptedState = interruptedDatabase
-        .query('SELECT state FROM snapshots WHERE id = ?')
-        .get('kill-snapshot-5100') as {readonly state: string};
-      interruptedDatabase.close(false);
-      expect(interruptedRows.count).toBe(5_000);
-      expect(interruptedState.state).toBe('building');
-
-      const replacementSymbols = Array.from({length: 5_100}, (_, index) => {
-        const id = `replacement-${String(index).padStart(5, '0')}`;
-        return symbol(id, id, [`typescript:name:${id}`]);
-      });
-      const originalSnapshot = {...readySnapshot(fixture.identity, 1, 0), id: 'kill-snapshot-1'};
-      const interruptedSnapshot = {
-        ...readySnapshot(fixture.identity, replacementSymbols.length, 0),
-        id: `kill-snapshot-${replacementSymbols.length}`,
+      const after = new Database(fixture.databasePath, {readonly: true, strict: true});
+      const retiredAfter = after.query('SELECT state FROM snapshots WHERE id = ?').get(firstSnapshot.id);
+      const currentAfter = after.query('SELECT state FROM snapshots WHERE id = ?').get(currentSnapshot.id) as {
+        readonly state: string;
       };
-      const recovered = await runEffect(
-        Effect.gen(function* () {
-          const store = yield* CodeGraphStore;
-          const activeBeforeRepair = yield* store.readySnapshot(fixture.databasePath, fixture.identity.worktreeId);
-          const graphBeforeRepair = activeBeforeRepair
-            ? yield* store.loadGraph(fixture.databasePath, activeBeforeRepair.id)
-            : undefined;
-          const healthBeforeRepair = yield* store.diagnose(fixture.databasePath);
-          const repaired = yield* store.repair(fixture.databasePath);
+      const activeAfter = after
+        .query('SELECT snapshot_id FROM active_snapshots WHERE worktree_id = ?')
+        .get(fixture.identity.worktreeId) as {readonly snapshot_id: string};
+      const retiredTermsAfter = readLexicalTerms(after, firstSnapshot.id);
+      const currentTermsAfter = readLexicalTerms(after, currentSnapshot.id);
+      const foreignKeyViolations = after.query('PRAGMA foreign_key_check').all();
+      after.close(false);
+      expect(retiredAfter).toBeNull();
+      expect(currentAfter.state).toBe('ready');
+      expect(activeAfter.snapshot_id).toBe(currentSnapshot.id);
+      expect(retiredTermsAfter).toEqual([]);
+      expect(currentTermsAfter.length).toBeGreaterThan(0);
+      expect(foreignKeyViolations).toEqual([]);
+    }).pipe(Effect.provide(ApplicationLayer)),
+  );
 
-          yield* store.withSession(
+  effectIt.effect('guards each persistent inventory transaction and resumes an exact 2,500-row prefix', () =>
+    Effect.gen(function* () {
+      const fixture = yield* Effect.promise(materializationFixture);
+      const files = Array.from({length: 2_501}, (_, index): CodeGraphInventoryFile => ({
+        ...fixture.file,
+        blobId: index.toString(16).padStart(40, '0'),
+        contentHash: index.toString(16).padStart(64, '0'),
+        path: `src/capacity-${String(index).padStart(4, '0')}-🙂.ts`,
+      }));
+      const snapshot = {
+        ...readySnapshot(fixture.identity, 0, 0),
+        fileCount: files.length,
+        id: 'inventory-capacity-🙂',
+      };
+      const store = yield* CodeGraphStore;
+      const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
+        ...snapshot,
+        state: 'building',
+      });
+      const prepare = (protector: CodeGraphDirectPersistentCapacityProtector) =>
+        store.prepareActivation(fixture.databasePath, files, snapshot.id, 1, ownerToken, protector);
+
+      const planPause = capacityGuardProbe('register persistent code graph materialization plan');
+      const planFailure = yield* Effect.flip(prepare(planPause.guard));
+      expect(planFailure).toBeInstanceOf(CodeGraphStoreNoSpaceError);
+      expect(planPause.boundaries).toEqual([
+        {
+          finalFactBytes: 0,
+          operation: 'register persistent code graph materialization plan',
+          rowCount: 2,
+        },
+      ]);
+      expect(persistentPreparationEvidence(fixture.databasePath, snapshot.id)).toEqual({
+        distinctFiles: 0,
+        expectedBatchCount: null,
+        files: 0,
+        lexicalCounters: 0,
+      });
+
+      const secondInventoryPause = capacityGuardProbe('stage persistent code graph inventory', 2);
+      const inventoryFailure = yield* Effect.flip(prepare(secondInventoryPause.guard));
+      expect(inventoryFailure).toBeInstanceOf(CodeGraphStoreNoSpaceError);
+      expect(secondInventoryPause.boundaries).toEqual([
+        {
+          finalFactBytes: 0,
+          operation: 'register persistent code graph materialization plan',
+          rowCount: 2,
+        },
+        expectedPersistentInventoryBoundary(snapshot.id, files.slice(0, 2_500)),
+        expectedPersistentInventoryBoundary(snapshot.id, files.slice(2_500)),
+      ]);
+      expect(persistentPreparationEvidence(fixture.databasePath, snapshot.id)).toEqual({
+        distinctFiles: 2_500,
+        expectedBatchCount: 1,
+        files: 2_500,
+        lexicalCounters: 1,
+      });
+
+      const resumed = capacityGuardProbe();
+      yield* prepare(resumed.guard);
+      expect(resumed.boundaries).toEqual([
+        {
+          finalFactBytes: 0,
+          operation: 'register persistent code graph materialization plan',
+          rowCount: 2,
+        },
+        expectedPersistentInventoryBoundary(snapshot.id, files.slice(0, 2_500)),
+        expectedPersistentInventoryBoundary(snapshot.id, files.slice(2_500)),
+      ]);
+      expect(persistentPreparationEvidence(fixture.databasePath, snapshot.id)).toEqual({
+        distinctFiles: 2_501,
+        expectedBatchCount: 1,
+        files: 2_501,
+        lexicalCounters: 1,
+      });
+    }).pipe(Effect.provide(ApplicationLayer)),
+  );
+
+  effectIt.effect('guards both persistent resolution transaction families and resumes their committed prefix', () =>
+    Effect.gen(function* () {
+      const fixture = yield* Effect.promise(materializationFixture);
+      const scope = 'cgp_capacity_resolution';
+      const sourcePath = 'src/capacity-barrel.ts';
+      const targetPath = 'src/capacity-target.ts';
+      const scopedNameKey = (path: string, name: string) =>
+        `typescript:${scope}:path:${encodeURIComponent(path)}:name:${encodeURIComponent(name)}`;
+      const source = {
+        ...symbol('capacity-resolution-source', 'capacityBarrel', [`typescript:${scope}:module:${sourcePath}`]),
+        kind: 'module' as const,
+        path: sourcePath,
+        qualifiedName: sourcePath,
+        resolutionScopeId: scope,
+      };
+      const target = {
+        ...symbol('capacity-resolution-target', 'capacityTarget', [
+          `${scopedNameKey(targetPath, 'capacityTarget')}:implementation`,
+          scopedNameKey(targetPath, 'capacityTarget'),
+        ]),
+        path: targetPath,
+        resolutionScopeId: scope,
+      };
+      const unresolved = {
+        ...edge('capacity-resolution-edge', source, target.name),
+        relation: 'reexports' as const,
+      };
+      const sourceKey = scopedNameKey(sourcePath, target.name);
+      const targetKey = scopedNameKey(targetPath, target.name);
+      const reference: CodeGraphReference = {
+        aliasLookupKeys: [`${sourceKey}:implementation`, sourceKey],
+        edgeId: unresolved.id,
+        evidencePath: source.path,
+        evidenceSpan: unresolved.evidenceSpan,
+        exportedOnly: true,
+        lookupTiers: [[`${targetKey}:implementation`], [targetKey]],
+        provenance: unresolved.provenance,
+        relation: unresolved.relation,
+        resolutionDomain: 'typescript',
+        sourceId: source.id,
+        sourceName: source.name,
+        targetName: target.name,
+      };
+      const files = [sourcePath, targetPath].map((path, index): CodeGraphInventoryFile => ({
+        ...fixture.file,
+        blobId: String(index + 1).padStart(40, '0'),
+        contentHash: String(index + 1).padStart(64, '0'),
+        path,
+      }));
+      const snapshot = {
+        ...readySnapshot(fixture.identity, 2, 1),
+        fileCount: files.length,
+        id: 'persistent-capacity-resolution',
+      };
+      const store = yield* CodeGraphStore;
+      const result = yield* store.withSession(
+        fixture.databasePath,
+        Effect.gen(function* () {
+          const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
+            ...snapshot,
+            state: 'building',
+          });
+          yield* store.prepareActivation(fixture.databasePath, files, snapshot.id, 1, ownerToken);
+          yield* store.stageActivationFacts(
             fixture.databasePath,
-            Effect.gen(function* () {
-              yield* store.prepareActivation(fixture.databasePath, [fixture.file]);
-              yield* store.stageActivationFacts(fixture.databasePath, replacementSymbols, []);
-              yield* store.activateStaged(fixture.databasePath, fixture.identity, interruptedSnapshot);
-              yield* store.promote(
-                fixture.databasePath,
-                fixture.identity,
-                interruptedSnapshot.id,
-                new Set([fixture.identity.worktreeId]),
-              );
-            }),
+            [source, target],
+            [unresolved],
+            [reference],
+            undefined,
+            0,
           );
-          const activeAfterRetry = yield* store.readySnapshot(fixture.databasePath, fixture.identity.worktreeId);
-          const graphAfterRetry = activeAfterRetry
-            ? yield* store.loadGraph(fixture.databasePath, activeAfterRetry.id)
-            : undefined;
+          yield* store.finalizePersistentMaterializationPlan(fixture.databasePath, 1);
+          const sql = yield* SqlClient.SqlClient;
+
+          const aliasPause = capacityGuardProbe(
+            'resolve persistent code graph reexport aliases' as CodeGraphDirectPersistentCapacityBoundary['operation'],
+          );
+          const aliasFailure = yield* store
+            .resolveStagedReferences(fixture.databasePath, undefined, aliasPause.guard)
+            .pipe(
+              Effect.as(undefined as CodeGraphStoreError | undefined),
+              Effect.catch(error => Effect.succeed(error)),
+            );
+          const afterAliasPause = yield* sql<{
+            readonly aliases: number;
+            readonly remainingReferences: number;
+            readonly resolvedEdges: number;
+          }>`
+            SELECT
+              (SELECT COUNT(*) FROM snapshot_symbol_lookup
+               WHERE snapshot_id = ${snapshot.id} AND provenance = 'alias') AS aliases,
+              (SELECT COUNT(*) FROM building_references
+               WHERE snapshot_id = ${snapshot.id}) AS remainingReferences,
+              (SELECT COUNT(*) FROM edges WHERE snapshot_id = ${snapshot.id} AND target_id IS NOT NULL) AS resolvedEdges
+          `;
+
+          const pagePause = capacityGuardProbe(
+            'resolve persistent code graph references' as CodeGraphDirectPersistentCapacityBoundary['operation'],
+          );
+          const pageFailure = yield* store
+            .resolveStagedReferences(fixture.databasePath, undefined, pagePause.guard)
+            .pipe(
+              Effect.as(undefined as CodeGraphStoreError | undefined),
+              Effect.catch(error => Effect.succeed(error)),
+            );
+          const afterPagePause = yield* sql<{
+            readonly aliases: number;
+            readonly remainingReferences: number;
+            readonly resolvedEdges: number;
+          }>`
+            SELECT
+              (SELECT COUNT(*) FROM snapshot_symbol_lookup
+               WHERE snapshot_id = ${snapshot.id} AND provenance = 'alias') AS aliases,
+              (SELECT COUNT(*) FROM building_references
+               WHERE snapshot_id = ${snapshot.id}) AS remainingReferences,
+              (SELECT COUNT(*) FROM edges WHERE snapshot_id = ${snapshot.id} AND target_id IS NOT NULL) AS resolvedEdges
+          `;
+
+          const resumed = capacityGuardProbe();
+          const resolution = yield* store.resolveStagedReferences(fixture.databasePath, undefined, resumed.guard);
+          const afterResume = yield* sql<{
+            readonly remainingReferences: number;
+            readonly resolvedEdges: number;
+          }>`
+            SELECT
+              (SELECT COUNT(*) FROM building_references
+               WHERE snapshot_id = ${snapshot.id}) AS remainingReferences,
+              (SELECT COUNT(*) FROM edges WHERE snapshot_id = ${snapshot.id} AND target_id IS NOT NULL) AS resolvedEdges
+          `;
           return {
-            activeAfterRetry,
-            activeBeforeRepair,
-            graphAfterRetry,
-            graphBeforeRepair,
-            healthBeforeRepair,
-            repaired,
+            afterAliasPause: afterAliasPause[0]!,
+            afterPagePause: afterPagePause[0]!,
+            afterResume: afterResume[0]!,
+            aliasFailure,
+            aliasPause: aliasPause.boundaries,
+            pageFailure,
+            pagePause: pagePause.boundaries,
+            resolution,
+            resumed: resumed.boundaries,
           };
         }),
       );
 
-      expect(recovered.activeBeforeRepair?.id).toBe(originalSnapshot.id);
-      expect(recovered.graphBeforeRepair?.symbols.map(entry => entry.id)).toEqual(['original']);
-      expect(recovered.healthBeforeRepair?.buildingSnapshots).toBe(1);
-      expect(recovered.repaired?.removedSnapshots).toBe(1);
-      expect(recovered.activeAfterRetry?.id).toBe(interruptedSnapshot.id);
-      expect(recovered.graphAfterRetry?.symbols).toHaveLength(replacementSymbols.length);
-    },
+      expect(result.aliasFailure).toBeInstanceOf(CodeGraphStoreNoSpaceError);
+      expect(result.aliasPause).toHaveLength(1);
+      expect(result.aliasPause[0]).toMatchObject({operation: 'resolve persistent code graph reexport aliases'});
+      expect(result.aliasPause[0]!.rowCount).toBeGreaterThan(0);
+      expect(result.aliasPause[0]!.finalFactBytes).toBeGreaterThan(0);
+      expect(result.afterAliasPause).toEqual({aliases: 0, remainingReferences: 1, resolvedEdges: 0});
+
+      expect(result.pageFailure).toBeInstanceOf(CodeGraphStoreNoSpaceError);
+      expect(result.pagePause.some(value => value.operation === 'resolve persistent code graph reexport aliases')).toBe(
+        true,
+      );
+      const pageBoundary = result.pagePause.find(
+        value => value.operation === 'resolve persistent code graph references',
+      );
+      expect(pageBoundary?.rowCount).toBeGreaterThan(0);
+      expect(pageBoundary?.finalFactBytes).toBeGreaterThan(0);
+      expect(result.afterPagePause.aliases).toBeGreaterThan(0);
+      expect(result.afterPagePause).toMatchObject({remainingReferences: 1, resolvedEdges: 0});
+
+      expect(result.resolution.resolved).toBe(1);
+      expect(result.afterResume).toEqual({remainingReferences: 0, resolvedEdges: 1});
+      expect(result.resumed.some(value => value.operation === 'resolve persistent code graph references')).toBe(true);
+    }).pipe(Effect.provide(ApplicationLayer)),
+  );
+
+  effectIt.effect('guards high-cardinality ready promotion and resumes the exact ready snapshot', () =>
+    Effect.gen(function* () {
+      const fixture = yield* Effect.promise(materializationFixture);
+      const snapshot: CodeGraphSnapshot = {
+        ...readySnapshot(fixture.identity, 0, 0),
+        fileCount: 0,
+        id: testSnapshotId(105),
+      };
+      const leaseCount = 512;
+      const store = yield* CodeGraphStore;
+      const result = yield* store.withSession(
+        fixture.databasePath,
+        Effect.gen(function* () {
+          const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
+            ...snapshot,
+            state: 'building',
+          });
+          yield* store.prepareActivation(fixture.databasePath, [], snapshot.id, 0, ownerToken);
+          yield* store.resolveStagedReferences(fixture.databasePath);
+          yield* store.activateStaged(fixture.databasePath, fixture.identity, snapshot);
+          const sql = yield* SqlClient.SqlClient;
+          const unrelatedSnapshotId = testSnapshotId(106);
+          yield* sql`
+            INSERT INTO snapshots (
+              id, repository_id, worktree_id, commit_id, graph_content_id, base_snapshot_id, extractor_set,
+              dirty, overlay_fingerprint, state, file_count, symbol_count, edge_count, started_at, completed_at
+            )
+            SELECT
+              ${unrelatedSnapshotId}, repository_id, worktree_id, commit_id, ${unrelatedSnapshotId},
+              base_snapshot_id, extractor_set, dirty, overlay_fingerprint, state, file_count, symbol_count,
+              edge_count, started_at, completed_at
+            FROM snapshots
+            WHERE id = ${snapshot.id}
+          `;
+          for (const offset of [0, 128, 256, 384]) {
+            const tokens = Array.from({length: 128}, (_, index) => `promotion-lease-${offset + index}`);
+            yield* sql.unsafe(
+              `INSERT INTO snapshot_leases (token, snapshot_id, expires_at, retire_when_inactive)
+               VALUES ${tokens.map(() => '(?, ?, ?, 0)').join(', ')}`,
+              tokens.flatMap(token => [token, snapshot.id, Date.now() + 60_000]),
+            );
+            const unrelatedTokens = Array.from(
+              {length: 128},
+              (_, index) => `unrelated-expired-lease-${offset + index}`,
+            );
+            yield* sql.unsafe(
+              `INSERT INTO snapshot_leases (token, snapshot_id, expires_at, retire_when_inactive)
+               VALUES ${unrelatedTokens.map(() => '(?, ?, ?, 0)').join(', ')}`,
+              unrelatedTokens.flatMap(token => [token, unrelatedSnapshotId, Date.now() + 60_000]),
+            );
+          }
+
+          const pause = capacityGuardProbe(
+            'promote ready code graph snapshot' as CodeGraphDirectPersistentCapacityBoundary['operation'],
+          );
+          const pauseFailure = yield* store
+            .promote(fixture.databasePath, fixture.identity, snapshot.id, {
+              persistentCapacityProtector: pause.guard,
+            })
+            .pipe(
+              Effect.as(undefined as CodeGraphStoreError | undefined),
+              Effect.catch(error => Effect.succeed(error)),
+            );
+          const afterPause = yield* sql<{readonly active: number; readonly flags: number; readonly state: string}>`
+            SELECT snapshot.state,
+              (SELECT COUNT(*) FROM active_snapshots WHERE worktree_id = ${fixture.identity.worktreeId}) AS active,
+              (SELECT COUNT(*) FROM snapshot_leases
+               WHERE snapshot_id = snapshot.id AND retire_when_inactive = 1) AS flags
+            FROM snapshots AS snapshot WHERE snapshot.id = ${snapshot.id}
+          `;
+
+          const resumedBoundaries: CodeGraphDirectPersistentCapacityBoundary[] = [];
+          let injectedLease = false;
+          const resumed: CodeGraphDirectPersistentCapacityProtector = (boundary, transaction) =>
+            Effect.gen(function* () {
+              resumedBoundaries.push(boundary);
+              if (!injectedLease) {
+                injectedLease = true;
+                yield* store.acquireSnapshotLease(fixture.databasePath, snapshot.id, 60_000);
+                yield* sql`
+                  UPDATE snapshot_leases SET expires_at = 0 WHERE snapshot_id = ${unrelatedSnapshotId}
+                `.pipe(Effect.mapError(() => new CodeGraphStoreError('Promotion fixture lease expiration failed.')));
+              }
+              return yield* transaction;
+            });
+          yield* store.promote(fixture.databasePath, fixture.identity, snapshot.id, {
+            persistentCapacityProtector: resumed,
+          });
+          const afterResume = yield* sql<{
+            readonly active: number;
+            readonly flags: number;
+            readonly state: string;
+            readonly unrelatedLeases: number;
+            readonly unrelatedState: string;
+          }>`
+            SELECT snapshot.state,
+              (SELECT COUNT(*) FROM active_snapshots WHERE worktree_id = ${fixture.identity.worktreeId}) AS active,
+              (SELECT COUNT(*) FROM snapshot_leases
+               WHERE snapshot_id = snapshot.id AND retire_when_inactive = 1) AS flags,
+              (SELECT COUNT(*) FROM snapshot_leases
+               WHERE snapshot_id = ${unrelatedSnapshotId}) AS unrelatedLeases,
+              (SELECT state FROM snapshots WHERE id = ${unrelatedSnapshotId}) AS unrelatedState
+            FROM snapshots AS snapshot WHERE snapshot.id = ${snapshot.id}
+          `;
+          return {
+            afterPause: afterPause[0]!,
+            afterResume: afterResume[0]!,
+            pause: pause.boundaries,
+            pauseFailure,
+            resumed: resumedBoundaries,
+          };
+        }),
+      );
+
+      expect(result.pauseFailure).toBeInstanceOf(CodeGraphStoreNoSpaceError);
+      expect(result.pause).toHaveLength(1);
+      expect(result.pause[0]).toMatchObject({
+        operation: 'promote ready code graph snapshot',
+        rowCount: 5,
+      });
+      expect(result.pause[0]!.finalFactBytes).toBeLessThan(leaseCount * snapshot.id.length);
+      expect(result.afterPause).toEqual({active: 0, flags: 0, state: 'ready'});
+      expect(result.resumed).toHaveLength(2);
+      expect(result.resumed[0]).toMatchObject({
+        operation: 'promote ready code graph snapshot',
+        rowCount: 5,
+      });
+      expect(result.resumed[1]).toMatchObject({
+        operation: 'promote ready code graph snapshot',
+        rowCount: 5,
+      });
+      expect(result.resumed[1]!.finalFactBytes).toBeGreaterThan(result.resumed[0]!.finalFactBytes);
+      expect(result.afterResume).toEqual({
+        active: 1,
+        flags: 1,
+        state: 'ready',
+        unrelatedLeases: leaseCount,
+        unrelatedState: 'ready',
+      });
+    }).pipe(Effect.provide(ApplicationLayer)),
+  );
+
+  effectIt.effect(
+    'guards exact workspace, conservative facts, plan finalization, and publication without partial mutation',
+    () =>
+      Effect.gen(function* () {
+        const fixture = yield* Effect.promise(materializationFixture);
+        const graphSymbol = symbol('capacity-symbol', 'capacitySymbol🙂', ['typescript:name:capacitySymbol🙂']);
+        const snapshot = {...readySnapshot(fixture.identity, 1, 0), id: 'persistent-boundaries'};
+        const workspace: CodeGraphWorkspace = {
+          diagnostics: ['top-level diagnostics are not persisted'],
+          fingerprint: 'workspace-capacity-fingerprint',
+          projects: [
+            {
+              buildSystem: 'node',
+              dependencies: ['cgp_dependency'],
+              dependencyDetails: [{evidence: 'package🙂.json', provenance: 'declared', targetId: 'cgp_dependency'}],
+              diagnostics: ['project🙂diagnostic'],
+              id: 'cgp_capacity',
+              kind: 'package',
+              languages: ['typescript', 'javascript🙂'],
+              name: 'capacity🙂project',
+              provenance: 'declared',
+              resolutionDomain: 'typescript',
+              root: 'packages/capacity🙂',
+              sourceRoots: ['packages/capacity🙂/src'],
+              workspaceId: 'cgw_capacity',
+              workspaceRoots: ['.'],
+            },
+          ],
+          workspaces: [
+            {
+              buildSystem: 'node',
+              diagnostics: ['workspace🙂diagnostic'],
+              id: 'cgw_capacity',
+              name: 'capacity🙂workspace',
+              provenance: 'declared',
+              root: '.',
+            },
+          ],
+        };
+        const finalFactBytes = 173;
+        const store = yield* CodeGraphStore;
+        const result = yield* store.withSession(
+          fixture.databasePath,
+          Effect.gen(function* () {
+            const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
+              ...snapshot,
+              state: 'building',
+            });
+            const preparation = capacityGuardProbe();
+            yield* store.prepareActivation(
+              fixture.databasePath,
+              [fixture.file],
+              snapshot.id,
+              1,
+              ownerToken,
+              preparation.guard,
+            );
+            const sql = yield* SqlClient.SqlClient;
+
+            const workspacePause = capacityGuardProbe('stage persistent code graph workspace');
+            const workspaceFailure = yield* store
+              .stageWorkspaceCatalog(fixture.databasePath, workspace, workspacePause.guard)
+              .pipe(
+                Effect.as(undefined as CodeGraphStoreError | undefined),
+                Effect.catch(error => Effect.succeed(error)),
+              );
+            const workspaceRowsAfterPause = yield* sql<{
+              readonly dependencies: number;
+              readonly projects: number;
+              readonly workspaces: number;
+            }>`
+              SELECT
+                (SELECT COUNT(*) FROM workspace_scopes WHERE snapshot_id = ${snapshot.id}) AS workspaces,
+                (SELECT COUNT(*) FROM workspace_components WHERE snapshot_id = ${snapshot.id}) AS projects,
+                (SELECT COUNT(*) FROM workspace_component_dependencies WHERE snapshot_id = ${snapshot.id}) AS dependencies
+            `;
+            const workspaceResume = capacityGuardProbe();
+            yield* store.stageWorkspaceCatalog(fixture.databasePath, workspace, workspaceResume.guard);
+
+            const invalidFactPause = capacityGuardProbe('stage persistent code graph facts');
+            const invalidFactFailure = yield* store
+              .stageActivationFactBatches(
+                fixture.databasePath,
+                [{batchIndex: 0, edges: [], references: [], symbols: [graphSymbol]}],
+                undefined,
+                invalidFactPause.guard,
+              )
+              .pipe(
+                Effect.as(undefined as CodeGraphStoreError | undefined),
+                Effect.catch(error => Effect.succeed(error)),
+              );
+            const factRowsAfterPause = yield* sql<{
+              readonly analysisReceipts: number;
+              readonly materializationReceipts: number;
+              readonly symbols: number;
+            }>`
+              SELECT
+                (SELECT COUNT(*) FROM symbols WHERE snapshot_id = ${snapshot.id}) AS symbols,
+                (SELECT COUNT(*) FROM building_analysis_batches WHERE snapshot_id = ${snapshot.id}) AS analysisReceipts,
+                (SELECT COUNT(*) FROM building_materialization_batches WHERE snapshot_id = ${snapshot.id}) AS materializationReceipts
+            `;
+
+            const factResume = capacityGuardProbe();
+            yield* store.stageActivationFactBatches(
+              fixture.databasePath,
+              [
+                {
+                  batchIndex: 0,
+                  edges: [],
+                  finalFactBytes,
+                  references: [],
+                  symbols: [graphSymbol],
+                },
+              ],
+              undefined,
+              factResume.guard,
+            );
+            const physicalFactRows = yield* sql<{
+              readonly analysisReceipts: number;
+              readonly analysisSymbols: number;
+              readonly compactPostings: number;
+              readonly compactSnapshots: number;
+              readonly compactSymbols: number;
+              readonly compactTerms: number;
+              readonly lexicalCounters: number;
+              readonly lookups: number;
+              readonly materializationReceipts: number;
+              readonly symbols: number;
+            }>`
+              SELECT
+                (SELECT COUNT(*) FROM symbols WHERE snapshot_id = ${snapshot.id}) AS symbols,
+                (SELECT COUNT(*) FROM snapshot_symbol_lookup WHERE snapshot_id = ${snapshot.id}) AS lookups,
+                (SELECT COUNT(*) FROM lexical_compact_snapshots WHERE snapshot_id = ${snapshot.id}) AS compactSnapshots,
+                (SELECT COUNT(*) FROM lexical_compact_symbols AS symbol
+                  JOIN lexical_compact_snapshots AS snapshot ON snapshot.snapshot_key = symbol.snapshot_key
+                  WHERE snapshot.snapshot_id = ${snapshot.id}) AS compactSymbols,
+                (SELECT COUNT(*) FROM lexical_compact_terms AS term
+                  JOIN lexical_compact_snapshots AS snapshot ON snapshot.snapshot_key = term.snapshot_key
+                  WHERE snapshot.snapshot_id = ${snapshot.id}) AS compactTerms,
+                (SELECT COUNT(*) FROM lexical_compact_postings AS posting
+                  JOIN lexical_compact_snapshots AS snapshot ON snapshot.snapshot_key = posting.snapshot_key
+                  WHERE snapshot.snapshot_id = ${snapshot.id}) AS compactPostings,
+                (SELECT COUNT(*) FROM snapshot_analysis_symbol_counts WHERE snapshot_id = ${snapshot.id}) AS analysisSymbols,
+                (SELECT COUNT(*) FROM building_analysis_batches WHERE snapshot_id = ${snapshot.id}) AS analysisReceipts,
+                (SELECT COUNT(*) FROM building_materialization_batches WHERE snapshot_id = ${snapshot.id}) AS materializationReceipts,
+                (SELECT COUNT(*) FROM building_lexical_counters WHERE snapshot_id = ${snapshot.id}) AS lexicalCounters
+            `;
+
+            const finalizePause = capacityGuardProbe('register persistent code graph materialization plan');
+            const finalizeFailure = yield* store
+              .finalizePersistentMaterializationPlan(fixture.databasePath, 1, finalizePause.guard)
+              .pipe(
+                Effect.as(undefined as CodeGraphStoreError | undefined),
+                Effect.catch(error => Effect.succeed(error)),
+              );
+            const finalizeResume = capacityGuardProbe();
+            yield* store.finalizePersistentMaterializationPlan(fixture.databasePath, 1, finalizeResume.guard);
+            yield* store.resolveStagedReferences(fixture.databasePath);
+
+            const publicationPause = capacityGuardProbe('publish persistent code graph snapshot');
+            const publicationFailure = yield* store
+              .activateStaged(
+                fixture.databasePath,
+                fixture.identity,
+                snapshot,
+                undefined,
+                undefined,
+                undefined,
+                publicationPause.guard,
+              )
+              .pipe(
+                Effect.as(undefined as CodeGraphStoreError | undefined),
+                Effect.catch(error => Effect.succeed(error)),
+              );
+            const publicationRowsAfterPause = yield* sql<{
+              readonly extractorGenerations: number;
+              readonly fileShards: number;
+              readonly lexicalFormats: number;
+              readonly owners: number;
+              readonly state: string;
+            }>`
+              SELECT snapshot.state,
+                (SELECT COUNT(*) FROM snapshot_build_owners WHERE snapshot_id = snapshot.id) AS owners,
+                (SELECT COUNT(*) FROM lexical_storage_formats WHERE snapshot_id = snapshot.id) AS lexicalFormats,
+                (SELECT COUNT(*) FROM snapshot_extractor_generations WHERE snapshot_id = snapshot.id) AS extractorGenerations,
+                (SELECT COUNT(*) FROM snapshot_file_shards WHERE snapshot_id = snapshot.id) AS fileShards
+              FROM snapshots AS snapshot WHERE snapshot.id = ${snapshot.id}
+            `;
+            const publicationResume = capacityGuardProbe();
+            yield* store.activateStaged(
+              fixture.databasePath,
+              fixture.identity,
+              snapshot,
+              undefined,
+              undefined,
+              undefined,
+              publicationResume.guard,
+            );
+            const published = yield* sql<{readonly owners: number; readonly state: string}>`
+              SELECT snapshot.state,
+                (SELECT COUNT(*) FROM snapshot_build_owners WHERE snapshot_id = snapshot.id) AS owners
+              FROM snapshots AS snapshot WHERE snapshot.id = ${snapshot.id}
+            `;
+            return {
+              factResume: factResume.boundaries,
+              factRowsAfterPause: factRowsAfterPause[0]!,
+              finalizeFailure,
+              finalizePause: finalizePause.boundaries,
+              finalizeResume: finalizeResume.boundaries,
+              invalidFactFailure,
+              invalidFactPause: invalidFactPause.boundaries,
+              physicalFactRows: physicalFactRows[0]!,
+              preparation: preparation.boundaries,
+              publicationFailure,
+              publicationPause: publicationPause.boundaries,
+              publicationResume: publicationResume.boundaries,
+              publicationRowsAfterPause: publicationRowsAfterPause[0]!,
+              published: published[0]!,
+              workspaceFailure,
+              workspacePause: workspacePause.boundaries,
+              workspaceResume: workspaceResume.boundaries,
+              workspaceRowsAfterPause: workspaceRowsAfterPause[0]!,
+            };
+          }),
+        );
+
+        expect(result.preparation).toEqual([
+          {finalFactBytes: 0, operation: 'register persistent code graph materialization plan', rowCount: 2},
+          expectedPersistentInventoryBoundary(snapshot.id, [fixture.file]),
+        ]);
+        expect(result.workspaceFailure).toBeInstanceOf(CodeGraphStoreNoSpaceError);
+        expect(result.workspaceRowsAfterPause).toEqual({dependencies: 0, projects: 0, workspaces: 0});
+        const expectedWorkspaceBoundary = expectedPersistentWorkspaceBoundary(snapshot.id, workspace);
+        expect(result.workspacePause).toEqual([expectedWorkspaceBoundary]);
+        expect(result.workspaceResume).toEqual([expectedWorkspaceBoundary]);
+
+        expect(result.invalidFactFailure).toBeInstanceOf(CodeGraphStoreNoSpaceError);
+        expect(result.invalidFactPause).toHaveLength(1);
+        expect(result.invalidFactPause[0]).toMatchObject({
+          operation: 'stage persistent code graph facts',
+        });
+        expect(Number.isNaN(result.invalidFactPause[0]!.finalFactBytes)).toBe(true);
+        expect(result.factRowsAfterPause).toEqual({analysisReceipts: 0, materializationReceipts: 0, symbols: 0});
+        expect(result.factResume).toHaveLength(1);
+        expect(result.factResume[0]).toMatchObject({
+          finalFactBytes,
+          operation: 'stage persistent code graph facts',
+        });
+        expect(result.factResume[0]!.rowCount).toBeGreaterThanOrEqual(
+          Object.values(result.physicalFactRows).reduce((total, value) => total + Number(value), 0),
+        );
+
+        const expectedPlanBoundary: CodeGraphDirectPersistentCapacityBoundary = {
+          finalFactBytes: 0,
+          operation: 'register persistent code graph materialization plan',
+          rowCount: 2,
+        };
+        expect(result.finalizeFailure).toBeInstanceOf(CodeGraphStoreNoSpaceError);
+        expect(result.finalizePause).toEqual([expectedPlanBoundary]);
+        expect(result.finalizeResume).toEqual([expectedPlanBoundary]);
+
+        expect(result.publicationFailure).toBeInstanceOf(CodeGraphStoreNoSpaceError);
+        expect(result.publicationRowsAfterPause).toEqual({
+          extractorGenerations: 0,
+          fileShards: 0,
+          lexicalFormats: 0,
+          owners: 1,
+          state: 'building',
+        });
+        const expectedPublicationBoundary: CodeGraphDirectPersistentCapacityBoundary = {
+          finalFactBytes: 0,
+          operation: 'publish persistent code graph snapshot',
+          rowCount: snapshot.fileCount + 6,
+        };
+        expect(result.publicationPause).toEqual([expectedPublicationBoundary]);
+        expect(result.publicationResume).toEqual([expectedPublicationBoundary]);
+        expect(result.published).toEqual({owners: 0, state: 'ready'});
+      }).pipe(Effect.provide(ApplicationLayer)),
+  );
+
+  effectIt.effect.skipIf(process.platform === 'win32')(
+    'survives SIGKILL after a committed activation chunk, repairs the abandoned build, and retries',
+    () =>
+      TestClock.withLive(
+        Effect.gen(function* () {
+          const fixture = yield* Effect.promise(materializationFixture);
+          const child = Bun.spawn({
+            cmd: [
+              process.execPath,
+              'run',
+              join(process.cwd(), 'test/helpers/code-graph-activation-kill-child.ts'),
+              fixture.databasePath,
+            ],
+            stderr: 'pipe',
+            stdout: 'pipe',
+          });
+
+          const marker = yield* Effect.promise(async () => {
+            try {
+              return await readJsonLine(child.stdout as ReadableStream<Uint8Array>, 30_000);
+            } catch (error) {
+              child.kill('SIGKILL');
+              const stderr = await new Response(child.stderr).text();
+              throw new Error(`Activation kill child failed before its committed-chunk marker: ${stderr}`, {
+                cause: error,
+              });
+            }
+          });
+          expect(marker).toEqual({event: 'activation-chunk-committed', rows: 5_000});
+
+          child.kill('SIGKILL');
+          yield* Effect.promise(() => child.exited);
+
+          const interruptedDatabase = new Database(fixture.databasePath, {readonly: true, strict: true});
+          const interruptedRows = interruptedDatabase
+            .query('SELECT COUNT(*) AS count FROM symbols WHERE snapshot_id = ?')
+            .get(testSnapshotId(5_100)) as {readonly count: number};
+          const interruptedState = interruptedDatabase
+            .query('SELECT state FROM snapshots WHERE id = ?')
+            .get(testSnapshotId(5_100)) as {readonly state: string};
+          interruptedDatabase.close(false);
+          expect(interruptedRows.count).toBe(5_000);
+          expect(interruptedState.state).toBe('building');
+
+          const replacementSymbols = Array.from({length: 5_100}, (_, index) => {
+            const id = `replacement-${String(index).padStart(5, '0')}`;
+            return symbol(id, id, [`typescript:name:${id}`]);
+          });
+          const originalSnapshot = {...readySnapshot(fixture.identity, 1, 0), id: testSnapshotId(1)};
+          const interruptedSnapshot = {
+            ...readySnapshot(fixture.identity, replacementSymbols.length, 0),
+            id: testSnapshotId(replacementSymbols.length),
+          };
+          const recovered = yield* Effect.gen(function* () {
+            const store = yield* CodeGraphStore;
+            const activeBeforeRepair = yield* store.readySnapshot(fixture.databasePath, fixture.identity.worktreeId);
+            const graphBeforeRepair = activeBeforeRepair
+              ? yield* store.loadGraph(fixture.databasePath, activeBeforeRepair.id)
+              : undefined;
+            const healthBeforeRepair = yield* store.diagnose(fixture.databasePath);
+            const repaired = yield* store.repair(fixture.databasePath);
+
+            yield* store.withSession(
+              fixture.databasePath,
+              Effect.gen(function* () {
+                yield* store.prepareActivation(fixture.databasePath, [fixture.file]);
+                yield* store.stageActivationFacts(fixture.databasePath, replacementSymbols, []);
+                yield* store.activateStaged(fixture.databasePath, fixture.identity, interruptedSnapshot);
+                yield* store.promote(fixture.databasePath, fixture.identity, interruptedSnapshot.id);
+              }),
+            );
+            const activeAfterRetry = yield* store.readySnapshot(fixture.databasePath, fixture.identity.worktreeId);
+            const graphAfterRetry = activeAfterRetry
+              ? yield* store.loadGraph(fixture.databasePath, activeAfterRetry.id)
+              : undefined;
+            return {
+              activeAfterRetry,
+              activeBeforeRepair,
+              graphAfterRetry,
+              graphBeforeRepair,
+              healthBeforeRepair,
+              repaired,
+            };
+          });
+
+          expect(recovered.activeBeforeRepair?.id).toBe(originalSnapshot.id);
+          expect(recovered.graphBeforeRepair?.symbols.map(entry => entry.id)).toEqual(['original']);
+          expect(recovered.healthBeforeRepair?.buildingSnapshots).toBe(1);
+          expect(recovered.repaired?.removedSnapshots).toBe(1);
+          expect(recovered.activeAfterRetry?.id).toBe(interruptedSnapshot.id);
+          expect(recovered.graphAfterRetry?.symbols).toHaveLength(replacementSymbols.length);
+        }).pipe(Effect.provide(ApplicationLayer)),
+      ),
     60_000,
   );
 });
@@ -3426,6 +4945,138 @@ async function materializationFixture() {
     source: 'commit',
   };
   return {databasePath: join(root, 'graph-v3.sqlite'), file, identity, root};
+}
+
+function capacityGuardProbe(
+  pauseOperation?: CodeGraphDirectPersistentCapacityBoundary['operation'],
+  pauseOccurrence = 1,
+): {
+  readonly boundaries: CodeGraphDirectPersistentCapacityBoundary[];
+  readonly guard: CodeGraphDirectPersistentCapacityProtector;
+} {
+  const boundaries: CodeGraphDirectPersistentCapacityBoundary[] = [];
+  let operationOccurrences = 0;
+  const guard: CodeGraphDirectPersistentCapacityProtector = <A, E, R>(
+    boundary: CodeGraphDirectPersistentCapacityBoundary,
+    transaction: Effect.Effect<A, E, R>,
+  ) =>
+    Effect.suspend((): Effect.Effect<A, E | CodeGraphStoreError, R> => {
+      boundaries.push({...boundary});
+      if (boundary.operation !== pauseOperation) return transaction;
+      operationOccurrences += 1;
+      return operationOccurrences === pauseOccurrence
+        ? Effect.fail(new CodeGraphDiskCapacityPressureError(boundary.operation))
+        : transaction;
+    });
+  return {boundaries, guard};
+}
+
+function mutationCount(databasePath: string): number {
+  const database = new Database(databasePath, {readonly: true, strict: true});
+  try {
+    return (
+      database.query<{readonly count: number}, []>('SELECT COUNT(*) AS count FROM cache_capacity_mutations').get()
+        ?.count ?? 0
+    );
+  } finally {
+    database.close(false);
+  }
+}
+
+function expectedPersistentInventoryBoundary(
+  snapshotId: string,
+  files: readonly CodeGraphInventoryFile[],
+): CodeGraphDirectPersistentCapacityBoundary {
+  return {
+    finalFactBytes: utf8PayloadBytes(
+      files.flatMap(file => [snapshotId, file.path, file.contentHash, file.language, file.mode, file.source]),
+    ),
+    operation: 'stage persistent code graph inventory',
+    rowCount: files.length,
+  };
+}
+
+function expectedPersistentWorkspaceBoundary(
+  snapshotId: string,
+  workspace: CodeGraphWorkspace,
+): CodeGraphDirectPersistentCapacityBoundary {
+  const values: string[] = [];
+  for (const scope of workspace.workspaces) {
+    values.push(
+      snapshotId,
+      scope.id,
+      scope.buildSystem,
+      scope.name,
+      scope.root,
+      scope.provenance,
+      JSON.stringify(scope.diagnostics),
+    );
+  }
+  let rowCount = workspace.workspaces.length;
+  for (const project of workspace.projects) {
+    values.push(
+      snapshotId,
+      project.id,
+      project.workspaceId,
+      project.buildSystem,
+      project.kind,
+      project.name,
+      project.root,
+      project.resolutionDomain,
+      JSON.stringify(project.languages),
+      JSON.stringify(project.sourceRoots),
+      JSON.stringify(project.workspaceRoots),
+      project.provenance,
+      JSON.stringify(project.diagnostics),
+    );
+    rowCount += 1;
+    for (const dependency of project.dependencyDetails) {
+      values.push(snapshotId, project.id, dependency.targetId, dependency.provenance);
+      if (dependency.evidence !== undefined) values.push(dependency.evidence);
+      rowCount += 1;
+    }
+  }
+  return {
+    finalFactBytes: utf8PayloadBytes(values),
+    operation: 'stage persistent code graph workspace',
+    rowCount,
+  };
+}
+
+function utf8PayloadBytes(values: readonly string[]): number {
+  const encoder = new TextEncoder();
+  return values.reduce((total, value) => total + encoder.encode(value).byteLength, 0);
+}
+
+function persistentPreparationEvidence(
+  databasePath: string,
+  snapshotId: string,
+): {
+  readonly distinctFiles: number;
+  readonly expectedBatchCount: number | null;
+  readonly files: number;
+  readonly lexicalCounters: number;
+} {
+  const database = new Database(databasePath, {readonly: true, strict: true});
+  try {
+    return database
+      .query(
+        `SELECT owner.expected_batch_count AS expectedBatchCount,
+           (SELECT COUNT(*) FROM snapshot_files WHERE snapshot_id = owner.snapshot_id) AS files,
+           (SELECT COUNT(DISTINCT path) FROM snapshot_files WHERE snapshot_id = owner.snapshot_id) AS distinctFiles,
+           (SELECT COUNT(*) FROM building_lexical_counters WHERE snapshot_id = owner.snapshot_id) AS lexicalCounters
+         FROM snapshot_build_owners AS owner
+         WHERE owner.snapshot_id = ?`,
+      )
+      .get(snapshotId) as {
+      readonly distinctFiles: number;
+      readonly expectedBatchCount: number | null;
+      readonly files: number;
+      readonly lexicalCounters: number;
+    };
+  } finally {
+    database.close(false);
+  }
 }
 
 interface CompletedBuildRows {
@@ -3620,4 +5271,8 @@ function readySnapshot(identity: RepositoryIdentity, symbolCount: number, edgeCo
     symbolCount,
     worktreeId: identity.worktreeId,
   };
+}
+
+function testSnapshotId(value: number): string {
+  return `cgsn_${'0'.repeat(40)}-full-${value.toString(16).padStart(16, '0')}`;
 }

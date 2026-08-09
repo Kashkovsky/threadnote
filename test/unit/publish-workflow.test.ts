@@ -1,6 +1,7 @@
 import {BunFileSystem} from '@effect/platform-bun';
 import {describe, expect, it} from '@effect/vitest';
 import {Effect, FileSystem} from 'effect';
+import {BUILTIN_MODEL_MANIFESTS, CORE_EMBEDDING_MODEL_ID} from '../../src/models/builtin.js';
 
 const readProjectFile = (path: string) =>
   FileSystem.FileSystem.pipe(
@@ -115,6 +116,41 @@ describe('standalone release workflows', () => {
       const workflow = yield* readProjectFile('.github/workflows/publish.yml');
       expect(workflow.match(/Produce a real embedding with the release payload/g)).toHaveLength(3);
       expect(workflow.match(/test\/e2e\/local-bins\.e2e\.ts/g)).toHaveLength(3);
+    }),
+  );
+
+  it.effect('prepares one checksum-verified model artifact for every native release runner', () =>
+    Effect.gen(function* () {
+      const workflow = yield* readProjectFile('.github/workflows/publish.yml');
+      const ci = yield* readProjectFile('.github/workflows/ci.yml');
+      const model = BUILTIN_MODEL_MANIFESTS.find(candidate => candidate.id === CORE_EMBEDDING_MODEL_ID)!;
+      const fixtureDirectory =
+        '${{ runner.temp }}/threadnote-release-home/models/embedding/${{ env.E2E_EMBEDDING_MODEL_ID }}';
+      const fixturePath = `${fixtureDirectory}/` + '${{ env.E2E_EMBEDDING_MODEL_SHA256 }}.gguf';
+
+      for (const sharedModelContract of [
+        `E2E_EMBEDDING_MODEL_ID: ${model.id}`,
+        `E2E_EMBEDDING_MODEL_SHA256: ${model.sha256}`,
+        'key: threadnote-e2e-model-${{ env.E2E_EMBEDDING_MODEL_SHA256 }}',
+        'path: artifacts/e2e-model-home/models/embedding/${{ env.E2E_EMBEDDING_MODEL_ID }}',
+      ]) {
+        expect(ci).toContain(sharedModelContract);
+        expect(workflow).toContain(sharedModelContract);
+      }
+      expect(workflow).toContain('prepare-release-model:');
+      expect(workflow).toContain('uses: actions/cache@v6');
+      expect(workflow).toContain("if: steps.release-model-cache.outputs.cache-hit != 'true'");
+      expect(workflow).toContain('models install ${{ env.E2E_EMBEDDING_MODEL_ID }}');
+      expect(workflow).toContain('models verify ${{ env.E2E_EMBEDDING_MODEL_ID }}');
+      expect(workflow).toContain('if-no-files-found: error');
+      expect(workflow.match(/name: release-core-embedding-model/g)).toHaveLength(4);
+      expect(workflow.match(/name: Download pinned release model/g)).toHaveLength(3);
+      expect(workflow.match(/needs: prepare-release-model/g)).toHaveLength(2);
+      expect(workflow).toContain('needs: [verify, prepare-release-model]');
+      expect(workflow.split(`path: ${fixtureDirectory}`).length - 1).toBe(3);
+      expect(workflow.split(`THREADNOTE_E2E_MODEL_PATH: ${fixturePath}`).length - 1).toBe(3);
+      expect(workflow.match(/install --no-start/g)).toHaveLength(3);
+      expect(workflow.match(/doctor --dry-run --strict/g)).toHaveLength(3);
     }),
   );
 

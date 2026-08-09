@@ -1,13 +1,72 @@
 import {describe, expect, it} from 'vitest';
 import {
   acceptsRepositoryPath,
+  codeGraphInventoryExclusionReason,
   parseGitTree,
   parseNameStatus,
   shouldOmitRepositoryContent,
 } from '../../src/code_graph/inventory.js';
+import {
+  CODE_GRAPH_GENERIC_JSON_EXCLUSION_BYTES,
+  CODE_GRAPH_HIGH_SIGNAL_JSON_HARD_CAP_BYTES,
+} from '../../src/code_graph/inventory_policy.js';
 import {CORPUS_EXTRACTION_SOURCE_BYTES_LIMIT} from '../../src/code_graph/languages/corpus/policy.js';
 
 describe('native code graph inventory policy', () => {
+  it('excludes SVG and low-meaning JSON at the reviewed pre-hydration boundaries', () => {
+    for (const path of ['icons/logo.svg', 'icons/LOGO.SVG', './icons/logo.SvG']) {
+      expect(codeGraphInventoryExclusionReason(path, 0), path).toBe('svg');
+      expect(codeGraphInventoryExclusionReason(path, Number.MAX_SAFE_INTEGER), path).toBe('svg');
+    }
+
+    for (const path of [
+      'test/__snapshots__/tiny.json',
+      'test/__fixtures__/tiny.json',
+      'test/_fixtures_/tiny.JSONC',
+      'fixtures/tiny.JSONC',
+      'assets/animations/loading.json',
+      'configs/fixtures/runtime-config.json',
+      'SCHEMAS/__SNAPSHOTS__/PROJECT.JSON',
+      'assets/application.min.jsonc',
+      'generated/package.json',
+      'config/gen/runtime-config.JSON',
+      'data/payload.generated.json',
+    ]) {
+      expect(codeGraphInventoryExclusionReason(path, 1), path).toBe('low-signal-json');
+    }
+
+    for (const path of ['data/events.json', 'assets/application.JSONC']) {
+      expect(
+        codeGraphInventoryExclusionReason(path, CODE_GRAPH_GENERIC_JSON_EXCLUSION_BYTES - 1),
+        path,
+      ).toBeUndefined();
+      expect(codeGraphInventoryExclusionReason(path, CODE_GRAPH_GENERIC_JSON_EXCLUSION_BYTES), path).toBe(
+        'generic-json-size',
+      );
+    }
+
+    for (const path of [
+      'package.json',
+      'apps/mobile/tsconfig.build.json',
+      'apps/mobile/project.json',
+      'nx.json',
+      'config/runtime.json',
+    ]) {
+      expect(codeGraphInventoryExclusionReason(path, CODE_GRAPH_GENERIC_JSON_EXCLUSION_BYTES), path).toBeUndefined();
+      expect(
+        codeGraphInventoryExclusionReason(path, CODE_GRAPH_HIGH_SIGNAL_JSON_HARD_CAP_BYTES - 1),
+        path,
+      ).toBeUndefined();
+      expect(codeGraphInventoryExclusionReason(path, CODE_GRAPH_HIGH_SIGNAL_JSON_HARD_CAP_BYTES), path).toBe(
+        'high-signal-json-hard-cap',
+      );
+    }
+
+    expect(codeGraphInventoryExclusionReason('data/events.yaml', Number.MAX_SAFE_INTEGER)).toBeUndefined();
+    expect(codeGraphInventoryExclusionReason('data/small.json', 1)).toBeUndefined();
+    expect(codeGraphInventoryExclusionReason('src/application.ts', Number.MAX_SAFE_INTEGER)).toBeUndefined();
+  });
+
   it('prunes every hidden, generated, vendor, and explicitly ignored directory before blob reads', () => {
     const ignore = 'fixtures/**\n!fixtures/keep.ts\n';
 
@@ -89,7 +148,7 @@ describe('native code graph inventory policy', () => {
     const status = parseNameStatus(
       ['R100', 'src/old.ts', 'src/new.ts', 'D', 'src/deleted.ts', 'M', 'src/a.ts', 'A', 'src/added.ts', ''].join('\0'),
     );
-    expect([...status.added]).toEqual(['src/added.ts']);
+    expect([...status.added].sort()).toEqual(['src/added.ts', 'src/new.ts']);
     expect([...status.changed].sort()).toEqual(['src/a.ts', 'src/added.ts', 'src/new.ts']);
     expect([...status.deleted].sort()).toEqual(['src/deleted.ts', 'src/old.ts']);
   });

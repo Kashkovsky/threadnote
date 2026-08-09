@@ -1,21 +1,61 @@
 import {it as effectIt} from '@effect/vitest';
-import {Effect} from 'effect';
+import {existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join, posix as posixPath, win32 as windowsPath} from 'node:path';
+import {Clock, Deferred, Effect, Fiber} from 'effect';
+import {TestClock} from 'effect/testing';
 import * as FC from 'effect/testing/FastCheck';
-import {describe, expect, it} from 'vitest';
-import {ApplicationLayer} from '../../src/effect/runtime.js';
+import {describe, expect, it, vi} from 'vitest';
 import {
   effectiveLinuxMemoryBytes,
   linuxCgroupMemoryFiles,
   parseLinuxCgroupMemoryLimitBytes,
 } from '../../src/effect/linux_cgroup.js';
 import {
+  availableDiskBytesFromStatfs,
+  legacyAvailableDiskBytes,
+  parseCanonicalProcessStartIdentityOutput,
   parsePosixAvailableDiskBytes,
   parseLinuxProcessStartIdentity,
   parseProcessStartIdentityOutput,
   parseWindowsAvailableDiskBytes,
+  platformPathFor,
+  probeAvailableDiskBytes,
+  readCanonicalProcessStartIdentity,
+  readProcessStartIdentity,
   resolveHomeDirectory,
+  makeCachedProcessStartIdentityResolver,
   SystemInfo,
 } from '../../src/effect/system.js';
+
+describe('SystemInfo structural path adapter', () => {
+  effectIt.effect.prop(
+    'matches the platform path contract across drives, UNC roots, separators, dots, and trailing separators',
+    {
+      child: FC.stringMatching(/^[A-Za-z0-9._-]{0,12}$/),
+      platform: FC.constantFrom('linux' as const, 'win32' as const),
+      prefix: FC.constantFrom('', '/', '//', '\\', 'C:\\', 'c:/', '\\\\server\\share\\', '//server/share/'),
+      segments: FC.array(FC.constantFrom('.', '..', 'a', 'B', 'space name', 'é', '_'), {
+        maxLength: 8,
+      }),
+      separator: FC.constantFrom('/', '\\', '//', '\\\\'),
+      trailing: FC.constantFrom('', '/', '\\'),
+    },
+    ({child, platform, prefix, segments, separator, trailing}) =>
+      Effect.sync(() => {
+        const candidate = `${prefix}${segments.join(separator)}${trailing}`;
+        const actual = platformPathFor(platform);
+        const expected = platform === 'win32' ? windowsPath : posixPath;
+
+        expect(actual.normalize(candidate)).toBe(expected.normalize(candidate));
+        expect(actual.isAbsolute(candidate)).toBe(expected.isAbsolute(candidate));
+        expect(actual.basename(candidate)).toBe(expected.basename(candidate));
+        expect(actual.dirname(candidate)).toBe(expected.dirname(candidate));
+        expect(actual.join(candidate, child)).toBe(expected.join(candidate, child));
+      }),
+    {fastCheck: {numRuns: 200}},
+  );
+});
 
 describe('SystemInfo home directory resolution', () => {
   it('ignores empty Windows home variables', () => {
@@ -58,7 +98,286 @@ describe('SystemInfo disk capacity parsing', () => {
     expect(parseWindowsAvailableDiskBytes('987654321\r\n')).toBe(987_654_321);
     expect(parseWindowsAvailableDiskBytes('not-a-size')).toBeUndefined();
   });
+
+  effectIt.effect.prop(
+    'converts native statfs values to a conservative safe integer monotonically',
+    {
+      availableBlocks: FC.integer({max: Number.MAX_SAFE_INTEGER, min: 0}),
+      blockSize: FC.integer({max: 1_048_576, min: 1}),
+      fewerAvailableBlocks: FC.integer({max: Number.MAX_SAFE_INTEGER, min: 0}),
+    },
+    ({availableBlocks, blockSize, fewerAvailableBlocks}) =>
+      Effect.sync(() => {
+        const lowerBlocks = Math.min(availableBlocks, fewerAvailableBlocks);
+        const higherBlocks = Math.max(availableBlocks, fewerAvailableBlocks);
+        const exactBytes = BigInt(higherBlocks) * BigInt(blockSize);
+        const expected = Number(
+          exactBytes > BigInt(Number.MAX_SAFE_INTEGER) ? BigInt(Number.MAX_SAFE_INTEGER) : exactBytes,
+        );
+        const lower = availableDiskBytesFromStatfs({bavail: BigInt(lowerBlocks), bsize: BigInt(blockSize)});
+        const higher = availableDiskBytesFromStatfs({bavail: BigInt(higherBlocks), bsize: BigInt(blockSize)});
+        if (lower === undefined || higher === undefined) {
+          throw new Error('Valid native statfs values must produce a safe capacity.');
+        }
+
+        expect(higher).toBe(expected);
+        expect(lower).toBeLessThanOrEqual(higher);
+        expect(Number.isSafeInteger(lower)).toBe(true);
+        expect(Number.isSafeInteger(higher)).toBe(true);
+      }),
+    {fastCheck: {numRuns: 100}},
+  );
+
+  effectIt.effect('uses native asynchronous statistics on supported POSIX platforms without falling back', () =>
+    Effect.gen(function* () {
+      for (const platform of ['darwin', 'linux'] as const) {
+        let fallbackInvocations = 0;
+        let nativeInvocations = 0;
+        const available = yield* probeAvailableDiskBytes(
+          '/private/native-statfs-fixture',
+          platform,
+          {},
+          {
+            fallback: () =>
+              Effect.sync(() => {
+                fallbackInvocations += 1;
+                return 1;
+              }),
+            statfs: () =>
+              Effect.sync(() => {
+                nativeInvocations += 1;
+                return {bavail: 256n, bsize: 4096n};
+              }),
+          },
+        );
+
+        expect(available).toBe(1_048_576);
+        expect(nativeInvocations).toBe(1);
+        expect(fallbackInvocations).toBe(0);
+      }
+    }),
+  );
+
+  effectIt.effect('falls back only for structured native-statfs unavailability', () =>
+    Effect.gen(function* () {
+      const unavailableCodes = ['ENOSYS', 'ENOTSUP', 'EOPNOTSUPP', 'ERR_NOT_IMPLEMENTED', 'ERR_METHOD_NOT_IMPLEMENTED'];
+      let fallbackInvocations = 0;
+      for (const code of unavailableCodes) {
+        const available = yield* probeAvailableDiskBytes(
+          '/private/unavailable-statfs-fixture',
+          'linux',
+          {},
+          {
+            fallback: () =>
+              Effect.sync(() => {
+                fallbackInvocations += 1;
+                return 42;
+              }),
+            statfs: () => Effect.fail(Object.assign(new Error('Native statfs unavailable.'), {code})),
+          },
+        );
+        expect(available).toBe(42);
+      }
+
+      for (const code of ['EACCES', 'EIO', 'ENOENT']) {
+        const available = yield* probeAvailableDiskBytes(
+          '/private/ordinary-statfs-failure',
+          'linux',
+          {},
+          {
+            fallback: () =>
+              Effect.sync(() => {
+                fallbackInvocations += 1;
+                return 99;
+              }),
+            statfs: () => Effect.fail(Object.assign(new Error(`/private/ordinary-statfs-failure: ${code}`), {code})),
+          },
+        );
+        expect(available).toBeUndefined();
+      }
+
+      expect(fallbackInvocations).toBe(unavailableCodes.length);
+    }),
+  );
+
+  effectIt.effect('bounds a stalled native probe without launching the fallback', () =>
+    Effect.gen(function* () {
+      let fallbackInvocations = 0;
+      let nativeInvocations = 0;
+      const fiber = yield* probeAvailableDiskBytes(
+        '/private/stalled-statfs-fixture',
+        'linux',
+        {},
+        {
+          fallback: () =>
+            Effect.sync(() => {
+              fallbackInvocations += 1;
+              return 99;
+            }),
+          statfs: () =>
+            Effect.sync(() => {
+              nativeInvocations += 1;
+            }).pipe(Effect.andThen(Effect.never)),
+        },
+        25,
+      ).pipe(Effect.forkChild);
+      yield* Effect.yieldNow;
+
+      yield* TestClock.adjust(25);
+
+      expect(yield* Fiber.join(fiber)).toBeUndefined();
+      expect(nativeInvocations).toBe(1);
+      expect(fallbackInvocations).toBe(0);
+    }),
+  );
+
+  effectIt.effect('shares one total deadline between unavailable native detection and fallback work', () =>
+    Effect.gen(function* () {
+      let fallbackInterruptions = 0;
+      let fallbackInvocations = 0;
+      let nativeInvocations = 0;
+      const fiber = yield* probeAvailableDiskBytes(
+        '/private/total-statfs-deadline-fixture',
+        'linux',
+        {},
+        {
+          fallback: () =>
+            Effect.sync(() => {
+              fallbackInvocations += 1;
+            }).pipe(
+              Effect.andThen(Effect.sleep(60)),
+              Effect.as(99),
+              Effect.onInterrupt(() =>
+                Effect.sync(() => {
+                  fallbackInterruptions += 1;
+                }),
+              ),
+            ),
+          statfs: () =>
+            Effect.sync(() => {
+              nativeInvocations += 1;
+            }).pipe(
+              Effect.andThen(Effect.sleep(60)),
+              Effect.andThen(Effect.fail(Object.assign(new Error('Native statfs unavailable.'), {code: 'ENOSYS'}))),
+            ),
+        },
+        100,
+      ).pipe(Effect.forkChild);
+      yield* Effect.yieldNow;
+
+      yield* TestClock.adjust(60);
+      yield* Effect.yieldNow;
+      expect(nativeInvocations).toBe(1);
+      expect(fallbackInvocations).toBe(1);
+
+      yield* TestClock.adjust(40);
+
+      expect(yield* Fiber.join(fiber)).toBeUndefined();
+      expect(fallbackInterruptions).toBe(1);
+    }),
+  );
+
+  effectIt.effect('preempts and kills the real asynchronous fallback at the shared deadline', () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        if (process.platform === 'win32') return;
+        yield* Effect.acquireUseRelease(
+          Effect.sync(() => {
+            const root = mkdtempSync(join(tmpdir(), 'threadnote-disk-fallback-'));
+            const processIdPath = join(root, 'process.pid');
+            writeFileSync(
+              join(root, 'df'),
+              '#!/bin/sh\nprintf \'%s\' "$$" > "$THREADNOTE_DISK_PROBE_PID"\nexec /bin/sleep 30\n',
+              {mode: 0o700},
+            );
+            return {processIdPath, root};
+          }),
+          fixture =>
+            Effect.gen(function* () {
+              const startedAt = yield* Clock.currentTimeMillis;
+              const fiber = yield* probeAvailableDiskBytes(
+                '/private/blocked-fallback-fixture',
+                process.platform,
+                {...process.env, PATH: fixture.root, THREADNOTE_DISK_PROBE_PID: fixture.processIdPath},
+                {
+                  fallback: legacyAvailableDiskBytes,
+                  statfs: () => Effect.fail(Object.assign(new Error('Native statfs unavailable.'), {code: 'ENOSYS'})),
+                },
+                750,
+              ).pipe(Effect.forkChild({startImmediately: true}));
+              const processId = yield* waitForRecordedProcessId(fixture.processIdPath, 500);
+
+              expect(yield* Fiber.join(fiber)).toBeUndefined();
+              expect((yield* Clock.currentTimeMillis) - startedAt).toBeLessThan(2_000);
+              yield* waitForProcessExit(processId, 2_000);
+            }),
+          fixture => Effect.sync(() => rmSync(fixture.root, {force: true, recursive: true})),
+        );
+      }),
+    ),
+  );
+
+  effectIt.effect('launches no subprocesses across a bounded supported-host probe load', () =>
+    Effect.acquireUseRelease(
+      Effect.sync(() => ({spawn: vi.spyOn(Bun, 'spawn'), spawnSync: vi.spyOn(Bun, 'spawnSync')})),
+      spies =>
+        Effect.gen(function* () {
+          if (process.platform !== 'darwin' && process.platform !== 'linux') return;
+          const system = yield* SystemInfo;
+          const capacities = yield* Effect.all(
+            Array.from({length: 128}, () => system.availableDiskBytes(process.cwd())),
+            {concurrency: 16},
+          );
+
+          expect(capacities).toHaveLength(128);
+          expect(capacities.every(value => value !== undefined && Number.isSafeInteger(value) && value >= 0)).toBe(
+            true,
+          );
+          expect(spies.spawn).not.toHaveBeenCalled();
+          expect(spies.spawnSync).not.toHaveBeenCalled();
+        }).pipe(Effect.provide(SystemInfo.layer)),
+      spies =>
+        Effect.sync(() => {
+          spies.spawn.mockRestore();
+          spies.spawnSync.mockRestore();
+        }),
+    ),
+  );
 });
+
+function waitForRecordedProcessId(path: string, timeoutMilliseconds: number) {
+  return Effect.gen(function* () {
+    const deadline = (yield* Clock.currentTimeMillis) + timeoutMilliseconds;
+    while ((yield* Clock.currentTimeMillis) < deadline) {
+      if (existsSync(path)) {
+        const processId = Number(readFileSync(path, 'utf8').trim());
+        if (Number.isSafeInteger(processId) && processId > 0) return processId;
+      }
+      yield* Effect.sleep(10);
+    }
+    return yield* Effect.fail(new Error('Timed out waiting for the fallback process to start.'));
+  });
+}
+
+function waitForProcessExit(processId: number, timeoutMilliseconds: number) {
+  return Effect.gen(function* () {
+    const deadline = (yield* Clock.currentTimeMillis) + timeoutMilliseconds;
+    while ((yield* Clock.currentTimeMillis) < deadline) {
+      if (!isProcessRunning(processId)) return;
+      yield* Effect.sleep(10);
+    }
+    return yield* Effect.fail(new Error('Timed out waiting for the fallback process to exit.'));
+  });
+}
+
+function isProcessRunning(processId: number): boolean {
+  try {
+    process.kill(processId, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 describe('Linux cgroup effective memory', () => {
   effectIt.prop(
@@ -163,43 +482,394 @@ describe('SystemInfo process identity', () => {
     ).toBeUndefined();
   });
 
-  it('normalizes macOS and Windows process-start command output', () => {
+  it('preserves the legacy macOS and Windows process-start formats', () => {
     expect(parseProcessStartIdentityOutput('darwin', ' Tue Jul 28 18:57:16 2026\n')).toBe(
       'darwin:Tue Jul 28 18:57:16 2026',
+    );
+    expect(parseProcessStartIdentityOutput('darwin', ' sob sie  8 23:04:27 2026\n')).toBe(
+      'darwin:sob sie  8 23:04:27 2026',
     );
     expect(parseProcessStartIdentityOutput('win32', '638893834360000000\r\n')).toBe('win32:638893834360000000');
     expect(parseProcessStartIdentityOutput('linux', '123')).toBeUndefined();
     expect(parseProcessStartIdentityOutput('darwin', '   ')).toBeUndefined();
   });
 
-  it('reports a stable identity for the current process on the host adapter', async () => {
-    const identities = await Effect.runPromise(
-      Effect.gen(function* () {
-        const system = yield* SystemInfo;
-        return [
-          yield* system.processStartIdentity(system.processId),
-          yield* system.processStartIdentity(system.processId),
-        ] as const;
-      }).pipe(Effect.provide(ApplicationLayer)),
+  it('normalizes canonical Darwin output to a versioned format', () => {
+    expect(parseCanonicalProcessStartIdentityOutput('darwin', ' Tue Jul 28 18:57:16 2026\n')).toBe(
+      'darwin-v2:Tue Jul 28 18:57:16 2026',
     );
-
-    expect(identities[0]).toBeTruthy();
-    expect(identities[1]).toBe(identities[0]);
+    expect(parseCanonicalProcessStartIdentityOutput('darwin', 'Sat Aug  8 23:04:27 2026    \n')).toBe(
+      'darwin-v2:Sat Aug  8 23:04:27 2026',
+    );
+    expect(parseCanonicalProcessStartIdentityOutput('win32', '638893834360000000\r\n')).toBe(
+      'win32:638893834360000000',
+    );
   });
+
+  it('rejects localized, path-bearing, control-bearing, or unbounded process-start output', () => {
+    for (const output of [
+      'sob sie  8 23:04:27 2026',
+      'Sat Aug  8 23:04:27 /private/tmp',
+      'Sat Aug  8 23:04:27 2026\nextra',
+      '\tSat Aug  8 23:04:27 2026',
+      '\u001bSat Aug  8 23:04:27 2026',
+      'Sat Aug 32 23:04:27 2026',
+      'Sat Aug  8 24:04:27 2026',
+      `Sat Aug  8 23:04:27 ${'2'.repeat(64)}`,
+    ]) {
+      expect(parseCanonicalProcessStartIdentityOutput('darwin', output)).toBeUndefined();
+    }
+    for (const output of [
+      '0638893834360000000',
+      '638893834360000000/path',
+      '638893834360000000\nextra',
+      '\t638893834360000000',
+      '1'.repeat(21),
+    ]) {
+      expect(parseCanonicalProcessStartIdentityOutput('win32', output)).toBeUndefined();
+    }
+  });
+
+  effectIt.prop(
+    'emits only bounded path-free canonical process-start identities',
+    {
+      output: FC.string({maxLength: 96}),
+      platform: FC.constantFrom('darwin' as const, 'win32' as const),
+    },
+    ({output, platform}) => {
+      const identity = parseCanonicalProcessStartIdentityOutput(platform, output);
+      if (identity === undefined) return;
+
+      expect(identity.length).toBeLessThanOrEqual(34);
+      expect(
+        Array.from(identity).every(character => {
+          const codePoint = character.codePointAt(0);
+          return (
+            character !== '/' && character !== '\\' && codePoint !== undefined && codePoint >= 32 && codePoint !== 127
+          );
+        }),
+      ).toBe(true);
+    },
+    {fastCheck: {numRuns: 200}},
+  );
+
+  effectIt.effect('preserves hostile Darwin legacy observations while canonicalizing the explicit v2 channel', () =>
+    process.platform === 'win32'
+      ? Effect.void
+      : Effect.acquireUseRelease(
+          Effect.sync(() => {
+            const root = mkdtempSync(join(tmpdir(), 'threadnote-process-identity-channel-'));
+            writeFileSync(
+              join(root, 'ps'),
+              '#!/bin/sh\nif [ "$THREADNOTE_PROCESS_IDENTITY_MODE" = legacy ]; then\n  [ "$LC_ALL" = pl_PL.UTF-8 ] || exit 70\n  [ "$LANG" = pl_PL.UTF-8 ] || exit 71\n  [ "$TZ" = Pacific/Kiritimati ] || exit 72\n  printf \'sob sie  8 23:04:27 2026\\n\'\nelse\n  [ "$LC_ALL" = C ] || exit 73\n  [ "$LANG" = C ] || exit 74\n  [ "$TZ" = UTC ] || exit 75\n  printf \'Sat Aug  8 23:04:27 2026    \\n\'\nfi\n',
+              {mode: 0o700},
+            );
+            return root;
+          }),
+          root =>
+            Effect.gen(function* () {
+              const hostileEnvironment = {
+                ...process.env,
+                LANG: 'pl_PL.UTF-8',
+                LC_ALL: 'pl_PL.UTF-8',
+                PATH: '',
+                TZ: 'Pacific/Kiritimati',
+              };
+              const command = join(root, 'ps');
+
+              expect(
+                yield* readProcessStartIdentity(
+                  10_000,
+                  'darwin',
+                  {...hostileEnvironment, THREADNOTE_PROCESS_IDENTITY_MODE: 'legacy'},
+                  1_000,
+                  command,
+                ),
+              ).toBe('darwin:sob sie  8 23:04:27 2026');
+              expect(
+                yield* readCanonicalProcessStartIdentity(
+                  10_000,
+                  'darwin',
+                  {...hostileEnvironment, THREADNOTE_PROCESS_IDENTITY_MODE: 'canonical'},
+                  1_000,
+                  command,
+                ),
+              ).toBe('darwin-v2:Sat Aug  8 23:04:27 2026');
+            }),
+          root => Effect.sync(() => rmSync(root, {force: true, recursive: true})),
+        ),
+  );
+
+  effectIt.effect('bounds concurrent Darwin probes and kills every timed-out or interrupted ps child', () =>
+    process.platform === 'win32'
+      ? Effect.void
+      : TestClock.withLive(
+          Effect.acquireUseRelease(
+            Effect.sync(() => {
+              const root = mkdtempSync(join(tmpdir(), 'threadnote-process-identity-'));
+              writeFileSync(
+                join(root, 'ps'),
+                '#!/bin/sh\n[ "$LC_ALL" = C ] || exit 70\n[ "$LANG" = C ] || exit 71\n[ "$TZ" = UTC ] || exit 72\nprintf \'%s\\n\' "$$" >> "$THREADNOTE_PROCESS_IDENTITY_PIDS"\nexec /bin/sleep 30\n',
+                {mode: 0o700},
+              );
+              return {root};
+            }),
+            fixture =>
+              Effect.gen(function* () {
+                const timedOutProcessIdsPath = join(fixture.root, 'timed-out-pids');
+                const timedOutEnvironment = {
+                  ...process.env,
+                  LANG: 'pl_PL.UTF-8',
+                  LC_ALL: 'pl_PL.UTF-8',
+                  PATH: '',
+                  THREADNOTE_PROCESS_IDENTITY_PIDS: timedOutProcessIdsPath,
+                  TZ: 'Pacific/Kiritimati',
+                };
+                const timedOutStartedAt = yield* Clock.currentTimeMillis;
+                const identities = yield* Effect.all(
+                  Array.from({length: 4}, (_, index) =>
+                    readCanonicalProcessStartIdentity(
+                      10_000 + index,
+                      'darwin',
+                      timedOutEnvironment,
+                      350,
+                      join(fixture.root, 'ps'),
+                    ),
+                  ),
+                  {concurrency: 'unbounded'},
+                );
+                const timedOutElapsed = (yield* Clock.currentTimeMillis) - timedOutStartedAt;
+                const timedOutProcessIds = yield* waitForRecordedProcessIds(timedOutProcessIdsPath, 4, 1_000);
+
+                expect(identities).toEqual([undefined, undefined, undefined, undefined]);
+                expect(timedOutElapsed).toBeLessThan(2_000);
+                expect(new Set(timedOutProcessIds).size).toBe(4);
+                yield* Effect.forEach(timedOutProcessIds, processId => waitForProcessExit(processId, 2_000), {
+                  concurrency: 'unbounded',
+                });
+
+                const interruptedProcessIdsPath = join(fixture.root, 'interrupted-pids');
+                const interruptedEnvironment = {
+                  ...process.env,
+                  LANG: 'pl_PL.UTF-8',
+                  LC_ALL: 'pl_PL.UTF-8',
+                  PATH: '',
+                  THREADNOTE_PROCESS_IDENTITY_PIDS: interruptedProcessIdsPath,
+                  TZ: 'Pacific/Kiritimati',
+                };
+                const interrupted = yield* Effect.all(
+                  Array.from({length: 4}, (_, index) =>
+                    readCanonicalProcessStartIdentity(
+                      20_000 + index,
+                      'darwin',
+                      interruptedEnvironment,
+                      30_000,
+                      join(fixture.root, 'ps'),
+                    ),
+                  ),
+                  {concurrency: 'unbounded'},
+                ).pipe(Effect.forkChild({startImmediately: true}));
+                const interruptedProcessIds = yield* waitForRecordedProcessIds(interruptedProcessIdsPath, 4, 1_000);
+                const interruptedAt = yield* Clock.currentTimeMillis;
+
+                yield* Fiber.interrupt(interrupted);
+
+                expect((yield* Clock.currentTimeMillis) - interruptedAt).toBeLessThan(2_000);
+                expect(new Set(interruptedProcessIds).size).toBe(4);
+                yield* Effect.forEach(interruptedProcessIds, processId => waitForProcessExit(processId, 2_000), {
+                  concurrency: 'unbounded',
+                });
+              }),
+            fixture => Effect.sync(() => rmSync(fixture.root, {force: true, recursive: true})),
+          ),
+        ),
+  );
+
+  effectIt.effect('caches legacy and canonical own-process identities independently', () =>
+    Effect.gen(function* () {
+      let legacyProbeCount = 0;
+      let canonicalProbeCount = 0;
+      const legacy = yield* makeCachedProcessStartIdentityResolver(42, () =>
+        Effect.sync(() => {
+          legacyProbeCount += 1;
+          return 'darwin:legacy-observation';
+        }),
+      );
+      const canonical = yield* makeCachedProcessStartIdentityResolver(42, () =>
+        Effect.sync(() => {
+          canonicalProbeCount += 1;
+          return 'darwin-v2:canonical-observation';
+        }),
+      );
+
+      expect(yield* legacy(42)).toBe('darwin:legacy-observation');
+      expect(yield* legacy(42)).toBe('darwin:legacy-observation');
+      expect(legacyProbeCount).toBe(1);
+      expect(canonicalProbeCount).toBe(0);
+
+      expect(yield* canonical(42)).toBe('darwin-v2:canonical-observation');
+      expect(yield* canonical(42)).toBe('darwin-v2:canonical-observation');
+      expect(legacyProbeCount).toBe(1);
+      expect(canonicalProbeCount).toBe(1);
+    }),
+  );
+
+  effectIt.effect('shares and caches an exact five-second unavailable own-process probe', () =>
+    Effect.gen(function* () {
+      let probeCount = 0;
+      const resolve = yield* makeCachedProcessStartIdentityResolver(42, () =>
+        Effect.sync(() => {
+          probeCount += 1;
+        }).pipe(Effect.andThen(Effect.sleep(5_000)), Effect.as(undefined)),
+      );
+      const fiber = yield* Effect.all(
+        Array.from({length: 32}, () => resolve(42)),
+        {
+          concurrency: 'unbounded',
+        },
+      ).pipe(Effect.forkChild({startImmediately: true}));
+      yield* Effect.yieldNow;
+
+      expect(probeCount).toBe(1);
+      yield* TestClock.adjust(4_999);
+      expect(fiber.pollUnsafe()).toBeUndefined();
+
+      yield* TestClock.adjust(1);
+      expect(yield* Fiber.join(fiber)).toEqual(Array.from({length: 32}, () => undefined));
+      expect(probeCount).toBe(1);
+      expect(yield* resolve(42)).toBeUndefined();
+      expect(probeCount).toBe(1);
+    }),
+  );
+
+  effectIt.effect('re-elects one owner after interruption so pending callers converge on the retry', () =>
+    Effect.gen(function* () {
+      const firstProbeStarted = yield* Deferred.make<void>();
+      let probeCount = 0;
+      const resolve = yield* makeCachedProcessStartIdentityResolver(42, () =>
+        Effect.suspend(() => {
+          probeCount += 1;
+          return probeCount === 1
+            ? Deferred.succeed(firstProbeStarted, undefined).pipe(Effect.andThen(Effect.never))
+            : Effect.succeed('fixture-process-start');
+        }),
+      );
+      const firstOwner = yield* resolve(42).pipe(Effect.forkChild({startImmediately: true}));
+      yield* Deferred.await(firstProbeStarted);
+      const waiters = yield* Effect.forEach(Array.from({length: 31}), () =>
+        resolve(42).pipe(Effect.forkChild({startImmediately: true})),
+      );
+
+      yield* Fiber.interrupt(firstOwner);
+
+      expect(yield* Effect.forEach(waiters, Fiber.join)).toEqual(
+        Array.from({length: 31}, () => 'fixture-process-start'),
+      );
+      expect(yield* resolve(42)).toBe('fixture-process-start');
+      expect(probeCount).toBe(2);
+    }),
+  );
+
+  effectIt.effect('cannot strand pending callers when interrupted immediately after ownership acquisition', () =>
+    Effect.gen(function* () {
+      const firstOwnerClaimed = yield* Deferred.make<void>();
+      const releaseFirstOwner = yield* Deferred.make<void>();
+      let ownerClaimCount = 0;
+      let probeCount = 0;
+      const resolve = yield* makeCachedProcessStartIdentityResolver(
+        42,
+        () =>
+          Effect.sync(() => {
+            probeCount += 1;
+            return 'fixture-process-start';
+          }),
+        Effect.suspend(() => {
+          ownerClaimCount += 1;
+          return ownerClaimCount === 1
+            ? Deferred.succeed(firstOwnerClaimed, undefined).pipe(
+                Effect.andThen(Deferred.await(releaseFirstOwner)),
+                Effect.asVoid,
+              )
+            : Effect.void;
+        }),
+      );
+      const firstOwner = yield* resolve(42).pipe(Effect.forkChild({startImmediately: true}));
+      yield* Deferred.await(firstOwnerClaimed);
+      const waiters = yield* Effect.forEach(Array.from({length: 31}), () =>
+        resolve(42).pipe(Effect.forkChild({startImmediately: true})),
+      );
+      const interruption = yield* Fiber.interrupt(firstOwner).pipe(Effect.forkChild({startImmediately: true}));
+      yield* Effect.yieldNow;
+
+      yield* Deferred.succeed(releaseFirstOwner, undefined);
+      yield* Fiber.join(interruption);
+
+      expect(yield* Effect.forEach(waiters, Fiber.join)).toEqual(
+        Array.from({length: 31}, () => 'fixture-process-start'),
+      );
+      expect(yield* resolve(42)).toBe('fixture-process-start');
+      expect(ownerClaimCount).toBe(2);
+      expect(probeCount).toBe(1);
+    }),
+  );
+
+  effectIt.effect('reports a stable identity for the current process on the host adapter', () =>
+    Effect.gen(function* () {
+      const system = yield* SystemInfo;
+      const canonicalProcessStartIdentity = system.canonicalProcessStartIdentity;
+      if (canonicalProcessStartIdentity === undefined) {
+        return yield* Effect.fail(new Error('The production SystemInfo layer must provide the canonical channel.'));
+      }
+      const identities = [
+        yield* system.processStartIdentity(system.processId),
+        yield* system.processStartIdentity(system.processId),
+      ] as const;
+      const canonicalIdentities = [
+        yield* canonicalProcessStartIdentity(system.processId),
+        yield* canonicalProcessStartIdentity(system.processId),
+      ] as const;
+
+      expect(identities[0]).toBeTruthy();
+      expect(identities[1]).toBe(identities[0]);
+      expect(canonicalIdentities[0]).toBeTruthy();
+      expect(canonicalIdentities[1]).toBe(canonicalIdentities[0]);
+      if (system.platform === 'darwin') {
+        expect(identities[0]).toMatch(/^darwin:/);
+        expect(canonicalIdentities[0]).toMatch(/^darwin-v2:/);
+      } else {
+        expect(canonicalIdentities[0]).toBe(identities[0]);
+      }
+    }).pipe(Effect.provide(SystemInfo.layer)),
+  );
 });
 
-describe('SystemInfo benchmark metadata', () => {
-  it('reports real CPU, memory, and operating-system values', async () => {
-    const hardware = await Effect.runPromise(
-      Effect.gen(function* () {
-        return yield* (yield* SystemInfo).hardwareInfo();
-      }).pipe(Effect.provide(ApplicationLayer)),
-    );
-
-    expect(hardware.cpuModel.trim().length).toBeGreaterThan(0);
-    expect(hardware.memoryBytes).toBeGreaterThan(0);
-    expect(hardware.effectiveMemoryBytes).toBeGreaterThan(0);
-    expect(hardware.effectiveMemoryBytes).toBeLessThanOrEqual(hardware.memoryBytes);
-    expect(hardware.operatingSystem.trim().length).toBeGreaterThan(0);
+function waitForRecordedProcessIds(path: string, expectedCount: number, timeoutMilliseconds: number) {
+  return Effect.gen(function* () {
+    const deadline = (yield* Clock.currentTimeMillis) + timeoutMilliseconds;
+    while ((yield* Clock.currentTimeMillis) < deadline) {
+      if (existsSync(path)) {
+        const processIds = readFileSync(path, 'utf8')
+          .split(/\r?\n/)
+          .map(value => Number(value.trim()))
+          .filter(processId => Number.isSafeInteger(processId) && processId > 0);
+        if (processIds.length >= expectedCount) return processIds.slice(0, expectedCount);
+      }
+      yield* Effect.sleep(10);
+    }
+    return yield* Effect.fail(new Error(`Timed out waiting for ${expectedCount} process identity probes to start.`));
   });
+}
+
+describe('SystemInfo benchmark metadata', () => {
+  effectIt.effect('reports real CPU, memory, and operating-system values', () =>
+    Effect.gen(function* () {
+      const hardware = yield* (yield* SystemInfo).hardwareInfo();
+
+      expect(hardware.cpuModel.trim().length).toBeGreaterThan(0);
+      expect(hardware.memoryBytes).toBeGreaterThan(0);
+      expect(hardware.effectiveMemoryBytes).toBeGreaterThan(0);
+      expect(hardware.effectiveMemoryBytes).toBeLessThanOrEqual(hardware.memoryBytes);
+      expect(hardware.operatingSystem.trim().length).toBeGreaterThan(0);
+    }).pipe(Effect.provide(SystemInfo.layer)),
+  );
 });

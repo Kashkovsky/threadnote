@@ -18,6 +18,7 @@ import {resolveRepositoryIdentity} from '../src/code_graph/repository.js';
 import type {CodeGraphActivationActivity, CodeGraphProgress, CodeGraphQueryResult} from '../src/code_graph/types.js';
 import {
   managerGraphCatalog,
+  ManagerGraphBusyError,
   ManagerGraphQueryLifecycle,
   managerGraphNodeDetail,
   managerGraphQuery,
@@ -58,11 +59,16 @@ import {atomicWrite, printJson, readJsonFile, scriptArguments} from './effect/sc
 import {
   GENERATED_VECTOR_CONTROL_PATH,
   PRODUCTION_LARGE_CODE_GRAPH_PROFILE,
+  PRODUCTION_WORKTREE_CHURN_SCENARIOS,
   VECTOR_SEMANTIC_CONTROL_QUERY,
   generatedSymbolName,
   prepareCodeGraphFixture,
   prepareGeneratedCodeGraphFixture,
   prepareProductionCodeGraphFixture,
+  productionEligibleFileCount,
+  productionExcludedByteDistribution,
+  productionRepositoryFileCount,
+  validateProductionProfile,
   type ProductionCodeGraphFixtureProfile,
 } from './code-graph-fixture.js';
 import {
@@ -90,6 +96,8 @@ const MANAGER_QUERY_NODE_LIMIT = 200;
 const MANAGER_QUERY_EDGE_LIMIT = 500;
 const EXTERNAL_QUERY_CONTROL_TIMEOUT_MS = 120_000;
 const MANAGER_SEQUENCE_TIMEOUT_MS = 180_000;
+const MANAGER_BUSY_RETRY_MILLISECONDS = 100;
+const MANAGER_BUSY_RETRY_ATTEMPTS = 20;
 const WORKTREE_GIT_COMMAND_TIMEOUT_MS = 30_000;
 const WORKTREE_ISOLATION_TIMEOUT_MS = 300_000;
 const PUBLIC_REPOSITORY_PROOF_TIMEOUT_MS = 60_000;
@@ -312,6 +320,8 @@ export const PRODUCTION_RELEASE_EVIDENCE_MEASUREMENTS = [
   {name: 'one-file-reindex-materialization-deduplicated-edge-rows-n1', unit: 'count'},
   {name: 'one-file-reindex-materialization-deduplicated-reference-rows-n1', unit: 'count'},
   {name: 'production-shape-file-target-attainment', unit: 'percent'},
+  {name: 'production-shape-repository-file-target-attainment', unit: 'percent'},
+  {name: 'production-shape-excluded-file-target-attainment', unit: 'percent'},
   {name: 'production-shape-symbol-target-attainment', unit: 'percent'},
   {name: 'production-shape-edge-target-attainment', unit: 'percent'},
   {name: 'production-shape-lexical-term-target-attainment', unit: 'percent'},
@@ -1242,6 +1252,7 @@ const benchmarkCodeGraph = Effect.scoped(
           ? productionShapeMeasurements(prepared.profile, {
               edges: cold.snapshot.edgeCount,
               files: cold.snapshot.fileCount,
+              skipped: cold.skippedFiles,
               symbols: cold.snapshot.symbolCount,
               terms: coldLexicalTermRows,
             })
@@ -1252,6 +1263,7 @@ const benchmarkCodeGraph = Effect.scoped(
           'privacy-safe completed-stage duration and row counts; unobserved optional stages are retained as zero',
         coldEdges: cold.snapshot.edgeCount,
         coldFiles: cold.snapshot.fileCount,
+        coldSkippedFiles: cold.skippedFiles,
         coldMaterializationStorageMode: coldMaterializationStorage?.materializationMode ?? 'unreported',
         coldSymbols: cold.snapshot.symbolCount,
         incrementalReusedFiles: incremental.reusedFiles,
@@ -1403,26 +1415,14 @@ const benchmarkCodeGraph = Effect.scoped(
               worktreeIsolationTopology: concurrentWorktreeEvidence?.topology ?? '',
             }
           : {}),
-        ...(prepared.profile
-          ? {
-              profile: prepared.profile.id,
-              profileDeclarationSymbols: prepared.profile.declarationSymbols,
-              profileSourceFiles: prepared.profile.sourceFiles,
-              profileTargetEdges: prepared.profile.targetGraphEdges,
-              profileTargetEligibleFiles: prepared.profile.targetEligibleFiles,
-              profileTargetLexicalTermRows: prepared.profile.targetLexicalTermRows,
-              profileTargetSymbols: prepared.profile.targetGraphSymbols,
-              profileVersion: prepared.profile.version,
-              profileWorkspaces: prepared.profile.workspaceCount,
-            }
-          : {}),
+        ...(prepared.profile ? productionProfileArtifactMetadata(prepared.profile) : {}),
       },
       suite: prepared.externalCommit
         ? 'code-graph-external-repository-v1'
         : prepared.profile
           ? options.vectors
-            ? 'code-graph-production-large-vectors-v1'
-            : 'code-graph-production-large-v1'
+            ? 'code-graph-production-large-vectors-v2'
+            : 'code-graph-production-large-v2'
           : options.vectors
             ? 'code-graph-vectors-v1'
             : options.scaleSymbols === undefined
@@ -3123,12 +3123,24 @@ const vectorRowCount = Effect.fn('benchmarkCodeGraph.vectorRowCount')(function* 
 
 function productionShapeMeasurements(
   profile: ProductionCodeGraphFixtureProfile,
-  actual: {readonly edges: number; readonly files: number; readonly symbols: number; readonly terms: number},
+  actual: {
+    readonly edges: number;
+    readonly files: number;
+    readonly skipped: number;
+    readonly symbols: number;
+    readonly terms: number;
+  },
 ): ReturnType<typeof benchmarkMeasurement>[] {
   const percent = (value: number, target: number) => (value / target) * 100;
   return [
     benchmarkMeasurement('production-shape-file-target-attainment', 'percent', [
       percent(actual.files, profile.targetEligibleFiles),
+    ]),
+    benchmarkMeasurement('production-shape-repository-file-target-attainment', 'percent', [
+      percent(actual.files + actual.skipped, profile.targetRepositoryFiles),
+    ]),
+    benchmarkMeasurement('production-shape-excluded-file-target-attainment', 'percent', [
+      percent(actual.skipped, profile.classMix.generatedSvgFiles + profile.classMix.duplicateHeavyJsonFiles),
     ]),
     benchmarkMeasurement('production-shape-symbol-target-attainment', 'percent', [
       percent(actual.symbols, profile.targetGraphSymbols),
@@ -3620,14 +3632,16 @@ export const benchmarkManagerPerformance = Effect.fn('benchmarkCodeGraph.manager
   samples: number,
   warmups: number,
 ) {
-  return yield* Effect.scoped(
-    benchmarkManagerPerformanceMeasured(
-      threadnoteHome,
-      expectedRepositoryId,
-      expectedSnapshotId,
-      queryText,
-      samples,
-      warmups,
+  return yield* retryManagerBenchmarkBusy(() =>
+    Effect.scoped(
+      benchmarkManagerPerformanceMeasured(
+        threadnoteHome,
+        expectedRepositoryId,
+        expectedSnapshotId,
+        queryText,
+        samples,
+        warmups,
+      ),
     ),
   ).pipe(
     Effect.timeoutOrElse({
@@ -3639,6 +3653,23 @@ export const benchmarkManagerPerformance = Effect.fn('benchmarkCodeGraph.manager
     }),
   );
 });
+
+/** @internal Models the Manager HTTP client's documented retry-after contract in benchmark callers. */
+export function retryManagerBenchmarkBusy<A, E, R>(
+  operation: () => Effect.Effect<A, E, R>,
+  remainingAttempts = MANAGER_BUSY_RETRY_ATTEMPTS,
+  retryDelayMilliseconds = MANAGER_BUSY_RETRY_MILLISECONDS,
+): Effect.Effect<A, E, R> {
+  return Effect.suspend(operation).pipe(
+    Effect.catch(error =>
+      error instanceof ManagerGraphBusyError && remainingAttempts > 0
+        ? Effect.sleep(retryDelayMilliseconds).pipe(
+            Effect.andThen(retryManagerBenchmarkBusy(operation, remainingAttempts - 1, retryDelayMilliseconds)),
+          )
+        : Effect.fail(error),
+    ),
+  );
+}
 
 function mcpOperationMatrixMeasurements(
   results: readonly McpOperationBenchmarkResult[],
@@ -3883,17 +3914,7 @@ function missingProductionShapeTargetAttainment(
 }
 
 function isReviewedProductionProfile(artifact: BenchmarkArtifactV1): boolean {
-  const expected = {
-    profile: PRODUCTION_LARGE_CODE_GRAPH_PROFILE.id,
-    profileDeclarationSymbols: PRODUCTION_LARGE_CODE_GRAPH_PROFILE.declarationSymbols,
-    profileSourceFiles: PRODUCTION_LARGE_CODE_GRAPH_PROFILE.sourceFiles,
-    profileTargetEdges: PRODUCTION_LARGE_CODE_GRAPH_PROFILE.targetGraphEdges,
-    profileTargetEligibleFiles: PRODUCTION_LARGE_CODE_GRAPH_PROFILE.targetEligibleFiles,
-    profileTargetLexicalTermRows: PRODUCTION_LARGE_CODE_GRAPH_PROFILE.targetLexicalTermRows,
-    profileTargetSymbols: PRODUCTION_LARGE_CODE_GRAPH_PROFILE.targetGraphSymbols,
-    profileVersion: PRODUCTION_LARGE_CODE_GRAPH_PROFILE.version,
-    profileWorkspaces: PRODUCTION_LARGE_CODE_GRAPH_PROFILE.workspaceCount,
-  } as const;
+  const expected = productionProfileArtifactMetadata(PRODUCTION_LARGE_CODE_GRAPH_PROFILE);
   return Object.entries(expected).every(([name, value]) => artifact.metadata[name] === value);
 }
 
@@ -3993,7 +4014,7 @@ function missingReleaseSourceProvenance(artifact: BenchmarkArtifactV1): readonly
   const resolvedSha = artifact.metadata.releaseEvidenceResolvedSha;
   const sha = artifact.metadata.releaseEvidenceSha;
   return typeof ref === 'string' &&
-    /^refs\/tags\/v4\.0\.0(?:-(?:beta|rc)\.\d+)?$/.test(ref) &&
+    THREADNOTE_4_RELEASE_REF_PATTERN.test(ref) &&
     typeof sha === 'string' &&
     EXACT_GIT_COMMIT_PATTERN.test(sha) &&
     resolvedSha === sha &&
@@ -4341,7 +4362,7 @@ export function parseCodeGraphBenchmarkArguments(args: readonly string[]): CodeG
       const value = required(args[++index], argument);
       if (value !== 'production-large') throw new Error(`Unknown code graph benchmark profile: ${value}`);
       profile = value;
-    } else if (argument === '--profile-files') profileFiles = integer(args[++index], argument, 1);
+    } else if (argument === '--profile-files') profileFiles = integer(args[++index], argument, 2);
     else if (argument === '--profile-symbols') profileSymbols = integer(args[++index], argument, 2);
     else if (argument === '--samples') samples = integer(args[++index], argument, 1);
     else if (argument === '--scale-symbols') scaleSymbols = integer(args[++index], argument, 1);
@@ -5310,8 +5331,41 @@ export function productionProfile(options: CodeGraphBenchmarkOptions): Productio
   }
   const sourceFiles = options.profileFiles ?? PRODUCTION_LARGE_CODE_GRAPH_PROFILE.sourceFiles;
   const targetGraphSymbols = options.profileSymbols ?? PRODUCTION_LARGE_CODE_GRAPH_PROFILE.targetGraphSymbols;
-  const scale = targetGraphSymbols / PRODUCTION_LARGE_CODE_GRAPH_PROFILE.targetGraphSymbols;
-  const workspaceCount = Math.min(PRODUCTION_LARGE_CODE_GRAPH_PROFILE.workspaceCount, sourceFiles);
+  const sourceScale = sourceFiles / PRODUCTION_LARGE_CODE_GRAPH_PROFILE.sourceFiles;
+  const symbolScale = targetGraphSymbols / PRODUCTION_LARGE_CODE_GRAPH_PROFILE.targetGraphSymbols;
+  const workspaceCount = Math.max(2, Math.min(PRODUCTION_LARGE_CODE_GRAPH_PROFILE.workspaceCount, sourceFiles));
+  const activeWorkspaceExcludedPackageCount = Math.min(
+    PRODUCTION_LARGE_CODE_GRAPH_PROFILE.activeWorkspaceExcludedPackageCount,
+    workspaceCount - 1,
+  );
+  const activeWorkspaceExcludedSourceFiles = Math.min(
+    PRODUCTION_LARGE_CODE_GRAPH_PROFILE.activeWorkspaceExcludedSourceFiles,
+    sourceFiles - 1,
+  );
+  const tsxSourceFiles = Math.min(
+    sourceFiles - 1,
+    Math.max(
+      1,
+      Math.round(
+        sourceFiles *
+          (PRODUCTION_LARGE_CODE_GRAPH_PROFILE.classMix.tsxSourceFiles /
+            PRODUCTION_LARGE_CODE_GRAPH_PROFILE.sourceFiles),
+      ),
+    ),
+  );
+  const classMix = {
+    duplicateHeavyJsonFiles: scaledProfileClassCount('duplicateHeavyJsonFiles', sourceScale),
+    generatedSvgFiles: scaledProfileClassCount('generatedSvgFiles', sourceScale),
+    nxProjectFiles: Math.min(workspaceCount, scaledProfileClassCount('nxProjectFiles', sourceScale)),
+    packageManifestFiles: workspaceCount + 1,
+    supportMarkdownFiles: scaledProfileClassCount('supportMarkdownFiles', sourceScale),
+    tsconfigFiles: Math.min(workspaceCount + 1, scaledProfileClassCount('tsconfigFiles', sourceScale)),
+    tsxSourceFiles,
+    typescriptSourceFiles: sourceFiles - tsxSourceFiles,
+    workspaceManifestFiles: 1,
+  } as const;
+  const targetEligibleFiles = productionEligibleFileCount(classMix);
+  const targetRepositoryFiles = productionRepositoryFileCount(classMix);
   const metadataGraphSymbols = workspaceCount + 3;
   const declarationSymbols = targetGraphSymbols - sourceFiles - metadataGraphSymbols;
   if (declarationSymbols < sourceFiles) {
@@ -5319,25 +5373,106 @@ export function productionProfile(options: CodeGraphBenchmarkOptions): Productio
       '--profile-symbols must cover the requested files, manifest/module symbols, and at least one declaration per file.',
     );
   }
-  return {
+  return validateProductionProfile({
+    activeWorkspaceExcludedPackageCount,
+    activeWorkspaceExcludedSourceFiles,
+    classMix,
     declarationSymbols,
+    duplicateBlobs: {
+      generatedSvgVariants: Math.min(
+        PRODUCTION_LARGE_CODE_GRAPH_PROFILE.duplicateBlobs.generatedSvgVariants,
+        classMix.generatedSvgFiles,
+      ),
+      heavyJsonPayloadBytes: PRODUCTION_LARGE_CODE_GRAPH_PROFILE.duplicateBlobs.heavyJsonPayloadBytes,
+      heavyJsonVariants: Math.min(
+        PRODUCTION_LARGE_CODE_GRAPH_PROFILE.duplicateBlobs.heavyJsonVariants,
+        classMix.duplicateHeavyJsonFiles,
+      ),
+    },
+    highSignalConfigHardCapBytes: PRODUCTION_LARGE_CODE_GRAPH_PROFILE.highSignalConfigHardCapBytes,
     id: 'production-large',
+    lowSignalJsonExclusionThresholdBytes: PRODUCTION_LARGE_CODE_GRAPH_PROFILE.lowSignalJsonExclusionThresholdBytes,
+    maxCallsPerDeclaration: PRODUCTION_LARGE_CODE_GRAPH_PROFILE.maxCallsPerDeclaration,
     sourceFiles,
-    targetEligibleFiles: sourceFiles + workspaceCount * 2 + 4,
-    targetGraphEdges: Math.max(1, Math.round(PRODUCTION_LARGE_CODE_GRAPH_PROFILE.targetGraphEdges * scale)),
+    surrogate: PRODUCTION_LARGE_CODE_GRAPH_PROFILE.surrogate,
+    targetEligibleFiles,
+    targetGraphEdges: Math.max(1, Math.round(PRODUCTION_LARGE_CODE_GRAPH_PROFILE.targetGraphEdges * symbolScale)),
     targetGraphSymbols,
-    targetLexicalTermRows: Math.max(1, Math.round(PRODUCTION_LARGE_CODE_GRAPH_PROFILE.targetLexicalTermRows * scale)),
-    version: 1,
+    targetLexicalTermRows: Math.max(
+      1,
+      Math.round(PRODUCTION_LARGE_CODE_GRAPH_PROFILE.targetLexicalTermRows * symbolScale),
+    ),
+    targetRepositoryFiles,
+    version: 2,
     workspaceCount,
-  };
+    worktreeChurnScenarioCount: PRODUCTION_WORKTREE_CHURN_SCENARIOS.length,
+  });
 }
 
 function productionProfileIdentity(profile: ProductionCodeGraphFixtureProfile, vectors: boolean): string {
   return (
     `generated-code-graph-production-v${profile.version}-${vectors ? 'vectors' : 'lexical'}:` +
     `${profile.targetEligibleFiles}:${profile.targetGraphSymbols}:${profile.targetGraphEdges}:` +
-    `${profile.targetLexicalTermRows}:${profile.workspaceCount}`
+    `${profile.targetRepositoryFiles}:${profile.targetLexicalTermRows}:${profile.workspaceCount}:` +
+    `${Object.values(profile.classMix).join(':')}:${profile.activeWorkspaceExcludedSourceFiles}:` +
+    `${profile.duplicateBlobs.generatedSvgVariants}:${profile.duplicateBlobs.heavyJsonVariants}:` +
+    `${profile.duplicateBlobs.heavyJsonPayloadBytes}:${profile.lowSignalJsonExclusionThresholdBytes}:` +
+    `${profile.highSignalConfigHardCapBytes}`
   );
+}
+
+function scaledProfileClassCount(
+  name: keyof Pick<
+    ProductionCodeGraphFixtureProfile['classMix'],
+    'duplicateHeavyJsonFiles' | 'generatedSvgFiles' | 'nxProjectFiles' | 'supportMarkdownFiles' | 'tsconfigFiles'
+  >,
+  scale: number,
+): number {
+  return Math.max(1, Math.round(PRODUCTION_LARGE_CODE_GRAPH_PROFILE.classMix[name] * scale));
+}
+
+export function productionProfileArtifactMetadata(
+  profile: ProductionCodeGraphFixtureProfile,
+): Readonly<Record<string, boolean | number | string>> {
+  const excludedBytes = productionExcludedByteDistribution(profile);
+  return {
+    profile: profile.id,
+    profileActiveWorkspaceExcludedPackages: profile.activeWorkspaceExcludedPackageCount,
+    profileActiveWorkspaceExcludedSourceFiles: profile.activeWorkspaceExcludedSourceFiles,
+    profileClassDuplicateHeavyJsonFiles: profile.classMix.duplicateHeavyJsonFiles,
+    profileClassGeneratedSvgFiles: profile.classMix.generatedSvgFiles,
+    profileClassNxProjectFiles: profile.classMix.nxProjectFiles,
+    profileClassPackageManifestFiles: profile.classMix.packageManifestFiles,
+    profileClassSupportMarkdownFiles: profile.classMix.supportMarkdownFiles,
+    profileClassTsconfigFiles: profile.classMix.tsconfigFiles,
+    profileClassTsxSourceFiles: profile.classMix.tsxSourceFiles,
+    profileClassTypescriptSourceFiles: profile.classMix.typescriptSourceFiles,
+    profileClassWorkspaceManifestFiles: profile.classMix.workspaceManifestFiles,
+    profileDeclarationSymbols: profile.declarationSymbols,
+    profileDuplicateGeneratedSvgVariants: profile.duplicateBlobs.generatedSvgVariants,
+    profileDuplicateHeavyJsonPayloadBytes: profile.duplicateBlobs.heavyJsonPayloadBytes,
+    profileDuplicateHeavyJsonVariants: profile.duplicateBlobs.heavyJsonVariants,
+    profileTargetExcludedGeneratedSvgBytes: excludedBytes.generatedSvgBytes,
+    profileTargetExcludedHeavyJsonBytes: excludedBytes.heavyJsonBytes,
+    profileTargetExcludedLowMeaningBytes: excludedBytes.totalBytes,
+    profileTargetExcludedLowMeaningFiles: profile.classMix.generatedSvgFiles + profile.classMix.duplicateHeavyJsonFiles,
+    profileHighSignalConfigHardCapBytes: profile.highSignalConfigHardCapBytes,
+    profileLowSignalJsonExclusionThresholdBytes: profile.lowSignalJsonExclusionThresholdBytes,
+    profileMaxCallsPerDeclaration: profile.maxCallsPerDeclaration,
+    profileSourceFiles: profile.sourceFiles,
+    profileSurrogate: profile.surrogate,
+    profileTargetEdges: profile.targetGraphEdges,
+    profileTargetEligibleFiles: profile.targetEligibleFiles,
+    profileTargetLexicalTermRows: profile.targetLexicalTermRows,
+    profileTargetRepositoryFiles: profile.targetRepositoryFiles,
+    profileTargetSymbols: profile.targetGraphSymbols,
+    profileVersion: profile.version,
+    profileWorkspaceExclusionPolicy: 'active-source-remains-eligible',
+    profileWorkspaces: profile.workspaceCount,
+    profileWorktreeChurnMode: 'declared-surrogate-scenarios-no-latency-claims',
+    profileWorktreeChurnScenarioCount: profile.worktreeChurnScenarioCount,
+    profileWorktreeChurnScenarios: PRODUCTION_WORKTREE_CHURN_SCENARIOS.join(','),
+  };
 }
 
 function benchmarkComparisonKey(input: {

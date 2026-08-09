@@ -20,6 +20,11 @@ import {
   type CodeGraphVisualizationCatalog,
 } from './store.js';
 import {inspectCodeGraphStorage, type CodeGraphStorage} from './storage.js';
+import {
+  codeGraphLocalAssociationLabel,
+  readCodeGraphLocalAssociation,
+  type CodeGraphLocalAssociation,
+} from './local_provenance.js';
 
 const DIAGNOSTIC_CATALOG_PAGE_SIZE = 64;
 
@@ -118,6 +123,20 @@ export interface CodeGraphDiagnosticsReport {
   };
   readonly type: 'code-graph-diagnostics';
   readonly version: 1;
+}
+
+/** Trusted local diagnostics projection. Never use this shape for MCP, doctor, logs, or issue reports. */
+export interface CodeGraphLocalDiagnosticsView extends CodeGraphDiagnosticsView {
+  readonly localAssociation: CodeGraphLocalAssociation;
+}
+
+export interface CodeGraphLocalDatabaseDiagnostics extends Omit<CodeGraphDatabaseDiagnostics, 'views'> {
+  readonly views: readonly CodeGraphLocalDiagnosticsView[];
+}
+
+export interface CodeGraphLocalDiagnosticsReport extends Omit<CodeGraphDiagnosticsReport, 'databases' | 'version'> {
+  readonly databases: readonly CodeGraphLocalDatabaseDiagnostics[];
+  readonly version: 2;
 }
 
 export const inspectAllCodeGraphs = Effect.fn('codeGraph.inspectAllDiagnostics')(function* (
@@ -266,7 +285,7 @@ export const inspectAllCodeGraphs = Effect.fn('codeGraph.inspectAllDiagnostics')
       databaseCount: entries.length,
       deferredDatabaseCount: entries.filter(entry => entry.healthState === 'deferred').length,
       healthyDatabaseCount: entries.filter(entry => entry.health?.integrity === 'ok').length,
-      readySnapshotCount: entries.reduce((total, entry) => total + (entry.health?.readySnapshots ?? 0), 0),
+      readySnapshotCount: entries.reduce((total, entry) => total + knownReadySnapshotCount(entry), 0),
       totalStorageBytes: entries.reduce(
         (total, entry) => total + (entry.storage.state === 'available' ? entry.storage.totalBytes : 0),
         0,
@@ -282,7 +301,57 @@ export const inspectAllCodeGraphs = Effect.fn('codeGraph.inspectAllDiagnostics')
   } satisfies CodeGraphDiagnosticsReport;
 });
 
-export function renderCodeGraphDiagnostics(report: CodeGraphDiagnosticsReport): string {
+/** Adds folder association only for trusted local-operator surfaces. */
+export const inspectAllCodeGraphsLocal = Effect.fn('codeGraph.inspectAllDiagnosticsLocal')(function* (
+  threadnoteHome: string,
+  options: CodeGraphDiagnosticsOptions = {},
+) {
+  const [report, buildStatuses] = yield* Effect.all(
+    [inspectAllCodeGraphs(threadnoteHome, options), readAllCodeGraphBuildStatuses(threadnoteHome)],
+    {concurrency: 2},
+  );
+  const databases = yield* Effect.forEach(
+    report.databases,
+    database =>
+      Effect.gen(function* () {
+        const views = yield* Effect.forEach(
+          database.views,
+          view => {
+            const liveStatus = buildStatuses.find(
+              status =>
+                status.identity.checkoutId === database.checkoutId &&
+                status.identity.worktreeId === view.viewWorktreeId &&
+                status.identity.repositoryId === view.repository.repositoryId &&
+                status.managerContext !== undefined,
+            );
+            return readCodeGraphLocalAssociation(
+              threadnoteHome,
+              {
+                checkoutId: database.checkoutId,
+                repositoryId: view.repository.repositoryId,
+                worktreeId: view.viewWorktreeId,
+              },
+              liveStatus?.managerContext?.worktreePath,
+            ).pipe(
+              Effect.map(localAssociation => ({
+                ...view,
+                localAssociation,
+                managementAvailable: localAssociation.available || view.managementAvailable,
+              })),
+            );
+          },
+          {concurrency: 4},
+        );
+        return {...database, views};
+      }),
+    {concurrency: 2},
+  );
+  return {...report, databases, version: 2} satisfies CodeGraphLocalDiagnosticsReport;
+});
+
+export function renderCodeGraphDiagnostics(
+  report: CodeGraphDiagnosticsReport | CodeGraphLocalDiagnosticsReport,
+): string {
   const lines = [
     'Native code graph diagnostics',
     `Databases: ${report.summary.databaseCount} · healthy ${report.summary.healthyDatabaseCount} · unhealthy ${report.summary.unhealthyDatabaseCount} · deferred ${report.summary.deferredDatabaseCount} · unreadable ${report.summary.unreadableDatabaseCount}`,
@@ -293,17 +362,25 @@ export function renderCodeGraphDiagnostics(report: CodeGraphDiagnosticsReport): 
     const health = database.health
       ? `${database.health.integrity}; schema v${database.health.schemaVersion ?? 'unknown'}; extension ${database.health.persistentExtensionSchemaRevision ?? 'missing'}`
       : database.healthState;
+    const snapshotSummary = database.health
+      ? `Snapshots: ${database.health.readySnapshots} ready · ${(database.health.buildingSnapshots ?? 0) + (database.health.failedSnapshots ?? 0)} incomplete`
+      : database.healthState === 'deferred'
+        ? `Snapshots: health inspection deferred · ${knownReadySnapshotCount(database)} ready snapshot(s) represented by indexed views`
+        : 'Snapshots: unavailable';
     lines.push(
       '',
       `${repository} · checkout ${database.checkoutId.slice(-8)}`,
       `Health: ${health}`,
-      `Snapshots: ${database.health?.readySnapshots ?? 0} ready · ${(database.health?.buildingSnapshots ?? 0) + (database.health?.failedSnapshots ?? 0)} incomplete`,
+      snapshotSummary,
       `Storage: ${database.storage.state === 'available' ? formatBytes(database.storage.totalBytes) : 'missing'}`,
     );
     for (const view of database.views) {
       lines.push(
         `View ${view.viewWorktreeId.slice(-8)}: ${view.snapshot.fileCount} files · ${view.snapshot.symbolCount} symbols · ${view.snapshot.edgeCount} edges`,
       );
+      if ('localAssociation' in view) {
+        lines.push(`Folder: ${codeGraphLocalAssociationLabel(view.localAssociation)} · ${view.localAssociation.state}`);
+      }
       if (view.analysis) {
         lines.push(
           `Analysis: ${view.analysis.coverage.complete ? 'complete' : 'partial'} · ${view.analysis.statistics.connectedComponentCount} component(s) · ${view.analysis.statistics.communityCount} communit${view.analysis.statistics.communityCount === 1 ? 'y' : 'ies'}`,
@@ -319,6 +396,12 @@ export function renderCodeGraphDiagnostics(report: CodeGraphDiagnosticsReport): 
     );
   }
   return `${lines.join('\n')}\n`;
+}
+
+function knownReadySnapshotCount(
+  database: CodeGraphDiagnosticsReport['databases'][number] | CodeGraphLocalDiagnosticsReport['databases'][number],
+): number {
+  return database.health?.readySnapshots ?? new Set(database.views.map(view => view.snapshot.id)).size;
 }
 
 const loadAllCatalogs = Effect.fn('codeGraph.loadAllDiagnosticCatalogs')(function* (

@@ -1,8 +1,14 @@
 import {Clock, Context, Crypto, Effect, FileSystem, Layer, Option, Path} from 'effect';
-import {CommandExecutor} from '../effect/command.js';
+import {CommandExecutor, runCommandEffect} from '../effect/command.js';
 import {withExclusiveFileLock} from '../effect/file_lock.js';
 import {SystemInfo} from '../effect/system.js';
-import {CodeGraphIndexer} from './indexer.js';
+import {
+  codeGraphDirectPersistentCapacityProtector,
+  CodeGraphIndexer,
+  type DirectPersistentCapacityProtection,
+} from './indexer.js';
+import type {CodeGraphDirectPersistentCapacityBoundary} from './disk_capacity.js';
+import {CodeGraphMaintenanceCoordinator} from './maintenance_coordinator.js';
 import {worktreeOverlayState} from './inventory.js';
 import {CodeGraphLanguagePackRegistry} from './languages/registry.js';
 import {
@@ -15,14 +21,20 @@ import {
   awaitCodeGraphWorktreeBuilds,
   withCodeGraphDatabaseWriteLock,
   withCodeGraphMaintenanceIntent,
+  withCodeGraphTargetWorktreeLock,
 } from './maintenance_gate.js';
+import {
+  recordVerifiedCodeGraphLocalAssociation,
+  resolveAndRecordCodeGraphLocalAssociation,
+} from './local_provenance.js';
 import {compareCodeUnits} from './ordering.js';
-import {repositoryWorktreeIds, resolveRepositoryIdentity} from './repository.js';
+import {resolveRepositoryIdentity} from './repository.js';
 import {CodeGraphStore, type CodeGraphStoreShape} from './store.js';
 import {CodeGraphEmbeddingIndex, type CodeGraphEmbeddingIndexShape} from './embedding.js';
 import {
   CODE_GRAPH_RESULT_VERSION,
   CodeGraphSnapshotUnavailable,
+  CodeGraphStoreBusyError,
   type CodeGraphEdge,
   type CodeGraphProgress,
   type CodeGraphProvenance,
@@ -48,6 +60,8 @@ export interface CodeGraphInspectOptions extends CodeGraphQueryOptions {
 }
 
 export interface CodeGraphStatusOptions {
+  /** @internal Run after the owned identity resolution and before reading graph status. */
+  readonly afterIdentityObserved?: (identity: RepositoryIdentity) => Effect.Effect<void, unknown>;
   readonly observeWorktree?: boolean;
 }
 
@@ -67,6 +81,20 @@ export interface CodeGraphTraversalTimeBudgets {
 export interface CodeGraphStatusObservation {
   readonly identity: RepositoryIdentity;
   readonly overlay: {readonly dirty: boolean; readonly fingerprint?: string};
+}
+
+export interface CodeGraphSharedReadyAttachInterlock {
+  /** @internal Deterministic barrier after the optimistic candidate read and before target-lock acquisition. */
+  readonly afterOptimisticCandidate?: () => Effect.Effect<void>;
+  /** @internal Deterministic barrier after promotion and before final identity validation. */
+  readonly afterPromotion?: () => Effect.Effect<void>;
+  /** @internal Deterministic observer before each full identity resolution owned by shared attachment. */
+  readonly beforeIdentityResolution?: () => Effect.Effect<void>;
+  /** @internal Deterministic fresh-capacity probe used by promotion fault tests. */
+  readonly diskCapacityAvailableBytes?: (
+    path: string,
+    boundary: CodeGraphDirectPersistentCapacityBoundary,
+  ) => Effect.Effect<number | undefined, unknown>;
 }
 
 const CODE_GRAPH_STATUS_OBSERVATION = Symbol('threadnote/codeGraph/statusObservation');
@@ -133,6 +161,9 @@ export class CodeGraphQueryService extends Context.Service<
     readonly attachSharedReadySnapshot: (
       threadnoteHome: string,
       identity: RepositoryIdentity,
+      /** @internal Fresh status returned for this exact identity avoids repeating its Git observation. */
+      observedStatus?: CodeGraphStatus,
+      interlock?: CodeGraphSharedReadyAttachInterlock,
     ) => Effect.Effect<CodeGraphStatus, unknown>;
     readonly inspect: (options: CodeGraphInspectOptions) => Effect.Effect<CodeGraphQueryResult, unknown>;
     readonly purge: (threadnoteHome: string, cwd: string) => Effect.Effect<string, unknown>;
@@ -158,6 +189,7 @@ export class CodeGraphQueryService extends Context.Service<
       const system = yield* SystemInfo;
       const store = yield* CodeGraphStore;
       const indexer = yield* CodeGraphIndexer;
+      const maintenance = yield* CodeGraphMaintenanceCoordinator;
       const embedding = yield* CodeGraphEmbeddingIndex;
       const languagePacks = yield* CodeGraphLanguagePackRegistry;
       const withRepositoryServices = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
@@ -168,12 +200,24 @@ export class CodeGraphQueryService extends Context.Service<
           Effect.provideService(Path.Path, path),
           Effect.provideService(SystemInfo, system),
         );
+      const requestMaintenance = (threadnoteHome: string, identity: RepositoryIdentity) => {
+        const layout = codeGraphLayout(path, threadnoteHome, identity.checkoutId, identity.worktreeId);
+        return maintenance.request({
+          anchorIdentity: identity,
+          checkoutId: identity.checkoutId,
+          databasePath: layout.databasePath,
+          threadnoteHome,
+          writerLockPath: layout.databaseWriteLockPath,
+        });
+      };
       const statusForIdentity = (
         threadnoteHome: string,
         identity: RepositoryIdentity,
         options?: CodeGraphStatusOptions,
+        identityAlreadyObserved = false,
       ) =>
         Effect.gen(function* () {
+          if (!identityAlreadyObserved) yield* recordVerifiedCodeGraphLocalAssociation(threadnoteHome, identity);
           const layout = codeGraphLayout(path, threadnoteHome, identity.checkoutId, identity.worktreeId);
           const readySnapshot = yield* store.readySnapshot(layout.databasePath, identity.worktreeId);
           const overlay = options?.observeWorktree === false ? undefined : yield* worktreeOverlayState(identity);
@@ -202,11 +246,24 @@ export class CodeGraphQueryService extends Context.Service<
           } satisfies CodeGraphStatus;
           return attachCodeGraphStatusObservation(status, overlay === undefined ? undefined : {identity, overlay});
         });
-      const attachSharedReadySnapshot = (threadnoteHome: string, identity: RepositoryIdentity) =>
+      const attachSharedReadySnapshot = (
+        threadnoteHome: string,
+        identity: RepositoryIdentity,
+        observedStatus?: CodeGraphStatus,
+        interlock?: CodeGraphSharedReadyAttachInterlock,
+      ) =>
         Effect.gen(function* () {
           // statusForIdentity already attaches a non-writable observation; never re-attach
           // onto the same object (Object.defineProperty would throw).
-          const status = yield* statusForIdentity(threadnoteHome, identity);
+          const observation = observedStatus && observationFromCodeGraphStatus(observedStatus);
+          const reusableStatus =
+            observedStatus !== undefined &&
+            observation !== undefined &&
+            sameRepositoryIdentity(observedStatus.identity, identity) &&
+            sameRepositoryIdentity(observation.identity, identity)
+              ? observedStatus
+              : undefined;
+          const status = reusableStatus ?? (yield* statusForIdentity(threadnoteHome, identity));
           if (!status.stale && status.readySnapshot?.commit === identity.headCommit) return status;
           const overlay = observationFromCodeGraphStatus(status)?.overlay ?? (yield* worktreeOverlayState(identity));
           if (overlay.dirty) return status;
@@ -227,18 +284,110 @@ export class CodeGraphQueryService extends Context.Service<
           ) {
             return status;
           }
-          const activeWorktreeIds = yield* repositoryWorktreeIds(identity);
-          yield* store.promote(layout.databasePath, identity, candidate.id, activeWorktreeIds);
-          return yield* statusForIdentity(threadnoteHome, identity);
+          yield* interlock?.afterOptimisticCandidate?.() ?? Effect.void;
+          return yield* withCodeGraphTargetWorktreeLock(
+            threadnoteHome,
+            identity.checkoutId,
+            identity.worktreeId,
+            Effect.gen(function* () {
+              // The initial observation is only an optimistic fast path. Once
+              // the target builder is excluded, repeat the complete status and
+              // candidate checks so a concurrent promotion or dirty overlay
+              // cannot be overwritten by this opportunistic attach.
+              const lockedStatus = yield* statusForIdentity(threadnoteHome, identity, undefined, true);
+              if (!lockedStatus.stale && lockedStatus.readySnapshot?.commit === identity.headCommit) {
+                return lockedStatus;
+              }
+              const lockedOverlay = observationFromCodeGraphStatus(lockedStatus)?.overlay;
+              if (lockedOverlay?.dirty !== false) return lockedStatus;
+              const lockedCandidate = yield* store.readySnapshotForCommit(
+                layout.databasePath,
+                identity.repositoryId,
+                identity.headCommit,
+              );
+              if (
+                lockedCandidate === undefined ||
+                !shouldAttachSharedReadySnapshot({
+                  candidate: lockedCandidate,
+                  headCommit: identity.headCommit,
+                  overlayDirty: lockedOverlay.dirty,
+                  readySnapshot: lockedStatus.readySnapshot,
+                })
+              ) {
+                return lockedStatus;
+              }
+              yield* interlock?.beforeIdentityResolution?.() ?? Effect.void;
+              const promotionIdentity = yield* resolveRepositoryIdentity(identity.repoRoot).pipe(Effect.option);
+              if (Option.isNone(promotionIdentity)) return lockedStatus;
+              if (!sameRepositoryIdentity(promotionIdentity.value, identity)) {
+                return yield* statusForIdentity(threadnoteHome, promotionIdentity.value);
+              }
+              const capacityProtection: DirectPersistentCapacityProtection = {
+                availableDiskBytes:
+                  interlock?.diskCapacityAvailableBytes ?? ((target: string) => system.availableDiskBytes(target)),
+                crypto,
+                maintenance,
+                path,
+                system,
+                temporaryDirectory: system.tempDirectory,
+                walAutoCheckpointPages: 1_000,
+              };
+              yield* store.promote(layout.databasePath, promotionIdentity.value, lockedCandidate.id, {
+                persistentCapacityProtector: codeGraphDirectPersistentCapacityProtector({
+                  capacityProtection,
+                  // The target-worktree lock is already held here. Never wait
+                  // for capacity or recursively run maintenance while holding
+                  // that authority; a later request can retry the attach.
+                  claimMode: 'nonblocking-one-attempt',
+                  fs,
+                  identity: promotionIdentity.value,
+                  layout,
+                  threadnoteHome,
+                }),
+                waitTimeoutMilliseconds: 0,
+              });
+              yield* interlock?.afterPromotion?.() ?? Effect.void;
+              const published = yield* postPromotionObservation(promotionIdentity.value);
+              if (published.headCommit !== promotionIdentity.value.headCommit) {
+                yield* interlock?.beforeIdentityResolution?.() ?? Effect.void;
+                const publishedIdentity = yield* resolveRepositoryIdentity(identity.repoRoot).pipe(Effect.option);
+                return Option.isSome(publishedIdentity)
+                  ? yield* statusForIdentity(threadnoteHome, publishedIdentity.value)
+                  : lockedStatus;
+              }
+              const finalOverlay = published.overlay;
+              const stale = finalOverlay?.dirty !== false;
+              return attachCodeGraphStatusObservation(
+                {
+                  ...lockedStatus,
+                  freshness: stale ? 'stale' : 'current',
+                  identity: promotionIdentity.value,
+                  readySnapshot: {...lockedCandidate, worktreeId: promotionIdentity.value.worktreeId},
+                  stale,
+                },
+                finalOverlay === undefined ? undefined : {identity: promotionIdentity.value, overlay: finalOverlay},
+              );
+            }),
+          ).pipe(
+            Effect.catch(error =>
+              error instanceof CodeGraphStoreBusyError ? Effect.succeed(status) : Effect.fail(error),
+            ),
+          );
         });
       return CodeGraphQueryService.of({
-        attachSharedReadySnapshot: (threadnoteHome, identity) =>
-          withRepositoryServices(attachSharedReadySnapshot(threadnoteHome, identity)),
+        attachSharedReadySnapshot: (threadnoteHome, identity, observedStatus, interlock) =>
+          withRepositoryServices(
+            attachSharedReadySnapshot(threadnoteHome, identity, observedStatus, interlock).pipe(
+              Effect.tap(status => requestMaintenance(threadnoteHome, status.identity)),
+            ),
+          ),
         inspect: options =>
           withRepositoryServices(
             Effect.gen(function* () {
               const statusObservation = options.statusObservation;
-              const identity = statusObservation?.identity ?? (yield* resolveRepositoryIdentity(options.cwd));
+              const identity =
+                statusObservation?.identity ??
+                (yield* resolveAndRecordCodeGraphLocalAssociation(options.threadnoteHome, options.cwd)).identity;
               const layout = codeGraphLayout(path, options.threadnoteHome, identity.checkoutId, identity.worktreeId);
               const existing = yield* store.readySnapshot(layout.databasePath, identity.worktreeId);
               const strictFreshness =
@@ -299,7 +448,7 @@ export class CodeGraphQueryService extends Context.Service<
                   return result;
                 });
               if (options.operation === 'impact' && options.baseCommit) {
-                return yield* Effect.acquireUseRelease(
+                const result = yield* Effect.acquireUseRelease(
                   indexer.ensureCommit({
                     commit: options.baseCommit,
                     cwd: options.cwd,
@@ -312,8 +461,12 @@ export class CodeGraphQueryService extends Context.Service<
                       .releaseSnapshotLease(layout.databasePath, base.leaseToken)
                       .pipe(Effect.catch(() => Effect.void)),
                 );
+                yield* requestMaintenance(options.threadnoteHome, identity);
+                return result;
               }
-              return yield* inspect();
+              const result = yield* inspect();
+              yield* requestMaintenance(options.threadnoteHome, identity);
+              return result;
             }),
           ),
         purge: (threadnoteHome, cwd) =>
@@ -358,12 +511,19 @@ export class CodeGraphQueryService extends Context.Service<
         status: (threadnoteHome, cwd, options) =>
           withRepositoryServices(
             Effect.gen(function* () {
-              const identity = yield* resolveRepositoryIdentity(cwd);
-              return yield* statusForIdentity(threadnoteHome, identity, options);
+              const {identity} = yield* resolveAndRecordCodeGraphLocalAssociation(threadnoteHome, cwd);
+              yield* options?.afterIdentityObserved?.(identity) ?? Effect.void;
+              const status = yield* statusForIdentity(threadnoteHome, identity, options, true);
+              yield* requestMaintenance(threadnoteHome, status.identity);
+              return status;
             }),
           ),
         statusForIdentity: (threadnoteHome, identity, options) =>
-          withRepositoryServices(statusForIdentity(threadnoteHome, identity, options)),
+          withRepositoryServices(
+            statusForIdentity(threadnoteHome, identity, options).pipe(
+              Effect.tap(status => requestMaintenance(threadnoteHome, status.identity)),
+            ),
+          ),
       });
     }),
   );
@@ -1353,6 +1513,46 @@ export function renderCodeGraphResult(
     lines.push('', ...result.warnings.map(warning => `Warning: ${warning}`));
   }
   return `${lines.join('\n')}\n`;
+}
+
+const postPromotionObservation = Effect.fn('codeGraph.postPromotionObservation')(function* (
+  identity: RepositoryIdentity,
+) {
+  // Porcelain v2 reports the exact HEAD and the clean/changed bit in one
+  // bounded process. Only a changed worktree pays for the policy-aware overlay
+  // observation that distinguishes admitted source from excluded files.
+  const result = yield* runCommandEffect(
+    'git',
+    ['-C', identity.repoRoot, 'status', '--porcelain=v2', '-z', '--branch', '--untracked-files=normal'],
+    {maxOutputBytes: 1_048_576, timeoutMs: 5_000},
+  ).pipe(Effect.option);
+  if (Option.isNone(result) || !result.value.stdout.endsWith('\0')) {
+    return {headCommit: undefined, overlay: undefined};
+  }
+  const records = result.value.stdout.slice(0, -1).split('\0');
+  const headRecords = records.filter(record => record.startsWith('# branch.oid '));
+  const headCommit = headRecords.length === 1 ? headRecords[0]!.slice('# branch.oid '.length) : undefined;
+  const expectedLength = identity.objectFormat === 'sha256' ? 64 : 40;
+  if (headCommit === undefined || !new RegExp(`^[0-9a-f]{${expectedLength}}$`).test(headCommit)) {
+    return {headCommit: undefined, overlay: undefined};
+  }
+  if (records.every(record => record.startsWith('# '))) {
+    return {headCommit, overlay: {dirty: false, fingerprint: undefined}};
+  }
+  const overlay = yield* worktreeOverlayState(identity).pipe(Effect.option);
+  return {headCommit, overlay: Option.getOrUndefined(overlay)};
+});
+
+function sameRepositoryIdentity(left: RepositoryIdentity, right: RepositoryIdentity): boolean {
+  return (
+    left.repoRoot === right.repoRoot &&
+    left.gitCommonDirectory === right.gitCommonDirectory &&
+    left.checkoutId === right.checkoutId &&
+    left.worktreeId === right.worktreeId &&
+    left.repositoryId === right.repositoryId &&
+    left.headCommit === right.headCommit &&
+    left.objectFormat === right.objectFormat
+  );
 }
 
 function snapshotMatches(

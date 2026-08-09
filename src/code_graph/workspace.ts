@@ -65,7 +65,9 @@ export function discoverManifestWorkspace(files: readonly CodeGraphInventoryFile
     ...discoverXcodeProjects(files, diagnostics),
   ];
   addFallbackProjects(files, candidates);
-  const projects = materializeProjects(mergeProjectCandidates(candidates));
+  const projects = materializeProjects(mergeProjectCandidates(candidates), diagnostics);
+  diagnoseNxProjectBoundaries(files, projects, diagnostics);
+  const orderedDiagnostics = uniqueStrings(diagnostics).slice(0, 100);
   const fingerprint = sha256HexSync(
     [
       'code-graph-workspace-v1',
@@ -85,14 +87,14 @@ export function discoverManifestWorkspace(files: readonly CodeGraphInventoryFile
           project.diagnostics.join(','),
         ].join('\0'),
       ),
-      ...diagnostics,
+      ...orderedDiagnostics,
     ].join('\n'),
   );
   return {
-    diagnostics: diagnostics.slice(0, 100),
+    diagnostics: orderedDiagnostics,
     fingerprint,
     projects,
-    workspaces: materializeBuildWorkspaces(projects, diagnostics),
+    workspaces: materializeBuildWorkspaces(projects, orderedDiagnostics),
   };
 }
 
@@ -1013,12 +1015,17 @@ function componentKindRank(kind: CodeGraphWorkspaceComponentKind): number {
   }
 }
 
-function materializeProjects(candidates: readonly ProjectCandidate[]): readonly CodeGraphWorkspaceProject[] {
+function materializeProjects(
+  candidates: readonly ProjectCandidate[],
+  diagnostics: string[],
+): readonly CodeGraphWorkspaceProject[] {
   const projectIds = new Map<ProjectCandidate, string>();
+  const candidatesById = new Map<string, ProjectCandidate>();
   const aliases = new Map<string, Set<string>>();
   for (const candidate of candidates) {
     const id = `cgp_${sha256HexSync(`project-v1\n${candidate.resolutionDomain}\n${candidate.root}`).slice(0, 32)}`;
     projectIds.set(candidate, id);
+    candidatesById.set(id, candidate);
     for (const alias of candidate.aliases) {
       const values = aliases.get(alias) ?? new Set<string>();
       values.add(id);
@@ -1028,11 +1035,18 @@ function materializeProjects(candidates: readonly ProjectCandidate[]): readonly 
   return candidates.map(candidate => {
     const id = projectIds.get(candidate)!;
     const dependencies = new Set<string>();
-    for (const alias of candidate.dependencyAliases) {
+    for (const alias of uniqueStrings(candidate.dependencyAliases)) {
       const targets = aliases.get(alias);
       if (targets?.size === 1) {
         const target = [...targets][0]!;
         if (target !== id) dependencies.add(target);
+      } else if (targets && targets.size > 1) {
+        const qualifier = [...targets].every(target => candidatesById.get(target)?.provenance === 'declared')
+          ? 'declared '
+          : '';
+        diagnostics.push(
+          `${candidate.evidence ?? candidate.root}: local dependency alias ${alias} matched multiple ${qualifier}projects`,
+        );
       }
     }
     return {
@@ -1054,6 +1068,26 @@ function materializeProjects(candidates: readonly ProjectCandidate[]): readonly 
       workspaceRoots: [...candidate.workspaceRoots].sort(),
     };
   });
+}
+
+function diagnoseNxProjectBoundaries(
+  files: readonly CodeGraphInventoryFile[],
+  projects: readonly CodeGraphWorkspaceProject[],
+  diagnostics: string[],
+): void {
+  const declaredProjectsByRoot = new Map<string, number>();
+  for (const project of projects) {
+    if (project.provenance !== 'declared') continue;
+    declaredProjectsByRoot.set(project.root, (declaredProjectsByRoot.get(project.root) ?? 0) + 1);
+  }
+  for (const file of files
+    .filter(candidate => basename(candidate.path).toLowerCase() === 'project.json')
+    .sort((left, right) => compareCodeUnits(left.path, right.path))) {
+    const root = dirname(file.path);
+    if (declaredProjectsByRoot.get(root) !== 1) {
+      diagnostics.push(`${file.path}: Nx project boundary is not reconciled to exactly one declared package root`);
+    }
+  }
 }
 
 function attributeSymbol(symbol: CodeGraphSymbol, project: CodeGraphWorkspaceProject): CodeGraphSymbol {

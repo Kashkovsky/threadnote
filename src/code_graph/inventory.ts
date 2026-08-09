@@ -5,8 +5,16 @@ import {SystemInfo} from '../effect/system.js';
 import {BUILTIN_LANGUAGE_PACK_REGISTRY, type CodeGraphLanguagePackRegistryShape} from './languages/registry.js';
 import {CORPUS_EXTRACTION_SOURCE_BYTES_LIMIT} from './languages/corpus/policy.js';
 import {isLowSignalStructuredPath} from './languages/schemas/policy.js';
+import {
+  codeGraphInventoryExclusionReason,
+  CODE_GRAPH_INVENTORY_ADMISSION_POLICY_VERSION,
+  CODE_GRAPH_INVENTORY_EXCLUSION_REASONS,
+  type CodeGraphInventoryExclusionReason,
+} from './inventory_policy.js';
 import {compareCodeUnits} from './ordering.js';
 import {type CodeGraphInventoryFile, type CodeGraphProgress, type RepositoryIdentity} from './types.js';
+
+export {codeGraphInventoryExclusionReason} from './inventory_policy.js';
 
 interface GitTreeEntry {
   readonly blobId: string;
@@ -23,11 +31,32 @@ interface CompiledIgnoreRule {
 export interface CodeGraphInventory {
   readonly committedFiles: readonly CodeGraphInventoryFile[];
   readonly committedParsedFiles: number;
+  /** Privacy-safe, bounded inventory-level diagnostics. */
+  readonly diagnostics?: readonly string[];
   readonly dirty: boolean;
   readonly files: readonly CodeGraphInventoryFile[];
   readonly overlayFingerprint?: string;
   readonly parsedFiles: number;
+  readonly policyExclusions?: CodeGraphInventoryPolicyExclusionSummary;
   readonly skipped: number;
+}
+
+export interface CodeGraphInventoryPolicyExclusionSummary {
+  readonly bytes: number;
+  readonly files: number;
+  readonly policyVersion: typeof CODE_GRAPH_INVENTORY_ADMISSION_POLICY_VERSION;
+  readonly reasons: readonly CodeGraphInventoryPolicyExclusionReasonSummary[];
+}
+
+export interface CodeGraphInventoryPolicyExclusionReasonSummary {
+  readonly bytes: number;
+  readonly files: number;
+  readonly reason: CodeGraphInventoryExclusionReason;
+}
+
+interface PolicyExclusionEntry {
+  readonly reason: CodeGraphInventoryExclusionReason;
+  readonly size: number;
 }
 
 export interface CodeGraphInventoryOptions {
@@ -105,10 +134,13 @@ export const inventoryRepository = Effect.fn('codeGraph.inventoryRepository')(fu
           timeoutMs: 0,
         })).stdout,
       );
-  const declaredWorkspace = yield* discoverDeclaredSourceRoots(identity, allTreeEntries, languagePacks);
+  const committedPolicyExclusions = policyExclusionsForEntries(allTreeEntries);
+  const committedTreeEntries = new Map(allTreeEntries.map(entry => [entry.path, entry]));
+  const policyAdmittedTreeEntries = allTreeEntries.filter(entry => !committedPolicyExclusions.has(entry.path));
+  const declaredWorkspace = yield* discoverDeclaredSourceRoots(identity, policyAdmittedTreeEntries, languagePacks);
   const threadnoteIgnore = yield* readOptionalText(fs, path.join(identity.repoRoot, '.threadnoteignore'));
   const ignoreRules = compileThreadnoteIgnore(threadnoteIgnore);
-  const acceptedByPolicy = allTreeEntries.filter(entry =>
+  const acceptedByPolicy = policyAdmittedTreeEntries.filter(entry =>
     acceptsRepositoryPathWithRules(
       entry.path,
       ignoreRules,
@@ -122,6 +154,7 @@ export const inventoryRepository = Effect.fn('codeGraph.inventoryRepository')(fu
     acceptedByPolicy.map(entry => entry.path),
   );
   const accepted = acceptedByPolicy.filter(entry => !ignoredByGit.has(entry.path));
+  const acceptedPaths = new Set(accepted.map(entry => entry.path));
   const excluded = allTreeEntries.length - accepted.length;
 
   const committed = yield* readCommittedFiles(
@@ -142,6 +175,8 @@ export const inventoryRepository = Effect.fn('codeGraph.inventoryRepository')(fu
           files: [],
           fingerprint: undefined,
           parsedPaths: new Set<string>(),
+          policyExclusions: committedPolicyExclusions,
+          policySkippedDelta: 0,
           skipped: 0,
         }
       : yield* readDirtyOverlay(
@@ -153,6 +188,9 @@ export const inventoryRepository = Effect.fn('codeGraph.inventoryRepository')(fu
           languagePacks,
           declaredWorkspace.projectRoots,
           declaredWorkspace.sourceRoots,
+          committedPolicyExclusions,
+          committedTreeEntries,
+          acceptedPaths,
           options.onContentBatch
             ? (files, context) =>
                 options.onContentBatch!(files, {
@@ -174,17 +212,21 @@ export const inventoryRepository = Effect.fn('codeGraph.inventoryRepository')(fu
   for (const file of overlay.files) filesByPath.set(file.path, file);
   const files = [...filesByPath.values()].sort((left, right) => compareCodeUnits(left.path, right.path));
   const parsedPaths = new Set([...committed.parsedPaths, ...overlay.parsedPaths]);
-  const skipped = excluded + committed.skipped + overlay.skipped;
+  const skipped = excluded + committed.skipped + overlay.skipped + overlay.policySkippedDelta;
+  const policyExclusions = summarizePolicyExclusions(overlay.policyExclusions);
+  const diagnostics = policyExclusions.files === 0 ? [] : [formatPolicyExclusionDiagnostic(policyExclusions)];
   return {
     committedFiles: [...committed.files].sort((left, right) => compareCodeUnits(left.path, right.path)),
     committedParsedFiles: committed.files.reduce(
       (total, file) => total + (committed.parsedPaths.has(file.path) ? 1 : 0),
       0,
     ),
+    diagnostics,
     dirty: overlay.dirty,
     files,
     overlayFingerprint: overlay.fingerprint,
     parsedFiles: files.reduce((total, file) => total + (parsedPaths.has(file.path) ? 1 : 0), 0),
+    policyExclusions,
     skipped,
   } satisfies CodeGraphInventory;
 });
@@ -211,21 +253,27 @@ export const worktreeOverlayState = Effect.fn('codeGraph.worktreeOverlayState')(
           timeoutMs: 0,
         })).stdout,
       );
+  const committedPolicyExclusions = policyExclusionsForEntries(allTreeEntries);
+  const committedTreeEntries = new Map(allTreeEntries.map(entry => [entry.path, entry]));
+  const policyAdmittedTreeEntries = allTreeEntries.filter(entry => !committedPolicyExclusions.has(entry.path));
   const declaredWorkspace = yield* discoverDeclaredSourceRoots(
     identity,
-    allTreeEntries,
+    policyAdmittedTreeEntries,
     BUILTIN_LANGUAGE_PACK_REGISTRY,
   );
   const threadnoteIgnore = yield* readOptionalText(fs, path.join(identity.repoRoot, '.threadnoteignore'));
+  const ignoreRules = compileThreadnoteIgnore(threadnoteIgnore);
   const overlay = yield* readDirtyOverlay(
     identity,
     path,
     threadnoteIgnore,
-    compileThreadnoteIgnore(threadnoteIgnore),
+    ignoreRules,
     new Set(),
     BUILTIN_LANGUAGE_PACK_REGISTRY,
     declaredWorkspace.projectRoots,
     declaredWorkspace.sourceRoots,
+    committedPolicyExclusions,
+    committedTreeEntries,
   );
   return {dirty: overlay.dirty, fingerprint: overlay.fingerprint};
 });
@@ -241,6 +289,43 @@ export function parseGitTree(output: string): readonly GitTreeEntry[] {
     entries.push({blobId: match[3]!, mode: match[1]!, path: normalizeRepositoryPath(match[5]!), size});
   }
   return entries;
+}
+
+function policyExclusionsForEntries(entries: readonly GitTreeEntry[]): Map<string, PolicyExclusionEntry> {
+  const exclusions = new Map<string, PolicyExclusionEntry>();
+  for (const entry of entries) {
+    const reason = codeGraphInventoryExclusionReason(entry.path, entry.size);
+    if (reason !== undefined) exclusions.set(entry.path, {reason, size: entry.size});
+  }
+  return exclusions;
+}
+
+function summarizePolicyExclusions(
+  exclusions: ReadonlyMap<string, PolicyExclusionEntry>,
+): CodeGraphInventoryPolicyExclusionSummary {
+  const byReason = new Map<CodeGraphInventoryExclusionReason, {bytes: number; files: number}>();
+  let bytes = 0;
+  for (const exclusion of exclusions.values()) {
+    bytes += exclusion.size;
+    const current = byReason.get(exclusion.reason) ?? {bytes: 0, files: 0};
+    byReason.set(exclusion.reason, {bytes: current.bytes + exclusion.size, files: current.files + 1});
+  }
+  return {
+    bytes,
+    files: exclusions.size,
+    policyVersion: CODE_GRAPH_INVENTORY_ADMISSION_POLICY_VERSION,
+    reasons: CODE_GRAPH_INVENTORY_EXCLUSION_REASONS.map(reason => ({
+      bytes: byReason.get(reason)?.bytes ?? 0,
+      files: byReason.get(reason)?.files ?? 0,
+      reason,
+    })),
+  };
+}
+
+function formatPolicyExclusionDiagnostic(summary: CodeGraphInventoryPolicyExclusionSummary): string {
+  return `Inventory admission policy v${summary.policyVersion} excluded ${summary.files} file(s) (${summary.bytes} bytes) before content loading: ${summary.reasons
+    .map(reason => `${reason.reason}=${reason.files}/${reason.bytes} bytes`)
+    .join(', ')}.`;
 }
 
 /**
@@ -328,6 +413,35 @@ export function acceptsRepositoryPath(
     declaredProjectRoots,
     declaredSourceRoots,
   );
+}
+
+function isPotentialOverlayCandidate(value: string, languagePacks: CodeGraphLanguagePackRegistryShape): boolean {
+  const repositoryPath = normalizeRepositoryPath(value);
+  if (
+    !repositoryPath ||
+    repositoryPath.startsWith('/') ||
+    repositoryPath.split('/').some(segment => segment === '..' || segment === '')
+  ) {
+    return false;
+  }
+  const directories = repositoryPath.split('/').slice(0, -1);
+  if (
+    directories.some(directory => {
+      const normalized = directory.toLowerCase();
+      return (directory.startsWith('.') && !AUTHORED_DOT_DIRECTORIES.has(normalized)) || normalized === 'node_modules';
+    })
+  ) {
+    return false;
+  }
+  return isInventoryPolicyExtension(repositoryPath) || Option.isSome(languagePacks.match(repositoryPath));
+}
+
+function isInventoryPolicyExtension(repositoryPath: string): boolean {
+  return /\.(?:jsonc?|svg)$/i.test(repositoryPath);
+}
+
+function isOverlayAdmissionControlPath(repositoryPath: string): boolean {
+  return repositoryPath === '.threadnoteignore' || /(?:^|\/)\.gitignore$/.test(repositoryPath);
 }
 
 function acceptsRepositoryPathWithRules(
@@ -623,6 +737,9 @@ const readDirtyOverlay = Effect.fn('codeGraph.readDirtyOverlay')(function* (
   languagePacks: CodeGraphLanguagePackRegistryShape,
   declaredProjectRoots: readonly string[],
   declaredSourceRoots: readonly string[],
+  committedPolicyExclusions: ReadonlyMap<string, PolicyExclusionEntry>,
+  committedTreeEntries: ReadonlyMap<string, GitTreeEntry>,
+  knownCommittedAcceptedPaths?: ReadonlySet<string>,
   onContentBatch?: CodeGraphInventoryOptions['onContentBatch'],
 ) {
   const fs = yield* FileSystem.FileSystem;
@@ -659,11 +776,56 @@ const readDirtyOverlay = Effect.fn('codeGraph.readDirtyOverlay')(function* (
   for (const value of untracked) {
     changes.changed.add(value);
   }
+  const relevantChangedPaths = [...new Set([...changes.changed, ...changes.deleted])].filter(relative =>
+    isPotentialOverlayCandidate(relative, languagePacks),
+  );
+  const threadnoteIgnoredChangedPaths = new Set(
+    relevantChangedPaths.filter(relative => isIgnoredByThreadnote(relative, ignoreRules)),
+  );
+  const ignoredChangedPaths = yield* ignoredPaths(
+    identity.repoRoot,
+    relevantChangedPaths.filter(relative => !threadnoteIgnoredChangedPaths.has(relative)),
+  );
+  const committedPathWasAccepted = (relative: string): boolean => {
+    if (knownCommittedAcceptedPaths !== undefined) return knownCommittedAcceptedPaths.has(relative);
+    const entry = committedTreeEntries.get(relative);
+    return (
+      entry !== undefined &&
+      !committedPolicyExclusions.has(relative) &&
+      !ignoredChangedPaths.has(relative) &&
+      acceptsRepositoryPathWithRules(relative, ignoreRules, languagePacks, declaredProjectRoots, declaredSourceRoots)
+    );
+  };
+  const policyExclusions = new Map(committedPolicyExclusions);
+  let policySkippedDelta = 0;
+  for (const relative of [...changes.deleted]) {
+    if (!policyExclusions.delete(relative)) continue;
+    changes.deleted.delete(relative);
+    policySkippedDelta -= 1;
+  }
+  const changedMetadata = new Map<string, StableContainedRegularFileMetadata>();
+  for (const relative of relevantChangedPaths
+    .filter(relative => changes.changed.has(relative))
+    .sort(compareCodeUnits)) {
+    if (
+      (ignoredChangedPaths.has(relative) || threadnoteIgnoredChangedPaths.has(relative)) &&
+      !isInventoryPolicyExtension(relative)
+    ) {
+      continue;
+    }
+    const inspected = yield* inspectContainedStableRegularFile(fs, path, repositoryRoot, relative).pipe(Effect.option);
+    if (inspected._tag === 'Some') changedMetadata.set(relative, inspected.value);
+  }
   const overlayContextFiles: CodeGraphInventoryFile[] = [];
   for (const relative of [...changes.changed].sort()) {
     if (!languagePacks.isResolutionContext(relative)) continue;
+    if (ignoredChangedPaths.has(relative) || threadnoteIgnoredChangedPaths.has(relative)) continue;
     const directories = relative.split('/').slice(0, -1);
     if (directories.some(directory => directory.startsWith('.') || directory.toLowerCase() === 'node_modules')) {
+      continue;
+    }
+    const metadata = changedMetadata.get(relative);
+    if (metadata === undefined || codeGraphInventoryExclusionReason(relative, metadata.size) !== undefined) {
       continue;
     }
     const opened = yield* materializeContainedStableRegularFile(
@@ -672,6 +834,7 @@ const readDirtyOverlay = Effect.fn('codeGraph.readDirtyOverlay')(function* (
       repositoryRoot,
       relative,
       size => size > CORPUS_EXTRACTION_SOURCE_BYTES_LIMIT,
+      metadata.size,
     ).pipe(Effect.option);
     if (opened._tag === 'None' || opened.value.bytes === undefined) continue;
     if (appearsGitLfsPointer(opened.value.bytes) || appearsBinary(opened.value.bytes)) continue;
@@ -718,7 +881,7 @@ const readDirtyOverlay = Effect.fn('codeGraph.readDirtyOverlay')(function* (
     skipped += 1;
     if (
       (untracked.has(relative) || changes.added.has(relative)) &&
-      (relative !== '.threadnoteignore' || threadnoteIgnore.length === 0)
+      (!isOverlayAdmissionControlPath(relative) || (relative === '.threadnoteignore' && threadnoteIgnore.length === 0))
     ) {
       changed.delete(relative);
       return;
@@ -750,12 +913,58 @@ const readDirtyOverlay = Effect.fn('codeGraph.readDirtyOverlay')(function* (
       : Effect.void;
   };
   for (const relative of [...changes.changed].sort()) {
+    const previousPolicyExclusion = policyExclusions.get(relative);
+    const metadata = changedMetadata.get(relative);
+    if (metadata === undefined) {
+      if (previousPolicyExclusion !== undefined) {
+        policyExclusions.delete(relative);
+        changed.delete(relative);
+        continue;
+      }
+      if (
+        !isOverlayAdmissionControlPath(relative) &&
+        !committedPathWasAccepted(relative) &&
+        !committedTreeEntries.has(relative)
+      ) {
+        skipped += 1;
+        changed.delete(relative);
+        continue;
+      }
+      if (
+        !isOverlayAdmissionControlPath(relative) &&
+        !committedPathWasAccepted(relative) &&
+        committedTreeEntries.has(relative)
+      ) {
+        changed.delete(relative);
+        continue;
+      }
+      markSkipped(relative);
+      continue;
+    }
+    const policyExclusionReason = codeGraphInventoryExclusionReason(relative, metadata.size);
+    if (policyExclusionReason !== undefined) {
+      policyExclusions.set(relative, {reason: policyExclusionReason, size: metadata.size});
+      if (
+        previousPolicyExclusion === undefined &&
+        (!committedTreeEntries.has(relative) || committedPathWasAccepted(relative))
+      ) {
+        policySkippedDelta += 1;
+      }
+      if (committedPathWasAccepted(relative)) {
+        skippedPaths.add(relative);
+      } else {
+        changed.delete(relative);
+      }
+      continue;
+    }
+    if (previousPolicyExclusion !== undefined) policyExclusions.delete(relative);
     const absolute = path.resolve(identity.repoRoot, relative);
     const containment = path.relative(identity.repoRoot, absolute);
     if (
       containment === '..' ||
       containment.startsWith(`..${path.sep}`) ||
       path.isAbsolute(containment) ||
+      ignoredChangedPaths.has(relative) ||
       !acceptsRepositoryPathWithRules(
         relative,
         ignoreRules,
@@ -764,12 +973,27 @@ const readDirtyOverlay = Effect.fn('codeGraph.readDirtyOverlay')(function* (
         effectiveDeclaredSourceRoots,
       )
     ) {
+      if (previousPolicyExclusion !== undefined) {
+        changed.delete(relative);
+        continue;
+      }
+      if (!committedPathWasAccepted(relative)) {
+        if (!committedTreeEntries.has(relative)) skipped += 1;
+        changed.delete(relative);
+        continue;
+      }
       markSkipped(relative);
       continue;
     }
+    if (previousPolicyExclusion !== undefined) policySkippedDelta -= 1;
     const readingStarted = performance.now();
-    const opened = yield* materializeContainedStableRegularFile(fs, path, repositoryRoot, relative, size =>
-      shouldOmitRepositoryContent(relative, size, languagePacks),
+    const opened = yield* materializeContainedStableRegularFile(
+      fs,
+      path,
+      repositoryRoot,
+      relative,
+      size => shouldOmitRepositoryContent(relative, size, languagePacks),
+      metadata.size,
     ).pipe(Effect.option);
     const readingMilliseconds = performance.now() - readingStarted;
     if (opened._tag === 'None') {
@@ -856,6 +1080,8 @@ const readDirtyOverlay = Effect.fn('codeGraph.readDirtyOverlay')(function* (
         )
       : undefined,
     parsedPaths,
+    policyExclusions,
+    policySkippedDelta,
     skipped,
   };
 });
@@ -876,7 +1102,10 @@ export function parseNameStatus(output: string): {
     if (status.startsWith('R') || status.startsWith('C')) {
       const second = normalizeRepositoryPath(fields[index++] ?? '');
       if (status.startsWith('R') && first) deleted.add(first);
-      if (second) changed.add(second);
+      if (second) {
+        added.add(second);
+        changed.add(second);
+      }
     } else if (status.startsWith('D')) {
       if (first) deleted.add(first);
     } else if (first) {
@@ -1321,6 +1550,58 @@ interface StableContainedMaterialization {
   readonly size: number;
 }
 
+interface StableContainedRegularFileMetadata {
+  readonly size: number;
+}
+
+/**
+ * Inspect only stable, contained path metadata. Admission depends on path and
+ * size, so excluded dirty files never need to be opened, read, or hashed.
+ */
+function inspectContainedStableRegularFile(
+  fs: FileSystem.FileSystem,
+  path: Path.Path,
+  repositoryRoot: string,
+  relative: string,
+): Effect.Effect<StableContainedRegularFileMetadata, Error, SystemInfo> {
+  const target = path.join(repositoryRoot, ...relative.split('/'));
+  return Effect.gen(function* () {
+    yield* validateRepositoryAncestors(fs, path, repositoryRoot, relative);
+    const canonicalBefore = yield* fs.realPath(target);
+    if (!isContainedPath(path, repositoryRoot, canonicalBefore)) {
+      return yield* Effect.fail(new Error(`Repository file resolves outside its root: ${relative}`));
+    }
+    const linkBefore = yield* fs.readLink(target).pipe(
+      Effect.map(Option.some),
+      Effect.catch(() => Effect.succeed(Option.none<string>())),
+    );
+    if (Option.isSome(linkBefore)) {
+      return yield* Effect.fail(new Error(`Refusing to inspect a symbolic repository file: ${relative}`));
+    }
+    const infoBefore = yield* fs.stat(target);
+    const size = Number(infoBefore.size);
+    if (infoBefore.type !== 'File' || !Number.isSafeInteger(size) || size < 0) {
+      return yield* Effect.fail(new Error(`Repository file metadata is not safely representable: ${relative}`));
+    }
+    yield* validateRepositoryAncestors(fs, path, repositoryRoot, relative);
+    const canonicalAfter = yield* fs.realPath(target);
+    const linkAfter = yield* fs.readLink(target).pipe(
+      Effect.map(Option.some),
+      Effect.catch(() => Effect.succeed(Option.none<string>())),
+    );
+    const infoAfter = yield* fs.stat(target);
+    if (
+      Option.isSome(linkAfter) ||
+      !isContainedPath(path, repositoryRoot, canonicalAfter) ||
+      !sameRegularFile(infoBefore, infoAfter, infoBefore) ||
+      infoBefore.size !== infoAfter.size
+    ) {
+      return yield* Effect.fail(new Error(`Repository file changed while its metadata was inspected: ${relative}`));
+    }
+    return {size};
+  }).pipe(Effect.mapError(cause => new Error(`Could not safely inspect repository path ${relative}.`, {cause})));
+}
+
 /**
  * Safely materialize a worktree file, or hash it through a fixed-size buffer when
  * policy says its content should remain metadata-only. This keeps dirty large
@@ -1333,6 +1614,7 @@ function materializeContainedStableRegularFile(
   repositoryRoot: string,
   relative: string,
   omitContent: (size: number) => boolean,
+  expectedSize?: number,
 ): Effect.Effect<StableContainedMaterialization, Error, SystemInfo> {
   const target = path.join(repositoryRoot, ...relative.split('/'));
   return Effect.gen(function* () {
@@ -1367,6 +1649,9 @@ function materializeContainedStableRegularFile(
         const size = Number(openedInfoBefore.size);
         if (!Number.isSafeInteger(size) || size < 0) {
           return yield* Effect.fail(new Error(`Repository file size cannot be represented safely: ${relative}`));
+        }
+        if (expectedSize !== undefined && size !== expectedSize) {
+          return yield* Effect.fail(new Error(`Repository file size changed before it was read: ${relative}`));
         }
         const hasher = new Bun.CryptoHasher('sha256');
         const bytes = omitContent(size) ? undefined : new Uint8Array(size);

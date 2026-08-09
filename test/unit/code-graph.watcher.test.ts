@@ -1,13 +1,21 @@
 import {it as effectIt} from '@effect/vitest';
-import {Deferred, Effect, Ref} from 'effect';
+import {Deferred, Effect, Fiber, Logger, Ref, Stream} from 'effect';
 import {TestClock} from 'effect/testing';
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import {
+  codeGraphWatcherSnapshotStale,
   makeCodeGraphWatcher,
   prewarmCandidatesFromRefOutput,
   type CodeGraphWatchOptions,
+  watchRepository,
 } from '../../src/code_graph/watcher.js';
+import {
+  CodeGraphStoreBusyError,
+  CodeGraphStoreNoSpaceError,
+  CodeGraphStorePermissionError,
+  CodeGraphStoreTransientIoError,
+} from '../../src/code_graph/types.js';
 
 const options: CodeGraphWatchOptions = {
   cwd: '/fixture/repository',
@@ -242,6 +250,284 @@ describe('CodeGraphWatcher', () => {
     });
   });
 
+  it('returns promptly under held-writer load and publishes one typed deferred failure', async () => {
+    const logs: string[] = [];
+    const logger = Logger.make<unknown, void>(options => {
+      logs.push(String(options.message));
+    });
+    const result = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const starts = yield* Ref.make(0);
+          const started = yield* Deferred.make<void>();
+          const release = yield* Deferred.make<void>();
+          const watcher = yield* makeCodeGraphWatcher(
+            () => Effect.never,
+            () =>
+              Ref.update(starts, count => count + 1).pipe(
+                Effect.andThen(Deferred.succeed(started, undefined)),
+                Effect.andThen(Deferred.await(release)),
+                Effect.andThen(
+                  Effect.fail(
+                    new CodeGraphStoreBusyError('private writer detail /Users/private/graph.sqlite', {
+                      operation: 'load /Users/private/graph.sqlite',
+                    }),
+                  ),
+                ),
+              ),
+          );
+
+          yield* watcher.ensure(options);
+          const requests = yield* Effect.all(
+            Array.from({length: 128}, () => watcher.refresh(options)),
+            {concurrency: 'unbounded'},
+          );
+          yield* Deferred.await(started);
+          const whileHeld = yield* watcher.status(options.key);
+          yield* Deferred.succeed(release, undefined);
+          let settled = yield* watcher.status(options.key);
+          for (
+            let attempt = 0;
+            attempt < 16 && settled._tag === 'Some' && settled.value.state === 'indexing';
+            attempt += 1
+          ) {
+            yield* Effect.yieldNow;
+            settled = yield* watcher.status(options.key);
+          }
+          return {requests, settled, starts: yield* Ref.get(starts), whileHeld};
+        }),
+      ).pipe(Effect.provide(Logger.layer([logger]))),
+    );
+
+    expect(result.starts).toBe(1);
+    expect(result.requests.filter(Boolean)).toHaveLength(1);
+    expect(result.whileHeld).toMatchObject({_tag: 'Some', value: {state: 'indexing'}});
+    expect(result.settled).toMatchObject({
+      _tag: 'Some',
+      value: {
+        failure: {code: 'busy', operation: 'refresh code graph', recovery: 'defer', retryable: true},
+        state: 'deferred',
+      },
+    });
+    const serialized = JSON.stringify(result.settled);
+    expect(serialized).not.toContain('/Users/private');
+    expect(serialized).not.toContain('private writer detail');
+    expect(logs).toContain('Code graph background refresh deferred (busy; recovery: defer).');
+    expect(logs.join('\n')).not.toContain('/fixture/repository');
+    expect(logs.join('\n')).not.toContain('/Users/private');
+    expect(logs.join('\n')).not.toContain('private writer detail');
+  });
+
+  it('normalizes operational refresh failures without retaining native details', async () => {
+    const privateMarker = '/Volumes/private/native-graph.sqlite';
+    const failures = [
+      new CodeGraphStoreBusyError(`busy ${privateMarker}`),
+      new CodeGraphStoreNoSpaceError(`full ${privateMarker}`),
+      new CodeGraphStorePermissionError(`permission ${privateMarker}`),
+      new CodeGraphStoreTransientIoError(`io ${privateMarker}`),
+    ];
+
+    for (const failure of failures) {
+      const status = await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const watcher = yield* makeCodeGraphWatcher(
+              () => Effect.never,
+              () => Effect.fail(failure),
+            );
+            const failureOptions = {...options, key: `${options.key}:${failure.code}`};
+            yield* watcher.ensure(failureOptions);
+            yield* watcher.refresh(failureOptions);
+            let current = yield* watcher.status(failureOptions.key);
+            for (let attempt = 0; attempt < 16; attempt += 1) {
+              if (current._tag === 'Some' && current.value.state !== 'indexing') break;
+              yield* Effect.yieldNow;
+              current = yield* watcher.status(failureOptions.key);
+            }
+            return current;
+          }),
+        ),
+      );
+
+      expect(status).toMatchObject({
+        _tag: 'Some',
+        value: {failure: {code: failure.code, operation: 'refresh code graph'}, state: 'deferred'},
+      });
+      expect(JSON.stringify(status)).not.toContain(privateMarker);
+    }
+  });
+
+  it('turns a refresh defect into one bounded unknown status instead of stranding indexing', async () => {
+    const privateMarker = '/Users/private/defect.sqlite';
+    const logs: string[] = [];
+    const logger = Logger.make<unknown, void>(options => {
+      logs.push(String(options.message));
+    });
+    const status = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const watcher = yield* makeCodeGraphWatcher(
+            () => Effect.never,
+            () => Effect.die(new Error(`native defect ${privateMarker}`)),
+          );
+          yield* watcher.ensure(options);
+          yield* watcher.refresh(options);
+          let current = yield* watcher.status(options.key);
+          for (let attempt = 0; attempt < 16; attempt += 1) {
+            if (current._tag === 'Some' && current.value.state !== 'indexing') break;
+            yield* Effect.yieldNow;
+            current = yield* watcher.status(options.key);
+          }
+          return current;
+        }),
+      ).pipe(Effect.provide(Logger.layer([logger]))),
+    );
+
+    expect(status).toMatchObject({
+      _tag: 'Some',
+      value: {
+        failure: {code: 'unknown', operation: 'refresh code graph', recovery: 'diagnose', retryable: false},
+        state: 'deferred',
+      },
+    });
+    expect(logs).toContain('Code graph background refresh deferred (unknown; recovery: diagnose).');
+    expect(`${JSON.stringify(status)}\n${logs.join('\n')}`).not.toContain(privateMarker);
+  });
+
+  it('propagates refresh scope interruption without converting it into a deferred failure', async () => {
+    const logs: string[] = [];
+    const logger = Logger.make<unknown, void>(options => {
+      logs.push(String(options.message));
+    });
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const started = yield* Deferred.make<void>();
+          const watcher = yield* makeCodeGraphWatcher(
+            () => Effect.never,
+            () => Deferred.succeed(started, undefined).pipe(Effect.andThen(Effect.never)),
+          );
+          yield* watcher.ensure(options);
+          yield* watcher.refresh(options);
+          yield* Deferred.await(started);
+          expect(yield* watcher.status(options.key)).toMatchObject({_tag: 'Some', value: {state: 'indexing'}});
+        }),
+      ).pipe(Effect.provide(Logger.layer([logger]))),
+    );
+
+    expect(logs.some(message => message.includes('background refresh deferred'))).toBe(false);
+  });
+
+  effectIt.effect('keeps periodic reconciliation alive after a filesystem watch defect', () => {
+    const privateMarker = '/Users/private/watch-root';
+    const logs: string[] = [];
+    const logger = Logger.make<unknown, void>(options => {
+      logs.push(String(options.message));
+    });
+    return Effect.gen(function* () {
+      const refreshes = yield* Ref.make(0);
+      const fiber = yield* watchRepository(
+        {watch: () => Stream.die(new Error(`watch defect ${privateMarker}`))} as never,
+        {} as never,
+        options,
+        false,
+        () => Ref.update(refreshes, count => count + 1),
+      ).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+      const beforeReconciliation = yield* Ref.get(refreshes);
+      yield* TestClock.adjust('5 minutes');
+      yield* Effect.yieldNow;
+
+      expect(yield* Ref.get(refreshes)).toBeGreaterThan(beforeReconciliation);
+      expect(logs).toContain('Code graph filesystem watch stopped; periodic reconciliation remains active.');
+      expect(logs.join('\n')).not.toContain(privateMarker);
+      yield* Fiber.interrupt(fiber);
+    }).pipe(Effect.provide(Logger.layer([logger])), Effect.scoped);
+  });
+
+  effectIt.effect('requests initial maintenance and orders change maintenance before refresh', () =>
+    Effect.gen(function* () {
+      const events = yield* Ref.make<string[]>([]);
+      const fiber = yield* watchRepository(
+        {watch: () => Stream.make({path: 'source.ts'})} as never,
+        {
+          isAbsolute: (value: string) => value.startsWith('/'),
+          join: (...values: string[]) => values.join('/'),
+          relative: () => 'source.ts',
+          sep: '/',
+        } as never,
+        options,
+        false,
+        () => Ref.update(events, current => [...current, 'refresh']),
+        {
+          periodicRefreshRequired: () => Effect.succeed(false),
+          requestAfterChange: () =>
+            Ref.update(events, current => [...current, 'change-maintenance']).pipe(
+              Effect.andThen(Effect.fail(new Error('maintenance scheduling defect'))),
+            ),
+          requestInitial: () => Ref.update(events, current => [...current, 'initial-maintenance']),
+        },
+      ).pipe(Effect.forkScoped);
+
+      yield* TestClock.adjust('751 millis');
+      yield* Effect.yieldNow;
+
+      expect(yield* Ref.get(events)).toEqual(['initial-maintenance', 'change-maintenance', 'refresh']);
+      yield* Fiber.interrupt(fiber);
+    }).pipe(Effect.scoped),
+  );
+
+  effectIt.effect('refreshes on periodic positive staleness and preserves on current or unknown evidence', () =>
+    Effect.gen(function* () {
+      for (const testCase of [
+        {expectedRefreshes: 0, probe: Effect.succeed(false)},
+        {expectedRefreshes: 1, probe: Effect.succeed(true)},
+        {expectedRefreshes: 0, probe: Effect.fail(new Error('unknown freshness'))},
+      ] as const) {
+        const refreshes = yield* Ref.make(0);
+        const maintenanceRequests = yield* Ref.make(0);
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const fiber = yield* watchRepository(
+              {watch: () => Stream.never} as never,
+              {} as never,
+              options,
+              false,
+              () => Ref.update(refreshes, count => count + 1),
+              {
+                periodicRefreshRequired: () =>
+                  Ref.update(maintenanceRequests, count => count + 1).pipe(Effect.andThen(testCase.probe)),
+                requestAfterChange: () => Effect.void,
+                requestInitial: () => Effect.void,
+              },
+            ).pipe(Effect.forkScoped);
+            yield* TestClock.adjust('5 minutes');
+            yield* Effect.yieldNow;
+
+            expect(yield* Ref.get(maintenanceRequests)).toBe(1);
+            expect(yield* Ref.get(refreshes)).toBe(testCase.expectedRefreshes);
+            yield* Fiber.interrupt(fiber);
+          }),
+        );
+      }
+    }),
+  );
+
+  effectIt.effect('classifies unchanged and changed watcher evidence without full refresh work', () =>
+    Effect.sync(() => {
+      const cleanSnapshot = {commit: 'a', dirty: false};
+      expect(codeGraphWatcherSnapshotStale(cleanSnapshot, {headCommit: 'a'}, {dirty: false})).toBe(false);
+      expect(codeGraphWatcherSnapshotStale(cleanSnapshot, {headCommit: 'b'}, {dirty: false})).toBe(true);
+      expect(
+        codeGraphWatcherSnapshotStale(
+          {commit: 'a', dirty: true, overlayFingerprint: 'old'},
+          {headCommit: 'a'},
+          {dirty: true, fingerprint: 'new'},
+        ),
+      ).toBe(true);
+    }),
+  );
+
   it('serializes explicit and watch-triggered refreshes while coalescing a trailing run', async () => {
     const result = await Effect.runPromise(
       Effect.scoped(
@@ -384,6 +670,161 @@ describe('CodeGraphWatcher', () => {
     expect(result.finalMaximum).toBe(1);
     expect(result.finalStarts).toBe(8);
   });
+
+  effectIt.effect('reports exact path-free queue and execution metrics under coalescing load', () =>
+    Effect.gen(function* () {
+      const watchTriggers = new Map<string, () => Effect.Effect<void>>();
+      const watchesStarted = yield* Ref.make(0);
+      const allWatchesStarted = yield* Deferred.make<void>();
+      const refreshStarts = yield* Ref.make(0);
+      const refreshCompletions = yield* Ref.make(0);
+      const firstRefreshStarted = yield* Deferred.make<void>();
+      const allRefreshesCompleted = yield* Deferred.make<void>();
+      const releaseRefreshes = yield* Deferred.make<void>();
+      const firstOptions = {...options, key: 'repository:worktree:first'};
+      const secondOptions = {...options, key: 'repository:worktree:second'};
+      const watcher = yield* makeCodeGraphWatcher(
+        (watchOptions, _initialRefresh, requestRefresh) =>
+          Effect.gen(function* () {
+            watchTriggers.set(watchOptions.key, requestRefresh);
+            const started = yield* Ref.updateAndGet(watchesStarted, count => count + 1);
+            if (started === 2) yield* Deferred.succeed(allWatchesStarted, undefined);
+            return yield* Effect.never;
+          }),
+        refreshOptions =>
+          Effect.gen(function* () {
+            const started = yield* Ref.updateAndGet(refreshStarts, count => count + 1);
+            if (started === 1) yield* Deferred.succeed(firstRefreshStarted, undefined);
+            yield* Deferred.await(releaseRefreshes);
+            yield* refreshOptions.onRefreshed?.(started * 100, started * 200) ?? Effect.void;
+            const completed = yield* Ref.updateAndGet(refreshCompletions, count => count + 1);
+            if (completed === 4) yield* Deferred.succeed(allRefreshesCompleted, undefined);
+          }),
+        {maximumWatchers: 4},
+      );
+
+      expect(yield* watcher.metrics()).toEqual({
+        activeRefreshKeys: 0,
+        activeWatches: 0,
+        executingRefreshes: 0,
+        executingRefreshHighWater: 0,
+        idleSweepFibers: 0,
+        maximumWatchers: 4,
+        pendingTrailingRefreshes: 0,
+        retainedStatuses: 0,
+      });
+
+      yield* watcher.ensure(firstOptions);
+      yield* watcher.ensure(secondOptions);
+      yield* Deferred.await(allWatchesStarted);
+      expect(yield* watcher.metrics()).toEqual({
+        activeRefreshKeys: 0,
+        activeWatches: 2,
+        executingRefreshes: 0,
+        executingRefreshHighWater: 0,
+        idleSweepFibers: 1,
+        maximumWatchers: 4,
+        pendingTrailingRefreshes: 0,
+        retainedStatuses: 0,
+      });
+
+      yield* watcher.refresh(firstOptions);
+      yield* Deferred.await(firstRefreshStarted);
+      yield* watcher.refresh(secondOptions);
+      yield* Effect.all(
+        Array.from({length: 256}, (_, index) => {
+          const selected = index % 2 === 0 ? firstOptions : secondOptions;
+          return index % 4 < 2 ? watchTriggers.get(selected.key)!() : watcher.refresh(selected).pipe(Effect.asVoid);
+        }),
+        {concurrency: 'unbounded', discard: true},
+      );
+
+      let whileHeld = yield* watcher.metrics();
+      for (let attempt = 0; attempt < 16 && whileHeld.retainedStatuses < 2; attempt += 1) {
+        yield* Effect.yieldNow;
+        whileHeld = yield* watcher.metrics();
+      }
+      expect(whileHeld).toEqual({
+        activeRefreshKeys: 2,
+        activeWatches: 2,
+        executingRefreshes: 1,
+        executingRefreshHighWater: 1,
+        idleSweepFibers: 1,
+        maximumWatchers: 4,
+        pendingTrailingRefreshes: 2,
+        retainedStatuses: 2,
+      });
+      expect(JSON.stringify(whileHeld)).not.toContain('/fixture');
+      expect(JSON.stringify(whileHeld)).not.toContain('repository:worktree');
+
+      yield* Deferred.succeed(releaseRefreshes, undefined);
+      yield* Deferred.await(allRefreshesCompleted);
+      let drained = yield* watcher.metrics();
+      for (let attempt = 0; attempt < 16 && drained.activeRefreshKeys > 0; attempt += 1) {
+        yield* Effect.yieldNow;
+        drained = yield* watcher.metrics();
+      }
+      expect(yield* Ref.get(refreshStarts)).toBe(4);
+      expect(drained).toEqual({
+        activeRefreshKeys: 0,
+        activeWatches: 2,
+        executingRefreshes: 0,
+        executingRefreshHighWater: 1,
+        idleSweepFibers: 1,
+        maximumWatchers: 4,
+        pendingTrailingRefreshes: 0,
+        retainedStatuses: 2,
+      });
+    }).pipe(Effect.scoped),
+  );
+
+  effectIt.effect('balances execution metrics across refresh failure and scope interruption', () =>
+    Effect.gen(function* () {
+      const failedWatcher = yield* makeCodeGraphWatcher(
+        () => Effect.never,
+        () => Effect.fail(new Error('expected refresh failure')),
+      );
+      yield* failedWatcher.refresh({...options, key: 'failure'});
+      let afterFailure = yield* failedWatcher.metrics();
+      for (let attempt = 0; attempt < 16 && afterFailure.activeRefreshKeys > 0; attempt += 1) {
+        yield* Effect.yieldNow;
+        afterFailure = yield* failedWatcher.metrics();
+      }
+      expect(afterFailure.executingRefreshes).toBe(0);
+      expect(afterFailure.executingRefreshHighWater).toBe(1);
+      expect(afterFailure.executingRefreshes).toBeGreaterThanOrEqual(0);
+
+      const interruptedWatcher = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const executingStarted = yield* Deferred.make<void>();
+          const watcher = yield* makeCodeGraphWatcher(
+            () => Effect.never,
+            refreshOptions =>
+              Deferred.succeed(executingStarted, undefined).pipe(
+                Effect.andThen(Effect.never),
+                Effect.andThen(refreshOptions.onRefreshed?.(1, 2) ?? Effect.void),
+              ),
+          );
+          yield* watcher.refresh({...options, key: 'executing'});
+          yield* Deferred.await(executingStarted);
+          yield* watcher.refresh({...options, key: 'waiting'});
+          let whileExecuting = yield* watcher.metrics();
+          for (let attempt = 0; attempt < 16 && whileExecuting.activeRefreshKeys < 2; attempt += 1) {
+            yield* Effect.yieldNow;
+            whileExecuting = yield* watcher.metrics();
+          }
+          expect(whileExecuting.executingRefreshes).toBe(1);
+          expect(whileExecuting.executingRefreshHighWater).toBe(1);
+          expect(whileExecuting.executingRefreshes).toBeGreaterThanOrEqual(0);
+          return watcher;
+        }),
+      );
+      const afterInterruption = yield* interruptedWatcher.metrics();
+      expect(afterInterruption.executingRefreshes).toBe(0);
+      expect(afterInterruption.executingRefreshHighWater).toBe(1);
+      expect(afterInterruption.executingRefreshes).toBeGreaterThanOrEqual(0);
+    }).pipe(Effect.scoped),
+  );
 
   effectIt.effect('estimates measured phase work and identifies newly started refreshes', () =>
     Effect.gen(function* () {

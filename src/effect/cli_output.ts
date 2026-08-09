@@ -18,15 +18,25 @@ export function makeFinalCliOutput(write: (output: string) => Promise<void>) {
   });
 }
 
-function makeQueuedBunWriter(open: () => ReturnType<typeof Bun.stdout.writer>) {
-  let sink: ReturnType<typeof Bun.stdout.writer> | undefined;
+interface CliOutputSink {
+  readonly end: (error?: Error) => number | Promise<number>;
+  readonly flush: () => number | Promise<number>;
+  readonly write: (chunk: string) => number | Promise<number>;
+}
+
+/** @internal Exported so pipe-backpressure ordering can be regression-tested without a real subprocess. */
+export function makeQueuedCliWriter(open: () => CliOutputSink) {
+  let sink: CliOutputSink | undefined;
   let tail = Promise.resolve();
   let failure: unknown;
   let ended = false;
   const write = (output: string): Promise<void> => {
     const write = tail.then(async () => {
       sink ??= open();
-      sink.write(`${output}\n`);
+      // Bun may complete a pipe write asynchronously once the OS pipe reaches
+      // backpressure. Flushing before that promise settles can close a large
+      // final JSON payload at an arbitrary prefix on slower hosts.
+      await sink.write(`${output}\n`);
       await sink.flush();
     });
     tail = write.catch(cause => {
@@ -59,8 +69,8 @@ const formatConsoleArguments = (arguments_: readonly unknown[]): string =>
 
 export class CliOutput extends Context.Service<CliOutput, CliOutputShape>()('threadnote/effect/CliOutput') {
   static readonly layer = Layer.sync(CliOutput, () => {
-    const stdout = makeQueuedBunWriter(() => Bun.stdout.writer({highWaterMark: 64 * 1024}));
-    const stderr = makeQueuedBunWriter(() => Bun.stderr.writer({highWaterMark: 64 * 1024}));
+    const stdout = makeQueuedCliWriter(() => Bun.stdout.writer({highWaterMark: 64 * 1024}));
+    const stderr = makeQueuedCliWriter(() => Bun.stderr.writer({highWaterMark: 64 * 1024}));
     return CliOutput.of({
       drain: Effect.tryPromise({
         try: () => Promise.all([stdout.drain(), stderr.drain()]).then(() => undefined),

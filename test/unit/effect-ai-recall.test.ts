@@ -1,7 +1,10 @@
 import {expect, it} from '@effect/vitest';
-import {Effect, Layer} from 'effect';
+import * as FC from 'effect/testing/FastCheck';
+import {Cause, Effect, Exit, Fiber, Layer} from 'effect';
+import {TestClock} from 'effect/testing';
 import {describe} from 'vitest';
 import {
+  boundedRecallCandidateSelection,
   boundedRecallExpansionScopes,
   expandRecallQueryEffect,
   expandWeakRecallQueryEffect,
@@ -11,6 +14,7 @@ import {
   normalizeRecallCandidateSelection,
   normalizeRecallRewrites,
   RecallCandidateSelector,
+  RECALL_SELECTION_TIMEOUT_MILLISECONDS,
   recallHybridMinimumScore,
   RecallQueryExpander,
   selectRecallCandidatesEffect,
@@ -163,5 +167,77 @@ describe('Effect AI recall expansion', () => {
         ),
       ).toBeUndefined();
     }),
+  );
+
+  it.effect('bounds the actual candidate selection and invokes it only once', () =>
+    Effect.gen(function* () {
+      let interrupted = 0;
+      let invocations = 0;
+      const selection = Effect.sync(() => {
+        invocations += 1;
+      }).pipe(
+        Effect.andThen(Effect.sleep(RECALL_SELECTION_TIMEOUT_MILLISECONDS + 1)),
+        Effect.as(['c1'] as const),
+        Effect.onInterrupt(() => Effect.sync(() => (interrupted += 1))),
+      );
+      const fiber = yield* boundedRecallCandidateSelection(selection).pipe(Effect.forkChild);
+
+      yield* TestClock.adjust(RECALL_SELECTION_TIMEOUT_MILLISECONDS);
+
+      expect(yield* Fiber.join(fiber)).toBeUndefined();
+      expect(invocations).toBe(1);
+      expect(interrupted).toBe(1);
+    }),
+  );
+
+  it.effect('preserves external cancellation instead of treating it as a selection timeout', () =>
+    Effect.gen(function* () {
+      let invocations = 0;
+      const selection = Effect.sync(() => {
+        invocations += 1;
+      }).pipe(Effect.andThen(Effect.never));
+      const fiber = yield* boundedRecallCandidateSelection(selection).pipe(Effect.forkChild);
+      yield* Effect.yieldNow;
+
+      yield* Fiber.interrupt(fiber);
+      const exit = yield* Fiber.await(fiber);
+
+      expect(Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)).toBe(true);
+      expect(invocations).toBe(1);
+    }),
+  );
+
+  it.effect.prop(
+    'returns a candidate selection exactly when arbitrary work finishes inside the budget',
+    {
+      delayMilliseconds: FC.oneof(
+        FC.integer({max: RECALL_SELECTION_TIMEOUT_MILLISECONDS - 1, min: 0}),
+        FC.integer({
+          max: RECALL_SELECTION_TIMEOUT_MILLISECONDS * 2,
+          min: RECALL_SELECTION_TIMEOUT_MILLISECONDS + 1,
+        }),
+      ),
+    },
+    ({delayMilliseconds}) =>
+      Effect.gen(function* () {
+        let interrupted = 0;
+        let invocations = 0;
+        const selection = Effect.sync(() => {
+          invocations += 1;
+        }).pipe(
+          Effect.andThen(Effect.sleep(delayMilliseconds)),
+          Effect.as(['c1'] as const),
+          Effect.onInterrupt(() => Effect.sync(() => (interrupted += 1))),
+        );
+        const fiber = yield* boundedRecallCandidateSelection(selection).pipe(Effect.forkChild);
+
+        yield* TestClock.adjust(Math.max(delayMilliseconds, RECALL_SELECTION_TIMEOUT_MILLISECONDS));
+
+        const completedInsideBudget = delayMilliseconds < RECALL_SELECTION_TIMEOUT_MILLISECONDS;
+        expect(yield* Fiber.join(fiber)).toEqual(completedInsideBudget ? ['c1'] : undefined);
+        expect(invocations).toBe(1);
+        expect(interrupted).toBe(completedInsideBudget ? 0 : 1);
+      }),
+    {fastCheck: {numRuns: 40}},
   );
 });

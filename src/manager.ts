@@ -57,10 +57,18 @@ import {runSeed, runSeedSkills} from './seeding.js';
 import {currentPackageVersion, fetchLatestVersion, releaseSource} from './update.js';
 import {selectUpdateChannel} from './update_channel.js';
 import {runCodeGraphCompact, runCodeGraphIndex, runCodeGraphPurge, runCodeGraphRepair} from './code_graph/commands.js';
-import {inspectAllCodeGraphs} from './code_graph/diagnostics.js';
+import {inspectAllCodeGraphsLocal} from './code_graph/diagnostics.js';
 import {readAllCodeGraphBuildStatuses} from './code_graph/build_status.js';
-import {resolveRepositoryIdentity} from './code_graph/repository.js';
+import {
+  readCodeGraphLocalAssociation,
+  resolveAndRecordCodeGraphLocalAssociation,
+} from './code_graph/local_provenance.js';
+import {repositoryIdentityMatchesExpectation} from './code_graph/repository.js';
+import {CodeGraphStoreBusyError, type RepositoryIdentityExpectation} from './code_graph/types.js';
 import {codeGraphMaintenanceIntentActive} from './code_graph/maintenance_gate.js';
+import {codeGraphLayout} from './code_graph/layout.js';
+import {CodeGraphMaintenanceCoordinator} from './code_graph/maintenance_coordinator.js';
+import {removeCodeGraphView, renderCodeGraphViewRemovalResult} from './code_graph/view_removal.js';
 import {
   managerGraphAnalysis,
   managerGraphBuildCatalog,
@@ -68,7 +76,10 @@ import {
   managerGraphCatalogPage,
   managerGraphNodeDetail,
   managerGraphQuery,
+  ManagerGraphBusyError,
+  ManagerGraphViewUnavailableError,
   releaseManagerGraphSnapshotLeases,
+  withManagerGraphSnapshotLeaseInvalidated,
   managerGraphVisualization,
   managerGraphViewsPage,
 } from './code_graph/visualization.js';
@@ -186,6 +197,14 @@ interface ApiContext {
   readonly token: string;
 }
 
+class ManagerGraphViewActionBusyError extends Error {
+  override readonly name = 'ManagerGraphViewActionBusyError';
+}
+
+class ManagerGraphViewActionError extends Error {
+  override readonly name = 'ManagerGraphViewActionError';
+}
+
 interface ManagerRequest {
   readonly body: Effect.Effect<Record<string, unknown>, unknown>;
   readonly headers: Readonly<Record<string, string | undefined>>;
@@ -266,7 +285,7 @@ export function runManage(config: RuntimeConfig, options: ManageOptions) {
       }
       return yield* Effect.never;
     }),
-  ).pipe(Effect.provide(BunHttpServer.layerTest));
+  ).pipe(Effect.provide(BunHttpServer.layer({hostname: '127.0.0.1', port: options.uiPort ?? 0})));
 }
 
 type ManagerRequestEffect = Effect.Effect<void, never, ApplicationServices>;
@@ -445,6 +464,22 @@ function handleRequestEffect(
   return requestEffect.pipe(
     Effect.catch(error =>
       Effect.sync(() => {
+        if (error instanceof ManagerGraphBusyError) {
+          writeJson(response, 409, {error: error.message, retryAfterMilliseconds: 1_000});
+          return;
+        }
+        if (error instanceof ManagerGraphViewActionBusyError) {
+          writeJson(response, 409, {
+            code: 'graph-view-busy',
+            error: error.message,
+            retryAfterMilliseconds: 1_000,
+          });
+          return;
+        }
+        if (error instanceof ManagerGraphViewUnavailableError) {
+          writeJson(response, 409, {code: 'graph-view-stale', error: error.message, retryAfterMilliseconds: 0});
+          return;
+        }
         writeJson(response, 500, {error: errorMessage(error)});
       }),
     ),
@@ -491,7 +526,7 @@ const handleRequestLegacy = Effect.fn('manager.handleRequestLegacy')(function* (
     writeJson(
       response,
       200,
-      yield* inspectAllCodeGraphs(context.config.agentContextHome, {
+      yield* inspectAllCodeGraphsLocal(context.config.agentContextHome, {
         analyze: url.searchParams.get('analyze') === 'true',
         deep: url.searchParams.get('deep') === 'true',
       }),
@@ -1478,7 +1513,7 @@ const runManagerGraphAction = Effect.fn('manager.runGraphAction')(function* (
     catch: error => error,
   });
   const dryRun = body.dryRun === true;
-  if (!dryRun && ['compact', 'purge', 'purge-all', 'purge-obsolete', 'repair'].includes(action)) {
+  if (!dryRun && ['compact', 'purge', 'purge-all', 'purge-obsolete', 'remove-view', 'repair'].includes(action)) {
     yield* Effect.try({
       try: () => requireConfirm(body),
       catch: error => error,
@@ -1515,20 +1550,77 @@ const runManagerGraphAction = Effect.fn('manager.runGraphAction')(function* (
     try: () => requireGraphIdentity(body.worktreeId, 'worktreeId'),
     catch: error => error,
   });
-  const cwd = yield* resolveManagerGraphActionCwd(
-    config.agentContextHome,
-    checkoutId,
-    worktreeId,
-    optionalString(body.cwd),
-  );
+  if (action === 'remove-view') {
+    const expectedSnapshotId = yield* Effect.try({
+      try: () => requireGraphSnapshotIdentity(body.expectedSnapshotId),
+      catch: error => error,
+    });
+    const target = {checkoutId, snapshotId: expectedSnapshotId, worktreeId};
+    const approvalDigest = yield* managerGraphViewRemovalApprovalDigest(target);
+    if (!dryRun && body.approvalDigest !== approvalDigest) {
+      return yield* Effect.fail(
+        new Error('Preview this exact graph view removal and provide its approval digest before applying.'),
+      );
+    }
+    const path = yield* Path.Path;
+    const maintenance = yield* CodeGraphMaintenanceCoordinator;
+    const layout = codeGraphLayout(path, config.agentContextHome, checkoutId, worktreeId);
+    const actionEffect = removeCodeGraphView(config.agentContextHome, target, {
+      afterRemoval: input =>
+        maintenance
+          .kickResidual({
+            checkoutId: input.checkoutId,
+            databasePath: input.databasePath,
+            threadnoteHome: input.threadnoteHome,
+            writerLockPath: layout.databaseWriteLockPath,
+          })
+          .pipe(Effect.asVoid),
+      apply: !dryRun,
+    }).pipe(
+      Effect.mapError(error =>
+        error instanceof CodeGraphStoreBusyError
+          ? new ManagerGraphViewActionBusyError(
+              'The selected graph view is busy. Retry after the active graph operation completes.',
+            )
+          : new ManagerGraphViewActionError(
+              'The selected graph view could not be inspected or removed safely. Run threadnote doctor --dry-run and retry.',
+            ),
+      ),
+    );
+    const applied = dryRun
+      ? {result: yield* actionEffect, warnings: [] as const}
+      : yield* withManagerGraphSnapshotLeaseInvalidated(
+          config.agentContextHome,
+          checkoutId,
+          worktreeId,
+          expectedSnapshotId,
+          actionEffect,
+        );
+    const warningOutput = applied.warnings.map(warning => `Warning [${warning.code}]: ${warning.message}`);
+    return {
+      approvalDigest,
+      output: [renderCodeGraphViewRemovalResult(applied.result), ...warningOutput].filter(Boolean).join('\n'),
+      result: applied.result,
+      warnings: applied.warnings,
+    };
+  }
+  const repositoryId = yield* Effect.try({
+    try: () => requireGraphIdentity(body.repositoryId, 'repositoryId'),
+    catch: error => error,
+  });
+  const expectedIdentity = {checkoutId, repositoryId, worktreeId} satisfies RepositoryIdentityExpectation;
+  const cwd = yield* resolveManagerGraphActionCwd(config.agentContextHome, expectedIdentity, optionalString(body.cwd));
   switch (action) {
     case 'compact':
       return yield* runCaptured(
-        () => runCodeGraphCompact(config, {cwd, dryRun, force: body.force === true}),
+        () => runCodeGraphCompact(config, {cwd, dryRun, expectedIdentity, force: body.force === true}),
         runEffect,
       );
     case 'index':
-      return yield* runCaptured(() => runCodeGraphIndex(config, {cwd, full: body.full === true}), runEffect);
+      return yield* runCaptured(
+        () => runCodeGraphIndex(config, {cwd, expectedIdentity, full: body.full === true}),
+        runEffect,
+      );
     default:
       return yield* Effect.fail(new Error(`Unsupported graph Manager action: ${action}`));
   }
@@ -1536,8 +1628,7 @@ const runManagerGraphAction = Effect.fn('manager.runGraphAction')(function* (
 
 const resolveManagerGraphActionCwd = Effect.fn('manager.resolveGraphActionCwd')(function* (
   threadnoteHome: string,
-  checkoutId: string,
-  worktreeId: string,
+  expectedIdentity: RepositoryIdentityExpectation,
   suppliedCwd?: string,
 ) {
   if (suppliedCwd) {
@@ -1545,29 +1636,43 @@ const resolveManagerGraphActionCwd = Effect.fn('manager.resolveGraphActionCwd')(
     if (!path.isAbsolute(suppliedCwd)) {
       return yield* Effect.fail(new Error('Supply cwd as an absolute local worktree path.'));
     }
-    const identity = yield* resolveRepositoryIdentity(suppliedCwd);
-    if (identity.checkoutId !== checkoutId || identity.worktreeId !== worktreeId) {
-      return yield* Effect.fail(new Error('The supplied worktree path does not match the selected graph identity.'));
-    }
+    const {identity} = yield* resolveAndRecordCodeGraphLocalAssociation(threadnoteHome, suppliedCwd, {
+      validateIdentity: identity =>
+        repositoryIdentityMatchesExpectation(identity, expectedIdentity)
+          ? Effect.void
+          : Effect.fail(new Error('The supplied worktree path does not match the selected graph identity.')),
+    });
     return identity.repoRoot;
+  }
+  const persisted = yield* readCodeGraphLocalAssociation(threadnoteHome, expectedIdentity);
+  if (persisted.state === 'verified' && persisted.path !== undefined) {
+    const observed = yield* resolveAndRecordCodeGraphLocalAssociation(threadnoteHome, persisted.path, {
+      validateIdentity: identity =>
+        repositoryIdentityMatchesExpectation(identity, expectedIdentity)
+          ? Effect.void
+          : Effect.fail(new Error('The persisted worktree path no longer matches the selected graph identity.')),
+    }).pipe(Effect.option);
+    if (Option.isSome(observed)) return observed.value.identity.repoRoot;
   }
   const statuses = yield* readAllCodeGraphBuildStatuses(threadnoteHome);
   for (const status of statuses) {
     if (
-      status.identity.checkoutId !== checkoutId ||
-      status.identity.worktreeId !== worktreeId ||
+      !repositoryIdentityMatchesExpectation(status.identity, expectedIdentity) ||
       status.managerContext === undefined
     ) {
       continue;
     }
-    const identity = yield* resolveRepositoryIdentity(status.managerContext.worktreePath).pipe(Effect.option);
-    if (
-      Option.isSome(identity) &&
-      identity.value.checkoutId === checkoutId &&
-      identity.value.worktreeId === worktreeId
-    ) {
-      return status.managerContext.worktreePath;
-    }
+    const observed = yield* resolveAndRecordCodeGraphLocalAssociation(
+      threadnoteHome,
+      status.managerContext.worktreePath,
+      {
+        validateIdentity: identity =>
+          repositoryIdentityMatchesExpectation(identity, expectedIdentity)
+            ? Effect.void
+            : Effect.fail(new Error('Manager graph context no longer matches the selected graph identity.')),
+      },
+    ).pipe(Effect.option);
+    if (Option.isSome(observed)) return observed.value.identity.repoRoot;
   }
   return yield* Effect.fail(
     new Error('The selected graph has no current local worktree target. Supply cwd and refresh graph diagnostics.'),
@@ -1579,6 +1684,30 @@ function requireGraphIdentity(value: unknown, name: string): string {
   if (!/^[0-9a-f]{64}$/.test(identity)) throw new Error(`Provide ${name} as a 64-character graph identity.`);
   return identity;
 }
+
+function requireGraphSnapshotIdentity(value: unknown): string {
+  const identity = requireString(value, 'expectedSnapshotId');
+  if (!/^cgsn_[0-9a-f]{40}(?:-direct|-full-[0-9a-f]{16})?$/.test(identity)) {
+    throw new Error('Provide expectedSnapshotId as an exact code graph snapshot identity.');
+  }
+  return identity;
+}
+
+const managerGraphViewRemovalApprovalDigest = Effect.fn('manager.graphViewRemovalApprovalDigest')(function* (target: {
+  readonly checkoutId: string;
+  readonly snapshotId: string;
+  readonly worktreeId: string;
+}) {
+  return `sha256:${yield* sha256(
+    JSON.stringify({
+      action: 'remove-view',
+      checkoutId: target.checkoutId,
+      expectedSnapshotId: target.snapshotId,
+      version: 1,
+      worktreeId: target.worktreeId,
+    }),
+  )}`;
+});
 
 const memoryUriFor = Effect.fn('manager.memoryUriFor')(function* (
   config: RuntimeConfig,

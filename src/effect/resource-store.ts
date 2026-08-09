@@ -1,7 +1,7 @@
-import {Context, Crypto, Effect, FileSystem, Layer, Option, Path, Schema} from 'effect';
+import {Context, Crypto, Effect, FileSystem, Layer, Option, Path, Result, Schema} from 'effect';
 import {uriSegment} from '../manifest.js';
 import {globToRegExp} from '../utils.js';
-import {withExclusiveFileLock} from './file_lock.js';
+import {readExclusiveFileLockOwner, withExclusiveFileLock} from './file_lock.js';
 import {resourceAccountMutationLockPath} from './resource_lock.js';
 import {SystemInfo} from './system.js';
 import {
@@ -40,6 +40,9 @@ export interface ResourceStoreEntry {
   readonly type: 'directory' | 'file';
   readonly uri: string;
 }
+
+export type ResourceStoreBoundedRead =
+  {readonly content: string; readonly truncated: false} | {readonly truncated: true};
 
 export interface ResourceStoreWriteOptions {
   readonly expectedFingerprint?: string;
@@ -144,6 +147,11 @@ export interface ResourceStoreShape {
     mutations: readonly ResourceStoreMutation[],
   ) => Effect.Effect<void, ResourceStoreError>;
   readonly read: (location: ResourceStoreLocation, uri: string) => Effect.Effect<string, ResourceStoreError>;
+  readonly readBounded: (
+    location: ResourceStoreLocation,
+    uri: string,
+    maximumBytes: number,
+  ) => Effect.Effect<ResourceStoreBoundedRead, ResourceStoreError>;
   readonly remove: (
     location: ResourceStoreLocation,
     uri: string,
@@ -232,18 +240,29 @@ function createResourceStoreOperations(
         staleAfterMilliseconds: 30_000,
         waitTimeoutMilliseconds: 30_000,
       },
-      effect,
+      Effect.result(effect),
     );
     return provideLockServices(lockEffect).pipe(
-      Effect.mapError(error =>
-        isResourceStoreError(error)
-          ? error
-          : new ResourceIoFailed({
-              cause: error,
-              message: `Resource lock failed for ${id.canonicalUri}.`,
-              operation: 'lock',
-              uri: id.canonicalUri,
-            }),
+      Effect.catch(error =>
+        readExclusiveFileLockOwner(fs, lockPath).pipe(
+          Effect.flatMap(owner => {
+            const processId = Option.getOrUndefined(owner)?.processId;
+            return Effect.fail(
+              new ResourceIoFailed({
+                cause: error,
+                message: resourceMutationLockFailureMessage(id.canonicalUri, processId),
+                operation: 'lock',
+                uri: id.canonicalUri,
+              }),
+            );
+          }),
+        ),
+      ),
+      Effect.flatMap(
+        Result.match({
+          onFailure: error => Effect.fail(error),
+          onSuccess: value => Effect.succeed(value),
+        }),
       ),
     ) as Effect.Effect<A, E | ResourceIoFailed, Exclude<R, Crypto.Crypto | Path.Path | SystemInfo>>;
   };
@@ -382,6 +401,11 @@ function createResourceStoreOperations(
         yield* verifyExistingPath(fs, path, resolved, 'File');
         return yield* fs.readFileString(resolved.path);
       }).pipe(mapIoError('read', uri)),
+    readBounded: (location, uri, maximumBytes) =>
+      Effect.gen(function* () {
+        const resolved = yield* resolve(location, uri);
+        return yield* readResourceBounded(fs, path, resolved, maximumBytes);
+      }).pipe(mapIoError('read', uri)),
     remove: (location, uri, options) => removeResource(location, uri, options),
     stat: (location, uri) =>
       Effect.gen(function* () {
@@ -391,6 +415,11 @@ function createResourceStoreOperations(
       }).pipe(mapIoError('stat', uri)),
     write: (location, uri, content, options) => writeResource(location, uri, content, options),
   };
+}
+
+export function resourceMutationLockFailureMessage(uri: string, processId?: number): string {
+  const ownerMessage = processId === undefined ? '' : ` Local process ${processId} currently owns the lock.`;
+  return `Resource lock failed for ${uri}.${ownerMessage} Retry after the active operation completes; use threadnote processes and threadnote doctor --dry-run for recovery guidance.`;
 }
 
 interface ResolvedResourcePath {
@@ -538,6 +567,102 @@ function verifyPathAtExpectedLocation(
     }
     return info;
   });
+}
+
+function readResourceBounded(
+  fs: FileSystem.FileSystem,
+  path: Path.Path,
+  resolved: ResolvedResourcePath,
+  maximumBytes: number,
+) {
+  return Effect.gen(function* () {
+    if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 0 || maximumBytes >= Number.MAX_SAFE_INTEGER) {
+      return yield* new ResourceIoFailed({
+        cause: new Error('invalid bounded resource read size'),
+        message: 'Resource read bound is invalid.',
+        operation: 'read',
+        uri: resolved.id.canonicalUri,
+      });
+    }
+    const pathInfoBefore = yield* verifyExistingPath(fs, path, resolved, 'File');
+    return yield* Effect.scoped(
+      Effect.gen(function* () {
+        const file = yield* fs.open(resolved.path, {flag: 'r'});
+        const openedInfoBefore = yield* file.stat;
+        const pathInfoOpened = yield* verifyExistingPath(fs, path, resolved, 'File');
+        if (!sameOpenedResourceFile(pathInfoBefore, pathInfoOpened, openedInfoBefore)) {
+          return yield* unsafe(resolved, 'Resource changed while opening it for a bounded read.');
+        }
+        if (openedInfoBefore.size > BigInt(maximumBytes)) {
+          return {truncated: true} as const;
+        }
+        const bytes = new Uint8Array(maximumBytes + 1);
+        let offset = 0;
+        while (offset < bytes.length) {
+          const count = Number(yield* file.read(bytes.subarray(offset)));
+          if (count <= 0) break;
+          offset += count;
+        }
+        if (offset < Number(openedInfoBefore.size)) {
+          return yield* unsafe(resolved, 'Resource ended before its bounded read completed.');
+        }
+        const openedInfoAfter = yield* file.stat;
+        const pathInfoAfter = yield* verifyExistingPath(fs, path, resolved, 'File');
+        if (
+          !sameOpenedResourceFile(pathInfoBefore, pathInfoAfter, openedInfoAfter) ||
+          !sameOpenedResourceState(openedInfoBefore, openedInfoAfter)
+        ) {
+          return yield* unsafe(resolved, 'Resource changed during a bounded read.');
+        }
+        if (offset > maximumBytes) return {truncated: true} as const;
+        const content = yield* Effect.try({
+          try: () => new TextDecoder('utf-8', {fatal: true, ignoreBOM: true}).decode(bytes.subarray(0, offset)),
+          catch: cause =>
+            new ResourceIoFailed({
+              cause,
+              message: 'Resource content is not valid UTF-8.',
+              operation: 'read',
+              uri: resolved.id.canonicalUri,
+            }),
+        });
+        return {content, truncated: false} as const;
+      }),
+    );
+  });
+}
+
+function sameOpenedResourceFile(
+  before: FileSystem.File.Info,
+  current: FileSystem.File.Info,
+  opened: FileSystem.File.Info,
+): boolean {
+  const beforeInode = Option.getOrUndefined(before.ino);
+  const currentInode = Option.getOrUndefined(current.ino);
+  const openedInode = Option.getOrUndefined(opened.ino);
+  // Threadnote's Bun FileSystem is backed by Node Stats, whose `ino` field is
+  // mandatory on every supported platform (including Windows), and Effect
+  // therefore wraps it in Some. Fail closed for custom FileSystem providers
+  // that omit inode identity instead of weakening the open/stat interlock.
+  return (
+    before.type === 'File' &&
+    current.type === 'File' &&
+    opened.type === 'File' &&
+    before.dev === current.dev &&
+    current.dev === opened.dev &&
+    beforeInode !== undefined &&
+    currentInode !== undefined &&
+    openedInode !== undefined &&
+    beforeInode === currentInode &&
+    currentInode === openedInode
+  );
+}
+
+function sameOpenedResourceState(before: FileSystem.File.Info, after: FileSystem.File.Info): boolean {
+  const beforeMtime = Option.getOrUndefined(before.mtime)?.getTime();
+  const afterMtime = Option.getOrUndefined(after.mtime)?.getTime();
+  return (
+    before.size === after.size && beforeMtime !== undefined && afterMtime !== undefined && beforeMtime === afterMtime
+  );
 }
 
 function assertCaseCompatible(fs: FileSystem.FileSystem, parent: string, desired: string, id: ResourceId) {

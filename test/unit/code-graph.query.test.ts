@@ -1,12 +1,24 @@
+import {execFileSync} from 'node:child_process';
+import {mkdirSync, mkdtempSync, rmSync, writeFileSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import * as BunServices from '@effect/platform-bun/BunServices';
 import {expect, it} from '@effect/vitest';
-import {Effect, Fiber} from 'effect';
+import {Effect, Fiber, Layer, Ref} from 'effect';
 import {TestClock} from 'effect/testing';
 import {describe} from 'vitest';
 import type {CodeGraphEmbeddingIndexShape} from '../../src/code_graph/embedding.js';
+import {CodeGraphEmbeddingIndex} from '../../src/code_graph/embedding.js';
+import {CommandExecutor} from '../../src/effect/command.js';
+import {SystemInfo} from '../../src/effect/system.js';
+import {CodeGraphIndexer} from '../../src/code_graph/indexer.js';
+import {CodeGraphLanguagePackRegistry} from '../../src/code_graph/languages/registry.js';
 import type {CodeGraphLayout} from '../../src/code_graph/layout.js';
-import {exactNodeQuery, neighborQuery, traversalQuery} from '../../src/code_graph/query.js';
-import type {CodeGraphStoreShape} from '../../src/code_graph/store.js';
-import type {CodeGraphEdge, CodeGraphQueryNode} from '../../src/code_graph/types.js';
+import {CodeGraphMaintenanceCoordinator} from '../../src/code_graph/maintenance_coordinator.js';
+import {CodeGraphQueryService, exactNodeQuery, neighborQuery, traversalQuery} from '../../src/code_graph/query.js';
+import {resolveRepositoryIdentity} from '../../src/code_graph/repository.js';
+import {CodeGraphStore, type CodeGraphStoreShape} from '../../src/code_graph/store.js';
+import type {CodeGraphEdge, CodeGraphQueryNode, CodeGraphSnapshot} from '../../src/code_graph/types.js';
 
 const seed: CodeGraphQueryNode = {
   contentHash: 'seed-hash',
@@ -87,6 +99,125 @@ const embedding = {
 } as unknown as CodeGraphEmbeddingIndexShape;
 
 describe('code graph query budgets', () => {
+  it.effect('requests one path-free maintenance opportunity after each successful public graph surface', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fixtureRoot = yield* Effect.acquireRelease(
+          Effect.sync(() => {
+            const root = mkdtempSync(join(tmpdir(), 'threadnote-query-maintenance-'));
+            const repository = join(root, 'repository');
+            const home = join(root, 'home');
+            mkdirSync(repository, {recursive: true});
+            mkdirSync(home, {recursive: true});
+            execFileSync('git', ['init', '-q', repository]);
+            execFileSync('git', ['-C', repository, 'config', 'user.name', 'Threadnote Test']);
+            execFileSync('git', ['-C', repository, 'config', 'user.email', 'test@threadnote.local']);
+            writeFileSync(join(repository, 'source.ts'), 'export const value = 1;\n');
+            execFileSync('git', ['-C', repository, 'add', 'source.ts']);
+            execFileSync('git', ['-C', repository, 'commit', '-qm', 'fixture']);
+            return {home, repository, root};
+          }),
+          fixture => Effect.sync(() => rmSync(fixture.root, {force: true, recursive: true})),
+        );
+        const requests = yield* Ref.make<readonly {allowIndexPreparation?: true; databasePath: string}[]>([]);
+        const systemLayer = SystemInfo.layer;
+        const commandLayer = CommandExecutor.layer.pipe(
+          Layer.provideMerge(Layer.merge(BunServices.layer, systemLayer)),
+        );
+        const maintenanceLayer = Layer.succeed(
+          CodeGraphMaintenanceCoordinator,
+          CodeGraphMaintenanceCoordinator.of({
+            kickOrdinary: () => Effect.die(new Error('query trigger test must not kick ordinary maintenance')),
+            kickResidual: () => Effect.die(new Error('query trigger test must not kick residual maintenance')),
+            request: input =>
+              Ref.update(requests, current => [
+                ...current,
+                {allowIndexPreparation: input.allowIndexPreparation, databasePath: input.databasePath},
+              ]),
+            tick: () => Effect.die(new Error('query trigger test must not synchronously tick maintenance')),
+          }),
+        );
+        const snapshotRef = yield* Ref.make<CodeGraphSnapshot | undefined>(undefined);
+        const storeLayer = Layer.succeed(
+          CodeGraphStore,
+          CodeGraphStore.of({
+            acquireSnapshotLease: () => Effect.succeed('lease'),
+            readySnapshot: () => Ref.get(snapshotRef),
+            readySnapshotForCommit: () => Effect.succeed(undefined),
+            releaseSnapshotLease: () => Effect.void,
+            symbolsByIds: () => Effect.succeed([]),
+            withSession: (_databasePath: string, effect: Effect.Effect<unknown, unknown, unknown>) => effect,
+          } as unknown as CodeGraphStoreShape),
+        );
+        const dependencies = Layer.mergeAll(
+          BunServices.layer,
+          systemLayer,
+          commandLayer,
+          maintenanceLayer,
+          storeLayer,
+          CodeGraphLanguagePackRegistry.layer,
+          Layer.succeed(
+            CodeGraphIndexer,
+            CodeGraphIndexer.of({
+              ensureCommit: () => Effect.die(new Error('query trigger test must not ensure a commit')),
+              index: () => Effect.die(new Error('query trigger test must not index')),
+            }),
+          ),
+          Layer.succeed(
+            CodeGraphEmbeddingIndex,
+            CodeGraphEmbeddingIndex.of({
+              check: () => Effect.die(new Error('query trigger test must not check embeddings')),
+              ensure: () => Effect.die(new Error('query trigger test must not ensure embeddings')),
+              search: () => Effect.succeed(new Map()),
+            }),
+          ),
+        );
+        const layer = CodeGraphQueryService.layer.pipe(Layer.provideMerge(dependencies));
+
+        yield* Effect.gen(function* () {
+          const query = yield* CodeGraphQueryService;
+          const identity = yield* resolveRepositoryIdentity(fixtureRoot.repository);
+          const snapshot = {
+            commit: identity.headCommit,
+            completedAt: '2026-08-08T00:00:00.000Z',
+            dirty: false,
+            edgeCount: 0,
+            extractorSet: 'query-maintenance-test',
+            fileCount: 1,
+            id: `cgsn_${'1'.repeat(40)}`,
+            repositoryId: identity.repositoryId,
+            state: 'ready',
+            symbolCount: 0,
+            worktreeId: identity.worktreeId,
+          } satisfies CodeGraphSnapshot;
+          yield* Ref.set(snapshotRef, snapshot);
+
+          const assertOneRequest = Effect.fn(function* (run: Effect.Effect<unknown, unknown>) {
+            yield* Ref.set(requests, []);
+            yield* run;
+            const observed = yield* Ref.get(requests);
+            expect(observed).toHaveLength(1);
+            expect(observed[0]?.allowIndexPreparation).toBeUndefined();
+          });
+
+          yield* assertOneRequest(query.status(fixtureRoot.home, fixtureRoot.repository, {observeWorktree: false}));
+          const status = yield* query.statusForIdentity(fixtureRoot.home, identity, {observeWorktree: false});
+          expect(yield* Ref.get(requests)).toHaveLength(2);
+          yield* assertOneRequest(query.attachSharedReadySnapshot(fixtureRoot.home, identity, status));
+          yield* assertOneRequest(
+            query.inspect({
+              cwd: fixtureRoot.repository,
+              nodeId: `cgs_${'a'.repeat(32)}`,
+              operation: 'node',
+              refresh: false,
+              threadnoteHome: fixtureRoot.home,
+            }),
+          );
+        }).pipe(Effect.provide(layer));
+      }),
+    ),
+  );
+
   it.effect('round-trips an exact stable node ID without fuzzy search', () =>
     Effect.gen(function* () {
       const requestedIds: string[][] = [];

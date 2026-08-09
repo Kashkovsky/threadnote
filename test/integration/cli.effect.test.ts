@@ -41,10 +41,14 @@ describe('Effect CLI', () => {
     const query = await runCli(['graph', 'query', '--help']);
     const node = await runCli(['graph', 'node', '--help']);
     const neighbors = await runCli(['graph', 'neighbors', '--help']);
+    const explain = await runCli(['graph', 'explain', '--help']);
+    const path = await runCli(['graph', 'path', '--help']);
+    const impact = await runCli(['graph', 'impact', '--help']);
     const analyze = await runCli(['graph', 'analyze', '--help']);
     const diagnostics = await runCli(['graph', 'diagnostics', '--help']);
     const exportHelp = await runCli(['graph', 'export', '--help']);
     const purge = await runCli(['graph', 'purge', '--help']);
+    const removeView = await runCli(['graph', 'remove-view', '--help']);
     const repair = await runCli(['graph', 'repair', '--help']);
 
     expect(graph.stdout).toContain('status');
@@ -67,6 +71,9 @@ describe('Effect CLI', () => {
     expect(neighbors.stdout).toContain('--direction choice');
     expect(neighbors.stdout).toContain('choices: both, incoming, outgoing');
     expect(neighbors.stdout).toContain('--depth integer');
+    for (const command of [query, neighbors, explain, path, impact]) {
+      expect(command.stdout).toContain('--node-limit, --limit integer');
+    }
     expect(analyze.stdout).toContain('--view choice');
     expect(analyze.stdout).toContain(
       'choices: stats, communities, community, groups, hubs, surprises, confidence, full',
@@ -80,13 +87,129 @@ describe('Effect CLI', () => {
     expect(community.stdout).toContain('--member-limit integer');
     expect(exportHelp.stdout).toContain('--format choice');
     expect(exportHelp.stdout).toContain('choices: json, graphml, html, svg');
-    expect(exportHelp.stdout).toContain('--node-limit string');
+    expect(exportHelp.stdout).toContain('--node-limit, --limit string');
     expect(exportHelp.stdout).toContain('--edge-limit string');
     expect(purge.stdout).toContain('--obsolete');
+    expect(removeView.stdout).toContain('--checkout-id string');
+    expect(removeView.stdout).toContain('--worktree-id string');
+    expect(removeView.stdout).toContain('--snapshot-id string');
+    expect(removeView.stdout).toContain('--apply');
+    expect(removeView.stdout).toContain('--json');
     expect(repair.stdout).toContain('--all');
     expect(repair.stdout).toContain('--deep');
     expect(repair.stdout).toContain('--dry-run');
   });
+
+  it('previews and applies an exact selected graph view through path-free JSON', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'threadnote-effect-cli-remove-view-'));
+    const home = join(root, '.threadnote-test-home');
+    try {
+      await writeFile(join(root, 'package.json'), '{"name":"remove-view"}\n');
+      await writeFile(join(root, 'index.ts'), 'export function selectedView(): number { return 1; }\n');
+      await execFilePromise('git', ['-C', root, 'init', '-q']);
+      await execFilePromise('git', ['-C', root, 'add', '.']);
+      await execFilePromise('git', [
+        '-C',
+        root,
+        '-c',
+        'user.name=Threadnote Test',
+        '-c',
+        'user.email=test@threadnote.local',
+        'commit',
+        '-qm',
+        'fixture',
+      ]);
+      const indexed = JSON.parse(
+        (await runCli(['graph', 'index', '--home', home, '--cwd', root, '--no-vectors', '--json'])).stdout,
+      ) as {
+        readonly identity: {readonly checkoutId: string; readonly worktreeId: string};
+        readonly snapshot: {readonly id: string};
+      };
+      const target = [
+        '--home',
+        home,
+        '--checkout-id',
+        indexed.identity.checkoutId,
+        '--worktree-id',
+        indexed.identity.worktreeId,
+        '--snapshot-id',
+        indexed.snapshot.id,
+        '--json',
+      ];
+
+      const staleFailure = await runCli([
+        'graph',
+        'remove-view',
+        '--home',
+        home,
+        '--checkout-id',
+        indexed.identity.checkoutId,
+        '--worktree-id',
+        indexed.identity.worktreeId,
+        '--snapshot-id',
+        `cgsn_${'e'.repeat(40)}-direct`,
+        '--json',
+      ]).catch(cause => cause as NodeJS.ErrnoException & {readonly stderr?: string; readonly stdout?: string});
+      const notFoundFailure = await runCli([
+        'graph',
+        'remove-view',
+        '--home',
+        home,
+        '--checkout-id',
+        indexed.identity.checkoutId,
+        '--worktree-id',
+        'f'.repeat(64),
+        '--snapshot-id',
+        indexed.snapshot.id,
+        '--json',
+      ]).catch(cause => cause as NodeJS.ErrnoException & {readonly stderr?: string; readonly stdout?: string});
+      expect(staleFailure).toMatchObject({code: 1});
+      expect(notFoundFailure).toMatchObject({code: 1});
+      const stale = JSON.parse(String(staleFailure.stdout)) as {readonly applied: boolean; readonly state: string};
+      const notFound = JSON.parse(String(notFoundFailure.stdout)) as {
+        readonly applied: boolean;
+        readonly state: string;
+      };
+      expect(stale).toMatchObject({applied: false, state: 'stale-target'});
+      expect(notFound).toMatchObject({applied: false, state: 'not-found'});
+      for (const failure of [staleFailure, notFoundFailure]) {
+        expect(String(failure.stdout)).not.toContain(root);
+        expect(String(failure.stdout)).not.toContain(home);
+        expect(String(failure.stdout)).not.toContain('databasePath');
+        expect(String(failure.stderr)).not.toContain(root);
+      }
+
+      const preview = JSON.parse((await runCli(['graph', 'remove-view', ...target])).stdout) as {
+        readonly applied: boolean;
+        readonly state: string;
+      };
+      const applied = JSON.parse((await runCli(['graph', 'remove-view', ...target, '--apply'])).stdout) as {
+        readonly applied: boolean;
+        readonly state: string;
+        readonly type: string;
+        readonly version: number;
+      };
+      const retry = JSON.parse((await runCli(['graph', 'remove-view', ...target, '--apply'])).stdout) as {
+        readonly state: string;
+      };
+
+      expect(preview).toMatchObject({applied: false, state: 'ready'});
+      expect(applied).toMatchObject({
+        applied: true,
+        state: 'removed',
+        type: 'code-graph-view-removal',
+        version: 1,
+      });
+      expect(retry.state).toBe('already-removed');
+      expect(JSON.stringify(applied)).not.toContain(root);
+      expect(JSON.stringify(applied)).not.toContain('databasePath');
+      await expect(
+        runCli(['graph', 'remove-view', '--checkout-id', indexed.identity.checkoutId]),
+      ).rejects.toMatchObject({code: 1});
+    } finally {
+      await rm(root, {force: true, recursive: true});
+    }
+  }, 30_000);
 
   it('keeps graph index JSON parseable while streaming structured progress to stderr', async () => {
     const root = await mkdtemp(join(tmpdir(), 'threadnote-effect-cli-graph-json-progress-'));
@@ -169,7 +292,7 @@ describe('Effect CLI', () => {
         root,
         '--query',
         'indexedBeforePull',
-        '--node-limit',
+        '--limit',
         '1',
         '--depth',
         '0',
@@ -506,6 +629,45 @@ describe('Effect CLI', () => {
     expect(result.stdout).toContain('current repo latest handoff');
     expect(result.stdout).toContain('threadnote');
     expect(result.stdout).toContain('threadnote://user/');
+  });
+
+  it('accepts compatibility aliases for memory command options', async () => {
+    const durableUri = 'threadnote://user/compat/memories/durable/projects/threadnote/previous.md';
+    const handoffUri = 'threadnote://user/compat/memories/handoffs/active/threadnote/previous.md';
+    const [recallResult, rememberResult, handoffResult, listResult] = await Promise.all([
+      runCli(['recall', '--dry-run', '--cwd', process.cwd(), '--limit', '1', '--query', 'compatibility aliases']),
+      runCli([
+        'remember',
+        '--dry-run',
+        '--text',
+        'compatibility aliases',
+        '--project',
+        'threadnote',
+        '--topic',
+        'compatibility-aliases',
+        `--replace-uri=${durableUri}`,
+      ]),
+      runCli([
+        'handoff',
+        '--dry-run',
+        '--task',
+        'compatibility aliases',
+        '--project',
+        'threadnote',
+        '--topic',
+        'compatibility-aliases',
+        `--replace-uri=${handoffUri}`,
+      ]),
+      runCli(['list', '--dry-run', '--limit', '1', 'threadnote://user/compat/memories']),
+    ]);
+
+    expect(recallResult.stdout).toContain('Would search native recall index for "compatibility aliases"');
+    expect(recallResult.stdout).toContain('/memories/durable/projects/threadnote');
+    expect(rememberResult.stdout).toContain(`supersedes: ${durableUri}`);
+    expect(rememberResult.stdout).toContain(`Would remove superseded native resource: ${durableUri}`);
+    expect(handoffResult.stdout).toContain(`supersedes: ${handoffUri}`);
+    expect(handoffResult.stdout).toContain(`Would remove superseded native resource: ${handoffUri}`);
+    expect(listResult.stdout).toContain('Would list native resource: threadnote://user/compat/memories');
   });
 
   it('rejects retired daemon port flags', async () => {

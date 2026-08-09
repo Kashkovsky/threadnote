@@ -6,8 +6,24 @@ import {
   codeGraphMaintenanceIntentPath,
   codeGraphMaintenanceLockPath,
   codeGraphRepositoryLockPath,
+  codeGraphWorktreeLockPath,
   codeGraphWorktreeLockRoot,
 } from './layout.js';
+import {classifyCodeGraphStoreFailure} from './store_failure.js';
+import {CodeGraphStoreBusyError, CodeGraphStoreError} from './types.js';
+
+export class CodeGraphMaintenanceActiveError extends CodeGraphStoreError {
+  override readonly name = 'CodeGraphMaintenanceActiveError';
+
+  constructor() {
+    super('Code graph maintenance is active.', {
+      code: 'busy',
+      operation: 'coordinate code graph maintenance',
+      recovery: 'defer',
+      retryable: true,
+    });
+  }
+}
 
 interface MaintenanceIntentOwner {
   readonly processId: number;
@@ -158,6 +174,34 @@ export const withCodeGraphDatabaseWriteLock = Effect.fn('codeGraph.withDatabaseW
     codeGraphDatabaseWriteLockPath(path, threadnoteHome, checkoutId),
     {...CODE_GRAPH_GATE_LOCK_OPTIONS, waitTimeoutMilliseconds},
     effect,
+  );
+});
+
+/**
+ * Opportunistic view mutations must not wait behind a foreground builder. The
+ * caller keeps this target-worktree gate across the graph-pointer CAS and any
+ * compare-keyed vector cleanup so an in-flight build cannot immediately
+ * republish the removed view between those stores.
+ */
+export const withCodeGraphTargetWorktreeLock = Effect.fn('codeGraph.withTargetWorktreeLock')(function* <A, E, R>(
+  threadnoteHome: string,
+  checkoutId: string,
+  worktreeId: string,
+  effect: Effect.Effect<A, E, R>,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  return yield* withExclusiveFileLock(
+    fs,
+    codeGraphWorktreeLockPath(path, threadnoteHome, checkoutId, worktreeId),
+    {...CODE_GRAPH_GATE_LOCK_OPTIONS, retryIntervalMilliseconds: 1, waitTimeoutMilliseconds: 0},
+    effect,
+  ).pipe(
+    Effect.catch(cause =>
+      isFileLockTimeout(cause)
+        ? Effect.fail(new CodeGraphStoreBusyError('Code graph worktree is busy.', {operation: 'mutate graph view'}))
+        : Effect.fail(classifyCodeGraphStoreFailure('mutate graph view', cause)),
+    ),
   );
 });
 

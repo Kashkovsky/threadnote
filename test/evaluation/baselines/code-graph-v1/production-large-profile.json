@@ -1,22 +1,70 @@
 {
   "fixture": {
-    "declarationSymbols": 752000,
-    "sourceFiles": 47880,
-    "workspaceCount": 24
+    "activeWorkspaceExcludedPackageCount": 24,
+    "activeWorkspaceExcludedSourceFiles": 3000,
+    "classMix": {
+      "duplicateHeavyJsonFiles": 64,
+      "generatedSvgFiles": 13000,
+      "nxProjectFiles": 105,
+      "packageManifestFiles": 996,
+      "supportMarkdownFiles": 13263,
+      "tsconfigFiles": 571,
+      "tsxSourceFiles": 15000,
+      "typescriptSourceFiles": 30000,
+      "workspaceManifestFiles": 1
+    },
+    "declarationSymbols": 2128000,
+    "duplicateBlobs": {
+      "generatedSvgVariants": 64,
+      "heavyJsonPayloadBytes": 1048576,
+      "heavyJsonVariants": 8
+    },
+    "highSignalConfigHardCapBytes": 1048576,
+    "lowSignalJsonExclusionThresholdBytes": 262144,
+    "maxCallsPerDeclaration": 1,
+    "sourceFiles": 45000,
+    "surrogate": "threadnote-4.0.10-public-monorepo",
+    "workspaceCount": 995,
+    "worktreeChurnScenarios": [
+      "concurrent-linked-worktree-builds",
+      "catalog-read-during-active-writer",
+      "dirty-overlay-worktree-isolation",
+      "linked-head-moves-during-build",
+      "interrupted-linked-build-resume",
+      "removed-worktree-reclaim"
+    ]
+  },
+  "targetEligibility": {
+    "excluded": {
+      "files": 13064,
+      "generatedSvg": {
+        "bytes": 1172030,
+        "files": 13000
+      },
+      "heavyJson": {
+        "bytes": 67108864,
+        "files": 64
+      },
+      "totalBytes": 68280894
+    },
+    "highSignalConfigHardCapBytes": 1048576,
+    "lowSignalJsonExclusionThresholdBytes": 262144
   },
   "notes": [
-    "Scheduled and manually dispatched strict runs plus Threadnote 4's separate bounded exact-tag observation use this profile; ordinary pull requests do not materialize it.",
-    "Targets come from the beta.27 large-monorepo investigation and are shape checks, not portable latency budgets.",
+    "Scheduled and manually dispatched strict runs use this current Threadnote 4.0.10 public monorepo surrogate; ordinary pull requests do not materialize it.",
+    "The class mix and aggregate graph targets are retained shape evidence, not portable latency budgets or measured latency claims.",
     "A checked performance artifact must come from a measured run; no synthetic latency baseline is accepted.",
-    "Every covered v4.0.0 beta, RC, and final tag starts one non-blocking exact-commit observation retained for 90 days; ordinary pull requests do not run this profile.",
-    "This profile retains materialization duration, CPU, RSS, and aggregate row counts; the separate heavy-tail fixture is parser/cache coverage, not materialization evidence."
+    "pnpm workspace exclusion models package-manager membership only; workspace exclusion never removes active source from graph eligibility.",
+    "The H1 target eligibility policy will exclude all SVG and low-signal JSON at or above 256 KiB before graph processing; recognized high-signal configs will have a separate 1 MiB hard cap.",
+    "Six linked-worktree churn scenarios are declared for retained evidence without synthesizing scenario latency measurements."
   ],
   "profile": "production-large",
   "targets": {
-    "eligibleFiles": 48000,
-    "graphEdges": 2700000,
-    "graphSymbols": 800000,
-    "lexicalTermRows": 12000000
+    "eligibleFiles": 59936,
+    "graphEdges": 4340000,
+    "graphSymbols": 2200000,
+    "lexicalTermRows": 32250000,
+    "repositoryFiles": 73000
   },
-  "version": 1
+  "version": 2
 }

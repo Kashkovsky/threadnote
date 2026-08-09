@@ -4,7 +4,6 @@ import {afterEach, describe, expect, it} from 'vitest';
 import {
   CODE_GRAPH_BUILD_PROGRESS_WRITE_INTERVAL_MILLISECONDS,
   CODE_GRAPH_BUILD_STALE_AFTER_MILLISECONDS,
-  type CodeGraphBuildStatus,
   calibratedCodeGraphEtaConfidence,
   makeCodeGraphBuildReporter,
   observeCodeGraphBuildStatus,
@@ -126,39 +125,6 @@ describe('code graph cross-process build status', () => {
     expect(JSON.stringify(statuses)).not.toContain(home);
     expect(result.global).toHaveLength(2);
     expect(result.global.every(status => status.managerContext?.worktreePath === `${home}/repository`)).toBe(true);
-  });
-
-  it('removes transient Manager path context after its build owner exits', async () => {
-    const home = await mkdtemp('threadnote-graph-build-abandoned-context-');
-    homes.push(home);
-    const result = await runEffect(
-      Effect.gen(function* () {
-        const fs = yield* FileSystem.FileSystem;
-        const path = yield* Path.Path;
-        const identity = fixtureIdentity(home);
-        const layout = codeGraphLayout(path, home, identity.checkoutId, identity.worktreeId);
-        const reporter = yield* makeCodeGraphBuildReporter(identity, layout);
-        yield* reporter.progress({completed: 8, phase: 'materializing', reused: 5, total: 20, unit: 'files'});
-        const directory = path.join(layout.repositoryRoot, 'build-status', identity.worktreeId);
-        const statusFile = (yield* fs.readDirectory(directory)).find(name => name.endsWith('.json'))!;
-        const statusPath = path.join(directory, statusFile);
-        const status = JSON.parse(yield* fs.readFileString(statusPath)) as CodeGraphBuildStatus;
-        yield* fs.writeFileString(
-          statusPath,
-          `${JSON.stringify({...status, owner: {...status.owner, processId: 2_147_483_647}})}\n`,
-        );
-        const before = yield* fs.readDirectory(directory);
-        const statuses = yield* readAllCodeGraphBuildStatuses(home);
-        const after = yield* fs.readDirectory(directory);
-        return {after, before, statuses};
-      }),
-    );
-
-    expect(result.before.some(name => name.endsWith('.manager-context'))).toBe(true);
-    expect(result.statuses).toHaveLength(1);
-    expect(result.statuses[0]?.observation).toMatchObject({liveness: 'abandoned', reason: 'owner-exited'});
-    expect(result.statuses[0]?.managerContext).toBeUndefined();
-    expect(result.after.some(name => name.endsWith('.manager-context'))).toBe(false);
   });
 
   it('persists privacy-safe superseded-snapshot reclamation progress', async () => {

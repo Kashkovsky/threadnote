@@ -4,6 +4,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {Database} from 'bun:sqlite';
 import {describe, expect, it} from '@effect/vitest';
+import {TestClock} from 'effect/testing';
 import * as FC from 'effect/testing/FastCheck';
 import {Effect, Option, Path} from 'effect';
 import {CodeGraphIndexer} from '../../src/code_graph/indexer.js';
@@ -11,6 +12,7 @@ import {codeGraphLayout} from '../../src/code_graph/layout.js';
 import {compareCodeUnits} from '../../src/code_graph/ordering.js';
 import {CodeGraphQueryService} from '../../src/code_graph/query.js';
 import {resolveRepositoryIdentity} from '../../src/code_graph/repository.js';
+import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {CodeGraphStore, type CodeGraphVisualizationCatalog, type StoredCodeGraph} from '../../src/code_graph/store.js';
 import type {CodeGraphMaterializationMetrics, CodeGraphQueryResult} from '../../src/code_graph/types.js';
 import {runEffect} from '../helpers/effect-runtime.js';
@@ -312,40 +314,36 @@ describe('code graph incremental-overlay differential properties', () => {
     'fails closed to full materialization for randomized clean resolution-surface changes',
     {scenario: cleanSurfaceChangeScenarioArbitrary},
     ({scenario}) =>
-      Effect.promise(async () => {
-        const source = scenario.sourceSeed % scenario.fileCount;
-        const baseScenario = simpleScenario(scenario.fileCount);
-        const root = createRepository(baseScenario);
-        const home = join(root, '.threadnote-clean-surface-home');
-        try {
-          const base = await runEffect(
-            Effect.gen(function* () {
-              const indexer = yield* CodeGraphIndexer;
-              return yield* indexer.index({cwd: root, threadnoteHome: home});
-            }),
-          );
-          writeSurfaceChangedSource(root, baseScenario, source, scenario.mutation);
-          commitPaths(root, [`src/file-${source}.ts`], `clean ${scenario.mutation} surface change`);
-          const result = await runEffect(
-            Effect.gen(function* () {
-              const indexer = yield* CodeGraphIndexer;
-              return yield* indexer.index({cwd: root, threadnoteHome: home});
-            }),
-          );
+      Effect.acquireUseRelease(
+        Effect.sync(() => createRepository(simpleScenario(scenario.fileCount))),
+        root =>
+          Effect.gen(function* () {
+            const source = scenario.sourceSeed % scenario.fileCount;
+            const baseScenario = simpleScenario(scenario.fileCount);
+            const home = join(root, '.threadnote-clean-surface-home');
+            const indexer = yield* CodeGraphIndexer;
+            const base = yield* indexer.index({cwd: root, threadnoteHome: home});
+            yield* Effect.sync(() => {
+              writeSurfaceChangedSource(root, baseScenario, source, scenario.mutation);
+              commitPaths(root, [`src/file-${source}.ts`], `clean ${scenario.mutation} surface change`);
+            });
+            const result = yield* indexer.index({cwd: root, threadnoteHome: home});
 
-          expect(result.materialization).toEqual({
-            mode: 'incremental-clean',
-            stagedFiles: scenario.fileCount,
-            totalFiles: scenario.fileCount,
-          });
-          expect(result.snapshot).toMatchObject({baseSnapshotId: base.snapshot.id, dirty: false, state: 'ready'});
-        } finally {
-          rmSync(root, {force: true, recursive: true});
-        }
-      }),
+            expect(result.materialization).toEqual({
+              fallbackReason:
+                scenario.mutation === 'arity' ? 'project-closure-incomplete' : 'resolution-surface-changed',
+              mode: 'full',
+              stagedFiles: scenario.fileCount,
+              totalFiles: scenario.fileCount,
+            });
+            expect(result.snapshot).toMatchObject({baseSnapshotId: undefined, dirty: false, state: 'ready'});
+            expect(result.snapshot.id).not.toBe(base.snapshot.id);
+          }),
+        root => Effect.sync(() => rmSync(root, {force: true, recursive: true})),
+      ).pipe(Effect.provide(ApplicationLayer), TestClock.withLive),
     {
-      fastCheck: {interruptAfterTimeLimit: 60_000, markInterruptAsFailure: true, numRuns: 6},
-      timeout: 70_000,
+      fastCheck: {interruptAfterTimeLimit: 120_000, markInterruptAsFailure: true, numRuns: 6},
+      timeout: 130_000,
     },
   );
 

@@ -1,6 +1,6 @@
 import {Clock, Crypto, Effect, FileSystem, Option, Path, PlatformError} from 'effect';
 import {sha256Hex} from './digest.js';
-import {SystemInfo} from './system.js';
+import {SystemInfo, type SystemInfoShape} from './system.js';
 
 export interface ExclusiveFileLockOptions {
   readonly heartbeatIntervalMilliseconds?: number;
@@ -8,6 +8,15 @@ export interface ExclusiveFileLockOptions {
   readonly onCompleted?: (lockPath: string) => Effect.Effect<void, never>;
   readonly onContention?: (lockPath: string) => Effect.Effect<void, never>;
   readonly retryIntervalMilliseconds: number;
+  /** @internal Select the versioned, cross-observer process identity channel. */
+  readonly useCanonicalProcessStartIdentity?: boolean;
+  /**
+   * Recover a JSON lock immediately when its PID is running as a different
+   * process instance. This is intentionally opt-in for reconciliation paths
+   * that already proved the durable owner dead; ordinary locks retain their
+   * age gate.
+   */
+  readonly recoverReusedProcessIdImmediately?: boolean;
   readonly staleAfterMilliseconds: number;
   readonly waitTimeoutMilliseconds: number;
 }
@@ -64,10 +73,10 @@ export function withExclusiveFileLock<A, E, R>(
   return Effect.gen(function* () {
     const pathService = yield* Path.Path;
     yield* fs.makeDirectory(pathService.dirname(lockPath), {recursive: true});
-    const token = yield* fileLockToken();
+    const token = yield* fileLockToken(options.useCanonicalProcessStartIdentity === true);
     const startedAt = yield* Clock.currentTimeMillis;
     let contentionReported = false;
-    while (!(yield* tryAcquireFileLock(fs, lockPath, token, options.staleAfterMilliseconds))) {
+    while (!(yield* tryAcquireFileLock(fs, lockPath, token, options))) {
       if (!contentionReported) {
         yield* options.onContention?.(lockPath) ?? Effect.void;
         contentionReported = true;
@@ -95,10 +104,10 @@ function tryAcquireFileLock(
   fs: FileSystem.FileSystem,
   lockPath: string,
   token: string,
-  staleAfterMilliseconds: number,
+  options: ExclusiveFileLockOptions,
 ): Effect.Effect<boolean, unknown, Crypto.Crypto | SystemInfo> {
   return Effect.gen(function* () {
-    yield* recoverStaleFileLock(fs, lockPath, staleAfterMilliseconds);
+    yield* recoverStaleFileLock(fs, lockPath, options);
     if (!(yield* tryWriteLockToken(fs, lockPath, token))) {
       return false;
     }
@@ -113,20 +122,20 @@ function tryAcquireFileLock(
 function recoverStaleFileLock(
   fs: FileSystem.FileSystem,
   lockPath: string,
-  staleAfterMilliseconds: number,
+  options: ExclusiveFileLockOptions,
 ): Effect.Effect<void, unknown, Crypto.Crypto | SystemInfo> {
   return Effect.gen(function* () {
     const guardPath = recoveryGuardPath(lockPath);
-    const lockNeedsRecovery = yield* staleDeadLockToken(fs, lockPath, staleAfterMilliseconds);
+    const lockNeedsRecovery = yield* staleDeadLockToken(fs, lockPath, options);
     if (lockNeedsRecovery === undefined && !(yield* fs.exists(guardPath))) {
       return;
     }
-    const guardToken = yield* acquireRecoveryGuard(fs, lockPath, guardPath, staleAfterMilliseconds);
+    const guardToken = yield* acquireRecoveryGuard(fs, lockPath, guardPath, options);
     if (guardToken === undefined) {
       return;
     }
     yield* Effect.gen(function* () {
-      const observedToken = yield* staleDeadLockToken(fs, lockPath, staleAfterMilliseconds);
+      const observedToken = yield* staleDeadLockToken(fs, lockPath, options);
       if (observedToken !== undefined) {
         yield* releaseFileLock(fs, lockPath, observedToken);
       }
@@ -138,25 +147,25 @@ function acquireRecoveryGuard(
   fs: FileSystem.FileSystem,
   lockPath: string,
   guardPath: string,
-  staleAfterMilliseconds: number,
+  options: Pick<ExclusiveFileLockOptions, 'staleAfterMilliseconds' | 'useCanonicalProcessStartIdentity'>,
 ): Effect.Effect<string | undefined, unknown, Crypto.Crypto | SystemInfo> {
   return Effect.gen(function* () {
-    const token = yield* fileLockToken();
+    const token = yield* fileLockToken(options.useCanonicalProcessStartIdentity === true);
     if (yield* tryWriteLockToken(fs, guardPath, token)) {
       return token;
     }
-    const staleGuardToken = yield* staleDeadLockToken(fs, guardPath, staleAfterMilliseconds);
+    const staleGuardToken = yield* staleDeadLockToken(fs, guardPath, options);
     if (staleGuardToken === undefined) {
       return undefined;
     }
     const nestedDigest = yield* sha256Hex(`${guardPath}\n${staleGuardToken}`);
     const nestedGuardPath = `${lockPath}.recovery-${nestedDigest}`;
-    const nestedToken = yield* acquireRecoveryGuard(fs, lockPath, nestedGuardPath, staleAfterMilliseconds);
+    const nestedToken = yield* acquireRecoveryGuard(fs, lockPath, nestedGuardPath, options);
     if (nestedToken === undefined) {
       return undefined;
     }
     yield* Effect.gen(function* () {
-      const currentStaleToken = yield* staleDeadLockToken(fs, guardPath, staleAfterMilliseconds);
+      const currentStaleToken = yield* staleDeadLockToken(fs, guardPath, options);
       if (currentStaleToken === staleGuardToken) {
         yield* releaseFileLock(fs, guardPath, staleGuardToken);
       }
@@ -168,7 +177,10 @@ function acquireRecoveryGuard(
 function staleDeadLockToken(
   fs: FileSystem.FileSystem,
   path: string,
-  staleAfterMilliseconds: number,
+  options: Pick<
+    ExclusiveFileLockOptions,
+    'recoverReusedProcessIdImmediately' | 'staleAfterMilliseconds' | 'useCanonicalProcessStartIdentity'
+  >,
 ): Effect.Effect<string | undefined, unknown, SystemInfo> {
   return Effect.gen(function* () {
     const system = yield* SystemInfo;
@@ -181,13 +193,27 @@ function staleDeadLockToken(
     if (owner && !system.isProcessRunning(owner.processId)) {
       return token;
     }
+    if (owner?.processStartIdentity && options.recoverReusedProcessIdImmediately) {
+      const currentStartIdentity = yield* selectedProcessStartIdentity(
+        system,
+        owner.processId,
+        options.useCanonicalProcessStartIdentity === true,
+      );
+      if (currentStartIdentity !== undefined && currentStartIdentity !== owner.processStartIdentity) {
+        return token;
+      }
+    }
     const modifiedAt = Option.getOrUndefined(info.mtime)?.getTime();
     const now = yield* Clock.currentTimeMillis;
-    if (modifiedAt === undefined || now - modifiedAt <= staleAfterMilliseconds) {
+    if (modifiedAt === undefined || now - modifiedAt <= options.staleAfterMilliseconds) {
       return undefined;
     }
     if (owner?.processStartIdentity) {
-      const currentStartIdentity = yield* system.processStartIdentity(owner.processId);
+      const currentStartIdentity = yield* selectedProcessStartIdentity(
+        system,
+        owner.processId,
+        options.useCanonicalProcessStartIdentity === true,
+      );
       if (currentStartIdentity !== undefined && currentStartIdentity !== owner.processStartIdentity) {
         return token;
       }
@@ -233,10 +259,14 @@ function refreshFileLockLease(
   }).pipe(Effect.catch(() => Effect.void));
 }
 
-const fileLockToken = Effect.fn('fileLock.token')(function* () {
+const fileLockToken = Effect.fn('fileLock.token')(function* (useCanonicalProcessStartIdentity: boolean) {
   const crypto = yield* Crypto.Crypto;
   const system = yield* SystemInfo;
-  const processStartIdentity = yield* system.processStartIdentity(system.processId);
+  const processStartIdentity = yield* selectedProcessStartIdentity(
+    system,
+    system.processId,
+    useCanonicalProcessStartIdentity,
+  );
   return JSON.stringify({
     processId: system.processId,
     ...(processStartIdentity ? {processStartIdentity} : {}),
@@ -244,6 +274,11 @@ const fileLockToken = Effect.fn('fileLock.token')(function* () {
     version: 1,
   } satisfies FileLockOwner);
 });
+
+function selectedProcessStartIdentity(system: SystemInfoShape, processId: number, canonical: boolean) {
+  if (!canonical) return system.processStartIdentity(processId);
+  return system.canonicalProcessStartIdentity?.(processId) ?? Effect.succeed(undefined);
+}
 
 function fileLockOwner(token: string): FileLockOwner | undefined {
   try {

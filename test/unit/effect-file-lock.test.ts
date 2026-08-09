@@ -1,4 +1,7 @@
-import {Effect, FileSystem} from 'effect';
+import * as BunServices from '@effect/platform-bun/BunServices';
+import {it as effectIt} from '@effect/vitest';
+import {Deferred, Effect, Fiber, FileSystem, Layer} from 'effect';
+import {TestClock} from 'effect/testing';
 import {afterEach, beforeEach, describe, expect, it} from 'vitest';
 import {FileLockTimeout, withExclusiveFileLock} from '../../src/effect/file_lock.js';
 import {SystemInfo} from '../../src/effect/system.js';
@@ -11,6 +14,7 @@ const TEST_LOCK_OPTIONS = {
   staleAfterMilliseconds: 20,
   waitTimeoutMilliseconds: 500,
 } as const;
+const FILE_LOCK_TEST_LAYER = SystemInfo.layer.pipe(Layer.provideMerge(BunServices.layer));
 
 describe('Effect file lock', () => {
   let directory: string;
@@ -25,37 +29,38 @@ describe('Effect file lock', () => {
     await rm(directory, {force: true, recursive: true});
   });
 
-  it('refreshes a live lease and keeps concurrent critical sections serialized', async () => {
-    const trace: string[] = [];
-    await run(
+  effectIt.effect('refreshes a live lease and keeps concurrent critical sections serialized', () =>
+    TestClock.withLive(
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
+        const acquired = yield* Deferred.make<void>();
+        const trace: string[] = [];
         const first = withExclusiveFileLock(
           fs,
           lockPath,
           TEST_LOCK_OPTIONS,
           Effect.gen(function* () {
             yield* Effect.sync(() => trace.push('first:start'));
+            yield* Deferred.succeed(acquired, undefined);
             yield* Effect.sleep(75);
             yield* Effect.sync(() => trace.push('first:end'));
           }),
         );
-        const second = Effect.sleep(30).pipe(
-          Effect.andThen(
-            withExclusiveFileLock(
-              fs,
-              lockPath,
-              TEST_LOCK_OPTIONS,
-              Effect.sync(() => trace.push('second:start', 'second:end')),
-            ),
-          ),
-        );
-        yield* Effect.all([first, second], {concurrency: 2});
-      }),
-    );
+        const firstFiber = yield* first.pipe(Effect.forkChild({startImmediately: true}));
+        yield* Deferred.await(acquired);
+        const secondFiber = yield* withExclusiveFileLock(
+          fs,
+          lockPath,
+          TEST_LOCK_OPTIONS,
+          Effect.sync(() => trace.push('second:start', 'second:end')),
+        ).pipe(Effect.forkChild({startImmediately: true}));
+        yield* Fiber.join(firstFiber);
+        yield* Fiber.join(secondFiber);
 
-    expect(trace).toEqual(['first:start', 'first:end', 'second:start', 'second:end']);
-  });
+        expect(trace).toEqual(['first:start', 'first:end', 'second:start', 'second:end']);
+      }).pipe(Effect.provide(FILE_LOCK_TEST_LAYER)),
+    ),
+  );
 
   it('reports lock contention with a typed timeout', async () => {
     await mkdir(join(lockPath, '..'), {recursive: true});
@@ -139,6 +144,203 @@ describe('Effect file lock', () => {
         }),
       ),
     ).resolves.toBe('acquired');
+  });
+
+  it('can recover a fresh PID-reused lock immediately only for an opted-in reconciler', async () => {
+    await mkdir(join(lockPath, '..'), {recursive: true});
+    await writeFile(
+      lockPath,
+      `${JSON.stringify({
+        processId: process.pid,
+        processStartIdentity: 'original-process',
+        token: 'orphaned-lock',
+        version: 1,
+      })}\n`,
+      {mode: 0o600},
+    );
+
+    await expect(
+      run(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const system = yield* SystemInfo;
+          return yield* withExclusiveFileLock(
+            fs,
+            lockPath,
+            {...TEST_LOCK_OPTIONS, recoverReusedProcessIdImmediately: true},
+            Effect.succeed('acquired'),
+          ).pipe(
+            Effect.provideService(
+              SystemInfo,
+              SystemInfo.of({
+                ...system,
+                isProcessRunning: () => true,
+                processStartIdentity: () => Effect.succeed('replacement-process'),
+              }),
+            ),
+          );
+        }),
+      ),
+    ).resolves.toBe('acquired');
+  });
+
+  effectIt.effect('preserves a fresh canonical lock when the immediate owner identity still matches', () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        yield* fs.makeDirectory(join(lockPath, '..'), {recursive: true});
+        yield* fs.writeFileString(
+          lockPath,
+          `${JSON.stringify({
+            processId: process.pid,
+            processStartIdentity: 'darwin-v2:canonical-owner',
+            token: 'live-canonical-lock',
+            version: 1,
+          })}\n`,
+          {mode: 0o600},
+        );
+        const system = yield* SystemInfo;
+        let canonicalLookups = 0;
+        let legacyLookups = 0;
+        const outcome = yield* withExclusiveFileLock(
+          fs,
+          lockPath,
+          {
+            ...TEST_LOCK_OPTIONS,
+            recoverReusedProcessIdImmediately: true,
+            useCanonicalProcessStartIdentity: true,
+            waitTimeoutMilliseconds: 10,
+          },
+          Effect.succeed('acquired'),
+        ).pipe(
+          Effect.provideService(
+            SystemInfo,
+            SystemInfo.of({
+              ...system,
+              canonicalProcessStartIdentity: () =>
+                Effect.sync(() => {
+                  canonicalLookups += 1;
+                  return 'darwin-v2:canonical-owner';
+                }),
+              isProcessRunning: () => true,
+              processStartIdentity: () =>
+                Effect.sync(() => {
+                  legacyLookups += 1;
+                  return 'darwin:different-owner';
+                }),
+            }),
+          ),
+          Effect.as('acquired' as const),
+          Effect.catch(error =>
+            error instanceof FileLockTimeout ? Effect.succeed('timed-out' as const) : Effect.fail(error),
+          ),
+        );
+
+        expect(outcome).toBe('timed-out');
+        expect(canonicalLookups).toBeGreaterThanOrEqual(2);
+        expect(legacyLookups).toBe(0);
+      }).pipe(Effect.provide(FILE_LOCK_TEST_LAYER)),
+    ),
+  );
+
+  effectIt.effect('recovers an aged canonical lock after a v2 mismatch and writes the canonical token', () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        yield* fs.makeDirectory(join(lockPath, '..'), {recursive: true});
+        yield* fs.writeFileString(
+          lockPath,
+          `${JSON.stringify({
+            processId: process.pid,
+            processStartIdentity: 'darwin:Sat Aug  8 23:04:27 2026',
+            token: 'orphaned-canonical-lock',
+            version: 1,
+          })}\n`,
+          {mode: 0o600},
+        );
+        const old = new Date(Date.now() - 60_000);
+        yield* fs.utimes(lockPath, old, old);
+        const system = yield* SystemInfo;
+        let canonicalLookups = 0;
+        let legacyLookups = 0;
+        const acquiredIdentity = yield* withExclusiveFileLock(
+          fs,
+          lockPath,
+          {...TEST_LOCK_OPTIONS, useCanonicalProcessStartIdentity: true},
+          fs
+            .readFileString(lockPath)
+            .pipe(
+              Effect.map(content =>
+                String((JSON.parse(content) as {readonly processStartIdentity?: unknown}).processStartIdentity),
+              ),
+            ),
+        ).pipe(
+          Effect.provideService(
+            SystemInfo,
+            SystemInfo.of({
+              ...system,
+              canonicalProcessStartIdentity: () =>
+                Effect.sync(() => {
+                  canonicalLookups += 1;
+                  return 'darwin-v2:Sat Aug  8 23:04:27 2026';
+                }),
+              isProcessRunning: () => true,
+              processStartIdentity: () =>
+                Effect.sync(() => {
+                  legacyLookups += 1;
+                  return 'darwin:Sat Aug  8 23:04:27 2026';
+                }),
+            }),
+          ),
+        );
+
+        expect(acquiredIdentity).toBe('darwin-v2:Sat Aug  8 23:04:27 2026');
+        expect(canonicalLookups).toBeGreaterThanOrEqual(3);
+        expect(legacyLookups).toBe(0);
+      }).pipe(Effect.provide(FILE_LOCK_TEST_LAYER)),
+    ),
+  );
+
+  it('refuses immediate PID-reuse recovery when the current process start is unknown', async () => {
+    await mkdir(join(lockPath, '..'), {recursive: true});
+    await writeFile(
+      lockPath,
+      `${JSON.stringify({
+        processId: process.pid,
+        processStartIdentity: 'original-process',
+        token: 'live-or-unknown-lock',
+        version: 1,
+      })}\n`,
+      {mode: 0o600},
+    );
+
+    await expect(
+      run(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const system = yield* SystemInfo;
+          return yield* withExclusiveFileLock(
+            fs,
+            lockPath,
+            {
+              ...TEST_LOCK_OPTIONS,
+              recoverReusedProcessIdImmediately: true,
+              waitTimeoutMilliseconds: 10,
+            },
+            Effect.void,
+          ).pipe(
+            Effect.provideService(
+              SystemInfo,
+              SystemInfo.of({
+                ...system,
+                isProcessRunning: () => true,
+                processStartIdentity: () => Effect.succeed(undefined),
+              }),
+            ),
+          );
+        }),
+      ),
+    ).rejects.toBeInstanceOf(FileLockTimeout);
   });
 
   it('does not inspect process identity while a live lock lease is fresh', async () => {

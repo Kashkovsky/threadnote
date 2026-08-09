@@ -13,8 +13,11 @@ import {
   externalSamplerMeasurements,
   materializationStorageMeasurements,
   parseCodeGraphBenchmarkArguments,
+  productionProfile,
+  productionProfileArtifactMetadata,
   resolvedReleaseEvidenceSource,
 } from '../../scripts/benchmark-code-graph.js';
+import {PRODUCTION_LARGE_CODE_GRAPH_PROFILE} from '../../scripts/code-graph-fixture.js';
 import {benchmarkMeasurement, type BenchmarkArtifactV1} from '../../src/evaluation/benchmark.js';
 import {
   retainedPerformanceArtifactFromHarness,
@@ -26,6 +29,37 @@ const POLYGLOT_BUDGETS = 'test/evaluation/baselines/code-graph-polyglot-v1/budge
 const BETA30_STAGING_EVIDENCE = 'test/evaluation/baselines/code-graph-v1/beta30-staging-development.json';
 
 describe('code graph release evidence', () => {
+  it('scales the v2 monorepo surrogate without losing exact class accounting', () => {
+    const profile = productionProfile(
+      parseCodeGraphBenchmarkArguments([
+        '--profile',
+        'production-large',
+        '--profile-files',
+        '12',
+        '--profile-symbols',
+        '99',
+      ]),
+    );
+
+    expect(profile).toMatchObject({
+      sourceFiles: 12,
+      surrogate: 'threadnote-4.0.10-public-monorepo',
+      targetGraphSymbols: 99,
+      version: 2,
+      worktreeChurnScenarioCount: 6,
+    });
+    expect(profile.classMix.typescriptSourceFiles + profile.classMix.tsxSourceFiles).toBe(12);
+    expect(Object.values(profile.classMix).reduce((total, count) => total + count, 0)).toBe(
+      profile.targetRepositoryFiles,
+    );
+    expect(profile.targetRepositoryFiles - profile.targetEligibleFiles).toBe(
+      profile.classMix.generatedSvgFiles + profile.classMix.duplicateHeavyJsonFiles,
+    );
+    expect(profile.lowSignalJsonExclusionThresholdBytes).toBe(262_144);
+    expect(profile.highSignalConfigHardCapBytes).toBe(1_048_576);
+    expect(profile.activeWorkspaceExcludedSourceFiles).toBeLessThan(profile.sourceFiles);
+  });
+
   it('keeps the sanitized direct-staging claims, timings, digests, and documentation consistent', () => {
     const evidence = readJson(BETA30_STAGING_EVIDENCE) as {
       readonly observations: readonly {
@@ -163,6 +197,28 @@ describe('code graph release evidence', () => {
     ).toThrow(/clean exact release source provenance/);
   });
 
+  it('accepts only exact Threadnote 4 release tags in completed evidence', () => {
+    const artifact = benchmarkArtifact(
+      requiredReleaseMeasurements(PRODUCTION_RELEASE_EVIDENCE_MEASUREMENTS),
+      {
+        coldMaterializationStorageMode: 'direct-persistent',
+        oneFileReindexMaterializationMode: 'incremental-overlay',
+        sameOverlayReferenceMaterializationMode: 'full',
+        sqliteVersion: '3.49.1',
+      },
+      'code-graph-production-large-v1',
+    );
+    const withRef = (releaseEvidenceRef: string): BenchmarkArtifactV1 => ({
+      ...artifact,
+      metadata: {...artifact.metadata, releaseEvidenceRef},
+    });
+
+    expect(() => assertProductionReleaseEvidence(withRef('refs/tags/v4.0.10'))).not.toThrow();
+    for (const ref of ['refs/tags/v4.0.10-beta', 'refs/tags/v3.0.10', 'refs/tags/v5.0.10', 'refs/heads/v4.0.10']) {
+      expect(() => assertProductionReleaseEvidence(withRef(ref))).toThrow(/clean exact release source provenance/);
+    }
+  });
+
   it('requires the declared release ref to resolve to the measured checkout commit', () => {
     const commit = '0123456789abcdef0123456789abcdef01234567';
     expect(resolvedReleaseEvidenceSource('refs/tags/v4.0.0-beta.30', commit, commit, commit, false)).toEqual({
@@ -247,6 +303,8 @@ describe('code graph release evidence', () => {
 
   it.each([
     'production-shape-file-target-attainment',
+    'production-shape-repository-file-target-attainment',
+    'production-shape-excluded-file-target-attainment',
     'production-shape-symbol-target-attainment',
     'production-shape-edge-target-attainment',
     'production-shape-lexical-term-target-attainment',
@@ -299,6 +357,26 @@ describe('code graph release evidence', () => {
     );
 
     expect(() => assertProductionReleaseEvidence(artifact)).toThrow(/reviewed default production-large profile/);
+
+    const reviewed = benchmarkArtifact(
+      requiredReleaseMeasurements(PRODUCTION_RELEASE_EVIDENCE_MEASUREMENTS),
+      {
+        coldMaterializationStorageMode: 'direct-persistent',
+        oneFileReindexMaterializationMode: 'incremental-overlay',
+        sameOverlayReferenceMaterializationMode: 'full',
+        sqliteVersion: '3.49.1',
+      },
+      'code-graph-production-large-v2',
+    );
+    expect(() =>
+      assertProductionReleaseEvidence({
+        ...reviewed,
+        metadata: {
+          ...reviewed.metadata,
+          profileClassGeneratedSvgFiles: PRODUCTION_LARGE_CODE_GRAPH_PROFILE.classMix.generatedSvgFiles - 1,
+        },
+      }),
+    ).toThrow(/reviewed default production-large profile/);
   });
 
   it('retains and requires split storage planning and relationship deduplication counters', () => {
@@ -1220,15 +1298,7 @@ function benchmarkArtifact(
       benchmarkValidatedManagedPayload: 'not-applicable-github-actions-clean-source',
       ...(suite.startsWith('code-graph-production-large-')
         ? {
-            profile: 'production-large',
-            profileDeclarationSymbols: 752_000,
-            profileSourceFiles: 47_880,
-            profileTargetEdges: 2_700_000,
-            profileTargetEligibleFiles: 48_000,
-            profileTargetLexicalTermRows: 12_000_000,
-            profileTargetSymbols: 800_000,
-            profileVersion: 1,
-            profileWorkspaces: 24,
+            ...productionProfileArtifactMetadata(PRODUCTION_LARGE_CODE_GRAPH_PROFILE),
             releaseEvidenceRef: 'refs/tags/v4.0.0-beta.30',
             releaseEvidenceResolvedSha: commit,
             releaseEvidenceSha: commit,

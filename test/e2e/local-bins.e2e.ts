@@ -16,6 +16,7 @@ const cli = join(root, 'dist', process.platform === 'win32' ? 'threadnote.exe' :
 const coreEmbeddingModelId = CORE_EMBEDDING_MODEL_ID;
 const coreEmbeddingManifest = BUILTIN_MODEL_MANIFESTS.find(candidate => candidate.id === coreEmbeddingModelId);
 const realModelTimeoutMs = 300_000;
+const cliOutputMaxBytes = 16 * 1024 * 1024;
 let home: string;
 let temporaryRoot: string;
 let userHome: string;
@@ -1211,6 +1212,7 @@ async function runCliOutput(
         USERPROFILE: userHome,
         ...environment,
       },
+      maxBuffer: cliOutputMaxBytes,
       timeout: realModelTimeoutMs,
     });
     return {stderr: result.stderr, stdout: result.stdout};

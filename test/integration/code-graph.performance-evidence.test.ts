@@ -1,5 +1,6 @@
 import {Effect, FileSystem} from 'effect';
 import fc from 'fast-check';
+import {it as effectIt} from '@effect/vitest';
 import {describe, expect, it} from 'vitest';
 import {
   assertPerformanceControlSet,
@@ -11,12 +12,14 @@ import {
   privacySafeExternalControlQuery,
   publicGitHubRepositoryEvidence,
   retainedExternalControlEvidence,
+  retryManagerBenchmarkBusy,
   type ExternalQueryControlResult,
   type ExternalRepositoryQueryControl,
 } from '../../scripts/benchmark-code-graph.js';
 import {prepareCodeGraphFixture} from '../../scripts/code-graph-fixture.js';
 import {CodeGraphIndexer} from '../../src/code_graph/indexer.js';
 import {CodeGraphQueryService} from '../../src/code_graph/query.js';
+import {ManagerGraphBusyError} from '../../src/code_graph/visualization.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 
 const PERFORMANCE_CONTROLS = [
@@ -27,6 +30,27 @@ const PERFORMANCE_CONTROLS = [
 ] as const satisfies readonly ExternalRepositoryQueryControl[];
 
 describe('external performance evidence', () => {
+  effectIt.effect('retries the Manager busy contract without weakening other failures', () =>
+    Effect.gen(function* () {
+      let attempts = 0;
+      const result = yield* retryManagerBenchmarkBusy(
+        () => {
+          attempts += 1;
+          return attempts < 3 ? Effect.fail(new ManagerGraphBusyError('busy')) : Effect.succeed('measured' as const);
+        },
+        2,
+        0,
+      );
+
+      expect(result).toBe('measured');
+      expect(attempts).toBe(3);
+
+      const terminal = new Error('terminal');
+      const observed = yield* retryManagerBenchmarkBusy(() => Effect.fail(terminal), 2, 0).pipe(Effect.flip);
+      expect(observed).toBe(terminal);
+    }),
+  );
+
   it('normalizes only public GitHub identities and privacy-safe controls', () => {
     expect(publicGitHubRepositoryEvidence('https://github.com/JetBrains/intellij-community.git')).toEqual({
       name: 'JetBrains/intellij-community',
@@ -222,4 +246,16 @@ describe('external performance evidence', () => {
       readySnapshotId: evidence.baselineSnapshotId,
     });
   }, 60_000);
+
+  it('treats an already-removed owned fixture root as a completed teardown', async () => {
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const fixture = yield* prepareCodeGraphFixture('code-graph-v1');
+          yield* fs.remove(fixture.root, {force: true, recursive: true});
+        }),
+      ).pipe(Effect.provide(ApplicationLayer)),
+    );
+  });
 });

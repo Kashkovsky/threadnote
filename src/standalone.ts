@@ -2,23 +2,42 @@ import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {Effect} from 'effect';
 import {withCliOutputConsole} from './effect/cli_output.js';
-import {CODE_GRAPH_PARSER_WORKER_ARGUMENT, LOCAL_MODEL_WORKER_ARGUMENT} from './worker_protocol.js';
+import {
+  CODE_GRAPH_GIT_WORKTREE_REGISTRATION_WORKER_ARGUMENT,
+  CODE_GRAPH_PARSER_WORKER_ARGUMENT,
+  LOCAL_MODEL_WORKER_ARGUMENT,
+} from './worker_protocol.js';
 
 const executableName = process.execPath.replaceAll('\\', '/').split('/').at(-1)?.toLowerCase();
 const arguments_ = process.argv.slice(2);
 const isLocalModelWorker = arguments_[0] === LOCAL_MODEL_WORKER_ARGUMENT;
 const isCodeGraphParserWorker = arguments_[0] === CODE_GRAPH_PARSER_WORKER_ARGUMENT;
+const isGitWorktreeRegistrationWorker = arguments_[0] === CODE_GRAPH_GIT_WORKTREE_REGISTRATION_WORKER_ARGUMENT;
 const isMcpServer = executableName?.startsWith('threadnote-mcp-server') === true || arguments_[0] === 'mcp-server';
 
 const program = isLocalModelWorker
   ? await localModelWorkerProgram(arguments_)
   : isCodeGraphParserWorker
     ? await codeGraphParserWorkerProgram(arguments_)
-    : await applicationProgram(arguments_, isMcpServer);
+    : isGitWorktreeRegistrationWorker
+      ? await gitWorktreeRegistrationWorkerProgram()
+      : await applicationProgram(arguments_, isMcpServer);
 
 BunRuntime.runMain(program, {
-  disableErrorReporting: isLocalModelWorker || isCodeGraphParserWorker || !isMcpServer,
+  disableErrorReporting:
+    isLocalModelWorker || isCodeGraphParserWorker || isGitWorktreeRegistrationWorker || !isMcpServer,
 });
+
+async function gitWorktreeRegistrationWorkerProgram() {
+  const [worker, system] = await Promise.all([
+    import('./code_graph/git_worktree_registration_worker.js'),
+    import('./effect/system.js'),
+  ]);
+  return worker.gitWorktreeRegistrationWorkerProgram.pipe(
+    Effect.provide(system.SystemInfo.layer),
+    Effect.provide(BunServices.layer),
+  );
+}
 
 async function localModelWorkerProgram(arguments_: readonly string[]) {
   const [model, systemModule, processDiagnostics, processLease] = await Promise.all([

@@ -50,7 +50,19 @@ import {
   trimTrailingSlash,
 } from './utils.js';
 import {getRuntimeConfig as getApplicationRuntimeConfig} from './runtime.js';
-import {EffectMcpServerAdapter, McpInput} from './effect/ai/mcp.js';
+import {
+  EffectMcpServerAdapter,
+  McpInput,
+  mcpProgressHeartbeatMilliseconds,
+  type McpProgressUpdate,
+  type McpToolProgress,
+  withMcpProgressHeartbeat,
+} from './effect/ai/mcp.js';
+import {
+  MCP_RESOURCE_MIME_TYPE,
+  MCP_RESOURCE_READ_MAX_BYTES,
+  readThreadnoteMcpResource,
+} from './effect/ai/mcp_resource.js';
 import {LocalModelRuntime} from './effect/ai/local-model-runtime.js';
 import {
   expandWeakRecallQueryEffect,
@@ -109,13 +121,13 @@ import {RECALL_RANKER_VERSION} from './recall/rank.js';
 import {canonicalResourceUri, parseResourceId, resourceIdWithoutAnchor} from './storage/resource-id.js';
 import {runObsidianProjectionPublish} from './obsidian_projection.js';
 import {syncObsidianSourcesBeforeRecall} from './obsidian_source.js';
-import {withProductionLogging} from './effect/production_log.js';
+import {withProductionLogging, withProductionPhaseTiming} from './effect/production_log.js';
 import {
   buildRecallIndexSelectionCandidates,
   buildRecallSelectionCandidates,
   createRecallRerankerCache,
   loadRecallExpansionVocabulary,
-  loadRecallSemanticScoresResult,
+  loadMcpRecallSemanticScoresResult,
   prepareRecallSections,
   recallSelectionAnchorIds,
   recallSelectionQueries,
@@ -127,11 +139,12 @@ import {
   observationFromCodeGraphStatus,
   renderCodeGraphResult,
 } from './code_graph/query.js';
-import {repositoryChangesSince, resolveRepositoryIdentity} from './code_graph/repository.js';
+import {repositoryChangesSince} from './code_graph/repository.js';
 import type {CodeGraphProgress, CodeGraphQueryResult} from './code_graph/types.js';
 import {
   CodeGraphWatcher,
   type CodeGraphProgressTiming,
+  type CodeGraphRefreshFailure,
   type CodeGraphRefreshStatus,
   type CodeGraphWatcherShape,
 } from './code_graph/watcher.js';
@@ -203,6 +216,8 @@ type CheckedOptionalTextArray =
 let mcpStartupVersion: string | undefined;
 let staleNoticeCache: {readonly checkedAtMs: number; readonly notice: string | undefined} | undefined;
 const STALE_NOTICE_TTL_MS = 60_000;
+const MCP_PROGRESS_TEST_SHARED_SYNC_DELAY_ENV = 'THREADNOTE_TEST_MCP_PROGRESS_SHARED_SYNC_DELAY_MILLISECONDS';
+const MCP_PROGRESS_TEST_SHARED_SYNC_DELAY_MAX_MILLISECONDS = 1_000;
 const MCP_CODE_GRAPH_INITIAL_WAIT_MILLISECONDS = 5_000;
 const MCP_CODE_GRAPH_POLL_MILLISECONDS = 100;
 const MCP_CODE_GRAPH_RETRY_FALLBACK_MILLISECONDS = 5_000;
@@ -224,6 +239,19 @@ const MCP_CODE_GRAPH_ANALYSIS_MAXIMUM_NODE_VISITS = 100_000;
 const MCP_CODE_GRAPH_ANALYSIS_MAXIMUM_EDGE_VISITS = 1_000_000;
 const MCP_CODE_GRAPH_ANALYSIS_MAXIMUM_DISTINCT_EDGES = 500_000;
 const MCP_CODE_GRAPH_ANALYSIS_MAXIMUM_COMMUNITY_MEMBERS = 5_000;
+
+interface RecallProgressTiming {
+  readonly heartbeatMilliseconds: number;
+  readonly sharedSyncDelayMilliseconds: number;
+}
+
+function mcpProgressTestSharedSyncDelayMilliseconds(environment: NodeJS.ProcessEnv): number {
+  if (environment.NODE_ENV !== 'test') return 0;
+  const configured = Number(environment[MCP_PROGRESS_TEST_SHARED_SYNC_DELAY_ENV]);
+  return Number.isSafeInteger(configured) && configured > 0
+    ? Math.min(configured, MCP_PROGRESS_TEST_SHARED_SYNC_DELAY_MAX_MILLISECONDS)
+    : 0;
+}
 
 const staleVersionNotice = Effect.fn('mcpServer.staleVersionNotice')(function* () {
   if (mcpStartupVersion === undefined) {
@@ -260,6 +288,10 @@ export const mcpServerEffect = Effect.gen(function* () {
         try: () => parseMcpToolset(system.environment()[MCP_TOOLSET_ENV] ?? DEFAULT_MCP_TOOLSET),
         catch: cause => (cause instanceof Error ? cause : new Error(String(cause))),
       });
+      const recallProgressTiming: RecallProgressTiming = {
+        heartbeatMilliseconds: mcpProgressHeartbeatMilliseconds(system.environment()),
+        sharedSyncDelayMilliseconds: mcpProgressTestSharedSyncDelayMilliseconds(system.environment()),
+      };
       mcpStartupVersion = yield* currentPackageVersion().pipe(Effect.catch(() => Effect.succeed(undefined)));
       const instructions =
         'Call `recall_context` with project and absolute `callerCwd`; read `threadnote://` URIs. Use `inspect_code_graph` before broad `rg`/grep; round-trip `cgs_` IDs via `node`, `neighbors`, or `path`. Use `analyze_code_graph` for whole-repo stats, communities, hubs, and surprises. Retry `state=indexing` after `retryAfterMilliseconds`; exact text search remains useful meanwhile. Write durable knowledge and handoffs directly under stable project/topic; replace duplicates. Use `review_session_context` for additional user-approved candidates. Do not store secrets/customer data/raw logs. Confirm publishes; never publish handoffs/preferences.';
@@ -270,7 +302,8 @@ export const mcpServerEffect = Effect.gen(function* () {
         config.agentContextHome,
       );
 
-      registerTools(server, config, toolset);
+      registerResources(server, config);
+      registerTools(server, config, toolset, recallProgressTiming);
       // Packaged lifecycle coverage uses runtime diagnostics to create the real
       // crash-isolated child without requiring an installed or selected model.
       if (system.environment()[MCP_PROCESS_LIFECYCLE_PROBE_ENV] === '1') {
@@ -284,16 +317,40 @@ export const mcpServerEffect = Effect.gen(function* () {
   );
 });
 
+function registerResources(server: EffectMcpServerAdapter, config: RuntimeConfig): void {
+  server.registerResourceTemplate(
+    {
+      description:
+        'Read one canonical Threadnote URI already returned by recall_context or list_context. This template does not enumerate private memories; resources/read is bounded, while read_context remains the complete canonical read path.',
+      meta: {'threadnote.io/max-resource-bytes': MCP_RESOURCE_READ_MAX_BYTES},
+      mimeType: MCP_RESOURCE_MIME_TYPE,
+      name: 'Threadnote canonical resource',
+      // Effect's MCP registry uses find-my-way route syntax internally. A
+      // catch-all lets the handler return an explicit invalid-URI protocol
+      // error instead of the registry's ambiguous empty-content fallback.
+      routerPath: '*',
+      uriTemplate: 'threadnote://{+resourcePath}',
+    },
+    uri => readThreadnoteMcpResource(config, uri),
+  );
+}
+
 const getRuntimeConfig = Effect.fn('mcpServer.getRuntimeConfig')(function* () {
   return yield* getApplicationRuntimeConfig();
 });
 
-function registerTools(server: EffectMcpServerAdapter, config: RuntimeConfig, toolset: McpToolset): void {
+function registerTools(
+  server: EffectMcpServerAdapter,
+  config: RuntimeConfig,
+  toolset: McpToolset,
+  recallProgressTiming: RecallProgressTiming,
+): void {
   registerSearchTool(
     server,
     config,
     'recall_context',
     'Search memories and seeded project guidance. Pass a stable project and absolute callerCwd for current repo/branch. Returns threadnote:// pointers to read or list. Lower threshold if results are sparse.',
+    recallProgressTiming,
   );
   if (toolset === 'full') {
     registerSearchTool(
@@ -301,6 +358,7 @@ function registerTools(server: EffectMcpServerAdapter, config: RuntimeConfig, to
       config,
       'search',
       'Compatibility alias for recall_context. Searches both personal memories and seeded project resources; see recall_context for the query conventions.',
+      recallProgressTiming,
     );
   }
 
@@ -855,22 +913,24 @@ function registerCodeGraphTool(server: EffectMcpServerAdapter, config: RuntimeCo
           operation === 'impact' && !requestedQuery
             ? yield* repositoryChangesSince(checkedCwd.value, base?.trim() || 'HEAD~1')
             : undefined;
-        let identity = yield* resolveRepositoryIdentity(checkedCwd.value);
         const watcher = yield* CodeGraphWatcher;
-        const refreshTarget = {
-          cwd: identity.repoRoot,
+        const service = yield* CodeGraphQueryService;
+        let refreshTarget = {
+          cwd: checkedCwd.value,
           threadnoteHome: config.agentContextHome,
         };
-        timeoutContext = Option.some({key: identity.worktreeId, target: refreshTarget, watcher});
-        yield* watcher.ensure({
-          ...refreshTarget,
-          key: identity.worktreeId,
+        let status = yield* service.status(config.agentContextHome, checkedCwd.value, {
+          afterIdentityObserved: identity =>
+            Effect.gen(function* () {
+              refreshTarget = {cwd: identity.repoRoot, threadnoteHome: config.agentContextHome};
+              timeoutContext = Option.some({key: identity.worktreeId, target: refreshTarget, watcher});
+              yield* watcher.ensure({...refreshTarget, key: identity.worktreeId});
+            }),
         });
-        const service = yield* CodeGraphQueryService;
+        let identity = status.identity;
         const strictFreshness = operation === 'impact' || operation === 'path';
-        let status = yield* service.statusForIdentity(config.agentContextHome, identity);
         if (status.stale || !status.readySnapshot) {
-          status = yield* service.attachSharedReadySnapshot(config.agentContextHome, identity);
+          status = yield* service.attachSharedReadySnapshot(config.agentContextHome, identity, status);
         }
         let staleAfterCleanCommitChange = canUseReadySnapshotAfterCleanCommitChange(status);
         let refreshStarted = false;
@@ -884,10 +944,10 @@ function registerCodeGraphTool(server: EffectMcpServerAdapter, config: RuntimeCo
           if (refreshStarted) {
             yield* waitForCodeGraphRefresh(watcher, identity.worktreeId, refreshTarget);
           }
-          identity = yield* resolveRepositoryIdentity(checkedCwd.value);
-          status = yield* service.statusForIdentity(config.agentContextHome, identity);
+          status = yield* service.status(config.agentContextHome, checkedCwd.value);
+          identity = status.identity;
           if (status.stale || !status.readySnapshot) {
-            status = yield* service.attachSharedReadySnapshot(config.agentContextHome, identity);
+            status = yield* service.attachSharedReadySnapshot(config.agentContextHome, identity, status);
           }
           staleAfterCleanCommitChange = canUseReadySnapshotAfterCleanCommitChange(status);
           if (!status.readySnapshot || (status.stale && strictFreshness)) {
@@ -896,7 +956,9 @@ function registerCodeGraphTool(server: EffectMcpServerAdapter, config: RuntimeCo
           }
         }
         const refreshStatus = Option.getOrUndefined(yield* watcher.status(identity.worktreeId, refreshTarget));
-        if (codeGraphRefreshBlocksReadyInspection(status, refreshStatus, staleAfterCleanCommitChange)) {
+        if (
+          selectCodeGraphReadySnapshotForInspection(status, refreshStatus, staleAfterCleanCommitChange) === undefined
+        ) {
           return codeGraphRefreshResult(operation, refreshStatus);
         }
         const result = yield* service.inspect({
@@ -919,7 +981,7 @@ function registerCodeGraphTool(server: EffectMcpServerAdapter, config: RuntimeCo
           threadnoteHome: config.agentContextHome,
           to,
         });
-        const response = codeGraphMcpResponse(result);
+        const response = codeGraphMcpResponse(codeGraphResultWithRefreshContinuity(result, refreshStatus));
         return {
           content: [{type: 'text' as const, text: response.text}],
           structuredContent: response.structuredContent,
@@ -977,17 +1039,19 @@ function registerCodeGraphTool(server: EffectMcpServerAdapter, config: RuntimeCo
         if (!path.isAbsolute(checkedCwd.value)) {
           return argumentError('analyze_code_graph callerCwd must be an absolute workspace path.');
         }
-        const identity = yield* resolveRepositoryIdentity(checkedCwd.value);
         const watcher = yield* CodeGraphWatcher;
-        yield* watcher.ensure({
-          cwd: identity.repoRoot,
-          key: identity.worktreeId,
-          threadnoteHome: config.agentContextHome,
-        });
         const query = yield* CodeGraphQueryService;
-        let status = yield* query.status(config.agentContextHome, checkedCwd.value);
+        let status = yield* query.status(config.agentContextHome, checkedCwd.value, {
+          afterIdentityObserved: identity =>
+            watcher.ensure({
+              cwd: identity.repoRoot,
+              key: identity.worktreeId,
+              threadnoteHome: config.agentContextHome,
+            }),
+        });
+        const identity = status.identity;
         if (status.stale || !status.readySnapshot) {
-          status = yield* query.attachSharedReadySnapshot(config.agentContextHome, identity);
+          status = yield* query.attachSharedReadySnapshot(config.agentContextHome, identity, status);
         }
         const refreshStarted = status.stale
           ? yield* watcher.refresh({
@@ -1004,7 +1068,7 @@ function registerCodeGraphTool(server: EffectMcpServerAdapter, config: RuntimeCo
         }
         if (status.stale) status = yield* query.status(config.agentContextHome, checkedCwd.value);
         if (status.stale || !status.readySnapshot) {
-          status = yield* query.attachSharedReadySnapshot(config.agentContextHome, identity);
+          status = yield* query.attachSharedReadySnapshot(config.agentContextHome, status.identity, status);
         }
         if (!status.readySnapshot || status.stale) {
           return codeGraphAnalysisRefreshResult(
@@ -1754,23 +1818,28 @@ function compactMcpText(value: string, maximumLength: number): string {
   return value.length <= maximumLength ? value : `${value.slice(0, Math.max(0, maximumLength - 1))}…`;
 }
 
-function codeGraphAnalysisRefreshResult(
+export function codeGraphAnalysisRefreshResult(
   operation: CodeGraphAnalysisView,
   status: CodeGraphRefreshStatus | undefined,
 ): CallToolResult {
-  if (status?.state === 'failed') {
-    const message = status.message.slice(0, 1_000);
+  if (status?.state === 'deferred') {
+    const warning = codeGraphRefreshRecoveryWarning(status.failure);
     return {
       content: [
         {
           type: 'text',
           text:
-            `Code graph background indexing failed: ${message}\n` +
-            'Run `threadnote doctor --dry-run`, address the reported graph diagnostic, and retry analyze_code_graph.',
+            `Code graph refresh is deferred (${status.failure.code}). ${warning} ` +
+            'Whole-graph analysis requires a current ready snapshot; retry analyze_code_graph after recovery.',
         },
       ],
-      isError: true,
-      structuredContent: {message, operation, state: 'failed', type: 'code-graph-analysis-state', version: 1},
+      structuredContent: {
+        failure: status.failure,
+        operation,
+        state: 'deferred',
+        type: 'code-graph-analysis-state',
+        version: 2,
+      },
     };
   }
   const progress = status?.state === 'indexing' ? status.progress : undefined;
@@ -1830,32 +1899,76 @@ export function codeGraphRefreshBlocksReadyInspection(
   refreshStatus: CodeGraphRefreshStatus | undefined,
   allowStaleReadySnapshot = false,
 ): boolean {
-  if (refreshStatus?.state === 'failed') return true;
-  return refreshStatus?.state === 'indexing' && (!status.readySnapshot || (status.stale && !allowStaleReadySnapshot));
+  const refreshBlocks = refreshStatus?.state === 'deferred' || refreshStatus?.state === 'indexing';
+  return refreshBlocks && (!status.readySnapshot || (status.stale && !allowStaleReadySnapshot));
+}
+
+/** Retain the exact observed pointer; refresh status alone is never promotion authority. */
+export function selectCodeGraphReadySnapshotForInspection<T>(
+  status: {readonly readySnapshot?: T; readonly stale: boolean},
+  refreshStatus: CodeGraphRefreshStatus | undefined,
+  allowStaleReadySnapshot = false,
+): T | undefined {
+  return codeGraphRefreshBlocksReadyInspection(status, refreshStatus, allowStaleReadySnapshot)
+    ? undefined
+    : status.readySnapshot;
+}
+
+/** Add a finite recovery hint without copying a native error, path, or raw cause into MCP output. */
+export function codeGraphResultWithRefreshContinuity(
+  result: CodeGraphQueryResult,
+  refreshStatus: CodeGraphRefreshStatus | undefined,
+): CodeGraphQueryResult {
+  if (result.freshness !== 'stale' || refreshStatus?.state !== 'deferred') return result;
+  const warning =
+    `Serving the existing stale ready snapshot because code graph refresh is deferred ` +
+    `(${refreshStatus.failure.code}). ${codeGraphRefreshRecoveryWarning(refreshStatus.failure)}`;
+  const bounded = compactMcpText(warning, 320);
+  return result.warnings.includes(bounded) ? result : {...result, warnings: [...result.warnings, bounded]};
+}
+
+function codeGraphRefreshRecoveryWarning(failure: CodeGraphRefreshFailure): string {
+  switch (failure.recovery) {
+    case 'defer':
+      return 'Retry after the current code graph writer finishes.';
+    case 'free-space':
+      return 'Free storage space, then retry the refresh.';
+    case 'fix-permissions':
+      return 'Restore storage permissions, then retry the refresh.';
+    case 'retry-read-only':
+      return 'Retry the read-only refresh; run `threadnote doctor --dry-run` if the failure repeats.';
+    case 'migrate-additive':
+      return 'Run the preflight-proven additive migration before retrying.';
+    case 'manual-migration':
+      return 'Run `threadnote doctor --dry-run` and follow the schema migration guidance.';
+    case 'manual-rebuild':
+      return 'Run `threadnote doctor --dry-run` before any explicit rebuild.';
+    case 'diagnose':
+      return 'Run `threadnote doctor --dry-run`, then retry after addressing the bounded diagnostic.';
+  }
 }
 
 function codeGraphRefreshResult(
   operation: 'explain' | 'impact' | 'neighbors' | 'node' | 'path' | 'query',
   status: CodeGraphRefreshStatus | undefined,
 ): CallToolResult {
-  if (status?.state === 'failed') {
-    const message = status.message.slice(0, 1_000);
+  if (status?.state === 'deferred') {
+    const warning = codeGraphRefreshRecoveryWarning(status.failure);
     return {
       content: [
         {
           type: 'text',
           text:
-            `Code graph background indexing failed: ${message}\n` +
-            'Run `threadnote doctor --dry-run`, address the reported graph diagnostic, and retry inspect_code_graph.',
+            `Code graph refresh is deferred (${status.failure.code}). ${warning} ` +
+            'Non-strict query, node, neighbors, and explain operations may continue from an existing usable ready snapshot.',
         },
       ],
-      isError: true,
       structuredContent: {
-        message,
+        failure: status.failure,
         operation,
-        state: 'failed',
+        state: 'deferred',
         type: 'code-graph-index-state',
-        version: 3,
+        version: 4,
       },
     };
   }
@@ -1922,7 +2035,7 @@ export function codeGraphQueryTimeoutResult(
   operation: 'explain' | 'impact' | 'neighbors' | 'node' | 'path' | 'query',
   status?: CodeGraphRefreshStatus,
 ): CallToolResult {
-  if (status?.state === 'failed' || status?.state === 'indexing') {
+  if (status?.state === 'deferred' || status?.state === 'indexing') {
     return codeGraphRefreshResult(operation, status);
   }
   return {
@@ -2517,6 +2630,7 @@ function registerSearchTool(
   config: RuntimeConfig,
   name: string,
   description: string,
+  progressTiming: RecallProgressTiming,
 ): void {
   server.registerTool(
     name,
@@ -2541,7 +2655,7 @@ function registerSearchTool(
         ),
       },
     },
-    ({callerCwd, includeArchived, nodeLimit, project, query, threshold, uri, workset}) => {
+    ({callerCwd, includeArchived, nodeLimit, project, query, threshold, uri, workset}, {progress}) => {
       const checkedQuery = requiredText(query, name, 'query', {query: 'unity-ui-ccc latest handoff'});
       if (!checkedQuery.ok) {
         return checkedQuery.error;
@@ -2550,16 +2664,21 @@ function registerSearchTool(
       if (!checkedUri.ok) {
         return checkedUri.error;
       }
-      return runRecallTool(config, {
-        callerCwd,
-        project: project?.trim() || undefined,
-        query: checkedQuery.value,
-        pinnedUri: checkedUri.value,
-        nodeLimit,
-        includeArchived: includeArchived === true,
-        threshold: threshold === undefined ? undefined : String(threshold),
-        workset: workset?.trim() || undefined,
-      }).pipe(
+      return runRecallTool(
+        config,
+        {
+          callerCwd,
+          project: project?.trim() || undefined,
+          query: checkedQuery.value,
+          pinnedUri: checkedUri.value,
+          nodeLimit,
+          includeArchived: includeArchived === true,
+          threshold: threshold === undefined ? undefined : String(threshold),
+          workset: workset?.trim() || undefined,
+        },
+        progress,
+        progressTiming,
+      ).pipe(
         Effect.flatMap(withStaleVersionNotice),
         Effect.catch(error =>
           Effect.succeed({content: [{type: 'text' as const, text: errorMessage(error)}], isError: true}),
@@ -2580,10 +2699,35 @@ interface RecallToolParams {
   readonly workset: string | undefined;
 }
 
-function runRecallTool(config: RuntimeConfig, params: RecallToolParams) {
+const RECALL_MCP_PROGRESS = {
+  lexicalRanking: {message: 'Ranking recall candidates.', phase: 'recall.lexical-ranking'},
+  obsidianSync: {message: 'Refreshing Obsidian sources.', phase: 'recall.obsidian-sync'},
+  semanticRetrieval: {message: 'Searching memory indexes.', phase: 'recall.semantic-retrieval'},
+  sharedSync: {message: 'Refreshing shared memories.', phase: 'recall.shared-sync'},
+  workspaceContext: {message: 'Resolving recall scope.', phase: 'recall.workspace-context'},
+} as const satisfies Readonly<Record<string, McpProgressUpdate>>;
+
+function runRecallTool(
+  config: RuntimeConfig,
+  params: RecallToolParams,
+  progress: McpToolProgress,
+  progressTiming: RecallProgressTiming,
+) {
   return Effect.gen(function* () {
     const syncWarnings: string[] = [];
-    const syncedTeams = yield* syncSharedReposBeforeAgentRead(config).pipe(
+    const syncedTeams = yield* withMcpProgressHeartbeat(
+      progress,
+      RECALL_MCP_PROGRESS.sharedSync,
+      withProductionPhaseTiming(
+        'recall.shared-sync',
+        progressTiming.sharedSyncDelayMilliseconds === 0
+          ? syncSharedReposBeforeAgentRead(config)
+          : Effect.sleep(progressTiming.sharedSyncDelayMilliseconds).pipe(
+              Effect.andThen(syncSharedReposBeforeAgentRead(config)),
+            ),
+      ),
+      progressTiming.heartbeatMilliseconds,
+    ).pipe(
       Effect.map(syncResult => {
         syncWarnings.push(...syncResult.warnings);
         return syncResult.syncedTeams;
@@ -2594,7 +2738,12 @@ function runRecallTool(config: RuntimeConfig, params: RecallToolParams) {
       }),
     );
     const obsidianSyncWarnings: string[] = [];
-    const syncedObsidianSources = yield* syncObsidianSourcesBeforeRecall(config).pipe(
+    const syncedObsidianSources = yield* withMcpProgressHeartbeat(
+      progress,
+      RECALL_MCP_PROGRESS.obsidianSync,
+      withProductionPhaseTiming('recall.obsidian-sync', syncObsidianSourcesBeforeRecall(config)),
+      progressTiming.heartbeatMilliseconds,
+    ).pipe(
       Effect.map(syncResult => {
         obsidianSyncWarnings.push(...syncResult.warnings);
         return syncResult.syncedSources;
@@ -2604,6 +2753,7 @@ function runRecallTool(config: RuntimeConfig, params: RecallToolParams) {
         return Effect.succeed([] as readonly string[]);
       }),
     );
+    yield* progress.report(RECALL_MCP_PROGRESS.workspaceContext);
     const query = yield* enrichRecallQueryWithWorkspaceContext(params.query, {
       cwd: params.callerCwd,
       includeProcessCwd: false,
@@ -2676,7 +2826,24 @@ function runRecallTool(config: RuntimeConfig, params: RecallToolParams) {
     let hybridMinimumScore = recallHybridMinimumScore(Number(threshold), params.threshold !== undefined);
     const expansionQueries: string[] = [];
     const recallLimit = params.nodeLimit ?? 12;
-    let semanticResult = yield* loadRecallSemanticScoresResult(config, query, recallLimit);
+    const semanticRetrieval = yield* withMcpProgressHeartbeat(
+      progress,
+      RECALL_MCP_PROGRESS.semanticRetrieval,
+      withProductionPhaseTiming(
+        'recall.semantic-retrieval',
+        loadMcpRecallSemanticScoresResult(config, query, recallLimit),
+        result =>
+          result.status === 'available'
+            ? 'success'
+            : result.status === 'unavailable'
+              ? 'unavailable'
+              : result.status === 'timed-out'
+                ? 'timed-out'
+                : 'failure',
+      ),
+      progressTiming.heartbeatMilliseconds,
+    );
+    let semanticResult = semanticRetrieval.result;
     const surfacedSemanticWarnings = new Set<string>();
     const appendSemanticWarning = (result: typeof semanticResult) => {
       if (Option.isNone(result.warning) || surfacedSemanticWarnings.has(result.warning.value)) return;
@@ -2686,30 +2853,39 @@ function runRecallTool(config: RuntimeConfig, params: RecallToolParams) {
     appendSemanticWarning(semanticResult);
     const rerankerCache = createRecallRerankerCache();
     const prepareSections = (candidateUris?: readonly string[]) =>
-      Effect.gen(function* () {
-        const prepared = yield* prepareRecallSections(config, {
-          allowExactRescue: params.threshold === undefined,
-          allowedUriScopes: params.pinnedUri ? [params.pinnedUri] : undefined,
-          candidateUris,
-          exactMatches,
-          feedbackQuery: params.query,
-          includeInactive: params.includeArchived,
-          limit: recallLimit,
-          minimumScore: hybridMinimumScore,
-          passes,
-          preferredUriScopes: params.pinnedUri ? undefined : [...scopedRecallUris],
-          project: recallProjectName,
-          query,
-          queryVariants: expansionQueries,
-          readRecords: uris => readMemoryRecordsByUri(config, uris),
-          rerankerCache,
-          seedUris: [params.pinnedUri, seededUri].filter((uri): uri is string => uri !== undefined),
-          semanticResult: Option.some(semanticResult),
-        });
-        semanticResult = prepared.semanticResult;
-        appendSemanticWarning(semanticResult);
-        return prepared;
-      });
+      withMcpProgressHeartbeat(
+        progress,
+        RECALL_MCP_PROGRESS.lexicalRanking,
+        withProductionPhaseTiming(
+          'recall.lexical-ranking',
+          Effect.gen(function* () {
+            const prepared = yield* prepareRecallSections(config, {
+              allowExactRescue: params.threshold === undefined,
+              allowedUriScopes: params.pinnedUri ? [params.pinnedUri] : undefined,
+              candidateUris,
+              exactMatches,
+              feedbackQuery: params.query,
+              includeInactive: params.includeArchived,
+              limit: recallLimit,
+              minimumScore: hybridMinimumScore,
+              passes,
+              preferredUriScopes: params.pinnedUri ? undefined : [...scopedRecallUris],
+              project: recallProjectName,
+              query,
+              queryVariants: expansionQueries,
+              readRecords: uris => readMemoryRecordsByUri(config, uris),
+              rerankerCache,
+              seedUris: [params.pinnedUri, seededUri].filter((uri): uri is string => uri !== undefined),
+              semanticGenerationMismatchPolicy: 'fallback',
+              semanticResult: Option.some(semanticResult),
+            });
+            semanticResult = prepared.semanticResult;
+            appendSemanticWarning(semanticResult);
+            return prepared;
+          }),
+        ),
+        progressTiming.heartbeatMilliseconds,
+      );
     let recallSections = yield* prepareSections();
     const shouldAttemptAiExpansion = shouldExpandRecall(recallSections.confidence);
     const indexSelectionCandidates = shouldAttemptAiExpansion

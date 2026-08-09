@@ -2,6 +2,11 @@ import {readFileSync} from 'node:fs';
 import {JSON_SCHEMA, load} from 'js-yaml';
 import {describe, expect, it} from 'vitest';
 import {ciScopeKeys} from '../ci/ci-scopes.js';
+import {
+  ciLongRunningTestGroupNames,
+  ciLongRunningTestGroups,
+  ciSerializedLongRunningTestGroups,
+} from '../ci/vitest-plan.js';
 
 interface WorkflowStep {
   readonly env?: Readonly<Record<string, string>>;
@@ -17,6 +22,10 @@ interface WorkflowJob {
   readonly if?: string;
   readonly needs?: string | readonly string[];
   readonly outputs?: Readonly<Record<string, string>>;
+  readonly strategy?: {
+    readonly 'fail-fast'?: boolean;
+    readonly matrix?: Readonly<Record<string, readonly unknown[] | string>>;
+  };
   readonly steps?: readonly WorkflowStep[];
 }
 
@@ -51,7 +60,11 @@ describe('dependency-aware CI workflow', () => {
     const checkout = changes.steps?.find(step => step.uses?.startsWith('actions/checkout@'));
     const classifier = changes.steps?.find(step => step.id === 'scopes');
 
-    expect(Object.keys(changes.outputs ?? {})).toEqual(ciScopeKeys);
+    expect(Object.keys(changes.outputs ?? {})).toEqual([
+      ...ciScopeKeys.slice(0, 2),
+      'long_test_groups',
+      ...ciScopeKeys.slice(2),
+    ]);
     expect(checkout?.with?.['fetch-depth']).toBe(0);
     expect(classifier?.run).toBe('bun test/ci/ci-scopes.ts --base "$BASE_SHA" --head "$HEAD_SHA"');
     expect(classifier?.env).toMatchObject({
@@ -60,23 +73,65 @@ describe('dependency-aware CI workflow', () => {
     });
   });
 
-  it('keeps the stable primary check while gating its expensive steps by scope', () => {
+  it('keeps the stable primary check while parallelizing scoped tests and quality gates', () => {
     const ci = workflow('.github/workflows/ci.yml');
-    const job = ci.jobs.test!;
-    const actionlint = job.steps?.find(step => step.uses === 'docker://rhysd/actionlint:1.7.8');
+    const primary = ci.jobs.test!;
+    const quality = ci.jobs.quality!;
+    const standard = ci.jobs.standard_tests!;
+    const long = ci.jobs.long_tests!;
+    const actionlint = quality.steps?.find(step => step.uses === 'docker://rhysd/actionlint:1.7.8');
 
-    expect(job.needs).toBe('changes');
+    expect(primary.needs).toEqual(['changes', 'quality', 'standard_tests', 'long_tests']);
+    expect(primary.if).toBe('always()');
+    expect(primary.steps?.some(step => step.name === 'Require every applicable test shard')).toBe(true);
+
+    expect(quality.needs).toBe('changes');
     expect(actionlint?.if).toBe("needs.changes.outputs.actions == 'true'");
-    expect(stepForRun(job, 'bun run prettier:check').if).toBeUndefined();
-    expect(stepForRun(job, 'bun run lint').if).toBe("needs.changes.outputs.code == 'true'");
-    expect(stepForRun(job, 'bun run typecheck').if).toBe("needs.changes.outputs.code == 'true'");
-    expect(stepForRun(job, 'bun run site:check').if).toBe(
+    expect(stepForRun(quality, 'bun run prettier:check').if).toBeUndefined();
+    expect(stepForRun(quality, 'bun run lint').if).toBe("needs.changes.outputs.code == 'true'");
+    expect(stepForRun(quality, 'bun run typecheck').if).toBe("needs.changes.outputs.code == 'true'");
+    expect(stepForRun(quality, 'bun run site:check').if).toBe(
       "needs.changes.outputs.site_check == 'true' && needs.changes.outputs.code != 'true'",
     );
-    expect(stepForRun(job, 'bun run site:build').if).toBe("needs.changes.outputs.site_build == 'true'");
-    expect(stepForRun(job, 'bun run build').if).toBe("needs.changes.outputs.release == 'true'");
-    expect(stepForRun(job, 'bun run check:self-contained').if).toBe("needs.changes.outputs.release == 'true'");
-    expect(stepForRun(job, 'bun run test:coverage').if).toBe("needs.changes.outputs.code == 'true'");
+    expect(stepForRun(quality, 'bun run site:build').if).toBe("needs.changes.outputs.site_build == 'true'");
+    expect(stepForRun(quality, 'bun run build').if).toBe("needs.changes.outputs.release == 'true'");
+    expect(stepForRun(quality, 'bun run check:self-contained').if).toBe("needs.changes.outputs.release == 'true'");
+
+    expect(standard).toMatchObject({
+      needs: 'changes',
+      if: "needs.changes.outputs.code == 'true'",
+      strategy: {matrix: {shard: [1, 2, 3, 4]}},
+    });
+    expect(standard.steps?.find(step => step.uses?.startsWith('actions/checkout@'))?.with?.['fetch-depth']).toBe(0);
+    expect(stepForRun(standard, 'bun --bun vitest run --shard=${{ matrix.shard }}/4').env).toEqual({
+      THREADNOTE_VITEST_STANDARD_SHARD: '${{ matrix.shard }}',
+    });
+    expect(standard.steps?.some(step => step.uses?.startsWith('actions/upload-artifact@'))).toBe(false);
+
+    expect(long).toMatchObject({
+      needs: 'changes',
+      if: "needs.changes.outputs.code == 'true'",
+    });
+    expect(long.strategy?.matrix?.group).toBe('${{ fromJSON(needs.changes.outputs.long_test_groups) }}');
+    expect(ciLongRunningTestGroupNames).toHaveLength(10);
+    expect(long.steps?.find(step => step.uses?.startsWith('actions/checkout@'))?.with?.['fetch-depth']).toBe(0);
+    expect(stepForRun(long, 'bun --bun vitest run').env).toEqual({
+      THREADNOTE_VITEST_LONG_GROUP: '${{ matrix.group }}',
+    });
+    expect(long.steps?.some(step => step.uses?.startsWith('actions/upload-artifact@'))).toBe(false);
+  });
+
+  it('keeps the quota-aware long-test plan bounded and non-overlapping', () => {
+    expect(ciLongRunningTestGroupNames).toEqual(Object.keys(ciLongRunningTestGroups));
+    expect(ciLongRunningTestGroupNames).toHaveLength(10);
+    expect([...ciSerializedLongRunningTestGroups]).toEqual(['load-evidence', 'os-contention']);
+
+    const assignments = Object.values(ciLongRunningTestGroups).flat();
+    const counts = new Map<string, number>();
+    for (const path of assignments) counts.set(path, (counts.get(path) ?? 0) + 1);
+    expect([...counts].filter(([, count]) => count > 1)).toEqual([
+      ['test/integration/code-graph.lifecycle.test.ts', 4],
+    ]);
   });
 
   it('gates quality, Windows, bytecode, model, and release matrices independently', () => {

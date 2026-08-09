@@ -1,13 +1,15 @@
-import {symlink} from 'node:fs/promises';
+import {symlink, writeFile as writeFileBytes} from 'node:fs/promises';
 import {join} from 'node:path';
 import {describe, expect, it} from '@effect/vitest';
 import * as FC from 'effect/testing/FastCheck';
-import {Effect} from 'effect';
+import {Effect, FileSystem, Option} from 'effect';
 import {
   ResourceAlreadyExists,
   ResourceConflict,
+  ResourceIoFailed,
   ResourcePathUnsafe,
   ResourceStore,
+  resourceMutationLockFailureMessage,
 } from '../../src/effect/resource-store.js';
 import {loadRecallExactMatches, loadRecallIndex} from '../../src/recall/index.js';
 import {InvalidResourceId, parseResourceId} from '../../src/storage/resource-id.js';
@@ -72,6 +74,18 @@ describe('ResourceId', () => {
 describe('native ResourceStore', () => {
   const location = (home: string) => ({account: 'local', home, user: 'test-user'});
 
+  it('reports privacy-safe lock ownership and bounded recovery guidance', () => {
+    const uri = 'threadnote://resources/repos/threadnote/locked.md';
+    const message = resourceMutationLockFailureMessage(uri, 4242);
+
+    expect(message).toContain(uri);
+    expect(message).toContain('Local process 4242');
+    expect(message).toContain('threadnote processes');
+    expect(message).toContain('threadnote doctor --dry-run');
+    expect(message).not.toContain('/locks/');
+    expect(message).not.toContain('token');
+  });
+
   it('atomically creates, reads, compares, replaces, lists, greps, and removes resources', async () => {
     const home = await mkdtemp('threadnote-resource-store-');
     try {
@@ -79,10 +93,25 @@ describe('native ResourceStore', () => {
         Effect.gen(function* () {
           const store = yield* ResourceStore;
           const uri = 'threadnote://user/test-user/memories/durable/projects/threadnote/storage.md';
-          const created = yield* store.write(location(home), uri, '# Storage\n\nfirst value', {mode: 'create'});
+          const content = '# Storage\n\nfirst value';
+          const created = yield* store.write(location(home), uri, content, {mode: 'create'});
 
           expect(created.uri).toBe(uri);
-          expect(yield* store.read(location(home), uri)).toBe('# Storage\n\nfirst value');
+          expect(yield* store.read(location(home), uri)).toBe(content);
+          expect(yield* store.readBounded(location(home), uri, Buffer.byteLength(content) - 1)).toEqual({
+            truncated: true,
+          });
+          expect(yield* store.readBounded(location(home), uri, Buffer.byteLength(content))).toEqual({
+            content,
+            truncated: false,
+          });
+          const bomUri = 'threadnote://resources/repos/threadnote/bom.txt';
+          const bomContent = '\uFEFFpreserved byte-order mark';
+          yield* store.write(location(home), bomUri, bomContent, {mode: 'create'});
+          expect(yield* store.readBounded(location(home), bomUri, Buffer.byteLength(bomContent))).toEqual({
+            content: bomContent,
+            truncated: false,
+          });
           expect((yield* store.stat(location(home), uri)).type).toBe('file');
           expect(
             (yield* store.list(location(home), 'threadnote://user/test-user/memories', {recursive: true})).map(
@@ -120,6 +149,7 @@ describe('native ResourceStore', () => {
           expect(conflict).toBeInstanceOf(ResourceConflict);
 
           yield* store.remove(location(home), uri);
+          yield* store.remove(location(home), bomUri);
           expect(
             (yield* store.list(location(home), 'threadnote://user/test-user/memories', {recursive: true})).some(
               entry => entry.uri === uri,
@@ -127,6 +157,78 @@ describe('native ResourceStore', () => {
           ).toBe(false);
         }),
       );
+    } finally {
+      await rm(home, {force: true, recursive: true});
+    }
+  });
+
+  it('rejects invalid UTF-8 instead of returning replacement text from a bounded read', async () => {
+    const home = await mkdtemp('threadnote-resource-utf8-');
+    const uri = 'threadnote://resources/repos/threadnote/invalid-utf8.txt';
+    try {
+      const resourceDirectory = join(home, 'data', 'local', 'resources', 'repos', 'threadnote');
+      await mkdir(resourceDirectory, {recursive: true});
+      await writeFileBytes(join(resourceDirectory, 'invalid-utf8.txt'), Uint8Array.of(0xc3, 0x28));
+
+      const failure = await runEffect(
+        Effect.gen(function* () {
+          const store = yield* ResourceStore;
+          return yield* Effect.flip(store.readBounded(location(home), uri, 100));
+        }),
+      );
+
+      expect(failure).toBeInstanceOf(ResourceIoFailed);
+      expect(failure).toMatchObject({operation: 'read', uri});
+    } finally {
+      await rm(home, {force: true, recursive: true});
+    }
+  });
+
+  it('fails closed when a custom bounded-read filesystem omits file identity or modification clocks', async () => {
+    const home = await mkdtemp('threadnote-resource-mtime-');
+    const uri = 'threadnote://resources/repos/threadnote/no-mtime.txt';
+    try {
+      const resourceDirectory = join(home, 'data', 'local', 'resources', 'repos', 'threadnote');
+      await mkdir(resourceDirectory, {recursive: true});
+      await writeFile(join(resourceDirectory, 'no-mtime.txt'), 'bounded content');
+
+      for (const omitted of ['inode', 'mtime'] as const) {
+        const failure = await runEffect(
+          Effect.gen(function* () {
+            const fs = yield* FileSystem.FileSystem;
+            const withoutIdentity = (info: FileSystem.File.Info): FileSystem.File.Info => ({
+              ...info,
+              ...(omitted === 'inode' ? {ino: Option.none()} : {mtime: Option.none()}),
+            });
+            const customFs = FileSystem.FileSystem.of({
+              ...fs,
+              open: (filePath, options) =>
+                fs.open(filePath, options).pipe(
+                  Effect.map(opened => ({
+                    [FileSystem.FileTypeId]: FileSystem.FileTypeId,
+                    fd: opened.fd,
+                    read: buffer => opened.read(buffer),
+                    readAlloc: size => opened.readAlloc(size),
+                    seek: (offset, from) => opened.seek(offset, from),
+                    stat: opened.stat.pipe(Effect.map(withoutIdentity)),
+                    sync: opened.sync,
+                    truncate: length => opened.truncate(length),
+                    write: buffer => opened.write(buffer),
+                    writeAll: buffer => opened.writeAll(buffer),
+                  })),
+                ),
+              stat: filePath => fs.stat(filePath).pipe(Effect.map(withoutIdentity)),
+            });
+            const store = yield* ResourceStore.pipe(
+              Effect.provide(ResourceStore.layerWith()),
+              Effect.provideService(FileSystem.FileSystem, customFs),
+            );
+            return yield* Effect.flip(store.readBounded(location(home), uri, 100));
+          }),
+        );
+
+        expect(failure, omitted).toBeInstanceOf(ResourcePathUnsafe);
+      }
     } finally {
       await rm(home, {force: true, recursive: true});
     }
@@ -244,6 +346,28 @@ describe('native ResourceStore', () => {
           expect(yield* store.read(location(home), uri)).toBe('committed despite cache failure');
           yield* store.remove(location(home), uri);
           expect(yield* Effect.exit(store.read(location(home), uri))).toMatchObject({_tag: 'Failure'});
+        }),
+      );
+    } finally {
+      await rm(home, {force: true, recursive: true});
+    }
+  });
+
+  it('classifies a protected remove failure as a remove error instead of lock contention', async () => {
+    const home = await mkdtemp('threadnote-resource-remove-error-');
+    try {
+      await runEffect(
+        Effect.gen(function* () {
+          const store = yield* ResourceStore;
+          const parentUri = 'threadnote://resources/repos/threadnote/non-empty';
+          yield* store.write(location(home), `${parentUri}/child.md`, 'child', {mode: 'create'});
+
+          const failure = yield* Effect.flip(store.remove(location(home), parentUri));
+
+          expect(failure).toBeInstanceOf(ResourceIoFailed);
+          expect(failure).toMatchObject({operation: 'remove', uri: parentUri});
+          expect(failure.message).toBe(`Resource remove failed for ${parentUri}.`);
+          expect(failure.message).not.toContain('lock');
         }),
       );
     } finally {
@@ -376,6 +500,35 @@ describe('native ResourceStore', () => {
       await rm(outside, {force: true, recursive: true});
     }
   });
+
+  it.runIf(process.platform !== 'win32')(
+    'recursively removes a subtree without following descendant symlinks',
+    async () => {
+      const home = await mkdtemp('threadnote-resource-recursive-symlink-');
+      const outside = await mkdtemp('threadnote-resource-recursive-outside-');
+      try {
+        const subtree = join(home, 'data', 'local', 'resources', 'repos', 'threadnote', 'retired');
+        const outsideFile = join(outside, 'keep.md');
+        await mkdir(subtree, {recursive: true});
+        await writeFile(join(subtree, 'inside.md'), 'inside');
+        await writeFile(outsideFile, 'outside');
+        await symlink(outside, join(subtree, 'external'));
+
+        await runEffect(
+          Effect.gen(function* () {
+            const store = yield* ResourceStore;
+            yield* store.remove(location(home), 'threadnote://resources/repos/threadnote/retired', {recursive: true});
+          }),
+        );
+
+        await expect(readFile(outsideFile, 'utf8')).resolves.toBe('outside');
+        await expect(stat(subtree)).rejects.toThrow();
+      } finally {
+        await rm(home, {force: true, recursive: true});
+        await rm(outside, {force: true, recursive: true});
+      }
+    },
+  );
 
   it.runIf(process.platform !== 'win32')('rejects a symlinked account storage root', async () => {
     const home = await mkdtemp('threadnote-resource-account-symlink-');

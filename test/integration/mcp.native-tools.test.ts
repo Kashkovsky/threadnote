@@ -12,6 +12,13 @@ interface TextContent {
   readonly type: 'text';
 }
 
+interface ThreadnoteProgress {
+  readonly _meta?: Readonly<Record<string, unknown>>;
+  readonly message?: string;
+  readonly progress: number;
+  readonly total?: number;
+}
+
 interface CanonicalReadMetadata {
   readonly resources: readonly {readonly contentIndex: number; readonly uri: string}[];
   readonly type: 'threadnote-canonical-read';
@@ -19,6 +26,14 @@ interface CanonicalReadMetadata {
 }
 
 const CANONICAL_READ_METADATA_KEY = 'threadnote.io/canonical-read';
+const MCP_RESOURCE_READ_MAX_BYTES = 1_048_576;
+const RECALL_PROGRESS_PHASES = [
+  'recall.shared-sync',
+  'recall.obsidian-sync',
+  'recall.workspace-context',
+  'recall.semantic-retrieval',
+  'recall.lexical-ranking',
+] as const;
 
 const CORE_TOOL_NAMES = [
   'recall_context',
@@ -59,7 +74,11 @@ const ADVANCED_TOOL_NAMES = [
 
 async function withMcpClient<T>(
   fn: (client: Client, fixture: {readonly home: string; readonly root: string}) => Promise<T>,
-  options: {readonly maxBufferSize?: number; readonly toolset?: 'core' | 'full' | null} = {},
+  options: {
+    readonly environment?: Readonly<Record<string, string>>;
+    readonly maxBufferSize?: number;
+    readonly toolset?: 'core' | 'full' | null;
+  } = {},
 ): Promise<T> {
   const root = await mkdtemp(join(tmpdir(), 'threadnote-mcp-native-'));
   const home = join(root, 'home');
@@ -67,6 +86,7 @@ async function withMcpClient<T>(
   const repoRoot = process.cwd();
   const environment = {
     ...process.env,
+    ...options.environment,
     THREADNOTE_ACCOUNT: 'local',
     THREADNOTE_AGENT_ID: 'threadnote',
     THREADNOTE_HOME: home,
@@ -145,6 +165,36 @@ async function writeCanonicalMemory(home: string, filename: string, content: str
   await writeFile(join(directory, filename), content, 'utf8');
 }
 
+function recallProgressPhases(updates: readonly ThreadnoteProgress[]): string[] {
+  return updates.map(update => {
+    const metadata = update._meta?.['threadnote.io/progress'] as
+      {readonly phase?: unknown; readonly version?: unknown} | undefined;
+    expect(metadata?.version).toBe(1);
+    expect(metadata).not.toHaveProperty('retryAfterMilliseconds');
+    expect(typeof metadata?.phase).toBe('string');
+    return metadata?.phase as string;
+  });
+}
+
+function collapseConsecutive<T>(values: readonly T[]): T[] {
+  return values.filter((value, index) => index === 0 || value !== values[index - 1]);
+}
+
+function expectOrderedRecallProgress(updates: readonly ThreadnoteProgress[]): string[] {
+  expect(updates.length).toBeGreaterThanOrEqual(RECALL_PROGRESS_PHASES.length);
+  expect(updates.map(update => update.progress)).toEqual(Array.from({length: updates.length}, (_, index) => index + 1));
+  const phases = recallProgressPhases(updates);
+  expect(collapseConsecutive(phases)).toEqual(RECALL_PROGRESS_PHASES);
+  return phases;
+}
+
+function expectRequestLocalRecallProgress(updates: readonly ThreadnoteProgress[]): void {
+  expect(updates.length).toBeGreaterThan(0);
+  expect(updates.map(update => update.progress)).toEqual(Array.from({length: updates.length}, (_, index) => index + 1));
+  const phases = collapseConsecutive(recallProgressPhases(updates));
+  expect(phases).toEqual(RECALL_PROGRESS_PHASES.slice(0, phases.length));
+}
+
 describe('Threadnote MCP toolsets', () => {
   it('keeps the core server instructions compact and self-contained', async () => {
     await withMcpClient(
@@ -182,6 +232,137 @@ describe('Threadnote MCP toolsets', () => {
         );
       },
       {toolset: null},
+    );
+  });
+
+  it('advertises bounded Threadnote resource discovery without enumerating private memories', async () => {
+    await withMcpClient(
+      async client => {
+        expect(client.getServerCapabilities()?.resources).toEqual({listChanged: true, subscribe: false});
+        await expect(client.listResources()).resolves.toEqual({resources: []});
+
+        const templates = await client.listResourceTemplates();
+        expect(templates.resourceTemplates).toEqual([
+          expect.objectContaining({
+            mimeType: 'text/plain; charset=utf-8',
+            name: 'Threadnote canonical resource',
+            uriTemplate: 'threadnote://{+resourcePath}',
+          }),
+        ]);
+        expect(templates.resourceTemplates[0]?._meta).toEqual({
+          'threadnote.io/max-resource-bytes': MCP_RESOURCE_READ_MAX_BYTES,
+        });
+      },
+      {toolset: 'core'},
+    );
+  });
+
+  it('reads one canonical Threadnote URI through the standard MCP resource protocol', async () => {
+    await withMcpClient(
+      async (client, fixture) => {
+        const uri = 'threadnote://user/test-user/memories/durable/projects/threadnote/protocol-resource.md';
+        const content = canonicalMemoryContent('protocol-resource', 'Protocol resource body.');
+        await writeCanonicalMemory(fixture.home, 'protocol-resource.md', content);
+
+        await expect(client.readResource({uri})).resolves.toEqual({
+          contents: [{mimeType: 'text/plain; charset=utf-8', text: content, uri}],
+        });
+      },
+      {toolset: 'core'},
+    );
+  });
+
+  it('rejects invalid, missing, and oversized protocol resources with bounded privacy-safe errors', async () => {
+    await withMcpClient(
+      async (client, fixture) => {
+        const missingUri =
+          'threadnote://user/test-user/memories/durable/projects/threadnote/missing-protocol-resource.md';
+        const crossUserUri =
+          'threadnote://user/other-user/memories/durable/projects/threadnote/private-protocol-resource.md';
+        const crossAccountUri = 'threadnote://resources/private-protocol-resource.txt';
+        const invalidUtf8Uri = 'threadnote://resources/invalid-utf8-protocol-resource.txt';
+        const oversizedUri =
+          'threadnote://user/test-user/memories/durable/projects/threadnote/oversized-protocol-resource.md';
+        await writeCanonicalMemory(
+          fixture.home,
+          'oversized-protocol-resource.md',
+          canonicalMemoryContent('oversized-protocol-resource', 'x'.repeat(MCP_RESOURCE_READ_MAX_BYTES)),
+        );
+        const foreignAccountResources = join(fixture.home, 'data', 'other-account', 'resources');
+        await mkdir(foreignAccountResources, {recursive: true});
+        await writeFile(
+          join(foreignAccountResources, 'private-protocol-resource.txt'),
+          'foreign account secret',
+          'utf8',
+        );
+        const activeAccountResources = join(fixture.home, 'data', 'local', 'resources');
+        await mkdir(activeAccountResources, {recursive: true});
+        await writeFile(join(activeAccountResources, 'invalid-utf8-protocol-resource.txt'), Uint8Array.of(0xc3, 0x28));
+
+        const invalidError = await client.readResource({uri: 'file:///tmp/private-memory.md'}).then(
+          () => undefined,
+          error => error as Error & {readonly code?: number; readonly data?: unknown},
+        );
+        expect(invalidError).toMatchObject({
+          code: -32602,
+          message: expect.stringContaining('canonical threadnote:// URI'),
+        });
+        expect(invalidError?.message).not.toContain('/tmp/private-memory.md');
+        expect(invalidError?.data).toBeUndefined();
+        await expect(client.readResource({uri: `${missingUri}/`})).rejects.toMatchObject({
+          code: -32602,
+          message: expect.stringContaining('canonical threadnote:// URI'),
+        });
+        await expect(
+          client.readResource({uri: missingUri.replace('threadnote://', 'viking://')}),
+        ).rejects.toMatchObject({
+          code: -32602,
+          message: expect.stringContaining('canonical threadnote:// URI'),
+        });
+        await expect(client.readResource({uri: missingUri})).rejects.toMatchObject({
+          code: -32002,
+          message: expect.stringContaining('Threadnote resource was not found.'),
+        });
+        const crossUserError = await client.readResource({uri: crossUserUri}).then(
+          () => undefined,
+          error => error as Error & {readonly code?: number; readonly data?: unknown},
+        );
+        expect(crossUserError).toMatchObject({
+          code: -32602,
+          message: expect.stringContaining('not readable in the active account'),
+        });
+        expect(crossUserError?.message).not.toContain('other-user');
+        expect(crossUserError?.data).toBeUndefined();
+        const crossAccountError = await client.readResource({uri: crossAccountUri}).then(
+          () => undefined,
+          error => error as Error & {readonly code?: number; readonly data?: unknown},
+        );
+        expect(crossAccountError).toMatchObject({
+          code: -32002,
+          message: expect.stringContaining('Threadnote resource was not found.'),
+        });
+        expect(crossAccountError?.message).not.toContain('other-account');
+        expect(crossAccountError?.message).not.toContain(fixture.root);
+        expect(crossAccountError?.data).toBeUndefined();
+        const invalidUtf8Error = await client.readResource({uri: invalidUtf8Uri}).then(
+          () => undefined,
+          error => error as Error & {readonly code?: number; readonly data?: unknown},
+        );
+        expect(invalidUtf8Error).toMatchObject({
+          code: -32603,
+          message: expect.stringContaining('Threadnote resource could not be read safely.'),
+        });
+        expect(invalidUtf8Error?.message).not.toContain('invalid-utf8-protocol-resource');
+        expect(invalidUtf8Error?.message).not.toContain(fixture.root);
+        expect(invalidUtf8Error?.data).toBeUndefined();
+        await expect(client.readResource({uri: oversizedUri})).rejects.toMatchObject({
+          code: -32602,
+          message: expect.stringContaining(
+            `Threadnote resource exceeds the ${MCP_RESOURCE_READ_MAX_BYTES}-byte resources/read limit; use read_context for a complete canonical read.`,
+          ),
+        });
+      },
+      {toolset: 'core'},
     );
   });
 
@@ -232,6 +413,189 @@ describe('Threadnote MCP toolsets', () => {
         expect(result.structuredContent).not.toHaveProperty('codeGraph');
       },
       {toolset: 'core'},
+    );
+  });
+
+  it('keeps progress opt-in and leaves unrelated tool handlers unchanged', async () => {
+    await withMcpClient(
+      async client => {
+        const progressUpdates: ThreadnoteProgress[] = [];
+        const result = await client.callTool({arguments: {}, name: 'list_context'}, undefined, {
+          onprogress: update => progressUpdates.push(update),
+          resetTimeoutOnProgress: true,
+          timeout: 5000,
+        });
+
+        expect(result.isError).not.toBe(true);
+        expect(progressUpdates).toEqual([]);
+      },
+      {toolset: 'core'},
+    );
+  });
+
+  it('records one-time recall pre-sync and read-only retrieval phases without private inputs', async () => {
+    await withMcpClient(
+      async (client, fixture) => {
+        const privateQuery = 'private-phase-timing-query-7788';
+        const progressUpdates: ThreadnoteProgress[] = [];
+        await writeFile(
+          join(fixture.home, 'layout.json'),
+          `${JSON.stringify({createdBy: 'threadnote', version: 2})}\n`,
+          'utf8',
+        );
+        await writeCanonicalMemory(
+          fixture.home,
+          'phase-timing.md',
+          canonicalMemoryContent('phase-timing', `Lexical anchor ${privateQuery}.`),
+        );
+
+        const result = await client.callTool(
+          {arguments: {project: 'threadnote', query: privateQuery}, name: 'recall_context'},
+          undefined,
+          {
+            onprogress: update => progressUpdates.push(update),
+            resetTimeoutOnProgress: true,
+            timeout: 5000,
+          },
+        );
+        expect(result.isError).not.toBe(true);
+
+        expectOrderedRecallProgress(progressUpdates);
+        expect(JSON.stringify(progressUpdates)).not.toContain(privateQuery);
+
+        const productionLog = await readFile(join(fixture.home, 'logs', 'threadnote.log'), 'utf8');
+        const entries = productionLog
+          .trim()
+          .split('\n')
+          .map(line => JSON.parse(line) as Record<string, unknown>);
+        const finished = entries
+          .filter(entry => entry.event === 'invocation.finished' && entry.operation === 'recall_context')
+          .at(-1);
+        const phaseTimings = finished?.phaseTimings as
+          readonly {readonly outcome: string; readonly phase: string}[] | undefined;
+
+        expect(phaseTimings?.filter(timing => timing.phase === 'recall.shared-sync')).toHaveLength(1);
+        expect(phaseTimings?.filter(timing => timing.phase === 'recall.obsidian-sync')).toHaveLength(1);
+        expect(phaseTimings?.filter(timing => timing.phase === 'recall.semantic-retrieval')).toHaveLength(1);
+        expect(phaseTimings?.filter(timing => timing.phase === 'recall.lexical-ranking').length).toBeGreaterThanOrEqual(
+          1,
+        );
+        expect(phaseTimings?.find(timing => timing.phase === 'recall.semantic-retrieval')?.outcome).toBe('unavailable');
+        expect(productionLog).not.toContain(privateQuery);
+      },
+      {toolset: 'core'},
+    );
+  });
+
+  it('keeps eight concurrent recall progress streams request-local under load', async () => {
+    await withMcpClient(
+      async client => {
+        const calls = await Promise.all(
+          Array.from({length: 8}, async (_, index) => {
+            const privateQuery = `private-concurrent-progress-${index}-7788`;
+            const progressUpdates: ThreadnoteProgress[] = [];
+            const result = await client.callTool(
+              {arguments: {project: 'threadnote', query: privateQuery}, name: 'recall_context'},
+              undefined,
+              {
+                onprogress: update => progressUpdates.push(update),
+                resetTimeoutOnProgress: true,
+                timeout: 10_000,
+              },
+            );
+            return {privateQuery, progressUpdates, result};
+          }),
+        );
+
+        for (const {privateQuery, progressUpdates, result} of calls) {
+          expect(result.isError).not.toBe(true);
+          expectRequestLocalRecallProgress(progressUpdates);
+          expect(JSON.stringify(progressUpdates)).not.toContain(privateQuery);
+        }
+      },
+      {toolset: 'core'},
+    );
+  });
+
+  it('repeats real stdio heartbeats until response or cancellation without reordering phases', async () => {
+    await withMcpClient(
+      async (client, fixture) => {
+        const privateQuery = 'private-short-heartbeat-query-7788';
+        await Promise.all(
+          Array.from({length: 128}, (_, index) =>
+            writeCanonicalMemory(
+              fixture.home,
+              `short-heartbeat-${index.toString().padStart(3, '0')}.md`,
+              canonicalMemoryContent(
+                `short-heartbeat-${index}`,
+                `${privateQuery} bounded lexical corpus entry ${index}.`,
+              ),
+            ),
+          ),
+        );
+
+        const protocolErrors: Error[] = [];
+        const originalOnError = client.onerror;
+        client.onerror = error => protocolErrors.push(error);
+        try {
+          const completedUpdates: ThreadnoteProgress[] = [];
+          const completed = await client.callTool(
+            {arguments: {project: 'threadnote', query: privateQuery}, name: 'recall_context'},
+            undefined,
+            {
+              maxTotalTimeout: 10_000,
+              onprogress: update => completedUpdates.push(update),
+              resetTimeoutOnProgress: true,
+              timeout: 5_000,
+            },
+          );
+          expect(completed.isError).not.toBe(true);
+          const completedPhases = expectOrderedRecallProgress(completedUpdates);
+          expect(completedPhases.some((phase, index) => index > 0 && phase === completedPhases[index - 1])).toBe(true);
+          expect(JSON.stringify(completedUpdates)).not.toContain(privateQuery);
+          await new Promise(resolve => setTimeout(resolve, 150));
+          expect(protocolErrors).toEqual([]);
+
+          const controller = new AbortController();
+          const cancelledUpdates: ThreadnoteProgress[] = [];
+          const cancelled = client.callTool(
+            {arguments: {project: 'threadnote', query: privateQuery}, name: 'recall_context'},
+            undefined,
+            {
+              maxTotalTimeout: 10_000,
+              onprogress: update => {
+                cancelledUpdates.push(update);
+                if (!controller.signal.aborted) controller.abort();
+              },
+              resetTimeoutOnProgress: true,
+              signal: controller.signal,
+              timeout: 5_000,
+            },
+          );
+
+          await expect(cancelled).rejects.toMatchObject({
+            code: -32_001,
+            message: expect.stringContaining('AbortError'),
+          });
+          expect(controller.signal.aborted).toBe(true);
+          expect(recallProgressPhases(cancelledUpdates)).toEqual(['recall.shared-sync']);
+          await new Promise(resolve => setTimeout(resolve, 400));
+          expect(protocolErrors).toEqual([]);
+
+          const followUp = await client.callTool({arguments: {}, name: 'list_context'}, undefined, {timeout: 5_000});
+          expect(followUp.isError).not.toBe(true);
+        } finally {
+          client.onerror = originalOnError;
+        }
+      },
+      {
+        environment: {
+          NODE_ENV: 'test',
+          THREADNOTE_TEST_MCP_PROGRESS_HEARTBEAT_MILLISECONDS: '100',
+          THREADNOTE_TEST_MCP_PROGRESS_SHARED_SYNC_DELAY_MILLISECONDS: '300',
+        },
+        toolset: 'core',
+      },
     );
   });
 

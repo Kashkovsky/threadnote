@@ -20,10 +20,13 @@ import {
   CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION,
   CodeGraphStore,
   codeGraphPersistentExtensionSchemaCompatible,
+  codeGraphRemovedViewCleanupSchemaAdmission,
   type CodeGraphDatabaseHealth,
 } from './store.js';
 import {CODE_GRAPH_SCHEMA_VERSION, type CodeGraphSnapshot} from './types.js';
 import {BUILTIN_LANGUAGE_PACK_REGISTRY} from './languages/registry.js';
+
+const CODE_GRAPH_EXPLICIT_SCHEMA_PREPARATION_STEP_LIMIT = 8;
 
 export interface CodeGraphRepairSummary {
   readonly databases: number;
@@ -99,7 +102,7 @@ export interface CodeGraphMaintenanceProgress {
   readonly current: number;
   readonly phase:
     'checking' | 'cleaning-snapshots' | 'cleaning-vectors' | 'deferred' | 'discarding' | 'migrating-schema';
-  readonly reason?: 'active-build' | 'deep-check-required' | 'schema-upgrade-on-use';
+  readonly reason?: 'active-build' | 'deep-check-required' | 'schema-upgrade-on-use' | 'unreadable-database';
   readonly snapshots?: number;
   readonly total: number;
 }
@@ -271,14 +274,13 @@ export const diagnoseCodeGraphDatabaseReadOnly = Effect.fn('codeGraph.diagnoseDa
       const schemaRows = yield* sql<{readonly value: string}>`
         SELECT value FROM schema_metadata WHERE key = 'schema_version'
       `;
-      const extensionRevisionRows = yield* sql<{readonly value: string}>`
-        SELECT value FROM schema_metadata WHERE key = 'persistent_extension_schema_revision'
-      `;
       const schemaVersion = Number.parseInt(schemaRows[0]?.value ?? '', 10);
-      const persistentExtensionSchemaRevision = Number.parseInt(extensionRevisionRows[0]?.value ?? '', 10);
+      const cleanupAdmission = yield* codeGraphRemovedViewCleanupSchemaAdmission(sql);
+      const persistentExtensionSchemaRevision = cleanupAdmission.persistentExtensionSchemaRevision;
       const persistentExtensionCurrent =
         persistentExtensionSchemaRevision === CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION &&
-        (yield* codeGraphPersistentExtensionSchemaCompatible(sql));
+        (yield* codeGraphPersistentExtensionSchemaCompatible(sql)) &&
+        cleanupAdmission.current;
       const stateRows = yield* sql<{readonly count: number; readonly state: CodeGraphSnapshot['state']}>`
         SELECT state, COUNT(*) AS count FROM snapshots GROUP BY state
       `;
@@ -303,9 +305,7 @@ export const diagnoseCodeGraphDatabaseReadOnly = Effect.fn('codeGraph.diagnoseDa
               ? 'ok'
               : 'corrupt',
         readySnapshots: counts.get('ready') ?? 0,
-        persistentExtensionSchemaRevision: Number.isSafeInteger(persistentExtensionSchemaRevision)
-          ? persistentExtensionSchemaRevision
-          : undefined,
+        persistentExtensionSchemaRevision,
         schemaVersion: Number.isSafeInteger(schemaVersion) ? schemaVersion : undefined,
       } satisfies CodeGraphDatabaseHealth;
     }).pipe(
@@ -372,13 +372,29 @@ export const repairCodeGraphIndexes = Effect.fn('codeGraph.repairIndexes')(funct
                     diagnosed.value.integrity === 'incompatible'
                   ) {
                     if (options.migrateSchema) {
-                      migratedDatabases += 1;
                       yield* progress({phase: 'migrating-schema'});
-                      if (dryRun) return 'maintained' as const;
+                      if (dryRun) {
+                        migratedDatabases += 1;
+                        return 'maintained' as const;
+                      }
+                      if (diagnosed.value.persistentExtensionSchemaRevision === 7) {
+                        let preparation = yield* store.prepareWorktreeReconciliationIndexes(database);
+                        for (
+                          let step = 1;
+                          preparation.state === 'prepared' && step < CODE_GRAPH_EXPLICIT_SCHEMA_PREPARATION_STEP_LIMIT;
+                          step += 1
+                        ) {
+                          preparation = yield* store.prepareWorktreeReconciliationIndexes(database);
+                        }
+                        if (preparation.state !== 'ready') return 'schema-upgrade-on-use' as const;
+                      }
                       yield* store.initialize(database);
                       diagnosed = deep
                         ? yield* store.diagnose(database).pipe(Effect.option)
                         : yield* diagnoseCodeGraphDatabaseReadOnly(database, false).pipe(Effect.option);
+                      if (diagnosed._tag === 'Some' && diagnosed.value?.integrity === 'ok') {
+                        migratedDatabases += 1;
+                      }
                     } else {
                       // Same-version beta databases with a missing revision or an
                       // incompatible extension-table contract are recoverable on the
@@ -389,7 +405,13 @@ export const repairCodeGraphIndexes = Effect.fn('codeGraph.repairIndexes')(funct
                       return 'schema-upgrade-on-use' as const;
                     }
                   }
-                  if (diagnosed._tag === 'None' || diagnosed.value?.integrity !== 'ok') {
+                  // A failed diagnostic is not evidence of corruption. In particular,
+                  // transient I/O, permissions, or an unreadable schema must never turn
+                  // an explicit deep check into recursive deletion of the graph store.
+                  if (diagnosed._tag === 'None' || diagnosed.value === undefined) {
+                    return deep ? ('unreadable-database' as const) : ('deep-check-required' as const);
+                  }
+                  if (diagnosed.value.integrity !== 'ok') {
                     return deep ? ('discard' as const) : ('deep-check-required' as const);
                   }
                   const incomplete = diagnosed.value.buildingSnapshots + diagnosed.value.failedSnapshots;

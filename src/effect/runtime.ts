@@ -14,6 +14,7 @@ import {CodeGraphIndexer} from '../code_graph/indexer.js';
 import {CodeGraphQueryService} from '../code_graph/query.js';
 import {CodeGraphEmbeddingIndex} from '../code_graph/embedding.js';
 import {CodeGraphWatcher} from '../code_graph/watcher.js';
+import {CodeGraphMaintenanceCoordinator} from '../code_graph/maintenance_coordinator.js';
 import {CodeGraphLanguagePackRegistry} from '../code_graph/languages/registry.js';
 import {TreeSitterRuntime} from '../code_graph/tree_sitter/runtime.js';
 import {CodeGraphAnalysis} from '../code_graph/analysis.js';
@@ -34,6 +35,9 @@ const localModelCatalogLayer = LocalModelCatalog.layer(BUILTIN_MODEL_MANIFESTS);
 // the CLI or MCP process still stores the canonical memory.
 const localModelRuntimeLayer = isolatedLocalModelRuntimeLayer().pipe(Layer.provideMerge(systemLayer));
 const codeGraphStoreLayer = CodeGraphStore.layer.pipe(Layer.provideMerge(systemLayer));
+const codeGraphMaintenanceCoordinatorLayer = CodeGraphMaintenanceCoordinator.layer.pipe(
+  Layer.provideMerge(Layer.merge(codeGraphStoreLayer, commandLayer)),
+);
 const codeGraphAnalysisLayer = CodeGraphAnalysis.layer.pipe(Layer.provideMerge(codeGraphStoreLayer));
 const treeSitterRuntimeLayer = TreeSitterRuntime.layer.pipe(Layer.provide(systemLayer));
 const codeGraphParserPoolLayer = CodeGraphParserPool.layer.pipe(Layer.provideMerge(systemLayer));
@@ -45,6 +49,7 @@ const codeGraphIndexerLayer = CodeGraphIndexer.layer.pipe(
   Layer.provideMerge(
     Layer.mergeAll(
       codeGraphStoreLayer,
+      codeGraphMaintenanceCoordinatorLayer,
       codeGraphEmbeddingLayer,
       codeGraphLanguagePackLayer,
       codeGraphParserPoolLayer,

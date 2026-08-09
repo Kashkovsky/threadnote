@@ -225,6 +225,66 @@ describe('code graph workspace properties', () => {
   });
 
   it.prop(
+    'reports ambiguous local dependency aliases independently of inventory order instead of silently dropping them',
+    {priorities: FC.array(FC.integer(), {maxLength: 7, minLength: 7})},
+    ({priorities}) => {
+      const ambiguous = [
+        workspaceFile(
+          'package.json',
+          JSON.stringify({name: 'root', private: true, workspaces: ['packages/*']}),
+          'npm-manifest',
+        ),
+        workspaceFile('packages/first/package.json', JSON.stringify({name: '@acme/shared'}), 'npm-manifest'),
+        workspaceFile('packages/first/index.ts', 'export const first = true', 'typescript'),
+        workspaceFile('packages/second/package.json', JSON.stringify({name: '@acme/shared'}), 'npm-manifest'),
+        workspaceFile('packages/second/index.ts', 'export const second = true', 'typescript'),
+        workspaceFile(
+          'packages/app/package.json',
+          JSON.stringify({dependencies: {'@acme/shared': 'workspace:*'}, name: '@acme/app'}),
+          'npm-manifest',
+        ),
+        workspaceFile('packages/app/index.ts', 'export const app = true', 'typescript'),
+      ];
+      const forward = discoverManifestWorkspace(ambiguous);
+      const permuted = discoverManifestWorkspace(
+        ambiguous
+          .map((file, index) => ({file, index, priority: priorities[index]!}))
+          .sort((left, right) => left.priority - right.priority || left.index - right.index)
+          .map(value => value.file),
+      );
+
+      expect(permuted).toEqual(forward);
+      expect(forward.diagnostics).toContain(
+        'packages/app/package.json: local dependency alias @acme/shared matched multiple declared projects',
+      );
+      expect(forward.projects.find(project => project.name === '@acme/app')?.dependencies).toEqual([]);
+    },
+    {fastCheck: {numRuns: 100}},
+  );
+
+  it('marks standalone unreconciled project.json boundaries incomplete while accepting one declared exact root', () => {
+    const workspace = discoverManifestWorkspace([
+      workspaceFile(
+        'package.json',
+        JSON.stringify({name: 'root', private: true, workspaces: ['apps/*']}),
+        'npm-manifest',
+      ),
+      workspaceFile('apps/web/project.json', JSON.stringify({name: 'web'}), 'json'),
+      workspaceFile('apps/web/package.json', JSON.stringify({name: '@acme/web'}), 'npm-manifest'),
+      workspaceFile('apps/web/index.ts', 'export const web = true', 'typescript'),
+      workspaceFile('orphan/project.json', JSON.stringify({name: 'orphan'}), 'json'),
+      workspaceFile('orphan/index.ts', 'export const orphan = true', 'typescript'),
+    ]);
+
+    expect(workspace.diagnostics).not.toContain(
+      'apps/web/project.json: Nx project boundary is not reconciled to exactly one declared package root',
+    );
+    expect(workspace.diagnostics).toContain(
+      'orphan/project.json: Nx project boundary is not reconciled to exactly one declared package root',
+    );
+  });
+
+  it.prop(
     'merges duplicate detector projects commutatively, associatively, and idempotently',
     {fragments: FC.array(workspaceFragmentArbitrary, {maxLength: 8, minLength: 2})},
     ({fragments}) => {

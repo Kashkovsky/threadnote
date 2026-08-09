@@ -1,6 +1,7 @@
 import {Clock, Effect, Option, Path, Ref} from 'effect';
 import {fromPromiseError} from '../effect/errors.js';
 import {SystemInfo, type SystemInfoShape} from '../effect/system.js';
+import {pollUntilEffect} from '../effect/time.js';
 
 import {
   CODE_GRAPH_BUILD_HEARTBEAT_INTERVAL_MILLISECONDS,
@@ -17,6 +18,9 @@ import type {CodeGraphProgress} from './types.js';
 export const BUILD_STATUS_POLL_MILLISECONDS = CODE_GRAPH_BUILD_HEARTBEAT_INTERVAL_MILLISECONDS;
 /** Give up awaiting a wedged foreign builder after this much continuous stall. */
 export const EXISTING_BUILDER_STALLED_TIMEOUT_MILLISECONDS = CODE_GRAPH_BUILD_STALE_AFTER_MILLISECONDS * 4;
+/** Allow an atomically-renamed completion sidecar a short, bounded window to become observable after child exit. */
+export const ISOLATED_BUILDER_RESULT_GRACE_MILLISECONDS = 2_000;
+export const ISOLATED_BUILDER_RESULT_POLL_MILLISECONDS = 100;
 const STDERR_TAIL_LIMIT_BYTES = 4 * 1024;
 
 export interface CodeGraphIsolatedBuilderSpawnPlan {
@@ -111,6 +115,7 @@ export function codeGraphProgressFromBuildStatus(
       return {
         phase: 'waiting',
         ...(status.subphase === 'database-writer' ||
+        status.subphase === 'disk-capacity' ||
         status.subphase === 'repository-lock' ||
         status.subphase === 'request-lock' ||
         status.subphase === 'snapshot-build'
@@ -231,21 +236,27 @@ export const runIsolatedCodeGraphIndex = Effect.fn('codeGraph.isolatedBuilder.ru
   const spawn = options.spawn ?? spawnIsolatedBuilderProcess;
   // Detach on interruption: do not kill multi-hour builds when the MCP host goes idle or reconnects.
   const child = yield* fromPromiseError(() => Promise.resolve(spawn(plan)));
+  const observedBuildId = yield* Ref.make<string | undefined>(undefined);
 
   const exitCode = yield* Effect.raceFirst(
     fromPromiseError(() => child.exited),
-    mirrorBuildStatusProgress(readStatus, child.processId, priorBuildId, options.onProgress),
+    mirrorBuildStatusProgress(readStatus, child.processId, priorBuildId, observedBuildId, options.onProgress),
   );
 
   if (exitCode !== 0) {
-    const failed = yield* statusOwnedBy(readStatus, child.processId, priorBuildId);
+    // A failed child is never rescued by a later sidecar; only enrich its failure with the exact owned status.
+    const failed = yield* statusOwnedBy(readStatus, child.processId, priorBuildId, yield* Ref.get(observedBuildId));
     return yield* Effect.fail(
       new Error(isolatedBuilderFailureMessage(exitCode, failed?.error?.summary, child.stderrTail?.())),
     );
   }
 
-  const completed = yield* statusOwnedBy(readStatus, child.processId, priorBuildId);
-  return yield* isolatedBuilderResultFromCompletedStatus(completed);
+  return yield* awaitOwnedIsolatedBuilderResult(
+    readStatus,
+    child.processId,
+    priorBuildId,
+    yield* Ref.get(observedBuildId),
+  );
 });
 
 /** @internal Pure exit/result contract for unit tests. */
@@ -273,6 +284,38 @@ export function isolatedBuilderResultFromCompletedStatus(
   return Effect.fail(new Error('isolated graph index finished without writing a build result'));
 }
 
+/** @internal Bounded completion-sidecar grace used after a successful isolated child exit. */
+export function awaitOwnedIsolatedBuilderResult<E, R>(
+  readStatus: Effect.Effect<ObservedCodeGraphBuildStatus | undefined, E, R>,
+  childProcessId: number,
+  priorBuildId: string | undefined,
+  observedBuildId?: string,
+  options: {
+    readonly pollMilliseconds?: number;
+    readonly timeoutMilliseconds?: number;
+  } = {},
+): Effect.Effect<CodeGraphIsolatedBuilderResult, E | Error, R> {
+  return Effect.gen(function* () {
+    let expectedBuildId = observedBuildId;
+    const completed = yield* pollUntilEffect(
+      readStatus.pipe(
+        Effect.map(status => {
+          if (!status || !statusBelongsToChild(status, childProcessId, priorBuildId, expectedBuildId)) {
+            return undefined;
+          }
+          expectedBuildId ??= status.buildId;
+          return status.result ? status : undefined;
+        }),
+      ),
+      {
+        intervalMs: options.pollMilliseconds ?? ISOLATED_BUILDER_RESULT_POLL_MILLISECONDS,
+        timeoutMs: options.timeoutMilliseconds ?? ISOLATED_BUILDER_RESULT_GRACE_MILLISECONDS,
+      },
+    );
+    return yield* isolatedBuilderResultFromCompletedStatus(completed);
+  });
+}
+
 function omitStartedAt<T extends {readonly startedAt: string}>(value: T): Omit<T, 'startedAt'> {
   const {startedAt: _startedAt, ...rest} = value;
   return rest;
@@ -291,10 +334,11 @@ export function statusBelongsToChild(
   status: ObservedCodeGraphBuildStatus,
   childProcessId: number,
   priorBuildId: string | undefined,
+  expectedBuildId?: string,
 ): boolean {
-  if (status.owner.processId === childProcessId) return true;
+  if (status.owner.processId !== childProcessId) return false;
   if (priorBuildId && status.buildId === priorBuildId) return false;
-  return false;
+  return expectedBuildId === undefined || status.buildId === expectedBuildId;
 }
 
 /** @internal Exported for unit tests. */
@@ -372,9 +416,12 @@ function statusOwnedBy<E, R>(
   readStatus: Effect.Effect<ObservedCodeGraphBuildStatus | undefined, E, R>,
   childProcessId: number,
   priorBuildId: string | undefined,
+  expectedBuildId?: string,
 ) {
   return readStatus.pipe(
-    Effect.map(status => (status && statusBelongsToChild(status, childProcessId, priorBuildId) ? status : undefined)),
+    Effect.map(status =>
+      status && statusBelongsToChild(status, childProcessId, priorBuildId, expectedBuildId) ? status : undefined,
+    ),
   );
 }
 
@@ -427,15 +474,20 @@ function mirrorBuildStatusProgress<E, R>(
   readStatus: Effect.Effect<ObservedCodeGraphBuildStatus | undefined, E, R>,
   childProcessId: number,
   priorBuildId: string | undefined,
+  observedBuildId: Ref.Ref<string | undefined>,
   onProgress: CodeGraphIsolatedBuilderOptions['onProgress'],
 ) {
   // Never succeed or fail: only the child's exit should settle the race. Progress errors must not kill the build.
   return Effect.forever(
     Effect.gen(function* () {
-      const status = yield* statusOwnedBy(readStatus, childProcessId, priorBuildId).pipe(
-        Effect.catch(() => Effect.succeed(undefined as ObservedCodeGraphBuildStatus | undefined)),
-      );
+      const status = yield* statusOwnedBy(
+        readStatus,
+        childProcessId,
+        priorBuildId,
+        yield* Ref.get(observedBuildId),
+      ).pipe(Effect.catch(() => Effect.succeed(undefined as ObservedCodeGraphBuildStatus | undefined)));
       if (status) {
+        yield* Ref.update(observedBuildId, current => current ?? status.buildId);
         yield* emitProgress(onProgress, codeGraphProgressFromBuildStatus(status));
       } else {
         yield* emitProgress(onProgress, {phase: 'registering'});

@@ -13,6 +13,17 @@ import {codeGraphVectorWriteLockPath, type CodeGraphLayout} from './layout.js';
 import {compareCodeUnits} from './ordering.js';
 import type {CodeGraphProgress, CodeGraphSnapshot, CodeGraphSymbol} from './types.js';
 import type {CodeGraphSymbolCursor} from './store.js';
+import {
+  CODE_GRAPH_VECTOR_GENERATIONS_TABLE_SQL,
+  CODE_GRAPH_VECTOR_POINTER_GENERATION_INDEX_SQL,
+  CODE_GRAPH_VECTOR_POINTERS_TABLE_SQL,
+  CODE_GRAPH_VECTOR_REUSE_INDEX_SQL,
+  CODE_GRAPH_VECTORS_TABLE_SQL,
+  initializeCodeGraphVectorRetirementSchema,
+  makeCodeGraphVectorRetirementCapacityProtector,
+  prepareCodeGraphVectorRetirement,
+  requireCodeGraphVectorRetirementSchema,
+} from './vector_retirement.js';
 
 const CODE_GRAPH_EMBEDDING_TEMPLATE_VERSION = 1;
 const CODE_GRAPH_VECTOR_DATABASE_VERSION = 2;
@@ -83,7 +94,6 @@ export interface CodeGraphEmbeddingIndexShape {
     snapshot: CodeGraphSnapshot,
     symbols: CodeGraphEmbeddingSymbolSource,
     options?: {
-      readonly activeWorktreeIds?: ReadonlySet<string>;
       readonly force?: boolean;
       readonly onProgress?: (progress: CodeGraphProgress) => Effect.Effect<void, unknown>;
     },
@@ -118,7 +128,6 @@ export class CodeGraphEmbeddingIndex extends Context.Service<CodeGraphEmbeddingI
           ),
         ensure: (threadnoteHome, layout, snapshot, symbols, options) =>
           ensureGraphVectors({
-            activeWorktreeIds: options?.activeWorktreeIds,
             catalog,
             force: options?.force === true,
             fs,
@@ -178,7 +187,7 @@ const checkGraphVectors = Effect.fn('codeGraph.checkVectors')(function* (input: 
     databasePath,
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
-      yield* initializeVectorDatabase(sql);
+      yield* requireVectorDatabaseReady(sql);
       const active = yield* selectActiveGeneration(sql, requiredWorktreeId(input.layout));
       if (
         !active ||
@@ -199,7 +208,6 @@ const checkGraphVectors = Effect.fn('codeGraph.checkVectors')(function* (input: 
 });
 
 const ensureGraphVectors = Effect.fn('codeGraph.ensureVectors')(function* (input: {
-  readonly activeWorktreeIds?: ReadonlySet<string>;
   readonly catalog: LocalModelCatalogShape;
   readonly force: boolean;
   readonly fs: FileSystem.FileSystem;
@@ -212,6 +220,8 @@ const ensureGraphVectors = Effect.fn('codeGraph.ensureVectors')(function* (input
   readonly symbols: CodeGraphEmbeddingSymbolSource;
   readonly threadnoteHome: string;
 }) {
+  const crypto = yield* Crypto.Crypto;
+  const system = yield* SystemInfo;
   const selected = yield* selectedEmbeddingModel(input.threadnoteHome, input.catalog, input.modelStore).pipe(
     Effect.catch(cause => Effect.succeed({reason: messageOf(cause)} as const)),
   );
@@ -227,6 +237,24 @@ const ensureGraphVectors = Effect.fn('codeGraph.ensureVectors')(function* (input
   );
   const worktreeId = requiredWorktreeId(input.layout);
   yield* input.fs.makeDirectory(root, {recursive: true, mode: 0o700});
+  if (yield* input.fs.exists(databasePath)) {
+    const capacityProtector = yield* makeCodeGraphVectorRetirementCapacityProtector({
+      databasePath,
+      threadnoteHome: input.threadnoteHome,
+    });
+    yield* prepareCodeGraphVectorRetirement(databasePath, {
+      capacityProtector: (boundary, transaction, storage) =>
+        capacityProtector(
+          boundary,
+          withExclusiveFileLock(input.fs, writeLockPath, CODE_GRAPH_VECTOR_WRITE_LOCK_OPTIONS, transaction).pipe(
+            Effect.provideService(Crypto.Crypto, crypto),
+            Effect.provideService(Path.Path, input.path),
+            Effect.provideService(SystemInfo, system),
+          ),
+          storage,
+        ),
+    });
+  }
   const status = yield* withExclusiveFileLock(
     input.fs,
     writeLockPath,
@@ -236,14 +264,6 @@ const ensureGraphVectors = Effect.fn('codeGraph.ensureVectors')(function* (input
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         yield* initializeVectorDatabase(sql);
-        // A stale building generation can only remain after the previous lock
-        // owner exited. Deleting it while holding this lock cannot invalidate a
-        // live linked-worktree writer.
-        yield* sql`DELETE FROM vector_generations WHERE state = 'building'`;
-        if (input.activeWorktreeIds) {
-          yield* reconcileVectorPointers(sql, new Set([...input.activeWorktreeIds, worktreeId]));
-        }
-
         const active = yield* selectActiveGeneration(sql, worktreeId);
         if (
           !input.force &&
@@ -252,7 +272,6 @@ const ensureGraphVectors = Effect.fn('codeGraph.ensureVectors')(function* (input
           active.template_version === CODE_GRAPH_EMBEDDING_TEMPLATE_VERSION &&
           active.dimensions === selected.manifest.dimensions
         ) {
-          yield* pruneVectorGenerations(sql);
           return {embedded: 0, modelId: selected.manifest.id, ready: true, reused: active.count};
         }
 
@@ -266,7 +285,6 @@ const ensureGraphVectors = Effect.fn('codeGraph.ensureVectors')(function* (input
             );
         if (exact) {
           yield* activateVectorGeneration(sql, worktreeId, exact.generation);
-          yield* pruneVectorGenerations(sql);
           return {embedded: 0, modelId: selected.manifest.id, ready: true, reused: exact.count};
         }
 
@@ -312,12 +330,8 @@ const ensureGraphVectors = Effect.fn('codeGraph.ensureVectors')(function* (input
               }),
             ),
           ),
-          Effect.onError(() =>
-            sql`DELETE FROM vector_generations WHERE generation = ${generation}`.pipe(Effect.ignore),
-          ),
         );
         const built = yield* build;
-        yield* pruneVectorGenerations(sql);
         yield* sql.unsafe('PRAGMA wal_checkpoint(TRUNCATE)');
         return {
           embedded: built.embedded,
@@ -462,7 +476,7 @@ const searchGraphVectors = Effect.fn('codeGraph.searchVectors')(function* (input
     databasePath,
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
-      yield* initializeVectorDatabase(sql);
+      yield* requireVectorDatabaseReady(sql);
       const active = yield* selectActiveGeneration(sql, requiredWorktreeId(input.layout));
       if (
         !active ||
@@ -691,54 +705,54 @@ function useVectorDatabase<A, E, R>(
   databasePath: string,
   effect: Effect.Effect<A, E, R | SqlClient.SqlClient>,
 ): Effect.Effect<A, E, Exclude<R, SqlClient.SqlClient>> {
-  return Effect.scoped(effect.pipe(Effect.provide(SqliteClient.layer({filename: databasePath})))) as Effect.Effect<
-    A,
-    E,
-    Exclude<R, SqlClient.SqlClient>
-  >;
+  return Effect.scoped(
+    effect.pipe(Effect.provide(SqliteClient.layer({disableWAL: true, filename: databasePath}))),
+  ) as Effect.Effect<A, E, Exclude<R, SqlClient.SqlClient>>;
 }
 
 const initializeVectorDatabase = Effect.fn('codeGraph.initializeVectorDatabase')(function* (sql: SqlClient.SqlClient) {
   yield* sql.unsafe('PRAGMA foreign_keys = ON');
   yield* sql.unsafe('PRAGMA busy_timeout = 5000');
-  yield* sql.unsafe('PRAGMA journal_mode = WAL');
   const versions = yield* sql.unsafe<{readonly user_version: number}>('PRAGMA user_version');
   const version = Number(versions[0]?.user_version ?? 0);
-  if (version !== 0 && version !== CODE_GRAPH_VECTOR_DATABASE_VERSION) {
-    yield* sql.unsafe('DROP TABLE IF EXISTS vector_pointers');
-    yield* sql.unsafe('DROP TABLE IF EXISTS vectors');
-    yield* sql.unsafe('DROP TABLE IF EXISTS vector_generations');
+  if (version === CODE_GRAPH_VECTOR_DATABASE_VERSION) {
+    yield* requireVectorDatabaseReady(sql);
+    yield* sql.unsafe('PRAGMA journal_mode = WAL');
+    return;
   }
-  yield* sql.unsafe(`
-    CREATE TABLE IF NOT EXISTS vector_generations (
-      generation TEXT PRIMARY KEY,
-      snapshot_id TEXT NOT NULL,
-      model_id TEXT NOT NULL,
-      model_sha256 TEXT NOT NULL,
-      dimensions INTEGER NOT NULL CHECK(dimensions > 0),
-      template_version INTEGER NOT NULL,
-      count INTEGER NOT NULL CHECK(count >= 0),
-      state TEXT NOT NULL CHECK(state IN ('building', 'ready')),
-      created_at TEXT NOT NULL
-    )
-  `);
-  yield* sql.unsafe(`
-    CREATE TABLE IF NOT EXISTS vector_pointers (
-      worktree_id TEXT PRIMARY KEY,
-      generation TEXT NOT NULL REFERENCES vector_generations(generation) ON DELETE CASCADE
-    )
-  `);
-  yield* sql.unsafe(`
-    CREATE TABLE IF NOT EXISTS vectors (
-      generation TEXT NOT NULL REFERENCES vector_generations(generation) ON DELETE CASCADE,
-      symbol_id TEXT NOT NULL,
-      fingerprint TEXT NOT NULL,
-      vector BLOB NOT NULL,
-      PRIMARY KEY (generation, symbol_id)
-    ) WITHOUT ROWID
-  `);
-  yield* sql.unsafe('CREATE INDEX IF NOT EXISTS vector_reuse_lookup ON vectors (generation, symbol_id, fingerprint)');
-  yield* sql.unsafe(`PRAGMA user_version = ${CODE_GRAPH_VECTOR_DATABASE_VERSION}`);
+  if (version !== 0) {
+    return yield* Effect.fail(new Error('Code graph vector database version is unsupported.'));
+  }
+  const objects = yield* sql.unsafe(
+    `SELECT 1 FROM sqlite_master
+     WHERE name NOT LIKE 'sqlite_%' COLLATE NOCASE
+     LIMIT 1`,
+  );
+  if (objects.length !== 0) {
+    return yield* Effect.fail(new Error('Code graph vector database initialization is incomplete.'));
+  }
+  yield* sql.withTransaction(
+    Effect.gen(function* () {
+      yield* sql.unsafe(CODE_GRAPH_VECTOR_GENERATIONS_TABLE_SQL);
+      yield* sql.unsafe(CODE_GRAPH_VECTOR_POINTERS_TABLE_SQL);
+      yield* sql.unsafe(CODE_GRAPH_VECTOR_POINTER_GENERATION_INDEX_SQL);
+      yield* sql.unsafe(CODE_GRAPH_VECTORS_TABLE_SQL);
+      yield* sql.unsafe(CODE_GRAPH_VECTOR_REUSE_INDEX_SQL);
+      yield* initializeCodeGraphVectorRetirementSchema(sql);
+      yield* sql.unsafe(`PRAGMA user_version = ${CODE_GRAPH_VECTOR_DATABASE_VERSION}`);
+    }),
+  );
+  yield* sql.unsafe('PRAGMA journal_mode = WAL');
+});
+
+const requireVectorDatabaseReady = Effect.fn('codeGraph.requireVectorDatabaseReady')(function* (
+  sql: SqlClient.SqlClient,
+) {
+  const versions = yield* sql.unsafe<{readonly user_version: unknown}>('PRAGMA user_version');
+  if (versions.length !== 1 || versions[0]?.user_version !== CODE_GRAPH_VECTOR_DATABASE_VERSION) {
+    return yield* Effect.fail(new Error('Code graph vector database version is unsupported.'));
+  }
+  yield* requireCodeGraphVectorRetirementSchema(sql);
 });
 
 const selectActiveGeneration = Effect.fn('codeGraph.selectActiveVectorGeneration')(function* (
@@ -750,6 +764,10 @@ const selectActiveGeneration = Effect.fn('codeGraph.selectActiveVectorGeneration
      FROM vector_pointers AS pointer
      JOIN vector_generations AS generation ON generation.generation = pointer.generation
      WHERE pointer.worktree_id = ? AND generation.state = 'ready'
+       AND NOT EXISTS (
+         SELECT 1 FROM vector_generation_retirements AS retirement
+         WHERE retirement.generation = generation.generation
+       )
      LIMIT 1`,
     [worktreeId],
   );
@@ -769,6 +787,10 @@ const selectGenerationForSnapshot = Effect.fn('codeGraph.selectVectorGenerationF
        AND dimensions = ?
        AND template_version = ?
        AND state = 'ready'
+       AND NOT EXISTS (
+         SELECT 1 FROM vector_generation_retirements AS retirement
+         WHERE retirement.generation = vector_generations.generation
+       )
      ORDER BY created_at DESC, generation DESC
      LIMIT 1`,
     [snapshotId, modelSha256, dimensions, CODE_GRAPH_EMBEDDING_TEMPLATE_VERSION],
@@ -784,6 +806,10 @@ const selectMostRecentCompatibleGeneration = Effect.fn('codeGraph.selectMostRece
        AND dimensions = ?
        AND template_version = ?
        AND state = 'ready'
+       AND NOT EXISTS (
+         SELECT 1 FROM vector_generation_retirements AS retirement
+         WHERE retirement.generation = vector_generations.generation
+       )
      ORDER BY created_at DESC, generation DESC
      LIMIT 1`,
       [modelSha256, dimensions, CODE_GRAPH_EMBEDDING_TEMPLATE_VERSION],
@@ -798,39 +824,6 @@ function activateVectorGeneration(sql: SqlClient.SqlClient, worktreeId: string, 
     VALUES (${worktreeId}, ${generation})
     ON CONFLICT(worktree_id) DO UPDATE SET generation = excluded.generation
   `;
-}
-
-const reconcileVectorPointers = Effect.fn('codeGraph.reconcileVectorPointers')(function* (
-  sql: SqlClient.SqlClient,
-  activeWorktreeIds: ReadonlySet<string>,
-) {
-  yield* sql.unsafe('CREATE TEMP TABLE IF NOT EXISTS retained_vector_worktrees (id TEXT PRIMARY KEY)');
-  yield* sql.unsafe('DELETE FROM retained_vector_worktrees');
-  const values = [...activeWorktreeIds].sort();
-  for (let start = 0; start < values.length; start += 400) {
-    const batch = values.slice(start, start + 400);
-    yield* sql.unsafe(
-      `INSERT OR IGNORE INTO retained_vector_worktrees (id)
-       VALUES ${batch.map(() => '(?)').join(', ')}`,
-      batch,
-    );
-  }
-  yield* sql.unsafe(
-    `DELETE FROM vector_pointers
-     WHERE NOT EXISTS (
-       SELECT 1 FROM retained_vector_worktrees WHERE id = vector_pointers.worktree_id
-     )`,
-  );
-});
-
-function pruneVectorGenerations(sql: SqlClient.SqlClient) {
-  return sql.unsafe(
-    `DELETE FROM vector_generations
-     WHERE state <> 'ready'
-        OR NOT EXISTS (
-          SELECT 1 FROM vector_pointers WHERE vector_pointers.generation = vector_generations.generation
-        )`,
-  );
 }
 
 const removeLegacyVectorSidecars = Effect.fn('codeGraph.removeLegacyVectorSidecars')(function* (

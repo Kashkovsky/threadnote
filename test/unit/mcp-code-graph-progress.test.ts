@@ -3,15 +3,18 @@ import {Effect} from 'effect';
 import * as FC from 'effect/testing/FastCheck';
 import {
   codeGraphAnalysisMcpResponse,
+  codeGraphAnalysisRefreshResult,
   codeGraphMcpAnalysisBudget,
   codeGraphMcpAnalysisLimits,
   codeGraphMcpResponse,
+  codeGraphResultWithRefreshContinuity,
   codeGraphRefreshBlocksReadyInspection,
   codeGraphQueryTimeoutResult,
   codeGraphRetryAfterMilliseconds,
   compactCodeGraphMcpProgress,
   compactCodeGraphMcpResult,
   compactCodeGraphMcpTiming,
+  selectCodeGraphReadySnapshotForInspection,
 } from '../../src/mcp_server.js';
 import {analyzeCodeGraph} from '../../src/code_graph/analysis.js';
 import type {CodeGraphProgress, CodeGraphQueryResult} from '../../src/code_graph/types.js';
@@ -29,11 +32,28 @@ describe('MCP code graph indexing progress', () => {
     );
     expect(codeGraphRefreshBlocksReadyInspection({stale: true}, indexing)).toBe(true);
     expect(
-      codeGraphRefreshBlocksReadyInspection(
-        {readySnapshot: {id: 'ready'}, stale: false},
-        {message: 'fixture failed', state: 'failed'},
-      ),
+      codeGraphRefreshBlocksReadyInspection({readySnapshot: {id: 'ready'}, stale: false}, deferredStatus('busy')),
+    ).toBe(false);
+    expect(
+      codeGraphRefreshBlocksReadyInspection({readySnapshot: {id: 'stale'}, stale: true}, deferredStatus('busy')),
     ).toBe(true);
+    expect(
+      codeGraphRefreshBlocksReadyInspection({readySnapshot: {id: 'stale'}, stale: true}, deferredStatus('busy'), true),
+    ).toBe(false);
+  });
+
+  it('never lets a deferred or active refresh hide a usable ready snapshot', () => {
+    const refreshStatuses = [deferredStatus('busy'), indexingStatus(60_000)];
+    for (const refresh of refreshStatuses) {
+      for (const stale of [false, true]) {
+        for (const allowStale of [false, true]) {
+          const usable = !stale || allowStale;
+          expect(
+            codeGraphRefreshBlocksReadyInspection({readySnapshot: {id: 'ready'}, stale}, refresh, allowStale),
+          ).toBe(!usable);
+        }
+      }
+    }
   });
 
   it('does not block inspection after a shared ready snapshot is attached to the worktree', () => {
@@ -43,6 +63,75 @@ describe('MCP code graph indexing progress', () => {
     );
   });
 
+  it.prop(
+    'keeps the exact ready snapshot selected until a verified promotion changes the observed pointer',
+    {
+      allowStale: FC.boolean(),
+      failureCode: FC.constantFrom(
+        'busy' as const,
+        'no-space' as const,
+        'permission' as const,
+        'transient-io' as const,
+      ),
+      refreshState: FC.constantFrom('deferred' as const, 'indexing' as const),
+      stale: FC.boolean(),
+      verifiedPromotion: FC.boolean(),
+    },
+    ({allowStale, failureCode, refreshState, stale, verifiedPromotion}) => {
+      const ready = {id: 'R'};
+      const candidate = {id: 'candidate'};
+      const observed = verifiedPromotion ? candidate : ready;
+      const refresh = refreshState === 'deferred' ? deferredStatus(failureCode) : indexingStatus(60_000);
+      const selected = selectCodeGraphReadySnapshotForInspection({readySnapshot: observed, stale}, refresh, allowStale);
+      const usable = !stale || allowStale;
+
+      expect(selected).toBe(usable ? observed : undefined);
+      if (!verifiedPromotion) expect(selected).not.toBe(candidate);
+    },
+    {fastCheck: {numRuns: 250}},
+  );
+
+  it('serves stale non-strict evidence with one bounded path-free recovery warning', () => {
+    const result = {...verboseCodeGraphResult(), freshness: 'stale' as const, warnings: []};
+    const deferred = {
+      ...deferredStatus('no-space'),
+      privateNativeDetail: '/Users/private/graph.sqlite',
+    } as unknown as CodeGraphRefreshStatus;
+    const continued = codeGraphResultWithRefreshContinuity(result, deferred);
+
+    expect(continued.freshness).toBe('stale');
+    expect(continued.snapshot).toBe(result.snapshot);
+    expect(continued.warnings).toHaveLength(1);
+    expect(continued.warnings[0]).toContain('no-space');
+    expect(continued.warnings[0]).toContain('Free storage space');
+    expect(continued.warnings[0]!.length).toBeLessThanOrEqual(320);
+    expect(JSON.stringify(continued)).not.toContain('/Users/private');
+    expect(codeGraphResultWithRefreshContinuity(continued, deferred)).toBe(continued);
+  });
+
+  it('keeps path, impact, and whole-graph analysis strict when refresh is deferred', () => {
+    const deferred = deferredStatus('permission');
+    for (const operation of ['path', 'impact'] as const) {
+      expect(codeGraphQueryTimeoutResult(operation, deferred)).toMatchObject({
+        structuredContent: {
+          failure: {code: 'permission', recovery: 'fix-permissions'},
+          operation,
+          state: 'deferred',
+          version: 4,
+        },
+      });
+    }
+    expect(codeGraphAnalysisRefreshResult('stats', deferred)).toMatchObject({
+      structuredContent: {
+        failure: {code: 'permission', recovery: 'fix-permissions'},
+        operation: 'stats',
+        state: 'deferred',
+        type: 'code-graph-analysis-state',
+        version: 2,
+      },
+    });
+  });
+
   it('derives a bounded adaptive poll interval from the phase estimate', () => {
     expect(codeGraphRetryAfterMilliseconds(undefined)).toBe(5_000);
     expect(codeGraphRetryAfterMilliseconds(indexingStatus(4_000))).toBe(3_000);
@@ -50,7 +139,7 @@ describe('MCP code graph indexing progress', () => {
     expect(codeGraphRetryAfterMilliseconds(indexingStatus(60 * 60_000))).toBe(30_000);
   });
 
-  it('keeps elapsed query and active indexing states retryable without hiding a failed build', () => {
+  it('keeps elapsed query, active indexing, and deferred refresh states explicit', () => {
     const timedOut = codeGraphQueryTimeoutResult('query');
     expect(timedOut.isError).not.toBe(true);
     expect(timedOut.structuredContent).toMatchObject({
@@ -69,13 +158,13 @@ describe('MCP code graph indexing progress', () => {
       version: 3,
     });
 
-    const failed = codeGraphQueryTimeoutResult('query', {message: 'fixture index failed', state: 'failed'});
-    expect(failed.isError).toBe(true);
-    expect(failed.structuredContent).toMatchObject({
-      message: 'fixture index failed',
-      state: 'failed',
+    const deferred = codeGraphQueryTimeoutResult('query', deferredStatus('transient-io'));
+    expect(deferred.isError).not.toBe(true);
+    expect(deferred.structuredContent).toMatchObject({
+      failure: {code: 'transient-io', recovery: 'retry-read-only', retryable: true},
+      state: 'deferred',
       type: 'code-graph-index-state',
-      version: 3,
+      version: 4,
     });
   });
 
@@ -464,6 +553,19 @@ function indexingStatus(estimatedPhaseRemainingMilliseconds: number): CodeGraphR
       startedAtMilliseconds: 0,
       updatedAtMilliseconds: 2_000,
     },
+  };
+}
+
+function deferredStatus(code: 'busy' | 'no-space' | 'permission' | 'transient-io'): CodeGraphRefreshStatus {
+  const metadata = {
+    busy: {recovery: 'defer' as const, retryable: true},
+    'no-space': {recovery: 'free-space' as const, retryable: false},
+    permission: {recovery: 'fix-permissions' as const, retryable: false},
+    'transient-io': {recovery: 'retry-read-only' as const, retryable: true},
+  }[code];
+  return {
+    failure: {code, operation: 'refresh code graph', ...metadata},
+    state: 'deferred',
   };
 }
 

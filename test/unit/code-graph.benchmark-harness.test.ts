@@ -1,7 +1,7 @@
 import {readFileSync} from 'node:fs';
 import {it as effectIt} from '@effect/vitest';
 import {Database} from 'bun:sqlite';
-import {Clock, Effect, FileSystem, Path} from 'effect';
+import {Clock, Effect, FileSystem, Path, Schedule} from 'effect';
 import {TestClock} from 'effect/testing';
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
@@ -25,7 +25,7 @@ import {
 import type {CodeGraphBenchmarkSamplerArtifact} from '../../scripts/code-graph-benchmark-sampler.js';
 import {codeGraphAnalysisLimitsForView} from '../../src/code_graph/analysis_render.js';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
-import type {RepositoryIdentity} from '../../src/code_graph/types.js';
+import {CodeGraphStoreBusyError, type RepositoryIdentity} from '../../src/code_graph/types.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 
 const CONTROL = JSON.stringify({
@@ -501,9 +501,9 @@ describe('code graph external benchmark harness', () => {
     );
   });
 
-  it('holds a real snapshot lease and one WAL read snapshot across promotion and cleanup', async () => {
-    const result = await Effect.runPromise(
-      Effect.scoped(
+  effectIt.effect('holds a real snapshot lease and one WAL read snapshot across promotion and cleanup', () =>
+    Effect.gen(function* () {
+      const result = yield* Effect.scoped(
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
@@ -535,7 +535,7 @@ describe('code graph external benchmark harness', () => {
             replacementSnapshotId,
             privatePath,
           );
-          yield* store.promote(databasePath, identity, firstSnapshotId, new Set([identity.worktreeId]));
+          yield* store.promote(databasePath, identity, firstSnapshotId);
           const before = yield* sqliteStructuralGraphEvidence(databasePath, firstSnapshotId);
           const replacementWriter = new Database(databasePath, {strict: true});
           try {
@@ -554,10 +554,18 @@ describe('code graph external benchmark harness', () => {
           };
           let leaseRenewals = 0;
           let comparisonLease: string | undefined;
+          const pruneRetiredSnapshots = () =>
+            store.pruneRetiredSnapshots(databasePath).pipe(
+              Effect.retry({
+                schedule: Schedule.spaced(25),
+                times: 20,
+                while: error => error instanceof CodeGraphStoreBusyError,
+              }),
+            );
           const pinned = yield* sqliteStructuralGraphEvidence(databasePath, firstSnapshotId, {
             onReadTransactionStarted: Effect.gen(function* () {
-              yield* store.promote(databasePath, identity, replacementSnapshotId, new Set([identity.worktreeId]));
-              yield* store.pruneRetiredSnapshots(databasePath);
+              yield* store.promote(databasePath, identity, replacementSnapshotId);
+              yield* pruneRetiredSnapshots();
               // Lease release now retires a superseded view automatically. Hold
               // a second reader lease so this test can intentionally compare
               // the post-write digest after the pinned read transaction ends.
@@ -582,8 +590,7 @@ describe('code graph external benchmark harness', () => {
           yield* store.releaseSnapshotLease(databasePath, comparisonLease);
           const mismatch = codeGraphStructuralParityEvidence(before, after);
           const failureMessage = codeGraphStructuralParityFailureMessage(mismatch);
-          yield* store.reconcileWorktrees(databasePath, new Set([identity.worktreeId]));
-          yield* store.pruneRetiredSnapshots(databasePath);
+          yield* pruneRetiredSnapshots();
           const finalDatabase = new Database(databasePath, {readonly: true, strict: true});
           try {
             const protectedSnapshotRows = Number(
@@ -614,30 +621,30 @@ describe('code graph external benchmark harness', () => {
             finalDatabase.close(false);
           }
         }),
-      ).pipe(Effect.provide(ApplicationLayer)),
-    );
+      ).pipe(Effect.provide(ApplicationLayer));
 
-    expect(result.pinned).toEqual(result.before);
-    expect(result.before.streams.find(stream => stream.name === 'symbol-terms')?.rowCount).toBe(1);
-    expect(result.after.digest).not.toBe(result.before.digest);
-    expect(result.during).toEqual({
-      activeSnapshotId: `cgsn_${'2'.repeat(40)}`,
-      baseFileRows: 1,
-      baseState: 'ready',
-      firstState: 'ready',
-      leaseRows: 2,
-    });
-    expect(result.mismatch.mismatchedStreams.map(stream => stream.name)).toEqual(['snapshot']);
-    expect(result.leaseRenewals).toBeGreaterThanOrEqual(1);
-    expect(result.failureMessage).toMatch(
-      /^Structural graph digest parity failed: snapshot incremental\(count=1,sha256=[0-9a-f]{64}\) same-overlay-full\(count=1,sha256=[0-9a-f]{64}\)\.$/,
-    );
-    expect(result.privacySafeEvidence).not.toContain(result.privatePath);
-    expect(result.privacySafeEvidence).not.toContain('3'.repeat(40));
-    expect(result.failureMessage).not.toContain(result.privatePath);
-    expect(result.protectedSnapshotRows).toBe(0);
-    expect(result.leaseRows).toBe(0);
-  });
+      expect(result.pinned).toEqual(result.before);
+      expect(result.before.streams.find(stream => stream.name === 'symbol-terms')?.rowCount).toBe(1);
+      expect(result.after.digest).not.toBe(result.before.digest);
+      expect(result.during).toEqual({
+        activeSnapshotId: `cgsn_${'2'.repeat(40)}`,
+        baseFileRows: 1,
+        baseState: 'ready',
+        firstState: 'ready',
+        leaseRows: 2,
+      });
+      expect(result.mismatch.mismatchedStreams.map(stream => stream.name)).toEqual(['snapshot']);
+      expect(result.leaseRenewals).toBeGreaterThanOrEqual(1);
+      expect(result.failureMessage).toMatch(
+        /^Structural graph digest parity failed: snapshot incremental\(count=1,sha256=[0-9a-f]{64}\) same-overlay-full\(count=1,sha256=[0-9a-f]{64}\)\.$/,
+      );
+      expect(result.privacySafeEvidence).not.toContain(result.privatePath);
+      expect(result.privacySafeEvidence).not.toContain('3'.repeat(40));
+      expect(result.failureMessage).not.toContain(result.privatePath);
+      expect(result.protectedSnapshotRows).toBe(1);
+      expect(result.leaseRows).toBe(0);
+    }).pipe(TestClock.withLive),
+  );
 });
 
 const LOOKUP_PATHS = ['src/a.ts', 'src/b.ts', 'src/c.ts'] as const;

@@ -226,12 +226,7 @@ describe('cross-session code graph increments', () => {
               current.summary.identity.checkoutId,
               current.summary.identity.worktreeId,
             );
-            yield* store.promote(
-              layout.databasePath,
-              current.summary.identity,
-              legacySnapshotId,
-              new Set([current.summary.identity.worktreeId]),
-            );
+            yield* store.promote(layout.databasePath, current.summary.identity, legacySnapshotId);
           }),
         ),
       ).rejects.toThrow('incompatible extractor generation');

@@ -47,6 +47,10 @@ The development installer records an opaque checkout identity and refuses to rep
 owned by another worktree. Do not bypass that guard while its task is active. After confirming the other task has
 finished, an intentional handoff can use `bun run dev:install-global -- --take-over-global-runtime`.
 
+This development machine has a single Threadnote user. After installing exact HEAD, terminate any superseded
+Threadnote processes with `bun run dev:install-global -- --terminate-superseded`; no separate process-owner approval is
+needed. This does not relax the active-worktree ownership guard above.
+
 Documentation-only and test-only changes do not require a global binary reinstall unless they alter a packaged runtime
 contract or expose a suspected runtime problem.
 

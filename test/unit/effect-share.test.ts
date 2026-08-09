@@ -1,12 +1,15 @@
+import {readdirSync} from 'node:fs';
 import {Effect, Fiber} from 'effect';
 import {afterEach, describe, expect, it, vi} from 'vitest';
 
 const shareMocks = vi.hoisted(() => ({
   markSharedAutoSyncDeferred: vi.fn(),
+  personalUriFor: vi.fn(),
   resolveTeam: vi.fn(),
   runShareConflicts: vi.fn(),
   runSharePublish: vi.fn(),
   runShareSync: vi.fn(),
+  runShareUnpublish: vi.fn(),
   shareAgentArtifact: vi.fn(),
   shareBundlePack: vi.fn(),
   refreshSharedReposInBackground: vi.fn(),
@@ -20,6 +23,7 @@ vi.mock('../../src/share.js', () => ({
   listShareConflicts: shareMocks.unused,
   listSharedAgentArtifacts: shareMocks.unused,
   markSharedAutoSyncDeferred: shareMocks.markSharedAutoSyncDeferred,
+  personalUriFor: shareMocks.personalUriFor,
   removeMemoryUri: shareMocks.unused,
   refreshSharedReposInBackground: shareMocks.refreshSharedReposInBackground,
   resolveShareConflict: shareMocks.unused,
@@ -38,7 +42,7 @@ vi.mock('../../src/share.js', () => ({
   runShareSetUrl: shareMocks.unused,
   runShareStatus: shareMocks.unused,
   runShareSync: shareMocks.runShareSync,
-  runShareUnpublish: shareMocks.unused,
+  runShareUnpublish: shareMocks.runShareUnpublish,
   shareAgentArtifact: shareMocks.shareAgentArtifact,
   shareBundlePack: shareMocks.shareBundlePack,
   SHARED_BACKGROUND_FETCH_INTERVAL_MILLISECONDS: 300_000,
@@ -51,6 +55,7 @@ import {
   runShareConflicts,
   runSharePublish,
   runShareSync,
+  runShareUnpublish,
   syncSharedReposBeforeAgentRead,
 } from '../../src/effect/share.js';
 import {join, mkdir, mkdtemp, rm, utimes, writeFile} from '../helpers/effect-filesystem.js';
@@ -112,6 +117,44 @@ describe('Effect share transaction', () => {
       expect.any(String),
       expect.objectContaining({team: 'alpha'}),
     );
+  });
+
+  it('pins the unpublish team and holds both source and target URI locks during apply', async () => {
+    const agentContextHome = await mkdtemp('threadnote-effect-share-unpublish-');
+    homes.push(agentContextHome);
+    const sourceUri = 'threadnote://user/test-user/memories/shared/alpha/durable/projects/threadnote/recall.md';
+    const targetUri = 'threadnote://user/test-user/memories/durable/projects/threadnote/recall.md';
+    let lockedUriCount = 0;
+    let unpublishedTeam: string | undefined;
+    shareMocks.resolveTeam.mockReturnValue(
+      Effect.succeed({
+        config: {
+          addedAt: '2026-08-08T00:00:00.000Z',
+          gitdir: '/test/alpha.git',
+          name: 'alpha',
+          remote: 'git@example.com:test/alpha.git',
+          worktree: '/test/alpha',
+        },
+        name: 'alpha',
+      }),
+    );
+    shareMocks.personalUriFor.mockReturnValue(targetUri);
+    shareMocks.runShareUnpublish.mockImplementation((_config, _sourceUri, options) =>
+      Effect.sync(() => {
+        unpublishedTeam = options.team;
+        lockedUriCount = readdirSync(join(agentContextHome, 'threadnote', 'memory-locks')).filter(name =>
+          name.endsWith('.lock'),
+        ).length;
+      }),
+    );
+
+    await runEffect(
+      runShareUnpublish({account: 'local', agentContextHome, agentId: 'threadnote', user: 'test-user'}, sourceUri, {}),
+    );
+
+    expect(unpublishedTeam).toBe('alpha');
+    expect(shareMocks.personalUriFor).toHaveBeenCalledWith(expect.any(Object), sourceUri, 'alpha');
+    expect(lockedUriCount).toBe(2);
   });
 
   it('keeps explicit sync blocked when an interrupted auto-sync Promise is still running', async () => {

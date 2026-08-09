@@ -1,6 +1,7 @@
 import React, {useEffect, useMemo, useRef, useState} from 'react';
 import * as THREE from 'three';
-import type {CodeGraphDiagnosticsReport} from './code_graph/diagnostics.js';
+import type {CodeGraphLocalDiagnosticsReport} from './code_graph/diagnostics.js';
+import type {CodeGraphLocalAssociation} from './code_graph/local_provenance.js';
 import {compareCodeUnits} from './code_graph/ordering.js';
 import {
   MANAGER_GRAPH_DEFAULT_EDGE_LIMIT,
@@ -53,6 +54,7 @@ export interface GraphRepository {
   readonly displayName: string;
   readonly id: string;
   readonly label: string;
+  readonly localAssociation: CodeGraphLocalAssociation;
   readonly metrics: 'complete' | 'deferred';
   readonly model: 'legacy-fallback' | 'workspace';
   readonly projectCount: number;
@@ -76,7 +78,7 @@ export interface GraphRepositoryGroup {
 
 export interface GraphCatalogDiagnostic {
   readonly checkoutId: string;
-  readonly code: 'no-ready-snapshot' | 'unreadable-database';
+  readonly code: 'lease-deferred' | 'lease-failed' | 'no-ready-snapshot' | 'unreadable-database';
   readonly message: string;
 }
 
@@ -96,6 +98,7 @@ export type GraphAdministrationAction =
       readonly dryRun?: boolean;
       readonly force?: boolean;
       readonly full?: boolean;
+      readonly repositoryId: string;
       readonly worktreeId: string;
     }
   | {
@@ -103,8 +106,34 @@ export type GraphAdministrationAction =
       readonly checkoutId: string;
       readonly dryRun?: boolean;
     }
+  | {
+      readonly action: 'remove-view';
+      readonly checkoutId: string;
+      readonly dryRun?: boolean;
+      readonly expectedSnapshotId: string;
+      readonly worktreeId: string;
+    }
   | {readonly action: 'purge-all'; readonly dryRun?: boolean}
   | {readonly action: 'repair'; readonly deep?: boolean; readonly dryRun?: boolean};
+
+type GraphWorktreeAdministrationAction = Extract<GraphAdministrationAction, {readonly action: 'compact' | 'index'}>;
+
+export function graphAdministrationTarget(
+  checkoutId: string,
+  view: {readonly repository: {readonly repositoryId: string}; readonly worktreeId: string},
+): Pick<GraphWorktreeAdministrationAction, 'checkoutId' | 'repositoryId' | 'worktreeId'> {
+  return {checkoutId, repositoryId: view.repository.repositoryId, worktreeId: view.worktreeId};
+}
+
+export function graphViewRemovalTarget(
+  checkoutId: string,
+  view: {readonly snapshot: {readonly id: string}; readonly worktreeId: string},
+): Pick<
+  Extract<GraphAdministrationAction, {readonly action: 'remove-view'}>,
+  'checkoutId' | 'expectedSnapshotId' | 'worktreeId'
+> {
+  return {checkoutId, expectedSnapshotId: view.snapshot.id, worktreeId: view.worktreeId};
+}
 
 export interface GraphCatalogPage {
   readonly projectOffset: number;
@@ -356,7 +385,7 @@ export function graphBuildTarget(
   return {
     repositoryLabel,
     worktreeLabel:
-      build.managerContext?.worktreePath ??
+      view?.localAssociation.displayPath ??
       view?.label ??
       `Checkout ${shortGraphIdentity(build.identity.checkoutId)} · worktree ${shortGraphIdentity(
         build.identity.worktreeId,
@@ -940,7 +969,7 @@ export function graphCatalogSearchOptions(
   for (const group of repositories) {
     for (const view of group.views) {
       viewsById.set(view.id, {
-        description: `${group.displayName} · ${view.snapshot.commit.slice(0, 8)}${view.snapshot.dirty ? ' · dirty' : ''}`,
+        description: `${group.displayName} · ${view.snapshot.commit.slice(0, 8)}${view.snapshot.dirty ? ' · dirty' : ''} · folder ${graphLocalAssociationText(view.localAssociation)}`,
         id: view.id,
         label: view.label,
         repositoryId: group.id,
@@ -1122,10 +1151,11 @@ export function graphOverviewSizeLabel(graph: GraphVisualization): string {
 }
 
 export function GraphWorkspace(props: {
-  readonly administration?: CodeGraphDiagnosticsReport;
+  readonly administration?: CodeGraphLocalDiagnosticsReport;
   readonly administrationBusy?: string;
   readonly administrationOutput?: string;
   readonly catalog?: GraphCatalog;
+  readonly catalogError?: string;
   readonly loadAnalysis: (repositoryId: string, snapshotId: string, signal: AbortSignal) => Promise<GraphAnalysis>;
   readonly loadGraph: (
     repositoryId: string,
@@ -1771,11 +1801,16 @@ export function GraphWorkspace(props: {
               >
                 {repositoryGroup.views.map(view => (
                   <option key={view.id} value={view.id}>
-                    {view.label}
+                    {view.label} · folder {graphLocalAssociationText(view.localAssociation)}
                   </option>
                 ))}
               </select>
             </label>
+          ) : null}
+          {repository ? (
+            <small className="graph-local-association">
+              Folder: {graphLocalAssociationText(repository.localAssociation)} · {repository.localAssociation.state}
+            </small>
           ) : null}
           <label>
             <span>Component</span>
@@ -2083,7 +2118,16 @@ export function GraphWorkspace(props: {
 
       <div className="graph-body">
         <section className="graph-stage">
-          {!props.catalog ? (
+          {!props.catalog && props.catalogError ? (
+            <div className="graph-empty" role="status">
+              <span className="empty-orbit" aria-hidden="true" />
+              <h3>Indexed repositories unavailable</h3>
+              <p>{props.catalogError}</p>
+              <button onClick={props.onRefresh} type="button">
+                Try again
+              </button>
+            </div>
+          ) : !props.catalog ? (
             <div aria-live="polite" className="graph-loading" role="status">
               <span className="spinner" aria-hidden="true" />
               <span>Loading indexed repositories…</span>
@@ -3089,7 +3133,7 @@ function GraphAdministration(props: {
   readonly onAction: (action: GraphAdministrationAction) => void;
   readonly onDiagnostics: (options: {readonly analyze: boolean; readonly deep: boolean}) => void;
   readonly output?: string;
-  readonly report?: CodeGraphDiagnosticsReport;
+  readonly report?: CodeGraphLocalDiagnosticsReport;
 }): React.ReactElement {
   const dialogs = useOptionalManagerDialogs();
   const [analyze, setAnalyze] = useState(false);
@@ -3101,8 +3145,8 @@ function GraphAdministration(props: {
   };
   const targetAction = async (
     managementAvailable: boolean,
-    action: Extract<GraphAdministrationAction, {readonly worktreeId: string}>,
-  ): Promise<GraphAdministrationAction | undefined> => {
+    action: GraphWorktreeAdministrationAction,
+  ): Promise<GraphWorktreeAdministrationAction | undefined> => {
     if (managementAvailable) return action;
     const values = await dialogs.prompt({
       confirmLabel: 'Use worktree',
@@ -3123,7 +3167,7 @@ function GraphAdministration(props: {
   };
   const dispatchTargetAction = async (
     managementAvailable: boolean,
-    action: Extract<GraphAdministrationAction, {readonly worktreeId: string}>,
+    action: GraphWorktreeAdministrationAction,
     confirmation?: ManagerDialogOptions,
   ): Promise<void> => {
     const targeted = await targetAction(managementAvailable, action);
@@ -3233,7 +3277,12 @@ function GraphAdministration(props: {
               const obsolete = props.report?.obsoleteStores.checkouts.find(
                 checkout => checkout.checkoutId === database.checkoutId,
               );
-              const target = view ? {checkoutId: database.checkoutId, worktreeId: view.viewWorktreeId} : undefined;
+              const target = view
+                ? graphAdministrationTarget(database.checkoutId, {
+                    repository: view.repository,
+                    worktreeId: view.viewWorktreeId,
+                  })
+                : undefined;
               return (
                 <article className="graph-database-card" key={database.checkoutId}>
                   <header>
@@ -3248,7 +3297,13 @@ function GraphAdministration(props: {
                   <dl>
                     <div>
                       <dt>Snapshots</dt>
-                      <dd>{database.health?.readySnapshots ?? 0} ready</dd>
+                      <dd>
+                        {database.health
+                          ? `${database.health.readySnapshots} ready`
+                          : database.healthState === 'deferred'
+                            ? 'health inspection deferred'
+                            : 'unavailable'}
+                      </dd>
                     </div>
                     <div>
                       <dt>Views</dt>
@@ -3268,33 +3323,72 @@ function GraphAdministration(props: {
                     </div>
                   </dl>
                   <div className="graph-database-views">
-                    {database.views.map(candidate => (
-                      <div key={`${database.checkoutId}:${candidate.viewWorktreeId}`}>
-                        <strong>View {candidate.viewWorktreeId.slice(-8)}</strong>
-                        <span>
-                          {candidate.snapshot.fileCount.toLocaleString()} files ·{' '}
-                          {candidate.snapshot.symbolCount.toLocaleString()} symbols ·{' '}
-                          {candidate.snapshot.edgeCount.toLocaleString()} edges
-                        </span>
-                        {candidate.analysis ? (
+                    {database.views.map(candidate => {
+                      const removalTarget = graphViewRemovalTarget(database.checkoutId, {
+                        snapshot: candidate.snapshot,
+                        worktreeId: candidate.viewWorktreeId,
+                      });
+                      return (
+                        <div key={`${database.checkoutId}:${candidate.viewWorktreeId}`}>
+                          <strong>View {candidate.viewWorktreeId.slice(-8)}</strong>
+                          <span>
+                            {candidate.snapshot.fileCount.toLocaleString()} files ·{' '}
+                            {candidate.snapshot.symbolCount.toLocaleString()} symbols ·{' '}
+                            {candidate.snapshot.edgeCount.toLocaleString()} edges
+                          </span>
                           <small>
-                            {candidate.analysis.coverage.complete ? 'Complete' : 'Partial'} analysis ·{' '}
-                            {candidate.analysis.coverage.topology.state === 'complete' ||
-                            candidate.analysis.coverage.topology.state === 'partial' ? (
-                              <>
-                                {candidate.analysis.statistics.connectedComponentCount.toLocaleString()} components ·{' '}
-                                {candidate.analysis.statistics.communityCount.toLocaleString()} communities · average
-                                degree {candidate.analysis.statistics.averageDegree.toFixed(2)} · maximum{' '}
-                                {candidate.analysis.statistics.maximumDegree.toLocaleString()} ·{' '}
-                                {candidate.analysis.statistics.isolatedNodeCount.toLocaleString()} isolated
-                              </>
-                            ) : (
-                              <>topology {candidate.analysis.coverage.topology.state}</>
-                            )}
+                            Folder: {graphLocalAssociationText(candidate.localAssociation)} ·{' '}
+                            {candidate.localAssociation.state}
                           </small>
-                        ) : null}
-                      </div>
-                    ))}
+                          {candidate.analysis ? (
+                            <small>
+                              {candidate.analysis.coverage.complete ? 'Complete' : 'Partial'} analysis ·{' '}
+                              {candidate.analysis.coverage.topology.state === 'complete' ||
+                              candidate.analysis.coverage.topology.state === 'partial' ? (
+                                <>
+                                  {candidate.analysis.statistics.connectedComponentCount.toLocaleString()} components ·{' '}
+                                  {candidate.analysis.statistics.communityCount.toLocaleString()} communities · average
+                                  degree {candidate.analysis.statistics.averageDegree.toFixed(2)} · maximum{' '}
+                                  {candidate.analysis.statistics.maximumDegree.toLocaleString()} ·{' '}
+                                  {candidate.analysis.statistics.isolatedNodeCount.toLocaleString()} isolated
+                                </>
+                              ) : (
+                                <>topology {candidate.analysis.coverage.topology.state}</>
+                              )}
+                            </small>
+                          ) : null}
+                          <div className="graph-view-actions">
+                            <button
+                              disabled={blocked}
+                              onClick={() => props.onAction({action: 'remove-view', dryRun: true, ...removalTarget})}
+                              type="button"
+                            >
+                              Preview remove
+                            </button>
+                            <button
+                              className="danger"
+                              disabled={blocked}
+                              onClick={() =>
+                                void confirmAction(
+                                  {
+                                    confirmLabel: 'Remove view',
+                                    detail: `Checkout ${removalTarget.checkoutId}\nWorktree ${removalTarget.worktreeId}\nSnapshot ${removalTarget.expectedSnapshotId}`,
+                                    message:
+                                      'Remove this exact active view. Snapshot data still referenced by another view remains available.',
+                                    title: 'Remove this indexed view?',
+                                    tone: 'danger',
+                                  },
+                                  {action: 'remove-view', ...removalTarget},
+                                )
+                              }
+                              type="button"
+                            >
+                              Remove view
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
                   {[...database.builds, ...database.waiters].map(job => (
                     <p className="graph-database-job" key={`${job.buildId}:${job.coordination?.role ?? 'build'}`}>
@@ -3441,6 +3535,10 @@ function GraphAdministration(props: {
       </div>
     </details>
   );
+}
+
+export function graphLocalAssociationText(association: CodeGraphLocalAssociation): string {
+  return association.displayPath ?? association.state.replaceAll('-', ' ');
 }
 
 function GraphBuildProgress(props: {

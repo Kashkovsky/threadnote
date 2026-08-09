@@ -105,7 +105,9 @@ jobs:
             echo "- Evidence policy: ${evidence_policy}"
             echo "- Retained artifact digest: \`${ARTIFACT_DIGEST:-not-produced}\`"
             echo "- Retained artifact: ${ARTIFACT_URL:-not-produced}"
-            echo '- Scope: aggregate production-shaped scan, materialization, resolution, activation-stage, SQLite scratch, and one-file reindex telemetry.'
+            echo '- Profile target: 73,000 repository files / 59,936 graph-eligible files, exact class and target-excluded-byte distributions, and six declared linked-worktree churn scenarios.'
+            echo '- Measured scope: aggregate materialization and one-file reindex telemetry; production-shape attainment records actual-versus-target counts.'
+            echo '- Workspace policy: package-manager exclusion never removes active source from graph eligibility.'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Enforce strict evidence completion
