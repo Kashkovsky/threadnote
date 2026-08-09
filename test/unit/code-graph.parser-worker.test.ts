@@ -6,6 +6,7 @@ import {Effect, FileSystem, Fiber, Layer} from 'effect';
 import {cachedCodeGraphFactBytes, CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM} from '../../src/code_graph/fact_budget.js';
 import {BUILTIN_LANGUAGE_PACK_REGISTRY} from '../../src/code_graph/languages/registry.js';
 import {
+  CODE_GRAPH_PARSER_RSS_BYTES_ENV,
   CODE_GRAPH_PARSER_SOURCE_BYTES_MAXIMUM,
   CODE_GRAPH_PARSER_WORKER_RESPONSE_BYTES_MAXIMUM,
   CODE_GRAPH_PARSER_WORKER_ARGUMENT,
@@ -13,6 +14,7 @@ import {
   budgetParserWorkerFacts,
   codeGraphParserPoolLayer,
   parserWorkerCapacity,
+  parserWorkerResourceBudget,
   parserWorkerSourceByteBudget,
   parserWorkerSuccessResponseBytes,
   type ParserWorkerProcess,
@@ -57,6 +59,39 @@ describe('code graph parser worker pool', () => {
       expect(capacity(memoryGiB)).toBeGreaterThanOrEqual(1);
       expect(capacity(memoryGiB)).toBeLessThanOrEqual(4);
       expect(capacity(memoryGiB + 1)).toBeGreaterThanOrEqual(capacity(memoryGiB));
+    },
+    {fastCheck: {numRuns: 100}},
+  );
+
+  it.prop(
+    'classifies parser allocation and RSS at inclusive resource boundaries',
+    {
+      allocationIncrease: FC.integer({max: 2_048, min: 0}),
+      allocationMaximum: FC.integer({max: 2_048, min: 1}),
+      beforePeak: FC.integer({max: 2_048, min: 0}),
+      rssMaximum: FC.integer({max: 4_096, min: 1}),
+      rssNow: FC.integer({max: 4_096, min: 0}),
+    },
+    ({allocationIncrease, allocationMaximum, beforePeak, rssMaximum, rssNow}) => {
+      const afterPeak = beforePeak + allocationIncrease;
+      const result = parserWorkerResourceBudget(
+        {peakRssBytes: beforePeak, rssBytes: beforePeak},
+        {peakRssBytes: afterPeak, rssBytes: rssNow},
+        {maximumAllocationBytes: allocationMaximum, maximumRssBytes: rssMaximum},
+      );
+      const observedRss = Math.max(afterPeak, rssNow);
+      expect(result).toEqual(
+        observedRss > rssMaximum
+          ? {code: 'rss-bytes', maximum: rssMaximum, observed: observedRss, unit: 'bytes'}
+          : allocationIncrease > allocationMaximum
+            ? {
+                code: 'allocation-bytes',
+                maximum: allocationMaximum,
+                observed: allocationIncrease,
+                unit: 'bytes',
+              }
+            : undefined,
+      );
     },
     {fastCheck: {numRuns: 100}},
   );
@@ -273,6 +308,59 @@ describe('code graph parser worker pool', () => {
     }).pipe(Effect.provide(parserLayer({capacity: 1})), Effect.scoped),
   );
 
+  it.effect('degrades and recycles a real worker that exceeds its RSS budget', () => {
+    const resourceLimitedSystem = systemWith({
+      environment: () => ({...process.env, [CODE_GRAPH_PARSER_RSS_BYTES_ENV]: '1'}),
+    });
+    return Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-parser-worker-rss-'});
+      const pool = yield* CodeGraphParserPool;
+      const result = yield* pool.extract(inventoryFile('src/rss-worker.ts', 'export const rssWorker = true;'), home);
+
+      expect(result.degraded).toBe(true);
+      expect(result.facts.symbols).toHaveLength(1);
+      expect(result.facts.diagnostics[0]).toContain(
+        '[code-graph-budget code=rss-bytes status=exhausted observed-bytes=',
+      );
+      expect(result.facts.diagnostics[0]).toContain('maximum-bytes=1]');
+    }).pipe(
+      Effect.provide(parserLayer({capacity: 1}, Layer.succeed(SystemInfo, resourceLimitedSystem))),
+      Effect.scoped,
+    );
+  });
+
+  it.effect('recycles a persistent slot after a worker reports resource degradation', () => {
+    const processes: ScriptedParserWorkerProcess[] = [];
+    const spawn: ParserWorkerSpawner = () => {
+      const generation = processes.length;
+      const worker = new ScriptedParserWorkerProcess(request => {
+        worker.respond(request, factsFor(request.file), {
+          degraded: generation === 0,
+          recycle: generation === 0,
+        });
+      });
+      processes.push(worker);
+      return worker;
+    };
+    return Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-parser-worker-resource-recycle-'});
+      const pool = yield* CodeGraphParserPool;
+
+      const degraded = yield* pool.extract(inventoryFile('src/resource-heavy.ts', 'export const heavy = true;'), home);
+      const recovered = yield* pool.extract(
+        inventoryFile('src/resource-recovered.ts', 'export const recovered = true;'),
+        home,
+      );
+
+      expect(degraded.degraded).toBe(true);
+      expect(recovered.degraded).toBe(false);
+      expect(processes).toHaveLength(2);
+      expect(processes[0]!.inputClosed).toBe(true);
+    }).pipe(Effect.provide(parserLayer({capacity: 1, spawnWorker: spawn})), Effect.scoped);
+  });
+
   it.effect('degrades pathological emitted facts in the real worker before response serialization', () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -407,6 +495,9 @@ describe('code graph parser worker pool', () => {
       expect(processes).toHaveLength(2);
       expect(processes.every(process => process.killed)).toBe(true);
       expect(result.facts.diagnostics.join('\n')).toContain('time budget');
+      expect(result.facts.diagnostics.join('\n')).toContain(
+        '[code-graph-budget code=elapsed status=exhausted observed-milliseconds=20 maximum-milliseconds=20]',
+      );
     }).pipe(
       Effect.provide(parserLayer({capacity: 1, requestTimeoutMilliseconds: 20, spawnWorker: spawn})),
       Effect.scoped,
@@ -698,9 +789,13 @@ class ScriptedParserWorkerProcess implements ParserWorkerProcess {
     this.resolveExit(137);
   }
 
-  respond(request: WireRequest, facts: CodeGraphFileFacts): void {
+  respond(
+    request: WireRequest,
+    facts: CodeGraphFileFacts,
+    options: {readonly degraded?: boolean; readonly recycle?: boolean} = {},
+  ): void {
     this.stdoutFeed.push(
-      `${JSON.stringify({degraded: false, facts, id: request.id, ok: true, parseMilliseconds: 1, protocol: request.protocol})}\n`,
+      `${JSON.stringify({degraded: options.degraded ?? false, facts, id: request.id, ok: true, parseMilliseconds: 1, protocol: request.protocol, recycle: options.recycle ?? false})}\n`,
     );
   }
 

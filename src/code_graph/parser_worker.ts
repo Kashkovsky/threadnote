@@ -18,9 +18,13 @@ export {CODE_GRAPH_PARSER_WORKER_ARGUMENT};
 export const CODE_GRAPH_PARSER_WORKERS_ENV = 'THREADNOTE_CODE_GRAPH_PARSER_WORKERS';
 export const CODE_GRAPH_PARSER_TIMEOUT_ENV = 'THREADNOTE_CODE_GRAPH_PARSER_TIMEOUT_MS';
 export const CODE_GRAPH_PARSER_IDLE_TIMEOUT_ENV = 'THREADNOTE_CODE_GRAPH_PARSER_IDLE_TIMEOUT_MS';
+export const CODE_GRAPH_PARSER_ALLOCATION_BYTES_ENV = 'THREADNOTE_CODE_GRAPH_PARSER_ALLOCATION_BYTES_MAX';
+export const CODE_GRAPH_PARSER_RSS_BYTES_ENV = 'THREADNOTE_CODE_GRAPH_PARSER_RSS_BYTES_MAX';
 export const CODE_GRAPH_PARSER_WORKER_RESPONSE_BYTES_MAXIMUM = CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM + 4 * 1_024;
 export const CODE_GRAPH_PARSER_SOURCE_BYTES_MAXIMUM = 16 * 1_048_576;
 export const CODE_GRAPH_PARSER_SYMBOLS_MAXIMUM = 4_000;
+export const CODE_GRAPH_PARSER_ALLOCATION_BYTES_MAXIMUM = 512 * 1_048_576;
+export const CODE_GRAPH_PARSER_RSS_BYTES_MAXIMUM = 2 * 1_024 * 1_024 * 1_024;
 
 const PROTOCOL_VERSION = 1;
 const DEFAULT_REQUEST_TIMEOUT_MILLISECONDS = 60_000;
@@ -36,21 +40,23 @@ type ParserWorkerEnvironment = Readonly<Record<string, string | undefined>>;
 
 type ParserWorkerFailureReason =
   | 'abort'
+  | 'allocation'
   | 'exit'
   | 'fact-bytes'
   | 'operation'
   | 'protocol'
+  | 'rss'
   | 'source-bytes'
   | 'spawn'
   | 'symbols'
   | 'timeout'
   | 'write';
 
-interface ParserWorkerBudgetDiagnostic {
-  readonly code: 'fact-bytes' | 'source-bytes' | 'symbols';
+export interface ParserWorkerBudgetDiagnostic {
+  readonly code: 'allocation-bytes' | 'elapsed' | 'fact-bytes' | 'rss-bytes' | 'source-bytes' | 'symbols';
   readonly maximum: number;
   readonly observed: number;
-  readonly unit: 'bytes' | 'symbols';
+  readonly unit: 'bytes' | 'milliseconds' | 'symbols';
 }
 
 export interface ParserWorkerSourceByteBudget {
@@ -113,6 +119,7 @@ interface ParserWorkerSuccess {
   readonly ok: true;
   readonly parseMilliseconds: number;
   readonly protocol: typeof PROTOCOL_VERSION;
+  readonly recycle: boolean;
 }
 
 interface ParserWorkerFailure {
@@ -133,6 +140,16 @@ export interface CodeGraphParserResult {
 export interface ParserWorkerFactBudgetOptions {
   readonly maximumFactBytes?: number;
   readonly maximumSymbols?: number;
+}
+
+export interface ParserWorkerResourceSnapshot {
+  readonly peakRssBytes: number;
+  readonly rssBytes: number;
+}
+
+export interface ParserWorkerResourceBudgetOptions {
+  readonly maximumAllocationBytes?: number;
+  readonly maximumRssBytes?: number;
 }
 
 export interface CodeGraphParserPoolShape {
@@ -362,6 +379,7 @@ class ParserWorkerSlot {
                 signal,
               );
               if (!response.ok) throw new ParserWorkerError('operation');
+              if (response.recycle) await this.discard(active).catch(() => undefined);
               return {
                 degraded: response.degraded,
                 facts: response.facts,
@@ -675,7 +693,14 @@ async function raceWorkerResponse<A>(
       new Promise<never>((_, reject) => {
         timeout = setTimeout(() => {
           abort();
-          reject(new ParserWorkerError('timeout'));
+          reject(
+            new ParserWorkerError('timeout', {
+              code: 'elapsed',
+              maximum: timeoutMilliseconds,
+              observed: timeoutMilliseconds,
+              unit: 'milliseconds',
+            }),
+          );
         }, timeoutMilliseconds);
       }),
       new Promise<never>((_, reject) => {
@@ -762,21 +787,42 @@ function handleParserWorkerLine(
   const request = decodeRequest(line);
   if (request === undefined) return Effect.succeed(protocolFailure('invalid', 'Invalid parser worker request.'));
   const startedAt = performance.now();
+  const resourceBefore = parserWorkerResourceSnapshot();
+  const resourceOptions = parserWorkerResourceOptions(process.env);
+  const completedResponse = (facts: CodeGraphFileFacts | undefined): ParserWorkerResponse => {
+    const parseMilliseconds = Math.max(0, performance.now() - startedAt);
+    const resourceBudget = parserWorkerResourceBudget(resourceBefore, parserWorkerResourceSnapshot(), resourceOptions);
+    if (resourceBudget !== undefined) {
+      return {
+        degraded: true,
+        facts: degradedFacts(
+          request.file,
+          new ParserWorkerError(resourceBudget.code === 'rss-bytes' ? 'rss' : 'allocation', resourceBudget),
+        ),
+        id: request.id,
+        ok: true,
+        parseMilliseconds,
+        protocol: PROTOCOL_VERSION,
+        recycle: true,
+      };
+    }
+    if (facts === undefined) return protocolFailure(request.id, 'Language extraction failed.');
+    const bounded = budgetParserWorkerFacts(request.file, facts);
+    return {
+      degraded: bounded.degraded,
+      facts: bounded.facts,
+      id: request.id,
+      ok: true,
+      parseMilliseconds,
+      protocol: PROTOCOL_VERSION,
+      recycle: bounded.degraded,
+    };
+  };
   return BUILTIN_LANGUAGE_PACK_REGISTRY.extractRawFile(request.file).pipe(
     Effect.provideService(TreeSitterRuntime, treeSitter),
     Effect.match({
-      onFailure: () => protocolFailure(request.id, 'Language extraction failed.'),
-      onSuccess: facts => {
-        const bounded = budgetParserWorkerFacts(request.file, facts);
-        return {
-          degraded: bounded.degraded,
-          facts: bounded.facts,
-          id: request.id,
-          ok: true as const,
-          parseMilliseconds: Math.max(0, performance.now() - startedAt),
-          protocol: PROTOCOL_VERSION,
-        };
-      },
+      onFailure: () => completedResponse(undefined),
+      onSuccess: completedResponse,
     }),
   );
 }
@@ -836,6 +882,7 @@ function decodeResponse(line: string, expectedId: string, expectedPath: string):
     return isFileFacts(value.facts) &&
       value.facts.path === expectedPath &&
       typeof value.degraded === 'boolean' &&
+      typeof value.recycle === 'boolean' &&
       typeof value.parseMilliseconds === 'number' &&
       Number.isFinite(value.parseMilliseconds) &&
       value.parseMilliseconds >= 0
@@ -1026,12 +1073,40 @@ export function parserWorkerSourceByteBudget(
   };
 }
 
+export function parserWorkerResourceBudget(
+  before: ParserWorkerResourceSnapshot,
+  after: ParserWorkerResourceSnapshot,
+  options: ParserWorkerResourceBudgetOptions = {},
+): ParserWorkerBudgetDiagnostic | undefined {
+  const maximumRssBytes = Math.min(
+    CODE_GRAPH_PARSER_RSS_BYTES_MAXIMUM,
+    positiveInteger(options.maximumRssBytes, CODE_GRAPH_PARSER_RSS_BYTES_MAXIMUM),
+  );
+  const observedRssBytes = Math.max(after.peakRssBytes, after.rssBytes);
+  if (observedRssBytes > maximumRssBytes) {
+    return {code: 'rss-bytes', maximum: maximumRssBytes, observed: observedRssBytes, unit: 'bytes'};
+  }
+  const maximumAllocationBytes = Math.min(
+    CODE_GRAPH_PARSER_ALLOCATION_BYTES_MAXIMUM,
+    positiveInteger(options.maximumAllocationBytes, CODE_GRAPH_PARSER_ALLOCATION_BYTES_MAXIMUM),
+  );
+  const observedAllocationBytes = Math.max(0, after.peakRssBytes - before.peakRssBytes);
+  return observedAllocationBytes > maximumAllocationBytes
+    ? {
+        code: 'allocation-bytes',
+        maximum: maximumAllocationBytes,
+        observed: observedAllocationBytes,
+        unit: 'bytes',
+      }
+    : undefined;
+}
+
 export function parserWorkerSuccessResponseBytes(
   facts: CodeGraphFileFacts,
   id = 'parser-worker-response-size',
 ): number {
   return new TextEncoder().encode(
-    `${JSON.stringify({degraded: false, facts, id, ok: true, parseMilliseconds: 0, protocol: PROTOCOL_VERSION})}\n`,
+    `${JSON.stringify({degraded: false, facts, id, ok: true, parseMilliseconds: 0, protocol: PROTOCOL_VERSION, recycle: false})}\n`,
   ).byteLength;
 }
 
@@ -1087,16 +1162,50 @@ function parserWorkerIdleTimeout(environment: ParserWorkerEnvironment): number {
     : DEFAULT_IDLE_TIMEOUT_MILLISECONDS;
 }
 
+function parserWorkerResourceOptions(environment: ParserWorkerEnvironment): ParserWorkerResourceBudgetOptions {
+  return {
+    maximumAllocationBytes: parserWorkerByteMaximum(
+      environment,
+      CODE_GRAPH_PARSER_ALLOCATION_BYTES_ENV,
+      CODE_GRAPH_PARSER_ALLOCATION_BYTES_MAXIMUM,
+    ),
+    maximumRssBytes: parserWorkerByteMaximum(
+      environment,
+      CODE_GRAPH_PARSER_RSS_BYTES_ENV,
+      CODE_GRAPH_PARSER_RSS_BYTES_MAXIMUM,
+    ),
+  };
+}
+
+function parserWorkerByteMaximum(environment: ParserWorkerEnvironment, name: string, fallback: number): number {
+  const configured = Number.parseInt(environment[name] ?? '', 10);
+  return Number.isSafeInteger(configured) && configured > 0 ? Math.min(fallback, configured) : fallback;
+}
+
+function parserWorkerResourceSnapshot(): ParserWorkerResourceSnapshot {
+  const rssBytes = process.memoryUsage.rss();
+  const peak = process.resourceUsage().maxRSS;
+  const peakRssBytes = 'bun' in process.versions ? peak : peak * 1_024;
+  return {
+    peakRssBytes: nonNegativeSafeInteger(peakRssBytes, rssBytes),
+    rssBytes: nonNegativeSafeInteger(rssBytes, 0),
+  };
+}
+
 function parserWorkerFailureSummary(reason: ParserWorkerFailureReason): string {
   switch (reason) {
     case 'abort':
       return 'parser request was interrupted';
+    case 'allocation':
+      return 'per-file allocation exceeded its byte budget';
     case 'exit':
       return 'parser worker exited unexpectedly';
     case 'operation':
       return 'language extraction failed';
     case 'protocol':
       return 'parser worker protocol failed';
+    case 'rss':
+      return 'parser worker RSS exceeded its byte budget';
     case 'source-bytes':
       return 'source exceeded its per-file byte budget';
     case 'symbols':
@@ -1118,6 +1227,10 @@ function positiveInteger(value: number | undefined, fallback: number): number {
 
 function nonNegativeInteger(value: number | undefined, fallback: number): number {
   return Number.isSafeInteger(value) && value! >= 0 ? value! : fallback;
+}
+
+function nonNegativeSafeInteger(value: number, fallback: number): number {
+  return Number.isSafeInteger(value) && value >= 0 ? value : fallback;
 }
 
 function tokens(value: string): readonly string[] {
