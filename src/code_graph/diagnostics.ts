@@ -187,7 +187,9 @@ export const inspectAllCodeGraphs = Effect.fn('codeGraph.inspectAllDiagnostics')
             });
           }
         }
-        const storage = privacySafeStorage(yield* inspectCodeGraphStorage(threadnoteHome, checkoutId));
+        const storage = privacySafeStorage(
+          yield* inspectCodeGraphStorage(threadnoteHome, checkoutId, {attributeObjects: options.deep === true}),
+        );
         const catalogResult = yield* loadAllCatalogs(store, database).pipe(
           Effect.match({onFailure: cause => ({cause}) as const, onSuccess: value => ({value}) as const}),
         );

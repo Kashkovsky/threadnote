@@ -75,8 +75,22 @@ describe('all-code-graph diagnostics', () => {
       const unreadable = report.databases.find(database => database.checkoutId === unreadableCheckoutId);
       expect(unreadable?.healthState).toBe('unreadable');
       expect(unreadable?.issues.map(issue => issue.code)).toContain('health-check-failed');
+      const ordinaryStorage = report.databases.find(database => database.checkoutId === healthyCheckoutId)?.storage;
+      if (ordinaryStorage?.state !== 'available') throw new Error('missing ordinary storage diagnostics');
+      expect(ordinaryStorage.pageStorage).not.toHaveProperty('attribution');
       expect(JSON.stringify(report)).not.toContain(home);
       expect(renderCodeGraphDiagnostics(report)).toContain('Native code graph diagnostics');
+
+      const deepReport = yield* inspectAllCodeGraphs(home, {deep: true});
+      const deepStorage = deepReport.databases.find(database => database.checkoutId === healthyCheckoutId)?.storage;
+      if (deepStorage?.state !== 'available') throw new Error('missing deep storage diagnostics');
+      expect(deepStorage.pageStorage).toMatchObject({
+        attribution: {
+          state: 'available',
+        },
+        state: 'available',
+      });
+      expect(JSON.stringify(deepReport)).not.toContain(home);
 
       const config: RuntimeConfig = {
         account: 'local',
