@@ -2,6 +2,11 @@ import {readFileSync} from 'node:fs';
 import {JSON_SCHEMA, load} from 'js-yaml';
 import {describe, expect, it} from 'vitest';
 import {ciScopeKeys} from '../ci/ci-scopes.js';
+import {
+  ciLongRunningTestGroupNames,
+  ciLongRunningTestGroups,
+  ciSerializedLongRunningTestGroups,
+} from '../ci/vitest-plan.js';
 
 interface WorkflowStep {
   readonly env?: Readonly<Record<string, string>>;
@@ -19,7 +24,7 @@ interface WorkflowJob {
   readonly outputs?: Readonly<Record<string, string>>;
   readonly strategy?: {
     readonly 'fail-fast'?: boolean;
-    readonly matrix?: Readonly<Record<string, readonly unknown[]>>;
+    readonly matrix?: Readonly<Record<string, readonly unknown[] | string>>;
   };
   readonly steps?: readonly WorkflowStep[];
 }
@@ -55,7 +60,11 @@ describe('dependency-aware CI workflow', () => {
     const checkout = changes.steps?.find(step => step.uses?.startsWith('actions/checkout@'));
     const classifier = changes.steps?.find(step => step.id === 'scopes');
 
-    expect(Object.keys(changes.outputs ?? {})).toEqual(ciScopeKeys);
+    expect(Object.keys(changes.outputs ?? {})).toEqual([
+      ...ciScopeKeys.slice(0, 2),
+      'long_test_groups',
+      ...ciScopeKeys.slice(2),
+    ]);
     expect(checkout?.with?.['fetch-depth']).toBe(0);
     expect(classifier?.run).toBe('bun test/ci/ci-scopes.ts --base "$BASE_SHA" --head "$HEAD_SHA"');
     expect(classifier?.env).toMatchObject({
@@ -103,12 +112,26 @@ describe('dependency-aware CI workflow', () => {
       needs: 'changes',
       if: "needs.changes.outputs.code == 'true'",
     });
-    expect(long.strategy?.matrix?.group).toHaveLength(42);
+    expect(long.strategy?.matrix?.group).toBe('${{ fromJSON(needs.changes.outputs.long_test_groups) }}');
+    expect(ciLongRunningTestGroupNames).toHaveLength(10);
     expect(long.steps?.find(step => step.uses?.startsWith('actions/checkout@'))?.with?.['fetch-depth']).toBe(0);
     expect(stepForRun(long, 'bun --bun vitest run').env).toEqual({
       THREADNOTE_VITEST_LONG_GROUP: '${{ matrix.group }}',
     });
     expect(long.steps?.some(step => step.uses?.startsWith('actions/upload-artifact@'))).toBe(false);
+  });
+
+  it('keeps the quota-aware long-test plan bounded and non-overlapping', () => {
+    expect(ciLongRunningTestGroupNames).toEqual(Object.keys(ciLongRunningTestGroups));
+    expect(ciLongRunningTestGroupNames).toHaveLength(10);
+    expect([...ciSerializedLongRunningTestGroups]).toEqual(['load-evidence', 'os-contention']);
+
+    const assignments = Object.values(ciLongRunningTestGroups).flat();
+    const counts = new Map<string, number>();
+    for (const path of assignments) counts.set(path, (counts.get(path) ?? 0) + 1);
+    expect([...counts].filter(([, count]) => count > 1)).toEqual([
+      ['test/integration/code-graph.lifecycle.test.ts', 4],
+    ]);
   });
 
   it('gates quality, Windows, bytecode, model, and release matrices independently', () => {

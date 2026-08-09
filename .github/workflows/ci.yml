@@ -29,6 +29,7 @@ jobs:
     outputs:
       actions: ${{ steps.scopes.outputs.actions }}
       code: ${{ steps.scopes.outputs.code }}
+      long_test_groups: ${{ steps.scopes.outputs.long_test_groups }}
       quality: ${{ steps.scopes.outputs.quality }}
       release: ${{ steps.scopes.outputs.release }}
       site_check: ${{ steps.scopes.outputs.site_check }}
@@ -132,49 +133,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        group:
-          - lifecycle-serves
-          - lifecycle-shares
-          - lifecycle-materializes
-          - lifecycle-global-resolution
-          - lifecycle-file-set-change
-          - lifecycle-core-a
-          - lifecycle-core-b
-          - lifecycle-core-c
-          - lifecycle-core-d
-          - lifecycle-core-e
-          - lifecycle-core-f
-          - lifecycle-core-g
-          - project-closure-reattribution
-          - project-closure-clean-base
-          - project-closure-cache-tuple
-          - project-closure-loss
-          - project-closure-fail-closed
-          - project-closure-overflow
-          - project-closure-property
-          - incremental-body-property
-          - incremental-clean-property
-          - incremental-surface-property
-          - incremental-recovery
-          - incremental-barrel-property
-          - removed-view-cleanup-load
-          - removed-view-cleanup-property
-          - view-removal-property
-          - worktree-reconciliation
-          - cli-native-tools
-          - view-attach-lock
-          - vector-retirement
-          - parser-languages
-          - graph-snapshot-repair
-          - graph-cross-session
-          - graph-cache-capacity-load
-          - graph-session
-          - benchmark-preflight
-          - vector-retirement-os
-          - removed-view-cleanup-os
-          - cache-capacity-os
-          - disk-reservation
-          - stores-retention
+        group: ${{ fromJSON(needs.changes.outputs.long_test_groups) }}
 
     steps:
       - uses: actions/checkout@v7
