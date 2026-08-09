@@ -1,6 +1,6 @@
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {it as effectIt} from '@effect/vitest';
-import {Effect, FileSystem, Layer} from 'effect';
+import {Deferred, Effect, Fiber, FileSystem, Layer} from 'effect';
 import {TestClock} from 'effect/testing';
 import {afterEach, beforeEach, describe, expect, it} from 'vitest';
 import {FileLockTimeout, withExclusiveFileLock} from '../../src/effect/file_lock.js';
@@ -29,37 +29,38 @@ describe('Effect file lock', () => {
     await rm(directory, {force: true, recursive: true});
   });
 
-  it('refreshes a live lease and keeps concurrent critical sections serialized', async () => {
-    const trace: string[] = [];
-    await run(
+  effectIt.effect('refreshes a live lease and keeps concurrent critical sections serialized', () =>
+    TestClock.withLive(
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
+        const acquired = yield* Deferred.make<void>();
+        const trace: string[] = [];
         const first = withExclusiveFileLock(
           fs,
           lockPath,
           TEST_LOCK_OPTIONS,
           Effect.gen(function* () {
             yield* Effect.sync(() => trace.push('first:start'));
+            yield* Deferred.succeed(acquired, undefined);
             yield* Effect.sleep(75);
             yield* Effect.sync(() => trace.push('first:end'));
           }),
         );
-        const second = Effect.sleep(30).pipe(
-          Effect.andThen(
-            withExclusiveFileLock(
-              fs,
-              lockPath,
-              TEST_LOCK_OPTIONS,
-              Effect.sync(() => trace.push('second:start', 'second:end')),
-            ),
-          ),
-        );
-        yield* Effect.all([first, second], {concurrency: 2});
-      }),
-    );
+        const firstFiber = yield* first.pipe(Effect.forkChild({startImmediately: true}));
+        yield* Deferred.await(acquired);
+        const secondFiber = yield* withExclusiveFileLock(
+          fs,
+          lockPath,
+          TEST_LOCK_OPTIONS,
+          Effect.sync(() => trace.push('second:start', 'second:end')),
+        ).pipe(Effect.forkChild({startImmediately: true}));
+        yield* Fiber.join(firstFiber);
+        yield* Fiber.join(secondFiber);
 
-    expect(trace).toEqual(['first:start', 'first:end', 'second:start', 'second:end']);
-  });
+        expect(trace).toEqual(['first:start', 'first:end', 'second:start', 'second:end']);
+      }).pipe(Effect.provide(FILE_LOCK_TEST_LAYER)),
+    ),
+  );
 
   it('reports lock contention with a typed timeout', async () => {
     await mkdir(join(lockPath, '..'), {recursive: true});
