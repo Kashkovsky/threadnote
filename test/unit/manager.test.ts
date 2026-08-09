@@ -384,6 +384,17 @@ async function startServer(
   };
 }
 
+async function fetchManagerGraphActionWhenAvailable(url: string, init: RequestInit): Promise<Response> {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const response = await fetch(url, init);
+    if (response.status !== 409) return response;
+    const body = (await response.clone().json()) as {readonly code?: string; readonly retryAfterMilliseconds?: number};
+    if (body.code !== 'graph-view-busy' || attempt === 2) return response;
+    await new Promise(resolve => setTimeout(resolve, body.retryAfterMilliseconds ?? 1_000));
+  }
+  throw new Error('Manager graph action retry budget was exhausted.');
+}
+
 function initializeGitRepository(root: string): void {
   execFileSync('git', ['init', '-q', root], {stdio: 'pipe'});
   execFileSync(
@@ -1115,7 +1126,7 @@ describe('manager http API', () => {
       expect(database.query('SELECT COUNT(*) AS count FROM snapshot_leases').get()).toEqual({count: 0});
       database.close();
 
-      const retried = await fetch(`${server.url}/api/graphs/action`, {
+      const retried = await fetchManagerGraphActionWhenAvailable(`${server.url}/api/graphs/action`, {
         body: JSON.stringify({...target, approvalDigest: prepared.approvalDigest, confirm: true}),
         headers,
         method: 'POST',
