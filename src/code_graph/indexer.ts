@@ -4,6 +4,7 @@ import {CommandExecutor} from '../effect/command.js';
 import {withExclusiveFileLock} from '../effect/file_lock.js';
 import {SystemInfo, type SystemInfoShape} from '../effect/system.js';
 import {withThreadnoteProcessActivity} from '../process_diagnostics.js';
+import {codeGraphBlobExtractionReuseClass, codeGraphBlobReuseCacheKey} from './blob_reuse.js';
 import type {CodeGraphBuildOwnerIdentity} from './build_owner.js';
 import {CODE_GRAPH_CACHE_TRANSACTION_LIMITS, codeGraphFileBlobCapacityBytes} from './cache_capacity.js';
 import {createRepositoryFactAttributor, extractRepositoryFileFacts} from './extractor.js';
@@ -46,6 +47,7 @@ import {CodeGraphMaintenanceCoordinator, type CodeGraphMaintenanceCoordinatorSha
 import {codeGraphMaintenanceIntentActive, withCodeGraphMaintenanceRegistration} from './maintenance_gate.js';
 import {resolveAndRecordCodeGraphLocalAssociation} from './local_provenance.js';
 import {compareCodeUnits} from './ordering.js';
+import {relocateStructuredSchemaFacts} from './languages/schemas/extractor.js';
 import {repositoryIdentityMatchesExpectation, resolveRepositoryIdentity} from './repository.js';
 import {
   codeGraphDiskCapacityFailure,
@@ -3439,6 +3441,9 @@ export function cacheContentBatch(options: {
     payloadBytes: number;
   };
   const pendingGroups = new Map<string, PendingCacheGroup>();
+  type SerializedParserResult = CodeGraphParserResult & {readonly cacheFact: BoundedCodeGraphFact};
+  const reusableExtractions = new Map<string, SerializedParserResult>();
+  const reusableExtractionUses = new Map<string, number>();
   const flushPendingGroup = (key: string) =>
     Effect.gen(function* () {
       const group = pendingGroups.get(key);
@@ -3505,7 +3510,9 @@ export function cacheContentBatch(options: {
       for (const {cacheFact, cacheIdentity: activeCacheIdentity, degraded, file} of rows) {
         const cacheIdentity = degraded ? degradedParserCacheIdentity(activeCacheIdentity) : activeCacheIdentity;
         const key = `${degraded ? 'degraded' : 'durable'}\0${cacheIdentity}`;
+        const reuseClass = degraded ? undefined : codeGraphBlobExtractionReuseClass(file);
         const rowBytes = codeGraphFileBlobCapacityBytes({
+          ...(reuseClass === undefined ? {} : {blobId: file.blobId, reuseClass}),
           contentHash: file.contentHash,
           createdAt: CODE_GRAPH_CACHE_TIMESTAMP_CAPACITY_PLACEHOLDER,
           extractorSet: cacheIdentity,
@@ -3536,7 +3543,8 @@ export function cacheContentBatch(options: {
           payloadBytes: 0,
         };
         if (!pendingGroups.has(key)) pendingGroups.set(key, pending);
-        const {bytes: _bytes, content: _content, ...cacheFile} = file;
+        const {bytes: _bytes, content: _content, ...baseCacheFile} = file;
+        const cacheFile = degraded ? {...baseCacheFile, blobId: ''} : baseCacheFile;
         pending.files.push(cacheFile);
         pending.facts.push(cacheFact);
         pending.paths.add(file.path);
@@ -3555,57 +3563,112 @@ export function cacheContentBatch(options: {
       latestContext = cumulativeContext;
       let parsedCompleted = 0;
       const orderedFiles = [...files].sort((left, right) => compareCodeUnits(left.path, right.path));
+      const localReuseCounts = new Map<string, number>();
+      for (const file of orderedFiles) {
+        const reuseKey = blobReuseKeyForFile(file, options.languagePacks);
+        if (reuseKey !== undefined) localReuseCounts.set(reuseKey, (localReuseCounts.get(reuseKey) ?? 0) + 1);
+      }
+      const expectedReuseCount = (key: string): number =>
+        cumulativeContext.blobReuseCounts?.get(key) ?? localReuseCounts.get(key) ?? 0;
+      const finishReuseAttempt = (key: string | undefined) => {
+        if (key === undefined) return;
+        const uses = (reusableExtractionUses.get(key) ?? 0) + 1;
+        if (uses >= expectedReuseCount(key)) {
+          reusableExtractionUses.delete(key);
+          reusableExtractions.delete(key);
+        } else {
+          reusableExtractionUses.set(key, uses);
+        }
+      };
       for (const window of chunkValues(orderedFiles, windowSize)) {
         let windowCompleted = 0;
-        const results = yield* Effect.forEach(
-          window,
-          file =>
-            Effect.gen(function* () {
-              yield* emitContentProgress(
-                options.onProgress,
-                cumulativeContext,
-                {
-                  batchCompleted: parsedCompleted,
-                  batchTotal: files.length,
-                  bytes: file.size,
-                  language: file.language,
-                  path: file.path,
-                  stage: 'extracting',
-                },
-                extractionMilliseconds,
-                persistenceMilliseconds,
-              );
-              const parsed = yield* extractParserFacts(file, options);
-              const cacheFact = serializeBoundedCodeGraphFact(parsed.facts);
-              const result = {
-                ...parsed,
-                cacheFact,
-                facts: cacheFact.facts,
-              } satisfies CodeGraphParserResult & {readonly cacheFact: BoundedCodeGraphFact};
-              windowCompleted += 1;
-              yield* emitContentProgress(
-                options.onProgress,
-                cumulativeContext,
-                {
-                  batchCompleted: parsedCompleted + windowCompleted,
-                  batchTotal: files.length,
-                  bytes: file.size,
-                  degraded: result.degraded,
-                  factsBytes: result.cacheFact.bytes,
-                  language: file.language,
-                  parseMilliseconds: result.parseMilliseconds,
-                  path: file.path,
-                  relations: result.facts.edges.length,
-                  stage: 'extracting',
-                  symbols: result.facts.symbols.length,
-                },
-                extractionMilliseconds + result.parseMilliseconds,
-                persistenceMilliseconds,
-              );
-              return {file, result};
-            }),
+        const groups = extractionReuseGroups(window, options.languagePacks);
+        const groupedResults = yield* Effect.forEach(
+          groups,
+          group =>
+            Effect.forEach(
+              group.files,
+              file =>
+                Effect.gen(function* () {
+                  const reuseKey = group.reuseKey;
+                  yield* emitContentProgress(
+                    options.onProgress,
+                    cumulativeContext,
+                    {
+                      batchCompleted: parsedCompleted,
+                      batchTotal: files.length,
+                      bytes: file.size,
+                      language: file.language,
+                      path: file.path,
+                      stage: 'extracting',
+                    },
+                    extractionMilliseconds,
+                    persistenceMilliseconds,
+                  );
+                  const donor = reuseKey === undefined ? undefined : reusableExtractions.get(reuseKey);
+                  const reused = donor === undefined ? undefined : relocateSerializedParserResult(file, donor);
+                  if (reused !== undefined) {
+                    finishReuseAttempt(reuseKey);
+                    windowCompleted += 1;
+                    yield* emitContentProgress(
+                      options.onProgress,
+                      cumulativeContext,
+                      {
+                        batchCompleted: parsedCompleted + windowCompleted,
+                        batchTotal: files.length,
+                        bytes: file.size,
+                        degraded: false,
+                        factsBytes: reused.cacheFact.bytes,
+                        language: file.language,
+                        parseMilliseconds: 0,
+                        path: file.path,
+                        relations: reused.facts.edges.length,
+                        stage: 'extracting',
+                        symbols: reused.facts.symbols.length,
+                      },
+                      extractionMilliseconds,
+                      persistenceMilliseconds,
+                    );
+                    return {file, result: reused};
+                  }
+                  const parsed = yield* extractParserFacts(file, options);
+                  const cacheFact = serializeBoundedCodeGraphFact(parsed.facts);
+                  const result = {
+                    ...parsed,
+                    cacheFact,
+                    facts: cacheFact.facts,
+                  } satisfies CodeGraphParserResult & {readonly cacheFact: BoundedCodeGraphFact};
+                  if (!result.degraded && reuseKey !== undefined && expectedReuseCount(reuseKey) > 1) {
+                    reusableExtractions.set(reuseKey, result);
+                  }
+                  finishReuseAttempt(reuseKey);
+                  windowCompleted += 1;
+                  yield* emitContentProgress(
+                    options.onProgress,
+                    cumulativeContext,
+                    {
+                      batchCompleted: parsedCompleted + windowCompleted,
+                      batchTotal: files.length,
+                      bytes: file.size,
+                      degraded: result.degraded,
+                      factsBytes: result.cacheFact.bytes,
+                      language: file.language,
+                      parseMilliseconds: result.parseMilliseconds,
+                      path: file.path,
+                      relations: result.facts.edges.length,
+                      stage: 'extracting',
+                      symbols: result.facts.symbols.length,
+                    },
+                    extractionMilliseconds + result.parseMilliseconds,
+                    persistenceMilliseconds,
+                  );
+                  return {file, result};
+                }),
+              {concurrency: 1},
+            ),
           {concurrency: options.parserPool.capacity},
         );
+        const results = groupedResults.flat();
         extractionMilliseconds += results.reduce((total, result) => total + result.result.parseMilliseconds, 0);
         parsedCompleted += results.length;
         const resultsByPath = new Map(results.map(result => [result.file.path, result.result]));
@@ -3638,13 +3701,51 @@ export function cacheContentBatch(options: {
         pendingBytes = 0;
         pendingRows = 0;
         latestContext = undefined;
+        reusableExtractions.clear();
+        reusableExtractionUses.clear();
       }),
     flush: () =>
       Effect.gen(function* () {
         while (pendingGroups.size > 0) yield* flushOldestPendingGroup();
+        reusableExtractions.clear();
+        reusableExtractionUses.clear();
       }),
     onContentBatch,
   };
+}
+
+function blobReuseKeyForFile(
+  file: CodeGraphInventoryFile,
+  languagePacks: CodeGraphLanguagePackRegistryShape,
+): string | undefined {
+  const cacheIdentity = Option.getOrUndefined(languagePacks.cacheIdentityForPath(file.path));
+  return cacheIdentity === undefined ? undefined : codeGraphBlobReuseCacheKey(file, cacheIdentity);
+}
+
+function extractionReuseGroups(
+  files: readonly CodeGraphInventoryFile[],
+  languagePacks: CodeGraphLanguagePackRegistryShape,
+): readonly {readonly files: readonly CodeGraphInventoryFile[]; readonly reuseKey?: string}[] {
+  const groups = new Map<string, {files: CodeGraphInventoryFile[]; reuseKey?: string}>();
+  for (const file of files) {
+    const reuseKey = blobReuseKeyForFile(file, languagePacks);
+    const key = reuseKey ?? `path\0${file.path}`;
+    const group = groups.get(key) ?? {files: [], ...(reuseKey === undefined ? {} : {reuseKey})};
+    if (!groups.has(key)) groups.set(key, group);
+    group.files.push(file);
+  }
+  return [...groups.values()];
+}
+
+function relocateSerializedParserResult(
+  file: CodeGraphInventoryFile,
+  donor: CodeGraphParserResult & {readonly cacheFact: BoundedCodeGraphFact},
+): (CodeGraphParserResult & {readonly cacheFact: BoundedCodeGraphFact}) | undefined {
+  if (donor.degraded) return undefined;
+  const relocated = relocateStructuredSchemaFacts(file, donor.facts);
+  if (relocated === undefined) return undefined;
+  const cacheFact = serializeBoundedCodeGraphFact(relocated);
+  return {cacheFact, degraded: false, facts: cacheFact.facts, parseMilliseconds: 0};
 }
 
 function extractParserFacts(

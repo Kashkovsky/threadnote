@@ -4,6 +4,7 @@ import {Deferred, Effect, Fiber, FileSystem, Option, Ref} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {afterEach, describe, expect, it} from 'vitest';
 import {TestClock} from 'effect/testing';
+import {codeGraphBlobReuseCacheKey} from '../../src/code_graph/blob_reuse.js';
 import {
   cachedCodeGraphFactBytes,
   CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM,
@@ -16,6 +17,7 @@ import {
   type CodeGraphDirectPersistentCapacityBoundary,
 } from '../../src/code_graph/disk_capacity.js';
 import type {CodeGraphWorkspace} from '../../src/code_graph/languages/types.js';
+import {extractStructuredSchemaFacts} from '../../src/code_graph/languages/schemas/extractor.js';
 import {augmentRationaleFacts} from '../../src/code_graph/rationale.js';
 import {
   CodeGraphStore,
@@ -3993,6 +3995,86 @@ describe('code graph full-build materialization store', () => {
     }).pipe(Effect.provide(ApplicationLayer)),
   );
 
+  effectIt.effect('reuses one committed structured blob with target-path-local identities', () =>
+    Effect.gen(function* () {
+      const fixture = yield* Effect.promise(materializationFixture);
+      const content = '{"flat.key":{"leaf":true},"flat":{"key":{"leaf":false}}}';
+      const donor = structuredCacheFile('config/donor.json', content);
+      const target = structuredCacheFile('config/copies/target.json', content);
+      const context = {packageName: Option.none(), project: Option.none()};
+      const donorFacts = extractStructuredSchemaFacts(donor, context);
+      const expected = extractStructuredSchemaFacts(target, context);
+      const store = yield* CodeGraphStore;
+
+      yield* store.cacheFacts(
+        fixture.databasePath,
+        [donor],
+        [donorFacts],
+        'structured-blob-cache',
+        unprotectedCacheWrite,
+      );
+      const decoded = yield* store.loadCachedFacts(fixture.databasePath, [target], 'structured-blob-cache');
+      const metadata = yield* store.loadCachedFacts(fixture.databasePath, [target], 'structured-blob-cache', {
+        decode: false,
+      });
+      const cachedKeys = yield* store.cachedCommittedFileKeys(fixture.databasePath, 'structured-blob-cache');
+
+      expect(decoded.facts.get(target.path)).toEqual(expected);
+      expect(decoded.keys).toEqual(new Set([target.path]));
+      expect(metadata.keys).toEqual(new Set([target.path]));
+      expect(metadata.bytes).toBeGreaterThanOrEqual(decoded.bytes);
+      expect(cachedKeys.has(codeGraphBlobReuseCacheKey(target, 'structured-blob-cache')!)).toBe(true);
+
+      const referenced = new Database(fixture.databasePath, {strict: true});
+      const now = new Date().toISOString();
+      referenced
+        .query(
+          `INSERT INTO repositories (id, display_name, object_format, created_at, last_used_at)
+           VALUES (?, 'blob reuse fixture', 'sha1', ?, ?)`,
+        )
+        .run(fixture.identity.repositoryId, now, now);
+      referenced
+        .query(
+          `INSERT INTO snapshots (
+             id, repository_id, worktree_id, commit_id, graph_content_id, base_snapshot_id,
+             extractor_set, dirty, overlay_fingerprint, state, file_count, symbol_count,
+             edge_count, started_at, completed_at, failure_summary
+           ) VALUES (?, ?, ?, ?, ?, NULL, ?, 0, NULL, 'ready', 1, 0, 0, ?, ?, NULL)`,
+        )
+        .run(
+          'blob-reuse-snapshot',
+          fixture.identity.repositoryId,
+          fixture.identity.worktreeId,
+          fixture.identity.headCommit,
+          'blob-reuse-content',
+          'structured-blob-cache',
+          now,
+          now,
+        );
+      referenced
+        .query(
+          `INSERT INTO snapshot_files (snapshot_id, path, content_hash, language, mode, size, source)
+           VALUES ('blob-reuse-snapshot', ?, ?, 'json', '100644', ?, 'commit')`,
+        )
+        .run(target.path, target.contentHash, target.size);
+      referenced.close(false);
+      yield* store.pruneCachedFacts(fixture.databasePath, ['structured-blob-cache']);
+
+      const database = new Database(fixture.databasePath, {readonly: true, strict: true});
+      const rows = database
+        .query('SELECT path_hint, blob_id, reuse_class FROM file_blobs WHERE extractor_set = ?')
+        .all('structured-blob-cache');
+      database.close(false);
+      expect(rows).toEqual([
+        {
+          blob_id: donor.blobId,
+          path_hint: donor.path,
+          reuse_class: 'structured-object-v1:json:full',
+        },
+      ]);
+    }).pipe(Effect.provide(ApplicationLayer)),
+  );
+
   effectIt.effect('does not hold the checkout writer lock while a direct build validates repository-scale input', () =>
     Effect.gen(function* () {
       const fixture = yield* Effect.promise(materializationFixture);
@@ -5226,6 +5308,19 @@ function readLexicalTerms(
     readonly term: string;
     readonly weight: number;
   }[];
+}
+
+function structuredCacheFile(path: string, content: string): CodeGraphInventoryFile {
+  return {
+    blobId: 'a'.repeat(40),
+    content,
+    contentHash: 'b'.repeat(64),
+    language: 'json',
+    mode: '100644',
+    path,
+    size: Buffer.byteLength(content),
+    source: 'commit',
+  };
 }
 
 function symbol(id: string, name: string, lookupKeys: readonly string[]): CodeGraphSymbol {

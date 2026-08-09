@@ -17,6 +17,7 @@ describe('code graph persistent cache capacity planning', () => {
       const unicode = String.fromCharCode(...values);
       const encoder = new TextEncoder();
       const fields = {
+        blobId: `blob-${unicode}`,
         contentHash: `hash-${unicode}`,
         createdAt: '2026-08-09T00:00:00.000Z',
         derivationIdentity: `derivation-${unicode}`,
@@ -25,12 +26,21 @@ describe('code graph persistent cache capacity planning', () => {
         id: `cgfs_${unicode}`,
         lastUsedAt: '2026-08-09T00:00:00.000Z',
         path: `packages/${unicode}.ts`,
+        reuseClass: `reuse-${unicode}`,
       };
       const independent = (...parts: readonly string[]) =>
         parts.reduce((total, part) => total + encoder.encode(part).byteLength, 0);
 
       expect(codeGraphFileBlobCapacityBytes(fields)).toBe(
-        independent(fields.contentHash, fields.extractorSet, fields.path, fields.factsJson, fields.createdAt),
+        independent(
+          fields.blobId,
+          fields.contentHash,
+          fields.extractorSet,
+          fields.path,
+          fields.factsJson,
+          fields.createdAt,
+          fields.reuseClass,
+        ),
       );
       expect(codeGraphMaterializedShardCapacityBytes(fields)).toBe(
         independent(

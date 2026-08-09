@@ -6,6 +6,11 @@ import {sha256HexSync} from '../crypto/sha256.js';
 import {isFileLockTimeout, withExclusiveFileLock} from '../effect/file_lock.js';
 import {SystemInfo} from '../effect/system.js';
 import {
+  codeGraphBlobExtractionReuseClass,
+  codeGraphStoredBlobReuseCacheKey,
+  type CodeGraphBlobReuseFile,
+} from './blob_reuse.js';
+import {
   classifyCodeGraphBuildOwner,
   type CodeGraphBuildOwnerIdentity,
   type CodeGraphBuildOwnerLiveness,
@@ -35,6 +40,7 @@ import {
   type CodeGraphCacheFactInput,
 } from './fact_budget.js';
 import {compareCodeUnits} from './ordering.js';
+import {relocateStructuredSchemaFacts} from './languages/schemas/extractor.js';
 import {codeGraphMaintenanceIntentActive} from './maintenance_gate.js';
 import {codeGraphLayout, codeGraphSnapshotBuildLockPath} from './layout.js';
 import {
@@ -121,8 +127,10 @@ interface EdgeRow {
 }
 
 interface FileBlobRow {
+  readonly blob_id: unknown;
   readonly content_hash: string;
   readonly facts_json: string;
+  readonly reuse_class: unknown;
 }
 
 export const CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION = 2 as const;
@@ -920,7 +928,7 @@ export interface CodeGraphStoreShape {
   ) => Effect.Effect<ReadonlySet<string>, CodeGraphStoreError>;
   readonly loadCachedFacts: (
     databasePath: string,
-    files: readonly Pick<CodeGraphInventoryFile, 'contentHash' | 'path'>[],
+    files: readonly CodeGraphBlobReuseFile[],
     extractorSet: string,
     options?: {readonly decode?: boolean},
   ) => Effect.Effect<LoadedCodeGraphFacts, CodeGraphStoreError>;
@@ -5290,11 +5298,15 @@ const initializeSchema = Effect.fn('codeGraph.initializeSchema')(function* (sql:
       content_hash TEXT NOT NULL,
       extractor_set TEXT NOT NULL,
       path_hint TEXT NOT NULL,
+      blob_id TEXT,
+      reuse_class TEXT,
       facts_json TEXT NOT NULL,
       created_at TEXT NOT NULL,
       PRIMARY KEY (content_hash, extractor_set, path_hint)
     ) WITHOUT ROWID
   `);
+  yield* ensureColumn(sql, 'file_blobs', 'blob_id', 'TEXT');
+  yield* ensureColumn(sql, 'file_blobs', 'reuse_class', 'TEXT');
   yield* sql.unsafe(`
     CREATE TABLE IF NOT EXISTS symbols (
       snapshot_id TEXT NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
@@ -5555,6 +5567,12 @@ const initializeSchema = Effect.fn('codeGraph.initializeSchema')(function* (sql:
     'CREATE INDEX IF NOT EXISTS snapshot_leases_snapshot_expiry ON snapshot_leases(snapshot_id, expires_at)',
   );
   yield* sql.unsafe('CREATE INDEX IF NOT EXISTS snapshot_files_blob ON snapshot_files(path, content_hash)');
+  yield* sql.unsafe('CREATE INDEX IF NOT EXISTS snapshot_files_content_hash ON snapshot_files(content_hash)');
+  yield* sql.unsafe(`
+    CREATE INDEX IF NOT EXISTS file_blobs_blob_reuse
+    ON file_blobs(blob_id, content_hash, extractor_set, reuse_class, path_hint)
+    WHERE blob_id IS NOT NULL AND reuse_class IS NOT NULL
+  `);
   // Routine cache reclamation resolves references from a disposable shard
   // back to snapshot-owned associations. Keep that reverse lookup indexed so
   // a bounded deletion page cannot hide a full association-table scan.
@@ -5783,6 +5801,13 @@ const CODE_GRAPH_SNAPSHOT_FILE_BLOB_REFERENCE_INDEX = {
   table: 'snapshot_files',
 } as const;
 
+const CODE_GRAPH_SNAPSHOT_FILE_CONTENT_REFERENCE_INDEX = {
+  columns: ['content_hash'],
+  definition: 'CREATE INDEX snapshot_files_content_hash ON snapshot_files(content_hash)',
+  name: 'snapshot_files_content_hash',
+  table: 'snapshot_files',
+} as const;
+
 const CODE_GRAPH_MATERIALIZED_SHARD_REFERENCE_INDEX = {
   columns: ['shard_id'],
   definition: 'CREATE INDEX snapshot_file_shards_shard ON snapshot_file_shards(shard_id)',
@@ -5812,6 +5837,15 @@ export function codeGraphRoutineFileBlobCleanupPageStatement(candidates: readonl
           FROM snapshot_files AS file
           WHERE file.path = file_blobs.path_hint
             AND file.content_hash = file_blobs.content_hash
+        )
+        AND NOT (
+          file_blobs.blob_id IS NOT NULL
+          AND file_blobs.reuse_class IS NOT NULL
+          AND EXISTS (
+            SELECT 1
+            FROM snapshot_files AS reusable_file
+            WHERE reusable_file.content_hash = file_blobs.content_hash
+          )
         )`,
   };
 }
@@ -6285,7 +6319,13 @@ const routineCacheSchemaCurrent = Effect.fn('codeGraph.routineCacheSchemaCurrent
     (yield* tableExists(sql, 'materialized_file_shards')) &&
     (yield* tableExists(sql, 'snapshot_file_shards')) &&
     (yield* tableExists(sql, 'routine_cache_cleanup_state')) &&
-    (yield* routineMaintenanceColumnsAvailable(sql, 'file_blobs', ['content_hash', 'extractor_set', 'path_hint'])) &&
+    (yield* routineMaintenanceColumnsAvailable(sql, 'file_blobs', [
+      'blob_id',
+      'content_hash',
+      'extractor_set',
+      'path_hint',
+      'reuse_class',
+    ])) &&
     (yield* routineMaintenanceColumnsAvailable(sql, 'snapshot_files', ['content_hash', 'path'])) &&
     (yield* routineMaintenanceColumnsAvailable(sql, 'materialized_file_shards', ['id'])) &&
     (yield* routineMaintenanceColumnsAvailable(sql, 'snapshot_file_shards', ['shard_id'])) &&
@@ -6298,12 +6338,15 @@ const routineCacheSchemaCurrent = Effect.fn('codeGraph.routineCacheSchemaCurrent
       'singleton',
     ])) &&
     (yield* codeGraphCacheReferenceIndexState(sql, CODE_GRAPH_SNAPSHOT_FILE_BLOB_REFERENCE_INDEX)) === 'ready' &&
+    (yield* codeGraphCacheReferenceIndexState(sql, CODE_GRAPH_SNAPSHOT_FILE_CONTENT_REFERENCE_INDEX)) === 'ready' &&
     (yield* codeGraphCacheReferenceIndexState(sql, CODE_GRAPH_MATERIALIZED_SHARD_REFERENCE_INDEX)) === 'ready'
   );
 });
 
 type CodeGraphCacheReferenceIndex =
-  typeof CODE_GRAPH_SNAPSHOT_FILE_BLOB_REFERENCE_INDEX | typeof CODE_GRAPH_MATERIALIZED_SHARD_REFERENCE_INDEX;
+  | typeof CODE_GRAPH_SNAPSHOT_FILE_BLOB_REFERENCE_INDEX
+  | typeof CODE_GRAPH_SNAPSHOT_FILE_CONTENT_REFERENCE_INDEX
+  | typeof CODE_GRAPH_MATERIALIZED_SHARD_REFERENCE_INDEX;
 
 const codeGraphCacheReferenceIndexState = Effect.fn('codeGraph.cacheReferenceIndexState')(function* (
   sql: SqlClient.SqlClient,
@@ -9052,11 +9095,13 @@ const activatePersistedIncrementalSnapshot = Effect.fn('codeGraph.activatePersis
 });
 
 interface PlannedFreshFactCacheRow extends CodeGraphCacheCapacityRow {
+  readonly blobId?: string;
   readonly contentHash: string;
   readonly createdAt: string;
   readonly extractorSet: string;
   readonly factsJson: string;
   readonly path: string;
+  readonly reuseClass?: string;
 }
 
 interface PlannedMaterializedShardCacheRow extends CodeGraphCacheCapacityRow {
@@ -9086,7 +9131,9 @@ function prepareFreshFactCacheChunks(
   return planCodeGraphCacheCapacityChunks(
     'cache code graph file facts',
     inputs.map(({bounded, file}) => {
+      const reuseClass = codeGraphBlobExtractionReuseClass(file);
       const row = {
+        ...(reuseClass === undefined ? {} : {blobId: file.blobId, reuseClass}),
         contentHash: file.contentHash,
         createdAt,
         extractorSet,
@@ -9103,12 +9150,16 @@ function storeFreshFactRows(sql: SqlClient.SqlClient, rows: readonly PlannedFres
   return Effect.gen(function* () {
     for (const row of rows) {
       yield* sql`
-        INSERT INTO file_blobs (content_hash, extractor_set, path_hint, facts_json, created_at)
+        INSERT INTO file_blobs (
+          content_hash, extractor_set, path_hint, blob_id, reuse_class, facts_json, created_at
+        )
         VALUES (
           ${row.contentHash}, ${row.extractorSet}, ${row.path},
-          ${row.factsJson}, ${row.createdAt}
+          ${row.blobId ?? null}, ${row.reuseClass ?? null}, ${row.factsJson}, ${row.createdAt}
         )
         ON CONFLICT(content_hash, extractor_set, path_hint) DO UPDATE SET
+          blob_id = excluded.blob_id,
+          reuse_class = excluded.reuse_class,
           facts_json = excluded.facts_json,
           created_at = excluded.created_at
       `;
@@ -16943,6 +16994,13 @@ const pruneUnreferencedFileBlobs = Effect.fn('codeGraph.pruneUnreferencedFileBlo
       WHERE snapshot_files.path = file_blobs.path_hint
         AND snapshot_files.content_hash = file_blobs.content_hash
     )
+      AND NOT (
+        file_blobs.blob_id IS NOT NULL
+        AND file_blobs.reuse_class IS NOT NULL
+        AND EXISTS (
+          SELECT 1 FROM snapshot_files WHERE snapshot_files.content_hash = file_blobs.content_hash
+        )
+      )
   `;
 });
 
@@ -16961,11 +17019,20 @@ const pruneCachedFileBlobs = Effect.fn('codeGraph.pruneCachedFileBlobs')(functio
   yield* sql.unsafe(
     `DELETE FROM file_blobs
      WHERE extractor_set NOT IN (${acceptedExtractorSets.map(() => '?').join(', ')})
-        OR NOT EXISTS (
-          SELECT 1
-          FROM snapshot_files
-          WHERE snapshot_files.path = file_blobs.path_hint
-            AND snapshot_files.content_hash = file_blobs.content_hash
+        OR (
+          NOT EXISTS (
+            SELECT 1
+            FROM snapshot_files
+            WHERE snapshot_files.path = file_blobs.path_hint
+              AND snapshot_files.content_hash = file_blobs.content_hash
+          )
+          AND NOT (
+            file_blobs.blob_id IS NOT NULL
+            AND file_blobs.reuse_class IS NOT NULL
+            AND EXISTS (
+              SELECT 1 FROM snapshot_files WHERE snapshot_files.content_hash = file_blobs.content_hash
+            )
+          )
         )`,
     acceptedExtractorSets,
   );
@@ -17283,7 +17350,7 @@ const selectReusableReexports = Effect.fn('codeGraph.selectReusableReexports')(f
 });
 
 const selectCachedFacts = Effect.fn('codeGraph.selectCachedFacts')(function* (
-  files: readonly Pick<CodeGraphInventoryFile, 'contentHash' | 'path'>[],
+  files: readonly CodeGraphBlobReuseFile[],
   extractorSet: string,
   decode: boolean,
 ) {
@@ -17302,6 +17369,15 @@ const selectCachedFacts = Effect.fn('codeGraph.selectCachedFacts')(function* (
         bytes += factBytes;
         bytesByPath.set(row.path_hint, factBytes);
       }
+      const missing = batch.filter(file => !keys.has(file.path));
+      const reusableRows = yield* selectReusableFileBlobMetadataBatch(sql, missing, extractorSet);
+      for (const row of reusableRows) {
+        if (keys.has(row.target_path)) continue;
+        keys.add(row.target_path);
+        const factBytes = Number(row.facts_bytes);
+        bytes += factBytes;
+        bytesByPath.set(row.target_path, factBytes);
+      }
       continue;
     }
     const rows = yield* selectFileBlobBatch(sql, batch, extractorSet);
@@ -17316,6 +17392,27 @@ const selectCachedFacts = Effect.fn('codeGraph.selectCachedFacts')(function* (
         bytesByPath.set(row.path_hint, factBytes);
       } catch {
         // A malformed cache row is disposable and will be replaced after extraction.
+      }
+    }
+    const missing = batch.filter(file => !keys.has(file.path));
+    const reusableRows = yield* selectReusableFileBlobBatch(sql, missing, extractorSet);
+    const filesByPath = new Map(reusableFileBlobTargets(missing).map(file => [file.path, file]));
+    for (const row of reusableRows) {
+      if (keys.has(row.target_path)) continue;
+      const file = filesByPath.get(row.target_path);
+      if (file === undefined) continue;
+      try {
+        const facts = JSON.parse(row.facts_json) as CodeGraphFileFacts;
+        if (facts.path !== row.path_hint) continue;
+        const relocated = relocateStructuredSchemaFacts(file, facts);
+        if (relocated === undefined) continue;
+        const factBytes = codeGraphUtf8ByteLength(JSON.stringify(relocated));
+        output.set(row.target_path, relocated);
+        keys.add(row.target_path);
+        bytes += factBytes;
+        bytesByPath.set(row.target_path, factBytes);
+      } catch {
+        // A malformed or incompatible donor is disposable and cannot satisfy this target path.
       }
     }
   }
@@ -17372,7 +17469,7 @@ const selectMaterializedFileShards = Effect.fn('codeGraph.selectMaterializedFile
 
 function selectFileBlobMetadataBatch(
   sql: SqlClient.SqlClient,
-  files: readonly Pick<CodeGraphInventoryFile, 'contentHash' | 'path'>[],
+  files: readonly CodeGraphBlobReuseFile[],
   extractorSet: string,
 ) {
   if (files.length === 0) {
@@ -17382,21 +17479,19 @@ function selectFileBlobMetadataBatch(
     `SELECT path_hint, length(CAST(facts_json AS BLOB)) AS facts_bytes
      FROM file_blobs
      WHERE extractor_set = ?
+       AND CASE WHEN json_valid(facts_json) THEN json_extract(facts_json, '$.path') ELSE NULL END = path_hint
        AND (${files.map(() => '(content_hash = ? AND path_hint = ?)').join(' OR ')})`,
     [extractorSet, ...files.flatMap(file => [file.contentHash, file.path])],
   );
 }
 
-function selectFileBlobBatch(
-  sql: SqlClient.SqlClient,
-  files: readonly Pick<CodeGraphInventoryFile, 'contentHash' | 'path'>[],
-  extractorSet: string,
-) {
+function selectFileBlobBatch(sql: SqlClient.SqlClient, files: readonly CodeGraphBlobReuseFile[], extractorSet: string) {
   if (files.length === 0) {
     return Effect.succeed([] as readonly (FileBlobRow & {readonly facts_bytes: number; readonly path_hint: string})[]);
   }
   return sql.unsafe<FileBlobRow & {readonly facts_bytes: number; readonly path_hint: string}>(
-    `SELECT content_hash, path_hint, facts_json, length(CAST(facts_json AS BLOB)) AS facts_bytes
+    `SELECT blob_id, content_hash, path_hint, reuse_class, facts_json,
+            length(CAST(facts_json AS BLOB)) AS facts_bytes
      FROM file_blobs
      WHERE extractor_set = ?
        AND (${files.map(() => '(content_hash = ? AND path_hint = ?)').join(' OR ')})`,
@@ -17404,13 +17499,139 @@ function selectFileBlobBatch(
   );
 }
 
+interface ReusableFileBlobRow {
+  readonly facts_bytes: number;
+  readonly facts_json: string;
+  readonly path_hint: string;
+  readonly target_path: string;
+}
+
+function selectReusableFileBlobMetadataBatch(
+  sql: SqlClient.SqlClient,
+  files: readonly CodeGraphBlobReuseFile[],
+  extractorSet: string,
+) {
+  const targets = reusableFileBlobTargets(files);
+  if (targets.length === 0) {
+    return Effect.succeed([] as readonly Pick<ReusableFileBlobRow, 'facts_bytes' | 'target_path'>[]);
+  }
+  return sql.unsafe<Pick<ReusableFileBlobRow, 'facts_bytes' | 'target_path'>>(
+    `${reusableFileBlobTargetCte(targets)}
+     SELECT requested.target_path,
+            MAX(
+              length(CAST(blob.facts_json AS BLOB)),
+              length(CAST(replace(
+                blob.facts_json,
+                substr(json_quote(blob.path_hint), 2, length(json_quote(blob.path_hint)) - 2),
+                substr(json_quote(requested.target_path), 2, length(json_quote(requested.target_path)) - 2)
+              ) AS BLOB))
+            ) AS facts_bytes
+     FROM requested
+     JOIN file_blobs AS blob ON ${reusableFileBlobJoin('blob')}
+     WHERE blob.extractor_set = ?
+       AND blob.path_hint <> requested.target_path
+       AND json_valid(blob.facts_json)
+       AND json_extract(blob.facts_json, '$.path') = blob.path_hint
+       AND blob.path_hint = (${reusableFileBlobFirstDonorSubquery()})`,
+    [...reusableFileBlobTargetParameters(targets), extractorSet],
+  );
+}
+
+function selectReusableFileBlobBatch(
+  sql: SqlClient.SqlClient,
+  files: readonly CodeGraphBlobReuseFile[],
+  extractorSet: string,
+) {
+  const targets = reusableFileBlobTargets(files);
+  if (targets.length === 0) return Effect.succeed([] as readonly ReusableFileBlobRow[]);
+  return sql.unsafe<ReusableFileBlobRow>(
+    `${reusableFileBlobTargetCte(targets)}
+     SELECT requested.target_path, blob.path_hint, blob.facts_json,
+            length(CAST(blob.facts_json AS BLOB)) AS facts_bytes
+     FROM requested
+     JOIN file_blobs AS blob ON ${reusableFileBlobJoin('blob')}
+     WHERE blob.extractor_set = ?
+       AND blob.path_hint <> requested.target_path
+       AND json_valid(blob.facts_json)
+       AND json_extract(blob.facts_json, '$.path') = blob.path_hint
+       AND blob.path_hint = (${reusableFileBlobFirstDonorSubquery()})`,
+    [...reusableFileBlobTargetParameters(targets), extractorSet],
+  );
+}
+
+interface ReusableFileBlobTarget {
+  readonly blobId: string;
+  readonly contentHash: string;
+  readonly language: string;
+  readonly path: string;
+  readonly reuseClass: string;
+}
+
+function reusableFileBlobTargets(files: readonly CodeGraphBlobReuseFile[]): readonly ReusableFileBlobTarget[] {
+  return files.flatMap(file => {
+    const reuseClass = codeGraphBlobExtractionReuseClass(file);
+    return reuseClass === undefined
+      ? []
+      : [
+          {
+            blobId: file.blobId!,
+            contentHash: file.contentHash,
+            language: file.language!,
+            path: file.path,
+            reuseClass,
+          },
+        ];
+  });
+}
+
+function reusableFileBlobTargetCte(targets: readonly ReusableFileBlobTarget[]): string {
+  return `WITH requested(target_path, content_hash, blob_id, reuse_class) AS (
+    VALUES ${targets.map(() => '(?, ?, ?, ?)').join(', ')}
+  )`;
+}
+
+function reusableFileBlobTargetParameters(targets: readonly ReusableFileBlobTarget[]): readonly string[] {
+  return targets.flatMap(target => [target.path, target.contentHash, target.blobId, target.reuseClass]);
+}
+
+function reusableFileBlobJoin(alias: string): string {
+  return `${alias}.blob_id = requested.blob_id
+    AND ${alias}.content_hash = requested.content_hash
+    AND ${alias}.reuse_class = requested.reuse_class`;
+}
+
+function reusableFileBlobFirstDonorSubquery(): string {
+  return `SELECT MIN(donor.path_hint)
+    FROM file_blobs AS donor
+    WHERE ${reusableFileBlobJoin('donor')}
+      AND donor.extractor_set = blob.extractor_set
+      AND donor.path_hint <> requested.target_path
+      AND json_valid(donor.facts_json)
+      AND json_extract(donor.facts_json, '$.path') = donor.path_hint`;
+}
+
 const selectCachedCommittedFileKeys = Effect.fn('codeGraph.selectCachedCommittedFileKeys')(function* (
   extractorSet: string,
 ) {
   const sql = yield* SqlClient.SqlClient;
   yield* configureConnection(sql);
-  const rows = yield* sql<{readonly content_hash: string; readonly path_hint: string}>`
-    SELECT content_hash, path_hint
+  const rows = yield* sql<{
+    readonly blob_id: unknown;
+    readonly content_hash: string;
+    readonly path_hint: string;
+    readonly reuse_class: unknown;
+  }>`
+    SELECT
+      CASE
+        WHEN typeof(blob_id) = 'text' AND length(CAST(blob_id AS BLOB)) IN (40, 64) THEN blob_id
+        ELSE NULL
+      END AS blob_id,
+      content_hash,
+      path_hint,
+      CASE
+        WHEN typeof(reuse_class) = 'text' AND length(CAST(reuse_class AS BLOB)) <= 128 THEN reuse_class
+        ELSE NULL
+      END AS reuse_class
     FROM file_blobs
     WHERE extractor_set = ${extractorSet}
       AND CASE
@@ -17418,7 +17639,19 @@ const selectCachedCommittedFileKeys = Effect.fn('codeGraph.selectCachedCommitted
         ELSE NULL
       END = path_hint
   `;
-  return new Set(rows.map(row => `${row.path_hint}\0${row.content_hash}\0${extractorSet}`));
+  const keys = new Set(rows.map(row => `${row.path_hint}\0${row.content_hash}\0${extractorSet}`));
+  for (const row of rows) {
+    if (
+      typeof row.blob_id !== 'string' ||
+      !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(row.blob_id) ||
+      typeof row.reuse_class !== 'string' ||
+      !/^structured-object-v1:(?:json|jsonc|yaml):full$/u.test(row.reuse_class)
+    ) {
+      continue;
+    }
+    keys.add(codeGraphStoredBlobReuseCacheKey(row.blob_id, row.content_hash, extractorSet, row.reuse_class));
+  }
+  return keys;
 });
 
 const selectStoredGraph = Effect.fn('codeGraph.selectStoredGraph')(function* (snapshotId: string) {

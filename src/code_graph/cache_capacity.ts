@@ -27,11 +27,13 @@ export interface CodeGraphCacheCapacityChunk<Row extends CodeGraphCacheCapacityR
 }
 
 interface CodeGraphFileBlobCapacityFields {
+  readonly blobId?: string;
   readonly contentHash: string;
   readonly createdAt: string;
   readonly extractorSet: string;
   readonly factsJson: string;
   readonly path: string;
+  readonly reuseClass?: string;
 }
 
 interface CodeGraphMaterializedShardCapacityFields extends CodeGraphFileBlobCapacityFields {
@@ -42,11 +44,13 @@ interface CodeGraphMaterializedShardCapacityFields extends CodeGraphFileBlobCapa
 
 export function codeGraphFileBlobCapacityBytes(fields: CodeGraphFileBlobCapacityFields): number {
   return codeGraphTextFieldsCapacityBytes(
+    fields.blobId ?? '',
     fields.contentHash,
     fields.extractorSet,
     fields.path,
     fields.factsJson,
     fields.createdAt,
+    fields.reuseClass ?? '',
   );
 }
 

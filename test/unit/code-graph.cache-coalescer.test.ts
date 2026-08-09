@@ -5,10 +5,12 @@ import {
   CODE_GRAPH_CACHE_TRANSACTION_LIMITS,
   codeGraphFileBlobCapacityBytes,
 } from '../../src/code_graph/cache_capacity.js';
+import {codeGraphBlobReuseCacheKey} from '../../src/code_graph/blob_reuse.js';
 import {serializeBoundedCodeGraphFact} from '../../src/code_graph/fact_budget.js';
 import {cacheContentBatch, type CodeGraphCacheExtractedRow} from '../../src/code_graph/indexer.js';
 import type {CodeGraphContentBatchContext} from '../../src/code_graph/inventory.js';
 import type {CodeGraphLanguagePackRegistryShape} from '../../src/code_graph/languages/registry.js';
+import {extractStructuredSchemaFacts} from '../../src/code_graph/languages/schemas/extractor.js';
 import type {CodeGraphParserPoolShape, CodeGraphParserResult} from '../../src/code_graph/parser_worker.js';
 import type {CodeGraphDirectPersistentCapacityProtector, CodeGraphStoreShape} from '../../src/code_graph/store.js';
 import type {TreeSitterRuntimeShape} from '../../src/code_graph/tree_sitter/runtime.js';
@@ -221,6 +223,68 @@ describe('code graph parser cache coalescer', () => {
     }),
   );
 
+  effectIt.effect('extracts one eligible Git blob once across committed inventory callbacks', () =>
+    Effect.gen(function* () {
+      const content = '{"nested":{"enabled":true},"items":[{"name":"one"}]}';
+      const donor = structuredCacheFile('config/donor.json', content);
+      const target = structuredCacheFile('config/copies/target.json', content);
+      const reuseKey = codeGraphBlobReuseCacheKey(donor, cacheIdentityForPath(donor.path))!;
+      const context = {...cacheContext(2), blobReuseCounts: new Map([[reuseKey, 2]])};
+      let extractions = 0;
+      const harness = coalescerHarness({
+        capacity: 2,
+        facts: file => {
+          extractions += 1;
+          return {
+            degraded: false,
+            facts: extractStructuredSchemaFacts(file, {packageName: Option.none(), project: Option.none()}),
+            parseMilliseconds: 1,
+          };
+        },
+      });
+
+      yield* harness.run([donor], context);
+      yield* harness.run([target], context);
+      yield* harness.flush();
+
+      expect(extractions).toBe(1);
+      const cachedFacts = new Map(
+        harness.calls.flatMap(call => call.facts.map(fact => [fact.facts.path, fact.facts] as const)),
+      );
+      expect(cachedFacts.get(donor.path)).toEqual(
+        extractStructuredSchemaFacts(donor, {packageName: Option.none(), project: Option.none()}),
+      );
+      expect(cachedFacts.get(target.path)).toEqual(
+        extractStructuredSchemaFacts(target, {packageName: Option.none(), project: Option.none()}),
+      );
+    }),
+  );
+
+  effectIt.effect('never reuses or publishes blob metadata for a degraded extraction', () =>
+    Effect.gen(function* () {
+      const content = '{"nested":{"enabled":true}}';
+      const donor = structuredCacheFile('config/degraded.json', content);
+      const target = structuredCacheFile('config/copies/degraded.json', content);
+      const reuseKey = codeGraphBlobReuseCacheKey(donor, cacheIdentityForPath(donor.path))!;
+      const context = {...cacheContext(2), blobReuseCounts: new Map([[reuseKey, 2]])};
+      let extractions = 0;
+      const harness = coalescerHarness({
+        capacity: 2,
+        facts: file => {
+          extractions += 1;
+          return {degraded: true, facts: emptyFacts(file.path), parseMilliseconds: 1};
+        },
+      });
+
+      yield* harness.run([donor], context);
+      yield* harness.run([target], context);
+      yield* harness.flush();
+
+      expect(extractions).toBe(2);
+      expect(harness.calls.flatMap(call => call.files).every(file => file.blobId === '')).toBe(true);
+    }),
+  );
+
   effectIt.effect('discards an interrupted pending window without starting a cache writer', () =>
     Effect.gen(function* () {
       const thirdExtractionEntered = yield* Deferred.make<void>();
@@ -333,6 +397,19 @@ function cacheFile(index: number, directory: string): CodeGraphInventoryFile {
     mode: '100644',
     path: `${directory}/file-${suffix}.ts`,
     size: 1,
+    source: 'commit',
+  };
+}
+
+function structuredCacheFile(path: string, content: string): CodeGraphInventoryFile {
+  return {
+    blobId: 'a'.repeat(40),
+    content,
+    contentHash: 'b'.repeat(64),
+    language: 'json',
+    mode: '100644',
+    path,
+    size: Buffer.byteLength(content),
     source: 'commit',
   };
 }

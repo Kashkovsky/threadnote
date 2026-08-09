@@ -2,6 +2,7 @@ import {Effect, FileSystem, Option, Path} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {runBinaryCommandEffect, runCommandEffect} from '../effect/command.js';
 import {SystemInfo} from '../effect/system.js';
+import {codeGraphBlobReuseCacheKey} from './blob_reuse.js';
 import {BUILTIN_LANGUAGE_PACK_REGISTRY, type CodeGraphLanguagePackRegistryShape} from './languages/registry.js';
 import {CORPUS_EXTRACTION_SOURCE_BYTES_LIMIT} from './languages/corpus/policy.js';
 import {isLowSignalStructuredPath} from './languages/schemas/policy.js';
@@ -139,6 +140,8 @@ export interface CodeGraphInventoryOptions {
 }
 
 export interface CodeGraphContentBatchContext {
+  /** Eligible duplicate Git blobs expected across this committed inventory pass. */
+  readonly blobReuseCounts?: ReadonlyMap<string, number>;
   /** Counters remain at the last completed inventory boundary while this batch is extracted. */
   readonly progress: Extract<CodeGraphProgress, {readonly phase: 'scanning'}>;
   readonly readingMilliseconds: number;
@@ -939,27 +942,46 @@ const readCommittedFiles = Effect.fn('codeGraph.readCommittedFiles')(function* (
   const metadataOnlyContent: CodeGraphInventoryFile[] = [];
   for (const entry of entries) {
     const contentHash = committedContentHash(identity.objectFormat, entry.blobId);
-    const cached = cachedCommittedFileKeys.has(cacheKey(entry.path, contentHash, languagePacks));
+    const metadata = inventoryFileForCommittedEntry(entry, contentHash, languagePacks);
+    const extractorSet = Option.getOrElse(languagePacks.cacheIdentityForPath(entry.path), () => 'unmatched');
+    const blobReuseKey = codeGraphBlobReuseCacheKey(metadata, extractorSet);
+    const cached =
+      cachedCommittedFileKeys.has(cacheKey(entry.path, contentHash, languagePacks)) ||
+      (blobReuseKey !== undefined && cachedCommittedFileKeys.has(blobReuseKey));
     const preloaded = preloadedResolutionContexts.get(entry.path);
     if (preloaded && cached) {
       files.push(preloaded);
       completed += 1;
     } else if (cached && !languagePacks.isResolutionContext(entry.path)) {
-      files.push(inventoryFileForCommittedEntry(entry, contentHash, languagePacks));
+      files.push(metadata);
       completed += 1;
     } else if (!cached && repositoryContentOmissionReason(entry.path, entry.size, languagePacks) !== undefined) {
-      const metadata = {
-        ...inventoryFileForCommittedEntry(entry, contentHash, languagePacks),
+      const omittedMetadata = {
+        ...metadata,
         contentOmittedReason: repositoryContentOmissionReason(entry.path, entry.size, languagePacks),
       } satisfies CodeGraphInventoryFile;
-      metadataOnlyContent.push(metadata);
-      files.push(retainResolutionContext(metadata, languagePacks));
+      metadataOnlyContent.push(omittedMetadata);
+      files.push(retainResolutionContext(omittedMetadata, languagePacks));
       parsedPaths.add(entry.path);
       completed += 1;
     } else {
       needsContent.push({...entry, parse: !cached});
     }
   }
+  const blobReuse = committedBlobReusePlan(identity, needsContent, languagePacks);
+  const blobReuseCounts = blobReuse.counts;
+  const orderedNeedsContent = [...needsContent].sort((left, right) => {
+    const leftKey = blobReuse.keysByPath.get(left.path);
+    const rightKey = blobReuse.keysByPath.get(right.path);
+    const leftDuplicate = leftKey !== undefined && blobReuseCounts.has(leftKey);
+    const rightDuplicate = rightKey !== undefined && blobReuseCounts.has(rightKey);
+    if (leftDuplicate !== rightDuplicate) return leftDuplicate ? -1 : 1;
+    if (leftDuplicate && rightDuplicate) {
+      const keyOrder = compareCodeUnits(leftKey!, rightKey!);
+      if (keyOrder !== 0) return keyOrder;
+    }
+    return compareCodeUnits(left.path, right.path);
+  });
   for (let offset = 0; offset < metadataOnlyContent.length; offset += CAT_FILE_BATCH_ENTRIES) {
     const batch = metadataOnlyContent.slice(offset, offset + CAT_FILE_BATCH_ENTRIES);
     yield* onContentBatch?.(batch, {
@@ -985,7 +1007,7 @@ const readCommittedFiles = Effect.fn('codeGraph.readCommittedFiles')(function* (
     total: entries.length,
     unit: 'files',
   }) ?? Effect.void;
-  for (const batch of chunkTreeEntries(needsContent)) {
+  for (const batch of chunkTreeEntries(orderedNeedsContent)) {
     const first = batch[0]!;
     const batchLanguages = new Set(
       batch.map(entry =>
@@ -1045,6 +1067,7 @@ const readCommittedFiles = Effect.fn('codeGraph.readCommittedFiles')(function* (
     }
     if (contentBatch.length > 0) {
       yield* onContentBatch?.(contentBatch, {
+        ...(blobReuseCounts.size === 0 ? {} : {blobReuseCounts}),
         progress: {
           accepted: files.length,
           completed,
@@ -1072,6 +1095,37 @@ const readCommittedFiles = Effect.fn('codeGraph.readCommittedFiles')(function* (
   }
   return {files, parsedPaths, skipped};
 });
+
+function committedBlobReusePlan(
+  identity: RepositoryIdentity,
+  entries: readonly (GitTreeEntry & {readonly parse: boolean})[],
+  languagePacks: CodeGraphLanguagePackRegistryShape,
+): {readonly counts: ReadonlyMap<string, number>; readonly keysByPath: ReadonlyMap<string, string>} {
+  const counts = new Map<string, number>();
+  const keysByPath = new Map<string, string>();
+  for (const entry of entries) {
+    if (!entry.parse) continue;
+    const key = committedBlobReuseKey(identity, entry, languagePacks);
+    if (key === undefined) continue;
+    keysByPath.set(entry.path, key);
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return {counts: new Map([...counts].filter(([, count]) => count > 1)), keysByPath};
+}
+
+function committedBlobReuseKey(
+  identity: RepositoryIdentity,
+  entry: GitTreeEntry,
+  languagePacks: CodeGraphLanguagePackRegistryShape,
+): string | undefined {
+  const file = inventoryFileForCommittedEntry(
+    entry,
+    committedContentHash(identity.objectFormat, entry.blobId),
+    languagePacks,
+  );
+  const extractorSet = Option.getOrElse(languagePacks.cacheIdentityForPath(entry.path), () => 'unmatched');
+  return codeGraphBlobReuseCacheKey(file, extractorSet);
+}
 
 function inventoryFileForCommittedEntry(
   entry: GitTreeEntry,

@@ -209,6 +209,43 @@ describe('routine code graph maintenance', () => {
     );
   });
 
+  it('retains a reusable donor while the same content is live at another path', () => {
+    const database = routineCachePropertyDatabase(0, 0, false);
+    try {
+      const now = new Date().toISOString();
+      database
+        .query(
+          `INSERT INTO file_blobs (
+             content_hash, extractor_set, path_hint, blob_id, reuse_class, facts_json, created_at
+           ) VALUES (?, 'cache-test', ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          'zz-live-content',
+          'config/donor.json',
+          'a'.repeat(40),
+          'structured-object-v1:json:full',
+          '{"diagnostics":[],"edges":[],"path":"config/donor.json","symbols":[]}',
+          now,
+        );
+      database
+        .query(
+          `INSERT INTO file_blobs (content_hash, extractor_set, path_hint, facts_json, created_at)
+           VALUES (?, 'cache-test', ?, '{}', ?)`,
+        )
+        .run('zz-live-content', 'config/non-reusable.json', now);
+
+      const candidates = readRoutineFileBlobCacheCandidates(database, undefined);
+      const statement = codeGraphRoutineFileBlobCleanupPageStatement(candidates);
+      database.query(statement.text).run(...statement.parameters);
+
+      expect(
+        database.query<{readonly path_hint: string}, []>('SELECT path_hint FROM file_blobs ORDER BY path_hint').all(),
+      ).toEqual([{path_hint: 'config/donor.json'}, {path_hint: 'src/live.ts'}]);
+    } finally {
+      database.close(false);
+    }
+  });
+
   it('starts the zero-wait cache collector after a successful promotion without a displaced pointer', async () => {
     const fixture = await routineFixture('threadnote-routine-cache-promotion-');
     const identity = routineIdentity(fixture, 'b'.repeat(64));
@@ -1523,10 +1560,13 @@ function routineCachePropertyDatabase(
       PRIMARY KEY (snapshot_id, path)
     ) WITHOUT ROWID;
     CREATE INDEX snapshot_files_blob ON snapshot_files(path, content_hash);
+    CREATE INDEX snapshot_files_content_hash ON snapshot_files(content_hash);
     CREATE TABLE file_blobs (
       content_hash TEXT NOT NULL,
       extractor_set TEXT NOT NULL,
       path_hint TEXT NOT NULL,
+      blob_id TEXT,
+      reuse_class TEXT,
       facts_json TEXT NOT NULL,
       created_at TEXT NOT NULL,
       PRIMARY KEY (content_hash, extractor_set, path_hint)

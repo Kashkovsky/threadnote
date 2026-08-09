@@ -2,7 +2,7 @@ import {execFileSync} from 'node:child_process';
 import {mkdirSync, mkdtempSync, rmSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {Effect} from 'effect';
+import {Effect, Option} from 'effect';
 import {afterEach, describe, expect, it} from 'vitest';
 import {
   createPackageAttributor,
@@ -11,6 +11,7 @@ import {
 } from '../../src/code_graph/extractor.js';
 import {CodeGraphIndexer} from '../../src/code_graph/indexer.js';
 import {inventoryRepository} from '../../src/code_graph/inventory.js';
+import {codeGraphBlobReuseCacheKey} from '../../src/code_graph/blob_reuse.js';
 import {BUILTIN_LANGUAGE_PACK_REGISTRY} from '../../src/code_graph/languages/registry.js';
 import {resolveRepositoryIdentity} from '../../src/code_graph/repository.js';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
@@ -169,6 +170,53 @@ describe('code graph inventory cache rehydration', () => {
         },
       ],
     });
+  });
+
+  it('admits a new committed path from an existing eligible blob cache key without reading its content', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'threadnote-inventory-blob-cache-'));
+    roots.push(root);
+    execFileSync('git', ['-C', root, 'init', '-q']);
+    mkdirSync(join(root, 'config', 'copies'), {recursive: true});
+    const content = '{"nested":{"enabled":true}}\n';
+    writeFileSync(join(root, 'config', 'donor.json'), content);
+    writeFileSync(join(root, 'config', 'copies', 'target.json'), content);
+    execFileSync('git', ['-C', root, 'add', '.']);
+    execFileSync('git', [
+      '-C',
+      root,
+      '-c',
+      'user.name=Threadnote Test',
+      '-c',
+      'user.email=test@threadnote.local',
+      'commit',
+      '-qm',
+      'duplicate structured blob',
+    ]);
+    const first = await runEffect(
+      Effect.gen(function* () {
+        const identity = yield* resolveRepositoryIdentity(root);
+        return yield* inventoryRepository(identity);
+      }),
+    );
+    const donor = first.committedFiles.find(file => file.path === 'config/donor.json')!;
+    const cacheIdentity = Option.getOrThrow(BUILTIN_LANGUAGE_PACK_REGISTRY.cacheIdentityForPath(donor.path));
+    const reuseKey = codeGraphBlobReuseCacheKey(donor, cacheIdentity)!;
+    const batches: CodeGraphInventoryFile[][] = [];
+
+    const second = await runEffect(
+      Effect.gen(function* () {
+        const identity = yield* resolveRepositoryIdentity(root);
+        return yield* inventoryRepository(identity, {
+          cachedCommittedFileKeys: new Set([reuseKey]),
+          onContentBatch: files => Effect.sync(() => batches.push([...files])),
+        });
+      }),
+    );
+
+    expect(batches).toEqual([]);
+    expect(second.parsedFiles).toBe(0);
+    expect(second.files.map(file => file.path)).toEqual(['config/copies/target.json', 'config/donor.json']);
+    expect(second.files.every(file => file.content === undefined)).toBe(true);
   });
 
   it('rehydrates cached manifests during a new-commit rebuild without losing attribution or resolution', async () => {

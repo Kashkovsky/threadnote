@@ -13,7 +13,7 @@ export const codeGraphLanguagePack: CodeGraphLanguagePack = {
         catch: cause =>
           new CodeGraphLanguagePackError(`Could not extract structured facts from ${file.path}.`, {cause}),
       }),
-    version: sha256HexSync('threadnote-structured-schema-extractors-v4-streamed-low-signal-data'),
+    version: sha256HexSync('threadnote-structured-schema-extractors-v5-blob-oid-reuse'),
   },
   files: [
     {kind: 'extension', language: 'sql', role: 'source', value: '.sql'},

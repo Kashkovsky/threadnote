@@ -702,14 +702,7 @@ function structuredSymbol(
   return {
     contentHash: file.contentHash,
     exported: true,
-    id:
-      occurrence === 0
-        ? `cgs_${sha256HexSync(
-            `structured-symbol-v1\n${file.path}\n${file.language}\n${kind}\n${identityQualifiedName}`,
-          ).slice(0, 32)}`
-        : `cgs_${sha256HexSync(
-            `structured-symbol-v2\n${file.path}\n${file.language}\n${kind}\n${qualifiedName}\n${occurrence}`,
-          ).slice(0, 32)}`,
+    id: structuredSymbolId(file.path, file.language, kind, qualifiedName, identityQualifiedName, occurrence),
     kind,
     language: file.language,
     name,
@@ -722,6 +715,134 @@ function structuredSymbol(
         ? {column: 1, endColumn: Math.max(1, end - start + 1), endLine: 1, line: 1}
         : sourceSpan(lineIndex, start, end),
   };
+}
+
+export function relocateStructuredSchemaFacts(
+  file: Pick<CodeGraphInventoryFile, 'contentHash' | 'language' | 'path'>,
+  facts: CodeGraphFileFacts,
+): CodeGraphFileFacts | undefined {
+  const sourcePath = facts.path;
+  if (
+    sourcePath === file.path ||
+    facts.references !== undefined ||
+    facts.symbols.length === 0 ||
+    facts.symbols.some(
+      symbol =>
+        symbol.path !== sourcePath ||
+        symbol.contentHash !== file.contentHash ||
+        symbol.language !== file.language ||
+        symbol.resolutionDomain !== 'structured-schema' ||
+        symbol.resolutionScopeId !== undefined ||
+        symbol.packageName !== undefined ||
+        symbol.lookupKeys !== undefined ||
+        symbol.documentation !== undefined ||
+        symbol.signature !== undefined,
+    ) ||
+    facts.edges.some(edge => edge.evidencePath !== sourcePath)
+  ) {
+    return undefined;
+  }
+
+  const occurrences = new Map<string, number>();
+  const ids = new Map<string, string>();
+  const symbolsByOldId = new Map<string, CodeGraphSymbol>();
+  const relocatedSymbols: CodeGraphSymbol[] = [];
+  for (const symbol of facts.symbols) {
+    if (ids.has(symbol.id)) return undefined;
+    const qualifiedName = relocateStructuredPathValue(symbol.qualifiedName, sourcePath, file.path);
+    const identityQualifiedName = structuredIdentityQualifiedName(symbol, sourcePath, file.path);
+    if (identityQualifiedName === undefined) return undefined;
+    const identityKey = `${symbol.kind}\n${identityQualifiedName}`;
+    const occurrence = occurrences.get(identityKey) ?? 0;
+    occurrences.set(identityKey, occurrence + 1);
+    const id = structuredSymbolId(
+      file.path,
+      file.language,
+      symbol.kind,
+      qualifiedName,
+      identityQualifiedName,
+      occurrence,
+    );
+    const relocated = {
+      ...symbol,
+      contentHash: file.contentHash,
+      id,
+      name: symbol.kind === 'module' && symbol.name === sourcePath ? file.path : symbol.name,
+      path: file.path,
+      qualifiedName,
+    } satisfies CodeGraphSymbol;
+    ids.set(symbol.id, id);
+    symbolsByOldId.set(symbol.id, relocated);
+    relocatedSymbols.push(relocated);
+  }
+
+  const relocatedEdges: CodeGraphEdge[] = [];
+  for (const edge of facts.edges) {
+    if (edge.sourceId === undefined) return undefined;
+    const sourceId = ids.get(edge.sourceId);
+    const targetId = edge.targetId === undefined ? undefined : ids.get(edge.targetId);
+    if (sourceId === undefined || (edge.targetId !== undefined && targetId === undefined)) return undefined;
+    const sourceName = symbolsByOldId.get(edge.sourceId)?.name;
+    const targetName = edge.targetId === undefined ? edge.targetName : symbolsByOldId.get(edge.targetId)?.name;
+    if (sourceName === undefined || targetName === undefined) return undefined;
+    relocatedEdges.push({
+      ...edge,
+      evidencePath: file.path,
+      id: structuredEdgeId(file.path, sourceId, edge.relation, targetId ?? targetName, edge.provenance),
+      sourceId,
+      sourceName,
+      ...(targetId === undefined ? {} : {targetId}),
+      targetName,
+    });
+  }
+
+  return {
+    ...facts,
+    diagnostics: facts.diagnostics.map(diagnostic =>
+      diagnostic.startsWith(`${sourcePath}:`) ? `${file.path}${diagnostic.slice(sourcePath.length)}` : diagnostic,
+    ),
+    edges: relocatedEdges,
+    path: file.path,
+    symbols: relocatedSymbols,
+  };
+}
+
+function structuredSymbolId(
+  path: string,
+  language: string,
+  kind: string,
+  qualifiedName: string,
+  identityQualifiedName: string,
+  occurrence: number,
+): string {
+  return occurrence === 0
+    ? `cgs_${sha256HexSync(`structured-symbol-v1\n${path}\n${language}\n${kind}\n${identityQualifiedName}`).slice(
+        0,
+        32,
+      )}`
+    : `cgs_${sha256HexSync(
+        `structured-symbol-v2\n${path}\n${language}\n${kind}\n${qualifiedName}\n${occurrence}`,
+      ).slice(0, 32)}`;
+}
+
+function relocateStructuredPathValue(value: string, sourcePath: string, targetPath: string): string {
+  if (value === sourcePath) return targetPath;
+  return value.startsWith(`${sourcePath}#`) ? `${targetPath}${value.slice(sourcePath.length)}` : value;
+}
+
+function structuredIdentityQualifiedName(
+  symbol: CodeGraphSymbol,
+  sourcePath: string,
+  targetPath: string,
+): string | undefined {
+  if (symbol.kind === 'module') return symbol.qualifiedName === sourcePath ? targetPath : undefined;
+  const prefix = `${sourcePath}#/`;
+  if (!symbol.qualifiedName.startsWith(prefix)) return undefined;
+  const segments = symbol.qualifiedName
+    .slice(prefix.length)
+    .split('/')
+    .map(segment => segment.replaceAll('~1', '/').replaceAll('~0', '~'));
+  return `${targetPath}#${segments.join('.')}`;
 }
 
 function structuredPath(filePath: string, segments: readonly string[]): string {
@@ -782,6 +903,10 @@ function addUnresolvedEdge(
 }
 
 function edgeId(path: string, source: string, relation: string, target: string, provenance: string): string {
+  return structuredEdgeId(path, source, relation, target, provenance);
+}
+
+function structuredEdgeId(path: string, source: string, relation: string, target: string, provenance: string): string {
   return `cge_${sha256HexSync(`structured-edge-v1\n${path}\n${source}\n${relation}\n${target}\n${provenance}`).slice(0, 32)}`;
 }
 
