@@ -607,11 +607,12 @@ describe('automatic missing-worktree reconciliation', () => {
         yield* store.initialize(databasePath);
         const worktreeIds = Array.from({length: 5}, (_, index) => String(index + 1).repeat(64));
         const snapshotIds = Array.from({length: 5}, (_, index) => `cgsn_${index.toString(16).padStart(40, '0')}`);
-        yield* Effect.sync(() => {
-          seedCandidateViews(databasePath, worktreeIds, false);
-          seedRetirementProtectionGraph(databasePath, snapshotIds);
-        });
+        yield* Effect.sync(() => seedCandidateViews(databasePath, worktreeIds, false));
         const leaseToken = yield* store.acquireSnapshotLease(databasePath, snapshotIds[0]!, 60_000);
+        // Lease acquisition legitimately prunes one existing retired page and
+        // may schedule detached cleanup. Seed the retired ancestry afterward
+        // so this authority test cannot race its own setup cleanup.
+        yield* Effect.sync(() => seedRetirementProtectionGraph(databasePath, snapshotIds));
 
         const results = yield* Effect.forEach(
           worktreeIds,
