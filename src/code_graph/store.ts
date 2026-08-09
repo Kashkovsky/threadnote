@@ -246,6 +246,8 @@ export type CodeGraphRoutineMaintenanceResult =
       readonly cleanup:
         | 'abandoned-build'
         | 'completed-build'
+        | 'file-blob-cache'
+        | 'materialized-shard-cache'
         | 'none'
         | 'reconciliation-index'
         | 'removed-worktree-view'
@@ -1304,7 +1306,7 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
           }
           if (matching) matching.schemaInitialized = true;
         });
-      const retiredSnapshotCleanupScheduled = new Set<string>();
+      const routinePhysicalCleanupScheduled = new Set<string>();
       const scheduleCompletedBuildCleanup = (databasePath: string, snapshotId?: string) =>
         Effect.gen(function* () {
           const session = yield* Effect.serviceOption(CodeGraphDatabaseSession);
@@ -1354,10 +1356,10 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
           });
           yield* cleanup.pipe(Effect.ignore, Effect.forkIn(scope));
         }).pipe(Effect.asVoid);
-      const scheduleRetiredSnapshotCleanup = (databasePath: string) =>
+      const scheduleRoutinePhysicalCleanup = (databasePath: string) =>
         Effect.gen(function* () {
-          if (retiredSnapshotCleanupScheduled.has(databasePath)) return;
-          retiredSnapshotCleanupScheduled.add(databasePath);
+          if (routinePhysicalCleanupScheduled.has(databasePath)) return;
+          routinePhysicalCleanupScheduled.add(databasePath);
           const session = yield* Effect.serviceOption(CodeGraphDatabaseSession);
           const options =
             Option.isSome(session) && session.value.databasePath === databasePath ? session.value : undefined;
@@ -1372,7 +1374,7 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
               Effect.gen(function* () {
                 const sql = yield* SqlClient.SqlClient;
                 yield* configureConnection(sql);
-                return yield* pruneRetiredSnapshotRowsPage(sql);
+                return yield* pruneRoutinePhysicalRowsPage(sql);
               }),
             );
           });
@@ -1401,7 +1403,7 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
               if (Option.isNone(result) || !result.value.remaining) return;
               yield* Effect.sleep(CODE_GRAPH_CLEANUP_YIELD_MILLISECONDS);
             }
-          }).pipe(Effect.ensuring(Effect.sync(() => retiredSnapshotCleanupScheduled.delete(databasePath))));
+          }).pipe(Effect.ensuring(Effect.sync(() => routinePhysicalCleanupScheduled.delete(databasePath))));
           yield* cleanup.pipe(Effect.ignore, Effect.forkIn(scope));
         }).pipe(Effect.asVoid);
       return CodeGraphStore.of({
@@ -1493,7 +1495,7 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
               ),
               Effect.mapError(cause => storeError('acquire code graph snapshot lease', cause)),
             );
-            if (acquired.cleanup.remaining) yield* scheduleRetiredSnapshotCleanup(databasePath);
+            if (acquired.cleanup.remaining) yield* scheduleRoutinePhysicalCleanup(databasePath);
             return acquired.token;
           }).pipe(Effect.mapError(cause => storeError('acquire code graph snapshot lease', cause))),
         retainViewSnapshotLease: (databasePath, worktreeId, snapshotId, durationMilliseconds, options) =>
@@ -1758,7 +1760,6 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
                 yield* ensureSchemaInitialized(databasePath, sql);
               }),
             );
-            let retired = 0;
             for (;;) {
               const plan = yield* useDatabase(databasePath, prepareSnapshotPromotionCapacity(identity, snapshotId));
               const transaction = withWriterGate(
@@ -1782,10 +1783,13 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
                 yield* Effect.yieldNow;
                 continue;
               }
-              retired = attempted.value;
               break;
             }
-            if (retired > 0) yield* scheduleRetiredSnapshotCleanup(databasePath);
+            // A successful promotion can make pre-policy parser and shard
+            // cache rows unreachable even when it does not displace a pointer.
+            // The detached collector never waits for the writer gate and
+            // reclaims at most one physical table page per acquisition.
+            yield* scheduleRoutinePhysicalCleanup(databasePath);
           }).pipe(Effect.mapError(cause => storeError('promote code graph snapshot', cause))),
         observeView: (databasePath, worktreeId, expectedSnapshotId) =>
           Effect.gen(function* () {
@@ -1922,7 +1926,7 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
               options?.requireReconciliationSchema !== true &&
               'retiredSnapshots' in result &&
               result.retiredSnapshots > 0
-                ? scheduleRetiredSnapshotCleanup(databasePath)
+                ? scheduleRoutinePhysicalCleanup(databasePath)
                 : Effect.void,
             ),
             Effect.mapError(cause => storeError('remove code graph view', cause)),
@@ -2744,7 +2748,7 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
                     options?.waitTimeoutMilliseconds,
                   ).pipe(
                     Effect.tap(cleanup =>
-                      cleanup.remaining ? scheduleRetiredSnapshotCleanup(databasePath) : Effect.void,
+                      cleanup.remaining ? scheduleRoutinePhysicalCleanup(databasePath) : Effect.void,
                     ),
                     Effect.asVoid,
                   )
@@ -2770,7 +2774,7 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
                     options?.waitTimeoutMilliseconds,
                   ).pipe(
                     Effect.tap(cleanup =>
-                      cleanup.remaining ? scheduleRetiredSnapshotCleanup(databasePath) : Effect.void,
+                      cleanup.remaining ? scheduleRoutinePhysicalCleanup(databasePath) : Effect.void,
                     ),
                     Effect.asVoid,
                   )
@@ -5551,6 +5555,39 @@ const initializeSchema = Effect.fn('codeGraph.initializeSchema')(function* (sql:
     'CREATE INDEX IF NOT EXISTS snapshot_leases_snapshot_expiry ON snapshot_leases(snapshot_id, expires_at)',
   );
   yield* sql.unsafe('CREATE INDEX IF NOT EXISTS snapshot_files_blob ON snapshot_files(path, content_hash)');
+  // Routine cache reclamation resolves references from a disposable shard
+  // back to snapshot-owned associations. Keep that reverse lookup indexed so
+  // a bounded deletion page cannot hide a full association-table scan.
+  yield* sql.unsafe('CREATE INDEX IF NOT EXISTS snapshot_file_shards_shard ON snapshot_file_shards(shard_id)');
+  yield* sql.unsafe(`
+    CREATE TABLE IF NOT EXISTS routine_cache_cleanup_state (
+      singleton INTEGER PRIMARY KEY NOT NULL CHECK (singleton = 1),
+      phase TEXT NOT NULL CHECK (phase IN ('file-blobs', 'materialized-shards')),
+      file_content_hash TEXT,
+      file_extractor_set TEXT,
+      file_path_hint TEXT,
+      materialized_shard_id TEXT,
+      CHECK (
+        (file_content_hash IS NULL AND file_extractor_set IS NULL AND file_path_hint IS NULL)
+        OR
+        (file_content_hash IS NOT NULL AND file_extractor_set IS NOT NULL AND file_path_hint IS NOT NULL)
+      ),
+      CHECK (
+        (phase = 'file-blobs' AND materialized_shard_id IS NULL)
+        OR
+        (phase = 'materialized-shards'
+          AND file_content_hash IS NULL
+          AND file_extractor_set IS NULL
+          AND file_path_hint IS NULL)
+      )
+    ) WITHOUT ROWID
+  `);
+  yield* sql`
+    INSERT INTO routine_cache_cleanup_state (
+      singleton, phase, file_content_hash, file_extractor_set, file_path_hint, materialized_shard_id
+    ) VALUES (1, 'file-blobs', NULL, NULL, NULL, NULL)
+    ON CONFLICT(singleton) DO NOTHING
+  `;
   yield* sql.unsafe('CREATE INDEX IF NOT EXISTS symbols_name ON symbols(snapshot_id, name)');
   yield* sql.unsafe('CREATE INDEX IF NOT EXISTS symbols_path ON symbols(snapshot_id, path)');
   yield* sql.unsafe('CREATE INDEX IF NOT EXISTS symbols_resolution_scope ON symbols(snapshot_id, resolution_scope_id)');
@@ -5737,12 +5774,82 @@ const repairDatabase = Effect.fn('codeGraph.repairDatabase')(function* (dryRun: 
 });
 
 const CODE_GRAPH_ROUTINE_EXPIRED_LEASE_PAGE_SIZE = 100;
+const CODE_GRAPH_ROUTINE_CACHE_PAGE_SIZE = 100;
+
+const CODE_GRAPH_SNAPSHOT_FILE_BLOB_REFERENCE_INDEX = {
+  columns: ['path', 'content_hash'],
+  definition: 'CREATE INDEX snapshot_files_blob ON snapshot_files(path, content_hash)',
+  name: 'snapshot_files_blob',
+  table: 'snapshot_files',
+} as const;
+
+const CODE_GRAPH_MATERIALIZED_SHARD_REFERENCE_INDEX = {
+  columns: ['shard_id'],
+  definition: 'CREATE INDEX snapshot_file_shards_shard ON snapshot_file_shards(shard_id)',
+  name: 'snapshot_file_shards_shard',
+  table: 'snapshot_file_shards',
+} as const;
+
+interface RoutineFileBlobCacheKey {
+  readonly contentHash: string;
+  readonly extractorSet: string;
+  readonly path: string;
+}
+
+export function codeGraphRoutineFileBlobCleanupPageStatement(candidates: readonly RoutineFileBlobCacheKey[]): {
+  readonly parameters: readonly string[];
+  readonly text: string;
+} {
+  if (candidates.length === 0 || candidates.length > CODE_GRAPH_ROUTINE_CACHE_PAGE_SIZE) {
+    throw new CodeGraphStoreError('File fact cache cleanup candidates are invalid.');
+  }
+  return {
+    parameters: candidates.flatMap(candidate => [candidate.contentHash, candidate.extractorSet, candidate.path]),
+    text: `DELETE FROM file_blobs
+      WHERE (content_hash, extractor_set, path_hint) IN (${candidates.map(() => '(?, ?, ?)').join(', ')})
+        AND NOT EXISTS (
+          SELECT 1
+          FROM snapshot_files AS file
+          WHERE file.path = file_blobs.path_hint
+            AND file.content_hash = file_blobs.content_hash
+        )`,
+  };
+}
+
+export function codeGraphRoutineMaterializedShardCleanupPageStatement(candidates: readonly string[]): {
+  readonly parameters: readonly string[];
+  readonly text: string;
+} {
+  if (candidates.length === 0 || candidates.length > CODE_GRAPH_ROUTINE_CACHE_PAGE_SIZE) {
+    throw new CodeGraphStoreError('Materialized shard cache cleanup candidates are invalid.');
+  }
+  return {
+    parameters: candidates,
+    text: `DELETE FROM materialized_file_shards
+      WHERE id IN (${candidates.map(() => '?').join(', ')})
+        AND NOT EXISTS (
+          SELECT 1
+          FROM snapshot_file_shards AS association
+          WHERE association.shard_id = materialized_file_shards.id
+        )`,
+  };
+}
 
 interface RoutineExpiredLeasePage {
   readonly candidates: readonly string[];
   readonly deleted: number;
   readonly remaining: boolean;
 }
+
+interface RoutinePhysicalCleanupPage {
+  readonly cleanup: 'file-blob-cache' | 'materialized-shard-cache' | 'none' | 'retired-snapshot';
+  readonly deleted: number;
+  readonly remaining: boolean;
+}
+
+type RoutineCacheCleanupState =
+  | {readonly cursor?: RoutineFileBlobCacheKey; readonly phase: 'file-blobs'}
+  | {readonly cursor?: string; readonly phase: 'materialized-shards'};
 
 const routineMaintenanceColumnsAvailable = Effect.fn('codeGraph.routineMaintenanceColumnsAvailable')(function* (
   sql: SqlClient.SqlClient,
@@ -6166,6 +6273,355 @@ const retireRoutineLeaseCandidates = Effect.fn('codeGraph.retireRoutineLeaseCand
   return yield* retireReadySnapshotsIfUnused(sql, candidates, now);
 });
 
+const routineCacheSchemaCurrent = Effect.fn('codeGraph.routineCacheSchemaCurrent')(function* (
+  sql: SqlClient.SqlClient,
+) {
+  const revision = yield* removedViewCleanupRecordedRevision(sql);
+  return (
+    revision.state === 'recorded' &&
+    revision.value === CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION &&
+    (yield* tableExists(sql, 'file_blobs')) &&
+    (yield* tableExists(sql, 'snapshot_files')) &&
+    (yield* tableExists(sql, 'materialized_file_shards')) &&
+    (yield* tableExists(sql, 'snapshot_file_shards')) &&
+    (yield* tableExists(sql, 'routine_cache_cleanup_state')) &&
+    (yield* routineMaintenanceColumnsAvailable(sql, 'file_blobs', ['content_hash', 'extractor_set', 'path_hint'])) &&
+    (yield* routineMaintenanceColumnsAvailable(sql, 'snapshot_files', ['content_hash', 'path'])) &&
+    (yield* routineMaintenanceColumnsAvailable(sql, 'materialized_file_shards', ['id'])) &&
+    (yield* routineMaintenanceColumnsAvailable(sql, 'snapshot_file_shards', ['shard_id'])) &&
+    (yield* routineMaintenanceColumnsAvailable(sql, 'routine_cache_cleanup_state', [
+      'file_content_hash',
+      'file_extractor_set',
+      'file_path_hint',
+      'materialized_shard_id',
+      'phase',
+      'singleton',
+    ])) &&
+    (yield* codeGraphCacheReferenceIndexState(sql, CODE_GRAPH_SNAPSHOT_FILE_BLOB_REFERENCE_INDEX)) === 'ready' &&
+    (yield* codeGraphCacheReferenceIndexState(sql, CODE_GRAPH_MATERIALIZED_SHARD_REFERENCE_INDEX)) === 'ready'
+  );
+});
+
+type CodeGraphCacheReferenceIndex =
+  typeof CODE_GRAPH_SNAPSHOT_FILE_BLOB_REFERENCE_INDEX | typeof CODE_GRAPH_MATERIALIZED_SHARD_REFERENCE_INDEX;
+
+const codeGraphCacheReferenceIndexState = Effect.fn('codeGraph.cacheReferenceIndexState')(function* (
+  sql: SqlClient.SqlClient,
+  index: CodeGraphCacheReferenceIndex,
+) {
+  const definitions = yield* sql.unsafe<{
+    readonly bounded_sql: unknown;
+    readonly name: unknown;
+    readonly sql_bytes: unknown;
+    readonly tbl_name: unknown;
+    readonly type: unknown;
+  }>(
+    `SELECT name, type, tbl_name,
+            CASE
+              WHEN typeof(sql) = 'text' AND length(CAST(sql AS BLOB)) <= 1024 THEN sql
+              ELSE NULL
+            END AS bounded_sql,
+            length(CAST(sql AS BLOB)) AS sql_bytes
+     FROM sqlite_master
+     WHERE name = ? COLLATE NOCASE
+     LIMIT 2`,
+    [index.name],
+  );
+  if (definitions.length === 0) return 'missing' as const;
+  if (
+    definitions.length !== 1 ||
+    definitions[0]?.name !== index.name ||
+    definitions[0]?.type !== 'index' ||
+    definitions[0]?.tbl_name !== index.table ||
+    typeof definitions[0]?.sql_bytes !== 'number' ||
+    !Number.isSafeInteger(definitions[0].sql_bytes) ||
+    definitions[0].sql_bytes > 1024 ||
+    typeof definitions[0]?.bounded_sql !== 'string' ||
+    normalizeSchemaDefinition(definitions[0].bounded_sql) !== normalizeSchemaDefinition(index.definition)
+  ) {
+    return 'incompatible' as const;
+  }
+  const xinfo = yield* sql.unsafe<{
+    readonly coll: string;
+    readonly desc: number;
+    readonly key: number;
+    readonly name: string | null;
+    readonly seqno: number;
+  }>(`SELECT * FROM pragma_index_xinfo(?) LIMIT 8`, [index.name]);
+  const keyColumns = xinfo.filter(column => Number(column.key) === 1).sort((left, right) => left.seqno - right.seqno);
+  // WITHOUT ROWID secondary indexes carry the table primary-key columns as
+  // non-key payload. The stored SQL fixes the declared key surface; admit the
+  // SQLite-added payload while still requiring the exact ordered BINARY keys.
+  return xinfo.length > 0 &&
+    xinfo.length < 8 &&
+    keyColumns.length === index.columns.length &&
+    keyColumns.every(
+      (column, columnIndex) =>
+        column.name === index.columns[columnIndex] &&
+        column.coll.toUpperCase() === 'BINARY' &&
+        Number(column.desc) === 0,
+    )
+    ? ('ready' as const)
+    : ('incompatible' as const);
+});
+
+interface RawRoutineCacheCleanupState {
+  readonly file_content_hash: unknown;
+  readonly file_extractor_set: unknown;
+  readonly file_path_hint: unknown;
+  readonly materialized_shard_id: unknown;
+  readonly phase: unknown;
+  readonly singleton: unknown;
+}
+
+function validRoutineCacheCursorText(value: unknown, maximumBytes = 16_384): value is string {
+  return (
+    typeof value === 'string' &&
+    value.length > 0 &&
+    value.length <= maximumBytes &&
+    !value.includes('\0') &&
+    Buffer.byteLength(value, 'utf8') <= maximumBytes
+  );
+}
+
+function decodeRoutineCacheCleanupState(row: RawRoutineCacheCleanupState): RoutineCacheCleanupState | undefined {
+  if (row.singleton !== 1) return undefined;
+  if (row.phase === 'file-blobs') {
+    if (row.materialized_shard_id !== null) return undefined;
+    if (row.file_content_hash === null && row.file_extractor_set === null && row.file_path_hint === null) {
+      return {phase: 'file-blobs'};
+    }
+    if (
+      !validRoutineCacheCursorText(row.file_content_hash, 1_024) ||
+      !validRoutineCacheCursorText(row.file_extractor_set, 4_096) ||
+      !validRoutineCacheCursorText(row.file_path_hint)
+    ) {
+      return undefined;
+    }
+    return {
+      cursor: {
+        contentHash: row.file_content_hash,
+        extractorSet: row.file_extractor_set,
+        path: row.file_path_hint,
+      },
+      phase: 'file-blobs',
+    };
+  }
+  if (
+    row.phase !== 'materialized-shards' ||
+    row.file_content_hash !== null ||
+    row.file_extractor_set !== null ||
+    row.file_path_hint !== null
+  ) {
+    return undefined;
+  }
+  if (row.materialized_shard_id === null) return {phase: 'materialized-shards'};
+  return validRoutineCacheCursorText(row.materialized_shard_id, 1_024)
+    ? {cursor: row.materialized_shard_id, phase: 'materialized-shards'}
+    : undefined;
+}
+
+const selectRoutineCacheCleanupState = Effect.fn('codeGraph.selectRoutineCacheCleanupState')(function* (
+  sql: SqlClient.SqlClient,
+) {
+  const rows = yield* sql.unsafe<RawRoutineCacheCleanupState>(
+    `SELECT singleton, phase, file_content_hash, file_extractor_set, file_path_hint, materialized_shard_id
+     FROM routine_cache_cleanup_state
+     LIMIT 2`,
+  );
+  const state = rows[0] === undefined ? undefined : decodeRoutineCacheCleanupState(rows[0]);
+  if (rows.length !== 1 || state === undefined) {
+    return yield* Effect.fail(new CodeGraphStoreError('Routine code graph cache cleanup state is invalid.'));
+  }
+  return state;
+});
+
+const updateRoutineCacheCleanupState = Effect.fn('codeGraph.updateRoutineCacheCleanupState')(function* (
+  sql: SqlClient.SqlClient,
+  state: RoutineCacheCleanupState,
+) {
+  const fileCursor = state.phase === 'file-blobs' ? state.cursor : undefined;
+  const materializedCursor = state.phase === 'materialized-shards' ? state.cursor : undefined;
+  yield* sql.unsafe(
+    `UPDATE routine_cache_cleanup_state
+     SET phase = ?,
+         file_content_hash = ?,
+         file_extractor_set = ?,
+         file_path_hint = ?,
+         materialized_shard_id = ?
+     WHERE singleton = 1`,
+    [
+      state.phase,
+      fileCursor?.contentHash ?? null,
+      fileCursor?.extractorSet ?? null,
+      fileCursor?.path ?? null,
+      materializedCursor ?? null,
+    ],
+  );
+  if ((yield* lastStatementChangeCount(sql)) !== 1) {
+    return yield* Effect.fail(new CodeGraphStoreError('Routine code graph cache cleanup state changed.'));
+  }
+});
+
+const selectRoutineFileBlobCacheCandidates = Effect.fn('codeGraph.selectRoutineFileBlobCacheCandidates')(function* (
+  sql: SqlClient.SqlClient,
+  cursor: RoutineFileBlobCacheKey | undefined,
+) {
+  const rows = yield* sql.unsafe<{
+    readonly content_hash: unknown;
+    readonly extractor_set: unknown;
+    readonly path_hint: unknown;
+  }>(
+    `SELECT content_hash, extractor_set, path_hint
+     FROM file_blobs
+     WHERE (? IS NULL OR (content_hash, extractor_set, path_hint) > (?, ?, ?))
+     ORDER BY content_hash, extractor_set, path_hint
+     LIMIT ?`,
+    [
+      cursor?.contentHash ?? null,
+      cursor?.contentHash ?? null,
+      cursor?.extractorSet ?? null,
+      cursor?.path ?? null,
+      CODE_GRAPH_ROUTINE_CACHE_PAGE_SIZE,
+    ],
+  );
+  if (
+    rows.some(
+      row =>
+        !validRoutineCacheCursorText(row.content_hash, 1_024) ||
+        !validRoutineCacheCursorText(row.extractor_set, 4_096) ||
+        !validRoutineCacheCursorText(row.path_hint),
+    )
+  ) {
+    return yield* Effect.fail(new CodeGraphStoreError('File fact cache cleanup cursor is invalid.'));
+  }
+  return rows.map(row => ({
+    contentHash: row.content_hash as string,
+    extractorSet: row.extractor_set as string,
+    path: row.path_hint as string,
+  }));
+});
+
+const selectRoutineMaterializedShardCacheCandidates = Effect.fn(
+  'codeGraph.selectRoutineMaterializedShardCacheCandidates',
+)(function* (sql: SqlClient.SqlClient, cursor: string | undefined) {
+  const rows = yield* sql.unsafe<{readonly id: unknown}>(
+    `SELECT id
+     FROM materialized_file_shards
+     WHERE (? IS NULL OR id > ?)
+     ORDER BY id
+     LIMIT ?`,
+    [cursor ?? null, cursor ?? null, CODE_GRAPH_ROUTINE_CACHE_PAGE_SIZE],
+  );
+  if (rows.some(row => !validRoutineCacheCursorText(row.id, 1_024))) {
+    return yield* Effect.fail(new CodeGraphStoreError('Materialized shard cache cleanup cursor is invalid.'));
+  }
+  return rows.map(row => row.id as string);
+});
+
+const deleteRoutineFileBlobCacheCandidates = Effect.fn('codeGraph.deleteRoutineFileBlobCacheCandidates')(function* (
+  sql: SqlClient.SqlClient,
+  candidates: readonly RoutineFileBlobCacheKey[],
+) {
+  if (candidates.length === 0) return 0;
+  const statement = codeGraphRoutineFileBlobCleanupPageStatement(candidates);
+  yield* sql.unsafe(statement.text, statement.parameters);
+  const deleted = yield* lastStatementChangeCount(sql);
+  if (!Number.isSafeInteger(deleted) || deleted < 0 || deleted > candidates.length) {
+    return yield* Effect.fail(new CodeGraphStoreError('File fact cache cleanup returned an invalid row count.'));
+  }
+  return deleted;
+});
+
+const deleteRoutineMaterializedShardCacheCandidates = Effect.fn(
+  'codeGraph.deleteRoutineMaterializedShardCacheCandidates',
+)(function* (sql: SqlClient.SqlClient, candidates: readonly string[]) {
+  if (candidates.length === 0) return 0;
+  const statement = codeGraphRoutineMaterializedShardCleanupPageStatement(candidates);
+  yield* sql.unsafe(statement.text, statement.parameters);
+  const deleted = yield* lastStatementChangeCount(sql);
+  if (!Number.isSafeInteger(deleted) || deleted < 0 || deleted > candidates.length) {
+    return yield* Effect.fail(new CodeGraphStoreError('Materialized shard cache cleanup returned an invalid count.'));
+  }
+  return deleted;
+});
+
+const pruneRoutineMaterializedShardCacheRowsPage = Effect.fn('codeGraph.pruneRoutineMaterializedShardCacheRowsPage')(
+  function* (sql: SqlClient.SqlClient, cursor: string | undefined) {
+    const candidates = yield* selectRoutineMaterializedShardCacheCandidates(sql, cursor);
+    const deleted = yield* deleteRoutineMaterializedShardCacheCandidates(sql, candidates);
+    const remaining = candidates.length === CODE_GRAPH_ROUTINE_CACHE_PAGE_SIZE;
+    yield* updateRoutineCacheCleanupState(
+      sql,
+      remaining ? {cursor: candidates.at(-1)!, phase: 'materialized-shards'} : {phase: 'file-blobs'},
+    );
+    return {
+      cleanup: deleted > 0 ? 'materialized-shard-cache' : 'none',
+      deleted,
+      remaining,
+    } satisfies RoutinePhysicalCleanupPage;
+  },
+);
+
+const pruneRoutineCacheRowsPage = Effect.fn('codeGraph.pruneRoutineCacheRowsPage')(function* (
+  sql: SqlClient.SqlClient,
+) {
+  if (!(yield* routineCacheSchemaCurrent(sql))) {
+    return {cleanup: 'none', deleted: 0, remaining: false} satisfies RoutinePhysicalCleanupPage;
+  }
+  return yield* sql.withTransaction(
+    Effect.gen(function* () {
+      const state = yield* selectRoutineCacheCleanupState(sql);
+      if (state.phase === 'materialized-shards') {
+        return yield* pruneRoutineMaterializedShardCacheRowsPage(sql, state.cursor);
+      }
+      const candidates = yield* selectRoutineFileBlobCacheCandidates(sql, state.cursor);
+      if (candidates.length === 0) {
+        // An empty keyset page performs no cache-row work, so the same tick may
+        // start the materialized phase without combining two physical pages.
+        return yield* pruneRoutineMaterializedShardCacheRowsPage(sql, undefined);
+      }
+      const deleted = yield* deleteRoutineFileBlobCacheCandidates(sql, candidates);
+      yield* updateRoutineCacheCleanupState(
+        sql,
+        candidates.length === CODE_GRAPH_ROUTINE_CACHE_PAGE_SIZE
+          ? {cursor: candidates.at(-1)!, phase: 'file-blobs'}
+          : {phase: 'materialized-shards'},
+      );
+      return {
+        cleanup: deleted > 0 ? 'file-blob-cache' : 'none',
+        deleted,
+        // A complete file-blob scan still needs the materialized-shard phase.
+        remaining: true,
+      } satisfies RoutinePhysicalCleanupPage;
+    }),
+  );
+});
+
+const resetRoutineCacheCleanupState = Effect.fn('codeGraph.resetRoutineCacheCleanupState')(function* (
+  sql: SqlClient.SqlClient,
+) {
+  if (!(yield* routineCacheSchemaCurrent(sql))) return;
+  yield* sql.withTransaction(updateRoutineCacheCleanupState(sql, {phase: 'file-blobs'}));
+});
+
+const pruneRoutinePhysicalRowsPage = Effect.fn('codeGraph.pruneRoutinePhysicalRowsPage')(function* (
+  sql: SqlClient.SqlClient,
+) {
+  const retired = yield* pruneRetiredSnapshotRowsPage(sql);
+  if (retired.deleted > 0 || retired.remaining) {
+    if (retired.deleted > 0 && !retired.remaining) yield* resetRoutineCacheCleanupState(sql);
+    return {
+      cleanup: retired.deleted > 0 ? 'retired-snapshot' : 'none',
+      deleted: retired.deleted,
+      // Once the final snapshot-owned row disappears, one more page must
+      // inspect caches whose last durable reference disappeared with it.
+      remaining: retired.remaining || retired.deleted > 0,
+    } satisfies RoutinePhysicalCleanupPage;
+  }
+  return yield* pruneRoutineCacheRowsPage(sql);
+});
+
 const runRoutineMaintenancePage = Effect.fn('codeGraph.runRoutineMaintenancePage')(function* () {
   const sql = yield* SqlClient.SqlClient;
   if (!(yield* initializeRoutineMaintenanceSchema(sql))) {
@@ -6203,13 +6659,13 @@ const runRoutineMaintenancePage = Effect.fn('codeGraph.runRoutineMaintenancePage
       state: 'completed',
     } satisfies CodeGraphRoutineMaintenanceResult;
   }
-  const retired = yield* pruneRetiredSnapshotRowsPage(sql);
+  const physical = yield* pruneRoutinePhysicalRowsPage(sql);
   return {
-    cleanup: retired.deleted > 0 ? 'retired-snapshot' : 'none',
+    cleanup: physical.cleanup,
     expiredLeases: leasePage.deleted,
-    remaining: leasePage.remaining || retired.remaining,
+    remaining: leasePage.remaining || physical.remaining,
     retiredSnapshots: leasePage.retiredSnapshots,
-    rowsDeleted: retired.deleted,
+    rowsDeleted: physical.deleted,
     state: 'completed',
   } satisfies CodeGraphRoutineMaintenanceResult;
 });
