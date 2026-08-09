@@ -93,6 +93,7 @@ describe('dependency-aware CI workflow', () => {
       if: "needs.changes.outputs.code == 'true'",
       strategy: {matrix: {shard: [1, 2, 3, 4]}},
     });
+    expect(standard.steps?.find(step => step.uses?.startsWith('actions/checkout@'))?.with?.['fetch-depth']).toBe(0);
     expect(stepForRun(standard, 'bun --bun vitest run --coverage --shard=${{ matrix.shard }}/4').env).toEqual({
       THREADNOTE_VITEST_STANDARD_SHARD: '1',
     });
@@ -101,7 +102,8 @@ describe('dependency-aware CI workflow', () => {
       needs: 'changes',
       if: "needs.changes.outputs.code == 'true'",
     });
-    expect(long.strategy?.matrix?.group).toHaveLength(8);
+    expect(long.strategy?.matrix?.group).toHaveLength(12);
+    expect(long.steps?.find(step => step.uses?.startsWith('actions/checkout@'))?.with?.['fetch-depth']).toBe(0);
     expect(stepForRun(long, 'bun run test:coverage').env).toEqual({
       THREADNOTE_VITEST_LONG_GROUP: '${{ matrix.group }}',
     });

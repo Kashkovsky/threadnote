@@ -3,15 +3,10 @@ import {defineConfig} from 'vitest/config';
 const ciLongRunningTestGroups: Record<string, string[]> = {
   lifecycle: ['test/integration/code-graph.lifecycle.test.ts'],
   'project-closure': ['test/integration/code-graph.project-closure.test.ts'],
-  'incremental-cleanup-load': [
-    'test/integration/code-graph.incremental.property.test.ts',
-    'test/integration/code-graph.removed-view-cleanup-load.test.ts',
-  ],
-  'cli-native-tools': [
-    'test/integration/cli.effect.test.ts',
-    'test/integration/mcp.native-tools.test.ts',
-    'test/integration/code-graph.view-attach-lock.test.ts',
-  ],
+  'incremental-property': ['test/integration/code-graph.incremental.property.test.ts'],
+  'removed-view-cleanup-load': ['test/integration/code-graph.removed-view-cleanup-load.test.ts'],
+  'cli-native-tools': ['test/integration/cli.effect.test.ts', 'test/integration/mcp.native-tools.test.ts'],
+  'view-attach-lock': ['test/integration/code-graph.view-attach-lock.test.ts'],
   'vector-retirement': [
     'test/unit/code-graph.vector-retirement-schema.test.ts',
     'test/unit/code-graph.vector-retirement-ordinary.test.ts',
@@ -29,7 +24,13 @@ const ciLongRunningTestGroups: Record<string, string[]> = {
     'test/integration/code-graph.cross-session-incremental.test.ts',
     'test/integration/code-graph.cache-capacity-load.test.ts',
     'test/integration/code-graph.session.test.ts',
-    'test/integration/code-graph.benchmark-preflight.test.ts',
+  ],
+  'benchmark-preflight': ['test/integration/code-graph.benchmark-preflight.test.ts'],
+  'os-recovery': [
+    'test/integration/code-graph.vector-retirement-os.test.ts',
+    'test/integration/code-graph.removed-view-cleanup-os.test.ts',
+    'test/integration/code-graph.cache-capacity-os.test.ts',
+    'test/integration/code-graph.disk-reservation.test.ts',
   ],
   'stores-retention': [
     'test/unit/evaluation.recall-v2.test.ts',

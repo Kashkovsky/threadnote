@@ -109,6 +109,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - uses: oven-sh/setup-bun@v2
         with:
@@ -141,15 +143,21 @@ jobs:
         group:
           - lifecycle
           - project-closure
-          - incremental-cleanup-load
+          - incremental-property
+          - removed-view-cleanup-load
           - cli-native-tools
+          - view-attach-lock
           - vector-retirement
           - parser-languages
           - graph-integration
+          - benchmark-preflight
+          - os-recovery
           - stores-retention
 
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - uses: oven-sh/setup-bun@v2
         with:
