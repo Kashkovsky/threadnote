@@ -15,6 +15,7 @@ import {
   representativeManagerGraphEdges,
   type ManagerGraphEdge,
 } from '../../src/code_graph/visualization.js';
+import {managerGraphCatalogRevision} from '../../src/code_graph/manager_catalog_revision.js';
 import type {CodeGraphEdge, CodeGraphSymbol} from '../../src/code_graph/types.js';
 import {
   MANAGER_GRAPH_MAX_EDGE_LIMIT,
@@ -23,6 +24,45 @@ import {
 } from '../../src/manager_graph_limits.js';
 
 describe('Manager graph properties', () => {
+  it('keeps catalog revisions order-independent and sensitive to lifecycle changes', () => {
+    fc.assert(
+      fc.property(
+        fc.uniqueArray(
+          fc.record({
+            checkoutId: fc.uuid(),
+            state: fc.constantFrom('ready' as const, 'unavailable' as const),
+            views: fc.uniqueArray(
+              fc.record({
+                activatedAt: fc.integer({min: 0, max: 2_000_000_000}).map(String),
+                repositoryId: fc.uuid(),
+                snapshotId: fc.uuid(),
+                worktreeId: fc.uuid(),
+              }),
+              {maxLength: 12, selector: view => view.worktreeId},
+            ),
+            viewsTruncated: fc.boolean(),
+          }),
+          {maxLength: 12, selector: database => database.checkoutId},
+        ),
+        databases => {
+          const reordered = [...databases]
+            .reverse()
+            .map(database => ({...database, views: [...database.views].reverse()}));
+          expect(managerGraphCatalogRevision(reordered)).toBe(managerGraphCatalogRevision(databases));
+
+          const changed =
+            databases.length === 0
+              ? [{checkoutId: 'new', state: 'ready' as const, views: [], viewsTruncated: false}]
+              : databases.map((database, index) =>
+                  index === 0 ? {...database, viewsTruncated: !database.viewsTruncated} : database,
+                );
+          expect(managerGraphCatalogRevision(changed)).not.toBe(managerGraphCatalogRevision(databases));
+        },
+      ),
+      {numRuns: 120},
+    );
+  });
+
   it('keeps actionable administration jobs deterministic, unique, and bounded', () => {
     fc.assert(
       fc.property(

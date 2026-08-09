@@ -5,6 +5,7 @@ import type {CodeGraphCacheFactInput} from './fact_budget.js';
 import type {CodeGraphWorkspace} from './languages/types.js';
 import type {
   CodeGraphActivationProgressCallback,
+  CodeGraphActiveViewIdentity,
   CodeGraphAnalysisEdgeAggregatePage,
   CodeGraphAnalysisSummary,
   CodeGraphAnalysisSymbolAggregatePage,
@@ -291,6 +292,10 @@ export interface CodeGraphStoreShape {
     metrics?: 'complete' | 'deferred',
     options?: CodeGraphVisualizationCatalogOptions,
   ) => Effect.Effect<CodeGraphVisualizationCatalog | undefined, CodeGraphStoreError>;
+  readonly loadActiveViewIdentities: (
+    databasePath: string,
+    limit: number,
+  ) => Effect.Effect<readonly CodeGraphActiveViewIdentity[], CodeGraphStoreError>;
   readonly loadVisualizationCatalogs: (
     databasePath: string,
     metrics?: 'complete' | 'deferred',

@@ -49,6 +49,7 @@ import {
   selectVisualizationScopeEdgeSummary,
   selectVisualizationSymbols,
 } from './store_visualization.js';
+import {selectActiveViewIdentities} from './store_active_views.js';
 import {repairDatabase} from './store_repair.js';
 import {
   preparePersistedFullActivation,
@@ -87,6 +88,7 @@ type CodeGraphStoreDataMethods = Pick<
   | 'countEmbeddingSymbols'
   | 'loadEmbeddingSymbolPage'
   | 'loadVisualizationCatalog'
+  | 'loadActiveViewIdentities'
   | 'loadVisualizationCatalogs'
   | 'loadVisualizationScopeEdges'
   | 'loadVisualizationScopeEdgeSummary'
@@ -324,6 +326,13 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
             : Effect.succeed(undefined),
         ),
         Effect.mapError(cause => storeError('load code graph visualization catalog', cause)),
+      ),
+    loadActiveViewIdentities: (databasePath, limit) =>
+      fs.exists(databasePath).pipe(
+        Effect.flatMap(exists =>
+          exists ? useReadOnlyDatabase(databasePath, selectActiveViewIdentities(limit)) : Effect.succeed([]),
+        ),
+        Effect.mapError(cause => storeError('load active code graph view identities', cause)),
       ),
     loadVisualizationCatalogs: (databasePath, metrics = 'complete', options = {}) =>
       fs.exists(databasePath).pipe(

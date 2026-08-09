@@ -244,11 +244,9 @@ function App(): React.ReactElement {
     const acknowledgedCompletedResults = new Set<string>();
     const poll = async (): Promise<void> => {
       try {
-        const status = await api<Pick<GraphCatalog, 'builds' | 'maintenance' | 'waiterCount' | 'waiters'>>(
-          '/api/graphs/status',
-          undefined,
-          {timeoutMilliseconds: GRAPH_CATALOG_REQUEST_TIMEOUT_MILLISECONDS},
-        );
+        const status = await api<
+          Pick<GraphCatalog, 'builds' | 'catalogRevision' | 'maintenance' | 'waiterCount' | 'waiters'>
+        >('/api/graphs/status', undefined, {timeoutMilliseconds: GRAPH_CATALOG_REQUEST_TIMEOUT_MILLISECONDS});
         if (cancelled) return;
         const active = status.builds.some(graphBuildIsActive);
         const activeMaintenance = status.maintenance !== undefined;
@@ -256,7 +254,12 @@ function App(): React.ReactElement {
           !activeMaintenance &&
           ((observedActiveBuild && !active) ||
             (observedActiveMaintenance && !activeMaintenance) ||
-            graphStatusRequiresCatalogRefresh(graphCatalogRef.current, status.builds, acknowledgedCompletedResults));
+            graphStatusRequiresCatalogRefresh(
+              graphCatalogRef.current,
+              status.builds,
+              acknowledgedCompletedResults,
+              status.catalogRevision,
+            ));
         if (refreshCatalog) {
           const refreshed = await api<GraphCatalog>('/api/graphs', undefined, {
             timeoutMilliseconds: GRAPH_CATALOG_REQUEST_TIMEOUT_MILLISECONDS,

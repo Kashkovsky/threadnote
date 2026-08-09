@@ -377,10 +377,10 @@ describe('manager graph focus', () => {
   });
 
   it('polls active graph builds within the two-second Manager freshness contract', () => {
-    expect(graphStatusPollDelay([])).toBe(15_000);
+    expect(graphStatusPollDelay([])).toBe(5_000);
     expect(graphStatusPollDelay([graphBuildStatus('running')])).toBe(1_000);
     expect(graphStatusPollDelay([graphBuildStatus('queued')])).toBe(1_000);
-    expect(graphStatusPollDelay([graphBuildStatus('completed')])).toBe(15_000);
+    expect(graphStatusPollDelay([graphBuildStatus('completed')])).toBe(5_000);
     const maintenance = {
       checkoutId: 'a'.repeat(64),
       completed: 3,
@@ -397,7 +397,7 @@ describe('manager graph focus', () => {
     };
     expect(graphBuildIsActive(abandoned)).toBe(false);
     expect(graphBuildShouldDisplay(abandoned)).toBe(false);
-    expect(graphStatusPollDelay([abandoned])).toBe(15_000);
+    expect(graphStatusPollDelay([abandoned])).toBe(5_000);
     const staleOwner = {
       ...graphBuildStatus('running'),
       coordination: {lockVerified: true, progressSilent: true, role: 'owner' as const},
@@ -428,11 +428,14 @@ describe('manager graph focus', () => {
   it('refreshes a terminal snapshot missing from the catalog and scopes waiters to their build', () => {
     const catalog = {
       builds: [],
+      catalogRevision: 'revision-before-removal',
       diagnostics: [],
       repositories: [repositoryGroup('repository', ['known-snapshot'], 'known-snapshot')],
       waiterCount: 0,
       waiters: [],
     };
+    expect(graphStatusRequiresCatalogRefresh(catalog, [], new Set(), 'revision-after-removal')).toBe(true);
+    expect(graphStatusRequiresCatalogRefresh(catalog, [], new Set(), 'revision-before-removal')).toBe(false);
     expect(
       graphStatusRequiresCatalogRefresh(catalog, [
         {...graphBuildStatus('completed'), result: {snapshotId: 'new-snapshot'}},

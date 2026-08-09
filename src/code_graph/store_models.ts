@@ -352,6 +352,14 @@ export interface CodeGraphVisualizationCatalog {
   readonly workspacesTruncated: boolean;
 }
 
+/** Bounded active-pointer identity used by cheap cross-process catalog invalidation. */
+export interface CodeGraphActiveViewIdentity {
+  readonly activatedAt?: string;
+  readonly repositoryId: string;
+  readonly snapshotId: string;
+  readonly worktreeId: string;
+}
+
 export interface CodeGraphVisualizationRelationshipSummary {
   readonly incoming: number;
   readonly outgoing: number;

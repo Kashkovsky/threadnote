@@ -4,6 +4,11 @@ import {CodeGraphEmbeddingIndex} from './embedding.js';
 import {codeGraphLayout} from './layout.js';
 import {observeCodeGraphMaintenanceStatus, type CodeGraphMaintenanceStatus} from './maintenance_gate.js';
 import {compareCodeUnits} from './ordering.js';
+import {
+  managerGraphCatalogRevision,
+  observeManagerGraphCatalogRevision,
+  type ManagerGraphCatalogRevisionDatabase,
+} from './manager_catalog_revision.js';
 import {traversalQuery} from './query.js';
 import {
   CodeGraphStore,
@@ -157,6 +162,7 @@ export interface ManagerGraphSnapshotLeaseWarning {
 
 export interface ManagerGraphCatalog {
   readonly builds: readonly ObservedCodeGraphBuildStatus[];
+  readonly catalogRevision: string;
   readonly diagnostics: readonly ManagerGraphCatalogDiagnostic[];
   readonly maintenance?: CodeGraphMaintenanceStatus;
   readonly repositories: readonly ManagerGraphRepository[];
@@ -180,6 +186,7 @@ export interface ManagerGraphViewPage {
 
 export interface ManagerGraphBuildCatalog {
   readonly builds: readonly ObservedCodeGraphBuildStatus[];
+  readonly catalogRevision?: string;
   readonly maintenance?: CodeGraphMaintenanceStatus;
   readonly queuedWorktreeIds: readonly string[];
   readonly waiterCount: number;
@@ -413,8 +420,28 @@ export const managerGraphCatalog = Effect.fn('codeGraph.managerCatalog')(functio
   const maintenance = yield* observeCodeGraphMaintenanceStatus(threadnoteHome).pipe(
     Effect.catch(() => Effect.succeed(undefined)),
   );
+  const catalogRevision = managerGraphCatalogRevision(
+    entries.map(entry => {
+      const catalogs = 'catalogs' in entry && entry.catalogs ? entry.catalogs : [];
+      return {
+        checkoutId: 'checkoutId' in entry ? entry.checkoutId : entry.diagnostic.checkoutId,
+        state:
+          'diagnostic' in entry && entry.diagnostic?.code === 'unreadable-database'
+            ? ('unavailable' as const)
+            : ('ready' as const),
+        views: catalogs.map(({catalog}) => ({
+          ...(catalog.activatedAt === undefined ? {} : {activatedAt: catalog.activatedAt}),
+          repositoryId: catalog.repository.repositoryId,
+          snapshotId: catalog.snapshot.id,
+          worktreeId: catalog.viewWorktreeId,
+        })),
+        viewsTruncated: 'viewsTruncated' in entry && entry.viewsTruncated === true,
+      } satisfies ManagerGraphCatalogRevisionDatabase;
+    }),
+  );
   return {
     builds: buildSelection.builds,
+    catalogRevision,
     diagnostics,
     ...(maintenance === undefined ? {} : {maintenance}),
     repositories: groupManagerGraphRepositories(catalogEntries),
@@ -601,8 +628,16 @@ export const managerGraphBuildCatalog = Effect.fn('codeGraph.managerBuildCatalog
   const maintenance = yield* observeCodeGraphMaintenanceStatus(threadnoteHome).pipe(
     Effect.catch(() => Effect.succeed(undefined)),
   );
+  const active = [...selection.builds, ...selection.waiters].some(
+    status => status.state === 'queued' || status.state === 'running',
+  );
+  const catalogRevision =
+    active || maintenance !== undefined
+      ? undefined
+      : yield* observeManagerGraphCatalogRevision(threadnoteHome).pipe(Effect.catch(() => Effect.succeed(undefined)));
   return {
     builds: selection.builds,
+    ...(catalogRevision === undefined ? {} : {catalogRevision}),
     ...(maintenance === undefined ? {} : {maintenance}),
     queuedWorktreeIds: [...new Set(selection.waiters.map(status => status.identity.worktreeId))],
     waiterCount: selection.waiters.length,

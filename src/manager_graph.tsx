@@ -89,6 +89,7 @@ export interface GraphCatalogDiagnostic {
 
 export interface GraphCatalog {
   readonly builds: readonly GraphBuildStatus[];
+  readonly catalogRevision?: string;
   readonly diagnostics: readonly GraphCatalogDiagnostic[];
   readonly maintenance?: CodeGraphMaintenanceStatus;
   readonly repositories: readonly GraphRepositoryGroup[];
@@ -509,7 +510,7 @@ export function graphStatusPollDelay(
   builds: readonly GraphBuildStatus[],
   maintenance?: CodeGraphMaintenanceStatus,
 ): number {
-  return builds.some(graphBuildIsActive) || maintenance !== undefined ? 1_000 : 15_000;
+  return builds.some(graphBuildIsActive) || maintenance !== undefined ? 1_000 : 5_000;
 }
 
 export function graphMaintenanceStatusLabel(status: CodeGraphMaintenanceStatus): string {
@@ -536,7 +537,15 @@ export function graphStatusRequiresCatalogRefresh(
   catalog: GraphCatalog | undefined,
   builds: readonly GraphBuildStatus[],
   acknowledgedResults: ReadonlySet<string> = new Set(),
+  observedCatalogRevision?: string,
 ): boolean {
+  if (
+    catalog !== undefined &&
+    observedCatalogRevision !== undefined &&
+    catalog.catalogRevision !== observedCatalogRevision
+  ) {
+    return true;
+  }
   if (!catalog) {
     return builds.some(build => {
       const identity = graphCompletedBuildResultIdentity(build);
