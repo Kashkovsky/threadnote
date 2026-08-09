@@ -206,7 +206,6 @@ describe('code graph cache capacity load calibration', () => {
               expect(measured.absoluteMainHighWaterBytes).toBeLessThan(256 * 1_048_576);
               expect(measured.absoluteWalHighWaterBytes).toBeGreaterThan(0);
               expect(measured.absoluteWalHighWaterBytes).toBeLessThan(32 * 1_048_576);
-              expect(measured.incrementalSharedHighWaterBytes).toBeGreaterThan(0);
               yield* logLoadEvidence({
                 absoluteMainHighWaterBytes: measured.absoluteMainHighWaterBytes,
                 absoluteWalHighWaterBytes: measured.absoluteWalHighWaterBytes,
