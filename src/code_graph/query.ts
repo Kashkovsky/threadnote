@@ -98,6 +98,7 @@ export interface CodeGraphSharedReadyAttachInterlock {
 }
 
 const CODE_GRAPH_STATUS_OBSERVATION = Symbol('threadnote/codeGraph/statusObservation');
+const CODE_GRAPH_SHARED_ATTACH_WRITER_WAIT_MILLISECONDS = 250;
 
 type ObservedCodeGraphStatus = CodeGraphStatus & {
   readonly [CODE_GRAPH_STATUS_OBSERVATION]?: CodeGraphStatusObservation;
@@ -344,7 +345,10 @@ export class CodeGraphQueryService extends Context.Service<
                   layout,
                   threadnoteHome,
                 }),
-                waitTimeoutMilliseconds: 0,
+                // Target-build exclusion is already held. Give an existing
+                // checkout writer one bounded foreground window to finish so
+                // opportunistic maintenance cannot make a clean attach flaky.
+                waitTimeoutMilliseconds: CODE_GRAPH_SHARED_ATTACH_WRITER_WAIT_MILLISECONDS,
               });
               yield* interlock?.afterPromotion?.() ?? Effect.void;
               const published = yield* postPromotionObservation(promotionIdentity.value);
@@ -1515,7 +1519,7 @@ export function renderCodeGraphResult(
   return `${lines.join('\n')}\n`;
 }
 
-const postPromotionObservation = Effect.fn('codeGraph.postPromotionObservation')(function* (
+const observePostPromotionOnce = Effect.fn('codeGraph.observePostPromotionOnce')(function* (
   identity: RepositoryIdentity,
 ) {
   // Porcelain v2 reports the exact HEAD and the clean/changed bit in one
@@ -1541,6 +1545,18 @@ const postPromotionObservation = Effect.fn('codeGraph.postPromotionObservation')
   }
   const overlay = yield* worktreeOverlayState(identity).pipe(Effect.option);
   return {headCommit, overlay: Option.getOrUndefined(overlay)};
+});
+
+const postPromotionObservation = Effect.fn('codeGraph.postPromotionObservation')(function* (
+  identity: RepositoryIdentity,
+) {
+  const first = yield* observePostPromotionOnce(identity);
+  if (first.headCommit !== undefined && first.overlay !== undefined) return first;
+  // A process spawn, bounded output read, or policy-aware overlay observation
+  // may fail transiently under host contention. Retry once, then preserve the
+  // existing fail-closed result if publication still cannot be proved.
+  yield* Effect.yieldNow;
+  return yield* observePostPromotionOnce(identity);
 });
 
 function sameRepositoryIdentity(left: RepositoryIdentity, right: RepositoryIdentity): boolean {

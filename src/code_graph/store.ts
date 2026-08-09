@@ -224,6 +224,11 @@ interface DeferredVisualizationComponentRow {
 
 interface CodeGraphDatabaseSessionShape extends CodeGraphDatabaseSessionOptions {
   readonly databasePath: string;
+  readonly detachedCleanupRequest: {
+    completedBuild: boolean;
+    completedSnapshotId: string | undefined;
+    routinePhysical: boolean;
+  };
   schemaInitialized: boolean;
   readonly sql: SqlClient.SqlClient;
 }
@@ -251,15 +256,16 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
       const crypto = yield* Crypto.Crypto;
       const system = yield* SystemInfo;
       const scope = yield* Effect.scope;
-      const detachedCleanupCounts = new Map<string, number>();
+      const detachedCleanupActive = new Set<string>();
       const scheduleDetachedCleanup = (databasePath: string, cleanup: Effect.Effect<void>) =>
         Effect.gen(function* () {
-          detachedCleanupCounts.set(databasePath, (detachedCleanupCounts.get(databasePath) ?? 0) + 1);
-          const release = Effect.sync(() => {
-            const remaining = (detachedCleanupCounts.get(databasePath) ?? 1) - 1;
-            if (remaining <= 0) detachedCleanupCounts.delete(databasePath);
-            else detachedCleanupCounts.set(databasePath, remaining);
-          });
+          // Every detached collector is opportunistic and resumable. Running
+          // more than one domain for the same database only adds SQLite
+          // sessions and writer contention; a later foreground or maintenance
+          // pass will resume whichever bounded domain was coalesced here.
+          if (detachedCleanupActive.has(databasePath)) return;
+          detachedCleanupActive.add(databasePath);
+          const release = Effect.sync(() => detachedCleanupActive.delete(databasePath));
           yield* cleanup.pipe(Effect.ensuring(release), Effect.forkIn(scope));
         }).pipe(Effect.asVoid);
       const prepare = (databasePath: string) =>
@@ -280,7 +286,7 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
             if (!writerLockPath) return effect;
             const requestedWaitTimeout = normalizedWriterGateWaitTimeout(waitTimeoutMilliseconds);
             const effectiveWaitTimeout =
-              requestedWaitTimeout === 0 && (detachedCleanupCounts.get(databasePath) ?? 0) > 0
+              requestedWaitTimeout === 0 && detachedCleanupActive.has(databasePath)
                 ? CODE_GRAPH_INTERNAL_CLEANUP_FOREGROUND_WAIT_MILLISECONDS
                 : requestedWaitTimeout;
             return withExclusiveFileLock(
@@ -328,26 +334,38 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
           }
           if (matching) matching.schemaInitialized = true;
         });
-      const routinePhysicalCleanupScheduled = new Set<string>();
-      const scheduleCompletedBuildCleanup = (databasePath: string, snapshotId?: string) =>
+      const startCompletedBuildCleanup = (
+        databasePath: string,
+        snapshotId: string | undefined,
+        includeRoutinePhysical: boolean,
+        options: CodeGraphDatabaseSessionOptions | undefined,
+      ) =>
         Effect.gen(function* () {
-          const session = yield* Effect.serviceOption(CodeGraphDatabaseSession);
-          const options =
-            Option.isSome(session) && session.value.databasePath === databasePath ? session.value : undefined;
           const writerLockPath = options?.writerLockPath ?? inferredCodeGraphWriterLockPath(path, databasePath);
+          let completedBuildRemaining = true;
           const cleanupSweep = Effect.gen(function* () {
             // Purge owns the same gate before deleting the repository root. Check
             // existence only after acquiring it, and open SQLite inside the same
             // critical section, so a detached cleanup fiber cannot retain a
             // Windows file handle or recreate a database after purge.
             if (!(yield* fs.exists(databasePath))) return {deleted: 0, remaining: false};
-            yield* options?.onCompletedBuildCleanupConnection?.() ?? Effect.void;
             return yield* useDatabaseDirect(
               databasePath,
               Effect.gen(function* () {
                 const sql = yield* SqlClient.SqlClient;
                 yield* configureConnection(sql);
-                return yield* drainCompletedPersistentBuildRows(sql, snapshotId, undefined, 1);
+                let deleted = 0;
+                if (completedBuildRemaining) {
+                  yield* options?.onCompletedBuildCleanupConnection?.() ?? Effect.void;
+                  const completed = yield* drainCompletedPersistentBuildRows(sql, snapshotId, undefined, 1);
+                  completedBuildRemaining = completed.remaining;
+                  deleted += completed.deleted;
+                  if (completed.remaining || !includeRoutinePhysical) {
+                    return {deleted, remaining: completed.remaining};
+                  }
+                }
+                const routine = yield* pruneRoutinePhysicalRowsPage(sql);
+                return {deleted: deleted + routine.deleted, remaining: routine.remaining};
               }),
             );
           });
@@ -378,13 +396,30 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
           });
           yield* scheduleDetachedCleanup(databasePath, cleanup.pipe(Effect.ignore));
         }).pipe(Effect.asVoid);
-      const scheduleRoutinePhysicalCleanup = (databasePath: string) =>
+      const scheduleCompletedBuildCleanup = (databasePath: string, snapshotId?: string) =>
         Effect.gen(function* () {
-          if (routinePhysicalCleanupScheduled.has(databasePath)) return;
-          routinePhysicalCleanupScheduled.add(databasePath);
           const session = yield* Effect.serviceOption(CodeGraphDatabaseSession);
           const options =
             Option.isSome(session) && session.value.databasePath === databasePath ? session.value : undefined;
+          if (options) {
+            const request = options.detachedCleanupRequest;
+            if (!request.completedBuild) {
+              request.completedBuild = true;
+              request.completedSnapshotId = snapshotId;
+            } else if (request.completedSnapshotId !== snapshotId) {
+              // Different snapshot-specific requests collapse safely to the
+              // complete set of unreachable build-only rows.
+              request.completedSnapshotId = undefined;
+            }
+            return;
+          }
+          yield* startCompletedBuildCleanup(databasePath, snapshotId, false, undefined);
+        }).pipe(Effect.asVoid);
+      const startRoutinePhysicalCleanup = (
+        databasePath: string,
+        options: CodeGraphDatabaseSessionOptions | undefined,
+      ) =>
+        Effect.gen(function* () {
           const writerLockPath = options?.writerLockPath ?? inferredCodeGraphWriterLockPath(path, databasePath);
           const cleanupSweep = Effect.gen(function* () {
             // Open SQLite only while holding the checkout writer gate. Purge
@@ -425,12 +460,28 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
               if (Option.isNone(result) || !result.value.remaining) return;
               yield* Effect.sleep(CODE_GRAPH_CLEANUP_YIELD_MILLISECONDS);
             }
-          }).pipe(Effect.ensuring(Effect.sync(() => routinePhysicalCleanupScheduled.delete(databasePath))));
+          });
           yield* scheduleDetachedCleanup(databasePath, cleanup.pipe(Effect.ignore));
         }).pipe(Effect.asVoid);
+      const scheduleRoutinePhysicalCleanup = (databasePath: string) =>
+        Effect.gen(function* () {
+          const session = yield* Effect.serviceOption(CodeGraphDatabaseSession);
+          const options =
+            Option.isSome(session) && session.value.databasePath === databasePath ? session.value : undefined;
+          if (options) {
+            options.detachedCleanupRequest.routinePhysical = true;
+            return;
+          }
+          yield* startRoutinePhysicalCleanup(databasePath, undefined);
+        }).pipe(Effect.asVoid);
       return CodeGraphStore.of({
-        withSession: (databasePath, effect, options) =>
-          useDatabaseDirect(
+        withSession: (databasePath, effect, options) => {
+          const detachedCleanupRequest: CodeGraphDatabaseSessionShape['detachedCleanupRequest'] = {
+            completedBuild: false,
+            completedSnapshotId: undefined,
+            routinePhysical: false,
+          };
+          return useDatabaseDirect(
             databasePath,
             Effect.gen(function* () {
               const sql = yield* SqlClient.SqlClient;
@@ -453,6 +504,7 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
               }
               const session = {
                 databasePath,
+                detachedCleanupRequest,
                 schemaInitialized: false,
                 sql,
                 ...options,
@@ -466,13 +518,15 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
                 // making graph queries pay cleanup latency.
                 if (options?.cleanupCompletedBuildRows && (yield* tableExists(sql, 'snapshots'))) {
                   yield* preflightRemovedViewCleanupSchema(sql);
-                  yield* drainCompletedPersistentBuildRows(
+                  const cleanup = yield* drainCompletedPersistentBuildRows(
                     sql,
                     undefined,
                     write => withWriterGate(databasePath, write),
                     1,
-                  ).pipe(Effect.ignore);
-                  yield* scheduleCompletedBuildCleanup(databasePath);
+                  ).pipe(Effect.option);
+                  if (Option.isSome(cleanup) && cleanup.value.remaining) {
+                    yield* scheduleCompletedBuildCleanup(databasePath);
+                  }
                 }
                 return yield* effect;
               }).pipe(Effect.provideService(CodeGraphDatabaseSession, session));
@@ -482,7 +536,20 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
             Effect.catchTag('SqlError', cause =>
               Effect.fail(storeError('use code graph database session', cause as SqlError.SqlError)),
             ),
-          ),
+            Effect.tap(() =>
+              detachedCleanupRequest.completedBuild
+                ? startCompletedBuildCleanup(
+                    databasePath,
+                    detachedCleanupRequest.completedSnapshotId,
+                    detachedCleanupRequest.routinePhysical,
+                    options,
+                  )
+                : detachedCleanupRequest.routinePhysical
+                  ? startRoutinePhysicalCleanup(databasePath, options)
+                  : Effect.void,
+            ),
+          );
+        },
         assertRuntimeSchemaCompatible: databasePath =>
           fs.exists(databasePath).pipe(
             Effect.flatMap(exists =>
