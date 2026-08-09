@@ -347,6 +347,70 @@ describe('bounded code graph maintenance', () => {
     }).pipe(Effect.provide(ApplicationLayer)),
   );
 
+  effectIt.effect('prepares legacy reconciliation indexes before an explicit revision-8 repair', () =>
+    Effect.gen(function* () {
+      const home = yield* Effect.promise(() => mkdtemp('threadnote-graph-repair-pre-index-revision-7-'));
+      homes.push(home);
+      const checkoutId = '7'.repeat(64);
+      const databasePath = join(
+        home,
+        'indexes',
+        'code-graph',
+        'repositories',
+        checkoutId,
+        `graph-v${CODE_GRAPH_SCHEMA_VERSION}.sqlite`,
+      );
+      const store = yield* CodeGraphStore;
+      yield* store.initialize(databasePath);
+      yield* Effect.sync(() => makePreReconciliationIndexRevision7(databasePath));
+
+      const progress: string[] = [];
+      const repair = yield* repairCodeGraphIndexes(
+        home,
+        false,
+        state => Effect.sync(() => progress.push(state.phase)),
+        undefined,
+        {migrateSchema: true, mode: 'quick'},
+      );
+
+      expect(repair).toMatchObject({deferredDatabases: 0, migratedDatabases: 1});
+      expect(progress).toEqual(['checking', 'migrating-schema']);
+      expect(yield* codeGraphDoctorCheck(home)).toMatchObject({status: 'ok'});
+      expect(
+        yield* Effect.sync(() => {
+          const database = new Database(databasePath, {readonly: true, strict: true});
+          try {
+            return {
+              indexes: database
+                .query(
+                  `SELECT name FROM sqlite_master
+                   WHERE type = 'index' AND name IN (
+                     'active_snapshots_snapshot_worktree',
+                     'snapshots_base_state_id',
+                     'snapshot_leases_snapshot_expiry'
+                   )
+                   ORDER BY name`,
+                )
+                .all(),
+              revision: database
+                .query("SELECT value FROM schema_metadata WHERE key = 'persistent_extension_schema_revision'")
+                .get(),
+            };
+          } finally {
+            database.close(false);
+          }
+        }),
+      ).toEqual({
+        indexes: [
+          {name: 'active_snapshots_snapshot_worktree'},
+          {name: 'snapshot_leases_snapshot_expiry'},
+          {name: 'snapshots_base_state_id'},
+        ],
+        revision: {value: '8'},
+      });
+    }).pipe(Effect.provide(ApplicationLayer)),
+  );
+
   effectIt.effect('exposes foreground schema migration through graph repair --all', () =>
     Effect.gen(function* () {
       const home = yield* Effect.promise(() => mkdtemp('threadnote-graph-repair-command-'));
@@ -441,6 +505,35 @@ function makeRecoverableInterruptedExtension(databasePath: string): void {
       throw error;
     } finally {
       database.run('PRAGMA foreign_keys = ON');
+    }
+  } finally {
+    database.close(false);
+  }
+}
+
+function makePreReconciliationIndexRevision7(databasePath: string): void {
+  const database = new Database(databasePath, {strict: true});
+  try {
+    database.run('BEGIN IMMEDIATE');
+    try {
+      database.exec(`
+        DROP TRIGGER removed_views_cleanup_revoke_delete;
+        DROP TRIGGER removed_views_cleanup_revoke_insert;
+        DROP TRIGGER removed_views_cleanup_revoke_update;
+        DROP TABLE removed_view_cleanup;
+        DROP INDEX active_snapshots_snapshot_worktree;
+        DROP INDEX snapshots_base_state_id;
+        DROP INDEX snapshot_leases_snapshot_expiry;
+        DELETE FROM schema_metadata
+        WHERE key IN ('removed_view_cleanup_admission_cursor', 'removed_view_cleanup_epoch_sequence');
+        UPDATE schema_metadata
+        SET value = '7'
+        WHERE key = 'persistent_extension_schema_revision';
+      `);
+      database.run('COMMIT');
+    } catch (error) {
+      if (database.inTransaction) database.run('ROLLBACK');
+      throw error;
     }
   } finally {
     database.close(false);

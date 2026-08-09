@@ -26,6 +26,8 @@ import {
 import {CODE_GRAPH_SCHEMA_VERSION, type CodeGraphSnapshot} from './types.js';
 import {BUILTIN_LANGUAGE_PACK_REGISTRY} from './languages/registry.js';
 
+const CODE_GRAPH_EXPLICIT_SCHEMA_PREPARATION_STEP_LIMIT = 8;
+
 export interface CodeGraphRepairSummary {
   readonly databases: number;
   readonly deferredDatabases: number;
@@ -370,13 +372,29 @@ export const repairCodeGraphIndexes = Effect.fn('codeGraph.repairIndexes')(funct
                     diagnosed.value.integrity === 'incompatible'
                   ) {
                     if (options.migrateSchema) {
-                      migratedDatabases += 1;
                       yield* progress({phase: 'migrating-schema'});
-                      if (dryRun) return 'maintained' as const;
+                      if (dryRun) {
+                        migratedDatabases += 1;
+                        return 'maintained' as const;
+                      }
+                      if (diagnosed.value.persistentExtensionSchemaRevision === 7) {
+                        let preparation = yield* store.prepareWorktreeReconciliationIndexes(database);
+                        for (
+                          let step = 1;
+                          preparation.state === 'prepared' && step < CODE_GRAPH_EXPLICIT_SCHEMA_PREPARATION_STEP_LIMIT;
+                          step += 1
+                        ) {
+                          preparation = yield* store.prepareWorktreeReconciliationIndexes(database);
+                        }
+                        if (preparation.state !== 'ready') return 'schema-upgrade-on-use' as const;
+                      }
                       yield* store.initialize(database);
                       diagnosed = deep
                         ? yield* store.diagnose(database).pipe(Effect.option)
                         : yield* diagnoseCodeGraphDatabaseReadOnly(database, false).pipe(Effect.option);
+                      if (diagnosed._tag === 'Some' && diagnosed.value?.integrity === 'ok') {
+                        migratedDatabases += 1;
+                      }
                     } else {
                       // Same-version beta databases with a missing revision or an
                       // incompatible extension-table contract are recoverable on the
