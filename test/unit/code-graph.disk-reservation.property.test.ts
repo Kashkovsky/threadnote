@@ -95,6 +95,8 @@ describe('code graph disk reservation ledger', () => {
     {
       bytes: fc.integer({max: 2 ** 42, min: 0}),
       operation: fc.constantFrom(
+        'cache code graph file facts' as const,
+        'cache materialized code graph file shards' as const,
         'promote ready code graph snapshot' as const,
         'publish persistent code graph snapshot' as const,
         'register persistent code graph materialization plan' as const,

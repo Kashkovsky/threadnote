@@ -5,9 +5,14 @@ import {
   CodeGraphStoreTransientIoError,
 } from './types.js';
 
-export const CODE_GRAPH_DISK_CAPACITY_MODEL_VERSION = 1 as const;
+export const CODE_GRAPH_DISK_CAPACITY_MODEL_VERSION = 2 as const;
+
+const SQLITE_WAL_HEADER_BYTES = 32;
+const SQLITE_WAL_FRAME_HEADER_BYTES = 24;
 
 export type CodeGraphDirectPersistentCapacityOperation =
+  | 'cache code graph file facts'
+  | 'cache materialized code graph file shards'
   | 'publish persistent code graph snapshot'
   | 'promote ready code graph snapshot'
   | 'register persistent code graph materialization plan'
@@ -48,6 +53,21 @@ export const CODE_GRAPH_DIRECT_PERSISTENT_CAPACITY_CALIBRATION = {
   transientRowBytes: 256,
 } as const;
 
+/**
+ * Cache blobs have a separately versioned payload calibration. They write the
+ * serialized JSON itself, so they must not silently inherit the normalized-row
+ * evidence used by direct materialization transactions.
+ */
+export const CODE_GRAPH_CACHE_PERSISTENT_CAPACITY_CALIBRATION = {
+  identityBase:
+    `graph-v${CODE_GRAPH_SCHEMA_VERSION}:${CODE_GRAPH_EXTRACTOR_SET_VERSION}:cache-payload:` +
+    `capacity-v${CODE_GRAPH_DISK_CAPACITY_MODEL_VERSION}`,
+  mainFactAmplification: 5,
+  mainRowBytes: 256,
+  transientFactAmplification: 3,
+  transientRowBytes: 256,
+} as const;
+
 export interface CodeGraphDirectPersistentCapacityDemandInput {
   readonly finalFactBytes: number;
   readonly lexicalFormatVersion: number;
@@ -56,6 +76,13 @@ export interface CodeGraphDirectPersistentCapacityDemandInput {
   readonly pageSize: number;
   readonly rowCount: number;
   readonly walAutoCheckpointPages: number;
+}
+
+export interface CodeGraphPersistentCapacityDemandInput extends Omit<
+  CodeGraphDirectPersistentCapacityDemandInput,
+  'finalFactBytes' | 'rowCount'
+> {
+  readonly boundary: CodeGraphDirectPersistentCapacityBoundary;
 }
 
 export interface CodeGraphMeasuredDiskCapacityDemand {
@@ -150,8 +177,30 @@ export class CodeGraphDiskCapacityPressureError extends CodeGraphStoreNoSpaceErr
 export function codeGraphDirectPersistentCapacityDemand(
   input: CodeGraphDirectPersistentCapacityDemandInput,
 ): CodeGraphDiskCapacityDemand {
+  return codeGraphPersistentCapacityDemandForCalibration(input, CODE_GRAPH_DIRECT_PERSISTENT_CAPACITY_CALIBRATION);
+}
+
+export function codeGraphPersistentCapacityDemand(
+  input: CodeGraphPersistentCapacityDemandInput,
+): CodeGraphDiskCapacityDemand {
+  const calibration =
+    input.boundary.operation === 'cache code graph file facts' ||
+    input.boundary.operation === 'cache materialized code graph file shards'
+      ? CODE_GRAPH_CACHE_PERSISTENT_CAPACITY_CALIBRATION
+      : CODE_GRAPH_DIRECT_PERSISTENT_CAPACITY_CALIBRATION;
+  return codeGraphPersistentCapacityDemandForCalibration(
+    {...input, finalFactBytes: input.boundary.finalFactBytes, rowCount: input.boundary.rowCount},
+    calibration,
+  );
+}
+
+function codeGraphPersistentCapacityDemandForCalibration(
+  input: CodeGraphDirectPersistentCapacityDemandInput,
+  calibration:
+    typeof CODE_GRAPH_DIRECT_PERSISTENT_CAPACITY_CALIBRATION | typeof CODE_GRAPH_CACHE_PERSISTENT_CAPACITY_CALIBRATION,
+): CodeGraphDiskCapacityDemand {
   const unknown = (reason: CodeGraphUnknownDiskCapacityDemand['reason']): CodeGraphUnknownDiskCapacityDemand => ({
-    calibrationIdentity: `${CODE_GRAPH_DIRECT_PERSISTENT_CAPACITY_CALIBRATION.identityBase}:unmeasured`,
+    calibrationIdentity: `${calibration.identityBase}:unmeasured`,
     reason,
     state: 'unknown',
   });
@@ -174,32 +223,37 @@ export function codeGraphDirectPersistentCapacityDemand(
   const rowCount = input.rowCount;
   const mainHighWaterBytes = Math.max(
     pageSize,
-    saturatingCapacityMultiply(finalFactBytes, CODE_GRAPH_DIRECT_PERSISTENT_CAPACITY_CALIBRATION.mainFactAmplification),
-    saturatingCapacityMultiply(rowCount, CODE_GRAPH_DIRECT_PERSISTENT_CAPACITY_CALIBRATION.mainRowBytes),
+    saturatingCapacityMultiply(finalFactBytes, calibration.mainFactAmplification),
+    saturatingCapacityMultiply(rowCount, calibration.mainRowBytes),
     input.observedMainHighWaterBytes ?? 0,
   );
   const transientHighWaterBytes = Math.max(
     pageSize,
-    saturatingCapacityMultiply(
-      finalFactBytes,
-      CODE_GRAPH_DIRECT_PERSISTENT_CAPACITY_CALIBRATION.transientFactAmplification,
-    ),
-    saturatingCapacityMultiply(rowCount, CODE_GRAPH_DIRECT_PERSISTENT_CAPACITY_CALIBRATION.transientRowBytes),
+    saturatingCapacityMultiply(finalFactBytes, calibration.transientFactAmplification),
+    saturatingCapacityMultiply(rowCount, calibration.transientRowBytes),
     input.observedTransientHighWaterBytes ?? 0,
   );
   return {
     calibrationIdentity:
-      `${CODE_GRAPH_DIRECT_PERSISTENT_CAPACITY_CALIBRATION.identityBase}:` +
+      `${calibration.identityBase}:` +
       `lexical-${input.lexicalFormatVersion}:page-${pageSize}:wal-${input.walAutoCheckpointPages}`,
     mainHighWaterBytes,
     recoveryFloorBytes: Math.max(
       transientHighWaterBytes,
-      saturatingCapacityMultiply(pageSize, input.walAutoCheckpointPages),
+      sqliteWalCapacityBytes(pageSize, input.walAutoCheckpointPages),
     ),
     state: 'measured',
     transientFilesystem: 'durable',
     transientHighWaterBytes,
   };
+}
+
+/** Exact bytes occupied by a WAL header and the configured number of full page frames. */
+export function sqliteWalCapacityBytes(pageSize: number, pageFrames: number): number {
+  return saturatingCapacityAdd(
+    SQLITE_WAL_HEADER_BYTES,
+    saturatingCapacityMultiply(pageFrames, saturatingCapacityAdd(pageSize, SQLITE_WAL_FRAME_HEADER_BYTES)),
+  );
 }
 
 /**
@@ -412,6 +466,8 @@ function availableCapacityBytes(value: number | undefined): number | undefined {
 
 function capacityOperation(operation: string): CodeGraphCapacityFailureOperation {
   switch (operation) {
+    case 'cache code graph file facts':
+    case 'cache materialized code graph file shards':
     case 'publish persistent code graph snapshot':
     case 'promote ready code graph snapshot':
     case 'register persistent code graph materialization plan':

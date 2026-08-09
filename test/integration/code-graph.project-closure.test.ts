@@ -65,6 +65,7 @@ describe('project-closure incremental indexing', () => {
             ],
             base.snapshot.extractorSet,
             poisonDerivation,
+            (_boundary, transaction) => transaction,
           );
           expect(
             (yield* store.loadMaterializedFileShards(

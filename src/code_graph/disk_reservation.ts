@@ -48,6 +48,8 @@ const RUNTIME_PLATFORMS = new Set<NodeJS.Platform>([
   'win32',
 ]);
 const OPERATIONS = new Set<CodeGraphDirectPersistentCapacityOperation>([
+  'cache code graph file facts',
+  'cache materialized code graph file shards',
   'publish persistent code graph snapshot',
   'promote ready code graph snapshot',
   'register persistent code graph materialization plan',

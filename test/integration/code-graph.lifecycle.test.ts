@@ -506,130 +506,114 @@ describe('native code graph lifecycle', () => {
     expect(activeSnapshotId(databasePath, resultB.snapshot.worktreeId)).toBe(resultB.snapshot.id);
   });
 
-  it('shares immutable clean snapshots without coupling worktree activation', async () => {
-    const root = createFixtureRepository();
-    git(root, ['branch', 'graph-clean-a']);
-    git(root, ['branch', 'graph-clean-b']);
-    const worktreeRoot = temporaryDirectory('threadnote-code-graph-clean-worktrees-');
-    const worktreeA = join(worktreeRoot, 'worktree-a');
-    const worktreeB = join(worktreeRoot, 'worktree-b');
-    git(root, ['worktree', 'add', worktreeA, 'graph-clean-a']);
-    git(root, ['worktree', 'add', worktreeB, 'graph-clean-b']);
-    const home = join(root, '.threadnote-test-home');
+  effectIt.effect('shares immutable clean snapshots without coupling worktree activation', () =>
+    Effect.gen(function* () {
+      const {home, worktreeA, worktreeB} = yield* Effect.sync(() => {
+        const root = createFixtureRepository();
+        git(root, ['branch', 'graph-clean-a']);
+        git(root, ['branch', 'graph-clean-b']);
+        const worktreeRoot = temporaryDirectory('threadnote-code-graph-clean-worktrees-');
+        const worktreeA = join(worktreeRoot, 'worktree-a');
+        const worktreeB = join(worktreeRoot, 'worktree-b');
+        git(root, ['worktree', 'add', worktreeA, 'graph-clean-a']);
+        git(root, ['worktree', 'add', worktreeB, 'graph-clean-b']);
+        return {home: join(root, '.threadnote-test-home'), worktreeA, worktreeB};
+      });
+      const indexer = yield* CodeGraphIndexer;
+      const store = yield* CodeGraphStore;
+      const graph = yield* CodeGraphQueryService;
+      const first = yield* indexer.index({cwd: worktreeA, threadnoteHome: home});
+      const second = yield* indexer.index({cwd: worktreeB, threadnoteHome: home});
+      const forced = yield* indexer.index({cwd: worktreeA, force: true, threadnoteHome: home});
+      const databasePath = join(
+        home,
+        'indexes',
+        'code-graph',
+        'repositories',
+        first.identity.checkoutId,
+        'graph-v3.sqlite',
+      );
+      const health = yield* store.diagnose(databasePath);
 
-    const result = await runEffect(
-      Effect.gen(function* () {
-        const indexer = yield* CodeGraphIndexer;
-        const store = yield* CodeGraphStore;
-        const first = yield* indexer.index({cwd: worktreeA, threadnoteHome: home});
-        const second = yield* indexer.index({cwd: worktreeB, threadnoteHome: home});
-        const forced = yield* indexer.index({cwd: worktreeA, force: true, threadnoteHome: home});
-        const database = join(
-          home,
-          'indexes',
-          'code-graph',
-          'repositories',
-          first.identity.checkoutId,
-          'graph-v3.sqlite',
-        );
-        return {first, forced, health: yield* store.diagnose(database), second};
-      }),
-    );
+      expect(first.snapshot.id).toBe(second.snapshot.id);
+      expect(forced.reusedFiles).toBe(0);
+      expect(forced.snapshot.id).not.toBe(first.snapshot.id);
+      expect(health).toMatchObject({
+        activeSnapshots: 2,
+        buildingSnapshots: 0,
+        failedSnapshots: 0,
+        integrity: 'ok',
+        readySnapshots: 2,
+      });
 
-    expect(result.first.snapshot.id).toBe(result.second.snapshot.id);
-    expect(result.forced.reusedFiles).toBe(0);
-    expect(result.forced.snapshot.id).not.toBe(result.first.snapshot.id);
-    expect(result.health).toMatchObject({
-      activeSnapshots: 2,
-      buildingSnapshots: 0,
-      failedSnapshots: 0,
-      integrity: 'ok',
-      readySnapshots: 2,
-    });
+      yield* Effect.sync(() => {
+        const audit = new Database(databasePath);
+        try {
+          audit.exec(`
+            CREATE TABLE cache_write_audit (operation TEXT NOT NULL);
+            CREATE TRIGGER cache_insert_audit AFTER INSERT ON file_blobs
+            BEGIN INSERT INTO cache_write_audit VALUES ('insert'); END;
+            CREATE TRIGGER cache_update_audit AFTER UPDATE ON file_blobs
+            BEGIN INSERT INTO cache_write_audit VALUES ('update'); END;
+          `);
+        } finally {
+          audit.close();
+        }
+        replaceFunction(worktreeA, 'ensureVectorIndex', 'ensureDirtyVectorIndex');
+      });
 
-    const databasePath = join(
-      home,
-      'indexes',
-      'code-graph',
-      'repositories',
-      result.first.identity.checkoutId,
-      'graph-v3.sqlite',
-    );
-    const audit = new Database(databasePath);
-    try {
-      audit.exec(`
-        CREATE TABLE cache_write_audit (operation TEXT NOT NULL);
-        CREATE TRIGGER cache_insert_audit AFTER INSERT ON file_blobs
-        BEGIN INSERT INTO cache_write_audit VALUES ('insert'); END;
-        CREATE TRIGGER cache_update_audit AFTER UPDATE ON file_blobs
-        BEGIN INSERT INTO cache_write_audit VALUES ('update'); END;
-      `);
-    } finally {
-      audit.close();
-    }
-
-    replaceFunction(worktreeA, 'ensureVectorIndex', 'ensureDirtyVectorIndex');
-    const afterDirty = await runEffect(
-      Effect.gen(function* () {
-        const graph = yield* CodeGraphQueryService;
-        const indexer = yield* CodeGraphIndexer;
-        const store = yield* CodeGraphStore;
-        const indexed = yield* indexer.index({cwd: worktreeA, threadnoteHome: home});
-        const dirty = yield* graph.inspect({
-          cwd: worktreeA,
-          operation: 'query',
-          query: 'ensureDirtyVectorIndex',
-          threadnoteHome: home,
-        });
-        const clean = yield* graph.inspect({
-          cwd: worktreeB,
-          operation: 'query',
-          query: 'ensureVectorIndex',
-          refresh: false,
-          threadnoteHome: home,
-        });
-        const database = join(
-          home,
-          'indexes',
-          'code-graph',
-          'repositories',
-          result.first.identity.checkoutId,
-          'graph-v3.sqlite',
-        );
-        return {clean, dirty, health: yield* store.diagnose(database), indexed};
-      }),
-    );
-    const materialization = afterDirty.indexed.materialization;
-    expect(materialization).toMatchObject({
-      mode: 'incremental-overlay',
-    });
-    expect(materialization?.stagedFiles).toBe(materialization?.totalFiles);
-    expect(afterDirty.indexed.snapshot).toMatchObject({baseSnapshotId: result.forced.snapshot.id, dirty: true});
-    expect(afterDirty.dirty.nodes.some(node => node.name === 'ensureDirtyVectorIndex')).toBe(true);
-    expect(afterDirty.clean.nodes.some(node => node.name === 'ensureVectorIndex')).toBe(true);
-    expect(afterDirty.health).toMatchObject({
-      activeSnapshots: 2,
-      integrity: 'ok',
-      readySnapshots: 3,
-    });
-    const database = new Database(databasePath, {readonly: true});
-    try {
-      const stored = database
-        .query<{readonly count: number}, [string]>('SELECT COUNT(*) AS count FROM symbols WHERE snapshot_id = ?')
-        .get(afterDirty.dirty.snapshot.id);
-      const changedFiles = database
-        .query<{readonly count: number}, [string]>('SELECT COUNT(*) AS count FROM snapshot_files WHERE snapshot_id = ?')
-        .get(afterDirty.dirty.snapshot.id);
-      const cacheWrites = database
-        .query<{readonly count: number}, []>('SELECT COUNT(*) AS count FROM cache_write_audit')
-        .get();
-      expect(stored?.count).toBe(afterDirty.indexed.snapshot.symbolCount);
-      expect(changedFiles?.count).toBe(afterDirty.indexed.snapshot.fileCount);
-      expect(cacheWrites?.count).toBe(1);
-    } finally {
-      database.close();
-    }
-  });
+      const indexed = yield* indexer.index({cwd: worktreeA, threadnoteHome: home});
+      const dirty = yield* graph.inspect({
+        cwd: worktreeA,
+        operation: 'query',
+        query: 'ensureDirtyVectorIndex',
+        threadnoteHome: home,
+      });
+      const clean = yield* graph.inspect({
+        cwd: worktreeB,
+        operation: 'query',
+        query: 'ensureVectorIndex',
+        refresh: false,
+        threadnoteHome: home,
+      });
+      const afterDirtyHealth = yield* store.diagnose(databasePath);
+      const materialization = indexed.materialization;
+      expect(materialization).toMatchObject({
+        fallbackReason: 'resolution-surface-changed',
+        mode: 'full',
+      });
+      expect(materialization?.stagedFiles).toBe(materialization?.totalFiles);
+      expect(indexed.snapshot).toMatchObject({baseSnapshotId: undefined, dirty: true});
+      expect(dirty.nodes.some(node => node.name === 'ensureDirtyVectorIndex')).toBe(true);
+      expect(clean.nodes.some(node => node.name === 'ensureVectorIndex')).toBe(true);
+      expect(afterDirtyHealth).toMatchObject({
+        activeSnapshots: 2,
+        integrity: 'ok',
+        readySnapshots: 3,
+      });
+      yield* Effect.sync(() => {
+        const database = new Database(databasePath, {readonly: true});
+        try {
+          const stored = database
+            .query<{readonly count: number}, [string]>('SELECT COUNT(*) AS count FROM symbols WHERE snapshot_id = ?')
+            .get(dirty.snapshot.id);
+          const changedFiles = database
+            .query<{readonly count: number}, [string]>(
+              'SELECT COUNT(*) AS count FROM snapshot_files WHERE snapshot_id = ?',
+            )
+            .get(dirty.snapshot.id);
+          const cacheWrites = database
+            .query<{readonly count: number}, []>('SELECT COUNT(*) AS count FROM cache_write_audit')
+            .get();
+          expect(stored?.count).toBe(indexed.snapshot.symbolCount);
+          expect(changedFiles?.count).toBe(indexed.snapshot.fileCount);
+          expect(cacheWrites?.count).toBe(1);
+        } finally {
+          database.close();
+        }
+      });
+    }).pipe(Effect.provide(ApplicationLayer)),
+  );
 
   it('attaches a shared clean ready snapshot to a new worktree without rematerializing', async () => {
     const root = createFixtureRepository();
@@ -880,6 +864,8 @@ describe('native code graph lifecycle', () => {
       expect(normalizeStoredGraph(incrementalGraph)).toEqual(normalizeStoredGraph(fullGraph));
       const probesPerObservation = statSync(root).dev === statSync(tmpdir()).dev ? 1 : 2;
       expect(Object.fromEntries(probes)).toEqual({
+        'cache code graph file facts': probesPerObservation,
+        'cache materialized code graph file shards': probesPerObservation,
         'promote ready code graph snapshot': probesPerObservation,
       });
     }).pipe(Effect.provide(ApplicationLayer)),
@@ -1683,22 +1669,22 @@ describe('native code graph lifecycle', () => {
     expect(result.status.readySnapshot?.id).toBe(result.indexed.snapshot.id);
   });
 
-  it.each([
+  describe.each([
     ['a renamed declaration', createRenamedDeclarationRepository, 'resolution-surface-changed'],
-    ['a changed lookup signature', createChangedSignatureRepository, 'resolution-surface-changed'],
+    ['a changed lookup signature', createChangedSignatureRepository, 'project-closure-incomplete'],
     ['a changed export surface', createChangedExportRepository, 'resolution-surface-changed'],
     ['changed resolution context', createChangedResolutionContextRepository, 'extractor-context-changed'],
-    ['dynamic re-export aliases', createDynamicAliasRepository, 'dynamic-aliases'],
+    ['dynamic re-export aliases', createDynamicAliasRepository, 'project-closure-incomplete'],
     ['an added eligible file', createAddedFileRepository, 'file-set-changed'],
     ['a deleted eligible file', createDeletedFileRepository, 'file-set-changed'],
-    ['an expanded changed-fact batch', createFactBudgetExpandedRepository, 'fact-budget-expanded'],
-  ] as const)('fails closed to full materialization for %s', async (_label, createRepository, fallbackReason) => {
-    const root = createRepository();
-    const storageObservations: NonNullable<CodeGraphMaterializationMetrics['storage']>[] = [];
-    const result = await runEffect(
+    ['an expanded changed-fact batch', createFactBudgetExpandedRepository, 'project-closure-unbounded'],
+  ] as const)('full materialization fallback for %s', (_label, createRepository, fallbackReason) => {
+    effectIt.effect('fails closed with the exact bounded reason', () =>
       Effect.gen(function* () {
+        const root = yield* Effect.sync(createRepository);
+        const storageObservations: NonNullable<CodeGraphMaterializationMetrics['storage']>[] = [];
         const indexer = yield* CodeGraphIndexer;
-        return yield* indexer.index({
+        const result = yield* indexer.index({
           cwd: root,
           onProgress: progress =>
             Effect.sync(() => {
@@ -1708,33 +1694,41 @@ describe('native code graph lifecycle', () => {
             }),
           threadnoteHome: join(root, '.threadnote-test-home'),
         });
-      }),
+        expect(result.materialization).toMatchObject({fallbackReason, mode: 'full'});
+        expect(result.materialization?.stagedFiles).toBe(result.materialization?.totalFiles);
+        expect(result.diagnostics.some(message => message.startsWith('Dirty overlay used full materialization:'))).toBe(
+          true,
+        );
+        expect(storageObservations.at(-1)).toMatchObject({
+          materializationMode: 'direct-persistent',
+          temporaryDatabaseBytes: 0,
+          temporaryDatabaseHighWaterBytes: 0,
+        });
+        yield* Effect.sync(() => {
+          const database = new Database(codeGraphDatabasePath(join(root, '.threadnote-test-home'), result), {
+            readonly: true,
+          });
+          try {
+            const snapshots = database
+              .query<
+                {
+                  readonly base_snapshot_id: unknown;
+                  readonly dirty: number;
+                  readonly id: string;
+                  readonly state: string;
+                },
+                []
+              >('SELECT id, base_snapshot_id, dirty, state FROM snapshots ORDER BY id')
+              .all();
+            expect(snapshots).toHaveLength(1);
+            expect(snapshots[0]).toMatchObject({dirty: 1, id: result.snapshot.id, state: 'ready'});
+            expect(snapshots[0]?.base_snapshot_id).toBeNull();
+          } finally {
+            database.close();
+          }
+        });
+      }).pipe(Effect.provide(ApplicationLayer)),
     );
-
-    expect(result.materialization).toMatchObject({fallbackReason, mode: 'full'});
-    expect(result.materialization?.stagedFiles).toBe(result.materialization?.totalFiles);
-    expect(result.diagnostics.some(message => message.startsWith('Dirty overlay used full materialization:'))).toBe(
-      true,
-    );
-    expect(storageObservations.at(-1)).toMatchObject({
-      materializationMode: 'direct-persistent',
-      temporaryDatabaseBytes: 0,
-      temporaryDatabaseHighWaterBytes: 0,
-    });
-    const database = new Database(codeGraphDatabasePath(join(root, '.threadnote-test-home'), result), {readonly: true});
-    try {
-      const snapshots = database
-        .query<
-          {readonly base_snapshot_id: unknown; readonly dirty: number; readonly id: string; readonly state: string},
-          []
-        >('SELECT id, base_snapshot_id, dirty, state FROM snapshots ORDER BY id')
-        .all();
-      expect(snapshots).toHaveLength(1);
-      expect(snapshots[0]).toMatchObject({dirty: 1, id: result.snapshot.id, state: 'ready'});
-      expect(snapshots[0]?.base_snapshot_id).toBeNull();
-    } finally {
-      database.close();
-    }
   });
 
   it('indexes aggregate symbols across parser batches without a repository-scale cap', async () => {
@@ -3012,10 +3006,14 @@ describe('native code graph lifecycle', () => {
       expect(failure).toBeInstanceOf(CodeGraphDiskCapacityPressureError);
       expect(failure).toBeInstanceOf(CodeGraphStoreNoSpaceError);
       expect(failure).toMatchObject({code: 'no-space', recovery: 'free-space'});
+      // The parser cache coalesces the 128-row/2-row inventory callbacks into
+      // one protected 130-row write before staging.
       // Inventory and workspace each observe once. Facts allow one transaction,
       // then observe pressure and the one bounded cleanup retry. Shared storage
       // never spawns duplicate df or PowerShell probes at a boundary.
       expect(Object.fromEntries(probes)).toEqual({
+        'cache code graph file facts': probesPerObservation,
+        'cache materialized code graph file shards': probesPerObservation * 2,
         'stage persistent code graph facts': probesPerObservation * 3,
         'stage persistent code graph inventory': probesPerObservation,
         'stage persistent code graph workspace': probesPerObservation,
@@ -3200,9 +3198,13 @@ describe('native code graph lifecycle', () => {
         recovery: 'retry-read-only',
         retryable: true,
       });
+      // The parser cache coalesces the 128-row/2-row inventory callbacks into
+      // one protected 130-row write before staging.
       // The second fact boundary fails closed after one observation; unlike
       // positive pressure it does not perform cleanup or a fresh re-observation.
       expect(Object.fromEntries(probes)).toEqual({
+        'cache code graph file facts': probesPerObservation,
+        'cache materialized code graph file shards': probesPerObservation * 2,
         'stage persistent code graph facts': probesPerObservation * 2,
         'stage persistent code graph inventory': probesPerObservation,
         'stage persistent code graph workspace': probesPerObservation,

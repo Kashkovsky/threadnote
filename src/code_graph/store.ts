@@ -12,6 +12,15 @@ import {
 } from './build_owner.js';
 import {corroborateCodeGraphBuildOwnerStatus} from './build_status.js';
 import {
+  CODE_GRAPH_CACHE_TRANSACTION_LIMITS,
+  codeGraphFileBlobCapacityBytes,
+  codeGraphMaterializedShardCapacityBytes,
+  codeGraphTextFieldsCapacityBytes,
+  planCodeGraphCacheCapacityChunks,
+  type CodeGraphCacheCapacityChunk,
+  type CodeGraphCacheCapacityRow,
+} from './cache_capacity.js';
+import {
   codeGraphUtf8ByteLength,
   saturatingCapacityAdd,
   saturatingCapacityMultiply,
@@ -637,6 +646,7 @@ export interface CodeGraphStoreShape {
     files: readonly CodeGraphInventoryFile[],
     facts: readonly CodeGraphCacheFactInput[],
     extractorSet: string,
+    persistentCapacityProtector: CodeGraphDirectPersistentCapacityProtector,
   ) => Effect.Effect<void, CodeGraphStoreError>;
   readonly cacheMaterializedFileShards: (
     databasePath: string,
@@ -644,6 +654,7 @@ export interface CodeGraphStoreShape {
     facts: readonly CodeGraphCacheFactInput[],
     extractorSet: string,
     derivationIdentity: string,
+    persistentCapacityProtector: CodeGraphDirectPersistentCapacityProtector,
   ) => Effect.Effect<void, CodeGraphStoreError>;
   readonly acquireSnapshotLease: (
     databasePath: string,
@@ -1036,6 +1047,10 @@ class CodeGraphDatabaseSession extends Context.Service<CodeGraphDatabaseSession,
 
 class CodeGraphPromotionCapacityPlanChanged extends Error {
   override readonly name = 'CodeGraphPromotionCapacityPlanChanged';
+}
+
+class CodeGraphCacheCapacityPlanChanged extends Error {
+  override readonly name = 'CodeGraphCacheCapacityPlanChanged';
 }
 
 export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphStoreShape>()(
@@ -1473,39 +1488,78 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
             ),
             Effect.mapError(cause => storeError('activate clean code graph snapshot alias', cause)),
           ),
-        cacheFacts: (databasePath, files, facts, extractorSet) =>
+        cacheFacts: (databasePath, files, facts, extractorSet, persistentCapacityProtector) =>
           Effect.gen(function* () {
-            const bounded = yield* Effect.sync(() => facts.map(ensureBoundedCodeGraphFact));
+            const chunks = yield* Effect.try({
+              catch: cause => cacheCapacityPlanningError('file facts', cause),
+              try: () =>
+                prepareFreshFactCacheChunks(
+                  files,
+                  facts.map(ensureBoundedCodeGraphFact),
+                  extractorSet,
+                  new Date().toISOString(),
+                ),
+            });
             yield* prepare(databasePath);
             yield* useDatabase(
               databasePath,
               Effect.gen(function* () {
                 const sql = yield* SqlClient.SqlClient;
                 yield* ensureSchemaInitialized(databasePath, sql);
-                yield* withWriterGate(
-                  databasePath,
-                  sql.withTransaction(storeFreshFacts(sql, files, bounded, extractorSet)),
-                );
               }),
             );
-          }).pipe(Effect.mapError(cause => storeError('cache code graph file facts', cause))),
-        cacheMaterializedFileShards: (databasePath, files, facts, extractorSet, derivationIdentity) =>
-          Effect.gen(function* () {
-            const bounded = yield* Effect.sync(() => facts.map(ensureBoundedCodeGraphFact));
-            yield* prepare(databasePath);
-            yield* useDatabase(
-              databasePath,
-              Effect.gen(function* () {
-                const sql = yield* SqlClient.SqlClient;
-                yield* ensureSchemaInitialized(databasePath, sql);
-                yield* withWriterGate(
+            for (const chunk of chunks) {
+              yield* persistentCapacityProtector(
+                chunk.boundary,
+                withWriterGate(
                   databasePath,
-                  sql.withTransaction(
-                    storeMaterializedFileShards(sql, files, bounded, extractorSet, derivationIdentity),
+                  useDatabase(
+                    databasePath,
+                    Effect.gen(function* () {
+                      const sql = yield* SqlClient.SqlClient;
+                      yield* sql.withTransaction(storeFreshFactRows(sql, chunk.rows));
+                    }),
                   ),
-                );
+                ),
+              );
+            }
+          }).pipe(Effect.mapError(cause => storeError('cache code graph file facts', cause))),
+        cacheMaterializedFileShards: (
+          databasePath,
+          files,
+          facts,
+          extractorSet,
+          derivationIdentity,
+          persistentCapacityProtector,
+        ) =>
+          Effect.gen(function* () {
+            const chunks = yield* Effect.try({
+              catch: cause => cacheCapacityPlanningError('materialized file shards', cause),
+              try: () =>
+                prepareMaterializedShardCacheChunks(
+                  files,
+                  facts.map(ensureBoundedCodeGraphFact),
+                  extractorSet,
+                  derivationIdentity,
+                  new Date().toISOString(),
+                ),
+            });
+            yield* prepare(databasePath);
+            yield* useDatabase(
+              databasePath,
+              Effect.gen(function* () {
+                const sql = yield* SqlClient.SqlClient;
+                yield* ensureSchemaInitialized(databasePath, sql);
               }),
             );
+            for (const chunk of chunks) {
+              yield* writeMaterializedShardCacheRows({
+                databasePath,
+                persistentCapacityProtector,
+                rows: chunk.rows,
+                withWriterGate,
+              });
+            }
           }).pipe(Effect.mapError(cause => storeError('cache materialized code graph file shards', cause))),
         promote: (databasePath, identity, snapshotId, options) =>
           Effect.gen(function* () {
@@ -7049,27 +7103,62 @@ const activatePersistedIncrementalSnapshot = Effect.fn('codeGraph.activatePersis
   `;
 });
 
-function storeFreshFacts(
-  sql: SqlClient.SqlClient,
+interface PlannedFreshFactCacheRow extends CodeGraphCacheCapacityRow {
+  readonly contentHash: string;
+  readonly createdAt: string;
+  readonly extractorSet: string;
+  readonly factsJson: string;
+  readonly path: string;
+}
+
+interface PlannedMaterializedShardCacheRow extends CodeGraphCacheCapacityRow {
+  readonly contentHash: string;
+  readonly createdAt: string;
+  readonly derivationIdentity: string;
+  readonly extractorSet: string;
+  readonly factsJson: string;
+  readonly id: string;
+  readonly lastUsedAt: string;
+  readonly path: string;
+}
+
+function cacheCapacityPlanningError(label: string, cause: unknown): CodeGraphStoreError {
+  if (cause instanceof CodeGraphStoreError) return cause;
+  const reason = cause instanceof Error && cause.message.includes('payload ceiling') ? ' payload ceiling' : ' input';
+  return new CodeGraphStoreError(`Code graph cache ${label}${reason} is invalid.`);
+}
+
+function prepareFreshFactCacheChunks(
   files: readonly CodeGraphInventoryFile[],
-  cacheFacts: readonly BoundedCodeGraphFact[],
-  cacheExtractorSet: string,
-) {
+  facts: readonly BoundedCodeGraphFact[],
+  extractorSet: string,
+  createdAt: string,
+): readonly CodeGraphCacheCapacityChunk<PlannedFreshFactCacheRow>[] {
+  const inputs = pairCacheInputs(files, facts, 'Fresh parser facts');
+  return planCodeGraphCacheCapacityChunks(
+    'cache code graph file facts',
+    inputs.map(({bounded, file}) => {
+      const row = {
+        contentHash: file.contentHash,
+        createdAt,
+        extractorSet,
+        factsJson: bounded.json,
+        key: file.path,
+        path: file.path,
+      };
+      return {...row, payloadBytes: codeGraphFileBlobCapacityBytes(row)};
+    }),
+  );
+}
+
+function storeFreshFactRows(sql: SqlClient.SqlClient, rows: readonly PlannedFreshFactCacheRow[]) {
   return Effect.gen(function* () {
-    const createdAt = new Date().toISOString();
-    const filesByPath = new Map(files.map(file => [file.path, file]));
-    for (const bounded of cacheFacts) {
-      const file = filesByPath.get(bounded.facts.path);
-      if (!file) {
-        return yield* Effect.fail(
-          new CodeGraphStoreError(`Fresh parser facts do not match the indexed file inventory: ${bounded.facts.path}.`),
-        );
-      }
+    for (const row of rows) {
       yield* sql`
         INSERT INTO file_blobs (content_hash, extractor_set, path_hint, facts_json, created_at)
         VALUES (
-          ${file.contentHash}, ${cacheExtractorSet}, ${file.path},
-          ${bounded.json}, ${createdAt}
+          ${row.contentHash}, ${row.extractorSet}, ${row.path},
+          ${row.factsJson}, ${row.createdAt}
         )
         ON CONFLICT(content_hash, extractor_set, path_hint) DO UPDATE SET
           facts_json = excluded.facts_json,
@@ -7148,36 +7237,235 @@ const inheritSnapshotFileShards = Effect.fn('codeGraph.inheritSnapshotFileShards
   `;
 });
 
-function storeMaterializedFileShards(
-  sql: SqlClient.SqlClient,
+function prepareMaterializedShardCacheChunks(
   files: readonly CodeGraphInventoryFile[],
   facts: readonly BoundedCodeGraphFact[],
   extractorSet: string,
   derivationIdentity: string,
-) {
-  return Effect.gen(function* () {
-    const filesByPath = new Map(files.map(file => [file.path, file]));
-    if (filesByPath.size !== files.length || facts.length !== files.length) {
-      return yield* Effect.fail(new CodeGraphStoreError('Materialized file shard inputs are inconsistent.'));
+  now: string,
+): readonly CodeGraphCacheCapacityChunk<PlannedMaterializedShardCacheRow>[] {
+  const inputs = pairCacheInputs(files, facts, 'Materialized file shard');
+  return planCodeGraphCacheCapacityChunks(
+    'cache materialized code graph file shards',
+    inputs.map(({bounded, file}) => {
+      const row = {
+        contentHash: file.contentHash,
+        createdAt: now,
+        derivationIdentity,
+        extractorSet,
+        factsJson: bounded.json,
+        id: materializedFileShardIdentity(file.contentHash, extractorSet, derivationIdentity, file.path),
+        key: file.path,
+        lastUsedAt: now,
+        path: file.path,
+      };
+      return {...row, payloadBytes: codeGraphMaterializedShardCapacityBytes(row)};
+    }),
+  );
+}
+
+function pairCacheInputs(
+  files: readonly CodeGraphInventoryFile[],
+  facts: readonly BoundedCodeGraphFact[],
+  label: string,
+): readonly {readonly bounded: BoundedCodeGraphFact; readonly file: CodeGraphInventoryFile}[] {
+  const filesByPath = new Map(files.map(file => [file.path, file]));
+  const factsByPath = new Map(facts.map(bounded => [bounded.facts.path, bounded]));
+  if (
+    files.length !== facts.length ||
+    filesByPath.size !== files.length ||
+    factsByPath.size !== facts.length ||
+    [...filesByPath.keys()].some(path => !factsByPath.has(path))
+  ) {
+    throw new CodeGraphStoreError(`${label} inputs are inconsistent.`);
+  }
+  return [...filesByPath]
+    .sort(([left], [right]) => compareCodeUnits(left, right))
+    .map(([path, file]) => ({bounded: factsByPath.get(path)!, file}));
+}
+
+interface MaterializedShardMetadataRow {
+  readonly content_hash: string;
+  readonly created_at: string;
+  readonly derivation_identity: string;
+  readonly extractor_set: string;
+  readonly facts_bytes: number;
+  readonly id: string;
+  readonly last_used_at: string;
+  readonly path_hint: string;
+}
+
+interface RawMaterializedShardMetadataRow {
+  readonly content_hash: unknown;
+  readonly created_at: unknown;
+  readonly derivation_identity: unknown;
+  readonly extractor_set: unknown;
+  readonly facts_bytes: unknown;
+  readonly id: unknown;
+  readonly last_used_at: unknown;
+  readonly path_hint: unknown;
+}
+
+interface MaterializedShardAssociationRow {
+  readonly path: string;
+  readonly shard_id: string;
+  readonly snapshot_id: string;
+}
+
+interface RawMaterializedShardAssociationPageRow {
+  readonly association_count: unknown;
+  readonly path: unknown;
+  readonly shard_id: unknown;
+  readonly snapshot_id: unknown;
+}
+
+type MaterializedShardRepairPlan =
+  | {
+      readonly associations: readonly MaterializedShardAssociationRow[];
+      readonly associationCount: number;
+      readonly boundary: CodeGraphDirectPersistentCapacityBoundary;
+      readonly conflicts: readonly MaterializedShardMetadataRow[];
+      readonly mode: 'drain';
+      readonly row: PlannedMaterializedShardCacheRow;
     }
-    const now = new Date().toISOString();
-    for (const bounded of facts) {
-      const file = filesByPath.get(bounded.facts.path);
-      if (!file) {
-        return yield* Effect.fail(
-          new CodeGraphStoreError(
-            `Materialized file shard does not match the indexed inventory: ${bounded.facts.path}.`,
-          ),
-        );
+  | {
+      readonly boundary: CodeGraphDirectPersistentCapacityBoundary;
+      readonly conflicts: readonly MaterializedShardMetadataRow[];
+      readonly mode: 'final';
+      readonly row: PlannedMaterializedShardCacheRow;
+    }
+  | {readonly mode: 'normal'};
+
+type CodeGraphCacheWriterGate = <A, E, R>(
+  databasePath: string,
+  effect: Effect.Effect<A, E, R>,
+) => Effect.Effect<A, unknown, R>;
+
+interface MaterializedShardCacheWriteInput {
+  readonly databasePath: string;
+  readonly persistentCapacityProtector: CodeGraphDirectPersistentCapacityProtector;
+  readonly withWriterGate: CodeGraphCacheWriterGate;
+}
+
+const writeMaterializedShardCacheRows = Effect.fn('codeGraph.writeMaterializedShardCacheRows')(function* (input: {
+  readonly databasePath: string;
+  readonly persistentCapacityProtector: CodeGraphDirectPersistentCapacityProtector;
+  readonly rows: readonly PlannedMaterializedShardCacheRow[];
+  readonly withWriterGate: CodeGraphCacheWriterGate;
+}) {
+  let pending = [...input.rows];
+  while (pending.length > 0) {
+    const collisionIndex = yield* useDatabase(
+      input.databasePath,
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const existing = yield* materializedShardMetadata(sql, pending);
+        return pending.findIndex(row => materializedShardConflicts(row, existing).length > 0);
+      }),
+    );
+    if (collisionIndex > 0) {
+      if (!(yield* writeNormalMaterializedShardCacheRows(input, pending.slice(0, collisionIndex)))) {
+        yield* Effect.yieldNow;
+        continue;
       }
-      const shardId = materializedFileShardIdentity(file.contentHash, extractorSet, derivationIdentity, file.path);
-      const upsert = () => sql<{readonly id: string}>`
+      pending = pending.slice(collisionIndex);
+      continue;
+    }
+    if (collisionIndex === 0) {
+      if (yield* repairMaterializedShardCacheRow(input, pending[0]!)) {
+        pending = pending.slice(1);
+      }
+      continue;
+    }
+
+    if (yield* writeNormalMaterializedShardCacheRows(input, pending)) return;
+    yield* Effect.yieldNow;
+  }
+});
+
+const writeNormalMaterializedShardCacheRows = Effect.fn('codeGraph.writeNormalMaterializedShardCacheRows')(function* (
+  input: MaterializedShardCacheWriteInput,
+  rows: readonly PlannedMaterializedShardCacheRow[],
+) {
+  const chunk = planCodeGraphCacheCapacityChunks('cache materialized code graph file shards', rows)[0]!;
+  return yield* input
+    .persistentCapacityProtector(
+      chunk.boundary,
+      input.withWriterGate(
+        input.databasePath,
+        useDatabase(
+          input.databasePath,
+          Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient;
+            yield* sql.withTransaction(storeNormalMaterializedShardRows(sql, chunk.rows));
+          }),
+        ),
+      ),
+    )
+    .pipe(
+      Effect.as(true),
+      Effect.catch(error =>
+        error instanceof CodeGraphCacheCapacityPlanChanged ? Effect.succeed(false) : Effect.fail(error),
+      ),
+    );
+});
+
+const repairMaterializedShardCacheRow = Effect.fn('codeGraph.repairMaterializedShardCacheRow')(function* (
+  input: {
+    readonly databasePath: string;
+    readonly persistentCapacityProtector: CodeGraphDirectPersistentCapacityProtector;
+    readonly withWriterGate: CodeGraphCacheWriterGate;
+  },
+  row: PlannedMaterializedShardCacheRow,
+) {
+  for (;;) {
+    const plan = yield* useDatabase(
+      input.databasePath,
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        return yield* prepareMaterializedShardRepairPlan(sql, row);
+      }),
+    );
+    if (plan.mode === 'normal') return false;
+    const completed = yield* input
+      .persistentCapacityProtector(
+        plan.boundary,
+        input.withWriterGate(
+          input.databasePath,
+          useDatabase(
+            input.databasePath,
+            Effect.gen(function* () {
+              const sql = yield* SqlClient.SqlClient;
+              yield* sql.withTransaction(applyMaterializedShardRepairPlan(sql, plan));
+            }),
+          ),
+        ),
+      )
+      .pipe(
+        Effect.as(true),
+        Effect.catch(error =>
+          error instanceof CodeGraphCacheCapacityPlanChanged ? Effect.succeed(false) : Effect.fail(error),
+        ),
+      );
+    if (!completed) {
+      yield* Effect.yieldNow;
+      continue;
+    }
+    if (plan.mode === 'final') return true;
+    yield* Effect.yieldNow;
+  }
+});
+
+function storeNormalMaterializedShardRows(sql: SqlClient.SqlClient, rows: readonly PlannedMaterializedShardCacheRow[]) {
+  return Effect.gen(function* () {
+    for (const row of rows) {
+      const stored = yield* sql<{readonly id: string}>`
           INSERT INTO materialized_file_shards (
             id, content_hash, extractor_set, derivation_identity, path_hint,
             facts_json, created_at, last_used_at
           ) VALUES (
-            ${shardId}, ${file.contentHash}, ${extractorSet}, ${derivationIdentity}, ${file.path},
-            ${bounded.json}, ${now}, ${now}
+            ${row.id}, ${row.contentHash}, ${row.extractorSet}, ${row.derivationIdentity}, ${row.path},
+            ${row.factsJson}, ${row.createdAt}, ${row.lastUsedAt}
           )
           ON CONFLICT(id) DO UPDATE SET
             facts_json = excluded.facts_json,
@@ -7189,25 +7477,328 @@ function storeMaterializedFileShards(
           ON CONFLICT(content_hash, extractor_set, derivation_identity, path_hint) DO NOTHING
           RETURNING id
         `;
-      let stored = yield* upsert();
-      if (stored[0]?.id !== shardId) {
-        yield* sql`
-          DELETE FROM materialized_file_shards
-          WHERE id = ${shardId}
-             OR (
-               content_hash = ${file.contentHash}
-               AND extractor_set = ${extractorSet}
-               AND derivation_identity = ${derivationIdentity}
-               AND path_hint = ${file.path}
-             )
-        `;
-        stored = yield* upsert();
-      }
-      if (stored[0]?.id !== shardId) {
-        return yield* Effect.fail(new CodeGraphStoreError(`Materialized file shard identity collision: ${shardId}.`));
+      if (stored.length !== 1 || stored[0]?.id !== row.id) {
+        return yield* Effect.fail(new CodeGraphCacheCapacityPlanChanged());
       }
     }
   });
+}
+
+const prepareMaterializedShardRepairPlan = Effect.fn('codeGraph.prepareMaterializedShardRepairPlan')(function* (
+  sql: SqlClient.SqlClient,
+  row: PlannedMaterializedShardCacheRow,
+) {
+  const existing = yield* materializedShardMetadata(sql, [row]);
+  const conflicts = materializedShardConflicts(row, existing);
+  if (conflicts.length === 0) return {mode: 'normal'} as const satisfies MaterializedShardRepairPlan;
+  if (conflicts.length > 2) {
+    return yield* Effect.fail(new CodeGraphStoreError(`Materialized file shard identity collision: ${row.id}.`));
+  }
+  const conflictIds = conflicts.map(conflict => conflict.id);
+  const associationPage = yield* materializedShardAssociationPage(
+    sql,
+    conflictIds,
+    CODE_GRAPH_CACHE_TRANSACTION_LIMITS.rows,
+  );
+  const associationCount = associationPage.associationCount;
+  if (associationCount > 0) {
+    const page: MaterializedShardAssociationRow[] = [];
+    let payloadBytes = 0;
+    for (const association of associationPage.associations) {
+      const candidateBytes = codeGraphTextFieldsCapacityBytes(
+        association.snapshot_id,
+        association.path,
+        association.shard_id,
+      );
+      if (candidateBytes > CODE_GRAPH_CACHE_TRANSACTION_LIMITS.payloadBytes) {
+        return yield* Effect.fail(
+          new CodeGraphStoreError(`Materialized file shard association exceeds the repair payload ceiling.`),
+        );
+      }
+      if (payloadBytes > CODE_GRAPH_CACHE_TRANSACTION_LIMITS.payloadBytes - candidateBytes) break;
+      page.push(association);
+      payloadBytes += candidateBytes;
+    }
+    if (page.length === 0) {
+      return yield* Effect.fail(new CodeGraphStoreError('Materialized file shard repair could not make progress.'));
+    }
+    return {
+      associations: page,
+      associationCount,
+      boundary: {
+        finalFactBytes: payloadBytes,
+        operation: 'cache materialized code graph file shards',
+        rowCount: page.length,
+      },
+      conflicts,
+      mode: 'drain',
+      row,
+    } as const satisfies MaterializedShardRepairPlan;
+  }
+
+  const conflictBytes = conflicts.reduce(
+    (total, conflict) => saturatingCapacityAdd(total, materializedShardMetadataCapacityBytes(conflict)),
+    0,
+  );
+  const payloadBytes = saturatingCapacityAdd(conflictBytes, row.payloadBytes);
+  if (payloadBytes > CODE_GRAPH_CACHE_TRANSACTION_LIMITS.payloadBytes) {
+    return yield* Effect.fail(
+      new CodeGraphStoreError('Materialized file shard collision exceeds the repair payload ceiling.'),
+    );
+  }
+  return {
+    boundary: {
+      finalFactBytes: payloadBytes,
+      operation: 'cache materialized code graph file shards',
+      rowCount: conflicts.length + 1,
+    },
+    conflicts,
+    mode: 'final',
+    row,
+  } as const satisfies MaterializedShardRepairPlan;
+});
+
+const applyMaterializedShardRepairPlan = Effect.fn('codeGraph.applyMaterializedShardRepairPlan')(function* (
+  sql: SqlClient.SqlClient,
+  plan: Exclude<MaterializedShardRepairPlan, {readonly mode: 'normal'}>,
+) {
+  const current = materializedShardConflicts(plan.row, yield* materializedShardMetadata(sql, [plan.row]));
+  if (!sameMaterializedShardMetadata(current, plan.conflicts)) {
+    return yield* Effect.fail(new CodeGraphCacheCapacityPlanChanged());
+  }
+  const conflictIds = plan.conflicts.map(conflict => conflict.id);
+  const associationPage = yield* materializedShardAssociationPage(
+    sql,
+    conflictIds,
+    plan.mode === 'drain' ? plan.associations.length : 1,
+  );
+  const associationCount = associationPage.associationCount;
+  if (plan.mode === 'drain') {
+    if (
+      associationCount !== plan.associationCount ||
+      !sameMaterializedShardAssociations(associationPage.associations, plan.associations)
+    ) {
+      return yield* Effect.fail(new CodeGraphCacheCapacityPlanChanged());
+    }
+    for (const association of plan.associations) {
+      yield* sql`
+        DELETE FROM snapshot_file_shards
+        WHERE snapshot_id = ${association.snapshot_id}
+          AND path = ${association.path}
+          AND shard_id = ${association.shard_id}
+      `;
+      if ((yield* lastStatementChangeCount(sql)) !== 1) {
+        return yield* Effect.fail(new CodeGraphCacheCapacityPlanChanged());
+      }
+    }
+    return;
+  }
+  if (associationCount !== 0) {
+    return yield* Effect.fail(new CodeGraphCacheCapacityPlanChanged());
+  }
+  for (const conflict of plan.conflicts) {
+    yield* sql`
+      DELETE FROM materialized_file_shards
+      WHERE id = ${conflict.id}
+        AND content_hash = ${conflict.content_hash}
+        AND extractor_set = ${conflict.extractor_set}
+        AND derivation_identity = ${conflict.derivation_identity}
+        AND path_hint = ${conflict.path_hint}
+        AND created_at = ${conflict.created_at}
+        AND last_used_at = ${conflict.last_used_at}
+        AND length(CAST(facts_json AS BLOB)) = ${conflict.facts_bytes}
+    `;
+    if ((yield* lastStatementChangeCount(sql)) !== 1) {
+      return yield* Effect.fail(new CodeGraphCacheCapacityPlanChanged());
+    }
+  }
+  yield* storeNormalMaterializedShardRows(sql, [plan.row]);
+});
+
+function materializedShardMetadata(sql: SqlClient.SqlClient, rows: readonly PlannedMaterializedShardCacheRow[]) {
+  if (rows.length === 0) return Effect.succeed([] as readonly MaterializedShardMetadataRow[]);
+  const ids = rows.map(row => row.id);
+  const requested = JSON.stringify(
+    rows.map(row => ({
+      contentHash: row.contentHash,
+      derivationIdentity: row.derivationIdentity,
+      extractorSet: row.extractorSet,
+      path: row.path,
+    })),
+  );
+  return Effect.gen(function* () {
+    const [byId, byTuple] = yield* Effect.all(
+      [
+        sql<RawMaterializedShardMetadataRow>`
+          SELECT id, content_hash, extractor_set, derivation_identity, path_hint,
+            length(CAST(facts_json AS BLOB)) AS facts_bytes, created_at, last_used_at
+          FROM materialized_file_shards
+          WHERE ${sql.in('id', ids)}
+        `,
+        sql<RawMaterializedShardMetadataRow>`
+          SELECT shard.id, shard.content_hash, shard.extractor_set, shard.derivation_identity, shard.path_hint,
+            length(CAST(shard.facts_json AS BLOB)) AS facts_bytes, shard.created_at, shard.last_used_at
+          FROM materialized_file_shards AS shard
+          JOIN json_each(${requested}) AS requested
+            ON shard.content_hash = json_extract(requested.value, '$.contentHash')
+           AND shard.extractor_set = json_extract(requested.value, '$.extractorSet')
+           AND shard.derivation_identity = json_extract(requested.value, '$.derivationIdentity')
+           AND shard.path_hint = json_extract(requested.value, '$.path')
+        `,
+      ] as const,
+      {concurrency: 1},
+    );
+    const unique = new Map<string, MaterializedShardMetadataRow>();
+    for (const value of [...byId, ...byTuple]) {
+      const decoded = yield* decodeMaterializedShardMetadata(value);
+      unique.set(decoded.id, decoded);
+    }
+    return [...unique.values()].sort((left, right) => compareCodeUnits(left.id, right.id));
+  });
+}
+
+function decodeMaterializedShardMetadata(row: RawMaterializedShardMetadataRow) {
+  if (
+    !validMaterializedShardText(row.id) ||
+    !validMaterializedShardText(row.content_hash) ||
+    !validMaterializedShardText(row.extractor_set) ||
+    !validMaterializedShardText(row.derivation_identity) ||
+    !validMaterializedShardText(row.path_hint) ||
+    !validMaterializedShardText(row.created_at) ||
+    !validMaterializedShardText(row.last_used_at) ||
+    typeof row.facts_bytes !== 'number' ||
+    !Number.isSafeInteger(row.facts_bytes) ||
+    row.facts_bytes < 0
+  ) {
+    return Effect.fail(new CodeGraphStoreError('Materialized file shard metadata is invalid.'));
+  }
+  return Effect.succeed({
+    content_hash: row.content_hash,
+    created_at: row.created_at,
+    derivation_identity: row.derivation_identity,
+    extractor_set: row.extractor_set,
+    facts_bytes: row.facts_bytes,
+    id: row.id,
+    last_used_at: row.last_used_at,
+    path_hint: row.path_hint,
+  } satisfies MaterializedShardMetadataRow);
+}
+
+function decodeMaterializedShardAssociationPageRow(row: RawMaterializedShardAssociationPageRow) {
+  if (
+    !validMaterializedShardText(row.snapshot_id) ||
+    !validMaterializedShardText(row.path) ||
+    !validMaterializedShardText(row.shard_id) ||
+    typeof row.association_count !== 'number' ||
+    !Number.isSafeInteger(row.association_count) ||
+    row.association_count < 1
+  ) {
+    return Effect.fail(new CodeGraphStoreError('Materialized file shard association metadata is invalid.'));
+  }
+  return Effect.succeed({
+    association: {path: row.path, shard_id: row.shard_id, snapshot_id: row.snapshot_id},
+    associationCount: row.association_count,
+  });
+}
+
+function validMaterializedShardText(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && !value.includes('\0');
+}
+
+function materializedShardConflicts(
+  row: PlannedMaterializedShardCacheRow,
+  existing: readonly MaterializedShardMetadataRow[],
+): readonly MaterializedShardMetadataRow[] {
+  return existing.filter(candidate => {
+    const tupleMatches = materializedShardTupleMatches(row, candidate);
+    const relevant = candidate.id === row.id || tupleMatches;
+    return relevant && !(candidate.id === row.id && tupleMatches);
+  });
+}
+
+function materializedShardTupleMatches(
+  row: PlannedMaterializedShardCacheRow,
+  candidate: MaterializedShardMetadataRow,
+): boolean {
+  return (
+    candidate.content_hash === row.contentHash &&
+    candidate.extractor_set === row.extractorSet &&
+    candidate.derivation_identity === row.derivationIdentity &&
+    candidate.path_hint === row.path
+  );
+}
+
+function materializedShardMetadataCapacityBytes(row: MaterializedShardMetadataRow): number {
+  return saturatingCapacityAdd(
+    codeGraphTextFieldsCapacityBytes(
+      row.id,
+      row.content_hash,
+      row.extractor_set,
+      row.derivation_identity,
+      row.path_hint,
+      row.created_at,
+      row.last_used_at,
+    ),
+    row.facts_bytes,
+  );
+}
+
+function materializedShardAssociationPage(sql: SqlClient.SqlClient, shardIds: readonly string[], limit: number) {
+  if (shardIds.length === 0 || limit <= 0) {
+    return Effect.succeed({associationCount: 0, associations: [] as readonly MaterializedShardAssociationRow[]});
+  }
+  const statement = codeGraphMaterializedShardAssociationPageStatement(shardIds, limit);
+  return sql.unsafe<RawMaterializedShardAssociationPageRow>(statement.text, statement.parameters).pipe(
+    Effect.flatMap(rows =>
+      Effect.gen(function* () {
+        if (rows.length === 0) return {associationCount: 0, associations: [] as const};
+        const associations: MaterializedShardAssociationRow[] = [];
+        let associationCount: number | undefined;
+        for (const row of rows) {
+          const decoded = yield* decodeMaterializedShardAssociationPageRow(row);
+          associationCount ??= decoded.associationCount;
+          if (decoded.associationCount !== associationCount) {
+            return yield* Effect.fail(
+              new CodeGraphStoreError('Materialized file shard association metadata is invalid.'),
+            );
+          }
+          associations.push(decoded.association);
+        }
+        return {associationCount: associationCount!, associations};
+      }),
+    ),
+  );
+}
+
+/** @internal Exposed for deterministic SQLite snapshot-contract tests. */
+export function codeGraphMaterializedShardAssociationPageStatement(shardIds: readonly string[], limit: number) {
+  return {
+    parameters: [
+      JSON.stringify(shardIds),
+      Math.min(CODE_GRAPH_CACHE_TRANSACTION_LIMITS.rows, Math.max(1, Math.floor(limit))),
+    ] as const,
+    text: `
+    SELECT snapshot_id, path, shard_id, COUNT(*) OVER () AS association_count
+    FROM snapshot_file_shards
+    WHERE shard_id IN (SELECT value FROM json_each(?))
+    ORDER BY snapshot_id, path
+    LIMIT ?
+  `,
+  };
+}
+
+function sameMaterializedShardMetadata(
+  left: readonly MaterializedShardMetadataRow[],
+  right: readonly MaterializedShardMetadataRow[],
+): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function sameMaterializedShardAssociations(
+  left: readonly MaterializedShardAssociationRow[],
+  right: readonly MaterializedShardAssociationRow[],
+): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 function persistentSnapshotBuildIdentityMatches(current: CodeGraphSnapshot, requested: CodeGraphSnapshot): boolean {

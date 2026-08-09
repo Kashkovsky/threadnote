@@ -1,7 +1,8 @@
 import fc from 'fast-check';
-import {describe, expect, it} from 'vitest';
+import {describe, expect, it} from '@effect/vitest';
 import {
   codeGraphDirectPersistentCapacityDemand,
+  codeGraphPersistentCapacityDemand,
   CodeGraphDiskCapacityObservationError,
   CodeGraphDiskCapacityPressureError,
   codeGraphDiskCapacityFailure,
@@ -10,13 +11,90 @@ import {
   isCodeGraphCapacityPause,
   saturatingCapacityAdd,
   saturatingCapacityMultiply,
+  sqliteWalCapacityBytes,
   type CodeGraphDiskCapacityInput,
 } from '../../src/code_graph/disk_capacity.js';
 import {CodeGraphStoreNoSpaceError, CodeGraphStoreTransientIoError} from '../../src/code_graph/types.js';
 
 const boundedBytes = fc.integer({max: 2 ** 42, min: 0});
+const capacityMagnitude = fc.oneof(
+  boundedBytes,
+  fc.constant(0),
+  fc.constant(Number.MAX_SAFE_INTEGER - 1),
+  fc.constant(Number.MAX_SAFE_INTEGER),
+);
 
 describe('code graph disk capacity properties', () => {
+  it('uses an independently versioned cache-payload calibration for both cache operations', () => {
+    for (const operation of [
+      'cache code graph file facts' as const,
+      'cache materialized code graph file shards' as const,
+    ]) {
+      const demand = codeGraphPersistentCapacityDemand({
+        boundary: {finalFactBytes: 8 * 1_048_576, operation, rowCount: 512},
+        lexicalFormatVersion: 1,
+        pageSize: 4_096,
+        walAutoCheckpointPages: 1_000,
+      });
+      expect(demand.state).toBe('measured');
+      expect(demand.calibrationIdentity).toContain(':cache-payload:capacity-v2:');
+      if (demand.state === 'measured') {
+        expect(demand.mainHighWaterBytes).toBeGreaterThanOrEqual(40 * 1_048_576);
+        expect(demand.transientHighWaterBytes).toBeGreaterThanOrEqual(24 * 1_048_576);
+      }
+    }
+  });
+
+  it.prop(
+    'keeps every cache demand component monotone in payload bytes and row count through saturation',
+    {
+      bytes: capacityMagnitude,
+      moreBytes: capacityMagnitude,
+      moreRows: capacityMagnitude,
+      operation: fc.constantFrom(
+        'cache code graph file facts' as const,
+        'cache materialized code graph file shards' as const,
+      ),
+      rows: capacityMagnitude,
+    },
+    ({bytes, moreBytes, moreRows, operation, rows}) => {
+      const demand = (finalFactBytes: number, rowCount: number) =>
+        codeGraphPersistentCapacityDemand({
+          boundary: {finalFactBytes, operation, rowCount},
+          lexicalFormatVersion: 1,
+          pageSize: 4_096,
+          walAutoCheckpointPages: 1_000,
+        });
+      const original = demand(bytes, rows);
+      const largerPayload = demand(saturatingCapacityAdd(bytes, moreBytes), rows);
+      const moreRowsDemand = demand(bytes, saturatingCapacityAdd(rows, moreRows));
+
+      expect(original.state).toBe('measured');
+      expect(largerPayload.state).toBe('measured');
+      expect(moreRowsDemand.state).toBe('measured');
+      if (original.state !== 'measured' || largerPayload.state !== 'measured' || moreRowsDemand.state !== 'measured') {
+        return;
+      }
+      for (const increased of [largerPayload, moreRowsDemand]) {
+        expect(increased.mainHighWaterBytes).toBeGreaterThanOrEqual(original.mainHighWaterBytes);
+        expect(increased.transientHighWaterBytes).toBeGreaterThanOrEqual(original.transientHighWaterBytes);
+        expect(increased.recoveryFloorBytes).toBeGreaterThanOrEqual(original.recoveryFloorBytes);
+      }
+    },
+    {fastCheck: {numRuns: 400}},
+  );
+
+  it.prop(
+    'models exact WAL header/frame bytes and saturates safely',
+    {pageFrames: capacityMagnitude, pageSize: capacityMagnitude},
+    ({pageFrames, pageSize}) => {
+      const exact = 32n + BigInt(pageFrames) * (BigInt(pageSize) + 24n);
+      const expected = Number(exact > BigInt(Number.MAX_SAFE_INTEGER) ? BigInt(Number.MAX_SAFE_INTEGER) : exact);
+      expect(sqliteWalCapacityBytes(pageSize, pageFrames)).toBe(expected);
+    },
+    {fastCheck: {numRuns: 400}},
+  );
+
   it('saturates every byte calculation at the safe-integer boundary', () => {
     fc.assert(
       fc.property(
@@ -229,6 +307,8 @@ describe('code graph disk capacity properties', () => {
     expect(isCodeGraphCapacityPause(failure)).toBe(true);
 
     for (const operation of [
+      'cache code graph file facts',
+      'cache materialized code graph file shards',
       'publish persistent code graph snapshot',
       'register persistent code graph materialization plan',
       'stage persistent code graph facts',
@@ -343,8 +423,10 @@ describe('code graph disk capacity properties', () => {
     expect(tuned.state).toBe('measured');
     expect(lexical.state).toBe('measured');
     if (small.state !== 'measured' || tuned.state !== 'measured' || lexical.state !== 'measured') return;
-    expect(small.recoveryFloorBytes).toBe(4_096_000);
-    expect(tuned.recoveryFloorBytes).toBe(65_536_000);
+    expect(small.recoveryFloorBytes).toBe(4_120_032);
+    expect(tuned.recoveryFloorBytes).toBe(65_728_032);
+    expect(small.recoveryFloorBytes).toBe(sqliteWalCapacityBytes(4_096, 1_000));
+    expect(tuned.recoveryFloorBytes).toBe(sqliteWalCapacityBytes(8_192, 8_000));
     expect(tuned.calibrationIdentity).not.toBe(small.calibrationIdentity);
     expect(lexical.calibrationIdentity).not.toBe(small.calibrationIdentity);
   });
