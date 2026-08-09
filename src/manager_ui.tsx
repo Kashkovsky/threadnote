@@ -268,6 +268,7 @@ function App(): React.ReactElement {
           graphCatalogRef.current = refreshed;
           setGraphCatalog(refreshed);
           setGraphCatalogError('');
+          void refreshGraphDiagnostics({analyze: false, deep: false}, false, true);
           for (const build of status.builds) {
             const identity = graphCompletedBuildResultIdentity(build);
             if (identity) acknowledgedCompletedResults.add(identity);
@@ -388,23 +389,27 @@ function App(): React.ReactElement {
   async function refreshGraphDiagnostics(
     options: {readonly analyze: boolean; readonly deep: boolean},
     notify = true,
+    background = false,
   ): Promise<void> {
-    setGraphAdministrationBusy(
-      options.deep ? 'Deep-checking graphs' : options.analyze ? 'Analyzing graphs' : 'Diagnosing graphs',
-    );
+    if (!background) {
+      setGraphAdministrationBusy(
+        options.deep ? 'Deep-checking graphs' : options.analyze ? 'Analyzing graphs' : 'Diagnosing graphs',
+      );
+    }
     try {
       const report = await api<CodeGraphLocalDiagnosticsReport>(
         `/api/graphs/diagnostics?analyze=${options.analyze}&deep=${options.deep}`,
       );
       setGraphDiagnostics(report);
-      setGraphAdministrationOutput('');
+      if (!background) setGraphAdministrationOutput('');
       if (notify) toastMessage('Graph diagnostics refreshed');
     } catch (cause) {
+      if (background) return;
       const message = errorMessage(cause);
       setGraphAdministrationOutput(message);
       toastMessage(message);
     } finally {
-      setGraphAdministrationBusy(undefined);
+      if (!background) setGraphAdministrationBusy(undefined);
     }
   }
 
