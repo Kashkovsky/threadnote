@@ -1823,6 +1823,9 @@ export function codeGraphAnalysisRefreshResult(
   status: CodeGraphRefreshStatus | undefined,
 ): CallToolResult {
   if (status?.state === 'deferred') {
+    if (status.failure.recovery === 'reconnect-runtime') {
+      return codeGraphRuntimeReconnectResult(operation, status.failure, 'code-graph-analysis-state');
+    }
     const warning = codeGraphRefreshRecoveryWarning(status.failure);
     return {
       content: [
@@ -1899,6 +1902,7 @@ export function codeGraphRefreshBlocksReadyInspection(
   refreshStatus: CodeGraphRefreshStatus | undefined,
   allowStaleReadySnapshot = false,
 ): boolean {
+  if (refreshStatus?.state === 'deferred' && refreshStatus.failure.recovery === 'reconnect-runtime') return true;
   const refreshBlocks = refreshStatus?.state === 'deferred' || refreshStatus?.state === 'indexing';
   return refreshBlocks && (!status.readySnapshot || (status.stale && !allowStaleReadySnapshot));
 }
@@ -1939,6 +1943,8 @@ function codeGraphRefreshRecoveryWarning(failure: CodeGraphRefreshFailure): stri
       return 'Retry the read-only refresh; run `threadnote doctor --dry-run` if the failure repeats.';
     case 'migrate-additive':
       return 'Run the preflight-proven additive migration before retrying.';
+    case 'reconnect-runtime':
+      return 'Reconnect this Threadnote MCP server to load the installed runtime, then retry.';
     case 'manual-migration':
       return 'Run `threadnote doctor --dry-run` and follow the schema migration guidance.';
     case 'manual-rebuild':
@@ -1953,6 +1959,9 @@ function codeGraphRefreshResult(
   status: CodeGraphRefreshStatus | undefined,
 ): CallToolResult {
   if (status?.state === 'deferred') {
+    if (status.failure.recovery === 'reconnect-runtime') {
+      return codeGraphRuntimeReconnectResult(operation, status.failure, 'code-graph-index-state');
+    }
     const warning = codeGraphRefreshRecoveryWarning(status.failure);
     return {
       content: [
@@ -2008,6 +2017,30 @@ function codeGraphRefreshResult(
       ...(compactTiming ? {timing: compactTiming} : {}),
       type: 'code-graph-index-state',
       version: 3,
+    },
+  };
+}
+
+function codeGraphRuntimeReconnectResult(
+  operation: CodeGraphAnalysisView | 'explain' | 'impact' | 'neighbors' | 'node' | 'path' | 'query',
+  failure: CodeGraphRefreshFailure,
+  type: 'code-graph-analysis-state' | 'code-graph-index-state',
+): CallToolResult {
+  return {
+    content: [
+      {
+        type: 'text',
+        text:
+          'Code graph storage was upgraded by a newer Threadnote runtime. Reconnect this Threadnote MCP server ' +
+          'to load the installed runtime, then retry the same graph request. No background build was started.',
+      },
+    ],
+    structuredContent: {
+      failure,
+      operation,
+      state: 'reconnect-required',
+      type,
+      version: 1,
     },
   };
 }

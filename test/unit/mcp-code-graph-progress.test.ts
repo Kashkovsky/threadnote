@@ -132,6 +132,40 @@ describe('MCP code graph indexing progress', () => {
     });
   });
 
+  it('returns a structured reconnect requirement when a newer runtime upgraded graph storage', () => {
+    const runtimeSkew = {
+      failure: {
+        code: 'incompatible-schema',
+        operation: 'refresh code graph',
+        recovery: 'reconnect-runtime',
+        retryable: false,
+      },
+      state: 'deferred',
+    } as const satisfies CodeGraphRefreshStatus;
+
+    expect(codeGraphRefreshBlocksReadyInspection({readySnapshot: {id: 'stale'}, stale: true}, runtimeSkew, true)).toBe(
+      true,
+    );
+
+    const inspection = codeGraphQueryTimeoutResult('query', runtimeSkew);
+    expect(inspection.structuredContent).toMatchObject({
+      failure: {code: 'incompatible-schema', recovery: 'reconnect-runtime'},
+      operation: 'query',
+      state: 'reconnect-required',
+      type: 'code-graph-index-state',
+    });
+    expect(JSON.stringify(inspection)).toMatch(/reconnect/i);
+
+    const analysis = codeGraphAnalysisRefreshResult('stats', runtimeSkew);
+    expect(analysis.structuredContent).toMatchObject({
+      failure: {code: 'incompatible-schema', recovery: 'reconnect-runtime'},
+      operation: 'stats',
+      state: 'reconnect-required',
+      type: 'code-graph-analysis-state',
+    });
+    expect(JSON.stringify(analysis)).toMatch(/reconnect/i);
+  });
+
   it('derives a bounded adaptive poll interval from the phase estimate', () => {
     expect(codeGraphRetryAfterMilliseconds(undefined)).toBe(5_000);
     expect(codeGraphRetryAfterMilliseconds(indexingStatus(4_000))).toBe(3_000);

@@ -12,7 +12,7 @@ import {
 } from './build_status.js';
 import {codeGraphLayout} from './layout.js';
 import {resolveRepositoryIdentity} from './repository.js';
-import type {CodeGraphProgress} from './types.js';
+import type {CodeGraphProgress, RepositoryIdentity} from './types.js';
 
 /** Match the child heartbeat cadence so MCP does not oversample process-liveness probes. */
 export const BUILD_STATUS_POLL_MILLISECONDS = CODE_GRAPH_BUILD_HEARTBEAT_INTERVAL_MILLISECONDS;
@@ -41,8 +41,12 @@ export type CodeGraphIsolatedBuilderSpawner = (
 ) => CodeGraphIsolatedBuilderProcess | Promise<CodeGraphIsolatedBuilderProcess>;
 
 export interface CodeGraphIsolatedBuilderOptions {
+  /** Read-only guard that must complete before an isolated child can be observed or spawned. */
+  readonly assertRuntimeSchemaCompatible: (databasePath: string) => Effect.Effect<void, unknown>;
   readonly cwd: string;
   readonly onProgress?: (progress: CodeGraphProgress) => Effect.Effect<void>;
+  /** @internal Deterministic identity seam for pre-spawn compatibility tests. */
+  readonly resolveIdentity?: (cwd: string) => Effect.Effect<RepositoryIdentity, unknown>;
   readonly spawn?: CodeGraphIsolatedBuilderSpawner;
   readonly spawnPlan?: (
     system: SystemInfoShape,
@@ -218,8 +222,9 @@ export const runIsolatedCodeGraphIndex = Effect.fn('codeGraph.isolatedBuilder.ru
 ) {
   const system = yield* SystemInfo;
   const path = yield* Path.Path;
-  const identity = yield* resolveRepositoryIdentity(options.cwd);
+  const identity = yield* options.resolveIdentity?.(options.cwd) ?? resolveRepositoryIdentity(options.cwd);
   const layout = codeGraphLayout(path, options.threadnoteHome, identity.checkoutId, identity.worktreeId);
+  yield* options.assertRuntimeSchemaCompatible(layout.databasePath);
   const plan = (options.spawnPlan ?? codeGraphIsolatedBuilderSpawnPlan)(system, {
     cwd: identity.repoRoot,
     threadnoteHome: options.threadnoteHome,

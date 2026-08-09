@@ -11,12 +11,15 @@ import {
   isCodeGraphIsolatedBuilderHost,
   isolatedBuilderFailureMessage,
   isolatedBuilderResultFromCompletedStatus,
+  runIsolatedCodeGraphIndex,
   shouldAwaitExistingBuilder,
   statusBelongsToChild,
   type CodeGraphIsolatedBuilderSpawnPlan,
 } from '../../src/code_graph/isolated_builder.js';
 import type {ObservedCodeGraphBuildStatus} from '../../src/code_graph/build_status.js';
+import {CodeGraphRuntimeReconnectRequiredError, type RepositoryIdentity} from '../../src/code_graph/types.js';
 import type {SystemInfoShape} from '../../src/effect/system.js';
+import {runEffect} from '../helpers/effect-runtime.js';
 
 function systemInfoStub(overrides: Partial<SystemInfoShape>): SystemInfoShape {
   return {
@@ -102,6 +105,41 @@ describe('isolated code-graph builder host detection', () => {
 });
 
 describe('isolated code-graph builder spawn plan', () => {
+  it('checks runtime compatibility before observing or spawning a child', async () => {
+    const identity: RepositoryIdentity = {
+      caseMode: 'sensitive',
+      checkoutId: 'a'.repeat(64),
+      displayName: 'fixture/repository',
+      gitCommonDirectory: '/fixture/repository/.git',
+      headCommit: 'b'.repeat(40),
+      objectFormat: 'sha1',
+      repoRoot: '/fixture/repository',
+      repositoryId: 'c'.repeat(64),
+      worktreeId: 'd'.repeat(64),
+    };
+    const failure = new CodeGraphRuntimeReconnectRequiredError();
+    let spawnCalls = 0;
+
+    await expect(
+      runEffect(
+        runIsolatedCodeGraphIndex({
+          assertRuntimeSchemaCompatible: databasePath => {
+            expect(databasePath).toContain(identity.checkoutId);
+            return Effect.fail(failure);
+          },
+          cwd: identity.repoRoot,
+          resolveIdentity: () => Effect.succeed(identity),
+          spawn: () => {
+            spawnCalls += 1;
+            throw new Error('spawn must not run');
+          },
+          threadnoteHome: '/fixture/home',
+        }),
+      ),
+    ).rejects.toBe(failure);
+    expect(spawnCalls).toBe(0);
+  });
+
   it('reinvokes CLI graph index with --no-vectors, home, and cwd', () => {
     const plan = codeGraphIsolatedBuilderSpawnPlan(
       systemInfoStub({

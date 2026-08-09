@@ -509,6 +509,7 @@ export type CodeGraphStoreRecovery =
   | 'manual-migration'
   | 'manual-rebuild'
   | 'migrate-additive'
+  | 'reconnect-runtime'
   | 'retry-read-only';
 
 export interface CodeGraphStoreErrorMetadata {
@@ -587,5 +588,19 @@ export class CodeGraphStoreIncompatibleSchemaError extends CodeGraphStoreError {
 
   constructor(message: string, metadata: Pick<CodeGraphStoreErrorMetadata, 'operation'> = {}) {
     super(message, {...metadata, code: 'incompatible-schema', recovery: 'manual-migration', retryable: false});
+  }
+}
+
+/** A long-lived process observed storage written by a newer Threadnote runtime. */
+export class CodeGraphRuntimeReconnectRequiredError extends CodeGraphStoreError {
+  override readonly name = 'CodeGraphRuntimeReconnectRequiredError';
+
+  constructor(metadata: Pick<CodeGraphStoreErrorMetadata, 'operation'> = {}) {
+    super('Code graph storage was upgraded by a newer Threadnote runtime. Reconnect this Threadnote process.', {
+      ...metadata,
+      code: 'incompatible-schema',
+      recovery: 'reconnect-runtime',
+      retryable: false,
+    });
   }
 }

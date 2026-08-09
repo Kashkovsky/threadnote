@@ -1,17 +1,21 @@
 import {Database} from 'bun:sqlite';
 import {it as effectIt} from '@effect/vitest';
 import {Deferred, Effect, Fiber, Option} from 'effect';
+import fc from 'fast-check';
 import {afterEach, describe, expect, it} from 'vitest';
 import {
   CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION,
   CodeGraphStore,
+  codeGraphRuntimeSchemaRequiresReconnect,
   type CodeGraphPersistentSchemaMigrationPhase,
 } from '../../src/code_graph/store.js';
-import type {
-  CodeGraphInventoryFile,
-  CodeGraphSnapshot,
-  CodeGraphSymbol,
-  RepositoryIdentity,
+import {
+  CODE_GRAPH_SCHEMA_VERSION,
+  CodeGraphRuntimeReconnectRequiredError,
+  type CodeGraphInventoryFile,
+  type CodeGraphSnapshot,
+  type CodeGraphSymbol,
+  type RepositoryIdentity,
 } from '../../src/code_graph/types.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {claimPersistentBuildForTest} from '../helpers/code-graph-build.js';
@@ -44,6 +48,20 @@ describe('code graph persistent schema migration', () => {
       runEffect(
         Effect.gen(function* () {
           const store = yield* CodeGraphStore;
+          yield* store.assertRuntimeSchemaCompatible(fixture.databasePath);
+        }),
+      ),
+    ).rejects.toMatchObject({
+      code: 'incompatible-schema',
+      name: 'CodeGraphRuntimeReconnectRequiredError',
+      recovery: 'reconnect-runtime',
+      retryable: false,
+    });
+
+    await expect(
+      runEffect(
+        Effect.gen(function* () {
+          const store = yield* CodeGraphStore;
           yield* store.initialize(fixture.databasePath);
         }),
       ),
@@ -57,6 +75,30 @@ describe('code graph persistent schema migration', () => {
     } finally {
       preserved.close(false);
     }
+  });
+
+  it('accepts current and older schema observations and monotonically rejects newer ones', () => {
+    fc.assert(
+      fc.property(
+        fc.integer({max: CODE_GRAPH_SCHEMA_VERSION, min: 0}),
+        fc.integer({max: CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION, min: 0}),
+        fc.integer({max: 100, min: 1}),
+        (coreVersion, extensionRevision, increment) => {
+          expect(codeGraphRuntimeSchemaRequiresReconnect(coreVersion, extensionRevision)).toBe(false);
+          expect(
+            codeGraphRuntimeSchemaRequiresReconnect(CODE_GRAPH_SCHEMA_VERSION + increment, extensionRevision),
+          ).toBe(true);
+          expect(
+            codeGraphRuntimeSchemaRequiresReconnect(
+              coreVersion,
+              CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION + increment,
+            ),
+          ).toBe(true);
+        },
+      ),
+      {numRuns: 100},
+    );
+    expect(new CodeGraphRuntimeReconnectRequiredError()).toMatchObject({recovery: 'reconnect-runtime'});
   });
 
   it('keeps revision 4 ready lexical rows readable while enabling compact writes for later snapshots', async () => {

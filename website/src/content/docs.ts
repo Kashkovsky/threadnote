@@ -1373,6 +1373,10 @@ threadnote graph purge \\
             text: 'A cold MCP call in a large repository may return state=indexing with a phase and retryAfterMilliseconds while one session-scoped build continues. Agents cannot query partial rows from an unpromoted snapshot; retry the same inspect_code_graph call after the requested delay. Once a consistent lexical snapshot is promoted, query, node, neighbors, and explain can use it while optional vector enrichment and whole-graph summaries continue in the background. During a source refresh those operations may disclose the previous ready snapshot as stale; path and impact wait for current state.',
           },
           {
+            type: 'paragraph',
+            text: 'If a long-lived MCP process observes graph storage upgraded by a newer installed Threadnote runtime, it returns the path-free state reconnect-required before starting a background builder. Reconnect the Threadnote MCP server, then retry the same graph request; the exact-current CLI and doctor continue to read the ready graph normally.',
+          },
+          {
             type: 'note',
             text: 'The first MCP graph inspection starts a watcher for that worktree during the MCP session. The watcher debounces filesystem events and performs a full Git reconciliation every five minutes. graph watch exposes the same behavior as a foreground CLI command.',
           },

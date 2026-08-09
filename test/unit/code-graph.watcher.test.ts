@@ -11,6 +11,7 @@ import {
   watchRepository,
 } from '../../src/code_graph/watcher.js';
 import {
+  CodeGraphRuntimeReconnectRequiredError,
   CodeGraphStoreBusyError,
   CodeGraphStoreNoSpaceError,
   CodeGraphStorePermissionError,
@@ -324,6 +325,7 @@ describe('CodeGraphWatcher', () => {
       new CodeGraphStoreBusyError(`busy ${privateMarker}`),
       new CodeGraphStoreNoSpaceError(`full ${privateMarker}`),
       new CodeGraphStorePermissionError(`permission ${privateMarker}`),
+      new CodeGraphRuntimeReconnectRequiredError(),
       new CodeGraphStoreTransientIoError(`io ${privateMarker}`),
     ];
 
@@ -353,6 +355,12 @@ describe('CodeGraphWatcher', () => {
         _tag: 'Some',
         value: {failure: {code: failure.code, operation: 'refresh code graph'}, state: 'deferred'},
       });
+      if (failure instanceof CodeGraphRuntimeReconnectRequiredError) {
+        expect(status).toMatchObject({
+          _tag: 'Some',
+          value: {failure: {recovery: 'reconnect-runtime', retryable: false}, state: 'deferred'},
+        });
+      }
       expect(JSON.stringify(status)).not.toContain(privateMarker);
     }
   });
