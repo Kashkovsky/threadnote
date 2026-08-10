@@ -1,0 +1,188 @@
+import {Effect, Stdio, Stream} from 'effect';
+import {CommandExecutor, type CommandExecutionError} from '../effect/command.js';
+import {SystemInfo, type SystemInfoShape} from '../effect/system.js';
+import {CODE_GRAPH_DEEP_DIAGNOSTICS_WORKER_ARGUMENT} from '../worker_protocol.js';
+import {type CodeGraphDatabaseHealth} from './store_models.js';
+import {diagnoseCodeGraphDatabaseReadOnly} from './store_health.js';
+
+const CODE_GRAPH_DEEP_DIAGNOSTICS_PROTOCOL = 1;
+const CODE_GRAPH_DEEP_DIAGNOSTICS_INPUT_BYTES_MAXIMUM = 64 * 1_024;
+const CODE_GRAPH_DEEP_DIAGNOSTICS_OUTPUT_BYTES_MAXIMUM = 4 * 1_024;
+
+interface CodeGraphDeepDiagnosticsRequest {
+  readonly databasePath: string;
+  readonly protocol: 1;
+}
+
+type CodeGraphDeepDiagnosticsResponse =
+  | {readonly health: CodeGraphDatabaseHealth; readonly ok: true; readonly protocol: 1}
+  | {readonly ok: false; readonly protocol: 1};
+
+/**
+ * Run SQLite's synchronous full integrity scan outside the lock-owning process.
+ * Interrupting the caller closes the Effect child scope, which terminates this
+ * worker before the parent releases its maintenance and writer locks.
+ */
+export const diagnoseCodeGraphDatabaseDeepIsolated: (
+  databasePath: string,
+) => Effect.Effect<CodeGraphDatabaseHealth, Error | CommandExecutionError, CommandExecutor | SystemInfo> = Effect.fn(
+  'codeGraph.diagnoseDatabaseDeepIsolated',
+)(function* (databasePath: string) {
+  const command = yield* CommandExecutor;
+  const system = yield* SystemInfo;
+  const invocation = deepDiagnosticsWorkerInvocation(system);
+  const request = {
+    databasePath,
+    protocol: CODE_GRAPH_DEEP_DIAGNOSTICS_PROTOCOL,
+  } satisfies CodeGraphDeepDiagnosticsRequest;
+  const result = yield* command.execute(invocation.executable, invocation.arguments, {
+    env: {THREADNOTE_CODE_GRAPH_DEEP_DIAGNOSTICS_WORKER: '1'},
+    input: new TextEncoder().encode(`${JSON.stringify(request)}\n`),
+    maxOutputBytes: CODE_GRAPH_DEEP_DIAGNOSTICS_OUTPUT_BYTES_MAXIMUM,
+    timeoutMs: 0,
+  });
+  const response = decodeDeepDiagnosticsResponse(result.stdout);
+  if (response === undefined || !response.ok) {
+    return yield* Effect.fail(new Error('Isolated code graph deep diagnostics failed.'));
+  }
+  return response.health;
+});
+
+export function diagnoseCodeGraphDatabase(
+  databasePath: string,
+  deep: boolean,
+): Effect.Effect<CodeGraphDatabaseHealth, unknown, CommandExecutor | SystemInfo> {
+  if (deep) return diagnoseCodeGraphDatabaseDeepIsolated(databasePath);
+  return diagnoseCodeGraphDatabaseReadOnly(databasePath, false).pipe(
+    Effect.map(health => health as CodeGraphDatabaseHealth),
+  );
+}
+
+/** Internal standalone mode. It deliberately runs without BunRuntime signal handlers. */
+export const codeGraphDeepDiagnosticsWorkerProgram: Effect.Effect<void, never, Stdio.Stdio> = Effect.gen(function* () {
+  const stdio = yield* Stdio.Stdio;
+  const content = yield* readBoundedWorkerInput(stdio);
+  const request = decodeDeepDiagnosticsRequest(content);
+  const response =
+    request === undefined
+      ? ({ok: false, protocol: CODE_GRAPH_DEEP_DIAGNOSTICS_PROTOCOL} as const)
+      : yield* diagnoseCodeGraphDatabaseReadOnly(request.databasePath, true).pipe(
+          Effect.match({
+            onFailure: () => ({ok: false, protocol: CODE_GRAPH_DEEP_DIAGNOSTICS_PROTOCOL}) as const,
+            onSuccess: health =>
+              ({
+                health,
+                ok: true,
+                protocol: CODE_GRAPH_DEEP_DIAGNOSTICS_PROTOCOL,
+              }) as const satisfies CodeGraphDeepDiagnosticsResponse,
+          }),
+        );
+  yield* Stream.run(
+    Stream.make(new TextEncoder().encode(`${JSON.stringify(response)}\n`)),
+    stdio.stdout({endOnDone: false}),
+  );
+}).pipe(Effect.catch(() => Effect.void));
+
+function readBoundedWorkerInput(stdio: Stdio.Stdio): Effect.Effect<string, Error> {
+  const encoder = new TextEncoder();
+  return stdio.stdin.pipe(
+    Stream.decodeText,
+    Stream.runFoldEffect(
+      () => ({chunks: [] as string[], size: 0}),
+      (state, chunk) => {
+        const size = state.size + encoder.encode(chunk).byteLength;
+        if (size > CODE_GRAPH_DEEP_DIAGNOSTICS_INPUT_BYTES_MAXIMUM) {
+          return Effect.fail(new Error('Code graph deep diagnostics request exceeded its input limit.'));
+        }
+        state.chunks.push(chunk);
+        return Effect.succeed({chunks: state.chunks, size});
+      },
+    ),
+    Effect.map(state => state.chunks.join('')),
+  );
+}
+
+function decodeDeepDiagnosticsRequest(content: string): CodeGraphDeepDiagnosticsRequest | undefined {
+  try {
+    const parsed: unknown = JSON.parse(content.trim());
+    if (
+      typeof parsed !== 'object' ||
+      parsed === null ||
+      !('protocol' in parsed) ||
+      parsed.protocol !== CODE_GRAPH_DEEP_DIAGNOSTICS_PROTOCOL ||
+      !('databasePath' in parsed) ||
+      typeof parsed.databasePath !== 'string' ||
+      parsed.databasePath.length === 0 ||
+      parsed.databasePath.includes('\0')
+    ) {
+      return undefined;
+    }
+    return {databasePath: parsed.databasePath, protocol: CODE_GRAPH_DEEP_DIAGNOSTICS_PROTOCOL};
+  } catch {
+    return undefined;
+  }
+}
+
+function decodeDeepDiagnosticsResponse(content: string): CodeGraphDeepDiagnosticsResponse | undefined {
+  try {
+    const parsed: unknown = JSON.parse(content.trim());
+    if (
+      typeof parsed !== 'object' ||
+      parsed === null ||
+      !('protocol' in parsed) ||
+      parsed.protocol !== CODE_GRAPH_DEEP_DIAGNOSTICS_PROTOCOL ||
+      !('ok' in parsed) ||
+      typeof parsed.ok !== 'boolean'
+    ) {
+      return undefined;
+    }
+    if (!parsed.ok) return {ok: false, protocol: CODE_GRAPH_DEEP_DIAGNOSTICS_PROTOCOL};
+    if (!('health' in parsed)) return undefined;
+    const health = decodeDatabaseHealth(parsed.health);
+    return health === undefined ? undefined : {health, ok: true, protocol: CODE_GRAPH_DEEP_DIAGNOSTICS_PROTOCOL};
+  } catch {
+    return undefined;
+  }
+}
+
+function decodeDatabaseHealth(value: unknown): CodeGraphDatabaseHealth | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const record = value as Readonly<Record<string, unknown>>;
+  const counts = [
+    record.activeSnapshots,
+    record.buildingSnapshots,
+    record.cachedFileBlobs,
+    record.failedSnapshots,
+    record.foreignKeyViolations,
+    record.readySnapshots,
+  ];
+  if (!counts.every(count => typeof count === 'number' && Number.isSafeInteger(count) && count >= 0)) {
+    return undefined;
+  }
+  if (!['corrupt', 'incompatible', 'migration-pending', 'ok'].includes(String(record.integrity))) {
+    return undefined;
+  }
+  for (const revision of [record.persistentExtensionSchemaRevision, record.schemaVersion]) {
+    if (revision !== undefined && (typeof revision !== 'number' || !Number.isSafeInteger(revision))) return undefined;
+  }
+  return record as unknown as CodeGraphDatabaseHealth;
+}
+
+function deepDiagnosticsWorkerInvocation(system: SystemInfoShape): {
+  readonly arguments: readonly string[];
+  readonly executable: string;
+} {
+  const executableName = system.executablePath.replaceAll('\\', '/').split('/').at(-1)?.toLowerCase();
+  if (executableName !== 'bun' && executableName !== 'bun.exe') {
+    return {arguments: [CODE_GRAPH_DEEP_DIAGNOSTICS_WORKER_ARGUMENT], executable: system.executablePath};
+  }
+  const currentScript = system.processArguments[1];
+  const standaloneScript =
+    currentScript && /(?:^|[/\\])(?:standalone\.(?:js|ts)|threadnote\.cjs)$/iu.test(currentScript)
+      ? currentScript
+      : Bun.fileURLToPath(new URL('../standalone.ts', import.meta.url));
+  return {
+    arguments: [standaloneScript, CODE_GRAPH_DEEP_DIAGNOSTICS_WORKER_ARGUMENT],
+    executable: system.executablePath,
+  };
+}

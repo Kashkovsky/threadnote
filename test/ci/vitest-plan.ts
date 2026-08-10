@@ -16,6 +16,7 @@ export const ciLongRunningTestGroups = {
     'test/integration/code-graph.cache-capacity-load.test.ts',
   ],
   'os-contention': [
+    'test/integration/code-graph.repair-signal.test.ts',
     'test/integration/code-graph.read-bootstrap.test.ts',
     'test/integration/code-graph.view-attach-lock.test.ts',
     'test/integration/code-graph.vector-retirement-os.test.ts',

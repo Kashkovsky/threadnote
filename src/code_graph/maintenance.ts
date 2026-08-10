@@ -18,6 +18,7 @@ import {CodeGraphStore, type CodeGraphDatabaseHealth} from './store.js';
 import {CODE_GRAPH_SCHEMA_VERSION} from './types.js';
 import {BUILTIN_LANGUAGE_PACK_REGISTRY} from './languages/registry.js';
 import {diagnoseCodeGraphDatabaseReadOnly} from './store_health.js';
+import {diagnoseCodeGraphDatabase} from './deep_diagnostics.js';
 
 export {diagnoseCodeGraphDatabaseReadOnly} from './store_health.js';
 
@@ -306,9 +307,7 @@ export const repairCodeGraphIndexes = Effect.fn('codeGraph.repairIndexes')(funct
               const decision = yield* store.withSession(
                 database,
                 Effect.gen(function* () {
-                  let diagnosed = deep
-                    ? yield* store.diagnose(database).pipe(Effect.option)
-                    : yield* diagnoseCodeGraphDatabaseReadOnly(database, false).pipe(Effect.option);
+                  let diagnosed = yield* diagnoseCodeGraphDatabase(database, deep).pipe(Effect.option);
                   if (
                     diagnosed._tag === 'Some' &&
                     diagnosed.value?.schemaVersion === CODE_GRAPH_SCHEMA_VERSION &&
@@ -332,9 +331,7 @@ export const repairCodeGraphIndexes = Effect.fn('codeGraph.repairIndexes')(funct
                         if (preparation.state === 'deferred') return 'schema-upgrade-on-use' as const;
                       }
                       yield* store.initialize(database);
-                      diagnosed = deep
-                        ? yield* store.diagnose(database).pipe(Effect.option)
-                        : yield* diagnoseCodeGraphDatabaseReadOnly(database, false).pipe(Effect.option);
+                      diagnosed = yield* diagnoseCodeGraphDatabase(database, deep).pipe(Effect.option);
                       if (diagnosed._tag === 'Some' && diagnosed.value?.integrity === 'ok') {
                         migratedDatabases += 1;
                       } else {

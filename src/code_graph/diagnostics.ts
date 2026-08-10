@@ -6,11 +6,7 @@ import {
   selectCodeGraphBuildStatuses,
   type ObservedCodeGraphBuildStatus,
 } from './build_status.js';
-import {
-  diagnoseCodeGraphDatabaseReadOnly,
-  inspectObsoleteCodeGraphStores,
-  codeGraphDatabasePaths,
-} from './maintenance.js';
+import {inspectObsoleteCodeGraphStores, codeGraphDatabasePaths} from './maintenance.js';
 import {codeGraphRepositoryLockActive, codeGraphWorktreeBuildActive} from './maintenance_gate.js';
 import {
   CodeGraphStore,
@@ -29,6 +25,7 @@ import {
 import {classifyCodeGraphLifecycle, type CodeGraphLifecycleClassification} from './lifecycle_classification.js';
 import {runCodeGraphLifecycleOpportunity} from './lifecycle_opportunity.js';
 import {CodeGraphMaintenanceCoordinator} from './maintenance_coordinator.js';
+import {diagnoseCodeGraphDatabase} from './deep_diagnostics.js';
 
 const DIAGNOSTIC_CATALOG_PAGE_SIZE = 64;
 
@@ -181,7 +178,7 @@ export const inspectAllCodeGraphs = Effect.fn('codeGraph.inspectAllDiagnostics')
             message: 'An active graph build owns this checkout; database health inspection was deferred.',
           });
         } else {
-          const diagnosed = yield* diagnoseCodeGraphDatabaseReadOnly(database, options.deep === true).pipe(
+          const diagnosed = yield* diagnoseCodeGraphDatabase(database, options.deep === true).pipe(
             Effect.match({onFailure: cause => ({cause}) as const, onSuccess: value => ({value}) as const}),
           );
           if ('value' in diagnosed) {

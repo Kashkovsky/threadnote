@@ -3,6 +3,7 @@ import * as BunServices from '@effect/platform-bun/BunServices';
 import {Effect} from 'effect';
 import {withCliOutputConsole} from './effect/cli_output.js';
 import {
+  CODE_GRAPH_DEEP_DIAGNOSTICS_WORKER_ARGUMENT,
   CODE_GRAPH_GIT_WORKTREE_REGISTRATION_WORKER_ARGUMENT,
   CODE_GRAPH_PARSER_WORKER_ARGUMENT,
   LOCAL_MODEL_WORKER_ARGUMENT,
@@ -12,21 +13,33 @@ const executableName = process.execPath.replaceAll('\\', '/').split('/').at(-1)?
 const arguments_ = process.argv.slice(2);
 const isLocalModelWorker = arguments_[0] === LOCAL_MODEL_WORKER_ARGUMENT;
 const isCodeGraphParserWorker = arguments_[0] === CODE_GRAPH_PARSER_WORKER_ARGUMENT;
+const isCodeGraphDeepDiagnosticsWorker = arguments_[0] === CODE_GRAPH_DEEP_DIAGNOSTICS_WORKER_ARGUMENT;
 const isGitWorktreeRegistrationWorker = arguments_[0] === CODE_GRAPH_GIT_WORKTREE_REGISTRATION_WORKER_ARGUMENT;
 const isMcpServer = executableName?.startsWith('threadnote-mcp-server') === true || arguments_[0] === 'mcp-server';
 
-const program = isLocalModelWorker
-  ? await localModelWorkerProgram(arguments_)
-  : isCodeGraphParserWorker
-    ? await codeGraphParserWorkerProgram(arguments_)
-    : isGitWorktreeRegistrationWorker
-      ? await gitWorktreeRegistrationWorkerProgram()
-      : await applicationProgram(arguments_, isMcpServer);
+if (isCodeGraphDeepDiagnosticsWorker) {
+  // SQLite's integrity_check is synchronous native work. This worker must keep
+  // the OS default SIGTERM behavior so the lock-owning parent can always stop it.
+  await codeGraphDeepDiagnosticsWorkerProgram();
+} else {
+  const program = isLocalModelWorker
+    ? await localModelWorkerProgram(arguments_)
+    : isCodeGraphParserWorker
+      ? await codeGraphParserWorkerProgram(arguments_)
+      : isGitWorktreeRegistrationWorker
+        ? await gitWorktreeRegistrationWorkerProgram()
+        : await applicationProgram(arguments_, isMcpServer);
 
-BunRuntime.runMain(program, {
-  disableErrorReporting:
-    isLocalModelWorker || isCodeGraphParserWorker || isGitWorktreeRegistrationWorker || !isMcpServer,
-});
+  BunRuntime.runMain(program, {
+    disableErrorReporting:
+      isLocalModelWorker || isCodeGraphParserWorker || isGitWorktreeRegistrationWorker || !isMcpServer,
+  });
+}
+
+async function codeGraphDeepDiagnosticsWorkerProgram() {
+  const worker = await import('./code_graph/deep_diagnostics.js');
+  await Effect.runPromise(worker.codeGraphDeepDiagnosticsWorkerProgram.pipe(Effect.provide(BunServices.layer)));
+}
 
 async function gitWorktreeRegistrationWorkerProgram() {
   const [worker, system] = await Promise.all([
