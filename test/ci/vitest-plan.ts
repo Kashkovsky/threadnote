@@ -5,6 +5,7 @@ export const ciLongRunningTestGroups = {
   'lifecycle-delta': ['test/integration/code-graph.lifecycle.test.ts'],
   'project-closure': ['test/integration/code-graph.project-closure.test.ts'],
   'incremental-property': [
+    'test/integration/code-graph.barrel-incremental.property.test.ts',
     'test/integration/code-graph.incremental.property.test.ts',
     'test/unit/code-graph.analysis-summary.property.test.ts',
     'test/unit/code-graph.resolution-summary.property.test.ts',
