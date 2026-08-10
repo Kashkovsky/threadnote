@@ -249,13 +249,18 @@ export const codeGraphDoctorCheck = Effect.fn('codeGraph.doctorCheck')(function*
       unhealthy += 1;
       continue;
     }
-    ready += health.readySnapshots;
-    incomplete += health.buildingSnapshots + health.failedSnapshots;
     if (health.integrity === 'migration-pending') {
+      ready += health.readySnapshots;
+      incomplete += health.buildingSnapshots + health.failedSnapshots;
       migrationPending += 1;
       continue;
     }
-    if (health.integrity !== 'ok') unhealthy += 1;
+    if (health.integrity !== 'ok') {
+      unhealthy += 1;
+      continue;
+    }
+    ready += health.readySnapshots;
+    incomplete += health.buildingSnapshots + health.failedSnapshots;
   }
   return codeGraphDoctorResult(databases.length, ready, incomplete, unhealthy, deferred, migrationPending, obsolete);
 });
