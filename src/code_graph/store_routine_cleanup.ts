@@ -60,17 +60,9 @@ const runRoutineMaintenancePage = Effect.fn('codeGraph.runRoutineMaintenancePage
       state: 'completed',
     } satisfies CodeGraphRoutineMaintenanceResult;
   }
-  const completed = yield* drainCompletedPersistentBuildRowsPage(sql);
-  if (completed.deleted > 0) {
-    return {
-      cleanup: 'completed-build',
-      expiredLeases: leasePage.deleted,
-      remaining: true,
-      retiredSnapshots: leasePage.retiredSnapshots,
-      rowsDeleted: completed.deleted,
-      state: 'completed',
-    } satisfies CodeGraphRoutineMaintenanceResult;
-  }
+  // Index completion contributes exactly one foreground routine unit. Apply
+  // the ready-snapshot policy before draining that build's small checkpoint
+  // rows so a short-lived CLI enforces retention instead of exiting first.
   const retention = yield* sql.withTransaction(retireExcessReadySnapshotsPage(sql, now));
   if (retention.retired > 0) {
     return {
@@ -79,6 +71,17 @@ const runRoutineMaintenancePage = Effect.fn('codeGraph.runRoutineMaintenancePage
       remaining: true,
       retiredSnapshots: leasePage.retiredSnapshots + retention.retired,
       rowsDeleted: 0,
+      state: 'completed',
+    } satisfies CodeGraphRoutineMaintenanceResult;
+  }
+  const completed = yield* drainCompletedPersistentBuildRowsPage(sql);
+  if (completed.deleted > 0) {
+    return {
+      cleanup: 'completed-build',
+      expiredLeases: leasePage.deleted,
+      remaining: true,
+      retiredSnapshots: leasePage.retiredSnapshots,
+      rowsDeleted: completed.deleted,
       state: 'completed',
     } satisfies CodeGraphRoutineMaintenanceResult;
   }

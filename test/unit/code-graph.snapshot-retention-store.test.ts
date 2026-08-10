@@ -74,6 +74,13 @@ describe('code graph snapshot retention store', () => {
         );
         ordinal += 1;
       }
+      database
+        .query(
+          `INSERT INTO building_lexical_counters
+            (snapshot_id, completed_batch_count, posting_count, symbol_count, term_count)
+           VALUES (?, 1, 1, 1, 1)`,
+        )
+        .run(`cgsn_${(ordinal - 1).toString(16).padStart(40, '0')}`);
     } finally {
       database.close(false);
     }
@@ -85,6 +92,14 @@ describe('code graph snapshot retention store', () => {
       }),
     );
     expect(result).toMatchObject({remaining: true, retiredSnapshots: 3, state: 'completed'});
+
+    const completedBuildCleanup = await runEffect(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        return yield* store.runRoutineMaintenance(databasePath, {writerLockPath});
+      }),
+    );
+    expect(completedBuildCleanup).toMatchObject({cleanup: 'completed-build', rowsDeleted: 1, state: 'completed'});
 
     const check = new Database(databasePath, {readonly: true, strict: true});
     try {
