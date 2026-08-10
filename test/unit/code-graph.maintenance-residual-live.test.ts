@@ -16,6 +16,7 @@ import {
 } from '../../src/code_graph/vector_retirement.js';
 import {codeGraphDiskReservationRoot, codeGraphLayout} from '../../src/code_graph/layout.js';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
+import {CODE_GRAPH_REMOVED_VIEW_CLEANUP_CLAIM_LEASE_MILLISECONDS} from '../../src/code_graph/store_models.js';
 import {CODE_GRAPH_EXTRACTOR_GENERATION} from '../../src/code_graph/types.js';
 import {removeCodeGraphView} from '../../src/code_graph/view_removal.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
@@ -78,9 +79,17 @@ describe('live removed-view residual maintenance', () => {
           const pointerCount = readVectorCounts(fixture.vectorDatabasePath!).pointers;
 
           expect(result.state).toBe('completed');
-          // Claiming takes one full-entry CAS revision and committing the
-          // bounded unit takes the next. No additional unit is detached.
-          expect(after.revision).toBe(before.revision + 2);
+          // Claiming takes one full-entry CAS revision. A nonblocking vector
+          // reservation may defer under OS contention before the commit CAS;
+          // otherwise the bounded commit takes the second revision. No
+          // additional unit is detached in either case.
+          const revisionDelta = after.revision - before.revision;
+          expect(revisionDelta).toBeGreaterThanOrEqual(1);
+          expect(revisionDelta).toBeLessThanOrEqual(2);
+          if (revisionDelta === 1) {
+            expect(after.phase).toBe(before.phase);
+            yield* TestClock.adjust(CODE_GRAPH_REMOVED_VIEW_CLEANUP_CLAIM_LEASE_MILLISECONDS + 1);
+          }
           expect(PHASES.indexOf(after.phase) - PHASES.indexOf(before.phase)).toBeGreaterThanOrEqual(0);
           expect(PHASES.indexOf(after.phase) - PHASES.indexOf(before.phase)).toBeLessThanOrEqual(1);
           expect(yield* activeReceiptCount(fs, path, fixture.home)).toBe(0);
