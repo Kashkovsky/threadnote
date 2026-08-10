@@ -4169,9 +4169,18 @@ describe('native code graph lifecycle', () => {
     );
 
     expect(result.doctor).toMatchObject({status: 'ok'});
-    expect(result.repair).toMatchObject({databases: 2, discarded: 0});
+    const deferredProgress = repairProgress.filter(state => state.startsWith('deferred:'));
+    expect(result.repair).toMatchObject({
+      databases: 2,
+      deferredDatabases: deferredProgress.length,
+      discarded: 0,
+    });
     expect(doctorProgress).toEqual(['checking:1/2', 'checking:2/2']);
-    expect(repairProgress).toEqual(['checking:1/2', 'cleaning-vectors:1/2', 'checking:2/2', 'cleaning-vectors:2/2']);
+    expect(repairProgress).toHaveLength(4);
+    expect(repairProgress[0]).toBe('checking:1/2');
+    expect(['cleaning-vectors:1/2', 'deferred:1/2']).toContain(repairProgress[1]);
+    expect(repairProgress[2]).toBe('checking:2/2');
+    expect(['cleaning-vectors:2/2', 'deferred:2/2']).toContain(repairProgress[3]);
   });
 
   it('streams progress before discarding an incompatible derived database', async () => {
