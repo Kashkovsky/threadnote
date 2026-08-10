@@ -16,6 +16,25 @@ const projectFileExists = (path: string) =>
   );
 
 describe('standalone release workflows', () => {
+  it.effect('reruns only release control-plane smokes before platform payload validation', () =>
+    Effect.gen(function* () {
+      const workflow = yield* readProjectFile('.github/workflows/publish.yml');
+      const manifest = JSON.parse(yield* readProjectFile('package.json')) as {
+        readonly scripts?: Readonly<Record<string, string>>;
+      };
+
+      expect(manifest.scripts?.['test:smoke:release']).toBe(
+        'bun --bun vitest run test/unit/bun-package-contract.test.ts test/unit/publish-workflow.test.ts',
+      );
+      expect(workflow).toContain('name: Run release contract smokes');
+      expect(workflow).toContain('run: bun run test:smoke:release');
+      expect(workflow).not.toContain('- run: bun run lint');
+      expect(workflow).not.toContain('- run: bun run prettier:check');
+      expect(workflow).not.toContain('- run: bun run typecheck');
+      expect(workflow).not.toContain('- run: bun run test\n');
+    }),
+  );
+
   it.effect('keeps internal architecture records and implementation plans out of the public docs tree', () =>
     Effect.gen(function* () {
       const ignore = yield* readProjectFile('.gitignore');

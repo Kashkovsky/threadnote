@@ -56,6 +56,16 @@ export type CiLongRunningTestGroupName = keyof typeof ciLongRunningTestGroups;
 
 export const ciLongRunningTestGroupNames = Object.keys(ciLongRunningTestGroups) as CiLongRunningTestGroupName[];
 
+export const ciScheduledLongRunningTestGroupNames = [
+  'load-evidence',
+] as const satisfies readonly CiLongRunningTestGroupName[];
+
+const ciScheduledLongRunningTestGroups = new Set<CiLongRunningTestGroupName>(ciScheduledLongRunningTestGroupNames);
+
+export const ciRequiredLongRunningTestGroupNames = ciLongRunningTestGroupNames.filter(
+  group => !ciScheduledLongRunningTestGroups.has(group),
+);
+
 export const ciSerializedLongRunningTestGroups = new Set<CiLongRunningTestGroupName>([
   'heavy-state',
   'load-evidence',

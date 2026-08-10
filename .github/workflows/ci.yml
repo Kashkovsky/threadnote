@@ -119,7 +119,7 @@ jobs:
 
       - run: bun install --frozen-lockfile
 
-      - name: Run ordinary tests with all available Vitest workers
+      - name: Run ordinary tests with a deterministic bounded worker pool
         run: bun --bun vitest run --shard=${{ matrix.shard }}/4
         env:
           THREADNOTE_VITEST_STANDARD_SHARD: ${{ matrix.shard }}

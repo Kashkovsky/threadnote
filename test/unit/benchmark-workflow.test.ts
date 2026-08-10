@@ -92,6 +92,7 @@ describe('platform benchmark workflow', () => {
     for (const jobName of [
       'code-graph',
       'code-graph-10k',
+      'code-graph-load-evidence',
       'code-graph-vectors',
       'code-graph-vectors-10k',
       'recall-10k',
@@ -100,6 +101,15 @@ describe('platform benchmark workflow', () => {
       expect(workflow.jobs[jobName]?.if).toContain("github.event_name == 'workflow_dispatch'");
       expect(workflow.jobs[jobName]?.if).not.toContain('refs/tags/');
     }
+
+    const loadEvidence = workflow.jobs['code-graph-load-evidence']!;
+    const loadEvidenceStep = loadEvidence.steps?.find(step => step.env?.THREADNOTE_VITEST_LONG_GROUP);
+    expect(loadEvidence['runs-on']).toBe('ubuntu-latest');
+    expect(loadEvidence['timeout-minutes']).toBe(30);
+    expect(loadEvidenceStep).toMatchObject({
+      env: {THREADNOTE_VITEST_LONG_GROUP: 'load-evidence'},
+      run: 'bun --bun vitest run',
+    });
     for (const jobName of ['code-graph-100k', 'code-graph-vectors-100k', 'recall-100k']) {
       expect(workflow.jobs[jobName]?.if).toContain("github.event_name == 'schedule'");
     }

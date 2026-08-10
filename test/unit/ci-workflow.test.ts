@@ -5,6 +5,8 @@ import {ciScopeKeys} from '../ci/ci-scopes.js';
 import {
   ciLongRunningTestGroupNames,
   ciLongRunningTestGroups,
+  ciRequiredLongRunningTestGroupNames,
+  ciScheduledLongRunningTestGroupNames,
   ciSerializedLongRunningTestGroups,
 } from '../ci/vitest-plan.js';
 
@@ -113,7 +115,7 @@ describe('dependency-aware CI workflow', () => {
       if: "needs.changes.outputs.code == 'true'",
     });
     expect(long.strategy?.matrix?.group).toBe('${{ fromJSON(needs.changes.outputs.long_test_groups) }}');
-    expect(ciLongRunningTestGroupNames).toHaveLength(10);
+    expect(ciRequiredLongRunningTestGroupNames).toHaveLength(9);
     expect(long.steps?.find(step => step.uses?.startsWith('actions/checkout@'))?.with?.['fetch-depth']).toBe(0);
     expect(stepForRun(long, 'bun --bun vitest run').env).toEqual({
       THREADNOTE_VITEST_LONG_GROUP: '${{ matrix.group }}',
@@ -124,6 +126,11 @@ describe('dependency-aware CI workflow', () => {
   it('keeps the quota-aware long-test plan bounded and non-overlapping', () => {
     expect(ciLongRunningTestGroupNames).toEqual(Object.keys(ciLongRunningTestGroups));
     expect(ciLongRunningTestGroupNames).toHaveLength(10);
+    expect(ciRequiredLongRunningTestGroupNames).not.toContain('load-evidence');
+    expect(ciScheduledLongRunningTestGroupNames).toEqual(['load-evidence']);
+    expect(new Set([...ciRequiredLongRunningTestGroupNames, ...ciScheduledLongRunningTestGroupNames])).toEqual(
+      new Set(ciLongRunningTestGroupNames),
+    );
     expect([...ciSerializedLongRunningTestGroups]).toEqual(['heavy-state', 'load-evidence', 'os-contention']);
 
     const assignments = Object.values(ciLongRunningTestGroups).flat();

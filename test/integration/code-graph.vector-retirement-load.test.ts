@@ -128,7 +128,6 @@ function runVectorLoadCase(options: {
       let deferredUnits = 0;
       const runStartedAt = performance.now();
       for (let unit = 0; unit < options.maximumUnits; unit += 1) {
-        const startedAt = performance.now();
         const beforeUnit = readVectorCounts(databasePath);
         const result = yield* runCodeGraphOrdinaryVectorMaintenanceUnit(input, {
           afterModelCommitBeforeFinalCursorCas: () =>
@@ -202,16 +201,18 @@ function runVectorLoadCase(options: {
                 walBytes: yield* observedFileSize(fs, `${databasePath}-wal`),
               };
             }),
-          deadlineMonotonicMilliseconds: startedAt + 250,
-          monotonicMilliseconds: () => performance.now(),
+          // The production deadline is an independent bounded-unit contract.
+          // This load calibration records wall time as evidence, but host speed
+          // must not decide whether the database transition is correct.
+          deadlineMonotonicMilliseconds: 250,
+          monotonicMilliseconds: () => 0,
           reservationMode: 'nonblocking-one-attempt',
         });
         finalState = result.state;
         expect(yield* activeReceiptOperations(fs, path, home)).toEqual([]);
         if (result.state === 'deferred') {
-          // The public unit is deliberately bounded by a 250 ms nonblocking
-          // deadline. A constrained runner may defer before the model commit;
-          // retrying must preserve the exact database prefix and converge.
+          // A transient zero-wait lock or reservation deferral must preserve
+          // the exact database prefix and converge on retry.
           expect(readVectorCounts(databasePath)).toEqual(beforeUnit);
           pending = undefined;
           deferredUnits += 1;

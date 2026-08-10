@@ -46,20 +46,18 @@ export default defineConfig({
     // Dedicated parser-pool and heavy-tail tests exercise parallel extraction.
     env: {THREADNOTE_CODE_GRAPH_PARSER_WORKERS: '1'},
     environment: 'node',
-    // Bound local shared-machine dogfood runs. Ordinary CI shards use the
-    // runner's available pool; long-test matrix jobs stay at two workers so a
-    // handful of CPU-heavy parsers cannot inflate a neighboring test from
-    // seconds to the per-test timeout on a two-core hosted runner.
-    ...(process.env.CI ? {} : {maxWorkers: 2}),
-    ...(ciLongRunningGroupName && !ciSerializedLongGroup ? {maxWorkers: 2} : {}),
-    ...(ciSerializedLongGroup ? {fileParallelism: false, maxWorkers: 1} : {}),
+    // Keep worker pressure invariant across local and hosted runs. Four outer
+    // CI shards provide parallelism; varying an inner pool with runner capacity
+    // only makes contention-sensitive test timing nondeterministic.
+    maxWorkers: ciSerializedLongGroup ? 1 : 2,
+    ...(ciSerializedLongGroup ? {fileParallelism: false} : {}),
     hookTimeout: 30_000,
     include: ciLongRunningGroup ? [...ciLongRunningGroup] : ['test/**/*.test.ts'],
     exclude: process.env.THREADNOTE_VITEST_STANDARD_SHARD ? ciLongRunningTests : undefined,
     testNamePattern: ciLongRunningGroupName ? ciLongRunningTestPatterns[ciLongRunningGroupName] : undefined,
     // Long groups are independently bounded jobs; ordinary shards retain the
     // same fast timeout as local runs so new regressions fail promptly.
-    testTimeout: process.env.THREADNOTE_VITEST_LONG_GROUP ? 180_000 : 30_000,
+    testTimeout: ciLongRunningGroupName === 'load-evidence' ? 600_000 : ciLongRunningGroupName ? 180_000 : 30_000,
     coverage: {
       provider: 'istanbul',
       reporter: ['text', 'html', 'lcov'],

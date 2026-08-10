@@ -39,6 +39,7 @@
     "test": "bun --bun vitest run",
     "test:e2e:local-bins": "bun run build && bun --bun vitest run --config vitest.e2e.config.ts",
     "test:e2e:windows": "bun run build && bun --bun vitest run --config vitest.windows-e2e.config.ts",
+    "test:smoke:release": "bun --bun vitest run test/unit/bun-package-contract.test.ts test/unit/publish-workflow.test.ts",
     "test:smoke:self-contained": "bun run build && bun scripts/smoke-self-contained.ts",
     "test:watch": "bun --bun vitest",
     "test:coverage": "bun --bun vitest run --coverage",

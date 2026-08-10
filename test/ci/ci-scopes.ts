@@ -1,4 +1,4 @@
-import {ciLongRunningTestGroupNames} from './vitest-plan.js';
+import {ciRequiredLongRunningTestGroupNames} from './vitest-plan.js';
 
 export const ciScopeKeys = ['actions', 'code', 'quality', 'release', 'site_check', 'site_build', 'windows'] as const;
 
@@ -261,7 +261,7 @@ async function writeGitHubOutputs(classification: CiScopeClassification, reason:
   if (outputPath) {
     const lines = [
       ...ciScopeKeys.map(key => `${key}=${String(classification.scopes[key])}`),
-      `long_test_groups=${JSON.stringify(ciLongRunningTestGroupNames)}`,
+      `long_test_groups=${JSON.stringify(ciRequiredLongRunningTestGroupNames)}`,
       `changed_count=${classification.changedCount}`,
       `reason=${reason}`,
     ];

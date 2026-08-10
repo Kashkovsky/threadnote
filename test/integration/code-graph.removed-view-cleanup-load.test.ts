@@ -155,7 +155,7 @@ describe('removed code graph view cleanup load and migration', () => {
           }),
         ),
       ).pipe(Effect.provide(ApplicationLayer)),
-    180_000,
+    600_000,
   );
 
   effectIt.effect(

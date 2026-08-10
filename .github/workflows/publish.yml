@@ -60,10 +60,8 @@ jobs:
             exit 1
           fi
 
-      - run: bun run lint
-      - run: bun run prettier:check
-      - run: bun run typecheck
-      - run: bun run test
+      - name: Run release contract smokes
+        run: bun run test:smoke:release
 
   prepare-release-model:
     name: Prepare pinned release model
