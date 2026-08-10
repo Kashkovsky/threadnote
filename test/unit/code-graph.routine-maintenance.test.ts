@@ -1278,10 +1278,17 @@ describe('routine code graph maintenance', () => {
 
       expect(
         results.filter(result => result.state === 'completed' && result.cleanup === 'reconciliation-index').length,
-      ).toBe(4);
+      ).toBe(3);
+      expect(
+        results.filter(result => result.state === 'completed' && result.cleanup === 'schema-migration'),
+      ).toHaveLength(1);
       expect(
         results
-          .filter(result => result.state !== 'completed' || result.cleanup !== 'reconciliation-index')
+          .filter(
+            result =>
+              result.state !== 'completed' ||
+              (result.cleanup !== 'reconciliation-index' && result.cleanup !== 'schema-migration'),
+          )
           .every(
             result =>
               (result.state === 'deferred' && result.reason === 'writer-busy') ||

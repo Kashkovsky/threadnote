@@ -61,9 +61,8 @@ const initializeRoutineMaintenanceSchema = Effect.fn('codeGraph.initializeRoutin
   const recordedRevision = revision.state === 'recorded' ? revision.value : undefined;
   const removedViewAuthority = yield* removedViewAuthorityTableState(sql);
   if (removedViewAuthority === 'incompatible') return false;
-  if (removedViewAuthority === 'absent') {
+  if (removedViewAuthority === 'absent' && recordedRevision !== undefined) {
     if (
-      recordedRevision === undefined ||
       recordedRevision < CODE_GRAPH_MINIMUM_BACKGROUND_MIGRATION_REVISION ||
       recordedRevision >= CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION
     ) {
@@ -95,6 +94,10 @@ const initializeRoutineMaintenanceSchema = Effect.fn('codeGraph.initializeRoutin
     const expiryIndexState = yield* codeGraphReconciliationIndexState(sql, CODE_GRAPH_SNAPSHOT_LEASE_EXPIRY_INDEX);
     if (expiryIndexState === 'incompatible') return false;
     if (expiryIndexState === 'missing') {
+      if (recordedRevision === undefined) {
+        const rows = yield* sql.unsafe('SELECT 1 FROM snapshot_leases LIMIT 1');
+        if (rows.length !== 0) return false;
+      }
       createExpiryIndex = true;
     }
   }
