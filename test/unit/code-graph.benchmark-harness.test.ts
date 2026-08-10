@@ -21,6 +21,7 @@ import {
   semanticBenchmarkOverlay,
   sqliteStructuralGraphEvidence,
   validateSqliteWriterSettingsEvidence,
+  vectorSemanticControlMinimumScore,
 } from '../../scripts/benchmark-code-graph.js';
 import type {CodeGraphBenchmarkSamplerArtifact} from '../../scripts/code-graph-benchmark-sampler.js';
 import {codeGraphAnalysisLimitsForView} from '../../src/code_graph/analysis_render.js';
@@ -35,6 +36,12 @@ const CONTROL = JSON.stringify({
 });
 
 describe('code graph external benchmark harness', () => {
+  it('applies the public path relevance policy to vector positive-control scores', () => {
+    expect(vectorSemanticControlMinimumScore('src/architecture.ts')).toBe(0.64);
+    expect(vectorSemanticControlMinimumScore('docs/architecture.md')).toBeLessThan(0.64);
+    expect(vectorSemanticControlMinimumScore('test/architecture.test.ts')).toBeLessThan(0.64);
+  });
+
   it('keeps whole-graph performance analysis on the persisted summary path', () => {
     const source = readFileSync('scripts/benchmark-code-graph.ts', 'utf8');
     expect(source).toContain("limits: codeGraphAnalysisLimitsForView('stats')");

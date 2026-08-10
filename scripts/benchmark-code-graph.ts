@@ -5,6 +5,7 @@ import {readCodeGraphBuildStatuses} from '../src/code_graph/build_status.js';
 import {CodeGraphIndexer} from '../src/code_graph/indexer.js';
 import {
   codeGraphEffectiveSymbolTermsQueryStatement,
+  codeGraphSymbolPathScoreMultiplier,
   CodeGraphStore,
   type CodeGraphSqliteWriterSettings,
   type CodeGraphSqliteWriterTuning,
@@ -93,6 +94,11 @@ const LONG_SCALE_PROVENANCE_THRESHOLD = 100_000;
 const EXACT_GIT_COMMIT_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const PERFORMANCE_CONTROL_LANGUAGES = ['java', 'kotlin', 'typescript', 'bazel-build'] as const;
 const MANAGER_QUERY_NODE_LIMIT = 200;
+const VECTOR_SEMANTIC_CONTROL_RAW_SCORE_MINIMUM = 0.64;
+
+export function vectorSemanticControlMinimumScore(expectedPath: string): number {
+  return VECTOR_SEMANTIC_CONTROL_RAW_SCORE_MINIMUM * codeGraphSymbolPathScoreMultiplier(expectedPath, []);
+}
 const MANAGER_QUERY_EDGE_LIMIT = 500;
 const EXTERNAL_QUERY_CONTROL_TIMEOUT_MS = 120_000;
 const MANAGER_SEQUENCE_TIMEOUT_MS = 180_000;
@@ -625,7 +631,8 @@ const benchmarkCodeGraph = Effect.scoped(
         options.scaleSymbols === undefined && prepared.profile === undefined
           ? 'docs/architecture.md'
           : GENERATED_VECTOR_CONTROL_PATH;
-      if (!semanticControl.nodes.some(node => node.path === expectedPath && node.score >= 0.64)) {
+      const minimumScore = vectorSemanticControlMinimumScore(expectedPath);
+      if (!semanticControl.nodes.some(node => node.path === expectedPath && node.score >= minimumScore)) {
         const observed = semanticControl.nodes
           .slice(0, 5)
           .map(node => `${node.path}:${node.name}:${node.score.toFixed(3)}`)
@@ -762,7 +769,9 @@ const benchmarkCodeGraph = Effect.scoped(
           : GENERATED_VECTOR_CONTROL_PATH;
       if (
         semanticControl.snapshot.id !== incremental.snapshot.id ||
-        !semanticControl.nodes.some(node => node.path === expectedPath && node.score >= 0.64)
+        !semanticControl.nodes.some(
+          node => node.path === expectedPath && node.score >= vectorSemanticControlMinimumScore(expectedPath),
+        )
       ) {
         const observed = semanticControl.nodes
           .slice(0, 5)

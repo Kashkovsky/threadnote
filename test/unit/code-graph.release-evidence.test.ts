@@ -43,7 +43,7 @@ describe('code graph release evidence', () => {
 
     expect(profile).toMatchObject({
       sourceFiles: 12,
-      surrogate: 'threadnote-4.0.10-public-monorepo',
+      surrogate: 'threadnote-4.1.0-beta.1-public-monorepo',
       targetGraphSymbols: 99,
       version: 2,
       worktreeChurnScenarioCount: 6,
@@ -213,8 +213,8 @@ describe('code graph release evidence', () => {
       metadata: {...artifact.metadata, releaseEvidenceRef},
     });
 
-    expect(() => assertProductionReleaseEvidence(withRef('refs/tags/v4.0.10'))).not.toThrow();
-    for (const ref of ['refs/tags/v4.0.10-beta', 'refs/tags/v3.0.10', 'refs/tags/v5.0.10', 'refs/heads/v4.0.10']) {
+    expect(() => assertProductionReleaseEvidence(withRef('refs/tags/v4.1.0-beta.1'))).not.toThrow();
+    for (const ref of ['refs/tags/v4.1.0-beta', 'refs/tags/v3.1.0', 'refs/tags/v5.1.0', 'refs/heads/v4.1.0']) {
       expect(() => assertProductionReleaseEvidence(withRef(ref))).toThrow(/clean exact release source provenance/);
     }
   });

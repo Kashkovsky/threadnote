@@ -1,4 +1,4 @@
-import {Effect, FileSystem, Path} from 'effect';
+import {Effect, FileSystem, Path, Schedule} from 'effect';
 import {
   CODE_GRAPH_GENERIC_JSON_EXCLUSION_BYTES,
   CODE_GRAPH_HIGH_SIGNAL_JSON_HARD_CAP_BYTES,
@@ -43,7 +43,7 @@ export interface ProductionCodeGraphFixtureProfile {
   readonly lowSignalJsonExclusionThresholdBytes: number;
   readonly maxCallsPerDeclaration: number;
   readonly sourceFiles: number;
-  readonly surrogate: 'threadnote-4.0.10-public-monorepo';
+  readonly surrogate: 'threadnote-4.1.0-beta.1-public-monorepo';
   readonly targetEligibleFiles: number;
   readonly targetGraphEdges: number;
   readonly targetGraphSymbols: number;
@@ -55,7 +55,7 @@ export interface ProductionCodeGraphFixtureProfile {
 }
 
 /**
- * Public, deterministic surrogate for the current Threadnote 4.0.10 monorepo evidence. The profile records shape
+ * Public, deterministic surrogate for the Threadnote 4.1 beta monorepo evidence. The profile records shape
  * targets rather than portable latency claims; its full materialization remains opt-in/nightly.
  */
 export const PRODUCTION_WORKTREE_CHURN_SCENARIOS = [
@@ -92,7 +92,7 @@ export const PRODUCTION_LARGE_CODE_GRAPH_PROFILE = {
   lowSignalJsonExclusionThresholdBytes: CODE_GRAPH_GENERIC_JSON_EXCLUSION_BYTES,
   maxCallsPerDeclaration: 1,
   sourceFiles: 45_000,
-  surrogate: 'threadnote-4.0.10-public-monorepo',
+  surrogate: 'threadnote-4.1.0-beta.1-public-monorepo',
   targetEligibleFiles: 59_936,
   targetGraphEdges: 4_340_000,
   targetGraphSymbols: 2_200_000,
@@ -112,8 +112,16 @@ const makeOwnedTempDirectoryScoped = Effect.fn('codeGraphFixture.makeOwnedTempDi
   const fs = yield* FileSystem.FileSystem;
   return yield* Effect.acquireRelease(fs.makeTempDirectory({prefix}), root =>
     fs.remove(root, {force: true, recursive: true}).pipe(
+      // Windows may retain a just-closed SQLite handle briefly. Give owned
+      // fixture cleanup a bounded grace period, then let an exhausted Busy
+      // cleanup remain runner-local instead of changing a successful result.
+      Effect.retry({
+        schedule: Schedule.spaced(100),
+        times: 5,
+        while: error => error.reason._tag === 'Busy',
+      }),
       Effect.catchIf(
-        error => error.reason._tag === 'NotFound',
+        error => error.reason._tag === 'Busy' || error.reason._tag === 'NotFound',
         () => Effect.void,
       ),
       Effect.orDie,
@@ -518,7 +526,7 @@ export function validateProductionProfile(
   if (
     profile.id !== 'production-large' ||
     profile.version !== 2 ||
-    profile.surrogate !== 'threadnote-4.0.10-public-monorepo'
+    profile.surrogate !== 'threadnote-4.1.0-beta.1-public-monorepo'
   ) {
     throw new Error('Unsupported production code graph fixture profile.');
   }

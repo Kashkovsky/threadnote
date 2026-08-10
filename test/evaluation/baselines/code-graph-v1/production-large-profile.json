@@ -23,7 +23,7 @@
     "lowSignalJsonExclusionThresholdBytes": 262144,
     "maxCallsPerDeclaration": 1,
     "sourceFiles": 45000,
-    "surrogate": "threadnote-4.0.10-public-monorepo",
+    "surrogate": "threadnote-4.1.0-beta.1-public-monorepo",
     "workspaceCount": 995,
     "worktreeChurnScenarios": [
       "concurrent-linked-worktree-builds",
@@ -51,7 +51,7 @@
     "lowSignalJsonExclusionThresholdBytes": 262144
   },
   "notes": [
-    "Scheduled and manually dispatched strict runs use this current Threadnote 4.0.10 public monorepo surrogate; ordinary pull requests do not materialize it.",
+    "Scheduled and manually dispatched strict runs use this Threadnote 4.1 beta public monorepo surrogate; ordinary pull requests do not materialize it.",
     "The class mix and aggregate graph targets are retained shape evidence, not portable latency budgets or measured latency claims.",
     "A checked performance artifact must come from a measured run; no synthetic latency baseline is accepted.",
     "pnpm workspace exclusion models package-manager membership only; workspace exclusion never removes active source from graph eligibility.",

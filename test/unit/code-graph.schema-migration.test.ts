@@ -101,6 +101,28 @@ describe('code graph persistent schema migration', () => {
     expect(new CodeGraphRuntimeReconnectRequiredError()).toMatchObject({recovery: 'reconnect-runtime'});
   });
 
+  it('keeps repeated current-schema initialization idempotent', async () => {
+    await fc.assert(
+      fc.asyncProperty(fc.integer({max: 4, min: 1}), async reopenCount => {
+        const fixture = await migrationFixture();
+        await runEffect(
+          Effect.gen(function* () {
+            const store = yield* CodeGraphStore;
+            yield* store.initialize(fixture.databasePath);
+            for (let index = 0; index < reopenCount; index += 1) {
+              const phases: CodeGraphPersistentSchemaMigrationPhase[] = [];
+              yield* store.withSession(fixture.databasePath, store.initialize(fixture.databasePath), {
+                onPersistentSchemaMigrationPhase: phase => Effect.sync(() => phases.push(phase)),
+              });
+              expect(phases).toEqual([]);
+            }
+          }),
+        );
+      }),
+      {numRuns: 10},
+    );
+  });
+
   it('keeps revision 4 ready lexical rows readable while enabling compact writes for later snapshots', async () => {
     const fixture = await migrationFixture();
     const ready = snapshot(fixture.identity, 'ready-legacy-lexical-before-upgrade');

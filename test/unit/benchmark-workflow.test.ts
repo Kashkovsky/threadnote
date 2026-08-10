@@ -125,7 +125,7 @@ describe('platform benchmark workflow', () => {
     expect(workflow.on.workflow_dispatch?.inputs).toHaveProperty('include_production_large');
     expect(productionInput?.description).toContain('73k-repository/59,936-eligible');
     expect(productionInput?.description).toContain('profile target');
-    expect(productionInput?.description).toContain('4.0.10 surrogate');
+    expect(productionInput?.description).toContain('4.1 beta surrogate');
     expect(caller.if).toContain("github.event_name == 'schedule'");
     expect(caller.if).toContain('inputs.include_production_large');
     expect(caller.uses).toBe('./.github/workflows/production-large-evidence.yml');

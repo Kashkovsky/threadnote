@@ -864,15 +864,11 @@ function registerCodeGraphTool(server: EffectMcpServerAdapter, config: RuntimeCo
           ['query', 'node', 'neighbors', 'explain', 'path', 'impact'],
           'Required graph operation',
         ),
-        package: McpInput.string(
-          'Exact indexed package or workspace component name for a bounded package-local query and absence hint',
-        ),
+        package: McpInput.string('Exact package/component for a bounded local query and absence hint'),
         query: McpInput.string('Concept, symbol, module, path, or impact selector'),
         symbol: McpInput.string('Symbol selector for operation=explain'),
         to: McpInput.string('Target symbol, path#symbol selector, or stable cgs_ node ID for operation=path'),
-        workset: McpInput.string(
-          'Named seed-manifest workset for a bounded query across existing ready repository snapshots',
-        ),
+        workset: McpInput.string('Named workset; queries existing ready repository snapshots only'),
       },
     },
     ({
