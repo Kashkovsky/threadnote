@@ -29,7 +29,10 @@ const program = Effect.gen(function* () {
           }),
         availableDiskBytes: () => Effect.succeed(Number.MAX_SAFE_INTEGER),
         deadlineMonotonicMilliseconds: startedAt + 250,
-        monotonicMilliseconds: () => performance.now(),
+        // The parent kills this helper only after the durable commit barrier.
+        // Keep that crash-recovery interlock independent of hosted-runner load;
+        // live deadline behavior belongs to the vector load suite.
+        monotonicMilliseconds: () => startedAt,
         reservationMode: 'nonblocking-one-attempt',
       },
     );
