@@ -7,6 +7,7 @@ import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import {
   applyBenchmarkOverlay,
+  benchmarkVectorModelDirectoryName,
   CODE_GRAPH_SQLITE_WRITER_PROFILES,
   codeGraphStructuralParityEvidence,
   codeGraphStructuralParityFailureMessage,
@@ -36,6 +37,12 @@ const CONTROL = JSON.stringify({
 });
 
 describe('code graph external benchmark harness', () => {
+  it('ignores ordinary vector-maintenance metadata before filesystem inspection', () => {
+    expect(benchmarkVectorModelDirectoryName('bge-small-en-v1.5-q8')).toBe(true);
+    expect(benchmarkVectorModelDirectoryName('.ordinary-vector-retirement-v1.cursor')).toBe(false);
+    expect(benchmarkVectorModelDirectoryName('.ordinary-vector-retirement-v1.cursor.tmp')).toBe(false);
+  });
+
   it('applies the public path relevance policy to vector positive-control scores', () => {
     expect(vectorSemanticControlMinimumScore('src/architecture.ts')).toBe(0.64);
     expect(vectorSemanticControlMinimumScore('docs/architecture.md')).toBeLessThan(0.64);

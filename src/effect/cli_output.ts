@@ -1,4 +1,4 @@
-import {Console, Context, Effect, Layer} from 'effect';
+import {Console, Context, Effect, Layer, Logger} from 'effect';
 
 export interface CliOutputShape {
   readonly drain: Effect.Effect<void, Error>;
@@ -94,6 +94,9 @@ export const withCliOutputConsole = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     const output = yield* CliOutput;
     return yield* Console.consoleWith(parent =>
       effect.pipe(
+        // Machine-readable commands own stdout. Effect diagnostics, including failures from inherited detached
+        // fibers, must use stderr so a late log line cannot follow and invalidate the final JSON document.
+        Effect.provideService(Logger.LogToStderr, true),
         Effect.provideService(
           Console.Console,
           Object.assign(Object.create(parent) as Console.Console, {

@@ -96,10 +96,16 @@ const EXACT_GIT_COMMIT_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const PERFORMANCE_CONTROL_LANGUAGES = ['java', 'kotlin', 'typescript', 'bazel-build'] as const;
 const MANAGER_QUERY_NODE_LIMIT = 200;
 const VECTOR_SEMANTIC_CONTROL_RAW_SCORE_MINIMUM = 0.64;
+const BENCHMARK_VECTOR_MODEL_DIRECTORY_NAME = /^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$/;
 
 export function vectorSemanticControlMinimumScore(expectedPath: string): number {
   return VECTOR_SEMANTIC_CONTROL_RAW_SCORE_MINIMUM * codeGraphSymbolPathScoreMultiplier(expectedPath, []);
 }
+
+export function benchmarkVectorModelDirectoryName(name: string): boolean {
+  return BENCHMARK_VECTOR_MODEL_DIRECTORY_NAME.test(name);
+}
+
 const MANAGER_QUERY_EDGE_LIMIT = 500;
 const EXTERNAL_QUERY_CONTROL_TIMEOUT_MS = 120_000;
 const MANAGER_SEQUENCE_TIMEOUT_MS = 180_000;
@@ -3129,6 +3135,9 @@ const vectorRowCount = Effect.fn('benchmarkCodeGraph.vectorRowCount')(function* 
   if (!(yield* fs.exists(vectorRoot))) return 0;
   let count = 0;
   for (const model of yield* fs.readDirectory(vectorRoot)) {
+    // Ordinary maintenance owns transient cursor files beside model directories. Filter them before stat so an
+    // atomic cursor cleanup cannot race this evidence-only count between readDirectory and stat.
+    if (!benchmarkVectorModelDirectoryName(model)) continue;
     const modelRoot = path.join(vectorRoot, model);
     const info = yield* fs.stat(modelRoot);
     if (info.type !== 'Directory') continue;
