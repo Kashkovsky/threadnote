@@ -4,7 +4,13 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type {CodeGraphLocalDiagnosticsReport} from './code_graph/diagnostics.js';
 import {ManagerAutocompleteInput, ManagerDialogProvider, useManagerDialogs} from './manager_dialog.js';
-import {graphViewRemovalApprovalDialog, type ManagerGraphViewRemovalResponse} from './manager_graph_removal.js';
+import {
+  graphViewRemovalApprovalDialog,
+  graphViewRemovalTargetIsAbsent,
+  type ManagerGraphViewRemovalResponse,
+  withoutRemovedGraphCatalogView,
+  withoutRemovedGraphDiagnosticsView,
+} from './manager_graph_removal.js';
 import {
   GraphWorkspace,
   graphBuildIsActive,
@@ -439,6 +445,7 @@ function App(): React.ReactElement {
     setGraphAdministrationBusy(label);
     try {
       let result: {readonly output: string};
+      let removedViewConfirmed = false;
       if (action.action === 'remove-view' && action.dryRun !== true) {
         const preview = await api<ManagerGraphViewRemovalResponse>('/api/graphs/action', {
           ...action,
@@ -449,13 +456,16 @@ function App(): React.ReactElement {
           setGraphAdministrationOutput(preview.output);
           return;
         }
-        result = approvalDialog
+        const removal = approvalDialog
           ? await api<ManagerGraphViewRemovalResponse>('/api/graphs/action', {
               ...action,
               approvalDigest: preview.approvalDigest,
               confirm: true,
             })
           : preview;
+        result = removal;
+        removedViewConfirmed = graphViewRemovalTargetIsAbsent(removal);
+        if (removedViewConfirmed) projectRemovedGraphView(action);
       } else {
         result = await api<{readonly output: string}>('/api/graphs/action', {
           ...action,
@@ -464,6 +474,7 @@ function App(): React.ReactElement {
       }
       await refreshGraphCatalog(false);
       await refreshGraphDiagnostics({analyze: false, deep: false}, false);
+      if (removedViewConfirmed && action.action === 'remove-view') projectRemovedGraphView(action);
       setGraphAdministrationOutput(result.output);
       toastMessage(`${label} complete`);
     } catch (cause) {
@@ -473,6 +484,13 @@ function App(): React.ReactElement {
     } finally {
       setGraphAdministrationBusy(undefined);
     }
+  }
+
+  function projectRemovedGraphView(target: Extract<GraphAdministrationAction, {readonly action: 'remove-view'}>): void {
+    const nextCatalog = withoutRemovedGraphCatalogView(graphCatalogRef.current, target);
+    graphCatalogRef.current = nextCatalog;
+    setGraphCatalog(nextCatalog);
+    setGraphDiagnostics(current => withoutRemovedGraphDiagnosticsView(current, target));
   }
 
   async function loadMemory(uri: string): Promise<void> {
