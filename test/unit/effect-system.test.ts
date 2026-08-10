@@ -347,7 +347,7 @@ describe('SystemInfo disk capacity parsing', () => {
     ),
   );
 
-  effectIt.effect('launches no subprocesses across a bounded supported-host probe load', () =>
+  effectIt.effect('uses only the selected adapter across a bounded supported-host probe load', () =>
     Effect.acquireUseRelease(
       Effect.sync(() => ({spawn: vi.spyOn(Bun, 'spawn'), spawnSync: vi.spyOn(Bun, 'spawnSync')})),
       spies =>
@@ -363,7 +363,14 @@ describe('SystemInfo disk capacity parsing', () => {
           expect(capacities.every(value => value !== undefined && Number.isSafeInteger(value) && value >= 0)).toBe(
             true,
           );
-          expect(spies.spawn).not.toHaveBeenCalled();
+          if (process.platform === 'darwin' && process.arch === 'x64') {
+            expect(spies.spawn).toHaveBeenCalledTimes(128);
+            for (const [options] of spies.spawn.mock.calls) {
+              expect(options).toMatchObject({cmd: ['df', '-Pk', process.cwd()]});
+            }
+          } else {
+            expect(spies.spawn).not.toHaveBeenCalled();
+          }
           expect(spies.spawnSync).not.toHaveBeenCalled();
         }).pipe(Effect.provide(SystemInfo.layer)),
       spies =>
