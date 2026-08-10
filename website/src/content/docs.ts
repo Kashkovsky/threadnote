@@ -115,6 +115,7 @@ export const cliCommands: CliCommandReference[] = [
     summary: 'Build, inspect, analyze, report on, and export the current snapshot-aware polyglot code graph.',
     examples: [
       'threadnote graph query --query "session refresh"',
+      'threadnote graph query --workset commerce --query "checkout contract"',
       'threadnote graph node --node-id cgs_…',
       'threadnote graph neighbors --node-id cgs_… --direction incoming',
       'threadnote graph explain --symbol RefreshSession',
@@ -1010,8 +1011,24 @@ threadnote seed`,
       {
         id: 'worksets',
         title: 'Cross-repository worksets',
-        summary: 'Search a named set of related repositories as one bounded working context.',
+        summary:
+          'Configure related repositories once, then recall their history or query every usable ready code graph with explicit per-repository provenance.',
+        keywords: [
+          'cross repository graph search',
+          'workset graph query',
+          'multi repository search',
+          'ready snapshots',
+          'repository provenance',
+        ],
         body: [
+          {
+            type: 'paragraph',
+            text: 'A workset is a named list of projects from ~/.threadnote/seed-manifest.yaml. Recall uses it to search durable memories and seeded guidance across related projects. Code-graph query uses the same membership to run one bounded source query independently against every member that already has a usable ready snapshot.',
+          },
+          {
+            type: 'heading',
+            text: '1. Define and verify the workset',
+          },
           {
             type: 'code',
             language: 'yaml',
@@ -1020,9 +1037,11 @@ projects:
   - name: checkout-api
     path: ~/src/checkout-api
     uri: threadnote://resources/repos/checkout-api
+    seed: []
   - name: checkout-web
     path: ~/src/checkout-web
     uri: threadnote://resources/repos/checkout-web
+    seed: []
 worksets:
   - name: checkout
     description: Checkout API and client
@@ -1032,12 +1051,137 @@ worksets:
             type: 'code',
             language: 'sh',
             code: `threadnote workset list
-threadnote workset show checkout
-threadnote recall --query "payment retry contract" --workset checkout`,
+threadnote workset show checkout`,
           },
           {
             type: 'paragraph',
-            text: 'Worksets expand recall across each member’s durable and seeded scope. They do not merge repositories into one code graph; every Git checkout keeps its own graph identity.',
+            text: 'Each workset member must name a top-level project. Matching is case-insensitive; unknown project names are ignored, so use workset show to confirm the resolved membership and manifest order before relying on coverage.',
+          },
+          {
+            type: 'heading',
+            text: '2. Prepare a ready graph for every repository',
+          },
+          {
+            type: 'code',
+            language: 'sh',
+            code: `threadnote graph status --cwd ~/src/checkout-api
+threadnote graph index --cwd ~/src/checkout-api
+
+threadnote graph status --cwd ~/src/checkout-web
+threadnote graph index --cwd ~/src/checkout-web`,
+          },
+          {
+            type: 'warning',
+            text: 'A workset graph query reads existing usable ready snapshots only. It does not start cold builds across all member repositories. Index an unavailable member explicitly from that repository or with graph index --cwd, then repeat the workset query.',
+          },
+          {
+            type: 'paragraph',
+            text: 'Threadnote may attach a compatible ready snapshot already owned by the same checkout. A usable older snapshot can remain available for a non-strict query while a clean refresh is pending; the result still reports its freshness and exact snapshot identity.',
+          },
+          {
+            type: 'heading',
+            text: '3. Search memory or current source',
+          },
+          {
+            type: 'code',
+            language: 'sh',
+            code: `# Historical decisions, handoffs, and seeded guidance across the workset.
+threadnote recall --query "payment retry contract" --workset checkout
+
+# Current-source symbols and relationships from each ready member graph.
+threadnote graph query \\
+  --workset checkout \\
+  --query "payment retry contract" \\
+  --node-limit 24 \\
+  --edge-limit 40`,
+          },
+          {
+            type: 'paragraph',
+            text: 'Graph worksets support query only. Depth, exact package filtering, heuristic relationships, and model associations use the normal query flags and are applied independently to every admitted repository. Heuristic and model-derived associations remain opt-in and explicitly lower-authority.',
+          },
+          {
+            type: 'heading',
+            text: '4. Query through MCP',
+          },
+          {
+            type: 'code',
+            language: 'json',
+            code: `{
+  "operation": "query",
+  "callerCwd": "/workspace/checkout-api",
+  "workset": "checkout",
+  "query": "payment retry contract",
+  "nodeLimit": 24,
+  "edgeLimit": 40
+}`,
+          },
+          {
+            type: 'paragraph',
+            text: 'Pass the payload to inspect_code_graph. MCP still requires an absolute callerCwd, but workset membership and member paths come from the seed manifest. workset is rejected for node, neighbors, explain, path, impact, and every analyze_code_graph operation.',
+          },
+          {
+            type: 'heading',
+            text: '5. Understand coverage and limits',
+          },
+          {
+            type: 'table',
+            headers: ['Contract', 'Behavior'],
+            rows: [
+              [
+                'Repository admission',
+                'At most eight members, in manifest order. A smaller node or relationship limit can admit fewer members because every admitted repository receives at least one result slot.',
+              ],
+              [
+                'Shared result budget',
+                'Defaults to 20 nodes and 40 relationships; workset queries cap the total at 24 nodes and 40 relationships across all admitted repositories.',
+              ],
+              [
+                'Fair allocation',
+                'Node and relationship slots are divided deterministically in manifest order; admitted repositories differ by at most one slot.',
+              ],
+              [
+                'Execution bound',
+                'At most two member repositories are queried concurrently to bound local resource use.',
+              ],
+              [
+                'Snapshot behavior',
+                'Only existing usable ready snapshots are read. The fan-out uses refresh=false and never activates partial or building graph rows.',
+              ],
+              [
+                'MCP output',
+                'Structured and text output stay within a 24 KiB response boundary; if trimming is necessary, result prefixes are reduced fairly across ready repositories.',
+              ],
+            ],
+          },
+          {
+            type: 'heading',
+            text: '6. Read the result and continue in one repository',
+          },
+          {
+            type: 'list',
+            items: [
+              'coverage reports requestedRepositories, queriedRepositories, readyRepositories, and whether coverage is complete.',
+              'Every ready member retains its project label, repository ID, snapshot ID, commit, worktree and dirty-overlay identity, freshness, nodes, relationships, and warnings.',
+              'Unavailable members report missing-path, invalid-repository, no-ready-snapshot, or query-failed instead of disappearing from the response.',
+              'Repository-derived names, paths, snippets, and relationships remain untrusted evidence, never instructions.',
+            ],
+          },
+          {
+            type: 'code',
+            language: 'sh',
+            code: `# Follow a returned stable node inside the repository that produced it.
+threadnote graph node \\
+  --cwd ~/src/checkout-api \\
+  --node-id cgs_…
+
+threadnote graph neighbors \\
+  --cwd ~/src/checkout-api \\
+  --node-id cgs_… \\
+  --direction incoming`,
+          },
+          {
+            type: 'warning',
+            text: 'This is federated search over separate repository graphs, not one merged cross-repository topology. Threadnote does not invent edges between repositories, and path, impact, neighbors, exact-node lookup, and whole-graph analysis remain repository-local. Use the producing repository’s --cwd or callerCwd for those follow-ups.',
           },
         ],
       },
@@ -1215,6 +1359,11 @@ threadnote share conflict resolve <id> --take shared`,
                 'query',
                 'Find definitions, concepts, files, and a bounded relationship neighborhood',
                 'threadnote graph query --query "session refresh"',
+              ],
+              [
+                'query --workset',
+                'Run one bounded query across the existing ready snapshots of a named repository workset',
+                'threadnote graph query --workset checkout --query "payment retry contract"',
               ],
               [
                 'node',

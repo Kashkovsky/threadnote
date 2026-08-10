@@ -690,8 +690,39 @@ describe('Threadnote 4 website content', () => {
 
     expect(searchDocs(index, 'graph impact')[0]?.article.id).toBe('graph-operations');
     expect(searchDocs(index, 'inspect code graph')[0]?.article.id).toBe('graph-operations');
+    expect(searchDocs(index, 'cross repository graph workset')[0]?.article.id).toBe('worksets');
     expect(searchDocs(index, 'share memory team')[0]?.article.id).toBe('publish-memory');
     expect(searchDocs(index, 'architecture analysis')[0]?.article.id).toBe('graph-analysis');
+  });
+
+  it('documents the complete bounded cross-repository graph-query workflow', () => {
+    const worksetArticle = docsSections.flatMap(section => section.articles).find(article => article.id === 'worksets');
+    const content = JSON.stringify(worksetArticle);
+    const mcpExample = worksetArticle?.body.find(block => block.type === 'code' && block.language === 'json');
+
+    expect(worksetArticle).toBeDefined();
+    expect(mcpExample?.type).toBe('code');
+    if (!mcpExample || mcpExample.type !== 'code') throw new Error('Missing workset MCP example.');
+    expect(content).toContain('threadnote graph index --cwd ~/src/checkout-api');
+    expect(content).toContain('threadnote graph query');
+    expect(content).toContain('--workset checkout');
+    expect(JSON.parse(mcpExample.code)).toMatchObject({
+      callerCwd: '/workspace/checkout-api',
+      operation: 'query',
+      workset: 'checkout',
+    });
+    expect(content).toContain('At most eight members');
+    expect(content).toContain('20 nodes and 40 relationships');
+    expect(content).toContain('24 nodes and 40 relationships');
+    expect(content).toContain('At most two member repositories are queried concurrently');
+    expect(content).toContain('reads existing usable ready snapshots only');
+    expect(content).toContain('does not start cold builds');
+    expect(content).toContain('missing-path');
+    expect(content).toContain('no-ready-snapshot');
+    expect(content).toContain('query-failed');
+    expect(content).toContain('24 KiB response boundary');
+    expect(content).toContain('not one merged cross-repository topology');
+    expect(content).toContain('Use the producing repository’s --cwd or callerCwd');
   });
 
   it('bounds adversarial query length and term count before fuzzy matching', () => {
