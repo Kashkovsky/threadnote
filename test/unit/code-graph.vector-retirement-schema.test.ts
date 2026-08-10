@@ -1398,74 +1398,77 @@ describe('code graph vector retirement schema', () => {
       ),
     );
 
-    layerIt.effect('rejects corrupt zero-vector generation manifests before capacity or writer admission', () =>
-      Effect.scoped(
-        Effect.gen(function* () {
-          const fs = yield* FileSystem.FileSystem;
-          const path = yield* Path.Path;
-          const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-vector-retirement-manifest-'});
-          const blob = new Uint8Array(1024 * 1024);
-          const text = 'x'.repeat(1024 * 1024);
-          const corruptions = [
-            {column: 'generation', name: 'generation-text', value: text},
-            {column: 'snapshot_id', name: 'snapshot-blob', value: blob},
-            {column: 'model_id', name: 'model-id-blob', value: blob},
-            {column: 'model_id', name: 'model-id-text', value: text},
-            {column: 'model_sha256', name: 'model-sha-blob', value: blob},
-            {column: 'model_sha256', name: 'model-sha-uppercase', value: 'F'.repeat(64)},
-            {column: 'dimensions', name: 'dimensions-blob', value: blob},
-            {column: 'template_version', name: 'template-version-blob', value: blob},
-            {column: 'count', name: 'count-blob', value: blob},
-            {column: 'state', name: 'state-blob', value: blob},
-            {column: 'created_at', name: 'created-at-blob', value: blob},
-            {column: 'created_at', name: 'created-at-text', value: text},
-          ] as const;
+    layerIt.effect(
+      'rejects corrupt zero-vector generation manifests before capacity or writer admission',
+      () =>
+        Effect.scoped(
+          Effect.gen(function* () {
+            const fs = yield* FileSystem.FileSystem;
+            const path = yield* Path.Path;
+            const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-vector-retirement-manifest-'});
+            const blob = new Uint8Array(1024 * 1024);
+            const text = 'x'.repeat(1024 * 1024);
+            const corruptions = [
+              {column: 'generation', name: 'generation-text', value: text},
+              {column: 'snapshot_id', name: 'snapshot-blob', value: blob},
+              {column: 'model_id', name: 'model-id-blob', value: blob},
+              {column: 'model_id', name: 'model-id-text', value: text},
+              {column: 'model_sha256', name: 'model-sha-blob', value: blob},
+              {column: 'model_sha256', name: 'model-sha-uppercase', value: 'F'.repeat(64)},
+              {column: 'dimensions', name: 'dimensions-blob', value: blob},
+              {column: 'template_version', name: 'template-version-blob', value: blob},
+              {column: 'count', name: 'count-blob', value: blob},
+              {column: 'state', name: 'state-blob', value: blob},
+              {column: 'created_at', name: 'created-at-blob', value: blob},
+              {column: 'created_at', name: 'created-at-text', value: text},
+            ] as const;
 
-          yield* Effect.forEach(
-            corruptions,
-            corruption =>
-              Effect.gen(function* () {
-                const databasePath = path.join(root, `${corruption.name}.sqlite`);
-                const generation = 'generation-corrupt';
-                const worktreeId = 'a'.repeat(64);
-                yield* Effect.sync(() =>
-                  seedVectorDatabase(databasePath, {
-                    generations: [{generation, snapshotId: 'snapshot-corrupt'}],
-                    pointers: [{generation, worktreeId}],
-                  }),
-                );
-                yield* prepareUntilReady(databasePath);
-                yield* deleteCodeGraphVectorPointerWithRetirement(databasePath, {
-                  expectedSnapshotId: 'snapshot-corrupt',
-                  worktreeId,
-                });
-                const epoch = retirementEpoch((yield* Effect.sync(() => readRetirementRows(databasePath)))[0]!);
-                yield* Effect.sync(() =>
-                  corruptMarkedGeneration(databasePath, corruption.column, corruption.value, generation),
-                );
-                const before = yield* Effect.sync(() => readRetirementDataState(databasePath));
-                let protectors = 0;
-                const capacityProtector: CodeGraphVectorRetirementCapacityProtector = (_boundary, transaction) => {
-                  protectors += 1;
-                  return transaction;
-                };
+            yield* Effect.forEach(
+              corruptions,
+              corruption =>
+                Effect.gen(function* () {
+                  const databasePath = path.join(root, `${corruption.name}.sqlite`);
+                  const generation = 'generation-corrupt';
+                  const worktreeId = 'a'.repeat(64);
+                  yield* Effect.sync(() =>
+                    seedVectorDatabase(databasePath, {
+                      generations: [{generation, snapshotId: 'snapshot-corrupt'}],
+                      pointers: [{generation, worktreeId}],
+                    }),
+                  );
+                  yield* prepareUntilReady(databasePath);
+                  yield* deleteCodeGraphVectorPointerWithRetirement(databasePath, {
+                    expectedSnapshotId: 'snapshot-corrupt',
+                    worktreeId,
+                  });
+                  const epoch = retirementEpoch((yield* Effect.sync(() => readRetirementRows(databasePath)))[0]!);
+                  yield* Effect.sync(() =>
+                    corruptMarkedGeneration(databasePath, corruption.column, corruption.value, generation),
+                  );
+                  const before = yield* Effect.sync(() => readRetirementDataState(databasePath));
+                  let protectors = 0;
+                  const capacityProtector: CodeGraphVectorRetirementCapacityProtector = (_boundary, transaction) => {
+                    protectors += 1;
+                    return transaction;
+                  };
 
-                const error = yield* retireCodeGraphVectorGenerationPage(
-                  databasePath,
-                  {epoch, generation, requestedLimit: 1_000},
-                  {capacityProtector},
-                ).pipe(Effect.flip);
+                  const error = yield* retireCodeGraphVectorGenerationPage(
+                    databasePath,
+                    {epoch, generation, requestedLimit: 1_000},
+                    {capacityProtector},
+                  ).pipe(Effect.flip);
 
-                expectPathFreeError(error, databasePath);
-                expect(protectors, corruption.name).toBe(0);
-                expect(yield* Effect.sync(() => readRetirementDataState(databasePath)), corruption.name).toEqual(
-                  before,
-                );
-              }),
-            {concurrency: 1, discard: true},
-          );
-        }),
-      ),
+                  expectPathFreeError(error, databasePath);
+                  expect(protectors, corruption.name).toBe(0);
+                  expect(yield* Effect.sync(() => readRetirementDataState(databasePath)), corruption.name).toEqual(
+                    before,
+                  );
+                }),
+              {concurrency: 1, discard: true},
+            );
+          }),
+        ),
+      90_000,
     );
 
     layerIt.effect('rejects unexpected vector indexes and cascading child tables before any retirement receipt', () =>

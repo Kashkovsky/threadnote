@@ -21,6 +21,7 @@ import {
   parseWindowsAvailableDiskBytes,
   platformPathFor,
   probeAvailableDiskBytes,
+  probeRuntimeAvailableDiskBytes,
   readCanonicalProcessStartIdentity,
   readProcessStartIdentity,
   resolveHomeDirectory,
@@ -99,6 +100,18 @@ describe('SystemInfo disk capacity parsing', () => {
     expect(parseWindowsAvailableDiskBytes('not-a-size')).toBeUndefined();
   });
 
+  effectIt.effect('uses an absolute POSIX disk probe when PATH is unavailable', () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        if (process.platform === 'win32') return;
+        const available = yield* legacyAvailableDiskBytes(process.cwd(), process.platform, {PATH: ''});
+
+        expect(available).toBeDefined();
+        expect(available).toBeGreaterThan(0);
+      }),
+    ),
+  );
+
   effectIt.effect.prop(
     'converts native statfs values to a conservative safe integer monotonically',
     {
@@ -155,6 +168,35 @@ describe('SystemInfo disk capacity parsing', () => {
         expect(nativeInvocations).toBe(1);
         expect(fallbackInvocations).toBe(0);
       }
+    }),
+  );
+
+  effectIt.effect('routes macOS Intel capacity probes through the bounded fallback', () =>
+    Effect.gen(function* () {
+      let fallbackInvocations = 0;
+      let nativeInvocations = 0;
+      const available = yield* probeRuntimeAvailableDiskBytes(
+        '/private/darwin-x64-statfs-fixture',
+        'darwin',
+        'x64',
+        {},
+        {
+          fallback: () =>
+            Effect.sync(() => {
+              fallbackInvocations += 1;
+              return 8_192;
+            }),
+          statfs: () =>
+            Effect.sync(() => {
+              nativeInvocations += 1;
+              return {bavail: 1n, bsize: 1n};
+            }),
+        },
+      );
+
+      expect(available).toBe(8_192);
+      expect(fallbackInvocations).toBe(1);
+      expect(nativeInvocations).toBe(0);
     }),
   );
 
@@ -300,7 +342,8 @@ describe('SystemInfo disk capacity parsing', () => {
                 process.platform,
                 {...process.env, PATH: fixture.root, THREADNOTE_DISK_PROBE_PID: fixture.processIdPath},
                 {
-                  fallback: legacyAvailableDiskBytes,
+                  fallback: (path, platform, environment) =>
+                    legacyAvailableDiskBytes(path, platform, environment, join(fixture.root, 'df')),
                   statfs: () => Effect.fail(Object.assign(new Error('Native statfs unavailable.'), {code: 'ENOSYS'})),
                 },
                 750,
@@ -317,7 +360,7 @@ describe('SystemInfo disk capacity parsing', () => {
     ),
   );
 
-  effectIt.effect('launches no subprocesses across a bounded supported-host probe load', () =>
+  effectIt.effect('uses only the selected adapter across a bounded supported-host probe load', () =>
     Effect.acquireUseRelease(
       Effect.sync(() => ({spawn: vi.spyOn(Bun, 'spawn'), spawnSync: vi.spyOn(Bun, 'spawnSync')})),
       spies =>
@@ -333,7 +376,14 @@ describe('SystemInfo disk capacity parsing', () => {
           expect(capacities.every(value => value !== undefined && Number.isSafeInteger(value) && value >= 0)).toBe(
             true,
           );
-          expect(spies.spawn).not.toHaveBeenCalled();
+          if (process.platform === 'darwin' && process.arch === 'x64') {
+            expect(spies.spawn).toHaveBeenCalledTimes(128);
+            for (const [options] of spies.spawn.mock.calls) {
+              expect(options).toMatchObject({cmd: ['/bin/df', '-Pk', process.cwd()]});
+            }
+          } else {
+            expect(spies.spawn).not.toHaveBeenCalled();
+          }
           expect(spies.spawnSync).not.toHaveBeenCalled();
         }).pipe(Effect.provide(SystemInfo.layer)),
       spies =>

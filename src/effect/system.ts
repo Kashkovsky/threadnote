@@ -357,7 +357,34 @@ class NativeStatfsUnavailableError {
 }
 
 function availableDiskBytes(path: string, platform: NodeJS.Platform, environment: NodeJS.ProcessEnv) {
-  return probeAvailableDiskBytes(path, platform, environment, defaultDiskCapacityProbeAdapters);
+  return probeRuntimeAvailableDiskBytes(
+    path,
+    platform,
+    runtimeArchitecture,
+    environment,
+    defaultDiskCapacityProbeAdapters,
+  );
+}
+
+export function probeRuntimeAvailableDiskBytes(
+  path: string,
+  platform: NodeJS.Platform,
+  architecture: NodeJS.Architecture,
+  environment: NodeJS.ProcessEnv,
+  adapters: DiskCapacityProbeAdapters,
+  timeoutMilliseconds = DISK_QUERY_TIMEOUT_MS,
+) {
+  // Bun 1.3.14's standalone darwin-x64 runtime has produced unusable native
+  // statfs observations on the exact Intel release runner. Keep the same
+  // bounded, cancellable query contract while using df on that architecture.
+  return platform === 'darwin' && architecture === 'x64'
+    ? adapters.fallback(path, platform, environment).pipe(
+        Effect.timeoutOrElse({
+          duration: timeoutMilliseconds,
+          orElse: () => Effect.succeed(undefined),
+        }),
+      )
+    : probeAvailableDiskBytes(path, platform, environment, adapters, timeoutMilliseconds);
 }
 
 export function probeAvailableDiskBytes(
@@ -401,7 +428,12 @@ function nativeStatfs(path: string) {
 }
 
 /** @internal Exported for a real-process cancellation regression. */
-export function legacyAvailableDiskBytes(path: string, platform: NodeJS.Platform, environment: NodeJS.ProcessEnv) {
+export function legacyAvailableDiskBytes(
+  path: string,
+  platform: NodeJS.Platform,
+  environment: NodeJS.ProcessEnv,
+  posixDiskCommand = '/bin/df',
+) {
   const command =
     platform === 'win32'
       ? [
@@ -413,7 +445,7 @@ export function legacyAvailableDiskBytes(path: string, platform: NodeJS.Platform
             'if (-not $root) { exit 2 }; ' +
             '[Console]::Out.Write((Get-PSDrive -Name $root.Substring(0,1)).Free)',
         ]
-      : ['df', '-Pk', path];
+      : [posixDiskCommand, '-Pk', path];
   const childEnvironment = platform === 'win32' ? {...environment, THREADNOTE_DISK_PATH: path} : environment;
   return Effect.acquireUseRelease(
     Effect.try({

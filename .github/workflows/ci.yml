@@ -299,9 +299,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Keep broad current-platform coverage and also gate the exact Apple Silicon
-        # runner label used by the release workflow.
-        os: [ubuntu-latest, macos-latest, macos-15, windows-latest]
+        # Gate both exact macOS runner architectures used by the release workflow.
+        os: [ubuntu-latest, macos-15, macos-15-intel, windows-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
 

@@ -128,6 +128,13 @@ describe('code graph vector retirement OS recovery', () => {
                       completed = true;
                       break;
                     }
+                    if (result.state === 'deferred') {
+                      // A killed owner can leave one zero-wait model-lock tick
+                      // unavailable while its durable receipt is reclaimed.
+                      // The bounded loop below still requires convergence.
+                      expect(result.blockedCode).toBe('model-unavailable');
+                      continue;
+                    }
                     expect(result.state).toBe('progress');
                   }
                   expect(completed).toBe(true);
