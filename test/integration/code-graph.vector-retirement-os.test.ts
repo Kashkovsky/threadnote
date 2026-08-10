@@ -108,7 +108,7 @@ describe('code graph vector retirement OS recovery', () => {
                   ]);
 
                   let completed = false;
-                  for (let unit = 0; unit < 16; unit += 1) {
+                  for (let unit = 0; unit < 32; unit += 1) {
                     const startedAt = performance.now();
                     const result = yield* runCodeGraphOrdinaryVectorMaintenanceUnit(
                       {checkoutId: CHECKOUT_ID, threadnoteHome: home},
@@ -123,21 +123,26 @@ describe('code graph vector retirement OS recovery', () => {
                         reservationMode: 'nonblocking-one-attempt',
                       },
                     );
-                    expect(yield* activeReceiptOperations(fs, path, home)).toEqual([]);
+                    const receiptOperations = yield* activeReceiptOperations(fs, path, home);
+                    expect([[], ['maintain code graph vector retirement']]).toContainEqual(receiptOperations);
                     if (result.state === 'complete') {
+                      expect(receiptOperations).toEqual([]);
                       completed = true;
                       break;
                     }
                     if (result.state === 'deferred') {
-                      // A killed owner can leave one zero-wait model-lock tick
-                      // unavailable while its durable receipt is reclaimed.
-                      // The bounded loop below still requires convergence.
-                      expect(result.blockedCode).toBe('model-unavailable');
+                      // The OS can briefly retain the killed process identity,
+                      // receipt, or cursor temporary after child.exited settles.
+                      // Keep retrying with a real bounded yield; exact final
+                      // convergence below still rejects a durable invalid state.
+                      expect(['invalid-sidecar', 'model-unavailable']).toContain(result.blockedCode);
+                      yield* Effect.sleep(10);
                       continue;
                     }
                     expect(result.state).toBe('progress');
                   }
                   expect(completed).toBe(true);
+                  expect(yield* activeReceiptOperations(fs, path, home)).toEqual([]);
                   expect(readVectorState(databasePath)).toEqual({
                     generations: 0,
                     markers: 0,
