@@ -1382,6 +1382,7 @@ const benchmarkCodeGraph = Effect.scoped(
         }),
         runnerClass: benchmarkRunnerLabel('THREADNOTE_BENCHMARK_RUNNER_CLASS', 'local-unclassified'),
         runnerIdentity: benchmarkRunnerLabel('THREADNOTE_BENCHMARK_RUNNER_ID', 'local'),
+        runtimePlatform: system.platform,
         sampler: largeEvidenceRun
           ? externalSamplerDescription(coldExternalTelemetry ?? bootstrapExternalTelemetry)
           : 'progress-boundary storage sampling',
@@ -5547,11 +5548,12 @@ export function enforceCodeGraphBenchmarkBudget(
   if (typeof value !== 'object' || value === null) throw new Error('Code graph budget file must be an object.');
   const record = value as {
     readonly developmentPerformance?: unknown;
+    readonly developmentPerformanceByPlatform?: Readonly<Record<string, unknown>>;
     readonly scalePerformance?: Readonly<Record<string, unknown>>;
     readonly vectorPerformance?: unknown;
     readonly vectorScalePerformance?: Readonly<Record<string, unknown>>;
   };
-  const selected =
+  const baseSelected =
     artifact.metadata.vectorEnabled === true
       ? scaleSymbols === undefined
         ? record.vectorPerformance
@@ -5559,6 +5561,19 @@ export function enforceCodeGraphBenchmarkBudget(
       : scaleSymbols === undefined
         ? record.developmentPerformance
         : record.scalePerformance?.[String(scaleSymbols)];
+  const runtimePlatform = artifact.metadata.runtimePlatform;
+  const platformOverride =
+    artifact.metadata.vectorEnabled !== true &&
+    scaleSymbols === undefined &&
+    typeof runtimePlatform === 'string' &&
+    typeof record.developmentPerformanceByPlatform?.[runtimePlatform] === 'object' &&
+    record.developmentPerformanceByPlatform[runtimePlatform] !== null
+      ? record.developmentPerformanceByPlatform[runtimePlatform]
+      : undefined;
+  const selected =
+    typeof baseSelected === 'object' && baseSelected !== null && platformOverride !== undefined
+      ? {...baseSelected, ...platformOverride}
+      : baseSelected;
   if (typeof selected !== 'object' || selected === null) {
     throw new Error(
       `No reviewed ${artifact.metadata.vectorEnabled === true ? 'vector ' : ''}code graph performance budget exists ` +

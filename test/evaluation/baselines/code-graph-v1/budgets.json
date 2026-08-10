@@ -17,11 +17,18 @@
     "coldIndexP95MillisecondsMaximum": 10000,
     "coldMaterializationP95MillisecondsMaximum": 5000,
     "derivedIndexBytesMaximum": 67108864,
-    "hotQueryP95MillisecondsMaximum": 500,
-    "oneFileIncrementalP95MillisecondsMaximum": 6000,
+    "hotQueryP95MillisecondsMaximum": 250,
+    "oneFileIncrementalP95MillisecondsMaximum": 5000,
     "oneFileMaterializationP95MillisecondsMaximum": 4000,
     "processPeakRssBytesMaximum": 1073741824,
     "wholeGraphAnalysisP95MillisecondsMaximum": 1000
+  },
+  "developmentPerformanceByPlatform": {
+    "win32": {
+      "hotQueryP95MillisecondsMaximum": 1000,
+      "oneFileIncrementalP95MillisecondsMaximum": 10000,
+      "wholeGraphAnalysisP95MillisecondsMaximum": 2000
+    }
   },
   "vectorPerformance": {
     "coldIndexP95MillisecondsMaximum": 60000,
@@ -80,7 +87,8 @@
   "notes": [
     "Quality and safety budgets are release gates on every platform.",
     "Development performance budgets detect order-of-magnitude regressions on the reviewed fixture.",
-    "The development hot-query and one-file incremental ceilings include hosted-Windows scheduler headroom while still rejecting multi-second query and minute-scale rebuild regressions.",
+    "Hosted Windows uses explicit development-only scheduler headroom for hot query, one-file indexing, and structural analysis; Linux and macOS retain the tighter reviewed fixture ceilings.",
+    "The Windows overrides still reject multi-second hot queries and minute-scale one-file rebuilds instead of weakening vector, scale, quality, or safety gates.",
     "Pinned production-vector budgets gate the lexically disjoint development control plus full vector activation and scans at 10k and 100k symbols.",
     "Generated 10k and 100k lexical artifacts are budget-gated on graph/runtime pull requests in Linux and on scheduled runners; production-shaped repositories remain a separate soak gate.",
     "Reviewed lexical incremental ceilings retain substantial cross-runner headroom over the stored baselines while rejecting minute-scale one-file rebuild regressions.",

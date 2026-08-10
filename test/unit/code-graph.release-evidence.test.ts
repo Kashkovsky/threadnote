@@ -715,6 +715,47 @@ describe('code graph release evidence', () => {
     );
   });
 
+  it('applies development scheduler headroom only to the recorded runtime platform', () => {
+    const measurements = [
+      'cold-index',
+      'cold-materialization',
+      'one-file-reindex-index',
+      'one-file-reindex-materialization',
+      'hot-exact-lexical-query',
+      'whole-graph-structural-analysis',
+    ].map(name => benchmarkMeasurement(name, 'milliseconds', [10]));
+    const artifact = benchmarkArtifact(
+      [
+        ...measurements,
+        benchmarkMeasurement('incremental-process-peak-rss', 'bytes', [10]),
+        benchmarkMeasurement('derived-index-disk', 'bytes', [10]),
+      ],
+      {runtimePlatform: 'win32'},
+    );
+    const budget = {
+      developmentPerformance: {
+        coldIndexP95MillisecondsMaximum: 20,
+        coldMaterializationP95MillisecondsMaximum: 20,
+        derivedIndexBytesMaximum: 20,
+        hotQueryP95MillisecondsMaximum: 5,
+        oneFileIncrementalP95MillisecondsMaximum: 20,
+        oneFileMaterializationP95MillisecondsMaximum: 20,
+        processPeakRssBytesMaximum: 20,
+        wholeGraphAnalysisP95MillisecondsMaximum: 20,
+      },
+      developmentPerformanceByPlatform: {win32: {hotQueryP95MillisecondsMaximum: 15}},
+    };
+
+    expect(() => enforceCodeGraphBenchmarkBudget(artifact, budget, undefined)).not.toThrow();
+    expect(() =>
+      enforceCodeGraphBenchmarkBudget(
+        {...artifact, metadata: {...artifact.metadata, runtimePlatform: 'linux'}},
+        budget,
+        undefined,
+      ),
+    ).toThrow(/hot-exact-lexical-query/);
+  });
+
   it('accepts repeatable structured controls without retaining them in the artifact contract', () => {
     const javaControl = JSON.stringify({
       expectedLanguage: 'java',
