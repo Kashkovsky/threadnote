@@ -32,6 +32,10 @@ import {SystemInfo} from '../../src/effect/system.js';
 import {CommandExecutor} from '../../src/effect/command.js';
 import type {CodeGraphWorkspace} from '../../src/code_graph/languages/types.js';
 import {CodeGraphStoreError} from '../../src/code_graph/types.js';
+import {
+  COMPONENT_SCOPE_TEMP_TABLE,
+  componentEdgeAggregateMaterializationStatement,
+} from '../../src/code_graph/store_component_aggregates.js';
 import type {
   CodeGraphEdge,
   CodeGraphFileFacts,
@@ -423,6 +427,20 @@ describe('Manager logical repository and workspace catalogs', () => {
     const repositoryPlan = queryPlanDatabase
       .query(`EXPLAIN QUERY PLAN ${repositoryStatement.text}`)
       .all(...repositoryStatement.parameters) as readonly {readonly detail: string}[];
+    queryPlanDatabase.run(
+      `CREATE TEMP TABLE ${COMPONENT_SCOPE_TEMP_TABLE} (
+        id TEXT PRIMARY KEY NOT NULL,
+        scope_id TEXT
+      ) WITHOUT ROWID`,
+    );
+    const aggregateStatement = componentEdgeAggregateMaterializationStatement(snapshot.id, undefined);
+    const aggregatePlan = queryPlanDatabase
+      .query(`EXPLAIN QUERY PLAN ${aggregateStatement.text}`)
+      .all(...aggregateStatement.parameters) as readonly {readonly detail: string}[];
+    expect(aggregatePlan.some(row => row.detail.includes(`SCAN ${COMPONENT_SCOPE_TEMP_TABLE}`))).toBe(false);
+    expect(aggregatePlan.filter(row => /^SEARCH (?:source|target) USING PRIMARY KEY \(id=\?\)$/u.test(row.detail))).toHaveLength(
+      2,
+    );
     queryPlanDatabase.close();
     expect(repositoryPlan.some(row => row.detail.includes('symbols_export_order (snapshot_id=?)'))).toBe(true);
 

@@ -3,10 +3,16 @@ import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {sha256HexSync} from '../crypto/sha256.js';
 import type {CodeGraphVisualizationScopeEdge} from './store_models.js';
 import {configureConnection, tableExists} from './store_session.js';
-import {effectiveGraphCtes, effectiveGraphParameters, selectBaseSnapshotId} from './store_query_core.js';
+import {
+  effectiveEdgesCte,
+  effectiveSnapshotParameters,
+  effectiveSymbolsCte,
+  selectBaseSnapshotId,
+} from './store_query_core.js';
 import {type CodeGraphEdge, type CodeGraphProvenance, CodeGraphStoreError} from './types.js';
 
 const COMPONENT_EDGE_AGGREGATE_VERSION = 1;
+const COMPONENT_SCOPE_TEMP_TABLE = 'threadnote_component_scopes';
 
 interface PersistedComponentEdgeAggregateRow {
   readonly confidence: number;
@@ -33,26 +39,21 @@ const materializeSnapshotComponentEdgeAggregates = Effect.fn('codeGraph.material
       ) > 0;
     yield* sql`DELETE FROM snapshot_component_edge_aggregate_receipts WHERE snapshot_id = ${snapshotId}`;
     yield* sql`DELETE FROM snapshot_component_edge_aggregates WHERE snapshot_id = ${snapshotId}`;
+    yield* sql.unsafe(`DROP TABLE IF EXISTS temp.${COMPONENT_SCOPE_TEMP_TABLE}`);
     yield* sql.unsafe(
-      `${effectiveGraphCtes()},
-     scoped_symbols AS (
-       SELECT id,
-         ${scopeExpression(hasWorkspaceCatalog)} AS scope_id
-       FROM effective_symbols
-     )
-     INSERT INTO snapshot_component_edge_aggregates (
-       snapshot_id, source_component_id, target_component_id, provenance, relation, count, confidence
-     )
-     SELECT ?, source.scope_id, target.scope_id, edge.provenance, edge.relation,
-       COUNT(*), MAX(edge.confidence)
-     FROM effective_edges AS edge
-     JOIN scoped_symbols AS source ON source.id = edge.source_id
-     JOIN scoped_symbols AS target ON target.id = edge.target_id
-     WHERE source.scope_id IS NOT NULL AND target.scope_id IS NOT NULL
-       AND source.scope_id <> target.scope_id
-     GROUP BY source.scope_id, target.scope_id, edge.provenance, edge.relation`,
-      [...effectiveGraphParameters(snapshotId, baseSnapshotId), snapshotId],
+      `CREATE TEMP TABLE ${COMPONENT_SCOPE_TEMP_TABLE} (
+         id TEXT PRIMARY KEY NOT NULL,
+         scope_id TEXT
+       ) WITHOUT ROWID`,
     );
+    const scopeStatement = componentScopeMaterializationStatement(
+      snapshotId,
+      baseSnapshotId,
+      hasWorkspaceCatalog,
+    );
+    yield* sql.unsafe(scopeStatement.text, [...scopeStatement.parameters]);
+    const edgeStatement = componentEdgeAggregateMaterializationStatement(snapshotId, baseSnapshotId);
+    yield* sql.unsafe(edgeStatement.text, [...edgeStatement.parameters]);
     const rows = yield* selectComponentEdgeAggregateRows(sql, snapshotId);
     const edges = rows.map(componentEdgeFromRow);
     const edgeCount = edges.reduce((total, edge) => total + edge.count, 0);
@@ -67,9 +68,41 @@ const materializeSnapshotComponentEdgeAggregates = Effect.fn('codeGraph.material
       ${componentEdgeAggregateDigest(edges)}, ${new Date().toISOString()}
     )
   `;
+    yield* sql.unsafe(`DROP TABLE temp.${COMPONENT_SCOPE_TEMP_TABLE}`);
     return true;
   },
 );
+
+function componentScopeMaterializationStatement(
+  snapshotId: string,
+  baseSnapshotId: string | undefined,
+  hasWorkspaceCatalog: boolean,
+) {
+  return {
+    parameters: effectiveSnapshotParameters(snapshotId, baseSnapshotId),
+    text: `${effectiveSymbolsCte()}
+      INSERT INTO ${COMPONENT_SCOPE_TEMP_TABLE} (id, scope_id)
+      SELECT id, ${scopeExpression(hasWorkspaceCatalog)} FROM effective_symbols`,
+  };
+}
+
+function componentEdgeAggregateMaterializationStatement(snapshotId: string, baseSnapshotId: string | undefined) {
+  return {
+    parameters: [...effectiveSnapshotParameters(snapshotId, baseSnapshotId), snapshotId],
+    text: `${effectiveEdgesCte()}
+      INSERT INTO snapshot_component_edge_aggregates (
+        snapshot_id, source_component_id, target_component_id, provenance, relation, count, confidence
+      )
+      SELECT ?, source.scope_id, target.scope_id, edge.provenance, edge.relation,
+        COUNT(*), MAX(edge.confidence)
+      FROM effective_edges AS edge
+      CROSS JOIN ${COMPONENT_SCOPE_TEMP_TABLE} AS source ON source.id = edge.source_id
+      CROSS JOIN ${COMPONENT_SCOPE_TEMP_TABLE} AS target ON target.id = edge.target_id
+      WHERE source.scope_id IS NOT NULL AND target.scope_id IS NOT NULL
+        AND source.scope_id <> target.scope_id
+      GROUP BY source.scope_id, target.scope_id, edge.provenance, edge.relation`,
+  };
+}
 
 const selectPersistedSnapshotComponentEdges = Effect.fn('codeGraph.selectPersistedSnapshotComponentEdges')(function* (
   snapshotId: string,
@@ -156,4 +189,9 @@ function scopeExpression(hasWorkspaceCatalog: boolean): string {
     : fallback;
 }
 
-export {materializeSnapshotComponentEdgeAggregates, selectPersistedSnapshotComponentEdges};
+export {
+  COMPONENT_SCOPE_TEMP_TABLE,
+  componentEdgeAggregateMaterializationStatement,
+  materializeSnapshotComponentEdgeAggregates,
+  selectPersistedSnapshotComponentEdges,
+};
