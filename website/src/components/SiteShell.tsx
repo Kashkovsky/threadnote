@@ -7,6 +7,7 @@ const navItems: Array<{page: SitePage; label: string; href: string}> = [
   {page: 'home', label: 'Product', href: ''},
   {page: 'performance', label: 'Performance', href: 'performance/'},
   {page: 'docs', label: 'Docs', href: 'docs/'},
+  {page: 'whats-new', label: "What's new", href: 'whats-new/'},
   {page: 'pro-tips', label: 'Pro tips', href: 'pro-tips/'},
   {page: 'manager-demo', label: 'Manager demo', href: 'manager-demo/'},
   {page: 'faq', label: 'FAQ', href: 'faq/'},
@@ -82,6 +83,7 @@ export function SiteShell({
         <div className="site-footer__links">
           <a href={siteHref('docs/')}>Documentation</a>
           <a href={siteHref('performance/')}>Performance</a>
+          <a href={siteHref('whats-new/')}>What's new</a>
           <a href={siteHref('pro-tips/')}>Pro tips</a>
           <a href={siteHref('faq/')}>FAQ</a>
           <a href={siteHref('font-licenses.txt')}>Font licenses</a>

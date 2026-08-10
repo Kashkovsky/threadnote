@@ -15,6 +15,7 @@ The site uses independent HTML entry points so every public route has a real doc
 - `/` — product landing page
 - `/performance/` — large-repository architecture and retained benchmark evidence
 - `/docs/` — searchable 4.0 documentation
+- `/whats-new/` — stable releases from the latest major version
 - `/pro-tips/` — animated workflow simulations
 - `/manager-demo/` — an interactive Manager using synthetic data only
 - `/faq/` — product questions and comparisons
@@ -123,7 +124,8 @@ Perform the control-plane changes in this order to avoid domain takeover and cer
 6. Optionally add GitHub's four IPv6 `AAAA` records: `2606:50c0:8000::153`, `2606:50c0:8001::153`,
    `2606:50c0:8002::153`, and `2606:50c0:8003::153`.
 7. After DNS propagation and certificate provisioning, enable **Enforce HTTPS**, dispatch the Website workflow, and
-   verify `/`, `/performance/`, `/docs/`, `/pro-tips/`, `/manager-demo/`, `/faq/`, `/robots.txt`, and `/sitemap.xml`.
+   verify `/`, `/performance/`, `/docs/`, `/whats-new/`, `/pro-tips/`, `/manager-demo/`, `/faq/`, `/robots.txt`, and
+   `/sitemap.xml`.
 
 After cutover, set the repository About homepage to `https://threadnote.io/` and submit
 `https://threadnote.io/sitemap.xml` to the search-engine webmaster consoles in use. The default project Pages URL and

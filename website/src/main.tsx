@@ -50,6 +50,7 @@ const pageLoaders: Readonly<Record<SitePage, () => Promise<PageModule>>> = {
   home: () => import('./pages/LandingPage'),
   performance: () => import('./pages/PerformancePage'),
   docs: () => import('./pages/DocsPage'),
+  'whats-new': () => import('./pages/WhatsNewPage'),
   'pro-tips': () => import('./pages/ProTipsPage'),
   'manager-demo': () => import('./pages/ManagerDemoPage'),
   faq: () => import('./pages/FaqPage'),
@@ -63,6 +64,8 @@ function declaredInitialPage(): SitePage {
     case 'docs':
       return page;
     case 'performance':
+      return page;
+    case 'whats-new':
       return page;
     case 'pro-tips':
       return page;

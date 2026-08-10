@@ -2,6 +2,7 @@ export const sitePagePaths = {
   home: '',
   performance: 'performance',
   docs: 'docs',
+  'whats-new': 'whats-new',
   'pro-tips': 'pro-tips',
   'manager-demo': 'manager-demo',
   faq: 'faq',

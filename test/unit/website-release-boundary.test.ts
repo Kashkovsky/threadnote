@@ -73,6 +73,7 @@ describe('website and standalone release boundary', () => {
       'index.html',
       'performance/index.html',
       'docs/index.html',
+      'whats-new/index.html',
       'pro-tips/index.html',
       'manager-demo/index.html',
       'faq/index.html',
@@ -173,25 +174,27 @@ describe('website and standalone release boundary', () => {
   it('uses threadnote.io as the single public website origin', async () => {
     const origin = 'https://threadnote.io';
     const entries = [
-      ['index.html', '/'],
-      ['performance/index.html', '/performance/'],
-      ['docs/index.html', '/docs/'],
-      ['pro-tips/index.html', '/pro-tips/'],
-      ['manager-demo/index.html', '/manager-demo/'],
-      ['faq/index.html', '/faq/'],
+      ['index.html', '/', 'og.png'],
+      ['performance/index.html', '/performance/', 'og.png'],
+      ['docs/index.html', '/docs/', 'og.png'],
+      ['whats-new/index.html', '/whats-new/', 'whats-new-og.png'],
+      ['pro-tips/index.html', '/pro-tips/', 'og.png'],
+      ['manager-demo/index.html', '/manager-demo/', 'og.png'],
+      ['faq/index.html', '/faq/', 'og.png'],
     ] as const;
     const htmlDocuments = await Promise.all(
-      entries.map(async ([entry, route]) => ({
+      entries.map(async ([entry, route, socialImage]) => ({
         route,
+        socialImage,
         html: await readFile(join(root, 'website', entry), 'utf8'),
       })),
     );
 
-    for (const {route, html} of htmlDocuments) {
+    for (const {route, socialImage, html} of htmlDocuments) {
       expect(html).toContain(`<link rel="canonical" href="${origin}${route}" />`);
       expect(html).toContain(`<meta property="og:url" content="${origin}${route}" />`);
-      expect(html).toContain(`<meta property="og:image" content="${origin}/og.png" />`);
-      expect(html).toContain(`<meta name="twitter:image" content="${origin}/og.png" />`);
+      expect(html).toContain(`<meta property="og:image" content="${origin}/${socialImage}" />`);
+      expect(html).toContain(`<meta name="twitter:image" content="${origin}/${socialImage}" />`);
       expect(html).not.toContain('kashkovsky.github.io/threadnote');
     }
 

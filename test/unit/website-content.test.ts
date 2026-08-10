@@ -8,6 +8,12 @@ import {
   performanceArtifactPublicUrl,
   sha256Hex,
 } from '../../scripts/site-performance-evidence.js';
+import {
+  loadLatestMajorWebsiteReleases,
+  parseStableReleaseVersion,
+  selectLatestMajorReleases,
+  summarizeReleaseNote,
+} from '../../scripts/site-release-notes.js';
 import {assertExternalPerformanceEvidence} from '../../scripts/benchmark-code-graph.js';
 import {docsSections, mcpTools} from '../../website/src/content/docs.js';
 import {graphAnalyzeScenario, graphInspectScenario, heroScenario} from '../../website/src/content/landing.js';
@@ -361,6 +367,7 @@ describe('Threadnote 4 website content', () => {
       'index.html',
       'performance/index.html',
       'docs/index.html',
+      'whats-new/index.html',
       'pro-tips/index.html',
       'manager-demo/index.html',
       'faq/index.html',
@@ -368,7 +375,7 @@ describe('Threadnote 4 website content', () => {
 
     await Promise.all(routes.map(route => access(join(root, 'website', route))));
     const config = await readFile(join(root, 'website', 'vite.config.ts'), 'utf8');
-    for (const route of ['performance', 'docs', 'proTips', 'managerDemo', 'faq']) {
+    for (const route of ['performance', 'docs', 'whatsNew', 'proTips', 'managerDemo', 'faq']) {
       expect(config).toContain(`${route}:`);
     }
   });
@@ -380,6 +387,7 @@ describe('Threadnote 4 website content', () => {
         'pages/LandingPage.tsx',
         'pages/PerformancePage.tsx',
         'pages/DocsPage.tsx',
+        'pages/WhatsNewPage.tsx',
         'pages/ProTipsPage.tsx',
         'pages/ManagerDemoPage.tsx',
         'pages/FaqPage.tsx',
@@ -390,6 +398,64 @@ describe('Threadnote 4 website content', () => {
     for (const page of pages) {
       expect(page).toContain('<SiteShell');
     }
+  });
+
+  it('shows published stable releases from the latest major only', () => {
+    const selected = selectLatestMajorReleases(
+      [
+        ['v3.9.0', '2026-07-01T00:00:00Z'],
+        ['v4.0.0', '2026-08-01T00:00:00Z'],
+        ['v4.1.0', '2026-08-10T00:00:00Z'],
+      ].map(([version, publishedAt]) => ({...parseStableReleaseVersion(version)!, publishedAt})),
+    );
+
+    expect(parseStableReleaseVersion('v4.1.0-beta.3')).toBeUndefined();
+    expect(selected.map(release => release.version)).toEqual(['v4.1.0', 'v4.0.0']);
+    expect(summarizeReleaseNote("## What's new\n\nA concise **summary**.\n\n### Safer upgrades\n\n- Details")).toEqual({
+      highlights: ['Safer upgrades'],
+      summary: 'A concise summary.',
+    });
+
+    const releases = loadLatestMajorWebsiteReleases(root);
+    expect(releases.length).toBeGreaterThan(1);
+    expect(releases.every(release => release.major === releases[0]!.major)).toBe(true);
+    expect(releases.every(release => !release.version.includes('-'))).toBe(true);
+    expect(releases.every(release => release.summary.length > 0)).toBe(true);
+    expect(releases.every(release => release.releaseUrl.endsWith(`/tag/${release.version}`))).toBe(true);
+  });
+
+  it('keeps latest-major release selection ordered, unique, and non-mutating', () => {
+    fc.assert(
+      fc.property(
+        fc.array(fc.tuple(fc.nat({max: 8}), fc.nat({max: 20}), fc.nat({max: 40})), {
+          maxLength: 80,
+          minLength: 1,
+        }),
+        versions => {
+          const releases = versions.map(([major, minor, patch], index) => ({
+            major,
+            minor,
+            patch,
+            publishedAt: `2026-01-${String((index % 28) + 1).padStart(2, '0')}T00:00:00Z`,
+            version: `v${major}.${minor}.${patch}`,
+          }));
+          const before = structuredClone(releases);
+          const selected = selectLatestMajorReleases(releases);
+          const latestMajor = Math.max(...releases.map(release => release.major));
+
+          expect(releases).toEqual(before);
+          expect(selected.every(release => release.major === latestMajor)).toBe(true);
+          expect(new Set(selected.map(release => release.version)).size).toBe(selected.length);
+          for (let index = 1; index < selected.length; index += 1) {
+            const previous = selected[index - 1]!;
+            const current = selected[index]!;
+            expect(
+              previous.minor > current.minor || (previous.minor === current.minor && previous.patch > current.patch),
+            ).toBe(true);
+          }
+        },
+      ),
+    );
   });
 
   it('covers the complete 4.0 documentation map with unique article anchors', () => {
@@ -669,6 +735,7 @@ describe('Threadnote 4 website content', () => {
       ['', 'home'],
       ['performance', 'performance'],
       ['docs', 'docs'],
+      ['whats-new', 'whats-new'],
       ['pro-tips', 'pro-tips'],
       ['manager-demo', 'manager-demo'],
       ['faq', 'faq'],
@@ -740,7 +807,7 @@ describe('Threadnote 4 website content', () => {
       resolveDocs = resolve;
     });
     const loaders = Object.fromEntries(
-      (['home', 'performance', 'docs', 'pro-tips', 'manager-demo', 'faq'] as const).map(page => [
+      (['home', 'performance', 'docs', 'whats-new', 'pro-tips', 'manager-demo', 'faq'] as const).map(page => [
         page,
         page === 'docs' ? () => deferredDocs : async () => page,
       ]),

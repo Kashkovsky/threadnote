@@ -3,10 +3,12 @@ name: Website
 on:
   push:
     branches: [main]
+    tags: ['v*.*.*']
     paths:
       - '.github/workflows/pages.yml'
       - 'scripts/site-performance-evidence.ts'
       - 'src/evaluation/benchmark.ts'
+      - '.github/release-notes/**'
       - 'test/evaluation/candidates/threadnote-4.0.0/benchmarks/darwin-arm64-m1-max/code-graph-intellij-*.json'
       - 'test/evaluation/candidates/threadnote-4.0.0/benchmarks/darwin-arm64-m1-max/code-graph-lexical-production-100k-*.json'
       - 'test/evaluation/candidates/threadnote-4.0.1/benchmarks/darwin-arm64-m1-max/code-graph-worktree-readiness-*.json'
