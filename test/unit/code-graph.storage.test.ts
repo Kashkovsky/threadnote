@@ -1,9 +1,11 @@
 import {copyFile, rename} from 'node:fs/promises';
 import {Database} from 'bun:sqlite';
 import {Deferred, Effect, Fiber, FileSystem, Path} from 'effect';
+import fc from 'fast-check';
 import {afterEach, describe, expect, it} from 'vitest';
 import {codeGraphWorktreeLockPath} from '../../src/code_graph/layout.js';
 import {
+  codeGraphStorageUnattributedBytes,
   codeGraphCompactionRequiredFreeBytes,
   compactCodeGraphStorage,
   inspectCodeGraphStorage,
@@ -23,12 +25,46 @@ describe('active code graph storage', () => {
 
   it('reports exact sidecar bytes and transactionally compacts verified free pages', async () => {
     const fixture = await storageFixture(homes);
-    const before = await runEffect(inspectCodeGraphStorage(fixture.home, fixture.checkoutId));
+    const ordinary = await runEffect(inspectCodeGraphStorage(fixture.home, fixture.checkoutId));
+    if (ordinary.state !== 'available' || ordinary.pageStorage.state !== 'available') {
+      throw new Error('missing ordinary storage');
+    }
+    expect(ordinary.pageStorage.attribution).toBeUndefined();
+
+    const before = await runEffect(inspectCodeGraphStorage(fixture.home, fixture.checkoutId, {attributeObjects: true}));
     expect(before).toMatchObject({state: 'available'});
     if (before.state !== 'available' || before.pageStorage.state !== 'available') throw new Error('missing storage');
-    expect(before.totalBytes).toBe(before.databaseBytes + before.walBytes + before.shmBytes);
+    expect(before.filesystemBytes).toBe(before.databaseBytes + before.walBytes + before.journalBytes + before.shmBytes);
+    expect(before.totalBytes).toBe(before.filesystemBytes + before.temporaryBytes);
     expect(before.pageStorage.freelistPages).toBeGreaterThan(0);
     expect(before.pageStorage.reclaimableBytes).toBe(before.pageStorage.pageSize * before.pageStorage.freelistPages);
+    const attribution = before.pageStorage.attribution;
+    expect(attribution).toBeDefined();
+    if (!attribution) throw new Error('missing deep storage attribution');
+    if (attribution.state === 'unavailable') {
+      expect(attribution.reason).toBe('sqlite-dbstat-unavailable');
+    } else {
+      expect(attribution.allocatedBytes).toBe(before.pageStorage.pageCount * before.pageStorage.pageSize);
+      expect(attribution.freelistBytes).toBe(before.pageStorage.reclaimableBytes);
+      expect(attribution.attributedBytes + attribution.freelistBytes + attribution.unattributedBytes).toBe(
+        attribution.allocatedBytes,
+      );
+      expect(attribution.objectsTruncated).toBe(false);
+      expect(attribution.objects).toHaveLength(attribution.objectCount);
+      expect(attribution.objects.reduce((total, object) => total + object.bytes, 0)).toBe(attribution.attributedBytes);
+      expect(attribution.objects).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({kind: 'internal', name: 'sqlite_schema'}),
+          expect.objectContaining({kind: 'table', name: 'payload'}),
+        ]),
+      );
+      expect(attribution.semantic.groups).toEqual(expect.arrayContaining([expect.objectContaining({name: 'other'})]));
+      expect(attribution.semantic.groupsComplete).toBe(true);
+      expect(attribution.semantic.snapshots).toMatchObject({state: 'unavailable'});
+      for (const object of attribution.objects) {
+        expect(object.bytes).toBe(object.pages * before.pageStorage.pageSize);
+      }
+    }
 
     const dryRun = await runEffect(
       compactCodeGraphStorage(fixture.home, fixture.checkoutId, {dryRun: true, force: true}),
@@ -49,6 +85,26 @@ describe('active code graph storage', () => {
     } finally {
       database.close(false);
     }
+  });
+
+  it('keeps exact attribution accounting for every valid allocation split', () => {
+    fc.assert(
+      fc.property(
+        fc.integer({max: 1_000_000_000, min: 0}),
+        fc.nat({max: 1_000_000_000}),
+        fc.nat({max: 1_000_000_000}),
+        (allocatedBytes, attributedSeed, freelistSeed) => {
+          const attributedBytes = attributedSeed % (allocatedBytes + 1);
+          const remainingBytes = allocatedBytes - attributedBytes;
+          const freelistBytes = freelistSeed % (remainingBytes + 1);
+          const unattributedBytes = codeGraphStorageUnattributedBytes(allocatedBytes, attributedBytes, freelistBytes);
+
+          expect(unattributedBytes).toBeGreaterThanOrEqual(0);
+          expect(attributedBytes + freelistBytes + unattributedBytes).toBe(allocatedBytes);
+        },
+      ),
+      {numRuns: 500},
+    );
   });
 
   it('refuses compaction before VACUUM when available disk space is below the conservative requirement', async () => {

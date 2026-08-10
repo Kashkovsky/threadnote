@@ -1,7 +1,7 @@
 import {Option} from 'effect';
 import type {CodeGraphProgress} from './types.js';
 
-export type CodeGraphEtaBasis = 'cached-fact-bytes' | 'files' | 'final-fact-bytes' | 'source-bytes';
+export type CodeGraphEtaBasis = 'cached-fact-bytes' | 'extraction-work' | 'files' | 'final-fact-bytes' | 'source-bytes';
 export type CodeGraphEtaConfidence = 'high' | 'low' | 'medium';
 export type CodeGraphEtaPhase = 'embedding' | 'materializing' | 'scanning';
 
@@ -67,7 +67,26 @@ export function makeCodeGraphEtaTracker(): CodeGraphEtaTracker {
 
 export function codeGraphEtaMeasurement(progress: CodeGraphProgress): Option.Option<CodeGraphEtaMeasurement> {
   switch (progress.phase) {
-    case 'scanning':
+    case 'scanning': {
+      const metrics = progress.metrics;
+      if (metrics && metrics.workUnitsTotal > 0) {
+        return Option.some({
+          basis: 'extraction-work',
+          completed: Math.min(metrics.workUnitsCompleted, metrics.workUnitsTotal),
+          phase: 'scanning',
+          total: metrics.workUnitsTotal,
+        });
+      }
+      if (metrics && metrics.sourceBytesTotal > 0) {
+        return Option.some({
+          basis: 'source-bytes',
+          completed: Math.min(metrics.sourceBytesCompleted, metrics.sourceBytesTotal),
+          phase: 'scanning',
+          total: metrics.sourceBytesTotal,
+        });
+      }
+      return Option.some({basis: 'files', completed: progress.completed, phase: 'scanning', total: progress.total});
+    }
     case 'embedding':
       return Option.some({basis: 'files', completed: progress.completed, phase: progress.phase, total: progress.total});
     case 'materializing': {

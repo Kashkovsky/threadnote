@@ -4,14 +4,19 @@ import {Deferred, Effect, Fiber, FileSystem, Path, Ref} from 'effect';
 import {TestClock} from 'effect/testing';
 import fc from 'fast-check';
 import {afterEach, describe, expect, it} from 'vitest';
-import {makeCodeGraphBuildReporter} from '../../src/code_graph/build_status.js';
+import {makeCodeGraphBuildReporter, type CodeGraphBuildStatus} from '../../src/code_graph/build_status.js';
 import {codeGraphLayout, codeGraphSnapshotBuildLockPath} from '../../src/code_graph/layout.js';
 import {
   CodeGraphMaintenanceCoordinator,
   makeCodeGraphMaintenanceCoordinator,
   type CodeGraphRoutineMaintenanceTick,
 } from '../../src/code_graph/maintenance_coordinator.js';
-import {CodeGraphStore, type CodeGraphRoutineMaintenanceResult} from '../../src/code_graph/store.js';
+import {
+  codeGraphRoutineFileBlobCleanupPageStatement,
+  codeGraphRoutineMaterializedShardCleanupPageStatement,
+  CodeGraphStore,
+  type CodeGraphRoutineMaintenanceResult,
+} from '../../src/code_graph/store.js';
 import {withCodeGraphMaintenanceIntent} from '../../src/code_graph/maintenance_gate.js';
 import {withExclusiveFileLock} from '../../src/effect/file_lock.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
@@ -26,6 +31,7 @@ import {join, mkdir, mkdtemp, rm, writeFile} from '../helpers/effect-filesystem.
 import {runEffect} from '../helpers/effect-runtime.js';
 
 const temporaryHomes: string[] = [];
+const ROUTINE_CACHE_ALL_ELIGIBLE = '9999-12-31T23:59:59.999Z';
 
 afterEach(async () => {
   await Promise.all(temporaryHomes.splice(0).map(home => rm(home, {force: true, recursive: true})));
@@ -95,6 +101,62 @@ describe('routine code graph maintenance', () => {
     await expect(Bun.file(fixture.databasePath).text()).resolves.toContain('must not be opened');
   });
 
+  effectIt.effect('automatically prunes an abandoned waiter sidecar without a successor build', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const temporaryHome = yield* fs.makeTempDirectory({prefix: 'threadnote-routine-abandoned-status-'});
+      const home = yield* fs.realPath(temporaryHome);
+      temporaryHomes.push(home);
+      const checkoutId = 'a'.repeat(64);
+      const identity = {...routineMaintenanceAnchor(), checkoutId, repoRoot: home};
+      const layout = codeGraphLayout(path, home, checkoutId, identity.worktreeId);
+      yield* fs.makeDirectory(path.dirname(layout.databasePath), {recursive: true});
+      const store = yield* CodeGraphStore;
+      yield* store.initialize(layout.databasePath);
+      const reporter = yield* makeCodeGraphBuildReporter(identity, layout);
+      const statusPath = path.join(
+        layout.repositoryRoot,
+        'build-status',
+        identity.worktreeId,
+        `${reporter.ownerIdentity.buildId}.json`,
+      );
+      const status = JSON.parse(yield* fs.readFileString(statusPath)) as CodeGraphBuildStatus;
+      yield* fs.writeFileString(
+        statusPath,
+        `${JSON.stringify({
+          ...status,
+          owner: {...status.owner, processId: 2_147_483_647, processStartIdentity: 'dead-process-instance'},
+        })}\n`,
+        {flag: 'w', mode: 0o600},
+      );
+
+      const coordinator = yield* CodeGraphMaintenanceCoordinator;
+      for (let attempt = 0; attempt < 3 && (yield* fs.exists(statusPath)); attempt += 1) {
+        yield* coordinator.tick({
+          anchorIdentity: identity,
+          automaticTail: false,
+          checkoutId,
+          databasePath: layout.databasePath,
+          threadnoteHome: home,
+          writerLockPath: layout.databaseWriteLockPath,
+        });
+      }
+
+      expect(yield* fs.exists(statusPath)).toBe(false);
+      expect(
+        yield* fs.exists(
+          path.join(
+            layout.repositoryRoot,
+            'build-status',
+            identity.worktreeId,
+            `${reporter.ownerIdentity.buildId}.manager-context`,
+          ),
+        ),
+      ).toBe(false);
+    }).pipe(Effect.provide(ApplicationLayer), TestClock.withLive),
+  );
+
   it('reclaims exactly one physical table page per tick and becomes idempotent', async () => {
     const fixture = await routineFixture('threadnote-routine-maintenance-page-');
     seedCleanupPages(fixture.databasePath);
@@ -129,6 +191,188 @@ describe('routine code graph maintenance', () => {
     } finally {
       database.close(false);
     }
+  });
+
+  it('reclaims parser blobs before materialized shards in bounded pages and preserves live cache rows', async () => {
+    const fixture = await routineFixture('threadnote-routine-cache-page-');
+    seedRoutineCacheRows(fixture.databasePath, 101, 101);
+
+    const results = await runEffect(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        const run = () => store.runRoutineMaintenance(fixture.databasePath, routineOptions(fixture));
+        return [yield* run(), yield* run(), yield* run(), yield* run(), yield* run(), yield* run()] as const;
+      }),
+    );
+
+    expect(results[0]).toMatchObject({cleanup: 'file-blob-cache', remaining: true, rowsDeleted: 100});
+    expect(results[1]).toMatchObject({cleanup: 'file-blob-cache', remaining: true, rowsDeleted: 1});
+    expect(results[2]).toMatchObject({cleanup: 'materialized-shard-cache', remaining: true, rowsDeleted: 100});
+    expect(results[3]).toMatchObject({cleanup: 'materialized-shard-cache', remaining: false, rowsDeleted: 1});
+    expect(results[4]).toMatchObject({cleanup: 'none', remaining: true, rowsDeleted: 0});
+    expect(results[5]).toEqual(noWorkResult);
+    expect(readRoutineCacheCounts(fixture.databasePath)).toEqual({fileBlobs: 1, materializedShards: 1});
+  });
+
+  it('does not reclaim fresh cache rows while any persistent snapshot is still building', async () => {
+    const fixture = await routineFixture('threadnote-routine-cache-active-build-');
+    const identity = routineIdentity(fixture, 'd'.repeat(64));
+    const snapshot = routineBuildingSnapshot(identity, `cgsn_${'8'.repeat(40)}`);
+    seedRoutineCacheRows(fixture.databasePath, 1, 1);
+
+    const result = await runEffect(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        yield* store.claimPersistentBuild(fixture.databasePath, identity, snapshot, {
+          logicalSnapshotId: snapshot.id,
+          owner: {buildId: '89abcdef-0123-4567', processId: process.pid},
+        });
+        return yield* store.runRoutineMaintenance(fixture.databasePath, routineOptions(fixture));
+      }),
+    );
+
+    expect(result).toEqual(noWorkResult);
+    expect(readRoutineCacheCounts(fixture.databasePath)).toEqual({fileBlobs: 2, materializedShards: 2});
+  });
+
+  it('admits unreferenced cache rows only after the fresh-build grace boundary', () => {
+    const database = routineCachePropertyDatabase(1, 1, false);
+    try {
+      const recent = '2026-08-09T12:00:00.000Z';
+      database.query('UPDATE file_blobs SET created_at = ?').run(recent);
+      database.query('UPDATE materialized_file_shards SET last_used_at = ?').run(recent);
+      const fileCandidates = readRoutineFileBlobCacheCandidates(database, undefined);
+      const shardCandidates = readRoutineMaterializedShardCacheCandidates(database, undefined);
+
+      const earlyFile = codeGraphRoutineFileBlobCleanupPageStatement(fileCandidates, '2026-08-09T11:59:59.999Z');
+      const earlyShard = codeGraphRoutineMaterializedShardCleanupPageStatement(
+        shardCandidates,
+        '2026-08-09T11:59:59.999Z',
+      );
+      expect(database.query(earlyFile.text).run(...earlyFile.parameters).changes).toBe(0);
+      expect(database.query(earlyShard.text).run(...earlyShard.parameters).changes).toBe(0);
+
+      const eligibleFile = codeGraphRoutineFileBlobCleanupPageStatement(fileCandidates, recent);
+      const eligibleShard = codeGraphRoutineMaterializedShardCleanupPageStatement(shardCandidates, recent);
+      expect(database.query(eligibleFile.text).run(...eligibleFile.parameters).changes).toBe(1);
+      expect(database.query(eligibleShard.text).run(...eligibleShard.parameters).changes).toBe(1);
+      expect(readRoutineCacheDatabaseCounts(database)).toEqual({fileBlobs: 1, materializedShards: 1});
+    } finally {
+      database.close(false);
+    }
+  });
+
+  it('routine cache page statements converge monotonically without deleting referenced rows', () => {
+    fc.assert(
+      fc.property(
+        fc.record({
+          fileBlobs: fc.integer({max: 205, min: 0}),
+          materializedShards: fc.integer({max: 205, min: 0}),
+          reverseInsertion: fc.boolean(),
+        }),
+        ({fileBlobs, materializedShards, reverseInsertion}) => {
+          const database = routineCachePropertyDatabase(fileBlobs, materializedShards, reverseInsertion);
+          try {
+            const pages: {readonly cleanup: 'file-blob-cache' | 'materialized-shard-cache'; readonly rows: number}[] =
+              [];
+            const examinedPages: number[] = [];
+            let fileCursor: RoutineTestFileBlobCacheKey | undefined;
+            for (;;) {
+              const candidates = readRoutineFileBlobCacheCandidates(database, fileCursor);
+              if (candidates.length === 0) break;
+              examinedPages.push(candidates.length);
+              const statement = codeGraphRoutineFileBlobCleanupPageStatement(candidates, ROUTINE_CACHE_ALL_ELIGIBLE);
+              const rows = Number(database.query(statement.text).run(...statement.parameters).changes);
+              if (rows > 0) pages.push({cleanup: 'file-blob-cache', rows});
+              fileCursor = candidates.at(-1)!;
+            }
+            let materializedCursor: string | undefined;
+            for (;;) {
+              const candidates = readRoutineMaterializedShardCacheCandidates(database, materializedCursor);
+              if (candidates.length === 0) break;
+              examinedPages.push(candidates.length);
+              const statement = codeGraphRoutineMaterializedShardCleanupPageStatement(
+                candidates,
+                ROUTINE_CACHE_ALL_ELIGIBLE,
+              );
+              const rows = Number(database.query(statement.text).run(...statement.parameters).changes);
+              if (rows > 0) pages.push({cleanup: 'materialized-shard-cache', rows});
+              materializedCursor = candidates.at(-1)!;
+            }
+
+            expect(examinedPages.every(rows => rows > 0 && rows <= 100)).toBe(true);
+            expect(pages.every(page => page.rows > 0 && page.rows <= 100)).toBe(true);
+            expect(pages.reduce((total, page) => total + page.rows, 0)).toBe(fileBlobs + materializedShards);
+            expect(pages.map(page => page.cleanup)).toEqual([
+              ...Array.from({length: Math.ceil(fileBlobs / 100)}, () => 'file-blob-cache' as const),
+              ...Array.from({length: Math.ceil(materializedShards / 100)}, () => 'materialized-shard-cache' as const),
+            ]);
+            expect(readRoutineCacheDatabaseCounts(database)).toEqual({fileBlobs: 1, materializedShards: 1});
+          } finally {
+            database.close(false);
+          }
+        },
+      ),
+      {numRuns: 40},
+    );
+  });
+
+  it('retains a reusable donor while the same content is live at another path', () => {
+    const database = routineCachePropertyDatabase(0, 0, false);
+    try {
+      const now = new Date().toISOString();
+      database
+        .query(
+          `INSERT INTO file_blobs (
+             content_hash, extractor_set, path_hint, blob_id, reuse_class, facts_json, created_at
+           ) VALUES (?, 'cache-test', ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          'zz-live-content',
+          'config/donor.json',
+          'a'.repeat(40),
+          'structured-object-v1:json:full',
+          '{"diagnostics":[],"edges":[],"path":"config/donor.json","symbols":[]}',
+          now,
+        );
+      database
+        .query(
+          `INSERT INTO file_blobs (content_hash, extractor_set, path_hint, facts_json, created_at)
+           VALUES (?, 'cache-test', ?, '{}', ?)`,
+        )
+        .run('zz-live-content', 'config/non-reusable.json', now);
+
+      const candidates = readRoutineFileBlobCacheCandidates(database, undefined);
+      const statement = codeGraphRoutineFileBlobCleanupPageStatement(candidates, ROUTINE_CACHE_ALL_ELIGIBLE);
+      database.query(statement.text).run(...statement.parameters);
+
+      expect(
+        database.query<{readonly path_hint: string}, []>('SELECT path_hint FROM file_blobs ORDER BY path_hint').all(),
+      ).toEqual([{path_hint: 'config/donor.json'}, {path_hint: 'src/live.ts'}]);
+    } finally {
+      database.close(false);
+    }
+  });
+
+  it('starts the zero-wait cache collector after a successful promotion without a displaced pointer', async () => {
+    const fixture = await routineFixture('threadnote-routine-cache-promotion-');
+    const identity = routineIdentity(fixture, 'b'.repeat(64));
+    const snapshot = {
+      ...routineBuildingSnapshot(identity, `cgsn_${'9'.repeat(40)}`),
+      state: 'ready' as const,
+    };
+    seedRoutineCacheRows(fixture.databasePath, 1, 1);
+    seedPromotableRoutineSnapshot(fixture.databasePath, snapshot);
+
+    const counts = await runEffect(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        yield* store.promote(fixture.databasePath, identity, snapshot.id);
+        return yield* Effect.promise(() => awaitRoutineCacheCounts(fixture.databasePath, 1, 1));
+      }),
+    );
+
+    expect(counts).toEqual({fileBlobs: 1, materializedShards: 1});
   });
 
   it('logically retires an exact dead owner and leaves physical rows for the next bounded tick', async () => {
@@ -1356,6 +1600,269 @@ function seedCleanupPages(databasePath: string): void {
       .run('retired-data');
   } finally {
     database.close(false);
+  }
+}
+
+function seedRoutineCacheRows(databasePath: string, fileBlobCount: number, materializedShardCount: number): void {
+  const database = new Database(databasePath, {strict: true});
+  try {
+    seedRepository(database);
+    insertSnapshot(database, 'cache-live', 'ready');
+    const now = new Date(0).toISOString();
+    const insertFile = database.query(
+      `INSERT INTO file_blobs (content_hash, extractor_set, path_hint, facts_json, created_at)
+       VALUES (?, 'cache-test', ?, '{}', ?)`,
+    );
+    const insertShard = database.query(
+      `INSERT INTO materialized_file_shards (
+         id, content_hash, extractor_set, derivation_identity, path_hint,
+         facts_json, created_at, last_used_at
+       ) VALUES (?, ?, 'cache-test', 'cache-derivation', ?, '{}', ?, ?)`,
+    );
+    database.transaction(() => {
+      database
+        .query(
+          `INSERT INTO snapshot_files (snapshot_id, path, content_hash, language, mode, size, source)
+           VALUES ('cache-live', 'src/live.ts', 'zz-live-content', 'typescript', '100644', 1, 'commit')`,
+        )
+        .run();
+      insertFile.run('zz-live-content', 'src/live.ts', now);
+      insertShard.run('zz-live-shard', 'zz-live-content', 'src/live.ts', now, now);
+      database
+        .query(
+          `INSERT INTO snapshot_file_shards (snapshot_id, path, shard_id)
+           VALUES ('cache-live', 'src/live.ts', 'zz-live-shard')`,
+        )
+        .run();
+      for (let index = 0; index < fileBlobCount; index += 1) {
+        const suffix = index.toString().padStart(4, '0');
+        insertFile.run(`orphan-file-${suffix}`, `fixtures/legacy-${suffix}.svg`, now);
+      }
+      for (let index = 0; index < materializedShardCount; index += 1) {
+        const suffix = index.toString().padStart(4, '0');
+        insertShard.run(
+          `orphan-shard-${suffix}`,
+          `orphan-shard-content-${suffix}`,
+          `fixtures/legacy-${suffix}.json`,
+          now,
+          now,
+        );
+      }
+    })();
+  } finally {
+    database.close(false);
+  }
+}
+
+function routineCachePropertyDatabase(
+  fileBlobCount: number,
+  materializedShardCount: number,
+  reverseInsertion: boolean,
+): Database {
+  const database = new Database(':memory:', {strict: true});
+  database.exec(`
+    CREATE TABLE snapshot_files (
+      snapshot_id TEXT NOT NULL,
+      path TEXT NOT NULL,
+      content_hash TEXT NOT NULL,
+      PRIMARY KEY (snapshot_id, path)
+    ) WITHOUT ROWID;
+    CREATE TABLE snapshots (
+      id TEXT PRIMARY KEY NOT NULL,
+      state TEXT NOT NULL
+    ) WITHOUT ROWID;
+    CREATE INDEX snapshot_files_blob ON snapshot_files(path, content_hash);
+    CREATE INDEX snapshot_files_content_hash ON snapshot_files(content_hash);
+    CREATE TABLE file_blobs (
+      content_hash TEXT NOT NULL,
+      extractor_set TEXT NOT NULL,
+      path_hint TEXT NOT NULL,
+      blob_id TEXT,
+      reuse_class TEXT,
+      facts_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (content_hash, extractor_set, path_hint)
+    ) WITHOUT ROWID;
+    CREATE TABLE materialized_file_shards (
+      id TEXT PRIMARY KEY NOT NULL,
+      content_hash TEXT NOT NULL,
+      extractor_set TEXT NOT NULL,
+      derivation_identity TEXT NOT NULL,
+      path_hint TEXT NOT NULL,
+      facts_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      last_used_at TEXT NOT NULL
+    ) WITHOUT ROWID;
+    CREATE TABLE snapshot_file_shards (
+      snapshot_id TEXT NOT NULL,
+      path TEXT NOT NULL,
+      shard_id TEXT NOT NULL,
+      PRIMARY KEY (snapshot_id, path)
+    ) WITHOUT ROWID;
+    CREATE INDEX snapshot_file_shards_shard ON snapshot_file_shards(shard_id);
+  `);
+  const now = new Date(0).toISOString();
+  const insertFile = database.query(
+    `INSERT INTO file_blobs (content_hash, extractor_set, path_hint, facts_json, created_at)
+     VALUES (?, 'cache-test', ?, '{}', ?)`,
+  );
+  const insertShard = database.query(
+    `INSERT INTO materialized_file_shards (
+       id, content_hash, extractor_set, derivation_identity, path_hint,
+       facts_json, created_at, last_used_at
+     ) VALUES (?, ?, 'cache-test', 'cache-derivation', ?, '{}', ?, ?)`,
+  );
+  const fileIndexes = Array.from({length: fileBlobCount}, (_, index) => index);
+  const shardIndexes = Array.from({length: materializedShardCount}, (_, index) => index);
+  if (reverseInsertion) {
+    fileIndexes.reverse();
+    shardIndexes.reverse();
+  }
+  database.transaction(() => {
+    database.query("INSERT INTO snapshots VALUES ('live-snapshot', 'ready')").run();
+    database.query("INSERT INTO snapshot_files VALUES ('live-snapshot', 'src/live.ts', 'zz-live-content')").run();
+    insertFile.run('zz-live-content', 'src/live.ts', now);
+    insertShard.run('zz-live-shard', 'zz-live-content', 'src/live.ts', now, now);
+    database.query("INSERT INTO snapshot_file_shards VALUES ('live-snapshot', 'src/live.ts', 'zz-live-shard')").run();
+    for (const index of fileIndexes) {
+      const suffix = index.toString().padStart(4, '0');
+      insertFile.run(`orphan-file-${suffix}`, `fixtures/legacy-${suffix}.svg`, now);
+    }
+    for (const index of shardIndexes) {
+      const suffix = index.toString().padStart(4, '0');
+      insertShard.run(
+        `orphan-shard-${suffix}`,
+        `orphan-shard-content-${suffix}`,
+        `fixtures/legacy-${suffix}.json`,
+        now,
+        now,
+      );
+    }
+  })();
+  return database;
+}
+
+interface RoutineTestFileBlobCacheKey {
+  readonly contentHash: string;
+  readonly extractorSet: string;
+  readonly path: string;
+}
+
+function readRoutineFileBlobCacheCandidates(
+  database: Database,
+  cursor: RoutineTestFileBlobCacheKey | undefined,
+): readonly RoutineTestFileBlobCacheKey[] {
+  const rows = database
+    .query<
+      {readonly content_hash: string; readonly extractor_set: string; readonly path_hint: string},
+      [string | null, string | null, string | null, string | null, number]
+    >(
+      `SELECT content_hash, extractor_set, path_hint
+       FROM file_blobs
+       WHERE (? IS NULL OR (content_hash, extractor_set, path_hint) > (?, ?, ?))
+       ORDER BY content_hash, extractor_set, path_hint
+       LIMIT ?`,
+    )
+    .all(
+      cursor?.contentHash ?? null,
+      cursor?.contentHash ?? null,
+      cursor?.extractorSet ?? null,
+      cursor?.path ?? null,
+      100,
+    );
+  return rows.map(row => ({contentHash: row.content_hash, extractorSet: row.extractor_set, path: row.path_hint}));
+}
+
+function readRoutineMaterializedShardCacheCandidates(database: Database, cursor: string | undefined): string[] {
+  return database
+    .query<{readonly id: string}, [string | null, string | null, number]>(
+      `SELECT id
+       FROM materialized_file_shards
+       WHERE (? IS NULL OR id > ?)
+       ORDER BY id
+       LIMIT ?`,
+    )
+    .all(cursor ?? null, cursor ?? null, 100)
+    .map(row => row.id);
+}
+
+function readRoutineCacheCounts(databasePath: string): {
+  readonly fileBlobs: number;
+  readonly materializedShards: number;
+} {
+  const database = new Database(databasePath, {readonly: true, strict: true});
+  try {
+    return readRoutineCacheDatabaseCounts(database);
+  } finally {
+    database.close(false);
+  }
+}
+
+function readRoutineCacheDatabaseCounts(database: Database): {
+  readonly fileBlobs: number;
+  readonly materializedShards: number;
+} {
+  return {
+    fileBlobs: (
+      database.query<{readonly count: number}, []>('SELECT COUNT(*) AS count FROM file_blobs').get() ?? {count: 0}
+    ).count,
+    materializedShards: (
+      database.query<{readonly count: number}, []>('SELECT COUNT(*) AS count FROM materialized_file_shards').get() ?? {
+        count: 0,
+      }
+    ).count,
+  };
+}
+
+function seedPromotableRoutineSnapshot(databasePath: string, snapshot: CodeGraphSnapshot): void {
+  const database = new Database(databasePath, {strict: true});
+  try {
+    const now = new Date().toISOString();
+    database.transaction(() => {
+      database
+        .query(
+          `INSERT INTO repositories (id, display_name, object_format, created_at, last_used_at)
+           VALUES (?, 'promotion cache fixture', 'sha1', ?, ?)`,
+        )
+        .run(snapshot.repositoryId, now, now);
+      database
+        .query(
+          `INSERT INTO snapshots (
+             id, repository_id, worktree_id, commit_id, graph_content_id, base_snapshot_id,
+             extractor_set, dirty, overlay_fingerprint, state, file_count, symbol_count,
+             edge_count, started_at, completed_at, failure_summary
+           ) VALUES (?, ?, ?, ?, ?, NULL, ?, 0, NULL, 'ready', 0, 0, 0, ?, ?, NULL)`,
+        )
+        .run(
+          snapshot.id,
+          snapshot.repositoryId,
+          snapshot.worktreeId,
+          snapshot.commit,
+          snapshot.graphContentId ?? null,
+          snapshot.extractorSet,
+          now,
+          now,
+        );
+      database
+        .query('INSERT INTO snapshot_extractor_generations (snapshot_id, generation) VALUES (?, ?)')
+        .run(snapshot.id, CODE_GRAPH_EXTRACTOR_GENERATION);
+    })();
+  } finally {
+    database.close(false);
+  }
+}
+
+async function awaitRoutineCacheCounts(
+  databasePath: string,
+  fileBlobs: number,
+  materializedShards: number,
+): Promise<{readonly fileBlobs: number; readonly materializedShards: number}> {
+  const deadline = Date.now() + 2_000;
+  for (;;) {
+    const counts = readRoutineCacheCounts(databasePath);
+    if (counts.fileBlobs === fileBlobs && counts.materializedShards === materializedShards) return counts;
+    if (Date.now() >= deadline) return counts;
+    await Bun.sleep(10);
   }
 }
 

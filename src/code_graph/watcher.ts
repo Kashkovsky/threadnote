@@ -28,9 +28,11 @@ import type {
   CodeGraphStoreRecovery,
   RepositoryIdentity,
 } from './types.js';
+import {CodeGraphRuntimeReconnectRequiredError} from './types.js';
 import {currentCodeGraphBuildStatus, type ObservedCodeGraphBuildStatus} from './build_status.js';
 import {isCodeGraphIsolatedBuilderHost, runIsolatedCodeGraphIndex} from './isolated_builder.js';
 import {codeGraphLayout} from './layout.js';
+import {runCodeGraphLifecycleOpportunity} from './lifecycle_opportunity.js';
 import {classifyCodeGraphStoreFailure} from './store_failure.js';
 import {
   codeGraphEtaMeasurement,
@@ -207,10 +209,13 @@ const CODE_GRAPH_REFRESH_FAILURE_METADATA = {
 export function codeGraphRefreshFailure(cause: unknown): CodeGraphRefreshFailure {
   const classified = classifyCodeGraphStoreFailure(CODE_GRAPH_REFRESH_OPERATION, cause);
   const code = Object.hasOwn(CODE_GRAPH_REFRESH_FAILURE_METADATA, classified.code) ? classified.code : 'unknown';
+  const defaults = CODE_GRAPH_REFRESH_FAILURE_METADATA[code];
+  const reconnectRequired = classified instanceof CodeGraphRuntimeReconnectRequiredError;
   return {
     code,
     operation: CODE_GRAPH_REFRESH_OPERATION,
-    ...CODE_GRAPH_REFRESH_FAILURE_METADATA[code],
+    recovery: reconnectRequired ? classified.recovery : defaults.recovery,
+    retryable: reconnectRequired ? classified.retryable : defaults.retryable,
   };
 }
 
@@ -262,6 +267,7 @@ export class CodeGraphWatcher extends Context.Service<CodeGraphWatcher, CodeGrap
         Effect.gen(function* () {
           if (isolateBuilder) {
             const summary = yield* runIsolatedCodeGraphIndex({
+              assertRuntimeSchemaCompatible: databasePath => store.assertRuntimeSchemaCompatible(databasePath),
               cwd: options.cwd,
               onProgress: options.onProgress,
               threadnoteHome: options.threadnoteHome,
@@ -333,12 +339,31 @@ export class CodeGraphWatcher extends Context.Service<CodeGraphWatcher, CodeGrap
                 identity.checkoutId,
                 identity.worktreeId,
               );
-              return maintenance.tick({
-                checkoutId: layout.checkoutId,
-                databasePath: layout.databasePath,
+              return runCodeGraphLifecycleOpportunity({
+                maintenance,
+                opportunity: 'critical-error',
+                targets: [
+                  {
+                    // This production dependency is wired directly to
+                    // resolveRepositoryIdentity above; test seams may retain
+                    // the intentionally smaller recovery identity shape.
+                    anchorIdentity: identity as RepositoryIdentity,
+                    checkoutId: layout.checkoutId,
+                    databasePath: layout.databasePath,
+                  },
+                ],
                 threadnoteHome: recoveryOptions.threadnoteHome,
-                writerLockPath: layout.databaseWriteLockPath,
-              });
+              }).pipe(
+                Effect.map(result =>
+                  result.state === 'completed'
+                    ? result.result
+                    : ({reason: 'schema-unavailable', state: 'skipped'} as const),
+                ),
+                Effect.provideService(CommandExecutor, commandExecutor),
+                Effect.provideService(FileSystem.FileSystem, fs),
+                Effect.provideService(Path.Path, path),
+                Effect.provideService(SystemInfo, systemInfo),
+              );
             },
           },
           options,

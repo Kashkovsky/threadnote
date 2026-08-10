@@ -27,6 +27,7 @@ import {repositoryChangesSince, repositoryIdentityMatchesExpectation, resolveRep
 import {CodeGraphStore} from './store.js';
 import type {CodeGraphProgress, CodeGraphQueryOptions, RepositoryIdentityExpectation} from './types.js';
 import {CodeGraphWatcher} from './watcher.js';
+import {inspectCodeGraphWorkset, renderCodeGraphWorksetResult} from './workset_query.js';
 import {CodeGraphAnalysis} from './analysis.js';
 import {
   codeGraphAnalysisLimitsForView,
@@ -42,12 +43,19 @@ import {
 } from './build_status.js';
 import {compactCodeGraphStorage, inspectCodeGraphStorage, type CodeGraphStorage} from './storage.js';
 import {inspectAllCodeGraphsLocal, renderCodeGraphDiagnostics} from './diagnostics.js';
+import {previewCodeGraphInventory, type CodeGraphInventoryPreview} from './inventory.js';
 import {
   codeGraphViewRemovalTargetFailure,
   removeCodeGraphView,
   renderCodeGraphViewRemovalResult,
   serializeCodeGraphViewRemovalResult,
 } from './view_removal.js';
+import {
+  codeGraphSnapshotPurgeTargetFailure,
+  purgeCodeGraphSnapshot,
+  renderCodeGraphSnapshotPurgeResult,
+  serializeCodeGraphSnapshotPurgeResult,
+} from './snapshot_purge.js';
 
 interface CwdOption {
   readonly cwd?: string;
@@ -379,6 +387,15 @@ export const runCodeGraphStatus = Effect.fn('codeGraph.command.status')(function
           `persist ${formatMilliseconds(current.timings.persistenceMilliseconds)}`,
       );
     }
+    if (current.extraction?.metrics) {
+      const metrics = current.extraction.metrics;
+      const workPercentage =
+        metrics.workUnitsTotal === 0 ? 0 : Math.min(100, (metrics.workUnitsCompleted / metrics.workUnitsTotal) * 100);
+      yield* Console.log(
+        `Extraction: ${formatBytes(metrics.sourceBytesCompleted)}/${formatBytes(metrics.sourceBytesTotal)} source · ` +
+          `${formatBytes(metrics.factsBytesCompleted)} emitted facts · ${workPercentage.toFixed(1)}% class-weighted work`,
+      );
+    }
     const lastProgressAge = Math.max(0, Date.now() - Date.parse(current.timestamps.lastProgressAt));
     if (current.eta && current.eta.confidence !== 'low' && lastProgressAge <= 15_000) {
       yield* Console.log(
@@ -432,6 +449,41 @@ export const runCodeGraphStatus = Effect.fn('codeGraph.command.status')(function
   );
 });
 
+export const runCodeGraphInventory = Effect.fn('codeGraph.command.inventory')(function* (
+  _config: RuntimeConfig,
+  options: CwdOption & {readonly json?: boolean},
+) {
+  const identity = yield* resolveRepositoryIdentity(yield* commandCwd(options.cwd));
+  const preview = yield* previewCodeGraphInventory(identity);
+  yield* writeFinalCliOutput(options.json ? JSON.stringify(preview) : renderCodeGraphInventoryPreview(preview));
+});
+
+function renderCodeGraphInventoryPreview(preview: CodeGraphInventoryPreview): string {
+  const source = `${preview.commit.slice(0, 12)}${preview.dirty ? ' + worktree changes' : ' (clean)'}`;
+  const lines = [
+    'Code graph inventory admission preview',
+    `Source: ${source}`,
+    `Policy: v${preview.policyVersion} · aggregate metadata only · repository paths and content omitted`,
+    `Repository: ${preview.totals.repository.files} file(s) · ${preview.totals.repository.bytes} bytes (${formatBytes(preview.totals.repository.bytes)})`,
+    `Eligible: ${preview.totals.eligible.files} file(s) · ${preview.totals.eligible.bytes} bytes (${formatBytes(preview.totals.eligible.bytes)})`,
+    `Skipped: ${preview.totals.skipped.files} file(s) · ${preview.totals.skipped.bytes} bytes (${formatBytes(preview.totals.skipped.bytes)})`,
+  ];
+  if (preview.omittedUnsafeWorktreeFiles > 0) {
+    lines.push(
+      `Omitted: ${preview.omittedUnsafeWorktreeFiles} changed unsafe/non-regular worktree path(s) are outside byte totals.`,
+    );
+  }
+  lines.push('', 'DISPOSITION\tLANGUAGE\tROLE\tCLASSIFIER\tREASON\tFILES\tBYTES');
+  for (const group of preview.groups) {
+    lines.push(
+      [group.disposition, group.language, group.role, group.classifier, group.reason, group.files, group.bytes].join(
+        '\t',
+      ),
+    );
+  }
+  return `${lines.join('\n')}\n`;
+}
+
 function renderReadySnapshotStatus(status: {
   readonly readySnapshot?: {
     readonly edgeCount: number;
@@ -472,7 +524,9 @@ function renderActiveStorageStatus(storage: CodeGraphStorage): Effect.Effect<voi
   return Effect.gen(function* () {
     yield* Console.log(
       `Storage: ${formatBytes(storage.databaseBytes)} database · ${formatBytes(storage.walBytes)} WAL · ` +
-        `${formatBytes(storage.shmBytes)} SHM · ${formatBytes(storage.totalBytes)} total`,
+        `${formatBytes(storage.journalBytes)} journal · ${formatBytes(storage.shmBytes)} SHM · ` +
+        `${formatBytes(storage.temporaryBytes)} TEMP · ${formatBytes(storage.filesystemBytes)} filesystem · ` +
+        `${formatBytes(storage.totalBytes)} observed total`,
     );
     if (storage.pageStorage.state === 'deferred') {
       yield* Console.log('Page storage: deferred while an active graph build owns the checkout lock.');
@@ -708,8 +762,27 @@ export const runCodeGraphInspect = Effect.fn('codeGraph.command.inspect')(functi
       readonly baseCommit?: string;
       readonly json?: boolean;
       readonly seedQueries?: readonly string[];
+      readonly workset?: string;
     },
 ) {
+  if (options.workset?.trim()) {
+    if (options.operation !== 'query') {
+      return yield* Effect.fail(new Error('--workset is valid only for `threadnote graph query`.'));
+    }
+    const query = options.query?.trim();
+    if (!query) return yield* Effect.fail(new Error('A workset graph query requires --query.'));
+    const result = yield* inspectCodeGraphWorkset(config, options.workset.trim(), {
+      depth: options.depth,
+      edgeLimit: options.edgeLimit,
+      includeHeuristic: options.includeHeuristic,
+      includeModelAssociations: options.includeModelAssociations,
+      nodeLimit: options.nodeLimit,
+      packageName: options.packageName,
+      query,
+    });
+    yield* writeFinalCliOutput(options.json ? JSON.stringify(result) : renderCodeGraphWorksetResult(result).trimEnd());
+    return;
+  }
   const service = yield* CodeGraphQueryService;
   const cwd = yield* commandCwd(options.cwd);
   let status = yield* service.status(config.agentContextHome, cwd);
@@ -773,18 +846,46 @@ export const runCodeGraphPurge = Effect.fn('codeGraph.command.purge')(function* 
   config: RuntimeConfig,
   options: CwdOption & {
     readonly all?: boolean;
+    readonly apply?: boolean;
+    readonly approval?: string;
     readonly checkoutId?: string;
     readonly dryRun?: boolean;
+    readonly json?: boolean;
     readonly obsolete?: boolean;
+    readonly snapshotId?: string;
     readonly waitTimeoutMilliseconds?: number;
   },
 ) {
   const path = yield* Path.Path;
-  if (options.all && (options.checkoutId !== undefined || options.obsolete)) {
-    return yield* Effect.fail(new Error('Use --all by itself, without --checkout-id or --obsolete.'));
+  if (options.all && (options.checkoutId !== undefined || options.obsolete || options.snapshotId !== undefined)) {
+    return yield* Effect.fail(new Error('Use --all by itself, without --checkout-id, --obsolete, or --snapshot-id.'));
   }
   if (options.checkoutId !== undefined && options.cwd !== undefined) {
     return yield* Effect.fail(new Error('Use either --checkout-id or --cwd, not both.'));
+  }
+  if (options.snapshotId !== undefined) {
+    if (options.obsolete || options.all || options.dryRun) {
+      return yield* Effect.fail(new Error('Use --snapshot-id without --all, --obsolete, or --dry-run.'));
+    }
+    let checkoutId = options.checkoutId;
+    if (checkoutId === undefined) {
+      const cwd = yield* commandCwd(options.cwd);
+      checkoutId = (yield* resolveRepositoryIdentity(cwd)).checkoutId;
+    }
+    const result = yield* purgeCodeGraphSnapshot(
+      config.agentContextHome,
+      {checkoutId, snapshotId: options.snapshotId},
+      {apply: options.apply === true, approvalDigest: options.approval},
+    );
+    yield* writeFinalCliOutput(
+      options.json ? serializeCodeGraphSnapshotPurgeResult(result) : renderCodeGraphSnapshotPurgeResult(result),
+    );
+    const failure = codeGraphSnapshotPurgeTargetFailure(result);
+    if (failure) return yield* Effect.fail(failure);
+    return;
+  }
+  if (options.apply || options.approval !== undefined || options.json) {
+    return yield* Effect.fail(new Error('Use --apply, --approval, or --json only with --snapshot-id.'));
   }
   if (options.obsolete) {
     let checkoutId = options.checkoutId;
@@ -1407,7 +1508,9 @@ function renderMaterializationRows(
   return values.length > 0 ? values.join(', ') : undefined;
 }
 
-function etaBasisLabel(basis: 'cached-fact-bytes' | 'files' | 'final-fact-bytes' | 'source-bytes'): string {
+function etaBasisLabel(
+  basis: 'cached-fact-bytes' | 'extraction-work' | 'files' | 'final-fact-bytes' | 'source-bytes',
+): string {
   switch (basis) {
     case 'cached-fact-bytes':
       return 'cached-fact bytes';
@@ -1415,6 +1518,8 @@ function etaBasisLabel(basis: 'cached-fact-bytes' | 'files' | 'final-fact-bytes'
       return 'final attributed fact bytes';
     case 'source-bytes':
       return 'source bytes';
+    case 'extraction-work':
+      return 'class-weighted extraction work';
     case 'files':
       return 'files';
   }

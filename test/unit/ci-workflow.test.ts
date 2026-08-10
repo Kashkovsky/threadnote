@@ -124,7 +124,7 @@ describe('dependency-aware CI workflow', () => {
   it('keeps the quota-aware long-test plan bounded and non-overlapping', () => {
     expect(ciLongRunningTestGroupNames).toEqual(Object.keys(ciLongRunningTestGroups));
     expect(ciLongRunningTestGroupNames).toHaveLength(10);
-    expect([...ciSerializedLongRunningTestGroups]).toEqual(['load-evidence', 'os-contention']);
+    expect([...ciSerializedLongRunningTestGroups]).toEqual(['heavy-state', 'load-evidence', 'os-contention']);
 
     const assignments = Object.values(ciLongRunningTestGroups).flat();
     const counts = new Map<string, number>();

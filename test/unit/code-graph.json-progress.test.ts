@@ -52,6 +52,7 @@ describe('code graph JSON progress coalescing', () => {
       {phase: 'activating', snapshotId: 'snapshot', subphase: 'validating-input'},
       {phase: 'activating', snapshotId: 'snapshot', subphase: 'writing-and-checkpointing'},
       {phase: 'activating', snapshotId: 'snapshot', subphase: 'promoting'},
+      {phase: 'activating', snapshotId: 'snapshot', subphase: 'structural-ready'},
       {phase: 'activating', snapshotId: 'snapshot', subphase: 'complete'},
       {completed: 0, embedded: 0, phase: 'embedding', reused: 0, total: 1, unit: 'symbols'},
     ];

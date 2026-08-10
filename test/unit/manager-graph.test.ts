@@ -7,7 +7,9 @@ import {
   graphAnalysisRequestIsCurrent,
   graphAnalysisCoverageLabel,
   graphAnalysisTopologyAvailable,
+  graphAdministrationJobSelection,
   graphAdministrationTarget,
+  graphBuildConcurrencyState,
   graphBuildIsActive,
   graphBuildShouldDisplay,
   graphBuildTarget,
@@ -15,9 +17,11 @@ import {
   graphCatalogPageOffsets,
   graphCatalogContinuationHasMore,
   graphCompletedBuildResultIdentity,
+  graphDiagnosticsRequiresCatalogRefresh,
   graphDisplayEdges,
   graphFocusLayoutTargets,
   graphFocusTarget,
+  graphMaintenanceStatusLabel,
   graphNodeDetailRequestIsCurrent,
   graphNodeSizeValues,
   graphOverviewSizeLabel,
@@ -63,7 +67,7 @@ describe('manager graph focus', () => {
     });
   });
 
-  it('renders per-view preview and confirmed removal controls without requiring a local folder', () => {
+  it('renders one preview-bound removal icon without requiring a local folder', () => {
     const neverResolves = () => new Promise<never>(() => undefined);
     const checkoutId = 'a'.repeat(64);
     const worktreeId = 'b'.repeat(64);
@@ -115,8 +119,9 @@ describe('manager graph focus', () => {
       }),
     );
 
-    expect(markup).toContain('Preview remove');
-    expect(markup).toContain('Remove view');
+    expect(markup.match(/aria-label="Remove indexed view bbbbbbbb"/g)).toHaveLength(1);
+    expect(markup).toContain('title="Remove indexed view"');
+    expect(markup).not.toContain('Preview remove');
     expect(markup).toContain('Index, reindex, and compact require a verified local worktree path.');
   });
 
@@ -136,6 +141,43 @@ describe('manager graph focus', () => {
         }),
       ),
     ).not.toThrow();
+  });
+
+  it('renders selected snapshot purge progress alongside graph build progress', () => {
+    const neverResolves = () => new Promise<never>(() => undefined);
+    const markup = renderToStaticMarkup(
+      createElement(GraphWorkspace, {
+        catalog: {
+          builds: [],
+          diagnostics: [],
+          maintenance: {
+            checkoutId: 'a'.repeat(64),
+            completed: 3,
+            operation: 'selected-snapshot-purge',
+            phase: 'verifying-graph',
+            snapshotId: `cgsn_${'b'.repeat(40)}-direct`,
+            startedAt: '2026-08-09T12:00:00.000Z',
+            total: 5,
+            updatedAt: '2026-08-09T12:00:01.000Z',
+          },
+          repositories: [],
+          waiterCount: 0,
+          waiters: [],
+        },
+        loadAnalysis: neverResolves,
+        loadCatalogPage: neverResolves,
+        loadGraph: neverResolves,
+        loadNodeDetail: neverResolves,
+        loadQuery: neverResolves,
+        loadViewsPage: neverResolves,
+        onRefresh: () => undefined,
+      }),
+    );
+
+    expect(markup).toContain('Selected snapshot purge');
+    expect(markup).toContain('rechecking graph safety evidence');
+    expect(markup).toContain('3 / 5 safety phases');
+    expect(markup).toContain('aria-label="60% complete"');
   });
 
   it('renders a retry state when the initial catalog request fails', () => {
@@ -178,6 +220,11 @@ describe('manager graph focus', () => {
     const build = {
       ...graphBuildStatus('running'),
       coordination: {lockVerified: true, progressSilent: true, role: 'owner' as const},
+      identity: {
+        ...graphBuildStatus('running').identity,
+        checkoutId: 'view-a',
+        worktreeId: 'view-a',
+      },
       managerContext: {worktreePath: '/tmp/jobs/repository-task-17'},
     };
     const markup = renderToStaticMarkup(
@@ -202,6 +249,113 @@ describe('manager graph focus', () => {
     expect(markup).not.toContain('progress is silent');
   });
 
+  it('streams path-free extraction dimensions and slow-file telemetry for active builds', () => {
+    const neverResolves = () => new Promise<never>(() => undefined);
+    const build = {
+      ...graphBuildStatus('running'),
+      activity: {
+        batchCompleted: 7,
+        batchTotal: 12,
+        bytes: 70 * 1_024,
+        classifier: 'typescript',
+        factsBytes: 18 * 1_024,
+        language: 'typescript',
+        parseMilliseconds: 1_250,
+        relations: 21,
+        role: 'source',
+        sizeBucket: '64-256KiB' as const,
+        stage: 'extracting' as const,
+        symbols: 9,
+      },
+      counters: {completed: 7, total: 12, unit: 'files'},
+      extraction: {
+        completedFiles: 7,
+        slowFiles: 2,
+        topSlowFiles: [],
+      },
+    };
+    const markup = renderToStaticMarkup(
+      createElement(GraphWorkspace, {
+        catalog: {builds: [build], diagnostics: [], repositories: [], waiterCount: 0, waiters: []},
+        loadAnalysis: neverResolves,
+        loadCatalogPage: neverResolves,
+        loadGraph: neverResolves,
+        loadNodeDetail: neverResolves,
+        loadQuery: neverResolves,
+        loadViewsPage: neverResolves,
+        onRefresh: () => undefined,
+      }),
+    );
+
+    expect(markup).toContain('64-256KiB source bucket');
+    expect(markup).toContain('source/typescript');
+    expect(markup).toContain('18.0 KiB emitted facts');
+    expect(markup).toContain('9 symbols');
+    expect(markup).toContain('21 relations');
+    expect(markup).toContain('Extraction telemetry: 7 files completed');
+    expect(markup).toContain('2 at or above 1.00s');
+  });
+
+  it('shows the active owner, latest queued target, and stale queryable snapshot without claiming FIFO order', () => {
+    const neverResolves = () => new Promise<never>(() => undefined);
+    const baseRepository = repositoryGroup('repository', ['worktree'], 'worktree');
+    const repository = {
+      ...baseRepository,
+      views: baseRepository.views.map(view => ({
+        ...view,
+        checkoutId: 'checkout',
+        snapshot: {...view.snapshot, commit: '1111111111111111111111111111111111111111'},
+        worktreeId: 'worktree',
+      })),
+    };
+    const build = {
+      ...graphBuildStatus('running'),
+      buildId: 'active-build',
+      coordination: {lockVerified: true, role: 'owner' as const},
+      identity: {...graphBuildStatus('running').identity, commit: '222222222222'},
+      owner: {processId: 42, processStartIdentity: 'opaque-process-start-00000042'},
+    };
+    const waiter = {
+      ...graphBuildStatus('queued'),
+      buildId: 'latest-waiter',
+      identity: {...build.identity, commit: '333333333333'},
+      request: {key: 'latest-request'},
+      timestamps: {
+        ...graphBuildStatus('queued').timestamps,
+        startedAt: '2026-07-31T12:01:00.000Z',
+      },
+    };
+
+    expect(graphBuildConcurrencyState(build, [waiter], [repository])).toEqual({
+      activeTargetCommit: '222222222222',
+      latestTargetCommit: '333333333333',
+      queuedRequests: 1,
+      readySnapshotCommit: '1111111111111111111111111111111111111111',
+      staleReady: true,
+    });
+
+    const markup = renderToStaticMarkup(
+      createElement(GraphWorkspace, {
+        catalog: {builds: [build], diagnostics: [], repositories: [repository], waiterCount: 1, waiters: [waiter]},
+        loadAnalysis: neverResolves,
+        loadCatalogPage: neverResolves,
+        loadGraph: neverResolves,
+        loadNodeDetail: neverResolves,
+        loadQuery: neverResolves,
+        loadViewsPage: neverResolves,
+        onRefresh: () => undefined,
+      }),
+    );
+
+    expect(markup).toContain('Active target 222222222222');
+    expect(markup).toContain('latest target 333333333333 queued');
+    expect(markup).toContain('1 queued request');
+    expect(markup).toContain('Ready snapshot 111111111111 remains queryable');
+    expect(markup).toContain('stale for latest target 333333333333');
+    expect(markup).toContain('Process 42 · owner instance 00000042');
+    expect(markup).not.toContain('queue position');
+  });
+
   it('uses catalog fallbacks before either a view or continuation exists', () => {
     expect(graphCatalogContinuationHasMore(undefined, undefined, 'projectHasMore', false)).toBe(false);
     expect(graphCatalogContinuationHasMore(undefined, undefined, 'workspaceHasMore', true)).toBe(true);
@@ -224,17 +378,28 @@ describe('manager graph focus', () => {
   });
 
   it('polls active graph builds within the two-second Manager freshness contract', () => {
-    expect(graphStatusPollDelay([])).toBe(15_000);
+    expect(graphStatusPollDelay([])).toBe(5_000);
     expect(graphStatusPollDelay([graphBuildStatus('running')])).toBe(1_000);
     expect(graphStatusPollDelay([graphBuildStatus('queued')])).toBe(1_000);
-    expect(graphStatusPollDelay([graphBuildStatus('completed')])).toBe(15_000);
+    expect(graphStatusPollDelay([graphBuildStatus('completed')])).toBe(5_000);
+    expect(graphStatusPollDelay([], undefined, true)).toBe(1_000);
+    const maintenance = {
+      checkoutId: 'a'.repeat(64),
+      completed: 3,
+      operation: 'selected-snapshot-purge' as const,
+      phase: 'verifying-graph' as const,
+      snapshotId: `cgsn_${'b'.repeat(40)}-direct`,
+      total: 5,
+    };
+    expect(graphStatusPollDelay([], maintenance)).toBe(1_000);
+    expect(graphMaintenanceStatusLabel(maintenance)).toBe('Selected snapshot purge · rechecking graph safety evidence');
     const abandoned = {
       ...graphBuildStatus('running'),
       observation: {heartbeatAgeMilliseconds: 60_000, liveness: 'abandoned' as const},
     };
     expect(graphBuildIsActive(abandoned)).toBe(false);
     expect(graphBuildShouldDisplay(abandoned)).toBe(false);
-    expect(graphStatusPollDelay([abandoned])).toBe(15_000);
+    expect(graphStatusPollDelay([abandoned])).toBe(5_000);
     const staleOwner = {
       ...graphBuildStatus('running'),
       coordination: {lockVerified: true, progressSilent: true, role: 'owner' as const},
@@ -243,14 +408,36 @@ describe('manager graph focus', () => {
     expect(graphBuildShouldDisplay(staleOwner)).toBe(true);
   });
 
+  it('shows only a bounded actionable administration job summary', () => {
+    const builds = [
+      {...graphBuildStatus('completed'), buildId: 'completed'},
+      {...graphBuildStatus('running'), buildId: 'running'},
+      {...graphBuildStatus('failed'), buildId: 'failed'},
+    ];
+    const waiters = Array.from({length: 5}, (_, index) => ({
+      ...graphBuildStatus('queued'),
+      buildId: `waiter-${index}`,
+    }));
+    const selected = graphAdministrationJobSelection(builds, waiters);
+
+    expect(selected.jobs).toHaveLength(4);
+    expect(selected.total).toBe(7);
+    expect(selected.hiddenCount).toBe(3);
+    expect(selected.jobs.map(job => job.state)).not.toContain('completed');
+    expect(selected.jobs[0]?.buildId).toBe('running');
+  });
+
   it('refreshes a terminal snapshot missing from the catalog and scopes waiters to their build', () => {
     const catalog = {
       builds: [],
+      catalogRevision: 'revision-before-removal',
       diagnostics: [],
       repositories: [repositoryGroup('repository', ['known-snapshot'], 'known-snapshot')],
       waiterCount: 0,
       waiters: [],
     };
+    expect(graphStatusRequiresCatalogRefresh(catalog, [], new Set(), 'revision-after-removal')).toBe(true);
+    expect(graphStatusRequiresCatalogRefresh(catalog, [], new Set(), 'revision-before-removal')).toBe(false);
     expect(
       graphStatusRequiresCatalogRefresh(catalog, [
         {...graphBuildStatus('completed'), result: {snapshotId: 'new-snapshot'}},
@@ -316,6 +503,23 @@ describe('manager graph focus', () => {
     const otherRequest = {...graphBuildStatus('queued'), buildId: 'waiter-c', request: {key: 'request-b'}};
     expect(graphWaiterCountForBuild(owner, [matching, otherCheckout, otherRequest])).toBe(1);
     expect(graphWaiterCountForBuild(graphBuildStatus('running'), [matching])).toBe(0);
+  });
+
+  it('keeps administration diagnostics pending until the exact catalog revision succeeds', () => {
+    expect(graphDiagnosticsRequiresCatalogRefresh(undefined, 'revision-after-removal')).toBe(true);
+    expect(graphDiagnosticsRequiresCatalogRefresh('revision-before-removal', 'revision-after-removal')).toBe(true);
+    expect(graphDiagnosticsRequiresCatalogRefresh('revision-after-removal', 'revision-after-removal')).toBe(false);
+    expect(
+      graphDiagnosticsRequiresCatalogRefresh('revision-before-removal', 'revision-after-removal', {
+        checkoutId: 'a'.repeat(64),
+        completed: 0,
+        operation: 'graph-maintenance',
+        phase: 'working',
+        startedAt: '2026-08-10T00:00:00.000Z',
+        total: 1,
+        updatedAt: '2026-08-10T00:00:00.000Z',
+      }),
+    ).toBe(false);
   });
 
   it('keeps a selected indexed view across refresh and falls back deterministically after removal', () => {

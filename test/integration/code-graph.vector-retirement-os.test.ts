@@ -115,7 +115,11 @@ describe('code graph vector retirement OS recovery', () => {
                       {
                         availableDiskBytes: () => Effect.succeed(Number.MAX_SAFE_INTEGER),
                         deadlineMonotonicMilliseconds: startedAt + 250,
-                        monotonicMilliseconds: () => performance.now(),
+                        // This OS test proves killed-receipt recovery and cursor
+                        // convergence. Keep its deadline deterministic so hosted
+                        // runner contention cannot turn that contract into a
+                        // performance assertion; the load suite owns live timing.
+                        monotonicMilliseconds: () => startedAt,
                         reservationMode: 'nonblocking-one-attempt',
                       },
                     );

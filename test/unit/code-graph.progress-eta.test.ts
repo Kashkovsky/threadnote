@@ -2,6 +2,7 @@ import {Option} from 'effect';
 import {describe, expect, it} from 'vitest';
 import {
   estimateCodeGraphEta,
+  codeGraphEtaMeasurement,
   makeCodeGraphEtaTracker,
   observeCodeGraphEta,
   type CodeGraphEtaMeasurement,
@@ -59,6 +60,34 @@ describe('code graph progress ETA', () => {
     );
     expect(reset.tracker.sampleCount).toBe(0);
     expect(Option.isNone(reset.estimate)).toBe(true);
+  });
+
+  it('prefers path-free class-weighted scan work over file counts', () => {
+    const measurement = Option.getOrUndefined(
+      codeGraphEtaMeasurement({
+        accepted: 8,
+        completed: 2,
+        excluded: 0,
+        metrics: {
+          factsBytesCompleted: 55_000,
+          sourceBytesCompleted: 20_000,
+          sourceBytesTotal: 100_000,
+          workUnitsCompleted: 80_000,
+          workUnitsTotal: 600_000,
+        },
+        phase: 'scanning',
+        skipped: 0,
+        total: 10,
+        unit: 'files',
+      }),
+    );
+
+    expect(measurement).toEqual({
+      basis: 'extraction-work',
+      completed: 80_000,
+      phase: 'scanning',
+      total: 600_000,
+    });
   });
 });
 

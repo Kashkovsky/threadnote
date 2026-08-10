@@ -4,6 +4,7 @@ import {
   CODE_GRAPH_CACHE_PERSISTENT_CAPACITY_CALIBRATION,
   CODE_GRAPH_DIRECT_PERSISTENT_CAPACITY_CALIBRATION,
   codeGraphDirectPersistentCapacityDemand,
+  codeGraphDiskCapacityReservationProjection,
   codeGraphPersistentCapacityDemand,
   CodeGraphDiskCapacityObservationError,
   CodeGraphDiskCapacityPressureError,
@@ -31,7 +32,7 @@ const capacityMagnitude = fc.oneof(
 );
 
 describe('code graph disk capacity properties', () => {
-  it('binds persistent-extension revision 8 into both calibration identities', () => {
+  it('binds the current persistent-extension revision into both calibration identities', () => {
     for (const calibration of [
       CODE_GRAPH_DIRECT_PERSISTENT_CAPACITY_CALIBRATION,
       CODE_GRAPH_CACHE_PERSISTENT_CAPACITY_CALIBRATION,
@@ -60,6 +61,46 @@ describe('code graph disk capacity properties', () => {
         expect(demand.transientHighWaterBytes).toBeGreaterThanOrEqual(24 * 1_048_576);
       }
     }
+  });
+
+  it('routes temporary staging main, journal, and recovery demand only to the temporary filesystem', () => {
+    const demand = codeGraphPersistentCapacityDemand({
+      boundary: {
+        finalFactBytes: 1_048_576,
+        mainFilesystem: 'temporary',
+        operation: 'stage temporary code graph facts',
+        rowCount: 10_000,
+        transientFilesystem: 'temporary',
+      },
+      lexicalFormatVersion: 1,
+      pageSize: 4_096,
+      walAutoCheckpointPages: 1_000,
+    });
+    expect(demand).toMatchObject({
+      mainFilesystem: 'temporary',
+      state: 'measured',
+      transientFilesystem: 'temporary',
+    });
+    const durable = 'd'.repeat(64);
+    const temporary = 'e'.repeat(64);
+    const projection = codeGraphDiskCapacityReservationProjection({
+      demand,
+      durableFilesystemKey: durable,
+      freelistBytes: Number.MAX_SAFE_INTEGER,
+      temporaryFilesystemKey: temporary,
+    });
+    expect(projection.state).toBe('measured');
+    if (projection.state !== 'measured' || demand.state !== 'measured') return;
+    expect(projection.filesystems).toEqual([
+      {
+        bytes: saturatingCapacityAdd(
+          demand.mainHighWaterBytes,
+          demand.transientHighWaterBytes,
+          demand.recoveryFloorBytes,
+        ),
+        key: temporary,
+      },
+    ]);
   });
 
   it.prop(
@@ -331,6 +372,13 @@ describe('code graph disk capacity properties', () => {
       'stage persistent code graph facts',
       'stage persistent code graph inventory',
       'stage persistent code graph workspace',
+      'prepare temporary incremental code graph activation',
+      'publish temporary code graph snapshot',
+      'resolve temporary code graph reexport aliases',
+      'resolve temporary code graph references',
+      'stage temporary code graph facts',
+      'stage temporary code graph inventory',
+      'stage temporary code graph workspace',
     ] as const) {
       const bounded = codeGraphDiskCapacityFailure(decision, operation);
       expect(bounded.operation).toBe(operation);

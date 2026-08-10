@@ -5,9 +5,18 @@ import remarkGfm from 'remark-gfm';
 import type {CodeGraphLocalDiagnosticsReport} from './code_graph/diagnostics.js';
 import {ManagerAutocompleteInput, ManagerDialogProvider, useManagerDialogs} from './manager_dialog.js';
 import {
+  graphViewRemovalApprovalDialog,
+  graphViewRemovalTargetIsAbsent,
+  type ManagerGraphViewRemovalResponse,
+  withoutRemovedGraphCatalogView,
+  withoutRemovedGraphDiagnosticsView,
+} from './manager_graph_removal.js';
+import {
   GraphWorkspace,
   graphBuildIsActive,
   graphCompletedBuildResultIdentity,
+  graphDiagnosticsRequiresCatalogRefresh,
+  graphMaintenanceStatusLabel,
   graphStatusPollDelay,
   graphStatusRequiresCatalogRefresh,
   type GraphAnalysis,
@@ -29,14 +38,6 @@ type MemoryStatus = 'active' | 'archived' | 'superseded';
 type AgentClient = 'claude' | 'codex' | 'copilot' | 'cursor' | 'effect-ai';
 type MemoryViewMode = 'edit' | 'preview';
 type SelectId = 'agent' | 'kind' | 'status';
-
-interface ManagerGraphViewRemovalResponse {
-  readonly approvalDigest: string;
-  readonly output: string;
-  readonly result: {
-    readonly state: 'already-removed' | 'not-found' | 'ready' | 'removed' | 'stale-target';
-  };
-}
 
 const SIDEBAR_WIDTH_KEY = 'threadnote.manager.sidebarWidth';
 const SIDEBAR_WIDTH_DEFAULT = 300;
@@ -180,6 +181,7 @@ function App(): React.ReactElement {
   const [graphCatalogError, setGraphCatalogError] = useState('');
   const graphCatalogRef = useRef<GraphCatalog | undefined>(undefined);
   const [graphDiagnostics, setGraphDiagnostics] = useState<CodeGraphLocalDiagnosticsReport | undefined>();
+  const graphDiagnosticsCatalogRevisionRef = useRef<string | undefined>(undefined);
   const [graphAdministrationBusy, setGraphAdministrationBusy] = useState<string | undefined>();
   const [graphAdministrationOutput, setGraphAdministrationOutput] = useState('');
   const [tree, setTree] = useState<TreeNode | undefined>();
@@ -246,19 +248,29 @@ function App(): React.ReactElement {
     let cancelled = false;
     let timer: number | undefined;
     let observedActiveBuild = false;
+    let observedActiveMaintenance = false;
     const acknowledgedCompletedResults = new Set<string>();
     const poll = async (): Promise<void> => {
       try {
-        const status = await api<Pick<GraphCatalog, 'builds' | 'waiterCount' | 'waiters'>>(
-          '/api/graphs/status',
-          undefined,
-          {timeoutMilliseconds: GRAPH_CATALOG_REQUEST_TIMEOUT_MILLISECONDS},
-        );
+        const status = await api<
+          Pick<
+            GraphCatalog,
+            'builds' | 'catalogRevision' | 'lifecyclePending' | 'maintenance' | 'waiterCount' | 'waiters'
+          >
+        >('/api/graphs/status', undefined, {timeoutMilliseconds: GRAPH_CATALOG_REQUEST_TIMEOUT_MILLISECONDS});
         if (cancelled) return;
         const active = status.builds.some(graphBuildIsActive);
+        const activeMaintenance = status.maintenance !== undefined;
         const refreshCatalog =
-          (observedActiveBuild && !active) ||
-          graphStatusRequiresCatalogRefresh(graphCatalogRef.current, status.builds, acknowledgedCompletedResults);
+          !activeMaintenance &&
+          ((observedActiveBuild && !active) ||
+            (observedActiveMaintenance && !activeMaintenance) ||
+            graphStatusRequiresCatalogRefresh(
+              graphCatalogRef.current,
+              status.builds,
+              acknowledgedCompletedResults,
+              status.catalogRevision,
+            ));
         if (refreshCatalog) {
           const refreshed = await api<GraphCatalog>('/api/graphs', undefined, {
             timeoutMilliseconds: GRAPH_CATALOG_REQUEST_TIMEOUT_MILLISECONDS,
@@ -276,8 +288,22 @@ function App(): React.ReactElement {
           graphCatalogRef.current = merged;
           setGraphCatalog(merged);
         }
+        if (
+          graphDiagnosticsRequiresCatalogRefresh(
+            graphDiagnosticsCatalogRevisionRef.current,
+            status.catalogRevision,
+            status.maintenance,
+          )
+        ) {
+          await refreshGraphDiagnostics({analyze: false, deep: false}, false, true, status.catalogRevision);
+          if (cancelled) return;
+        }
         observedActiveBuild = active;
-        timer = window.setTimeout(() => void poll(), graphStatusPollDelay(status.builds));
+        observedActiveMaintenance = activeMaintenance;
+        timer = window.setTimeout(
+          () => void poll(),
+          graphStatusPollDelay(status.builds, status.maintenance, status.lifecyclePending),
+        );
       } catch {
         if (!cancelled) timer = window.setTimeout(() => void poll(), 15_000);
       }
@@ -386,23 +412,31 @@ function App(): React.ReactElement {
   async function refreshGraphDiagnostics(
     options: {readonly analyze: boolean; readonly deep: boolean},
     notify = true,
-  ): Promise<void> {
-    setGraphAdministrationBusy(
-      options.deep ? 'Deep-checking graphs' : options.analyze ? 'Analyzing graphs' : 'Diagnosing graphs',
-    );
+    background = false,
+    catalogRevision = graphCatalogRef.current?.catalogRevision,
+  ): Promise<boolean> {
+    if (!background) {
+      setGraphAdministrationBusy(
+        options.deep ? 'Deep-checking graphs' : options.analyze ? 'Analyzing graphs' : 'Diagnosing graphs',
+      );
+    }
     try {
       const report = await api<CodeGraphLocalDiagnosticsReport>(
         `/api/graphs/diagnostics?analyze=${options.analyze}&deep=${options.deep}`,
       );
       setGraphDiagnostics(report);
-      setGraphAdministrationOutput('');
+      graphDiagnosticsCatalogRevisionRef.current = catalogRevision;
+      if (!background) setGraphAdministrationOutput('');
       if (notify) toastMessage('Graph diagnostics refreshed');
+      return true;
     } catch (cause) {
+      if (background) return false;
       const message = errorMessage(cause);
       setGraphAdministrationOutput(message);
       toastMessage(message);
+      return false;
     } finally {
-      setGraphAdministrationBusy(undefined);
+      if (!background) setGraphAdministrationBusy(undefined);
     }
   }
 
@@ -411,26 +445,36 @@ function App(): React.ReactElement {
     setGraphAdministrationBusy(label);
     try {
       let result: {readonly output: string};
+      let removedViewConfirmed = false;
       if (action.action === 'remove-view' && action.dryRun !== true) {
         const preview = await api<ManagerGraphViewRemovalResponse>('/api/graphs/action', {
           ...action,
           dryRun: true,
         });
-        result =
-          preview.result.state === 'ready' || preview.result.state === 'already-removed'
-            ? await api<ManagerGraphViewRemovalResponse>('/api/graphs/action', {
-                ...action,
-                approvalDigest: preview.approvalDigest,
-                confirm: true,
-              })
-            : preview;
+        const approvalDialog = graphViewRemovalApprovalDialog(preview);
+        if (approvalDialog && !(await dialogs.confirm(approvalDialog))) {
+          setGraphAdministrationOutput(preview.output);
+          return;
+        }
+        const removal = approvalDialog
+          ? await api<ManagerGraphViewRemovalResponse>('/api/graphs/action', {
+              ...action,
+              approvalDigest: preview.approvalDigest,
+              confirm: true,
+            })
+          : preview;
+        result = removal;
+        removedViewConfirmed = graphViewRemovalTargetIsAbsent(removal);
+        if (removedViewConfirmed) projectRemovedGraphView(action);
       } else {
         result = await api<{readonly output: string}>('/api/graphs/action', {
           ...action,
           confirm: action.dryRun !== true,
         });
       }
-      await Promise.all([refreshGraphCatalog(false), refreshGraphDiagnostics({analyze: false, deep: false}, false)]);
+      await refreshGraphCatalog(false);
+      await refreshGraphDiagnostics({analyze: false, deep: false}, false);
+      if (removedViewConfirmed && action.action === 'remove-view') projectRemovedGraphView(action);
       setGraphAdministrationOutput(result.output);
       toastMessage(`${label} complete`);
     } catch (cause) {
@@ -440,6 +484,13 @@ function App(): React.ReactElement {
     } finally {
       setGraphAdministrationBusy(undefined);
     }
+  }
+
+  function projectRemovedGraphView(target: Extract<GraphAdministrationAction, {readonly action: 'remove-view'}>): void {
+    const nextCatalog = withoutRemovedGraphCatalogView(graphCatalogRef.current, target);
+    graphCatalogRef.current = nextCatalog;
+    setGraphCatalog(nextCatalog);
+    setGraphDiagnostics(current => withoutRemovedGraphDiagnosticsView(current, target));
   }
 
   async function loadMemory(uri: string): Promise<void> {
@@ -1235,7 +1286,14 @@ function App(): React.ReactElement {
           <section className="panel graph-panel is-active">
             <GraphWorkspace
               administration={graphDiagnostics}
-              administrationBusy={graphAdministrationBusy}
+              administrationBusy={
+                graphAdministrationBusy ??
+                (graphCatalog?.maintenance
+                  ? graphMaintenanceStatusLabel(graphCatalog.maintenance)
+                  : graphCatalog?.lifecyclePending
+                    ? 'Reconciling indexed views'
+                    : undefined)
+              }
               administrationOutput={graphAdministrationOutput}
               catalog={graphCatalog}
               catalogError={graphCatalogError}

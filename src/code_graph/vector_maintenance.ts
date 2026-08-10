@@ -11,6 +11,7 @@ import {
   commitCodeGraphVectorRetirementPage,
   commitCodeGraphVectorRetirementPreparation,
   deleteCodeGraphVectorPointerWithRetirement,
+  inspectCodeGraphVectorSnapshotUsage,
   inspectCodeGraphVectorPageStorage,
   inspectCodeGraphVectorRetirementWork,
   makeCodeGraphVectorRetirementCapacityProtector,
@@ -19,7 +20,9 @@ import {
   planCodeGraphVectorRetirementPage,
   planCodeGraphVectorRetirementPreparation,
   selectCodeGraphVectorRetirementMarkerCandidate,
+  type CodeGraphVectorSnapshotUsage,
 } from './vector_retirement.js';
+import {CodeGraphStoreBusyError} from './types.js';
 
 export {
   type CodeGraphVectorRetirementCapacityProtector,
@@ -91,6 +94,19 @@ export interface CodeGraphVectorPointerCleanupResult {
   readonly databasesProcessed: number;
   readonly pointersRemoved: number;
   readonly warnings: readonly CodeGraphVectorCleanupWarning[];
+}
+
+export const CODE_GRAPH_SNAPSHOT_VECTOR_BLOCKER_CODES = ['vector-active', 'vector-unverifiable'] as const;
+
+export type CodeGraphSnapshotVectorBlockerCode = (typeof CODE_GRAPH_SNAPSHOT_VECTOR_BLOCKER_CODES)[number];
+
+export interface CodeGraphSnapshotVectorEvidence {
+  readonly activePointerCount: number;
+  readonly blockers: readonly CodeGraphSnapshotVectorBlockerCode[];
+  readonly databasesInspected: number;
+  readonly generationCount: number;
+  readonly inventoryDigest: string;
+  readonly vectorEvidenceDigest: string;
 }
 
 interface VectorDatabaseCandidate {
@@ -1497,6 +1513,202 @@ function verifyVectorUnitInventory(
     Effect.provideService(Crypto.Crypto, crypto),
     Effect.provideService(Path.Path, path),
     Effect.provideService(SystemInfo, system),
+  );
+}
+
+/** Read-only, bounded and path-free vector evidence for selected snapshot deletion. */
+export const inspectCodeGraphSnapshotVectorEvidence = Effect.fn('codeGraph.inspectSnapshotVectorEvidence')(function* (
+  threadnoteHome: string,
+  checkoutId: string,
+  snapshotId: string,
+) {
+  yield* validateSnapshotVectorTarget(checkoutId, snapshotId);
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const inventory = yield* inspectVectorDatabases(fs, path, threadnoteHome, checkoutId).pipe(
+    Effect.match({onFailure: () => undefined, onSuccess: value => value}),
+  );
+  if (inventory === undefined) return unavailableSnapshotVectorEvidence('inventory-unavailable');
+  return yield* snapshotVectorEvidence(fs, path, inventory, snapshotId);
+});
+
+/**
+ * Acquires every current model writer lock in deterministic order and keeps
+ * those locks held while `use` performs the graph-store approval CAS.
+ */
+export const withCodeGraphSnapshotVectorEvidenceLocks = Effect.fn('codeGraph.withSnapshotVectorEvidenceLocks')(
+  function* <A, E, R>(
+    threadnoteHome: string,
+    checkoutId: string,
+    snapshotId: string,
+    use: (evidence: CodeGraphSnapshotVectorEvidence) => Effect.Effect<A, E, R>,
+  ) {
+    yield* validateSnapshotVectorTarget(checkoutId, snapshotId);
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const initial = yield* inspectVectorDatabases(fs, path, threadnoteHome, checkoutId).pipe(
+      Effect.match({onFailure: () => undefined, onSuccess: value => value}),
+    );
+    if (initial === undefined) return yield* use(unavailableSnapshotVectorEvidence('inventory-unavailable'));
+    if (initial.truncated || initial.unsafeEntries > 0) {
+      return yield* use(yield* snapshotVectorEvidence(fs, path, initial, snapshotId));
+    }
+    const initialInventoryDigest = snapshotVectorInventoryDigest(initial);
+    const verifyAndUse = Effect.gen(function* () {
+      const current = yield* inspectVectorDatabases(fs, path, threadnoteHome, checkoutId).pipe(
+        Effect.match({onFailure: () => undefined, onSuccess: value => value}),
+      );
+      if (current === undefined) return yield* use(unavailableSnapshotVectorEvidence('inventory-unavailable'));
+      if (snapshotVectorInventoryDigest(current) !== initialInventoryDigest) {
+        return yield* use(yield* snapshotVectorEvidence(fs, path, current, snapshotId, true));
+      }
+      return yield* use(yield* snapshotVectorEvidence(fs, path, current, snapshotId));
+    });
+    const locked = withAllSnapshotVectorModelLocks(
+      fs,
+      path,
+      threadnoteHome,
+      checkoutId,
+      initial.candidates,
+      verifyAndUse,
+    );
+    return yield* locked.pipe(
+      Effect.catch(cause =>
+        isFileLockTimeout(cause)
+          ? Effect.fail(
+              new CodeGraphStoreBusyError('Code graph vector store is busy.', {
+                operation: 'purge selected code graph snapshot',
+              }),
+            )
+          : Effect.fail(cause),
+      ),
+    );
+  },
+);
+
+function withAllSnapshotVectorModelLocks<A, E, R>(
+  fs: FileSystem.FileSystem,
+  path: Path.Path,
+  threadnoteHome: string,
+  checkoutId: string,
+  candidates: readonly VectorDatabaseCandidate[],
+  use: Effect.Effect<A, E, R>,
+  index = 0,
+): Effect.Effect<A, unknown, R | Crypto.Crypto | Path.Path | SystemInfo> {
+  const candidate = candidates[index];
+  if (candidate === undefined) return use;
+  return withExclusiveFileLock(
+    fs,
+    codeGraphVectorWriteLockPath(path, threadnoteHome, checkoutId, candidate.modelKey),
+    {
+      retryIntervalMilliseconds: 1,
+      staleAfterMilliseconds: 120_000,
+      waitTimeoutMilliseconds: 0,
+    },
+    validateVectorDatabaseCandidate(fs, path, candidate).pipe(
+      Effect.andThen(withAllSnapshotVectorModelLocks(fs, path, threadnoteHome, checkoutId, candidates, use, index + 1)),
+    ),
+  );
+}
+
+const validateSnapshotVectorTarget = Effect.fn('codeGraph.validateSnapshotVectorTarget')(function* (
+  checkoutId: string,
+  snapshotId: string,
+) {
+  if (!HASH_ID.test(checkoutId) || !validSnapshotId(snapshotId)) {
+    return yield* Effect.fail(new Error('Code graph vector snapshot purge target is invalid.'));
+  }
+});
+
+function snapshotVectorEvidence(
+  fs: FileSystem.FileSystem,
+  path: Path.Path,
+  inventory: VectorDatabaseInventory,
+  snapshotId: string,
+  inventoryChanged = false,
+): Effect.Effect<CodeGraphSnapshotVectorEvidence, never> {
+  return Effect.gen(function* () {
+    const stores: Array<
+      | {readonly modelKey: string; readonly state: 'unreadable'}
+      | ({readonly modelKey: string; readonly state: 'ready'} & CodeGraphVectorSnapshotUsage)
+    > = [];
+    for (const candidate of inventory.candidates) {
+      const usage = yield* validateVectorDatabaseCandidate(fs, path, candidate).pipe(
+        Effect.andThen(inspectCodeGraphVectorSnapshotUsage(candidate.databasePath, snapshotId)),
+        Effect.match({onFailure: () => undefined, onSuccess: value => value}),
+      );
+      stores.push(
+        usage === undefined
+          ? {modelKey: candidate.modelKey, state: 'unreadable'}
+          : {modelKey: candidate.modelKey, state: 'ready', ...usage},
+      );
+    }
+    const activePointerCount = stores.reduce(
+      (total, store) => total + (store.state === 'ready' ? store.activePointerCount : 0),
+      0,
+    );
+    const generationCount = stores.reduce(
+      (total, store) => total + (store.state === 'ready' ? store.generationCount : 0),
+      0,
+    );
+    const unverifiable =
+      inventoryChanged ||
+      inventory.truncated ||
+      inventory.unsafeEntries > 0 ||
+      stores.some(store => store.state === 'unreadable');
+    const blockers: CodeGraphSnapshotVectorBlockerCode[] = [];
+    if (activePointerCount > 0) blockers.push('vector-active');
+    if (unverifiable) blockers.push('vector-unverifiable');
+    blockers.sort();
+    const inventoryDigest = snapshotVectorInventoryDigest(inventory);
+    const projection = {
+      activePointerCount,
+      blockers,
+      generationCount,
+      inventoryChanged,
+      inventoryDigest,
+      stores: stores.map(store =>
+        store.state === 'ready'
+          ? [store.modelKey, store.state, store.evidenceDigest, store.activePointerCount, store.generationCount]
+          : [store.modelKey, store.state],
+      ),
+    };
+    return {
+      activePointerCount,
+      blockers,
+      databasesInspected: stores.filter(store => store.state === 'ready').length,
+      generationCount,
+      inventoryDigest,
+      vectorEvidenceDigest: sha256HexSync(`code-graph-snapshot-purge-vector-v1\n${JSON.stringify(projection)}`),
+    } satisfies CodeGraphSnapshotVectorEvidence;
+  });
+}
+
+function unavailableSnapshotVectorEvidence(reason: 'inventory-unavailable'): CodeGraphSnapshotVectorEvidence {
+  const inventoryDigest = sha256HexSync(`code-graph-snapshot-purge-vector-inventory-v1\n${reason}`);
+  return {
+    activePointerCount: 0,
+    blockers: ['vector-unverifiable'],
+    databasesInspected: 0,
+    generationCount: 0,
+    inventoryDigest,
+    vectorEvidenceDigest: sha256HexSync(
+      `code-graph-snapshot-purge-vector-v1\n${JSON.stringify({inventoryDigest, reason})}`,
+    ),
+  };
+}
+
+function snapshotVectorInventoryDigest(inventory: VectorDatabaseInventory): string {
+  return sha256HexSync(
+    `code-graph-snapshot-purge-vector-inventory-v1\n${JSON.stringify({
+      candidates: inventory.candidates.map(candidate => [
+        candidate.modelKey,
+        candidate.fileIdentity.dev,
+        candidate.fileIdentity.ino ?? null,
+      ]),
+      truncated: inventory.truncated,
+      unsafeEntries: inventory.unsafeEntries,
+    })}`,
   );
 }
 

@@ -124,7 +124,13 @@ export function createCodeGraphLanguagePackRegistry(
     if (Option.isNone(matched)) {
       return Effect.fail(new CodeGraphLanguagePackError(`No code graph language pack accepts ${file.path}.`));
     }
-    const project = projectForPath(projects, file.path, matched.value.pack.resolutionStrategy.domain);
+    const nearestProjectContext =
+      matched.value.role === 'corpus' || /(?:^|\/)[^/]+\.xcassets\/.*\/Contents\.json$/iu.test(file.path);
+    const project = projectForPath(
+      projects,
+      file.path,
+      nearestProjectContext ? undefined : matched.value.pack.resolutionStrategy.domain,
+    );
     const context: CodeGraphExtractionContext = {
       packageName: Option.map(project, value => value.name),
       project,

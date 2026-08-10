@@ -132,6 +132,8 @@ threadnote read threadnote://user/me/memories/handoffs/active/threadnote/release
 threadnote remember --kind durable --project threadnote --topic storage-contract --text "..."
 threadnote handoff --project threadnote --topic release --text "..."
 threadnote graph query --query "release update lifecycle"
+threadnote graph query --query "clear session" --package "@threadnote/mobile"
+threadnote graph query --query "account logout contract" --workset product
 threadnote graph analyze --view hubs
 ```
 
@@ -174,6 +176,14 @@ represented as assets rather than guessed. A corpus artifact over 64 MiB remains
 instead of being rejected or semantically decompressed. Selected OpenXML, OpenDocument, and EPUB text entries have
 bounded expansion. These are per-artifact extraction safety budgets, not repository or graph-size caps.
 
+Mobile resource wiring is explicit rather than inferred: Android `res` XML contributes bounded element, attribute,
+and `@type/name` reference evidence, while Apple property lists, storyboards, XIB files, and asset-catalog scalar values
+contribute searchable resource identifiers. Package-scoped queries return structured examined/matched counts; zero
+matches are labeled a package-local absence hint, never proof that the symbol is absent elsewhere. Named seed-manifest
+worksets query at most eight repositories with deterministic shared node/edge budgets and per-repository snapshot
+provenance. They reuse existing ready snapshots and report unavailable members instead of starting cold builds across
+the workset.
+
 Hidden directories and conventional generated roots such as `node_modules`, `dist`, `build`, `out`, `.nx`,
 `graphify-out`, and `bazel-*` are pruned before content is read, including when a broad package root contains them. Large unknown JSON,
 JSONC, and YAML files keep only bounded structure, while recognized snapshots, golden files, fixtures, datasets, and
@@ -196,6 +206,8 @@ deterministic order.
 ```sh
 threadnote graph status
 threadnote graph query --query "exclusive file lock"
+threadnote graph query --query "clear session" --package "@threadnote/mobile"
+threadnote graph query --query "logout contract" --workset product
 threadnote graph node --node-id cgs_…
 threadnote graph neighbors --node-id cgs_… --direction incoming --depth 2
 threadnote graph explain --symbol CodeGraphQueryService

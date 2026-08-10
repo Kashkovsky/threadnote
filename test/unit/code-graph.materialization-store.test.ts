@@ -4,18 +4,21 @@ import {Deferred, Effect, Fiber, FileSystem, Option, Ref} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {afterEach, describe, expect, it} from 'vitest';
 import {TestClock} from 'effect/testing';
+import {codeGraphBlobReuseCacheKey} from '../../src/code_graph/blob_reuse.js';
 import {
   cachedCodeGraphFactBytes,
   CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM,
   CODE_GRAPH_REFERENCE_CANDIDATES_PER_REFERENCE_MAXIMUM,
   finalCodeGraphFactBatches,
 } from '../../src/code_graph/fact_budget.js';
+import {CODE_GRAPH_STORED_FACT_CODEC, decodeStoredCodeGraphFact} from '../../src/code_graph/fact_storage.js';
 import {createCachedCodeGraphFactsAttributor, factMaterializationBatches} from '../../src/code_graph/indexer.js';
 import {
   CodeGraphDiskCapacityPressureError,
   type CodeGraphDirectPersistentCapacityBoundary,
 } from '../../src/code_graph/disk_capacity.js';
 import type {CodeGraphWorkspace} from '../../src/code_graph/languages/types.js';
+import {extractStructuredSchemaFacts} from '../../src/code_graph/languages/schemas/extractor.js';
 import {augmentRationaleFacts} from '../../src/code_graph/rationale.js';
 import {
   CodeGraphStore,
@@ -430,7 +433,7 @@ describe('code graph full-build materialization store', () => {
           database.close(false);
         }
       });
-      const persisted = JSON.parse(row.facts_json) as CodeGraphFileFacts;
+      const persisted = decodeStoredCodeGraphFact(row.facts_json, fixture.file.path).facts;
 
       expect(row.facts_bytes).toBeLessThanOrEqual(CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM);
       expect(row.facts_bytes).toBe(new TextEncoder().encode(row.facts_json).byteLength);
@@ -1708,7 +1711,7 @@ describe('code graph full-build materialization store', () => {
     const staging = await runEffect(
       Effect.gen(function* () {
         const store = yield* CodeGraphStore;
-        return yield* store.withSession(
+        yield* store.withSession(
           fixture.databasePath,
           Effect.gen(function* () {
             const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
@@ -1730,9 +1733,9 @@ describe('code graph full-build materialization store', () => {
               undefined,
               progress => Effect.sync(() => activation.push(progress)),
             );
-            return yield* Effect.promise(() => awaitCompletedBuildCleanup(fixture.databasePath, snapshot.id));
           }),
         );
+        return yield* Effect.promise(() => awaitCompletedBuildCleanup(fixture.databasePath, snapshot.id));
       }),
     );
 
@@ -3599,6 +3602,31 @@ describe('code graph full-build materialization store', () => {
     expect(search.map(node => node.path)).toEqual(['test/integration/mcp.native-tools.test.ts', 'src/mcp_server.ts']);
   });
 
+  it('ranks a production side-effect owner ahead of lexical state and test matches', async () => {
+    const fixture = await materializationFixture();
+    const owner = {...symbol('owner', 'clearAllTabs', []), path: 'src/TabsStore.ts'};
+    const state = {...symbol('state', 'tabs', []), kind: 'property', path: 'src/TabsState.ts'};
+    const testCopy = {...symbol('test-copy', 'clearAllTabs', []), path: 'test/TabsStore.test.ts'};
+
+    const search = await runEffect(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        return yield* store.withSession(
+          fixture.databasePath,
+          Effect.gen(function* () {
+            yield* store.prepareActivation(fixture.databasePath, [fixture.file]);
+            yield* store.stageActivationFacts(fixture.databasePath, [state, testCopy, owner], []);
+            const snapshot = readySnapshot(fixture.identity, 3, 0);
+            yield* store.activateStaged(fixture.databasePath, fixture.identity, snapshot);
+            return yield* store.searchSymbols(fixture.databasePath, snapshot.id, 'tabs', 10);
+          }),
+        );
+      }),
+    );
+
+    expect(search.map(node => node.id)).toEqual(['owner', 'state', 'test-copy']);
+  });
+
   it('fails fast on duplicate full-build IDs without replacing already staged facts', async () => {
     const fixture = await materializationFixture();
     const original = symbol('stable-id', 'original', ['typescript:name:original']);
@@ -3993,6 +4021,100 @@ describe('code graph full-build materialization store', () => {
     }).pipe(Effect.provide(ApplicationLayer)),
   );
 
+  effectIt.effect('reuses one committed structured blob with target-path-local identities', () =>
+    Effect.gen(function* () {
+      const fixture = yield* Effect.promise(materializationFixture);
+      const content = JSON.stringify({
+        'flat.key': {leaf: true},
+        flat: {key: {leaf: false}},
+        ...Object.fromEntries(Array.from({length: 100}, (_, index) => [`entry-${index}`, {leaf: index}])),
+      });
+      const donor = structuredCacheFile('config/donor.json', content);
+      const target = structuredCacheFile('config/copies/target.json', content);
+      const context = {packageName: Option.none(), project: Option.none()};
+      const donorFacts = extractStructuredSchemaFacts(donor, context);
+      const expected = extractStructuredSchemaFacts(target, context);
+      const store = yield* CodeGraphStore;
+
+      yield* store.cacheFacts(
+        fixture.databasePath,
+        [donor],
+        [donorFacts],
+        'structured-blob-cache',
+        unprotectedCacheWrite,
+      );
+      const decoded = yield* store.loadCachedFacts(fixture.databasePath, [target], 'structured-blob-cache');
+      const metadata = yield* store.loadCachedFacts(fixture.databasePath, [target], 'structured-blob-cache', {
+        decode: false,
+      });
+      const cachedKeys = yield* store.cachedCommittedFileKeys(fixture.databasePath, 'structured-blob-cache');
+
+      expect(decoded.facts.get(target.path)).toEqual(expected);
+      expect(decoded.keys).toEqual(new Set([target.path]));
+      expect(metadata.keys).toEqual(new Set([target.path]));
+      expect(metadata.bytes).toBeGreaterThanOrEqual(decoded.bytes);
+      expect(cachedKeys.has(codeGraphBlobReuseCacheKey(target, 'structured-blob-cache')!)).toBe(true);
+      const compact = new Database(fixture.databasePath, {readonly: true, strict: true});
+      try {
+        expect(
+          compact
+            .query("SELECT json_extract(facts_json, '$.codec') AS codec FROM file_blobs WHERE path_hint = ?")
+            .get(donor.path),
+        ).toEqual({codec: CODE_GRAPH_STORED_FACT_CODEC});
+      } finally {
+        compact.close(false);
+      }
+
+      const referenced = new Database(fixture.databasePath, {strict: true});
+      const now = new Date().toISOString();
+      referenced
+        .query(
+          `INSERT INTO repositories (id, display_name, object_format, created_at, last_used_at)
+           VALUES (?, 'blob reuse fixture', 'sha1', ?, ?)`,
+        )
+        .run(fixture.identity.repositoryId, now, now);
+      referenced
+        .query(
+          `INSERT INTO snapshots (
+             id, repository_id, worktree_id, commit_id, graph_content_id, base_snapshot_id,
+             extractor_set, dirty, overlay_fingerprint, state, file_count, symbol_count,
+             edge_count, started_at, completed_at, failure_summary
+           ) VALUES (?, ?, ?, ?, ?, NULL, ?, 0, NULL, 'ready', 1, 0, 0, ?, ?, NULL)`,
+        )
+        .run(
+          'blob-reuse-snapshot',
+          fixture.identity.repositoryId,
+          fixture.identity.worktreeId,
+          fixture.identity.headCommit,
+          'blob-reuse-content',
+          'structured-blob-cache',
+          now,
+          now,
+        );
+      referenced
+        .query(
+          `INSERT INTO snapshot_files (snapshot_id, path, content_hash, language, mode, size, source)
+           VALUES ('blob-reuse-snapshot', ?, ?, 'json', '100644', ?, 'commit')`,
+        )
+        .run(target.path, target.contentHash, target.size);
+      referenced.close(false);
+      yield* store.pruneCachedFacts(fixture.databasePath, ['structured-blob-cache']);
+
+      const database = new Database(fixture.databasePath, {readonly: true, strict: true});
+      const rows = database
+        .query('SELECT path_hint, blob_id, reuse_class FROM file_blobs WHERE extractor_set = ?')
+        .all('structured-blob-cache');
+      database.close(false);
+      expect(rows).toEqual([
+        {
+          blob_id: donor.blobId,
+          path_hint: donor.path,
+          reuse_class: 'structured-object-v1:json:full',
+        },
+      ]);
+    }).pipe(Effect.provide(ApplicationLayer)),
+  );
+
   effectIt.effect('does not hold the checkout writer lock while a direct build validates repository-scale input', () =>
     Effect.gen(function* () {
       const fixture = yield* Effect.promise(materializationFixture);
@@ -4206,6 +4328,250 @@ describe('code graph full-build materialization store', () => {
         files: 2_501,
         lexicalCounters: 1,
       });
+    }).pipe(Effect.provide(ApplicationLayer)),
+  );
+
+  effectIt.effect('stops temporary staging and publication before mutation while preserving the prior ready view', () =>
+    Effect.gen(function* () {
+      const fixture = yield* Effect.promise(materializationFixture);
+      const store = yield* CodeGraphStore;
+      const result = yield* store.withSession(
+        fixture.databasePath,
+        Effect.gen(function* () {
+          yield* store.initialize(fixture.databasePath);
+          const original = symbol('temporary-capacity-original', 'temporaryCapacityOriginal', []);
+          const base = {...readySnapshot(fixture.identity, 1, 0), id: 'temporary-capacity-base'};
+          yield* store.prepareActivation(fixture.databasePath, [fixture.file]);
+          yield* store.stageActivationFacts(fixture.databasePath, [original], []);
+          yield* store.resolveStagedReferences(fixture.databasePath);
+          yield* store.activateStaged(fixture.databasePath, fixture.identity, base);
+          yield* store.promote(fixture.databasePath, fixture.identity, base.id, {
+            persistentCapacityProtector: unprotectedCacheWrite,
+          });
+
+          const replacement = symbol('temporary-capacity-replacement', 'temporaryCapacityReplacement', []);
+          const overlay: CodeGraphSnapshot = {
+            ...readySnapshot(fixture.identity, 1, 0),
+            baseSnapshotId: base.id,
+            dirty: true,
+            id: 'temporary-capacity-overlay',
+          };
+          const inventoryPause = capacityGuardProbe('stage temporary code graph inventory');
+          const inventoryFailure = yield* store
+            .prepareActivation(
+              fixture.databasePath,
+              [fixture.file],
+              undefined,
+              undefined,
+              undefined,
+              inventoryPause.guard,
+            )
+            .pipe(Effect.flip);
+          const sql = yield* SqlClient.SqlClient;
+          const afterInventoryPause = yield* sql<{
+            readonly active: string;
+            readonly base_state: string;
+            readonly staged_files: number;
+          }>`
+            SELECT
+              (SELECT snapshot_id FROM active_snapshots
+               WHERE worktree_id = ${fixture.identity.worktreeId}) AS active,
+              (SELECT state FROM snapshots WHERE id = ${base.id}) AS base_state,
+              (SELECT COUNT(*) FROM activation_files) AS staged_files
+          `;
+
+          const inventoryResume = capacityGuardProbe();
+          yield* store.prepareActivation(
+            fixture.databasePath,
+            [fixture.file],
+            undefined,
+            undefined,
+            undefined,
+            inventoryResume.guard,
+          );
+          const factsPause = capacityGuardProbe('stage temporary code graph facts');
+          const factsFailure = yield* store
+            .stageActivationFacts(fixture.databasePath, [replacement], [], [], undefined, 0, factsPause.guard)
+            .pipe(Effect.flip);
+          const afterFactsPause = yield* sql<{readonly symbols: number}>`
+            SELECT COUNT(*) AS symbols FROM activation_symbols
+          `;
+          const factsResume = capacityGuardProbe();
+          yield* store.stageActivationFacts(
+            fixture.databasePath,
+            [replacement],
+            [],
+            [],
+            undefined,
+            0,
+            factsResume.guard,
+          );
+          yield* store.resolveStagedReferences(fixture.databasePath, undefined, factsResume.guard);
+
+          const publicationPause = capacityGuardProbe('publish temporary code graph snapshot');
+          const publicationFailure = yield* store
+            .activateStaged(
+              fixture.databasePath,
+              fixture.identity,
+              overlay,
+              undefined,
+              undefined,
+              undefined,
+              publicationPause.guard,
+            )
+            .pipe(Effect.flip);
+          const afterPublicationPause = yield* sql<{
+            readonly active: string;
+            readonly base_state: string;
+            readonly overlay_rows: number;
+          }>`
+            SELECT
+              (SELECT snapshot_id FROM active_snapshots
+               WHERE worktree_id = ${fixture.identity.worktreeId}) AS active,
+              (SELECT state FROM snapshots WHERE id = ${base.id}) AS base_state,
+              (SELECT COUNT(*) FROM snapshots WHERE id = ${overlay.id}) AS overlay_rows
+          `;
+          const publicationResume = capacityGuardProbe();
+          yield* store.activateStaged(
+            fixture.databasePath,
+            fixture.identity,
+            overlay,
+            undefined,
+            undefined,
+            undefined,
+            publicationResume.guard,
+          );
+          const resumed = yield* sql<{readonly state: string}>`
+            SELECT state FROM snapshots WHERE id = ${overlay.id}
+          `;
+          return {
+            afterFactsPause: afterFactsPause[0]!,
+            afterInventoryPause: afterInventoryPause[0]!,
+            afterPublicationPause: afterPublicationPause[0]!,
+            factsFailure,
+            factsPause: factsPause.boundaries,
+            factsResume: factsResume.boundaries,
+            inventoryFailure,
+            inventoryPause: inventoryPause.boundaries,
+            inventoryResume: inventoryResume.boundaries,
+            publicationFailure,
+            publicationPause: publicationPause.boundaries,
+            publicationResume: publicationResume.boundaries,
+            resumed: resumed[0]!,
+          };
+        }),
+      );
+
+      expect(result.inventoryFailure).toBeInstanceOf(CodeGraphStoreNoSpaceError);
+      expect(result.inventoryPause).toEqual([
+        expect.objectContaining({
+          mainFilesystem: 'temporary',
+          operation: 'stage temporary code graph inventory',
+          transientFilesystem: 'temporary',
+        }),
+      ]);
+      expect(result.inventoryResume).toEqual(result.inventoryPause);
+      // Admission happens before clearing the prior connection-private stage,
+      // so a pause is non-mutating as well as preserving the durable view.
+      expect(result.afterInventoryPause).toEqual({
+        active: 'temporary-capacity-base',
+        base_state: 'ready',
+        staged_files: 1,
+      });
+
+      expect(result.factsFailure).toBeInstanceOf(CodeGraphStoreNoSpaceError);
+      expect(result.factsPause).toEqual([
+        expect.objectContaining({
+          mainFilesystem: 'temporary',
+          operation: 'stage temporary code graph facts',
+          transientFilesystem: 'temporary',
+        }),
+      ]);
+      expect(result.factsResume).toEqual(result.factsPause);
+      expect(result.afterFactsPause).toEqual({symbols: 0});
+
+      expect(result.publicationFailure).toBeInstanceOf(CodeGraphStoreNoSpaceError);
+      expect(result.publicationPause).toEqual([
+        expect.objectContaining({operation: 'publish temporary code graph snapshot', transientFilesystem: 'durable'}),
+      ]);
+      expect(result.publicationResume).toEqual(result.publicationPause);
+      expect(result.afterPublicationPause).toEqual({
+        active: 'temporary-capacity-base',
+        base_state: 'ready',
+        overlay_rows: 0,
+      });
+      expect(result.resumed).toEqual({state: 'ready'});
+    }).pipe(Effect.provide(ApplicationLayer)),
+  );
+
+  effectIt.effect('reserves every temporary reference page before mutating its resumable stage', () =>
+    Effect.gen(function* () {
+      const fixture = yield* Effect.promise(materializationFixture);
+      const store = yield* CodeGraphStore;
+      const result = yield* store.withSession(
+        fixture.databasePath,
+        Effect.gen(function* () {
+          yield* store.initialize(fixture.databasePath);
+          const lookupKey = 'typescript:name:temporaryCapacityTarget';
+          const source = symbol('temporary-capacity-source', 'temporaryCapacitySource', []);
+          const target = symbol('temporary-capacity-target', 'temporaryCapacityTarget', [lookupKey]);
+          const unresolved = edge('temporary-capacity-edge', source, target.name);
+          const reference: CodeGraphReference = {
+            edgeId: unresolved.id,
+            evidencePath: unresolved.evidencePath,
+            evidenceSpan: unresolved.evidenceSpan,
+            exportedOnly: false,
+            lookupTiers: [[lookupKey]],
+            provenance: unresolved.provenance,
+            relation: unresolved.relation,
+            resolutionDomain: 'typescript',
+            sourceId: source.id,
+            sourceName: source.name,
+            targetName: target.name,
+          };
+          yield* store.prepareActivation(fixture.databasePath, [fixture.file]);
+          yield* store.stageActivationFacts(fixture.databasePath, [source, target], [unresolved], [reference]);
+
+          const pause = capacityGuardProbe('resolve temporary code graph references');
+          const failure = yield* store
+            .resolveStagedReferences(fixture.databasePath, undefined, pause.guard)
+            .pipe(Effect.flip);
+          const sql = yield* SqlClient.SqlClient;
+          const afterPause = yield* sql<{readonly remaining: number; readonly resolved: number}>`
+            SELECT
+              (SELECT COUNT(*) FROM activation_references) AS remaining,
+              (SELECT COUNT(*) FROM activation_edges WHERE target_id IS NOT NULL) AS resolved
+          `;
+          const resume = capacityGuardProbe();
+          const resolution = yield* store.resolveStagedReferences(fixture.databasePath, undefined, resume.guard);
+          const afterResume = yield* sql<{readonly remaining: number; readonly resolved: number}>`
+            SELECT
+              (SELECT COUNT(*) FROM activation_references) AS remaining,
+              (SELECT COUNT(*) FROM activation_edges WHERE target_id IS NOT NULL) AS resolved
+          `;
+          return {
+            afterPause: afterPause[0]!,
+            afterResume: afterResume[0]!,
+            failure,
+            pause: pause.boundaries,
+            resolution,
+            resume: resume.boundaries,
+          };
+        }),
+      );
+
+      expect(result.failure).toBeInstanceOf(CodeGraphStoreNoSpaceError);
+      expect(result.pause).toEqual([
+        expect.objectContaining({
+          mainFilesystem: 'temporary',
+          operation: 'resolve temporary code graph references',
+          transientFilesystem: 'temporary',
+        }),
+      ]);
+      expect(result.afterPause).toEqual({remaining: 1, resolved: 0});
+      expect(result.resume).toEqual(result.pause);
+      expect(result.resolution.resolved).toBe(1);
+      expect(result.afterResume).toEqual({remaining: 0, resolved: 1});
     }).pipe(Effect.provide(ApplicationLayer)),
   );
 
@@ -5226,6 +5592,19 @@ function readLexicalTerms(
     readonly term: string;
     readonly weight: number;
   }[];
+}
+
+function structuredCacheFile(path: string, content: string): CodeGraphInventoryFile {
+  return {
+    blobId: 'a'.repeat(40),
+    content,
+    contentHash: 'b'.repeat(64),
+    language: 'json',
+    mode: '100644',
+    path,
+    size: Buffer.byteLength(content),
+    source: 'commit',
+  };
 }
 
 function symbol(id: string, name: string, lookupKeys: readonly string[]): CodeGraphSymbol {

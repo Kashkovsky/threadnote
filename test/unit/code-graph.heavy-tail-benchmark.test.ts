@@ -6,10 +6,14 @@ import {
 } from '../../scripts/benchmark-code-graph-heavy-tail.js';
 import {
   CODE_GRAPH_HEAVY_TAIL_PROFILE,
+  CODE_GRAPH_HEAVY_TAIL_JSON_DUPLICATES,
+  CODE_GRAPH_HEAVY_TAIL_SMOKE_PROFILE,
   codeGraphHeavyTailEligibleFiles,
   codeGraphHeavyTailGeneratedTypeScript,
+  codeGraphHeavyTailJsonFixtures,
   codeGraphHeavyTailLowSignalJson,
   codeGraphHeavyTailPathologicalTypeScript,
+  codeGraphHeavyTailRepositoryFiles,
   codeGraphHeavyTailTextlessSvg,
   parseCodeGraphHeavyTailProfile,
 } from '../../scripts/code-graph-heavy-tail-fixture.js';
@@ -18,19 +22,34 @@ describe('code graph large-monorepo heavy-tail benchmark', () => {
   it('keeps the checked profile synchronized with the reviewed workload shape', async () => {
     const baseline = (await Bun.file('test/evaluation/baselines/code-graph-v1/heavy-tail-profile.json').json()) as {
       readonly profile: unknown;
-      readonly reviewedShape: {readonly eligibleFiles: number; readonly latencyBudget: string};
+      readonly reviewedShape: {
+        readonly eligibleFiles: number;
+        readonly latencyBudget: string;
+        readonly repositoryFiles: number;
+      };
       readonly version: number;
     };
 
     expect(baseline.version).toBe(1);
     expect(parseCodeGraphHeavyTailProfile(baseline.profile)).toEqual(CODE_GRAPH_HEAVY_TAIL_PROFILE);
     expect(baseline.reviewedShape.eligibleFiles).toBe(codeGraphHeavyTailEligibleFiles(CODE_GRAPH_HEAVY_TAIL_PROFILE));
+    expect(baseline.reviewedShape.repositoryFiles).toBe(
+      codeGraphHeavyTailRepositoryFiles(CODE_GRAPH_HEAVY_TAIL_PROFILE),
+    );
     expect(baseline.reviewedShape.latencyBudget).toContain('same-run comparison');
     expect(CODE_GRAPH_HEAVY_TAIL_PROFILE.lowSignalJsonBytes).toBe(25 * 1_048_576);
     expect(CODE_GRAPH_HEAVY_TAIL_PROFILE.textlessSvgFiles).toBeGreaterThanOrEqual(1_000);
+    const jsonFixtures = codeGraphHeavyTailJsonFixtures(CODE_GRAPH_HEAVY_TAIL_PROFILE);
+    expect([...new Set(jsonFixtures.map(fixture => fixture.bytes))]).toEqual([
+      64 * 1_024,
+      Math.round(0.8 * 1_048_576),
+      Math.round(5.7 * 1_048_576),
+      25 * 1_048_576,
+    ]);
+    expect(jsonFixtures).toHaveLength(4 * CODE_GRAPH_HEAVY_TAIL_JSON_DUPLICATES);
   });
 
-  it('retains a reviewed full-shape observation without turning local latency into a portable gate', async () => {
+  it('retains the historical pre-admission observation without turning local latency into a portable gate', async () => {
     const baseline = (await Bun.file('test/evaluation/baselines/code-graph-v1/heavy-tail-development.json').json()) as {
       readonly assertions: Readonly<Record<string, boolean>>;
       readonly interpretation: {readonly latency: string};
@@ -61,6 +80,26 @@ describe('code graph large-monorepo heavy-tail benchmark', () => {
 
     expect(new TextEncoder().encode(json)).toHaveLength(4_096);
     expect(JSON.parse(json)).toMatchObject({frames: [], kind: 'test-snapshot'});
+  });
+
+  it('keeps duplicate JSON fixture paths and repository accounting deterministic', () => {
+    fc.assert(
+      fc.property(fc.integer({max: 2 * 1_048_576, min: 2_048}), lowSignalJsonBytes => {
+        const profile = {...CODE_GRAPH_HEAVY_TAIL_SMOKE_PROFILE, lowSignalJsonBytes};
+        const fixtures = codeGraphHeavyTailJsonFixtures(profile);
+        expect(fixtures).toHaveLength(4 * CODE_GRAPH_HEAVY_TAIL_JSON_DUPLICATES);
+        expect(new Set(fixtures.map(fixture => fixture.path))).toHaveLength(fixtures.length);
+        for (const bytes of new Set(fixtures.map(fixture => fixture.bytes))) {
+          expect(fixtures.filter(fixture => fixture.bytes === bytes)).toHaveLength(
+            CODE_GRAPH_HEAVY_TAIL_JSON_DUPLICATES,
+          );
+        }
+        expect(codeGraphHeavyTailRepositoryFiles(profile)).toBe(
+          codeGraphHeavyTailEligibleFiles(profile) + fixtures.length + profile.textlessSvgFiles,
+        );
+      }),
+      {numRuns: 64},
+    );
   });
 
   it('keeps generated heavy-tail source sizes and tail declarations valid across bounded shapes', () => {

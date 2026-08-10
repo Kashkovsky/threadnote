@@ -11,11 +11,17 @@ import {
   withCodeGraphMaintenanceIntent,
 } from './maintenance_gate.js';
 import {CODE_GRAPH_SCHEMA_VERSION, type CodeGraphSnapshot} from './types.js';
+import {
+  CODE_GRAPH_STORAGE_SEMANTIC_OBJECT_LIMIT,
+  readCodeGraphStorageSemanticAttribution,
+  type CodeGraphStorageSemanticAttribution,
+} from './storage_attribution.js';
 
 export const CODE_GRAPH_COMPACTION_MIN_RECLAIMABLE_BYTES = 512 * 1024 * 1024;
 export const CODE_GRAPH_COMPACTION_MIN_RECLAIMABLE_RATIO = 0.2;
 export const CODE_GRAPH_COMPACTION_MIN_SAFETY_MARGIN_BYTES = 512 * 1024 * 1024;
 export const CODE_GRAPH_COMPACTION_SAFETY_MARGIN_RATIO = 0.1;
+export const CODE_GRAPH_STORAGE_ATTRIBUTION_OBJECT_LIMIT = 128;
 
 export interface CodeGraphStorageThreshold {
   readonly minimumReclaimableBytes: number;
@@ -24,6 +30,7 @@ export interface CodeGraphStorageThreshold {
 }
 
 export interface CodeGraphPageStorage {
+  readonly attribution?: CodeGraphStorageAttribution;
   readonly freelistPages: number;
   readonly pageCount: number;
   readonly pageSize: number;
@@ -31,6 +38,55 @@ export interface CodeGraphPageStorage {
   readonly reclaimableRatio: number;
   readonly state: 'available';
   readonly threshold: CodeGraphStorageThreshold;
+}
+
+export interface CodeGraphStorageObjectAttribution {
+  readonly bytes: number;
+  readonly kind: 'index' | 'internal' | 'table';
+  readonly name: string;
+  readonly pages: number;
+}
+
+export type CodeGraphStorageAttribution = CodeGraphStorageAttributionAvailable | CodeGraphStorageAttributionUnavailable;
+
+export interface CodeGraphStorageAttributionAvailable {
+  /** Logical allocated bytes represented by page_count * page_size. */
+  readonly allocatedBytes: number;
+  /** Bytes assigned by SQLite dbstat to named B-trees. */
+  readonly attributedBytes: number;
+  readonly freelistBytes: number;
+  readonly objectCount: number;
+  readonly objects: readonly CodeGraphStorageObjectAttribution[];
+  readonly objectsTruncated: boolean;
+  /** Exact B-tree groups plus bounded logical per-snapshot payload attribution. */
+  readonly semantic: CodeGraphStorageSemanticAttribution;
+  readonly state: 'available';
+  /** Pointer-map or other pages not assigned to a named B-tree or freelist. */
+  readonly unattributedBytes: number;
+}
+
+export interface CodeGraphStorageAttributionUnavailable {
+  readonly reason: 'sqlite-dbstat-unavailable';
+  readonly state: 'unavailable';
+}
+
+/** @internal Exact remainder after assigning allocated SQLite pages to objects and the freelist. */
+export function codeGraphStorageUnattributedBytes(
+  allocatedBytes: number,
+  attributedBytes: number,
+  freelistBytes: number,
+): number {
+  for (const [label, value] of [
+    ['allocated', allocatedBytes],
+    ['attributed', attributedBytes],
+    ['freelist', freelistBytes],
+  ] as const) {
+    if (!Number.isSafeInteger(value) || value < 0) throw new Error(`Invalid SQLite ${label} storage bytes.`);
+  }
+  if (attributedBytes > allocatedBytes || freelistBytes > allocatedBytes - attributedBytes) {
+    throw new Error('SQLite storage attribution exceeds allocated page bytes.');
+  }
+  return allocatedBytes - attributedBytes - freelistBytes;
 }
 
 export interface CodeGraphDeferredPageStorage {
@@ -46,13 +102,19 @@ export interface CodeGraphUnavailablePageStorage {
 }
 
 export interface CodeGraphActiveStorage {
+  readonly availableBytes?: number;
   readonly checkoutId: string;
   readonly databaseBytes: number;
   readonly databasePath: string;
+  /** Exact DB, rollback journal, WAL, and SHM bytes visible on the durable filesystem. */
+  readonly filesystemBytes: number;
+  readonly journalBytes: number;
   readonly pageStorage: CodeGraphDeferredPageStorage | CodeGraphPageStorage | CodeGraphUnavailablePageStorage;
   readonly shmBytes: number;
   readonly state: 'available';
+  /** Filesystem bytes plus currently reported SQLite TEMP database bytes. */
   readonly totalBytes: number;
+  readonly temporaryBytes: number;
   readonly walBytes: number;
 }
 
@@ -107,19 +169,30 @@ const STORAGE_LOCK_OPTIONS = {
 export const inspectCodeGraphStorage = Effect.fn('codeGraph.inspectStorage')(function* (
   threadnoteHome: string,
   checkoutId: string,
-  options: {readonly openWhileLocked?: boolean} = {},
+  options: {
+    readonly attributeObjects?: boolean;
+    readonly openWhileLocked?: boolean;
+    /** Current TEMP database bytes reported by an active build status. */
+    readonly temporaryBytes?: number;
+  } = {},
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
+  const system = yield* SystemInfo;
   const repositoryRoot = codeGraphRepositoryRoot(path, threadnoteHome, checkoutId);
   const databasePath = path.join(repositoryRoot, `graph-v${CODE_GRAPH_SCHEMA_VERSION}.sqlite`);
   const database = yield* regularFileBytes(fs, databasePath);
   if (database.state === 'missing') {
     return {checkoutId, databasePath, state: 'missing'} satisfies CodeGraphMissingStorage;
   }
-  const [wal, shm] = yield* Effect.all(
-    [regularFileBytes(fs, `${databasePath}-wal`), regularFileBytes(fs, `${databasePath}-shm`)],
-    {concurrency: 2},
+  const [wal, shm, journal, availableBytes] = yield* Effect.all(
+    [
+      regularFileBytes(fs, `${databasePath}-wal`),
+      regularFileBytes(fs, `${databasePath}-shm`),
+      regularFileBytes(fs, `${databasePath}-journal`),
+      system.availableDiskBytes(repositoryRoot).pipe(Effect.catch(() => Effect.succeed(undefined))),
+    ],
+    {concurrency: 4},
   );
   const locked =
     !options.openWhileLocked &&
@@ -131,7 +204,7 @@ export const inspectCodeGraphStorage = Effect.fn('codeGraph.inspectStorage')(fun
   } as const;
   const pageStorage = locked
     ? ({reason: 'active-build', state: 'deferred', threshold} satisfies CodeGraphDeferredPageStorage)
-    : yield* readPageStorage(databasePath).pipe(
+    : yield* readPageStorage(databasePath, options.attributeObjects === true).pipe(
         Effect.catch(() =>
           Effect.succeed({
             reason: 'database-busy-or-unreadable',
@@ -140,18 +213,30 @@ export const inspectCodeGraphStorage = Effect.fn('codeGraph.inspectStorage')(fun
           } satisfies CodeGraphUnavailablePageStorage),
         ),
       );
+  const walBytes = wal.state === 'available' ? wal.bytes : 0;
+  const shmBytes = shm.state === 'available' ? shm.bytes : 0;
+  const journalBytes = journal.state === 'available' ? journal.bytes : 0;
+  const temporaryBytes = nonNegativeSafeBytes(options.temporaryBytes) ? options.temporaryBytes : 0;
+  const filesystemBytes = database.bytes + walBytes + shmBytes + journalBytes;
   return {
+    ...(nonNegativeSafeBytes(availableBytes) ? {availableBytes} : {}),
     checkoutId,
     databaseBytes: database.bytes,
     databasePath,
+    filesystemBytes,
+    journalBytes,
     pageStorage,
-    shmBytes: shm.state === 'available' ? shm.bytes : 0,
+    shmBytes,
     state: 'available',
-    totalBytes:
-      database.bytes + (wal.state === 'available' ? wal.bytes : 0) + (shm.state === 'available' ? shm.bytes : 0),
-    walBytes: wal.state === 'available' ? wal.bytes : 0,
+    temporaryBytes,
+    totalBytes: filesystemBytes + temporaryBytes,
+    walBytes,
   } satisfies CodeGraphActiveStorage;
 });
+
+function nonNegativeSafeBytes(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
 
 /**
  * Explicit compaction uses SQLite's transactional VACUUM implementation. SQLite
@@ -343,7 +428,7 @@ function regularFileBytes(
   });
 }
 
-function readPageStorage(databasePath: string): Effect.Effect<CodeGraphPageStorage, Error> {
+function readPageStorage(databasePath: string, attributeObjects: boolean): Effect.Effect<CodeGraphPageStorage, Error> {
   return Effect.try({
     try: () => {
       const database = new Database(databasePath, {readonly: true, strict: true});
@@ -354,7 +439,11 @@ function readPageStorage(databasePath: string): Effect.Effect<CodeGraphPageStora
         const freelistPages = pragmaNumber(database, 'freelist_count');
         const reclaimableBytes = safeProduct(pageSize, freelistPages, 'reclaimable byte count');
         const reclaimableRatio = pageCount === 0 ? 0 : Math.min(1, freelistPages / pageCount);
+        const attribution = attributeObjects
+          ? readStorageAttribution(database, pageCount, pageSize, reclaimableBytes)
+          : undefined;
         return {
+          ...(attribution ? {attribution} : {}),
           freelistPages,
           pageCount,
           pageSize,
@@ -375,6 +464,77 @@ function readPageStorage(databasePath: string): Effect.Effect<CodeGraphPageStora
     },
     catch: cause => new Error(`Could not inspect code graph page storage: ${errorText(cause)}`),
   });
+}
+
+function readStorageAttribution(
+  database: Database,
+  pageCount: number,
+  pageSize: number,
+  freelistBytes: number,
+): CodeGraphStorageAttribution {
+  const dbstat = database.query("SELECT sqlite_compileoption_used('ENABLE_DBSTAT_VTAB') AS enabled").get() as {
+    readonly enabled: bigint | number;
+  } | null;
+  if (safeCount(dbstat?.enabled ?? 0, 'dbstat availability') !== 1) {
+    return {reason: 'sqlite-dbstat-unavailable', state: 'unavailable'};
+  }
+  const rows = database
+    .query(
+      `SELECT dbstat.name AS name,
+              CASE
+                WHEN dbstat.name = 'sqlite_schema' THEN 'internal'
+                WHEN schema.type = 'index' THEN 'index'
+                WHEN schema.type = 'table' THEN 'table'
+                ELSE 'internal'
+              END AS kind,
+              SUM(dbstat.pgsize) AS bytes,
+              COUNT(*) AS pages,
+              SUM(SUM(dbstat.pgsize)) OVER () AS total_bytes,
+              COUNT(*) OVER () AS object_count
+         FROM dbstat
+         LEFT JOIN sqlite_schema AS schema ON schema.name = dbstat.name
+        GROUP BY dbstat.name, kind
+        ORDER BY bytes DESC, dbstat.name ASC
+        LIMIT ?`,
+    )
+    .all(CODE_GRAPH_STORAGE_SEMANTIC_OBJECT_LIMIT + 1) as readonly {
+    readonly bytes: bigint | number;
+    readonly kind: CodeGraphStorageObjectAttribution['kind'];
+    readonly name: string;
+    readonly object_count: bigint | number;
+    readonly pages: bigint | number;
+    readonly total_bytes: bigint | number;
+  }[];
+  const semanticRows = rows.slice(0, CODE_GRAPH_STORAGE_SEMANTIC_OBJECT_LIMIT).map(row => ({
+    bytes: safeCount(row.bytes, `storage object ${safeStorageObjectName(row.name)} bytes`),
+    name: safeStorageObjectName(row.name),
+    pages: safeCount(row.pages, `storage object ${safeStorageObjectName(row.name)} pages`),
+  }));
+  const attributedBytes = safeCount(rows[0]?.total_bytes ?? 0, 'attributed storage bytes');
+  const objectCount = safeCount(rows[0]?.object_count ?? 0, 'attributed storage objects');
+  const objectsTruncated = objectCount > CODE_GRAPH_STORAGE_ATTRIBUTION_OBJECT_LIMIT;
+  const objects = rows.slice(0, CODE_GRAPH_STORAGE_ATTRIBUTION_OBJECT_LIMIT).map(row => ({
+    bytes: safeCount(row.bytes, `storage object ${safeStorageObjectName(row.name)} bytes`),
+    kind: row.kind,
+    name: safeStorageObjectName(row.name),
+    pages: safeCount(row.pages, `storage object ${safeStorageObjectName(row.name)} pages`),
+  }));
+  const allocatedBytes = safeProduct(pageCount, pageSize, 'allocated storage bytes');
+  return {
+    allocatedBytes,
+    attributedBytes,
+    freelistBytes,
+    objectCount,
+    objects,
+    objectsTruncated,
+    semantic: readCodeGraphStorageSemanticAttribution(database, semanticRows, objectCount, attributedBytes),
+    state: 'available',
+    unattributedBytes: codeGraphStorageUnattributedBytes(allocatedBytes, attributedBytes, freelistBytes),
+  };
+}
+
+function safeStorageObjectName(value: string): string {
+  return /^[a-zA-Z0-9_]{1,128}$/.test(value) ? value : 'unrecognized-schema-object';
 }
 
 function readCompactionReceipt(databasePath: string): Effect.Effect<CodeGraphCompactionReceipt, Error> {

@@ -23,6 +23,7 @@ export interface PreparedCodeGraphHeavyTailFixture {
 
 export const CODE_GRAPH_HEAVY_TAIL_JSON_PATH = 'test/__snapshots__/large-state.snapshot.json';
 export const CODE_GRAPH_HEAVY_TAIL_GENERATED_TYPESCRIPT_PATH = 'src/generated-surface.ts';
+export const CODE_GRAPH_HEAVY_TAIL_JSON_DUPLICATES = 2;
 
 /**
  * This is a reviewed workload shape, not a portable latency budget. It represents the pathological file classes from
@@ -85,7 +86,37 @@ export function parseCodeGraphHeavyTailProfile(value: unknown): CodeGraphHeavyTa
 }
 
 export function codeGraphHeavyTailEligibleFiles(profile: CodeGraphHeavyTailProfile): number {
-  return 5 + profile.pathologicalTypeScriptFiles + profile.regularTypeScriptFiles + profile.textlessSvgFiles;
+  return 4 + profile.pathologicalTypeScriptFiles + profile.regularTypeScriptFiles;
+}
+
+export function codeGraphHeavyTailJsonFixtures(
+  profile: CodeGraphHeavyTailProfile,
+): readonly {readonly bytes: number; readonly path: string}[] {
+  const sizes =
+    profile.lowSignalJsonBytes >= 25 * MEBIBYTE
+      ? [64 * 1_024, Math.round(0.8 * MEBIBYTE), Math.round(5.7 * MEBIBYTE), profile.lowSignalJsonBytes]
+      : [
+          Math.max(128, Math.floor(profile.lowSignalJsonBytes / 16)),
+          Math.max(128, Math.floor(profile.lowSignalJsonBytes / 4)),
+          Math.max(128, Math.floor(profile.lowSignalJsonBytes / 2)),
+          profile.lowSignalJsonBytes,
+        ];
+  const labels = ['small', 'medium', 'large', 'extreme'] as const;
+  return sizes.flatMap((bytes, sizeIndex) =>
+    Array.from({length: CODE_GRAPH_HEAVY_TAIL_JSON_DUPLICATES}, (_, duplicateIndex) => ({
+      bytes,
+      path:
+        sizeIndex === sizes.length - 1 && duplicateIndex === 0
+          ? CODE_GRAPH_HEAVY_TAIL_JSON_PATH
+          : `test/__snapshots__/${labels[sizeIndex]}-state-${duplicateIndex + 1}.snapshot.json`,
+    })),
+  );
+}
+
+export function codeGraphHeavyTailRepositoryFiles(profile: CodeGraphHeavyTailProfile): number {
+  return (
+    codeGraphHeavyTailEligibleFiles(profile) + codeGraphHeavyTailJsonFixtures(profile).length + profile.textlessSvgFiles
+  );
 }
 
 export function codeGraphHeavyTailPathologicalTypeScript(index: number, calls: number): string {
@@ -158,9 +189,10 @@ export const prepareCodeGraphHeavyTailFixture = Effect.fn('codeGraphHeavyTailFix
     path.join(repository, CODE_GRAPH_HEAVY_TAIL_GENERATED_TYPESCRIPT_PATH),
     codeGraphHeavyTailGeneratedTypeScript(profile.generatedTypeScriptBytes),
   );
-  yield* fs.writeFileString(
-    path.join(repository, CODE_GRAPH_HEAVY_TAIL_JSON_PATH),
-    codeGraphHeavyTailLowSignalJson(profile.lowSignalJsonBytes),
+  yield* Effect.forEach(
+    codeGraphHeavyTailJsonFixtures(profile),
+    fixture => fs.writeFileString(path.join(repository, fixture.path), codeGraphHeavyTailLowSignalJson(fixture.bytes)),
+    {concurrency: 1, discard: true},
   );
   yield* Effect.forEach(
     Array.from({length: profile.pathologicalTypeScriptFiles}, (_, index) => index),

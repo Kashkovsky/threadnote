@@ -28,6 +28,13 @@ skip graph search. Memory recall answers what was learned or decided; code-graph
 snapshot and worktree contain. Call both when a task needs historical context and present code evidence, but do not
 treat one as a fallback answer from the other.
 
+Graph-first applies to unfamiliar local source and relationship claims. An explicit graph skip is honest when the task
+is confined to an already-known exact path or symbol, a remote review has no local checkout, or the evidence is purely
+visual or a binary asset Threadnote does not interpret. Use the exact file, diff, or asset and state that bounded reason;
+call the graph if the scope expands. A package-local zero-result is an absence hint, not proof of repository-wide
+absence. A named workset query reports per-repository provenance from existing ready snapshots and does not fan out
+cold builds.
+
 At closeout, store normal durable feature knowledge and handoffs directly without asking. Use
 `review_session_context` only for additional session-extracted candidates, and apply those only after explicit user
 approval. Never store secrets, credentials, customer data, or raw production logs.

@@ -3,6 +3,7 @@ import {existsSync, statSync} from 'node:fs';
 import {it as effectIt} from '@effect/vitest';
 import {Database} from 'bun:sqlite';
 import {Effect, FileSystem, Path} from 'effect';
+import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {TestClock} from 'effect/testing';
 import {describe, expect} from 'vitest';
 import {
@@ -13,6 +14,7 @@ import {
   type CodeGraphPersistentSchemaMigrationPhase,
 } from '../../src/code_graph/store.js';
 import {CODE_GRAPH_EXTRACTOR_GENERATION, CodeGraphStoreError} from '../../src/code_graph/types.js';
+import {inspectPersistentExtensionTables} from '../../src/code_graph/store_schema_inspection.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 
 const CHECKOUT_ID = 'a'.repeat(64);
@@ -226,6 +228,16 @@ describe('removed code graph view cleanup load and migration', () => {
               'removed_views_cleanup_revoke_insert',
               'removed_views_cleanup_revoke_update',
             ]);
+
+            const extensionInspections = yield* store.withSession(
+              databasePath,
+              Effect.gen(function* () {
+                const sql = yield* SqlClient.SqlClient;
+                return yield* inspectPersistentExtensionTables(sql);
+              }),
+              {readOnly: true},
+            );
+            expect(extensionInspections.filter(inspection => !inspection.exists || !inspection.compatible)).toEqual([]);
 
             const reopenPhases: CodeGraphPersistentSchemaMigrationPhase[] = [];
             yield* store.withSession(databasePath, store.initialize(databasePath), {

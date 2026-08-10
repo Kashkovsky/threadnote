@@ -3,7 +3,12 @@ import {sha256HexSync} from '../crypto/sha256.js';
 import {fromPromiseError, fromPromiseInterruptible} from '../effect/errors.js';
 import {isFileLockTimeout, withExclusiveFileLock} from '../effect/file_lock.js';
 import {SystemInfo, type SystemInfoShape} from '../effect/system.js';
-import {CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM, serializeBoundedCodeGraphFact} from './fact_budget.js';
+import {
+  cachedCodeGraphFactByteUpperBound,
+  cachedCodeGraphFactBytes,
+  CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM,
+  serializeBoundedCodeGraphFact,
+} from './fact_budget.js';
 import {BUILTIN_LANGUAGE_PACK_REGISTRY} from './languages/registry.js';
 import {TreeSitterRuntime, type TreeSitterRuntimeShape} from './tree_sitter/runtime.js';
 import type {CodeGraphFileFacts, CodeGraphInventoryFile, CodeGraphSymbol} from './types.js';
@@ -13,7 +18,13 @@ export {CODE_GRAPH_PARSER_WORKER_ARGUMENT};
 export const CODE_GRAPH_PARSER_WORKERS_ENV = 'THREADNOTE_CODE_GRAPH_PARSER_WORKERS';
 export const CODE_GRAPH_PARSER_TIMEOUT_ENV = 'THREADNOTE_CODE_GRAPH_PARSER_TIMEOUT_MS';
 export const CODE_GRAPH_PARSER_IDLE_TIMEOUT_ENV = 'THREADNOTE_CODE_GRAPH_PARSER_IDLE_TIMEOUT_MS';
+export const CODE_GRAPH_PARSER_ALLOCATION_BYTES_ENV = 'THREADNOTE_CODE_GRAPH_PARSER_ALLOCATION_BYTES_MAX';
+export const CODE_GRAPH_PARSER_RSS_BYTES_ENV = 'THREADNOTE_CODE_GRAPH_PARSER_RSS_BYTES_MAX';
 export const CODE_GRAPH_PARSER_WORKER_RESPONSE_BYTES_MAXIMUM = CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM + 4 * 1_024;
+export const CODE_GRAPH_PARSER_SOURCE_BYTES_MAXIMUM = 16 * 1_048_576;
+export const CODE_GRAPH_PARSER_SYMBOLS_MAXIMUM = 4_000;
+export const CODE_GRAPH_PARSER_ALLOCATION_BYTES_MAXIMUM = 512 * 1_048_576;
+export const CODE_GRAPH_PARSER_RSS_BYTES_MAXIMUM = 2 * 1_024 * 1_024 * 1_024;
 
 const PROTOCOL_VERSION = 1;
 const DEFAULT_REQUEST_TIMEOUT_MILLISECONDS = 60_000;
@@ -27,12 +38,40 @@ const PARSER_WORKER_MEMORY_BYTES_PER_SLOT = 8 * 1_024 * 1_024 * 1_024;
 
 type ParserWorkerEnvironment = Readonly<Record<string, string | undefined>>;
 
-type ParserWorkerFailureReason = 'abort' | 'exit' | 'operation' | 'protocol' | 'spawn' | 'timeout' | 'write';
+type ParserWorkerFailureReason =
+  | 'abort'
+  | 'allocation'
+  | 'exit'
+  | 'fact-bytes'
+  | 'operation'
+  | 'protocol'
+  | 'rss'
+  | 'source-bytes'
+  | 'spawn'
+  | 'symbols'
+  | 'timeout'
+  | 'write';
+
+export interface ParserWorkerBudgetDiagnostic {
+  readonly code: 'allocation-bytes' | 'elapsed' | 'fact-bytes' | 'rss-bytes' | 'source-bytes' | 'symbols';
+  readonly maximum: number;
+  readonly observed: number;
+  readonly unit: 'bytes' | 'milliseconds' | 'symbols';
+}
+
+export interface ParserWorkerSourceByteBudget {
+  readonly exceeded: boolean;
+  readonly maximumBytes: number;
+  readonly observedBytes: number;
+}
 
 class ParserWorkerError extends Error {
   override readonly name = 'ParserWorkerError';
 
-  constructor(readonly reason: ParserWorkerFailureReason) {
+  constructor(
+    readonly reason: ParserWorkerFailureReason,
+    readonly budget?: ParserWorkerBudgetDiagnostic,
+  ) {
     super(parserWorkerFailureSummary(reason));
   }
 }
@@ -60,6 +99,8 @@ export interface CodeGraphParserPoolOptions {
   readonly capacity?: number;
   readonly idleTimeoutMilliseconds?: number;
   readonly maxProtocolLineBytes?: number;
+  /** Test and internal callers may lower, but never raise, the production source budget. */
+  readonly maxSourceBytes?: number;
   readonly maxStderrBytes?: number;
   readonly requestTimeoutMilliseconds?: number;
   readonly spawnWorker?: ParserWorkerSpawner;
@@ -72,11 +113,13 @@ interface ParserWorkerRequest {
 }
 
 interface ParserWorkerSuccess {
+  readonly degraded: boolean;
   readonly facts: CodeGraphFileFacts;
   readonly id: string;
   readonly ok: true;
   readonly parseMilliseconds: number;
   readonly protocol: typeof PROTOCOL_VERSION;
+  readonly recycle: boolean;
 }
 
 interface ParserWorkerFailure {
@@ -92,6 +135,21 @@ export interface CodeGraphParserResult {
   readonly degraded: boolean;
   readonly facts: CodeGraphFileFacts;
   readonly parseMilliseconds: number;
+}
+
+export interface ParserWorkerFactBudgetOptions {
+  readonly maximumFactBytes?: number;
+  readonly maximumSymbols?: number;
+}
+
+export interface ParserWorkerResourceSnapshot {
+  readonly peakRssBytes: number;
+  readonly rssBytes: number;
+}
+
+export interface ParserWorkerResourceBudgetOptions {
+  readonly maximumAllocationBytes?: number;
+  readonly maximumRssBytes?: number;
 }
 
 export interface CodeGraphParserPoolShape {
@@ -152,6 +210,10 @@ export function codeGraphParserPoolLayer(
           parserWorkerIdleTimeout(environment),
         );
         const maxProtocolLineBytes = positiveInteger(options.maxProtocolLineBytes, MAX_PROTOCOL_LINE_BYTES);
+        const maxSourceBytes = Math.min(
+          CODE_GRAPH_PARSER_SOURCE_BYTES_MAXIMUM,
+          positiveInteger(options.maxSourceBytes, CODE_GRAPH_PARSER_SOURCE_BYTES_MAXIMUM),
+        );
         const maxStderrBytes = positiveInteger(options.maxStderrBytes, STDERR_BYTES_LIMIT);
         const spawnWorker = options.spawnWorker ?? spawnBunParserWorker;
         const slots = Array.from(
@@ -173,8 +235,24 @@ export function codeGraphParserPoolLayer(
         return {
           service: CodeGraphParserPool.of({
             capacity,
-            extract: (file, threadnoteHome) =>
-              Effect.acquireUseRelease(
+            extract: (file, threadnoteHome) => {
+              const sourceByteBudget = parserWorkerSourceByteBudget(file, maxSourceBytes);
+              if (sourceByteBudget.exceeded) {
+                return Effect.succeed({
+                  degraded: true,
+                  facts: degradedFacts(
+                    file,
+                    new ParserWorkerError('source-bytes', {
+                      code: 'source-bytes',
+                      maximum: sourceByteBudget.maximumBytes,
+                      observed: sourceByteBudget.observedBytes,
+                      unit: 'bytes',
+                    }),
+                  ),
+                  parseMilliseconds: 0,
+                });
+              }
+              return Effect.acquireUseRelease(
                 Queue.take(available),
                 slot =>
                   withGlobalParserSlot(
@@ -186,7 +264,6 @@ export function codeGraphParserPoolLayer(
                     capacity,
                     slot.extract(file, threadnoteHome),
                   ).pipe(
-                    Effect.map(result => ({...result, degraded: false})),
                     Effect.catch(cause =>
                       Effect.succeed({
                         degraded: true,
@@ -196,7 +273,8 @@ export function codeGraphParserPoolLayer(
                     ),
                   ),
                 slot => Queue.offer(available, slot),
-              ),
+              );
+            },
             trimIdle: () =>
               Effect.acquireUseRelease(
                 Queue.clear(available),
@@ -301,8 +379,9 @@ class ParserWorkerSlot {
                 signal,
               );
               if (!response.ok) throw new ParserWorkerError('operation');
+              if (response.recycle) await this.discard(active).catch(() => undefined);
               return {
-                degraded: false,
+                degraded: response.degraded,
                 facts: response.facts,
                 parseMilliseconds: response.parseMilliseconds,
               };
@@ -614,7 +693,14 @@ async function raceWorkerResponse<A>(
       new Promise<never>((_, reject) => {
         timeout = setTimeout(() => {
           abort();
-          reject(new ParserWorkerError('timeout'));
+          reject(
+            new ParserWorkerError('timeout', {
+              code: 'elapsed',
+              maximum: timeoutMilliseconds,
+              observed: timeoutMilliseconds,
+              unit: 'milliseconds',
+            }),
+          );
         }, timeoutMilliseconds);
       }),
       new Promise<never>((_, reject) => {
@@ -648,9 +734,10 @@ async function completesBeforeDeadline(promise: Promise<unknown>, timeoutMillise
   }
 }
 
-export const codeGraphParserWorkerServer: Effect.Effect<void, never, Stdio.Stdio | TreeSitterRuntime> = Effect.gen(
-  function* () {
+export const codeGraphParserWorkerServer: Effect.Effect<void, never, Stdio.Stdio | SystemInfo | TreeSitterRuntime> =
+  Effect.gen(function* () {
     const stdio = yield* Stdio.Stdio;
+    const system = yield* SystemInfo;
     const treeSitter = yield* TreeSitterRuntime;
     const decoder = new TextDecoder();
     const encoder = new TextEncoder();
@@ -660,7 +747,8 @@ export const codeGraphParserWorkerServer: Effect.Effect<void, never, Stdio.Stdio
     const writeResponse = (response: ParserWorkerResponse) =>
       Stream.run(Stream.make(encodeParserWorkerResponse(response)), stdio.stdout({endOnDone: false}));
 
-    const processLine = (line: string) => handleParserWorkerLine(line, treeSitter).pipe(Effect.flatMap(writeResponse));
+    const processLine = (line: string) =>
+      handleParserWorkerLine(line, treeSitter, system).pipe(Effect.flatMap(writeResponse));
 
     yield* stdio.stdin.pipe(
       Stream.runForEach(chunk =>
@@ -691,30 +779,56 @@ export const codeGraphParserWorkerServer: Effect.Effect<void, never, Stdio.Stdio
       return yield* Effect.fail(new ParserWorkerError('protocol'));
     }
     if (buffered.trim()) yield* processLine(buffered.trim());
-  },
-).pipe(Effect.catch(() => Effect.void));
+  }).pipe(Effect.catch(() => Effect.void));
 
 function handleParserWorkerLine(
   line: string,
   treeSitter: TreeSitterRuntimeShape,
+  system: SystemInfoShape,
 ): Effect.Effect<ParserWorkerResponse, never> {
   const request = decodeRequest(line);
   if (request === undefined) return Effect.succeed(protocolFailure('invalid', 'Invalid parser worker request.'));
   const startedAt = performance.now();
+  const resourceBefore = parserWorkerResourceSnapshot(system);
+  const resourceOptions = parserWorkerResourceOptions(system.environment());
+  const completedResponse = (facts: CodeGraphFileFacts | undefined): ParserWorkerResponse => {
+    const parseMilliseconds = Math.max(0, performance.now() - startedAt);
+    const resourceBudget = parserWorkerResourceBudget(
+      resourceBefore,
+      parserWorkerResourceSnapshot(system),
+      resourceOptions,
+    );
+    if (resourceBudget !== undefined) {
+      return {
+        degraded: true,
+        facts: degradedFacts(
+          request.file,
+          new ParserWorkerError(resourceBudget.code === 'rss-bytes' ? 'rss' : 'allocation', resourceBudget),
+        ),
+        id: request.id,
+        ok: true,
+        parseMilliseconds,
+        protocol: PROTOCOL_VERSION,
+        recycle: true,
+      };
+    }
+    if (facts === undefined) return protocolFailure(request.id, 'Language extraction failed.');
+    const bounded = budgetParserWorkerFacts(request.file, facts);
+    return {
+      degraded: bounded.degraded,
+      facts: bounded.facts,
+      id: request.id,
+      ok: true,
+      parseMilliseconds,
+      protocol: PROTOCOL_VERSION,
+      recycle: bounded.degraded,
+    };
+  };
   return BUILTIN_LANGUAGE_PACK_REGISTRY.extractRawFile(request.file).pipe(
     Effect.provideService(TreeSitterRuntime, treeSitter),
     Effect.match({
-      onFailure: () => protocolFailure(request.id, 'Language extraction failed.'),
-      onSuccess: facts => {
-        const boundedFacts = budgetParserWorkerFacts(facts);
-        return {
-          facts: boundedFacts,
-          id: request.id,
-          ok: true as const,
-          parseMilliseconds: Math.max(0, performance.now() - startedAt),
-          protocol: PROTOCOL_VERSION,
-        };
-      },
+      onFailure: () => completedResponse(undefined),
+      onSuccess: completedResponse,
     }),
   );
 }
@@ -773,6 +887,8 @@ function decodeResponse(line: string, expectedId: string, expectedPath: string):
     }
     return isFileFacts(value.facts) &&
       value.facts.path === expectedPath &&
+      typeof value.degraded === 'boolean' &&
+      typeof value.recycle === 'boolean' &&
       typeof value.parseMilliseconds === 'number' &&
       Number.isFinite(value.parseMilliseconds) &&
       value.parseMilliseconds >= 0
@@ -877,7 +993,11 @@ function isStringArray(value: unknown): value is readonly string[] {
 
 function degradedFacts(file: CodeGraphInventoryFile, cause: unknown): CodeGraphFileFacts {
   const reason = cause instanceof ParserWorkerError ? cause.reason : 'protocol';
-  const diagnostic = `${file.path}: parser worker degraded this file to searchable metadata (${parserWorkerFailureSummary(reason)})`;
+  const budgetDiagnostic =
+    cause instanceof ParserWorkerError && cause.budget !== undefined
+      ? ` [code-graph-budget code=${cause.budget.code} status=exhausted observed-${cause.budget.unit}=${cause.budget.observed} maximum-${cause.budget.unit}=${cause.budget.maximum}]`
+      : '';
+  const diagnostic = `${file.path}: parser extraction degraded this file to searchable metadata (${parserWorkerFailureSummary(reason)})${budgetDiagnostic}`;
   const symbol: CodeGraphSymbol = {
     contentHash: file.contentHash,
     documentation: diagnostic,
@@ -896,8 +1016,95 @@ function degradedFacts(file: CodeGraphInventoryFile, cause: unknown): CodeGraphF
   return {diagnostics: [diagnostic], edges: [], path: file.path, symbols: [symbol]};
 }
 
-export function budgetParserWorkerFacts(facts: CodeGraphFileFacts): CodeGraphFileFacts {
-  return serializeBoundedCodeGraphFact(facts).facts;
+export function budgetParserWorkerFacts(
+  file: CodeGraphInventoryFile,
+  facts: CodeGraphFileFacts,
+  options: ParserWorkerFactBudgetOptions = {},
+): Pick<CodeGraphParserResult, 'degraded' | 'facts'> {
+  const maximumSymbols = Math.min(
+    CODE_GRAPH_PARSER_SYMBOLS_MAXIMUM,
+    positiveInteger(options.maximumSymbols, CODE_GRAPH_PARSER_SYMBOLS_MAXIMUM),
+  );
+  if (facts.symbols.length > maximumSymbols) {
+    return {
+      degraded: true,
+      facts: degradedFacts(
+        file,
+        new ParserWorkerError('symbols', {
+          code: 'symbols',
+          maximum: maximumSymbols,
+          observed: facts.symbols.length,
+          unit: 'symbols',
+        }),
+      ),
+    };
+  }
+  const maximumFactBytes = Math.min(
+    CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM,
+    positiveInteger(options.maximumFactBytes, CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM),
+  );
+  if (cachedCodeGraphFactByteUpperBound(facts) > maximumFactBytes) {
+    const observedBytes = cachedCodeGraphFactBytes(facts);
+    if (observedBytes > maximumFactBytes) {
+      return {
+        degraded: true,
+        facts: degradedFacts(
+          file,
+          new ParserWorkerError('fact-bytes', {
+            code: 'fact-bytes',
+            maximum: maximumFactBytes,
+            observed: observedBytes,
+            unit: 'bytes',
+          }),
+        ),
+      };
+    }
+  }
+  return {degraded: false, facts: serializeBoundedCodeGraphFact(facts, maximumFactBytes).facts};
+}
+
+export function parserWorkerSourceByteBudget(
+  file: CodeGraphInventoryFile,
+  maximumBytes = CODE_GRAPH_PARSER_SOURCE_BYTES_MAXIMUM,
+): ParserWorkerSourceByteBudget {
+  const effectiveMaximumBytes = positiveInteger(maximumBytes, CODE_GRAPH_PARSER_SOURCE_BYTES_MAXIMUM);
+  if (file.content === undefined) {
+    return {exceeded: false, maximumBytes: effectiveMaximumBytes, observedBytes: 0};
+  }
+  const observedBytes = Math.max(file.size, Buffer.byteLength(file.content, 'utf8'));
+  return {
+    exceeded: observedBytes > effectiveMaximumBytes,
+    maximumBytes: effectiveMaximumBytes,
+    observedBytes,
+  };
+}
+
+export function parserWorkerResourceBudget(
+  before: ParserWorkerResourceSnapshot,
+  after: ParserWorkerResourceSnapshot,
+  options: ParserWorkerResourceBudgetOptions = {},
+): ParserWorkerBudgetDiagnostic | undefined {
+  const maximumRssBytes = Math.min(
+    CODE_GRAPH_PARSER_RSS_BYTES_MAXIMUM,
+    positiveInteger(options.maximumRssBytes, CODE_GRAPH_PARSER_RSS_BYTES_MAXIMUM),
+  );
+  const observedRssBytes = Math.max(after.peakRssBytes, after.rssBytes);
+  if (observedRssBytes > maximumRssBytes) {
+    return {code: 'rss-bytes', maximum: maximumRssBytes, observed: observedRssBytes, unit: 'bytes'};
+  }
+  const maximumAllocationBytes = Math.min(
+    CODE_GRAPH_PARSER_ALLOCATION_BYTES_MAXIMUM,
+    positiveInteger(options.maximumAllocationBytes, CODE_GRAPH_PARSER_ALLOCATION_BYTES_MAXIMUM),
+  );
+  const observedAllocationBytes = Math.max(0, after.peakRssBytes - before.peakRssBytes);
+  return observedAllocationBytes > maximumAllocationBytes
+    ? {
+        code: 'allocation-bytes',
+        maximum: maximumAllocationBytes,
+        observed: observedAllocationBytes,
+        unit: 'bytes',
+      }
+    : undefined;
 }
 
 export function parserWorkerSuccessResponseBytes(
@@ -905,7 +1112,7 @@ export function parserWorkerSuccessResponseBytes(
   id = 'parser-worker-response-size',
 ): number {
   return new TextEncoder().encode(
-    `${JSON.stringify({facts, id, ok: true, parseMilliseconds: 0, protocol: PROTOCOL_VERSION})}\n`,
+    `${JSON.stringify({degraded: false, facts, id, ok: true, parseMilliseconds: 0, protocol: PROTOCOL_VERSION, recycle: false})}\n`,
   ).byteLength;
 }
 
@@ -961,16 +1168,54 @@ function parserWorkerIdleTimeout(environment: ParserWorkerEnvironment): number {
     : DEFAULT_IDLE_TIMEOUT_MILLISECONDS;
 }
 
+function parserWorkerResourceOptions(environment: ParserWorkerEnvironment): ParserWorkerResourceBudgetOptions {
+  return {
+    maximumAllocationBytes: parserWorkerByteMaximum(
+      environment,
+      CODE_GRAPH_PARSER_ALLOCATION_BYTES_ENV,
+      CODE_GRAPH_PARSER_ALLOCATION_BYTES_MAXIMUM,
+    ),
+    maximumRssBytes: parserWorkerByteMaximum(
+      environment,
+      CODE_GRAPH_PARSER_RSS_BYTES_ENV,
+      CODE_GRAPH_PARSER_RSS_BYTES_MAXIMUM,
+    ),
+  };
+}
+
+function parserWorkerByteMaximum(environment: ParserWorkerEnvironment, name: string, fallback: number): number {
+  const configured = Number.parseInt(environment[name] ?? '', 10);
+  return Number.isSafeInteger(configured) && configured > 0 ? Math.min(fallback, configured) : fallback;
+}
+
+function parserWorkerResourceSnapshot(system: SystemInfoShape): ParserWorkerResourceSnapshot {
+  const usage = system.memoryUsage();
+  return {
+    peakRssBytes: nonNegativeSafeInteger(usage.peakRss ?? usage.rss, usage.rss),
+    rssBytes: nonNegativeSafeInteger(usage.rss, 0),
+  };
+}
+
 function parserWorkerFailureSummary(reason: ParserWorkerFailureReason): string {
   switch (reason) {
     case 'abort':
       return 'parser request was interrupted';
+    case 'allocation':
+      return 'per-file allocation exceeded its byte budget';
     case 'exit':
       return 'parser worker exited unexpectedly';
     case 'operation':
       return 'language extraction failed';
     case 'protocol':
       return 'parser worker protocol failed';
+    case 'rss':
+      return 'parser worker RSS exceeded its byte budget';
+    case 'source-bytes':
+      return 'source exceeded its per-file byte budget';
+    case 'symbols':
+      return 'emitted symbols exceeded their per-file budget';
+    case 'fact-bytes':
+      return 'emitted facts exceeded their per-file byte budget';
     case 'spawn':
       return 'parser worker could not start';
     case 'timeout':
@@ -986,6 +1231,10 @@ function positiveInteger(value: number | undefined, fallback: number): number {
 
 function nonNegativeInteger(value: number | undefined, fallback: number): number {
   return Number.isSafeInteger(value) && value! >= 0 ? value! : fallback;
+}
+
+function nonNegativeSafeInteger(value: number, fallback: number): number {
+  return Number.isSafeInteger(value) && value >= 0 ? value : fallback;
 }
 
 function tokens(value: string): readonly string[] {

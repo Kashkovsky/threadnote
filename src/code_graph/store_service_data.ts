@@ -1,0 +1,633 @@
+import {Effect} from 'effect';
+import * as SqlClient from 'effect/unstable/sql/SqlClient';
+import {type CodeGraphDirectPersistentCapacityBoundary} from './disk_capacity.js';
+import {configureConnection, useDatabase, useReadOnlyDatabase} from './store_session.js';
+import {CodeGraphStoreError} from './types.js';
+import {upsertRepository, storeError} from './store_utilities.js';
+import {selectCachedCommittedFileKeys} from './store_query_core.js';
+import {stageActivationFiles, activationMode, type CodeGraphWriterGate} from './store_build_core.js';
+import {
+  selectReusableBaseReceipt,
+  selectReadySnapshot,
+  selectReadySnapshotById,
+  selectCurrentLexicalReadySnapshotById,
+  selectReadySnapshotForCommit,
+  selectReusableCleanBase,
+  selectReusableReexports,
+  selectCachedFacts,
+  selectMaterializedFileShards,
+  selectStoredGraph,
+  selectStoredSymbols,
+  selectEdgePage,
+  selectEdgesForNodes,
+} from './store_queries.js';
+import {pruneCachedFileBlobs} from './store_cleanup_core.js';
+import {prepareActivationTables} from './store_staging_core.js';
+import {
+  selectAnalysisSummary,
+  selectSymbolPage,
+  selectAnalysisSymbolAggregatePage,
+  selectAnalysisEdgeAggregatePage,
+  selectEmbeddingSymbolCount,
+  selectEmbeddingSymbolPage,
+} from './store_analysis.js';
+import {initializeSchema} from './store_schema_initialization.js';
+import {diagnoseDatabase} from './store_diagnostics.js';
+import {ensureReadySnapshotAnalysisSummary} from './store_activation_persistent.js';
+import {pruneRetiredSnapshotRows} from './store_retirement.js';
+import {selectResumableForcedBuild, selectResumableBuildById} from './store_resolution_core.js';
+import {
+  claimPersistentSnapshotBuild,
+  retireIncompleteWorktreeSnapshots,
+  finalizePersistentMaterializationPlan,
+  failBuildingSnapshot,
+} from './store_persistent_build.js';
+import {
+  selectVisualizationCatalog,
+  selectVisualizationCatalogs,
+  selectVisualizationScopeEdges,
+  selectVisualizationScopeEdgeSummary,
+  selectVisualizationSymbols,
+} from './store_visualization.js';
+import {selectActiveViewIdentities} from './store_active_views.js';
+import {repairDatabase} from './store_repair.js';
+import {
+  preparePersistedFullActivation,
+  preparePersistedIncrementalActivation,
+  replaceStagedModifiedFiles,
+} from './store_build_preparation.js';
+import {
+  selectSymbolsByPathAndName,
+  selectRepresentativeEdgesForNodes,
+  selectRelationshipSummaryForNode,
+} from './store_relationship_queries.js';
+import {type CodeGraphStoreRuntime} from './store_runtime.js';
+import {type CodeGraphStoreShape} from './store_shape.js';
+import {
+  temporaryActivationInventoryCapacity,
+  temporaryIncrementalActivationCapacity,
+} from './store_temporary_capacity.js';
+
+type CodeGraphStoreDataMethods = Pick<
+  CodeGraphStoreShape,
+  | 'initialize'
+  | 'prepareActivation'
+  | 'finalizePersistentMaterializationPlan'
+  | 'preparePersistedIncrementalActivation'
+  | 'replaceStagedModifiedFiles'
+  | 'diagnose'
+  | 'cachedCommittedFileKeys'
+  | 'edgesForNodes'
+  | 'findSymbolsByPathAndName'
+  | 'loadCachedFacts'
+  | 'loadMaterializedFileShards'
+  | 'loadGraph'
+  | 'loadSymbols'
+  | 'loadEdgePage'
+  | 'loadSymbolPage'
+  | 'loadAnalysisSymbolAggregatePage'
+  | 'loadAnalysisEdgeAggregatePage'
+  | 'loadAnalysisSummary'
+  | 'ensureAnalysisSummary'
+  | 'countEmbeddingSymbols'
+  | 'loadEmbeddingSymbolPage'
+  | 'loadVisualizationCatalog'
+  | 'loadActiveViewIdentities'
+  | 'loadVisualizationCatalogs'
+  | 'loadVisualizationScopeEdges'
+  | 'loadVisualizationScopeEdgeSummary'
+  | 'loadVisualizationSymbols'
+  | 'representativeEdgesForNodes'
+  | 'markBuilding'
+  | 'claimPersistentBuild'
+  | 'resumableForcedBuild'
+  | 'resumableBuildById'
+  | 'retireIncompleteWorktreeSnapshots'
+  | 'markFailed'
+  | 'readySnapshot'
+  | 'readySnapshotById'
+  | 'currentLexicalReadySnapshotById'
+  | 'readySnapshotForCommit'
+  | 'reusableBaseReceipt'
+  | 'reusableCleanBase'
+  | 'reusableReexports'
+  | 'relationshipSummaryForNode'
+  | 'pruneCachedFacts'
+  | 'pruneRetiredSnapshots'
+  | 'repair'
+>;
+
+export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): CodeGraphStoreDataMethods {
+  const {prepare, ensureSchemaInitialized, withWriterGate, fs, system, crypto} = runtime;
+  return {
+    initialize: databasePath =>
+      prepare(databasePath).pipe(
+        Effect.andThen(
+          useDatabase(
+            databasePath,
+            Effect.gen(function* () {
+              const sql = yield* SqlClient.SqlClient;
+              yield* ensureSchemaInitialized(databasePath, sql);
+            }),
+          ),
+        ),
+        Effect.mapError(cause => storeError('initialize code graph database', cause)),
+      ),
+    prepareActivation: (
+      databasePath,
+      files,
+      persistentSnapshotId,
+      persistentBatchCount,
+      persistentOwnerToken,
+      persistentCapacityProtector,
+    ) =>
+      prepare(databasePath).pipe(
+        Effect.andThen(
+          useDatabase(
+            databasePath,
+            Effect.gen(function* () {
+              const sql = yield* SqlClient.SqlClient;
+              yield* ensureSchemaInitialized(databasePath, sql);
+              if (persistentSnapshotId === undefined) {
+                const staging = Effect.gen(function* () {
+                  yield* prepareActivationTables(sql);
+                  yield* stageActivationFiles(sql, files, 'insert');
+                });
+                yield* persistentCapacityProtector
+                  ? persistentCapacityProtector(temporaryActivationInventoryCapacity(files), staging)
+                  : staging;
+              } else {
+                yield* preparePersistedFullActivation(
+                  sql,
+                  persistentSnapshotId,
+                  files,
+                  persistentBatchCount,
+                  persistentOwnerToken,
+                  effect => withWriterGate(databasePath, effect),
+                  persistentCapacityProtector,
+                );
+              }
+            }),
+          ),
+        ),
+        Effect.mapError(cause => storeError('prepare staged code graph activation', cause)),
+      ),
+    finalizePersistentMaterializationPlan: (databasePath, expectedBatchCount, persistentCapacityProtector) =>
+      prepare(databasePath).pipe(
+        Effect.andThen(
+          useDatabase(
+            databasePath,
+            Effect.gen(function* () {
+              const sql = yield* SqlClient.SqlClient;
+              const mode = yield* activationMode(sql);
+              if (mode?.mode !== 'persisted-full') {
+                return yield* Effect.fail(
+                  new CodeGraphStoreError('Persistent full-build materialization is not active.'),
+                );
+              }
+              const boundary: CodeGraphDirectPersistentCapacityBoundary = {
+                finalFactBytes: 0,
+                operation: 'register persistent code graph materialization plan',
+                // Owner plan registration and the lexical counter receipt.
+                rowCount: 2,
+              };
+              const transaction = withWriterGate(
+                databasePath,
+                finalizePersistentMaterializationPlan(sql, mode.snapshotId, mode.ownerToken, expectedBatchCount),
+              );
+              yield* persistentCapacityProtector ? persistentCapacityProtector(boundary, transaction) : transaction;
+            }),
+          ),
+        ),
+        Effect.mapError(cause => storeError('finalize persistent code graph materialization plan', cause)),
+      ),
+    preparePersistedIncrementalActivation: (
+      databasePath,
+      baseSnapshotId,
+      files,
+      facts,
+      options,
+      persistentCapacityProtector,
+    ) =>
+      prepare(databasePath).pipe(
+        Effect.andThen(
+          useDatabase(
+            databasePath,
+            Effect.gen(function* () {
+              const sql = yield* SqlClient.SqlClient;
+              yield* ensureSchemaInitialized(databasePath, sql);
+              const preparation = preparePersistedIncrementalActivation(baseSnapshotId, files, facts, options);
+              return yield* persistentCapacityProtector
+                ? persistentCapacityProtector(
+                    temporaryIncrementalActivationCapacity(files, facts, options?.deletedPaths),
+                    preparation,
+                  )
+                : preparation;
+            }),
+          ),
+        ),
+        Effect.mapError(cause => storeError('prepare persisted incremental code graph activation', cause)),
+      ),
+    replaceStagedModifiedFiles: (databasePath, baseSnapshotId, files, facts, persistentCapacityProtector) =>
+      prepare(databasePath).pipe(
+        Effect.andThen(
+          useDatabase(
+            databasePath,
+            persistentCapacityProtector
+              ? persistentCapacityProtector(
+                  temporaryIncrementalActivationCapacity(files, facts),
+                  replaceStagedModifiedFiles(baseSnapshotId, files, facts),
+                )
+              : replaceStagedModifiedFiles(baseSnapshotId, files, facts),
+          ),
+        ),
+        Effect.mapError(cause => storeError('replace staged modified code graph files', cause)),
+      ),
+    diagnose: databasePath =>
+      fs.exists(databasePath).pipe(
+        Effect.flatMap(exists => (exists ? useDatabase(databasePath, diagnoseDatabase()) : Effect.succeed(undefined))),
+        Effect.mapError(cause => storeError('diagnose code graph database', cause)),
+      ),
+    cachedCommittedFileKeys: (databasePath, extractorSet) =>
+      fs.exists(databasePath).pipe(
+        Effect.flatMap(exists =>
+          exists
+            ? useReadOnlyDatabase(databasePath, selectCachedCommittedFileKeys(extractorSet))
+            : Effect.succeed(new Set<string>()),
+        ),
+        Effect.mapError(cause => storeError('load cached code graph file keys', cause)),
+      ),
+    edgesForNodes: (databasePath, snapshotId, nodeIds, direction, limit, allowedProvenances) =>
+      prepare(databasePath).pipe(
+        Effect.andThen(
+          useReadOnlyDatabase(
+            databasePath,
+            selectEdgesForNodes(snapshotId, nodeIds, direction, limit, allowedProvenances),
+          ),
+        ),
+        Effect.mapError(cause => storeError('load code graph adjacency', cause)),
+      ),
+    findSymbolsByPathAndName: (databasePath, snapshotId, sourcePath, name) =>
+      prepare(databasePath).pipe(
+        Effect.andThen(useReadOnlyDatabase(databasePath, selectSymbolsByPathAndName(snapshotId, sourcePath, name))),
+        Effect.mapError(cause => storeError('resolve qualified code graph symbol', cause)),
+      ),
+    loadCachedFacts: (databasePath, files, extractorSet, options) =>
+      prepare(databasePath).pipe(
+        Effect.andThen(
+          useReadOnlyDatabase(databasePath, selectCachedFacts(files, extractorSet, options?.decode !== false)),
+        ),
+        Effect.mapError(cause => storeError('load cached code graph facts', cause)),
+      ),
+    loadMaterializedFileShards: (databasePath, files, extractorSet, derivationIdentity) =>
+      prepare(databasePath).pipe(
+        Effect.andThen(
+          useReadOnlyDatabase(databasePath, selectMaterializedFileShards(files, extractorSet, derivationIdentity)),
+        ),
+        Effect.mapError(cause => storeError('load materialized code graph file shards', cause)),
+      ),
+    loadGraph: (databasePath, snapshotId) =>
+      prepare(databasePath).pipe(
+        Effect.andThen(useReadOnlyDatabase(databasePath, selectStoredGraph(snapshotId))),
+        Effect.mapError(cause => storeError('load code graph snapshot', cause)),
+      ),
+    loadSymbols: (databasePath, snapshotId) =>
+      prepare(databasePath).pipe(
+        Effect.andThen(useReadOnlyDatabase(databasePath, selectStoredSymbols(snapshotId))),
+        Effect.mapError(cause => storeError('load code graph snapshot symbols', cause)),
+      ),
+    loadEdgePage: (databasePath, snapshotId, cursor, limit) =>
+      prepare(databasePath).pipe(
+        Effect.andThen(useReadOnlyDatabase(databasePath, selectEdgePage(snapshotId, cursor, limit))),
+        Effect.mapError(cause => storeError('load code graph edge page', cause)),
+      ),
+    loadSymbolPage: (databasePath, snapshotId, cursor, limit) =>
+      prepare(databasePath).pipe(
+        Effect.andThen(useReadOnlyDatabase(databasePath, selectSymbolPage(snapshotId, cursor, limit))),
+        Effect.mapError(cause => storeError('load code graph symbol page', cause)),
+      ),
+    loadAnalysisSymbolAggregatePage: (databasePath, snapshotId, cursorId, limit) =>
+      prepare(databasePath).pipe(
+        Effect.andThen(
+          useReadOnlyDatabase(databasePath, selectAnalysisSymbolAggregatePage(snapshotId, cursorId, limit)),
+        ),
+        Effect.mapError(cause => storeError('aggregate code graph symbol page', cause)),
+      ),
+    loadAnalysisEdgeAggregatePage: (databasePath, snapshotId, cursorId, limit) =>
+      prepare(databasePath).pipe(
+        Effect.andThen(useReadOnlyDatabase(databasePath, selectAnalysisEdgeAggregatePage(snapshotId, cursorId, limit))),
+        Effect.mapError(cause => storeError('aggregate code graph edge page', cause)),
+      ),
+    loadAnalysisSummary: (databasePath, snapshotId) =>
+      prepare(databasePath).pipe(
+        Effect.andThen(useReadOnlyDatabase(databasePath, selectAnalysisSummary(snapshotId))),
+        Effect.mapError(cause => storeError('load code graph analysis summary', cause)),
+      ),
+    ensureAnalysisSummary: (databasePath, snapshotId) =>
+      prepare(databasePath).pipe(
+        Effect.andThen(
+          withWriterGate(
+            databasePath,
+            useDatabase(
+              databasePath,
+              Effect.gen(function* () {
+                const sql = yield* SqlClient.SqlClient;
+                yield* initializeSchema(sql);
+                return yield* sql.withTransaction(ensureReadySnapshotAnalysisSummary(sql, snapshotId));
+              }),
+            ),
+          ),
+        ),
+        Effect.mapError(cause => storeError('ensure code graph analysis summary', cause)),
+      ),
+    countEmbeddingSymbols: (databasePath, snapshotId) =>
+      prepare(databasePath).pipe(
+        Effect.andThen(useReadOnlyDatabase(databasePath, selectEmbeddingSymbolCount(snapshotId))),
+        Effect.mapError(cause => storeError('count code graph embedding symbols', cause)),
+      ),
+    loadEmbeddingSymbolPage: (databasePath, snapshotId, cursor, limit) =>
+      prepare(databasePath).pipe(
+        Effect.andThen(useReadOnlyDatabase(databasePath, selectEmbeddingSymbolPage(snapshotId, cursor, limit))),
+        Effect.mapError(cause => storeError('load code graph embedding symbol page', cause)),
+      ),
+    loadVisualizationCatalog: (databasePath, metrics = 'complete', options = {}) =>
+      fs.exists(databasePath).pipe(
+        Effect.flatMap(exists =>
+          exists
+            ? useReadOnlyDatabase(databasePath, selectVisualizationCatalog(undefined, metrics, options))
+            : Effect.succeed(undefined),
+        ),
+        Effect.mapError(cause => storeError('load code graph visualization catalog', cause)),
+      ),
+    loadActiveViewIdentities: (databasePath, limit) =>
+      fs.exists(databasePath).pipe(
+        Effect.flatMap(exists =>
+          exists ? useReadOnlyDatabase(databasePath, selectActiveViewIdentities(limit)) : Effect.succeed([]),
+        ),
+        Effect.mapError(cause => storeError('load active code graph view identities', cause)),
+      ),
+    loadVisualizationCatalogs: (databasePath, metrics = 'complete', options = {}) =>
+      fs.exists(databasePath).pipe(
+        Effect.flatMap(exists =>
+          exists
+            ? useReadOnlyDatabase(databasePath, selectVisualizationCatalogs(metrics, options))
+            : Effect.succeed([]),
+        ),
+        Effect.mapError(cause => storeError('load code graph visualization catalogs', cause)),
+      ),
+    loadVisualizationScopeEdges: (databasePath, snapshotId) =>
+      fs.exists(databasePath).pipe(
+        Effect.flatMap(exists =>
+          exists ? useReadOnlyDatabase(databasePath, selectVisualizationScopeEdges(snapshotId)) : Effect.succeed([]),
+        ),
+        Effect.mapError(cause => storeError('load code graph visualization scope edges', cause)),
+      ),
+    loadVisualizationScopeEdgeSummary: (databasePath, snapshotId, scopeIds, limit) =>
+      prepare(databasePath).pipe(
+        Effect.andThen(
+          useReadOnlyDatabase(databasePath, selectVisualizationScopeEdgeSummary(snapshotId, scopeIds, limit)),
+        ),
+        Effect.mapError(cause => storeError('load bounded code graph visualization scope edges', cause)),
+      ),
+    loadVisualizationSymbols: (databasePath, snapshotId, scope, limit) =>
+      prepare(databasePath).pipe(
+        Effect.andThen(useReadOnlyDatabase(databasePath, selectVisualizationSymbols(snapshotId, scope, limit))),
+        Effect.mapError(cause => storeError('load code graph visualization symbols', cause)),
+      ),
+    representativeEdgesForNodes: (databasePath, snapshotId, nodeIds, direction, limit, allowedProvenances) =>
+      prepare(databasePath).pipe(
+        Effect.andThen(
+          useReadOnlyDatabase(
+            databasePath,
+            selectRepresentativeEdgesForNodes(snapshotId, nodeIds, direction, limit, allowedProvenances),
+          ),
+        ),
+        Effect.mapError(cause => storeError('load representative code graph adjacency', cause)),
+      ),
+    markBuilding: (databasePath, identity, snapshot) =>
+      prepare(databasePath).pipe(
+        Effect.andThen(
+          withWriterGate(
+            databasePath,
+            useDatabase(
+              databasePath,
+              Effect.gen(function* () {
+                const sql = yield* SqlClient.SqlClient;
+                yield* initializeSchema(sql);
+                yield* upsertRepository(sql, identity);
+                const registered = yield* sql<{readonly id: string}>`
+                          INSERT INTO snapshots (
+                            id, repository_id, worktree_id, commit_id, graph_content_id, base_snapshot_id, extractor_set,
+                            dirty, overlay_fingerprint, state, file_count, symbol_count, edge_count, started_at
+                          ) VALUES (
+                            ${snapshot.id}, ${snapshot.repositoryId}, ${snapshot.worktreeId}, ${snapshot.commit},
+                            ${snapshot.graphContentId ?? snapshot.id}, ${snapshot.baseSnapshotId ?? null},
+                            ${snapshot.extractorSet}, ${snapshot.dirty ? 1 : 0},
+                            ${snapshot.overlayFingerprint ?? null}, 'building', 0, 0, 0, ${new Date().toISOString()}
+                          )
+                          ON CONFLICT(id) DO UPDATE SET
+                            graph_content_id = excluded.graph_content_id,
+                            state = 'building',
+                            file_count = 0,
+                            symbol_count = 0,
+                            edge_count = 0,
+                            started_at = excluded.started_at,
+                            completed_at = NULL,
+                            failure_summary = NULL
+                          WHERE snapshots.repository_id = excluded.repository_id
+                            AND snapshots.worktree_id = excluded.worktree_id
+                            AND snapshots.commit_id = excluded.commit_id
+                            AND snapshots.graph_content_id = excluded.graph_content_id
+                            AND snapshots.base_snapshot_id IS excluded.base_snapshot_id
+                            AND snapshots.extractor_set = excluded.extractor_set
+                            AND snapshots.dirty = excluded.dirty
+                            AND snapshots.overlay_fingerprint IS excluded.overlay_fingerprint
+                            AND snapshots.state IN ('building', 'failed', 'retired')
+                          RETURNING id
+                        `;
+                if (registered.length !== 1) {
+                  return yield* Effect.fail(
+                    new CodeGraphStoreError(
+                      `Snapshot identity ${snapshot.id} already belongs to incompatible or ready content.`,
+                    ),
+                  );
+                }
+              }),
+            ),
+          ),
+        ),
+        Effect.mapError(cause => storeError('start code graph snapshot', cause)),
+      ),
+    claimPersistentBuild: (databasePath, identity, snapshot, claim) =>
+      Effect.gen(function* () {
+        const ownerToken = `${system.processId}:${yield* crypto.randomUUIDv4}`;
+        const writerGate: CodeGraphWriterGate = effect => withWriterGate(databasePath, effect);
+        yield* prepare(databasePath);
+        yield* useDatabase(
+          databasePath,
+          claimPersistentSnapshotBuild(identity, snapshot, ownerToken, claim, writerGate),
+        );
+        return ownerToken;
+      }).pipe(Effect.mapError(cause => storeError('claim persistent code graph snapshot', cause))),
+    resumableForcedBuild: (databasePath, logicalSnapshotId) =>
+      fs.exists(databasePath).pipe(
+        Effect.flatMap(exists =>
+          exists
+            ? useReadOnlyDatabase(databasePath, selectResumableForcedBuild(logicalSnapshotId))
+            : Effect.succeed(undefined),
+        ),
+        Effect.mapError(cause => storeError('load resumable forced code graph snapshot', cause)),
+      ),
+    resumableBuildById: (databasePath, snapshotId) =>
+      fs.exists(databasePath).pipe(
+        Effect.flatMap(exists =>
+          exists ? useReadOnlyDatabase(databasePath, selectResumableBuildById(snapshotId)) : Effect.succeed(undefined),
+        ),
+        Effect.mapError(cause => storeError('load resumable code graph snapshot by identity', cause)),
+      ),
+    retireIncompleteWorktreeSnapshots: (databasePath, repositoryId, worktreeId, retainedSnapshotIds, onProgress) =>
+      Effect.gen(function* () {
+        yield* prepare(databasePath);
+        return yield* useDatabase(
+          databasePath,
+          retireIncompleteWorktreeSnapshots(
+            repositoryId,
+            worktreeId,
+            retainedSnapshotIds,
+            effect => withWriterGate(databasePath, effect),
+            onProgress,
+          ),
+        );
+      }).pipe(Effect.mapError(cause => storeError('retire incomplete code graph snapshots', cause))),
+    markFailed: (databasePath, snapshotId, summary, ownerToken) =>
+      prepare(databasePath).pipe(
+        Effect.andThen(
+          useDatabase(
+            databasePath,
+            withWriterGate(databasePath, failBuildingSnapshot(snapshotId, summary, ownerToken)).pipe(Effect.asVoid),
+          ),
+        ),
+        Effect.mapError(cause => storeError('fail code graph snapshot', cause)),
+      ),
+    readySnapshot: (databasePath, worktreeId) =>
+      fs.exists(databasePath).pipe(
+        Effect.flatMap(exists =>
+          exists ? useReadOnlyDatabase(databasePath, selectReadySnapshot(worktreeId)) : Effect.succeed(undefined),
+        ),
+        Effect.mapError(cause => storeError('load ready code graph snapshot', cause)),
+      ),
+    readySnapshotById: (databasePath, snapshotId) =>
+      fs.exists(databasePath).pipe(
+        Effect.flatMap(exists =>
+          exists ? useReadOnlyDatabase(databasePath, selectReadySnapshotById(snapshotId)) : Effect.succeed(undefined),
+        ),
+        Effect.mapError(cause => storeError('load ready code graph snapshot by identity', cause)),
+      ),
+    currentLexicalReadySnapshotById: (databasePath, snapshotId) =>
+      fs.exists(databasePath).pipe(
+        Effect.flatMap(exists =>
+          exists
+            ? useReadOnlyDatabase(databasePath, selectCurrentLexicalReadySnapshotById(snapshotId))
+            : Effect.succeed(undefined),
+        ),
+        Effect.mapError(cause => storeError('load current-format ready code graph snapshot by identity', cause)),
+      ),
+    readySnapshotForCommit: (databasePath, repositoryId, commit, extractorSet) =>
+      fs.exists(databasePath).pipe(
+        Effect.flatMap(exists =>
+          exists
+            ? useReadOnlyDatabase(databasePath, selectReadySnapshotForCommit(repositoryId, commit, extractorSet))
+            : Effect.succeed(undefined),
+        ),
+        Effect.mapError(cause => storeError('load ready code graph snapshot for commit', cause)),
+      ),
+    reusableBaseReceipt: (databasePath, snapshotId) =>
+      fs.exists(databasePath).pipe(
+        Effect.flatMap(exists =>
+          exists ? useReadOnlyDatabase(databasePath, selectReusableBaseReceipt(snapshotId)) : Effect.succeed(undefined),
+        ),
+        Effect.mapError(cause => storeError('load reusable code graph base receipt', cause)),
+      ),
+    reusableCleanBase: (
+      databasePath,
+      repositoryId,
+      extractorSet,
+      workspaceFingerprint,
+      fileSetFingerprint,
+      graphContentId,
+      preferredCommitGroups,
+    ) =>
+      fs.exists(databasePath).pipe(
+        Effect.flatMap(exists =>
+          exists
+            ? useReadOnlyDatabase(
+                databasePath,
+                selectReusableCleanBase(
+                  repositoryId,
+                  extractorSet,
+                  workspaceFingerprint,
+                  fileSetFingerprint,
+                  graphContentId,
+                  preferredCommitGroups,
+                ),
+              )
+            : Effect.succeed(undefined),
+        ),
+        Effect.mapError(cause => storeError('load reusable clean code graph base', cause)),
+      ),
+    reusableReexports: (databasePath, snapshotId, seeds, options) =>
+      fs.exists(databasePath).pipe(
+        Effect.flatMap(exists =>
+          exists
+            ? useReadOnlyDatabase(databasePath, selectReusableReexports(snapshotId, seeds, options?.maxRows))
+            : Effect.succeed(undefined),
+        ),
+        Effect.mapError(cause => storeError('load reusable code graph reexport provenance', cause)),
+      ),
+    relationshipSummaryForNode: (databasePath, snapshotId, nodeId, allowedProvenances, limit) =>
+      prepare(databasePath).pipe(
+        Effect.andThen(
+          useReadOnlyDatabase(
+            databasePath,
+            selectRelationshipSummaryForNode(snapshotId, nodeId, allowedProvenances, limit),
+          ),
+        ),
+        Effect.mapError(cause => storeError('summarize code graph relationships', cause)),
+      ),
+    pruneCachedFacts: (databasePath, acceptedExtractorSets) =>
+      fs.exists(databasePath).pipe(
+        Effect.flatMap(exists =>
+          exists
+            ? useDatabase(
+                databasePath,
+                Effect.gen(function* () {
+                  const sql = yield* SqlClient.SqlClient;
+                  yield* configureConnection(sql);
+                  yield* sql.withTransaction(pruneCachedFileBlobs(sql, acceptedExtractorSets));
+                }),
+              )
+            : Effect.void,
+        ),
+        Effect.mapError(cause => storeError('prune cached code graph facts', cause)),
+      ),
+    pruneRetiredSnapshots: databasePath =>
+      fs.exists(databasePath).pipe(
+        Effect.flatMap(exists =>
+          exists
+            ? useDatabase(
+                databasePath,
+                pruneRetiredSnapshotRows(effect => withWriterGate(databasePath, effect)),
+              )
+            : Effect.void,
+        ),
+        Effect.mapError(cause => storeError('prune retired code graph snapshots', cause)),
+      ),
+    repair: (databasePath, dryRun = false) =>
+      fs.exists(databasePath).pipe(
+        Effect.flatMap(exists =>
+          exists ? useDatabase(databasePath, repairDatabase(dryRun)) : Effect.succeed(undefined),
+        ),
+        Effect.mapError(cause => storeError('repair code graph database', cause)),
+      ),
+  } as const;
+}

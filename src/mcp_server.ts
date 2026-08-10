@@ -141,6 +141,7 @@ import {
 } from './code_graph/query.js';
 import {repositoryChangesSince} from './code_graph/repository.js';
 import type {CodeGraphProgress, CodeGraphQueryResult} from './code_graph/types.js';
+import {inspectCodeGraphWorkset, type CodeGraphWorksetQueryResult} from './code_graph/workset_query.js';
 import {
   CodeGraphWatcher,
   type CodeGraphProgressTiming,
@@ -863,9 +864,11 @@ function registerCodeGraphTool(server: EffectMcpServerAdapter, config: RuntimeCo
           ['query', 'node', 'neighbors', 'explain', 'path', 'impact'],
           'Required graph operation',
         ),
+        package: McpInput.string('Exact package/component for a bounded local query and absence hint'),
         query: McpInput.string('Concept, symbol, module, path, or impact selector'),
         symbol: McpInput.string('Symbol selector for operation=explain'),
         to: McpInput.string('Target symbol, path#symbol selector, or stable cgs_ node ID for operation=path'),
+        workset: McpInput.string('Named workset; queries existing ready repository snapshots only'),
       },
     },
     ({
@@ -880,9 +883,11 @@ function registerCodeGraphTool(server: EffectMcpServerAdapter, config: RuntimeCo
       nodeId,
       nodeLimit,
       operation,
+      package: packageName,
       query,
       symbol,
       to,
+      workset,
     }) => {
       let timeoutContext = Option.none<{
         readonly key: string;
@@ -908,7 +913,30 @@ function registerCodeGraphTool(server: EffectMcpServerAdapter, config: RuntimeCo
         if (base?.trim() && operation !== 'impact') {
           return argumentError('inspect_code_graph base is valid only for operation=impact.');
         }
+        if (packageName?.trim() && operation !== 'query') {
+          return argumentError('inspect_code_graph package is valid only for operation=query.');
+        }
+        if (workset?.trim() && operation !== 'query') {
+          return argumentError('inspect_code_graph workset is valid only for operation=query.');
+        }
         const requestedQuery = query?.trim();
+        if (workset?.trim()) {
+          if (!requestedQuery) return argumentError('A workset graph query requires query.');
+          const result = yield* inspectCodeGraphWorkset(config, workset.trim(), {
+            depth,
+            edgeLimit: edgeLimit ?? MCP_CODE_GRAPH_DEFAULT_EDGE_LIMIT,
+            includeHeuristic,
+            includeModelAssociations,
+            nodeLimit: nodeLimit ?? MCP_CODE_GRAPH_DEFAULT_NODE_LIMIT,
+            packageName: packageName?.trim() || undefined,
+            query: requestedQuery,
+          });
+          const response = codeGraphWorksetMcpResponse(result);
+          return {
+            content: [{type: 'text' as const, text: response.text}],
+            structuredContent: response.structuredContent,
+          };
+        }
         const changes =
           operation === 'impact' && !requestedQuery
             ? yield* repositoryChangesSince(checkedCwd.value, base?.trim() || 'HEAD~1')
@@ -973,6 +1001,7 @@ function registerCodeGraphTool(server: EffectMcpServerAdapter, config: RuntimeCo
           nodeId,
           nodeLimit: nodeLimit ?? MCP_CODE_GRAPH_DEFAULT_NODE_LIMIT,
           operation,
+          packageName: packageName?.trim() || undefined,
           query: requestedQuery || changes?.paths.join(' '),
           refresh: false,
           seedQueries: changes?.paths,
@@ -1166,6 +1195,7 @@ export function compactCodeGraphMcpResult(result: CodeGraphQueryResult) {
       repositoryId: result.repository.repositoryId,
     },
     snapshot: result.snapshot,
+    ...(result.scope ? {scope: result.scope} : {}),
     sourceVersion: result.version,
     trust: result.trust,
     type: 'code-graph-inspection' as const,
@@ -1251,6 +1281,123 @@ export function codeGraphMcpResponse(result: CodeGraphQueryResult) {
     structuredContent: compact,
     text: renderCodeGraphResult(rendered, 'mcp'),
   };
+}
+
+export function codeGraphWorksetMcpResponse(result: CodeGraphWorksetQueryResult) {
+  const totalNodes = result.repositories.reduce(
+    (total, member) => total + (member.state === 'ready' ? member.graph.nodes.length : 0),
+    0,
+  );
+  const totalEdges = result.repositories.reduce(
+    (total, member) => total + (member.state === 'ready' ? member.graph.edges.length : 0),
+    0,
+  );
+  const readyMembers = result.repositories.filter(
+    (member): member is Extract<(typeof result.repositories)[number], {state: 'ready'}> => member.state === 'ready',
+  );
+  let nodeBudget = totalNodes;
+  let edgeBudget = totalEdges;
+  let structuredContent = projectCodeGraphWorksetMcpResult(result, nodeBudget, edgeBudget);
+  const budget = MCP_CODE_GRAPH_STRUCTURED_CONTENT_BYTES - MCP_CODE_GRAPH_STRUCTURED_CONTENT_RESERVE_BYTES;
+  while (encodedMcpBytes(structuredContent) > budget && (nodeBudget > 0 || edgeBudget > 0)) {
+    if (edgeBudget > nodeBudget && edgeBudget > 0) edgeBudget -= 1;
+    else if (nodeBudget > 0) nodeBudget -= 1;
+    else edgeBudget -= 1;
+    structuredContent = projectCodeGraphWorksetMcpResult(result, nodeBudget, edgeBudget);
+  }
+  const nodeCounts = fairPrefixCounts(
+    readyMembers.map(member => member.graph.nodes.length),
+    nodeBudget,
+  );
+  const edgeCounts = fairPrefixCounts(
+    readyMembers.map(member => member.graph.edges.length),
+    edgeBudget,
+  );
+  let readyIndex = 0;
+  const rendered = [
+    `Code graph workset: ${result.workset.name} (${result.coverage.readyRepositories}/${result.coverage.queriedRepositories} ready)`,
+  ];
+  for (const member of result.repositories) {
+    rendered.push('', `Repository member: ${member.project}`);
+    if (member.state === 'unavailable') {
+      rendered.push(`Unavailable: ${member.reason}`);
+      continue;
+    }
+    rendered.push(
+      renderCodeGraphResult(
+        {
+          ...member.graph,
+          edges: member.graph.edges.slice(0, edgeCounts[readyIndex]!),
+          nodes: member.graph.nodes.slice(0, nodeCounts[readyIndex]!),
+        },
+        'mcp',
+      ).trimEnd(),
+    );
+    readyIndex += 1;
+  }
+  if (result.warnings.length > 0) rendered.push('', ...result.warnings.map(warning => `Warning: ${warning}`));
+  const text = compactMcpUtf8Text(`${rendered.join('\n')}\n`, MCP_CODE_GRAPH_STRUCTURED_CONTENT_BYTES);
+  return {structuredContent, text};
+}
+
+function projectCodeGraphWorksetMcpResult(result: CodeGraphWorksetQueryResult, nodeBudget: number, edgeBudget: number) {
+  const readyMembers = result.repositories.filter(
+    (member): member is Extract<(typeof result.repositories)[number], {state: 'ready'}> => member.state === 'ready',
+  );
+  const nodeCounts = fairPrefixCounts(
+    readyMembers.map(member => member.graph.nodes.length),
+    nodeBudget,
+  );
+  const edgeCounts = fairPrefixCounts(
+    readyMembers.map(member => member.graph.edges.length),
+    edgeBudget,
+  );
+  let readyIndex = 0;
+  const repositories = result.repositories.map(member => {
+    if (member.state === 'unavailable') return member;
+    const graph = compactCodeGraphMcpResult({
+      ...member.graph,
+      edges: member.graph.edges.slice(0, edgeCounts[readyIndex]!),
+      nodes: member.graph.nodes.slice(0, nodeCounts[readyIndex]!),
+    });
+    readyIndex += 1;
+    return {graph, project: member.project, state: member.state};
+  });
+  const totalNodes = readyMembers.reduce((total, member) => total + member.graph.nodes.length, 0);
+  const totalEdges = readyMembers.reduce((total, member) => total + member.graph.edges.length, 0);
+  const returnedNodes = Math.min(totalNodes, nodeBudget);
+  const returnedEdges = Math.min(totalEdges, edgeBudget);
+  const truncated = returnedNodes < totalNodes || returnedEdges < totalEdges;
+  return {
+    coverage: result.coverage,
+    output: {returnedEdges, returnedNodes, totalEdges, totalNodes, truncated},
+    repositories,
+    trust: result.trust,
+    type: result.type,
+    version: result.version,
+    warnings: truncated
+      ? [
+          ...result.warnings.slice(0, 4),
+          `MCP output was bounded to ${returnedNodes}/${totalNodes} nodes and ${returnedEdges}/${totalEdges} relationships across the workset.`,
+        ]
+      : result.warnings.slice(0, 5),
+    workset: result.workset,
+  };
+}
+
+function fairPrefixCounts(lengths: readonly number[], budget: number): readonly number[] {
+  const counts = lengths.map(() => 0);
+  let remaining = Math.max(0, Math.floor(budget));
+  for (;;) {
+    let advanced = false;
+    for (let index = 0; index < lengths.length && remaining > 0; index += 1) {
+      if (counts[index]! >= lengths[index]!) continue;
+      counts[index] = counts[index]! + 1;
+      remaining -= 1;
+      advanced = true;
+    }
+    if (!advanced || remaining === 0) return counts;
+  }
 }
 
 interface CodeGraphMcpOutputCoverage {
@@ -1823,6 +1970,9 @@ export function codeGraphAnalysisRefreshResult(
   status: CodeGraphRefreshStatus | undefined,
 ): CallToolResult {
   if (status?.state === 'deferred') {
+    if (status.failure.recovery === 'reconnect-runtime') {
+      return codeGraphRuntimeReconnectResult(operation, status.failure, 'code-graph-analysis-state');
+    }
     const warning = codeGraphRefreshRecoveryWarning(status.failure);
     return {
       content: [
@@ -1899,6 +2049,7 @@ export function codeGraphRefreshBlocksReadyInspection(
   refreshStatus: CodeGraphRefreshStatus | undefined,
   allowStaleReadySnapshot = false,
 ): boolean {
+  if (refreshStatus?.state === 'deferred' && refreshStatus.failure.recovery === 'reconnect-runtime') return true;
   const refreshBlocks = refreshStatus?.state === 'deferred' || refreshStatus?.state === 'indexing';
   return refreshBlocks && (!status.readySnapshot || (status.stale && !allowStaleReadySnapshot));
 }
@@ -1939,6 +2090,8 @@ function codeGraphRefreshRecoveryWarning(failure: CodeGraphRefreshFailure): stri
       return 'Retry the read-only refresh; run `threadnote doctor --dry-run` if the failure repeats.';
     case 'migrate-additive':
       return 'Run the preflight-proven additive migration before retrying.';
+    case 'reconnect-runtime':
+      return 'Reconnect this Threadnote MCP server to load the installed runtime, then retry.';
     case 'manual-migration':
       return 'Run `threadnote doctor --dry-run` and follow the schema migration guidance.';
     case 'manual-rebuild':
@@ -1953,6 +2106,9 @@ function codeGraphRefreshResult(
   status: CodeGraphRefreshStatus | undefined,
 ): CallToolResult {
   if (status?.state === 'deferred') {
+    if (status.failure.recovery === 'reconnect-runtime') {
+      return codeGraphRuntimeReconnectResult(operation, status.failure, 'code-graph-index-state');
+    }
     const warning = codeGraphRefreshRecoveryWarning(status.failure);
     return {
       content: [
@@ -2008,6 +2164,30 @@ function codeGraphRefreshResult(
       ...(compactTiming ? {timing: compactTiming} : {}),
       type: 'code-graph-index-state',
       version: 3,
+    },
+  };
+}
+
+function codeGraphRuntimeReconnectResult(
+  operation: CodeGraphAnalysisView | 'explain' | 'impact' | 'neighbors' | 'node' | 'path' | 'query',
+  failure: CodeGraphRefreshFailure,
+  type: 'code-graph-analysis-state' | 'code-graph-index-state',
+): CallToolResult {
+  return {
+    content: [
+      {
+        type: 'text',
+        text:
+          'Code graph storage was upgraded by a newer Threadnote runtime. Reconnect this Threadnote MCP server ' +
+          'to load the installed runtime, then retry the same graph request. No background build was started.',
+      },
+    ],
+    structuredContent: {
+      failure,
+      operation,
+      state: 'reconnect-required',
+      type,
+      version: 1,
     },
   };
 }

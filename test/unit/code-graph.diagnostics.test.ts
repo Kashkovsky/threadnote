@@ -10,8 +10,13 @@ import {
 import {runCodeGraphDiagnostics} from '../../src/code_graph/commands.js';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
 import {recordVerifiedCodeGraphLocalAssociation} from '../../src/code_graph/local_provenance.js';
+import {observeManagerGraphCatalogRevision} from '../../src/code_graph/manager_catalog_revision.js';
 import {resolveRepositoryIdentity} from '../../src/code_graph/repository.js';
-import {managerGraphCatalog, releaseManagerGraphSnapshotLeases} from '../../src/code_graph/visualization.js';
+import {
+  managerGraphBuildCatalog,
+  managerGraphCatalog,
+  releaseManagerGraphSnapshotLeases,
+} from '../../src/code_graph/visualization.js';
 import {
   CODE_GRAPH_SCHEMA_VERSION,
   type CodeGraphSnapshot,
@@ -75,8 +80,23 @@ describe('all-code-graph diagnostics', () => {
       const unreadable = report.databases.find(database => database.checkoutId === unreadableCheckoutId);
       expect(unreadable?.healthState).toBe('unreadable');
       expect(unreadable?.issues.map(issue => issue.code)).toContain('health-check-failed');
+      expect(unreadable?.lifecycle).toContainEqual(
+        expect.objectContaining({action: 'retry-observation', disposition: 'observe', state: 'unreadable-store'}),
+      );
+      const ordinaryStorage = report.databases.find(database => database.checkoutId === healthyCheckoutId)?.storage;
+      if (ordinaryStorage?.state !== 'available') throw new Error('missing ordinary storage diagnostics');
+      expect(ordinaryStorage.pageStorage).not.toHaveProperty('attribution');
       expect(JSON.stringify(report)).not.toContain(home);
       expect(renderCodeGraphDiagnostics(report)).toContain('Native code graph diagnostics');
+
+      const deepReport = yield* inspectAllCodeGraphs(home, {deep: true});
+      const deepStorage = deepReport.databases.find(database => database.checkoutId === healthyCheckoutId)?.storage;
+      if (deepStorage?.state !== 'available') throw new Error('missing deep storage diagnostics');
+      expect(deepStorage.pageStorage).toMatchObject({state: 'available'});
+      if (deepStorage.pageStorage.state !== 'available') throw new Error('missing deep page diagnostics');
+      expect(deepStorage.pageStorage.attribution).toBeDefined();
+      expect(['available', 'unavailable']).toContain(deepStorage.pageStorage.attribution?.state);
+      expect(JSON.stringify(deepReport)).not.toContain(home);
 
       const config: RuntimeConfig = {
         account: 'local',
@@ -229,6 +249,86 @@ describe('all-code-graph diagnostics', () => {
         yield* releaseManagerGraphSnapshotLeases();
       }).pipe(Effect.provide(ApplicationLayer)),
   );
+
+  effectIt.effect('advances missing-view reconciliation through the live Manager status poll', () =>
+    Effect.gen(function* () {
+      const temporaryHome = yield* Effect.promise(() => mkdtemp('threadnote-graph-live-status-'));
+      const fileSystem = yield* FileSystem.FileSystem;
+      const home = yield* fileSystem.realPath(temporaryHome);
+      const repository = yield* Effect.sync(localRepository);
+      const worktreeRoot = yield* Effect.promise(() => mkdtemp('threadnote-graph-live-status-worktree-'));
+      const linked = join(worktreeRoot, 'linked');
+      homes.push(home, repository, worktreeRoot);
+      yield* Effect.sync(() => {
+        execFileSync('git', ['-C', repository, 'branch', 'manager-live-refresh'], {stdio: 'pipe'});
+        execFileSync('git', ['-C', repository, 'worktree', 'add', '-q', linked, 'manager-live-refresh'], {
+          stdio: 'pipe',
+        });
+        execFileSync(
+          'git',
+          [
+            '-C',
+            linked,
+            '-c',
+            'user.name=Threadnote Test',
+            '-c',
+            'user.email=test@threadnote.local',
+            'commit',
+            '--allow-empty',
+            '-qm',
+            'linked fixture',
+          ],
+          {stdio: 'pipe'},
+        );
+      });
+      const mainIdentity = yield* resolveRepositoryIdentity(repository);
+      const linkedIdentity = yield* resolveRepositoryIdentity(linked);
+      const mainSnapshot = readySnapshot(mainIdentity, 'd');
+      const linkedSnapshot = readySnapshot(linkedIdentity, 'e');
+      const database = join(
+        home,
+        'indexes',
+        'code-graph',
+        'repositories',
+        mainIdentity.checkoutId,
+        `graph-v${CODE_GRAPH_SCHEMA_VERSION}.sqlite`,
+      );
+      const store = yield* CodeGraphStore;
+      yield* store.activate(database, mainIdentity, mainSnapshot, [], [], []);
+      yield* store.promote(database, mainIdentity, mainSnapshot.id);
+      yield* store.activate(database, linkedIdentity, linkedSnapshot, [], [], []);
+      yield* store.promote(database, linkedIdentity, linkedSnapshot.id);
+      yield* recordVerifiedCodeGraphLocalAssociation(home, mainIdentity);
+      yield* recordVerifiedCodeGraphLocalAssociation(home, linkedIdentity);
+      yield* Effect.sync(() =>
+        execFileSync('git', ['-C', repository, 'worktree', 'remove', '--force', linked], {stdio: 'pipe'}),
+      );
+
+      const stale = yield* inspectAllCodeGraphsLocal(home);
+      expect(stale.summary.viewCount).toBe(2);
+      expect(stale.databases[0]?.views).toContainEqual(
+        expect.objectContaining({localAssociation: expect.objectContaining({state: 'missing'})}),
+      );
+
+      const beforeRevision = yield* observeManagerGraphCatalogRevision(home);
+      let status = yield* managerGraphBuildCatalog(home);
+      let activeViews = yield* store.loadActiveViewIdentities(database, 8);
+      expect(status.lifecyclePending || activeViews.length === 1).toBe(true);
+      for (let attempt = 0; attempt < 8 && activeViews.length > 1; attempt += 1) {
+        status = yield* managerGraphBuildCatalog(home);
+        activeViews = yield* store.loadActiveViewIdentities(database, 8);
+      }
+      expect(activeViews).toHaveLength(1);
+      expect(activeViews[0]?.worktreeId).toBe(mainIdentity.worktreeId);
+      expect(status.catalogRevision).not.toBe(beforeRevision);
+      expect((yield* managerGraphBuildCatalog(home)).lifecyclePending).toBe(false);
+
+      const refreshed = yield* inspectAllCodeGraphsLocal(home);
+      expect(refreshed.summary.viewCount).toBe(1);
+      expect(refreshed.databases[0]?.views[0]?.viewWorktreeId).toBe(mainIdentity.worktreeId);
+      yield* releaseManagerGraphSnapshotLeases();
+    }).pipe(Effect.provide(ApplicationLayer)),
+  );
 });
 
 function localRepository(): string {
@@ -267,7 +367,7 @@ function repositoryIdentity(root: string, checkoutId: string): RepositoryIdentit
   };
 }
 
-function readySnapshot(identity: RepositoryIdentity): CodeGraphSnapshot {
+function readySnapshot(identity: RepositoryIdentity, id = 'd'): CodeGraphSnapshot {
   return {
     commit: identity.headCommit,
     completedAt: '2026-08-05T08:00:00.000Z',
@@ -275,7 +375,7 @@ function readySnapshot(identity: RepositoryIdentity): CodeGraphSnapshot {
     edgeCount: 0,
     extractorSet: 'diagnostics-test',
     fileCount: 0,
-    id: `cgsn_${'d'.repeat(40)}`,
+    id: `cgsn_${id.repeat(40)}`,
     repositoryId: identity.repositoryId,
     state: 'ready',
     symbolCount: 0,

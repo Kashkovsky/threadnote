@@ -63,6 +63,13 @@ const OPERATIONS = new Set<CodeGraphDirectPersistentCapacityOperation>([
   'stage persistent code graph facts',
   'stage persistent code graph inventory',
   'stage persistent code graph workspace',
+  'prepare temporary incremental code graph activation',
+  'publish temporary code graph snapshot',
+  'resolve temporary code graph reexport aliases',
+  'resolve temporary code graph references',
+  'stage temporary code graph facts',
+  'stage temporary code graph inventory',
+  'stage temporary code graph workspace',
 ]);
 // Recovery authority is local-process state for one exact immutable receipt.
 // Receipt paths include the ledger identity, so a copied token/canonical body

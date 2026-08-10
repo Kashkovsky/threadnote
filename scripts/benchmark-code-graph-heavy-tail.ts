@@ -13,7 +13,6 @@ import {SystemInfo} from '../src/effect/system.js';
 import {atomicWrite, printJson, readJsonFile, scriptArguments} from './effect/script.js';
 import {
   CODE_GRAPH_HEAVY_TAIL_GENERATED_TYPESCRIPT_PATH,
-  CODE_GRAPH_HEAVY_TAIL_JSON_PATH,
   CODE_GRAPH_HEAVY_TAIL_PROFILE,
   CODE_GRAPH_HEAVY_TAIL_SMOKE_PROFILE,
   codeGraphHeavyTailEligibleFiles,
@@ -74,12 +73,12 @@ interface HeavyTailChildRun {
 interface CodeGraphHeavyTailBenchmarkArtifact {
   readonly assertions: {
     readonly interruptionRetainedCache: true;
-    readonly lowSignalJsonBounded: true;
+    readonly lowSignalJsonExcluded: true;
     readonly parallelMatchesSingle: true;
     readonly pathologicalTypeScriptSurfacePreserved: true;
     readonly resumeMatchesClean: true;
     readonly resumeReusedCache: true;
-    readonly textlessSvgMetadataPreserved: true;
+    readonly textlessSvgExcluded: true;
   };
   readonly createdAt: string;
   readonly environment: {
@@ -196,12 +195,12 @@ const runParent = Effect.fn('benchmarkCodeGraphHeavyTail.parent')(function* (arg
   const artifact: CodeGraphHeavyTailBenchmarkArtifact = {
     assertions: {
       interruptionRetainedCache: true,
-      lowSignalJsonBounded: true,
+      lowSignalJsonExcluded: true,
       parallelMatchesSingle: true,
       pathologicalTypeScriptSurfacePreserved: true,
       resumeMatchesClean: true,
       resumeReusedCache: true,
-      textlessSvgMetadataPreserved: true,
+      textlessSvgExcluded: true,
     },
     createdAt: new Date().toISOString(),
     environment: {
@@ -390,7 +389,8 @@ function heavyTailGraphShape(graph: StoredCodeGraph) {
       symbol =>
         symbol.path === CODE_GRAPH_HEAVY_TAIL_GENERATED_TYPESCRIPT_PATH && symbol.name === 'GeneratedSurfaceTail',
     ),
-    lowSignalJsonSymbols: graph.symbols.filter(symbol => symbol.path === CODE_GRAPH_HEAVY_TAIL_JSON_PATH).length,
+    lowSignalJsonSymbols: graph.symbols.filter(symbol => /^test\/__snapshots__\/.*\.snapshot\.json$/.test(symbol.path))
+      .length,
     pathologicalTypeScriptTails: graph.symbols.filter(
       symbol => symbol.path.startsWith('src/pathological-') && symbol.name.startsWith('PreservedTail'),
     ).length,
@@ -401,8 +401,8 @@ function heavyTailGraphShape(graph: StoredCodeGraph) {
 
 function validateCompletedRun(name: string, run: HeavyTailChildRun, profile: CodeGraphHeavyTailProfile): void {
   if (run.state !== 'complete' || !run.graph) throw new Error(`${name} heavy-tail run did not complete.`);
-  if (run.graph.lowSignalJsonSymbols !== 1 || run.cache.lowSignalJsonFactsBytes > 16 * 1_024) {
-    throw new Error(`${name} heavy-tail run expanded low-signal JSON beyond the metadata-only contract.`);
+  if (run.graph.lowSignalJsonSymbols !== 0 || run.cache.lowSignalJsonFactsBytes !== 0) {
+    throw new Error(`${name} heavy-tail run admitted excluded low-signal JSON.`);
   }
   if (run.graph.pathologicalTypeScriptTails !== profile.pathologicalTypeScriptFiles) {
     throw new Error(`${name} heavy-tail run lost declarations after pathological TypeScript calls.`);
@@ -410,8 +410,8 @@ function validateCompletedRun(name: string, run: HeavyTailChildRun, profile: Cod
   if (!run.graph.generatedTypeScriptTailPreserved) {
     throw new Error(`${name} heavy-tail run lost declarations from generated TypeScript surface extraction.`);
   }
-  if (run.graph.textlessSvgSymbols !== profile.textlessSvgFiles) {
-    throw new Error(`${name} heavy-tail run did not preserve one metadata symbol per textless SVG.`);
+  if (run.graph.textlessSvgSymbols !== 0) {
+    throw new Error(`${name} heavy-tail run admitted excluded textless SVG.`);
   }
   if (run.graph.files !== codeGraphHeavyTailEligibleFiles(profile)) {
     throw new Error(`${name} heavy-tail run indexed ${run.graph.files} files; expected fixture shape mismatch.`);
@@ -428,8 +428,10 @@ function databaseCacheTelemetry(databasePath: string): HeavyTailChildRun['cache'
       .query('SELECT COUNT(*) AS files, COALESCE(SUM(length(facts_json)), 0) AS factsBytes FROM file_blobs')
       .get() as {readonly factsBytes: number; readonly files: number};
     const json = database
-      .query('SELECT COALESCE(MAX(length(facts_json)), 0) AS factsBytes FROM file_blobs WHERE path_hint = ?')
-      .get(CODE_GRAPH_HEAVY_TAIL_JSON_PATH) as {readonly factsBytes: number};
+      .query(
+        "SELECT COALESCE(SUM(length(facts_json)), 0) AS factsBytes FROM file_blobs WHERE path_hint LIKE 'test/__snapshots__/%'",
+      )
+      .get() as {readonly factsBytes: number};
     return {
       factsBytes: Number(total.factsBytes),
       files: Number(total.files),

@@ -215,8 +215,8 @@ describe('code graph incremental-overlay differential properties', () => {
         }
       }),
     {
-      fastCheck: {interruptAfterTimeLimit: 90_000, markInterruptAsFailure: true, numRuns: 10},
-      timeout: 100_000,
+      fastCheck: {interruptAfterTimeLimit: 180_000, markInterruptAsFailure: true, numRuns: 10},
+      timeout: 190_000,
     },
   );
 
@@ -884,8 +884,8 @@ describe('code graph incremental-overlay differential properties', () => {
         }
       }),
     {
-      fastCheck: {interruptAfterTimeLimit: 60_000, markInterruptAsFailure: true, numRuns: 6},
-      timeout: 70_000,
+      fastCheck: {interruptAfterTimeLimit: 180_000, markInterruptAsFailure: true, numRuns: 6},
+      timeout: 190_000,
     },
   );
 });

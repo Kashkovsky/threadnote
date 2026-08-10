@@ -7,6 +7,33 @@ import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {SystemInfo} from '../../src/effect/system.js';
 
 describe('CLI progress indicator', () => {
+  it('keeps Effect diagnostics off machine-readable stdout', async () => {
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const flush = Effect.void;
+    const output = CliOutput.of({
+      drain: flush,
+      enqueueError: value => stderr.push(value),
+      enqueueOutput: value => stdout.push(value),
+      flush,
+      writeError: value => Effect.sync(() => stderr.push(value)),
+      writeFinal: value => Effect.sync(() => stdout.push(value)),
+    });
+
+    await Effect.runPromise(
+      withCliOutputConsole(
+        Effect.gen(function* () {
+          yield* Console.log('{"type":"machine-result"}');
+          yield* Effect.logWarning('deferred maintenance diagnostic');
+        }),
+      ).pipe(Effect.provideService(CliOutput, output)),
+    );
+
+    expect(stdout).toEqual(['{"type":"machine-result"}']);
+    expect(stderr).toHaveLength(1);
+    expect(stderr[0]).toContain('deferred maintenance diagnostic');
+  });
+
   it('waits for a backpressured pipe write before flushing or closing it', async () => {
     const events: string[] = [];
     let releaseWrite: (() => void) | undefined;

@@ -4,43 +4,27 @@ import type {CodeGraphFileFacts, CodeGraphInventoryFile, CodeGraphReference, Cod
 import type {
   CodeGraphBuildWorkspace,
   CodeGraphWorkspace,
-  CodeGraphWorkspaceBuildSystem,
   CodeGraphWorkspaceComponentKind,
   CodeGraphWorkspaceDependency,
   CodeGraphWorkspaceDetector,
   CodeGraphWorkspaceProject,
-  CodeGraphWorkspaceProvenance,
 } from './languages/types.js';
 import {compareCodeUnits} from './ordering.js';
+import {discoverNodeWorkspaceCandidates} from './workspace_node.js';
 import {
-  bazelAttribute,
-  bazelLabelPackage,
-  canonicalBazelLabel,
-  parseBazelSyntax,
-  type BazelCall,
-} from './languages/bazel/syntax.js';
+  basename,
+  dirname,
+  joinPath,
+  materializeBuildWorkspaces,
+  normalizeContainedPath,
+  type ProjectCandidate,
+  type WorkspaceFileIndex,
+  unique,
+  uniqueStrings,
+  workspaceIdentity,
+} from './workspace_primitives.js';
 
-interface ProjectCandidate {
-  readonly aliases: readonly string[];
-  readonly buildSystem: CodeGraphWorkspaceBuildSystem;
-  readonly dependencyAliases: readonly string[];
-  readonly diagnostics: readonly string[];
-  readonly evidence?: string;
-  readonly kind: CodeGraphWorkspaceComponentKind;
-  readonly languages: readonly string[];
-  readonly name: string;
-  readonly provenance: CodeGraphWorkspaceProvenance;
-  readonly resolutionDomain: string;
-  readonly root: string;
-  readonly sourceRoots: readonly string[];
-  readonly workspaceRoots: readonly string[];
-}
-
-interface WorkspaceFileIndex {
-  readonly buildFileByRoot: ReadonlyMap<string, CodeGraphInventoryFile>;
-  readonly fileByPath: ReadonlyMap<string, CodeGraphInventoryFile>;
-  readonly sortedPaths: readonly string[];
-}
+export {discoverBazelWorkspace} from './workspace_bazel.js';
 
 interface WorkspaceProjectPathIndex {
   readonly projectsByRoot: ReadonlyMap<string, readonly CodeGraphWorkspaceProject[]>;
@@ -58,7 +42,7 @@ export function discoverManifestWorkspace(files: readonly CodeGraphInventoryFile
   const diagnostics: string[] = [];
   const fileIndex = createWorkspaceFileIndex(files);
   const candidates = [
-    ...discoverNodeProjects(files, diagnostics, fileIndex),
+    ...discoverNodeWorkspaceCandidates(files, diagnostics),
     ...discoverMavenProjects(files, diagnostics, fileIndex),
     ...discoverGradleProjects(files, diagnostics, fileIndex),
     ...discoverSwiftPackageProjects(files, diagnostics),
@@ -66,7 +50,6 @@ export function discoverManifestWorkspace(files: readonly CodeGraphInventoryFile
   ];
   addFallbackProjects(files, candidates);
   const projects = materializeProjects(mergeProjectCandidates(candidates), diagnostics);
-  diagnoseNxProjectBoundaries(files, projects, diagnostics);
   const orderedDiagnostics = uniqueStrings(diagnostics).slice(0, 100);
   const fingerprint = sha256HexSync(
     [
@@ -96,429 +79,6 @@ export function discoverManifestWorkspace(files: readonly CodeGraphInventoryFile
     projects,
     workspaces: materializeBuildWorkspaces(projects, orderedDiagnostics),
   };
-}
-
-interface BazelPackageCandidate {
-  readonly dependencyLabels: readonly {readonly evidence: string; readonly label: string}[];
-  readonly evidence: string;
-  readonly name: string;
-  readonly packagePath: string;
-  readonly root: string;
-  readonly workspaceRoot: string;
-}
-
-const BAZEL_WORKSPACE_MARKERS = new Set(['module.bazel', 'workspace', 'workspace.bazel']);
-const BAZEL_BUILD_FILES = new Set(['build', 'build.bazel']);
-const BAZEL_DEPENDENCY_ATTRIBUTES = new Set([
-  'actual',
-  'deps',
-  'exports',
-  'implementation_deps',
-  'plugins',
-  'runtime_deps',
-  'toolchains',
-  'tools',
-]);
-
-/**
- * Discovers Bazel statically from checked-in Starlark. It deliberately does not invoke Bazel or evaluate macros.
- * Packages from a nested MODULE/WORKSPACE use the nearest marker, while BUILD files without a marker remain
- * integrated into the repository-root Bazel workspace. The resulting Bazel resolution domain can overlap Node,
- * JVM, Swift, and other workspace projects at the same path.
- */
-export function discoverBazelWorkspace(files: readonly CodeGraphInventoryFile[]): CodeGraphWorkspace {
-  const diagnostics: string[] = [];
-  const workspaceMarkers = files
-    .filter(file => BAZEL_WORKSPACE_MARKERS.has(basename(file.path).toLowerCase()))
-    .sort((left, right) => compareCodeUnits(left.path, right.path));
-  const declaredRoots = new Set(workspaceMarkers.map(file => dirname(file.path)));
-  const bazelRcRoots = new Set(
-    files.filter(file => basename(file.path).toLowerCase().endsWith('.bazelrc')).map(file => dirname(file.path)),
-  );
-  const candidates: BazelPackageCandidate[] = files
-    .filter(file => BAZEL_BUILD_FILES.has(basename(file.path).toLowerCase()) && file.content !== undefined)
-    .sort((left, right) => compareCodeUnits(left.path, right.path))
-    .map(file => {
-      const root = dirname(file.path);
-      const workspaceRoot = nearestBazelWorkspaceRoot(root, declaredRoots, bazelRcRoots);
-      const packagePath = relativeContainedPath(workspaceRoot, root) ?? root;
-      const syntax = parseBazelSyntax(file.content!);
-      if (syntax.bounded) diagnostics.push(`${file.path}: workspace discovery reached its deterministic syntax bound`);
-      const dependencyLabels = bazelDependencyLabels(syntax.calls, packagePath, file.path);
-      return {
-        dependencyLabels,
-        evidence: file.path,
-        name: packagePath ? `//${packagePath}` : '//',
-        packagePath,
-        root,
-        workspaceRoot,
-      };
-    });
-
-  for (const marker of workspaceMarkers) {
-    const root = dirname(marker.path);
-    if (candidates.some(candidate => candidate.root === root && candidate.workspaceRoot === root)) continue;
-    const name = bazelDeclaredWorkspaceName(marker) ?? (root.split('/').at(-1) || 'root');
-    candidates.push({
-      dependencyLabels: [],
-      evidence: marker.path,
-      name,
-      packagePath: '',
-      root,
-      workspaceRoot: root,
-    });
-  }
-  candidates.sort(
-    (left, right) =>
-      compareCodeUnits(left.root, right.root) ||
-      compareCodeUnits(left.workspaceRoot, right.workspaceRoot) ||
-      compareCodeUnits(left.evidence, right.evidence),
-  );
-
-  const projectIdByPackage = new Map<string, string>();
-  for (const candidate of candidates) {
-    projectIdByPackage.set(
-      bazelPackageIdentity(candidate.workspaceRoot, candidate.packagePath),
-      bazelProjectIdentity(candidate.root),
-    );
-  }
-  const projects = candidates.map(candidate => {
-    const id = bazelProjectIdentity(candidate.root);
-    const dependencies = new Map<string, CodeGraphWorkspaceDependency>();
-    for (const dependency of candidate.dependencyLabels) {
-      const parsed = bazelLabelPackage(dependency.label);
-      if (Option.isNone(parsed) || parsed.value.external) continue;
-      const targetId = projectIdByPackage.get(bazelPackageIdentity(candidate.workspaceRoot, parsed.value.packagePath));
-      if (targetId === undefined) {
-        diagnostics.push(`${dependency.evidence}: local Bazel package //${parsed.value.packagePath} was not indexed`);
-      } else if (targetId !== id) {
-        dependencies.set(targetId, {evidence: dependency.evidence, provenance: 'declared', targetId});
-      }
-    }
-    const dependencyDetails = [...dependencies.values()].sort((left, right) =>
-      compareCodeUnits(left.targetId, right.targetId),
-    );
-    return {
-      buildSystem: 'bazel',
-      dependencies: dependencyDetails.map(dependency => dependency.targetId),
-      dependencyDetails,
-      diagnostics: [],
-      id,
-      kind: BAZEL_BUILD_FILES.has(basename(candidate.evidence).toLowerCase()) ? 'package' : 'project',
-      languages: ['bazel', 'starlark'],
-      name: candidate.name,
-      provenance: 'declared',
-      resolutionDomain: 'bazel',
-      root: candidate.root,
-      sourceRoots: [candidate.root],
-      workspaceId: workspaceIdentity('bazel', candidate.workspaceRoot),
-      workspaceRoots: [candidate.workspaceRoot],
-    } satisfies CodeGraphWorkspaceProject;
-  });
-  const orderedDiagnostics = unique(diagnostics).sort(compareCodeUnits).slice(0, 100);
-  const workspaces = materializeBuildWorkspaces(projects, orderedDiagnostics);
-  return {
-    diagnostics: orderedDiagnostics,
-    fingerprint: sha256HexSync(
-      JSON.stringify({
-        diagnostics: orderedDiagnostics,
-        projects: projects.map(project => [
-          project.id,
-          project.workspaceId,
-          project.name,
-          project.root,
-          project.dependencies,
-          project.workspaceRoots,
-        ]),
-        version: 'bazel-static-workspace-v1',
-      }),
-    ),
-    projects,
-    workspaces,
-  };
-}
-
-function bazelDependencyLabels(
-  calls: readonly BazelCall[],
-  packagePath: string,
-  evidence: string,
-): readonly {readonly evidence: string; readonly label: string}[] {
-  const output = new Map<string, {readonly evidence: string; readonly label: string}>();
-  for (const call of calls) {
-    const callee = call.callee.replace(/\s+/gu, '');
-    if (callee === 'load') {
-      const label = call.strings[0]?.value;
-      const canonical = label ? canonicalBazelLabel(label, packagePath) : Option.none();
-      if (Option.isSome(canonical)) output.set(canonical.value, {evidence, label: canonical.value});
-      continue;
-    }
-    for (const attribute of call.attributes) {
-      if (!BAZEL_DEPENDENCY_ATTRIBUTES.has(attribute.name)) continue;
-      for (const literal of attribute.strings) {
-        const canonical = canonicalBazelLabel(literal.value, packagePath);
-        if (Option.isSome(canonical)) output.set(canonical.value, {evidence, label: canonical.value});
-      }
-    }
-  }
-  return [...output.values()].sort((left, right) => compareCodeUnits(left.label, right.label));
-}
-
-function bazelDeclaredWorkspaceName(file: CodeGraphInventoryFile): string | undefined {
-  if (file.content === undefined) return undefined;
-  const expected = basename(file.path).toLowerCase() === 'module.bazel' ? 'module' : 'workspace';
-  const declaration = parseBazelSyntax(file.content).calls.find(
-    call => call.topLevel && call.callee.replace(/\s+/gu, '') === expected,
-  );
-  return Option.getOrUndefined(
-    Option.flatMap(Option.fromUndefinedOr(declaration), call =>
-      Option.flatMap(bazelAttribute(call, 'name'), attribute => Option.fromUndefinedOr(attribute.strings[0]?.value)),
-    ),
-  );
-}
-
-function nearestBazelWorkspaceRoot(
-  root: string,
-  declaredRoots: ReadonlySet<string>,
-  bazelRcRoots: ReadonlySet<string>,
-): string {
-  let candidate = root;
-  for (;;) {
-    if (declaredRoots.has(candidate) || bazelRcRoots.has(candidate)) return candidate;
-    if (candidate === '') return '';
-    const parent = dirname(candidate);
-    if (parent === candidate) return '';
-    candidate = parent;
-  }
-}
-
-function bazelPackageIdentity(workspaceRoot: string, packagePath: string): string {
-  return `${workspaceRoot}\0${packagePath}`;
-}
-
-function bazelProjectIdentity(root: string): string {
-  return `cgp_${sha256HexSync(`project-v1\nbazel\n${root}`).slice(0, 32)}`;
-}
-
-interface NodePackageManifest {
-  readonly dependencyAliases: readonly string[];
-  readonly file: CodeGraphInventoryFile;
-  readonly name: string;
-  readonly root: string;
-  readonly workspacePatterns: readonly string[];
-}
-
-function discoverNodeProjects(
-  files: readonly CodeGraphInventoryFile[],
-  diagnostics: string[],
-  fileIndex: WorkspaceFileIndex,
-): readonly ProjectCandidate[] {
-  const manifests = files
-    .filter(candidate => basename(candidate.path).toLowerCase() === 'package.json' && candidate.content !== undefined)
-    .flatMap(file => {
-      try {
-        const parsed: unknown = JSON.parse(file.content!);
-        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-          diagnostics.push(`${file.path}: package manifest is not an object`);
-          return [];
-        }
-        const manifest = parsed as Record<string, unknown>;
-        const root = dirname(file.path);
-        const name =
-          typeof manifest.name === 'string' && manifest.name.trim()
-            ? manifest.name.trim()
-            : root.split('/').at(-1) || 'root';
-        return [
-          {
-            dependencyAliases: packageDependencyNames(manifest),
-            file,
-            name,
-            root,
-            workspacePatterns: packageWorkspacePatterns(manifest),
-          } satisfies NodePackageManifest,
-        ];
-      } catch (cause) {
-        diagnostics.push(`${file.path}: invalid package.json (${messageOf(cause)})`);
-        return [];
-      }
-    })
-    .sort((left, right) => compareCodeUnits(left.root, right.root));
-  const pnpmPatterns = new Map<string, readonly string[]>();
-  for (const file of files.filter(candidate => basename(candidate.path).toLowerCase() === 'pnpm-workspace.yaml')) {
-    if (file.content !== undefined) pnpmPatterns.set(dirname(file.path), pnpmWorkspacePatterns(file.content));
-  }
-  const manifestsByRoot = new Map(manifests.map(manifest => [manifest.root, manifest]));
-  return manifests.map(manifest => {
-    const declaringWorkspaceRoot = nearestNodeWorkspaceRoot(manifest.root, manifestsByRoot, pnpmPatterns);
-    const workspaceRoot = declaringWorkspaceRoot ?? manifest.root;
-    const tsconfig = fileIndex.fileByPath.get(joinPath(manifest.root, 'tsconfig.json'));
-    const referenceRoots = tsconfig?.content ? typescriptReferenceRoots(manifest.root, tsconfig.content) : [];
-    const referencedPackageNames = referenceRoots.flatMap(referenceRoot => {
-      const target = manifestsByRoot.get(referenceRoot);
-      return target ? [target.name] : [];
-    });
-    return {
-      aliases: unique([manifest.name, manifest.root, ...referenceRoots]),
-      buildSystem: 'node',
-      dependencyAliases: unique([...manifest.dependencyAliases, ...referenceRoots, ...referencedPackageNames]),
-      diagnostics: [],
-      evidence: manifest.file.path,
-      kind: 'package',
-      languages: ['javascript', 'typescript'],
-      name: manifest.name,
-      provenance: 'declared',
-      resolutionDomain: 'typescript',
-      root: manifest.root,
-      sourceRoots: [manifest.root],
-      workspaceRoots: [workspaceRoot],
-    } satisfies ProjectCandidate;
-  });
-}
-
-function nearestNodeWorkspaceRoot(
-  packageRoot: string,
-  manifestsByRoot: ReadonlyMap<string, NodePackageManifest>,
-  pnpmPatterns: ReadonlyMap<string, readonly string[]>,
-): string | undefined {
-  let candidateRoot = dirname(packageRoot);
-  while (candidateRoot !== packageRoot) {
-    const relative = relativeContainedPath(candidateRoot, packageRoot);
-    if (relative !== undefined && relative !== '') {
-      const manifestPatterns = manifestsByRoot.get(candidateRoot)?.workspacePatterns ?? [];
-      const pnpm = pnpmPatterns.get(candidateRoot) ?? [];
-      if (workspacePatternsInclude(manifestPatterns, relative) || workspacePatternsInclude(pnpm, relative)) {
-        return candidateRoot;
-      }
-    }
-    if (candidateRoot === '') return undefined;
-    const parent = dirname(candidateRoot);
-    if (parent === candidateRoot) return undefined;
-    candidateRoot = parent;
-  }
-  return undefined;
-}
-
-function packageDependencyNames(manifest: Record<string, unknown>): readonly string[] {
-  return unique(
-    ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies'].flatMap(section => {
-      const dependencies = manifest[section];
-      return dependencies && typeof dependencies === 'object' && !Array.isArray(dependencies)
-        ? Object.keys(dependencies)
-        : [];
-    }),
-  ).sort(compareCodeUnits);
-}
-
-function packageWorkspacePatterns(manifest: Record<string, unknown>): readonly string[] {
-  const workspaces = manifest.workspaces;
-  if (Array.isArray(workspaces)) return workspaces.filter((value): value is string => typeof value === 'string');
-  if (!workspaces || typeof workspaces !== 'object') return [];
-  const packages = (workspaces as Record<string, unknown>).packages;
-  return Array.isArray(packages) ? packages.filter((value): value is string => typeof value === 'string') : [];
-}
-
-function pnpmWorkspacePatterns(content: string): readonly string[] {
-  const patterns: string[] = [];
-  let packages = false;
-  for (const rawLine of content.split(/\r?\n/)) {
-    if (/^\s*packages\s*:/.test(rawLine)) {
-      packages = true;
-      continue;
-    }
-    if (packages && /^\S/.test(rawLine)) break;
-    if (!packages) continue;
-    const match = /^\s*-\s*["']?([^"'#]+?)["']?\s*(?:#.*)?$/.exec(rawLine);
-    if (match?.[1]) patterns.push(match[1].trim());
-  }
-  return unique(patterns).sort(compareCodeUnits);
-}
-
-function typescriptReferenceRoots(root: string, content: string): readonly string[] {
-  try {
-    const parsed: unknown = JSON.parse(stripJsonCommentsAndTrailingCommas(content));
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return [];
-    const references = (parsed as Record<string, unknown>).references;
-    if (!Array.isArray(references)) return [];
-    return unique(
-      references.flatMap(reference => {
-        if (!reference || typeof reference !== 'object' || Array.isArray(reference)) return [];
-        const value = (reference as Record<string, unknown>).path;
-        if (typeof value !== 'string') return [];
-        const normalized = normalizeContainedPath(root, value.replace(/(?:\/tsconfig(?:\.json)?)$/i, ''));
-        return normalized === undefined ? [] : [normalized];
-      }),
-    ).sort(compareCodeUnits);
-  } catch {
-    return [];
-  }
-}
-
-function workspacePatternsInclude(patterns: readonly string[], relative: string): boolean {
-  const included = patterns.some(
-    pattern => !pattern.trim().startsWith('!') && workspacePatternMatches(pattern, relative),
-  );
-  const excluded = patterns.some(pattern => {
-    const normalized = pattern.trim();
-    return normalized.startsWith('!') && workspacePatternMatches(normalized.slice(1), relative);
-  });
-  return included && !excluded;
-}
-
-function relativeContainedPath(parent: string, child: string): string | undefined {
-  if (parent === '') return child;
-  if (child === parent) return '';
-  return child.startsWith(`${parent}/`) ? child.slice(parent.length + 1) : undefined;
-}
-
-function workspacePatternMatches(pattern: string, relative: string): boolean {
-  const normalized = pattern.trim().replace(/^\.\//, '').replace(/\/$/, '');
-  if (!normalized) return false;
-  const escaped = normalized
-    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
-    .replaceAll('**', '\u0000')
-    .replaceAll('*', '[^/]*')
-    .replaceAll('?', '[^/]')
-    .replaceAll('\u0000', '.*');
-  return new RegExp(`^${escaped}$`).test(relative);
-}
-
-function stripJsonCommentsAndTrailingCommas(content: string): string {
-  let output = '';
-  let inString = false;
-  let escaped = false;
-  for (let index = 0; index < content.length; index += 1) {
-    const character = content[index]!;
-    const next = content[index + 1];
-    if (inString) {
-      output += character;
-      if (escaped) escaped = false;
-      else if (character === '\\') escaped = true;
-      else if (character === '"') inString = false;
-      continue;
-    }
-    if (character === '"') {
-      inString = true;
-      output += character;
-      continue;
-    }
-    if (character === '/' && next === '/') {
-      while (index < content.length && content[index] !== '\n') index += 1;
-      output += '\n';
-      continue;
-    }
-    if (character === '/' && next === '*') {
-      index += 2;
-      while (index < content.length && !(content[index] === '*' && content[index + 1] === '/')) index += 1;
-      index += 1;
-      continue;
-    }
-    if (character === ',') {
-      let lookahead = index + 1;
-      while (/\s/.test(content[lookahead] ?? '')) lookahead += 1;
-      if (content[lookahead] === '}' || content[lookahead] === ']') continue;
-    }
-    output += character;
-  }
-  return output;
 }
 
 export function mergeCodeGraphWorkspaces(workspaces: readonly CodeGraphWorkspace[]): CodeGraphWorkspace {
@@ -947,7 +507,7 @@ function addFallbackProjects(files: readonly CodeGraphInventoryFile[], candidate
 function mergeProjectCandidates(candidates: readonly ProjectCandidate[]): readonly ProjectCandidate[] {
   const merged = new Map<string, ProjectCandidate>();
   for (const candidate of candidates) {
-    const key = `${candidate.resolutionDomain}\0${candidate.root}`;
+    const key = candidate.identityKey ?? `${candidate.resolutionDomain}\0${candidate.root}`;
     const existing = merged.get(key);
     if (!existing) {
       merged.set(key, candidate);
@@ -960,6 +520,9 @@ function mergeProjectCandidates(candidates: readonly ProjectCandidate[]): readon
       dependencyAliases: unique([...existing.dependencyAliases, ...candidate.dependencyAliases]).sort(),
       diagnostics: unique([...existing.diagnostics, ...candidate.diagnostics]).sort(),
       evidence: preferred.evidence ?? existing.evidence ?? candidate.evidence,
+      ...((preferred.identityKey ?? existing.identityKey ?? candidate.identityKey)
+        ? {identityKey: preferred.identityKey ?? existing.identityKey ?? candidate.identityKey}
+        : {}),
       kind: preferred.kind,
       languages: unique([...existing.languages, ...candidate.languages]).sort(),
       name: preferredProjectName(existing.name, candidate.name),
@@ -1023,7 +586,8 @@ function materializeProjects(
   const candidatesById = new Map<string, ProjectCandidate>();
   const aliases = new Map<string, Set<string>>();
   for (const candidate of candidates) {
-    const id = `cgp_${sha256HexSync(`project-v1\n${candidate.resolutionDomain}\n${candidate.root}`).slice(0, 32)}`;
+    const identity = candidate.identityKey ?? `${candidate.resolutionDomain}\n${candidate.root}`;
+    const id = `cgp_${sha256HexSync(`project-v1\n${identity}`).slice(0, 32)}`;
     projectIds.set(candidate, id);
     candidatesById.set(id, candidate);
     for (const alias of candidate.aliases) {
@@ -1047,6 +611,10 @@ function materializeProjects(
         diagnostics.push(
           `${candidate.evidence ?? candidate.root}: local dependency alias ${alias} matched multiple ${qualifier}projects`,
         );
+      } else if (/^(?:nx-project:|nx-target:|tsconfig:)/u.test(alias)) {
+        diagnostics.push(
+          `${candidate.evidence ?? candidate.root}: declared component dependency ${alias} was not indexed`,
+        );
       }
     }
     return {
@@ -1068,26 +636,6 @@ function materializeProjects(
       workspaceRoots: [...candidate.workspaceRoots].sort(),
     };
   });
-}
-
-function diagnoseNxProjectBoundaries(
-  files: readonly CodeGraphInventoryFile[],
-  projects: readonly CodeGraphWorkspaceProject[],
-  diagnostics: string[],
-): void {
-  const declaredProjectsByRoot = new Map<string, number>();
-  for (const project of projects) {
-    if (project.provenance !== 'declared') continue;
-    declaredProjectsByRoot.set(project.root, (declaredProjectsByRoot.get(project.root) ?? 0) + 1);
-  }
-  for (const file of files
-    .filter(candidate => basename(candidate.path).toLowerCase() === 'project.json')
-    .sort((left, right) => compareCodeUnits(left.path, right.path))) {
-    const root = dirname(file.path);
-    if (declaredProjectsByRoot.get(root) !== 1) {
-      diagnostics.push(`${file.path}: Nx project boundary is not reconciled to exactly one declared package root`);
-    }
-  }
 }
 
 function attributeSymbol(symbol: CodeGraphSymbol, project: CodeGraphWorkspaceProject): CodeGraphSymbol {
@@ -1323,75 +871,6 @@ function xmlTags(content: string, tag: string): readonly string[] {
   );
 }
 
-function normalizeContainedPath(root: string, relative: string): string | undefined {
-  const output = root ? root.split('/') : [];
-  for (const segment of relative.replaceAll('\\', '/').split('/')) {
-    if (!segment || segment === '.') continue;
-    if (segment === '..') {
-      if (output.length === 0) return undefined;
-      output.pop();
-    } else {
-      output.push(segment);
-    }
-  }
-  return output.join('/');
-}
-
-function dirname(path: string): string {
-  return path.split('/').slice(0, -1).join('/');
-}
-
-function basename(path: string): string {
-  return path.split('/').at(-1) ?? path;
-}
-
-function joinPath(...components: readonly string[]): string {
-  return components.filter(Boolean).join('/').replace(/\/+/g, '/').replace(/^\.\//, '');
-}
-
-function workspaceIdentity(buildSystem: CodeGraphWorkspaceBuildSystem, root: string): string {
-  return `cgw_${sha256HexSync(`workspace-v1\n${buildSystem}\n${root}`).slice(0, 32)}`;
-}
-
-function materializeBuildWorkspaces(
-  projects: readonly CodeGraphWorkspaceProject[],
-  workspaceDiagnostics: readonly string[],
-): readonly CodeGraphBuildWorkspace[] {
-  const output = new Map<string, CodeGraphBuildWorkspace>();
-  for (const project of projects) {
-    const root = project.workspaceRoots[0] ?? project.root;
-    const existing = output.get(project.workspaceId);
-    output.set(project.workspaceId, {
-      buildSystem: project.buildSystem,
-      diagnostics: unique([...(existing?.diagnostics ?? []), ...project.diagnostics]).sort(),
-      id: project.workspaceId,
-      name: existing?.name ?? root.split('/').at(-1) ?? project.name,
-      provenance: existing?.provenance === 'declared' || project.provenance === 'declared' ? 'declared' : 'inferred',
-      root,
-    });
-  }
-  const ordered = [...output.values()].sort(
-    (left, right) => compareCodeUnits(left.root, right.root) || compareCodeUnits(left.id, right.id),
-  );
-  if (ordered[0] && workspaceDiagnostics.length > 0) {
-    ordered[0] = {
-      ...ordered[0],
-      diagnostics: unique([...ordered[0].diagnostics, ...workspaceDiagnostics])
-        .sort()
-        .slice(0, 100),
-    };
-  }
-  return ordered;
-}
-
-function unique<T>(values: readonly T[]): T[] {
-  return [...new Set(values)];
-}
-
-function uniqueStrings(values: readonly string[]): string[] {
-  return unique(values).sort(compareCodeUnits);
-}
-
 function uniqueBy<T>(values: readonly T[], key: (value: T) => string): T[] {
   const output = new Map<string, T>();
   for (const value of values) output.set(key(value), value);
@@ -1407,8 +886,4 @@ function preferredProjectName(left: string, right: string): string {
     : left.length < right.length
       ? left
       : right;
-}
-
-function messageOf(cause: unknown): string {
-  return cause instanceof Error ? cause.message : String(cause);
 }

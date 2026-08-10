@@ -43,7 +43,7 @@ describe('code graph release evidence', () => {
 
     expect(profile).toMatchObject({
       sourceFiles: 12,
-      surrogate: 'threadnote-4.0.10-public-monorepo',
+      surrogate: 'threadnote-4.1.0-beta.1-public-monorepo',
       targetGraphSymbols: 99,
       version: 2,
       worktreeChurnScenarioCount: 6,
@@ -213,8 +213,8 @@ describe('code graph release evidence', () => {
       metadata: {...artifact.metadata, releaseEvidenceRef},
     });
 
-    expect(() => assertProductionReleaseEvidence(withRef('refs/tags/v4.0.10'))).not.toThrow();
-    for (const ref of ['refs/tags/v4.0.10-beta', 'refs/tags/v3.0.10', 'refs/tags/v5.0.10', 'refs/heads/v4.0.10']) {
+    expect(() => assertProductionReleaseEvidence(withRef('refs/tags/v4.1.0-beta.1'))).not.toThrow();
+    for (const ref of ['refs/tags/v4.1.0-beta', 'refs/tags/v3.1.0', 'refs/tags/v5.1.0', 'refs/heads/v4.1.0']) {
       expect(() => assertProductionReleaseEvidence(withRef(ref))).toThrow(/clean exact release source provenance/);
     }
   });
@@ -713,6 +713,47 @@ describe('code graph release evidence', () => {
     expect(() => enforceCodeGraphBenchmarkBudget(regressed, budget, undefined)).toThrow(
       /one-file-reindex-materialization/,
     );
+  });
+
+  it('applies development scheduler headroom only to the recorded runtime platform', () => {
+    const measurements = [
+      'cold-index',
+      'cold-materialization',
+      'one-file-reindex-index',
+      'one-file-reindex-materialization',
+      'hot-exact-lexical-query',
+      'whole-graph-structural-analysis',
+    ].map(name => benchmarkMeasurement(name, 'milliseconds', [10]));
+    const artifact = benchmarkArtifact(
+      [
+        ...measurements,
+        benchmarkMeasurement('incremental-process-peak-rss', 'bytes', [10]),
+        benchmarkMeasurement('derived-index-disk', 'bytes', [10]),
+      ],
+      {runtimePlatform: 'win32'},
+    );
+    const budget = {
+      developmentPerformance: {
+        coldIndexP95MillisecondsMaximum: 20,
+        coldMaterializationP95MillisecondsMaximum: 20,
+        derivedIndexBytesMaximum: 20,
+        hotQueryP95MillisecondsMaximum: 5,
+        oneFileIncrementalP95MillisecondsMaximum: 20,
+        oneFileMaterializationP95MillisecondsMaximum: 20,
+        processPeakRssBytesMaximum: 20,
+        wholeGraphAnalysisP95MillisecondsMaximum: 20,
+      },
+      developmentPerformanceByPlatform: {win32: {hotQueryP95MillisecondsMaximum: 15}},
+    };
+
+    expect(() => enforceCodeGraphBenchmarkBudget(artifact, budget, undefined)).not.toThrow();
+    expect(() =>
+      enforceCodeGraphBenchmarkBudget(
+        {...artifact, metadata: {...artifact.metadata, runtimePlatform: 'linux'}},
+        budget,
+        undefined,
+      ),
+    ).toThrow(/hot-exact-lexical-query/);
   });
 
   it('accepts repeatable structured controls without retaining them in the artifact contract', () => {

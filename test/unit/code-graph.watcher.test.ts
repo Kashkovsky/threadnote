@@ -11,6 +11,7 @@ import {
   watchRepository,
 } from '../../src/code_graph/watcher.js';
 import {
+  CodeGraphRuntimeReconnectRequiredError,
   CodeGraphStoreBusyError,
   CodeGraphStoreNoSpaceError,
   CodeGraphStorePermissionError,
@@ -324,6 +325,7 @@ describe('CodeGraphWatcher', () => {
       new CodeGraphStoreBusyError(`busy ${privateMarker}`),
       new CodeGraphStoreNoSpaceError(`full ${privateMarker}`),
       new CodeGraphStorePermissionError(`permission ${privateMarker}`),
+      new CodeGraphRuntimeReconnectRequiredError(),
       new CodeGraphStoreTransientIoError(`io ${privateMarker}`),
     ];
 
@@ -353,6 +355,12 @@ describe('CodeGraphWatcher', () => {
         _tag: 'Some',
         value: {failure: {code: failure.code, operation: 'refresh code graph'}, state: 'deferred'},
       });
+      if (failure instanceof CodeGraphRuntimeReconnectRequiredError) {
+        expect(status).toMatchObject({
+          _tag: 'Some',
+          value: {failure: {recovery: 'reconnect-runtime', retryable: false}, state: 'deferred'},
+        });
+      }
       expect(JSON.stringify(status)).not.toContain(privateMarker);
     }
   });
@@ -617,6 +625,57 @@ describe('CodeGraphWatcher', () => {
       _tag: 'Some',
       value: {edges: 400, state: 'ready', symbols: 200},
     });
+  });
+
+  it('atomically collapses intermediate changes and resolves the latest target in the trailing run', async () => {
+    const observed = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const targets: string[] = [];
+          let currentTarget = 'commit-a';
+          let trigger: (() => Effect.Effect<void>) | undefined;
+          const firstStarted = yield* Deferred.make<void>();
+          const firstRelease = yield* Deferred.make<void>();
+          const secondCompleted = yield* Deferred.make<void>();
+          const watcher = yield* makeCodeGraphWatcher(
+            (_options, _initialRefresh, requestRefresh) =>
+              Effect.sync(() => {
+                trigger = requestRefresh;
+              }).pipe(Effect.andThen(Effect.never)),
+            () =>
+              Effect.gen(function* () {
+                targets.push(currentTarget);
+                if (targets.length === 1) {
+                  yield* Deferred.succeed(firstStarted, undefined);
+                  yield* Deferred.await(firstRelease);
+                } else {
+                  yield* Deferred.succeed(secondCompleted, undefined);
+                }
+              }),
+          );
+
+          yield* watcher.ensure(options);
+          while (trigger === undefined) yield* Effect.yieldNow;
+          yield* watcher.refresh(options);
+          yield* Deferred.await(firstStarted);
+          currentTarget = 'commit-b';
+          yield* trigger!();
+          currentTarget = 'commit-c';
+          yield* Effect.all(
+            Array.from({length: 64}, () => trigger!()),
+            {
+              concurrency: 'unbounded',
+              discard: true,
+            },
+          );
+          yield* Deferred.succeed(firstRelease, undefined);
+          yield* Deferred.await(secondCompleted);
+          return targets;
+        }),
+      ),
+    );
+
+    expect(observed).toEqual(['commit-a', 'commit-c']);
   });
 
   it('serializes refreshes across repository keys to bound process memory', async () => {

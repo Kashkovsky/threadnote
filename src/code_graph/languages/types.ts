@@ -65,7 +65,8 @@ export interface CodeGraphWorkspaceProject {
   readonly workspaceRoots: readonly string[];
 }
 
-export type CodeGraphWorkspaceBuildSystem = 'bazel' | 'gradle' | 'inferred' | 'maven' | 'node' | 'swiftpm' | 'xcode';
+export type CodeGraphWorkspaceBuildSystem =
+  'bazel' | 'gradle' | 'inferred' | 'maven' | 'node' | 'nx' | 'pnpm' | 'swiftpm' | 'typescript' | 'xcode';
 export type CodeGraphWorkspaceComponentKind = 'module' | 'package' | 'project' | 'target';
 export type CodeGraphWorkspaceProvenance = 'declared' | 'inferred';
 

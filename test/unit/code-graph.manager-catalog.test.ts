@@ -32,6 +32,10 @@ import {SystemInfo} from '../../src/effect/system.js';
 import {CommandExecutor} from '../../src/effect/command.js';
 import type {CodeGraphWorkspace} from '../../src/code_graph/languages/types.js';
 import {CodeGraphStoreError} from '../../src/code_graph/types.js';
+import {
+  COMPONENT_SCOPE_TEMP_TABLE,
+  componentEdgeAggregateMaterializationStatement,
+} from '../../src/code_graph/store_component_aggregates.js';
 import type {
   CodeGraphEdge,
   CodeGraphFileFacts,
@@ -245,6 +249,8 @@ describe('Manager logical repository and workspace catalogs', () => {
             yield* store.promote(databasePath, identity, snapshot.id);
           }),
         );
+        const aggregatesBuilt = yield* store.ensureAnalysisSummary(databasePath, snapshot.id);
+        const aggregatesReused = yield* store.ensureAnalysisSummary(databasePath, snapshot.id);
         const highFanStartedAt = performance.now();
         const highFanSummary = yield* store.relationshipSummaryForNode(
           databasePath,
@@ -272,6 +278,8 @@ describe('Manager logical repository and workspace catalogs', () => {
             20,
           ),
           catalog: yield* store.loadVisualizationCatalog(databasePath),
+          aggregatesBuilt,
+          aggregatesReused,
           deferredCatalog: yield* store.loadVisualizationCatalog(databasePath, 'deferred'),
           highFanElapsedMilliseconds,
           highFanSummary,
@@ -289,6 +297,8 @@ describe('Manager logical repository and workspace catalogs', () => {
     );
 
     expect(result.catalog?.model).toBe('workspace');
+    expect(result.aggregatesBuilt).toBe(true);
+    expect(result.aggregatesReused).toBe(false);
     expect(result.catalog?.metrics).toBe('complete');
     expect(result.catalog?.projects.filter(project => project.label === 'core').map(project => project.id)).toEqual([
       'cgp_component_a',
@@ -361,6 +371,18 @@ describe('Manager logical repository and workspace catalogs', () => {
     expect([...representativeEndpoints]).toEqual(expect.arrayContaining(['symbol-a-1', 'symbol-a-2', 'symbol-b']));
     expect(result.representativeElapsedMilliseconds).toBeLessThan(1_000);
     const queryPlanDatabase = new Database(databasePath, {readonly: true});
+    const aggregateReceipt = queryPlanDatabase
+      .query(
+        `SELECT row_count, edge_count
+         FROM snapshot_component_edge_aggregate_receipts
+         WHERE snapshot_id = ?`,
+      )
+      .get(snapshot.id) as {readonly edge_count: number; readonly row_count: number};
+    const persistedAggregateCount = queryPlanDatabase
+      .query('SELECT COUNT(*) AS count FROM snapshot_component_edge_aggregates WHERE snapshot_id = ?')
+      .get(snapshot.id) as {readonly count: number};
+    expect(aggregateReceipt.row_count).toBe(persistedAggregateCount.count);
+    expect(aggregateReceipt.edge_count).toBe(3);
     const componentStatement = codeGraphVisualizationSymbolsQueryStatement(
       snapshot.id,
       undefined,
@@ -405,6 +427,20 @@ describe('Manager logical repository and workspace catalogs', () => {
     const repositoryPlan = queryPlanDatabase
       .query(`EXPLAIN QUERY PLAN ${repositoryStatement.text}`)
       .all(...repositoryStatement.parameters) as readonly {readonly detail: string}[];
+    queryPlanDatabase.run(
+      `CREATE TEMP TABLE ${COMPONENT_SCOPE_TEMP_TABLE} (
+        id TEXT PRIMARY KEY NOT NULL,
+        scope_id TEXT
+      ) WITHOUT ROWID`,
+    );
+    const aggregateStatement = componentEdgeAggregateMaterializationStatement(snapshot.id, undefined);
+    const aggregatePlan = queryPlanDatabase
+      .query(`EXPLAIN QUERY PLAN ${aggregateStatement.text}`)
+      .all(...aggregateStatement.parameters) as readonly {readonly detail: string}[];
+    expect(aggregatePlan.some(row => row.detail.includes(`SCAN ${COMPONENT_SCOPE_TEMP_TABLE}`))).toBe(false);
+    expect(
+      aggregatePlan.filter(row => /^SEARCH (?:source|target) USING PRIMARY KEY \(id=\?\)$/u.test(row.detail)),
+    ).toHaveLength(2);
     queryPlanDatabase.close();
     expect(repositoryPlan.some(row => row.detail.includes('symbols_export_order (snapshot_id=?)'))).toBe(true);
 

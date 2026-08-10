@@ -1315,7 +1315,18 @@ threadnote graph compact --dry-run
 threadnote graph remove-view \\
   --checkout-id <checkout-id> \\
   --worktree-id <worktree-id> \\
-  --snapshot-id <snapshot-id>`,
+  --snapshot-id <snapshot-id>
+
+# Expert-only physical deletion: preview, then repeat with the exact approval.
+threadnote graph purge \\
+  --checkout-id <checkout-id> \\
+  --snapshot-id <snapshot-id> \\
+  --json
+threadnote graph purge \\
+  --checkout-id <checkout-id> \\
+  --snapshot-id <snapshot-id> \\
+  --apply \\
+  --approval <sha256-digest>`,
           },
           {
             type: 'paragraph',
@@ -1350,12 +1361,20 @@ threadnote graph remove-view \\
             text: 'graph remove-view targets the exact checkout, worktree, and selected snapshot identity; it previews by default and requires --apply for the compare-and-swap removal. The worktree folder does not need to exist. Threadnote refuses a stale target or busy build, preserves shared snapshots and required bases, lets existing leased readers finish, and removes only derived pointers and private provenance that still match the approved target. Repeating an applied removal is idempotent.',
           },
           {
+            type: 'paragraph',
+            text: 'graph purge --snapshot-id is the expert follow-up for an already isolated ready or retired snapshot. It previews by default and emits an approval digest bound to the exact graph and vector evidence; --apply also requires --approval with that digest. Threadnote rechecks the evidence under zero-wait maintenance, build, vector-writer, and graph-writer gates, and refuses active views, live leases, required bases, aliases, build owners, pending cleanup, active vector pointers, unsafe sidecars, or any state change. It never implicitly removes a view, tombstone, provenance record, source, or worktree. Foreground physical cleanup advances only one bounded page and reports whether retirement cleanup remains.',
+          },
+          {
             type: 'note',
             text: 'Folder associations are local-only operational data. The authenticated loopback Manager may display them, but MCP responses, production logs, issue-report diagnostics, and portable graph output remain path-free.',
           },
           {
             type: 'paragraph',
             text: 'A cold MCP call in a large repository may return state=indexing with a phase and retryAfterMilliseconds while one session-scoped build continues. Agents cannot query partial rows from an unpromoted snapshot; retry the same inspect_code_graph call after the requested delay. Once a consistent lexical snapshot is promoted, query, node, neighbors, and explain can use it while optional vector enrichment and whole-graph summaries continue in the background. During a source refresh those operations may disclose the previous ready snapshot as stale; path and impact wait for current state.',
+          },
+          {
+            type: 'paragraph',
+            text: 'If a long-lived MCP process observes graph storage upgraded by a newer installed Threadnote runtime, it returns the path-free state reconnect-required before starting a background builder. Reconnect the Threadnote MCP server, then retry the same graph request; the exact-current CLI and doctor continue to read the ready graph normally.',
           },
           {
             type: 'note',

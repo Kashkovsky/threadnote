@@ -11,12 +11,12 @@ export const codeGraphLanguagePack: CodeGraphLanguagePack = {
   assets: [],
   capabilities: new Set(['assets', 'corpus', 'declarations', 'documentation']),
   extractor: {
-    extract: file =>
+    extract: (file, context) =>
       fromPromiseInterruptible(
-        signal => extractCorpusFile(file, {signal}),
+        signal => extractCorpusFile(file, {signal}, context),
         cause => new CodeGraphLanguagePackError(`Could not extract corpus facts from ${file.path}.`, {cause}),
       ),
-    version: sha256HexSync('threadnote-corpus-extractor-v3-text-aware-svg-and-metadata-only-media'),
+    version: sha256HexSync('threadnote-corpus-extractor-v4-mobile-resource-wiring'),
   },
   files: [
     ...extensions(
@@ -34,15 +34,18 @@ export const codeGraphLanguagePack: CodeGraphLanguagePack = {
         '.mmd',
         '.org',
         '.plantuml',
+        '.plist',
         '.puml',
         '.rst',
         '.rtf',
+        '.storyboard',
         '.svg',
         '.tex',
         '.tsv',
         '.txt',
         '.url',
         '.webloc',
+        '.xib',
         '.xml',
       ],
       'document',

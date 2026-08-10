@@ -191,9 +191,13 @@ describe('code graph cache capacity load calibration', () => {
               expect(measured.receipts).toBe(143);
               expect(measured.boundaries.slice(0, -1).every(boundary => boundary.rowCount === 512)).toBe(true);
               expect(measured.boundaries.at(-1)?.rowCount).toBe(296);
-              expect(Math.max(...measured.boundaries.map(boundary => boundary.finalFactBytes))).toBeGreaterThan(
-                7 * 1_048_576,
-              );
+              const maximumBoundaryBytes = Math.max(...measured.boundaries.map(boundary => boundary.finalFactBytes));
+              // The fixture contains a raw multi-megabyte fact. Compact fact
+              // envelopes must make the persisted transaction materially
+              // smaller while the physical main/WAL assertions below remain
+              // the capacity authority.
+              expect(maximumBoundaryBytes).toBeGreaterThan(64 * 1_024);
+              expect(maximumBoundaryBytes).toBeLessThan(1 * 1_048_576);
               expect(
                 measured.boundaries.every(
                   boundary =>

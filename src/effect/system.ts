@@ -127,6 +127,8 @@ export interface SystemInfoShape {
   readonly memoryUsage: () => {
     readonly external: number;
     readonly heapUsed: number;
+    /** Peak resident bytes when the runtime exposes a compatible process counter. */
+    readonly peakRss?: number;
     readonly rss: number;
   };
   readonly processStartIdentity: (processId: number) => Effect.Effect<string | undefined>;
@@ -258,9 +260,11 @@ export class SystemInfo extends Context.Service<SystemInfo, SystemInfoShape>()('
         },
         memoryUsage: () => {
           const usage = process.memoryUsage();
+          const runtimePeakRss = process.resourceUsage().maxRSS;
           return {
             external: usage.external,
             heapUsed: usage.heapUsed,
+            peakRss: 'bun' in process.versions ? runtimePeakRss : runtimePeakRss * 1_024,
             rss: usage.rss,
           };
         },

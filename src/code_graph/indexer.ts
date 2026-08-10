@@ -4,9 +4,11 @@ import {CommandExecutor} from '../effect/command.js';
 import {withExclusiveFileLock} from '../effect/file_lock.js';
 import {SystemInfo, type SystemInfoShape} from '../effect/system.js';
 import {withThreadnoteProcessActivity} from '../process_diagnostics.js';
+import {codeGraphBlobExtractionReuseClass, codeGraphBlobReuseCacheKey} from './blob_reuse.js';
 import type {CodeGraphBuildOwnerIdentity} from './build_owner.js';
 import {CODE_GRAPH_CACHE_TRANSACTION_LIMITS, codeGraphFileBlobCapacityBytes} from './cache_capacity.js';
 import {createRepositoryFactAttributor, extractRepositoryFileFacts} from './extractor.js';
+import {planCodeGraphExtractionLanes} from './extraction_lanes.js';
 import {
   budgetCachedCodeGraphFacts,
   cachedCodeGraphFactBytes,
@@ -23,6 +25,12 @@ import {
   PROJECT_INCREMENTAL_CLOSURE_MAX_SOURCE_BYTES,
   selectProjectIncrementalClosure,
 } from './incremental_closure.js';
+import {preferredIncrementalBaseCommitGroups} from './incremental_base_selection.js';
+import {
+  codeGraphIncrementalWorkFitsBudget,
+  measureCodeGraphIncrementalWork,
+  type CodeGraphIncrementalWork,
+} from './incremental_work.js';
 import {
   inventoryRepository,
   worktreeOverlayState,
@@ -43,9 +51,16 @@ import {
   codeGraphSnapshotBuildLockPath,
 } from './layout.js';
 import {CodeGraphMaintenanceCoordinator, type CodeGraphMaintenanceCoordinatorShape} from './maintenance_coordinator.js';
+import {runCodeGraphLifecycleOpportunity} from './lifecycle_opportunity.js';
 import {codeGraphMaintenanceIntentActive, withCodeGraphMaintenanceRegistration} from './maintenance_gate.js';
 import {resolveAndRecordCodeGraphLocalAssociation} from './local_provenance.js';
 import {compareCodeUnits} from './ordering.js';
+import {
+  codeGraphExtractionWorkUnits,
+  codeGraphSourceSizeBucket,
+  type CodeGraphScanningMetrics,
+} from './progress_telemetry.js';
+import {relocateStructuredSchemaFacts} from './languages/schemas/extractor.js';
 import {repositoryIdentityMatchesExpectation, resolveRepositoryIdentity} from './repository.js';
 import {
   codeGraphDiskCapacityFailure,
@@ -102,7 +117,12 @@ import {TreeSitterRuntime, type TreeSitterRuntimeShape} from './tree_sitter/runt
 import {createWorkspaceAttributor} from './workspace.js';
 import {makeCodeGraphBuildReporter, readCodeGraphBuildStatuses} from './build_status.js';
 import type {CodeGraphWorkspace} from './languages/types.js';
-import {CodeGraphParserPool, type CodeGraphParserPoolShape, type CodeGraphParserResult} from './parser_worker.js';
+import {
+  budgetParserWorkerFacts,
+  CodeGraphParserPool,
+  type CodeGraphParserPoolShape,
+  type CodeGraphParserResult,
+} from './parser_worker.js';
 
 export {
   budgetCachedCodeGraphFacts,
@@ -171,6 +191,7 @@ type IncrementalOverlayAssessment =
       readonly deletedPaths?: readonly string[];
       readonly resolutionClosure?: 'changed' | 'full' | 'project';
       readonly reuse: 'persisted-base' | 'staged-base';
+      readonly work: CodeGraphIncrementalWork;
     }
   | {
       readonly mode: 'fallback';
@@ -696,6 +717,14 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                             );
                           }
                           const incrementalReusedFiles = inventory.files.length - incrementalAssessment.files.length;
+                          const incrementalCapacityProtector = codeGraphDirectPersistentCapacityProtector({
+                            capacityProtection,
+                            fs,
+                            identity,
+                            layout,
+                            onProgress: options.onProgress,
+                            threadnoteHome: options.threadnoteHome,
+                          });
                           yield* options.onProgress?.({
                             completed: 0,
                             phase: 'materializing',
@@ -714,12 +743,14 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                                     deletedPaths: incrementalAssessment.deletedPaths,
                                     resolutionClosure: incrementalAssessment.resolutionClosure,
                                   },
+                                  incrementalCapacityProtector,
                                 )
                               : yield* store.replaceStagedModifiedFiles(
                                   layout.databasePath,
                                   committedBase.snapshot.id,
                                   incrementalAssessment.files,
                                   incrementalAssessment.facts,
+                                  incrementalCapacityProtector,
                                 );
                           if (!incrementalPrepared) {
                             incrementalAssessment = {mode: 'fallback', reason: 'staging-identity-mismatch'};
@@ -805,16 +836,14 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
               }),
             ).pipe(
               Effect.ensuring(
-                maintenance
-                  .request({
-                    allowIndexPreparation: true,
-                    anchorIdentity: initialIdentity,
-                    checkoutId: layout.checkoutId,
-                    databasePath: layout.databasePath,
-                    threadnoteHome: request.threadnoteHome,
-                    writerLockPath: layout.databaseWriteLockPath,
-                  })
-                  .pipe(Effect.ignore),
+                runCodeGraphLifecycleOpportunity({
+                  maintenance,
+                  opportunity: 'index-completion',
+                  targets: [
+                    {anchorIdentity: initialIdentity, checkoutId: layout.checkoutId, databasePath: layout.databasePath},
+                  ],
+                  threadnoteHome: request.threadnoteHome,
+                }).pipe(Effect.ignore),
               ),
             );
             return summary;
@@ -982,16 +1011,14 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
               }),
             ).pipe(
               Effect.ensuring(
-                maintenance
-                  .request({
-                    allowIndexPreparation: true,
-                    anchorIdentity: initialIdentity,
-                    checkoutId: layout.checkoutId,
-                    databasePath: layout.databasePath,
-                    threadnoteHome: request.threadnoteHome,
-                    writerLockPath: layout.databaseWriteLockPath,
-                  })
-                  .pipe(Effect.ignore),
+                runCodeGraphLifecycleOpportunity({
+                  maintenance,
+                  opportunity: 'index-completion',
+                  targets: [
+                    {anchorIdentity: initialIdentity, checkoutId: layout.checkoutId, databasePath: layout.databasePath},
+                  ],
+                  threadnoteHome: request.threadnoteHome,
+                }).pipe(Effect.ignore),
               ),
             );
             return lease;
@@ -1146,6 +1173,8 @@ const reuseReadySnapshot = Effect.fn('codeGraph.reuseReadySnapshot')(function* (
   readonly threadnoteHome: string;
   readonly totalFiles: number;
 }) {
+  yield* input.onProgress?.({phase: 'activating', snapshotId: input.snapshot.id, subphase: 'structural-ready'}) ??
+    Effect.void;
   let analysisSummaryFailure: string | undefined;
   const analysisSummaryBackfilled = yield* prepareReadyAnalysisSummary({
     databasePath: input.layout.databasePath,
@@ -1437,6 +1466,10 @@ const attemptReusableCleanSnapshot = Effect.fn('codeGraph.attemptReusableCleanSn
     return Option.none<ReusableCleanSnapshotAttempt>();
   }
   const extractorSet = extractorSetIdentity(input.inventory.files, input.languagePacks);
+  const preferredCommitGroups = yield* preferredIncrementalBaseCommitGroups(
+    input.identity.repoRoot,
+    input.identity.headCommit,
+  );
   const candidate = yield* input.store.reusableCleanBase(
     input.layout.databasePath,
     input.identity.repositoryId,
@@ -1444,6 +1477,7 @@ const attemptReusableCleanSnapshot = Effect.fn('codeGraph.attemptReusableCleanSn
     workspace.fingerprint,
     reusableBaseFileSetFingerprint(input.inventory.files),
     graphContentIdentity(extractorSet, input.inventory.files),
+    preferredCommitGroups,
   );
   if (!candidate || candidate.snapshot.id === input.logicalSnapshotId)
     return Option.none<ReusableCleanSnapshotAttempt>();
@@ -1583,6 +1617,7 @@ const attemptReusableCleanSnapshot = Effect.fn('codeGraph.attemptReusableCleanSn
             deletedPaths: incrementalAssessment.deletedPaths,
             resolutionClosure: incrementalAssessment.resolutionClosure,
           },
+          assessmentInput.persistentCapacityProtector,
         );
         if (!prepared) {
           return Option.some<ReusableCleanSnapshotAttempt>({mode: 'fallback', reason: 'staging-identity-mismatch'});
@@ -1642,6 +1677,10 @@ const attemptReusableDirtyBase = Effect.fn('codeGraph.attemptReusableDirtyBase')
       readonly preassessment: Extract<IncrementalOverlayPreassessment, {readonly mode: 'compatible'}>;
     }>();
   }
+  const preferredCommitGroups = yield* preferredIncrementalBaseCommitGroups(
+    input.identity.repoRoot,
+    input.identity.headCommit,
+  );
   const candidate = yield* input.store.reusableCleanBase(
     input.layout.databasePath,
     input.identity.repositoryId,
@@ -1649,6 +1688,7 @@ const attemptReusableDirtyBase = Effect.fn('codeGraph.attemptReusableDirtyBase')
     workspace.fingerprint,
     reusableBaseFileSetFingerprint(input.inventory.files),
     graphContentIdentity(input.extractorSet, input.inventory.files),
+    preferredCommitGroups,
   );
   if (!candidate) return Option.none();
   const lease = yield* input.store
@@ -1847,9 +1887,14 @@ export function codeGraphDirectPersistentCapacityProtector(
             ledgerLockPath: codeGraphDiskReservationLockPath(input.capacityProtection.path, input.threadnoteHome),
             ledgerRoot: codeGraphDiskReservationRoot(input.capacityProtection.path, input.threadnoteHome),
             maintenance: input.capacityProtection.maintenance
-              .kickOrdinary({
+              .tick({
+                allowIndexPreparation: true,
+                anchorIdentity: input.identity,
+                automaticTail: false,
                 checkoutId: input.layout.checkoutId,
                 databasePath: input.layout.databasePath,
+                joinActive: false,
+                pressure: 'critical',
                 threadnoteHome: input.threadnoteHome,
                 writerLockPath: input.layout.databaseWriteLockPath,
               })
@@ -1925,12 +1970,12 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
   const workspace = input.workspace ?? (yield* input.languagePacks.discoverWorkspace(input.inventory.files));
   const directPersistentMaterialization = input.persistentOwnerToken !== undefined;
   const protectDirectPersistentWrite = codeGraphDirectPersistentCapacityProtector(input);
-  const persistentCapacityGuard = directPersistentMaterialization ? protectDirectPersistentWrite : undefined;
+  const persistentCapacityGuard = protectDirectPersistentWrite;
   const attributeFacts = createCachedCodeGraphFactsAttributor(input.inventory.files, workspace);
   const shardDerivationIdentity = materializedShardDerivationIdentity(
     input.building.extractorSet,
     workspace.fingerprint,
-    reusableBaseFileSetFingerprint(input.inventory.files),
+    graphContentIdentity(input.building.extractorSet, input.inventory.files),
   );
   const extractionDiagnostics: string[] = [...workspace.diagnostics];
   let materializedFiles = 0;
@@ -1966,12 +2011,14 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
                 deletedPaths: incrementalAssessment.deletedPaths,
                 resolutionClosure: incrementalAssessment.resolutionClosure,
               },
+              protectDirectPersistentWrite,
             )
           : yield* input.store.replaceStagedModifiedFiles(
               input.layout.databasePath,
               input.committedBase!.snapshot.id,
               incrementalAssessment.files,
               incrementalAssessment.facts,
+              protectDirectPersistentWrite,
             );
     if (incrementalApplied) {
       materializedFiles = incrementalAssessment.files.length;
@@ -2242,6 +2289,7 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
               batch.references,
               progress => reportStagingProgress(batch, progress),
               batch.batchIndex,
+              persistentCapacityGuard,
             );
           }
         }
@@ -2546,7 +2594,11 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
     if (input.committedBase && Option.isSome(input.committedBase.leaseToken)) {
       yield* input.store.releaseSnapshotLease(input.layout.databasePath, input.committedBase.leaseToken.value);
     }
-    yield* input.onProgress?.({phase: 'activating', snapshotId: activated.id, subphase: 'complete'}) ?? Effect.void;
+    yield* input.onProgress?.({
+      phase: 'activating',
+      snapshotId: activated.id,
+      subphase: input.activatePointer ? 'structural-ready' : 'complete',
+    }) ?? Effect.void;
     return activated;
   });
   let analysisSummaryFailure: string | undefined;
@@ -2616,6 +2668,9 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
     ].slice(0, 100),
     durationMs: (yield* Clock.currentTimeMillis) - input.startedAt,
     identity: input.identity,
+    ...(incrementalApplied && incrementalAssessment?.mode === 'eligible'
+      ? {incrementalWork: incrementalAssessment.work}
+      : {}),
     materialization: {
       ...(incrementalApplied && incrementalAssessment?.mode === 'eligible'
         ? {
@@ -2725,14 +2780,25 @@ const assessIncrementalOverlay = Effect.fn('codeGraph.assessIncrementalOverlay')
   if (finalBatches.length !== 1 && preassessment.resolutionClosure !== 'full') {
     return {mode: 'fallback', reason: 'fact-budget-expanded'} satisfies IncrementalOverlayAssessment;
   }
+  const facts = finalBatches.flatMap(batch => batch.map(value => value.facts));
+  const work = measureCodeGraphIncrementalWork({
+    deletedPaths: preassessment.deletedPaths,
+    facts,
+    files: preassessment.files,
+    totalFiles: input.inventory.files.length,
+  });
+  if (!codeGraphIncrementalWorkFitsBudget(work)) {
+    return {mode: 'fallback', reason: 'incremental-rewrite-unbounded'} satisfies IncrementalOverlayAssessment;
+  }
   return {
     closureProjects: preassessment.closureProjects,
     deletedPaths: preassessment.deletedPaths,
-    facts: finalBatches.flatMap(batch => batch.map(value => value.facts)),
+    facts,
     files: preassessment.files,
     mode: 'eligible',
     resolutionClosure: preassessment.resolutionClosure,
     reuse,
+    work,
   } satisfies IncrementalOverlayAssessment;
 });
 
@@ -2916,7 +2982,7 @@ const assessReusableCleanBaseCompatibility = Effect.fn('codeGraph.assessReusable
     materializedShardDerivationIdentity(
       input.candidate.snapshot.extractorSet,
       workspace.fingerprint,
-      reusableBaseFileSetFingerprint(input.inventory.files),
+      graphContentIdentity(input.candidate.snapshot.extractorSet, input.inventory.files),
     ),
     input.persistentCapacityProtector,
   );
@@ -3367,6 +3433,8 @@ function overlayFallbackDescription(reason: CodeGraphOverlayFallbackReason): str
       return 'eligible files were added or deleted';
     case 'forced-full-rebuild':
       return 'a full rebuild was requested';
+    case 'incremental-rewrite-unbounded':
+      return 'the changed closure exceeded the bounded incremental rewrite budget';
     case 'no-materialized-changes':
       return 'no graph-eligible file content changed';
     case 'project-closure-incomplete':
@@ -3408,6 +3476,18 @@ export interface CodeGraphCacheContentCoalescer {
 
 const CODE_GRAPH_CACHE_TIMESTAMP_CAPACITY_PLACEHOLDER = '1970-01-01T00:00:00.000Z';
 
+function codeGraphFileProgressDimensions(
+  file: CodeGraphInventoryFile,
+  languagePacks: CodeGraphLanguagePackRegistryShape,
+) {
+  const matched = Option.getOrUndefined(languagePacks.match(file.path));
+  return {
+    classifier: matched?.pack.id ?? 'unmatched',
+    role: matched?.role ?? 'unmatched',
+    sizeBucket: codeGraphSourceSizeBucket(file.size),
+  } as const;
+}
+
 /** @internal Exposed for cache coalescing/cancellation contract tests. */
 export function cacheContentBatch(options: {
   readonly databasePath: string;
@@ -3421,6 +3501,10 @@ export function cacheContentBatch(options: {
 }): CodeGraphCacheContentCoalescer {
   const windowSize = Math.max(1, options.parserPool.capacity * 2);
   let extractionMilliseconds = 0;
+  let extractionFactsBytesCompleted = 0;
+  let extractionSourceBytesCompleted = 0;
+  let extractionWorkUnitsCompleted = 0;
+  let extractionPlan = undefined as CodeGraphContentBatchContext['extractionPlan'];
   let persistenceMilliseconds = 0;
   let readingMilliseconds = 0;
   let pendingBytes = 0;
@@ -3434,6 +3518,52 @@ export function cacheContentBatch(options: {
     payloadBytes: number;
   };
   const pendingGroups = new Map<string, PendingCacheGroup>();
+  const currentScanningMetrics = (): CodeGraphScanningMetrics | undefined =>
+    extractionPlan === undefined
+      ? undefined
+      : {
+          factsBytesCompleted: extractionFactsBytesCompleted,
+          sourceBytesCompleted: extractionSourceBytesCompleted,
+          sourceBytesTotal: extractionPlan.sourceBytesTotal,
+          workUnitsCompleted: extractionWorkUnitsCompleted,
+          workUnitsTotal: extractionPlan.workUnitsTotal,
+        };
+  const observeExtractionPlan = (plan: CodeGraphContentBatchContext['extractionPlan']) => {
+    if (plan === undefined) {
+      extractionPlan = undefined;
+      extractionFactsBytesCompleted = 0;
+      extractionSourceBytesCompleted = 0;
+      extractionWorkUnitsCompleted = 0;
+      return;
+    }
+    if (
+      extractionPlan === undefined ||
+      extractionPlan.sourceBytesTotal !== plan.sourceBytesTotal ||
+      extractionPlan.workUnitsTotal !== plan.workUnitsTotal
+    ) {
+      extractionFactsBytesCompleted = 0;
+      extractionSourceBytesCompleted = 0;
+      extractionWorkUnitsCompleted = 0;
+    }
+    extractionPlan = plan;
+  };
+  const completeExtractionMetrics = (file: CodeGraphInventoryFile, factsBytes: number) => {
+    if (extractionPlan === undefined) return undefined;
+    extractionFactsBytesCompleted = Math.min(Number.MAX_SAFE_INTEGER, extractionFactsBytesCompleted + factsBytes);
+    extractionSourceBytesCompleted = Math.min(
+      extractionPlan.sourceBytesTotal,
+      extractionSourceBytesCompleted + file.size,
+    );
+    extractionWorkUnitsCompleted = Math.min(
+      extractionPlan.workUnitsTotal,
+      extractionWorkUnitsCompleted +
+        codeGraphExtractionWorkUnits(file.size, file.language, codeGraphSourceSizeBucket(file.size)),
+    );
+    return currentScanningMetrics();
+  };
+  type SerializedParserResult = CodeGraphParserResult & {readonly cacheFact: BoundedCodeGraphFact};
+  const reusableExtractions = new Map<string, SerializedParserResult>();
+  const reusableExtractionUses = new Map<string, number>();
   const flushPendingGroup = (key: string) =>
     Effect.gen(function* () {
       const group = pendingGroups.get(key);
@@ -3450,13 +3580,16 @@ export function cacheContentBatch(options: {
           batchCompleted: 0,
           batchTotal: group.files.length,
           bytes: groupBytes,
+          ...codeGraphFileProgressDimensions(representative, options.languagePacks),
           factsBytes: groupFactBytes,
           language: representative.language,
           path: representative.path,
+          sizeBucket: codeGraphSourceSizeBucket(groupBytes),
           stage: 'persisting',
         },
         extractionMilliseconds,
         persistenceMilliseconds,
+        currentScanningMetrics(),
       );
       const startedAt = performance.now();
       yield* options.store.cacheFacts(
@@ -3478,16 +3611,19 @@ export function cacheContentBatch(options: {
           batchCompleted: group.files.length,
           batchTotal: group.files.length,
           bytes: groupBytes,
+          ...codeGraphFileProgressDimensions(representative, options.languagePacks),
           factsBytes: groupFactBytes,
           language: representative.language,
           path: representative.path,
           persistMilliseconds: elapsed,
           relations: group.facts.reduce((total, fact) => total + fact.facts.edges.length, 0),
+          sizeBucket: codeGraphSourceSizeBucket(groupBytes),
           stage: 'persisting',
           symbols: group.facts.reduce((total, fact) => total + fact.facts.symbols.length, 0),
         },
         extractionMilliseconds,
         persistenceMilliseconds,
+        currentScanningMetrics(),
       );
     });
   const flushOldestPendingGroup = () => {
@@ -3500,7 +3636,9 @@ export function cacheContentBatch(options: {
       for (const {cacheFact, cacheIdentity: activeCacheIdentity, degraded, file} of rows) {
         const cacheIdentity = degraded ? degradedParserCacheIdentity(activeCacheIdentity) : activeCacheIdentity;
         const key = `${degraded ? 'degraded' : 'durable'}\0${cacheIdentity}`;
+        const reuseClass = degraded ? undefined : codeGraphBlobExtractionReuseClass(file);
         const rowBytes = codeGraphFileBlobCapacityBytes({
+          ...(reuseClass === undefined ? {} : {blobId: file.blobId, reuseClass}),
           contentHash: file.contentHash,
           createdAt: CODE_GRAPH_CACHE_TIMESTAMP_CAPACITY_PLACEHOLDER,
           extractorSet: cacheIdentity,
@@ -3531,7 +3669,8 @@ export function cacheContentBatch(options: {
           payloadBytes: 0,
         };
         if (!pendingGroups.has(key)) pendingGroups.set(key, pending);
-        const {bytes: _bytes, content: _content, ...cacheFile} = file;
+        const {bytes: _bytes, content: _content, ...baseCacheFile} = file;
+        const cacheFile = degraded ? {...baseCacheFile, blobId: ''} : baseCacheFile;
         pending.files.push(cacheFile);
         pending.facts.push(cacheFact);
         pending.paths.add(file.path);
@@ -3546,61 +3685,125 @@ export function cacheContentBatch(options: {
   ) =>
     Effect.gen(function* () {
       readingMilliseconds += context.readingMilliseconds;
+      observeExtractionPlan(context.extractionPlan);
       const cumulativeContext = {...context, readingMilliseconds};
       latestContext = cumulativeContext;
       let parsedCompleted = 0;
       const orderedFiles = [...files].sort((left, right) => compareCodeUnits(left.path, right.path));
+      const localReuseCounts = new Map<string, number>();
+      for (const file of orderedFiles) {
+        const reuseKey = blobReuseKeyForFile(file, options.languagePacks);
+        if (reuseKey !== undefined) localReuseCounts.set(reuseKey, (localReuseCounts.get(reuseKey) ?? 0) + 1);
+      }
+      const expectedReuseCount = (key: string): number =>
+        cumulativeContext.blobReuseCounts?.get(key) ?? localReuseCounts.get(key) ?? 0;
+      const finishReuseAttempt = (key: string | undefined) => {
+        if (key === undefined) return;
+        const uses = (reusableExtractionUses.get(key) ?? 0) + 1;
+        if (uses >= expectedReuseCount(key)) {
+          reusableExtractionUses.delete(key);
+          reusableExtractions.delete(key);
+        } else {
+          reusableExtractionUses.set(key, uses);
+        }
+      };
       for (const window of chunkValues(orderedFiles, windowSize)) {
         let windowCompleted = 0;
-        const results = yield* Effect.forEach(
-          window,
-          file =>
-            Effect.gen(function* () {
-              yield* emitContentProgress(
-                options.onProgress,
-                cumulativeContext,
-                {
-                  batchCompleted: parsedCompleted,
-                  batchTotal: files.length,
-                  bytes: file.size,
-                  language: file.language,
-                  path: file.path,
-                  stage: 'extracting',
-                },
-                extractionMilliseconds,
-                persistenceMilliseconds,
-              );
-              const parsed = yield* extractParserFacts(file, options);
-              const cacheFact = serializeBoundedCodeGraphFact(parsed.facts);
-              const result = {
-                ...parsed,
-                cacheFact,
-                facts: cacheFact.facts,
-              } satisfies CodeGraphParserResult & {readonly cacheFact: BoundedCodeGraphFact};
-              windowCompleted += 1;
-              yield* emitContentProgress(
-                options.onProgress,
-                cumulativeContext,
-                {
-                  batchCompleted: parsedCompleted + windowCompleted,
-                  batchTotal: files.length,
-                  bytes: file.size,
-                  degraded: result.degraded,
-                  factsBytes: result.cacheFact.bytes,
-                  language: file.language,
-                  parseMilliseconds: result.parseMilliseconds,
-                  path: file.path,
-                  relations: result.facts.edges.length,
-                  stage: 'extracting',
-                  symbols: result.facts.symbols.length,
-                },
-                extractionMilliseconds + result.parseMilliseconds,
-                persistenceMilliseconds,
-              );
-              return {file, result};
-            }),
-          {concurrency: options.parserPool.capacity},
-        );
+        const groups = extractionReuseGroups(window, options.languagePacks);
+        const extractGroup = (group: (typeof groups)[number]) =>
+          Effect.forEach(
+            group.files,
+            file =>
+              Effect.gen(function* () {
+                const reuseKey = group.reuseKey;
+                yield* emitContentProgress(
+                  options.onProgress,
+                  cumulativeContext,
+                  {
+                    batchCompleted: parsedCompleted,
+                    batchTotal: files.length,
+                    bytes: file.size,
+                    ...codeGraphFileProgressDimensions(file, options.languagePacks),
+                    language: file.language,
+                    path: file.path,
+                    stage: 'extracting',
+                  },
+                  extractionMilliseconds,
+                  persistenceMilliseconds,
+                  currentScanningMetrics(),
+                );
+                const donor = reuseKey === undefined ? undefined : reusableExtractions.get(reuseKey);
+                const reused = donor === undefined ? undefined : relocateSerializedParserResult(file, donor);
+                if (reused !== undefined) {
+                  finishReuseAttempt(reuseKey);
+                  windowCompleted += 1;
+                  yield* emitContentProgress(
+                    options.onProgress,
+                    cumulativeContext,
+                    {
+                      batchCompleted: parsedCompleted + windowCompleted,
+                      batchTotal: files.length,
+                      bytes: file.size,
+                      ...codeGraphFileProgressDimensions(file, options.languagePacks),
+                      degraded: false,
+                      factsBytes: reused.cacheFact.bytes,
+                      language: file.language,
+                      parseMilliseconds: 0,
+                      path: file.path,
+                      relations: reused.facts.edges.length,
+                      stage: 'extracting',
+                      symbols: reused.facts.symbols.length,
+                    },
+                    extractionMilliseconds,
+                    persistenceMilliseconds,
+                    completeExtractionMetrics(file, reused.cacheFact.bytes),
+                  );
+                  return {file, result: reused};
+                }
+                const parsed = yield* extractParserFacts(file, options);
+                const cacheFact = serializeBoundedCodeGraphFact(parsed.facts);
+                const result = {
+                  ...parsed,
+                  cacheFact,
+                  facts: cacheFact.facts,
+                } satisfies CodeGraphParserResult & {readonly cacheFact: BoundedCodeGraphFact};
+                if (!result.degraded && reuseKey !== undefined && expectedReuseCount(reuseKey) > 1) {
+                  reusableExtractions.set(reuseKey, result);
+                }
+                finishReuseAttempt(reuseKey);
+                windowCompleted += 1;
+                yield* emitContentProgress(
+                  options.onProgress,
+                  cumulativeContext,
+                  {
+                    batchCompleted: parsedCompleted + windowCompleted,
+                    batchTotal: files.length,
+                    bytes: file.size,
+                    ...codeGraphFileProgressDimensions(file, options.languagePacks),
+                    degraded: result.degraded,
+                    factsBytes: result.cacheFact.bytes,
+                    language: file.language,
+                    parseMilliseconds: result.parseMilliseconds,
+                    path: file.path,
+                    relations: result.facts.edges.length,
+                    stage: 'extracting',
+                    symbols: result.facts.symbols.length,
+                  },
+                  extractionMilliseconds + result.parseMilliseconds,
+                  persistenceMilliseconds,
+                  completeExtractionMetrics(file, result.cacheFact.bytes),
+                );
+                return {file, result};
+              }),
+            {concurrency: 1},
+          );
+        const groupedResults: Array<
+          readonly {readonly file: CodeGraphInventoryFile; readonly result: SerializedParserResult}[]
+        > = [];
+        for (const lane of planCodeGraphExtractionLanes(groups, options.parserPool.capacity)) {
+          groupedResults.push(...(yield* Effect.forEach(lane.groups, extractGroup, {concurrency: lane.concurrency})));
+        }
+        const results = groupedResults.flat();
         extractionMilliseconds += results.reduce((total, result) => total + result.result.parseMilliseconds, 0);
         parsedCompleted += results.length;
         const resultsByPath = new Map(results.map(result => [result.file.path, result.result]));
@@ -3633,13 +3836,51 @@ export function cacheContentBatch(options: {
         pendingBytes = 0;
         pendingRows = 0;
         latestContext = undefined;
+        reusableExtractions.clear();
+        reusableExtractionUses.clear();
       }),
     flush: () =>
       Effect.gen(function* () {
         while (pendingGroups.size > 0) yield* flushOldestPendingGroup();
+        reusableExtractions.clear();
+        reusableExtractionUses.clear();
       }),
     onContentBatch,
   };
+}
+
+function blobReuseKeyForFile(
+  file: CodeGraphInventoryFile,
+  languagePacks: CodeGraphLanguagePackRegistryShape,
+): string | undefined {
+  const cacheIdentity = Option.getOrUndefined(languagePacks.cacheIdentityForPath(file.path));
+  return cacheIdentity === undefined ? undefined : codeGraphBlobReuseCacheKey(file, cacheIdentity);
+}
+
+function extractionReuseGroups(
+  files: readonly CodeGraphInventoryFile[],
+  languagePacks: CodeGraphLanguagePackRegistryShape,
+): readonly {readonly files: readonly CodeGraphInventoryFile[]; readonly reuseKey?: string}[] {
+  const groups = new Map<string, {files: CodeGraphInventoryFile[]; reuseKey?: string}>();
+  for (const file of files) {
+    const reuseKey = blobReuseKeyForFile(file, languagePacks);
+    const key = reuseKey ?? `path\0${file.path}`;
+    const group = groups.get(key) ?? {files: [], ...(reuseKey === undefined ? {} : {reuseKey})};
+    if (!groups.has(key)) groups.set(key, group);
+    group.files.push(file);
+  }
+  return [...groups.values()];
+}
+
+function relocateSerializedParserResult(
+  file: CodeGraphInventoryFile,
+  donor: CodeGraphParserResult & {readonly cacheFact: BoundedCodeGraphFact},
+): (CodeGraphParserResult & {readonly cacheFact: BoundedCodeGraphFact}) | undefined {
+  if (donor.degraded) return undefined;
+  const relocated = relocateStructuredSchemaFacts(file, donor.facts);
+  if (relocated === undefined) return undefined;
+  const cacheFact = serializeBoundedCodeGraphFact(relocated);
+  return {cacheFact, degraded: false, facts: cacheFact.facts, parseMilliseconds: 0};
 }
 
 function extractParserFacts(
@@ -3657,9 +3898,10 @@ function extractParserFacts(
     const facts = yield* options.languagePacks
       .extractRawFile(file)
       .pipe(Effect.provideService(TreeSitterRuntime, options.treeSitter));
+    const bounded = budgetParserWorkerFacts(file, facts);
     return {
-      degraded: false,
-      facts,
+      degraded: bounded.degraded,
+      facts: bounded.facts,
       parseMilliseconds: Math.max(0, performance.now() - startedAt),
     };
   });
@@ -3671,11 +3913,13 @@ function emitContentProgress(
   activity: NonNullable<Extract<CodeGraphProgress, {readonly phase: 'scanning'}>['activity']>,
   extractionMilliseconds: number,
   persistenceMilliseconds: number,
+  metrics?: CodeGraphScanningMetrics,
 ) {
   return (
     onProgress?.({
       ...context.progress,
       activity,
+      ...(metrics === undefined ? {} : {metrics}),
       timings: {
         extractionMilliseconds,
         persistenceMilliseconds,

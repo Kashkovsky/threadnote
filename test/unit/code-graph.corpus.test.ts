@@ -1,5 +1,6 @@
 import {describe, expect, test} from 'vitest';
 import {strToU8, zipSync} from 'fflate';
+import {Option} from 'effect';
 import {extractCorpusFile} from '../../src/code_graph/languages/corpus/extractor.js';
 import {
   CORPUS_ARCHIVE_ENTRY_BYTES_LIMIT,
@@ -222,6 +223,59 @@ describe('code graph corpus extraction', () => {
     expect(facts.diagnostics).toEqual([]);
   });
 
+  test('indexes Android adaptive-icon wiring and package provenance without interpreting pixels', async () => {
+    const facts = await extractCorpusFile(
+      textFile(
+        'app/src/main/res/mipmap-anydpi-v33/ic_appicon.xml',
+        [
+          '<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">',
+          '  <background android:drawable="@color/ic_appicon_background"/>',
+          '  <foreground android:drawable="@drawable/ic_appicon_foreground"/>',
+          '  <monochrome android:drawable="@drawable/ic_appicon_monochrome"/>',
+          '</adaptive-icon>',
+        ].join('\n'),
+      ),
+      {},
+      {packageName: Option.some(':app'), project: Option.none()},
+    );
+
+    expect(facts.symbols[0]).toMatchObject({kind: 'resource', packageName: ':app'});
+    expect(facts.symbols.filter(symbol => symbol.kind === 'resource-reference').map(symbol => symbol.name)).toEqual([
+      '@color/ic_appicon_background',
+      '@drawable/ic_appicon_foreground',
+      '@drawable/ic_appicon_monochrome',
+    ]);
+    expect(facts.symbols.every(symbol => symbol.packageName === ':app')).toBe(true);
+    const resourceReferenceIds = new Set(
+      facts.symbols.filter(symbol => symbol.kind === 'resource-reference').map(symbol => symbol.id),
+    );
+    expect(
+      facts.edges.filter(
+        edge =>
+          edge.relation === 'references' && edge.targetId !== undefined && resourceReferenceIds.has(edge.targetId),
+      ),
+    ).toHaveLength(3);
+    expect(facts.diagnostics).toEqual([]);
+  });
+
+  test('retains iOS storyboard asset and side-effect-owner identifiers as resource evidence', async () => {
+    const facts = await extractCorpusFile(
+      textFile(
+        'Mobile/Resources/Launch.storyboard',
+        '<document><imageView image="AppIconMonochrome" customClass="LaunchImageView"/></document>',
+      ),
+    );
+
+    expect(facts.symbols[0]).toMatchObject({kind: 'resource'});
+    expect(facts.symbols.filter(symbol => symbol.kind === 'resource-reference').map(symbol => symbol.name)).toEqual([
+      'AppIconMonochrome',
+      'LaunchImageView',
+    ]);
+    expect(facts.symbols.some(symbol => symbol.documentation?.includes('attribute image AppIconMonochrome'))).toBe(
+      true,
+    );
+  });
+
   test('keeps an oversized artifact searchable without materializing or interpreting its bytes', async () => {
     const facts = await extractCorpusFile({
       blobId: 'large-video',
@@ -264,6 +318,10 @@ describe('code graph corpus extraction', () => {
     expect(BUILTIN_LANGUAGE_PACK_REGISTRY.match('package.json')).toMatchObject({
       _tag: 'Some',
       value: {role: 'manifest'},
+    });
+    expect(BUILTIN_LANGUAGE_PACK_REGISTRY.match('Mobile/Launch.storyboard')).toMatchObject({
+      _tag: 'Some',
+      value: {role: 'corpus'},
     });
   });
 });

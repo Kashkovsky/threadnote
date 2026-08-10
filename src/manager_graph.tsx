@@ -2,7 +2,12 @@ import React, {useEffect, useMemo, useRef, useState} from 'react';
 import * as THREE from 'three';
 import type {CodeGraphLocalDiagnosticsReport} from './code_graph/diagnostics.js';
 import type {CodeGraphLocalAssociation} from './code_graph/local_provenance.js';
+import type {CodeGraphMaintenanceStatus} from './code_graph/maintenance_gate.js';
 import {compareCodeUnits} from './code_graph/ordering.js';
+import {
+  CODE_GRAPH_SLOW_FILE_THRESHOLD_MILLISECONDS,
+  CODE_GRAPH_TOP_SLOW_FILE_LIMIT,
+} from './code_graph/progress_telemetry.js';
 import {
   MANAGER_GRAPH_DEFAULT_EDGE_LIMIT,
   MANAGER_GRAPH_DEFAULT_NODE_LIMIT,
@@ -84,7 +89,10 @@ export interface GraphCatalogDiagnostic {
 
 export interface GraphCatalog {
   readonly builds: readonly GraphBuildStatus[];
+  readonly catalogRevision?: string;
   readonly diagnostics: readonly GraphCatalogDiagnostic[];
+  readonly lifecyclePending?: boolean;
+  readonly maintenance?: CodeGraphMaintenanceStatus;
   readonly repositories: readonly GraphRepositoryGroup[];
   readonly waiterCount: number;
   readonly waiters: readonly GraphBuildStatus[];
@@ -165,11 +173,17 @@ export interface GraphBuildStatus {
     readonly batchCompleted: number;
     readonly batchTotal: number;
     readonly bytes: number;
+    readonly classifier?: string;
     readonly degraded?: boolean;
+    readonly factsBytes?: number;
     readonly language: string;
     readonly parseMilliseconds?: number;
     readonly persistMilliseconds?: number;
+    readonly relations?: number;
+    readonly role?: string;
+    readonly sizeBucket?: '0-16KiB' | '16-64KiB' | '64-256KiB' | '256KiB-1MiB' | '>1MiB';
     readonly stage: 'extracting' | 'persisting' | 'reading';
+    readonly symbols?: number;
   };
   readonly buildId: string;
   readonly coordination?: {
@@ -193,9 +207,34 @@ export interface GraphBuildStatus {
   };
   readonly error?: {readonly summary: string};
   readonly eta?: {
-    readonly basis?: 'cached-fact-bytes' | 'files' | 'final-fact-bytes' | 'source-bytes';
+    readonly basis?: 'cached-fact-bytes' | 'extraction-work' | 'files' | 'final-fact-bytes' | 'source-bytes';
     readonly confidence: 'high' | 'low' | 'medium';
     readonly remainingMilliseconds: number;
+  };
+  readonly extraction?: {
+    readonly completedFiles: number;
+    readonly metrics?: {
+      readonly factsBytesCompleted: number;
+      readonly sourceBytesCompleted: number;
+      readonly sourceBytesTotal: number;
+      readonly workUnitsCompleted: number;
+      readonly workUnitsTotal: number;
+    };
+    readonly slowFiles: number;
+    readonly topSlowFiles: readonly {
+      readonly classifier: string;
+      readonly degraded?: boolean;
+      readonly durationMilliseconds: number;
+      readonly extension: string;
+      readonly factsBytes?: number;
+      readonly language: string;
+      readonly pathHash: string;
+      readonly relations?: number;
+      readonly role: string;
+      readonly sizeBucket: '0-16KiB' | '16-64KiB' | '64-256KiB' | '256KiB-1MiB' | '>1MiB';
+      readonly sourceBytes: number;
+      readonly symbols?: number;
+    }[];
   };
   readonly identity: {
     readonly checkoutId: string;
@@ -242,7 +281,7 @@ export interface GraphBuildStatus {
       readonly transactionMilliseconds?: number;
     };
   };
-  readonly owner: {readonly processId: number};
+  readonly owner: {readonly processId: number; readonly processStartIdentity?: string};
   readonly phase: string;
   readonly request?: {readonly key: string};
   readonly resolution?: {
@@ -362,9 +401,48 @@ export function graphBuildShouldDisplay(build: GraphBuildStatus): boolean {
   return build.state === 'failed' || graphBuildIsActive(build);
 }
 
+const GRAPH_ADMINISTRATION_JOB_LIMIT = 4;
+
+export interface GraphAdministrationJobSelection {
+  readonly hiddenCount: number;
+  readonly jobs: readonly GraphBuildStatus[];
+  readonly total: number;
+}
+
+/** Keep administration cards focused on bounded, actionable build state. */
+export function graphAdministrationJobSelection(
+  builds: readonly GraphBuildStatus[],
+  waiters: readonly GraphBuildStatus[],
+): GraphAdministrationJobSelection {
+  const unique = new Map<string, GraphBuildStatus>();
+  for (const job of [...builds, ...waiters]) {
+    if (graphBuildShouldDisplay(job) && !unique.has(job.buildId)) unique.set(job.buildId, job);
+  }
+  const relevant = [...unique.values()].sort(compareGraphAdministrationJob);
+  const jobs = relevant.slice(0, GRAPH_ADMINISTRATION_JOB_LIMIT);
+  return {hiddenCount: relevant.length - jobs.length, jobs, total: relevant.length};
+}
+
+function compareGraphAdministrationJob(left: GraphBuildStatus, right: GraphBuildStatus): number {
+  const priority = (job: GraphBuildStatus) => (job.state === 'running' ? 0 : job.state === 'queued' ? 1 : 2);
+  return (
+    priority(left) - priority(right) ||
+    (Date.parse(right.timestamps.lastProgressAt) || 0) - (Date.parse(left.timestamps.lastProgressAt) || 0) ||
+    compareCodeUnits(left.buildId, right.buildId)
+  );
+}
+
 export interface GraphBuildTarget {
   readonly repositoryLabel: string;
   readonly worktreeLabel: string;
+}
+
+export interface GraphBuildConcurrencyState {
+  readonly activeTargetCommit?: string;
+  readonly latestTargetCommit: string;
+  readonly queuedRequests: number;
+  readonly readySnapshotCommit?: string;
+  readonly staleReady: boolean;
 }
 
 export function graphBuildTarget(
@@ -393,8 +471,69 @@ export function graphBuildTarget(
   };
 }
 
-export function graphStatusPollDelay(builds: readonly GraphBuildStatus[]): number {
-  return builds.some(graphBuildIsActive) ? 1_000 : 15_000;
+/**
+ * Summarize only observed concurrency facts. File locks do not promise FIFO, so
+ * waiters are counted without claiming an execution position. The most recent
+ * request is the latest requested target, independent of input ordering.
+ */
+export function graphBuildConcurrencyState(
+  build: GraphBuildStatus,
+  waiters: readonly GraphBuildStatus[],
+  repositories: readonly GraphRepositoryGroup[],
+): GraphBuildConcurrencyState {
+  const matchingWaiters = waiters.filter(
+    waiter =>
+      waiter.buildId !== build.buildId &&
+      waiter.identity.checkoutId === build.identity.checkoutId &&
+      waiter.identity.worktreeId === build.identity.worktreeId,
+  );
+  const latest = [build, ...matchingWaiters].sort(compareGraphBuildRequest)[matchingWaiters.length]!;
+  const repository = repositories.find(candidate => candidate.repositoryId === build.identity.repositoryId);
+  const ready = repository?.views.find(
+    candidate =>
+      candidate.checkoutId === build.identity.checkoutId && candidate.worktreeId === build.identity.worktreeId,
+  );
+  const queuedRequests = matchingWaiters.length + (build.state === 'queued' ? 1 : 0);
+  const readySnapshotCommit = ready?.snapshot.commit;
+  return {
+    ...(build.state === 'running' ? {activeTargetCommit: build.identity.commit} : {}),
+    latestTargetCommit: latest.identity.commit,
+    queuedRequests,
+    ...(readySnapshotCommit === undefined ? {} : {readySnapshotCommit}),
+    staleReady: readySnapshotCommit !== undefined && !graphCommitMatches(readySnapshotCommit, latest.identity.commit),
+  };
+}
+
+function compareGraphBuildRequest(left: GraphBuildStatus, right: GraphBuildStatus): number {
+  const leftStartedAt = Date.parse(left.timestamps.startedAt) || 0;
+  const rightStartedAt = Date.parse(right.timestamps.startedAt) || 0;
+  return leftStartedAt - rightStartedAt || compareCodeUnits(left.buildId, right.buildId);
+}
+
+function graphCommitMatches(left: string, right: string): boolean {
+  return left === right || left.startsWith(right) || right.startsWith(left);
+}
+
+export function graphStatusPollDelay(
+  builds: readonly GraphBuildStatus[],
+  maintenance?: CodeGraphMaintenanceStatus,
+  lifecyclePending = false,
+): number {
+  return builds.some(graphBuildIsActive) || maintenance !== undefined || lifecyclePending ? 1_000 : 5_000;
+}
+
+export function graphMaintenanceStatusLabel(status: CodeGraphMaintenanceStatus): string {
+  const operation = status.operation === 'selected-snapshot-purge' ? 'Selected snapshot purge' : 'Graph maintenance';
+  const phases: Record<CodeGraphMaintenanceStatus['phase'], string> = {
+    'acquiring-gates': 'acquiring safety gates',
+    'retiring-and-cleaning': 'retiring snapshot and advancing cleanup',
+    'status-unavailable': 'working; detailed status unavailable',
+    'verifying-graph': 'rechecking graph safety evidence',
+    'verifying-vectors': 'rechecking vector safety evidence',
+    'waiting-builders': 'waiting for graph builders',
+    working: 'working',
+  };
+  return `${operation} · ${phases[status.phase]}`;
 }
 
 export function graphCompletedBuildResultIdentity(build: GraphBuildStatus): string | undefined {
@@ -407,7 +546,15 @@ export function graphStatusRequiresCatalogRefresh(
   catalog: GraphCatalog | undefined,
   builds: readonly GraphBuildStatus[],
   acknowledgedResults: ReadonlySet<string> = new Set(),
+  observedCatalogRevision?: string,
 ): boolean {
+  if (
+    catalog !== undefined &&
+    observedCatalogRevision !== undefined &&
+    catalog.catalogRevision !== observedCatalogRevision
+  ) {
+    return true;
+  }
   if (!catalog) {
     return builds.some(build => {
       const identity = graphCompletedBuildResultIdentity(build);
@@ -428,6 +575,18 @@ export function graphStatusRequiresCatalogRefresh(
     );
     return identity !== undefined && !acknowledgedResults.has(identity) && !resultVisible;
   });
+}
+
+export function graphDiagnosticsRequiresCatalogRefresh(
+  diagnosticsCatalogRevision: string | undefined,
+  observedCatalogRevision: string | undefined,
+  maintenance?: CodeGraphMaintenanceStatus,
+): boolean {
+  return (
+    maintenance === undefined &&
+    observedCatalogRevision !== undefined &&
+    diagnosticsCatalogRevision !== observedCatalogRevision
+  );
 }
 
 export function graphWaiterCountForBuild(build: GraphBuildStatus, waiters: readonly GraphBuildStatus[]): number {
@@ -1751,6 +1910,7 @@ export function GraphWorkspace(props: {
           output={props.administrationOutput}
           report={props.administration}
         />
+        {props.catalog?.maintenance ? <GraphMaintenanceProgress status={props.catalog.maintenance} /> : null}
         {activeBuilds.length > 0 ? (
           <div className="graph-build-status" aria-live="polite">
             {activeBuilds.map(build => (
@@ -1758,7 +1918,7 @@ export function GraphWorkspace(props: {
                 build={build}
                 key={`${build.identity.checkoutId}:${build.identity.worktreeId}:${build.buildId}`}
                 repositories={repositories}
-                waiterCount={graphWaiterCountForBuild(build, props.catalog?.waiters ?? [])}
+                waiters={props.catalog?.waiters ?? []}
               />
             ))}
           </div>
@@ -1806,11 +1966,6 @@ export function GraphWorkspace(props: {
                 ))}
               </select>
             </label>
-          ) : null}
-          {repository ? (
-            <small className="graph-local-association">
-              Folder: {graphLocalAssociationText(repository.localAssociation)} · {repository.localAssociation.state}
-            </small>
           ) : null}
           <label>
             <span>Component</span>
@@ -3274,6 +3429,7 @@ function GraphAdministration(props: {
               const view = database.views.find(candidate => candidate.managementAvailable) ?? database.views[0];
               const managementAvailable = view?.managementAvailable === true;
               const repository = view?.repository.displayName ?? `Checkout ${database.checkoutId.slice(-8)}`;
+              const jobs = graphAdministrationJobSelection(database.builds, database.waiters);
               const obsolete = props.report?.obsoleteStores.checkouts.find(
                 checkout => checkout.checkoutId === database.checkoutId,
               );
@@ -3319,7 +3475,7 @@ function GraphAdministration(props: {
                     </div>
                     <div>
                       <dt>Jobs</dt>
-                      <dd>{database.builds.length + database.waiters.length}</dd>
+                      <dd>{jobs.total === 0 ? 'None' : `${jobs.total} actionable`}</dd>
                     </div>
                   </dl>
                   <div className="graph-database-views">
@@ -3357,45 +3513,33 @@ function GraphAdministration(props: {
                               )}
                             </small>
                           ) : null}
-                          <div className="graph-view-actions">
-                            <button
-                              disabled={blocked}
-                              onClick={() => props.onAction({action: 'remove-view', dryRun: true, ...removalTarget})}
-                              type="button"
-                            >
-                              Preview remove
-                            </button>
-                            <button
-                              className="danger"
-                              disabled={blocked}
-                              onClick={() =>
-                                void confirmAction(
-                                  {
-                                    confirmLabel: 'Remove view',
-                                    detail: `Checkout ${removalTarget.checkoutId}\nWorktree ${removalTarget.worktreeId}\nSnapshot ${removalTarget.expectedSnapshotId}`,
-                                    message:
-                                      'Remove this exact active view. Snapshot data still referenced by another view remains available.',
-                                    title: 'Remove this indexed view?',
-                                    tone: 'danger',
-                                  },
-                                  {action: 'remove-view', ...removalTarget},
-                                )
-                              }
-                              type="button"
-                            >
-                              Remove view
-                            </button>
-                          </div>
+                          <button
+                            aria-label={`Remove indexed view ${candidate.viewWorktreeId.slice(-8)}`}
+                            className="danger graph-view-remove"
+                            disabled={blocked}
+                            onClick={() => props.onAction({action: 'remove-view', ...removalTarget})}
+                            title="Remove indexed view"
+                            type="button"
+                          >
+                            <svg aria-hidden="true" viewBox="0 0 24 24">
+                              <path d="M4 6h16M9 6V4h6v2m3 0-1 14H7L6 6m4 4v6m4-6v6" />
+                            </svg>
+                          </button>
                         </div>
                       );
                     })}
                   </div>
-                  {[...database.builds, ...database.waiters].map(job => (
+                  {jobs.jobs.map(job => (
                     <p className="graph-database-job" key={`${job.buildId}:${job.coordination?.role ?? 'build'}`}>
-                      {job.identity.worktreeId.slice(-8)} · {job.state} · {job.phase}
+                      View {job.identity.worktreeId.slice(-8)} · {job.state === 'running' ? 'active' : job.state} ·{' '}
+                      {job.phase}
                       {job.subphase ? `/${job.subphase}` : ''} · {job.observation.liveness}
+                      {job.error ? ` · ${job.error.summary}` : ''}
                     </p>
                   ))}
+                  {jobs.hiddenCount > 0 ? (
+                    <p className="graph-database-job">+{jobs.hiddenCount} more active or failed jobs</p>
+                  ) : null}
                   {database.issues.map(issue => (
                     <p className="graph-database-issue" key={`${database.checkoutId}:${issue.code}`}>
                       {issue.code}: {issue.message}
@@ -3541,10 +3685,51 @@ export function graphLocalAssociationText(association: CodeGraphLocalAssociation
   return association.displayPath ?? association.state.replaceAll('-', ' ');
 }
 
+function GraphMaintenanceProgress(props: {readonly status: CodeGraphMaintenanceStatus}): React.ReactElement {
+  const {status} = props;
+  const elapsed = status.startedAt === undefined ? undefined : Math.max(0, Date.now() - Date.parse(status.startedAt));
+  const lastUpdate =
+    status.updatedAt === undefined ? undefined : Math.max(0, Date.now() - Date.parse(status.updatedAt));
+  const percentage =
+    status.completed !== undefined && status.total !== undefined && status.total > 0
+      ? Math.max(0, Math.min(100, (status.completed / status.total) * 100))
+      : undefined;
+  return (
+    <div className="graph-build-status graph-maintenance-status" aria-live="polite">
+      <article className="graph-build-card is-running is-active">
+        <header>
+          <div className="graph-build-target">
+            <strong>
+              {status.operation === 'selected-snapshot-purge' ? 'Selected snapshot purge' : 'Graph maintenance'}
+            </strong>
+            <span>
+              {status.checkoutId ? `Checkout ${shortGraphIdentity(status.checkoutId)}` : 'Home-wide maintenance'}
+              {status.snapshotId ? ` · snapshot ${status.snapshotId}` : ''}
+            </span>
+          </div>
+          {elapsed === undefined ? null : <span>Elapsed {formatBuildDuration(elapsed)}</span>}
+        </header>
+        <p className="graph-build-phase">{graphMaintenanceStatusLabel(status)}</p>
+        {percentage === undefined ? null : (
+          <div className="graph-build-meter" aria-label={`${Math.round(percentage)}% complete`}>
+            <i style={{width: `${percentage}%`}} />
+          </div>
+        )}
+        <p>
+          {status.completed === undefined || status.total === undefined
+            ? 'Waiting for the next maintenance phase update'
+            : `${status.completed.toLocaleString()} / ${status.total.toLocaleString()} safety phases`}
+          {lastUpdate === undefined ? '' : ` · last update ${formatBuildDuration(lastUpdate)} ago`}
+        </p>
+      </article>
+    </div>
+  );
+}
+
 function GraphBuildProgress(props: {
   readonly build: GraphBuildStatus;
   readonly repositories: readonly GraphRepositoryGroup[];
-  readonly waiterCount: number;
+  readonly waiters: readonly GraphBuildStatus[];
 }): React.ReactElement {
   const {build} = props;
   const completed = build.counters.completed;
@@ -3558,6 +3743,8 @@ function GraphBuildProgress(props: {
   const progressSilent = build.coordination?.progressSilent === true;
   const eta = progressSilent ? undefined : build.eta;
   const target = graphBuildTarget(build, props.repositories);
+  const concurrency = graphBuildConcurrencyState(build, props.waiters, props.repositories);
+  const waiterCount = graphWaiterCountForBuild(build, props.waiters);
   const statusLabel =
     build.state === 'failed'
       ? 'Indexing failed'
@@ -3578,6 +3765,27 @@ function GraphBuildProgress(props: {
       <p className="graph-build-phase">
         {statusLabel} · {build.phase}/{build.subphase ?? 'working'} · commit {build.identity.commit}
       </p>
+      <p className="graph-build-concurrency">
+        {build.state === 'running'
+          ? `Active target ${graphCommitLabel(build.identity.commit)}`
+          : build.state === 'queued'
+            ? `Queued target ${graphCommitLabel(build.identity.commit)}`
+            : build.state === 'failed'
+              ? `Failed target ${graphCommitLabel(build.identity.commit)}`
+              : `Completed target ${graphCommitLabel(build.identity.commit)}`}
+        {concurrency.latestTargetCommit === build.identity.commit
+          ? ''
+          : ` · latest target ${graphCommitLabel(concurrency.latestTargetCommit)} queued`}
+        {concurrency.queuedRequests === 0
+          ? ''
+          : ` · ${concurrency.queuedRequests.toLocaleString()} queued request${concurrency.queuedRequests === 1 ? '' : 's'}`}
+      </p>
+      {concurrency.staleReady && concurrency.readySnapshotCommit !== undefined ? (
+        <p className="graph-build-attention">
+          Ready snapshot {graphCommitLabel(concurrency.readySnapshotCommit)} remains queryable · stale for latest target{' '}
+          {graphCommitLabel(concurrency.latestTargetCommit)}
+        </p>
+      ) : null}
       {percentage === undefined ? null : (
         <div className="graph-build-meter" aria-label={`${Math.round(percentage)}% complete`}>
           <i style={{width: `${percentage}%`}} />
@@ -3604,6 +3812,14 @@ function GraphBuildProgress(props: {
           Current reported step: {build.activity.stage} {build.activity.language} ·{' '}
           {formatGraphBytes(build.activity.bytes)} · batch {build.activity.batchCompleted.toLocaleString()}/
           {build.activity.batchTotal.toLocaleString()}
+          {build.activity.sizeBucket === undefined ? '' : ` · ${build.activity.sizeBucket} source bucket`}
+          {build.activity.role === undefined ? '' : ` · ${build.activity.role}`}
+          {build.activity.classifier === undefined ? '' : `/${build.activity.classifier}`}
+          {build.activity.factsBytes === undefined
+            ? ''
+            : ` · ${formatGraphBytes(build.activity.factsBytes)} emitted facts`}
+          {build.activity.symbols === undefined ? '' : ` · ${build.activity.symbols.toLocaleString()} symbols`}
+          {build.activity.relations === undefined ? '' : ` · ${build.activity.relations.toLocaleString()} relations`}
           {build.activity.parseMilliseconds === undefined
             ? ''
             : ` · parse ${formatGraphMilliseconds(build.activity.parseMilliseconds)}`}
@@ -3611,6 +3827,22 @@ function GraphBuildProgress(props: {
             ? ''
             : ` · persist ${formatGraphMilliseconds(build.activity.persistMilliseconds)}`}
           {build.activity.degraded ? ' · metadata fallback; retry scheduled' : ''}
+        </p>
+      ) : null}
+      {build.extraction ? (
+        <p>
+          Extraction telemetry: {build.extraction.completedFiles.toLocaleString()} files completed ·{' '}
+          {build.extraction.metrics === undefined
+            ? ''
+            : `${formatGraphBytes(build.extraction.metrics.sourceBytesCompleted)}/${formatGraphBytes(
+                build.extraction.metrics.sourceBytesTotal,
+              )} source · ${formatGraphBytes(build.extraction.metrics.factsBytesCompleted)} emitted facts · ${formatGraphPercentage(
+                build.extraction.metrics.workUnitsCompleted,
+                build.extraction.metrics.workUnitsTotal,
+              )} class-weighted work · `}
+          {build.extraction.slowFiles.toLocaleString()} at or above{' '}
+          {formatGraphMilliseconds(CODE_GRAPH_SLOW_FILE_THRESHOLD_MILLISECONDS)} · bounded top-slow evidence{' '}
+          {build.extraction.topSlowFiles.length.toLocaleString()}/{CODE_GRAPH_TOP_SLOW_FILE_LIMIT.toLocaleString()}
         </p>
       ) : null}
       {build.materialization?.activity ? (
@@ -3765,7 +3997,12 @@ function GraphBuildProgress(props: {
         </p>
       ) : null}
       <footer>
-        <span>Process {build.owner.processId}</span>
+        <span title={build.owner.processStartIdentity}>
+          Process {build.owner.processId}
+          {build.owner.processStartIdentity
+            ? ` · owner instance ${shortGraphIdentity(build.owner.processStartIdentity)}`
+            : ''}
+        </span>
         {eta && eta.confidence !== 'low' ? (
           <span>
             Estimated time remaining in this phase: {formatBuildDuration(eta.remainingMilliseconds)} · {eta.confidence}{' '}
@@ -3773,11 +4010,15 @@ function GraphBuildProgress(props: {
             {eta.basis ? ` · ${graphEtaBasisLabel(eta.basis)}` : ''}
           </span>
         ) : null}
-        {props.waiterCount > 0 ? <span>{props.waiterCount} waiting process(es)</span> : null}
+        {waiterCount > 0 ? <span>{waiterCount} waiting process(es) for this exact target</span> : null}
         {build.error ? <span className="graph-build-error">{build.error.summary}</span> : null}
       </footer>
     </article>
   );
+}
+
+function graphCommitLabel(commit: string): string {
+  return commit.slice(0, 12) || 'unknown';
 }
 
 function graphActiveBatchNumber(completed: number, total: number): number {
@@ -3862,7 +4103,9 @@ function graphMaterializationDiskWarning(storage: GraphMaterializationStorage): 
   return scopes.length === 0 ? undefined : `Low disk: ${scopes.join(' and ')} storage is below its estimate.`;
 }
 
-function graphEtaBasisLabel(basis: 'cached-fact-bytes' | 'files' | 'final-fact-bytes' | 'source-bytes'): string {
+function graphEtaBasisLabel(
+  basis: 'cached-fact-bytes' | 'extraction-work' | 'files' | 'final-fact-bytes' | 'source-bytes',
+): string {
   switch (basis) {
     case 'cached-fact-bytes':
       return 'cached-fact bytes';
@@ -3870,9 +4113,16 @@ function graphEtaBasisLabel(basis: 'cached-fact-bytes' | 'files' | 'final-fact-b
       return 'final attributed fact bytes';
     case 'source-bytes':
       return 'source bytes';
+    case 'extraction-work':
+      return 'class-weighted extraction work';
     case 'files':
       return 'files';
   }
+}
+
+function formatGraphPercentage(completed: number, total: number): string {
+  if (total <= 0) return '0%';
+  return `${Math.min(100, Math.max(0, (completed / total) * 100)).toFixed(1)}%`;
 }
 
 function GraphEmptyState(props: {readonly building: boolean}): React.ReactElement {

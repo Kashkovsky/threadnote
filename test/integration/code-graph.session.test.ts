@@ -271,13 +271,14 @@ describe('code graph SQLite session lifetime', () => {
 });
 
 function expectClosedSessions(expected: number): void {
-  // Successful builds schedule exactly one bounded post-promotion cleanup
-  // connection after the indexing session closes. Failed builds never schedule
-  // it. A store-call-per-connection regression would therefore exceed these
-  // fixed counts even though every connection eventually closes.
-  expect(sqliteSessions.opened, JSON.stringify(sqliteSessions.opened)).toHaveLength(expected);
+  // Index completion may open one additional zero-wait Store routine session
+  // after the indexing session closes. Whether a fixture has cleanup work is
+  // platform/state dependent, but a store-call-per-connection regression would
+  // still exceed this bounded allowance.
+  expect(sqliteSessions.opened.length, JSON.stringify(sqliteSessions.opened)).toBeGreaterThanOrEqual(expected);
+  expect(sqliteSessions.opened.length, JSON.stringify(sqliteSessions.opened)).toBeLessThanOrEqual(expected + 1);
   expect(sqliteSessions.closed).toEqual(sqliteSessions.opened);
-  expect(sqliteSessions.maximumActive).toBeLessThanOrEqual(expected);
+  expect(sqliteSessions.maximumActive).toBeLessThanOrEqual(1);
   expect(sqliteSessions.active).toBe(0);
   expect(sqliteSessions.opened.every(filename => /graph-v\d+\.sqlite$/.test(filename))).toBe(true);
 }

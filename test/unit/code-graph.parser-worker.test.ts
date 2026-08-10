@@ -3,19 +3,19 @@ import {describe, expect, it} from '@effect/vitest';
 import * as FC from 'effect/testing/FastCheck';
 import {TestClock} from 'effect/testing';
 import {Effect, FileSystem, Fiber, Layer} from 'effect';
-import {sha256HexSync} from '../../src/crypto/sha256.js';
-import {
-  cachedCodeGraphFactBytes,
-  CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM,
-  serializeBoundedCodeGraphFact,
-} from '../../src/code_graph/fact_budget.js';
+import {cachedCodeGraphFactBytes, CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM} from '../../src/code_graph/fact_budget.js';
 import {BUILTIN_LANGUAGE_PACK_REGISTRY} from '../../src/code_graph/languages/registry.js';
 import {
+  CODE_GRAPH_PARSER_RSS_BYTES_ENV,
+  CODE_GRAPH_PARSER_SOURCE_BYTES_MAXIMUM,
   CODE_GRAPH_PARSER_WORKER_RESPONSE_BYTES_MAXIMUM,
   CODE_GRAPH_PARSER_WORKER_ARGUMENT,
   CodeGraphParserPool,
+  budgetParserWorkerFacts,
   codeGraphParserPoolLayer,
   parserWorkerCapacity,
+  parserWorkerResourceBudget,
+  parserWorkerSourceByteBudget,
   parserWorkerSuccessResponseBytes,
   type ParserWorkerProcess,
   type ParserWorkerSpawner,
@@ -59,6 +59,104 @@ describe('code graph parser worker pool', () => {
       expect(capacity(memoryGiB)).toBeGreaterThanOrEqual(1);
       expect(capacity(memoryGiB)).toBeLessThanOrEqual(4);
       expect(capacity(memoryGiB + 1)).toBeGreaterThanOrEqual(capacity(memoryGiB));
+    },
+    {fastCheck: {numRuns: 100}},
+  );
+
+  it.prop(
+    'classifies parser allocation and RSS at inclusive resource boundaries',
+    {
+      allocationIncrease: FC.integer({max: 2_048, min: 0}),
+      allocationMaximum: FC.integer({max: 2_048, min: 1}),
+      beforePeak: FC.integer({max: 2_048, min: 0}),
+      rssMaximum: FC.integer({max: 4_096, min: 1}),
+      rssNow: FC.integer({max: 4_096, min: 0}),
+    },
+    ({allocationIncrease, allocationMaximum, beforePeak, rssMaximum, rssNow}) => {
+      const afterPeak = beforePeak + allocationIncrease;
+      const result = parserWorkerResourceBudget(
+        {peakRssBytes: beforePeak, rssBytes: beforePeak},
+        {peakRssBytes: afterPeak, rssBytes: rssNow},
+        {maximumAllocationBytes: allocationMaximum, maximumRssBytes: rssMaximum},
+      );
+      const observedRss = Math.max(afterPeak, rssNow);
+      expect(result).toEqual(
+        observedRss > rssMaximum
+          ? {code: 'rss-bytes', maximum: rssMaximum, observed: observedRss, unit: 'bytes'}
+          : allocationIncrease > allocationMaximum
+            ? {
+                code: 'allocation-bytes',
+                maximum: allocationMaximum,
+                observed: allocationIncrease,
+                unit: 'bytes',
+              }
+            : undefined,
+      );
+    },
+    {fastCheck: {numRuns: 100}},
+  );
+
+  it('degrades emitted symbol and fact-byte exhaustion to one searchable module', () => {
+    const file = inventoryFile('src/emission-budget.ts', 'export const emissionBudget = true;');
+    const root = factsFor(file).symbols[0]!;
+    const symbolHeavyFacts: CodeGraphFileFacts = {
+      diagnostics: [],
+      edges: [],
+      path: file.path,
+      symbols: [root, {...root, id: `${root.id}-child`, kind: 'variable', name: 'child'}],
+    };
+    const symbolHeavy = budgetParserWorkerFacts(file, symbolHeavyFacts, {maximumSymbols: 1});
+
+    expect(symbolHeavy.degraded).toBe(true);
+    expect(symbolHeavy.facts.symbols).toHaveLength(1);
+    expect(symbolHeavy.facts.edges).toEqual([]);
+    expect(symbolHeavy.facts.diagnostics[0]).toContain(
+      '[code-graph-budget code=symbols status=exhausted observed-symbols=2 maximum-symbols=1]',
+    );
+
+    const maximumFactBytes = 2_048;
+    const byteHeavyFacts: CodeGraphFileFacts = {
+      diagnostics: [],
+      edges: [],
+      path: file.path,
+      symbols: [{...root, documentation: 'x'.repeat(maximumFactBytes * 2)}],
+    };
+    const observedBytes = cachedCodeGraphFactBytes(byteHeavyFacts);
+    const byteHeavy = budgetParserWorkerFacts(file, byteHeavyFacts, {maximumFactBytes});
+
+    expect(byteHeavy.degraded).toBe(true);
+    expect(byteHeavy.facts.symbols).toHaveLength(1);
+    expect(byteHeavy.facts.edges).toEqual([]);
+    expect(byteHeavy.facts.diagnostics[0]).toContain(
+      `[code-graph-budget code=fact-bytes status=exhausted observed-bytes=${observedBytes} maximum-bytes=${maximumFactBytes}]`,
+    );
+    expect(cachedCodeGraphFactBytes(byteHeavy.facts)).toBeLessThanOrEqual(maximumFactBytes);
+  });
+
+  it.prop(
+    'enforces an inclusive emitted-symbol boundary',
+    {
+      maximumSymbols: FC.integer({max: 16, min: 1}),
+      symbolCount: FC.integer({max: 24, min: 1}),
+    },
+    ({maximumSymbols, symbolCount}) => {
+      const file = inventoryFile('src/symbol-property.ts', 'export const symbolProperty = true;');
+      const root = factsFor(file).symbols[0]!;
+      const facts: CodeGraphFileFacts = {
+        diagnostics: [],
+        edges: [],
+        path: file.path,
+        symbols: Array.from({length: symbolCount}, (_, index) => ({
+          ...root,
+          id: `${root.id}-${index}`,
+          kind: index === 0 ? 'module' : 'variable',
+          name: `symbol-${index}`,
+        })),
+      };
+      const result = budgetParserWorkerFacts(file, facts, {maximumSymbols});
+
+      expect(result.degraded).toBe(symbolCount > maximumSymbols);
+      expect(result.facts.symbols).toHaveLength(symbolCount > maximumSymbols ? 1 : symbolCount);
     },
     {fastCheck: {numRuns: 100}},
   );
@@ -110,6 +208,81 @@ describe('code graph parser worker pool', () => {
     ).toBe(1);
   });
 
+  it.effect('degrades oversized source before acquiring or launching a parser worker', () => {
+    const launches: ParserWorkerSpawnOptions[] = [];
+    const spawn: ParserWorkerSpawner = options => {
+      launches.push(options);
+      return echoProcess();
+    };
+    return Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-parser-worker-source-budget-'});
+      const pool = yield* CodeGraphParserPool;
+      const file = {...inventoryFile('src/oversized.ts', 'é'.repeat(9)), size: 1};
+      const result = yield* pool.extract(file, home);
+
+      expect(result.degraded).toBe(true);
+      expect(result.parseMilliseconds).toBe(0);
+      expect(result.facts.symbols).toHaveLength(1);
+      expect(result.facts.symbols[0]).toMatchObject({kind: 'module', path: file.path});
+      expect(result.facts.edges).toEqual([]);
+      expect(result.facts.diagnostics).toEqual([
+        expect.stringContaining(
+          '[code-graph-budget code=source-bytes status=exhausted observed-bytes=18 maximum-bytes=16]',
+        ),
+      ]);
+      expect(launches).toEqual([]);
+    }).pipe(Effect.provide(parserLayer({capacity: 1, maxSourceBytes: 16, spawnWorker: spawn})), Effect.scoped);
+  });
+
+  it.effect('admits source exactly at the byte boundary and leaves omitted content metadata-only', () => {
+    const processes: ScriptedParserWorkerProcess[] = [];
+    const spawn: ParserWorkerSpawner = () => {
+      const process = echoProcess();
+      processes.push(process);
+      return process;
+    };
+    return Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-parser-worker-source-boundary-'});
+      const pool = yield* CodeGraphParserPool;
+      const admitted = yield* pool.extract(inventoryFile('src/boundary.ts', 'é'.repeat(8)), home);
+
+      expect(admitted.degraded).toBe(false);
+      expect(processes).toHaveLength(1);
+      expect(
+        parserWorkerSourceByteBudget(
+          {
+            ...inventoryFile('src/omitted.ts', ''),
+            content: undefined,
+            contentOmittedReason: 'size-budget',
+            size: CODE_GRAPH_PARSER_SOURCE_BYTES_MAXIMUM + 1,
+          },
+          16,
+        ),
+      ).toEqual({exceeded: false, maximumBytes: 16, observedBytes: 0});
+    }).pipe(Effect.provide(parserLayer({capacity: 1, maxSourceBytes: 16, spawnWorker: spawn})), Effect.scoped);
+  });
+
+  it.prop(
+    'classifies source bytes from UTF-8 content and declared size without undercounting either',
+    {
+      content: FC.string({maxLength: 128}),
+      declaredSize: FC.integer({max: 256, min: 0}),
+      maximumBytes: FC.integer({max: 256, min: 1}),
+    },
+    ({content, declaredSize, maximumBytes}) => {
+      const file = {...inventoryFile('src/property.ts', content), size: declaredSize};
+      const observedBytes = Math.max(declaredSize, encoder.encode(content).byteLength);
+      expect(parserWorkerSourceByteBudget(file, maximumBytes)).toEqual({
+        exceeded: observedBytes > maximumBytes,
+        maximumBytes,
+        observedBytes,
+      });
+    },
+    {fastCheck: {numRuns: 100}},
+  );
+
   it.effect('launches the real source worker and extracts TypeScript outside the caller process', () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -135,7 +308,60 @@ describe('code graph parser worker pool', () => {
     }).pipe(Effect.provide(parserLayer({capacity: 1})), Effect.scoped),
   );
 
-  it.effect('budgets pathological facts in the real worker with exact parent and digest parity', () =>
+  it.effect('degrades and recycles a real worker that exceeds its RSS budget', () => {
+    const resourceLimitedSystem = systemWith({
+      environment: () => ({...process.env, [CODE_GRAPH_PARSER_RSS_BYTES_ENV]: '1'}),
+    });
+    return Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-parser-worker-rss-'});
+      const pool = yield* CodeGraphParserPool;
+      const result = yield* pool.extract(inventoryFile('src/rss-worker.ts', 'export const rssWorker = true;'), home);
+
+      expect(result.degraded).toBe(true);
+      expect(result.facts.symbols).toHaveLength(1);
+      expect(result.facts.diagnostics[0]).toContain(
+        '[code-graph-budget code=rss-bytes status=exhausted observed-bytes=',
+      );
+      expect(result.facts.diagnostics[0]).toContain('maximum-bytes=1]');
+    }).pipe(
+      Effect.provide(parserLayer({capacity: 1}, Layer.succeed(SystemInfo, resourceLimitedSystem))),
+      Effect.scoped,
+    );
+  });
+
+  it.effect('recycles a persistent slot after a worker reports resource degradation', () => {
+    const processes: ScriptedParserWorkerProcess[] = [];
+    const spawn: ParserWorkerSpawner = () => {
+      const generation = processes.length;
+      const worker = new ScriptedParserWorkerProcess(request => {
+        worker.respond(request, factsFor(request.file), {
+          degraded: generation === 0,
+          recycle: generation === 0,
+        });
+      });
+      processes.push(worker);
+      return worker;
+    };
+    return Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-parser-worker-resource-recycle-'});
+      const pool = yield* CodeGraphParserPool;
+
+      const degraded = yield* pool.extract(inventoryFile('src/resource-heavy.ts', 'export const heavy = true;'), home);
+      const recovered = yield* pool.extract(
+        inventoryFile('src/resource-recovered.ts', 'export const recovered = true;'),
+        home,
+      );
+
+      expect(degraded.degraded).toBe(true);
+      expect(recovered.degraded).toBe(false);
+      expect(processes).toHaveLength(2);
+      expect(processes[0]!.inputClosed).toBe(true);
+    }).pipe(Effect.provide(parserLayer({capacity: 1, spawnWorker: spawn})), Effect.scoped);
+  });
+
+  it.effect('degrades pathological emitted facts in the real worker before response serialization', () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-parser-worker-budget-'});
@@ -144,17 +370,15 @@ describe('code graph parser worker pool', () => {
       const raw = yield* BUILTIN_LANGUAGE_PACK_REGISTRY.extractRawFile(file).pipe(
         Effect.provide(TreeSitterRuntime.layer),
       );
-      const parent = serializeBoundedCodeGraphFact(raw);
       const worker = yield* CodeGraphParserPool;
       const result = yield* worker.extract(file, home);
 
       expect(cachedCodeGraphFactBytes(raw)).toBeGreaterThan(CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM);
-      expect(result.degraded).toBe(false);
-      expect(result.facts).toEqual(parent.facts);
-      expect(JSON.stringify(result.facts)).toBe(parent.json);
-      expect(sha256HexSync(JSON.stringify(result.facts))).toBe(sha256HexSync(parent.json));
-      expect(cachedCodeGraphFactBytes(result.facts)).toBe(parent.bytes);
-      expect(parent.bytes).toBeLessThanOrEqual(CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM);
+      expect(result.degraded).toBe(true);
+      expect(result.facts.symbols).toHaveLength(1);
+      expect(result.facts.edges).toEqual([]);
+      expect(result.facts.diagnostics[0]).toContain('code-graph-budget code=fact-bytes status=exhausted');
+      expect(cachedCodeGraphFactBytes(result.facts)).toBeLessThanOrEqual(CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM);
       expect(parserWorkerSuccessResponseBytes(result.facts, 'x'.repeat(100))).toBeLessThanOrEqual(
         CODE_GRAPH_PARSER_WORKER_RESPONSE_BYTES_MAXIMUM,
       );
@@ -271,6 +495,9 @@ describe('code graph parser worker pool', () => {
       expect(processes).toHaveLength(2);
       expect(processes.every(process => process.killed)).toBe(true);
       expect(result.facts.diagnostics.join('\n')).toContain('time budget');
+      expect(result.facts.diagnostics.join('\n')).toContain(
+        '[code-graph-budget code=elapsed status=exhausted observed-milliseconds=20 maximum-milliseconds=20]',
+      );
     }).pipe(
       Effect.provide(parserLayer({capacity: 1, requestTimeoutMilliseconds: 20, spawnWorker: spawn})),
       Effect.scoped,
@@ -562,9 +789,13 @@ class ScriptedParserWorkerProcess implements ParserWorkerProcess {
     this.resolveExit(137);
   }
 
-  respond(request: WireRequest, facts: CodeGraphFileFacts): void {
+  respond(
+    request: WireRequest,
+    facts: CodeGraphFileFacts,
+    options: {readonly degraded?: boolean; readonly recycle?: boolean} = {},
+  ): void {
     this.stdoutFeed.push(
-      `${JSON.stringify({facts, id: request.id, ok: true, parseMilliseconds: 1, protocol: request.protocol})}\n`,
+      `${JSON.stringify({degraded: options.degraded ?? false, facts, id: request.id, ok: true, parseMilliseconds: 1, protocol: request.protocol, recycle: options.recycle ?? false})}\n`,
     );
   }
 

@@ -96,6 +96,7 @@ import {
   runCodeGraphExport,
   runCodeGraphImpact,
   runCodeGraphIndex,
+  runCodeGraphInventory,
   runCodeGraphInspect,
   runCodeGraphPurge,
   runCodeGraphRemoveView,
@@ -599,6 +600,15 @@ const graphStatus = Command.make(
   options => withRuntimeEffect(config => runCodeGraphStatus(config, options)),
 ).pipe(Command.withDescription('Show native code graph snapshot and freshness state'));
 
+const graphInventory = Command.make(
+  'inventory',
+  {
+    cwd: graphBounds.cwd,
+    json: graphBounds.json,
+  },
+  options => withRuntimeEffect(config => runCodeGraphInventory(config, options)),
+).pipe(Command.withDescription('Preview aggregate graph eligibility by language, role, classifier, and policy reason'));
+
 const graphDiagnostics = Command.make(
   'diagnostics',
   {
@@ -638,7 +648,9 @@ const graphQuery = Command.make(
   'query',
   {
     ...graphBounds,
+    packageName: optionalString('package', 'Restrict results to one exact indexed package or workspace component'),
     query: requiredString('query', 'Concept, symbol, module, path, or documentation query'),
+    workset: optionalString('workset', 'Query ready snapshots for a named seed-manifest workset'),
   },
   options => withRuntimeEffect(config => runCodeGraphInspect(config, {...options, operation: 'query'})),
 ).pipe(Command.withDescription('Search symbols and inspect a bounded relationship neighborhood'));
@@ -804,10 +816,14 @@ const graphPurge = Command.make(
   'purge',
   {
     all: boolean('all', 'Remove every disposable native code graph index'),
+    apply: boolean('apply', 'Apply an exact selected-snapshot purge after preview approval'),
+    approval: optionalString('approval', 'Exact sha256 approval digest emitted by a fresh snapshot preview'),
     checkoutId: optionalString('checkout-id', 'Target one inventoried checkout by its full 64-character identity'),
     cwd: graphBounds.cwd,
     dryRun: boolean('dry-run', 'Show the derived index path without removing it'),
+    json: graphBounds.json,
     obsolete: boolean('obsolete', 'Remove only verified older graph-vN SQLite files for this checkout'),
+    snapshotId: optionalString('snapshot-id', 'Expert action targeting one exact isolated ready/retired snapshot'),
   },
   options => withRuntimeEffect(config => runCodeGraphPurge(config, options)),
 ).pipe(Command.withDescription('Remove disposable native code graph data without touching repositories or memories'));
@@ -839,6 +855,7 @@ const graphCommand = Command.make('graph').pipe(
   Command.withDescription('Index and inspect the self-contained native code graph'),
   Command.withSubcommands([
     graphStatus,
+    graphInventory,
     graphDiagnostics,
     graphRepair,
     graphIndex,

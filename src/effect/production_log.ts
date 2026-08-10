@@ -35,6 +35,9 @@ const PRODUCTION_LOG_LOCK_RETRY_MILLISECONDS = 25;
 const PRODUCTION_LOG_LOCK_STALE_MILLISECONDS = 30_000;
 const PRODUCTION_LOG_LOCK_WAIT_MILLISECONDS = 2_000;
 const PRODUCTION_LOG_PROCESS_WAIT_MILLISECONDS = PRODUCTION_LOG_LOCK_WAIT_MILLISECONDS + 500;
+// Eight standalone Windows processes can occupy the low-volume log lock beyond two seconds under hosted-runner
+// scheduling. Keep the queue bounded while preserving both lifecycle entries for commands that already completed.
+const PRODUCTION_LOG_WINDOWS_LOCK_WAIT_MILLISECONDS = 5_000;
 const PRODUCTION_LOG_RUNTIME_NAME = 'bun';
 const PRODUCTION_LOG_UNKNOWN_ERROR_TYPE = 'UnknownError';
 const PRODUCTION_LOG_REPORTED_ERROR_TYPE = 'ReportedError';
@@ -386,6 +389,10 @@ function appendProductionLogs(
     const logsRoot = path.join(home, PRODUCTION_LOG_DIRECTORY_NAME);
     const activePath = path.join(logsRoot, PRODUCTION_LOG_FILE_NAME);
     const lockPath = path.join(home, PRODUCTION_LOG_LOCK_DIRECTORY_NAME, PRODUCTION_LOG_LOCK_FILE_NAME);
+    const lockOptions =
+      system.platform === 'win32'
+        ? {...PRODUCTION_LOG_LOCK_OPTIONS, waitTimeoutMilliseconds: PRODUCTION_LOG_WINDOWS_LOCK_WAIT_MILLISECONDS}
+        : PRODUCTION_LOG_LOCK_OPTIONS;
     const serialized = entries.map(entry => JSON.stringify(entry)).join('\n') + '\n';
     const serializedBytes = BigInt(new TextEncoder().encode(serialized).byteLength);
     yield* withProcessProductionLogPermit(
@@ -393,7 +400,7 @@ function appendProductionLogs(
       withExclusiveFileLock(
         fs,
         lockPath,
-        PRODUCTION_LOG_LOCK_OPTIONS,
+        lockOptions,
         Effect.gen(function* () {
           if (!(yield* isOwnedThreadnoteHome(fs, path, home))) {
             return;
@@ -417,7 +424,7 @@ function appendProductionLogs(
           yield* fs.chmod(logsRoot, PRODUCTION_LOG_DIRECTORY_MODE);
         }),
       ),
-    ).pipe(Effect.timeout(PRODUCTION_LOG_PROCESS_WAIT_MILLISECONDS));
+    ).pipe(Effect.timeout(lockOptions.waitTimeoutMilliseconds + 500));
   }).pipe(Effect.catch(() => Effect.void));
 }
 

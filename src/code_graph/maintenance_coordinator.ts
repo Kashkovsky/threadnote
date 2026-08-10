@@ -1,6 +1,7 @@
 import {Clock, Context, Crypto, Deferred, Effect, Exit, FileSystem, Layer, Path, SynchronizedRef} from 'effect';
 import {CommandExecutor} from '../effect/command.js';
 import {SystemInfo} from '../effect/system.js';
+import {maintainCodeGraphBuildHistoryUnit} from './build_status.js';
 import {
   cleanupMissingCodeGraphLocalProvenance,
   type CodeGraphLocalProvenanceCleanupResult,
@@ -11,6 +12,7 @@ import {
   type CodeGraphRemovedViewCleanupWorkerResult,
 } from './removed_view_cleanup.js';
 import {cleanupCodeGraphRemovedViewBuildStatusUnit} from './removed_view_build_cleanup.js';
+import {codeGraphLayout} from './layout.js';
 import {CodeGraphStore, type CodeGraphRoutineMaintenanceResult} from './store.js';
 import {
   codeGraphMaintenanceIntentActive,
@@ -26,6 +28,7 @@ import {
 } from './vector_maintenance.js';
 import {makeLiveCodeGraphWorktreeReconciler} from './worktree_reconciliation.js';
 import {inspectCodeGraphViewDatabaseTarget} from './view_removal.js';
+import {type CodeGraphStoragePressure} from './storage_pressure.js';
 
 export const CODE_GRAPH_MAINTENANCE_PENDING_DATABASE_LIMIT = 128;
 export const CODE_GRAPH_MAINTENANCE_AUTOMATIC_TAIL_MILLISECONDS = 250;
@@ -33,20 +36,30 @@ export const CODE_GRAPH_MAINTENANCE_AUTOMATIC_TAIL_UNITS = 8;
 export const CODE_GRAPH_MAINTENANCE_LANES = ['residual', 'reconciliation', 'ordinary'] as const;
 
 export type CodeGraphMaintenanceLane = (typeof CODE_GRAPH_MAINTENANCE_LANES)[number];
+export type {CodeGraphStoragePressure} from './storage_pressure.js';
+type CodeGraphMaintenanceStoragePressure = Extract<CodeGraphStoragePressure, 'critical' | 'elevated'>;
 
 const CODE_GRAPH_MAINTENANCE_TRAILING = Symbol('codeGraphMaintenanceTrailing');
 
 export interface CodeGraphRoutineMaintenanceTick {
   readonly allowIndexPreparation?: true;
   readonly anchorIdentity?: RepositoryIdentity;
+  /** Trusted local path resolved only after a missing-view candidate is observed. */
+  readonly anchorPath?: string;
+  /** One-shot foreground work can suppress the detached automatic tail. Defaults to true. */
+  readonly automaticTail?: boolean;
   readonly checkoutId: string;
   readonly databasePath: string;
+  /** Foreground probes can defer instead of joining an already-running unit. Defaults to true. */
+  readonly joinActive?: boolean;
+  /** Start the bounded lane cycle with physical reclaim under observed pressure. */
+  readonly pressure?: CodeGraphMaintenanceStoragePressure;
   readonly threadnoteHome: string;
   readonly writerLockPath: string;
 }
 
 export interface CodeGraphMaintenanceCoordinatorShape {
-  /** Run exactly one nonblocking ordinary Store/vector unit without entering a target-worktree lane. */
+  /** Run exactly one nonblocking Store routine unit without entering a target-worktree lane. */
   readonly kickOrdinary: (
     input: CodeGraphRoutineMaintenanceTick,
   ) => Effect.Effect<CodeGraphRoutineMaintenanceResult, CodeGraphStoreError>;
@@ -160,6 +173,30 @@ export class CodeGraphMaintenanceCoordinator extends Context.Service<
           threadnoteHome: input.threadnoteHome,
           writerLockPath: input.writerLockPath,
         });
+      const runBuildHistoryMaintenance: CodeGraphRoutineMaintenanceRun = input => {
+        const identity = input.anchorIdentity;
+        if (identity === undefined || identity.checkoutId !== input.checkoutId) {
+          return Effect.succeed(emptyMaintenanceResult());
+        }
+        const layout = codeGraphLayout(path, input.threadnoteHome, input.checkoutId, identity.worktreeId);
+        if (layout.databasePath !== input.databasePath) return Effect.succeed(emptyMaintenanceResult());
+        return maintainCodeGraphBuildHistoryUnit(layout, identity.worktreeId).pipe(
+          Effect.map(result => {
+            if (result.state === 'complete') return emptyMaintenanceResult();
+            if (result.state === 'deferred') {
+              return {reason: 'status-sidecar-unavailable', state: 'deferred'} as const;
+            }
+            return {
+              ...emptyMaintenanceResult(),
+              cleanup: result.removedAbandoned === true ? ('build-status-history' as const) : ('none' as const),
+              remaining: true,
+            };
+          }),
+          Effect.provideService(FileSystem.FileSystem, fs),
+          Effect.provideService(Path.Path, path),
+          Effect.provideService(SystemInfo, system),
+        );
+      };
       const revalidateResidualTarget = (input: {
         readonly checkoutId: string;
         readonly databasePath: string;
@@ -281,8 +318,10 @@ export class CodeGraphMaintenanceCoordinator extends Context.Service<
                     : Effect.succeed(emptyMaintenanceResult()),
           ),
         );
-      const runReconciliationOrPreparation: CodeGraphRoutineMaintenanceRun = input => {
-        if (input.anchorIdentity === undefined) return Effect.succeed(emptyMaintenanceResult());
+      const runReconciliationOrPreparationWithoutHistory: CodeGraphRoutineMaintenanceRun = input => {
+        if (input.anchorIdentity === undefined && input.anchorPath === undefined) {
+          return Effect.succeed(emptyMaintenanceResult());
+        }
         if (input.allowIndexPreparation !== true) return runReconciliation(input);
         return store
           .prepareWorktreeReconciliationIndexes(input.databasePath, {
@@ -326,6 +365,17 @@ export class CodeGraphMaintenanceCoordinator extends Context.Service<
             ),
           );
       };
+      const runReconciliationOrPreparation: CodeGraphRoutineMaintenanceRun = input =>
+        runBuildHistoryMaintenance(input).pipe(
+          Effect.flatMap(history => {
+            if (history.state === 'completed' && history.remaining) return Effect.succeed(history);
+            return runReconciliationOrPreparationWithoutHistory(input).pipe(
+              Effect.map(reconciliation =>
+                history.state === 'deferred' && maintenanceResultIsEmpty(reconciliation) ? history : reconciliation,
+              ),
+            );
+          }),
+        );
       const runVectorMaintenance: CodeGraphOrdinaryMaintenanceRuns['vector'] = input =>
         Effect.sync(() => performance.now()).pipe(
           Effect.flatMap(startedAt =>
@@ -364,7 +414,7 @@ export class CodeGraphMaintenanceCoordinator extends Context.Service<
           ),
         {},
         runResidualCleanup,
-        runOrdinaryMaintenance,
+        runRoutineMaintenance,
       );
     }),
   );
@@ -567,7 +617,10 @@ function selectMaintenanceLane(
     homeNextLaneIndexes.delete(inactiveHome);
   }
 
-  const laneIndex = homeNextLaneIndexes.get(input.threadnoteHome) ?? 0;
+  const laneIndex =
+    input.pressure === undefined
+      ? (homeNextLaneIndexes.get(input.threadnoteHome) ?? 0)
+      : CODE_GRAPH_MAINTENANCE_LANES.indexOf('ordinary');
   homeNextLaneIndexes.delete(input.threadnoteHome);
   homeNextLaneIndexes.set(input.threadnoteHome, (laneIndex + 1) % CODE_GRAPH_MAINTENANCE_LANES.length);
   databaseStates.delete(databaseKey);
@@ -599,6 +652,10 @@ function emptyMaintenanceResult(): CodeGraphRoutineMaintenanceResult {
     rowsDeleted: 0,
     state: 'completed',
   };
+}
+
+function maintenanceResultIsEmpty(result: CodeGraphRoutineMaintenanceResult): boolean {
+  return result.state === 'completed' && result.cleanup === 'none' && !result.remaining;
 }
 
 /**
@@ -633,6 +690,7 @@ export const makeCodeGraphMaintenanceCoordinator = Effect.fn('codeGraph.makeMain
         ).pipe(Effect.exit);
         const completedBudget = {...budget, units: budget.units + 1};
         const shouldTail =
+          input.automaticTail !== false &&
           Exit.isSuccess(exit) &&
           automaticTailBudgetAvailable(completedBudget, monotonicMilliseconds()) &&
           ((exit.value as CodeGraphRoutineMaintenanceResult & {[CODE_GRAPH_MAINTENANCE_TRAILING]?: true})[
@@ -695,7 +753,7 @@ export const makeCodeGraphMaintenanceCoordinator = Effect.fn('codeGraph.makeMain
             if (home !== undefined) {
               const pending = new Map(home.pending);
               const decision: MaintenanceTickDecision =
-                home.active.databasePath === input.databasePath
+                home.active.databasePath === input.databasePath && input.joinActive !== false
                   ? {completion: home.active.completion, state: 'join'}
                   : {state: 'deferred'};
               const existingPending = pending.get(input.databasePath);
@@ -835,5 +893,14 @@ function mergeMaintenanceTick(
     allowIndexPreparation:
       incoming.allowIndexPreparation === true || existing.allowIndexPreparation === true ? true : undefined,
     anchorIdentity: incoming.anchorIdentity ?? existing.anchorIdentity,
+    anchorPath: incoming.anchorPath ?? existing.anchorPath,
+    pressure: strongestStoragePressure(existing.pressure, incoming.pressure),
   };
+}
+
+function strongestStoragePressure(
+  left: CodeGraphMaintenanceStoragePressure | undefined,
+  right: CodeGraphMaintenanceStoragePressure | undefined,
+): CodeGraphMaintenanceStoragePressure | undefined {
+  return left === 'critical' || right === 'critical' ? 'critical' : (left ?? right);
 }

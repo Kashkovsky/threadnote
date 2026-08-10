@@ -229,15 +229,24 @@ it with:
 
 ```sh
 threadnote graph status
+threadnote graph inventory
 threadnote doctor --dry-run
 threadnote graph index --full
 ```
 
+`threadnote graph inventory` is a non-mutating, aggregate-only admission preview. It reports exact file and byte totals
+for eligible and skipped inputs, grouped by language, file role, language-pack classifier, and decision reason. The
+breakdown makes SVG, heavy/generated JSON, Git ignore, and `.threadnoteignore` decisions visible while separately
+showing admitted TypeScript, package manifests, Nx configuration, and TypeScript configuration. Add `--json` for the
+versioned path-free payload. Ordinary source blobs are not hydrated; Threadnote reads only the small resolution
+manifests needed to apply the same declared-source-root rules as indexing.
+
 Interactive indexing shows each Git read batch, then each extraction file and language with parse timing, followed by
 the persistence batches. Long pauses can therefore be attributed to input, parsing, or SQLite publication instead of
 appearing as an undifferentiated spinner. Generated roots such as `node_modules`, `dist`, `build`, `out`, hidden caches, and
-`bazel-*` are pruned before reads. Snapshot/golden/fixture structured data is fingerprinted without hydrating its
-payload and retained as file/module metadata only; manifests, schemas, and configs still use their dedicated parsers.
+`bazel-*` are pruned before reads. SVG and snapshot/golden/fixture or generated JSON/JSONC are excluded before blob
+reads and hashing. Generic JSON/JSONC at or above 256 KiB is also excluded, while recognized package, Nx, TypeScript,
+schema, and configuration inputs remain eligible below their separate 1 MiB safety cap.
 
 A large cold MCP inspection can return `state: "indexing"` with measured phase progress, an optional phase-scoped
 estimate, and adaptive retry timing. Continue useful targeted text or path investigation while it builds, then retry
@@ -247,6 +256,17 @@ logic and ambiguous dependencies remain syntactic rather than being guessed. Baz
 loads, and labels are also detected statically from `WORKSPACE*`, `MODULE.bazel`, `BUILD*`, `.bzl`, `.axl`, and
 `.bazelrc` (including Aspect CLI sources under `.aspect/`); Threadnote never invokes Bazel or evaluates Starlark
 macros.
+
+Use `threadnote graph query --package <exact-package> --query <terms>` when a monorepo question is explicitly
+package-local. Its bounded examined/matched counts make a zero-result useful as an absence hint, but never as proof of
+repository-wide absence. For a named seed-manifest workset, `threadnote graph query --workset <name> --query <terms>`
+allocates one shared bounded result budget across at most eight member repositories and labels every result with its
+repository and snapshot. It reads existing ready snapshots only; unavailable members are reported and are not cold
+indexed as a fan-out side effect.
+
+Android `res` XML and Apple plist, storyboard, XIB, and asset-catalog metadata contribute explicit searchable resource
+wiring. Binary images remain metadata-only: no query result may be used to infer pixel bounds, visual appearance, OCR,
+or other image semantics Threadnote did not extract.
 
 Manager keeps ready graph views readable while another process owns the graph writer. A `lease-deferred` notice means
 snapshot retention was postponed by that active build, not that the database or ready snapshot is unhealthy; retry

@@ -9,6 +9,7 @@ import {
   sameCodeGraphGitWorktreeRegistration,
   type CodeGraphGitWorktreeRegistration,
 } from './git_worktree_registration.js';
+import {classifyCodeGraphLifecycle} from './lifecycle_classification.js';
 import {resolveRepositoryIdentityDetail} from './repository.js';
 import {codeGraphLocalProvenanceLockPath} from './layout.js';
 import type {RepositoryIdentity} from './types.js';
@@ -554,6 +555,11 @@ const cleanupMissingCodeGraphLocalProvenanceUnsafe = Effect.fn('codeGraph.cleanu
       owned === undefined ||
       !sameLocalProvenanceCleanupCandidate(initial, owned) ||
       !(yield* recordedWorktreePathMissing(owned.record.canonicalWorktreePath))
+    ) {
+      return {observedState: 'stale', state: 'preserved'} as const satisfies CodeGraphLocalProvenanceCleanupResult;
+    }
+    if (
+      classifyCodeGraphLifecycle({authority: 'proven-disposable', state: 'orphaned-sidecar'}).disposition !== 'reclaim'
     ) {
       return {observedState: 'stale', state: 'preserved'} as const satisfies CodeGraphLocalProvenanceCleanupResult;
     }

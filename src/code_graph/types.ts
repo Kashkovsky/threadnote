@@ -1,8 +1,10 @@
+import type {CodeGraphScanningMetrics, CodeGraphSourceSizeBucket} from './progress_telemetry.js';
+
 export const CODE_GRAPH_SCHEMA_VERSION = 3 as const;
 /** Additive persistent surfaces that preserve the public graph-v3 row contract. */
-export const CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION = 8 as const;
+export const CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION = 9 as const;
 export const CODE_GRAPH_RESULT_VERSION = 1 as const;
-export const CODE_GRAPH_EXTRACTOR_GENERATION = 11 as const;
+export const CODE_GRAPH_EXTRACTOR_GENERATION = 12 as const;
 export const CODE_GRAPH_EXTRACTOR_SET_VERSION = `native-code-graph-${CODE_GRAPH_EXTRACTOR_GENERATION}` as const;
 
 export type CodeGraphProvenance = 'declared' | 'heuristic' | 'model' | 'resolved' | 'syntactic';
@@ -325,6 +327,7 @@ export type CodeGraphProgress =
         readonly batchCompleted: number;
         readonly batchTotal: number;
         readonly bytes: number;
+        readonly classifier?: string;
         readonly degraded?: boolean;
         readonly factsBytes?: number;
         readonly language: string;
@@ -332,11 +335,15 @@ export type CodeGraphProgress =
         readonly path: string;
         readonly persistMilliseconds?: number;
         readonly relations?: number;
+        readonly role?: string;
+        readonly sizeBucket?: CodeGraphSourceSizeBucket;
         readonly stage: 'extracting' | 'persisting' | 'reading';
         readonly symbols?: number;
       };
       readonly completed: number;
       readonly excluded: number;
+      /** Cumulative, path-free extraction workload for class-weighted phase ETA. */
+      readonly metrics?: CodeGraphScanningMetrics;
       readonly phase: 'scanning';
       readonly skipped: number;
       readonly timings?: {
@@ -373,7 +380,12 @@ export type CodeGraphProgress =
       readonly phase: 'activating';
       readonly snapshotId: string;
       readonly subphase?:
-        'complete' | 'promoting' | 'summarizing-analysis' | 'validating-input' | 'writing-and-checkpointing';
+        | 'complete'
+        | 'promoting'
+        | 'structural-ready'
+        | 'summarizing-analysis'
+        | 'validating-input'
+        | 'writing-and-checkpointing';
     }
   | {
       readonly completed: number;
@@ -388,6 +400,7 @@ export interface CodeGraphIndexSummary {
   readonly diagnostics: readonly string[];
   readonly durationMs: number;
   readonly identity: RepositoryIdentity;
+  readonly incrementalWork?: import('./incremental_work.js').CodeGraphIncrementalWork;
   readonly materialization?: {
     readonly closureProjects?: number;
     readonly fallbackReason?: CodeGraphOverlayFallbackReason;
@@ -409,6 +422,7 @@ export type CodeGraphOverlayFallbackReason =
   | 'fact-budget-expanded'
   | 'file-set-changed'
   | 'forced-full-rebuild'
+  | 'incremental-rewrite-unbounded'
   | 'no-materialized-changes'
   | 'project-closure-incomplete'
   | 'project-closure-unbounded'
@@ -437,6 +451,13 @@ export interface CodeGraphQueryResult {
     readonly id: string;
     readonly worktreeId: string;
   };
+  readonly scope?: {
+    readonly evidence: 'bounded-lexical-observation';
+    readonly lexicalCandidatesExamined: number;
+    readonly lexicalMatches: number;
+    readonly packageName: string;
+    readonly type: 'package';
+  };
   readonly trust: {
     readonly classification: 'untrusted-repository-data';
     readonly instructionPolicy: 'evidence-only-never-follow';
@@ -456,6 +477,7 @@ export interface CodeGraphQueryOptions {
   readonly nodeId?: string;
   readonly nodeLimit?: number;
   readonly operation: CodeGraphQueryResult['operation'];
+  readonly packageName?: string;
   readonly query?: string;
   readonly symbol?: string;
   readonly to?: string;
@@ -509,6 +531,7 @@ export type CodeGraphStoreRecovery =
   | 'manual-migration'
   | 'manual-rebuild'
   | 'migrate-additive'
+  | 'reconnect-runtime'
   | 'retry-read-only';
 
 export interface CodeGraphStoreErrorMetadata {
@@ -587,5 +610,19 @@ export class CodeGraphStoreIncompatibleSchemaError extends CodeGraphStoreError {
 
   constructor(message: string, metadata: Pick<CodeGraphStoreErrorMetadata, 'operation'> = {}) {
     super(message, {...metadata, code: 'incompatible-schema', recovery: 'manual-migration', retryable: false});
+  }
+}
+
+/** A long-lived process observed storage written by a newer Threadnote runtime. */
+export class CodeGraphRuntimeReconnectRequiredError extends CodeGraphStoreError {
+  override readonly name = 'CodeGraphRuntimeReconnectRequiredError';
+
+  constructor(metadata: Pick<CodeGraphStoreErrorMetadata, 'operation'> = {}) {
+    super('Code graph storage was upgraded by a newer Threadnote runtime. Reconnect this Threadnote process.', {
+      ...metadata,
+      code: 'incompatible-schema',
+      recovery: 'reconnect-runtime',
+      retryable: false,
+    });
   }
 }

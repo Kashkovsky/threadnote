@@ -4,7 +4,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {Effect, FileSystem} from 'effect';
 import {afterEach, describe, expect, it} from 'vitest';
-import {inventoryRepository, worktreeOverlayState} from '../../src/code_graph/inventory.js';
+import {inventoryRepository, previewCodeGraphInventory, worktreeOverlayState} from '../../src/code_graph/inventory.js';
 import {
   CODE_GRAPH_GENERIC_JSON_EXCLUSION_BYTES,
   CODE_GRAPH_HIGH_SIGNAL_JSON_HARD_CAP_BYTES,
@@ -117,6 +117,79 @@ describe('code graph inventory admission policy', () => {
         admittedOpened.some(opened => opened.endsWith(`/${path}`)),
         path,
       ).toBe(false);
+    }
+  });
+
+  it('previews exact aggregate admission decisions without reading excluded blobs', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'threadnote-inventory-preview-'));
+    roots.push(root);
+    git(root, ['init', '-q']);
+    for (const directory of [['apps', 'mobile'], ['assets'], ['data'], ['src']]) {
+      mkdirSync(join(root, ...directory), {recursive: true});
+    }
+    writeFileSync(join(root, 'package.json'), '{"name":"inventory-preview"}\n');
+    writeFileSync(join(root, 'tsconfig.json'), '{"compilerOptions":{}}\n');
+    writeFileSync(join(root, 'apps', 'mobile', 'project.json'), '{}\n');
+    writeFileSync(join(root, 'src', 'active.ts'), 'export const active = true;\n');
+    writeFileSync(join(root, 'src', 'ignored.ts'), 'export const ignored = true;\n');
+    writeFileSync(join(root, '.threadnoteignore'), 'src/ignored.ts\n');
+    writeFileSync(join(root, 'assets', 'icon.svg'), '<svg/>');
+    writeSizedFile(join(root, 'data', 'heavy.json'), CODE_GRAPH_GENERIC_JSON_EXCLUSION_BYTES);
+    git(root, ['add', '.']);
+    git(root, [
+      '-c',
+      'user.name=Threadnote Test',
+      '-c',
+      'user.email=test@threadnote.local',
+      'commit',
+      '-qm',
+      'fixture',
+    ]);
+    const excludedBlobIds = new Set([
+      git(root, ['rev-parse', 'HEAD:assets/icon.svg']),
+      git(root, ['rev-parse', 'HEAD:data/heavy.json']),
+    ]);
+    const requestedBlobIds: string[] = [];
+
+    const preview = await runEffect(
+      Effect.gen(function* () {
+        const identity = yield* resolveRepositoryIdentity(root);
+        const command = yield* CommandExecutor;
+        const observedCommand = CommandExecutor.of({
+          ...command,
+          executeBytes: (executable, args, options) => {
+            if (executable === 'git' && args.includes('cat-file') && args.includes('--batch')) {
+              requestedBlobIds.push(
+                ...new TextDecoder()
+                  .decode(options?.input ?? new Uint8Array())
+                  .split('\n')
+                  .filter(Boolean),
+              );
+            }
+            return command.executeBytes!(executable, args, options);
+          },
+        });
+        return yield* previewCodeGraphInventory(identity).pipe(Effect.provideService(CommandExecutor, observedCommand));
+      }),
+    );
+    const group = (reason: string, language: string) =>
+      preview.groups.find(candidate => candidate.reason === reason && candidate.language === language);
+
+    expect(requestedBlobIds.filter(blobId => excludedBlobIds.has(blobId))).toEqual([]);
+    expect(preview).toMatchObject({dirty: false, policyVersion: 1, scope: 'head-and-worktree'});
+    expect(group('svg', 'document')).toMatchObject({classifier: 'corpus', disposition: 'skipped'});
+    expect(group('generic-json-size', 'json')).toMatchObject({classifier: 'schemas', disposition: 'skipped'});
+    expect(group('threadnote-ignore', 'typescript')).toMatchObject({
+      classifier: 'typescript',
+      disposition: 'skipped',
+    });
+    expect(group('admitted', 'typescript')).toMatchObject({disposition: 'eligible', role: 'source'});
+    expect(group('admitted', 'npm-manifest')).toMatchObject({disposition: 'eligible', role: 'manifest'});
+    expect(group('admitted', 'typescript-config')).toMatchObject({disposition: 'eligible', role: 'workspace'});
+    expect(group('admitted', 'json')).toMatchObject({classifier: 'schemas', disposition: 'eligible'});
+    expect(JSON.stringify(preview)).not.toContain(root);
+    for (const repositoryPath of ['src/active.ts', 'src/ignored.ts', 'assets/icon.svg', 'data/heavy.json']) {
+      expect(JSON.stringify(preview)).not.toContain(repositoryPath);
     }
   });
 

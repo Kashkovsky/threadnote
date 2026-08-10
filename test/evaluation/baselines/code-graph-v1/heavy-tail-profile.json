@@ -13,12 +13,15 @@
     "version": 1
   },
   "reviewedShape": {
-    "eligibleFiles": 4269,
+    "eligibleFiles": 268,
+    "repositoryFiles": 4276,
+    "excludedJsonFiles": 8,
+    "excludedSvgFiles": 4000,
     "interruptionResumeRequired": true,
     "latencyBudget": "same-run comparison only; no portable absolute threshold",
-    "lowSignalJsonPolicy": "one module symbol and at most 16384 cached fact bytes",
+    "lowSignalJsonPolicy": "small, 0.8 MiB, 5.7 MiB, and 25 MiB duplicate snapshot blobs are excluded before extraction and cache admission",
     "parallelDeterminism": "workers=1 graph digest must equal workers=4 graph digest",
     "pathologicalTypeScriptPolicy": "imports, exports, and declarations after bounded calls remain present",
-    "textlessSvgPolicy": "one deterministic metadata symbol per tracked SVG"
+    "textlessSvgPolicy": "generated textless SVG packs are excluded before extraction and cache admission"
   }
 }

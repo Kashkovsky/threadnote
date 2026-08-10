@@ -646,20 +646,68 @@ describe('manager http API', () => {
       const statusResponse = await fetch(`${server.url}/api/graphs/status`, {headers});
       const status = (await statusResponse.json()) as {
         readonly builds: readonly {readonly state: string}[];
+        readonly catalogRevision?: string;
         readonly queuedWorktreeIds: readonly string[];
       };
       expect(statusResponse.status).toBe(200);
       expect(status.builds).toEqual([expect.objectContaining({state: 'queued'})]);
       expect(status.queuedWorktreeIds).toEqual([seeded.worktreeId]);
+      expect(status.catalogRevision).toBeUndefined();
       expect(existsSync(seeded.databasePath)).toBe(false);
 
       const catalogResponse = await fetch(`${server.url}/api/graphs`, {headers});
       const catalog = (await catalogResponse.json()) as {
         readonly builds: readonly {readonly state: string}[];
+        readonly catalogRevision: string;
         readonly repositories: readonly unknown[];
       };
       expect(catalog).toMatchObject({builds: [expect.objectContaining({state: 'queued'})], repositories: []});
+      expect(catalog.catalogRevision).toMatch(/^[0-9a-f]{64}$/u);
       expect(existsSync(seeded.databasePath)).toBe(false);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('invalidates an open Manager catalog when another process removes a view', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    const checkoutId = await seedManagerGraph(config);
+    const server = await startServer(config, 'secret');
+    try {
+      const headers = {authorization: 'Bearer secret'};
+      const initialResponse = await fetch(`${server.url}/api/graphs`, {headers});
+      const initial = (await initialResponse.json()) as {
+        readonly catalogRevision: string;
+        readonly repositories: readonly {readonly views: readonly unknown[]}[];
+      };
+      expect(initialResponse.status).toBe(200);
+      expect(initial.repositories[0]?.views).toHaveLength(1);
+
+      const removal = await runEffect(
+        Effect.gen(function* () {
+          const path = yield* Path.Path;
+          const store = yield* CodeGraphStore;
+          const layout = codeGraphLayout(path, config.agentContextHome, checkoutId, 'c'.repeat(64));
+          return yield* store.removeView(layout.databasePath, 'c'.repeat(64), MANAGER_GRAPH_SNAPSHOT_ID);
+        }),
+      );
+      expect(removal.state).toBe('removed');
+
+      const statusResponse = await fetch(`${server.url}/api/graphs/status`, {headers});
+      const status = (await statusResponse.json()) as {readonly catalogRevision?: string};
+      expect(statusResponse.status).toBe(200);
+      expect(status.catalogRevision).toMatch(/^[0-9a-f]{64}$/u);
+      expect(status.catalogRevision).not.toBe(initial.catalogRevision);
+
+      const refreshedResponse = await fetch(`${server.url}/api/graphs`, {headers});
+      const refreshed = (await refreshedResponse.json()) as {
+        readonly catalogRevision: string;
+        readonly repositories: readonly unknown[];
+      };
+      expect(refreshedResponse.status).toBe(200);
+      expect(refreshed.catalogRevision).toBe(status.catalogRevision);
+      expect(refreshed.repositories).toEqual([]);
     } finally {
       await server.close();
     }
@@ -1298,17 +1346,30 @@ describe('manager http API', () => {
     homes.push(config.agentContextHome);
     const server = await startServer(config, 'secret');
     try {
-      const response = await runEffect(
+      const [response, statusResponse] = await runEffect(
         withCodeGraphMaintenanceIntent(
           config.agentContextHome,
-          Effect.promise(() =>
-            fetch(`${server.url}/api/graphs/diagnostics`, {headers: {authorization: 'Bearer secret'}}),
+          Effect.all(
+            [
+              Effect.promise(() =>
+                fetch(`${server.url}/api/graphs/diagnostics`, {headers: {authorization: 'Bearer secret'}}),
+              ),
+              Effect.promise(() =>
+                fetch(`${server.url}/api/graphs/status`, {headers: {authorization: 'Bearer secret'}}),
+              ),
+            ] as const,
+            {concurrency: 'unbounded'},
           ),
         ),
       );
       expect(response.status).toBe(409);
       expect(await response.json()).toMatchObject({
         error: expect.stringContaining('Native code graph repair or maintenance is in progress'),
+      });
+      expect(statusResponse.status).toBe(200);
+      expect(await statusResponse.json()).toMatchObject({
+        builds: [],
+        maintenance: {operation: 'graph-maintenance', phase: 'working'},
       });
     } finally {
       await server.close();

@@ -1,9 +1,12 @@
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import {
+  graphAdministrationJobSelection,
+  graphBuildConcurrencyState,
   graphFocusTarget,
   graphWheelZoomFactor,
   graphWithNodeNeighborhood,
+  type GraphBuildStatus,
   type GraphNodeDetail,
   type GraphVisualization,
 } from '../../src/manager_graph.js';
@@ -12,6 +15,7 @@ import {
   representativeManagerGraphEdges,
   type ManagerGraphEdge,
 } from '../../src/code_graph/visualization.js';
+import {managerGraphCatalogRevision} from '../../src/code_graph/manager_catalog_revision.js';
 import type {CodeGraphEdge, CodeGraphSymbol} from '../../src/code_graph/types.js';
 import {
   MANAGER_GRAPH_MAX_EDGE_LIMIT,
@@ -20,6 +24,124 @@ import {
 } from '../../src/manager_graph_limits.js';
 
 describe('Manager graph properties', () => {
+  it('keeps catalog revisions order-independent and sensitive to lifecycle changes', () => {
+    fc.assert(
+      fc.property(
+        fc.uniqueArray(
+          fc.record({
+            checkoutId: fc.uuid(),
+            state: fc.constantFrom('ready' as const, 'unavailable' as const),
+            views: fc.uniqueArray(
+              fc.record({
+                activatedAt: fc.integer({min: 0, max: 2_000_000_000}).map(String),
+                repositoryId: fc.uuid(),
+                snapshotId: fc.uuid(),
+                worktreeId: fc.uuid(),
+              }),
+              {maxLength: 12, selector: view => view.worktreeId},
+            ),
+            viewsTruncated: fc.boolean(),
+          }),
+          {maxLength: 12, selector: database => database.checkoutId},
+        ),
+        databases => {
+          const reordered = [...databases]
+            .reverse()
+            .map(database => ({...database, views: [...database.views].reverse()}));
+          expect(managerGraphCatalogRevision(reordered)).toBe(managerGraphCatalogRevision(databases));
+
+          const changed =
+            databases.length === 0
+              ? [{checkoutId: 'new', state: 'ready' as const, views: [], viewsTruncated: false}]
+              : databases.map((database, index) =>
+                  index === 0 ? {...database, viewsTruncated: !database.viewsTruncated} : database,
+                );
+          expect(managerGraphCatalogRevision(changed)).not.toBe(managerGraphCatalogRevision(databases));
+        },
+      ),
+      {numRuns: 120},
+    );
+  });
+
+  it('keeps actionable administration jobs deterministic, unique, and bounded', () => {
+    fc.assert(
+      fc.property(
+        fc.uniqueArray(
+          fc.record({
+            buildNumber: fc.integer({min: 0, max: 1_000_000}),
+            startedAt: fc.integer({min: 0, max: 2_000_000_000}),
+            state: fc.constantFrom('completed' as const, 'failed' as const, 'queued' as const, 'running' as const),
+          }),
+          {maxLength: 80, selector: item => item.buildNumber},
+        ),
+        records => {
+          const statuses = records.map(record =>
+            graphBuildStatus(
+              `build-${record.buildNumber}`,
+              record.buildNumber.toString(16).padStart(12, '0'),
+              record.startedAt,
+              record.state,
+            ),
+          );
+          const builds = statuses.filter((_, index) => index % 2 === 0);
+          const waiters = statuses.filter((_, index) => index % 2 === 1);
+          const forward = graphAdministrationJobSelection(builds, waiters);
+          const reverse = graphAdministrationJobSelection([...builds].reverse(), [...waiters].reverse());
+          const expectedTotal = statuses.filter(status => status.state !== 'completed').length;
+
+          expect(forward).toEqual(reverse);
+          expect(forward.jobs.length).toBeLessThanOrEqual(4);
+          expect(forward.jobs.length + forward.hiddenCount).toBe(forward.total);
+          expect(forward.total).toBe(expectedTotal);
+          expect(new Set(forward.jobs.map(job => job.buildId)).size).toBe(forward.jobs.length);
+          expect(forward.jobs.every(job => job.state !== 'completed')).toBe(true);
+        },
+      ),
+      {numRuns: 120},
+    );
+  });
+
+  it('selects the latest observed queued target independently of waiter order', () => {
+    fc.assert(
+      fc.property(
+        fc.uniqueArray(fc.integer({min: 1, max: 1_000_000}), {minLength: 1, maxLength: 80}),
+        startedAtValues => {
+          const owner = graphBuildStatus('owner', '000000000000', 0, 'running');
+          const waiters = startedAtValues.map(startedAt =>
+            graphBuildStatus(
+              `waiter-${startedAt.toString().padStart(7, '0')}`,
+              startedAt.toString(16).padStart(12, '0'),
+              startedAt,
+              'queued',
+            ),
+          );
+          const unrelated = {
+            ...graphBuildStatus('unrelated', 'ffffffffffff', 2_000_000, 'queued'),
+            identity: {
+              ...owner.identity,
+              checkoutId: 'other-checkout',
+              worktreeId: 'other-worktree',
+            },
+          };
+          const expected = Math.max(...startedAtValues)
+            .toString(16)
+            .padStart(12, '0');
+          const forward = graphBuildConcurrencyState(owner, [...waiters, unrelated], []);
+          const reverse = graphBuildConcurrencyState(owner, [unrelated, ...waiters].reverse(), []);
+
+          expect(forward).toEqual(reverse);
+          expect(forward).toEqual({
+            activeTargetCommit: '000000000000',
+            latestTargetCommit: expected,
+            queuedRequests: waiters.length,
+            staleReady: false,
+          });
+        },
+      ),
+      {numRuns: 160},
+    );
+  });
+
   it('always normalizes arbitrary requested budgets into positive hard bounds', () => {
     fc.assert(
       fc.property(
@@ -166,6 +288,33 @@ describe('Manager graph properties', () => {
     );
   });
 });
+
+function graphBuildStatus(
+  buildId: string,
+  commit: string,
+  startedAtMilliseconds: number,
+  state: 'completed' | 'failed' | 'queued' | 'running',
+): GraphBuildStatus {
+  const startedAt = new Date(startedAtMilliseconds).toISOString();
+  return {
+    buildId,
+    counters: {},
+    identity: {
+      checkoutId: 'checkout',
+      commit,
+      repositoryId: 'repository',
+      worktreeId: 'worktree',
+    },
+    observation: {
+      heartbeatAgeMilliseconds: 0,
+      liveness: state === 'completed' ? 'completed' : state === 'failed' ? 'failed' : 'active',
+    },
+    owner: {processId: 42},
+    phase: state === 'queued' ? 'waiting' : 'scanning',
+    state,
+    timestamps: {heartbeatAt: startedAt, lastProgressAt: startedAt, startedAt},
+  };
+}
 
 function codeGraphSymbol(id: string, resolutionScopeId: string | undefined): CodeGraphSymbol {
   return {

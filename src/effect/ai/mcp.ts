@@ -6,7 +6,10 @@ import {fromPromiseError} from '../errors.js';
 import type {ApplicationServices} from '../runtime.js';
 import {omitProductionLogPhaseRecorder, withProductionLogging} from '../production_log.js';
 
-const MCP_PRODUCTION_LOG_WRITE_TIMEOUT_MILLISECONDS = 50;
+// Windows antivirus and filesystem scheduling can make an otherwise healthy
+// append exceed 50 ms. Keep MCP diagnostics best-effort and bounded without
+// routinely dropping the completion record that explains a returned error.
+const MCP_PRODUCTION_LOG_WRITE_TIMEOUT_MILLISECONDS = 500;
 const EFFECT_RPC_CAUSE_MARKER = new TextEncoder().encode('"_tag":"Cause"');
 const MCP_RESOURCE_ERROR_BRAND_KEY = 'threadnote.io/resource-read-error';
 export const MCP_RESOURCE_ERROR_DATA = Object.freeze({[MCP_RESOURCE_ERROR_BRAND_KEY]: 1});

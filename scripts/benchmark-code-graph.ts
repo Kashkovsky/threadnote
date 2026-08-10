@@ -1,10 +1,11 @@
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import {Database} from 'bun:sqlite';
-import {Clock, Deferred, Effect, Exit, FileSystem, Option, Path} from 'effect';
+import {Clock, Deferred, Effect, Exit, FileSystem, Option, Path, PlatformError} from 'effect';
 import {readCodeGraphBuildStatuses} from '../src/code_graph/build_status.js';
 import {CodeGraphIndexer} from '../src/code_graph/indexer.js';
 import {
   codeGraphEffectiveSymbolTermsQueryStatement,
+  codeGraphSymbolPathScoreMultiplier,
   CodeGraphStore,
   type CodeGraphSqliteWriterSettings,
   type CodeGraphSqliteWriterTuning,
@@ -62,6 +63,7 @@ import {
   PRODUCTION_WORKTREE_CHURN_SCENARIOS,
   VECTOR_SEMANTIC_CONTROL_QUERY,
   generatedSymbolName,
+  makeOwnedTempDirectoryScoped,
   prepareCodeGraphFixture,
   prepareGeneratedCodeGraphFixture,
   prepareProductionCodeGraphFixture,
@@ -93,6 +95,17 @@ const LONG_SCALE_PROVENANCE_THRESHOLD = 100_000;
 const EXACT_GIT_COMMIT_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const PERFORMANCE_CONTROL_LANGUAGES = ['java', 'kotlin', 'typescript', 'bazel-build'] as const;
 const MANAGER_QUERY_NODE_LIMIT = 200;
+const VECTOR_SEMANTIC_CONTROL_RAW_SCORE_MINIMUM = 0.64;
+const BENCHMARK_VECTOR_MODEL_DIRECTORY_NAME = /^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$/;
+
+export function vectorSemanticControlMinimumScore(expectedPath: string): number {
+  return VECTOR_SEMANTIC_CONTROL_RAW_SCORE_MINIMUM * codeGraphSymbolPathScoreMultiplier(expectedPath, []);
+}
+
+export function benchmarkVectorModelDirectoryName(name: string): boolean {
+  return BENCHMARK_VECTOR_MODEL_DIRECTORY_NAME.test(name);
+}
+
 const MANAGER_QUERY_EDGE_LIMIT = 500;
 const EXTERNAL_QUERY_CONTROL_TIMEOUT_MS = 120_000;
 const MANAGER_SEQUENCE_TIMEOUT_MS = 180_000;
@@ -619,13 +632,15 @@ const benchmarkCodeGraph = Effect.scoped(
         operation: 'query',
         query: queryText,
         refresh: false,
+        requestMaintenance: false,
         threadnoteHome: prepared.home,
       });
       const expectedPath =
         options.scaleSymbols === undefined && prepared.profile === undefined
           ? 'docs/architecture.md'
           : GENERATED_VECTOR_CONTROL_PATH;
-      if (!semanticControl.nodes.some(node => node.path === expectedPath && node.score >= 0.64)) {
+      const minimumScore = vectorSemanticControlMinimumScore(expectedPath);
+      if (!semanticControl.nodes.some(node => node.path === expectedPath && node.score >= minimumScore)) {
         const observed = semanticControl.nodes
           .slice(0, 5)
           .map(node => `${node.path}:${node.name}:${node.score.toFixed(3)}`)
@@ -651,6 +666,7 @@ const benchmarkCodeGraph = Effect.scoped(
           operation: 'query',
           query: queryText,
           refresh: false,
+          requestMaintenance: false,
           threadnoteHome: prepared.home,
         }),
         cold.snapshot.id,
@@ -662,6 +678,7 @@ const benchmarkCodeGraph = Effect.scoped(
         cwd: prepared.repository,
         operation: 'query',
         query: queryText,
+        requestMaintenance: false,
         threadnoteHome: prepared.home,
       });
     }
@@ -674,6 +691,7 @@ const benchmarkCodeGraph = Effect.scoped(
         cwd: prepared.repository,
         operation: 'query',
         query: queryText,
+        requestMaintenance: false,
         threadnoteHome: prepared.home,
       });
       queryDurations.push(Number((yield* Clock.currentTimeNanos) - started) / NANOSECONDS_PER_MILLISECOND);
@@ -754,6 +772,7 @@ const benchmarkCodeGraph = Effect.scoped(
         operation: 'query',
         query: queryText,
         refresh: false,
+        requestMaintenance: false,
         threadnoteHome: prepared.home,
       });
       const expectedPath =
@@ -762,7 +781,9 @@ const benchmarkCodeGraph = Effect.scoped(
           : GENERATED_VECTOR_CONTROL_PATH;
       if (
         semanticControl.snapshot.id !== incremental.snapshot.id ||
-        !semanticControl.nodes.some(node => node.path === expectedPath && node.score >= 0.64)
+        !semanticControl.nodes.some(
+          node => node.path === expectedPath && node.score >= vectorSemanticControlMinimumScore(expectedPath),
+        )
       ) {
         const observed = semanticControl.nodes
           .slice(0, 5)
@@ -799,6 +820,7 @@ const benchmarkCodeGraph = Effect.scoped(
           operation: 'query',
           query: queryText,
           refresh: false,
+          requestMaintenance: false,
           threadnoteHome: prepared.home,
         }),
         incremental.snapshot.id,
@@ -809,8 +831,10 @@ const benchmarkCodeGraph = Effect.scoped(
       : [];
 
     const sameOverlayReferenceHome =
-      prepared.referenceHome ??
-      (yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-code-graph-same-overlay-reference-'}));
+      prepared.referenceHome ?? (yield* makeOwnedTempDirectoryScoped('threadnote-code-graph-same-overlay-reference-'));
+    if (options.vectors) {
+      yield* prepareBenchmarkEmbedding(sameOverlayReferenceHome, options.modelHome);
+    }
     const sameOverlayReferenceIdentity = yield* resolveRepositoryIdentity(prepared.repository);
     const sameOverlayReferenceLayout = codeGraphLayout(
       path,
@@ -895,6 +919,7 @@ const benchmarkCodeGraph = Effect.scoped(
                     operation: 'query',
                     query: queryText,
                     refresh: false,
+                    requestMaintenance: false,
                     threadnoteHome: sameOverlayReferenceHome,
                   }),
                   summary.snapshot.id,
@@ -1357,6 +1382,7 @@ const benchmarkCodeGraph = Effect.scoped(
         }),
         runnerClass: benchmarkRunnerLabel('THREADNOTE_BENCHMARK_RUNNER_CLASS', 'local-unclassified'),
         runnerIdentity: benchmarkRunnerLabel('THREADNOTE_BENCHMARK_RUNNER_ID', 'local'),
+        runtimePlatform: system.platform,
         sampler: largeEvidenceRun
           ? externalSamplerDescription(coldExternalTelemetry ?? bootstrapExternalTelemetry)
           : 'progress-boundary storage sampling',
@@ -1477,18 +1503,36 @@ const benchmarkCodeGraph = Effect.scoped(
   }),
 );
 
-function directoryBytes(fs: FileSystem.FileSystem, path: Path.Path, directory: string): Effect.Effect<number, unknown> {
+export function directoryBytes(
+  fs: FileSystem.FileSystem,
+  path: Path.Path,
+  directory: string,
+): Effect.Effect<number, unknown> {
   return Effect.gen(function* () {
     if (!(yield* fs.exists(directory))) return 0;
     let bytes = 0;
     for (const name of yield* fs.readDirectory(directory)) {
       const child = path.join(directory, name);
-      const info = yield* fs.stat(child);
-      if (info.type === 'Directory') bytes += yield* directoryBytes(fs, path, child);
-      else if (info.type === 'File') bytes += Number(info.size);
+      const info = yield* fs.stat(child).pipe(
+        Effect.map(Option.some),
+        Effect.catch(error =>
+          error instanceof PlatformError.PlatformError && error.reason._tag === 'NotFound'
+            ? Effect.succeed(Option.none<FileSystem.File.Info>())
+            : Effect.fail(error),
+        ),
+      );
+      if (Option.isNone(info)) continue;
+      if (info.value.type === 'Directory') bytes += yield* directoryBytes(fs, path, child);
+      else if (info.value.type === 'File') bytes += Number(info.value.size);
     }
     return bytes;
-  });
+  }).pipe(
+    Effect.catch(error =>
+      error instanceof PlatformError.PlatformError && error.reason._tag === 'NotFound'
+        ? Effect.succeed(0)
+        : Effect.fail(error),
+    ),
+  );
 }
 
 function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
@@ -3110,6 +3154,9 @@ const vectorRowCount = Effect.fn('benchmarkCodeGraph.vectorRowCount')(function* 
   if (!(yield* fs.exists(vectorRoot))) return 0;
   let count = 0;
   for (const model of yield* fs.readDirectory(vectorRoot)) {
+    // Ordinary maintenance owns transient cursor files beside model directories. Filter them before stat so an
+    // atomic cursor cleanup cannot race this evidence-only count between readDirectory and stat.
+    if (!benchmarkVectorModelDirectoryName(model)) continue;
     const modelRoot = path.join(vectorRoot, model);
     const info = yield* fs.stat(modelRoot);
     if (info.type !== 'Directory') continue;
@@ -3196,6 +3243,7 @@ const benchmarkExternalQueryControl = Effect.fn('benchmarkCodeGraph.externalQuer
       operation: 'query',
       query: control.query,
       refresh: false,
+      requestMaintenance: false,
       threadnoteHome,
     })
     .pipe(
@@ -3241,6 +3289,7 @@ const benchmarkMcpOperationMatrix = Effect.fn('benchmarkCodeGraph.mcpOperationMa
         edgeLimit: 80,
         nodeLimit: 40,
         refresh: false,
+        requestMaintenance: false,
         threadnoteHome,
       })
       .pipe(Effect.timeout(25_000));
@@ -5070,6 +5119,7 @@ export const benchmarkConcurrentWorktreeIsolation = Effect.fn('benchmarkCodeGrap
             operation: 'query',
             query: 'primaryWorktreeSentinel',
             refresh: false,
+            requestMaintenance: false,
             threadnoteHome,
           }),
           query.inspect({
@@ -5077,6 +5127,7 @@ export const benchmarkConcurrentWorktreeIsolation = Effect.fn('benchmarkCodeGrap
             operation: 'query',
             query: 'linkedWorktreeSentinel',
             refresh: false,
+            requestMaintenance: false,
             threadnoteHome,
           }),
           query.inspect({
@@ -5084,6 +5135,7 @@ export const benchmarkConcurrentWorktreeIsolation = Effect.fn('benchmarkCodeGrap
             operation: 'query',
             query: 'linkedWorktreeSentinel',
             refresh: false,
+            requestMaintenance: false,
             threadnoteHome,
           }),
           query.inspect({
@@ -5091,6 +5143,7 @@ export const benchmarkConcurrentWorktreeIsolation = Effect.fn('benchmarkCodeGrap
             operation: 'query',
             query: 'primaryWorktreeSentinel',
             refresh: false,
+            requestMaintenance: false,
             threadnoteHome,
           }),
         ],
@@ -5495,11 +5548,12 @@ export function enforceCodeGraphBenchmarkBudget(
   if (typeof value !== 'object' || value === null) throw new Error('Code graph budget file must be an object.');
   const record = value as {
     readonly developmentPerformance?: unknown;
+    readonly developmentPerformanceByPlatform?: Readonly<Record<string, unknown>>;
     readonly scalePerformance?: Readonly<Record<string, unknown>>;
     readonly vectorPerformance?: unknown;
     readonly vectorScalePerformance?: Readonly<Record<string, unknown>>;
   };
-  const selected =
+  const baseSelected =
     artifact.metadata.vectorEnabled === true
       ? scaleSymbols === undefined
         ? record.vectorPerformance
@@ -5507,6 +5561,19 @@ export function enforceCodeGraphBenchmarkBudget(
       : scaleSymbols === undefined
         ? record.developmentPerformance
         : record.scalePerformance?.[String(scaleSymbols)];
+  const runtimePlatform = artifact.metadata.runtimePlatform;
+  const platformOverride =
+    artifact.metadata.vectorEnabled !== true &&
+    scaleSymbols === undefined &&
+    typeof runtimePlatform === 'string' &&
+    typeof record.developmentPerformanceByPlatform?.[runtimePlatform] === 'object' &&
+    record.developmentPerformanceByPlatform[runtimePlatform] !== null
+      ? record.developmentPerformanceByPlatform[runtimePlatform]
+      : undefined;
+  const selected =
+    typeof baseSelected === 'object' && baseSelected !== null && platformOverride !== undefined
+      ? {...baseSelected, ...platformOverride}
+      : baseSelected;
   if (typeof selected !== 'object' || selected === null) {
     throw new Error(
       `No reviewed ${artifact.metadata.vectorEnabled === true ? 'vector ' : ''}code graph performance budget exists ` +

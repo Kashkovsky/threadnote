@@ -1,8 +1,10 @@
 import {unzipSync, type UnzipFileInfo} from 'fflate';
 import {getDocumentProxy, getResolvedPDFJS} from 'unpdf';
+import {Option} from 'effect';
 import {sha256HexSync} from '../../../crypto/sha256.js';
 import {compareNaturalCodeUnits} from '../../ordering.js';
 import type {CodeGraphEdge, CodeGraphFileFacts, CodeGraphInventoryFile, CodeGraphSymbol} from '../../types.js';
+import type {CodeGraphExtractionContext} from '../types.js';
 import {
   CORPUS_ARCHIVE_ENTRY_BYTES_LIMIT,
   CORPUS_ARCHIVE_EXPANDED_BYTES_LIMIT,
@@ -31,6 +33,8 @@ const IMAGE_EXTENSIONS = new Set([
 ]);
 const AUDIO_EXTENSIONS = new Set(['.aac', '.flac', '.m4a', '.mp3', '.oga', '.ogg', '.opus', '.wav']);
 const VIDEO_EXTENSIONS = new Set(['.avi', '.m4v', '.mkv', '.mov', '.mp4', '.mpeg', '.mpg', '.webm']);
+const MOBILE_RESOURCE_XML_ELEMENT_LIMIT = 512;
+const MOBILE_RESOURCE_XML_ATTRIBUTE_LIMIT = 4_096;
 
 interface ExtractedSection {
   readonly name: string;
@@ -39,8 +43,9 @@ interface ExtractedSection {
 
 interface ExtractedCorpus {
   readonly diagnostics: readonly string[];
-  readonly kind: 'asset' | 'document';
+  readonly kind: 'asset' | 'document' | 'resource';
   readonly metadata: readonly string[];
+  readonly resourceReferences?: readonly string[];
   readonly sections: readonly ExtractedSection[];
   readonly urls: readonly string[];
 }
@@ -63,27 +68,36 @@ export interface CorpusExtractionOptions {
 export async function extractCorpusFile(
   file: CodeGraphInventoryFile,
   options: CorpusExtractionOptions = {},
+  context?: CodeGraphExtractionContext,
 ): Promise<CodeGraphFileFacts> {
   const extension = extensionOf(file.path);
   if (file.contentOmittedReason === 'metadata-only') {
-    return buildFacts(file, {
-      diagnostics: [`${file.path}: binary media content was not loaded; indexed as deterministic asset metadata.`],
-      kind: 'asset',
-      metadata: [`format ${extension.slice(1) || 'unknown'}`, `${file.size} bytes`],
-      sections: [],
-      urls: [],
-    });
+    return buildFacts(
+      file,
+      {
+        diagnostics: [`${file.path}: binary media content was not loaded; indexed as deterministic asset metadata.`],
+        kind: 'asset',
+        metadata: [`format ${extension.slice(1) || 'unknown'}`, `${file.size} bytes`],
+        sections: [],
+        urls: [],
+      },
+      context,
+    );
   }
   if (file.contentOmittedReason === 'size-budget' || file.size > CORPUS_EXTRACTION_SOURCE_BYTES_LIMIT) {
-    return buildFacts(file, {
-      diagnostics: [
-        `${file.path}: content exceeds the 64 MiB per-artifact extraction safety budget; indexed as asset metadata.`,
-      ],
-      kind: 'asset',
-      metadata: [`format ${extension.slice(1) || 'unknown'}`, `${file.size} bytes`],
-      sections: [],
-      urls: [],
-    });
+    return buildFacts(
+      file,
+      {
+        diagnostics: [
+          `${file.path}: content exceeds the 64 MiB per-artifact extraction safety budget; indexed as asset metadata.`,
+        ],
+        kind: 'asset',
+        metadata: [`format ${extension.slice(1) || 'unknown'}`, `${file.size} bytes`],
+        sections: [],
+        urls: [],
+      },
+      context,
+    );
   }
   try {
     const extracted =
@@ -100,21 +114,27 @@ export async function extractCorpusFile(
                 : extension === '.svg'
                   ? extractSvg(file)
                   : extractTextDocument(file, extension);
-    return buildFacts(file, extracted);
+    return buildFacts(file, extracted, context);
   } catch (cause) {
     if (options.signal?.aborted) throw options.signal.reason ?? cause;
-    return buildFacts(file, {
-      diagnostics: [`${file.path}: corpus extraction failed (${messageOf(cause)})`],
-      kind: 'asset',
-      metadata: [`format ${extension.slice(1) || 'unknown'}`, `${file.size} bytes`],
-      sections: [],
-      urls: [],
-    });
+    return buildFacts(
+      file,
+      {
+        diagnostics: [`${file.path}: corpus extraction failed (${messageOf(cause)})`],
+        kind: 'asset',
+        metadata: [`format ${extension.slice(1) || 'unknown'}`, `${file.size} bytes`],
+        sections: [],
+        urls: [],
+      },
+      context,
+    );
   }
 }
 
 function extractTextDocument(file: CodeGraphInventoryFile, extension: string): ExtractedCorpus {
   const source = requireText(file);
+  const resource = extractMobileResourceXml(file.path, source, extension);
+  if (resource !== undefined) return resource;
   const text = normalizeTextDocument(source, extension);
   return {
     diagnostics: [],
@@ -122,6 +142,73 @@ function extractTextDocument(file: CodeGraphInventoryFile, extension: string): E
     metadata: [`format ${extension.slice(1) || 'text'}`, `${file.size} bytes`],
     sections: sectionize(text, basename(file.path)),
     urls: extractUrls(text),
+  };
+}
+
+function extractMobileResourceXml(path: string, source: string, extension: string): ExtractedCorpus | undefined {
+  const normalizedPath = path.replaceAll('\\', '/').toLowerCase();
+  const platform =
+    extension === '.xml' &&
+    /(?:^|\/)res\/(?:anim|animator|color|drawable|font|layout|menu|mipmap|navigation|raw|values|xml)(?:-[^/]*)?\//u.test(
+      normalizedPath,
+    )
+      ? 'android'
+      : ['.plist', '.storyboard', '.xib'].includes(extension)
+        ? 'apple'
+        : undefined;
+  if (platform === undefined) return undefined;
+
+  const evidence: string[] = [];
+  const references: string[] = [];
+  let attributes = 0;
+  let elements = 0;
+  const elementPattern = /<([A-Za-z_][A-Za-z0-9_.:-]*)(?:\s+([^<>]*?))?\s*\/?>/gu;
+  for (const match of source.matchAll(elementPattern)) {
+    if (elements >= MOBILE_RESOURCE_XML_ELEMENT_LIMIT || attributes >= MOBILE_RESOURCE_XML_ATTRIBUTE_LIMIT) break;
+    const elementName = match[1]!;
+    const values = [`element ${elementName}`];
+    const attributeSource = match[2] ?? '';
+    for (const attribute of attributeSource.matchAll(/([A-Za-z_][A-Za-z0-9_.:-]*)\s*=\s*(?:"([^"]*)"|'([^']*)')/gu)) {
+      if (attributes >= MOBILE_RESOURCE_XML_ATTRIBUTE_LIMIT) break;
+      const name = attribute[1]!;
+      const value = decodeXmlEntities(attribute[2] ?? attribute[3] ?? '');
+      values.push(`attribute ${name} ${value}`);
+      for (const reference of value.match(/[@?](?:android:)?[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+/gu) ?? []) {
+        references.push(reference);
+      }
+      if (
+        platform === 'apple' &&
+        /^(?:customClass|image|name|restorationIdentifier|reuseIdentifier|storyboardIdentifier)$/u.test(name) &&
+        value.length > 0 &&
+        value.length <= 256
+      ) {
+        references.push(value);
+      }
+      attributes += 1;
+    }
+    evidence.push(values.join(' · '));
+    elements += 1;
+  }
+
+  const text = normalizeWhitespace(xmlToText(source));
+  const wiring = evidence.join('\n');
+  const combined = [wiring, text].filter(Boolean).join('\n\n');
+  const bounded = elements >= MOBILE_RESOURCE_XML_ELEMENT_LIMIT || attributes >= MOBILE_RESOURCE_XML_ATTRIBUTE_LIMIT;
+  return {
+    diagnostics: bounded
+      ? [
+          `${path}: mobile resource wiring extraction reached its bounded element or attribute limit; results are partial.`,
+        ]
+      : [],
+    kind: 'resource',
+    metadata: [
+      platform === 'android' ? 'platform Android resource XML' : 'platform Apple interface resource',
+      `${elements} element${elements === 1 ? '' : 's'}`,
+      `${attributes} attribute${attributes === 1 ? '' : 's'}`,
+    ],
+    resourceReferences: uniqueStrings(references),
+    sections: sectionize(combined, platform === 'android' ? 'Android resource wiring' : 'Apple resource wiring'),
+    urls: extractUrls(source),
   };
 }
 
@@ -348,10 +435,16 @@ function extractMediaAsset(file: CodeGraphInventoryFile, extension: string, medi
   };
 }
 
-function buildFacts(file: CodeGraphInventoryFile, extracted: ExtractedCorpus): CodeGraphFileFacts {
+function buildFacts(
+  file: CodeGraphInventoryFile,
+  extracted: ExtractedCorpus,
+  context?: CodeGraphExtractionContext,
+): CodeGraphFileFacts {
+  const packageName = context ? Option.getOrUndefined(context.packageName) : undefined;
   const rootName = titleFromPath(file.path);
   const root = symbol(file, extracted.kind, rootName, file.path, 1, 1, {
     documentation: [rootName, ...extracted.metadata].join('\n'),
+    packageName,
     signature: extracted.metadata.join(' · '),
   });
   const symbols: CodeGraphSymbol[] = [root];
@@ -366,7 +459,7 @@ function buildFacts(file: CodeGraphInventoryFile, extracted: ExtractedCorpus): C
       `${file.path}#section-${index + 1}-${slug(section.name)}`,
       logicalLine,
       logicalLine + lineCount - 1,
-      {documentation: section.text},
+      {documentation: section.text, packageName},
     );
     symbols.push(child);
     edges.push(edge(file, root, child, 'contains', logicalLine));
@@ -383,6 +476,23 @@ function buildFacts(file: CodeGraphInventoryFile, extracted: ExtractedCorpus): C
       {
         documentation: url,
         language: 'url',
+        packageName,
+      },
+    );
+    symbols.push(child);
+    edges.push(edge(file, root, child, 'references', logicalLine + index));
+  });
+  extracted.resourceReferences?.forEach((reference, index) => {
+    const child = symbol(
+      file,
+      'resource-reference',
+      reference,
+      `${file.path}#resource-${sha256HexSync(reference).slice(0, 16)}`,
+      logicalLine + index,
+      logicalLine + index,
+      {
+        documentation: `Declared mobile resource reference ${reference}`,
+        packageName,
       },
     );
     symbols.push(child);
@@ -398,7 +508,12 @@ function symbol(
   qualifiedName: string,
   line: number,
   endLine: number,
-  options: {readonly documentation?: string; readonly language?: string; readonly signature?: string} = {},
+  options: {
+    readonly documentation?: string;
+    readonly language?: string;
+    readonly packageName?: string;
+    readonly signature?: string;
+  } = {},
 ): CodeGraphSymbol {
   const language = options.language ?? file.language;
   return {
@@ -410,6 +525,7 @@ function symbol(
     language,
     lookupKeys: uniqueStrings([name, qualifiedName, file.path, ...tokens(name), ...tokens(file.path)]),
     name,
+    packageName: options.packageName,
     path: file.path,
     qualifiedName,
     resolutionDomain: 'corpus',

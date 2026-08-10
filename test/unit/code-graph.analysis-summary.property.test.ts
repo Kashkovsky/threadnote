@@ -250,10 +250,10 @@ describe('persisted code graph analysis summaries', () => {
             yield* store.stageActivationFacts(databasePath, symbols, edges, [], undefined, 0);
             yield* store.resolveStagedReferences(databasePath);
             yield* store.activateStaged(databasePath, identity, ready);
+            yield* store.ensureAnalysisSummary?.(databasePath, ready.id);
           }),
         );
 
-        yield* store.ensureAnalysisSummary?.(databasePath, ready.id);
         const summary = Option.getOrThrow(yield* store.loadAnalysisSummary(databasePath, ready.id));
         expect(summary).toMatchObject({edgeCount: 1, symbolCount: 2});
         expect(summary.edges).toEqual([expect.objectContaining({count: 1, provenance: 'resolved', relation: 'calls'})]);
@@ -320,10 +320,10 @@ describe('persisted code graph analysis summaries', () => {
             const resolution = yield* store.resolveStagedReferences(databasePath);
             expect(resolution.resolved).toBe(1);
             yield* store.activateStaged(databasePath, identity, ready);
+            yield* store.ensureAnalysisSummary?.(databasePath, ready.id);
           }),
         );
 
-        yield* store.ensureAnalysisSummary?.(databasePath, ready.id);
         const summary = Option.getOrThrow(yield* store.loadAnalysisSummary(databasePath, ready.id));
         expect(summary.edges).toEqual([
           expect.objectContaining({

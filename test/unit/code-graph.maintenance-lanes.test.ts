@@ -83,6 +83,42 @@ describe('code graph maintenance lanes', () => {
     }),
   );
 
+  effectIt.effect('lets a foreground opportunity defer instead of joining an active same-database unit', () =>
+    Effect.gen(function* () {
+      const started = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const coordinator = yield* makeCodeGraphMaintenanceCoordinator(() =>
+        Deferred.succeed(started, undefined).pipe(Effect.andThen(Deferred.await(release)), Effect.as(completed())),
+      );
+      const owner = yield* coordinator.tick(tick('/home', '/database/A')).pipe(Effect.forkChild);
+      yield* Deferred.await(started);
+
+      expect(yield* coordinator.tick({...tick('/home', '/database/A'), joinActive: false})).toEqual({
+        reason: 'home-tick-active',
+        state: 'deferred',
+      });
+
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(owner);
+    }),
+  );
+
+  effectIt.effect('keeps a foreground opportunity to one unit even when that unit reports remaining work', () =>
+    Effect.gen(function* () {
+      const calls = yield* Ref.make(0);
+      const coordinator = yield* makeCodeGraphMaintenanceCoordinator(() =>
+        Ref.update(calls, count => count + 1).pipe(Effect.as({...completed(), remaining: true as const})),
+      );
+
+      expect(yield* coordinator.tick({...tick('/home', '/database/A'), automaticTail: false})).toMatchObject({
+        remaining: true,
+        state: 'completed',
+      });
+      yield* Effect.forEach(Array.from({length: 32}), () => Effect.yieldNow);
+      expect(yield* Ref.get(calls)).toBe(1);
+    }),
+  );
+
   effectIt.effect('keeps a newer same-database request when an older active result self-tails', () =>
     Effect.gen(function* () {
       const calls = yield* Ref.make<CodeGraphRoutineMaintenanceTick[]>([]);
@@ -425,6 +461,25 @@ describe('code graph maintenance lanes', () => {
         'ordinary',
         'residual',
       ]);
+    }),
+  );
+
+  effectIt.effect('starts with physical reclaim when a caller reports storage pressure', () =>
+    Effect.gen(function* () {
+      const calls = yield* Ref.make<CodeGraphMaintenanceLane[]>([]);
+      const lane =
+        (name: CodeGraphMaintenanceLane): CodeGraphRoutineMaintenanceRun =>
+        () =>
+          Ref.update(calls, current => [...current, name]).pipe(Effect.as(completed()));
+      const run = yield* makeCodeGraphMaintenanceLaneRunner({
+        ordinary: lane('ordinary'),
+        reconciliation: lane('reconciliation'),
+        residual: lane('residual'),
+      });
+
+      yield* run({...tick('/home', '/database/A'), pressure: 'critical'});
+
+      expect(yield* Ref.get(calls)).toEqual(['ordinary']);
     }),
   );
 
