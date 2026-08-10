@@ -23,6 +23,7 @@ import {
   runSharePublishBundle as runSharePublishBundleEffect,
   runShareRemove as runShareRemoveEffect,
   runShareRename as runShareRenameEffect,
+  runShareSetAccess as runShareSetAccessEffect,
   runShareSetUrl as runShareSetUrlEffect,
   runShareStatus as runShareStatusEffect,
   runShareSync as runShareSyncEffect,
@@ -46,6 +47,7 @@ import type {
   SharePublishOptions,
   ShareRemoveOptions,
   ShareRenameOptions,
+  ShareSetAccessOptions,
   ShareSetUrlOptions,
   ShareStatusOptions,
   ShareSyncOptions,
@@ -170,6 +172,8 @@ export const runShareUnpublish = Effect.fn('share.unpublish')(function* (
 export const runShareList = (config: ShareRuntime, options: ShareListOptions) => runShareListEffect(config, options);
 export const runShareRename = (config: ShareRuntime, options: ShareRenameOptions) =>
   withSharedRepositoryLock(config, runShareRenameEffect(config, options));
+export const runShareSetAccess = (config: ShareRuntime, options: ShareSetAccessOptions) =>
+  withSharedRepositoryLock(config, runShareSetAccessEffect(config, options));
 export const runShareSetUrl = (config: ShareRuntime, remoteUrl: string, options: ShareSetUrlOptions) =>
   withSharedRepositoryLock(config, runShareSetUrlEffect(config, remoteUrl, options));
 export const runShareRemove = (config: ShareRuntime, options: ShareRemoveOptions) =>

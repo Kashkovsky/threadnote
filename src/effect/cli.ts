@@ -66,6 +66,7 @@ import {
   runSharePublishBundle,
   runShareRemove,
   runShareRename,
+  runShareSetAccess,
   runShareSetUrl,
   runShareStatus,
   runShareSync,
@@ -163,6 +164,12 @@ const optionalChoice = <const Choices extends readonly string[]>(
   description: string,
 ): Flag.Flag<Choices[number] | undefined> =>
   optional(describeFlag(valueFlag(name, Flag.choice(name, choices), 'other'), description));
+
+const requiredChoice = <const Choices extends readonly string[]>(
+  name: string,
+  choices: Choices,
+  description: string,
+): Flag.Flag<Choices[number]> => describeFlag(valueFlag(name, Flag.choice(name, choices), 'other'), description);
 
 const defaultChoice = <const Choices extends readonly string[], const Value extends Choices[number]>(
   name: string,
@@ -623,6 +630,8 @@ const graphRepair = Command.make(
   'repair',
   {
     all: boolean('all', 'Repair every local native code graph database'),
+    checkoutId: optionalString('checkout-id', 'Repair one exact checkout identity instead of the current repository'),
+    cwd: graphBounds.cwd,
     deep: boolean('deep', 'Run full SQLite integrity and foreign-key checks before destructive recovery'),
     dryRun: boolean('dry-run', 'Print repair actions without modifying graph databases'),
     json: graphBounds.json,
@@ -1319,6 +1328,7 @@ const shareInit = Command.make(
   {
     dryRun: boolean('dry-run', 'Print actions without running them'),
     push: negatedBoolean('push', 'Do not push the generated housekeeping commit'),
+    readOnly: boolean('read-only', 'Persist the team as fetch/ingest-only and disable publication or pushes'),
     remoteUrl: argument('remote-url', 'git remote URL of the shared memories repo'),
     setDefault: boolean('set-default', 'Mark this team as the default'),
     team: optionalString('team', 'Team name; defaults to default'),
@@ -1465,6 +1475,16 @@ const shareSetUrl = Command.make(
   ({remoteUrl, ...options}) => withRuntimeEffect(config => runShareSetUrl(config, remoteUrl, options)),
 ).pipe(Command.withDescription('Change a shared team git remote URL'));
 
+const shareSetAccess = Command.make(
+  'set-access',
+  {
+    dryRun: boolean('dry-run', 'Print the access change without writing it'),
+    mode: requiredChoice('mode', ['read-only', 'read-write'], 'Persistent shared-team access mode'),
+    team: optionalString('team', 'Team name'),
+  },
+  options => withRuntimeEffect(config => runShareSetAccess(config, options)),
+).pipe(Command.withDescription('Set a shared team to read-only or read-write'));
+
 const shareRemove = Command.make(
   'remove',
   {
@@ -1491,6 +1511,7 @@ const share = Command.make('share').pipe(
     shareUnpublish,
     shareList,
     shareRename,
+    shareSetAccess,
     shareSetUrl,
     shareRemove,
   ]),

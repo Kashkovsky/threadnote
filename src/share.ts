@@ -21,10 +21,12 @@ import type {
   SharePublishOptions,
   ShareRenameOptions,
   ShareRemoveOptions,
+  ShareSetAccessOptions,
   ShareSetUrlOptions,
   ShareRuntime,
   ShareStatusOptions,
   ShareSyncOptions,
+  ShareTeamAccess,
   ShareTeamConfig,
   ShareTeamsFile,
   ShareUnpublishOptions,
@@ -429,6 +431,7 @@ export const runShareInit = Effect.fn('share.runShareInit')(function* (
   ]);
 
   const newConfig: ShareTeamConfig = {
+    ...(options.readOnly === true ? {access: 'read-only' as const} : {}),
     addedAt: new Date().toISOString(),
     gitdir,
     name: teamName,
@@ -443,13 +446,18 @@ export const runShareInit = Effect.fn('share.runShareInit')(function* (
   if (dryRun) {
     yield* Console.log(`Would write teams file: ${yield* teamsFilePath(config)}`);
     yield* Console.log(`Would set ${teamName} as default? ${updatedTeams.defaultTeam === teamName}`);
+    yield* Console.log(`Would set ${teamName} access: ${shareTeamAccess(newConfig)}`);
   } else {
     yield* writeTeamsFile(config, updatedTeams);
-    yield* Console.log(`Configured shared team "${teamName}" -> ${yield* portablePath(worktree)}`);
+    yield* Console.log(
+      `Configured shared team "${teamName}" (${shareTeamAccess(newConfig)}) -> ${yield* portablePath(worktree)}`,
+    );
   }
 
   if (!dryRun) {
-    yield* ensureSharedGitignore(worktree, git, options.push !== false);
+    if (shareTeamAccess(newConfig) === 'read-write') {
+      yield* ensureSharedGitignore(worktree, git, options.push !== false);
+    }
     const ingested = yield* ingestWorktreeFiles(config, newConfig, 'create');
     yield* Console.log(`Ingested ${ingested} shared file(s) into native canonical store.`);
   }
@@ -519,6 +527,7 @@ export const runShareStatus = Effect.fn('share.runShareStatus')(function* (
   const team = yield* resolveTeam(config, options.team);
   const git = yield* requiredExecutable('git');
   yield* Console.log(`Team: ${team.name}`);
+  yield* Console.log(`Access: ${shareTeamAccess(team.config)}`);
   yield* Console.log(`Remote: ${team.config.remote}`);
   yield* Console.log(`Worktree: ${yield* portablePath(team.config.worktree)}`);
   yield* Console.log(`Gitdir: ${yield* portablePath(team.config.gitdir)}`);
@@ -934,14 +943,20 @@ const runShareSyncForTeam = Effect.fn('share.runShareSyncForTeam')(function* (
   const dryRun = options.dryRun === true;
   const git = yield* requiredExecutable('git');
   const worktree = team.config.worktree;
+  const readOnly = shareTeamAccess(team.config) === 'read-only';
 
-  if (!dryRun) {
+  if (!dryRun && !readOnly) {
     // Don't push here — sync's final push step (below) will deliver any
     // .gitignore housekeeping commit, avoiding a double-push round trip.
     yield* ensureSharedGitignore(worktree, git, false);
   }
 
   if (yield* hasUncommittedChanges(worktree)) {
+    if (readOnly) {
+      throw new Error(
+        `Shared team "${team.name}" is read-only and has local worktree changes. Discard or move them before syncing; Threadnote will not auto-commit read-only teams.`,
+      );
+    }
     if (options.autoCommit === false) {
       throw new Error(
         `Worktree ${worktree} has uncommitted changes. Commit them yourself or rerun without --no-auto-commit.`,
@@ -967,6 +982,15 @@ const runShareSyncForTeam = Effect.fn('share.runShareSyncForTeam')(function* (
     if (!dryRun && (yield* hasUncommittedChanges(worktree))) {
       throw new Error(
         `Worktree ${worktree} still has uncommitted changes after staging Threadnote shareable files. Commit, remove, or ignore the remaining files, then rerun \`threadnote share sync\`.`,
+      );
+    }
+  }
+
+  if (readOnly) {
+    const ahead = yield* gitOutput(worktree, ['rev-list', '--count', '@{u}..HEAD'], dryRun);
+    if ((Number.parseInt(ahead ?? '0', 10) || 0) > 0) {
+      throw new Error(
+        `Shared team "${team.name}" is read-only but has local commits ahead of upstream. Move those commits to a writable clone before syncing.`,
       );
     }
   }
@@ -1014,7 +1038,9 @@ const runShareSyncForTeam = Effect.fn('share.runShareSyncForTeam')(function* (
     }
   }
 
-  if (options.push !== false) {
+  if (readOnly) {
+    yield* Console.log(`Read-only shared team "${team.name}": push disabled.`);
+  } else if (options.push !== false) {
     const pushResult = dryRun
       ? undefined
       : yield* runCommand(git, ['-C', worktree, 'push', DEFAULT_GIT_REMOTE_NAME], {allowFailure: true});
@@ -1141,6 +1167,7 @@ export const resolveShareConflict = Effect.fn('share.resolveShareConflict')(func
     );
   }
   const conflict = yield* readPendingShareConflict(config, reference, options.team);
+  if (take !== 'shared') assertShareTeamWritable(conflict.team, 'publish conflict resolutions');
   const inspected = yield* inspectShareConflict(config, conflict.team, conflict.change);
   const dryRun = options.dryRun === true;
   const ov = NATIVE_RESOURCE_BACKEND;
@@ -1239,7 +1266,9 @@ const runShareSyncQuiet = Effect.fn('share.runShareSyncQuiet')(function* (
       synced: false,
       warnings: [
         ...pendingMemoryIngestWarnings(state, team.name),
-        `Shared team "${team.name}" has local commits ahead of upstream; skipped automatic sync. Run \`threadnote share sync --team ${team.name}\` to publish or reconcile them.`,
+        shareTeamAccess(team.config) === 'read-only'
+          ? `Shared team "${team.name}" is read-only and has local commits ahead of upstream; skipped automatic sync. Move those commits to a writable clone before syncing.`
+          : `Shared team "${team.name}" has local commits ahead of upstream; skipped automatic sync. Run \`threadnote share sync --team ${team.name}\` to publish or reconcile them.`,
       ],
     };
   }
@@ -2001,6 +2030,7 @@ export const runSharePublish = Effect.fn('share.runSharePublish')(function* (
 ) {
   assertResourceUri(sourceUri);
   const team = yield* resolveTeam(config, options.team);
+  assertShareTeamWritable(team, 'publish memories');
   const dryRun = options.dryRun === true;
   const preview = options.preview === true;
   if (isInSharedNamespace(config, sourceUri)) {
@@ -2117,6 +2147,7 @@ export const shareAgentArtifact = Effect.fn('share.shareAgentArtifact')(function
   options: SharePublishArtifactOptions,
 ) {
   const team = yield* resolveTeam(config, options.team);
+  assertShareTeamWritable(team, 'publish agent artifacts');
   const resolvedSourcePath = yield* expandPath(sourcePath);
   if (!(yield* isRegularFileNoSymlink(resolvedSourcePath))) {
     throw new Error(`Agent artifact source is not a regular file: ${resolvedSourcePath}`);
@@ -2876,6 +2907,7 @@ export const shareBundlePack = Effect.fn('share.shareBundlePack')(function* (
   options: SharePublishArtifactOptions,
 ) {
   const team = yield* resolveTeam(config, options.team);
+  assertShareTeamWritable(team, 'publish agent artifact bundles');
   const dryRun = options.dryRun === true;
   const preview = options.preview === true;
   const resolvedManifest = yield* expandPath(manifestPath);
@@ -3291,6 +3323,7 @@ export const runShareUnpublish = Effect.fn('share.runShareUnpublish')(function* 
 ) {
   assertResourceUri(sourceUri);
   const team = yield* resolveTeam(config, options.team);
+  assertShareTeamWritable(team, 'unpublish memories');
   const dryRun = options.dryRun === true;
   if (!isInTeamNamespace(config, sourceUri, team.name)) {
     throw new Error(`Memory ${sourceUri} is not in team "${team.name}" shared namespace.`);
@@ -3492,6 +3525,7 @@ export const runShareList = Effect.fn('share.runShareList')(function* (
     const marker = team.name === teams.defaultTeam ? ' (default)' : '';
     yield* Console.log(`- ${team.name}${marker}`);
     yield* Console.log(`    remote: ${team.remote}`);
+    yield* Console.log(`    access: ${shareTeamAccess(team)}`);
     yield* Console.log(`    worktree: ${yield* portablePath(team.worktree)}`);
     yield* Console.log(`    gitdir: ${yield* portablePath(team.gitdir)}`);
     yield* Console.log(`    added: ${team.addedAt}`);
@@ -3639,6 +3673,32 @@ export const runShareSetUrl = Effect.fn('share.runShareSetUrl')(function* (
     teams: {...teamsFile.teams, [team.name]: updatedTeam},
   });
   yield* Console.log(`Updated shared team "${team.name}" remote: ${remoteUrl}`);
+});
+
+export const runShareSetAccess = Effect.fn('share.runShareSetAccess')(function* (
+  config: ShareRuntime,
+  options: ShareSetAccessOptions,
+) {
+  const team = yield* resolveTeam(config, options.team);
+  const mode = options.mode;
+  if (mode !== 'read-only' && mode !== 'read-write') {
+    throw new Error('Choose a shared-team access mode: read-only or read-write.');
+  }
+  const current = shareTeamAccess(team.config);
+  if (current === mode) {
+    yield* Console.log(`Shared team "${team.name}" is already ${mode}.`);
+    return;
+  }
+  if (options.dryRun === true) {
+    yield* Console.log(`Would set shared team "${team.name}" access: ${current} -> ${mode}`);
+    return;
+  }
+  const teamsFile = yield* readTeamsFile(config);
+  yield* writeTeamsFile(config, {
+    ...teamsFile,
+    teams: {...teamsFile.teams, [team.name]: {...team.config, access: mode}},
+  });
+  yield* Console.log(`Set shared team "${team.name}" access: ${mode}`);
 });
 
 export const runShareRemove = Effect.fn('share.runShareRemove')(function* (
@@ -3829,7 +3889,12 @@ export const readTeamsFile = Effect.fn('share.readTeamsFile')(function* (config:
         yield* Console.warn(`Skipping team entry "${name}" in ${path}: missing or empty "remote" field.`);
         continue;
       }
+      if (entry.access !== undefined && entry.access !== 'read-only' && entry.access !== 'read-write') {
+        yield* Console.warn(`Skipping team entry "${name}" in ${path}: invalid "access" field.`);
+        continue;
+      }
       teams[name] = {
+        ...(entry.access === 'read-only' || entry.access === 'read-write' ? {access: entry.access} : {}),
         addedAt: typeof entry.addedAt === 'string' ? entry.addedAt : new Date(0).toISOString(),
         gitdir: typeof entry.gitdir === 'string' ? entry.gitdir : yield* teamGitdirPath(config, name),
         name,
@@ -3841,6 +3906,10 @@ export const readTeamsFile = Effect.fn('share.readTeamsFile')(function* (config:
   const defaultTeam = typeof parsed.defaultTeam === 'string' ? parsed.defaultTeam : undefined;
   return {defaultTeam, teams, version: TEAMS_FILE_VERSION} as ShareTeamsFile;
 });
+
+export function shareTeamAccess(team: ShareTeamConfig): ShareTeamAccess {
+  return team.access === 'read-only' ? 'read-only' : 'read-write';
+}
 
 const writeTeamsFile = Effect.fn('share.writeTeamsFile')(function* (config: ShareRuntime, contents: ShareTeamsFile) {
   const path = yield* teamsFilePath(config);
@@ -3870,6 +3939,14 @@ export const resolveTeam = Effect.fn('share.resolveTeam')(function* (
   }
   return {config: found, name: wantName};
 });
+
+function assertShareTeamWritable(team: ResolvedTeam, operation: string): void {
+  if (shareTeamAccess(team.config) === 'read-only') {
+    throw new Error(
+      `Shared team "${team.name}" is read-only; cannot ${operation}. Change it with: threadnote share set-access --team ${team.name} --mode read-write`,
+    );
+  }
+}
 
 function shouldSetDefault(options: ShareInitOptions, existing: ShareTeamsFile): boolean {
   if (options.setDefault === true) {

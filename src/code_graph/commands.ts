@@ -73,11 +73,23 @@ export interface CodeGraphExportInterlock {
 
 export const runCodeGraphRepair = Effect.fn('codeGraph.command.repair')(function* (
   config: RuntimeConfig,
-  options: {readonly all?: boolean; readonly deep?: boolean; readonly dryRun?: boolean; readonly json?: boolean},
+  options: CwdOption & {
+    readonly all?: boolean;
+    readonly checkoutId?: string;
+    readonly deep?: boolean;
+    readonly dryRun?: boolean;
+    readonly json?: boolean;
+  },
 ) {
-  if (!options.all) {
-    return yield* Effect.fail(new Error('All-database graph repair requires --all.'));
+  if (options.all && (options.checkoutId !== undefined || options.cwd !== undefined)) {
+    return yield* Effect.fail(new Error('Use --all by itself, without --checkout-id or --cwd.'));
   }
+  if (options.checkoutId !== undefined && options.cwd !== undefined) {
+    return yield* Effect.fail(new Error('Use either --checkout-id or --cwd, not both.'));
+  }
+  const targetCheckoutId = options.all
+    ? undefined
+    : (options.checkoutId ?? (yield* resolveRepositoryIdentity(yield* commandCwd(options.cwd))).checkoutId);
   let completion: CodeGraphRepairCompletion | undefined;
   const summary = yield* repairCodeGraphIndexes(
     config.agentContextHome,
@@ -86,12 +98,13 @@ export const runCodeGraphRepair = Effect.fn('codeGraph.command.repair')(function
       ? undefined
       : progress => Console.log(codeGraphRepairProgressMessage(progress, options.dryRun === true)),
     result => Effect.sync(() => void (completion = result)),
-    {migrateSchema: true, mode: options.deep ? 'deep' : 'quick'},
+    {migrateSchema: true, mode: options.deep ? 'deep' : 'quick', targetCheckoutId},
   );
   if (options.json) {
     yield* writeFinalCliOutput(
       JSON.stringify({
         doctor: completion?.doctorCheck ?? null,
+        ...(targetCheckoutId === undefined ? {all: true} : {checkoutId: targetCheckoutId}),
         dryRun: options.dryRun === true,
         mode: options.deep ? 'deep' : 'quick',
         summary,

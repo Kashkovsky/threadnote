@@ -72,6 +72,7 @@ export const ciRequiredLongRunningTestGroupNames = ciLongRunningTestGroupNames.f
 export const ciSerializedLongRunningTestGroups = new Set<CiLongRunningTestGroupName>([
   'heavy-integration',
   'heavy-state',
+  'incremental-property',
   'load-evidence',
   'os-contention',
 ]);

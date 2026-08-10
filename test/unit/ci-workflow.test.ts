@@ -134,6 +134,7 @@ describe('dependency-aware CI workflow', () => {
     expect([...ciSerializedLongRunningTestGroups]).toEqual([
       'heavy-integration',
       'heavy-state',
+      'incremental-property',
       'load-evidence',
       'os-contention',
     ]);

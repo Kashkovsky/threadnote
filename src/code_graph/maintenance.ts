@@ -271,175 +271,202 @@ export const repairCodeGraphIndexes = Effect.fn('codeGraph.repairIndexes')(funct
   dryRun: boolean,
   onProgress?: CodeGraphProgressHandler,
   onComplete?: CodeGraphRepairCompletionHandler<R>,
-  options: {readonly migrateSchema?: boolean; readonly mode?: 'deep' | 'quick'} = {},
+  options: {
+    readonly migrateSchema?: boolean;
+    readonly mode?: 'deep' | 'quick';
+    readonly targetCheckoutId?: string;
+  } = {},
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const store = yield* CodeGraphStore;
+  if (options.targetCheckoutId !== undefined && !/^[0-9a-f]{64}$/.test(options.targetCheckoutId)) {
+    return yield* Effect.fail(new Error('Code graph checkout identity is invalid.'));
+  }
+  const repair = Effect.gen(function* () {
+    const allDatabases = yield* codeGraphDatabasePaths(threadnoteHome);
+    const databases =
+      options.targetCheckoutId === undefined
+        ? allDatabases
+        : allDatabases.filter(database => path.basename(path.dirname(database)) === options.targetCheckoutId);
+    const obsoleteBefore =
+      options.targetCheckoutId === undefined
+        ? yield* inspectObsoleteCodeGraphStores(threadnoteHome)
+        : emptyObsoleteInventory();
+    const deep = options.mode !== 'quick';
+    let deferredDatabases = 0;
+    let discarded = 0;
+    let migratedDatabases = 0;
+    let removedIncompleteSnapshots = 0;
+    let remainingIncompleteSnapshots = 0;
+    let removedTemporaryFiles = 0;
+    let readySnapshots = 0;
+    for (const [index, database] of databases.entries()) {
+      const progress = (input: Omit<CodeGraphMaintenanceProgress, 'current' | 'total'>) =>
+        onProgress?.({current: index + 1, total: databases.length, ...input}) ?? Effect.void;
+      yield* progress({phase: 'checking'});
+      const repositoryRoot = path.dirname(database);
+      const maintained = yield* withDatabaseLock(
+        fs,
+        path,
+        threadnoteHome,
+        database,
+        Effect.gen(function* () {
+          const decision = yield* store.withSession(
+            database,
+            Effect.gen(function* () {
+              let diagnosed = yield* diagnoseCodeGraphDatabase(database, deep).pipe(Effect.option);
+              if (
+                diagnosed._tag === 'Some' &&
+                diagnosed.value?.schemaVersion === CODE_GRAPH_SCHEMA_VERSION &&
+                (diagnosed.value.integrity === 'incompatible' || diagnosed.value.integrity === 'migration-pending')
+              ) {
+                if (options.migrateSchema) {
+                  yield* progress({phase: 'migrating-schema'});
+                  if (dryRun) {
+                    migratedDatabases += 1;
+                    return 'maintained' as const;
+                  }
+                  if (diagnosed.value.integrity === 'migration-pending') {
+                    let preparation = yield* store.prepareWorktreeReconciliationIndexes(database);
+                    for (
+                      let step = 1;
+                      preparation.state === 'prepared' && step < CODE_GRAPH_EXPLICIT_SCHEMA_PREPARATION_STEP_LIMIT;
+                      step += 1
+                    ) {
+                      preparation = yield* store.prepareWorktreeReconciliationIndexes(database);
+                    }
+                    if (preparation.state === 'deferred') return 'schema-upgrade-on-use' as const;
+                  }
+                  yield* store.initialize(database);
+                  diagnosed = yield* diagnoseCodeGraphDatabase(database, deep).pipe(Effect.option);
+                  if (diagnosed._tag === 'Some' && diagnosed.value?.integrity === 'ok') {
+                    migratedDatabases += 1;
+                  } else {
+                    return 'schema-upgrade-on-use' as const;
+                  }
+                } else {
+                  // Same-version beta databases with a missing revision or an
+                  // incompatible extension-table contract are recoverable on the
+                  // next ordinary writer open.
+                  // Never discard their ready snapshots as if the canonical graph
+                  // rows were corrupt merely because this maintenance pass is
+                  // deliberately read-only while holding the checkout gate.
+                  return 'schema-upgrade-on-use' as const;
+                }
+              }
+              // A failed diagnostic is not evidence of corruption. In particular,
+              // transient I/O, permissions, or an unreadable schema must never turn
+              // an explicit deep check into recursive deletion of the graph store.
+              if (diagnosed._tag === 'None' || diagnosed.value === undefined) {
+                return deep ? ('unreadable-database' as const) : ('deep-check-required' as const);
+              }
+              if (diagnosed.value.integrity !== 'ok') {
+                return deep ? ('discard' as const) : ('deep-check-required' as const);
+              }
+              const incomplete = diagnosed.value.buildingSnapshots + diagnosed.value.failedSnapshots;
+              readySnapshots += diagnosed.value.readySnapshots;
+              if (!deep && incomplete > 0) return 'deep-check-required' as const;
+              if (!deep) return 'maintained' as const;
+              if (incomplete > 0) {
+                yield* progress({phase: 'cleaning-snapshots', snapshots: incomplete});
+                const repaired = yield* store.repair(database, dryRun);
+                const removed = repaired?.removedSnapshots ?? 0;
+                removedIncompleteSnapshots += removed;
+                remainingIncompleteSnapshots += Math.max(0, incomplete - removed);
+              }
+              // Build-time cache GC can delete parser facts belonging to another
+              // linked worktree before that worktree activates its snapshot. This
+              // path has drained every worktree lock for the checkout, so
+              // it is safe to collect cache facts shared by its linked worktrees.
+              if (!dryRun) {
+                yield* store.pruneRetiredSnapshots(database);
+                yield* store.pruneCachedFacts(database, BUILTIN_LANGUAGE_PACK_REGISTRY.cacheIdentities);
+              }
+              yield* progress({phase: 'cleaning-vectors'});
+              removedTemporaryFiles += yield* cleanTemporaryVectorFiles(
+                fs,
+                path,
+                path.join(repositoryRoot, 'vectors'),
+                dryRun,
+              );
+              return 'maintained' as const;
+            }),
+            {writerGateHeld: true},
+          );
+          if (decision !== 'discard') return decision;
+
+          // The session-scoped SqliteClient has finalized before this branch.
+          // Keep the repository and database writer gates held while closing
+          // the handle first, otherwise Windows rejects recursive deletion of
+          // the incompatible SQLite store with a sharing violation.
+          discarded += 1;
+          yield* progress({phase: 'discarding'});
+          if (!dryRun) yield* fs.remove(repositoryRoot, {force: true, recursive: true});
+          return 'maintained' as const;
+        }),
+        0,
+      ).pipe(
+        Effect.catch(cause =>
+          isFileLockTimeout(cause) ? Effect.succeed('active-build' as const) : Effect.fail(cause),
+        ),
+      );
+      if (maintained !== 'maintained') {
+        deferredDatabases += 1;
+        yield* progress({
+          phase: 'deferred',
+          reason: maintained,
+        });
+      }
+    }
+    const currentDatabases =
+      options.targetCheckoutId === undefined
+        ? yield* codeGraphDatabasePaths(threadnoteHome)
+        : (yield* codeGraphDatabasePaths(threadnoteHome)).filter(
+            database => path.basename(path.dirname(database)) === options.targetCheckoutId,
+          );
+    const obsolete =
+      options.targetCheckoutId !== undefined
+        ? emptyObsoleteInventory()
+        : dryRun
+          ? obsoleteBefore
+          : yield* inspectObsoleteCodeGraphStores(threadnoteHome);
+    const summary = {
+      databases: databases.length,
+      deferredDatabases,
+      discarded,
+      migratedDatabases,
+      obsoleteStoreBytes: obsolete.bytes,
+      obsoleteStoreCheckouts: obsolete.checkouts.length,
+      obsoleteStoreFiles: obsolete.fileCount,
+      removedIncompleteSnapshots,
+      removedTemporaryFiles,
+      unsafeObsoleteEntries: obsolete.unsafeEntryCount,
+    } satisfies CodeGraphRepairSummary;
+    yield* onComplete?.({
+      doctorCheck: codeGraphDoctorResult(
+        currentDatabases.length,
+        readySnapshots,
+        dryRun ? removedIncompleteSnapshots + remainingIncompleteSnapshots : remainingIncompleteSnapshots,
+        dryRun ? discarded : 0,
+        deferredDatabases,
+        dryRun ? migratedDatabases : 0,
+        obsolete,
+      ),
+      summary,
+    }) ?? Effect.void;
+    return summary;
+  });
+  if (options.targetCheckoutId !== undefined) {
+    // Checkout, linked-worktree, and database-writer gates fully isolate this
+    // repository. Avoid the home-global intent so unrelated graph builds keep running.
+    return yield* repair;
+  }
   return yield* withExclusiveFileLock(
     fs,
     codeGraphMaintenanceLockPath(path, threadnoteHome),
     CODE_GRAPH_LOCK_OPTIONS,
-    withCodeGraphMaintenanceIntent(
-      threadnoteHome,
-      Effect.gen(function* () {
-        const databases = yield* codeGraphDatabasePaths(threadnoteHome);
-        const obsoleteBefore = yield* inspectObsoleteCodeGraphStores(threadnoteHome);
-        const deep = options.mode !== 'quick';
-        let deferredDatabases = 0;
-        let discarded = 0;
-        let migratedDatabases = 0;
-        let removedIncompleteSnapshots = 0;
-        let remainingIncompleteSnapshots = 0;
-        let removedTemporaryFiles = 0;
-        let readySnapshots = 0;
-        for (const [index, database] of databases.entries()) {
-          const progress = (input: Omit<CodeGraphMaintenanceProgress, 'current' | 'total'>) =>
-            onProgress?.({current: index + 1, total: databases.length, ...input}) ?? Effect.void;
-          yield* progress({phase: 'checking'});
-          const repositoryRoot = path.dirname(database);
-          const maintained = yield* withDatabaseLock(
-            fs,
-            path,
-            threadnoteHome,
-            database,
-            Effect.gen(function* () {
-              const decision = yield* store.withSession(
-                database,
-                Effect.gen(function* () {
-                  let diagnosed = yield* diagnoseCodeGraphDatabase(database, deep).pipe(Effect.option);
-                  if (
-                    diagnosed._tag === 'Some' &&
-                    diagnosed.value?.schemaVersion === CODE_GRAPH_SCHEMA_VERSION &&
-                    (diagnosed.value.integrity === 'incompatible' || diagnosed.value.integrity === 'migration-pending')
-                  ) {
-                    if (options.migrateSchema) {
-                      yield* progress({phase: 'migrating-schema'});
-                      if (dryRun) {
-                        migratedDatabases += 1;
-                        return 'maintained' as const;
-                      }
-                      if (diagnosed.value.integrity === 'migration-pending') {
-                        let preparation = yield* store.prepareWorktreeReconciliationIndexes(database);
-                        for (
-                          let step = 1;
-                          preparation.state === 'prepared' && step < CODE_GRAPH_EXPLICIT_SCHEMA_PREPARATION_STEP_LIMIT;
-                          step += 1
-                        ) {
-                          preparation = yield* store.prepareWorktreeReconciliationIndexes(database);
-                        }
-                        if (preparation.state === 'deferred') return 'schema-upgrade-on-use' as const;
-                      }
-                      yield* store.initialize(database);
-                      diagnosed = yield* diagnoseCodeGraphDatabase(database, deep).pipe(Effect.option);
-                      if (diagnosed._tag === 'Some' && diagnosed.value?.integrity === 'ok') {
-                        migratedDatabases += 1;
-                      } else {
-                        return 'schema-upgrade-on-use' as const;
-                      }
-                    } else {
-                      // Same-version beta databases with a missing revision or an
-                      // incompatible extension-table contract are recoverable on the
-                      // next ordinary writer open.
-                      // Never discard their ready snapshots as if the canonical graph
-                      // rows were corrupt merely because this maintenance pass is
-                      // deliberately read-only while holding the checkout gate.
-                      return 'schema-upgrade-on-use' as const;
-                    }
-                  }
-                  // A failed diagnostic is not evidence of corruption. In particular,
-                  // transient I/O, permissions, or an unreadable schema must never turn
-                  // an explicit deep check into recursive deletion of the graph store.
-                  if (diagnosed._tag === 'None' || diagnosed.value === undefined) {
-                    return deep ? ('unreadable-database' as const) : ('deep-check-required' as const);
-                  }
-                  if (diagnosed.value.integrity !== 'ok') {
-                    return deep ? ('discard' as const) : ('deep-check-required' as const);
-                  }
-                  const incomplete = diagnosed.value.buildingSnapshots + diagnosed.value.failedSnapshots;
-                  readySnapshots += diagnosed.value.readySnapshots;
-                  if (!deep && incomplete > 0) return 'deep-check-required' as const;
-                  if (!deep) return 'maintained' as const;
-                  if (incomplete > 0) {
-                    yield* progress({phase: 'cleaning-snapshots', snapshots: incomplete});
-                    const repaired = yield* store.repair(database, dryRun);
-                    const removed = repaired?.removedSnapshots ?? 0;
-                    removedIncompleteSnapshots += removed;
-                    remainingIncompleteSnapshots += Math.max(0, incomplete - removed);
-                  }
-                  // Build-time cache GC can delete parser facts belonging to another
-                  // linked worktree before that worktree activates its snapshot. This
-                  // path owns the global maintenance intent and has drained every
-                  // checkout worktree lock, so it is the safe place to collect them.
-                  if (!dryRun) {
-                    yield* store.pruneRetiredSnapshots(database);
-                    yield* store.pruneCachedFacts(database, BUILTIN_LANGUAGE_PACK_REGISTRY.cacheIdentities);
-                  }
-                  yield* progress({phase: 'cleaning-vectors'});
-                  removedTemporaryFiles += yield* cleanTemporaryVectorFiles(
-                    fs,
-                    path,
-                    path.join(repositoryRoot, 'vectors'),
-                    dryRun,
-                  );
-                  return 'maintained' as const;
-                }),
-                {writerGateHeld: true},
-              );
-              if (decision !== 'discard') return decision;
-
-              // The session-scoped SqliteClient has finalized before this branch.
-              // Keep the repository and database writer gates held while closing
-              // the handle first, otherwise Windows rejects recursive deletion of
-              // the incompatible SQLite store with a sharing violation.
-              discarded += 1;
-              yield* progress({phase: 'discarding'});
-              if (!dryRun) yield* fs.remove(repositoryRoot, {force: true, recursive: true});
-              return 'maintained' as const;
-            }),
-            0,
-          ).pipe(
-            Effect.catch(cause =>
-              isFileLockTimeout(cause) ? Effect.succeed('active-build' as const) : Effect.fail(cause),
-            ),
-          );
-          if (maintained !== 'maintained') {
-            deferredDatabases += 1;
-            yield* progress({
-              phase: 'deferred',
-              reason: maintained,
-            });
-          }
-        }
-        const currentDatabases = yield* codeGraphDatabasePaths(threadnoteHome);
-        const obsolete = dryRun ? obsoleteBefore : yield* inspectObsoleteCodeGraphStores(threadnoteHome);
-        const summary = {
-          databases: databases.length,
-          deferredDatabases,
-          discarded,
-          migratedDatabases,
-          obsoleteStoreBytes: obsolete.bytes,
-          obsoleteStoreCheckouts: obsolete.checkouts.length,
-          obsoleteStoreFiles: obsolete.fileCount,
-          removedIncompleteSnapshots,
-          removedTemporaryFiles,
-          unsafeObsoleteEntries: obsolete.unsafeEntryCount,
-        } satisfies CodeGraphRepairSummary;
-        yield* onComplete?.({
-          doctorCheck: codeGraphDoctorResult(
-            currentDatabases.length,
-            readySnapshots,
-            dryRun ? removedIncompleteSnapshots + remainingIncompleteSnapshots : remainingIncompleteSnapshots,
-            dryRun ? discarded : 0,
-            deferredDatabases,
-            dryRun ? migratedDatabases : 0,
-            obsolete,
-          ),
-          summary,
-        }) ?? Effect.void;
-        return summary;
-      }),
-    ),
+    withCodeGraphMaintenanceIntent(threadnoteHome, repair),
   );
 });
 

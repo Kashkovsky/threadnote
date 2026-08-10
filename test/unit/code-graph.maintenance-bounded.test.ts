@@ -533,6 +533,69 @@ describe('bounded code graph maintenance', () => {
     }).pipe(Effect.provide(ApplicationLayer)),
   );
 
+  effectIt.effect('repairs one checkout while an unrelated checkout build remains active', () =>
+    Effect.gen(function* () {
+      const home = yield* Effect.promise(() => mkdtemp('threadnote-graph-targeted-repair-'));
+      homes.push(home);
+      const identity = legacyRepositoryIdentity(home, 'a');
+      const databasePath = join(
+        home,
+        'indexes',
+        'code-graph',
+        'repositories',
+        identity.checkoutId,
+        `graph-v${CODE_GRAPH_SCHEMA_VERSION}.sqlite`,
+      );
+      const store = yield* CodeGraphStore;
+      const snapshot = legacyReadySnapshot(identity, 'a');
+      yield* store.activate(databasePath, identity, snapshot, [], [], []);
+      yield* store.promote(databasePath, identity, snapshot.id);
+      yield* Effect.sync(() => downgradeToReleasedRevision6(databasePath));
+
+      const otherCheckoutId = 'b'.repeat(64);
+      const otherDatabasePath = join(
+        home,
+        'indexes',
+        'code-graph',
+        'repositories',
+        otherCheckoutId,
+        `graph-v${CODE_GRAPH_SCHEMA_VERSION}.sqlite`,
+      );
+      yield* store.initialize(otherDatabasePath);
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const acquired = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const owner = yield* Effect.forkChild(
+        withExclusiveFileLock(
+          fs,
+          codeGraphWorktreeLockPath(path, home, otherCheckoutId, 'c'.repeat(64)),
+          {
+            heartbeatIntervalMilliseconds: 20,
+            onAcquired: () => Deferred.succeed(acquired, undefined).pipe(Effect.asVoid),
+            retryIntervalMilliseconds: 5,
+            staleAfterMilliseconds: 100,
+            waitTimeoutMilliseconds: 5_000,
+          },
+          Deferred.await(release),
+        ),
+      );
+      yield* Deferred.await(acquired);
+
+      const repair = yield* repairCodeGraphIndexes(home, false, undefined, undefined, {
+        migrateSchema: true,
+        mode: 'quick',
+        targetCheckoutId: identity.checkoutId,
+      });
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(owner);
+
+      expect(repair).toMatchObject({databases: 1, deferredDatabases: 0, migratedDatabases: 1});
+      expect(readPersistentExtensionRevision(databasePath)).toBe(CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION);
+      expect(yield* codeGraphDoctorCheck(home)).toMatchObject({status: 'ok'});
+    }).pipe(Effect.provide(ApplicationLayer), TestClock.withLive),
+  );
+
   effectIt.effect('exposes foreground schema migration through graph repair --all', () =>
     Effect.gen(function* () {
       const home = yield* Effect.promise(() => mkdtemp('threadnote-graph-repair-command-'));

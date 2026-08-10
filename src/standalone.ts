@@ -1,6 +1,6 @@
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import * as BunServices from '@effect/platform-bun/BunServices';
-import {Effect} from 'effect';
+import {Effect, Runtime} from 'effect';
 import {withCliOutputConsole} from './effect/cli_output.js';
 import {
   CODE_GRAPH_DEEP_DIAGNOSTICS_WORKER_ARGUMENT,
@@ -16,11 +16,18 @@ const isCodeGraphParserWorker = arguments_[0] === CODE_GRAPH_PARSER_WORKER_ARGUM
 const isCodeGraphDeepDiagnosticsWorker = arguments_[0] === CODE_GRAPH_DEEP_DIAGNOSTICS_WORKER_ARGUMENT;
 const isGitWorktreeRegistrationWorker = arguments_[0] === CODE_GRAPH_GIT_WORKTREE_REGISTRATION_WORKER_ARGUMENT;
 const isMcpServer = executableName?.startsWith('threadnote-mcp-server') === true || arguments_[0] === 'mcp-server';
+const runSignalTransparentMain = Runtime.makeRunMain(({fiber, teardown}) => {
+  fiber.addObserver(exit => {
+    teardown(exit, code => {
+      if (code !== 0) process.exit(code);
+    });
+  });
+});
 
 if (isCodeGraphDeepDiagnosticsWorker) {
   // SQLite's integrity_check is synchronous native work. This worker must keep
   // the OS default SIGTERM behavior so the lock-owning parent can always stop it.
-  await codeGraphDeepDiagnosticsWorkerProgram();
+  runSignalTransparentMain(await codeGraphDeepDiagnosticsWorkerProgram(), {disableErrorReporting: true});
 } else {
   const program = isLocalModelWorker
     ? await localModelWorkerProgram(arguments_)
@@ -38,7 +45,7 @@ if (isCodeGraphDeepDiagnosticsWorker) {
 
 async function codeGraphDeepDiagnosticsWorkerProgram() {
   const worker = await import('./code_graph/deep_diagnostics.js');
-  await Effect.runPromise(worker.codeGraphDeepDiagnosticsWorkerProgram.pipe(Effect.provide(BunServices.layer)));
+  return worker.codeGraphDeepDiagnosticsWorkerProgram.pipe(Effect.provide(BunServices.layer));
 }
 
 async function gitWorktreeRegistrationWorkerProgram() {

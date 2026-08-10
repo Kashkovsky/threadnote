@@ -296,12 +296,15 @@ export interface ShareRuntime {
 }
 
 export interface ShareTeamConfig {
+  readonly access?: ShareTeamAccess;
   readonly addedAt: string;
   readonly gitdir: string;
   readonly name: string;
   readonly remote: string;
   readonly worktree: string;
 }
+
+export type ShareTeamAccess = 'read-only' | 'read-write';
 
 export interface ShareTeamsFile {
   readonly defaultTeam?: string;
@@ -312,6 +315,7 @@ export interface ShareTeamsFile {
 export interface ShareInitOptions {
   readonly dryRun?: boolean;
   readonly push?: boolean;
+  readonly readOnly?: boolean;
   readonly setDefault?: boolean;
   readonly team?: string;
 }
@@ -413,6 +417,12 @@ export interface ShareRenameOptions {
 
 export interface ShareSetUrlOptions {
   readonly dryRun?: boolean;
+  readonly team?: string;
+}
+
+export interface ShareSetAccessOptions {
+  readonly dryRun?: boolean;
+  readonly mode?: ShareTeamAccess;
   readonly team?: string;
 }
 

@@ -26,6 +26,23 @@ Publish is transactional:
 A failed canonical write, verification, commit, or push preserves the personal source. Artifact and pack publishing
 uses an undo journal so partial companion trees are removed and replaced content is restored.
 
+## Read-only shared teams
+
+Use a persistent read-only team when Threadnote should fetch, ingest, recall, report status, and install artifacts but
+must never publish or push into that repository:
+
+```sh
+threadnote share init git@github.com:org/team-memories.git --team reference --read-only
+threadnote share set-access --team reference --mode read-only
+threadnote share sync --team reference
+```
+
+`share list` and `share status` display the persisted access mode. Read-only sync fetches, rebases, and ingests remote
+changes, disables housekeeping commits and pushes, and refuses dirty worktrees or local commits instead of
+auto-committing them. Memory publication, unpublish, local/merged conflict publication, and artifact or pack
+publication fail before mutation. `--take shared`, recall, status, artifact installation, rename, and removal remain
+available. Switch back explicitly with `share set-access --team <name> --mode read-write`.
+
 ## Unpublish a shared memory
 
 `share unpublish --dry-run` performs the same destination and Git/worktree preflight as apply. It reports `--mode
