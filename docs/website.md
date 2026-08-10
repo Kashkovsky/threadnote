@@ -76,6 +76,13 @@ The Performance page derives its rounded worktree values from that checked-in JS
 unchanged raw artifact at `/evidence/code-graph-worktree-readiness-v4.0.1.json` so readers can inspect every sample and
 its provenance. Keep the source module, emitted path, tests, and artifact together when refreshing the comparison.
 
+The 4.1 beta hardening program adds retained candidate and exact-tag evidence without replacing the narrower checked-in
+v4.0.1 comparison. Production-large runs remain pinned-runner `n=1` observations; heavy-tail runs cover parser/cache
+and interruption behavior; required PR checks cover correctness and platform packaging. Website copy may describe
+those gates and bounded architecture, but it must not publish a combined latency percentile or claim universal
+“maximum performance.” See [`4.1.0-beta.1-release-evidence.md`](./4.1.0-beta.1-release-evidence.md) for the release-facing
+scope and deliberate deferrals.
+
 ## Content and interaction contracts
 
 - Treat current source, CLI help, MCP schemas, checked-in user guides, tests, and shared durable design memories as

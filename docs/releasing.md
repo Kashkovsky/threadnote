@@ -55,17 +55,28 @@ checksums but are not OS code-signed.
 
 ## Publishing
 
+For a prerelease, use a full SemVer prerelease such as `4.1.0-beta.1` in `package.json`,
+`.github/release-notes/v4.1.0-beta.1.md`, and the `v4.1.0-beta.1` tag. The publisher detects the hyphenated tag and
+creates a GitHub prerelease; do not use an unnumbered `-beta` suffix.
+
 1. Add `.github/release-notes/vX.Y.Z.md` for the exact version being released. Begin with `## What's new`, describe
    user-visible value rather than implementation history, include concrete commands when useful, and do not add a
    validation/checks section.
 2. Merge the release source and ensure ordinary CI is green.
-3. Review the latest retained `code-graph-production-large-n1` evidence when assessing graph performance. Do not
-   dispatch a duplicate production-large run for the same tag.
+3. Review the candidate's retained production-large and heavy-tail evidence plus required PR checks when assessing
+   graph correctness and performance. The tag starts one separate exact-tag `code-graph-production-large-n1`
+   observation automatically; do not dispatch a duplicate production-large run for that tag.
 4. Confirm immutable releases are enabled and the Apple signing secrets below are configured.
 5. Create and push the version tag matching both `package.json` and the release-notes filename, for example
    `v4.0.1`.
 6. Wait for `Publish standalone release`. Do not create a GitHub Release manually. Every channel publishes after all
    four enabled archives are verified while its bounded production-large observation continues independently.
+
+The release evidence record must distinguish a clean candidate run from exact-tag evidence. Candidate evidence can
+close implementation gates before merge, but only the tag-triggered artifact may claim exact release provenance. Keep
+public surrogate results, private path-free aggregate evidence, and checked-in same-machine comparisons separate; do
+not combine them into a synthetic percentile. The current beta closeout contract is documented in
+[`4.1.0-beta.1-release-evidence.md`](./4.1.0-beta.1-release-evidence.md).
 
 Every Threadnote 4 version tag starts a separate production-large evidence workflow on `ubuntu-24.04`; publication
 never waits for it. The evidence job has a hard 30-minute ceiling: its measured phase gets 20 minutes, leaving bounded
