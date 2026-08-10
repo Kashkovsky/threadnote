@@ -71,7 +71,7 @@ export default function ProTipsPage() {
           </p>
         </div>
         <div className="subpage-hero__metric">
-          <strong>7</strong>
+          <strong>{proTips.length}</strong>
           <span>high-leverage workflows</span>
           <small>Each one includes a live agent simulation.</small>
         </div>

@@ -1,7 +1,8 @@
 import {useEffect, useState, type ReactNode} from 'react';
-import {githubUrl, siteHref} from '../lib/site';
+import {githubUrl, siteHref, xUrl} from '../lib/site';
 import type {SitePage} from '../lib/routes';
 import {ThreadnoteMark} from './Brand';
+import {Icon} from './Icons';
 
 const navItems: Array<{page: SitePage; label: string; href: string}> = [
   {page: 'home', label: 'Product', href: ''},
@@ -62,10 +63,28 @@ export function SiteShell({
                 {item.label}
               </a>
             ))}
-            <a href={githubUrl} target="_blank" rel="noreferrer">
-              GitHub
-              <span aria-hidden="true"> ↗</span>
-            </a>
+            <div className="site-nav__socials" role="group" aria-label="Threadnote social links">
+              <a
+                className="site-nav__icon-link"
+                href={githubUrl}
+                target="_blank"
+                rel="noreferrer"
+                aria-label="Threadnote on GitHub"
+                title="Threadnote on GitHub"
+              >
+                <Icon name="github" aria-hidden="true" />
+              </a>
+              <a
+                className="site-nav__icon-link"
+                href={xUrl}
+                target="_blank"
+                rel="noreferrer"
+                aria-label="Threadnote on X"
+                title="Threadnote on X"
+              >
+                <Icon name="x" aria-hidden="true" />
+              </a>
+            </div>
             <a className="button button--small" href={siteHref('docs/#installation')}>
               Install
             </a>

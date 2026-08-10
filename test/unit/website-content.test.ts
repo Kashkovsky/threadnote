@@ -400,6 +400,26 @@ describe('Threadnote 4 website content', () => {
     }
   });
 
+  it('derives the Pro Tips total and renders icon-only social links', async () => {
+    const [proTipsPage, shell, icons, site] = await Promise.all([
+      readFile(join(root, 'website', 'src', 'pages', 'ProTipsPage.tsx'), 'utf8'),
+      readFile(join(root, 'website', 'src', 'components', 'SiteShell.tsx'), 'utf8'),
+      readFile(join(root, 'website', 'src', 'components', 'Icons.tsx'), 'utf8'),
+      readFile(join(root, 'website', 'src', 'lib', 'site.ts'), 'utf8'),
+    ]);
+
+    expect(proTipsPage).toContain('<strong>{proTips.length}</strong>');
+    expect(shell).toContain('className="site-nav__socials"');
+    expect(shell).toContain('role="group" aria-label="Threadnote social links"');
+    expect(shell).toContain('aria-label="Threadnote on GitHub"');
+    expect(shell).toContain('aria-label="Threadnote on X"');
+    expect(shell).toContain('<Icon name="github" aria-hidden="true" />');
+    expect(shell).toContain('<Icon name="x" aria-hidden="true" />');
+    expect(site).toContain("export const xUrl = 'https://x.com/threadnoteio';");
+    expect(icons).toContain("| 'github'");
+    expect(icons).toContain("| 'x'");
+  });
+
   it('shows published stable releases from the latest major only', () => {
     const selected = selectLatestMajorReleases(
       [

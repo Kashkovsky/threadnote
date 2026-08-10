@@ -8,6 +8,7 @@ export function siteHref(path = ''): string {
 }
 
 export const githubUrl = 'https://github.com/Kashkovsky/threadnote';
+export const xUrl = 'https://x.com/threadnoteio';
 
 export function setDocumentMeta(title: string, description: string): void {
   const pageTitle = `${title} — Threadnote`;
