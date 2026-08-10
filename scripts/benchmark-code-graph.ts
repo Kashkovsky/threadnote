@@ -63,6 +63,7 @@ import {
   PRODUCTION_WORKTREE_CHURN_SCENARIOS,
   VECTOR_SEMANTIC_CONTROL_QUERY,
   generatedSymbolName,
+  makeOwnedTempDirectoryScoped,
   prepareCodeGraphFixture,
   prepareGeneratedCodeGraphFixture,
   prepareProductionCodeGraphFixture,
@@ -625,6 +626,7 @@ const benchmarkCodeGraph = Effect.scoped(
         operation: 'query',
         query: queryText,
         refresh: false,
+        requestMaintenance: false,
         threadnoteHome: prepared.home,
       });
       const expectedPath =
@@ -658,6 +660,7 @@ const benchmarkCodeGraph = Effect.scoped(
           operation: 'query',
           query: queryText,
           refresh: false,
+          requestMaintenance: false,
           threadnoteHome: prepared.home,
         }),
         cold.snapshot.id,
@@ -669,6 +672,7 @@ const benchmarkCodeGraph = Effect.scoped(
         cwd: prepared.repository,
         operation: 'query',
         query: queryText,
+        requestMaintenance: false,
         threadnoteHome: prepared.home,
       });
     }
@@ -681,6 +685,7 @@ const benchmarkCodeGraph = Effect.scoped(
         cwd: prepared.repository,
         operation: 'query',
         query: queryText,
+        requestMaintenance: false,
         threadnoteHome: prepared.home,
       });
       queryDurations.push(Number((yield* Clock.currentTimeNanos) - started) / NANOSECONDS_PER_MILLISECOND);
@@ -761,6 +766,7 @@ const benchmarkCodeGraph = Effect.scoped(
         operation: 'query',
         query: queryText,
         refresh: false,
+        requestMaintenance: false,
         threadnoteHome: prepared.home,
       });
       const expectedPath =
@@ -808,6 +814,7 @@ const benchmarkCodeGraph = Effect.scoped(
           operation: 'query',
           query: queryText,
           refresh: false,
+          requestMaintenance: false,
           threadnoteHome: prepared.home,
         }),
         incremental.snapshot.id,
@@ -818,8 +825,10 @@ const benchmarkCodeGraph = Effect.scoped(
       : [];
 
     const sameOverlayReferenceHome =
-      prepared.referenceHome ??
-      (yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-code-graph-same-overlay-reference-'}));
+      prepared.referenceHome ?? (yield* makeOwnedTempDirectoryScoped('threadnote-code-graph-same-overlay-reference-'));
+    if (options.vectors) {
+      yield* prepareBenchmarkEmbedding(sameOverlayReferenceHome, options.modelHome);
+    }
     const sameOverlayReferenceIdentity = yield* resolveRepositoryIdentity(prepared.repository);
     const sameOverlayReferenceLayout = codeGraphLayout(
       path,
@@ -904,6 +913,7 @@ const benchmarkCodeGraph = Effect.scoped(
                     operation: 'query',
                     query: queryText,
                     refresh: false,
+                    requestMaintenance: false,
                     threadnoteHome: sameOverlayReferenceHome,
                   }),
                   summary.snapshot.id,
@@ -3205,6 +3215,7 @@ const benchmarkExternalQueryControl = Effect.fn('benchmarkCodeGraph.externalQuer
       operation: 'query',
       query: control.query,
       refresh: false,
+      requestMaintenance: false,
       threadnoteHome,
     })
     .pipe(
@@ -3250,6 +3261,7 @@ const benchmarkMcpOperationMatrix = Effect.fn('benchmarkCodeGraph.mcpOperationMa
         edgeLimit: 80,
         nodeLimit: 40,
         refresh: false,
+        requestMaintenance: false,
         threadnoteHome,
       })
       .pipe(Effect.timeout(25_000));
@@ -5079,6 +5091,7 @@ export const benchmarkConcurrentWorktreeIsolation = Effect.fn('benchmarkCodeGrap
             operation: 'query',
             query: 'primaryWorktreeSentinel',
             refresh: false,
+            requestMaintenance: false,
             threadnoteHome,
           }),
           query.inspect({
@@ -5086,6 +5099,7 @@ export const benchmarkConcurrentWorktreeIsolation = Effect.fn('benchmarkCodeGrap
             operation: 'query',
             query: 'linkedWorktreeSentinel',
             refresh: false,
+            requestMaintenance: false,
             threadnoteHome,
           }),
           query.inspect({
@@ -5093,6 +5107,7 @@ export const benchmarkConcurrentWorktreeIsolation = Effect.fn('benchmarkCodeGrap
             operation: 'query',
             query: 'linkedWorktreeSentinel',
             refresh: false,
+            requestMaintenance: false,
             threadnoteHome,
           }),
           query.inspect({
@@ -5100,6 +5115,7 @@ export const benchmarkConcurrentWorktreeIsolation = Effect.fn('benchmarkCodeGrap
             operation: 'query',
             query: 'primaryWorktreeSentinel',
             refresh: false,
+            requestMaintenance: false,
             threadnoteHome,
           }),
         ],

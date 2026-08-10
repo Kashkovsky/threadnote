@@ -106,7 +106,7 @@ export const PRODUCTION_LARGE_CODE_GRAPH_PROFILE = {
 export const GENERATED_VECTOR_CONTROL_PATH = 'docs/vector-semantic-control.md';
 export const VECTOR_SEMANTIC_CONTROL_QUERY = 'serialize concurrent tasks via mutual exclusion';
 
-const makeOwnedTempDirectoryScoped = Effect.fn('codeGraphFixture.makeOwnedTempDirectoryScoped')(function* (
+export const makeOwnedTempDirectoryScoped = Effect.fn('codeGraphFixture.makeOwnedTempDirectoryScoped')(function* (
   prefix: string,
 ) {
   const fs = yield* FileSystem.FileSystem;

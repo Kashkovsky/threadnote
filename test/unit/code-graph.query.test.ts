@@ -99,7 +99,7 @@ const embedding = {
 } as unknown as CodeGraphEmbeddingIndexShape;
 
 describe('code graph query budgets', () => {
-  it.effect('requests one path-free maintenance opportunity after each successful public graph surface', () =>
+  it.effect('requests one path-free maintenance opportunity unless an internal evidence read opts out', () =>
     Effect.scoped(
       Effect.gen(function* () {
         const fixtureRoot = yield* Effect.acquireRelease(
@@ -213,6 +213,16 @@ describe('code graph query budgets', () => {
               threadnoteHome: fixtureRoot.home,
             }),
           );
+          yield* Ref.set(requests, []);
+          yield* query.inspect({
+            cwd: fixtureRoot.repository,
+            nodeId: `cgs_${'a'.repeat(32)}`,
+            operation: 'node',
+            refresh: false,
+            requestMaintenance: false,
+            threadnoteHome: fixtureRoot.home,
+          });
+          expect(yield* Ref.get(requests)).toEqual([]);
         }).pipe(Effect.provide(layer));
       }),
     ),

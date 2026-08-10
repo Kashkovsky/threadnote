@@ -49,6 +49,8 @@ import {
 export interface CodeGraphInspectOptions extends CodeGraphQueryOptions {
   readonly baseCommit?: string;
   readonly interlock?: CodeGraphQueryInterlock;
+  /** @internal Evidence harnesses can isolate query work from the detached maintenance lane. */
+  readonly requestMaintenance?: boolean;
   readonly onProgress?: (progress: CodeGraphProgress) => Effect.Effect<void>;
   readonly refresh?: boolean;
   readonly seedQueries?: readonly string[];
@@ -465,11 +467,15 @@ export class CodeGraphQueryService extends Context.Service<
                       .releaseSnapshotLease(layout.databasePath, base.leaseToken)
                       .pipe(Effect.catch(() => Effect.void)),
                 );
-                yield* requestMaintenance(options.threadnoteHome, identity);
+                if (options.requestMaintenance !== false) {
+                  yield* requestMaintenance(options.threadnoteHome, identity);
+                }
                 return result;
               }
               const result = yield* inspect();
-              yield* requestMaintenance(options.threadnoteHome, identity);
+              if (options.requestMaintenance !== false) {
+                yield* requestMaintenance(options.threadnoteHome, identity);
+              }
               return result;
             }),
           ),

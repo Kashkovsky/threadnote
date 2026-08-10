@@ -1,5 +1,7 @@
 import {existsSync} from 'node:fs';
+import {it as effectIt} from '@effect/vitest';
 import {Effect, FileSystem, Path} from 'effect';
+import {TestClock} from 'effect/testing';
 import {afterEach, describe, expect, it} from 'vitest';
 import {
   CODE_GRAPH_BUILD_PROGRESS_WRITE_INTERVAL_MILLISECONDS,
@@ -17,6 +19,7 @@ import {CodeGraphIndexer} from '../../src/code_graph/indexer.js';
 import {resolveRepositoryIdentity} from '../../src/code_graph/repository.js';
 import {captureConsole} from '../../src/effect/console.js';
 import {withExclusiveFileLock} from '../../src/effect/file_lock.js';
+import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {
   CODE_GRAPH_EXTRACTOR_SET_VERSION,
   type CodeGraphResolutionActivity,
@@ -59,19 +62,20 @@ describe('code graph cross-process build status', () => {
     ).toBeUndefined();
   });
 
-  it('publishes a reporter ETA only after stable phase-local throughput', async () => {
-    const confidenceFor = async (delays: readonly number[]) => {
-      const home = await mkdtemp('threadnote-graph-eta-reporter-');
-      homes.push(home);
-      return runEffect(
+  effectIt.effect('publishes a reporter ETA only after stable phase-local throughput', () =>
+    Effect.gen(function* () {
+      const confidenceFor = (delays: readonly number[]) =>
         Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
+          const home = yield* fs.makeTempDirectory({prefix: 'threadnote-graph-eta-reporter-'});
+          homes.push(home);
           const identity = fixtureIdentity(home);
           const layout = codeGraphLayout(path, home, identity.checkoutId, identity.worktreeId);
           const reporter = yield* makeCodeGraphBuildReporter(identity, layout);
           yield* reporter.progress({completed: 0, phase: 'materializing', reused: 0, total: 50, unit: 'files'});
-          for (const [index, delay] of delays.entries()) {
-            yield* Effect.sleep(delay);
+          for (const [index, milliseconds] of delays.entries()) {
+            yield* TestClock.adjust(milliseconds);
             yield* reporter.progress({
               completed: index + 1,
               phase: 'materializing',
@@ -81,15 +85,14 @@ describe('code graph cross-process build status', () => {
             });
           }
           return (yield* readCodeGraphBuildStatuses(layout))[0]?.eta;
-        }),
-      );
-    };
+        }).pipe(Effect.provide(ApplicationLayer));
 
-    const stable = await confidenceFor(Array.from({length: 24}, () => 50));
-    expect(stable).toMatchObject({scope: 'phase'});
-    expect(['high', 'medium']).toContain(stable?.confidence);
-    expect(await confidenceFor(Array.from({length: 24}, (_, index) => (index % 2 === 0 ? 5 : 90)))).toBeUndefined();
-  });
+      const stable = yield* confidenceFor(Array.from({length: 24}, () => 50));
+      expect(stable).toMatchObject({scope: 'phase'});
+      expect(['high', 'medium']).toContain(stable?.confidence);
+      expect(yield* confidenceFor(Array.from({length: 24}, (_, index) => (index % 2 === 0 ? 5 : 90)))).toBeUndefined();
+    }),
+  );
 
   it('keeps active owner and queued observer jobs separate and atomically readable', async () => {
     const home = await mkdtemp('threadnote-graph-build-status-');

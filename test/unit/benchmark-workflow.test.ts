@@ -105,6 +105,34 @@ describe('platform benchmark workflow', () => {
     }
   });
 
+  it('prepares one verified model artifact before every vector benchmark lane', () => {
+    const workflow = load(readFileSync('.github/workflows/benchmarks.yml', 'utf8'), {
+      schema: JSON_SCHEMA,
+    }) as BenchmarkWorkflow;
+    const preparation = workflow.jobs['prepare-code-graph-vector-model']!;
+    const preparationSteps = preparation.steps ?? [];
+
+    expect(preparation.if).toContain("github.event_name == 'schedule'");
+    expect(preparation.if).toContain("github.event_name == 'workflow_dispatch'");
+    expect(preparation['timeout-minutes']).toBeLessThanOrEqual(10);
+    expect(preparationSteps.find(step => step.id === 'graph-model-cache')?.uses).toBe('actions/cache@v6');
+    expect(preparationSteps.find(step => step.run?.includes('models install'))?.run).toContain(
+      '${CODE_GRAPH_EMBEDDING_MODEL_ID}',
+    );
+    expect(preparationSteps.find(step => step.uses === 'actions/upload-artifact@v7')?.with).toMatchObject({
+      'if-no-files-found': 'error',
+      name: 'code-graph-core-embedding-model',
+    });
+
+    for (const jobName of ['code-graph-vectors', 'code-graph-vectors-10k', 'code-graph-vectors-100k']) {
+      const job = workflow.jobs[jobName]!;
+      expect(job.needs).toBe('prepare-code-graph-vector-model');
+      const download = job.steps?.find(step => step.uses === 'actions/download-artifact@v8');
+      expect(download?.with).toMatchObject({name: 'code-graph-core-embedding-model'});
+      expect(job.steps?.some(step => step.uses === 'actions/cache@v6')).toBe(false);
+    }
+  });
+
   it('bounds the shared production-large n=1 workflow for schedule, opt-in, and release evidence', () => {
     const workflow = load(readFileSync('.github/workflows/benchmarks.yml', 'utf8'), {
       schema: JSON_SCHEMA,

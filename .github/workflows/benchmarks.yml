@@ -206,9 +206,51 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  prepare-code-graph-vector-model:
+    name: Prepare pinned graph model
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - run: bun install --frozen-lockfile
+
+      - name: Restore verified graph model cache
+        id: graph-model-cache
+        uses: actions/cache@v6
+        with:
+          key: threadnote-code-graph-model-${{ env.CODE_GRAPH_EMBEDDING_MODEL_SHA256 }}
+          path: artifacts/code-graph-model-home/models/embedding/${{ env.CODE_GRAPH_EMBEDDING_MODEL_ID }}
+
+      - name: Download and verify the pinned graph model once
+        if: steps.graph-model-cache.outputs.cache-hit != 'true'
+        run: |
+          for delay in 0 5 15 30; do
+            if [ "$delay" -gt 0 ]; then sleep "$delay"; fi
+            if bun src/standalone.ts --home artifacts/code-graph-model-home models install "${CODE_GRAPH_EMBEDDING_MODEL_ID}"; then
+              exit 0
+            fi
+          done
+          exit 1
+
+      - name: Share the pinned graph model with vector jobs
+        uses: actions/upload-artifact@v7
+        with:
+          name: code-graph-core-embedding-model
+          path: artifacts/code-graph-model-home/models/embedding/${{ env.CODE_GRAPH_EMBEDDING_MODEL_ID }}/${{ env.CODE_GRAPH_EMBEDDING_MODEL_SHA256 }}.gguf
+          if-no-files-found: error
+          retention-days: 1
+
   code-graph-vectors:
     name: Code graph pinned vectors · Linux
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    needs: prepare-code-graph-vector-model
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -221,10 +263,10 @@ jobs:
 
       - run: bun install --frozen-lockfile
 
-      - name: Restore pinned graph model
-        uses: actions/cache@v6
+      - name: Download pinned graph model
+        uses: actions/download-artifact@v8
         with:
-          key: threadnote-code-graph-model-${{ env.CODE_GRAPH_EMBEDDING_MODEL_SHA256 }}
+          name: code-graph-core-embedding-model
           path: artifacts/code-graph-model-home/models/embedding/${{ env.CODE_GRAPH_EMBEDDING_MODEL_ID }}
 
       - name: Gate production vector activation and semantic queries
@@ -247,6 +289,7 @@ jobs:
   code-graph-vectors-10k:
     name: Code graph pinned vectors 10k · Linux
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    needs: prepare-code-graph-vector-model
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
@@ -259,10 +302,10 @@ jobs:
 
       - run: bun install --frozen-lockfile
 
-      - name: Restore pinned graph model
-        uses: actions/cache@v6
+      - name: Download pinned graph model
+        uses: actions/download-artifact@v8
         with:
-          key: threadnote-code-graph-model-${{ env.CODE_GRAPH_EMBEDDING_MODEL_SHA256 }}
+          name: code-graph-core-embedding-model
           path: artifacts/code-graph-model-home/models/embedding/${{ env.CODE_GRAPH_EMBEDDING_MODEL_ID }}
 
       - name: Gate 10k production-vector activation and scans
@@ -317,6 +360,7 @@ jobs:
   code-graph-vectors-100k:
     name: Code graph pinned vectors 100k · Linux
     if: github.event_name == 'schedule' || inputs.include_100k
+    needs: prepare-code-graph-vector-model
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
@@ -329,10 +373,10 @@ jobs:
 
       - run: bun install --frozen-lockfile
 
-      - name: Restore pinned graph model
-        uses: actions/cache@v6
+      - name: Download pinned graph model
+        uses: actions/download-artifact@v8
         with:
-          key: threadnote-code-graph-model-${{ env.CODE_GRAPH_EMBEDDING_MODEL_SHA256 }}
+          name: code-graph-core-embedding-model
           path: artifacts/code-graph-model-home/models/embedding/${{ env.CODE_GRAPH_EMBEDDING_MODEL_ID }}
 
       - name: Gate 100k production-vector activation and scans
