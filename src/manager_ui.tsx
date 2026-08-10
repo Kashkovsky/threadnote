@@ -9,6 +9,7 @@ import {
   GraphWorkspace,
   graphBuildIsActive,
   graphCompletedBuildResultIdentity,
+  graphDiagnosticsRequiresCatalogRefresh,
   graphMaintenanceStatusLabel,
   graphStatusPollDelay,
   graphStatusRequiresCatalogRefresh,
@@ -174,6 +175,7 @@ function App(): React.ReactElement {
   const [graphCatalogError, setGraphCatalogError] = useState('');
   const graphCatalogRef = useRef<GraphCatalog | undefined>(undefined);
   const [graphDiagnostics, setGraphDiagnostics] = useState<CodeGraphLocalDiagnosticsReport | undefined>();
+  const graphDiagnosticsCatalogRevisionRef = useRef<string | undefined>(undefined);
   const [graphAdministrationBusy, setGraphAdministrationBusy] = useState<string | undefined>();
   const [graphAdministrationOutput, setGraphAdministrationOutput] = useState('');
   const [tree, setTree] = useState<TreeNode | undefined>();
@@ -271,7 +273,6 @@ function App(): React.ReactElement {
           graphCatalogRef.current = refreshed;
           setGraphCatalog(refreshed);
           setGraphCatalogError('');
-          void refreshGraphDiagnostics({analyze: false, deep: false}, false, true);
           for (const build of status.builds) {
             const identity = graphCompletedBuildResultIdentity(build);
             if (identity) acknowledgedCompletedResults.add(identity);
@@ -280,6 +281,16 @@ function App(): React.ReactElement {
           const merged = {...graphCatalogRef.current, ...status};
           graphCatalogRef.current = merged;
           setGraphCatalog(merged);
+        }
+        if (
+          graphDiagnosticsRequiresCatalogRefresh(
+            graphDiagnosticsCatalogRevisionRef.current,
+            status.catalogRevision,
+            status.maintenance,
+          )
+        ) {
+          await refreshGraphDiagnostics({analyze: false, deep: false}, false, true, status.catalogRevision);
+          if (cancelled) return;
         }
         observedActiveBuild = active;
         observedActiveMaintenance = activeMaintenance;
@@ -396,7 +407,8 @@ function App(): React.ReactElement {
     options: {readonly analyze: boolean; readonly deep: boolean},
     notify = true,
     background = false,
-  ): Promise<void> {
+    catalogRevision = graphCatalogRef.current?.catalogRevision,
+  ): Promise<boolean> {
     if (!background) {
       setGraphAdministrationBusy(
         options.deep ? 'Deep-checking graphs' : options.analyze ? 'Analyzing graphs' : 'Diagnosing graphs',
@@ -407,13 +419,16 @@ function App(): React.ReactElement {
         `/api/graphs/diagnostics?analyze=${options.analyze}&deep=${options.deep}`,
       );
       setGraphDiagnostics(report);
+      graphDiagnosticsCatalogRevisionRef.current = catalogRevision;
       if (!background) setGraphAdministrationOutput('');
       if (notify) toastMessage('Graph diagnostics refreshed');
+      return true;
     } catch (cause) {
-      if (background) return;
+      if (background) return false;
       const message = errorMessage(cause);
       setGraphAdministrationOutput(message);
       toastMessage(message);
+      return false;
     } finally {
       if (!background) setGraphAdministrationBusy(undefined);
     }
@@ -447,7 +462,8 @@ function App(): React.ReactElement {
           confirm: action.dryRun !== true,
         });
       }
-      await Promise.all([refreshGraphCatalog(false), refreshGraphDiagnostics({analyze: false, deep: false}, false)]);
+      await refreshGraphCatalog(false);
+      await refreshGraphDiagnostics({analyze: false, deep: false}, false);
       setGraphAdministrationOutput(result.output);
       toastMessage(`${label} complete`);
     } catch (cause) {

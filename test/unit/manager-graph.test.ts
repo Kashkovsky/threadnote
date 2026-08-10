@@ -17,6 +17,7 @@ import {
   graphCatalogPageOffsets,
   graphCatalogContinuationHasMore,
   graphCompletedBuildResultIdentity,
+  graphDiagnosticsRequiresCatalogRefresh,
   graphDisplayEdges,
   graphFocusLayoutTargets,
   graphFocusTarget,
@@ -502,6 +503,23 @@ describe('manager graph focus', () => {
     const otherRequest = {...graphBuildStatus('queued'), buildId: 'waiter-c', request: {key: 'request-b'}};
     expect(graphWaiterCountForBuild(owner, [matching, otherCheckout, otherRequest])).toBe(1);
     expect(graphWaiterCountForBuild(graphBuildStatus('running'), [matching])).toBe(0);
+  });
+
+  it('keeps administration diagnostics pending until the exact catalog revision succeeds', () => {
+    expect(graphDiagnosticsRequiresCatalogRefresh(undefined, 'revision-after-removal')).toBe(true);
+    expect(graphDiagnosticsRequiresCatalogRefresh('revision-before-removal', 'revision-after-removal')).toBe(true);
+    expect(graphDiagnosticsRequiresCatalogRefresh('revision-after-removal', 'revision-after-removal')).toBe(false);
+    expect(
+      graphDiagnosticsRequiresCatalogRefresh('revision-before-removal', 'revision-after-removal', {
+        checkoutId: 'a'.repeat(64),
+        completed: 0,
+        operation: 'graph-maintenance',
+        phase: 'working',
+        startedAt: '2026-08-10T00:00:00.000Z',
+        total: 1,
+        updatedAt: '2026-08-10T00:00:00.000Z',
+      }),
+    ).toBe(false);
   });
 
   it('keeps a selected indexed view across refresh and falls back deterministically after removal', () => {

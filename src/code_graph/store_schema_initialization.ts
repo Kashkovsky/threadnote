@@ -273,6 +273,28 @@ const initializeSchema = Effect.fn('codeGraph.initializeSchema')(function* (sql:
     ) WITHOUT ROWID
   `);
   yield* sql.unsafe(`
+    CREATE TABLE IF NOT EXISTS snapshot_component_edge_aggregates (
+      snapshot_id TEXT NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
+      source_component_id TEXT NOT NULL,
+      target_component_id TEXT NOT NULL,
+      provenance TEXT NOT NULL,
+      relation TEXT NOT NULL,
+      count INTEGER NOT NULL CHECK (count > 0),
+      confidence REAL NOT NULL,
+      PRIMARY KEY (snapshot_id, source_component_id, target_component_id, provenance, relation)
+    ) WITHOUT ROWID
+  `);
+  yield* sql.unsafe(`
+    CREATE TABLE IF NOT EXISTS snapshot_component_edge_aggregate_receipts (
+      snapshot_id TEXT PRIMARY KEY NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
+      version INTEGER NOT NULL CHECK (version = 1),
+      row_count INTEGER NOT NULL CHECK (row_count >= 0),
+      edge_count INTEGER NOT NULL CHECK (edge_count >= 0),
+      digest TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    ) WITHOUT ROWID
+  `);
+  yield* sql.unsafe(`
     CREATE TABLE IF NOT EXISTS snapshot_analysis_summary_receipts (
       snapshot_id TEXT PRIMARY KEY NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
       version INTEGER NOT NULL CHECK (version = 1),

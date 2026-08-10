@@ -32,7 +32,7 @@ const capacityMagnitude = fc.oneof(
 );
 
 describe('code graph disk capacity properties', () => {
-  it('binds persistent-extension revision 8 into both calibration identities', () => {
+  it('binds the current persistent-extension revision into both calibration identities', () => {
     for (const calibration of [
       CODE_GRAPH_DIRECT_PERSISTENT_CAPACITY_CALIBRATION,
       CODE_GRAPH_CACHE_PERSISTENT_CAPACITY_CALIBRATION,

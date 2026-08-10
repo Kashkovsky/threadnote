@@ -282,14 +282,12 @@ const migratePersistentExtensionTables = Effect.fn('codeGraph.migratePersistentE
       const inspections = yield* inspectPersistentExtensionTables(sql);
       const extensionSchemaCompatible = inspections.every(inspection => inspection.exists && inspection.compatible);
       if ((recordedRevision === 7 || recordedRevision === 8) && extensionSchemaCompatible) {
-        if (recordedRevision !== CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION) {
-          yield* sql`
-            INSERT INTO schema_metadata (key, value)
-            VALUES ('persistent_extension_schema_revision', ${String(CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION)})
-            ON CONFLICT(key) DO UPDATE SET value = excluded.value
-          `;
-          yield* observe?.('recorded-revision') ?? Effect.void;
-        }
+        yield* sql`
+          INSERT INTO schema_metadata (key, value)
+          VALUES ('persistent_extension_schema_revision', ${String(CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION)})
+          ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        `;
+        yield* observe?.('recorded-revision') ?? Effect.void;
         if (!(yield* codeGraphRemovedViewCleanupSchemaAdmission(sql)).current) {
           return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view cleanup schema is unavailable.'));
         }

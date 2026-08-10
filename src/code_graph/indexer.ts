@@ -55,7 +55,11 @@ import {runCodeGraphLifecycleOpportunity} from './lifecycle_opportunity.js';
 import {codeGraphMaintenanceIntentActive, withCodeGraphMaintenanceRegistration} from './maintenance_gate.js';
 import {resolveAndRecordCodeGraphLocalAssociation} from './local_provenance.js';
 import {compareCodeUnits} from './ordering.js';
-import {codeGraphSourceSizeBucket} from './progress_telemetry.js';
+import {
+  codeGraphExtractionWorkUnits,
+  codeGraphSourceSizeBucket,
+  type CodeGraphScanningMetrics,
+} from './progress_telemetry.js';
 import {relocateStructuredSchemaFacts} from './languages/schemas/extractor.js';
 import {repositoryIdentityMatchesExpectation, resolveRepositoryIdentity} from './repository.js';
 import {
@@ -3497,6 +3501,10 @@ export function cacheContentBatch(options: {
 }): CodeGraphCacheContentCoalescer {
   const windowSize = Math.max(1, options.parserPool.capacity * 2);
   let extractionMilliseconds = 0;
+  let extractionFactsBytesCompleted = 0;
+  let extractionSourceBytesCompleted = 0;
+  let extractionWorkUnitsCompleted = 0;
+  let extractionPlan = undefined as CodeGraphContentBatchContext['extractionPlan'];
   let persistenceMilliseconds = 0;
   let readingMilliseconds = 0;
   let pendingBytes = 0;
@@ -3510,6 +3518,49 @@ export function cacheContentBatch(options: {
     payloadBytes: number;
   };
   const pendingGroups = new Map<string, PendingCacheGroup>();
+  const currentScanningMetrics = (): CodeGraphScanningMetrics | undefined =>
+    extractionPlan === undefined
+      ? undefined
+      : {
+          factsBytesCompleted: extractionFactsBytesCompleted,
+          sourceBytesCompleted: extractionSourceBytesCompleted,
+          sourceBytesTotal: extractionPlan.sourceBytesTotal,
+          workUnitsCompleted: extractionWorkUnitsCompleted,
+          workUnitsTotal: extractionPlan.workUnitsTotal,
+        };
+  const observeExtractionPlan = (plan: CodeGraphContentBatchContext['extractionPlan']) => {
+    if (plan === undefined) {
+      extractionPlan = undefined;
+      extractionFactsBytesCompleted = 0;
+      extractionSourceBytesCompleted = 0;
+      extractionWorkUnitsCompleted = 0;
+      return;
+    }
+    if (
+      extractionPlan === undefined ||
+      extractionPlan.sourceBytesTotal !== plan.sourceBytesTotal ||
+      extractionPlan.workUnitsTotal !== plan.workUnitsTotal
+    ) {
+      extractionFactsBytesCompleted = 0;
+      extractionSourceBytesCompleted = 0;
+      extractionWorkUnitsCompleted = 0;
+    }
+    extractionPlan = plan;
+  };
+  const completeExtractionMetrics = (file: CodeGraphInventoryFile, factsBytes: number) => {
+    if (extractionPlan === undefined) return undefined;
+    extractionFactsBytesCompleted = Math.min(Number.MAX_SAFE_INTEGER, extractionFactsBytesCompleted + factsBytes);
+    extractionSourceBytesCompleted = Math.min(
+      extractionPlan.sourceBytesTotal,
+      extractionSourceBytesCompleted + file.size,
+    );
+    extractionWorkUnitsCompleted = Math.min(
+      extractionPlan.workUnitsTotal,
+      extractionWorkUnitsCompleted +
+        codeGraphExtractionWorkUnits(file.size, file.language, codeGraphSourceSizeBucket(file.size)),
+    );
+    return currentScanningMetrics();
+  };
   type SerializedParserResult = CodeGraphParserResult & {readonly cacheFact: BoundedCodeGraphFact};
   const reusableExtractions = new Map<string, SerializedParserResult>();
   const reusableExtractionUses = new Map<string, number>();
@@ -3538,6 +3589,7 @@ export function cacheContentBatch(options: {
         },
         extractionMilliseconds,
         persistenceMilliseconds,
+        currentScanningMetrics(),
       );
       const startedAt = performance.now();
       yield* options.store.cacheFacts(
@@ -3571,6 +3623,7 @@ export function cacheContentBatch(options: {
         },
         extractionMilliseconds,
         persistenceMilliseconds,
+        currentScanningMetrics(),
       );
     });
   const flushOldestPendingGroup = () => {
@@ -3632,6 +3685,7 @@ export function cacheContentBatch(options: {
   ) =>
     Effect.gen(function* () {
       readingMilliseconds += context.readingMilliseconds;
+      observeExtractionPlan(context.extractionPlan);
       const cumulativeContext = {...context, readingMilliseconds};
       latestContext = cumulativeContext;
       let parsedCompleted = 0;
@@ -3676,6 +3730,7 @@ export function cacheContentBatch(options: {
                   },
                   extractionMilliseconds,
                   persistenceMilliseconds,
+                  currentScanningMetrics(),
                 );
                 const donor = reuseKey === undefined ? undefined : reusableExtractions.get(reuseKey);
                 const reused = donor === undefined ? undefined : relocateSerializedParserResult(file, donor);
@@ -3701,6 +3756,7 @@ export function cacheContentBatch(options: {
                     },
                     extractionMilliseconds,
                     persistenceMilliseconds,
+                    completeExtractionMetrics(file, reused.cacheFact.bytes),
                   );
                   return {file, result: reused};
                 }
@@ -3735,6 +3791,7 @@ export function cacheContentBatch(options: {
                   },
                   extractionMilliseconds + result.parseMilliseconds,
                   persistenceMilliseconds,
+                  completeExtractionMetrics(file, result.cacheFact.bytes),
                 );
                 return {file, result};
               }),
@@ -3856,11 +3913,13 @@ function emitContentProgress(
   activity: NonNullable<Extract<CodeGraphProgress, {readonly phase: 'scanning'}>['activity']>,
   extractionMilliseconds: number,
   persistenceMilliseconds: number,
+  metrics?: CodeGraphScanningMetrics,
 ) {
   return (
     onProgress?.({
       ...context.progress,
       activity,
+      ...(metrics === undefined ? {} : {metrics}),
       timings: {
         extractionMilliseconds,
         persistenceMilliseconds,

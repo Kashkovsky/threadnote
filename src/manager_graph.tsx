@@ -207,12 +207,19 @@ export interface GraphBuildStatus {
   };
   readonly error?: {readonly summary: string};
   readonly eta?: {
-    readonly basis?: 'cached-fact-bytes' | 'files' | 'final-fact-bytes' | 'source-bytes';
+    readonly basis?: 'cached-fact-bytes' | 'extraction-work' | 'files' | 'final-fact-bytes' | 'source-bytes';
     readonly confidence: 'high' | 'low' | 'medium';
     readonly remainingMilliseconds: number;
   };
   readonly extraction?: {
     readonly completedFiles: number;
+    readonly metrics?: {
+      readonly factsBytesCompleted: number;
+      readonly sourceBytesCompleted: number;
+      readonly sourceBytesTotal: number;
+      readonly workUnitsCompleted: number;
+      readonly workUnitsTotal: number;
+    };
     readonly slowFiles: number;
     readonly topSlowFiles: readonly {
       readonly classifier: string;
@@ -568,6 +575,18 @@ export function graphStatusRequiresCatalogRefresh(
     );
     return identity !== undefined && !acknowledgedResults.has(identity) && !resultVisible;
   });
+}
+
+export function graphDiagnosticsRequiresCatalogRefresh(
+  diagnosticsCatalogRevision: string | undefined,
+  observedCatalogRevision: string | undefined,
+  maintenance?: CodeGraphMaintenanceStatus,
+): boolean {
+  return (
+    maintenance === undefined &&
+    observedCatalogRevision !== undefined &&
+    diagnosticsCatalogRevision !== observedCatalogRevision
+  );
 }
 
 export function graphWaiterCountForBuild(build: GraphBuildStatus, waiters: readonly GraphBuildStatus[]): number {
@@ -3813,6 +3832,14 @@ function GraphBuildProgress(props: {
       {build.extraction ? (
         <p>
           Extraction telemetry: {build.extraction.completedFiles.toLocaleString()} files completed ·{' '}
+          {build.extraction.metrics === undefined
+            ? ''
+            : `${formatGraphBytes(build.extraction.metrics.sourceBytesCompleted)}/${formatGraphBytes(
+                build.extraction.metrics.sourceBytesTotal,
+              )} source · ${formatGraphBytes(build.extraction.metrics.factsBytesCompleted)} emitted facts · ${formatGraphPercentage(
+                build.extraction.metrics.workUnitsCompleted,
+                build.extraction.metrics.workUnitsTotal,
+              )} class-weighted work · `}
           {build.extraction.slowFiles.toLocaleString()} at or above{' '}
           {formatGraphMilliseconds(CODE_GRAPH_SLOW_FILE_THRESHOLD_MILLISECONDS)} · bounded top-slow evidence{' '}
           {build.extraction.topSlowFiles.length.toLocaleString()}/{CODE_GRAPH_TOP_SLOW_FILE_LIMIT.toLocaleString()}
@@ -4076,7 +4103,9 @@ function graphMaterializationDiskWarning(storage: GraphMaterializationStorage): 
   return scopes.length === 0 ? undefined : `Low disk: ${scopes.join(' and ')} storage is below its estimate.`;
 }
 
-function graphEtaBasisLabel(basis: 'cached-fact-bytes' | 'files' | 'final-fact-bytes' | 'source-bytes'): string {
+function graphEtaBasisLabel(
+  basis: 'cached-fact-bytes' | 'extraction-work' | 'files' | 'final-fact-bytes' | 'source-bytes',
+): string {
   switch (basis) {
     case 'cached-fact-bytes':
       return 'cached-fact bytes';
@@ -4084,9 +4113,16 @@ function graphEtaBasisLabel(basis: 'cached-fact-bytes' | 'files' | 'final-fact-b
       return 'final attributed fact bytes';
     case 'source-bytes':
       return 'source bytes';
+    case 'extraction-work':
+      return 'class-weighted extraction work';
     case 'files':
       return 'files';
   }
+}
+
+function formatGraphPercentage(completed: number, total: number): string {
+  if (total <= 0) return '0%';
+  return `${Math.min(100, Math.max(0, (completed / total) * 100)).toFixed(1)}%`;
 }
 
 function GraphEmptyState(props: {readonly building: boolean}): React.ReactElement {

@@ -118,7 +118,7 @@ export function codeGraphStorageSemanticGroup(name: string): CodeGraphStorageSem
   }
   if (/^(?:sqlite_autoindex_)?(?:symbols|edges)(?:_|$)/u.test(name)) return 'structural-graph';
   if (/^(?:sqlite_autoindex_)?workspace_/u.test(name)) return 'workspace-inventory';
-  if (/^(?:sqlite_autoindex_)?snapshot_analysis/u.test(name)) return 'analysis';
+  if (/^(?:sqlite_autoindex_)?snapshot_(?:analysis|component_edge)/u.test(name)) return 'analysis';
   if (
     /^(?:sqlite_autoindex_)?(?:active_snapshots|building_|removed_|repositories|routine_|schema_metadata|snapshot_build|snapshot_extractor|snapshot_files|snapshot_leases|snapshot_reuse|snapshots|sqlite_schema)/u.test(
       name,

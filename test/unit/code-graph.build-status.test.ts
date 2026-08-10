@@ -272,6 +272,13 @@ describe('code graph cross-process build status', () => {
           },
           completed: 0,
           excluded: 2,
+          metrics: {
+            factsBytesCompleted: 2_048,
+            sourceBytesCompleted: 4_096,
+            sourceBytesTotal: 32_768,
+            workUnitsCompleted: 8_192,
+            workUnitsTotal: 65_536,
+          },
           phase: 'scanning',
           skipped: 0,
           timings: {
@@ -298,6 +305,13 @@ describe('code graph cross-process build status', () => {
     expect(status.counters).toMatchObject({completed: 8, total: 10});
     expect(status.extraction).toMatchObject({
       completedFiles: 1,
+      metrics: {
+        factsBytesCompleted: 2_048,
+        sourceBytesCompleted: 4_096,
+        sourceBytesTotal: 32_768,
+        workUnitsCompleted: 8_192,
+        workUnitsTotal: 65_536,
+      },
       slowFiles: 1,
       topSlowFiles: [
         {

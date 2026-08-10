@@ -386,6 +386,15 @@ export const runCodeGraphStatus = Effect.fn('codeGraph.command.status')(function
           `persist ${formatMilliseconds(current.timings.persistenceMilliseconds)}`,
       );
     }
+    if (current.extraction?.metrics) {
+      const metrics = current.extraction.metrics;
+      const workPercentage =
+        metrics.workUnitsTotal === 0 ? 0 : Math.min(100, (metrics.workUnitsCompleted / metrics.workUnitsTotal) * 100);
+      yield* Console.log(
+        `Extraction: ${formatBytes(metrics.sourceBytesCompleted)}/${formatBytes(metrics.sourceBytesTotal)} source · ` +
+          `${formatBytes(metrics.factsBytesCompleted)} emitted facts · ${workPercentage.toFixed(1)}% class-weighted work`,
+      );
+    }
     const lastProgressAge = Math.max(0, Date.now() - Date.parse(current.timestamps.lastProgressAt));
     if (current.eta && current.eta.confidence !== 'low' && lastProgressAge <= 15_000) {
       yield* Console.log(
@@ -1479,7 +1488,9 @@ function renderMaterializationRows(
   return values.length > 0 ? values.join(', ') : undefined;
 }
 
-function etaBasisLabel(basis: 'cached-fact-bytes' | 'files' | 'final-fact-bytes' | 'source-bytes'): string {
+function etaBasisLabel(
+  basis: 'cached-fact-bytes' | 'extraction-work' | 'files' | 'final-fact-bytes' | 'source-bytes',
+): string {
   switch (basis) {
     case 'cached-fact-bytes':
       return 'cached-fact bytes';
@@ -1487,6 +1498,8 @@ function etaBasisLabel(basis: 'cached-fact-bytes' | 'files' | 'final-fact-bytes'
       return 'final attributed fact bytes';
     case 'source-bytes':
       return 'source bytes';
+    case 'extraction-work':
+      return 'class-weighted extraction work';
     case 'files':
       return 'files';
   }

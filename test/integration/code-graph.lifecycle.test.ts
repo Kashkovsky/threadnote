@@ -29,6 +29,8 @@ import {
   CodeGraphDiskCapacityObservationError,
   CodeGraphDiskCapacityPressureError,
 } from '../../src/code_graph/disk_capacity.js';
+import {ensureBoundedCodeGraphFact} from '../../src/code_graph/fact_budget.js';
+import {decodeStoredCodeGraphFact, encodeStoredCodeGraphFact} from '../../src/code_graph/fact_storage.js';
 import {codeGraphLayout} from '../../src/code_graph/layout.js';
 import {readPersistedCodeGraphLocalAssociation} from '../../src/code_graph/local_provenance.js';
 import {
@@ -1561,21 +1563,18 @@ describe('native code graph lifecycle', () => {
       const row = database
         .query<{readonly facts_json: string}, [string]>('SELECT facts_json FROM file_blobs WHERE path_hint = ? LIMIT 1')
         .get('packages/search/src/vector-index.ts');
-      const facts = JSON.parse(row!.facts_json) as {
-        readonly diagnostics: readonly string[];
-        readonly edges: readonly unknown[];
-        readonly path: string;
-        readonly symbols: ReadonlyArray<Record<string, unknown>>;
-      };
+      const facts = decodeStoredCodeGraphFact(row!.facts_json, 'packages/search/src/vector-index.ts').facts;
       database.query('UPDATE file_blobs SET facts_json = ? WHERE path_hint = ?').run(
-        JSON.stringify({
-          ...facts,
-          symbols: facts.symbols.map(symbol => ({
-            ...symbol,
-            name: 'corruptedVectorIndex',
-            qualifiedName: 'corruptedVectorIndex',
-          })),
-        }),
+        encodeStoredCodeGraphFact(
+          ensureBoundedCodeGraphFact({
+            ...facts,
+            symbols: facts.symbols.map(symbol => ({
+              ...symbol,
+              name: 'corruptedVectorIndex',
+              qualifiedName: 'corruptedVectorIndex',
+            })),
+          }),
+        ).json,
         'packages/search/src/vector-index.ts',
       );
     } finally {
@@ -1606,8 +1605,12 @@ describe('native code graph lifecycle', () => {
       const repaired = repairedDatabase
         .query<{readonly facts_json: string}, [string]>('SELECT facts_json FROM file_blobs WHERE path_hint = ? LIMIT 1')
         .get('packages/search/src/vector-index.ts');
-      expect(repaired?.facts_json).toContain('ensureVectorIndex');
-      expect(repaired?.facts_json).not.toContain('corruptedVectorIndex');
+      const names = decodeStoredCodeGraphFact(
+        repaired!.facts_json,
+        'packages/search/src/vector-index.ts',
+      ).facts.symbols.flatMap(symbol => [symbol.name, symbol.qualifiedName]);
+      expect(names).toContain('ensureVectorIndex');
+      expect(names).not.toContain('corruptedVectorIndex');
     } finally {
       repairedDatabase.close();
     }

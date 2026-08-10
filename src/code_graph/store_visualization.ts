@@ -46,6 +46,7 @@ import {
   visualizationScopeIdForSymbol,
 } from './store_visualization_sql.js';
 import {edgeFromRow, snapshotFromRow, symbolFromRow} from './store_rows.js';
+import {selectPersistedSnapshotComponentEdges} from './store_component_aggregates.js';
 import {
   codeGraphAdjacencyQueryStatement,
   effectiveGraphCtes,
@@ -608,7 +609,6 @@ const selectVisualizationScopeEdges = Effect.fn('codeGraph.selectVisualizationSc
 ) {
   const sql = yield* SqlClient.SqlClient;
   yield* configureConnection(sql);
-  const baseSnapshotId = yield* selectBaseSnapshotId(sql, snapshotId);
   const hasWorkspaceCatalog =
     (yield* tableExists(sql, 'workspace_components')) &&
     Number(
@@ -616,40 +616,54 @@ const selectVisualizationScopeEdges = Effect.fn('codeGraph.selectVisualizationSc
           SELECT COUNT(*) AS count FROM workspace_components WHERE snapshot_id = ${snapshotId}
         `)[0]?.count ?? 0,
     ) > 0;
-  const graphRows = yield* sql.unsafe<{
-    readonly confidence: number;
-    readonly count: number;
-    readonly provenance: CodeGraphProvenance;
-    readonly relation: CodeGraphEdge['relation'];
-    readonly source_scope_id: string;
-    readonly target_scope_id: string;
-  }>(
-    `${effectiveGraphCtes()}
-     , scoped_symbols AS (
-       SELECT id,
-         ${hasWorkspaceCatalog ? "CASE WHEN resolution_scope_id IS NOT NULL THEN resolution_scope_id WHEN language = 'markdown' OR kind IN ('document', 'heading', 'section') THEN 'facet:unscoped-documentation' WHEN package_name IS NOT NULL AND trim(package_name) <> '' THEN 'package:' || package_name WHEN instr(path, '/') > 0 THEN 'path:' || substr(path, 1, instr(path, '/') - 1) ELSE 'path:(root)' END" : "CASE WHEN package_name IS NOT NULL AND trim(package_name) <> '' THEN 'package:' || package_name WHEN instr(path, '/') > 0 THEN 'path:' || substr(path, 1, instr(path, '/') - 1) ELSE 'path:(root)' END"} AS scope_id
-       FROM effective_symbols
-     )
-     SELECT source.scope_id AS source_scope_id, target.scope_id AS target_scope_id,
-       edge.provenance, edge.relation, COUNT(*) AS count, MAX(edge.confidence) AS confidence
-     FROM effective_edges AS edge
-     JOIN scoped_symbols AS source ON source.id = edge.source_id
-     JOIN scoped_symbols AS target ON target.id = edge.target_id
-     WHERE source.scope_id IS NOT NULL AND target.scope_id IS NOT NULL
-       AND source.scope_id <> target.scope_id
-     GROUP BY source.scope_id, target.scope_id, edge.provenance, edge.relation
-     ORDER BY source.scope_id, target.scope_id, edge.provenance, edge.relation`,
-    effectiveGraphParameters(snapshotId, baseSnapshotId),
-  );
-  const sourceRelationships: CodeGraphVisualizationScopeEdge[] = graphRows.map(row => ({
-    confidence: Number(row.confidence),
-    count: Number(row.count),
-    provenance: row.provenance,
-    relation: row.relation,
-    sourceId: row.source_scope_id,
-    targetId: row.target_scope_id,
-    type: 'source-relationship',
-  }));
+  const persisted = yield* selectPersistedSnapshotComponentEdges(snapshotId);
+  let sourceRelationships = Option.getOrElse(persisted, () => [] as readonly CodeGraphVisualizationScopeEdge[]);
+  if (Option.isNone(persisted)) {
+    const snapshotRows = yield* sql<{readonly edge_count: number}>`
+      SELECT edge_count FROM snapshots WHERE id = ${snapshotId} AND state = 'ready' LIMIT 1
+    `;
+    const edgeCount = Number(snapshotRows[0]?.edge_count ?? Number.MAX_SAFE_INTEGER);
+    // Compatibility-only exact fallback for old small snapshots. Production
+    // graphs stay bounded and partial until the post-ready aggregate receipt
+    // is built rather than running an unbounded GROUP BY in a Manager read.
+    if (Number.isSafeInteger(edgeCount) && edgeCount >= 0 && edgeCount <= 25_000) {
+      const baseSnapshotId = yield* selectBaseSnapshotId(sql, snapshotId);
+      const graphRows = yield* sql.unsafe<{
+        readonly confidence: number;
+        readonly count: number;
+        readonly provenance: CodeGraphProvenance;
+        readonly relation: CodeGraphEdge['relation'];
+        readonly source_scope_id: string;
+        readonly target_scope_id: string;
+      }>(
+        `${effectiveGraphCtes()}
+         , scoped_symbols AS (
+           SELECT id,
+             ${hasWorkspaceCatalog ? "CASE WHEN resolution_scope_id IS NOT NULL THEN resolution_scope_id WHEN language = 'markdown' OR kind IN ('document', 'heading', 'section') THEN 'facet:unscoped-documentation' WHEN package_name IS NOT NULL AND trim(package_name) <> '' THEN 'package:' || package_name WHEN instr(path, '/') > 0 THEN 'path:' || substr(path, 1, instr(path, '/') - 1) ELSE 'path:(root)' END" : "CASE WHEN package_name IS NOT NULL AND trim(package_name) <> '' THEN 'package:' || package_name WHEN instr(path, '/') > 0 THEN 'path:' || substr(path, 1, instr(path, '/') - 1) ELSE 'path:(root)' END"} AS scope_id
+           FROM effective_symbols
+         )
+         SELECT source.scope_id AS source_scope_id, target.scope_id AS target_scope_id,
+           edge.provenance, edge.relation, COUNT(*) AS count, MAX(edge.confidence) AS confidence
+         FROM effective_edges AS edge
+         JOIN scoped_symbols AS source ON source.id = edge.source_id
+         JOIN scoped_symbols AS target ON target.id = edge.target_id
+         WHERE source.scope_id IS NOT NULL AND target.scope_id IS NOT NULL
+           AND source.scope_id <> target.scope_id
+         GROUP BY source.scope_id, target.scope_id, edge.provenance, edge.relation
+         ORDER BY source.scope_id, target.scope_id, edge.provenance, edge.relation`,
+        effectiveGraphParameters(snapshotId, baseSnapshotId),
+      );
+      sourceRelationships = graphRows.map(row => ({
+        confidence: Number(row.confidence),
+        count: Number(row.count),
+        provenance: row.provenance,
+        relation: row.relation,
+        sourceId: row.source_scope_id,
+        targetId: row.target_scope_id,
+        type: 'source-relationship',
+      }));
+    }
+  }
   if (!hasWorkspaceCatalog) return sourceRelationships;
   const dependencies = yield* sql<{
     readonly provenance: CodeGraphWorkspaceProvenance;

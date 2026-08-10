@@ -51,6 +51,10 @@ import {associateSnapshotFileShards} from './store_cache.js';
 import {insertActivationLease, recordSnapshotExtractorGeneration} from './store_maintenance_core.js';
 import {type CodeGraphSqlQueryStatement} from './store_visualization_sql.js';
 import {selectReusableBaseReceipt} from './store_queries.js';
+import {
+  materializeSnapshotComponentEdgeAggregates,
+  selectPersistedSnapshotComponentEdges,
+} from './store_component_aggregates.js';
 
 /**
  * Read-only linearization point for Manager's writer-busy fallback. A cached
@@ -135,32 +139,38 @@ const ensureReadySnapshotAnalysisSummary = Effect.fn('codeGraph.ensureReadySnaps
   // otherwise leave a plausible receipt that makes every later writer skip the
   // repair while readers repeatedly fall back to the expensive raw scan.
   const existing = yield* selectAnalysisSummary(snapshotId);
-  if (Option.isSome(existing)) return false;
+  const existingComponentEdges = yield* selectPersistedSnapshotComponentEdges(snapshotId);
+  if (Option.isSome(existing) && Option.isSome(existingComponentEdges)) return false;
   const rows = yield* sql<SnapshotRow>`SELECT * FROM snapshots WHERE id = ${snapshotId} AND state = 'ready' LIMIT 1`;
   if (!rows[0]) return yield* Effect.fail(new CodeGraphStoreError(`Ready snapshot ${snapshotId} was not found.`));
   const snapshot = snapshotFromRow(rows[0]);
   const baseSnapshotId = Option.getOrUndefined(sqlTextOption(rows[0].base_snapshot_id));
-  if (baseSnapshotId) {
-    const baseSummary = yield* selectAnalysisSummary(baseSnapshotId);
-    if (Option.isNone(baseSummary)) {
-      const baseRows = yield* sql<SnapshotRow>`
-        SELECT * FROM snapshots WHERE id = ${baseSnapshotId} AND state = 'ready' LIMIT 1
-      `;
-      const base = baseRows[0];
-      if (!base || Option.isSome(sqlTextOption(base.base_snapshot_id))) {
-        return yield* Effect.fail(
-          new CodeGraphStoreError('Nested legacy overlays require a clean code graph rebuild before summary backfill.'),
-        );
+  if (Option.isNone(existing)) {
+    if (baseSnapshotId) {
+      const baseSummary = yield* selectAnalysisSummary(baseSnapshotId);
+      if (Option.isNone(baseSummary)) {
+        const baseRows = yield* sql<SnapshotRow>`
+          SELECT * FROM snapshots WHERE id = ${baseSnapshotId} AND state = 'ready' LIMIT 1
+        `;
+        const base = baseRows[0];
+        if (!base || Option.isSome(sqlTextOption(base.base_snapshot_id))) {
+          return yield* Effect.fail(
+            new CodeGraphStoreError(
+              'Nested legacy overlays require a clean code graph rebuild before summary backfill.',
+            ),
+          );
+        }
+        const baseSnapshot = snapshotFromRow(base);
+        yield* materializeCleanSnapshotAnalysisSummary(sql, baseSnapshot);
+        yield* recordSnapshotAnalysisReceipt(sql, baseSnapshot);
       }
-      const baseSnapshot = snapshotFromRow(base);
-      yield* materializeCleanSnapshotAnalysisSummary(sql, baseSnapshot);
-      yield* recordSnapshotAnalysisReceipt(sql, baseSnapshot);
+      yield* materializeOverlaySnapshotAnalysisSummary(sql, snapshot, baseSnapshotId);
+    } else {
+      yield* materializeCleanSnapshotAnalysisSummary(sql, snapshot);
     }
-    yield* materializeOverlaySnapshotAnalysisSummary(sql, snapshot, baseSnapshotId);
-  } else {
-    yield* materializeCleanSnapshotAnalysisSummary(sql, snapshot);
+    yield* recordSnapshotAnalysisReceipt(sql, snapshot);
   }
-  yield* recordSnapshotAnalysisReceipt(sql, snapshot);
+  if (Option.isNone(existingComponentEdges)) yield* materializeSnapshotComponentEdgeAggregates(sql, snapshot.id);
   return true;
 });
 

@@ -3,6 +3,7 @@ import {Effect} from 'effect';
 import {afterEach, describe, expect, it} from 'vitest';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
 import {inspectCodeGraphStorage} from '../../src/code_graph/storage.js';
+import {readCodeGraphStorageSemanticAttribution} from '../../src/code_graph/storage_attribution.js';
 import {CODE_GRAPH_EXTRACTOR_GENERATION} from '../../src/code_graph/types.js';
 import {join, mkdir, mkdtemp, rm} from '../helpers/effect-filesystem.js';
 import {runEffect} from '../helpers/effect-runtime.js';
@@ -89,24 +90,60 @@ describe('code graph semantic storage attribution', () => {
       database.close(false);
     }
 
+    const semanticDatabase = new Database(databasePath, {readonly: true, strict: true});
+    try {
+      const semantic = readCodeGraphStorageSemanticAttribution(
+        semanticDatabase,
+        [
+          {bytes: 4_096, name: 'materialized_file_shards', pages: 1},
+          {bytes: 4_096, name: 'snapshot_component_edge_aggregates', pages: 1},
+          {bytes: 4_096, name: 'symbols', pages: 1},
+        ],
+        3,
+        12_288,
+      );
+      expect(semantic.groups).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({name: 'analysis'}),
+          expect.objectContaining({name: 'facts-cache'}),
+          expect.objectContaining({name: 'structural-graph'}),
+        ]),
+      );
+      assertSnapshotAttribution(semantic.snapshots, snapshotId, factsJson);
+    } finally {
+      semanticDatabase.close(false);
+    }
+
     const storage = await runEffect(inspectCodeGraphStorage(home, checkoutId, {attributeObjects: true}));
     if (storage.state !== 'available' || storage.pageStorage.state !== 'available') throw new Error('missing storage');
     const attribution = storage.pageStorage.attribution;
-    if (!attribution || attribution.state !== 'available') throw new Error('missing attribution');
+    if (!attribution) throw new Error('missing attribution');
+    if (attribution.state === 'unavailable') {
+      expect(attribution.reason).toBe('sqlite-dbstat-unavailable');
+      return;
+    }
     expect(attribution.semantic.groups).toEqual(
       expect.arrayContaining([
         expect.objectContaining({name: 'facts-cache'}),
         expect.objectContaining({name: 'structural-graph'}),
       ]),
     );
-    if (attribution.semantic.snapshots.state !== 'available') throw new Error('missing snapshot attribution');
-    expect(attribution.semantic.snapshots.baseline).toMatchObject({activeSnapshotCount: 1, activeSymbolCount: 1});
-    expect(attribution.semantic.snapshots.snapshots[0]).toMatchObject({
-      active: true,
-      associatedFactRawBytes: Buffer.byteLength(factsJson),
-      associatedFactStoredBytes: Buffer.byteLength(factsJson),
-      id: snapshotId,
-      symbolCount: 1,
-    });
+    assertSnapshotAttribution(attribution.semantic.snapshots, snapshotId, factsJson);
   });
 });
+
+function assertSnapshotAttribution(
+  attribution: ReturnType<typeof readCodeGraphStorageSemanticAttribution>['snapshots'],
+  snapshotId: string,
+  factsJson: string,
+): void {
+  if (attribution.state !== 'available') throw new Error('missing snapshot attribution');
+  expect(attribution.baseline).toMatchObject({activeSnapshotCount: 1, activeSymbolCount: 1});
+  expect(attribution.snapshots[0]).toMatchObject({
+    active: true,
+    associatedFactRawBytes: Buffer.byteLength(factsJson),
+    associatedFactStoredBytes: Buffer.byteLength(factsJson),
+    id: snapshotId,
+    symbolCount: 1,
+  });
+}

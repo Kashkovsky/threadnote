@@ -14,7 +14,11 @@ import {
   type CodeGraphInventoryExclusionReason,
 } from './inventory_policy.js';
 import {compareCodeUnits} from './ordering.js';
-import {codeGraphSourceSizeBucket} from './progress_telemetry.js';
+import {
+  codeGraphExtractionPlanMetrics,
+  codeGraphSourceSizeBucket,
+  type CodeGraphExtractionPlanMetrics,
+} from './progress_telemetry.js';
 import {type CodeGraphInventoryFile, type CodeGraphProgress, type RepositoryIdentity} from './types.js';
 
 export {codeGraphInventoryExclusionReason} from './inventory_policy.js';
@@ -143,6 +147,8 @@ export interface CodeGraphInventoryOptions {
 export interface CodeGraphContentBatchContext {
   /** Eligible duplicate Git blobs expected across this committed inventory pass. */
   readonly blobReuseCounts?: ReadonlyMap<string, number>;
+  /** Full path-free extraction denominator for this inventory pass. */
+  readonly extractionPlan?: CodeGraphExtractionPlanMetrics;
   /** Counters remain at the last completed inventory boundary while this batch is extracted. */
   readonly progress: Extract<CodeGraphProgress, {readonly phase: 'scanning'}>;
   readonly readingMilliseconds: number;
@@ -983,9 +989,18 @@ const readCommittedFiles = Effect.fn('codeGraph.readCommittedFiles')(function* (
     }
     return compareCodeUnits(left.path, right.path);
   });
+  const extractionPlan = codeGraphExtractionPlanMetrics([
+    ...metadataOnlyContent,
+    ...orderedNeedsContent
+      .filter(entry => entry.parse)
+      .map(entry =>
+        inventoryFileForCommittedEntry(entry, committedContentHash(identity.objectFormat, entry.blobId), languagePacks),
+      ),
+  ]);
   for (let offset = 0; offset < metadataOnlyContent.length; offset += CAT_FILE_BATCH_ENTRIES) {
     const batch = metadataOnlyContent.slice(offset, offset + CAT_FILE_BATCH_ENTRIES);
     yield* onContentBatch?.(batch, {
+      extractionPlan,
       progress: {
         accepted: files.length,
         completed: completed - metadataOnlyContent.length + offset,
@@ -1072,6 +1087,7 @@ const readCommittedFiles = Effect.fn('codeGraph.readCommittedFiles')(function* (
     if (contentBatch.length > 0) {
       yield* onContentBatch?.(contentBatch, {
         ...(blobReuseCounts.size === 0 ? {} : {blobReuseCounts}),
+        extractionPlan,
         progress: {
           accepted: files.length,
           completed,

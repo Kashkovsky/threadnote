@@ -658,6 +658,18 @@ const RETIRED_SNAPSHOT_CLEANUP_SPECS = [
     batchRows: 1_000,
     keyColumns: ['snapshot_id'],
     maximumBatchRows: 1_000,
+    table: 'snapshot_component_edge_aggregate_receipts',
+  },
+  {
+    batchRows: 5_000,
+    keyColumns: ['snapshot_id', 'source_component_id', 'target_component_id', 'provenance', 'relation'],
+    maximumBatchRows: 20_000,
+    table: 'snapshot_component_edge_aggregates',
+  },
+  {
+    batchRows: 1_000,
+    keyColumns: ['snapshot_id'],
+    maximumBatchRows: 1_000,
     table: 'snapshot_analysis_summary_receipts',
   },
   {

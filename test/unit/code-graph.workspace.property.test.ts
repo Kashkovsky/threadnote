@@ -87,7 +87,10 @@ const sharedProjectArbitrary = FC.record({
     'inferred',
     'maven',
     'node',
+    'nx',
+    'pnpm',
     'swiftpm',
+    'typescript',
     'xcode',
   ),
   dependencies: FC.array(FC.constantFrom('cgp_shared', 'cgp_a', 'cgp_b'), {maxLength: 5}),
@@ -166,19 +169,29 @@ describe('code graph workspace properties', () => {
       workspaceFile('apps/web/settings.gradle.kts', 'rootProject.name = "mobile"'),
       workspaceFile('apps/web/src/main/kotlin/App.kt', 'class App', 'kotlin'),
     ]);
-    const nodeProjects = workspace.projects.filter(project => project.buildSystem === 'node');
-    const root = nodeProjects.find(project => project.root === '')!;
-    const core = nodeProjects.find(project => project.root === 'packages/core')!;
-    const web = nodeProjects.find(project => project.root === 'apps/web')!;
-    const release = nodeProjects.find(project => project.root === 'tools/release')!;
+    const packageProjects = workspace.projects.filter(
+      project => project.kind === 'package' && (project.buildSystem === 'node' || project.buildSystem === 'pnpm'),
+    );
+    const root = packageProjects.find(project => project.root === '')!;
+    const core = packageProjects.find(project => project.root === 'packages/core')!;
+    const web = packageProjects.find(project => project.root === 'apps/web')!;
+    const release = packageProjects.find(project => project.root === 'tools/release')!;
 
-    expect(nodeProjects.map(project => project.name)).toEqual([
+    expect(packageProjects.map(project => project.name)).toEqual([
       'threadnote-root',
       '@acme/web',
       '@acme/core',
       '@acme/release',
     ]);
-    expect(new Set([root.workspaceId, core.workspaceId, web.workspaceId, release.workspaceId]).size).toBe(1);
+    expect([root.buildSystem, core.buildSystem, web.buildSystem, release.buildSystem]).toEqual([
+      'pnpm',
+      'node',
+      'node',
+      'pnpm',
+    ]);
+    expect(root.workspaceId).toBe(release.workspaceId);
+    expect(core.workspaceId).toBe(web.workspaceId);
+    expect(root.workspaceId).not.toBe(core.workspaceId);
     expect(root.dependencies).toEqual(expect.arrayContaining([core.id, web.id]));
     expect(web.dependencies).toContain(core.id);
     expect(workspace.projects).toContainEqual(expect.objectContaining({buildSystem: 'gradle', root: 'apps/web'}));
@@ -262,7 +275,84 @@ describe('code graph workspace properties', () => {
     {fastCheck: {numRuns: 100}},
   );
 
-  it('marks standalone unreconciled project.json boundaries incomplete while accepting one declared exact root', () => {
+  it.prop(
+    'persists stable typed Nx projects, targets, pnpm packages, and tsconfig references regardless of inventory order',
+    {priorities: FC.array(FC.integer(), {maxLength: 13, minLength: 13})},
+    ({priorities}) => {
+      const nxFiles = [
+        workspaceFile('nx.json', JSON.stringify({targetDefaults: {build: {dependsOn: ['^build']}}}), 'json'),
+        workspaceFile('pnpm-workspace.yaml', "packages:\n  - 'apps/*'\n", 'pnpm-workspace'),
+        workspaceFile('package.json', JSON.stringify({name: 'root', private: true}), 'npm-manifest'),
+        workspaceFile('apps/core/package.json', JSON.stringify({name: '@acme/core'}), 'npm-manifest'),
+        workspaceFile(
+          'apps/core/project.json',
+          JSON.stringify({name: 'core', sourceRoot: 'apps/core/src', targets: {build: {executor: '@nx/js:tsc'}}}),
+          'json',
+        ),
+        workspaceFile('apps/core/tsconfig.json', JSON.stringify({include: ['src/**/*.ts']}), 'typescript-config'),
+        workspaceFile('apps/core/src/index.ts', 'export const core = true', 'typescript'),
+        workspaceFile('apps/web/package.json', JSON.stringify({name: '@acme/web'}), 'npm-manifest'),
+        workspaceFile(
+          'apps/web/project.json',
+          JSON.stringify({
+            implicitDependencies: ['core'],
+            name: 'web',
+            sourceRoot: 'apps/web/src',
+            targets: {build: {dependsOn: ['^build']}, test: {dependsOn: ['build']}},
+          }),
+          'json',
+        ),
+        workspaceFile(
+          'apps/web/tsconfig.json',
+          JSON.stringify({include: ['src/**/*.ts'], references: [{path: '../core'}]}),
+          'typescript-config',
+        ),
+        workspaceFile('apps/web/src/index.ts', 'export const web = true', 'typescript'),
+        workspaceFile('README.md', '# workspace', 'markdown'),
+        workspaceFile('docs/architecture.md', '# architecture', 'markdown'),
+      ];
+      const workspace = discoverManifestWorkspace(nxFiles);
+      const permuted = discoverManifestWorkspace(
+        nxFiles
+          .map((file, index) => ({file, index, priority: priorities[index]!}))
+          .sort((left, right) => left.priority - right.priority || left.index - right.index)
+          .map(value => value.file),
+      );
+      const nxProject = (name: string) =>
+        workspace.projects.find(
+          project => project.buildSystem === 'nx' && project.kind === 'project' && project.name === name,
+        )!;
+      const nxTarget = (name: string) =>
+        workspace.projects.find(
+          project => project.buildSystem === 'nx' && project.kind === 'target' && project.name === name,
+        )!;
+      const core = nxProject('core');
+      const web = nxProject('web');
+      const coreBuild = nxTarget('core:build');
+      const webBuild = nxTarget('web:build');
+      const webTest = nxTarget('web:test');
+      const coreConfig = workspace.projects.find(
+        project => project.buildSystem === 'typescript' && project.root === 'apps/core',
+      )!;
+      const webConfig = workspace.projects.find(
+        project => project.buildSystem === 'typescript' && project.root === 'apps/web',
+      )!;
+
+      expect(permuted).toEqual(workspace);
+      expect(core.sourceRoots).toEqual(['apps/core/src']);
+      expect(web.workspaceId).toBe(core.workspaceId);
+      expect(web.dependencies).toContain(core.id);
+      expect(webBuild.dependencies).toEqual(expect.arrayContaining([web.id, coreBuild.id]));
+      expect(webTest.dependencies).toEqual(expect.arrayContaining([web.id, webBuild.id]));
+      expect(webConfig.dependencies).toContain(coreConfig.id);
+      expect(workspace.projects.filter(project => project.buildSystem === 'pnpm').map(project => project.name)).toEqual(
+        ['root', '@acme/core', '@acme/web'],
+      );
+    },
+    {fastCheck: {numRuns: 100}},
+  );
+
+  it('keeps standalone Nx project boundaries as typed components instead of diagnostic-only records', () => {
     const workspace = discoverManifestWorkspace([
       workspaceFile(
         'package.json',
@@ -276,12 +366,13 @@ describe('code graph workspace properties', () => {
       workspaceFile('orphan/index.ts', 'export const orphan = true', 'typescript'),
     ]);
 
-    expect(workspace.diagnostics).not.toContain(
-      'apps/web/project.json: Nx project boundary is not reconciled to exactly one declared package root',
+    expect(workspace.projects).toContainEqual(
+      expect.objectContaining({buildSystem: 'nx', kind: 'project', name: 'web', root: 'apps/web'}),
     );
-    expect(workspace.diagnostics).toContain(
-      'orphan/project.json: Nx project boundary is not reconciled to exactly one declared package root',
+    expect(workspace.projects).toContainEqual(
+      expect.objectContaining({buildSystem: 'nx', kind: 'project', name: 'orphan', root: 'orphan'}),
     );
+    expect(workspace.diagnostics).not.toContainEqual(expect.stringContaining('not reconciled'));
   });
 
   it.prop(

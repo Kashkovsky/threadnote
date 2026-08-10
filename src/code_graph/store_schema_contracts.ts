@@ -205,6 +205,55 @@ export const PERSISTENT_EXTENSION_TABLES = [
   {
     columns: [
       requiredColumn('snapshot_id', 'TEXT', 1),
+      requiredColumn('source_component_id', 'TEXT', 2),
+      requiredColumn('target_component_id', 'TEXT', 3),
+      requiredColumn('provenance', 'TEXT', 4),
+      requiredColumn('relation', 'TEXT', 5),
+      requiredColumn('count', 'INTEGER'),
+      requiredColumn('confidence', 'REAL'),
+    ],
+    createSql: `CREATE TABLE IF NOT EXISTS snapshot_component_edge_aggregates (
+      snapshot_id TEXT NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
+      source_component_id TEXT NOT NULL,
+      target_component_id TEXT NOT NULL,
+      provenance TEXT NOT NULL,
+      relation TEXT NOT NULL,
+      count INTEGER NOT NULL CHECK (count > 0),
+      confidence REAL NOT NULL,
+      PRIMARY KEY (snapshot_id, source_component_id, target_component_id, provenance, relation)
+    ) WITHOUT ROWID`,
+    group: 'analysis',
+    name: 'snapshot_component_edge_aggregates',
+    requiredDefinitionPatterns: [/CHECK\s*\(\s*count\s*>\s*0\s*\)/i],
+  },
+  {
+    columns: [
+      requiredColumn('snapshot_id', 'TEXT', 1),
+      requiredColumn('version', 'INTEGER'),
+      requiredColumn('row_count', 'INTEGER'),
+      requiredColumn('edge_count', 'INTEGER'),
+      requiredColumn('digest', 'TEXT'),
+      requiredColumn('created_at', 'TEXT'),
+    ],
+    createSql: `CREATE TABLE IF NOT EXISTS snapshot_component_edge_aggregate_receipts (
+      snapshot_id TEXT PRIMARY KEY NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
+      version INTEGER NOT NULL CHECK (version = 1),
+      row_count INTEGER NOT NULL CHECK (row_count >= 0),
+      edge_count INTEGER NOT NULL CHECK (edge_count >= 0),
+      digest TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    ) WITHOUT ROWID`,
+    group: 'analysis',
+    name: 'snapshot_component_edge_aggregate_receipts',
+    requiredDefinitionPatterns: [
+      /CHECK\s*\(\s*version\s*=\s*1\s*\)/i,
+      /CHECK\s*\(\s*row_count\s*>=\s*0\s*\)/i,
+      /CHECK\s*\(\s*edge_count\s*>=\s*0\s*\)/i,
+    ],
+  },
+  {
+    columns: [
+      requiredColumn('snapshot_id', 'TEXT', 1),
       requiredColumn('version', 'INTEGER'),
       requiredColumn('symbol_count', 'INTEGER'),
       requiredColumn('edge_count', 'INTEGER'),

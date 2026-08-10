@@ -1,6 +1,8 @@
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import {
+  codeGraphExtractionPlanMetrics,
+  codeGraphExtractionWorkUnits,
   codeGraphSourceSizeBucket,
   retainCodeGraphSlowFileTelemetry,
   type CodeGraphSlowFileTelemetry,
@@ -14,6 +16,36 @@ describe('code graph progress telemetry properties', () => {
     expect(codeGraphSourceSizeBucket(64 * 1_024 + 1)).toBe('64-256KiB');
     expect(codeGraphSourceSizeBucket(256 * 1_024 + 1)).toBe('256KiB-1MiB');
     expect(codeGraphSourceSizeBucket(1_024 * 1_024 + 1)).toBe('>1MiB');
+  });
+
+  it('keeps class-weighted extraction work deterministic, monotone, and path-free', () => {
+    fc.assert(
+      fc.property(fc.integer({max: 8 * 1_024 * 1_024, min: 0}), sourceBytes => {
+        const bucket = codeGraphSourceSizeBucket(sourceBytes);
+        const plain = codeGraphExtractionWorkUnits(sourceBytes, 'ruby', bucket);
+        const typescript = codeGraphExtractionWorkUnits(sourceBytes, 'typescript', bucket);
+        const structured = codeGraphExtractionWorkUnits(sourceBytes, 'json', bucket);
+        const nextBytes = Math.min(8 * 1_024 * 1_024, sourceBytes + 1);
+
+        expect(plain).toBeLessThanOrEqual(typescript);
+        expect(typescript).toBeLessThanOrEqual(structured);
+        expect(
+          codeGraphExtractionWorkUnits(nextBytes, 'json', codeGraphSourceSizeBucket(nextBytes)),
+        ).toBeGreaterThanOrEqual(structured);
+        expect(
+          codeGraphExtractionPlanMetrics([
+            {language: 'typescript', size: sourceBytes},
+            {language: 'json', size: nextBytes},
+          ]),
+        ).toEqual(
+          codeGraphExtractionPlanMetrics([
+            {language: 'typescript', size: sourceBytes},
+            {language: 'json', size: nextBytes},
+          ]),
+        );
+      }),
+      {numRuns: 64},
+    );
   });
 
   it('retains the same bounded top-slow evidence regardless of completion order', () => {

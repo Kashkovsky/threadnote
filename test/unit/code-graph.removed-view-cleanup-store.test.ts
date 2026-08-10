@@ -27,7 +27,7 @@ const SNAPSHOT_ID = 'cgsn_1111111111111111111111111111111111111111';
 const NEW_SNAPSHOT_ID = 'cgsn_2222222222222222222222222222222222222222';
 
 describe('removed code graph view cleanup queue', () => {
-  effectIt.effect('adds revision 8 without retiring ready or interrupted snapshots', () =>
+  effectIt.effect('carries the revision 8 cleanup authority into the current extension schema', () =>
     withFixture('threadnote-removed-cleanup-migration-', ({databasePath}) =>
       Effect.gen(function* () {
         const store = yield* CodeGraphStore;
@@ -74,8 +74,8 @@ describe('removed code graph view cleanup queue', () => {
           }
         });
 
-        expect(CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION).toBe(8);
-        expect(observed.revision).toEqual({value: '8'});
+        expect(CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION).toBe(9);
+        expect(observed.revision).toEqual({value: '9'});
         expect(observed.ready).toEqual({state: 'ready'});
         expect(observed.building).toEqual({state: 'building'});
         expect(observed.active).toEqual([{snapshot_id: SNAPSHOT_ID, worktree_id: WORKTREE_ID}]);

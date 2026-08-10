@@ -20,6 +20,7 @@ import {
   codeGraphSourceSizeBucket,
   isCodeGraphSourceSizeBucket,
   retainCodeGraphSlowFileTelemetry,
+  type CodeGraphScanningMetrics,
   type CodeGraphSlowFileTelemetry,
   type CodeGraphSourceSizeBucket,
 } from './progress_telemetry.js';
@@ -78,6 +79,7 @@ export interface CodeGraphBuildActivity {
 
 export interface CodeGraphBuildExtraction {
   readonly completedFiles: number;
+  readonly metrics?: CodeGraphScanningMetrics;
   readonly slowFiles: number;
   readonly topSlowFiles: readonly CodeGraphSlowFileTelemetry[];
 }
@@ -109,7 +111,7 @@ export interface CodeGraphBuildStatus {
   readonly counters: CodeGraphBuildCounters;
   readonly error?: {readonly summary: string};
   readonly eta?: {
-    readonly basis?: 'cached-fact-bytes' | 'files' | 'final-fact-bytes' | 'source-bytes';
+    readonly basis?: 'cached-fact-bytes' | 'extraction-work' | 'files' | 'final-fact-bytes' | 'source-bytes';
     readonly confidence: 'high' | 'low' | 'medium';
     readonly remainingMilliseconds: number;
     readonly scope: 'phase';
@@ -898,6 +900,7 @@ function progressExtraction(
     : currentTop;
   return {
     completedFiles: (current?.completedFiles ?? 0) + 1,
+    ...(progress.metrics ? {metrics: progress.metrics} : current?.metrics ? {metrics: current.metrics} : {}),
     slowFiles:
       (current?.slowFiles ?? 0) + (durationMilliseconds >= CODE_GRAPH_SLOW_FILE_THRESHOLD_MILLISECONDS ? 1 : 0),
     topSlowFiles,
@@ -1745,6 +1748,8 @@ function parseExtraction(value: unknown): CodeGraphBuildExtraction | undefined {
   }
   const topSlowFiles = value.topSlowFiles.map(parseSlowFileTelemetry);
   if (topSlowFiles.some(sample => sample === undefined)) return undefined;
+  const metrics = value.metrics === undefined ? undefined : parseScanningMetrics(value.metrics);
+  if (value.metrics !== undefined && metrics === undefined) return undefined;
   const samples = topSlowFiles as CodeGraphSlowFileTelemetry[];
   if (
     samples.some(
@@ -1759,8 +1764,35 @@ function parseExtraction(value: unknown): CodeGraphBuildExtraction | undefined {
   }
   return {
     completedFiles: Number(value.completedFiles),
+    ...(metrics === undefined ? {} : {metrics}),
     slowFiles: Number(value.slowFiles),
     topSlowFiles: samples,
+  };
+}
+
+function parseScanningMetrics(value: unknown): CodeGraphScanningMetrics | undefined {
+  if (!isRecord(value)) return undefined;
+  for (const key of [
+    'factsBytesCompleted',
+    'sourceBytesCompleted',
+    'sourceBytesTotal',
+    'workUnitsCompleted',
+    'workUnitsTotal',
+  ] as const) {
+    if (!isNonNegativeSafeInteger(value[key])) return undefined;
+  }
+  if (
+    Number(value.sourceBytesCompleted) > Number(value.sourceBytesTotal) ||
+    Number(value.workUnitsCompleted) > Number(value.workUnitsTotal)
+  ) {
+    return undefined;
+  }
+  return {
+    factsBytesCompleted: Number(value.factsBytesCompleted),
+    sourceBytesCompleted: Number(value.sourceBytesCompleted),
+    sourceBytesTotal: Number(value.sourceBytesTotal),
+    workUnitsCompleted: Number(value.workUnitsCompleted),
+    workUnitsTotal: Number(value.workUnitsTotal),
   };
 }
 
@@ -1856,14 +1888,17 @@ function parseEta(value: unknown): CodeGraphBuildStatus['eta'] | undefined {
     value.scope === 'phase' &&
     ['high', 'low', 'medium'].includes(String(value.confidence)) &&
     (value.basis === undefined ||
-      ['cached-fact-bytes', 'files', 'final-fact-bytes', 'source-bytes'].includes(String(value.basis))) &&
+      ['cached-fact-bytes', 'extraction-work', 'files', 'final-fact-bytes', 'source-bytes'].includes(
+        String(value.basis),
+      )) &&
     Number.isSafeInteger(value.remainingMilliseconds) &&
     Number(value.remainingMilliseconds) >= 0
     ? {
         ...(value.basis === undefined
           ? {}
           : {
-              basis: value.basis as 'cached-fact-bytes' | 'files' | 'final-fact-bytes' | 'source-bytes',
+              basis: value.basis as
+                'cached-fact-bytes' | 'extraction-work' | 'files' | 'final-fact-bytes' | 'source-bytes',
             }),
         confidence: value.confidence as 'high' | 'low' | 'medium',
         remainingMilliseconds: Number(value.remainingMilliseconds),
