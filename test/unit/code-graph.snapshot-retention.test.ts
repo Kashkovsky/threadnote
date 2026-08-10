@@ -342,10 +342,15 @@ describe('code graph ready snapshot retention', () => {
     await runEffect(
       Effect.gen(function* () {
         const store = yield* CodeGraphStore;
-        // Lease acquisition is the first writer in this process. It must apply
-        // the additive schema migration before executing lease SQL.
+        // Lease acquisition is the first writer in this process. It repairs
+        // only the safe read/lease surface and preserves retirement candidates
+        // until the background migration restores full authority.
         const currentLease = yield* store.acquireSnapshotLease(databasePath, current.id, 60_000);
+        expect(readSnapshotState(databasePath, superseded.id)).toBe('ready');
+        yield* store.initialize(databasePath);
+        const migratedLease = yield* store.acquireSnapshotLease(databasePath, current.id, 60_000);
         yield* waitForSnapshotRemoval(databasePath, superseded.id);
+        yield* store.releaseSnapshotLease(databasePath, migratedLease);
         yield* store.releaseSnapshotLease(databasePath, currentLease);
       }),
     );
