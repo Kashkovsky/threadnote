@@ -432,6 +432,20 @@ function compareGraphAdministrationJob(left: GraphBuildStatus, right: GraphBuild
   );
 }
 
+function graphAdministrationInventorySummary(
+  summary: Pick<CodeGraphLocalDiagnosticsReport['summary'], 'databaseCount' | 'readySnapshotCount' | 'viewCount'>,
+): string {
+  return [
+    graphAdministrationCount(summary.databaseCount, 'graph database'),
+    graphAdministrationCount(summary.readySnapshotCount, 'stored ready snapshot'),
+    graphAdministrationCount(summary.viewCount, 'active worktree view'),
+  ].join(' · ');
+}
+
+function graphAdministrationCount(count: number, singular: string): string {
+  return `${count.toLocaleString()} ${singular}${count === 1 ? '' : 's'}`;
+}
+
 export interface GraphBuildTarget {
   readonly repositoryLabel: string;
   readonly worktreeLabel: string;
@@ -3337,7 +3351,7 @@ function GraphAdministration(props: {
           <strong>Graph administration</strong>
           <small>
             {props.report
-              ? `${props.report.summary.databaseCount} databases · ${props.report.summary.readySnapshotCount} ready snapshots`
+              ? graphAdministrationInventorySummary(props.report.summary)
               : 'Load home-wide status, diagnostics, and maintenance controls'}
           </small>
         </span>
@@ -3451,18 +3465,18 @@ function GraphAdministration(props: {
                   </header>
                   <dl>
                     <div>
-                      <dt>Snapshots</dt>
+                      <dt>Stored ready snapshots</dt>
                       <dd>
                         {database.health
-                          ? `${database.health.readySnapshots} ready`
+                          ? database.health.readySnapshots.toLocaleString()
                           : database.healthState === 'deferred'
                             ? 'health inspection deferred'
                             : 'unavailable'}
                       </dd>
                     </div>
                     <div>
-                      <dt>Views</dt>
-                      <dd>{database.views.length}</dd>
+                      <dt>Active worktree views</dt>
+                      <dd>{database.views.length.toLocaleString()}</dd>
                     </div>
                     <div>
                       <dt>Storage</dt>
@@ -3477,6 +3491,10 @@ function GraphAdministration(props: {
                       <dd>{jobs.total === 0 ? 'None' : `${jobs.total} actionable`}</dd>
                     </div>
                   </dl>
+                  <p className="graph-database-inventory-note">
+                    Snapshot and view counts can differ: views are per-worktree pointers, while ready snapshots are
+                    stored graph versions that can be shared, retained for reuse, or protected while in use.
+                  </p>
                   <div className="graph-database-views">
                     {database.views.map(candidate => {
                       const removalTarget = graphViewRemovalTarget(database.checkoutId, {
@@ -3485,7 +3503,7 @@ function GraphAdministration(props: {
                       });
                       return (
                         <div key={`${database.checkoutId}:${candidate.viewWorktreeId}`}>
-                          <strong>View {candidate.viewWorktreeId.slice(-8)}</strong>
+                          <strong>Active view {candidate.viewWorktreeId.slice(-8)}</strong>
                           <span>
                             {candidate.snapshot.fileCount.toLocaleString()} files ·{' '}
                             {candidate.snapshot.symbolCount.toLocaleString()} symbols ·{' '}
@@ -3513,11 +3531,11 @@ function GraphAdministration(props: {
                             </small>
                           ) : null}
                           <button
-                            aria-label={`Remove indexed view ${candidate.viewWorktreeId.slice(-8)}`}
+                            aria-label={`Remove active worktree view ${candidate.viewWorktreeId.slice(-8)}`}
                             className="danger graph-view-remove"
                             disabled={blocked}
                             onClick={() => props.onAction({action: 'remove-view', ...removalTarget})}
-                            title="Remove indexed view"
+                            title="Remove active worktree view"
                             type="button"
                           >
                             <svg aria-hidden="true" viewBox="0 0 24 24">

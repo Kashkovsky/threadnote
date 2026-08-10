@@ -67,7 +67,7 @@ describe('manager graph focus', () => {
     });
   });
 
-  it('renders one preview-bound removal icon without requiring a local folder', () => {
+  it('distinguishes stored snapshots from active worktree views without requiring a local folder', () => {
     const neverResolves = () => new Promise<never>(() => undefined);
     const checkoutId = 'a'.repeat(64);
     const worktreeId = 'b'.repeat(64);
@@ -79,7 +79,7 @@ describe('manager graph focus', () => {
             {
               builds: [],
               checkoutId,
-              health: {integrity: 'migration-pending', readySnapshots: 1},
+              health: {integrity: 'migration-pending', readySnapshots: 3},
               healthState: 'checked',
               issues: [],
               storage: {state: 'available', totalBytes: 0},
@@ -104,7 +104,7 @@ describe('manager graph focus', () => {
           generatedAt: '2026-08-08T12:00:00.000Z',
           mode: {analyze: false, deep: false},
           obsoleteStores: {bytes: 0, checkouts: [], fileCount: 0, unsafeEntryCount: 0},
-          summary: {databaseCount: 1, readySnapshotCount: 1},
+          summary: {databaseCount: 1, readySnapshotCount: 3, viewCount: 1},
           type: 'code-graph-diagnostics',
           version: 2,
         } as never,
@@ -119,8 +119,13 @@ describe('manager graph focus', () => {
       }),
     );
 
-    expect(markup.match(/aria-label="Remove indexed view bbbbbbbb"/g)).toHaveLength(1);
-    expect(markup).toContain('title="Remove indexed view"');
+    expect(markup).toContain('1 graph database · 3 stored ready snapshots · 1 active worktree view');
+    expect(markup).toContain('<dt>Stored ready snapshots</dt><dd>3</dd>');
+    expect(markup).toContain('<dt>Active worktree views</dt><dd>1</dd>');
+    expect(markup).toContain('Snapshot and view counts can differ');
+    expect(markup).toContain('Active view bbbbbbbb');
+    expect(markup.match(/aria-label="Remove active worktree view bbbbbbbb"/g)).toHaveLength(1);
+    expect(markup).toContain('title="Remove active worktree view"');
     expect(markup).not.toContain('Preview remove');
     expect(markup).toContain('class="is-migration-pending">migrating</em>');
     expect(markup).not.toContain('>incompatible</em>');

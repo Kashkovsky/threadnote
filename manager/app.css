@@ -1128,6 +1128,13 @@ dd {
   margin: 0;
 }
 
+.graph-database-inventory-note {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.4;
+  margin: -1px 0 0;
+}
+
 .graph-database-issue {
   color: #f7d56b;
   font-size: 10px;
