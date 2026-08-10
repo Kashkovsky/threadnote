@@ -100,6 +100,18 @@ describe('SystemInfo disk capacity parsing', () => {
     expect(parseWindowsAvailableDiskBytes('not-a-size')).toBeUndefined();
   });
 
+  effectIt.effect('uses an absolute POSIX disk probe when PATH is unavailable', () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        if (process.platform === 'win32') return;
+        const available = yield* legacyAvailableDiskBytes(process.cwd(), process.platform, {PATH: ''});
+
+        expect(available).toBeDefined();
+        expect(available).toBeGreaterThan(0);
+      }),
+    ),
+  );
+
   effectIt.effect.prop(
     'converts native statfs values to a conservative safe integer monotonically',
     {
@@ -330,7 +342,8 @@ describe('SystemInfo disk capacity parsing', () => {
                 process.platform,
                 {...process.env, PATH: fixture.root, THREADNOTE_DISK_PROBE_PID: fixture.processIdPath},
                 {
-                  fallback: legacyAvailableDiskBytes,
+                  fallback: (path, platform, environment) =>
+                    legacyAvailableDiskBytes(path, platform, environment, join(fixture.root, 'df')),
                   statfs: () => Effect.fail(Object.assign(new Error('Native statfs unavailable.'), {code: 'ENOSYS'})),
                 },
                 750,
@@ -366,7 +379,7 @@ describe('SystemInfo disk capacity parsing', () => {
           if (process.platform === 'darwin' && process.arch === 'x64') {
             expect(spies.spawn).toHaveBeenCalledTimes(128);
             for (const [options] of spies.spawn.mock.calls) {
-              expect(options).toMatchObject({cmd: ['df', '-Pk', process.cwd()]});
+              expect(options).toMatchObject({cmd: ['/bin/df', '-Pk', process.cwd()]});
             }
           } else {
             expect(spies.spawn).not.toHaveBeenCalled();

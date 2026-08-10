@@ -428,7 +428,12 @@ function nativeStatfs(path: string) {
 }
 
 /** @internal Exported for a real-process cancellation regression. */
-export function legacyAvailableDiskBytes(path: string, platform: NodeJS.Platform, environment: NodeJS.ProcessEnv) {
+export function legacyAvailableDiskBytes(
+  path: string,
+  platform: NodeJS.Platform,
+  environment: NodeJS.ProcessEnv,
+  posixDiskCommand = '/bin/df',
+) {
   const command =
     platform === 'win32'
       ? [
@@ -440,7 +445,7 @@ export function legacyAvailableDiskBytes(path: string, platform: NodeJS.Platform
             'if (-not $root) { exit 2 }; ' +
             '[Console]::Out.Write((Get-PSDrive -Name $root.Substring(0,1)).Free)',
         ]
-      : ['df', '-Pk', path];
+      : [posixDiskCommand, '-Pk', path];
   const childEnvironment = platform === 'win32' ? {...environment, THREADNOTE_DISK_PATH: path} : environment;
   return Effect.acquireUseRelease(
     Effect.try({
