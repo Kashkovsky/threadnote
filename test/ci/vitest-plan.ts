@@ -66,7 +66,10 @@ export const ciRequiredLongRunningTestGroupNames = ciLongRunningTestGroupNames.f
   group => !ciScheduledLongRunningTestGroups.has(group),
 );
 
+// These groups exercise parser processes or shared state heavily enough that
+// cross-file Vitest workers can starve otherwise fast fixtures on hosted runners.
 export const ciSerializedLongRunningTestGroups = new Set<CiLongRunningTestGroupName>([
+  'heavy-integration',
   'heavy-state',
   'load-evidence',
   'os-contention',

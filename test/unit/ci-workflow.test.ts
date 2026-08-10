@@ -131,7 +131,12 @@ describe('dependency-aware CI workflow', () => {
     expect(new Set([...ciRequiredLongRunningTestGroupNames, ...ciScheduledLongRunningTestGroupNames])).toEqual(
       new Set(ciLongRunningTestGroupNames),
     );
-    expect([...ciSerializedLongRunningTestGroups]).toEqual(['heavy-state', 'load-evidence', 'os-contention']);
+    expect([...ciSerializedLongRunningTestGroups]).toEqual([
+      'heavy-integration',
+      'heavy-state',
+      'load-evidence',
+      'os-contention',
+    ]);
 
     const assignments = Object.values(ciLongRunningTestGroups).flat();
     const counts = new Map<string, number>();
