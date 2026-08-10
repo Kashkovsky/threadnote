@@ -34,10 +34,10 @@ archiving. The same payload must contain the pinned Tree-sitter runtime, Java/Ko
 version/checksum manifest, and all four parser licenses. Source checks, archive smoke tests, and updater validation each
 reject missing or altered code-graph assets.
 
-Pull-request distribution CI retains the broad `ubuntu-latest`, `macos-latest`, and `windows-latest` lanes and adds an
-explicit `macos-15` Apple Silicon lane. `macos-15` is the exact runner label used to build the published macOS arm64
-archive, so its real-model installed-release E2E—including the supervised local-model worker—is a pre-tag gate rather
-than being exercised for the first time after a tag is pushed.
+Pull-request distribution CI retains `ubuntu-latest` and `windows-latest` and gates the exact `macos-15` Apple Silicon
+and `macos-15-intel` runner labels used by the release workflow. Their real-model installed-release E2E—including the
+supervised local-model worker and disk-capacity admission—is therefore a pre-tag gate rather than being exercised for
+the first time after a tag is pushed.
 
 ## Signing order
 
@@ -76,7 +76,7 @@ The release evidence record must distinguish a clean candidate run from exact-ta
 close implementation gates before merge, but only the tag-triggered artifact may claim exact release provenance. Keep
 public surrogate results, private path-free aggregate evidence, and checked-in same-machine comparisons separate; do
 not combine them into a synthetic percentile. The current beta closeout contract is documented in
-[`4.1.0-beta.1-release-evidence.md`](./4.1.0-beta.1-release-evidence.md).
+[`4.1.0-beta.2-release-evidence.md`](./4.1.0-beta.2-release-evidence.md).
 
 Every Threadnote 4 version tag starts a separate production-large evidence workflow on `ubuntu-24.04`; publication
 never waits for it. The evidence job has a hard 30-minute ceiling: its measured phase gets 20 minutes, leaving bounded
