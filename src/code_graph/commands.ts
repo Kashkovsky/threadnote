@@ -27,6 +27,7 @@ import {repositoryChangesSince, repositoryIdentityMatchesExpectation, resolveRep
 import {CodeGraphStore} from './store.js';
 import type {CodeGraphProgress, CodeGraphQueryOptions, RepositoryIdentityExpectation} from './types.js';
 import {CodeGraphWatcher} from './watcher.js';
+import {inspectCodeGraphWorkset, renderCodeGraphWorksetResult} from './workset_query.js';
 import {CodeGraphAnalysis} from './analysis.js';
 import {
   codeGraphAnalysisLimitsForView,
@@ -761,8 +762,27 @@ export const runCodeGraphInspect = Effect.fn('codeGraph.command.inspect')(functi
       readonly baseCommit?: string;
       readonly json?: boolean;
       readonly seedQueries?: readonly string[];
+      readonly workset?: string;
     },
 ) {
+  if (options.workset?.trim()) {
+    if (options.operation !== 'query') {
+      return yield* Effect.fail(new Error('--workset is valid only for `threadnote graph query`.'));
+    }
+    const query = options.query?.trim();
+    if (!query) return yield* Effect.fail(new Error('A workset graph query requires --query.'));
+    const result = yield* inspectCodeGraphWorkset(config, options.workset.trim(), {
+      depth: options.depth,
+      edgeLimit: options.edgeLimit,
+      includeHeuristic: options.includeHeuristic,
+      includeModelAssociations: options.includeModelAssociations,
+      nodeLimit: options.nodeLimit,
+      packageName: options.packageName,
+      query,
+    });
+    yield* writeFinalCliOutput(options.json ? JSON.stringify(result) : renderCodeGraphWorksetResult(result).trimEnd());
+    return;
+  }
   const service = yield* CodeGraphQueryService;
   const cwd = yield* commandCwd(options.cwd);
   let status = yield* service.status(config.agentContextHome, cwd);

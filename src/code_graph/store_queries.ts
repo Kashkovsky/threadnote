@@ -29,7 +29,7 @@ import {boundedPageLimit, chunk, normalizedTerms, sqlTextOption, uniqueBy} from 
 import {
   codeGraphAdjacencyQueryStatement,
   codeGraphExactSymbolQueryStatement,
-  codeGraphSymbolPathScoreMultiplier,
+  codeGraphSymbolSearchScoreMultiplier,
   codeGraphSymbolsByIdsQueryStatement,
   effectiveEdgesCte,
   effectiveSnapshotParameters,
@@ -771,9 +771,9 @@ function searchSymbolRowComparator(
   queryTerms: readonly string[],
 ): (left: SearchSymbolRow, right: SearchSymbolRow) => number {
   return (left, right) =>
+    codeGraphSymbolSearchScoreMultiplier(right.path, right.kind, right.name, queryTerms) -
+      codeGraphSymbolSearchScoreMultiplier(left.path, left.kind, left.name, queryTerms) ||
     right.exact_rank - left.exact_rank ||
-    codeGraphSymbolPathScoreMultiplier(right.path, queryTerms) -
-      codeGraphSymbolPathScoreMultiplier(left.path, queryTerms) ||
     right.score - left.score ||
     right.exported - left.exported ||
     searchSymbolKindOrder(left.kind) - searchSymbolKindOrder(right.kind) ||
@@ -809,7 +809,10 @@ const selectSearchSymbolsWithSql = Effect.fn('codeGraph.selectSearchSymbolsWithS
   const compareRows = searchSymbolRowComparator(terms);
   const rankedNode = (row: SearchSymbolRow) => ({
     ...symbolFromRow(row),
-    score: Math.max(0, Math.min(1, (row.score / 100) * codeGraphSymbolPathScoreMultiplier(row.path, terms))),
+    score: Math.max(
+      0,
+      Math.min(1, (row.score / 100) * codeGraphSymbolSearchScoreMultiplier(row.path, row.kind, row.name, terms)),
+    ),
   });
   const exactPath = normalizeExactSearchPath(query);
   const exactStatement = codeGraphExactSymbolQueryStatement(snapshotId, baseSnapshotId, exactPath ?? query, safeLimit);

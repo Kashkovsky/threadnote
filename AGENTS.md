@@ -10,6 +10,10 @@ nearest checked-in guidance remain authoritative.
   `threadnote://` records it returns.
 - Use Threadnote's own `inspect_code_graph` for focused current-source relationships and `analyze_code_graph` for
   repository-wide structure when those tools are relevant. Use exact text or path search for literals and verification.
+- Graph-first applies to unfamiliar local source and relationship claims. State an explicit bounded skip for an
+  already-known exact path or symbol, a remote review without a checkout, or purely visual/binary evidence Threadnote
+  cannot interpret; use the graph if scope expands. Treat package-local absence as a hint, and named workset results as
+  per-repository evidence from existing ready snapshots rather than proof or implicit cold indexing.
 - Store reusable decisions and contracts as durable memory. Store current status, checks, blockers, and next steps as a
   handoff before pausing or ending meaningful work.
 - Use stable project/topic identities and update an existing memory with `replaceUri`; do not create timestamped

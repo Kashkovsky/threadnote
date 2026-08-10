@@ -407,6 +407,59 @@ describe('code graph query budgets', () => {
     }),
   );
 
+  it.effect('returns an explicit bounded package-local match or honest absence hint', () =>
+    Effect.gen(function* () {
+      const mobile = {...seed, id: 'mobile', packageName: 'MobileApp'};
+      const web = {...seed, id: 'web', packageName: 'WebApp'};
+      const requestedLimits: number[] = [];
+      const store = {
+        edgesForNodes: () => Effect.succeed([]),
+        searchSymbolsMany: (_databasePath: string, _snapshotId: string, _queries: readonly string[], limit: number) =>
+          Effect.sync(() => {
+            requestedLimits.push(limit);
+            return [[web, mobile]];
+          }),
+        symbolsByIds: () => Effect.succeed([]),
+      } as unknown as CodeGraphStoreShape;
+
+      const inspect = (packageName: string) =>
+        traversalQuery(
+          store,
+          layout.databasePath,
+          'snapshot',
+          'session clear',
+          'both',
+          12,
+          1,
+          0,
+          ['resolved'],
+          embedding,
+          '/fixture/home',
+          layout,
+          false,
+          undefined,
+          undefined,
+          {},
+          packageName,
+        );
+      const found = yield* inspect('MobileApp');
+      const absent = yield* inspect('DesktopApp');
+
+      expect(found.nodes.map(node => node.id)).toEqual(['mobile']);
+      expect(found.scope).toEqual({
+        evidence: 'bounded-lexical-observation',
+        lexicalCandidatesExamined: 2,
+        lexicalMatches: 1,
+        packageName: 'MobileApp',
+        type: 'package',
+      });
+      expect(absent.nodes).toEqual([]);
+      expect(absent.scope).toMatchObject({lexicalCandidatesExamined: 2, lexicalMatches: 0});
+      expect(absent.warnings.join('\n')).toContain('package-local absence hint, not proof');
+      expect(requestedLimits).toEqual([240, 240]);
+    }),
+  );
+
   it.effect('accepts semantic evidence that takes longer than the traversal budget', () =>
     Effect.gen(function* () {
       const calls: string[] = [];
@@ -438,7 +491,7 @@ describe('code graph query budgets', () => {
         store,
         layout.databasePath,
         'snapshot',
-        'architecture overview',
+        'architecture documentation overview',
         'both',
         20,
         40,

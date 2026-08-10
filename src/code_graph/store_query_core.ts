@@ -444,6 +444,30 @@ const TEST_QUERY_TERMS = new Set([
   'tests',
 ]);
 
+const SIDE_EFFECT_OWNER_KINDS = new Set(['constructor', 'function', 'method']);
+
+const SIDE_EFFECT_OWNER_TERMS = new Set([
+  'activate',
+  'apply',
+  'clear',
+  'close',
+  'delete',
+  'dismiss',
+  'erase',
+  'invalidate',
+  'logout',
+  'perform',
+  'purge',
+  'remove',
+  'reset',
+  'revoke',
+  'save',
+  'sync',
+  'terminate',
+  'update',
+  'wipe',
+]);
+
 const TEST_FILE_NAME_PATTERN = /(?:^|[._-])(?:spec|test)s?\.[^.]+$/;
 
 export function codeGraphSymbolPathClass(path: string): CodeGraphSymbolPathClass {
@@ -469,6 +493,29 @@ export function codeGraphSymbolPathScoreMultiplier(path: string, queryTerms: rea
   if (pathClass === 'implementation') return 1;
   const requestedTerms = pathClass === 'test' ? TEST_QUERY_TERMS : DOCUMENTATION_QUERY_TERMS;
   return queryTerms.some(term => requestedTerms.has(term)) ? 1 : SYMBOL_PATH_CLASS_SCORE_MULTIPLIERS[pathClass];
+}
+
+/** Prefer production methods that own a mutation or lifecycle transition over lexical copies of that behavior. */
+export function codeGraphSymbolSearchScoreMultiplier(
+  path: string,
+  kind: string,
+  name: string,
+  queryTerms: readonly string[],
+): number {
+  const pathMultiplier = codeGraphSymbolPathScoreMultiplier(path, queryTerms);
+  if (
+    codeGraphSymbolPathClass(path) !== 'implementation' ||
+    queryTerms.some(term => TEST_QUERY_TERMS.has(term) || DOCUMENTATION_QUERY_TERMS.has(term)) ||
+    !SIDE_EFFECT_OWNER_KINDS.has(kind)
+  ) {
+    return pathMultiplier;
+  }
+  const nameTerms = name
+    .replace(/([a-z0-9])([A-Z])/gu, '$1 $2')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/gu)
+    .filter(Boolean);
+  return nameTerms.some(term => SIDE_EFFECT_OWNER_TERMS.has(term)) ? pathMultiplier * 1.12 : pathMultiplier;
 }
 
 function searchSymbolKindOrder(kind: string): number {
@@ -683,6 +730,8 @@ export {
   TEST_PATH_DIRECTORIES,
   DOCUMENTATION_QUERY_TERMS,
   TEST_QUERY_TERMS,
+  SIDE_EFFECT_OWNER_KINDS,
+  SIDE_EFFECT_OWNER_TERMS,
   TEST_FILE_NAME_PATTERN,
   searchSymbolKindOrder,
   normalizeExactSearchPath,

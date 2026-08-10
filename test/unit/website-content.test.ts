@@ -63,9 +63,11 @@ const toolKeys = {
     'nodeId',
     'nodeLimit',
     'operation',
+    'package',
     'query',
     'symbol',
     'to',
+    'workset',
   ]),
   read_context: new Set(['uri', 'uris']),
   recall_context: new Set([

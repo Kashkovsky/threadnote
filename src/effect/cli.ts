@@ -648,7 +648,9 @@ const graphQuery = Command.make(
   'query',
   {
     ...graphBounds,
+    packageName: optionalString('package', 'Restrict results to one exact indexed package or workspace component'),
     query: requiredString('query', 'Concept, symbol, module, path, or documentation query'),
+    workset: optionalString('workset', 'Query ready snapshots for a named seed-manifest workset'),
   },
   options => withRuntimeEffect(config => runCodeGraphInspect(config, {...options, operation: 'query'})),
 ).pipe(Command.withDescription('Search symbols and inspect a bounded relationship neighborhood'));

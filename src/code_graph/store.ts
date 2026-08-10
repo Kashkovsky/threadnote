@@ -46,6 +46,7 @@ export {
   codeGraphExactSymbolQueryStatement,
   codeGraphSymbolPathClass,
   codeGraphSymbolPathScoreMultiplier,
+  codeGraphSymbolSearchScoreMultiplier,
   codeGraphSymbolsByIdsQueryStatement,
   isCanonicalAbsoluteBazelLabel,
   type CodeGraphSymbolPathClass,

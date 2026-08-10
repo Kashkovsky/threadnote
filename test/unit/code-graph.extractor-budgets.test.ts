@@ -1,8 +1,11 @@
 import {Option} from 'effect';
 import {describe, expect, it} from 'vitest';
 import {extractFileFacts, TYPESCRIPT_DYNAMIC_RELATIONSHIP_LIMIT} from '../../src/code_graph/extractor.js';
+import {BUILTIN_LANGUAGE_PACK_REGISTRY} from '../../src/code_graph/languages/registry.js';
 import {extractStructuredSchemaFacts} from '../../src/code_graph/languages/schemas/extractor.js';
+import type {CodeGraphWorkspaceProject} from '../../src/code_graph/languages/types.js';
 import type {CodeGraphInventoryFile} from '../../src/code_graph/types.js';
+import {runEffect} from '../helpers/effect-runtime.js';
 
 describe('code graph per-file extraction budgets', () => {
   it('bounds pathological TypeScript calls while preserving imports, reexports, and later declarations', () => {
@@ -186,6 +189,64 @@ describe('code graph per-file extraction budgets', () => {
 
     expect(facts.symbols.map(symbol => symbol.name)).toEqual([path]);
     expect(facts.diagnostics.join('\n')).toContain('module metadata only');
+  });
+
+  it('keeps bounded iOS asset-catalog scalar values searchable', () => {
+    const path = 'Mobile/Assets.xcassets/AppIcon.appiconset/Contents.json';
+    const facts = extractStructuredSchemaFacts(
+      sourceFile(
+        path,
+        'json',
+        JSON.stringify({
+          images: [{filename: 'AppIcon-Monochrome@3x.png', idiom: 'universal', scale: '3x'}],
+          info: {author: 'xcode', version: 1},
+        }),
+      ),
+      {packageName: Option.some('MobileApp'), project: Option.none()},
+    );
+
+    const resourceValues = facts.symbols.filter(symbol => symbol.kind === 'resource-value');
+    expect(resourceValues.map(symbol => symbol.name)).toEqual(
+      expect.arrayContaining(['AppIcon-Monochrome@3x.png', 'universal', '3x', 'xcode', '1']),
+    );
+    expect(resourceValues.find(symbol => symbol.name === 'AppIcon-Monochrome@3x.png')?.lookupKeys).toEqual(
+      expect.arrayContaining(['app', 'icon', 'monochrome', '3x', 'png']),
+    );
+    expect(resourceValues.every(symbol => symbol.packageName === 'MobileApp')).toBe(true);
+  });
+
+  it('attributes iOS asset-catalog values to the nearest typed mobile component through the registry', async () => {
+    const project: CodeGraphWorkspaceProject = {
+      buildSystem: 'xcode',
+      dependencies: [],
+      dependencyDetails: [],
+      diagnostics: [],
+      id: 'cgp_mobile',
+      kind: 'project',
+      languages: ['swift'],
+      name: 'MobileApp',
+      provenance: 'declared',
+      resolutionDomain: 'swift',
+      root: 'Mobile',
+      sourceRoots: ['Mobile'],
+      workspaceId: 'cgw_mobile',
+      workspaceRoots: ['Mobile'],
+    };
+    const facts = await runEffect(
+      BUILTIN_LANGUAGE_PACK_REGISTRY.extractFile(
+        sourceFile(
+          'Mobile/Assets.xcassets/AppIcon.appiconset/Contents.json',
+          'json',
+          JSON.stringify({images: [{filename: 'AppIcon-Monochrome.png'}]}),
+        ),
+        [project],
+      ),
+    );
+
+    expect(facts.symbols.find(symbol => symbol.kind === 'resource-value')).toMatchObject({
+      name: 'AppIcon-Monochrome.png',
+      packageName: 'MobileApp',
+    });
   });
 
   it('keeps dedicated package manifests fully functional above the generic config threshold', () => {

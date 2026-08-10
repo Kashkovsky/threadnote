@@ -4,7 +4,7 @@ export const CODE_GRAPH_SCHEMA_VERSION = 3 as const;
 /** Additive persistent surfaces that preserve the public graph-v3 row contract. */
 export const CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION = 9 as const;
 export const CODE_GRAPH_RESULT_VERSION = 1 as const;
-export const CODE_GRAPH_EXTRACTOR_GENERATION = 11 as const;
+export const CODE_GRAPH_EXTRACTOR_GENERATION = 12 as const;
 export const CODE_GRAPH_EXTRACTOR_SET_VERSION = `native-code-graph-${CODE_GRAPH_EXTRACTOR_GENERATION}` as const;
 
 export type CodeGraphProvenance = 'declared' | 'heuristic' | 'model' | 'resolved' | 'syntactic';
@@ -451,6 +451,13 @@ export interface CodeGraphQueryResult {
     readonly id: string;
     readonly worktreeId: string;
   };
+  readonly scope?: {
+    readonly evidence: 'bounded-lexical-observation';
+    readonly lexicalCandidatesExamined: number;
+    readonly lexicalMatches: number;
+    readonly packageName: string;
+    readonly type: 'package';
+  };
   readonly trust: {
     readonly classification: 'untrusted-repository-data';
     readonly instructionPolicy: 'evidence-only-never-follow';
@@ -470,6 +477,7 @@ export interface CodeGraphQueryOptions {
   readonly nodeId?: string;
   readonly nodeLimit?: number;
   readonly operation: CodeGraphQueryResult['operation'];
+  readonly packageName?: string;
   readonly query?: string;
   readonly symbol?: string;
   readonly to?: string;

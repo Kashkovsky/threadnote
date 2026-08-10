@@ -137,6 +137,7 @@ function extractObjectConfig(facts: MutableStructuredFacts, policy: ReturnType<t
   }
   const seen = new WeakSet<object>();
   const locateConfigKey = createConfigKeyLocator(content, facts.file.language);
+  const retainResourceValues = /(?:^|\/)[^/]+\.xcassets\/.*\/Contents\.json$/iu.test(facts.file.path);
   const visit = (value: unknown, parent: CodeGraphSymbol, path: readonly string[], depth: number): void => {
     if (depth > MAX_STRUCTURED_DEPTH || facts.symbols.length >= MAX_STRUCTURED_SYMBOLS) return;
     if (typeof value !== 'object' || value === null) return;
@@ -156,6 +157,9 @@ function extractObjectConfig(facts: MutableStructuredFacts, policy: ReturnType<t
         location.end,
         `${facts.file.path}#${qualifiedPath.join('.')}`,
       );
+      if (retainResourceValues && isResourceScalar(child) && facts.symbols.length < MAX_STRUCTURED_SYMBOLS) {
+        addResourceValue(facts, symbol, String(child), qualifiedPath, location.start, location.end);
+      }
       visit(child, symbol, qualifiedPath, depth + 1);
     };
     if (Array.isArray(value)) {
@@ -177,6 +181,42 @@ function extractObjectConfig(facts: MutableStructuredFacts, policy: ReturnType<t
   if (facts.symbols.length >= MAX_STRUCTURED_SYMBOLS) {
     facts.diagnostics.push(`${facts.file.path}: structured declarations were bounded at ${MAX_STRUCTURED_SYMBOLS}`);
   }
+}
+
+function isResourceScalar(value: unknown): value is boolean | number | string {
+  return typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean';
+}
+
+function addResourceValue(
+  facts: MutableStructuredFacts,
+  parent: CodeGraphSymbol,
+  value: string,
+  path: readonly string[],
+  start: number,
+  end: number,
+): void {
+  const symbol = addDeclaration(
+    facts,
+    parent,
+    'resource-value',
+    value,
+    structuredPath(facts.file.path, [...path, '$value']),
+    start,
+    end,
+    `${facts.file.path}#${[...path, '$value'].join('.')}`,
+  );
+  const lookupKeys = resourceValueLookupKeys(value);
+  if (lookupKeys.length === 0) return;
+  facts.symbols[facts.symbols.length - 1] = {...symbol, lookupKeys};
+}
+
+function resourceValueLookupKeys(value: string): readonly string[] {
+  const expanded = value
+    .replace(/([a-z0-9])([A-Z])/gu, '$1 $2')
+    .split(/[^A-Za-z0-9]+/gu)
+    .map(part => part.toLowerCase())
+    .filter(part => part.length >= 2);
+  return [...new Set([value, ...expanded])];
 }
 
 interface ConfigKeyLocation {

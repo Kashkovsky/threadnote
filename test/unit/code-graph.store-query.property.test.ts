@@ -9,6 +9,7 @@ import {
   codeGraphExactSymbolQueryStatement,
   codeGraphSymbolPathClass,
   codeGraphSymbolPathScoreMultiplier,
+  codeGraphSymbolSearchScoreMultiplier,
   codeGraphSymbolsByIdsQueryStatement,
   codeGraphTermCandidateQueryStatement,
   CodeGraphStore,
@@ -106,6 +107,26 @@ describe('code graph indexed query properties', () => {
       if (pathClass === 'implementation') expect(multiplier).toBe(1);
     },
     {fastCheck: {numRuns: 200}},
+  );
+
+  it.prop(
+    'boosts side-effect owners only in implementation paths and only for behavior-focused queries',
+    {
+      action: FC.constantFrom('clearAllTabs', 'dismissDrawer', 'purgeCache', 'resetSession', 'wipeCredentials'),
+      artifactTerm: FC.constantFrom('docs', 'test'),
+      kind: FC.constantFrom('function', 'method'),
+    },
+    ({action, artifactTerm, kind}) => {
+      const base = codeGraphSymbolPathScoreMultiplier('src/owner.ts', []);
+      const owner = codeGraphSymbolSearchScoreMultiplier('src/owner.ts', kind, action, []);
+
+      expect(owner).toBeGreaterThan(base);
+      expect(codeGraphSymbolSearchScoreMultiplier('test/owner.test.ts', kind, action, [])).toBeLessThan(base);
+      expect(codeGraphSymbolSearchScoreMultiplier('src/owner.ts', kind, action, [artifactTerm])).toBe(base);
+      expect(codeGraphSymbolSearchScoreMultiplier('src/owner.ts', 'class', action, [])).toBe(base);
+      expect(codeGraphSymbolSearchScoreMultiplier('src/owner.ts', kind, action, [])).toBe(owner);
+    },
+    {fastCheck: {numRuns: 100}},
   );
 
   it.effect('treats a database observed during partial schema publication as unavailable', () =>

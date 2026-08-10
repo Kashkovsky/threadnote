@@ -68,6 +68,8 @@ describe('Effect CLI', () => {
     expect(graph.stdout).toContain('repair');
     expect(query.stdout).toContain('--query string');
     expect(query.stdout).toContain('--cwd string');
+    expect(query.stdout).toContain('--package string');
+    expect(query.stdout).toContain('--workset string');
     expect(node.stdout).toContain('--node-id string');
     expect(neighbors.stdout).toContain('--node-id string');
     expect(neighbors.stdout).toContain('--direction choice');

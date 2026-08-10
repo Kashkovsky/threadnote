@@ -3602,6 +3602,31 @@ describe('code graph full-build materialization store', () => {
     expect(search.map(node => node.path)).toEqual(['test/integration/mcp.native-tools.test.ts', 'src/mcp_server.ts']);
   });
 
+  it('ranks a production side-effect owner ahead of lexical state and test matches', async () => {
+    const fixture = await materializationFixture();
+    const owner = {...symbol('owner', 'clearAllTabs', []), path: 'src/TabsStore.ts'};
+    const state = {...symbol('state', 'tabs', []), kind: 'property', path: 'src/TabsState.ts'};
+    const testCopy = {...symbol('test-copy', 'clearAllTabs', []), path: 'test/TabsStore.test.ts'};
+
+    const search = await runEffect(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        return yield* store.withSession(
+          fixture.databasePath,
+          Effect.gen(function* () {
+            yield* store.prepareActivation(fixture.databasePath, [fixture.file]);
+            yield* store.stageActivationFacts(fixture.databasePath, [state, testCopy, owner], []);
+            const snapshot = readySnapshot(fixture.identity, 3, 0);
+            yield* store.activateStaged(fixture.databasePath, fixture.identity, snapshot);
+            return yield* store.searchSymbols(fixture.databasePath, snapshot.id, 'tabs', 10);
+          }),
+        );
+      }),
+    );
+
+    expect(search.map(node => node.id)).toEqual(['owner', 'state', 'test-copy']);
+  });
+
   it('fails fast on duplicate full-build IDs without replacing already staged facts', async () => {
     const fixture = await materializationFixture();
     const original = symbol('stable-id', 'original', ['typescript:name:original']);

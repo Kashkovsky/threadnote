@@ -257,6 +257,17 @@ loads, and labels are also detected statically from `WORKSPACE*`, `MODULE.bazel`
 `.bazelrc` (including Aspect CLI sources under `.aspect/`); Threadnote never invokes Bazel or evaluates Starlark
 macros.
 
+Use `threadnote graph query --package <exact-package> --query <terms>` when a monorepo question is explicitly
+package-local. Its bounded examined/matched counts make a zero-result useful as an absence hint, but never as proof of
+repository-wide absence. For a named seed-manifest workset, `threadnote graph query --workset <name> --query <terms>`
+allocates one shared bounded result budget across at most eight member repositories and labels every result with its
+repository and snapshot. It reads existing ready snapshots only; unavailable members are reported and are not cold
+indexed as a fan-out side effect.
+
+Android `res` XML and Apple plist, storyboard, XIB, and asset-catalog metadata contribute explicit searchable resource
+wiring. Binary images remain metadata-only: no query result may be used to infer pixel bounds, visual appearance, OCR,
+or other image semantics Threadnote did not extract.
+
 Manager keeps ready graph views readable while another process owns the graph writer. A `lease-deferred` notice means
 snapshot retention was postponed by that active build, not that the database or ready snapshot is unhealthy; retry
 after the build completes. A graph detail request that cannot safely retain its snapshot returns HTTP 409 with
