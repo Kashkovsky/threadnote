@@ -44,6 +44,9 @@ import {
   removedViewCleanupSchemaCurrent,
 } from './store_schema_core.js';
 
+/** Revision that first made the exact cleanup queue part of durable graph authority. */
+const REMOVED_VIEW_CLEANUP_EXTENSION_REVISION = 8;
+
 const preflightRemovedViewCleanupSchema = Effect.fn('codeGraph.preflightRemovedViewCleanupSchema')(function* (
   sql: SqlClient.SqlClient,
 ) {
@@ -128,14 +131,16 @@ const preflightRemovedViewCleanupSchema = Effect.fn('codeGraph.preflightRemovedV
     !cursorCurrent ||
     (schema === 'absent' &&
       recordedRevision !== undefined &&
-      recordedRevision >= CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION) ||
+      recordedRevision >= REMOVED_VIEW_CLEANUP_EXTENSION_REVISION) ||
     (schema === 'absent' && (epochSequence.state !== 'missing' || admissionCursor.state !== 'missing')) ||
     (schema === 'absent' &&
       metadataRowCount >
         REMOVED_VIEW_CLEANUP_LEGACY_MAXIMUM_METADATA_ROWS -
           (revision.state === 'missing' && revision.metadataPresent ? 1 : 0)) ||
     (schema === 'compatible' &&
-      (recordedRevision !== CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION || !epochSequenceCurrent)) ||
+      (recordedRevision === undefined ||
+        recordedRevision < REMOVED_VIEW_CLEANUP_EXTENSION_REVISION ||
+        !epochSequenceCurrent)) ||
     (schema === 'compatible' && removedViewAuthority !== 'compatible') ||
     (schema === 'compatible' &&
       metadataRowCount >
@@ -147,8 +152,9 @@ const preflightRemovedViewCleanupSchema = Effect.fn('codeGraph.preflightRemovedV
   ) {
     return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view cleanup schema is incompatible.'));
   }
-  // Table and index creation plus r8 recording are one transaction. A partial
-  // state is drift, not a recovery surface, and must never be self-healed.
+  // Table and index creation plus the authority revision are one transaction.
+  // Later additive extension revisions may retain this exact verified schema;
+  // a missing or partial authority at revision 8+ is drift and never self-heals.
 });
 
 /** Exact read-only admission shared by cleanup writers and both health paths. */
