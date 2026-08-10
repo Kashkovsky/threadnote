@@ -58,6 +58,9 @@ describe('active code graph storage', () => {
           expect.objectContaining({kind: 'table', name: 'payload'}),
         ]),
       );
+      expect(attribution.semantic.groups).toEqual(expect.arrayContaining([expect.objectContaining({name: 'other'})]));
+      expect(attribution.semantic.groupsComplete).toBe(true);
+      expect(attribution.semantic.snapshots).toMatchObject({state: 'unavailable'});
       for (const object of attribution.objects) {
         expect(object.bytes).toBe(object.pages * before.pageStorage.pageSize);
       }

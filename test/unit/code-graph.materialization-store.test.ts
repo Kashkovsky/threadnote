@@ -11,6 +11,7 @@ import {
   CODE_GRAPH_REFERENCE_CANDIDATES_PER_REFERENCE_MAXIMUM,
   finalCodeGraphFactBatches,
 } from '../../src/code_graph/fact_budget.js';
+import {CODE_GRAPH_STORED_FACT_CODEC, decodeStoredCodeGraphFact} from '../../src/code_graph/fact_storage.js';
 import {createCachedCodeGraphFactsAttributor, factMaterializationBatches} from '../../src/code_graph/indexer.js';
 import {
   CodeGraphDiskCapacityPressureError,
@@ -432,7 +433,7 @@ describe('code graph full-build materialization store', () => {
           database.close(false);
         }
       });
-      const persisted = JSON.parse(row.facts_json) as CodeGraphFileFacts;
+      const persisted = decodeStoredCodeGraphFact(row.facts_json, fixture.file.path).facts;
 
       expect(row.facts_bytes).toBeLessThanOrEqual(CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM);
       expect(row.facts_bytes).toBe(new TextEncoder().encode(row.facts_json).byteLength);
@@ -3998,7 +3999,11 @@ describe('code graph full-build materialization store', () => {
   effectIt.effect('reuses one committed structured blob with target-path-local identities', () =>
     Effect.gen(function* () {
       const fixture = yield* Effect.promise(materializationFixture);
-      const content = '{"flat.key":{"leaf":true},"flat":{"key":{"leaf":false}}}';
+      const content = JSON.stringify({
+        'flat.key': {leaf: true},
+        flat: {key: {leaf: false}},
+        ...Object.fromEntries(Array.from({length: 100}, (_, index) => [`entry-${index}`, {leaf: index}])),
+      });
       const donor = structuredCacheFile('config/donor.json', content);
       const target = structuredCacheFile('config/copies/target.json', content);
       const context = {packageName: Option.none(), project: Option.none()};
@@ -4024,6 +4029,16 @@ describe('code graph full-build materialization store', () => {
       expect(metadata.keys).toEqual(new Set([target.path]));
       expect(metadata.bytes).toBeGreaterThanOrEqual(decoded.bytes);
       expect(cachedKeys.has(codeGraphBlobReuseCacheKey(target, 'structured-blob-cache')!)).toBe(true);
+      const compact = new Database(fixture.databasePath, {readonly: true, strict: true});
+      try {
+        expect(
+          compact
+            .query("SELECT json_extract(facts_json, '$.codec') AS codec FROM file_blobs WHERE path_hint = ?")
+            .get(donor.path),
+        ).toEqual({codec: CODE_GRAPH_STORED_FACT_CODEC});
+      } finally {
+        compact.close(false);
+      }
 
       const referenced = new Database(fixture.databasePath, {strict: true});
       const now = new Date().toISOString();

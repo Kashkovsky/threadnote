@@ -13,6 +13,7 @@ import {
   retireRoutineLeaseCandidates,
 } from './store_leases.js';
 import {drainCompletedPersistentBuildRowsPage} from './store_activation_core.js';
+import {retireExcessReadySnapshotsPage} from './snapshot_retention.js';
 
 /** Fresh facts are written before the durable building snapshot owns its inventory. */
 
@@ -67,6 +68,17 @@ const runRoutineMaintenancePage = Effect.fn('codeGraph.runRoutineMaintenancePage
       remaining: true,
       retiredSnapshots: leasePage.retiredSnapshots,
       rowsDeleted: completed.deleted,
+      state: 'completed',
+    } satisfies CodeGraphRoutineMaintenanceResult;
+  }
+  const retention = yield* sql.withTransaction(retireExcessReadySnapshotsPage(sql, now));
+  if (retention.retired > 0) {
+    return {
+      cleanup: 'none',
+      expiredLeases: leasePage.deleted,
+      remaining: true,
+      retiredSnapshots: leasePage.retiredSnapshots + retention.retired,
+      rowsDeleted: 0,
       state: 'completed',
     } satisfies CodeGraphRoutineMaintenanceResult;
   }

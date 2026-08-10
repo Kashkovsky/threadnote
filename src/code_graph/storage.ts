@@ -11,6 +11,11 @@ import {
   withCodeGraphMaintenanceIntent,
 } from './maintenance_gate.js';
 import {CODE_GRAPH_SCHEMA_VERSION, type CodeGraphSnapshot} from './types.js';
+import {
+  CODE_GRAPH_STORAGE_SEMANTIC_OBJECT_LIMIT,
+  readCodeGraphStorageSemanticAttribution,
+  type CodeGraphStorageSemanticAttribution,
+} from './storage_attribution.js';
 
 export const CODE_GRAPH_COMPACTION_MIN_RECLAIMABLE_BYTES = 512 * 1024 * 1024;
 export const CODE_GRAPH_COMPACTION_MIN_RECLAIMABLE_RATIO = 0.2;
@@ -53,6 +58,8 @@ export interface CodeGraphStorageAttributionAvailable {
   readonly objectCount: number;
   readonly objects: readonly CodeGraphStorageObjectAttribution[];
   readonly objectsTruncated: boolean;
+  /** Exact B-tree groups plus bounded logical per-snapshot payload attribution. */
+  readonly semantic: CodeGraphStorageSemanticAttribution;
   readonly state: 'available';
   /** Pointer-map or other pages not assigned to a named B-tree or freelist. */
   readonly unattributedBytes: number;
@@ -490,7 +497,7 @@ function readStorageAttribution(
         ORDER BY bytes DESC, dbstat.name ASC
         LIMIT ?`,
     )
-    .all(CODE_GRAPH_STORAGE_ATTRIBUTION_OBJECT_LIMIT + 1) as readonly {
+    .all(CODE_GRAPH_STORAGE_SEMANTIC_OBJECT_LIMIT + 1) as readonly {
     readonly bytes: bigint | number;
     readonly kind: CodeGraphStorageObjectAttribution['kind'];
     readonly name: string;
@@ -498,15 +505,20 @@ function readStorageAttribution(
     readonly pages: bigint | number;
     readonly total_bytes: bigint | number;
   }[];
-  const objectsTruncated = rows.length > CODE_GRAPH_STORAGE_ATTRIBUTION_OBJECT_LIMIT;
+  const semanticRows = rows.slice(0, CODE_GRAPH_STORAGE_SEMANTIC_OBJECT_LIMIT).map(row => ({
+    bytes: safeCount(row.bytes, `storage object ${safeStorageObjectName(row.name)} bytes`),
+    name: safeStorageObjectName(row.name),
+    pages: safeCount(row.pages, `storage object ${safeStorageObjectName(row.name)} pages`),
+  }));
+  const attributedBytes = safeCount(rows[0]?.total_bytes ?? 0, 'attributed storage bytes');
+  const objectCount = safeCount(rows[0]?.object_count ?? 0, 'attributed storage objects');
+  const objectsTruncated = objectCount > CODE_GRAPH_STORAGE_ATTRIBUTION_OBJECT_LIMIT;
   const objects = rows.slice(0, CODE_GRAPH_STORAGE_ATTRIBUTION_OBJECT_LIMIT).map(row => ({
     bytes: safeCount(row.bytes, `storage object ${safeStorageObjectName(row.name)} bytes`),
     kind: row.kind,
     name: safeStorageObjectName(row.name),
     pages: safeCount(row.pages, `storage object ${safeStorageObjectName(row.name)} pages`),
   }));
-  const attributedBytes = safeCount(rows[0]?.total_bytes ?? 0, 'attributed storage bytes');
-  const objectCount = safeCount(rows[0]?.object_count ?? 0, 'attributed storage objects');
   const allocatedBytes = safeProduct(pageCount, pageSize, 'allocated storage bytes');
   return {
     allocatedBytes,
@@ -515,6 +527,7 @@ function readStorageAttribution(
     objectCount,
     objects,
     objectsTruncated,
+    semantic: readCodeGraphStorageSemanticAttribution(database, semanticRows, objectCount, attributedBytes),
     state: 'available',
     unattributedBytes: codeGraphStorageUnattributedBytes(allocatedBytes, attributedBytes, freelistBytes),
   };

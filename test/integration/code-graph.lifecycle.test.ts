@@ -286,6 +286,14 @@ describe('native code graph lifecycle', () => {
       snapshotId: first.snapshot.id,
       subphase: 'summarizing-analysis',
     });
+    expect(backfillProgress).toContainEqual({
+      phase: 'activating',
+      snapshotId: first.snapshot.id,
+      subphase: 'structural-ready',
+    });
+    expect(backfillProgress.findIndex(progress => progress.subphase === 'structural-ready')).toBeLessThan(
+      backfillProgress.findIndex(progress => progress.subphase === 'summarizing-analysis'),
+    );
     expect(second.diagnostics).toContain('Built the persisted whole-graph analysis summary for this reused snapshot.');
 
     const idempotentProgress: Array<{readonly phase: string; readonly subphase?: string}> = [];

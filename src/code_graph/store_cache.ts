@@ -13,6 +13,7 @@ import {
 } from './cache_capacity.js';
 import {saturatingCapacityAdd, type CodeGraphDirectPersistentCapacityBoundary} from './disk_capacity.js';
 import {type BoundedCodeGraphFact} from './fact_budget.js';
+import {encodeStoredCodeGraphFact} from './fact_storage.js';
 import {compareCodeUnits} from './ordering.js';
 import {
   type CodeGraphDirectPersistentCapacityProtector,
@@ -61,12 +62,13 @@ function prepareFreshFactCacheChunks(
     'cache code graph file facts',
     inputs.map(({bounded, file}) => {
       const reuseClass = codeGraphBlobExtractionReuseClass(file);
+      const stored = encodeStoredCodeGraphFact(bounded);
       const row = {
         ...(reuseClass === undefined ? {} : {blobId: file.blobId, reuseClass}),
         contentHash: file.contentHash,
         createdAt,
         extractorSet,
-        factsJson: bounded.json,
+        factsJson: stored.json,
         key: file.path,
         path: file.path,
       };
@@ -175,12 +177,13 @@ function prepareMaterializedShardCacheChunks(
   return planCodeGraphCacheCapacityChunks(
     'cache materialized code graph file shards',
     inputs.map(({bounded, file}) => {
+      const stored = encodeStoredCodeGraphFact(bounded);
       const row = {
         contentHash: file.contentHash,
         createdAt: now,
         derivationIdentity,
         extractorSet,
-        factsJson: bounded.json,
+        factsJson: stored.json,
         id: materializedFileShardIdentity(file.contentHash, extractorSet, derivationIdentity, file.path),
         key: file.path,
         lastUsedAt: now,

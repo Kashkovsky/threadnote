@@ -1,0 +1,356 @@
+import {Database} from 'bun:sqlite';
+import {storedCodeGraphFactRawBytesSql} from './fact_storage.js';
+
+export const CODE_GRAPH_STORAGE_SNAPSHOT_ATTRIBUTION_LIMIT = 64;
+export const CODE_GRAPH_STORAGE_SEMANTIC_OBJECT_LIMIT = 512;
+
+export type CodeGraphStorageSemanticGroupName =
+  | 'analysis'
+  | 'facts-cache'
+  | 'lifecycle'
+  | 'lexical'
+  | 'lookup-resolution'
+  | 'other'
+  | 'structural-graph'
+  | 'workspace-inventory';
+
+export interface CodeGraphStorageSemanticGroupAttribution {
+  readonly bytes: number;
+  readonly name: CodeGraphStorageSemanticGroupName;
+  readonly objectCount: number;
+  readonly pages: number;
+}
+
+export interface CodeGraphSnapshotStorageAttribution {
+  readonly active: boolean;
+  readonly associatedFactRawBytes: number;
+  readonly associatedFactStoredBytes: number;
+  readonly commit: string;
+  readonly completedAt?: string;
+  readonly edgeCount: number;
+  readonly id: string;
+  readonly logicalPayloadBytes: number;
+  readonly logicalRows: number;
+  readonly state: 'building' | 'failed' | 'ready' | 'retired';
+  readonly symbolCount: number;
+}
+
+export interface CodeGraphStorageBytesPerSymbolBaseline {
+  readonly activeLogicalPayloadBytes: number;
+  readonly activeLogicalPayloadBytesPerSymbol?: number;
+  readonly activeSnapshotCount: number;
+  readonly activeSymbolCount: number;
+  readonly attributedBtreeBytes: number;
+  readonly attributedBtreeBytesPerSymbol?: number;
+  readonly denominator: 'unique-active-snapshot-symbols';
+}
+
+export type CodeGraphStorageSnapshotAttribution =
+  | {
+      readonly baseline: CodeGraphStorageBytesPerSymbolBaseline;
+      readonly snapshots: readonly CodeGraphSnapshotStorageAttribution[];
+      readonly snapshotsTruncated: boolean;
+      readonly state: 'available';
+    }
+  | {readonly reason: 'snapshot-attribution-unavailable'; readonly state: 'unavailable'};
+
+export interface CodeGraphStorageSemanticAttribution {
+  readonly groups: readonly CodeGraphStorageSemanticGroupAttribution[];
+  readonly groupsComplete: boolean;
+  readonly snapshots: CodeGraphStorageSnapshotAttribution;
+}
+
+interface StorageObjectRow {
+  readonly bytes: number;
+  readonly name: string;
+  readonly pages: number;
+}
+
+interface SnapshotMetadataRow {
+  readonly active: number;
+  readonly commit_id: string;
+  readonly completed_at: string | null;
+  readonly edge_count: number;
+  readonly id: string;
+  readonly state: CodeGraphSnapshotStorageAttribution['state'];
+  readonly symbol_count: number;
+}
+
+interface SnapshotLogicalRow {
+  readonly fact_raw_bytes: number;
+  readonly group_name: string;
+  readonly logical_bytes: number;
+  readonly row_count: number;
+  readonly snapshot_id: string;
+}
+
+export function readCodeGraphStorageSemanticAttribution(
+  database: Database,
+  objects: readonly StorageObjectRow[],
+  objectCount: number,
+  attributedBtreeBytes: number,
+): CodeGraphStorageSemanticAttribution {
+  const groups = semanticStorageGroups(objects);
+  let snapshots: CodeGraphStorageSnapshotAttribution;
+  try {
+    snapshots = readSnapshotStorageAttribution(database, attributedBtreeBytes);
+  } catch {
+    snapshots = {reason: 'snapshot-attribution-unavailable', state: 'unavailable'};
+  }
+  return {
+    groups,
+    groupsComplete: objectCount <= CODE_GRAPH_STORAGE_SEMANTIC_OBJECT_LIMIT,
+    snapshots,
+  };
+}
+
+export function codeGraphStorageSemanticGroup(name: string): CodeGraphStorageSemanticGroupName {
+  if (/^(?:sqlite_autoindex_)?(?:file_blobs|materialized_file_shards|snapshot_file_shards)/u.test(name)) {
+    return 'facts-cache';
+  }
+  if (/^(?:sqlite_autoindex_)?(?:lexical_|symbol_terms)/u.test(name)) return 'lexical';
+  if (
+    /^(?:sqlite_autoindex_)?(?:snapshot_symbol_lookup|building_reference|building_references|snapshot_reexport|legacy_building_references)/u.test(
+      name,
+    )
+  ) {
+    return 'lookup-resolution';
+  }
+  if (/^(?:sqlite_autoindex_)?(?:symbols|edges)(?:_|$)/u.test(name)) return 'structural-graph';
+  if (/^(?:sqlite_autoindex_)?workspace_/u.test(name)) return 'workspace-inventory';
+  if (/^(?:sqlite_autoindex_)?snapshot_analysis/u.test(name)) return 'analysis';
+  if (
+    /^(?:sqlite_autoindex_)?(?:active_snapshots|building_|removed_|repositories|routine_|schema_metadata|snapshot_build|snapshot_extractor|snapshot_files|snapshot_leases|snapshot_reuse|snapshots|sqlite_schema)/u.test(
+      name,
+    )
+  ) {
+    return 'lifecycle';
+  }
+  return 'other';
+}
+
+function semanticStorageGroups(
+  objects: readonly StorageObjectRow[],
+): readonly CodeGraphStorageSemanticGroupAttribution[] {
+  const groups = new Map<CodeGraphStorageSemanticGroupName, {bytes: number; objectCount: number; pages: number}>();
+  for (const object of objects) {
+    const name = codeGraphStorageSemanticGroup(object.name);
+    const current = groups.get(name) ?? {bytes: 0, objectCount: 0, pages: 0};
+    current.bytes += object.bytes;
+    current.objectCount += 1;
+    current.pages += object.pages;
+    groups.set(name, current);
+  }
+  return [...groups]
+    .map(([name, value]) => ({name, ...value}))
+    .sort((left, right) => right.bytes - left.bytes || left.name.localeCompare(right.name));
+}
+
+function readSnapshotStorageAttribution(
+  database: Database,
+  attributedBtreeBytes: number,
+): CodeGraphStorageSnapshotAttribution {
+  const metadata = database
+    .query(
+      `SELECT snapshot.id, snapshot.commit_id, snapshot.state, snapshot.symbol_count,
+              snapshot.edge_count, snapshot.completed_at,
+              EXISTS (
+                SELECT 1 FROM active_snapshots AS active
+                WHERE active.snapshot_id = snapshot.id
+                  AND NOT EXISTS (
+                    SELECT 1 FROM removed_views AS removed
+                    WHERE removed.worktree_id = active.worktree_id
+                      AND removed.expected_snapshot_id = active.snapshot_id
+                  )
+              ) AS active
+         FROM snapshots AS snapshot
+        ORDER BY active DESC,
+                 CASE snapshot.state WHEN 'ready' THEN 0 WHEN 'building' THEN 1
+                   WHEN 'failed' THEN 2 ELSE 3 END,
+                 snapshot.completed_at DESC, snapshot.id DESC
+        LIMIT ?`,
+    )
+    .all(CODE_GRAPH_STORAGE_SNAPSHOT_ATTRIBUTION_LIMIT + 1) as readonly SnapshotMetadataRow[];
+  const snapshotsTruncated = metadata.length > CODE_GRAPH_STORAGE_SNAPSHOT_ATTRIBUTION_LIMIT;
+  const selected = metadata.slice(0, CODE_GRAPH_STORAGE_SNAPSHOT_ATTRIBUTION_LIMIT);
+  if (selected.length === 0) {
+    return {
+      baseline: {
+        activeLogicalPayloadBytes: 0,
+        activeSnapshotCount: 0,
+        activeSymbolCount: 0,
+        attributedBtreeBytes,
+        denominator: 'unique-active-snapshot-symbols',
+      },
+      snapshots: [],
+      snapshotsTruncated,
+      state: 'available',
+    };
+  }
+  validateSnapshotMetadata(selected);
+  const ids = selected.map(row => row.id);
+  const values = ids.map(() => '(?)').join(', ');
+  const logicalRows = database
+    .query(
+      `WITH selected(snapshot_id) AS (VALUES ${values})
+       SELECT file.snapshot_id, 'workspace-inventory' AS group_name, COUNT(*) AS row_count,
+              COALESCE(SUM(length(CAST(file.path AS BLOB)) + length(CAST(file.content_hash AS BLOB)) +
+                length(CAST(file.language AS BLOB)) + length(CAST(file.mode AS BLOB)) +
+                length(CAST(file.source AS BLOB)) + 8), 0) AS logical_bytes,
+              0 AS fact_raw_bytes
+         FROM snapshot_files AS file JOIN selected ON selected.snapshot_id = file.snapshot_id
+        GROUP BY file.snapshot_id
+       UNION ALL
+       SELECT symbol.snapshot_id, 'structural-graph', COUNT(*),
+              COALESCE(SUM(length(CAST(symbol.id AS BLOB)) + length(CAST(symbol.content_hash AS BLOB)) +
+                length(CAST(symbol.kind AS BLOB)) + length(CAST(symbol.name AS BLOB)) +
+                length(CAST(symbol.qualified_name AS BLOB)) + length(CAST(symbol.path AS BLOB)) +
+                length(CAST(symbol.language AS BLOB)) + length(CAST(symbol.lookup_keys_json AS BLOB)) +
+                length(CAST(COALESCE(symbol.resolution_domain, '') AS BLOB)) +
+                length(CAST(COALESCE(symbol.resolution_scope_id, '') AS BLOB)) +
+                length(CAST(COALESCE(symbol.package_name, '') AS BLOB)) +
+                length(CAST(COALESCE(symbol.signature, '') AS BLOB)) +
+                length(CAST(COALESCE(symbol.documentation, '') AS BLOB)) +
+                length(CAST(symbol.span_json AS BLOB)) + 8 + CASE WHEN symbol.arity IS NULL THEN 0 ELSE 8 END), 0), 0
+         FROM symbols AS symbol JOIN selected ON selected.snapshot_id = symbol.snapshot_id
+        GROUP BY symbol.snapshot_id
+       UNION ALL
+       SELECT edge.snapshot_id, 'structural-graph', COUNT(*),
+              COALESCE(SUM(length(CAST(edge.id AS BLOB)) + length(CAST(COALESCE(edge.source_id, '') AS BLOB)) +
+                length(CAST(edge.source_name AS BLOB)) + length(CAST(edge.relation AS BLOB)) +
+                length(CAST(COALESCE(edge.target_id, '') AS BLOB)) + length(CAST(edge.target_name AS BLOB)) +
+                length(CAST(edge.provenance AS BLOB)) + length(CAST(edge.evidence_path AS BLOB)) +
+                length(CAST(edge.evidence_span_json AS BLOB)) + 8), 0), 0
+         FROM edges AS edge JOIN selected ON selected.snapshot_id = edge.snapshot_id
+        GROUP BY edge.snapshot_id
+       UNION ALL
+       SELECT lookup.snapshot_id, 'lookup-resolution', COUNT(*),
+              COALESCE(SUM(length(CAST(lookup.lookup_key AS BLOB)) + length(CAST(lookup.symbol_id AS BLOB)) +
+                length(CAST(lookup.resolution_domain AS BLOB)) + length(CAST(lookup.provenance AS BLOB)) +
+                length(CAST(COALESCE(lookup.evidence_edge_id, '') AS BLOB)) +
+                length(CAST(COALESCE(lookup.evidence_path, '') AS BLOB)) + 8), 0), 0
+         FROM snapshot_symbol_lookup AS lookup JOIN selected ON selected.snapshot_id = lookup.snapshot_id
+        GROUP BY lookup.snapshot_id
+       UNION ALL
+       SELECT lexical.snapshot_id, 'lexical',
+              (SELECT COUNT(*) FROM lexical_compact_terms AS term WHERE term.snapshot_key = lexical.snapshot_key) +
+              (SELECT COUNT(*) FROM lexical_compact_symbols AS symbol WHERE symbol.snapshot_key = lexical.snapshot_key) +
+              (SELECT COUNT(*) FROM lexical_compact_postings AS posting WHERE posting.snapshot_key = lexical.snapshot_key),
+              COALESCE((SELECT SUM(length(CAST(term.term AS BLOB)) + 16)
+                FROM lexical_compact_terms AS term WHERE term.snapshot_key = lexical.snapshot_key), 0) +
+              COALESCE((SELECT SUM(length(CAST(symbol.symbol_id AS BLOB)) + 16)
+                FROM lexical_compact_symbols AS symbol WHERE symbol.snapshot_key = lexical.snapshot_key), 0) +
+              COALESCE((SELECT COUNT(*) * 32 FROM lexical_compact_postings AS posting
+                WHERE posting.snapshot_key = lexical.snapshot_key), 0), 0
+         FROM lexical_compact_snapshots AS lexical JOIN selected ON selected.snapshot_id = lexical.snapshot_id
+       UNION ALL
+       SELECT association.snapshot_id, 'facts-cache', COUNT(*),
+              COALESCE(SUM(length(CAST(shard.facts_json AS BLOB))), 0),
+              COALESCE(SUM(${storedCodeGraphFactRawBytesSql('shard.facts_json')}), 0)
+         FROM snapshot_file_shards AS association
+         JOIN selected ON selected.snapshot_id = association.snapshot_id
+         JOIN materialized_file_shards AS shard ON shard.id = association.shard_id
+        GROUP BY association.snapshot_id
+       UNION ALL
+       SELECT component.snapshot_id, 'workspace-inventory', COUNT(*),
+              COALESCE(SUM(length(CAST(component.id AS BLOB)) + length(CAST(component.workspace_id AS BLOB)) +
+                length(CAST(component.build_system AS BLOB)) + length(CAST(component.kind AS BLOB)) +
+                length(CAST(component.name AS BLOB)) + length(CAST(component.root AS BLOB)) +
+                length(CAST(component.resolution_domain AS BLOB)) + length(CAST(component.languages_json AS BLOB)) +
+                length(CAST(component.source_roots_json AS BLOB)) +
+                length(CAST(component.workspace_roots_json AS BLOB)) + length(CAST(component.provenance AS BLOB)) +
+                length(CAST(component.diagnostics_json AS BLOB))), 0), 0
+         FROM workspace_components AS component JOIN selected ON selected.snapshot_id = component.snapshot_id
+        GROUP BY component.snapshot_id
+       UNION ALL
+       SELECT dependency.snapshot_id, 'workspace-inventory', COUNT(*),
+              COALESCE(SUM(length(CAST(dependency.source_component_id AS BLOB)) +
+                length(CAST(dependency.target_component_id AS BLOB)) + length(CAST(dependency.provenance AS BLOB)) +
+                length(CAST(COALESCE(dependency.evidence, '') AS BLOB))), 0), 0
+         FROM workspace_component_dependencies AS dependency
+         JOIN selected ON selected.snapshot_id = dependency.snapshot_id
+        GROUP BY dependency.snapshot_id
+       UNION ALL
+       SELECT scope.snapshot_id, 'workspace-inventory', COUNT(*),
+              COALESCE(SUM(length(CAST(scope.id AS BLOB)) + length(CAST(scope.build_system AS BLOB)) +
+                length(CAST(scope.name AS BLOB)) + length(CAST(scope.root AS BLOB)) +
+                length(CAST(scope.provenance AS BLOB)) + length(CAST(scope.diagnostics_json AS BLOB))), 0), 0
+         FROM workspace_scopes AS scope JOIN selected ON selected.snapshot_id = scope.snapshot_id
+        GROUP BY scope.snapshot_id`,
+    )
+    .all(...ids) as readonly SnapshotLogicalRow[];
+  const aggregates = new Map<
+    string,
+    {factRawBytes: number; factStoredBytes: number; logicalBytes: number; rows: number}
+  >();
+  for (const row of logicalRows) {
+    const current = aggregates.get(row.snapshot_id) ?? {factRawBytes: 0, factStoredBytes: 0, logicalBytes: 0, rows: 0};
+    current.logicalBytes += safeAggregate(row.logical_bytes);
+    current.rows += safeAggregate(row.row_count);
+    if (row.group_name === 'facts-cache') {
+      current.factRawBytes += safeAggregate(row.fact_raw_bytes);
+      current.factStoredBytes += safeAggregate(row.logical_bytes);
+    }
+    aggregates.set(row.snapshot_id, current);
+  }
+  const snapshots = selected.map(row => {
+    const aggregate = aggregates.get(row.id) ?? {factRawBytes: 0, factStoredBytes: 0, logicalBytes: 0, rows: 0};
+    return {
+      active: row.active === 1,
+      associatedFactRawBytes: aggregate.factRawBytes,
+      associatedFactStoredBytes: aggregate.factStoredBytes,
+      commit: row.commit_id,
+      ...(row.completed_at === null ? {} : {completedAt: row.completed_at}),
+      edgeCount: row.edge_count,
+      id: row.id,
+      logicalPayloadBytes: aggregate.logicalBytes,
+      logicalRows: aggregate.rows,
+      state: row.state,
+      symbolCount: row.symbol_count,
+    } satisfies CodeGraphSnapshotStorageAttribution;
+  });
+  const active = snapshots.filter(snapshot => snapshot.active);
+  const activeSymbolCount = active.reduce((total, snapshot) => total + snapshot.symbolCount, 0);
+  const activeLogicalPayloadBytes = active.reduce((total, snapshot) => total + snapshot.logicalPayloadBytes, 0);
+  return {
+    baseline: {
+      activeLogicalPayloadBytes,
+      ...(activeSymbolCount > 0
+        ? {
+            activeLogicalPayloadBytesPerSymbol: Math.round(activeLogicalPayloadBytes / activeSymbolCount),
+            attributedBtreeBytesPerSymbol: Math.round(attributedBtreeBytes / activeSymbolCount),
+          }
+        : {}),
+      activeSnapshotCount: active.length,
+      activeSymbolCount,
+      attributedBtreeBytes,
+      denominator: 'unique-active-snapshot-symbols',
+    },
+    snapshots,
+    snapshotsTruncated,
+    state: 'available',
+  };
+}
+
+function validateSnapshotMetadata(rows: readonly SnapshotMetadataRow[]): void {
+  for (const row of rows) {
+    if (
+      typeof row.id !== 'string' ||
+      typeof row.commit_id !== 'string' ||
+      !['building', 'failed', 'ready', 'retired'].includes(row.state) ||
+      (row.completed_at !== null && typeof row.completed_at !== 'string') ||
+      !Number.isSafeInteger(row.symbol_count) ||
+      row.symbol_count < 0 ||
+      !Number.isSafeInteger(row.edge_count) ||
+      row.edge_count < 0 ||
+      (row.active !== 0 && row.active !== 1)
+    ) {
+      throw new Error('Code graph snapshot storage metadata is invalid.');
+    }
+  }
+}
+
+function safeAggregate(value: number): number {
+  if (!Number.isSafeInteger(value) || value < 0) throw new Error('Code graph storage aggregate is invalid.');
+  return value;
+}

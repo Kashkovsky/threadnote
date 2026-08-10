@@ -41,6 +41,17 @@ import {CODE_GRAPH_SNAPSHOT_ID, validCanonicalTimestamp} from './store_reconcili
 import {CodeGraphPromotionCapacityPlanChanged} from './store_internal_models.js';
 import {lastStatementChangeCount} from './store_activation_core.js';
 
+export const CODE_GRAPH_RESOLUTION_PASS_MAXIMUM = 32;
+
+/** @internal Total-pass convergence fence; every admitted pass is independently page-bounded. */
+export function codeGraphResolutionPassAdmitted(passesCompleted: number): boolean {
+  return (
+    Number.isSafeInteger(passesCompleted) &&
+    passesCompleted >= 0 &&
+    passesCompleted < CODE_GRAPH_RESOLUTION_PASS_MAXIMUM
+  );
+}
+
 /** Exact read-only admission shared by cleanup writers and both health paths. */
 
 /** Fresh facts are written before the durable building snapshot owns its inventory. */
@@ -213,6 +224,13 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
     const referencesTotal = Number(countRows[0]?.count ?? 0);
     matchingMilliseconds += (yield* Clock.currentTimeMillis) - countStartedAt;
     if (referencesTotal === 0) break;
+    if (!codeGraphResolutionPassAdmitted(passesCompleted)) {
+      return yield* Effect.fail(
+        new CodeGraphStoreError(
+          `Code graph reference resolution did not converge within ${CODE_GRAPH_RESOLUTION_PASS_MAXIMUM} bounded passes.`,
+        ),
+      );
+    }
     const pass = passesCompleted + 1;
     let pageTotal = persistentFull
       ? persistentFullReferencePageTotal(countRows[0] ?? {candidate_count: 0, count: 0, payload_bytes: 0})

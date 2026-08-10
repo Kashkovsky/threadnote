@@ -451,6 +451,35 @@ export function renderCodeGraphDiagnostics(
           `logical rows deleted ${database.accounting.logicalRowsDeleted} · pressure ${database.accounting.pressure}`,
       );
     }
+    const attribution =
+      database.storage.state === 'available' && database.storage.pageStorage.state === 'available'
+        ? database.storage.pageStorage.attribution
+        : undefined;
+    if (attribution?.state === 'available') {
+      lines.push(
+        `B-tree groups${attribution.semantic.groupsComplete ? '' : ' (partial)'}: ${attribution.semantic.groups
+          .slice(0, 8)
+          .map(group => `${group.name} ${formatBytes(group.bytes)}`)
+          .join(' · ')}`,
+      );
+      if (attribution.semantic.snapshots.state === 'available') {
+        const baseline = attribution.semantic.snapshots.baseline;
+        lines.push(
+          baseline.activeSymbolCount > 0
+            ? `Bytes/symbol: attributed B-trees ${formatBytes(baseline.attributedBtreeBytesPerSymbol ?? 0)} · ` +
+                `active logical payload ${formatBytes(baseline.activeLogicalPayloadBytesPerSymbol ?? 0)} · ` +
+                `${baseline.activeSymbolCount.toLocaleString()} symbols across ${baseline.activeSnapshotCount} unique active snapshot(s)`
+            : 'Bytes/symbol: unavailable because no active snapshot symbols are present.',
+          'Attribution note: B-tree bytes include shared caches, detached/retired snapshots, and secondary indexes; snapshot facts are associated logical payloads and can share one physical row.',
+        );
+        for (const snapshot of attribution.semantic.snapshots.snapshots.slice(0, 8)) {
+          lines.push(
+            `Snapshot ${snapshot.id.slice(-8)}${snapshot.active ? ' active' : ''} ${snapshot.state}: ` +
+              `${formatBytes(snapshot.logicalPayloadBytes)} logical · facts ${formatBytes(snapshot.associatedFactStoredBytes)} stored/${formatBytes(snapshot.associatedFactRawBytes)} raw · ${snapshot.logicalRows.toLocaleString()} rows`,
+          );
+        }
+      }
+    }
     for (const view of database.views) {
       lines.push(
         `View ${view.viewWorktreeId.slice(-8)}: ${view.snapshot.fileCount} files · ${view.snapshot.symbolCount} symbols · ${view.snapshot.edgeCount} edges`,

@@ -378,7 +378,12 @@ export type CodeGraphProgress =
       readonly phase: 'activating';
       readonly snapshotId: string;
       readonly subphase?:
-        'complete' | 'promoting' | 'summarizing-analysis' | 'validating-input' | 'writing-and-checkpointing';
+        | 'complete'
+        | 'promoting'
+        | 'structural-ready'
+        | 'summarizing-analysis'
+        | 'validating-input'
+        | 'writing-and-checkpointing';
     }
   | {
       readonly completed: number;

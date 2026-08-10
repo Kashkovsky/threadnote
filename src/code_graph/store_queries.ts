@@ -2,7 +2,7 @@ import {Effect, Option} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {type CodeGraphBlobReuseFile} from './blob_reuse.js';
 import {codeGraphUtf8ByteLength} from './disk_capacity.js';
-import {ensureBoundedCodeGraphFact} from './fact_budget.js';
+import {decodeStoredCodeGraphFact, storedCodeGraphFactRawBytesSql} from './fact_storage.js';
 import {compareCodeUnits} from './ordering.js';
 import {relocateStructuredSchemaFacts} from './languages/schemas/extractor.js';
 import {
@@ -466,11 +466,10 @@ const selectCachedFacts = Effect.fn('codeGraph.selectCachedFacts')(function* (
     const rows = yield* selectFileBlobBatch(sql, batch, extractorSet);
     for (const row of rows) {
       try {
-        const facts = JSON.parse(row.facts_json) as CodeGraphFileFacts;
-        if (facts.path !== row.path_hint) continue;
-        output.set(row.path_hint, facts);
+        const bounded = decodeStoredCodeGraphFact(row.facts_json, row.path_hint);
+        output.set(row.path_hint, bounded.facts);
         keys.add(row.path_hint);
-        const factBytes = Number(row.facts_bytes);
+        const factBytes = bounded.bytes;
         bytes += factBytes;
         bytesByPath.set(row.path_hint, factBytes);
       } catch {
@@ -485,9 +484,8 @@ const selectCachedFacts = Effect.fn('codeGraph.selectCachedFacts')(function* (
       const file = filesByPath.get(row.target_path);
       if (file === undefined) continue;
       try {
-        const facts = JSON.parse(row.facts_json) as CodeGraphFileFacts;
-        if (facts.path !== row.path_hint) continue;
-        const relocated = relocateStructuredSchemaFacts(file, facts);
+        const bounded = decodeStoredCodeGraphFact(row.facts_json, row.path_hint);
+        const relocated = relocateStructuredSchemaFacts(file, bounded.facts);
         if (relocated === undefined) continue;
         const factBytes = codeGraphUtf8ByteLength(JSON.stringify(relocated));
         output.set(row.target_path, relocated);
@@ -522,7 +520,7 @@ const selectMaterializedFileShards = Effect.fn('codeGraph.selectMaterializedFile
       readonly id: string;
       readonly path_hint: string;
     }>(
-      `SELECT id, content_hash, path_hint, facts_json, length(CAST(facts_json AS BLOB)) AS facts_bytes
+      `SELECT id, content_hash, path_hint, facts_json, ${storedCodeGraphFactRawBytesSql('facts_json')} AS facts_bytes
        FROM materialized_file_shards
        WHERE extractor_set = ? AND derivation_identity = ?
          AND (${batch.map(() => '(content_hash = ? AND path_hint = ?)').join(' OR ')})`,
@@ -530,7 +528,7 @@ const selectMaterializedFileShards = Effect.fn('codeGraph.selectMaterializedFile
     );
     for (const row of rows) {
       try {
-        const bounded = ensureBoundedCodeGraphFact(JSON.parse(row.facts_json) as CodeGraphFileFacts);
+        const bounded = decodeStoredCodeGraphFact(row.facts_json, row.path_hint);
         if (
           bounded.facts.path !== row.path_hint ||
           row.id !== materializedFileShardIdentity(row.content_hash, extractorSet, derivationIdentity, row.path_hint)
@@ -539,7 +537,7 @@ const selectMaterializedFileShards = Effect.fn('codeGraph.selectMaterializedFile
         }
         output.set(row.path_hint, bounded.facts);
         keys.add(row.path_hint);
-        const factBytes = Number(row.facts_bytes);
+        const factBytes = bounded.bytes;
         bytes += factBytes;
         bytesByPath.set(row.path_hint, factBytes);
       } catch {
@@ -556,7 +554,7 @@ function selectFileBlobBatch(sql: SqlClient.SqlClient, files: readonly CodeGraph
   }
   return sql.unsafe<FileBlobRow & {readonly facts_bytes: number; readonly path_hint: string}>(
     `SELECT blob_id, content_hash, path_hint, reuse_class, facts_json,
-            length(CAST(facts_json AS BLOB)) AS facts_bytes
+            ${storedCodeGraphFactRawBytesSql('facts_json')} AS facts_bytes
      FROM file_blobs
      WHERE extractor_set = ?
        AND (${files.map(() => '(content_hash = ? AND path_hint = ?)').join(' OR ')})`,

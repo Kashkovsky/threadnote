@@ -191,6 +191,7 @@ export function codeGraphProgressFromBuildStatus(
         snapshotId: 'building',
         ...(status.subphase === 'complete' ||
         status.subphase === 'promoting' ||
+        status.subphase === 'structural-ready' ||
         status.subphase === 'summarizing-analysis' ||
         status.subphase === 'validating-input' ||
         status.subphase === 'writing-and-checkpointing'

@@ -6,6 +6,7 @@ import {
   type CodeGraphBlobReuseFile,
 } from './blob_reuse.js';
 import {configureConnection} from './store_session.js';
+import {CODE_GRAPH_STORED_FACT_CODEC, storedCodeGraphFactRawBytesSql} from './fact_storage.js';
 import {type CodeGraphProvenance, CodeGraphStoreError} from './types.js';
 import {sqlTextOption} from './store_utilities.js';
 import {type CodeGraphSqlQueryStatement} from './store_visualization_sql.js';
@@ -19,7 +20,7 @@ function selectFileBlobMetadataBatch(
     return Effect.succeed([] as readonly {readonly facts_bytes: number; readonly path_hint: string}[]);
   }
   return sql.unsafe<{readonly facts_bytes: number; readonly path_hint: string}>(
-    `SELECT path_hint, length(CAST(facts_json AS BLOB)) AS facts_bytes
+    `SELECT path_hint, ${storedCodeGraphFactRawBytesSql('facts_json')} AS facts_bytes
      FROM file_blobs
      WHERE extractor_set = ?
        AND (${files.map(() => '(content_hash = ? AND path_hint = ?)').join(' OR ')})`,
@@ -46,14 +47,26 @@ function selectReusableFileBlobMetadataBatch(
   return sql.unsafe<Pick<ReusableFileBlobRow, 'facts_bytes' | 'target_path'>>(
     `${reusableFileBlobTargetCte(targets)}
      SELECT requested.target_path,
-            MAX(
-              length(CAST(blob.facts_json AS BLOB)),
-              length(CAST(replace(
-                blob.facts_json,
-                substr(json_quote(blob.path_hint), 2, length(json_quote(blob.path_hint)) - 2),
-                substr(json_quote(requested.target_path), 2, length(json_quote(requested.target_path)) - 2)
-              ) AS BLOB))
-            ) AS facts_bytes
+            CASE
+              WHEN json_extract(blob.facts_json, '$.codec') = '${CODE_GRAPH_STORED_FACT_CODEC}'
+              THEN MAX(
+                ${storedCodeGraphFactRawBytesSql('blob.facts_json')},
+                ${storedCodeGraphFactRawBytesSql('blob.facts_json')} +
+                  CAST(json_extract(blob.facts_json, '$.pathOccurrences') AS INTEGER) *
+                  (length(CAST(substr(json_quote(requested.target_path), 2,
+                    length(json_quote(requested.target_path)) - 2) AS BLOB)) -
+                   length(CAST(substr(json_quote(blob.path_hint), 2,
+                    length(json_quote(blob.path_hint)) - 2) AS BLOB)))
+              )
+              ELSE MAX(
+                length(CAST(blob.facts_json AS BLOB)),
+                length(CAST(replace(
+                  blob.facts_json,
+                  substr(json_quote(blob.path_hint), 2, length(json_quote(blob.path_hint)) - 2),
+                  substr(json_quote(requested.target_path), 2, length(json_quote(requested.target_path)) - 2)
+                ) AS BLOB))
+              )
+            END AS facts_bytes
      FROM requested
      JOIN file_blobs AS blob ON ${reusableFileBlobJoin('blob')}
      WHERE blob.extractor_set = ?
@@ -75,7 +88,7 @@ function selectReusableFileBlobBatch(
   return sql.unsafe<ReusableFileBlobRow>(
     `${reusableFileBlobTargetCte(targets)}
      SELECT requested.target_path, blob.path_hint, blob.facts_json,
-            length(CAST(blob.facts_json AS BLOB)) AS facts_bytes
+            ${storedCodeGraphFactRawBytesSql('blob.facts_json')} AS facts_bytes
      FROM requested
      JOIN file_blobs AS blob ON ${reusableFileBlobJoin('blob')}
      WHERE blob.extractor_set = ?
