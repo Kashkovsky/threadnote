@@ -79,7 +79,7 @@ describe('manager graph focus', () => {
             {
               builds: [],
               checkoutId,
-              health: {integrity: 'ok', readySnapshots: 1},
+              health: {integrity: 'migration-pending', readySnapshots: 1},
               healthState: 'checked',
               issues: [],
               storage: {state: 'available', totalBytes: 0},
@@ -122,6 +122,8 @@ describe('manager graph focus', () => {
     expect(markup.match(/aria-label="Remove indexed view bbbbbbbb"/g)).toHaveLength(1);
     expect(markup).toContain('title="Remove indexed view"');
     expect(markup).not.toContain('Preview remove');
+    expect(markup).toContain('class="is-migration-pending">migrating</em>');
+    expect(markup).not.toContain('>incompatible</em>');
     expect(markup).toContain('Index, reindex, and compact require a verified local worktree path.');
   });
 

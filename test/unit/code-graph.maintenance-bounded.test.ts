@@ -1,6 +1,7 @@
 import {Database} from 'bun:sqlite';
 import {it as effectIt} from '@effect/vitest';
 import {Clock, Deferred, Effect, Fiber, FileSystem, Path} from 'effect';
+import {TestClock} from 'effect/testing';
 import {afterEach, describe, expect, it} from 'vitest';
 import {runCodeGraphRepair} from '../../src/code_graph/commands.js';
 import {
@@ -8,10 +9,16 @@ import {
   diagnoseCodeGraphDatabaseReadOnly,
   repairCodeGraphIndexes,
 } from '../../src/code_graph/maintenance.js';
-import {codeGraphRepositoryLockPath, codeGraphWorktreeLockPath} from '../../src/code_graph/layout.js';
+import {
+  codeGraphDatabaseWriteLockPath,
+  codeGraphRepositoryLockPath,
+  codeGraphWorktreeLockPath,
+} from '../../src/code_graph/layout.js';
 import {
   CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION,
   CODE_GRAPH_SCHEMA_VERSION,
+  type CodeGraphSnapshot,
+  type RepositoryIdentity,
 } from '../../src/code_graph/types.js';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
 import {captureConsole} from '../../src/effect/console.js';
@@ -20,6 +27,8 @@ import type {RuntimeConfig} from '../../src/types.js';
 import {join, mkdir, mkdtemp, rm, writeFile} from '../helpers/effect-filesystem.js';
 import {runEffect} from '../helpers/effect-runtime.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
+import {CodeGraphMaintenanceCoordinator} from '../../src/code_graph/maintenance_coordinator.js';
+import {inspectCodeGraphViewDatabaseTarget} from '../../src/code_graph/view_removal.js';
 
 describe('bounded code graph maintenance', () => {
   const homes: string[] = [];
@@ -414,6 +423,116 @@ describe('bounded code graph maintenance', () => {
     }).pipe(Effect.provide(ApplicationLayer)),
   );
 
+  effectIt.effect('keeps revision-6 ready snapshots readable while background maintenance migrates them', () =>
+    Effect.gen(function* () {
+      const home = yield* Effect.promise(() => mkdtemp('threadnote-graph-background-revision-6-'));
+      homes.push(home);
+      const identity = legacyRepositoryIdentity(home, '6');
+      const databasePath = join(
+        home,
+        'indexes',
+        'code-graph',
+        'repositories',
+        identity.checkoutId,
+        `graph-v${CODE_GRAPH_SCHEMA_VERSION}.sqlite`,
+      );
+      const snapshot = legacyReadySnapshot(identity, '6');
+      const store = yield* CodeGraphStore;
+      yield* store.activate(databasePath, identity, snapshot, [], [], []);
+      yield* store.promote(databasePath, identity, snapshot.id);
+      yield* Effect.sync(() => downgradeToReleasedRevision6(databasePath));
+      const legacyStore = yield* Effect.gen(function* () {
+        return yield* CodeGraphStore;
+      }).pipe(Effect.provide(CodeGraphStore.layer));
+
+      const before = yield* diagnoseCodeGraphDatabaseReadOnly(databasePath, false);
+      expect(before).toMatchObject({integrity: 'migration-pending', readySnapshots: 1});
+      const doctor = yield* codeGraphDoctorCheck(home);
+      expect(doctor.status).toBe('warn');
+      expect(doctor.detail).toContain('remain usable while background schema migration is pending');
+      expect(doctor.detail).not.toContain('disposable rebuild');
+      expect(yield* legacyStore.loadGraph(databasePath, snapshot.id)).toMatchObject({edges: [], symbols: []});
+
+      const lease = yield* legacyStore.acquireSnapshotLease(databasePath, snapshot.id, 60_000);
+      expect((yield* legacyStore.readySnapshot(databasePath, identity.worktreeId))?.id).toBe(snapshot.id);
+      yield* legacyStore.releaseSnapshotLease(databasePath, lease, {waitTimeoutMilliseconds: 0});
+      const retained = yield* legacyStore.retainViewSnapshotLease(
+        databasePath,
+        identity.worktreeId,
+        snapshot.id,
+        60_000,
+      );
+      expect(retained.state).toBe('retained');
+      if (retained.state === 'retained') {
+        yield* legacyStore.releaseSnapshotLease(databasePath, retained.token, {waitTimeoutMilliseconds: 0});
+      }
+      expect(readPersistentExtensionRevision(databasePath)).toBe(6);
+      const inspectedTarget = yield* inspectCodeGraphViewDatabaseTarget(home, identity.checkoutId);
+      if (inspectedTarget.state !== 'ready') throw new Error('legacy graph target disappeared');
+      yield* Effect.sleep(100);
+
+      const path = yield* Path.Path;
+      const coordinator = yield* CodeGraphMaintenanceCoordinator;
+      yield* Effect.forEach(
+        Array.from({length: 12}),
+        () =>
+          coordinator
+            .request({
+              allowIndexPreparation: true,
+              anchorIdentity: identity,
+              checkoutId: identity.checkoutId,
+              databasePath: inspectedTarget.databasePath,
+              threadnoteHome: inspectedTarget.canonicalHome,
+              writerLockPath: codeGraphDatabaseWriteLockPath(path, inspectedTarget.canonicalHome, identity.checkoutId),
+            })
+            .pipe(Effect.andThen(Effect.sleep(100))),
+        {concurrency: 1},
+      );
+
+      expect({
+        health: yield* diagnoseCodeGraphDatabaseReadOnly(databasePath, false),
+        indexes: readReconciliationIndexes(databasePath),
+        revision: readPersistentExtensionRevision(databasePath),
+      }).toMatchObject({
+        health: {integrity: 'ok', readySnapshots: 1},
+        indexes: ['active_snapshots_snapshot_worktree', 'snapshot_leases_snapshot_expiry', 'snapshots_base_state_id'],
+        revision: CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION,
+      });
+      expect((yield* legacyStore.readySnapshot(databasePath, identity.worktreeId))?.id).toBe(snapshot.id);
+    }).pipe(Effect.provide(ApplicationLayer), TestClock.withLive),
+  );
+
+  effectIt.effect('repair migrates a released revision-6 store without dropping its ready graph', () =>
+    Effect.gen(function* () {
+      const home = yield* Effect.promise(() => mkdtemp('threadnote-graph-repair-revision-6-'));
+      homes.push(home);
+      const identity = legacyRepositoryIdentity(home, '8');
+      const databasePath = join(
+        home,
+        'indexes',
+        'code-graph',
+        'repositories',
+        identity.checkoutId,
+        `graph-v${CODE_GRAPH_SCHEMA_VERSION}.sqlite`,
+      );
+      const snapshot = legacyReadySnapshot(identity, '8');
+      const store = yield* CodeGraphStore;
+      yield* store.activate(databasePath, identity, snapshot, [], [], []);
+      yield* store.promote(databasePath, identity, snapshot.id);
+      yield* Effect.sync(() => downgradeToReleasedRevision6(databasePath));
+
+      const repair = yield* repairCodeGraphIndexes(home, false, undefined, undefined, {
+        migrateSchema: true,
+        mode: 'quick',
+      });
+
+      expect(repair).toMatchObject({deferredDatabases: 0, discarded: 0, migratedDatabases: 1});
+      expect(readPersistentExtensionRevision(databasePath)).toBe(CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION);
+      expect((yield* store.readySnapshot(databasePath, identity.worktreeId))?.id).toBe(snapshot.id);
+      expect(yield* codeGraphDoctorCheck(home)).toMatchObject({status: 'ok'});
+    }).pipe(Effect.provide(ApplicationLayer)),
+  );
+
   effectIt.effect('exposes foreground schema migration through graph repair --all', () =>
     Effect.gen(function* () {
       const home = yield* Effect.promise(() => mkdtemp('threadnote-graph-repair-command-'));
@@ -541,4 +660,102 @@ function makePreReconciliationIndexRevision7(databasePath: string): void {
   } finally {
     database.close(false);
   }
+}
+
+function downgradeToReleasedRevision6(databasePath: string): void {
+  const database = new Database(databasePath, {strict: true});
+  try {
+    database.run('PRAGMA foreign_keys = OFF');
+    database.run('BEGIN IMMEDIATE');
+    try {
+      database.exec(`
+        DROP TRIGGER IF EXISTS removed_views_cleanup_revoke_delete;
+        DROP TRIGGER IF EXISTS removed_views_cleanup_revoke_insert;
+        DROP TRIGGER IF EXISTS removed_views_cleanup_revoke_update;
+        DROP TABLE IF EXISTS removed_view_cleanup;
+        DROP TABLE IF EXISTS snapshot_build_owner_instances;
+        DROP TABLE IF EXISTS snapshot_component_edge_aggregate_receipts;
+        DROP TABLE IF EXISTS snapshot_component_edge_aggregates;
+        DROP TABLE IF EXISTS removed_views;
+        DROP INDEX IF EXISTS active_snapshots_snapshot_worktree;
+        DROP INDEX IF EXISTS snapshots_base_state_id;
+        DROP INDEX IF EXISTS snapshot_leases_snapshot_expiry;
+        DELETE FROM schema_metadata
+        WHERE key IN ('removed_view_cleanup_admission_cursor', 'removed_view_cleanup_epoch_sequence');
+        UPDATE schema_metadata
+        SET value = '6'
+        WHERE key = 'persistent_extension_schema_revision';
+      `);
+      database.run('COMMIT');
+    } catch (error) {
+      if (database.inTransaction) database.run('ROLLBACK');
+      throw error;
+    } finally {
+      database.run('PRAGMA foreign_keys = ON');
+    }
+  } finally {
+    database.close(false);
+  }
+}
+
+function readPersistentExtensionRevision(databasePath: string): number {
+  const database = new Database(databasePath, {readonly: true, strict: true});
+  try {
+    const row = database
+      .query("SELECT value FROM schema_metadata WHERE key = 'persistent_extension_schema_revision'")
+      .get() as {readonly value: string};
+    return Number(row.value);
+  } finally {
+    database.close(false);
+  }
+}
+
+function readReconciliationIndexes(databasePath: string): readonly string[] {
+  const database = new Database(databasePath, {readonly: true, strict: true});
+  try {
+    return database
+      .query(
+        `SELECT name FROM sqlite_master
+         WHERE type = 'index' AND name IN (
+           'active_snapshots_snapshot_worktree',
+           'snapshot_leases_snapshot_expiry',
+           'snapshots_base_state_id'
+         )
+         ORDER BY name`,
+      )
+      .all()
+      .map(row => (row as {readonly name: string}).name);
+  } finally {
+    database.close(false);
+  }
+}
+
+function legacyRepositoryIdentity(home: string, seed: string): RepositoryIdentity {
+  return {
+    caseMode: 'sensitive',
+    checkoutId: seed.repeat(64),
+    displayName: 'acme/legacy-graph',
+    gitCommonDirectory: join(home, '.git'),
+    headCommit: seed.repeat(40),
+    objectFormat: 'sha1',
+    repoRoot: home,
+    repositoryId: seed.repeat(64),
+    worktreeId: seed.repeat(64),
+  };
+}
+
+function legacyReadySnapshot(identity: RepositoryIdentity, seed: string): CodeGraphSnapshot {
+  return {
+    commit: identity.headCommit,
+    completedAt: '2026-08-10T00:00:00.000Z',
+    dirty: false,
+    edgeCount: 0,
+    extractorSet: 'revision-6-regression',
+    fileCount: 0,
+    id: `cgsn_${seed.repeat(40)}`,
+    repositoryId: identity.repositoryId,
+    state: 'ready',
+    symbolCount: 0,
+    worktreeId: identity.worktreeId,
+  };
 }

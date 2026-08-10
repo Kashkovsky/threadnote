@@ -149,7 +149,7 @@ function codeGraphRepairProgressMessage(progress: CodeGraphMaintenanceProgress, 
         return `Deferred ${database}: an active graph build owns the checkout.`;
       }
       if (progress.reason === 'schema-upgrade-on-use') {
-        return `Deferred ${database}: its persistent schema could not be migrated in this pass.`;
+        return `Deferred ${database}: ready snapshots remain usable while background schema migration retries.`;
       }
       return `Deferred ${database}: rerun with --deep when a full derived-store check is convenient.`;
   }

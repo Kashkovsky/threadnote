@@ -206,6 +206,7 @@ export class CodeGraphQueryService extends Context.Service<
       const requestMaintenance = (threadnoteHome: string, identity: RepositoryIdentity) => {
         const layout = codeGraphLayout(path, threadnoteHome, identity.checkoutId, identity.worktreeId);
         return maintenance.request({
+          allowIndexPreparation: true,
           anchorIdentity: identity,
           checkoutId: identity.checkoutId,
           databasePath: layout.databasePath,

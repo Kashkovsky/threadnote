@@ -121,7 +121,7 @@ export interface CodeGraphDatabaseHealth {
   readonly cachedFileBlobs: number;
   readonly failedSnapshots: number;
   readonly foreignKeyViolations: number;
-  readonly integrity: 'corrupt' | 'incompatible' | 'ok';
+  readonly integrity: 'corrupt' | 'incompatible' | 'migration-pending' | 'ok';
   readonly persistentExtensionSchemaRevision?: number;
   readonly readySnapshots: number;
   readonly schemaVersion?: number;
@@ -142,6 +142,7 @@ export type CodeGraphRoutineMaintenanceResult =
         | 'none'
         | 'reconciliation-index'
         | 'removed-worktree-view'
+        | 'schema-migration'
         | 'retired-snapshot';
       readonly expiredLeases: number;
       readonly remaining: boolean;
@@ -540,6 +541,7 @@ export interface CodeGraphRemovedViewCleanupStoreOptions extends CodeGraphSnapsh
 }
 
 export type CodeGraphWorktreeReconciliationIndexPreparationResult =
+  | {readonly state: 'migration-ready'}
   | {readonly state: 'ready'}
   | {readonly index: string; readonly state: 'prepared'}
   | {readonly reason: 'incompatible-schema'; readonly state: 'deferred'};

@@ -2,12 +2,10 @@ import {Effect} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {type CodeGraphDatabaseHealth} from './store_models.js';
 import {codeGraphPersistentExtensionSchemaCompatible} from './store_schema_inspection.js';
-import {
-  type CodeGraphSnapshot,
-  CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION,
-  CODE_GRAPH_SCHEMA_VERSION,
-} from './types.js';
+import {type CodeGraphSnapshot, CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION} from './types.js';
 import {codeGraphRemovedViewCleanupSchemaAdmission} from './store_schema_migration.js';
+import {codeGraphWorktreeReconciliationSchemaCompatible} from './store_reconciliation.js';
+import {codeGraphDatabaseIntegrity} from './store_health.js';
 
 const diagnoseDatabase = Effect.fn('codeGraph.diagnoseDatabase')(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -24,6 +22,13 @@ const diagnoseDatabase = Effect.fn('codeGraph.diagnoseDatabase')(function* () {
     persistentExtensionSchemaRevision === CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION &&
     (yield* codeGraphPersistentExtensionSchemaCompatible(sql)) &&
     cleanupAdmission.current;
+  const coreReadSchemaCompatible = yield* codeGraphWorktreeReconciliationSchemaCompatible(
+    sql,
+    false,
+    false,
+    false,
+    false,
+  );
   const stateRows = yield* sql<{readonly count: number; readonly state: CodeGraphSnapshot['state']}>`
     SELECT state, COUNT(*) AS count FROM snapshots GROUP BY state
   `;
@@ -39,12 +44,13 @@ const diagnoseDatabase = Effect.fn('codeGraph.diagnoseDatabase')(function* () {
     cachedFileBlobs: Number(cacheRows[0]?.count ?? 0),
     failedSnapshots: counts.get('failed') ?? 0,
     foreignKeyViolations: foreignKeyRows.length,
-    integrity:
-      !Number.isSafeInteger(schemaVersion) || schemaVersion !== CODE_GRAPH_SCHEMA_VERSION || !persistentExtensionCurrent
-        ? 'incompatible'
-        : integrityOk
-          ? 'ok'
-          : 'corrupt',
+    integrity: codeGraphDatabaseIntegrity({
+      coreReadSchemaCompatible,
+      integrityOk,
+      persistentExtensionCurrent,
+      persistentExtensionSchemaRevision,
+      schemaVersion: Number.isSafeInteger(schemaVersion) ? schemaVersion : undefined,
+    }),
     readySnapshots: counts.get('ready') ?? 0,
     persistentExtensionSchemaRevision,
     schemaVersion: Number.isSafeInteger(schemaVersion) ? schemaVersion : undefined,

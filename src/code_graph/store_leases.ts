@@ -5,8 +5,11 @@ import {
   type CodeGraphViewSnapshotLeaseRetainResult,
   type CodeGraphViewSnapshotLeaseValidationResult,
 } from './store_models.js';
-import {MAXIMUM_CANONICAL_DATE_MILLISECONDS} from './store_removed_view_schema_contracts.js';
-import {removedViewCleanupRecordedRevision} from './store_removed_view_schema_inspection.js';
+import {MAXIMUM_CANONICAL_DATE_MILLISECONDS, REMOVED_VIEWS_TABLE_SQL} from './store_removed_view_schema_contracts.js';
+import {
+  removedViewAuthorityTableState,
+  removedViewCleanupRecordedRevision,
+} from './store_removed_view_schema_inspection.js';
 import {configureConnection, tableExists} from './store_session.js';
 import {CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION, CodeGraphStoreError} from './types.js';
 import {
@@ -30,6 +33,7 @@ import {type PersistentBuildOwnerCandidate} from './store_internal_models.js';
 import {codeGraphWorktreeReconciliationSchemaCompatible} from './store_reconciliation.js';
 import {lastStatementChangeCount} from './store_activation_core.js';
 import {retireReadySnapshotsIfUnused} from './store_cleanup_core.js';
+import {CODE_GRAPH_MINIMUM_BACKGROUND_MIGRATION_REVISION} from './store_health.js';
 
 /** Fresh facts are written before the durable building snapshot owns its inventory. */
 
@@ -52,6 +56,22 @@ const initializeRoutineMaintenanceSchema = Effect.fn('codeGraph.initializeRoutin
   ) {
     return false;
   }
+  const revision = yield* removedViewCleanupRecordedRevision(sql);
+  if (revision.state === 'invalid') return false;
+  const recordedRevision = revision.state === 'recorded' ? revision.value : undefined;
+  const removedViewAuthority = yield* removedViewAuthorityTableState(sql);
+  if (removedViewAuthority === 'incompatible') return false;
+  if (removedViewAuthority === 'absent') {
+    if (
+      recordedRevision === undefined ||
+      recordedRevision < CODE_GRAPH_MINIMUM_BACKGROUND_MIGRATION_REVISION ||
+      recordedRevision >= CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION
+    ) {
+      return false;
+    }
+    yield* sql.unsafe(REMOVED_VIEWS_TABLE_SQL);
+    if ((yield* removedViewAuthorityTableState(sql)) !== 'compatible') return false;
+  }
   if (
     (yield* tableExists(sql, 'snapshot_leases')) &&
     !(yield* routineMaintenanceColumnsAvailable(sql, 'snapshot_leases', ['expires_at', 'snapshot_id', 'token']))
@@ -59,9 +79,6 @@ const initializeRoutineMaintenanceSchema = Effect.fn('codeGraph.initializeRoutin
     return false;
   }
   const leaseTableExists = yield* tableExists(sql, 'snapshot_leases');
-  const revision = yield* removedViewCleanupRecordedRevision(sql);
-  if (revision.state === 'invalid') return false;
-  const recordedRevision = revision.state === 'recorded' ? revision.value : undefined;
   const successorIndexState = leaseTableExists
     ? yield* codeGraphReconciliationIndexState(sql, CODE_GRAPH_RECONCILIATION_REQUIRED_INDEXES[2])
     : ('missing' as const);
@@ -78,8 +95,6 @@ const initializeRoutineMaintenanceSchema = Effect.fn('codeGraph.initializeRoutin
     const expiryIndexState = yield* codeGraphReconciliationIndexState(sql, CODE_GRAPH_SNAPSHOT_LEASE_EXPIRY_INDEX);
     if (expiryIndexState === 'incompatible') return false;
     if (expiryIndexState === 'missing') {
-      const rows = yield* sql.unsafe('SELECT 1 FROM snapshot_leases LIMIT 1');
-      if (revision.state !== 'missing' || rows.length !== 0) return false;
       createExpiryIndex = true;
     }
   }
@@ -277,7 +292,7 @@ const acquireSnapshotLease = Effect.fn('codeGraph.acquireSnapshotLease')(functio
   const duration = Math.max(1_000, Math.min(60 * 60_000, Math.floor(durationMilliseconds)));
   yield* sql.withTransaction(
     Effect.gen(function* () {
-      if (!(yield* codeGraphWorktreeReconciliationSchemaCompatible(sql))) {
+      if (!(yield* codeGraphWorktreeReconciliationSchemaCompatible(sql, false, false))) {
         return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot lease authority schema is invalid.'));
       }
       const ready = yield* sql<{readonly id: string}>`
@@ -325,7 +340,7 @@ const retainViewSnapshotLease = Effect.fn('codeGraph.retainViewSnapshotLease')(f
   const minimumRemaining = Math.max(0, Math.min(duration, Math.floor(options?.minimumRemainingMilliseconds ?? 0)));
   return yield* sql.withTransaction(
     Effect.gen(function* () {
-      if (!(yield* codeGraphWorktreeReconciliationSchemaCompatible(sql))) {
+      if (!(yield* codeGraphWorktreeReconciliationSchemaCompatible(sql, false, false))) {
         return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot lease authority schema is invalid.'));
       }
       const observation = yield* observeActiveView(sql, worktreeId, snapshotId);
@@ -403,7 +418,7 @@ const validateViewSnapshotLease = Effect.fn('codeGraph.validateViewSnapshotLease
   yield* sql.unsafe('PRAGMA query_only = ON');
   return yield* sql.withTransaction(
     Effect.gen(function* () {
-      if (!(yield* codeGraphWorktreeReconciliationSchemaCompatible(sql))) {
+      if (!(yield* codeGraphWorktreeReconciliationSchemaCompatible(sql, false, false))) {
         return {state: 'invalid'} as const satisfies CodeGraphViewSnapshotLeaseValidationResult;
       }
       const now = yield* Clock.currentTimeMillis;
@@ -442,9 +457,10 @@ const releaseSnapshotLease = Effect.fn('codeGraph.releaseSnapshotLease')(functio
   yield* configureConnection(sql);
   yield* sql.withTransaction(
     Effect.gen(function* () {
-      if (!(yield* codeGraphWorktreeReconciliationSchemaCompatible(sql))) {
+      if (!(yield* codeGraphWorktreeReconciliationSchemaCompatible(sql, false, false))) {
         return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot lease authority schema is invalid.'));
       }
+      const retirementAuthorityCurrent = yield* codeGraphWorktreeReconciliationSchemaCompatible(sql);
       const now = yield* Clock.currentTimeMillis;
       const releasedRows = yield* sql.unsafe<BoundedSnapshotLeaseRow>(
         `SELECT ${boundedSnapshotLeaseProjection('lease')}
@@ -474,7 +490,7 @@ const releaseSnapshotLease = Effect.fn('codeGraph.releaseSnapshotLease')(functio
           return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot lease manifest is invalid.'));
         }
         if (successor === undefined) {
-          releasedCandidates.push(row.snapshotId);
+          if (retirementAuthorityCurrent) releasedCandidates.push(row.snapshotId);
         } else {
           yield* sql`
             UPDATE snapshot_leases
@@ -505,7 +521,7 @@ const renewSnapshotLease = Effect.fn('codeGraph.renewSnapshotLease')(function* (
   const duration = Math.max(1_000, Math.min(60 * 60_000, Math.floor(durationMilliseconds)));
   yield* sql.withTransaction(
     Effect.gen(function* () {
-      if (!(yield* codeGraphWorktreeReconciliationSchemaCompatible(sql))) {
+      if (!(yield* codeGraphWorktreeReconciliationSchemaCompatible(sql, false, false))) {
         return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot lease authority schema is invalid.'));
       }
       const active = yield* sql<{readonly present: number}>`

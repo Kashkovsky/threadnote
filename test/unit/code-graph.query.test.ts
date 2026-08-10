@@ -197,7 +197,7 @@ describe('code graph query budgets', () => {
             yield* run;
             const observed = yield* Ref.get(requests);
             expect(observed).toHaveLength(1);
-            expect(observed[0]?.allowIndexPreparation).toBeUndefined();
+            expect(observed[0]?.allowIndexPreparation).toBe(true);
           });
 
           yield* assertOneRequest(query.status(fixtureRoot.home, fixtureRoot.repository, {observeWorktree: false}));

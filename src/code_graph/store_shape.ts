@@ -193,7 +193,10 @@ export interface CodeGraphStoreShape {
     update: CodeGraphRemovedViewCleanupUpdate,
     options?: CodeGraphRemovedViewCleanupStoreOptions,
   ) => Effect.Effect<CodeGraphRemovedViewCleanupUpdateResult, CodeGraphStoreError>;
-  readonly initialize: (databasePath: string) => Effect.Effect<void, CodeGraphStoreError>;
+  readonly initialize: (
+    databasePath: string,
+    options?: {readonly waitTimeoutMilliseconds?: number},
+  ) => Effect.Effect<void, CodeGraphStoreError>;
   readonly prepareActivation: (
     databasePath: string,
     files: readonly CodeGraphInventoryFile[],

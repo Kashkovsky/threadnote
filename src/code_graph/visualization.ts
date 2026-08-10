@@ -374,7 +374,7 @@ export const managerGraphCatalog = Effect.fn('codeGraph.managerCatalog')(functio
                     ? ('lease-failed' as const)
                     : ('lease-deferred' as const),
                   message: retained.some(result => result.state === 'failed')
-                    ? `Checkout ${shortIdentity(checkoutId)} is readable, but snapshot retention failed. Run threadnote doctor --dry-run and retry.`
+                    ? `Checkout ${shortIdentity(checkoutId)} remains readable. Snapshot retention is temporarily unavailable, and background maintenance will retry.`
                     : `Checkout ${shortIdentity(checkoutId)} is readable, but snapshot retention is deferred while another graph writer is active. Retry after the active build completes.`,
                 } satisfies ManagerGraphCatalogDiagnostic,
               }),

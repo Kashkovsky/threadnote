@@ -352,9 +352,20 @@ export class CodeGraphMaintenanceCoordinator extends Context.Service<
                     rowsDeleted: 0,
                     state: 'completed',
                   } as const satisfies CodeGraphRoutineMaintenanceResult)
-                : result.state === 'deferred'
-                  ? Effect.succeed({reason: 'schema-unavailable', state: 'skipped'} as const)
-                  : runReconciliation(input),
+                : result.state === 'migration-ready'
+                  ? store.initialize(input.databasePath, {waitTimeoutMilliseconds: 0}).pipe(
+                      Effect.as({
+                        cleanup: 'schema-migration',
+                        expiredLeases: 0,
+                        remaining: true,
+                        retiredSnapshots: 0,
+                        rowsDeleted: 0,
+                        state: 'completed',
+                      } as const satisfies CodeGraphRoutineMaintenanceResult),
+                    )
+                  : result.state === 'deferred'
+                    ? Effect.succeed({reason: 'schema-unavailable', state: 'skipped'} as const)
+                    : runReconciliation(input),
             ),
             Effect.catch((error): Effect.Effect<CodeGraphRoutineMaintenanceResult> =>
               error instanceof CodeGraphMaintenanceActiveError

@@ -19,6 +19,7 @@ import {storeError} from './store_utilities.js';
 import {initializeSchema} from './store_schema_initialization.js';
 import {pruneRoutinePhysicalRowsPage} from './store_routine_cleanup.js';
 import {drainCompletedPersistentBuildRows} from './store_activation_persistent.js';
+import {initializeRoutineMaintenanceSchema} from './store_leases.js';
 
 export const makeCodeGraphStoreRuntime = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
@@ -89,7 +90,8 @@ export const makeCodeGraphStoreRuntime = Effect.gen(function* () {
 
   const ensureLeaseSchemaInitialized = (databasePath: string, sql: SqlClient.SqlClient) => {
     if (leaseSchemasInitialized.has(databasePath)) return Effect.void;
-    return initializeSchema(sql).pipe(
+    return initializeRoutineMaintenanceSchema(sql).pipe(
+      Effect.flatMap(ready => (ready ? Effect.void : initializeSchema(sql))),
       Effect.tap(() =>
         Effect.sync(() => {
           leaseSchemasInitialized.add(databasePath);
@@ -98,13 +100,13 @@ export const makeCodeGraphStoreRuntime = Effect.gen(function* () {
     );
   };
 
-  const ensureSchemaInitialized = (databasePath: string, sql: SqlClient.SqlClient) =>
+  const ensureSchemaInitialized = (databasePath: string, sql: SqlClient.SqlClient, waitTimeoutMilliseconds?: number) =>
     Effect.gen(function* () {
       const session = yield* Effect.serviceOption(CodeGraphDatabaseSession);
       const matching =
         Option.isSome(session) && session.value.databasePath === databasePath ? session.value : undefined;
       if (matching?.schemaInitialized) return;
-      yield* withWriterGate(databasePath, initializeSchema(sql));
+      yield* withWriterGate(databasePath, initializeSchema(sql), waitTimeoutMilliseconds);
       if (matching?.sqliteWriterTuning) {
         yield* configureSqliteWriterConnection(
           sql,

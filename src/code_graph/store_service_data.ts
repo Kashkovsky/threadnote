@@ -120,14 +120,14 @@ type CodeGraphStoreDataMethods = Pick<
 export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): CodeGraphStoreDataMethods {
   const {prepare, ensureSchemaInitialized, withWriterGate, fs, system, crypto} = runtime;
   return {
-    initialize: databasePath =>
+    initialize: (databasePath, options) =>
       prepare(databasePath).pipe(
         Effect.andThen(
           useDatabase(
             databasePath,
             Effect.gen(function* () {
               const sql = yield* SqlClient.SqlClient;
-              yield* ensureSchemaInitialized(databasePath, sql);
+              yield* ensureSchemaInitialized(databasePath, sql, options?.waitTimeoutMilliseconds);
             }),
           ),
         ),

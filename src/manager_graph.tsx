@@ -3439,6 +3439,7 @@ function GraphAdministration(props: {
                     worktreeId: view.viewWorktreeId,
                   })
                 : undefined;
+              const health = database.health?.integrity ?? database.healthState;
               return (
                 <article className="graph-database-card" key={database.checkoutId}>
                   <header>
@@ -3446,9 +3447,7 @@ function GraphAdministration(props: {
                       <strong>{repository}</strong>
                       <small>{database.checkoutId.slice(-12)}</small>
                     </span>
-                    <em className={`is-${database.health?.integrity ?? database.healthState}`}>
-                      {database.health?.integrity ?? database.healthState}
-                    </em>
+                    <em className={`is-${health}`}>{health === 'migration-pending' ? 'migrating' : health}</em>
                   </header>
                   <dl>
                     <div>

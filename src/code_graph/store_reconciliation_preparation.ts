@@ -1,7 +1,10 @@
 import {Effect} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {REMOVED_VIEW_CLEANUP_EPOCH_SEQUENCE_KEY} from './store_removed_view_schema_contracts.js';
-import {removedViewCleanupSchemaState} from './store_removed_view_schema_inspection.js';
+import {
+  removedViewCleanupRecordedRevision,
+  removedViewCleanupSchemaState,
+} from './store_removed_view_schema_inspection.js';
 import {codeGraphPersistentExtensionSchemaCompatible} from './store_schema_inspection.js';
 import {CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION, CodeGraphStoreError} from './types.js';
 import {
@@ -16,6 +19,8 @@ import {
   CODE_GRAPH_RECONCILIATION_REQUIRED_INDEXES,
   codeGraphReconciliationIndexState,
 } from './store_reconciliation_core.js';
+import {initializeRoutineMaintenanceSchema} from './store_leases.js';
+import {CODE_GRAPH_MINIMUM_BACKGROUND_MIGRATION_REVISION} from './store_health.js';
 
 /** @internal Indexed cursor-page statement retained for query-plan and high-cardinality regressions. */
 
@@ -72,6 +77,9 @@ const prepareRemovedViewCleanupExtension = Effect.fn('codeGraph.prepareRemovedVi
 const prepareWorktreeReconciliationIndex = Effect.fn('codeGraph.prepareWorktreeReconciliationIndex')(function* (
   sql: SqlClient.SqlClient,
 ) {
+  if (!(yield* initializeRoutineMaintenanceSchema(sql))) {
+    return {reason: 'incompatible-schema', state: 'deferred'} as const;
+  }
   const preflightReady = yield* preflightRemovedViewCleanupSchema(sql).pipe(
     Effect.as(true),
     Effect.catch(error => (error instanceof CodeGraphStoreError ? Effect.succeed(false) : Effect.fail(error))),
@@ -98,6 +106,15 @@ const prepareWorktreeReconciliationIndex = Effect.fn('codeGraph.prepareWorktreeR
       return yield* Effect.fail(new CodeGraphStoreError('Code graph reconciliation index changed during setup.'));
     }
     return {index: missing.index.name, state: 'prepared'} as const;
+  }
+  const revision = yield* removedViewCleanupRecordedRevision(sql);
+  const recordedRevision = revision.state === 'recorded' ? revision.value : undefined;
+  if (
+    recordedRevision !== undefined &&
+    recordedRevision >= CODE_GRAPH_MINIMUM_BACKGROUND_MIGRATION_REVISION &&
+    recordedRevision < CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION
+  ) {
+    return {state: 'migration-ready'} as const;
   }
   const cleanup = yield* prepareRemovedViewCleanupExtension(sql);
   if (cleanup.state !== 'ready') return cleanup;

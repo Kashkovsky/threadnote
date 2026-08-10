@@ -135,12 +135,14 @@ const codeGraphWorktreeReconciliationSchemaCompatible: (
   requireIndexes?: boolean,
   requireCleanup?: boolean,
   requireRemovedViewAuthority?: boolean,
+  requireLeaseExpiryIndex?: boolean,
 ) => Effect.Effect<boolean, SqlError.SqlError> = Effect.fn('codeGraph.worktreeReconciliationSchemaCompatible')(
   function* (
     sql: SqlClient.SqlClient,
     requireIndexes = true,
     requireCleanup = true,
     requireRemovedViewAuthority = true,
+    requireLeaseExpiryIndex = true,
   ) {
     const extensionRevision = yield* removedViewCleanupRecordedRevision(sql);
     if (extensionRevision.state === 'invalid') return false;
@@ -193,7 +195,8 @@ const codeGraphWorktreeReconciliationSchemaCompatible: (
       !(yield* authorityPrimaryKeyBinary(sql, 'active_snapshots', 'worktree_id')) ||
       !(yield* authorityPrimaryKeyBinary(sql, 'snapshot_leases', 'token')) ||
       !(yield* authorityPrimaryKeyBinary(sql, 'snapshots', 'id')) ||
-      (yield* codeGraphReconciliationIndexState(sql, CODE_GRAPH_SNAPSHOT_LEASE_EXPIRY_INDEX)) !== 'ready'
+      (requireLeaseExpiryIndex &&
+        (yield* codeGraphReconciliationIndexState(sql, CODE_GRAPH_SNAPSHOT_LEASE_EXPIRY_INDEX)) !== 'ready')
     ) {
       return false;
     }

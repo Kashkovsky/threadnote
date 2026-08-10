@@ -1065,7 +1065,8 @@ describe('Manager logical repository and workspace catalogs', () => {
       expect.objectContaining({checkoutId: identity.checkoutId, code: 'lease-failed'}),
     ]);
     expect(catalog.diagnostics[0]?.message).not.toContain(home);
-    expect(catalog.diagnostics[0]?.message).toContain('threadnote doctor --dry-run');
+    expect(catalog.diagnostics[0]?.message).toContain('background maintenance will retry');
+    expect(catalog.diagnostics[0]?.message).not.toContain('threadnote doctor');
   });
 
   it('returns a prompt privacy-safe busy error when a query cannot retain its selected snapshot', async () => {

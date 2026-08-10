@@ -120,6 +120,7 @@ export interface CodeGraphDiagnosticsReport {
     readonly databaseCount: number;
     readonly deferredDatabaseCount: number;
     readonly healthyDatabaseCount: number;
+    readonly migrationPendingDatabaseCount: number;
     readonly readySnapshotCount: number;
     readonly totalStorageBytes: number;
     readonly unhealthyDatabaseCount: number;
@@ -320,13 +321,18 @@ export const inspectAllCodeGraphs = Effect.fn('codeGraph.inspectAllDiagnostics')
       databaseCount: entries.length,
       deferredDatabaseCount: entries.filter(entry => entry.healthState === 'deferred').length,
       healthyDatabaseCount: entries.filter(entry => entry.health?.integrity === 'ok').length,
+      migrationPendingDatabaseCount: entries.filter(entry => entry.health?.integrity === 'migration-pending').length,
       readySnapshotCount: entries.reduce((total, entry) => total + knownReadySnapshotCount(entry), 0),
       totalStorageBytes: entries.reduce(
         (total, entry) => total + (entry.storage.state === 'available' ? entry.storage.totalBytes : 0),
         0,
       ),
-      unhealthyDatabaseCount: entries.filter(entry => entry.health !== undefined && entry.health.integrity !== 'ok')
-        .length,
+      unhealthyDatabaseCount: entries.filter(
+        entry =>
+          entry.health !== undefined &&
+          entry.health.integrity !== 'ok' &&
+          entry.health.integrity !== 'migration-pending',
+      ).length,
       unreadableDatabaseCount: entries.filter(entry => entry.healthState === 'unreadable').length,
       viewCount: entries.reduce((total, entry) => total + entry.views.length, 0),
       waiterCount: buildSelection.waiters.length,
@@ -423,7 +429,7 @@ export function renderCodeGraphDiagnostics(
 ): string {
   const lines = [
     'Native code graph diagnostics',
-    `Databases: ${report.summary.databaseCount} · healthy ${report.summary.healthyDatabaseCount} · unhealthy ${report.summary.unhealthyDatabaseCount} · deferred ${report.summary.deferredDatabaseCount} · unreadable ${report.summary.unreadableDatabaseCount}`,
+    `Databases: ${report.summary.databaseCount} · healthy ${report.summary.healthyDatabaseCount} · migrating ${report.summary.migrationPendingDatabaseCount} · unhealthy ${report.summary.unhealthyDatabaseCount} · deferred ${report.summary.deferredDatabaseCount} · unreadable ${report.summary.unreadableDatabaseCount}`,
     `Ready snapshots: ${report.summary.readySnapshotCount} · indexed views ${report.summary.viewCount} · storage ${formatBytes(report.summary.totalStorageBytes)}`,
   ];
   for (const database of report.databases) {

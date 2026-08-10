@@ -1,6 +1,4 @@
-import * as SqliteClient from '@effect/sql-sqlite-bun/SqliteClient';
 import {Crypto, Effect, FileSystem, Option, Path} from 'effect';
-import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import type {DoctorCheck} from '../types.js';
 import {isFileLockTimeout, withExclusiveFileLock} from '../effect/file_lock.js';
 import {
@@ -16,15 +14,12 @@ import {
   withCodeGraphDatabaseWriteLock,
   withCodeGraphMaintenanceIntent,
 } from './maintenance_gate.js';
-import {
-  CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION,
-  CodeGraphStore,
-  codeGraphPersistentExtensionSchemaCompatible,
-  codeGraphRemovedViewCleanupSchemaAdmission,
-  type CodeGraphDatabaseHealth,
-} from './store.js';
-import {CODE_GRAPH_SCHEMA_VERSION, type CodeGraphSnapshot} from './types.js';
+import {CodeGraphStore, type CodeGraphDatabaseHealth} from './store.js';
+import {CODE_GRAPH_SCHEMA_VERSION} from './types.js';
 import {BUILTIN_LANGUAGE_PACK_REGISTRY} from './languages/registry.js';
+import {diagnoseCodeGraphDatabaseReadOnly} from './store_health.js';
+
+export {diagnoseCodeGraphDatabaseReadOnly} from './store_health.js';
 
 const CODE_GRAPH_EXPLICIT_SCHEMA_PREPARATION_STEP_LIMIT = 8;
 
@@ -223,10 +218,11 @@ export const codeGraphDoctorCheck = Effect.fn('codeGraph.doctorCheck')(function*
   const path = yield* Path.Path;
   const databases = yield* codeGraphDatabasePaths(threadnoteHome);
   const obsolete = yield* inspectObsoleteCodeGraphStores(threadnoteHome);
-  if (databases.length === 0) return codeGraphDoctorResult(0, 0, 0, 0, 0, obsolete);
+  if (databases.length === 0) return codeGraphDoctorResult(0, 0, 0, 0, 0, 0, obsolete);
   let ready = 0;
   let deferred = 0;
   let incomplete = 0;
+  let migrationPending = 0;
   let unhealthy = 0;
   for (const [index, database] of databases.entries()) {
     yield* onProgress?.({current: index + 1, phase: 'checking', total: databases.length}) ?? Effect.void;
@@ -249,77 +245,19 @@ export const codeGraphDoctorCheck = Effect.fn('codeGraph.doctorCheck')(function*
       Effect.catch(() => Effect.succeed<CodeGraphQuickCheck>({state: 'unreadable'})),
     );
     const health = checked.state === 'checked' ? checked.health : undefined;
-    if (!health || health.integrity !== 'ok') {
+    if (!health) {
       unhealthy += 1;
       continue;
     }
     ready += health.readySnapshots;
     incomplete += health.buildingSnapshots + health.failedSnapshots;
+    if (health.integrity === 'migration-pending') {
+      migrationPending += 1;
+      continue;
+    }
+    if (health.integrity !== 'ok') unhealthy += 1;
   }
-  return codeGraphDoctorResult(databases.length, ready, incomplete, unhealthy, deferred, obsolete);
-});
-
-export const diagnoseCodeGraphDatabaseReadOnly = Effect.fn('codeGraph.diagnoseDatabaseReadOnly')(function* (
-  databasePath: string,
-  deep: boolean,
-) {
-  return yield* Effect.scoped(
-    Effect.gen(function* () {
-      const sql = yield* SqlClient.SqlClient;
-      yield* sql.unsafe('PRAGMA query_only = ON');
-      yield* sql.unsafe(`PRAGMA busy_timeout = ${deep ? 5_000 : 250}`);
-      const integrityRows = deep
-        ? yield* sql.unsafe<{readonly integrity_check: string}>('PRAGMA integrity_check(10)')
-        : [{integrity_check: 'ok'}];
-      const schemaRows = yield* sql<{readonly value: string}>`
-        SELECT value FROM schema_metadata WHERE key = 'schema_version'
-      `;
-      const schemaVersion = Number.parseInt(schemaRows[0]?.value ?? '', 10);
-      const cleanupAdmission = yield* codeGraphRemovedViewCleanupSchemaAdmission(sql);
-      const persistentExtensionSchemaRevision = cleanupAdmission.persistentExtensionSchemaRevision;
-      const persistentExtensionCurrent =
-        persistentExtensionSchemaRevision === CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION &&
-        (yield* codeGraphPersistentExtensionSchemaCompatible(sql)) &&
-        cleanupAdmission.current;
-      const stateRows = yield* sql<{readonly count: number; readonly state: CodeGraphSnapshot['state']}>`
-        SELECT state, COUNT(*) AS count FROM snapshots GROUP BY state
-      `;
-      const activeRows = yield* sql<{readonly count: number}>`SELECT COUNT(*) AS count FROM active_snapshots`;
-      const cacheRows = deep ? yield* sql<{readonly count: number}>`SELECT COUNT(*) AS count FROM file_blobs` : [];
-      const foreignKeyRows = deep ? yield* sql.unsafe('PRAGMA foreign_key_check') : [];
-      const counts = new Map(stateRows.map(row => [row.state, Number(row.count)]));
-      const integrityOk =
-        integrityRows.length === 1 && integrityRows[0]?.integrity_check === 'ok' && foreignKeyRows.length === 0;
-      return {
-        activeSnapshots: Number(activeRows[0]?.count ?? 0),
-        buildingSnapshots: counts.get('building') ?? 0,
-        cachedFileBlobs: Number(cacheRows[0]?.count ?? 0),
-        failedSnapshots: counts.get('failed') ?? 0,
-        foreignKeyViolations: foreignKeyRows.length,
-        integrity:
-          !Number.isSafeInteger(schemaVersion) ||
-          schemaVersion !== CODE_GRAPH_SCHEMA_VERSION ||
-          !persistentExtensionCurrent
-            ? 'incompatible'
-            : integrityOk
-              ? 'ok'
-              : 'corrupt',
-        readySnapshots: counts.get('ready') ?? 0,
-        persistentExtensionSchemaRevision,
-        schemaVersion: Number.isSafeInteger(schemaVersion) ? schemaVersion : undefined,
-      } satisfies CodeGraphDatabaseHealth;
-    }).pipe(
-      Effect.provide(
-        SqliteClient.layer({
-          create: false,
-          disableWAL: true,
-          filename: databasePath,
-          readonly: true,
-          readwrite: false,
-        }),
-      ),
-    ),
-  );
+  return codeGraphDoctorResult(databases.length, ready, incomplete, unhealthy, deferred, migrationPending, obsolete);
 });
 
 export const repairCodeGraphIndexes = Effect.fn('codeGraph.repairIndexes')(function* <R = never>(
@@ -369,7 +307,7 @@ export const repairCodeGraphIndexes = Effect.fn('codeGraph.repairIndexes')(funct
                   if (
                     diagnosed._tag === 'Some' &&
                     diagnosed.value?.schemaVersion === CODE_GRAPH_SCHEMA_VERSION &&
-                    diagnosed.value.integrity === 'incompatible'
+                    (diagnosed.value.integrity === 'incompatible' || diagnosed.value.integrity === 'migration-pending')
                   ) {
                     if (options.migrateSchema) {
                       yield* progress({phase: 'migrating-schema'});
@@ -377,7 +315,7 @@ export const repairCodeGraphIndexes = Effect.fn('codeGraph.repairIndexes')(funct
                         migratedDatabases += 1;
                         return 'maintained' as const;
                       }
-                      if (diagnosed.value.persistentExtensionSchemaRevision === 7) {
+                      if (diagnosed.value.integrity === 'migration-pending') {
                         let preparation = yield* store.prepareWorktreeReconciliationIndexes(database);
                         for (
                           let step = 1;
@@ -386,7 +324,7 @@ export const repairCodeGraphIndexes = Effect.fn('codeGraph.repairIndexes')(funct
                         ) {
                           preparation = yield* store.prepareWorktreeReconciliationIndexes(database);
                         }
-                        if (preparation.state !== 'ready') return 'schema-upgrade-on-use' as const;
+                        if (preparation.state === 'deferred') return 'schema-upgrade-on-use' as const;
                       }
                       yield* store.initialize(database);
                       diagnosed = deep
@@ -394,6 +332,8 @@ export const repairCodeGraphIndexes = Effect.fn('codeGraph.repairIndexes')(funct
                         : yield* diagnoseCodeGraphDatabaseReadOnly(database, false).pipe(Effect.option);
                       if (diagnosed._tag === 'Some' && diagnosed.value?.integrity === 'ok') {
                         migratedDatabases += 1;
+                      } else {
+                        return 'schema-upgrade-on-use' as const;
                       }
                     } else {
                       // Same-version beta databases with a missing revision or an
@@ -488,8 +428,9 @@ export const repairCodeGraphIndexes = Effect.fn('codeGraph.repairIndexes')(funct
             currentDatabases.length,
             readySnapshots,
             dryRun ? removedIncompleteSnapshots + remainingIncompleteSnapshots : remainingIncompleteSnapshots,
-            dryRun ? discarded + migratedDatabases : 0,
+            dryRun ? discarded : 0,
             deferredDatabases,
+            dryRun ? migratedDatabases : 0,
             obsolete,
           ),
           summary,
@@ -506,6 +447,7 @@ function codeGraphDoctorResult(
   incompleteSnapshots: number,
   unhealthyDatabases: number,
   deferredDatabases = 0,
+  migrationPendingDatabases = 0,
   obsolete = emptyObsoleteInventory(),
 ): DoctorCheck {
   if (databases === 0 && obsolete.fileCount === 0 && obsolete.unsafeEntryCount === 0) {
@@ -520,6 +462,9 @@ function codeGraphDoctorResult(
       `${databases} database(s); ${readySnapshots} ready snapshot(s); ${incompleteSnapshots} incomplete snapshot(s)` +
       (unhealthyDatabases > 0 ? `; ${unhealthyDatabases} database(s) need a disposable rebuild` : '') +
       (deferredDatabases > 0 ? `; ${deferredDatabases} database maintenance check(s) deferred` : '') +
+      (migrationPendingDatabases > 0
+        ? `; ${migrationPendingDatabases} database(s) remain usable while background schema migration is pending`
+        : '') +
       (obsolete.fileCount > 0
         ? `; ${obsolete.fileCount} obsolete store file(s), ${obsolete.bytes} byte(s), across ${obsolete.checkouts.length} checkout(s); run \`threadnote graph purge --obsolete\``
         : '') +
@@ -530,7 +475,7 @@ function codeGraphDoctorResult(
     status:
       unhealthyDatabases > 0 || obsolete.unsafeEntryCount > 0
         ? 'fail'
-        : incompleteSnapshots > 0 || deferredDatabases > 0 || obsolete.fileCount > 0
+        : incompleteSnapshots > 0 || deferredDatabases > 0 || migrationPendingDatabases > 0 || obsolete.fileCount > 0
           ? 'warn'
           : 'ok',
   };

@@ -348,7 +348,7 @@ export const runRepair = Effect.fn('lifecycle.repair')(function* (config: Runtim
       Console.log(codeGraphRepairSummaryMessage(completion.summary, dryRun)).pipe(
         Effect.andThen(runDoctor(config, {codeGraphCheck: completion.doctorCheck, dryRun, strict: false})),
       ),
-    {mode: options.deep === true ? 'deep' : 'quick'},
+    {migrateSchema: true, mode: options.deep === true ? 'deep' : 'quick'},
   ).pipe(Effect.mapError(cause => new Error(`Native code graph repair failed: ${errorMessage(cause)}`)));
   if (options.postUpdate !== false) {
     yield* maybeRunPostUpdateAfterRepair(config, {dryRun});
@@ -417,7 +417,7 @@ function codeGraphMaintenanceProgressMessage(progress: CodeGraphMaintenanceProgr
         return `Deferred ${database}: an active graph build owns the checkout; update and repair will not wait for it.`;
       }
       return progress.reason === 'schema-upgrade-on-use'
-        ? `Deferred ${database}: the next graph query or index will transactionally repair or upgrade its persistent schema.`
+        ? `Deferred ${database}: ready snapshots remain usable while background schema migration retries.`
         : `Deferred ${database}: run \`threadnote repair --deep\` when a full derived-store check is convenient.`;
     case 'discarding':
       return `${dryRun ? 'Would discard' : 'Discarding'} unreadable derived ${database}.`;

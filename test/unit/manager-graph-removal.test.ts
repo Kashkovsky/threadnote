@@ -145,6 +145,7 @@ function diagnosticsFixture(worktreeIds: readonly string[]): CodeGraphLocalDiagn
       databaseCount: 1,
       deferredDatabaseCount: 0,
       healthyDatabaseCount: 1,
+      migrationPendingDatabaseCount: 0,
       readySnapshotCount: worktreeIds.length,
       totalStorageBytes: 0,
       unhealthyDatabaseCount: 0,
