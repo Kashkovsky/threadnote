@@ -1,7 +1,7 @@
 import {readFileSync} from 'node:fs';
 import {it as effectIt} from '@effect/vitest';
 import {Database} from 'bun:sqlite';
-import {Clock, Effect, FileSystem, Path, Schedule} from 'effect';
+import {Clock, Effect, FileSystem, Path, PlatformError, Schedule} from 'effect';
 import {TestClock} from 'effect/testing';
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
@@ -13,6 +13,7 @@ import {
   codeGraphStructuralParityFailureMessage,
   codeGraphStructuralDigestSymbolLookupStatement,
   decodeBenchmarkSource,
+  directoryBytes,
   externalBenchmarkPlatformSupported,
   measureBenchmarkIndex,
   measureSampledBenchmarkIndex,
@@ -42,6 +43,38 @@ describe('code graph external benchmark harness', () => {
     expect(benchmarkVectorModelDirectoryName('.ordinary-vector-retirement-v1.cursor')).toBe(false);
     expect(benchmarkVectorModelDirectoryName('.ordinary-vector-retirement-v1.cursor.tmp')).toBe(false);
   });
+
+  effectIt.effect('keeps storage telemetry bounded when a listed entry disappears before stat', () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = path.join('benchmark', 'vectors');
+      const disappearingFileSystem = FileSystem.FileSystem.of({
+        ...fileSystem,
+        exists: target => (String(target) === root ? Effect.succeed(true) : fileSystem.exists(target)),
+        readDirectory: target =>
+          String(target) === root
+            ? Effect.succeed(['vectors-v1.sqlite', '.cursor.tmp'])
+            : fileSystem.readDirectory(target),
+        stat: target =>
+          String(target).endsWith('.cursor.tmp')
+            ? Effect.fail(
+                PlatformError.systemError({
+                  _tag: 'NotFound',
+                  description: 'injected atomic telemetry disappearance',
+                  method: 'stat',
+                  module: 'FileSystem',
+                  pathOrDescriptor: String(target),
+                }),
+              )
+            : String(target).endsWith('vectors-v1.sqlite')
+              ? Effect.succeed({size: 42, type: 'File'} as unknown as FileSystem.File.Info)
+              : fileSystem.stat(target),
+      });
+
+      expect(yield* directoryBytes(disappearingFileSystem, path, root)).toBe(42);
+    }).pipe(Effect.provide(ApplicationLayer)),
+  );
 
   it('applies the public path relevance policy to vector positive-control scores', () => {
     expect(vectorSemanticControlMinimumScore('src/architecture.ts')).toBe(0.64);

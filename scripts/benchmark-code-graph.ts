@@ -1,6 +1,6 @@
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import {Database} from 'bun:sqlite';
-import {Clock, Deferred, Effect, Exit, FileSystem, Option, Path} from 'effect';
+import {Clock, Deferred, Effect, Exit, FileSystem, Option, Path, PlatformError} from 'effect';
 import {readCodeGraphBuildStatuses} from '../src/code_graph/build_status.js';
 import {CodeGraphIndexer} from '../src/code_graph/indexer.js';
 import {
@@ -1502,18 +1502,36 @@ const benchmarkCodeGraph = Effect.scoped(
   }),
 );
 
-function directoryBytes(fs: FileSystem.FileSystem, path: Path.Path, directory: string): Effect.Effect<number, unknown> {
+export function directoryBytes(
+  fs: FileSystem.FileSystem,
+  path: Path.Path,
+  directory: string,
+): Effect.Effect<number, unknown> {
   return Effect.gen(function* () {
     if (!(yield* fs.exists(directory))) return 0;
     let bytes = 0;
     for (const name of yield* fs.readDirectory(directory)) {
       const child = path.join(directory, name);
-      const info = yield* fs.stat(child);
-      if (info.type === 'Directory') bytes += yield* directoryBytes(fs, path, child);
-      else if (info.type === 'File') bytes += Number(info.size);
+      const info = yield* fs.stat(child).pipe(
+        Effect.map(Option.some),
+        Effect.catch(error =>
+          error instanceof PlatformError.PlatformError && error.reason._tag === 'NotFound'
+            ? Effect.succeed(Option.none<FileSystem.File.Info>())
+            : Effect.fail(error),
+        ),
+      );
+      if (Option.isNone(info)) continue;
+      if (info.value.type === 'Directory') bytes += yield* directoryBytes(fs, path, child);
+      else if (info.value.type === 'File') bytes += Number(info.value.size);
     }
     return bytes;
-  });
+  }).pipe(
+    Effect.catch(error =>
+      error instanceof PlatformError.PlatformError && error.reason._tag === 'NotFound'
+        ? Effect.succeed(0)
+        : Effect.fail(error),
+    ),
+  );
 }
 
 function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
