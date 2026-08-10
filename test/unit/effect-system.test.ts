@@ -21,6 +21,7 @@ import {
   parseWindowsAvailableDiskBytes,
   platformPathFor,
   probeAvailableDiskBytes,
+  probeRuntimeAvailableDiskBytes,
   readCanonicalProcessStartIdentity,
   readProcessStartIdentity,
   resolveHomeDirectory,
@@ -155,6 +156,35 @@ describe('SystemInfo disk capacity parsing', () => {
         expect(nativeInvocations).toBe(1);
         expect(fallbackInvocations).toBe(0);
       }
+    }),
+  );
+
+  effectIt.effect('routes macOS Intel capacity probes through the bounded fallback', () =>
+    Effect.gen(function* () {
+      let fallbackInvocations = 0;
+      let nativeInvocations = 0;
+      const available = yield* probeRuntimeAvailableDiskBytes(
+        '/private/darwin-x64-statfs-fixture',
+        'darwin',
+        'x64',
+        {},
+        {
+          fallback: () =>
+            Effect.sync(() => {
+              fallbackInvocations += 1;
+              return 8_192;
+            }),
+          statfs: () =>
+            Effect.sync(() => {
+              nativeInvocations += 1;
+              return {bavail: 1n, bsize: 1n};
+            }),
+        },
+      );
+
+      expect(available).toBe(8_192);
+      expect(fallbackInvocations).toBe(1);
+      expect(nativeInvocations).toBe(0);
     }),
   );
 

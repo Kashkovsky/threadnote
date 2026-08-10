@@ -357,7 +357,34 @@ class NativeStatfsUnavailableError {
 }
 
 function availableDiskBytes(path: string, platform: NodeJS.Platform, environment: NodeJS.ProcessEnv) {
-  return probeAvailableDiskBytes(path, platform, environment, defaultDiskCapacityProbeAdapters);
+  return probeRuntimeAvailableDiskBytes(
+    path,
+    platform,
+    runtimeArchitecture,
+    environment,
+    defaultDiskCapacityProbeAdapters,
+  );
+}
+
+export function probeRuntimeAvailableDiskBytes(
+  path: string,
+  platform: NodeJS.Platform,
+  architecture: NodeJS.Architecture,
+  environment: NodeJS.ProcessEnv,
+  adapters: DiskCapacityProbeAdapters,
+  timeoutMilliseconds = DISK_QUERY_TIMEOUT_MS,
+) {
+  // Bun 1.3.14's standalone darwin-x64 runtime has produced unusable native
+  // statfs observations on the exact Intel release runner. Keep the same
+  // bounded, cancellable query contract while using df on that architecture.
+  return platform === 'darwin' && architecture === 'x64'
+    ? adapters.fallback(path, platform, environment).pipe(
+        Effect.timeoutOrElse({
+          duration: timeoutMilliseconds,
+          orElse: () => Effect.succeed(undefined),
+        }),
+      )
+    : probeAvailableDiskBytes(path, platform, environment, adapters, timeoutMilliseconds);
 }
 
 export function probeAvailableDiskBytes(
