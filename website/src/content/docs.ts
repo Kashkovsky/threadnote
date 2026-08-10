@@ -104,6 +104,8 @@ export const cliCommands: CliCommandReference[] = [
     summary: 'Configure, synchronize, publish to, and resolve conflicts in Git-backed team memory repositories.',
     examples: [
       'threadnote share init git@github.com:org/team-memories.git',
+      'threadnote share init git@github.com:org/team-memories.git --read-only',
+      'threadnote share set-access --mode read-only',
       'threadnote share publish threadnote://user/me/memories/durable/projects/mobile/auth.md',
       'threadnote share sync',
     ],
@@ -1089,6 +1091,33 @@ threadnote share sync`,
         ],
       },
       {
+        id: 'read-only-teams',
+        title: 'Use a read-only team',
+        summary: 'Consume shared context without granting Threadnote permission to publish or push.',
+        keywords: ['read-only sharing', 'consumer team', 'shared memory access', 'share permissions'],
+        body: [
+          {
+            type: 'code',
+            language: 'sh',
+            code: `threadnote share init git@github.com:org/team-memories.git --read-only
+threadnote share set-access --mode read-only
+threadnote share status
+threadnote share sync
+
+# Restore publishing only when this installation should contribute changes.
+threadnote share set-access --mode read-write`,
+          },
+          {
+            type: 'paragraph',
+            text: 'Read-only access is persistent. Threadnote may fetch, rebase a clean team worktree, ingest shared memories, recall them, report status, and install reviewed shared artifacts, but it cannot publish, unpublish, commit, or push. Sync refuses dirty team files or local commits ahead of upstream instead of silently writing them.',
+          },
+          {
+            type: 'note',
+            text: 'Read-only is a Threadnote capability boundary, not a substitute for Git hosting permissions. Keep the remote read-only too when the installation must never push through another Git client.',
+          },
+        ],
+      },
+      {
         id: 'publish-memory',
         title: 'Publish a memory',
         summary: 'Preview and publish one active durable memory after user confirmation.',
@@ -1305,6 +1334,12 @@ threadnote share conflict resolve <id> --take shared`,
             language: 'sh',
             code: `threadnote graph status
 threadnote graph diagnostics --analyze
+# Repair the current repository by default.
+threadnote graph repair --dry-run
+# Target another exact repository or checkout without blocking unrelated graph work.
+threadnote graph repair --cwd ~/src/another-repository --dry-run
+threadnote graph repair --checkout-id <checkout-id> --dry-run
+# Home-wide maintenance remains explicit.
 threadnote graph repair --all --dry-run
 threadnote graph index
 threadnote graph index --full
@@ -1350,7 +1385,11 @@ threadnote graph purge \\
           },
           {
             type: 'paragraph',
-            text: 'graph diagnostics is home-wide and does not depend on the current directory. It reports every local graph database, ready snapshot, indexed view, build, waiter, storage total, health issue, and obsolete store. Add --analyze for bounded structural statistics per indexed view, --deep for full SQLite integrity checks, or --json for the versioned diagnostic document. graph repair --all immediately performs pending persistent-schema migrations; its default pass is quick, while --deep opts into a full scan and destructive recovery of disposable corrupt stores. Both repair modes support --dry-run.',
+            text: 'graph diagnostics is home-wide and does not depend on the current directory. It reports every local graph database, readable snapshot, indexed view, build, waiter, storage total, health issue, and obsolete store. Add --analyze for bounded structural statistics per indexed view, --deep for full SQLite integrity checks, or --json for the versioned diagnostic document. graph repair targets the current repository by default; --cwd and --checkout-id select another exact target, while --all requests home-wide maintenance. Targeted repair does not take the home-wide maintenance gate, so unrelated indexing can continue. The default pass is quick, --deep opts into a full scan and recovery only for state proven disposable, and SIGTERM cancels deep diagnostics and releases owned locks. Every repair mode supports --dry-run.',
+          },
+          {
+            type: 'paragraph',
+            text: 'Upgrading from 4.0.10 does not require purging existing graphs. Threadnote keeps a verified ready snapshot queryable while additive lease, reconciliation, and retention tables migrate in the background. Doctor, repair, graph status, and Manager describe that state as usable and migration-pending rather than incompatible, and a failed refresh continues serving the last good snapshot.',
           },
           {
             type: 'paragraph',
@@ -1653,11 +1692,11 @@ threadnote repair`,
           },
           {
             type: 'paragraph',
-            text: 'Doctor checks the self-contained home, canonical layout, core model, recall indexes, code-graph integrity, configured MCP clients, and agent instructions. When Cursor is installed, it also performs a read-only check of the Marketplace plugin and rejects the legacy local injection path. Strict mode exits non-zero when a check fails.',
+            text: 'Doctor checks the self-contained home, canonical layout, core model, recall indexes, readable code-graph snapshots and pending maintenance, configured MCP clients, and agent instructions. A supported older graph that is still queryable is reported as migrating or maintenance-pending, not corrupt or incompatible. When Cursor is installed, Doctor also performs a read-only check of the Marketplace plugin and rejects the legacy local injection path. Strict mode exits non-zero when a check fails.',
           },
           {
             type: 'paragraph',
-            text: 'Repair can reassert storage layout, provision the core embedding model, rebuild derived lexical/vector state, clean corrupt or abandoned code-graph databases, and repair hooks or MCP configuration. It does not install, update, remove, or repair Cursor plugins; Marketplace state remains Cursor-owned. It also does not modify repositories or delete canonical memories.',
+            text: 'Repair can reassert storage layout, provision the core embedding model, rebuild derived lexical/vector state, schedule additive code-graph migrations, clean state proven corrupt or abandoned, and repair hooks or MCP configuration. It preserves readable older graphs during migration and does not advise a destructive purge merely because a newer schema extension is pending. It does not install, update, remove, or repair Cursor plugins; Marketplace state remains Cursor-owned. It also does not modify repositories or delete canonical memories.',
           },
           {
             type: 'note',
@@ -1779,7 +1818,7 @@ threadnote report-issue \\
         body: [
           {
             type: 'paragraph',
-            text: 'Run threadnote <command> --help for the installed version’s exact flags. The groups below cover the stable 4.0 operator surface.',
+            text: 'Run threadnote <command> --help for the installed version’s exact flags. The groups below cover the stable 4.1 operator surface.',
           },
           {
             type: 'table',

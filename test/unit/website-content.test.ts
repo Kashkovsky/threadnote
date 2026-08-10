@@ -727,7 +727,7 @@ describe('Threadnote 4 website content', () => {
     }
     expect(performancePage).not.toMatch(/>Pending<|pending artifact|evidence pending/i);
     expect(performancePage).toContain('aria-label={`Open the pinned');
-    expect(performancePage).toContain('Threadnote 4.1 beta also gates large-worktree safety');
+    expect(performancePage).toContain('Threadnote 4.1 also gates large-worktree safety');
     expect(performancePage).toContain('never merged into a universal latency percentile');
     expect(performancePage).toContain('deliberately makes no “maximum performance” claim');
     expect(landingPage).toContain('public IntelliJ evidence still covers 232,750 files');

@@ -122,7 +122,7 @@ const questions = [
   {
     question: 'Will every new worktree rebuild its graph from scratch?',
     answer:
-      'No. Linked worktrees share one checkout graph store. Threadnote 4.0.1 can immediately alias a graph-equivalent commit, build a compatible clean commit as a bounded delta from a ready full anchor, or construct an already-dirty worktree directly from that anchor. Extractor, workspace, manifest, or unbounded resolution changes still fall back to a full build for correctness.',
+      'No. Linked worktrees share one checkout graph store. Threadnote 4.1 can immediately alias a graph-equivalent commit, build a compatible clean commit as a bounded delta from a ready full anchor, or construct an already-dirty worktree directly from that anchor. Extractor, workspace, manifest, or unbounded resolution changes still fall back to a full build for correctness.',
   },
   {
     question: 'Can agents query a graph while it is still indexing?',

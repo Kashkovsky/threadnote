@@ -576,11 +576,11 @@ export default function PerformancePage() {
             than Threadnote's previous lexical index format, with canonical, query, and posting-count parity.
           </p>
           <p>
-            Threadnote 4.1 beta also gates large-worktree safety with separate production-shape, parser-heavy-tail,
+            Threadnote 4.1 also gates large-worktree safety with separate production-shape, parser-heavy-tail,
             interruption, concurrency, and low-disk evidence. Those retained runs validate bounded behavior and recovery
             on their stated runner; they are never merged into a universal latency percentile or a promise that every
             repository has the same wall time. The first strict 73k candidate observation reached its 20-minute
-            materialization boundary, so this beta deliberately makes no “maximum performance” claim.
+            materialization boundary, so this release deliberately makes no “maximum performance” claim.
           </p>
         </div>
       </section>

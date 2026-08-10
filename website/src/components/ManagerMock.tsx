@@ -472,7 +472,7 @@ export function ManagerMock(): React.ReactElement {
             <span className="manager-demo-runtime-light" />
             <div>
               <strong>Local runtime</strong>
-              <span>ready · 4.0.1</span>
+              <span>ready · 4.1.0</span>
             </div>
           </div>
         </aside>
