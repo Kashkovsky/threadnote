@@ -465,7 +465,7 @@ function createProjectClosureRepository(options: {readonly orphanProjectBoundary
   write(root, 'packages/unrelated/package.json', {name: '@fixture/unrelated'});
   writeFile(root, 'packages/unrelated/index.ts', 'export function unrelated() { return "unrelated"; }\n');
   if (options.orphanProjectBoundary) {
-    write(root, 'unmodeled/project.json', {name: 'unmodeled'});
+    write(root, 'unmodeled/tsconfig.json', {references: [{path: '../not-indexed'}]});
     writeFile(root, 'unmodeled/index.ts', 'export const unmodeled = true;\n');
   }
   git(root, ['init', '-q']);

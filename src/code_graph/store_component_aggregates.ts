@@ -46,11 +46,7 @@ const materializeSnapshotComponentEdgeAggregates = Effect.fn('codeGraph.material
          scope_id TEXT
        ) WITHOUT ROWID`,
     );
-    const scopeStatement = componentScopeMaterializationStatement(
-      snapshotId,
-      baseSnapshotId,
-      hasWorkspaceCatalog,
-    );
+    const scopeStatement = componentScopeMaterializationStatement(snapshotId, baseSnapshotId, hasWorkspaceCatalog);
     yield* sql.unsafe(scopeStatement.text, [...scopeStatement.parameters]);
     const edgeStatement = componentEdgeAggregateMaterializationStatement(snapshotId, baseSnapshotId);
     yield* sql.unsafe(edgeStatement.text, [...edgeStatement.parameters]);

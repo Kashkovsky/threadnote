@@ -33,7 +33,11 @@ const prepareRemovedViewCleanupExtension = Effect.fn('codeGraph.prepareRemovedVi
   const revisions = yield* sql<{readonly value: string}>`
     SELECT value FROM schema_metadata WHERE key = 'persistent_extension_schema_revision'
   `;
-  if (revisions.length !== 1 || (revisions[0]?.value !== '7' && revisions[0]?.value !== '8')) {
+  const revision = revisions[0]?.value;
+  if (
+    revisions.length !== 1 ||
+    (revision !== '7' && revision !== '8' && revision !== String(CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION))
+  ) {
     return {reason: 'incompatible-schema', state: 'deferred'} as const;
   }
   if (!(yield* codeGraphPersistentExtensionSchemaCompatible(sql))) {
@@ -47,11 +51,11 @@ const prepareRemovedViewCleanupExtension = Effect.fn('codeGraph.prepareRemovedVi
       VALUES (${REMOVED_VIEW_CLEANUP_EPOCH_SEQUENCE_KEY}, '0')
     `;
   }
-  if (revisions[0]?.value !== String(CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION)) {
+  if (revision !== String(CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION)) {
     yield* sql`
       UPDATE schema_metadata
       SET value = ${String(CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION)}
-      WHERE key = 'persistent_extension_schema_revision' AND value = ${revisions[0]!.value}
+      WHERE key = 'persistent_extension_schema_revision' AND value = ${revision!}
     `;
     if ((yield* lastStatementChangeCount(sql)) !== 1) {
       return yield* Effect.fail(new CodeGraphStoreError('Code graph cleanup schema revision changed during setup.'));
@@ -60,7 +64,7 @@ const prepareRemovedViewCleanupExtension = Effect.fn('codeGraph.prepareRemovedVi
   if (!(yield* codeGraphRemovedViewCleanupSchemaAdmission(sql)).current) {
     return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view cleanup schema is unavailable.'));
   }
-  return wasCurrent && revisions[0]?.value === String(CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION)
+  return wasCurrent && revision === String(CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION)
     ? ({state: 'ready'} as const)
     : ({index: 'removed_view_cleanup_due', state: 'prepared'} as const);
 });

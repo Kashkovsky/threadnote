@@ -438,9 +438,9 @@ describe('Manager logical repository and workspace catalogs', () => {
       .query(`EXPLAIN QUERY PLAN ${aggregateStatement.text}`)
       .all(...aggregateStatement.parameters) as readonly {readonly detail: string}[];
     expect(aggregatePlan.some(row => row.detail.includes(`SCAN ${COMPONENT_SCOPE_TEMP_TABLE}`))).toBe(false);
-    expect(aggregatePlan.filter(row => /^SEARCH (?:source|target) USING PRIMARY KEY \(id=\?\)$/u.test(row.detail))).toHaveLength(
-      2,
-    );
+    expect(
+      aggregatePlan.filter(row => /^SEARCH (?:source|target) USING PRIMARY KEY \(id=\?\)$/u.test(row.detail)),
+    ).toHaveLength(2);
     queryPlanDatabase.close();
     expect(repositoryPlan.some(row => row.detail.includes('symbols_export_order (snapshot_id=?)'))).toBe(true);
 

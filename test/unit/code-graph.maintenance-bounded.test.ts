@@ -9,7 +9,10 @@ import {
   repairCodeGraphIndexes,
 } from '../../src/code_graph/maintenance.js';
 import {codeGraphRepositoryLockPath, codeGraphWorktreeLockPath} from '../../src/code_graph/layout.js';
-import {CODE_GRAPH_SCHEMA_VERSION} from '../../src/code_graph/types.js';
+import {
+  CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION,
+  CODE_GRAPH_SCHEMA_VERSION,
+} from '../../src/code_graph/types.js';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
 import {captureConsole} from '../../src/effect/console.js';
 import {withExclusiveFileLock} from '../../src/effect/file_lock.js';
@@ -347,7 +350,7 @@ describe('bounded code graph maintenance', () => {
     }).pipe(Effect.provide(ApplicationLayer)),
   );
 
-  effectIt.effect('prepares legacy reconciliation indexes before an explicit revision-8 repair', () =>
+  effectIt.effect('prepares legacy reconciliation indexes before an explicit extension repair', () =>
     Effect.gen(function* () {
       const home = yield* Effect.promise(() => mkdtemp('threadnote-graph-repair-pre-index-revision-7-'));
       homes.push(home);
@@ -406,7 +409,7 @@ describe('bounded code graph maintenance', () => {
           {name: 'snapshot_leases_snapshot_expiry'},
           {name: 'snapshots_base_state_id'},
         ],
-        revision: {value: '8'},
+        revision: {value: String(CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION)},
       });
     }).pipe(Effect.provide(ApplicationLayer)),
   );
