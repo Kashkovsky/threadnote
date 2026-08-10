@@ -283,8 +283,8 @@ describe('code graph ready snapshot retention', () => {
   it('reaps an expired reader lease on the next ordinary acquire', async () => {
     const root = await mkdtemp('threadnote-ready-retention-expired-');
     temporaryRoots.push(root);
-    const databasePath = join(root, 'graph-v3.sqlite');
     const identity = repositoryIdentity(root);
+    const databasePath = join(root, 'indexes', 'code-graph', 'repositories', identity.checkoutId, 'graph-v3.sqlite');
     const superseded = snapshot(identity, 'expired-reader');
     const current = snapshot(identity, 'current');
 
