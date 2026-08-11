@@ -108,5 +108,5 @@ export async function generateDocsArticlePages(siteDist = join(process.cwd(), 's
 
 if (import.meta.main) {
   const generatedCount = await generateDocsArticlePages();
-  console.log(`Generated ${generatedCount} crawler-visible documentation pages.`);
+  process.stdout.write(`Generated ${generatedCount} crawler-visible documentation pages.\n`);
 }
