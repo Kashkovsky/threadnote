@@ -17,7 +17,6 @@ import {
 import {codeGraphLayout} from '../../src/code_graph/layout.js';
 import {CodeGraphStore, type CodeGraphVisualizationCatalog} from '../../src/code_graph/store.js';
 import {CODE_GRAPH_EXTRACTOR_GENERATION, type CodeGraphIndexSummary} from '../../src/code_graph/types.js';
-import {runEffect} from '../helpers/effect-runtime.js';
 
 describe('cross-session code graph increments', () => {
   it.effect(
@@ -66,33 +65,27 @@ describe('cross-session code graph increments', () => {
     60_000,
   );
 
-  it('reuses a persisted clean base for a body-only dirty overlay', async () => {
-    const root = createRepository(32);
-    const incrementalHome = join(root, '.threadnote-incremental');
-    const fullHome = join(root, '.threadnote-full');
-    try {
-      const clean = await runEffect(
-        Effect.gen(function* () {
-          const indexer = yield* CodeGraphIndexer;
-          return yield* indexer.index({cwd: root, threadnoteHome: incrementalHome});
-        }),
-      );
+  it.effect('reuses a persisted clean base for a body-only dirty overlay', () => {
+    let fullHome: string | undefined;
+    let incrementalHome: string | undefined;
+    let root: string | undefined;
+    return Effect.gen(function* () {
+      root = createRepository(32);
+      incrementalHome = mkdtempSync(join(tmpdir(), 'threadnote-incremental-home-'));
+      fullHome = mkdtempSync(join(tmpdir(), 'threadnote-full-home-'));
+      const indexer = yield* CodeGraphIndexer;
+      const clean = yield* indexer.index({cwd: root, threadnoteHome: incrementalHome});
       expect(clean.materialization?.mode).toBe('full');
 
       writeUseFile(root, 'second body-only revision');
 
-      const incremental = await indexAndLoad(root, incrementalHome);
-      const full = await runEffect(
-        Effect.gen(function* () {
-          const indexer = yield* CodeGraphIndexer;
-          return yield* indexer.index({
-            cwd: root,
-            incrementalOverlay: false,
-            threadnoteHome: fullHome,
-          });
-        }),
-      );
-      const rebuilt = await loadGraph(root, fullHome, full);
+      const incremental = yield* indexAndLoadEffect(root, incrementalHome);
+      const full = yield* indexer.index({
+        cwd: root,
+        incrementalOverlay: false,
+        threadnoteHome: fullHome,
+      });
+      const rebuilt = yield* loadGraphEffect(root, fullHome, full);
 
       expect(incremental.summary.materialization).toEqual({
         mode: 'incremental-overlay',
@@ -100,7 +93,9 @@ describe('cross-session code graph increments', () => {
         totalFiles: 34,
       });
       expect(projectGraph(incremental.graph)).toEqual(projectGraph(rebuilt));
-      expect(normalizeCatalog(incremental.catalog)).toEqual(normalizeCatalog(await yieldCatalog(root, fullHome, full)));
+      expect(normalizeCatalog(incremental.catalog)).toEqual(
+        normalizeCatalog(yield* loadVisualizationCatalogEffect(fullHome, full)),
+      );
       expect(incremental.health).toMatchObject({foreignKeyViolations: 0, integrity: 'ok'});
       expect(
         incremental.graph.edges.some(
@@ -117,32 +112,34 @@ describe('cross-session code graph increments', () => {
       expect(incremental.summary.diagnostics).toContain(
         'Dirty overlay reused persisted clean base for 1 modified file(s).',
       );
-    } finally {
-      rmSync(root, {force: true, recursive: true});
-    }
+    }).pipe(
+      Effect.provide(ApplicationLayer),
+      TestClock.withLive,
+      Effect.ensuring(removeTemporaryPaths(() => [root, incrementalHome, fullHome])),
+    );
   });
 
-  it('matches full rebuilds when changed-file relationships are added or deleted', async () => {
-    for (const operation of ['add', 'delete'] as const) {
-      const root = createRepository();
-      const incrementalHome = join(root, `.threadnote-${operation}-incremental`);
-      const fullHome = join(root, `.threadnote-${operation}-full`);
-      try {
+  it.effect('matches full rebuilds when changed-file relationships are added or deleted', () => {
+    const temporaryPaths: string[] = [];
+    return Effect.gen(function* () {
+      const indexer = yield* CodeGraphIndexer;
+      for (const operation of ['add', 'delete'] as const) {
+        const root = createRepository();
+        temporaryPaths.push(root);
+        const incrementalHome = mkdtempSync(join(tmpdir(), `threadnote-${operation}-incremental-home-`));
+        temporaryPaths.push(incrementalHome);
+        const fullHome = mkdtempSync(join(tmpdir(), `threadnote-${operation}-full-home-`));
+        temporaryPaths.push(fullHome);
         if (operation === 'add') writeUseFileWithoutCall(root, 'clean no-call revision');
         git(root, ['add', '.']);
         git(root, ['commit', '--amend', '-qm', 'fixture']);
-        await indexAndLoad(root, incrementalHome);
+        yield* indexAndLoadEffect(root, incrementalHome);
         if (operation === 'add') writeUseFile(root, 'dirty call revision');
         else writeUseFileWithoutCall(root, 'dirty no-call revision');
 
-        const incremental = await indexAndLoad(root, incrementalHome);
-        const fullSummary = await runEffect(
-          Effect.gen(function* () {
-            const indexer = yield* CodeGraphIndexer;
-            return yield* indexer.index({cwd: root, incrementalOverlay: false, threadnoteHome: fullHome});
-          }),
-        );
-        const full = await loadGraph(root, fullHome, fullSummary);
+        const incremental = yield* indexAndLoadEffect(root, incrementalHome);
+        const fullSummary = yield* indexer.index({cwd: root, incrementalOverlay: false, threadnoteHome: fullHome});
+        const full = yield* loadGraphEffect(root, fullHome, fullSummary);
         expect(incremental.summary.materialization?.mode).toBe('incremental-overlay');
         expect(projectGraph(incremental.graph)).toEqual(projectGraph(full));
         expect(
@@ -150,32 +147,33 @@ describe('cross-session code graph increments', () => {
             edge => edge.sourceName === 'useHelper' && edge.relation === 'calls' && edge.targetName === 'helper',
           ),
         ).toBe(operation === 'add');
-      } finally {
-        rmSync(root, {force: true, recursive: true});
       }
-    }
+    }).pipe(
+      Effect.provide(ApplicationLayer),
+      TestClock.withLive,
+      Effect.ensuring(removeTemporaryPaths(() => temporaryPaths)),
+    );
   });
 
-  it('resolves changed consumers through persisted barrel aliases and declaration-only overloads', async () => {
-    const root = createBarrelRepository();
-    const incrementalHome = join(root, '.threadnote-barrel-incremental');
-    const fullHome = join(root, '.threadnote-barrel-full');
-    try {
-      const clean = await indexAndLoad(root, incrementalHome);
+  it.effect('resolves changed consumers through persisted barrel aliases and declaration-only overloads', () => {
+    let fullHome: string | undefined;
+    let incrementalHome: string | undefined;
+    let root: string | undefined;
+    return Effect.gen(function* () {
+      root = createBarrelRepository();
+      incrementalHome = mkdtempSync(join(tmpdir(), 'threadnote-barrel-incremental-home-'));
+      fullHome = mkdtempSync(join(tmpdir(), 'threadnote-barrel-full-home-'));
+      const clean = yield* indexAndLoadEffect(root, incrementalHome);
       expect(reusableReceiptStats(clean.databasePath, clean.summary.snapshot.id)).toMatchObject({
         formatVersion: 2,
         reexports: 2,
       });
       expect(reusableReceiptStats(clean.databasePath, clean.summary.snapshot.id).aliases).toBeGreaterThan(0);
       writeBarrelConsumer(root, 'dirty');
-      const incremental = await indexAndLoad(root, incrementalHome);
-      const fullSummary = await runEffect(
-        Effect.gen(function* () {
-          const indexer = yield* CodeGraphIndexer;
-          return yield* indexer.index({cwd: root, incrementalOverlay: false, threadnoteHome: fullHome});
-        }),
-      );
-      const full = await loadGraph(root, fullHome, fullSummary);
+      const incremental = yield* indexAndLoadEffect(root, incrementalHome);
+      const indexer = yield* CodeGraphIndexer;
+      const fullSummary = yield* indexer.index({cwd: root, incrementalOverlay: false, threadnoteHome: fullHome});
+      const full = yield* loadGraphEffect(root, fullHome, fullSummary);
 
       expect(incremental.summary.materialization?.mode).toBe('incremental-overlay');
       expect(projectGraph(incremental.graph)).toEqual(projectGraph(full));
@@ -198,29 +196,35 @@ describe('cross-session code graph increments', () => {
             .map(edge => edge.targetId),
         ),
       ).toEqual(new Set(decodeDeclarations.map(symbol => symbol.id)));
-    } finally {
-      rmSync(root, {force: true, recursive: true});
-    }
+    }).pipe(
+      Effect.provide(ApplicationLayer),
+      TestClock.withLive,
+      Effect.ensuring(removeTemporaryPaths(() => [root, incrementalHome, fullHome])),
+    );
   });
 
-  it('falls back conservatively when the clean base predates reusable receipts', async () => {
-    const root = createRepository();
-    const home = join(root, '.threadnote-old-base');
-    try {
-      const clean = await indexAndLoad(root, home);
+  it.effect('falls back conservatively when the clean base predates reusable receipts', () => {
+    let home: string | undefined;
+    let root: string | undefined;
+    return Effect.gen(function* () {
+      root = createRepository();
+      home = mkdtempSync(join(tmpdir(), 'threadnote-old-base-home-'));
+      const clean = yield* indexAndLoadEffect(root, home);
       deleteReusableReceipt(clean.databasePath, clean.summary.snapshot.id);
       writeUseFile(root, 'dirty revision after upgrade');
 
-      const dirty = await indexAndLoad(root, home);
+      const dirty = yield* indexAndLoadEffect(root, home);
       expect(dirty.summary.materialization).toEqual({
         fallbackReason: 'staging-unavailable',
         mode: 'full',
         stagedFiles: 2,
         totalFiles: 2,
       });
-    } finally {
-      rmSync(root, {force: true, recursive: true});
-    }
+    }).pipe(
+      Effect.provide(ApplicationLayer),
+      TestClock.withLive,
+      Effect.ensuring(removeTemporaryPaths(() => [root, home])),
+    );
   });
 
   it.effect(
@@ -290,10 +294,11 @@ describe('cross-session code graph increments', () => {
   });
 
   it.effect('does not let a stale peer failure poison an already-ready reusable base', () => {
+    let home: string | undefined;
     let root: string | undefined;
     return Effect.gen(function* () {
       root = createRepository();
-      const home = join(root, '.threadnote-peer-failure');
+      home = mkdtempSync(join(tmpdir(), 'threadnote-peer-failure-home-'));
       yield* indexAndLoadEffect(root, home);
       writeUseFile(root, 'dirty peer-failure revision');
       const dirty = yield* indexAndLoadEffect(root, home);
@@ -302,12 +307,7 @@ describe('cross-session code graph increments', () => {
 
       const path = yield* Path.Path;
       const store = yield* CodeGraphStore;
-      const layout = codeGraphLayout(
-        path,
-        home,
-        dirty.summary.identity.checkoutId,
-        dirty.summary.identity.worktreeId,
-      );
+      const layout = codeGraphLayout(path, home, dirty.summary.identity.checkoutId, dirty.summary.identity.worktreeId);
       yield* store.markFailed(layout.databasePath, baseSnapshotId!, 'late failure from a peer builder');
       const state = {
         receipt: yield* store.reusableBaseReceipt(layout.databasePath, baseSnapshotId!),
@@ -317,19 +317,18 @@ describe('cross-session code graph increments', () => {
       expect(state.snapshot?.state).toBe('ready');
       expect(state.receipt?.snapshotId).toBe(baseSnapshotId);
     }).pipe(
-      Effect.ensuring(
-        Effect.sync(() => (root === undefined ? undefined : rmSync(root, {force: true, recursive: true}))),
-      ),
       Effect.provide(ApplicationLayer),
       TestClock.withLive,
+      Effect.ensuring(removeTemporaryPaths(() => [root, home])),
     );
   });
 
   it.effect('prevents an overlapping older extractor generation from replacing the active graph', () => {
+    let home: string | undefined;
     let root: string | undefined;
     return Effect.gen(function* () {
       root = createRepository();
-      const home = join(root, '.threadnote-extractor-generation');
+      home = mkdtempSync(join(tmpdir(), 'threadnote-extractor-generation-home-'));
       const current = yield* indexAndLoadEffect(root, home);
       const legacySnapshotId = 'cgsn_legacy_generation_8';
       insertLegacyReadySnapshot(current.databasePath, current.summary, legacySnapshotId);
@@ -357,11 +356,9 @@ describe('cross-session code graph increments', () => {
         minimum: CODE_GRAPH_EXTRACTOR_GENERATION,
       });
     }).pipe(
-      Effect.ensuring(
-        Effect.sync(() => (root === undefined ? undefined : rmSync(root, {force: true, recursive: true}))),
-      ),
       Effect.provide(ApplicationLayer),
       TestClock.withLive,
+      Effect.ensuring(removeTemporaryPaths(() => [root, home])),
     );
   });
 });
@@ -381,21 +378,6 @@ const indexAndLoadEffect = Effect.fn('test.indexAndLoad')(function* (root: strin
     summary,
   };
 });
-
-async function indexAndLoad(root: string, home: string) {
-  return runEffect(indexAndLoadEffect(root, home));
-}
-
-async function loadGraph(root: string, home: string, summary: CodeGraphIndexSummary) {
-  return runEffect(
-    Effect.gen(function* () {
-      const path = yield* Path.Path;
-      const store = yield* CodeGraphStore;
-      const layout = codeGraphLayout(path, home, summary.identity.checkoutId, summary.identity.worktreeId);
-      return yield* store.loadGraph(layout.databasePath, summary.snapshot.id);
-    }),
-  );
-}
 
 const loadGraphEffect = Effect.fn('test.loadGraph')(function* (
   root: string,
@@ -451,16 +433,15 @@ function normalizeCatalog(catalog: CodeGraphVisualizationCatalog | undefined): u
   return {...stable, snapshot: stableSnapshot};
 }
 
-async function yieldCatalog(root: string, home: string, summary: CodeGraphIndexSummary) {
-  return runEffect(
-    Effect.gen(function* () {
-      const path = yield* Path.Path;
-      const store = yield* CodeGraphStore;
-      const layout = codeGraphLayout(path, home, summary.identity.checkoutId, summary.identity.worktreeId);
-      return yield* store.loadVisualizationCatalog(layout.databasePath);
-    }),
-  );
-}
+const loadVisualizationCatalogEffect = Effect.fn('test.loadVisualizationCatalog')(function* (
+  home: string,
+  summary: CodeGraphIndexSummary,
+) {
+  const path = yield* Path.Path;
+  const store = yield* CodeGraphStore;
+  const layout = codeGraphLayout(path, home, summary.identity.checkoutId, summary.identity.worktreeId);
+  return yield* store.loadVisualizationCatalog(layout.databasePath);
+});
 
 function createRepository(passiveFiles = 0): string {
   const root = mkdtempSync(join(tmpdir(), 'threadnote-cross-session-incremental-'));
@@ -688,4 +669,12 @@ function git(cwd: string, args: readonly string[]): void {
 function configureTestGitIdentity(cwd: string): void {
   git(cwd, ['config', 'user.name', 'Threadnote Test']);
   git(cwd, ['config', 'user.email', 'test@threadnote.local']);
+}
+
+function removeTemporaryPaths(paths: () => readonly (string | undefined)[]) {
+  return Effect.sync(() => {
+    for (const path of paths()) {
+      if (path !== undefined) rmSync(path, {force: true, recursive: true});
+    }
+  });
 }
