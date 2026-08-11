@@ -184,7 +184,9 @@ describe('dependency-aware CI workflow', () => {
     expect(pagePaths).toEqual(
       expect.arrayContaining([
         '.github/workflows/pages.yml',
+        'package.json',
         'scripts/site-performance-evidence.ts',
+        'scripts/site-release-notes.ts',
         'src/evaluation/benchmark.ts',
         'website/**',
       ]),

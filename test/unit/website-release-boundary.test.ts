@@ -5,6 +5,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {describe, expect, it} from 'vitest';
 import {assertPerformanceSourceClean} from '../../scripts/site-performance-evidence.js';
+import {loadLatestMajorWebsiteReleases} from '../../scripts/site-release-notes.js';
 
 const root = process.cwd();
 
@@ -162,14 +163,107 @@ describe('website and standalone release boundary', () => {
     expect(workflow).toContain('fetch-depth: 0');
     const pushTrigger = workflow.slice(workflow.indexOf('  push:'), workflow.indexOf('  workflow_dispatch:'));
     expect(pushTrigger).toContain('paths:');
+    expect(pushTrigger).toContain('branches: [main]');
+    expect(pushTrigger).not.toContain('tags:');
+    expect(pushTrigger).toContain("'package.json'");
     expect(pushTrigger).toContain("'website/**'");
     expect(pushTrigger).toContain("'scripts/site-doc-pages.ts'");
     expect(pushTrigger).toContain("'scripts/site-performance-evidence.ts'");
+    expect(pushTrigger).toContain("'scripts/site-release-notes.ts'");
     expect(pushTrigger).toContain("'src/evaluation/benchmark.ts'");
     expect(pushTrigger).not.toContain("'src/**'");
     expect(workflow).toContain('path: site-dist');
     expect(workflow).toContain('actions/deploy-pages@');
     expect(workflow).toMatch(/^ {2}THREADNOTE_SITE_BASE: \/$/m);
+  });
+
+  it('loads a prepared stable release before tagging and deduplicates it after tagging', async () => {
+    const repository = await mkdtemp(join(tmpdir(), 'threadnote-prepared-site-release-'));
+    const git = (...arguments_: string[]) =>
+      execFileSync('git', arguments_, {cwd: repository, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe']});
+    const gitAt = (date: string, ...arguments_: string[]) =>
+      execFileSync('git', arguments_, {
+        cwd: repository,
+        encoding: 'utf8',
+        env: {...process.env, GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date},
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+
+    try {
+      await mkdir(join(repository, '.github', 'release-notes'), {recursive: true});
+      await writeFile(join(repository, 'package.json'), '{"version":"4.0.0"}\n');
+      await writeFile(
+        join(repository, '.github', 'release-notes', 'v4.0.0.md'),
+        "## What's new\n\nThreadnote 4.0 is ready.\n\n### Standalone runtime\n",
+      );
+      git('init');
+      git('add', '.');
+      gitAt(
+        '2026-08-10T10:00:00Z',
+        '-c',
+        'user.name=Threadnote Test',
+        '-c',
+        'user.email=threadnote@example.invalid',
+        'commit',
+        '-m',
+        '4.0 release',
+      );
+      gitAt(
+        '2026-08-10T10:05:00Z',
+        '-c',
+        'user.name=Threadnote Test',
+        '-c',
+        'user.email=threadnote@example.invalid',
+        'tag',
+        '-a',
+        'v4.0.0',
+        '-m',
+        'v4.0.0',
+      );
+
+      await writeFile(join(repository, 'package.json'), '{"version":"4.1.1"}\n');
+      await writeFile(
+        join(repository, '.github', 'release-notes', 'v4.1.1.md'),
+        "## What's new\n\nThreadnote 4.1.1 is ready.\n\n### Faster refreshes\n",
+      );
+      git('add', '.');
+      gitAt(
+        '2026-08-11T11:00:00Z',
+        '-c',
+        'user.name=Threadnote Test',
+        '-c',
+        'user.email=threadnote@example.invalid',
+        'commit',
+        '-m',
+        'prepare 4.1.1',
+      );
+
+      const prepared = loadLatestMajorWebsiteReleases(repository);
+      expect(prepared.map(release => release.version)).toEqual(['v4.1.1', 'v4.0.0']);
+      expect(prepared[0]).toMatchObject({
+        publishedAt: '2026-08-11T11:00:00+00:00',
+        releaseUrl: 'https://github.com/Kashkovsky/threadnote/releases/tag/v4.1.1',
+        summary: 'Threadnote 4.1.1 is ready.',
+      });
+
+      gitAt(
+        '2026-08-12T12:00:00Z',
+        '-c',
+        'user.name=Threadnote Test',
+        '-c',
+        'user.email=threadnote@example.invalid',
+        'tag',
+        '-a',
+        'v4.1.1',
+        '-m',
+        'v4.1.1',
+      );
+      const tagged = loadLatestMajorWebsiteReleases(repository);
+      expect(tagged.map(release => release.version)).toEqual(['v4.1.1', 'v4.0.0']);
+      expect(tagged[0]?.publishedAt).toBe('2026-08-12T12:00:00+00:00');
+    } finally {
+      await rm(repository, {force: true, recursive: true});
+    }
   });
 
   it('uses threadnote.io as the single public website origin', async () => {

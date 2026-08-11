@@ -72,6 +72,11 @@ creates a GitHub prerelease; do not use an unnumbered `-beta` suffix.
 6. Wait for `Publish standalone release`. Do not create a GitHub Release manually. Every channel publishes after all
    four enabled archives are verified while its bounded production-large observation continues independently.
 
+The main-branch website build includes the prepared stable `package.json` version when its matching release note is
+checked in but its tag does not exist yet. Merge only a ready-to-tag stable version and push its tag immediately; until
+a later main deployment observes the tag, What's New uses the release-preparation commit date and its release link is
+intentionally future-facing.
+
 The release evidence record must distinguish a clean candidate run from exact-tag evidence. Candidate evidence can
 close implementation gates before merge, but only the tag-triggered artifact may claim exact release provenance. Keep
 public surrogate results, private path-free aggregate evidence, and checked-in same-machine comparisons separate; do
