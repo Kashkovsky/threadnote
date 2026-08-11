@@ -163,6 +163,7 @@ describe('website and standalone release boundary', () => {
     const pushTrigger = workflow.slice(workflow.indexOf('  push:'), workflow.indexOf('  workflow_dispatch:'));
     expect(pushTrigger).toContain('paths:');
     expect(pushTrigger).toContain("'website/**'");
+    expect(pushTrigger).toContain("'scripts/site-doc-pages.ts'");
     expect(pushTrigger).toContain("'scripts/site-performance-evidence.ts'");
     expect(pushTrigger).toContain("'src/evaluation/benchmark.ts'");
     expect(pushTrigger).not.toContain("'src/**'");

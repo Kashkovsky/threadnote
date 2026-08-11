@@ -6,6 +6,7 @@ on:
     tags: ['v*.*.*']
     paths:
       - '.github/workflows/pages.yml'
+      - 'scripts/site-doc-pages.ts'
       - 'scripts/site-performance-evidence.ts'
       - 'src/evaluation/benchmark.ts'
       - '.github/release-notes/**'
