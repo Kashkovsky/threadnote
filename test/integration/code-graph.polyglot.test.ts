@@ -2,13 +2,15 @@ import {execFileSync} from 'node:child_process';
 import {mkdirSync, mkdtempSync, rmSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {dirname, join} from 'node:path';
+import {it as effectIt} from '@effect/vitest';
 import {Effect, Path} from 'effect';
-import {afterEach, describe, expect, it} from 'vitest';
+import {TestClock} from 'effect/testing';
+import {afterEach, describe, expect} from 'vitest';
 import {CodeGraphIndexer} from '../../src/code_graph/indexer.js';
 import {codeGraphLayout} from '../../src/code_graph/layout.js';
 import {CodeGraphQueryService} from '../../src/code_graph/query.js';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
-import {runEffect} from '../helpers/effect-runtime.js';
+import {ApplicationLayer} from '../../src/effect/runtime.js';
 
 const temporaryRoots: string[] = [];
 
@@ -17,11 +19,12 @@ afterEach(() => {
 });
 
 describe('polyglot code graph lifecycle', () => {
-  it('indexes and queries a mixed compiler, AST, structured, and bounded specialist graph', async () => {
-    const root = createPolyglotRepository();
-    const home = join(root, '.threadnote-test-home');
-    const result = await runEffect(
+  effectIt.effect(
+    'indexes and queries a mixed compiler, AST, structured, and bounded specialist graph',
+    () =>
       Effect.gen(function* () {
+        const root = createPolyglotRepository();
+        const home = join(root, '.threadnote-test-home');
         const indexer = yield* CodeGraphIndexer;
         const query = yield* CodeGraphQueryService;
         const store = yield* CodeGraphStore;
@@ -63,57 +66,57 @@ describe('polyglot code graph lifecycle', () => {
           ],
           {concurrency: 1},
         );
-        return {graph, indexed, operations};
-      }),
-    );
-
-    expect(result.graph.symbols.map(symbol => symbol.language)).toEqual(
-      expect.arrayContaining([
-        'apex',
-        'bash',
-        'c',
-        'cpp',
-        'csharp',
-        'dart',
-        'fortran',
-        'go',
-        'java',
-        'json',
-        'kotlin',
-        'php',
-        'python',
-        'razor',
-        'ruby',
-        'rust',
-        'sql',
-        'swift',
-        'systemverilog',
-        'terraform',
-        'typescript',
-      ]),
-    );
-    expect(
-      result.graph.edges.find(
-        edge => edge.sourceName === 'start' && edge.relation === 'constructs' && edge.targetName === 'Greeter',
-      ),
-    ).toMatchObject({provenance: 'resolved', targetId: expect.stringMatching(/^cgs_/)});
-    expect(
-      result.graph.edges.find(
-        edge => edge.sourceName === 'swiftBoot' && edge.relation === 'calls' && edge.targetName === 'makeService',
-      ),
-    ).toMatchObject({provenance: 'resolved', targetId: expect.stringMatching(/^cgs_/)});
-    expect(
-      result.graph.edges.find(
-        edge =>
-          edge.sourceName === 'typescriptBoot' && edge.relation === 'calls' && edge.targetName === 'typescriptHelper',
-      ),
-    ).toMatchObject({provenance: 'resolved', targetId: expect.stringMatching(/^cgs_/)});
-    expect(result.operations.every(operation => operation.snapshot.id === result.indexed.snapshot.id)).toBe(true);
-    expect(result.operations[0]!.nodes.some(node => node.language === 'java')).toBe(true);
-    expect(result.operations[1]!.nodes.some(node => node.name === 'KotlinApp')).toBe(true);
-    expect(result.operations[2]!.edges.some(edge => edge.targetName === 'typescriptHelper')).toBe(true);
-    expect(result.operations[3]!.nodes.some(node => node.name === 'swiftBoot')).toBe(true);
-  });
+        expect(graph.symbols.map(symbol => symbol.language)).toEqual(
+          expect.arrayContaining([
+            'apex',
+            'bash',
+            'c',
+            'cpp',
+            'csharp',
+            'dart',
+            'fortran',
+            'go',
+            'java',
+            'json',
+            'kotlin',
+            'php',
+            'python',
+            'razor',
+            'ruby',
+            'rust',
+            'sql',
+            'swift',
+            'systemverilog',
+            'terraform',
+            'typescript',
+          ]),
+        );
+        expect(
+          graph.edges.find(
+            edge => edge.sourceName === 'start' && edge.relation === 'constructs' && edge.targetName === 'Greeter',
+          ),
+        ).toMatchObject({provenance: 'resolved', targetId: expect.stringMatching(/^cgs_/)});
+        expect(
+          graph.edges.find(
+            edge => edge.sourceName === 'swiftBoot' && edge.relation === 'calls' && edge.targetName === 'makeService',
+          ),
+        ).toMatchObject({provenance: 'resolved', targetId: expect.stringMatching(/^cgs_/)});
+        expect(
+          graph.edges.find(
+            edge =>
+              edge.sourceName === 'typescriptBoot' &&
+              edge.relation === 'calls' &&
+              edge.targetName === 'typescriptHelper',
+          ),
+        ).toMatchObject({provenance: 'resolved', targetId: expect.stringMatching(/^cgs_/)});
+        expect(operations.every(operation => operation.snapshot.id === indexed.snapshot.id)).toBe(true);
+        expect(operations[0]!.nodes.some(node => node.language === 'java')).toBe(true);
+        expect(operations[1]!.nodes.some(node => node.name === 'KotlinApp')).toBe(true);
+        expect(operations[2]!.edges.some(edge => edge.targetName === 'typescriptHelper')).toBe(true);
+        expect(operations[3]!.nodes.some(node => node.name === 'swiftBoot')).toBe(true);
+      }).pipe(Effect.provide(ApplicationLayer), TestClock.withLive),
+    60_000,
+  );
 });
 
 function createPolyglotRepository(): string {

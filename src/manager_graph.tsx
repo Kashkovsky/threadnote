@@ -270,9 +270,11 @@ export interface GraphBuildStatus {
       readonly batchesTotal: number;
       readonly cachedFactBytesCompleted?: number;
       readonly cachedFactBytesTotal?: number;
+      readonly fallbackReason?: string;
       readonly factsBytesCompleted?: number;
       readonly factsBytesTotal?: number;
       readonly loadingMilliseconds?: number;
+      readonly mode?: 'full' | 'incremental-clean' | 'incremental-overlay';
       readonly rows?: GraphMaterializationRows;
       readonly sourceBytesCompleted: number;
       readonly sourceBytesTotal: number;
@@ -3860,6 +3862,14 @@ function GraphBuildProgress(props: {
           {build.extraction.slowFiles.toLocaleString()} at or above{' '}
           {formatGraphMilliseconds(CODE_GRAPH_SLOW_FILE_THRESHOLD_MILLISECONDS)} · bounded top-slow evidence{' '}
           {build.extraction.topSlowFiles.length.toLocaleString()}/{CODE_GRAPH_TOP_SLOW_FILE_LIMIT.toLocaleString()}
+        </p>
+      ) : null}
+      {build.materialization?.metrics?.mode === 'full' ? (
+        <p className="graph-build-attention">
+          Full materialization selected
+          {build.materialization.metrics.fallbackReason === undefined
+            ? ''
+            : ` · incremental fallback: ${build.materialization.metrics.fallbackReason.replaceAll('-', ' ')}`}
         </p>
       ) : null}
       {build.materialization?.activity ? (

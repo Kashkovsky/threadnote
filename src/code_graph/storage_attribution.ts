@@ -1,5 +1,6 @@
 import {Database} from 'bun:sqlite';
 import {storedCodeGraphFactRawBytesSql} from './fact_storage.js';
+import {BUILTIN_LANGUAGE_PACK_REGISTRY} from './languages/registry.js';
 
 export const CODE_GRAPH_STORAGE_SNAPSHOT_ATTRIBUTION_LIMIT = 64;
 export const CODE_GRAPH_STORAGE_SEMANTIC_OBJECT_LIMIT = 512;
@@ -25,6 +26,7 @@ export interface CodeGraphSnapshotStorageAttribution {
   readonly active: boolean;
   readonly associatedFactRawBytes: number;
   readonly associatedFactStoredBytes: number;
+  readonly classifiers: readonly CodeGraphClassifierStorageAttribution[];
   readonly commit: string;
   readonly completedAt?: string;
   readonly edgeCount: number;
@@ -33,6 +35,19 @@ export interface CodeGraphSnapshotStorageAttribution {
   readonly logicalRows: number;
   readonly state: 'building' | 'failed' | 'ready' | 'retired';
   readonly symbolCount: number;
+}
+
+export interface CodeGraphClassifierStorageAttribution {
+  readonly classifier: string;
+  readonly edgeRows: number;
+  readonly factRawBytes: number;
+  readonly factStoredBytes: number;
+  readonly files: number;
+  readonly logicalBytes: number;
+  readonly logicalRows: number;
+  readonly lookupRows: number;
+  readonly sourceBytes: number;
+  readonly symbolRows: number;
 }
 
 export interface CodeGraphStorageBytesPerSymbolBaseline {
@@ -82,6 +97,11 @@ interface SnapshotLogicalRow {
   readonly logical_bytes: number;
   readonly row_count: number;
   readonly snapshot_id: string;
+}
+
+interface SnapshotClassifierLogicalRow extends SnapshotLogicalRow {
+  readonly language: string;
+  readonly source_bytes: number;
 }
 
 export function readCodeGraphStorageSemanticAttribution(
@@ -279,6 +299,7 @@ function readSnapshotStorageAttribution(
         GROUP BY scope.snapshot_id`,
     )
     .all(...ids) as readonly SnapshotLogicalRow[];
+  const classifierRows = readSnapshotClassifierStorageAttribution(database, ids, values);
   const aggregates = new Map<
     string,
     {factRawBytes: number; factStoredBytes: number; logicalBytes: number; rows: number}
@@ -299,6 +320,7 @@ function readSnapshotStorageAttribution(
       active: row.active === 1,
       associatedFactRawBytes: aggregate.factRawBytes,
       associatedFactStoredBytes: aggregate.factStoredBytes,
+      classifiers: classifierRows.get(row.id) ?? [],
       commit: row.commit_id,
       ...(row.completed_at === null ? {} : {completedAt: row.completed_at}),
       edgeCount: row.edge_count,
@@ -330,6 +352,122 @@ function readSnapshotStorageAttribution(
     snapshotsTruncated,
     state: 'available',
   };
+}
+
+function readSnapshotClassifierStorageAttribution(
+  database: Database,
+  snapshotIds: readonly string[],
+  selectedValues: string,
+): ReadonlyMap<string, readonly CodeGraphClassifierStorageAttribution[]> {
+  const rows = database
+    .query(
+      `WITH selected(snapshot_id) AS (VALUES ${selectedValues})
+       SELECT file.snapshot_id, file.language, 'source' AS group_name, COUNT(*) AS row_count,
+              COALESCE(SUM(file.size), 0) AS source_bytes,
+              COALESCE(SUM(length(CAST(file.path AS BLOB)) + length(CAST(file.content_hash AS BLOB)) +
+                length(CAST(file.language AS BLOB)) + length(CAST(file.mode AS BLOB)) +
+                length(CAST(file.source AS BLOB)) + 8), 0) AS logical_bytes,
+              0 AS fact_raw_bytes
+         FROM snapshot_files AS file JOIN selected ON selected.snapshot_id = file.snapshot_id
+        GROUP BY file.snapshot_id, file.language
+       UNION ALL
+       SELECT association.snapshot_id, file.language, 'facts-cache', COUNT(*), 0,
+              COALESCE(SUM(length(CAST(shard.facts_json AS BLOB))), 0),
+              COALESCE(SUM(${storedCodeGraphFactRawBytesSql('shard.facts_json')}), 0)
+         FROM snapshot_file_shards AS association
+         JOIN selected ON selected.snapshot_id = association.snapshot_id
+         JOIN snapshot_files AS file
+           ON file.snapshot_id = association.snapshot_id AND file.path = association.path
+         JOIN materialized_file_shards AS shard ON shard.id = association.shard_id
+        GROUP BY association.snapshot_id, file.language
+       UNION ALL
+       SELECT symbol.snapshot_id, file.language, 'symbols', COUNT(*), 0,
+              COALESCE(SUM(length(CAST(symbol.id AS BLOB)) + length(CAST(symbol.content_hash AS BLOB)) +
+                length(CAST(symbol.kind AS BLOB)) + length(CAST(symbol.name AS BLOB)) +
+                length(CAST(symbol.qualified_name AS BLOB)) + length(CAST(symbol.path AS BLOB)) +
+                length(CAST(symbol.language AS BLOB)) + length(CAST(symbol.lookup_keys_json AS BLOB)) +
+                length(CAST(COALESCE(symbol.resolution_domain, '') AS BLOB)) +
+                length(CAST(COALESCE(symbol.resolution_scope_id, '') AS BLOB)) +
+                length(CAST(COALESCE(symbol.package_name, '') AS BLOB)) +
+                length(CAST(COALESCE(symbol.signature, '') AS BLOB)) +
+                length(CAST(COALESCE(symbol.documentation, '') AS BLOB)) +
+                length(CAST(symbol.span_json AS BLOB)) + 8 + CASE WHEN symbol.arity IS NULL THEN 0 ELSE 8 END), 0), 0
+         FROM symbols AS symbol JOIN selected ON selected.snapshot_id = symbol.snapshot_id
+         JOIN snapshot_files AS file ON file.snapshot_id = symbol.snapshot_id AND file.path = symbol.path
+        GROUP BY symbol.snapshot_id, file.language
+       UNION ALL
+       SELECT edge.snapshot_id, file.language, 'edges', COUNT(*), 0,
+              COALESCE(SUM(length(CAST(edge.id AS BLOB)) + length(CAST(COALESCE(edge.source_id, '') AS BLOB)) +
+                length(CAST(edge.source_name AS BLOB)) + length(CAST(edge.relation AS BLOB)) +
+                length(CAST(COALESCE(edge.target_id, '') AS BLOB)) + length(CAST(edge.target_name AS BLOB)) +
+                length(CAST(edge.provenance AS BLOB)) + length(CAST(edge.evidence_path AS BLOB)) +
+                length(CAST(edge.evidence_span_json AS BLOB)) + 8), 0), 0
+         FROM edges AS edge JOIN selected ON selected.snapshot_id = edge.snapshot_id
+         JOIN snapshot_files AS file ON file.snapshot_id = edge.snapshot_id AND file.path = edge.evidence_path
+        GROUP BY edge.snapshot_id, file.language
+       UNION ALL
+       SELECT lookup.snapshot_id, file.language, 'lookup', COUNT(*), 0,
+              COALESCE(SUM(length(CAST(lookup.lookup_key AS BLOB)) + length(CAST(lookup.symbol_id AS BLOB)) +
+                length(CAST(lookup.resolution_domain AS BLOB)) + length(CAST(lookup.provenance AS BLOB)) +
+                length(CAST(COALESCE(lookup.evidence_edge_id, '') AS BLOB)) +
+                length(CAST(COALESCE(lookup.evidence_path, '') AS BLOB)) + 8), 0), 0
+         FROM snapshot_symbol_lookup AS lookup JOIN selected ON selected.snapshot_id = lookup.snapshot_id
+         JOIN symbols AS symbol ON symbol.snapshot_id = lookup.snapshot_id AND symbol.id = lookup.symbol_id
+         JOIN snapshot_files AS file ON file.snapshot_id = symbol.snapshot_id AND file.path = symbol.path
+        GROUP BY lookup.snapshot_id, file.language`,
+    )
+    .all(...snapshotIds) as readonly SnapshotClassifierLogicalRow[];
+  const aggregates = new Map<string, Map<string, CodeGraphClassifierStorageAttribution>>();
+  for (const row of rows) {
+    if (typeof row.language !== 'string' || typeof row.group_name !== 'string') {
+      throw new Error('Code graph classifier storage attribution is invalid.');
+    }
+    const classifier = codeGraphStorageClassifierForLanguage(row.language);
+    const byClassifier = aggregates.get(row.snapshot_id) ?? new Map<string, CodeGraphClassifierStorageAttribution>();
+    if (!aggregates.has(row.snapshot_id)) aggregates.set(row.snapshot_id, byClassifier);
+    const current = byClassifier.get(classifier) ?? {
+      classifier,
+      edgeRows: 0,
+      factRawBytes: 0,
+      factStoredBytes: 0,
+      files: 0,
+      logicalBytes: 0,
+      logicalRows: 0,
+      lookupRows: 0,
+      sourceBytes: 0,
+      symbolRows: 0,
+    };
+    const rowCount = safeAggregate(row.row_count);
+    const logicalBytes = safeAggregate(row.logical_bytes);
+    const next = {
+      ...current,
+      edgeRows: current.edgeRows + (row.group_name === 'edges' ? rowCount : 0),
+      factRawBytes: current.factRawBytes + (row.group_name === 'facts-cache' ? safeAggregate(row.fact_raw_bytes) : 0),
+      factStoredBytes: current.factStoredBytes + (row.group_name === 'facts-cache' ? logicalBytes : 0),
+      files: current.files + (row.group_name === 'source' ? rowCount : 0),
+      logicalBytes: current.logicalBytes + logicalBytes,
+      logicalRows: current.logicalRows + rowCount,
+      lookupRows: current.lookupRows + (row.group_name === 'lookup' ? rowCount : 0),
+      sourceBytes: current.sourceBytes + (row.group_name === 'source' ? safeAggregate(row.source_bytes) : 0),
+      symbolRows: current.symbolRows + (row.group_name === 'symbols' ? rowCount : 0),
+    } satisfies CodeGraphClassifierStorageAttribution;
+    byClassifier.set(classifier, next);
+  }
+  return new Map(
+    [...aggregates].map(([snapshotId, values]) => [
+      snapshotId,
+      [...values.values()].sort(
+        (left, right) => right.logicalBytes - left.logicalBytes || left.classifier.localeCompare(right.classifier),
+      ),
+    ]),
+  );
+}
+
+export function codeGraphStorageClassifierForLanguage(language: string): string {
+  for (const pack of BUILTIN_LANGUAGE_PACK_REGISTRY.packs) {
+    if (pack.files.some(matcher => matcher.language === language)) return pack.id;
+  }
+  return 'unmatched';
 }
 
 function validateSnapshotMetadata(rows: readonly SnapshotMetadataRow[]): void {

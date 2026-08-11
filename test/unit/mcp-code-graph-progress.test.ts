@@ -4,6 +4,7 @@ import * as FC from 'effect/testing/FastCheck';
 import {
   codeGraphAnalysisMcpResponse,
   codeGraphAnalysisRefreshResult,
+  codeGraphInspectionAllowsStaleReady,
   codeGraphMcpAnalysisBudget,
   codeGraphMcpAnalysisLimits,
   codeGraphMcpResponse,
@@ -22,6 +23,17 @@ import type {CodeGraphRefreshStatus} from '../../src/code_graph/watcher.js';
 import {analysisEdge, analysisSnapshot, analysisSymbol, pagedAnalysisStore} from '../helpers/code-graph-analysis.js';
 
 describe('MCP code graph indexing progress', () => {
+  it('allows stale ready evidence for non-strict operations only', () => {
+    expect(
+      Object.fromEntries(
+        (['query', 'node', 'neighbors', 'explain', 'path', 'impact'] as const).map(operation => [
+          operation,
+          codeGraphInspectionAllowsStaleReady(operation),
+        ]),
+      ),
+    ).toEqual({explain: true, impact: false, neighbors: true, node: true, path: false, query: true});
+  });
+
   it('allows an explicitly safe ready graph to serve while background indexing continues', () => {
     const indexing = indexingStatus(60_000);
 
@@ -107,6 +119,16 @@ describe('MCP code graph indexing progress', () => {
     expect(continued.warnings[0]!.length).toBeLessThanOrEqual(320);
     expect(JSON.stringify(continued)).not.toContain('/Users/private');
     expect(codeGraphResultWithRefreshContinuity(continued, deferred)).toBe(continued);
+  });
+
+  it('labels stale ready evidence while indexing continues', () => {
+    const result = {...verboseCodeGraphResult(), freshness: 'stale' as const, warnings: []};
+    const continued = codeGraphResultWithRefreshContinuity(result, indexingStatus(60_000));
+
+    expect(continued.warnings).toEqual([
+      'Serving the existing stale ready snapshot while code graph refresh continues in the background.',
+    ]);
+    expect(codeGraphResultWithRefreshContinuity(continued, indexingStatus(60_000))).toBe(continued);
   });
 
   it('keeps path, impact, and whole-graph analysis strict when refresh is deferred', () => {

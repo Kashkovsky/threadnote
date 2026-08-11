@@ -352,7 +352,7 @@ export function codeGraphPersistedEndpointValidationPageStatement(
   pageRows = PERSISTENT_ACTIVATION_ENDPOINT_VALIDATION_PAGE_ROWS,
 ): CodeGraphSqlQueryStatement {
   const column = endpoint === 'source' ? 'source_id' : 'target_id';
-  const index = endpoint === 'source' ? 'edges_source' : 'edges_target';
+  const index = endpoint === 'source' ? 'edges_source' : 'edges_target_resolved';
   const cursorPredicate = Option.isSome(cursor) ? `AND edge.${column} > ?` : '';
   return {
     parameters: [snapshotId, ...Option.toArray(cursor), pageRows, snapshotId],
@@ -387,7 +387,7 @@ function persistedEndpointEdgeStatement(
   symbolId: string,
 ): CodeGraphSqlQueryStatement {
   const column = endpoint === 'source' ? 'source_id' : 'target_id';
-  const index = endpoint === 'source' ? 'edges_source' : 'edges_target';
+  const index = endpoint === 'source' ? 'edges_source' : 'edges_target_resolved';
   return {
     parameters: [snapshotId, symbolId],
     text: `SELECT edge.id

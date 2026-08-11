@@ -5,6 +5,8 @@ import {join} from 'node:path';
 import {Database} from 'bun:sqlite';
 import {describe, expect, it} from '@effect/vitest';
 import {Effect, Path} from 'effect';
+import {TestClock} from 'effect/testing';
+import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {CodeGraphIndexer} from '../../src/code_graph/indexer.js';
 import {codeGraphLayout} from '../../src/code_graph/layout.js';
 import {CodeGraphStore, type CodeGraphVisualizationCatalog} from '../../src/code_graph/store.js';
@@ -12,6 +14,52 @@ import {CODE_GRAPH_EXTRACTOR_GENERATION, type CodeGraphIndexSummary} from '../..
 import {runEffect} from '../helpers/effect-runtime.js';
 
 describe('cross-session code graph increments', () => {
+  it.effect(
+    're-promotes a recent clean increment after a dirty-to-clean round trip',
+    () => {
+      let root: string | undefined;
+      return Effect.gen(function* () {
+        root = createRepository(16);
+        const home = join(root, '.threadnote-round-trip');
+        const initial = yield* indexAndLoadEffect(root, home);
+        expect(initial.summary.materialization?.mode).toBe('full');
+
+        writeUseFile(root, 'committed clean revision');
+        git(root, ['add', 'src/use.ts']);
+        git(root, ['commit', '-qm', 'clean increment']);
+        const committed = yield* indexAndLoadEffect(root, home);
+        expect(committed.summary.materialization).toEqual({
+          mode: 'incremental-clean',
+          stagedFiles: 1,
+          totalFiles: 18,
+        });
+
+        writeUseFile(root, 'temporary dirty revision');
+        const dirty = yield* indexAndLoadEffect(root, home);
+        expect(dirty.summary.materialization?.mode).toBe('incremental-overlay');
+        expect(persistedSnapshotState(committed.databasePath, committed.summary.snapshot.id)).toBe('ready');
+
+        git(root, ['checkout', '--', 'src/use.ts']);
+        const restored = yield* indexAndLoadEffect(root, home);
+        expect(restored.summary.snapshot.id).toBe(committed.summary.snapshot.id);
+        expect(restored.summary.materialization).toEqual({
+          mode: 'reused-snapshot',
+          stagedFiles: 0,
+          totalFiles: 18,
+        });
+        expect(projectGraph(restored.graph)).toEqual(projectGraph(committed.graph));
+        expect(restored.health).toMatchObject({foreignKeyViolations: 0, integrity: 'ok'});
+      }).pipe(
+        Effect.ensuring(
+          Effect.sync(() => (root === undefined ? undefined : rmSync(root, {force: true, recursive: true}))),
+        ),
+        Effect.provide(ApplicationLayer),
+        TestClock.withLive,
+      );
+    },
+    60_000,
+  );
+
   it('reuses a persisted clean base for a body-only dirty overlay', async () => {
     const root = createRepository(32);
     const incrementalHome = join(root, '.threadnote-incremental');
@@ -255,24 +303,24 @@ describe('cross-session code graph increments', () => {
   });
 });
 
+const indexAndLoadEffect = Effect.fn('test.indexAndLoad')(function* (root: string, home: string) {
+  const indexer = yield* CodeGraphIndexer;
+  const summary = yield* indexer.index({cwd: root, threadnoteHome: home});
+  const path = yield* Path.Path;
+  const store = yield* CodeGraphStore;
+  const layout = codeGraphLayout(path, home, summary.identity.checkoutId, summary.identity.worktreeId);
+  const graph = yield* store.loadGraph(layout.databasePath, summary.snapshot.id);
+  return {
+    catalog: yield* store.loadVisualizationCatalog(layout.databasePath),
+    databasePath: layout.databasePath,
+    graph,
+    health: yield* store.diagnose(layout.databasePath),
+    summary,
+  };
+});
+
 async function indexAndLoad(root: string, home: string) {
-  return runEffect(
-    Effect.gen(function* () {
-      const indexer = yield* CodeGraphIndexer;
-      const summary = yield* indexer.index({cwd: root, threadnoteHome: home});
-      const path = yield* Path.Path;
-      const store = yield* CodeGraphStore;
-      const layout = codeGraphLayout(path, home, summary.identity.checkoutId, summary.identity.worktreeId);
-      const graph = yield* store.loadGraph(layout.databasePath, summary.snapshot.id);
-      return {
-        catalog: yield* store.loadVisualizationCatalog(layout.databasePath),
-        databasePath: layout.databasePath,
-        graph,
-        health: yield* store.diagnose(layout.databasePath),
-        summary,
-      };
-    }),
-  );
+  return runEffect(indexAndLoadEffect(root, home));
 }
 
 async function loadGraph(root: string, home: string, summary: CodeGraphIndexSummary) {
@@ -291,6 +339,16 @@ function projectGraph(graph: {readonly edges: readonly unknown[]; readonly symbo
     readonly edges: readonly unknown[];
     readonly symbols: readonly unknown[];
   };
+}
+
+function persistedSnapshotState(databasePath: string, snapshotId: string): string | undefined {
+  const database = new Database(databasePath, {readonly: true, strict: true});
+  try {
+    return (database.query('SELECT state FROM snapshots WHERE id = ?').get(snapshotId) as {state?: string} | null)
+      ?.state;
+  } finally {
+    database.close(false);
+  }
 }
 
 function normalizeCatalog(catalog: CodeGraphVisualizationCatalog | undefined): unknown {

@@ -5,6 +5,7 @@ import fc from 'fast-check';
 import {afterEach, describe, expect, it} from 'vitest';
 import {codeGraphWorktreeLockPath} from '../../src/code_graph/layout.js';
 import {
+  codeGraphCompactionRecommendation,
   codeGraphStorageUnattributedBytes,
   codeGraphCompactionRequiredFreeBytes,
   compactCodeGraphStorage,
@@ -46,6 +47,11 @@ describe('active code graph storage', () => {
     } else {
       expect(attribution.allocatedBytes).toBe(before.pageStorage.pageCount * before.pageStorage.pageSize);
       expect(attribution.freelistBytes).toBe(before.pageStorage.reclaimableBytes);
+      expect(attribution.fragmentedBytes).toBeGreaterThanOrEqual(0);
+      expect(before.pageStorage.fragmentedBytes).toBe(attribution.fragmentedBytes);
+      expect(before.pageStorage.compactionOpportunityBytes).toBe(
+        before.pageStorage.reclaimableBytes + attribution.fragmentedBytes,
+      );
       expect(attribution.attributedBytes + attribution.freelistBytes + attribution.unattributedBytes).toBe(
         attribution.allocatedBytes,
       );
@@ -105,6 +111,54 @@ describe('active code graph storage', () => {
       ),
       {numRuns: 500},
     );
+  });
+
+  it('monotonically schedules compaction from freelist and live-page fragmentation', () => {
+    fc.assert(
+      fc.property(
+        fc.integer({max: 2_000_000_000, min: 1}),
+        fc.nat({max: 2_000_000_000}),
+        fc.nat({max: 2_000_000_000}),
+        fc.nat({max: 2_000_000_000}),
+        (allocatedBytes, reclaimableSeed, fragmentedSeed, growthSeed) => {
+          const reclaimableBytes = reclaimableSeed % (allocatedBytes + 1);
+          const fragmentedBytes = fragmentedSeed % (allocatedBytes - reclaimableBytes + 1);
+          const remainingBytes = allocatedBytes - reclaimableBytes - fragmentedBytes;
+          const growthBytes = growthSeed % (remainingBytes + 1);
+          const initial = codeGraphCompactionRecommendation({
+            allocatedBytes,
+            fragmentedBytes,
+            reclaimableBytes,
+          });
+          const moreFreelist = codeGraphCompactionRecommendation({
+            allocatedBytes,
+            fragmentedBytes,
+            reclaimableBytes: reclaimableBytes + growthBytes,
+          });
+          const moreFragmentation = codeGraphCompactionRecommendation({
+            allocatedBytes,
+            fragmentedBytes: fragmentedBytes + growthBytes,
+            reclaimableBytes,
+          });
+
+          expect(initial.recommended && !moreFreelist.recommended).toBe(false);
+          expect(initial.recommended && !moreFragmentation.recommended).toBe(false);
+          expect(initial.compactionOpportunityBytes).toBe(reclaimableBytes + fragmentedBytes);
+        },
+      ),
+      {numRuns: 500},
+    );
+
+    expect(
+      codeGraphCompactionRecommendation({
+        allocatedBytes: 2_926_362_624,
+        fragmentedBytes: 300_617_728,
+        reclaimableBytes: 380_100_608,
+      }),
+    ).toMatchObject({
+      reason: 'freelist-and-fragmentation',
+      recommended: true,
+    });
   });
 
   it('refuses compaction before VACUUM when available disk space is below the conservative requirement', async () => {

@@ -4,7 +4,7 @@ export const CODE_GRAPH_SCHEMA_VERSION = 3 as const;
 /** Additive persistent surfaces that preserve the public graph-v3 row contract. */
 export const CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION = 9 as const;
 export const CODE_GRAPH_RESULT_VERSION = 1 as const;
-export const CODE_GRAPH_EXTRACTOR_GENERATION = 12 as const;
+export const CODE_GRAPH_EXTRACTOR_GENERATION = 13 as const;
 export const CODE_GRAPH_EXTRACTOR_SET_VERSION = `native-code-graph-${CODE_GRAPH_EXTRACTOR_GENERATION}` as const;
 
 export type CodeGraphProvenance = 'declared' | 'heuristic' | 'model' | 'resolved' | 'syntactic';
@@ -208,10 +208,13 @@ export interface CodeGraphMaterializationMetrics {
   readonly batchesTotal: number;
   readonly cachedFactBytesCompleted?: number;
   readonly cachedFactBytesTotal?: number;
+  /** Exact bounded reason a repository-wide rewrite was selected, when known. */
+  readonly fallbackReason?: CodeGraphOverlayFallbackReason;
   /** Exact UTF-8 JSON bytes of final postprocessed and attributed facts. */
   readonly factsBytesCompleted?: number;
   readonly factsBytesTotal?: number;
   readonly loadingMilliseconds?: number;
+  readonly mode?: 'full' | 'incremental-clean' | 'incremental-overlay';
   readonly rows?: CodeGraphMaterializationRows;
   readonly sourceBytesCompleted: number;
   readonly sourceBytesTotal: number;

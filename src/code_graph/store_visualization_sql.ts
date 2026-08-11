@@ -276,7 +276,7 @@ function visualizationScopeIndex(scope: CodeGraphVisualizationScope): string {
       // still read an older v3 database before the next writer initializes it.
       return '';
     case 'documentation-facet':
-      return ' INDEXED BY symbols_resolution_scope';
+      return ' INDEXED BY symbols_visualization_scope_v2';
   }
 }
 

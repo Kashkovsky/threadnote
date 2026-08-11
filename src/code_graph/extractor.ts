@@ -236,6 +236,16 @@ function addNormalizedLookupKeys(symbol: CodeGraphSymbol): CodeGraphSymbol {
 }
 
 function globalLookupKeys(symbol: CodeGraphSymbol): readonly string[] {
+  // Generic JSON/YAML properties are lexical evidence inside their file, not
+  // cross-file resolution targets. Persisting two global lookup rows for
+  // every leaf duplicates a large structured-data tail without resolving an
+  // edge; the file module remains globally addressable.
+  if (
+    ['json', 'jsonc', 'yaml'].includes(symbol.language) &&
+    ['item', 'property', 'resource-value'].includes(symbol.kind)
+  ) {
+    return [];
+  }
   return [
     `global:qualified:${lookupComponent(symbol.qualifiedName)}`,
     `global:name:${lookupComponent(symbol.name)}`,

@@ -460,9 +460,13 @@ const initializeSchema = Effect.fn('codeGraph.initializeSchema')(function* (sql:
     ) VALUES (1, 'file-blobs', NULL, NULL, NULL, NULL)
     ON CONFLICT(singleton) DO NOTHING
   `;
-  yield* sql.unsafe('CREATE INDEX IF NOT EXISTS symbols_name ON symbols(snapshot_id, name)');
+  // Exact lookup uses the NOCASE index and computes case-sensitive rank from
+  // the same rows. Keep one name projection instead of duplicating it.
+  yield* sql.unsafe('DROP INDEX IF EXISTS symbols_name');
   yield* sql.unsafe('CREATE INDEX IF NOT EXISTS symbols_path ON symbols(snapshot_id, path)');
-  yield* sql.unsafe('CREATE INDEX IF NOT EXISTS symbols_resolution_scope ON symbols(snapshot_id, resolution_scope_id)');
+  // The visualization scope index has this exact leading prefix and also
+  // satisfies documentation-facet filtering.
+  yield* sql.unsafe('DROP INDEX IF EXISTS symbols_resolution_scope');
   yield* sql.unsafe('DROP INDEX IF EXISTS symbols_visualization_scope');
   yield* sql.unsafe('DROP INDEX IF EXISTS symbols_visualization_package');
   yield* sql.unsafe('DROP INDEX IF EXISTS symbols_visualization_path');
@@ -502,7 +506,14 @@ const initializeSchema = Effect.fn('codeGraph.initializeSchema')(function* (sql:
     'CREATE INDEX IF NOT EXISTS symbols_export_order ON symbols(snapshot_id, path, qualified_name, id)',
   );
   yield* sql.unsafe('CREATE INDEX IF NOT EXISTS edges_source ON edges(snapshot_id, source_id, relation)');
-  yield* sql.unsafe('CREATE INDEX IF NOT EXISTS edges_target ON edges(snapshot_id, target_id, relation)');
+  // Unresolved edges have no target and are never adjacency candidates. A
+  // partial projection avoids indexing the large unresolved tail twice.
+  yield* sql.unsafe('DROP INDEX IF EXISTS edges_target');
+  yield* sql.unsafe(`
+    CREATE INDEX IF NOT EXISTS edges_target_resolved
+    ON edges(snapshot_id, target_id, relation)
+    WHERE target_id IS NOT NULL
+  `);
   yield* sql.unsafe(
     'CREATE INDEX IF NOT EXISTS edges_export_order ON edges(snapshot_id, source_name, relation, target_name, id)',
   );

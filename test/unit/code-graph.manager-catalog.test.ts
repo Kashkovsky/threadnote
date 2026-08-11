@@ -76,7 +76,7 @@ describe('Manager logical repository and workspace catalogs', () => {
     );
     const legacy = new Database(databasePath);
     legacy.run("INSERT INTO schema_metadata (key, value) VALUES ('legacy_marker', 'preserve-me')");
-    legacy.run('DROP INDEX symbols_resolution_scope');
+    legacy.run('DROP INDEX IF EXISTS symbols_resolution_scope');
     legacy.run('DROP INDEX symbols_visualization_scope_v2');
     legacy.run('DROP INDEX symbols_visualization_package_v2');
     legacy.run('DROP INDEX symbols_visualization_path_v2');
@@ -102,6 +102,16 @@ describe('Manager logical repository and workspace catalogs', () => {
     expect(
       migrated.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'workspace_components'").get(),
     ).toEqual({name: 'workspace_components'});
+    expect(
+      migrated
+        .query(
+          "SELECT name FROM sqlite_master WHERE type = 'index' AND name IN ('symbols_name', 'symbols_resolution_scope', 'edges_target') ORDER BY name",
+        )
+        .all(),
+    ).toEqual([]);
+    expect(
+      migrated.query("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'edges_target_resolved'").get(),
+    ).toEqual({name: 'edges_target_resolved'});
     migrated.close();
   });
 
@@ -800,7 +810,7 @@ describe('Manager logical repository and workspace catalogs', () => {
     planDatabase.close();
     expect(symbolPlan.some(row => row.detail.includes('symbols_visualization_scope_v2'))).toBe(true);
     expect(edgePlan.some(row => row.detail.includes('edges_source'))).toBe(true);
-    expect(edgePlan.some(row => row.detail.includes('edges_target'))).toBe(true);
+    expect(edgePlan.some(row => row.detail.includes('edges_target_resolved'))).toBe(true);
     expect(
       endpointPlan.some(
         row =>

@@ -11,7 +11,7 @@ import type {
   CodeGraphSymbol,
 } from '../../types.js';
 import {createSourceLineIndex, sourceSpan, type SourceLineIndex} from '../source_line_index.js';
-import {isLowSignalStructuredPath, isRecognizedStructuredPath} from './policy.js';
+import {isLowSignalStructuredPath, isRecognizedStructuredPath, structuredObjectDeclarationBudget} from './policy.js';
 
 interface MutableStructuredFacts {
   readonly diagnostics: string[];
@@ -25,7 +25,6 @@ interface MutableStructuredFacts {
 }
 
 const MAX_STRUCTURED_SYMBOLS = 4_000;
-const MAX_STRUCTURED_DEPTH = 32;
 const MAX_FULL_OBJECT_CONFIG_CHARACTERS = 4 * 1_024 * 1_024;
 const MAX_RECOGNIZED_FULL_OBJECT_CONFIG_CHARACTERS = 16 * 1_024 * 1_024;
 const MAX_SHALLOW_OBJECT_CONFIG_CHARACTERS = 1 * 1_024 * 1_024;
@@ -136,15 +135,17 @@ function extractObjectConfig(facts: MutableStructuredFacts, policy: ReturnType<t
     documents = [JSON.parse(source) as unknown];
   }
   const seen = new WeakSet<object>();
+  const declarationBudget = structuredObjectDeclarationBudget(facts.file.path);
+  const maximumSymbols = declarationBudget.maximumDeclarations + 1;
   const locateConfigKey = createConfigKeyLocator(content, facts.file.language);
   const retainResourceValues = /(?:^|\/)[^/]+\.xcassets\/.*\/Contents\.json$/iu.test(facts.file.path);
   const visit = (value: unknown, parent: CodeGraphSymbol, path: readonly string[], depth: number): void => {
-    if (depth > MAX_STRUCTURED_DEPTH || facts.symbols.length >= MAX_STRUCTURED_SYMBOLS) return;
+    if (depth > declarationBudget.maximumDepth || facts.symbols.length >= maximumSymbols) return;
     if (typeof value !== 'object' || value === null) return;
     if (seen.has(value)) return;
     seen.add(value);
     const addChild = (key: string, child: unknown, item: boolean) => {
-      if (facts.symbols.length >= MAX_STRUCTURED_SYMBOLS) return;
+      if (facts.symbols.length >= maximumSymbols) return;
       const qualifiedPath = [...path, key];
       const location = locateConfigKey(key);
       const symbol = addDeclaration(
@@ -157,20 +158,20 @@ function extractObjectConfig(facts: MutableStructuredFacts, policy: ReturnType<t
         location.end,
         `${facts.file.path}#${qualifiedPath.join('.')}`,
       );
-      if (retainResourceValues && isResourceScalar(child) && facts.symbols.length < MAX_STRUCTURED_SYMBOLS) {
+      if (retainResourceValues && isResourceScalar(child) && facts.symbols.length < maximumSymbols) {
         addResourceValue(facts, symbol, String(child), qualifiedPath, location.start, location.end);
       }
       visit(child, symbol, qualifiedPath, depth + 1);
     };
     if (Array.isArray(value)) {
-      for (let index = 0; index < value.length && facts.symbols.length < MAX_STRUCTURED_SYMBOLS; index += 1) {
+      for (let index = 0; index < value.length && facts.symbols.length < maximumSymbols; index += 1) {
         const child = value[index];
         if (typeof child === 'object' && child !== null) addChild(String(index), child, true);
       }
       return;
     }
     for (const key in value as Record<string, unknown>) {
-      if (facts.symbols.length >= MAX_STRUCTURED_SYMBOLS) break;
+      if (facts.symbols.length >= maximumSymbols) break;
       if (!Object.hasOwn(value, key)) continue;
       addChild(key, (value as Record<string, unknown>)[key], false);
     }
@@ -178,8 +179,11 @@ function extractObjectConfig(facts: MutableStructuredFacts, policy: ReturnType<t
   documents.forEach((document, index) =>
     visit(document, facts.module, documents.length > 1 ? [`document-${index + 1}`] : [], 0),
   );
-  if (facts.symbols.length >= MAX_STRUCTURED_SYMBOLS) {
-    facts.diagnostics.push(`${facts.file.path}: structured declarations were bounded at ${MAX_STRUCTURED_SYMBOLS}`);
+  if (facts.symbols.length >= maximumSymbols) {
+    facts.diagnostics.push(
+      `${facts.file.path}: ${declarationBudget.policy} structured declarations were bounded at ` +
+        `${declarationBudget.maximumDeclarations}`,
+    );
   }
 }
 

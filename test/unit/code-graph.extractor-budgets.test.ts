@@ -1,13 +1,58 @@
 import {Option} from 'effect';
+import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
-import {extractFileFacts, TYPESCRIPT_DYNAMIC_RELATIONSHIP_LIMIT} from '../../src/code_graph/extractor.js';
+import {
+  createResolutionAttributor,
+  extractFileFacts,
+  TYPESCRIPT_DYNAMIC_RELATIONSHIP_LIMIT,
+} from '../../src/code_graph/extractor.js';
 import {BUILTIN_LANGUAGE_PACK_REGISTRY} from '../../src/code_graph/languages/registry.js';
 import {extractStructuredSchemaFacts} from '../../src/code_graph/languages/schemas/extractor.js';
+import {GENERIC_STRUCTURED_DECLARATION_LIMIT} from '../../src/code_graph/languages/schemas/policy.js';
 import type {CodeGraphWorkspaceProject} from '../../src/code_graph/languages/types.js';
 import type {CodeGraphInventoryFile} from '../../src/code_graph/types.js';
 import {runEffect} from '../helpers/effect-runtime.js';
 
 describe('code graph per-file extraction budgets', () => {
+  it('bounds generic structured declarations deterministically across object widths', () => {
+    fc.assert(
+      fc.property(fc.integer({max: 800, min: 0}), width => {
+        const content = JSON.stringify(
+          Object.fromEntries(Array.from({length: width}, (_, index) => [`property-${index}`, {leaf: index}])),
+        );
+        const first = extractStructuredSchemaFacts(sourceFile('data/object.json', 'json', content), {
+          packageName: Option.none(),
+          project: Option.none(),
+        });
+        const second = extractStructuredSchemaFacts(sourceFile('data/object.json', 'json', content), {
+          packageName: Option.none(),
+          project: Option.none(),
+        });
+
+        expect(first).toEqual(second);
+        expect(first.symbols.length).toBeLessThanOrEqual(GENERIC_STRUCTURED_DECLARATION_LIMIT + 1);
+        if (width > GENERIC_STRUCTURED_DECLARATION_LIMIT) {
+          expect(first.diagnostics.join('\n')).toContain('generic structured declarations were bounded');
+        }
+      }),
+      {numRuns: 40},
+    );
+  });
+
+  it('does not materialize global resolution projections for generic structured leaves', () => {
+    const file = sourceFile('data/object.json', 'json', JSON.stringify({root: {first: 1, second: 2}}));
+    const extracted = extractStructuredSchemaFacts(file, {packageName: Option.none(), project: Option.none()});
+    const [facts] = createResolutionAttributor([file])([extracted]);
+    if (!facts) throw new Error('missing resolved structured facts');
+    const leaves = facts.symbols.filter(symbol => symbol.kind === 'property');
+
+    expect(leaves.length).toBeGreaterThan(0);
+    expect(leaves.every(symbol => (symbol.lookupKeys ?? []).length === 0)).toBe(true);
+    expect(facts.symbols.find(symbol => symbol.kind === 'module')?.lookupKeys).toEqual(
+      expect.arrayContaining(['global:path:data%2Fobject.json']),
+    );
+  });
+
   it('bounds pathological TypeScript calls while preserving imports, reexports, and later declarations', () => {
     const calls = Array.from({length: TYPESCRIPT_DYNAMIC_RELATIONSHIP_LIMIT + 2_000}, () => 'dependency();');
     const content = [

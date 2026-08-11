@@ -1,15 +1,35 @@
 import {describe, expect, test} from 'vitest';
+import fc from 'fast-check';
 import {strToU8, zipSync} from 'fflate';
 import {Option} from 'effect';
 import {extractCorpusFile} from '../../src/code_graph/languages/corpus/extractor.js';
 import {
   CORPUS_ARCHIVE_ENTRY_BYTES_LIMIT,
   CORPUS_EXTRACTION_SOURCE_BYTES_LIMIT,
+  OPAQUE_CORPUS_MEDIA_EXTENSIONS,
+  isOpaqueCorpusMediaPath,
 } from '../../src/code_graph/languages/corpus/policy.js';
 import {BUILTIN_LANGUAGE_PACK_REGISTRY} from '../../src/code_graph/languages/registry.js';
 import type {CodeGraphInventoryFile} from '../../src/code_graph/types.js';
 
 describe('code graph corpus extraction', () => {
+  test('classifies opaque media by final extension independent of path shape and case', () => {
+    fc.assert(
+      fc.property(
+        fc.constantFrom(...OPAQUE_CORPUS_MEDIA_EXTENSIONS),
+        fc.array(fc.stringMatching(/^[a-z0-9_-]{1,12}$/u), {maxLength: 4}),
+        fc.boolean(),
+        (extension, directories, uppercase) => {
+          const suffix = uppercase ? extension.toUpperCase() : extension;
+          const path = [...directories, `asset${suffix}`].join('/');
+          expect(isOpaqueCorpusMediaPath(path)).toBe(true);
+          expect(isOpaqueCorpusMediaPath(`${path}.txt`)).toBe(false);
+        },
+      ),
+      {numRuns: 100},
+    );
+  });
+
   test('turns structured text and external references into searchable graph evidence', async () => {
     const facts = await extractCorpusFile(
       textFile(

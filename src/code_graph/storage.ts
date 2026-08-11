@@ -27,11 +27,17 @@ export interface CodeGraphStorageThreshold {
   readonly minimumReclaimableBytes: number;
   readonly minimumReclaimableRatio: number;
   readonly recommended: boolean;
+  readonly reason?: 'freelist' | 'freelist-and-fragmentation';
 }
 
 export interface CodeGraphPageStorage {
   readonly attribution?: CodeGraphStorageAttribution;
+  /** Freelist bytes plus measured unused space inside live B-tree pages. */
+  readonly compactionOpportunityBytes?: number;
+  readonly compactionOpportunityRatio?: number;
   readonly freelistPages: number;
+  readonly fragmentedBytes?: number;
+  readonly fragmentationRatio?: number;
   readonly pageCount: number;
   readonly pageSize: number;
   readonly reclaimableBytes: number;
@@ -55,6 +61,8 @@ export interface CodeGraphStorageAttributionAvailable {
   /** Bytes assigned by SQLite dbstat to named B-trees. */
   readonly attributedBytes: number;
   readonly freelistBytes: number;
+  /** Unused payload capacity inside live B-tree pages, measured by SQLite dbstat. */
+  readonly fragmentedBytes: number;
   readonly objectCount: number;
   readonly objects: readonly CodeGraphStorageObjectAttribution[];
   readonly objectsTruncated: boolean;
@@ -87,6 +95,56 @@ export function codeGraphStorageUnattributedBytes(
     throw new Error('SQLite storage attribution exceeds allocated page bytes.');
   }
   return allocatedBytes - attributedBytes - freelistBytes;
+}
+
+/**
+ * Recommends VACUUM from either fully free pages or the combined footprint of
+ * free pages and unused capacity left by write churn inside live B-tree pages.
+ */
+export function codeGraphCompactionRecommendation(input: {
+  readonly allocatedBytes: number;
+  readonly fragmentedBytes: number;
+  readonly reclaimableBytes: number;
+}): CodeGraphStorageThreshold & {
+  readonly compactionOpportunityBytes: number;
+  readonly compactionOpportunityRatio: number;
+} {
+  const {allocatedBytes, fragmentedBytes, reclaimableBytes} = input;
+  for (const [label, value] of [
+    ['allocated', allocatedBytes],
+    ['fragmented', fragmentedBytes],
+    ['reclaimable', reclaimableBytes],
+  ] as const) {
+    if (!Number.isSafeInteger(value) || value < 0) throw new Error(`Invalid SQLite ${label} storage bytes.`);
+  }
+  const compactionOpportunityBytes = reclaimableBytes + fragmentedBytes;
+  if (
+    !Number.isSafeInteger(compactionOpportunityBytes) ||
+    reclaimableBytes > allocatedBytes ||
+    compactionOpportunityBytes > allocatedBytes
+  ) {
+    throw new Error('SQLite compaction opportunity exceeds allocated page bytes.');
+  }
+  const reclaimableRatio = allocatedBytes === 0 ? 0 : reclaimableBytes / allocatedBytes;
+  const compactionOpportunityRatio = allocatedBytes === 0 ? 0 : compactionOpportunityBytes / allocatedBytes;
+  const freelistRecommended =
+    reclaimableBytes >= CODE_GRAPH_COMPACTION_MIN_RECLAIMABLE_BYTES &&
+    reclaimableRatio >= CODE_GRAPH_COMPACTION_MIN_RECLAIMABLE_RATIO;
+  const fragmentationRecommended =
+    compactionOpportunityBytes >= CODE_GRAPH_COMPACTION_MIN_RECLAIMABLE_BYTES &&
+    compactionOpportunityRatio >= CODE_GRAPH_COMPACTION_MIN_RECLAIMABLE_RATIO;
+  return {
+    compactionOpportunityBytes,
+    compactionOpportunityRatio,
+    minimumReclaimableBytes: CODE_GRAPH_COMPACTION_MIN_RECLAIMABLE_BYTES,
+    minimumReclaimableRatio: CODE_GRAPH_COMPACTION_MIN_RECLAIMABLE_RATIO,
+    recommended: freelistRecommended || fragmentationRecommended,
+    ...((freelistRecommended
+      ? {reason: 'freelist'}
+      : fragmentationRecommended
+        ? {reason: 'freelist-and-fragmentation'}
+        : {}) satisfies Pick<CodeGraphStorageThreshold, 'reason'>),
+  };
 }
 
 export interface CodeGraphDeferredPageStorage {
@@ -171,6 +229,8 @@ export const inspectCodeGraphStorage = Effect.fn('codeGraph.inspectStorage')(fun
   checkoutId: string,
   options: {
     readonly attributeObjects?: boolean;
+    /** Measure live-page fragmentation without collecting full semantic attribution. */
+    readonly measureFragmentation?: boolean;
     readonly openWhileLocked?: boolean;
     /** Current TEMP database bytes reported by an active build status. */
     readonly temporaryBytes?: number;
@@ -204,7 +264,11 @@ export const inspectCodeGraphStorage = Effect.fn('codeGraph.inspectStorage')(fun
   } as const;
   const pageStorage = locked
     ? ({reason: 'active-build', state: 'deferred', threshold} satisfies CodeGraphDeferredPageStorage)
-    : yield* readPageStorage(databasePath, options.attributeObjects === true).pipe(
+    : yield* readPageStorage(
+        databasePath,
+        options.attributeObjects === true,
+        options.measureFragmentation === true,
+      ).pipe(
         Effect.catch(() =>
           Effect.succeed({
             reason: 'database-busy-or-unreadable',
@@ -280,7 +344,10 @@ export const compactCodeGraphStorage = Effect.fn('codeGraph.compactStorage')(fun
         threadnoteHome,
         checkoutId,
         Effect.gen(function* () {
-          const before = yield* inspectCodeGraphStorage(threadnoteHome, checkoutId, {openWhileLocked: true});
+          const before = yield* inspectCodeGraphStorage(threadnoteHome, checkoutId, {
+            measureFragmentation: true,
+            openWhileLocked: true,
+          });
           if (before.state === 'missing') {
             return {
               action: 'missing',
@@ -314,7 +381,7 @@ export const compactCodeGraphStorage = Effect.fn('codeGraph.compactStorage')(fun
               checkoutId,
               databasePath,
               dryRun: true,
-              reclaimedBytes: before.pageStorage.reclaimableBytes,
+              reclaimedBytes: before.pageStorage.compactionOpportunityBytes ?? before.pageStorage.reclaimableBytes,
             } satisfies CodeGraphCompactionSummary;
           }
           yield* verifyCompactionDiskHeadroom(system, path.dirname(databasePath), before);
@@ -428,7 +495,11 @@ function regularFileBytes(
   });
 }
 
-function readPageStorage(databasePath: string, attributeObjects: boolean): Effect.Effect<CodeGraphPageStorage, Error> {
+function readPageStorage(
+  databasePath: string,
+  attributeObjects: boolean,
+  measureFragmentation: boolean,
+): Effect.Effect<CodeGraphPageStorage, Error> {
   return Effect.try({
     try: () => {
       const database = new Database(databasePath, {readonly: true, strict: true});
@@ -442,21 +513,35 @@ function readPageStorage(databasePath: string, attributeObjects: boolean): Effec
         const attribution = attributeObjects
           ? readStorageAttribution(database, pageCount, pageSize, reclaimableBytes)
           : undefined;
+        const measuredFragmentedBytes =
+          attribution?.state === 'available'
+            ? attribution.fragmentedBytes
+            : measureFragmentation
+              ? readFragmentedStorageBytes(database)
+              : undefined;
+        const fragmentedBytes = measuredFragmentedBytes ?? 0;
+        const recommendation = codeGraphCompactionRecommendation({
+          allocatedBytes: safeProduct(pageSize, pageCount, 'allocated storage bytes'),
+          fragmentedBytes,
+          reclaimableBytes,
+        });
         return {
           ...(attribution ? {attribution} : {}),
+          ...(measuredFragmentedBytes !== undefined
+            ? {
+                compactionOpportunityBytes: recommendation.compactionOpportunityBytes,
+                compactionOpportunityRatio: recommendation.compactionOpportunityRatio,
+                fragmentedBytes,
+                fragmentationRatio: pageCount === 0 ? 0 : fragmentedBytes / (pageCount * pageSize),
+              }
+            : {}),
           freelistPages,
           pageCount,
           pageSize,
           reclaimableBytes,
           reclaimableRatio,
           state: 'available',
-          threshold: {
-            minimumReclaimableBytes: CODE_GRAPH_COMPACTION_MIN_RECLAIMABLE_BYTES,
-            minimumReclaimableRatio: CODE_GRAPH_COMPACTION_MIN_RECLAIMABLE_RATIO,
-            recommended:
-              reclaimableBytes >= CODE_GRAPH_COMPACTION_MIN_RECLAIMABLE_BYTES &&
-              reclaimableRatio >= CODE_GRAPH_COMPACTION_MIN_RECLAIMABLE_RATIO,
-          },
+          threshold: recommendation,
         } satisfies CodeGraphPageStorage;
       } finally {
         database.close(false);
@@ -464,6 +549,17 @@ function readPageStorage(databasePath: string, attributeObjects: boolean): Effec
     },
     catch: cause => new Error(`Could not inspect code graph page storage: ${errorText(cause)}`),
   });
+}
+
+function readFragmentedStorageBytes(database: Database): number | undefined {
+  const dbstat = database.query("SELECT sqlite_compileoption_used('ENABLE_DBSTAT_VTAB') AS enabled").get() as {
+    readonly enabled: bigint | number;
+  } | null;
+  if (safeCount(dbstat?.enabled ?? 0, 'dbstat availability') !== 1) return undefined;
+  const row = database.query('SELECT COALESCE(SUM(unused), 0) AS bytes FROM dbstat').get() as {
+    readonly bytes: bigint | number;
+  } | null;
+  return safeCount(row?.bytes ?? 0, 'fragmented storage bytes');
 }
 
 function readStorageAttribution(
@@ -490,6 +586,7 @@ function readStorageAttribution(
               SUM(dbstat.pgsize) AS bytes,
               COUNT(*) AS pages,
               SUM(SUM(dbstat.pgsize)) OVER () AS total_bytes,
+              SUM(SUM(dbstat.unused)) OVER () AS total_unused_bytes,
               COUNT(*) OVER () AS object_count
          FROM dbstat
          LEFT JOIN sqlite_schema AS schema ON schema.name = dbstat.name
@@ -504,6 +601,7 @@ function readStorageAttribution(
     readonly object_count: bigint | number;
     readonly pages: bigint | number;
     readonly total_bytes: bigint | number;
+    readonly total_unused_bytes: bigint | number;
   }[];
   const semanticRows = rows.slice(0, CODE_GRAPH_STORAGE_SEMANTIC_OBJECT_LIMIT).map(row => ({
     bytes: safeCount(row.bytes, `storage object ${safeStorageObjectName(row.name)} bytes`),
@@ -511,6 +609,7 @@ function readStorageAttribution(
     pages: safeCount(row.pages, `storage object ${safeStorageObjectName(row.name)} pages`),
   }));
   const attributedBytes = safeCount(rows[0]?.total_bytes ?? 0, 'attributed storage bytes');
+  const fragmentedBytes = safeCount(rows[0]?.total_unused_bytes ?? 0, 'fragmented storage bytes');
   const objectCount = safeCount(rows[0]?.object_count ?? 0, 'attributed storage objects');
   const objectsTruncated = objectCount > CODE_GRAPH_STORAGE_ATTRIBUTION_OBJECT_LIMIT;
   const objects = rows.slice(0, CODE_GRAPH_STORAGE_ATTRIBUTION_OBJECT_LIMIT).map(row => ({
@@ -524,6 +623,7 @@ function readStorageAttribution(
     allocatedBytes,
     attributedBytes,
     freelistBytes,
+    fragmentedBytes,
     objectCount,
     objects,
     objectsTruncated,

@@ -427,6 +427,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                       const inventory = yield* inventoryRepository(identity, {
                         ...options,
                         cachedCommittedFileKeys,
+                        includeOpaqueCorpusAssets: ensureVectors,
                         languagePacks,
                         onContentBatch: cacheCoalescer.onContentBatch,
                       }).pipe(
@@ -664,6 +665,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                               buildOwner: reporter.ownerIdentity,
                               capacityProtection,
                               embedding,
+                              existing,
                               force: false,
                               forceGeneration,
                               fs,
@@ -1747,6 +1749,7 @@ const ensureCommittedBase = Effect.fn('codeGraph.ensureCommittedBase')(function*
   readonly buildOwner: CodeGraphBuildOwnerIdentity;
   readonly capacityProtection: DirectPersistentCapacityProtection;
   readonly embedding: CodeGraphEmbeddingIndexShape;
+  readonly existing?: CodeGraphSnapshot;
   readonly force: boolean;
   readonly forceGeneration?: string;
   readonly fs: FileSystem.FileSystem;
@@ -1843,7 +1846,7 @@ const ensureCommittedBase = Effect.fn('codeGraph.ensureCommittedBase')(function*
         activatePointer: false,
         building,
         ensureVectors: false,
-        existing: undefined,
+        existing: input.existing,
         inventory: cleanInventory,
         persistentOwnerToken: ownerToken,
       }).pipe(
@@ -1988,7 +1991,11 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
     input.incrementalAssessment ??
     (input.inventory.dirty ? yield* assessIncrementalOverlay(input, workspace) : undefined);
   let fallbackReason: CodeGraphOverlayFallbackReason | undefined =
-    incrementalAssessment?.mode === 'fallback' ? incrementalAssessment.reason : undefined;
+    incrementalAssessment?.mode === 'fallback'
+      ? incrementalAssessment.reason
+      : input.existing !== undefined && input.existing.extractorSet !== input.building.extractorSet
+        ? 'extractor-context-changed'
+        : undefined;
   let incrementalApplied = false;
   if (incrementalAssessment?.mode === 'eligible') {
     const incrementalReusedFiles = input.inventory.files.length - incrementalAssessment.files.length;
@@ -2134,9 +2141,11 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
       batchesTotal,
       cachedFactBytesCompleted,
       cachedFactBytesTotal,
+      ...(fallbackReason === undefined ? {} : {fallbackReason}),
       factsBytesCompleted,
       ...(finalFactsBytesTotal === undefined ? {} : {factsBytesTotal: finalFactsBytesTotal}),
       loadingMilliseconds,
+      mode: 'full',
       rows: materializedRows,
       sourceBytesCompleted,
       sourceBytesTotal,
@@ -2648,6 +2657,7 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
   }
   return {
     diagnostics: [
+      ...(input.inventory.diagnostics ?? []),
       ...extractionDiagnostics,
       ...(input.inventory.dirty
         ? [

@@ -612,12 +612,12 @@ function effectiveAdjacentEdgesCte(
   const provenancePlaceholders = provenances.map(() => '?').join(', ');
   const axes =
     direction === 'incoming'
-      ? ([{column: 'target_id', index: 'edges_target'}] as const)
+      ? ([{column: 'target_id', index: 'edges_target_resolved'}] as const)
       : direction === 'outgoing'
         ? ([{column: 'source_id', index: 'edges_source'}] as const)
         : ([
             {column: 'source_id', index: 'edges_source'},
-            {column: 'target_id', index: 'edges_target'},
+            {column: 'target_id', index: 'edges_target_resolved'},
           ] as const);
   const branches: string[] = [];
   const parameters: Array<number | string> = [];
@@ -628,6 +628,7 @@ function effectiveAdjacentEdgesCte(
       FROM edges AS current_edges INDEXED BY ${axis.index}
       WHERE current_edges.snapshot_id = ?
         AND current_edges.${axis.column} IN (${idPlaceholders})
+        AND current_edges.${axis.column} IS NOT NULL
         AND current_edges.provenance IN (${provenancePlaceholders})`;
     branches.push(
       boundedBranchLimit === undefined
@@ -642,6 +643,7 @@ function effectiveAdjacentEdgesCte(
       FROM edges AS base_edges INDEXED BY ${axis.index}
       WHERE base_edges.snapshot_id = ?
         AND base_edges.${axis.column} IN (${idPlaceholders})
+        AND base_edges.${axis.column} IS NOT NULL
         AND base_edges.provenance IN (${provenancePlaceholders})
         AND NOT EXISTS (
           SELECT 1 FROM edges AS overrides

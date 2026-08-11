@@ -792,6 +792,8 @@ describe('code graph cross-process build status', () => {
           metrics: {
             batchesCompleted: 3,
             batchesTotal: 10,
+            fallbackReason: 'file-set-changed',
+            mode: 'full',
             rows: {edges: 90, symbols: 60},
             sourceBytesCompleted: 12_000,
             sourceBytesTotal: 40_000,
@@ -847,7 +849,11 @@ describe('code graph cross-process build status', () => {
     expect(result.elapsedMilliseconds).toBeLessThan(2_000);
     const status = JSON.parse(result.output) as Record<string, unknown>;
     expect(status).toMatchObject({
-      build: {counters: {completed: 3, reused: 2, total: 10}, state: 'running'},
+      build: {
+        counters: {completed: 3, reused: 2, total: 10},
+        materialization: {metrics: {fallbackReason: 'file-set-changed', mode: 'full'}},
+        state: 'running',
+      },
       obsoleteStores: {bytes: 15, fileCount: 1, unsafeEntryCount: 0},
       type: 'code-graph-status',
       version: 2,
@@ -856,6 +862,8 @@ describe('code graph cross-process build status', () => {
     expect(idleStatus).toMatchObject({build: null, builds: [], type: 'code-graph-status', version: 2});
     expect(Object.keys(idleStatus).sort()).toEqual(Object.keys(status).sort());
     expect(result.human).toContain('Current activity: writing graph facts');
+    expect(result.human).toContain('full materialization');
+    expect(result.human).toContain('incremental fallback: file set changed');
     expect(result.human).toContain('23.4 KiB current TEMP database');
     expect(result.human).toContain('31.3 KiB TEMP database high-water');
     expect(result.human).toContain('46.9 KiB allocated durable pages');

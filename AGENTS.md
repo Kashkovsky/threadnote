@@ -21,6 +21,28 @@ nearest checked-in guidance remain authoritative.
 - Prefer the Threadnote MCP tools. If they are unavailable, use the `threadnote` CLI as the fallback and treat the
   unavailability as a dogfooding issue under the policy below.
 
+## Use Effect-aware test tooling
+
+Threadnote application and runtime behavior is predominantly Effect code. Tests whose primary program under test is an
+`Effect` must use the Effect Vitest integration from `@effect/vitest` rather than wrapping the program with
+`Effect.runPromise`, `runEffect`, or another Promise bridge inside a plain async Vitest test.
+
+- Import `it as effectIt` from `@effect/vitest` and use `effectIt.effect` for Effect examples,
+  `effectIt.scoped` when the test owns scoped resources, and `effectIt.effect.prop` for Effect properties.
+- Provide the narrow test layer explicitly. Use `ApplicationLayer` only for integration behavior that genuinely needs
+  the application service graph; prefer focused service layers for unit tests.
+- Keep setup, synchronization, assertions, and cleanup inside the returned Effect. Use `Effect.acquireUseRelease`,
+  `Effect.ensuring`, `Scope`, `Deferred`, and Effect interruption instead of Promise `try/finally` or manually running
+  nested Effects.
+- Effect tests use the test clock. Apply `TestClock.withLive` only when exercising real processes, SQLite leases,
+  wall-clock deadlines, or other behavior that deliberately needs live time; otherwise advance `TestClock`
+  deterministically.
+- Plain `it`/`test` and explicit Promise execution remain appropriate when the contract being tested is itself a
+  Promise/Node callback boundary, operating-system child process, external CLI protocol, or non-Effect code. Do not
+  convert those tests merely for uniform syntax.
+- When touching an existing plain async test that principally calls `runEffect(Effect...)`, convert that test to the
+  Effect Vitest integration as part of the change unless a boundary exception above applies.
+
 ## Seek property-based testing opportunities
 
 During development, always assess whether changed behavior has general properties that example tests alone would

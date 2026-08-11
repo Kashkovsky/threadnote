@@ -289,7 +289,7 @@ describe('code graph indexed query properties', () => {
           );
           const adjacencyPlan = queryPlan(database, adjacency.text, adjacency.parameters);
           expect(adjacencyPlan.filter(detail => detail.includes('edges_source'))).toHaveLength(2);
-          expect(adjacencyPlan.filter(detail => detail.includes('edges_target'))).toHaveLength(2);
+          expect(adjacencyPlan.filter(detail => detail.includes('edges_target_resolved'))).toHaveLength(2);
           expect(adjacencyPlan.join('\n')).not.toMatch(/SCAN (?:current_edges|base_edges|effective_edges)/u);
           expect(adjacency.text.match(/LIMIT \?/gu)).toHaveLength(5);
 

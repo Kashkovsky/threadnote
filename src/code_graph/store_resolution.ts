@@ -824,11 +824,15 @@ const promoteSnapshot = Effect.fn('codeGraph.promoteSnapshot')(function* (
       // displaced just like a lease acquired while the pointer was active.
       yield* markSnapshotLeaseRetirementBaton(sql, snapshotId, now);
       if (displacedSnapshotId === undefined || displacedSnapshotId === snapshotId) return 0;
+      // Dirty overlays cannot be exact future aliases. Recent clean snapshots
+      // remain ready and are bounded by routine per-repository LRU retention,
+      // allowing a dirty edit reverted to HEAD to reuse the exact clean graph.
       yield* sql`
         UPDATE snapshots AS candidate
         SET state = 'retired'
         WHERE candidate.id = ${displacedSnapshotId}
           AND candidate.state = 'ready'
+          AND candidate.dirty = 1
           AND NOT EXISTS (
             SELECT 1 FROM active_snapshots AS active
             WHERE active.snapshot_id = candidate.id

@@ -30,6 +30,7 @@ import type {
   CodeGraphMaterializationActivity,
   CodeGraphMaterializationMetrics,
   CodeGraphMaterializationRows,
+  CodeGraphOverlayFallbackReason,
   CodeGraphProgress,
   CodeGraphResolutionActivity,
   CodeGraphSnapshot,
@@ -237,6 +238,24 @@ const VALID_PHASES = new Set<CodeGraphProgress['phase']>([
   'waiting',
 ]);
 const VALID_STATES = new Set<CodeGraphBuildState>(['completed', 'failed', 'queued', 'running']);
+const VALID_MATERIALIZATION_FALLBACK_REASONS = new Set<CodeGraphOverlayFallbackReason>([
+  'cache-incomplete',
+  'disabled',
+  'dynamic-aliases',
+  'extractor-context-changed',
+  'fact-budget-expanded',
+  'file-set-changed',
+  'forced-full-rebuild',
+  'incremental-rewrite-unbounded',
+  'no-materialized-changes',
+  'project-closure-incomplete',
+  'project-closure-unbounded',
+  'reexport-closure-unbounded',
+  'resolution-surface-changed',
+  'staging-identity-mismatch',
+  'staging-unavailable',
+  'workspace-changed',
+]);
 
 export type CodeGraphBuildHistoryPruneResult =
   | {readonly state: 'complete'}
@@ -1419,6 +1438,15 @@ function parseMaterializationMetrics(value: unknown): CodeGraphMaterializationMe
   ) {
     return undefined;
   }
+  if (
+    value.fallbackReason !== undefined &&
+    !VALID_MATERIALIZATION_FALLBACK_REASONS.has(value.fallbackReason as CodeGraphOverlayFallbackReason)
+  ) {
+    return undefined;
+  }
+  if (value.mode !== undefined && !['full', 'incremental-clean', 'incremental-overlay'].includes(String(value.mode))) {
+    return undefined;
+  }
   for (const key of [
     'cachedFactBytesCompleted',
     'cachedFactBytesTotal',
@@ -1453,6 +1481,9 @@ function parseMaterializationMetrics(value: unknown): CodeGraphMaterializationMe
   if (storage?.estimateBasis === 'cached-fact-bytes' && value.cachedFactBytesTotal === undefined) return undefined;
   if (storage?.estimateBasis === 'final-fact-bytes' && value.factsBytesTotal === undefined) return undefined;
   return {
+    ...(value.fallbackReason === undefined
+      ? {}
+      : {fallbackReason: value.fallbackReason as CodeGraphMaterializationMetrics['fallbackReason']}),
     ...(value.attributionMilliseconds === undefined
       ? {}
       : {attributionMilliseconds: Number(value.attributionMilliseconds)}),
@@ -1465,6 +1496,7 @@ function parseMaterializationMetrics(value: unknown): CodeGraphMaterializationMe
     ...(value.factsBytesCompleted === undefined ? {} : {factsBytesCompleted: Number(value.factsBytesCompleted)}),
     ...(value.factsBytesTotal === undefined ? {} : {factsBytesTotal: Number(value.factsBytesTotal)}),
     ...(value.loadingMilliseconds === undefined ? {} : {loadingMilliseconds: Number(value.loadingMilliseconds)}),
+    ...(value.mode === undefined ? {} : {mode: value.mode as CodeGraphMaterializationMetrics['mode']}),
     ...(rows ? {rows} : {}),
     sourceBytesCompleted: Number(value.sourceBytesCompleted),
     sourceBytesTotal: Number(value.sourceBytesTotal),

@@ -1258,7 +1258,7 @@ describe('Threadnote MCP toolsets', () => {
     );
   }, 40_000);
 
-  it('returns a ready stale graph immediately after a clean checked-out commit change', async () => {
+  it('returns a ready stale graph immediately during dirty and clean repository changes', async () => {
     await withMcpClient(
       async (client, fixture) => {
         const repository = join(fixture.root, 'stale-ready-repository');
@@ -1316,6 +1316,26 @@ describe('Threadnote MCP toolsets', () => {
             'export function addedAfterPull(): string { return "after"; }\n',
             'utf8',
           );
+
+          const dirtyStartedAt = Date.now();
+          const dirtyStale = await client.callTool(
+            {
+              arguments: {callerCwd: repository, operation: 'query', query: 'indexedBeforePull'},
+              name: 'inspect_code_graph',
+            },
+            undefined,
+            {timeout: 5_000},
+          );
+          expect(Date.now() - dirtyStartedAt).toBeLessThan(2_000);
+          expect(dirtyStale.isError).not.toBe(true);
+          expect(dirtyStale.structuredContent).toMatchObject({
+            freshness: 'stale',
+            nodes: expect.arrayContaining([expect.objectContaining({name: 'indexedBeforePull'})]),
+            operation: 'query',
+            snapshot: {commit: indexedCommit, id: firstSnapshotId},
+          });
+          expect((dirtyStale.structuredContent as {readonly state?: unknown} | undefined)?.state).toBeUndefined();
+
           execFileSync('git', ['add', '.'], {cwd: repository});
           execFileSync('git', ['commit', '-qm', 'clean pulled commit'], {cwd: repository});
 

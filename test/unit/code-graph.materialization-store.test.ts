@@ -262,7 +262,7 @@ describe('code graph full-build materialization store', () => {
           PRIMARY KEY (snapshot_id, id)
         ) WITHOUT ROWID;
         CREATE INDEX edges_source ON edges(snapshot_id, source_id, relation);
-        CREATE INDEX edges_target ON edges(snapshot_id, target_id, relation);
+        CREATE INDEX edges_target_resolved ON edges(snapshot_id, target_id, relation) WHERE target_id IS NOT NULL;
       `);
 
       for (const endpoint of ['source', 'target'] as const) {
@@ -278,7 +278,7 @@ describe('code graph full-build materialization store', () => {
           }[]
         ).map(row => row.detail);
         const output = plan.join('\n');
-        const index = endpoint === 'source' ? 'edges_source' : 'edges_target';
+        const index = endpoint === 'source' ? 'edges_source' : 'edges_target_resolved';
         const column = endpoint === 'source' ? 'source_id' : 'target_id';
 
         expect(output).toContain('MATERIALIZE raw_page');
@@ -4194,7 +4194,7 @@ describe('code graph full-build materialization store', () => {
       const fixture = yield* Effect.promise(materializationFixture);
       const firstSymbol = symbol('retired-symbol', 'retiredSymbol', ['typescript:name:retiredSymbol']);
       const currentSymbol = symbol('current-symbol', 'currentSymbol', ['typescript:name:currentSymbol']);
-      const firstSnapshot = {...readySnapshot(fixture.identity, 1, 0), id: testSnapshotId(103)};
+      const firstSnapshot = {...readySnapshot(fixture.identity, 1, 0), dirty: true, id: testSnapshotId(103)};
       const currentSnapshot = {...readySnapshot(fixture.identity, 1, 0), id: testSnapshotId(104)};
 
       yield* Effect.gen(function* () {
