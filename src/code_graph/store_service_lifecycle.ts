@@ -71,6 +71,7 @@ import {temporaryActivationPublicationCapacity} from './store_temporary_capacity
 type CodeGraphStoreLifecycleMethods = Pick<
   CodeGraphStoreShape,
   | 'withSession'
+  | 'shrinkMemory'
   | 'assertRuntimeSchemaCompatible'
   | 'acquireSnapshotLease'
   | 'retainViewSnapshotLease'
@@ -107,6 +108,14 @@ export function makeCodeGraphStoreLifecycleMethods(runtime: CodeGraphStoreRuntim
     ensureSchemaInitialized,
   } = runtime;
   return {
+    shrinkMemory: databasePath =>
+      useDatabase(
+        databasePath,
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          yield* sql.unsafe('PRAGMA shrink_memory');
+        }),
+      ).pipe(Effect.mapError(cause => storeError('release code graph SQLite memory', cause))),
     withSession: (databasePath, effect, options) => {
       const detachedCleanupRequest: CodeGraphDatabaseSessionShape['detachedCleanupRequest'] = {
         completedBuild: false,
@@ -122,7 +131,7 @@ export function makeCodeGraphStoreLifecycleMethods(runtime: CodeGraphStoreRuntim
             // Keep hot upper B-tree pages resident for the one long-lived
             // indexing writer. Read/query sessions retain SQLite's small
             // default cache, so concurrent agents do not multiply this
-            // bounded 64 MiB budget.
+            // bounded 64 KiB budget.
             if (options.sqliteWriterTuning) {
               yield* configureSqliteWriterConnection(
                 sql,
@@ -131,7 +140,12 @@ export function makeCodeGraphStoreLifecycleMethods(runtime: CodeGraphStoreRuntim
                 options.onSqliteWriterConfigured,
               );
             } else {
-              yield* sql.unsafe(`PRAGMA main.cache_size = -${CODE_GRAPH_WRITER_MAIN_CACHE_KIB}`);
+              yield* configureSqliteWriterConnection(
+                sql,
+                {mainCacheKiB: CODE_GRAPH_WRITER_MAIN_CACHE_KIB},
+                'connection',
+                options.onSqliteWriterConfigured,
+              );
             }
           }
           const session = {

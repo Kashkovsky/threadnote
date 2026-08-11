@@ -337,7 +337,13 @@ const activateStagedSnapshot = Effect.fn('codeGraph.activateStagedSnapshot')(fun
           compactLexicalReceipt.postingCount,
           expectedCompactSymbols,
         );
-        if (baseSnapshotId) yield* inheritSnapshotFileShards(sql, snapshot.id, baseSnapshotId);
+        // Dirty overlays keep their clean base reachable and are never selected
+        // as reusable clean roots, so duplicating every unchanged shard
+        // association would add repository-sized publication work for no cache
+        // ownership benefit.
+        if (baseSnapshotId && !snapshot.dirty) {
+          yield* inheritSnapshotFileShards(sql, snapshot.id, baseSnapshotId);
+        }
         yield* associateSnapshotFileShards(sql, snapshot, reusableBaseReceipt);
       }
       yield* recordSnapshotExtractorGeneration(sql, snapshot.id);
@@ -650,7 +656,7 @@ const activatePersistedIncrementalSnapshot = Effect.fn('codeGraph.activatePersis
           Number(staged.terms),
           Number(staged.symbols),
         );
-        yield* inheritSnapshotFileShards(sql, snapshot.id, baseSnapshotId);
+        if (!snapshot.dirty) yield* inheritSnapshotFileShards(sql, snapshot.id, baseSnapshotId);
         yield* associateSnapshotFileShards(sql, snapshot, reusableBaseReceipt);
       }
       yield* recordSnapshotExtractorGeneration(sql, snapshot.id);

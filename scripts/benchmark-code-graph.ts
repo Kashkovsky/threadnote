@@ -165,8 +165,8 @@ const MATERIALIZATION_STAGES = [
 
 export const CODE_GRAPH_SQLITE_WRITER_PROFILES = {
   current: {
-    description: 'Current 64 MiB writer cache and 1,000-page WAL auto-checkpoint.',
-    tuning: {mainCacheKiB: 64 * 1_024, walAutoCheckpointPages: 1_000},
+    description: 'Current 64 KiB writer cache and 1,000-page WAL auto-checkpoint.',
+    tuning: {mainCacheKiB: 64, walAutoCheckpointPages: 1_000},
   },
   'cache-256m': {
     description: 'Isolates a 256 MiB writer page cache.',

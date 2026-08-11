@@ -99,7 +99,7 @@ export const configureReadConnection = Effect.fn('codeGraph.configureReadConnect
   yield* sql.unsafe('PRAGMA query_only = ON');
 });
 
-export const CODE_GRAPH_WRITER_MAIN_CACHE_KIB = 64 * 1_024;
+export const CODE_GRAPH_WRITER_MAIN_CACHE_KIB = 64;
 const CODE_GRAPH_SQLITE_WRITER_CACHE_KIB_MAXIMUM = 4 * 1_024 * 1_024;
 const CODE_GRAPH_SQLITE_WRITER_MMAP_BYTES_MAXIMUM = 64 * 1_024 * 1_024 * 1_024;
 const CODE_GRAPH_SQLITE_WRITER_WAL_CHECKPOINT_PAGES_MAXIMUM = 1_000_000;
@@ -118,6 +118,17 @@ export const configureSqliteWriterConnection = Effect.fn('codeGraph.configureSql
       CODE_GRAPH_SQLITE_WRITER_CACHE_KIB_MAXIMUM,
     );
     yield* sql.unsafe(`PRAGMA main.cache_size = -${value}`);
+    const pageSize = yield* sql.unsafe<{readonly page_size: number}>('PRAGMA main.page_size');
+    const bytesPerPage = Number(pageSize[0]?.page_size ?? 0);
+    if (!Number.isSafeInteger(bytesPerPage) || bytesPerPage < 512) {
+      return yield* Effect.fail(new CodeGraphStoreError('SQLite writer page size is invalid.'));
+    }
+    // SQLite's connection default can retain a 20,000-page spill threshold
+    // even after cache_size is lowered. Bind spill to the configured byte
+    // budget so a publication transaction cannot silently grow tens of MiB
+    // beyond the reviewed writer cache.
+    const spillPages = Math.max(1, Math.ceil((value * 1_024) / bytesPerPage));
+    yield* sql.unsafe(`PRAGMA cache_spill = ${spillPages}`);
   }
   if (tuning.mmapSizeBytes !== undefined) {
     const value = sqlitePragmaInteger(

@@ -36,6 +36,7 @@ import {
   type CodeGraphSqliteWriterTuning,
   type CodeGraphStagingProgress,
 } from '../../src/code_graph/store.js';
+import {prepareActivationTables} from '../../src/code_graph/store_staging_core.js';
 import {
   CodeGraphStoreError,
   CodeGraphStoreNoSpaceError,
@@ -81,17 +82,24 @@ describe('code graph full-build materialization store', () => {
         return yield* store.withSession(
           fixture.databasePath,
           Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient;
+            yield* prepareActivationTables(sql);
+            const temporaryCache = yield* sql.unsafe<{readonly cache_size: number}>('PRAGMA temp.cache_size');
+            const temporarySpill = yield* sql.unsafe<{readonly cache_spill: number}>('PRAGMA temp.cache_spill');
             const snapshot = {...readySnapshot(fixture.identity, 0, 0), id: 'pager-configuration'};
             const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
               ...snapshot,
               state: 'building',
             });
             yield* store.prepareActivation(fixture.databasePath, [], snapshot.id, 0, ownerToken);
-            const sql = yield* SqlClient.SqlClient;
             const cache = yield* sql.unsafe<{readonly cache_size: number}>('PRAGMA main.cache_size');
+            const spill = yield* sql.unsafe<{readonly cache_spill: number}>('PRAGMA cache_spill');
             const temporary = yield* sql.unsafe<{readonly temp_store: number}>('PRAGMA temp_store');
             return {
               cacheSize: Number(cache[0]?.cache_size),
+              spillPages: Number(spill[0]?.cache_spill),
+              temporaryCacheSize: Number(temporaryCache[0]?.cache_size),
+              temporarySpillPages: Number(temporarySpill[0]?.cache_spill),
               temporaryStore: Number(temporary[0]?.temp_store),
             };
           }),
@@ -100,7 +108,13 @@ describe('code graph full-build materialization store', () => {
       }),
     );
 
-    expect(pager).toEqual({cacheSize: -64 * 1_024, temporaryStore: 2});
+    expect(pager).toEqual({
+      cacheSize: -64,
+      spillPages: 16,
+      temporaryCacheSize: -64,
+      temporarySpillPages: 16,
+      temporaryStore: 2,
+    });
   });
 
   it('restores FULL durability before publication and leaves a failed publication resumable', async () => {

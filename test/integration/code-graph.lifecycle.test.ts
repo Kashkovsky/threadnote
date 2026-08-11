@@ -1970,55 +1970,52 @@ describe('native code graph lifecycle', () => {
     expect(result.inspected.nodes.some(node => node.name === 'changed128')).toBe(true);
   }, 30_000);
 
-  it('retries when the worktree changes after activation but before pointer promotion', async () => {
-    const root = createFixtureRepository();
-    const home = join(root, '.threadnote-test-home');
-    const initialCommit = execFileSync('git', ['-C', root, 'rev-parse', 'HEAD'], {encoding: 'utf8'}).trim();
-    let changed = false;
-    let staleSnapshotId: string | undefined;
-
-    const result = await runEffect(
-      Effect.gen(function* () {
-        const indexer = yield* CodeGraphIndexer;
-        const query = yield* CodeGraphQueryService;
-        const store = yield* CodeGraphStore;
-        const current = yield* indexer.index({
-          cwd: root,
-          onProgress: progress =>
-            Effect.sync(() => {
-              if (!changed && progress.phase === 'activating' && progress.subphase === 'promoting') {
-                staleSnapshotId = progress.snapshotId;
-                changed = true;
-                replaceFunction(root, 'ensureVectorIndex', 'ensureRacedVectorIndex');
-              }
-            }),
-          threadnoteHome: home,
-        });
-        const inspected = yield* query.inspect({
-          cwd: root,
-          operation: 'query',
-          query: 'ensureRacedVectorIndex',
-          refresh: false,
-          threadnoteHome: home,
-        });
-        const databasePath = codeGraphDatabasePath(home, current);
-        const stale = staleSnapshotId
-          ? yield* store.currentLexicalReadySnapshotById(databasePath, staleSnapshotId)
-          : undefined;
-        const staleGraph = stale ? yield* store.loadGraph(databasePath, stale.id) : undefined;
-        const active = yield* store.readySnapshot(databasePath, current.identity.worktreeId);
-        return {active, current, inspected, stale, staleGraph};
-      }),
-    );
-
-    expect(result.inspected.freshness).toBe('deferred');
-    expect(result.inspected.nodes.some(node => node.name === 'ensureRacedVectorIndex')).toBe(true);
-    expect(result.stale).toMatchObject({commit: initialCommit, id: staleSnapshotId, state: 'ready'});
-    expect(result.stale?.id).not.toBe(result.current.snapshot.id);
-    expect(result.staleGraph?.symbols.some(symbol => symbol.name === 'ensureVectorIndex')).toBe(true);
-    expect(result.staleGraph?.symbols.some(symbol => symbol.name === 'ensureRacedVectorIndex')).toBe(false);
-    expect(result.active?.id).toBe(result.current.snapshot.id);
-  });
+  effectIt.effect('retries when the worktree changes after activation but before pointer promotion', () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.sync(createFixtureRepository);
+      const home = join(root, '.threadnote-test-home');
+      const initialCommit = yield* Effect.sync(() =>
+        execFileSync('git', ['-C', root, 'rev-parse', 'HEAD'], {encoding: 'utf8'}).trim(),
+      );
+      let changed = false;
+      let staleSnapshotId: string | undefined;
+      const indexer = yield* CodeGraphIndexer;
+      const query = yield* CodeGraphQueryService;
+      const store = yield* CodeGraphStore;
+      const current = yield* indexer.index({
+        cwd: root,
+        onProgress: progress =>
+          Effect.sync(() => {
+            if (!changed && progress.phase === 'activating' && progress.subphase === 'promoting') {
+              staleSnapshotId = progress.snapshotId;
+              changed = true;
+              replaceFunction(root, 'ensureVectorIndex', 'ensureRacedVectorIndex');
+            }
+          }),
+        threadnoteHome: home,
+      });
+      const inspected = yield* query.inspect({
+        cwd: root,
+        operation: 'query',
+        query: 'ensureRacedVectorIndex',
+        refresh: false,
+        threadnoteHome: home,
+      });
+      const databasePath = codeGraphDatabasePath(home, current);
+      const stale = staleSnapshotId
+        ? yield* store.currentLexicalReadySnapshotById(databasePath, staleSnapshotId)
+        : undefined;
+      const staleGraph = stale ? yield* store.loadGraph(databasePath, stale.id) : undefined;
+      const active = yield* store.readySnapshot(databasePath, current.identity.worktreeId);
+      expect(inspected.freshness).toBe('deferred');
+      expect(inspected.nodes.some(node => node.name === 'ensureRacedVectorIndex')).toBe(true);
+      expect(stale).toMatchObject({commit: initialCommit, id: staleSnapshotId, state: 'ready'});
+      expect(stale?.id).not.toBe(current.snapshot.id);
+      expect(staleGraph?.symbols.some(symbol => symbol.name === 'ensureVectorIndex')).toBe(true);
+      expect(staleGraph?.symbols.some(symbol => symbol.name === 'ensureRacedVectorIndex')).toBe(false);
+      expect(active?.id).toBe(current.snapshot.id);
+    }).pipe(Effect.provide(ApplicationLayer), TestClock.withLive),
+  );
 
   it('removes stale committed facts when a changed source becomes ineligible', async () => {
     const root = createFixtureRepository();

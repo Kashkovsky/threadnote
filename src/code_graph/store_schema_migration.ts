@@ -198,6 +198,14 @@ const ensureCurrentCodeGraphQueryIndexes = Effect.fn('codeGraph.ensureCurrentQue
     ON edges(snapshot_id, target_id, relation)
     WHERE target_id IS NOT NULL
   `);
+  // Incremental publication must enumerate only the base edges owned by the
+  // changed path closure. Without this index a one-file overlay scans every
+  // edge twice (counting and deletion), retaining repository-sized pager
+  // state inside the ready-state transaction.
+  yield* sql.unsafe(`
+    CREATE INDEX IF NOT EXISTS edges_evidence_path
+    ON edges(snapshot_id, evidence_path)
+  `);
 });
 
 const migratePersistentExtensionTables = Effect.fn('codeGraph.migratePersistentExtensionTables')(function* (
@@ -316,6 +324,7 @@ const migratePersistentExtensionTables = Effect.fn('codeGraph.migratePersistentE
         (recordedRevision === 7 ||
           recordedRevision === 8 ||
           recordedRevision === 9 ||
+          recordedRevision === 10 ||
           recordedRevision === CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION) &&
         extensionSchemaCompatible
       ) {

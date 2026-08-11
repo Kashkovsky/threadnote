@@ -4,6 +4,8 @@ import fc from 'fast-check';
 import {
   addMaterializationRows,
   compactCachedFileRelationships,
+  codeGraphActiveParserCacheKey,
+  codeGraphParserCacheLookupGenerations,
   deduplicateMaterializationRelationships,
   estimatedMaterializationStorageBytes,
   factMaterializationBatches,
@@ -38,6 +40,43 @@ const materializationRows = FC.record({
 });
 
 describe('code graph indexer properties', () => {
+  it.prop(
+    'admits both active and degraded parser cache generations deterministically',
+    {
+      activeIdentities: FC.uniqueArray(FC.string({maxLength: 80, minLength: 1}), {maxLength: 8}),
+    },
+    ({activeIdentities}) => {
+      const generations = codeGraphParserCacheLookupGenerations(activeIdentities);
+      const expected = [...new Set(activeIdentities)].sort().flatMap(activeIdentity => [
+        {activeIdentity, storedIdentity: activeIdentity},
+        {
+          activeIdentity,
+          storedIdentity: sha256HexSync(`code-graph-parser-degraded-v1\n${activeIdentity}`),
+        },
+      ]);
+
+      expect(generations).toEqual(expected);
+      expect(codeGraphParserCacheLookupGenerations([...activeIdentities].reverse())).toEqual(generations);
+      for (const generation of generations) {
+        expect(
+          codeGraphActiveParserCacheKey(
+            `src/file.ts\0content-hash\0${generation.storedIdentity}`,
+            generation.storedIdentity,
+            generation.activeIdentity,
+          ),
+        ).toBe(`src/file.ts\0content-hash\0${generation.activeIdentity}`);
+        expect(
+          codeGraphActiveParserCacheKey(
+            `blob\0blob-id\0content-hash\0${generation.storedIdentity}\0reuse-class`,
+            generation.storedIdentity,
+            generation.activeIdentity,
+          ),
+        ).toBe(`blob\0blob-id\0content-hash\0${generation.activeIdentity}\0reuse-class`);
+      }
+    },
+    {fastCheck: {numRuns: 100}},
+  );
+
   it('keeps extractor selection independent of content while detecting active pack changes', () => {
     fc.assert(
       fc.property(fc.string({minLength: 1}), fc.string({minLength: 1}), (leftHash, rightHash) => {

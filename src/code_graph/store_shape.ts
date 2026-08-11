@@ -78,6 +78,8 @@ export interface CodeGraphStoreShape {
     effect: Effect.Effect<A, E, R | SqlClient.SqlClient>,
     options?: CodeGraphDatabaseSessionOptions,
   ) => Effect.Effect<A, E | CodeGraphStoreError, Exclude<R, SqlClient.SqlClient>>;
+  /** Release disposable SQLite page-cache allocations between index phases. */
+  readonly shrinkMemory: (databasePath: string) => Effect.Effect<void, CodeGraphStoreError>;
   /** Read-only preflight used before a long-lived process starts an isolated builder. */
   readonly assertRuntimeSchemaCompatible: (databasePath: string) => Effect.Effect<void, CodeGraphStoreError>;
   readonly activate: (
