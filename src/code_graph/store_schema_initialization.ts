@@ -533,6 +533,12 @@ const initializeSchema = Effect.fn('codeGraph.initializeSchema')(function* (sql:
   yield* sql.unsafe(
     'CREATE INDEX IF NOT EXISTS snapshot_reexport_source ON snapshot_reexport_provenance(snapshot_id, source_path, local_name)',
   );
+  yield* sql.unsafe(
+    'CREATE INDEX IF NOT EXISTS code_graph_monikers_identity ON code_graph_monikers(snapshot_id, scheme, resolution_domain, identity, role, id)',
+  );
+  yield* sql.unsafe(
+    'CREATE INDEX IF NOT EXISTS workspace_external_dependencies_package ON workspace_external_dependencies(snapshot_id, ecosystem, package_name, source_component_id)',
+  );
   yield* sql`
     INSERT INTO schema_metadata (key, value)
     VALUES ('minimum_extractor_generation', ${String(CODE_GRAPH_EXTRACTOR_GENERATION)})

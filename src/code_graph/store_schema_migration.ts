@@ -350,6 +350,11 @@ const migratePersistentExtensionTables = Effect.fn('codeGraph.migratePersistentE
       const lexicalReadSurfaceMissing = inspections.some(
         inspection => inspection.group === 'lexical' && !inspection.exists,
       );
+      const crossRepositoryAuthorityUnavailable = inspections.some(
+        inspection => inspection.group === 'cross-repository' && (!inspection.exists || !inspection.compatible),
+      );
+      const crossRepositorySnapshotAuthorityLost =
+        crossRepositoryAuthorityUnavailable && Number.isSafeInteger(recordedRevision) && recordedRevision >= 7;
       const incomplete = yield* sql<{readonly count: number}>`
         SELECT COUNT(*) AS count FROM snapshots WHERE state IN ('building', 'failed')
       `;
@@ -373,6 +378,31 @@ const migratePersistentExtensionTables = Effect.fn('codeGraph.migratePersistentE
           WHERE state IN ('building', 'failed')
         `;
         yield* observe?.('retired-incomplete') ?? Effect.void;
+      }
+      // Revision 10 makes external declarations and monikers part of snapshot
+      // authority rather than a reconstructible summary. A ready pre-v10
+      // snapshot cannot prove that it contains those declarations, and a
+      // current snapshot whose tables drifted must not remain active after the
+      // tables are recreated empty. Revoke its pointer in the same migration
+      // transaction and let the ordinary identity path rebuild it.
+      if (crossRepositorySnapshotAuthorityLost) {
+        if (yield* tableExists(sql, 'active_snapshots')) {
+          yield* sql`
+            DELETE FROM active_snapshots
+            WHERE snapshot_id IN (SELECT id FROM snapshots WHERE state = 'ready')
+          `;
+        }
+        yield* sql`
+          UPDATE snapshots
+          SET state = 'retired',
+              completed_at = COALESCE(completed_at, ${new Date().toISOString()}),
+              failure_summary = COALESCE(
+                failure_summary,
+                'Cross-repository declaration storage changed; rebuild required.'
+              )
+          WHERE state = 'ready'
+        `;
+        yield* observe?.('retired-incompatible-ready') ?? Effect.void;
       }
       // Revision 5 is the first schema that can claim compact lexical storage.
       // If any table in that contract is missing or incompatible, keeping a

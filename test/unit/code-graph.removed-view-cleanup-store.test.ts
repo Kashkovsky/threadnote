@@ -27,63 +27,65 @@ const SNAPSHOT_ID = 'cgsn_1111111111111111111111111111111111111111';
 const NEW_SNAPSHOT_ID = 'cgsn_2222222222222222222222222222222222222222';
 
 describe('removed code graph view cleanup queue', () => {
-  effectIt.effect('upgrades an exact revision 8 cleanup authority to revision 11 without retiring ready views', () =>
-    withFixture('threadnote-removed-cleanup-r8-r9-', ({databasePath}) =>
-      Effect.gen(function* () {
-        const store = yield* CodeGraphStore;
-        yield* store.initialize(databasePath);
-        yield* Effect.sync(() => {
-          const database = new Database(databasePath, {strict: true});
-          try {
-            seedSnapshot(database, SNAPSHOT_ID, WORKTREE_ID, 'ready');
-            database
-              .query('INSERT INTO active_snapshots (worktree_id, snapshot_id, activated_at) VALUES (?, ?, ?)')
-              .run(WORKTREE_ID, SNAPSHOT_ID, new Date(0).toISOString());
-            database.exec('DROP TABLE snapshot_component_edge_aggregate_receipts');
-            database.exec('DROP TABLE snapshot_component_edge_aggregates');
-            database
-              .query("UPDATE schema_metadata SET value = '8' WHERE key = 'persistent_extension_schema_revision'")
-              .run();
-          } finally {
-            database.close(false);
-          }
-        });
+  effectIt.effect(
+    'upgrades an exact revision 8 cleanup authority to the current revision without retiring ready views',
+    () =>
+      withFixture('threadnote-removed-cleanup-r8-current-', ({databasePath}) =>
+        Effect.gen(function* () {
+          const store = yield* CodeGraphStore;
+          yield* store.initialize(databasePath);
+          yield* Effect.sync(() => {
+            const database = new Database(databasePath, {strict: true});
+            try {
+              seedSnapshot(database, SNAPSHOT_ID, WORKTREE_ID, 'ready');
+              database
+                .query('INSERT INTO active_snapshots (worktree_id, snapshot_id, activated_at) VALUES (?, ?, ?)')
+                .run(WORKTREE_ID, SNAPSHOT_ID, new Date(0).toISOString());
+              database.exec('DROP TABLE snapshot_component_edge_aggregate_receipts');
+              database.exec('DROP TABLE snapshot_component_edge_aggregates');
+              database
+                .query("UPDATE schema_metadata SET value = '8' WHERE key = 'persistent_extension_schema_revision'")
+                .run();
+            } finally {
+              database.close(false);
+            }
+          });
 
-        yield* store.initialize(databasePath);
+          yield* store.initialize(databasePath);
 
-        const observed = yield* Effect.sync(() => {
-          const database = new Database(databasePath, {readonly: true, strict: true});
-          try {
-            return {
-              active: database.query('SELECT worktree_id, snapshot_id FROM active_snapshots').all(),
-              aggregates: database
-                .query(
-                  `SELECT name FROM sqlite_schema
+          const observed = yield* Effect.sync(() => {
+            const database = new Database(databasePath, {readonly: true, strict: true});
+            try {
+              return {
+                active: database.query('SELECT worktree_id, snapshot_id FROM active_snapshots').all(),
+                aggregates: database
+                  .query(
+                    `SELECT name FROM sqlite_schema
                    WHERE name IN ('snapshot_component_edge_aggregates', 'snapshot_component_edge_aggregate_receipts')
                    ORDER BY name`,
-                )
-                .all(),
-              ready: database.query('SELECT state FROM snapshots WHERE id = ?').get(SNAPSHOT_ID),
-              revision: database
-                .query("SELECT value FROM schema_metadata WHERE key = 'persistent_extension_schema_revision'")
-                .get(),
-            };
-          } finally {
-            database.close(false);
-          }
-        });
+                  )
+                  .all(),
+                ready: database.query('SELECT state FROM snapshots WHERE id = ?').get(SNAPSHOT_ID),
+                revision: database
+                  .query("SELECT value FROM schema_metadata WHERE key = 'persistent_extension_schema_revision'")
+                  .get(),
+              };
+            } finally {
+              database.close(false);
+            }
+          });
 
-        expect(observed).toEqual({
-          active: [{snapshot_id: SNAPSHOT_ID, worktree_id: WORKTREE_ID}],
-          aggregates: [
-            {name: 'snapshot_component_edge_aggregate_receipts'},
-            {name: 'snapshot_component_edge_aggregates'},
-          ],
-          ready: {state: 'ready'},
-          revision: {value: '11'},
-        });
-      }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+          expect(observed).toEqual({
+            active: [{snapshot_id: SNAPSHOT_ID, worktree_id: WORKTREE_ID}],
+            aggregates: [
+              {name: 'snapshot_component_edge_aggregate_receipts'},
+              {name: 'snapshot_component_edge_aggregates'},
+            ],
+            ready: {state: 'ready'},
+            revision: {value: String(CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION)},
+          });
+        }),
+      ).pipe(Effect.provide(ApplicationLayer)),
   );
 
   effectIt.effect('carries the revision 8 cleanup authority into the current extension schema', () =>
@@ -134,7 +136,7 @@ describe('removed code graph view cleanup queue', () => {
         });
 
         expect(CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION).toBe(11);
-        expect(observed.revision).toEqual({value: '11'});
+        expect(observed.revision).toEqual({value: String(CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION)});
         expect(observed.ready).toEqual({state: 'ready'});
         expect(observed.building).toEqual({state: 'building'});
         expect(observed.active).toEqual([{snapshot_id: SNAPSHOT_ID, worktree_id: WORKTREE_ID}]);

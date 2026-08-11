@@ -8,6 +8,8 @@ import type {
 } from './languages/types.js';
 import {compareCodeUnits} from './ordering.js';
 import type {CodeGraphInventoryFile} from './types.js';
+import type {CodeGraphExternalDependencyV1} from './cross_repository/types.js';
+import type {CodeGraphSpan} from './types.js';
 
 export interface ProjectCandidate {
   readonly aliases: readonly string[];
@@ -15,11 +17,15 @@ export interface ProjectCandidate {
   readonly dependencyAliases: readonly string[];
   readonly diagnostics: readonly string[];
   readonly evidence?: string;
+  readonly externalDependencies?: readonly CodeGraphExternalDependencyV1[];
   /** Optional identity discriminator for multiple typed components at one root. */
   readonly identityKey?: string;
   readonly kind: CodeGraphWorkspaceComponentKind;
   readonly languages: readonly string[];
   readonly name: string;
+  readonly packageNameSpan?: CodeGraphSpan;
+  readonly packageNameDeclared?: boolean;
+  readonly packageVersion?: string;
   readonly provenance: CodeGraphWorkspaceProvenance;
   readonly resolutionDomain: string;
   readonly root: string;

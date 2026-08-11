@@ -1,4 +1,5 @@
 import type {CodeGraphScanningMetrics, CodeGraphSourceSizeBucket} from './progress_telemetry.js';
+import type {CodeGraphMonikerV1} from './cross_repository/types.js';
 
 export const CODE_GRAPH_SCHEMA_VERSION = 3 as const;
 /** Additive persistent surfaces that preserve the public graph-v3 row contract. */
@@ -104,6 +105,7 @@ export interface CodeGraphFileFacts {
   readonly derivationInputs?: CodeGraphDerivationInputs;
   readonly diagnostics: readonly string[];
   readonly edges: readonly CodeGraphEdge[];
+  readonly monikers?: readonly CodeGraphMonikerV1[];
   readonly path: string;
   readonly references?: readonly CodeGraphReference[];
   readonly symbols: readonly CodeGraphSymbol[];

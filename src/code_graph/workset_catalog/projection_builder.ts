@@ -2,38 +2,93 @@ import {Effect, Path} from 'effect';
 import {codeGraphLayout} from '../layout.js';
 import {CodeGraphStore} from '../store.js';
 import type {RepositoryIdentity} from '../types.js';
-import {buildCodeGraphReadySnapshotRoutingProjection} from './snapshot_projection.js';
+import {
+  buildCodeGraphReadySnapshotRoutingProjectionScoped,
+  streamCodeGraphReadySnapshotRoutingProjectionScoped,
+} from './snapshot_projection.js';
+import {
+  appendCodeGraphWorksetCatalogProjectionPage,
+  beginCodeGraphWorksetCatalogProjection,
+  completeCodeGraphWorksetCatalogProjection,
+} from './store.js';
 import {CodeGraphWorksetCatalogError} from './types.js';
 
 export interface CodeGraphWorksetRoutingProjectionRequestV1 {
   readonly identity: Pick<RepositoryIdentity, 'checkoutId' | 'repositoryId' | 'worktreeId'>;
   readonly leaseDurationMilliseconds?: number;
   readonly pageSize?: number;
+  /** @internal Test/benchmark observer for the largest live normalized symbol page. */
+  readonly observeBufferedSymbols?: (count: number) => void;
   readonly snapshotId?: string;
   readonly threadnoteHome: string;
 }
 
 /** Runtime adapter that resolves the authoritative per-checkout graph path. */
-export const buildCodeGraphWorksetRoutingProjection = Effect.fn('codeGraphWorksetCatalog.buildRoutingProjection')(
-  function* (request: CodeGraphWorksetRoutingProjectionRequestV1) {
-    const path = yield* Path.Path;
-    const store = yield* CodeGraphStore;
-    const layout = yield* Effect.try({
-      try: () =>
-        codeGraphLayout(path, request.threadnoteHome, request.identity.checkoutId, request.identity.worktreeId),
-      catch: cause =>
-        new CodeGraphWorksetCatalogError('invalid-input', 'Workset routing projection identity is invalid.', {cause}),
-    });
-    return yield* buildCodeGraphReadySnapshotRoutingProjection(store, {
+export const buildCodeGraphWorksetRoutingProjectionScoped = Effect.fn(
+  'codeGraphWorksetCatalog.buildRoutingProjectionScoped',
+)(function* (request: CodeGraphWorksetRoutingProjectionRequestV1) {
+  const path = yield* Path.Path;
+  const store = yield* CodeGraphStore;
+  const layout = yield* Effect.try({
+    try: () => codeGraphLayout(path, request.threadnoteHome, request.identity.checkoutId, request.identity.worktreeId),
+    catch: cause =>
+      new CodeGraphWorksetCatalogError('invalid-input', 'Workset routing projection identity is invalid.', {cause}),
+  });
+  return yield* buildCodeGraphReadySnapshotRoutingProjectionScoped(store, {
+    checkoutId: request.identity.checkoutId,
+    databasePath: layout.databasePath,
+    ...(request.leaseDurationMilliseconds === undefined
+      ? {}
+      : {leaseDurationMilliseconds: request.leaseDurationMilliseconds}),
+    ...(request.pageSize === undefined ? {} : {pageSize: request.pageSize}),
+    ...(request.observeBufferedSymbols === undefined ? {} : {observeBufferedSymbols: request.observeBufferedSymbols}),
+    repositoryId: request.identity.repositoryId,
+    ...(request.snapshotId === undefined ? {} : {snapshotId: request.snapshotId}),
+    worktreeId: request.identity.worktreeId,
+  });
+});
+
+/** Stream one leased ready snapshot into the home-global catalog with page-bounded memory. */
+export const stageCodeGraphWorksetRoutingProjectionScoped = Effect.fn(
+  'codeGraphWorksetCatalog.stageRoutingProjectionScoped',
+)(function* (request: CodeGraphWorksetRoutingProjectionRequestV1) {
+  const path = yield* Path.Path;
+  const store = yield* CodeGraphStore;
+  const layout = yield* Effect.try({
+    try: () => codeGraphLayout(path, request.threadnoteHome, request.identity.checkoutId, request.identity.worktreeId),
+    catch: cause =>
+      new CodeGraphWorksetCatalogError('invalid-input', 'Workset routing projection identity is invalid.', {cause}),
+  });
+  return yield* streamCodeGraphReadySnapshotRoutingProjectionScoped(
+    store,
+    {
       checkoutId: request.identity.checkoutId,
       databasePath: layout.databasePath,
       ...(request.leaseDurationMilliseconds === undefined
         ? {}
         : {leaseDurationMilliseconds: request.leaseDurationMilliseconds}),
       ...(request.pageSize === undefined ? {} : {pageSize: request.pageSize}),
+      ...(request.observeBufferedSymbols === undefined ? {} : {observeBufferedSymbols: request.observeBufferedSymbols}),
       repositoryId: request.identity.repositoryId,
       ...(request.snapshotId === undefined ? {} : {snapshotId: request.snapshotId}),
       worktreeId: request.identity.worktreeId,
-    });
+    },
+    {
+      append: (projectionDigest, symbols) =>
+        appendCodeGraphWorksetCatalogProjectionPage(request.threadnoteHome, {projectionDigest, symbols}),
+      begin: receipt => beginCodeGraphWorksetCatalogProjection(request.threadnoteHome, receipt),
+      complete: projectionDigest =>
+        completeCodeGraphWorksetCatalogProjection(request.threadnoteHome, projectionDigest).pipe(Effect.asVoid),
+    },
+  );
+});
+
+/** Build one projection and release its lease when the projection returns. */
+export const buildCodeGraphWorksetRoutingProjection = Effect.fn('codeGraphWorksetCatalog.buildRoutingProjection')(
+  function* (request: CodeGraphWorksetRoutingProjectionRequestV1) {
+    const {assertLease: _assertLease, ...built} = yield* buildCodeGraphWorksetRoutingProjectionScoped(request).pipe(
+      Effect.scoped,
+    );
+    return built;
   },
 );

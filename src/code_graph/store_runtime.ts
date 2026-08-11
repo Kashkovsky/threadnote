@@ -34,6 +34,9 @@ export const makeCodeGraphStoreRuntime = Effect.gen(function* () {
 
   const detachedCleanupActive = new Set<string>();
 
+  const writerLockPathFor = (databasePath: string, options: CodeGraphDatabaseSessionOptions | undefined) =>
+    options?.writerLockPath ?? inferredCodeGraphWriterLockPath(path, databasePath) ?? `${databasePath}.writer.lock`;
+
   const scheduleDetachedCleanup = (databasePath: string, cleanup: Effect.Effect<void>) =>
     Effect.gen(function* () {
       // Every detached collector is opportunistic and resumable. Running
@@ -61,8 +64,7 @@ export const makeCodeGraphStoreRuntime = Effect.gen(function* () {
         const options =
           Option.isSome(session) && session.value.databasePath === databasePath ? session.value : undefined;
         if (options?.writerGateHeld) return effect;
-        const writerLockPath = options?.writerLockPath ?? inferredCodeGraphWriterLockPath(path, databasePath);
-        if (!writerLockPath) return effect;
+        const writerLockPath = writerLockPathFor(databasePath, options);
         const requestedWaitTimeout = normalizedWriterGateWaitTimeout(waitTimeoutMilliseconds);
         const effectiveWaitTimeout =
           requestedWaitTimeout === 0 && detachedCleanupActive.has(databasePath)
@@ -125,7 +127,7 @@ export const makeCodeGraphStoreRuntime = Effect.gen(function* () {
     options: CodeGraphDatabaseSessionOptions | undefined,
   ) =>
     Effect.gen(function* () {
-      const writerLockPath = options?.writerLockPath ?? inferredCodeGraphWriterLockPath(path, databasePath);
+      const writerLockPath = writerLockPathFor(databasePath, options);
       let completedBuildRemaining = true;
       const cleanupSweep = Effect.gen(function* () {
         // Purge owns the same gate before deleting the repository root. Check
@@ -153,16 +155,18 @@ export const makeCodeGraphStoreRuntime = Effect.gen(function* () {
           }),
         );
       });
-      const runSweep =
-        writerLockPath === undefined
-          ? cleanupSweep.pipe(Effect.map(Option.some))
-          : withExclusiveFileLock(fs, writerLockPath, CODE_GRAPH_DETACHED_CLEANUP_LOCK_OPTIONS, cleanupSweep).pipe(
-              Effect.map(Option.some),
-              Effect.catch(error => (isFileLockTimeout(error) ? Effect.succeed(Option.none()) : Effect.fail(error))),
-              Effect.provideService(Crypto.Crypto, crypto),
-              Effect.provideService(Path.Path, path),
-              Effect.provideService(SystemInfo, system),
-            );
+      const runSweep = withExclusiveFileLock(
+        fs,
+        writerLockPath,
+        CODE_GRAPH_DETACHED_CLEANUP_LOCK_OPTIONS,
+        cleanupSweep,
+      ).pipe(
+        Effect.map(Option.some),
+        Effect.catch(error => (isFileLockTimeout(error) ? Effect.succeed(Option.none()) : Effect.fail(error))),
+        Effect.provideService(Crypto.Crypto, crypto),
+        Effect.provideService(Path.Path, path),
+        Effect.provideService(SystemInfo, system),
+      );
       const cleanup = Effect.gen(function* () {
         for (;;) {
           const result = yield* runSweep;
@@ -200,7 +204,7 @@ export const makeCodeGraphStoreRuntime = Effect.gen(function* () {
 
   const startRoutinePhysicalCleanup = (databasePath: string, options: CodeGraphDatabaseSessionOptions | undefined) =>
     Effect.gen(function* () {
-      const writerLockPath = options?.writerLockPath ?? inferredCodeGraphWriterLockPath(path, databasePath);
+      const writerLockPath = writerLockPathFor(databasePath, options);
       const cleanupSweep = Effect.gen(function* () {
         // Open SQLite only while holding the checkout writer gate. Purge
         // owns the same gate, so a detached collector cannot retain a
@@ -215,16 +219,18 @@ export const makeCodeGraphStoreRuntime = Effect.gen(function* () {
           }),
         );
       });
-      const runSweep =
-        writerLockPath === undefined
-          ? cleanupSweep.pipe(Effect.map(Option.some))
-          : withExclusiveFileLock(fs, writerLockPath, CODE_GRAPH_DETACHED_CLEANUP_LOCK_OPTIONS, cleanupSweep).pipe(
-              Effect.map(Option.some),
-              Effect.catch(error => (isFileLockTimeout(error) ? Effect.succeed(Option.none()) : Effect.fail(error))),
-              Effect.provideService(Crypto.Crypto, crypto),
-              Effect.provideService(Path.Path, path),
-              Effect.provideService(SystemInfo, system),
-            );
+      const runSweep = withExclusiveFileLock(
+        fs,
+        writerLockPath,
+        CODE_GRAPH_DETACHED_CLEANUP_LOCK_OPTIONS,
+        cleanupSweep,
+      ).pipe(
+        Effect.map(Option.some),
+        Effect.catch(error => (isFileLockTimeout(error) ? Effect.succeed(Option.none()) : Effect.fail(error))),
+        Effect.provideService(Crypto.Crypto, crypto),
+        Effect.provideService(Path.Path, path),
+        Effect.provideService(SystemInfo, system),
+      );
       const cleanup = Effect.gen(function* () {
         // Pointer publication and lease release stay latency-bounded. Give
         // the foreground operation one polling window to finish before the

@@ -1736,7 +1736,7 @@ function formatKindCounts(counts: ReadonlyMap<CompactableMemoryKind, number>): s
   return (['handoff', 'durable', 'incident'] as const).map(kind => `${kind} ${counts.get(kind) ?? 0}`).join(', ');
 }
 
-const readMemoryRecordsByUri = Effect.fn('memory.readMemoryRecordsByUri')(function* (
+export const readMemoryRecordsByUri = Effect.fn('memory.readMemoryRecordsByUri')(function* (
   config: RuntimeConfig,
   uris: readonly string[],
 ) {

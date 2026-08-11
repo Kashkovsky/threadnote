@@ -85,10 +85,14 @@ export const inferProjectFromQuery = Effect.fn('manifest.inferProjectFromQuery')
  */
 function resolveWorksetProjects(manifest: SeedManifest, workset: WorksetManifest): ResolvedWorkset {
   const byName = new Map(manifest.projects.map(project => [project.name.toLowerCase(), project]));
-  const projects = workset.projects
-    .map(name => byName.get(name.toLowerCase()))
-    .filter((project): project is ProjectManifest => project !== undefined);
-  return {name: workset.name, projects};
+  const projects: ProjectManifest[] = [];
+  const unresolvedProjects: string[] = [];
+  for (const name of workset.projects) {
+    const project = byName.get(name.toLowerCase());
+    if (project === undefined) unresolvedProjects.push(name);
+    else projects.push(project);
+  }
+  return {name: workset.name, projects, unresolvedProjects};
 }
 
 /** Looks up a workset by exact (case-insensitive) name; undefined when unknown or unreadable. */

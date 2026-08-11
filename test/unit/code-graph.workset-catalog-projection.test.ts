@@ -4,7 +4,12 @@ import {afterEach, describe, expect, it} from 'vitest';
 import {Effect} from 'effect';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
-import {buildCodeGraphWorksetRoutingProjection} from '../../src/code_graph/workset_catalog/projection_builder.js';
+import {CODE_GRAPH_EXTRACTOR_GENERATION} from '../../src/code_graph/types.js';
+import {
+  buildCodeGraphWorksetRoutingProjection,
+  buildCodeGraphWorksetRoutingProjectionScoped,
+  stageCodeGraphWorksetRoutingProjectionScoped,
+} from '../../src/code_graph/workset_catalog/projection_builder.js';
 import {CodeGraphWorksetCatalogError} from '../../src/code_graph/workset_catalog/types.js';
 import {join, mkdtemp, rm} from '../helpers/effect-filesystem.js';
 import {runEffect} from '../helpers/effect-runtime.js';
@@ -188,6 +193,70 @@ describe('code graph ready-snapshot workset routing projections', () => {
     });
   });
 
+  it('retains a 32-hex-node projection lease for the complete caller scope', async () => {
+    const home = await temporaryHome(homes);
+    const identity = repositoryIdentity('scoped-lease');
+    const snapshotId = snapshotIdentity('scoped-lease');
+    await initializeGraph(home, identity.checkoutId);
+    seedGraph(
+      home,
+      identity,
+      [{effectiveSymbolCount: 1, id: snapshotId, symbols: [symbol('leased')], worktreeId: identity.worktreeId}],
+      [{snapshotId, worktreeId: identity.worktreeId}],
+    );
+
+    const during = await runEffect(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const built = yield* buildCodeGraphWorksetRoutingProjectionScoped({
+            identity,
+            snapshotId,
+            threadnoteHome: home,
+          });
+          expect(built.projection.symbols[0]?.nodeId).toMatch(/^cgs_[0-9a-f]{32}$/u);
+          yield* built.assertLease;
+          return countSnapshotLeases(home, identity.checkoutId, snapshotId);
+        }),
+      ),
+    );
+
+    expect(during).toBe(1);
+    expect(countSnapshotLeases(home, identity.checkoutId, snapshotId)).toBe(0);
+  });
+
+  it('rejects publication fencing after the active worktree snapshot drifts', async () => {
+    const home = await temporaryHome(homes);
+    const identity = repositoryIdentity('active-drift');
+    const selectedId = snapshotIdentity('active-drift-selected');
+    const replacementId = snapshotIdentity('active-drift-replacement');
+    await initializeGraph(home, identity.checkoutId);
+    seedGraph(
+      home,
+      identity,
+      [
+        {effectiveSymbolCount: 1, id: selectedId, symbols: [symbol('selected')], worktreeId: identity.worktreeId},
+        {effectiveSymbolCount: 1, id: replacementId, symbols: [symbol('replacement')], worktreeId: identity.worktreeId},
+      ],
+      [{snapshotId: selectedId, worktreeId: identity.worktreeId}],
+    );
+
+    await expect(
+      runEffect(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const built = yield* buildCodeGraphWorksetRoutingProjectionScoped({
+              identity,
+              snapshotId: selectedId,
+              threadnoteHome: home,
+            });
+            yield* Effect.sync(() => replaceActiveSnapshot(home, identity, replacementId));
+            yield* built.assertLease;
+          }),
+        ),
+      ),
+    ).rejects.toMatchObject({reason: 'missing'} satisfies Partial<CodeGraphWorksetCatalogError>);
+  });
+
   it('keeps projection identity invariant across bounded keyset page sizes', async () => {
     const home = await temporaryHome(homes);
     const identity = repositoryIdentity('page-property');
@@ -221,10 +290,27 @@ describe('code graph ready-snapshot workset routing projections', () => {
 
     await fc.assert(
       fc.asyncProperty(fc.integer({min: 1, max: 16}), async pageSize => {
+        let peakBufferedSymbols = 0;
         const candidate = await runEffect(
           buildCodeGraphWorksetRoutingProjection({identity, pageSize, snapshotId, threadnoteHome: home}),
         );
+        const streamed = await runEffect(
+          Effect.scoped(
+            stageCodeGraphWorksetRoutingProjectionScoped({
+              identity,
+              observeBufferedSymbols: count => {
+                peakBufferedSymbols = Math.max(peakBufferedSymbols, count);
+              },
+              pageSize,
+              snapshotId,
+              threadnoteHome: home,
+            }),
+          ),
+        );
         expect(candidate.projection).toEqual(reference.projection);
+        expect(streamed.receipt.projectionDigest).toBe(reference.projection.projectionDigest);
+        expect(streamed.receipt.symbolCount).toBe(reference.projection.symbols.length);
+        expect(peakBufferedSymbols).toBeLessThanOrEqual(pageSize);
         expect({...candidate.stats, pagesRead: 0}).toEqual({...reference.stats, pagesRead: 0});
       }),
       {numRuns: 40},
@@ -334,8 +420,8 @@ function seedSnapshot(database: Database, repositoryId: string, snapshot: Fixtur
       '2026-08-11T00:00:01.000Z',
     );
   database
-    .query('INSERT INTO snapshot_extractor_generations (snapshot_id, generation) VALUES (?, 12)')
-    .run(snapshot.id);
+    .query('INSERT INTO snapshot_extractor_generations (snapshot_id, generation) VALUES (?, ?)')
+    .run(snapshot.id, CODE_GRAPH_EXTRACTOR_GENERATION);
   seedWorkspace(database, snapshot.id);
 
   for (const entry of snapshot.symbols) {
@@ -525,12 +611,34 @@ function databasePath(home: string, checkoutId: string): string {
   return join(home, 'indexes', 'code-graph', 'repositories', checkoutId, 'graph-v3.sqlite');
 }
 
+function countSnapshotLeases(home: string, checkoutId: string, snapshotId: string): number {
+  const database = new Database(databasePath(home, checkoutId), {readonly: true, strict: true});
+  try {
+    return database
+      .query<{readonly count: number}, [string]>('SELECT COUNT(*) AS count FROM snapshot_leases WHERE snapshot_id = ?')
+      .get(snapshotId)!.count;
+  } finally {
+    database.close(false);
+  }
+}
+
+function replaceActiveSnapshot(home: string, identity: FixtureIdentity, snapshotId: string): void {
+  const database = new Database(databasePath(home, identity.checkoutId), {strict: true});
+  try {
+    database
+      .query('UPDATE active_snapshots SET snapshot_id = ?, activated_at = ? WHERE worktree_id = ?')
+      .run(snapshotId, '2026-08-11T00:01:00.000Z', identity.worktreeId);
+  } finally {
+    database.close(false);
+  }
+}
+
 function snapshotIdentity(value: string): string {
   return `cgsn_${hash(`snapshot:${value}`).slice(0, 40)}`;
 }
 
 function nodeIdentity(value: string): string {
-  return `cgs_${hash(`node:${value}`).slice(0, 40)}`;
+  return `cgs_${hash(`node:${value}`).slice(0, 32)}`;
 }
 
 function commitIdentity(value: string): string {

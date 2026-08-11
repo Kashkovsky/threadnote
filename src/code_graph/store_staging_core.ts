@@ -13,6 +13,8 @@ import {
   type CodeGraphSymbol,
   CodeGraphStoreError,
 } from './types.js';
+import type {CodeGraphMonikerV1} from './cross_repository/types.js';
+import {canonicalCodeGraphMonikers} from './cross_repository/monikers.js';
 import {
   ACTIVATION_REFERENCE_BATCH_ROWS,
   ACTIVATION_REFERENCE_CANDIDATE_BATCH_ROWS,
@@ -301,6 +303,42 @@ const prepareActivationTables = Effect.fn('codeGraph.prepareActivationTables')(f
     ) WITHOUT ROWID
   `);
   yield* sql.unsafe(`
+    CREATE TEMP TABLE IF NOT EXISTS activation_workspace_external_dependencies (
+      source_component_id TEXT NOT NULL,
+      ecosystem TEXT NOT NULL,
+      package_name TEXT NOT NULL,
+      import_alias TEXT NOT NULL,
+      dependency_kind TEXT NOT NULL,
+      version_constraint TEXT NOT NULL,
+      evidence_path TEXT NOT NULL,
+      evidence_span_json TEXT,
+      PRIMARY KEY (
+        source_component_id, ecosystem, package_name, import_alias, dependency_kind,
+        version_constraint, evidence_path
+      )
+    ) WITHOUT ROWID
+  `);
+  yield* sql.unsafe(`
+    CREATE TEMP TABLE IF NOT EXISTS activation_monikers (
+      id TEXT PRIMARY KEY,
+      version INTEGER NOT NULL,
+      scheme TEXT NOT NULL,
+      role TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      resolution_domain TEXT NOT NULL,
+      identity TEXT NOT NULL,
+      package_name TEXT,
+      package_version TEXT,
+      import_path TEXT,
+      qualified_name TEXT,
+      component_id TEXT,
+      symbol_id TEXT,
+      dependency_kind TEXT,
+      evidence_path TEXT NOT NULL,
+      evidence_span_json TEXT NOT NULL
+    ) WITHOUT ROWID
+  `);
+  yield* sql.unsafe(`
     CREATE TEMP TABLE IF NOT EXISTS activation_symbol_lookup (
       lookup_key TEXT NOT NULL,
       symbol_id TEXT NOT NULL,
@@ -389,6 +427,8 @@ const prepareActivationTables = Effect.fn('codeGraph.prepareActivationTables')(f
   yield* sql.unsafe('DELETE FROM activation_workspace_scopes');
   yield* sql.unsafe('DELETE FROM activation_workspace_components');
   yield* sql.unsafe('DELETE FROM activation_workspace_dependencies');
+  yield* sql.unsafe('DELETE FROM activation_workspace_external_dependencies');
+  yield* sql.unsafe('DELETE FROM activation_monikers');
   yield* sql.unsafe('DELETE FROM activation_symbols');
   yield* sql.unsafe('DELETE FROM activation_symbol_lookup');
   yield* sql.unsafe('DELETE FROM activation_edges');
@@ -539,14 +579,89 @@ function stageActivationReferences(
   });
 }
 
+function stageActivationMonikers(
+  sql: SqlClient.SqlClient,
+  monikers: readonly CodeGraphMonikerV1[],
+  mode: ActivationInsertMode = 'insert',
+) {
+  return Effect.gen(function* () {
+    for (const batch of chunk(canonicalCodeGraphMonikers(monikers), 500)) {
+      yield* sql.unsafe(
+        `${activationInsertClause(mode)} INTO activation_monikers (
+          id, version, scheme, role, kind, resolution_domain, identity,
+          package_name, package_version, import_path, qualified_name, component_id,
+          symbol_id, dependency_kind, evidence_path, evidence_span_json
+        ) VALUES ${batch.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ')}`,
+        batch.flatMap(moniker => [
+          moniker.id,
+          moniker.version,
+          moniker.scheme,
+          moniker.role,
+          moniker.kind,
+          moniker.resolutionDomain,
+          moniker.identity,
+          'packageName' in moniker ? (moniker.packageName ?? null) : null,
+          'packageVersion' in moniker ? (moniker.packageVersion ?? null) : null,
+          'importPath' in moniker ? (moniker.importPath ?? null) : null,
+          'qualifiedName' in moniker ? (moniker.qualifiedName ?? null) : null,
+          'componentId' in moniker ? (moniker.componentId ?? null) : null,
+          'symbolId' in moniker ? (moniker.symbolId ?? null) : null,
+          'dependencyKind' in moniker ? (moniker.dependencyKind ?? null) : null,
+          moniker.evidence.path,
+          JSON.stringify(moniker.evidence.span),
+        ]),
+      );
+    }
+  });
+}
+
+function stageSnapshotMonikers(
+  sql: SqlClient.SqlClient,
+  snapshotId: string,
+  monikers: readonly CodeGraphMonikerV1[],
+  mode: ActivationInsertMode = 'insert',
+) {
+  return Effect.gen(function* () {
+    for (const batch of chunk(canonicalCodeGraphMonikers(monikers), 500)) {
+      yield* sql.unsafe(
+        `${activationInsertClause(mode)} INTO code_graph_monikers (
+          snapshot_id, id, version, scheme, role, kind, resolution_domain, identity,
+          package_name, package_version, import_path, qualified_name, component_id,
+          symbol_id, dependency_kind, evidence_path, evidence_span_json
+        ) VALUES ${batch.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ')}`,
+        batch.flatMap(moniker => [
+          snapshotId,
+          moniker.id,
+          moniker.version,
+          moniker.scheme,
+          moniker.role,
+          moniker.kind,
+          moniker.resolutionDomain,
+          moniker.identity,
+          'packageName' in moniker ? (moniker.packageName ?? null) : null,
+          'packageVersion' in moniker ? (moniker.packageVersion ?? null) : null,
+          'importPath' in moniker ? (moniker.importPath ?? null) : null,
+          'qualifiedName' in moniker ? (moniker.qualifiedName ?? null) : null,
+          'componentId' in moniker ? (moniker.componentId ?? null) : null,
+          'symbolId' in moniker ? (moniker.symbolId ?? null) : null,
+          'dependencyKind' in moniker ? (moniker.dependencyKind ?? null) : null,
+          moniker.evidence.path,
+          JSON.stringify(moniker.evidence.span),
+        ]),
+      );
+    }
+  });
+}
+
 const persistedFullBatchFingerprint = Effect.fn('codeGraph.persistedFullBatchFingerprint')(function* (
   symbols: readonly CodeGraphSymbol[],
   edges: readonly CodeGraphEdge[],
   references: readonly CodeGraphReference[],
+  monikers: readonly CodeGraphMonikerV1[] = [],
 ) {
   const digest = new Bun.CryptoHasher('sha256');
   let rows = 0;
-  const update = (kind: 'edge' | 'reference' | 'symbol', value: readonly unknown[]) => {
+  const update = (kind: 'edge' | 'moniker' | 'reference' | 'symbol', value: readonly unknown[]) => {
     digest.update(kind);
     digest.update('\0');
     digest.update(JSON.stringify(value));
@@ -577,6 +692,10 @@ const persistedFullBatchFingerprint = Effect.fn('codeGraph.persistedFullBatchFin
       reference.relation,
       reference.evidencePath,
     ]);
+    if ((rows += 1) % 1_024 === 0) yield* Effect.yieldNow;
+  }
+  for (const moniker of canonicalCodeGraphMonikers(monikers)) {
+    update('moniker', [moniker]);
     if ((rows += 1) % 1_024 === 0) yield* Effect.yieldNow;
   }
   for (const symbol of sortedBy(symbols, symbol => symbol.id)) {
@@ -851,6 +970,8 @@ export {
   parseTypeScriptPathNameLookupKey,
   normalizedReexportProvenance,
   stageActivationReferences,
+  stageActivationMonikers,
+  stageSnapshotMonikers,
   PERSISTENT_FULL_LOOKUP_SUMMARY_BATCH_KEYS,
   REEXPORT_CLOSURE_SEED_PAGE_ROWS,
   REEXPORT_CLOSURE_PAGE_MAXIMUM_ROWS,

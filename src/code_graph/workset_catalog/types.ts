@@ -1,15 +1,28 @@
-export const CODE_GRAPH_WORKSET_CATALOG_PROJECTOR_VERSION = 1 as const;
+import type {CodeGraphEvidenceCardV1, CodeGraphWorksetQueryResultV2} from '../workset_evidence.js';
+
+export const CODE_GRAPH_WORKSET_CATALOG_PROJECTOR_VERSION = 2 as const;
 
 export const CODE_GRAPH_WORKSET_CATALOG_LIMITS = {
+  bridgeRecordBytesMaximum: 64 * 1_024,
+  bridgesPerGeneration: 250_000,
+  exactKeysPerSymbol: 256,
   lookupKeysPerSymbol: 64,
   membersPerGeneration: 4_096,
   readPageMaximum: 1_000,
+  resultSetBytesMaximum: 2 * 1_024 * 1_024,
+  resultSetCardBytesMaximum: 64 * 1_024,
+  resultSetCardsMaximum: 512,
+  resultSetPageMaximum: 128,
+  resultSetTtlMillisecondsDefault: 30 * 60 * 1_000,
+  resultSetTtlMillisecondsMaximum: 24 * 60 * 60 * 1_000,
+  resultSetsBytesMaximum: 16 * 1_024 * 1_024,
+  resultSetsMaximum: 128,
   symbolsPerProjection: 250_000,
   termsPerSymbol: 64,
 } as const;
 
 export type CodeGraphWorksetCatalogErrorReason =
-  'busy' | 'corrupt' | 'incompatible' | 'invalid-input' | 'missing' | 'storage';
+  'busy' | 'capacity' | 'corrupt' | 'expired' | 'incompatible' | 'invalid-input' | 'missing' | 'stale' | 'storage';
 
 export class CodeGraphWorksetCatalogError extends Error {
   override readonly name = 'CodeGraphWorksetCatalogError';
@@ -68,6 +81,22 @@ export interface CodeGraphWorksetRoutingProjectionV1 extends CodeGraphWorksetRou
   readonly projectionDigest: string;
 }
 
+/** Lightweight final projection identity used by page-streaming catalog writers. */
+export interface CodeGraphWorksetRoutingProjectionReceiptV1 extends Omit<
+  CodeGraphWorksetRoutingProjectionDraftV1,
+  'symbols'
+> {
+  readonly projectionDigest: string;
+  readonly symbolCount: number;
+}
+
+/** Page-bound symbol-chain state; it never retains previously observed symbols. */
+export interface CodeGraphWorksetRoutingProjectionDigestStateV1 {
+  readonly chainDigest: string;
+  readonly lastNodeId?: string;
+  readonly symbolCount: number;
+}
+
 export interface CodeGraphWorksetCatalogGenerationMemberV1 {
   readonly projection: CodeGraphWorksetRoutingProjectionV1;
   readonly repositoryKey: string;
@@ -90,6 +119,19 @@ export interface CodeGraphWorksetCatalogGenerationDigestMemberV1 {
   readonly repositoryId: string;
   readonly repositoryKey: string;
   readonly snapshotId: string;
+}
+
+/** Generation staging input containing only already-staged projection receipts. */
+export interface CodeGraphWorksetCatalogGenerationReceiptInputV1 {
+  readonly manifestDigest: string;
+  readonly members: readonly CodeGraphWorksetCatalogGenerationDigestMemberV1[];
+  readonly worksetName: string;
+}
+
+export interface CodeGraphWorksetCatalogGenerationReceiptIdentityV1 {
+  readonly digest: string;
+  readonly id: string;
+  readonly members: readonly CodeGraphWorksetCatalogGenerationDigestMemberV1[];
 }
 
 export interface CodeGraphWorksetCatalogGenerationReceiptV1 {
@@ -173,4 +215,68 @@ export interface CodeGraphWorksetCatalogMaintenanceResultV1 {
 export interface CodeGraphWorksetCatalogRecoveryResultV1 {
   readonly previousState: CodeGraphWorksetCatalogHealthV1['state'];
   readonly rebuilt: boolean;
+}
+
+export interface CodeGraphQualifiedRefRecordV1 {
+  readonly createdAt: string;
+  readonly nodeId: string;
+  readonly ref: string;
+  readonly repositoryId: string;
+}
+
+export interface CodeGraphWorksetResultSetGenerationV1 {
+  readonly digest: string;
+  readonly id: string;
+}
+
+export interface CodeGraphWorksetResultSetInputV1 {
+  readonly projectorVersion: number;
+  /** Full logical V2 result; cards and coverage/snapshot receipts are persisted together. */
+  readonly result: CodeGraphWorksetQueryResultV2;
+  readonly ttlMilliseconds?: number;
+}
+
+export interface CodeGraphWorksetResultSetRegistrationV1 {
+  readonly cardCount: number;
+  /** Pure callback suitable for `projectCodeGraphWorksetEvidence`. */
+  readonly continuationForOffset: (offset: number) => string;
+  readonly createdAt: string;
+  readonly expiresAt: string;
+  readonly generation: CodeGraphWorksetResultSetGenerationV1;
+  readonly id: string;
+  readonly initialCursor: string;
+  readonly projectorVersion: number;
+  readonly totalBytes: number;
+  readonly worksetName: string;
+}
+
+export interface CodeGraphWorksetResultSetPageV1 {
+  readonly cards: readonly CodeGraphEvidenceCardV1[];
+  /** Absolute persisted sequence offset, suitable for the response projector. */
+  readonly continuationForOffset: (offset: number) => string;
+  readonly cursor: string;
+  readonly expiresAt: string;
+  readonly generation: CodeGraphWorksetResultSetGenerationV1;
+  readonly next?: string;
+  readonly offset: number;
+  readonly projectorVersion: number;
+  readonly result: CodeGraphWorksetQueryResultV2;
+  readonly resultSetId: string;
+  readonly totalCards: number;
+  readonly totalBytes: number;
+  readonly worksetName: string;
+}
+
+export interface CodeGraphWorksetResultSetMaintenanceOptionsV1 {
+  /** Delete at most this many result sets in one call. */
+  readonly limit?: number;
+  /** Canonical ISO instant used as the expiry cutoff. Defaults to now. */
+  readonly now?: string;
+}
+
+export interface CodeGraphWorksetResultSetMaintenanceResultV1 {
+  readonly capacityResultSetsDeleted: number;
+  readonly expiredResultSetsDeleted: number;
+  readonly remainingBytes: number;
+  readonly remainingResultSets: number;
 }

@@ -6,6 +6,36 @@ import {makeCodeGraphStoreMaintenanceMethods} from './store_service_maintenance.
 import {makeCodeGraphStoreStagingMethods} from './store_service_staging.js';
 import {type CodeGraphStoreShape} from './store_shape.js';
 
+export {
+  canonicalCodeGraphMonikers,
+  codeGraphPackageMoniker,
+  codeGraphProtobufMoniker,
+  compareCodeGraphMonikers,
+  normalizeNpmPackageName,
+  normalizeProtobufImportPath,
+  normalizeProtobufName,
+  parseCodeGraphMonikerV1,
+  type CodeGraphPackageMonikerInput,
+  type CodeGraphProtobufMonikerInput,
+} from './cross_repository/monikers.js';
+export {
+  CODE_GRAPH_EXTERNAL_DEPENDENCY_KINDS,
+  CODE_GRAPH_MONIKER_STRICT_PARSE_OPTIONS,
+  CODE_GRAPH_MONIKER_VERSION,
+  CodeGraphExternalDependencySchemaV1,
+  CodeGraphMonikerSchemaV1,
+  CodeGraphPackageMonikerSchemaV1,
+  CodeGraphProtobufMonikerSchemaV1,
+  type CodeGraphExternalDependencyKind,
+  type CodeGraphExternalDependencyV1,
+  type CodeGraphMonikerRole,
+  type CodeGraphMonikerV1,
+  type CodeGraphPackageMonikerV1,
+  type CodeGraphProtobufMonikerKind,
+  type CodeGraphProtobufMonikerV1,
+  type CodeGraphSourceEvidenceV1,
+} from './cross_repository/types.js';
+
 export * from './store_models.js';
 export type {
   CodeGraphDatabaseSessionOptions,

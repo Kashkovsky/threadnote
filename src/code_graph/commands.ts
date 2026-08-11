@@ -27,7 +27,24 @@ import type {
   RepositoryIdentityExpectation,
 } from './types.js';
 import {CodeGraphWatcher} from './watcher.js';
-import {inspectCodeGraphWorkset, renderCodeGraphWorksetResult} from './workset_query.js';
+import {
+  findCodeGraphWorksetPath,
+  inspectCodeGraphWorksetTopology,
+  traceCodeGraphWorksetImpact,
+  type CodeGraphWorksetTopologyResultV1,
+} from './cross_repository/runtime.js';
+import type {CodeGraphCrossRepositoryTraversalResultV1} from './cross_repository/traversal.js';
+import {
+  continueCodeGraphWorksetQueryV2,
+  queryCodeGraphWorksetV2,
+  resolveCodeGraphQualifiedRefTarget,
+} from './workset_query_v2.js';
+import {
+  inspectCodeGraphWorksetStatus,
+  prepareCodeGraphWorkset,
+  type CodeGraphWorksetPrepareResultV1,
+  type CodeGraphWorksetStatusResultV1,
+} from './workset_catalog/workset.js';
 import {CodeGraphAnalysis} from './analysis.js';
 import {
   codeGraphAnalysisLimitsForView,
@@ -792,6 +809,72 @@ export const runCodeGraphIndex = Effect.fn('codeGraph.command.index')(function* 
   );
 });
 
+export const runCodeGraphWorksetPrepare = Effect.fn('codeGraph.command.worksetPrepare')(function* (
+  config: RuntimeConfig,
+  options: {readonly concurrency?: number; readonly json?: boolean; readonly name: string},
+) {
+  const result = yield* prepareCodeGraphWorkset(config, options.name, {concurrency: options.concurrency});
+  yield* writeFinalCliOutput(
+    options.json ? JSON.stringify(result) : renderCodeGraphWorksetPrepareResult(result).trimEnd(),
+  );
+  if (result.state === 'failed') {
+    return yield* Effect.fail(
+      new Error('Workset preparation was incomplete; the previous published catalog generation was preserved.'),
+    );
+  }
+});
+
+export const runCodeGraphWorksetStatus = Effect.fn('codeGraph.command.worksetStatus')(function* (
+  config: RuntimeConfig,
+  options: {readonly json?: boolean; readonly name: string},
+) {
+  const result = yield* inspectCodeGraphWorksetStatus(config, options.name);
+  yield* writeFinalCliOutput(
+    options.json ? JSON.stringify(result) : renderCodeGraphWorksetStatusResult(result).trimEnd(),
+  );
+});
+
+export function renderCodeGraphWorksetPrepareResult(result: CodeGraphWorksetPrepareResultV1): string {
+  const lines = [
+    `Workset prepare: ${result.workset}`,
+    `State: ${result.state}`,
+    `Members: ${result.members.filter(member => member.state === 'ready').length}/${result.members.length} ready`,
+  ];
+  for (const member of result.members) {
+    lines.push(
+      member.state === 'ready'
+        ? `- ${member.project}: ready (${member.symbolCount} routing symbols)`
+        : `- ${member.project}: ${member.state} (${member.reason})`,
+    );
+  }
+  if (result.bridges !== undefined) {
+    lines.push(
+      `Bridges: ${result.bridges.state} (${result.bridges.bridgeCount} resolved, ${result.bridges.rejectionCount} rejected, ${result.bridges.monikerCount} monikers)`,
+    );
+    for (const warning of result.bridges.warnings) lines.push(`Warning: ${warning}`);
+  }
+  if (result.published !== undefined) lines.push(`Published generation: ${result.published.id}`);
+  return `${lines.join('\n')}\n`;
+}
+
+export function renderCodeGraphWorksetStatusResult(result: CodeGraphWorksetStatusResultV1): string {
+  const lines = [
+    `Workset status: ${result.workset}`,
+    `Catalog: ${result.catalog.state}${result.catalog.generation ? ` (${result.catalog.generation.id})` : ''}`,
+    `Coverage: ${result.coverage.current}/${result.coverage.requested} current`,
+  ];
+  if (result.bridges !== undefined) {
+    lines.push(
+      `Bridges: ${result.bridges.coverage.state} (${result.bridges.bridgeCount} resolved, ${result.bridges.coverage.rejectionCount} rejected)`,
+    );
+  }
+  for (const member of result.members) {
+    lines.push(`- ${member.project}: ${member.state}${member.reason ? ` (${member.reason})` : ''}`);
+  }
+  for (const warning of result.warnings) lines.push(`Warning: ${warning}`);
+  return `${lines.join('\n')}\n`;
+}
+
 export const runCodeGraphAnalysis = Effect.fn('codeGraph.command.analysis')(function* (
   config: RuntimeConfig,
   options: CwdOption & {
@@ -896,30 +979,77 @@ export const runCodeGraphInspect = Effect.fn('codeGraph.command.inspect')(functi
       readonly json?: boolean;
       /** @internal Tests can exercise the foreground timeout without waiting for the public budget. */
       readonly readTimeoutMilliseconds?: number;
+      readonly budgetTokens?: number;
+      readonly cursor?: string;
       readonly seedQueries?: readonly string[];
       readonly workset?: string;
     },
 ) {
   if (options.workset?.trim()) {
-    if (options.operation !== 'query') {
-      return yield* Effect.fail(new Error('--workset is valid only for `threadnote graph query`.'));
+    const worksetName = options.workset.trim();
+    if (options.operation === 'path') {
+      const result = yield* findCodeGraphWorksetPath(config, {
+        from: options.from ?? '',
+        maxDepth: options.depth,
+        maxEdges: options.edgeLimit,
+        to: options.to ?? '',
+        worksetName,
+      });
+      yield* writeFinalCliOutput(options.json ? JSON.stringify(result) : renderCodeGraphWorksetTraversal(result));
+      return;
     }
-    const query = options.query?.trim();
-    if (!query) return yield* Effect.fail(new Error('A workset graph query requires --query.'));
-    const result = yield* inspectCodeGraphWorkset(config, options.workset.trim(), {
-      depth: options.depth,
-      edgeLimit: options.edgeLimit,
-      includeHeuristic: options.includeHeuristic,
-      includeModelAssociations: options.includeModelAssociations,
-      nodeLimit: options.nodeLimit,
-      packageName: options.packageName,
-      query,
-    });
-    yield* writeFinalCliOutput(options.json ? JSON.stringify(result) : renderCodeGraphWorksetResult(result).trimEnd());
+    if (options.operation === 'impact') {
+      const query = options.query?.trim();
+      if (!query) return yield* Effect.fail(new Error('A workset impact trace requires --query.'));
+      const result = yield* traceCodeGraphWorksetImpact(config, {
+        maxDepth: options.depth,
+        maxEdges: options.edgeLimit,
+        query,
+        worksetName,
+      });
+      yield* writeFinalCliOutput(options.json ? JSON.stringify(result) : renderCodeGraphWorksetTraversal(result));
+      return;
+    }
+    if (options.operation !== 'query') {
+      return yield* Effect.fail(new Error('--workset is valid for graph query, path, and impact.'));
+    }
+    const cursor = options.cursor?.trim();
+    const projected = cursor
+      ? yield* continueCodeGraphWorksetQueryV2(config, {
+          cursor,
+          maximumEstimatedTokens: options.budgetTokens,
+        })
+      : yield* Effect.gen(function* () {
+          const query = options.query?.trim();
+          if (!query) return yield* Effect.fail(new Error('A workset graph query requires --query or --cursor.'));
+          return yield* queryCodeGraphWorksetV2(config, {
+            depth: options.depth,
+            edgeLimit: options.edgeLimit,
+            includeHeuristic: options.includeHeuristic,
+            includeModelAssociations: options.includeModelAssociations,
+            maximumEstimatedTokens: options.budgetTokens,
+            nodeLimit: options.nodeLimit,
+            packageName: options.packageName,
+            query,
+            worksetName,
+          });
+        });
+    yield* writeFinalCliOutput(options.json ? JSON.stringify(projected.structuredContent) : projected.text.trimEnd());
     return;
   }
+  if (options.cursor?.trim() || options.budgetTokens !== undefined) {
+    return yield* Effect.fail(new Error('--cursor and --budget-tokens require --workset.'));
+  }
+  if (options.operation === 'query' && !options.query?.trim()) {
+    return yield* Effect.fail(new Error('A graph query requires --query.'));
+  }
+  const qualifiedTarget = options.nodeId?.startsWith('cgr_')
+    ? yield* resolveCodeGraphQualifiedRefTarget(config, options.nodeId, options.cwd)
+    : undefined;
+  const effectiveOptions =
+    qualifiedTarget === undefined ? options : {...options, cwd: qualifiedTarget.cwd, nodeId: qualifiedTarget.nodeId};
   const service = yield* CodeGraphQueryService;
-  const cwd = yield* commandCwd(options.cwd);
+  const cwd = yield* commandCwd(effectiveOptions.cwd);
   let status = yield* service.status(config.agentContextHome, cwd);
   const identity = status.identity;
   if (status.stale || !status.readySnapshot) {
@@ -937,7 +1067,7 @@ export const runCodeGraphInspect = Effect.fn('codeGraph.command.inspect')(functi
   const statusObservation = observationFromCodeGraphStatus(status);
   const inspect = (onProgress?: (progress: CodeGraphProgress) => Effect.Effect<void>) =>
     service.inspect({
-      ...options,
+      ...effectiveOptions,
       cwd,
       onProgress,
       refresh: readPlan.refresh,
@@ -945,8 +1075,8 @@ export const runCodeGraphInspect = Effect.fn('codeGraph.command.inspect')(functi
       strictFreshness: readPlan.strictFreshness,
       threadnoteHome: config.agentContextHome,
     });
-  const reportProgress = options.json ? yield* makeCodeGraphJsonProgressReporter() : undefined;
-  const read = options.json
+  const reportProgress = effectiveOptions.json ? yield* makeCodeGraphJsonProgressReporter() : undefined;
+  const read = effectiveOptions.json
     ? inspect(reportProgress)
     : readPlan.refresh
       ? Effect.acquireUseRelease(
@@ -981,6 +1111,62 @@ export const runCodeGraphInspect = Effect.fn('codeGraph.command.inspect')(functi
   );
 });
 
+export const runCodeGraphWorksetTopology = Effect.fn('codeGraph.command.worksetTopology')(function* (
+  config: RuntimeConfig,
+  options: {
+    readonly edgeLimit?: number;
+    readonly json?: boolean;
+    readonly nodeLimit?: number;
+    readonly workset: string;
+  },
+) {
+  const result = yield* inspectCodeGraphWorksetTopology(config, {
+    maxEdges: options.edgeLimit,
+    maxNodes: options.nodeLimit,
+    worksetName: options.workset,
+  });
+  yield* writeFinalCliOutput(options.json ? JSON.stringify(result) : renderCodeGraphWorksetTopology(result));
+});
+
+export function renderCodeGraphWorksetTraversal(result: CodeGraphCrossRepositoryTraversalResultV1): string {
+  const lines = [
+    `Workset ${result.direction === 'forward' ? 'path' : 'impact'}: ${result.generationId}`,
+    `Stop: ${result.stop.reason}${result.stop.complete ? ' (complete)' : ' (partial)'}`,
+    `Coverage: ${result.coverage.endpointsVisited} endpoints, ${result.coverage.acceptedLocalEdges} local edges, ${result.coverage.acceptedBridgeEdges} bridges`,
+  ];
+  for (const edge of result.edges) {
+    lines.push(
+      `- ${traversalEndpointLabel(edge.source)} --${edge.relation}/${edge.provenance.kind}--> ${traversalEndpointLabel(edge.target)}`,
+    );
+  }
+  return `${lines.join('\n')}\n`;
+}
+
+export function renderCodeGraphWorksetTopology(result: CodeGraphWorksetTopologyResultV1): string {
+  const lines = [`Workset topology: ${result.workset}`, `State: ${result.state}`];
+  if (result.bridgeSet !== undefined) {
+    lines.push(
+      `Bridges: ${result.bridgeSet.bridgeCount} (${result.bridgeSet.coverage.state}; generation ${result.bridgeSet.generationId})`,
+    );
+  }
+  if (result.topology !== undefined) {
+    lines.push(
+      `Topology: ${result.topology.nodes.length} nodes, ${result.topology.edges.length} aggregate edges${result.topology.coverage.complete ? '' : ' (partial)'}`,
+    );
+    for (const edge of result.topology.edges) {
+      lines.push(`- ${edge.sourceNodeId} -> ${edge.targetNodeId}: ${edge.bridgeCount} declared bridge(s)`);
+    }
+  }
+  for (const warning of result.warnings) lines.push(`Warning: ${warning}`);
+  return `${lines.join('\n')}\n`;
+}
+
+function traversalEndpointLabel(endpoint: CodeGraphCrossRepositoryTraversalResultV1['visited'][number]): string {
+  return `${endpoint.repositoryKey}:${
+    endpoint.reference.kind === 'component' ? endpoint.reference.componentId : endpoint.reference.ref
+  }`;
+}
+
 export const runCodeGraphImpact = Effect.fn('codeGraph.command.impact')(function* (
   config: RuntimeConfig,
   options: CwdOption & {
@@ -990,8 +1176,16 @@ export const runCodeGraphImpact = Effect.fn('codeGraph.command.impact')(function
     readonly json?: boolean;
     readonly nodeLimit?: number;
     readonly query?: string;
+    readonly workset?: string;
   },
 ) {
+  if (options.workset?.trim()) {
+    if (!options.query?.trim()) {
+      return yield* Effect.fail(new Error('A workset impact trace requires --query with a qualified endpoint.'));
+    }
+    yield* runCodeGraphInspect(config, {...options, operation: 'impact'});
+    return;
+  }
   const cwd = yield* commandCwd(options.cwd);
   const changes = options.query?.trim() ? undefined : yield* repositoryChangesSince(cwd, options.base ?? 'HEAD~1');
   const input = options.query?.trim() || changes!.paths.join(' ');

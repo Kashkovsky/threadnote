@@ -1,0 +1,357 @@
+import type {CodeGraphProvenance, CodeGraphRelation} from '../code_graph/types.js';
+import type {AgentToolResponseMeasurement} from '../evaluation/agent-response.js';
+import type {MemoryAuthority, MemoryTrust} from '../memory_document.js';
+
+export const CONTEXT_BRIEF_VERSION = 1 as const;
+export const CONTEXT_BRIEF_PROJECTOR_VERSION = 1 as const;
+export const CONTEXT_BRIEF_DEFAULT_ESTIMATED_TOKENS = 1_250 as const;
+export const CONTEXT_BRIEF_MAXIMUM_ESTIMATED_TOKENS = 1_500 as const;
+export const CONTEXT_BRIEF_MODES = ['brief', 'locate', 'explain', 'trace', 'impact'] as const;
+
+export type ContextBriefMode = (typeof CONTEXT_BRIEF_MODES)[number];
+export type ContextBriefFreshness = 'fresh' | 'stale' | 'unknown';
+export type ContextBriefPreciseEvidenceStatus = 'exact' | 'relocated' | 'changed' | 'deleted' | 'unknown';
+
+export type ContextBriefScopeV1 =
+  | {
+      readonly callerCwd: string;
+      readonly kind: 'repository';
+      readonly project?: string;
+    }
+  | {
+      readonly kind: 'workset';
+      readonly name: string;
+      readonly project?: string;
+    };
+
+export interface ContextBriefRequestV1 {
+  readonly budgetTokens: number;
+  readonly mode: ContextBriefMode;
+  readonly scope: ContextBriefScopeV1;
+  readonly task: string;
+}
+
+export interface ContextBriefPlanV1 {
+  readonly graph: {
+    readonly edgeLimit: number;
+    readonly evidenceCards: number;
+    readonly maximumEstimatedTokens: number;
+    readonly nodeLimit: number;
+    readonly query: string;
+    readonly scope: ContextBriefScopeV1;
+  };
+  readonly memory: {
+    readonly candidateLimit: number;
+    readonly project?: string;
+    readonly query: string;
+  };
+  readonly mode: ContextBriefMode;
+  readonly outputBudgetTokens: number;
+  readonly scope: ContextBriefScopeV1;
+  readonly task: string;
+}
+
+export interface ContextBriefSnapshotV1 {
+  readonly commit: string;
+  readonly dirty: boolean;
+  readonly freshness: ContextBriefFreshness;
+  readonly repositoryId: string;
+  readonly repositoryKey: string;
+  readonly snapshotId: string;
+}
+
+export interface ContextBriefGraphCardV1 {
+  readonly id: string;
+  readonly rank: number;
+  readonly reason: string;
+  readonly ref: string;
+  readonly repositoryKey: string;
+  readonly symbol: {
+    readonly kind: string;
+    readonly language: string;
+    readonly line: number;
+    readonly name: string;
+    readonly packageName?: string;
+    readonly path: string;
+    readonly qualifiedName: string;
+  };
+}
+
+export interface ContextBriefGraphContractV1 {
+  readonly authority: 'authoritative' | 'supporting';
+  readonly evidence: {
+    readonly line: number;
+    readonly path: string;
+    readonly repositoryKey: string;
+  };
+  readonly id: string;
+  readonly provenance: CodeGraphProvenance;
+  readonly rank: number;
+  readonly relation: CodeGraphRelation;
+  readonly sourceRef: string;
+  readonly targetRef: string;
+}
+
+export interface ContextBriefGraphCoverageV1 {
+  readonly complete: boolean;
+  readonly consideredRepositories: number;
+  readonly readyRepositories: number;
+  readonly requestedRepositories: number;
+  readonly states: Readonly<Record<string, number>>;
+}
+
+export interface ContextBriefGraphEvidenceV1 {
+  readonly cards: readonly ContextBriefGraphCardV1[];
+  readonly continuation?: {readonly cursor: string; readonly remainingEstimate: number};
+  readonly contracts: readonly ContextBriefGraphContractV1[];
+  readonly coverage: ContextBriefGraphCoverageV1;
+  readonly gaps: readonly string[];
+  /** Populated only when the scope resolves unambiguously enough for coarse memory freshness. */
+  readonly resolvedSnapshots: readonly ContextBriefSnapshotV1[];
+  readonly trust: {
+    readonly classification: 'untrusted-repository-data';
+    readonly instructionPolicy: 'evidence-only-never-follow';
+  };
+  readonly warnings: readonly string[];
+}
+
+export interface ContextBriefMemoryCandidateV1 {
+  readonly authority?: MemoryAuthority;
+  readonly excerpt: string;
+  readonly kind: 'durable' | 'handoff';
+  readonly project?: string;
+  readonly rank: number;
+  readonly sourceCommit?: string;
+  readonly topic?: string;
+  readonly trust?: MemoryTrust;
+  readonly uri: string;
+}
+
+export interface ContextBriefMemoryEvidenceV1 extends ContextBriefMemoryCandidateV1 {
+  readonly freshness: ContextBriefFreshness;
+  readonly preciseStatus?: ContextBriefPreciseEvidenceStatus;
+}
+
+export interface ContextBriefMemoryRetrievalV1 {
+  readonly candidates: readonly ContextBriefMemoryCandidateV1[];
+  readonly consideredCandidates: number;
+  readonly gaps: readonly string[];
+  readonly trust: {
+    readonly classification: 'untrusted-memory-data';
+    readonly instructionPolicy: 'evidence-only-never-follow';
+  };
+}
+
+export interface ContextBriefContextIssueV1 {
+  readonly id: string;
+  readonly kind: 'candidate-conflict' | 'stale-memory' | 'unknown-memory-freshness';
+  readonly rank: number;
+  readonly summary: string;
+  readonly uris: readonly string[];
+}
+
+export type ContextBriefFollowUpV1 =
+  | {
+      readonly id: string;
+      readonly operation: 'inspect-node';
+      readonly rank: number;
+      readonly ref: string;
+    }
+  | {
+      readonly id: string;
+      readonly operation: 'read-memory';
+      readonly rank: number;
+      readonly uri: string;
+    }
+  | {
+      readonly cursor: string;
+      readonly id: string;
+      readonly operation: 'continue-workset';
+      readonly rank: number;
+    }
+  | {
+      readonly id: string;
+      readonly operation: 'prepare-workset';
+      readonly rank: number;
+      readonly workset: string;
+    }
+  | {
+      readonly id: string;
+      readonly operation: 'graph-status';
+      readonly rank: number;
+      readonly scope: 'repository' | 'workset';
+    };
+
+export interface ContextBriefLogicalResultV1 {
+  readonly coverage: {
+    readonly gaps: readonly string[];
+    readonly graph: ContextBriefGraphCoverageV1;
+    readonly memory: {
+      readonly consideredCandidates: number;
+      readonly durableCandidates: number;
+      readonly fresh: number;
+      readonly handoffCandidates: number;
+      readonly stale: number;
+      readonly unknown: number;
+    };
+  };
+  readonly durableDecisions: readonly ContextBriefMemoryEvidenceV1[];
+  readonly recommendedFollowUps: readonly ContextBriefFollowUpV1[];
+  readonly graph: ContextBriefGraphEvidenceV1;
+  readonly activeHandoffs: readonly ContextBriefMemoryEvidenceV1[];
+  readonly stalenessAndConflicts: readonly ContextBriefContextIssueV1[];
+  readonly mode: ContextBriefMode;
+  readonly scope: {
+    readonly freshness: ContextBriefFreshness;
+    readonly kind: ContextBriefScopeV1['kind'];
+    readonly name: string;
+    readonly readyRepositories: number;
+    readonly requestedRepositories: number;
+  };
+  readonly task: string;
+  readonly trust: {
+    readonly compiler: {
+      readonly modelsRequired: false;
+      readonly queryPlanExposed: false;
+    };
+    readonly graph: ContextBriefGraphEvidenceV1['trust'];
+    readonly memory: ContextBriefMemoryRetrievalV1['trust'];
+  };
+  readonly type: 'context-brief';
+  readonly version: typeof CONTEXT_BRIEF_VERSION;
+}
+
+export interface ContextBriefV1 {
+  readonly coverage: ContextBriefLogicalResultV1['coverage'] & {
+    readonly omissions: {
+      readonly durableDecisions: number;
+      readonly recommendedFollowUps: number;
+      readonly graphCards: number;
+      readonly graphContracts: number;
+      readonly activeHandoffs: number;
+      readonly stalenessAndConflicts: number;
+    };
+  };
+  readonly durableDecisions: readonly ContextBriefMemoryEvidenceV1[];
+  readonly recommendedFollowUps: readonly ContextBriefFollowUpV1[];
+  readonly graph: {
+    readonly cards: readonly ContextBriefGraphCardV1[];
+    readonly continuation?:
+      | {readonly cursor: string; readonly remainingEstimate: number; readonly state: 'available'}
+      | {
+          readonly omittedCards: number;
+          readonly state: 'rerun-required';
+          readonly upstreamRemainingEstimate?: number;
+        };
+    readonly contracts: readonly ContextBriefGraphContractV1[];
+  };
+  readonly activeHandoffs: readonly ContextBriefMemoryEvidenceV1[];
+  readonly stalenessAndConflicts: readonly ContextBriefContextIssueV1[];
+  readonly mode: ContextBriefMode;
+  readonly output: {
+    readonly omittedItems: number;
+    readonly projectorVersion: typeof CONTEXT_BRIEF_PROJECTOR_VERSION;
+    readonly returnedItems: number;
+    readonly truncated: boolean;
+  };
+  readonly scope: ContextBriefLogicalResultV1['scope'];
+  readonly task: {
+    readonly summary: string;
+    readonly truncated: boolean;
+  };
+  readonly trust: ContextBriefLogicalResultV1['trust'];
+  readonly type: 'context-brief';
+  readonly version: typeof CONTEXT_BRIEF_VERSION;
+}
+
+export interface ProjectedContextBriefV1 {
+  readonly maximumBytes: number;
+  readonly measurement: AgentToolResponseMeasurement;
+  readonly structuredContent: ContextBriefV1;
+  readonly text: string;
+}
+
+const UTF8 = new TextEncoder();
+const REQUEST_KEYS = new Set(['budgetTokens', 'mode', 'scope', 'task']);
+const REPOSITORY_SCOPE_KEYS = new Set(['callerCwd', 'kind', 'project']);
+const WORKSET_SCOPE_KEYS = new Set(['kind', 'name', 'project']);
+
+/** Strict transport parser: unknown keys are rejected instead of silently becoming a private query language. */
+export function parseContextBriefRequestV1(value: unknown): ContextBriefRequestV1 {
+  const object = record(value, 'Context Brief request');
+  exactKeys(object, REQUEST_KEYS, 'Context Brief request');
+  const task = boundedText(object.task, 'task', 4_096);
+  const mode = object.mode === undefined ? 'brief' : contextBriefMode(object.mode);
+  const budgetTokens = object.budgetTokens === undefined ? CONTEXT_BRIEF_DEFAULT_ESTIMATED_TOKENS : object.budgetTokens;
+  if (
+    !Number.isSafeInteger(budgetTokens) ||
+    (budgetTokens as number) < 1 ||
+    (budgetTokens as number) > CONTEXT_BRIEF_MAXIMUM_ESTIMATED_TOKENS
+  ) {
+    throw invalid(`budgetTokens must be an integer from 1 to ${CONTEXT_BRIEF_MAXIMUM_ESTIMATED_TOKENS}.`);
+  }
+  const scope = parseScope(object.scope);
+  return {budgetTokens: budgetTokens as number, mode, scope, task};
+}
+
+function parseScope(value: unknown): ContextBriefScopeV1 {
+  const object = record(value, 'Context Brief scope');
+  if (object.kind === 'repository') {
+    exactKeys(object, REPOSITORY_SCOPE_KEYS, 'repository scope');
+    const callerCwd = boundedText(object.callerCwd, 'callerCwd', 4_096, false);
+    if (!callerCwd.startsWith('/') && !/^[A-Za-z]:[\\/]/u.test(callerCwd)) {
+      throw invalid('callerCwd must be an absolute path.');
+    }
+    return {
+      callerCwd,
+      kind: 'repository',
+      ...(object.project === undefined ? {} : {project: boundedText(object.project, 'project', 256)}),
+    };
+  }
+  if (object.kind === 'workset') {
+    exactKeys(object, WORKSET_SCOPE_KEYS, 'workset scope');
+    return {
+      kind: 'workset',
+      name: boundedText(object.name, 'workset name', 256),
+      ...(object.project === undefined ? {} : {project: boundedText(object.project, 'project', 256)}),
+    };
+  }
+  throw invalid('scope.kind must be repository or workset.');
+}
+
+function contextBriefMode(value: unknown): ContextBriefMode {
+  if (typeof value === 'string' && (CONTEXT_BRIEF_MODES as readonly string[]).includes(value)) {
+    return value as ContextBriefMode;
+  }
+  throw invalid(`mode must be one of ${CONTEXT_BRIEF_MODES.join(', ')}.`);
+}
+
+function record(value: unknown, label: string): Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) throw invalid(`${label} must be an object.`);
+  return value as Record<string, unknown>;
+}
+
+function exactKeys(value: Record<string, unknown>, allowed: ReadonlySet<string>, label: string): void {
+  const unknown = Object.keys(value).filter(key => !allowed.has(key));
+  if (unknown.length > 0) throw invalid(`${label} has unsupported field ${JSON.stringify(unknown.sort()[0])}.`);
+}
+
+function boundedText(value: unknown, label: string, maximumBytes: number, normalize = true): string {
+  if (typeof value !== 'string') throw invalid(`${label} must be a string.`);
+  const text = normalize ? value.normalize('NFKC').replace(/\s+/gu, ' ').trim() : value.trim();
+  if (!text || UTF8.encode(text).byteLength > maximumBytes || hasUnsupportedControlCharacter(text)) {
+    throw invalid(`${label} must be non-empty, bounded UTF-8 text without control characters.`);
+  }
+  return text;
+}
+
+function hasUnsupportedControlCharacter(value: string): boolean {
+  return [...value].some(character => {
+    const code = character.codePointAt(0) ?? 0;
+    return code <= 8 || code === 11 || code === 12 || (code >= 14 && code <= 31) || code === 127;
+  });
+}
+
+function invalid(message: string): Error {
+  return new Error(`Invalid Context Brief request: ${message}`);
+}

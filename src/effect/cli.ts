@@ -105,8 +105,12 @@ import {
   runCodeGraphReport,
   runCodeGraphStatus,
   runCodeGraphWatch,
+  runCodeGraphWorksetPrepare,
+  runCodeGraphWorksetStatus,
+  runCodeGraphWorksetTopology,
 } from '../code_graph/commands.js';
 import {runProcessDiagnostics} from '../process_diagnostics.js';
+import {runContextBrief} from '../context_brief/commands.js';
 
 const describeFlag = <A>(flag: Flag.Flag<A>, description: string): Flag.Flag<A> =>
   flag.pipe(Flag.withDescription(description));
@@ -674,9 +678,21 @@ const graphQuery = Command.make(
   {
     ...graphBounds,
     freshness: graphFreshness('ready'),
+    budgetTokens: optional(
+      describeFlag(
+        integerFlag('budget-tokens').pipe(
+          Flag.withSchema(Schema.Int.check(Schema.isBetween({minimum: 1, maximum: 1_500}))),
+        ),
+        'Maximum estimated tokens for the compact workset agent response',
+      ),
+    ),
+    cursor: optionalString('cursor', 'Opaque cgwc_ continuation from a prior workset query'),
     packageName: optionalString('package', 'Restrict results to one exact indexed package or workspace component'),
-    query: requiredString('query', 'Concept, symbol, module, path, or documentation query'),
-    workset: optionalString('workset', 'Query ready snapshots for a named seed-manifest workset'),
+    query: optionalString('query', 'Concept, symbol, module, path, or documentation query'),
+    workset: optionalString(
+      'workset',
+      'Query a published ready-snapshot catalog; run `threadnote workset prepare` for cold members',
+    ),
   },
   options => withRuntimeEffect(config => runCodeGraphInspect(config, {...options, operation: 'query'})),
 ).pipe(Command.withDescription('Search symbols and inspect a bounded relationship neighborhood'));
@@ -687,7 +703,7 @@ const graphNode = Command.make(
     cwd: graphBounds.cwd,
     freshness: graphFreshness('ready'),
     json: graphBounds.json,
-    nodeId: requiredString('node-id', 'Exact stable cgs_ node ID returned by graph inspection'),
+    nodeId: requiredString('node-id', 'Exact local cgs_ ID or repository-qualified cgr_ handle'),
     readTimeoutMilliseconds: graphBounds.readTimeoutMilliseconds,
   },
   options => withRuntimeEffect(config => runCodeGraphInspect(config, {...options, operation: 'node'})),
@@ -704,7 +720,7 @@ const graphNeighbors = Command.make(
       'Relationship direction relative to each traversal frontier',
       'both',
     ),
-    nodeId: requiredString('node-id', 'Exact stable cgs_ node ID returned by graph inspection'),
+    nodeId: requiredString('node-id', 'Exact local cgs_ ID or repository-qualified cgr_ handle'),
   },
   options => withRuntimeEffect(config => runCodeGraphInspect(config, {...options, operation: 'neighbors'})),
 ).pipe(Command.withDescription('Traverse a bounded neighborhood from one exact stable node ID'));
@@ -724,8 +740,9 @@ const graphPath = Command.make(
   {
     ...graphBounds,
     freshness: graphFreshness('current'),
-    from: requiredString('from', 'Starting symbol, path#symbol selector, or stable cgs_ node ID'),
-    to: requiredString('to', 'Target symbol, path#symbol selector, or stable cgs_ node ID'),
+    from: requiredString('from', 'Local symbol/cgs_ selector, or cgr_ / repository:cgp_ endpoint with --workset'),
+    to: requiredString('to', 'Local symbol/cgs_ selector, or cgr_ / repository:cgp_ endpoint with --workset'),
+    workset: optionalString('workset', 'Traverse a prepared workset generation across authoritative bridges'),
   },
   options => withRuntimeEffect(config => runCodeGraphInspect(config, {...options, operation: 'path'})),
 ).pipe(Command.withDescription('Find a bounded authoritative path between two code concepts'));
@@ -739,10 +756,22 @@ const graphImpact = Command.make(
     edgeLimit: graphBounds.edgeLimit,
     json: graphBounds.json,
     nodeLimit: graphBounds.nodeLimit,
-    query: optionalString('query', 'Symbol or path whose reverse impact should be inspected'),
+    query: optionalString('query', 'Local selector, or cgr_ / repository:cgp_ endpoint with --workset'),
+    workset: optionalString('workset', 'Trace reverse impact across a prepared workset generation'),
   },
   options => withRuntimeEffect(config => runCodeGraphImpact(config, options)),
 ).pipe(Command.withDescription('Trace reverse impact from a symbol, path, or Git diff'));
+
+const graphTopology = Command.make(
+  'topology',
+  {
+    edgeLimit: graphBounds.edgeLimit,
+    json: graphBounds.json,
+    nodeLimit: graphBounds.nodeLimit,
+    workset: requiredString('workset', 'Prepared workset generation to summarize'),
+  },
+  options => withRuntimeEffect(config => runCodeGraphWorksetTopology(config, options)),
+).pipe(Command.withDescription('Summarize generation-bound repository/component bridge topology'));
 
 const graphAnalysisBounds = {
   cwd: graphBounds.cwd,
@@ -896,6 +925,7 @@ const graphCommand = Command.make('graph').pipe(
     graphExplain,
     graphPath,
     graphImpact,
+    graphTopology,
     graphAnalyze,
     graphStats,
     graphCommunities,
@@ -1256,9 +1286,56 @@ const worksetShow = Command.make('show', {name: argument('name', 'Workset name')
   withRuntimeEffect(config => runWorksetShow(config, name)),
 ).pipe(Command.withDescription('Show the member projects of a workset'));
 
+const worksetPrepare = Command.make(
+  'prepare',
+  {
+    concurrency: optional(
+      describeFlag(
+        integerFlag('concurrency'),
+        'Maximum repositories to index and project concurrently (default 2, maximum 8)',
+      ),
+    ),
+    json: boolean('json', 'Print a machine-readable preparation receipt'),
+    name: argument('name', 'Workset name'),
+  },
+  options => withRuntimeEffect(config => runCodeGraphWorksetPrepare(config, options)),
+).pipe(Command.withDescription('Build member snapshots explicitly and atomically publish the routing catalog'));
+
+const worksetStatus = Command.make(
+  'status',
+  {json: boolean('json', 'Print a machine-readable workset coverage receipt'), name: argument('name', 'Workset name')},
+  options => withRuntimeEffect(config => runCodeGraphWorksetStatus(config, options)),
+).pipe(Command.withDescription('Compare the workset manifest, ready snapshots, and published routing catalog'));
+
 const workset = Command.make('workset').pipe(
-  Command.withDescription('Inspect named sets of related repos'),
-  Command.withSubcommands([worksetList, worksetShow]),
+  Command.withDescription('Inspect and prepare named sets of related repos'),
+  Command.withSubcommands([worksetList, worksetShow, worksetPrepare, worksetStatus]),
+);
+
+const contextBrief = Command.make(
+  'brief',
+  {
+    budgetTokens: optional(
+      describeFlag(
+        integerFlag('budget-tokens').pipe(
+          Flag.withSchema(Schema.Int.check(Schema.isBetween({minimum: 1, maximum: 1_500}))),
+        ),
+        'Maximum estimated tokens for the combined structured and text response',
+      ),
+    ),
+    cwd: optionalString('cwd', 'Absolute repository path; defaults to the current directory'),
+    json: boolean('json', 'Print the structured Context Brief projection'),
+    mode: defaultChoice('mode', ['brief', 'locate', 'explain', 'trace', 'impact'], 'Evidence-planning mode', 'brief'),
+    project: optionalString('project', 'Optional memory project scope'),
+    task: requiredString('task', 'Engineering task or question to orient'),
+    workset: optionalString('workset', 'Prepared workset scope instead of the current repository'),
+  },
+  options => withRuntimeEffect(config => runContextBrief(config, options)),
+).pipe(Command.withDescription('Compile bounded graph, decision, handoff, and freshness evidence for an agent task'));
+
+const context = Command.make('context').pipe(
+  Command.withDescription('Compile task-oriented agent context'),
+  Command.withSubcommands([contextBrief]),
 );
 
 const compact = Command.make(
@@ -1641,6 +1718,7 @@ const topLevelCommandRegistrations = [
   }),
   registerTopLevelCommand('recall', recall),
   registerTopLevelCommand('workset', workset),
+  registerTopLevelCommand('context', context),
   registerTopLevelCommand('compact', compact, {productionLog: {mode: 'requires-apply'}}),
   registerTopLevelCommand('read', read),
   registerTopLevelCommand('list', list, {aliases: ['ls']}),

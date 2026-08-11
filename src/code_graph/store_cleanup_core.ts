@@ -584,6 +584,27 @@ const RETIRED_SNAPSHOT_CLEANUP_SPECS = [
   },
   {
     batchRows: 5_000,
+    keyColumns: ['snapshot_id', 'id'],
+    maximumBatchRows: 20_000,
+    table: 'code_graph_monikers',
+  },
+  {
+    batchRows: 5_000,
+    keyColumns: [
+      'snapshot_id',
+      'source_component_id',
+      'ecosystem',
+      'package_name',
+      'import_alias',
+      'dependency_kind',
+      'version_constraint',
+      'evidence_path',
+    ],
+    maximumBatchRows: 20_000,
+    table: 'workspace_external_dependencies',
+  },
+  {
+    batchRows: 5_000,
     keyColumns: ['snapshot_id', 'source_component_id', 'target_component_id', 'provenance'],
     maximumBatchRows: 20_000,
     table: 'workspace_component_dependencies',

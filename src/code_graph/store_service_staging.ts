@@ -12,7 +12,7 @@ import {
   type PreparedPersistedFullFactBatch,
 } from './store_build_core.js';
 import {selectSearchSymbols, selectSearchSymbolsMany, selectSymbolsByIds} from './store_queries.js';
-import {stageActivationReferences} from './store_staging_core.js';
+import {stageActivationMonikers, stageActivationReferences} from './store_staging_core.js';
 import {stagePersistedFullFacts} from './store_resolution_core.js';
 import {
   activationStagingObserver,
@@ -74,6 +74,7 @@ export function makeCodeGraphStoreStagingMethods(runtime: CodeGraphStoreRuntime)
       onProgress,
       batchIndex,
       persistentCapacityProtector,
+      monikers = [],
     ) =>
       prepare(databasePath).pipe(
         Effect.andThen(
@@ -99,6 +100,9 @@ export function makeCodeGraphStoreStagingMethods(runtime: CodeGraphStoreRuntime)
                     edges,
                     references,
                     observer,
+                    false,
+                    undefined,
+                    monikers,
                   ),
                 );
                 return;
@@ -109,11 +113,15 @@ export function makeCodeGraphStoreStagingMethods(runtime: CodeGraphStoreRuntime)
                   yield* stageActivationSymbolTerms(sql, symbols, 'insert', observer);
                   yield* stageActivationEdges(sql, edges, 'insert', observer);
                   yield* stageActivationReferences(sql, references, 'insert', observer);
+                  yield* stageActivationMonikers(sql, monikers);
                   yield* observer('committing', 0, true);
                 }),
               );
               yield* persistentCapacityProtector
-                ? persistentCapacityProtector(temporaryActivationFactsCapacity(symbols, edges, references), transaction)
+                ? persistentCapacityProtector(
+                    temporaryActivationFactsCapacity(symbols, edges, references, monikers),
+                    transaction,
+                  )
                 : transaction;
               yield* observer('committed', 0, true);
             }),

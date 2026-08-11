@@ -7,6 +7,8 @@ import type {
   CodeGraphRelation,
   CodeGraphSymbol,
 } from './types.js';
+import type {CodeGraphMonikerV1} from './cross_repository/types.js';
+import {canonicalCodeGraphMonikers} from './cross_repository/monikers.js';
 
 export const CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM = 8 * 1_048_576;
 export const CODE_GRAPH_REFERENCE_CANDIDATES_PER_REFERENCE_MAXIMUM = 100_000;
@@ -168,16 +170,34 @@ export function budgetCachedCodeGraphFacts(
   const selectedEdges: CodeGraphEdge[] = [];
   const selectedEdgeIds = new Set<string>();
   const selectedReferences: CodeGraphReference[] = [];
+  const selectedMonikers: CodeGraphMonikerV1[] = [];
   const selectedDiagnostics: string[] = [];
   const includeReferences = compacted.references !== undefined;
   const output = (): CodeGraphFileFacts => ({
     diagnostics: selectedDiagnostics,
     edges: selectedEdges,
+    ...(compacted.monikers === undefined ? {} : {monikers: selectedMonikers}),
     path: compacted.path,
     ...(includeReferences ? {references: selectedReferences} : {}),
     symbols: selectedSymbols,
   });
   let selectedBytes = cachedCodeGraphFactBytes(output());
+
+  for (const moniker of canonicalCodeGraphMonikers(compacted.monikers ?? [])) {
+    const anchor = moniker.scheme === 'protobuf' ? symbolsById.get(moniker.symbolId) : undefined;
+    if (moniker.scheme === 'protobuf' && anchor === undefined) continue;
+    const missingAnchor = anchor === undefined || selectedSymbolIds.has(anchor.id) ? [] : [anchor];
+    const delta =
+      cachedFactArrayAppendBytes(selectedSymbols.length, missingAnchor) +
+      cachedFactArrayAppendBytes(selectedMonikers.length, [moniker]);
+    if (selectedBytes + delta > maximumBytes) continue;
+    for (const symbol of missingAnchor) {
+      selectedSymbols.push(symbol);
+      selectedSymbolIds.add(symbol.id);
+    }
+    selectedMonikers.push(moniker);
+    selectedBytes += delta;
+  }
 
   const tryAddDiagnostic = (diagnostic: string): boolean => {
     const delta = cachedFactArrayAppendBytes(selectedDiagnostics.length, [diagnostic]);

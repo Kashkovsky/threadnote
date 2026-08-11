@@ -12,6 +12,7 @@ import {
 import {compareCodeUnits} from './ordering.js';
 import {configureConnection, tableExists} from './store_session.js';
 import {type CodeGraphEdge, type CodeGraphReference, type CodeGraphSymbol, CodeGraphStoreError} from './types.js';
+import type {CodeGraphMonikerV1} from './cross_repository/types.js';
 import {type SnapshotRow} from './store_internal_models.js';
 import {snapshotFromRow} from './store_rows.js';
 import {
@@ -44,6 +45,7 @@ import {
   persistedFullBatchFingerprint,
   type PersistedFullBatchReceipt,
   stagePersistedAnalysisBatch,
+  stageSnapshotMonikers,
 } from './store_staging_core.js';
 import {chunk, lookupDomain, sortedBy, uniqueBy} from './store_utilities.js';
 import {type CodeGraphSqlQueryStatement} from './store_visualization_sql.js';
@@ -90,12 +92,13 @@ const stagePersistedFullFacts = Effect.fn('codeGraph.stagePersistedFullFacts')(f
   observer: ActivationStagingObserver,
   withinTransaction = false,
   prepared?: PreparedPersistedFullFactBatch,
+  monikers: readonly CodeGraphMonikerV1[] = [],
 ) {
   if (!Number.isSafeInteger(batchIndex) || batchIndex < 0) {
     return yield* Effect.fail(new CodeGraphStoreError('Persistent materialization batch identity is invalid.'));
   }
   const boundedReferences = prepared?.boundedReferences ?? references.filter(isCodeGraphReferenceWithinCandidateBudget);
-  const batchFingerprint = yield* persistedFullBatchFingerprint(symbols, edges, boundedReferences);
+  const batchFingerprint = yield* persistedFullBatchFingerprint(symbols, edges, boundedReferences, monikers);
 
   let lookupCount = 0;
   let termCount = 0;
@@ -298,6 +301,7 @@ const stagePersistedFullFacts = Effect.fn('codeGraph.stagePersistedFullFacts')(f
       yield* observer('references', 0, true);
       yield* observer('reference-candidates', 0, true);
       yield* observer('reexports', 0, true);
+      yield* stageSnapshotMonikers(sql, snapshotId, monikers);
       yield* observer('analysis', 0, true);
       yield* stagePersistedAnalysisBatch(sql, snapshotId, batchIndex, batchFingerprint, symbols, edges);
       yield* observer('analysis', symbols.length + edges.length, true);

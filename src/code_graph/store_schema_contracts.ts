@@ -1,4 +1,4 @@
-export type PersistentExtensionGroup = 'analysis' | 'build' | 'lexical' | 'shards';
+export type PersistentExtensionGroup = 'analysis' | 'build' | 'cross-repository' | 'lexical' | 'shards';
 
 export type CodeGraphPersistentSchemaMigrationPhase =
   | 'added-build-owner-instance'
@@ -93,6 +93,88 @@ const optionalColumn = (name: string, type: string): PersistentExtensionColumnCo
  * are restarted against the current resumable-build contract.
  */
 export const PERSISTENT_EXTENSION_TABLES = [
+  {
+    columns: [
+      requiredColumn('snapshot_id', 'TEXT', 1),
+      requiredColumn('source_component_id', 'TEXT', 2),
+      requiredColumn('ecosystem', 'TEXT', 3),
+      requiredColumn('package_name', 'TEXT', 4),
+      requiredColumn('import_alias', 'TEXT', 5),
+      requiredColumn('dependency_kind', 'TEXT', 6),
+      requiredColumn('version_constraint', 'TEXT', 7),
+      requiredColumn('evidence_path', 'TEXT', 8),
+      optionalColumn('evidence_span_json', 'TEXT'),
+    ],
+    createSql: `CREATE TABLE IF NOT EXISTS workspace_external_dependencies (
+      snapshot_id TEXT NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
+      source_component_id TEXT NOT NULL,
+      ecosystem TEXT NOT NULL CHECK (ecosystem = 'npm'),
+      package_name TEXT NOT NULL,
+      import_alias TEXT NOT NULL,
+      dependency_kind TEXT NOT NULL CHECK (dependency_kind IN ('runtime', 'development', 'optional', 'peer')),
+      version_constraint TEXT NOT NULL,
+      evidence_path TEXT NOT NULL,
+      evidence_span_json TEXT,
+      PRIMARY KEY (
+        snapshot_id, source_component_id, ecosystem, package_name, import_alias, dependency_kind,
+        version_constraint, evidence_path
+      )
+    ) WITHOUT ROWID`,
+    group: 'cross-repository',
+    name: 'workspace_external_dependencies',
+    requiredDefinitionPatterns: [
+      /CHECK\s*\(\s*ecosystem\s*=\s*'npm'\s*\)/i,
+      /CHECK\s*\(\s*dependency_kind\s+IN\s*\(\s*'runtime'\s*,\s*'development'\s*,\s*'optional'\s*,\s*'peer'\s*\)\s*\)/i,
+    ],
+  },
+  {
+    columns: [
+      requiredColumn('snapshot_id', 'TEXT', 1),
+      requiredColumn('id', 'TEXT', 2),
+      requiredColumn('version', 'INTEGER'),
+      requiredColumn('scheme', 'TEXT'),
+      requiredColumn('role', 'TEXT'),
+      requiredColumn('kind', 'TEXT'),
+      requiredColumn('resolution_domain', 'TEXT'),
+      requiredColumn('identity', 'TEXT'),
+      optionalColumn('package_name', 'TEXT'),
+      optionalColumn('package_version', 'TEXT'),
+      optionalColumn('import_path', 'TEXT'),
+      optionalColumn('qualified_name', 'TEXT'),
+      optionalColumn('component_id', 'TEXT'),
+      optionalColumn('symbol_id', 'TEXT'),
+      optionalColumn('dependency_kind', 'TEXT'),
+      requiredColumn('evidence_path', 'TEXT'),
+      requiredColumn('evidence_span_json', 'TEXT'),
+    ],
+    createSql: `CREATE TABLE IF NOT EXISTS code_graph_monikers (
+      snapshot_id TEXT NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
+      id TEXT NOT NULL,
+      version INTEGER NOT NULL CHECK (version = 1),
+      scheme TEXT NOT NULL CHECK (scheme IN ('package', 'protobuf')),
+      role TEXT NOT NULL CHECK (role IN ('import', 'export')),
+      kind TEXT NOT NULL,
+      resolution_domain TEXT NOT NULL,
+      identity TEXT NOT NULL,
+      package_name TEXT,
+      package_version TEXT,
+      import_path TEXT,
+      qualified_name TEXT,
+      component_id TEXT,
+      symbol_id TEXT,
+      dependency_kind TEXT,
+      evidence_path TEXT NOT NULL,
+      evidence_span_json TEXT NOT NULL,
+      PRIMARY KEY (snapshot_id, id)
+    ) WITHOUT ROWID`,
+    group: 'cross-repository',
+    name: 'code_graph_monikers',
+    requiredDefinitionPatterns: [
+      /CHECK\s*\(\s*version\s*=\s*1\s*\)/i,
+      /CHECK\s*\(\s*scheme\s+IN\s*\(\s*'package'\s*,\s*'protobuf'\s*\)\s*\)/i,
+      /CHECK\s*\(\s*role\s+IN\s*\(\s*'import'\s*,\s*'export'\s*\)\s*\)/i,
+    ],
+  },
   {
     columns: [
       requiredColumn('snapshot_id', 'TEXT', 1),

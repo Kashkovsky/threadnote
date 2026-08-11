@@ -4021,6 +4021,9 @@ describe('code graph full-build materialization store', () => {
               },
             );
           }),
+          // This regression isolates SQLite transaction yielding; checkout-gate
+          // serialization is covered separately by the writer-lock tests.
+          {writerGateHeld: true},
         )
         .pipe(Effect.forkChild);
 

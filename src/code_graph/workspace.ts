@@ -10,6 +10,8 @@ import type {
   CodeGraphWorkspaceProject,
 } from './languages/types.js';
 import {compareCodeUnits} from './ordering.js';
+import {canonicalCodeGraphMonikers, codeGraphPackageMoniker} from './cross_repository/monikers.js';
+import type {CodeGraphExternalDependencyV1, CodeGraphMonikerV1} from './cross_repository/types.js';
 import {discoverNodeWorkspaceCandidates} from './workspace_node.js';
 import {
   basename,
@@ -65,6 +67,8 @@ export function discoverManifestWorkspace(files: readonly CodeGraphInventoryFile
           project.root,
           project.resolutionDomain,
           project.dependencies.join(','),
+          JSON.stringify(project.externalDependencies ?? []),
+          JSON.stringify(project.monikers ?? []),
           project.sourceRoots.join(','),
           project.workspaceRoots.join(','),
           project.diagnostics.join(','),
@@ -100,10 +104,15 @@ export function mergeCodeGraphWorkspaces(workspaces: readonly CodeGraphWorkspace
           ...existing.dependencyDetails,
           ...project.dependencyDetails,
         ]),
+        externalDependencies: normalizeExternalDependencies([
+          ...(existing.externalDependencies ?? []),
+          ...(project.externalDependencies ?? []),
+        ]),
         diagnostics: uniqueStrings([...existing.diagnostics, ...project.diagnostics]),
         id: project.id,
         kind: preferred.kind,
         languages: uniqueStrings([...existing.languages, ...project.languages]),
+        monikers: canonicalCodeGraphMonikers([...(existing.monikers ?? []), ...(project.monikers ?? [])]),
         name: preferredProjectName(existing.name, project.name),
         provenance: existing.provenance === 'declared' || project.provenance === 'declared' ? 'declared' : 'inferred',
         resolutionDomain: preferred.resolutionDomain,
@@ -136,11 +145,31 @@ function normalizeWorkspaceProject(project: CodeGraphWorkspaceProject): CodeGrap
     ...project,
     dependencies: uniqueStrings(project.dependencies),
     dependencyDetails: normalizeWorkspaceDependencies(project.dependencyDetails),
+    externalDependencies: normalizeExternalDependencies(project.externalDependencies ?? []),
     diagnostics: uniqueStrings(project.diagnostics),
     languages: uniqueStrings(project.languages),
+    monikers: canonicalCodeGraphMonikers(project.monikers ?? []),
     sourceRoots: uniqueStrings(project.sourceRoots),
     workspaceRoots: uniqueStrings(project.workspaceRoots),
   };
+}
+
+function normalizeExternalDependencies(
+  dependencies: readonly CodeGraphExternalDependencyV1[],
+): readonly CodeGraphExternalDependencyV1[] {
+  return uniqueBy(
+    dependencies,
+    dependency =>
+      `${dependency.ecosystem}\0${dependency.name}\0${dependency.importAlias}\0${dependency.kind}\0${dependency.versionConstraint}\0${dependency.evidence.path}`,
+  ).sort(
+    (left, right) =>
+      compareCodeUnits(left.ecosystem, right.ecosystem) ||
+      compareCodeUnits(left.name, right.name) ||
+      compareCodeUnits(left.importAlias, right.importAlias) ||
+      compareCodeUnits(left.kind, right.kind) ||
+      compareCodeUnits(left.versionConstraint, right.versionConstraint) ||
+      compareCodeUnits(left.evidence.path, right.evidence.path),
+  );
 }
 
 function normalizeWorkspaceDependencies(
@@ -201,6 +230,8 @@ function mergedWorkspaceFingerprint(
           dependency.provenance,
           dependency.evidence ?? '',
         ]),
+        project.externalDependencies ?? [],
+        project.monikers ?? [],
         project.languages,
         project.sourceRoots,
         project.workspaceRoots,
@@ -520,12 +551,19 @@ function mergeProjectCandidates(candidates: readonly ProjectCandidate[]): readon
       dependencyAliases: unique([...existing.dependencyAliases, ...candidate.dependencyAliases]).sort(),
       diagnostics: unique([...existing.diagnostics, ...candidate.diagnostics]).sort(),
       evidence: preferred.evidence ?? existing.evidence ?? candidate.evidence,
+      externalDependencies: normalizeExternalDependencies([
+        ...(existing.externalDependencies ?? []),
+        ...(candidate.externalDependencies ?? []),
+      ]),
       ...((preferred.identityKey ?? existing.identityKey ?? candidate.identityKey)
         ? {identityKey: preferred.identityKey ?? existing.identityKey ?? candidate.identityKey}
         : {}),
       kind: preferred.kind,
       languages: unique([...existing.languages, ...candidate.languages]).sort(),
       name: preferredProjectName(existing.name, candidate.name),
+      ...(preferred.packageNameSpan === undefined ? {} : {packageNameSpan: preferred.packageNameSpan}),
+      ...(preferred.packageNameDeclared === undefined ? {} : {packageNameDeclared: preferred.packageNameDeclared}),
+      ...(preferred.packageVersion === undefined ? {} : {packageVersion: preferred.packageVersion}),
       provenance: existing.provenance === 'declared' || candidate.provenance === 'declared' ? 'declared' : 'inferred',
       resolutionDomain: preferred.resolutionDomain,
       root: preferred.root,
@@ -617,16 +655,64 @@ function materializeProjects(
         );
       }
     }
+    const externalDependencies = normalizeExternalDependencies(
+      (candidate.externalDependencies ?? []).filter(dependency => {
+        if (dependency.importAlias !== dependency.name) return true;
+        const targets = aliases.get(dependency.name);
+        if (targets === undefined || targets.size !== 1) return true;
+        return targets.has(id);
+      }),
+    );
+    const monikers: CodeGraphMonikerV1[] = [];
+    for (const dependency of externalDependencies) {
+      try {
+        monikers.push(
+          codeGraphPackageMoniker({
+            componentId: id,
+            dependencyKind: dependency.kind,
+            evidence: {
+              path: dependency.evidence.path,
+              span: dependency.evidence.span ?? {column: 1, endColumn: 1, endLine: 1, line: 1},
+            },
+            packageName: dependency.name,
+            packageVersion: dependency.versionConstraint,
+            role: 'import',
+          }),
+        );
+      } catch {
+        diagnostics.push(`${dependency.evidence.path}: npm dependency cannot form a package moniker`);
+      }
+    }
+    if ((candidate.buildSystem === 'node' || candidate.buildSystem === 'pnpm') && candidate.packageNameDeclared) {
+      try {
+        monikers.push(
+          codeGraphPackageMoniker({
+            componentId: id,
+            evidence: {
+              path: candidate.evidence ?? `${candidate.root ? `${candidate.root}/` : ''}package.json`,
+              span: candidate.packageNameSpan ?? {column: 1, endColumn: 1, endLine: 1, line: 1},
+            },
+            packageName: candidate.name,
+            packageVersion: candidate.packageVersion,
+            role: 'export',
+          }),
+        );
+      } catch {
+        diagnostics.push(`${candidate.evidence ?? candidate.root}: npm package name cannot form a package moniker`);
+      }
+    }
     return {
       buildSystem: candidate.buildSystem,
       dependencies: [...dependencies].sort(),
       dependencyDetails: [...dependencies]
         .sort()
         .map(targetId => ({evidence: candidate.evidence, provenance: candidate.provenance, targetId})),
+      externalDependencies,
       diagnostics: candidate.diagnostics,
       id,
       kind: candidate.kind,
       languages: [...candidate.languages].sort(),
+      monikers: canonicalCodeGraphMonikers(monikers),
       name: candidate.name,
       provenance: candidate.provenance,
       resolutionDomain: candidate.resolutionDomain,

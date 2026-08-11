@@ -482,6 +482,43 @@ describe('code graph ready snapshot retention', () => {
     expect(error.message).toContain('another code graph writer owns this checkout');
     expect(error.message).not.toContain(home);
   });
+
+  it('serializes arbitrary-path lease writers through the fallback sidecar lock', async () => {
+    const root = await mkdtemp('threadnote-ready-retention-fallback-writer-');
+    temporaryRoots.push(root);
+    const databasePath = join(root, 'graph-v3.sqlite');
+    const writerLockPath = `${databasePath}.writer.lock`;
+    const identity = repositoryIdentity(root);
+    const ready = snapshot(identity, 'fallback-writer');
+
+    const result = await runEffect(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        yield* store.initialize(databasePath);
+        yield* registerReadySnapshots(store, databasePath, identity, [ready]);
+        const writerAcquired = yield* Deferred.make<void>();
+        const releaseWriter = yield* Deferred.make<void>();
+        const writer = yield* store
+          .withSession(databasePath, store.initialize(databasePath), {
+            onWriterAcquired: () =>
+              Deferred.succeed(writerAcquired, undefined).pipe(Effect.andThen(Deferred.await(releaseWriter))),
+            writerLockPath,
+          })
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(writerAcquired);
+        const busy = yield* store
+          .acquireSnapshotLease(databasePath, ready.id, 60_000, {waitTimeoutMilliseconds: 0})
+          .pipe(Effect.flip, Effect.ensuring(Deferred.succeed(releaseWriter, undefined).pipe(Effect.asVoid)));
+        yield* Fiber.join(writer);
+        const token = yield* store.acquireSnapshotLease(databasePath, ready.id, 60_000);
+        yield* store.releaseSnapshotLease(databasePath, token);
+        return busy;
+      }),
+    );
+
+    expect(result).toBeInstanceOf(CodeGraphStoreBusyError);
+    expect(result.message).not.toContain(root);
+  });
 });
 
 function registerReadySnapshots(

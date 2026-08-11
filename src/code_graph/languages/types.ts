@@ -1,6 +1,7 @@
 import {Effect, Option} from 'effect';
 import type {TreeSitterRuntime} from '../tree_sitter/runtime.js';
 import type {CodeGraphFileFacts, CodeGraphInventoryFile} from '../types.js';
+import type {CodeGraphExternalDependencyV1, CodeGraphMonikerV1} from '../cross_repository/types.js';
 
 export type CodeGraphFileRole = 'corpus' | 'documentation' | 'manifest' | 'source' | 'workspace';
 export type CodeGraphCapability =
@@ -52,10 +53,12 @@ export interface CodeGraphWorkspaceProject {
   readonly buildSystem: CodeGraphWorkspaceBuildSystem;
   readonly dependencies: readonly string[];
   readonly dependencyDetails: readonly CodeGraphWorkspaceDependency[];
+  readonly externalDependencies?: readonly CodeGraphExternalDependencyV1[];
   readonly diagnostics: readonly string[];
   readonly id: string;
   readonly kind: CodeGraphWorkspaceComponentKind;
   readonly languages: readonly string[];
+  readonly monikers?: readonly CodeGraphMonikerV1[];
   readonly name: string;
   readonly provenance: CodeGraphWorkspaceProvenance;
   readonly resolutionDomain: string;

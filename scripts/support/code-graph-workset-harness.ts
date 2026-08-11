@@ -1,10 +1,25 @@
 import {Clock, Effect} from 'effect';
 import {CodeGraphIndexer, type CodeGraphIndexerShape} from '../../src/code_graph/indexer.js';
 import {
-  CODE_GRAPH_WORKSET_MAX_REPOSITORIES,
-  inspectCodeGraphWorkset,
-  type CodeGraphWorksetQueryResult,
-} from '../../src/code_graph/workset_query.js';
+  publishCodeGraphWorksetCatalogGeneration,
+  stageCodeGraphWorksetCatalogGenerationFromReceipts,
+} from '../../src/code_graph/workset_catalog/store.js';
+import {stageCodeGraphWorksetRoutingProjectionScoped} from '../../src/code_graph/workset_catalog/projection_builder.js';
+import {
+  codeGraphWorksetManifestDigest,
+  prepareCodeGraphWorksetBridgesForGeneration,
+} from '../../src/code_graph/workset_catalog/workset.js';
+import {
+  executeCodeGraphWorksetV2,
+  type CodeGraphWorksetQueryV2ExecutionV1,
+} from '../../src/code_graph/workset_query_v2.js';
+import type {
+  CodeGraphEvidenceCardV1,
+  CodeGraphWorksetQueryResultV2,
+  ProjectedCodeGraphWorksetEvidenceV1,
+} from '../../src/code_graph/workset_evidence.js';
+import {CodeGraphQueryService} from '../../src/code_graph/query.js';
+import {requireWorkset} from '../../src/manifest.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import {
   CODE_GRAPH_WORKSET_EVALUATION_VERSION,
@@ -20,7 +35,6 @@ import {
 } from '../../src/evaluation/code-graph-workset.js';
 import {measureAgentToolResponse} from '../../src/evaluation/agent-response.js';
 import {benchmarkMeasurement, type BenchmarkMeasurementV1} from '../../src/evaluation/benchmark.js';
-import {codeGraphWorksetMcpResponse} from '../../src/mcp_server.js';
 import {
   CODE_GRAPH_WORKSET_FIXTURE_ARCHETYPES,
   CODE_GRAPH_WORKSET_FIXTURE_GENERATOR_VERSION,
@@ -34,6 +48,7 @@ import {
 const NANOSECONDS_PER_MILLISECOND = 1_000_000;
 
 export const CODE_GRAPH_WORKSET_DEFAULT_NODE_LIMIT = 24;
+export const CODE_GRAPH_WORKSET_DEFAULT_EVIDENCE_CARDS = 40;
 export const CODE_GRAPH_WORKSET_DEFAULT_EDGE_LIMIT = 40;
 export const CODE_GRAPH_WORKSET_AGENT_TOKEN_BUDGET = 1_500;
 export const CODE_GRAPH_WORKSET_FIFTY_FIRST_EVIDENCE_P95_BUDGET_MS = 1_000;
@@ -69,8 +84,8 @@ export interface CodeGraphWorksetBenchmarkSample {
 
 export interface MeasuredCodeGraphWorksetQuery {
   readonly measurement: CodeGraphWorksetEvaluationMeasurementV1;
-  readonly response: ReturnType<typeof codeGraphWorksetMcpResponse>;
-  readonly result: CodeGraphWorksetQueryResult;
+  readonly response: ProjectedCodeGraphWorksetEvidenceV1;
+  readonly result: CodeGraphWorksetQueryResultV2;
 }
 
 export function codeGraphWorksetRuntimeConfig(fixture: PreparedCodeGraphWorksetFixture): RuntimeConfig {
@@ -94,16 +109,26 @@ export function buildCodeGraphWorksetEvaluationFixture(
 ): CodeGraphWorksetEvaluationFixtureV1 {
   const sizes = [...requestedSizes];
   const usedArchetypes = new Set(plan.members.map(member => member.archetypeId));
+  const searchableMembers = new Set(
+    plan.members
+      .filter(member => member.expectedState === 'current' || member.expectedState === 'stale')
+      .map(member => member.id),
+  );
   const queries = plan.queries.flatMap(query => {
     const applicableSizes = query.sizes.filter(size => sizes.includes(size));
     if (applicableSizes.length === 0) return [];
+    const expectedEdges = query.expectedEdges.filter(
+      edge => searchableMembers.has(edge.source.repositoryId) && searchableMembers.has(edge.target.repositoryId),
+    );
+    const expectedRepositories = query.expectedRepositories.filter(repositoryId => searchableMembers.has(repositoryId));
+    const expectedSymbols = query.expectedSymbols.filter(symbol => searchableMembers.has(symbol.repositoryId));
     return [
       {
         answerable: query.answerable,
         category: query.category,
-        expectedEdges: query.expectedEdges,
-        expectedRepositories: query.expectedRepositories,
-        expectedSymbols: query.expectedSymbols,
+        expectedEdges,
+        expectedRepositories,
+        expectedSymbols,
         id: query.id,
         operation: query.operation,
         query: query.query,
@@ -139,30 +164,123 @@ export const indexPreparedCodeGraphWorksetFixture = Effect.fn('codeGraphWorksetH
   });
 });
 
+/**
+ * Publish prefix workset generations from the fixture's already-indexed ready
+ * snapshots. This intentionally does not refresh or attach a repository, so
+ * mixed-state evaluation preserves stale, cold, missing, and failed controls.
+ */
+const publishIndexedCodeGraphWorksetCatalogScoped = Effect.fn('codeGraphWorksetHarness.publishCatalogScoped')(
+  function* (fixture: PreparedCodeGraphWorksetFixture, worksetNames: readonly string[]) {
+    const query = yield* CodeGraphQueryService;
+    const config = codeGraphWorksetRuntimeConfig(fixture);
+    const staged = yield* Effect.forEach(
+      fixture.repositories,
+      repository =>
+        query.status(fixture.home, repository.path, {requestMaintenance: false}).pipe(
+          Effect.flatMap(status =>
+            status.readySnapshot === undefined
+              ? Effect.succeed(undefined)
+              : stageCodeGraphWorksetRoutingProjectionScoped({
+                  identity: status.identity,
+                  snapshotId: status.readySnapshot.id,
+                  threadnoteHome: fixture.home,
+                }).pipe(Effect.map(built => ({built, identity: status.identity, project: repository.projectName}))),
+          ),
+          Effect.catch(() => Effect.succeed(undefined)),
+        ),
+      {concurrency: 1},
+    );
+    const stagedByProject = new Map(
+      staged.flatMap(value => (value === undefined ? [] : [[value.project, value] as const])),
+    );
+    for (const worksetName of worksetNames) {
+      const workset = yield* requireWorkset(config.manifestPath, worksetName);
+      const members = workset.projects.flatMap(project => {
+        const stagedMember = stagedByProject.get(project.name);
+        return stagedMember === undefined
+          ? []
+          : [
+              {
+                projectionDigest: stagedMember.built.receipt.projectionDigest,
+                repositoryId: stagedMember.built.receipt.repositoryId,
+                repositoryKey: project.name,
+                snapshotId: stagedMember.built.receipt.snapshotId,
+              },
+            ];
+      });
+      if (members.length === 0) {
+        return yield* Effect.fail(new Error(`Fixture workset ${worksetName} has no ready routing projections.`));
+      }
+      const stagedGeneration = yield* stageCodeGraphWorksetCatalogGenerationFromReceipts(fixture.home, {
+        manifestDigest: codeGraphWorksetManifestDigest(workset),
+        members,
+        worksetName,
+      });
+      const bridgeMembers = workset.projects.flatMap(project => {
+        const stagedMember = stagedByProject.get(project.name);
+        return stagedMember === undefined
+          ? []
+          : [
+              {
+                assertLease: stagedMember.built.assertLease,
+                identity: stagedMember.identity,
+                project: project.name,
+                repositoryId: stagedMember.built.receipt.repositoryId,
+                snapshotId: stagedMember.built.receipt.snapshotId,
+              },
+            ];
+      });
+      yield* prepareCodeGraphWorksetBridgesForGeneration(config, stagedGeneration.id, bridgeMembers);
+      const assertLeases = () =>
+        Effect.all(
+          workset.projects.flatMap(project => {
+            const stagedMember = stagedByProject.get(project.name);
+            return stagedMember === undefined ? [] : [stagedMember.built.assertLease];
+          }),
+          {discard: true},
+        );
+      yield* publishCodeGraphWorksetCatalogGeneration(fixture.home, {
+        beforePointerSwap: assertLeases,
+        generationId: stagedGeneration.id,
+        worksetName,
+      });
+    }
+  },
+);
+
+export const publishIndexedCodeGraphWorksetCatalog = Effect.fn('codeGraphWorksetHarness.publishCatalog')(function* (
+  fixture: PreparedCodeGraphWorksetFixture,
+  worksetNames: readonly string[],
+) {
+  return yield* publishIndexedCodeGraphWorksetCatalogScoped(fixture, worksetNames).pipe(Effect.scoped);
+});
+
 export const measureCodeGraphWorksetQuery = Effect.fn('codeGraphWorksetHarness.measureQuery')(function* (
   config: RuntimeConfig,
   worksetName: string,
   query: string,
 ) {
   const started = yield* Clock.currentTimeNanos;
-  const result = yield* inspectCodeGraphWorkset(config, worksetName, {
+  const execution: CodeGraphWorksetQueryV2ExecutionV1 = yield* executeCodeGraphWorksetV2(config, {
     edgeLimit: CODE_GRAPH_WORKSET_DEFAULT_EDGE_LIMIT,
+    evidenceCards: CODE_GRAPH_WORKSET_DEFAULT_EVIDENCE_CARDS,
+    maximumEstimatedTokens: CODE_GRAPH_WORKSET_AGENT_TOKEN_BUDGET,
     nodeLimit: CODE_GRAPH_WORKSET_DEFAULT_NODE_LIMIT,
     query,
-    requestMaintenance: false,
+    worksetName,
   });
-  const response = codeGraphWorksetMcpResponse(result);
+  const response = execution.projected;
+  const result = execution.logicalResult;
   const finished = yield* Clock.currentTimeNanos;
   const completionMilliseconds = Number(finished - started) / NANOSECONDS_PER_MILLISECOND;
   const evidenceItemCount = returnedEvidenceItemCount(response);
-  const readyRepositories = result.repositories.filter(member => member.state === 'ready').length;
   return {
     measurement: codeGraphWorksetDeliveryMeasurement({
       completionMilliseconds,
       evidenceItemCount,
-      repositoriesConsidered: result.coverage.queriedRepositories,
-      repositoriesDeepQueried: readyRepositories,
-      repositoryDatabasesOpened: readyRepositories,
+      repositoriesConsidered: execution.instrumentation.repositoriesConsidered,
+      repositoriesDeepQueried: execution.instrumentation.deepQueriedRepositories,
+      repositoryDatabasesOpened: execution.instrumentation.databasesOpened,
       response,
     }),
     response,
@@ -171,10 +289,10 @@ export const measureCodeGraphWorksetQuery = Effect.fn('codeGraphWorksetHarness.m
 });
 
 /**
- * V1 delivers a complete buffered MCP response. Consequently, when evidence
- * is present, delivered time-to-first-evidence equals completion. The current
- * response has nodes and edges rather than formal V2 cards, so the card-count
- * field records the exact number of delivered V1 evidence items.
+ * Workset Search 2.0 still delivers one complete buffered MCP response.
+ * Consequently, when a card is present, delivered time-to-first-evidence
+ * equals completion. The card count records only the compact projected cards
+ * visible to the agent.
  */
 export function codeGraphWorksetDeliveryMeasurement(
   input: CodeGraphWorksetDeliveryMeasurementInput,
@@ -213,29 +331,37 @@ export function codeGraphWorksetObservationFromQuery(
     observationCount: 0,
   },
 ): CodeGraphWorksetEvaluationObservationV1 {
-  const repositoryIdByProject = repositoryIdsByProject(fixture, measured.result);
   const repositoryHits: string[] = [];
   const symbolHits: CodeGraphWorksetSymbolRefV1[] = [];
   const edges: CodeGraphWorksetExpectedEdgeV1[] = [];
-  const resultByProject = new Map(measured.result.repositories.map(member => [member.project, member]));
-  for (const member of measured.response.structuredContent.repositories) {
-    if (member.state !== 'ready') continue;
-    const repositoryId = repositoryIdByProject.get(member.project);
+  const cardsByRef = new Map(measured.result.cards.map(card => [card.ref, card] as const));
+  // Relevance is scored over the persisted globally ranked sequence; response
+  // bytes and delivered-card count are measured separately on the compact
+  // first page. This keeps breadth quality independent from token envelope.
+  for (const card of measured.result.cards) {
+    const repositoryId = fixtureRepositoryId(fixture, card.repositoryKey);
     if (!repositoryId) continue;
-    if (member.graph.nodes.length > 0 || member.graph.edges.length > 0) repositoryHits.push(repositoryId);
-    for (const node of member.graph.nodes) {
-      symbolHits.push({repositoryId, symbol: `${node.path}#${node.name}`});
-    }
-    const rawMember = resultByProject.get(member.project);
-    const rawNodes = new Map(
-      rawMember?.state === 'ready' ? rawMember.graph.nodes.map(node => [node.id, node] as const) : [],
-    );
-    for (const edge of member.graph.edges) {
+    repositoryHits.push(repositoryId);
+    symbolHits.push({repositoryId, symbol: `${card.symbol.path}#${card.symbol.name}`});
+    for (const relationship of card.relationships) {
+      const source = deliveredRelationshipEndpoint(
+        relationship.source.repositoryKey,
+        relationship.source.ref,
+        cardsByRef,
+        fixture,
+      );
+      const target = deliveredRelationshipEndpoint(
+        relationship.target.repositoryKey,
+        relationship.target.ref,
+        cardsByRef,
+        fixture,
+      );
+      if (source === undefined || target === undefined) continue;
       edges.push({
-        provenance: edge.provenance,
-        relation: edge.relation,
-        source: deliveredEdgeEndpoint(repositoryId, edge.sourceId, edge.sourceName, edge.evidencePath, rawNodes),
-        target: deliveredEdgeEndpoint(repositoryId, edge.targetId, edge.targetName, edge.evidencePath, rawNodes),
+        provenance: relationship.provenance,
+        relation: relationship.relation,
+        source,
+        target,
       });
     }
   }
@@ -247,8 +373,8 @@ export function codeGraphWorksetObservationFromQuery(
     execution: 'executed',
     measurement: measured.measurement,
     queryId,
-    reportedNoAnswer: symbolHits.length === 0 && returnedEvidenceItemCount(measured.response) === 0,
-    repositoryHits,
+    reportedNoAnswer: measured.result.cards.length === 0,
+    repositoryHits: [...new Set(repositoryHits)],
     sampleId,
     symbolHits: uniqueSymbols(symbolHits),
     version: CODE_GRAPH_WORKSET_EVALUATION_VERSION,
@@ -285,14 +411,13 @@ export function unsupportedCodeGraphWorksetObservation(
 export function codeGraphWorksetCoverage(
   fixture: CodeGraphWorksetEvaluationFixtureV1,
   worksetSize: number,
-  result: CodeGraphWorksetQueryResult,
+  result: CodeGraphWorksetQueryResultV2,
 ): readonly CodeGraphWorksetCoverageObservationV1[] {
   const activeMembers = fixture.members.filter(member => member.ordinal <= worksetSize);
-  const byProject = new Map(result.repositories.map(member => [member.project, member]));
   return activeMembers.flatMap(member => {
     const project = `workset-${member.id}`;
-    const observed = byProject.get(project);
-    return observed ? [{repositoryId: member.id, state: memberState(observed)}] : [];
+    const observed = result.repositories[project];
+    return observed === undefined ? [] : [{repositoryId: member.id, state: memberState(observed.state)}];
   });
 }
 
@@ -324,9 +449,7 @@ export function codeGraphWorksetBenchmarkMeasurements(
   samples: readonly CodeGraphWorksetBenchmarkSample[],
 ): readonly BenchmarkMeasurementV1[] {
   const sizes = [...new Set(samples.map(sample => sample.worksetSize))].sort((left, right) => left - right);
-  const measurements: BenchmarkMeasurementV1[] = [
-    benchmarkMeasurement('workset-current-repository-cap', 'count', [CODE_GRAPH_WORKSET_MAX_REPOSITORIES]),
-  ];
+  const measurements: BenchmarkMeasurementV1[] = [benchmarkMeasurement('workset-current-repository-cap', 'count', [0])];
   for (const size of sizes) {
     const selected = samples.filter(sample => sample.worksetSize === size);
     const prefix = `workset-${size}`;
@@ -382,7 +505,7 @@ export function codeGraphWorksetBenchmarkMeasurements(
         selected.map(value => value.repositoryDatabasesOpened),
       ),
       benchmarkMeasurement(
-        `${prefix}-delivered-v1-evidence-items`,
+        `${prefix}-delivered-v2-evidence-cards`,
         'count',
         selected.map(value => value.evidenceItemCount),
       ),
@@ -442,28 +565,14 @@ function indexFixtureRepository(
   );
 }
 
-function repositoryIdsByProject(
-  fixture: CodeGraphWorksetEvaluationFixtureV1,
-  result: CodeGraphWorksetQueryResult,
-): ReadonlyMap<string, string> {
-  const activeIds = new Set(fixture.members.map(member => member.id));
-  return new Map(
-    result.repositories.flatMap(member => {
-      const id = member.project.startsWith('workset-') ? member.project.slice('workset-'.length) : '';
-      return activeIds.has(id) ? [[member.project, id] as const] : [];
-    }),
-  );
+function memberState(
+  state: CodeGraphWorksetQueryResultV2['repositories'][string]['state'],
+): CodeGraphWorksetMemberState {
+  return state === 'excluded' ? 'failed' : state;
 }
 
-function memberState(member: CodeGraphWorksetQueryResult['repositories'][number]): CodeGraphWorksetMemberState {
-  if (member.state === 'ready') return member.graph.freshness;
-  if (member.reason === 'missing-path') return 'missing';
-  if (member.reason === 'no-ready-snapshot') return 'deferred';
-  return 'failed';
-}
-
-function returnedEvidenceItemCount(response: ReturnType<typeof codeGraphWorksetMcpResponse>): number {
-  return response.structuredContent.output.returnedNodes + response.structuredContent.output.returnedEdges;
+function returnedEvidenceItemCount(response: ProjectedCodeGraphWorksetEvidenceV1): number {
+  return response.structuredContent.output.returnedCards;
 }
 
 function uniqueSymbols(symbols: readonly CodeGraphWorksetSymbolRefV1[]): readonly CodeGraphWorksetSymbolRefV1[] {
@@ -486,18 +595,22 @@ function uniqueEdges(edges: readonly CodeGraphWorksetExpectedEdgeV1[]): readonly
   });
 }
 
-function deliveredEdgeEndpoint(
-  repositoryId: string,
-  nodeId: string | undefined,
-  name: string,
-  evidencePath: string,
-  nodes: ReadonlyMap<string, {readonly name: string; readonly path: string}>,
-): CodeGraphWorksetSymbolRefV1 {
-  const node = nodeId ? nodes.get(nodeId) : undefined;
-  return {
-    repositoryId,
-    symbol: node ? `${node.path}#${node.name}` : `${evidencePath}#${name}`,
-  };
+function deliveredRelationshipEndpoint(
+  repositoryKey: string,
+  ref: string,
+  cardsByRef: ReadonlyMap<string, CodeGraphEvidenceCardV1>,
+  fixture: CodeGraphWorksetEvaluationFixtureV1,
+): CodeGraphWorksetSymbolRefV1 | undefined {
+  const card = cardsByRef.get(ref);
+  const repositoryId = fixtureRepositoryId(fixture, repositoryKey);
+  return card === undefined || repositoryId === undefined
+    ? undefined
+    : {repositoryId, symbol: `${card.symbol.path}#${card.symbol.name}`};
+}
+
+function fixtureRepositoryId(fixture: CodeGraphWorksetEvaluationFixtureV1, repositoryKey: string): string | undefined {
+  const id = repositoryKey.startsWith('workset-') ? repositoryKey.slice('workset-'.length) : '';
+  return fixture.members.some(member => member.id === id) ? id : undefined;
 }
 
 function assertNonNegativeInteger(value: number, label: string): void {

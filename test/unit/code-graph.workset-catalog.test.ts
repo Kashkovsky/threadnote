@@ -14,11 +14,16 @@ import {
   ensureCodeGraphWorksetCatalog,
   inspectCodeGraphWorksetCatalog,
   maintainCodeGraphWorksetCatalog,
+  appendCodeGraphWorksetCatalogProjectionPage,
+  beginCodeGraphWorksetCatalogProjection,
+  codeGraphWorksetCatalogProjectionContainsNode,
+  completeCodeGraphWorksetCatalogProjection,
   publishCodeGraphWorksetCatalogGeneration,
   readCodeGraphWorksetCatalogRoutingSymbols,
   readPublishedCodeGraphWorksetCatalogGeneration,
   recoverCodeGraphWorksetCatalog,
   stageCodeGraphWorksetCatalogGeneration,
+  stageCodeGraphWorksetCatalogGenerationFromReceipts,
 } from '../../src/code_graph/workset_catalog/store.js';
 import {
   CODE_GRAPH_WORKSET_CATALOG_PROJECTOR_VERSION,
@@ -120,6 +125,30 @@ describe('code graph workset catalog', () => {
     expect(secondPage?.next).toBeUndefined();
   });
 
+  it('checks a qualified node against one exact projection without scanning the generation', async () => {
+    const home = await temporaryHome(homes);
+    const input = generationInput('engineering', 'manifest-node-membership', [member(1, 'producer')]);
+    await runEffect(stageCodeGraphWorksetCatalogGeneration(home, input));
+    const projection = input.members[0]!.projection;
+
+    expect(
+      await runEffect(
+        codeGraphWorksetCatalogProjectionContainsNode(home, {
+          nodeId: projection.symbols[0]!.nodeId,
+          projectionDigest: projection.projectionDigest,
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      await runEffect(
+        codeGraphWorksetCatalogProjectionContainsNode(home, {
+          nodeId: `cgs_${'f'.repeat(32)}`,
+          projectionDigest: projection.projectionDigest,
+        }),
+      ),
+    ).toBe(false);
+  });
+
   it('refuses a corrupted staged projection without replacing the published generation', async () => {
     const home = await temporaryHome(homes);
     const first = await publish(home, generationInput('engineering', 'manifest-a', [member(1, 'producer')]));
@@ -160,6 +189,76 @@ describe('code graph workset catalog', () => {
     );
     expect(await collectSymbols(incrementalHome, 'engineering')).toEqual(
       await collectSymbols(cleanHome, 'engineering'),
+    );
+  });
+
+  it('streams bounded projection pages to the same generation and never publishes an incomplete stream', async () => {
+    const wholeHome = await temporaryHome(homes);
+    const streamedHome = await temporaryHome(homes);
+    const input = generationInput('engineering', 'manifest-stream', [member(3, 'schema'), member(1, 'producer')]);
+    const whole = await publish(wholeHome, input);
+
+    await fc.assert(
+      fc.asyncProperty(fc.integer({min: 1, max: 3}), async pageSize => {
+        const propertyHome = await temporaryHome(homes);
+        await runEffect(ensureCodeGraphWorksetCatalog(propertyHome));
+        for (const entry of input.members) {
+          const receipt = projectionReceipt(entry.projection);
+          const begun = await runEffect(beginCodeGraphWorksetCatalogProjection(propertyHome, receipt));
+          if (begun.state === 'staging') {
+            for (let offset = 0; offset < entry.projection.symbols.length; offset += pageSize) {
+              await runEffect(
+                appendCodeGraphWorksetCatalogProjectionPage(propertyHome, {
+                  projectionDigest: receipt.projectionDigest,
+                  symbols: entry.projection.symbols.slice(offset, offset + pageSize),
+                }),
+              );
+            }
+            await runEffect(completeCodeGraphWorksetCatalogProjection(propertyHome, receipt.projectionDigest));
+          }
+        }
+        const staged = await runEffect(
+          stageCodeGraphWorksetCatalogGenerationFromReceipts(propertyHome, {
+            manifestDigest: input.manifestDigest,
+            members: input.members.map(entry => ({
+              projectionDigest: entry.projection.projectionDigest,
+              repositoryId: entry.projection.repositoryId,
+              repositoryKey: entry.repositoryKey,
+              snapshotId: entry.projection.snapshotId,
+            })),
+            worksetName: input.worksetName,
+          }),
+        );
+        await runEffect(
+          publishCodeGraphWorksetCatalogGeneration(propertyHome, {
+            generationId: staged.id,
+            worksetName: input.worksetName,
+          }),
+        );
+        expect(staged.id).toBe(whole.id);
+        expect(await collectSymbols(propertyHome, input.worksetName)).toEqual(
+          await collectSymbols(wholeHome, input.worksetName),
+        );
+      }),
+      {numRuns: 8},
+    );
+
+    const staged = await runEffect(stageCodeGraphWorksetCatalogGeneration(streamedHome, input));
+    await runEffect(
+      publishCodeGraphWorksetCatalogGeneration(streamedHome, {
+        generationId: staged.id,
+        worksetName: input.worksetName,
+      }),
+    );
+
+    const previous = await runEffect(readPublishedCodeGraphWorksetCatalogGeneration(streamedHome, 'engineering'));
+    const incomplete = projection(99);
+    await runEffect(beginCodeGraphWorksetCatalogProjection(streamedHome, projectionReceipt(incomplete)));
+    await expect(
+      runEffect(completeCodeGraphWorksetCatalogProjection(streamedHome, incomplete.projectionDigest)),
+    ).rejects.toMatchObject({reason: 'corrupt'} satisfies Partial<CodeGraphWorksetCatalogError>);
+    expect((await runEffect(readPublishedCodeGraphWorksetCatalogGeneration(streamedHome, 'engineering')))?.id).toBe(
+      previous?.id,
     );
   });
 
@@ -289,6 +388,11 @@ function projection(seed: number): CodeGraphWorksetRoutingProjectionV1 {
     ],
     worktreeId: digest(`worktree-${seed}`),
   });
+}
+
+function projectionReceipt(projection: CodeGraphWorksetRoutingProjectionV1) {
+  const {symbols, ...receipt} = projection;
+  return {...receipt, symbolCount: symbols.length};
 }
 
 function catalogPath(home: string): string {

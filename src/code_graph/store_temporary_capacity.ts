@@ -7,6 +7,7 @@ import {
 import {isCodeGraphReferenceWithinCandidateBudget} from './fact_budget.js';
 import {symbolTerms} from './store_utilities.js';
 import {type CodeGraphWorkspace} from './languages/types.js';
+import type {CodeGraphMonikerV1} from './cross_repository/types.js';
 import {
   type CodeGraphEdge,
   type CodeGraphFileFacts,
@@ -35,7 +36,13 @@ export function temporaryActivationWorkspaceCapacity(
   workspace: CodeGraphWorkspace,
 ): CodeGraphDirectPersistentCapacityBoundary {
   const dependencyRows = workspace.projects.reduce(
-    (total, project) => saturatingCapacityAdd(total, project.dependencyDetails.length),
+    (total, project) =>
+      saturatingCapacityAdd(
+        total,
+        project.dependencyDetails.length,
+        project.externalDependencies?.length ?? 0,
+        project.monikers?.length ?? 0,
+      ),
     0,
   );
   return temporaryBoundary(
@@ -49,6 +56,7 @@ export function temporaryActivationFactsCapacity(
   symbols: readonly CodeGraphSymbol[],
   edges: readonly CodeGraphEdge[],
   references: readonly CodeGraphReference[],
+  monikers: readonly CodeGraphMonikerV1[] = [],
 ): CodeGraphDirectPersistentCapacityBoundary {
   const boundedReferences = references.filter(isCodeGraphReferenceWithinCandidateBudget);
   const lookupRows = symbols.reduce((total, symbol) => saturatingCapacityAdd(total, symbol.lookupKeys?.length ?? 0), 0);
@@ -68,6 +76,7 @@ export function temporaryActivationFactsCapacity(
     edges.length,
     boundedReferences.length,
     candidateRows,
+    monikers.length,
     // Every reference can contribute at most one bounded provenance row per
     // candidate. This intentionally over-reserves malformed duplicate input.
     candidateRows,
@@ -75,7 +84,7 @@ export function temporaryActivationFactsCapacity(
   return temporaryBoundary(
     'stage temporary code graph facts',
     rowCount,
-    encodedBytes([symbols, edges, boundedReferences]),
+    encodedBytes([symbols, edges, boundedReferences, monikers]),
   );
 }
 
@@ -88,6 +97,7 @@ export function temporaryIncrementalActivationCapacity(
     facts.flatMap(fact => fact.symbols),
     facts.flatMap(fact => fact.edges),
     facts.flatMap(fact => fact.references ?? []),
+    facts.flatMap(fact => fact.monikers ?? []),
   );
   return temporaryBoundary(
     'prepare temporary incremental code graph activation',

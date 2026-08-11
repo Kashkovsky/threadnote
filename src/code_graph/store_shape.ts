@@ -3,6 +3,7 @@ import type * as SqlClient from 'effect/unstable/sql/SqlClient';
 import type {CodeGraphBlobReuseFile} from './blob_reuse.js';
 import type {CodeGraphCacheFactInput} from './fact_budget.js';
 import type {CodeGraphWorkspace} from './languages/types.js';
+import type {CodeGraphMonikerV1} from './cross_repository/types.js';
 import type {
   CodeGraphActivationProgressCallback,
   CodeGraphActiveViewIdentity,
@@ -479,6 +480,7 @@ export interface CodeGraphStoreShape {
     onProgress?: CodeGraphStagingProgressCallback,
     batchIndex?: number,
     persistentCapacityProtector?: CodeGraphDirectPersistentCapacityProtector,
+    monikers?: readonly CodeGraphMonikerV1[],
   ) => Effect.Effect<void, CodeGraphStoreError>;
   readonly stageActivationFactBatches: (
     databasePath: string,

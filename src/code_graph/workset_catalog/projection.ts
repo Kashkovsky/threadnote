@@ -7,14 +7,19 @@ import {
   type CodeGraphWorksetCatalogGenerationIdentityV1,
   type CodeGraphWorksetCatalogGenerationDigestMemberV1,
   type CodeGraphWorksetCatalogGenerationMemberV1,
+  type CodeGraphWorksetCatalogGenerationReceiptIdentityV1,
+  type CodeGraphWorksetCatalogGenerationReceiptInputV1,
   type CodeGraphWorksetRoutingProjectionDraftV1,
+  type CodeGraphWorksetRoutingProjectionDigestStateV1,
+  type CodeGraphWorksetRoutingProjectionReceiptV1,
   type CodeGraphWorksetRoutingProjectionV1,
   type CodeGraphWorksetRoutingSymbolV1,
 } from './types.js';
 
 const SHA256_HEX = /^[0-9a-f]{64}$/u;
 const COMMIT_ID = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/u;
-const NODE_ID = /^cgs_[0-9a-f]{40}$/u;
+const NODE_ID = /^cgs_(?:[0-9a-f]{32}|[0-9a-f]{40}|[0-9a-f]{64})$/u;
+const SYMBOL_CHAIN_SEED = sha256HexSync('threadnote-workset-routing-symbol-chain-v2');
 
 export function createCodeGraphWorksetRoutingProjection(
   input: CodeGraphWorksetRoutingProjectionDraftV1,
@@ -37,36 +42,106 @@ export function validateCodeGraphWorksetRoutingProjection(
 
 export function codeGraphWorksetRoutingProjectionDigest(input: CodeGraphWorksetRoutingProjectionDraftV1): string {
   const normalized = normalizeProjectionDraft(input);
+  const appended = codeGraphWorksetRoutingProjectionDigestAppend(
+    codeGraphWorksetRoutingProjectionDigestStart(),
+    normalized.symbols,
+  );
+  return codeGraphWorksetRoutingProjectionDigestComplete(
+    {...normalized, symbolCount: normalized.symbols.length},
+    appended.state,
+  );
+}
+
+export function codeGraphWorksetRoutingProjectionDigestStart(): CodeGraphWorksetRoutingProjectionDigestStateV1 {
+  return {chainDigest: SYMBOL_CHAIN_SEED, symbolCount: 0};
+}
+
+/** Normalize and fold one already-ordered page without retaining earlier pages. */
+export function codeGraphWorksetRoutingProjectionDigestAppend(
+  state: CodeGraphWorksetRoutingProjectionDigestStateV1,
+  page: readonly CodeGraphWorksetRoutingSymbolV1[],
+): {
+  readonly state: CodeGraphWorksetRoutingProjectionDigestStateV1;
+  readonly symbols: readonly CodeGraphWorksetRoutingSymbolV1[];
+} {
+  const symbols = page.map(normalizeCodeGraphWorksetRoutingSymbol);
+  return {state: appendCanonicalSymbols(state, symbols, false), symbols};
+}
+
+/** Fold an already-normalized page without allocating a second page-sized array. */
+export function codeGraphWorksetRoutingProjectionDigestAppendCanonical(
+  state: CodeGraphWorksetRoutingProjectionDigestStateV1,
+  symbols: readonly CodeGraphWorksetRoutingSymbolV1[],
+): CodeGraphWorksetRoutingProjectionDigestStateV1 {
+  return appendCanonicalSymbols(state, symbols, true);
+}
+
+function appendCanonicalSymbols(
+  state: CodeGraphWorksetRoutingProjectionDigestStateV1,
+  symbols: readonly CodeGraphWorksetRoutingSymbolV1[],
+  validateCanonical: boolean,
+): CodeGraphWorksetRoutingProjectionDigestStateV1 {
+  assertSha256(state.chainDigest, 'projection symbol-chain digest');
+  if (!Number.isSafeInteger(state.symbolCount) || state.symbolCount < 0) {
+    throw invalid('Workset projection symbol-chain count is invalid.');
+  }
+  let chainDigest = state.chainDigest;
+  let lastNodeId = state.lastNodeId;
+  for (const symbol of symbols) {
+    const canonical = validateCanonical ? normalizeCodeGraphWorksetRoutingSymbol(symbol) : symbol;
+    if (
+      validateCanonical &&
+      JSON.stringify(symbolDigestRecord(canonical)) !== JSON.stringify(symbolDigestRecord(symbol))
+    ) {
+      throw invalid('Workset routing projection page is not canonical.');
+    }
+    if (lastNodeId !== undefined && compareText(lastNodeId, symbol.nodeId) >= 0) {
+      throw invalid('Workset routing symbol pages are not in strict node-identity order.');
+    }
+    chainDigest = sha256HexSync(
+      JSON.stringify(['threadnote-workset-routing-symbol-chain-link-v2', chainDigest, symbolDigestRecord(canonical)]),
+    );
+    lastNodeId = symbol.nodeId;
+  }
+  const symbolCount = state.symbolCount + symbols.length;
+  if (!Number.isSafeInteger(symbolCount) || symbolCount > CODE_GRAPH_WORKSET_CATALOG_LIMITS.symbolsPerProjection) {
+    throw invalid('Workset routing projection has too many symbols.');
+  }
+  return {chainDigest, ...(lastNodeId === undefined ? {} : {lastNodeId}), symbolCount};
+}
+
+export function codeGraphWorksetRoutingProjectionDigestComplete(
+  input: Omit<CodeGraphWorksetRoutingProjectionReceiptV1, 'projectionDigest'>,
+  state: CodeGraphWorksetRoutingProjectionDigestStateV1,
+): string {
+  const metadata = normalizeProjectionMetadata(input);
+  assertSha256(state.chainDigest, 'projection symbol-chain digest');
+  if (state.symbolCount !== metadata.symbolCount) {
+    throw invalid('Workset routing projection symbol-chain count does not match its receipt.');
+  }
   return sha256HexSync(
     JSON.stringify([
-      'threadnote-workset-routing-projection-v1',
-      normalized.repositoryId,
-      normalized.checkoutId,
-      normalized.worktreeId,
-      normalized.snapshotId,
-      normalized.snapshotDigest,
-      normalized.commitId,
-      normalized.extractorGeneration,
-      normalized.projectorVersion,
-      normalized.componentCount,
-      normalized.symbols.map(symbol => [
-        symbol.nodeId,
-        symbol.kind,
-        symbol.language,
-        symbol.exported ? 1 : 0,
-        symbol.packageName ?? null,
-        symbol.path,
-        symbol.name,
-        symbol.qualifiedName,
-        symbol.span.line,
-        symbol.span.column,
-        symbol.span.endLine,
-        symbol.span.endColumn,
-        symbol.lookupKeys,
-        symbol.terms.map(term => [term.term, term.weight]),
-      ]),
+      'threadnote-workset-routing-projection-v2',
+      metadata.repositoryId,
+      metadata.checkoutId,
+      metadata.worktreeId,
+      metadata.snapshotId,
+      metadata.snapshotDigest,
+      metadata.commitId,
+      metadata.extractorGeneration,
+      metadata.projectorVersion,
+      metadata.componentCount,
+      metadata.symbolCount,
+      state.chainDigest,
     ]),
   );
+}
+
+export function validateCodeGraphWorksetRoutingProjectionReceipt(
+  input: CodeGraphWorksetRoutingProjectionReceiptV1,
+): CodeGraphWorksetRoutingProjectionReceiptV1 {
+  assertSha256(input.projectionDigest, 'projection digest');
+  return {...normalizeProjectionMetadata(input), projectionDigest: input.projectionDigest};
 }
 
 export function codeGraphWorksetCatalogGenerationIdentity(
@@ -108,24 +183,7 @@ export function codeGraphWorksetCatalogGenerationDigest(
   if (members.length > CODE_GRAPH_WORKSET_CATALOG_LIMITS.membersPerGeneration) {
     throw invalid('Workset catalog generation has too many members.');
   }
-  const normalizedMembers = members
-    .map(member => {
-      assertSha256(member.repositoryId, 'repository identity');
-      assertSha256(member.projectionDigest, 'projection digest');
-      return {
-        projectionDigest: member.projectionDigest,
-        repositoryId: member.repositoryId,
-        repositoryKey: boundedText(member.repositoryKey, 'repository key', 512),
-        snapshotId: boundedText(member.snapshotId, 'snapshot identity', 256),
-      };
-    })
-    .sort(
-      (left, right) =>
-        compareText(left.repositoryKey, right.repositoryKey) ||
-        compareText(left.repositoryId, right.repositoryId) ||
-        compareText(left.snapshotId, right.snapshotId) ||
-        compareText(left.projectionDigest, right.projectionDigest),
-    );
+  const normalizedMembers = members.map(normalizeGenerationDigestMember).sort(compareDigestMember);
   for (let index = 1; index < normalizedMembers.length; index += 1) {
     if (normalizedMembers[index - 1]!.repositoryKey === normalizedMembers[index]!.repositoryKey) {
       throw invalid(`Workset catalog repository key ${normalizedMembers[index]!.repositoryKey} is duplicated.`);
@@ -144,6 +202,17 @@ export function codeGraphWorksetCatalogGenerationDigest(
       ]),
     ]),
   );
+}
+
+export function codeGraphWorksetCatalogGenerationReceiptIdentity(
+  input: CodeGraphWorksetCatalogGenerationReceiptInputV1,
+): CodeGraphWorksetCatalogGenerationReceiptIdentityV1 {
+  if (input.members.length > CODE_GRAPH_WORKSET_CATALOG_LIMITS.membersPerGeneration) {
+    throw invalid('Workset catalog generation has too many members.');
+  }
+  const members = input.members.map(normalizeGenerationDigestMember).sort(compareDigestMember);
+  const digest = codeGraphWorksetCatalogGenerationDigest(input.worksetName, input.manifestDigest, members);
+  return {digest, id: `cgwg_${digest.slice(0, 40)}`, members};
 }
 
 function normalizeGenerationMember(
@@ -176,7 +245,9 @@ function normalizeProjectionDraft(
   if (input.symbols.length > CODE_GRAPH_WORKSET_CATALOG_LIMITS.symbolsPerProjection) {
     throw invalid('Workset routing projection has too many symbols.');
   }
-  const symbols = input.symbols.map(normalizeSymbol).sort((left, right) => compareText(left.nodeId, right.nodeId));
+  const symbols = input.symbols
+    .map(normalizeCodeGraphWorksetRoutingSymbol)
+    .sort((left, right) => compareText(left.nodeId, right.nodeId));
   for (let index = 1; index < symbols.length; index += 1) {
     if (symbols[index - 1]!.nodeId === symbols[index]!.nodeId) {
       throw invalid(`Workset routing symbol ${symbols[index]!.nodeId} is duplicated.`);
@@ -196,7 +267,9 @@ function normalizeProjectionDraft(
   };
 }
 
-function normalizeSymbol(symbol: CodeGraphWorksetRoutingSymbolV1): CodeGraphWorksetRoutingSymbolV1 {
+export function normalizeCodeGraphWorksetRoutingSymbol(
+  symbol: CodeGraphWorksetRoutingSymbolV1,
+): CodeGraphWorksetRoutingSymbolV1 {
   if (!NODE_ID.test(symbol.nodeId)) throw invalid('Workset routing node identity is invalid.');
   const path = repositoryRelativePath(symbol.path);
   const lookupKeys = [...new Set(symbol.lookupKeys.map(key => boundedText(key, 'lookup key', 2_048)))].sort(
@@ -237,6 +310,40 @@ function normalizeSymbol(symbol: CodeGraphWorksetRoutingSymbolV1): CodeGraphWork
     span: {...span},
     terms: [...terms].sort(([left], [right]) => compareText(left, right)).map(([term, weight]) => ({term, weight})),
   };
+}
+
+function normalizeProjectionMetadata(
+  input: Omit<CodeGraphWorksetRoutingProjectionReceiptV1, 'projectionDigest'>,
+): Omit<CodeGraphWorksetRoutingProjectionReceiptV1, 'projectionDigest'> {
+  const normalized = normalizeProjectionDraft({...input, symbols: []});
+  if (
+    !Number.isSafeInteger(input.symbolCount) ||
+    input.symbolCount < 0 ||
+    input.symbolCount > CODE_GRAPH_WORKSET_CATALOG_LIMITS.symbolsPerProjection
+  ) {
+    throw invalid('Workset routing projection symbol count is invalid.');
+  }
+  const {symbols: _symbols, ...metadata} = normalized;
+  return {...metadata, symbolCount: input.symbolCount};
+}
+
+function symbolDigestRecord(symbol: CodeGraphWorksetRoutingSymbolV1): readonly unknown[] {
+  return [
+    symbol.nodeId,
+    symbol.kind,
+    symbol.language,
+    symbol.exported ? 1 : 0,
+    symbol.packageName ?? null,
+    symbol.path,
+    symbol.name,
+    symbol.qualifiedName,
+    symbol.span.line,
+    symbol.span.column,
+    symbol.span.endLine,
+    symbol.span.endColumn,
+    symbol.lookupKeys,
+    symbol.terms.map(term => [term.term, term.weight]),
+  ];
 }
 
 function repositoryRelativePath(value: string): string {
@@ -286,6 +393,31 @@ function compareMember(
     compareText(left.projection.snapshotId, right.projection.snapshotId) ||
     compareText(left.projection.projectionDigest, right.projection.projectionDigest)
   );
+}
+
+function compareDigestMember(
+  left: CodeGraphWorksetCatalogGenerationDigestMemberV1,
+  right: CodeGraphWorksetCatalogGenerationDigestMemberV1,
+): number {
+  return (
+    compareText(left.repositoryKey, right.repositoryKey) ||
+    compareText(left.repositoryId, right.repositoryId) ||
+    compareText(left.snapshotId, right.snapshotId) ||
+    compareText(left.projectionDigest, right.projectionDigest)
+  );
+}
+
+function normalizeGenerationDigestMember(
+  member: CodeGraphWorksetCatalogGenerationDigestMemberV1,
+): CodeGraphWorksetCatalogGenerationDigestMemberV1 {
+  assertSha256(member.repositoryId, 'repository identity');
+  assertSha256(member.projectionDigest, 'projection digest');
+  return {
+    projectionDigest: member.projectionDigest,
+    repositoryId: member.repositoryId,
+    repositoryKey: boundedText(member.repositoryKey, 'repository key', 512),
+    snapshotId: boundedText(member.snapshotId, 'snapshot identity', 256),
+  };
 }
 
 function compareText(left: string, right: string): number {

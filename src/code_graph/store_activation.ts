@@ -118,7 +118,9 @@ const activateStagedSnapshot = Effect.fn('codeGraph.activateStagedSnapshot')(fun
       (SELECT COUNT(*) FROM activation_symbol_terms) AS terms,
       (SELECT COUNT(*) FROM activation_workspace_scopes)
         + (SELECT COUNT(*) FROM activation_workspace_components)
-        + (SELECT COUNT(*) FROM activation_workspace_dependencies) AS workspace_rows
+        + (SELECT COUNT(*) FROM activation_workspace_dependencies)
+        + (SELECT COUNT(*) FROM activation_workspace_external_dependencies)
+        + (SELECT COUNT(*) FROM activation_monikers) AS workspace_rows
   `;
   const counts = stagedCounts[0];
   if (
@@ -187,6 +189,26 @@ const activateStagedSnapshot = Effect.fn('codeGraph.activateStagedSnapshot')(fun
           )
           SELECT ${snapshot.id}, source_component_id, target_component_id, provenance, evidence
           FROM activation_workspace_dependencies
+        `;
+        yield* sql`
+          INSERT INTO workspace_external_dependencies (
+            snapshot_id, source_component_id, ecosystem, package_name, import_alias, dependency_kind,
+            version_constraint, evidence_path, evidence_span_json
+          )
+          SELECT ${snapshot.id}, source_component_id, ecosystem, package_name, import_alias, dependency_kind,
+            version_constraint, evidence_path, evidence_span_json
+          FROM activation_workspace_external_dependencies
+        `;
+        yield* sql`
+          INSERT INTO code_graph_monikers (
+            snapshot_id, id, version, scheme, role, kind, resolution_domain, identity,
+            package_name, package_version, import_path, qualified_name, component_id,
+            symbol_id, dependency_kind, evidence_path, evidence_span_json
+          )
+          SELECT ${snapshot.id}, id, version, scheme, role, kind, resolution_domain, identity,
+            package_name, package_version, import_path, qualified_name, component_id,
+            symbol_id, dependency_kind, evidence_path, evidence_span_json
+          FROM activation_monikers
         `;
         yield* observe('copying-workspace', 'completed', Number(counts.workspace_rows));
         if (!baseSnapshotId) {
@@ -580,6 +602,42 @@ const activatePersistedIncrementalSnapshot = Effect.fn('codeGraph.activatePersis
           )
           SELECT ${snapshot.id}, source_component_id, target_component_id, provenance, evidence
           FROM workspace_component_dependencies WHERE snapshot_id = ${baseSnapshotId}
+        `;
+        yield* sql`
+          INSERT INTO workspace_external_dependencies (
+            snapshot_id, source_component_id, ecosystem, package_name, import_alias, dependency_kind,
+            version_constraint, evidence_path, evidence_span_json
+          )
+          SELECT ${snapshot.id}, source_component_id, ecosystem, package_name, import_alias, dependency_kind,
+            version_constraint, evidence_path, evidence_span_json
+          FROM workspace_external_dependencies WHERE snapshot_id = ${baseSnapshotId}
+        `;
+        yield* sql`
+          INSERT INTO code_graph_monikers (
+            snapshot_id, id, version, scheme, role, kind, resolution_domain, identity,
+            package_name, package_version, import_path, qualified_name, component_id,
+            symbol_id, dependency_kind, evidence_path, evidence_span_json
+          )
+          SELECT ${snapshot.id}, id, version, scheme, role, kind, resolution_domain, identity,
+            package_name, package_version, import_path, qualified_name, component_id,
+            symbol_id, dependency_kind, evidence_path, evidence_span_json
+          FROM code_graph_monikers AS base
+          WHERE base.snapshot_id = ${baseSnapshotId}
+            AND (
+              base.scheme = 'package'
+              OR base.evidence_path NOT IN (SELECT path FROM activation_incremental_paths)
+            )
+        `;
+        yield* sql`
+          INSERT INTO code_graph_monikers (
+            snapshot_id, id, version, scheme, role, kind, resolution_domain, identity,
+            package_name, package_version, import_path, qualified_name, component_id,
+            symbol_id, dependency_kind, evidence_path, evidence_span_json
+          )
+          SELECT ${snapshot.id}, id, version, scheme, role, kind, resolution_domain, identity,
+            package_name, package_version, import_path, qualified_name, component_id,
+            symbol_id, dependency_kind, evidence_path, evidence_span_json
+          FROM activation_monikers
         `;
         yield* observe('copying-workspace', 'completed');
         yield* observe('copying-files', 'started');

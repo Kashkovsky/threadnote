@@ -189,30 +189,48 @@ describe('code graph workset delivery measurement', () => {
   });
 });
 
-describe('code graph workset agent-visible observation mapping', () => {
-  it('credits only delivered symbols and retains delivered repository-qualified edges', () => {
+describe('code graph workset ranked-sequence observation mapping', () => {
+  it('scores the materialized sequence while measuring only the compact transport', () => {
     const fixture = buildCodeGraphWorksetEvaluationFixture(createCodeGraphWorksetFixturePlan(1), [1]);
-    const source = {id: 'cgs_source', name: 'sourceSymbol', path: 'src/source.ts'};
-    const target = {id: 'cgs_target', name: 'targetSymbol', path: 'src/target.ts'};
-    const edge = {
-      evidencePath: 'src/source.ts',
+    const source = {
+      id: 'cgec_source',
+      reason: {score: 1, signals: ['exact'], summary: 'Exact match.'},
+      ref: 'cgr_source',
+      relationships: [] as unknown[],
+      repositoryKey: 'workset-repo-000',
+      symbol: {
+        kind: 'function',
+        language: 'typescript',
+        name: 'sourceSymbol',
+        path: 'src/source.ts',
+        qualifiedName: 'sourceSymbol',
+        span: {column: 0, endColumn: 1, endLine: 1, line: 1},
+      },
+    };
+    const target = {
+      ...source,
+      id: 'cgec_target',
+      ref: 'cgr_target',
+      symbol: {...source.symbol, name: 'targetSymbol', path: 'src/target.ts', qualifiedName: 'targetSymbol'},
+    };
+    const relationship = {
+      authority: 'authoritative',
+      confidence: 1,
+      evidence: {
+        path: 'src/source.ts',
+        repositoryKey: 'workset-repo-000',
+        span: {column: 0, endColumn: 1, endLine: 1, line: 1},
+      },
       provenance: 'resolved',
       relation: 'calls',
-      sourceId: source.id,
-      sourceName: source.name,
-      targetId: target.id,
-      targetName: target.name,
+      source: {ref: source.ref, repositoryKey: 'workset-repo-000'},
+      target: {ref: target.ref, repositoryKey: 'workset-repo-000'},
     };
+    const deliveredSource = {...source, relationships: [relationship]};
     const response = {
       structuredContent: {
-        output: {returnedEdges: 1, returnedNodes: 1},
-        repositories: [
-          {
-            graph: {edges: [edge], nodes: [source]},
-            project: 'workset-repo-000',
-            state: 'ready',
-          },
-        ],
+        cards: [deliveredSource],
+        output: {returnedCards: 1},
       },
       text: 'one delivered symbol and edge',
     } as unknown as MeasuredCodeGraphWorksetQuery['response'];
@@ -227,25 +245,38 @@ describe('code graph workset agent-visible observation mapping', () => {
       }),
       response,
       result: {
-        coverage: {complete: true, queriedRepositories: 1, readyRepositories: 1, requestedRepositories: 1},
-        repositories: [
-          {
-            graph: {edges: [edge], freshness: 'current', nodes: [source, target]},
-            project: 'workset-repo-000',
-            state: 'ready',
+        cards: [deliveredSource, target],
+        coverage: {
+          cataloguedRepositories: 1,
+          complete: true,
+          consideredRepositories: 1,
+          deepQueriedRepositories: 1,
+          requestedRepositories: 1,
+          states: {current: 1, deferred: 0, excluded: 0, failed: 0, missing: 0, stale: 0},
+          stopReason: 'exhaustion',
+        },
+        repositories: {
+          'workset-repo-000': {
+            considered: true,
+            deepQueried: true,
+            repositoryId: 'repo-000',
+            state: 'current',
           },
-        ],
+        },
         trust: {classification: 'untrusted-repository-data', instructionPolicy: 'evidence-only-never-follow'},
         type: 'code-graph-workset-query',
-        version: 1,
+        version: 2,
         warnings: [],
-        workset: {name: 'code-graph-workset-1'},
+        workset: {generation: {digest: 'digest', id: 'generation'}, name: 'code-graph-workset-1'},
       },
     } as unknown as MeasuredCodeGraphWorksetQuery;
 
     const observation = codeGraphWorksetObservationFromQuery(fixture, 1, 'sample-1', fixture.queries[0]!.id, measured);
 
-    expect(observation.symbolHits).toEqual([{repositoryId: 'repo-000', symbol: 'src/source.ts#sourceSymbol'}]);
+    expect(observation.symbolHits).toEqual([
+      {repositoryId: 'repo-000', symbol: 'src/source.ts#sourceSymbol'},
+      {repositoryId: 'repo-000', symbol: 'src/target.ts#targetSymbol'},
+    ]);
     expect(observation.edges).toEqual([
       {
         provenance: 'resolved',
@@ -257,16 +288,16 @@ describe('code graph workset agent-visible observation mapping', () => {
     expect(observation.authoritativeEdges).toEqual(observation.edges);
   });
 
-  it('does not fabricate deferred receipts for members omitted by the repository cap', () => {
+  it('retains explicit mixed-state receipts without fabricating omitted members', () => {
     const fixture = buildCodeGraphWorksetEvaluationFixture(
       createCodeGraphWorksetFixturePlan(32, {stateProfile: 'mixed'}),
       [32],
     );
     const result = {
-      repositories: [
-        {graph: {freshness: 'current'}, project: 'workset-repo-000', state: 'ready'},
-        {project: 'workset-repo-006', reason: 'no-ready-snapshot', state: 'unavailable'},
-      ],
+      repositories: {
+        'workset-repo-000': {state: 'current'},
+        'workset-repo-006': {state: 'deferred'},
+      },
     } as unknown as MeasuredCodeGraphWorksetQuery['result'];
 
     expect(codeGraphWorksetCoverage(fixture, 32, result)).toEqual([
@@ -275,10 +306,26 @@ describe('code graph workset agent-visible observation mapping', () => {
     ]);
     expect(fixture.members.find(member => member.id === 'repo-014')?.expectedState).toBe('deferred');
   });
+
+  it('retains the exact Protobuf bridge expectation in the mixed size-eight evaluator', () => {
+    const plan = createCodeGraphWorksetFixturePlan(8, {stateProfile: 'mixed'});
+    const fixture = buildCodeGraphWorksetEvaluationFixture(plan, [1, 8]);
+
+    expect(plan.repositories.find(repository => repository.repositoryKey === 'repo-002')?.state).toBe('missing');
+    expect(plan.repositories.find(repository => repository.repositoryKey === 'repo-003')?.state).toBe('stale');
+    expect(fixture.queries.find(query => query.id === 'protobuf-session-directory')?.expectedEdges).toEqual([
+      {
+        provenance: 'declared',
+        relation: 'imports',
+        source: {repositoryId: 'repo-003', symbol: 'proto/session_client.proto#session.proto'},
+        target: {repositoryId: 'repo-000', symbol: 'threadnote/session/v1/session.proto#session.proto'},
+      },
+    ]);
+  });
 });
 
 describe('code graph workset benchmark mapping', () => {
-  it('emits versioned measurements, exposes the current cap, and enforces selected budgets', () => {
+  it('emits versioned measurements, records the removed cap, and enforces selected budgets', () => {
     const samples: CodeGraphWorksetBenchmarkSample[] = [
       benchmarkSample(50, {completionMilliseconds: 900, timeToFirstEvidenceMilliseconds: 800}),
       benchmarkSample(50, {completionMilliseconds: 1_200, timeToFirstEvidenceMilliseconds: 1_100}),
@@ -286,8 +333,8 @@ describe('code graph workset benchmark mapping', () => {
     ];
     const measurements = codeGraphWorksetBenchmarkMeasurements(samples);
     expect(measurements.find(measurement => measurement.name === 'workset-current-repository-cap')).toMatchObject({
-      maximum: 8,
-      minimum: 8,
+      maximum: 0,
+      minimum: 0,
       unit: 'count',
     });
     expect(

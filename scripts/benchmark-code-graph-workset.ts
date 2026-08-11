@@ -1,6 +1,5 @@
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import {Effect} from 'effect';
-import {CODE_GRAPH_WORKSET_MAX_REPOSITORIES} from '../src/code_graph/workset_query.js';
 import {runCommandEffect} from '../src/effect/command.js';
 import {ApplicationLayer} from '../src/effect/runtime.js';
 import {SystemInfo} from '../src/effect/system.js';
@@ -17,6 +16,7 @@ import {
   codeGraphWorksetRuntimeConfig,
   indexPreparedCodeGraphWorksetFixture,
   measureCodeGraphWorksetQuery,
+  publishIndexedCodeGraphWorksetCatalog,
 } from './support/code-graph-workset-harness.js';
 import {
   CODE_GRAPH_WORKSET_FIXTURE_SUPPORTED_SIZES,
@@ -71,6 +71,12 @@ export const benchmarkCodeGraphWorkset = Effect.scoped(
         }).pipe(Effect.catch(() => Effect.void)),
     );
     yield* indexPreparedCodeGraphWorksetFixture(prepared);
+    const selectedWorksets = options.sizes.map(size => {
+      const workset = prepared.plan.worksets.find(candidate => candidate.size === size);
+      if (!workset) throw new Error(`Fixture did not emit a size-${size} workset.`);
+      return workset.name;
+    });
+    yield* publishIndexedCodeGraphWorksetCatalog(prepared, selectedWorksets);
     const config = codeGraphWorksetRuntimeConfig(prepared);
     const query = prepared.plan.queries.find(candidate => candidate.id === BENCHMARK_QUERY_ID);
     if (!query) return yield* Effect.fail(new Error(`Fixture is missing benchmark query ${BENCHMARK_QUERY_ID}.`));
@@ -116,14 +122,14 @@ export const benchmarkCodeGraphWorkset = Effect.scoped(
       metadata: {
         agentTokenEstimate: 'utf8-bytes-divided-by-3; not a representative tokenizer count',
         catalogBytesRead: 0,
-        currentRepositoryCap: CODE_GRAPH_WORKSET_MAX_REPOSITORIES,
-        evidenceUnit: 'current-v1-returned-node-or-edge; formal evidence cards are not implemented',
+        currentRepositoryCap: 0,
+        evidenceUnit: 'globally-ranked-v2-evidence-card',
         firstEvidenceSemantics: 'buffered-response; delivered time-to-first equals completion',
         requestedSizes: options.sizes.join(','),
-        responseSurface: 'actual codeGraphWorksetMcpResponse structuredContent plus text',
-        routingMode: 'current manifest-order prefix',
+        responseSurface: 'canonical Workset Search 2.0 structuredContent plus terse text',
+        routingMode: 'complete indexed catalog with adaptive 4/4/16 deep expansion',
       },
-      suite: 'code-graph-workset-v1',
+      suite: 'code-graph-workset-v2',
       version: BENCHMARK_ARTIFACT_VERSION,
       warmups: options.warmups,
     });

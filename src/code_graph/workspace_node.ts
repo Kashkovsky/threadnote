@@ -1,5 +1,8 @@
 import type {CodeGraphInventoryFile} from './types.js';
 import {compareCodeUnits} from './ordering.js';
+import type {CodeGraphExternalDependencyKind, CodeGraphExternalDependencyV1} from './cross_repository/types.js';
+import {normalizeNpmPackageName} from './cross_repository/monikers.js';
+import {createSourceLineIndex, sourceSpan, type SourceLineIndex} from './languages/source_line_index.js';
 import {
   basename,
   dirname,
@@ -13,9 +16,13 @@ import {
 
 interface NodePackageManifest {
   readonly dependencyAliases: readonly string[];
+  readonly externalDependencies: readonly CodeGraphExternalDependencyV1[];
   readonly file: CodeGraphInventoryFile;
   readonly name: string;
+  readonly nameDeclared: boolean;
+  readonly nameSpan: ReturnType<typeof sourceSpan>;
   readonly root: string;
+  readonly version?: string;
   readonly workspacePatterns: readonly string[];
 }
 
@@ -47,6 +54,8 @@ interface NodeWorkspaceMatch {
   readonly buildSystem: 'node' | 'pnpm';
   readonly root: string;
 }
+
+const MAX_NODE_EXTERNAL_DEPENDENCIES_PER_MANIFEST = 20_000;
 
 /**
  * Parses package, pnpm, Nx, and TypeScript manifests once into typed component
@@ -82,9 +91,13 @@ export function discoverNodeWorkspaceCandidates(
       dependencyAliases: uniqueStrings([...manifest.dependencyAliases, ...referenceRoots, ...referencedPackageNames]),
       diagnostics: [],
       evidence: manifest.file.path,
+      externalDependencies: manifest.externalDependencies,
       kind: 'package',
       languages: ['javascript', 'typescript'],
       name: manifest.name,
+      packageNameSpan: manifest.nameSpan,
+      packageNameDeclared: manifest.nameDeclared,
+      ...(manifest.version === undefined ? {} : {packageVersion: manifest.version}),
       provenance: 'declared',
       resolutionDomain: 'typescript',
       root: manifest.root,
@@ -139,15 +152,38 @@ function parsePackageManifests(
       const manifest = parseJsonObject(file, 'package manifest', diagnostics);
       if (!manifest) return [];
       const root = dirname(file.path);
+      const declaredName = typeof manifest.name === 'string' && manifest.name.trim() ? manifest.name.trim() : undefined;
+      let name = declaredName ?? (root.split('/').at(-1) || 'root');
+      if (declaredName !== undefined) {
+        try {
+          name = normalizeNpmPackageName(declaredName);
+        } catch {
+          // Retain the workspace component even when its registry identity is
+          // invalid; materialization will omit only the unsafe export moniker.
+        }
+      }
+      const lineIndex = createSourceLineIndex(file.content!);
+      const stringTokens = jsonStringTokens(file.content!);
+      const externalDependencies = packageDependencies(
+        manifest,
+        file,
+        diagnostics,
+        jsonDependencySpans(file.content!, stringTokens, lineIndex),
+      );
       return [
         {
-          dependencyAliases: packageDependencyNames(manifest),
+          dependencyAliases: externalDependencies
+            .filter(dependency => dependency.importAlias === dependency.name)
+            .map(dependency => dependency.name),
+          externalDependencies,
           file,
-          name:
-            typeof manifest.name === 'string' && manifest.name.trim()
-              ? manifest.name.trim()
-              : root.split('/').at(-1) || 'root',
+          name,
+          nameDeclared: declaredName !== undefined,
+          nameSpan: jsonPropertySpan(file, 'name', declaredName ?? name, stringTokens, lineIndex),
           root,
+          ...(typeof manifest.version === 'string' && manifest.version.trim()
+            ? {version: manifest.version.trim()}
+            : {}),
           workspacePatterns: packageWorkspacePatterns(manifest),
         },
       ];
@@ -393,15 +429,206 @@ function nearestAncestor(path: string, roots: ReadonlySet<string>): string | und
   }
 }
 
-function packageDependencyNames(manifest: Record<string, unknown>): readonly string[] {
-  return uniqueStrings(
-    ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies'].flatMap(section => {
-      const dependencies = manifest[section];
-      return dependencies && typeof dependencies === 'object' && !Array.isArray(dependencies)
-        ? Object.keys(dependencies)
-        : [];
-    }),
+function packageDependencies(
+  manifest: Record<string, unknown>,
+  file: CodeGraphInventoryFile,
+  diagnostics: string[],
+  spans: ReadonlyMap<string, ReturnType<typeof sourceSpan>>,
+): readonly CodeGraphExternalDependencyV1[] {
+  const sections = [
+    ['dependencies', 'runtime'],
+    ['devDependencies', 'development'],
+    ['optionalDependencies', 'optional'],
+    ['peerDependencies', 'peer'],
+  ] as const satisfies readonly (readonly [string, CodeGraphExternalDependencyKind])[];
+  const output: CodeGraphExternalDependencyV1[] = [];
+  for (const [section, kind] of sections) {
+    const dependencies = manifest[section];
+    if (!dependencies || typeof dependencies !== 'object' || Array.isArray(dependencies)) continue;
+    for (const [rawName, rawConstraint] of Object.entries(dependencies)) {
+      if (typeof rawConstraint !== 'string' || !rawConstraint.trim() || rawConstraint.trim().length > 8_192) continue;
+      try {
+        const declaration = npmDependencyDeclaration(rawName, rawConstraint);
+        output.push({
+          ecosystem: 'npm',
+          evidence: {
+            path: file.path,
+            span: spans.get(`${section}\0${rawName}`) ?? {column: 1, endColumn: 1, endLine: 1, line: 1},
+          },
+          importAlias: declaration.importAlias,
+          kind,
+          name: declaration.name,
+          versionConstraint: declaration.versionConstraint,
+        });
+      } catch {
+        // Invalid registry names remain ordinary unresolved graph text; they
+        // cannot become authoritative cross-repository package declarations.
+      }
+    }
+  }
+  const ordered = output.sort(
+    (left, right) =>
+      compareCodeUnits(left.name, right.name) ||
+      compareCodeUnits(left.importAlias, right.importAlias) ||
+      compareCodeUnits(left.kind, right.kind) ||
+      compareCodeUnits(left.versionConstraint, right.versionConstraint),
   );
+  if (ordered.length > MAX_NODE_EXTERNAL_DEPENDENCIES_PER_MANIFEST) {
+    diagnostics.push(
+      `${file.path}: npm external dependency declarations exceeded ${MAX_NODE_EXTERNAL_DEPENDENCIES_PER_MANIFEST} entries and were truncated`,
+    );
+  }
+  return ordered.slice(0, MAX_NODE_EXTERNAL_DEPENDENCIES_PER_MANIFEST);
+}
+
+function npmDependencyDeclaration(
+  rawName: string,
+  rawConstraint: string,
+): {readonly importAlias: string; readonly name: string; readonly versionConstraint: string} {
+  const importAlias = normalizeNpmPackageName(rawName);
+  const constraint = rawConstraint.normalize('NFKC').trim();
+  if (!constraint.startsWith('npm:')) {
+    return {importAlias, name: importAlias, versionConstraint: constraint};
+  }
+  const target = constraint.slice('npm:'.length).trim();
+  const packageSeparator = target.startsWith('@')
+    ? target.indexOf('@', target.indexOf('/') + 1)
+    : target.lastIndexOf('@');
+  const packageName = packageSeparator > 0 ? target.slice(0, packageSeparator) : target;
+  const versionConstraint = packageSeparator > 0 ? target.slice(packageSeparator + 1).trim() : '*';
+  if (!versionConstraint) throw new Error('npm alias version constraint is empty');
+  return {
+    importAlias,
+    name: normalizeNpmPackageName(packageName),
+    versionConstraint,
+  };
+}
+
+function jsonPropertySpan(
+  file: CodeGraphInventoryFile,
+  property: string,
+  fallback: string,
+  tokens: readonly JsonStringToken[],
+  lineIndex: SourceLineIndex,
+): ReturnType<typeof sourceSpan> {
+  const content = file.content!;
+  const keyIndex = lastJsonTokenIndex(tokens, token => token.depth === 1 && token.key && token.value === property);
+  const value = keyIndex >= 0 ? tokens[keyIndex + 1] : undefined;
+  if (value && !value.key && value.depth === 1 && value.value === fallback) {
+    return sourceSpan(lineIndex, value.start, value.end);
+  }
+  return sourceSpan(lineIndex, 0, Math.min(content.length, JSON.stringify(fallback).length));
+}
+
+interface JsonStringToken {
+  readonly depth: number;
+  readonly end: number;
+  readonly key: boolean;
+  readonly start: number;
+  readonly value: string;
+}
+
+function jsonStringTokens(content: string): readonly JsonStringToken[] {
+  const output: JsonStringToken[] = [];
+  let depth = 0;
+  for (let index = 0; index < content.length; index += 1) {
+    const character = content[index];
+    if (character === '{') {
+      depth += 1;
+      continue;
+    }
+    if (character === '}') {
+      depth = Math.max(0, depth - 1);
+      continue;
+    }
+    if (character !== '"') continue;
+    const end = jsonStringEnd(content, index);
+    const raw = content.slice(index, end);
+    const value = JSON.parse(raw) as unknown;
+    if (typeof value === 'string') {
+      output.push({
+        depth,
+        end,
+        key: content[nextNonWhitespace(content, end)] === ':',
+        start: index,
+        value,
+      });
+    }
+    index = end - 1;
+  }
+  return output;
+}
+
+function jsonDependencySpans(
+  content: string,
+  tokens: readonly JsonStringToken[],
+  lineIndex: SourceLineIndex,
+): ReadonlyMap<string, ReturnType<typeof sourceSpan>> {
+  const output = new Map<string, ReturnType<typeof sourceSpan>>();
+  for (const section of ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies']) {
+    const sectionIndex = lastJsonTokenIndex(tokens, token => token.depth === 1 && token.key && token.value === section);
+    if (sectionIndex < 0) continue;
+    const sectionToken = tokens[sectionIndex]!;
+    const colon = nextNonWhitespace(content, sectionToken.end);
+    const objectStart = nextNonWhitespace(content, colon + 1);
+    if (content[objectStart] !== '{') continue;
+    const objectEnd = jsonObjectEnd(content, objectStart);
+    for (let index = sectionIndex + 1; index < tokens.length; index += 1) {
+      const key = tokens[index]!;
+      if (key.start >= objectEnd) break;
+      if (key.depth !== 2 || !key.key) continue;
+      const value = tokens[index + 1];
+      if (!value || value.start >= objectEnd || value.depth !== 2 || value.key) continue;
+      output.set(`${section}\0${key.value}`, sourceSpan(lineIndex, key.start, value.end));
+    }
+  }
+  return output;
+}
+
+function jsonStringEnd(content: string, start: number): number {
+  let escaped = false;
+  for (let index = start + 1; index < content.length; index += 1) {
+    const character = content[index]!;
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (character === '\\') {
+      escaped = true;
+      continue;
+    }
+    if (character === '"') return index + 1;
+  }
+  return content.length;
+}
+
+function jsonObjectEnd(content: string, start: number): number {
+  let depth = 0;
+  for (let index = start; index < content.length; index += 1) {
+    if (content[index] === '"') {
+      index = jsonStringEnd(content, index) - 1;
+      continue;
+    }
+    if (content[index] === '{') depth += 1;
+    else if (content[index] === '}' && --depth === 0) return index;
+  }
+  return content.length;
+}
+
+function nextNonWhitespace(content: string, start: number): number {
+  let index = start;
+  while (index < content.length && /\s/u.test(content[index]!)) index += 1;
+  return index;
+}
+
+function lastJsonTokenIndex(
+  tokens: readonly JsonStringToken[],
+  predicate: (token: JsonStringToken) => boolean,
+): number {
+  for (let index = tokens.length - 1; index >= 0; index -= 1) {
+    if (predicate(tokens[index]!)) return index;
+  }
+  return -1;
 }
 
 function packageWorkspacePatterns(manifest: Record<string, unknown>): readonly string[] {

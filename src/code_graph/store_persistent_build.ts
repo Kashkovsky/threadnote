@@ -35,6 +35,8 @@ import {
   reclaimRetiredSnapshotRows,
   REEXPORT_CLOSURE_PAGE_MAXIMUM_ROWS,
   REEXPORT_CLOSURE_SEED_PAGE_ROWS,
+  stageActivationMonikers,
+  stageSnapshotMonikers,
 } from './store_staging_core.js';
 import {persistentReexportAliasCapacityBoundary, type ReexportClosureRow} from './store_resolution_core.js';
 
@@ -484,6 +486,19 @@ function stageActivationWorkspace(workspace: CodeGraphWorkspace) {
           )
         `;
       }
+      for (const dependency of component.externalDependencies ?? []) {
+        yield* sql`
+          INSERT OR REPLACE INTO activation_workspace_external_dependencies (
+            source_component_id, ecosystem, package_name, import_alias, dependency_kind,
+            version_constraint, evidence_path, evidence_span_json
+          ) VALUES (
+            ${component.id}, ${dependency.ecosystem}, ${dependency.name}, ${dependency.importAlias}, ${dependency.kind},
+            ${dependency.versionConstraint}, ${dependency.evidence.path},
+            ${dependency.evidence.span === undefined ? null : JSON.stringify(dependency.evidence.span)}
+          )
+        `;
+      }
+      yield* stageActivationMonikers(sql, component.monikers ?? [], 'upsert');
     }
   });
 }
@@ -532,6 +547,20 @@ const stagePersistedFullWorkspace = Effect.fn('codeGraph.stagePersistedFullWorks
             )
           `;
         }
+        for (const dependency of component.externalDependencies ?? []) {
+          yield* sql`
+            INSERT OR REPLACE INTO workspace_external_dependencies (
+              snapshot_id, source_component_id, ecosystem, package_name, import_alias, dependency_kind,
+              version_constraint, evidence_path, evidence_span_json
+            ) VALUES (
+              ${snapshotId}, ${component.id}, ${dependency.ecosystem}, ${dependency.name},
+              ${dependency.importAlias}, ${dependency.kind},
+              ${dependency.versionConstraint}, ${dependency.evidence.path},
+              ${dependency.evidence.span === undefined ? null : JSON.stringify(dependency.evidence.span)}
+            )
+          `;
+        }
+        yield* stageSnapshotMonikers(sql, snapshotId, component.monikers ?? [], 'upsert');
       }
     }),
   );

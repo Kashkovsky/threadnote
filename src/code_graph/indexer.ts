@@ -56,6 +56,8 @@ import {runCodeGraphLifecycleOpportunity} from './lifecycle_opportunity.js';
 import {codeGraphMaintenanceIntentActive, withCodeGraphMaintenanceRegistration} from './maintenance_gate.js';
 import {resolveAndRecordCodeGraphLocalAssociation} from './local_provenance.js';
 import {compareCodeUnits} from './ordering.js';
+import {canonicalCodeGraphMonikers} from './cross_repository/monikers.js';
+import type {CodeGraphMonikerV1} from './cross_repository/types.js';
 import {
   codeGraphExtractionWorkUnits,
   codeGraphSourceSizeBucket,
@@ -2386,6 +2388,7 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
       readonly batchIndex: number;
       readonly edges: readonly CodeGraphEdge[];
       readonly loadingMilliseconds: number;
+      readonly monikers: readonly CodeGraphMonikerV1[];
       readonly references: readonly CodeGraphReference[];
       rows: CodeGraphMaterializationRows;
       readonly stageMilliseconds: Map<string, number>;
@@ -2448,6 +2451,7 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
               batchIndex: batch.batchIndex,
               edges: batch.edges,
               finalFactBytes: batch.factBytes,
+              monikers: batch.monikers,
               references: batch.references,
               symbols: batch.symbols,
             })),
@@ -2464,6 +2468,7 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
               progress => reportStagingProgress(batch, progress),
               batch.batchIndex,
               persistentCapacityGuard,
+              batch.monikers,
             );
           }
         }
@@ -2599,6 +2604,7 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
         );
         const edges = relationships.edges;
         const references = relationships.references;
+        const monikers = canonicalCodeGraphMonikers(finalFacts.flatMap(file => file.monikers ?? []));
         const rows = materializationRows(symbols, edges.length, references, {
           edges: relationships.duplicateEdges,
           references: relationships.duplicateReferences,
@@ -2630,6 +2636,7 @@ const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (inpu
           factBytes: batchFinalFactBytes,
           fileCount: batchFiles.length,
           loadingMilliseconds: finalBatchIndex === 0 ? batchLoadingMilliseconds : 0,
+          monikers,
           references,
           rows,
           sourceBytes: batchSourceBytes,

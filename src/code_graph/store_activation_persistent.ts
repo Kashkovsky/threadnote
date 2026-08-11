@@ -231,10 +231,33 @@ const activateCleanStagedSnapshot = Effect.fn('codeGraph.activateCleanStagedSnap
     observe,
     copiedWorkspaceScopes.rows + copiedWorkspaceComponents.rows,
   );
+  const copiedWorkspaceExternalDependencies = yield* copyPersistentActivationRows(
+    sql,
+    snapshot.id,
+    PERSISTENT_ACTIVATION_COPY_SPECS.workspaceExternalDependencies,
+    'copying-workspace',
+    observe,
+    copiedWorkspaceScopes.rows + copiedWorkspaceComponents.rows + copiedWorkspaceDependencies.rows,
+  );
+  const copiedMonikers = yield* copyPersistentActivationRows(
+    sql,
+    snapshot.id,
+    PERSISTENT_ACTIVATION_COPY_SPECS.monikers,
+    'copying-workspace',
+    observe,
+    copiedWorkspaceScopes.rows +
+      copiedWorkspaceComponents.rows +
+      copiedWorkspaceDependencies.rows +
+      copiedWorkspaceExternalDependencies.rows,
+  );
   yield* observe(
     'copying-workspace',
     'completed',
-    copiedWorkspaceScopes.rows + copiedWorkspaceComponents.rows + copiedWorkspaceDependencies.rows,
+    copiedWorkspaceScopes.rows +
+      copiedWorkspaceComponents.rows +
+      copiedWorkspaceDependencies.rows +
+      copiedWorkspaceExternalDependencies.rows +
+      copiedMonikers.rows,
   );
 
   yield* observe('copying-files', 'started');
@@ -800,6 +823,26 @@ const activateCleanSnapshotAlias = Effect.fn('codeGraph.activateCleanSnapshotAli
         )
         SELECT ${snapshot.id}, source_component_id, target_component_id, provenance, evidence
         FROM workspace_component_dependencies WHERE snapshot_id = ${baseSnapshotId}
+      `;
+      yield* sql`
+        INSERT INTO workspace_external_dependencies (
+          snapshot_id, source_component_id, ecosystem, package_name, import_alias, dependency_kind,
+          version_constraint, evidence_path, evidence_span_json
+        )
+        SELECT ${snapshot.id}, source_component_id, ecosystem, package_name, import_alias, dependency_kind,
+          version_constraint, evidence_path, evidence_span_json
+        FROM workspace_external_dependencies WHERE snapshot_id = ${baseSnapshotId}
+      `;
+      yield* sql`
+        INSERT INTO code_graph_monikers (
+          snapshot_id, id, version, scheme, role, kind, resolution_domain, identity,
+          package_name, package_version, import_path, qualified_name, component_id,
+          symbol_id, dependency_kind, evidence_path, evidence_span_json
+        )
+        SELECT ${snapshot.id}, id, version, scheme, role, kind, resolution_domain, identity,
+          package_name, package_version, import_path, qualified_name, component_id,
+          symbol_id, dependency_kind, evidence_path, evidence_span_json
+        FROM code_graph_monikers WHERE snapshot_id = ${baseSnapshotId}
       `;
       yield* sql`
         INSERT INTO snapshot_file_shards (snapshot_id, path, shard_id)

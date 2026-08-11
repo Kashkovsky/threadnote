@@ -44,6 +44,8 @@ describe('Effect CLI', () => {
     const explain = await runCli(['graph', 'explain', '--help']);
     const path = await runCli(['graph', 'path', '--help']);
     const impact = await runCli(['graph', 'impact', '--help']);
+    const topology = await runCli(['graph', 'topology', '--help']);
+    const contextBrief = await runCli(['context', 'brief', '--help']);
     const inventory = await runCli(['graph', 'inventory', '--help']);
     const analyze = await runCli(['graph', 'analyze', '--help']);
     const diagnostics = await runCli(['graph', 'diagnostics', '--help']);
@@ -59,6 +61,7 @@ describe('Effect CLI', () => {
     expect(graph.stdout).toContain('neighbors');
     expect(graph.stdout).toContain('path');
     expect(graph.stdout).toContain('impact');
+    expect(graph.stdout).toContain('topology');
     expect(graph.stdout).toContain('inventory');
     expect(graph.stdout).toContain('communities');
     expect(graph.stdout).toContain('community');
@@ -70,6 +73,9 @@ describe('Effect CLI', () => {
     expect(query.stdout).toContain('--cwd string');
     expect(query.stdout).toContain('--package string');
     expect(query.stdout).toContain('--workset string');
+    expect(query.stdout).toContain('--budget-tokens integer');
+    expect(query.stdout).toContain('--cursor string');
+    expect(query.stdout).toContain('workset prepare');
     expect(node.stdout).toContain('--node-id string');
     expect(neighbors.stdout).toContain('--node-id string');
     expect(neighbors.stdout).toContain('--direction choice');
@@ -78,6 +84,15 @@ describe('Effect CLI', () => {
     for (const command of [query, neighbors, explain, path, impact]) {
       expect(command.stdout).toContain('--node-limit, --limit integer');
     }
+    expect(path.stdout).toContain('--workset string');
+    expect(impact.stdout).toContain('--workset string');
+    expect(topology.stdout).toContain('--workset string');
+    expect(topology.stdout).toContain('--edge-limit integer');
+    expect(topology.stdout).toContain('--node-limit, --limit integer');
+    expect(contextBrief.stdout).toContain('--task string');
+    expect(contextBrief.stdout).toContain('--budget-tokens integer');
+    expect(contextBrief.stdout).toContain('--workset string');
+    expect(contextBrief.stdout).toContain('choices: brief, locate, explain, trace, impact');
     expect(analyze.stdout).toContain('--view choice');
     expect(analyze.stdout).toContain(
       'choices: stats, communities, community, groups, hubs, surprises, confidence, full',

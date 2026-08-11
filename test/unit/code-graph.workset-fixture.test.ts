@@ -90,18 +90,22 @@ describe('deterministic code graph workset fixtures', () => {
     const plan = createCodeGraphWorksetFixturePlan(128);
 
     for (const size of [32, 50, 64, 128] as const) {
+      const repositorySuffix = `Repo${String(size - 1).padStart(3, '0')}`;
       const query = plan.queries.find(candidate => candidate.id === `tail-repository-marker-${size}`);
       expect(query).toMatchObject({
         expectedRepositories: [`repo-${String(size - 1).padStart(3, '0')}`],
         expectedSymbols: [
           {
             repositoryId: `repo-${String(size - 1).padStart(3, '0')}`,
-            symbol: 'src/health.ts#repositoryHealthMarker',
+            symbol: `src/health.ts#repositoryHealthMarker${repositorySuffix}`,
           },
         ],
       });
       expect(query?.sizes).toContain(size);
       expect(Number(query?.expectedRepositories[0]?.slice('repo-'.length))).toBeGreaterThanOrEqual(8);
+      expect(plan.repositories[size - 1]?.files.find(file => file.path === 'src/health.ts')?.content).toContain(
+        `/** Deterministic repository marker repo-${String(size - 1).padStart(3, '0')}:ready. */`,
+      );
     }
   });
 

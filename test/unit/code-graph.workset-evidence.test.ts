@@ -60,6 +60,26 @@ describe('code graph workset evidence', () => {
         coverage: {...result.coverage, requestedRepositories: 3},
       }),
     ).toThrow(/state counts/u);
+    expect(() =>
+      parseCodeGraphWorksetQueryResultV2({
+        ...result,
+        repositories: {
+          ...result.repositories,
+          consumer: {
+            considered: true,
+            deepQueried: false,
+            repositoryId: result.repositories.consumer!.repositoryId,
+            state: 'missing',
+          },
+        },
+        coverage: {
+          ...result.coverage,
+          cataloguedRepositories: 1,
+          deepQueriedRepositories: 1,
+          states: {...result.coverage.states, current: 1, missing: 1},
+        },
+      }),
+    ).toThrow(/endpoint.*usable snapshot/u);
   });
 
   it('projects the longest ranked prefix within exact structured plus text bytes', () => {
@@ -101,6 +121,37 @@ describe('code graph workset evidence', () => {
     expect(parseCodeGraphWorksetEvidenceProjectionV2(JSON.parse(JSON.stringify(projected.structuredContent)))).toEqual(
       projected.structuredContent,
     );
+  });
+
+  it('keeps an absolute continuation when a bounded persisted page ends before the sequence', () => {
+    const result = evidenceResult(6, 24);
+    const page = {...result, cards: result.cards.slice(2, 4)};
+    const offsets: number[] = [];
+    const projected = projectCodeGraphWorksetEvidence(page, {
+      continuationForOffset: offset => {
+        offsets.push(offset);
+        return codeGraphWorksetContinuationHandle({
+          generationDigest: result.workset.generation.digest,
+          offset,
+          projectorVersion: CODE_GRAPH_WORKSET_EVIDENCE_PROJECTOR_VERSION,
+          resultSetToken: digest('bounded-page-result-set'),
+        });
+      },
+      continuationOffsetBase: 2,
+      maximumEstimatedTokens: 1_500,
+      totalCards: 4,
+    });
+
+    expect(projected.structuredContent.cards).toHaveLength(2);
+    expect(projected.structuredContent.output).toEqual({
+      omittedCards: 2,
+      projectorVersion: 1,
+      returnedCards: 2,
+      totalCards: 4,
+      truncated: true,
+    });
+    expect(offsets).toEqual([4]);
+    expect(projected.structuredContent.continuation?.remainingEstimate).toBe(2);
   });
 
   it('keeps only receipts referenced by retained relationship endpoints', () => {
@@ -150,6 +201,36 @@ describe('code graph workset evidence', () => {
       }),
       {numRuns: 100},
     );
+  });
+
+  it('permits one stable ref to carry distinct snapshot-bound sibling-worktree evidence', () => {
+    const first = evidenceResult(1);
+    const original = first.cards[0]!;
+    const siblingReceipt = readyReceipt(first.repositories.repository!.repositoryId, 'sibling');
+    const sibling = {
+      ...original,
+      id: codeGraphEvidenceCardId(original.ref, siblingReceipt.snapshot!.id, siblingReceipt.snapshot!.worktreeId),
+      repositoryKey: 'sibling',
+    };
+    const result: CodeGraphWorksetQueryResultV2 = {
+      ...first,
+      cards: [original, sibling],
+      coverage: {
+        ...first.coverage,
+        cataloguedRepositories: 2,
+        consideredRepositories: 2,
+        deepQueriedRepositories: 2,
+        requestedRepositories: 2,
+        states: {...first.coverage.states, current: 2},
+      },
+      repositories: {...first.repositories, sibling: siblingReceipt},
+    };
+
+    expect(parseCodeGraphWorksetQueryResultV2(result).cards.map(card => card.ref)).toEqual([
+      original.ref,
+      original.ref,
+    ]);
+    expect(result.cards[0]!.id).not.toBe(result.cards[1]!.id);
   });
 
   it('is deterministic, round-trippable, prefix-monotone, and byte bounded across budgets', () => {
@@ -258,7 +339,7 @@ function relationshipResult(): CodeGraphWorksetQueryResultV2 {
   const producerSnapshot = `cgsn_${digest('producer-snapshot').slice(0, 40)}`;
   const generationDigest = digest('relationship-generation');
   const producerCard: CodeGraphEvidenceCardV1 = {
-    id: codeGraphEvidenceCardId(producerRef, producerSnapshot),
+    id: codeGraphEvidenceCardId(producerRef, producerSnapshot, digest('worktree:producer')),
     reason: {score: 1, signals: ['exact-qualified-name'], summary: 'Exact qualified symbol match.'},
     ref: producerRef,
     relationships: [
@@ -322,6 +403,7 @@ function readyReceipt(repositoryId: string, seed: string, snapshotId?: string): 
     deepQueried: true,
     repositoryId,
     snapshot: {
+      checkoutId: digest(`checkout:${seed}`),
       commit: digest(`commit:${seed}`).slice(0, 40),
       digest: digest(`snapshot-digest:${seed}`),
       dirty: false,
@@ -329,6 +411,7 @@ function readyReceipt(repositoryId: string, seed: string, snapshotId?: string): 
       id: snapshotId ?? `cgsn_${digest(`snapshot:${seed}`).slice(0, 40)}`,
       projectionDigest: digest(`projection:${seed}`),
       provenance: 'ready-snapshot',
+      worktreeId: digest(`worktree:${seed}`),
     },
     state: 'current',
   };
@@ -347,7 +430,7 @@ function card(
   });
   const snapshotId = `cgsn_${digest('snapshot:repository').slice(0, 40)}`;
   return {
-    id: codeGraphEvidenceCardId(ref, snapshotId),
+    id: codeGraphEvidenceCardId(ref, snapshotId, digest('worktree:repository')),
     reason: {score: 1 - ordinal / 1_000, signals: ['lexical-name'], summary: 'Globally ranked lexical match.'},
     ref,
     relationships: [],

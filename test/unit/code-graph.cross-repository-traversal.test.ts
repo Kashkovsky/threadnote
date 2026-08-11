@@ -1,0 +1,348 @@
+import * as FC from 'effect/testing/FastCheck';
+import {Effect} from 'effect';
+import {describe, expect, it} from 'vitest';
+import {sha256HexSync} from '../../src/crypto/sha256.js';
+import {codeGraphPackageMoniker} from '../../src/code_graph/cross_repository/monikers.js';
+import {
+  resolveCodeGraphCrossRepositoryBridges,
+  type CodeGraphBridgeRepositoryV1,
+  type CodeGraphCrossRepositoryBridgeV1,
+} from '../../src/code_graph/cross_repository/resolver.js';
+import type {CodeGraphCrossRepositoryBridgePageV1} from '../../src/code_graph/cross_repository/store.js';
+import {
+  findCodeGraphCrossRepositoryPath,
+  traceCodeGraphCrossRepositoryImpact,
+  type CodeGraphCrossRepositoryLocalEdgeV1,
+  type CodeGraphCrossRepositoryTraversalDependencies,
+  type CodeGraphCrossRepositoryTraversalEndpointV1,
+} from '../../src/code_graph/cross_repository/traversal.js';
+import type {CodeGraphMonikerV1} from '../../src/code_graph/cross_repository/types.js';
+import {runEffect} from '../helpers/effect-runtime.js';
+
+const span = {column: 1, endColumn: 8, endLine: 1, line: 1} as const;
+const generationId = `cgwg_${'a'.repeat(40)}`;
+const bridgeSet = {digest: digest('bridge-set'), totalBridges: 2} as const;
+
+describe('cross-repository graph traversal', () => {
+  it('finds a forward path through two authoritative bridges and preserves provenance on every edge', async () => {
+    const fixture = traversalFixture();
+    const result = await runEffect(
+      findCodeGraphCrossRepositoryPath(dependencies(fixture), {
+        bridgeSet,
+        generationId,
+        maxDepth: 8,
+        maxEdges: 32,
+        start: fixture.start,
+        target: fixture.end,
+      }),
+    );
+
+    expect(result.reachedTarget).toBe(true);
+    expect(result.stop).toEqual({complete: true, reason: 'target-found'});
+    expect(result.edges.map(edge => edge.provenance.kind)).toEqual(['local', 'bridge', 'local', 'bridge', 'local']);
+    expect(result.edges.filter(edge => edge.provenance.kind === 'bridge')).toHaveLength(2);
+    expect(
+      result.edges.every(
+        edge =>
+          edge.provenance.kind !== 'bridge' ||
+          (edge.provenance.generationId === generationId && edge.provenance.sourceEvidence.path.length > 0),
+      ),
+    ).toBe(true);
+    expect(result.coverage).toMatchObject({acceptedBridgeEdges: 2, acceptedLocalEdges: 3});
+  });
+
+  it('traces reverse impact across both bridges and refuses an unready or unleased endpoint', async () => {
+    const fixture = traversalFixture();
+    const complete = await runEffect(
+      traceCodeGraphCrossRepositoryImpact(dependencies(fixture), {
+        bridgeSet,
+        generationId,
+        maxDepth: 8,
+        maxEdges: 32,
+        start: fixture.end,
+      }),
+    );
+    expect(complete.direction).toBe('reverse');
+    expect(complete.stop).toEqual({complete: true, reason: 'exhaustion'});
+    expect(complete.edges.map(edge => edge.provenance.kind)).toEqual(['local', 'bridge', 'local', 'bridge', 'local']);
+    expect(complete.visited).toEqual(expect.arrayContaining([fixture.start, fixture.end]));
+
+    const blockedKey = endpointKey(fixture.bridges[0]!.source);
+    const blocked = await runEffect(
+      traceCodeGraphCrossRepositoryImpact(dependencies(fixture, {blockedKey}), {
+        bridgeSet,
+        generationId,
+        maxDepth: 8,
+        maxEdges: 32,
+        start: fixture.end,
+      }),
+    );
+    expect(blocked.visited).not.toContainEqual(fixture.start);
+    expect(blocked.coverage.unreadyEndpointsSkipped).toBeGreaterThan(0);
+    expect(blocked.edges.every(edge => endpointKey(edge.source) !== blockedKey)).toBe(true);
+    expect(blocked.stop).toEqual({complete: false, reason: 'exhaustion'});
+  });
+
+  it('returns explicit edge, depth, deadline, and cancellation stop receipts', async () => {
+    const fixture = traversalFixture();
+    const edgeLimited = await runEffect(
+      findCodeGraphCrossRepositoryPath(dependencies(fixture), {
+        bridgeSet,
+        generationId,
+        maxDepth: 8,
+        maxEdges: 2,
+        start: fixture.start,
+        target: fixture.end,
+      }),
+    );
+    expect(edgeLimited.stop).toEqual({complete: false, reason: 'edge-limit'});
+    expect(edgeLimited.coverage.scannedEdges).toBe(2);
+
+    const depthLimited = await runEffect(
+      findCodeGraphCrossRepositoryPath(dependencies(fixture), {
+        bridgeSet,
+        generationId,
+        maxDepth: 2,
+        maxEdges: 32,
+        start: fixture.start,
+        target: fixture.end,
+      }),
+    );
+    expect(depthLimited.stop).toEqual({complete: false, reason: 'depth'});
+
+    let ticks = 0;
+    const deadline = await runEffect(
+      findCodeGraphCrossRepositoryPath(
+        {...dependencies(fixture), monotonicMilliseconds: () => (ticks++ === 0 ? 0 : 2)},
+        {
+          bridgeSet,
+          deadlineMilliseconds: 1,
+          generationId,
+          maxDepth: 8,
+          maxEdges: 32,
+          start: fixture.start,
+          target: fixture.end,
+        },
+      ),
+    );
+    expect(deadline.stop).toEqual({complete: false, reason: 'deadline'});
+
+    const controller = new AbortController();
+    controller.abort();
+    const cancelled = await runEffect(
+      findCodeGraphCrossRepositoryPath(dependencies(fixture), {
+        bridgeSet,
+        generationId,
+        maxDepth: 8,
+        maxEdges: 32,
+        signal: controller.signal,
+        start: fixture.start,
+        target: fixture.end,
+      }),
+    );
+    expect(cancelled.stop).toEqual({complete: false, reason: 'cancelled'});
+  });
+
+  it('is deterministic under local order and concurrent local/bridge completion order', async () => {
+    await FC.assert(
+      FC.asyncProperty(
+        FC.record({bridgeFirst: FC.boolean(), reverseLocal: FC.boolean()}),
+        async ({bridgeFirst, reverseLocal}) => {
+          const fixture = traversalFixture();
+          const baseline = await runEffect(
+            findCodeGraphCrossRepositoryPath(dependencies(fixture), {
+              bridgeSet,
+              generationId,
+              maxDepth: 8,
+              maxEdges: 32,
+              start: fixture.start,
+              target: fixture.end,
+            }),
+          );
+          const reordered = await runEffect(
+            findCodeGraphCrossRepositoryPath(dependencies(fixture, {bridgeFirst, reverseLocal}), {
+              bridgeSet,
+              generationId,
+              maxDepth: 8,
+              maxEdges: 32,
+              start: fixture.start,
+              target: fixture.end,
+            }),
+          );
+          expect(reordered).toEqual(baseline);
+        },
+      ),
+      {numRuns: 30},
+    );
+  });
+});
+
+interface TraversalFixture {
+  readonly bridges: readonly CodeGraphCrossRepositoryBridgeV1[];
+  readonly end: CodeGraphCrossRepositoryTraversalEndpointV1;
+  readonly localEdges: readonly CodeGraphCrossRepositoryLocalEdgeV1[];
+  readonly start: CodeGraphCrossRepositoryTraversalEndpointV1;
+}
+
+function traversalFixture(): TraversalFixture {
+  const consumer = repository('consumer', 'apps/consumer', [
+    packageMoniker('import', '@acme/middle', '^1.0.0', 'consumer-middle'),
+  ]);
+  const middle = repository('middle', 'packages/middle', [
+    packageMoniker('export', '@acme/middle', '1.2.0', 'middle-export'),
+    packageMoniker('import', '@acme/terminal', '^2.0.0', 'middle-terminal'),
+  ]);
+  const terminal = repository('terminal', 'packages/terminal', [
+    packageMoniker('export', '@acme/terminal', '2.4.0', 'terminal-export'),
+  ]);
+  const resolution = resolveCodeGraphCrossRepositoryBridges([terminal, consumer, middle]);
+  if (resolution.rejections.length > 0 || resolution.bridges.length !== 2) throw new Error('Invalid fixture.');
+  const first = resolution.bridges.find(bridge => bridge.source.repositoryId === consumer.repositoryId)!;
+  const second = resolution.bridges.find(bridge => bridge.source.repositoryId === middle.repositoryId)!;
+  const start = endpoint(consumer, {kind: 'qualified-ref', ref: qualifiedRef('start')});
+  const end = endpoint(terminal, {kind: 'qualified-ref', ref: qualifiedRef('end')});
+  const localEdges = [
+    localEdge('consumer-local', start, endpointFromBridge(first.source)),
+    localEdge('middle-local', endpointFromBridge(first.target), endpointFromBridge(second.source)),
+    localEdge('terminal-local', endpointFromBridge(second.target), end),
+  ];
+  return {bridges: [first, second], end, localEdges, start};
+}
+
+function dependencies(
+  fixture: TraversalFixture,
+  options: {readonly blockedKey?: string; readonly bridgeFirst?: boolean; readonly reverseLocal?: boolean} = {},
+): CodeGraphCrossRepositoryTraversalDependencies {
+  return {
+    monotonicMilliseconds: () => 0,
+    readBridgePage: request => {
+      const endpoint = endpointLookupKey(request.endpoint);
+      const matches = fixture.bridges.filter(bridge =>
+        request.direction === 'outgoing'
+          ? endpointLookupKey(bridge.source) === endpoint
+          : endpointLookupKey(bridge.target) === endpoint,
+      );
+      const page: CodeGraphCrossRepositoryBridgePageV1 = {
+        bridgeSetDigest: digest('bridge-set'),
+        bridges: matches,
+        coverage: {
+          diagnostics: [],
+          failedRepositoryCount: 0,
+          rejectionCount: 0,
+          repositoriesRead: 3,
+          repositoryCount: 3,
+          state: 'complete',
+        },
+        generationId,
+        resolverVersion: 1,
+        totalBridges: fixture.bridges.length,
+        worksetName: 'engineering',
+      };
+      const effect = Effect.succeed(page);
+      return options.bridgeFirst === false ? Effect.sleep(1).pipe(Effect.andThen(effect)) : effect;
+    },
+    readLocalPage: request => {
+      const endpoint = endpointKey(request.endpoint);
+      const matches = fixture.localEdges.filter(edge =>
+        request.direction === 'outgoing'
+          ? endpointKey(edge.source) === endpoint
+          : endpointKey(edge.target) === endpoint,
+      );
+      const edges = options.reverseLocal === true ? [...matches].reverse() : matches;
+      const effect = Effect.succeed({edges});
+      return options.bridgeFirst === true ? Effect.sleep(1).pipe(Effect.andThen(effect)) : effect;
+    },
+    validateEndpointAccess: candidate =>
+      Effect.succeed({leased: endpointKey(candidate) !== options.blockedKey, ready: true}),
+  };
+}
+
+function repository(seed: string, repositoryKey: string, monikers: readonly CodeGraphMonikerV1[]) {
+  return {
+    monikers,
+    repositoryId: digest(`repository:${seed}`),
+    repositoryKey,
+    snapshotId: `cgsn_${digest(`snapshot:${seed}`).slice(0, 40)}`,
+  } satisfies CodeGraphBridgeRepositoryV1;
+}
+
+function packageMoniker(role: 'export' | 'import', packageName: string, packageVersion: string, seed: string) {
+  return codeGraphPackageMoniker({
+    componentId: `cgp_${digest(`component:${seed}`).slice(0, 32)}`,
+    ...(role === 'import' ? {dependencyKind: 'runtime' as const} : {}),
+    evidence: {path: `${seed}/package.json`, span},
+    packageName,
+    packageVersion,
+    role,
+  });
+}
+
+function localEdge(
+  seed: string,
+  source: CodeGraphCrossRepositoryTraversalEndpointV1,
+  target: CodeGraphCrossRepositoryTraversalEndpointV1,
+): CodeGraphCrossRepositoryLocalEdgeV1 {
+  return {confidence: 1, id: `local:${seed}`, provenance: 'resolved', relation: 'connects', source, target};
+}
+
+function endpoint(
+  repository: Pick<CodeGraphBridgeRepositoryV1, 'repositoryId' | 'repositoryKey' | 'snapshotId'>,
+  reference: CodeGraphCrossRepositoryTraversalEndpointV1['reference'],
+): CodeGraphCrossRepositoryTraversalEndpointV1 {
+  return {
+    reference,
+    repositoryId: repository.repositoryId,
+    repositoryKey: repository.repositoryKey,
+    snapshotId: repository.snapshotId,
+  };
+}
+
+function endpointFromBridge(
+  bridgeEndpoint: CodeGraphCrossRepositoryBridgeV1['source'],
+): CodeGraphCrossRepositoryTraversalEndpointV1 {
+  return {
+    reference: bridgeEndpoint.reference,
+    repositoryId: bridgeEndpoint.repositoryId,
+    repositoryKey: bridgeEndpoint.repositoryKey,
+    snapshotId: bridgeEndpoint.snapshotId,
+  };
+}
+
+function endpointKey(
+  value:
+    | CodeGraphCrossRepositoryTraversalEndpointV1
+    | {
+        readonly reference: CodeGraphCrossRepositoryTraversalEndpointV1['reference'];
+        readonly repositoryId: string;
+        readonly snapshotId: string;
+      },
+): string {
+  return [
+    value.repositoryId,
+    'repositoryKey' in value ? value.repositoryKey : '',
+    value.snapshotId,
+    value.reference.kind,
+    value.reference.kind === 'component' ? value.reference.componentId : value.reference.ref,
+  ].join('\0');
+}
+
+function endpointLookupKey(value: {
+  readonly reference: CodeGraphCrossRepositoryTraversalEndpointV1['reference'];
+  readonly repositoryId: string;
+  readonly snapshotId: string;
+}): string {
+  return [
+    value.repositoryId,
+    value.snapshotId,
+    value.reference.kind,
+    value.reference.kind === 'component' ? value.reference.componentId : value.reference.ref,
+  ].join('\0');
+}
+
+function qualifiedRef(seed: string): string {
+  return `cgr_${digest(`qualified:${seed}`).slice(0, 40)}`;
+}
+
+function digest(value: string): string {
+  return sha256HexSync(value);
+}

@@ -1,6 +1,5 @@
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import {Effect} from 'effect';
-import {CODE_GRAPH_WORKSET_MAX_REPOSITORIES} from '../src/code_graph/workset_query.js';
 import {runCommandEffect} from '../src/effect/command.js';
 import {ApplicationLayer} from '../src/effect/runtime.js';
 import {SystemInfo} from '../src/effect/system.js';
@@ -22,6 +21,7 @@ import {
   codeGraphWorksetRuntimeConfig,
   indexPreparedCodeGraphWorksetFixture,
   measureCodeGraphWorksetQuery,
+  publishIndexedCodeGraphWorksetCatalog,
   unsupportedCodeGraphWorksetObservation,
 } from './support/code-graph-workset-harness.js';
 import {
@@ -72,6 +72,12 @@ export const evaluateCodeGraphWorkset = Effect.scoped(
     const maximumSize = Math.max(...options.sizes) as CodeGraphWorksetFixtureSize;
     const prepared = yield* acquirePreparedFixture(maximumSize, 'mixed');
     yield* indexPreparedCodeGraphWorksetFixture(prepared);
+    const selectedWorksets = options.sizes.map(size => {
+      const workset = prepared.plan.worksets.find(candidate => candidate.size === size);
+      if (!workset) throw new Error(`Fixture did not emit a size-${size} workset.`);
+      return workset.name;
+    });
+    yield* publishIndexedCodeGraphWorksetCatalog(prepared, selectedWorksets);
 
     const fixture = buildCodeGraphWorksetEvaluationFixture(prepared.plan, options.sizes);
     const config = codeGraphWorksetRuntimeConfig(prepared);
@@ -188,17 +194,11 @@ const measureWorktreeIsolation = Effect.fn('evaluateCodeGraphWorkset.worktreeIso
   worksetName: string,
   worksetSize: number,
 ) {
-  const admitted = prepared.repositories
-    .slice(0, Math.min(worksetSize, CODE_GRAPH_WORKSET_MAX_REPOSITORIES))
-    .filter(repository => repository.state === 'worktree');
+  const admitted = prepared.repositories.slice(0, worksetSize).filter(repository => repository.state === 'worktree');
   if (admitted.length === 0) return {leakageCount: 0, observationCount: 0};
   const measured = yield* measureCodeGraphWorksetQuery(config, worksetName, 'siblingOnlySymbol');
   const leakedRepositories = new Set(
-    measured.result.repositories.flatMap(member =>
-      member.state === 'ready' && member.graph.nodes.some(node => node.name === 'siblingOnlySymbol')
-        ? [member.project]
-        : [],
-    ),
+    measured.result.cards.filter(card => card.symbol.name === 'siblingOnlySymbol').map(card => card.repositoryKey),
   );
   return {
     leakageCount: admitted.filter(repository => leakedRepositories.has(repository.projectName)).length,

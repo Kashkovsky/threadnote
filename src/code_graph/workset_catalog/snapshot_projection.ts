@@ -1,17 +1,24 @@
-import {Cause, Effect, Option, Result} from 'effect';
+import {Cause, Effect, Option, Ref, Result} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {sha256HexSync} from '../../crypto/sha256.js';
 import {CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION} from '../store_build_core.js';
 import {effectiveSnapshotParameters, effectiveSymbolsCte} from '../store_query_core.js';
 import type {CodeGraphStoreShape} from '../store_shape.js';
 import type {CodeGraphSnapshot} from '../types.js';
-import {createCodeGraphWorksetRoutingProjection} from './projection.js';
+import {
+  codeGraphWorksetRoutingProjectionDigestAppendCanonical,
+  codeGraphWorksetRoutingProjectionDigestComplete,
+  codeGraphWorksetRoutingProjectionDigestStart,
+  createCodeGraphWorksetRoutingProjection,
+  normalizeCodeGraphWorksetRoutingSymbol,
+} from './projection.js';
 import {
   CODE_GRAPH_WORKSET_CATALOG_LIMITS,
   CODE_GRAPH_WORKSET_CATALOG_PROJECTOR_VERSION,
   CodeGraphWorksetCatalogError,
   type CodeGraphWorksetCatalogSpanV1,
   type CodeGraphWorksetRoutingProjectionV1,
+  type CodeGraphWorksetRoutingProjectionReceiptV1,
   type CodeGraphWorksetRoutingSymbolV1,
   type CodeGraphWorksetRoutingTermV1,
 } from './types.js';
@@ -33,6 +40,8 @@ export interface CodeGraphReadySnapshotRoutingProjectionInputV1 {
   readonly repositoryId: string;
   /** When omitted, project the active ready snapshot for `worktreeId`. */
   readonly snapshotId?: string;
+  /** @internal Test/benchmark observer for the largest live normalized symbol page. */
+  readonly observeBufferedSymbols?: (count: number) => void;
   readonly worktreeId: string;
 }
 
@@ -50,6 +59,28 @@ export interface CodeGraphReadySnapshotRoutingProjectionStatsV1 {
 export interface CodeGraphReadySnapshotRoutingProjectionBuildV1 {
   readonly projection: CodeGraphWorksetRoutingProjectionV1;
   readonly stats: CodeGraphReadySnapshotRoutingProjectionStatsV1;
+}
+
+export interface CodeGraphReadySnapshotRoutingProjectionScopedBuildV1 extends CodeGraphReadySnapshotRoutingProjectionBuildV1 {
+  /** Refresh and verify the still-scoped source-snapshot lease before publication. */
+  readonly assertLease: Effect.Effect<void, CodeGraphWorksetCatalogError>;
+}
+
+export interface CodeGraphReadySnapshotRoutingProjectionStreamBuildV1 {
+  readonly assertLease: Effect.Effect<void, CodeGraphWorksetCatalogError>;
+  readonly receipt: CodeGraphWorksetRoutingProjectionReceiptV1;
+  readonly stats: CodeGraphReadySnapshotRoutingProjectionStatsV1;
+}
+
+export interface CodeGraphReadySnapshotRoutingProjectionSinkV1<E, R> {
+  readonly append: (
+    projectionDigest: string,
+    symbols: readonly CodeGraphWorksetRoutingSymbolV1[],
+  ) => Effect.Effect<void, E, R>;
+  readonly begin: (
+    receipt: CodeGraphWorksetRoutingProjectionReceiptV1,
+  ) => Effect.Effect<{readonly state: 'ready' | 'staging'}, E, R>;
+  readonly complete: (projectionDigest: string) => Effect.Effect<void, E, R>;
 }
 
 interface SnapshotProjectionRow {
@@ -137,8 +168,8 @@ interface MutableProjectionStats {
  * only routing metadata and keyset-pages symbol rows; source bodies,
  * documentation, signatures, and file contents are never selected.
  */
-export const buildCodeGraphReadySnapshotRoutingProjection = Effect.fn(
-  'codeGraphWorksetCatalog.buildReadySnapshotProjection',
+export const buildCodeGraphReadySnapshotRoutingProjectionScoped = Effect.fn(
+  'codeGraphWorksetCatalog.buildReadySnapshotProjectionScoped',
 )(function* (store: CodeGraphStoreShape, input: CodeGraphReadySnapshotRoutingProjectionInputV1) {
   const normalized = yield* normalizeInput(input);
   const selected = yield* store
@@ -159,17 +190,133 @@ export const buildCodeGraphReadySnapshotRoutingProjection = Effect.fn(
     );
   }
 
-  const lease = yield* store
-    .acquireSnapshotLease(normalized.databasePath, selected.id, normalized.leaseDurationMilliseconds)
-    .pipe(Effect.mapError(cause => storage('Unable to lease the ready code graph snapshot.', cause)));
-  return yield* store.withSession(normalized.databasePath, readProjection(selected, normalized), {readOnly: true}).pipe(
-    Effect.mapError(cause =>
-      cause instanceof CodeGraphWorksetCatalogError
-        ? cause
-        : storage('Unable to read the ready code graph routing surface.', cause),
-    ),
-    Effect.ensuring(store.releaseSnapshotLease(normalized.databasePath, lease).pipe(Effect.catch(() => Effect.void))),
+  const lease = yield* Effect.acquireRelease(
+    store
+      .acquireSnapshotLease(normalized.databasePath, selected.id, normalized.leaseDurationMilliseconds)
+      .pipe(Effect.mapError(cause => storage('Unable to lease the ready code graph snapshot.', cause))),
+    lease => store.releaseSnapshotLease(normalized.databasePath, lease).pipe(Effect.catch(() => Effect.void)),
   );
+  const renewalFailure = yield* Ref.make<unknown | undefined>(undefined);
+  const renewalIntervalMilliseconds = Math.max(1_000, Math.floor(normalized.leaseDurationMilliseconds / 3));
+  yield* Effect.forkScoped(
+    Effect.forever(
+      Effect.sleep(renewalIntervalMilliseconds).pipe(
+        Effect.andThen(store.renewSnapshotLease(normalized.databasePath, lease, normalized.leaseDurationMilliseconds)),
+      ),
+    ).pipe(Effect.catchCause(cause => Ref.set(renewalFailure, Cause.squash(cause)))),
+  );
+  const built = yield* store
+    .withSession(normalized.databasePath, readProjection(selected, normalized), {
+      readOnly: true,
+    })
+    .pipe(
+      Effect.mapError(cause =>
+        cause instanceof CodeGraphWorksetCatalogError
+          ? cause
+          : storage('Unable to read the ready code graph routing surface.', cause),
+      ),
+    );
+  const assertLease = Ref.get(renewalFailure).pipe(
+    Effect.flatMap(failure =>
+      failure === undefined
+        ? store
+            .renewSnapshotLease(normalized.databasePath, lease, normalized.leaseDurationMilliseconds)
+            .pipe(Effect.mapError(cause => storage('The routing projection snapshot lease is no longer valid.', cause)))
+        : Effect.fail(storage('The routing projection snapshot lease could not be renewed.', failure)),
+    ),
+    Effect.andThen(
+      store
+        .readySnapshot(normalized.databasePath, normalized.worktreeId)
+        .pipe(Effect.mapError(cause => storage('Unable to revalidate the routing projection snapshot.', cause))),
+    ),
+    Effect.flatMap(active =>
+      active?.id === selected.id && active.repositoryId === selected.repositoryId
+        ? Effect.void
+        : Effect.fail(missing('The routing projection snapshot is no longer active for its worktree.')),
+    ),
+  );
+  return {...built, assertLease} satisfies CodeGraphReadySnapshotRoutingProjectionScopedBuildV1;
+});
+
+/** Two-pass, page-bounded projection: digest first, then append the same leased snapshot to a sink. */
+export const streamCodeGraphReadySnapshotRoutingProjectionScoped = Effect.fn(
+  'codeGraphWorksetCatalog.streamReadySnapshotProjectionScoped',
+)(function* <E, R>(
+  store: CodeGraphStoreShape,
+  input: CodeGraphReadySnapshotRoutingProjectionInputV1,
+  sink: CodeGraphReadySnapshotRoutingProjectionSinkV1<E, R>,
+) {
+  const normalized = yield* normalizeInput(input);
+  const selected = yield* store
+    .readySnapshot(normalized.databasePath, normalized.worktreeId)
+    .pipe(Effect.mapError(cause => storage('Unable to select a ready code graph snapshot.', cause)));
+  if (!selected) return yield* Effect.fail(missing('No active ready code graph snapshot exists for this worktree.'));
+  if (normalized.snapshotId !== undefined && selected.id !== normalized.snapshotId) {
+    return yield* Effect.fail(missing('The requested ready snapshot is not active for this worktree.'));
+  }
+  if (selected.repositoryId !== normalized.repositoryId || selected.state !== 'ready') {
+    return yield* Effect.fail(corrupt('The active ready snapshot has inconsistent repository provenance.'));
+  }
+  if (selected.symbolCount > CODE_GRAPH_WORKSET_CATALOG_LIMITS.symbolsPerProjection) {
+    return yield* Effect.fail(
+      invalid('The ready snapshot has more symbols than one routing projection can represent.'),
+    );
+  }
+  const lease = yield* Effect.acquireRelease(
+    store
+      .acquireSnapshotLease(normalized.databasePath, selected.id, normalized.leaseDurationMilliseconds)
+      .pipe(Effect.mapError(cause => storage('Unable to lease the ready code graph snapshot.', cause))),
+    lease => store.releaseSnapshotLease(normalized.databasePath, lease).pipe(Effect.catch(() => Effect.void)),
+  );
+  const renewalFailure = yield* Ref.make<unknown | undefined>(undefined);
+  const renewalIntervalMilliseconds = Math.max(1_000, Math.floor(normalized.leaseDurationMilliseconds / 3));
+  yield* Effect.forkScoped(
+    Effect.forever(
+      Effect.sleep(renewalIntervalMilliseconds).pipe(
+        Effect.andThen(store.renewSnapshotLease(normalized.databasePath, lease, normalized.leaseDurationMilliseconds)),
+      ),
+    ).pipe(Effect.catchCause(cause => Ref.set(renewalFailure, Cause.squash(cause)))),
+  );
+  const built = yield* store
+    .withSession(normalized.databasePath, readProjectionStreamed(selected, normalized, sink), {readOnly: true})
+    .pipe(
+      Effect.mapError(cause =>
+        cause instanceof CodeGraphWorksetCatalogError
+          ? cause
+          : storage('Unable to stream the ready code graph routing surface.', cause),
+      ),
+    );
+  const assertLease = Ref.get(renewalFailure).pipe(
+    Effect.flatMap(failure =>
+      failure === undefined
+        ? store
+            .renewSnapshotLease(normalized.databasePath, lease, normalized.leaseDurationMilliseconds)
+            .pipe(Effect.mapError(cause => storage('The routing projection snapshot lease is no longer valid.', cause)))
+        : Effect.fail(storage('The routing projection snapshot lease could not be renewed.', failure)),
+    ),
+    Effect.andThen(
+      store
+        .readySnapshot(normalized.databasePath, normalized.worktreeId)
+        .pipe(Effect.mapError(cause => storage('Unable to revalidate the routing projection snapshot.', cause))),
+    ),
+    Effect.flatMap(active =>
+      active?.id === selected.id && active.repositoryId === selected.repositoryId
+        ? Effect.void
+        : Effect.fail(missing('The routing projection snapshot is no longer active for its worktree.')),
+    ),
+  );
+  return {...built, assertLease} satisfies CodeGraphReadySnapshotRoutingProjectionStreamBuildV1;
+});
+
+/** Build one projection and release its lease when the projection returns. */
+export const buildCodeGraphReadySnapshotRoutingProjection = Effect.fn(
+  'codeGraphWorksetCatalog.buildReadySnapshotProjection',
+)(function* (store: CodeGraphStoreShape, input: CodeGraphReadySnapshotRoutingProjectionInputV1) {
+  const {assertLease: _assertLease, ...built} = yield* buildCodeGraphReadySnapshotRoutingProjectionScoped(
+    store,
+    input,
+  ).pipe(Effect.scoped);
+  return built;
 });
 
 function readProjection(selected: CodeGraphSnapshot, input: NormalizedProjectionInput) {
@@ -311,11 +458,203 @@ function readProjection(selected: CodeGraphSnapshot, input: NormalizedProjection
   );
 }
 
+function readProjectionStreamed<E, R>(
+  selected: CodeGraphSnapshot,
+  input: NormalizedProjectionInput,
+  sink: CodeGraphReadySnapshotRoutingProjectionSinkV1<E, R>,
+) {
+  return Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const before = yield* selectProjectionSnapshot(sql, selected.id, input.repositoryId, input.worktreeId);
+    validateSelectedSnapshot(before, selected);
+    const baseSnapshotId = optionalText(before.base_snapshot_id, 'base snapshot identity');
+    const extractorGeneration = yield* selectExtractorGeneration(sql, selected.id);
+    const componentCount = yield* selectCount(
+      sql,
+      'SELECT COUNT(*) AS count FROM workspace_components WHERE snapshot_id = ?',
+      [selected.id],
+      'workspace component count',
+    );
+    const dependencyCount = yield* selectCount(
+      sql,
+      'SELECT COUNT(*) AS count FROM workspace_component_dependencies WHERE snapshot_id = ?',
+      [selected.id],
+      'workspace dependency count',
+    );
+    const expectedSymbolCount = safeCount(before.symbol_count, 'snapshot symbol count');
+    validateOptionalReceipts(
+      yield* selectAnalysisReceipt(sql, selected.id),
+      yield* selectComponentReceipt(sql, selected.id),
+      yield* selectLexicalReceipts(sql, selected.id, baseSnapshotId),
+      expectedSymbolCount,
+      safeCount(before.edge_count, 'snapshot edge count'),
+    );
+    const stats = projectionStats(componentCount, dependencyCount);
+    const firstPass = yield* scanProjectionSymbolPages(
+      sql,
+      selected.id,
+      baseSnapshotId,
+      input,
+      stats,
+      () => Effect.void,
+    );
+    if (firstPass.symbolCount !== expectedSymbolCount || firstPass.symbolCount !== selected.symbolCount) {
+      return yield* Effect.fail(
+        corrupt('The effective routing symbol count does not match the ready snapshot receipt.'),
+      );
+    }
+    yield* validateProjectionSnapshotUnchanged(sql, selected, input, before);
+    const snapshotDigest = readySnapshotProjectionDigest({
+      baseSnapshotId,
+      commitId: requiredText(before.commit_id, 'snapshot commit identity'),
+      componentCount,
+      dependencyCount,
+      dirty: booleanInteger(before.dirty, 'snapshot dirty state'),
+      extractorGeneration,
+      extractorSet: requiredText(before.extractor_set, 'snapshot extractor set'),
+      graphContentId: optionalText(before.graph_content_id, 'graph content identity'),
+      lookupKeysObserved: stats.lookupKeysObserved,
+      overlayFingerprint: optionalText(before.overlay_fingerprint, 'snapshot overlay fingerprint'),
+      repositoryId: input.repositoryId,
+      snapshotId: selected.id,
+      symbolCount: expectedSymbolCount,
+      termsObserved: stats.termsObserved,
+    });
+    const header = {
+      checkoutId: input.checkoutId,
+      commitId: requiredText(before.commit_id, 'snapshot commit identity'),
+      componentCount,
+      extractorGeneration,
+      projectorVersion: CODE_GRAPH_WORKSET_CATALOG_PROJECTOR_VERSION,
+      repositoryId: input.repositoryId,
+      snapshotDigest,
+      snapshotId: selected.id,
+      symbolCount: expectedSymbolCount,
+      worktreeId: input.worktreeId,
+    } as const;
+    const projectionDigest = yield* Effect.try({
+      try: () => codeGraphWorksetRoutingProjectionDigestComplete(header, firstPass),
+      catch: cause => corrupt('The ready snapshot contains an invalid streamed projection surface.', cause),
+    });
+    const receipt = {...header, projectionDigest} satisfies CodeGraphWorksetRoutingProjectionReceiptV1;
+    const begun = yield* sink.begin(receipt);
+    if (begun.state === 'staging') {
+      const verificationStats = projectionStats(componentCount, dependencyCount);
+      const secondPass = yield* scanProjectionSymbolPages(
+        sql,
+        selected.id,
+        baseSnapshotId,
+        input,
+        verificationStats,
+        symbols => sink.append(projectionDigest, symbols),
+      );
+      if (
+        codeGraphWorksetRoutingProjectionDigestComplete(header, secondPass) !== projectionDigest ||
+        JSON.stringify(verificationStats) !== JSON.stringify(stats)
+      ) {
+        return yield* Effect.fail(corrupt('The ready snapshot routing projection changed between streaming passes.'));
+      }
+      yield* validateProjectionSnapshotUnchanged(sql, selected, input, before);
+      yield* sink.complete(projectionDigest);
+    }
+    return {receipt, stats: {...stats}};
+  }).pipe(
+    Effect.catchCause(cause => {
+      if (Cause.hasInterruptsOnly(cause)) return Effect.failCause(cause);
+      const failure = Cause.findErrorOption(cause);
+      if (Option.isSome(failure)) return Effect.fail(failure.value);
+      const defect = Cause.findDefect(cause);
+      if (Result.isSuccess(defect) && defect.success instanceof CodeGraphWorksetCatalogError) {
+        return Effect.fail(defect.success);
+      }
+      return Effect.fail(corrupt('The ready snapshot routing surface could not be streamed.', Cause.squash(cause)));
+    }),
+  );
+}
+
+function projectionStats(componentCount: number, dependencyCount: number): MutableProjectionStats {
+  return {
+    componentCount,
+    dependencyCount,
+    lookupKeysOmitted: 0,
+    lookupKeysObserved: 0,
+    pagesRead: 0,
+    symbolsRead: 0,
+    termsOmitted: 0,
+    termsObserved: 0,
+  };
+}
+
+function scanProjectionSymbolPages<E, R>(
+  sql: SqlClient.SqlClient,
+  snapshotId: string,
+  baseSnapshotId: string | undefined,
+  input: NormalizedProjectionInput,
+  stats: MutableProjectionStats,
+  emit: (symbols: readonly CodeGraphWorksetRoutingSymbolV1[]) => Effect.Effect<void, E, R>,
+) {
+  return Effect.gen(function* () {
+    let digestState = codeGraphWorksetRoutingProjectionDigestStart();
+    let afterNodeId = '';
+    for (;;) {
+      const page = yield* selectSymbolPage(sql, snapshotId, baseSnapshotId, afterNodeId, input.pageSize);
+      if (page.length === 0) break;
+      stats.pagesRead += 1;
+      const nodeIds = page.map(row => requiredText(row.id, 'symbol identity'));
+      const lookupBySymbol = groupLookupRows(yield* selectLookupRows(sql, snapshotId, baseSnapshotId, nodeIds));
+      const termsBySymbol = groupTermRows(yield* selectTermRows(sql, snapshotId, baseSnapshotId, nodeIds));
+      const symbols: CodeGraphWorksetRoutingSymbolV1[] = page.map(row => {
+        const nodeId = requiredText(row.id, 'symbol identity');
+        return normalizeCodeGraphWorksetRoutingSymbol({
+          exported: booleanInteger(row.exported, 'symbol exported state'),
+          kind: requiredText(row.kind, 'symbol kind'),
+          language: requiredText(row.language, 'symbol language'),
+          lookupKeys: selectLookupKeys(decodeLookupKeys(row.lookup_keys_json), lookupBySymbol.get(nodeId) ?? [], stats),
+          name: requiredText(row.name, 'symbol name'),
+          nodeId,
+          ...(row.package_name === null ? {} : {packageName: requiredText(row.package_name, 'symbol package name')}),
+          path: requiredText(row.path, 'symbol path'),
+          qualifiedName: requiredText(row.qualified_name, 'symbol qualified name'),
+          span: decodeSpan(row.span_json),
+          terms: selectTerms(termsBySymbol.get(nodeId) ?? [], stats),
+        });
+      });
+      const appendedState = yield* Effect.try({
+        try: () => codeGraphWorksetRoutingProjectionDigestAppendCanonical(digestState, symbols),
+        catch: cause => corrupt('The ready snapshot contains an invalid routing projection page.', cause),
+      });
+      input.observeBufferedSymbols?.(symbols.length);
+      yield* emit(symbols);
+      digestState = appendedState;
+      stats.symbolsRead += symbols.length;
+      afterNodeId = nodeIds.at(-1)!;
+      if (page.length < input.pageSize) break;
+      yield* Effect.yieldNow;
+    }
+    return digestState;
+  });
+}
+
+function validateProjectionSnapshotUnchanged(
+  sql: SqlClient.SqlClient,
+  selected: CodeGraphSnapshot,
+  input: NormalizedProjectionInput,
+  before: SnapshotProjectionRow,
+) {
+  return Effect.gen(function* () {
+    const after = yield* selectProjectionSnapshot(sql, selected.id, input.repositoryId, input.worktreeId);
+    if (!sameSnapshotProjectionRow(before, after)) {
+      return yield* Effect.fail(corrupt('The active ready snapshot changed while its routing projection was read.'));
+    }
+  });
+}
+
 interface NormalizedProjectionInput {
   readonly checkoutId: string;
   readonly databasePath: string;
   readonly leaseDurationMilliseconds: number;
   readonly pageSize: number;
+  readonly observeBufferedSymbols?: (count: number) => void;
   readonly repositoryId: string;
   readonly snapshotId?: string;
   readonly worktreeId: string;
@@ -355,6 +694,7 @@ function normalizeInput(
         databasePath: input.databasePath,
         leaseDurationMilliseconds,
         pageSize,
+        ...(input.observeBufferedSymbols === undefined ? {} : {observeBufferedSymbols: input.observeBufferedSymbols}),
         repositoryId: input.repositoryId,
         ...(input.snapshotId === undefined ? {} : {snapshotId: input.snapshotId}),
         worktreeId: input.worktreeId,

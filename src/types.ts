@@ -31,6 +31,8 @@ export interface WorksetManifest {
 export interface ResolvedWorkset {
   readonly name: string;
   readonly projects: readonly ProjectManifest[];
+  /** Manifest member names that do not resolve to a configured project. */
+  readonly unresolvedProjects: readonly string[];
 }
 
 export interface SeedManifest {

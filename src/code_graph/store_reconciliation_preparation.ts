@@ -41,7 +41,10 @@ const prepareRemovedViewCleanupExtension = Effect.fn('codeGraph.prepareRemovedVi
   const revision = revisions[0]?.value;
   if (
     revisions.length !== 1 ||
-    (revision !== '7' && revision !== '8' && revision !== String(CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION))
+    (revision !== '7' &&
+      revision !== '8' &&
+      revision !== '9' &&
+      revision !== String(CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION))
   ) {
     return {reason: 'incompatible-schema', state: 'deferred'} as const;
   }

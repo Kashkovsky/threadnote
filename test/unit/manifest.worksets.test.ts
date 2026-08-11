@@ -64,6 +64,7 @@ describe('seed manifest worksets', () => {
     const resolved = await resolveWorkset(manifestPath, 'storefront');
     expect(resolved?.name).toBe('storefront');
     expect(resolved?.projects.map(project => project.name)).toEqual(['web-app', 'design-system']);
+    expect(resolved?.unresolvedProjects).toEqual(['missing-repo']);
   });
 
   it('matches worksets case-insensitively and returns undefined for unknown names', async () => {

@@ -12,6 +12,8 @@ import type {
 } from '../../types.js';
 import {createSourceLineIndex, sourceSpan, type SourceLineIndex} from '../source_line_index.js';
 import {isLowSignalStructuredPath, isRecognizedStructuredPath, structuredObjectDeclarationBudget} from './policy.js';
+import {canonicalCodeGraphMonikers, codeGraphProtobufMoniker} from '../../cross_repository/monikers.js';
+import type {CodeGraphMonikerV1} from '../../cross_repository/types.js';
 
 interface MutableStructuredFacts {
   readonly diagnostics: string[];
@@ -20,11 +22,15 @@ interface MutableStructuredFacts {
   readonly identityOccurrences: Map<string, number>;
   readonly lineIndex: SourceLineIndex | undefined;
   readonly module: CodeGraphSymbol;
+  readonly monikers: CodeGraphMonikerV1[];
   readonly packageName: string | undefined;
   readonly symbols: CodeGraphSymbol[];
 }
 
 const MAX_STRUCTURED_SYMBOLS = 4_000;
+const MAX_STRUCTURED_MONIKERS = 4_000;
+const MAX_STRUCTURED_IMPORTS = 4_000;
+const MAX_STRUCTURED_DEPTH = 32;
 const MAX_FULL_OBJECT_CONFIG_CHARACTERS = 4 * 1_024 * 1_024;
 const MAX_RECOGNIZED_FULL_OBJECT_CONFIG_CHARACTERS = 16 * 1_024 * 1_024;
 const MAX_SHALLOW_OBJECT_CONFIG_CHARACTERS = 1 * 1_024 * 1_024;
@@ -81,7 +87,13 @@ export function extractStructuredSchemaFacts(
   } catch (cause) {
     facts.diagnostics.push(`${file.path}: ${cause instanceof Error ? cause.message : String(cause)}`);
   }
-  return {diagnostics: facts.diagnostics, edges: facts.edges, path: file.path, symbols: facts.symbols};
+  return {
+    diagnostics: facts.diagnostics,
+    edges: facts.edges,
+    ...(facts.monikers.length === 0 ? {} : {monikers: canonicalCodeGraphMonikers(facts.monikers)}),
+    path: file.path,
+    symbols: facts.symbols,
+  };
 }
 
 function createFacts(
@@ -105,7 +117,17 @@ function createFacts(
     identityOccurrences,
     lineIndex,
   );
-  return {diagnostics: [], edges: [], file, identityOccurrences, lineIndex, module, packageName, symbols: [module]};
+  return {
+    diagnostics: [],
+    edges: [],
+    file,
+    identityOccurrences,
+    lineIndex,
+    module,
+    monikers: [],
+    packageName,
+    symbols: [module],
+  };
 }
 
 function extractObjectConfig(facts: MutableStructuredFacts, policy: ReturnType<typeof objectConfigPolicy>): void {
@@ -597,12 +619,55 @@ function extractGraphql(facts: MutableStructuredFacts): void {
 function extractProtobuf(facts: MutableStructuredFacts): void {
   const content = facts.file.content!;
   const declarationsSource = maskCStyleNonCode(content, true);
-  const commentsMaskedSource = maskCStyleNonCode(content, false);
-  const namespace = /^\s*package\s+([\w.]+)\s*;/m.exec(declarationsSource)?.[1];
+  const packageMatch = /\bpackage\s+([\w.]+)\s*;/.exec(declarationsSource);
+  const namespace = packageMatch?.[1];
+  const moduleSpan = facts.module.span;
+  let monikersTruncated = false;
+  let monikersRejected = false;
+  const addMoniker = (create: () => CodeGraphMonikerV1): void => {
+    if (facts.monikers.length >= MAX_STRUCTURED_MONIKERS) {
+      monikersTruncated = true;
+      return;
+    }
+    try {
+      facts.monikers.push(create());
+    } catch {
+      monikersRejected = true;
+    }
+  };
+  addMoniker(() =>
+    codeGraphProtobufMoniker({
+      evidence: {path: facts.file.path, span: moduleSpan},
+      importPath: facts.file.path,
+      kind: 'file',
+      role: 'export',
+      symbolId: facts.module.id,
+    }),
+  );
+  if (namespace && packageMatch) {
+    const offset = packageMatch.index ?? 0;
+    addMoniker(() =>
+      codeGraphProtobufMoniker({
+        evidence: {
+          path: facts.file.path,
+          span: sourceSpan(requiredLineIndex(facts), offset, offset + packageMatch[0].length),
+        },
+        kind: 'package',
+        packageName: namespace,
+        role: 'export',
+        symbolId: facts.module.id,
+      }),
+    );
+  }
   const token = /\b(message|enum|service|rpc|oneof)\s+([A-Za-z_]\w*)|[{}]/gi;
   const scopes: Array<CodeGraphSymbol | undefined> = [];
   let pendingScope: CodeGraphSymbol | undefined;
+  let declarationsTruncated = false;
   for (const match of declarationsSource.matchAll(token)) {
+    if (facts.symbols.length >= MAX_STRUCTURED_SYMBOLS) {
+      declarationsTruncated = true;
+      break;
+    }
     const text = match[0];
     if (text === '{') {
       scopes.push(pendingScope);
@@ -619,7 +684,7 @@ function extractProtobuf(facts: MutableStructuredFacts): void {
     const offset = match.index ?? 0;
     const parent = [...scopes].reverse().find((scope): scope is CodeGraphSymbol => scope !== undefined) ?? facts.module;
     const parentQualifiedName = parent === facts.module ? namespace : parent.qualifiedName;
-    pendingScope = addDeclaration(
+    const declaration = addDeclaration(
       facts,
       parent,
       kind,
@@ -628,17 +693,61 @@ function extractProtobuf(facts: MutableStructuredFacts): void {
       offset,
       offset + text.length,
     );
+    pendingScope = declaration;
+    if (kind === 'message' || kind === 'service' || kind === 'rpc') {
+      addMoniker(() =>
+        codeGraphProtobufMoniker({
+          evidence: {path: facts.file.path, span: declaration.span},
+          kind,
+          ...(namespace === undefined ? {} : {packageName: namespace}),
+          qualifiedName: declaration.qualifiedName,
+          role: 'export',
+          symbolId: declaration.id,
+        }),
+      );
+    }
   }
-  for (const match of commentsMaskedSource.matchAll(/^\s*import\s+(?:public\s+|weak\s+)?["']([^"']+)["']\s*;/gim)) {
-    addUnresolvedEdge(
-      facts,
-      facts.module,
-      match[1]!,
-      'imports',
-      'declared',
-      match.index ?? 0,
-      (match.index ?? 0) + match[0].length,
+  if (declarationsTruncated) {
+    facts.diagnostics.push(`${facts.file.path}: protobuf declarations were bounded at ${MAX_STRUCTURED_SYMBOLS}`);
+  }
+  let imports = 0;
+  let importsTruncated = false;
+  for (const match of declarationsSource.matchAll(/\bimport\s+(?:public\s+|weak\s+)?\s*;/gi)) {
+    if (imports >= MAX_STRUCTURED_IMPORTS) {
+      importsTruncated = true;
+      break;
+    }
+    const offset = match.index ?? 0;
+    const statement = content.slice(offset, offset + match[0].length);
+    const importPath = /\bimport\s+(?:public\s+|weak\s+)?["']([^"']+)["']\s*;/i.exec(statement)?.[1];
+    if (importPath === undefined) continue;
+    addMoniker(() =>
+      codeGraphProtobufMoniker({
+        evidence: {
+          path: facts.file.path,
+          span: sourceSpan(requiredLineIndex(facts), offset, offset + match[0].length),
+        },
+        importPath,
+        kind: 'file',
+        role: 'import',
+        symbolId: facts.module.id,
+      }),
     );
+    addUnresolvedEdge(facts, facts.module, importPath, 'imports', 'declared', offset, offset + match[0].length);
+    imports += 1;
+  }
+  if (monikersTruncated) {
+    facts.diagnostics.push(
+      `${facts.file.path}: protobuf monikers exceeded ${MAX_STRUCTURED_MONIKERS} entries and were truncated`,
+    );
+  }
+  if (monikersRejected) {
+    facts.diagnostics.push(
+      `${facts.file.path}: one or more protobuf declarations or imports could not form scoped cross-repository monikers`,
+    );
+  }
+  if (importsTruncated) {
+    facts.diagnostics.push(`${facts.file.path}: protobuf imports were bounded at ${MAX_STRUCTURED_IMPORTS}`);
   }
 }
 
@@ -768,6 +877,7 @@ export function relocateStructuredSchemaFacts(
   const sourcePath = facts.path;
   if (
     sourcePath === file.path ||
+    (facts.monikers?.length ?? 0) > 0 ||
     facts.references !== undefined ||
     facts.symbols.length === 0 ||
     facts.symbols.some(

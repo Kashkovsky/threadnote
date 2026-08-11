@@ -789,7 +789,9 @@ const temporaryPublicationCapacity = Effect.fn('codeGraph.temporaryPublicationCa
       (SELECT COUNT(*) FROM activation_symbol_terms) AS terms,
       (SELECT COUNT(*) FROM activation_workspace_scopes)
         + (SELECT COUNT(*) FROM activation_workspace_components)
-        + (SELECT COUNT(*) FROM activation_workspace_dependencies) AS workspace_rows
+        + (SELECT COUNT(*) FROM activation_workspace_dependencies)
+        + (SELECT COUNT(*) FROM activation_workspace_external_dependencies)
+        + (SELECT COUNT(*) FROM activation_monikers) AS workspace_rows
   `);
   const counts = rows[0];
   return temporaryActivationPublicationCapacity({

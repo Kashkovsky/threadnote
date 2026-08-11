@@ -48,6 +48,7 @@ import {
   normalizedReexportProvenance,
   prepareActivationTables,
   snapshotPromotionLeaseCapacity,
+  stageActivationMonikers,
   stageActivationReferences,
 } from './store_staging_core.js';
 import {promotionRemovedSnapshotId, stagePersistedFullFacts} from './store_resolution_core.js';
@@ -335,6 +336,24 @@ function preparePersistedFullWorkspace(
       ]);
       rowCount = saturatingCapacityAdd(rowCount, 1);
     }
+    for (const dependency of project.externalDependencies ?? []) {
+      finalFactBytes = persistentBoundTextBytes(finalFactBytes, [
+        snapshotId,
+        project.id,
+        dependency.ecosystem,
+        dependency.name,
+        dependency.importAlias,
+        dependency.kind,
+        dependency.versionConstraint,
+        dependency.evidence.path,
+        dependency.evidence.span === undefined ? undefined : JSON.stringify(dependency.evidence.span),
+      ]);
+      rowCount = saturatingCapacityAdd(rowCount, 1);
+    }
+    for (const moniker of project.monikers ?? []) {
+      finalFactBytes = persistentBoundTextBytes(finalFactBytes, [snapshotId, JSON.stringify(moniker)]);
+      rowCount = saturatingCapacityAdd(rowCount, 1);
+    }
   }
   return {
     capacity: {finalFactBytes, operation: 'stage persistent code graph workspace', rowCount},
@@ -430,6 +449,7 @@ function preparePersistedFullFactCapacity(batches: readonly CodeGraphStagingBatc
       // compact term row.
       saturatingCapacityMultiply(termPostings, 2),
       batch.edges.length,
+      batch.monikers?.length ?? 0,
       boundedReferences.length,
       reexportRows,
       // Analysis symbol/histogram groups cannot exceed their source rows.
@@ -503,6 +523,7 @@ const stagePersistedFullFactBatches = Effect.fn('codeGraph.stagePersistedFullFac
           observer(batch.batchIndex),
           true,
           prepared?.[index],
+          batch.monikers ?? [],
         );
       }
       // The physical commit belongs to the group, not to every logical
@@ -566,6 +587,10 @@ const preparePersistedIncrementalActivation = Effect.fn('codeGraph.preparePersis
   yield* stageActivationReferences(
     sql,
     facts.flatMap(file => file.references ?? []),
+  );
+  yield* stageActivationMonikers(
+    sql,
+    facts.flatMap(file => file.monikers ?? []),
   );
   const safe =
     resolutionClosure === 'changed'
@@ -652,6 +677,11 @@ const replaceStagedModifiedFiles = Effect.fn('codeGraph.replaceStagedModifiedFil
         WHERE path IN (SELECT path FROM activation_incremental_paths)
       `);
       yield* sql.unsafe(`
+        DELETE FROM activation_monikers
+        WHERE scheme <> 'package'
+          AND evidence_path IN (SELECT path FROM activation_incremental_paths)
+      `);
+      yield* sql.unsafe(`
         DELETE FROM activation_files
         WHERE path IN (SELECT path FROM activation_incremental_paths)
       `);
@@ -666,6 +696,10 @@ const replaceStagedModifiedFiles = Effect.fn('codeGraph.replaceStagedModifiedFil
       yield* stageActivationReferences(
         sql,
         facts.flatMap(file => file.references ?? []),
+      );
+      yield* stageActivationMonikers(
+        sql,
+        facts.flatMap(file => file.monikers ?? []),
       );
       yield* sql.unsafe('DELETE FROM activation_changed_symbol_ids');
       yield* sql.unsafe('DELETE FROM activation_resolved_reference_batch');

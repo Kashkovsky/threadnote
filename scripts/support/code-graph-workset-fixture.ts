@@ -167,6 +167,7 @@ interface FixtureArchetype {
 }
 
 const REPOSITORY_KEY_TOKEN = '__REPOSITORY_KEY__';
+const REPOSITORY_SYMBOL_TOKEN = '__REPOSITORY_SYMBOL__';
 const PROJECT_NAME_TOKEN = '__PROJECT_NAME__';
 const PACKAGE_NAME_TOKEN = '__PACKAGE_NAME__';
 const PRODUCER_PACKAGE = '@threadnote-fixture/session-contract';
@@ -196,7 +197,7 @@ const ARCHETYPES = [
       'contracts/schema.graphql':
         'type TenantSession { tenantId: ID!, sessionId: ID!, active: Boolean! }\n' +
         'type Query { tenantSession(tenantId: ID!): TenantSession }\n',
-      'contracts/session.proto':
+      'threadnote/session/v1/session.proto':
         'syntax = "proto3";\n' +
         'package threadnote.session.v1;\n' +
         'message TenantSessionRequest { string tenant_id = 1; }\n' +
@@ -406,8 +407,9 @@ const ARCHETYPES = [
         2,
       )}\n`,
       'src/health.ts':
-        `export const repositoryHealthMarker = '${REPOSITORY_KEY_TOKEN}:ready';\n` +
-        "export const isRepositoryHealthy = () => repositoryHealthMarker.endsWith(':ready');\n",
+        `/** Deterministic repository marker ${REPOSITORY_KEY_TOKEN}:ready. */\n` +
+        `export const ${REPOSITORY_SYMBOL_TOKEN} = '${REPOSITORY_KEY_TOKEN}:ready';\n` +
+        `export const isRepositoryHealthy = () => ${REPOSITORY_SYMBOL_TOKEN}.endsWith(':ready');\n`,
       'tsconfig.json': TYPESCRIPT_CONFIG,
     },
     id: 'support',
@@ -426,7 +428,7 @@ const CORE_ARCHETYPE_IDS = [
   'no-answer-member',
 ] as const;
 const SCALE_ARCHETYPE_IDS = ['same-name-distractor', 'support', 'no-answer-member', 'support'] as const;
-const MIXED_STATES = ['clean', 'dirty', 'stale', 'missing', 'failed', 'worktree', 'cold', 'clean'] as const;
+const MIXED_STATES = ['clean', 'dirty', 'missing', 'stale', 'failed', 'worktree', 'cold', 'clean'] as const;
 
 const ARCHETYPE_BY_ID = new Map(ARCHETYPES.map(archetype => [archetype.id, archetype]));
 
@@ -725,6 +727,12 @@ function fixtureQueries(
   const consumerCaller = workspaceConsumer[0]
     ? ref(workspaceConsumer[0], 'packages/session-client/src/client.ts#loadSession')
     : undefined;
+  const protobufProducerFile = producer[0]
+    ? ref(producer[0], 'threadnote/session/v1/session.proto#session.proto')
+    : undefined;
+  const protobufConsumerImport = protobufConsumer[0]
+    ? ref(protobufConsumer[0], 'proto/session_client.proto#session.proto')
+    : undefined;
   const dependencyEdge =
     producerResolver && consumerCaller
       ? ({
@@ -741,6 +749,15 @@ function fixtureQueries(
           relation: 'calls',
           source: consumerCaller,
           target: producerResolver,
+        } satisfies CodeGraphWorksetFixtureEdgeExpectation)
+      : undefined;
+  const protobufBridgeEdge =
+    protobufProducerFile && protobufConsumerImport
+      ? ({
+          provenance: 'declared',
+          relation: 'imports',
+          source: protobufConsumerImport,
+          target: protobufProducerFile,
         } satisfies CodeGraphWorksetFixtureEdgeExpectation)
       : undefined;
   const makeQuery = (
@@ -804,7 +821,7 @@ function fixtureQueries(
       [...producer, ...graphqlConsumer],
       [
         ...producer.map(key => ref(key, 'contracts/schema.graphql#TenantSession')),
-        ...graphqlConsumer.map(key => ref(key, 'src/session-query.graphql#TenantSessionByTenant')),
+        ...graphqlConsumer.map(key => ref(key, 'src/session-query.ts#tenantSessionOperation')),
       ],
     ),
     makeQuery(
@@ -813,9 +830,10 @@ function fixtureQueries(
       'threadnote.session.v1.SessionDirectory ResolveTenantSession',
       [...producer, ...protobufConsumer],
       [
-        ...producer.map(key => ref(key, 'contracts/session.proto#SessionDirectory')),
+        ...producer.map(key => ref(key, 'threadnote/session/v1/session.proto#SessionDirectory')),
         ...protobufConsumer.map(key => ref(key, 'proto/session_client.proto#SessionLookup')),
       ],
+      protobufBridgeEdge ? [protobufBridgeEdge] : [],
     ),
     makeQuery(
       'schema',
@@ -823,7 +841,7 @@ function fixtureQueries(
       'getTenantSession /v1/tenant-sessions/{tenantId}',
       [...producer, ...httpConsumer],
       [
-        ...producer.map(key => ref(key, 'contracts/openapi.yaml#getTenantSession')),
+        ...producer.map(key => ref(key, 'contracts/openapi.yaml#/v1/tenant-sessions/{tenantId}')),
         ...httpConsumer.map(key => ref(key, 'openapi/session-gateway.yaml#proxyTenantSession')),
       ],
     ),
@@ -833,8 +851,8 @@ function fixtureQueries(
       'TenantSessionChanged tenant.session.changed',
       [...producer, ...messageConsumer],
       [
-        ...producer.map(key => ref(key, 'contracts/messages.asyncapi.yaml#TenantSessionChanged')),
-        ...messageConsumer.map(key => ref(key, 'asyncapi.yaml#TenantSessionChanged')),
+        ...producer.map(key => ref(key, 'contracts/messages.asyncapi.yaml#tenant.session.changed')),
+        ...messageConsumer.map(key => ref(key, 'src/worker.ts#TenantSessionChanged')),
       ],
     ),
     makeQuery(
@@ -855,13 +873,14 @@ function fixtureQueries(
     if (target.archetype !== 'support') {
       throw new Error(`Scale-tail fixture repository ${target.repositoryKey} must use the support archetype.`);
     }
+    const markerSymbol = repositoryMarkerSymbol(target.repositoryKey);
     queries.push(
       makeQuery(
         'symbol',
         `tail-repository-marker-${targetSize}`,
-        `repositoryHealthMarker ${target.repositoryKey}:ready`,
+        `${markerSymbol} ${target.repositoryKey}:ready`,
         [target.repositoryKey],
-        [ref(target.repositoryKey, 'src/health.ts#repositoryHealthMarker')],
+        [ref(target.repositoryKey, `src/health.ts#${markerSymbol}`)],
       ),
     );
   }
@@ -1151,8 +1170,17 @@ function applyRepositoryTemplate(
 ): string {
   return template
     .replaceAll(REPOSITORY_KEY_TOKEN, values.repositoryKey)
+    .replaceAll(REPOSITORY_SYMBOL_TOKEN, repositoryMarkerSymbol(values.repositoryKey))
     .replaceAll(PROJECT_NAME_TOKEN, values.projectName)
     .replaceAll(PACKAGE_NAME_TOKEN, values.packageName);
+}
+
+function repositoryMarkerSymbol(key: string): string {
+  const suffix = key
+    .split('-')
+    .map(segment => `${segment.slice(0, 1).toUpperCase()}${segment.slice(1)}`)
+    .join('');
+  return `repositoryHealthMarker${suffix}`;
 }
 
 function repositoryKey(index: number): string {
