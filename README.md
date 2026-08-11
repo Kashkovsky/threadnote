@@ -127,10 +127,10 @@ it does not occupy context during normal work.
 ## Daily Workflow
 
 ```sh
-threadnote recall "threadnote latest handoff" --caller-cwd "$PWD"
+threadnote recall --query "threadnote latest handoff" --caller-cwd "$PWD"
 threadnote read threadnote://user/me/memories/handoffs/active/threadnote/release.md
 threadnote remember --kind durable --project threadnote --topic storage-contract --text "..."
-threadnote handoff --project threadnote --topic release --text "..."
+threadnote handoff --project threadnote --topic release --task "..." --next-step "..."
 threadnote graph query --query "release update lifecycle"
 threadnote graph query --query "clear session" --package "@threadnote/mobile"
 threadnote graph query --query "account logout contract" --workset product
@@ -186,9 +186,12 @@ Mobile resource wiring is explicit rather than inferred: Android `res` XML contr
 and `@type/name` reference evidence, while Apple property lists, storyboards, XIB files, and asset-catalog scalar values
 contribute searchable resource identifiers. Package-scoped queries return structured examined/matched counts; zero
 matches are labeled a package-local absence hint, never proof that the symbol is absent elsewhere. Named seed-manifest
-worksets query at most eight repositories with deterministic shared node/edge budgets and per-repository snapshot
-provenance. They reuse existing ready snapshots and report unavailable members instead of starting cold builds across
-the workset.
+worksets use Workset Search 2.0: a disposable catalog globally ranks the complete published ready-snapshot generation
+with no eight-repository admission cap, then opens only the strongest repositories in bounded adaptive batches. Queries
+remain normal task text, not a public DSL. The public logical evidence sequence defaults to 40 cards; its separate
+internal safety maximum is 512. Search breadth is independent from compact response projection, which defaults to 1,250
+estimated tokens and accepts at most 1,500. Workset queries reuse exact ready snapshots, report unavailable members,
+and never start cold builds as a query side effect.
 
 Hidden directories and conventional generated roots such as `node_modules`, `dist`, `build`, `out`, `.nx`,
 `graphify-out`, and `bazel-*` are pruned before content is read, including when a broad package root contains them. Large unknown JSON,
@@ -410,7 +413,9 @@ performance baselines are checked in under `test/evaluation/baselines/threadnote
 The original code-graph-v1 repository fixture preserves compiler-backed TypeScript behavior and gates definitions,
 paths, impact, documentation, false edges, no-answer behavior, and worktree isolation against frozen
 Graphify/no-graph comparisons and a native baseline. A second frozen `code-graph-polyglot-v1` fixture and performance
-baseline exercise Java, Kotlin, Swift, and TypeScript together, including JVM and Swift target dependencies.
+baseline exercise Java, Kotlin, Swift, and TypeScript together, including JVM and Swift target dependencies. Workset
+Search 2.0 has a dedicated multi-repository evaluator and a budget-enforcing development benchmark across the scaling
+fixtures.
 
 ```sh
 bun run eval:recall:v2 -- \
@@ -420,6 +425,8 @@ bun run eval:recall:models -- --embedding bge-small-en-v1.5-q8 --install
 bun run bench:recall:micro -- --json
 bun run eval:code-graph
 bun run bench:code-graph
+bun run eval:code-graph-workset -- --sizes 1,8,32,64,128
+bun run bench:code-graph-workset -- --sizes 32,50,64,128 --samples 5 --warmups 1 --fail-on-budget
 ```
 
 ## Development

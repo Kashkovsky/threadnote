@@ -260,9 +260,12 @@ macros.
 Use `threadnote graph query --package <exact-package> --query <terms>` when a monorepo question is explicitly
 package-local. Its bounded examined/matched counts make a zero-result useful as an absence hint, but never as proof of
 repository-wide absence. For a named seed-manifest workset, `threadnote graph query --workset <name> --query <terms>`
-allocates one shared bounded result budget across at most eight member repositories and labels every result with its
-repository and snapshot. It reads existing ready snapshots only; unavailable members are reported and are not cold
-indexed as a fan-out side effect.
+uses Workset Search 2.0 to route normal task text, not a public DSL, across the complete published generation with no
+eight-repository admission cap. It globally ranks catalog candidates, then opens only the strongest repositories in
+bounded adaptive batches. The public logical evidence sequence defaults to 40 cards and has a separate 512-card
+internal safety maximum. That search breadth is independent from the compact response projection, which defaults to
+1,250 estimated tokens and accepts at most 1,500. Every returned card identifies its repository and exact snapshot;
+unavailable members remain explicit, and queries never cold-index repositories as a fan-out side effect.
 
 Android `res` XML and Apple plist, storyboard, XIB, and asset-catalog metadata contribute explicit searchable resource
 wiring. Binary images remain metadata-only: no query result may be used to infer pixel bounds, visual appearance, OCR,

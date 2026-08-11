@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "suite": "code-graph-workset-v1",
+  "suite": "code-graph-workset-v2",
   "fixture": {
     "benchmarkOnlySizes": [50],
     "generatorVersion": 1,
@@ -27,7 +27,7 @@
   },
   "notes": [
     "Safety gates are active in the Phase 0 evaluator on every run.",
-    "Phase 1 exit targets are the initial product-plan targets; they expose current V1 gaps and must not be relaxed in the same change that fails them.",
+    "Phase 1 exit targets are the Workset Search 2.0 release targets and must not be relaxed in the same change that fails them.",
     "Delivered time to first evidence currently has buffered-response semantics and therefore equals completion when evidence is returned.",
     "The token target uses ceil(structured UTF-8 bytes plus text UTF-8 bytes divided by 3); no representative tokenizer gate is claimed until a tokenizer dependency is pinned.",
     "Size 50 is a latency gate only and does not replace any required correctness size."

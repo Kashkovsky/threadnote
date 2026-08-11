@@ -1,3 +1,4 @@
+// oxlint-disable effecttsgo/node-builtin-import -- This compatibility suite exercises Node-facing website scripts.
 import {execFileSync} from 'node:child_process';
 import {access, readFile} from 'node:fs/promises';
 import {join} from 'node:path';
@@ -694,6 +695,8 @@ describe('Threadnote 4 website content', () => {
     expect(searchDocs(index, 'graph impact')[0]?.article.id).toBe('graph-operations');
     expect(searchDocs(index, 'inspect code graph')[0]?.article.id).toBe('graph-operations');
     expect(searchDocs(index, 'cross repository graph workset')[0]?.article.id).toBe('worksets');
+    expect(searchDocs(index, 'workset prepare status')[0]?.article.id).toBe('worksets');
+    expect(searchDocs(index, 'context brief')[0]?.article.id).toBe('worksets');
     expect(searchDocs(index, 'share memory team')[0]?.article.id).toBe('publish-memory');
     expect(searchDocs(index, 'architecture analysis')[0]?.article.id).toBe('graph-analysis');
   });
@@ -706,26 +709,74 @@ describe('Threadnote 4 website content', () => {
     expect(worksetArticle).toBeDefined();
     expect(mcpExample?.type).toBe('code');
     if (!mcpExample || mcpExample.type !== 'code') throw new Error('Missing workset MCP example.');
-    expect(content).toContain('threadnote graph index --cwd ~/src/checkout-api');
+    expect(content).toContain('threadnote workset status checkout');
+    expect(content).toContain('threadnote workset prepare checkout --concurrency 4');
     expect(content).toContain('threadnote graph query');
     expect(content).toContain('--workset checkout');
     expect(JSON.parse(mcpExample.code)).toMatchObject({
+      budgetTokens: 1250,
       callerCwd: '/workspace/checkout-api',
       operation: 'query',
       workset: 'checkout',
     });
-    expect(content).toContain('At most eight members');
-    expect(content).toContain('20 nodes and 40 relationships');
-    expect(content).toContain('24 nodes and 40 relationships');
-    expect(content).toContain('At most two member repositories are queried concurrently');
-    expect(content).toContain('reads existing usable ready snapshots only');
-    expect(content).toContain('does not start cold builds');
-    expect(content).toContain('missing-path');
-    expect(content).toContain('no-ready-snapshot');
-    expect(content).toContain('query-failed');
-    expect(content).toContain('24 KiB response boundary');
-    expect(content).toContain('not one merged cross-repository topology');
-    expect(content).toContain('Use the producing repository’s --cwd or callerCwd');
+    expect(content).not.toContain('At most eight members');
+    expect(content).toContain('no eight-repository admission cap');
+    expect(content).toContain('One-hop contract neighbors');
+    expect(content).toContain('strongest 16 catalog-routed repositories');
+    expect(content).toContain('capped at 64 bridges');
+    expect(content).toContain('at most 2,048 unique bridge records');
+    expect(content).toContain('one four-repository ambiguity-validation wave');
+    expect(content).toContain('defaults to 1,250 estimated tokens');
+    expect(content).toContain('1 through 1,500');
+    expect(content).toContain('logical sequence of up to 40 evidence cards by default');
+    expect(content).toContain('internal sequence guard permits at most 512 cards');
+    expect(content).toContain('evidenceCards is not a public CLI or MCP input');
+    expect(content).toContain('not a query language');
+    expect(content).toContain('no public DSL is parsed');
+    expect(content).toContain('never fans out cold builds');
+    expect(content).toContain('refresh=false');
+    expect(content).toContain('cataloguedRepositories');
+    expect(content).toContain('current, stale, deferred, missing, failed, and excluded');
+    expect(content).toContain('cgwc_');
+    expect(content).toContain('cgr_');
+    expect(content).toContain('npm package dependency');
+    expect(content).toContain('Protobuf');
+    expect(content).toContain('as many as four exact Protobuf bridge endpoints');
+    expect(content).toContain('authoritative, confidence-1, declared relationship');
+    expect(content).toContain('the component contract is not projected as a query card or card relationship');
+    expect(content).toContain('GraphQL, OpenAPI and HTTP routes');
+    expect(content).toContain('threadnote graph path');
+    expect(content).toContain('threadnote graph impact');
+    expect(content).toContain('threadnote graph topology');
+    expect(content).toContain('threadnote context brief');
+    expect(content).toContain('context_brief');
+    expect(content).toContain('currently buffer the compact projection');
+    expect(content).toContain('buffered delivered-first-evidence at or below one second');
+    expect(content).toContain('At 128 repositories, the completion target is at or below five seconds');
+    expect(content).toContain('does not merge every local repository graph');
+  });
+
+  it('keeps the public Workset Search 2.0 quality and scaling contracts aligned', async () => {
+    const [readme, troubleshooting] = await Promise.all([
+      readFile(join(root, 'README.md'), 'utf8'),
+      readFile(join(root, 'docs', 'troubleshooting.md'), 'utf8'),
+    ]);
+
+    for (const source of [readme, troubleshooting]) {
+      const normalized = source.replace(/\s+/g, ' ');
+      expect(normalized).toContain('Workset Search 2.0');
+      expect(normalized).toContain('no eight-repository admission cap');
+      expect(normalized).toContain('logical evidence sequence defaults to 40 cards');
+      expect(normalized).toContain('internal safety maximum');
+      expect(normalized).toContain('1,250');
+      expect(normalized).toContain('1,500');
+      expect(normalized).toContain('not a public DSL');
+      expect(normalized).not.toMatch(/(?:queries|query) at most eight repositories/i);
+    }
+    expect(readme).toContain('bun run eval:code-graph-workset -- --sizes 1,8,32,64,128');
+    expect(readme).toContain(
+      'bun run bench:code-graph-workset -- --sizes 32,50,64,128 --samples 5 --warmups 1 --fail-on-budget',
+    );
   });
 
   it('bounds adversarial query length and term count before fuzzy matching', () => {

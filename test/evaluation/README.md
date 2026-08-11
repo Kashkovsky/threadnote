@@ -46,10 +46,11 @@ bun run bench:code-graph:heavy-tail -- --smoke \
 ### Cross-repository workset contract
 
 The workset fixture scales one deterministic set of repository archetypes into prefix worksets. Sizes 1, 8, 32, 64,
-and 128 are the required correctness matrix: together they cover single-repository parity, the current eight-repository
-product boundary, and progressively larger cross-repository coverage. Size 50 is benchmark-only. It exists to measure
-the Phase 1 50-ready-repository latency target and must not replace any required correctness size or be included when
-claiming that the correctness matrix passed.
+and 128 are the required correctness matrix: together they cover single-repository parity and progressively larger
+published catalog generations without an eight-repository admission cap. Size 50 is benchmark-only. It exists to
+measure the 50-ready-repository latency target and must not replace any required correctness size or be included when
+claiming that the correctness matrix passed. The directory remains `code-graph-workset-v1` because it names the frozen
+fixture and evaluator schema; the implementation and performance suite are Workset Search 2.0 / `code-graph-workset-v2`.
 
 Ordinary CI runs the truthful bounded smoke against sizes 1 and 8. The scheduled/manual platform workflow runs the
 complete correctness matrix, then measures sizes 32, 50, 64, and 128 with 25 recorded samples after five warmups. That
@@ -72,7 +73,7 @@ bun run bench:code-graph-workset -- \
   --warmups 5 \
   --output artifacts/code-graph-workset-benchmark.json
 
-# Explicit Phase 1 target check; expected to fail against the recorded V1 baseline.
+# Enforce the Workset Search 2.0 latency and response-budget targets.
 bun run bench:code-graph-workset -- \
   --sizes 50,128 \
   --samples 25 \
@@ -85,46 +86,46 @@ queried. Therefore `delivered-time-to-first-evidence-buffered` is the elapsed ti
 available to the client, which is also completion time for the buffered response. An internal first-candidate timer
 may help diagnose the pipeline, but it is not user-visible time to first evidence and must retain a distinct name.
 
-Agent-response cost counts the UTF-8 bytes of both MCP channels: structured content plus the duplicated text rendering.
-It intentionally does not deduplicate equivalent facts across those channels, because both are transmitted to the
-agent. Estimated tokens use the conservative ceiling `ceil(total UTF-8 bytes / 3)`, not the recall evaluator's older
-four-characters-per-token estimate. Artifacts retain each channel's bytes, their sum, and the estimate so future
+Workset Search 2.0 first reads the complete indexed routing catalog, globally ranks candidates, then opens repository
+graphs in bounded 4/4/16 waves. One four-repository validation wave may resolve ambiguous non-empty evidence; the
+16-repository wave is reserved for zero-evidence exhaustion. The logical result sequence defaults to 40 evidence cards
+with a separate internal maximum of 512. Its compact projection defaults to 1,250 estimated tokens and has a hard
+1,500-token public ceiling. Continuations resolve an opaque persisted `cgwc_` sequence; repository-qualified `cgr_`
+handles bind drill-down to the published generation and exact snapshot.
+
+Agent-response cost counts the UTF-8 bytes of both MCP channels: structured content plus the duplicated terse text
+rendering. It intentionally does not deduplicate equivalent facts across those channels because both are transmitted
+to the agent. Estimated tokens use the conservative ceiling `ceil(total UTF-8 bytes / 3)`, not the recall evaluator's
+older four-characters-per-token estimate. Artifacts retain each channel's bytes, their sum, and the estimate so future
 response compaction remains comparable without claiming tokenizer-specific precision.
 
-#### Phase 0 bottleneck decomposition
+The clean native baseline records perfect coverage accuracy, repository recall@5, symbol recall, no-answer
+precision/recall, and worktree isolation at every required size. Size 1 records full edge recall. Larger sizes record
+0.25 edge recall because this frozen V1 evaluator still marks its `path` and `impact` cells unsupported and its package
+expectation is not a query-card endpoint contract. The real
+`test/integration/code-graph.workset-cross-repository-traversal.test.ts` lifecycle separately proves npm and Protobuf
+extraction, generation-bound publication, V2 query evidence, forward path, and reverse impact through public runtime
+surfaces. Do not describe the evaluator's unsupported cells as missing Phase 2 runtime support.
 
-The first full local baseline on the reference Apple M1 Max development class recorded the following current-V1
-shape. Timing values are one-run development evidence, not a p95 distribution claim; the scheduled workflow owns the
-25-sample latency artifacts.
+`performance-development.json` is a clean exact-commit, same-machine distribution with five samples after one warmup
+at sizes 1, 8, 32, 50, 64, and 128. Its values are development evidence rather than portable latency promises; the
+numeric targets remain versioned in `baselines/code-graph-workset-v1/budgets.json`. `catalogBytesRead: 0` currently
+means catalog byte reads are not instrumented by this harness. It must not be interpreted as proof that the V2 query
+did not use the routing catalog.
 
-| Workset size | Completion p95-shaped statistic | Coverage accuracy | Repository recall@5 | Symbol recall |
-| -----------: | ------------------------------: | ----------------: | ------------------: | ------------: |
-|            1 |                           80 ms |             1.000 |               1.000 |         1.000 |
-|            8 |                          259 ms |             1.000 |               0.900 |         0.588 |
-|           32 |                          284 ms |             0.250 |               0.818 |         0.556 |
-|           64 |                          256 ms |             0.125 |               0.692 |         0.500 |
-|          128 |                          234 ms |             0.063 |               0.643 |         0.476 |
+The checked 4.1.1 development artifact was captured from clean implementation commit
+`8bfcc63c164f23456cb83fd1e090293ab020a18b` on the documented M1 Max runner. Because this bounded development run has
+five samples, its p95 is the maximum observed sample; scheduled 25-sample runs remain the release-quality
+distribution. All checked response estimates remain under the 1,500-token ceiling.
 
-The apparently flat latency above eight repositories is not scale success: V1 admits only the first eight manifest
-members, so the 128-repository run still considered/opened at most eight repositories per query. The late-repository
-fixture controls make that omission visible in recall and coverage. This makes global routing and complete coverage
-receipts the first Phase 1 bottleneck, ahead of concurrency tuning.
-
-The clean exact-commit development distribution in `performance-development.json` records five samples after one
-warmup. Its buffered completion p95 is 53 ms at size 1, 306 ms at size 8, 308 ms at size 32, 320 ms at the benchmark-only
-size 50, 334 ms at size 64, and 314 ms at size 128. These are same-machine measurements, not portable release limits;
-the flat post-8 shape is another receipt of the fixed V1 admission cap.
-
-The next bottleneck is transport cost. The exact-symbol control used about 5,085 estimated tokens at size 1, 9,427 at
-size 8, and 9,502 at size 50; the size-50 response was 28,504 UTF-8 bytes across structured content and duplicated text.
-The Phase 1 target remains 1,500 estimated tokens. A compact evidence-card projector and terse MCP text are therefore
-required even if search latency is already below the provisional ceiling.
-
-Finally, delivered first evidence is buffered, catalog bytes read are zero because V1 has no routing catalog, and
-workset `impact`/`path` are explicitly recorded as unsupported. Phase 1 must add catalog-wide consideration and a
-bounded response before its latency numbers can be compared honestly; Phase 2 owns cross-repository relationship
-stitching. Numeric gates are versioned in `baselines/code-graph-workset-v1/budgets.json` and are not adjusted by a
-change that fails them.
+| Workset size | Buffered completion p95 | Estimated agent tokens |
+| -----------: | ----------------------: | ---------------------: |
+|            1 |              148.893 ms |                  1,306 |
+|            8 |              445.221 ms |                    930 |
+|           32 |              622.110 ms |                    931 |
+|           50 |              758.645 ms |                    931 |
+|           64 |              874.532 ms |                    931 |
+|          128 |            1,423.727 ms |                    933 |
 
 The evaluator runs Threadnote's real Git inventory, extractor, SQLite store, and query service. Its active Phase 0
 safety gates require zero authoritative false edges, zero worktree leakage, and perfect no-answer precision/recall.
