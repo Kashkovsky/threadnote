@@ -999,6 +999,20 @@ const benchmarkCodeGraph = Effect.scoped(
     if (!analysisComplete) {
       return yield* Effect.fail(new Error('Code graph benchmark analysis returned partial coverage.'));
     }
+    const sameOverlayReferenceAnalysis = yield* analysis.analyze({
+      databasePath: sameOverlayReferenceLayout.databasePath,
+      limits: codeGraphAnalysisLimitsForView('stats'),
+      snapshot: sameOverlayReference.summary.snapshot,
+    });
+    if (
+      !sameOverlayReferenceAnalysis.coverage.complete ||
+      sameOverlayReferenceAnalysis.coverage.topology.state !== 'not-requested' ||
+      sameOverlayReferenceAnalysis.usage.edgeVisits !== 0
+    ) {
+      return yield* Effect.fail(
+        new Error('Code graph benchmark reference analysis unexpectedly required a detail scan.'),
+      );
+    }
 
     const statusSamples = Math.max(1, Math.min(options.samples, largeEvidenceRun ? 3 : 10));
     const repositoryStatusDurations: number[] = [];

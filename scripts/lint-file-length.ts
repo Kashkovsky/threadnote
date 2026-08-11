@@ -1,6 +1,9 @@
+import {BunRuntime} from '@effect/platform-bun';
+import {Console, Effect} from 'effect';
 import {existsSync} from 'node:fs';
 import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
+import {SystemInfo} from '../src/effect/system.js';
 
 export const PRODUCTION_FILE_LINE_LIMIT = 2_000;
 export const PRODUCTION_CODE_ROOTS = ['src', 'website/src'] as const;
@@ -233,15 +236,33 @@ function parseArguments(arguments_: readonly string[]): {readonly base?: string;
 }
 
 if (import.meta.main) {
-  try {
-    const {base, roots} = parseArguments(Bun.argv.slice(2));
-    process.exitCode = runProductionFileLengthLint({
-      base: base ?? process.env.THREADNOTE_LINT_BASE,
-      repositoryRoot: fileURLToPath(new URL('..', import.meta.url)),
-      roots,
-    });
-  } catch (cause) {
-    console.error(`Production file length lint failed: ${cause instanceof Error ? cause.message : String(cause)}`);
-    process.exitCode = 2;
-  }
+  BunRuntime.runMain(
+    Effect.gen(function* () {
+      const system = yield* SystemInfo;
+      const outcome = yield* Effect.try({
+        try: () => {
+          const {base, roots} = parseArguments(Bun.argv.slice(2));
+          return runProductionFileLengthLint({
+            base: base ?? process.env.THREADNOTE_LINT_BASE,
+            repositoryRoot: fileURLToPath(new URL('..', import.meta.url)),
+            roots,
+          });
+        },
+        catch: cause => cause,
+      }).pipe(
+        Effect.match({
+          onFailure: cause => ({cause, success: false}) as const,
+          onSuccess: exitCode => ({exitCode, success: true}) as const,
+        }),
+      );
+      if (!outcome.success) {
+        yield* Console.error(
+          `Production file length lint failed: ${outcome.cause instanceof Error ? outcome.cause.message : String(outcome.cause)}`,
+        );
+        system.setExitCode(2);
+        return;
+      }
+      system.setExitCode(outcome.exitCode);
+    }).pipe(Effect.provide(SystemInfo.layer)),
+  );
 }
