@@ -536,147 +536,142 @@ describe('CodeGraphWatcher', () => {
     }),
   );
 
-  it('serializes explicit and watch-triggered refreshes while coalescing a trailing run', async () => {
-    const result = await Effect.runPromise(
-      Effect.scoped(
-        Effect.gen(function* () {
-          const starts = yield* Ref.make(0);
-          const concurrent = yield* Ref.make(0);
-          const maximumConcurrent = yield* Ref.make(0);
-          const watchStarted = yield* Deferred.make<void>();
-          const firstStarted = yield* Deferred.make<void>();
-          const secondStarted = yield* Deferred.make<void>();
-          const firstRelease = yield* Deferred.make<void>();
-          const secondRelease = yield* Deferred.make<void>();
-          const secondCompleted = yield* Deferred.make<void>();
-          let trigger: (() => Effect.Effect<void>) | undefined;
-          const watcher = yield* makeCodeGraphWatcher(
-            (_options, _initialRefresh, requestRefresh) =>
-              Effect.sync(() => {
-                trigger = requestRefresh;
-              }).pipe(Effect.andThen(Deferred.succeed(watchStarted, undefined)), Effect.andThen(Effect.never)),
-            refreshOptions =>
-              Effect.gen(function* () {
-                const ordinal = yield* Ref.updateAndGet(starts, count => count + 1);
-                const active = yield* Ref.updateAndGet(concurrent, count => count + 1);
-                yield* Ref.update(maximumConcurrent, current => Math.max(current, active));
-                yield* refreshOptions.onProgress?.({
-                  accepted: ordinal,
-                  completed: ordinal,
-                  excluded: 0,
-                  phase: 'scanning',
-                  skipped: 0,
-                  total: 2,
-                  unit: 'files',
-                }) ?? Effect.void;
-                yield* Deferred.succeed(ordinal === 1 ? firstStarted : secondStarted, undefined);
-                yield* Deferred.await(ordinal === 1 ? firstRelease : secondRelease);
-                yield* refreshOptions.onRefreshed?.(ordinal * 100, ordinal * 200) ?? Effect.void;
-                if (ordinal === 2) yield* Deferred.succeed(secondCompleted, undefined);
-              }).pipe(Effect.ensuring(Ref.update(concurrent, count => count - 1))),
-          );
+  effectIt.effect('serializes explicit and watch-triggered refreshes while coalescing a trailing run', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const starts = yield* Ref.make(0);
+        const concurrent = yield* Ref.make(0);
+        const maximumConcurrent = yield* Ref.make(0);
+        const watchStarted = yield* Deferred.make<void>();
+        const firstStarted = yield* Deferred.make<void>();
+        const secondStarted = yield* Deferred.make<void>();
+        const firstRelease = yield* Deferred.make<void>();
+        const secondRelease = yield* Deferred.make<void>();
+        const secondCompleted = yield* Deferred.make<void>();
+        let trigger: (() => Effect.Effect<void>) | undefined;
+        const watcher = yield* makeCodeGraphWatcher(
+          (_options, _initialRefresh, requestRefresh) =>
+            Effect.sync(() => {
+              trigger = requestRefresh;
+            }).pipe(Effect.andThen(Deferred.succeed(watchStarted, undefined)), Effect.andThen(Effect.never)),
+          refreshOptions =>
+            Effect.gen(function* () {
+              const ordinal = yield* Ref.updateAndGet(starts, count => count + 1);
+              const active = yield* Ref.updateAndGet(concurrent, count => count + 1);
+              yield* Ref.update(maximumConcurrent, current => Math.max(current, active));
+              yield* refreshOptions.onProgress?.({
+                accepted: ordinal,
+                completed: ordinal,
+                excluded: 0,
+                phase: 'scanning',
+                skipped: 0,
+                total: 2,
+                unit: 'files',
+              }) ?? Effect.void;
+              yield* Deferred.succeed(ordinal === 1 ? firstStarted : secondStarted, undefined);
+              yield* Deferred.await(ordinal === 1 ? firstRelease : secondRelease);
+              yield* refreshOptions.onRefreshed?.(ordinal * 100, ordinal * 200) ?? Effect.void;
+              if (ordinal === 2) yield* Deferred.succeed(secondCompleted, undefined);
+            }).pipe(Effect.ensuring(Ref.update(concurrent, count => count - 1))),
+        );
 
-          yield* watcher.ensure(options);
-          yield* Deferred.await(watchStarted);
-          yield* watcher.refresh(options);
-          yield* Deferred.await(firstStarted);
-          yield* Effect.all(
-            [
-              ...Array.from({length: 50}, () => trigger!()),
-              ...Array.from({length: 50}, () => watcher.refresh(options)),
-            ],
-            {concurrency: 'unbounded'},
-          );
-          const beforeRelease = {
-            maximum: yield* Ref.get(maximumConcurrent),
-            starts: yield* Ref.get(starts),
-          };
-          yield* Deferred.succeed(firstRelease, undefined);
-          yield* Deferred.await(secondStarted);
-          const duringTrailing = {
-            maximum: yield* Ref.get(maximumConcurrent),
-            starts: yield* Ref.get(starts),
-          };
-          yield* Effect.all(
-            Array.from({length: 50}, () => watcher.refresh(options)),
-            {
-              concurrency: 'unbounded',
-            },
-          );
-          yield* Deferred.succeed(secondRelease, undefined);
-          yield* Deferred.await(secondCompleted);
-          yield* Effect.yieldNow;
-          return {
-            beforeRelease,
-            duringTrailing,
-            finalMaximum: yield* Ref.get(maximumConcurrent),
-            finalStarts: yield* Ref.get(starts),
-            status: yield* watcher.status(options.key),
-          };
+        yield* watcher.ensure(options);
+        yield* Deferred.await(watchStarted);
+        yield* watcher.refresh(options);
+        yield* Deferred.await(firstStarted);
+        yield* Effect.all(
+          [...Array.from({length: 50}, () => trigger!()), ...Array.from({length: 50}, () => watcher.refresh(options))],
+          {concurrency: 'unbounded'},
+        );
+        const beforeRelease = {
+          maximum: yield* Ref.get(maximumConcurrent),
+          starts: yield* Ref.get(starts),
+        };
+        yield* Deferred.succeed(firstRelease, undefined);
+        yield* Deferred.await(secondStarted);
+        const duringTrailing = {
+          maximum: yield* Ref.get(maximumConcurrent),
+          starts: yield* Ref.get(starts),
+        };
+        yield* Effect.all(
+          Array.from({length: 50}, () => watcher.refresh(options)),
+          {
+            concurrency: 'unbounded',
+          },
+        );
+        yield* Deferred.succeed(secondRelease, undefined);
+        yield* Deferred.await(secondCompleted);
+        yield* Effect.yieldNow;
+        return {
+          beforeRelease,
+          duringTrailing,
+          finalMaximum: yield* Ref.get(maximumConcurrent),
+          finalStarts: yield* Ref.get(starts),
+          status: yield* watcher.status(options.key),
+        };
+      }),
+    ).pipe(
+      Effect.tap(result =>
+        Effect.sync(() => {
+          expect(result.beforeRelease).toEqual({maximum: 1, starts: 1});
+          expect(result.duringTrailing).toEqual({maximum: 1, starts: 2});
+          expect(result.finalMaximum).toBe(1);
+          expect(result.finalStarts).toBe(2);
+          expect(result.status).toMatchObject({
+            _tag: 'Some',
+            value: {edges: 400, state: 'ready', symbols: 200},
+          });
         }),
       ),
-    );
+    ),
+  );
 
-    expect(result.beforeRelease).toEqual({maximum: 1, starts: 1});
-    expect(result.duringTrailing).toEqual({maximum: 1, starts: 2});
-    expect(result.finalMaximum).toBe(1);
-    expect(result.finalStarts).toBe(2);
-    expect(result.status).toMatchObject({
-      _tag: 'Some',
-      value: {edges: 400, state: 'ready', symbols: 200},
-    });
-  });
+  effectIt.effect('atomically collapses intermediate changes and resolves the latest target in the trailing run', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const targets: string[] = [];
+        let currentTarget = 'commit-a';
+        let trigger: (() => Effect.Effect<void>) | undefined;
+        const firstStarted = yield* Deferred.make<void>();
+        const firstRelease = yield* Deferred.make<void>();
+        const secondCompleted = yield* Deferred.make<void>();
+        const watcher = yield* makeCodeGraphWatcher(
+          (_options, _initialRefresh, requestRefresh) =>
+            Effect.sync(() => {
+              trigger = requestRefresh;
+            }).pipe(Effect.andThen(Effect.never)),
+          () =>
+            Effect.gen(function* () {
+              targets.push(currentTarget);
+              if (targets.length === 1) {
+                yield* Deferred.succeed(firstStarted, undefined);
+                yield* Deferred.await(firstRelease);
+              } else {
+                yield* Deferred.succeed(secondCompleted, undefined);
+              }
+            }),
+        );
 
-  it('atomically collapses intermediate changes and resolves the latest target in the trailing run', async () => {
-    const observed = await Effect.runPromise(
-      Effect.scoped(
-        Effect.gen(function* () {
-          const targets: string[] = [];
-          let currentTarget = 'commit-a';
-          let trigger: (() => Effect.Effect<void>) | undefined;
-          const firstStarted = yield* Deferred.make<void>();
-          const firstRelease = yield* Deferred.make<void>();
-          const secondCompleted = yield* Deferred.make<void>();
-          const watcher = yield* makeCodeGraphWatcher(
-            (_options, _initialRefresh, requestRefresh) =>
-              Effect.sync(() => {
-                trigger = requestRefresh;
-              }).pipe(Effect.andThen(Effect.never)),
-            () =>
-              Effect.gen(function* () {
-                targets.push(currentTarget);
-                if (targets.length === 1) {
-                  yield* Deferred.succeed(firstStarted, undefined);
-                  yield* Deferred.await(firstRelease);
-                } else {
-                  yield* Deferred.succeed(secondCompleted, undefined);
-                }
-              }),
-          );
-
-          yield* watcher.ensure(options);
-          while (trigger === undefined) yield* Effect.yieldNow;
-          yield* watcher.refresh(options);
-          yield* Deferred.await(firstStarted);
-          currentTarget = 'commit-b';
-          yield* trigger!();
-          currentTarget = 'commit-c';
-          yield* Effect.all(
-            Array.from({length: 64}, () => trigger!()),
-            {
-              concurrency: 'unbounded',
-              discard: true,
-            },
-          );
-          yield* Deferred.succeed(firstRelease, undefined);
-          yield* Deferred.await(secondCompleted);
-          return targets;
-        }),
-      ),
-    );
-
-    expect(observed).toEqual(['commit-a', 'commit-c']);
-  });
+        yield* watcher.ensure(options);
+        while (trigger === undefined) yield* Effect.yieldNow;
+        yield* watcher.refresh(options);
+        yield* Deferred.await(firstStarted);
+        currentTarget = 'commit-b';
+        yield* trigger!();
+        currentTarget = 'commit-c';
+        yield* Effect.all(
+          Array.from({length: 64}, () => trigger!()),
+          {
+            concurrency: 'unbounded',
+            discard: true,
+          },
+        );
+        yield* Deferred.succeed(firstRelease, undefined);
+        yield* Deferred.await(secondCompleted);
+        return targets;
+      }),
+    ).pipe(Effect.tap(observed => Effect.sync(() => expect(observed).toEqual(['commit-a', 'commit-c'])))),
+  );
 
   it('serializes refreshes across repository keys to bound process memory', async () => {
     const result = await Effect.runPromise(

@@ -6,7 +6,7 @@ import {codeGraphBlobReuseCacheKey} from './blob_reuse.js';
 import {BUILTIN_LANGUAGE_PACK_REGISTRY, type CodeGraphLanguagePackRegistryShape} from './languages/registry.js';
 import {CORPUS_EXTRACTION_SOURCE_BYTES_LIMIT, isOpaqueCorpusMediaPath} from './languages/corpus/policy.js';
 import {isLowSignalStructuredPath} from './languages/schemas/policy.js';
-import type {CodeGraphFileRole} from './languages/types.js';
+import type {CodeGraphFileRole, CodeGraphWorkspace} from './languages/types.js';
 import {
   codeGraphInventoryExclusionReason,
   CODE_GRAPH_INVENTORY_ADMISSION_POLICY_VERSION,
@@ -46,6 +46,8 @@ export interface CodeGraphInventory {
   readonly parsedFiles: number;
   readonly policyExclusions?: CodeGraphInventoryPolicyExclusionSummary;
   readonly skipped: number;
+  /** Workspace derived from the same admitted resolution-context files, when the overlay did not change one. */
+  readonly workspace?: CodeGraphWorkspace;
 }
 
 export interface CodeGraphInventoryPolicyExclusionSummary {
@@ -419,6 +421,9 @@ export const inventoryRepository = Effect.fn('codeGraph.inventoryRepository')(fu
     parsedFiles: files.reduce((total, file) => total + (parsedPaths.has(file.path) ? 1 : 0), 0),
     policyExclusions,
     skipped,
+    ...([...overlay.changed].some(relative => languagePacks.isResolutionContext(relative))
+      ? {}
+      : {workspace: declaredWorkspace.workspace}),
   } satisfies CodeGraphInventory;
 });
 
@@ -516,6 +521,7 @@ const readInventoryPreviewTree = Effect.fn('codeGraph.readInventoryPreviewTree')
   path: Path.Path,
   committedEntries: readonly GitTreeEntry[],
   includeOverlay: boolean,
+  excludedPathPrefix?: string,
 ) {
   const emptyChanges = {added: new Set<string>(), changed: new Set<string>(), deleted: new Set<string>()};
   if (!includeOverlay) {
@@ -530,12 +536,16 @@ const readInventoryPreviewTree = Effect.fn('codeGraph.readInventoryPreviewTree')
   const fs = yield* FileSystem.FileSystem;
   const repositoryRoot = yield* fs.realPath(identity.repoRoot);
   const unborn = isZeroObjectId(identity.headCommit);
+  const excludePath = (relative: string) =>
+    excludedPathPrefix !== undefined &&
+    (relative === excludedPathPrefix || relative.startsWith(`${excludedPathPrefix}/`));
+  const pathspec = excludedPathPrefix === undefined ? [] : ['--', '.', `:(top,exclude,literal)${excludedPathPrefix}`];
   const [diffOutput, untrackedOutput] = unborn
     ? [
         '',
         (yield* runCommandEffect(
           'git',
-          ['-C', identity.repoRoot, 'ls-files', '-z', '--cached', '--others', '--exclude-standard'],
+          ['-C', identity.repoRoot, 'ls-files', '-z', '--cached', '--others', '--exclude-standard', ...pathspec],
           {maxOutputBytes: 0, timeoutMs: 0},
         )).stdout,
       ]
@@ -543,20 +553,39 @@ const readInventoryPreviewTree = Effect.fn('codeGraph.readInventoryPreviewTree')
         [
           runCommandEffect(
             'git',
-            ['-C', identity.repoRoot, 'diff', '--name-status', '-z', '--find-renames', identity.headCommit, '--'],
+            [
+              '-C',
+              identity.repoRoot,
+              'diff',
+              '--name-status',
+              '-z',
+              '--find-renames',
+              identity.headCommit,
+              ...(pathspec.length === 0 ? ['--'] : pathspec),
+            ],
             {maxOutputBytes: 0, timeoutMs: 0},
           ).pipe(Effect.map(result => result.stdout)),
-          runCommandEffect('git', ['-C', identity.repoRoot, 'ls-files', '-z', '--others', '--exclude-standard'], {
-            maxOutputBytes: 0,
-            timeoutMs: 0,
-          }).pipe(Effect.map(result => result.stdout)),
+          runCommandEffect(
+            'git',
+            ['-C', identity.repoRoot, 'ls-files', '-z', '--others', '--exclude-standard', ...pathspec],
+            {
+              maxOutputBytes: 0,
+              timeoutMs: 0,
+            },
+          ).pipe(Effect.map(result => result.stdout)),
         ],
         {concurrency: 2},
       );
   const changes = parseNameStatus(diffOutput);
   for (const relative of untrackedOutput.split('\0').filter(Boolean).map(normalizeRepositoryPath)) {
+    if (excludePath(relative)) continue;
     changes.added.add(relative);
     changes.changed.add(relative);
+  }
+  for (const collection of [changes.added, changes.changed, changes.deleted]) {
+    for (const relative of collection) {
+      if (excludePath(relative)) collection.delete(relative);
+    }
   }
   const entries = new Map(committedEntries.map(entry => [entry.path, entry]));
   for (const relative of changes.deleted) entries.delete(relative);
@@ -633,6 +662,76 @@ export const worktreeOverlayState = Effect.fn('codeGraph.worktreeOverlayState')(
   return {dirty: overlay.dirty, fingerprint: overlay.fingerprint};
 });
 
+/**
+ * Exact, policy-independent dirty input identity for build admission. Unlike
+ * `worktreeOverlayState`, this does not hydrate the committed tree or discover
+ * every workspace before the real inventory pass. Changed regular files are
+ * still streamed through SHA-256 with the same containment and race checks, so
+ * two processes can safely coalesce only the exact same worktree bytes.
+ */
+export const worktreeBuildRequestState = Effect.fn('codeGraph.worktreeBuildRequestState')(function* (
+  identity: RepositoryIdentity,
+  threadnoteHome?: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const repositoryRoot = yield* fs.realPath(identity.repoRoot);
+  const relativeHome =
+    threadnoteHome === undefined
+      ? undefined
+      : normalizeRepositoryPath(
+          path.relative(repositoryRoot, yield* canonicalizePotentialPath(fs, path, threadnoteHome)),
+        );
+  const excludedPathPrefix =
+    relativeHome !== undefined &&
+    relativeHome.length > 0 &&
+    relativeHome !== '..' &&
+    !relativeHome.startsWith('../') &&
+    !path.isAbsolute(relativeHome)
+      ? relativeHome
+      : undefined;
+  const pathspec = excludedPathPrefix === undefined ? [] : ['--', '.', `:(top,exclude,literal)${excludedPathPrefix}`];
+  const porcelain = yield* runCommandEffect(
+    'git',
+    ['-C', identity.repoRoot, 'status', '--porcelain=v1', '-z', '--untracked-files=normal', ...pathspec],
+    {maxOutputBytes: 0, timeoutMs: 0},
+  );
+  if (porcelain.stdout.length === 0) return {dirty: false, fingerprint: undefined};
+  const tree = yield* readInventoryPreviewTree(identity, path, [], true, excludedPathPrefix);
+  const threadnoteIgnore = yield* readOptionalText(fs, path.join(identity.repoRoot, '.threadnoteignore'));
+  const fileRows: string[] = [];
+  const skippedRows: string[] = [];
+  for (const relative of [...tree.changes.changed].sort(compareCodeUnits)) {
+    if (tree.changes.deleted.has(relative)) continue;
+    const metadata = tree.changedMetadata.get(relative);
+    const materialized = yield* materializeContainedStableRegularFile(
+      fs,
+      path,
+      repositoryRoot,
+      relative,
+      () => true,
+      metadata?.size,
+    ).pipe(Effect.option);
+    if (Option.isSome(materialized)) fileRows.push(`F\0${relative}\0${materialized.value.contentHash}`);
+    else skippedRows.push(`S\0${relative}`);
+  }
+  const dirty = tree.changes.changed.size > 0 || tree.changes.deleted.size > 0;
+  return {
+    dirty,
+    fingerprint: dirty
+      ? sha256HexSync(
+          [
+            'build-request-overlay-v1',
+            `I\0${sha256HexSync(threadnoteIgnore)}`,
+            ...[...tree.changes.deleted].sort(compareCodeUnits).map(relative => `D\0${relative}`),
+            ...fileRows,
+            ...skippedRows,
+          ].join('\n'),
+        )
+      : undefined,
+  };
+});
+
 export function parseGitTree(output: string): readonly GitTreeEntry[] {
   const entries: GitTreeEntry[] = [];
   for (const record of output.split('\0')) {
@@ -704,7 +803,12 @@ const discoverDeclaredSourceRoots = Effect.fn('codeGraph.discoverDeclaredSourceR
     return !directories.some(directory => directory.startsWith('.') || directory.toLowerCase() === 'node_modules');
   });
   if (contexts.length === 0) {
-    return {files: new Map<string, CodeGraphInventoryFile>(), projectRoots: [], sourceRoots: []};
+    return {
+      files: new Map<string, CodeGraphInventoryFile>(),
+      projectRoots: [],
+      sourceRoots: [],
+      workspace: yield* languagePacks.discoverWorkspace([]),
+    };
   }
 
   const files: CodeGraphInventoryFile[] = [];
@@ -752,7 +856,7 @@ const discoverDeclaredSourceRoots = Effect.fn('codeGraph.discoverDeclaredSourceR
         .filter(root => root.length > 0 && !root.split('/').some(segment => segment === '..' || segment === '')),
     ),
   ].sort(compareCodeUnits);
-  return {files: new Map(files.map(file => [file.path, file])), projectRoots, sourceRoots};
+  return {files: new Map(files.map(file => [file.path, file])), projectRoots, sourceRoots, workspace};
 });
 
 const discoverOverlaySourceRoots = Effect.fn('codeGraph.discoverOverlaySourceRoots')(function* (
@@ -1904,6 +2008,23 @@ function decodeUtf8(bytes: Uint8Array): string | undefined {
 function normalizeRepositoryPath(value: string): string {
   return value.replace(/^\.\/+/, '');
 }
+
+const canonicalizePotentialPath = Effect.fn('codeGraph.canonicalizePotentialPath')(function* (
+  fs: FileSystem.FileSystem,
+  path: Path.Path,
+  target: string,
+) {
+  let current = path.resolve(target);
+  const missingSegments: string[] = [];
+  while (true) {
+    const canonical = yield* fs.realPath(current).pipe(Effect.option);
+    if (Option.isSome(canonical)) return path.join(canonical.value, ...missingSegments);
+    const parent = path.dirname(current);
+    if (parent === current) return path.resolve(target);
+    missingSegments.unshift(path.basename(current));
+    current = parent;
+  }
+});
 
 function cacheKey(path: string, contentHash: string, languagePacks: CodeGraphLanguagePackRegistryShape): string {
   return `${path}\0${contentHash}\0${Option.getOrElse(languagePacks.cacheIdentityForPath(path), () => 'unmatched')}`;

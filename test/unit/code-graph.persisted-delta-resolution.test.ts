@@ -32,6 +32,7 @@ describe('persisted delta reference resolution', () => {
               yield* store.stageActivationFacts(databasePath, fixture.baseSymbols, []);
               yield* store.activateStaged(databasePath, fixture.identity, fixture.baseSnapshot, {
                 fileSetFingerprint: 'large-base-files',
+                packProvenance: [],
                 workspaceFingerprint: 'large-base-workspace',
               });
 

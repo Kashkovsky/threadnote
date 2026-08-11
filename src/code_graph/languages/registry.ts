@@ -12,6 +12,7 @@ import {
   type CodeGraphWorkspaceProject,
 } from './types.js';
 import type {CodeGraphFileFacts, CodeGraphInventoryFile} from '../types.js';
+import type {CodeGraphLanguagePackProvenance} from '../store_models.js';
 import {TREE_SITTER_RUNTIME_CACHE_IDENTITY, type TreeSitterRuntime} from '../tree_sitter/runtime.js';
 import {mergeCodeGraphWorkspaces, projectForPath} from '../workspace.js';
 import {
@@ -26,6 +27,7 @@ export {CODE_GRAPH_PARSER_FACTS_VERSION} from '../fact_budget.js';
 export interface CodeGraphLanguagePackRegistryShape {
   readonly activeCacheIdentities: (paths: readonly string[]) => readonly string[];
   readonly activeDerivationIdentities: (paths: readonly string[]) => readonly string[];
+  readonly activePackProvenance: (paths: readonly string[]) => readonly CodeGraphLanguagePackProvenance[];
   readonly cacheIdentities: readonly string[];
   readonly cacheIdentityForPath: (path: string) => Option.Option<string>;
   readonly discoverWorkspace: (
@@ -94,6 +96,19 @@ export function createCodeGraphLanguagePackRegistry(
           paths.flatMap(path => Option.toArray(Option.map(match(path), value => packDerivationIdentity(value.pack)))),
         ),
       ].sort(),
+    activePackProvenance: paths => {
+      const activeIds = new Set(paths.flatMap(path => Option.toArray(Option.map(match(path), value => value.pack.id))));
+      return packs
+        .filter(pack => activeIds.has(pack.id))
+        .map(pack => ({
+          cacheIdentity: packCacheIdentity(pack),
+          derivationIdentity: packDerivationIdentity(pack),
+          id: pack.id,
+          resolutionDomain: pack.resolutionStrategy.domain,
+          resolutionVersion: pack.resolutionStrategy.version,
+        }))
+        .sort((left, right) => left.id.localeCompare(right.id));
+    },
     cacheIdentityForPath: path => Option.map(match(path), value => value.cacheIdentity),
     cacheIdentities: [...new Set(entries.map(entry => entry.cacheIdentity))].sort(),
     discoverWorkspace: files =>

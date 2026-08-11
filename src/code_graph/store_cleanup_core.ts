@@ -680,6 +680,12 @@ const RETIRED_SNAPSHOT_CLEANUP_SPECS = [
   },
   {
     batchRows: 1_000,
+    keyColumns: ['snapshot_id', 'pack_id'],
+    maximumBatchRows: 1_000,
+    table: 'snapshot_pack_provenance',
+  },
+  {
+    batchRows: 1_000,
     keyColumns: ['snapshot_id'],
     maximumBatchRows: 1_000,
     table: 'snapshot_extractor_generations',

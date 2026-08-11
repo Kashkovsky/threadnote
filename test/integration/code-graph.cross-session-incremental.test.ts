@@ -4,10 +4,16 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {Database} from 'bun:sqlite';
 import {describe, expect, it} from '@effect/vitest';
-import {Effect, Path} from 'effect';
+import {Context, Effect, Layer, Path} from 'effect';
 import {TestClock} from 'effect/testing';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {CodeGraphIndexer} from '../../src/code_graph/indexer.js';
+import {
+  BUILTIN_LANGUAGE_PACK_REGISTRY,
+  CodeGraphLanguagePackRegistry,
+  createCodeGraphLanguagePackRegistry,
+  type CodeGraphLanguagePackRegistryShape,
+} from '../../src/code_graph/languages/registry.js';
 import {codeGraphLayout} from '../../src/code_graph/layout.js';
 import {CodeGraphStore, type CodeGraphVisualizationCatalog} from '../../src/code_graph/store.js';
 import {CODE_GRAPH_EXTRACTOR_GENERATION, type CodeGraphIndexSummary} from '../../src/code_graph/types.js';
@@ -217,6 +223,72 @@ describe('cross-session code graph increments', () => {
     }
   });
 
+  it.effect(
+    're-extracts only the changed language pack across a compatible extractor rollout',
+    () => {
+      let root: string | undefined;
+      return Effect.gen(function* () {
+        root = createRepository(6);
+        writeFileSync(join(root, 'README.md'), '# Mixed language fixture\n');
+        git(root, ['add', 'README.md']);
+        git(root, ['commit', '--amend', '-qm', 'fixture']);
+        const home = join(root, '.threadnote-pack-rollout');
+        const referenceHome = join(root, '.threadnote-pack-rollout-reference');
+        const initialRegistry = createCodeGraphLanguagePackRegistry(BUILTIN_LANGUAGE_PACK_REGISTRY.packs);
+        const nextRegistry = createCodeGraphLanguagePackRegistry(
+          BUILTIN_LANGUAGE_PACK_REGISTRY.packs.map(pack =>
+            pack.id === 'typescript'
+              ? {...pack, extractor: {...pack.extractor, version: `${pack.extractor.version}-compatible-next`}}
+              : pack,
+          ),
+        );
+
+        const initial = yield* indexWithRegistry(root, home, initialRegistry);
+        expect(initial.materialization?.mode).toBe('full');
+        const incremental = yield* indexWithRegistry(root, home, nextRegistry);
+        const rebuilt = yield* indexWithRegistry(root, referenceHome, nextRegistry, true);
+        expect(incremental.materialization).toEqual({
+          mode: 'incremental-clean',
+          stagedFiles: 8,
+          totalFiles: 9,
+        });
+        expect(projectGraph(yield* loadGraphEffect(root, home, incremental))).toEqual(
+          projectGraph(yield* loadGraphEffect(root, referenceHome, rebuilt)),
+        );
+      }).pipe(
+        Effect.ensuring(
+          Effect.sync(() => (root === undefined ? undefined : rmSync(root, {force: true, recursive: true}))),
+        ),
+        Effect.provide(ApplicationLayer),
+      );
+    },
+    60_000,
+  );
+
+  it.effect('fails closed when a global extractor change is not explained by pack provenance', () => {
+    let root: string | undefined;
+    return Effect.gen(function* () {
+      root = createRepository(4);
+      const home = join(root, '.threadnote-global-extractor');
+      const initial = yield* indexAndLoadEffect(root, home);
+      replaceSnapshotExtractorSet(initial.databasePath, initial.summary.snapshot.id, 'unexplained-global-change');
+      writeUseFile(root, 'changed alongside a global extractor rollout');
+
+      const next = yield* indexAndLoadEffect(root, home);
+      expect(next.summary.materialization).toEqual({
+        fallbackReason: 'extractor-context-changed',
+        mode: 'full',
+        stagedFiles: 6,
+        totalFiles: 6,
+      });
+    }).pipe(
+      Effect.ensuring(
+        Effect.sync(() => (root === undefined ? undefined : rmSync(root, {force: true, recursive: true}))),
+      ),
+      Effect.provide(ApplicationLayer),
+    );
+  });
+
   it('does not let a stale peer failure poison an already-ready reusable base', async () => {
     const root = createRepository();
     const home = join(root, '.threadnote-peer-failure');
@@ -333,6 +405,36 @@ async function loadGraph(root: string, home: string, summary: CodeGraphIndexSumm
     }),
   );
 }
+
+const loadGraphEffect = Effect.fn('test.loadGraph')(function* (
+  root: string,
+  home: string,
+  summary: CodeGraphIndexSummary,
+) {
+  const path = yield* Path.Path;
+  const store = yield* CodeGraphStore;
+  const layout = codeGraphLayout(path, home, summary.identity.checkoutId, summary.identity.worktreeId);
+  return yield* store.loadGraph(layout.databasePath, summary.snapshot.id);
+});
+
+const indexWithRegistry = Effect.fn('test.indexWithRegistry')(function* (
+  root: string,
+  home: string,
+  registry: CodeGraphLanguagePackRegistryShape,
+  force = false,
+) {
+  const layer = Layer.fresh(CodeGraphIndexer.layer).pipe(
+    Layer.provide(Layer.succeed(CodeGraphLanguagePackRegistry, registry)),
+    Layer.provide(ApplicationLayer),
+  );
+  return yield* Effect.scoped(
+    Effect.gen(function* () {
+      const context = yield* Layer.build(layer);
+      const indexer = Context.get(context, CodeGraphIndexer);
+      return yield* indexer.index({cwd: root, force, threadnoteHome: home});
+    }),
+  );
+});
 
 function projectGraph(graph: {readonly edges: readonly unknown[]; readonly symbols: readonly unknown[]}) {
   return JSON.parse(JSON.stringify({edges: graph.edges, symbols: graph.symbols})) as {
@@ -510,6 +612,15 @@ function deleteReusableReceipt(databasePath: string, snapshotId: string): void {
   const database = new Database(databasePath);
   try {
     database.query('DELETE FROM snapshot_reuse_receipts WHERE snapshot_id = ?').run(snapshotId);
+  } finally {
+    database.close();
+  }
+}
+
+function replaceSnapshotExtractorSet(databasePath: string, snapshotId: string, extractorSet: string): void {
+  const database = new Database(databasePath);
+  try {
+    database.query('UPDATE snapshots SET extractor_set = ? WHERE id = ?').run(extractorSet, snapshotId);
   } finally {
     database.close();
   }

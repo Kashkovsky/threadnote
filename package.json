@@ -59,6 +59,8 @@
     "bench:code-graph:lexical-production": "bun scripts/benchmark-code-graph-lexical-production.ts",
     "bench:code-graph:heavy-tail": "bun scripts/benchmark-code-graph-heavy-tail.ts",
     "bench:code-graph:dirty-overlay": "bun scripts/benchmark-code-graph-dirty-overlay.ts",
+    "bench:code-graph:mixed-monorepo:fixture": "bun scripts/generate-mixed-nx-bazel-fixture.ts",
+    "bench:code-graph:mixed-monorepo:gate": "bun scripts/validate-mixed-nx-bazel-gate.ts",
     "bench:worktree-readiness": "bun scripts/benchmark-worktree-readiness.ts",
     "eval:code-graph": "bun scripts/evaluate-code-graph.ts",
     "mcp-server": "bun src/standalone.ts mcp-server",
