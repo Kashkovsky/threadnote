@@ -1,6 +1,6 @@
 import {Database} from 'bun:sqlite';
 import {it as effectIt} from '@effect/vitest';
-import {Deferred, Effect, Fiber, Option} from 'effect';
+import {Deferred, Effect, Exit, Fiber, Option} from 'effect';
 import fc from 'fast-check';
 import {afterEach, describe, expect, it} from 'vitest';
 import {
@@ -12,6 +12,7 @@ import {
 import {
   CODE_GRAPH_SCHEMA_VERSION,
   CodeGraphRuntimeReconnectRequiredError,
+  type CodeGraphEdge,
   type CodeGraphInventoryFile,
   type CodeGraphSnapshot,
   type CodeGraphSymbol,
@@ -122,6 +123,90 @@ describe('code graph persistent schema migration', () => {
       {numRuns: 10},
     );
   });
+
+  effectIt.effect('atomically upgrades revision 9 query indexes before serving adjacency', () =>
+    Effect.gen(function* () {
+      const fixture = yield* Effect.promise(migrationFixture);
+      const store = yield* CodeGraphStore;
+      const source = graphSymbol('revision-9-source');
+      const target = graphSymbol('revision-9-target');
+      const edge: CodeGraphEdge = {
+        confidence: 1,
+        evidencePath: fixture.file.path,
+        evidenceSpan: {column: 1, endColumn: 2, endLine: 1, line: 1},
+        id: 'revision-9-edge',
+        provenance: 'resolved',
+        relation: 'calls',
+        sourceId: source.id,
+        sourceName: source.name,
+        targetId: target.id,
+        targetName: target.name,
+      };
+      const ready = {
+        ...snapshot(fixture.identity, 'ready-before-revision-10-index-upgrade'),
+        edgeCount: 1,
+        symbolCount: 2,
+      };
+
+      yield* store.initialize(fixture.databasePath);
+      yield* store.withSession(
+        fixture.databasePath,
+        Effect.gen(function* () {
+          yield* store.prepareActivation(fixture.databasePath, [fixture.file]);
+          yield* store.stageActivationFacts(fixture.databasePath, [source, target], [edge]);
+          yield* store.activateStaged(fixture.databasePath, fixture.identity, ready);
+          yield* store.promote(fixture.databasePath, fixture.identity, ready.id);
+        }),
+      );
+      yield* Effect.sync(() => {
+        const database = new Database(fixture.databasePath, {strict: true});
+        try {
+          database.exec(`
+            DROP INDEX edges_target_resolved;
+            CREATE INDEX edges_target ON edges(snapshot_id, target_id, relation);
+            CREATE INDEX symbols_name ON symbols(snapshot_id, name);
+            CREATE INDEX symbols_resolution_scope ON symbols(snapshot_id, resolution_scope_id);
+            UPDATE schema_metadata
+            SET value = '9'
+            WHERE key = 'persistent_extension_schema_revision';
+          `);
+        } finally {
+          database.close(false);
+        }
+      });
+
+      const interrupted = yield* Effect.exit(
+        store.withSession(fixture.databasePath, store.initialize(fixture.databasePath), {
+          onPersistentSchemaMigrationPhase: phase =>
+            phase === 'migrated-query-indexes'
+              ? Effect.die(new Error('fault after revision 9 query-index migration'))
+              : Effect.void,
+        }),
+      );
+      expect(Exit.isFailure(interrupted)).toBe(true);
+      const rolledBack = yield* Effect.sync(() => readRevision9IndexState(fixture.databasePath));
+      expect(rolledBack).toMatchObject({
+        currentDefinition: undefined,
+        legacyNames: ['edges_target', 'symbols_name', 'symbols_resolution_scope'],
+        revision: '9',
+      });
+
+      const phases: CodeGraphPersistentSchemaMigrationPhase[] = [];
+      yield* store.withSession(fixture.databasePath, store.initialize(fixture.databasePath), {
+        onPersistentSchemaMigrationPhase: phase => Effect.sync(() => phases.push(phase)),
+      });
+      const incoming = yield* store.edgesForNodes(fixture.databasePath, ready.id, [target.id], 'incoming', 10, [
+        'resolved',
+      ]);
+      const migrated = yield* Effect.sync(() => readRevision9IndexState(fixture.databasePath));
+
+      expect(phases).toContain('migrated-query-indexes');
+      expect(migrated.legacyNames).toEqual([]);
+      expect(migrated.currentDefinition).toMatch(/WHERE\s+target_id\s+IS\s+NOT\s+NULL/iu);
+      expect(migrated.revision).toBe(String(CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION));
+      expect(incoming.map(candidate => candidate.id)).toEqual([edge.id]);
+    }).pipe(Effect.provide(ApplicationLayer)),
+  );
 
   it('keeps revision 4 ready lexical rows readable while enabling compact writes for later snapshots', async () => {
     const fixture = await migrationFixture();
@@ -858,7 +943,7 @@ describe('code graph persistent schema migration', () => {
         onPersistentSchemaMigrationPhase: phase => Effect.sync(() => phases.push(phase)),
       });
       const healed = yield* Effect.sync(() => readRemovedViewCleanupMigrationSurface(fixture.databasePath));
-      expect(phases).toEqual(['added-removed-view-cleanup', 'recorded-revision']);
+      expect(phases).toEqual(['added-removed-view-cleanup', 'migrated-query-indexes', 'recorded-revision']);
       expect(healed.revision).toEqual({value: String(CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION)});
       expect(healed.sequence).toEqual({value: '0'});
       expect(healed.queueRows).toEqual({count: 0});
@@ -916,7 +1001,7 @@ describe('code graph persistent schema migration', () => {
         onPersistentSchemaMigrationPhase: phase => Effect.sync(() => phases.push(phase)),
       });
       const healed = yield* Effect.sync(() => readRemovedViewCleanupMigrationSurface(fixture.databasePath));
-      expect(phases).toEqual(['added-removed-view-cleanup', 'recorded-revision']);
+      expect(phases).toEqual(['added-removed-view-cleanup', 'migrated-query-indexes', 'recorded-revision']);
       expect(healed.revision).toEqual({value: String(CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION)});
       expect(healed.sequence).toEqual({value: '0'});
       expect(healed.queueRows).toEqual({count: 0});
@@ -1611,6 +1696,37 @@ function removeRemovedViewCleanupRevision8(database: Database): void {
        WHERE key IN ('removed_view_cleanup_epoch_sequence', 'removed_view_cleanup_admission_cursor')`,
     )
     .run();
+}
+
+function readRevision9IndexState(databasePath: string): {
+  readonly currentDefinition: string | undefined;
+  readonly legacyNames: readonly string[];
+  readonly revision: string | undefined;
+} {
+  const database = new Database(databasePath, {readonly: true, strict: true});
+  try {
+    const legacy = database
+      .query(
+        `SELECT name FROM sqlite_master
+         WHERE type = 'index'
+           AND name IN ('edges_target', 'symbols_name', 'symbols_resolution_scope')
+         ORDER BY name`,
+      )
+      .all() as readonly {readonly name: string}[];
+    const current = database
+      .query("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'edges_target_resolved'")
+      .get() as {readonly sql: string} | null;
+    const revision = database
+      .query("SELECT value FROM schema_metadata WHERE key = 'persistent_extension_schema_revision'")
+      .get() as {readonly value: string} | null;
+    return {
+      currentDefinition: current?.sql,
+      legacyNames: legacy.map(index => index.name),
+      revision: revision?.value,
+    };
+  } finally {
+    database.close(false);
+  }
 }
 
 async function migrationFixture() {

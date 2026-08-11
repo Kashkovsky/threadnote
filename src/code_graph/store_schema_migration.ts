@@ -182,6 +182,26 @@ const ensureRemovedViewCleanupSchema = Effect.fn('codeGraph.ensureRemovedViewCle
   }
 });
 
+/** Keep query-required core indexes compatible across additive extension upgrades. */
+const ensureCurrentCodeGraphQueryIndexes = Effect.fn('codeGraph.ensureCurrentQueryIndexes')(function* (
+  sql: SqlClient.SqlClient,
+  replaceResolvedTarget = false,
+) {
+  // These projections are covered by the NOCASE name and visualization scope
+  // indexes. Drop them during the same revision transaction as the target-edge
+  // replacement so an upgraded database cannot advertise the new revision
+  // while retaining only the legacy query surface.
+  yield* sql.unsafe('DROP INDEX IF EXISTS symbols_name');
+  yield* sql.unsafe('DROP INDEX IF EXISTS symbols_resolution_scope');
+  yield* sql.unsafe('DROP INDEX IF EXISTS edges_target');
+  if (replaceResolvedTarget) yield* sql.unsafe('DROP INDEX IF EXISTS edges_target_resolved');
+  yield* sql.unsafe(`
+    CREATE INDEX IF NOT EXISTS edges_target_resolved
+    ON edges(snapshot_id, target_id, relation)
+    WHERE target_id IS NOT NULL
+  `);
+});
+
 const migratePersistentExtensionTables = Effect.fn('codeGraph.migratePersistentExtensionTables')(function* (
   sql: SqlClient.SqlClient,
 ) {
@@ -214,6 +234,13 @@ const migratePersistentExtensionTables = Effect.fn('codeGraph.migratePersistentE
           VALUES (${REMOVED_VIEW_CLEANUP_EPOCH_SEQUENCE_KEY}, '0')
         `;
         yield* observe?.('added-removed-view-cleanup') ?? Effect.void;
+      }
+      if (
+        Number.isSafeInteger(recordedRevision) &&
+        recordedRevision < CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION
+      ) {
+        yield* ensureCurrentCodeGraphQueryIndexes(sql, true);
+        yield* observe?.('migrated-query-indexes') ?? Effect.void;
       }
       if (recordedRevision === 6) {
         const ownerInstances = PERSISTENT_EXTENSION_TABLES.find(
@@ -290,6 +317,7 @@ const migratePersistentExtensionTables = Effect.fn('codeGraph.migratePersistentE
       if (
         (recordedRevision === 7 ||
           recordedRevision === 8 ||
+          recordedRevision === 9 ||
           recordedRevision === CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION) &&
         extensionSchemaCompatible
       ) {
@@ -390,4 +418,9 @@ const migratePersistentExtensionTables = Effect.fn('codeGraph.migratePersistentE
   );
 });
 
-export {preflightRemovedViewCleanupSchema, ensureRemovedViewCleanupSchema, migratePersistentExtensionTables};
+export {
+  preflightRemovedViewCleanupSchema,
+  ensureRemovedViewCleanupSchema,
+  ensureCurrentCodeGraphQueryIndexes,
+  migratePersistentExtensionTables,
+};

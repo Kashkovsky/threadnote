@@ -182,18 +182,21 @@ function collectFailureEvidence(root: unknown): FailureEvidence {
     }
     const code = safeField(value, 'code');
     const errno = safeField(value, 'errno');
+    const name = safeField(value, 'name');
     const tag = safeField(value, '_tag');
     const normalizedCode = stableToken(code);
     const normalizedErrno = stableToken(errno);
     if (normalizedCode) tokens.add(normalizedCode);
     if (normalizedErrno) tokens.add(normalizedErrno);
+    if (typeof name === 'string' && /^[A-Za-z][A-Za-z0-9]{0,79}$/u.test(name)) tags.add(name);
     if (typeof tag === 'string' && /^[A-Za-z][A-Za-z0-9]{0,79}$/u.test(tag)) tags.add(tag);
     if (typeof code === 'number' && Number.isSafeInteger(code) && code >= 0) {
       sqlitePrimaryCodes.add(code & 0xff);
     }
     if (typeof errno === 'number' && Number.isSafeInteger(errno)) {
-      if (normalizedCode?.startsWith('SQLITE_')) sqlitePrimaryCodes.add(Math.abs(errno) & 0xff);
-      else osErrnos.add(Math.abs(errno));
+      if (normalizedCode?.startsWith('SQLITE_') || name === 'SQLiteError') {
+        sqlitePrimaryCodes.add(Math.abs(errno) & 0xff);
+      } else osErrnos.add(Math.abs(errno));
     }
     for (const field of ['cause', 'reason'] as const) {
       enqueue(safeField(value, field), current.depth + 1);

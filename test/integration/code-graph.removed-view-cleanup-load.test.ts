@@ -212,7 +212,7 @@ describe('removed code graph view cleanup load and migration', () => {
             expect(sharedGrowthBytes).toBeLessThan(1_048_576);
             const after = authorityDigest(databasePath);
             expect(after).toEqual(before);
-            expect(phases).toEqual(['added-removed-view-cleanup', 'recorded-revision']);
+            expect(phases).toEqual(['added-removed-view-cleanup', 'migrated-query-indexes', 'recorded-revision']);
 
             const surface = readCleanupSurface(databasePath);
             expect(surface).toMatchObject({
