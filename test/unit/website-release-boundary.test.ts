@@ -241,10 +241,10 @@ describe('website and standalone release boundary', () => {
       const prepared = loadLatestMajorWebsiteReleases(repository);
       expect(prepared.map(release => release.version)).toEqual(['v4.1.1', 'v4.0.0']);
       expect(prepared[0]).toMatchObject({
-        publishedAt: '2026-08-11T11:00:00+00:00',
         releaseUrl: 'https://github.com/Kashkovsky/threadnote/releases/tag/v4.1.1',
         summary: 'Threadnote 4.1.1 is ready.',
       });
+      expect(new Date(prepared[0]!.publishedAt).toISOString()).toBe('2026-08-11T11:00:00.000Z');
 
       gitAt(
         '2026-08-12T12:00:00Z',
@@ -260,7 +260,7 @@ describe('website and standalone release boundary', () => {
       );
       const tagged = loadLatestMajorWebsiteReleases(repository);
       expect(tagged.map(release => release.version)).toEqual(['v4.1.1', 'v4.0.0']);
-      expect(tagged[0]?.publishedAt).toBe('2026-08-12T12:00:00+00:00');
+      expect(new Date(tagged[0]!.publishedAt).toISOString()).toBe('2026-08-12T12:00:00.000Z');
     } finally {
       await rm(repository, {force: true, recursive: true});
     }
