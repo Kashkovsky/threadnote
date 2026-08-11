@@ -62,6 +62,39 @@ describe('Effect file lock', () => {
     ),
   );
 
+  effectIt.effect('releases an atomically written token when acquisition is interrupted', () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const tokenWritten = yield* Deferred.make<void>();
+        const blockAfterWrite = yield* Deferred.make<void>();
+        const blockedFs = FileSystem.FileSystem.of({
+          ...fs,
+          writeFileString: (path, content, options) =>
+            fs.writeFileString(path, content, options).pipe(
+              Effect.tap(() => (path === lockPath ? Deferred.succeed(tokenWritten, undefined) : Effect.void)),
+              Effect.andThen(path === lockPath ? Deferred.await(blockAfterWrite) : Effect.void),
+            ),
+        });
+        const interruptedFiber = yield* withExclusiveFileLock(
+          blockedFs,
+          lockPath,
+          TEST_LOCK_OPTIONS,
+          Effect.never,
+        ).pipe(Effect.forkChild({startImmediately: true}));
+
+        yield* Deferred.await(tokenWritten);
+        const interruptCompleted = yield* Fiber.interrupt(interruptedFiber).pipe(Effect.as(true));
+        expect(interruptCompleted).toBe(true);
+        expect(yield* fs.exists(lockPath)).toBe(false);
+
+        const reacquired = yield* withExclusiveFileLock(fs, lockPath, TEST_LOCK_OPTIONS, Effect.succeed('reacquired'));
+        expect(reacquired).toBe('reacquired');
+        expect(yield* fs.exists(lockPath)).toBe(false);
+      }).pipe(Effect.provide(FILE_LOCK_TEST_LAYER)),
+    ),
+  );
+
   it('reports lock contention with a typed timeout', async () => {
     await mkdir(join(lockPath, '..'), {recursive: true});
     await writeFile(lockPath, `${process.pid}:live-owner\n`, {mode: 0o600});

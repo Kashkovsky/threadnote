@@ -76,7 +76,27 @@ export function withExclusiveFileLock<A, E, R>(
     const token = yield* fileLockToken(options.useCanonicalProcessStartIdentity === true);
     const startedAt = yield* Clock.currentTimeMillis;
     let contentionReported = false;
-    while (!(yield* tryAcquireFileLock(fs, lockPath, token, options))) {
+    const heartbeatIntervalMilliseconds =
+      options.heartbeatIntervalMilliseconds ?? Math.max(1, Math.floor(options.staleAfterMilliseconds / 3));
+    const protectedEffect = Effect.scoped(
+      Effect.gen(function* () {
+        yield* Effect.forkScoped(refreshFileLockLease(fs, lockPath, token, heartbeatIntervalMilliseconds));
+        yield* options.onAcquired?.(lockPath) ?? Effect.void;
+        return yield* effect.pipe(Effect.ensuring(options.onCompleted?.(lockPath) ?? Effect.void));
+      }),
+    );
+    for (;;) {
+      const attempted = yield* tryAcquireFileLock(fs, lockPath, token, options).pipe(
+        Effect.flatMap(acquired =>
+          acquired ? protectedEffect.pipe(Effect.map(Option.some)) : Effect.succeed(Option.none<A>()),
+        ),
+        // Register release around the acquisition itself. Interruption or an
+        // I/O failure after the atomic token write must not strand a lock owned
+        // by this still-live process. A failed contender cannot remove another
+        // owner's lock because release verifies the exact random token.
+        Effect.ensuring(releaseFileLock(fs, lockPath, token)),
+      );
+      if (Option.isSome(attempted)) return attempted.value;
       if (!contentionReported) {
         yield* options.onContention?.(lockPath) ?? Effect.void;
         contentionReported = true;
@@ -87,16 +107,6 @@ export function withExclusiveFileLock<A, E, R>(
       }
       yield* Effect.sleep(options.retryIntervalMilliseconds);
     }
-    const heartbeatIntervalMilliseconds =
-      options.heartbeatIntervalMilliseconds ?? Math.max(1, Math.floor(options.staleAfterMilliseconds / 3));
-    const protectedEffect = Effect.scoped(
-      Effect.gen(function* () {
-        yield* Effect.forkScoped(refreshFileLockLease(fs, lockPath, token, heartbeatIntervalMilliseconds));
-        yield* options.onAcquired?.(lockPath) ?? Effect.void;
-        return yield* effect.pipe(Effect.ensuring(options.onCompleted?.(lockPath) ?? Effect.void));
-      }),
-    );
-    return yield* protectedEffect.pipe(Effect.ensuring(releaseFileLock(fs, lockPath, token)));
   });
 }
 
