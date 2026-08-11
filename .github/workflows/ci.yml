@@ -80,6 +80,8 @@ jobs:
 
       - run: bun run lint
         if: needs.changes.outputs.code == 'true'
+        env:
+          LINT_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
 
       - run: bun run typecheck
         if: needs.changes.outputs.code == 'true'

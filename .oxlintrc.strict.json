@@ -1,0 +1,80 @@
+{
+  "$schema": "./node_modules/@effect/tsgo/oxlint-schema.json",
+  "extends": ["./.oxlintrc.json"],
+  "env": {
+    "builtin": true,
+    "browser": true
+  },
+  "globals": {
+    "Bun": "readonly",
+    "Buffer": "readonly",
+    "THREADNOTE_STANDALONE": "readonly",
+    "THREADNOTE_VERSION": "readonly",
+    "process": "readonly"
+  },
+  "rules": {
+    "effecttsgo/catch-unfailable-effect": "error",
+    "effecttsgo/class-self-mismatch": "error",
+    "effecttsgo/duplicate-package": "error",
+    "effecttsgo/effect-fn-iife": "error",
+    "effecttsgo/effect-fn-implicit-any": "error",
+    "effecttsgo/effect-gen-uses-adapter": "error",
+    "effecttsgo/effect-in-failure": "error",
+    "effecttsgo/effect-in-void-success": "error",
+    "effecttsgo/floating-effect": "error",
+    "effecttsgo/floating-effect-in-vitest": "error",
+    "effecttsgo/global-error-in-effect-catch": "error",
+    "effecttsgo/global-error-in-effect-failure": "error",
+    "effecttsgo/layer-merge-all-with-dependencies": "error",
+    "effecttsgo/lazy-effect": "error",
+    "effecttsgo/lazy-promise-in-effect-sync": "error",
+    "effecttsgo/leaking-requirements": "error",
+    "effecttsgo/missing-return-yield-star": "error",
+    "effecttsgo/missing-star-in-yield-effect-gen": "error",
+    "effecttsgo/multiple-effect-provide": "error",
+    "effecttsgo/node-builtin-import": "error",
+    "effecttsgo/non-object-effect-service-type": "error",
+    "effecttsgo/outdated-api": "error",
+    "effecttsgo/overridden-schema-constructor": "error",
+    "effecttsgo/prefer-unsafe-constructor": "error",
+    "effecttsgo/promise-in-effect-success": "error",
+    "effecttsgo/return-effect-in-gen": "error",
+    "effecttsgo/run-effect-inside-effect": "error",
+    "effecttsgo/schema-literal-non-finite": "error",
+    "effecttsgo/schema-opaque-instance-member": "error",
+    "effecttsgo/schema-sync-in-effect": "error",
+    "effecttsgo/scope-in-layer-effect": "error",
+    "effecttsgo/strict-effect-provide": "error",
+    "effecttsgo/try-catch-in-effect-gen": "error",
+    "effecttsgo/unknown-in-effect-catch": "error",
+    "effecttsgo/unsafe-effect-type-assertion": "error"
+  },
+  "overrides": [
+    {
+      "files": ["src/**/*.ts", "src/**/*.tsx"],
+      "rules": {
+        "threadnote/no-effect-runtime": "error",
+        "threadnote/no-node-runtime": "error"
+      }
+    },
+    {
+      "files": ["scripts/**/*.ts", "website/**/*.ts", "website/**/*.tsx"],
+      "rules": {
+        "threadnote/no-node-runtime": "error"
+      }
+    },
+    {
+      "files": ["src/standalone.ts"],
+      "rules": {
+        "effecttsgo/strict-effect-provide": "off",
+        "threadnote/no-effect-runtime": "off"
+      }
+    },
+    {
+      "files": ["test/**/*.test.ts", "test/**/*.spec.ts", "test/e2e/**/*.e2e.ts"],
+      "rules": {
+        "threadnote/no-effect-runtime-in-tests": "error"
+      }
+    }
+  ]
+}

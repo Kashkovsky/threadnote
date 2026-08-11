@@ -1,6 +1,11 @@
 {
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["typescript"],
+  "$schema": "./node_modules/@effect/tsgo/oxlint-schema.json",
+  "extends": ["./node_modules/@effect/tsgo/oxlint-presets/antipattern.json"],
+  "plugins": ["typescript", "effecttsgo"],
+  "jsPlugins": ["./config/lint/threadnote-plugin.js"],
+  "options": {
+    "typeAware": true
+  },
   "categories": {
     "correctness": "off"
   },
@@ -15,7 +20,14 @@
     "THREADNOTE_VERSION": "readonly",
     "process": "readonly"
   },
-  "ignorePatterns": ["build/**", "coverage/**", "dist/**", "node_modules/**", "out/**"],
+  "ignorePatterns": [
+    "build/**",
+    "coverage/**",
+    "dist/**",
+    "node_modules/**",
+    "out/**",
+    "test/evaluation/fixtures/**/repository/**"
+  ],
   "rules": {
     "constructor-super": "error",
     "for-direction": "error",
@@ -97,7 +109,27 @@
     "typescript/no-wrapper-object-types": "error",
     "typescript/prefer-as-const": "error",
     "typescript/prefer-namespace-keyword": "error",
-    "typescript/triple-slash-reference": "error"
+    "typescript/triple-slash-reference": "error",
+    "effecttsgo/class-self-mismatch": "warn",
+    "effecttsgo/duplicate-package": "warn",
+    "effecttsgo/effect-fn-implicit-any": "warn",
+    "effecttsgo/effect-in-failure": "warn",
+    "effecttsgo/effect-in-void-success": "warn",
+    "effecttsgo/floating-effect": "warn",
+    "effecttsgo/floating-effect-in-vitest": "warn",
+    "effecttsgo/lazy-promise-in-effect-sync": "warn",
+    "effecttsgo/missing-return-yield-star": "warn",
+    "effecttsgo/missing-star-in-yield-effect-gen": "warn",
+    "effecttsgo/node-builtin-import": "warn",
+    "effecttsgo/non-object-effect-service-type": "warn",
+    "effecttsgo/outdated-api": "warn",
+    "effecttsgo/overridden-schema-constructor": "warn",
+    "effecttsgo/promise-in-effect-success": "warn",
+    "effecttsgo/return-effect-in-gen": "warn",
+    "effecttsgo/run-effect-inside-effect": "warn",
+    "effecttsgo/schema-literal-non-finite": "warn",
+    "effecttsgo/schema-opaque-instance-member": "warn",
+    "effecttsgo/unsafe-effect-type-assertion": "warn"
   },
   "overrides": [
     {
@@ -142,6 +174,32 @@
       "files": ["src/manager_ui.tsx"],
       "env": {
         "browser": true
+      }
+    },
+    {
+      "files": ["src/**/*.ts", "src/**/*.tsx"],
+      "rules": {
+        "threadnote/no-effect-runtime": "warn",
+        "threadnote/no-node-runtime": "warn"
+      }
+    },
+    {
+      "files": ["scripts/**/*.ts", "website/**/*.ts", "website/**/*.tsx"],
+      "rules": {
+        "threadnote/no-node-runtime": "warn"
+      }
+    },
+    {
+      "files": ["src/standalone.ts"],
+      "rules": {
+        "effecttsgo/strict-effect-provide": "off",
+        "threadnote/no-effect-runtime": "off"
+      }
+    },
+    {
+      "files": ["test/**/*.test.ts", "test/**/*.spec.ts", "test/e2e/**/*.e2e.ts"],
+      "rules": {
+        "threadnote/no-effect-runtime-in-tests": "warn"
       }
     }
   ]

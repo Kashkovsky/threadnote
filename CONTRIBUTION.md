@@ -39,9 +39,12 @@ boundaries below when changing the CLI, lifecycle, manager, MCP, command executi
 
 Keep these invariants intact:
 
-- Each executable constructs one Effect, provides the application layer once, and runs it once at `main`.
-- Library workflows return and compose Effects. Do not introduce internal `runPromise`, `runFork`, or repeated runtime
-  boundaries.
+- The application constructs one Effect, provides the application layer once, and runs it once in `src/standalone.ts`.
+  The signal-transparent diagnostics worker is a mutually exclusive root execution path, not a nested runtime.
+- Independent build, benchmark, and evaluation scripts are separate executables and may run one top-level Effect. Their
+  workflows still compose Effects internally and must not start a nested runtime.
+- Library workflows return and compose Effects. Do not introduce internal `runSync`, `runPromise`, `runFork`,
+  `runCallback`, `ManagedRuntime.make`, or repeated runtime boundaries.
 - Expected failures belong in typed Effect error channels. Use defects for truly unexpected programmer errors.
 - Use the shared `fromPromise`/`fromSync` adapters in `src/effect/errors.ts` for compatibility helpers; do not add
   module-local Promise-lifting helpers or a generic Promise bridge in the CLI.
@@ -57,6 +60,8 @@ Keep these invariants intact:
   Application and build-script code must not import `node:*` modules.
 - Keep `effect`, `@effect/platform-bun`, `@effect/sql-sqlite-bun`, `@effect/vitest`, and
   `@effect/ai-openai-compat` pinned to the same exact beta.
+- Effectful tests use `it.effect`, `it.scoped`, or their property variants from `@effect/vitest`. Do not convert an
+  Effect to a Promise or run it synchronously inside a Vitest callback.
 
 Threadnote intentionally uses `effect/unstable/*`. API instability is acceptable, but an upgrade must update its
 adapters and compatibility tests together.
@@ -79,6 +84,11 @@ bun run test:smoke:self-contained
 ```
 
 `typecheck` intentionally uses TypeScript 7 for both source and test code.
+
+Lint adopts new Effect and platform boundaries incrementally: existing files report the new rules as warnings, while
+files changed in the working tree are checked as errors. Pull-request CI applies the error policy to the complete PR
+diff using the base commit supplied by GitHub. The initial rollout is anchored to the pre-policy source commit, so code
+that was already on this development line is not misclassified as new during the adoption PR.
 
 ### CI changed-path routing
 
