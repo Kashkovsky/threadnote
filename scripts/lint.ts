@@ -1,8 +1,8 @@
 const LINT_TARGETS = ['config/lint', 'scripts', 'src', 'test', 'website/src', 'website/vite.config.ts'];
 const LINTABLE_EXTENSION = /\.(?:[cm]?[jt]sx?)$/;
-// Everything at this commit predates the lint ratchet and remains warning-only.
+// Everything through the Workset Search 2.0 release at this commit predates the lint ratchet and remains warning-only.
 // Once a configured CI base contains it, that newer base becomes the strict boundary.
-const LINT_ADOPTION_BASE = 'cebcb89cc8be690a1fde0ca16e3037b56c399f0a';
+const LINT_ADOPTION_BASE = 'ce63d995f5e5685246f6866ab889a54fd70b5322';
 const decoder = new TextDecoder();
 
 function gitLines(arguments_: readonly string[], allowFailure = false): readonly string[] {

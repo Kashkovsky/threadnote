@@ -1,5 +1,6 @@
 import fc from 'fast-check';
 import {Effect} from 'effect';
+import {it as effectIt} from '@effect/vitest';
 import {describe, expect, it} from 'vitest';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
 import {
@@ -138,149 +139,148 @@ describe('code graph workset router', () => {
     );
   });
 
-  it('uses bounded indexed source requests and wraps lane keysets in an opaque stable continuation', async () => {
-    const published = generation(2);
-    let exactCalls = 0;
-    let lexicalCalls = 0;
-    const exactRequests: string[] = [];
-    const fairnessBounds: number[] = [];
-    const source: CodeGraphWorksetCatalogCandidateSourceV1 = {
-      mode: 'catalog-index',
-      readExactCandidates: request => {
-        exactCalls += 1;
-        exactRequests.push(request.after ?? '<start>');
-        fairnessBounds.push(request.maximumHitsPerMember);
-        return Effect.succeed(
-          exactCalls === 1
-            ? page('exact', published, [{catalogRank: 1, symbol: symbol(1, 0)}], 'exact-next')
-            : page('exact', published, []),
-        );
-      },
-      readGeneration: () => Effect.succeed(published),
-      readLexicalCandidates: () => {
-        lexicalCalls += 1;
-        return Effect.succeed(page('lexical', published, []));
-      },
-    };
-    const request = {
-      limits: {candidateLimitPerLane: 2},
-      query: 'symbol-1',
-      worksetName: published.worksetName,
-    } as const;
-    const first = await Effect.runPromise(routeCodeGraphWorksetCatalogCandidates(source, request));
+  effectIt.effect('uses bounded indexed source requests and wraps lane keysets in an opaque stable continuation', () =>
+    Effect.gen(function* () {
+      const published = generation(2);
+      let exactCalls = 0;
+      let lexicalCalls = 0;
+      const exactRequests: string[] = [];
+      const fairnessBounds: number[] = [];
+      const source: CodeGraphWorksetCatalogCandidateSourceV1 = {
+        mode: 'catalog-index',
+        readExactCandidates: request => {
+          exactCalls += 1;
+          exactRequests.push(request.after ?? '<start>');
+          fairnessBounds.push(request.maximumHitsPerMember);
+          return Effect.succeed(
+            exactCalls === 1
+              ? page('exact', published, [{catalogRank: 1, symbol: symbol(1, 0)}], 'exact-next')
+              : page('exact', published, []),
+          );
+        },
+        readGeneration: () => Effect.succeed(published),
+        readLexicalCandidates: () => {
+          lexicalCalls += 1;
+          return Effect.succeed(page('lexical', published, []));
+        },
+      };
+      const request = {
+        limits: {candidateLimitPerLane: 2},
+        query: 'symbol-1',
+        worksetName: published.worksetName,
+      } as const;
+      const first = yield* routeCodeGraphWorksetCatalogCandidates(source, request);
 
-    expect(first.continuation).toMatch(/^cgwr_[A-Za-z0-9_-]+$/u);
-    expect(first.continuation).not.toContain('exact-next');
-    expect(first.retrieval).toMatchObject({candidateLimitPerLane: 2, exactHits: 1, lexicalHits: 0});
-    expect(first.coverage).toEqual({
-      consideredMemberCount: 2,
-      eligibleMemberCount: 2,
-      source: 'catalog-index',
-      state: 'complete',
-    });
+      expect(first.continuation).toMatch(/^cgwr_[A-Za-z0-9_-]+$/u);
+      expect(first.continuation).not.toContain('exact-next');
+      expect(first.retrieval).toMatchObject({candidateLimitPerLane: 2, exactHits: 1, lexicalHits: 0});
+      expect(first.coverage).toEqual({
+        consideredMemberCount: 2,
+        eligibleMemberCount: 2,
+        source: 'catalog-index',
+        state: 'complete',
+      });
 
-    const second = await Effect.runPromise(
-      routeCodeGraphWorksetCatalogCandidates(source, {...request, cursor: first.continuation}),
-    );
-    expect(second.continuation).toBeUndefined();
-    expect(exactRequests).toEqual(['<start>', 'exact-next']);
-    expect(fairnessBounds).toEqual([2, 2]);
-    expect(exactCalls).toBe(2);
-    expect(lexicalCalls).toBe(1);
+      const second = yield* routeCodeGraphWorksetCatalogCandidates(source, {
+        ...request,
+        cursor: first.continuation,
+      });
+      expect(second.continuation).toBeUndefined();
+      expect(exactRequests).toEqual(['<start>', 'exact-next']);
+      expect(fairnessBounds).toEqual([2, 2]);
+      expect(exactCalls).toBe(2);
+      expect(lexicalCalls).toBe(1);
 
-    await expect(
-      Effect.runPromise(
-        routeCodeGraphWorksetCatalogCandidates(source, {
-          ...request,
-          cursor: first.continuation,
-          query: 'different query',
-        }),
-      ),
-    ).rejects.toMatchObject({reason: 'stale-cursor'} satisfies Partial<CodeGraphWorksetRouterError>);
+      const queryError = yield* routeCodeGraphWorksetCatalogCandidates(source, {
+        ...request,
+        cursor: first.continuation,
+        query: 'different query',
+      }).pipe(Effect.flip);
+      expect(queryError).toMatchObject({reason: 'stale-cursor'} satisfies Partial<CodeGraphWorksetRouterError>);
 
-    await expect(
-      Effect.runPromise(
-        routeCodeGraphWorksetCatalogCandidates(source, {
-          ...request,
-          cursor: first.continuation,
-          limits: {candidateLimitPerLane: 3},
-        }),
-      ),
-    ).rejects.toMatchObject({reason: 'stale-cursor'} satisfies Partial<CodeGraphWorksetRouterError>);
-  });
+      const limitError = yield* routeCodeGraphWorksetCatalogCandidates(source, {
+        ...request,
+        cursor: first.continuation,
+        limits: {candidateLimitPerLane: 3},
+      }).pipe(Effect.flip);
+      expect(limitError).toMatchObject({reason: 'stale-cursor'} satisfies Partial<CodeGraphWorksetRouterError>);
+    }),
+  );
 
-  it('allows explicit partial coverage only from an in-memory test source', async () => {
-    const published = generation(2);
-    let lexicalCalls = 0;
-    const partialPage = (lane: 'exact' | 'lexical') =>
-      page(lane, published, [], undefined, {consideredMemberCount: 1, eligibleMemberCount: 2, state: 'partial'});
-    const inMemory: CodeGraphWorksetCatalogCandidateSourceV1 = {
-      mode: 'in-memory-test',
-      readExactCandidates: () => Effect.succeed(partialPage('exact')),
-      readGeneration: () => Effect.succeed(published),
-      readLexicalCandidates: () => {
-        lexicalCalls += 1;
-        return Effect.succeed(
-          lexicalCalls === 1
-            ? page('lexical', published, [{catalogRank: 1, symbol: symbol(1, 0)}], 'partial-next', {
-                consideredMemberCount: 1,
-                eligibleMemberCount: 2,
-                state: 'partial',
-              })
-            : partialPage('lexical'),
-        );
-      },
-    };
-    const request = {query: 'service', worksetName: published.worksetName};
+  effectIt.effect('allows explicit partial coverage only from an in-memory test source', () =>
+    Effect.gen(function* () {
+      const published = generation(2);
+      let lexicalCalls = 0;
+      const partialPage = (lane: 'exact' | 'lexical') =>
+        page(lane, published, [], undefined, {
+          consideredMemberCount: 1,
+          eligibleMemberCount: 2,
+          state: 'partial',
+        });
+      const inMemory: CodeGraphWorksetCatalogCandidateSourceV1 = {
+        mode: 'in-memory-test',
+        readExactCandidates: () => Effect.succeed(partialPage('exact')),
+        readGeneration: () => Effect.succeed(published),
+        readLexicalCandidates: () => {
+          lexicalCalls += 1;
+          return Effect.succeed(
+            lexicalCalls === 1
+              ? page('lexical', published, [{catalogRank: 1, symbol: symbol(1, 0)}], 'partial-next', {
+                  consideredMemberCount: 1,
+                  eligibleMemberCount: 2,
+                  state: 'partial',
+                })
+              : partialPage('lexical'),
+          );
+        },
+      };
+      const request = {query: 'service', worksetName: published.worksetName};
 
-    const first = await Effect.runPromise(routeCodeGraphWorksetCatalogCandidates(inMemory, request));
-    expect(first).toMatchObject({
-      coverage: {consideredMemberCount: 1, source: 'in-memory-test', state: 'partial'},
-      uncertainty: {state: 'partial'},
-    });
-    expect(first.continuation).toBeDefined();
-    expect(
-      await Effect.runPromise(
-        routeCodeGraphWorksetCatalogCandidates(inMemory, {...request, cursor: first.continuation}),
-      ),
-    ).toMatchObject({
-      coverage: {consideredMemberCount: 1, source: 'in-memory-test', state: 'partial'},
-      uncertainty: {state: 'partial'},
-    });
+      const first = yield* routeCodeGraphWorksetCatalogCandidates(inMemory, request);
+      expect(first).toMatchObject({
+        coverage: {consideredMemberCount: 1, source: 'in-memory-test', state: 'partial'},
+        uncertainty: {state: 'partial'},
+      });
+      expect(first.continuation).toBeDefined();
+      expect(
+        yield* routeCodeGraphWorksetCatalogCandidates(inMemory, {...request, cursor: first.continuation}),
+      ).toMatchObject({
+        coverage: {consideredMemberCount: 1, source: 'in-memory-test', state: 'partial'},
+        uncertainty: {state: 'partial'},
+      });
 
-    const production = {
-      ...inMemory,
-      mode: 'catalog-index' as const,
-      readLexicalCandidates: () => Effect.succeed(partialPage('lexical')),
-    };
-    await expect(Effect.runPromise(routeCodeGraphWorksetCatalogCandidates(production, request))).rejects.toMatchObject({
-      reason: 'source-contract',
-    } satisfies Partial<CodeGraphWorksetRouterError>);
-  });
+      const production = {
+        ...inMemory,
+        mode: 'catalog-index' as const,
+        readLexicalCandidates: () => Effect.succeed(partialPage('lexical')),
+      };
+      const error = yield* routeCodeGraphWorksetCatalogCandidates(production, request).pipe(Effect.flip);
+      expect(error).toMatchObject({reason: 'source-contract'} satisfies Partial<CodeGraphWorksetRouterError>);
+    }),
+  );
 
-  it('rejects source pages that exceed the requested candidate bound', async () => {
-    const published = generation(3);
-    const oversized = Array.from({length: 3}, (_, index) => ({
-      catalogRank: index + 1,
-      symbol: symbol(index + 1, index),
-    }));
-    const source: CodeGraphWorksetCatalogCandidateSourceV1 = {
-      mode: 'catalog-index',
-      readExactCandidates: () => Effect.succeed(page('exact', published, [])),
-      readGeneration: () => Effect.succeed(published),
-      readLexicalCandidates: () => Effect.succeed(page('lexical', published, oversized)),
-    };
+  effectIt.effect('rejects source pages that exceed the requested candidate bound', () =>
+    Effect.gen(function* () {
+      const published = generation(3);
+      const oversized = Array.from({length: 3}, (_, index) => ({
+        catalogRank: index + 1,
+        symbol: symbol(index + 1, index),
+      }));
+      const source: CodeGraphWorksetCatalogCandidateSourceV1 = {
+        mode: 'catalog-index',
+        readExactCandidates: () => Effect.succeed(page('exact', published, [])),
+        readGeneration: () => Effect.succeed(published),
+        readLexicalCandidates: () => Effect.succeed(page('lexical', published, oversized)),
+      };
 
-    await expect(
-      Effect.runPromise(
-        routeCodeGraphWorksetCatalogCandidates(source, {
-          limits: {candidateLimitPerLane: 2},
-          query: 'service',
-          worksetName: published.worksetName,
-        }),
-      ),
-    ).rejects.toMatchObject({reason: 'source-contract'} satisfies Partial<CodeGraphWorksetRouterError>);
-  });
+      const error = yield* routeCodeGraphWorksetCatalogCandidates(source, {
+        limits: {candidateLimitPerLane: 2},
+        query: 'service',
+        worksetName: published.worksetName,
+      }).pipe(Effect.flip);
+      expect(error).toMatchObject({reason: 'source-contract'} satisfies Partial<CodeGraphWorksetRouterError>);
+    }),
+  );
 
   it('keeps public hard bounds conservative', () => {
     expect(CODE_GRAPH_WORKSET_ROUTER_LIMITS.candidateLimitPerLaneDefault).toBeLessThanOrEqual(

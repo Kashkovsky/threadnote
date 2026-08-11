@@ -1,11 +1,11 @@
-import {execFile} from 'node:child_process';
-import {createHash} from 'node:crypto';
-import {access, appendFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile} from 'node:fs/promises';
-import {tmpdir} from 'node:os';
-import {dirname, join, relative, resolve} from 'node:path';
-import {promisify} from 'node:util';
+import {BunFileSystem, BunPath} from '@effect/platform-bun';
+import {Effect, FileSystem, Layer, ManagedRuntime, Path} from 'effect';
+import {sha256HexSync} from '../../src/crypto/sha256.js';
 
-const execFileAsync = promisify(execFile);
+const platformRuntime = ManagedRuntime.make(Layer.merge(BunFileSystem.layer, BunPath.layer));
+const fileSystem = platformRuntime.runSync(FileSystem.FileSystem);
+const pathService = platformRuntime.runSync(Path.Path);
+const {dirname, join, relative, resolve} = pathService;
 
 export const CODE_GRAPH_WORKSET_FIXTURE_GENERATOR_VERSION = 1 as const;
 /** Default correctness/evaluation matrix from the product plan. */
@@ -558,7 +558,7 @@ export async function prepareCodeGraphWorksetFixture(
   const plan = createCodeGraphWorksetFixturePlan(options.size, options);
   const root = options.root
     ? resolve(options.root)
-    : await mkdtemp(join(tmpdir(), `threadnote-code-graph-workset-${options.size}-`));
+    : await makeTempDirectory(`threadnote-code-graph-workset-${options.size}-`);
   try {
     return await materializeCodeGraphWorksetFixture(root, plan, {concurrency: options.concurrency});
   } catch (error) {
@@ -1200,7 +1200,7 @@ function assertFixtureState(state: string): asserts state is CodeGraphWorksetFix
 }
 
 function digest(value: string): string {
-  return createHash('sha256').update(value).digest('hex');
+  return sha256HexSync(value);
 }
 
 function canonicalJson(value: unknown): string {
@@ -1248,4 +1248,83 @@ async function fixtureCheckout(cwd: string, args: readonly string[]): Promise<vo
     maxBuffer: 16 * 1_048_576,
     windowsHide: true,
   });
+}
+
+interface FixtureCommandOptions {
+  readonly cwd?: string;
+  readonly encoding?: string;
+  readonly env?: NodeJS.ProcessEnv;
+  readonly maxBuffer?: number;
+  readonly windowsHide?: boolean;
+}
+
+async function execFileAsync(
+  executable: string,
+  args: readonly string[],
+  options: FixtureCommandOptions = {},
+): Promise<{readonly stderr: string; readonly stdout: string}> {
+  const subprocess = Bun.spawn({
+    cmd: [executable, ...args],
+    ...(options.cwd === undefined ? {} : {cwd: options.cwd}),
+    ...(options.env === undefined ? {} : {env: options.env}),
+    stderr: 'pipe',
+    stdout: 'pipe',
+  });
+  const [exitCode, stderr, stdout] = await Promise.all([
+    subprocess.exited,
+    new Response(subprocess.stderr).text(),
+    new Response(subprocess.stdout).text(),
+  ]);
+  const maximumOutputBytes = options.maxBuffer;
+  if (
+    maximumOutputBytes !== undefined &&
+    Buffer.byteLength(stderr, 'utf8') + Buffer.byteLength(stdout, 'utf8') > maximumOutputBytes
+  ) {
+    throw new Error(`Command output exceeded ${maximumOutputBytes} bytes: ${executable}.`);
+  }
+  if (exitCode !== 0) {
+    throw new Error(stderr.trim() || `${executable} exited with status ${exitCode}.`);
+  }
+  return {stderr, stdout};
+}
+
+function access(path: string): Promise<void> {
+  return runFileSystem(fileSystem.access(path));
+}
+
+function appendFile(path: string, data: string, _encoding?: string): Promise<void> {
+  return runFileSystem(fileSystem.writeFileString(path, data, {flag: 'a'}));
+}
+
+function makeTempDirectory(prefix: string): Promise<string> {
+  return runFileSystem(fileSystem.makeTempDirectory({prefix}));
+}
+
+function mkdir(path: string, options: {readonly mode?: number; readonly recursive?: boolean} = {}): Promise<void> {
+  return runFileSystem(fileSystem.makeDirectory(path, options));
+}
+
+function readFile(path: string, encoding?: string): Promise<string> {
+  return runFileSystem(fileSystem.readFileString(path, encoding));
+}
+
+function readdir(path: string): Promise<readonly string[]> {
+  return runFileSystem(fileSystem.readDirectory(path));
+}
+
+function rm(path: string, options: {readonly force?: boolean; readonly recursive?: boolean} = {}): Promise<void> {
+  return runFileSystem(fileSystem.remove(path, options));
+}
+
+function writeFile(
+  path: string,
+  data: string,
+  options: string | {readonly encoding?: string; readonly mode?: number} = {},
+): Promise<void> {
+  const mode = typeof options === 'string' ? undefined : options.mode;
+  return runFileSystem(fileSystem.writeFileString(path, data, mode === undefined ? undefined : {mode}));
+}
+
+function runFileSystem<A, E>(effect: Effect.Effect<A, E>): Promise<A> {
+  return Effect.runPromise(effect);
 }
