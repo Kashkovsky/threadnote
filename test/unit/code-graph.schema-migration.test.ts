@@ -163,6 +163,7 @@ describe('code graph persistent schema migration', () => {
         try {
           database.exec(`
             DROP INDEX edges_target_resolved;
+            DROP INDEX edges_evidence_path;
             CREATE INDEX edges_target ON edges(snapshot_id, target_id, relation);
             CREATE INDEX symbols_name ON symbols(snapshot_id, name);
             CREATE INDEX symbols_resolution_scope ON symbols(snapshot_id, resolution_scope_id);
@@ -187,6 +188,7 @@ describe('code graph persistent schema migration', () => {
       const rolledBack = yield* Effect.sync(() => readRevision9IndexState(fixture.databasePath));
       expect(rolledBack).toMatchObject({
         currentDefinition: undefined,
+        evidenceDefinition: undefined,
         legacyNames: ['edges_target', 'symbols_name', 'symbols_resolution_scope'],
         revision: '9',
       });
@@ -203,6 +205,7 @@ describe('code graph persistent schema migration', () => {
       expect(phases).toContain('migrated-query-indexes');
       expect(migrated.legacyNames).toEqual([]);
       expect(migrated.currentDefinition).toMatch(/WHERE\s+target_id\s+IS\s+NOT\s+NULL/iu);
+      expect(migrated.evidenceDefinition).toMatch(/edges\s*\(snapshot_id,\s*evidence_path\)/iu);
       expect(migrated.revision).toBe(String(CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION));
       expect(incoming.map(candidate => candidate.id)).toEqual([edge.id]);
 
@@ -1716,6 +1719,7 @@ function removeRemovedViewCleanupRevision8(database: Database): void {
 function readRevision9IndexState(databasePath: string): {
   readonly currentDefinition: string | undefined;
   readonly currentRootPage: number | undefined;
+  readonly evidenceDefinition: string | undefined;
   readonly legacyNames: readonly string[];
   readonly revision: string | undefined;
 } {
@@ -1732,12 +1736,16 @@ function readRevision9IndexState(databasePath: string): {
     const current = database
       .query("SELECT rootpage, sql FROM sqlite_master WHERE type = 'index' AND name = 'edges_target_resolved'")
       .get() as {readonly rootpage: number; readonly sql: string} | null;
+    const evidence = database
+      .query("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'edges_evidence_path'")
+      .get() as {readonly sql: string} | null;
     const revision = database
       .query("SELECT value FROM schema_metadata WHERE key = 'persistent_extension_schema_revision'")
       .get() as {readonly value: string} | null;
     return {
       currentDefinition: current?.sql,
       currentRootPage: current?.rootpage,
+      evidenceDefinition: evidence?.sql,
       legacyNames: legacy.map(index => index.name),
       revision: revision?.value,
     };

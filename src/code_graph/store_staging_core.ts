@@ -227,6 +227,8 @@ const reclaimRetiredSnapshotPage = Effect.fn('codeGraph.reclaimRetiredSnapshotPa
 
 const prepareActivationTables = Effect.fn('codeGraph.prepareActivationTables')(function* (sql: SqlClient.SqlClient) {
   yield* sql.unsafe('PRAGMA temp_store = FILE');
+  yield* sql.unsafe('PRAGMA temp.cache_size = -64');
+  yield* sql.unsafe('PRAGMA temp.cache_spill = 16');
   yield* sql.unsafe(`
     CREATE TEMP TABLE IF NOT EXISTS activation_state (
       key TEXT PRIMARY KEY,

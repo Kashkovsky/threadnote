@@ -519,6 +519,7 @@ const initializeSchema = Effect.fn('codeGraph.initializeSchema')(function* (sql:
     'CREATE INDEX IF NOT EXISTS symbols_export_order ON symbols(snapshot_id, path, qualified_name, id)',
   );
   yield* sql.unsafe('CREATE INDEX IF NOT EXISTS edges_source ON edges(snapshot_id, source_id, relation)');
+  yield* sql.unsafe('CREATE INDEX IF NOT EXISTS edges_evidence_path ON edges(snapshot_id, evidence_path)');
   yield* sql.unsafe(
     'CREATE INDEX IF NOT EXISTS edges_export_order ON edges(snapshot_id, source_name, relation, target_name, id)',
   );

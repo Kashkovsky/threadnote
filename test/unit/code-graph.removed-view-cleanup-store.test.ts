@@ -27,7 +27,7 @@ const SNAPSHOT_ID = 'cgsn_1111111111111111111111111111111111111111';
 const NEW_SNAPSHOT_ID = 'cgsn_2222222222222222222222222222222222222222';
 
 describe('removed code graph view cleanup queue', () => {
-  effectIt.effect('upgrades an exact revision 8 cleanup authority to revision 10 without retiring ready views', () =>
+  effectIt.effect('upgrades an exact revision 8 cleanup authority to revision 11 without retiring ready views', () =>
     withFixture('threadnote-removed-cleanup-r8-r9-', ({databasePath}) =>
       Effect.gen(function* () {
         const store = yield* CodeGraphStore;
@@ -80,7 +80,7 @@ describe('removed code graph view cleanup queue', () => {
             {name: 'snapshot_component_edge_aggregates'},
           ],
           ready: {state: 'ready'},
-          revision: {value: '10'},
+          revision: {value: '11'},
         });
       }),
     ).pipe(Effect.provide(ApplicationLayer)),
@@ -133,8 +133,8 @@ describe('removed code graph view cleanup queue', () => {
           }
         });
 
-        expect(CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION).toBe(10);
-        expect(observed.revision).toEqual({value: '10'});
+        expect(CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION).toBe(11);
+        expect(observed.revision).toEqual({value: '11'});
         expect(observed.ready).toEqual({state: 'ready'});
         expect(observed.building).toEqual({state: 'building'});
         expect(observed.active).toEqual([{snapshot_id: SNAPSHOT_ID, worktree_id: WORKTREE_ID}]);
