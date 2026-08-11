@@ -205,6 +205,21 @@ describe('code graph persistent schema migration', () => {
       expect(migrated.currentDefinition).toMatch(/WHERE\s+target_id\s+IS\s+NOT\s+NULL/iu);
       expect(migrated.revision).toBe(String(CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION));
       expect(incoming.map(candidate => candidate.id)).toEqual([edge.id]);
+
+      yield* Effect.sync(() => {
+        const database = new Database(fixture.databasePath, {strict: true});
+        try {
+          database
+            .query("UPDATE schema_metadata SET value = '9' WHERE key = 'persistent_extension_schema_revision'")
+            .run();
+        } finally {
+          database.close(false);
+        }
+      });
+      yield* store.initialize(fixture.databasePath);
+      const preparedRetry = yield* Effect.sync(() => readRevision9IndexState(fixture.databasePath));
+      expect(preparedRetry.currentRootPage).toBe(migrated.currentRootPage);
+      expect(preparedRetry.revision).toBe(String(CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION));
     }).pipe(Effect.provide(ApplicationLayer)),
   );
 
@@ -1700,6 +1715,7 @@ function removeRemovedViewCleanupRevision8(database: Database): void {
 
 function readRevision9IndexState(databasePath: string): {
   readonly currentDefinition: string | undefined;
+  readonly currentRootPage: number | undefined;
   readonly legacyNames: readonly string[];
   readonly revision: string | undefined;
 } {
@@ -1714,13 +1730,14 @@ function readRevision9IndexState(databasePath: string): {
       )
       .all() as readonly {readonly name: string}[];
     const current = database
-      .query("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'edges_target_resolved'")
-      .get() as {readonly sql: string} | null;
+      .query("SELECT rootpage, sql FROM sqlite_master WHERE type = 'index' AND name = 'edges_target_resolved'")
+      .get() as {readonly rootpage: number; readonly sql: string} | null;
     const revision = database
       .query("SELECT value FROM schema_metadata WHERE key = 'persistent_extension_schema_revision'")
       .get() as {readonly value: string} | null;
     return {
       currentDefinition: current?.sql,
+      currentRootPage: current?.rootpage,
       legacyNames: legacy.map(index => index.name),
       revision: revision?.value,
     };
