@@ -223,6 +223,13 @@ describe('code graph query budgets', () => {
             threadnoteHome: fixtureRoot.home,
           });
           expect(yield* Ref.get(requests)).toEqual([]);
+          yield* query.status(fixtureRoot.home, fixtureRoot.repository, {
+            observeWorktree: false,
+            requestMaintenance: false,
+          });
+          expect(yield* Ref.get(requests)).toEqual([]);
+          yield* query.attachSharedReadySnapshot(fixtureRoot.home, identity, status, {requestMaintenance: false});
+          expect(yield* Ref.get(requests)).toEqual([]);
         }).pipe(Effect.provide(layer));
       }),
     ),

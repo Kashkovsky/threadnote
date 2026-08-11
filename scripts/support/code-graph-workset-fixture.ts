@@ -919,7 +919,18 @@ function fixtureQueries(
     sizes: allSizes,
     text: 'quantumMarzipanLeaseCoordinator',
   });
-  return queries;
+  const minimumMembersByQuery = new Map<string, number>([
+    ['package-session-contract', 2],
+    ['graphql-tenant-session', 3],
+    ['protobuf-session-directory', 4],
+    ['openapi-tenant-session', 5],
+    ['message-tenant-session-changed', 6],
+    ['imports-session-contract', 2],
+    ['callers-session-resolver', 2],
+    ['impact-session-contract', 2],
+    ['path-bootstrap-to-session', 2],
+  ]);
+  return queries.filter(query => repositories.length >= (minimumMembersByQuery.get(query.id) ?? 1));
 }
 
 function uniqueEdges(

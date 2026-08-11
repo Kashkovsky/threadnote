@@ -149,6 +149,7 @@ export const measureCodeGraphWorksetQuery = Effect.fn('codeGraphWorksetHarness.m
     edgeLimit: CODE_GRAPH_WORKSET_DEFAULT_EDGE_LIMIT,
     nodeLimit: CODE_GRAPH_WORKSET_DEFAULT_NODE_LIMIT,
     query,
+    requestMaintenance: false,
   });
   const response = codeGraphWorksetMcpResponse(result);
   const finished = yield* Clock.currentTimeNanos;

@@ -11,6 +11,8 @@ export const CODE_GRAPH_WORKSET_MAX_EDGES = 40;
 
 export interface CodeGraphWorksetQueryOptions extends Omit<CodeGraphQueryOptions, 'cwd' | 'operation'> {
   readonly query: string;
+  /** @internal Evaluation harnesses can prevent detached maintenance from outliving an owned temporary home. */
+  readonly requestMaintenance?: boolean;
 }
 
 export type CodeGraphWorksetMember =
@@ -70,9 +72,13 @@ export const inspectCodeGraphWorkset = Effect.fn('codeGraph.inspectWorkset')(fun
         if (!(yield* fs.exists(cwd))) {
           return unavailable(project.name, 'missing-path');
         }
-        let status = yield* service.status(config.agentContextHome, cwd);
+        let status = yield* service.status(config.agentContextHome, cwd, {
+          requestMaintenance: options.requestMaintenance,
+        });
         if (status.stale || !status.readySnapshot) {
-          status = yield* service.attachSharedReadySnapshot(config.agentContextHome, status.identity, status);
+          status = yield* service.attachSharedReadySnapshot(config.agentContextHome, status.identity, status, {
+            requestMaintenance: options.requestMaintenance,
+          });
         }
         if (!status.readySnapshot) {
           return unavailable(project.name, 'no-ready-snapshot');
@@ -84,6 +90,7 @@ export const inspectCodeGraphWorkset = Effect.fn('codeGraph.inspectWorkset')(fun
           nodeLimit: nodeBudgets[index]!,
           operation: 'query',
           refresh: false,
+          requestMaintenance: options.requestMaintenance,
           statusObservation: observationFromCodeGraphStatus(status),
           strictFreshness: false,
           threadnoteHome: config.agentContextHome,

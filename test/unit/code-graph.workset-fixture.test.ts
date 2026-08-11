@@ -52,6 +52,11 @@ describe('deterministic code graph workset fixtures', () => {
     );
     expect(createCodeGraphWorksetFixturePlan(50).workset.name).toBe('code-graph-workset-50');
     expect(full.worksets.map(workset => workset.size)).toContain(50);
+    for (const size of [1, 8] as const) {
+      expect(createCodeGraphWorksetFixturePlan(size).queries.map(query => query.id)).toEqual(
+        full.queries.filter(query => query.sizes.includes(size)).map(query => query.id),
+      );
+    }
   });
 
   it('includes authoritative contracts, consumers, distractors, and an unanswerable query', () => {

@@ -65,6 +65,8 @@ export interface CodeGraphStatusOptions {
   /** @internal Run after the owned identity resolution and before reading graph status. */
   readonly afterIdentityObserved?: (identity: RepositoryIdentity) => Effect.Effect<void, unknown>;
   readonly observeWorktree?: boolean;
+  /** @internal Evidence harnesses can isolate status work from the detached maintenance lane. */
+  readonly requestMaintenance?: boolean;
 }
 
 export interface CodeGraphQueryInterlock {
@@ -97,6 +99,8 @@ export interface CodeGraphSharedReadyAttachInterlock {
     path: string,
     boundary: CodeGraphDirectPersistentCapacityBoundary,
   ) => Effect.Effect<number | undefined, unknown>;
+  /** @internal Evidence harnesses can isolate shared-ready attachment from detached maintenance. */
+  readonly requestMaintenance?: boolean;
 }
 
 const CODE_GRAPH_STATUS_OBSERVATION = Symbol('threadnote/codeGraph/statusObservation');
@@ -372,12 +376,14 @@ export class CodeGraphQueryService extends Context.Service<
           );
         });
       return CodeGraphQueryService.of({
-        attachSharedReadySnapshot: (threadnoteHome, identity, observedStatus, interlock) =>
-          withRepositoryServices(
-            attachSharedReadySnapshot(threadnoteHome, identity, observedStatus, interlock).pipe(
-              Effect.tap(status => requestMaintenance(threadnoteHome, status.identity)),
-            ),
-          ),
+        attachSharedReadySnapshot: (threadnoteHome, identity, observedStatus, interlock) => {
+          const attach = attachSharedReadySnapshot(threadnoteHome, identity, observedStatus, interlock);
+          return withRepositoryServices(
+            interlock?.requestMaintenance === false
+              ? attach
+              : attach.pipe(Effect.tap(status => requestMaintenance(threadnoteHome, status.identity))),
+          );
+        },
         inspect: options =>
           withRepositoryServices(
             Effect.gen(function* () {
@@ -515,16 +521,20 @@ export class CodeGraphQueryService extends Context.Service<
               const {identity} = yield* resolveAndRecordCodeGraphLocalAssociation(threadnoteHome, cwd);
               yield* options?.afterIdentityObserved?.(identity) ?? Effect.void;
               const status = yield* statusForIdentity(threadnoteHome, identity, options, true);
-              yield* requestMaintenance(threadnoteHome, status.identity);
+              if (options?.requestMaintenance !== false) {
+                yield* requestMaintenance(threadnoteHome, status.identity);
+              }
               return status;
             }),
           ),
-        statusForIdentity: (threadnoteHome, identity, options) =>
-          withRepositoryServices(
-            statusForIdentity(threadnoteHome, identity, options).pipe(
-              Effect.tap(status => requestMaintenance(threadnoteHome, status.identity)),
-            ),
-          ),
+        statusForIdentity: (threadnoteHome, identity, options) => {
+          const status = statusForIdentity(threadnoteHome, identity, options);
+          return withRepositoryServices(
+            options?.requestMaintenance === false
+              ? status
+              : status.pipe(Effect.tap(value => requestMaintenance(threadnoteHome, value.identity))),
+          );
+        },
       });
     }),
   );
