@@ -2934,9 +2934,10 @@ describe('native code graph lifecycle', () => {
   it('coalesces independent operating-system processes into one inventory pass', async () => {
     const root = createFixtureRepository();
     const home = join(root, '.threadnote-test-home');
-    const gate = join(root, '.release-code-graph-owner');
-    const firstMarker = join(root, '.first-code-graph-process');
-    const secondMarker = join(root, '.second-code-graph-process');
+    const controlRoot = temporaryDirectory('threadnote-code-graph-process-control-');
+    const gate = join(controlRoot, 'release-code-graph-owner');
+    const firstMarker = join(controlRoot, 'first-code-graph-process');
+    const secondMarker = join(controlRoot, 'second-code-graph-process');
     const first = startCodeGraphIndexProcess(root, home, gate, firstMarker);
     let second: ReturnType<typeof startCodeGraphIndexProcess> | undefined;
     try {
