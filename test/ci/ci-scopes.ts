@@ -125,6 +125,9 @@ function scopesForWorkflow(path: string): CiScopes {
 }
 
 function scopesForScript(path: string): CiScopes {
+  if (path === 'scripts/lint-file-length.ts') {
+    return selectedScopes('code', 'site_check');
+  }
   if (path === 'scripts/site-performance-evidence.ts') {
     return selectedScopes('code', 'site_check', 'site_build');
   }
@@ -172,7 +175,12 @@ function scopesForPath(path: string): CiScopes {
   if (path === 'vitest.e2e.config.ts' || path === 'vitest.windows-e2e.config.ts') {
     return selectedScopes('code', 'release', 'windows');
   }
-  if (path === '.oxlintrc.json' || path === '.prettierrc.json' || path === '.prettierignore') {
+  if (
+    path === '.oxlintrc.json' ||
+    path === '.oxlintrc.max-lines.json' ||
+    path === '.prettierrc.json' ||
+    path === '.prettierignore'
+  ) {
     return selectedScopes('code', 'site_check');
   }
   if (path.startsWith('.husky/')) return selectedScopes('code');

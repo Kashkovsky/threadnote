@@ -92,6 +92,8 @@ describe('CI changed-path scope properties', () => {
     expect(enabledScopes(['README.md'])).toEqual(['site_check']);
     expect(enabledScopes(['test/ci/ci-scopes.ts'])).toEqual(ciScopeKeys);
     expect(enabledScopes(['scripts/benchmark-worktree-readiness.ts'])).toEqual(['code', 'quality']);
+    expect(enabledScopes(['scripts/lint-file-length.ts'])).toEqual(['code', 'site_check']);
+    expect(enabledScopes(['.oxlintrc.max-lines.json'])).toEqual(['code', 'site_check']);
     expect(enabledScopes(['scripts/release-targets.ts'])).toEqual(['code', 'release', 'windows']);
     expect(enabledScopes(['scripts/effect/script.ts'])).toEqual(['code', 'quality', 'release', 'windows']);
   });

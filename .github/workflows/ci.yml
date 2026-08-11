@@ -56,6 +56,8 @@ jobs:
     name: Static checks and build
     needs: changes
     runs-on: ubuntu-latest
+    env:
+      THREADNOTE_LINT_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
 
     steps:
       - uses: actions/checkout@v7
