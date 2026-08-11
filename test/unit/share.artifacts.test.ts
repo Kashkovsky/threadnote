@@ -1,6 +1,6 @@
-import {mkdtemp, mkdir, readFile, rm, writeFile} from 'node:fs/promises';
-import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {mkdtemp, mkdir, readFile, rm, writeFile} from '../helpers/node-fs-promises.js';
+import {tmpdir} from '../helpers/node-os.js';
+import {join} from '../helpers/node-path.js';
 import {Effect} from 'effect';
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
 import {shareAgentArtifact, shareBundlePack} from '../../src/share.js';

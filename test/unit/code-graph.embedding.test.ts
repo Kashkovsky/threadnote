@@ -1,8 +1,11 @@
+import {TestError} from '../helpers/test-error.js';
+import {provideTestLayer} from '../helpers/effect-layer.js';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {Database} from 'bun:sqlite';
-import {renameSync, rmSync} from 'node:fs';
+import {renameSync, rmSync} from '../helpers/node-fs.js';
 import {it as effectIt} from '@effect/vitest';
 import {Effect, Fiber, FileSystem, Layer, Path} from 'effect';
+import {TestClock} from 'effect/testing';
 import {describe, expect, it} from 'vitest';
 import {CodeGraphEmbeddingIndex, selectGraphEmbeddingSymbols} from '../../src/code_graph/embedding.js';
 import {codeGraphLayout} from '../../src/code_graph/layout.js';
@@ -20,24 +23,23 @@ import {LocalModelCatalog} from '../../src/models/catalog.js';
 import {selectLocalModel} from '../../src/models/selection.js';
 import {LocalModelStore, type LocalModelStoreShape} from '../../src/models/store.js';
 import {mkdtemp, rm} from '../helpers/effect-filesystem.js';
-
 const manifest = BUILTIN_MODEL_MANIFESTS.find(model => model.id === 'bge-small-en-v1.5-q8')!;
-
 describe('native code graph vector generations', () => {
   it('keeps every eligible symbol instead of truncating vectors at the former 20k cap', () => {
-    const symbols = Array.from({length: 20_001}, (_, index) =>
-      symbol(`symbol-${index}`, `Symbol${index}`, `Documents symbol ${index}.`),
+    const symbols = Array.from(
+      {
+        length: 20_001,
+      },
+      (_, index) => symbol(`symbol-${index}`, `Symbol${index}`, `Documents symbol ${index}.`),
     );
-
     expect(selectGraphEmbeddingSymbols(symbols)).toHaveLength(20_001);
   });
-
-  it('reuses unchanged vectors, preserves sibling pointers, and serves semantic scores', async () => {
-    const home = await mkdtemp('threadnote-code-graph-vectors-');
-    const embeddedBatches: number[] = [];
-    try {
-      const result = await Effect.runPromise(
-        Effect.gen(function* () {
+  effectIt.effect('reuses unchanged vectors, preserves sibling pointers, and serves semantic scores', () =>
+    Effect.gen(function* () {
+      const home = yield* Effect.promise(() => mkdtemp('threadnote-code-graph-vectors-'));
+      const embeddedBatches: number[] = [];
+      try {
+        const result = yield* Effect.gen(function* () {
           const path = yield* Path.Path;
           const fs = yield* FileSystem.FileSystem;
           const catalog = yield* LocalModelCatalog;
@@ -89,37 +91,72 @@ describe('native code graph vector generations', () => {
             unchanged,
           };
         }).pipe(
-          Effect.provide(
+          provideTestLayer(
             Layer.merge(testEmbeddingLayer(embeddedBatches), LocalModelCatalog.layer(BUILTIN_MODEL_MANIFESTS)),
           ),
-          Effect.provide(BunServices.layer),
-        ),
-      );
-
-      expect(result.first).toMatchObject({embedded: 2, ready: true, reused: 0});
-      expect(result.unchanged).toMatchObject({embedded: 0, ready: true, reused: 2});
-      expect(result.changed).toMatchObject({embedded: 1, ready: true, reused: 1});
-      expect(result.shared).toMatchObject({embedded: 0, ready: true, reused: 2});
-      expect(result.deduplicated).toMatchObject({embedded: 1, ready: true, reused: 0});
-      expect(result.forced).toMatchObject({embedded: 1, ready: true, reused: 0});
-      expect(result.checked).toEqual({modelId: manifest.id, reused: 1, state: 'ready'});
-      expect(result.databaseReady).toBe(true);
-      expect(result.scores.get('alpha')).toBeCloseTo(1);
-      expect(result.preservedScores.get('alpha')).toBeCloseTo(1);
-      expect(result.preservedUnavailablePointer).toMatchObject({state: 'ready'});
-      expect(result.scores.has('beta')).toBe(false);
-      expect(embeddedBatches).toEqual([2, 1, 1, 1, 1, 1]);
-    } finally {
-      await rm(home, {force: true, recursive: true});
-    }
-  });
-
+          provideTestLayer(BunServices.layer),
+        );
+        expect(result.first).toMatchObject({
+          embedded: 2,
+          ready: true,
+          reused: 0,
+        });
+        expect(result.unchanged).toMatchObject({
+          embedded: 0,
+          ready: true,
+          reused: 2,
+        });
+        expect(result.changed).toMatchObject({
+          embedded: 1,
+          ready: true,
+          reused: 1,
+        });
+        expect(result.shared).toMatchObject({
+          embedded: 0,
+          ready: true,
+          reused: 2,
+        });
+        expect(result.deduplicated).toMatchObject({
+          embedded: 1,
+          ready: true,
+          reused: 0,
+        });
+        expect(result.forced).toMatchObject({
+          embedded: 1,
+          ready: true,
+          reused: 0,
+        });
+        expect(result.checked).toEqual({
+          modelId: manifest.id,
+          reused: 1,
+          state: 'ready',
+        });
+        expect(result.databaseReady).toBe(true);
+        expect(result.scores.get('alpha')).toBeCloseTo(1);
+        expect(result.preservedScores.get('alpha')).toBeCloseTo(1);
+        expect(result.preservedUnavailablePointer).toMatchObject({
+          state: 'ready',
+        });
+        expect(result.scores.has('beta')).toBe(false);
+        expect(embeddedBatches).toEqual([2, 1, 1, 1, 1, 1]);
+      } finally {
+        yield* Effect.promise(() =>
+          rm(home, {
+            force: true,
+            recursive: true,
+          }),
+        );
+      }
+    }),
+  );
   effectIt.effect('prepares the released pointer index without pruning or admitting under the embedding lock', () =>
     Effect.scoped(
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
-        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-code-graph-vector-pointer-index-'});
+        const home = yield* fs.makeTempDirectoryScoped({
+          prefix: 'threadnote-code-graph-vector-pointer-index-',
+        });
         const pointerCount = 4_096;
         const orphanCount = 512;
         const result = yield* Effect.gen(function* () {
@@ -134,14 +171,19 @@ describe('native code graph vector generations', () => {
           const databasePath = path.join(layout.vectorRoot, manifest.id, 'vectors-v2.sqlite');
           yield* Effect.sync(() => rebuildReleasedVectorPointerLoad(databasePath, pointerCount, orphanCount));
           const refreshed = yield* vectors.ensure(home, layout, target, []);
-          return {databasePath, refreshed};
+          return {
+            databasePath,
+            refreshed,
+          };
         }).pipe(
-          Effect.provide(Layer.merge(testEmbeddingLayer([]), LocalModelCatalog.layer(BUILTIN_MODEL_MANIFESTS))),
-          Effect.provide(BunServices.layer),
+          provideTestLayer(Layer.merge(testEmbeddingLayer([]), LocalModelCatalog.layer(BUILTIN_MODEL_MANIFESTS))),
+          provideTestLayer(BunServices.layer),
         );
-
         yield* Effect.sync(() => {
-          const database = new Database(result.databasePath, {readonly: true, strict: true});
+          const database = new Database(result.databasePath, {
+            readonly: true,
+            strict: true,
+          });
           try {
             const indexes = database.query("PRAGMA index_list('vector_pointers')").all() as readonly {
               readonly name: string;
@@ -155,10 +197,15 @@ describe('native code graph vector generations', () => {
              ORDER BY vector_generations.generation
              LIMIT 1`,
               )
-              .all('') as readonly {readonly detail: string}[];
+              .all('') as readonly {
+              readonly detail: string;
+            }[];
             const details = plan.map(row => row.detail);
-
-            expect(result.refreshed).toMatchObject({embedded: 0, ready: true, reused: 1});
+            expect(result.refreshed).toMatchObject({
+              embedded: 0,
+              ready: true,
+              reused: 1,
+            });
             expect(indexes.map(index => index.name)).toContain('vector_pointer_generation_lookup');
             expect(details).toContainEqual(expect.stringContaining('SEARCH vector_generations USING'));
             expect(details.some(detail => detail.includes('SCAN '))).toBe(false);
@@ -171,7 +218,9 @@ describe('native code graph vector generations', () => {
             });
             expect(
               database.query("SELECT COUNT(*) AS count FROM vector_generations WHERE generation LIKE 'orphan-%'").get(),
-            ).toEqual({count: orphanCount});
+            ).toEqual({
+              count: orphanCount,
+            });
             expect(database.query('SELECT COUNT(*) AS count FROM vector_generation_retirements').get()).toEqual({
               count: 0,
             });
@@ -180,145 +229,190 @@ describe('native code graph vector generations', () => {
           }
         });
       }).pipe(
-        Effect.provide(Layer.merge(testEmbeddingLayer([]), LocalModelCatalog.layer(BUILTIN_MODEL_MANIFESTS))),
-        Effect.provide(BunServices.layer),
+        provideTestLayer(Layer.merge(testEmbeddingLayer([]), LocalModelCatalog.layer(BUILTIN_MODEL_MANIFESTS))),
+        provideTestLayer(BunServices.layer),
       ),
     ),
   );
-
-  it('builds and searches a paged SQLite vector generation without materializing a repository symbol array', async () => {
-    const home = await mkdtemp('threadnote-code-graph-vector-pages-');
-    const embeddedBatches: number[] = [];
-    const pageLimits: number[] = [];
-    try {
-      const symbols = Array.from({length: 901}, (_, index) =>
-        symbol(`paged-${index.toString().padStart(4, '0')}`, `Paged${index}`, `Paged symbol ${index}.`),
-      );
-      const result = await Effect.runPromise(
-        Effect.gen(function* () {
-          const path = yield* Path.Path;
-          const catalog = yield* LocalModelCatalog;
-          yield* selectLocalModel(home, catalog, 'embedding', manifest.id);
-          const vectors = yield* CodeGraphEmbeddingIndex;
-          const layout = codeGraphLayout(path, home, 'a'.repeat(64), 'b'.repeat(64));
-          const source = {
-            count: Effect.succeed(symbols.length),
-            loadPage: (cursor: {readonly id: string} | undefined, limit: number) => {
-              pageLimits.push(limit);
-              const start = cursor ? symbols.findIndex(candidate => candidate.id === cursor.id) + 1 : 0;
-              return Effect.succeed(symbols.slice(start, start + limit));
+  effectIt.effect(
+    'builds and searches a paged SQLite vector generation without materializing a repository symbol array',
+    () =>
+      Effect.gen(function* () {
+        const home = yield* Effect.promise(() => mkdtemp('threadnote-code-graph-vector-pages-'));
+        const embeddedBatches: number[] = [];
+        const pageLimits: number[] = [];
+        try {
+          const symbols = Array.from(
+            {
+              length: 901,
             },
-          };
-          const built = yield* vectors.ensure(
-            home,
-            layout,
-            {...snapshot('snapshot-paged'), symbolCount: symbols.length},
-            source,
+            (_, index) =>
+              symbol(`paged-${index.toString().padStart(4, '0')}`, `Paged${index}`, `Paged symbol ${index}.`),
           );
-          const scores = yield* vectors.search(home, layout, 'snapshot-paged', 'paged symbol', 5);
-          return {built, scores};
-        }).pipe(
-          Effect.provide(
-            Layer.merge(testEmbeddingLayer(embeddedBatches), LocalModelCatalog.layer(BUILTIN_MODEL_MANIFESTS)),
-          ),
-          Effect.provide(BunServices.layer),
-        ),
-      );
-
-      expect(result.built).toMatchObject({embedded: 901, ready: true, reused: 0});
-      expect(result.scores.size).toBe(5);
-      expect(pageLimits).toEqual([400, 400, 400]);
-      expect(Math.max(...embeddedBatches)).toBeLessThanOrEqual(128);
-    } finally {
-      await rm(home, {force: true, recursive: true});
-    }
-  });
-
-  it('serializes linked-worktree vector writers without deleting a live generation', async () => {
-    const home = await mkdtemp('threadnote-code-graph-vector-concurrency-');
-    let activeEmbeddings = 0;
-    let embedCalls = 0;
-    let maximumActiveEmbeddings = 0;
-    let releaseFirst!: () => void;
-    let reportFirstStarted!: () => void;
-    const firstRelease = new Promise<void>(resolve => (releaseFirst = resolve));
-    const firstStarted = new Promise<void>(resolve => (reportFirstStarted = resolve));
-    const runtime = LocalModelRuntime.of({
-      diagnostics: () => Effect.succeed({backend: 'fake', buildType: 'prebuilt', cpuMathCores: 4}),
-      embedMany: ({inputs, manifest: requested}) =>
-        Effect.acquireUseRelease(
-          Effect.sync(() => {
-            activeEmbeddings += 1;
-            maximumActiveEmbeddings = Math.max(maximumActiveEmbeddings, activeEmbeddings);
-            embedCalls += 1;
-            if (embedCalls === 1) reportFirstStarted();
-            return embedCalls;
-          }),
-          call =>
-            (call === 1 ? Effect.promise(() => firstRelease) : Effect.void).pipe(
-              Effect.as(inputs.map(input => unitVector(requested.dimensions ?? 0, input.includes('alpha') ? 0 : 1))),
-            ),
-          () =>
-            Effect.sync(() => {
-              activeEmbeddings -= 1;
-            }),
-        ),
-      generate: () => Effect.die(new Error('Unexpected generation')),
-      rerank: () => Effect.die(new Error('Unexpected reranking')),
-    });
-    try {
-      const result = await Effect.runPromise(
-        Effect.scoped(
-          Effect.gen(function* () {
+          const result = yield* Effect.gen(function* () {
             const path = yield* Path.Path;
             const catalog = yield* LocalModelCatalog;
             yield* selectLocalModel(home, catalog, 'embedding', manifest.id);
             const vectors = yield* CodeGraphEmbeddingIndex;
-            const firstLayout = codeGraphLayout(path, home, 'a'.repeat(64), 'b'.repeat(64));
-            const secondLayout = codeGraphLayout(path, home, 'a'.repeat(64), 'd'.repeat(64));
-            const first = yield* Effect.forkScoped(
-              vectors.ensure(home, firstLayout, snapshot('snapshot-concurrent-one'), [
-                symbol('alpha-concurrent', 'AlphaConcurrent', 'alpha concurrent symbol'),
-              ]),
+            const layout = codeGraphLayout(path, home, 'a'.repeat(64), 'b'.repeat(64));
+            const source = {
+              count: Effect.succeed(symbols.length),
+              loadPage: (
+                cursor:
+                  | {
+                      readonly id: string;
+                    }
+                  | undefined,
+                limit: number,
+              ) => {
+                pageLimits.push(limit);
+                const start = cursor ? symbols.findIndex(candidate => candidate.id === cursor.id) + 1 : 0;
+                return Effect.succeed(symbols.slice(start, start + limit));
+              },
+            };
+            const built = yield* vectors.ensure(
+              home,
+              layout,
+              {
+                ...snapshot('snapshot-paged'),
+                symbolCount: symbols.length,
+              },
+              source,
             );
-            yield* Effect.promise(() => firstStarted);
-            const second = yield* Effect.forkScoped(
-              vectors.ensure(home, secondLayout, snapshot('snapshot-concurrent-two'), [
-                symbol('beta-concurrent', 'BetaConcurrent', 'beta concurrent symbol'),
-              ]),
-            );
-            yield* Effect.sleep(100);
-            const callsWhileFirstWasBlocked = embedCalls;
-            yield* Effect.sync(releaseFirst);
-            const summaries = yield* Effect.all([Fiber.join(first), Fiber.join(second)]);
-            return {callsWhileFirstWasBlocked, summaries};
+            const scores = yield* vectors.search(home, layout, 'snapshot-paged', 'paged symbol', 5);
+            return {
+              built,
+              scores,
+            };
+          }).pipe(
+            provideTestLayer(
+              Layer.merge(testEmbeddingLayer(embeddedBatches), LocalModelCatalog.layer(BUILTIN_MODEL_MANIFESTS)),
+            ),
+            provideTestLayer(BunServices.layer),
+          );
+          expect(result.built).toMatchObject({
+            embedded: 901,
+            ready: true,
+            reused: 0,
+          });
+          expect(result.scores.size).toBe(5);
+          expect(pageLimits).toEqual([400, 400, 400]);
+          expect(Math.max(...embeddedBatches)).toBeLessThanOrEqual(128);
+        } finally {
+          yield* Effect.promise(() =>
+            rm(home, {
+              force: true,
+              recursive: true,
+            }),
+          );
+        }
+      }),
+  );
+  effectIt.effect('serializes linked-worktree vector writers without deleting a live generation', () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const home = yield* Effect.promise(() => mkdtemp('threadnote-code-graph-vector-concurrency-'));
+        let activeEmbeddings = 0;
+        let embedCalls = 0;
+        let maximumActiveEmbeddings = 0;
+        let releaseFirst!: () => void;
+        let reportFirstStarted!: () => void;
+        const firstRelease = new Promise<void>(resolve => (releaseFirst = resolve));
+        const firstStarted = new Promise<void>(resolve => (reportFirstStarted = resolve));
+        const runtime = LocalModelRuntime.of({
+          diagnostics: Effect.succeed({
+            backend: 'fake',
+            buildType: 'prebuilt',
+            cpuMathCores: 4,
           }),
-        ).pipe(
-          Effect.provide(
-            Layer.merge(testEmbeddingLayer([], runtime), LocalModelCatalog.layer(BUILTIN_MODEL_MANIFESTS)),
-          ),
-          Effect.provide(BunServices.layer),
-        ),
-      );
-
-      expect(result.callsWhileFirstWasBlocked).toBe(1);
-      expect(maximumActiveEmbeddings).toBe(1);
-      expect(result.summaries).toEqual([
-        expect.objectContaining({embedded: 1, ready: true}),
-        expect.objectContaining({embedded: 1, ready: true}),
-      ]);
-    } finally {
-      releaseFirst?.();
-      await rm(home, {force: true, recursive: true});
-    }
-  });
+          embedMany: ({inputs, manifest: requested}) =>
+            Effect.acquireUseRelease(
+              Effect.sync(() => {
+                activeEmbeddings += 1;
+                maximumActiveEmbeddings = Math.max(maximumActiveEmbeddings, activeEmbeddings);
+                embedCalls += 1;
+                if (embedCalls === 1) reportFirstStarted();
+                return embedCalls;
+              }),
+              call =>
+                (call === 1 ? Effect.promise(() => firstRelease) : Effect.void).pipe(
+                  Effect.as(
+                    inputs.map(input => unitVector(requested.dimensions ?? 0, input.includes('alpha') ? 0 : 1)),
+                  ),
+                ),
+              () =>
+                Effect.sync(() => {
+                  activeEmbeddings -= 1;
+                }),
+            ),
+          generate: () => Effect.die(new TestError('Unexpected generation')),
+          rerank: () => Effect.die(new TestError('Unexpected reranking')),
+        });
+        try {
+          const result = yield* Effect.scoped(
+            Effect.gen(function* () {
+              const path = yield* Path.Path;
+              const catalog = yield* LocalModelCatalog;
+              yield* selectLocalModel(home, catalog, 'embedding', manifest.id);
+              const vectors = yield* CodeGraphEmbeddingIndex;
+              const firstLayout = codeGraphLayout(path, home, 'a'.repeat(64), 'b'.repeat(64));
+              const secondLayout = codeGraphLayout(path, home, 'a'.repeat(64), 'd'.repeat(64));
+              const first = yield* Effect.forkScoped(
+                vectors.ensure(home, firstLayout, snapshot('snapshot-concurrent-one'), [
+                  symbol('alpha-concurrent', 'AlphaConcurrent', 'alpha concurrent symbol'),
+                ]),
+              );
+              yield* Effect.promise(() => firstStarted);
+              const second = yield* Effect.forkScoped(
+                vectors.ensure(home, secondLayout, snapshot('snapshot-concurrent-two'), [
+                  symbol('beta-concurrent', 'BetaConcurrent', 'beta concurrent symbol'),
+                ]),
+              );
+              yield* Effect.sleep(100);
+              const callsWhileFirstWasBlocked = embedCalls;
+              yield* Effect.sync(releaseFirst);
+              const summaries = yield* Effect.all([Fiber.join(first), Fiber.join(second)]);
+              return {
+                callsWhileFirstWasBlocked,
+                summaries,
+              };
+            }),
+          ).pipe(
+            provideTestLayer(
+              Layer.merge(testEmbeddingLayer([], runtime), LocalModelCatalog.layer(BUILTIN_MODEL_MANIFESTS)),
+            ),
+            provideTestLayer(BunServices.layer),
+          );
+          expect(result.callsWhileFirstWasBlocked).toBe(1);
+          expect(maximumActiveEmbeddings).toBe(1);
+          expect(result.summaries).toEqual([
+            expect.objectContaining({
+              embedded: 1,
+              ready: true,
+            }),
+            expect.objectContaining({
+              embedded: 1,
+              ready: true,
+            }),
+          ]);
+        } finally {
+          releaseFirst?.();
+          yield* Effect.promise(() =>
+            rm(home, {
+              force: true,
+              recursive: true,
+            }),
+          );
+        }
+      }),
+    ),
+  );
 });
-
 function testEmbeddingLayer(embeddedBatches: number[], runtimeOverride?: LocalModelRuntimeShape) {
   const modelStoreLayer = Layer.succeed(
     LocalModelStore,
     LocalModelStore.of({
-      install: () => Effect.die(new Error('Unexpected install')),
+      install: () => Effect.die(new TestError('Unexpected install')),
       path: root => `${root}/models/fake.gguf`,
       remove: () => Effect.succeed(false),
       status: root => Effect.succeed(installation(root)),
@@ -329,15 +423,19 @@ function testEmbeddingLayer(embeddedBatches: number[], runtimeOverride?: LocalMo
     LocalModelRuntime,
     runtimeOverride ??
       LocalModelRuntime.of({
-        diagnostics: () => Effect.succeed({backend: 'fake', buildType: 'prebuilt', cpuMathCores: 4}),
+        diagnostics: Effect.succeed({
+          backend: 'fake',
+          buildType: 'prebuilt',
+          cpuMathCores: 4,
+        }),
         embedMany: ({inputs, manifest: requested}) => {
           embeddedBatches.push(inputs.length);
           return Effect.succeed(
             inputs.map(input => unitVector(requested.dimensions ?? 0, input.toLowerCase().includes('alpha') ? 0 : 1)),
           );
         },
-        generate: () => Effect.die(new Error('Unexpected generation')),
-        rerank: () => Effect.die(new Error('Unexpected reranking')),
+        generate: () => Effect.die(new TestError('Unexpected generation')),
+        rerank: () => Effect.die(new TestError('Unexpected reranking')),
       }),
   );
   return CodeGraphEmbeddingIndex.layer.pipe(
@@ -346,19 +444,24 @@ function testEmbeddingLayer(embeddedBatches: number[], runtimeOverride?: LocalMo
     ),
   );
 }
-
 function rebuildReleasedVectorPointerLoad(databasePath: string, pointerCount: number, orphanCount: number): void {
   const replacementPath = `${databasePath}.released-v2`;
-  rmSync(replacementPath, {force: true});
-
-  const source = new Database(databasePath, {create: false, strict: true});
+  rmSync(replacementPath, {
+    force: true,
+  });
+  const source = new Database(databasePath, {
+    create: false,
+    strict: true,
+  });
   try {
     source.exec('PRAGMA wal_checkpoint(TRUNCATE)');
   } finally {
     source.close(false);
   }
-
-  const database = new Database(replacementPath, {create: true, strict: true});
+  const database = new Database(replacementPath, {
+    create: true,
+    strict: true,
+  });
   let sourceAttached = false;
   try {
     database.exec(CODE_GRAPH_VECTOR_GENERATIONS_TABLE_SQL);
@@ -368,7 +471,6 @@ function rebuildReleasedVectorPointerLoad(databasePath: string, pointerCount: nu
     database.exec('PRAGMA user_version = 2');
     database.query('ATTACH DATABASE ? AS source').run(databasePath);
     sourceAttached = true;
-
     const template = database
       .query<
         {
@@ -385,32 +487,24 @@ function rebuildReleasedVectorPointerLoad(databasePath: string, pointerCount: nu
          LIMIT 1`,
       )
       .get();
-    if (!template) throw new Error('Vector pointer load fixture has no generation template.');
-    const insertGeneration = database.prepare(
-      `INSERT INTO vector_generations (
+    if (!template) throw new TestError('Vector pointer load fixture has no generation template.');
+    const insertGeneration = database.prepare(`INSERT INTO vector_generations (
          generation, snapshot_id, model_id, model_sha256, dimensions,
          template_version, count, state, created_at
-       ) VALUES (?, ?, ?, ?, ?, ?, 0, 'ready', ?)`,
-    );
+       ) VALUES (?, ?, ?, ?, ?, ?, 0, 'ready', ?)`);
     const insertPointer = database.prepare('INSERT INTO vector_pointers (worktree_id, generation) VALUES (?, ?)');
     database.transaction(() => {
-      database.exec(
-        `INSERT INTO vector_generations (
+      database.exec(`INSERT INTO vector_generations (
            generation, snapshot_id, model_id, model_sha256, dimensions,
            template_version, count, state, created_at
          )
          SELECT generation, snapshot_id, model_id, model_sha256, dimensions,
                 template_version, count, state, created_at
-         FROM source.vector_generations`,
-      );
-      database.exec(
-        `INSERT INTO vector_pointers (worktree_id, generation)
-         SELECT worktree_id, generation FROM source.vector_pointers`,
-      );
-      database.exec(
-        `INSERT INTO vectors (generation, symbol_id, fingerprint, vector)
-         SELECT generation, symbol_id, fingerprint, vector FROM source.vectors`,
-      );
+         FROM source.vector_generations`);
+      database.exec(`INSERT INTO vector_pointers (worktree_id, generation)
+         SELECT worktree_id, generation FROM source.vector_pointers`);
+      database.exec(`INSERT INTO vectors (generation, symbol_id, fingerprint, vector)
+         SELECT generation, symbol_id, fingerprint, vector FROM source.vectors`);
       for (let index = 0; index < pointerCount; index += 1) {
         const generation = `referenced-${index.toString().padStart(4, '0')}`;
         insertGeneration.run(
@@ -438,9 +532,13 @@ function rebuildReleasedVectorPointerLoad(databasePath: string, pointerCount: nu
     })();
     database.exec('DETACH DATABASE source');
     sourceAttached = false;
-
     const objects = database
-      .query<{readonly name: string}, []>(
+      .query<
+        {
+          readonly name: string;
+        },
+        []
+      >(
         `SELECT name
          FROM sqlite_master
          WHERE name IN ('vector_generation_retirements', 'vector_retirement_state')
@@ -451,19 +549,23 @@ function rebuildReleasedVectorPointerLoad(databasePath: string, pointerCount: nu
       )
       .all();
     if (objects.length !== 0) {
-      throw new Error('Released vector v2 fixture unexpectedly contains retirement authority.');
+      throw new TestError('Released vector v2 fixture unexpectedly contains retirement authority.');
     }
   } finally {
     if (sourceAttached) database.exec('DETACH DATABASE source');
     database.close(false);
   }
-
-  rmSync(databasePath, {force: true});
-  rmSync(`${databasePath}-shm`, {force: true});
-  rmSync(`${databasePath}-wal`, {force: true});
+  rmSync(databasePath, {
+    force: true,
+  });
+  rmSync(`${databasePath}-shm`, {
+    force: true,
+  });
+  rmSync(`${databasePath}-wal`, {
+    force: true,
+  });
   renameSync(replacementPath, databasePath);
 }
-
 function symbol(id: string, name: string, documentation: string): CodeGraphSymbol {
   return {
     contentHash: id.repeat(64).slice(0, 64),
@@ -475,10 +577,14 @@ function symbol(id: string, name: string, documentation: string): CodeGraphSymbo
     name,
     path: `src/${id}.ts`,
     qualifiedName: name,
-    span: {column: 1, endColumn: 2, endLine: 1, line: 1},
+    span: {
+      column: 1,
+      endColumn: 2,
+      endLine: 1,
+      line: 1,
+    },
   };
 }
-
 function snapshot(id: string): CodeGraphSnapshot {
   return {
     commit: 'c'.repeat(40),
@@ -493,7 +599,6 @@ function snapshot(id: string): CodeGraphSnapshot {
     worktreeId: 'b'.repeat(64),
   };
 }
-
 function installation(home: string) {
   return {
     bytes: manifest.size,
@@ -504,7 +609,11 @@ function installation(home: string) {
     verified: true,
   };
 }
-
 function unitVector(dimensions: number, axis: number): readonly number[] {
-  return Array.from({length: dimensions}, (_, index) => (index === axis ? 1 : 0));
+  return Array.from(
+    {
+      length: dimensions,
+    },
+    (_, index) => (index === axis ? 1 : 0),
+  );
 }

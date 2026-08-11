@@ -3,19 +3,10 @@
   "categories": {
     "correctness": "off"
   },
-  "ignorePatterns": [
-    "src/code_graph/build_status.ts",
-    "src/code_graph/indexer.ts",
-    "src/code_graph/inventory.ts",
-    "src/manager_graph.tsx",
-    "src/mcp_server.ts",
-    "src/memory.ts",
-    "website/src/content/docs.ts"
-  ],
   "plugins": [],
   "rules": {
     "max-lines": [
-      "warn",
+      "error",
       {
         "max": 2000,
         "skipBlankLines": false,

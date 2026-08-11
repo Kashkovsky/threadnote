@@ -1,3 +1,4 @@
+import {provideScriptLayer, ScriptError} from '../effect/errors.js';
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {Console, Effect, FileSystem, Layer, Path} from 'effect';
@@ -45,10 +46,10 @@ function parseArguments(args: readonly string[], resolve: (value: string) => str
     if (argument === '--draft') draft = resolve(required(args[++index], argument));
     else if (argument === '--groups') groups = resolve(required(args[++index], argument));
     else if (argument === '--output') output = resolve(required(args[++index], argument));
-    else throw new Error(`Unknown reviewed-dataset preparation option: ${argument}\n\n${usage()}`);
+    else throw new ScriptError(`Unknown reviewed-dataset preparation option: ${argument}\n\n${usage()}`);
   }
   if (draft === undefined || groups === undefined || output === undefined) {
-    throw new Error(`--draft, --groups, and --output are required.\n\n${usage()}`);
+    throw new ScriptError(`--draft, --groups, and --output are required.\n\n${usage()}`);
   }
   return {draft, groups, output};
 }
@@ -57,12 +58,12 @@ function parseJson(content: string, source: string): unknown {
   try {
     return JSON.parse(content) as unknown;
   } catch (cause) {
-    throw new Error(`Could not parse JSON file: ${source}`, {cause});
+    throw new ScriptError(`Could not parse JSON file: ${source}`, {cause});
   }
 }
 
 function required(value: string | undefined, option: string): string {
-  if (!value?.trim()) throw new Error(`${option} requires a value.`);
+  if (!value?.trim()) throw new ScriptError(`${option} requires a value.`);
   return value;
 }
 
@@ -80,4 +81,4 @@ function usage(): string {
 }
 
 const scriptLayer = Layer.mergeAll(BunServices.layer, SystemInfo.layer);
-BunRuntime.runMain(program.pipe(Effect.provide(scriptLayer)));
+BunRuntime.runMain(provideScriptLayer(program, scriptLayer));

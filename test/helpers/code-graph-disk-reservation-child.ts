@@ -1,3 +1,4 @@
+import {provideTestLayer} from './effect-layer.js';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {Effect, FileSystem, Layer, Path} from 'effect';
 import {withCodeGraphDiskReservation} from '../../src/code_graph/disk_reservation.js';
@@ -104,7 +105,7 @@ const program = awaitFirstClaimBarrier.pipe(
       process.stdout.write(`${JSON.stringify({at: Date.now(), event: 'complete', processId: process.pid})}\n`);
     }),
   ),
-  Effect.provide(layer),
+  provideTestLayer(layer),
 );
 
 Effect.runPromise(program).catch(cause => {

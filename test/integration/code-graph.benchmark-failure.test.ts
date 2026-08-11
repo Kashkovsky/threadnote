@@ -1,9 +1,13 @@
-import {mkdtemp, readFile, readdir, rm} from 'node:fs/promises';
-import {tmpdir} from 'node:os';
-import {join} from 'node:path';
-import {fileURLToPath} from 'node:url';
+import {TestError} from '../helpers/test-error.js';
+import {provideTestLayer} from '../helpers/effect-layer.js';
+import {mkdtemp, readFile, readdir, rm} from '../helpers/node-fs-promises.js';
+import {tmpdir} from '../helpers/node-os.js';
+import {join} from '../helpers/node-path.js';
+import {fileURLToPath} from '../helpers/node-url.js';
 import * as BunServices from '@effect/platform-bun/BunServices';
+import {it as effectIt} from '@effect/vitest';
 import {Effect, FileSystem, Path} from 'effect';
+import {TestClock} from 'effect/testing';
 import {describe, expect, it} from 'vitest';
 import {parseCodeGraphBenchmarkRunCheckpoint, startExternalSampler} from '../../scripts/benchmark-code-graph.js';
 import {parseCodeGraphBenchmarkSamplerCheckpoint} from '../../scripts/code-graph-benchmark-sampler.js';
@@ -79,50 +83,54 @@ describe('production-large benchmark failure telemetry', () => {
     20_000,
   );
 
-  it('terminates within a bound and preserves the last checkpoint when stop signaling fails', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'threadnote-benchmark-stop-failure-'));
-    const checkpoint = join(root, 'artifacts', 'code-graph-production-large-n1-stop-failure.bootstrap.sampler.json');
-    try {
-      const result = await Effect.runPromise(
-        Effect.gen(function* () {
-          const fileSystem = yield* FileSystem.FileSystem;
-          const path = yield* Path.Path;
-          const failingFileSystem = FileSystem.FileSystem.of({
-            ...fileSystem,
-            writeFileString: (file, data, options) =>
-              file.endsWith('.stop')
-                ? Effect.die(new Error('injected stop-write failure'))
-                : fileSystem.writeFileString(file, data, options),
-          });
-          const sampler = yield* startExternalSampler(
-            failingFileSystem,
-            path,
-            join(root, 'sampler'),
-            join(root, 'sqlite-temp'),
-            join(root, 'not-created.sqlite'),
-            checkpoint,
-            'bootstrap',
-          );
-          const before = parseCodeGraphBenchmarkSamplerCheckpoint(
-            JSON.parse(yield* fileSystem.readFileString(checkpoint)),
-          );
-          const startedAt = Date.now();
-          const exit = yield* Effect.exit(sampler.stop());
-          return {before, elapsedMilliseconds: Date.now() - startedAt, exit};
-        }).pipe(Effect.provide(BunServices.layer)),
-      );
+  effectIt.effect('terminates within a bound and preserves the last checkpoint when stop signaling fails', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fileSystem.makeTempDirectoryScoped({prefix: 'threadnote-benchmark-stop-failure-'});
+        const checkpoint = path.join(
+          root,
+          'artifacts',
+          'code-graph-production-large-n1-stop-failure.bootstrap.sampler.json',
+        );
+        const failingFileSystem = FileSystem.FileSystem.of({
+          ...fileSystem,
+          writeFileString: (file, data, options) =>
+            file.endsWith('.stop')
+              ? Effect.die(new TestError('injected stop-write failure'))
+              : fileSystem.writeFileString(file, data, options),
+        });
+        const sampler = yield* startExternalSampler(
+          failingFileSystem,
+          path,
+          path.join(root, 'sampler'),
+          path.join(root, 'sqlite-temp'),
+          path.join(root, 'not-created.sqlite'),
+          checkpoint,
+          'bootstrap',
+        );
+        const before = parseCodeGraphBenchmarkSamplerCheckpoint(
+          JSON.parse(yield* fileSystem.readFileString(checkpoint)),
+        );
+        const startedAt = Date.now();
+        const exit = yield* Effect.exit(sampler.stop());
+        const elapsedMilliseconds = Date.now() - startedAt;
+        const after = parseCodeGraphBenchmarkSamplerCheckpoint(
+          JSON.parse(yield* fileSystem.readFileString(checkpoint)),
+        );
+        yield* Effect.promise(() => Bun.sleep(100));
+        const stable = parseCodeGraphBenchmarkSamplerCheckpoint(
+          JSON.parse(yield* fileSystem.readFileString(checkpoint)),
+        );
 
-      expect(result.before.state).toBe('running');
-      expect(result.exit._tag).toBe('Failure');
-      expect(result.elapsedMilliseconds).toBeLessThan(3_000);
-      const after = parseCodeGraphBenchmarkSamplerCheckpoint(JSON.parse(await readFile(checkpoint, 'utf8')));
-      await Bun.sleep(100);
-      const stable = parseCodeGraphBenchmarkSamplerCheckpoint(JSON.parse(await readFile(checkpoint, 'utf8')));
-      expect(stable.sampler.samples).toBe(after.sampler.samples);
-    } finally {
-      await rm(root, {force: true, recursive: true});
-    }
-  });
+        expect(before.state).toBe('running');
+        expect(exit._tag).toBe('Failure');
+        expect(elapsedMilliseconds).toBeLessThan(3_000);
+        expect(stable.sampler.samples).toBe(after.sampler.samples);
+      }).pipe(provideTestLayer(BunServices.layer), TestClock.withLive),
+    ),
+  );
 });
 
 async function waitFor<A>(observe: () => A | Promise<A>, timeoutMilliseconds: number): Promise<NonNullable<A>> {
@@ -130,7 +138,7 @@ async function waitFor<A>(observe: () => A | Promise<A>, timeoutMilliseconds: nu
   for (;;) {
     const value = await observe();
     if (value !== undefined && value !== false && value !== null) return value as NonNullable<A>;
-    if (Date.now() >= deadline) throw new Error(`Timed out after ${timeoutMilliseconds} ms.`);
+    if (Date.now() >= deadline) throw new TestError(`Timed out after ${timeoutMilliseconds} ms.`);
     await Bun.sleep(20);
   }
 }

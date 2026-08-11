@@ -176,16 +176,13 @@ export class ResourceStore extends Context.Service<ResourceStore, ResourceStoreS
     return Layer.effect(
       ResourceStore,
       Effect.gen(function* () {
-        const crypto = yield* Crypto.Crypto;
         const fs = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
-        const system = yield* SystemInfo;
-        const provideLockServices = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-          effect.pipe(
-            Effect.provideService(Crypto.Crypto, crypto),
-            Effect.provideService(Path.Path, path),
-            Effect.provideService(SystemInfo, system),
-          ) as Effect.Effect<A, E, Exclude<R, Crypto.Crypto | Path.Path | SystemInfo>>;
+        const lockServices = yield* Effect.context<Crypto.Crypto | Path.Path | SystemInfo>();
+        const provideLockServices = <A, E, R>(
+          effect: Effect.Effect<A, E, R>,
+        ): Effect.Effect<A, E, Exclude<R, Crypto.Crypto | Path.Path | SystemInfo>> =>
+          effect.pipe(Effect.provide(lockServices));
         const operation = createResourceStoreOperations(fs, path, provideLockServices, options);
         return ResourceStore.of(operation);
       }),
@@ -217,11 +214,7 @@ function createResourceStoreOperations(
     );
   const invalidateRecallBestEffort = (location: ResourceStoreLocation, invalidatedUris: readonly string[]) =>
     invalidateRecall(location, invalidatedUris).pipe(Effect.catchCause(() => Effect.void));
-  const withLock = <A, E, R>(
-    location: ResourceStoreLocation,
-    id: ResourceId,
-    effect: Effect.Effect<A, E, R>,
-  ): Effect.Effect<A, E | ResourceIoFailed, Exclude<R, Crypto.Crypto | Path.Path | SystemInfo>> => {
+  const withLock = <A, E, R>(location: ResourceStoreLocation, id: ResourceId, effect: Effect.Effect<A, E, R>) => {
     const lockPath = resourceAccountMutationLockPath(path, location.home, location.account);
     const event = {account: location.account, lockPath, uri: id.canonicalUri};
     const lockEffect = withExclusiveFileLock(
@@ -264,7 +257,7 @@ function createResourceStoreOperations(
           onSuccess: value => Effect.succeed(value),
         }),
       ),
-    ) as Effect.Effect<A, E | ResourceIoFailed, Exclude<R, Crypto.Crypto | Path.Path | SystemInfo>>;
+    );
   };
   const removeResource = (location: ResourceStoreLocation, uri: string, options?: {readonly recursive?: boolean}) =>
     Effect.gen(function* () {

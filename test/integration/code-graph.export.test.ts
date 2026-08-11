@@ -1,9 +1,11 @@
-import {mkdtempSync, rmSync} from 'node:fs';
-import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {it as effectIt} from "@effect/vitest";
+import {provideTestLayer} from '../helpers/effect-layer.js';
+import {mkdtempSync, rmSync} from '../helpers/node-fs.js';
+import {tmpdir} from '../helpers/node-os.js';
+import {join} from '../helpers/node-path.js';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {Effect, Layer} from 'effect';
-import {afterEach, describe, expect, it} from 'vitest';
+import {afterEach, describe, expect} from 'vitest';
 import {exportCodeGraph} from '../../src/code_graph/export.js';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
 import {SystemInfo} from '../../src/effect/system.js';
@@ -22,7 +24,7 @@ afterEach(() => {
 });
 
 describe('SQLite code graph export integration', () => {
-  it('reads deterministic bounded pages from a ready snapshot for JSON and GraphML', async () => {
+  effectIt.effect('reads deterministic bounded pages from a ready snapshot for JSON and GraphML', () => Effect.gen(function* () {
     const root = mkdtempSync(join(tmpdir(), 'threadnote-graph-export-'));
     temporaryRoots.push(root);
     const databasePath = join(root, 'graph.sqlite');
@@ -32,16 +34,14 @@ describe('SQLite code graph export integration', () => {
     const edges = storedEdges();
     const files = storedFiles();
 
-    const result = await Effect.runPromise(
-      Effect.gen(function* () {
+    const result = yield* (Effect.gen(function* () {
         const store = yield* CodeGraphStore;
         yield* store.activate(databasePath, identity, snapshot, files, symbols, edges);
         const firstJson = yield* capture(databasePath, snapshot, 'json', 1);
         const secondJson = yield* capture(databasePath, snapshot, 'json', 2);
         const graphml = yield* capture(databasePath, snapshot, 'graphml', 1);
         return {firstJson, graphml, secondJson};
-      }).pipe(Effect.provide(codeGraphStoreLayer)),
-    );
+      }).pipe(provideTestLayer(codeGraphStoreLayer)));
 
     expect(result.firstJson.output).toBe(result.secondJson.output);
     const json = JSON.parse(result.firstJson.output) as {
@@ -65,28 +65,26 @@ describe('SQLite code graph export integration', () => {
     );
     expect(result.graphml.summary.edges).toMatchObject({omitted: 0, scanned: 3, written: 3});
     expect(result.graphml.summary.nodes).toMatchObject({supplemental: 1, written: 2});
-  });
+  }));
 
-  it('renews only an active SQLite snapshot lease', async () => {
+  effectIt.effect('renews only an active SQLite snapshot lease', () => Effect.gen(function* () {
     const root = mkdtempSync(join(tmpdir(), 'threadnote-graph-export-lease-'));
     temporaryRoots.push(root);
     const databasePath = join(root, 'graph.sqlite');
     const identity = repositoryIdentity(root);
     const snapshot = readySnapshot(identity);
 
-    const result = await Effect.runPromise(
-      Effect.gen(function* () {
+    const result = yield* (Effect.gen(function* () {
         const store = yield* CodeGraphStore;
         yield* store.activate(databasePath, identity, snapshot, storedFiles(), storedSymbols(), storedEdges());
         const lease = yield* store.acquireSnapshotLease(databasePath, snapshot.id, 1_000);
         yield* store.renewSnapshotLease(databasePath, lease, 5_000);
         yield* store.releaseSnapshotLease(databasePath, lease);
         return yield* store.renewSnapshotLease(databasePath, lease, 5_000).pipe(Effect.result);
-      }).pipe(Effect.provide(codeGraphStoreLayer)),
-    );
+      }).pipe(provideTestLayer(codeGraphStoreLayer)));
 
     expect(result._tag).toBe('Failure');
-  });
+  }));
 });
 
 const codeGraphStoreLayer = CodeGraphStore.layer.pipe(

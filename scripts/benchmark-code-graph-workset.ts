@@ -1,3 +1,4 @@
+import {provideScriptLayer, scriptError, ScriptError} from './effect/errors.js';
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import {Effect} from 'effect';
 import {runCommandEffect} from '../src/effect/command.js';
@@ -50,7 +51,7 @@ export function parseCodeGraphWorksetBenchmarkArguments(args: readonly string[])
     else if (argument === '--samples') samples = integer(args[++index], argument, 1, 100);
     else if (argument === '--sizes') sizes = parseBenchmarkSizes(required(args[++index], argument));
     else if (argument === '--warmups') warmups = integer(args[++index], argument, 0, 100);
-    else throw new Error(`Unknown code graph workset benchmark option: ${argument}`);
+    else throw new ScriptError(`Unknown code graph workset benchmark option: ${argument}`);
   }
   return {failOnBudget, outputPath, samples, sizes, warmups};
 }
@@ -62,29 +63,29 @@ export const benchmarkCodeGraphWorkset = Effect.scoped(
     const prepared = yield* Effect.acquireRelease(
       Effect.tryPromise({
         try: () => prepareCodeGraphWorksetFixture({size: maximumSize, stateProfile: 'all-clean'}),
-        catch: cause => (cause instanceof Error ? cause : new Error(String(cause))),
+        catch: cause => scriptError(cause),
       }),
       fixture =>
         Effect.tryPromise({
           try: () => removePreparedCodeGraphWorksetFixture(fixture),
-          catch: cause => (cause instanceof Error ? cause : new Error(String(cause))),
+          catch: cause => scriptError(cause),
         }).pipe(Effect.catch(() => Effect.void)),
     );
     yield* indexPreparedCodeGraphWorksetFixture(prepared);
     const selectedWorksets = options.sizes.map(size => {
       const workset = prepared.plan.worksets.find(candidate => candidate.size === size);
-      if (!workset) throw new Error(`Fixture did not emit a size-${size} workset.`);
+      if (!workset) throw new ScriptError(`Fixture did not emit a size-${size} workset.`);
       return workset.name;
     });
     yield* publishIndexedCodeGraphWorksetCatalog(prepared, selectedWorksets);
     const config = codeGraphWorksetRuntimeConfig(prepared);
     const query = prepared.plan.queries.find(candidate => candidate.id === BENCHMARK_QUERY_ID);
-    if (!query) return yield* Effect.fail(new Error(`Fixture is missing benchmark query ${BENCHMARK_QUERY_ID}.`));
+    if (!query) return yield* Effect.fail(new ScriptError(`Fixture is missing benchmark query ${BENCHMARK_QUERY_ID}.`));
 
     const samples = [];
     for (const worksetSize of options.sizes) {
       const workset = prepared.plan.worksets.find(candidate => candidate.size === worksetSize);
-      if (!workset) return yield* Effect.fail(new Error(`Fixture did not emit a size-${worksetSize} workset.`));
+      if (!workset) return yield* Effect.fail(new ScriptError(`Fixture did not emit a size-${worksetSize} workset.`));
       for (let warmup = 0; warmup < options.warmups; warmup += 1) {
         yield* measureCodeGraphWorksetQuery(config, workset.name, query.query);
       }
@@ -96,7 +97,7 @@ export const benchmarkCodeGraphWorkset = Effect.scoped(
 
     const measurements = codeGraphWorksetBenchmarkMeasurements(samples);
     const system = yield* SystemInfo;
-    const hardware = yield* system.hardwareInfo();
+    const hardware = yield* system.hardwareInfo;
     const [commit, dirty] = yield* Effect.all(
       [sourceGit(['rev-parse', 'HEAD']), sourceGit(['status', '--porcelain'])],
       {
@@ -137,7 +138,7 @@ export const benchmarkCodeGraphWorkset = Effect.scoped(
     yield* printJson(artifact);
     if (options.failOnBudget) {
       const failures = codeGraphWorksetBenchmarkBudgetFailures(measurements, options.sizes);
-      if (failures.length > 0) return yield* Effect.fail(new Error(failures.join('\n')));
+      if (failures.length > 0) return yield* Effect.fail(new ScriptError(failures.join('\n')));
     }
   }),
 );
@@ -145,16 +146,16 @@ export const benchmarkCodeGraphWorkset = Effect.scoped(
 function parseBenchmarkSizes(value: string): readonly CodeGraphWorksetFixtureSize[] {
   const parts = value.split(',');
   if (parts.length === 0 || parts.some(part => !part.trim()))
-    throw new Error('--sizes requires comma-separated sizes.');
+    throw new ScriptError('--sizes requires comma-separated sizes.');
   const sizes = parts.map(part => Number(part.trim()));
   if (sizes.some(size => !Number.isSafeInteger(size) || size < 1)) {
-    throw new Error('--sizes requires positive integer sizes.');
+    throw new ScriptError('--sizes requires positive integer sizes.');
   }
-  if (new Set(sizes).size !== sizes.length) throw new Error('--sizes sizes must be unique.');
+  if (new Set(sizes).size !== sizes.length) throw new ScriptError('--sizes sizes must be unique.');
   const allowed = new Set<number>(CODE_GRAPH_WORKSET_FIXTURE_SUPPORTED_SIZES);
   for (const size of sizes) {
     if (!allowed.has(size)) {
-      throw new Error(
+      throw new ScriptError(
         `--sizes only accepts benchmark sizes: ${CODE_GRAPH_WORKSET_FIXTURE_SUPPORTED_SIZES.join(', ')}. Received ${size}.`,
       );
     }
@@ -165,22 +166,23 @@ function parseBenchmarkSizes(value: string): readonly CodeGraphWorksetFixtureSiz
 function integer(value: string | undefined, option: string, minimum: number, maximum: number): number {
   const parsed = Number(required(value, option));
   if (!Number.isSafeInteger(parsed) || parsed < minimum || parsed > maximum) {
-    throw new Error(`${option} must be an integer from ${minimum} through ${maximum}.`);
+    throw new ScriptError(`${option} must be an integer from ${minimum} through ${maximum}.`);
   }
   return parsed;
 }
 
 function required(value: string | undefined, option: string): string {
-  if (!value?.trim()) throw new Error(`${option} requires a value.`);
+  if (!value?.trim()) throw new ScriptError(`${option} requires a value.`);
   return value;
 }
 
 function benchmarkCreatedAt(environment: NodeJS.ProcessEnv): string {
   const epoch = environment.SOURCE_DATE_EPOCH;
   if (epoch === undefined) return new Date().toISOString();
-  if (!/^\d+$/.test(epoch)) throw new Error('SOURCE_DATE_EPOCH must be a non-negative integer number of seconds.');
+  if (!/^\d+$/.test(epoch))
+    throw new ScriptError('SOURCE_DATE_EPOCH must be a non-negative integer number of seconds.');
   const date = new Date(Number(epoch) * 1_000);
-  if (!Number.isFinite(date.getTime())) throw new Error('SOURCE_DATE_EPOCH is outside the supported date range.');
+  if (!Number.isFinite(date.getTime())) throw new ScriptError('SOURCE_DATE_EPOCH is outside the supported date range.');
   return date.toISOString();
 }
 
@@ -190,4 +192,4 @@ const sourceGit = Effect.fn('benchmarkCodeGraphWorkset.git')((args: readonly str
   ),
 );
 
-if (import.meta.main) BunRuntime.runMain(benchmarkCodeGraphWorkset.pipe(Effect.provide(ApplicationLayer)));
+if (import.meta.main) BunRuntime.runMain(provideScriptLayer(benchmarkCodeGraphWorkset, ApplicationLayer));

@@ -1,8 +1,9 @@
-import {access, mkdir, mkdtemp, rm} from 'node:fs/promises';
-import {tmpdir} from 'node:os';
-import {join} from 'node:path';
-import {execFile} from 'node:child_process';
-import {promisify} from 'node:util';
+import {TestError} from '../helpers/test-error.js';
+import {access, mkdir, mkdtemp, rm} from '../helpers/node-fs-promises.js';
+import {tmpdir} from '../helpers/node-os.js';
+import {join} from '../helpers/node-path.js';
+import {execFile} from '../helpers/node-child-process.js';
+import {promisify} from '../helpers/node-util.js';
 import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {StdioClientTransport} from '@modelcontextprotocol/sdk/client/stdio.js';
 import {afterEach, beforeEach, describe, expect, it} from 'vitest';
@@ -80,7 +81,7 @@ async function startLifecycleMcpClient(): Promise<LifecycleMcpClient> {
   try {
     await client.connect(transport);
     const mcpProcessId = transport.pid;
-    if (!mcpProcessId) throw new Error('Packaged MCP transport did not expose its process ID.');
+    if (!mcpProcessId) throw new TestError('Packaged MCP transport did not expose its process ID.');
     const workerProcessId = await waitForModelWorker(mcpProcessId);
     return {client, mcpProcessId, workerProcessId};
   } catch (cause) {
@@ -102,7 +103,7 @@ async function waitForModelWorker(parentProcessId: number): Promise<number> {
     if (worker) return worker.processId;
     await new Promise(resolve => setTimeout(resolve, 50));
   }
-  throw new Error(`Timed out waiting for a real local-model worker below MCP process ${parentProcessId}.`);
+  throw new TestError(`Timed out waiting for a real local-model worker below MCP process ${parentProcessId}.`);
 }
 
 async function processDiagnostics(): Promise<{
@@ -141,7 +142,7 @@ async function expectProcessesToExit(processIds: readonly number[]): Promise<voi
     if ((await Promise.all(processIds.map(isProcessRunning))).every(running => !running)) return;
     await new Promise(resolve => setTimeout(resolve, 50));
   }
-  throw new Error(
+  throw new TestError(
     `Threadnote processes did not exit within ${lifecycleDeadlineMilliseconds} ms: ${processIds.join(', ')}`,
   );
 }

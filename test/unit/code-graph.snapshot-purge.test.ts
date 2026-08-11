@@ -1,3 +1,4 @@
+import {TestError} from '../helpers/test-error.js';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {Database} from 'bun:sqlite';
 import {describe, expect, it as effectIt} from '@effect/vitest';
@@ -104,7 +105,7 @@ describe('code graph selected snapshot purge', () => {
             checkoutId: CHECKOUT_ID,
             snapshotId: SNAPSHOT_ID,
           });
-          if (preview.approvalDigest === undefined) throw new Error('expected approval digest');
+          if (preview.approvalDigest === undefined) throw new TestError('expected approval digest');
 
           const result = yield* purgeCodeGraphSnapshot(
             fixture.home,
@@ -158,7 +159,7 @@ describe('code graph selected snapshot purge', () => {
             checkoutId: CHECKOUT_ID,
             snapshotId: SNAPSHOT_ID,
           });
-          if (preview.approvalDigest === undefined) throw new Error('expected approval digest');
+          if (preview.approvalDigest === undefined) throw new TestError('expected approval digest');
 
           const result = yield* purgeCodeGraphSnapshot(
             fixture.home,
@@ -218,7 +219,7 @@ describe('code graph selected snapshot purge', () => {
             checkoutId: CHECKOUT_ID,
             snapshotId: SNAPSHOT_ID,
           });
-          if (preview.approvalDigest === undefined) throw new Error('expected approval digest');
+          if (preview.approvalDigest === undefined) throw new TestError('expected approval digest');
 
           const crypto = yield* Crypto.Crypto;
           const fs = yield* FileSystem.FileSystem;
@@ -268,7 +269,7 @@ describe('code graph selected snapshot purge', () => {
             checkoutId: CHECKOUT_ID,
             snapshotId: SNAPSHOT_ID,
           });
-          if (preview.approvalDigest === undefined) throw new Error('expected approval digest');
+          if (preview.approvalDigest === undefined) throw new TestError('expected approval digest');
           yield* purgeCodeGraphSnapshot(
             fixture.home,
             {checkoutId: CHECKOUT_ID, snapshotId: SNAPSHOT_ID},
@@ -297,7 +298,7 @@ describe('code graph selected snapshot purge', () => {
             checkoutId: CHECKOUT_ID,
             snapshotId: SNAPSHOT_ID,
           });
-          if (preview.approvalDigest === undefined) throw new Error('expected approval digest');
+          if (preview.approvalDigest === undefined) throw new TestError('expected approval digest');
           let observed: unknown;
           yield* purgeCodeGraphSnapshot(
             fixture.home,
@@ -411,7 +412,7 @@ function seedSnapshotVectorDatabase(home: string, active: boolean) {
       });
       if (prepared.state === 'ready') return databasePath;
     }
-    return yield* Effect.die(new Error('Vector retirement schema did not become ready.'));
+    return yield* Effect.die(new TestError('Vector retirement schema did not become ready.'));
   });
 }
 

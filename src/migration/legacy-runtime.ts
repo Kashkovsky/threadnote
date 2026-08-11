@@ -9,6 +9,10 @@ const LEGACY_LOCAL_AI_RECEIPT_VERSION = 1;
 const LEGACY_LOCAL_AI_STOP_WAIT_MILLISECONDS = 2_000;
 const LEGACY_LOCAL_AI_STOP_POLL_MILLISECONDS = 50;
 
+class LegacyRuntimeMigrationError extends Error {
+  readonly _tag = 'LegacyRuntimeMigrationError' as const;
+}
+
 interface LegacyLocalAiReceipt {
   readonly launchId: string;
   readonly pid: number;
@@ -99,7 +103,7 @@ export const stopVerifiedLegacyLocalAi = Effect.fn('legacyRuntime.stopLocalAi')(
 
   const signalResult = yield* Effect.try({
     try: () => system.signalProcess(receipt.pid, 'SIGTERM'),
-    catch: cause => cause,
+    catch: cause => new LegacyRuntimeMigrationError('Could not signal the verified legacy local AI process.', {cause}),
   }).pipe(Effect.result);
   if (Result.isFailure(signalResult) && system.isProcessRunning(receipt.pid)) {
     yield* Console.warn(`WARN verified legacy local AI process ${receipt.pid} could not be signaled.`);

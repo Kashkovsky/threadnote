@@ -1,3 +1,5 @@
+import {TestError} from '../helpers/test-error.js';
+import {provideTestLayer} from '../helpers/effect-layer.js';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {Database} from 'bun:sqlite';
 import {it as effectIt} from '@effect/vitest';
@@ -70,7 +72,7 @@ describe('code graph vector retirement load calibration', () => {
           withPointer: true,
           verifyZeroBackfill: true,
         }),
-      ).pipe(Effect.provide(loadEvidenceLoggerLayer), Effect.provide(VectorLoadLayer)),
+      ).pipe(provideTestLayer(loadEvidenceLoggerLayer), provideTestLayer(VectorLoadLayer)),
     120_000,
   );
 
@@ -87,7 +89,7 @@ describe('code graph vector retirement load calibration', () => {
           withPointer: false,
           verifyZeroBackfill: false,
         }),
-      ).pipe(Effect.provide(loadEvidenceLoggerLayer), Effect.provide(VectorLoadLayer)),
+      ).pipe(provideTestLayer(loadEvidenceLoggerLayer), provideTestLayer(VectorLoadLayer)),
     120_000,
   );
 });
@@ -132,7 +134,7 @@ function runVectorLoadCase(options: {
         const result = yield* runCodeGraphOrdinaryVectorMaintenanceUnit(input, {
           afterModelCommitBeforeFinalCursorCas: () =>
             Effect.gen(function* () {
-              if (pending === undefined) return yield* Effect.die(new Error('Vector load measurement was absent.'));
+              if (pending === undefined) return yield* Effect.die(new TestError('Vector load measurement was absent.'));
               const after = readVectorCounts(databasePath);
               const afterMainBytes = yield* observedFileSize(fs, databasePath);
               const afterWalBytes = yield* observedFileSize(fs, `${databasePath}-wal`);

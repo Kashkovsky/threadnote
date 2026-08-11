@@ -1,6 +1,6 @@
-import {access, mkdir, mkdtemp, readFile, rm, symlink, writeFile} from 'node:fs/promises';
-import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {access, mkdir, mkdtemp, readFile, rm, symlink, writeFile} from '../helpers/node-fs-promises.js';
+import {tmpdir} from '../helpers/node-os.js';
+import {join} from '../helpers/node-path.js';
 import {Effect} from 'effect';
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
 import {clearAutoShareStateForTest, publishShareGitChange} from '../../src/share.js';

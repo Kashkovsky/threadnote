@@ -1,3 +1,5 @@
+import {TestError} from '../helpers/test-error.js';
+import {provideTestLayer} from '../helpers/effect-layer.js';
 import {expect, it} from '@effect/vitest';
 import {Effect, Exit, Fiber, Layer} from 'effect';
 import * as EmbeddingModel from 'effect/unstable/ai/EmbeddingModel';
@@ -21,8 +23,8 @@ describe('Effect AI native harness', () => {
       LlamaCppEngine,
       LlamaCppEngine.of({
         diagnostics: {backend: 'fake', buildType: 'prebuilt', cpuMathCores: 4},
-        loadEmbeddingSession: () => Effect.die(new Error('Unexpected embedding model load')),
-        loadGenerationSession: () => Effect.die(new Error('Unexpected generation model load')),
+        loadEmbeddingSession: () => Effect.die(new TestError('Unexpected embedding model load')),
+        loadGenerationSession: () => Effect.die(new TestError('Unexpected generation model load')),
         loadRankingSession: options =>
           Effect.sync(() => {
             loadOptions = options;
@@ -45,7 +47,7 @@ describe('Effect AI native harness', () => {
           query: 'query',
         });
         expect(loadOptions).toEqual(expect.objectContaining({rankingTemplate: '[CLS]{{query}}[SEP]{{document}}[SEP]'}));
-      }).pipe(Effect.provide(localModelRuntimeLayer(engine))),
+      }).pipe(provideTestLayer(localModelRuntimeLayer(engine))),
     );
   });
 
@@ -119,15 +121,15 @@ describe('Effect AI native harness', () => {
                 }),
               modelId: options.modelId,
             }),
-          loadGenerationSession: () => Effect.die(new Error('Unexpected generation model load')),
-          loadRankingSession: () => Effect.die(new Error('Unexpected ranking model load')),
+          loadGenerationSession: () => Effect.die(new TestError('Unexpected generation model load')),
+          loadRankingSession: () => Effect.die(new TestError('Unexpected ranking model load')),
         }),
       );
       const result = yield* Effect.gen(function* () {
         const embedding = yield* EmbeddingModel.EmbeddingModel;
         return yield* embedding.embedMany(['alpha', 'b']);
       }).pipe(
-        Effect.provide(
+        provideTestLayer(
           llamaEmbeddingModelLayer({
             dimensions: 2,
             modelId: 'fake-embedding',
@@ -160,8 +162,8 @@ describe('Effect AI native harness', () => {
                 }),
               modelId: options.modelId,
             }),
-          loadGenerationSession: () => Effect.die(new Error('Unexpected generation model load')),
-          loadRankingSession: () => Effect.die(new Error('Unexpected ranking model load')),
+          loadGenerationSession: () => Effect.die(new TestError('Unexpected generation model load')),
+          loadRankingSession: () => Effect.die(new TestError('Unexpected ranking model load')),
         }),
       );
       const result = yield* Effect.gen(function* () {
@@ -171,7 +173,7 @@ describe('Effect AI native harness', () => {
           concurrency: 'unbounded',
         });
       }).pipe(
-        Effect.provide(
+        provideTestLayer(
           llamaEmbeddingModelLayer({
             dimensions: 1,
             modelId: 'fake-embedding',
@@ -219,7 +221,7 @@ describe('Effect AI native harness', () => {
                         getEmbeddingFor: (input: string) => Promise.resolve({vector: [input.length, 1]}),
                       });
                     },
-                    createRankingContext: () => Promise.reject(new Error('Unexpected ranking context')),
+                    createRankingContext: () => Promise.reject(new TestError('Unexpected ranking context')),
                     detokenize: (tokens: readonly number[]) => String.fromCodePoint(...tokens),
                     disposed: false,
                     dispose: () => {
@@ -245,7 +247,7 @@ describe('Effect AI native harness', () => {
           });
           expect(yield* session.embedMany(['abc'])).toEqual([[3, 1]]);
         }),
-      ).pipe(Effect.provide(layer));
+      ).pipe(provideTestLayer(layer));
 
       expect(calls).toEqual([
         {
@@ -311,7 +313,7 @@ describe('Effect AI native harness', () => {
                           return {vector: [index + 1, 6 - index]};
                         },
                       }),
-                    createRankingContext: () => Promise.reject(new Error('Unexpected ranking context')),
+                    createRankingContext: () => Promise.reject(new TestError('Unexpected ranking context')),
                     detokenize: (tokens: readonly number[]) => String.fromCodePoint(...tokens),
                     disposed: false,
                     dispose: () => Promise.resolve(),
@@ -332,7 +334,7 @@ describe('Effect AI native harness', () => {
           });
           return (yield* session.embedMany([input, 'tail']))[0];
         }),
-      ).pipe(Effect.provide(layer));
+      ).pipe(provideTestLayer(layer));
 
       expect(embeddedWindows).toEqual([
         input.slice(0, 16),
@@ -370,7 +372,7 @@ describe('Effect AI native harness', () => {
       }
       const nativeModel = {
         createContext() {
-          if (this !== nativeModel) return Promise.reject(new Error('createContext was called without its model'));
+          if (this !== nativeModel) return Promise.reject(new TestError('createContext was called without its model'));
           return Promise.resolve({
             disposed: false,
             dispose: () => {
@@ -380,8 +382,8 @@ describe('Effect AI native harness', () => {
             getSequence: () => ({id: 1}),
           });
         },
-        createEmbeddingContext: () => Promise.reject(new Error('Unexpected embedding context')),
-        createRankingContext: () => Promise.reject(new Error('Unexpected ranking context')),
+        createEmbeddingContext: () => Promise.reject(new TestError('Unexpected embedding context')),
+        createRankingContext: () => Promise.reject(new TestError('Unexpected ranking context')),
         detokenize: (tokens: readonly number[]) => String.fromCodePoint(...tokens),
         disposed: false,
         dispose: () => {
@@ -395,7 +397,7 @@ describe('Effect AI native harness', () => {
         cpuMathCores: 4,
         createGrammarForJsonSchema(schema: Readonly<Record<string, unknown>>) {
           if (this !== nativeLlama) {
-            return Promise.reject(new Error('createGrammarForJsonSchema was called without its llama runtime'));
+            return Promise.reject(new TestError('createGrammarForJsonSchema was called without its llama runtime'));
           }
           expect(schema).toMatchObject({type: 'object'});
           return Promise.resolve({parse: (json: string) => JSON.parse(json) as unknown});
@@ -437,7 +439,7 @@ describe('Effect AI native harness', () => {
             system: 'Be exact.',
           });
         }),
-      ).pipe(Effect.provide(generatorLayer));
+      ).pipe(provideTestLayer(generatorLayer));
 
       expect(result).toEqual({answer: 'native'});
       expect(events).toEqual(['chat:dispose', 'context:dispose', 'model:dispose', 'llama:dispose']);
@@ -450,7 +452,7 @@ describe('Effect AI native harness', () => {
         override readonly name = 'NoBinaryFoundError';
       }
       const exit = yield* LlamaCppEngine.pipe(
-        Effect.provide(
+        provideTestLayer(
           nodeLlamaCppEngineLayer({
             loadModule: () =>
               Promise.resolve({
@@ -535,7 +537,7 @@ describe('Effect AI native harness', () => {
           expect.objectContaining({darwinArm64EmbeddingGpuLayers: 0, modelId: embedding.id}),
         ]);
         expect(releasedGenerationSessions).toBe(2);
-      }).pipe(Effect.provide(localModelRuntimeLayer(engine))),
+      }).pipe(provideTestLayer(localModelRuntimeLayer(engine))),
     );
   });
 
@@ -564,7 +566,7 @@ describe('Effect AI native harness', () => {
               modelId: options.modelId,
             };
           }),
-        loadGenerationSession: () => Effect.die(new Error('Unexpected generation model load')),
+        loadGenerationSession: () => Effect.die(new TestError('Unexpected generation model load')),
         loadRankingSession: options =>
           Effect.sync(() => {
             loads.reranker += 1;
@@ -623,7 +625,7 @@ describe('Effect AI native harness', () => {
           }),
         ).toEqual([0, 0.1]);
         expect(loads).toEqual({embedding: 2, reranker: 2});
-      }).pipe(Effect.provide(localModelRuntimeLayer(engine))),
+      }).pipe(provideTestLayer(localModelRuntimeLayer(engine))),
     );
   });
 
@@ -634,7 +636,7 @@ describe('Effect AI native harness', () => {
       LlamaCppEngine,
       LlamaCppEngine.of({
         diagnostics: {backend: 'fake', buildType: 'prebuilt', cpuMathCores: 4},
-        loadEmbeddingSession: () => Effect.die(new Error('Unexpected embedding model load')),
+        loadEmbeddingSession: () => Effect.die(new TestError('Unexpected embedding model load')),
         loadGenerationSession: options =>
           Effect.acquireRelease(
             Effect.sync(() => {
@@ -646,7 +648,7 @@ describe('Effect AI native harness', () => {
             }),
             () => Effect.sync(() => (releases += 1)),
           ),
-        loadRankingSession: () => Effect.die(new Error('Unexpected reranker model load')),
+        loadRankingSession: () => Effect.die(new TestError('Unexpected reranker model load')),
       }),
     );
     return Effect.scoped(
@@ -665,7 +667,7 @@ describe('Effect AI native harness', () => {
         while (!loaded) yield* Effect.yieldNow;
         yield* Fiber.interrupt(fiber);
         expect(releases).toBe(1);
-      }).pipe(Effect.provide(localModelRuntimeLayer(engine))),
+      }).pipe(provideTestLayer(localModelRuntimeLayer(engine))),
     );
   });
 });

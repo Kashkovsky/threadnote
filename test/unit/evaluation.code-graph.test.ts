@@ -1,5 +1,5 @@
-import {readFileSync} from 'node:fs';
-import {join} from 'node:path';
+import {readFileSync} from '../helpers/node-fs.js';
+import {join} from '../helpers/node-path.js';
 import {Effect} from 'effect';
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';

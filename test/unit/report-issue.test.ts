@@ -1,3 +1,5 @@
+import {TestError} from '../helpers/test-error.js';
+import {provideTestLayer} from '../helpers/effect-layer.js';
 import {it as effectIt} from '@effect/vitest';
 import {Cause, Effect, Exit, FileSystem, Path} from 'effect';
 import {describe, expect} from 'vitest';
@@ -63,7 +65,7 @@ describe('report issue', () => {
         expect(report.output).not.toContain('memoryBody');
         expect(report.output).not.toContain('sk-1234567890abcdefghijkl');
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('creates an issue through gh api without putting public content in process arguments', () =>
@@ -150,7 +152,7 @@ describe('report issue', () => {
         expect((requestMode ?? 0) & 0o777).toBe(0o600);
         expect(yield* fs.exists(invocation?.requestPath as string)).toBe(false);
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('refuses apply when logs changed after the approved preview', () =>
@@ -199,7 +201,7 @@ describe('report issue', () => {
         );
         expect(commandInvoked).toBe(false);
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('rejects terminal control sequences before preview or publication', () =>
@@ -229,7 +231,7 @@ describe('report issue', () => {
         expect(Exit.isFailure(exit) ? Cause.squash(exit.cause) : undefined).toBeInstanceOf(ReportIssueInvalid);
         expect(commandInvoked).toBe(false);
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('blocks credential-like content before preview or publication', () =>
@@ -259,7 +261,7 @@ describe('report issue', () => {
         expect(Exit.isFailure(exit) ? Cause.squash(exit.cause) : undefined).toBeInstanceOf(ReportIssueInvalid);
         expect(commandInvoked).toBe(false);
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('explains how to install and authenticate gh when submission cannot spawn it', () =>
@@ -271,7 +273,7 @@ describe('report issue', () => {
             Effect.fail(
               new CommandSpawnFailed({
                 args: [],
-                cause: new Error('not found'),
+                cause: new TestError('not found'),
                 executable: 'gh',
                 message: 'gh could not be started',
               }),
@@ -303,7 +305,7 @@ describe('report issue', () => {
         expect(error instanceof Error ? error.message : '').toContain('gh auth login');
         expect(error instanceof Error ? error.message : '').toContain('--apply');
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 });
 

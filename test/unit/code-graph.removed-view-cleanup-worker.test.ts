@@ -13,6 +13,7 @@ import type {
   CodeGraphRemovedViewCleanupUpdate,
   CodeGraphRemovedViewCleanupUpdateResult,
 } from '../../src/code_graph/store.js';
+import {CodeGraphStoreBusyError} from '../../src/code_graph/types.js';
 
 const INPUT: CodeGraphRemovedViewCleanupWorkerInput = {
   checkoutId: 'a'.repeat(64),
@@ -130,7 +131,7 @@ describe('removed view cleanup worker', () => {
       const immediateWorker = yield* makeCodeGraphRemovedViewCleanupWorker(
         dependencies({
           claim: () => Effect.succeed([cleanupEntry()]),
-          monotonicMilliseconds: () => Effect.succeed(immediateMonotonic),
+          monotonicMilliseconds: Effect.sync(() => immediateMonotonic),
           withPreparedVectorUnit: injectedPreparedVectorUnit({
             advanceMonotonic: milliseconds => {
               immediateMonotonic += milliseconds;
@@ -160,7 +161,7 @@ describe('removed view cleanup worker', () => {
       const delayedWorker = yield* makeCodeGraphRemovedViewCleanupWorker(
         dependencies({
           claim: () => Effect.succeed([cleanupEntry()]),
-          monotonicMilliseconds: () => Effect.succeed(delayedMonotonic),
+          monotonicMilliseconds: Effect.sync(() => delayedMonotonic),
           withPreparedVectorUnit: injectedPreparedVectorUnit({
             advanceMonotonic: milliseconds => {
               delayedMonotonic += milliseconds;
@@ -375,7 +376,7 @@ describe('removed view cleanup worker', () => {
           claim: () => Effect.succeed([entry]),
           withPreparedVectorUnit: (_input, _entry, _deadline, use) =>
             use(Effect.succeed({blockedCode: 'busy', retryAfterMilliseconds: 250, state: 'deferred'})),
-          nowMilliseconds: () => Effect.succeed(500),
+          nowMilliseconds: Effect.succeed(500),
           update: (_input, candidate, update) =>
             Effect.sync(() => {
               updates.push(update);
@@ -462,7 +463,7 @@ describe('removed view cleanup worker', () => {
               }),
             ),
           withTargetLock: (_input, worktreeId, effect) =>
-            worktreeId.endsWith('0') ? Effect.fail(new Error('busy')) : effect,
+            worktreeId.endsWith('0') ? Effect.fail(new CodeGraphStoreBusyError('busy')) : effect,
         }),
       );
 
@@ -513,8 +514,8 @@ describe('removed view cleanup worker', () => {
                 } as const;
               }),
             ),
-          monotonicMilliseconds: () => Effect.succeed(monotonic),
-          nowMilliseconds: () => Effect.succeed(wall),
+          monotonicMilliseconds: Effect.sync(() => monotonic),
+          nowMilliseconds: Effect.sync(() => wall),
           sleep: milliseconds =>
             Effect.sync(() => {
               monotonic += milliseconds;
@@ -562,8 +563,8 @@ describe('removed view cleanup worker', () => {
                 } as const;
               }),
             ),
-          monotonicMilliseconds: () => Effect.succeed(monotonic),
-          nowMilliseconds: () => Effect.succeed(wall),
+          monotonicMilliseconds: Effect.sync(() => monotonic),
+          nowMilliseconds: Effect.sync(() => wall),
           sleep: milliseconds =>
             Effect.sync(() => {
               sleeps.push(milliseconds);
@@ -610,7 +611,7 @@ function injectedPreparedVectorUnit(options: {
           () =>
             Effect.suspend((): Effect.Effect<A, unknown> => {
               if (options.monotonicMilliseconds() > preparation.deadlineMonotonicMilliseconds) {
-                return Effect.fail(new Error('reservation deadline exhausted'));
+                return Effect.fail(new CodeGraphStoreBusyError('reservation deadline exhausted'));
               }
               options.events.push('use');
               return use(Effect.succeed(completeVectorPage())).pipe(Effect.mapError(error => error as unknown));
@@ -659,8 +660,8 @@ function dependencies(
     cleanupBuildStatusUnit: () => Effect.succeed({state: 'complete'}),
     cleanupProvenanceUnit: () => Effect.succeed({state: 'complete'}),
     withPreparedVectorUnit: (_input, _entry, _deadline, use) => use(Effect.succeed({state: 'complete'})),
-    monotonicMilliseconds: () => Effect.succeed(500),
-    nowMilliseconds: () => Effect.succeed(500),
+    monotonicMilliseconds: Effect.succeed(500),
+    nowMilliseconds: Effect.succeed(500),
     sleep: () => Effect.void,
     update: (_input, entry, update) => Effect.succeed(updated(entry, update)),
     withTargetLock: (_input, _worktreeId, effect) => effect,

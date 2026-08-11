@@ -1,6 +1,6 @@
-import {mkdtemp, rm} from 'node:fs/promises';
-import {tmpdir} from 'node:os';
-import {basename, join} from 'node:path';
+import {mkdtemp, rm} from '../helpers/node-fs-promises.js';
+import {tmpdir} from '../helpers/node-os.js';
+import {basename, join} from '../helpers/node-path.js';
 import {describe, expect, it} from 'vitest';
 import {
   enrichRecallQueryWithWorkspaceContext as enrichRecallQueryWithWorkspaceContextEffect,

@@ -1,7 +1,7 @@
-import {existsSync} from 'node:fs';
-import {mkdtemp, mkdir, readFile, rm, writeFile} from 'node:fs/promises';
-import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {existsSync} from '../helpers/node-fs.js';
+import {mkdtemp, mkdir, readFile, rm, writeFile} from '../helpers/node-fs-promises.js';
+import {tmpdir} from '../helpers/node-os.js';
+import {join} from '../helpers/node-path.js';
 import {Effect} from 'effect';
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
 import {runSharePublish as runSharePublishEffect} from '../../src/effect/share.js';

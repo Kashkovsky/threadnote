@@ -1,21 +1,20 @@
-import {mkdir, mkdtemp, rm, writeFile} from 'node:fs/promises';
-import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {provideTestLayer} from '../helpers/effect-layer.js';
+import {it as effectIt} from '@effect/vitest';
+import {mkdir, mkdtemp, rm, writeFile} from '../helpers/node-fs-promises.js';
+import {tmpdir} from '../helpers/node-os.js';
+import {join} from '../helpers/node-path.js';
 import {Effect} from 'effect';
 import {afterEach, describe, expect, it, vi} from 'vitest';
-import {ApplicationLayer, type ApplicationServices} from '../../src/effect/runtime.js';
+import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {hasAgentSkillCatalogIntent, runRecall, stripAdvancedSearchFlags} from '../../src/memory.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import * as utils from '../../src/utils.js';
-
-const run = <A, E>(effect: Effect.Effect<A, E, ApplicationServices>) =>
-  Effect.runPromise(effect.pipe(Effect.provide(ApplicationLayer)));
-
 vi.mock('../../src/utils.js', async importOriginal => {
   const actual = await importOriginal<typeof import('../../src/utils.js')>();
-  return {...actual};
+  return {
+    ...actual,
+  };
 });
-
 const runtime: RuntimeConfig = {
   account: 'local',
   agentContextHome: '/tmp/threadnote-test',
@@ -23,18 +22,15 @@ const runtime: RuntimeConfig = {
   manifestPath: '/tmp/threadnote-test/seed-manifest.yaml',
   user: 'denys',
 };
-
 afterEach(() => {
   vi.restoreAllMocks();
 });
-
 describe('recall skill catalog intent inference', () => {
   it('does not treat seed-skills maintenance queries as agent skill lookup', () => {
     expect(hasAgentSkillCatalogIntent('threadnote seed skills claude commands')).toBe(false);
     expect(hasAgentSkillCatalogIntent('fix seed-skills not recognizing claude commands')).toBe(false);
     expect(hasAgentSkillCatalogIntent('skill seeding should include repo commands')).toBe(false);
   });
-
   it('still recognizes explicit skill catalog lookup queries', () => {
     expect(hasAgentSkillCatalogIntent('skills')).toBe(true);
     expect(hasAgentSkillCatalogIntent('find skill for swiftui performance')).toBe(true);
@@ -42,357 +38,448 @@ describe('recall skill catalog intent inference', () => {
     expect(hasAgentSkillCatalogIntent('skills for ios debugging')).toBe(true);
   });
 });
-
 describe('runRecall native index', () => {
-  it('uses the native recall index without a repair subprocess', async () => {
-    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
-
-    await run(runRecall(runtime, {dryRun: true, query: 'availability check'}));
-
-    const output = log.mock.calls.map(call => call.join(' ')).join('\n');
-    expect(output).not.toContain('repair failed');
-    expect(output).toContain('Would search native recall index');
-    expect(output).toContain('availability check');
-  });
-
-  it('ignores obsolete local-AI service configuration while deterministic recall remains available', async () => {
-    const dir = await mkdtemp(join(tmpdir(), 'threadnote-recall-malformed-local-ai-'));
-    await mkdir(join(dir, 'threadnote'), {recursive: true});
-    await writeFile(join(dir, 'threadnote', 'local-ai.json'), '{invalid', 'utf8');
-    const runCommand = vi
-      .spyOn(utils, 'runCommand')
-      .mockReturnValue(Effect.succeed({exitCode: 0, stderr: '', stdout: '[]'}));
-    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
-
-    try {
-      await run(
-        runRecall(
-          {...runtime, agentContextHome: dir, manifestPath: join(dir, 'missing-seed-manifest.yaml')},
-          {inferScope: false, query: 'deterministic fallback'},
-        ),
-      );
-    } finally {
-      runCommand.mockRestore();
-      await rm(dir, {force: true, recursive: true});
-    }
-
-    const output = log.mock.calls.map(call => call.join(' ')).join('\n');
-    expect(output).not.toContain('Invalid Threadnote local AI configuration');
-    expect(output).not.toContain('background service');
-  });
-
-  it('adds remote-derived project memory scopes for current repo recall', async () => {
-    const dir = await mkdtemp(join(tmpdir(), 'threadnote-recall-remote-project-'));
-    const repoRoot = join(dir, 'easy-to-type');
-    const previousCallerCwd = process.env.THREADNOTE_CALLER_CWD;
-    const gitEnvKeys = ['GIT_COMMON_DIR', 'GIT_DIR', 'GIT_INDEX_FILE', 'GIT_WORK_TREE'] as const;
-    const previousGitEnv = new Map(gitEnvKeys.map(key => [key, process.env[key]]));
-    for (const key of gitEnvKeys) {
-      delete process.env[key];
-    }
-    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
-
-    try {
-      await mkdir(repoRoot);
-      await run(utils.runCommand('git', ['init'], {cwd: repoRoot}));
-      await run(
-        utils.runCommand('git', ['remote', 'add', 'origin', 'git@github.com:Kashkovsky/threadnote.git'], {
-          cwd: repoRoot,
+  effectIt.effect('uses the native recall index without a repair subprocess', () =>
+    Effect.gen(function* () {
+      const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+      yield* runRecall(runtime, {
+        dryRun: true,
+        query: 'availability check',
+      }).pipe(provideTestLayer(ApplicationLayer));
+      const output = log.mock.calls.map(call => call.join(' ')).join('\n');
+      expect(output).not.toContain('repair failed');
+      expect(output).toContain('Would search native recall index');
+      expect(output).toContain('availability check');
+    }),
+  );
+  effectIt.effect('ignores obsolete local-AI service configuration while deterministic recall remains available', () =>
+    Effect.gen(function* () {
+      const dir = yield* Effect.promise(() => mkdtemp(join(tmpdir(), 'threadnote-recall-malformed-local-ai-')));
+      yield* Effect.promise(() =>
+        mkdir(join(dir, 'threadnote'), {
+          recursive: true,
         }),
       );
-      process.env.THREADNOTE_CALLER_CWD = repoRoot;
-
-      await run(
-        runRecall(
-          {...runtime, manifestPath: join(dir, 'missing-seed-manifest.yaml')},
-          {dryRun: true, query: 'current repo latest handoff'},
-        ),
-      );
-    } finally {
-      if (previousCallerCwd === undefined) {
-        delete process.env.THREADNOTE_CALLER_CWD;
-      } else {
-        process.env.THREADNOTE_CALLER_CWD = previousCallerCwd;
-      }
-      for (const key of gitEnvKeys) {
-        const value = previousGitEnv.get(key);
-        if (value === undefined) {
-          delete process.env[key];
-        } else {
-          process.env[key] = value;
-        }
-      }
-      await rm(dir, {force: true, recursive: true});
-    }
-
-    const output = log.mock.calls.map(call => call.join(' ')).join('\n');
-    expect(output).toContain('current repo latest handoff');
-    expect(output).toContain('threadnote');
-    expect(output).toContain('--uri threadnote://user/denys/memories/durable/projects/threadnote');
-    expect(output).toContain('--uri threadnote://user/denys/memories/handoffs/active/threadnote');
-    expect(output).not.toContain('easy-to-type');
-  });
-
-  it('prefers a project named by the query over the current workspace project', async () => {
-    const dir = await mkdtemp(join(tmpdir(), 'threadnote-recall-query-project-'));
-    const repoRoot = join(dir, 'easy-to-type');
-    const manifestPath = join(dir, 'seed-manifest.yaml');
-    const previousCallerCwd = process.env.THREADNOTE_CALLER_CWD;
-    const gitEnvKeys = ['GIT_COMMON_DIR', 'GIT_DIR', 'GIT_INDEX_FILE', 'GIT_WORK_TREE'] as const;
-    const previousGitEnv = new Map(gitEnvKeys.map(key => [key, process.env[key]]));
-    for (const key of gitEnvKeys) {
-      delete process.env[key];
-    }
-    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
-
-    try {
-      await mkdir(repoRoot);
-      await run(utils.runCommand('git', ['init'], {cwd: repoRoot}));
-      await run(
-        utils.runCommand('git', ['remote', 'add', 'origin', 'git@github.com:Kashkovsky/threadnote.git'], {
-          cwd: repoRoot,
+      yield* Effect.promise(() => writeFile(join(dir, 'threadnote', 'local-ai.json'), '{invalid', 'utf8'));
+      const runCommand = vi.spyOn(utils, 'runCommand').mockReturnValue(
+        Effect.succeed({
+          exitCode: 0,
+          stderr: '',
+          stdout: '[]',
         }),
       );
-      await writeFile(
-        manifestPath,
-        [
-          'version: 1',
-          'projects:',
-          '  - name: threadnote',
-          `    path: ${repoRoot}`,
-          '    uri: threadnote://resources/repos/threadnote',
-          '    seed: []',
-          '  - name: orion-worker',
-          `    path: ${dir}/orion-worker`,
-          '    uri: threadnote://resources/repos/orion-worker',
-          '    seed: []',
-          '',
-        ].join('\n'),
-        'utf8',
-      );
-      process.env.THREADNOTE_CALLER_CWD = repoRoot;
-
-      await run(runRecall({...runtime, manifestPath}, {dryRun: true, query: 'worker lease renewal'}));
-    } finally {
-      if (previousCallerCwd === undefined) {
-        delete process.env.THREADNOTE_CALLER_CWD;
-      } else {
-        process.env.THREADNOTE_CALLER_CWD = previousCallerCwd;
+      const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+      try {
+        yield* runRecall(
+          {
+            ...runtime,
+            agentContextHome: dir,
+            manifestPath: join(dir, 'missing-seed-manifest.yaml'),
+          },
+          {
+            inferScope: false,
+            query: 'deterministic fallback',
+          },
+        ).pipe(provideTestLayer(ApplicationLayer));
+      } finally {
+        runCommand.mockRestore();
+        yield* Effect.promise(() =>
+          rm(dir, {
+            force: true,
+            recursive: true,
+          }),
+        );
       }
+      const output = log.mock.calls.map(call => call.join(' ')).join('\n');
+      expect(output).not.toContain('Invalid Threadnote local AI configuration');
+      expect(output).not.toContain('background service');
+    }),
+  );
+  effectIt.effect('adds remote-derived project memory scopes for current repo recall', () =>
+    Effect.gen(function* () {
+      const dir = yield* Effect.promise(() => mkdtemp(join(tmpdir(), 'threadnote-recall-remote-project-')));
+      const repoRoot = join(dir, 'easy-to-type');
+      const previousCallerCwd = process.env.THREADNOTE_CALLER_CWD;
+      const gitEnvKeys = ['GIT_COMMON_DIR', 'GIT_DIR', 'GIT_INDEX_FILE', 'GIT_WORK_TREE'] as const;
+      const previousGitEnv = new Map(gitEnvKeys.map(key => [key, process.env[key]]));
       for (const key of gitEnvKeys) {
-        const value = previousGitEnv.get(key);
-        if (value === undefined) {
-          delete process.env[key];
-        } else {
-          process.env[key] = value;
-        }
+        delete process.env[key];
       }
-      await rm(dir, {force: true, recursive: true});
-    }
-
-    const output = log.mock.calls.map(call => call.join(' ')).join('\n');
-    expect(output).toContain('--uri threadnote://user/denys/memories/durable/projects/orion-worker');
-    expect(output).toContain('--uri threadnote://resources/repos/orion-worker');
-    expect(output).not.toContain('--uri threadnote://user/denys/memories/durable/projects/threadnote');
-  });
-
-  it('does not duplicate current project durable scope through workset expansion', async () => {
-    const dir = await mkdtemp(join(tmpdir(), 'threadnote-recall-workset-dedupe-'));
-    const repoRoot = join(dir, 'easy-to-type');
-    const manifestPath = join(dir, 'seed-manifest.yaml');
-    const previousCallerCwd = process.env.THREADNOTE_CALLER_CWD;
-    const gitEnvKeys = ['GIT_COMMON_DIR', 'GIT_DIR', 'GIT_INDEX_FILE', 'GIT_WORK_TREE'] as const;
-    const previousGitEnv = new Map(gitEnvKeys.map(key => [key, process.env[key]]));
-    for (const key of gitEnvKeys) {
-      delete process.env[key];
-    }
-    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
-
-    try {
-      await mkdir(repoRoot);
-      await run(utils.runCommand('git', ['init'], {cwd: repoRoot}));
-      await run(
-        utils.runCommand('git', ['remote', 'add', 'origin', 'git@github.com:Kashkovsky/threadnote.git'], {
-          cwd: repoRoot,
-        }),
-      );
-      await writeFile(
-        manifestPath,
-        [
-          'version: 1',
-          'projects:',
-          '  - name: threadnote',
-          `    path: ${repoRoot}`,
-          '    uri: threadnote://resources/repos/threadnote',
-          '    seed: []',
-          'worksets:',
-          '  - name: platform',
-          '    projects: [threadnote]',
-          '',
-        ].join('\n'),
-        'utf8',
-      );
-      process.env.THREADNOTE_CALLER_CWD = repoRoot;
-
-      await run(
-        runRecall(
-          {...runtime, manifestPath},
-          {dryRun: true, query: 'current repo latest handoff', workset: 'platform'},
+      const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+      try {
+        yield* Effect.promise(() => mkdir(repoRoot));
+        yield* utils
+          .runCommand('git', ['init'], {
+            cwd: repoRoot,
+          })
+          .pipe(provideTestLayer(ApplicationLayer));
+        yield* utils
+          .runCommand('git', ['remote', 'add', 'origin', 'git@github.com:Kashkovsky/threadnote.git'], {
+            cwd: repoRoot,
+          })
+          .pipe(provideTestLayer(ApplicationLayer));
+        process.env.THREADNOTE_CALLER_CWD = repoRoot;
+        yield* runRecall(
+          {
+            ...runtime,
+            manifestPath: join(dir, 'missing-seed-manifest.yaml'),
+          },
+          {
+            dryRun: true,
+            query: 'current repo latest handoff',
+          },
+        ).pipe(provideTestLayer(ApplicationLayer));
+      } finally {
+        if (previousCallerCwd === undefined) {
+          delete process.env.THREADNOTE_CALLER_CWD;
+        } else {
+          process.env.THREADNOTE_CALLER_CWD = previousCallerCwd;
+        }
+        for (const key of gitEnvKeys) {
+          const value = previousGitEnv.get(key);
+          if (value === undefined) {
+            delete process.env[key];
+          } else {
+            process.env[key] = value;
+          }
+        }
+        yield* Effect.promise(() =>
+          rm(dir, {
+            force: true,
+            recursive: true,
+          }),
+        );
+      }
+      const output = log.mock.calls.map(call => call.join(' ')).join('\n');
+      expect(output).toContain('current repo latest handoff');
+      expect(output).toContain('threadnote');
+      expect(output).toContain('--uri threadnote://user/denys/memories/durable/projects/threadnote');
+      expect(output).toContain('--uri threadnote://user/denys/memories/handoffs/active/threadnote');
+      expect(output).not.toContain('easy-to-type');
+    }),
+  );
+  effectIt.effect('prefers a project named by the query over the current workspace project', () =>
+    Effect.gen(function* () {
+      const dir = yield* Effect.promise(() => mkdtemp(join(tmpdir(), 'threadnote-recall-query-project-')));
+      const repoRoot = join(dir, 'easy-to-type');
+      const manifestPath = join(dir, 'seed-manifest.yaml');
+      const previousCallerCwd = process.env.THREADNOTE_CALLER_CWD;
+      const gitEnvKeys = ['GIT_COMMON_DIR', 'GIT_DIR', 'GIT_INDEX_FILE', 'GIT_WORK_TREE'] as const;
+      const previousGitEnv = new Map(gitEnvKeys.map(key => [key, process.env[key]]));
+      for (const key of gitEnvKeys) {
+        delete process.env[key];
+      }
+      const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+      try {
+        yield* Effect.promise(() => mkdir(repoRoot));
+        yield* utils
+          .runCommand('git', ['init'], {
+            cwd: repoRoot,
+          })
+          .pipe(provideTestLayer(ApplicationLayer));
+        yield* utils
+          .runCommand('git', ['remote', 'add', 'origin', 'git@github.com:Kashkovsky/threadnote.git'], {
+            cwd: repoRoot,
+          })
+          .pipe(provideTestLayer(ApplicationLayer));
+        yield* Effect.promise(() =>
+          writeFile(
+            manifestPath,
+            [
+              'version: 1',
+              'projects:',
+              '  - name: threadnote',
+              `    path: ${repoRoot}`,
+              '    uri: threadnote://resources/repos/threadnote',
+              '    seed: []',
+              '  - name: orion-worker',
+              `    path: ${dir}/orion-worker`,
+              '    uri: threadnote://resources/repos/orion-worker',
+              '    seed: []',
+              '',
+            ].join('\n'),
+            'utf8',
+          ),
+        );
+        process.env.THREADNOTE_CALLER_CWD = repoRoot;
+        yield* runRecall(
+          {
+            ...runtime,
+            manifestPath,
+          },
+          {
+            dryRun: true,
+            query: 'worker lease renewal',
+          },
+        ).pipe(provideTestLayer(ApplicationLayer));
+      } finally {
+        if (previousCallerCwd === undefined) {
+          delete process.env.THREADNOTE_CALLER_CWD;
+        } else {
+          process.env.THREADNOTE_CALLER_CWD = previousCallerCwd;
+        }
+        for (const key of gitEnvKeys) {
+          const value = previousGitEnv.get(key);
+          if (value === undefined) {
+            delete process.env[key];
+          } else {
+            process.env[key] = value;
+          }
+        }
+        yield* Effect.promise(() =>
+          rm(dir, {
+            force: true,
+            recursive: true,
+          }),
+        );
+      }
+      const output = log.mock.calls.map(call => call.join(' ')).join('\n');
+      expect(output).toContain('--uri threadnote://user/denys/memories/durable/projects/orion-worker');
+      expect(output).toContain('--uri threadnote://resources/repos/orion-worker');
+      expect(output).not.toContain('--uri threadnote://user/denys/memories/durable/projects/threadnote');
+    }),
+  );
+  effectIt.effect('does not duplicate current project durable scope through workset expansion', () =>
+    Effect.gen(function* () {
+      const dir = yield* Effect.promise(() => mkdtemp(join(tmpdir(), 'threadnote-recall-workset-dedupe-')));
+      const repoRoot = join(dir, 'easy-to-type');
+      const manifestPath = join(dir, 'seed-manifest.yaml');
+      const previousCallerCwd = process.env.THREADNOTE_CALLER_CWD;
+      const gitEnvKeys = ['GIT_COMMON_DIR', 'GIT_DIR', 'GIT_INDEX_FILE', 'GIT_WORK_TREE'] as const;
+      const previousGitEnv = new Map(gitEnvKeys.map(key => [key, process.env[key]]));
+      for (const key of gitEnvKeys) {
+        delete process.env[key];
+      }
+      const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+      try {
+        yield* Effect.promise(() => mkdir(repoRoot));
+        yield* utils
+          .runCommand('git', ['init'], {
+            cwd: repoRoot,
+          })
+          .pipe(provideTestLayer(ApplicationLayer));
+        yield* utils
+          .runCommand('git', ['remote', 'add', 'origin', 'git@github.com:Kashkovsky/threadnote.git'], {
+            cwd: repoRoot,
+          })
+          .pipe(provideTestLayer(ApplicationLayer));
+        yield* Effect.promise(() =>
+          writeFile(
+            manifestPath,
+            [
+              'version: 1',
+              'projects:',
+              '  - name: threadnote',
+              `    path: ${repoRoot}`,
+              '    uri: threadnote://resources/repos/threadnote',
+              '    seed: []',
+              'worksets:',
+              '  - name: platform',
+              '    projects: [threadnote]',
+              '',
+            ].join('\n'),
+            'utf8',
+          ),
+        );
+        process.env.THREADNOTE_CALLER_CWD = repoRoot;
+        yield* runRecall(
+          {
+            ...runtime,
+            manifestPath,
+          },
+          {
+            dryRun: true,
+            query: 'current repo latest handoff',
+            workset: 'platform',
+          },
+        ).pipe(provideTestLayer(ApplicationLayer));
+      } finally {
+        if (previousCallerCwd === undefined) {
+          delete process.env.THREADNOTE_CALLER_CWD;
+        } else {
+          process.env.THREADNOTE_CALLER_CWD = previousCallerCwd;
+        }
+        for (const key of gitEnvKeys) {
+          const value = previousGitEnv.get(key);
+          if (value === undefined) {
+            delete process.env[key];
+          } else {
+            process.env[key] = value;
+          }
+        }
+        yield* Effect.promise(() =>
+          rm(dir, {
+            force: true,
+            recursive: true,
+          }),
+        );
+      }
+      const output = log.mock.calls.map(call => call.join(' ')).join('\n');
+      const durableScope = '--uri threadnote://user/denys/memories/durable/projects/threadnote';
+      expect(output.split(durableScope)).toHaveLength(2);
+    }),
+  );
+  effectIt.effect('honors an explicit workset when inference is disabled', () =>
+    Effect.gen(function* () {
+      const dir = yield* Effect.promise(() => mkdtemp(join(tmpdir(), 'threadnote-recall-workset-')));
+      const manifestPath = join(dir, 'seed-manifest.yaml');
+      yield* Effect.promise(() =>
+        writeFile(
+          manifestPath,
+          [
+            'version: 1',
+            'projects:',
+            '  - name: alpha',
+            `    path: ${dir}/alpha`,
+            '    uri: threadnote://resources/repos/alpha',
+            '    seed: []',
+            'worksets:',
+            '  - name: platform',
+            '    projects: [alpha]',
+            '',
+          ].join('\n'),
+          'utf8',
         ),
       );
-    } finally {
-      if (previousCallerCwd === undefined) {
-        delete process.env.THREADNOTE_CALLER_CWD;
-      } else {
-        process.env.THREADNOTE_CALLER_CWD = previousCallerCwd;
-      }
-      for (const key of gitEnvKeys) {
-        const value = previousGitEnv.get(key);
-        if (value === undefined) {
-          delete process.env[key];
-        } else {
-          process.env[key] = value;
-        }
-      }
-      await rm(dir, {force: true, recursive: true});
-    }
-
-    const output = log.mock.calls.map(call => call.join(' ')).join('\n');
-    const durableScope = '--uri threadnote://user/denys/memories/durable/projects/threadnote';
-    expect(output.split(durableScope)).toHaveLength(2);
-  });
-
-  it('honors an explicit workset when inference is disabled', async () => {
-    const dir = await mkdtemp(join(tmpdir(), 'threadnote-recall-workset-'));
-    const manifestPath = join(dir, 'seed-manifest.yaml');
-    await writeFile(
-      manifestPath,
-      [
-        'version: 1',
-        'projects:',
-        '  - name: alpha',
-        `    path: ${dir}/alpha`,
-        '    uri: threadnote://resources/repos/alpha',
-        '    seed: []',
-        'worksets:',
-        '  - name: platform',
-        '    projects: [alpha]',
-        '',
-      ].join('\n'),
-      'utf8',
-    );
-    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
-
-    try {
-      await run(
-        runRecall(
-          {...runtime, manifestPath},
+      const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+      try {
+        yield* runRecall(
+          {
+            ...runtime,
+            manifestPath,
+          },
           {
             dryRun: true,
             inferScope: false,
             query: 'current status',
             workset: 'platform',
           },
+        ).pipe(provideTestLayer(ApplicationLayer));
+      } finally {
+        yield* Effect.promise(() =>
+          rm(dir, {
+            force: true,
+            recursive: true,
+          }),
+        );
+      }
+      const output = log.mock.calls.map(call => call.join(' ')).join('\n');
+      expect(output).toContain('Workset scope: platform (alpha)');
+      expect(output).toContain('threadnote://resources/repos/alpha');
+    }),
+  );
+  effectIt.effect('reports an unknown explicit workset instead of running unscoped', () =>
+    Effect.gen(function* () {
+      const dir = yield* Effect.promise(() => mkdtemp(join(tmpdir(), 'threadnote-recall-missing-workset-')));
+      const manifestPath = join(dir, 'seed-manifest.yaml');
+      yield* Effect.promise(() =>
+        writeFile(
+          manifestPath,
+          [
+            'version: 1',
+            'projects:',
+            '  - name: alpha',
+            `    path: ${dir}/alpha`,
+            '    uri: threadnote://resources/repos/alpha',
+            '    seed: []',
+            'worksets:',
+            '  - name: platform',
+            '    projects: [alpha]',
+            '',
+          ].join('\n'),
+          'utf8',
         ),
       );
-    } finally {
-      await rm(dir, {force: true, recursive: true});
-    }
-
-    const output = log.mock.calls.map(call => call.join(' ')).join('\n');
-    expect(output).toContain('Workset scope: platform (alpha)');
-    expect(output).toContain('threadnote://resources/repos/alpha');
-  });
-
-  it('reports an unknown explicit workset instead of running unscoped', async () => {
-    const dir = await mkdtemp(join(tmpdir(), 'threadnote-recall-missing-workset-'));
-    const manifestPath = join(dir, 'seed-manifest.yaml');
-    await writeFile(
-      manifestPath,
-      [
-        'version: 1',
-        'projects:',
-        '  - name: alpha',
-        `    path: ${dir}/alpha`,
-        '    uri: threadnote://resources/repos/alpha',
-        '    seed: []',
-        'worksets:',
-        '  - name: platform',
-        '    projects: [alpha]',
-        '',
-      ].join('\n'),
-      'utf8',
-    );
-    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
-
-    try {
-      await expect(
-        run(
-          runRecall(
-            {...runtime, manifestPath},
-            {
-              dryRun: true,
-              query: 'current status',
-              workset: 'platfrom',
-            },
+      const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+      try {
+        expect(
+          String(
+            yield* Effect.flip(
+              runRecall(
+                {
+                  ...runtime,
+                  manifestPath,
+                },
+                {
+                  dryRun: true,
+                  query: 'current status',
+                  workset: 'platfrom',
+                },
+              ).pipe(provideTestLayer(ApplicationLayer)),
+            ),
           ),
+        ).toContain(`No workset named "platfrom" in ${manifestPath}.`);
+      } finally {
+        yield* Effect.promise(() =>
+          rm(dir, {
+            force: true,
+            recursive: true,
+          }),
+        );
+      }
+      expect(log.mock.calls.map(call => call.join(' ')).join('\n')).not.toContain('/ov search');
+    }),
+  );
+  effectIt.effect('validates an explicit workset before a pinned uri search', () =>
+    Effect.gen(function* () {
+      const dir = yield* Effect.promise(() => mkdtemp(join(tmpdir(), 'threadnote-recall-pinned-workset-')));
+      const manifestPath = join(dir, 'seed-manifest.yaml');
+      yield* Effect.promise(() =>
+        writeFile(
+          manifestPath,
+          [
+            'version: 1',
+            'projects:',
+            '  - name: alpha',
+            `    path: ${dir}/alpha`,
+            '    uri: threadnote://resources/repos/alpha',
+            '    seed: []',
+            'worksets:',
+            '  - name: platform',
+            '    projects: [alpha]',
+            '',
+          ].join('\n'),
+          'utf8',
         ),
-      ).rejects.toThrow(`No workset named "platfrom" in ${manifestPath}.`);
-    } finally {
-      await rm(dir, {force: true, recursive: true});
-    }
-    expect(log.mock.calls.map(call => call.join(' ')).join('\n')).not.toContain('/ov search');
-  });
-
-  it('validates an explicit workset before a pinned uri search', async () => {
-    const dir = await mkdtemp(join(tmpdir(), 'threadnote-recall-pinned-workset-'));
-    const manifestPath = join(dir, 'seed-manifest.yaml');
-    await writeFile(
-      manifestPath,
-      [
-        'version: 1',
-        'projects:',
-        '  - name: alpha',
-        `    path: ${dir}/alpha`,
-        '    uri: threadnote://resources/repos/alpha',
-        '    seed: []',
-        'worksets:',
-        '  - name: platform',
-        '    projects: [alpha]',
-        '',
-      ].join('\n'),
-      'utf8',
-    );
-    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
-
-    try {
-      await expect(
-        run(
-          runRecall(
-            {...runtime, manifestPath},
-            {
-              dryRun: true,
-              query: 'current status',
-              uri: 'threadnote://resources/repos/alpha',
-              workset: 'platfrom',
-            },
+      );
+      const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+      try {
+        expect(
+          String(
+            yield* Effect.flip(
+              runRecall(
+                {
+                  ...runtime,
+                  manifestPath,
+                },
+                {
+                  dryRun: true,
+                  query: 'current status',
+                  uri: 'threadnote://resources/repos/alpha',
+                  workset: 'platfrom',
+                },
+              ).pipe(provideTestLayer(ApplicationLayer)),
+            ),
           ),
-        ),
-      ).rejects.toThrow(`No workset named "platfrom" in ${manifestPath}.`);
-    } finally {
-      await rm(dir, {force: true, recursive: true});
-    }
-    expect(log.mock.calls.map(call => call.join(' ')).join('\n')).not.toContain('/ov search');
-  });
+        ).toContain(`No workset named "platfrom" in ${manifestPath}.`);
+      } finally {
+        yield* Effect.promise(() =>
+          rm(dir, {
+            force: true,
+            recursive: true,
+          }),
+        );
+      }
+      expect(log.mock.calls.map(call => call.join(' ')).join('\n')).not.toContain('/ov search');
+    }),
+  );
 });
-
 describe('stripAdvancedSearchFlags', () => {
   it('removes --threshold and --level with their values, keeping the rest', () => {
     expect(
       stripAdvancedSearchFlags(['search', 'q', '--threshold', '0.45', '--level', '2', '--uri', 'threadnote://x']),
     ).toEqual(['search', 'q', '--uri', 'threadnote://x']);
   });
-
   it('is a no-op when no advanced flags are present', () => {
     expect(stripAdvancedSearchFlags(['search', 'q', '--node-limit', '5'])).toEqual([
       'search',

@@ -1,3 +1,4 @@
+import {ScriptError} from './effect/errors.js';
 import {Database} from 'bun:sqlite';
 
 const MEBIBYTE = 1024 * 1024;
@@ -34,7 +35,7 @@ export function assessVectorDatabaseStorage(
   incremental: VectorDatabaseStorageMeasurement,
 ): VectorDatabaseStorageBudget {
   if (!Number.isSafeInteger(documents) || documents <= 0) {
-    throw new Error('Vector database storage budget requires a positive document count.');
+    throw new ScriptError('Vector database storage budget requires a positive document count.');
   }
   assertMeasurement(initial);
   assertMeasurement(incremental);
@@ -61,18 +62,18 @@ function assertMeasurement(measurement: VectorDatabaseStorageMeasurement): void 
     !Number.isSafeInteger(measurement.databaseBytes) ||
     measurement.databaseBytes < 0
   ) {
-    throw new Error('Invalid vector database storage measurement.');
+    throw new ScriptError('Invalid vector database storage measurement.');
   }
 }
 
 function safeProduct(left: number, right: number, label: string): number {
   const value = left * right;
-  if (!Number.isSafeInteger(value) || value < 0) throw new Error(`Invalid ${label}.`);
+  if (!Number.isSafeInteger(value) || value < 0) throw new ScriptError(`Invalid ${label}.`);
   return value;
 }
 
 function safeSum(left: number, right: number, label: string): number {
   const value = left + right;
-  if (!Number.isSafeInteger(value) || value < 0) throw new Error(`Invalid ${label}.`);
+  if (!Number.isSafeInteger(value) || value < 0) throw new ScriptError(`Invalid ${label}.`);
   return value;
 }

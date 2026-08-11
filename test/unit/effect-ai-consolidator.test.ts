@@ -1,3 +1,4 @@
+import {provideTestLayer} from '../helpers/effect-layer.js';
 import {expect, it} from '@effect/vitest';
 import {Effect, Layer} from 'effect';
 import {describe} from 'vitest';
@@ -29,7 +30,7 @@ describe('Effect AI consolidator', () => {
 
   it.effect('keeps application code provider-independent', () =>
     consolidateWithAiEffect('combine these memories').pipe(
-      Effect.provide(
+      provideTestLayer(
         Layer.succeed(AiConsolidator, {
           consolidate: prompt => Effect.succeed(`draft:${prompt}`),
         }),

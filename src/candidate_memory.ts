@@ -89,6 +89,10 @@ interface CandidateAuditTransition {
   readonly memoryUri?: string;
 }
 
+class CandidateMemoryError extends Error {
+  readonly _tag = 'CandidateMemoryError' as const;
+}
+
 const MEMORY_READ_CONCURRENCY = 16;
 const MAX_CANDIDATE_AUDIT_EVENTS = 5_000;
 const MAX_CANDIDATE_REVIEW_AUDIT_EVENTS = 100;
@@ -353,7 +357,7 @@ export const saveCandidateReview = Effect.fn('candidate.saveReview')(function* (
   const serialized = `${JSON.stringify(review, undefined, 2)}\n`;
   if (new TextEncoder().encode(serialized).byteLength > MAX_CANDIDATE_REVIEW_BYTES) {
     return yield* Effect.fail(
-      new Error(`Candidate review exceeds the ${MAX_CANDIDATE_REVIEW_BYTES}-byte persistence limit.`),
+      new CandidateMemoryError(`Candidate review exceeds the ${MAX_CANDIDATE_REVIEW_BYTES}-byte persistence limit.`),
     );
   }
   yield* writePrivateFileAtomically(fs, path, serialized);
@@ -372,7 +376,7 @@ export const loadCandidateReview = Effect.fn('candidate.loadReview')(function* (
   const raw = yield* fs.readFileString(path);
   const review = yield* Effect.try({
     try: () => parseCandidateReview(JSON.parse(raw)),
-    catch: cause => new Error(`Invalid candidate review ${reviewId}: ${errorText(cause)}`),
+    catch: cause => new CandidateMemoryError(`Invalid candidate review ${reviewId}: ${errorText(cause)}`),
   });
   yield* syncCandidateAudit(agentContextHome, review.auditEvents);
   return review;
@@ -760,7 +764,7 @@ function parseCandidateReview(value: unknown): CandidateReview {
     !('candidates' in value) ||
     !Array.isArray(value.candidates)
   ) {
-    throw new Error('unsupported review document');
+    throw new CandidateMemoryError('unsupported review document');
   }
   const review = value as CandidateReview;
   return {

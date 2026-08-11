@@ -1,3 +1,4 @@
+import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import {BunRuntime} from '@effect/platform-bun';
 import {Effect, FileSystem, Path} from 'effect';
 import {ApplicationLayer} from '../src/effect/runtime.js';
@@ -48,7 +49,7 @@ export function validateMixedNxBazelGate(evidence: MixedNxBazelGateEvidence, bud
   ) {
     failures.push('post-target closure was not bounded');
   }
-  if (failures.length > 0) throw new Error(`Mixed Nx/Bazel P2 gate failed: ${failures.join('; ')}`);
+  if (failures.length > 0) throw new ScriptError(`Mixed Nx/Bazel P2 gate failed: ${failures.join('; ')}`);
 }
 
 const run = Effect.fn('mixedNxBazelGate.run')(function* (args: readonly string[] = process.argv.slice(2)) {
@@ -57,9 +58,9 @@ const run = Effect.fn('mixedNxBazelGate.run')(function* (args: readonly string[]
   for (let index = 0; index < args.length; index += 1) {
     if (args[index] === '--evidence') evidencePath = args[++index];
     else if (args[index] === '--budgets') budgetsPath = args[++index]!;
-    else throw new Error(`Unknown mixed-monorepo gate option: ${args[index]}`);
+    else throw new ScriptError(`Unknown mixed-monorepo gate option: ${args[index]}`);
   }
-  if (!evidencePath) throw new Error('--evidence requires a JSON artifact.');
+  if (!evidencePath) throw new ScriptError('--evidence requires a JSON artifact.');
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const [evidence, budgets] = yield* Effect.all([
@@ -69,4 +70,4 @@ const run = Effect.fn('mixedNxBazelGate.run')(function* (args: readonly string[]
   validateMixedNxBazelGate(evidence as MixedNxBazelGateEvidence, budgets as MixedNxBazelGateBudgets);
 });
 
-if (import.meta.main) BunRuntime.runMain(run().pipe(Effect.provide(ApplicationLayer)));
+if (import.meta.main) BunRuntime.runMain(provideScriptLayer(run(), ApplicationLayer));

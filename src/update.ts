@@ -43,6 +43,10 @@ import {
   formatShellCommand,
 } from './utils.js';
 
+class UpdateOperationError extends Error {
+  readonly _tag = 'UpdateOperationError' as const;
+}
+
 const THREADNOTE_COMMAND = 'threadnote';
 const DEFAULT_RELEASE_SOURCE = 'https://api.github.com/repos/Kashkovsky/threadnote/releases?per_page=100';
 const ALLOW_UNTRUSTED_SOURCE_ENV = 'THREADNOTE_ALLOW_UNTRUSTED_RELEASE_SOURCE';
@@ -181,7 +185,7 @@ export const runUpdate = Effect.fn('runUpdate')(function* (config: RuntimeConfig
   yield* Console.log(keyValue('Release source', info.source));
   if (requiresFreshStandaloneInstall(info.currentVersion)) {
     return yield* Effect.fail(
-      new Error(
+      new UpdateOperationError(
         'Threadnote 3 cannot update across the standalone-runtime boundary. Install Threadnote 4 fresh from the GitHub release installer.',
       ),
     );
@@ -288,13 +292,13 @@ const installStandaloneRelease = Effect.fn('update.installStandaloneRelease')(fu
   const releases = yield* fetchAvailableReleases(options.source);
   const release = releases.find(candidate => compareVersions(candidate.version, options.version) === 0);
   if (!release) {
-    return yield* Effect.fail(new Error(`GitHub release ${options.version} is no longer available.`));
+    return yield* Effect.fail(new UpdateOperationError(`GitHub release ${options.version} is no longer available.`));
   }
   const archiveAsset = release.assets.find(asset => asset.name === artifactName);
   const checksumAsset = release.assets.find(asset => asset.name === `${artifactName}.sha256`);
   if (!archiveAsset || !checksumAsset) {
     return yield* Effect.fail(
-      new Error(
+      new UpdateOperationError(
         `Release ${options.version} does not publish ${artifactName} and ${artifactName}.sha256 for this platform.`,
       ),
     );
@@ -330,7 +334,9 @@ const installStandaloneRelease = Effect.fn('update.installStandaloneRelease')(fu
       const actualChecksum = yield* sha256FileHex(archivePath);
       if (actualChecksum !== expectedChecksum) {
         return yield* Effect.fail(
-          new Error(`Checksum mismatch for ${artifactName}: expected ${expectedChecksum}, got ${actualChecksum}.`),
+          new UpdateOperationError(
+            `Checksum mismatch for ${artifactName}: expected ${expectedChecksum}, got ${actualChecksum}.`,
+          ),
         );
       }
       yield* extractGzipTar(archivePath, extractedRoot);
@@ -357,11 +363,13 @@ export const verifyOfficialPlatformSignature = Effect.fn('update.verifyOfficialP
       const type = yield* runCommandEffect('file', ['--brief', file]);
       if (!type.stdout.includes('Mach-O')) continue;
       yield* runCommandEffect('codesign', ['--verify', '--strict', '--verbose=2', file]).pipe(
-        Effect.mapError(cause => new Error(`Release signature validation failed for ${file}.`, {cause})),
+        Effect.mapError(cause => new UpdateOperationError(`Release signature validation failed for ${file}.`, {cause})),
       );
     }
     yield* runCommandEffect('codesign', ['--verify', '--strict', '--verbose=2', executable]).pipe(
-      Effect.mapError(cause => new Error(`Release signature validation failed for ${executable}.`, {cause})),
+      Effect.mapError(
+        cause => new UpdateOperationError(`Release signature validation failed for ${executable}.`, {cause}),
+      ),
     );
     return;
   }
@@ -378,7 +386,7 @@ export const verifyOfficialPlatformSignature = Effect.fn('update.verifyOfficialP
       THREADNOTE_SIGNED_EXECUTABLE: executable,
       THREADNOTE_SIGNED_RUNTIME: path.join(releaseRoot, 'runtime'),
     },
-  }).pipe(Effect.mapError(cause => new Error('Release Authenticode validation failed.', {cause})));
+  }).pipe(Effect.mapError(cause => new UpdateOperationError('Release Authenticode validation failed.', {cause})));
 });
 
 const findFilesRecursively = Effect.fn('update.findFilesRecursively')(function* (
@@ -406,7 +414,7 @@ export function releaseArtifactName(system: Pick<SystemInfoShape, 'architecture'
   const platform = system.platform === 'win32' ? 'windows' : system.platform === 'darwin' ? 'darwin' : system.platform;
   const architecture = system.architecture === 'aarch64' ? 'arm64' : system.architecture;
   if (!['darwin', 'linux', 'windows'].includes(platform) || !['arm64', 'x64'].includes(architecture)) {
-    throw new Error(`No standalone Threadnote artifact is available for ${platform}-${architecture}.`);
+    throw new UpdateOperationError(`No standalone Threadnote artifact is available for ${platform}-${architecture}.`);
   }
   return `threadnote-${platform}-${architecture}.tar.gz`;
 }
@@ -425,7 +433,7 @@ export function parseReleaseChecksum(content: string, artifactName: string): str
     .find(value => value.length > 0);
   const match = line ? /^([a-f0-9]{64})(?:\s+\*?(.+))?$/i.exec(line) : undefined;
   if (!match || (match[2] !== undefined && match[2] !== artifactName)) {
-    throw new Error(`Invalid checksum document for ${artifactName}.`);
+    throw new UpdateOperationError(`Invalid checksum document for ${artifactName}.`);
   }
   return match[1]!.toLowerCase();
 }
@@ -440,7 +448,7 @@ const validateExtractedRelease = Effect.fn('update.validateExtractedRelease')(fu
   const metadataContent = yield* fs.readFileString(path.join(releaseRoot, 'release.json'));
   const metadata = yield* Effect.try({
     try: () => JSON.parse(metadataContent) as unknown,
-    catch: cause => new Error('Release metadata is invalid.', {cause}),
+    catch: cause => new UpdateOperationError('Release metadata is invalid.', {cause}),
   });
   const executable = platform === 'win32' ? 'threadnote.exe' : 'threadnote';
   if (
@@ -453,7 +461,9 @@ const validateExtractedRelease = Effect.fn('update.validateExtractedRelease')(fu
     !(yield* fs.exists(path.join(releaseRoot, executable))) ||
     !(yield* fs.exists(path.join(releaseRoot, 'runtime', 'node-llama-cpp.js')))
   ) {
-    return yield* Effect.fail(new Error(`Release artifact validation failed for Threadnote ${version}.`));
+    return yield* Effect.fail(
+      new UpdateOperationError(`Release artifact validation failed for Threadnote ${version}.`),
+    );
   }
   yield* validateCodeGraphAssets(fs, path, releaseRoot);
   if (platform !== 'win32') {
@@ -470,10 +480,10 @@ const validateCodeGraphAssets = Effect.fn('update.validateCodeGraphAssets')(func
   const content = yield* fs.readFileString(manifestPath);
   const manifest = yield* Effect.try({
     try: () => JSON.parse(content) as unknown,
-    catch: cause => new Error('Code graph asset manifest is invalid.', {cause}),
+    catch: cause => new UpdateOperationError('Code graph asset manifest is invalid.', {cause}),
   });
   if (!isJsonObject(manifest) || manifest.version !== 1 || !isJsonObject(manifest.runtime)) {
-    return yield* Effect.fail(new Error('Code graph asset manifest is invalid.'));
+    return yield* Effect.fail(new UpdateOperationError('Code graph asset manifest is invalid.'));
   }
   const grammars = isJsonObject(manifest.grammars) ? manifest.grammars : {};
   const expected = [
@@ -500,19 +510,25 @@ const validateCodeGraphAssets = Effect.fn('update.validateCodeGraphAssets')(func
         ? asset.metadata.id !== asset.id
         : !Number.isInteger(asset.metadata.abi) || Number(asset.metadata.abi) <= 0)
     ) {
-      return yield* Effect.fail(new Error(`Code graph asset metadata is invalid for ${asset.id}.`));
+      return yield* Effect.fail(new UpdateOperationError(`Code graph asset metadata is invalid for ${asset.id}.`));
     }
     const assetPath = path.join(releaseRoot, 'assets', 'code-graph', ...asset.metadata.path.split('/'));
     if (!(yield* fs.exists(assetPath)) || (yield* sha256FileHex(assetPath)) !== asset.metadata.sha256) {
-      return yield* Effect.fail(new Error(`Code graph asset checksum validation failed for ${asset.metadata.path}.`));
+      return yield* Effect.fail(
+        new UpdateOperationError(`Code graph asset checksum validation failed for ${asset.metadata.path}.`),
+      );
     }
     if (!asset.runtime) {
       if (typeof asset.metadata.license !== 'string') {
-        return yield* Effect.fail(new Error(`Code graph asset license metadata is missing for ${asset.id}.`));
+        return yield* Effect.fail(
+          new UpdateOperationError(`Code graph asset license metadata is missing for ${asset.id}.`),
+        );
       }
       const licensePath = path.join(releaseRoot, 'assets', 'code-graph', ...asset.metadata.license.split('/'));
       if (!(yield* fs.exists(licensePath)) || (yield* fs.stat(licensePath)).size <= 0) {
-        return yield* Effect.fail(new Error(`Code graph asset license is missing for ${asset.metadata.license}.`));
+        return yield* Effect.fail(
+          new UpdateOperationError(`Code graph asset license is missing for ${asset.metadata.license}.`),
+        );
       }
       if (typeof asset.metadata.builderLicense === 'string') {
         const builderLicensePath = path.join(
@@ -523,7 +539,9 @@ const validateCodeGraphAssets = Effect.fn('update.validateCodeGraphAssets')(func
         );
         if (!(yield* fs.exists(builderLicensePath)) || (yield* fs.stat(builderLicensePath)).size <= 0) {
           return yield* Effect.fail(
-            new Error(`Code graph asset builder license is missing for ${asset.metadata.builderLicense}.`),
+            new UpdateOperationError(
+              `Code graph asset builder license is missing for ${asset.metadata.builderLicense}.`,
+            ),
           );
         }
       }
@@ -531,7 +549,9 @@ const validateCodeGraphAssets = Effect.fn('update.validateCodeGraphAssets')(func
   }
   const runtimeLicense = path.join(releaseRoot, 'assets', 'code-graph', 'licenses', 'web-tree-sitter.LICENSE');
   if (!(yield* fs.exists(runtimeLicense)) || (yield* fs.stat(runtimeLicense)).size <= 0) {
-    return yield* Effect.fail(new Error('Code graph asset license is missing for web-tree-sitter.LICENSE.'));
+    return yield* Effect.fail(
+      new UpdateOperationError('Code graph asset license is missing for web-tree-sitter.LICENSE.'),
+    );
   }
 });
 
@@ -572,7 +592,7 @@ export const runPostUpdate = Effect.fn('runPostUpdate')(function* (config: Runti
     return yield* Effect.fail(
       applicationError(
         'validate post-update options',
-        new Error('Provide --from-version and --to-version for post-update.'),
+        new UpdateOperationError('Provide --from-version and --to-version for post-update.'),
       ),
     );
   }
@@ -630,7 +650,7 @@ function runStreamingSubcommand(
       return yield* Effect.fail(
         applicationError(
           'run interactive subcommand',
-          new Error(`${formatShellCommand(executable, args)} exited with ${result.exitCode}.`),
+          new UpdateOperationError(`${formatShellCommand(executable, args)} exited with ${result.exitCode}.`),
         ),
       );
     }
@@ -684,7 +704,7 @@ function getUpdateInfo(
 
 export function requestedUpdateChannel(options: Pick<UpdateOptions, 'beta' | 'stable'>): UpdateChannel | undefined {
   if (options.beta === true && options.stable === true) {
-    throw new Error('Choose either --beta or --stable, not both.');
+    throw new UpdateOperationError('Choose either --beta or --stable, not both.');
   }
   if (options.beta === true) {
     return 'beta';
@@ -722,13 +742,16 @@ const fetchAvailableReleases = Effect.fn('update.fetchAvailableReleases')(functi
     Effect.mapError(cause =>
       applicationError(
         'check GitHub for updates',
-        new Error(`Could not check GitHub for updates: ${errorMessage(cause)}`, {cause}),
+        new UpdateOperationError(`Could not check GitHub for updates: ${errorMessage(cause)}`, {cause}),
       ),
     ),
   );
   if (!Array.isArray(response.body)) {
     return yield* Effect.fail(
-      applicationError('check GitHub for updates', new Error('GitHub releases response was not an array.')),
+      applicationError(
+        'check GitHub for updates',
+        new UpdateOperationError('GitHub releases response was not an array.'),
+      ),
     );
   }
   return response.body.flatMap(parseAvailableRelease);
@@ -876,7 +899,7 @@ const runApplicablePostUpdateMigrationsUnlocked = Effect.fn('update.runApplicabl
         return yield* Effect.fail(
           applicationError(
             'verify post-update migration',
-            new Error(
+            new UpdateOperationError(
               `Migration ${migration.id} exited successfully but its filesystem requirements remain pending; it was not marked handled.`,
             ),
           ),
@@ -964,10 +987,10 @@ const readPostUpdateMigrations = Effect.fn('update.readPostUpdateMigrations')(fu
   }
   const parsed = yield* Effect.try({
     try: (): unknown => JSON.parse(raw),
-    catch: cause => new Error(`Could not parse ${POST_UPDATE_MIGRATIONS_FILE}.`, {cause}),
+    catch: cause => new UpdateOperationError(`Could not parse ${POST_UPDATE_MIGRATIONS_FILE}.`, {cause}),
   });
   if (!isJsonObject(parsed) || !Array.isArray(parsed.migrations)) {
-    throw new Error(`${POST_UPDATE_MIGRATIONS_FILE} must contain a migrations array.`);
+    throw new UpdateOperationError(`${POST_UPDATE_MIGRATIONS_FILE} must contain a migrations array.`);
   }
   return parsed.migrations.map(parsePostUpdateMigration);
 });
@@ -982,7 +1005,7 @@ function parsePostUpdateMigration(value: unknown): PostUpdateMigration {
     !Array.isArray(value.commandArgs) ||
     !Array.isArray(value.instructions)
   ) {
-    throw new Error(`Invalid entry in ${POST_UPDATE_MIGRATIONS_FILE}.`);
+    throw new UpdateOperationError(`Invalid entry in ${POST_UPDATE_MIGRATIONS_FILE}.`);
   }
   return {
     appliesToPrereleases: value.appliesToPrereleases === true,
@@ -1019,7 +1042,7 @@ function stableVersionCore(version: string): string {
 function stringArray(value: JsonObject, key: string): readonly string[] {
   const raw = value[key];
   if (!Array.isArray(raw) || !raw.every(item => typeof item === 'string')) {
-    throw new Error(`Invalid ${key} in ${POST_UPDATE_MIGRATIONS_FILE}.`);
+    throw new UpdateOperationError(`Invalid ${key} in ${POST_UPDATE_MIGRATIONS_FILE}.`);
   }
   return raw;
 }
@@ -1052,14 +1075,14 @@ const readPostUpdateState = Effect.fn('update.readPostUpdateState')(function* (c
   const raw = yield* fs.readFileString(statePath);
   const parsedResult = Result.try((): unknown => JSON.parse(raw));
   if (Result.isFailure(parsedResult)) {
-    return yield* Effect.fail(new Error(`Post-update state is invalid and was preserved: ${statePath}`));
+    return yield* Effect.fail(new UpdateOperationError(`Post-update state is invalid and was preserved: ${statePath}`));
   }
   const parsed = parsedResult.success;
   if (!isJsonObject(parsed) || !Array.isArray(parsed.handledMigrationIds)) {
-    return yield* Effect.fail(new Error(`Post-update state is invalid and was preserved: ${statePath}`));
+    return yield* Effect.fail(new UpdateOperationError(`Post-update state is invalid and was preserved: ${statePath}`));
   }
   if (!parsed.handledMigrationIds.every((id): id is string => typeof id === 'string')) {
-    return yield* Effect.fail(new Error(`Post-update state is invalid and was preserved: ${statePath}`));
+    return yield* Effect.fail(new UpdateOperationError(`Post-update state is invalid and was preserved: ${statePath}`));
   }
   return {handledMigrationIds: [...new Set(parsed.handledMigrationIds)].sort()};
 });
@@ -1115,7 +1138,7 @@ export function resolveReleaseSource(
     untrustedSourceAllowed,
   );
   if (normalized !== DEFAULT_RELEASE_SOURCE && !untrustedSourceAllowed) {
-    throw new Error(
+    throw new UpdateOperationError(
       `Refusing custom release source ${normalized}. Use the official GitHub releases API, pass --allow-untrusted-source, or set ${ALLOW_UNTRUSTED_SOURCE_ENV}=1 only for an approved mirror.`,
     );
   }
@@ -1129,7 +1152,7 @@ function normalizeReleaseSource(source: string, untrustedSourceAllowed: boolean)
     url.protocol === 'http:' &&
     (url.hostname === '127.0.0.1' || url.hostname === 'localhost' || url.hostname === '[::1]');
   if (url.protocol !== 'https:' && !localDevelopmentSource) {
-    throw new Error(`Release source must use https: ${source}`);
+    throw new UpdateOperationError(`Release source must use https: ${source}`);
   }
   return url.toString();
 }

@@ -1,8 +1,9 @@
-import {createHash} from 'node:crypto';
-import {mkdtemp, rm} from 'node:fs/promises';
-import {tmpdir} from 'node:os';
-import {join} from 'node:path';
-import {spawn} from 'node:child_process';
+import {TestError} from '../helpers/test-error.js';
+import {createHash} from '../helpers/node-crypto.js';
+import {mkdtemp, rm} from '../helpers/node-fs-promises.js';
+import {tmpdir} from '../helpers/node-os.js';
+import {join} from '../helpers/node-path.js';
+import {spawn} from '../helpers/node-child-process.js';
 import {afterAll, beforeAll, describe, expect, it} from 'vitest';
 import {CODE_GRAPH_PARSER_WORKER_ARGUMENT, LOCAL_MODEL_WORKER_ARGUMENT} from '../../src/worker_protocol.js';
 
@@ -111,9 +112,9 @@ async function runWorker(
     child.once('error', reject);
     child.once('close', code => resolve(code ?? -1));
   });
-  if (exitCode !== 0) throw new Error(`Worker exited ${exitCode}: ${stderr.slice(0, 1_000)}`);
+  if (exitCode !== 0) throw new TestError(`Worker exited ${exitCode}: ${stderr.slice(0, 1_000)}`);
   const lines = stdout.trim().split(/\r?\n/);
-  if (lines.length !== 1 || !lines[0]) throw new Error(`Expected one worker response line, got: ${stdout}`);
+  if (lines.length !== 1 || !lines[0]) throw new TestError(`Expected one worker response line, got: ${stdout}`);
   return JSON.parse(lines[0]) as WorkerResponse;
 }
 

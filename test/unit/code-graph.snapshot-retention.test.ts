@@ -1,5 +1,7 @@
+import {TestError} from '../helpers/test-error.js';
+import {provideTestLayer} from '../helpers/effect-layer.js';
 import {Database} from 'bun:sqlite';
-import {createHash} from 'node:crypto';
+import {createHash} from '../helpers/node-crypto.js';
 import {it as effectIt} from '@effect/vitest';
 import {Deferred, Effect, Fiber} from 'effect';
 import {TestClock} from 'effect/testing';
@@ -70,7 +72,7 @@ describe('code graph ready snapshot retention', () => {
             database.close(false);
           }
         });
-      }).pipe(Effect.provide(ApplicationLayer)),
+      }).pipe(provideTestLayer(ApplicationLayer)),
     ),
   );
 
@@ -189,7 +191,7 @@ describe('code graph ready snapshot retention', () => {
         expect(readSnapshotState(databasePath, superseded.id)).toBeUndefined();
         expect(readSnapshotState(databasePath, base.id)).toBe('ready');
         expect(readSnapshotState(databasePath, current.id)).toBe('ready');
-      }).pipe(Effect.provide(ApplicationLayer)),
+      }).pipe(provideTestLayer(ApplicationLayer)),
     ),
   );
 
@@ -674,6 +676,6 @@ function waitForSnapshotRemoval(databasePath: string, snapshotId: string) {
       if (readSnapshotState(databasePath, snapshotId) === undefined) return;
       yield* Effect.sleep(10);
     }
-    return yield* Effect.fail(new Error(`Timed out waiting for retired snapshot ${snapshotId} to be reclaimed.`));
+    return yield* Effect.fail(new TestError(`Timed out waiting for retired snapshot ${snapshotId} to be reclaimed.`));
   });
 }

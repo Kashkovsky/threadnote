@@ -1,3 +1,4 @@
+import {TestError} from '../helpers/test-error.js';
 import {Database} from 'bun:sqlite';
 import fc from 'fast-check';
 import {afterEach, describe, expect, it} from 'vitest';
@@ -380,7 +381,7 @@ function bridgeFixture(seed: string, options: {readonly consumerSnapshot?: strin
   ]);
   const repositories = [consumer, alpha, beta, protobuf];
   const resolution = resolveCodeGraphCrossRepositoryBridges(repositories);
-  if (resolution.rejections.length > 0 || resolution.bridges.length !== 3) throw new Error('Invalid test fixture.');
+  if (resolution.rejections.length > 0 || resolution.bridges.length !== 3) throw new TestError('Invalid test fixture.');
   return {
     bridges: resolution.bridges,
     members: repositories.map((repository, index) => member(repository, index)),

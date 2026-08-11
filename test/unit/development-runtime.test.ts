@@ -1,5 +1,9 @@
+import {it as effectIt} from '@effect/vitest';
+import {TestError} from '../helpers/test-error.js';
+import {provideTestLayer} from '../helpers/effect-layer.js';
 import fc from 'fast-check';
 import {Effect, FileSystem, Option, Path} from 'effect';
+import {TestClock} from 'effect/testing';
 import {describe, expect, it} from 'vitest';
 import {
   DEVELOPMENT_INSTALL_RECEIPT_VERSION,
@@ -79,85 +83,87 @@ describe('exact-head development runtime', () => {
     );
   });
 
-  it('requires an explicit takeover before another checkout can replace an active development runtime', async () => {
-    const result = await Effect.runPromise(
-      Effect.scoped(
-        Effect.gen(function* () {
-          const fs = yield* FileSystem.FileSystem;
-          const path = yield* Path.Path;
-          const baseSystem = yield* SystemInfo;
-          const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-development-owner-'});
-          const installRoot = path.join(root, 'install');
-          const binRoot = path.join(root, 'bin');
-          const sourceCommit = '9'.repeat(40);
-          const version = developmentBuildVersion('4.0.3', sourceCommit);
-          const releaseRoot = path.join(installRoot, 'versions', version);
-          const executableName = baseSystem.platform === 'win32' ? 'threadnote.exe' : 'threadnote';
-          const firstCheckoutId = '1'.repeat(64);
-          const secondCheckoutId = '2'.repeat(64);
-          yield* writeDevelopmentReleaseFixture(
-            fs,
-            path,
-            releaseRoot,
-            version,
-            sourceCommit,
-            executableName,
-            'owned-development-release',
-          );
-          yield* fs.writeFileString(
-            path.join(installRoot, 'active-release.json'),
-            `${JSON.stringify({releaseRoot, version})}\n`,
-            {mode: 0o600},
-          );
-          const ownerFile = path.join(installRoot, 'development-runtime-owner.json');
-          yield* fs.writeFileString(
-            ownerFile,
-            `${JSON.stringify({schemaVersion: 1, sourceCheckoutId: firstCheckoutId, version})}\n`,
-            {mode: 0o600},
-          );
-          const testSystem = SystemInfo.of({
-            ...baseSystem,
-            environment: () => ({
-              ...baseSystem.environment(),
-              THREADNOTE_BIN_DIR: binRoot,
-              THREADNOTE_INSTALL_ROOT: installRoot,
-            }),
-          });
-          const canonicalInstallRoot = yield* fs.realPath(installRoot);
-          const canonicalVersionsRoot = yield* fs.realPath(path.join(installRoot, 'versions'));
-          const activation = (takeOverGlobalRuntime: boolean) =>
-            activateLocalStandaloneRelease({
-              canonicalInstallRoot,
-              canonicalVersionsRoot,
-              commit: sourceCommit,
-              executableName,
+  effectIt.effect(
+    'requires an explicit takeover before another checkout can replace an active development runtime',
+    () =>
+      Effect.gen(function* () {
+        const result = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const fs = yield* FileSystem.FileSystem;
+            const path = yield* Path.Path;
+            const baseSystem = yield* SystemInfo;
+            const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-development-owner-'});
+            const installRoot = path.join(root, 'install');
+            const binRoot = path.join(root, 'bin');
+            const sourceCommit = '9'.repeat(40);
+            const version = developmentBuildVersion('4.0.3', sourceCommit);
+            const releaseRoot = path.join(installRoot, 'versions', version);
+            const executableName = baseSystem.platform === 'win32' ? 'threadnote.exe' : 'threadnote';
+            const firstCheckoutId = '1'.repeat(64);
+            const secondCheckoutId = '2'.repeat(64);
+            yield* writeDevelopmentReleaseFixture(
+              fs,
+              path,
               releaseRoot,
-              reused: true,
-              sourceCheckoutId: secondCheckoutId,
-              stagedRoot: Option.none(),
-              takeOverGlobalRuntime,
-              terminateSuperseded: false,
               version,
-            }).pipe(
-              Effect.provideService(CommandExecutor, versionCommandExecutor(version)),
-              Effect.provideService(SystemInfo, testSystem),
+              sourceCommit,
+              executableName,
+              'owned-development-release',
             );
+            yield* fs.writeFileString(
+              path.join(installRoot, 'active-release.json'),
+              `${JSON.stringify({releaseRoot, version})}\n`,
+              {mode: 0o600},
+            );
+            const ownerFile = path.join(installRoot, 'development-runtime-owner.json');
+            yield* fs.writeFileString(
+              ownerFile,
+              `${JSON.stringify({schemaVersion: 1, sourceCheckoutId: firstCheckoutId, version})}\n`,
+              {mode: 0o600},
+            );
+            const testSystem = SystemInfo.of({
+              ...baseSystem,
+              environment: () => ({
+                ...baseSystem.environment(),
+                THREADNOTE_BIN_DIR: binRoot,
+                THREADNOTE_INSTALL_ROOT: installRoot,
+              }),
+            });
+            const canonicalInstallRoot = yield* fs.realPath(installRoot);
+            const canonicalVersionsRoot = yield* fs.realPath(path.join(installRoot, 'versions'));
+            const activation = (takeOverGlobalRuntime: boolean) =>
+              activateLocalStandaloneRelease({
+                canonicalInstallRoot,
+                canonicalVersionsRoot,
+                commit: sourceCommit,
+                executableName,
+                releaseRoot,
+                reused: true,
+                sourceCheckoutId: secondCheckoutId,
+                stagedRoot: Option.none(),
+                takeOverGlobalRuntime,
+                terminateSuperseded: false,
+                version,
+              }).pipe(
+                Effect.provideService(CommandExecutor, versionCommandExecutor(version)),
+                Effect.provideService(SystemInfo, testSystem),
+              );
 
-          const refusal = String(yield* activation(false).pipe(Effect.flip));
-          const ownerAfterRefusal = yield* fs.readFileString(ownerFile);
-          const installed = yield* activation(true);
-          const ownerAfterTakeover = yield* fs.readFileString(ownerFile);
-          return {installed, ownerAfterRefusal, ownerAfterTakeover, refusal, root};
-        }),
-      ).pipe(Effect.provide(ApplicationLayer)),
-    );
+            const refusal = String(yield* activation(false).pipe(Effect.flip));
+            const ownerAfterRefusal = yield* fs.readFileString(ownerFile);
+            const installed = yield* activation(true);
+            const ownerAfterTakeover = yield* fs.readFileString(ownerFile);
+            return {installed, ownerAfterRefusal, ownerAfterTakeover, refusal, root};
+          }),
+        ).pipe(provideTestLayer(ApplicationLayer));
 
-    expect(result.refusal).toContain('another source checkout owns');
-    expect(JSON.parse(result.ownerAfterRefusal)).toMatchObject({sourceCheckoutId: '1'.repeat(64)});
-    expect(JSON.parse(result.ownerAfterTakeover)).toMatchObject({sourceCheckoutId: '2'.repeat(64)});
-    expect(result.ownerAfterTakeover).not.toContain(result.root);
-    expect(result.installed.active).toBe(true);
-  });
+        expect(result.refusal).toContain('another source checkout owns');
+        expect(JSON.parse(result.ownerAfterRefusal)).toMatchObject({sourceCheckoutId: '1'.repeat(64)});
+        expect(JSON.parse(result.ownerAfterTakeover)).toMatchObject({sourceCheckoutId: '2'.repeat(64)});
+        expect(result.ownerAfterTakeover).not.toContain(result.root);
+        expect(result.installed.active).toBe(true);
+      }),
+  );
 
   it('derives an unambiguous SHA-bound development version for valid release versions', () => {
     fc.assert(
@@ -201,9 +207,9 @@ describe('exact-head development runtime', () => {
     expect(Option.isNone(parseDevelopmentInstallReceipt({...receipt, sourceCommit: 'short'}))).toBe(true);
   });
 
-  it('validates a managed release without exposing local paths', async () => {
-    const evidence = await Effect.runPromise(
-      Effect.scoped(
+  effectIt.effect('validates a managed release without exposing local paths', () =>
+    Effect.gen(function* () {
+      const evidence = yield* Effect.scoped(
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
@@ -238,23 +244,23 @@ describe('exact-head development runtime', () => {
             Effect.provideService(SystemInfo, testSystem),
           );
         }),
-      ).pipe(Effect.provide(ApplicationLayer)),
-    );
+      ).pipe(provideTestLayer(ApplicationLayer));
 
-    expect(evidence).toMatchObject({
-      runtime: 'bun-test',
-      sourceCommit: 'b'.repeat(40),
-      target: TEST_TARGET,
-    });
-    expect(Object.keys(evidence)).not.toContain('releaseRoot');
-    expect(Object.keys(evidence)).not.toContain('executable');
-  });
+      expect(evidence).toMatchObject({
+        runtime: 'bun-test',
+        sourceCommit: 'b'.repeat(40),
+        target: TEST_TARGET,
+      });
+      expect(Object.keys(evidence)).not.toContain('releaseRoot');
+      expect(Object.keys(evidence)).not.toContain('executable');
+    }),
+  );
 
-  it.skipIf(process.platform === 'win32')(
+  effectIt.effect.skipIf(process.platform === 'win32')(
     'rejects payload content, membership, mode, link, and receipt-permission changes',
-    async () => {
-      const result = await Effect.runPromise(
-        Effect.scoped(
+    () =>
+      Effect.gen(function* () {
+        const result = yield* Effect.scoped(
           Effect.gen(function* () {
             const fs = yield* FileSystem.FileSystem;
             const path = yield* Path.Path;
@@ -350,22 +356,21 @@ describe('exact-head development runtime', () => {
               specialModeFailure,
             };
           }),
-        ).pipe(Effect.provide(ApplicationLayer)),
-      );
+        ).pipe(provideTestLayer(ApplicationLayer));
 
-      expect(result.contentFailure).toContain('payload manifest does not match');
-      expect(result.membershipFailure).toContain('payload manifest does not match');
-      expect(result.modeFailure).toContain('payload manifest does not match');
-      expect(result.specialModeFailure).toContain('unsupported special permission bits');
-      expect(result.linkFailure).toContain('must not contain symbolic links');
-      expect(result.receiptModeFailure).toContain('unsafe permissions');
-      expect(result.receiptSpecialModeFailure).toContain('unsafe permissions');
-    },
+        expect(result.contentFailure).toContain('payload manifest does not match');
+        expect(result.membershipFailure).toContain('payload manifest does not match');
+        expect(result.modeFailure).toContain('payload manifest does not match');
+        expect(result.specialModeFailure).toContain('unsupported special permission bits');
+        expect(result.linkFailure).toContain('must not contain symbolic links');
+        expect(result.receiptModeFailure).toContain('unsafe permissions');
+        expect(result.receiptSpecialModeFailure).toContain('unsafe permissions');
+      }),
   );
 
-  it('rejects an otherwise attested payload compiled for another host target', async () => {
-    const failure = await Effect.runPromise(
-      Effect.scoped(
+  effectIt.effect('rejects an otherwise attested payload compiled for another host target', () =>
+    Effect.gen(function* () {
+      const failure = yield* Effect.scoped(
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
@@ -396,15 +401,15 @@ describe('exact-head development runtime', () => {
             Effect.flip,
           );
         }),
-      ).pipe(Effect.provide(ApplicationLayer)),
-    );
+      ).pipe(provideTestLayer(ApplicationLayer));
 
-    expect(String(failure)).toContain('does not match the exact source commit');
-  });
+      expect(String(failure)).toContain('does not match the exact source commit');
+    }),
+  );
 
-  it.skipIf(process.platform === 'win32')('rejects a symlinked managed release directory', async () => {
-    const failure = await Effect.runPromise(
-      Effect.scoped(
+  effectIt.effect.skipIf(process.platform === 'win32')('rejects a symlinked managed release directory', () =>
+    Effect.gen(function* () {
+      const failure = yield* Effect.scoped(
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
@@ -433,15 +438,15 @@ describe('exact-head development runtime', () => {
             Effect.flip,
           );
         }),
-      ).pipe(Effect.provide(ApplicationLayer)),
-    );
+      ).pipe(provideTestLayer(ApplicationLayer));
 
-    expect(String(failure)).toContain('escapes the versions root');
-  });
+      expect(String(failure)).toContain('escapes the versions root');
+    }),
+  );
 
-  it.skipIf(process.platform === 'win32')('rejects a symlinked managed versions directory', async () => {
-    const failure = await Effect.runPromise(
-      Effect.scoped(
+  effectIt.effect.skipIf(process.platform === 'win32')('rejects a symlinked managed versions directory', () =>
+    Effect.gen(function* () {
+      const failure = yield* Effect.scoped(
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
@@ -471,41 +476,43 @@ describe('exact-head development runtime', () => {
             Effect.flip,
           );
         }),
-      ).pipe(Effect.provide(ApplicationLayer)),
-    );
+      ).pipe(provideTestLayer(ApplicationLayer));
 
-    expect(String(failure)).toContain('versions directory is not canonical');
-  });
+      expect(String(failure)).toContain('versions directory is not canonical');
+    }),
+  );
 
-  it.skipIf(process.platform === 'win32')('rejects a symlinked versions root before build or staging', async () => {
-    const failure = await Effect.runPromise(
-      Effect.scoped(
-        Effect.gen(function* () {
-          const fs = yield* FileSystem.FileSystem;
-          const path = yield* Path.Path;
-          const baseSystem = yield* SystemInfo;
-          const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-development-prestage-link-'});
-          const installRoot = path.join(root, 'install');
-          const outsideVersionsRoot = path.join(root, 'outside-versions');
-          yield* fs.makeDirectory(installRoot, {recursive: true});
-          yield* fs.makeDirectory(outsideVersionsRoot, {recursive: true});
-          yield* fs.symlink(outsideVersionsRoot, path.join(installRoot, 'versions'));
-          return yield* prepareCanonicalDevelopmentInstallRoots(installRoot).pipe(
-            Effect.provideService(SystemInfo, baseSystem),
-            Effect.flip,
-          );
-        }),
-      ).pipe(Effect.provide(ApplicationLayer)),
-    );
+  effectIt.effect.skipIf(process.platform === 'win32')(
+    'rejects a symlinked versions root before build or staging',
+    () =>
+      Effect.gen(function* () {
+        const failure = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const fs = yield* FileSystem.FileSystem;
+            const path = yield* Path.Path;
+            const baseSystem = yield* SystemInfo;
+            const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-development-prestage-link-'});
+            const installRoot = path.join(root, 'install');
+            const outsideVersionsRoot = path.join(root, 'outside-versions');
+            yield* fs.makeDirectory(installRoot, {recursive: true});
+            yield* fs.makeDirectory(outsideVersionsRoot, {recursive: true});
+            yield* fs.symlink(outsideVersionsRoot, path.join(installRoot, 'versions'));
+            return yield* prepareCanonicalDevelopmentInstallRoots(installRoot).pipe(
+              Effect.provideService(SystemInfo, baseSystem),
+              Effect.flip,
+            );
+          }),
+        ).pipe(provideTestLayer(ApplicationLayer));
 
-    expect(String(failure)).toContain('must not be a symbolic link');
-  });
+        expect(String(failure)).toContain('must not be a symbolic link');
+      }),
+  );
 
-  it.skipIf(process.platform === 'win32')(
+  effectIt.effect.skipIf(process.platform === 'win32')(
     'supports a canonical install root reached through a parent symlink',
-    async () => {
-      const evidence = await Effect.runPromise(
-        Effect.scoped(
+    () =>
+      Effect.gen(function* () {
+        const evidence = yield* Effect.scoped(
           Effect.gen(function* () {
             const fs = yield* FileSystem.FileSystem;
             const path = yield* Path.Path;
@@ -544,17 +551,16 @@ describe('exact-head development runtime', () => {
             );
             return {roots, runtime};
           }),
-        ).pipe(Effect.provide(ApplicationLayer)),
-      );
+        ).pipe(provideTestLayer(ApplicationLayer));
 
-      expect(evidence.roots.installRoot).toContain('physical-install');
-      expect(evidence.runtime.version).toContain(`local.g${'9'.repeat(40)}`);
-    },
+        expect(evidence.roots.installRoot).toContain('physical-install');
+        expect(evidence.runtime.version).toContain(`local.g${'9'.repeat(40)}`);
+      }),
   );
 
-  it('binds managed provenance to the active pointer version', async () => {
-    const failure = await Effect.runPromise(
-      Effect.scoped(
+  effectIt.effect('binds managed provenance to the active pointer version', () =>
+    Effect.gen(function* () {
+      const failure = yield* Effect.scoped(
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
@@ -590,15 +596,15 @@ describe('exact-head development runtime', () => {
             Effect.flip,
           );
         }),
-      ).pipe(Effect.provide(ApplicationLayer)),
-    );
+      ).pipe(provideTestLayer(ApplicationLayer));
 
-    expect(String(failure)).toContain('pointer and release version do not match');
-  });
+      expect(String(failure)).toContain('pointer and release version do not match');
+    }),
+  );
 
-  it('revalidates a reused release under the installation lock before writing launchers', async () => {
-    const result = await Effect.runPromise(
-      Effect.scoped(
+  effectIt.effect('revalidates a reused release under the installation lock before writing launchers', () =>
+    Effect.gen(function* () {
+      const result = yield* Effect.scoped(
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
@@ -658,17 +664,17 @@ describe('exact-head development runtime', () => {
             failure: String(failure),
           };
         }),
-      ).pipe(Effect.provide(ApplicationLayer)),
-    );
+      ).pipe(provideTestLayer(ApplicationLayer));
 
-    expect(result.failure).toContain('not reusable');
-    expect(result.activePointerExists).toBe(false);
-    expect(result.binRootExists).toBe(false);
-  });
+      expect(result.failure).toContain('not reusable');
+      expect(result.activePointerExists).toBe(false);
+      expect(result.binRootExists).toBe(false);
+    }),
+  );
 
-  it('reuses a valid same-version release that wins while another stage waits for the lock', async () => {
-    const result = await Effect.runPromise(
-      Effect.scoped(
+  effectIt.effect('reuses a valid same-version release that wins while another stage waits for the lock', () =>
+    Effect.gen(function* () {
+      const result = yield* Effect.scoped(
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
@@ -728,19 +734,19 @@ describe('exact-head development runtime', () => {
             stagedExists: yield* fs.exists(stagedRoot),
           };
         }),
-      ).pipe(Effect.provide(ApplicationLayer)),
-    );
+      ).pipe(provideTestLayer(ApplicationLayer));
 
-    expect(result.installed.reused).toBe(true);
-    expect(result.releaseBytes).toBe('concurrent-winner\n');
-    expect(result.stagedExists).toBe(false);
-  });
+      expect(result.installed.reused).toBe(true);
+      expect(result.releaseBytes).toBe('concurrent-winner\n');
+      expect(result.stagedExists).toBe(false);
+    }),
+  );
 
-  it.skipIf(process.platform === 'win32')(
+  effectIt.effect.skipIf(process.platform === 'win32')(
     'repairs exact managed launcher modes and executes the CLI launcher before success',
-    async () => {
-      const result = await Effect.runPromise(
-        Effect.scoped(
+    () =>
+      Effect.gen(function* () {
+        const result = yield* Effect.scoped(
           Effect.gen(function* () {
             const fs = yield* FileSystem.FileSystem;
             const path = yield* Path.Path;
@@ -792,7 +798,7 @@ describe('exact-head development runtime', () => {
                       : `threadnote v${version}\n`,
                 });
               },
-              executeStreaming: () => Effect.die(new Error('Unexpected streaming command')),
+              executeStreaming: () => Effect.die(new TestError('Unexpected streaming command')),
             });
             const installed = yield* activateLocalStandaloneRelease({
               canonicalInstallRoot: yield* fs.realPath(installRoot),
@@ -815,94 +821,95 @@ describe('exact-head development runtime', () => {
               cliLauncher,
             };
           }),
-        ).pipe(Effect.provide(ApplicationLayer)),
-      );
+        ).pipe(provideTestLayer(ApplicationLayer));
 
-      expect(result.installed.launchersVerified).toBe(true);
-      expect(result.cliMode).toBe(0o755);
-      expect(result.mcpMode).toBe(0o755);
-      expect(result.invocations).toContainEqual({arguments: ['--version'], executable: result.cliLauncher});
-    },
+        expect(result.installed.launchersVerified).toBe(true);
+        expect(result.cliMode).toBe(0o755);
+        expect(result.mcpMode).toBe(0o755);
+        expect(result.invocations).toContainEqual({arguments: ['--version'], executable: result.cliLauncher});
+      }),
   );
 
-  it.skipIf(process.platform === 'win32')('executes the real POSIX CLI launcher before reporting success', async () => {
-    const result = await Effect.runPromise(
-      Effect.scoped(
-        Effect.gen(function* () {
-          const fs = yield* FileSystem.FileSystem;
-          const path = yield* Path.Path;
-          const baseSystem = yield* SystemInfo;
-          const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-development-real-launcher-'});
-          const installRoot = path.join(root, 'install');
-          const binRoot = path.join(root, 'bin');
-          const sourceCommit = '4'.repeat(40);
-          const version = developmentBuildVersion('4.0.0-beta.30', sourceCommit);
-          const releaseRoot = path.join(installRoot, 'versions', version);
-          yield* writeDevelopmentReleaseFixture(
-            fs,
-            path,
-            releaseRoot,
-            version,
-            sourceCommit,
-            'threadnote',
-            'placeholder',
-          );
-          const executable = path.join(releaseRoot, 'threadnote');
-          yield* fs.writeFileString(
-            executable,
-            [
-              '#!/bin/sh',
-              'if [ "$1" = "doctor" ]; then',
-              "  printf '%s\\n' 'Running Threadnote doctor checks.' 'Summary: all checks complete.'",
-              'elif [ "$1" = "--version" ]; then',
-              `  printf '%s\\n' 'threadnote v${version}'`,
-              'else',
-              '  exit 64',
-              'fi',
-              '',
-            ].join('\n'),
-            {mode: 0o755},
-          );
-          yield* fs.chmod(executable, 0o755);
-          yield* refreshDevelopmentReceipt(fs, path, releaseRoot, version, sourceCommit, 'threadnote');
-          const testSystem = SystemInfo.of({
-            ...baseSystem,
-            environment: () => ({
-              ...baseSystem.environment(),
-              THREADNOTE_BIN_DIR: binRoot,
-              THREADNOTE_INSTALL_ROOT: installRoot,
-            }),
-          });
-          const installed = yield* activateLocalStandaloneRelease({
-            canonicalInstallRoot: yield* fs.realPath(installRoot),
-            canonicalVersionsRoot: yield* fs.realPath(path.join(installRoot, 'versions')),
-            commit: sourceCommit,
-            executableName: 'threadnote',
-            releaseRoot,
-            reused: true,
-            sourceCheckoutId: 'a'.repeat(64),
-            stagedRoot: Option.none(),
-            takeOverGlobalRuntime: false,
-            terminateSuperseded: false,
-            version,
-          }).pipe(Effect.provideService(SystemInfo, testSystem));
-          const launcher = yield* commandLauncherPath('cli').pipe(Effect.provideService(SystemInfo, testSystem));
-          const versionResult = yield* runCommandEffect(launcher, ['--version']).pipe(
-            Effect.provideService(SystemInfo, testSystem),
-          );
-          return {installed, launcherMode: (yield* fs.stat(launcher)).mode & 0o777, versionResult};
-        }),
-      ).pipe(Effect.provide(ApplicationLayer)),
-    );
+  effectIt.effect.skipIf(process.platform === 'win32')(
+    'executes the real POSIX CLI launcher before reporting success',
+    () =>
+      Effect.gen(function* () {
+        const result = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const fs = yield* FileSystem.FileSystem;
+            const path = yield* Path.Path;
+            const baseSystem = yield* SystemInfo;
+            const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-development-real-launcher-'});
+            const installRoot = path.join(root, 'install');
+            const binRoot = path.join(root, 'bin');
+            const sourceCommit = '4'.repeat(40);
+            const version = developmentBuildVersion('4.0.0-beta.30', sourceCommit);
+            const releaseRoot = path.join(installRoot, 'versions', version);
+            yield* writeDevelopmentReleaseFixture(
+              fs,
+              path,
+              releaseRoot,
+              version,
+              sourceCommit,
+              'threadnote',
+              'placeholder',
+            );
+            const executable = path.join(releaseRoot, 'threadnote');
+            yield* fs.writeFileString(
+              executable,
+              [
+                '#!/bin/sh',
+                'if [ "$1" = "doctor" ]; then',
+                "  printf '%s\\n' 'Running Threadnote doctor checks.' 'Summary: all checks complete.'",
+                'elif [ "$1" = "--version" ]; then',
+                `  printf '%s\\n' 'threadnote v${version}'`,
+                'else',
+                '  exit 64',
+                'fi',
+                '',
+              ].join('\n'),
+              {mode: 0o755},
+            );
+            yield* fs.chmod(executable, 0o755);
+            yield* refreshDevelopmentReceipt(fs, path, releaseRoot, version, sourceCommit, 'threadnote');
+            const testSystem = SystemInfo.of({
+              ...baseSystem,
+              environment: () => ({
+                ...baseSystem.environment(),
+                THREADNOTE_BIN_DIR: binRoot,
+                THREADNOTE_INSTALL_ROOT: installRoot,
+              }),
+            });
+            const installed = yield* activateLocalStandaloneRelease({
+              canonicalInstallRoot: yield* fs.realPath(installRoot),
+              canonicalVersionsRoot: yield* fs.realPath(path.join(installRoot, 'versions')),
+              commit: sourceCommit,
+              executableName: 'threadnote',
+              releaseRoot,
+              reused: true,
+              sourceCheckoutId: 'a'.repeat(64),
+              stagedRoot: Option.none(),
+              takeOverGlobalRuntime: false,
+              terminateSuperseded: false,
+              version,
+            }).pipe(Effect.provideService(SystemInfo, testSystem));
+            const launcher = yield* commandLauncherPath('cli').pipe(Effect.provideService(SystemInfo, testSystem));
+            const versionResult = yield* runCommandEffect(launcher, ['--version']).pipe(
+              Effect.provideService(SystemInfo, testSystem),
+            );
+            return {installed, launcherMode: (yield* fs.stat(launcher)).mode & 0o777, versionResult};
+          }),
+        ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive);
 
-    expect(result.installed.launchersVerified).toBe(true);
-    expect(result.launcherMode).toBe(0o755);
-    expect(result.versionResult.stdout.trim()).toBe(`threadnote v${result.installed.version}`);
-  });
+        expect(result.installed.launchersVerified).toBe(true);
+        expect(result.launcherMode).toBe(0o755);
+        expect(result.versionResult.stdout.trim()).toBe(`threadnote v${result.installed.version}`);
+      }),
+  );
 
-  it('restores the prior active pointer and launchers when launcher verification fails', async () => {
-    const result = await Effect.runPromise(
-      Effect.scoped(
+  effectIt.effect('restores the prior active pointer and launchers when launcher verification fails', () =>
+    Effect.gen(function* () {
+      const result = yield* Effect.scoped(
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
@@ -972,18 +979,18 @@ describe('exact-head development runtime', () => {
             priorPointer,
           };
         }),
-      ).pipe(Effect.provide(ApplicationLayer)),
-    );
+      ).pipe(provideTestLayer(ApplicationLayer));
 
-    expect(result.failure).toContain('managed mcp launcher did not activate');
-    expect(result.activePointer).toBe(result.priorPointer);
-    expect(result.cli).toBe(result.priorCli);
-    expect(result.mcp).toBe('unmanaged launcher\n');
-  });
+      expect(result.failure).toContain('managed mcp launcher did not activate');
+      expect(result.activePointer).toBe(result.priorPointer);
+      expect(result.cli).toBe(result.priorCli);
+      expect(result.mcp).toBe('unmanaged launcher\n');
+    }),
+  );
 
-  it('attempts every rollback restore and surfaces multiple independent restore failures', async () => {
-    const result = await Effect.runPromise(
-      Effect.scoped(
+  effectIt.effect('attempts every rollback restore and surfaces multiple independent restore failures', () =>
+    Effect.gen(function* () {
+      const result = yield* Effect.scoped(
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
@@ -1064,18 +1071,18 @@ describe('exact-head development runtime', () => {
             rollbackAttempts,
           };
         }),
-      ).pipe(Effect.provide(ApplicationLayer)),
-    );
+      ).pipe(provideTestLayer(ApplicationLayer));
 
-    expect(result.failure).toContain('rollback was incomplete');
-    expect(result.rollbackAttempts).toHaveLength(3);
-    expect(result.errorMessages.filter(message => message.startsWith('Could not restore the'))).toHaveLength(2);
-    expect(result.activePointer).toContain('4.0.0-beta.29');
-  });
+      expect(result.failure).toContain('rollback was incomplete');
+      expect(result.rollbackAttempts).toHaveLength(3);
+      expect(result.errorMessages.filter(message => message.startsWith('Could not restore the'))).toHaveLength(2);
+      expect(result.activePointer).toContain('4.0.0-beta.29');
+    }),
+  );
 
-  it('keeps a valid activation active while reporting independent cleanup failures', async () => {
-    const result = await Effect.runPromise(
-      Effect.scoped(
+  effectIt.effect('keeps a valid activation active while reporting independent cleanup failures', () =>
+    Effect.gen(function* () {
+      const result = yield* Effect.scoped(
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
@@ -1149,23 +1156,23 @@ describe('exact-head development runtime', () => {
             stagedExists: yield* fs.exists(stagedRoot),
           };
         }),
-      ).pipe(Effect.provide(ApplicationLayer)),
-    );
+      ).pipe(provideTestLayer(ApplicationLayer));
 
-    expect(result.installed).toMatchObject({
-      active: true,
-      cleanupComplete: false,
-      cleanupIssues: ['process-inspection', 'release-pruning', 'staging-removal'],
-      doctorVerified: true,
-      launchersVerified: true,
-    });
-    expect(result.activePointer.version).toBe(result.installed.version);
-    expect(result.stagedExists).toBe(true);
-  });
+      expect(result.installed).toMatchObject({
+        active: true,
+        cleanupComplete: false,
+        cleanupIssues: ['process-inspection', 'release-pruning', 'staging-removal'],
+        doctorVerified: true,
+        launchersVerified: true,
+      });
+      expect(result.activePointer.version).toBe(result.installed.version);
+      expect(result.stagedExists).toBe(true);
+    }),
+  );
 
-  it('removes a disposable staging directory when pre-activation validation fails', async () => {
-    const result = await Effect.runPromise(
-      Effect.scoped(
+  effectIt.effect('removes a disposable staging directory when pre-activation validation fails', () =>
+    Effect.gen(function* () {
+      const result = yield* Effect.scoped(
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
@@ -1215,12 +1222,12 @@ describe('exact-head development runtime', () => {
           );
           return {failure: String(failure), stagedExists: yield* fs.exists(stagedRoot)};
         }),
-      ).pipe(Effect.provide(ApplicationLayer)),
-    );
+      ).pipe(provideTestLayer(ApplicationLayer));
 
-    expect(result.failure).toContain('failed validation before activation');
-    expect(result.stagedExists).toBe(false);
-  });
+      expect(result.failure).toContain('failed validation before activation');
+      expect(result.stagedExists).toBe(false);
+    }),
+  );
 });
 
 function validReceipt(
@@ -1258,7 +1265,7 @@ function versionCommandExecutor(version: string) {
             ? 'Running Threadnote doctor checks.\nSummary: all checks complete.\n'
             : `threadnote v${version}\n`,
       }),
-    executeStreaming: () => Effect.die(new Error('Unexpected streaming command')),
+    executeStreaming: () => Effect.die(new TestError('Unexpected streaming command')),
   });
 }
 

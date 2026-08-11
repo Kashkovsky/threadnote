@@ -1,6 +1,8 @@
-import {mkdtempSync, rmSync} from 'node:fs';
-import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {TestError} from '../helpers/test-error.js';
+import {provideTestLayer} from '../helpers/effect-layer.js';
+import {mkdtempSync, rmSync} from '../helpers/node-fs.js';
+import {tmpdir} from '../helpers/node-os.js';
+import {join} from '../helpers/node-path.js';
 import {it as effectIt} from '@effect/vitest';
 import {Database} from 'bun:sqlite';
 import {Effect} from 'effect';
@@ -80,7 +82,7 @@ describe('removed code graph view cleanup state-machine properties', () => {
                   const before = current;
                   const result = yield* store.updateRemovedViewCleanup(databasePath, current, transition.update);
                   expect(result.state).toBe('updated');
-                  if (result.state !== 'updated') throw new Error('modeled cleanup update was not applied');
+                  if (result.state !== 'updated') throw new TestError('modeled cleanup update was not applied');
                   const expected = applyUpdate(current, transition.update);
                   expect(result.entry).toEqual(expected);
                   stale = before;
@@ -100,7 +102,7 @@ describe('removed code graph view cleanup state-machine properties', () => {
             }
           }),
         ),
-      ).pipe(Effect.provide(ApplicationLayer)),
+      ).pipe(provideTestLayer(ApplicationLayer)),
     {fastCheck: {numRuns: 40}},
   );
 
@@ -174,7 +176,7 @@ describe('removed code graph view cleanup state-machine properties', () => {
           expect(readSnapshotLeases(databasePath, SNAPSHOT_C)).toEqual(unrelatedLeases);
         }),
       ),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 });
 
@@ -459,7 +461,7 @@ function advanceToComplete(
       };
       const result = yield* store.updateRemovedViewCleanup(databasePath, entry, update);
       expect(result.state).toBe('updated');
-      if (result.state !== 'updated') throw new Error('cleanup phase did not advance');
+      if (result.state !== 'updated') throw new TestError('cleanup phase did not advance');
       entry = result.entry;
     }
     return entry;

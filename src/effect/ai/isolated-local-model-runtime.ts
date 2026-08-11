@@ -1,4 +1,4 @@
-import {Cause, Effect, Exit, Layer, Option, Schema, Semaphore} from 'effect';
+import {Cause, Effect, Exit, Layer, Option, Schema, Semaphore, Stream} from 'effect';
 import type {LocalModelManifest} from '../../models/catalog.js';
 import {parseLocalModelManifest} from '../../models/catalog.js';
 import {
@@ -14,7 +14,6 @@ import {
   UnsupportedNativeRuntime,
 } from './errors.js';
 import {
-  localModelRuntimeLayer,
   LocalModelRuntime,
   type LocalEmbeddingRequest,
   type LocalGenerationRequest,
@@ -106,7 +105,7 @@ export interface IsolatedLocalModelRuntimeOptions {
 }
 
 interface LocalModelRuntimeWithDiagnostics extends LocalModelRuntimeShape {
-  readonly diagnostics: () => Effect.Effect<LlamaCppDiagnostics, NativeRuntimeUnavailable | UnsupportedNativeRuntime>;
+  readonly diagnostics: Effect.Effect<LlamaCppDiagnostics, NativeRuntimeUnavailable | UnsupportedNativeRuntime>;
 }
 
 interface PendingResponse {
@@ -157,19 +156,18 @@ export function isolatedLocalModelRuntimeLayer(
         };
 
         const service: LocalModelRuntimeWithDiagnostics = {
-          diagnostics: () =>
-            permits.withPermit(
-              request('diagnostics', {}, decodeDiagnostics).pipe(
-                Effect.mapError(error =>
-                  error instanceof LocalModelWorkerTransportError
-                    ? new NativeRuntimeUnavailable({
-                        cause: genericWorkerCause(error.reason),
-                        message: `The isolated local AI worker could not report runtime diagnostics: ${error.message}`,
-                      })
-                    : remoteNativeRuntimeError(error),
-                ),
+          diagnostics: permits.withPermit(
+            request('diagnostics', {}, decodeDiagnostics).pipe(
+              Effect.mapError(error =>
+                error instanceof LocalModelWorkerTransportError
+                  ? new NativeRuntimeUnavailable({
+                      cause: genericWorkerCause(error.reason),
+                      message: `The isolated local AI worker could not report runtime diagnostics: ${error.message}`,
+                    })
+                  : remoteNativeRuntimeError(error),
               ),
             ),
+          ),
           embedMany: input =>
             permits.withPermit(
               Effect.gen(function* () {
@@ -225,47 +223,71 @@ export function isolatedLocalModelRuntimeLayer(
  */
 export const localModelWorkerServer: Effect.Effect<void, never, LocalModelRuntime> = Effect.gen(function* () {
   const runtime = yield* LocalModelRuntime;
-  yield* Effect.callback<void>(resume => {
-    void serveWorker(runtime, {
-      input: process.stdin as AsyncIterable<string | Uint8Array>,
-      writeLine: line =>
-        new Promise<void>((resolve, reject) => {
-          process.stdout.write(`${line}\n`, error => (error ? reject(error) : resolve()));
-        }),
-    }).then(
-      () => resume(Effect.void),
-      () => resume(Effect.void),
-    );
-    return Effect.sync(() => {
-      if (!process.stdin.destroyed) process.stdin.pause();
-    });
-  });
+  yield* serveWorker(runtime, {
+    input: process.stdin as AsyncIterable<string | Uint8Array>,
+    writeLine: line =>
+      new Promise<void>((resolve, reject) => {
+        process.stdout.write(`${line}\n`, error => (error ? reject(error) : resolve()));
+      }),
+  }).pipe(
+    Effect.catch(() => Effect.void),
+    Effect.ensuring(
+      Effect.sync(() => {
+        if (!process.stdin.destroyed) process.stdin.pause();
+      }),
+    ),
+  );
 });
-
-export const nativeLocalModelWorkerServer = localModelWorkerServer.pipe(Effect.provide(localModelRuntimeLayer()));
 
 export interface LocalModelWorkerServerIo {
   readonly input: AsyncIterable<string | Uint8Array>;
   readonly writeLine: (line: string) => Promise<void>;
 }
 
-export async function serveWorker(runtime: LocalModelRuntimeShape, io: LocalModelWorkerServerIo): Promise<void> {
+class LocalModelWorkerServerError extends Error {
+  readonly _tag = 'LocalModelWorkerServerError' as const;
+}
+
+export function serveWorker(
+  runtime: LocalModelRuntimeShape,
+  io: LocalModelWorkerServerIo,
+): Effect.Effect<void, LocalModelWorkerServerError> {
   const decoder = new TextDecoder();
   let buffered = '';
-  for await (const chunk of io.input) {
-    buffered += typeof chunk === 'string' ? chunk : decoder.decode(chunk, {stream: true});
-    for (;;) {
-      const newline = buffered.indexOf('\n');
-      if (newline < 0) break;
-      const line = buffered.slice(0, newline).replace(/\r$/, '');
-      buffered = buffered.slice(newline + 1);
-      if (!line) continue;
-      await io.writeLine(JSON.stringify(await handleWorkerLine(runtime, line)));
-    }
-  }
-  buffered += decoder.decode();
-  const finalLine = buffered.trim();
-  if (finalLine) await io.writeLine(JSON.stringify(await handleWorkerLine(runtime, finalLine)));
+  const writeResponse = (line: string) =>
+    handleWorkerLine(runtime, line).pipe(
+      Effect.flatMap(response =>
+        Effect.tryPromise({
+          try: () => io.writeLine(JSON.stringify(response)),
+          catch: cause => new LocalModelWorkerServerError('Could not write local model worker response.', {cause}),
+        }),
+      ),
+    );
+  const consumeChunk = (chunk: string | Uint8Array) =>
+    Effect.gen(function* () {
+      buffered += typeof chunk === 'string' ? chunk : decoder.decode(chunk, {stream: true});
+      for (;;) {
+        const newline = buffered.indexOf('\n');
+        if (newline < 0) break;
+        const line = buffered.slice(0, newline).replace(/\r$/, '');
+        buffered = buffered.slice(newline + 1);
+        if (!line) continue;
+        yield* writeResponse(line);
+      }
+    });
+  return Stream.fromAsyncIterable(
+    io.input,
+    cause => new LocalModelWorkerServerError('Could not read local model worker input.', {cause}),
+  ).pipe(
+    Stream.runForEach(consumeChunk),
+    Effect.andThen(
+      Effect.gen(function* () {
+        buffered += decoder.decode();
+        const finalLine = buffered.trim();
+        if (finalLine) yield* writeResponse(finalLine);
+      }),
+    ),
+  );
 }
 
 class LocalModelWorkerPool {
@@ -659,33 +681,36 @@ function developmentStandaloneScript(system: SystemInfoShape): Option.Option<str
   return Option.some(Bun.fileURLToPath(new URL('../../standalone.ts', import.meta.url)));
 }
 
-async function handleWorkerLine(runtime: LocalModelRuntimeShape, line: string): Promise<WorkerResponse> {
+function handleWorkerLine(runtime: LocalModelRuntimeShape, line: string): Effect.Effect<WorkerResponse> {
   const request = decodeWorkerRequest(line);
-  if (Option.isNone(request)) return protocolFailure('invalid');
+  if (Option.isNone(request)) return Effect.succeed(protocolFailure('invalid'));
   const effect = withThreadnoteProcessActivity(
     'local-model-worker',
     workerOperationLabel(request.value.operation),
     dispatchWorkerRequest(runtime, request.value),
     {idleTransitionDelayMilliseconds: LOCAL_MODEL_PROCESS_ACTIVITY_IDLE_DELAY_MS},
   );
-  const exit = await Effect.runPromiseExit(effect);
-  if (Exit.isSuccess(exit)) {
-    return {
-      id: request.value.id,
-      ok: true,
-      protocol: PROTOCOL_VERSION,
-      result: exit.value,
-    };
-  }
-  const failure = Cause.findErrorOption(exit.cause);
-  return {
-    error: {
-      tag: Option.isSome(failure) ? operationErrorTag(failure.value) : 'WorkerOperationFailed',
-    },
-    id: request.value.id,
-    ok: false,
-    protocol: PROTOCOL_VERSION,
-  };
+  return Effect.exit(effect).pipe(
+    Effect.map(exit => {
+      if (Exit.isSuccess(exit)) {
+        return {
+          id: request.value.id,
+          ok: true,
+          protocol: PROTOCOL_VERSION,
+          result: exit.value,
+        } satisfies WorkerResponse;
+      }
+      const failure = Cause.findErrorOption(exit.cause);
+      return {
+        error: {
+          tag: Option.isSome(failure) ? operationErrorTag(failure.value) : 'WorkerOperationFailed',
+        },
+        id: request.value.id,
+        ok: false,
+        protocol: PROTOCOL_VERSION,
+      } satisfies WorkerResponse;
+    }),
+  );
 }
 
 function workerOperationLabel(operation: WorkerOperation): string {
@@ -698,7 +723,7 @@ function dispatchWorkerRequest(
 ): Effect.Effect<unknown, unknown> {
   if (request.operation === 'diagnostics') {
     const diagnostics = (runtime as Partial<LocalModelRuntimeWithDiagnostics>).diagnostics;
-    return diagnostics ? diagnostics() : Effect.fail({_tag: 'NativeRuntimeUnavailable'});
+    return diagnostics ?? Effect.fail({_tag: 'NativeRuntimeUnavailable'});
   }
   if (request.operation === 'embedMany') {
     const decoded = decodeEmbeddingRequest(request.payload);

@@ -4,6 +4,10 @@ import {SystemInfo} from './effect/system.js';
 import type {DoctorCheck} from './types.js';
 import {errorMessage, expandPath, findExecutable, readFileIfExists, toolRoot} from './utils.js';
 
+class CursorPluginError extends Error {
+  readonly _tag = 'CursorPluginError' as const;
+}
+
 const CURSOR_PLUGIN_NAME = 'threadnote';
 const CURSOR_PLUGIN_MANIFEST = '.cursor-plugin/plugin.json';
 const CURSOR_PLUGIN_RULE = 'rules/threadnote.mdc';
@@ -119,7 +123,7 @@ const inspectCursorPluginRoot = Effect.fn('cursorPlugin.inspectRoot')(function* 
   const path = yield* Path.Path;
   const manifestPath = path.join(pluginRoot, CURSOR_PLUGIN_MANIFEST);
   const manifest = yield* readCursorPluginManifest(manifestPath).pipe(
-    Effect.mapError(cause => new Error(`${manifestPath}: ${errorMessage(cause)}`)),
+    Effect.mapError(cause => new CursorPluginError(`${manifestPath}: ${errorMessage(cause)}`)),
   );
   if (manifest.name !== CURSOR_PLUGIN_NAME) {
     return {
@@ -151,7 +155,9 @@ const inspectCursorPluginRoot = Effect.fn('cursorPlugin.inspectRoot')(function* 
   const bundledManifest = yield* readCursorPluginManifest(path.join(bundledRoot, CURSOR_PLUGIN_MANIFEST));
   const bundledRule = yield* readFileIfExists(path.join(bundledRoot, CURSOR_PLUGIN_RULE));
   if (bundledRule === undefined) {
-    return yield* Effect.fail(new Error('The standalone release is missing its bundled Cursor plugin rule.'));
+    return yield* Effect.fail(
+      new CursorPluginError('The standalone release is missing its bundled Cursor plugin rule.'),
+    );
   }
   const comparison = compareSemver(manifest.version, bundledManifest.version);
   if (comparison < 0) {
@@ -177,10 +183,10 @@ const inspectCursorPluginRoot = Effect.fn('cursorPlugin.inspectRoot')(function* 
 
 const readCursorPluginManifest = Effect.fn('cursorPlugin.readManifest')(function* (manifestPath: string) {
   const raw = yield* readFileIfExists(manifestPath);
-  if (raw === undefined) return yield* Effect.fail(new Error('manifest is missing'));
+  if (raw === undefined) return yield* Effect.fail(new CursorPluginError('manifest is missing'));
   const parsed = yield* Effect.try({
     try: () => JSON.parse(raw) as unknown,
-    catch: cause => new Error('manifest is not valid JSON', {cause}),
+    catch: cause => new CursorPluginError('manifest is not valid JSON', {cause}),
   });
   if (
     typeof parsed !== 'object' ||
@@ -190,7 +196,7 @@ const readCursorPluginManifest = Effect.fn('cursorPlugin.readManifest')(function
     typeof (parsed as Record<string, unknown>).version !== 'string' ||
     !isSemver((parsed as Record<string, unknown>).version as string)
   ) {
-    return yield* Effect.fail(new Error('manifest must declare string name and semantic version fields'));
+    return yield* Effect.fail(new CursorPluginError('manifest must declare string name and semantic version fields'));
   }
   return parsed as CursorPluginManifest;
 });

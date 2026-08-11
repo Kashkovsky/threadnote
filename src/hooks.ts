@@ -261,11 +261,14 @@ const captureTraceContext = Effect.fn('hooks.captureTraceContext')(() =>
   Effect.gen(function* () {
     const payload = yield* readHookPayload();
     if (!payload) {
-      return {};
+      return {} satisfies TraceContext;
     }
     const rawTrace = payload.transcriptPath ? yield* distillTrace(payload.transcriptPath) : undefined;
-    return {sessionId: payload.sessionId, trace: rawTrace ? scrubTrace(rawTrace) : undefined};
-  }).pipe(Effect.catch(() => Effect.succeed({} as TraceContext))),
+    return {
+      sessionId: payload.sessionId,
+      trace: rawTrace ? scrubTrace(rawTrace) : undefined,
+    } satisfies TraceContext;
+  }),
 );
 
 /** Redacts soft leaks; drops the trace on a hard credential blocker. */

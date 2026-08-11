@@ -1,3 +1,4 @@
+import {TestError} from './test-error.js';
 import {Console, Effect} from 'effect';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
 import type {
@@ -9,7 +10,7 @@ import type {
 import {runEffect} from './effect-runtime.js';
 
 const databasePath = Bun.argv[2];
-if (!databasePath) throw new Error('Expected the code-graph database path as the first argument.');
+if (!databasePath) throw new TestError('Expected the code-graph database path as the first argument.');
 
 const identity: RepositoryIdentity = {
   caseMode: 'sensitive',

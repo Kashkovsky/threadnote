@@ -1,7 +1,8 @@
-import {execFileSync} from 'node:child_process';
-import {mkdtempSync, rmSync, writeFileSync} from 'node:fs';
-import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {provideTestLayer} from '../helpers/effect-layer.js';
+import {execFileSync} from '../helpers/node-child-process.js';
+import {mkdtempSync, rmSync, writeFileSync} from '../helpers/node-fs.js';
+import {tmpdir} from '../helpers/node-os.js';
+import {join} from '../helpers/node-path.js';
 import {Deferred, Effect, Fiber, FileSystem, Path} from 'effect';
 import {TestClock} from 'effect/testing';
 import {it as effectIt} from '@effect/vitest';
@@ -61,7 +62,7 @@ describe('shared ready view attachment locking', () => {
       const pointer = yield* store.readySnapshot(layout.databasePath, identity.worktreeId);
       expect(attached.readySnapshot?.id).toBe(snapshot.id);
       expect(pointer?.id).toBe(snapshot.id);
-    }).pipe(Effect.provide(ApplicationLayer), TestClock.withLive),
+    }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );
 
   it('defers without mutation when the target builder is active, then attaches after release', async () => {

@@ -1,3 +1,5 @@
+import {TestError} from '../helpers/test-error.js';
+import {provideTestLayer} from '../helpers/effect-layer.js';
 import {expect, it} from '@effect/vitest';
 import {Effect, FileSystem, Path} from 'effect';
 import {describe} from 'vitest';
@@ -80,7 +82,7 @@ describe('legacy installation cleanup', () => {
               }
               return {exitCode: 0, stderr: '', stdout: ''};
             }),
-          executeStreaming: () => Effect.die(new Error('Unexpected streaming command')),
+          executeStreaming: () => Effect.die(new TestError('Unexpected streaming command')),
         });
         const testSystem = SystemInfo.of({
           ...baseSystem,
@@ -111,7 +113,7 @@ describe('legacy installation cleanup', () => {
         expect(yield* fs.exists(legacyHome)).toBe(true);
         expect(result.output).toContain(`Preserved legacy memories and rollback data: ${legacyHome}`);
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it.effect('leaves unrelated OpenViking installations untouched without Threadnote ownership evidence', () =>
@@ -152,7 +154,7 @@ describe('legacy installation cleanup', () => {
               }
               return {exitCode: 0, stderr: '', stdout: ''};
             }),
-          executeStreaming: () => Effect.die(new Error('Unexpected streaming command')),
+          executeStreaming: () => Effect.die(new TestError('Unexpected streaming command')),
         });
         const testSystem = SystemInfo.of({
           ...baseSystem,
@@ -173,6 +175,6 @@ describe('legacy installation cleanup', () => {
         expect(calls.some(call => call.includes('uninstall'))).toBe(false);
         expect(calls.some(call => call.includes('tool list'))).toBe(false);
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 });

@@ -1,4 +1,4 @@
-import {readFile} from 'node:fs/promises';
+import {readFile} from '../helpers/node-fs-promises.js';
 import {describe, expect, it} from 'vitest';
 import {evaluateRecallFixture, parseRecallEvaluationFixture} from '../../src/recall/evaluate.js';
 

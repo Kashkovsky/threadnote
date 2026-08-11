@@ -1,3 +1,5 @@
+import {TestError} from '../helpers/test-error.js';
+import {provideTestLayer} from '../helpers/effect-layer.js';
 import {Database} from 'bun:sqlite';
 import {it as effectIt} from '@effect/vitest';
 import {Effect, FileSystem, Path} from 'effect';
@@ -85,7 +87,7 @@ describe('removed code graph view cleanup queue', () => {
             revision: {value: String(CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION)},
           });
         }),
-      ).pipe(Effect.provide(ApplicationLayer)),
+      ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('carries the revision 8 cleanup authority into the current extension schema', () =>
@@ -142,7 +144,7 @@ describe('removed code graph view cleanup queue', () => {
         expect(observed.active).toEqual([{snapshot_id: SNAPSHOT_ID, worktree_id: WORKTREE_ID}]);
         expect(observed.cleanupDefinition).toEqual({sql: expect.stringMatching(/WITHOUT\s+ROWID/iu)});
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('refuses an incompatible revision-8 queue without mutating graph authority', () =>
@@ -190,7 +192,7 @@ describe('removed code graph view cleanup queue', () => {
         expect(observed.active).toEqual([{snapshot_id: SNAPSHOT_ID, worktree_id: WORKTREE_ID}]);
         expect(observed.cleanupColumns).toEqual([expect.objectContaining({name: 'worktree_id', pk: 1, type: 'TEXT'})]);
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('fails before WAL or mutation when a current database loses a required authority index', () =>
@@ -234,7 +236,7 @@ describe('removed code graph view cleanup queue', () => {
         expect(yield* fs.exists(`${deleteJournalDatabasePath}-wal`)).toBe(false);
         expect(yield* fs.exists(`${deleteJournalDatabasePath}-shm`)).toBe(false);
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('rejects near-canonical cleanup table DDL before WAL without mutating authority', () =>
@@ -326,7 +328,7 @@ describe('removed code graph view cleanup queue', () => {
           expect(yield* fs.exists(`${copyPath}-shm`)).toBe(false);
         }
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('does not self-heal a populated unversioned lease table that lost its expiry index', () =>
@@ -379,7 +381,7 @@ describe('removed code graph view cleanup queue', () => {
         expect(yield* fs.exists(`${databasePath}-wal`)).toBe(false);
         expect(yield* fs.exists(`${databasePath}-shm`)).toBe(false);
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('atomically binds cleanup evidence to removal and clears it only on current promotion', () =>
@@ -432,7 +434,7 @@ describe('removed code graph view cleanup queue', () => {
           removed: [],
         });
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('binds one shared snapshot removal without disturbing the other worktree authority', () =>
@@ -480,7 +482,7 @@ describe('removed code graph view cleanup queue', () => {
         expect((yield* store.readySnapshot(databasePath, WORKTREE_ID))?.id).toBe(SNAPSHOT_ID);
         expect(yield* store.readySnapshot(databasePath, OTHER_WORKTREE_ID)).toBeUndefined();
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('fences an old promote and same-id old removal even when removed_at repeats', () =>
@@ -535,7 +537,7 @@ describe('removed code graph view cleanup queue', () => {
         expect(replacement!.removedAt).toBe(first!.removedAt);
         expect(replacement!.epoch).toBeGreaterThan(first!.epoch);
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('re-deletes matching legacy pointers and rejects stale phase CAS or a different active pointer', () =>
@@ -600,7 +602,7 @@ describe('removed code graph view cleanup queue', () => {
         });
         expect(readAuthority(databasePath).active).toEqual([{snapshot_id: NEW_SNAPSHOT_ID, worktree_id: WORKTREE_ID}]);
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('linearizes identical concurrent full-entry updates to one update and one stale result', () =>
@@ -641,7 +643,7 @@ describe('removed code graph view cleanup queue', () => {
           expect.objectContaining({cursor_token: update.cursorToken, revision: candidate!.revision + 1}),
         ]);
       }).pipe(TestClock.withLive),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('rolls back sequence, revision, and attempt overflow boundaries', () =>
@@ -739,7 +741,7 @@ describe('removed code graph view cleanup queue', () => {
         ).toBe('Failure');
         expect(readCleanupRows(databasePath)).toEqual(before);
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('marks one lease baton without fanout and retires the tombstone target on final release', () =>
@@ -798,7 +800,7 @@ describe('removed code graph view cleanup queue', () => {
         yield* store.releaseSnapshotLease(databasePath, leaseState.carrierToken);
         expect(yield* store.readySnapshotById(databasePath, SNAPSHOT_ID)).toBeUndefined();
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('keeps admission and due pages on their source-order indexes without temporary sorting', () =>
@@ -832,7 +834,7 @@ describe('removed code graph view cleanup queue', () => {
           false,
         );
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('transfers one retirement baton through first, new, middle, and final lease releases', () =>
@@ -876,7 +878,7 @@ describe('removed code graph view cleanup queue', () => {
         expect(readLeaseCarriers(databasePath)).toEqual([]);
         expect(yield* store.readySnapshotById(databasePath, SNAPSHOT_ID)).toBeUndefined();
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('rolls back old-writer tombstone mutations when the baton index is unavailable', () =>
@@ -1013,7 +1015,7 @@ describe('removed code graph view cleanup queue', () => {
           }
         });
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('fails a corrupt bounded lease page without mutating leases or snapshot authority', () =>
@@ -1054,7 +1056,7 @@ describe('removed code graph view cleanup queue', () => {
         });
         expect(observed).toEqual({leases: {count: 1}, snapshot: {state: 'ready'}});
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('rejects a giant corrupt first baton carrier before store or old-writer authority mutation', () =>
@@ -1118,7 +1120,7 @@ describe('removed code graph view cleanup queue', () => {
           }
         });
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('rejects a case-folded lease capability before validate, renew, or release can alias it', () =>
@@ -1191,7 +1193,7 @@ describe('removed code graph view cleanup queue', () => {
           token: 'capability-lower',
         });
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 });
 
@@ -1239,15 +1241,15 @@ function rewriteRemovedViewCleanupStoredSql(databasePath: string, mutate: (defin
         "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'removed_view_cleanup'",
       )
       .get();
-    if (row === null) throw new Error('missing canonical removed view cleanup table');
+    if (row === null) throw new TestError('missing canonical removed view cleanup table');
     const changed = mutate(row.sql);
-    if (changed === row.sql) throw new Error('removed view cleanup table mutation did not change its definition');
+    if (changed === row.sql) throw new TestError('removed view cleanup table mutation did not change its definition');
     const dueIndex = database
       .query<{readonly sql: string}, []>(
         "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'removed_view_cleanup_due'",
       )
       .get();
-    if (dueIndex === null) throw new Error('missing canonical removed view cleanup due index');
+    if (dueIndex === null) throw new TestError('missing canonical removed view cleanup due index');
     database.run('PRAGMA foreign_keys = OFF');
     database.run('PRAGMA ignore_check_constraints = ON');
     database.run('BEGIN IMMEDIATE');

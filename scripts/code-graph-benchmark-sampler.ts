@@ -1,10 +1,21 @@
-import {mkdir, readdir, readFile, readlink, realpath, rename, stat, writeFile} from 'fs/promises';
-import {basename, dirname, isAbsolute, join, relative, resolve, sep} from 'path';
+import {provideScriptLayer, scriptError, ScriptError} from './effect/errors.js';
+import * as BunRuntime from '@effect/platform-bun/BunRuntime';
+import * as BunServices from '@effect/platform-bun/BunServices';
+import {Clock, Effect, FileSystem, Layer, Option} from 'effect';
+import {
+  platformPathFor,
+  runtimeLstat,
+  runtimePlatform,
+  runtimeStat,
+  SystemInfo,
+  type RuntimeBigIntStats,
+} from '../src/effect/system.js';
 
 const MAX_DARWIN_LSOF_BYTES = 8 * 1024 * 1024;
 const DARWIN_OPEN_FILE_SAMPLE_INTERVAL_MILLISECONDS = 1_000;
 const MAX_OPEN_FILE_DESCRIPTORS = 65_536;
 const MAX_OPEN_FILE_PROCESSES = 4_096;
+const hostPath = platformPathFor(runtimePlatform);
 
 export interface CodeGraphBenchmarkSamplerPhase {
   readonly cpuMilliseconds?: number;
@@ -80,7 +91,8 @@ export interface CodeGraphBenchmarkSamplerCheckpoint {
 }
 
 export function parseCodeGraphBenchmarkSamplerArtifact(value: unknown): CodeGraphBenchmarkSamplerArtifact {
-  if (typeof value !== 'object' || value === null) throw new Error('Benchmark sampler artifact must be an object.');
+  if (typeof value !== 'object' || value === null)
+    throw new ScriptError('Benchmark sampler artifact must be an object.');
   const artifact = value as Partial<CodeGraphBenchmarkSamplerArtifact>;
   if (
     (artifact.version !== 2 && artifact.version !== 3 && artifact.version !== 4) ||
@@ -94,7 +106,7 @@ export function parseCodeGraphBenchmarkSamplerArtifact(value: unknown): CodeGrap
     typeof artifact.phases !== 'object' ||
     artifact.phases === null
   ) {
-    throw new Error('Benchmark sampler artifact is invalid.');
+    throw new ScriptError('Benchmark sampler artifact is invalid.');
   }
   const processTelemetry = parseSamplerProcessTelemetry(artifact.platform, artifact.processTelemetry, artifact.version);
   const temporaryTelemetry = parseSamplerTemporaryTelemetry(
@@ -105,17 +117,19 @@ export function parseCodeGraphBenchmarkSamplerArtifact(value: unknown): CodeGrap
   let phaseSamples = 0;
   for (const [phase, sample] of Object.entries(artifact.phases)) {
     if (!phase || !isSamplerPhase(sample, processTelemetry, temporaryTelemetry, artifact.version)) {
-      throw new Error(`Benchmark sampler phase ${phase || '<empty>'} is invalid.`);
+      throw new ScriptError(`Benchmark sampler phase ${phase || '<empty>'} is invalid.`);
     }
     phaseSamples += sample.samples;
-    if (!Number.isSafeInteger(phaseSamples)) throw new Error('Benchmark sampler sample total is invalid.');
+    if (!Number.isSafeInteger(phaseSamples)) throw new ScriptError('Benchmark sampler sample total is invalid.');
   }
-  if (phaseSamples !== artifact.samples) throw new Error('Benchmark sampler phase samples do not match its total.');
+  if (phaseSamples !== artifact.samples)
+    throw new ScriptError('Benchmark sampler phase samples do not match its total.');
   return artifact as CodeGraphBenchmarkSamplerArtifact;
 }
 
 export function parseCodeGraphBenchmarkSamplerCheckpoint(value: unknown): CodeGraphBenchmarkSamplerCheckpoint {
-  if (typeof value !== 'object' || value === null) throw new Error('Benchmark sampler checkpoint must be an object.');
+  if (typeof value !== 'object' || value === null)
+    throw new ScriptError('Benchmark sampler checkpoint must be an object.');
   const checkpoint = value as Partial<CodeGraphBenchmarkSamplerCheckpoint>;
   if (
     (checkpoint.version !== 2 && checkpoint.version !== 3 && checkpoint.version !== 4) ||
@@ -123,10 +137,11 @@ export function parseCodeGraphBenchmarkSamplerCheckpoint(value: unknown): CodeGr
     typeof checkpoint.updatedAt !== 'string' ||
     !Number.isFinite(Date.parse(checkpoint.updatedAt))
   ) {
-    throw new Error('Benchmark sampler checkpoint is invalid.');
+    throw new ScriptError('Benchmark sampler checkpoint is invalid.');
   }
   const sampler = parseCodeGraphBenchmarkSamplerArtifact(checkpoint.sampler);
-  if (sampler.version !== checkpoint.version) throw new Error('Benchmark sampler checkpoint version is inconsistent.');
+  if (sampler.version !== checkpoint.version)
+    throw new ScriptError('Benchmark sampler checkpoint version is inconsistent.');
   return checkpoint as CodeGraphBenchmarkSamplerCheckpoint;
 }
 
@@ -136,7 +151,7 @@ function parseSamplerProcessTelemetry(
   version: CodeGraphBenchmarkSamplerArtifact['version'],
 ): CodeGraphBenchmarkSamplerProcessTelemetry {
   if (typeof value !== 'object' || value === null) {
-    throw new Error('Benchmark sampler process telemetry must be an object.');
+    throw new ScriptError('Benchmark sampler process telemetry must be an object.');
   }
   const telemetry = value as Partial<CodeGraphBenchmarkSamplerProcessTelemetry>;
   if (telemetry.availability === 'available') {
@@ -183,7 +198,7 @@ function parseSamplerProcessTelemetry(
   ) {
     return telemetry as CodeGraphBenchmarkSamplerProcessTelemetry;
   }
-  throw new Error('Benchmark sampler process telemetry does not match its platform.');
+  throw new ScriptError('Benchmark sampler process telemetry does not match its platform.');
 }
 
 function parseSamplerTemporaryTelemetry(
@@ -192,11 +207,11 @@ function parseSamplerTemporaryTelemetry(
   version: CodeGraphBenchmarkSamplerArtifact['version'],
 ): CodeGraphBenchmarkSamplerTemporaryTelemetry | undefined {
   if (version < 4) {
-    if (value !== undefined) throw new Error('Legacy benchmark sampler temporary telemetry must be omitted.');
+    if (value !== undefined) throw new ScriptError('Legacy benchmark sampler temporary telemetry must be omitted.');
     return undefined;
   }
   if (typeof value !== 'object' || value === null) {
-    throw new Error('Benchmark sampler temporary telemetry must be an object.');
+    throw new ScriptError('Benchmark sampler temporary telemetry must be an object.');
   }
   const telemetry = value as Partial<CodeGraphBenchmarkSamplerTemporaryTelemetry>;
   if (
@@ -226,7 +241,7 @@ function parseSamplerTemporaryTelemetry(
   ) {
     return telemetry as CodeGraphBenchmarkSamplerTemporaryTelemetry;
   }
-  throw new Error('Benchmark sampler temporary telemetry does not match its platform.');
+  throw new ScriptError('Benchmark sampler temporary telemetry does not match its platform.');
 }
 
 function isSamplerPhase(
@@ -349,25 +364,26 @@ interface SamplerOptions {
   readonly temporaryRoot: string;
 }
 
-async function main(): Promise<void> {
-  const options = parseArguments(process.argv.slice(2));
-  const canonicalTemporaryRoot = await canonicalDirectory(options.temporaryRoot);
-  const clockTicksPerSecond = linuxClockTicksPerSecond();
-  const processSampleIntervalMilliseconds = process.platform === 'darwin' ? 250 : options.intervalMilliseconds;
+const samplerMain = Effect.gen(function* () {
+  const system = yield* SystemInfo;
+  const options = parseArguments(system.processArguments.slice(2));
+  const canonicalTemporaryRoot = yield* canonicalDirectory(options.temporaryRoot);
+  const clockTicksPerSecond = yield* linuxClockTicksPerSecond();
+  const processSampleIntervalMilliseconds = system.platform === 'darwin' ? 250 : options.intervalMilliseconds;
   const openFileSampleIntervalMilliseconds =
-    process.platform === 'darwin' ? DARWIN_OPEN_FILE_SAMPLE_INTERVAL_MILLISECONDS : options.intervalMilliseconds;
-  const initialProcessSample = await readProcessTreeSample(options.processId, clockTicksPerSecond);
+    system.platform === 'darwin' ? DARWIN_OPEN_FILE_SAMPLE_INTERVAL_MILLISECONDS : options.intervalMilliseconds;
+  const initialProcessSample = yield* readProcessTreeSample(options.processId, clockTicksPerSecond);
   const processTelemetry = samplerProcessTelemetryContract(
-    process.platform,
+    system.platform,
     initialProcessSample?.rootStartIdentity,
     processSampleIntervalMilliseconds,
   );
   const parentStartIdentity = initialProcessSample?.rootStartIdentity;
   const initialTemporaryOpenFiles = initialProcessSample
-    ? await readOpenTemporaryFileSnapshot(initialProcessSample.processIds, canonicalTemporaryRoot)
+    ? yield* readOpenTemporaryFileSnapshot(initialProcessSample.processIds, canonicalTemporaryRoot)
     : undefined;
   const temporaryTelemetry = samplerTemporaryTelemetryContract(
-    process.platform,
+    system.platform,
     initialTemporaryOpenFiles,
     openFileSampleIntervalMilliseconds,
   );
@@ -376,39 +392,43 @@ async function main(): Promise<void> {
   let pendingInitialProcessSample = previousProcessSample;
   let pendingInitialTemporaryOpenFiles =
     temporaryTelemetry.availability === 'available' ? initialTemporaryOpenFiles : undefined;
-  let lastProcessSampleAt = Date.now();
+  let lastProcessSampleAt = yield* Clock.currentTimeMillis;
   let lastSuccessfulProcessSampleAt = lastProcessSampleAt;
-  let lastTemporaryOpenSampleAt = Date.now();
+  let lastTemporaryOpenSampleAt = lastProcessSampleAt;
   let samples = 0;
   let lastCheckpointAt = 0;
   let readyPublished = false;
   let stopped: boolean;
   let stopState: CodeGraphBenchmarkSamplerCheckpoint['state'];
   do {
-    const phase = (await readText(options.phasePath))?.trim() || 'unknown';
+    const phase = (yield* readText(options.phasePath))?.trim() || 'unknown';
+    const sampleStartedAt = yield* Clock.currentTimeMillis;
     const processSampleDue =
       pendingInitialProcessSample !== undefined ||
-      Date.now() - lastProcessSampleAt >= processSampleIntervalMilliseconds;
+      sampleStartedAt - lastProcessSampleAt >= processSampleIntervalMilliseconds;
     const temporaryOpenSampleDue =
       pendingInitialTemporaryOpenFiles !== undefined ||
-      Date.now() - lastTemporaryOpenSampleAt >= openFileSampleIntervalMilliseconds;
+      sampleStartedAt - lastTemporaryOpenSampleAt >= openFileSampleIntervalMilliseconds;
     const [databaseBytes, walBytes, shmBytes, journalBytes, temporaryLinkedFiles, observedProcessSample] =
-      await Promise.all([
-        fileBytes(options.databasePath),
-        fileBytes(`${options.databasePath}-wal`),
-        fileBytes(`${options.databasePath}-shm`),
-        fileBytes(`${options.databasePath}-journal`),
-        directoryFileSnapshot(canonicalTemporaryRoot),
-        processSampleDue
-          ? pendingInitialProcessSample !== undefined
-            ? Promise.resolve(pendingInitialProcessSample)
-            : readProcessTreeSample(options.processId, clockTicksPerSecond)
-          : Promise.resolve(undefined),
-      ]);
+      yield* Effect.all(
+        [
+          fileBytes(options.databasePath),
+          fileBytes(`${options.databasePath}-wal`),
+          fileBytes(`${options.databasePath}-shm`),
+          fileBytes(`${options.databasePath}-journal`),
+          directoryFileSnapshot(canonicalTemporaryRoot),
+          processSampleDue
+            ? pendingInitialProcessSample !== undefined
+              ? Effect.succeed(pendingInitialProcessSample)
+              : readProcessTreeSample(options.processId, clockTicksPerSecond)
+            : Effect.succeed(undefined),
+        ],
+        {concurrency: 'unbounded'},
+      );
     const processSample = processSampleDue ? observedProcessSample : undefined;
     if (processSampleDue) {
       pendingInitialProcessSample = undefined;
-      lastProcessSampleAt = Date.now();
+      lastProcessSampleAt = yield* Clock.currentTimeMillis;
     }
     const processForOpenSample = processSample ?? previousProcessSample;
     const temporaryOpenFiles =
@@ -416,15 +436,15 @@ async function main(): Promise<void> {
         ? pendingInitialTemporaryOpenFiles !== undefined
           ? pendingInitialTemporaryOpenFiles
           : processForOpenSample
-            ? await readOpenTemporaryFileSnapshot(processForOpenSample.processIds, canonicalTemporaryRoot)
+            ? yield* readOpenTemporaryFileSnapshot(processForOpenSample.processIds, canonicalTemporaryRoot)
             : undefined
         : undefined;
     if (temporaryOpenSampleDue) {
       pendingInitialTemporaryOpenFiles = undefined;
-      lastTemporaryOpenSampleAt = Date.now();
+      lastTemporaryOpenSampleAt = yield* Clock.currentTimeMillis;
     }
     const temporaryBytes = mergeTemporaryFileSnapshots(temporaryLinkedFiles, temporaryOpenFiles).bytes;
-    const parentExists = processExists(options.processId);
+    const parentExists = system.isProcessRunning(options.processId);
     const parentExited = samplerParentExited(parentStartIdentity, processSample?.rootStartIdentity, parentExists);
     const telemetrySample = processTelemetry.availability === 'available' && !parentExited ? processSample : undefined;
     const current = phases.get(phase) ?? {
@@ -463,7 +483,7 @@ async function main(): Promise<void> {
     }
     current.temporaryPeakBytes = Math.max(current.temporaryPeakBytes, temporaryBytes);
     if (processTelemetry.availability === 'available' && processSampleDue) {
-      const observedAt = Date.now();
+      const observedAt = yield* Clock.currentTimeMillis;
       current.processSampleAttempts += 1;
       current.processSampleGapPeakMilliseconds = Math.max(
         current.processSampleGapPeakMilliseconds,
@@ -485,33 +505,48 @@ async function main(): Promise<void> {
     current.samples += 1;
     samples += 1;
     phases.set(phase, current);
-    const requestedStop = await readText(options.stopPath);
+    const requestedStop = yield* readText(options.stopPath);
     stopped = requestedStop !== undefined || parentExited;
     stopState =
       requestedStop !== undefined ? parseStopState(requestedStop) : parentExited ? 'parent-exited' : 'running';
-    const now = Date.now();
+    const now = yield* Clock.currentTimeMillis;
     if (stopped || samples === 1 || now - lastCheckpointAt >= options.checkpointIntervalMilliseconds) {
-      await writeCheckpoint(
+      yield* writeCheckpoint(
         options.checkpointPath,
-        samplerArtifact(options.intervalMilliseconds, phases, processTelemetry, temporaryTelemetry, samples),
+        samplerArtifact(
+          options.intervalMilliseconds,
+          phases,
+          system.platform,
+          processTelemetry,
+          temporaryTelemetry,
+          samples,
+        ),
         stopState,
       );
       if (!readyPublished) {
-        await atomicWriteFile(options.readyPath, '{"checkpointVersion":4,"version":1}\n');
+        yield* atomicWriteFile(options.readyPath, '{"checkpointVersion":4,"version":1}\n');
         readyPublished = true;
       }
       lastCheckpointAt = now;
     }
-    if (!stopped) await Bun.sleep(options.intervalMilliseconds);
+    if (!stopped) yield* Effect.sleep(options.intervalMilliseconds);
   } while (!stopped);
 
-  const artifact = samplerArtifact(options.intervalMilliseconds, phases, processTelemetry, temporaryTelemetry, samples);
-  await atomicWriteFile(options.outputPath, `${JSON.stringify(artifact)}\n`);
-}
+  const artifact = samplerArtifact(
+    options.intervalMilliseconds,
+    phases,
+    system.platform,
+    processTelemetry,
+    temporaryTelemetry,
+    samples,
+  );
+  yield* atomicWriteFile(options.outputPath, `${JSON.stringify(artifact)}\n`);
+});
 
 function samplerArtifact(
   intervalMilliseconds: number,
   phases: ReadonlyMap<string, MutablePhase>,
+  platform: string,
   processTelemetry: CodeGraphBenchmarkSamplerProcessTelemetry,
   temporaryTelemetry: CodeGraphBenchmarkSamplerTemporaryTelemetry,
   samples: number,
@@ -562,7 +597,7 @@ function samplerArtifact(
           ];
         }),
     ),
-    platform: process.platform,
+    platform,
     processTelemetry,
     samples,
     temporaryTelemetry,
@@ -570,26 +605,31 @@ function samplerArtifact(
   };
 }
 
-async function writeCheckpoint(
+const writeCheckpoint = Effect.fn('codeGraphBenchmarkSampler.writeCheckpoint')(function* (
   checkpointPath: string,
   sampler: CodeGraphBenchmarkSamplerArtifact,
   state: CodeGraphBenchmarkSamplerCheckpoint['state'],
-): Promise<void> {
+) {
   const checkpoint: CodeGraphBenchmarkSamplerCheckpoint = {
     sampler,
     state,
-    updatedAt: new Date().toISOString(),
+    updatedAt: new Date(yield* Clock.currentTimeMillis).toISOString(),
     version: sampler.version,
   };
-  await atomicWriteFile(checkpointPath, `${JSON.stringify(checkpoint)}\n`);
-}
+  yield* atomicWriteFile(checkpointPath, `${JSON.stringify(checkpoint)}\n`);
+});
 
-async function atomicWriteFile(outputPath: string, contents: string): Promise<void> {
-  await mkdir(dirname(outputPath), {recursive: true, mode: 0o700});
-  const temporaryPath = `${outputPath}.${process.pid}.tmp`;
-  await writeFile(temporaryPath, contents, {encoding: 'utf8', mode: 0o600});
-  await rename(temporaryPath, outputPath);
-}
+const atomicWriteFile = Effect.fn('codeGraphBenchmarkSampler.atomicWriteFile')(function* (
+  outputPath: string,
+  contents: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const system = yield* SystemInfo;
+  yield* fs.makeDirectory(hostPath.dirname(outputPath), {recursive: true, mode: 0o700});
+  const temporaryPath = `${outputPath}.${system.processId}.tmp`;
+  yield* fs.writeFileString(temporaryPath, contents, {mode: 0o600});
+  yield* fs.rename(temporaryPath, outputPath);
+});
 
 function parseStopState(value: string): 'aborted' | 'complete' {
   return value.trim() === 'complete' ? 'complete' : 'aborted';
@@ -708,25 +748,23 @@ export function processTreeDelta(
   return {cpuMilliseconds, ioReadBytes, ioWriteBytes};
 }
 
-async function readProcessTreeSample(
+const readProcessTreeSample = Effect.fn('codeGraphBenchmarkSampler.readProcessTreeSample')(function* (
   processId: number,
   clockTicksPerSecond: number,
-): Promise<BenchmarkProcessTreeSample | undefined> {
-  if (process.platform === 'linux') return readLinuxProcessTreeSample(processId, clockTicksPerSecond, process.pid);
-  if (process.platform === 'darwin') return readDarwinProcessTreeSample(processId, process.pid);
+) {
+  const system = yield* SystemInfo;
+  if (system.platform === 'linux') {
+    return yield* readLinuxProcessTreeSample(processId, clockTicksPerSecond, system.processId);
+  }
+  if (system.platform === 'darwin') return yield* readDarwinProcessTreeSample(processId, system.processId);
   return undefined;
-}
+});
 
-interface LinuxProcessEntryRead {
-  readonly childProcessIds: readonly number[];
-  readonly entry: BenchmarkProcessTreeEntry;
-}
-
-async function readLinuxProcessTreeSample(
+const readLinuxProcessTreeSample = Effect.fn('codeGraphBenchmarkSampler.readLinuxProcessTreeSample')(function* (
   rootProcessId: number,
   clockTicksPerSecond: number,
   excludedProcessId: number,
-): Promise<BenchmarkProcessTreeSample | undefined> {
+) {
   const pending: Array<{readonly expectedParent?: number; readonly processId: number}> = [{processId: rootProcessId}];
   const entries: BenchmarkProcessTreeEntry[] = [];
   const visited = new Set<number>();
@@ -734,7 +772,7 @@ async function readLinuxProcessTreeSample(
     const next = pending.shift();
     if (!next || visited.has(next.processId)) continue;
     visited.add(next.processId);
-    const observed = await readLinuxProcessEntry(next.processId, clockTicksPerSecond);
+    const observed = yield* readLinuxProcessEntry(next.processId, clockTicksPerSecond);
     if (!observed || (next.expectedParent !== undefined && observed.entry.parentProcessId !== next.expectedParent)) {
       continue;
     }
@@ -742,22 +780,26 @@ async function readLinuxProcessTreeSample(
     pending.push(...observed.childProcessIds.map(processId => ({expectedParent: observed.entry.processId, processId})));
   }
   return aggregateProcessTree(entries, rootProcessId, undefined, excludedProcessId);
-}
+});
 
-async function readLinuxProcessEntry(
+const readLinuxProcessEntry = Effect.fn('codeGraphBenchmarkSampler.readLinuxProcessEntry')(function* (
   processId: number,
   clockTicksPerSecond: number,
-): Promise<LinuxProcessEntryRead | undefined> {
-  try {
-    const firstStatText = await readFile(`/proc/${processId}/stat`, 'utf8');
+) {
+  const fs = yield* FileSystem.FileSystem;
+  return yield* Effect.gen(function* () {
+    const firstStatText = yield* fs.readFileString(`/proc/${processId}/stat`);
     const firstStat = parseLinuxProcessStat(firstStatText);
     if (!firstStat) return undefined;
-    const [statusText, ioText, childrenText, validatedStatText] = await Promise.all([
-      readFile(`/proc/${processId}/status`, 'utf8'),
-      readText(`/proc/${processId}/io`),
-      readText(`/proc/${processId}/task/${processId}/children`),
-      readFile(`/proc/${processId}/stat`, 'utf8'),
-    ]);
+    const [statusText, ioText, childrenText, validatedStatText] = yield* Effect.all(
+      [
+        fs.readFileString(`/proc/${processId}/status`),
+        readText(`/proc/${processId}/io`),
+        readText(`/proc/${processId}/task/${processId}/children`),
+        fs.readFileString(`/proc/${processId}/stat`),
+      ],
+      {concurrency: 'unbounded'},
+    );
     const validatedStat = parseLinuxProcessStat(validatedStatText);
     if (!validatedStat || validatedStat.startIdentity !== firstStat.startIdentity) return undefined;
     const rssMatch = /^VmRSS:\s+(\d+)\s+kB$/m.exec(statusText);
@@ -776,10 +818,8 @@ async function readLinuxProcessEntry(
         startIdentity: validatedStat.startIdentity,
       },
     };
-  } catch {
-    return undefined;
-  }
-}
+  }).pipe(Effect.option, Effect.map(Option.getOrUndefined));
+});
 
 function parseLinuxChildProcessIds(text: string): readonly number[] {
   return text
@@ -801,27 +841,28 @@ export function parseLinuxProcessIo(
   return {readBytes, writeBytes};
 }
 
-async function readDarwinProcessTreeSample(
+const readDarwinProcessTreeSample = Effect.fn('codeGraphBenchmarkSampler.readDarwinProcessTreeSample')(function* (
   rootProcessId: number,
   excludedProcessId: number,
-): Promise<BenchmarkProcessTreeSample | undefined> {
-  try {
-    const result = Bun.spawnSync({
-      cmd: ['/bin/ps', '-axo', 'pid=,ppid=,lstart=,time=,rss='],
-      env: {LC_ALL: 'C'},
-      stderr: 'ignore',
-    });
-    if (result.exitCode !== 0) return undefined;
-    return aggregateProcessTree(
-      parseDarwinProcessList(new TextDecoder().decode(result.stdout)),
-      rootProcessId,
-      undefined,
-      excludedProcessId,
-    );
-  } catch {
-    return undefined;
-  }
-}
+) {
+  return yield* Effect.try({
+    try: () => {
+      const result = Bun.spawnSync({
+        cmd: ['/bin/ps', '-axo', 'pid=,ppid=,lstart=,time=,rss='],
+        env: {LC_ALL: 'C'},
+        stderr: 'ignore',
+      });
+      if (result.exitCode !== 0) return undefined;
+      return aggregateProcessTree(
+        parseDarwinProcessList(new TextDecoder().decode(result.stdout)),
+        rootProcessId,
+        undefined,
+        excludedProcessId,
+      );
+    },
+    catch: scriptError,
+  }).pipe(Effect.option, Effect.map(Option.getOrUndefined));
+});
 
 export function parseDarwinProcessList(output: string): readonly BenchmarkProcessTreeEntry[] {
   return output
@@ -1021,12 +1062,13 @@ export function mergeTemporaryFileSnapshots(
 
 export function isOpenTemporaryFilePath(target: string, canonicalTemporaryRoot: string): boolean {
   const withoutDeletedMarker = target.endsWith(' (deleted)') ? target.slice(0, -' (deleted)'.length) : target;
-  if (!isAbsolute(withoutDeletedMarker)) return false;
-  const candidate = resolve(withoutDeletedMarker);
-  const relativePath = relative(canonicalTemporaryRoot, candidate);
+  if (!hostPath.isAbsolute(withoutDeletedMarker)) return false;
+  const candidate = hostPath.resolve(withoutDeletedMarker);
+  const relativePath = hostPath.relative(canonicalTemporaryRoot, candidate);
   const belongsToTemporaryRoot =
-    relativePath === '' || (relativePath !== '..' && !relativePath.startsWith(`..${sep}`) && !isAbsolute(relativePath));
-  return belongsToTemporaryRoot || /^etilqs_[a-z0-9]+$/i.test(basename(candidate));
+    relativePath === '' ||
+    (relativePath !== '..' && !relativePath.startsWith(`..${hostPath.sep}`) && !hostPath.isAbsolute(relativePath));
+  return belongsToTemporaryRoot || /^etilqs_[a-z0-9]+$/i.test(hostPath.basename(candidate));
 }
 
 export function parseDarwinOpenFileList(
@@ -1112,31 +1154,31 @@ export function parseDarwinOpenFileList(
   return observedRoot ? temporaryFileSnapshot(files) : undefined;
 }
 
-async function readOpenTemporaryFileSnapshot(
+const readOpenTemporaryFileSnapshot = Effect.fn('codeGraphBenchmarkSampler.readOpenTemporaryFileSnapshot')(function* (
   processIds: readonly number[],
   canonicalTemporaryRoot: string,
-): Promise<BenchmarkTemporaryFileSnapshot | undefined> {
-  if (process.platform === 'linux') return readLinuxOpenTemporaryFiles(processIds, canonicalTemporaryRoot);
-  if (process.platform === 'darwin') return readDarwinOpenTemporaryFiles(processIds, canonicalTemporaryRoot);
+) {
+  const system = yield* SystemInfo;
+  if (system.platform === 'linux') return yield* readLinuxOpenTemporaryFiles(processIds, canonicalTemporaryRoot);
+  if (system.platform === 'darwin') return yield* readDarwinOpenTemporaryFiles(processIds, canonicalTemporaryRoot);
   return undefined;
-}
+});
 
-async function readLinuxOpenTemporaryFiles(
+const readLinuxOpenTemporaryFiles = Effect.fn('codeGraphBenchmarkSampler.readLinuxOpenTemporaryFiles')(function* (
   processIds: readonly number[],
   canonicalTemporaryRoot: string,
-): Promise<BenchmarkTemporaryFileSnapshot | undefined> {
+) {
+  const fs = yield* FileSystem.FileSystem;
   const rootProcessId = processIds[0];
   if (rootProcessId === undefined || processIds.length > MAX_OPEN_FILE_PROCESSES) return undefined;
   const descriptors: Array<{readonly descriptorPath: string; readonly processId: number}> = [];
   for (const processId of [...new Set(processIds)]) {
-    let names: readonly string[];
-    try {
-      names = await readdir(`/proc/${processId}/fd`);
-    } catch {
+    const names = yield* fs.readDirectory(`/proc/${processId}/fd`).pipe(Effect.option);
+    if (Option.isNone(names)) {
       if (processId === rootProcessId) return undefined;
       continue;
     }
-    for (const name of names) {
+    for (const name of names.value) {
       if (!/^\d+$/.test(name)) continue;
       if (descriptors.length >= MAX_OPEN_FILE_DESCRIPTORS) return undefined;
       descriptors.push({descriptorPath: `/proc/${processId}/fd/${name}`, processId});
@@ -1144,65 +1186,67 @@ async function readLinuxOpenTemporaryFiles(
   }
   const files = new Map<string, number>();
   for (let offset = 0; offset < descriptors.length; offset += 32) {
-    const observed = await Promise.all(
-      descriptors
-        .slice(offset, offset + 32)
-        .map(({descriptorPath}) => readLinuxOpenTemporaryFile(descriptorPath, canonicalTemporaryRoot)),
+    const observed = yield* Effect.forEach(
+      descriptors.slice(offset, offset + 32),
+      ({descriptorPath}) => readLinuxOpenTemporaryFile(descriptorPath, canonicalTemporaryRoot),
+      {concurrency: 'unbounded'},
     );
     for (const file of observed) {
       if (file) files.set(file.identity, Math.max(files.get(file.identity) ?? 0, file.bytes));
     }
   }
   return temporaryFileSnapshot(files);
-}
+});
 
-async function readLinuxOpenTemporaryFile(
+const readLinuxOpenTemporaryFile = Effect.fn('codeGraphBenchmarkSampler.readLinuxOpenTemporaryFile')(function* (
   descriptorPath: string,
   canonicalTemporaryRoot: string,
-): Promise<{readonly bytes: number; readonly identity: string} | undefined> {
-  try {
-    const [target, info] = await Promise.all([readlink(descriptorPath), stat(descriptorPath, {bigint: true})]);
-    if (!info.isFile() || !isOpenTemporaryFilePath(target, canonicalTemporaryRoot)) return undefined;
-    const bytes = safeBigIntByteCount(info.size);
-    return bytes === undefined ? undefined : {bytes, identity: `${info.dev}:${info.ino}`};
-  } catch {
-    return undefined;
-  }
-}
+) {
+  const fs = yield* FileSystem.FileSystem;
+  return yield* Effect.gen(function* () {
+    const [target, info] = yield* Effect.all(
+      [fs.readLink(descriptorPath), Effect.tryPromise({try: () => runtimeStat(descriptorPath), catch: scriptError})],
+      {concurrency: 2},
+    );
+    if (!isOpenTemporaryFilePath(target, canonicalTemporaryRoot)) return undefined;
+    return temporaryFileObservationFromStats(info);
+  }).pipe(Effect.option, Effect.map(Option.getOrUndefined));
+});
 
-async function readDarwinOpenTemporaryFiles(
+const readDarwinOpenTemporaryFiles = Effect.fn('codeGraphBenchmarkSampler.readDarwinOpenTemporaryFiles')(function* (
   processIds: readonly number[],
   canonicalTemporaryRoot: string,
-): Promise<BenchmarkTemporaryFileSnapshot | undefined> {
+) {
   const uniqueProcessIds = [...new Set(processIds)].filter(
     processId => Number.isSafeInteger(processId) && processId > 0,
   );
   const rootProcessId = uniqueProcessIds[0];
   if (rootProcessId === undefined || uniqueProcessIds.length > MAX_OPEN_FILE_PROCESSES) return undefined;
-  try {
-    const result = Bun.spawnSync({
-      cmd: ['/usr/sbin/lsof', '-nP', '-a', '-p', uniqueProcessIds.join(','), '-d', '0-1048575', '-F0pftsiDn'],
-      env: {LC_ALL: 'C'},
-      maxBuffer: MAX_DARWIN_LSOF_BYTES,
-      stderr: 'ignore',
-    });
-    if (
-      (result.signalCode !== undefined && result.signalCode !== null) ||
-      ![0, 1].includes(result.exitCode) ||
-      result.stdout.byteLength >= MAX_DARWIN_LSOF_BYTES
-    ) {
-      return undefined;
-    }
-    return parseDarwinOpenFileList(
-      new TextDecoder().decode(result.stdout),
-      uniqueProcessIds,
-      rootProcessId,
-      canonicalTemporaryRoot,
-    );
-  } catch {
-    return undefined;
-  }
-}
+  return yield* Effect.try({
+    try: () => {
+      const result = Bun.spawnSync({
+        cmd: ['/usr/sbin/lsof', '-nP', '-a', '-p', uniqueProcessIds.join(','), '-d', '0-1048575', '-F0pftsiDn'],
+        env: {LC_ALL: 'C'},
+        maxBuffer: MAX_DARWIN_LSOF_BYTES,
+        stderr: 'ignore',
+      });
+      if (
+        (result.signalCode !== undefined && result.signalCode !== null) ||
+        ![0, 1].includes(result.exitCode) ||
+        result.stdout.byteLength >= MAX_DARWIN_LSOF_BYTES
+      ) {
+        return undefined;
+      }
+      return parseDarwinOpenFileList(
+        new TextDecoder().decode(result.stdout),
+        uniqueProcessIds,
+        rootProcessId,
+        canonicalTemporaryRoot,
+      );
+    },
+    catch: scriptError,
+  }).pipe(Effect.option, Effect.map(Option.getOrUndefined));
+});
 
 function parseDarwinDevice(value: string | undefined): string | undefined {
   if (value === undefined || !/^(?:0x[0-9a-f]+|\d+)$/i.test(value)) return undefined;
@@ -1220,6 +1264,14 @@ function parseSafeByteCount(value: string | undefined): number | undefined {
   } catch {
     return undefined;
   }
+}
+
+export function temporaryFileObservationFromStats(
+  info: Pick<RuntimeBigIntStats, 'dev' | 'ino' | 'isFile' | 'size'>,
+): {readonly bytes: number; readonly identity: string} | undefined {
+  if (!info.isFile()) return undefined;
+  const bytes = safeBigIntByteCount(info.size);
+  return bytes === undefined ? undefined : {bytes, identity: `${info.dev}:${info.ino}`};
 }
 
 function safeBigIntByteCount(value: bigint): number | undefined {
@@ -1253,124 +1305,102 @@ export function samplerParentExited(
   );
 }
 
-function linuxClockTicksPerSecond(): number {
-  if (process.platform !== 'linux') return 100;
-  try {
-    const result = Bun.spawnSync({cmd: ['getconf', 'CLK_TCK'], stderr: 'ignore'});
-    const value = Number(new TextDecoder().decode(result.stdout).trim());
-    return Number.isFinite(value) && value > 0 ? value : 100;
-  } catch {
-    return 100;
-  }
-}
+const linuxClockTicksPerSecond = Effect.fn('codeGraphBenchmarkSampler.linuxClockTicksPerSecond')(function* () {
+  const system = yield* SystemInfo;
+  if (system.platform !== 'linux') return 100;
+  return yield* Effect.try({
+    try: () => {
+      const result = Bun.spawnSync({cmd: ['getconf', 'CLK_TCK'], stderr: 'ignore'});
+      const value = Number(new TextDecoder().decode(result.stdout).trim());
+      return Number.isFinite(value) && value > 0 ? value : 100;
+    },
+    catch: scriptError,
+  }).pipe(Effect.catch(() => Effect.succeed(100)));
+});
 
-async function canonicalDirectory(directory: string): Promise<string> {
-  try {
-    return await realpath(directory);
-  } catch {
-    return resolve(directory);
-  }
-}
+const canonicalDirectory = Effect.fn('codeGraphBenchmarkSampler.canonicalDirectory')(function* (directory: string) {
+  const fs = yield* FileSystem.FileSystem;
+  return yield* fs.realPath(directory).pipe(Effect.catch(() => Effect.succeed(hostPath.resolve(directory))));
+});
 
-async function directoryFileSnapshot(directory: string): Promise<BenchmarkTemporaryFileSnapshot> {
+const directoryFileSnapshot = Effect.fn('codeGraphBenchmarkSampler.directoryFileSnapshot')(function* (
+  directory: string,
+) {
   const files = new Map<string, number>();
-  await collectDirectoryFiles(directory, files);
+  yield* collectDirectoryFiles(directory, files);
   return temporaryFileSnapshot(files);
-}
+});
 
-async function collectDirectoryFiles(directory: string, files: Map<string, number>): Promise<void> {
-  try {
-    for (const entry of await readdir(directory, {withFileTypes: true})) {
-      const child = join(directory, entry.name);
-      if (entry.isDirectory()) {
-        await collectDirectoryFiles(child, files);
-      } else if (entry.isFile()) {
-        const observed = await fileSnapshotEntry(child);
-        if (observed) files.set(observed.identity, Math.max(files.get(observed.identity) ?? 0, observed.bytes));
+function collectDirectoryFiles(
+  directory: string,
+  files: Map<string, number>,
+): Effect.Effect<void, never, FileSystem.FileSystem> {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const names = yield* fs.readDirectory(directory).pipe(Effect.option);
+    if (Option.isNone(names)) return;
+    for (const name of names.value) {
+      const child = hostPath.join(directory, name);
+      const info = yield* Effect.tryPromise({try: () => runtimeLstat(child), catch: scriptError}).pipe(Effect.option);
+      if (Option.isNone(info)) continue;
+      if (info.value.isDirectory()) {
+        yield* collectDirectoryFiles(child, files);
+        continue;
       }
+      const observed = temporaryFileObservationFromStats(info.value);
+      if (observed) files.set(observed.identity, Math.max(files.get(observed.identity) ?? 0, observed.bytes));
     }
-  } catch {
-    return;
-  }
+  });
 }
 
-async function fileSnapshotEntry(
-  file: string,
-): Promise<{readonly bytes: number; readonly identity: string} | undefined> {
-  try {
-    const info = await stat(file, {bigint: true});
-    if (!info.isFile()) return undefined;
-    const bytes = safeBigIntByteCount(info.size);
-    return bytes === undefined ? undefined : {bytes, identity: `${info.dev}:${info.ino}`};
-  } catch {
-    return undefined;
-  }
-}
+const fileBytes = Effect.fn('codeGraphBenchmarkSampler.fileBytes')(function* (file: string) {
+  const fs = yield* FileSystem.FileSystem;
+  const info = yield* fs.stat(file).pipe(Effect.option);
+  if (Option.isNone(info) || info.value.type !== 'File') return 0;
+  return safeBigIntByteCount(info.value.size) ?? 0;
+});
 
-async function fileBytes(file: string): Promise<number> {
-  try {
-    const info = await stat(file);
-    return info.isFile() ? info.size : 0;
-  } catch {
-    return 0;
-  }
-}
-
-function processExists(processId: number): boolean {
-  try {
-    process.kill(processId, 0);
-    return true;
-  } catch (cause: unknown) {
-    return !(
-      typeof cause === 'object' &&
-      cause !== null &&
-      'code' in cause &&
-      (cause as {readonly code?: unknown}).code === 'ESRCH'
-    );
-  }
-}
-
-async function readText(file: string): Promise<string | undefined> {
-  try {
-    return await readFile(file, 'utf8');
-  } catch {
-    return undefined;
-  }
-}
+const readText = Effect.fn('codeGraphBenchmarkSampler.readText')(function* (file: string) {
+  const fs = yield* FileSystem.FileSystem;
+  return yield* fs.readFileString(file).pipe(Effect.option, Effect.map(Option.getOrUndefined));
+});
 
 function parseArguments(args: readonly string[]): SamplerOptions {
   const values = new Map<string, string>();
   for (let index = 0; index < args.length; index += 2) {
     const flag = args[index];
     const value = args[index + 1];
-    if (!flag?.startsWith('--') || value === undefined) throw new Error(`Invalid benchmark sampler argument ${flag}.`);
+    if (!flag?.startsWith('--') || value === undefined)
+      throw new ScriptError(`Invalid benchmark sampler argument ${flag}.`);
     values.set(flag, value);
   }
   const required = (flag: string) => {
     const value = values.get(flag);
-    if (!value) throw new Error(`Missing benchmark sampler argument ${flag}.`);
+    if (!value) throw new ScriptError(`Missing benchmark sampler argument ${flag}.`);
     return value;
   };
   const processId = Number(required('--pid'));
   const intervalMilliseconds = Number(required('--interval-ms'));
   const checkpointIntervalMilliseconds = Number(required('--checkpoint-ms'));
-  if (!Number.isSafeInteger(processId) || processId <= 0) throw new Error('Sampler PID must be positive.');
+  if (!Number.isSafeInteger(processId) || processId <= 0) throw new ScriptError('Sampler PID must be positive.');
   if (!Number.isSafeInteger(intervalMilliseconds) || intervalMilliseconds < 10) {
-    throw new Error('Sampler interval must be at least 10 milliseconds.');
+    throw new ScriptError('Sampler interval must be at least 10 milliseconds.');
   }
   if (!Number.isSafeInteger(checkpointIntervalMilliseconds) || checkpointIntervalMilliseconds < intervalMilliseconds) {
-    throw new Error('Sampler checkpoint interval must be at least the sampling interval.');
+    throw new ScriptError('Sampler checkpoint interval must be at least the sampling interval.');
   }
   const outputPath = required('--output');
   const checkpointPath = required('--checkpoint-output');
   const readyPath = required('--ready');
-  if (dirname(outputPath) === outputPath) throw new Error('Sampler output path must have a parent directory.');
-  if (dirname(checkpointPath) === checkpointPath) {
-    throw new Error('Sampler checkpoint path must have a parent directory.');
+  if (hostPath.dirname(outputPath) === outputPath)
+    throw new ScriptError('Sampler output path must have a parent directory.');
+  if (hostPath.dirname(checkpointPath) === checkpointPath) {
+    throw new ScriptError('Sampler checkpoint path must have a parent directory.');
   }
-  if (dirname(readyPath) === readyPath) throw new Error('Sampler ready path must have a parent directory.');
+  if (hostPath.dirname(readyPath) === readyPath)
+    throw new ScriptError('Sampler ready path must have a parent directory.');
   if (new Set([checkpointPath, outputPath, readyPath]).size !== 3) {
-    throw new Error('Sampler checkpoint, output, and ready paths must be distinct.');
+    throw new ScriptError('Sampler checkpoint, output, and ready paths must be distinct.');
   }
   return {
     checkpointIntervalMilliseconds,
@@ -1386,4 +1416,6 @@ function parseArguments(args: readonly string[]): SamplerOptions {
   };
 }
 
-if (import.meta.main) await main();
+const SamplerLayer = SystemInfo.layer.pipe(Layer.provideMerge(BunServices.layer));
+
+if (import.meta.main) BunRuntime.runMain(provideScriptLayer(samplerMain, SamplerLayer));

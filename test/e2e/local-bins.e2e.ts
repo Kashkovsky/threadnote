@@ -1,8 +1,20 @@
-import {chmod, copyFile, cp, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile} from 'node:fs/promises';
-import {tmpdir} from 'node:os';
-import {dirname, join} from 'node:path';
-import {execFile} from 'node:child_process';
-import {promisify} from 'node:util';
+import {TestError} from '../helpers/test-error.js';
+import {
+  chmod,
+  copyFile,
+  cp,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  stat,
+  writeFile,
+} from '../helpers/node-fs-promises.js';
+import {tmpdir} from '../helpers/node-os.js';
+import {dirname, join} from '../helpers/node-path.js';
+import {execFile} from '../helpers/node-child-process.js';
+import {promisify} from '../helpers/node-util.js';
 import {Database} from 'bun:sqlite';
 import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {StdioClientTransport} from '@modelcontextprotocol/sdk/client/stdio.js';
@@ -199,7 +211,7 @@ describe('built self-contained distribution', () => {
     const lockId = pathResult.nodes?.find(node => node.name === 'withExclusiveFileLock')?.id;
     expect(runApplicationId).toMatch(/^cgs_[a-f0-9]{32,64}$/);
     expect(lockId).toMatch(/^cgs_[a-f0-9]{32,64}$/);
-    if (!runApplicationId || !lockId) throw new Error('Expected packaged graph fixture node IDs.');
+    if (!runApplicationId || !lockId) throw new TestError('Expected packaged graph fixture node IDs.');
 
     const exactNode = await runCliJson<{
       readonly nodes?: ReadonlyArray<{readonly id?: string; readonly name?: string}>;
@@ -1222,7 +1234,7 @@ async function runCliOutput(
       readonly stderr?: unknown;
       readonly stdout?: unknown;
     };
-    throw new Error(
+    throw new TestError(
       [
         `Packaged Threadnote command exited with ${String(failure.code ?? 'an unknown status')}:`,
         `${cli} --home ${home} ${args.join(' ')}`,
@@ -1242,7 +1254,7 @@ function boundedFailureOutput(value: unknown): string {
 async function seedCoreEmbeddingFixture(): Promise<void> {
   const fixture = process.env.THREADNOTE_E2E_MODEL_PATH;
   if (!fixture) return;
-  if (!coreEmbeddingManifest) throw new Error(`Missing built-in model manifest: ${coreEmbeddingModelId}`);
+  if (!coreEmbeddingManifest) throw new TestError(`Missing built-in model manifest: ${coreEmbeddingModelId}`);
 
   const directory = join(home, 'models', coreEmbeddingManifest.role, coreEmbeddingManifest.id);
   await mkdir(directory, {recursive: true});

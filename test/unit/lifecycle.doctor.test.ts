@@ -1,6 +1,7 @@
-import {mkdir, mkdtemp, rm, writeFile} from 'node:fs/promises';
-import {tmpdir} from 'node:os';
-import {dirname, join} from 'node:path';
+import {provideTestLayer} from '../helpers/effect-layer.js';
+import {mkdir, mkdtemp, rm, writeFile} from '../helpers/node-fs-promises.js';
+import {tmpdir} from '../helpers/node-os.js';
+import {dirname, join} from '../helpers/node-path.js';
 import {it as effectIt} from '@effect/vitest';
 import {Effect, FileSystem, Path} from 'effect';
 import {afterEach, describe, expect, it} from 'vitest';
@@ -146,6 +147,6 @@ describe('doctor report resilience', () => {
         expect(report.output).toContain('FAIL lexical recall index:');
         expect(report.output).toContain('Summary: 4 failure(s)');
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 });

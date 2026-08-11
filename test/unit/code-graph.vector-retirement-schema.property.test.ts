@@ -1,3 +1,4 @@
+import {TestError} from '../helpers/test-error.js';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {Database} from 'bun:sqlite';
 import {describe, expect, it as effectIt} from '@effect/vitest';
@@ -104,7 +105,7 @@ function prepareUntilReady(databasePath: string) {
       const result = yield* prepareCodeGraphVectorRetirement(databasePath, capacityOptions);
       if (result.state === 'ready') return;
     }
-    return yield* Effect.die(new Error('Vector retirement schema did not become ready within sixteen steps.'));
+    return yield* Effect.die(new TestError('Vector retirement schema did not become ready within sixteen steps.'));
   });
 }
 

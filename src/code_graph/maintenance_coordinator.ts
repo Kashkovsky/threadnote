@@ -205,7 +205,7 @@ export class CodeGraphMaintenanceCoordinator extends Context.Service<
         Effect.gen(function* () {
           const inspected = yield* inspectCodeGraphViewDatabaseTarget(input.threadnoteHome, input.checkoutId);
           if (inspected.state !== 'ready' || inspected.databasePath !== input.databasePath) {
-            return yield* Effect.fail(new Error('Code graph cleanup database target changed.'));
+            return yield* Effect.fail(new CodeGraphStoreError('Code graph cleanup database target changed.'));
           }
           if (yield* codeGraphMaintenanceIntentActive(input.threadnoteHome)) {
             return yield* Effect.fail(new CodeGraphMaintenanceActiveError());
@@ -259,8 +259,8 @@ export class CodeGraphMaintenanceCoordinator extends Context.Service<
             Effect.provideService(Path.Path, path),
             Effect.provideService(SystemInfo, system),
           ),
-        monotonicMilliseconds: () => Effect.sync(() => performance.now()),
-        nowMilliseconds: () => Clock.currentTimeMillis,
+        monotonicMilliseconds: Effect.sync(() => performance.now()),
+        nowMilliseconds: Clock.currentTimeMillis,
         sleep: milliseconds => Effect.sleep(milliseconds),
         update: (input, entry, update) =>
           store.updateRemovedViewCleanup(input.databasePath, entry, update, {
@@ -329,7 +329,9 @@ export class CodeGraphMaintenanceCoordinator extends Context.Service<
               Effect.gen(function* () {
                 const inspected = yield* inspectCodeGraphViewDatabaseTarget(input.threadnoteHome, input.checkoutId);
                 if (inspected.state !== 'ready' || inspected.databasePath !== input.databasePath) {
-                  return yield* Effect.fail(new Error('Code graph database target changed before index preparation.'));
+                  return yield* Effect.fail(
+                    new CodeGraphStoreError('Code graph database target changed before index preparation.'),
+                  );
                 }
                 if (yield* codeGraphMaintenanceIntentActive(input.threadnoteHome)) {
                   return yield* Effect.fail(new CodeGraphMaintenanceActiveError());

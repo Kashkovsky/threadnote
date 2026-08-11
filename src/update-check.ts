@@ -89,7 +89,7 @@ export const spawnDetachedAutoUpdate = Effect.fn('updateCheck.spawnDetachedAutoU
         stdout: 'ignore',
         stderr: 'ignore',
       });
-      yield* child.unref;
+      yield* child.unref.pipe(Effect.asVoid);
     }),
   ).pipe(Effect.ignore);
 });

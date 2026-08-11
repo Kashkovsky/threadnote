@@ -1,6 +1,6 @@
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import * as BunServices from '@effect/platform-bun/BunServices';
-import {Effect, Runtime} from 'effect';
+import {Effect, Layer, Runtime} from 'effect';
 import {withCliOutputConsole} from './effect/cli_output.js';
 import {
   CODE_GRAPH_DEEP_DIAGNOSTICS_WORKER_ARGUMENT,
@@ -29,7 +29,7 @@ if (isCodeGraphDeepDiagnosticsWorker) {
   // the OS default SIGTERM behavior so the lock-owning parent can always stop it.
   runSignalTransparentMain(await codeGraphDeepDiagnosticsWorkerProgram(), {disableErrorReporting: true});
 } else {
-  const program = isLocalModelWorker
+  const program: Effect.Effect<void, unknown, never> = isLocalModelWorker
     ? await localModelWorkerProgram(arguments_)
     : isCodeGraphParserWorker
       ? await codeGraphParserWorkerProgram(arguments_)
@@ -54,14 +54,14 @@ async function gitWorktreeRegistrationWorkerProgram() {
     import('./effect/system.js'),
   ]);
   return worker.gitWorktreeRegistrationWorkerProgram.pipe(
-    Effect.provide(system.SystemInfo.layer),
-    Effect.provide(BunServices.layer),
+    Effect.provide(Layer.merge(system.SystemInfo.layer, BunServices.layer)),
   );
 }
 
 async function localModelWorkerProgram(arguments_: readonly string[]) {
-  const [model, systemModule, processDiagnostics, processLease] = await Promise.all([
+  const [isolatedModel, model, systemModule, processDiagnostics, processLease] = await Promise.all([
     import('./effect/ai/isolated-local-model-runtime.js'),
+    import('./effect/ai/local-model-runtime.js'),
     import('./effect/system.js'),
     import('./process_diagnostics.js'),
     import('./standalone_process_lease.js'),
@@ -73,13 +73,12 @@ async function localModelWorkerProgram(arguments_: readonly string[]) {
         processDiagnostics.withThreadnoteProcessRegistration(
           home,
           'local-model-worker',
-          Effect.scoped(model.nativeLocalModelWorkerServer),
+          Effect.scoped(isolatedModel.localModelWorkerServer.pipe(Effect.provide(model.localModelRuntimeLayer()))),
           'model-stdio',
         ),
       ),
     ),
-    Effect.provide(systemModule.SystemInfo.layer),
-    Effect.provide(BunServices.layer),
+    Effect.provide(Layer.merge(systemModule.SystemInfo.layer, BunServices.layer)),
   );
 }
 
@@ -103,9 +102,11 @@ async function codeGraphParserWorkerProgram(arguments_: readonly string[]) {
         ),
       ),
     ),
-    Effect.provide(treeSitter.TreeSitterRuntime.layer),
-    Effect.provide(systemModule.SystemInfo.layer),
-    Effect.provide(BunServices.layer),
+    Effect.provide(
+      treeSitter.TreeSitterRuntime.layer.pipe(
+        Layer.provideMerge(Layer.merge(systemModule.SystemInfo.layer, BunServices.layer)),
+      ),
+    ),
   );
 }
 

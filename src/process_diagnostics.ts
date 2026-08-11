@@ -176,7 +176,7 @@ export const readThreadnoteProcessDiagnostics = Effect.fn('processDiagnostics.re
     const running = system.isProcessRunning(value.processId);
     const identity =
       running && value.processStartIdentity
-        ? yield* system.processStartIdentity(value.processId).pipe(Effect.catch(() => Effect.succeed(undefined)))
+        ? yield* system.processStartIdentity(value.processId)
         : undefined;
     const identityMatches =
       value.processStartIdentity === undefined || identity === undefined || identity === value.processStartIdentity;
@@ -352,9 +352,7 @@ function registerThreadnoteProcess(home: string, baseRole: RegisteredThreadnoteP
       fileSystem: fs,
       parentProcessId: process.ppid,
       processId: system.processId,
-      processStartIdentity: yield* system
-        .processStartIdentity(system.processId)
-        .pipe(Effect.catch(() => Effect.succeed(undefined))),
+      processStartIdentity: yield* system.processStartIdentity(system.processId),
       originalTitle: process.title,
       path,
       startedAt: new Date().toISOString(),

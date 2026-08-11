@@ -1,3 +1,4 @@
+import {TestError} from '../helpers/test-error.js';
 import {it as effectIt} from '@effect/vitest';
 import {Deferred, Effect, Fiber, Ref} from 'effect';
 import fc from 'fast-check';
@@ -429,7 +430,7 @@ describe('code graph maintenance lanes', () => {
         routine: () => Effect.sync(() => synchronousCalls.push('routine')).pipe(Effect.as(completed())),
         vector: () => {
           synchronousCalls.push('vector');
-          throw new Error('Synchronous vector callback failure.');
+          throw new TestError('Synchronous vector callback failure.');
         },
       });
       expect((yield* synchronousFailure(tick('/home', '/database/A')).pipe(Effect.exit))._tag).toBe('Failure');

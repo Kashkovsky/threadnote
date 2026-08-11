@@ -1,4 +1,5 @@
-import {execFileSync} from 'node:child_process';
+import {TestError} from '../helpers/test-error.js';
+import {execFileSync} from '../helpers/node-child-process.js';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {describe, expect, it as effectIt} from '@effect/vitest';
 import {Clock, Crypto, Deferred, Effect, Fiber, FileSystem, Layer, Path} from 'effect';
@@ -286,7 +287,7 @@ describe('code graph local provenance cleanup', () => {
                   {stdio: 'pipe'},
                 );
               },
-              catch: cause => new Error('Could not create the provenance publisher fixture.', {cause}),
+              catch: cause => new TestError('Could not create the provenance publisher fixture.', {cause}),
             });
             const identity = yield* resolveRepositoryIdentity(yield* fs.realPath(repository));
             const acquired = yield* Deferred.make<void>();

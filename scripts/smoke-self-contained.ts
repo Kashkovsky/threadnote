@@ -1,3 +1,4 @@
+import {provideScriptLayer, scriptError, ScriptError} from './effect/errors.js';
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {Client} from '@modelcontextprotocol/sdk/client/index.js';
@@ -19,7 +20,7 @@ const smokeSelfContained = Effect.scoped(
     const root = yield* path.fromFileUrl(ROOT_URL);
     const executable = path.join(root, 'dist', process.platform === 'win32' ? 'threadnote.exe' : 'threadnote');
     if (!(yield* fs.exists(executable))) {
-      return yield* Effect.fail(new Error('Standalone executable is missing; run bun run build first.'));
+      return yield* Effect.fail(new ScriptError('Standalone executable is missing; run bun run build first.'));
     }
 
     const temporaryRoot = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-standalone-smoke-'});
@@ -31,7 +32,7 @@ const smokeSelfContained = Effect.scoped(
     }
     const gitExecutable = Option.fromNullishOr(Bun.which('git'));
     if (Option.isNone(gitExecutable)) {
-      return yield* Effect.fail(new Error('Standalone graph smoke requires Git on the build host.'));
+      return yield* Effect.fail(new ScriptError('Standalone graph smoke requires Git on the build host.'));
     }
     yield* writePolyglotRepository(fs, path, invocationDirectory, gitExecutable.value);
 
@@ -56,14 +57,14 @@ const smokeSelfContained = Effect.scoped(
 
     const version = yield* run(['--version']);
     if (!/threadnote v4\./.test(version)) {
-      return yield* Effect.fail(new Error(`Standalone release reported an unexpected version:\n${version}`));
+      return yield* Effect.fail(new ScriptError(`Standalone release reported an unexpected version:\n${version}`));
     }
 
     yield* run(['install', '--dry-run', '--no-start']);
 
     const runtime = yield* run(['models', 'runtime']);
     if (!/node-llama-cpp:\s+prebuilt/i.test(runtime)) {
-      return yield* Effect.fail(new Error(`Native runtime was not loaded from the release payload:\n${runtime}`));
+      return yield* Effect.fail(new ScriptError(`Native runtime was not loaded from the release payload:\n${runtime}`));
     }
 
     yield* run([
@@ -79,7 +80,7 @@ const smokeSelfContained = Effect.scoped(
     ]);
     const recall = yield* run(['recall', '--query', `${SMOKE_MARKER} standalone recall`]);
     if (!recall.includes('standalone-bun-smoke.md')) {
-      return yield* Effect.fail(new Error(`Standalone lexical recall missed the stored memory:\n${recall}`));
+      return yield* Effect.fail(new ScriptError(`Standalone lexical recall missed the stored memory:\n${recall}`));
     }
 
     const storedMemoryPath = path.join(
@@ -111,7 +112,7 @@ const smokeSelfContained = Effect.scoped(
     });
     if (largeRead.bytes <= 65_536 || largeRead.hasStart !== true || largeRead.hasEnd !== true) {
       return yield* Effect.fail(
-        new Error(
+        new ScriptError(
           `Standalone large memory read was truncated before stdout drained: ${largeRead.bytes} bytes; ` +
             `start=${largeRead.hasStart}; end=${largeRead.hasEnd}.`,
         ),
@@ -121,17 +122,17 @@ const smokeSelfContained = Effect.scoped(
     const lexicalDatabase = path.join(threadnoteHome, 'indexes', 'lexical', 'active-v3.sqlite');
     const lexicalInfo = yield* fs.stat(lexicalDatabase);
     if (lexicalInfo.type !== 'File' || lexicalInfo.size <= 0) {
-      return yield* Effect.fail(new Error('Standalone recall did not create a populated Bun SQLite index.'));
+      return yield* Effect.fail(new ScriptError('Standalone recall did not create a populated Bun SQLite index.'));
     }
 
     const doctor = yield* run(['doctor', '--dry-run']);
     if (!/bun runtime:\s+v1\.3\.14;\s+embedded/i.test(doctor) || /Node runtime/i.test(doctor)) {
-      return yield* Effect.fail(new Error(`Doctor did not report the embedded Bun runtime:\n${doctor}`));
+      return yield* Effect.fail(new ScriptError(`Doctor did not report the embedded Bun runtime:\n${doctor}`));
     }
 
     const indexed = yield* run(['graph', 'index']);
     if (!/14 symbols|symbols/i.test(indexed)) {
-      return yield* Effect.fail(new Error(`Standalone graph index did not complete:\n${indexed}`));
+      return yield* Effect.fail(new ScriptError(`Standalone graph index did not complete:\n${indexed}`));
     }
     const graphOperations = yield* Effect.all(
       [
@@ -145,7 +146,7 @@ const smokeSelfContained = Effect.scoped(
     for (const [index, expected] of ['java', 'KotlinApp', 'typescriptHelper', 'swiftBoot'].entries()) {
       if (!graphOperations[index]!.includes(expected)) {
         return yield* Effect.fail(
-          new Error(`Standalone graph operation ${index + 1} missed ${expected}:\n${graphOperations[index]}`),
+          new ScriptError(`Standalone graph operation ${index + 1} missed ${expected}:\n${graphOperations[index]}`),
         );
       }
     }
@@ -197,7 +198,7 @@ const readLargeOutputThroughPlatformPipe = Effect.fn('smokeSelfContained.readLar
           readonly hasEnd: boolean;
           readonly hasStart: boolean;
         },
-      catch: cause => new Error('Standalone large-output pipe returned invalid JSON.', {cause}),
+      catch: cause => new ScriptError('Standalone large-output pipe returned invalid JSON.', {cause}),
     });
   },
 );
@@ -263,17 +264,17 @@ const verifyMcp = Effect.fn('smokeSelfContained.verifyMcp')(function* (
   yield* Effect.acquireUseRelease(
     Effect.tryPromise({
       try: () => client.connect(transport),
-      catch: cause => new Error('Could not start the standalone MCP server.', {cause}),
+      catch: cause => new ScriptError('Could not start the standalone MCP server.', {cause}),
     }),
     () =>
       Effect.tryPromise({
         try: async () => {
           const tools = await client.listTools();
           if (!tools.tools.some(tool => tool.name === 'recall_context')) {
-            throw new Error('Standalone MCP server did not expose recall_context.');
+            throw new ScriptError('Standalone MCP server did not expose recall_context.');
           }
           if (!tools.tools.some(tool => tool.name === 'inspect_code_graph')) {
-            throw new Error('Standalone MCP server did not expose inspect_code_graph.');
+            throw new ScriptError('Standalone MCP server did not expose inspect_code_graph.');
           }
           const recalled = await client.callTool(
             {
@@ -289,7 +290,7 @@ const verifyMcp = Effect.fn('smokeSelfContained.verifyMcp')(function* (
           );
           const text = (recalled.content ?? []).map(item => ('text' in item ? item.text : '')).join('\n');
           if (recalled.isError === true || !text.includes('standalone-bun-smoke.md')) {
-            throw new Error(`Standalone MCP recall missed the stored memory:\n${text}`);
+            throw new ScriptError(`Standalone MCP recall missed the stored memory:\n${text}`);
           }
           const graphOperations = [
             {arguments: {callerCwd: cwd, operation: 'query', query: 'Greeter'}, expected: 'Greeter'},
@@ -316,16 +317,16 @@ const verifyMcp = Effect.fn('smokeSelfContained.verifyMcp')(function* (
             );
             const graphText = (inspected.content ?? []).map(item => ('text' in item ? item.text : '')).join('\n');
             if (inspected.isError === true || !graphText.includes(graph.expected)) {
-              throw new Error(`Standalone MCP graph inspection missed ${graph.expected}:\n${graphText}`);
+              throw new ScriptError(`Standalone MCP graph inspection missed ${graph.expected}:\n${graphText}`);
             }
           }
         },
-        catch: cause => (cause instanceof Error ? cause : new Error('Standalone MCP smoke failed.', {cause})),
+        catch: cause => scriptError(cause, 'Standalone MCP smoke failed.'),
       }),
     () =>
       Effect.tryPromise({
         try: () => client.close(),
-        catch: cause => new Error('Could not close the standalone MCP smoke client.', {cause}),
+        catch: cause => new ScriptError('Could not close the standalone MCP smoke client.', {cause}),
       }).pipe(Effect.catch(() => Effect.void)),
   );
 });
@@ -334,4 +335,4 @@ const systemLayer = SystemInfo.layer;
 const commandLayer = CommandExecutor.layer.pipe(Layer.provide(systemLayer));
 const smokeLayer = Layer.merge(systemLayer, commandLayer).pipe(Layer.provideMerge(BunServices.layer));
 
-BunRuntime.runMain(smokeSelfContained.pipe(Effect.provide(smokeLayer)));
+BunRuntime.runMain(provideScriptLayer(smokeSelfContained, smokeLayer));

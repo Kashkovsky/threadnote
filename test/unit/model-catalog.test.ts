@@ -1,3 +1,4 @@
+import {provideTestLayer} from '../helpers/effect-layer.js';
 import {expect, it} from '@effect/vitest';
 import {Effect, Exit} from 'effect';
 import {describe} from 'vitest';
@@ -71,6 +72,6 @@ describe('local model catalog', () => {
       if (Exit.isFailure(generation)) {
         expect(generation.cause.toString()).toContain('measured model bake-off');
       }
-    }).pipe(Effect.provide(LocalModelCatalog.layer([embedding], {embedding: embedding.id}))),
+    }).pipe(provideTestLayer(LocalModelCatalog.layer([embedding], {embedding: embedding.id}))),
   );
 });

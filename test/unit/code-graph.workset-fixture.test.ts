@@ -1,7 +1,8 @@
-import {execFile} from 'node:child_process';
-import {readFile, readdir, rm} from 'node:fs/promises';
-import {join} from 'node:path';
-import {promisify} from 'node:util';
+import {TestError} from '../helpers/test-error.js';
+import {execFile} from '../helpers/node-child-process.js';
+import {readFile, readdir, rm} from '../helpers/node-fs-promises.js';
+import {join} from '../helpers/node-path.js';
+import {promisify} from '../helpers/node-util.js';
 import {expect, it} from '@effect/vitest';
 import * as FC from 'effect/testing/FastCheck';
 import {afterEach, describe} from 'vitest';
@@ -220,7 +221,7 @@ function required(
 ): MaterializedCodeGraphWorksetFixtureRepository {
   const repository = repositories.get(state);
   if (!repository) {
-    throw new Error(`Missing ${state} fixture repository.`);
+    throw new TestError(`Missing ${state} fixture repository.`);
   }
   return repository;
 }

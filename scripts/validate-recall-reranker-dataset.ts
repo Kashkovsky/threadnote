@@ -1,3 +1,4 @@
+import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {Console, Effect, FileSystem, Layer, Path} from 'effect';
@@ -50,7 +51,7 @@ const program = Effect.gen(function* () {
     policy.forbiddenTextsSha256 !== forbiddenTextsHash
   ) {
     return yield* Effect.fail(
-      new Error('Recall reranker validation policy does not match the current frozen recall evaluation fixture.'),
+      new ScriptError('Recall reranker validation policy does not match the current frozen recall evaluation fixture.'),
     );
   }
   if (
@@ -58,7 +59,9 @@ const program = Effect.gen(function* () {
       candidate => candidate.name === policy.reservedEvaluation.name && candidate.sha256 === evaluationHash,
     )
   ) {
-    return yield* Effect.fail(new Error('Dataset manifest does not reserve the current recall evaluation fixture.'));
+    return yield* Effect.fail(
+      new ScriptError('Dataset manifest does not reserve the current recall evaluation fixture.'),
+    );
   }
   const dataset = parseRecallRerankerDatasetV1(manifestValue, groupContent, {
     forbiddenTexts,
@@ -77,7 +80,7 @@ function parseJson(content: string, source: string): unknown {
   try {
     return JSON.parse(content) as unknown;
   } catch (cause) {
-    throw new Error(`Could not parse JSON file: ${source}`, {cause});
+    throw new ScriptError(`Could not parse JSON file: ${source}`, {cause});
   }
 }
 
@@ -90,15 +93,15 @@ function parseArguments(args: readonly string[], resolve: (value: string) => str
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index]!;
     if (argument === '--dataset') dataset = resolve(required(args[++index], argument));
-    else throw new Error(`Unknown recall reranker validation option: ${argument}. Pass --help for usage.`);
+    else throw new ScriptError(`Unknown recall reranker validation option: ${argument}. Pass --help for usage.`);
   }
   return {dataset};
 }
 
 function required(value: string | undefined, option: string): string {
-  if (!value?.trim()) throw new Error(`${option} requires a value.`);
+  if (!value?.trim()) throw new ScriptError(`${option} requires a value.`);
   return value;
 }
 
 const scriptLayer = Layer.mergeAll(BunServices.layer, SystemInfo.layer);
-BunRuntime.runMain(program.pipe(Effect.provide(scriptLayer)));
+BunRuntime.runMain(provideScriptLayer(program, scriptLayer));

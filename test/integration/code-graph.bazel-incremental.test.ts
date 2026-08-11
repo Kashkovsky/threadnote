@@ -1,7 +1,8 @@
-import {execFileSync} from 'node:child_process';
-import {mkdirSync, mkdtempSync, rmSync, writeFileSync} from 'node:fs';
-import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {provideTestLayer} from '../helpers/effect-layer.js';
+import {execFileSync} from '../helpers/node-child-process.js';
+import {mkdirSync, mkdtempSync, rmSync, writeFileSync} from '../helpers/node-fs.js';
+import {tmpdir} from '../helpers/node-os.js';
+import {join} from '../helpers/node-path.js';
 import {describe, expect, it} from '@effect/vitest';
 import {TestClock} from 'effect/testing';
 import {Effect, Path} from 'effect';
@@ -58,7 +59,7 @@ describe('mixed Node and Bazel incremental indexing', () => {
           expect(normalizeGraph(incrementalGraph)).toEqual(normalizeGraph(fullGraph));
         }),
       root => Effect.sync(() => rmSync(root, {force: true, recursive: true})),
-    ).pipe(Effect.provide(ApplicationLayer), TestClock.withLive),
+    ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );
 
   it.effect('rematerializes only a changed nested Bazel dependency closure', () =>
@@ -106,7 +107,7 @@ describe('mixed Node and Bazel incremental indexing', () => {
           expect(normalizeGraph(incrementalGraph)).toEqual(normalizeGraph(fullGraph));
         }),
       root => Effect.sync(() => rmSync(root, {force: true, recursive: true})),
-    ).pipe(Effect.provide(ApplicationLayer), TestClock.withLive),
+    ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );
 });
 

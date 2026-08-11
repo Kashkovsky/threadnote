@@ -1,7 +1,8 @@
-import {mkdtemp, open, readFile, rm, writeFile} from 'node:fs/promises';
-import {tmpdir} from 'node:os';
-import {join} from 'node:path';
-import {fileURLToPath} from 'node:url';
+import {TestError} from '../helpers/test-error.js';
+import {mkdtemp, open, readFile, rm, writeFile} from '../helpers/node-fs-promises.js';
+import {tmpdir} from '../helpers/node-os.js';
+import {join} from '../helpers/node-path.js';
+import {fileURLToPath} from '../helpers/node-url.js';
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import {
@@ -20,6 +21,7 @@ import {
   samplerParentExited,
   samplerProcessTelemetryContract,
   samplerTemporaryTelemetryContract,
+  temporaryFileObservationFromStats,
 } from '../../scripts/code-graph-benchmark-sampler.js';
 
 const validArtifact = {
@@ -487,6 +489,31 @@ describe('code graph benchmark sampler artifact', () => {
     });
   });
 
+  it('preserves bigint device and inode identities beyond the safe-integer range', () => {
+    fc.assert(
+      fc.property(
+        fc.bigInt({min: BigInt(Number.MAX_SAFE_INTEGER) + 1n, max: (1n << 96n) - 1n}),
+        fc.bigInt({min: BigInt(Number.MAX_SAFE_INTEGER) + 1n, max: (1n << 96n) - 1n}),
+        fc.bigInt({min: 0n, max: BigInt(Number.MAX_SAFE_INTEGER)}),
+        (dev, ino, size) => {
+          expect(temporaryFileObservationFromStats({dev, ino, isFile: () => true, size})).toEqual({
+            bytes: Number(size),
+            identity: `${dev}:${ino}`,
+          });
+        },
+      ),
+      {numRuns: 200},
+    );
+    expect(
+      temporaryFileObservationFromStats({
+        dev: 1n,
+        ino: 2n,
+        isFile: () => true,
+        size: BigInt(Number.MAX_SAFE_INTEGER) + 1n,
+      }),
+    ).toBeUndefined();
+  });
+
   it('aggregates only recursive descendants and validates the root identity', () => {
     const entries = [
       processEntry(10, 1, 'root', 100, 1_000, 10, 20),
@@ -810,7 +837,7 @@ async function waitForText(file: string, timeoutMilliseconds = 2_000): Promise<s
       await Bun.sleep(5);
     }
   } while (Date.now() < deadline);
-  throw new Error(`Timed out waiting for ${file}.`);
+  throw new TestError(`Timed out waiting for ${file}.`);
 }
 
 function processEntry(

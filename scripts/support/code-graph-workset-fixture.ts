@@ -1,3 +1,4 @@
+import {ScriptError} from '../effect/errors.js';
 import {BunFileSystem, BunPath} from '@effect/platform-bun';
 import {Effect, FileSystem, Layer, ManagedRuntime, Path} from 'effect';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
@@ -454,13 +455,13 @@ export function createCodeGraphWorksetFixturePlan(
   const stateProfile = options.stateProfile ?? 'all-clean';
   const worksetName = options.worksetName ?? `code-graph-workset-${size}`;
   if (!/^[a-z0-9][a-z0-9._-]*$/.test(worksetName)) {
-    throw new Error(`Invalid code graph workset fixture name: ${worksetName}.`);
+    throw new ScriptError(`Invalid code graph workset fixture name: ${worksetName}.`);
   }
 
   const knownRepositoryKeys = new Set(Array.from({length: size}, (_, index) => repositoryKey(index)));
   for (const [key, state] of Object.entries(options.repositoryStates ?? {})) {
     if (!knownRepositoryKeys.has(key)) {
-      throw new Error(`Unknown code graph workset fixture repository: ${key}.`);
+      throw new ScriptError(`Unknown code graph workset fixture repository: ${key}.`);
     }
     assertFixtureState(state);
   }
@@ -578,11 +579,11 @@ export async function materializeCodeGraphWorksetFixture(
   await mkdir(root, {recursive: true, mode: 0o700});
   const existingEntries = await readdir(root);
   if (existingEntries.length > 0) {
-    throw new Error(`Code graph workset fixture root must be empty: ${root}.`);
+    throw new ScriptError(`Code graph workset fixture root must be empty: ${root}.`);
   }
   const concurrency = options.concurrency ?? 8;
   if (!Number.isSafeInteger(concurrency) || concurrency < 1 || concurrency > 32) {
-    throw new Error('Code graph workset fixture concurrency must be an integer from 1 through 32.');
+    throw new ScriptError('Code graph workset fixture concurrency must be an integer from 1 through 32.');
   }
 
   const home = join(root, 'home');
@@ -644,7 +645,7 @@ export async function establishCodeGraphWorksetStaleReadySnapshot<Result>(
   buildReadySnapshot: (repositoryPath: string) => Promise<Result>,
 ): Promise<Result> {
   if (repository.state !== 'stale' || !repository.readyCommit || !repository.headCommit) {
-    throw new Error(`Repository ${repository.repositoryKey} is not a materialized stale fixture member.`);
+    throw new ScriptError(`Repository ${repository.repositoryKey} is not a materialized stale fixture member.`);
   }
   await fixtureCheckout(repository.path, [
     '-c',
@@ -668,7 +669,7 @@ function archetypeForIndex(index: number): FixtureArchetype {
       : SCALE_ARCHETYPE_IDS[(index - CORE_ARCHETYPE_IDS.length) % SCALE_ARCHETYPE_IDS.length];
   const archetype = id ? ARCHETYPE_BY_ID.get(id) : undefined;
   if (!archetype) {
-    throw new Error(`Missing code graph workset fixture archetype for repository ${index}.`);
+    throw new ScriptError(`Missing code graph workset fixture archetype for repository ${index}.`);
   }
   return archetype;
 }
@@ -871,7 +872,7 @@ function fixtureQueries(
     const target = repositories[targetSize - 1];
     if (!target) continue;
     if (target.archetype !== 'support') {
-      throw new Error(`Scale-tail fixture repository ${target.repositoryKey} must use the support archetype.`);
+      throw new ScriptError(`Scale-tail fixture repository ${target.repositoryKey} must use the support archetype.`);
     }
     const markerSymbol = repositoryMarkerSymbol(target.repositoryKey);
     queries.push(
@@ -1048,7 +1049,7 @@ async function writeRepositoryFiles(root: string, files: readonly CodeGraphWorks
   await mkdir(root, {recursive: true});
   for (const file of files) {
     if (file.path.startsWith('/') || file.path.split('/').includes('..')) {
-      throw new Error(`Unsafe code graph workset fixture path: ${file.path}.`);
+      throw new ScriptError(`Unsafe code graph workset fixture path: ${file.path}.`);
     }
     const target = join(root, file.path);
     await mkdir(dirname(target), {recursive: true});
@@ -1075,7 +1076,7 @@ function renderSeedManifest(plan: CodeGraphWorksetFixturePlan, repositoriesRoot:
         .map(key => {
           const project = projectByKey.get(key);
           if (!project) {
-            throw new Error(`Workset ${workset.name} references unknown fixture repository ${key}.`);
+            throw new ScriptError(`Workset ${workset.name} references unknown fixture repository ${key}.`);
           }
           return `      - ${project}\n`;
         })
@@ -1189,13 +1190,13 @@ function repositoryKey(index: number): string {
 
 function assertFixtureSize(size: number): asserts size is CodeGraphWorksetFixtureSize {
   if (!(CODE_GRAPH_WORKSET_FIXTURE_SUPPORTED_SIZES as readonly number[]).includes(size)) {
-    throw new Error(`Unsupported code graph workset fixture size: ${size}.`);
+    throw new ScriptError(`Unsupported code graph workset fixture size: ${size}.`);
   }
 }
 
 function assertFixtureState(state: string): asserts state is CodeGraphWorksetFixtureState {
   if (!['clean', 'cold', 'dirty', 'failed', 'missing', 'stale', 'worktree'].includes(state)) {
-    throw new Error(`Unsupported code graph workset fixture state: ${state}.`);
+    throw new ScriptError(`Unsupported code graph workset fixture state: ${state}.`);
   }
 }
 
@@ -1229,7 +1230,7 @@ export async function readCodeGraphWorksetFixtureFile(
 ): Promise<string> {
   const repository = fixture.repositories.find(candidate => candidate.repositoryKey === repositoryKey);
   if (!repository?.exists) {
-    throw new Error(`Code graph workset fixture repository is unavailable: ${repositoryKey}.`);
+    throw new ScriptError(`Code graph workset fixture repository is unavailable: ${repositoryKey}.`);
   }
   return readFile(join(repository.path, path), 'utf8');
 }
@@ -1280,10 +1281,10 @@ async function execFileAsync(
     maximumOutputBytes !== undefined &&
     Buffer.byteLength(stderr, 'utf8') + Buffer.byteLength(stdout, 'utf8') > maximumOutputBytes
   ) {
-    throw new Error(`Command output exceeded ${maximumOutputBytes} bytes: ${executable}.`);
+    throw new ScriptError(`Command output exceeded ${maximumOutputBytes} bytes: ${executable}.`);
   }
   if (exitCode !== 0) {
-    throw new Error(stderr.trim() || `${executable} exited with status ${exitCode}.`);
+    throw new ScriptError(stderr.trim() || `${executable} exited with status ${exitCode}.`);
   }
   return {stderr, stdout};
 }

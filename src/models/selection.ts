@@ -1,6 +1,10 @@
 import {Crypto, Effect, FileSystem, Path, Result} from 'effect';
 import type {LocalModelCatalogShape, LocalModelRole} from './catalog.js';
 
+class ModelSelectionError extends Error {
+  readonly _tag = 'ModelSelectionError' as const;
+}
+
 export const MODEL_SELECTION_VERSION = 1 as const;
 
 export interface ModelSelection {
@@ -44,7 +48,7 @@ export const selectLocalModel = Effect.fn('models.select')(function* (
 ) {
   const manifest = yield* catalog.get(modelId);
   if (manifest.role !== role) {
-    return yield* Effect.fail(new Error(`Model ${modelId} has role ${manifest.role}, not ${role}.`));
+    return yield* Effect.fail(new ModelSelectionError(`Model ${modelId} has role ${manifest.role}, not ${role}.`));
   }
   const current = yield* readModelSelection(home);
   const selection: ModelSelection = {

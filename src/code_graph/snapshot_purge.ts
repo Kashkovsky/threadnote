@@ -23,6 +23,10 @@ import {
 } from './vector_maintenance.js';
 import {inspectCodeGraphViewDatabaseTarget} from './view_removal.js';
 
+class CodeGraphSnapshotPurgeError extends Error {
+  readonly _tag = 'CodeGraphSnapshotPurgeError' as const;
+}
+
 const HASH_ID = /^[0-9a-f]{64}$/u;
 const SNAPSHOT_ID = /^cgsn_[0-9a-f]{40}(?:-direct|-full-[0-9a-f]{16})?$/u;
 const APPROVAL_DIGEST = /^sha256:[0-9a-f]{64}$/u;
@@ -177,7 +181,11 @@ export const purgeCodeGraphSnapshot = Effect.fn('codeGraph.purgeSnapshotAction')
                           Effect.flatMap(currentTarget =>
                             currentTarget.state === 'ready' && currentTarget.databasePath === inspected.databasePath
                               ? Effect.void
-                              : Effect.fail(new Error('Code graph database target changed before snapshot purge.')),
+                              : Effect.fail(
+                                  new CodeGraphSnapshotPurgeError(
+                                    'Code graph database target changed before snapshot purge.',
+                                  ),
+                                ),
                           ),
                           Effect.provideService(FileSystem.FileSystem, fs),
                           Effect.provideService(Path.Path, path),
@@ -267,11 +275,16 @@ export function renderCodeGraphSnapshotPurgeResult(result: CodeGraphSnapshotPurg
 }
 
 export function codeGraphSnapshotPurgeTargetFailure(result: CodeGraphSnapshotPurgeActionResult): Error | undefined {
-  if (result.state === 'not-found') return new Error('The selected code graph snapshot does not exist.');
-  if (result.state === 'approval-required') return new Error('A fresh snapshot purge approval digest is required.');
-  if (result.state === 'state-changed') return new Error('The selected snapshot changed; preview it again.');
+  if (result.state === 'not-found')
+    return new CodeGraphSnapshotPurgeError('The selected code graph snapshot does not exist.');
+  if (result.state === 'approval-required')
+    return new CodeGraphSnapshotPurgeError('A fresh snapshot purge approval digest is required.');
+  if (result.state === 'state-changed')
+    return new CodeGraphSnapshotPurgeError('The selected snapshot changed; preview it again.');
   if (result.state === 'blocked') {
-    return new Error(`The selected snapshot is protected: ${result.blockers.map(blocker => blocker.code).join(', ')}.`);
+    return new CodeGraphSnapshotPurgeError(
+      `The selected snapshot is protected: ${result.blockers.map(blocker => blocker.code).join(', ')}.`,
+    );
   }
   return undefined;
 }
@@ -419,9 +432,11 @@ const validateSnapshotPurgeTarget = Effect.fn('codeGraph.validateSnapshotPurgeTa
   target: CodeGraphSnapshotPurgeTarget,
 ) {
   if (!HASH_ID.test(target.checkoutId)) {
-    return yield* Effect.fail(new Error('Code graph checkout identity must be 64 lowercase hexadecimal characters.'));
+    return yield* Effect.fail(
+      new CodeGraphSnapshotPurgeError('Code graph checkout identity must be 64 lowercase hexadecimal characters.'),
+    );
   }
   if (!SNAPSHOT_ID.test(target.snapshotId)) {
-    return yield* Effect.fail(new Error('Code graph snapshot identity is invalid.'));
+    return yield* Effect.fail(new CodeGraphSnapshotPurgeError('Code graph snapshot identity is invalid.'));
   }
 });

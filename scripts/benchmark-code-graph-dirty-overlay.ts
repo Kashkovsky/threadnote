@@ -1,3 +1,4 @@
+import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import {Clock, Effect, FileSystem, Path} from 'effect';
 import {CodeGraphIndexer, type CodeGraphIndexerShape} from '../src/code_graph/indexer.js';
@@ -31,7 +32,7 @@ const benchmarkCodeGraphDirtyOverlay = Effect.scoped(
   Effect.gen(function* () {
     const options = parseArguments(yield* scriptArguments());
     const system = yield* SystemInfo;
-    const hardware = yield* system.hardwareInfo();
+    const hardware = yield* system.hardwareInfo;
     const indexer = yield* CodeGraphIndexer;
     const incremental: DirtyOverlayObservation[] = [];
     const full: DirtyOverlayObservation[] = [];
@@ -52,7 +53,9 @@ const benchmarkCodeGraphDirtyOverlay = Effect.scoped(
         incrementalSample.edges !== fullSample.edges ||
         incrementalSample.totalFiles !== fullSample.totalFiles
       ) {
-        return yield* Effect.fail(new Error(`Dirty-overlay benchmark graph shape diverged in sample ${index + 1}.`));
+        return yield* Effect.fail(
+          new ScriptError(`Dirty-overlay benchmark graph shape diverged in sample ${index + 1}.`),
+        );
       }
     }
 
@@ -111,7 +114,7 @@ const runDirtyOverlayIndex = Effect.fn('benchmarkCodeGraphDirtyOverlay.run')(fun
   const changedPath = path.join(prepared.repository, 'src/module-00000.ts');
   const committed = yield* fs.readFileString(changedPath);
   if (!committed.includes('return 0;')) {
-    return yield* Effect.fail(new Error('Dirty-overlay benchmark fixture lost its body-only edit marker.'));
+    return yield* Effect.fail(new ScriptError('Dirty-overlay benchmark fixture lost its body-only edit marker.'));
   }
   yield* fs.writeFileString(changedPath, committed.replace('return 0;', 'return 1000000;'));
 
@@ -158,12 +161,14 @@ const runDirtyOverlayIndex = Effect.fn('benchmarkCodeGraphDirtyOverlay.run')(fun
 function validateMaterialization(summary: CodeGraphIndexSummary, incrementalOverlay: boolean): void {
   if (incrementalOverlay) {
     if (summary.materialization?.mode !== 'incremental-overlay' || summary.materialization.stagedFiles !== 1) {
-      throw new Error(`Incremental dirty-overlay benchmark fell back: ${JSON.stringify(summary.materialization)}.`);
+      throw new ScriptError(
+        `Incremental dirty-overlay benchmark fell back: ${JSON.stringify(summary.materialization)}.`,
+      );
     }
     return;
   }
   if (summary.materialization?.mode !== 'full' || summary.materialization.fallbackReason !== 'disabled') {
-    throw new Error(
+    throw new ScriptError(
       `Full dirty-overlay benchmark did not use its control path: ${JSON.stringify(summary.materialization)}.`,
     );
   }
@@ -174,7 +179,7 @@ function summarize(values: readonly number[]): {
   readonly mean: number;
   readonly minimum: number;
 } {
-  if (values.length === 0) throw new Error('Dirty-overlay benchmark requires at least one observation.');
+  if (values.length === 0) throw new ScriptError('Dirty-overlay benchmark requires at least one observation.');
   return {
     maximum: Math.max(...values),
     mean: values.reduce((total, value) => total + value, 0) / values.length,
@@ -195,20 +200,20 @@ function parseArguments(args: readonly string[]): DirtyOverlayBenchmarkOptions {
     if (argument === '--output') outputPath = required(args[++index], argument);
     else if (argument === '--samples') samples = integer(args[++index], argument, 1);
     else if (argument === '--scale-symbols') scaleSymbols = integer(args[++index], argument, 1);
-    else throw new Error(`Unknown dirty-overlay benchmark option: ${argument}`);
+    else throw new ScriptError(`Unknown dirty-overlay benchmark option: ${argument}`);
   }
   return {outputPath, samples, scaleSymbols};
 }
 
 function integer(value: string | undefined, option: string, minimum: number): number {
   const parsed = Number.parseInt(required(value, option), 10);
-  if (!Number.isSafeInteger(parsed) || parsed < minimum) throw new Error(`${option} must be at least ${minimum}`);
+  if (!Number.isSafeInteger(parsed) || parsed < minimum) throw new ScriptError(`${option} must be at least ${minimum}`);
   return parsed;
 }
 
 function required(value: string | undefined, option: string): string {
-  if (!value?.trim()) throw new Error(`${option} requires a value`);
+  if (!value?.trim()) throw new ScriptError(`${option} requires a value`);
   return value;
 }
 
-BunRuntime.runMain(benchmarkCodeGraphDirtyOverlay.pipe(Effect.provide(ApplicationLayer)));
+BunRuntime.runMain(provideScriptLayer(benchmarkCodeGraphDirtyOverlay, ApplicationLayer));

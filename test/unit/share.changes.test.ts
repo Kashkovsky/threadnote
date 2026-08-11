@@ -1,6 +1,6 @@
-import {mkdir, mkdtemp, rm, symlink, writeFile} from 'node:fs/promises';
-import {tmpdir} from 'node:os';
-import {dirname, join} from 'node:path';
+import {mkdir, mkdtemp, rm, symlink, writeFile} from '../helpers/node-fs-promises.js';
+import {tmpdir} from '../helpers/node-os.js';
+import {dirname, join} from '../helpers/node-path.js';
 import {describe, expect, it} from 'vitest';
 import {listChangedFiles, mergeChanges} from '../../src/share.js';
 import type {ChangedFile} from '../../src/share.js';

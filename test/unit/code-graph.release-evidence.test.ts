@@ -1,4 +1,4 @@
-import {readFileSync} from 'node:fs';
+import {readFileSync} from '../helpers/node-fs.js';
 import {load} from 'js-yaml';
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';

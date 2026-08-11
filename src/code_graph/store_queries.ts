@@ -487,16 +487,13 @@ const selectCachedFacts = Effect.fn('codeGraph.selectCachedFacts')(function* (
     }
     const rows = yield* selectFileBlobBatch(sql, batch, extractorSet);
     for (const row of rows) {
-      try {
-        const bounded = decodeStoredCodeGraphFact(row.facts_json, row.path_hint);
-        output.set(row.path_hint, bounded.facts);
-        keys.add(row.path_hint);
-        const factBytes = bounded.bytes;
-        bytes += factBytes;
-        bytesByPath.set(row.path_hint, factBytes);
-      } catch {
-        // A malformed cache row is disposable and will be replaced after extraction.
-      }
+      const bounded = decodeStoredCodeGraphFactOption(row.facts_json, row.path_hint);
+      if (bounded === undefined) continue;
+      output.set(row.path_hint, bounded.facts);
+      keys.add(row.path_hint);
+      const factBytes = bounded.bytes;
+      bytes += factBytes;
+      bytesByPath.set(row.path_hint, factBytes);
     }
     const missing = batch.filter(file => !keys.has(file.path));
     const reusableRows = yield* selectReusableFileBlobBatch(sql, missing, extractorSet);
@@ -505,18 +502,12 @@ const selectCachedFacts = Effect.fn('codeGraph.selectCachedFacts')(function* (
       if (keys.has(row.target_path)) continue;
       const file = filesByPath.get(row.target_path);
       if (file === undefined) continue;
-      try {
-        const bounded = decodeStoredCodeGraphFact(row.facts_json, row.path_hint);
-        const relocated = relocateStructuredSchemaFacts(file, bounded.facts);
-        if (relocated === undefined) continue;
-        const factBytes = codeGraphUtf8ByteLength(JSON.stringify(relocated));
-        output.set(row.target_path, relocated);
-        keys.add(row.target_path);
-        bytes += factBytes;
-        bytesByPath.set(row.target_path, factBytes);
-      } catch {
-        // A malformed or incompatible donor is disposable and cannot satisfy this target path.
-      }
+      const relocated = relocateStoredCodeGraphFactOption(row.facts_json, row.path_hint, file);
+      if (relocated === undefined) continue;
+      output.set(row.target_path, relocated.facts);
+      keys.add(row.target_path);
+      bytes += relocated.bytes;
+      bytesByPath.set(row.target_path, relocated.bytes);
     }
   }
   return {bytes, bytesByPath, facts: output, keys} satisfies LoadedCodeGraphFacts;
@@ -549,26 +540,47 @@ const selectMaterializedFileShards = Effect.fn('codeGraph.selectMaterializedFile
       [extractorSet, derivationIdentity, ...batch.flatMap(file => [file.contentHash, file.path])],
     );
     for (const row of rows) {
-      try {
-        const bounded = decodeStoredCodeGraphFact(row.facts_json, row.path_hint);
-        if (
-          bounded.facts.path !== row.path_hint ||
-          row.id !== materializedFileShardIdentity(row.content_hash, extractorSet, derivationIdentity, row.path_hint)
-        ) {
-          continue;
-        }
-        output.set(row.path_hint, bounded.facts);
-        keys.add(row.path_hint);
-        const factBytes = bounded.bytes;
-        bytes += factBytes;
-        bytesByPath.set(row.path_hint, factBytes);
-      } catch {
-        // Materialized shards are disposable; malformed rows are ignored and rebuilt.
+      const bounded = decodeStoredCodeGraphFactOption(row.facts_json, row.path_hint);
+      if (
+        bounded === undefined ||
+        bounded.facts.path !== row.path_hint ||
+        row.id !== materializedFileShardIdentity(row.content_hash, extractorSet, derivationIdentity, row.path_hint)
+      ) {
+        continue;
       }
+      output.set(row.path_hint, bounded.facts);
+      keys.add(row.path_hint);
+      const factBytes = bounded.bytes;
+      bytes += factBytes;
+      bytesByPath.set(row.path_hint, factBytes);
     }
   }
   return {bytes, bytesByPath, facts: output, keys} satisfies LoadedCodeGraphFacts;
 });
+
+function decodeStoredCodeGraphFactOption(json: string, path: string) {
+  try {
+    return decodeStoredCodeGraphFact(json, path);
+  } catch {
+    // Cached graph facts are disposable; malformed rows are ignored and rebuilt.
+    return undefined;
+  }
+}
+
+function relocateStoredCodeGraphFactOption(
+  json: string,
+  sourcePath: string,
+  file: Pick<CodeGraphInventoryFile, 'contentHash' | 'language' | 'path'>,
+): {readonly bytes: number; readonly facts: CodeGraphFileFacts} | undefined {
+  try {
+    const bounded = decodeStoredCodeGraphFact(json, sourcePath);
+    const facts = relocateStructuredSchemaFacts(file, bounded.facts);
+    return facts === undefined ? undefined : {bytes: codeGraphUtf8ByteLength(JSON.stringify(facts)), facts};
+  } catch {
+    // Malformed or incompatible donors cannot satisfy the target path.
+    return undefined;
+  }
+}
 
 function selectFileBlobBatch(sql: SqlClient.SqlClient, files: readonly CodeGraphBlobReuseFile[], extractorSet: string) {
   if (files.length === 0) {

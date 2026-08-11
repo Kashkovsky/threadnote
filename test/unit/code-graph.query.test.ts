@@ -1,7 +1,9 @@
-import {execFileSync} from 'node:child_process';
-import {mkdirSync, mkdtempSync, rmSync, writeFileSync} from 'node:fs';
-import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {TestError} from '../helpers/test-error.js';
+import {provideTestLayer} from '../helpers/effect-layer.js';
+import {execFileSync} from '../helpers/node-child-process.js';
+import {mkdirSync, mkdtempSync, rmSync, writeFileSync} from '../helpers/node-fs.js';
+import {tmpdir} from '../helpers/node-os.js';
+import {join} from '../helpers/node-path.js';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {expect, it} from '@effect/vitest';
 import {Effect, Fiber, Layer, Ref} from 'effect';
@@ -127,14 +129,14 @@ describe('code graph query budgets', () => {
         const maintenanceLayer = Layer.succeed(
           CodeGraphMaintenanceCoordinator,
           CodeGraphMaintenanceCoordinator.of({
-            kickOrdinary: () => Effect.die(new Error('query trigger test must not kick ordinary maintenance')),
-            kickResidual: () => Effect.die(new Error('query trigger test must not kick residual maintenance')),
+            kickOrdinary: () => Effect.die(new TestError('query trigger test must not kick ordinary maintenance')),
+            kickResidual: () => Effect.die(new TestError('query trigger test must not kick residual maintenance')),
             request: input =>
               Ref.update(requests, current => [
                 ...current,
                 {allowIndexPreparation: input.allowIndexPreparation, databasePath: input.databasePath},
               ]),
-            tick: () => Effect.die(new Error('query trigger test must not synchronously tick maintenance')),
+            tick: () => Effect.die(new TestError('query trigger test must not synchronously tick maintenance')),
           }),
         );
         const snapshotRef = yield* Ref.make<CodeGraphSnapshot | undefined>(undefined);
@@ -159,15 +161,15 @@ describe('code graph query budgets', () => {
           Layer.succeed(
             CodeGraphIndexer,
             CodeGraphIndexer.of({
-              ensureCommit: () => Effect.die(new Error('query trigger test must not ensure a commit')),
-              index: () => Effect.die(new Error('query trigger test must not index')),
+              ensureCommit: () => Effect.die(new TestError('query trigger test must not ensure a commit')),
+              index: () => Effect.die(new TestError('query trigger test must not index')),
             }),
           ),
           Layer.succeed(
             CodeGraphEmbeddingIndex,
             CodeGraphEmbeddingIndex.of({
-              check: () => Effect.die(new Error('query trigger test must not check embeddings')),
-              ensure: () => Effect.die(new Error('query trigger test must not ensure embeddings')),
+              check: () => Effect.die(new TestError('query trigger test must not check embeddings')),
+              ensure: () => Effect.die(new TestError('query trigger test must not ensure embeddings')),
               search: () => Effect.succeed(new Map()),
             }),
           ),
@@ -230,7 +232,7 @@ describe('code graph query budgets', () => {
           expect(yield* Ref.get(requests)).toEqual([]);
           yield* query.attachSharedReadySnapshot(fixtureRoot.home, identity, status, {requestMaintenance: false});
           expect(yield* Ref.get(requests)).toEqual([]);
-        }).pipe(Effect.provide(layer));
+        }).pipe(provideTestLayer(layer));
       }),
     ),
   );
@@ -624,7 +626,7 @@ describe('code graph query budgets', () => {
             return ids.map((id, index) => {
               const pathIndex = Number(id.split('-')[1]);
               const current = currentNodes.get(`current-${pathIndex}`);
-              if (!current) throw new Error(`Missing current recovery fixture for ${id}.`);
+              if (!current) throw new TestError(`Missing current recovery fixture for ${id}.`);
               return {
                 ...edge,
                 evidencePath: current.path,

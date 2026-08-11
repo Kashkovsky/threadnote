@@ -1,5 +1,8 @@
+import {provideTestLayer} from '../helpers/effect-layer.js';
+import {it as effectIt} from '@effect/vitest';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {Effect} from 'effect';
+import {TestClock} from 'effect/testing';
 import {describe, expect, it} from 'vitest';
 import {BUILTIN_LANGUAGE_PACK_REGISTRY} from '../../src/code_graph/languages/registry.js';
 import {TreeSitterRuntime} from '../../src/code_graph/tree_sitter/runtime.js';
@@ -8,30 +11,39 @@ import {createWorkspaceAttributor, discoverManifestWorkspace} from '../../src/co
 import {SystemInfo} from '../../src/effect/system.js';
 
 describe('code graph hot-path scaling', () => {
-  it('keeps declaration and reference ownership near-linear through 10k Java declarations', async () => {
-    const durations: number[] = [];
-    for (const count of [1_000, 5_000, 10_000]) {
-      const methods = Array.from(
-        {length: count},
-        (_, index) => `public int method${index}() { return helper(${index}); }`,
-      ).join('\n');
-      const content = `package bench; public class Scale { public int helper(int value) { return value; }\n${methods} }`;
-      const startedAt = performance.now();
-      const facts = await runExtraction(inventoryFile('src/main/java/bench/Scale.java', content, 'java'));
-      durations.push(performance.now() - startedAt);
+  effectIt.effect(
+    'keeps declaration and reference ownership near-linear through 10k Java declarations',
+    () =>
+      TestClock.withLive(
+        Effect.gen(function* () {
+          const durations: number[] = [];
+          for (const count of [1_000, 5_000, 10_000]) {
+            const methods = Array.from(
+              {length: count},
+              (_, index) => `public int method${index}() { return helper(${index}); }`,
+            ).join('\n');
+            const content = `package bench; public class Scale { public int helper(int value) { return value; }\n${methods} }`;
+            const startedAt = performance.now();
+            const facts = yield* runExtraction(inventoryFile('src/main/java/bench/Scale.java', content, 'java'));
+            durations.push(performance.now() - startedAt);
 
-      expect(facts.symbols.filter(symbol => symbol.kind === 'method')).toHaveLength(count + 1);
-      expect(facts.edges.filter(edge => edge.relation === 'calls' && edge.targetName === 'helper')).toHaveLength(count);
-      expect(
-        facts.edges.find(edge => edge.targetName === `method${count - 1}` && edge.relation === 'contains'),
-      ).toMatchObject({sourceName: 'Scale'});
-    }
+            expect(facts.symbols.filter(symbol => symbol.kind === 'method')).toHaveLength(count + 1);
+            expect(facts.edges.filter(edge => edge.relation === 'calls' && edge.targetName === 'helper')).toHaveLength(
+              count,
+            );
+            expect(
+              facts.edges.find(edge => edge.targetName === `method${count - 1}` && edge.relation === 'contains'),
+            ).toMatchObject({sourceName: 'Scale'});
+          }
 
-    const fiveThousand = durations[1]!;
-    const tenThousand = durations[2]!;
-    expect(tenThousand).toBeLessThan(5_000);
-    expect(tenThousand).toBeLessThan(fiveThousand * 3 + 1_000);
-  }, 20_000);
+          const fiveThousand = durations[1]!;
+          const tenThousand = durations[2]!;
+          expect(tenThousand).toBeLessThan(5_000);
+          expect(tenThousand).toBeLessThan(fiveThousand * 3 + 1_000);
+        }),
+      ),
+    20_000,
+  );
 
   it('discovers and attributes 5k Gradle modules without files-by-project scans', () => {
     const moduleCount = 5_000;
@@ -66,13 +78,11 @@ describe('code graph hot-path scaling', () => {
   }, 20_000);
 });
 
-function runExtraction(file: CodeGraphInventoryFile): Promise<CodeGraphFileFacts> {
-  return Effect.runPromise(
-    BUILTIN_LANGUAGE_PACK_REGISTRY.extractFile(file).pipe(
-      Effect.provide(TreeSitterRuntime.layer),
-      Effect.provide(SystemInfo.layer),
-      Effect.provide(BunServices.layer),
-    ),
+function runExtraction(file: CodeGraphInventoryFile) {
+  return BUILTIN_LANGUAGE_PACK_REGISTRY.extractFile(file).pipe(
+    provideTestLayer(TreeSitterRuntime.layer),
+    provideTestLayer(SystemInfo.layer),
+    provideTestLayer(BunServices.layer),
   );
 }
 

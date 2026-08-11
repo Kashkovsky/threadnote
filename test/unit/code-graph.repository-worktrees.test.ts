@@ -1,7 +1,7 @@
-import {execFileSync} from 'node:child_process';
-import {mkdtempSync, renameSync} from 'node:fs';
-import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {execFileSync} from '../helpers/node-child-process.js';
+import {mkdtempSync, renameSync} from '../helpers/node-fs.js';
+import {tmpdir} from '../helpers/node-os.js';
+import {join} from '../helpers/node-path.js';
 import fc from 'fast-check';
 import {Effect} from 'effect';
 import {describe, expect, it} from 'vitest';

@@ -1,3 +1,4 @@
+import {provideTestLayer} from '../helpers/effect-layer.js';
 import {expect, it} from '@effect/vitest';
 import {Effect, FileSystem, Path} from 'effect';
 import {describe} from 'vitest';
@@ -34,6 +35,6 @@ describe('MCP doctor checks', () => {
           status: 'ok',
         });
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 });

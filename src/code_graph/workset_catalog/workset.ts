@@ -29,6 +29,7 @@ import {
   registerCodeGraphQualifiedRef,
   stageCodeGraphWorksetCatalogGenerationFromReceipts,
 } from './store.js';
+import {CodeGraphWorksetCatalogError} from './types.js';
 import type {
   CodeGraphWorksetCatalogGenerationDigestMemberV1,
   CodeGraphWorksetCatalogGenerationReceiptV1,
@@ -174,7 +175,10 @@ const prepareCodeGraphWorksetScoped = Effect.fn('codeGraphWorkset.prepareScoped'
   const workset = yield* requireWorkset(config.manifestPath, worksetName);
   const concurrency = yield* Effect.try({
     try: () => prepareConcurrency(options.concurrency),
-    catch: cause => (cause instanceof Error ? cause : new Error(String(cause))),
+    catch: cause =>
+      new CodeGraphWorksetCatalogError('invalid-input', cause instanceof Error ? cause.message : String(cause), {
+        cause,
+      }),
   });
   const manifestDigest = codeGraphWorksetManifestDigest(workset);
   const indexed = yield* Effect.forEach(
@@ -551,7 +555,10 @@ export const prepareCodeGraphWorksetBridgesForGeneration = Effect.fn('codeGraphW
     const resolution = yield* Effect.result(
       Effect.try({
         try: () => resolveCodeGraphCrossRepositoryBridges(repositories),
-        catch: cause => (cause instanceof Error ? cause : new Error(String(cause))),
+        catch: cause =>
+          new CodeGraphWorksetCatalogError('invalid-input', cause instanceof Error ? cause.message : String(cause), {
+            cause,
+          }),
       }),
     );
     if (Result.isFailure(resolution)) {

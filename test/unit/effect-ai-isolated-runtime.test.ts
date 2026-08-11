@@ -1,5 +1,7 @@
+import {TestError} from '../helpers/test-error.js';
+import {provideTestLayer} from '../helpers/effect-layer.js';
 import {expect, it} from '@effect/vitest';
-import {Effect, Exit, Layer} from 'effect';
+import {Effect, Exit, Fiber, Layer} from 'effect';
 import {describe} from 'vitest';
 import {
   isolatedLocalModelRuntimeLayer,
@@ -34,7 +36,7 @@ describe('isolated local model runtime', () => {
       expect(options.executable).toBe('/runtime/bun');
       expect(options.arguments.at(-1)).toBe('--threadnote-local-model-worker');
       expect(options.arguments.at(-2)?.replaceAll('\\', '/')).toMatch(/\/src\/standalone\.ts$/);
-    }).pipe(Effect.provide(SystemInfo.layer)),
+    }).pipe(provideTestLayer(SystemInfo.layer)),
   );
 
   it.effect('contains repeated fatal generation-child crashes as a typed failure', () => {
@@ -59,7 +61,7 @@ describe('isolated local model runtime', () => {
         expect(exit.cause.toString()).toContain('worker retry was exhausted');
       }
       expect(fatalWorker.spawnCount()).toBe(2);
-    }).pipe(Effect.provide(runtimeLayer(fatalWorker.spawnWorker)));
+    }).pipe(provideTestLayer(runtimeLayer(fatalWorker.spawnWorker)));
   });
 
   it.effect('kills a crash-banner worker, restarts it, and retries the current request once', () => {
@@ -92,7 +94,7 @@ describe('isolated local model runtime', () => {
       expect(processes[0]!.killed).toBe(true);
       expect(processes[0]!.writes).toHaveLength(1);
       expect(processes[1]!.writes).toHaveLength(1);
-    }).pipe(Effect.provide(runtimeLayer(spawn)));
+    }).pipe(provideTestLayer(runtimeLayer(spawn)));
   });
 
   it.effect('retries one transient worker spawn failure', () => {
@@ -100,7 +102,7 @@ describe('isolated local model runtime', () => {
     let attempts = 0;
     const spawn: LocalModelWorkerSpawner = () => {
       attempts += 1;
-      if (attempts === 1) throw new Error('synthetic spawn failure');
+      if (attempts === 1) throw new TestError('synthetic spawn failure');
       const worker = new FakeWorkerProcess(request => {
         worker.respond(
           request,
@@ -122,7 +124,7 @@ describe('isolated local model runtime', () => {
       ).toEqual([[5, 6]]);
       expect(attempts).toBe(2);
       expect(processes).toHaveLength(1);
-    }).pipe(Effect.provide(runtimeLayer(spawn)));
+    }).pipe(provideTestLayer(runtimeLayer(spawn)));
   });
 
   it.effect(
@@ -152,7 +154,7 @@ describe('isolated local model runtime', () => {
         }
         expect(processes).toHaveLength(2);
         expect(processes.every(worker => worker.killed)).toBe(true);
-      }).pipe(Effect.provide(runtimeLayer(spawn, 10)));
+      }).pipe(provideTestLayer(runtimeLayer(spawn, 10)));
     },
   );
 
@@ -179,7 +181,7 @@ describe('isolated local model runtime', () => {
       expect(Exit.isFailure(exit)).toBe(true);
       expect(processes).toHaveLength(2);
       expect(processes.every(worker => worker.killed)).toBe(true);
-    }).pipe(Effect.provide(runtimeLayer(spawn, 10)));
+    }).pipe(provideTestLayer(runtimeLayer(spawn, 10)));
   });
 
   it.effect('kills and retries a worker whose protocol line exceeds the response budget', () => {
@@ -205,7 +207,7 @@ describe('isolated local model runtime', () => {
       expect(Exit.isFailure(exit)).toBe(true);
       expect(processes).toHaveLength(2);
       expect(processes.every(worker => worker.killed)).toBe(true);
-    }).pipe(Effect.provide(runtimeLayer(spawn, 1_000, 64)));
+    }).pipe(provideTestLayer(runtimeLayer(spawn, 1_000, 64)));
   });
 
   it.effect('reuses one worker across embedding batches and subsequent calls', () => {
@@ -240,7 +242,7 @@ describe('isolated local model runtime', () => {
       expect(processes).toHaveLength(1);
       expect(processes[0]!.writes.map(request => request.payload.inputs.length)).toEqual([32, 8, 1]);
       expect(new Set(processes[0]!.writes.map(request => request.id)).size).toBe(3);
-    }).pipe(Effect.provide(runtimeLayer(spawn)));
+    }).pipe(provideTestLayer(runtimeLayer(spawn)));
   });
 
   it.effect('evicts an idle worker and lazily respawns exactly one worker for concurrent requests', () => {
@@ -284,7 +286,7 @@ describe('isolated local model runtime', () => {
       expect(results).toEqual([[[6, 2]], [[5, 2]]]);
       expect(processes).toHaveLength(2);
       expect(processes[1]!.writes).toHaveLength(2);
-    }).pipe(Effect.provide(runtimeLayer(spawn, 1_000, 1_024, 10)));
+    }).pipe(provideTestLayer(runtimeLayer(spawn, 1_000, 1_024, 10)));
   });
 
   it.effect('waits for idle eviction to release native resources before spawning a replacement', () => {
@@ -319,20 +321,20 @@ describe('isolated local model runtime', () => {
       yield* Effect.promise(() => new Promise(resolve => setTimeout(resolve, 30)));
       expect(processes[0]?.inputClosed).toBe(true);
 
-      const pending = Effect.runPromise(
-        runtime.embedMany({
+      const pending = yield* runtime
+        .embedMany({
           inputs: ['second'],
           manifest: embeddingManifest,
           modelPath: '/models/embedding.gguf',
-        }),
-      );
+        })
+        .pipe(Effect.forkChild);
       yield* Effect.promise(() => new Promise(resolve => setTimeout(resolve, 20)));
       expect(processes).toHaveLength(1);
 
       releaseEviction();
-      expect(yield* Effect.promise(() => pending)).toEqual([[6, 2]]);
+      expect(yield* Fiber.join(pending)).toEqual([[6, 2]]);
       expect(processes).toHaveLength(2);
-    }).pipe(Effect.provide(runtimeLayer(spawn, 1_000, 1_024, 10)));
+    }).pipe(provideTestLayer(runtimeLayer(spawn, 1_000, 1_024, 10)));
   });
 
   it.effect('serializes concurrent operations through the persistent worker', () => {
@@ -370,7 +372,7 @@ describe('isolated local model runtime', () => {
       expect(results).toEqual([[[3, 3]], [[5, 3]], [[5, 3]]]);
       expect(processes).toHaveLength(1);
       expect(maximumActive).toBe(1);
-    }).pipe(Effect.provide(runtimeLayer(spawn)));
+    }).pipe(provideTestLayer(runtimeLayer(spawn)));
   });
 
   it.effect('gracefully closes the persistent worker when its layer scope ends', () => {
@@ -394,7 +396,7 @@ describe('isolated local model runtime', () => {
           manifest: embeddingManifest,
           modelPath: '/models/embedding.gguf',
         });
-      }).pipe(Effect.provide(runtimeLayer(spawn)));
+      }).pipe(provideTestLayer(runtimeLayer(spawn)));
 
       expect(processes).toHaveLength(1);
       expect(processes[0]!.inputClosed).toBe(true);
@@ -414,7 +416,7 @@ describe('isolated local model runtime', () => {
         },
         undefined,
         () => {
-          throw new Error('synthetic broken pipe');
+          throw new TestError('synthetic broken pipe');
         },
       );
       processes.push(worker);
@@ -429,7 +431,7 @@ describe('isolated local model runtime', () => {
           manifest: embeddingManifest,
           modelPath: '/models/embedding.gguf',
         });
-      }).pipe(Effect.provide(runtimeLayer(spawn)));
+      }).pipe(provideTestLayer(runtimeLayer(spawn)));
 
       expect(processes).toHaveLength(1);
       expect(processes[0]!.killed).toBe(true);
@@ -455,29 +457,27 @@ describe('isolated local model runtime', () => {
       );
       input.end();
 
-      yield* Effect.promise(() =>
-        serveWorker(
-          LocalModelRuntime.of({
-            diagnostics: () => Effect.succeed({backend: 'fake', buildType: 'prebuilt', cpuMathCores: 4}),
-            embedMany: request =>
-              Effect.fail(
-                new EmbeddingFailed({
-                  cause: new Error(`${secret}:${request.inputs[0]}`),
-                  message: secret,
-                  modelId: request.manifest.id,
-                }),
-              ),
-            generate: () => Effect.die(new Error('Unexpected generation request')),
-            rerank: () => Effect.die(new Error('Unexpected reranking request')),
-          }),
-          {
-            input,
-            writeLine: line => {
-              output.push(line);
-              return Promise.resolve();
-            },
+      yield* serveWorker(
+        LocalModelRuntime.of({
+          diagnostics: Effect.succeed({backend: 'fake', buildType: 'prebuilt', cpuMathCores: 4}),
+          embedMany: request =>
+            Effect.fail(
+              new EmbeddingFailed({
+                cause: new TestError(`${secret}:${request.inputs[0]}`),
+                message: secret,
+                modelId: request.manifest.id,
+              }),
+            ),
+          generate: () => Effect.die(new TestError('Unexpected generation request')),
+          rerank: () => Effect.die(new TestError('Unexpected reranking request')),
+        }),
+        {
+          input,
+          writeLine: line => {
+            output.push(line);
+            return Promise.resolve();
           },
-        ),
+        },
       );
 
       expect(output).toHaveLength(1);

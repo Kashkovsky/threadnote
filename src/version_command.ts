@@ -7,13 +7,17 @@ import {compareVersions, errorMessage} from './utils.js';
 import {whatsNewLinesForVersion, whatsNewLinesForVersionRange} from './release_notes.js';
 import {SystemInfo} from './effect/system.js';
 
+class VersionCommandError extends Error {
+  readonly _tag = 'VersionCommandError' as const;
+}
+
 export const runVersion = Effect.fn('runVersion')(function* (config: RuntimeConfig, options: VersionOptions) {
   const currentVersion = yield* currentPackageVersion();
   const channel = selectUpdateChannel(currentVersion);
   const system = yield* SystemInfo;
   const source = yield* Effect.try({
     try: () => resolveReleaseSource(options.source, options.allowUntrustedSource, system.environment()),
-    catch: cause => new Error('Could not resolve the release source.', {cause}),
+    catch: cause => new VersionCommandError('Could not resolve the release source.', {cause}),
   });
   const latest = yield* withSpinnerEffect(
     'Checking GitHub for the latest standalone Threadnote release',

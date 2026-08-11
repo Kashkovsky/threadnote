@@ -1,3 +1,4 @@
+import {TestError} from '../helpers/test-error.js';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {it as effectIt} from '@effect/vitest';
 import {Effect, FileSystem, Layer, Path} from 'effect';
@@ -240,7 +241,7 @@ describe('bounded code graph build-status maintenance', () => {
             identity.worktreeId,
             currentBuildId,
             undefined,
-            {afterManagerContextRemoval: () => Effect.fail(new Error('interrupt'))},
+            {afterManagerContextRemoval: () => Effect.fail(new TestError('interrupt'))},
           );
 
           expect(interrupted).toEqual({blockedCode: 'io-error', retryAfterMilliseconds: 1_000, state: 'deferred'});

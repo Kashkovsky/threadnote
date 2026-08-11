@@ -1,6 +1,6 @@
 import {Context, Crypto, Effect, FileSystem, Layer, Option, Path, Queue, Stdio, Stream} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
-import {fromPromiseError, fromPromiseInterruptible} from '../effect/errors.js';
+import {fromPromise, fromPromiseInterruptible} from '../effect/errors.js';
 import {isFileLockTimeout, withExclusiveFileLock} from '../effect/file_lock.js';
 import {SystemInfo, type SystemInfoShape} from '../effect/system.js';
 import {
@@ -158,7 +158,7 @@ export interface CodeGraphParserPoolShape {
     file: CodeGraphInventoryFile,
     threadnoteHome: string,
   ) => Effect.Effect<CodeGraphParserResult, never>;
-  readonly trimIdle: () => Effect.Effect<void, never>;
+  readonly trimIdle: Effect.Effect<void, never>;
 }
 
 export interface ParserWorkerCapacityInput {
@@ -191,7 +191,7 @@ export function codeGraphParserPoolLayer(
         const explicitCapacity = explicitParserWorkerCapacity(environment, options.capacity);
         const capacity =
           explicitCapacity ??
-          (yield* system.hardwareInfo().pipe(
+          (yield* system.hardwareInfo.pipe(
             Effect.map(hardware =>
               parserWorkerCapacity({
                 effectiveMemoryBytes: hardware.effectiveMemoryBytes,
@@ -275,22 +275,21 @@ export function codeGraphParserPoolLayer(
                 slot => Queue.offer(available, slot),
               );
             },
-            trimIdle: () =>
-              Effect.acquireUseRelease(
-                Queue.clear(available),
-                idleSlots =>
-                  Effect.forEach(idleSlots, slot => fromPromiseError(() => slot.trimIdle()), {
-                    concurrency: 'unbounded',
-                    discard: true,
-                  }).pipe(Effect.catch(() => Effect.void)),
-                idleSlots => Queue.offerAll(available, idleSlots),
-              ).pipe(Effect.asVoid),
+            trimIdle: Effect.acquireUseRelease(
+              Queue.clear(available),
+              idleSlots =>
+                Effect.forEach(idleSlots, slot => fromPromise('trim idle parser worker', () => slot.trimIdle()), {
+                  concurrency: 'unbounded',
+                  discard: true,
+                }).pipe(Effect.catch(() => Effect.void)),
+              idleSlots => Queue.offerAll(available, idleSlots),
+            ).pipe(Effect.asVoid),
           }),
           slots,
         };
       }),
       ({slots}) =>
-        Effect.forEach(slots, slot => fromPromiseError(() => slot.close()), {
+        Effect.forEach(slots, slot => fromPromise('close parser worker', () => slot.close()), {
           concurrency: 'unbounded',
           discard: true,
         }).pipe(Effect.catch(() => Effect.void)),

@@ -1,9 +1,10 @@
-import {createHash} from 'node:crypto';
-import {existsSync} from 'node:fs';
-import {mkdir, mkdtemp, readFile, realpath, rm, writeFile} from 'node:fs/promises';
-import {execFileSync} from 'node:child_process';
-import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {TestError} from '../helpers/test-error.js';
+import {createHash} from '../helpers/node-crypto.js';
+import {existsSync} from '../helpers/node-fs.js';
+import {mkdir, mkdtemp, readFile, realpath, rm, writeFile} from '../helpers/node-fs-promises.js';
+import {execFileSync} from '../helpers/node-child-process.js';
+import {tmpdir} from '../helpers/node-os.js';
+import {join} from '../helpers/node-path.js';
 import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {StdioClientTransport} from '@modelcontextprotocol/sdk/client/stdio.js';
 import {describe, expect, it} from 'vitest';
@@ -128,7 +129,7 @@ async function callCodeGraphUntilReady(client: Client, arguments_: Readonly<Reco
       {readonly retryAfterMilliseconds?: unknown; readonly state?: unknown} | undefined;
     if (!isRetryableCodeGraphState(structured?.state)) return result;
     if (Date.now() >= deadline) {
-      throw new Error(`Code graph remained ${String(structured?.state)} for 90 seconds.`);
+      throw new TestError(`Code graph remained ${String(structured?.state)} for 90 seconds.`);
     }
     const requestedDelay =
       typeof structured?.retryAfterMilliseconds === 'number' ? structured.retryAfterMilliseconds : 250;
@@ -759,9 +760,10 @@ describe('Threadnote MCP toolsets', () => {
           const readyDeadline = Date.now() + 10_000;
           while (!(await Bun.file(ready).exists())) {
             if (owner.exitCode !== null) {
-              throw new Error(`Share lock owner exited early: ${await new Response(owner.stderr).text()}`);
+              throw new TestError(`Share lock owner exited early: ${await new Response(owner.stderr).text()}`);
             }
-            if (Date.now() >= readyDeadline) throw new Error('Timed out waiting for the shared repository lock owner.');
+            if (Date.now() >= readyDeadline)
+              throw new TestError('Timed out waiting for the shared repository lock owner.');
             await Bun.sleep(10);
           }
 
@@ -786,7 +788,9 @@ describe('Threadnote MCP toolsets', () => {
           ownerExitCode = await owner.exited;
         }
         if (ownerExitCode !== 0) {
-          throw new Error(`Share lock owner exited with ${ownerExitCode}: ${await new Response(owner.stderr).text()}`);
+          throw new TestError(
+            `Share lock owner exited with ${ownerExitCode}: ${await new Response(owner.stderr).text()}`,
+          );
         }
       },
       {toolset: 'core'},
@@ -1021,7 +1025,9 @@ describe('Threadnote MCP toolsets', () => {
             edgeLimit: {maximum: 500, minimum: 1, type: 'integer'},
             nodeId: {type: 'string'},
             nodeLimit: {maximum: 200, minimum: 1, type: 'integer'},
-            operation: {enum: ['query', 'node', 'neighbors', 'explain', 'path', 'impact', 'topology']},
+            operation: {
+              enum: ['query', 'node', 'neighbors', 'explain', 'path', 'impact', 'topology'],
+            },
           },
           type: 'object',
         });
@@ -1133,7 +1139,7 @@ describe('Threadnote MCP toolsets', () => {
         )?.nodes?.find(node => node.name === 'afterImpact');
         expect(beforeNode?.id).toMatch(/^cgs_[a-f0-9]{32,64}$/);
         expect(afterNode?.id).toMatch(/^cgs_[a-f0-9]{32,64}$/);
-        if (!beforeNode?.id || !afterNode?.id) throw new Error('Expected exact code graph fixture node IDs.');
+        if (!beforeNode?.id || !afterNode?.id) throw new TestError('Expected exact code graph fixture node IDs.');
         const beforeId = beforeNode.id;
         const afterId = afterNode.id;
 

@@ -2,12 +2,25 @@ import {Context, Deferred, Effect, Exit, Layer, Ref} from 'effect';
 import {effectiveLinuxMemoryBytes, linuxCgroupMemoryFiles} from './linux_cgroup.js';
 import {readWindowsHardwareInfo, readWindowsProcessStartIdentity} from './windows_system.js';
 
+class SystemOperationError extends Error {
+  readonly _tag = 'SystemOperationError' as const;
+}
+
+function systemOperationError(cause: unknown): SystemOperationError {
+  return cause instanceof SystemOperationError
+    ? cause
+    : new SystemOperationError(cause instanceof Error ? cause.message : String(cause), {cause});
+}
+
 export interface PlatformPathShape {
   readonly basename: (path: string) => string;
   readonly dirname: (path: string) => string;
   readonly isAbsolute: (path: string) => boolean;
   readonly join: (...paths: readonly string[]) => string;
   readonly normalize: (path: string) => string;
+  readonly relative: (from: string, to: string) => string;
+  readonly resolve: (...paths: readonly string[]) => string;
+  readonly sep: string;
 }
 
 interface NativeFileSystemPromisesShape {
@@ -16,12 +29,19 @@ interface NativeFileSystemPromisesShape {
     path: string,
     options: {readonly bufferSize: number; readonly encoding: 'buffer' | 'utf8'},
   ) => Promise<RuntimeDirectoryHandle>;
+  readonly stat: (path: string, options: {readonly bigint: true}) => Promise<RuntimeBigIntStats>;
   readonly statfs?: (path: string, options: {readonly bigint: true}) => Promise<unknown>;
 }
 
 interface NativePathModuleShape {
   readonly posix: PlatformPathShape;
   readonly win32: PlatformPathShape;
+}
+
+interface NativeOperatingSystemModuleShape {
+  readonly cpus: () => readonly {readonly model: string}[];
+  readonly release: () => string;
+  readonly totalmem: () => number;
 }
 
 export interface RuntimeBigIntStats {
@@ -32,6 +52,7 @@ export interface RuntimeBigIntStats {
   readonly mtimeNs: bigint;
   readonly size: bigint;
   readonly isDirectory: () => boolean;
+  readonly isFile: () => boolean;
   readonly isSymbolicLink: () => boolean;
 }
 
@@ -56,6 +77,8 @@ export interface RuntimeTextDirectoryNamePage {
 /** Host facts and Bun's Node-compatible structural adapters stay inside SystemInfo's runtime boundary. */
 export const runtimeArchitecture = process.arch;
 export const runtimePlatform = process.platform;
+const nativeOperatingSystemModule = process.getBuiltinModule('os') as NativeOperatingSystemModuleShape;
+export const runtimeOperatingSystemRelease = nativeOperatingSystemModule.release();
 const nativeFileSystemPromises = (process.getBuiltinModule('fs') as {readonly promises: NativeFileSystemPromisesShape})
   .promises;
 const nativePathModule = process.getBuiltinModule('path') as NativePathModuleShape;
@@ -64,13 +87,33 @@ export function platformPathFor(platform: NodeJS.Platform): PlatformPathShape {
   return platform === 'win32' ? nativePathModule.win32 : nativePathModule.posix;
 }
 
+/** Exact host facts retained by same-machine benchmark provenance. */
+export function runtimeHostHardwareInfo(): {
+  readonly cpuModel: string;
+  readonly logicalCpuCount: number;
+  readonly memoryBytes: number;
+} {
+  const processors = nativeOperatingSystemModule.cpus();
+  return {
+    cpuModel: processors[0]?.model ?? 'unknown',
+    logicalCpuCount: processors.length,
+    memoryBytes: nativeOperatingSystemModule.totalmem(),
+  };
+}
+
 export function runtimeLstat(path: string): Promise<RuntimeBigIntStats> {
   return nativeFileSystemPromises.lstat(path, {bigint: true});
 }
 
+/** Follows links while retaining exact device/inode identity beyond JavaScript's safe-integer range. */
+export function runtimeStat(path: string): Promise<RuntimeBigIntStats> {
+  return nativeFileSystemPromises.stat(path, {bigint: true});
+}
+
 /** Raw POSIX directory names stay bytes; enumeration stops immediately after the first over-limit entry. */
 export async function runtimeDirectoryNamePage(path: string, entryLimit: number): Promise<RuntimeDirectoryNamePage> {
-  if (!Number.isSafeInteger(entryLimit) || entryLimit < 0) throw new Error('Runtime directory entry limit is invalid.');
+  if (!Number.isSafeInteger(entryLimit) || entryLimit < 0)
+    throw new SystemOperationError('Runtime directory entry limit is invalid.');
   const directory = await nativeFileSystemPromises.opendir(path, {
     bufferSize: 32,
     encoding: runtimePlatform === 'win32' ? 'utf8' : 'buffer',
@@ -99,7 +142,7 @@ export function runtimeTextDirectoryNamePage(
 ): Effect.Effect<RuntimeTextDirectoryNamePage, unknown> {
   return Effect.tryPromise({
     try: () => runtimeDirectoryNamePage(path, entryLimit),
-    catch: cause => cause,
+    catch: systemOperationError,
   }).pipe(
     Effect.flatMap(page =>
       Effect.try({
@@ -107,7 +150,7 @@ export function runtimeTextDirectoryNamePage(
           const decoder = new TextDecoder('utf-8', {fatal: true, ignoreBOM: true});
           return {names: page.names.map(name => decoder.decode(name)), overflow: page.overflow};
         },
-        catch: cause => cause,
+        catch: systemOperationError,
       }),
     ),
   );
@@ -122,7 +165,7 @@ export interface SystemInfoShape {
   readonly environment: () => NodeJS.ProcessEnv;
   readonly executablePath: string;
   readonly homeDirectory: string;
-  readonly hardwareInfo: () => Effect.Effect<SystemHardwareInfo, Error>;
+  readonly hardwareInfo: Effect.Effect<SystemHardwareInfo, Error>;
   readonly isProcessRunning: (processId: number) => boolean;
   readonly memoryUsage: () => {
     readonly external: number;
@@ -243,7 +286,7 @@ export class SystemInfo extends Context.Service<SystemInfo, SystemInfoShape>()('
         currentDirectory: () => process.cwd(),
         environment: () => process.env,
         executablePath: process.execPath,
-        hardwareInfo: () => readSystemHardwareInfo(runtimePlatform, process.env),
+        hardwareInfo: readSystemHardwareInfo(runtimePlatform, process.env),
         homeDirectory,
         isProcessRunning: processId => {
           try {
@@ -423,7 +466,7 @@ function nativeStatfs(path: string) {
   }
   return Effect.tryPromise({
     try: () => nativeFileSystemPromises.statfs!(path, {bigint: true}),
-    catch: cause => cause,
+    catch: systemOperationError,
   });
 }
 
@@ -459,7 +502,7 @@ export function legacyAvailableDiskBytes(
           stdin: 'ignore',
           stdout: 'pipe',
         }),
-      catch: cause => cause,
+      catch: systemOperationError,
     }),
     child =>
       Effect.tryPromise({
@@ -469,7 +512,7 @@ export function legacyAvailableDiskBytes(
           const text = output.trim();
           return platform === 'win32' ? parseWindowsAvailableDiskBytes(text) : parsePosixAvailableDiskBytes(text);
         },
-        catch: cause => cause,
+        catch: systemOperationError,
       }),
     child =>
       Effect.sync(() => {
@@ -489,9 +532,10 @@ const defaultDiskCapacityProbeAdapters: DiskCapacityProbeAdapters = {
 };
 
 function isNativeStatfsUnavailable(cause: unknown): boolean {
-  if (cause instanceof NativeStatfsUnavailableError) return true;
-  if (typeof cause !== 'object' || cause === null || !('code' in cause)) return false;
-  const code = (cause as {readonly code?: unknown}).code;
+  const underlying = cause instanceof SystemOperationError ? cause.cause : cause;
+  if (underlying instanceof NativeStatfsUnavailableError) return true;
+  if (typeof underlying !== 'object' || underlying === null || !('code' in underlying)) return false;
+  const code = (underlying as {readonly code?: unknown}).code;
   return typeof code === 'string' && NATIVE_STATFS_UNAVAILABLE_CODES.has(code);
 }
 
@@ -531,14 +575,14 @@ function readSystemHardwareInfo(platform: NodeJS.Platform, environment: NodeJS.P
         const cpuModel = /^(?:model name|Hardware)\s*:\s*(.+)$/m.exec(cpuInfo)?.[1]?.trim();
         const memoryKibibytes = Number(/^MemTotal:\s+(\d+)\s+kB$/m.exec(memoryInfo)?.[1]);
         if (!cpuModel || !Number.isSafeInteger(memoryKibibytes) || memoryKibibytes <= 0) {
-          throw new Error('Linux hardware metadata is incomplete.');
+          throw new SystemOperationError('Linux hardware metadata is incomplete.');
         }
         const memoryBytes = memoryKibibytes * KIBIBYTE_BYTES;
         const effectiveMemoryBytes = await readLinuxEffectiveMemoryBytes(memoryBytes);
         const operatingSystem = spawnText(['uname', '-sr'], environment);
         return {cpuModel, effectiveMemoryBytes, memoryBytes, operatingSystem};
       },
-      catch: cause => new Error('Could not read Linux hardware metadata.', {cause}),
+      catch: cause => new SystemOperationError('Could not read Linux hardware metadata.', {cause}),
     });
   }
   if (platform === 'darwin') {
@@ -548,17 +592,17 @@ function readSystemHardwareInfo(platform: NodeJS.Platform, environment: NodeJS.P
         const memoryBytes = Number(spawnText(['sysctl', '-n', 'hw.memsize'], environment));
         const version = spawnText(['sw_vers', '-productVersion'], environment);
         if (!Number.isSafeInteger(memoryBytes) || memoryBytes <= 0) {
-          throw new Error('macOS memory metadata is invalid.');
+          throw new SystemOperationError('macOS memory metadata is invalid.');
         }
         return {cpuModel, effectiveMemoryBytes: memoryBytes, memoryBytes, operatingSystem: `macOS ${version}`};
       },
-      catch: cause => new Error('Could not read macOS hardware metadata.', {cause}),
+      catch: cause => new SystemOperationError('Could not read macOS hardware metadata.', {cause}),
     });
   }
   if (platform === 'win32') {
     return readWindowsHardwareInfo(environment);
   }
-  return Effect.fail(new Error(`Hardware metadata is not supported on ${platform}.`));
+  return Effect.fail(new SystemOperationError(`Hardware metadata is not supported on ${platform}.`));
 }
 
 async function readLinuxEffectiveMemoryBytes(physicalMemoryBytes: number): Promise<number> {
@@ -589,10 +633,10 @@ function spawnText(command: readonly string[], environment: NodeJS.ProcessEnv): 
     timeout: DISK_QUERY_TIMEOUT_MS,
   });
   if (result.exitCode !== 0) {
-    throw new Error(`${command[0]} exited with ${result.exitCode}: ${result.stderr.toString().trim()}`);
+    throw new SystemOperationError(`${command[0]} exited with ${result.exitCode}: ${result.stderr.toString().trim()}`);
   }
   const output = result.stdout.toString().trim();
-  if (!output) throw new Error(`${command[0]} returned no hardware metadata.`);
+  if (!output) throw new SystemOperationError(`${command[0]} returned no hardware metadata.`);
   return output;
 }
 
@@ -663,7 +707,7 @@ function readDarwinProcessStartIdentity(
           stdin: 'ignore',
           stdout: 'pipe',
         }),
-      catch: cause => cause,
+      catch: systemOperationError,
     }),
     child =>
       Effect.tryPromise({
@@ -671,7 +715,7 @@ function readDarwinProcessStartIdentity(
           const [exitCode, output] = await Promise.all([child.exited, new Response(child.stdout).text()]);
           return exitCode === 0 ? parseOutput(output) : undefined;
         },
-        catch: cause => cause,
+        catch: systemOperationError,
       }),
     child =>
       Effect.sync(() => {
@@ -728,7 +772,7 @@ export function resolveHomeDirectory(environment: NodeJS.ProcessEnv, platform: N
   const windowsHome = userProfile ?? (homeDrive && homePath ? `${homeDrive}${homePath}` : undefined);
   const resolved = platform === 'win32' ? (windowsHome ?? home) : (home ?? windowsHome);
   if (!resolved) {
-    throw new Error('Could not determine the current user home directory from the environment.');
+    throw new SystemOperationError('Could not determine the current user home directory from the environment.');
   }
   return resolved;
 }

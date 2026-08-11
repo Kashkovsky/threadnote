@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 
-import {readFile} from 'node:fs/promises';
-import {join} from 'node:path';
+import {readFile} from '../helpers/node-fs-promises.js';
+import {join} from '../helpers/node-path.js';
 import fc from 'fast-check';
 import React, {useState} from 'react';
 import {act} from 'react';

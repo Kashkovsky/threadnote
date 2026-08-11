@@ -1,6 +1,6 @@
-import {mkdtemp, mkdir, rm} from 'node:fs/promises';
-import {tmpdir} from 'node:os';
-import {basename, join} from 'node:path';
+import {mkdtemp, mkdir, rm} from '../helpers/node-fs-promises.js';
+import {tmpdir} from '../helpers/node-os.js';
+import {basename, join} from '../helpers/node-path.js';
 import {afterEach, beforeEach, describe, expect, it} from 'vitest';
 import {resolveRepoName as resolveRepoNameEffect, runCommand as runCommandEffect} from '../../src/utils.js';
 import {runEffect} from '../helpers/effect-runtime.js';

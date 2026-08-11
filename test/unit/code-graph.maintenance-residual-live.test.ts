@@ -1,3 +1,4 @@
+import {provideTestLayer} from '../helpers/effect-layer.js';
 import {Database} from 'bun:sqlite';
 import {describe, expect, it as effectIt} from '@effect/vitest';
 import {Effect, FileSystem, Path} from 'effect';
@@ -147,7 +148,7 @@ describe('live removed-view residual maintenance', () => {
           {expected_snapshot_id: SNAPSHOT_ID, worktree_id: WORKTREE_ID},
         ]);
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('defers invalid and legacy provenance with a durable invalid-sidecar cooldown', () =>
@@ -200,7 +201,7 @@ describe('live removed-view residual maintenance', () => {
           });
         }
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 });
 

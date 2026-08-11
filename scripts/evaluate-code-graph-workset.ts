@@ -1,3 +1,4 @@
+import {provideScriptLayer, scriptError, ScriptError} from './effect/errors.js';
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import {Effect} from 'effect';
 import {runCommandEffect} from '../src/effect/command.js';
@@ -60,7 +61,7 @@ export function parseCodeGraphWorksetEvaluationArguments(
     else if (argument === '--output') outputPath = required(args[++index], argument);
     else if (argument === '--sizes') requestedSizes = parseEvaluationSizes(required(args[++index], argument));
     else if (argument === '--smoke') smoke = true;
-    else throw new Error(`Unknown code graph workset evaluation option: ${argument}`);
+    else throw new ScriptError(`Unknown code graph workset evaluation option: ${argument}`);
   }
   const sizes = requestedSizes ?? (smoke ? WORKSET_EVALUATION_SMOKE_SIZES : CODE_GRAPH_WORKSET_FIXTURE_SIZES);
   return {createdAt, outputPath, sizes, smoke};
@@ -74,7 +75,7 @@ export const evaluateCodeGraphWorkset = Effect.scoped(
     yield* indexPreparedCodeGraphWorksetFixture(prepared);
     const selectedWorksets = options.sizes.map(size => {
       const workset = prepared.plan.worksets.find(candidate => candidate.size === size);
-      if (!workset) throw new Error(`Fixture did not emit a size-${size} workset.`);
+      if (!workset) throw new ScriptError(`Fixture did not emit a size-${size} workset.`);
       return workset.name;
     });
     yield* publishIndexedCodeGraphWorksetCatalog(prepared, selectedWorksets);
@@ -84,7 +85,7 @@ export const evaluateCodeGraphWorkset = Effect.scoped(
     const observations: CodeGraphWorksetEvaluationObservationV1[] = [];
     for (const worksetSize of options.sizes) {
       const workset = prepared.plan.worksets.find(candidate => candidate.size === worksetSize);
-      if (!workset) return yield* Effect.fail(new Error(`Fixture did not emit a size-${worksetSize} workset.`));
+      if (!workset) return yield* Effect.fail(new ScriptError(`Fixture did not emit a size-${worksetSize} workset.`));
       const queries = fixture.queries.filter(query => query.sizes.includes(worksetSize));
       const worktree = yield* measureWorktreeIsolation(prepared, config, workset.name, worksetSize);
       let coverage: readonly CodeGraphWorksetCoverageObservationV1[] | undefined;
@@ -96,7 +97,9 @@ export const evaluateCodeGraphWorkset = Effect.scoped(
               candidate => candidate.operation === 'query' && candidate.sizes.includes(worksetSize),
             );
             if (!probe?.query) {
-              return yield* Effect.fail(new Error(`Fixture size ${worksetSize} has no executable coverage probe.`));
+              return yield* Effect.fail(
+                new ScriptError(`Fixture size ${worksetSize} has no executable coverage probe.`),
+              );
             }
             const measured = yield* measureCodeGraphWorksetQuery(config, workset.name, probe.query);
             coverage = codeGraphWorksetCoverage(fixture, worksetSize, measured.result);
@@ -124,7 +127,7 @@ export const evaluateCodeGraphWorkset = Effect.scoped(
 
     const metrics = evaluateCodeGraphWorksetObservations(fixture, observations);
     const system = yield* SystemInfo;
-    const hardware = yield* system.hardwareInfo();
+    const hardware = yield* system.hardwareInfo;
     const [commit, dirty, version] = yield* Effect.all(
       [
         sourceGit(['rev-parse', 'HEAD']),
@@ -156,7 +159,7 @@ export const evaluateCodeGraphWorkset = Effect.scoped(
     if (options.outputPath) yield* atomicWrite(options.outputPath, `${JSON.stringify(baseline, undefined, 2)}\n`);
     yield* printJson(baseline);
     const safetyFailures = codeGraphWorksetEvaluationSafetyFailures(metrics);
-    if (safetyFailures.length > 0) return yield* Effect.fail(new Error(safetyFailures.join('\n')));
+    if (safetyFailures.length > 0) return yield* Effect.fail(new ScriptError(safetyFailures.join('\n')));
   }),
 );
 
@@ -178,12 +181,12 @@ function acquirePreparedFixture(size: CodeGraphWorksetFixtureSize, stateProfile:
   return Effect.acquireRelease(
     Effect.tryPromise({
       try: () => prepareCodeGraphWorksetFixture({size, stateProfile}),
-      catch: cause => (cause instanceof Error ? cause : new Error(String(cause))),
+      catch: cause => scriptError(cause),
     }),
     fixture =>
       Effect.tryPromise({
         try: () => removePreparedCodeGraphWorksetFixture(fixture),
-        catch: cause => (cause instanceof Error ? cause : new Error(String(cause))),
+        catch: cause => scriptError(cause),
       }).pipe(Effect.catch(() => Effect.void)),
   );
 }
@@ -211,7 +214,7 @@ function parseEvaluationSizes(value: string): readonly CodeGraphWorksetFixtureSi
   const sizes = parseSizeList(value, '--sizes');
   for (const size of sizes) {
     if (!allowed.has(size)) {
-      throw new Error(
+      throw new ScriptError(
         `--sizes only accepts evaluation sizes: ${CODE_GRAPH_WORKSET_FIXTURE_SIZES.join(', ')}. Received ${size}.`,
       );
     }
@@ -222,32 +225,33 @@ function parseEvaluationSizes(value: string): readonly CodeGraphWorksetFixtureSi
 function parseSizeList(value: string, option: string): readonly number[] {
   const parts = value.split(',');
   if (parts.length === 0 || parts.some(part => !part.trim()))
-    throw new Error(`${option} requires comma-separated sizes.`);
+    throw new ScriptError(`${option} requires comma-separated sizes.`);
   const sizes = parts.map(part => Number(part.trim()));
   if (sizes.some(size => !Number.isSafeInteger(size) || size < 1)) {
-    throw new Error(`${option} requires positive integer sizes.`);
+    throw new ScriptError(`${option} requires positive integer sizes.`);
   }
-  if (new Set(sizes).size !== sizes.length) throw new Error(`${option} sizes must be unique.`);
+  if (new Set(sizes).size !== sizes.length) throw new ScriptError(`${option} sizes must be unique.`);
   return sizes;
 }
 
 function defaultCreatedAt(environment: NodeJS.ProcessEnv, now: Date): string {
   const epoch = environment.SOURCE_DATE_EPOCH;
   if (epoch === undefined) return parseCreatedAt(now.toISOString(), 'current time');
-  if (!/^\d+$/.test(epoch)) throw new Error('SOURCE_DATE_EPOCH must be a non-negative integer number of seconds.');
+  if (!/^\d+$/.test(epoch))
+    throw new ScriptError('SOURCE_DATE_EPOCH must be a non-negative integer number of seconds.');
   const date = new Date(Number(epoch) * 1_000);
-  if (!Number.isFinite(date.getTime())) throw new Error('SOURCE_DATE_EPOCH is outside the supported date range.');
+  if (!Number.isFinite(date.getTime())) throw new ScriptError('SOURCE_DATE_EPOCH is outside the supported date range.');
   return date.toISOString();
 }
 
 function parseCreatedAt(value: string, option: string): string {
   const date = new Date(value);
-  if (!Number.isFinite(date.getTime())) throw new Error(`${option} requires a valid date.`);
+  if (!Number.isFinite(date.getTime())) throw new ScriptError(`${option} requires a valid date.`);
   return date.toISOString();
 }
 
 function required(value: string | undefined, option: string): string {
-  if (!value?.trim()) throw new Error(`${option} requires a value.`);
+  if (!value?.trim()) throw new ScriptError(`${option} requires a value.`);
   return value;
 }
 
@@ -258,4 +262,4 @@ const sourceGit = Effect.fn('evaluateCodeGraphWorkset.sourceGit')((args: readonl
   }).pipe(Effect.map(result => result.stdout.trim())),
 );
 
-if (import.meta.main) BunRuntime.runMain(evaluateCodeGraphWorkset.pipe(Effect.provide(ApplicationLayer)));
+if (import.meta.main) BunRuntime.runMain(provideScriptLayer(evaluateCodeGraphWorkset, ApplicationLayer));

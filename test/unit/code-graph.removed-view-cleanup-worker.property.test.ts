@@ -204,8 +204,8 @@ function dependencies(
     cleanupBuildStatusUnit: () => Effect.succeed(page),
     cleanupProvenanceUnit: () => Effect.succeed(page),
     withPreparedVectorUnit: (_input, _entry, _deadline, use) => use(Effect.succeed(page)),
-    monotonicMilliseconds: () => Effect.succeed(now),
-    nowMilliseconds: () => Effect.succeed(now),
+    monotonicMilliseconds: Effect.succeed(now),
+    nowMilliseconds: Effect.succeed(now),
     sleep: () => Effect.void,
     update: (_input, candidate, update) =>
       Effect.sync(() => {

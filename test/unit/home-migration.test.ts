@@ -1,3 +1,4 @@
+import {provideTestLayer} from '../helpers/effect-layer.js';
 import {expect, it} from '@effect/vitest';
 import {Effect, FileSystem, Path} from 'effect';
 import {describe} from 'vitest';
@@ -75,7 +76,7 @@ describe('OpenViking home migration', () => {
         expect(yield* migrateOpenVikingHome({legacyHome, targetHome})).toEqual({action: 'no_legacy_content'});
         expect(yield* fs.exists(path.join(targetHome, 'layout.json'))).toBe(true);
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it.effect('treats the v3 root server PID as runtime-only migration noise', () =>
@@ -95,7 +96,7 @@ describe('OpenViking home migration', () => {
         });
         expect(yield* fs.exists(targetHome)).toBe(false);
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it.effect('probes a wide runtime-only legacy root without enumerating it', () =>
@@ -126,7 +127,7 @@ describe('OpenViking home migration', () => {
         expect(pending).toBe(false);
         expect(enumeratedRoot).toBe(false);
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it.effect('detects canonical content for the configured non-default account and user without enumeration', () =>
@@ -176,7 +177,7 @@ describe('OpenViking home migration', () => {
           ),
         ).toContain('Custom account context');
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it.effect('reports beta-only layout and model recovery without a contradictory legacy-home message', () =>
@@ -212,7 +213,7 @@ describe('OpenViking home migration', () => {
         }
         expect(yield* fs.readFileString(path.join(targetHome, 'data', 'local', 'memory.md'))).toContain('Beta memory');
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it.effect('reports completed-receipt layout marker repair without claiming there is nothing to migrate', () =>
@@ -250,7 +251,7 @@ describe('OpenViking home migration', () => {
           version: 2,
         });
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it.effect('recognizes genuine legacy canonical content and completed receipts', () =>
@@ -271,7 +272,7 @@ describe('OpenViking home migration', () => {
         expect(yield* isLegacyHomeMigrationPending({legacyHome, targetHome})).toBe(false);
         expect(yield* isThreadnoteHomeMigrationPending({legacyHome, targetHome})).toBe(false);
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it.effect('recognizes beta layout and pending local-model recovery without ~/.openviking', () =>
@@ -303,7 +304,7 @@ describe('OpenViking home migration', () => {
         );
         expect(yield* isThreadnoteHomeMigrationPending({legacyHome, targetHome})).toBe(false);
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it.effect('dry-runs, validates, promotes, preserves the source, and is idempotent', () =>
@@ -400,7 +401,7 @@ describe('OpenViking home migration', () => {
         expect(yield* fs.exists(interruptedStage)).toBe(false);
         expect(yield* fs.exists(targetHome)).toBe(true);
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it.effect('does not promote a resumable stage after the legacy source changes', () =>
@@ -429,7 +430,7 @@ describe('OpenViking home migration', () => {
         ).toBe('newer canonical value');
         expect(yield* fs.exists(interruptedStage)).toBe(true);
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it.effect('refuses to overwrite an unrelated target home', () =>
@@ -447,7 +448,7 @@ describe('OpenViking home migration', () => {
         expect(error._tag).toBe('HomeMigrationConflict');
         expect(yield* fs.readFileString(path.join(targetHome, 'unrelated.txt'))).toBe('keep');
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it.effect('does not treat generic Threadnote-like directory names as an owned target home', () =>
@@ -472,7 +473,7 @@ describe('OpenViking home migration', () => {
           expect(yield* fs.readDirectory(path.join(targetHome, marker))).toEqual(['sentinel.txt']);
         }
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it.effect('requires a strong ownership receipt before recovering into an existing target', () =>
@@ -530,7 +531,7 @@ describe('OpenViking home migration', () => {
           expect(yield* snapshotDirectory(fs, path, targetHome)).toEqual(before);
         }
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it.effect('recovers into an empty beta home without copying server metadata or overwriting generated state', () =>
@@ -653,7 +654,7 @@ describe('OpenViking home migration', () => {
         expect(yield* fs.readFileString(source)).toContain('Recovered memory');
         expect(yield* fs.readFileString(path.join(legacyHome, 'update-check.json'))).toBe(legacyUpdateCache);
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it.effect('preserves newer canonical content when recovering into a current-layout beta home', () =>
@@ -727,7 +728,7 @@ describe('OpenViking home migration', () => {
         expect(yield* fs.readFileString(legacyMemory)).toBe('# Older legacy memory\n');
         expect((yield* migrateOpenVikingHome({apply: true, legacyHome, targetHome})).action).toBe('already_migrated');
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it.effect('still rejects different non-canonical content in a recoverable target home', () =>
@@ -752,7 +753,7 @@ describe('OpenViking home migration', () => {
         expect(error._tag).toBe('HomeMigrationConflict');
         expect(yield* fs.readFileString(path.join(targetHome, 'seed-manifest.yaml'))).toContain('root: current');
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it.effect('rejects every incomplete current managed-share checkout shape before copying', () =>
@@ -803,7 +804,7 @@ describe('OpenViking home migration', () => {
           expect(yield* fs.exists(path.join(targetHome, 'migration', 'openviking-home-v1.json'))).toBe(false);
         }
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it.effect('recovers every provable legacy-derived partial managed-share checkout shape', () =>
@@ -953,7 +954,7 @@ describe('OpenViking home migration', () => {
           expect(yield* fs.readFileString(path.join(legacyWorktree, '.git'))).toBe(`gitdir: ${legacyGitdir}\n`);
         }
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it.effect('rejects partial managed-share state that is not a subset of the preserved legacy repository', () =>
@@ -1037,7 +1038,7 @@ describe('OpenViking home migration', () => {
           expect((yield* fs.stat(currentHook)).mode & 0o100).toBe(0o100);
         }
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it.effect('rejects a current share worktree that points at a different Git directory', () =>
@@ -1065,7 +1066,7 @@ describe('OpenViking home migration', () => {
         expect(error.message).toContain('does not point at its registered Git directory');
         expect(yield* fs.readFileString(path.join(currentGitdir, 'HEAD'))).toBe('ref: refs/heads/current\n');
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it.effect('migrates the complete legacy share repository when no current checkout exists', () =>
@@ -1153,7 +1154,7 @@ describe('OpenViking home migration', () => {
         );
         expect(yield* fs.readFileString(path.join(legacyGitdir, 'index'))).toBe('legacy staged state');
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it.effect('ignores mutable operating-system metadata while recovering into an existing beta home', () =>
@@ -1211,7 +1212,7 @@ describe('OpenViking home migration', () => {
         expect(yield* fs.exists(path.join(targetHome, 'data', 'Thumbs.db'))).toBe(false);
         expect(yield* fs.exists(path.join(targetHome, 'data', 'desktop.ini'))).toBe(false);
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it.effect('preserves a complete current managed-share repository as one authority boundary', () =>
@@ -1384,7 +1385,7 @@ describe('OpenViking home migration', () => {
         expect(yield* fs.exists(path.join(legacyGitdir, 'index.lock'))).toBe(true);
         expect(yield* fs.exists(path.join(legacyGitdir, 'refs', 'heads', 'main.lock'))).toBe(true);
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it.effect('rejects legacy symlinks that escape the owned home', () =>
@@ -1407,7 +1408,7 @@ describe('OpenViking home migration', () => {
         expect(error._tag).toBe('HomeMigrationUnsafe');
         expect(yield* fs.exists(targetHome)).toBe(false);
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it.effect('rejects absolute symlinks even when they point inside the legacy home', () =>
@@ -1432,7 +1433,7 @@ describe('OpenViking home migration', () => {
         expect(error.message).toContain('Absolute symbolic links');
         expect(yield* fs.exists(targetHome)).toBe(false);
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 });
 

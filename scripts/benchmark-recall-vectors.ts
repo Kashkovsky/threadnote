@@ -1,3 +1,4 @@
+import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {BunRuntime} from '@effect/platform-bun';
 import {Database} from 'bun:sqlite';
@@ -28,7 +29,7 @@ const options = parseOptions(process.argv.slice(2));
 const modelStoreLayer = Layer.succeed(
   LocalModelStore,
   LocalModelStore.of({
-    install: () => Effect.die(new Error('Unexpected model installation')),
+    install: () => Effect.die(new ScriptError('Unexpected model installation')),
     path: home => `${home}/models/benchmark.gguf`,
     remove: () => Effect.succeed(false),
     status: home => Effect.succeed(modelInstallation(home)),
@@ -39,11 +40,11 @@ const modelStoreLayer = Layer.succeed(
 const runtimeLayer = Layer.succeed(
   LocalModelRuntime,
   LocalModelRuntime.of({
-    diagnostics: () => Effect.succeed({backend: 'fake', buildType: 'prebuilt', cpuMathCores: 4}),
+    diagnostics: Effect.succeed({backend: 'fake', buildType: 'prebuilt', cpuMathCores: 4}),
     embedMany: ({inputs, manifest: requested}) =>
       Effect.sync(() => inputs.map(input => deterministicVector(requested.dimensions ?? 0, input))),
-    generate: () => Effect.die(new Error('Unexpected generation')),
-    rerank: () => Effect.die(new Error('Unexpected reranking')),
+    generate: () => Effect.die(new ScriptError('Unexpected generation')),
+    rerank: () => Effect.die(new ScriptError('Unexpected reranking')),
   }),
 );
 
@@ -103,7 +104,7 @@ const program = Effect.scoped(
         const expectedUri = candidates[targetIndex]!.uri;
         if (scores?.size !== expectedSize || (scores.get(expectedUri) ?? -1) < 0.999) {
           return yield* Effect.fail(
-            new Error(
+            new ScriptError(
               `Vector benchmark returned ${scores?.size ?? 0}/${expectedSize} results without the exact target ${expectedUri}.`,
             ),
           );
@@ -209,40 +210,44 @@ const program = Effect.scoped(
       const scale = options.documents / DEFAULT_DOCUMENT_COUNT;
       const boundedScale = Math.max(1, scale);
       if (result.scenarios.semanticQuery.p95Milliseconds > boundedScale * 750) {
-        return yield* Effect.fail(new Error('Semantic vector query exceeded its linear scale budget.'));
+        return yield* Effect.fail(new ScriptError('Semantic vector query exceeded its linear scale budget.'));
       }
       if (result.scenarios.initialBuild.milliseconds > boundedScale * 15_000) {
-        return yield* Effect.fail(new Error('Initial vector build exceeded its linear scale budget.'));
+        return yield* Effect.fail(new ScriptError('Initial vector build exceeded its linear scale budget.'));
       }
       if (result.scenarios.incrementalBuild.milliseconds > boundedScale * 3_000) {
-        return yield* Effect.fail(new Error('Incremental vector build exceeded its linear scale budget.'));
+        return yield* Effect.fail(new ScriptError('Incremental vector build exceeded its linear scale budget.'));
       }
       if (result.scenarios.initialBuild.peakRssBytes > boundedScale * 768 * MEBIBYTE) {
-        return yield* Effect.fail(new Error('Initial vector build exceeded its bounded-memory budget.'));
+        return yield* Effect.fail(new ScriptError('Initial vector build exceeded its bounded-memory budget.'));
       }
       if (result.scenarios.incrementalBuild.peakRssBytes > boundedScale * 768 * MEBIBYTE) {
-        return yield* Effect.fail(new Error('Incremental vector build exceeded its bounded-memory budget.'));
+        return yield* Effect.fail(new ScriptError('Incremental vector build exceeded its bounded-memory budget.'));
       }
       if (result.scenarios.semanticQuery.rssDeltaBytes > 128 * MEBIBYTE) {
-        return yield* Effect.fail(new Error('Semantic vector query exceeded its bounded-memory budget.'));
+        return yield* Effect.fail(new ScriptError('Semantic vector query exceeded its bounded-memory budget.'));
       }
       if (!storageBudget.databaseBytesWithinBudget) {
-        return yield* Effect.fail(new Error('Vector database exceeded its per-document storage budget.'));
+        return yield* Effect.fail(new ScriptError('Vector database exceeded its per-document storage budget.'));
       }
       if (!storageBudget.incrementalCompactedBytesWithinBudget) {
-        return yield* Effect.fail(new Error('Incremental vector build caused unexpected compacted database growth.'));
+        return yield* Effect.fail(
+          new ScriptError('Incremental vector build caused unexpected compacted database growth.'),
+        );
       }
       if (incremental.embeddedChunkCount !== 1 || incremental.reusedChunkCount !== options.documents - 1) {
-        return yield* Effect.fail(new Error('Incremental vector build did not reuse all unchanged chunks.'));
+        return yield* Effect.fail(new ScriptError('Incremental vector build did not reuse all unchanged chunks.'));
       }
       if (storage.vectorValues !== options.documents || storage.chunkMappings !== options.documents) {
-        return yield* Effect.fail(new Error('Content-addressed vector storage duplicated unchanged vector values.'));
+        return yield* Effect.fail(
+          new ScriptError('Content-addressed vector storage duplicated unchanged vector values.'),
+        );
       }
     }
   }),
 );
 
-BunRuntime.runMain(program.pipe(Effect.provide(benchmarkLayer)));
+BunRuntime.runMain(provideScriptLayer(program, benchmarkLayer));
 
 function deterministicVector(dimensions: number, input: string): readonly number[] {
   const numeric = Number(/(\d+)(?!.*\d)/.exec(input)?.[1] ?? 0);
@@ -300,13 +305,13 @@ function parseOptions(arguments_: readonly string[]): {
     else if (argument === '--samples') samples = positiveInteger(arguments_[++index], '--samples');
     else if (argument === '--output') output = arguments_[++index];
     else if (argument === '--fail-on-budget') failOnBudget = true;
-    else throw new Error(`Unknown vector benchmark option: ${argument}`);
+    else throw new ScriptError(`Unknown vector benchmark option: ${argument}`);
   }
   return {...(output ? {output} : {}), documents, failOnBudget, samples};
 }
 
 function positiveInteger(value: string | undefined, option: string): number {
   const parsed = Number(value);
-  if (!Number.isSafeInteger(parsed) || parsed <= 0) throw new Error(`${option} requires a positive integer.`);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) throw new ScriptError(`${option} requires a positive integer.`);
   return parsed;
 }

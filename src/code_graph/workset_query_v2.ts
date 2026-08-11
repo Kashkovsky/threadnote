@@ -1,4 +1,3 @@
-// oxlint-disable effecttsgo/lazy-effect -- Injected functions construct fresh clock and routing effects per invocation.
 import {Clock, Effect, FileSystem} from 'effect';
 import {readSeedManifest, requireWorkset} from '../manifest.js';
 import type {ProjectManifest, RuntimeConfig} from '../types.js';
@@ -113,7 +112,7 @@ export interface CodeGraphWorksetQueryV2DependenciesV1<R = never> {
   readonly deepQuery: (
     repository: CodeGraphWorksetRouterRepositoryCandidateV1,
   ) => Effect.Effect<CodeGraphQueryResult, unknown, R>;
-  readonly nowMilliseconds: () => Effect.Effect<number, unknown, R>;
+  readonly nowMilliseconds: Effect.Effect<number, unknown, R>;
   readonly persist: (
     result: CodeGraphWorksetQueryResultV2,
     qualifiedRefs: readonly QualifiedCodeGraphRefV1[],
@@ -121,7 +120,7 @@ export interface CodeGraphWorksetQueryV2DependenciesV1<R = never> {
   readonly readBridgeExpansion: (
     router: CodeGraphWorksetRouterResultV1,
   ) => Effect.Effect<CodeGraphWorksetQueryBridgeExpansionV1, unknown, R>;
-  readonly route: () => Effect.Effect<CodeGraphWorksetRouterResultV1, unknown, R>;
+  readonly route: Effect.Effect<CodeGraphWorksetRouterResultV1, unknown, R>;
 }
 
 interface CodeGraphWorksetQueryV2TimingV1 {
@@ -166,13 +165,13 @@ export const runCodeGraphWorksetQueryV2Core = Effect.fn('codeGraphWorksetV2.runC
   timing: CodeGraphWorksetQueryV2TimingV1 = {},
 ) {
   const prepared = validateCoreInput(input);
-  const observedStarted = yield* dependencies.nowMilliseconds();
+  const observedStarted = yield* dependencies.nowMilliseconds;
   const requestedStarted = timing.startedAtMilliseconds;
   if (requestedStarted !== undefined && (!Number.isSafeInteger(requestedStarted) || requestedStarted < 0)) {
     throw new Error('The deadline clock origin is invalid.');
   }
   const started = Math.min(observedStarted, requestedStarted ?? observedStarted);
-  const catalogRouter = yield* dependencies.route();
+  const catalogRouter = yield* dependencies.route;
   validateRouterReceipt(prepared, catalogRouter);
   const bridgeExpansion = yield* dependencies.readBridgeExpansion(catalogRouter);
   const router = expandCodeGraphWorksetRouterWithBridges(catalogRouter, prepared.published, bridgeExpansion);
@@ -187,7 +186,7 @@ export const runCodeGraphWorksetQueryV2Core = Effect.fn('codeGraphWorksetV2.runC
   let stopReason: WorksetCoverageV2['stopReason'] = 'exhaustion';
 
   for (;;) {
-    const now = yield* dependencies.nowMilliseconds();
+    const now = yield* dependencies.nowMilliseconds;
     const remainingMilliseconds = Math.max(0, prepared.deadlineMilliseconds - Math.max(0, now - started));
     const expansion = selectCodeGraphWorksetAdaptiveExpansionBatch({
       alreadySelectedRepositoryKeys: selectedRepositoryKeys,
@@ -210,7 +209,7 @@ export const runCodeGraphWorksetQueryV2Core = Effect.fn('codeGraphWorksetV2.runC
           return Effect.succeed({repository, state: 'skipped' as const});
         }
         return Effect.gen(function* () {
-          const taskStarted = yield* dependencies.nowMilliseconds();
+          const taskStarted = yield* dependencies.nowMilliseconds;
           const taskRemaining = Math.max(0, prepared.deadlineMilliseconds - Math.max(0, taskStarted - started));
           if (taskRemaining === 0) return {repository, state: 'timed-out' as const};
           attemptedRepositoryKeys.add(repository.repositoryKey);
@@ -241,7 +240,7 @@ export const runCodeGraphWorksetQueryV2Core = Effect.fn('codeGraphWorksetV2.runC
       break;
     }
 
-    const afterBatch = yield* dependencies.nowMilliseconds();
+    const afterBatch = yield* dependencies.nowMilliseconds;
     if (Math.max(0, afterBatch - started) >= prepared.deadlineMilliseconds) {
       stopReason = 'deadline';
       break;
@@ -387,7 +386,7 @@ export const executeCodeGraphWorksetV2 = Effect.fn('codeGraphWorksetV2.execute')
           threadnoteHome: config.agentContextHome,
         });
       },
-      nowMilliseconds: () => Clock.currentTimeMillis,
+      nowMilliseconds: Clock.currentTimeMillis,
       persist: (result, qualifiedRefs) =>
         Effect.gen(function* () {
           yield* Effect.forEach(qualifiedRefs, ref => registerCodeGraphQualifiedRef(config.agentContextHome, ref), {
@@ -410,8 +409,7 @@ export const executeCodeGraphWorksetV2 = Effect.fn('codeGraphWorksetV2.execute')
             } satisfies CodeGraphWorksetQueryBridgeExpansionV1),
           ),
         ),
-      route: () =>
-        routeCodeGraphWorksetCatalogCandidates(source, {
+      route: routeCodeGraphWorksetCatalogCandidates(source, {
           limits: {repositoryLimit: Math.min(512, Math.max(64, runtime.input.members.length))},
           query: options.query,
           worksetName: runtime.input.worksetName,

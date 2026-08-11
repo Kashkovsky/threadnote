@@ -1,5 +1,7 @@
-import {access, readFile} from 'node:fs/promises';
-import {join} from 'node:path';
+import {TestError} from '../helpers/test-error.js';
+import {provideTestLayer} from '../helpers/effect-layer.js';
+import {access, readFile} from '../helpers/node-fs-promises.js';
+import {join} from '../helpers/node-path.js';
 import {expect, it} from '@effect/vitest';
 import {Effect, FileSystem, Path} from 'effect';
 import {describe} from 'vitest';
@@ -159,7 +161,7 @@ describe('Cursor plugin package', () => {
         expect(invalid).toMatchObject([{name: 'Cursor plugin', status: 'fail'}]);
         expect(invalid[0]?.detail).toContain('Cursor Marketplace');
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 });
 
@@ -174,6 +176,6 @@ async function pathExists(path: string): Promise<boolean> {
 
 function svgPathData(svg: string): string {
   const pathData = /<path\b[^>]*\bd="([^"]+)"/.exec(svg)?.[1];
-  if (!pathData) throw new Error('SVG does not contain a path with geometry data');
+  if (!pathData) throw new TestError('SVG does not contain a path with geometry data');
   return pathData;
 }

@@ -1,3 +1,4 @@
+import {provideTestLayer} from '../helpers/effect-layer.js';
 import {expect, it} from '@effect/vitest';
 import {Effect, FileSystem, Path} from 'effect';
 import {describe} from 'vitest';
@@ -52,7 +53,7 @@ describe('Threadnote storage layout migration', () => {
           action: 'already_current',
         });
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it.effect('removes ignored metadata and empty account scaffolds while migrating real beta data', () =>
@@ -82,7 +83,7 @@ describe('Threadnote storage layout migration', () => {
         expect(yield* fs.exists(path.join(home, 'data', 'local', '.DS_Store'))).toBe(false);
         expect(yield* fs.exists(path.join(home, 'data', 'viking', 'local', '.DS_Store'))).toBe(true);
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it.effect('does not hide a material account directory that shares a runtime-metadata filename', () =>
@@ -105,7 +106,7 @@ describe('Threadnote storage layout migration', () => {
         );
         expect(yield* fs.exists(source)).toBe(false);
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it.effect('accepts additive canonical writes that arrive after a source file moves', () =>
@@ -141,7 +142,7 @@ describe('Threadnote storage layout migration', () => {
         expect(yield* fs.readFileString(additive)).toBe('concurrent canonical memory');
         expect(yield* isThreadnoteStorageLayoutMigrationPending({home})).toBe(false);
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it.effect('keeps a late legacy write and resumes it instead of deleting the source tree', () =>
@@ -194,7 +195,7 @@ describe('Threadnote storage layout migration', () => {
         expect(yield* fs.exists(lateSource)).toBe(false);
         expect(yield* isThreadnoteStorageLayoutMigrationPending({home})).toBe(false);
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it.effect('flattens beta.1 accounts into data and records a resumable migration', () =>
@@ -223,7 +224,7 @@ describe('Threadnote storage layout migration', () => {
         expect(yield* fs.exists(path.join(home, 'migration', `${STORAGE_LAYOUT_MIGRATION_ID}.json`))).toBe(true);
         expect(yield* isThreadnoteStorageLayoutMigrationPending({home})).toBe(false);
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it.effect('refuses an account collision without moving either tree', () =>
@@ -244,7 +245,7 @@ describe('Threadnote storage layout migration', () => {
         expect(yield* fs.readFileString(source)).toBe('source');
         expect(yield* fs.readFileString(target)).toBe('target');
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it.effect('merges disjoint beta.1 and canonical account contents', () =>
@@ -268,7 +269,7 @@ describe('Threadnote storage layout migration', () => {
         expect(yield* fs.readFileString(target)).toBe('legacy memory');
         expect(yield* fs.exists(source)).toBe(false);
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it.effect('recovers beta.1 data even when repair already wrote the current layout marker', () =>
@@ -291,7 +292,7 @@ describe('Threadnote storage layout migration', () => {
         expect(yield* fs.exists(source)).toBe(false);
         expect(yield* isThreadnoteStorageLayoutMigrationPending({home})).toBe(false);
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it.effect('resumes a pending receipt even when the current layout marker already exists', () =>
@@ -327,7 +328,7 @@ describe('Threadnote storage layout migration', () => {
         expect(yield* fs.readFileString(target)).toBe('already moved');
         expect(yield* isThreadnoteStorageLayoutMigrationPending({home})).toBe(false);
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it.effect('upgrades an old pending receipt whose target digest included OS metadata', () =>
@@ -374,7 +375,7 @@ describe('Threadnote storage layout migration', () => {
         expect(receipt.accounts[0]?.treeSha256).toBe(filteredTreeSha256);
         expect(yield* fs.readFileString(metadata)).toBe(metadataContent);
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it.effect('rejects a source-absent resume when the canonical target does not match its receipt', () =>
@@ -406,7 +407,7 @@ describe('Threadnote storage layout migration', () => {
         ).toBe('pending');
         expect(yield* isThreadnoteStorageLayoutMigrationPending({home})).toBe(true);
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it.effect('rejects an empty residual source scaffold when its canonical target is incomplete', () =>
@@ -438,7 +439,7 @@ describe('Threadnote storage layout migration', () => {
         expect(receipt.status).toBe('pending');
         expect(yield* isThreadnoteStorageLayoutMigrationPending({home})).toBe(true);
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it.effect('reports and repairs a missing or stale layout marker from a completed receipt', () =>
@@ -482,7 +483,7 @@ describe('Threadnote storage layout migration', () => {
           expect(yield* isThreadnoteStorageLayoutMigrationPending({home})).toBe(false);
         }
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it.effect('rejects a symbolic-link legacy root before eligibility or apply can traverse it', () =>
@@ -508,7 +509,7 @@ describe('Threadnote storage layout migration', () => {
         expect(yield* fs.readFileString(externalMemory)).toBe('must remain external');
         expect(yield* fs.exists(path.join(home, 'data', 'local'))).toBe(false);
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it.effect('rejects a symbolic-link data parent before eligibility or apply can reach external beta data', () =>
@@ -533,7 +534,7 @@ describe('Threadnote storage layout migration', () => {
         expect(yield* fs.readFileString(externalMemory)).toBe('must remain external');
         expect(yield* fs.exists(path.join(externalData, 'local'))).toBe(false);
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it.effect('rejects a non-directory legacy root before eligibility or apply can traverse it', () =>
@@ -552,6 +553,6 @@ describe('Threadnote storage layout migration', () => {
         expect(apply).toBeInstanceOf(StorageLayoutMigrationConflict);
         expect(yield* fs.readFileString(legacyRoot)).toBe('not a directory');
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 });

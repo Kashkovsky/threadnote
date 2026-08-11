@@ -1,5 +1,9 @@
 import {Effect, Exit, FileSystem, Path, Scope, Stream} from 'effect';
 
+class ArchiveOperationError extends Error {
+  readonly _tag = 'ArchiveOperationError' as const;
+}
+
 const TAR_BLOCK_BYTES = 512;
 const MAX_COMPRESSED_ARCHIVE_BYTES = 1024 * 1024 * 1024;
 const MAX_EXPANDED_ARCHIVE_BYTES = 4 * 1024 * 1024 * 1024;
@@ -36,7 +40,7 @@ export const extractGzipTar = Effect.fn('archive.extractGzipTar')(function* (
       const archiveInfo = yield* fs.stat(archivePath);
       if (Number(archiveInfo.size) > MAX_COMPRESSED_ARCHIVE_BYTES) {
         return yield* Effect.fail(
-          new Error(`Release archive exceeds ${MAX_COMPRESSED_ARCHIVE_BYTES} compressed bytes.`),
+          new ArchiveOperationError(`Release archive exceeds ${MAX_COMPRESSED_ARCHIVE_BYTES} compressed bytes.`),
         );
       }
       const limits: Required<ArchiveExtractionLimits> = {
@@ -50,26 +54,33 @@ export const extractGzipTar = Effect.fn('archive.extractGzipTar')(function* (
       const parser = createTarStreamParser(fs, path, parentScope, destination, limits);
       const decompressed = Stream.fromReadableStream({
         evaluate: () => Bun.file(archivePath).stream().pipeThrough(new DecompressionStream('gzip')),
-        onError: cause => new Error(`Could not decompress ${archivePath}.`, {cause}),
+        onError: cause => new ArchiveOperationError(`Could not decompress ${archivePath}.`, {cause}),
       });
       let decompressedBytes = 0;
       yield* decompressed.pipe(
         Stream.runForEach(chunk =>
           Effect.gen(function* () {
             if (chunk.length > MAX_DECOMPRESSED_CHUNK_BYTES) {
-              return yield* Effect.fail(new Error(`Release archive emitted an oversized ${chunk.length}-byte chunk.`));
+              return yield* Effect.fail(
+                new ArchiveOperationError(`Release archive emitted an oversized ${chunk.length}-byte chunk.`),
+              );
             }
             decompressedBytes += chunk.length;
             if (decompressedBytes > limits.decompressedBytes) {
               return yield* Effect.fail(
-                new Error(`Release archive exceeds ${limits.decompressedBytes} decompressed tar bytes.`),
+                new ArchiveOperationError(
+                  `Release archive exceeds ${limits.decompressedBytes} decompressed tar bytes.`,
+                ),
               );
             }
             yield* parser.write(chunk);
           }),
         ),
         Effect.andThen(parser.complete()),
-        Effect.mapError(cause => new Error(`Could not extract ${archivePath}: ${archiveCauseMessage(cause)}`, {cause})),
+        Effect.mapError(
+          cause =>
+            new ArchiveOperationError(`Could not extract ${archivePath}: ${archiveCauseMessage(cause)}`, {cause}),
+        ),
       );
     }),
   );
@@ -109,11 +120,13 @@ function createTarStreamParser(
     while (buffer.length > 0) {
       if (ended) {
         if (!buffer.every(byte => byte === 0)) {
-          return yield* Effect.fail(new Error('Release archive contains data after its end marker.'));
+          return yield* Effect.fail(new ArchiveOperationError('Release archive contains data after its end marker.'));
         }
         endPaddingBytes += buffer.length;
         if (endPaddingBytes > limits.endPaddingBytes) {
-          return yield* Effect.fail(new Error(`Release archive exceeds ${limits.endPaddingBytes} end-padding bytes.`));
+          return yield* Effect.fail(
+            new ArchiveOperationError(`Release archive exceeds ${limits.endPaddingBytes} end-padding bytes.`),
+          );
         }
         buffer = new Uint8Array();
         return;
@@ -163,16 +176,20 @@ function createTarStreamParser(
       }
       entryCount += 1;
       if (entryCount > limits.entries) {
-        return yield* Effect.fail(new Error(`Release archive exceeds ${limits.entries} tar entries.`));
+        return yield* Effect.fail(new ArchiveOperationError(`Release archive exceeds ${limits.entries} tar entries.`));
       }
       const entry = yield* attemptArchiveParse(() => parseTarHeader(header));
       expandedBytes += entry.size;
       if (expandedBytes > limits.expandedBytes) {
-        return yield* Effect.fail(new Error(`Release archive exceeds ${limits.expandedBytes} expanded bytes.`));
+        return yield* Effect.fail(
+          new ArchiveOperationError(`Release archive exceeds ${limits.expandedBytes} expanded bytes.`),
+        );
       }
       if (entry.type === 'globalPax' || entry.type === 'longPath' || entry.type === 'pax') {
         if (entry.size > MAX_TAR_METADATA_BYTES) {
-          return yield* Effect.fail(new Error(`Release archive tar metadata exceeds ${MAX_TAR_METADATA_BYTES} bytes.`));
+          return yield* Effect.fail(
+            new ArchiveOperationError(`Release archive tar metadata exceeds ${MAX_TAR_METADATA_BYTES} bytes.`),
+          );
         }
         file = {
           chunks: [],
@@ -198,7 +215,9 @@ function createTarStreamParser(
           : yield* attemptArchiveParse(() => parsePaxSize(effectivePax.size!));
       expandedBytes += effectiveSize - entry.size;
       if (expandedBytes > limits.expandedBytes) {
-        return yield* Effect.fail(new Error(`Release archive exceeds ${limits.expandedBytes} expanded bytes.`));
+        return yield* Effect.fail(
+          new ArchiveOperationError(`Release archive exceeds ${limits.expandedBytes} expanded bytes.`),
+        );
       }
       nextLongPath = undefined;
       nextPax = undefined;
@@ -238,10 +257,12 @@ function createTarStreamParser(
 
   const complete = Effect.fn('archive.tarParser.complete')(function* () {
     if (!ended || file || paddingRemaining !== 0 || buffer.length !== 0) {
-      return yield* Effect.fail(new Error('Release archive ended before a complete tar end marker.'));
+      return yield* Effect.fail(new ArchiveOperationError('Release archive ended before a complete tar end marker.'));
     }
     if (nextLongPath !== undefined || nextPax !== undefined) {
-      return yield* Effect.fail(new Error('Release archive ended after metadata without a target entry.'));
+      return yield* Effect.fail(
+        new ArchiveOperationError('Release archive ended after metadata without a target entry.'),
+      );
     }
   });
 
@@ -252,14 +273,17 @@ function validateExtractionLimits(limits: Required<ArchiveExtractionLimits>) {
   return Effect.forEach(Object.entries(limits), ([name, value]) =>
     Number.isSafeInteger(value) && value > 0
       ? Effect.void
-      : Effect.fail(new Error(`Archive extraction limit ${name} must be a positive safe integer.`)),
+      : Effect.fail(new ArchiveOperationError(`Archive extraction limit ${name} must be a positive safe integer.`)),
   ).pipe(Effect.asVoid);
 }
 
 function attemptArchiveParse<A>(parse: () => A) {
   return Effect.try({
     try: parse,
-    catch: cause => (cause instanceof Error ? cause : new Error(String(cause))),
+    catch: cause =>
+      cause instanceof ArchiveOperationError
+        ? cause
+        : new ArchiveOperationError(cause instanceof Error ? cause.message : String(cause), {cause}),
   });
 }
 
@@ -270,13 +294,14 @@ function archiveCauseMessage(cause: unknown): string {
 function parseTarHeader(header: Uint8Array<ArrayBufferLike>): TarEntry {
   const expectedChecksum = parseTarNumber(header.slice(148, 156), 'checksum');
   const checksum = header.reduce((total, byte, index) => total + (index >= 148 && index < 156 ? 0x20 : byte), 0);
-  if (checksum !== expectedChecksum) throw new Error('Release archive contains an invalid tar header checksum.');
+  if (checksum !== expectedChecksum)
+    throw new ArchiveOperationError('Release archive contains an invalid tar header checksum.');
   const name = tarText(header.slice(0, 100));
   const prefix = tarText(header.slice(345, 500));
   const entryPath = prefix ? `${prefix}/${name}` : name;
   const type = String.fromCharCode(header[156] ?? 0);
   if (type !== '\0' && type !== '0' && type !== '5' && type !== 'g' && type !== 'L' && type !== 'x') {
-    throw new Error(`Release archive contains unsupported tar entry type ${JSON.stringify(type)}.`);
+    throw new ArchiveOperationError(`Release archive contains unsupported tar entry type ${JSON.stringify(type)}.`);
   }
   return {
     mode: parseTarNumber(header.slice(100, 108), 'mode') & 0o777,
@@ -300,17 +325,18 @@ function parsePaxMetadata(bytes: Uint8Array<ArrayBufferLike>): Readonly<Record<s
   let offset = 0;
   while (offset < bytes.length) {
     const separator = bytes.indexOf(0x20, offset);
-    if (separator < 0) throw new Error('Release archive contains malformed PAX metadata length.');
+    if (separator < 0) throw new ArchiveOperationError('Release archive contains malformed PAX metadata length.');
     const lengthText = new TextDecoder().decode(bytes.slice(offset, separator));
-    if (!/^[1-9][0-9]*$/.test(lengthText)) throw new Error('Release archive contains an invalid PAX record length.');
+    if (!/^[1-9][0-9]*$/.test(lengthText))
+      throw new ArchiveOperationError('Release archive contains an invalid PAX record length.');
     const length = Number.parseInt(lengthText, 10);
     const end = offset + length;
     if (!Number.isSafeInteger(length) || end > bytes.length || bytes[end - 1] !== 0x0a) {
-      throw new Error('Release archive contains a truncated PAX metadata record.');
+      throw new ArchiveOperationError('Release archive contains a truncated PAX metadata record.');
     }
     const record = new TextDecoder().decode(bytes.slice(separator + 1, end - 1));
     const equals = record.indexOf('=');
-    if (equals <= 0) throw new Error('Release archive contains malformed PAX metadata.');
+    if (equals <= 0) throw new ArchiveOperationError('Release archive contains malformed PAX metadata.');
     metadata[record.slice(0, equals)] = record.slice(equals + 1);
     offset = end;
   }
@@ -330,9 +356,11 @@ function mergePaxMetadata(
 }
 
 function parsePaxSize(value: string): number {
-  if (!/^(?:0|[1-9][0-9]*)$/.test(value)) throw new Error('Release archive contains an invalid PAX size.');
+  if (!/^(?:0|[1-9][0-9]*)$/.test(value))
+    throw new ArchiveOperationError('Release archive contains an invalid PAX size.');
   const size = Number.parseInt(value, 10);
-  if (!Number.isSafeInteger(size) || size < 0) throw new Error('Release archive contains an invalid PAX size.');
+  if (!Number.isSafeInteger(size) || size < 0)
+    throw new ArchiveOperationError('Release archive contains an invalid PAX size.');
   return size;
 }
 
@@ -348,16 +376,16 @@ function safeArchivePath(path: Path.Path, destination: string, entry: string): s
     .replace(/^\.\/+/, '')
     .replace(/\/+$/, '');
   if (!normalized || normalized.startsWith('/') || /^[A-Za-z]:\//.test(normalized)) {
-    throw new Error(`Release archive contains an unsafe path: ${entry}`);
+    throw new ArchiveOperationError(`Release archive contains an unsafe path: ${entry}`);
   }
   const segments = normalized.split('/');
   if (segments.some(segment => !segment || segment === '.' || segment === '..')) {
-    throw new Error(`Release archive contains an unsafe path: ${entry}`);
+    throw new ArchiveOperationError(`Release archive contains an unsafe path: ${entry}`);
   }
   const root = path.resolve(destination);
   const resolved = path.resolve(root, ...segments);
   if (resolved !== root && !resolved.startsWith(`${root}${path.sep}`)) {
-    throw new Error(`Release archive path escapes its destination: ${entry}`);
+    throw new ArchiveOperationError(`Release archive path escapes its destination: ${entry}`);
   }
   return resolved;
 }
@@ -368,9 +396,10 @@ function isArchiveRootPath(entry: string): boolean {
 
 function parseTarNumber(bytes: Uint8Array<ArrayBufferLike>, field: string): number {
   const text = tarText(bytes).trim();
-  if (!/^[0-7]+$/.test(text)) throw new Error(`Release archive has an invalid tar ${field}.`);
+  if (!/^[0-7]+$/.test(text)) throw new ArchiveOperationError(`Release archive has an invalid tar ${field}.`);
   const value = Number.parseInt(text, 8);
-  if (!Number.isSafeInteger(value) || value < 0) throw new Error(`Release archive has an invalid tar ${field}.`);
+  if (!Number.isSafeInteger(value) || value < 0)
+    throw new ArchiveOperationError(`Release archive has an invalid tar ${field}.`);
   return value;
 }
 

@@ -1,3 +1,4 @@
+import {provideTestLayer} from './effect-layer.js';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {Crypto, Effect, FileSystem, Layer, Path} from 'effect';
 import {codeGraphPersistentCapacityDemand} from '../../src/code_graph/disk_capacity.js';
@@ -134,7 +135,7 @@ const program = Effect.gen(function* () {
       : store.cacheMaterializedFileShards(databasePath, [file], [facts], EXTRACTOR_SET, DERIVATION_IDENTITY, protector);
   yield* store.withSession(databasePath, cache, {writerLockPath});
   process.stdout.write(`${JSON.stringify({event: 'complete', processId: process.pid})}\n`);
-}).pipe(Effect.provide(childLayer));
+}).pipe(provideTestLayer(childLayer));
 
 Effect.runPromise(program).catch(cause => {
   process.stderr.write(`cache-capacity child failed: ${cause instanceof Error ? cause.name : 'unknown'}\n`);

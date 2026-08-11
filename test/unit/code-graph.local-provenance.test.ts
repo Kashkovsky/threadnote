@@ -1,4 +1,5 @@
-import {execFileSync} from 'node:child_process';
+import {TestError} from '../helpers/test-error.js';
+import {execFileSync} from '../helpers/node-child-process.js';
 import {
   chmodSync,
   existsSync,
@@ -14,9 +15,9 @@ import {
   symlinkSync,
   unlinkSync,
   writeFileSync,
-} from 'node:fs';
-import {homedir, tmpdir} from 'node:os';
-import {basename, dirname, join, sep} from 'node:path';
+} from '../helpers/node-fs.js';
+import {homedir, tmpdir} from '../helpers/node-os.js';
+import {basename, dirname, join, sep} from '../helpers/node-path.js';
 import {afterEach} from 'vitest';
 import {describe, expect, it} from '@effect/vitest';
 import {Effect, FileSystem, Option, PlatformError} from 'effect';
@@ -94,7 +95,7 @@ describe('code graph private local provenance', () => {
     await runEffect(recordVerifiedCodeGraphLocalAssociation(fixture.home, fixture.identity));
     const current = readRecord(fixture.sidecar);
     expect(current.schemaVersion).toBe(2);
-    if (current.schemaVersion !== 2) throw new Error('fixture did not publish v2 provenance');
+    if (current.schemaVersion !== 2) throw new TestError('fixture did not publish v2 provenance');
     const {registration: _registration, ...base} = current;
     writeFileSync(fixture.sidecar, `${JSON.stringify({...base, schemaVersion: 1})}\n`, {mode: 0o600});
     const legacyInode = statSync(fixture.sidecar).ino;
@@ -314,7 +315,8 @@ describe('code graph private local provenance', () => {
         const command = yield* CommandExecutor;
         const query = yield* CodeGraphQueryService;
         const executeBytes = command.executeBytes;
-        if (executeBytes === undefined) return yield* Effect.fail(new Error('binary command adapter is unavailable'));
+        if (executeBytes === undefined)
+          return yield* Effect.fail(new TestError('binary command adapter is unavailable'));
         const mutableCommand = command as {
           execute: typeof command.execute;
           executeBytes: typeof executeBytes;

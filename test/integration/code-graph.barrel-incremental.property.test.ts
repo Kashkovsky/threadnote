@@ -1,3 +1,4 @@
+import {provideTestLayer} from '../helpers/effect-layer.js';
 import {describe, expect, it} from '@effect/vitest';
 import {Effect, FileSystem, Path} from 'effect';
 import * as FC from 'effect/testing/FastCheck';
@@ -121,7 +122,7 @@ describe('code graph incremental barrel differential properties', () => {
           );
           expect(resolvedArities).toEqual(new Set(scenario.dirtyArities));
         }),
-      ).pipe(Effect.provide(ApplicationLayer)),
+      ).pipe(provideTestLayer(ApplicationLayer)),
     {
       fastCheck: {interruptAfterTimeLimit: 180_000, markInterruptAsFailure: true, numRuns: 6},
       timeout: 190_000,

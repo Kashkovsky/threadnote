@@ -1,6 +1,6 @@
-import {chmod, mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises';
-import {tmpdir} from 'node:os';
-import {delimiter, join} from 'node:path';
+import {chmod, mkdir, mkdtemp, readFile, rm, writeFile} from '../helpers/node-fs-promises.js';
+import {tmpdir} from '../helpers/node-os.js';
+import {delimiter, join} from '../helpers/node-path.js';
 import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {StdioClientTransport} from '@modelcontextprotocol/sdk/client/stdio.js';
 import {describe, expect, it} from 'vitest';

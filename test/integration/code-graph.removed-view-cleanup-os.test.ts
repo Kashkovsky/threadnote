@@ -1,3 +1,5 @@
+import {TestError} from '../helpers/test-error.js';
+import {provideTestLayer} from '../helpers/effect-layer.js';
 import {it as effectIt} from '@effect/vitest';
 import {Database} from 'bun:sqlite';
 import {Deferred, Effect, Fiber, FileSystem, Path} from 'effect';
@@ -93,7 +95,7 @@ describe('removed code graph view cleanup OS crash coordination', () => {
             );
           }),
         ),
-      ).pipe(Effect.provide(ApplicationLayer)),
+      ).pipe(provideTestLayer(ApplicationLayer)),
     30_000,
   );
 
@@ -121,7 +123,7 @@ describe('removed code graph view cleanup OS crash coordination', () => {
           expect(claimed.map(entry => entry.revision)).toEqual(Array(32).fill(1));
         }),
       ),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 });
 
@@ -192,7 +194,7 @@ function startCleanupChild(databasePath: string, now: number, markerPath: string
 function terminateCleanupChild(child: CleanupChildProcess): Effect.Effect<void, never> {
   return Effect.gen(function* () {
     if (child.exitCode === null) child.kill('SIGKILL');
-    yield* Effect.promise(() => child.exited).pipe(Effect.catch(() => Effect.void));
+    yield* Effect.promise(() => child.exited);
   });
 }
 
@@ -200,7 +202,7 @@ function waitForMarker(fs: FileSystem.FileSystem, markerPath: string) {
   return Effect.gen(function* () {
     const deadline = Date.now() + 15_000;
     while (!(yield* fs.exists(markerPath))) {
-      if (Date.now() >= deadline) return yield* Effect.fail(new Error('Cleanup child missed its commit marker.'));
+      if (Date.now() >= deadline) return yield* Effect.fail(new TestError('Cleanup child missed its commit marker.'));
       yield* Effect.sleep(10);
     }
   });
@@ -211,7 +213,7 @@ function readMarker(fs: FileSystem.FileSystem, markerPath: string) {
     Effect.flatMap(content =>
       Effect.try({
         try: () => JSON.parse(content) as CleanupChildMarker,
-        catch: cause => new Error('Cleanup child marker was invalid.', {cause}),
+        catch: cause => new TestError('Cleanup child marker was invalid.', {cause}),
       }),
     ),
     Effect.filterOrFail(
@@ -222,7 +224,7 @@ function readMarker(fs: FileSystem.FileSystem, markerPath: string) {
         marker.revisions.length === 32 &&
         marker.worktreeIds.every(value => /^[0-9a-f]{64}$/u.test(value)) &&
         marker.revisions.every(value => Number.isSafeInteger(value)),
-      () => new Error('Cleanup child marker shape was invalid.'),
+      () => new TestError('Cleanup child marker shape was invalid.'),
     ),
   );
 }

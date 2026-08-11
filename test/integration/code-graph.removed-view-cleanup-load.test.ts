@@ -1,5 +1,7 @@
-import {createHash} from 'node:crypto';
-import {existsSync, statSync} from 'node:fs';
+import {TestError} from '../helpers/test-error.js';
+import {provideTestLayer} from '../helpers/effect-layer.js';
+import {createHash} from '../helpers/node-crypto.js';
+import {existsSync, statSync} from '../helpers/node-fs.js';
 import {it as effectIt} from '@effect/vitest';
 import {Database} from 'bun:sqlite';
 import {Effect, FileSystem, Path} from 'effect';
@@ -95,7 +97,7 @@ describe('removed code graph view cleanup load and migration', () => {
             });
           }),
         ),
-      ).pipe(Effect.provide(ApplicationLayer)),
+      ).pipe(provideTestLayer(ApplicationLayer)),
     120_000,
   );
 
@@ -124,7 +126,7 @@ describe('removed code graph view cleanup load and migration', () => {
                 claimed[0]?.worktreeId !== worktreeId(index) ||
                 claimed[0].epoch !== index + 1
               ) {
-                throw new Error(`Cleanup admission diverged at bounded row ${index}.`);
+                throw new TestError(`Cleanup admission diverged at bounded row ${index}.`);
               }
             }
             const surface = readCleanupSurface(databasePath);
@@ -154,7 +156,7 @@ describe('removed code graph view cleanup load and migration', () => {
             });
           }),
         ),
-      ).pipe(Effect.provide(ApplicationLayer)),
+      ).pipe(provideTestLayer(ApplicationLayer)),
     600_000,
   );
 
@@ -200,7 +202,7 @@ describe('removed code graph view cleanup load and migration', () => {
               ),
               {onPersistentSchemaMigrationPhase: phase => Effect.sync(() => phases.push(phase))},
             );
-            if (committedEvidence === undefined) throw new Error('Cleanup migration evidence was not retained.');
+            if (committedEvidence === undefined) throw new TestError('Cleanup migration evidence was not retained.');
             const mainGrowthBytes = Math.max(0, committedEvidence.databaseBytes - baselineMainBytes);
             const walGrowthBytes = Math.max(0, committedEvidence.walBytes - baselineWalBytes);
             const sharedGrowthBytes = Math.max(
@@ -265,7 +267,7 @@ describe('removed code graph view cleanup load and migration', () => {
             });
           }),
         ),
-      ).pipe(Effect.provide(ApplicationLayer)),
+      ).pipe(provideTestLayer(ApplicationLayer)),
     120_000,
   );
 
@@ -289,7 +291,7 @@ describe('removed code graph view cleanup load and migration', () => {
           }
         }),
       ),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 });
 

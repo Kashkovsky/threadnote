@@ -1,3 +1,5 @@
+import {TestError} from '../helpers/test-error.js';
+import {provideTestLayer} from '../helpers/effect-layer.js';
 import {it as effectIt} from '@effect/vitest';
 import {Effect, FileSystem, PlatformError} from 'effect';
 import {afterEach, describe, expect} from 'vitest';
@@ -84,16 +86,16 @@ describe('all-code-graph diagnostics', () => {
         expect.objectContaining({action: 'retry-observation', disposition: 'observe', state: 'unreadable-store'}),
       );
       const ordinaryStorage = report.databases.find(database => database.checkoutId === healthyCheckoutId)?.storage;
-      if (ordinaryStorage?.state !== 'available') throw new Error('missing ordinary storage diagnostics');
+      if (ordinaryStorage?.state !== 'available') throw new TestError('missing ordinary storage diagnostics');
       expect(ordinaryStorage.pageStorage).not.toHaveProperty('attribution');
       expect(JSON.stringify(report)).not.toContain(home);
       expect(renderCodeGraphDiagnostics(report)).toContain('Native code graph diagnostics');
 
       const deepReport = yield* inspectAllCodeGraphs(home, {deep: true});
       const deepStorage = deepReport.databases.find(database => database.checkoutId === healthyCheckoutId)?.storage;
-      if (deepStorage?.state !== 'available') throw new Error('missing deep storage diagnostics');
+      if (deepStorage?.state !== 'available') throw new TestError('missing deep storage diagnostics');
       expect(deepStorage.pageStorage).toMatchObject({state: 'available'});
-      if (deepStorage.pageStorage.state !== 'available') throw new Error('missing deep page diagnostics');
+      if (deepStorage.pageStorage.state !== 'available') throw new TestError('missing deep page diagnostics');
       expect(deepStorage.pageStorage.attribution).toBeDefined();
       expect(['available', 'unavailable']).toContain(deepStorage.pageStorage.attribution?.state);
       expect(JSON.stringify(deepReport)).not.toContain(home);
@@ -121,7 +123,7 @@ describe('all-code-graph diagnostics', () => {
           },
         ],
       });
-    }).pipe(Effect.provide(ApplicationLayer)),
+    }).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect(
@@ -247,7 +249,7 @@ describe('all-code-graph diagnostics', () => {
         const humanOutput = yield* captureConsole(runCodeGraphDiagnostics(config, {}));
         expect(humanOutput.output).toContain(`Folder: ${identity.repoRoot} · verified`);
         yield* releaseManagerGraphSnapshotLeases();
-      }).pipe(Effect.provide(ApplicationLayer)),
+      }).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('advances missing-view reconciliation through the live Manager status poll', () =>
@@ -327,7 +329,7 @@ describe('all-code-graph diagnostics', () => {
       expect(refreshed.summary.viewCount).toBe(1);
       expect(refreshed.databases[0]?.views[0]?.viewWorktreeId).toBe(mainIdentity.worktreeId);
       yield* releaseManagerGraphSnapshotLeases();
-    }).pipe(Effect.provide(ApplicationLayer)),
+    }).pipe(provideTestLayer(ApplicationLayer)),
   );
 });
 
@@ -382,6 +384,6 @@ function readySnapshot(identity: RepositoryIdentity, id = 'd'): CodeGraphSnapsho
     worktreeId: identity.worktreeId,
   };
 }
-import {execFileSync} from 'node:child_process';
-import {mkdtempSync} from 'node:fs';
-import {tmpdir} from 'node:os';
+import {execFileSync} from '../helpers/node-child-process.js';
+import {mkdtempSync} from '../helpers/node-fs.js';
+import {tmpdir} from '../helpers/node-os.js';

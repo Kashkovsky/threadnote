@@ -1,5 +1,9 @@
+import {it as effectIt} from '@effect/vitest';
+import {TestError} from '../helpers/test-error.js';
+import {provideTestLayer} from '../helpers/effect-layer.js';
 import {Effect, FileSystem, Path} from 'effect';
-import {describe, expect, it} from 'vitest';
+import {TestClock} from 'effect/testing';
+import {describe, expect} from 'vitest';
 import {SystemInfo, type SystemInfoShape} from '../../src/effect/system.js';
 import {
   activateStandaloneRelease,
@@ -17,11 +21,11 @@ import {
 } from '../../src/standalone_process_lease.js';
 
 describe('standalone release lifecycle', () => {
-  it.skipIf(process.platform === 'win32')(
+  effectIt.effect.skipIf(process.platform === 'win32')(
     'rejects release-directory symlinks during lifecycle validation',
-    async () => {
-      const validated = await Effect.runPromise(
-        Effect.scoped(
+    () =>
+      Effect.gen(function* () {
+        const validated = yield* Effect.scoped(
           Effect.gen(function* () {
             const fs = yield* FileSystem.FileSystem;
             const path = yield* Path.Path;
@@ -38,16 +42,15 @@ describe('standalone release lifecycle', () => {
             yield* fs.symlink(outsideRelease, linkedRelease);
             return yield* readValidatedRelease(fs, path, linkedRelease, installRoot);
           }),
-        ).pipe(Effect.provide(ApplicationLayer)),
-      );
+        ).pipe(provideTestLayer(ApplicationLayer));
 
-      expect(validated).toBeUndefined();
-    },
+        expect(validated).toBeUndefined();
+      }),
   );
 
-  it('tracks the active release and retains only it plus the running rollback version', async () => {
-    const result = await Effect.runPromise(
-      Effect.scoped(
+  effectIt.effect('tracks the active release and retains only it plus the running rollback version', () =>
+    Effect.gen(function* () {
+      const result = yield* Effect.scoped(
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
@@ -84,20 +87,20 @@ describe('standalone release lifecycle', () => {
             activeExists: yield* fs.exists(activeRelease),
           };
         }),
-      ).pipe(Effect.provide(ApplicationLayer)),
-    );
+      ).pipe(provideTestLayer(ApplicationLayer));
 
-    expect(result).toEqual({
-      activeExists: true,
-      activeVersion: '4.0.2',
-      oldestExists: false,
-      rollbackExists: true,
-    });
-  });
+      expect(result).toEqual({
+        activeExists: true,
+        activeVersion: '4.0.2',
+        oldestExists: false,
+        rollbackExists: true,
+      });
+    }),
+  );
 
-  it('retains a superseded release while a live MCP or CLI process leases it', async () => {
-    const result = await Effect.runPromise(
-      Effect.scoped(
+  effectIt.effect('retains a superseded release while a live MCP or CLI process leases it', () =>
+    Effect.gen(function* () {
+      const result = yield* Effect.scoped(
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
@@ -135,19 +138,19 @@ describe('standalone release lifecycle', () => {
             runningExists: yield* fs.exists(path.join(versionsRoot, '4.0.1')),
           };
         }),
-      ).pipe(Effect.provide(ApplicationLayer)),
-    );
+      ).pipe(provideTestLayer(ApplicationLayer));
 
-    expect(result).toEqual({
-      activeExists: true,
-      leasedExists: true,
-      runningExists: true,
-    });
-  });
+      expect(result).toEqual({
+        activeExists: true,
+        leasedExists: true,
+        runningExists: true,
+      });
+    }),
+  );
 
-  it('discards a lease when its process ID has been reused by another process', async () => {
-    const result = await Effect.runPromise(
-      Effect.scoped(
+  effectIt.effect('discards a lease when its process ID has been reused by another process', () =>
+    Effect.gen(function* () {
+      const result = yield* Effect.scoped(
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
@@ -190,18 +193,18 @@ describe('standalone release lifecycle', () => {
             staleReleaseExists: yield* fs.exists(path.join(versionsRoot, '4.0.0')),
           };
         }),
-      ).pipe(Effect.provide(ApplicationLayer)),
-    );
+      ).pipe(provideTestLayer(ApplicationLayer));
 
-    expect(result).toEqual({
-      leaseExists: false,
-      staleReleaseExists: false,
-    });
-  });
+      expect(result).toEqual({
+        leaseExists: false,
+        staleReleaseExists: false,
+      });
+    }),
+  );
 
-  it('serializes concurrent installation mutations', async () => {
-    const maximumActive = await Effect.runPromise(
-      Effect.scoped(
+  effectIt.effect('serializes concurrent installation mutations', () =>
+    Effect.gen(function* () {
+      const maximumActive = yield* Effect.scoped(
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
@@ -231,15 +234,15 @@ describe('standalone release lifecycle', () => {
           yield* Effect.all([mutation, mutation, mutation], {concurrency: 3});
           return maximum;
         }),
-      ).pipe(Effect.provide(ApplicationLayer)),
-    );
+      ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive);
 
-    expect(maximumActive).toBe(1);
-  });
+      expect(maximumActive).toBe(1);
+    }),
+  );
 
-  it('recovers an interrupted active-pointer backup before the next activation', async () => {
-    const result = await Effect.runPromise(
-      Effect.scoped(
+  effectIt.effect('recovers an interrupted active-pointer backup before the next activation', () =>
+    Effect.gen(function* () {
+      const result = yield* Effect.scoped(
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
@@ -254,7 +257,7 @@ describe('standalone release lifecycle', () => {
           const interrupted = yield* activateStandaloneRelease(newRelease, false, {
             afterStep: step =>
               step === 'active-previous-backed-up'
-                ? Effect.fail(new Error('simulated active pointer crash'))
+                ? Effect.fail(new TestError('simulated active pointer crash'))
                 : Effect.void,
           }).pipe(Effect.provideService(SystemInfo, testSystem), Effect.flip);
           const activeMissingAfterCrash = !(yield* fs.exists(path.join(installRoot, 'active-release.json')));
@@ -270,21 +273,21 @@ describe('standalone release lifecycle', () => {
             journalExists: yield* fs.exists(path.join(installRoot, 'active-release.promotion.json')),
           };
         }),
-      ).pipe(Effect.provide(ApplicationLayer)),
-    );
+      ).pipe(provideTestLayer(ApplicationLayer));
 
-    expect(result).toMatchObject({
-      active: {version: '4.0.2'},
-      activeMissingAfterCrash: true,
-      backupExists: false,
-      journalExists: false,
-    });
-    expect(result.interrupted).toContain('simulated active pointer crash');
-  });
+      expect(result).toMatchObject({
+        active: {version: '4.0.2'},
+        activeMissingAfterCrash: true,
+        backupExists: false,
+        journalExists: false,
+      });
+      expect(result.interrupted).toContain('simulated active pointer crash');
+    }),
+  );
 
-  it('commits an interrupted active-pointer promotion during installation-lock recovery', async () => {
-    const result = await Effect.runPromise(
-      Effect.scoped(
+  effectIt.effect('commits an interrupted active-pointer promotion during installation-lock recovery', () =>
+    Effect.gen(function* () {
+      const result = yield* Effect.scoped(
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
@@ -299,7 +302,7 @@ describe('standalone release lifecycle', () => {
           yield* activateStandaloneRelease(newRelease, false, {
             afterStep: step =>
               step === 'active-promoted'
-                ? Effect.fail(new Error('simulated crash after pointer promotion'))
+                ? Effect.fail(new TestError('simulated crash after pointer promotion'))
                 : Effect.void,
           }).pipe(Effect.provideService(SystemInfo, testSystem), Effect.flip);
 
@@ -312,23 +315,23 @@ describe('standalone release lifecycle', () => {
             journalExists: yield* fs.exists(path.join(installRoot, 'active-release.promotion.json')),
           };
         }),
-      ).pipe(Effect.provide(ApplicationLayer)),
-    );
+      ).pipe(provideTestLayer(ApplicationLayer));
 
-    expect(result).toEqual({
-      active: {releaseRoot: expect.any(String), version: '4.0.2'},
-      backupExists: false,
-      journalExists: false,
-    });
-  });
+      expect(result).toEqual({
+        active: {releaseRoot: expect.any(String), version: '4.0.2'},
+        backupExists: false,
+        journalExists: false,
+      });
+    }),
+  );
 
-  it.each([
+  effectIt.effect.each([
     {expected: 'old', step: 'release-journaled' as const},
     {expected: 'old', step: 'release-previous-backed-up' as const},
     {expected: 'new', step: 'release-promoted' as const},
-  ])('recovers release directory promotion interrupted after $step', async ({expected, step}) => {
-    const result = await Effect.runPromise(
-      Effect.scoped(
+  ])('recovers release directory promotion interrupted after $step', ({expected, step}) =>
+    Effect.gen(function* () {
+      const result = yield* Effect.scoped(
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
@@ -343,7 +346,7 @@ describe('standalone release lifecycle', () => {
           yield* fs.writeFileString(path.join(stagedRoot, 'release.json'), '{"version":"4.0.2"}\n');
           yield* promoteStandaloneReleaseDirectory(fs, path, stagedRoot, releaseRoot, system.processId, {
             afterStep: observed =>
-              observed === step ? Effect.fail(new Error(`simulated crash after ${step}`)) : Effect.void,
+              observed === step ? Effect.fail(new TestError(`simulated crash after ${step}`)) : Effect.void,
           }).pipe(Effect.flip);
 
           yield* recoverStandaloneReleasePromotion(fs, path, releaseRoot);
@@ -355,21 +358,21 @@ describe('standalone release lifecycle', () => {
             stagingContainerExists: yield* fs.exists(stagingContainer),
           };
         }),
-      ).pipe(Effect.provide(ApplicationLayer)),
-    );
+      ).pipe(provideTestLayer(ApplicationLayer));
 
-    expect(result).toEqual({
-      backupExists: false,
-      journalExists: false,
-      marker: `${expected}\n`,
-      stagedExists: false,
-      stagingContainerExists: false,
-    });
-  });
+      expect(result).toEqual({
+        backupExists: false,
+        journalExists: false,
+        marker: `${expected}\n`,
+        stagedExists: false,
+        stagingContainerExists: false,
+      });
+    }),
+  );
 
-  it('uses semantic version precedence when choosing the retained rollback release', async () => {
-    const result = await Effect.runPromise(
-      Effect.scoped(
+  effectIt.effect('uses semantic version precedence when choosing the retained rollback release', () =>
+    Effect.gen(function* () {
+      const result = yield* Effect.scoped(
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
@@ -399,19 +402,19 @@ describe('standalone release lifecycle', () => {
             stableExists: yield* fs.exists(path.join(versionsRoot, '4.1.0')),
           };
         }),
-      ).pipe(Effect.provide(ApplicationLayer)),
-    );
+      ).pipe(provideTestLayer(ApplicationLayer));
 
-    expect(result).toEqual({
-      activeExists: true,
-      betaExists: false,
-      stableExists: true,
-    });
-  });
+      expect(result).toEqual({
+        activeExists: true,
+        betaExists: false,
+        stableExists: true,
+      });
+    }),
+  );
 
-  it('aborts stale pruning when another updater has activated a newer release', async () => {
-    const result = await Effect.runPromise(
-      Effect.scoped(
+  effectIt.effect('aborts stale pruning when another updater has activated a newer release', () =>
+    Effect.gen(function* () {
+      const result = yield* Effect.scoped(
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
@@ -445,19 +448,19 @@ describe('standalone release lifecycle', () => {
             staleExists: yield* fs.exists(staleActiveRelease),
           };
         }),
-      ).pipe(Effect.provide(ApplicationLayer)),
-    );
+      ).pipe(provideTestLayer(ApplicationLayer));
 
-    expect(result).toEqual({
-      currentExists: true,
-      oldestExists: true,
-      staleExists: true,
-    });
-  });
+      expect(result).toEqual({
+        currentExists: true,
+        oldestExists: true,
+        staleExists: true,
+      });
+    }),
+  );
 
-  it('retires verified superseded process trees without signaling the active release', async () => {
-    const result = await Effect.runPromise(
-      Effect.scoped(
+  effectIt.effect('retires verified superseded process trees without signaling the active release', () =>
+    Effect.gen(function* () {
+      const result = yield* Effect.scoped(
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
@@ -498,22 +501,22 @@ describe('standalone release lifecycle', () => {
           }).pipe(Effect.provideService(SystemInfo, testSystem));
           return {activeStillRunning: running.has(activeProcessId), signals, termination};
         }),
-      ).pipe(Effect.provide(ApplicationLayer)),
-    );
+      ).pipe(provideTestLayer(ApplicationLayer));
 
-    expect(result.signals).toEqual([
-      [40_001, 'SIGTERM'],
-      [40_002, 'SIGTERM'],
-    ]);
-    expect(result.activeStillRunning).toBe(true);
-    expect(result.termination.signaled.map(lease => lease.processId)).toEqual([40_001, 40_002]);
-    expect(result.termination.remaining).toEqual([]);
-    expect(result.termination.skippedUnverified).toEqual([]);
-  });
+      expect(result.signals).toEqual([
+        [40_001, 'SIGTERM'],
+        [40_002, 'SIGTERM'],
+      ]);
+      expect(result.activeStillRunning).toBe(true);
+      expect(result.termination.signaled.map(lease => lease.processId)).toEqual([40_001, 40_002]);
+      expect(result.termination.remaining).toEqual([]);
+      expect(result.termination.skippedUnverified).toEqual([]);
+    }),
+  );
 
-  it('does not signal a superseded lease when the process identity changes after scanning', async () => {
-    const result = await Effect.runPromise(
-      Effect.scoped(
+  effectIt.effect('does not signal a superseded lease when the process identity changes after scanning', () =>
+    Effect.gen(function* () {
+      const result = yield* Effect.scoped(
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
@@ -544,17 +547,17 @@ describe('standalone release lifecycle', () => {
           }).pipe(Effect.provideService(SystemInfo, testSystem));
           return {signals, termination};
         }),
-      ).pipe(Effect.provide(ApplicationLayer)),
-    );
+      ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive);
 
-    expect(result.signals).toEqual([]);
-    expect(result.termination.signaled).toEqual([]);
-    expect(result.termination.remaining.map(lease => lease.processId)).toEqual([41_001]);
-  });
+      expect(result.signals).toEqual([]);
+      expect(result.termination.signaled).toEqual([]);
+      expect(result.termination.remaining.map(lease => lease.processId)).toEqual([41_001]);
+    }),
+  );
 
-  it('reports but never signals superseded leases without verifiable process identity', async () => {
-    const result = await Effect.runPromise(
-      Effect.scoped(
+  effectIt.effect('reports but never signals superseded leases without verifiable process identity', () =>
+    Effect.gen(function* () {
+      const result = yield* Effect.scoped(
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
@@ -580,66 +583,68 @@ describe('standalone release lifecycle', () => {
           }).pipe(Effect.provideService(SystemInfo, testSystem));
           return {signals, termination};
         }),
-      ).pipe(Effect.provide(ApplicationLayer)),
-    );
+      ).pipe(provideTestLayer(ApplicationLayer));
 
-    expect(result.signals).toEqual([]);
-    expect(result.termination.remaining).toEqual([]);
-    expect(result.termination.skippedUnverified.map(lease => lease.processId)).toEqual([42_001]);
-  });
+      expect(result.signals).toEqual([]);
+      expect(result.termination.remaining).toEqual([]);
+      expect(result.termination.skippedUnverified.map(lease => lease.processId)).toEqual([42_001]);
+    }),
+  );
 
-  it('fails closed on malformed live leases and retains every release while inspection is incomplete', async () => {
-    const result = await Effect.runPromise(
-      Effect.scoped(
-        Effect.gen(function* () {
-          const fs = yield* FileSystem.FileSystem;
-          const path = yield* Path.Path;
-          const baseSystem = yield* SystemInfo;
-          const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-process-incomplete-'});
-          const installRoot = path.join(root, 'install');
-          const versionsRoot = path.join(installRoot, 'versions');
-          for (const version of ['4.0.0', '4.0.1', '4.0.2']) {
-            const releaseRoot = path.join(versionsRoot, version);
-            yield* fs.makeDirectory(releaseRoot, {recursive: true});
-            yield* fs.writeFileString(path.join(releaseRoot, 'release.json'), `${JSON.stringify({version})}\n`);
-          }
-          const processId = 43_001;
-          const leaseRoot = path.join(installRoot, 'leases', '4.0.0');
-          yield* fs.makeDirectory(leaseRoot, {recursive: true});
-          yield* fs.writeFileString(path.join(leaseRoot, `${processId}.json`), '{malformed');
-          yield* fs.makeDirectory(path.join(installRoot, 'leases', 'unexpected-directory'));
-          const testSystem = SystemInfo.of({
-            ...baseSystem,
-            environment: () => ({...baseSystem.environment(), THREADNOTE_INSTALL_ROOT: installRoot}),
-            executablePath: path.join(versionsRoot, '4.0.1', 'threadnote'),
-            isProcessRunning: candidate => candidate === processId,
-            processId: 99_999,
-          });
-          const verification = yield* readStandaloneProcessLeaseVerification().pipe(
-            Effect.provideService(SystemInfo, testSystem),
-          );
-          const terminationFailure = yield* terminateSupersededStandaloneProcesses('4.0.2').pipe(
-            Effect.provideService(SystemInfo, testSystem),
-            Effect.flip,
-          );
-          const pruning = yield* pruneStandaloneReleases(path.join(versionsRoot, '4.0.2'), false).pipe(
-            Effect.provideService(SystemInfo, testSystem),
-          );
-          return {
-            pruning,
-            staleReleaseExists: yield* fs.exists(path.join(versionsRoot, '4.0.0')),
-            terminationFailure: String(terminationFailure),
-            verification,
-          };
-        }),
-      ).pipe(Effect.provide(ApplicationLayer)),
-    );
+  effectIt.effect(
+    'fails closed on malformed live leases and retains every release while inspection is incomplete',
+    () =>
+      Effect.gen(function* () {
+        const result = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const fs = yield* FileSystem.FileSystem;
+            const path = yield* Path.Path;
+            const baseSystem = yield* SystemInfo;
+            const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-process-incomplete-'});
+            const installRoot = path.join(root, 'install');
+            const versionsRoot = path.join(installRoot, 'versions');
+            for (const version of ['4.0.0', '4.0.1', '4.0.2']) {
+              const releaseRoot = path.join(versionsRoot, version);
+              yield* fs.makeDirectory(releaseRoot, {recursive: true});
+              yield* fs.writeFileString(path.join(releaseRoot, 'release.json'), `${JSON.stringify({version})}\n`);
+            }
+            const processId = 43_001;
+            const leaseRoot = path.join(installRoot, 'leases', '4.0.0');
+            yield* fs.makeDirectory(leaseRoot, {recursive: true});
+            yield* fs.writeFileString(path.join(leaseRoot, `${processId}.json`), '{malformed');
+            yield* fs.makeDirectory(path.join(installRoot, 'leases', 'unexpected-directory'));
+            const testSystem = SystemInfo.of({
+              ...baseSystem,
+              environment: () => ({...baseSystem.environment(), THREADNOTE_INSTALL_ROOT: installRoot}),
+              executablePath: path.join(versionsRoot, '4.0.1', 'threadnote'),
+              isProcessRunning: candidate => candidate === processId,
+              processId: 99_999,
+            });
+            const verification = yield* readStandaloneProcessLeaseVerification().pipe(
+              Effect.provideService(SystemInfo, testSystem),
+            );
+            const terminationFailure = yield* terminateSupersededStandaloneProcesses('4.0.2').pipe(
+              Effect.provideService(SystemInfo, testSystem),
+              Effect.flip,
+            );
+            const pruning = yield* pruneStandaloneReleases(path.join(versionsRoot, '4.0.2'), false).pipe(
+              Effect.provideService(SystemInfo, testSystem),
+            );
+            return {
+              pruning,
+              staleReleaseExists: yield* fs.exists(path.join(versionsRoot, '4.0.0')),
+              terminationFailure: String(terminationFailure),
+              verification,
+            };
+          }),
+        ).pipe(provideTestLayer(ApplicationLayer));
 
-    expect(result.verification).toEqual({truncated: true, unverified: [], verified: []});
-    expect(result.terminationFailure).toContain('inspection was incomplete');
-    expect(result.pruning.complete).toBe(false);
-    expect(result.staleReleaseExists).toBe(true);
-  });
+        expect(result.verification).toEqual({truncated: true, unverified: [], verified: []});
+        expect(result.terminationFailure).toContain('inspection was incomplete');
+        expect(result.pruning.complete).toBe(false);
+        expect(result.staleReleaseExists).toBe(true);
+      }),
+  );
 });
 
 function createRelease(

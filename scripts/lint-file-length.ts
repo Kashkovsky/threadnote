@@ -1,38 +1,23 @@
+import {provideScriptLayer, scriptError, ScriptError} from './effect/errors.js';
 import {BunRuntime} from '@effect/platform-bun';
-import {Console, Effect} from 'effect';
-import {existsSync} from 'node:fs';
-import {join} from 'node:path';
-import {fileURLToPath} from 'node:url';
+import {Console, Effect, Result} from 'effect';
 import {SystemInfo} from '../src/effect/system.js';
 
 export const PRODUCTION_FILE_LINE_LIMIT = 2_000;
 export const PRODUCTION_CODE_ROOTS = ['src', 'website/src'] as const;
-export const FILE_LENGTH_OXLINT_CONFIG = fileURLToPath(new URL('../.oxlintrc.max-lines.json', import.meta.url));
+export const FILE_LENGTH_OXLINT_CONFIG = Bun.fileURLToPath(new URL('../.oxlintrc.max-lines.json', import.meta.url));
 
 const CODE_FILE_PATTERN = /\.(?:c|m)?(?:js|jsx|ts|tsx)$/u;
 const TEST_FILE_PATTERN = /\.(?:spec|test)\.(?:c|m)?(?:js|jsx|ts|tsx)$/u;
 const TEST_DIRECTORY_NAMES = new Set(['__tests__', 'test', 'tests']);
 
-export type FileLengthSeverity = 'error' | 'warn';
-
-export interface ProductionFileLintPartition {
-  readonly errorFiles: readonly string[];
-  readonly warningFiles: readonly string[];
-}
-
-export interface ProductionFileLintPlan extends ProductionFileLintPartition {
-  readonly base: string | undefined;
-}
-
 export interface OxlintFileLengthRequest {
   readonly configPath: string;
   readonly files: readonly string[];
   readonly repositoryRoot: string;
-  readonly severity: FileLengthSeverity;
 }
 
 export interface RunProductionFileLengthLintOptions {
-  readonly base?: string;
   readonly execute?: (request: OxlintFileLengthRequest) => number;
   readonly repositoryRoot: string;
   readonly roots?: readonly string[];
@@ -57,11 +42,13 @@ export function normalizeRepositoryPath(path: string): string | undefined {
 
 function normalizedProductionRoots(roots: readonly string[]): readonly string[] {
   const normalized = roots.map(root => normalizeRepositoryPath(root));
-  if (normalized.some(root => root === undefined)) throw new Error('Production lint roots must be repository paths.');
+  if (normalized.some(root => root === undefined)) {
+    throw new ScriptError('Production lint roots must be repository paths.');
+  }
   const validRoots = normalized as string[];
   for (const root of validRoots) {
     if (!(PRODUCTION_CODE_ROOTS as readonly string[]).includes(root)) {
-      throw new Error(`Unsupported production lint root: ${root}`);
+      throw new ScriptError(`Unsupported production lint root: ${root}`);
     }
   }
   return [...new Set(validRoots)].sort(comparePaths);
@@ -70,111 +57,61 @@ function normalizedProductionRoots(roots: readonly string[]): readonly string[] 
 export function isProductionCodePath(path: string, roots: readonly string[] = PRODUCTION_CODE_ROOTS): boolean {
   const normalized = normalizeRepositoryPath(path);
   if (!normalized || !CODE_FILE_PATTERN.test(normalized) || TEST_FILE_PATTERN.test(normalized)) return false;
-
-  const segments = normalized.split('/');
-  if (segments.some(segment => TEST_DIRECTORY_NAMES.has(segment))) return false;
-
+  if (normalized.split('/').some(segment => TEST_DIRECTORY_NAMES.has(segment))) return false;
   return roots.some(root => normalized === root || normalized.startsWith(`${root}/`));
 }
 
-export function partitionProductionCodeFiles(
+/** Return every unique production source path, independent of Git change state or iteration order. */
+export function productionCodeFiles(
   files: Iterable<string>,
-  changedPaths: Iterable<string>,
   roots: readonly string[] = PRODUCTION_CODE_ROOTS,
-): ProductionFileLintPartition {
-  const changed = new Set(
-    [...changedPaths].map(path => normalizeRepositoryPath(path)).filter((path): path is string => path !== undefined),
-  );
+): readonly string[] {
   const productionFiles = new Set<string>();
   for (const file of files) {
     const normalized = normalizeRepositoryPath(file);
     if (normalized && isProductionCodePath(normalized, roots)) productionFiles.add(normalized);
   }
-
-  const errorFiles: string[] = [];
-  const warningFiles: string[] = [];
-  for (const file of [...productionFiles].sort(comparePaths)) {
-    (changed.has(file) ? errorFiles : warningFiles).push(file);
-  }
-  return {errorFiles, warningFiles};
-}
-
-function decodeOutput(output: Uint8Array | undefined): string {
-  return output ? new TextDecoder().decode(output) : '';
+  return [...productionFiles].sort(comparePaths);
 }
 
 function decodeNullSeparated(output: Uint8Array | undefined): readonly string[] {
-  return decodeOutput(output).split('\0').filter(Boolean);
+  return output ? new TextDecoder().decode(output).split('\0').filter(Boolean) : [];
 }
 
-function runGit(repositoryRoot: string, arguments_: readonly string[]): ReturnType<typeof Bun.spawnSync> {
-  return Bun.spawnSync({
+function gitPaths(repositoryRoot: string, arguments_: readonly string[]): readonly string[] {
+  const result = Bun.spawnSync({
     cmd: ['git', ...arguments_],
     cwd: repositoryRoot,
     stderr: 'pipe',
     stdout: 'pipe',
   });
-}
-
-function gitPaths(repositoryRoot: string, arguments_: readonly string[]): readonly string[] {
-  const result = runGit(repositoryRoot, arguments_);
   if (result.exitCode !== 0) {
-    const detail = decodeOutput(result.stderr).trim();
-    throw new Error(`git ${arguments_.join(' ')} failed${detail ? `: ${detail}` : '.'}`);
+    const detail = result.stderr ? new TextDecoder().decode(result.stderr).trim() : '';
+    throw new ScriptError(`git ${arguments_.join(' ')} failed${detail ? `: ${detail}` : '.'}`);
   }
   return decodeNullSeparated(result.stdout);
 }
 
-function commitExists(repositoryRoot: string, reference: string): boolean {
-  if (reference.startsWith('-') || reference.includes('\0')) return false;
-  return runGit(repositoryRoot, ['rev-parse', '--verify', '--quiet', `${reference}^{commit}`]).exitCode === 0;
-}
-
-export function resolveProductionLintBase(repositoryRoot: string, requestedBase?: string): string | undefined {
-  const base = requestedBase?.trim();
-  if (base) {
-    if (!commitExists(repositoryRoot, base)) throw new Error(`Production file lint base is not a commit: ${base}`);
-    return base;
-  }
-  return commitExists(repositoryRoot, 'origin/main') ? 'origin/main' : undefined;
-}
-
-export function collectProductionFileLintPlan(
+export function collectProductionCodeFiles(
   repositoryRoot: string,
-  options: {readonly base?: string; readonly roots?: readonly string[]} = {},
-): ProductionFileLintPlan {
-  const roots = normalizedProductionRoots(options.roots ?? PRODUCTION_CODE_ROOTS);
-  const pathspec = ['--', ...roots];
-  const base = resolveProductionLintBase(repositoryRoot, options.base);
-  const allFiles = gitPaths(repositoryRoot, [
+  roots: readonly string[] = PRODUCTION_CODE_ROOTS,
+): readonly string[] {
+  const normalizedRoots = normalizedProductionRoots(roots);
+  const pathspec = ['--', ...normalizedRoots];
+  const deletedFiles = new Set(gitPaths(repositoryRoot, ['ls-files', '--deleted', '-z', ...pathspec]));
+  const files = gitPaths(repositoryRoot, [
     'ls-files',
     '--cached',
     '--others',
     '--exclude-standard',
     '-z',
     ...pathspec,
-  ]).filter(path => existsSync(join(repositoryRoot, path)));
-  const changedPaths = new Set([
-    ...gitPaths(repositoryRoot, ['diff', '--name-only', '--no-renames', '-z', 'HEAD', ...pathspec]),
-    ...gitPaths(repositoryRoot, ['ls-files', '--others', '--exclude-standard', '-z', ...pathspec]),
-  ]);
-  if (base) {
-    for (const path of gitPaths(repositoryRoot, [
-      'diff',
-      '--name-only',
-      '--no-renames',
-      '-z',
-      `${base}...HEAD`,
-      ...pathspec,
-    ])) {
-      changedPaths.add(path);
-    }
-  }
-  return {...partitionProductionCodeFiles(allFiles, changedPaths, roots), base};
+  ]).filter(path => !deletedFiles.has(path));
+  return productionCodeFiles(files, normalizedRoots);
 }
 
 function executeOxlint(request: OxlintFileLengthRequest): number {
-  const severityArguments = request.severity === 'error' ? ['--deny', 'max-lines'] : [];
+  if (request.files.length === 0) return 0;
   const result = Bun.spawnSync({
     cmd: [
       process.execPath,
@@ -186,7 +123,9 @@ function executeOxlint(request: OxlintFileLengthRequest): number {
       '--disable-oxc-plugin',
       '--disable-typescript-plugin',
       '--no-error-on-unmatched-pattern',
-      ...severityArguments,
+      '--threads=1',
+      '--deny-warnings',
+      '--report-unused-disable-directives-severity=error',
       ...request.files,
     ],
     cwd: request.repositoryRoot,
@@ -197,72 +136,42 @@ function executeOxlint(request: OxlintFileLengthRequest): number {
 }
 
 export function runProductionFileLengthLint(options: RunProductionFileLengthLintOptions): number {
-  const plan = collectProductionFileLintPlan(options.repositoryRoot, {
-    base: options.base,
-    roots: options.roots,
+  const files = collectProductionCodeFiles(options.repositoryRoot, options.roots);
+  return (options.execute ?? executeOxlint)({
+    configPath: FILE_LENGTH_OXLINT_CONFIG,
+    files,
+    repositoryRoot: options.repositoryRoot,
   });
-  const execute = options.execute ?? executeOxlint;
-  for (const request of [
-    {files: plan.warningFiles, severity: 'warn' as const},
-    {files: plan.errorFiles, severity: 'error' as const},
-  ]) {
-    if (request.files.length === 0) continue;
-    const exitCode = execute({
-      configPath: FILE_LENGTH_OXLINT_CONFIG,
-      files: request.files,
-      repositoryRoot: options.repositoryRoot,
-      severity: request.severity,
-    });
-    if (exitCode !== 0) return exitCode;
-  }
-  return 0;
 }
 
-function parseArguments(arguments_: readonly string[]): {readonly base?: string; readonly roots: readonly string[]} {
-  const roots: string[] = [];
-  let base: string | undefined;
-  for (let index = 0; index < arguments_.length; index += 1) {
-    const argument = arguments_[index];
-    if (argument === '--base') {
-      base = arguments_[index + 1];
-      if (!base) throw new Error('--base requires a Git commit or reference.');
-      index += 1;
-      continue;
-    }
-    if (argument.startsWith('-')) throw new Error(`Unknown production file lint option: ${argument}`);
-    roots.push(argument);
+function parseArguments(arguments_: readonly string[]): readonly string[] {
+  if (arguments_.some(argument => argument.startsWith('-'))) {
+    throw new ScriptError('Production file lint accepts only optional production roots.');
   }
-  return {base, roots: normalizedProductionRoots(roots.length === 0 ? PRODUCTION_CODE_ROOTS : roots)};
+  return normalizedProductionRoots(arguments_.length === 0 ? PRODUCTION_CODE_ROOTS : arguments_);
 }
 
 if (import.meta.main) {
   BunRuntime.runMain(
-    Effect.gen(function* () {
-      const system = yield* SystemInfo;
-      const outcome = yield* Effect.try({
-        try: () => {
-          const {base, roots} = parseArguments(Bun.argv.slice(2));
-          return runProductionFileLengthLint({
-            base: base ?? process.env.THREADNOTE_LINT_BASE,
-            repositoryRoot: fileURLToPath(new URL('..', import.meta.url)),
-            roots,
-          });
-        },
-        catch: cause => cause,
-      }).pipe(
-        Effect.match({
-          onFailure: cause => ({cause, success: false}) as const,
-          onSuccess: exitCode => ({exitCode, success: true}) as const,
-        }),
-      );
-      if (!outcome.success) {
-        yield* Console.error(
-          `Production file length lint failed: ${outcome.cause instanceof Error ? outcome.cause.message : String(outcome.cause)}`,
-        );
-        system.setExitCode(2);
-        return;
-      }
-      system.setExitCode(outcome.exitCode);
-    }).pipe(Effect.provide(SystemInfo.layer)),
+    provideScriptLayer(
+      Effect.gen(function* () {
+        const system = yield* SystemInfo;
+        const outcome = yield* Effect.try({
+          try: () =>
+            runProductionFileLengthLint({
+              repositoryRoot: Bun.fileURLToPath(new URL('..', import.meta.url)),
+              roots: parseArguments(Bun.argv.slice(2)),
+            }),
+          catch: cause => scriptError(cause, 'Could not evaluate the production file-length policy.'),
+        }).pipe(Effect.result);
+        if (Result.isFailure(outcome)) {
+          yield* Console.error(`Production file length lint failed: ${outcome.failure.message}`);
+          system.setExitCode(2);
+          return;
+        }
+        system.setExitCode(outcome.success);
+      }),
+      SystemInfo.layer,
+    ),
   );
 }

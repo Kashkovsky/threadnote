@@ -1,7 +1,17 @@
-import {execFileSync, spawn} from 'node:child_process';
-import {existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync} from 'node:fs';
-import {tmpdir} from 'node:os';
-import {dirname, join} from 'node:path';
+import {TestError} from '../helpers/test-error.js';
+import {provideTestLayer} from '../helpers/effect-layer.js';
+import {execFileSync, spawn} from '../helpers/node-child-process.js';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from '../helpers/node-fs.js';
+import {tmpdir} from '../helpers/node-os.js';
+import {dirname, join} from '../helpers/node-path.js';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {it as effectIt} from '@effect/vitest';
 import {Database} from 'bun:sqlite';
@@ -514,7 +524,7 @@ describe('automatic missing-worktree reconciliation', () => {
           }
         }).pipe(Effect.andThen(store.claimWorktreeReconciliationCandidates(databasePath, 32).pipe(Effect.exit)));
         expect(cascadingTombstone._tag).toBe('Failure');
-      }).pipe(Effect.provide(storeLayer)),
+      }).pipe(provideTestLayer(storeLayer)),
     ),
   );
 
@@ -563,7 +573,7 @@ describe('automatic missing-worktree reconciliation', () => {
         });
         expect(sparsePage.map(entry => entry.worktreeId)).toEqual([worktreeIds[64]]);
         expect(readReconciliationCursor(databasePath)).toBe(worktreeIds[95]);
-      }).pipe(Effect.provide(storeLayer)),
+      }).pipe(provideTestLayer(storeLayer)),
     ),
   );
 
@@ -611,7 +621,7 @@ describe('automatic missing-worktree reconciliation', () => {
           removedSnapshotId: selectedSnapshotId,
           selectedState: 'retired',
         });
-      }).pipe(Effect.provide(storeLayer)),
+      }).pipe(provideTestLayer(storeLayer)),
     ),
   );
 
@@ -666,7 +676,7 @@ describe('automatic missing-worktree reconciliation', () => {
           {id: snapshotIds[0], state: 'ready'},
           {id: childAfterRemoval, state: 'ready'},
         ]);
-      }).pipe(Effect.provide(storeLayer)),
+      }).pipe(provideTestLayer(storeLayer)),
     ),
   );
 
@@ -702,7 +712,7 @@ describe('automatic missing-worktree reconciliation', () => {
           {id: targetSnapshotId, state: 'ready'},
           {id: blockingChildId, state: 'ready'},
         ]);
-      }).pipe(Effect.provide(storeLayer)),
+      }).pipe(provideTestLayer(storeLayer)),
     ),
   );
 
@@ -743,7 +753,7 @@ describe('automatic missing-worktree reconciliation', () => {
             });
           }
         }
-      }).pipe(Effect.provide(storeLayer)),
+      }).pipe(provideTestLayer(storeLayer)),
     ),
   );
 
@@ -782,7 +792,7 @@ describe('automatic missing-worktree reconciliation', () => {
           {id: immediateBlockerId, state: 'ready'},
           {id: tailId, state: 'ready'},
         ]);
-      }).pipe(Effect.provide(storeLayer)),
+      }).pipe(provideTestLayer(storeLayer)),
     ),
   );
 
@@ -818,7 +828,7 @@ describe('automatic missing-worktree reconciliation', () => {
           expect(existsSync(`${databasePath}-wal`)).toBe(false);
           expect(existsSync(`${databasePath}-shm`)).toBe(false);
         }
-      }).pipe(Effect.provide(storeLayer)),
+      }).pipe(provideTestLayer(storeLayer)),
     ),
   );
 
@@ -950,7 +960,7 @@ describe('automatic missing-worktree reconciliation', () => {
               before,
             );
           }
-        }).pipe(Effect.provide(storeLayer)),
+        }).pipe(provideTestLayer(storeLayer)),
       ),
   );
 
@@ -974,7 +984,7 @@ describe('automatic missing-worktree reconciliation', () => {
         });
         expect(indexDefinition(databasePath, 'active_snapshots_snapshot_worktree')).toBeUndefined();
         expect(indexDefinition(databasePath, 'snapshots_base_state_id')).toContain('snapshots(state, id)');
-      }).pipe(Effect.provide(storeLayer)),
+      }).pipe(provideTestLayer(storeLayer)),
     ),
   );
 
@@ -1009,7 +1019,7 @@ describe('automatic missing-worktree reconciliation', () => {
         ).toMatchObject({state: 'removed'});
         yield* Effect.sleep('100 millis');
         expect(extensionDefinitionAndRows(databasePath)).toEqual(before);
-      }).pipe(Effect.provide(storeLayer)),
+      }).pipe(provideTestLayer(storeLayer)),
     ),
   );
 
@@ -1053,7 +1063,7 @@ describe('automatic missing-worktree reconciliation', () => {
           removedSnapshotId: undefined,
           selectedState: 'ready',
         });
-      }).pipe(Effect.provide(storeLayer)),
+      }).pipe(provideTestLayer(storeLayer)),
     ),
   );
 
@@ -1085,7 +1095,7 @@ describe('automatic missing-worktree reconciliation', () => {
 
         yield* Deferred.succeed(release, undefined);
         expect(yield* Fiber.join(owner)).toHaveLength(1);
-      }).pipe(Effect.provide(storeLayer)),
+      }).pipe(provideTestLayer(storeLayer)),
     ),
   );
 
@@ -1126,7 +1136,7 @@ describe('automatic missing-worktree reconciliation', () => {
           selectedState: 'ready',
         });
         expect(indexDefinition(databasePath, 'active_snapshots_snapshot_worktree')).toBeUndefined();
-      }).pipe(Effect.provide(storeLayer)),
+      }).pipe(provideTestLayer(storeLayer)),
     ),
   );
 
@@ -1161,7 +1171,7 @@ describe('automatic missing-worktree reconciliation', () => {
         expect(readFileSync(fixture.mainFile, 'utf8')).toBe('main source\n');
         expect(existsSync(join(fixture.main, '.git'))).toBe(true);
         expect(JSON.stringify(result)).not.toContain(fixture.root);
-      }).pipe(Effect.provide(liveLayer)),
+      }).pipe(provideTestLayer(liveLayer)),
     ),
   );
 
@@ -1187,7 +1197,7 @@ describe('automatic missing-worktree reconciliation', () => {
         });
         expect(readFileSync(join(fixture.linked, 'reappeared.txt'), 'utf8')).toBe('preserve me\n');
         expect(readFileSync(fixture.mainFile, 'utf8')).toBe('main source\n');
-      }).pipe(Effect.provide(liveLayer)),
+      }).pipe(provideTestLayer(liveLayer)),
     ),
   );
 
@@ -1214,7 +1224,7 @@ describe('automatic missing-worktree reconciliation', () => {
         expect(readFileSync(fixture.adminPath, 'utf8')).toBe('partial admin child\n');
         expect(readFileSync(fixture.mainFile, 'utf8')).toBe('main source\n');
         expect(JSON.stringify(result)).not.toContain(fixture.root);
-      }).pipe(Effect.provide(liveLayer)),
+      }).pipe(provideTestLayer(liveLayer)),
     ),
   );
 
@@ -1243,7 +1253,7 @@ describe('automatic missing-worktree reconciliation', () => {
         expect(['retired', undefined]).toContain(view.snapshotState);
         expect(readFileSync(fixture.mainFile, 'utf8')).toBe('main source\n');
         expect(existsSync(fixture.provenancePath)).toBe(true);
-      }).pipe(Effect.provide(liveLayer)),
+      }).pipe(provideTestLayer(liveLayer)),
     ),
   );
 
@@ -1371,7 +1381,7 @@ function createLiveReconciliationFixture(prefix: string) {
     );
     const association = yield* recordVerifiedCodeGraphLocalAssociation(home, linkedIdentity);
     if (association.state !== 'verified') {
-      return yield* Effect.fail(new Error('Could not record the exact linked-worktree provenance fixture.'));
+      return yield* Effect.fail(new TestError('Could not record the exact linked-worktree provenance fixture.'));
     }
     const path = yield* Path.Path;
     const layout = codeGraphLayout(path, home, linkedIdentity.checkoutId, linkedIdentity.worktreeId);
@@ -1399,7 +1409,7 @@ function createLiveReconciliationFixture(prefix: string) {
       `${linkedIdentity.worktreeId}.json`,
     );
     if (!existsSync(provenancePath)) {
-      return yield* Effect.fail(new Error('The exact linked-worktree provenance fixture is missing.'));
+      return yield* Effect.fail(new TestError('The exact linked-worktree provenance fixture is missing.'));
     }
     return {
       adminPath,
@@ -1471,7 +1481,7 @@ async function runLiveReconciliationContenders(
   const completed = Promise.all(contenders);
   await Promise.race([
     waitForContenderBarrier(barrier, count, 10_000),
-    completed.then(() => Promise.reject(new Error('E4 contenders exited before the shared barrier was released.'))),
+    completed.then(() => Promise.reject(new TestError('E4 contenders exited before the shared barrier was released.'))),
   ]);
   writeFileSync(join(barrier, 'release'), 'go\n', {mode: 0o600});
   return await completed;
@@ -1514,7 +1524,7 @@ async function runLiveReconciliationContender(
       clearTimeout(timeout);
       const resultLine = stdout.split(/\r?\n/u).find(line => line.startsWith('THREADNOTE_E4_RESULT='));
       if (code !== 0 || resultLine === undefined) {
-        reject(new Error(`E4 contender exited ${String(code)}: ${stderr || stdout}`));
+        reject(new TestError(`E4 contender exited ${String(code)}: ${stderr || stdout}`));
         return;
       }
       try {
@@ -1530,7 +1540,7 @@ async function waitForContenderBarrier(barrier: string, count: number, timeoutMi
   const deadline = Date.now() + timeoutMilliseconds;
   for (;;) {
     if (Array.from({length: count}, (_, index) => existsSync(join(barrier, `${index}.ready`))).every(Boolean)) return;
-    if (Date.now() >= deadline) throw new Error('E4 contenders did not reach the shared barrier in time.');
+    if (Date.now() >= deadline) throw new TestError('E4 contenders did not reach the shared barrier in time.');
     await new Promise(resolve => setTimeout(resolve, 5));
   }
 }
@@ -1842,15 +1852,15 @@ function rebuildCanonicalTableDefinition(
     const row = database.query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?").get(tableName) as {
       readonly sql: string;
     } | null;
-    if (row === null) throw new Error(`missing canonical table ${tableName}`);
+    if (row === null) throw new TestError(`missing canonical table ${tableName}`);
     const changed = mutate(row.sql);
-    if (changed === row.sql) throw new Error(`canonical table mutation did not change ${tableName}`);
+    if (changed === row.sql) throw new TestError(`canonical table mutation did not change ${tableName}`);
     const temporaryTable = `${tableName}_drift_fixture`;
     const temporaryDefinition = changed.replace(
       new RegExp(`^CREATE TABLE(?: IF NOT EXISTS)? "?${tableName}"?`, 'u'),
       `CREATE TABLE ${temporaryTable}`,
     );
-    if (temporaryDefinition === changed) throw new Error(`cannot derive temporary table for ${tableName}`);
+    if (temporaryDefinition === changed) throw new TestError(`cannot derive temporary table for ${tableName}`);
     const columns = (
       database.query(`PRAGMA table_xinfo('${tableName}')`).all() as readonly {
         readonly hidden: number;

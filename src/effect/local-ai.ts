@@ -7,6 +7,10 @@ import {clearLocalModelSelection, readModelSelection, selectLocalModel} from '..
 import {LocalModelStore} from '../models/store.js';
 import type {RuntimeConfig} from '../types.js';
 
+class LocalAiOperationError extends Error {
+  readonly _tag = 'LocalAiOperationError' as const;
+}
+
 const COMPATIBILITY_MODEL_ID = 'gemma-4-e4b-it-q4';
 const compatibilityModel = BUILTIN_MODEL_MANIFESTS.find(model => model.id === COMPATIBILITY_MODEL_ID)!;
 
@@ -61,7 +65,7 @@ export const runLocalAiInstall = Effect.fn('localAi.compat.install')(function* (
 ) {
   if (options.modelPath) {
     return yield* Effect.fail(
-      new Error(
+      new LocalAiOperationError(
         '`threadnote local-ai --model-path` was removed in 4.0 because unmanaged model files bypass the signed catalog. Use `threadnote models install`.',
       ),
     );
@@ -78,7 +82,9 @@ export const runLocalAiModelSwitch = Effect.fn('localAi.compat.switch')(function
 ) {
   if (!options.model) {
     return yield* Effect.fail(
-      new Error('Specify `--model <id>`, or use `threadnote models list` and `threadnote models select generation`.'),
+      new LocalAiOperationError(
+        'Specify `--model <id>`, or use `threadnote models list` and `threadnote models select generation`.',
+      ),
     );
   }
   yield* Console.warn('`threadnote local-ai model switch` is deprecated; use `threadnote models select generation`.');
@@ -92,7 +98,7 @@ export const runLocalAiEnable = Effect.fn('localAi.compat.enable')(function* (
   const models = yield* installedGenerationModels(config);
   if (models.length === 0) {
     return yield* Effect.fail(
-      new Error('No generation model is installed. Run `threadnote models install <model-id>` first.'),
+      new LocalAiOperationError('No generation model is installed. Run `threadnote models install <model-id>` first.'),
     );
   }
   const selected = models[0]!;
@@ -213,7 +219,7 @@ export function parseLocalAiSettings(value: unknown): LocalAiSettings {
     typeof (value as Partial<LocalAiSettings>).model !== 'string' ||
     typeof (value as Partial<LocalAiSettings>).modelPath !== 'string'
   ) {
-    throw new Error('Legacy local-ai server settings are not valid Threadnote 4 settings.');
+    throw new LocalAiOperationError('Legacy local-ai server settings are not valid Threadnote 4 settings.');
   }
   return value as LocalAiSettings;
 }
@@ -237,7 +243,7 @@ function requireSelectedGeneration(config: LocalAiRuntimeConfig) {
       selected
         ? Effect.succeed(selected)
         : Effect.fail(
-            new Error(
+            new LocalAiOperationError(
               'No generation model is selected. Use `threadnote models install` and `threadnote models select generation`.',
             ),
           ),

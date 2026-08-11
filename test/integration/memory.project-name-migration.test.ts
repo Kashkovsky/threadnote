@@ -1,6 +1,6 @@
-import {mkdtemp, mkdir, rm, writeFile} from 'node:fs/promises';
-import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {mkdtemp, mkdir, rm, writeFile} from '../helpers/node-fs-promises.js';
+import {tmpdir} from '../helpers/node-os.js';
+import {join} from '../helpers/node-path.js';
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
 import {hasProjectNameMigrationCandidates, runMigrateProjectNames} from '../../src/memory.js';
 import type {RuntimeConfig} from '../../src/types.js';

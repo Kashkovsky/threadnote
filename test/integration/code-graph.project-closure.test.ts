@@ -1,7 +1,9 @@
-import {execFileSync} from 'node:child_process';
-import {mkdirSync, mkdtempSync, rmSync, writeFileSync} from 'node:fs';
-import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {TestError} from '../helpers/test-error.js';
+import {provideTestLayer} from '../helpers/effect-layer.js';
+import {execFileSync} from '../helpers/node-child-process.js';
+import {mkdirSync, mkdtempSync, rmSync, writeFileSync} from '../helpers/node-fs.js';
+import {tmpdir} from '../helpers/node-os.js';
+import {join} from '../helpers/node-path.js';
 import {Database} from 'bun:sqlite';
 import {describe, expect, it} from '@effect/vitest';
 import {TestClock} from 'effect/testing';
@@ -142,7 +144,7 @@ describe('project-closure incremental indexing', () => {
           ).toBeUndefined();
         }),
       root => Effect.sync(() => rmSync(root, {force: true, recursive: true})),
-    ).pipe(Effect.provide(ApplicationLayer), TestClock.withLive),
+    ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );
 
   it.effect('uses the same project closure from a nearby persisted clean base', () =>
@@ -194,7 +196,7 @@ describe('project-closure incremental indexing', () => {
           ]);
         }),
       root => Effect.sync(() => rmSync(root, {force: true, recursive: true})),
-    ).pipe(Effect.provide(ApplicationLayer), TestClock.withLive),
+    ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );
 
   it.effect('reparses and replaces a valid cache tuple whose payload names another path', () =>
@@ -225,7 +227,7 @@ describe('project-closure incremental indexing', () => {
           expect(cachedFactPayloadPaths(layout.databasePath, baseBarrelHash)).toEqual(['packages/barrel/index.ts']);
         }),
       root => Effect.sync(() => rmSync(root, {force: true, recursive: true})),
-    ).pipe(Effect.provide(ApplicationLayer), TestClock.withLive),
+    ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );
 
   it.effect('falls back through bounded full materialization for cache and receipt loss or oversized facts', () =>
@@ -278,7 +280,7 @@ describe('project-closure incremental indexing', () => {
           root => Effect.sync(() => rmSync(root, {force: true, recursive: true})),
         ),
       {concurrency: 1},
-    ).pipe(Effect.provide(ApplicationLayer), TestClock.withLive),
+    ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );
 
   it.effect('fails closed for file-set, global-surface, and unreconciled-workspace changes', () =>
@@ -318,7 +320,7 @@ describe('project-closure incremental indexing', () => {
           root => Effect.sync(() => rmSync(root, {force: true, recursive: true})),
         ),
       {concurrency: 1},
-    ).pipe(Effect.provide(ApplicationLayer), TestClock.withLive),
+    ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );
 
   it.effect(
@@ -346,7 +348,7 @@ describe('project-closure incremental indexing', () => {
             expect(indexed.materialization?.stagedFiles).toBe(indexed.materialization?.totalFiles);
           }),
         root => Effect.sync(() => rmSync(root, {force: true, recursive: true})),
-      ).pipe(Effect.provide(ApplicationLayer), TestClock.withLive),
+      ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
     {timeout: 120_000},
   );
 
@@ -431,7 +433,7 @@ describe('project-closure incremental indexing', () => {
             );
           }),
         root => Effect.sync(() => rmSync(root, {force: true, recursive: true})),
-      ).pipe(Effect.provide(ApplicationLayer), TestClock.withLive),
+      ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
     {fastCheck: {interruptAfterTimeLimit: 120_000, markInterruptAsFailure: true, numRuns: 4}, timeout: 130_000},
   );
 });
@@ -623,7 +625,7 @@ function snapshotFileContentHash(databasePath: string, snapshotId: string, path:
         'SELECT content_hash AS contentHash FROM snapshot_files WHERE snapshot_id = ? AND path = ?',
       )
       .get(snapshotId, path);
-    if (!row) throw new Error(`Missing snapshot file ${path}.`);
+    if (!row) throw new TestError(`Missing snapshot file ${path}.`);
     return row.contentHash;
   } finally {
     database.close(false);

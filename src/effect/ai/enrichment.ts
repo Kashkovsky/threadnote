@@ -93,18 +93,24 @@ export const runEffectAiMemoryEnrichment = Effect.fn('MemoryEnricher.run')(funct
   input: MemoryEnrichmentInput,
   config: EffectAiConfiguration,
 ) {
-  return yield* enrichMemoryEffect(input).pipe(
-    Effect.provide(memoryEnricherLayer(config)),
-    Effect.timeoutOrElse({
-      duration: MEMORY_ENRICHMENT_TIMEOUT_MILLISECONDS,
-      orElse: () =>
-        Effect.fail(
-          new AiMemoryEnrichmentFailed({
-            cause: new Error('Memory enrichment timed out.'),
-            message: 'Effect AI memory enrichment timed out.',
+  return yield* Effect.scoped(
+    Layer.build(memoryEnricherLayer(config)).pipe(
+      Effect.flatMap(context =>
+        enrichMemoryEffect(input).pipe(
+          Effect.provide(context),
+          Effect.timeoutOrElse({
+            duration: MEMORY_ENRICHMENT_TIMEOUT_MILLISECONDS,
+            orElse: () =>
+              Effect.fail(
+                new AiMemoryEnrichmentFailed({
+                  cause: new Error('Memory enrichment timed out.'),
+                  message: 'Effect AI memory enrichment timed out.',
+                }),
+              ),
           }),
         ),
-    }),
+      ),
+    ),
   );
 });
 

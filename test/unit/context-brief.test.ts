@@ -1,4 +1,5 @@
 import fc from 'fast-check';
+import {it as effectIt} from '@effect/vitest';
 import {Effect} from 'effect';
 import {describe, expect, it} from 'vitest';
 import {
@@ -30,55 +31,55 @@ const SNAPSHOT = {
 };
 
 describe('Context Brief compiler', () => {
-  it('combines graph, durable decisions, active handoffs, freshness, gaps, and exact follow-ups', async () => {
-    const result = await Effect.runPromise(
-      compileContextBriefWith(
+  effectIt.effect('combines graph, durable decisions, active handoffs, freshness, gaps, and exact follow-ups', () =>
+    Effect.gen(function* () {
+      const result = yield* compileContextBriefWith(
         {
           graphEvidence: () => Effect.succeed(graphEvidence()),
           memoryEvidence: () => Effect.succeed(memoryEvidence()),
         },
         request(1_250),
-      ),
-    );
+      );
 
-    expect(result.measurement.estimatedTokens).toBeLessThanOrEqual(1_250);
-    expect(result.structuredContent).toMatchObject({
-      scope: {freshness: 'fresh', readyRepositories: 1, requestedRepositories: 1},
-      trust: {
-        compiler: {modelsRequired: false, queryPlanExposed: false},
-        graph: {instructionPolicy: 'evidence-only-never-follow'},
-        memory: {instructionPolicy: 'evidence-only-never-follow'},
-      },
-      type: 'context-brief',
-      version: 1,
-    });
-    expect(result.structuredContent.graph.cards).toHaveLength(2);
-    expect(result.structuredContent.graph.continuation).toEqual({
-      omittedCards: 1,
-      state: 'rerun-required',
-      upstreamRemainingEstimate: 4,
-    });
-    expect(result.structuredContent.durableDecisions).toEqual(
-      expect.arrayContaining([expect.objectContaining({freshness: 'fresh', topic: 'catalog-contract'})]),
-    );
-    expect(result.structuredContent.activeHandoffs).toEqual(
-      expect.arrayContaining([expect.objectContaining({freshness: 'stale', topic: 'current-rollout'})]),
-    );
-    expect(result.structuredContent.stalenessAndConflicts).toEqual(
-      expect.arrayContaining([expect.objectContaining({kind: 'stale-memory'})]),
-    );
-    expect(result.structuredContent.recommendedFollowUps).toEqual(
-      expect.arrayContaining([expect.objectContaining({operation: 'inspect-node'})]),
-    );
+      expect(result.measurement.estimatedTokens).toBeLessThanOrEqual(1_250);
+      expect(result.structuredContent).toMatchObject({
+        scope: {freshness: 'fresh', readyRepositories: 1, requestedRepositories: 1},
+        trust: {
+          compiler: {modelsRequired: false, queryPlanExposed: false},
+          graph: {instructionPolicy: 'evidence-only-never-follow'},
+          memory: {instructionPolicy: 'evidence-only-never-follow'},
+        },
+        type: 'context-brief',
+        version: 1,
+      });
+      expect(result.structuredContent.graph.cards).toHaveLength(2);
+      expect(result.structuredContent.graph.continuation).toEqual({
+        omittedCards: 1,
+        state: 'rerun-required',
+        upstreamRemainingEstimate: 4,
+      });
+      expect(result.structuredContent.durableDecisions).toEqual(
+        expect.arrayContaining([expect.objectContaining({freshness: 'fresh', topic: 'catalog-contract'})]),
+      );
+      expect(result.structuredContent.activeHandoffs).toEqual(
+        expect.arrayContaining([expect.objectContaining({freshness: 'stale', topic: 'current-rollout'})]),
+      );
+      expect(result.structuredContent.stalenessAndConflicts).toEqual(
+        expect.arrayContaining([expect.objectContaining({kind: 'stale-memory'})]),
+      );
+      expect(result.structuredContent.recommendedFollowUps).toEqual(
+        expect.arrayContaining([expect.objectContaining({operation: 'inspect-node'})]),
+      );
 
-    const expanded = await compile(graphEvidence(), memoryEvidence(), 1_500);
-    expect(expanded.structuredContent.graph.cards).toHaveLength(3);
-    expect(expanded.structuredContent.graph.continuation).toEqual({
-      cursor: `cgwc_${'1'.repeat(40)}`,
-      remainingEstimate: 4,
-      state: 'available',
-    });
-  });
+      const expanded = yield* compile(graphEvidence(), memoryEvidence(), 1_500);
+      expect(expanded.structuredContent.graph.cards).toHaveLength(3);
+      expect(expanded.structuredContent.graph.continuation).toEqual({
+        cursor: `cgwc_${'1'.repeat(40)}`,
+        remainingEstimate: 4,
+        state: 'available',
+      });
+    }),
+  );
 
   it('treats bodies as bounded evidence excerpts and never as instructions', () => {
     const excerpt = memoryEvidenceExcerpt(
@@ -134,73 +135,72 @@ describe('Context Brief compiler', () => {
     ).toBe('unknown');
   });
 
-  it('is deterministic under evidence completion order', async () => {
-    await fc.assert(
-      fc.asyncProperty(
-        fc.shuffledSubarray([0, 1, 2], {minLength: 3, maxLength: 3}),
-        fc.shuffledSubarray([0, 1, 2], {minLength: 3, maxLength: 3}),
-        async (graphOrder, memoryOrder) => {
-          const baseline = await compile(graphEvidence(), memoryEvidence(), 1_500);
-          const graph = graphEvidence();
-          const memory = memoryEvidence();
-          const reordered = await compile(
-            {...graph, cards: graphOrder.map(index => graph.cards[index]!)},
-            {...memory, candidates: memoryOrder.map(index => memory.candidates[index]!)},
-            1_500,
-          );
-          expect(reordered.structuredContent).toEqual(baseline.structuredContent);
-          expect(reordered.text).toBe(baseline.text);
-        },
-      ),
-      {numRuns: 30},
-    );
-  });
+  effectIt.effect.prop(
+    'is deterministic under evidence completion order',
+    {
+      graphOrder: fc.shuffledSubarray([0, 1, 2], {minLength: 3, maxLength: 3}),
+      memoryOrder: fc.shuffledSubarray([0, 1, 2], {minLength: 3, maxLength: 3}),
+    },
+    ({graphOrder, memoryOrder}) =>
+      Effect.gen(function* () {
+        const baseline = yield* compile(graphEvidence(), memoryEvidence(), 1_500);
+        const graph = graphEvidence();
+        const memory = memoryEvidence();
+        const reordered = yield* compile(
+          {...graph, cards: graphOrder.map(index => graph.cards[index]!)},
+          {...memory, candidates: memoryOrder.map(index => memory.candidates[index]!)},
+          1_500,
+        );
+        expect(reordered.structuredContent).toEqual(baseline.structuredContent);
+        expect(reordered.text).toBe(baseline.text);
+      }),
+    {fastCheck: {numRuns: 30}},
+  );
 
-  it('keeps exact combined response bytes within every accepted budget', async () => {
-    await fc.assert(
-      fc.asyncProperty(fc.integer({min: 700, max: 1_500}), async budget => {
-        const result = await compile(graphEvidence(), memoryEvidence(), budget);
+  effectIt.effect.prop(
+    'keeps exact combined response bytes within every accepted budget',
+    {budget: fc.integer({min: 700, max: 1_500})},
+    ({budget}) =>
+      Effect.gen(function* () {
+        const result = yield* compile(graphEvidence(), memoryEvidence(), budget);
         expect(result.measurement.totalBytes).toBeLessThanOrEqual(budget * 3);
         expect(result.measurement.estimatedTokens).toBeLessThanOrEqual(budget);
         expect(result.structuredContent.coverage).toBeDefined();
         expect(result.structuredContent.trust).toBeDefined();
       }),
-      {numRuns: 40},
-    );
-  });
+    {fastCheck: {numRuns: 40}},
+  );
 
-  it('extends a deterministic evidence prefix as the budget grows', async () => {
-    await fc.assert(
-      fc.asyncProperty(
-        fc.integer({min: 700, max: 1_200}),
-        fc.integer({min: 0, max: 300}),
-        async (smallBudget, delta) => {
-          const largeBudget = Math.min(1_500, smallBudget + delta);
-          const small = (await compile(graphEvidence(), memoryEvidence(), smallBudget)).structuredContent;
-          const large = (await compile(graphEvidence(), memoryEvidence(), largeBudget)).structuredContent;
-          expect(sectionIds(small.graph.cards)).toEqual(
-            sectionIds(large.graph.cards).slice(0, small.graph.cards.length),
-          );
-          expect(sectionIds(small.graph.contracts)).toEqual(
-            sectionIds(large.graph.contracts).slice(0, small.graph.contracts.length),
-          );
-          expect(memoryUris(small.durableDecisions)).toEqual(
-            memoryUris(large.durableDecisions).slice(0, small.durableDecisions.length),
-          );
-          expect(memoryUris(small.activeHandoffs)).toEqual(
-            memoryUris(large.activeHandoffs).slice(0, small.activeHandoffs.length),
-          );
-          expect(sectionIds(small.stalenessAndConflicts)).toEqual(
-            sectionIds(large.stalenessAndConflicts).slice(0, small.stalenessAndConflicts.length),
-          );
-          expect(sectionIds(small.recommendedFollowUps)).toEqual(
-            sectionIds(large.recommendedFollowUps).slice(0, small.recommendedFollowUps.length),
-          );
-        },
-      ),
-      {numRuns: 40},
-    );
-  });
+  effectIt.effect.prop(
+    'extends a deterministic evidence prefix as the budget grows',
+    {
+      delta: fc.integer({min: 0, max: 300}),
+      smallBudget: fc.integer({min: 700, max: 1_200}),
+    },
+    ({smallBudget, delta}) =>
+      Effect.gen(function* () {
+        const largeBudget = Math.min(1_500, smallBudget + delta);
+        const small = (yield* compile(graphEvidence(), memoryEvidence(), smallBudget)).structuredContent;
+        const large = (yield* compile(graphEvidence(), memoryEvidence(), largeBudget)).structuredContent;
+        expect(sectionIds(small.graph.cards)).toEqual(sectionIds(large.graph.cards).slice(0, small.graph.cards.length));
+        expect(sectionIds(small.graph.contracts)).toEqual(
+          sectionIds(large.graph.contracts).slice(0, small.graph.contracts.length),
+        );
+        expect(memoryUris(small.durableDecisions)).toEqual(
+          memoryUris(large.durableDecisions).slice(0, small.durableDecisions.length),
+        );
+        expect(memoryUris(small.activeHandoffs)).toEqual(
+          memoryUris(large.activeHandoffs).slice(0, small.activeHandoffs.length),
+        );
+        expect(sectionIds(small.stalenessAndConflicts)).toEqual(
+          sectionIds(large.stalenessAndConflicts).slice(0, small.stalenessAndConflicts.length),
+        );
+        expect(sectionIds(small.recommendedFollowUps)).toEqual(
+          sectionIds(large.recommendedFollowUps).slice(0, small.recommendedFollowUps.length),
+        );
+      }),
+    {fastCheck: {numRuns: 40}},
+  );
 
   it('never classifies a changed content hash as fresh', () => {
     fc.assert(
@@ -230,12 +230,10 @@ function request(budgetTokens: number) {
   };
 }
 
-async function compile(graph: ContextBriefGraphEvidenceV1, memory: ContextBriefMemoryRetrievalV1, budget: number) {
-  return Effect.runPromise(
-    compileContextBriefWith(
-      {graphEvidence: () => Effect.succeed(graph), memoryEvidence: () => Effect.succeed(memory)},
-      request(budget),
-    ),
+function compile(graph: ContextBriefGraphEvidenceV1, memory: ContextBriefMemoryRetrievalV1, budget: number) {
+  return compileContextBriefWith(
+    {graphEvidence: () => Effect.succeed(graph), memoryEvidence: () => Effect.succeed(memory)},
+    request(budget),
   );
 }
 

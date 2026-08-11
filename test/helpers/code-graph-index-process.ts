@@ -1,11 +1,13 @@
-import {existsSync, writeFileSync} from 'node:fs';
+import {TestError} from './test-error.js';
+import {provideTestLayer} from './effect-layer.js';
+import {existsSync, writeFileSync} from './node-fs.js';
 import {Effect} from 'effect';
 import {CodeGraphIndexer} from '../../src/code_graph/indexer.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 
 const [repository, home, releaseGate, marker] = process.argv.slice(2);
 if (!repository || !home || !releaseGate || !marker) {
-  throw new Error('Expected repository, home, release gate, and marker arguments.');
+  throw new TestError('Expected repository, home, release gate, and marker arguments.');
 }
 
 const summary = await Effect.runPromise(
@@ -23,7 +25,7 @@ const summary = await Effect.runPromise(
         }),
       threadnoteHome: home,
     });
-  }).pipe(Effect.provide(ApplicationLayer)),
+  }).pipe(provideTestLayer(ApplicationLayer)),
 );
 
 process.stdout.write(`${JSON.stringify({summary, type: 'summary'})}\n`);

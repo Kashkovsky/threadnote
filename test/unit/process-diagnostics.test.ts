@@ -1,6 +1,7 @@
-import {mkdtemp, readFile, rm} from 'node:fs/promises';
-import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {provideTestLayer} from '../helpers/effect-layer.js';
+import {mkdtemp, readFile, rm} from '../helpers/node-fs-promises.js';
+import {tmpdir} from '../helpers/node-os.js';
+import {join} from '../helpers/node-path.js';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {expect, it} from '@effect/vitest';
 import {Effect, FileSystem} from 'effect';
@@ -251,7 +252,7 @@ describe('process diagnostics', () => {
         )).processes,
       ).toEqual([]);
       expect(yield* fileSystem.exists(leasePath)).toBe(false);
-    }).pipe(Effect.provide(SystemInfo.layer), Effect.provide(BunServices.layer), Effect.scoped),
+    }).pipe(provideTestLayer(SystemInfo.layer), provideTestLayer(BunServices.layer), Effect.scoped),
   );
 
   it.effect('keeps process identity as ROLE while nested activities update OPERATION and title', () =>
@@ -326,7 +327,7 @@ describe('process diagnostics', () => {
 
       expect(process.title).toBe(originalTitle);
       expect((yield* readThreadnoteProcessDiagnostics(config)).processes).toEqual([]);
-    }).pipe(Effect.provide(SystemInfo.layer), Effect.provide(BunServices.layer)),
+    }).pipe(provideTestLayer(SystemInfo.layer), provideTestLayer(BunServices.layer)),
   );
 
   it.effect('reports a dedicated CLI graph build as a graph activity owned by a CLI process', () =>
@@ -353,7 +354,7 @@ describe('process diagnostics', () => {
         ),
         'graph',
       );
-    }).pipe(Effect.provide(SystemInfo.layer), Effect.provide(BunServices.layer), Effect.scoped),
+    }).pipe(provideTestLayer(SystemInfo.layer), provideTestLayer(BunServices.layer), Effect.scoped),
   );
 
   it.effect('resolves explicit process homes without leaking command arguments into diagnostics', () =>
@@ -368,7 +369,7 @@ describe('process diagnostics', () => {
           THREADNOTE_CALLER_CWD: join(process.cwd(), 'caller-worktree'),
         }),
       ).toBe(join(process.cwd(), 'caller-worktree', 'private-home'));
-    }).pipe(Effect.provide(SystemInfo.layer), Effect.provide(BunServices.layer)),
+    }).pipe(provideTestLayer(SystemInfo.layer), provideTestLayer(BunServices.layer)),
   );
 
   it.effect('falls back to runtime RSS when the host process query is unavailable', () =>
@@ -396,7 +397,7 @@ describe('process diagnostics', () => {
           ]);
         }),
       ).pipe(Effect.provideService(SystemInfo, systemWithoutPs));
-    }).pipe(Effect.provide(SystemInfo.layer), Effect.provide(BunServices.layer), Effect.scoped),
+    }).pipe(provideTestLayer(SystemInfo.layer), provideTestLayer(BunServices.layer), Effect.scoped),
   );
 
   it.live('coalesces consecutive model batches while preserving operation and idle transitions', () =>
@@ -458,7 +459,7 @@ describe('process diagnostics', () => {
         }),
         'model-stdio',
       ).pipe(Effect.provideService(FileSystem.FileSystem, countingFileSystem));
-    }).pipe(Effect.provide(SystemInfo.layer), Effect.provide(BunServices.layer)),
+    }).pipe(provideTestLayer(SystemInfo.layer), provideTestLayer(BunServices.layer)),
   );
 
   it.effect.prop(
@@ -506,7 +507,7 @@ describe('process diagnostics', () => {
             'model-stdio',
           ).pipe(Effect.provideService(FileSystem.FileSystem, countingFileSystem));
         }),
-      ).pipe(Effect.provide(SystemInfo.layer), Effect.provide(BunServices.layer)),
+      ).pipe(provideTestLayer(SystemInfo.layer), provideTestLayer(BunServices.layer)),
     {fastCheck: {numRuns: 30}},
   );
 });

@@ -1,3 +1,4 @@
+import {TestError} from '../helpers/test-error.js';
 import {it as effectIt} from '@effect/vitest';
 import {Cause, Deferred, Effect, Exit, Fiber} from 'effect';
 import {TestClock} from 'effect/testing';
@@ -18,6 +19,7 @@ import {
   MCP_PROGRESS_MESSAGE_MAX_BYTES,
   MCP_PROGRESS_METADATA_KEY,
   MCP_RESOURCE_ERROR_DATA,
+  MCP_RESOURCE_NOT_FOUND_ERROR_DATA,
   StdioSingleClientSet,
   makeInitializeInstructionsTransform,
   mcpProgressNotification,
@@ -106,8 +108,9 @@ describe('Effect MCP initialization instructions', () => {
           {
             _tag: 'Fail',
             error: {
-              code: -32002,
-              data: MCP_RESOURCE_ERROR_DATA,
+              _tag: 'InvalidParams',
+              code: -32602,
+              data: MCP_RESOURCE_NOT_FOUND_ERROR_DATA,
               message: 'Threadnote resource was not found.',
             },
           },
@@ -268,7 +271,7 @@ describe('Effect MCP resource interruption', () => {
 
   effectIt.effect('maps defects to a bounded protocol error without exposing their details', () =>
     Effect.gen(function* () {
-      const exit = yield* Effect.die(new Error('/private/path: secret fixture')).pipe(
+      const exit = yield* Effect.die(new TestError('/private/path: secret fixture')).pipe(
         Effect.catchCause(mcpResourceFailureResult),
         Effect.exit,
       );
@@ -299,7 +302,7 @@ describe('Effect MCP tool interruption', () => {
 
   effectIt.effect('still converts ordinary tool failures into an isError payload', () =>
     Effect.gen(function* () {
-      const result = yield* Effect.fail(new Error('bounded fixture failure')).pipe(
+      const result = yield* Effect.fail(new TestError('bounded fixture failure')).pipe(
         Effect.catchCause(mcpToolFailureResult),
       );
 
@@ -619,7 +622,7 @@ describe('Effect MCP tool progress', () => {
     const original = target.callTool;
     const server = new Proxy(target, {
       defineProperty(object, property, descriptor) {
-        if (property === 'initializedClients') throw new Error('fixture rejects recipient binding');
+        if (property === 'initializedClients') throw new TestError('fixture rejects recipient binding');
         return Reflect.defineProperty(object, property, descriptor);
       },
       set(object, property, value) {
@@ -788,7 +791,7 @@ describe('Effect MCP tool progress', () => {
     Effect.gen(function* () {
       let phaseInvocations = 0;
       const progress = makeMcpToolProgress('disconnected-token', () =>
-        Effect.fail(new Error('/private/progress-transport-fixture')),
+        Effect.fail(new TestError('/private/progress-transport-fixture')),
       );
 
       const result = yield* withMcpProgressHeartbeat(

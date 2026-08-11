@@ -1,3 +1,4 @@
+import {provideTestLayer} from '../helpers/effect-layer.js';
 import {Database} from 'bun:sqlite';
 import {describe, expect, it} from '@effect/vitest';
 import {Effect, FileSystem, Path} from 'effect';
@@ -157,7 +158,7 @@ describe('code graph indexed query properties', () => {
 
         expect(yield* store.readySnapshotForCommit(databasePath, repositoryId, 'commit')).toBeUndefined();
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it.effect.prop(
@@ -210,7 +211,7 @@ describe('code graph indexed query properties', () => {
           expect(actual.map(edgeIdentity)).toEqual(expected.map(edgeIdentity));
           expect(new Set(actual.map(edge => edge.id)).size).toBe(actual.length);
         }),
-      ).pipe(Effect.provide(ApplicationLayer)),
+      ).pipe(provideTestLayer(ApplicationLayer)),
     {fastCheck: {numRuns: 35}},
   );
 
@@ -244,7 +245,7 @@ describe('code graph indexed query properties', () => {
         expect(both.map(edge => edge.id)).toEqual([edgeId(3), edgeId(1)]);
         expect(summary).toMatchObject({incoming: 1, outgoing: 2});
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it.effect('forces directional and exact-match indexes instead of scanning effective snapshots', () =>
@@ -348,7 +349,7 @@ describe('code graph indexed query properties', () => {
           database.close(false);
         }
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it.effect.prop(
@@ -410,7 +411,7 @@ describe('code graph indexed query properties', () => {
             expectedScores,
           );
         }),
-      ).pipe(Effect.provide(ApplicationLayer)),
+      ).pipe(provideTestLayer(ApplicationLayer)),
     {fastCheck: {numRuns: 80}},
   );
 
@@ -452,7 +453,7 @@ describe('code graph indexed query properties', () => {
         expect(actual.map(edge => edge.id)).toEqual(expected.map(edge => edge.id));
         expect(elapsedMilliseconds).toBeLessThan(2_000);
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it.effect('ranks an exact-case declaration above case-insensitive local properties', () =>
@@ -474,7 +475,7 @@ describe('code graph indexed query properties', () => {
           ['property', 'progressManager', 0.98],
         ]);
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it.effect('resolves an exact repository path without broad lexical candidate expansion', () =>
@@ -495,7 +496,7 @@ describe('code graph indexed query properties', () => {
           ['function', 'createButton', 'src/feature/button.ts', 0.9],
         ]);
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it.effect('preserves canonical Bazel labels for exact qualified-name lookup', () =>
@@ -529,7 +530,7 @@ describe('code graph indexed query properties', () => {
           score: 0.99,
         });
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it.effect.prop(

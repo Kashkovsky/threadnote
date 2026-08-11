@@ -1,3 +1,4 @@
+import {TestError} from '../helpers/test-error.js';
 import {Option} from 'effect';
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
@@ -43,7 +44,7 @@ describe('code graph per-file extraction budgets', () => {
     const file = sourceFile('data/object.json', 'json', JSON.stringify({root: {first: 1, second: 2}}));
     const extracted = extractStructuredSchemaFacts(file, {packageName: Option.none(), project: Option.none()});
     const [facts] = createResolutionAttributor([file])([extracted]);
-    if (!facts) throw new Error('missing resolved structured facts');
+    if (!facts) throw new TestError('missing resolved structured facts');
     const leaves = facts.symbols.filter(symbol => symbol.kind === 'property');
 
     expect(leaves.length).toBeGreaterThan(0);

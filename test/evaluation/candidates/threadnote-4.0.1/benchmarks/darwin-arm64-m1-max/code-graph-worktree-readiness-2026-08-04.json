@@ -22,6 +22,7 @@
       "ref": "55c4bf3f35c0d6ddd43a4d686f5e9d0c6b9a670b^"
     },
     "harness": {
+      "commit": "4e5f224527e67b4785ece5fa6f4f2e72849bb661",
       "path": "scripts/benchmark-worktree-readiness.ts",
       "sha256": "54374ee4def78ef1ad363f37869927bede62f7d7fb69af48f4e9416070042be4"
     }

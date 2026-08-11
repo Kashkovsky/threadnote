@@ -1,3 +1,5 @@
+import {TestError} from '../helpers/test-error.js';
+import {provideTestLayer} from '../helpers/effect-layer.js';
 import {Database} from 'bun:sqlite';
 import {it as effectIt} from '@effect/vitest';
 import {Crypto, Deferred, Effect, Fiber, FileSystem, Logger, Path} from 'effect';
@@ -72,7 +74,7 @@ describe('code graph cache capacity load calibration', () => {
             ]);
             const protector: CodeGraphDirectPersistentCapacityProtector = (boundary, transaction) => {
               const operationEvidence = evidence.get(boundary.operation as typeof FILE_FACT_OPERATION);
-              if (!operationEvidence) return Effect.die(new Error('Unexpected cache load operation.'));
+              if (!operationEvidence) return Effect.die(new TestError('Unexpected cache load operation.'));
               const demand = codeGraphPersistentCapacityDemand({
                 boundary,
                 lexicalFormatVersion: 1,
@@ -255,7 +257,7 @@ describe('code graph cache capacity load calibration', () => {
           }).pipe(
             Effect.ensuring(fs.remove(root, {force: true, recursive: true}).pipe(Effect.catch(() => Effect.void))),
           );
-        }).pipe(Effect.provide(ApplicationLayer)),
+        }).pipe(provideTestLayer(ApplicationLayer)),
       ),
     120_000,
   );
@@ -515,7 +517,7 @@ describe('code graph cache capacity load calibration', () => {
               ),
             );
           }
-        }).pipe(Effect.provide(ApplicationLayer)),
+        }).pipe(provideTestLayer(ApplicationLayer)),
       ),
     120_000,
   );
@@ -651,7 +653,7 @@ function activeReceiptCount(fs: FileSystem.FileSystem, ledgerRoot: string) {
 }
 
 function logLoadEvidence(evidence: Readonly<Record<string, number | string>>) {
-  return Effect.logInfo(JSON.stringify(evidence)).pipe(Effect.provide(loadEvidenceLoggerLayer));
+  return Effect.logInfo(JSON.stringify(evidence)).pipe(provideTestLayer(loadEvidenceLoggerLayer));
 }
 
 function emptyLoadEvidence(): LoadEvidence {

@@ -1,4 +1,4 @@
-import {readdirSync} from 'node:fs';
+import {readdirSync} from '../helpers/node-fs.js';
 import {Effect, Fiber} from 'effect';
 import {afterEach, describe, expect, it, vi} from 'vitest';
 

@@ -1,3 +1,4 @@
+import {TestError} from '../helpers/test-error.js';
 import {describe, expect, test} from 'vitest';
 import fc from 'fast-check';
 import {strToU8, zipSync} from 'fflate';
@@ -194,7 +195,7 @@ describe('code graph corpus extraction', () => {
     const extraction = extractCorpusFile(binaryFile('docs/cancelled.pdf', minimalPdf('cancelled')), {
       signal: controller.signal,
     });
-    queueMicrotask(() => controller.abort(new Error('indexing cancelled')));
+    queueMicrotask(() => controller.abort(new TestError('indexing cancelled')));
 
     await expect(extraction).rejects.toThrow('indexing cancelled');
   });

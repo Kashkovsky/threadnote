@@ -1,3 +1,5 @@
+import {it as effectIt} from "@effect/vitest";
+import {provideTestLayer} from '../helpers/effect-layer.js';
 import {BunCrypto, BunPath} from '@effect/platform-bun';
 import {Effect, FileSystem, Layer, Option} from 'effect';
 import {afterEach, beforeEach, describe, expect, it} from 'vitest';
@@ -179,7 +181,7 @@ describe('candidate-memory formation', () => {
     }
   });
 
-  it('normalizes Windows filesystem separators in comparison target URIs', async () => {
+  effectIt.effect('normalizes Windows filesystem separators in comparison target URIs', () => Effect.gen(function* () {
     const agentContextHome = 'C:\\context';
     const projectDirectory = 'C:\\context\\data\\local\\user\\me\\memories\\durable\\projects\\threadnote';
     const memoryPath = `${projectDirectory}\\recall.md`;
@@ -218,18 +220,14 @@ describe('candidate-memory formation', () => {
         } satisfies FileSystem.File.Info),
     });
     const WindowsTestLayer = Layer.mergeAll(BunCrypto.layer, BunPath.layerWin32, WindowsFileSystemLayer);
-    const records = await Effect.runPromise(
-      readActiveProjectMemories({account: 'local', agentContextHome, user: 'me'}, 'threadnote').pipe(
-        Effect.provide(WindowsTestLayer),
-      ),
-    );
-    const review = await Effect.runPromise(
-      buildCandidateReview(
+    const records = yield* (readActiveProjectMemories({account: 'local', agentContextHome, user: 'me'}, 'threadnote').pipe(
+        provideTestLayer(WindowsTestLayer),
+      ));
+    const review = yield* (buildCandidateReview(
         {...input, handoff: [], invariants: [], preferences: []},
         records,
         new Date('2026-07-23T10:00:00.000Z'),
-      ).pipe(Effect.provide(WindowsTestLayer)),
-    );
+      ).pipe(provideTestLayer(WindowsTestLayer)));
 
     expect(records[0]?.uri).toBe('threadnote://user/me/memories/durable/projects/threadnote/recall.md');
     expect(review.candidates[0]).toMatchObject({
@@ -237,7 +235,7 @@ describe('candidate-memory formation', () => {
       recommendation: 'no_action',
       targetUri: 'threadnote://user/me/memories/durable/projects/threadnote/recall.md',
     });
-  });
+  }));
 
   it('rejects unbounded closeout arrays, items, and total payloads', () => {
     expect(validateSessionCloseoutInput({...input, evidence: Array.from({length: 33}, () => 'file.md')})).toContain(

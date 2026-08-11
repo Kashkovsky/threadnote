@@ -1,6 +1,7 @@
-import {Effect, FileSystem, Path} from 'effect';
+import {Crypto, Effect, FileSystem, Path} from 'effect';
 import {sha256Hex} from './digest.js';
 import {withExclusiveFileLock} from './file_lock.js';
+import {SystemInfo} from './system.js';
 
 const MEMORY_LOCK_STALE_MILLISECONDS = 5 * 60 * 1_000;
 const MEMORY_LOCK_RETRY_MILLISECONDS = 25;
@@ -29,12 +30,11 @@ export function withMemoryUriLocks<A, E, R>(
         Effect.map(digest => pathService.join(agentContextHome, 'threadnote', 'memory-locks', `${digest}.lock`)),
       ),
     );
-    return yield* lockPaths
-      .sort()
-      .reduceRight<Effect.Effect<A, E | unknown, R>>(
-        (protectedEffect, lockPath) =>
-          withExclusiveFileLock(fs, lockPath, MEMORY_LOCK_OPTIONS, protectedEffect) as Effect.Effect<A, E | unknown, R>,
-        effect,
-      );
+    const sortedLockPaths = lockPaths.sort();
+    const protect = (index: number): Effect.Effect<A, unknown, R | Crypto.Crypto | Path.Path | SystemInfo> =>
+      index >= sortedLockPaths.length
+        ? effect
+        : withExclusiveFileLock(fs, sortedLockPaths[index]!, MEMORY_LOCK_OPTIONS, protect(index + 1));
+    return yield* protect(0);
   });
 }

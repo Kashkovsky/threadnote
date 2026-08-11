@@ -1,4 +1,5 @@
-import {createHash} from 'node:crypto';
+import {provideTestLayer} from '../helpers/effect-layer.js';
+import {createHash} from '../helpers/node-crypto.js';
 import {expect, it} from '@effect/vitest';
 import {Effect, FileSystem, Path} from 'effect';
 import {describe} from 'vitest';
@@ -54,7 +55,7 @@ describe('legacy local model migration', () => {
         expect(yield* isLegacyLocalModelMigrationPending({home, manifests: [manifest]})).toBe(false);
         expect((yield* readModelSelection(home)).roles.generation).toBe(manifest.id);
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it.effect('leaves a checksum-mismatched legacy file in place', () =>
@@ -70,7 +71,7 @@ describe('legacy local model migration', () => {
         yield* migrateLegacyLocalModels({apply: true, home, manifests: [manifest]}).pipe(Effect.flip);
         expect(yield* fs.exists(source)).toBe(true);
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it.effect('rejects a pending legacy-model symlink during eligibility and apply without touching its target', () =>
@@ -100,7 +101,7 @@ describe('legacy local model migration', () => {
         expect(Array.from(yield* fs.readFile(outside))).toEqual(Array.from(modelBytes));
         expect(yield* fs.exists(path.join(home, 'models', manifest.role, manifest.id))).toBe(false);
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it.effect('rejects symlinked legacy-model parent directories during eligibility and apply', () =>
@@ -136,7 +137,7 @@ describe('legacy local model migration', () => {
           expect(yield* fs.exists(path.join(home, 'models', manifest.role, manifest.id))).toBe(false);
         }
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it.effect('rejects a directory at a legacy model path during eligibility and apply', () =>
@@ -154,6 +155,6 @@ describe('legacy local model migration', () => {
         expect(String(apply)).toContain('must be a regular file');
         expect((yield* fs.stat(source)).type).toBe('Directory');
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 });

@@ -1,3 +1,5 @@
+import {TestError} from '../helpers/test-error.js';
+import {provideTestLayer} from '../helpers/effect-layer.js';
 import {expect, it} from '@effect/vitest';
 import {Context, Effect, FileSystem, Layer, Option, Path, Scope} from 'effect';
 import {describe} from 'vitest';
@@ -59,11 +61,11 @@ describe('native memory workflow', () => {
           verified: true,
         };
         const modelStore = LocalModelStore.of({
-          install: () => Effect.die(new Error('Unexpected model install')),
+          install: () => Effect.die(new TestError('Unexpected model install')),
           path: () => modelPath,
-          remove: () => Effect.die(new Error('Unexpected model removal')),
+          remove: () => Effect.die(new TestError('Unexpected model removal')),
           status: () => Effect.succeed(installation),
-          verify: () => Effect.die(new Error('Unexpected model verification')),
+          verify: () => Effect.die(new TestError('Unexpected model verification')),
         } satisfies LocalModelStoreShape);
 
         const remembered = yield* captureConsole(
@@ -99,7 +101,7 @@ describe('native memory workflow', () => {
         expect(remembered.output).toContain('Stored memory:');
         expect(fatalWorker.spawnCount()).toBe(2);
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it.effect('stores, reads, lists, recalls, and forgets in the owned canonical store', () =>
@@ -170,7 +172,7 @@ describe('native memory workflow', () => {
           ),
         ).toBe(false);
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it.effect('previews and recursively forgets an exact shared team subtree while preserving siblings', () =>
@@ -205,7 +207,7 @@ describe('native memory workflow', () => {
         expect(Option.isNone(yield* Effect.option(store.stat(location, retired)))).toBe(true);
         expect(yield* store.read(location, sibling)).toBe('active');
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it.effect('rejects anchored and broad collection targets before forget mutation', () =>
@@ -239,7 +241,7 @@ describe('native memory workflow', () => {
         );
         expect(String(anchorFailure)).toContain('anchored resource');
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it.effect('uses the SQLite exact index for a production no-hit recall instead of canonical grep scans', () =>
@@ -299,7 +301,7 @@ describe('native memory workflow', () => {
 
         expect(grepManyCalls).toBe(0);
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it.effect('does not advertise dangling referenced-context pointers', () =>
@@ -384,7 +386,7 @@ describe('native memory workflow', () => {
         expect(recalled.output).toContain(existingUri);
         expect(recalled.output).not.toContain(missingUri);
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it.effect('round-trips the default pack root into the current user memories namespace', () =>
@@ -428,7 +430,7 @@ describe('native memory workflow', () => {
           'Pack round-trip preserves',
         );
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it.effect('retains preferred project-scope candidates alongside the global fallback', () =>
@@ -477,6 +479,6 @@ describe('native memory workflow', () => {
         );
         expect(result.expansionCandidates.some(candidate => candidate.uri.includes('/repos/alpha/'))).toBe(true);
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 });

@@ -104,7 +104,7 @@ export interface CodeGraphWatcherMetrics {
 
 export interface CodeGraphWatcherShape {
   readonly ensure: (options: CodeGraphWatchOptions) => Effect.Effect<void>;
-  readonly metrics: () => Effect.Effect<CodeGraphWatcherMetrics>;
+  readonly metrics: Effect.Effect<CodeGraphWatcherMetrics>;
   readonly refresh: (options: CodeGraphWatchOptions) => Effect.Effect<boolean>;
   readonly status: (
     key: string,
@@ -133,9 +133,9 @@ export type CodeGraphRecoveryRun = (
 ) => Effect.Effect<void, unknown>;
 
 export interface CodeGraphWatchReconciliationHooks {
-  readonly periodicRefreshRequired: () => Effect.Effect<boolean, unknown>;
-  readonly requestAfterChange: () => Effect.Effect<void, unknown>;
-  readonly requestInitial?: () => Effect.Effect<void, unknown>;
+  readonly periodicRefreshRequired: Effect.Effect<boolean, unknown>;
+  readonly requestAfterChange: Effect.Effect<void, unknown>;
+  readonly requestInitial?: Effect.Effect<void, unknown>;
 }
 
 export interface CodeGraphAutomaticRecoveryIdentity extends Partial<RepositoryIdentity> {
@@ -188,6 +188,10 @@ interface ProgressTracker {
 interface RefreshExecutionMetrics {
   readonly executing: number;
   readonly highWater: number;
+}
+
+class CodeGraphWatcherError extends Error {
+  readonly _tag = 'CodeGraphWatcherError' as const;
 }
 
 const DEFAULT_IDLE_TIMEOUT_MILLISECONDS = 30 * 60_000;
@@ -302,25 +306,23 @@ export class CodeGraphWatcher extends Context.Service<CodeGraphWatcher, CodeGrap
         });
       };
       const watchReconciliationHooks = (options: CodeGraphWatchOptions): CodeGraphWatchReconciliationHooks => ({
-        periodicRefreshRequired: () =>
-          Effect.gen(function* () {
-            const identity = yield* resolveRecoveryIdentity(options.cwd);
-            yield* requestWatchMaintenance(options, identity);
-            const layout = codeGraphLayout(path, options.threadnoteHome, identity.checkoutId, identity.worktreeId);
-            const ready = yield* store.readySnapshot(layout.databasePath, identity.worktreeId);
-            if (ready === undefined || ready.commit !== identity.headCommit) return true;
-            const overlay = yield* worktreeOverlayState(identity).pipe(
-              Effect.provideService(CommandExecutor, commandExecutor),
-              Effect.provideService(FileSystem.FileSystem, fs),
-              Effect.provideService(Path.Path, path),
-              Effect.provideService(SystemInfo, systemInfo),
-            );
-            return codeGraphWatcherSnapshotStale(ready, identity, overlay);
-          }),
-        requestAfterChange: () =>
-          resolveRecoveryIdentity(options.cwd).pipe(
-            Effect.flatMap(identity => requestWatchMaintenance(options, identity)),
-          ),
+        periodicRefreshRequired: Effect.gen(function* () {
+          const identity = yield* resolveRecoveryIdentity(options.cwd);
+          yield* requestWatchMaintenance(options, identity);
+          const layout = codeGraphLayout(path, options.threadnoteHome, identity.checkoutId, identity.worktreeId);
+          const ready = yield* store.readySnapshot(layout.databasePath, identity.worktreeId);
+          if (ready === undefined || ready.commit !== identity.headCommit) return true;
+          const overlay = yield* worktreeOverlayState(identity).pipe(
+            Effect.provideService(CommandExecutor, commandExecutor),
+            Effect.provideService(FileSystem.FileSystem, fs),
+            Effect.provideService(Path.Path, path),
+            Effect.provideService(SystemInfo, systemInfo),
+          );
+          return codeGraphWatcherSnapshotStale(ready, identity, overlay);
+        }),
+        requestAfterChange: resolveRecoveryIdentity(options.cwd).pipe(
+          Effect.flatMap(identity => requestWatchMaintenance(options, identity)),
+        ),
       });
       const run = (
         options: CodeGraphWatchOptions,
@@ -658,28 +660,27 @@ export const makeCodeGraphWatcher = Effect.fn('codeGraph.makeWatcher')(function*
 
   return CodeGraphWatcher.of({
     ensure: startSessionWatch,
-    metrics: () =>
-      Effect.gen(function* () {
-        const watches = yield* SynchronizedRef.get(activeWatches);
-        const refreshes = yield* SynchronizedRef.get(activeRefreshes);
-        const statuses = yield* SynchronizedRef.get(refreshStatuses);
-        const execution = yield* Ref.get(refreshExecutionMetrics);
-        const idleSweepStarted = yield* Ref.get(sweepStarted);
-        let pendingTrailingRefreshes = 0;
-        for (const refresh of refreshes.values()) {
-          if (refresh.pending) pendingTrailingRefreshes += 1;
-        }
-        return {
-          activeRefreshKeys: refreshes.size,
-          activeWatches: watches.size,
-          executingRefreshes: execution.executing,
-          executingRefreshHighWater: execution.highWater,
-          idleSweepFibers: idleSweepStarted ? 1 : 0,
-          maximumWatchers,
-          pendingTrailingRefreshes,
-          retainedStatuses: statuses.size,
-        };
-      }),
+    metrics: Effect.gen(function* () {
+      const watches = yield* SynchronizedRef.get(activeWatches);
+      const refreshes = yield* SynchronizedRef.get(activeRefreshes);
+      const statuses = yield* SynchronizedRef.get(refreshStatuses);
+      const execution = yield* Ref.get(refreshExecutionMetrics);
+      const idleSweepStarted = yield* Ref.get(sweepStarted);
+      let pendingTrailingRefreshes = 0;
+      for (const refresh of refreshes.values()) {
+        if (refresh.pending) pendingTrailingRefreshes += 1;
+      }
+      return {
+        activeRefreshKeys: refreshes.size,
+        activeWatches: watches.size,
+        executingRefreshes: execution.executing,
+        executingRefreshHighWater: execution.highWater,
+        idleSweepFibers: idleSweepStarted ? 1 : 0,
+        maximumWatchers,
+        pendingTrailingRefreshes,
+        retainedStatuses: statuses.size,
+      };
+    }),
     refresh: options =>
       Effect.gen(function* () {
         yield* touchWatch(options.key);
@@ -717,7 +718,9 @@ export const requestCodeGraphAutomaticRecovery = Effect.fn('codeGraph.requestAut
         Effect.flatMap(identity =>
           identity.worktreeId === options.key
             ? dependencies.routineMaintenance(options, identity)
-            : Effect.fail(new Error('Code graph recovery identity changed before maintenance admission.')),
+            : Effect.fail(
+                new CodeGraphWatcherError('Code graph recovery identity changed before maintenance admission.'),
+              ),
         ),
       );
     return yield* dependencies.coordinator
@@ -983,11 +986,11 @@ export const watchRepository = Effect.fn('codeGraph.watchRepository')(function* 
   _initialRefresh: boolean,
   requestRefresh: () => Effect.Effect<void>,
   reconciliationHooks: CodeGraphWatchReconciliationHooks = {
-    periodicRefreshRequired: () => Effect.succeed(true),
-    requestAfterChange: () => Effect.void,
+    periodicRefreshRequired: Effect.succeed(true),
+    requestAfterChange: Effect.void,
   },
 ) {
-  yield* (reconciliationHooks.requestInitial ?? reconciliationHooks.requestAfterChange)().pipe(
+  yield* (reconciliationHooks.requestInitial ?? reconciliationHooks.requestAfterChange).pipe(
     Effect.catch(() => Effect.logWarning('Code graph initial maintenance scheduling failed; watch remains active.')),
   );
   const changes = fs.watch(options.cwd).pipe(
@@ -1006,13 +1009,13 @@ export const watchRepository = Effect.fn('codeGraph.watchRepository')(function* 
   yield* Stream.merge(changes, reconciliation).pipe(
     Stream.runForEach(event =>
       event === 'change'
-        ? reconciliationHooks.requestAfterChange().pipe(
+        ? reconciliationHooks.requestAfterChange.pipe(
             Effect.catch(() =>
               Effect.logWarning('Code graph change maintenance scheduling failed; refresh remains active.'),
             ),
             Effect.andThen(requestRefresh()),
           )
-        : reconciliationHooks.periodicRefreshRequired().pipe(
+        : reconciliationHooks.periodicRefreshRequired.pipe(
             Effect.match({
               onFailure: () => false,
               onSuccess: refreshRequired => refreshRequired,

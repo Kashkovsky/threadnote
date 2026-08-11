@@ -22,11 +22,5 @@ export const fromPromiseInterruptible = <A, E>(
   onError: (cause: unknown) => E,
 ) => Effect.tryPromise({try: evaluate, catch: onError});
 
-export const fromPromiseError = <A>(evaluate: () => PromiseLike<A>) =>
-  Effect.tryPromise({
-    try: evaluate,
-    catch: cause => (cause instanceof Error ? cause : new Error(String(cause))),
-  });
-
 export const fromSync = <A>(operation: string, evaluate: () => A) =>
   Effect.try({try: evaluate, catch: cause => applicationError(operation, cause)});

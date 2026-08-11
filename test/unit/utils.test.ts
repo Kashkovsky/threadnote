@@ -1,6 +1,6 @@
-import {chmod, mkdtemp, rm, writeFile} from 'node:fs/promises';
-import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {chmod, mkdtemp, rm, writeFile} from '../helpers/node-fs-promises.js';
+import {tmpdir} from '../helpers/node-os.js';
+import {join} from '../helpers/node-path.js';
 import {Effect} from 'effect';
 import {afterAll, beforeAll, describe, expect, it} from 'vitest';
 import {

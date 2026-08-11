@@ -1,4 +1,4 @@
-import {readFile, readlink, rename, rm as nodeRm, symlink} from 'node:fs/promises';
+import {readFile, readlink, rename, rm as nodeRm, symlink} from '../helpers/node-fs-promises.js';
 import {Deferred, Effect, Fiber, FileSystem, Path} from 'effect';
 import fc from 'fast-check';
 import {afterEach, describe, expect, it} from 'vitest';

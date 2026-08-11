@@ -1,3 +1,4 @@
+import {provideTestLayer} from '../helpers/effect-layer.js';
 import {it as effectIt} from '@effect/vitest';
 import {Effect, FileSystem} from 'effect';
 import {describe, expect} from 'vitest';
@@ -17,6 +18,6 @@ describe('model selection', () => {
         expect(selected.roles.embedding).toBe('bge-small-en-v1.5-q8');
         expect((yield* readModelSelection(home)).roles.embedding).toBe('bge-small-en-v1.5-q8');
       }).pipe(Effect.ensuring(fs.remove(home, {force: true, recursive: true}).pipe(Effect.orDie)));
-    }).pipe(Effect.provide(LocalModelCatalog.layer(BUILTIN_MODEL_MANIFESTS)), Effect.provide(ApplicationLayer)),
+    }).pipe(provideTestLayer(LocalModelCatalog.layer(BUILTIN_MODEL_MANIFESTS)), provideTestLayer(ApplicationLayer)),
   );
 });

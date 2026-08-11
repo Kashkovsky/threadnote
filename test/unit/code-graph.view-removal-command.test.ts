@@ -1,3 +1,4 @@
+import {TestError} from '../helpers/test-error.js';
 import {Database} from 'bun:sqlite';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {describe, expect, it as effectIt} from '@effect/vitest';
@@ -150,7 +151,7 @@ describe('code graph remove-view command core', () => {
           const lockReacquired = yield* Deferred.make<void>();
           const target = {checkoutId: CHECKOUT_ID, snapshotId: SNAPSHOT_ID, worktreeId: WORKTREE_ID};
           const evidence = yield* captureCodeGraphLocalProvenanceCleanupEvidence(fixture.home, target);
-          if (evidence === undefined) throw new Error('expected exact provenance evidence');
+          if (evidence === undefined) throw new TestError('expected exact provenance evidence');
 
           const result = yield* removeCodeGraphView(fixture.home, target, {
             afterProvenanceEvidenceCapture: () =>
@@ -188,7 +189,7 @@ describe('code graph remove-view command core', () => {
             replacementFixture.home,
             target,
           );
-          if (originalEvidence === undefined) throw new Error('expected exact provenance evidence');
+          if (originalEvidence === undefined) throw new TestError('expected exact provenance evidence');
           const replaced = yield* removeCodeGraphView(replacementFixture.home, target, {
             apply: true,
             beforeProvenanceCleanup: () =>
@@ -228,7 +229,7 @@ describe('code graph remove-view command core', () => {
             const original = yield* seedLocalProvenance(fixture.home, new Date(0).toISOString());
             const target = {checkoutId: CHECKOUT_ID, snapshotId: SNAPSHOT_ID, worktreeId: WORKTREE_ID};
             const originalEvidence = yield* captureCodeGraphLocalProvenanceCleanupEvidence(fixture.home, target);
-            if (originalEvidence === undefined) throw new Error('expected exact provenance evidence');
+            if (originalEvidence === undefined) throw new TestError('expected exact provenance evidence');
             const replacement = localProvenanceRecord(original.missingWorktree, new Date(1).toISOString());
 
             const result = yield* removeCodeGraphView(fixture.home, target, {
@@ -258,10 +259,10 @@ describe('code graph remove-view command core', () => {
             unchangedFixture.home,
             target,
           );
-          if (unchangedEvidence === undefined) throw new Error('expected exact provenance evidence');
+          if (unchangedEvidence === undefined) throw new TestError('expected exact provenance evidence');
           const unchangedInterrupted = yield* removeCodeGraphView(unchangedFixture.home, target, {
             apply: true,
-            beforeProvenanceCleanup: () => Effect.fail(new Error('simulated post-core interruption')),
+            beforeProvenanceCleanup: () => Effect.fail(new TestError('simulated post-core interruption')),
           }).pipe(Effect.exit);
           expect(unchangedInterrupted._tag).toBe('Failure');
           const unchangedRetry = yield* removeCodeGraphView(unchangedFixture.home, target, {apply: true});
@@ -273,10 +274,10 @@ describe('code graph remove-view command core', () => {
           const fixture = yield* viewActionFixture;
           const original = yield* seedLocalProvenance(fixture.home, new Date(0).toISOString());
           const originalEvidence = yield* captureCodeGraphLocalProvenanceCleanupEvidence(fixture.home, target);
-          if (originalEvidence === undefined) throw new Error('expected exact provenance evidence');
+          if (originalEvidence === undefined) throw new TestError('expected exact provenance evidence');
           const interrupted = yield* removeCodeGraphView(fixture.home, target, {
             apply: true,
-            beforeProvenanceCleanup: () => Effect.fail(new Error('simulated post-core interruption')),
+            beforeProvenanceCleanup: () => Effect.fail(new TestError('simulated post-core interruption')),
           }).pipe(Effect.exit);
           expect(interrupted._tag).toBe('Failure');
           expect(removedView(fixture.databasePath)).toBe(SNAPSHOT_ID);

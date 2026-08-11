@@ -1,3 +1,4 @@
+import {ScriptError} from './effect/errors.js';
 export interface StableReleaseVersion {
   readonly version: string;
   readonly major: number;
@@ -104,7 +105,7 @@ function runGit(repositoryRoot: string, arguments_: readonly string[]): string {
   });
   if (result.exitCode !== 0) {
     const detail = result.stderr.toString().trim();
-    throw new Error(`Could not load website release notes${detail ? `: ${detail}` : '.'}`);
+    throw new ScriptError(`Could not load website release notes${detail ? `: ${detail}` : '.'}`);
   }
   return result.stdout.toString();
 }
@@ -163,16 +164,17 @@ export function loadLatestMajorWebsiteReleases(repositoryRoot: string): readonly
   const refs = includePreparedWebsiteRelease(published, loadPreparedWebsiteRelease(repositoryRoot, published));
 
   const selected = selectLatestMajorReleases(refs);
-  if (selected.length === 0) throw new Error('The website needs at least one published or prepared stable release.');
+  if (selected.length === 0)
+    throw new ScriptError('The website needs at least one published or prepared stable release.');
   const sourcesByVersion = new Map(refs.map(release => [release.version, release]));
 
   return selected.map(release => {
     const releaseNotePath = `.github/release-notes/${release.version}.md`;
     const source = sourcesByVersion.get(release.version);
-    if (source === undefined) throw new Error(`Could not resolve website release source for ${release.version}.`);
+    if (source === undefined) throw new ScriptError(`Could not resolve website release source for ${release.version}.`);
     const markdown = runGit(repositoryRoot, ['show', `${source.noteRef}:${releaseNotePath}`]);
     const {summary, highlights} = summarizeReleaseNote(markdown);
-    if (!summary) throw new Error(`${releaseNotePath} needs an introductory release summary.`);
+    if (!summary) throw new ScriptError(`${releaseNotePath} needs an introductory release summary.`);
     return {
       ...release,
       highlights,

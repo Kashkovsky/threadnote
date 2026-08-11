@@ -1,4 +1,4 @@
-import {Crypto, Effect, FileSystem, Path} from 'effect';
+import {Crypto, Effect, FileSystem, Path, Schema} from 'effect';
 import {CommandExecutor} from '../effect/command.js';
 import {SystemInfo} from '../effect/system.js';
 import {
@@ -30,6 +30,11 @@ import {inspectCodeGraphViewDatabaseTarget} from './view_removal.js';
 export {type CodeGraphWorktreeReconciliationCandidate} from './store.js';
 
 export const CODE_GRAPH_WORKTREE_RECONCILIATION_CANDIDATE_LIMIT = 32;
+
+class CodeGraphWorktreeAuthorityChanged extends Schema.TaggedErrorClass<CodeGraphWorktreeAuthorityChanged>()(
+  'CodeGraphWorktreeAuthorityChanged',
+  {message: Schema.String},
+) {}
 
 export interface CodeGraphWorktreeReconciliationAuthorityInput {
   readonly anchorMatches: boolean;
@@ -392,7 +397,7 @@ export const makeCodeGraphWorktreeReconciler = Effect.fn('codeGraph.makeWorktree
               }),
             );
           return locked;
-        }).pipe(Effect.catch(() => Effect.succeed({reason: 'catalog-unavailable', state: 'deferred'} as const)));
+        });
 
       return {tick} satisfies CodeGraphWorktreeReconcilerShape;
     }),
@@ -417,7 +422,11 @@ export const makeLiveCodeGraphWorktreeReconciler = Effect.fn('codeGraph.makeLive
     Effect.gen(function* () {
       const inspected = yield* provideLive(inspectCodeGraphViewDatabaseTarget(input.threadnoteHome, input.checkoutId));
       if (inspected.state !== 'ready' || inspected.databasePath !== input.databasePath) {
-        return yield* Effect.fail(new Error(`Code graph database target changed before ${operation}.`));
+        return yield* Effect.fail(
+          new CodeGraphWorktreeAuthorityChanged({
+            message: `Code graph database target changed before ${operation}.`,
+          }),
+        );
       }
       if (yield* provideLive(codeGraphMaintenanceIntentActive(input.threadnoteHome))) {
         return yield* Effect.fail(new CodeGraphMaintenanceActiveError());

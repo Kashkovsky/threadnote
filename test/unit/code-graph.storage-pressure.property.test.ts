@@ -1,3 +1,4 @@
+import {TestError} from '../helpers/test-error.js';
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import {
@@ -36,7 +37,7 @@ describe('code graph storage pressure properties', () => {
             availableBytes: sample.highAvailableBytes,
           }).pressure;
           const low = classifyCodeGraphStoragePressure({...observation, availableBytes: lowAvailableBytes}).pressure;
-          if (high === 'unknown' || low === 'unknown') throw new Error('known byte observations became unknown');
+          if (high === 'unknown' || low === 'unknown') throw new TestError('known byte observations became unknown');
           expect(severity[low]).toBeGreaterThanOrEqual(severity[high]);
         },
       ),

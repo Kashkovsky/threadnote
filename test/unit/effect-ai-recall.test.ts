@@ -1,3 +1,4 @@
+import {provideTestLayer} from '../helpers/effect-layer.js';
 import {expect, it} from '@effect/vitest';
 import * as FC from 'effect/testing/FastCheck';
 import {Cause, Effect, Exit, Fiber, Layer} from 'effect';
@@ -124,7 +125,7 @@ describe('Effect AI recall expansion', () => {
 
   it.effect('keeps application code provider-independent', () =>
     expandRecallQueryEffect({project: 'threadnote', query: 'how do beta updates differ'}).pipe(
-      Effect.provide(
+      provideTestLayer(
         Layer.succeed(RecallQueryExpander, {
           expand: ({query}) => Effect.succeed([`rewrite:${query}`]),
         }),
@@ -138,7 +139,7 @@ describe('Effect AI recall expansion', () => {
       candidates: [{id: 'c1', summary: 'release channel', uri: 'threadnote://release'}],
       query: 'preview release updates',
     }).pipe(
-      Effect.provide(
+      provideTestLayer(
         Layer.succeed(RecallCandidateSelector, {
           select: () => Effect.succeed(['c1']),
         }),

@@ -1,5 +1,6 @@
+import {it as effectIt} from "@effect/vitest";
 import {Effect} from 'effect';
-import {describe, expect, it} from 'vitest';
+import {describe, expect} from 'vitest';
 import {analyzeCodeGraph} from '../../src/code_graph/analysis.js';
 import type {CodeGraphEdge, CodeGraphSymbol} from '../../src/code_graph/types.js';
 import {
@@ -11,7 +12,7 @@ import {
 } from '../helpers/code-graph-analysis.js';
 
 describe('code graph analysis scaling', () => {
-  it('analyzes a production-shaped graph through bounded pages without hydrating the edge set', async () => {
+  effectIt.effect('analyzes a production-shaped graph through bounded pages without hydrating the edge set', () => Effect.gen(function* () {
     const nodeCount = 20_000;
     const packageSize = 100;
     const symbols: CodeGraphSymbol[] = Array.from({length: nodeCount}, (_, index) => {
@@ -34,8 +35,7 @@ describe('code graph analysis scaling', () => {
     const observation: AnalysisPagingObservation = {edgePageLimits: [], symbolPageLimits: []};
     const startedAt = performance.now();
 
-    const result = await Effect.runPromise(
-      analyzeCodeGraph(pagedAnalysisStore(symbols, edges, observation), {
+    const result = yield* (analyzeCodeGraph(pagedAnalysisStore(symbols, edges, observation), {
         budget: {
           maxEdges: edges.length,
           maxEdgeVisits: edges.length * 2,
@@ -45,8 +45,7 @@ describe('code graph analysis scaling', () => {
         databasePath: '/scale/graph.sqlite',
         limits: {communities: 50, components: 10, hubs: 10, memberships: 100, surprisingLinks: 10},
         snapshot: analysisSnapshot(symbols, edges),
-      }),
-    );
+      }));
     const duration = performance.now() - startedAt;
 
     expect(result.coverage.complete).toBe(true);
@@ -65,5 +64,5 @@ describe('code graph analysis scaling', () => {
     expect(observation.symbolPageLimits.length).toBeGreaterThan(50);
     expect(observation.edgePageLimits.length).toBeGreaterThan(200);
     expect(duration).toBeLessThan(10_000);
-  }, 20_000);
+  }), 20_000);
 });

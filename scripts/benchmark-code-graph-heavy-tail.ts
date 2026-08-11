@@ -1,3 +1,4 @@
+import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import {Database} from 'bun:sqlite';
 import {Effect, Exit, FileSystem, Path} from 'effect';
@@ -175,19 +176,19 @@ const runParent = Effect.fn('benchmarkCodeGraphHeavyTail.parent')(function* (arg
   validateCompletedRun('parallel-worker', parallel, profile);
   validateCompletedRun('resumed', resumed, profile);
   if (interrupted.state !== 'interrupted' || interrupted.cache.files < 1) {
-    return yield* Effect.fail(new Error('The interruption run did not retain any durable parser cache rows.'));
+    return yield* Effect.fail(new ScriptError('The interruption run did not retain any durable parser cache rows.'));
   }
   if ((resumed.reusedFiles ?? 0) < 1) {
-    return yield* Effect.fail(new Error('The resumed run did not reuse facts persisted before interruption.'));
+    return yield* Effect.fail(new ScriptError('The resumed run did not reuse facts persisted before interruption.'));
   }
   if (single.graph!.digest !== parallel.graph!.digest) {
-    return yield* Effect.fail(new Error('Single-worker and parallel code graphs differ.'));
+    return yield* Effect.fail(new ScriptError('Single-worker and parallel code graphs differ.'));
   }
   if (single.graph!.digest !== resumed.graph!.digest) {
-    return yield* Effect.fail(new Error('Interrupted/resumed and clean code graphs differ.'));
+    return yield* Effect.fail(new ScriptError('Interrupted/resumed and clean code graphs differ.'));
   }
 
-  const hardware = yield* system.hardwareInfo();
+  const hardware = yield* system.hardwareInfo;
   const [commit, dirty] = yield* Effect.all(
     [git(process.cwd(), ['rev-parse', 'HEAD']), git(process.cwd(), ['status', '--porcelain'])],
     {concurrency: 2},
@@ -261,7 +262,7 @@ const runChild = Effect.fn('benchmarkCodeGraphHeavyTail.child')(function* (args:
           return false;
         }).pipe(
           Effect.flatMap(shouldInterrupt =>
-            shouldInterrupt ? Effect.fail(new Error('Expected heavy-tail benchmark interruption.')) : Effect.void,
+            shouldInterrupt ? Effect.fail(new ScriptError('Expected heavy-tail benchmark interruption.')) : Effect.void,
           ),
         ),
       threadnoteHome: home,
@@ -291,7 +292,7 @@ const runChild = Effect.fn('benchmarkCodeGraphHeavyTail.child')(function* (args:
     return;
   }
   if (args.interruptAfterPersistedFiles !== undefined) {
-    return yield* Effect.fail(new Error('The heavy-tail benchmark completed before its requested interruption.'));
+    return yield* Effect.fail(new ScriptError('The heavy-tail benchmark completed before its requested interruption.'));
   }
   const summary = exit.value;
   const graph = yield* store.loadGraph(layout.databasePath, summary.snapshot.id);
@@ -400,24 +401,24 @@ function heavyTailGraphShape(graph: StoredCodeGraph) {
 }
 
 function validateCompletedRun(name: string, run: HeavyTailChildRun, profile: CodeGraphHeavyTailProfile): void {
-  if (run.state !== 'complete' || !run.graph) throw new Error(`${name} heavy-tail run did not complete.`);
+  if (run.state !== 'complete' || !run.graph) throw new ScriptError(`${name} heavy-tail run did not complete.`);
   if (run.graph.lowSignalJsonSymbols !== 0 || run.cache.lowSignalJsonFactsBytes !== 0) {
-    throw new Error(`${name} heavy-tail run admitted excluded low-signal JSON.`);
+    throw new ScriptError(`${name} heavy-tail run admitted excluded low-signal JSON.`);
   }
   if (run.graph.pathologicalTypeScriptTails !== profile.pathologicalTypeScriptFiles) {
-    throw new Error(`${name} heavy-tail run lost declarations after pathological TypeScript calls.`);
+    throw new ScriptError(`${name} heavy-tail run lost declarations after pathological TypeScript calls.`);
   }
   if (!run.graph.generatedTypeScriptTailPreserved) {
-    throw new Error(`${name} heavy-tail run lost declarations from generated TypeScript surface extraction.`);
+    throw new ScriptError(`${name} heavy-tail run lost declarations from generated TypeScript surface extraction.`);
   }
   if (run.graph.textlessSvgSymbols !== 0) {
-    throw new Error(`${name} heavy-tail run admitted excluded textless SVG.`);
+    throw new ScriptError(`${name} heavy-tail run admitted excluded textless SVG.`);
   }
   if (run.graph.files !== codeGraphHeavyTailEligibleFiles(profile)) {
-    throw new Error(`${name} heavy-tail run indexed ${run.graph.files} files; expected fixture shape mismatch.`);
+    throw new ScriptError(`${name} heavy-tail run indexed ${run.graph.files} files; expected fixture shape mismatch.`);
   }
   if (Object.values(run.languages).some(language => language.degradedFiles > 0)) {
-    throw new Error(`${name} heavy-tail run degraded one or more parser files.`);
+    throw new ScriptError(`${name} heavy-tail run degraded one or more parser files.`);
   }
 }
 
@@ -483,7 +484,7 @@ const spawnChild = Effect.fn('benchmarkCodeGraphHeavyTail.spawnChild')(function*
   );
   if (exitCode !== 0) {
     return yield* Effect.fail(
-      new Error(
+      new ScriptError(
         `${options.name} heavy-tail child exited with ${exitCode}.\n` +
           boundedOutput('stdout', stdout) +
           boundedOutput('stderr', stderr),
@@ -494,7 +495,8 @@ const spawnChild = Effect.fn('benchmarkCodeGraphHeavyTail.spawnChild')(function*
 });
 
 export function parseHeavyTailChildRun(value: unknown): HeavyTailChildRun {
-  if (typeof value !== 'object' || value === null) throw new Error('Heavy-tail child artifact must be an object.');
+  if (typeof value !== 'object' || value === null)
+    throw new ScriptError('Heavy-tail child artifact must be an object.');
   const artifact = value as Partial<HeavyTailChildRun>;
   if (
     artifact.version !== 1 ||
@@ -513,19 +515,20 @@ export function parseHeavyTailChildRun(value: unknown): HeavyTailChildRun {
     artifact.languages === null ||
     !Array.isArray(artifact.slowFiles)
   ) {
-    throw new Error('Heavy-tail child artifact is invalid.');
+    throw new ScriptError('Heavy-tail child artifact is invalid.');
   }
   if (artifact.state === 'complete' && artifact.graph === undefined) {
-    throw new Error('Completed heavy-tail child artifact must include a graph shape.');
+    throw new ScriptError('Completed heavy-tail child artifact must include a graph shape.');
   }
   if (artifact.state === 'interrupted' && !positiveInteger(artifact.interruptedAfterPersistedFiles)) {
-    throw new Error('Interrupted heavy-tail child artifact must include its durable interruption point.');
+    throw new ScriptError('Interrupted heavy-tail child artifact must include its durable interruption point.');
   }
   return artifact as HeavyTailChildRun;
 }
 
 export function parseCodeGraphHeavyTailBenchmarkArtifact(value: unknown): CodeGraphHeavyTailBenchmarkArtifact {
-  if (typeof value !== 'object' || value === null) throw new Error('Heavy-tail benchmark artifact must be an object.');
+  if (typeof value !== 'object' || value === null)
+    throw new ScriptError('Heavy-tail benchmark artifact must be an object.');
   const artifact = value as Partial<CodeGraphHeavyTailBenchmarkArtifact>;
   if (
     artifact.version !== 1 ||
@@ -535,7 +538,7 @@ export function parseCodeGraphHeavyTailBenchmarkArtifact(value: unknown): CodeGr
     typeof artifact.runs !== 'object' ||
     artifact.runs === null
   ) {
-    throw new Error('Heavy-tail benchmark artifact is invalid.');
+    throw new ScriptError('Heavy-tail benchmark artifact is invalid.');
   }
   parseCodeGraphHeavyTailProfile(artifact.profile);
   parseHeavyTailChildRun(artifact.runs.single);
@@ -565,15 +568,15 @@ function parseArguments(args: readonly string[]): BenchmarkArguments {
     else if (argument === '--repository') repository = required(args[++index], argument);
     else if (argument === '--smoke') smoke = true;
     else if (argument === '--workers') workers = integer(args[++index], argument, 1, 8);
-    else throw new Error(`Unknown heavy-tail benchmark option: ${argument}`);
+    else throw new ScriptError(`Unknown heavy-tail benchmark option: ${argument}`);
   }
   if (
     !child &&
     [home, profilePath, repository, workers, interruptAfterPersistedFiles].some(value => value !== undefined)
   ) {
-    throw new Error('Child-only heavy-tail benchmark options require --child.');
+    throw new ScriptError('Child-only heavy-tail benchmark options require --child.');
   }
-  if (child && smoke) throw new Error('--smoke is a parent benchmark option.');
+  if (child && smoke) throw new ScriptError('--smoke is a parent benchmark option.');
   return {child, home, interruptAfterPersistedFiles, outputPath, profilePath, repository, smoke, workers};
 }
 
@@ -585,13 +588,13 @@ function integer(
 ): number {
   const parsed = Number.parseInt(required(value, option), 10);
   if (!Number.isSafeInteger(parsed) || parsed < minimum || parsed > maximum) {
-    throw new Error(`${option} must be between ${minimum} and ${maximum}.`);
+    throw new ScriptError(`${option} must be between ${minimum} and ${maximum}.`);
   }
   return parsed;
 }
 
 function required(value: string | undefined, option: string): string {
-  if (!value?.trim()) throw new Error(`${option} requires a value.`);
+  if (!value?.trim()) throw new ScriptError(`${option} requires a value.`);
   return value;
 }
 
@@ -628,4 +631,4 @@ const git = Effect.fn('benchmarkCodeGraphHeavyTail.git')((cwd: string, args: rea
   ),
 );
 
-if (import.meta.main) BunRuntime.runMain(benchmark.pipe(Effect.provide(ApplicationLayer)));
+if (import.meta.main) BunRuntime.runMain(provideScriptLayer(benchmark, ApplicationLayer));

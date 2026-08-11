@@ -1,8 +1,9 @@
-import {execFile} from 'node:child_process';
-import {mkdir, mkdtemp, rm, writeFile} from 'node:fs/promises';
-import {tmpdir} from 'node:os';
-import {join} from 'node:path';
-import {promisify} from 'node:util';
+import {TestError} from '../helpers/test-error.js';
+import {execFile} from '../helpers/node-child-process.js';
+import {mkdir, mkdtemp, rm, writeFile} from '../helpers/node-fs-promises.js';
+import {tmpdir} from '../helpers/node-os.js';
+import {join} from '../helpers/node-path.js';
+import {promisify} from '../helpers/node-util.js';
 import {describe, expect, it} from 'vitest';
 
 const execFilePromise = promisify(execFile);
@@ -975,7 +976,7 @@ async function runCliThroughPlatformPipe(
       new Response(child.stdout).text(),
     ]);
     if (exitCode !== 0) {
-      throw new Error(`CLI ${mode} platform pipe failed with ${exitCode}.\n${stderr}`);
+      throw new TestError(`CLI ${mode} platform pipe failed with ${exitCode}.\n${stderr}`);
     }
     return JSON.parse(stdout);
   } finally {

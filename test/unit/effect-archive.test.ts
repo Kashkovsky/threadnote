@@ -1,121 +1,135 @@
+import {provideTestLayer} from '../helpers/effect-layer.js';
+import {it as effectIt} from '@effect/vitest';
 import {Effect, FileSystem, Path} from 'effect';
-import {describe, expect, it} from 'vitest';
+import {describe, expect} from 'vitest';
 import {extractGzipTar, type ArchiveExtractionLimits} from '../../src/effect/archive.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 
 const TAR_BLOCK_BYTES = 512;
 
 describe('bounded streaming release extraction', () => {
-  it('applies local PAX path and size overrides', async () => {
-    const pax = paxRecords({path: './nested/local.txt', size: '5'});
-    const result = await extractFixture(
-      tarArchive([
-        tarEntry('./PaxHeader/local.txt', pax, {type: 'x'}),
-        tarEntry('./fallback.txt', bytes('hello'), {headerSize: 0}),
-      ]),
-    );
+  effectIt.effect('applies local PAX path and size overrides', () =>
+    Effect.gen(function* () {
+      const pax = paxRecords({path: './nested/local.txt', size: '5'});
+      const result = yield* extractFixture(
+        tarArchive([
+          tarEntry('./PaxHeader/local.txt', pax, {type: 'x'}),
+          tarEntry('./fallback.txt', bytes('hello'), {headerSize: 0}),
+        ]),
+      );
 
-    expect(result.failure).toBeUndefined();
-    expect(result.files.get('nested/local.txt')).toBe('hello');
-    expect(result.files.has('fallback.txt')).toBe(false);
-  });
+      expect(result.failure).toBeUndefined();
+      expect(result.files.get('nested/local.txt')).toBe('hello');
+      expect(result.files.has('fallback.txt')).toBe(false);
+    }),
+  );
 
-  it('applies global PAX metadata and lets an empty local value clear it', async () => {
-    const globalArchive = tarArchive([
-      tarEntry('./GlobalHead.1', paxRecords({path: './global.txt'}), {type: 'g'}),
-      tarEntry('./fallback.txt', bytes('global')),
-    ]);
-    const clearedArchive = tarArchive([
-      tarEntry('./GlobalHead.1', paxRecords({path: './global.txt'}), {type: 'g'}),
-      tarEntry('./PaxHeader/local.txt', paxRecords({path: ''}), {type: 'x'}),
-      tarEntry('./fallback.txt', bytes('fallback')),
-    ]);
-    const [global, cleared] = await Promise.all([extractFixture(globalArchive), extractFixture(clearedArchive)]);
+  effectIt.effect('applies global PAX metadata and lets an empty local value clear it', () =>
+    Effect.gen(function* () {
+      const globalArchive = tarArchive([
+        tarEntry('./GlobalHead.1', paxRecords({path: './global.txt'}), {type: 'g'}),
+        tarEntry('./fallback.txt', bytes('global')),
+      ]);
+      const clearedArchive = tarArchive([
+        tarEntry('./GlobalHead.1', paxRecords({path: './global.txt'}), {type: 'g'}),
+        tarEntry('./PaxHeader/local.txt', paxRecords({path: ''}), {type: 'x'}),
+        tarEntry('./fallback.txt', bytes('fallback')),
+      ]);
+      const [global, cleared] = yield* Effect.all([extractFixture(globalArchive), extractFixture(clearedArchive)], {
+        concurrency: 2,
+      });
 
-    expect(global.failure).toBeUndefined();
-    expect(global.files.get('global.txt')).toBe('global');
-    expect(cleared.failure).toBeUndefined();
-    expect(cleared.files.get('fallback.txt')).toBe('fallback');
-  });
+      expect(global.failure).toBeUndefined();
+      expect(global.files.get('global.txt')).toBe('global');
+      expect(cleared.failure).toBeUndefined();
+      expect(cleared.files.get('fallback.txt')).toBe('fallback');
+    }),
+  );
 
-  it('rejects malformed or truncated PAX records', async () => {
-    const malformed = await extractFixture(
-      tarArchive([
-        tarEntry('./PaxHeader/broken', bytes('99 path=broken.txt\n'), {type: 'x'}),
-        tarEntry('./fallback.txt', bytes('content')),
-      ]),
-    );
+  effectIt.effect('rejects malformed or truncated PAX records', () =>
+    Effect.gen(function* () {
+      const malformed = yield* extractFixture(
+        tarArchive([
+          tarEntry('./PaxHeader/broken', bytes('99 path=broken.txt\n'), {type: 'x'}),
+          tarEntry('./fallback.txt', bytes('content')),
+        ]),
+      );
 
-    expect(String(malformed.failure)).toMatch(/truncated PAX metadata record/);
-    expect(malformed.files.has('fallback.txt')).toBe(false);
-  });
+      expect(String(malformed.failure)).toMatch(/truncated PAX metadata record/);
+      expect(malformed.files.has('fallback.txt')).toBe(false);
+    }),
+  );
 
-  it.each([
-    {
-      label: 'cumulative decompressed bytes',
-      limits: {decompressedBytes: TAR_BLOCK_BYTES * 2},
-      pattern: /decompressed tar bytes/,
-    },
-    {
-      label: 'tar entry count',
-      limits: {entries: 1},
-      pattern: /tar entries/,
-    },
-    {
-      label: 'end padding',
-      limits: {endPaddingBytes: TAR_BLOCK_BYTES / 2},
-      pattern: /end-padding bytes/,
-    },
-  ])('bounds $label independently of file payload sizes', async ({limits, pattern}) => {
-    const result = await extractFixture(
-      tarArchive([tarEntry('./first.txt', new Uint8Array()), tarEntry('./second.txt', new Uint8Array())]),
-      limits,
-    );
+  effectIt.effect('bounds independent archive limits independently of file payload sizes', () =>
+    Effect.gen(function* () {
+      for (const {limits, pattern} of [
+        {
+          label: 'cumulative decompressed bytes',
+          limits: {decompressedBytes: TAR_BLOCK_BYTES * 2},
+          pattern: /decompressed tar bytes/,
+        },
+        {
+          label: 'tar entry count',
+          limits: {entries: 1},
+          pattern: /tar entries/,
+        },
+        {
+          label: 'end padding',
+          limits: {endPaddingBytes: TAR_BLOCK_BYTES / 2},
+          pattern: /end-padding bytes/,
+        },
+      ]) {
+        const result = yield* extractFixture(
+          tarArchive([tarEntry('./first.txt', new Uint8Array()), tarEntry('./second.txt', new Uint8Array())]),
+          limits,
+        );
 
-    expect(String(result.failure)).toMatch(pattern);
-  });
+        expect(String(result.failure)).toMatch(pattern);
+      }
+    }),
+  );
 
-  it('counts effective PAX sizes against the expanded payload budget', async () => {
-    const pax = paxRecords({size: '5'});
-    const result = await extractFixture(
-      tarArchive([
-        tarEntry('./PaxHeader/size', pax, {type: 'x'}),
-        tarEntry('./payload.txt', bytes('hello'), {headerSize: 0}),
-      ]),
-      {expandedBytes: pax.length + 4},
-    );
+  effectIt.effect('counts effective PAX sizes against the expanded payload budget', () =>
+    Effect.gen(function* () {
+      const pax = paxRecords({size: '5'});
+      const result = yield* extractFixture(
+        tarArchive([
+          tarEntry('./PaxHeader/size', pax, {type: 'x'}),
+          tarEntry('./payload.txt', bytes('hello'), {headerSize: 0}),
+        ]),
+        {expandedBytes: pax.length + 4},
+      );
 
-    expect(String(result.failure)).toMatch(/expanded bytes/);
-    expect(result.files.has('payload.txt')).toBe(false);
-  });
+      expect(String(result.failure)).toMatch(/expanded bytes/);
+      expect(result.files.has('payload.txt')).toBe(false);
+    }),
+  );
 });
 
-async function extractFixture(tar: Uint8Array, limits: ArchiveExtractionLimits = {}) {
-  return Effect.runPromise(
-    Effect.scoped(
-      Effect.gen(function* () {
-        const fs = yield* FileSystem.FileSystem;
-        const path = yield* Path.Path;
-        const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-archive-test-'});
-        const archive = path.join(root, 'release.tar.gz');
-        const destination = path.join(root, 'release');
-        yield* fs.writeFile(archive, Bun.gzipSync(new Uint8Array(tar)));
-        const failure = yield* extractGzipTar(archive, destination, limits).pipe(
-          Effect.as(undefined),
-          Effect.catch(cause => Effect.succeed(cause)),
-        );
-        const files = new Map<string, string>();
-        if (yield* fs.exists(destination)) {
-          for (const relative of yield* fs.readDirectory(destination, {recursive: true})) {
-            const file = path.join(destination, relative);
-            if ((yield* fs.stat(file)).type === 'File')
-              files.set(relative.replaceAll('\\', '/'), yield* fs.readFileString(file));
-          }
+function extractFixture(tar: Uint8Array, limits: ArchiveExtractionLimits = {}) {
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-archive-test-'});
+      const archive = path.join(root, 'release.tar.gz');
+      const destination = path.join(root, 'release');
+      yield* fs.writeFile(archive, Bun.gzipSync(new Uint8Array(tar)));
+      const failure = yield* extractGzipTar(archive, destination, limits).pipe(
+        Effect.as(undefined),
+        Effect.catch(cause => Effect.succeed(cause)),
+      );
+      const files = new Map<string, string>();
+      if (yield* fs.exists(destination)) {
+        for (const relative of yield* fs.readDirectory(destination, {recursive: true})) {
+          const file = path.join(destination, relative);
+          if ((yield* fs.stat(file)).type === 'File')
+            files.set(relative.replaceAll('\\', '/'), yield* fs.readFileString(file));
         }
-        return {failure, files};
-      }),
-    ).pipe(Effect.provide(ApplicationLayer)),
-  );
+      }
+      return {failure, files};
+    }),
+  ).pipe(provideTestLayer(ApplicationLayer));
 }
 
 function tarArchive(entries: readonly Uint8Array[]): Uint8Array {

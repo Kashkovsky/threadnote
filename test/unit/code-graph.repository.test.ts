@@ -1,7 +1,8 @@
-import {execFileSync} from 'node:child_process';
-import {mkdtempSync} from 'node:fs';
-import {tmpdir} from 'node:os';
-import {basename, isAbsolute, join} from 'node:path';
+import {TestError} from '../helpers/test-error.js';
+import {execFileSync} from '../helpers/node-child-process.js';
+import {mkdtempSync} from '../helpers/node-fs.js';
+import {tmpdir} from '../helpers/node-os.js';
+import {basename, isAbsolute, join} from '../helpers/node-path.js';
 import {Effect} from 'effect';
 import {describe, expect, it} from 'vitest';
 import {runCodeGraphCompact, runCodeGraphIndex} from '../../src/code_graph/commands.js';
@@ -50,7 +51,8 @@ describe('code graph repository identity', () => {
       Effect.gen(function* () {
         const command = yield* CommandExecutor;
         const executeBytes = command.executeBytes;
-        if (executeBytes === undefined) return yield* Effect.fail(new Error('binary command adapter is unavailable'));
+        if (executeBytes === undefined)
+          return yield* Effect.fail(new TestError('binary command adapter is unavailable'));
         const malformed = CommandExecutor.of({
           ...command,
           executeBytes: (executable, args, options) =>

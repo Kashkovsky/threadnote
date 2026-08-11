@@ -1,3 +1,4 @@
+import {TestError} from '../helpers/test-error.js';
 import {Effect, FileSystem} from 'effect';
 import {beforeEach, describe, expect, it, vi} from 'vitest';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
@@ -238,7 +239,7 @@ describe('code graph workset mixed-coverage preparation', () => {
       ensureCommit: () => Effect.die('not used'),
       index: () => Effect.succeed(summary),
     };
-    mocks.readSnapshotMonikers.mockReturnValue(Effect.fail(new Error('malformed moniker row')));
+    mocks.readSnapshotMonikers.mockReturnValue(Effect.fail(new TestError('malformed moniker row')));
 
     const result = await runEffect(
       prepareCodeGraphWorkset(config, 'engineering').pipe(

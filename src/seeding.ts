@@ -49,6 +49,10 @@ interface SeedStateFile {
   readonly version: 1;
 }
 
+class SeedingOperationError extends Error {
+  readonly _tag = 'SeedingOperationError' as const;
+}
+
 const log = Console.log;
 const MAX_SEED_CANDIDATES_PER_PROJECT = 20_000;
 const MAX_SEED_FILE_BYTES = 4 * 1024 * 1024;
@@ -153,7 +157,7 @@ export function runSeed(config: RuntimeConfig, options: SeedOptions) {
       return yield* Effect.fail(
         applicationError(
           'seed projects',
-          new Error(
+          new SeedingOperationError(
             `${failedProjectNames.length} project(s) failed after the remaining projects were processed: ${failedProjectNames.join(', ')}`,
           ),
         ),
@@ -384,7 +388,7 @@ function filterProjects(
   const missing = only.filter(name => !known.has(name));
   if (missing.length > 0) {
     const all = [...known].join(', ');
-    throw new Error(`Unknown project(s) in --only: ${missing.join(', ')}. Manifest projects: ${all}`);
+    throw new SeedingOperationError(`Unknown project(s) in --only: ${missing.join(', ')}. Manifest projects: ${all}`);
   }
   const want = new Set(only);
   return projects.filter(project => want.has(project.name));
@@ -451,7 +455,7 @@ function assertUniqueProjectUriRoots(projects: readonly ProjectManifest[]): void
     const root = trimTrailingSlash(project.uri);
     const existing = ownerByRoot.get(root);
     if (existing !== undefined) {
-      throw new Error(`Projects ${existing} and ${project.name} use the same seed URI root: ${root}.`);
+      throw new SeedingOperationError(`Projects ${existing} and ${project.name} use the same seed URI root: ${root}.`);
     }
     ownerByRoot.set(root, project.name);
   }
@@ -585,7 +589,10 @@ export function runWorksetShow(config: RuntimeConfig, name: string) {
     const workset = manifest.worksets?.find(entry => entry.name.toLowerCase() === name.toLowerCase());
     if (!workset) {
       return yield* Effect.fail(
-        applicationError('show workset', new Error(`No workset named "${name}" in ${config.manifestPath}.`)),
+        applicationError(
+          'show workset',
+          new SeedingOperationError(`No workset named "${name}" in ${config.manifestPath}.`),
+        ),
       );
     }
     yield* log(`Workset: ${workset.name}`);
@@ -634,7 +641,7 @@ export function runSeedSkills(config: RuntimeConfig, options: SeedOptions) {
 export const resolveRepoRoot = Effect.fn('seeding.resolveRepoRoot')(function* (repoInput: string) {
   const inputPath = yield* expandPath(repoInput);
   if (!(yield* isDirectory(inputPath))) {
-    return yield* Effect.fail(new Error(`Repo path is not a directory: ${inputPath}`));
+    return yield* Effect.fail(new SeedingOperationError(`Repo path is not a directory: ${inputPath}`));
   }
   return (yield* gitValue(['rev-parse', '--show-toplevel'], inputPath)) ?? inputPath;
 });
@@ -687,7 +694,7 @@ const visitSeedCandidates = Effect.fn('seeding.visitSeedCandidates')(function* (
         budget.candidates += 1;
         if (budget.candidates > MAX_SEED_CANDIDATES_PER_PROJECT) {
           return yield* Effect.fail(
-            new Error(
+            new SeedingOperationError(
               `candidate limit exceeded (${MAX_SEED_CANDIDATES_PER_PROJECT}); narrow the project's seed patterns`,
             ),
           );
@@ -778,7 +785,7 @@ const visitProjectPattern = Effect.fn('seeding.visitProjectPattern')(function* (
       budget.entries += 1;
       if (budget.entries > MAX_SEED_WALK_ENTRIES_PER_PROJECT) {
         return yield* Effect.fail(
-          new Error(
+          new SeedingOperationError(
             `filesystem traversal limit exceeded (${MAX_SEED_WALK_ENTRIES_PER_PROJECT} entries); narrow the project's seed patterns or extend .threadnoteignore`,
           ),
         );

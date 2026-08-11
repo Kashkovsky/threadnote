@@ -1,7 +1,9 @@
-import {execFileSync} from 'node:child_process';
-import {mkdirSync, mkdtempSync, rmSync, writeFileSync} from 'node:fs';
-import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {TestError} from '../helpers/test-error.js';
+import {provideTestLayer} from '../helpers/effect-layer.js';
+import {execFileSync} from '../helpers/node-child-process.js';
+import {mkdirSync, mkdtempSync, rmSync, writeFileSync} from '../helpers/node-fs.js';
+import {tmpdir} from '../helpers/node-os.js';
+import {join} from '../helpers/node-path.js';
 import {Database} from 'bun:sqlite';
 import {describe, expect, it} from '@effect/vitest';
 import {TestClock} from 'effect/testing';
@@ -319,7 +321,7 @@ describe('code graph incremental-overlay differential properties', () => {
             expect(result.snapshot.id).not.toBe(base.snapshot.id);
           }),
         root => Effect.sync(() => rmSync(root, {force: true, recursive: true})),
-      ).pipe(Effect.provide(ApplicationLayer), TestClock.withLive),
+      ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
     {
       fastCheck: {interruptAfterTimeLimit: 120_000, markInterruptAsFailure: true, numRuns: 6},
       timeout: 130_000,
@@ -974,7 +976,7 @@ function persistedForcedBuildCheckpoint(databasePath: string): {
         "SELECT id, dirty, started_at AS startedAt, state FROM snapshots WHERE state = 'building' ORDER BY started_at, id",
       )
       .get();
-    if (snapshot === null) throw new Error('Interrupted forced build did not preserve its building snapshot.');
+    if (snapshot === null) throw new TestError('Interrupted forced build did not preserve its building snapshot.');
     const receipt = database
       .query<{readonly count: number}, [string]>(
         'SELECT COUNT(*) AS count FROM building_materialization_batches WHERE snapshot_id = ?',
@@ -997,7 +999,7 @@ function persistedBuildingSnapshot(databasePath: string): {
         "SELECT id, base_snapshot_id AS baseSnapshotId FROM snapshots WHERE state = 'building' ORDER BY started_at, id LIMIT 1",
       )
       .get();
-    if (snapshot === null) throw new Error('Interrupted build did not preserve its building snapshot.');
+    if (snapshot === null) throw new TestError('Interrupted build did not preserve its building snapshot.');
     return {
       ...snapshot,
       baseSnapshotId:

@@ -1,7 +1,8 @@
-import {execFileSync} from 'node:child_process';
-import {mkdirSync, mkdtempSync, rmSync, writeFileSync} from 'node:fs';
-import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {provideTestLayer} from '../helpers/effect-layer.js';
+import {execFileSync} from '../helpers/node-child-process.js';
+import {mkdirSync, mkdtempSync, rmSync, writeFileSync} from '../helpers/node-fs.js';
+import {tmpdir} from '../helpers/node-os.js';
+import {join} from '../helpers/node-path.js';
 import {Database} from 'bun:sqlite';
 import {describe, expect, it} from '@effect/vitest';
 import {Context, Effect, Layer, Path} from 'effect';
@@ -58,7 +59,7 @@ describe('cross-session code graph increments', () => {
         Effect.ensuring(
           Effect.sync(() => (root === undefined ? undefined : rmSync(root, {force: true, recursive: true}))),
         ),
-        Effect.provide(ApplicationLayer),
+        provideTestLayer(ApplicationLayer),
         TestClock.withLive,
       );
     },
@@ -113,7 +114,7 @@ describe('cross-session code graph increments', () => {
         'Dirty overlay reused persisted clean base for 1 modified file(s).',
       );
     }).pipe(
-      Effect.provide(ApplicationLayer),
+      provideTestLayer(ApplicationLayer),
       TestClock.withLive,
       Effect.ensuring(removeTemporaryPaths(() => [root, incrementalHome, fullHome])),
     );
@@ -149,7 +150,7 @@ describe('cross-session code graph increments', () => {
         ).toBe(operation === 'add');
       }
     }).pipe(
-      Effect.provide(ApplicationLayer),
+      provideTestLayer(ApplicationLayer),
       TestClock.withLive,
       Effect.ensuring(removeTemporaryPaths(() => temporaryPaths)),
     );
@@ -197,7 +198,7 @@ describe('cross-session code graph increments', () => {
         ),
       ).toEqual(new Set(decodeDeclarations.map(symbol => symbol.id)));
     }).pipe(
-      Effect.provide(ApplicationLayer),
+      provideTestLayer(ApplicationLayer),
       TestClock.withLive,
       Effect.ensuring(removeTemporaryPaths(() => [root, incrementalHome, fullHome])),
     );
@@ -221,7 +222,7 @@ describe('cross-session code graph increments', () => {
         totalFiles: 2,
       });
     }).pipe(
-      Effect.provide(ApplicationLayer),
+      provideTestLayer(ApplicationLayer),
       TestClock.withLive,
       Effect.ensuring(removeTemporaryPaths(() => [root, home])),
     );
@@ -263,7 +264,7 @@ describe('cross-session code graph increments', () => {
         Effect.ensuring(
           Effect.sync(() => (root === undefined ? undefined : rmSync(root, {force: true, recursive: true}))),
         ),
-        Effect.provide(ApplicationLayer),
+        provideTestLayer(ApplicationLayer),
       );
     },
     60_000,
@@ -289,7 +290,7 @@ describe('cross-session code graph increments', () => {
       Effect.ensuring(
         Effect.sync(() => (root === undefined ? undefined : rmSync(root, {force: true, recursive: true}))),
       ),
-      Effect.provide(ApplicationLayer),
+      provideTestLayer(ApplicationLayer),
     );
   });
 
@@ -317,7 +318,7 @@ describe('cross-session code graph increments', () => {
       expect(state.snapshot?.state).toBe('ready');
       expect(state.receipt?.snapshotId).toBe(baseSnapshotId);
     }).pipe(
-      Effect.provide(ApplicationLayer),
+      provideTestLayer(ApplicationLayer),
       TestClock.withLive,
       Effect.ensuring(removeTemporaryPaths(() => [root, home])),
     );
@@ -356,7 +357,7 @@ describe('cross-session code graph increments', () => {
         minimum: CODE_GRAPH_EXTRACTOR_GENERATION,
       });
     }).pipe(
-      Effect.provide(ApplicationLayer),
+      provideTestLayer(ApplicationLayer),
       TestClock.withLive,
       Effect.ensuring(removeTemporaryPaths(() => [root, home])),
     );

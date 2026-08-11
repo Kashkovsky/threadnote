@@ -1,13 +1,15 @@
+import {TestError} from './test-error.js';
+import {provideTestLayer} from './effect-layer.js';
 import {Effect} from 'effect';
 import {CodeGraphIndexer} from '../../src/code_graph/indexer.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 
 const [repository, home, marker, transactionMode] = process.argv.slice(2);
 if (!repository || !home || !marker) {
-  throw new Error('Expected repository, Threadnote home, and marker arguments.');
+  throw new TestError('Expected repository, Threadnote home, and marker arguments.');
 }
 if (transactionMode !== undefined && transactionMode !== 'single') {
-  throw new Error('Transaction mode must be omitted or single.');
+  throw new TestError('Transaction mode must be omitted or single.');
 }
 
 let paused = false;
@@ -47,5 +49,5 @@ await Effect.runPromise(
       },
       threadnoteHome: home,
     });
-  }).pipe(Effect.provide(ApplicationLayer)),
+  }).pipe(provideTestLayer(ApplicationLayer)),
 );

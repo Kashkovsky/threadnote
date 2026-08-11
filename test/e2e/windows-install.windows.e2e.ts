@@ -1,8 +1,8 @@
-import {execFile} from 'node:child_process';
-import {mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile} from 'node:fs/promises';
-import {tmpdir} from 'node:os';
-import {delimiter, join} from 'node:path';
-import {promisify} from 'node:util';
+import {execFile} from '../helpers/node-child-process.js';
+import {mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile} from '../helpers/node-fs-promises.js';
+import {tmpdir} from '../helpers/node-os.js';
+import {delimiter, join} from '../helpers/node-path.js';
+import {promisify} from '../helpers/node-util.js';
 import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {StdioClientTransport} from '@modelcontextprotocol/sdk/client/stdio.js';
 import {expect, it} from 'vitest';

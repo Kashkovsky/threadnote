@@ -1,3 +1,4 @@
+import {TestError} from '../helpers/test-error.js';
 import {describe, expect, it} from '@effect/vitest';
 import {Option} from 'effect';
 import * as FC from 'effect/testing/FastCheck';
@@ -573,7 +574,7 @@ function identityTestPack(): CodeGraphLanguagePack {
     capabilities: new Set<CodeGraphCapability>(['declarations']),
     extractor: {
       extract: () => {
-        throw new Error('identity-only test extractor');
+        throw new TestError('identity-only test extractor');
       },
       version: 'identity-extractor-v1',
     },

@@ -1,6 +1,6 @@
-import {mkdir, mkdtemp, readFile, readdir, rm, writeFile} from 'node:fs/promises';
-import {tmpdir} from 'node:os';
-import {dirname, join} from 'node:path';
+import {mkdir, mkdtemp, readFile, readdir, rm, writeFile} from '../helpers/node-fs-promises.js';
+import {tmpdir} from '../helpers/node-os.js';
+import {dirname, join} from '../helpers/node-path.js';
 import {Effect} from 'effect';
 import {afterEach, describe, expect, it} from 'vitest';
 import {captureConsole} from '../../src/effect/console.js';

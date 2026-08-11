@@ -5,6 +5,10 @@ import {CODE_GRAPH_DEEP_DIAGNOSTICS_WORKER_ARGUMENT} from '../worker_protocol.js
 import {type CodeGraphDatabaseHealth} from './store_models.js';
 import {diagnoseCodeGraphDatabaseReadOnly} from './store_health.js';
 
+class CodeGraphDeepDiagnosticsError extends Error {
+  readonly _tag = 'CodeGraphDeepDiagnosticsError' as const;
+}
+
 const CODE_GRAPH_DEEP_DIAGNOSTICS_PROTOCOL = 1;
 const CODE_GRAPH_DEEP_DIAGNOSTICS_INPUT_BYTES_MAXIMUM = 64 * 1_024;
 const CODE_GRAPH_DEEP_DIAGNOSTICS_OUTPUT_BYTES_MAXIMUM = 4 * 1_024;
@@ -43,7 +47,7 @@ export const diagnoseCodeGraphDatabaseDeepIsolated: (
   });
   const response = decodeDeepDiagnosticsResponse(result.stdout);
   if (response === undefined || !response.ok) {
-    return yield* Effect.fail(new Error('Isolated code graph deep diagnostics failed.'));
+    return yield* Effect.fail(new CodeGraphDeepDiagnosticsError('Isolated code graph deep diagnostics failed.'));
   }
   return response.health;
 });
@@ -92,7 +96,9 @@ function readBoundedWorkerInput(stdio: Stdio.Stdio): Effect.Effect<string, Error
       (state, chunk) => {
         const size = state.size + encoder.encode(chunk).byteLength;
         if (size > CODE_GRAPH_DEEP_DIAGNOSTICS_INPUT_BYTES_MAXIMUM) {
-          return Effect.fail(new Error('Code graph deep diagnostics request exceeded its input limit.'));
+          return Effect.fail(
+            new CodeGraphDeepDiagnosticsError('Code graph deep diagnostics request exceeded its input limit.'),
+          );
         }
         state.chunks.push(chunk);
         return Effect.succeed({chunks: state.chunks, size});

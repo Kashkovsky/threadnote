@@ -1,5 +1,5 @@
 import * as SqliteClient from '@effect/sql-sqlite-bun/SqliteClient';
-import {Effect, FileSystem, Path} from 'effect';
+import {Effect, FileSystem, Layer, Path} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {sha256HexSync} from '../../crypto/sha256.js';
 import type {
@@ -143,54 +143,53 @@ function readCandidatePage(
     if (!(yield* fs.exists(databasePath))) {
       return yield* Effect.fail(new CodeGraphWorksetCatalogError('missing', 'The workset catalog does not exist.'));
     }
+    const read = Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* configureCodeGraphWorksetCatalogReadConnection(sql);
+      return yield* sql.withTransaction(
+        Effect.gen(function* () {
+          const memberCount = yield* readCompleteCoverage(sql, normalized);
+          const coverage = {
+            consideredMemberCount: memberCount,
+            eligibleMemberCount: memberCount,
+            state: 'complete' as const,
+          };
+          if (lane === 'lexical' && normalized.query.terms.length === 0) {
+            return {coverage, generationId: normalized.generationId, hits: [], lane};
+          }
+          const rows =
+            lane === 'exact'
+              ? yield* selectExactCandidates(sql, normalized as typeof normalized & {readonly cursor?: ExactCursor})
+              : yield* selectLexicalCandidates(
+                  sql,
+                  normalized as typeof normalized & {readonly cursor?: LexicalCursor},
+                );
+          const visible = rows.slice(0, normalized.limit);
+          const surfaces = yield* loadCandidateSurfaces(sql, visible);
+          const hits = yield* decodeHits(visible, surfaces);
+          const last = visible.at(-1);
+          return {
+            coverage,
+            generationId: normalized.generationId,
+            hits,
+            lane,
+            ...(rows.length > normalized.limit && last !== undefined
+              ? {next: encodeCursor(normalized, lane, last)}
+              : {}),
+          } satisfies CodeGraphWorksetCatalogCandidatePageV1;
+        }),
+      );
+    });
     return yield* Effect.scoped(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* configureCodeGraphWorksetCatalogReadConnection(sql);
-        return yield* sql.withTransaction(
-          Effect.gen(function* () {
-            const memberCount = yield* readCompleteCoverage(sql, normalized);
-            const coverage = {
-              consideredMemberCount: memberCount,
-              eligibleMemberCount: memberCount,
-              state: 'complete' as const,
-            };
-            if (lane === 'lexical' && normalized.query.terms.length === 0) {
-              return {coverage, generationId: normalized.generationId, hits: [], lane};
-            }
-            const rows =
-              lane === 'exact'
-                ? yield* selectExactCandidates(sql, normalized as typeof normalized & {readonly cursor?: ExactCursor})
-                : yield* selectLexicalCandidates(
-                    sql,
-                    normalized as typeof normalized & {readonly cursor?: LexicalCursor},
-                  );
-            const visible = rows.slice(0, normalized.limit);
-            const surfaces = yield* loadCandidateSurfaces(sql, visible);
-            const hits = yield* decodeHits(visible, surfaces);
-            const last = visible.at(-1);
-            return {
-              coverage,
-              generationId: normalized.generationId,
-              hits,
-              lane,
-              ...(rows.length > normalized.limit && last !== undefined
-                ? {next: encodeCursor(normalized, lane, last)}
-                : {}),
-            } satisfies CodeGraphWorksetCatalogCandidatePageV1;
-          }),
-        );
-      }).pipe(
-        Effect.provide(
-          SqliteClient.layer({
-            create: false,
-            disableWAL: true,
-            filename: databasePath,
-            readonly: true,
-            readwrite: false,
-          }),
-        ),
-      ),
+      Layer.build(
+        SqliteClient.layer({
+          create: false,
+          disableWAL: true,
+          filename: databasePath,
+          readonly: true,
+          readwrite: false,
+        }),
+      ).pipe(Effect.flatMap(context => read.pipe(Effect.provide(context)))),
     );
   }).pipe(mapCandidateError(`read ${lane} workset candidates`));
 }

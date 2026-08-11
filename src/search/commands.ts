@@ -5,6 +5,10 @@ import {readModelSelection} from '../models/selection.js';
 import {currentRecallCorpusGeneration, loadRecallIndexData} from '../recall/index.js';
 import {purgeVectorIndex, rebuildVectorIndex, vectorIndexStatus} from './vector-index.js';
 
+class SearchCommandError extends Error {
+  readonly _tag = 'SearchCommandError' as const;
+}
+
 export const runIndexRebuild = Effect.fn('index.command.rebuild')(function* (
   config: RuntimeConfig,
   options: {readonly model?: string},
@@ -13,11 +17,13 @@ export const runIndexRebuild = Effect.fn('index.command.rebuild')(function* (
   const selection = yield* readModelSelection(config.agentContextHome);
   const modelId = options.model ?? selection.roles.embedding;
   if (!modelId) {
-    return yield* Effect.fail(new Error('No embedding model is selected. Run `threadnote repair` to provision it.'));
+    return yield* Effect.fail(
+      new SearchCommandError('No embedding model is selected. Run `threadnote repair` to provision it.'),
+    );
   }
   const manifest = yield* catalog.get(modelId);
   if (manifest.role !== 'embedding') {
-    return yield* Effect.fail(new Error(`Model ${modelId} is not an embedding model.`));
+    return yield* Effect.fail(new SearchCommandError(`Model ${modelId} is not an embedding model.`));
   }
   const index = yield* loadRecallIndexData(config, {forceRefresh: true, includeInactive: false});
   yield* Console.log(`Embedding ${index.candidates.length} canonical document(s) with ${manifest.id}.`);
@@ -52,12 +58,16 @@ export const runIndexVerify = Effect.fn('index.command.verify')(function* (
   const selection = yield* readModelSelection(config.agentContextHome);
   const modelId = options.model ?? selection.roles.embedding;
   if (!modelId) {
-    return yield* Effect.fail(new Error('No embedding model is selected. Run `threadnote repair` to provision it.'));
+    return yield* Effect.fail(
+      new SearchCommandError('No embedding model is selected. Run `threadnote repair` to provision it.'),
+    );
   }
   const manifest = yield* catalog.get(modelId);
   const status = yield* vectorIndexStatus(config.agentContextHome, manifest);
   if (!status.ready) {
-    return yield* Effect.fail(new Error(`Vector index ${modelId} is invalid: ${status.reason ?? 'unknown error'}.`));
+    return yield* Effect.fail(
+      new SearchCommandError(`Vector index ${modelId} is invalid: ${status.reason ?? 'unknown error'}.`),
+    );
   }
   yield* Console.log(
     `Verified vector generation ${status.generation}: ${status.chunkCount} chunks, ${status.dimensions} dimensions.`,
@@ -72,7 +82,9 @@ export const runIndexPurge = Effect.fn('index.command.purge')(function* (
   const selection = yield* readModelSelection(config.agentContextHome);
   const modelId = options.model ?? selection.roles.embedding;
   if (!modelId) {
-    return yield* Effect.fail(new Error('No embedding model is selected. Run `threadnote repair` to provision it.'));
+    return yield* Effect.fail(
+      new SearchCommandError('No embedding model is selected. Run `threadnote repair` to provision it.'),
+    );
   }
   yield* catalog.get(modelId);
   if (options.dryRun === true) {

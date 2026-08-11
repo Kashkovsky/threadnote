@@ -1,3 +1,4 @@
+import {provideTestLayer} from '../helpers/effect-layer.js';
 import {expect, it} from '@effect/vitest';
 import {Effect, Layer} from 'effect';
 import {describe} from 'vitest';
@@ -44,7 +45,7 @@ describe('Effect AI memory enrichment', () => {
 
   it.effect('keeps enrichment provider-independent', () =>
     enrichMemoryEffect(input).pipe(
-      Effect.provide(
+      provideTestLayer(
         Layer.succeed(MemoryEnricher, {
           enrich: () => Effect.succeed(['resume jobs after stalled heartbeat']),
         }),

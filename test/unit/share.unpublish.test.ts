@@ -1,7 +1,7 @@
-import {existsSync} from 'node:fs';
-import {mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises';
-import {tmpdir} from 'node:os';
-import {dirname, join} from 'node:path';
+import {existsSync} from '../helpers/node-fs.js';
+import {mkdir, mkdtemp, readFile, rm, writeFile} from '../helpers/node-fs-promises.js';
+import {tmpdir} from '../helpers/node-os.js';
+import {dirname, join} from '../helpers/node-path.js';
 import {describe, expect, it} from '@effect/vitest';
 import {Effect} from 'effect';
 import * as FC from 'effect/testing/FastCheck';

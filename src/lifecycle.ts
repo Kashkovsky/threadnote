@@ -69,6 +69,10 @@ import {
   toolRoot,
 } from './utils.js';
 
+class LifecycleOperationError extends Error {
+  readonly _tag = 'LifecycleOperationError' as const;
+}
+
 const LAYOUT_RECEIPT = 'layout.json';
 type UserAgentInstructionTarget = (typeof USER_AGENT_INSTRUCTION_TARGETS)[number];
 interface RunInstallOptions extends InstallOptions {
@@ -324,7 +328,7 @@ export const runRepair = Effect.fn('lifecycle.repair')(function* (config: Runtim
           `Rebuilt recall indexes for ${documentCount} document(s) and ${vectors.chunkCount} vector chunk(s).`,
         ),
       ),
-      Effect.mapError(cause => new Error(`Recall index repair failed: ${errorMessage(cause)}`)),
+      Effect.mapError(cause => new LifecycleOperationError(`Recall index repair failed: ${errorMessage(cause)}`)),
     );
   } else {
     yield* Console.log('Would validate and rebuild the derived lexical and vector recall indexes.');
@@ -349,7 +353,9 @@ export const runRepair = Effect.fn('lifecycle.repair')(function* (config: Runtim
         Effect.andThen(runDoctor(config, {codeGraphCheck: completion.doctorCheck, dryRun, strict: false})),
       ),
     {migrateSchema: true, mode: options.deep === true ? 'deep' : 'quick'},
-  ).pipe(Effect.mapError(cause => new Error(`Native code graph repair failed: ${errorMessage(cause)}`)));
+  ).pipe(
+    Effect.mapError(cause => new LifecycleOperationError(`Native code graph repair failed: ${errorMessage(cause)}`)),
+  );
   if (options.postUpdate !== false) {
     yield* maybeRunPostUpdateAfterRepair(config, {dryRun});
   }
@@ -380,7 +386,7 @@ const maintainRecallIndexes = Effect.fn('lifecycle.maintainRecallIndexes')(funct
         });
         return {documentCount: index.candidates.length, vectors};
       }),
-    progress => progress.stop(),
+    progress => progress.stop,
   );
 });
 
@@ -480,7 +486,9 @@ export const runUninstall = Effect.fn('lifecycle.uninstall')(function* (
 ) {
   const dryRun = options.dryRun === true;
   if (options.eraseMemories === true && options.preserveMemories === true) {
-    return yield* Effect.fail(new Error('Use either --erase-memories or --preserve-memories, not both.'));
+    return yield* Effect.fail(
+      new LifecycleOperationError('Use either --erase-memories or --preserve-memories, not both.'),
+    );
   }
   yield* removeMcpConfigs(options.mcp ?? 'available', dryRun);
   yield* removeMcpSnippets(config, dryRun);

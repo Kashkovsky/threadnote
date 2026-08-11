@@ -1,3 +1,5 @@
+import {TestError} from '../helpers/test-error.js';
+import {provideTestLayer} from '../helpers/effect-layer.js';
 import {
   cpSync,
   existsSync,
@@ -12,10 +14,10 @@ import {
   symlinkSync,
   truncateSync,
   writeFileSync,
-} from 'node:fs';
-import {tmpdir} from 'node:os';
-import {join} from 'node:path';
-import {execFileSync, spawn} from 'node:child_process';
+} from '../helpers/node-fs.js';
+import {tmpdir} from '../helpers/node-os.js';
+import {join} from '../helpers/node-path.js';
+import {execFileSync, spawn} from '../helpers/node-child-process.js';
 import {Database} from 'bun:sqlite';
 import {it as effectIt} from '@effect/vitest';
 import {Context, Deferred, Effect, Fiber, FileSystem, Layer, Path, Ref} from 'effect';
@@ -49,7 +51,11 @@ import {
 import {resolveRepositoryIdentity} from '../../src/code_graph/repository.js';
 import {compactCodeGraphStorage} from '../../src/code_graph/storage.js';
 import {CodeGraphStore, type StoredCodeGraph} from '../../src/code_graph/store.js';
-import {CodeGraphStoreNoSpaceError, type CodeGraphMaterializationMetrics} from '../../src/code_graph/types.js';
+import {
+  CodeGraphStoreNoSpaceError,
+  type CodeGraphMaterializationMetrics,
+  type CodeGraphProgress,
+} from '../../src/code_graph/types.js';
 import {captureConsole} from '../../src/effect/console.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
@@ -185,7 +191,7 @@ describe('native code graph lifecycle', () => {
                 Effect.sleep(5_000).pipe(
                   Effect.andThen(Ref.get(selected)),
                   Effect.flatMap(count =>
-                    Effect.die(new Error(`Only ${count} of 8 parallel queries selected the ready snapshot.`)),
+                    Effect.die(new TestError(`Only ${count} of 8 parallel queries selected the ready snapshot.`)),
                   ),
                 ),
               ),
@@ -228,7 +234,7 @@ describe('native code graph lifecycle', () => {
         yield* Fiber.join(query);
         const released = yield* Effect.sync(() => snapshotLeaseCount(databasePath));
         expect({active, released}).toEqual({active: 1, released: 0});
-      }).pipe(Effect.provide(ApplicationLayer), TestClock.withLive),
+      }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
     // Suite-wide graph fixtures can delay setup; the in-test 5s barrier still
     // enforces that all eight selected readers bootstrap without contention.
     60_000,
@@ -601,7 +607,7 @@ describe('native code graph lifecycle', () => {
           database.close();
         }
       });
-    }).pipe(Effect.provide(ApplicationLayer), TestClock.withLive),
+    }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );
 
   it('attaches a shared clean ready snapshot to a new worktree without rematerializing', async () => {
@@ -843,7 +849,7 @@ describe('native code graph lifecycle', () => {
         'promote ready code graph snapshot': probesPerObservation,
         'publish temporary code graph snapshot': probesPerObservation,
       });
-    }).pipe(Effect.provide(ApplicationLayer), TestClock.withLive),
+    }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );
 
   effectIt.effect('selects the nearest compatible ancestor instead of a newer sibling commit', () =>
@@ -898,7 +904,7 @@ describe('native code graph lifecycle', () => {
       expect(target.incrementalWork?.factBytes).toBeGreaterThan(0);
       expect(target.incrementalWork?.plannedRows).toBeGreaterThan(0);
       expect(target.incrementalWork?.sourceBytes).toBeLessThan(1_024);
-    }).pipe(Effect.provide(ApplicationLayer), TestClock.withLive),
+    }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );
 
   effectIt.effect('falls back when equally near merge parents are both reusable clean bases', () =>
@@ -958,7 +964,7 @@ describe('native code graph lifecycle', () => {
 
       expect(merged.snapshot.baseSnapshotId).toBeUndefined();
       expect(merged.materialization).toEqual({mode: 'full', stagedFiles: 4, totalFiles: 4});
-    }).pipe(Effect.provide(ApplicationLayer), TestClock.withLive),
+    }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );
 
   it('reuses content-addressed materialized file shards during a forced clean rebuild', async () => {
@@ -1171,7 +1177,7 @@ describe('native code graph lifecycle', () => {
           ),
         ).toBe(false);
         expect(normalizeStoredGraph(rebuiltGraph)).toEqual(normalizeStoredGraph(firstGraph));
-      }).pipe(Effect.provide(ApplicationLayer)),
+      }).pipe(provideTestLayer(ApplicationLayer)),
     ),
   );
 
@@ -1214,7 +1220,7 @@ describe('native code graph lifecycle', () => {
       expect(indexed.snapshot.baseSnapshotId).toBeUndefined();
       expect(indexed.snapshot.id).not.toBe(first.snapshot.id);
       expect(found.nodes.some(node => node.name === 'renamed0')).toBe(true);
-    }).pipe(Effect.provide(ApplicationLayer), TestClock.withLive),
+    }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );
 
   effectIt.effect('falls back to bounded full materialization when a clean commit adds or deletes a file', () =>
@@ -1259,7 +1265,7 @@ describe('native code graph lifecycle', () => {
           expect(fallback.snapshot.id).not.toBe(first.snapshot.id);
         }),
       {concurrency: 1},
-    ).pipe(Effect.provide(ApplicationLayer), TestClock.withLive),
+    ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );
 
   it('builds an immediately dirty worktree directly from the prior compatible anchor', async () => {
@@ -1841,7 +1847,7 @@ describe('native code graph lifecycle', () => {
 
       expect(result.materialization).toMatchObject({mode: 'incremental-overlay', stagedFiles: 1});
       expect(result.materialization?.fallbackReason).toBeUndefined();
-    }).pipe(Effect.provide(ApplicationLayer)),
+    }).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   describe.each([
@@ -1907,7 +1913,7 @@ describe('native code graph lifecycle', () => {
             database.close();
           }
         });
-      }).pipe(Effect.provide(ApplicationLayer)),
+      }).pipe(provideTestLayer(ApplicationLayer)),
     );
   });
 
@@ -2014,7 +2020,65 @@ describe('native code graph lifecycle', () => {
       expect(staleGraph?.symbols.some(symbol => symbol.name === 'ensureVectorIndex')).toBe(true);
       expect(staleGraph?.symbols.some(symbol => symbol.name === 'ensureRacedVectorIndex')).toBe(false);
       expect(active?.id).toBe(current.snapshot.id);
-    }).pipe(Effect.provide(ApplicationLayer), TestClock.withLive),
+    }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
+  effectIt.effect('reclaims a failed persistent snapshot before the automatic worktree-change retry', () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.sync(createFixtureRepository);
+      const home = join(root, '.threadnote-test-home');
+      let changed = false;
+      const reclamationProgress: Extract<CodeGraphProgress, {readonly phase: 'reclaiming'}>[] = [];
+      const indexer = yield* CodeGraphIndexer;
+      const current = yield* indexer.index({
+        cwd: root,
+        onProgress: progress =>
+          Effect.sync(() => {
+            if (progress.phase === 'reclaiming') reclamationProgress.push(progress);
+            if (!changed && progress.phase === 'activating' && progress.subphase === 'validating-input') {
+              changed = true;
+              replaceFunction(root, 'ensureVectorIndex', 'ensureStorageBoundedVectorIndex');
+            }
+          }),
+        threadnoteHome: home,
+      });
+
+      expect(changed).toBe(true);
+      expect(current.snapshot.dirty).toBe(true);
+      const completedReclamation = reclamationProgress.at(-1);
+      expect(completedReclamation).toMatchObject({unit: 'snapshots'});
+      expect(completedReclamation?.completed).toBe(completedReclamation?.total);
+      expect(completedReclamation?.rowsDeleted).toBeGreaterThan(0);
+      const database = new Database(codeGraphDatabasePath(home, current), {readonly: true, strict: true});
+      try {
+        const retired = database
+          .query<{readonly count: number}, []>("SELECT COUNT(*) AS count FROM snapshots WHERE state = 'retired'")
+          .get();
+        const retiredSymbols = database
+          .query<{readonly count: number}, []>(
+            `SELECT COUNT(*) AS count
+             FROM symbols AS symbol
+             JOIN snapshots AS snapshot ON snapshot.id = symbol.snapshot_id
+             WHERE snapshot.state = 'retired'`,
+          )
+          .get();
+        const retiredEdges = database
+          .query<{readonly count: number}, []>(
+            `SELECT COUNT(*) AS count
+             FROM edges AS edge
+             JOIN snapshots AS snapshot ON snapshot.id = edge.snapshot_id
+             WHERE snapshot.state = 'retired'`,
+          )
+          .get();
+        expect(retired?.count).toBe(0);
+        expect(retiredSymbols?.count).toBe(0);
+        expect(retiredEdges?.count).toBe(0);
+        expect(database.query('SELECT id FROM snapshots').all()).toEqual([{id: current.snapshot.id}]);
+        expect(database.query('PRAGMA foreign_key_check').all()).toEqual([]);
+      } finally {
+        database.close(false);
+      }
+    }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );
 
   it('removes stale committed facts when a changed source becomes ineligible', async () => {
@@ -2257,7 +2321,7 @@ describe('native code graph lifecycle', () => {
       expect(states[0].buildRequest.dirty).toBe(true);
       expect(states[1].buildRequest.dirty).toBe(true);
       expect(states[0].buildRequest.fingerprint).not.toBe(states[1].buildRequest.fingerprint);
-    }).pipe(Effect.provide(ApplicationLayer)),
+    }).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('excludes an in-repository Threadnote home from build admission', () =>
@@ -2271,7 +2335,7 @@ describe('native code graph lifecycle', () => {
 
       replaceFunction(root, 'ensureVectorIndex', 'ensureChangedVectorIndex');
       expect((yield* worktreeBuildRequestState(identity, home)).dirty).toBe(true);
-    }).pipe(Effect.provide(ApplicationLayer)),
+    }).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('reuses manifest-only workspace discovery until a resolution context changes', () =>
@@ -2291,7 +2355,7 @@ describe('native code graph lifecycle', () => {
       writeFileSync(tsconfig, `${readFileSync(tsconfig, 'utf8')}\n`);
       const resolutionChanged = yield* inventoryRepository(identity);
       expect(resolutionChanged.workspace).toBeUndefined();
-    }).pipe(Effect.provide(ApplicationLayer)),
+    }).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it('indexes a manifest-declared Android module named pods while pruning generated CocoaPods output', async () => {
@@ -2554,7 +2618,7 @@ describe('native code graph lifecycle', () => {
         .get(indexed.snapshot.id, 'withExclusiveFileLock');
       expect(source?.id).toBeDefined();
       expect(target?.id).toBeDefined();
-      if (!source || !target) throw new Error('Fixture graph symbols were not indexed.');
+      if (!source || !target) throw new TestError('Fixture graph symbols were not indexed.');
       const insert = database.query(
         `INSERT INTO edges (
           snapshot_id, id, source_id, source_name, relation, target_id, target_name,
@@ -2987,7 +3051,7 @@ describe('native code graph lifecycle', () => {
         });
       } catch (error) {
         if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
-        throw new Error(`Forced-build child did not reach a committed batch: ${stderr}`, {cause: error});
+        throw new TestError(`Forced-build child did not reach a committed batch: ${stderr}`, {cause: error});
       }
 
       const markerProgress = JSON.parse(readFileSync(marker, 'utf8')) as {
@@ -3204,7 +3268,7 @@ describe('native code graph lifecycle', () => {
           readyDatabase.close();
         }
       } catch (error) {
-        throw new Error(`Clean-build resume fixture failed: ${stderr}`, {cause: error});
+        throw new TestError(`Clean-build resume fixture failed: ${stderr}`, {cause: error});
       } finally {
         if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
       }
@@ -3324,7 +3388,7 @@ describe('native code graph lifecycle', () => {
       } finally {
         resumedDatabase.close();
       }
-    }).pipe(Effect.provide(ApplicationLayer)),
+    }).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('reprotects the exact ready snapshot when a paused promotion resumes', () =>
@@ -3398,7 +3462,7 @@ describe('native code graph lifecycle', () => {
       } finally {
         resumedDatabase.close();
       }
-    }).pipe(Effect.provide(ApplicationLayer)),
+    }).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('retains a resumable receipt prefix when fresh capacity observation is unavailable', () =>
@@ -3480,7 +3544,7 @@ describe('native code graph lifecycle', () => {
       } finally {
         pausedDatabase.close();
       }
-    }).pipe(Effect.provide(ApplicationLayer)),
+    }).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('marks a generic write-time no-space failure instead of preserving it as a preflight pause', () =>
@@ -3549,7 +3613,7 @@ describe('native code graph lifecycle', () => {
       } finally {
         database.close();
       }
-    }).pipe(Effect.provide(ApplicationLayer)),
+    }).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it('indexes linked worktrees concurrently across processes without mixing dirty overlays or waiters', async () => {
@@ -3580,7 +3644,7 @@ describe('native code graph lifecycle', () => {
       expect(observed.builds.filter(build => build.coordination?.role === 'owner')).toHaveLength(2);
       expect(new Set(observed.builds.map(build => build.identity.worktreeId)).size).toBe(2);
       const checkoutId = observed.builds[0]?.identity.checkoutId;
-      if (!checkoutId) throw new Error('Linked-worktree builders did not publish a checkout identity.');
+      if (!checkoutId) throw new TestError('Linked-worktree builders did not publish a checkout identity.');
       expect(await runEffect(compactCodeGraphStorage(home, checkoutId, {dryRun: false, force: true}))).toMatchObject({
         action: 'deferred',
         reason: 'active-build',
@@ -3755,7 +3819,7 @@ describe('native code graph lifecycle', () => {
           reclaimedDatabase.close();
         }
       } catch (error) {
-        throw new Error(`Removed-worktree cleanup fixture failed: ${stderr}`, {cause: error});
+        throw new TestError(`Removed-worktree cleanup fixture failed: ${stderr}`, {cause: error});
       } finally {
         if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
         if (existsSync(orphanWorktree)) {
@@ -4136,7 +4200,7 @@ describe('native code graph lifecycle', () => {
                 'SELECT content_hash, path FROM snapshot_files ORDER BY path LIMIT 1',
               )
               .get();
-            if (!active) throw new Error('Ready graph did not retain a file for cache maintenance coverage.');
+            if (!active) throw new TestError('Ready graph did not retain a file for cache maintenance coverage.');
             database
               .query(
                 'INSERT INTO file_blobs (content_hash, extractor_set, path_hint, facts_json, created_at) VALUES (?, ?, ?, ?, ?)',
@@ -4636,7 +4700,7 @@ async function awaitCompletedBuildCleanup(databasePath: string, snapshotId: stri
         .get(snapshotId, snapshotId);
       if ((rows?.owners ?? 0) === 0 && (rows?.batches ?? 0) === 0) return;
       if (Date.now() >= deadline) {
-        throw new Error(`Timed out waiting for completed build cleanup: ${JSON.stringify(rows)}.`);
+        throw new TestError(`Timed out waiting for completed build cleanup: ${JSON.stringify(rows)}.`);
       }
     } finally {
       database.close();
@@ -4717,7 +4781,7 @@ function startCodeGraphIndexProcess(
     child.once('error', reject);
     child.once('exit', (code, signal) => {
       if (code === 0) resolve(stdout);
-      else reject(new Error(`Code graph child exited ${code ?? signal}: ${stderr || stdout}`));
+      else reject(new TestError(`Code graph child exited ${code ?? signal}: ${stderr || stdout}`));
     });
   });
   return {
@@ -4730,7 +4794,7 @@ function startCodeGraphIndexProcess(
 async function waitForPath(path: string, timeoutMilliseconds = 15_000): Promise<void> {
   const deadline = Date.now() + timeoutMilliseconds;
   while (!existsSync(path)) {
-    if (Date.now() >= deadline) throw new Error(`Timed out waiting for child process marker: ${path}`);
+    if (Date.now() >= deadline) throw new TestError(`Timed out waiting for child process marker: ${path}`);
     await new Promise(resolve => setTimeout(resolve, 25));
   }
 }
@@ -4753,7 +4817,7 @@ function codeGraphProcessSummary(output: string): {
     .filter(Boolean)
     .map(line => JSON.parse(line) as {readonly summary?: unknown; readonly type?: string})
     .find(message => message.type === 'summary')?.summary;
-  if (!summary || typeof summary !== 'object') throw new Error(`Child process did not emit a summary: ${output}`);
+  if (!summary || typeof summary !== 'object') throw new TestError(`Child process did not emit a summary: ${output}`);
   return summary as {
     readonly identity: {readonly checkoutId: string; readonly worktreeId: string};
     readonly materialization?: {readonly mode: string; readonly stagedFiles: number};
@@ -4789,7 +4853,7 @@ function snapshotFileHash(databasePath: string, snapshotId: string, sourcePath: 
         'SELECT content_hash FROM snapshot_files WHERE snapshot_id = ? AND path = ?',
       )
       .get(snapshotId, sourcePath);
-    if (!row) throw new Error(`Snapshot ${snapshotId} has no row for ${sourcePath}.`);
+    if (!row) throw new TestError(`Snapshot ${snapshotId} has no row for ${sourcePath}.`);
     return row.content_hash;
   } finally {
     database.close();
@@ -4820,7 +4884,7 @@ function effectiveSnapshotFileHash(databasePath: string, snapshotId: string, sou
         .get(current)?.base_snapshot_id;
       current = typeof baseSnapshotId === 'string' ? baseSnapshotId : undefined;
     }
-    throw new Error(`Snapshot ${snapshotId} has no effective row for ${sourcePath}.`);
+    throw new TestError(`Snapshot ${snapshotId} has no effective row for ${sourcePath}.`);
   } finally {
     database.close();
   }

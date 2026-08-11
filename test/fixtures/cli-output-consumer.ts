@@ -1,3 +1,4 @@
+import {TestError} from '../helpers/test-error.js';
 const mode = process.argv[2];
 const startMarker = process.argv[3] ?? 'generic-output-start';
 const endMarker = process.argv[4] ?? 'generic-output-end';
@@ -20,7 +21,7 @@ const result = (() => {
       hasStart: text.includes(startMarker),
     };
   }
-  throw new Error(`Unsupported CLI output consumer mode: ${mode ?? '<missing>'}`);
+  throw new TestError(`Unsupported CLI output consumer mode: ${mode ?? '<missing>'}`);
 })();
 
 await Bun.write(Bun.stdout, `${JSON.stringify(result)}\n`);

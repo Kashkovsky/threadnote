@@ -1,6 +1,9 @@
-import {mkdtemp, rm} from 'node:fs/promises';
-import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {it as effectIt} from '@effect/vitest';
+import {TestError} from '../helpers/test-error.js';
+import {provideTestLayer} from '../helpers/effect-layer.js';
+import {mkdtemp, rm} from '../helpers/node-fs-promises.js';
+import {tmpdir} from '../helpers/node-os.js';
+import {join} from '../helpers/node-path.js';
 import {Crypto, Effect, FileSystem, Path} from 'effect';
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
 import {captureConsole} from '../../src/effect/console.js';
@@ -75,31 +78,31 @@ describe('standalone release selection', () => {
     expect(requiresFreshStandaloneInstall('4.0.0-beta.1')).toBe(false);
   });
 
-  it('selects stable and beta GitHub releases while ignoring drafts and mutable releases', async () => {
-    const releases = [
-      releaseResponse('4.1.0-beta.2', true),
-      releaseResponse('4.0.1', false),
-      {...releaseResponse('9.0.0', false), draft: true},
-      {...releaseResponse('8.0.0', false), immutable: false},
-      releaseResponse('4.1.0-beta.1', true),
-    ];
-    const http = HttpService.of({
-      downloadToFile: () => Effect.die('not used'),
-      getJson: () => Effect.succeed({body: releases, status: 200}),
-      getStatus: () => Effect.succeed(200),
-      getText: () => Effect.die('not used'),
-    });
+  effectIt.effect('selects stable and beta GitHub releases while ignoring drafts and mutable releases', () =>
+    Effect.gen(function* () {
+      const releases = [
+        releaseResponse('4.1.0-beta.2', true),
+        releaseResponse('4.0.1', false),
+        {...releaseResponse('9.0.0', false), draft: true},
+        {...releaseResponse('8.0.0', false), immutable: false},
+        releaseResponse('4.1.0-beta.1', true),
+      ];
+      const http = HttpService.of({
+        downloadToFile: () => Effect.die('not used'),
+        getJson: () => Effect.succeed({body: releases, status: 200}),
+        getStatus: () => Effect.succeed(200),
+        getText: () => Effect.die('not used'),
+      });
 
-    const [stable, beta] = await Effect.runPromise(
-      Effect.all([
+      const [stable, beta] = yield* Effect.all([
         fetchLatestVersion(OFFICIAL_RELEASE_SOURCE, 'latest'),
         fetchLatestVersion(OFFICIAL_RELEASE_SOURCE, 'beta'),
-      ]).pipe(Effect.provideService(HttpService, http)),
-    );
+      ]).pipe(Effect.provideService(HttpService, http));
 
-    expect(stable).toBe('4.0.1');
-    expect(beta).toBe('4.1.0-beta.2');
-  });
+      expect(stable).toBe('4.0.1');
+      expect(beta).toBe('4.1.0-beta.2');
+    }),
+  );
 
   it('requires HTTPS and explicit trust for custom release sources', () => {
     expect(resolveReleaseSource(undefined, false, {})).toBe(OFFICIAL_RELEASE_SOURCE);
@@ -129,9 +132,9 @@ describe('standalone release selection', () => {
     );
   });
 
-  it('verifies every nested Mach-O runtime file on macOS independent of the test host', async () => {
-    const commands = await Effect.runPromise(
-      Effect.scoped(
+  effectIt.effect('verifies every nested Mach-O runtime file on macOS independent of the test host', () =>
+    Effect.gen(function* () {
+      const commands = yield* Effect.scoped(
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
@@ -168,22 +171,22 @@ describe('standalone release selection', () => {
           );
           return recorded;
         }),
-      ).pipe(Effect.provide(ApplicationLayer)),
-    );
+      ).pipe(provideTestLayer(ApplicationLayer));
 
-    const codesignCommands = commands.filter(command => command.startsWith('codesign '));
-    expect(commands.join('\n')).toContain('file --brief');
-    expect(codesignCommands.join('\n')).toContain('libfixture.so');
-    expect(codesignCommands.join('\n')).toContain('threadnote');
-    expect(codesignCommands.join('\n')).not.toContain('metadata.txt');
-    expect(commands.join('\n')).not.toContain('spctl');
-  });
+      const codesignCommands = commands.filter(command => command.startsWith('codesign '));
+      expect(commands.join('\n')).toContain('file --brief');
+      expect(codesignCommands.join('\n')).toContain('libfixture.so');
+      expect(codesignCommands.join('\n')).toContain('threadnote');
+      expect(codesignCommands.join('\n')).not.toContain('metadata.txt');
+      expect(commands.join('\n')).not.toContain('spctl');
+    }),
+  );
 });
 
 describe('update notifications', () => {
-  it('revalidates a cached update before announcing a withdrawn release', async () => {
-    const result = await Effect.runPromise(
-      Effect.scoped(
+  effectIt.effect('revalidates a cached update before announcing a withdrawn release', () =>
+    Effect.gen(function* () {
+      const result = yield* Effect.scoped(
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
@@ -211,15 +214,15 @@ describe('update notifications', () => {
           );
           return {output: captured.output, requests};
         }),
-      ).pipe(Effect.provide(ApplicationLayer)),
-    );
+      ).pipe(provideTestLayer(ApplicationLayer));
 
-    expect(result).toEqual({output: '', requests: 1});
-  });
+      expect(result).toEqual({output: '', requests: 1});
+    }),
+  );
 
-  it('announces a cached update only after confirming that it is still published', async () => {
-    const result = await Effect.runPromise(
-      Effect.scoped(
+  effectIt.effect('announces a cached update only after confirming that it is still published', () =>
+    Effect.gen(function* () {
+      const result = yield* Effect.scoped(
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
@@ -247,45 +250,44 @@ describe('update notifications', () => {
           );
           return {output: captured.output, requests};
         }),
-      ).pipe(Effect.provide(ApplicationLayer)),
-    );
+      ).pipe(provideTestLayer(ApplicationLayer));
 
-    expect(result.requests).toBe(1);
-    expect(result.output).toContain('Update available: threadnote 4.0.0 -> 4.0.1');
-  });
+      expect(result.requests).toBe(1);
+      expect(result.output).toContain('Update available: threadnote 4.0.0 -> 4.0.1');
+    }),
+  );
 
-  it('does not check or announce updates for an exact local development build', async () => {
-    vi.mocked(utils.currentPackageVersion).mockReturnValue(Effect.succeed(`4.0.0-local.g${'a'.repeat(40)}`));
-    let requests = 0;
-    const http = HttpService.of({
-      downloadToFile: () => Effect.die('not used'),
-      getJson: () =>
-        Effect.sync(() => {
-          requests += 1;
-          return {body: [releaseResponse('4.0.1', false)], status: 200};
-        }),
-      getStatus: () => Effect.die('not used'),
-      getText: () => Effect.die('not used'),
-    });
-    const captured = await Effect.runPromise(
-      captureConsole(maybeNotifyUpdate(runtimeConfig('/tmp/threadnote-local-update-notification'))).pipe(
-        Effect.provideService(HttpService, http),
-        Effect.provide(ApplicationLayer),
-      ),
-    );
+  effectIt.effect('does not check or announce updates for an exact local development build', () =>
+    Effect.gen(function* () {
+      vi.mocked(utils.currentPackageVersion).mockReturnValue(Effect.succeed(`4.0.0-local.g${'a'.repeat(40)}`));
+      let requests = 0;
+      const http = HttpService.of({
+        downloadToFile: () => Effect.die('not used'),
+        getJson: () =>
+          Effect.sync(() => {
+            requests += 1;
+            return {body: [releaseResponse('4.0.1', false)], status: 200};
+          }),
+        getStatus: () => Effect.die('not used'),
+        getText: () => Effect.die('not used'),
+      });
+      const captured = yield* captureConsole(
+        maybeNotifyUpdate(runtimeConfig('/tmp/threadnote-local-update-notification')),
+      ).pipe(Effect.provideService(HttpService, http), provideTestLayer(ApplicationLayer));
 
-    expect(captured.output).toBe('');
-    expect(requests).toBe(0);
-  });
+      expect(captured.output).toBe('');
+      expect(requests).toBe(0);
+    }),
+  );
 });
 
 describe('standalone updater', () => {
-  it('updates the active installation when a newer local development binary invokes the updater', async () => {
-    const activeVersion = '4.0.0-beta.19';
-    const latestVersion = '4.0.0-beta.30';
-    vi.mocked(utils.currentPackageVersion).mockReturnValue(Effect.succeed(latestVersion));
-    const result = await Effect.runPromise(
-      Effect.scoped(
+  effectIt.effect('updates the active installation when a newer local development binary invokes the updater', () =>
+    Effect.gen(function* () {
+      const activeVersion = '4.0.0-beta.19';
+      const latestVersion = '4.0.0-beta.30';
+      vi.mocked(utils.currentPackageVersion).mockReturnValue(Effect.succeed(latestVersion));
+      const result = yield* Effect.scoped(
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
@@ -335,20 +337,20 @@ describe('standalone updater', () => {
             launcher: yield* fs.readFileString(launcher),
           };
         }),
-      ).pipe(Effect.provide(ApplicationLayer)),
-    );
+      ).pipe(provideTestLayer(ApplicationLayer));
 
-    expect(result.captured.output).toContain(`Current version: ${activeVersion}`);
-    expect(result.captured.output).toContain(`Installed standalone Threadnote ${latestVersion}`);
-    expect(result.active.version).toBe(latestVersion);
-    expect(result.launcher).toContain(latestVersion);
-  });
+      expect(result.captured.output).toContain(`Current version: ${activeVersion}`);
+      expect(result.captured.output).toContain(`Installed standalone Threadnote ${latestVersion}`);
+      expect(result.active.version).toBe(latestVersion);
+      expect(result.launcher).toContain(latestVersion);
+    }),
+  );
 
-  it('repairs a managed launcher when the active installation is already current', async () => {
-    const latestVersion = '4.0.0-beta.30';
-    vi.mocked(utils.currentPackageVersion).mockReturnValue(Effect.succeed(latestVersion));
-    const result = await Effect.runPromise(
-      Effect.scoped(
+  effectIt.effect('repairs a managed launcher when the active installation is already current', () =>
+    Effect.gen(function* () {
+      const latestVersion = '4.0.0-beta.30';
+      vi.mocked(utils.currentPackageVersion).mockReturnValue(Effect.succeed(latestVersion));
+      const result = yield* Effect.scoped(
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
@@ -393,19 +395,19 @@ describe('standalone updater', () => {
           );
           return {captured, launcher: yield* fs.readFileString(launcher)};
         }),
-      ).pipe(Effect.provide(ApplicationLayer)),
-    );
+      ).pipe(provideTestLayer(ApplicationLayer));
 
-    expect(result.captured.output).toContain('Threadnote is up to date.');
-    expect(result.captured.output).toContain('Wrote command launcher:');
-    expect(result.launcher).toContain(latestVersion);
-    expect(result.launcher).not.toContain('old-release');
-  });
+      expect(result.captured.output).toContain('Threadnote is up to date.');
+      expect(result.captured.output).toContain('Wrote command launcher:');
+      expect(result.launcher).toContain(latestVersion);
+      expect(result.launcher).not.toContain('old-release');
+    }),
+  );
 
-  it('installs a verified archive atomically and points stable launchers at the versioned release', async () => {
-    vi.mocked(utils.currentPackageVersion).mockReturnValue(Effect.succeed('4.0.0-beta.7'));
-    const result = await Effect.runPromise(
-      Effect.scoped(
+  effectIt.effect('installs a verified archive atomically and points stable launchers at the versioned release', () =>
+    Effect.gen(function* () {
+      vi.mocked(utils.currentPackageVersion).mockReturnValue(Effect.succeed('4.0.0-beta.7'));
+      const result = yield* Effect.scoped(
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
@@ -481,30 +483,31 @@ describe('standalone updater', () => {
             signatureCommands,
           };
         }),
-      ).pipe(Effect.provide(ApplicationLayer)),
-    );
+      ).pipe(provideTestLayer(ApplicationLayer));
 
-    expect(result.executableExists).toBe(true);
-    expect(result.grammarAssetsExist).toBe(true);
-    expect(result.corruptContentsExist).toBe(false);
-    expect(JSON.parse(result.activeRelease)).toMatchObject({version: RELEASE_VERSION});
-    expect(JSON.parse(result.releaseMetadata)).toMatchObject({version: RELEASE_VERSION});
-    expect(result.launcher).toContain(`versions/${RELEASE_VERSION}/threadnote`.replaceAll('/', pathSeparator()));
-    expect(result.mcpLauncher).toContain('mcp-server');
-    if (result.platform === 'darwin') {
-      expect(result.signatureCommands.join('\n')).toContain('codesign --verify --strict --verbose=2');
-      expect(result.signatureCommands.join('\n')).toContain('libfixture.so');
-      expect(result.signatureCommands.join('\n')).not.toContain('spctl');
-    }
-    if (result.platform === 'win32') expect(result.signatureCommands.join('\n')).toContain('Get-AuthenticodeSignature');
-    if (result.platform === 'linux') expect(result.signatureCommands).toHaveLength(0);
-    expect(result.captured.output).toContain(`Installed standalone Threadnote ${RELEASE_VERSION}`);
-    expect(result.captured.output).toContain('Update complete.');
-  });
+      expect(result.executableExists).toBe(true);
+      expect(result.grammarAssetsExist).toBe(true);
+      expect(result.corruptContentsExist).toBe(false);
+      expect(JSON.parse(result.activeRelease)).toMatchObject({version: RELEASE_VERSION});
+      expect(JSON.parse(result.releaseMetadata)).toMatchObject({version: RELEASE_VERSION});
+      expect(result.launcher).toContain(`versions/${RELEASE_VERSION}/threadnote`.replaceAll('/', pathSeparator()));
+      expect(result.mcpLauncher).toContain('mcp-server');
+      if (result.platform === 'darwin') {
+        expect(result.signatureCommands.join('\n')).toContain('codesign --verify --strict --verbose=2');
+        expect(result.signatureCommands.join('\n')).toContain('libfixture.so');
+        expect(result.signatureCommands.join('\n')).not.toContain('spctl');
+      }
+      if (result.platform === 'win32')
+        expect(result.signatureCommands.join('\n')).toContain('Get-AuthenticodeSignature');
+      if (result.platform === 'linux') expect(result.signatureCommands).toHaveLength(0);
+      expect(result.captured.output).toContain(`Installed standalone Threadnote ${RELEASE_VERSION}`);
+      expect(result.captured.output).toContain('Update complete.');
+    }),
+  );
 
-  it('rejects a checksum mismatch before promoting or rewriting launchers', async () => {
-    const result = await Effect.runPromise(
-      Effect.scoped(
+  effectIt.effect('rejects a checksum mismatch before promoting or rewriting launchers', () =>
+    Effect.gen(function* () {
+      const result = yield* Effect.scoped(
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
@@ -551,21 +554,21 @@ describe('standalone updater', () => {
             releaseExists: yield* fs.exists(releaseRoot),
           };
         }),
-      ).pipe(Effect.provide(ApplicationLayer)),
-    );
+      ).pipe(provideTestLayer(ApplicationLayer));
 
-    expect(String(result.failure)).toMatch(/Checksum mismatch/);
-    expect(result).toMatchObject({
-      activeReleaseExists: false,
-      cliLauncherExists: false,
-      mcpLauncherExists: false,
-      releaseExists: false,
-    });
-  });
+      expect(String(result.failure)).toMatch(/Checksum mismatch/);
+      expect(result).toMatchObject({
+        activeReleaseExists: false,
+        cliLauncherExists: false,
+        mcpLauncherExists: false,
+        releaseExists: false,
+      });
+    }),
+  );
 
-  it('rejects an archive whose bundled code graph grammar does not match its signed manifest', async () => {
-    const result = await Effect.runPromise(
-      Effect.scoped(
+  effectIt.effect('rejects an archive whose bundled code graph grammar does not match its signed manifest', () =>
+    Effect.gen(function* () {
+      const result = yield* Effect.scoped(
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
@@ -604,16 +607,16 @@ describe('standalone updater', () => {
             releaseExists: yield* fs.exists(path.join(installRoot, 'versions', RELEASE_VERSION)),
           };
         }),
-      ).pipe(Effect.provide(ApplicationLayer)),
-    );
+      ).pipe(provideTestLayer(ApplicationLayer));
 
-    expect(String(result.failure)).toMatch(/Code graph asset checksum validation failed for grammars\/java\.wasm/);
-    expect(result.releaseExists).toBe(false);
-  });
+      expect(String(result.failure)).toMatch(/Code graph asset checksum validation failed for grammars\/java\.wasm/);
+      expect(result.releaseExists).toBe(false);
+    }),
+  );
 
-  it('restores an existing release when atomic promotion fails', async () => {
-    const result = await Effect.runPromise(
-      Effect.scoped(
+  effectIt.effect('restores an existing release when atomic promotion fails', () =>
+    Effect.gen(function* () {
+      const result = yield* Effect.scoped(
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
@@ -644,19 +647,19 @@ describe('standalone updater', () => {
             releaseExists: yield* fs.exists(releaseRoot),
           };
         }),
-      ).pipe(Effect.provide(ApplicationLayer)),
-    );
+      ).pipe(provideTestLayer(ApplicationLayer));
 
-    expect(result.releaseExists).toBe(true);
-    expect(result.marker).toBe('keep this release\n');
-    expect(result.backupExists).toBe(false);
-    expect(String(result.failure)).toMatch(/missing-staged-release/);
-  });
+      expect(result.releaseExists).toBe(true);
+      expect(result.marker).toBe('keep this release\n');
+      expect(result.backupExists).toBe(false);
+      expect(String(result.failure)).toMatch(/missing-staged-release/);
+    }),
+  );
 
-  it('runs applicable post-update work before repairing the promoted release', async () => {
-    vi.mocked(utils.currentPackageVersion).mockReturnValue(Effect.succeed('4.0.0-beta.7'));
-    const captured = await Effect.runPromise(
-      Effect.gen(function* () {
+  effectIt.effect('runs applicable post-update work before repairing the promoted release', () =>
+    Effect.gen(function* () {
+      vi.mocked(utils.currentPackageVersion).mockReturnValue(Effect.succeed('4.0.0-beta.7'));
+      const captured = yield* Effect.gen(function* () {
         const system = yield* SystemInfo;
         const release = releaseResponse(RELEASE_VERSION, false, releaseArtifactName(system));
         const http = HttpService.of({
@@ -672,50 +675,56 @@ describe('standalone updater', () => {
             yes: true,
           }).pipe(Effect.provideService(HttpService, http)),
         );
-      }).pipe(Effect.provide(ApplicationLayer)),
-    );
+      }).pipe(provideTestLayer(ApplicationLayer));
 
-    const postUpdate = captured.output.indexOf('post-update --from-version');
-    const repair = captured.output.indexOf('repair --no-post-update');
-    expect(postUpdate).toBeGreaterThan(0);
-    expect(repair).toBeGreaterThan(postUpdate);
-  });
+      const postUpdate = captured.output.indexOf('post-update --from-version');
+      const repair = captured.output.indexOf('repair --no-post-update');
+      expect(postUpdate).toBeGreaterThan(0);
+      expect(repair).toBeGreaterThan(postUpdate);
+    }),
+  );
 
-  it('refuses to execute an in-place Threadnote 3 to 4 transition', async () => {
-    vi.mocked(utils.currentPackageVersion).mockReturnValue(Effect.succeed('3.0.5'));
-    let downloadAttempted = false;
-    const http = HttpService.of({
-      downloadToFile: () => {
-        downloadAttempted = true;
-        return Effect.die('must not download');
-      },
-      getJson: () => Effect.succeed({body: [releaseResponse(RELEASE_VERSION, false)], status: 200}),
-      getStatus: () => Effect.succeed(200),
-      getText: () => Effect.die('must not download checksums'),
-    });
+  effectIt.effect('refuses to execute an in-place Threadnote 3 to 4 transition', () =>
+    Effect.gen(function* () {
+      vi.mocked(utils.currentPackageVersion).mockReturnValue(Effect.succeed('3.0.5'));
+      let downloadAttempted = false;
+      const http = HttpService.of({
+        downloadToFile: () => {
+          downloadAttempted = true;
+          return Effect.die('must not download');
+        },
+        getJson: () => Effect.succeed({body: [releaseResponse(RELEASE_VERSION, false)], status: 200}),
+        getStatus: () => Effect.succeed(200),
+        getText: () => Effect.die('must not download checksums'),
+      });
 
-    await expect(
-      Effect.runPromise(
-        runUpdate(runtimeConfig('/tmp/threadnote-fresh-install-boundary'), {
-          stable: true,
-        }).pipe(Effect.provideService(HttpService, http), Effect.provide(ApplicationLayer)),
-      ),
-    ).rejects.toThrow(/cannot update across the standalone-runtime boundary.*Install Threadnote 4 fresh/);
-    expect(downloadAttempted).toBe(false);
-  });
+      expect(
+        String(
+          yield* Effect.flip(
+            runUpdate(runtimeConfig('/tmp/threadnote-fresh-install-boundary'), {
+              stable: true,
+            }).pipe(Effect.provideService(HttpService, http), provideTestLayer(ApplicationLayer)),
+          ),
+        ),
+      ).toMatch(/cannot update across the standalone-runtime boundary.*Install Threadnote 4 fresh/);
+      expect(downloadAttempted).toBe(false);
+    }),
+  );
 });
 
 describe('post-update validation', () => {
-  it('requires both version boundaries', async () => {
-    const config = runtimeConfig('/tmp/threadnote-post-update-validation');
-    await expect(Effect.runPromise(runPostUpdate(config, {}).pipe(Effect.provide(ApplicationLayer)))).rejects.toThrow(
-      /Provide --from-version and --to-version/,
-    );
-  });
+  effectIt.effect('requires both version boundaries', () =>
+    Effect.gen(function* () {
+      const config = runtimeConfig('/tmp/threadnote-post-update-validation');
+      expect(String(yield* Effect.flip(runPostUpdate(config, {}).pipe(provideTestLayer(ApplicationLayer))))).toMatch(
+        /Provide --from-version and --to-version/,
+      );
+    }),
+  );
 
-  it('is silent for fresh homes in interactive and non-interactive post-update and repair paths', async () => {
-    const outputs = await Effect.runPromise(
-      Effect.scoped(
+  effectIt.effect('is silent for fresh homes in interactive and non-interactive post-update and repair paths', () =>
+    Effect.gen(function* () {
+      const outputs = yield* Effect.scoped(
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
@@ -761,15 +770,15 @@ describe('post-update validation', () => {
           }
           return outputs;
         }),
-      ).pipe(Effect.provide(ApplicationLayer)),
-    );
+      ).pipe(provideTestLayer(ApplicationLayer));
 
-    expect(outputs).toEqual(['', '', '', '']);
-  });
+      expect(outputs).toEqual(['', '', '', '']);
+    }),
+  );
 
-  it('keeps the shipped beta migration catalog silent for a fresh current home', async () => {
-    const outputs = await Effect.runPromise(
-      Effect.scoped(
+  effectIt.effect('keeps the shipped beta migration catalog silent for a fresh current home', () =>
+    Effect.gen(function* () {
+      const outputs = yield* Effect.scoped(
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
@@ -801,15 +810,15 @@ describe('post-update validation', () => {
           }
           return outputs;
         }),
-      ).pipe(Effect.provide(ApplicationLayer)),
-    );
+      ).pipe(provideTestLayer(ApplicationLayer));
 
-    expect(outputs).toEqual(['', '']);
-  });
+      expect(outputs).toEqual(['', '']);
+    }),
+  );
 
-  it('does not announce an action when migration evidence disappears at the locked recheck', async () => {
-    const result = await Effect.runPromise(
-      Effect.scoped(
+  effectIt.effect('does not announce an action when migration evidence disappears at the locked recheck', () =>
+    Effect.gen(function* () {
+      const result = yield* Effect.scoped(
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
@@ -859,15 +868,15 @@ describe('post-update validation', () => {
           );
           return {evidenceChecks, output: captured.output};
         }),
-      ).pipe(Effect.provide(ApplicationLayer)),
-    );
+      ).pipe(provideTestLayer(ApplicationLayer));
 
-    expect(result).toEqual({evidenceChecks: 2, output: ''});
-  });
+      expect(result).toEqual({evidenceChecks: 2, output: ''});
+    }),
+  );
 
-  it('retries evidence-backed beta-layout recovery until it materially completes', async () => {
-    const result = await Effect.runPromise(
-      Effect.scoped(
+  effectIt.effect('retries evidence-backed beta-layout recovery until it materially completes', () =>
+    Effect.gen(function* () {
+      const result = yield* Effect.scoped(
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
@@ -929,18 +938,18 @@ describe('post-update validation', () => {
           const second = yield* run();
           return {attempts, first: first.output, noOpFailure: String(noOpFailure), second: second.output};
         }),
-      ).pipe(Effect.provide(ApplicationLayer)),
-    );
+      ).pipe(provideTestLayer(ApplicationLayer));
 
-    expect(result.attempts).toEqual(['home-recovery', 'home-recovery']);
-    expect(result.noOpFailure).toContain('filesystem requirements remain pending');
-    expect(result.first).toContain('Post-update actions are available.');
-    expect(result.second).toBe('');
-  });
+      expect(result.attempts).toEqual(['home-recovery', 'home-recovery']);
+      expect(result.noOpFailure).toContain('filesystem requirements remain pending');
+      expect(result.first).toContain('Post-update actions are available.');
+      expect(result.second).toBe('');
+    }),
+  );
 
-  it('keeps authoritative home recovery eligible after its introduction version until it completes', async () => {
-    const result = await Effect.runPromise(
-      Effect.scoped(
+  effectIt.effect('keeps authoritative home recovery eligible after its introduction version until it completes', () =>
+    Effect.gen(function* () {
+      const result = yield* Effect.scoped(
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
@@ -994,19 +1003,19 @@ describe('post-update validation', () => {
           const second = yield* run();
           return {executions, first: first.output, second: second.output};
         }),
-      ).pipe(Effect.provide(ApplicationLayer)),
-    );
+      ).pipe(provideTestLayer(ApplicationLayer));
 
-    expect(result).toEqual({
-      executions: 1,
-      first: expect.stringContaining('Post-update actions are available.'),
-      second: '',
-    });
-  });
+      expect(result).toEqual({
+        executions: 1,
+        first: expect.stringContaining('Post-update actions are available.'),
+        second: '',
+      });
+    }),
+  );
 
-  it('recovers beta data after an older repair already wrote the current layout marker', async () => {
-    const result = await Effect.runPromise(
-      Effect.scoped(
+  effectIt.effect('recovers beta data after an older repair already wrote the current layout marker', () =>
+    Effect.gen(function* () {
+      const result = yield* Effect.scoped(
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
@@ -1067,21 +1076,21 @@ describe('post-update validation', () => {
             sourceExists: yield* fs.exists(betaMemory),
           };
         }),
-      ).pipe(Effect.provide(ApplicationLayer)),
-    );
+      ).pipe(provideTestLayer(ApplicationLayer));
 
-    expect(result).toEqual({
-      executions: 1,
-      first: expect.stringContaining('Post-update actions are available.'),
-      memory: '# Preserved beta memory\n',
-      second: '',
-      sourceExists: false,
-    });
-  });
+      expect(result).toEqual({
+        executions: 1,
+        first: expect.stringContaining('Post-update actions are available.'),
+        memory: '# Preserved beta memory\n',
+        second: '',
+        sourceExists: false,
+      });
+    }),
+  );
 
-  it('checkpoints each successful migration before a later migration fails', async () => {
-    const result = await Effect.runPromise(
-      Effect.scoped(
+  effectIt.effect('checkpoints each successful migration before a later migration fails', () =>
+    Effect.gen(function* () {
+      const result = yield* Effect.scoped(
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
@@ -1146,21 +1155,21 @@ describe('post-update validation', () => {
             temporaryStateFiles,
           };
         }),
-      ).pipe(Effect.provide(ApplicationLayer)),
-    );
+      ).pipe(provideTestLayer(ApplicationLayer));
 
-    expect(result).toEqual({
-      finalState: {handledMigrationIds: ['fixture-one', 'fixture-two']},
-      firstFailure: expect.stringContaining('exited with 1'),
-      firstState: {handledMigrationIds: ['fixture-one']},
-      retryAttempts: ['fixture-two'],
-      temporaryStateFiles: [],
-    });
-  });
+      expect(result).toEqual({
+        finalState: {handledMigrationIds: ['fixture-one', 'fixture-two']},
+        firstFailure: expect.stringContaining('exited with 1'),
+        firstState: {handledMigrationIds: ['fixture-one']},
+        retryAttempts: ['fixture-two'],
+        temporaryStateFiles: [],
+      });
+    }),
+  );
 
-  it('serializes concurrent post-update runs so a migration executes once', async () => {
-    const result = await Effect.runPromise(
-      Effect.scoped(
+  effectIt.effect('serializes concurrent post-update runs so a migration executes once', () =>
+    Effect.gen(function* () {
+      const result = yield* Effect.scoped(
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
@@ -1194,18 +1203,18 @@ describe('post-update validation', () => {
             state: JSON.parse(yield* fs.readFileString(path.join(home, 'post-update-state.json'))),
           };
         }),
-      ).pipe(Effect.provide(ApplicationLayer)),
-    );
+      ).pipe(provideTestLayer(ApplicationLayer));
 
-    expect(result).toEqual({
-      executions: 1,
-      state: {handledMigrationIds: ['fixture-once']},
-    });
-  });
+      expect(result).toEqual({
+        executions: 1,
+        state: {handledMigrationIds: ['fixture-once']},
+      });
+    }),
+  );
 
-  it('preserves corrupt post-update state instead of silently rerunning migrations', async () => {
-    const result = await Effect.runPromise(
-      Effect.scoped(
+  effectIt.effect('preserves corrupt post-update state instead of silently rerunning migrations', () =>
+    Effect.gen(function* () {
+      const result = yield* Effect.scoped(
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
@@ -1234,14 +1243,14 @@ describe('post-update validation', () => {
             state: yield* fs.readFileString(statePath),
           };
         }),
-      ).pipe(Effect.provide(ApplicationLayer)),
-    );
+      ).pipe(provideTestLayer(ApplicationLayer));
 
-    expect(result).toEqual({
-      failure: expect.stringContaining('Post-update state is invalid and was preserved'),
-      state: '{"handledMigrationIds": [',
-    });
-  });
+      expect(result).toEqual({
+        failure: expect.stringContaining('Post-update state is invalid and was preserved'),
+        state: '{"handledMigrationIds": [',
+      });
+    }),
+  );
 });
 
 function releaseResponse(version: string, prerelease: boolean, artifactName = 'threadnote-darwin-arm64.tar.gz') {
@@ -1431,7 +1440,7 @@ function writeReleaseArchive(
         {compress: 'gzip'},
       );
     },
-    catch: cause => new Error('Could not create updater fixture archive.', {cause}),
+    catch: cause => new TestError('Could not create updater fixture archive.', {cause}),
   });
 }
 
@@ -1450,7 +1459,7 @@ async function codeGraphFixtureAsset(
   if (grammar?.packagePath) return Bun.file(grammar.packagePath).bytes();
   const license = grammars.find(value => value.license === asset);
   if (license?.licensePackagePath) return Bun.file(license.licensePackagePath).bytes();
-  throw new Error(`Missing code graph fixture asset: ${asset}`);
+  throw new TestError(`Missing code graph fixture asset: ${asset}`);
 }
 
 function pathSeparator(): string {

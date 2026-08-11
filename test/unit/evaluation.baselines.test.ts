@@ -1,6 +1,6 @@
-import {createHash} from 'node:crypto';
-import {readFileSync, readdirSync} from 'node:fs';
-import {join} from 'node:path';
+import {createHash} from '../helpers/node-crypto.js';
+import {readFileSync, readdirSync} from '../helpers/node-fs.js';
+import {join} from '../helpers/node-path.js';
 import {describe, expect, it} from '@effect/vitest';
 import {parseBenchmarkArtifactV1} from '../../src/evaluation/benchmark.js';
 import {parseRecallEvaluationBaselineV1} from '../../src/evaluation/recall-baseline.js';

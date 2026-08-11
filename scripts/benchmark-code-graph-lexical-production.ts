@@ -1,3 +1,4 @@
+import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import {Database} from 'bun:sqlite';
 import {Effect, FileSystem, Option, Path} from 'effect';
@@ -70,7 +71,7 @@ const benchmark = Effect.scoped(
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const system = yield* SystemInfo;
-    const hardware = yield* system.hardwareInfo();
+    const hardware = yield* system.hardwareInfo;
     const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-lexical-production-micro-'});
     const compactPath = path.join(root, 'compact.sqlite');
     const legacyPath = path.join(root, 'legacy.sqlite');
@@ -111,7 +112,7 @@ const benchmark = Effect.scoped(
     };
     if (Object.values(assertions).some(value => !value)) {
       return yield* Effect.fail(
-        new Error(`Code graph lexical production microbenchmark failed: ${JSON.stringify(assertions)}`),
+        new ScriptError(`Code graph lexical production microbenchmark failed: ${JSON.stringify(assertions)}`),
       );
     }
 
@@ -360,7 +361,7 @@ function compactValidationMeasurements(databasePath: string, snapshotId: string)
       result = query.get(...statement.parameters) as typeof result;
       durations.push(performance.now() - startedAt);
     }
-    if (result === undefined) throw new Error('Compact lexical deep audit did not return a storage receipt.');
+    if (result === undefined) throw new ScriptError('Compact lexical deep audit did not return a storage receipt.');
     return {
       actualPostingCount: Number(result.posting_count),
       actualSymbolCount: Number(result.symbol_count),
@@ -461,7 +462,7 @@ function storageMeasurements(databasePath: string): StorageMeasurements {
 function pragmaInteger(database: Database, name: 'freelist_count' | 'page_count' | 'page_size'): number {
   const row = database.query(`PRAGMA ${name}`).get() as Record<string, bigint | number> | null;
   const value = Number(row?.[name] ?? -1);
-  if (!Number.isSafeInteger(value) || value < 0) throw new Error(`SQLite returned an invalid ${name}.`);
+  if (!Number.isSafeInteger(value) || value < 0) throw new ScriptError(`SQLite returned an invalid ${name}.`);
   return value;
 }
 
@@ -548,4 +549,4 @@ function gitValue(arguments_: readonly string[]): string {
   return result.exitCode === 0 ? new TextDecoder().decode(result.stdout).trim() : 'unknown';
 }
 
-if (import.meta.main) benchmark.pipe(Effect.provide(ApplicationLayer), BunRuntime.runMain);
+if (import.meta.main) BunRuntime.runMain(provideScriptLayer(benchmark, ApplicationLayer));

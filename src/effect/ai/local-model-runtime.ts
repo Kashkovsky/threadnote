@@ -41,7 +41,7 @@ export interface LocalGenerationRequest extends StructuredGenerationRequest {
 }
 
 export interface LocalModelRuntimeShape {
-  readonly diagnostics: () => Effect.Effect<LlamaCppDiagnostics, NativeRuntimeError>;
+  readonly diagnostics: Effect.Effect<LlamaCppDiagnostics, NativeRuntimeError>;
   readonly embedMany: (
     request: LocalEmbeddingRequest,
   ) => Effect.Effect<readonly (readonly number[])[], LocalEmbeddingError>;
@@ -61,13 +61,12 @@ export class LocalModelRuntime extends Context.Service<LocalModelRuntime, LocalM
   static readonly nativeLayer = localModelRuntimeLayer();
 }
 
-export function localModelRuntimeLayer<R = Path.Path | SystemInfo>(
-  engineLayer: Layer.Layer<LlamaCppEngine, NativeRuntimeError, R> = nodeLlamaCppEngineLayer() as Layer.Layer<
-    LlamaCppEngine,
-    NativeRuntimeError,
-    R
-  >,
-) {
+export function localModelRuntimeLayer(): Layer.Layer<LocalModelRuntime, NativeRuntimeError, Path.Path | SystemInfo>;
+export function localModelRuntimeLayer<R>(
+  engineLayer: Layer.Layer<LlamaCppEngine, NativeRuntimeError, R>,
+): Layer.Layer<LocalModelRuntime, NativeRuntimeError, R>;
+export function localModelRuntimeLayer<R>(engineLayer?: Layer.Layer<LlamaCppEngine, NativeRuntimeError, R>) {
+  if (engineLayer === undefined) return localModelRuntimeLayer(nodeLlamaCppEngineLayer());
   return Layer.fromBuild((_memoMap, scope) =>
     Effect.gen(function* () {
       const inferencePermits = yield* Semaphore.make(1);
@@ -81,7 +80,7 @@ export function localModelRuntimeLayer<R = Path.Path | SystemInfo>(
         Effect.Effect<RerankerShape, InferenceInterrupted | RerankingFailed | ModelSessionError>
       >();
       return Context.make(LocalModelRuntime, {
-        diagnostics: () => engineContext.pipe(Effect.map(context => Context.get(context, LlamaCppEngine).diagnostics)),
+        diagnostics: engineContext.pipe(Effect.map(context => Context.get(context, LlamaCppEngine).diagnostics)),
         embedMany: request =>
           inferencePermits.withPermit(embedManyNative(request, scope, engineContext, embeddingModels)),
         generate: request => inferencePermits.withPermit(generateNative(request, engineContext)),
