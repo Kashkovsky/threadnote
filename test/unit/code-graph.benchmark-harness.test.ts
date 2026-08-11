@@ -250,12 +250,20 @@ describe('code graph external benchmark harness', () => {
 
   it('retains privacy-safe structural parity evidence before a failed external run exits', () => {
     const source = readFileSync('scripts/benchmark-code-graph.ts', 'utf8');
+    const analysisParity = sourceSlice(source, 'if (!analysisComplete)', 'const structuralGraphParityEvidence');
     const parity = sourceSlice(
       source,
       'const structuralGraphParityEvidence = codeGraphStructuralParityEvidence(',
       'const coldLanguageCounts',
     );
 
+    expectInOrder(analysisParity, [
+      'const sameOverlayReferenceAnalysis = yield* analysis.analyze({',
+      'databasePath: sameOverlayReferenceLayout.databasePath',
+      'snapshot: sameOverlayReference.summary.snapshot',
+      'const incrementalStructuralGraphEvidence',
+      'const sameOverlayReferenceStructuralGraphEvidence',
+    ]);
     expectInOrder(parity, [
       'if (!structuralGraphParityEvidence.parity)',
       '.structural-parity.json',
@@ -345,8 +353,11 @@ describe('code graph external benchmark harness', () => {
     ).toThrow('did not restore FULL after NORMAL');
     expect(() =>
       validateSqliteWriterSettingsEvidence('current', [
-        ...evidence.filter(settings => settings.phase === 'connection').slice(0, 2),
-        {...connection('same-overlay-reference'), walAutoCheckpointPages: 8_192},
+        ...evidence
+          .filter(settings => settings.phase === 'connection')
+          .slice(0, 2)
+          .map(settings => ({...settings, cacheSizePragma: -64})),
+        {...connection('same-overlay-reference'), cacheSizePragma: -64, walAutoCheckpointPages: 8_192},
       ]),
     ).toThrow('did not apply its WAL checkpoint cadence');
   });

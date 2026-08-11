@@ -438,6 +438,7 @@ describe('project-closure incremental indexing', () => {
 
 function createProjectClosureRepository(options: {readonly orphanProjectBoundary?: boolean} = {}): string {
   const root = mkdtempSync(join(tmpdir(), 'threadnote-project-closure-'));
+  writeFile(root, '.gitignore', '/.threadnote-*/\n');
   write(root, 'package.json', {name: '@fixture/root', private: true, workspaces: ['packages/*']});
   write(root, 'packages/app/package.json', {
     dependencies: {
@@ -491,6 +492,7 @@ function redirectBarrelWithOutsideCall(root: string): void {
 
 function createRandomProjectClosureRepository(projectCount: number, salt: number): string {
   const root = mkdtempSync(join(tmpdir(), 'threadnote-random-project-closure-'));
+  writeFile(root, '.gitignore', '/.threadnote-*/\n');
   const packageCount = projectCount - 1;
   write(root, 'package.json', {name: '@random/root', private: true, workspaces: ['packages/*']});
   write(root, 'packages/p0/package.json', {name: '@random/p0'});
