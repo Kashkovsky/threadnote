@@ -102,13 +102,9 @@ describe('Effect architecture boundaries', () => {
       "import '../helpers/node-crypto.js';",
     ].join('\n');
     expect(importedModuleSpecifiers('builtin-shapes.ts', importShapes).filter(isNodeBuiltinSpecifier)).toEqual([
-      '../helpers/node-fs.js',
       'fs/promises',
-      'path',
-      '../helpers/node-url.js',
       'os',
       'fs',
-      '../helpers/node-crypto.js',
     ]);
 
     for (const path of await sourceFiles()) {
@@ -125,11 +121,12 @@ describe('Effect architecture boundaries', () => {
       const source = await readFile(path, 'utf8');
       const relativePath = relative(repoRoot, path);
       const mentions = source.match(/\bgetBuiltinModule\b/g)?.length ?? 0;
-      expect(mentions, relativePath).toBe(relativePath === 'src/effect/system.ts' ? 2 : 0);
+      expect(mentions, relativePath).toBe(relativePath === 'src/effect/system.ts' ? 3 : 0);
       const calls = [...source.matchAll(/process\.getBuiltinModule\(\s*['"]([^'"]+)['"]\s*\)/g)];
       accesses.push(...calls.map(match => ({module: match[1]!, path: relativePath})));
     }
     expect(accesses).toEqual([
+      {module: 'os', path: 'src/effect/system.ts'},
       {module: 'fs', path: 'src/effect/system.ts'},
       {module: 'path', path: 'src/effect/system.ts'},
     ]);

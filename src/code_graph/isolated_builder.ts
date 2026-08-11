@@ -1,4 +1,5 @@
 import {Clock, Effect, Option, Path, Ref} from 'effect';
+import {fromPromiseInterruptible} from '../effect/errors.js';
 import {SystemInfo, type SystemInfoShape} from '../effect/system.js';
 import {pollUntilEffect} from '../effect/time.js';
 
@@ -18,11 +19,11 @@ class IsolatedBuilderError extends Error {
 }
 
 const isolatedBuilderPromise = <A>(operation: string, evaluate: () => PromiseLike<A>) =>
-  Effect.tryPromise({
-    try: evaluate,
-    catch: cause =>
+  fromPromiseInterruptible(
+    evaluate,
+    cause =>
       new IsolatedBuilderError(`${operation}: ${cause instanceof Error ? cause.message : String(cause)}`, {cause}),
-  });
+  );
 
 /** Match the child heartbeat cadence so MCP does not oversample process-liveness probes. */
 export const BUILD_STATUS_POLL_MILLISECONDS = CODE_GRAPH_BUILD_HEARTBEAT_INTERVAL_MILLISECONDS;

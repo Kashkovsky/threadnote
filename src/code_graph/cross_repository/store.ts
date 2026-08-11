@@ -1,7 +1,10 @@
-import {Clock, Effect} from 'effect';
+import {Clock, Effect, Path} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {sha256HexSync} from '../../crypto/sha256.js';
+import {SystemInfo} from '../../effect/system.js';
 import {compareCodeUnits} from '../ordering.js';
+import {codeGraphWorksetCatalogLayout} from '../workset_catalog/layout.js';
+import {changes} from '../workset_catalog/store_support.js';
 import {CODE_GRAPH_WORKSET_CATALOG_LIMITS, CodeGraphWorksetCatalogError} from '../workset_catalog/types.js';
 import {withCodeGraphWorksetCatalogReader, withCodeGraphWorksetCatalogWriter} from '../workset_catalog/store.js';
 import {
@@ -23,6 +26,10 @@ const MAX_REPOSITORY_KEY_BYTES = 4_096;
 const MAX_SNAPSHOT_ID_BYTES = 256;
 const MAX_IDENTITY_BYTES = 8_192;
 const MAX_EVIDENCE_PATH_BYTES = 4_096;
+const BRIDGE_SET_DISK_SAFETY_BYTES = 512 * 1_024 * 1_024;
+const BRIDGE_ROW_STORAGE_OVERHEAD_BYTES = 1_024;
+const BRIDGE_SET_WRITE_AMPLIFICATION = 2;
+const BRIDGE_SET_DIGEST_DOMAIN = 'threadnote-cross-repository-bridge-set-v1';
 
 export interface CodeGraphCrossRepositoryEndpointKeyV1 {
   readonly reference: CodeGraphBridgeEndpointReferenceV1;
@@ -105,6 +112,7 @@ interface GenerationMemberRow {
 }
 
 interface BridgeSetRow {
+  readonly bridge_bytes: unknown;
   readonly bridge_count: unknown;
   readonly bridge_set_digest: unknown;
   readonly coverage_state: unknown;
@@ -155,6 +163,17 @@ interface PreparedBridge {
   readonly json: string;
 }
 
+interface PreparedBridgeSet {
+  readonly bridges: readonly PreparedBridge[];
+  readonly digest: string;
+  readonly totalBytes: number;
+}
+
+interface StoredBridgeFootprint {
+  readonly bridgeCount: number;
+  readonly totalBytes: number;
+}
+
 /**
  * Atomically replace the complete bridge set for one deterministic generation.
  * A staged generation stays invisible. A ready generation must still be the
@@ -168,10 +187,15 @@ export const replaceCodeGraphWorksetCatalogBridgeSet = Effect.fn('codeGraphCross
       readonly coverage?: Omit<CodeGraphCrossRepositoryBridgeCoverageV1, 'repositoryCount'> & {
         readonly repositoryCount?: number;
       };
+      /** @internal Deterministic capacity probe used by focused storage tests. */
+      readonly diskCapacityAvailableBytes?: (target: string) => Effect.Effect<number | undefined, unknown>;
       readonly generationId: string;
     },
   ) {
     const prepared = yield* validateInput(() => prepareBridgeSet(input));
+    const path = yield* Path.Path;
+    const system = yield* SystemInfo;
+    const layout = codeGraphWorksetCatalogLayout(path, threadnoteHome);
     return yield* withCodeGraphWorksetCatalogWriter(threadnoteHome, sql =>
       Effect.gen(function* () {
         const generation = yield* loadWritableGeneration(sql, input.generationId);
@@ -180,21 +204,72 @@ export const replaceCodeGraphWorksetCatalogBridgeSet = Effect.fn('codeGraphCross
         const coverage = yield* validateInput(() =>
           prepareCoverage(input.coverage, members.length, prepared.bridges.length),
         );
+        const stored = yield* loadStoredBridgeFootprint(sql, input.generationId);
+        const requiredFreeBytes = yield* validateInput(() =>
+          codeGraphCrossRepositoryBridgeReplacementRequiredFreeBytes({
+            existingBridgeBytes: stored.totalBytes,
+            existingBridgeCount: stored.bridgeCount,
+            replacementBridgeBytes: prepared.totalBytes,
+            replacementBridgeCount: prepared.bridges.length,
+          }),
+        );
+        yield* verifyBridgeReplacementDiskCapacity(
+          input.diskCapacityAvailableBytes ?? (target => system.availableDiskBytes(target)),
+          layout.root,
+          requiredFreeBytes,
+        );
         const replacedAt = yield* currentIsoInstant;
         yield* sql.withTransaction(
           Effect.gen(function* () {
+            const capacities = yield* sql.unsafe<{
+              readonly bridge_logical_bytes: unknown;
+              readonly projection_logical_bytes: unknown;
+            }>(
+              `SELECT bridge_logical_bytes, projection_logical_bytes
+               FROM catalog_capacity WHERE singleton = 1 LIMIT 1`,
+            );
+            if (capacities.length !== 1) {
+              return yield* Effect.fail(corrupt('Catalog capacity receipt is missing.'));
+            }
+            const bridgeLogicalBytes = requiredInteger(
+              capacities[0]!.bridge_logical_bytes,
+              'catalog bridge logical bytes',
+            );
+            const projectionLogicalBytes = requiredInteger(
+              capacities[0]!.projection_logical_bytes,
+              'catalog projection logical bytes',
+            );
+            const nextBridgeLogicalBytes = bridgeLogicalBytes - stored.totalBytes + prepared.totalBytes;
+            if (
+              nextBridgeLogicalBytes < 0 ||
+              nextBridgeLogicalBytes + projectionLogicalBytes >
+                CODE_GRAPH_WORKSET_CATALOG_LIMITS.catalogPhysicalBytesMaximum
+            ) {
+              return yield* Effect.fail(
+                new CodeGraphWorksetCatalogError('capacity', 'The home-global workset catalog is full.'),
+              );
+            }
+            yield* sql.unsafe(
+              `UPDATE catalog_capacity SET bridge_logical_bytes = ?
+               WHERE singleton = 1 AND bridge_logical_bytes = ?`,
+              [nextBridgeLogicalBytes, bridgeLogicalBytes],
+            );
+            if ((yield* changes(sql)) !== 1) {
+              return yield* Effect.fail(corrupt('Catalog bridge capacity receipt changed unexpectedly.'));
+            }
             yield* sql.unsafe('DELETE FROM cross_repository_bridge_sets WHERE generation_id = ?', [input.generationId]);
             yield* sql.unsafe(
               `INSERT INTO cross_repository_bridge_sets (
-               generation_id, resolver_version, bridge_count, bridge_set_digest,
+               generation_id, resolver_version, bridge_count, bridge_bytes, bridge_set_digest,
                coverage_state, repository_count, repositories_read,
                failed_repository_count, rejection_count, diagnostic_codes_json,
                replaced_at
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
               [
                 input.generationId,
                 CODE_GRAPH_CROSS_REPOSITORY_RESOLVER_VERSION,
                 prepared.bridges.length,
+                prepared.totalBytes,
                 prepared.digest,
                 coverage.state,
                 coverage.repositoryCount,
@@ -465,12 +540,13 @@ export const readCodeGraphWorksetCatalogBridgeGenerationPage = Effect.fn(
 function prepareBridgeSet(input: {
   readonly bridges: readonly CodeGraphCrossRepositoryBridgeV1[];
   readonly generationId: string;
-}) {
+}): PreparedBridgeSet {
   if (!GENERATION_ID.test(input.generationId)) throw invalid('Bridge generation identity is invalid.');
   if (!Array.isArray(input.bridges) || input.bridges.length > CODE_GRAPH_WORKSET_CATALOG_LIMITS.bridgesPerGeneration) {
     throw invalid('Bridge set exceeds the supported generation bound.');
   }
   const byId = new Map<string, PreparedBridge>();
+  let totalBytes = 0;
   for (const value of input.bridges) {
     const bridge = parseCanonicalBridge(value);
     const json = JSON.stringify(bridge);
@@ -479,15 +555,120 @@ function prepareBridgeSet(input: {
       throw invalid('Bridge record exceeds the supported byte bound.');
     }
     if (byId.has(bridge.id)) throw invalid('Bridge set contains a duplicate identity.');
+    totalBytes += bytes;
+    if (totalBytes > CODE_GRAPH_WORKSET_CATALOG_LIMITS.bridgeSetBytesMaximum) {
+      throw invalid('Bridge set exceeds the supported aggregate byte bound.');
+    }
     byId.set(bridge.id, {bridge, bytes, digest: sha256HexSync(json), json});
   }
   const bridges = [...byId.values()].sort((left, right) => compareBridges(left.bridge, right.bridge));
-  return {
-    bridges,
-    digest: sha256HexSync(
-      ['threadnote-cross-repository-bridge-set-v1', ...bridges.map(entry => entry.json)].join('\n'),
+  const digest = new Bun.CryptoHasher('sha256');
+  digest.update(BRIDGE_SET_DIGEST_DOMAIN);
+  for (const entry of bridges) {
+    digest.update('\n');
+    digest.update(entry.json);
+  }
+  return {bridges, digest: digest.digest('hex'), totalBytes};
+}
+
+/**
+ * Conservative WAL/database headroom for replacing one bounded bridge set.
+ * Counts account for normalized columns and endpoint indexes without reading
+ * payloads into memory; byte totals account for both the old and new JSON.
+ */
+export function codeGraphCrossRepositoryBridgeReplacementRequiredFreeBytes(input: {
+  readonly existingBridgeBytes: number;
+  readonly existingBridgeCount: number;
+  readonly replacementBridgeBytes: number;
+  readonly replacementBridgeCount: number;
+}): number {
+  for (const [label, value] of Object.entries(input)) {
+    if (!Number.isSafeInteger(value) || value < 0) throw invalid(`Bridge ${label} is invalid.`);
+  }
+  if (
+    input.existingBridgeBytes > CODE_GRAPH_WORKSET_CATALOG_LIMITS.bridgeSetBytesMaximum ||
+    input.replacementBridgeBytes > CODE_GRAPH_WORKSET_CATALOG_LIMITS.bridgeSetBytesMaximum ||
+    input.replacementBridgeCount > CODE_GRAPH_WORKSET_CATALOG_LIMITS.bridgesPerGeneration ||
+    input.existingBridgeCount > CODE_GRAPH_WORKSET_CATALOG_LIMITS.bridgesPerGeneration
+  ) {
+    throw invalid('Bridge replacement footprint exceeds the supported bound.');
+  }
+  const rows = input.existingBridgeCount + input.replacementBridgeCount;
+  const logicalBytes =
+    input.existingBridgeBytes + input.replacementBridgeBytes + rows * BRIDGE_ROW_STORAGE_OVERHEAD_BYTES;
+  const safetyBytes = Math.max(BRIDGE_SET_DISK_SAFETY_BYTES, Math.ceil(logicalBytes * 0.1));
+  const requiredBytes = logicalBytes * BRIDGE_SET_WRITE_AMPLIFICATION + safetyBytes;
+  if (!Number.isSafeInteger(requiredBytes) || requiredBytes < BRIDGE_SET_DISK_SAFETY_BYTES) {
+    throw invalid('Bridge replacement storage requirement exceeds the supported byte range.');
+  }
+  return requiredBytes;
+}
+
+function loadStoredBridgeFootprint(sql: SqlClient.SqlClient, generationId: string) {
+  return sql
+    .unsafe<{readonly bridge_count: unknown; readonly bridge_bytes: unknown}>(
+      `SELECT bridge_count, bridge_bytes FROM cross_repository_bridge_sets
+       WHERE generation_id = ? LIMIT 1`,
+      [generationId],
+    )
+    .pipe(
+      Effect.flatMap(rows =>
+        validateStored(() => {
+          if (rows.length === 0) return {bridgeCount: 0, totalBytes: 0} satisfies StoredBridgeFootprint;
+          if (rows.length !== 1) throw corrupt('Stored bridge footprint query returned an invalid row set.');
+          const bridgeCount = requiredInteger(rows[0]!.bridge_count, 'stored bridge count');
+          const totalBytes = requiredInteger(rows[0]!.bridge_bytes, 'stored bridge byte count');
+          if (
+            bridgeCount > CODE_GRAPH_WORKSET_CATALOG_LIMITS.bridgesPerGeneration ||
+            totalBytes > CODE_GRAPH_WORKSET_CATALOG_LIMITS.bridgeSetBytesMaximum
+          ) {
+            throw corrupt('Stored bridge footprint exceeds the supported bound.');
+          }
+          return {bridgeCount, totalBytes} satisfies StoredBridgeFootprint;
+        }),
+      ),
+    );
+}
+
+function verifyBridgeReplacementDiskCapacity(
+  probe: (target: string) => Effect.Effect<number | undefined, unknown>,
+  target: string,
+  requiredBytes: number,
+) {
+  return probe(target).pipe(
+    Effect.mapError(
+      cause =>
+        new CodeGraphWorksetCatalogError(
+          'storage',
+          `Could not inspect free disk space before bridge publication. Verify at least ${String(requiredBytes)} bytes are free and retry; the catalog was not modified.`,
+          {cause},
+        ),
     ),
-  };
+    Effect.flatMap(availableBytes => {
+      if (availableBytes === undefined) {
+        return Effect.fail(
+          new CodeGraphWorksetCatalogError(
+            'storage',
+            `Could not determine free disk space before bridge publication. Verify at least ${String(requiredBytes)} bytes are free and retry; the catalog was not modified.`,
+          ),
+        );
+      }
+      if (!Number.isSafeInteger(availableBytes) || availableBytes < 0) {
+        return Effect.fail(
+          new CodeGraphWorksetCatalogError('storage', 'The free disk space probe returned an invalid result.'),
+        );
+      }
+      if (availableBytes < requiredBytes) {
+        return Effect.fail(
+          new CodeGraphWorksetCatalogError(
+            'capacity',
+            `Bridge publication needs ${String(requiredBytes)} bytes free, but only ${String(availableBytes)} bytes are available. Free disk space and retry; the catalog was not modified.`,
+          ),
+        );
+      }
+      return Effect.void;
+    }),
+  );
 }
 
 function loadWritableGeneration(sql: SqlClient.SqlClient, generationId: string) {
@@ -629,7 +810,7 @@ function loadPublishedBridgeSet(sql: SqlClient.SqlClient, generationId: string) 
   return sql
     .unsafe<BridgeSetRow>(
       `SELECT s.generation_id, s.resolver_version, s.bridge_count,
-              s.bridge_set_digest, s.coverage_state, s.repository_count,
+              s.bridge_bytes, s.bridge_set_digest, s.coverage_state, s.repository_count,
               s.repositories_read, s.failed_repository_count, s.rejection_count,
               s.diagnostic_codes_json, g.workset_name
        FROM cross_repository_bridge_sets AS s
@@ -648,12 +829,14 @@ function loadPublishedBridgeSet(sql: SqlClient.SqlClient, generationId: string) 
               const row = rows[0]!;
               const resolverVersion = requiredInteger(row.resolver_version, 'bridge resolver version');
               const bridgeCount = requiredInteger(row.bridge_count, 'bridge count');
+              const bridgeBytes = requiredInteger(row.bridge_bytes, 'bridge byte count');
               const digest = requiredText(row.bridge_set_digest, 'bridge-set digest');
               const id = requiredText(row.generation_id, 'bridge generation identity');
               const coverage = decodeCoverage(row);
               if (
                 resolverVersion !== CODE_GRAPH_CROSS_REPOSITORY_RESOLVER_VERSION ||
                 bridgeCount > CODE_GRAPH_WORKSET_CATALOG_LIMITS.bridgesPerGeneration ||
+                bridgeBytes > CODE_GRAPH_WORKSET_CATALOG_LIMITS.bridgeSetBytesMaximum ||
                 !SHA256_HEX.test(digest) ||
                 !GENERATION_ID.test(id)
               ) {

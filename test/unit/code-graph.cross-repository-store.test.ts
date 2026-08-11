@@ -1,5 +1,6 @@
 import {TestError} from '../helpers/test-error.js';
 import {Database} from 'bun:sqlite';
+import {Effect} from 'effect';
 import fc from 'fast-check';
 import {afterEach, describe, expect, it} from 'vitest';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
@@ -10,6 +11,7 @@ import {
   type CodeGraphCrossRepositoryBridgeV1,
 } from '../../src/code_graph/cross_repository/resolver.js';
 import {
+  codeGraphCrossRepositoryBridgeReplacementRequiredFreeBytes,
   readCodeGraphWorksetCatalogBridgeGenerationPage,
   readCodeGraphWorksetCatalogBridgePage,
   readCodeGraphWorksetCatalogRepositoryBridgePage,
@@ -266,7 +268,9 @@ describe('cross-repository bridge catalog', () => {
         }),
       ),
     ).toBeUndefined();
-    await runEffect(maintainCodeGraphWorksetCatalog(home, {generationLimit: 8, projectionLimit: 0}));
+    for (let page = 0; page < 8; page += 1) {
+      await runEffect(maintainCodeGraphWorksetCatalog(home, {generationLimit: 8, projectionLimit: 0}));
+    }
     const database = new Database(catalogPath(home), {readonly: true, strict: true});
     try {
       expect(
@@ -279,6 +283,65 @@ describe('cross-repository bridge catalog', () => {
     } finally {
       database.close(false);
     }
+  });
+
+  it('fails disk preflight before replacement and preserves the prior bridge set', async () => {
+    const home = await temporaryHome(homes);
+    const fixture = bridgeFixture('capacity');
+    const staged = await stage(home, fixture);
+    const first = await runEffect(
+      replaceCodeGraphWorksetCatalogBridgeSet(home, {bridges: fixture.bridges, generationId: staged.id}),
+    );
+
+    await expect(
+      runEffect(
+        replaceCodeGraphWorksetCatalogBridgeSet(home, {
+          bridges: fixture.bridges.slice(0, 1),
+          diskCapacityAvailableBytes: () => Effect.succeed(0),
+          generationId: staged.id,
+        }),
+      ),
+    ).rejects.toMatchObject({reason: 'capacity'} satisfies Partial<CodeGraphWorksetCatalogError>);
+    await publish(home, fixture.worksetName, staged.id);
+    expect(await runEffect(readPublishedCodeGraphWorksetCatalogBridgeSetSummary(home, staged.id))).toMatchObject({
+      bridgeCount: fixture.bridges.length,
+      digest: first.digest,
+    });
+  });
+
+  it('computes monotone bounded replacement headroom without payload-sized allocations', () => {
+    fc.assert(
+      fc.property(
+        fc.nat({max: 64 * 1_024 * 1_024 - 1}),
+        fc.nat({max: 20_000}),
+        fc.nat({max: 64 * 1_024 * 1_024}),
+        fc.nat({max: 20_000}),
+        (existingBridgeBytes, existingBridgeCount, replacementBridgeBytes, replacementBridgeCount) => {
+          const baseline = codeGraphCrossRepositoryBridgeReplacementRequiredFreeBytes({
+            existingBridgeBytes,
+            existingBridgeCount,
+            replacementBridgeBytes,
+            replacementBridgeCount,
+          });
+          const larger = codeGraphCrossRepositoryBridgeReplacementRequiredFreeBytes({
+            existingBridgeBytes: existingBridgeBytes + 1,
+            existingBridgeCount,
+            replacementBridgeBytes,
+            replacementBridgeCount,
+          });
+          expect(larger).toBeGreaterThan(baseline);
+        },
+      ),
+      {numRuns: 100},
+    );
+    expect(() =>
+      codeGraphCrossRepositoryBridgeReplacementRequiredFreeBytes({
+        existingBridgeBytes: 0,
+        existingBridgeCount: 0,
+        replacementBridgeBytes: 64 * 1_024 * 1_024 + 1,
+        replacementBridgeCount: 1,
+      }),
+    ).toThrowError(/footprint exceeds the supported bound/u);
   });
 
   it('makes clean and incremental bridge replacement deterministic under input order and invalidates snapshots', async () => {
@@ -297,6 +360,14 @@ describe('cross-repository bridge catalog', () => {
             bridges: ordered,
             generationId: cleanStage.id,
           }),
+        );
+        expect(cleanReceipt.digest).toBe(
+          sha256HexSync(
+            [
+              'threadnote-cross-repository-bridge-set-v1',
+              ...fixture.bridges.map(bridge => JSON.stringify(bridge)),
+            ].join('\n'),
+          ),
         );
         await runEffect(
           replaceCodeGraphWorksetCatalogBridgeSet(incrementalHome, {

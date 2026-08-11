@@ -2,6 +2,7 @@ import {Database} from 'bun:sqlite';
 import {Effect, FileSystem, Option, Path} from 'effect';
 import {isFileLockTimeout, withExclusiveFileLock} from '../effect/file_lock.js';
 import {SystemInfo, type SystemInfoShape} from '../effect/system.js';
+import {recordCodeGraphAutomaticCompactionAttempt} from './automatic_compaction_receipt.js';
 import {codeGraphMaintenanceLockPath, codeGraphRepositoryLockPath, codeGraphRepositoryRoot} from './layout.js';
 import {
   awaitCodeGraphWorktreeBuilds,
@@ -406,7 +407,7 @@ export const compactCodeGraphStorage = Effect.fn('codeGraph.compactStorage')(fun
               new CodeGraphStorageOperationError('Code graph database disappeared during compaction.'),
             );
           }
-          return {
+          const summary = {
             action: 'compacted',
             after,
             before,
@@ -415,6 +416,12 @@ export const compactCodeGraphStorage = Effect.fn('codeGraph.compactStorage')(fun
             dryRun: false,
             reclaimedBytes: Math.max(0, before.databaseBytes - after.databaseBytes),
           } satisfies CodeGraphCompactionSummary;
+          yield* recordCodeGraphAutomaticCompactionAttempt(
+            threadnoteHome,
+            {checkoutId, opportunityBytes: codeGraphCompactionSummaryOpportunityBytes(summary)},
+            {action: summary.action, reclaimedBytes: summary.reclaimedBytes},
+          );
+          return summary;
         }),
         0,
       );
@@ -432,18 +439,41 @@ export const compactCodeGraphStorage = Effect.fn('codeGraph.compactStorage')(fun
       isFileLockTimeout(cause) ? Effect.succeed(deferred('active-maintenance')) : Effect.fail(cause),
     ),
   );
-  return yield* maintain;
+  if (options.dryRun) return yield* maintain;
+  const candidate = (opportunityBytes: number) => ({checkoutId, opportunityBytes});
+  return yield* maintain.pipe(
+    Effect.tap(summary =>
+      summary.action === 'compacted'
+        ? Effect.void
+        : recordCodeGraphAutomaticCompactionAttempt(
+            threadnoteHome,
+            candidate(codeGraphCompactionSummaryOpportunityBytes(summary)),
+            {action: summary.action, reclaimedBytes: summary.reclaimedBytes},
+          ),
+    ),
+    Effect.tapError(() => recordCodeGraphAutomaticCompactionAttempt(threadnoteHome, candidate(0), undefined)),
+  );
 });
+
+function codeGraphCompactionSummaryOpportunityBytes(summary: CodeGraphCompactionSummary): number {
+  if (!('before' in summary) || summary.before === undefined || summary.before.pageStorage.state !== 'available') {
+    return 0;
+  }
+  return summary.before.pageStorage.compactionOpportunityBytes ?? summary.before.pageStorage.reclaimableBytes;
+}
 
 export function codeGraphCompactionRequiredFreeBytes(
   storage: Pick<CodeGraphActiveStorage, 'databaseBytes' | 'walBytes'>,
 ): number {
-  const sourceBytes = storage.databaseBytes + storage.walBytes;
+  // SQLite may need one database-sized temporary copy and another database-sized
+  // rollback journal while VACUUM copies the compacted image back. Existing WAL
+  // bytes and a separate safety margin remain additional conservative headroom.
+  const vacuumWorkingBytes = storage.databaseBytes * 2 + storage.walBytes;
   const safetyMargin = Math.max(
     CODE_GRAPH_COMPACTION_MIN_SAFETY_MARGIN_BYTES,
-    Math.ceil(sourceBytes * CODE_GRAPH_COMPACTION_SAFETY_MARGIN_RATIO),
+    Math.ceil(vacuumWorkingBytes * CODE_GRAPH_COMPACTION_SAFETY_MARGIN_RATIO),
   );
-  const required = sourceBytes + safetyMargin;
+  const required = vacuumWorkingBytes + safetyMargin;
   if (!Number.isSafeInteger(required) || required < 0) {
     throw new CodeGraphStorageOperationError(
       'Code graph compaction storage requirement exceeds the supported byte range.',

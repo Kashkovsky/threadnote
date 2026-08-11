@@ -300,7 +300,10 @@ const ensureGraphVectors = Effect.fn('codeGraph.ensureVectors')(function* (input
               active.dimensions === selected.manifest.dimensions
             ? active
             : yield* selectMostRecentCompatibleGeneration(sql, selected.manifest.sha256, selected.manifest.dimensions!);
-        const generation = `${yield* Clock.currentTimeMillis}-${worktreeId.slice(-8)}-${input.snapshot.id.slice(-8)}`;
+        const generation = `${yield* Clock.currentTimeMillis}-${worktreeId.slice(-8)}-${input.snapshot.id.slice(-8)}-${(yield* crypto.randomUUIDv4).slice(
+          0,
+          8,
+        )}`;
         yield* sql`
         INSERT INTO vector_generations (
           generation, snapshot_id, model_id, model_sha256, dimensions,

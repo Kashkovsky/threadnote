@@ -532,7 +532,7 @@ describe('Manager logical repository and workspace catalogs', () => {
       `${'b'.repeat(64)}.${'2'.repeat(64)}`,
       `${'a'.repeat(64)}.${'1'.repeat(64)}`,
     ]);
-    expect(groups[0]?.views[0]?.label).toMatch(/abcdef01 · clean · 2026-07-31 10:00Z · checkout b{8} · worktree 2{8}/);
+    expect(groups[0]?.views[0]?.label).toBe('abcdef01 · clean · indexed 2026-07-31 10:00Z');
     expect(groups[0]?.views[0]?.localAssociation).toMatchObject({
       displayPath: '~/src/current',
       path: '/home/tester/src/current',
@@ -1029,7 +1029,7 @@ describe('Manager logical repository and workspace catalogs', () => {
         expect.objectContaining({checkoutId: identity.checkoutId, code: 'lease-deferred'}),
       ]);
       expect(catalog.diagnostics[0]?.message).not.toContain(home);
-    }),
+    }).pipe(TestClock.withLive),
   );
 
   effectIt.effect('single-flights concurrent catalog retention without leaking snapshot leases', () =>
@@ -1128,7 +1128,7 @@ describe('Manager logical repository and workspace catalogs', () => {
       expect(failure).toBeInstanceOf(ManagerGraphBusyError);
       expect(String(failure)).toContain('temporarily busy');
       expect(String(failure)).not.toContain(home);
-    }),
+    }).pipe(TestClock.withLive),
   );
 
   effectIt.effect('reuses a live catalog lease for a query while a new writer is active', () =>
@@ -1178,7 +1178,7 @@ describe('Manager logical repository and workspace catalogs', () => {
 
       expect(elapsed).toBeLessThan(1_000);
       expect(result.query).toMatchObject({state: 'ready', text: 'missing-symbol'});
-    }),
+    }).pipe(TestClock.withLive),
   );
 
   effectIt.effect('reuses a live catalog lease for analysis while a new writer is active', () =>
@@ -1225,7 +1225,7 @@ describe('Manager logical repository and workspace catalogs', () => {
 
       expect(elapsed).toBeLessThan(1_000);
       expect(result.snapshot.id).toBe(snapshot.id);
-    }),
+    }).pipe(TestClock.withLive),
   );
 
   effectIt.effect('does not block Manager shutdown while a graph writer owns lease cleanup', () =>
@@ -1267,7 +1267,7 @@ describe('Manager logical repository and workspace catalogs', () => {
       }).pipe(provideTestLayer(managerGraphLayer));
 
       expect(elapsed).toBeLessThan(1_000);
-    }),
+    }).pipe(TestClock.withLive),
   );
 
   effectIt.effect('releases catalog snapshot leases when the Manager lifecycle ends', () =>

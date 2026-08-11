@@ -4,6 +4,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type {CodeGraphLocalDiagnosticsReport} from './code_graph/diagnostics.js';
 import {ManagerAutocompleteInput, ManagerDialogProvider, useManagerDialogs} from './manager_dialog.js';
+import {WorksetsPanel} from './manager_worksets_view.js';
 import {
   graphViewRemovalApprovalDialog,
   graphViewRemovalTargetIsAbsent,
@@ -19,6 +20,7 @@ import {
   graphMaintenanceStatusLabel,
   graphStatusPollDelay,
   graphStatusRequiresCatalogRefresh,
+  mergeGraphCatalogStatus,
   type GraphAdministrationAction,
   type GraphCatalog,
 } from './manager_graph.js';
@@ -63,7 +65,7 @@ export {
   selectableMemoryUris,
 } from './manager_ui_support.js';
 
-export type PanelName = 'doctor' | 'graph' | 'memory' | 'shares' | 'tools';
+export type PanelName = 'doctor' | 'graph' | 'memory' | 'shares' | 'tools' | 'worksets';
 type NavTreeTab = 'memories' | 'resources';
 type CheckStatus = 'fail' | 'ok' | 'warn';
 type MemoryKind = 'durable' | 'handoff' | 'incident' | 'preference' | 'smoke';
@@ -285,7 +287,13 @@ function App(): React.ReactElement {
         const status = await api<
           Pick<
             GraphCatalog,
-            'builds' | 'catalogRevision' | 'lifecyclePending' | 'maintenance' | 'waiterCount' | 'waiters'
+            | 'automaticCompaction'
+            | 'builds'
+            | 'catalogRevision'
+            | 'lifecyclePending'
+            | 'maintenance'
+            | 'waiterCount'
+            | 'waiters'
           >
         >('/api/graphs/status', undefined, {timeoutMilliseconds: GRAPH_CATALOG_REQUEST_TIMEOUT_MILLISECONDS});
         if (cancelled) return;
@@ -306,15 +314,16 @@ function App(): React.ReactElement {
             timeoutMilliseconds: GRAPH_CATALOG_REQUEST_TIMEOUT_MILLISECONDS,
           });
           if (cancelled) return;
-          graphCatalogRef.current = refreshed;
-          setGraphCatalog(refreshed);
+          const refreshedWithStatus = mergeGraphCatalogStatus(refreshed, status);
+          graphCatalogRef.current = refreshedWithStatus;
+          setGraphCatalog(refreshedWithStatus);
           setGraphCatalogError('');
           for (const build of status.builds) {
             const identity = graphCompletedBuildResultIdentity(build);
             if (identity) acknowledgedCompletedResults.add(identity);
           }
-        } else if (graphCatalogRef.current) {
-          const merged = {...graphCatalogRef.current, ...status};
+        } else {
+          const merged = mergeGraphCatalogStatus(graphCatalogRef.current, status);
           graphCatalogRef.current = merged;
           setGraphCatalog(merged);
         }
@@ -332,7 +341,7 @@ function App(): React.ReactElement {
         observedActiveMaintenance = activeMaintenance;
         timer = window.setTimeout(
           () => void poll(),
-          graphStatusPollDelay(status.builds, status.maintenance, status.lifecyclePending),
+          graphStatusPollDelay(status.builds, status.maintenance, status.lifecyclePending, status.automaticCompaction),
         );
       } catch {
         if (!cancelled) timer = window.setTimeout(() => void poll(), 15_000);
@@ -1138,7 +1147,7 @@ function App(): React.ReactElement {
         </div>
         <p className="sidebar-label">Workspace</p>
         <nav className="primary-nav" aria-label="Manager sections">
-          {(['graph', 'memory', 'shares', 'doctor', 'tools'] as const).map(name => (
+          {(['graph', 'worksets', 'memory', 'shares', 'doctor', 'tools'] as const).map(name => (
             <button
               aria-current={panel === name ? 'page' : undefined}
               className={panel === name ? 'is-active' : undefined}
@@ -1337,6 +1346,12 @@ function App(): React.ReactElement {
               onDiagnostics={options => void refreshGraphDiagnostics(options)}
               onRefresh={() => void refreshGraphCatalog(true)}
             />
+          </section>
+        ) : null}
+
+        {panel === 'worksets' ? (
+          <section className="panel is-active">
+            <WorksetsPanel />
           </section>
         ) : null}
 

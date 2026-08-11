@@ -231,14 +231,16 @@ describe('cross-session code graph increments', () => {
   it.effect(
     're-extracts only the changed language pack across a compatible extractor rollout',
     () => {
+      let home: string | undefined;
+      let referenceHome: string | undefined;
       let root: string | undefined;
       return Effect.gen(function* () {
         root = createRepository(6);
         writeFileSync(join(root, 'README.md'), '# Mixed language fixture\n');
         git(root, ['add', 'README.md']);
         git(root, ['commit', '--amend', '-qm', 'fixture']);
-        const home = join(root, '.threadnote-pack-rollout');
-        const referenceHome = join(root, '.threadnote-pack-rollout-reference');
+        home = mkdtempSync(join(tmpdir(), 'threadnote-pack-rollout-home-'));
+        referenceHome = mkdtempSync(join(tmpdir(), 'threadnote-pack-rollout-reference-home-'));
         const initialRegistry = createCodeGraphLanguagePackRegistry(BUILTIN_LANGUAGE_PACK_REGISTRY.packs);
         const nextRegistry = createCodeGraphLanguagePackRegistry(
           BUILTIN_LANGUAGE_PACK_REGISTRY.packs.map(pack =>
@@ -261,10 +263,9 @@ describe('cross-session code graph increments', () => {
           projectGraph(yield* loadGraphEffect(root, referenceHome, rebuilt)),
         );
       }).pipe(
-        Effect.ensuring(
-          Effect.sync(() => (root === undefined ? undefined : rmSync(root, {force: true, recursive: true}))),
-        ),
+        Effect.ensuring(removeTemporaryPaths(() => [root, home, referenceHome])),
         provideTestLayer(ApplicationLayer),
+        TestClock.withLive,
       );
     },
     60_000,

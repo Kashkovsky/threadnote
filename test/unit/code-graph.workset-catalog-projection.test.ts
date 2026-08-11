@@ -316,6 +316,40 @@ describe('code graph ready-snapshot workset routing projections', () => {
       {numRuns: 40},
     );
   });
+
+  it('splits a source page when its derived routing storage charge exceeds the catalog page bound', async () => {
+    const home = await temporaryHome(homes);
+    const identity = repositoryIdentity('storage-page-split');
+    const snapshotId = snapshotIdentity('storage-page-split');
+    const symbols = Array.from({length: 40}, (_, symbolIndex) =>
+      symbol(`wide${symbolIndex.toString().padStart(2, '0')}`, {
+        lookupKeys: Array.from(
+          {length: 64},
+          (_, lookupIndex) =>
+            `wide.${symbolIndex.toString().padStart(2, '0')}.${lookupIndex.toString().padStart(2, '0')}.${'x'.repeat(1_800)}`,
+        ),
+      }),
+    );
+    await initializeGraph(home, identity.checkoutId);
+    seedGraph(
+      home,
+      identity,
+      [{effectiveSymbolCount: symbols.length, id: snapshotId, symbols, worktreeId: identity.worktreeId}],
+      [{snapshotId, worktreeId: identity.worktreeId}],
+    );
+
+    const staged = await runEffect(
+      Effect.scoped(
+        stageCodeGraphWorksetRoutingProjectionScoped({
+          identity,
+          pageSize: 512,
+          snapshotId,
+          threadnoteHome: home,
+        }),
+      ),
+    );
+    expect(staged.receipt.symbolCount).toBe(symbols.length);
+  });
 });
 
 interface FixtureIdentity {

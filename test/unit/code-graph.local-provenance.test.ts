@@ -60,8 +60,18 @@ describe('code graph private local provenance', () => {
     );
     const repeatedStat = statSync(fixture.sidecar);
 
-    expect(first).toMatchObject({available: true, path: fixture.root, state: 'verified'});
-    expect(repeated).toMatchObject({available: true, path: fixture.root, state: 'verified'});
+    expect(first).toMatchObject({
+      available: true,
+      branch: fixture.identity.branch,
+      path: fixture.root,
+      state: 'verified',
+    });
+    expect(repeated).toMatchObject({
+      available: true,
+      branch: fixture.identity.branch,
+      path: fixture.root,
+      state: 'verified',
+    });
     expect(firstStat.mode & 0o777).toBe(process.platform === 'win32' ? firstStat.mode & 0o777 : 0o600);
     if (process.platform !== 'win32') {
       expect(statSync(dirname(fixture.sidecar)).mode & 0o777).toBe(0o700);
@@ -70,8 +80,20 @@ describe('code graph private local provenance', () => {
     expect(repeatedStat.ino).toBe(firstStat.ino);
     expect(publicationValidationCount).toBe(0);
     expect(readRecord(fixture.sidecar)).toEqual(firstRecord);
-    expect(firstRecord).toMatchObject({registration: {kind: 'main'}, schemaVersion: 2});
+    expect(firstRecord).toMatchObject({
+      branch: fixture.identity.branch,
+      registration: {kind: 'main'},
+      schemaVersion: 2,
+    });
     expect(readdirSync(dirname(fixture.sidecar)).filter(name => name.endsWith('.tmp'))).toEqual([]);
+
+    git(fixture.root, ['branch', '-m', 'feature/manager-labels']);
+    const renamedBranchIdentity = await runEffect(resolveRepositoryIdentity(fixture.root));
+    await runEffect(recordVerifiedCodeGraphLocalAssociation(fixture.home, renamedBranchIdentity));
+    const renamedBranchRecord = readRecord(fixture.sidecar);
+    expect(renamedBranchIdentity.headCommit).toBe(fixture.identity.headCommit);
+    expect(renamedBranchRecord.branch).toBe('feature/manager-labels');
+    expect(statSync(fixture.sidecar).ino).not.toBe(firstStat.ino);
 
     git(fixture.root, [
       '-c',
@@ -308,6 +330,7 @@ describe('code graph private local provenance', () => {
     const fixture = await provenanceFixture();
     await runEffect(recordVerifiedCodeGraphLocalAssociation(fixture.home, fixture.identity));
     let gitInvocationCount = 0;
+    let branchObservationCount = 0;
     let interlockCount = 0;
 
     const statuses = await runEffect(
@@ -325,11 +348,17 @@ describe('code graph private local provenance', () => {
         return yield* Effect.acquireUseRelease(
           Effect.sync(() => {
             mutableCommand.execute = (executable, args, options) => {
-              if (executable === 'git') gitInvocationCount += 1;
+              if (executable === 'git') {
+                gitInvocationCount += 1;
+                if (args.includes('symbolic-ref')) branchObservationCount += 1;
+              }
               return execute(executable, args, options);
             };
             mutableCommand.executeBytes = (executable, args, options) => {
-              if (executable === 'git') gitInvocationCount += 1;
+              if (executable === 'git') {
+                gitInvocationCount += 1;
+                if (args.includes('symbolic-ref')) branchObservationCount += 1;
+              }
               return executeBytes(executable, args, options);
             };
           }),
@@ -358,7 +387,8 @@ describe('code graph private local provenance', () => {
     expect(statuses).toHaveLength(16);
     expect(statuses.every(status => status.identity.repositoryId === fixture.identity.repositoryId)).toBe(true);
     expect(interlockCount).toBe(16);
-    expect(gitInvocationCount).toBe(16 * 6);
+    expect(branchObservationCount).toBe(16);
+    expect(gitInvocationCount).toBe(16 * 7);
   });
 
   it('distinguishes a legacy checkout, an absent exact record, and a moved worktree', async () => {
@@ -764,6 +794,7 @@ describe('code graph private local provenance', () => {
     },
     ({segment}) => {
       const record = {
+        branch: `feature/${segment}`,
         canonicalWorktreePath: `/private/tmp/${segment}`,
         checkoutId: 'a'.repeat(64),
         headCommit: 'b'.repeat(40),
@@ -776,6 +807,7 @@ describe('code graph private local provenance', () => {
 
       const safe = privacySafeCodeGraphLocalAssociation({
         available: true,
+        branch: record.branch,
         displayPath: `~/${segment}`,
         observedAt: record.observedAt,
         path: record.canonicalWorktreePath,
@@ -784,6 +816,7 @@ describe('code graph private local provenance', () => {
       expect(safe).toEqual({available: true, state: 'verified'});
       expect(JSON.stringify(safe)).not.toContain(record.canonicalWorktreePath);
       expect(JSON.stringify(safe)).not.toContain(`~/${segment}`);
+      expect(JSON.stringify(safe)).not.toContain(record.branch);
     },
     {fastCheck: {numRuns: 200}},
   );

@@ -74,11 +74,19 @@ export const stageCodeGraphWorksetRoutingProjectionScoped = Effect.fn(
       worktreeId: request.identity.worktreeId,
     },
     {
-      append: (projectionDigest, symbols) =>
-        appendCodeGraphWorksetCatalogProjectionPage(request.threadnoteHome, {projectionDigest, symbols}),
-      begin: receipt => beginCodeGraphWorksetCatalogProjection(request.threadnoteHome, receipt),
-      complete: projectionDigest =>
-        completeCodeGraphWorksetCatalogProjection(request.threadnoteHome, projectionDigest).pipe(Effect.asVoid),
+      append: (projectionDigest, stagingToken, symbols) =>
+        appendCodeGraphWorksetCatalogProjectionPage(request.threadnoteHome, {
+          projectionDigest,
+          stagingToken,
+          symbols,
+        }),
+      begin: (receipt, reservedLogicalBytes) =>
+        beginCodeGraphWorksetCatalogProjection(request.threadnoteHome, receipt, reservedLogicalBytes),
+      complete: (projectionDigest, stagingToken) =>
+        completeCodeGraphWorksetCatalogProjection(request.threadnoteHome, {
+          projectionDigest,
+          stagingToken,
+        }).pipe(Effect.asVoid),
     },
   );
 });

@@ -1230,7 +1230,11 @@ threadnote graph purge \\
           },
           {
             type: 'paragraph',
-            text: 'graph status reports exact active database, WAL, and SHM bytes and, when no build owns the checkout, page count, freelist pages, and reclaimable bytes. Threadnote recommends graph compact once at least 512 MiB and 20% are reclaimable. The explicit command uses zero-wait maintenance/build locks, pre/post verification, and SQLite transactional VACUUM; use --dry-run to preview or --force below the threshold.',
+            text: 'graph status and Manager distinguish the physical SQLite file plus sidecars from pages in use and freelist bytes already reusable inside the database. A large physical file therefore does not imply the same amount of live graph data. Automatic eligibility is deliberately freelist-only: once freelist bytes are both at least 512 MiB and 20% of the database, a running Manager compacts one eligible database at a time when builders and maintenance locks are idle and verified disk headroom is sufficient. Persisted per-database cooldowns prevent repeated attempts after successful, low-yield, deferred, or failed outcomes. SQLite VACUUM can require more than twice the database size as temporary free space, so Manager withholds compaction when that conservative headroom cannot be proved. Automatic compaction runs in an isolated child process so Manager remains responsive, and the UI shows the latest check, deferral, failure, or reclaimed bytes. Structural-fragmentation analysis can scan live SQLite pages, so it is never scheduled automatically. The storage boundary revalidates the active snapshot before and after the transactional rewrite, and interruption preserves the original database. graph compact --dry-run remains the explicit preview for additional fragmentation opportunities and manual timing control; --force is the expert override below the automatic threshold.',
+          },
+          {
+            type: 'paragraph',
+            text: 'Manager presents repository names, branches labeled by their observation boundary, and trusted local folders as the primary graph-view labels. Opaque checkout and worktree identities remain available only as last-resort diagnostics and exact CLI selectors.',
           },
           {
             type: 'paragraph',
@@ -1428,6 +1432,146 @@ threadnote manage --no-open`,
               'Knowledge graph: explore current symbols and relationships, request topology signals, and preview or remove one exact indexed view without requiring its local folder. Removal refreshes the target, asks for explicit confirmation, and reports busy or stale state without force-bypassing shared readers and bases.',
               'Shares: inspect configured teams, synchronization, and conflicts.',
               'Tools: discover operational surfaces without memorizing every command.',
+            ],
+          },
+        ],
+      },
+      {
+        id: 'manager-worksets',
+        title: 'Manage cross-repository Worksets',
+        summary: 'Create authoritative repository sets, prepare published evidence, and operate them from Manager.',
+        keywords: [
+          'Manager Worksets',
+          'workset definition editor',
+          'workset create edit delete',
+          'workset query continuation',
+          'context brief workset',
+        ],
+        body: [
+          {
+            type: 'paragraph',
+            text: 'Open threadnote manage and choose Worksets. A Workset is a named set of projects from the seed manifest, not a second repository registry. The manifest remains authoritative: Manager reads its project inventory and edits only the worksets collection while preserving unrelated keys and supported YAML comments.',
+          },
+          {
+            type: 'code',
+            language: 'yaml',
+            code: `version: 1
+projects:
+  - name: api
+    path: ~/src/api
+    uri: threadnote://resources/repos/api
+    seed: []
+  - name: billing
+    path: ~/src/billing
+    uri: threadnote://resources/repos/billing
+    seed: []
+worksets:
+  - name: commerce
+    description: Checkout and billing services
+    projects: [api, billing]`,
+          },
+          {
+            type: 'heading',
+            text: 'Create and maintain definitions',
+          },
+          {
+            type: 'list',
+            items: [
+              'Choose + to create a Workset, enter a unique name and optional description, select at least one manifest project, then save.',
+              'Choose Edit to rename the Workset, change its description, or add and remove members. Search and selected-only pagination keep all 4,096 supported projects manageable.',
+              'Existing unresolved member names remain visible so they can be preserved or removed; a new member must match a configured manifest project.',
+              'Choose Delete and confirm the destructive definition change. Repository graphs are derived data and are not deleted by this action.',
+            ],
+          },
+          {
+            type: 'paragraph',
+            text: 'Every save carries the SHA-256 revision of the raw manifest that Manager loaded. Threadnote re-reads that revision under the graph-prepare lock and a dedicated manifest lock, validates the complete candidate, writes a private same-directory temporary file, rechecks the revision immediately before promotion, and atomically renames it. A concurrent edit returns revision-conflict without writing; Manager refreshes definitions and preserves the draft for deliberate review. Description-only changes do not stale a graph publication. Rename or membership changes retire only the exact old published generation after the manifest commit; a bounded cleanup warning never rolls the authoritative manifest back.',
+          },
+          {
+            type: 'warning',
+            text: 'Manager definition editing is deliberately read-only when the manifest is a symbolic link or when mutable Workset YAML uses aliases, anchors, or unsupported node shapes. Ordinary maps, scalar names and descriptions, and scalar project sequences preserve comments. Project, member, and Workset names must already be normalized non-empty text without surrounding or repeated whitespace and must fit the 256-byte runtime bound; Manager fails closed instead of trimming or presenting a different identity.',
+          },
+          {
+            type: 'heading',
+            text: 'Prepare and inspect readiness',
+          },
+          {
+            type: 'paragraph',
+            text: 'Definitions do not build graphs. Choose Prepare to start an explicit background Manager job that indexes the selected repositories, builds exact routing and bridge projections, and atomically publishes one generation. The tab remains usable while the job runs, shows its Workset name and terminal member receipts, supports Stop preparation, and polls only the lightweight job record. Stopping is interruption-safe, but an atomic publication may have completed just before interruption; the selected readiness view is refreshed and remains authoritative.',
+          },
+          {
+            type: 'list',
+            items: [
+              'Reloading the same Manager page rediscovers active and recent jobs. The bounded list retains 32 summaries and fetches one selected job result on demand.',
+              'Closing Manager interrupts its active prepare and waits for staging cleanup. Jobs are session state, not a persistent queue or daemon.',
+              'Readiness is loaded only for the selected Workset. It reports current, stale, missing, failed, excluded, deferred, and uncatalogued members plus exact-bridge coverage and recovery guidance.',
+              'Status and every read operation use only ready published state and never trigger a cold repository build. Prepare is the only Worksets action that builds.',
+            ],
+          },
+          {
+            type: 'heading',
+            text: 'Search, continue, traverse, and compile a brief',
+          },
+          {
+            type: 'table',
+            headers: ['Manager action', 'How to use it', 'What it returns'],
+            rows: [
+              [
+                'Query',
+                'Enter an ordinary engineering task or symbol; no Workset query language is required. Set a token budget and optionally include non-authoritative heuristic or model support.',
+                'Generation-bound evidence cards, human repository labels, reasons, relationship authority and provenance, coverage, warnings, and truncation.',
+              ],
+              [
+                'Continue',
+                'Choose Continue when the latest result supplies a cgwc_ cursor.',
+                'The next stable page from the same published generation. A definition change or successful reprepare clears old cards and cursors.',
+              ],
+              [
+                'Exact path',
+                'On a query card choose Use as From or Use as To, then run the path action with two cgr_ references.',
+                'A bounded authoritative path through repository-local edges and exact cross-repository bridges, with stop and coverage receipts.',
+              ],
+              [
+                'Reverse impact',
+                'Choose Trace impact on a card, or paste its cgr_ reference as the starting point.',
+                'Bounded reverse dependencies with relationship provenance and traversal coverage.',
+              ],
+              [
+                'Topology',
+                'Load the selected published Workset topology.',
+                'Human-labeled repositories, package components, exact bridge edges, evidence counts, and completeness warnings.',
+              ],
+              [
+                'Context brief',
+                'Enter a task, choose brief, locate, explain, trace, or impact, and set a token budget.',
+                'Projected graph cards and contracts, durable decisions, active handoffs, scope coverage, conflicts, and recommended follow-ups.',
+              ],
+            ],
+          },
+          {
+            type: 'note',
+            text: 'Manager prefers the manifest project name, an explicitly labeled observed branch, and the trusted local folder and path. Detached, missing, and deferred branch observations are shown as such. Opaque repository or checkout IDs appear only as shortened fallback diagnostics; graph references remain available as advanced copy/use values.',
+          },
+          {
+            type: 'table',
+            headers: ['Boundary', 'Limit or behavior'],
+            rows: [
+              [
+                'Definitions, manifest projects, and members per Workset',
+                '4,096 each; project picker pages contain 250 rows',
+              ],
+              ['Names', '1–256 UTF-8 bytes, normalized, unique case-insensitively, and free of control characters'],
+              ['Descriptions, tasks, query text, and graph selectors', 'At most 4,096 UTF-8 bytes'],
+              ['Response budget', '1–1,500 estimated tokens'],
+              ['Prepare concurrency', 'Manager uses 2; the authenticated API accepts 1–8'],
+              [
+                'Branch labels',
+                'One bounded Git symbolic-ref observation per admitted project; catalog observation is capped at 128 projects',
+              ],
+              [
+                'Graph maintenance',
+                'Definitions and job list/detail/cancel stay available; readiness, prepare, query, continuation, path, impact, topology, and Context Brief return maintenance-busy and must be retried',
+              ],
             ],
           },
         ],

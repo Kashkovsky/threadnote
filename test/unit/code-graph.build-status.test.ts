@@ -130,6 +130,7 @@ describe('code graph cross-process build status', () => {
     expect(JSON.stringify(statuses)).not.toContain(home);
     expect(result.global).toHaveLength(2);
     expect(result.global.every(status => status.managerContext?.worktreePath === `${home}/repository`)).toBe(true);
+    expect(result.global.every(status => status.managerContext?.branch === 'feature/manager-labels')).toBe(true);
   });
 
   it('persists privacy-safe superseded-snapshot reclamation progress', async () => {
@@ -959,6 +960,7 @@ function resolutionActivity(
 
 function fixtureIdentity(home: string): RepositoryIdentity {
   return {
+    branch: 'feature/manager-labels',
     caseMode: 'sensitive',
     checkoutId: 'a'.repeat(64),
     displayName: 'example/repository',

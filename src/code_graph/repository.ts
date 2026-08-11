@@ -35,7 +35,7 @@ export const resolveRepositoryIdentityDetail = Effect.fn('codeGraph.resolveRepos
     Effect.mapError(cause => new CodeGraphRepositoryError(`Not a Git repository: ${cause.message}`)),
   );
   const repoRoot = yield* fs.realPath(rootResult.stdout.trim());
-  const [directoryResult, formatResult, commitResult, ignoreCaseResult, remoteResult] = yield* Effect.all(
+  const [directoryResult, formatResult, commitResult, ignoreCaseResult, remoteResult, branch] = yield* Effect.all(
     [
       runBinaryCommandEffect(
         'git',
@@ -46,8 +46,9 @@ export const resolveRepositoryIdentityDetail = Effect.fn('codeGraph.resolveRepos
       runGit(repoRoot, ['rev-parse', 'HEAD'], true),
       runGit(repoRoot, ['config', '--bool', 'core.ignorecase'], true),
       runGit(repoRoot, ['remote', 'get-url', 'origin'], true),
+      observeRepositoryBranch(repoRoot),
     ],
-    {concurrency: 5},
+    {concurrency: 6},
   );
   const directories = parseGitDirectoryOutput(directoryResult.stdout);
   if (directories === undefined) {
@@ -66,6 +67,7 @@ export const resolveRepositoryIdentityDetail = Effect.fn('codeGraph.resolveRepos
   const headCommit = commitResult.exitCode === 0 ? commitResult.stdout.trim() : zeroObjectId(objectFormat);
   const displayName = repositoryDisplayName(remoteIdentity, repoRoot);
   const identity = {
+    ...(branch.state === 'current' ? {branch: branch.branch} : {}),
     caseMode:
       ignoreCaseResult.exitCode === 0 && ignoreCaseResult.stdout.trim().toLowerCase() === 'true'
         ? 'insensitive'
@@ -83,13 +85,45 @@ export const resolveRepositoryIdentityDetail = Effect.fn('codeGraph.resolveRepos
   return {gitDirectory: directories.gitDirectory, identity};
 });
 
+export function normalizeRepositoryBranchName(value: string): string | undefined {
+  const branch = value.trim();
+  return branch.length > 0 &&
+    new TextEncoder().encode(branch).byteLength <= 1_024 &&
+    !hasControlCharacter(branch) &&
+    !/\p{Bidi_Control}/u.test(branch)
+    ? branch
+    : undefined;
+}
+
+export const observeRepositoryBranch = Effect.fn('codeGraph.observeRepositoryBranch')(function* (cwd: string) {
+  const result = yield* runCommandEffect('git', ['-C', cwd, 'symbolic-ref', '--quiet', '--short', 'HEAD'], {
+    allowFailure: true,
+    maxOutputBytes: 2_048,
+    timeoutMs: 5_000,
+  }).pipe(Effect.option);
+  if (result._tag === 'None' || (result.value.exitCode !== 0 && result.value.exitCode !== 1)) {
+    return {state: 'missing' as const};
+  }
+  if (result.value.exitCode === 1) return {state: 'detached' as const};
+  const branch = normalizeRepositoryBranchName(result.value.stdout);
+  return branch === undefined ? {state: 'missing' as const} : {branch, state: 'current' as const};
+});
+
+function hasControlCharacter(value: string): boolean {
+  for (const character of value) {
+    const codePoint = character.codePointAt(0);
+    if (codePoint !== undefined && (codePoint <= 31 || codePoint === 127)) return true;
+  }
+  return false;
+}
+
 export const resolveRepositoryIdentity = Effect.fn('codeGraph.resolveRepositoryIdentity')(function* (cwd: string) {
   return (yield* resolveRepositoryIdentityDetail(cwd)).identity;
 });
 
 /**
  * Revalidate a previously published repository identity without repeating the
- * six-command discovery path. The expected repository ID remains independently
+ * full discovery path. The expected repository ID remains independently
  * recomputed from the current remote or local checkout before it is trusted.
  */
 export const resolveRepositoryIdentityForExpectation = Effect.fn('codeGraph.resolveRepositoryIdentityForExpectation')(
@@ -97,7 +131,7 @@ export const resolveRepositoryIdentityForExpectation = Effect.fn('codeGraph.reso
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const system = yield* SystemInfo;
-    const [metadataResult, ignoreCaseResult, remoteResult] = yield* Effect.all(
+    const [metadataResult, ignoreCaseResult, remoteResult, branch] = yield* Effect.all(
       [
         runGit(cwd, [
           'rev-parse',
@@ -109,8 +143,9 @@ export const resolveRepositoryIdentityForExpectation = Effect.fn('codeGraph.reso
         ]),
         runGit(cwd, ['config', '--bool', 'core.ignorecase'], true),
         runGit(cwd, ['remote', 'get-url', 'origin'], true),
+        observeRepositoryBranch(cwd),
       ],
-      {concurrency: 3},
+      {concurrency: 4},
     ).pipe(Effect.mapError(() => new CodeGraphRepositoryError('Repository identity could not be revalidated.')));
     const metadata = metadataResult.stdout.replace(/\r?\n$/u, '').split(/\r?\n/u);
     if (metadata.length !== 4) {
@@ -132,6 +167,7 @@ export const resolveRepositoryIdentityForExpectation = Effect.fn('codeGraph.reso
       remoteResult.exitCode === 0 ? normalizeCredentialFreeRemote(remoteResult.stdout.trim()) : undefined;
     const repositorySource = remoteIdentity ?? `local:${normalizeLocalIdentity(gitCommonDirectory, system.platform)}`;
     const identity = {
+      ...(branch.state === 'current' ? {branch: branch.branch} : {}),
       caseMode:
         ignoreCaseResult.exitCode === 0 && ignoreCaseResult.stdout.trim().toLowerCase() === 'true'
           ? 'insensitive'

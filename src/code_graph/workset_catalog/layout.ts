@@ -1,10 +1,11 @@
 import type {Path} from 'effect';
 
-export const CODE_GRAPH_WORKSET_CATALOG_SCHEMA_VERSION = 2 as const;
+export const CODE_GRAPH_WORKSET_CATALOG_SCHEMA_VERSION = 3 as const;
 
 export interface CodeGraphWorksetCatalogLayout {
   readonly databasePath: string;
   readonly lockPath: string;
+  readonly prepareLockPath: string;
   readonly root: string;
 }
 
@@ -32,6 +33,7 @@ export function codeGraphWorksetCatalogLayout(path: Path.Path, threadnoteHome: s
   return {
     databasePath: codeGraphWorksetCatalogDatabasePath(path, threadnoteHome),
     lockPath: codeGraphWorksetCatalogLockPath(path, threadnoteHome),
+    prepareLockPath: path.join(threadnoteHome, 'locks', 'indexes', 'code-graph', 'worksets', 'prepare.lock'),
     root: codeGraphWorksetCatalogRoot(path, threadnoteHome),
   };
 }

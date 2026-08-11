@@ -89,7 +89,7 @@ describe('Effect CommandExecutor', () => {
           const pidPath = pathService.join(directory, 'child.pid');
           const fiber = yield* runStreamingCommandEffect(process.execPath, [
             '-e',
-            'require("../helpers/node-fs.js").writeFileSync(process.argv[1], String(process.pid)); setInterval(() => undefined, 1000)',
+            'require("node:fs").writeFileSync(process.argv[1], String(process.pid)); setInterval(() => undefined, 1000)',
             pidPath,
           ]).pipe(Effect.forkScoped);
           const deadline = (yield* Clock.currentTimeMillis) + 5000;

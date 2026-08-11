@@ -177,6 +177,7 @@ export interface ObservedCodeGraphBuildStatus extends CodeGraphBuildStatus {
   };
   /** Local-only Manager context. Never written into the privacy-safe build status document. */
   readonly managerContext?: {
+    readonly branch?: string;
     readonly worktreePath: string;
   };
   readonly observation: {
@@ -337,7 +338,9 @@ export const makeCodeGraphBuildReporter = Effect.fn('codeGraph.buildStatus.makeR
       .pipe(Effect.catch(() => Effect.void));
 
   yield* persist(current => current, true);
-  yield* writeCodeGraphManagerContext(fs, path, file, buildId, identity.repoRoot).pipe(Effect.catch(() => Effect.void));
+  yield* writeCodeGraphManagerContext(fs, path, file, buildId, identity.repoRoot, identity.branch).pipe(
+    Effect.catch(() => Effect.void),
+  );
   reporterHistoryAuthority.current = Option.getOrUndefined(
     yield* inspectBuildHistoryDirectory(fs, path, layout, identity.worktreeId).pipe(Effect.option),
   );
@@ -1007,13 +1010,19 @@ function writeCodeGraphManagerContext(
   statusFile: string,
   buildId: string,
   worktreePath: string,
+  branch?: string,
 ) {
   return Effect.gen(function* () {
     if (!isText(worktreePath, 4_096)) return;
     const file = codeGraphManagerContextPath(path, statusFile, buildId);
     if ((yield* fs.readLink(file).pipe(Effect.option))._tag === 'Some') return;
     const temporary = path.join(path.dirname(file), `.${buildId}.manager-context.tmp`);
-    const content = `${JSON.stringify({buildId, schemaVersion: MANAGER_CONTEXT_SCHEMA_VERSION, worktreePath})}\n`;
+    const content = `${JSON.stringify({
+      ...(branch !== undefined && isText(branch, 1_024) ? {branch} : {}),
+      buildId,
+      schemaVersion: MANAGER_CONTEXT_SCHEMA_VERSION,
+      worktreePath,
+    })}\n`;
     if (new TextEncoder().encode(content).byteLength > MANAGER_CONTEXT_FILE_BYTES_LIMIT) return;
     yield* fs.writeFileString(temporary, content, {flag: 'wx', mode: 0o600});
     yield* fs
@@ -1079,11 +1088,12 @@ function readCodeGraphManagerContext(fs: FileSystem.FileSystem, file: string, bu
       !isRecord(value) ||
       value.schemaVersion !== MANAGER_CONTEXT_SCHEMA_VERSION ||
       value.buildId !== buildId ||
-      !isText(value.worktreePath, 4_096)
+      !isText(value.worktreePath, 4_096) ||
+      (value.branch !== undefined && !isText(value.branch, 1_024))
     ) {
       return undefined;
     }
-    return {worktreePath: value.worktreePath};
+    return {...(value.branch === undefined ? {} : {branch: value.branch}), worktreePath: value.worktreePath};
   }).pipe(Effect.catch(() => Effect.succeed(undefined)));
 }
 
@@ -1520,7 +1530,8 @@ const readBuildHistoryManagerContext = Effect.fn('codeGraph.buildStatus.readHist
         isRecord(value) &&
         value.schemaVersion === MANAGER_CONTEXT_SCHEMA_VERSION &&
         value.buildId === buildId &&
-        isText(value.worktreePath, 4_096)
+        isText(value.worktreePath, 4_096) &&
+        (value.branch === undefined || isText(value.branch, 1_024))
       );
     },
     catch: () => new InvalidBuildHistorySidecarError('Build history Manager context is invalid JSON.'),

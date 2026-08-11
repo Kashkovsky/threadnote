@@ -694,11 +694,7 @@ interface SearchSymbolRow extends SymbolRow {
   readonly score: number;
 }
 
-/**
- * Build exact-match candidates with the equality predicate inside every
- * current/base branch. Keeping the predicate outside effectiveSymbolsCte()
- * makes SQLite scan every symbol in a large snapshot before applying LIMIT.
- */
+/** Keep exact predicates inside each branch so SQLite does not scan every symbol before LIMIT. */
 
 function compactLexicalTermBranch(alias: string, placeholders: string, base: boolean): string {
   const suppression = base

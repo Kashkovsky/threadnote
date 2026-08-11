@@ -28,6 +28,7 @@ import * as lifecycle from '../../src/lifecycle.js';
 import * as memory from '../../src/memory.js';
 import * as seeding from '../../src/seeding.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
+import * as automaticCompaction from '../../src/code_graph/automatic_compaction.js';
 import {codeGraphLayout} from '../../src/code_graph/layout.js';
 import {makeCodeGraphBuildReporter} from '../../src/code_graph/build_status.js';
 import {recordVerifiedCodeGraphLocalAssociation} from '../../src/code_graph/local_provenance.js';
@@ -80,6 +81,11 @@ vi.mock('../../src/seeding.js', async importOriginal => {
       Console.log(options.dryRun ? 'seed skills dry run' : 'seed skills applied'),
     ),
   };
+});
+
+vi.mock('../../src/code_graph/automatic_compaction.js', async importOriginal => {
+  const actual = await importOriginal<typeof import('../../src/code_graph/automatic_compaction.js')>();
+  return {...actual, compactCodeGraphStorageIsolated: vi.fn(actual.compactCodeGraphStorageIsolated)};
 });
 
 async function makeRuntime(): Promise<RuntimeConfig> {
@@ -551,6 +557,7 @@ describe('manager http API', () => {
   const homes: string[] = [];
 
   beforeEach(() => {
+    vi.mocked(automaticCompaction.compactCodeGraphStorageIsolated).mockClear();
     vi.mocked(lifecycle.runRepair)
       .mockReset()
       .mockImplementation((_config, options) => Console.log(options.dryRun ? 'repair dry run' : 'repair applied'));
@@ -1054,6 +1061,45 @@ describe('manager http API', () => {
         output: `Removed derived code graph index for checkout ${orphanedCheckoutId.slice(0, 12)}.`,
       });
       expect(existsSync(orphanedRoot)).toBe(false);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('applies a verified isolated graph compaction through the authenticated Manager route', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    const root = join(config.agentContextHome, 'manager-compaction-worktree');
+    initializeGitRepository(root);
+    const identity = await runEffect(resolveRepositoryIdentity(root));
+    vi.mocked(automaticCompaction.compactCodeGraphStorageIsolated).mockReturnValueOnce(
+      Effect.succeed({action: 'compacted', checkoutId: identity.checkoutId, reclaimedBytes: 1_048_576}),
+    );
+    const server = await startServer(config, 'secret');
+    try {
+      const response = await fetch(`${server.url}/api/graphs/action`, {
+        body: JSON.stringify({
+          action: 'compact',
+          checkoutId: identity.checkoutId,
+          confirm: true,
+          cwd: root,
+          force: true,
+          repositoryId: identity.repositoryId,
+          worktreeId: identity.worktreeId,
+        }),
+        headers: {authorization: 'Bearer secret', 'content-type': 'application/json'},
+        method: 'POST',
+      });
+
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({
+        output: 'Compacted the selected graph in an isolated process and reclaimed 1,048,576 bytes.',
+      });
+      expect(automaticCompaction.compactCodeGraphStorageIsolated).toHaveBeenCalledWith(
+        config.agentContextHome,
+        identity.checkoutId,
+        {force: true, operation: 'compact'},
+      );
     } finally {
       await server.close();
     }

@@ -326,7 +326,7 @@ export const managerGraphCatalog = Effect.fn('codeGraph.managerCatalog')(functio
             diagnostic: {
               checkoutId,
               code: 'no-ready-snapshot',
-              message: `Checkout ${shortIdentity(checkoutId)} has no ready graph snapshot.`,
+              message: 'An indexed repository database has no ready graph snapshot.',
             } satisfies ManagerGraphCatalogDiagnostic,
           } as const;
         }
@@ -351,7 +351,7 @@ export const managerGraphCatalog = Effect.fn('codeGraph.managerCatalog')(functio
             diagnostic: {
               checkoutId,
               code: 'no-ready-snapshot',
-              message: `Checkout ${shortIdentity(checkoutId)} has no ready graph snapshot.`,
+              message: 'An indexed repository database has no ready graph snapshot.',
             } satisfies ManagerGraphCatalogDiagnostic,
           } as const;
         }
@@ -365,6 +365,14 @@ export const managerGraphCatalog = Effect.fn('codeGraph.managerCatalog')(functio
             ]).pipe(Effect.map(localAssociation => ({catalog, localAssociation}))),
           {concurrency: 4},
         );
+        const primaryView = observedCatalogs[0];
+        const primaryViewPath =
+          primaryView && 'displayPath' in primaryView.localAssociation
+            ? primaryView.localAssociation.displayPath
+            : undefined;
+        const viewLabel = primaryView
+          ? `${primaryView.catalog.repository.displayName}${primaryViewPath ? ` at ${primaryViewPath}` : ''}`
+          : 'The indexed repository';
         return {
           checkoutId,
           catalogs: observedCatalogs,
@@ -378,8 +386,8 @@ export const managerGraphCatalog = Effect.fn('codeGraph.managerCatalog')(functio
                     ? ('lease-failed' as const)
                     : ('lease-deferred' as const),
                   message: retained.some(result => result.state === 'failed')
-                    ? `Checkout ${shortIdentity(checkoutId)} remains readable. Snapshot retention is temporarily unavailable, and background maintenance will retry.`
-                    : `Checkout ${shortIdentity(checkoutId)} is readable, but snapshot retention is deferred while another graph writer is active. Retry after the active build completes.`,
+                    ? `${viewLabel} remains readable. Snapshot retention is temporarily unavailable, and background maintenance will retry.`
+                    : `${viewLabel} is readable, but snapshot retention is deferred while another graph writer is active. Retry after the active build completes.`,
                 } satisfies ManagerGraphCatalogDiagnostic,
               }),
           viewsTruncated: catalogs.length > MANAGER_CATALOG_VIEW_LIMIT,
@@ -392,7 +400,7 @@ export const managerGraphCatalog = Effect.fn('codeGraph.managerCatalog')(functio
             diagnostic: {
               checkoutId,
               code: 'unreadable-database',
-              message: `Checkout ${shortIdentity(checkoutId)} graph database is unreadable: ${privacySafeCatalogError(cause)}`,
+              message: `An indexed repository graph database is unreadable: ${privacySafeCatalogError(cause)}`,
             } satisfies ManagerGraphCatalogDiagnostic,
           } as const),
         ),
@@ -1436,7 +1444,7 @@ function repositoryFromCatalog(
     checkoutId,
     displayName: catalog.repository.displayName,
     id: viewId,
-    label: indexedViewLabel(checkoutId, catalog),
+    label: indexedViewLabel(catalog),
     localAssociation,
     metrics: catalog.metrics,
     model: catalog.model,
@@ -1658,16 +1666,12 @@ function compareIndexedViews(left: ManagerGraphIndexedView, right: ManagerGraphI
   );
 }
 
-function indexedViewLabel(checkoutId: string, catalog: CodeGraphVisualizationCatalog): string {
+function indexedViewLabel(catalog: CodeGraphVisualizationCatalog): string {
   const commit = catalog.snapshot.commit.slice(0, 8) || 'no-commit';
   const state = catalog.snapshot.dirty ? 'dirty' : 'clean';
   const indexed = catalog.activatedAt ?? catalog.snapshot.completedAt;
   const indexedLabel = indexed ? new Date(indexed).toISOString().slice(0, 16).replace('T', ' ') + 'Z' : 'time unknown';
-  return `${commit} · ${state} · ${indexedLabel} · checkout ${shortIdentity(checkoutId)} · worktree ${shortIdentity(catalog.viewWorktreeId)}`;
-}
-
-function shortIdentity(value: string): string {
-  return value.slice(-8) || 'unknown';
+  return `${commit} · ${state} · indexed ${indexedLabel}`;
 }
 
 function privacySafeCatalogError(cause: unknown): string {

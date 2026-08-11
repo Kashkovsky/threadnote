@@ -1,5 +1,5 @@
 import {BunHttpServer} from '@effect/platform-bun';
-import {Effect, Fiber} from 'effect';
+import {Effect, Fiber, Scope} from 'effect';
 import {HttpServer} from 'effect/unstable/http';
 import {createManagerServer} from '../../src/manager.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
@@ -25,7 +25,8 @@ export async function startManagerTestServer(config: RuntimeConfig, token: strin
     Effect.scoped(
       Effect.gen(function* () {
         const server = yield* HttpServer.HttpServer;
-        yield* server.serve(createManagerServer({config, jobs: new Map(), token}));
+        const worksetScope = yield* Scope.Scope;
+        yield* server.serve(createManagerServer({config, jobs: new Map(), token, worksetScope}));
         const serverAddress = server.address;
         if (serverAddress._tag !== 'TcpAddress') {
           return yield* Effect.fail(new TestError('manager test server did not bind to TCP'));

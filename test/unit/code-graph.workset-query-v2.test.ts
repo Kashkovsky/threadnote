@@ -1,6 +1,7 @@
 import {it as effectIt} from '@effect/vitest';
 import fc from 'fast-check';
 import {Effect} from 'effect';
+import {TestClock} from 'effect/testing';
 import {describe, expect, it} from 'vitest';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
 import {codeGraphProtobufMoniker} from '../../src/code_graph/cross_repository/monikers.js';
@@ -74,7 +75,7 @@ describe('code graph Workset Search V2 core', () => {
       const execution = yield* runCodeGraphWorksetQueryV2Core(dependencies(fixture, {delays}), {
         ...fixture.input,
         deadlineMilliseconds: 350,
-      });
+      }).pipe(TestClock.withLive);
 
       expect(execution.logicalResult.coverage.stopReason).toBe('deadline');
       expect(execution.logicalResult.cards).toEqual([]);
@@ -114,7 +115,7 @@ describe('code graph Workset Search V2 core', () => {
       const execution = yield* runCodeGraphWorksetQueryV2Core(dependencies(fixture, {delays}), {
         ...fixture.input,
         deadlineMilliseconds: 350,
-      });
+      }).pipe(TestClock.withLive);
 
       expect(execution.logicalResult.coverage.stopReason).toBe('deadline');
       expect(execution.logicalResult.cards.map(card => card.repositoryKey)).toEqual(['repository-0']);
@@ -151,7 +152,7 @@ describe('code graph Workset Search V2 core', () => {
         ...uncertain.input,
         deadlineMilliseconds: 950,
         evidenceCards: 40,
-      });
+      }).pipe(TestClock.withLive);
 
       expect(Date.now() - started).toBeLessThan(1_250);
       expect(execution.logicalResult.coverage.stopReason).toBe('deadline');
@@ -338,7 +339,9 @@ describe('code graph Workset Search V2 core', () => {
         const fixture = makeFixture(4);
         const delays = new Map(completionOrder.map((repository, index) => [`repository-${repository}`, index]));
         const forward = yield* runCodeGraphWorksetQueryV2Core(dependencies(fixture), fixture.input);
-        const reordered = yield* runCodeGraphWorksetQueryV2Core(dependencies(fixture, {delays}), fixture.input);
+        const reordered = yield* runCodeGraphWorksetQueryV2Core(dependencies(fixture, {delays}), fixture.input).pipe(
+          TestClock.withLive,
+        );
         expect(reordered.logicalResult).toEqual(forward.logicalResult);
       }),
     {fastCheck: {numRuns: 30}},

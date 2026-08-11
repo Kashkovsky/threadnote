@@ -2,7 +2,7 @@ import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {Console, Effect, FileSystem, Path} from 'effect';
-import {javascriptStringLiteral} from './effect/javascript.js';
+import {javascriptStringLiteral, optionalNativePackageFallbackModule} from './effect/javascript.js';
 import {isDevelopmentBuildVersion} from './development-runtime.js';
 
 interface PackageManifest {
@@ -257,7 +257,7 @@ function bundleNativeRuntime(entrypoint: string, outfile: string, nativePackage:
                     `const binsDir = Bun.fileURLToPath(new URL('./native', import.meta.url));`,
                     `export const getBinsDir = () => ({binsDir, packageVersion: ${javascriptStringLiteral(nativeRuntimeVersion)}});`,
                   ].join('\n')
-                : "export const getBinsDir = () => { throw new ScriptError('Optional native package is not included in this Threadnote artifact.'); };",
+                : optionalNativePackageFallbackModule(),
             loader: 'js',
           }));
         },

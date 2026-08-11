@@ -107,7 +107,7 @@ describe('shared ready view attachment locking', () => {
         yield* Deferred.succeed(release, undefined);
         yield* Fiber.join(owner);
 
-        const counts = {fullIdentity: 0, git: 0, publicationProof: 0, status: 0};
+        const counts = {branchObservation: 0, fullIdentity: 0, git: 0, publicationProof: 0, status: 0};
         const mutableCommand = command as {
           execute: typeof command.execute;
           executeBytes?: NonNullable<typeof command.executeBytes>;
@@ -117,6 +117,7 @@ describe('shared ready view attachment locking', () => {
         const observeInvocation = (executable: string, args: readonly string[]) => {
           if (executable !== 'git') return;
           counts.git += 1;
+          if (args.includes('symbolic-ref')) counts.branchObservation += 1;
           if (args[2] === 'rev-parse' && args[3] === '--show-toplevel') counts.fullIdentity += 1;
           if (args[2] === 'status') {
             counts.status += 1;
@@ -153,7 +154,7 @@ describe('shared ready view attachment locking', () => {
     expect(observed.elapsedMilliseconds).toBeLessThan(500);
     expect(observed.attached.readySnapshot?.id).toBe(observed.snapshot.id);
     expect(observed.attached.stale).toBe(false);
-    expect(observed.counts).toEqual({fullIdentity: 1, git: 8, publicationProof: 1, status: 2});
+    expect(observed.counts).toEqual({branchObservation: 1, fullIdentity: 1, git: 9, publicationProof: 1, status: 2});
   });
 
   it('does not promote an optimistic candidate after HEAD moves before target-lock acquisition', async () => {

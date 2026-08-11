@@ -12,6 +12,7 @@ import {
   createCodeGraphWorksetRoutingProjection,
   normalizeCodeGraphWorksetRoutingSymbol,
 } from './projection.js';
+import {codeGraphWorksetRoutingProjectionLogicalBytesAppend} from './projection_storage.js';
 import {
   CODE_GRAPH_WORKSET_CATALOG_LIMITS,
   CODE_GRAPH_WORKSET_CATALOG_PROJECTOR_VERSION,
@@ -75,12 +76,14 @@ export interface CodeGraphReadySnapshotRoutingProjectionStreamBuildV1 {
 export interface CodeGraphReadySnapshotRoutingProjectionSinkV1<E, R> {
   readonly append: (
     projectionDigest: string,
+    stagingToken: string,
     symbols: readonly CodeGraphWorksetRoutingSymbolV1[],
   ) => Effect.Effect<void, E, R>;
   readonly begin: (
     receipt: CodeGraphWorksetRoutingProjectionReceiptV1,
-  ) => Effect.Effect<{readonly state: 'ready' | 'staging'}, E, R>;
-  readonly complete: (projectionDigest: string) => Effect.Effect<void, E, R>;
+    reservedLogicalBytes: number,
+  ) => Effect.Effect<{readonly state: 'ready'} | {readonly stagingToken: string; readonly state: 'staging'}, E, R>;
+  readonly complete: (projectionDigest: string, stagingToken: string) => Effect.Effect<void, E, R>;
 }
 
 interface SnapshotProjectionRow {
@@ -490,13 +493,17 @@ function readProjectionStreamed<E, R>(
       safeCount(before.edge_count, 'snapshot edge count'),
     );
     const stats = projectionStats(componentCount, dependencyCount);
-    const firstPass = yield* scanProjectionSymbolPages(
-      sql,
-      selected.id,
-      baseSnapshotId,
-      input,
-      stats,
-      () => Effect.void,
+    let reservedLogicalBytes = 0;
+    const firstPass = yield* scanProjectionSymbolPages(sql, selected.id, baseSnapshotId, input, stats, symbols =>
+      Effect.try({
+        try: () => {
+          reservedLogicalBytes = codeGraphWorksetRoutingProjectionLogicalBytesAppend(reservedLogicalBytes, symbols);
+        },
+        catch: cause =>
+          cause instanceof CodeGraphWorksetCatalogError
+            ? cause
+            : corrupt('The routing projection storage charge is invalid.', cause),
+      }),
     );
     if (firstPass.symbolCount !== expectedSymbolCount || firstPass.symbolCount !== selected.symbolCount) {
       return yield* Effect.fail(
@@ -537,7 +544,7 @@ function readProjectionStreamed<E, R>(
       catch: cause => corrupt('The ready snapshot contains an invalid streamed projection surface.', cause),
     });
     const receipt = {...header, projectionDigest} satisfies CodeGraphWorksetRoutingProjectionReceiptV1;
-    const begun = yield* sink.begin(receipt);
+    const begun = yield* sink.begin(receipt, reservedLogicalBytes);
     if (begun.state === 'staging') {
       const verificationStats = projectionStats(componentCount, dependencyCount);
       const secondPass = yield* scanProjectionSymbolPages(
@@ -546,7 +553,7 @@ function readProjectionStreamed<E, R>(
         baseSnapshotId,
         input,
         verificationStats,
-        symbols => sink.append(projectionDigest, symbols),
+        symbols => appendBoundedProjectionPages(sink, projectionDigest, begun.stagingToken, symbols),
       );
       if (
         codeGraphWorksetRoutingProjectionDigestComplete(header, secondPass) !== projectionDigest ||
@@ -555,7 +562,7 @@ function readProjectionStreamed<E, R>(
         return yield* Effect.fail(corrupt('The ready snapshot routing projection changed between streaming passes.'));
       }
       yield* validateProjectionSnapshotUnchanged(sql, selected, input, before);
-      yield* sink.complete(projectionDigest);
+      yield* sink.complete(projectionDigest, begun.stagingToken);
     }
     return {receipt, stats: {...stats}};
   }).pipe(
@@ -583,6 +590,34 @@ function projectionStats(componentCount: number, dependencyCount: number): Mutab
     termsOmitted: 0,
     termsObserved: 0,
   };
+}
+
+function appendBoundedProjectionPages<E, R>(
+  sink: CodeGraphReadySnapshotRoutingProjectionSinkV1<E, R>,
+  projectionDigest: string,
+  stagingToken: string,
+  symbols: readonly CodeGraphWorksetRoutingSymbolV1[],
+) {
+  return Effect.gen(function* () {
+    let page: CodeGraphWorksetRoutingSymbolV1[] = [];
+    let pageBytes = 0;
+    for (const symbol of symbols) {
+      const nextBytes = codeGraphWorksetRoutingProjectionLogicalBytesAppend(pageBytes, [symbol]);
+      if (page.length > 0 && nextBytes > CODE_GRAPH_WORKSET_CATALOG_LIMITS.projectionPageBytesMaximum) {
+        yield* sink.append(projectionDigest, stagingToken, page);
+        page = [];
+        pageBytes = 0;
+      }
+      pageBytes = codeGraphWorksetRoutingProjectionLogicalBytesAppend(pageBytes, [symbol]);
+      if (pageBytes > CODE_GRAPH_WORKSET_CATALOG_LIMITS.projectionPageBytesMaximum) {
+        return yield* Effect.fail(
+          new CodeGraphWorksetCatalogError('capacity', 'A routing symbol exceeds the supported projection page bound.'),
+        );
+      }
+      page.push(symbol);
+    }
+    if (page.length > 0) yield* sink.append(projectionDigest, stagingToken, page);
+  });
 }
 
 function scanProjectionSymbolPages<E, R>(

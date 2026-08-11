@@ -1,6 +1,7 @@
 import {TestError} from '../helpers/test-error.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {Effect, FileSystem} from 'effect';
+import {TestClock} from 'effect/testing';
 import fc from 'fast-check';
 import {it as effectIt} from '@effect/vitest';
 import {describe, expect, it} from 'vitest';
@@ -184,7 +185,7 @@ describe('external performance evidence', () => {
               1,
             );
           }),
-        ).pipe(provideTestLayer(ApplicationLayer));
+        ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive);
 
         expect(evidence.catalogColdMilliseconds).toHaveLength(1);
         expect(evidence.catalogWarmMilliseconds).toHaveLength(2);
@@ -219,7 +220,7 @@ describe('external performance evidence', () => {
             const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-worktree-evidence-home-'});
             return yield* benchmarkConcurrentWorktreeIsolation(home);
           }),
-        ).pipe(provideTestLayer(ApplicationLayer));
+        ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive);
         expect(evidence).toMatchObject({
           cleanupPassed: true,
           indexedFiles: 2,
@@ -248,7 +249,7 @@ describe('external performance evidence', () => {
             const status = yield* query.status(fixture.home, fixture.repository);
             return {baselineSnapshotId: baseline.snapshot.id, failed, readySnapshotId: status.readySnapshot?.id};
           }),
-        ).pipe(provideTestLayer(ApplicationLayer));
+        ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive);
         expect(evidence).toEqual({
           baselineSnapshotId: evidence.baselineSnapshotId,
           failed: true,

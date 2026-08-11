@@ -1,4 +1,5 @@
 import React, {useEffect, useState} from 'react';
+import type {CodeGraphAutomaticCompactionStatus} from './code_graph/automatic_compaction.js';
 import type {CodeGraphLocalDiagnosticsReport} from './code_graph/diagnostics.js';
 import type {CodeGraphMaintenanceStatus} from './code_graph/maintenance_gate.js';
 import {
@@ -37,6 +38,7 @@ import {
   type GraphNodeDetail,
   type GraphRepositoryGroup,
   type GraphSizeMetric,
+  type GraphStorageSummary,
   type GraphVisualization,
   type GraphWorktreeAdministrationAction,
 } from './manager_graph_model.js';
@@ -476,7 +478,7 @@ export function GraphAdministration(props: {
     if (managementAvailable) return action;
     const values = await dialogs.prompt({
       confirmLabel: 'Use worktree',
-      detail: `Checkout ${action.checkoutId.slice(-12)} · view ${action.worktreeId.slice(-8)}`,
+      detail: 'The local folder is not currently associated with this indexed view.',
       fields: [
         {
           description: 'Threadnote verifies this path against the indexed checkout and worktree before acting.',
@@ -599,7 +601,7 @@ export function GraphAdministration(props: {
             {props.report.databases.map(database => {
               const view = database.views.find(candidate => candidate.managementAvailable) ?? database.views[0];
               const managementAvailable = view?.managementAvailable === true;
-              const repository = view?.repository.displayName ?? `Checkout ${database.checkoutId.slice(-8)}`;
+              const repository = view?.repository.displayName ?? 'Indexed repository';
               const jobs = graphAdministrationJobSelection(database.builds, database.waiters);
               const obsolete = props.report?.obsoleteStores.checkouts.find(
                 checkout => checkout.checkoutId === database.checkoutId,
@@ -616,7 +618,11 @@ export function GraphAdministration(props: {
                   <header>
                     <span>
                       <strong>{repository}</strong>
-                      <small>{database.checkoutId.slice(-12)}</small>
+                      <small>
+                        {view?.localAssociation.branch ? `observed branch ${view.localAssociation.branch} · ` : ''}
+                        {view?.localAssociation.displayPath ??
+                          'Local folder unavailable; opaque ID shown in diagnostics'}
+                      </small>
                     </span>
                     <em className={`is-${health}`}>{health === 'migration-pending' ? 'migrating' : health}</em>
                   </header>
@@ -639,7 +645,7 @@ export function GraphAdministration(props: {
                       <dt>Storage</dt>
                       <dd>
                         {database.storage.state === 'available'
-                          ? formatGraphBytes(database.storage.totalBytes)
+                          ? `${formatGraphBytes(database.storage.filesystemBytes)} physical DB + sidecars`
                           : 'missing'}
                       </dd>
                     </div>
@@ -652,6 +658,41 @@ export function GraphAdministration(props: {
                     Snapshot and view counts can differ: views are per-worktree pointers, while ready snapshots are
                     stored graph versions that can be shared, retained for reuse, or protected while in use.
                   </p>
+                  {database.storage.state === 'available' && 'pageStorage' in database.storage ? (
+                    database.storage.pageStorage.state === 'available' ? (
+                      <p className="graph-database-inventory-note">
+                        SQLite pages:{' '}
+                        {formatGraphBytes(
+                          database.storage.pageStorage.pageCount * database.storage.pageStorage.pageSize -
+                            database.storage.pageStorage.reclaimableBytes,
+                        )}{' '}
+                        in use · {formatGraphBytes(database.storage.pageStorage.reclaimableBytes)} already reusable
+                        inside the file
+                        {database.storage.pageStorage.compactionOpportunityBytes === undefined ||
+                        database.storage.pageStorage.compactionOpportunityBytes ===
+                          database.storage.pageStorage.reclaimableBytes
+                          ? ''
+                          : ` · ${formatGraphBytes(
+                              database.storage.pageStorage.compactionOpportunityBytes,
+                            )} total compaction opportunity`}
+                        {database.storage.pageStorage.threshold.reason === 'freelist'
+                          ? ' · eligible for automatic compaction after retry-cooldown, disk, and maintenance safety checks'
+                          : database.storage.pageStorage.threshold.reason === 'freelist-and-fragmentation'
+                            ? ' · manual compaction opportunity; automatic compaction is withheld for live-page structural slack'
+                            : ''}
+                      </p>
+                    ) : database.storage.pageStorage.state === 'deferred' ? (
+                      <p className="graph-database-inventory-note">
+                        SQLite page usage is deferred while an active build owns this repository. Manager will retry
+                        after the build releases its lock.
+                      </p>
+                    ) : (
+                      <p className="graph-database-inventory-note">
+                        SQLite page usage and automatic-compaction eligibility could not be established. Run graph
+                        diagnostics before retrying repair or compaction.
+                      </p>
+                    )
+                  ) : null}
                   <div className="graph-database-views">
                     {database.views.map(candidate => {
                       const removalTarget = graphViewRemovalTarget(database.checkoutId, {
@@ -660,13 +701,16 @@ export function GraphAdministration(props: {
                       });
                       return (
                         <div key={`${database.checkoutId}:${candidate.viewWorktreeId}`}>
-                          <strong>Active view {candidate.viewWorktreeId.slice(-8)}</strong>
+                          <strong>{candidate.repository.displayName}</strong>
                           <span>
                             {candidate.snapshot.fileCount.toLocaleString()} files ·{' '}
                             {candidate.snapshot.symbolCount.toLocaleString()} symbols ·{' '}
                             {candidate.snapshot.edgeCount.toLocaleString()} edges
                           </span>
                           <small>
+                            {candidate.localAssociation.branch
+                              ? `Observed branch ${candidate.localAssociation.branch} · `
+                              : ''}
                             Folder: {graphLocalAssociationText(candidate.localAssociation)} ·{' '}
                             {candidate.localAssociation.state}
                           </small>
@@ -703,14 +747,20 @@ export function GraphAdministration(props: {
                       );
                     })}
                   </div>
-                  {jobs.jobs.map(job => (
-                    <p className="graph-database-job" key={`${job.buildId}:${job.coordination?.role ?? 'build'}`}>
-                      View {job.identity.worktreeId.slice(-8)} · {job.state === 'running' ? 'active' : job.state} ·{' '}
-                      {job.phase}
-                      {job.subphase ? `/${job.subphase}` : ''} · {job.observation.liveness}
-                      {job.error ? ` · ${job.error.summary}` : ''}
-                    </p>
-                  ))}
+                  {jobs.jobs.map(job => {
+                    const jobView = database.views.find(
+                      candidate => candidate.viewWorktreeId === job.identity.worktreeId,
+                    );
+                    return (
+                      <p className="graph-database-job" key={`${job.buildId}:${job.coordination?.role ?? 'build'}`}>
+                        {jobView?.repository.displayName ?? 'Indexed repository'}
+                        {jobView ? ` · folder ${graphLocalAssociationText(jobView.localAssociation)}` : ''} ·{' '}
+                        {job.state === 'running' ? 'active' : job.state} · {job.phase}
+                        {job.subphase ? `/${job.subphase}` : ''} · {job.observation.liveness}
+                        {job.error ? ` · ${job.error.summary}` : ''}
+                      </p>
+                    );
+                  })}
                   {jobs.hiddenCount > 0 ? (
                     <p className="graph-database-job">+{jobs.hiddenCount} more active or failed jobs</p>
                   ) : null}
@@ -855,8 +905,14 @@ export function GraphAdministration(props: {
   );
 }
 
-export function GraphMaintenanceProgress(props: {readonly status: CodeGraphMaintenanceStatus}): React.ReactElement {
+export function GraphMaintenanceProgress(props: {
+  readonly repositories: readonly GraphRepositoryGroup[];
+  readonly status: CodeGraphMaintenanceStatus;
+}): React.ReactElement {
   const {status} = props;
+  const repository = props.repositories
+    .flatMap(group => group.views)
+    .find(view => view.checkoutId === status.checkoutId);
   const elapsed = status.startedAt === undefined ? undefined : Math.max(0, Date.now() - Date.parse(status.startedAt));
   const lastUpdate =
     status.updatedAt === undefined ? undefined : Math.max(0, Date.now() - Date.parse(status.updatedAt));
@@ -873,8 +929,11 @@ export function GraphMaintenanceProgress(props: {readonly status: CodeGraphMaint
               {status.operation === 'selected-snapshot-purge' ? 'Selected snapshot purge' : 'Graph maintenance'}
             </strong>
             <span>
-              {status.checkoutId ? `Checkout ${shortGraphIdentity(status.checkoutId)}` : 'Home-wide maintenance'}
-              {status.snapshotId ? ` · snapshot ${status.snapshotId}` : ''}
+              {status.checkoutId
+                ? repository
+                  ? `${repository.displayName} · folder ${graphLocalAssociationText(repository.localAssociation)}`
+                  : 'Indexed repository'
+                : 'Home-wide maintenance'}
             </span>
           </div>
           {elapsed === undefined ? null : <span>Elapsed {formatBuildDuration(elapsed)}</span>}
@@ -896,9 +955,60 @@ export function GraphMaintenanceProgress(props: {readonly status: CodeGraphMaint
   );
 }
 
+export function GraphAutomaticCompactionProgress(props: {
+  readonly repositories: readonly GraphRepositoryGroup[];
+  readonly status: CodeGraphAutomaticCompactionStatus;
+}): React.ReactElement | null {
+  const {status} = props;
+  if (status.state === 'idle') return null;
+  const checkoutId = 'checkoutId' in status ? status.checkoutId : undefined;
+  const repository = props.repositories.flatMap(group => group.views).find(view => view.checkoutId === checkoutId);
+  const target = repository
+    ? `${repository.displayName} · folder ${graphLocalAssociationText(repository.localAssociation)}`
+    : checkoutId
+      ? 'Indexed repository'
+      : 'Local graph storage';
+  const message = (() => {
+    switch (status.state) {
+      case 'inspecting':
+        return 'Checking bounded graph storage receipts for a safe reclaim opportunity.';
+      case 'running':
+        return `Compacting ${target} in an isolated process without blocking Manager.`;
+      case 'deferred':
+        return `Compaction for ${target} was deferred because ${
+          status.reason === 'active-build' ? 'a graph build is active' : 'another maintenance operation is active'
+        }. Manager will retry.`;
+      case 'failed':
+        return status.reason === 'inspection-failed'
+          ? 'The automatic storage check could not inspect any candidate. Review graph diagnostics.'
+          : 'The isolated compaction result could not be confirmed. Review diagnostics before retrying.';
+      case 'completed':
+        return status.action === 'compacted'
+          ? `Compacted ${target} and returned ${formatGraphBytes(status.reclaimedBytes)} to the filesystem.`
+          : `Automatic storage check completed: no eligible graph required compaction (${status.inspected.toLocaleString()} inspected${
+              status.inspectionFailures === 0 ? '' : `, ${status.inspectionFailures.toLocaleString()} unavailable`
+            }).`;
+    }
+  })();
+  return (
+    <div className="graph-build-status graph-maintenance-status" aria-live="polite">
+      <article className={`graph-build-card is-${status.state}`}>
+        <header>
+          <div className="graph-build-target">
+            <strong>Automatic graph storage compaction</strong>
+            <span>{target}</span>
+          </div>
+        </header>
+        <p className={status.state === 'failed' ? 'graph-build-error' : undefined}>{message}</p>
+      </article>
+    </div>
+  );
+}
+
 export function GraphBuildProgress(props: {
   readonly build: GraphBuildStatus;
   readonly repositories: readonly GraphRepositoryGroup[];
+  readonly storage?: GraphStorageSummary;
   readonly waiters: readonly GraphBuildStatus[];
 }): React.ReactElement {
   const {build} = props;
@@ -976,6 +1086,33 @@ export function GraphBuildProgress(props: {
           No progress update for {formatBuildDuration(lastProgress)}. Process {build.owner.processId} still owns the
           build lock, but Manager cannot determine whether its current operation is advancing.
         </p>
+      ) : null}
+      {props.storage?.state === 'available' ? (
+        props.storage.pageStorage.state === 'available' ? (
+          <p className={props.storage.pageStorage.automaticCompaction === 'eligible' ? 'graph-build-attention' : ''}>
+            Storage now: {formatGraphBytes(props.storage.physicalBytes)} physical SQLite file + sidecars ·{' '}
+            {formatGraphBytes(props.storage.pageStorage.inUseBytes)} pages in use ·{' '}
+            {formatGraphBytes(props.storage.pageStorage.reusableBytes)} reusable inside SQLite
+            {props.storage.pageStorage.compactionOpportunityBytes === undefined ||
+            props.storage.pageStorage.compactionOpportunityBytes === props.storage.pageStorage.reusableBytes
+              ? ''
+              : ` · ${formatGraphBytes(props.storage.pageStorage.compactionOpportunityBytes)} total compaction opportunity`}
+            {props.storage.pageStorage.automaticCompaction === 'eligible'
+              ? ' · eligible for automatic compaction after retry-cooldown and maintenance safety checks'
+              : props.storage.pageStorage.automaticCompaction === 'waiting-for-space'
+                ? ` · automatic compaction is waiting for ${formatGraphBytes(
+                    props.storage.pageStorage.requiredFreeBytes ?? 0,
+                  )} free disk space`
+                : props.storage.pageStorage.automaticCompaction === 'space-unknown'
+                  ? ' · free disk space could not be verified, so automatic compaction is withheld'
+                  : ''}
+          </p>
+        ) : (
+          <p>
+            Storage now: {formatGraphBytes(props.storage.physicalBytes)} physical SQLite file + sidecars · page usage
+            and automatic compaction decision deferred while an active build or database lock owns this checkout
+          </p>
+        )
       ) : null}
       {build.activity ? (
         <p>
@@ -1113,10 +1250,10 @@ export function GraphBuildProgress(props: {
                 Storage:
                 {build.materialization.metrics.storage.durableDatabaseBytes === undefined
                   ? ''
-                  : ` ${formatGraphBytes(build.materialization.metrics.storage.durableDatabaseBytes)} allocated durable pages`}
+                  : ` ${formatGraphBytes(build.materialization.metrics.storage.durableDatabaseBytes)} allocated SQLite pages observed during this build`}
                 {build.materialization.metrics.storage.durableDatabaseHighWaterBytes === undefined
                   ? ''
-                  : ` · ${formatGraphBytes(build.materialization.metrics.storage.durableDatabaseHighWaterBytes)} allocated-page high-water`}
+                  : ` · ${formatGraphBytes(build.materialization.metrics.storage.durableDatabaseHighWaterBytes)} SQLite allocation high-water`}
                 {build.materialization.metrics.storage.durableDatabaseGrowthHighWaterBytes === undefined
                   ? ''
                   : ` · ${formatGraphBytes(build.materialization.metrics.storage.durableDatabaseGrowthHighWaterBytes)} main-database growth`}

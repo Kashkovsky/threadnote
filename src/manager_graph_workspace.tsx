@@ -46,6 +46,7 @@ import {
 } from './manager_graph_model.js';
 import {
   GraphAdministration,
+  GraphAutomaticCompactionProgress,
   GraphBuildProgress,
   GraphEmptyState,
   GraphMaintenanceProgress,
@@ -655,7 +656,12 @@ export function GraphWorkspace(props: {
           output={props.administrationOutput}
           report={props.administration}
         />
-        {props.catalog?.maintenance ? <GraphMaintenanceProgress status={props.catalog.maintenance} /> : null}
+        {props.catalog?.automaticCompaction ? (
+          <GraphAutomaticCompactionProgress repositories={repositories} status={props.catalog.automaticCompaction} />
+        ) : null}
+        {props.catalog?.maintenance ? (
+          <GraphMaintenanceProgress repositories={repositories} status={props.catalog.maintenance} />
+        ) : null}
         {activeBuilds.length > 0 ? (
           <div className="graph-build-status" aria-live="polite">
             {activeBuilds.map(build => (
@@ -663,6 +669,7 @@ export function GraphWorkspace(props: {
                 build={build}
                 key={`${build.identity.checkoutId}:${build.identity.worktreeId}:${build.buildId}`}
                 repositories={repositories}
+                storage={props.catalog?.storage?.[build.identity.checkoutId]}
                 waiters={props.catalog?.waiters ?? []}
               />
             ))}
@@ -706,7 +713,9 @@ export function GraphWorkspace(props: {
               >
                 {repositoryGroup.views.map(view => (
                   <option key={view.id} value={view.id}>
-                    {view.label} · folder {graphLocalAssociationText(view.localAssociation)}
+                    {view.label}
+                    {view.localAssociation.branch ? ` · observed branch ${view.localAssociation.branch}` : ''} · folder{' '}
+                    {graphLocalAssociationText(view.localAssociation)}
                   </option>
                 ))}
               </select>

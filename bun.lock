@@ -14,6 +14,7 @@
         "typescript-compiler": "npm:typescript@5.9.3",
         "unpdf": "1.6.2",
         "web-tree-sitter": "0.26.11",
+        "yaml": "^2.9.0",
       },
       "devDependencies": {
         "@effect/ai-openai-compat": "4.0.0-beta.102",

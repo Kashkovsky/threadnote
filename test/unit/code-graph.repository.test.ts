@@ -8,6 +8,7 @@ import {describe, expect, it} from 'vitest';
 import {runCodeGraphCompact, runCodeGraphIndex} from '../../src/code_graph/commands.js';
 import {
   normalizeCredentialFreeRemote,
+  normalizeRepositoryBranchName,
   repositoryIdentityMatchesExpectation,
   resolveRepositoryIdentity,
   resolveRepositoryIdentityDetail,
@@ -17,6 +18,12 @@ import type {RuntimeConfig} from '../../src/types.js';
 import {runEffect} from '../helpers/effect-runtime.js';
 
 describe('code graph repository identity', () => {
+  it('rejects branch labels containing bidirectional display controls', () => {
+    expect(normalizeRepositoryBranchName('feature/safe')).toBe('feature/safe');
+    expect(normalizeRepositoryBranchName('feature/\u202Etxt')).toBeUndefined();
+    expect(normalizeRepositoryBranchName('\u2066spoof\u2069')).toBeUndefined();
+  });
+
   it('strips credentials and non-identity URL fields from remotes', () => {
     expect(normalizeCredentialFreeRemote('git@github.com:Kashkovsky/threadnote.git')).toBe(
       'github.com/Kashkovsky/threadnote',
@@ -37,6 +44,16 @@ describe('code graph repository identity', () => {
 
     expect(identity.displayName).toBe(basename(root));
     expect(identity.remoteIdentity).toBeUndefined();
+  });
+
+  it('observes an unborn branch without preventing zero-commit identity fallback', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'threadnote-code-graph-unborn-'));
+    git(root, ['init', '-q', '-b', 'unborn-work']);
+
+    const identity = await runEffect(resolveRepositoryIdentity(root));
+
+    expect(identity.branch).toBe('unborn-work');
+    expect(identity.headCommit).toBe('0'.repeat(identity.objectFormat === 'sha256' ? 64 : 40));
   });
 
   it('shares one bounded directory command without serializing git-dir into public identity', async () => {
@@ -86,6 +103,7 @@ describe('code graph repository identity', () => {
 
     expect(worktree.repositoryId).toBe(primary.repositoryId);
     expect(worktree.checkoutId).toBe(primary.checkoutId);
+    expect(worktree.branch).toBe('linked');
     expect(worktree.worktreeId).not.toBe(primary.worktreeId);
   });
 

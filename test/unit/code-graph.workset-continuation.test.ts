@@ -32,7 +32,7 @@ import {
   type CodeGraphWorksetResultSetPageV1,
   type CodeGraphWorksetRoutingProjectionV1,
 } from '../../src/code_graph/workset_catalog/types.js';
-import {join, mkdir, mkdtemp, rm, stat} from '../helpers/effect-filesystem.js';
+import {join, mkdir, mkdtemp, rm, stat, writeFile} from '../helpers/effect-filesystem.js';
 import {runEffect} from '../helpers/effect-runtime.js';
 
 describe('code graph workset qualified refs and continuation', () => {
@@ -42,11 +42,11 @@ describe('code graph workset qualified refs and continuation', () => {
     await Promise.all(homes.splice(0).map(home => rm(home, {force: true, recursive: true})));
   });
 
-  it('isolates the v2 exact-key catalog from a pre-v2 disposable database', async () => {
+  it('creates v3 before removing the obsolete disposable v2 catalog', async () => {
     const home = await temporaryHome(homes);
     const root = join(home, 'indexes', 'code-graph', 'worksets');
     await mkdir(root, {recursive: true});
-    const legacyPath = join(root, 'catalog-v1.sqlite');
+    const legacyPath = join(root, 'catalog-v2.sqlite');
     const legacy = new Database(legacyPath, {create: true, strict: true});
     try {
       legacy.exec('CREATE TABLE legacy_ready_projection (id TEXT PRIMARY KEY)');
@@ -54,11 +54,14 @@ describe('code graph workset qualified refs and continuation', () => {
     } finally {
       legacy.close(false);
     }
+    const legacySidecars = ['-journal', '-shm', '-wal'].map(suffix => `${legacyPath}${suffix}`);
+    for (const sidecar of legacySidecars) await writeFile(sidecar, 'obsolete disposable sidecar');
 
     await runEffect(ensureCodeGraphWorksetCatalog(home));
-    expect(catalogPath(home)).toBe(join(root, 'catalog-v2.sqlite'));
-    expect((await stat(legacyPath)).isFile()).toBe(true);
-    expect(await runEffect(inspectCodeGraphWorksetCatalog(home))).toMatchObject({schemaVersion: 2, state: 'ok'});
+    expect(catalogPath(home)).toBe(join(root, 'catalog-v3.sqlite'));
+    await expect(stat(legacyPath)).rejects.toBeDefined();
+    for (const sidecar of legacySidecars) await expect(stat(sidecar)).rejects.toBeDefined();
+    expect(await runEffect(inspectCodeGraphWorksetCatalog(home))).toMatchObject({schemaVersion: 3, state: 'ok'});
   });
 
   it('isolates cgr handles by repository while accepting every local node-id width', async () => {
@@ -196,7 +199,54 @@ describe('code graph workset qualified refs and continuation', () => {
       home,
       generationInput('engineering', 'manifest-b', [member({repositoryKey: 'new', seed: 3})]),
     );
-    await runEffect(maintainCodeGraphWorksetCatalog(home, {generationLimit: 10, projectionLimit: 10}));
+    for (let page = 0; page < 64; page += 1) {
+      await runEffect(maintainCodeGraphWorksetCatalog(home, {generationLimit: 10, projectionLimit: 10}));
+      const rawMaintenance = new Database(catalogPath(home), {readonly: true, strict: true});
+      try {
+        const memberCount = rawMaintenance
+          .query<{readonly count: number}, [string]>(
+            'SELECT COUNT(*) AS count FROM workset_generation_members WHERE generation_id = ?',
+          )
+          .get(generation.id)!.count;
+        const projectionCount = rawMaintenance
+          .query<{readonly count: number}, [string, string]>(
+            'SELECT COUNT(*) AS count FROM repository_snapshots WHERE projection_digest IN (?, ?)',
+          )
+          .get(left.projection.projectionDigest, right.projection.projectionDigest)!.count;
+        const storedMemberCount = rawMaintenance
+          .query<{readonly member_count: number}, [string]>('SELECT member_count FROM workset_generations WHERE id = ?')
+          .get(generation.id)!.member_count;
+        if (memberCount === 0 && projectionCount === 0 && storedMemberCount === 0) break;
+      } finally {
+        rawMaintenance.close(false);
+      }
+    }
+    const compacted = new Database(catalogPath(home), {readonly: true, strict: true});
+    try {
+      expect(
+        compacted
+          .query<{readonly member_count: number; readonly state: string}, [string]>(
+            'SELECT member_count, state FROM workset_generations WHERE id = ?',
+          )
+          .get(generation.id),
+      ).toEqual({member_count: 0, state: 'retired'});
+      expect(
+        compacted
+          .query<{readonly count: number}, [string]>(
+            'SELECT COUNT(*) AS count FROM workset_generation_members WHERE generation_id = ?',
+          )
+          .get(generation.id)?.count,
+      ).toBe(0);
+      expect(
+        compacted
+          .query<{readonly count: number}, [string, string]>(
+            'SELECT COUNT(*) AS count FROM repository_snapshots WHERE projection_digest IN (?, ?)',
+          )
+          .get(left.projection.projectionDigest, right.projection.projectionDigest)?.count,
+      ).toBe(0);
+    } finally {
+      compacted.close(false);
+    }
     expect(
       (await runEffect(readCodeGraphWorksetResultSetPage(home, {cursor: registered.initialCursor}))).cards,
     ).toEqual(cards);
@@ -239,6 +289,22 @@ describe('code graph workset qualified refs and continuation', () => {
     await expect(
       runEffect(readCodeGraphWorksetResultSetPage(home, {cursor: registered.initialCursor})),
     ).rejects.toMatchObject({reason: 'expired'} satisfies Partial<CodeGraphWorksetCatalogError>);
+    await runEffect(maintainCodeGraphWorksetResultSets(home, {limit: 1, now: '2026-01-01T00:00:00.000Z'}));
+    const afterExpiry = new Database(catalogPath(home), {readonly: true, strict: true});
+    try {
+      expect(
+        afterExpiry
+          .query<{readonly count: number}, [string]>('SELECT COUNT(*) AS count FROM workset_generations WHERE id = ?')
+          .get(generation.id)?.count,
+      ).toBe(0);
+      expect(
+        afterExpiry
+          .query<{readonly count: number}, [string]>('SELECT COUNT(*) AS count FROM workset_generations WHERE id = ?')
+          .get(replacement.id)?.count,
+      ).toBe(1);
+    } finally {
+      afterExpiry.close(false);
+    }
   });
 
   it('concatenates bounded keyset pages to the original globally ranked card order', async () => {

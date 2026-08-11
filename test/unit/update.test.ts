@@ -5,6 +5,7 @@ import {mkdtemp, rm} from '../helpers/node-fs-promises.js';
 import {tmpdir} from '../helpers/node-os.js';
 import {join} from '../helpers/node-path.js';
 import {Crypto, Effect, FileSystem, Path} from 'effect';
+import {TestClock} from 'effect/testing';
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
 import {captureConsole} from '../../src/effect/console.js';
 import {CommandExecutor} from '../../src/effect/command.js';
@@ -1209,7 +1210,7 @@ describe('post-update validation', () => {
         executions: 1,
         state: {handledMigrationIds: ['fixture-once']},
       });
-    }),
+    }).pipe(TestClock.withLive),
   );
 
   effectIt.effect('preserves corrupt post-update state instead of silently rerunning migrations', () =>

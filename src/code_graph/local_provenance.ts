@@ -10,7 +10,7 @@ import {
   type CodeGraphGitWorktreeRegistration,
 } from './git_worktree_registration.js';
 import {classifyCodeGraphLifecycle} from './lifecycle_classification.js';
-import {resolveRepositoryIdentityDetail} from './repository.js';
+import {normalizeRepositoryBranchName, resolveRepositoryIdentityDetail} from './repository.js';
 import {codeGraphLocalProvenanceLockPath} from './layout.js';
 import type {RepositoryIdentity} from './types.js';
 
@@ -32,6 +32,7 @@ export type CodeGraphLocalAssociationState = 'invalid' | 'legacy-unknown' | 'mis
 
 export interface CodeGraphLocalAssociation {
   readonly available: boolean;
+  readonly branch?: string;
   /** Home-abbreviated path for trusted local human interfaces. */
   readonly displayPath?: string;
   readonly observedAt?: string;
@@ -47,6 +48,7 @@ export interface CodeGraphLocalAssociationTarget {
 }
 
 interface CodeGraphLocalProvenanceRecordBase {
+  readonly branch?: string;
   readonly canonicalWorktreePath: string;
   readonly checkoutId: string;
   readonly headCommit?: string;
@@ -248,6 +250,7 @@ const recordResolvedCodeGraphLocalAssociationUnlocked = Effect.fn('codeGraph.rec
     if (
       existing?.canonicalWorktreePath === identity.repoRoot &&
       existing.headCommit === identity.headCommit &&
+      existing.branch === identity.branch &&
       existing.schemaVersion === LOCAL_PROVENANCE_SCHEMA_VERSION &&
       sameCodeGraphGitWorktreeRegistration(existing.registration, registration.value) &&
       now - Date.parse(existing.observedAt) >= 0 &&
@@ -257,6 +260,7 @@ const recordResolvedCodeGraphLocalAssociationUnlocked = Effect.fn('codeGraph.rec
     }
 
     const record = {
+      ...(identity.branch === undefined ? {} : {branch: identity.branch}),
       canonicalWorktreePath: identity.repoRoot,
       checkoutId: identity.checkoutId,
       headCommit: identity.headCommit,
@@ -904,7 +908,8 @@ export function parseCodeGraphLocalProvenanceRecord(
     !isHash(value.repositoryId) ||
     !isCanonicalTimestamp(value.observedAt) ||
     !isLocalPath(value.canonicalWorktreePath) ||
-    (value.headCommit !== undefined && (typeof value.headCommit !== 'string' || !COMMIT_ID.test(value.headCommit)))
+    (value.headCommit !== undefined && (typeof value.headCommit !== 'string' || !COMMIT_ID.test(value.headCommit))) ||
+    (value.branch !== undefined && !isBranchName(value.branch))
   ) {
     return undefined;
   }
@@ -922,6 +927,7 @@ export function parseCodeGraphLocalProvenanceRecord(
     return undefined;
   }
   const base = {
+    ...(value.branch === undefined ? {} : {branch: value.branch}),
     canonicalWorktreePath: value.canonicalWorktreePath,
     checkoutId: value.checkoutId,
     ...(value.headCommit === undefined ? {} : {headCommit: value.headCommit}),
@@ -965,7 +971,8 @@ function resolveMatchingRepositoryIdentity(identity: RepositoryIdentity) {
       resolved.checkoutId !== identity.checkoutId ||
       resolved.worktreeId !== identity.worktreeId ||
       resolved.repositoryId !== identity.repositoryId ||
-      resolved.headCommit !== identity.headCommit
+      resolved.headCommit !== identity.headCommit ||
+      resolved.branch !== identity.branch
     ) {
       return yield* Effect.fail(
         new CodeGraphLocalProvenanceError('Code graph local provenance identity changed before observation.'),
@@ -1130,6 +1137,7 @@ function associationForRecord(path: Path.Path, record: CodeGraphLocalProvenanceR
     const system = yield* SystemInfo;
     return {
       available: state === 'verified',
+      ...(record.branch === undefined ? {} : {branch: record.branch}),
       displayPath: homeAbbreviatedPath(path, system.homeDirectory, record.canonicalWorktreePath),
       observedAt: record.observedAt,
       path: record.canonicalWorktreePath,
@@ -1155,6 +1163,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isHash(value: unknown): value is string {
   return typeof value === 'string' && HASH_ID.test(value);
+}
+
+function isBranchName(value: unknown): value is string {
+  return typeof value === 'string' && normalizeRepositoryBranchName(value) === value;
 }
 
 function isCanonicalTimestamp(value: unknown): value is string {

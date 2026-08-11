@@ -5,6 +5,7 @@ import {Deferred, Effect, Fiber, FileSystem, Path} from 'effect';
 import fc from 'fast-check';
 import {afterEach, describe, expect, it} from 'vitest';
 import {codeGraphWorktreeLockPath} from '../../src/code_graph/layout.js';
+import {codeGraphAutomaticCompactionCandidateAllowed} from '../../src/code_graph/automatic_compaction.js';
 import {
   codeGraphCompactionRecommendation,
   codeGraphStorageUnattributedBytes,
@@ -23,6 +24,16 @@ describe('active code graph storage', () => {
 
   afterEach(async () => {
     await Promise.all(homes.splice(0).map(home => rm(home, {force: true, recursive: true})));
+  });
+
+  it('reserves two database copies plus WAL and a separate safety margin for VACUUM', () => {
+    const databaseBytes = 4 * 1024 ** 3;
+    const walBytes = 256 * 1024 ** 2;
+    const workingBytes = databaseBytes * 2 + walBytes;
+
+    expect(codeGraphCompactionRequiredFreeBytes({databaseBytes, walBytes})).toBe(
+      workingBytes + Math.ceil(workingBytes * 0.1),
+    );
   });
 
   it('reports exact sidecar bytes and transactionally compacts verified free pages', async () => {
@@ -74,15 +85,21 @@ describe('active code graph storage', () => {
       }
     }
 
+    const compactionCandidate = {checkoutId: fixture.checkoutId, opportunityBytes: 0};
+    expect(await runEffect(codeGraphAutomaticCompactionCandidateAllowed(fixture.home, compactionCandidate))).toBe(true);
     const dryRun = await runEffect(
       compactCodeGraphStorage(fixture.home, fixture.checkoutId, {dryRun: true, force: true}),
     );
     expect(dryRun).toMatchObject({action: 'would-compact', dryRun: true});
+    expect(await runEffect(codeGraphAutomaticCompactionCandidateAllowed(fixture.home, compactionCandidate))).toBe(true);
 
     const compacted = await runEffect(
       compactCodeGraphStorage(fixture.home, fixture.checkoutId, {dryRun: false, force: true}),
     );
     expect(compacted).toMatchObject({action: 'compacted', dryRun: false});
+    expect(await runEffect(codeGraphAutomaticCompactionCandidateAllowed(fixture.home, compactionCandidate))).toBe(
+      false,
+    );
     if (compacted.action !== 'compacted') throw new TestError(`unexpected action ${compacted.action}`);
     expect(compacted.reclaimedBytes).toBeGreaterThan(0);
     expect(compacted.after?.pageStorage).toMatchObject({freelistPages: 0, state: 'available'});

@@ -36,9 +36,10 @@ describe('code graph incremental barrel differential properties', () => {
           const indexer = yield* CodeGraphIndexer;
           const store = yield* CodeGraphStore;
           const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-code-graph-barrel-property-'});
+          const homesRoot = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-code-graph-barrel-homes-'});
           const sourceRoot = path.join(root, 'src');
-          const incrementalHome = path.join(root, '.threadnote-barrel-incremental-home');
-          const fullHome = path.join(root, '.threadnote-barrel-full-home');
+          const incrementalHome = path.join(homesRoot, 'incremental');
+          const fullHome = path.join(homesRoot, 'full');
           const writeConsumer = (arities: readonly number[], revision: number) => {
             const calls = arities.map(arity => (arity === 0 ? 'decode()' : 'decode("a", "b")'));
             return fs.writeFileString(

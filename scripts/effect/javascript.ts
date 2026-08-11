@@ -14,3 +14,7 @@ export function javascriptStringLiteral(value: string): string {
     character => JAVASCRIPT_CHARACTER_ESCAPE[character as UnsafeJavascriptStringCharacter],
   );
 }
+
+export function optionalNativePackageFallbackModule(): string {
+  return "export const getBinsDir = () => { throw new Error('Optional native package is not included in this Threadnote artifact.'); };";
+}

@@ -134,6 +134,19 @@ function SharesPanel(props: {
   );
 }
 
+export class ManagerApiError extends Error {
+  override readonly name = 'ManagerApiError';
+
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code?: string,
+    readonly retryAfterMilliseconds?: number,
+  ) {
+    super(message);
+  }
+}
+
 async function api<T>(
   path: string,
   body?: Record<string, unknown>,
@@ -163,9 +176,18 @@ async function api<T>(
       method: body ? 'POST' : 'GET',
       signal: controller?.signal ?? options.signal,
     });
-    const data = (await response.json()) as {readonly error?: string};
+    const data = (await response.json()) as {
+      readonly code?: string;
+      readonly error?: string;
+      readonly retryAfterMilliseconds?: number;
+    };
     if (!response.ok) {
-      throw new Error(data.error ?? `HTTP ${response.status}`);
+      throw new ManagerApiError(
+        data.error ?? `HTTP ${response.status}`,
+        response.status,
+        data.code,
+        data.retryAfterMilliseconds,
+      );
     }
     return data as T;
   } catch (cause) {
@@ -453,6 +475,8 @@ function tabTitle(name: PanelName): string {
       return 'Sharing';
     case 'tools':
       return 'Tools';
+    case 'worksets':
+      return 'Worksets';
   }
 }
 
@@ -468,6 +492,8 @@ function panelIcon(name: PanelName): string {
       return '⇄';
     case 'tools':
       return '··';
+    case 'worksets':
+      return '⌘';
   }
 }
 
@@ -483,6 +509,8 @@ function panelNavDescription(name: PanelName): string {
       return 'Team repositories';
     case 'tools':
       return 'Recall and maintenance';
+    case 'worksets':
+      return 'Cross-repository work';
   }
 }
 
@@ -498,6 +526,8 @@ function panelDescription(name: PanelName): string {
       return 'Manage synchronized team context';
     case 'tools':
       return 'Recall, compact, import, export, and seed';
+    case 'worksets':
+      return 'Manage and search published cross-repository worksets';
   }
 }
 

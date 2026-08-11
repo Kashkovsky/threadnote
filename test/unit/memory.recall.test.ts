@@ -6,8 +6,9 @@ import {join} from '../helpers/node-path.js';
 import {Effect} from 'effect';
 import {afterEach, describe, expect, it, vi} from 'vitest';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
+import {captureConsole} from '../../src/effect/console.js';
 import {hasAgentSkillCatalogIntent, runRecall, stripAdvancedSearchFlags} from '../../src/memory.js';
-import type {RuntimeConfig} from '../../src/types.js';
+import type {RecallOptions, RuntimeConfig} from '../../src/types.js';
 import * as utils from '../../src/utils.js';
 vi.mock('../../src/utils.js', async importOriginal => {
   const actual = await importOriginal<typeof import('../../src/utils.js')>();
@@ -22,6 +23,8 @@ const runtime: RuntimeConfig = {
   manifestPath: '/tmp/threadnote-test/seed-manifest.yaml',
   user: 'denys',
 };
+const captureRecall = (config: RuntimeConfig, options: RecallOptions) =>
+  captureConsole(runRecall(config, options)).pipe(provideTestLayer(ApplicationLayer));
 afterEach(() => {
   vi.restoreAllMocks();
 });
@@ -41,12 +44,10 @@ describe('recall skill catalog intent inference', () => {
 describe('runRecall native index', () => {
   effectIt.effect('uses the native recall index without a repair subprocess', () =>
     Effect.gen(function* () {
-      const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
-      yield* runRecall(runtime, {
+      const {output} = yield* captureRecall(runtime, {
         dryRun: true,
         query: 'availability check',
-      }).pipe(provideTestLayer(ApplicationLayer));
-      const output = log.mock.calls.map(call => call.join(' ')).join('\n');
+      });
       expect(output).not.toContain('repair failed');
       expect(output).toContain('Would search native recall index');
       expect(output).toContain('availability check');
@@ -68,9 +69,9 @@ describe('runRecall native index', () => {
           stdout: '[]',
         }),
       );
-      const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+      let output = '';
       try {
-        yield* runRecall(
+        output = (yield* captureRecall(
           {
             ...runtime,
             agentContextHome: dir,
@@ -80,7 +81,7 @@ describe('runRecall native index', () => {
             inferScope: false,
             query: 'deterministic fallback',
           },
-        ).pipe(provideTestLayer(ApplicationLayer));
+        )).output;
       } finally {
         runCommand.mockRestore();
         yield* Effect.promise(() =>
@@ -90,7 +91,6 @@ describe('runRecall native index', () => {
           }),
         );
       }
-      const output = log.mock.calls.map(call => call.join(' ')).join('\n');
       expect(output).not.toContain('Invalid Threadnote local AI configuration');
       expect(output).not.toContain('background service');
     }),
@@ -105,7 +105,7 @@ describe('runRecall native index', () => {
       for (const key of gitEnvKeys) {
         delete process.env[key];
       }
-      const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+      let output = '';
       try {
         yield* Effect.promise(() => mkdir(repoRoot));
         yield* utils
@@ -119,7 +119,7 @@ describe('runRecall native index', () => {
           })
           .pipe(provideTestLayer(ApplicationLayer));
         process.env.THREADNOTE_CALLER_CWD = repoRoot;
-        yield* runRecall(
+        output = (yield* captureRecall(
           {
             ...runtime,
             manifestPath: join(dir, 'missing-seed-manifest.yaml'),
@@ -128,7 +128,7 @@ describe('runRecall native index', () => {
             dryRun: true,
             query: 'current repo latest handoff',
           },
-        ).pipe(provideTestLayer(ApplicationLayer));
+        )).output;
       } finally {
         if (previousCallerCwd === undefined) {
           delete process.env.THREADNOTE_CALLER_CWD;
@@ -150,7 +150,6 @@ describe('runRecall native index', () => {
           }),
         );
       }
-      const output = log.mock.calls.map(call => call.join(' ')).join('\n');
       expect(output).toContain('current repo latest handoff');
       expect(output).toContain('threadnote');
       expect(output).toContain('--uri threadnote://user/denys/memories/durable/projects/threadnote');
@@ -169,7 +168,7 @@ describe('runRecall native index', () => {
       for (const key of gitEnvKeys) {
         delete process.env[key];
       }
-      const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+      let output = '';
       try {
         yield* Effect.promise(() => mkdir(repoRoot));
         yield* utils
@@ -202,7 +201,7 @@ describe('runRecall native index', () => {
           ),
         );
         process.env.THREADNOTE_CALLER_CWD = repoRoot;
-        yield* runRecall(
+        output = (yield* captureRecall(
           {
             ...runtime,
             manifestPath,
@@ -211,7 +210,7 @@ describe('runRecall native index', () => {
             dryRun: true,
             query: 'worker lease renewal',
           },
-        ).pipe(provideTestLayer(ApplicationLayer));
+        )).output;
       } finally {
         if (previousCallerCwd === undefined) {
           delete process.env.THREADNOTE_CALLER_CWD;
@@ -233,7 +232,6 @@ describe('runRecall native index', () => {
           }),
         );
       }
-      const output = log.mock.calls.map(call => call.join(' ')).join('\n');
       expect(output).toContain('--uri threadnote://user/denys/memories/durable/projects/orion-worker');
       expect(output).toContain('--uri threadnote://resources/repos/orion-worker');
       expect(output).not.toContain('--uri threadnote://user/denys/memories/durable/projects/threadnote');
@@ -250,7 +248,7 @@ describe('runRecall native index', () => {
       for (const key of gitEnvKeys) {
         delete process.env[key];
       }
-      const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+      let output = '';
       try {
         yield* Effect.promise(() => mkdir(repoRoot));
         yield* utils
@@ -282,7 +280,7 @@ describe('runRecall native index', () => {
           ),
         );
         process.env.THREADNOTE_CALLER_CWD = repoRoot;
-        yield* runRecall(
+        output = (yield* captureRecall(
           {
             ...runtime,
             manifestPath,
@@ -292,7 +290,7 @@ describe('runRecall native index', () => {
             query: 'current repo latest handoff',
             workset: 'platform',
           },
-        ).pipe(provideTestLayer(ApplicationLayer));
+        )).output;
       } finally {
         if (previousCallerCwd === undefined) {
           delete process.env.THREADNOTE_CALLER_CWD;
@@ -314,7 +312,6 @@ describe('runRecall native index', () => {
           }),
         );
       }
-      const output = log.mock.calls.map(call => call.join(' ')).join('\n');
       const durableScope = '--uri threadnote://user/denys/memories/durable/projects/threadnote';
       expect(output.split(durableScope)).toHaveLength(2);
     }),
@@ -341,9 +338,9 @@ describe('runRecall native index', () => {
           'utf8',
         ),
       );
-      const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+      let output = '';
       try {
-        yield* runRecall(
+        output = (yield* captureRecall(
           {
             ...runtime,
             manifestPath,
@@ -354,7 +351,7 @@ describe('runRecall native index', () => {
             query: 'current status',
             workset: 'platform',
           },
-        ).pipe(provideTestLayer(ApplicationLayer));
+        )).output;
       } finally {
         yield* Effect.promise(() =>
           rm(dir, {
@@ -363,7 +360,6 @@ describe('runRecall native index', () => {
           }),
         );
       }
-      const output = log.mock.calls.map(call => call.join(' ')).join('\n');
       expect(output).toContain('Workset scope: platform (alpha)');
       expect(output).toContain('threadnote://resources/repos/alpha');
     }),

@@ -1,7 +1,9 @@
 import type * as THREE from 'three';
+import type {CodeGraphAutomaticCompactionStatus} from './code_graph/automatic_compaction.js';
 import type {CodeGraphLocalDiagnosticsReport} from './code_graph/diagnostics.js';
 import type {CodeGraphLocalAssociation} from './code_graph/local_provenance.js';
 import type {CodeGraphMaintenanceStatus} from './code_graph/maintenance_gate.js';
+import type {ManagerGraphStorageSummary} from './code_graph/manager_status.js';
 import {compareCodeUnits} from './code_graph/ordering.js';
 import {
   MANAGER_GRAPH_DEFAULT_EDGE_LIMIT,
@@ -81,12 +83,14 @@ export interface GraphCatalogDiagnostic {
 }
 
 export interface GraphCatalog {
+  readonly automaticCompaction?: CodeGraphAutomaticCompactionStatus;
   readonly builds: readonly GraphBuildStatus[];
   readonly catalogRevision?: string;
   readonly diagnostics: readonly GraphCatalogDiagnostic[];
   readonly lifecyclePending?: boolean;
   readonly maintenance?: CodeGraphMaintenanceStatus;
   readonly repositories: readonly GraphRepositoryGroup[];
+  readonly storage?: Readonly<Record<string, ManagerGraphStorageSummary>>;
   readonly waiterCount: number;
   readonly waiters: readonly GraphBuildStatus[];
 }
@@ -240,6 +244,7 @@ export interface GraphBuildStatus {
     readonly worktreeId: string;
   };
   readonly managerContext?: {
+    readonly branch?: string;
     readonly worktreePath: string;
   };
   readonly observation: {
@@ -470,16 +475,19 @@ export function graphBuildTarget(
   const repositoryLabel = repository
     ? graphRepositoryOptionLabel(repository, repositories)
     : fallbackName
-      ? `${fallbackName} · repository ${shortGraphIdentity(build.identity.repositoryId)}`
-      : `Repository ${shortGraphIdentity(build.identity.repositoryId)}`;
+      ? fallbackName
+      : 'Indexed repository';
+  const folder = view?.localAssociation.displayPath ?? build.managerContext?.worktreePath;
+  const branch = view?.localAssociation.branch
+    ? `observed worktree branch ${view.localAssociation.branch}`
+    : build.managerContext?.branch
+      ? `build-start branch ${build.managerContext.branch}`
+      : undefined;
   return {
     repositoryLabel,
     worktreeLabel:
-      view?.localAssociation.displayPath ??
-      view?.label ??
-      `Checkout ${shortGraphIdentity(build.identity.checkoutId)} · worktree ${shortGraphIdentity(
-        build.identity.worktreeId,
-      )}`,
+      ([branch, folder].filter((value): value is string => value !== undefined).join(' · ') || view?.label) ??
+      `Local folder unavailable · commit ${build.identity.commit.slice(0, 8) || 'unknown'}`,
   };
 }
 
@@ -530,9 +538,54 @@ export function graphStatusPollDelay(
   builds: readonly GraphBuildStatus[],
   maintenance?: CodeGraphMaintenanceStatus,
   lifecyclePending = false,
+  automaticCompaction?: CodeGraphAutomaticCompactionStatus,
 ): number {
-  return builds.some(graphBuildIsActive) || maintenance !== undefined || lifecyclePending ? 1_000 : 5_000;
+  return builds.some(graphBuildIsActive) ||
+    maintenance !== undefined ||
+    lifecyclePending ||
+    automaticCompaction?.state === 'inspecting' ||
+    automaticCompaction?.state === 'running'
+    ? 1_000
+    : 5_000;
 }
+
+/** Keep live build activity visible even when the full catalog request has not completed. */
+export function mergeGraphCatalogStatus(
+  catalog: GraphCatalog | undefined,
+  status: Pick<
+    GraphCatalog,
+    | 'automaticCompaction'
+    | 'builds'
+    | 'catalogRevision'
+    | 'lifecyclePending'
+    | 'maintenance'
+    | 'storage'
+    | 'waiterCount'
+    | 'waiters'
+  >,
+): GraphCatalog {
+  const base = catalog ?? {
+    builds: [],
+    diagnostics: [],
+    repositories: [],
+    waiterCount: 0,
+    waiters: [],
+  };
+  const {maintenance: _previousMaintenance, ...catalogWithoutMaintenance} = base;
+  return {
+    ...catalogWithoutMaintenance,
+    ...status,
+    ...(status.catalogRevision === undefined && base.catalogRevision !== undefined
+      ? {catalogRevision: base.catalogRevision}
+      : {}),
+    ...(status.storage === undefined && base.storage !== undefined ? {storage: base.storage} : {}),
+    ...(status.automaticCompaction === undefined && base.automaticCompaction !== undefined
+      ? {automaticCompaction: base.automaticCompaction}
+      : {}),
+  };
+}
+
+export type GraphStorageSummary = ManagerGraphStorageSummary;
 
 export function graphMaintenanceStatusLabel(status: CodeGraphMaintenanceStatus): string {
   const operation = status.operation === 'selected-snapshot-purge' ? 'Selected snapshot purge' : 'Graph maintenance';
@@ -631,7 +684,9 @@ export function graphRepositoryOptionLabel(
   const collides = repositories.some(
     candidate => candidate.id !== repository.id && candidate.displayName === repository.displayName,
   );
-  return collides ? `${repository.displayName} · ${repository.id.slice(0, 8)}` : repository.displayName;
+  if (!collides) return repository.displayName;
+  const folder = repository.views.find(view => view.localAssociation.displayPath)?.localAssociation.displayPath;
+  return `${repository.displayName} · ${folder ?? `repository ${repository.id.slice(0, 8)}`}`;
 }
 
 export function shortGraphIdentity(value: string): string {
@@ -1140,7 +1195,7 @@ export function graphCatalogSearchOptions(
   for (const group of repositories) {
     for (const view of group.views) {
       viewsById.set(view.id, {
-        description: `${group.displayName} · ${view.snapshot.commit.slice(0, 8)}${view.snapshot.dirty ? ' · dirty' : ''} · folder ${graphLocalAssociationText(view.localAssociation)}`,
+        description: `${group.displayName} · ${view.snapshot.commit.slice(0, 8)}${view.snapshot.dirty ? ' · dirty' : ''}${view.localAssociation.branch ? ` · observed branch ${view.localAssociation.branch}` : ''} · folder ${graphLocalAssociationText(view.localAssociation)}`,
         id: view.id,
         label: view.label,
         repositoryId: group.id,

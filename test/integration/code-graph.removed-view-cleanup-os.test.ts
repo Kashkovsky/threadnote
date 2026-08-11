@@ -11,6 +11,7 @@ import {ApplicationLayer} from '../../src/effect/runtime.js';
 const CHECKOUT_ID = 'a'.repeat(64);
 const REMOVED_AT = new Date(0).toISOString();
 const OS_ROWS = 64;
+const CHILD_MARKER_TIMEOUT_MILLISECONDS = 45_000;
 
 interface CleanupChildProcess {
   readonly exited: Promise<number>;
@@ -44,7 +45,7 @@ describe('removed code graph view cleanup OS crash coordination', () => {
               startCleanupChild(databasePath, now, markerPath),
               child =>
                 Effect.gen(function* () {
-                  yield* waitForMarker(fs, markerPath);
+                  yield* waitForMarker(fs, markerPath, child);
                   const marker = yield* readMarker(fs, markerPath);
                   const expectedKilled = Array.from({length: 32}, (_, index) => worktreeId(index));
                   expect(child.exitCode).toBeNull();
@@ -96,7 +97,7 @@ describe('removed code graph view cleanup OS crash coordination', () => {
           }),
         ),
       ).pipe(provideTestLayer(ApplicationLayer)),
-    30_000,
+    60_000,
   );
 
   effectIt.effect('interrupts before SQLite open without consuming a cleanup prefix', () =>
@@ -198,14 +199,62 @@ function terminateCleanupChild(child: CleanupChildProcess): Effect.Effect<void, 
   });
 }
 
-function waitForMarker(fs: FileSystem.FileSystem, markerPath: string) {
+function waitForMarker(fs: FileSystem.FileSystem, markerPath: string, child: CleanupChildProcess) {
   return Effect.gen(function* () {
-    const deadline = Date.now() + 15_000;
+    // The child deliberately allows 30 seconds to acquire the writer gate.
+    // Keep the process-start barrier above that contract so a slow CI runner
+    // cannot turn valid lock backpressure into a premature marker timeout.
+    const deadline = Date.now() + CHILD_MARKER_TIMEOUT_MILLISECONDS;
     while (!(yield* fs.exists(markerPath))) {
-      if (Date.now() >= deadline) return yield* Effect.fail(new TestError('Cleanup child missed its commit marker.'));
+      if (child.exitCode !== null) {
+        yield* Effect.promise(() => child.exited);
+        const streams = yield* collectChildStreams(child);
+        return yield* Effect.fail(
+          new TestError(`Cleanup child exited before its commit marker: ${JSON.stringify(streams)}`),
+        );
+      }
+      if (Date.now() >= deadline) {
+        child.kill('SIGKILL');
+        yield* Effect.promise(() => child.exited);
+        const streams = yield* collectChildStreams(child);
+        return yield* Effect.fail(new TestError(`Cleanup child missed its commit marker: ${JSON.stringify(streams)}`));
+      }
       yield* Effect.sleep(10);
     }
   });
+}
+
+function collectChildStreams(child: CleanupChildProcess) {
+  return Effect.all(
+    {
+      stderr: readBoundedChildStream(child.stderr, 4_096).pipe(Effect.map(output => output.trim())),
+      stdout: readBoundedChildStream(child.stdout, 4_096).pipe(Effect.map(output => output.trim())),
+    },
+    {concurrency: 2},
+  );
+}
+
+function readBoundedChildStream(stream: ReadableStream<Uint8Array>, maximumBytes: number) {
+  return Effect.acquireUseRelease(
+    Effect.sync(() => stream.getReader()),
+    reader =>
+      Effect.tryPromise({
+        try: async () => {
+          const decoder = new TextDecoder();
+          let bytes = 0;
+          let output = '';
+          while (true) {
+            const next = await reader.read();
+            if (next.done) return output + decoder.decode();
+            bytes += next.value.byteLength;
+            if (bytes > maximumBytes) throw new TestError('Cleanup child output exceeded its byte bound.');
+            output += decoder.decode(next.value, {stream: true});
+          }
+        },
+        catch: cause => new TestError('Could not read bounded cleanup child output.', {cause}),
+      }),
+    reader => Effect.sync(() => reader.releaseLock()),
+  );
 }
 
 function readMarker(fs: FileSystem.FileSystem, markerPath: string) {
