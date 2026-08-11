@@ -1594,7 +1594,7 @@ describe('code graph full-build materialization store', () => {
               fixture.databasePath,
               fixture.identity,
               snapshot,
-              {fileSetFingerprint: 'files', workspaceFingerprint: 'workspace'},
+              {fileSetFingerprint: 'files', packProvenance: [], workspaceFingerprint: 'workspace'},
               undefined,
               progress => Effect.sync(() => activation.push(progress)),
             );
@@ -3685,6 +3685,15 @@ describe('code graph full-build materialization store', () => {
     };
     const receiptInput = {
       fileSetFingerprint: 'files-fingerprint',
+      packProvenance: [
+        {
+          cacheIdentity: 'typescript-extractor-v1',
+          derivationIdentity: 'typescript-derivation-v1',
+          id: 'typescript',
+          resolutionDomain: 'typescript',
+          resolutionVersion: 'typescript-resolver-v1',
+        },
+      ],
       workspaceFingerprint: 'workspace-fingerprint',
     };
 
@@ -3726,6 +3735,7 @@ describe('code graph full-build materialization store', () => {
       aliasCount: counts.aliases,
       fileSetFingerprint: receiptInput.fileSetFingerprint,
       lookupCount: counts.lookups,
+      packProvenance: receiptInput.packProvenance,
       reexportCount: 0,
       workspaceFingerprint: receiptInput.workspaceFingerprint,
     });

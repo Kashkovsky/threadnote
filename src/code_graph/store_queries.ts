@@ -139,16 +139,17 @@ const selectReusableCleanBase = Effect.fn('codeGraph.selectReusableCleanBase')(f
   fileSetFingerprint: string,
   graphContentId?: string,
   preferredCommitGroups?: readonly (readonly string[])[],
+  allowExtractorMismatch = false,
 ) {
   const sql = yield* SqlClient.SqlClient;
   yield* configureConnection(sql);
-  if (graphContentId !== undefined) {
+  if (graphContentId !== undefined && !allowExtractorMismatch) {
     const exactCandidates = yield* sql<SnapshotRow>`
       SELECT snapshot.*
       FROM snapshots AS snapshot
       JOIN snapshot_reuse_receipts AS receipt ON receipt.snapshot_id = snapshot.id
       WHERE snapshot.repository_id = ${repositoryId}
-        AND snapshot.extractor_set = ${extractorSet}
+        AND (${allowExtractorMismatch ? 1 : 0} = 1 OR snapshot.extractor_set = ${extractorSet})
         AND snapshot.state = 'ready'
         AND snapshot.dirty = 0
         AND snapshot.base_snapshot_id IS NULL
@@ -182,7 +183,7 @@ const selectReusableCleanBase = Effect.fn('codeGraph.selectReusableCleanBase')(f
       FROM snapshots AS snapshot
       JOIN snapshot_reuse_receipts AS receipt ON receipt.snapshot_id = snapshot.id
       WHERE snapshot.repository_id = ${repositoryId}
-        AND snapshot.extractor_set = ${extractorSet}
+        AND (${allowExtractorMismatch ? 1 : 0} = 1 OR snapshot.extractor_set = ${extractorSet})
         AND snapshot.state = 'ready'
         AND snapshot.dirty = 0
         AND snapshot.base_snapshot_id IS NULL
@@ -202,7 +203,7 @@ const selectReusableCleanBase = Effect.fn('codeGraph.selectReusableCleanBase')(f
         FROM snapshots AS snapshot
         JOIN snapshot_reuse_receipts AS receipt ON receipt.snapshot_id = snapshot.id
         WHERE snapshot.repository_id = ${repositoryId}
-          AND snapshot.extractor_set = ${extractorSet}
+          AND (${allowExtractorMismatch ? 1 : 0} = 1 OR snapshot.extractor_set = ${extractorSet})
           AND snapshot.state = 'ready'
           AND snapshot.dirty = 0
           AND snapshot.base_snapshot_id IS NULL
@@ -211,6 +212,7 @@ const selectReusableCleanBase = Effect.fn('codeGraph.selectReusableCleanBase')(f
           AND receipt.resolution_surface_version = 1
           AND receipt.workspace_fingerprint = ${workspaceFingerprint}
         ORDER BY
+          CASE WHEN snapshot.extractor_set = ${extractorSet} THEN 0 ELSE 1 END,
           CASE WHEN receipt.file_set_fingerprint = ${fileSetFingerprint} THEN 0 ELSE 1 END,
           snapshot.completed_at DESC,
           snapshot.id
@@ -226,7 +228,7 @@ const selectReusableCleanBase = Effect.fn('codeGraph.selectReusableCleanBase')(f
     FROM snapshots AS snapshot
     JOIN snapshot_reuse_receipts AS receipt ON receipt.snapshot_id = snapshot.id
     WHERE snapshot.repository_id = ${repositoryId}
-      AND snapshot.extractor_set = ${extractorSet}
+      AND (${allowExtractorMismatch ? 1 : 0} = 1 OR snapshot.extractor_set = ${extractorSet})
       AND snapshot.state = 'ready'
       AND snapshot.dirty = 0
       AND snapshot.base_snapshot_id IS NULL
@@ -234,6 +236,7 @@ const selectReusableCleanBase = Effect.fn('codeGraph.selectReusableCleanBase')(f
       AND receipt.resolution_surface_version = 1
       AND receipt.workspace_fingerprint = ${workspaceFingerprint}
     ORDER BY
+      CASE WHEN snapshot.extractor_set = ${extractorSet} THEN 0 ELSE 1 END,
       CASE WHEN receipt.file_set_fingerprint = ${fileSetFingerprint} THEN 0 ELSE 1 END,
       snapshot.completed_at DESC,
       snapshot.id
@@ -330,6 +333,18 @@ const selectReusableBaseReceipt = Effect.fn('codeGraph.selectReusableBaseReceipt
   `;
   const row = rows[0];
   if (!row) return undefined;
+  const packProvenance = yield* sql<{
+    readonly cache_identity: string;
+    readonly derivation_identity: string;
+    readonly pack_id: string;
+    readonly resolution_domain: string;
+    readonly resolution_version: string;
+  }>`
+    SELECT pack_id, cache_identity, derivation_identity, resolution_domain, resolution_version
+    FROM snapshot_pack_provenance
+    WHERE snapshot_id = ${snapshotId}
+    ORDER BY pack_id
+  `;
   const lookupCount = Number(row.lookup_count);
   const aliasCount = Number(row.alias_count);
   const reexportCount = Number(row.reexport_count);
@@ -352,6 +367,13 @@ const selectReusableBaseReceipt = Effect.fn('codeGraph.selectReusableBaseReceipt
     fileSetFingerprint: row.file_set_fingerprint,
     formatVersion: Number(row.format_version),
     lookupCount,
+    packProvenance: packProvenance.map(pack => ({
+      cacheIdentity: pack.cache_identity,
+      derivationIdentity: pack.derivation_identity,
+      id: pack.pack_id,
+      resolutionDomain: pack.resolution_domain,
+      resolutionVersion: pack.resolution_version,
+    })),
     reexportCount,
     resolutionSurfaceVersion: Number(row.resolution_surface_version),
     snapshotId: row.snapshot_id,

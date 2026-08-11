@@ -24,7 +24,16 @@ export const CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION = 2 as const;
 
 export interface CodeGraphReusableBaseReceiptInput {
   readonly fileSetFingerprint: string;
+  readonly packProvenance: readonly CodeGraphLanguagePackProvenance[];
   readonly workspaceFingerprint: string;
+}
+
+export interface CodeGraphLanguagePackProvenance {
+  readonly cacheIdentity: string;
+  readonly derivationIdentity: string;
+  readonly id: string;
+  readonly resolutionDomain: string;
+  readonly resolutionVersion: string;
 }
 
 export interface CodeGraphReusableBaseReceipt extends CodeGraphReusableBaseReceiptInput {

@@ -25,6 +25,7 @@ describe('project-closure persisted store', () => {
         yield* store.stageActivationFacts(databasePath, [baseSymbol], []);
         yield* store.activateStaged(databasePath, identity, base, {
           fileSetFingerprint: 'same-files',
+          packProvenance: [],
           workspaceFingerprint: 'same-workspace',
         });
 
@@ -94,6 +95,7 @@ describe('project-closure persisted store', () => {
         yield* store.stageActivationFacts(databasePath, [symbol(1)], []);
         yield* store.activateStaged(databasePath, identity, base, {
           fileSetFingerprint: 'same-files',
+          packProvenance: [],
           workspaceFingerprint: 'same-workspace',
         });
         yield* Effect.sync(() => insertReexports(databasePath, base.id, 10_001));
@@ -120,6 +122,7 @@ describe('project-closure persisted store', () => {
         yield* store.stageActivationFacts(databasePath, [symbol(1)], []);
         yield* store.activateStaged(databasePath, identity, base, {
           fileSetFingerprint: 'same-files',
+          packProvenance: [],
           workspaceFingerprint: 'same-workspace',
         });
         yield* Effect.sync(() => insertOverlappingReexports(databasePath, base.id));
@@ -147,6 +150,7 @@ describe('project-closure persisted store', () => {
         yield* store.stageActivationFacts(databasePath, [symbol(1)], []);
         yield* store.activateStaged(databasePath, identity, base, {
           fileSetFingerprint: 'same-files',
+          packProvenance: [],
           workspaceFingerprint: 'same-workspace',
         });
         const facts = fileFacts(file.path, symbol(2));

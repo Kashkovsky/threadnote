@@ -414,6 +414,7 @@ export interface CodeGraphStoreShape {
     fileSetFingerprint: string,
     graphContentId?: string,
     preferredCommitGroups?: readonly (readonly string[])[],
+    allowExtractorMismatch?: boolean,
   ) => Effect.Effect<CodeGraphReusableCleanBase | undefined, CodeGraphStoreError>;
   readonly reusableReexports: (
     databasePath: string,

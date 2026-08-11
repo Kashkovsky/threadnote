@@ -359,6 +359,17 @@ const initializeSchema = Effect.fn('codeGraph.initializeSchema')(function* (sql:
   `);
   yield* ensureColumn(sql, 'snapshot_reuse_receipts', 'reexport_count', 'INTEGER NOT NULL DEFAULT 0');
   yield* sql.unsafe(`
+    CREATE TABLE IF NOT EXISTS snapshot_pack_provenance (
+      snapshot_id TEXT NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
+      pack_id TEXT NOT NULL,
+      cache_identity TEXT NOT NULL,
+      derivation_identity TEXT NOT NULL,
+      resolution_domain TEXT NOT NULL,
+      resolution_version TEXT NOT NULL,
+      PRIMARY KEY (snapshot_id, pack_id)
+    ) WITHOUT ROWID
+  `);
+  yield* sql.unsafe(`
     CREATE TABLE IF NOT EXISTS snapshot_reexport_provenance (
       snapshot_id TEXT NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
       source_path TEXT NOT NULL,

@@ -72,6 +72,7 @@ describe('persisted code graph analysis summaries', () => {
               yield* store.stageActivationFacts(databasePath, baseSymbols, [...baseEdgeMap.values()]);
               yield* store.activateStaged(databasePath, identity, baseSnapshot, {
                 fileSetFingerprint: 'base-files',
+                packProvenance: [],
                 workspaceFingerprint: 'base-workspace',
               });
               const effectiveFile = inventoryFile('effective');
@@ -181,6 +182,7 @@ describe('persisted code graph analysis summaries', () => {
             yield* store.stageActivationFacts(databasePath, symbols, baseEdges);
             yield* store.activateStaged(databasePath, identity, base, {
               fileSetFingerprint: 'collision-base-files',
+              packProvenance: [],
               workspaceFingerprint: 'collision-base-workspace',
             });
             const file = inventoryFile('collision-effective');

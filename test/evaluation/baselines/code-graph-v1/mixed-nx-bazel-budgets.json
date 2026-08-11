@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "fixture": {
+    "sources": {
+      "angular/angular": "8925a4ee491aebaf6a1a74880c73dfb20e0a4ba1",
+      "aspect-build/rules_js": "0960bdd0f542a73a4a6fa3183d68ef5766cce285",
+      "nrwl/nx": "2d15c7faa570629657112857a079803897e8e43d"
+    }
+  },
+  "baseline": {
+    "coldIndexMilliseconds": 383120
+  },
+  "maximum": {
+    "analysisMilliseconds": 15000,
+    "analysisPeakRssBytes": 786432000,
+    "boundedStaleReadMilliseconds": 25000,
+    "coldIndexMilliseconds": 287340,
+    "crashRecoveryForegroundMilliseconds": 2000,
+    "currentQueryMilliseconds": 1000,
+    "inventoryMilliseconds": 2000,
+    "oneFileIncrementalMilliseconds": 8000,
+    "oneFileIncrementalPeakRssBytes": 536870912,
+    "postChurnStorageGrowthPercent": 10,
+    "stableNoopMilliseconds": 2000
+  }
+}

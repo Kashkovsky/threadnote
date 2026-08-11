@@ -51,6 +51,7 @@ import {associateSnapshotFileShards} from './store_cache.js';
 import {insertActivationLease, recordSnapshotExtractorGeneration} from './store_maintenance_core.js';
 import {type CodeGraphSqlQueryStatement} from './store_visualization_sql.js';
 import {selectReusableBaseReceipt} from './store_queries.js';
+import {recordSnapshotPackProvenance} from './store_pack_provenance.js';
 import {
   materializeSnapshotComponentEdgeAggregates,
   selectPersistedSnapshotComponentEdges,
@@ -320,6 +321,7 @@ const activateCleanStagedSnapshot = Effect.fn('codeGraph.activateCleanStagedSnap
             ${new Date().toISOString()}
           )
         `;
+        yield* recordSnapshotPackProvenance(sql, snapshot.id, reusableBaseReceipt.packProvenance);
       }
       yield* insertActivationLease(sql, snapshot.id, promotionLease);
       yield* observe('recording-completion', 'started');
@@ -670,6 +672,7 @@ const activatePersistedFullSnapshot = Effect.fn('codeGraph.activatePersistedFull
             ${new Date().toISOString()}
           )
         `;
+            yield* recordSnapshotPackProvenance(sql, snapshot.id, reusableBaseReceipt.packProvenance);
           }
           yield* insertActivationLease(sql, snapshot.id, promotionLease);
           const completed = yield* sql<{readonly id: string}>`

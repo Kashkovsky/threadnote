@@ -32,10 +32,12 @@ import {
 import {ensureBoundedCodeGraphFact} from '../../src/code_graph/fact_budget.js';
 import {decodeStoredCodeGraphFact, encodeStoredCodeGraphFact} from '../../src/code_graph/fact_storage.js';
 import {codeGraphLayout} from '../../src/code_graph/layout.js';
+import {BUILTIN_LANGUAGE_PACK_REGISTRY} from '../../src/code_graph/languages/registry.js';
 import {readPersistedCodeGraphLocalAssociation} from '../../src/code_graph/local_provenance.js';
 import {
   inventoryRepository,
   readContainedStableRegularFile,
+  worktreeBuildRequestState,
   worktreeOverlayState,
 } from '../../src/code_graph/inventory.js';
 import {CodeGraphQueryService, observationFromCodeGraphStatus} from '../../src/code_graph/query.js';
@@ -2236,23 +2238,64 @@ describe('native code graph lifecycle', () => {
     expect(repeatedObservations).toBe(0);
   });
 
-  it('changes the overlay fingerprint for successive edits to an already-modified file', async () => {
-    const root = createFixtureRepository();
-    const states = await runEffect(
-      Effect.gen(function* () {
-        const identity = yield* resolveRepositoryIdentity(root);
-        replaceFunction(root, 'ensureVectorIndex', 'ensureFirstVectorIndex');
-        const first = yield* worktreeOverlayState(identity);
-        replaceFunction(root, 'ensureFirstVectorIndex', 'ensureSecondVectorIndex');
-        const second = yield* worktreeOverlayState(identity);
-        return [first, second] as const;
-      }),
-    );
+  effectIt.effect('changes the overlay fingerprint for successive edits to an already-modified file', () =>
+    Effect.gen(function* () {
+      const root = createFixtureRepository();
+      const identity = yield* resolveRepositoryIdentity(root);
+      replaceFunction(root, 'ensureVectorIndex', 'ensureFirstVectorIndex');
+      const first = yield* Effect.all({
+        buildRequest: worktreeBuildRequestState(identity),
+        overlay: worktreeOverlayState(identity),
+      });
+      replaceFunction(root, 'ensureFirstVectorIndex', 'ensureSecondVectorIndex');
+      const second = yield* Effect.all({
+        buildRequest: worktreeBuildRequestState(identity),
+        overlay: worktreeOverlayState(identity),
+      });
+      const states = [first, second] as const;
 
-    expect(states[0].dirty).toBe(true);
-    expect(states[1].dirty).toBe(true);
-    expect(states[0].fingerprint).not.toBe(states[1].fingerprint);
-  });
+      expect(states[0].overlay.dirty).toBe(true);
+      expect(states[1].overlay.dirty).toBe(true);
+      expect(states[0].overlay.fingerprint).not.toBe(states[1].overlay.fingerprint);
+      expect(states[0].buildRequest.dirty).toBe(true);
+      expect(states[1].buildRequest.dirty).toBe(true);
+      expect(states[0].buildRequest.fingerprint).not.toBe(states[1].buildRequest.fingerprint);
+    }).pipe(Effect.provide(ApplicationLayer)),
+  );
+
+  effectIt.effect('excludes an in-repository Threadnote home from build admission', () =>
+    Effect.gen(function* () {
+      const root = createFixtureRepository();
+      const home = join(root, '.threadnote-test-home');
+      mkdirSync(home, {recursive: true});
+      writeFileSync(join(home, 'runtime.json'), '{}\n');
+      const identity = yield* resolveRepositoryIdentity(root);
+      expect(yield* worktreeBuildRequestState(identity, home)).toEqual({dirty: false, fingerprint: undefined});
+
+      replaceFunction(root, 'ensureVectorIndex', 'ensureChangedVectorIndex');
+      expect((yield* worktreeBuildRequestState(identity, home)).dirty).toBe(true);
+    }).pipe(Effect.provide(ApplicationLayer)),
+  );
+
+  effectIt.effect('reuses manifest-only workspace discovery until a resolution context changes', () =>
+    Effect.gen(function* () {
+      const root = createFixtureRepository();
+      const identity = yield* resolveRepositoryIdentity(root);
+      const clean = yield* inventoryRepository(identity);
+      const cleanDirect = yield* BUILTIN_LANGUAGE_PACK_REGISTRY.discoverWorkspace(clean.files);
+      expect(clean.workspace?.fingerprint).toBe(cleanDirect.fingerprint);
+
+      replaceFunction(root, 'ensureVectorIndex', 'ensureChangedVectorIndex');
+      const sourceOnly = yield* inventoryRepository(identity);
+      const sourceOnlyDirect = yield* BUILTIN_LANGUAGE_PACK_REGISTRY.discoverWorkspace(sourceOnly.files);
+      expect(sourceOnly.workspace?.fingerprint).toBe(sourceOnlyDirect.fingerprint);
+
+      const tsconfig = join(root, 'tsconfig.json');
+      writeFileSync(tsconfig, `${readFileSync(tsconfig, 'utf8')}\n`);
+      const resolutionChanged = yield* inventoryRepository(identity);
+      expect(resolutionChanged.workspace).toBeUndefined();
+    }).pipe(Effect.provide(ApplicationLayer)),
+  );
 
   it('indexes a manifest-declared Android module named pods while pruning generated CocoaPods output', async () => {
     const root = temporaryDirectory('threadnote-code-graph-declared-pods-');

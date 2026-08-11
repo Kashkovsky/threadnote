@@ -30,6 +30,7 @@ import {identifyChangedSymbols} from './store_resolution_core.js';
 import {associateSnapshotFileShards, inheritSnapshotFileShards} from './store_cache.js';
 import {insertActivationLease, recordSnapshotExtractorGeneration} from './store_maintenance_core.js';
 import {selectReusableBaseReceipt} from './store_queries.js';
+import {recordSnapshotPackProvenance} from './store_pack_provenance.js';
 
 /** Exact read-only admission shared by cleanup writers and both health paths. */
 
@@ -375,6 +376,7 @@ const activateStagedSnapshot = Effect.fn('codeGraph.activateStagedSnapshot')(fun
             ${new Date().toISOString()}
           FROM activation_symbol_lookup
         `;
+        yield* recordSnapshotPackProvenance(sql, snapshot.id, reusableBaseReceipt.packProvenance);
       }
       yield* insertActivationLease(sql, snapshot.id, promotionLease);
       if (activated) {

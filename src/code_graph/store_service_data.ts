@@ -569,6 +569,7 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
       fileSetFingerprint,
       graphContentId,
       preferredCommitGroups,
+      allowExtractorMismatch,
     ) =>
       fs.exists(databasePath).pipe(
         Effect.flatMap(exists =>
@@ -582,6 +583,7 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
                   fileSetFingerprint,
                   graphContentId,
                   preferredCommitGroups,
+                  allowExtractorMismatch,
                 ),
               )
             : Effect.succeed(undefined),
