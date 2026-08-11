@@ -406,6 +406,10 @@ export const runCodeGraphStatus = Effect.fn('codeGraph.command.status')(function
     if (current.materialization?.metrics) {
       const metrics = current.materialization.metrics;
       const details = [
+        metrics.mode === undefined ? undefined : `${metrics.mode.replaceAll('-', ' ')} materialization`,
+        metrics.fallbackReason === undefined
+          ? undefined
+          : `incremental fallback: ${metrics.fallbackReason.replaceAll('-', ' ')}`,
         `${metrics.batchesCompleted}/${metrics.batchesTotal} batches committed`,
         `${formatBytes(metrics.sourceBytesCompleted)}/${formatBytes(metrics.sourceBytesTotal)} source`,
         metrics.cachedFactBytesCompleted === undefined
@@ -658,10 +662,23 @@ function renderActiveStorageStatus(storage: CodeGraphStorage): Effect.Effect<voi
       `Reclaimable: ${formatBytes(page.reclaimableBytes)} (${formatPercent(page.reclaimableRatio)}; ` +
         `${page.freelistPages}/${page.pageCount} pages at ${page.pageSize} byte(s)/page)`,
     );
+    if (
+      page.fragmentedBytes !== undefined &&
+      page.fragmentationRatio !== undefined &&
+      page.compactionOpportunityBytes !== undefined &&
+      page.compactionOpportunityRatio !== undefined
+    ) {
+      yield* Console.log(
+        `Fragmented: ${formatBytes(page.fragmentedBytes)} (${formatPercent(page.fragmentationRatio)}); ` +
+          `combined compaction opportunity ${formatBytes(page.compactionOpportunityBytes)} ` +
+          `(${formatPercent(page.compactionOpportunityRatio)}).`,
+      );
+    }
     yield* Console.log(
       `Compaction: ${page.threshold.recommended ? 'recommended' : 'not needed'}; threshold is ` +
         `${formatBytes(page.threshold.minimumReclaimableBytes)} and ` +
-        `${formatPercent(page.threshold.minimumReclaimableRatio)} free.`,
+        `${formatPercent(page.threshold.minimumReclaimableRatio)} free or fragmented` +
+        (page.threshold.reason === 'freelist-and-fragmentation' ? '; fragmentation crossed the threshold.' : '.'),
     );
   });
 }
@@ -1539,7 +1556,17 @@ function progressMessage(progress: CodeGraphProgress): string {
 function materializationProgressMessage(
   progress: Extract<CodeGraphProgress, {readonly phase: 'materializing'}>,
 ): string {
-  const summary = `Materializing · ${progress.completed}/${progress.total} files · ${progress.reused} reused`;
+  const plan = [
+    progress.metrics?.mode === undefined ? undefined : `${progress.metrics.mode.replaceAll('-', ' ')} materialization`,
+    progress.metrics?.fallbackReason === undefined
+      ? undefined
+      : `incremental fallback: ${progress.metrics.fallbackReason.replaceAll('-', ' ')}`,
+  ]
+    .filter((value): value is string => value !== undefined)
+    .join(' · ');
+  const summary = `Materializing · ${progress.completed}/${progress.total} files · ${progress.reused} reused${
+    plan ? ` · ${plan}` : ''
+  }`;
   const diskWarning = materializationDiskWarning(progress.metrics?.storage);
   const activity = progress.activity;
   if (!activity) return diskWarning ? `${summary} · ${diskWarning}` : summary;

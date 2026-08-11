@@ -3,6 +3,7 @@ import {sha256HexSync} from '../../../crypto/sha256.js';
 import {fromPromiseInterruptible} from '../../../effect/errors.js';
 import {CodeGraphLanguagePackError, type CodeGraphFileMatcher, type CodeGraphLanguagePack} from '../types.js';
 import {extractCorpusFile} from './extractor.js';
+import {OPAQUE_CORPUS_MEDIA_EXTENSIONS} from './policy.js';
 
 const extensions = (values: readonly string[], language: string): readonly CodeGraphFileMatcher[] =>
   values.map(value => ({kind: 'extension', language, role: 'corpus', value}));
@@ -52,11 +53,25 @@ export const codeGraphLanguagePack: CodeGraphLanguagePack = {
     ),
     ...extensions(['.docx', '.epub', '.odp', '.ods', '.odt', '.pdf', '.pptx', '.xlsx'], 'office-document'),
     ...extensions(
-      ['.avif', '.bmp', '.gif', '.heic', '.ico', '.jpeg', '.jpg', '.png', '.tif', '.tiff', '.webp'],
+      OPAQUE_CORPUS_MEDIA_EXTENSIONS.filter(extension =>
+        ['.avif', '.bmp', '.gif', '.heic', '.ico', '.jpeg', '.jpg', '.png', '.tif', '.tiff', '.webp'].includes(
+          extension,
+        ),
+      ),
       'image',
     ),
-    ...extensions(['.aac', '.flac', '.m4a', '.mp3', '.oga', '.ogg', '.opus', '.wav'], 'audio'),
-    ...extensions(['.avi', '.m4v', '.mkv', '.mov', '.mp4', '.mpeg', '.mpg', '.webm'], 'video'),
+    ...extensions(
+      OPAQUE_CORPUS_MEDIA_EXTENSIONS.filter(extension =>
+        ['.aac', '.flac', '.m4a', '.mp3', '.oga', '.ogg', '.opus', '.wav'].includes(extension),
+      ),
+      'audio',
+    ),
+    ...extensions(
+      OPAQUE_CORPUS_MEDIA_EXTENSIONS.filter(extension =>
+        ['.avi', '.m4v', '.mkv', '.mov', '.mp4', '.mpeg', '.mpg', '.webm'].includes(extension),
+      ),
+      'video',
+    ),
   ],
   id: 'corpus',
   resolutionStrategy: {domain: 'corpus', version: 'corpus-links-v1'},

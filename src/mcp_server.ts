@@ -133,12 +133,7 @@ import {
   recallSelectionQueries,
   selectedRecallCandidateUris,
 } from './recall/runtime.js';
-import {
-  canUseReadySnapshotAfterCleanCommitChange,
-  CodeGraphQueryService,
-  observationFromCodeGraphStatus,
-  renderCodeGraphResult,
-} from './code_graph/query.js';
+import {CodeGraphQueryService, observationFromCodeGraphStatus, renderCodeGraphResult} from './code_graph/query.js';
 import {repositoryChangesSince} from './code_graph/repository.js';
 import type {CodeGraphProgress, CodeGraphQueryResult} from './code_graph/types.js';
 import {inspectCodeGraphWorkset, type CodeGraphWorksetQueryResult} from './code_graph/workset_query.js';
@@ -956,11 +951,11 @@ function registerCodeGraphTool(server: EffectMcpServerAdapter, config: RuntimeCo
             }),
         });
         let identity = status.identity;
-        const strictFreshness = operation === 'impact' || operation === 'path';
+        const allowStaleReadySnapshot = codeGraphInspectionAllowsStaleReady(operation);
+        const strictFreshness = !allowStaleReadySnapshot;
         if (status.stale || !status.readySnapshot) {
           status = yield* service.attachSharedReadySnapshot(config.agentContextHome, identity, status);
         }
-        let staleAfterCleanCommitChange = canUseReadySnapshotAfterCleanCommitChange(status);
         let refreshStarted = false;
         if (status.stale) {
           refreshStarted = yield* watcher.refresh({
@@ -977,16 +972,13 @@ function registerCodeGraphTool(server: EffectMcpServerAdapter, config: RuntimeCo
           if (status.stale || !status.readySnapshot) {
             status = yield* service.attachSharedReadySnapshot(config.agentContextHome, identity, status);
           }
-          staleAfterCleanCommitChange = canUseReadySnapshotAfterCleanCommitChange(status);
           if (!status.readySnapshot || (status.stale && strictFreshness)) {
             const refreshStatus = Option.getOrUndefined(yield* watcher.status(identity.worktreeId, refreshTarget));
             return codeGraphRefreshResult(operation, refreshStatus);
           }
         }
         const refreshStatus = Option.getOrUndefined(yield* watcher.status(identity.worktreeId, refreshTarget));
-        if (
-          selectCodeGraphReadySnapshotForInspection(status, refreshStatus, staleAfterCleanCommitChange) === undefined
-        ) {
+        if (selectCodeGraphReadySnapshotForInspection(status, refreshStatus, allowStaleReadySnapshot) === undefined) {
           return codeGraphRefreshResult(operation, refreshStatus);
         }
         const result = yield* service.inspect({
@@ -2054,6 +2046,16 @@ export function codeGraphRefreshBlocksReadyInspection(
   return refreshBlocks && (!status.readySnapshot || (status.stale && !allowStaleReadySnapshot));
 }
 
+/**
+ * Immutable ready snapshots remain valid bounded evidence while a newer snapshot builds.
+ * Relationship paths and impact analysis are correctness-sensitive and require current state.
+ */
+export function codeGraphInspectionAllowsStaleReady(
+  operation: 'explain' | 'impact' | 'neighbors' | 'node' | 'path' | 'query',
+): boolean {
+  return operation !== 'impact' && operation !== 'path';
+}
+
 /** Retain the exact observed pointer; refresh status alone is never promotion authority. */
 export function selectCodeGraphReadySnapshotForInspection<T>(
   status: {readonly readySnapshot?: T; readonly stale: boolean},
@@ -2070,10 +2072,15 @@ export function codeGraphResultWithRefreshContinuity(
   result: CodeGraphQueryResult,
   refreshStatus: CodeGraphRefreshStatus | undefined,
 ): CodeGraphQueryResult {
-  if (result.freshness !== 'stale' || refreshStatus?.state !== 'deferred') return result;
+  if (result.freshness !== 'stale') return result;
   const warning =
-    `Serving the existing stale ready snapshot because code graph refresh is deferred ` +
-    `(${refreshStatus.failure.code}). ${codeGraphRefreshRecoveryWarning(refreshStatus.failure)}`;
+    refreshStatus?.state === 'deferred'
+      ? `Serving the existing stale ready snapshot because code graph refresh is deferred ` +
+        `(${refreshStatus.failure.code}). ${codeGraphRefreshRecoveryWarning(refreshStatus.failure)}`
+      : refreshStatus?.state === 'indexing'
+        ? 'Serving the existing stale ready snapshot while code graph refresh continues in the background.'
+        : undefined;
+  if (warning === undefined) return result;
   const bounded = compactMcpText(warning, 320);
   return result.warnings.includes(bounded) ? result : {...result, warnings: [...result.warnings, bounded]};
 }

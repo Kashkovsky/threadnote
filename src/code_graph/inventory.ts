@@ -4,7 +4,7 @@ import {runBinaryCommandEffect, runCommandEffect} from '../effect/command.js';
 import {SystemInfo} from '../effect/system.js';
 import {codeGraphBlobReuseCacheKey} from './blob_reuse.js';
 import {BUILTIN_LANGUAGE_PACK_REGISTRY, type CodeGraphLanguagePackRegistryShape} from './languages/registry.js';
-import {CORPUS_EXTRACTION_SOURCE_BYTES_LIMIT} from './languages/corpus/policy.js';
+import {CORPUS_EXTRACTION_SOURCE_BYTES_LIMIT, isOpaqueCorpusMediaPath} from './languages/corpus/policy.js';
 import {isLowSignalStructuredPath} from './languages/schemas/policy.js';
 import type {CodeGraphFileRole} from './languages/types.js';
 import {
@@ -71,6 +71,7 @@ export type CodeGraphInventoryPreviewReason =
   | 'git-ignore'
   | 'hidden-directory'
   | 'invalid-path'
+  | 'opaque-corpus-deferred'
   | 'threadnote-ignore'
   | 'unsupported-language'
   | 'vendor-directory';
@@ -119,12 +120,14 @@ export interface CodeGraphInventoryPreviewSummaryOptions {
   readonly declaredProjectRoots?: readonly string[];
   readonly declaredSourceRoots?: readonly string[];
   readonly gitIgnoredPaths?: ReadonlySet<string>;
+  readonly includeOpaqueCorpusAssets?: boolean;
   readonly languagePacks?: CodeGraphLanguagePackRegistryShape;
   readonly threadnoteIgnore?: string;
 }
 
 export interface CodeGraphInventoryPreviewOptions {
   readonly includeOverlay?: boolean;
+  readonly includeOpaqueCorpusAssets?: boolean;
   readonly languagePacks?: CodeGraphLanguagePackRegistryShape;
 }
 
@@ -136,6 +139,8 @@ interface PolicyExclusionEntry {
 export interface CodeGraphInventoryOptions {
   readonly cachedCommittedFileKeys?: ReadonlySet<string>;
   readonly includeOverlay?: boolean;
+  /** Binary media is metadata-only structural evidence and may be deferred until vector indexing is requested. */
+  readonly includeOpaqueCorpusAssets?: boolean;
   readonly languagePacks?: CodeGraphLanguagePackRegistryShape;
   readonly onContentBatch?: (
     files: readonly CodeGraphInventoryFile[],
@@ -230,6 +235,7 @@ export function summarizeCodeGraphInventoryPreview(
             languagePacks,
             options.declaredProjectRoots ?? [],
             options.declaredSourceRoots ?? [],
+            options.includeOpaqueCorpusAssets !== false,
           )
         : undefined;
     const reason = policyReason ?? pathReason ?? (gitIgnoredPaths.has(path) ? 'git-ignore' : 'admitted');
@@ -307,11 +313,27 @@ export const inventoryRepository = Effect.fn('codeGraph.inventoryRepository')(fu
       languagePacks,
       declaredWorkspace.projectRoots,
       declaredWorkspace.sourceRoots,
+      options.includeOpaqueCorpusAssets !== false,
     ),
   );
+  const deferredOpaqueEntries =
+    options.includeOpaqueCorpusAssets === false
+      ? policyAdmittedTreeEntries.filter(
+          entry =>
+            isOpaqueCorpusMediaPath(entry.path) &&
+            acceptsRepositoryPathWithRules(
+              entry.path,
+              ignoreRules,
+              languagePacks,
+              declaredWorkspace.projectRoots,
+              declaredWorkspace.sourceRoots,
+              true,
+            ),
+        )
+      : [];
   const ignoredByGit = yield* ignoredPaths(
     identity.repoRoot,
-    acceptedByPolicy.map(entry => entry.path),
+    [...acceptedByPolicy, ...deferredOpaqueEntries].map(entry => entry.path),
   );
   const accepted = acceptedByPolicy.filter(entry => !ignoredByGit.has(entry.path));
   const acceptedPaths = new Set(accepted.map(entry => entry.path));
@@ -351,6 +373,7 @@ export const inventoryRepository = Effect.fn('codeGraph.inventoryRepository')(fu
           committedPolicyExclusions,
           committedTreeEntries,
           acceptedPaths,
+          options.includeOpaqueCorpusAssets !== false,
           options.onContentBatch
             ? (files, context) =>
                 options.onContentBatch!(files, {
@@ -375,6 +398,14 @@ export const inventoryRepository = Effect.fn('codeGraph.inventoryRepository')(fu
   const skipped = excluded + committed.skipped + overlay.skipped + overlay.policySkippedDelta;
   const policyExclusions = summarizePolicyExclusions(overlay.policyExclusions);
   const diagnostics = policyExclusions.files === 0 ? [] : [formatPolicyExclusionDiagnostic(policyExclusions)];
+  if (options.includeOpaqueCorpusAssets === false) {
+    const deferred = deferredOpaqueEntries.filter(entry => !ignoredByGit.has(entry.path));
+    if (deferred.length > 0) {
+      diagnostics.push(
+        `Deferred ${deferred.length} opaque corpus asset(s) / ${deferred.reduce((total, entry) => total + entry.size, 0)} byte(s) during structural-only indexing.`,
+      );
+    }
+  }
   return {
     committedFiles: [...committed.files].sort((left, right) => compareCodeUnits(left.path, right.path)),
     committedParsedFiles: committed.files.reduce(
@@ -452,6 +483,7 @@ export const previewCodeGraphInventory = Effect.fn('codeGraph.previewInventory')
           languagePacks,
           effectiveRoots.projectRoots,
           effectiveRoots.sourceRoots,
+          options.includeOpaqueCorpusAssets !== false,
         ) === undefined,
     )
     .map(entry => entry.path);
@@ -461,6 +493,7 @@ export const previewCodeGraphInventory = Effect.fn('codeGraph.previewInventory')
     declaredSourceRoots: effectiveRoots.sourceRoots,
     gitIgnoredPaths,
     languagePacks,
+    includeOpaqueCorpusAssets: options.includeOpaqueCorpusAssets,
     threadnoteIgnore,
   });
   return {
@@ -839,10 +872,17 @@ function acceptsRepositoryPathWithRules(
   languagePacks: CodeGraphLanguagePackRegistryShape,
   declaredProjectRoots: readonly string[] = [],
   declaredSourceRoots: readonly string[] = [],
+  includeOpaqueCorpusAssets = true,
 ): boolean {
   return (
-    repositoryPathExclusionReason(value, ignoreRules, languagePacks, declaredProjectRoots, declaredSourceRoots) ===
-    undefined
+    repositoryPathExclusionReason(
+      value,
+      ignoreRules,
+      languagePacks,
+      declaredProjectRoots,
+      declaredSourceRoots,
+      includeOpaqueCorpusAssets,
+    ) === undefined
   );
 }
 
@@ -852,6 +892,7 @@ function repositoryPathExclusionReason(
   languagePacks: CodeGraphLanguagePackRegistryShape,
   declaredProjectRoots: readonly string[] = [],
   declaredSourceRoots: readonly string[] = [],
+  includeOpaqueCorpusAssets = true,
 ): Exclude<CodeGraphInventoryPreviewReason, CodeGraphInventoryExclusionReason | 'admitted' | 'git-ignore'> | undefined {
   const path = normalizeRepositoryPath(value);
   if (!path || path.startsWith('/') || path.split('/').some(segment => segment === '..' || segment === '')) {
@@ -880,6 +921,7 @@ function repositoryPathExclusionReason(
     return normalizedDirectory === 'node_modules' ? 'vendor-directory' : 'generated-directory';
   }
   if (isIgnoredByThreadnote(path, ignoreRules)) return 'threadnote-ignore';
+  if (!includeOpaqueCorpusAssets && isOpaqueCorpusMediaPath(path)) return 'opaque-corpus-deferred';
   return Option.isSome(languagePacks.match(path)) ? undefined : 'unsupported-language';
 }
 
@@ -1207,6 +1249,7 @@ const readDirtyOverlay = Effect.fn('codeGraph.readDirtyOverlay')(function* (
   committedPolicyExclusions: ReadonlyMap<string, PolicyExclusionEntry>,
   committedTreeEntries: ReadonlyMap<string, GitTreeEntry>,
   knownCommittedAcceptedPaths?: ReadonlySet<string>,
+  includeOpaqueCorpusAssets = true,
   onContentBatch?: CodeGraphInventoryOptions['onContentBatch'],
 ) {
   const fs = yield* FileSystem.FileSystem;
@@ -1260,7 +1303,14 @@ const readDirtyOverlay = Effect.fn('codeGraph.readDirtyOverlay')(function* (
       entry !== undefined &&
       !committedPolicyExclusions.has(relative) &&
       !ignoredChangedPaths.has(relative) &&
-      acceptsRepositoryPathWithRules(relative, ignoreRules, languagePacks, declaredProjectRoots, declaredSourceRoots)
+      acceptsRepositoryPathWithRules(
+        relative,
+        ignoreRules,
+        languagePacks,
+        declaredProjectRoots,
+        declaredSourceRoots,
+        includeOpaqueCorpusAssets,
+      )
     );
   };
   const policyExclusions = new Map(committedPolicyExclusions);
@@ -1398,6 +1448,7 @@ const readDirtyOverlay = Effect.fn('codeGraph.readDirtyOverlay')(function* (
         languagePacks,
         effectiveDeclaredProjectRoots,
         effectiveDeclaredSourceRoots,
+        includeOpaqueCorpusAssets,
       )
     ) {
       if (previousPolicyExclusion !== undefined) {

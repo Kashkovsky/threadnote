@@ -303,6 +303,40 @@ describe('manager graph focus', () => {
     expect(markup).toContain('2 at or above 1.00s');
   });
 
+  it('explains a repository-wide incremental fallback while materialization is active', () => {
+    const neverResolves = () => new Promise<never>(() => undefined);
+    const build = {
+      ...graphBuildStatus('running'),
+      counters: {completed: 37_209, reused: 58_482, total: 59_076, unit: 'files'},
+      materialization: {
+        metrics: {
+          batchesCompleted: 707,
+          batchesTotal: 933,
+          fallbackReason: 'file-set-changed',
+          mode: 'full' as const,
+          sourceBytesCompleted: 1,
+          sourceBytesTotal: 2,
+        },
+      },
+      phase: 'materializing',
+    };
+    const markup = renderToStaticMarkup(
+      createElement(GraphWorkspace, {
+        catalog: {builds: [build], diagnostics: [], repositories: [], waiterCount: 0, waiters: []},
+        loadAnalysis: neverResolves,
+        loadCatalogPage: neverResolves,
+        loadGraph: neverResolves,
+        loadNodeDetail: neverResolves,
+        loadQuery: neverResolves,
+        loadViewsPage: neverResolves,
+        onRefresh: () => undefined,
+      }),
+    );
+
+    expect(markup).toContain('Full materialization selected');
+    expect(markup).toContain('incremental fallback: file set changed');
+  });
+
   it('shows the active owner, latest queued target, and stale queryable snapshot without claiming FIFO order', () => {
     const neverResolves = () => new Promise<never>(() => undefined);
     const baseRepository = repositoryGroup('repository', ['worktree'], 'worktree');

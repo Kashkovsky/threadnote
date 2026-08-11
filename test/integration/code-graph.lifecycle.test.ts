@@ -149,21 +149,19 @@ describe('native code graph lifecycle', () => {
     });
   });
 
-  it('serves parallel ready-snapshot queries without contending on SQLite connection bootstrap', async () => {
-    const root = createFixtureRepository();
-    const home = join(root, '.threadnote-test-home');
-    const indexed = await runEffect(
+  effectIt.effect(
+    'serves parallel ready-snapshot queries without contending on SQLite connection bootstrap',
+    () =>
       Effect.gen(function* () {
+        const root = yield* Effect.sync(createFixtureRepository);
+        const home = join(root, '.threadnote-test-home');
         const indexer = yield* CodeGraphIndexer;
-        return yield* indexer.index({cwd: root, threadnoteHome: home});
-      }),
-    );
-    const databasePath = codeGraphDatabasePath(home, indexed);
-
-    const queryOnly = await runEffect(
-      Effect.gen(function* () {
         const store = yield* CodeGraphStore;
-        return yield* store.withSession(
+        const graph = yield* CodeGraphQueryService;
+        const indexed = yield* indexer.index({cwd: root, threadnoteHome: home});
+        const databasePath = codeGraphDatabasePath(home, indexed);
+
+        const queryOnly = yield* store.withSession(
           databasePath,
           Effect.gen(function* () {
             const sql = yield* SqlClient.SqlClient;
@@ -172,13 +170,8 @@ describe('native code graph lifecycle', () => {
           }),
           {readOnly: true},
         );
-      }),
-    );
-    expect(queryOnly).toBe(1);
+        expect(queryOnly).toBe(1);
 
-    const results = await runEffect(
-      Effect.gen(function* () {
-        const graph = yield* CodeGraphQueryService;
         const selected = yield* Ref.make(0);
         const allSelected = yield* Deferred.make<void>();
         const afterSnapshotSelected = () =>
@@ -196,7 +189,7 @@ describe('native code graph lifecycle', () => {
               ),
             ),
           );
-        return yield* Effect.all(
+        const results = yield* Effect.all(
           Array.from({length: 8}, () =>
             graph.inspect({
               cwd: root,
@@ -209,14 +202,9 @@ describe('native code graph lifecycle', () => {
           ),
           {concurrency: 'unbounded'},
         );
-      }),
-    );
-    expect(results).toHaveLength(8);
-    expect(results.every(result => result.nodes.some(node => node.name === 'withExclusiveFileLock'))).toBe(true);
+        expect(results).toHaveLength(8);
+        expect(results.every(result => result.nodes.some(node => node.name === 'withExclusiveFileLock'))).toBe(true);
 
-    const leaseCoverage = await runEffect(
-      Effect.gen(function* () {
-        const graph = yield* CodeGraphQueryService;
         const readCompleted = yield* Deferred.make<void>();
         const finish = yield* Deferred.make<void>();
         const query = yield* graph
@@ -233,14 +221,16 @@ describe('native code graph lifecycle', () => {
           })
           .pipe(Effect.forkChild);
         yield* Deferred.await(readCompleted);
-        const active = snapshotLeaseCount(databasePath);
+        const active = yield* Effect.sync(() => snapshotLeaseCount(databasePath));
         yield* Deferred.succeed(finish, undefined);
         yield* Fiber.join(query);
-        return {active, released: snapshotLeaseCount(databasePath)};
-      }),
-    );
-    expect(leaseCoverage).toEqual({active: 1, released: 0});
-  });
+        const released = yield* Effect.sync(() => snapshotLeaseCount(databasePath));
+        expect({active, released}).toEqual({active: 1, released: 0});
+      }).pipe(Effect.provide(ApplicationLayer), TestClock.withLive),
+    // Suite-wide graph fixtures can delay setup; the in-test 5s barrier still
+    // enforces that all eight selected readers bootstrap without contention.
+    60_000,
+  );
 
   it('visibly and idempotently backfills analysis summaries when reusing a legacy ready snapshot', async () => {
     const root = createFixtureRepository();
@@ -1864,6 +1854,7 @@ describe('native code graph lifecycle', () => {
     effectIt.effect('fails closed with the exact bounded reason', () =>
       Effect.gen(function* () {
         const root = yield* Effect.sync(createRepository);
+        const planObservations: Pick<CodeGraphMaterializationMetrics, 'fallbackReason' | 'mode'>[] = [];
         const storageObservations: NonNullable<CodeGraphMaterializationMetrics['storage']>[] = [];
         const indexer = yield* CodeGraphIndexer;
         const result = yield* indexer.index({
@@ -1872,12 +1863,17 @@ describe('native code graph lifecycle', () => {
             Effect.sync(() => {
               if (progress.phase === 'materializing' && progress.metrics?.storage !== undefined) {
                 storageObservations.push(progress.metrics.storage);
+                planObservations.push({
+                  fallbackReason: progress.metrics.fallbackReason,
+                  mode: progress.metrics.mode,
+                });
               }
             }),
           threadnoteHome: join(root, '.threadnote-test-home'),
         });
         expect(result.materialization).toMatchObject({fallbackReason, mode: 'full'});
         expect(result.materialization?.stagedFiles).toBe(result.materialization?.totalFiles);
+        expect(planObservations.at(-1)).toEqual({fallbackReason, mode: 'full'});
         expect(result.diagnostics.some(message => message.startsWith('Dirty overlay used full materialization:'))).toBe(
           true,
         );
