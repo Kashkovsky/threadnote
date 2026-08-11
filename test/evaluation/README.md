@@ -99,16 +99,21 @@ shape. Timing values are one-run development evidence, not a p95 distribution cl
 
 | Workset size | Completion p95-shaped statistic | Coverage accuracy | Repository recall@5 | Symbol recall |
 | -----------: | ------------------------------: | ----------------: | ------------------: | ------------: |
-|            1 |                          135 ms |             1.000 |               1.000 |         1.000 |
-|            8 |                          375 ms |             1.000 |               0.900 |         0.588 |
-|           32 |                          331 ms |             0.250 |               0.818 |         0.556 |
-|           64 |                          356 ms |             0.125 |               0.692 |         0.500 |
-|          128 |                          323 ms |             0.063 |               0.643 |         0.476 |
+|            1 |                           80 ms |             1.000 |               1.000 |         1.000 |
+|            8 |                          259 ms |             1.000 |               0.900 |         0.588 |
+|           32 |                          284 ms |             0.250 |               0.818 |         0.556 |
+|           64 |                          256 ms |             0.125 |               0.692 |         0.500 |
+|          128 |                          234 ms |             0.063 |               0.643 |         0.476 |
 
 The apparently flat latency above eight repositories is not scale success: V1 admits only the first eight manifest
 members, so the 128-repository run still considered/opened at most eight repositories per query. The late-repository
 fixture controls make that omission visible in recall and coverage. This makes global routing and complete coverage
 receipts the first Phase 1 bottleneck, ahead of concurrency tuning.
+
+The clean exact-commit development distribution in `performance-development.json` records five samples after one
+warmup. Its buffered completion p95 is 53 ms at size 1, 306 ms at size 8, 308 ms at size 32, 320 ms at the benchmark-only
+size 50, 334 ms at size 64, and 314 ms at size 128. These are same-machine measurements, not portable release limits;
+the flat post-8 shape is another receipt of the fixed V1 admission cap.
 
 The next bottleneck is transport cost. The exact-symbol control used about 5,085 estimated tokens at size 1, 9,427 at
 size 8, and 9,502 at size 50; the size-50 response was 28,504 UTF-8 bytes across structured content and duplicated text.
@@ -121,10 +126,12 @@ bounded response before its latency numbers can be compared honestly; Phase 2 ow
 stitching. Numeric gates are versioned in `baselines/code-graph-workset-v1/budgets.json` and are not adjusted by a
 change that fails them.
 
-The evaluator runs Threadnote's real Git inventory, extractor, SQLite store, and query service. It gates zero
-authoritative false edges, zero worktree leakage, perfect no-answer precision/recall, perfect reviewed symbol/edge
-recall, and MRR 1. The checked Graphify 0.9.29 result remains a frozen historical comparison, not the native release
-floor. `threadnote-native.json` is the native baseline; `budgets.json` records quality and
+The evaluator runs Threadnote's real Git inventory, extractor, SQLite store, and query service. Its active Phase 0
+safety gates require zero authoritative false edges, zero worktree leakage, and perfect no-answer precision/recall.
+Repository, symbol, and edge recall plus MRR remain measured Phase 1 gaps rather than waived or falsely passing gates.
+The checked Graphify 0.9.29 result remains a frozen historical comparison, not the native release floor.
+`threadnote-native.json` is the native baseline; `performance-development.json` is the clean five-sample local
+distribution; `budgets.json` records quality and
 development and scale performance limits. The default development and scale artifacts are explicitly lexical-only.
 `performance-vectors-development.json` separately records activation and a lexically disjoint semantic query with the
 pinned production embedding model. Reviewed local lexical 10k/100k results and a production-model 10k vector result

@@ -1,0 +1,353 @@
+{
+  "createdAt": "2026-08-11T10:12:53.057Z",
+  "fixture": {
+    "hash": "08f306dd17b3c568a842a27afb47a3aece6c225f1d02c2a47d8a343ccd02eca3",
+    "id": "cgwf_a23fc33f6c29c123f592b1c101b24a04",
+    "members": 128,
+    "queries": 17,
+    "sizes": [1, 8, 32, 64, 128],
+    "version": 1
+  },
+  "metrics": {
+    "aggregate": {
+      "answerableQueries": 51,
+      "authoritativeFalseEdgeRate": 0,
+      "completionMilliseconds": {
+        "maximum": 284.267875,
+        "mean": 219.31895908928567,
+        "p50": 229.063667,
+        "p95": 258.046541,
+        "sampleCount": 56
+      },
+      "coverageAccuracy": 0.1288604898828541,
+      "edgeRecall": 0,
+      "executedQueries": 56,
+      "meanReciprocalRank": 0.545751633986928,
+      "noAnswerPrecision": 1,
+      "noAnswerRecall": 1,
+      "queryCount": 64,
+      "repositoryRecallAt1": 0.5686274509803921,
+      "repositoryRecallAt3": 0.7254901960784313,
+      "repositoryRecallAt5": 0.7647058823529411,
+      "symbolRecall": 0.5443037974683544,
+      "timeToFirstEvidenceCardMilliseconds": {
+        "maximum": 284.267875,
+        "mean": 221.68714054901957,
+        "p50": 229.503417,
+        "p95": 255.618292,
+        "sampleCount": 51
+      },
+      "timeToFirstEvidenceSemantics": "buffered-response",
+      "totals": {
+        "catalogBytesRead": 0,
+        "estimatedTokenCount": 302067,
+        "evidenceCardCount": 1192,
+        "representativeTokenCounts": [],
+        "repositoriesConsidered": 420,
+        "repositoriesDeepQueried": 264,
+        "repositoryDatabasesOpened": 264,
+        "responseUtf8Bytes": 906148,
+        "structuredResponseUtf8Bytes": 697514,
+        "textResponseUtf8Bytes": 208634
+      },
+      "unsupportedOperationQueries": 8,
+      "unsupportedOperations": [
+        {
+          "count": 4,
+          "operation": "impact"
+        },
+        {
+          "count": 4,
+          "operation": "path"
+        }
+      ],
+      "worktreeLeakageRate": 0
+    },
+    "metricsBySize": [
+      {
+        "metrics": {
+          "answerableQueries": 3,
+          "authoritativeFalseEdgeRate": 0,
+          "completionMilliseconds": {
+            "maximum": 79.587417,
+            "mean": 59.630114500000005,
+            "p50": 52.831916,
+            "p95": 79.587417,
+            "sampleCount": 4
+          },
+          "coverageAccuracy": 1,
+          "edgeRecall": 1,
+          "executedQueries": 4,
+          "meanReciprocalRank": 0.8333333333333334,
+          "noAnswerPrecision": 1,
+          "noAnswerRecall": 1,
+          "queryCount": 4,
+          "repositoryRecallAt1": 1,
+          "repositoryRecallAt3": 1,
+          "repositoryRecallAt5": 1,
+          "symbolRecall": 1,
+          "timeToFirstEvidenceCardMilliseconds": {
+            "maximum": 79.587417,
+            "mean": 62.833944333333335,
+            "p50": 56.0825,
+            "p95": 79.587417,
+            "sampleCount": 3
+          },
+          "timeToFirstEvidenceSemantics": "buffered-response",
+          "totals": {
+            "catalogBytesRead": 0,
+            "estimatedTokenCount": 15998,
+            "evidenceCardCount": 92,
+            "representativeTokenCounts": [],
+            "repositoriesConsidered": 4,
+            "repositoriesDeepQueried": 4,
+            "repositoryDatabasesOpened": 4,
+            "responseUtf8Bytes": 47991,
+            "structuredResponseUtf8Bytes": 38185,
+            "textResponseUtf8Bytes": 9806
+          },
+          "unsupportedOperationQueries": 0,
+          "unsupportedOperations": [],
+          "worktreeLeakageRate": 0
+        },
+        "worksetSize": 1
+      },
+      {
+        "metrics": {
+          "answerableQueries": 10,
+          "authoritativeFalseEdgeRate": 0,
+          "completionMilliseconds": {
+            "maximum": 259.275917,
+            "mean": 242.26246972727276,
+            "p50": 240.70025,
+            "p95": 259.275917,
+            "sampleCount": 11
+          },
+          "coverageAccuracy": 1,
+          "edgeRecall": 0,
+          "executedQueries": 11,
+          "meanReciprocalRank": 0.6333333333333334,
+          "noAnswerPrecision": 1,
+          "noAnswerRecall": 1,
+          "queryCount": 13,
+          "repositoryRecallAt1": 0.65,
+          "repositoryRecallAt3": 0.85,
+          "repositoryRecallAt5": 0.9,
+          "symbolRecall": 0.5882352941176471,
+          "timeToFirstEvidenceCardMilliseconds": {
+            "maximum": 259.275917,
+            "mean": 240.6840626,
+            "p50": 239.299791,
+            "p95": 259.275917,
+            "sampleCount": 10
+          },
+          "timeToFirstEvidenceSemantics": "buffered-response",
+          "totals": {
+            "catalogBytesRead": 0,
+            "estimatedTokenCount": 65944,
+            "evidenceCardCount": 269,
+            "representativeTokenCounts": [],
+            "repositoriesConsidered": 88,
+            "repositoriesDeepQueried": 55,
+            "repositoryDatabasesOpened": 55,
+            "responseUtf8Bytes": 197823,
+            "structuredResponseUtf8Bytes": 152630,
+            "textResponseUtf8Bytes": 45193
+          },
+          "unsupportedOperationQueries": 2,
+          "unsupportedOperations": [
+            {
+              "count": 1,
+              "operation": "impact"
+            },
+            {
+              "count": 1,
+              "operation": "path"
+            }
+          ],
+          "worktreeLeakageRate": 0
+        },
+        "worksetSize": 8
+      },
+      {
+        "metrics": {
+          "answerableQueries": 11,
+          "authoritativeFalseEdgeRate": 0,
+          "completionMilliseconds": {
+            "maximum": 284.267875,
+            "mean": 234.5153715,
+            "p50": 232.574042,
+            "p95": 284.267875,
+            "sampleCount": 12
+          },
+          "coverageAccuracy": 0.25,
+          "edgeRecall": 0,
+          "executedQueries": 12,
+          "meanReciprocalRank": 0.5757575757575758,
+          "noAnswerPrecision": 1,
+          "noAnswerRecall": 1,
+          "queryCount": 14,
+          "repositoryRecallAt1": 0.5909090909090909,
+          "repositoryRecallAt3": 0.7727272727272727,
+          "repositoryRecallAt5": 0.8181818181818182,
+          "symbolRecall": 0.5555555555555556,
+          "timeToFirstEvidenceCardMilliseconds": {
+            "maximum": 284.267875,
+            "mean": 233.77299236363635,
+            "p50": 232.574042,
+            "p95": 284.267875,
+            "sampleCount": 11
+          },
+          "timeToFirstEvidenceSemantics": "buffered-response",
+          "totals": {
+            "catalogBytesRead": 0,
+            "estimatedTokenCount": 69236,
+            "evidenceCardCount": 272,
+            "representativeTokenCounts": [],
+            "repositoriesConsidered": 96,
+            "repositoriesDeepQueried": 60,
+            "repositoryDatabasesOpened": 60,
+            "responseUtf8Bytes": 207698,
+            "structuredResponseUtf8Bytes": 159468,
+            "textResponseUtf8Bytes": 48230
+          },
+          "unsupportedOperationQueries": 2,
+          "unsupportedOperations": [
+            {
+              "count": 1,
+              "operation": "impact"
+            },
+            {
+              "count": 1,
+              "operation": "path"
+            }
+          ],
+          "worktreeLeakageRate": 0
+        },
+        "worksetSize": 32
+      },
+      {
+        "metrics": {
+          "answerableQueries": 13,
+          "authoritativeFalseEdgeRate": 0,
+          "completionMilliseconds": {
+            "maximum": 255.618292,
+            "mean": 228.37155071428575,
+            "p50": 227.336792,
+            "p95": 255.618292,
+            "sampleCount": 14
+          },
+          "coverageAccuracy": 0.125,
+          "edgeRecall": 0,
+          "executedQueries": 14,
+          "meanReciprocalRank": 0.4871794871794872,
+          "noAnswerPrecision": 1,
+          "noAnswerRecall": 1,
+          "queryCount": 16,
+          "repositoryRecallAt1": 0.5,
+          "repositoryRecallAt3": 0.6538461538461539,
+          "repositoryRecallAt5": 0.6923076923076923,
+          "symbolRecall": 0.5,
+          "timeToFirstEvidenceCardMilliseconds": {
+            "maximum": 255.618292,
+            "mean": 229.46386869230767,
+            "p50": 229.503417,
+            "p95": 255.618292,
+            "sampleCount": 13
+          },
+          "timeToFirstEvidenceSemantics": "buffered-response",
+          "totals": {
+            "catalogBytesRead": 0,
+            "estimatedTokenCount": 74192,
+            "evidenceCardCount": 278,
+            "representativeTokenCounts": [],
+            "repositoriesConsidered": 112,
+            "repositoriesDeepQueried": 70,
+            "repositoryDatabasesOpened": 70,
+            "responseUtf8Bytes": 222564,
+            "structuredResponseUtf8Bytes": 170768,
+            "textResponseUtf8Bytes": 51796
+          },
+          "unsupportedOperationQueries": 2,
+          "unsupportedOperations": [
+            {
+              "count": 1,
+              "operation": "impact"
+            },
+            {
+              "count": 1,
+              "operation": "path"
+            }
+          ],
+          "worktreeLeakageRate": 0
+        },
+        "worksetSize": 64
+      },
+      {
+        "metrics": {
+          "answerableQueries": 14,
+          "authoritativeFalseEdgeRate": 0,
+          "completionMilliseconds": {
+            "maximum": 233.971416,
+            "mean": 224.47119439999997,
+            "p50": 225.944041,
+            "p95": 233.971416,
+            "sampleCount": 15
+          },
+          "coverageAccuracy": 0.0625,
+          "edgeRecall": 0,
+          "executedQueries": 15,
+          "meanReciprocalRank": 0.45238095238095244,
+          "noAnswerPrecision": 1,
+          "noAnswerRecall": 1,
+          "queryCount": 17,
+          "repositoryRecallAt1": 0.4642857142857143,
+          "repositoryRecallAt3": 0.6071428571428571,
+          "repositoryRecallAt5": 0.6428571428571429,
+          "symbolRecall": 0.47619047619047616,
+          "timeToFirstEvidenceCardMilliseconds": {
+            "maximum": 233.971416,
+            "mean": 225.44060714285712,
+            "p50": 225.944041,
+            "p95": 233.971416,
+            "sampleCount": 14
+          },
+          "timeToFirstEvidenceSemantics": "buffered-response",
+          "totals": {
+            "catalogBytesRead": 0,
+            "estimatedTokenCount": 76697,
+            "evidenceCardCount": 281,
+            "representativeTokenCounts": [],
+            "repositoriesConsidered": 120,
+            "repositoriesDeepQueried": 75,
+            "repositoryDatabasesOpened": 75,
+            "responseUtf8Bytes": 230072,
+            "structuredResponseUtf8Bytes": 176463,
+            "textResponseUtf8Bytes": 53609
+          },
+          "unsupportedOperationQueries": 2,
+          "unsupportedOperations": [
+            {
+              "count": 1,
+              "operation": "impact"
+            },
+            {
+              "count": 1,
+              "operation": "path"
+            }
+          ],
+          "worktreeLeakageRate": 0
+        },
+        "worksetSize": 128
+      }
+    ]
+  },
+  "source": {
+    "commit": "5dac511c06f158d4690615aaf567c6e92ddc2f94",
+    "dirty": false,
+    "environment": "macOS 27.0; arm64",
+    "name": "threadnote-native-code-graph-workset",
+    "version": "4.1.0"
+  },
+  "version": 1
+}
