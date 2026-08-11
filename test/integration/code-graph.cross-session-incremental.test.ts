@@ -289,89 +289,80 @@ describe('cross-session code graph increments', () => {
     );
   });
 
-  it('does not let a stale peer failure poison an already-ready reusable base', async () => {
-    const root = createRepository();
-    const home = join(root, '.threadnote-peer-failure');
-    try {
-      await indexAndLoad(root, home);
+  it.effect('does not let a stale peer failure poison an already-ready reusable base', () => {
+    let root: string | undefined;
+    return Effect.gen(function* () {
+      root = createRepository();
+      const home = join(root, '.threadnote-peer-failure');
+      yield* indexAndLoadEffect(root, home);
       writeUseFile(root, 'dirty peer-failure revision');
-      const dirty = await indexAndLoad(root, home);
+      const dirty = yield* indexAndLoadEffect(root, home);
       const baseSnapshotId = dirty.summary.snapshot.baseSnapshotId;
       expect(baseSnapshotId).toBeDefined();
 
-      const state = await runEffect(
-        Effect.gen(function* () {
-          const path = yield* Path.Path;
-          const store = yield* CodeGraphStore;
-          const layout = codeGraphLayout(
-            path,
-            home,
-            dirty.summary.identity.checkoutId,
-            dirty.summary.identity.worktreeId,
-          );
-          yield* store.markFailed(layout.databasePath, baseSnapshotId!, 'late failure from a peer builder');
-          return {
-            receipt: yield* store.reusableBaseReceipt(layout.databasePath, baseSnapshotId!),
-            snapshot: yield* store.readySnapshotById(layout.databasePath, baseSnapshotId!),
-          };
-        }),
+      const path = yield* Path.Path;
+      const store = yield* CodeGraphStore;
+      const layout = codeGraphLayout(
+        path,
+        home,
+        dirty.summary.identity.checkoutId,
+        dirty.summary.identity.worktreeId,
       );
+      yield* store.markFailed(layout.databasePath, baseSnapshotId!, 'late failure from a peer builder');
+      const state = {
+        receipt: yield* store.reusableBaseReceipt(layout.databasePath, baseSnapshotId!),
+        snapshot: yield* store.readySnapshotById(layout.databasePath, baseSnapshotId!),
+      };
 
       expect(state.snapshot?.state).toBe('ready');
       expect(state.receipt?.snapshotId).toBe(baseSnapshotId);
-    } finally {
-      rmSync(root, {force: true, recursive: true});
-    }
+    }).pipe(
+      Effect.ensuring(
+        Effect.sync(() => (root === undefined ? undefined : rmSync(root, {force: true, recursive: true}))),
+      ),
+      Effect.provide(ApplicationLayer),
+      TestClock.withLive,
+    );
   });
 
-  it('prevents an overlapping older extractor generation from replacing the active graph', async () => {
-    const root = createRepository();
-    const home = join(root, '.threadnote-extractor-generation');
-    try {
-      const current = await indexAndLoad(root, home);
+  it.effect('prevents an overlapping older extractor generation from replacing the active graph', () => {
+    let root: string | undefined;
+    return Effect.gen(function* () {
+      root = createRepository();
+      const home = join(root, '.threadnote-extractor-generation');
+      const current = yield* indexAndLoadEffect(root, home);
       const legacySnapshotId = 'cgsn_legacy_generation_8';
       insertLegacyReadySnapshot(current.databasePath, current.summary, legacySnapshotId);
       expect(() =>
         promoteLegacySnapshot(current.databasePath, current.summary.identity.worktreeId, legacySnapshotId),
       ).toThrow('older extractor generation');
 
-      await expect(
-        runEffect(
-          Effect.gen(function* () {
-            const path = yield* Path.Path;
-            const store = yield* CodeGraphStore;
-            const layout = codeGraphLayout(
-              path,
-              home,
-              current.summary.identity.checkoutId,
-              current.summary.identity.worktreeId,
-            );
-            yield* store.promote(layout.databasePath, current.summary.identity, legacySnapshotId);
-          }),
-        ),
-      ).rejects.toThrow('incompatible extractor generation');
-
-      const state = await runEffect(
-        Effect.gen(function* () {
-          const path = yield* Path.Path;
-          const store = yield* CodeGraphStore;
-          const layout = codeGraphLayout(
-            path,
-            home,
-            current.summary.identity.checkoutId,
-            current.summary.identity.worktreeId,
-          );
-          return yield* store.readySnapshot(layout.databasePath, current.summary.identity.worktreeId);
-        }),
+      const path = yield* Path.Path;
+      const store = yield* CodeGraphStore;
+      const layout = codeGraphLayout(
+        path,
+        home,
+        current.summary.identity.checkoutId,
+        current.summary.identity.worktreeId,
       );
+      const promotionError = yield* store
+        .promote(layout.databasePath, current.summary.identity, legacySnapshotId)
+        .pipe(Effect.flip);
+      expect(promotionError.message).toContain('incompatible extractor generation');
+
+      const state = yield* store.readySnapshot(layout.databasePath, current.summary.identity.worktreeId);
       expect(state?.id).toBe(current.summary.snapshot.id);
       expect(extractorGenerationState(current.databasePath, current.summary.snapshot.id)).toEqual({
         generation: CODE_GRAPH_EXTRACTOR_GENERATION,
         minimum: CODE_GRAPH_EXTRACTOR_GENERATION,
       });
-    } finally {
-      rmSync(root, {force: true, recursive: true});
-    }
+    }).pipe(
+      Effect.ensuring(
+        Effect.sync(() => (root === undefined ? undefined : rmSync(root, {force: true, recursive: true}))),
+      ),
+      Effect.provide(ApplicationLayer),
+      TestClock.withLive,
+    );
   });
 });
 
