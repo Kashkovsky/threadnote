@@ -28,11 +28,12 @@ import {
   resolveAndRecordCodeGraphLocalAssociation,
 } from './local_provenance.js';
 import {compareCodeUnits} from './ordering.js';
-import {resolveRepositoryIdentity} from './repository.js';
+import {resolveRepositoryIdentity, resolveRepositoryIdentityForExpectation} from './repository.js';
 import {codeGraphSymbolSearchScoreMultiplier, CodeGraphStore, type CodeGraphStoreShape} from './store.js';
 import {CodeGraphEmbeddingIndex, type CodeGraphEmbeddingIndexShape} from './embedding.js';
 import {
   CODE_GRAPH_RESULT_VERSION,
+  CodeGraphRepositoryError,
   CodeGraphSnapshotUnavailable,
   CodeGraphStoreBusyError,
   type CodeGraphEdge,
@@ -44,6 +45,7 @@ import {
   type CodeGraphSnapshot,
   type CodeGraphStatus,
   type RepositoryIdentity,
+  type RepositoryIdentityExpectation,
 } from './types.js';
 
 export interface CodeGraphInspectOptions extends CodeGraphQueryOptions {
@@ -172,6 +174,13 @@ export class CodeGraphQueryService extends Context.Service<
     readonly statusForIdentity: (
       threadnoteHome: string,
       identity: RepositoryIdentity,
+      options?: CodeGraphStatusOptions,
+    ) => Effect.Effect<CodeGraphStatus, unknown>;
+    /** @internal Revalidate a manifest path against one published workset member. */
+    readonly statusForPublishedIdentity: (
+      threadnoteHome: string,
+      cwd: string,
+      expected: RepositoryIdentityExpectation,
       options?: CodeGraphStatusOptions,
     ) => Effect.Effect<CodeGraphStatus, unknown>;
   }
@@ -535,6 +544,16 @@ export class CodeGraphQueryService extends Context.Service<
               : status.pipe(Effect.tap(value => requestMaintenance(threadnoteHome, value.identity))),
           );
         },
+        statusForPublishedIdentity: (threadnoteHome, cwd, expected, options) =>
+          withRepositoryServices(
+            Effect.gen(function* () {
+              const identity = yield* resolveRepositoryIdentityForExpectation(cwd, expected);
+              yield* options?.afterIdentityObserved?.(identity) ?? Effect.void;
+              const status = yield* statusForIdentity(threadnoteHome, identity, options, true);
+              if (options?.requestMaintenance !== false) yield* requestMaintenance(threadnoteHome, identity);
+              return status;
+            }),
+          ),
       });
     }),
   );
@@ -1016,7 +1035,9 @@ const inspectReadyGraph = Effect.fn('codeGraph.inspectReadyGraph')(function* (in
 }) {
   const identity = input.observation?.identity ?? (yield* resolveRepositoryIdentity(input.options.cwd));
   if (identity.repositoryId !== input.expectedRepositoryId) {
-    return yield* Effect.fail(new Error('Repository identity changed while waiting for the graph lock.'));
+    return yield* Effect.fail(
+      new CodeGraphRepositoryError('Repository identity changed while waiting for the graph lock.'),
+    );
   }
   const overlay =
     input.observation?.overlay ??
@@ -1136,7 +1157,7 @@ const inspectReadyGraph = Effect.fn('codeGraph.inspectReadyGraph')(function* (in
     const safeSelection = sanitizeSelection(selected);
     const finalIdentity = input.strictFreshness ? yield* resolveRepositoryIdentity(input.options.cwd) : identity;
     if (finalIdentity.repositoryId !== input.expectedRepositoryId || finalIdentity.worktreeId !== identity.worktreeId) {
-      return yield* Effect.fail(new Error('Repository identity changed during the graph read.'));
+      return yield* Effect.fail(new CodeGraphRepositoryError('Repository identity changed during the graph read.'));
     }
     const finalOverlay = input.strictFreshness
       ? yield* observeWorktree(finalIdentity, input.options.interlock)

@@ -1,9 +1,10 @@
+// oxlint-disable effecttsgo/lazy-effect -- Injected functions construct fresh clock and routing effects per invocation.
 import {Clock, Effect, FileSystem} from 'effect';
 import {readSeedManifest, requireWorkset} from '../manifest.js';
 import type {ProjectManifest, RuntimeConfig} from '../types.js';
 import {expandPath} from '../utils.js';
 import {CodeGraphQueryService, observationFromCodeGraphStatus} from './query.js';
-import type {CodeGraphQueryResult, CodeGraphStatus} from './types.js';
+import type {CodeGraphQueryResult, CodeGraphStatus, RepositoryIdentityExpectation} from './types.js';
 import {
   attachCodeGraphWorksetBridgeRelationships,
   expandCodeGraphWorksetRouterWithBridges,
@@ -21,10 +22,11 @@ import {
   registerCodeGraphWorksetResultSet,
   resolveCodeGraphQualifiedRef,
 } from './workset_catalog/store.js';
-import type {
-  CodeGraphWorksetCatalogPublishedGenerationV1,
-  CodeGraphWorksetCatalogPublishedMemberV1,
-  CodeGraphWorksetResultSetRegistrationV1,
+import {
+  CodeGraphWorksetCatalogError,
+  type CodeGraphWorksetCatalogPublishedGenerationV1,
+  type CodeGraphWorksetCatalogPublishedMemberV1,
+  type CodeGraphWorksetResultSetRegistrationV1,
 } from './workset_catalog/types.js';
 import {codeGraphWorksetCatalogGenerationMatches, codeGraphWorksetManifestDigest} from './workset_catalog/workset.js';
 import {
@@ -122,6 +124,10 @@ export interface CodeGraphWorksetQueryV2DependenciesV1<R = never> {
   readonly route: () => Effect.Effect<CodeGraphWorksetRouterResultV1, unknown, R>;
 }
 
+interface CodeGraphWorksetQueryV2TimingV1 {
+  readonly startedAtMilliseconds?: number;
+}
+
 export interface QueryCodeGraphWorksetV2OptionsV1 {
   readonly deadlineMilliseconds?: number;
   readonly depth?: number;
@@ -157,9 +163,15 @@ export interface ResolvedCodeGraphQualifiedRefTargetV1 {
 export const runCodeGraphWorksetQueryV2Core = Effect.fn('codeGraphWorksetV2.runCore')(function* <R>(
   dependencies: CodeGraphWorksetQueryV2DependenciesV1<R>,
   input: CodeGraphWorksetQueryV2InputV1,
+  timing: CodeGraphWorksetQueryV2TimingV1 = {},
 ) {
   const prepared = validateCoreInput(input);
-  const started = yield* dependencies.nowMilliseconds();
+  const observedStarted = yield* dependencies.nowMilliseconds();
+  const requestedStarted = timing.startedAtMilliseconds;
+  if (requestedStarted !== undefined && (!Number.isSafeInteger(requestedStarted) || requestedStarted < 0)) {
+    throw new Error('The deadline clock origin is invalid.');
+  }
+  const started = Math.min(observedStarted, requestedStarted ?? observedStarted);
   const catalogRouter = yield* dependencies.route();
   validateRouterReceipt(prepared, catalogRouter);
   const bridgeExpansion = yield* dependencies.readBridgeExpansion(catalogRouter);
@@ -345,15 +357,19 @@ export const executeCodeGraphWorksetV2 = Effect.fn('codeGraphWorksetV2.execute')
   config: RuntimeConfig,
   options: QueryCodeGraphWorksetV2OptionsV1,
 ) {
+  const deadlineStartedAtMilliseconds = yield* Clock.currentTimeMillis;
+  const deadlineMilliseconds = validateDeadlineMilliseconds(options.deadlineMilliseconds);
   const queryService = yield* CodeGraphQueryService;
-  const runtime = yield* prepareRuntimeQuery(config, options, queryService);
+  const runtime = yield* prepareRuntimeQuery(config, {...options, deadlineMilliseconds}, queryService);
   const source = yield* makeCodeGraphWorksetCatalogCandidateSource(config.agentContextHome);
   const execution = yield* runCodeGraphWorksetQueryV2Core(
     {
       deepQuery: repository => {
         const member = runtime.deepMembers.get(repository.repositoryKey);
         if (member === undefined)
-          return Effect.fail(new Error('The routed repository has no validated ready snapshot.'));
+          return Effect.fail(
+            new CodeGraphWorksetCatalogError('missing', 'The routed repository has no validated ready snapshot.'),
+          );
         return queryService.inspect({
           cwd: member.cwd,
           depth: options.depth,
@@ -402,6 +418,7 @@ export const executeCodeGraphWorksetV2 = Effect.fn('codeGraphWorksetV2.execute')
         }),
     },
     runtime.input,
+    {startedAtMilliseconds: deadlineStartedAtMilliseconds},
   );
   return execution;
 });
@@ -525,12 +542,7 @@ function validateCoreInput(input: CodeGraphWorksetQueryV2InputV1): PreparedCoreI
   }
   return {
     ...input,
-    deadlineMilliseconds: boundedInteger(
-      input.deadlineMilliseconds ?? DEFAULT_DEADLINE_MILLISECONDS,
-      'deadline',
-      1,
-      MAXIMUM_DEADLINE_MILLISECONDS,
-    ),
+    deadlineMilliseconds: validateDeadlineMilliseconds(input.deadlineMilliseconds),
     evidenceCards: boundedInteger(
       input.evidenceCards ?? DEFAULT_EVIDENCE_CARDS,
       'evidence card count',
@@ -542,6 +554,10 @@ function validateCoreInput(input: CodeGraphWorksetQueryV2InputV1): PreparedCoreI
     query,
     worksetName,
   };
+}
+
+function validateDeadlineMilliseconds(value: number | undefined): number {
+  return boundedInteger(value ?? DEFAULT_DEADLINE_MILLISECONDS, 'deadline', 1, MAXIMUM_DEADLINE_MILLISECONDS);
 }
 
 function validateRouterReceipt(input: PreparedCoreInput, router: CodeGraphWorksetRouterResultV1): void {
@@ -719,16 +735,24 @@ interface RuntimeDeepMember {
   readonly status: CodeGraphStatus;
 }
 
+interface RuntimeQueryStatusService {
+  readonly status: (
+    threadnoteHome: string,
+    cwd: string,
+    options?: {readonly requestMaintenance?: boolean},
+  ) => Effect.Effect<CodeGraphStatus, unknown>;
+  readonly statusForPublishedIdentity: (
+    threadnoteHome: string,
+    cwd: string,
+    expected: RepositoryIdentityExpectation,
+    options?: {readonly requestMaintenance?: boolean},
+  ) => Effect.Effect<CodeGraphStatus, unknown>;
+}
+
 function prepareRuntimeQuery(
   config: RuntimeConfig,
   options: QueryCodeGraphWorksetV2OptionsV1,
-  queryService: {
-    readonly status: (
-      threadnoteHome: string,
-      cwd: string,
-      options?: {readonly requestMaintenance?: boolean},
-    ) => Effect.Effect<CodeGraphStatus, unknown>;
-  },
+  queryService: RuntimeQueryStatusService,
 ) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -737,14 +761,16 @@ function prepareRuntimeQuery(
     const published = yield* readPublishedCodeGraphWorksetCatalogGeneration(config.agentContextHome, workset.name);
     if (published === undefined) {
       return yield* Effect.fail(
-        new Error(
+        new CodeGraphWorksetCatalogError(
+          'missing',
           `No published routing catalog exists for ${workset.name}; run \`threadnote workset prepare ${workset.name}\`.`,
         ),
       );
     }
     if (!codeGraphWorksetCatalogGenerationMatches(workset, manifestDigest, published)) {
       return yield* Effect.fail(
-        new Error(
+        new CodeGraphWorksetCatalogError(
+          'stale',
           `The published routing catalog for ${workset.name} is stale; run \`threadnote workset prepare ${workset.name}\`.`,
         ),
       );
@@ -753,7 +779,7 @@ function prepareRuntimeQuery(
     const observed = yield* Effect.forEach(
       workset.projects,
       project => observeRuntimeMember(config, project, publishedByKey.get(safeLabel(project.name)), fs, queryService),
-      {concurrency: 4},
+      {concurrency: 8},
     );
     const members = observed.map(value => value.member);
     const deepMembers = new Map(
@@ -787,13 +813,7 @@ function observeRuntimeMember(
   project: ProjectManifest,
   published: CodeGraphWorksetCatalogPublishedMemberV1 | undefined,
   fs: FileSystem.FileSystem,
-  queryService: {
-    readonly status: (
-      threadnoteHome: string,
-      cwd: string,
-      options?: {readonly requestMaintenance?: boolean},
-    ) => Effect.Effect<CodeGraphStatus, unknown>;
-  },
+  queryService: RuntimeQueryStatusService,
 ) {
   const repositoryKey = safeLabel(project.name);
   const fallbackRepositoryId = published?.repositoryId ?? '0'.repeat(64);
@@ -813,7 +833,11 @@ function observeRuntimeMember(
         } satisfies CodeGraphWorksetQueryV2MemberV1,
       };
     }
-    const status = yield* queryService.status(config.agentContextHome, cwd, {requestMaintenance: false});
+    const status = yield* published === undefined
+      ? queryService.status(config.agentContextHome, cwd, {requestMaintenance: false})
+      : queryService.statusForPublishedIdentity(config.agentContextHome, cwd, published, {
+          requestMaintenance: false,
+        });
     const ready = status.readySnapshot;
     if (published === undefined) {
       return {

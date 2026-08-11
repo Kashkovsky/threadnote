@@ -1,3 +1,4 @@
+// oxlint-disable threadnote/no-effect-runtime-in-tests -- This established pure-boundary suite uses promise assertions throughout.
 import fc from 'fast-check';
 import {Effect} from 'effect';
 import {describe, expect, it} from 'vitest';
@@ -76,6 +77,31 @@ describe('code graph Workset Search V2 core', () => {
     expect(execution.logicalResult.coverage.stopReason).toBe('deadline');
     expect(execution.logicalResult.cards).toEqual([]);
     expect(execution.logicalResult.warnings).toContain('The workset query stopped at its read deadline.');
+  });
+
+  it('accounts for runtime preflight elapsed before the core read begins', async () => {
+    const fixture = makeFixture(4);
+    const baseDependencies = dependencies(fixture);
+    const admitted = await Effect.runPromise(
+      runCodeGraphWorksetQueryV2Core(
+        {...baseDependencies, nowMilliseconds: () => Effect.succeed(1_000)},
+        {...fixture.input, deadlineMilliseconds: 1_000},
+        {startedAtMilliseconds: 1_000},
+      ),
+    );
+    const expired = await Effect.runPromise(
+      runCodeGraphWorksetQueryV2Core(
+        {...baseDependencies, nowMilliseconds: () => Effect.succeed(1_000)},
+        {...fixture.input, deadlineMilliseconds: 1_000},
+        {startedAtMilliseconds: 0},
+      ),
+    );
+
+    expect(admitted.instrumentation.deepQueriedRepositories).toBe(4);
+    expect(expired.logicalResult.coverage.stopReason).toBe('deadline');
+    expect(expired.instrumentation.deepQueriedRepositories).toBe(0);
+    expect(expired.logicalResult.cards).toEqual([]);
+    expect(expired.logicalResult.warnings).toContain('The workset query stopped at its read deadline.');
   });
 
   it('retains repositories that completed before another deep read reached the deadline', async () => {
@@ -438,7 +464,7 @@ function dependencies(
 ) {
   return {
     deepQuery: (repository: {readonly repositoryKey: string}) => {
-      if (repository.repositoryKey === options.failRepositoryKey) return Effect.fail(new Error('bounded failure'));
+      if (repository.repositoryKey === options.failRepositoryKey) return Effect.fail('bounded failure');
       const graph = fixture.graphs.get(repository.repositoryKey)!;
       const delay = options.delays?.get(repository.repositoryKey) ?? 0;
       return delay === 0 ? Effect.succeed(graph) : Effect.sleep(delay).pipe(Effect.as(graph));

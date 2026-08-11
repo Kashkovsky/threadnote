@@ -88,6 +88,74 @@ export const resolveRepositoryIdentity = Effect.fn('codeGraph.resolveRepositoryI
 });
 
 /**
+ * Revalidate a previously published repository identity without repeating the
+ * six-command discovery path. The expected repository ID remains independently
+ * recomputed from the current remote or local checkout before it is trusted.
+ */
+export const resolveRepositoryIdentityForExpectation = Effect.fn('codeGraph.resolveRepositoryIdentityForExpectation')(
+  function* (cwd: string, expected: RepositoryIdentityExpectation) {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const system = yield* SystemInfo;
+    const [metadataResult, ignoreCaseResult, remoteResult] = yield* Effect.all(
+      [
+        runGit(cwd, [
+          'rev-parse',
+          '--path-format=absolute',
+          '--show-toplevel',
+          '--git-common-dir',
+          '--show-object-format',
+          'HEAD',
+        ]),
+        runGit(cwd, ['config', '--bool', 'core.ignorecase'], true),
+        runGit(cwd, ['remote', 'get-url', 'origin'], true),
+      ],
+      {concurrency: 3},
+    ).pipe(Effect.mapError(() => new CodeGraphRepositoryError('Repository identity could not be revalidated.')));
+    const metadata = metadataResult.stdout.replace(/\r?\n$/u, '').split(/\r?\n/u);
+    if (metadata.length !== 4) {
+      return yield* Effect.fail(new CodeGraphRepositoryError('Git repository identity metadata is invalid.'));
+    }
+    const repoRoot = yield* fs
+      .realPath(metadata[0]!)
+      .pipe(Effect.mapError(() => new CodeGraphRepositoryError('Repository identity could not be revalidated.')));
+    const commonRaw = metadata[1]!;
+    const commonAbsolute = path.isAbsolute(commonRaw) ? commonRaw : path.resolve(repoRoot, commonRaw);
+    const gitCommonDirectory = yield* fs
+      .realPath(commonAbsolute)
+      .pipe(Effect.mapError(() => new CodeGraphRepositoryError('Repository identity could not be revalidated.')));
+    const objectFormat = metadata[2]!;
+    if (objectFormat !== 'sha1' && objectFormat !== 'sha256') {
+      return yield* Effect.fail(new CodeGraphRepositoryError(`Unsupported Git object format: ${objectFormat}`));
+    }
+    const remoteIdentity =
+      remoteResult.exitCode === 0 ? normalizeCredentialFreeRemote(remoteResult.stdout.trim()) : undefined;
+    const repositorySource = remoteIdentity ?? `local:${normalizeLocalIdentity(gitCommonDirectory, system.platform)}`;
+    const identity = {
+      caseMode:
+        ignoreCaseResult.exitCode === 0 && ignoreCaseResult.stdout.trim().toLowerCase() === 'true'
+          ? 'insensitive'
+          : 'sensitive',
+      checkoutId: checkoutIdForGitCommonDirectory(gitCommonDirectory),
+      displayName: repositoryDisplayName(remoteIdentity, repoRoot),
+      gitCommonDirectory,
+      headCommit: metadata[3]!,
+      objectFormat,
+      remoteIdentity,
+      repoRoot,
+      repositoryId: sha256HexSync(`repository-v${IDENTITY_FORMAT_VERSION}\n${repositorySource}`),
+      worktreeId: worktreeIdForRoot(repoRoot),
+    } satisfies RepositoryIdentity;
+    if (!repositoryIdentityMatchesExpectation(identity, expected)) {
+      return yield* Effect.fail(
+        new CodeGraphRepositoryError('Repository identity does not match the published workset.'),
+      );
+    }
+    return identity;
+  },
+);
+
+/**
  * Return a bounded, pathless diagnostic observation from Git's porcelain output.
  *
  * This is not deletion authority: Git may probe registered worktree paths while
@@ -178,7 +246,7 @@ export const repositoryChangesSince = Effect.fn('codeGraph.repositoryChangesSinc
   );
   const objectId = verified.stdout.trim();
   if (!/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(objectId)) {
-    return yield* Effect.fail(new Error(`Git resolved ${base} to an invalid object ID.`));
+    return yield* Effect.fail(new CodeGraphRepositoryError(`Git resolved ${base} to an invalid object ID.`));
   }
   const [tracked, untracked] = yield* Effect.all(
     [
@@ -194,7 +262,8 @@ export const repositoryChangesSince = Effect.fn('codeGraph.repositoryChangesSinc
     {concurrency: 2},
   );
   const paths = [...new Set(`${tracked.stdout}\0${untracked.stdout}`.split('\0').filter(Boolean))].sort();
-  if (paths.length === 0) return yield* Effect.fail(new Error(`No changed paths found relative to ${base}.`));
+  if (paths.length === 0)
+    return yield* Effect.fail(new CodeGraphRepositoryError(`No changed paths found relative to ${base}.`));
   return {baseCommit: objectId, paths};
 });
 
