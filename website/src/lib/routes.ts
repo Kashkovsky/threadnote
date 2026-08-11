@@ -24,23 +24,43 @@ function normalizedBasePath(basePath: string): string {
   return withLeadingSlash.endsWith('/') ? withLeadingSlash : `${withLeadingSlash}/`;
 }
 
-export function sitePageForPathname(pathname: string, basePath: string): SitePage | undefined {
+function siteRelativePathname(pathname: string, basePath: string): string | undefined {
   const base = normalizedBasePath(basePath);
   const baseWithoutTrailingSlash = base === '/' ? '' : base.slice(0, -1);
-  let relativePath: string;
 
   if (pathname === baseWithoutTrailingSlash || pathname === base) {
-    relativePath = '';
-  } else if (pathname.startsWith(base)) {
-    relativePath = pathname.slice(base.length).replace(/\/+$/, '');
-  } else {
+    return '';
+  }
+  if (!pathname.startsWith(base)) return undefined;
+  return pathname.slice(base.length).replace(/\/+$/, '');
+}
+
+export function docsArticlePath(articleId: string): string {
+  return `docs/${encodeURIComponent(articleId)}/`;
+}
+
+export function docsArticleIdForPathname(pathname: string, basePath: string): string | undefined {
+  const relativePath = siteRelativePathname(pathname, basePath);
+  const match = relativePath?.match(/^docs\/([^/]+)$/);
+  if (!match?.[1]) return undefined;
+  try {
+    const articleId = decodeURIComponent(match[1]);
+    return articleId.includes('/') ? undefined : articleId;
+  } catch {
     return undefined;
   }
+}
 
-  return pagesByPath.get(relativePath);
+export function sitePageForPathname(pathname: string, basePath: string): SitePage | undefined {
+  const relativePath = siteRelativePathname(pathname, basePath);
+  if (relativePath === undefined) return undefined;
+
+  return pagesByPath.get(relativePath) ?? (docsArticleIdForPathname(pathname, basePath) ? 'docs' : undefined);
 }
 
 export function siteCanonicalUrlForPathname(pathname: string, basePath: string): string {
+  const docsArticleId = docsArticleIdForPathname(pathname, basePath);
+  if (docsArticleId) return new URL(docsArticlePath(docsArticleId), 'https://threadnote.io/').href;
   const page = sitePageForPathname(pathname, basePath) ?? 'home';
   const route = sitePagePaths[page];
   return new URL(route ? `${route}/` : '', 'https://threadnote.io/').href;

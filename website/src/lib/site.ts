@@ -1,10 +1,14 @@
-import {siteCanonicalUrlForPathname} from './routes.js';
+import {docsArticlePath, siteCanonicalUrlForPathname} from './routes.js';
 
 const base = import.meta.env.BASE_URL;
 
 export function siteHref(path = ''): string {
   const normalized = path.replace(/^\/+/, '');
   return `${base}${normalized}`;
+}
+
+export function docsArticleHref(articleId: string): string {
+  return siteHref(docsArticlePath(articleId));
 }
 
 export const githubUrl = 'https://github.com/Kashkovsky/threadnote';

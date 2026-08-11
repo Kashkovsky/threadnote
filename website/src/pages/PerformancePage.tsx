@@ -8,7 +8,7 @@ import {
 import {performanceEvidence} from '../content/performanceEvidence';
 import {checkedInPerformanceEvidence} from '../content/performanceHighlights';
 import {checkedInWorktreeReadinessEvidence} from '../content/worktreeReadiness';
-import {setDocumentMeta, siteHref} from '../lib/site';
+import {docsArticleHref, setDocumentMeta, siteHref} from '../lib/site';
 
 const integerFormatter = new Intl.NumberFormat('en-US');
 
@@ -343,7 +343,7 @@ export default function PerformancePage() {
               Inspect measured evidence
               <Icon name="arrow" aria-hidden="true" />
             </a>
-            <a className="button button--ghost" href={siteHref('docs/#graph-monorepos')}>
+            <a className="button button--ghost" href={docsArticleHref('graph-monorepos')}>
               Large-repository docs
             </a>
           </div>
@@ -591,7 +591,7 @@ export default function PerformancePage() {
           <h2>Your agents will love it—even when the repository is enormous.</h2>
           <p>Give them precise current-source evidence without filling their context with the machinery behind it.</p>
           <div className="cta-panel__actions">
-            <a className="button" href={siteHref('docs/#installation')}>
+            <a className="button" href={docsArticleHref('installation')}>
               Install Threadnote
             </a>
             <a className="button button--ghost" href={siteHref('manager-demo/')}>

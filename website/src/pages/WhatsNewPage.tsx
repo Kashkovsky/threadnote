@@ -2,7 +2,7 @@ import {useEffect} from 'react';
 import releases from 'virtual:threadnote-release-notes';
 import {Icon} from '../components/Icons';
 import {SiteShell} from '../components/SiteShell';
-import {setDocumentMeta, siteHref} from '../lib/site';
+import {docsArticleHref, setDocumentMeta} from '../lib/site';
 
 const releaseDate = new Intl.DateTimeFormat('en', {
   day: 'numeric',
@@ -51,7 +51,7 @@ export default function WhatsNewPage() {
               Read the full release notes
               <Icon name="arrow" aria-hidden="true" />
             </a>
-            <a className="button button--ghost" href={siteHref('docs/#installation')}>
+            <a className="button button--ghost" href={docsArticleHref('installation')}>
               Install or update
             </a>
           </div>

@@ -12,7 +12,7 @@ import {
   type ManagerDemoGraphNode,
   type ManagerDemoTabId,
 } from '../content/managerDemo';
-import {siteHref} from '../lib/site';
+import {docsArticleHref, siteHref} from '../lib/site';
 
 const ManagerGraphScene = lazy(() => import('../visuals/ManagerGraphScene'));
 const DEMO_ONLY = 'Available in the real Threadnote Manager';
@@ -389,7 +389,7 @@ function ToolsPanel(): React.ReactElement {
             <span>{tool.surface}</span>
             <code>{tool.name}</code>
             <p>{tool.description}</p>
-            <a href={siteHref(`docs/#${tool.surface === 'MCP' ? 'mcp-reference' : 'cli-reference'}`)}>View docs →</a>
+            <a href={docsArticleHref(tool.surface === 'MCP' ? 'mcp-reference' : 'cli-reference')}>View docs →</a>
           </article>
         ))}
       </div>

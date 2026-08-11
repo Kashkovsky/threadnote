@@ -1,6 +1,6 @@
 import {Icon} from '../components/Icons';
 import {SiteShell} from '../components/SiteShell';
-import {setDocumentMeta, siteHref} from '../lib/site';
+import {docsArticleHref, setDocumentMeta, siteHref} from '../lib/site';
 
 const SHOW_GRAPHIFY_COMPARISON = import.meta.env.VITE_SHOW_GRAPHIFY_COMPARISON === 'true';
 
@@ -268,7 +268,7 @@ export default function FaqPage() {
             architecture before connecting an agent.
           </p>
           <div className="cta-panel__actions">
-            <a className="button" href={siteHref('docs/#installation')}>
+            <a className="button" href={docsArticleHref('installation')}>
               Install guide
             </a>
             <a className="button button--ghost" href={siteHref('manager-demo/')}>

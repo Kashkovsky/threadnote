@@ -3,7 +3,7 @@ import {AgentTrace} from '../components/AgentTrace';
 import {Icon} from '../components/Icons';
 import {SiteShell} from '../components/SiteShell';
 import {proTips, type ProTip} from '../content/proTips';
-import {setDocumentMeta, siteHref} from '../lib/site';
+import {docsArticleHref, setDocumentMeta} from '../lib/site';
 
 const categories: Array<{id: 'all' | ProTip['category']; label: string}> = [
   {id: 'all', label: 'All workflows'},
@@ -146,7 +146,7 @@ export default function ProTipsPage() {
           <p>
             Add the agent instructions once and every compatible agent gets the same memory and graph-search contract.
           </p>
-          <a className="button" href={siteHref('docs/#connect-an-agent')}>
+          <a className="button" href={docsArticleHref('connect-an-agent')}>
             Connect an agent
             <Icon name="arrow" aria-hidden="true" />
           </a>

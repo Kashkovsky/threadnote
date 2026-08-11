@@ -12,7 +12,8 @@ import {
   searchDocs,
   type DocsSearchResult,
 } from '../lib/docsSearch';
-import {setDocumentMeta, siteHref} from '../lib/site';
+import {docsArticleIdForPathname} from '../lib/routes';
+import {docsArticleHref, setDocumentMeta, siteHref} from '../lib/site';
 
 const articles = docsSections.flatMap(section => section.articles.map(article => ({article, section})));
 const docsSearchIndex = createDocsSearchIndex(docsSections);
@@ -69,7 +70,22 @@ function HighlightedText({terms, text}: {terms: readonly string[]; text: string}
 }
 
 function InlineMarkdown({children}: {children: string}) {
-  return <ReactMarkdown remarkPlugins={[remarkGfm]}>{children}</ReactMarkdown>;
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      components={{
+        a: ({href, children: linkChildren}) => {
+          const resolvedHref =
+            href && !href.startsWith('/') && !href.startsWith('#') && !/^[a-z][a-z0-9+.-]*:/i.test(href)
+              ? new URL(href, new URL(siteHref('docs/'), window.location.origin)).href
+              : href;
+          return <a href={resolvedHref}>{linkChildren}</a>;
+        },
+      }}
+    >
+      {children}
+    </ReactMarkdown>
+  );
 }
 
 function DocsBlockView({block}: {block: DocsBlock}) {
@@ -137,6 +153,8 @@ function DocsBlockView({block}: {block: DocsBlock}) {
 }
 
 function currentIdFromLocation(): string {
+  const pathId = docsArticleIdForPathname(window.location.pathname, import.meta.env.BASE_URL);
+  if (pathId && articles.some(({article}) => article.id === pathId)) return pathId;
   const hash = window.location.hash.replace(/^#/, '');
   return articles.some(({article}) => article.id === hash) ? hash : defaultDocId;
 }
@@ -202,7 +220,7 @@ export default function DocsPage() {
   }, [closeSearch]);
 
   useEffect(() => {
-    const onHashChange = () => setActiveId(currentIdFromLocation());
+    const onLocationChange = () => setActiveId(currentIdFromLocation());
     const onKeyDown = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
         event.preventDefault();
@@ -222,10 +240,12 @@ export default function DocsPage() {
       if (searchOpen) trapFocus(event, searchPanelRef.current);
       else if (navOpen) trapFocus(event, sidebarRef.current);
     };
-    window.addEventListener('hashchange', onHashChange);
+    window.addEventListener('hashchange', onLocationChange);
+    window.addEventListener('popstate', onLocationChange);
     window.addEventListener('keydown', onKeyDown);
     return () => {
-      window.removeEventListener('hashchange', onHashChange);
+      window.removeEventListener('hashchange', onLocationChange);
+      window.removeEventListener('popstate', onLocationChange);
       window.removeEventListener('keydown', onKeyDown);
     };
   }, [closeNav, closeSearch, navOpen, openSearch, searchOpen]);
@@ -261,6 +281,11 @@ export default function DocsPage() {
   }, [navOpen, searchOpen]);
 
   useEffect(() => {
+    const pathId = docsArticleIdForPathname(window.location.pathname, import.meta.env.BASE_URL);
+    const hashId = window.location.hash.replace(/^#/, '');
+    if (!pathId && hashId === activeEntry.article.id) {
+      window.history.replaceState({}, '', docsArticleHref(activeEntry.article.id));
+    }
     setDocumentMeta(`${activeEntry.article.title} · Docs`, activeEntry.article.summary);
     window.scrollTo({top: 0, behavior: 'instant'});
     if (shouldFocusArticleRef.current) {
@@ -297,7 +322,10 @@ export default function DocsPage() {
 
   const navigate = (id: string) => {
     shouldFocusArticleRef.current = true;
-    window.location.hash = id;
+    const href = docsArticleHref(id);
+    if (window.location.href !== new URL(href, window.location.href).href) {
+      window.history.pushState({}, '', href);
+    }
     setActiveId(id);
     closeNav(false);
     closeSearch(false);
@@ -339,7 +367,7 @@ export default function DocsPage() {
                 {section.articles.map(article => (
                   <a
                     key={article.id}
-                    href={`#${article.id}`}
+                    href={docsArticleHref(article.id)}
                     aria-current={activeId === article.id ? 'page' : undefined}
                     onClick={event => {
                       event.preventDefault();
@@ -401,7 +429,7 @@ export default function DocsPage() {
           <nav className="docs-pagination" aria-label="Adjacent documentation">
             {previous ? (
               <a
-                href={`#${previous.article.id}`}
+                href={docsArticleHref(previous.article.id)}
                 onClick={event => {
                   event.preventDefault();
                   navigate(previous.article.id);
@@ -415,7 +443,7 @@ export default function DocsPage() {
             )}
             {next && (
               <a
-                href={`#${next.article.id}`}
+                href={docsArticleHref(next.article.id)}
                 onClick={event => {
                   event.preventDefault();
                   navigate(next.article.id);

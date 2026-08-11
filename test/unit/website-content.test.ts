@@ -36,6 +36,8 @@ import {
   worktreeReadinessSpeedup,
 } from '../../website/src/content/worktreeReadiness.js';
 import {
+  docsArticleIdForPathname,
+  docsArticlePath,
   commitPreparedRoute,
   createSitePageModuleCache,
   isSameDocumentNavigation,
@@ -43,6 +45,7 @@ import {
   sitePageForPathname,
   type SitePage,
 } from '../../website/src/lib/routes.js';
+import {renderDocsArticleHtml, renderDocsSitemap} from '../../scripts/site-doc-pages.js';
 import type {BenchmarkArtifactV1} from '../../src/evaluation/benchmark.js';
 import {proTips} from '../../website/src/content/proTips.js';
 import {EXTERNAL_REPOSITORY_REQUIRED_MEASUREMENTS} from '../../src/evaluation/external_evidence.js';
@@ -797,10 +800,15 @@ describe('Threadnote 4 website content', () => {
       expect(sitePageForPathname(`/threadnote/${path}${path ? '/' : ''}`, '/threadnote/')).toBe(page);
     }
     expect(sitePageForPathname('/threadnote', '/threadnote/')).toBe('home');
-    expect(sitePageForPathname('/threadnote/docs/nested/', '/threadnote/')).toBeUndefined();
+    expect(sitePageForPathname('/threadnote/docs/worksets/', '/threadnote/')).toBe('docs');
+    expect(docsArticleIdForPathname('/threadnote/docs/worksets/', '/threadnote/')).toBe('worksets');
+    expect(sitePageForPathname('/threadnote/docs/nested/extra/', '/threadnote/')).toBeUndefined();
     expect(sitePageForPathname('/other/docs/', '/threadnote/')).toBeUndefined();
     expect(siteCanonicalUrlForPathname('/performance/', '/')).toBe('https://threadnote.io/performance/');
     expect(siteCanonicalUrlForPathname('/threadnote/docs/', '/threadnote/')).toBe('https://threadnote.io/docs/');
+    expect(siteCanonicalUrlForPathname('/threadnote/docs/worksets/', '/threadnote/')).toBe(
+      'https://threadnote.io/docs/worksets/',
+    );
     expect(
       isSameDocumentNavigation(
         new URL('https://threadnote.io/docs/'),
@@ -810,6 +818,46 @@ describe('Threadnote 4 website content', () => {
     expect(
       isSameDocumentNavigation(new URL('https://threadnote.io/docs/'), new URL('https://threadnote.io/performance/')),
     ).toBe(false);
+  });
+
+  it('round-trips URL-safe documentation article paths under every supported site base', () => {
+    const slug = fc
+      .array(fc.constantFrom(...'abcdefghijklmnopqrstuvwxyz0123456789-'), {minLength: 1, maxLength: 48})
+      .map(parts => parts.join(''))
+      .filter(value => /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value));
+
+    fc.assert(
+      fc.property(slug, fc.constantFrom('/', '/threadnote/'), (articleId, basePath) => {
+        const pathname = `${basePath}${docsArticlePath(articleId)}`.replace(/\/+/g, '/');
+        expect(sitePageForPathname(pathname, basePath)).toBe('docs');
+        expect(docsArticleIdForPathname(pathname, basePath)).toBe(articleId);
+        expect(siteCanonicalUrlForPathname(pathname, basePath)).toBe(
+          `https://threadnote.io/${docsArticlePath(articleId)}`,
+        );
+      }),
+      {numRuns: 100},
+    );
+  });
+
+  it('renders crawler-visible metadata and sitemap entries for exact documentation articles', async () => {
+    const worksets = docsSections.flatMap(section => section.articles).find(article => article.id === 'worksets');
+    expect(worksets).toBeDefined();
+    const [template, sitemap] = await Promise.all([
+      readFile(join(root, 'website', 'docs', 'index.html'), 'utf8'),
+      readFile(join(root, 'website', 'public', 'sitemap.xml'), 'utf8'),
+    ]);
+    const rendered = renderDocsArticleHtml(template, worksets!);
+    const renderedSitemap = renderDocsSitemap(sitemap, [worksets!]);
+
+    expect(rendered).toContain('<title>Cross-repository worksets · Docs — Threadnote</title>');
+    expect(rendered).toContain('<link rel="canonical" href="https://threadnote.io/docs/worksets/" />');
+    expect(rendered).toContain('<link rel="icon" href="../../threadnote-logo.svg"');
+    expect(rendered).toContain('<meta property="og:title" content="Cross-repository worksets · Docs — Threadnote" />');
+    expect(rendered).toContain('<meta property="og:type" content="article" />');
+    expect(rendered).toContain('<meta property="og:url" content="https://threadnote.io/docs/worksets/" />');
+    expect(rendered).toContain(`content="${worksets!.summary}"`);
+    expect(renderedSitemap).toContain('<loc>https://threadnote.io/docs/worksets/</loc>');
+    expect(renderDocsSitemap(renderedSitemap, [worksets!])).toBe(renderedSitemap);
   });
 
   it('shows checked-in public measurements instead of placeholder performance cards', async () => {

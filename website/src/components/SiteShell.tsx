@@ -1,5 +1,5 @@
 import {useEffect, useState, type ReactNode} from 'react';
-import {githubUrl, siteHref, xUrl} from '../lib/site';
+import {docsArticleHref, githubUrl, siteHref, xUrl} from '../lib/site';
 import type {SitePage} from '../lib/routes';
 import {ThreadnoteMark} from './Brand';
 import {Icon} from './Icons';
@@ -85,7 +85,7 @@ export function SiteShell({
                 <Icon name="x" aria-hidden="true" />
               </a>
             </div>
-            <a className="button button--small" href={siteHref('docs/#installation')}>
+            <a className="button button--small" href={docsArticleHref('installation')}>
               Install
             </a>
           </nav>

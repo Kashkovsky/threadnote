@@ -4,7 +4,7 @@ import {CodeBlock} from '../components/CodeBlock';
 import {Icon, type IconName} from '../components/Icons';
 import {SiteShell} from '../components/SiteShell';
 import {graphAnalyzeScenario, graphInspectScenario, heroScenario} from '../content/landing';
-import {githubUrl, setDocumentMeta, siteHref} from '../lib/site';
+import {docsArticleHref, githubUrl, setDocumentMeta, siteHref} from '../lib/site';
 
 const ThreadScene = lazy(() => import('../visuals/ThreadScene'));
 
@@ -219,7 +219,7 @@ function GraphSearchShowcase() {
               Open the Manager demo
               <Icon name="arrow" aria-hidden="true" />
             </a>
-            <a className="button button--ghost" href={siteHref('docs/#graph-operations')}>
+            <a className="button button--ghost" href={docsArticleHref('graph-operations')}>
               Graph search docs
             </a>
           </div>
@@ -307,7 +307,7 @@ export default function LandingPage() {
             the next agent you try.
           </p>
           <div className="hero__actions">
-            <a className="button" href={siteHref('docs/#installation')}>
+            <a className="button" href={docsArticleHref('installation')}>
               Install Threadnote
               <Icon name="arrow" aria-hidden="true" />
             </a>
@@ -412,7 +412,7 @@ export default function LandingPage() {
             Canonical Markdown, SQLite indexes, models, graph snapshots, and share metadata live under{' '}
             <code>~/.threadnote</code>. Derived indexes can be rebuilt. Sharing is an explicit previewed action.
           </p>
-          <a className="text-link" href={siteHref('docs/#architecture')}>
+          <a className="text-link" href={docsArticleHref('architecture')}>
             Read the architecture
             <Icon name="arrow" aria-hidden="true" />
           </a>

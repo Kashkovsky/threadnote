@@ -14,7 +14,7 @@ The site uses independent HTML entry points so every public route has a real doc
 
 - `/` — product landing page
 - `/performance/` — large-repository architecture and retained benchmark evidence
-- `/docs/` — searchable 4.0 documentation
+- `/docs/` — searchable 4.0 documentation; every article also has a crawler-visible `/docs/<article>/` URL
 - `/whats-new/` — stable releases from the latest major version
 - `/pro-tips/` — animated workflow simulations
 - `/manager-demo/` — an interactive Manager using synthetic data only
@@ -28,6 +28,10 @@ THREADNOTE_SITE_BASE=/ bun run site:build
 ```
 
 The production output is `site-dist/`. It is ignored by Git and rejected if it appears inside `dist/`.
+The build derives one static HTML shell per documentation article from the canonical docs content. These files expose
+article-specific canonical, Open Graph, and X card metadata before React loads, so copied article URLs produce the
+correct link preview. Legacy `/docs/#<article>` links still open and are upgraded in the browser, but fragments are
+not sent in HTTP requests and therefore cannot provide article-specific crawler previews themselves.
 
 The researched Graphify comparison remains in the FAQ source but is hidden in normal development and production
 builds. Set `VITE_SHOW_GRAPHIFY_COMPARISON=true` only when the comparison is ready to be shown again.

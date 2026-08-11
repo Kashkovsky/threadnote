@@ -59,6 +59,8 @@ const pageLoaders: Readonly<Record<SitePage, () => Promise<PageModule>>> = {
 const pageModuleCache = createSitePageModuleCache(pageLoaders);
 
 function declaredInitialPage(): SitePage {
+  const routedPage = sitePageForPathname(window.location.pathname, import.meta.env.BASE_URL);
+  if (routedPage) return routedPage;
   const page = document.body.dataset.page;
   switch (page) {
     case 'docs':
@@ -113,7 +115,7 @@ function RoutedPage({route}: {readonly route: ActiveRoute}) {
     scrollToRouteTarget(route.href);
   }, [route.href]);
 
-  return <route.Page />;
+  return <route.Page key={new URL(route.href).pathname} />;
 }
 
 function WebsiteRouter() {
