@@ -1786,10 +1786,9 @@ const attemptReusableDirtyBase = Effect.fn('codeGraph.attemptReusableDirtyBase')
       readonly preassessment: Extract<IncrementalOverlayPreassessment, {readonly mode: 'compatible'}>;
     }>();
   }
-  // Prefer the exact committed snapshot path below when it is already ready.
-  // Loading the generic reusable-base receipt also hydrates its full file set;
-  // doing that for a one-file dirty overlay duplicates the inventory solely to
-  // rediscover the same HEAD snapshot.
+  // Prefer the exact committed snapshot path below when it is itself a root
+  // reusable base. A clean incremental snapshot is already layered, so another
+  // overlay must instead reuse its root and include the cumulative changed set.
   const committedExtractorSet = extractorSetIdentity(input.inventory.committedFiles, input.languagePacks);
   const exactCommittedSnapshotId = snapshotIdentity(
     input.identity,
@@ -1797,7 +1796,11 @@ const attemptReusableDirtyBase = Effect.fn('codeGraph.attemptReusableDirtyBase')
     committedExtractorSet,
     input.inventory.committedFiles,
   );
-  if (yield* input.store.currentLexicalReadySnapshotById(input.layout.databasePath, exactCommittedSnapshotId)) {
+  const exactCommittedSnapshot = yield* input.store.currentLexicalReadySnapshotById(
+    input.layout.databasePath,
+    exactCommittedSnapshotId,
+  );
+  if (exactCommittedSnapshot && exactCommittedSnapshot.baseSnapshotId === undefined) {
     return Option.none();
   }
   const committedFileSetFingerprint = reusableBaseFileSetFingerprint(input.inventory.committedFiles);
