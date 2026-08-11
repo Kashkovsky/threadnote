@@ -8,12 +8,16 @@ on:
       - 'bun.lock'
       - 'package.json'
       - 'scripts/benchmark-code-graph.ts'
+      - 'scripts/benchmark-code-graph-workset.ts'
       - 'scripts/benchmark-code-graph-heavy-tail.ts'
       - 'scripts/code-graph-benchmark-sampler.ts'
       - 'scripts/benchmark-recall-vectors.ts'
       - 'scripts/code-graph-fixture.ts'
       - 'scripts/code-graph-heavy-tail-fixture.ts'
+      - 'scripts/evaluate-code-graph-workset.ts'
       - 'scripts/evaluate-recall.ts'
+      - 'scripts/support/code-graph-workset-fixture.ts'
+      - 'scripts/support/code-graph-workset-harness.ts'
       - 'src/code_graph/**'
       - 'src/crypto/**'
       - 'src/effect/ai/**'
@@ -30,9 +34,15 @@ on:
       - 'src/search/vector-search.ts'
       - 'src/storage/layout.ts'
       - 'test/evaluation/baselines/code-graph-v1/**'
+      - 'test/evaluation/baselines/code-graph-workset-v1/**'
       - 'test/evaluation/candidates/threadnote-4.0.0/**'
       - 'test/evaluation/fixtures/code-graph-v1/**'
+      - 'test/evaluation/fixtures/code-graph-workset-v1/**'
       - 'test/evaluation/fixtures/recall-v1/**'
+      - 'test/unit/code-graph.workset-fixture.test.ts'
+      - 'test/unit/code-graph.workset-harness.test.ts'
+      - 'test/unit/evaluation.agent-response.test.ts'
+      - 'test/unit/evaluation.code-graph-workset.test.ts'
   workflow_dispatch:
     inputs:
       include_100k:
@@ -168,6 +178,43 @@ jobs:
         with:
           name: code-graph-benchmarks-${{ runner.os }}-${{ runner.arch }}
           path: artifacts/
+          if-no-files-found: error
+          retention-days: 30
+
+  code-graph-workset:
+    name: Code graph workset 32/50/64/128 · pinned Linux class
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - run: bun install --frozen-lockfile
+
+      - name: Gate the complete workset correctness matrix
+        run: >-
+          bun run eval:code-graph-workset --
+          --sizes 1,8,32,64,128
+          --output artifacts/code-graph-workset-quality-Linux-${{ runner.arch }}.json
+
+      - name: Capture current workset latency and agent-response evidence
+        run: >-
+          bun run bench:code-graph-workset --
+          --sizes 32,50,64,128
+          --samples 25
+          --warmups 5
+          --output artifacts/code-graph-workset-benchmark-Linux-${{ runner.arch }}.json
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: code-graph-workset-Linux-${{ runner.arch }}-${{ github.run_id }}
+          path: artifacts/code-graph-workset-*.json
           if-no-files-found: error
           retention-days: 30
 

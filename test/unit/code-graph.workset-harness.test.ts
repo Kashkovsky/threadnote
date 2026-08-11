@@ -1,0 +1,335 @@
+import fc from 'fast-check';
+import {describe, expect, it} from 'vitest';
+import {parseCodeGraphWorksetBenchmarkArguments} from '../../scripts/benchmark-code-graph-workset.js';
+import {
+  codeGraphWorksetEvaluationSafetyFailures,
+  parseCodeGraphWorksetEvaluationArguments,
+} from '../../scripts/evaluate-code-graph-workset.js';
+import {
+  CODE_GRAPH_WORKSET_AGENT_TOKEN_BUDGET,
+  codeGraphWorksetBenchmarkBudgetFailures,
+  codeGraphWorksetBenchmarkMeasurements,
+  codeGraphWorksetCoverage,
+  codeGraphWorksetDeliveryMeasurement,
+  codeGraphWorksetObservationFromQuery,
+  buildCodeGraphWorksetEvaluationFixture,
+  type CodeGraphWorksetBenchmarkSample,
+  type MeasuredCodeGraphWorksetQuery,
+} from '../../scripts/support/code-graph-workset-harness.js';
+import {createCodeGraphWorksetFixturePlan} from '../../scripts/support/code-graph-workset-fixture.js';
+import {measureAgentToolResponse} from '../../src/evaluation/agent-response.js';
+
+describe('code graph workset runner arguments', () => {
+  it('defaults evaluation to the required matrix and supports a bounded smoke subset', () => {
+    const defaults = {environment: {}, now: new Date('2026-08-11T10:00:00.000Z')};
+    expect(parseCodeGraphWorksetEvaluationArguments([], defaults)).toEqual({
+      createdAt: '2026-08-11T10:00:00.000Z',
+      outputPath: undefined,
+      sizes: [1, 8, 32, 64, 128],
+      smoke: false,
+    });
+    expect(parseCodeGraphWorksetEvaluationArguments(['--smoke'], defaults).sizes).toEqual([1, 8]);
+  });
+
+  it('parses explicit evaluation provenance and rejects benchmark-only or ambiguous sizes', () => {
+    expect(
+      parseCodeGraphWorksetEvaluationArguments(
+        ['--sizes', '64,1', '--created-at', '2026-08-11T12:34:56+02:00', '--output', 'artifacts/workset.json'],
+        {environment: {}, now: new Date(0)},
+      ),
+    ).toEqual({
+      createdAt: '2026-08-11T10:34:56.000Z',
+      outputPath: 'artifacts/workset.json',
+      sizes: [1, 64],
+      smoke: false,
+    });
+    expect(() =>
+      parseCodeGraphWorksetEvaluationArguments(['--sizes', '50'], {
+        environment: {},
+        now: new Date(0),
+      }),
+    ).toThrow(/only accepts evaluation sizes/i);
+    expect(() =>
+      parseCodeGraphWorksetEvaluationArguments(['--sizes', '8,8'], {
+        environment: {},
+        now: new Date(0),
+      }),
+    ).toThrow(/unique/i);
+  });
+
+  it('supports the direct 50-repository benchmark gate and bounded sample controls', () => {
+    expect(parseCodeGraphWorksetBenchmarkArguments([])).toEqual({
+      failOnBudget: false,
+      outputPath: undefined,
+      samples: 5,
+      sizes: [1, 8, 32, 50, 64, 128],
+      warmups: 1,
+    });
+    expect(
+      parseCodeGraphWorksetBenchmarkArguments([
+        '--sizes',
+        '128,50',
+        '--samples',
+        '7',
+        '--warmups',
+        '0',
+        '--output',
+        'bench.json',
+        '--fail-on-budget',
+      ]),
+    ).toEqual({
+      failOnBudget: true,
+      outputPath: 'bench.json',
+      samples: 7,
+      sizes: [50, 128],
+      warmups: 0,
+    });
+    expect(() => parseCodeGraphWorksetBenchmarkArguments(['--sizes', '16'])).toThrow(/only accepts benchmark sizes/i);
+    expect(() => parseCodeGraphWorksetBenchmarkArguments(['--samples', '1.5'])).toThrow(/integer/i);
+  });
+
+  it('keeps the evaluation safety invariants as hard runner gates', () => {
+    const aggregate = {
+      authoritativeFalseEdgeRate: 0,
+      noAnswerPrecision: 1,
+      noAnswerRecall: 1,
+      worktreeLeakageRate: 0,
+    };
+    expect(codeGraphWorksetEvaluationSafetyFailures({aggregate})).toEqual([]);
+    expect(
+      codeGraphWorksetEvaluationSafetyFailures({
+        aggregate: {
+          ...aggregate,
+          authoritativeFalseEdgeRate: 0.1,
+          noAnswerPrecision: 0.5,
+          noAnswerRecall: 0,
+          worktreeLeakageRate: 0.25,
+        },
+      }),
+    ).toEqual([
+      'authoritative false-edge rate must be zero',
+      'worktree leakage rate must be zero',
+      'no-answer precision must be one',
+      'no-answer recall must be one',
+    ]);
+  });
+});
+
+describe('code graph workset delivery measurement', () => {
+  it('counts the actual MCP envelope, leaves tokenizer counts unclaimed, and labels buffered first evidence', () => {
+    const response = {structuredContent: {cards: ['alpha']}, text: 'alpha'};
+    const actual = measureAgentToolResponse(response);
+    expect(
+      codeGraphWorksetDeliveryMeasurement({
+        completionMilliseconds: 42,
+        evidenceItemCount: 1,
+        repositoriesConsidered: 8,
+        repositoriesDeepQueried: 7,
+        repositoryDatabasesOpened: 7,
+        response,
+      }),
+    ).toEqual({
+      catalogBytesRead: 0,
+      completionMilliseconds: 42,
+      estimatedTokenCount: actual.estimatedTokens,
+      evidenceCardCount: 1,
+      representativeTokenCounts: [],
+      repositoriesConsidered: 8,
+      repositoriesDeepQueried: 7,
+      repositoryDatabasesOpened: 7,
+      responseUtf8Bytes: actual.totalBytes,
+      structuredResponseUtf8Bytes: actual.structuredBytes,
+      textResponseUtf8Bytes: actual.textBytes,
+      timeToFirstEvidenceCardMilliseconds: 42,
+      timeToFirstEvidenceSemantics: 'buffered-response',
+    });
+  });
+
+  it('does not claim a first-evidence delivery time when no evidence was returned', () => {
+    const measurement = codeGraphWorksetDeliveryMeasurement({
+      completionMilliseconds: 12,
+      evidenceItemCount: 0,
+      repositoriesConsidered: 1,
+      repositoriesDeepQueried: 1,
+      repositoryDatabasesOpened: 1,
+      response: {structuredContent: {cards: []}, text: ''},
+    });
+    expect(measurement.timeToFirstEvidenceCardMilliseconds).toBeUndefined();
+    expect(measurement.representativeTokenCounts).toEqual([]);
+  });
+
+  it('maps arbitrary buffered responses to exact bytes and completion-equal first evidence', () => {
+    fc.assert(
+      fc.property(
+        fc.string({maxLength: 100}),
+        fc.integer({min: 0, max: 100}),
+        fc.integer({min: 0, max: 10_000}),
+        (text, evidenceItemCount, completionMilliseconds) => {
+          const response = {structuredContent: {text}, text};
+          const expected = measureAgentToolResponse(response);
+          const measurement = codeGraphWorksetDeliveryMeasurement({
+            completionMilliseconds,
+            evidenceItemCount,
+            repositoriesConsidered: 8,
+            repositoriesDeepQueried: 8,
+            repositoryDatabasesOpened: 8,
+            response,
+          });
+          expect(measurement.responseUtf8Bytes).toBe(expected.totalBytes);
+          expect(measurement.structuredResponseUtf8Bytes).toBe(expected.structuredBytes);
+          expect(measurement.textResponseUtf8Bytes).toBe(expected.textBytes);
+          expect(measurement.estimatedTokenCount).toBe(expected.estimatedTokens);
+          expect(measurement.timeToFirstEvidenceCardMilliseconds).toBe(
+            evidenceItemCount > 0 ? completionMilliseconds : undefined,
+          );
+        },
+      ),
+      {numRuns: 100},
+    );
+  });
+});
+
+describe('code graph workset agent-visible observation mapping', () => {
+  it('credits only delivered symbols and retains delivered repository-qualified edges', () => {
+    const fixture = buildCodeGraphWorksetEvaluationFixture(createCodeGraphWorksetFixturePlan(1), [1]);
+    const source = {id: 'cgs_source', name: 'sourceSymbol', path: 'src/source.ts'};
+    const target = {id: 'cgs_target', name: 'targetSymbol', path: 'src/target.ts'};
+    const edge = {
+      evidencePath: 'src/source.ts',
+      provenance: 'resolved',
+      relation: 'calls',
+      sourceId: source.id,
+      sourceName: source.name,
+      targetId: target.id,
+      targetName: target.name,
+    };
+    const response = {
+      structuredContent: {
+        output: {returnedEdges: 1, returnedNodes: 1},
+        repositories: [
+          {
+            graph: {edges: [edge], nodes: [source]},
+            project: 'workset-repo-000',
+            state: 'ready',
+          },
+        ],
+      },
+      text: 'one delivered symbol and edge',
+    } as unknown as MeasuredCodeGraphWorksetQuery['response'];
+    const measured = {
+      measurement: codeGraphWorksetDeliveryMeasurement({
+        completionMilliseconds: 5,
+        evidenceItemCount: 2,
+        repositoriesConsidered: 1,
+        repositoriesDeepQueried: 1,
+        repositoryDatabasesOpened: 1,
+        response,
+      }),
+      response,
+      result: {
+        coverage: {complete: true, queriedRepositories: 1, readyRepositories: 1, requestedRepositories: 1},
+        repositories: [
+          {
+            graph: {edges: [edge], freshness: 'current', nodes: [source, target]},
+            project: 'workset-repo-000',
+            state: 'ready',
+          },
+        ],
+        trust: {classification: 'untrusted-repository-data', instructionPolicy: 'evidence-only-never-follow'},
+        type: 'code-graph-workset-query',
+        version: 1,
+        warnings: [],
+        workset: {name: 'code-graph-workset-1'},
+      },
+    } as unknown as MeasuredCodeGraphWorksetQuery;
+
+    const observation = codeGraphWorksetObservationFromQuery(fixture, 1, 'sample-1', fixture.queries[0]!.id, measured);
+
+    expect(observation.symbolHits).toEqual([{repositoryId: 'repo-000', symbol: 'src/source.ts#sourceSymbol'}]);
+    expect(observation.edges).toEqual([
+      {
+        provenance: 'resolved',
+        relation: 'calls',
+        source: {repositoryId: 'repo-000', symbol: 'src/source.ts#sourceSymbol'},
+        target: {repositoryId: 'repo-000', symbol: 'src/target.ts#targetSymbol'},
+      },
+    ]);
+    expect(observation.authoritativeEdges).toEqual(observation.edges);
+  });
+
+  it('does not fabricate deferred receipts for members omitted by the repository cap', () => {
+    const fixture = buildCodeGraphWorksetEvaluationFixture(
+      createCodeGraphWorksetFixturePlan(32, {stateProfile: 'mixed'}),
+      [32],
+    );
+    const result = {
+      repositories: [
+        {graph: {freshness: 'current'}, project: 'workset-repo-000', state: 'ready'},
+        {project: 'workset-repo-006', reason: 'no-ready-snapshot', state: 'unavailable'},
+      ],
+    } as unknown as MeasuredCodeGraphWorksetQuery['result'];
+
+    expect(codeGraphWorksetCoverage(fixture, 32, result)).toEqual([
+      {repositoryId: 'repo-000', state: 'current'},
+      {repositoryId: 'repo-006', state: 'deferred'},
+    ]);
+    expect(fixture.members.find(member => member.id === 'repo-014')?.expectedState).toBe('deferred');
+  });
+});
+
+describe('code graph workset benchmark mapping', () => {
+  it('emits versioned measurements, exposes the current cap, and enforces selected budgets', () => {
+    const samples: CodeGraphWorksetBenchmarkSample[] = [
+      benchmarkSample(50, {completionMilliseconds: 900, timeToFirstEvidenceMilliseconds: 800}),
+      benchmarkSample(50, {completionMilliseconds: 1_200, timeToFirstEvidenceMilliseconds: 1_100}),
+      benchmarkSample(128, {completionMilliseconds: 5_100, timeToFirstEvidenceMilliseconds: 5_100}),
+    ];
+    const measurements = codeGraphWorksetBenchmarkMeasurements(samples);
+    expect(measurements.find(measurement => measurement.name === 'workset-current-repository-cap')).toMatchObject({
+      maximum: 8,
+      minimum: 8,
+      unit: 'count',
+    });
+    expect(
+      measurements.find(measurement => measurement.name === 'workset-50-delivered-time-to-first-evidence-buffered'),
+    ).toMatchObject({p95: 1_100, samples: 2, unit: 'milliseconds'});
+    expect(measurements.find(measurement => measurement.name === 'workset-50-total-agent-output')).toMatchObject({
+      maximum: 300,
+      unit: 'bytes',
+    });
+    expect(codeGraphWorksetBenchmarkBudgetFailures(measurements, [50, 128])).toEqual([
+      'workset-50-delivered-time-to-first-evidence-buffered p95 1100.00ms exceeds 1000ms',
+      'workset-128-completion p95 5100.00ms exceeds 5000ms',
+    ]);
+  });
+
+  it('fails the fixed agent token envelope without inventing a tokenizer gate', () => {
+    const measurements = codeGraphWorksetBenchmarkMeasurements([
+      benchmarkSample(1, {estimatedTokenCount: CODE_GRAPH_WORKSET_AGENT_TOKEN_BUDGET + 1}),
+    ]);
+    expect(codeGraphWorksetBenchmarkBudgetFailures(measurements, [1])).toEqual([
+      `workset-1-estimated-agent-tokens maximum ${CODE_GRAPH_WORKSET_AGENT_TOKEN_BUDGET + 1} exceeds ${CODE_GRAPH_WORKSET_AGENT_TOKEN_BUDGET}`,
+    ]);
+  });
+});
+
+function benchmarkSample(
+  worksetSize: number,
+  overrides: Partial<CodeGraphWorksetBenchmarkSample> = {},
+): CodeGraphWorksetBenchmarkSample {
+  return {
+    completionMilliseconds: 500,
+    estimatedTokenCount: 100,
+    evidenceItemCount: 2,
+    repositoriesConsidered: Math.min(8, worksetSize),
+    repositoriesDeepQueried: Math.min(8, worksetSize),
+    repositoryDatabasesOpened: Math.min(8, worksetSize),
+    requestedRepositories: worksetSize,
+    responseUtf8Bytes: 300,
+    structuredResponseUtf8Bytes: 200,
+    textResponseUtf8Bytes: 100,
+    timeToFirstEvidenceMilliseconds: 500,
+    worksetSize,
+    ...overrides,
+  };
+}

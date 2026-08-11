@@ -196,6 +196,9 @@ jobs:
       - name: Frozen native code graph quality gate
         run: bun run eval:code-graph
 
+      - name: Bounded cross-repository workset quality smoke
+        run: bun run eval:code-graph-workset -- --sizes 1,8
+
       - name: Recall-v2 category and safety gate
         run: >-
           bun run eval:recall:v2 --

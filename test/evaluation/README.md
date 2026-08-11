@@ -43,6 +43,84 @@ bun run bench:code-graph:heavy-tail -- --smoke \
   --output artifacts/code-graph-heavy-tail-smoke.json
 ```
 
+### Cross-repository workset contract
+
+The workset fixture scales one deterministic set of repository archetypes into prefix worksets. Sizes 1, 8, 32, 64,
+and 128 are the required correctness matrix: together they cover single-repository parity, the current eight-repository
+product boundary, and progressively larger cross-repository coverage. Size 50 is benchmark-only. It exists to measure
+the Phase 1 50-ready-repository latency target and must not replace any required correctness size or be included when
+claiming that the correctness matrix passed.
+
+Ordinary CI runs the truthful bounded smoke against sizes 1 and 8. The scheduled/manual platform workflow runs the
+complete correctness matrix, then measures sizes 32, 50, 64, and 128 with 25 recorded samples after five warmups. That
+sample count supports a p95 distribution claim; a single observation remains `n=1` evidence even when an artifact
+schema contains p50, p95, or p99 fields.
+
+```sh
+# Fast correctness smoke used by ordinary quality CI.
+bun run eval:code-graph-workset -- --sizes 1,8
+
+# Complete required correctness matrix.
+bun run eval:code-graph-workset -- \
+  --sizes 1,8,32,64,128 \
+  --output artifacts/code-graph-workset-quality.json
+
+# Full scheduled/manual performance distribution, including benchmark-only size 50.
+bun run bench:code-graph-workset -- \
+  --sizes 32,50,64,128 \
+  --samples 25 \
+  --warmups 5 \
+  --output artifacts/code-graph-workset-benchmark.json
+
+# Explicit Phase 1 target check; expected to fail against the recorded V1 baseline.
+bun run bench:code-graph-workset -- \
+  --sizes 50,128 \
+  --samples 25 \
+  --warmups 5 \
+  --fail-on-budget
+```
+
+Workset MCP responses are currently buffered: the client receives no partial card while repositories are still being
+queried. Therefore `delivered-time-to-first-evidence-buffered` is the elapsed time until the first evidence is actually
+available to the client, which is also completion time for the buffered response. An internal first-candidate timer
+may help diagnose the pipeline, but it is not user-visible time to first evidence and must retain a distinct name.
+
+Agent-response cost counts the UTF-8 bytes of both MCP channels: structured content plus the duplicated text rendering.
+It intentionally does not deduplicate equivalent facts across those channels, because both are transmitted to the
+agent. Estimated tokens use the conservative ceiling `ceil(total UTF-8 bytes / 3)`, not the recall evaluator's older
+four-characters-per-token estimate. Artifacts retain each channel's bytes, their sum, and the estimate so future
+response compaction remains comparable without claiming tokenizer-specific precision.
+
+#### Phase 0 bottleneck decomposition
+
+The first full local baseline on the reference Apple M1 Max development class recorded the following current-V1
+shape. Timing values are one-run development evidence, not a p95 distribution claim; the scheduled workflow owns the
+25-sample latency artifacts.
+
+| Workset size | Completion p95-shaped statistic | Coverage accuracy | Repository recall@5 | Symbol recall |
+| -----------: | ------------------------------: | ----------------: | ------------------: | ------------: |
+|            1 |                          135 ms |             1.000 |               1.000 |         1.000 |
+|            8 |                          375 ms |             1.000 |               0.900 |         0.588 |
+|           32 |                          331 ms |             0.250 |               0.818 |         0.556 |
+|           64 |                          356 ms |             0.125 |               0.692 |         0.500 |
+|          128 |                          323 ms |             0.063 |               0.643 |         0.476 |
+
+The apparently flat latency above eight repositories is not scale success: V1 admits only the first eight manifest
+members, so the 128-repository run still considered/opened at most eight repositories per query. The late-repository
+fixture controls make that omission visible in recall and coverage. This makes global routing and complete coverage
+receipts the first Phase 1 bottleneck, ahead of concurrency tuning.
+
+The next bottleneck is transport cost. The exact-symbol control used about 5,085 estimated tokens at size 1, 9,427 at
+size 8, and 9,502 at size 50; the size-50 response was 28,504 UTF-8 bytes across structured content and duplicated text.
+The Phase 1 target remains 1,500 estimated tokens. A compact evidence-card projector and terse MCP text are therefore
+required even if search latency is already below the provisional ceiling.
+
+Finally, delivered first evidence is buffered, catalog bytes read are zero because V1 has no routing catalog, and
+workset `impact`/`path` are explicitly recorded as unsupported. Phase 1 must add catalog-wide consideration and a
+bounded response before its latency numbers can be compared honestly; Phase 2 owns cross-repository relationship
+stitching. Numeric gates are versioned in `baselines/code-graph-workset-v1/budgets.json` and are not adjusted by a
+change that fails them.
+
 The evaluator runs Threadnote's real Git inventory, extractor, SQLite store, and query service. It gates zero
 authoritative false edges, zero worktree leakage, perfect no-answer precision/recall, perfect reviewed symbol/edge
 recall, and MRR 1. The checked Graphify 0.9.29 result remains a frozen historical comparison, not the native release

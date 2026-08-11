@@ -57,11 +57,14 @@ describe('platform benchmark workflow', () => {
     const command = pullRequestJob.steps?.flatMap(step => (step.run ? [step.run] : [])).join('\n') ?? '';
     const recallJob = workflow.jobs['recall-pr-10k']!;
     const recallCommand = recallJob.steps?.flatMap(step => (step.run ? [step.run] : [])).join('\n') ?? '';
+    const worksetJob = workflow.jobs['code-graph-workset']!;
+    const worksetCommand = worksetJob.steps?.flatMap(step => (step.run ? [step.run] : [])).join('\n') ?? '';
 
     expect(paths).toEqual(
       expect.arrayContaining([
         '.github/workflows/benchmarks.yml',
         'scripts/benchmark-code-graph.ts',
+        'scripts/benchmark-code-graph-workset.ts',
         'scripts/code-graph-benchmark-sampler.ts',
         'scripts/benchmark-recall-vectors.ts',
         'scripts/evaluate-recall.ts',
@@ -72,6 +75,7 @@ describe('platform benchmark workflow', () => {
         'src/recall/**',
         'src/search/vector-index.ts',
         'test/evaluation/baselines/code-graph-v1/**',
+        'test/evaluation/baselines/code-graph-workset-v1/**',
       ]),
     );
     expect(pullRequestJob.if).toBe("github.event_name == 'pull_request'");
@@ -88,6 +92,14 @@ describe('platform benchmark workflow', () => {
     expect(recallCommand).toContain('bun run bench:recall:vectors');
     expect(recallCommand).toContain('--documents 10000');
     expect(recallCommand).toContain('--fail-on-budget');
+    expect(worksetJob.if).toContain("github.event_name == 'schedule'");
+    expect(worksetJob.if).toContain("github.event_name == 'workflow_dispatch'");
+    expect(worksetJob['runs-on']).toBe('ubuntu-24.04');
+    expect(worksetCommand).toContain('--sizes 1,8,32,64,128');
+    expect(worksetCommand).toContain('--sizes 32,50,64,128');
+    expect(worksetCommand).toContain('--samples 25');
+    expect(worksetCommand).toContain('--warmups 5');
+    expect(worksetCommand).not.toContain('--fail-on-budget');
 
     for (const jobName of [
       'code-graph',
