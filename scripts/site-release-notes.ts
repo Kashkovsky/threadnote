@@ -15,6 +15,10 @@ export interface WebsiteRelease extends PublishedReleaseRef {
   readonly releaseUrl: string;
 }
 
+interface WebsiteReleaseSource extends PublishedReleaseRef {
+  readonly noteRef: string;
+}
+
 const STABLE_RELEASE = /^v(\d+)\.(\d+)\.(\d+)$/;
 
 export function parseStableReleaseVersion(version: string): StableReleaseVersion | undefined {
@@ -39,6 +43,14 @@ export function selectLatestMajorReleases(releases: readonly PublishedReleaseRef
     if (release.major === latestMajor) byVersion.set(release.version, release);
   }
   return [...byVersion.values()].sort(compareReleasesDescending);
+}
+
+function includePreparedWebsiteRelease<T extends PublishedReleaseRef>(
+  published: readonly T[],
+  prepared: T | undefined,
+): readonly T[] {
+  if (prepared === undefined || published.some(release => release.version === prepared.version)) return published;
+  return [...published, prepared];
 }
 
 function plainText(markdown: string): string {
@@ -97,8 +109,42 @@ function runGit(repositoryRoot: string, arguments_: readonly string[]): string {
   return result.stdout.toString();
 }
 
+function gitObjectExists(repositoryRoot: string, object: string): boolean {
+  return (
+    Bun.spawnSync({
+      cmd: ['git', 'cat-file', '-e', object],
+      cwd: repositoryRoot,
+      stderr: 'ignore',
+      stdout: 'ignore',
+    }).exitCode === 0
+  );
+}
+
+function loadPreparedWebsiteRelease(
+  repositoryRoot: string,
+  published: readonly WebsiteReleaseSource[],
+): WebsiteReleaseSource | undefined {
+  const manifest = JSON.parse(runGit(repositoryRoot, ['show', 'HEAD:package.json'])) as {readonly version?: unknown};
+  if (typeof manifest.version !== 'string') return undefined;
+  const parsed = parseStableReleaseVersion(`v${manifest.version}`);
+  if (parsed === undefined) return undefined;
+  if (published.some(release => compareReleasesDescending(parsed, release) >= 0)) return undefined;
+
+  const releaseNotePath = `.github/release-notes/${parsed.version}.md`;
+  if (!gitObjectExists(repositoryRoot, `HEAD:${releaseNotePath}`)) return undefined;
+  const publishedAt = runGit(repositoryRoot, [
+    'log',
+    '-1',
+    '--format=%cI',
+    '--',
+    'package.json',
+    releaseNotePath,
+  ]).trim();
+  return {...parsed, noteRef: 'HEAD', publishedAt};
+}
+
 export function loadLatestMajorWebsiteReleases(repositoryRoot: string): readonly WebsiteRelease[] {
-  const refs = runGit(repositoryRoot, [
+  const published = runGit(repositoryRoot, [
     'for-each-ref',
     '--format=%(refname:short)|%(creatordate:iso-strict)',
     'refs/tags/v*',
@@ -112,15 +158,19 @@ export function loadLatestMajorWebsiteReleases(repositoryRoot: string): readonly
       const version = line.slice(0, separator);
       const parsed = parseStableReleaseVersion(version);
       if (!parsed) return [];
-      return [{...parsed, publishedAt: line.slice(separator + 1)}];
+      return [{...parsed, noteRef: version, publishedAt: line.slice(separator + 1)} satisfies WebsiteReleaseSource];
     });
+  const refs = includePreparedWebsiteRelease(published, loadPreparedWebsiteRelease(repositoryRoot, published));
 
   const selected = selectLatestMajorReleases(refs);
-  if (selected.length === 0) throw new Error('The website needs at least one published stable release tag.');
+  if (selected.length === 0) throw new Error('The website needs at least one published or prepared stable release.');
+  const sourcesByVersion = new Map(refs.map(release => [release.version, release]));
 
   return selected.map(release => {
     const releaseNotePath = `.github/release-notes/${release.version}.md`;
-    const markdown = runGit(repositoryRoot, ['show', `${release.version}:${releaseNotePath}`]);
+    const source = sourcesByVersion.get(release.version);
+    if (source === undefined) throw new Error(`Could not resolve website release source for ${release.version}.`);
+    const markdown = runGit(repositoryRoot, ['show', `${source.noteRef}:${releaseNotePath}`]);
     const {summary, highlights} = summarizeReleaseNote(markdown);
     if (!summary) throw new Error(`${releaseNotePath} needs an introductory release summary.`);
     return {
