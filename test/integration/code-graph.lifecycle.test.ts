@@ -1841,11 +1841,21 @@ describe('native code graph lifecycle', () => {
     expect(result.status.readySnapshot?.id).toBe(result.indexed.snapshot.id);
   });
 
+  effectIt.effect('keeps graph-semantic-neutral resolution config edits incremental', () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.sync(createChangedResolutionContextRepository);
+      const indexer = yield* CodeGraphIndexer;
+      const result = yield* indexer.index({cwd: root, threadnoteHome: join(root, '.threadnote-test-home')});
+
+      expect(result.materialization).toMatchObject({mode: 'incremental-overlay', stagedFiles: 1});
+      expect(result.materialization?.fallbackReason).toBeUndefined();
+    }).pipe(Effect.provide(ApplicationLayer)),
+  );
+
   describe.each([
     ['a renamed declaration', createRenamedDeclarationRepository, 'resolution-surface-changed'],
     ['a changed lookup signature', createChangedSignatureRepository, 'project-closure-incomplete'],
     ['a changed export surface', createChangedExportRepository, 'resolution-surface-changed'],
-    ['changed resolution context', createChangedResolutionContextRepository, 'extractor-context-changed'],
     ['dynamic re-export aliases', createDynamicAliasRepository, 'project-closure-incomplete'],
     ['an added eligible file', createAddedFileRepository, 'file-set-changed'],
     ['a deleted eligible file', createDeletedFileRepository, 'file-set-changed'],

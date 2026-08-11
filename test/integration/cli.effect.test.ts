@@ -597,7 +597,7 @@ describe('Effect CLI', () => {
     }
   });
 
-  it('refreshes stale query and explain reads in separate one-shot CLI processes', async () => {
+  it('uses ready snapshots by default and refreshes stale reads only when current freshness is requested', async () => {
     const root = await mkdtemp(join(tmpdir(), 'threadnote-effect-cli-graph-freshness-'));
     const home = join(root, '.threadnote-test-home');
     try {
@@ -631,6 +631,21 @@ describe('Effect CLI', () => {
       expect(first.stdout).toContain('"name":"firstGraphSymbol"');
 
       await writeFile(join(root, 'index.ts'), 'export function queryRefreshSymbol(): number { return 2; }\n');
+      const ready = await runCli([
+        'graph',
+        'query',
+        '--home',
+        home,
+        '--cwd',
+        root,
+        '--query',
+        'firstGraphSymbol',
+        '--json',
+      ]);
+      expect(ready.stdout).toContain('"freshness":"stale"');
+      expect(ready.stdout).toContain('"name":"firstGraphSymbol"');
+      expect(ready.stdout).not.toContain('"name":"queryRefreshSymbol"');
+
       const query = await runCli([
         'graph',
         'query',
@@ -640,6 +655,8 @@ describe('Effect CLI', () => {
         root,
         '--query',
         'queryRefreshSymbol',
+        '--freshness',
+        'current',
         '--json',
       ]);
       expect(query.stdout).toContain('"freshness":"current"');
@@ -655,10 +672,97 @@ describe('Effect CLI', () => {
         root,
         '--symbol',
         'explainRefreshSymbol',
+        '--freshness',
+        'current',
         '--json',
       ]);
       expect(explain.stdout).toContain('"freshness":"current"');
       expect(explain.stdout).toContain('"name":"explainRefreshSymbol"');
+    } finally {
+      await rm(root, {force: true, recursive: true});
+    }
+  }, 30_000);
+
+  it('fails fast for allow-stale without a snapshot and cancels bounded current refreshes cleanly', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'threadnote-effect-cli-graph-read-budget-'));
+    const home = join(root, '.threadnote-test-home');
+    try {
+      await writeFile(join(root, 'package.json'), '{"name":"graph-read-budget"}\n');
+      await writeFile(join(root, 'index.ts'), 'export function boundedReadSymbol(): number { return 1; }\n');
+      await execFilePromise('git', ['-C', root, 'init', '-q']);
+      await execFilePromise('git', ['-C', root, 'add', '.']);
+      await execFilePromise('git', [
+        '-C',
+        root,
+        '-c',
+        'user.name=Threadnote Test',
+        '-c',
+        'user.email=test@threadnote.local',
+        'commit',
+        '-qm',
+        'fixture',
+      ]);
+
+      const unavailable = await runCli([
+        'graph',
+        'query',
+        '--home',
+        home,
+        '--cwd',
+        root,
+        '--query',
+        'boundedReadSymbol',
+        '--freshness',
+        'allow-stale',
+        '--json',
+      ]);
+      expect(JSON.parse(unavailable.stdout)).toMatchObject({
+        freshnessPolicy: 'allow-stale',
+        reason: 'no-ready-snapshot',
+        state: 'unavailable',
+        type: 'code-graph-query-state',
+      });
+
+      const timedOut = await runCli([
+        'graph',
+        'query',
+        '--home',
+        home,
+        '--cwd',
+        root,
+        '--query',
+        'boundedReadSymbol',
+        '--freshness',
+        'current',
+        '--read-timeout-ms',
+        '1',
+        '--json',
+      ]);
+      const finalLine = timedOut.stdout.trim().split('\n').at(-1);
+      expect(finalLine).toBeDefined();
+      expect(JSON.parse(finalLine!)).toMatchObject({
+        budgetMilliseconds: 1,
+        freshnessPolicy: 'current',
+        reason: 'read-timeout',
+        state: 'timed-out',
+        type: 'code-graph-query-state',
+      });
+
+      const recovered = await runCli([
+        'graph',
+        'query',
+        '--home',
+        home,
+        '--cwd',
+        root,
+        '--query',
+        'boundedReadSymbol',
+        '--freshness',
+        'current',
+        '--json',
+      ]);
+      expect(recovered.stdout).toContain('"freshness":"current"');
+      expect(recovered.stdout).toContain('"name":"boundedReadSymbol"');
     } finally {
       await rm(root, {force: true, recursive: true});
     }

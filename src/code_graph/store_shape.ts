@@ -376,6 +376,7 @@ export interface CodeGraphStoreShape {
     worktreeId: string,
     retainedSnapshotIds: ReadonlySet<string>,
     onProgress?: CodeGraphRetiredSnapshotCleanupProgressCallback,
+    options?: {readonly cleanupMode?: 'deferred' | 'required'},
   ) => Effect.Effect<number, CodeGraphStoreError>;
   readonly markFailed: (
     databasePath: string,

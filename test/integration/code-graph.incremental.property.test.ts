@@ -454,7 +454,7 @@ describe('code graph incremental-overlay differential properties', () => {
     }
   });
 
-  it('reclaims an interrupted direct sibling before reusing the ready logical snapshot', async () => {
+  it('reuses the ready logical snapshot before detached cleanup reclaims an interrupted direct sibling', async () => {
     const scenario = {
       baseTargets: [1, 0, 1],
       dirty: new Set([0, 2]),
@@ -510,6 +510,13 @@ describe('code graph incremental-overlay differential properties', () => {
 
       expect(reused.snapshot.id).toBe(interrupted.logical.snapshot.id);
       expect(reused.materialization?.mode).toBe('reused-snapshot');
+      expect(persistedSnapshotState(interrupted.databasePath, direct.id)).toBe('retired');
+      await runEffect(
+        Effect.gen(function* () {
+          const store = yield* CodeGraphStore;
+          yield* store.pruneRetiredSnapshots(interrupted.databasePath);
+        }),
+      );
       expect(persistedSnapshotState(interrupted.databasePath, direct.id)).toBeUndefined();
       expect(persistedSnapshotRowCount(interrupted.databasePath, direct.id, 'symbols')).toBe(0);
       expect(persistedSnapshotRowCount(interrupted.databasePath, direct.id, 'building_materialization_batches')).toBe(
@@ -604,7 +611,7 @@ describe('code graph incremental-overlay differential properties', () => {
     }
   });
 
-  it('reclaims an interrupted dirty direct build before indexing the restored clean worktree', async () => {
+  it('indexes the restored clean worktree before detached cleanup reclaims an interrupted dirty build', async () => {
     const scenario = {
       baseTargets: [1, 0, 1],
       dirty: new Set([0, 2]),
@@ -649,6 +656,13 @@ describe('code graph incremental-overlay differential properties', () => {
 
       expect(clean.snapshot.dirty).toBe(false);
       expect(clean.snapshot.id).not.toMatch(/-direct$/);
+      expect(persistedSnapshotState(databasePath, interrupted.id)).toBe('retired');
+      await runEffect(
+        Effect.gen(function* () {
+          const store = yield* CodeGraphStore;
+          yield* store.pruneRetiredSnapshots(databasePath);
+        }),
+      );
       expect(persistedSnapshotState(databasePath, interrupted.id)).toBeUndefined();
       expect(persistedSnapshots(databasePath)).toEqual([
         {

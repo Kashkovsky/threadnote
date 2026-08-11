@@ -31,6 +31,7 @@ import {lastStatementChangeCount} from './store_activation_core.js';
 import {pruneRetiredSnapshotRows} from './store_retirement.js';
 import {chunk, uniqueBy, upsertRepository} from './store_utilities.js';
 import {
+  reclaimRetiredSnapshotPage,
   reclaimRetiredSnapshotRows,
   REEXPORT_CLOSURE_PAGE_MAXIMUM_ROWS,
   REEXPORT_CLOSURE_SEED_PAGE_ROWS,
@@ -171,6 +172,7 @@ const retireIncompleteWorktreeSnapshots = Effect.fn('codeGraph.retireIncompleteW
   retainedSnapshotIds: ReadonlySet<string>,
   writerGate?: CodeGraphWriterGate,
   onProgress?: CodeGraphRetiredSnapshotCleanupProgressCallback,
+  cleanupMode: 'deferred' | 'required' = 'required',
 ) {
   const sql = yield* SqlClient.SqlClient;
   yield* configureConnection(sql);
@@ -256,18 +258,32 @@ const retireIncompleteWorktreeSnapshots = Effect.fn('codeGraph.retireIncompleteW
       }),
     ),
   );
-  if (result.reclaimable.length > 0) {
+  if (cleanupMode === 'required' && result.reclaimable.length > 0) {
     yield* reclaimRetiredSnapshotRows(sql, result.reclaimable, runWrite, onProgress);
+  } else if (result.reclaimable.length > 0) {
+    const targets = result.reclaimable.slice(0, 100);
+    yield* onProgress?.({
+      pagesCompleted: 0,
+      rowsDeleted: 0,
+      snapshotsCompleted: 0,
+      snapshotsTotal: result.reclaimable.length,
+    }) ?? Effect.void;
+    const page = yield* runWrite(sql.withTransaction(reclaimRetiredSnapshotPage(sql, targets)));
+    yield* onProgress?.({
+      pagesCompleted: 1,
+      rowsDeleted: page.rowsDeleted,
+      snapshotsCompleted: page.complete ? targets.length : 0,
+      snapshotsTotal: result.reclaimable.length,
+    }) ?? Effect.void;
   }
-  return result.retired;
+  return {reclaimable: result.reclaimable.length, retired: result.retired};
 });
 
 /**
- * Superseded persistent builds can own repository-sized durable tables. Reclaim
- * their exact identities before the replacement build starts, one transaction
- * at a time. The writer gate is released between pages so linked worktrees can
- * make progress; unlike best-effort detached cleanup, this required path waits
- * through contention until every still-eligible target is gone.
+ * Superseded persistent builds can own repository-sized durable tables. The
+ * required mode reclaims their exact identities before replacement work; the
+ * indexer uses deferred mode so ordinary ready-snapshot reuse only performs the
+ * bounded retirement transaction and hands physical pages to routine cleanup.
  */
 
 const finalizePersistentMaterializationPlan = Effect.fn('codeGraph.finalizePersistentMaterializationPlan')(function* (

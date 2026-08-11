@@ -115,6 +115,7 @@ import {
 } from './embedding.js';
 import {TreeSitterRuntime, type TreeSitterRuntimeShape} from './tree_sitter/runtime.js';
 import {createWorkspaceAttributor} from './workspace.js';
+import {assessCodeGraphWorkspaceCompatibility} from './workspace_compatibility.js';
 import {makeCodeGraphBuildReporter, readCodeGraphBuildStatuses} from './build_status.js';
 import type {CodeGraphWorkspace} from './languages/types.js';
 import {
@@ -373,6 +374,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                             identity.worktreeId,
                             new Set(),
                             retiredSnapshotCleanupReporter(options.onProgress),
+                            {cleanupMode: 'deferred'},
                           );
                           yield* promoteReadySnapshotWithCapacity(
                             {
@@ -494,6 +496,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                         identity.worktreeId,
                         retainedSnapshotIds,
                         retiredSnapshotCleanupReporter(options.onProgress),
+                        {cleanupMode: 'deferred'},
                       );
                       if (reusableReady) {
                         if (existing?.id !== reusableReady.id) {
@@ -2816,9 +2819,6 @@ const assessIncrementalOverlayCompatibility = Effect.fn('codeGraph.assessIncreme
     return {mode: 'fallback', reason: 'extractor-context-changed'} satisfies IncrementalOverlayPreassessment;
   }
   const committedWorkspace = yield* input.languagePacks.discoverWorkspace(input.inventory.committedFiles);
-  if (committedWorkspace.fingerprint !== workspace.fingerprint) {
-    return {mode: 'fallback', reason: 'workspace-changed'} satisfies IncrementalOverlayPreassessment;
-  }
   const committedByPath = new Map(input.inventory.committedFiles.map(file => [file.path, file]));
   const effectiveByPath = new Map(input.inventory.files.map(file => [file.path, file]));
   if (
@@ -2839,6 +2839,10 @@ const assessIncrementalOverlayCompatibility = Effect.fn('codeGraph.assessIncreme
   });
   if (modifiedFiles.length === 0) {
     return {mode: 'fallback', reason: 'no-materialized-changes'} satisfies IncrementalOverlayPreassessment;
+  }
+  const workspaceCompatibility = assessCodeGraphWorkspaceCompatibility(committedWorkspace, workspace);
+  if (workspaceCompatibility.mode === 'fallback') {
+    return workspaceCompatibility satisfies IncrementalOverlayPreassessment;
   }
   const committedFiles = modifiedFiles.map(file => committedByPath.get(file.path)!);
   const changedDecodeBudget = yield* assessProjectClosureChangedDecodeBudget({
@@ -2876,7 +2880,7 @@ const assessIncrementalOverlayCompatibility = Effect.fn('codeGraph.assessIncreme
     return !committed || !hasSameCodeGraphResolutionSurface(committed.symbols, file.symbols);
   });
   const dynamicAliases = hasDynamicAliases(committedFacts) || hasDynamicAliases(effectiveFacts);
-  if (!dynamicAliases && !resolutionSurfaceChanged) {
+  if (!dynamicAliases && !resolutionSurfaceChanged && workspaceCompatibility.mode === 'unchanged') {
     if (finalCodeGraphFactBatches(effectiveFacts).length !== 1) {
       return {mode: 'fallback', reason: 'fact-budget-expanded'} satisfies IncrementalOverlayPreassessment;
     }
@@ -2897,6 +2901,8 @@ const assessIncrementalOverlayCompatibility = Effect.fn('codeGraph.assessIncreme
     languagePacks: input.languagePacks,
     layout: input.layout,
     store: input.store,
+    workspaceSeedProjectIds:
+      workspaceCompatibility.mode === 'project-closure' ? workspaceCompatibility.seedProjectIds : [],
   });
 });
 
@@ -2969,6 +2975,7 @@ const assessReusableCleanBaseCompatibility = Effect.fn('codeGraph.assessReusable
       languagePacks: input.languagePacks,
       layout: input.layout,
       store: input.store,
+      workspaceSeedProjectIds: [],
     });
   }
   if (finalCodeGraphFactBatches(currentFacts).length !== 1) {
@@ -3006,6 +3013,7 @@ const assessProjectIncrementalClosureCompatibility = Effect.fn(
   readonly languagePacks: CodeGraphLanguagePackRegistryShape;
   readonly layout: CodeGraphLayout;
   readonly store: CodeGraphStoreShape;
+  readonly workspaceSeedProjectIds: readonly string[];
 }) {
   const seeds = assessProjectClosureSeeds({
     committedFacts: input.changedBaseFacts,
@@ -3015,11 +3023,14 @@ const assessProjectIncrementalClosureCompatibility = Effect.fn(
   if (seeds.mode === 'fallback') {
     return seeds satisfies IncrementalOverlayPreassessment;
   }
+  const seedProjectIds = [...new Set([...seeds.seedProjectIds, ...input.workspaceSeedProjectIds])].sort(
+    compareCodeUnits,
+  );
   const selection = selectProjectIncrementalClosure({
     files: input.currentFiles,
     modifiedPaths: input.currentChangedFiles.map(file => file.path),
     projects: input.currentWorkspace.projects,
-    seedProjectIds: seeds.seedProjectIds,
+    seedProjectIds,
     workspaceDiagnostics: input.currentWorkspace.diagnostics,
   });
   if (selection.mode === 'fallback') {
@@ -3038,7 +3049,7 @@ const assessProjectIncrementalClosureCompatibility = Effect.fn(
     files: input.currentFiles,
     modifiedPaths: input.currentChangedFiles.map(file => file.path),
     projects: input.currentWorkspace.projects,
-    seedProjectIds: seeds.seedProjectIds,
+    seedProjectIds,
     workspaceDiagnostics: input.currentWorkspace.diagnostics,
   });
   if (plan.mode === 'fallback') {
@@ -3982,16 +3993,11 @@ export function extractorSetIdentity(
   files: readonly {readonly contentHash: string; readonly path: string}[],
   languagePacks: CodeGraphLanguagePackRegistryShape = BUILTIN_LANGUAGE_PACK_REGISTRY,
 ): string {
-  const context = files
-    .filter(file => languagePacks.isResolutionContext(file.path))
-    .map(file => `${file.path}\0${file.contentHash}`)
-    .sort()
-    .join('\n');
   const paths = files.map(file => file.path);
   const activeParsers = languagePacks.activeCacheIdentities(paths).join('\n');
   const activeDerivations = languagePacks.activeDerivationIdentities(paths).join('\n');
   return sha256HexSync(
-    `${CODE_GRAPH_EXTRACTOR_SET_VERSION}\nactive-parser-packs:\n${activeParsers}\nactive-derivations:\n${activeDerivations}\nignore-policy:3\nresolution-context:\n${context}`,
+    `${CODE_GRAPH_EXTRACTOR_SET_VERSION}\nactive-parser-packs:\n${activeParsers}\nactive-derivations:\n${activeDerivations}\nignore-policy:3\nresolution-context-policy:semantic-workspace-v1`,
   );
 }
 
