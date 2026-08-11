@@ -1,4 +1,4 @@
-import {it as effectIt} from "@effect/vitest";
+import {it as effectIt} from '@effect/vitest';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {mkdtempSync, rmSync} from '../helpers/node-fs.js';
 import {tmpdir} from '../helpers/node-os.js';
@@ -24,67 +24,71 @@ afterEach(() => {
 });
 
 describe('SQLite code graph export integration', () => {
-  effectIt.effect('reads deterministic bounded pages from a ready snapshot for JSON and GraphML', () => Effect.gen(function* () {
-    const root = mkdtempSync(join(tmpdir(), 'threadnote-graph-export-'));
-    temporaryRoots.push(root);
-    const databasePath = join(root, 'graph.sqlite');
-    const identity = repositoryIdentity(root);
-    const snapshot = readySnapshot(identity);
-    const symbols = storedSymbols();
-    const edges = storedEdges();
-    const files = storedFiles();
+  effectIt.effect('reads deterministic bounded pages from a ready snapshot for JSON and GraphML', () =>
+    Effect.gen(function* () {
+      const root = mkdtempSync(join(tmpdir(), 'threadnote-graph-export-'));
+      temporaryRoots.push(root);
+      const databasePath = join(root, 'graph.sqlite');
+      const identity = repositoryIdentity(root);
+      const snapshot = readySnapshot(identity);
+      const symbols = storedSymbols();
+      const edges = storedEdges();
+      const files = storedFiles();
 
-    const result = yield* (Effect.gen(function* () {
+      const result = yield* Effect.gen(function* () {
         const store = yield* CodeGraphStore;
         yield* store.activate(databasePath, identity, snapshot, files, symbols, edges);
         const firstJson = yield* capture(databasePath, snapshot, 'json', 1);
         const secondJson = yield* capture(databasePath, snapshot, 'json', 2);
         const graphml = yield* capture(databasePath, snapshot, 'graphml', 1);
         return {firstJson, graphml, secondJson};
-      }).pipe(provideTestLayer(codeGraphStoreLayer)));
+      }).pipe(provideTestLayer(codeGraphStoreLayer));
 
-    expect(result.firstJson.output).toBe(result.secondJson.output);
-    const json = JSON.parse(result.firstJson.output) as {
-      edges: CodeGraphEdge[];
-      nodes: CodeGraphSymbol[];
-      summary: {edges: {written: number}; nodes: {written: number}};
-    };
-    expect(json.nodes.map(node => `${node.path}#${node.qualifiedName}`)).toEqual([
-      'src/a.ts#Alpha',
-      'src/z.ts#Zeta <&>',
-    ]);
-    expect(json.edges.map(edge => edge.id)).toEqual(['edge-alpha', 'edge-zeta', 'edge-unresolved']);
-    expect(json.summary).toMatchObject({edges: {written: 3}, nodes: {written: 2}});
+      expect(result.firstJson.output).toBe(result.secondJson.output);
+      const json = JSON.parse(result.firstJson.output) as {
+        edges: CodeGraphEdge[];
+        nodes: CodeGraphSymbol[];
+        summary: {edges: {written: number}; nodes: {written: number}};
+      };
+      expect(json.nodes.map(node => `${node.path}#${node.qualifiedName}`)).toEqual([
+        'src/a.ts#Alpha',
+        'src/z.ts#Zeta <&>',
+      ]);
+      expect(json.edges.map(edge => edge.id)).toEqual(['edge-alpha', 'edge-zeta', 'edge-unresolved']);
+      expect(json.summary).toMatchObject({edges: {written: 3}, nodes: {written: 2}});
 
-    expect(result.graphml.output).toContain('<node id="node-alpha">');
-    expect(result.graphml.output).toContain('Zeta &lt;&amp;&gt;');
-    expect(result.graphml.output).toContain('<edge id="edge-alpha" source="node-alpha" target="node-zeta">');
-    expect(result.graphml.output).toContain('<edge id="edge-zeta" source="node-zeta" target="node-alpha">');
-    expect(result.graphml.output).toContain(
-      '<edge id="edge-unresolved" source="node-zeta" target="tn-unresolved-target-3">',
-    );
-    expect(result.graphml.summary.edges).toMatchObject({omitted: 0, scanned: 3, written: 3});
-    expect(result.graphml.summary.nodes).toMatchObject({supplemental: 1, written: 2});
-  }));
+      expect(result.graphml.output).toContain('<node id="node-alpha">');
+      expect(result.graphml.output).toContain('Zeta &lt;&amp;&gt;');
+      expect(result.graphml.output).toContain('<edge id="edge-alpha" source="node-alpha" target="node-zeta">');
+      expect(result.graphml.output).toContain('<edge id="edge-zeta" source="node-zeta" target="node-alpha">');
+      expect(result.graphml.output).toContain(
+        '<edge id="edge-unresolved" source="node-zeta" target="tn-unresolved-target-3">',
+      );
+      expect(result.graphml.summary.edges).toMatchObject({omitted: 0, scanned: 3, written: 3});
+      expect(result.graphml.summary.nodes).toMatchObject({supplemental: 1, written: 2});
+    }),
+  );
 
-  effectIt.effect('renews only an active SQLite snapshot lease', () => Effect.gen(function* () {
-    const root = mkdtempSync(join(tmpdir(), 'threadnote-graph-export-lease-'));
-    temporaryRoots.push(root);
-    const databasePath = join(root, 'graph.sqlite');
-    const identity = repositoryIdentity(root);
-    const snapshot = readySnapshot(identity);
+  effectIt.effect('renews only an active SQLite snapshot lease', () =>
+    Effect.gen(function* () {
+      const root = mkdtempSync(join(tmpdir(), 'threadnote-graph-export-lease-'));
+      temporaryRoots.push(root);
+      const databasePath = join(root, 'graph.sqlite');
+      const identity = repositoryIdentity(root);
+      const snapshot = readySnapshot(identity);
 
-    const result = yield* (Effect.gen(function* () {
+      const result = yield* Effect.gen(function* () {
         const store = yield* CodeGraphStore;
         yield* store.activate(databasePath, identity, snapshot, storedFiles(), storedSymbols(), storedEdges());
         const lease = yield* store.acquireSnapshotLease(databasePath, snapshot.id, 1_000);
         yield* store.renewSnapshotLease(databasePath, lease, 5_000);
         yield* store.releaseSnapshotLease(databasePath, lease);
         return yield* store.renewSnapshotLease(databasePath, lease, 5_000).pipe(Effect.result);
-      }).pipe(provideTestLayer(codeGraphStoreLayer)));
+      }).pipe(provideTestLayer(codeGraphStoreLayer));
 
-    expect(result._tag).toBe('Failure');
-  }));
+      expect(result._tag).toBe('Failure');
+    }),
+  );
 });
 
 const codeGraphStoreLayer = CodeGraphStore.layer.pipe(

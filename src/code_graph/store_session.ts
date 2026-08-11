@@ -64,9 +64,7 @@ export function useExistingDatabase<A, E, R>(
         readonly: false,
         readwrite: true,
       }),
-    ).pipe(
-      Effect.flatMap(context => effect.pipe(Effect.provide(context))),
-    ),
+    ).pipe(Effect.flatMap(context => effect.pipe(Effect.provide(context)))),
   );
 }
 
@@ -84,9 +82,7 @@ export function useDatabaseDirect<A, E, R>(
         readwrite: false,
       })
     : SqliteClient.layer({disableWAL: true, filename: databasePath});
-  return Effect.scoped(
-    Layer.build(layer).pipe(Effect.flatMap(context => effect.pipe(Effect.provide(context)))),
-  );
+  return Effect.scoped(Layer.build(layer).pipe(Effect.flatMap(context => effect.pipe(Effect.provide(context)))));
 }
 
 export const configureConnection = Effect.fn('codeGraph.configureConnection')(function* (sql: SqlClient.SqlClient) {

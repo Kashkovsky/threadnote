@@ -1,4 +1,4 @@
-import {it as effectIt} from "@effect/vitest";
+import {it as effectIt} from '@effect/vitest';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {BunCrypto, BunPath} from '@effect/platform-bun';
 import {Effect, FileSystem, Layer, Option} from 'effect';
@@ -181,61 +181,64 @@ describe('candidate-memory formation', () => {
     }
   });
 
-  effectIt.effect('normalizes Windows filesystem separators in comparison target URIs', () => Effect.gen(function* () {
-    const agentContextHome = 'C:\\context';
-    const projectDirectory = 'C:\\context\\data\\local\\user\\me\\memories\\durable\\projects\\threadnote';
-    const memoryPath = `${projectDirectory}\\recall.md`;
-    const memoryContent = [
-      'MEMORY',
-      'kind: durable',
-      'status: active',
-      'project: threadnote',
-      'topic: recall-memory-formation',
-      'source_agent_client: test',
-      'timestamp: 2026-07-23T00:00:00.000Z',
-      '',
-      '## Decisions',
-      '- Keep application workflows Effect-native.',
-    ].join('\n');
-    const WindowsFileSystemLayer = FileSystem.layerNoop({
-      readDirectory: path => Effect.succeed(path === projectDirectory ? ['recall.md'] : []),
-      readFileString: () => Effect.succeed(memoryContent),
-      realPath: path => Effect.succeed(path),
-      stat: path =>
-        Effect.succeed({
-          atime: Option.none(),
-          birthtime: Option.none(),
-          blksize: Option.none(),
-          blocks: Option.none(),
-          dev: 0,
-          gid: Option.none(),
-          ino: Option.none(),
-          mode: 0,
-          mtime: Option.none(),
-          nlink: Option.none(),
-          rdev: Option.none(),
-          size: FileSystem.Size(0),
-          type: path === memoryPath ? 'File' : 'Directory',
-          uid: Option.none(),
-        } satisfies FileSystem.File.Info),
-    });
-    const WindowsTestLayer = Layer.mergeAll(BunCrypto.layer, BunPath.layerWin32, WindowsFileSystemLayer);
-    const records = yield* (readActiveProjectMemories({account: 'local', agentContextHome, user: 'me'}, 'threadnote').pipe(
-        provideTestLayer(WindowsTestLayer),
-      ));
-    const review = yield* (buildCandidateReview(
+  effectIt.effect('normalizes Windows filesystem separators in comparison target URIs', () =>
+    Effect.gen(function* () {
+      const agentContextHome = 'C:\\context';
+      const projectDirectory = 'C:\\context\\data\\local\\user\\me\\memories\\durable\\projects\\threadnote';
+      const memoryPath = `${projectDirectory}\\recall.md`;
+      const memoryContent = [
+        'MEMORY',
+        'kind: durable',
+        'status: active',
+        'project: threadnote',
+        'topic: recall-memory-formation',
+        'source_agent_client: test',
+        'timestamp: 2026-07-23T00:00:00.000Z',
+        '',
+        '## Decisions',
+        '- Keep application workflows Effect-native.',
+      ].join('\n');
+      const WindowsFileSystemLayer = FileSystem.layerNoop({
+        readDirectory: path => Effect.succeed(path === projectDirectory ? ['recall.md'] : []),
+        readFileString: () => Effect.succeed(memoryContent),
+        realPath: path => Effect.succeed(path),
+        stat: path =>
+          Effect.succeed({
+            atime: Option.none(),
+            birthtime: Option.none(),
+            blksize: Option.none(),
+            blocks: Option.none(),
+            dev: 0,
+            gid: Option.none(),
+            ino: Option.none(),
+            mode: 0,
+            mtime: Option.none(),
+            nlink: Option.none(),
+            rdev: Option.none(),
+            size: FileSystem.Size(0),
+            type: path === memoryPath ? 'File' : 'Directory',
+            uid: Option.none(),
+          } satisfies FileSystem.File.Info),
+      });
+      const WindowsTestLayer = Layer.mergeAll(BunCrypto.layer, BunPath.layerWin32, WindowsFileSystemLayer);
+      const records = yield* readActiveProjectMemories(
+        {account: 'local', agentContextHome, user: 'me'},
+        'threadnote',
+      ).pipe(provideTestLayer(WindowsTestLayer));
+      const review = yield* buildCandidateReview(
         {...input, handoff: [], invariants: [], preferences: []},
         records,
         new Date('2026-07-23T10:00:00.000Z'),
-      ).pipe(provideTestLayer(WindowsTestLayer)));
+      ).pipe(provideTestLayer(WindowsTestLayer));
 
-    expect(records[0]?.uri).toBe('threadnote://user/me/memories/durable/projects/threadnote/recall.md');
-    expect(review.candidates[0]).toMatchObject({
-      comparison: 'duplicate',
-      recommendation: 'no_action',
-      targetUri: 'threadnote://user/me/memories/durable/projects/threadnote/recall.md',
-    });
-  }));
+      expect(records[0]?.uri).toBe('threadnote://user/me/memories/durable/projects/threadnote/recall.md');
+      expect(review.candidates[0]).toMatchObject({
+        comparison: 'duplicate',
+        recommendation: 'no_action',
+        targetUri: 'threadnote://user/me/memories/durable/projects/threadnote/recall.md',
+      });
+    }),
+  );
 
   it('rejects unbounded closeout arrays, items, and total payloads', () => {
     expect(validateSessionCloseoutInput({...input, evidence: Array.from({length: 33}, () => 'file.md')})).toContain(

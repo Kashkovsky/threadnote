@@ -448,8 +448,9 @@ describe('code graph external benchmark harness', () => {
     });
   });
 
-  effectIt.effect('applies and restores the overlay byte-for-byte while preserving concurrent edits', () => Effect.gen(function* () {
-    const result = yield* (Effect.scoped(
+  effectIt.effect('applies and restores the overlay byte-for-byte while preserving concurrent edits', () =>
+    Effect.gen(function* () {
+      const result = yield* Effect.scoped(
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
@@ -486,17 +487,20 @@ describe('code graph external benchmark harness', () => {
             restoreConflict: restoreConflict._tag,
           };
         }),
-      ).pipe(provideTestLayer(ApplicationLayer)));
+      ).pipe(provideTestLayer(ApplicationLayer));
 
-    expect([...result.applied]).toEqual([
-      ...new TextEncoder().encode("\uFEFFimport 'threadnote-benchmark-overlay';\r\nexport const source = 1;\r\n"),
-    ]);
-    expect([...result.restored]).toEqual([...new TextEncoder().encode('\uFEFFexport const source = 1;\r\n')]);
-    expect(result.applyConflict).toBe('Failure');
-    expect(result.restoreConflict).toBe('Failure');
-    expect([...result.afterApplyConflict]).toEqual([...new TextEncoder().encode('export const userEdit = true;\n')]);
-    expect([...result.afterRestoreConflict]).toEqual([...new TextEncoder().encode('export const userEdit = true;\n')]);
-  }));
+      expect([...result.applied]).toEqual([
+        ...new TextEncoder().encode("\uFEFFimport 'threadnote-benchmark-overlay';\r\nexport const source = 1;\r\n"),
+      ]);
+      expect([...result.restored]).toEqual([...new TextEncoder().encode('\uFEFFexport const source = 1;\r\n')]);
+      expect(result.applyConflict).toBe('Failure');
+      expect(result.restoreConflict).toBe('Failure');
+      expect([...result.afterApplyConflict]).toEqual([...new TextEncoder().encode('export const userEdit = true;\n')]);
+      expect([...result.afterRestoreConflict]).toEqual([
+        ...new TextEncoder().encode('export const userEdit = true;\n'),
+      ]);
+    }),
+  );
 
   it('rejects non-UTF-8 overlay sources without lossy replacement', () => {
     expect(() => decodeBenchmarkSource(Uint8Array.from([0xc3, 0x28]))).toThrow('valid UTF-8');

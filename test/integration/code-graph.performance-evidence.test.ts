@@ -138,11 +138,13 @@ describe('external performance evidence', () => {
     });
   });
 
-  effectIt.effect('reports only privacy-safe filesystem and storage-medium categories', () => Effect.gen(function* () {
-    const evidence = yield* (benchmarkStorageEnvironment(process.cwd()).pipe(provideTestLayer(ApplicationLayer)));
-    expect(evidence.filesystem).toMatch(/^[a-z0-9._+-]+$/);
-    expect(['rotational', 'solid-state', 'unknown', 'virtual-or-network']).toContain(evidence.medium);
-  }));
+  effectIt.effect('reports only privacy-safe filesystem and storage-medium categories', () =>
+    Effect.gen(function* () {
+      const evidence = yield* benchmarkStorageEnvironment(process.cwd()).pipe(provideTestLayer(ApplicationLayer));
+      expect(evidence.filesystem).toMatch(/^[a-z0-9._+-]+$/);
+      expect(['rotational', 'solid-state', 'unknown', 'virtual-or-network']).toContain(evidence.medium);
+    }),
+  );
 
   it('rejects Manager responses that exceed or misreport their requested graph budget', () => {
     const limits = {edgeLimit: 1_500, nodeLimit: 500};
@@ -164,90 +166,107 @@ describe('external performance evidence', () => {
     ).toThrow('exceeded or misreported');
   });
 
-  effectIt.effect('measures real Manager catalog, visualization, detail, query, payload, and client layout preparation', () => Effect.gen(function* () {
-    const evidence = yield* (Effect.scoped(
-        Effect.gen(function* () {
-          const fixture = yield* prepareCodeGraphFixture('code-graph-v1');
-          const indexer = yield* CodeGraphIndexer;
-          const summary = yield* indexer.index({cwd: fixture.repository, threadnoteHome: fixture.home});
-          return yield* benchmarkManagerPerformance(
-            fixture.home,
-            summary.identity.repositoryId,
-            summary.snapshot.id,
-            'exclusive file lock',
-            2,
-            1,
-          );
-        }),
-      ).pipe(provideTestLayer(ApplicationLayer)));
+  effectIt.effect(
+    'measures real Manager catalog, visualization, detail, query, payload, and client layout preparation',
+    () =>
+      Effect.gen(function* () {
+        const evidence = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const fixture = yield* prepareCodeGraphFixture('code-graph-v1');
+            const indexer = yield* CodeGraphIndexer;
+            const summary = yield* indexer.index({cwd: fixture.repository, threadnoteHome: fixture.home});
+            return yield* benchmarkManagerPerformance(
+              fixture.home,
+              summary.identity.repositoryId,
+              summary.snapshot.id,
+              'exclusive file lock',
+              2,
+              1,
+            );
+          }),
+        ).pipe(provideTestLayer(ApplicationLayer));
 
-    expect(evidence.catalogColdMilliseconds).toHaveLength(1);
-    expect(evidence.catalogWarmMilliseconds).toHaveLength(2);
-    expect(evidence.overviewColdMilliseconds).toHaveLength(1);
-    expect(evidence.overviewWarmMilliseconds).toHaveLength(2);
-    expect(evidence.detailColdMilliseconds).toHaveLength(1);
-    expect(evidence.nodeDetailColdMilliseconds).toHaveLength(1);
-    expect(evidence.queryMilliseconds).toHaveLength(2);
-    expect(evidence.queryPayloadBytes).toHaveLength(2);
-    expect(evidence.layoutPreparationProxyMilliseconds).toHaveLength(2);
-    expect(evidence.overviewNodeCount).toBeGreaterThan(0);
-    expect(evidence.detailNodeCount).toBeGreaterThan(0);
-    expect(evidence.maxResponsePayloadBytes.every(bytes => bytes > 0)).toBe(true);
-    expect(evidence).toMatchObject({
-      edgeBudget: 1_500,
-      nodeBudget: 500,
-      requestCancellationPassed: true,
-      snapshotBindingPassed: true,
-      staleResponseRejectionPassed: true,
-    });
-  }), 30_000);
+        expect(evidence.catalogColdMilliseconds).toHaveLength(1);
+        expect(evidence.catalogWarmMilliseconds).toHaveLength(2);
+        expect(evidence.overviewColdMilliseconds).toHaveLength(1);
+        expect(evidence.overviewWarmMilliseconds).toHaveLength(2);
+        expect(evidence.detailColdMilliseconds).toHaveLength(1);
+        expect(evidence.nodeDetailColdMilliseconds).toHaveLength(1);
+        expect(evidence.queryMilliseconds).toHaveLength(2);
+        expect(evidence.queryPayloadBytes).toHaveLength(2);
+        expect(evidence.layoutPreparationProxyMilliseconds).toHaveLength(2);
+        expect(evidence.overviewNodeCount).toBeGreaterThan(0);
+        expect(evidence.detailNodeCount).toBeGreaterThan(0);
+        expect(evidence.maxResponsePayloadBytes.every(bytes => bytes > 0)).toBe(true);
+        expect(evidence).toMatchObject({
+          edgeBudget: 1_500,
+          nodeBudget: 500,
+          requestCancellationPassed: true,
+          snapshotBindingPassed: true,
+          staleResponseRejectionPassed: true,
+        });
+      }),
+    30_000,
+  );
 
-  effectIt.effect('indexes and reads two dirty linked worktrees concurrently without cross-contamination', () => Effect.gen(function* () {
-    const evidence = yield* (Effect.scoped(
-        Effect.gen(function* () {
-          const fs = yield* FileSystem.FileSystem;
-          const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-worktree-evidence-home-'});
-          return yield* benchmarkConcurrentWorktreeIsolation(home);
-        }),
-      ).pipe(provideTestLayer(ApplicationLayer)));
-    expect(evidence).toMatchObject({
-      cleanupPassed: true,
-      indexedFiles: 2,
-      isolationPassed: true,
-      simultaneousWorktrees: 2,
-      topology: 'bounded-synthetic-linked-worktrees-in-measured-primary-home',
-    });
-    expect(evidence.durationMilliseconds).toBeGreaterThan(0);
-  }), 30_000);
+  effectIt.effect(
+    'indexes and reads two dirty linked worktrees concurrently without cross-contamination',
+    () =>
+      Effect.gen(function* () {
+        const evidence = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const fs = yield* FileSystem.FileSystem;
+            const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-worktree-evidence-home-'});
+            return yield* benchmarkConcurrentWorktreeIsolation(home);
+          }),
+        ).pipe(provideTestLayer(ApplicationLayer));
+        expect(evidence).toMatchObject({
+          cleanupPassed: true,
+          indexedFiles: 2,
+          isolationPassed: true,
+          simultaneousWorktrees: 2,
+          topology: 'bounded-synthetic-linked-worktrees-in-measured-primary-home',
+        });
+        expect(evidence.durationMilliseconds).toBeGreaterThan(0);
+      }),
+    30_000,
+  );
 
-  effectIt.effect('cleans interrupted worktree controls without replacing an existing ready snapshot', () => Effect.gen(function* () {
-    const evidence = yield* (Effect.scoped(
-        Effect.gen(function* () {
-          const fixture = yield* prepareCodeGraphFixture('code-graph-v1');
-          const indexer = yield* CodeGraphIndexer;
-          const query = yield* CodeGraphQueryService;
-          const baseline = yield* indexer.index({cwd: fixture.repository, threadnoteHome: fixture.home});
-          const failed = yield* benchmarkConcurrentWorktreeIsolation(fixture.home, {
-            failureInjection: 'after-index',
-          }).pipe(Effect.match({onFailure: () => true, onSuccess: () => false}));
-          const status = yield* query.status(fixture.home, fixture.repository);
-          return {baselineSnapshotId: baseline.snapshot.id, failed, readySnapshotId: status.readySnapshot?.id};
-        }),
-      ).pipe(provideTestLayer(ApplicationLayer)));
-    expect(evidence).toEqual({
-      baselineSnapshotId: evidence.baselineSnapshotId,
-      failed: true,
-      readySnapshotId: evidence.baselineSnapshotId,
-    });
-  }), 60_000);
+  effectIt.effect(
+    'cleans interrupted worktree controls without replacing an existing ready snapshot',
+    () =>
+      Effect.gen(function* () {
+        const evidence = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const fixture = yield* prepareCodeGraphFixture('code-graph-v1');
+            const indexer = yield* CodeGraphIndexer;
+            const query = yield* CodeGraphQueryService;
+            const baseline = yield* indexer.index({cwd: fixture.repository, threadnoteHome: fixture.home});
+            const failed = yield* benchmarkConcurrentWorktreeIsolation(fixture.home, {
+              failureInjection: 'after-index',
+            }).pipe(Effect.match({onFailure: () => true, onSuccess: () => false}));
+            const status = yield* query.status(fixture.home, fixture.repository);
+            return {baselineSnapshotId: baseline.snapshot.id, failed, readySnapshotId: status.readySnapshot?.id};
+          }),
+        ).pipe(provideTestLayer(ApplicationLayer));
+        expect(evidence).toEqual({
+          baselineSnapshotId: evidence.baselineSnapshotId,
+          failed: true,
+          readySnapshotId: evidence.baselineSnapshotId,
+        });
+      }),
+    60_000,
+  );
 
-  effectIt.effect('treats an already-removed owned fixture root as a completed teardown', () => Effect.gen(function* () {
-    yield* (Effect.scoped(
+  effectIt.effect('treats an already-removed owned fixture root as a completed teardown', () =>
+    Effect.gen(function* () {
+      yield* Effect.scoped(
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const fixture = yield* prepareCodeGraphFixture('code-graph-v1');
           yield* fs.remove(fixture.root, {force: true, recursive: true});
         }),
-      ).pipe(provideTestLayer(ApplicationLayer)));
-  }));
+      ).pipe(provideTestLayer(ApplicationLayer));
+    }),
+  );
 });

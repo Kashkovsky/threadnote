@@ -1,4 +1,4 @@
-import {it as effectIt} from "@effect/vitest";
+import {it as effectIt} from '@effect/vitest';
 import {TestError} from '../helpers/test-error.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {Deferred, Effect, Exit, Logger, Ref} from 'effect';
@@ -58,8 +58,9 @@ describe('automatic code graph recovery', () => {
     );
   });
 
-  effectIt.effect('never turns no-space load into a second maintenance attempt', () => Effect.gen(function* () {
-    yield* (Effect.gen(function* () {
+  effectIt.effect('never turns no-space load into a second maintenance attempt', () =>
+    Effect.gen(function* () {
+      yield* Effect.gen(function* () {
         const calls = yield* Ref.make(0);
         const coordinator = yield* makeCodeGraphAutomaticRecoveryCoordinator();
         const admissions = yield* Effect.all(
@@ -81,11 +82,13 @@ describe('automatic code graph recovery', () => {
             state: 'not-actionable-here',
           })),
         );
-      }).pipe(Effect.scoped));
-  }));
+      }).pipe(Effect.scoped);
+    }),
+  );
 
-  effectIt.effect('fails closed when a direct recovery key is not an opaque worktree identity', () => Effect.gen(function* () {
-    yield* (Effect.gen(function* () {
+  effectIt.effect('fails closed when a direct recovery key is not an opaque worktree identity', () =>
+    Effect.gen(function* () {
+      yield* Effect.gen(function* () {
         const calls = yield* Ref.make(0);
         const coordinator = yield* makeCodeGraphAutomaticRecoveryCoordinator();
         const admission = yield* coordinator.request({
@@ -101,11 +104,13 @@ describe('automatic code graph recovery', () => {
         });
         expect(yield* Ref.get(calls)).toBe(0);
         expect(JSON.stringify(admission)).not.toContain('/private');
-      }).pipe(Effect.scoped));
-  }));
+      }).pipe(Effect.scoped);
+    }),
+  );
 
-  effectIt.effect('resolves a CLI-shaped key before additive admission and reuses that identity for one tick', () => Effect.gen(function* () {
-    yield* (Effect.gen(function* () {
+  effectIt.effect('resolves a CLI-shaped key before additive admission and reuses that identity for one tick', () =>
+    Effect.gen(function* () {
+      yield* Effect.gen(function* () {
         const resolverCalls = yield* Ref.make(0);
         const maintenanceCalls = yield* Ref.make(0);
         const completed = yield* Deferred.make<void>();
@@ -135,11 +140,13 @@ describe('automatic code graph recovery', () => {
         expect(admission).toEqual({action: 'routine-maintenance', state: 'scheduled'});
         expect(yield* Ref.get(resolverCalls)).toBe(1);
         expect(yield* Ref.get(maintenanceCalls)).toBe(1);
-      }).pipe(Effect.scoped));
-  }));
+      }).pipe(Effect.scoped);
+    }),
+  );
 
-  effectIt.effect('coalesces 256 MCP-shaped failures before resolving identity or opening maintenance', () => Effect.gen(function* () {
-    yield* (Effect.gen(function* () {
+  effectIt.effect('coalesces 256 MCP-shaped failures before resolving identity or opening maintenance', () =>
+    Effect.gen(function* () {
+      yield* Effect.gen(function* () {
         const resolverCalls = yield* Ref.make(0);
         const maintenanceCalls = yield* Ref.make(0);
         const started = yield* Deferred.make<void>();
@@ -171,11 +178,13 @@ describe('automatic code graph recovery', () => {
         expect(admissions.filter(admission => admission.state === 'scheduled')).toHaveLength(1);
         expect(admissions.filter(admission => admission.state === 'coalesced')).toHaveLength(255);
         yield* Deferred.succeed(release, undefined);
-      }).pipe(Effect.scoped));
-  }));
+      }).pipe(Effect.scoped);
+    }),
+  );
 
-  effectIt.effect('does not resolve identity or mutate for any non-actionable failure class', () => Effect.gen(function* () {
-    yield* (Effect.gen(function* () {
+  effectIt.effect('does not resolve identity or mutate for any non-actionable failure class', () =>
+    Effect.gen(function* () {
+      yield* Effect.gen(function* () {
         const resolverCalls = yield* Ref.make(0);
         const maintenanceCalls = yield* Ref.make(0);
         const coordinator = yield* makeCodeGraphAutomaticRecoveryCoordinator();
@@ -198,11 +207,13 @@ describe('automatic code graph recovery', () => {
         expect(admissions).toEqual(nonActionable.map(code => ({action: 'none', code, state: 'not-actionable-here'})));
         expect(yield* Ref.get(resolverCalls)).toBe(0);
         expect(yield* Ref.get(maintenanceCalls)).toBe(0);
-      }).pipe(Effect.scoped));
-  }));
+      }).pipe(Effect.scoped);
+    }),
+  );
 
-  effectIt.effect('single-flights additive recovery without joining a held maintenance page', () => Effect.gen(function* () {
-    yield* (Effect.gen(function* () {
+  effectIt.effect('single-flights additive recovery without joining a held maintenance page', () =>
+    Effect.gen(function* () {
+      yield* Effect.gen(function* () {
         const calls = yield* Ref.make(0);
         const started = yield* Deferred.make<void>();
         const release = yield* Deferred.make<void>();
@@ -225,11 +236,13 @@ describe('automatic code graph recovery', () => {
         expect(admissions.filter(admission => admission.state === 'scheduled')).toHaveLength(1);
         expect(admissions.filter(admission => admission.state === 'coalesced')).toHaveLength(255);
         yield* Deferred.succeed(release, undefined);
-      }).pipe(Effect.scoped));
-  }));
+      }).pipe(Effect.scoped);
+    }),
+  );
 
-  effectIt.effect('opens a bounded cooldown after one additive recovery attempt', () => Effect.gen(function* () {
-    yield* (Effect.gen(function* () {
+  effectIt.effect('opens a bounded cooldown after one additive recovery attempt', () =>
+    Effect.gen(function* () {
+      yield* Effect.gen(function* () {
         const calls = yield* Ref.make(0);
         const now = yield* Ref.make(0);
         const completed = yield* Deferred.make<void>();
@@ -274,16 +287,18 @@ describe('automatic code graph recovery', () => {
         });
         for (let attempt = 0; attempt < 16 && (yield* Ref.get(calls)) < 2; attempt += 1) yield* Effect.yieldNow;
         expect(yield* Ref.get(calls)).toBe(2);
-      }).pipe(Effect.scoped));
-  }));
+      }).pipe(Effect.scoped);
+    }),
+  );
 
-  effectIt.effect('reports a failed first attempt without retaining native paths', () => Effect.gen(function* () {
-    const privateMarker = '/Users/private/recovery.sqlite';
-    const logs: string[] = [];
-    const logger = Logger.make<unknown, void>(options => {
-      logs.push(String(options.message));
-    });
-    yield* (Effect.gen(function* () {
+  effectIt.effect('reports a failed first attempt without retaining native paths', () =>
+    Effect.gen(function* () {
+      const privateMarker = '/Users/private/recovery.sqlite';
+      const logs: string[] = [];
+      const logger = Logger.make<unknown, void>(options => {
+        logs.push(String(options.message));
+      });
+      yield* Effect.gen(function* () {
         const attempted = yield* Deferred.make<void>();
         const coordinator = yield* makeCodeGraphAutomaticRecoveryCoordinator();
         const routineMaintenance = Deferred.succeed(attempted, undefined).pipe(
@@ -305,16 +320,18 @@ describe('automatic code graph recovery', () => {
           'Code graph automatic recovery maintenance failed (permission; recovery: fix-permissions).',
         );
         expect(`${JSON.stringify(settled)}\n${logs.join('\n')}`).not.toContain(privateMarker);
-      }).pipe(provideTestLayer(Logger.layer([logger])), Effect.scoped));
-  }));
+      }).pipe(provideTestLayer(Logger.layer([logger])), Effect.scoped);
+    }),
+  );
 
-  effectIt.effect('bounds a detached CLI identity-resolution failure without retaining its path', () => Effect.gen(function* () {
-    const privateMarker = '/Volumes/private/recovery-worktree';
-    const logs: string[] = [];
-    const logger = Logger.make<unknown, void>(options => {
-      logs.push(String(options.message));
-    });
-    yield* (Effect.gen(function* () {
+  effectIt.effect('bounds a detached CLI identity-resolution failure without retaining its path', () =>
+    Effect.gen(function* () {
+      const privateMarker = '/Volumes/private/recovery-worktree';
+      const logs: string[] = [];
+      const logger = Logger.make<unknown, void>(options => {
+        logs.push(String(options.message));
+      });
+      yield* Effect.gen(function* () {
         const attempted = yield* Deferred.make<void>();
         const coordinator = yield* makeCodeGraphAutomaticRecoveryCoordinator();
         const watcher = yield* makeCodeGraphWatcher(
@@ -350,15 +367,17 @@ describe('automatic code graph recovery', () => {
 
         expect(logs).toContain('Code graph automatic recovery scheduling failed (unknown; recovery: diagnose).');
         expect(logs.join('\n')).not.toContain(privateMarker);
-      }).pipe(provideTestLayer(Logger.layer([logger])), Effect.scoped));
-  }));
+      }).pipe(provideTestLayer(Logger.layer([logger])), Effect.scoped);
+    }),
+  );
 
-  effectIt.effect('preserves scope cancellation without reporting it as recovery failure', () => Effect.gen(function* () {
-    const logs: string[] = [];
-    const logger = Logger.make<unknown, void>(options => {
-      logs.push(String(options.message));
-    });
-    yield* (Effect.gen(function* () {
+  effectIt.effect('preserves scope cancellation without reporting it as recovery failure', () =>
+    Effect.gen(function* () {
+      const logs: string[] = [];
+      const logger = Logger.make<unknown, void>(options => {
+        logs.push(String(options.message));
+      });
+      yield* Effect.gen(function* () {
         const interrupted = yield* Ref.make(0);
         const started = yield* Deferred.make<void>();
         yield* Effect.scoped(
@@ -379,11 +398,13 @@ describe('automatic code graph recovery', () => {
 
         expect(yield* Ref.get(interrupted)).toBe(1);
         expect(logs.some(message => message.includes('automatic recovery maintenance failed'))).toBe(false);
-      }).pipe(provideTestLayer(Logger.layer([logger]))));
-  }));
+      }).pipe(provideTestLayer(Logger.layer([logger])));
+    }),
+  );
 
-  effectIt.effect('publishes background failure state while recovery scheduling remains held', () => Effect.gen(function* () {
-    yield* (Effect.gen(function* () {
+  effectIt.effect('publishes background failure state while recovery scheduling remains held', () =>
+    Effect.gen(function* () {
+      yield* Effect.gen(function* () {
         const recoveryCalls = yield* Ref.make(0);
         const recoveryStarted = yield* Deferred.make<void>();
         const watcher = yield* makeCodeGraphWatcher(
@@ -406,11 +427,13 @@ describe('automatic code graph recovery', () => {
           _tag: 'Some',
           value: {failure: {code: 'schema-additive'}, state: 'deferred'},
         });
-      }).pipe(Effect.scoped));
-  }));
+      }).pipe(Effect.scoped);
+    }),
+  );
 
-  effectIt.effect('does not make foreground watch wait for held recovery scheduling', () => Effect.gen(function* () {
-    yield* (Effect.gen(function* () {
+  effectIt.effect('does not make foreground watch wait for held recovery scheduling', () =>
+    Effect.gen(function* () {
+      yield* Effect.gen(function* () {
         const recoveryStarted = yield* Deferred.make<void>();
         const watcher = yield* makeCodeGraphWatcher(
           () => Effect.never,
@@ -422,8 +445,9 @@ describe('automatic code graph recovery', () => {
         yield* Deferred.await(recoveryStarted);
 
         expect(Exit.isFailure(exit)).toBe(true);
-      }).pipe(Effect.scoped));
-  }));
+      }).pipe(Effect.scoped);
+    }),
+  );
 });
 
 function refreshFailure(code: CodeGraphStoreFailureCode): CodeGraphRefreshFailure {

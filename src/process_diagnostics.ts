@@ -175,9 +175,7 @@ export const readThreadnoteProcessDiagnostics = Effect.fn('processDiagnostics.re
     const value = candidate.value.value;
     const running = system.isProcessRunning(value.processId);
     const identity =
-      running && value.processStartIdentity
-        ? yield* system.processStartIdentity(value.processId)
-        : undefined;
+      running && value.processStartIdentity ? yield* system.processStartIdentity(value.processId) : undefined;
     const identityMatches =
       value.processStartIdentity === undefined || identity === undefined || identity === value.processStartIdentity;
     if (!running || !identityMatches) {

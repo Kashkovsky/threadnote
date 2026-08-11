@@ -38,7 +38,9 @@ export class TreeSitterRuntime extends Context.Service<TreeSitterRuntime, TreeSi
       const runtimePath = path.join(assetRoot, RUNTIME_RELATIVE_PATH);
       const initialization = yield* Effect.cached(
         verifyAsset(fs, runtimePath, RUNTIME_SHA256, 'Tree-sitter runtime').pipe(
-          Effect.andThen(fromPromise('initialize tree-sitter parser', () => Parser.init({locateFile: () => runtimePath}))),
+          Effect.andThen(
+            fromPromise('initialize tree-sitter parser', () => Parser.init({locateFile: () => runtimePath})),
+          ),
           Effect.mapError(cause =>
             cause instanceof TreeSitterRuntimeError
               ? cause
