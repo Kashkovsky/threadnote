@@ -9,6 +9,7 @@
     "src/code_graph/inventory.ts",
     "src/manager_graph.tsx",
     "src/mcp_server.ts",
+    "src/memory.ts",
     "website/src/content/docs.ts"
   ],
   "plugins": [],

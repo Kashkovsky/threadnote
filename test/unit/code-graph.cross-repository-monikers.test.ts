@@ -736,6 +736,7 @@ function stageClean(
     );
     yield* store.activateStaged(databasePath, identity, target, {
       fileSetFingerprint: `files-${target.id}`,
+      packProvenance: [],
       workspaceFingerprint: workspace.fingerprint,
     });
   });
