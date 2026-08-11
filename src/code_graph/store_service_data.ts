@@ -118,7 +118,8 @@ type CodeGraphStoreDataMethods = Pick<
 >;
 
 export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): CodeGraphStoreDataMethods {
-  const {prepare, ensureSchemaInitialized, withWriterGate, fs, system, crypto} = runtime;
+  const {prepare, ensureSchemaInitialized, scheduleRoutinePhysicalCleanup, withWriterGate, fs, system, crypto} =
+    runtime;
   return {
     initialize: (databasePath, options) =>
       prepare(databasePath).pipe(
@@ -485,10 +486,17 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
         ),
         Effect.mapError(cause => storeError('load resumable code graph snapshot by identity', cause)),
       ),
-    retireIncompleteWorktreeSnapshots: (databasePath, repositoryId, worktreeId, retainedSnapshotIds, onProgress) =>
+    retireIncompleteWorktreeSnapshots: (
+      databasePath,
+      repositoryId,
+      worktreeId,
+      retainedSnapshotIds,
+      onProgress,
+      options,
+    ) =>
       Effect.gen(function* () {
         yield* prepare(databasePath);
-        return yield* useDatabase(
+        const result = yield* useDatabase(
           databasePath,
           retireIncompleteWorktreeSnapshots(
             repositoryId,
@@ -496,8 +504,13 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
             retainedSnapshotIds,
             effect => withWriterGate(databasePath, effect),
             onProgress,
+            options?.cleanupMode,
           ),
         );
+        if (options?.cleanupMode === 'deferred' && result.reclaimable > 0) {
+          yield* scheduleRoutinePhysicalCleanup(databasePath);
+        }
+        return result.retired;
       }).pipe(Effect.mapError(cause => storeError('retire incomplete code graph snapshots', cause))),
     markFailed: (databasePath, snapshotId, summary, ownerToken) =>
       prepare(databasePath).pipe(

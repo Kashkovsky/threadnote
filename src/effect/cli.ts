@@ -596,7 +596,23 @@ const graphBounds = {
     'limit',
     'other',
   ),
+  readTimeoutMilliseconds: optional(
+    describeFlag(
+      integerFlag('read-timeout-ms').pipe(
+        Flag.withSchema(Schema.Int.check(Schema.isBetween({minimum: 1, maximum: 600_000}))),
+      ),
+      'Foreground read/refresh budget in milliseconds; defaults to 25000',
+    ),
+  ),
 } as const;
+
+const graphFreshness = (value: 'current' | 'ready') =>
+  defaultChoice(
+    'freshness',
+    ['ready', 'current', 'allow-stale'],
+    'Ready uses an existing snapshot, current performs a bounded refresh, and allow-stale never starts indexing',
+    value,
+  );
 
 const graphStatus = Command.make(
   'status',
@@ -657,6 +673,7 @@ const graphQuery = Command.make(
   'query',
   {
     ...graphBounds,
+    freshness: graphFreshness('ready'),
     packageName: optionalString('package', 'Restrict results to one exact indexed package or workspace component'),
     query: requiredString('query', 'Concept, symbol, module, path, or documentation query'),
     workset: optionalString('workset', 'Query ready snapshots for a named seed-manifest workset'),
@@ -668,8 +685,10 @@ const graphNode = Command.make(
   'node',
   {
     cwd: graphBounds.cwd,
+    freshness: graphFreshness('ready'),
     json: graphBounds.json,
     nodeId: requiredString('node-id', 'Exact stable cgs_ node ID returned by graph inspection'),
+    readTimeoutMilliseconds: graphBounds.readTimeoutMilliseconds,
   },
   options => withRuntimeEffect(config => runCodeGraphInspect(config, {...options, operation: 'node'})),
 ).pipe(Command.withDescription('Read one code graph node by its exact stable ID'));
@@ -678,6 +697,7 @@ const graphNeighbors = Command.make(
   'neighbors',
   {
     ...graphBounds,
+    freshness: graphFreshness('ready'),
     direction: defaultChoice(
       'direction',
       ['both', 'incoming', 'outgoing'],
@@ -693,6 +713,7 @@ const graphExplain = Command.make(
   'explain',
   {
     ...graphBounds,
+    freshness: graphFreshness('ready'),
     symbol: requiredString('symbol', 'Symbol, qualified name, or source path selector'),
   },
   options => withRuntimeEffect(config => runCodeGraphInspect(config, {...options, operation: 'explain'})),
@@ -702,6 +723,7 @@ const graphPath = Command.make(
   'path',
   {
     ...graphBounds,
+    freshness: graphFreshness('current'),
     from: requiredString('from', 'Starting symbol, path#symbol selector, or stable cgs_ node ID'),
     to: requiredString('to', 'Target symbol, path#symbol selector, or stable cgs_ node ID'),
   },

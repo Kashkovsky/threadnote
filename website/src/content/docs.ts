@@ -1479,6 +1479,10 @@ threadnote share conflict resolve <id> --take shared`,
             text: 'The first graph query lazily builds a per-checkout SQLite snapshot below ~/.threadnote/indexes/code-graph. Committed source comes from bounded Git object reads; staged, unstaged, renamed, deleted, and eligible untracked files form the current worktree overlay.',
           },
           {
+            type: 'paragraph',
+            text: 'Graph query, node, neighbors, and explain read the latest ready snapshot by default, so ordinary semantic lookup does not queue behind a large refresh. Select --freshness current for a bounded current-worktree refresh, --freshness allow-stale to guarantee no indexing, and --read-timeout-ms to override the default 25-second foreground budget. Graph path remains current by default, and impact remains strict-current.',
+          },
+          {
             type: 'code',
             language: 'sh',
             code: `threadnote graph status

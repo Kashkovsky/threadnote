@@ -156,6 +156,12 @@ clones keep separate operational stores, and one worktree can never see another'
 symbol, edge, lexical-term, and vector counts are not capped by repository size; fixed-size processing batches bound
 transient work without truncating the stored graph.
 
+`graph query`, `node`, `neighbors`, and `explain` read the latest ready snapshot by default, so an ordinary semantic
+lookup does not wait behind a large refresh. Use `--freshness current` when the answer must include the current
+worktree; that refresh has a 25-second foreground budget by default and reports an explicit terminal indexing state if
+the budget expires. `--read-timeout-ms` changes the budget, while `--freshness allow-stale` guarantees that the read
+will not start indexing. `graph path` remains current by default, and `graph impact` remains strict-current.
+
 TypeScript and JavaScript retain the compiler-backed extractor that shipped with the first native graph. Java,
 Kotlin, Swift, Bash, C, C++, C#, Dart, Elixir, Go, HCL/Terraform, Julia, Lua, Objective-C, PHP, PowerShell, Python,
 Ruby, Rust, Scala, Solidity, Svelte, SystemVerilog/Verilog, Vue, and Zig use exact-pinned, bundled Tree-sitter WASM

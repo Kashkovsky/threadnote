@@ -8,6 +8,7 @@ import {
   estimatedMaterializationStorageBytes,
   factMaterializationBatches,
   graphContentIdentity,
+  extractorSetIdentity,
   materializationRowsWithStoreProgress,
   materializationStoragePlan,
   materializationStorageShortfalls,
@@ -37,6 +38,25 @@ const materializationRows = FC.record({
 });
 
 describe('code graph indexer properties', () => {
+  it('keeps extractor selection independent of content while detecting active pack changes', () => {
+    fc.assert(
+      fc.property(fc.string({minLength: 1}), fc.string({minLength: 1}), (leftHash, rightHash) => {
+        const paths = [
+          {contentHash: leftHash, path: 'MODULE.bazel'},
+          {contentHash: leftHash, path: 'src/index.ts'},
+          {contentHash: leftHash, path: 'tsconfig.json'},
+        ];
+        const changedContent = paths.map(file => ({...file, contentHash: rightHash}));
+        const identity = extractorSetIdentity(paths);
+
+        expect(extractorSetIdentity(changedContent)).toBe(identity);
+        expect(extractorSetIdentity([...paths].reverse())).toBe(identity);
+        expect(extractorSetIdentity([...paths, {contentHash: leftHash, path: 'src/tool.py'}])).not.toBe(identity);
+      }),
+      {numRuns: 100},
+    );
+  });
+
   it('includes the compact lexical format in deterministic snapshot identity', () => {
     const identity = {headCommit: 'a'.repeat(40), repositoryId: 'b'.repeat(64), worktreeId: 'c'.repeat(64)};
     const files = [{contentHash: 'd'.repeat(64), path: 'src/index.ts', source: 'commit'}];

@@ -17,15 +17,15 @@ import {
   type CodeGraphRepairCompletion,
   type ObsoleteCodeGraphStoreInventory,
 } from './maintenance.js';
-import {
-  canUseReadySnapshotAfterCleanCommitChange,
-  CodeGraphQueryService,
-  observationFromCodeGraphStatus,
-  renderCodeGraphResult,
-} from './query.js';
+import {CodeGraphQueryService, observationFromCodeGraphStatus, renderCodeGraphResult} from './query.js';
 import {repositoryChangesSince, repositoryIdentityMatchesExpectation, resolveRepositoryIdentity} from './repository.js';
 import {CodeGraphStore} from './store.js';
-import type {CodeGraphProgress, CodeGraphQueryOptions, RepositoryIdentityExpectation} from './types.js';
+import type {
+  CodeGraphProgress,
+  CodeGraphQueryOptions,
+  CodeGraphStatus,
+  RepositoryIdentityExpectation,
+} from './types.js';
 import {CodeGraphWatcher} from './watcher.js';
 import {inspectCodeGraphWorkset, renderCodeGraphWorksetResult} from './workset_query.js';
 import {CodeGraphAnalysis} from './analysis.js';
@@ -59,6 +59,108 @@ import {
 
 interface CwdOption {
   readonly cwd?: string;
+}
+
+export type CodeGraphCliFreshnessPolicy = 'allow-stale' | 'current' | 'ready';
+
+export interface CodeGraphCliReadPlan {
+  readonly refresh: boolean;
+  readonly strictFreshness: boolean;
+  readonly unavailable: boolean;
+}
+
+export const CODE_GRAPH_CLI_READ_TIMEOUT_MILLISECONDS = 25_000;
+const CODE_GRAPH_CLI_READ_RETRY_MILLISECONDS = 1_000;
+
+export function codeGraphCliReadPlan(
+  policy: CodeGraphCliFreshnessPolicy,
+  status: Pick<CodeGraphStatus, 'readySnapshot' | 'stale'>,
+): CodeGraphCliReadPlan {
+  const hasReadySnapshot = status.readySnapshot !== undefined;
+  const strictFreshness = policy === 'current';
+  const unavailable = policy === 'allow-stale' && !hasReadySnapshot;
+  return {
+    refresh: !unavailable && (!hasReadySnapshot || (status.stale && strictFreshness)),
+    strictFreshness,
+    unavailable,
+  };
+}
+
+export function defaultCodeGraphCliFreshness(
+  operation: CodeGraphQueryOptions['operation'],
+): Exclude<CodeGraphCliFreshnessPolicy, 'allow-stale'> {
+  return operation === 'impact' || operation === 'path' ? 'current' : 'ready';
+}
+
+interface CodeGraphCliReadState {
+  readonly budgetMilliseconds?: number;
+  readonly freshness: CodeGraphStatus['freshness'];
+  readonly freshnessPolicy: CodeGraphCliFreshnessPolicy;
+  readonly operation: CodeGraphQueryOptions['operation'];
+  readonly reason: 'no-ready-snapshot' | 'read-timeout';
+  readonly repository: {
+    readonly displayName: string;
+    readonly repositoryId: string;
+  };
+  readonly retryAfterMilliseconds: number;
+  readonly snapshot?: {
+    readonly commit: string;
+    readonly dirty: boolean;
+    readonly id: string;
+  };
+  readonly state: 'timed-out' | 'unavailable';
+  readonly type: 'code-graph-query-state';
+  readonly version: 1;
+}
+
+function codeGraphCliReadState(
+  status: CodeGraphStatus,
+  policy: CodeGraphCliFreshnessPolicy,
+  operation: CodeGraphQueryOptions['operation'],
+  reason: CodeGraphCliReadState['reason'],
+  budgetMilliseconds?: number,
+): CodeGraphCliReadState {
+  return {
+    ...(budgetMilliseconds === undefined ? {} : {budgetMilliseconds}),
+    freshness: status.freshness,
+    freshnessPolicy: policy,
+    operation,
+    reason,
+    repository: {
+      displayName: status.identity.displayName,
+      repositoryId: status.identity.repositoryId,
+    },
+    retryAfterMilliseconds: CODE_GRAPH_CLI_READ_RETRY_MILLISECONDS,
+    ...(status.readySnapshot
+      ? {
+          snapshot: {
+            commit: status.readySnapshot.commit,
+            dirty: status.readySnapshot.dirty,
+            id: status.readySnapshot.id,
+          },
+        }
+      : {}),
+    state: reason === 'read-timeout' ? 'timed-out' : 'unavailable',
+    type: 'code-graph-query-state',
+    version: 1,
+  };
+}
+
+function renderCodeGraphCliReadState(state: CodeGraphCliReadState): string {
+  if (state.state === 'unavailable') {
+    return (
+      'No ready code graph snapshot is available. Retry after indexing, or use --freshness ready/current to allow ' +
+      'this command to start a bounded refresh.\n'
+    );
+  }
+  const readyHint =
+    state.snapshot === undefined
+      ? ''
+      : ' A ready snapshot remains available; retry with --freshness ready to inspect it without waiting.';
+  return (
+    `Code graph ${state.freshnessPolicy} read exceeded Threadnote's ` +
+    `${(state.budgetMilliseconds ?? CODE_GRAPH_CLI_READ_TIMEOUT_MILLISECONDS) / 1_000}-second foreground budget.${readyHint}\n`
+  );
 }
 
 interface ExpectedRepositoryIdentityOption {
@@ -773,7 +875,10 @@ export const runCodeGraphInspect = Effect.fn('codeGraph.command.inspect')(functi
   options: CwdOption &
     Omit<CodeGraphQueryOptions, 'cwd'> & {
       readonly baseCommit?: string;
+      readonly freshness?: CodeGraphCliFreshnessPolicy;
       readonly json?: boolean;
+      /** @internal Tests can exercise the foreground timeout without waiting for the public budget. */
+      readonly readTimeoutMilliseconds?: number;
       readonly seedQueries?: readonly string[];
       readonly workset?: string;
     },
@@ -803,32 +908,60 @@ export const runCodeGraphInspect = Effect.fn('codeGraph.command.inspect')(functi
   if (status.stale || !status.readySnapshot) {
     status = yield* service.attachSharedReadySnapshot(config.agentContextHome, identity, status);
   }
-  const strictFreshness = options.operation === 'impact' || options.operation === 'path';
+  const freshness = options.freshness ?? defaultCodeGraphCliFreshness(options.operation);
+  const readPlan = codeGraphCliReadPlan(freshness, status);
+  if (readPlan.unavailable) {
+    const unavailable = codeGraphCliReadState(status, freshness, options.operation, 'no-ready-snapshot');
+    yield* writeFinalCliOutput(
+      options.json ? JSON.stringify(unavailable) : renderCodeGraphCliReadState(unavailable).trimEnd(),
+    );
+    return;
+  }
   const statusObservation = observationFromCodeGraphStatus(status);
-  // Preserve live-edit behavior, but do not make an ordinary read wait for a clean post-pull rebuild.
-  const staleAfterCleanCommitChange = canUseReadySnapshotAfterCleanCommitChange(status);
-  const refresh = !status.readySnapshot || (status.stale && (strictFreshness || !staleAfterCleanCommitChange));
   const inspect = (onProgress?: (progress: CodeGraphProgress) => Effect.Effect<void>) =>
     service.inspect({
       ...options,
       cwd,
       onProgress,
-      refresh,
+      refresh: readPlan.refresh,
       statusObservation,
-      strictFreshness,
+      strictFreshness: readPlan.strictFreshness,
       threadnoteHome: config.agentContextHome,
     });
   const reportProgress = options.json ? yield* makeCodeGraphJsonProgressReporter() : undefined;
-  const result = options.json
-    ? yield* inspect(reportProgress)
-    : refresh
-      ? yield* Effect.acquireUseRelease(
+  const read = options.json
+    ? inspect(reportProgress)
+    : readPlan.refresh
+      ? Effect.acquireUseRelease(
           startProgress('Scanning repository source from Git.'),
           progress => inspect(state => progress.update(progressMessage(state)).pipe(Effect.catch(() => Effect.void))),
           progress => progress.stop().pipe(Effect.catch(() => Effect.void)),
         )
-      : yield* inspect();
-  yield* writeFinalCliOutput(options.json ? JSON.stringify(result) : renderCodeGraphResult(result).trimEnd());
+      : inspect();
+  const readTimeoutMilliseconds = options.readTimeoutMilliseconds ?? CODE_GRAPH_CLI_READ_TIMEOUT_MILLISECONDS;
+  const result = yield* read.pipe(
+    Effect.map(Option.some),
+    Effect.timeoutOrElse({
+      duration: readTimeoutMilliseconds,
+      orElse: () => Effect.succeed(Option.none()),
+    }),
+  );
+  if (Option.isNone(result)) {
+    const timedOut = codeGraphCliReadState(
+      status,
+      freshness,
+      options.operation,
+      'read-timeout',
+      readTimeoutMilliseconds,
+    );
+    yield* writeFinalCliOutput(
+      options.json ? JSON.stringify(timedOut) : renderCodeGraphCliReadState(timedOut).trimEnd(),
+    );
+    return;
+  }
+  yield* writeFinalCliOutput(
+    options.json ? JSON.stringify(result.value) : renderCodeGraphResult(result.value).trimEnd(),
+  );
 });
 
 export const runCodeGraphImpact = Effect.fn('codeGraph.command.impact')(function* (
