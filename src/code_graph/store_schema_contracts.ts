@@ -7,6 +7,7 @@ export type CodeGraphPersistentSchemaMigrationPhase =
   | 'created-extensions'
   | 'dropped-incompatible'
   | 'dropped-obsolete-indexes'
+  | 'migrated-query-indexes'
   | 'recorded-revision'
   | 'retired-incompatible-ready'
   | 'retired-incomplete'

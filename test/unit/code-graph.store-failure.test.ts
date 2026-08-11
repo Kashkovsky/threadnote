@@ -90,6 +90,17 @@ describe('code graph store failure classification', () => {
     expect(failure.message).not.toContain('/Users/private');
   });
 
+  it('keeps Bun SQLite errno values in the SQLite domain instead of misclassifying EPERM', () => {
+    const failure = classifyCodeGraphStoreFailure('load code graph adjacency', {
+      errno: 1,
+      message: 'no query solution',
+      name: 'SQLiteError',
+    });
+
+    expect(failure).toMatchObject({code: 'unknown', recovery: 'diagnose', retryable: false});
+    expect(failure).not.toBeInstanceOf(CodeGraphStorePermissionError);
+  });
+
   it('constructs schema-additive recovery only through the explicit preflight result', () => {
     const failure = codeGraphStoreSchemaAdditiveRequired('initialize code graph database', {
       createsOnly: true,
