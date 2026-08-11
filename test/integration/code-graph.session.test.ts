@@ -67,6 +67,7 @@ beforeAll(() => {
   git(['init', '-q']);
   git(['config', 'user.email', 'threadnote@example.test']);
   git(['config', 'user.name', 'Threadnote Test']);
+  writeFileSync(join(repositoryRoot, '.gitignore'), '/.threadnote-*/\n');
   git(['add', '.']);
   git(['commit', '-qm', 'large base']);
   baseCommit = git(['rev-parse', 'HEAD']).trim();
