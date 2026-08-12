@@ -103,6 +103,7 @@ function blockText(block: DocsBlock): string {
   if ('text' in block) return block.text;
   if ('code' in block) return block.code;
   if ('items' in block) return block.items.join(' ');
+  if ('visual' in block) return block.visual.replaceAll('-', ' ');
   return [...block.headers, ...block.rows.flat()].join(' ');
 }
 

@@ -3,6 +3,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {CodeBlock} from '../components/CodeBlock';
 import {Icon} from '../components/Icons';
+import {ManagerOperationsVisual} from '../components/ManagerOperationsVisual.js';
 import {SiteShell} from '../components/SiteShell';
 import {defaultDocId, docsSections, type DocsBlock} from '../content/docs';
 import {
@@ -149,6 +150,8 @@ function DocsBlockView({block}: {block: DocsBlock}) {
           </table>
         </div>
       );
+    case 'visual':
+      return <ManagerOperationsVisual kind={block.visual} />;
   }
 }
 

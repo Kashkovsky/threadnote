@@ -3116,6 +3116,318 @@ p {
   background: var(--panel-raised);
 }
 
+.docs-manager-workflow {
+  position: relative;
+  margin: 32px 0 38px;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 12% 0%, rgba(103, 232, 199, 0.09), transparent 32%),
+    linear-gradient(145deg, rgba(22, 29, 39, 0.96), rgba(12, 17, 24, 0.98));
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 22px 54px rgba(0, 0, 0, 0.2);
+}
+
+.docs-manager-workflow::before {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  content: '';
+  opacity: 0.38;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.018) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.018) 1px, transparent 1px);
+  background-size: 28px 28px;
+  mask-image: linear-gradient(to bottom, black, transparent 82%);
+}
+
+.docs-manager-workflow figcaption {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(180px, 0.7fr) minmax(240px, 1.3fr);
+  gap: 6px 26px;
+  padding: 18px 22px 20px;
+  background: rgba(8, 11, 16, 0.54);
+  border-top: 1px solid var(--line-soft);
+}
+
+.docs-manager-workflow figcaption > span {
+  grid-row: 1 / 3;
+  align-self: center;
+  color: var(--teal);
+  font:
+    var(--font-size-min)/1.45 'JetBrains Mono Variable',
+    monospace;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.docs-manager-workflow figcaption > strong {
+  font-size: 14px;
+  font-weight: 590;
+}
+
+.docs-manager-workflow figcaption > p {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--font-size-min);
+  line-height: 1.5;
+}
+
+.docs-manager-flow {
+  position: relative;
+  padding: 20px 22px 18px;
+}
+
+.docs-manager-flow__toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 34px;
+  padding: 0 11px;
+  margin-bottom: 16px;
+  color: var(--muted);
+  font:
+    var(--font-size-min)/1 'JetBrains Mono Variable',
+    monospace;
+  background: rgba(8, 11, 16, 0.62);
+  border: 1px solid var(--line-soft);
+  border-radius: 5px;
+}
+
+.docs-manager-flow__tabs {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.docs-manager-flow__tabs b {
+  padding: 6px 1px 5px;
+  color: var(--teal);
+  font-weight: 550;
+  border-bottom: 1px solid var(--teal);
+}
+
+.docs-manager-flow__track {
+  display: flex;
+  align-items: stretch;
+}
+
+.docs-manager-flow__stage {
+  position: relative;
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  gap: 7px;
+  justify-content: center;
+  min-width: 0;
+  min-height: 128px;
+  padding: 15px;
+  overflow: hidden;
+  background: rgba(16, 21, 29, 0.92);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  opacity: 0;
+  transform: translateY(9px);
+  animation: docs-manager-stage-enter 520ms ease-out forwards;
+  animation-delay: var(--stage-delay);
+}
+
+.docs-manager-flow--prepare .docs-manager-flow__stage {
+  padding: 13px;
+}
+
+.docs-manager-flow__stage::after {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  content: '';
+  border-radius: inherit;
+  box-shadow: inset 0 0 0 1px transparent;
+  animation: docs-manager-stage-confirm 760ms ease-out forwards;
+  animation-delay: calc(var(--stage-delay) + 180ms);
+}
+
+.docs-manager-flow__stage > small {
+  color: var(--teal);
+  font:
+    var(--font-size-min)/1.25 'JetBrains Mono Variable',
+    monospace;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.docs-manager-flow__stage > strong {
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  font-weight: 590;
+  line-height: 1.3;
+}
+
+.docs-manager-flow__stage > strong s {
+  color: var(--muted);
+  text-decoration-color: var(--red);
+}
+
+.docs-manager-flow__stage > span {
+  color: var(--muted);
+  font-size: var(--font-size-min);
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.docs-manager-flow__stage > i {
+  width: fit-content;
+  padding-top: 6px;
+  color: var(--green);
+  font:
+    normal var(--font-size-min)/1.2 'JetBrains Mono Variable',
+    monospace;
+}
+
+.docs-manager-flow__stage--empty {
+  border-style: dashed;
+}
+
+.docs-manager-flow__stage--warning {
+  border-color: rgba(255, 184, 107, 0.35);
+}
+
+.docs-manager-flow__stage--warning > small,
+.docs-manager-flow__stage--warning > i {
+  color: var(--amber);
+}
+
+.docs-manager-flow__stage--retained {
+  border-color: rgba(120, 230, 163, 0.28);
+}
+
+.docs-manager-flow__stage--retained > small {
+  color: var(--green);
+}
+
+.docs-manager-flow__action,
+.docs-manager-flow__chip {
+  width: fit-content;
+  padding: 4px 7px;
+  color: var(--teal) !important;
+  font-family: 'JetBrains Mono Variable', 'JetBrains Mono', ui-monospace, monospace;
+  background: rgba(103, 232, 199, 0.07);
+  border: 1px solid rgba(103, 232, 199, 0.22);
+  border-radius: 4px;
+}
+
+.docs-manager-flow__chip--unresolved {
+  color: var(--amber) !important;
+  background: rgba(255, 184, 107, 0.07);
+  border-color: rgba(255, 184, 107, 0.3);
+}
+
+.docs-manager-flow__arrow {
+  position: relative;
+  flex: 0 0 34px;
+  align-self: center;
+  height: 20px;
+}
+
+.docs-manager-flow__arrow::before {
+  position: absolute;
+  top: 9px;
+  right: 5px;
+  left: 4px;
+  height: 1px;
+  content: '';
+  background: var(--line);
+}
+
+.docs-manager-flow__arrow::after {
+  position: absolute;
+  top: 6px;
+  left: 4px;
+  width: 7px;
+  height: 7px;
+  content: '';
+  background: var(--teal);
+  border-radius: 50%;
+  box-shadow: 0 0 12px rgba(103, 232, 199, 0.7);
+  opacity: 0;
+  animation: docs-manager-flow-signal 820ms ease-in-out forwards;
+  animation-delay: var(--flow-delay);
+}
+
+.docs-manager-flow__arrow > span {
+  position: absolute;
+  top: 1px;
+  right: 0;
+  color: var(--muted);
+  font:
+    var(--font-size-min)/1 'JetBrains Mono Variable',
+    monospace;
+}
+
+.docs-manager-flow__receipt {
+  display: flex;
+  gap: 10px 22px;
+  justify-content: space-between;
+  padding-top: 14px;
+  color: var(--muted);
+  font:
+    var(--font-size-min)/1.4 'JetBrains Mono Variable',
+    monospace;
+}
+
+.docs-manager-flow__receipt span::before {
+  margin-right: 7px;
+  color: var(--green);
+  content: '✓';
+}
+
+.docs-manager-flow__receipt--warning span::before {
+  color: var(--amber);
+  content: '•';
+}
+
+@keyframes docs-manager-stage-enter {
+  from {
+    opacity: 0;
+    transform: translateY(9px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes docs-manager-stage-confirm {
+  0%,
+  100% {
+    box-shadow: inset 0 0 0 1px transparent;
+  }
+
+  45% {
+    box-shadow:
+      inset 0 0 0 1px rgba(103, 232, 199, 0.42),
+      0 0 20px rgba(103, 232, 199, 0.08);
+  }
+}
+
+@keyframes docs-manager-flow-signal {
+  0% {
+    opacity: 0;
+    transform: translateX(0);
+  }
+
+  20% {
+    opacity: 1;
+  }
+
+  100% {
+    opacity: 0;
+    transform: translateX(21px);
+  }
+}
+
 .docs-pagination {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -5971,6 +6283,62 @@ p {
     font-size: 42px;
   }
 
+  .docs-manager-flow {
+    padding: 16px;
+  }
+
+  .docs-manager-flow__toolbar {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 9px;
+    padding: 10px;
+  }
+
+  .docs-manager-flow__track {
+    flex-direction: column;
+  }
+
+  .docs-manager-flow__stage {
+    width: 100%;
+    min-height: 112px;
+  }
+
+  .docs-manager-flow__arrow {
+    flex-basis: 30px;
+    width: 100%;
+    height: 30px;
+  }
+
+  .docs-manager-flow__arrow::before {
+    top: 3px;
+    right: auto;
+    bottom: 3px;
+    left: 50%;
+    width: 1px;
+    height: auto;
+  }
+
+  .docs-manager-flow__arrow::after {
+    display: none;
+  }
+
+  .docs-manager-flow__arrow > span {
+    top: 10px;
+    right: auto;
+    left: calc(50% + 6px);
+    transform: rotate(90deg);
+  }
+
+  .docs-manager-flow__receipt,
+  .docs-manager-workflow figcaption {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .docs-manager-workflow figcaption > span {
+    grid-row: auto;
+  }
+
   .docs-pagination {
     grid-template-columns: 1fr;
   }
@@ -6189,5 +6557,16 @@ p {
 
   .thread-scene__fallback {
     opacity: 1;
+  }
+
+  .docs-manager-flow__stage,
+  .docs-manager-flow__stage::after,
+  .docs-manager-flow__arrow::after {
+    animation: none !important;
+  }
+
+  .docs-manager-flow__stage {
+    opacity: 1;
+    transform: none;
   }
 }

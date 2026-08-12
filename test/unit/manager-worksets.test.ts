@@ -6,16 +6,21 @@ import {TestClock} from 'effect/testing';
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
+import {CommandExecutor} from '../../src/effect/command.js';
 import {codeGraphWorksetCatalogLayout} from '../../src/code_graph/workset_catalog/layout.js';
 import {withCodeGraphMaintenanceIntent} from '../../src/code_graph/maintenance_gate.js';
+import {readSeedManifest} from '../../src/manifest.js';
+import {validateManagerProjectRoots} from '../../src/manager_project_roots.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import {
   handleManagerWorksetRequest,
   managerWorksetJobSummary,
   managerWorksetRequestAllowedDuringMaintenance,
+  mutateManagerManifestProject,
   mutateManagerWorksetDefinition,
   readManagerWorksetCatalog,
   readManagerWorksetDefinition,
+  readManagerManifestProject,
   type ManagerWorksetDefinitionMutation,
 } from '../../src/manager_worksets.js';
 import {managerWorksetRepositoryLabel, PrepareJobPanel} from '../../src/manager_worksets_view.js';
@@ -109,6 +114,274 @@ function git(cwd: string, args: readonly string[]): void {
 }
 
 describe('Manager Worksets manifest transactions', () => {
+  effectIt.effect('creates the first project and then the first workset from an empty manifest inventory', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const current = yield* fixture(() => '# empty inventory\nversion: 1\nprojects: []\n');
+        const emptyCatalog = yield* readManagerWorksetCatalog(current.config);
+        const project = yield* mutateManagerManifestProject(current.config, {
+          expectedRevision: emptyCatalog.revision,
+          name: 'api',
+          operation: 'create',
+          path: '~/src/api',
+          seed: ['README.md', 'docs/**/*.md'],
+          uri: 'threadnote://resources/repos/api',
+        });
+        const workset = yield* mutateManagerWorksetDefinition(current.config, {
+          expectedRevision: project.catalog.revision,
+          name: 'platform',
+          operation: 'create',
+          projects: ['api'],
+        });
+        const raw = yield* current.fs.readFileString(current.manifestPath);
+
+        expect(project.catalog.projects).toContainEqual(expect.objectContaining({name: 'api', worksetCount: 0}));
+        expect(workset.catalog.definitions).toContainEqual({memberCount: 1, name: 'platform'});
+        expect(yield* readManagerManifestProject(current.config, 'API')).toEqual({
+          name: 'api',
+          path: '~/src/api',
+          seed: ['README.md', 'docs/**/*.md'],
+          uri: 'threadnote://resources/repos/api',
+        });
+        expect(raw).toContain('# empty inventory');
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('renames and deletes projects without losing member comments or silently deleting worksets', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const current = yield* fixture(root => {
+          const withProjectComments = manifest(
+            root,
+            [
+              'worksets:',
+              '  - name: platform',
+              '    projects:',
+              '      - api # retained membership note',
+              '      - billing',
+            ].join('\n'),
+          )
+            .replace('  - name: api', '  - name: api # project name note')
+            .replace(`    path: ${root}/api`, `    path: ${root}/api # project path note`)
+            .replace(
+              '    uri: threadnote://resources/repos/api',
+              '    uri: threadnote://resources/repos/api # project URI note',
+            );
+          return withProjectComments;
+        });
+        const revision = (yield* readManagerWorksetCatalog(current.config)).revision;
+        const renamed = yield* mutateManagerManifestProject(current.config, {
+          expectedRevision: revision,
+          name: 'gateway',
+          operation: 'update',
+          path: `${current.root}/api with  two spaces`,
+          project: 'api',
+          seed: ['README.md'],
+          uri: 'threadnote://resources/repos/gateway',
+        });
+        const afterRename = yield* current.fs.readFileString(current.manifestPath);
+        const renamedProject = yield* readManagerManifestProject(current.config, 'gateway');
+        expect(afterRename).toContain('- gateway # retained membership note');
+        expect(afterRename).toContain('name: gateway # project name note');
+        expect(afterRename).toContain('# project path note');
+        expect(afterRename).toContain('uri: threadnote://resources/repos/gateway # project URI note');
+        expect(renamedProject.path).toBe(`${current.root}/api with  two spaces`);
+        expect(renamed.catalog.projects.find(project => project.name === 'gateway')?.worksetCount).toBe(1);
+
+        const deleted = yield* mutateManagerManifestProject(current.config, {
+          confirm: true,
+          expectedRevision: renamed.catalog.revision,
+          operation: 'delete',
+          project: 'gateway',
+        });
+        const definition = yield* readManagerWorksetDefinition(current.config, 'platform');
+        const afterDelete = yield* current.fs.readFileString(current.manifestPath);
+        expect(deleted.warnings.join(' ')).toContain('unresolved member');
+        expect(definition.members).toContainEqual(expect.objectContaining({configured: false, project: 'gateway'}));
+        expect(afterDelete).toContain('- gateway # retained membership note');
+        expect(afterDelete).not.toContain('name: gateway');
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('rejects rename collisions and treats unresolved target-name worksets as affected', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const collision = yield* fixture(root =>
+          manifest(root, ['worksets:', '  - name: collision', '    projects: [api, gateway]'].join('\n')),
+        );
+        const before = yield* collision.fs.readFileString(collision.manifestPath);
+        const collisionRevision = (yield* readManagerWorksetCatalog(collision.config)).revision;
+        const collisionError = yield* mutateManagerManifestProject(collision.config, {
+          expectedRevision: collisionRevision,
+          name: 'gateway',
+          operation: 'update',
+          path: `${collision.root}/api`,
+          project: 'api',
+          seed: [],
+          uri: 'threadnote://resources/repos/gateway',
+        }).pipe(Effect.flip);
+        expect(collisionError).toMatchObject({code: 'name-conflict', status: 409});
+        expect(yield* collision.fs.readFileString(collision.manifestPath)).toBe(before);
+
+        const unresolved = yield* fixture(root =>
+          manifest(
+            root,
+            [
+              'worksets:',
+              '  - name: old-name',
+              '    projects: [api]',
+              '  - name: new-name',
+              '    projects: [gateway]',
+            ].join('\n'),
+          ),
+        );
+        const unresolvedRevision = (yield* readManagerWorksetCatalog(unresolved.config)).revision;
+        const renamed = yield* mutateManagerManifestProject(unresolved.config, {
+          expectedRevision: unresolvedRevision,
+          name: 'gateway',
+          operation: 'update',
+          path: `${unresolved.root}/api`,
+          project: 'api',
+          seed: [],
+          uri: 'threadnote://resources/repos/gateway',
+        });
+        expect(renamed.catalog.projects.find(project => project.name === 'gateway')?.worksetCount).toBe(2);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('supports case-only project renames and rejects duplicate unresolved references on create', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const current = yield* fixture(root =>
+          manifest(
+            root,
+            [
+              'worksets:',
+              '  - name: platform',
+              '    projects:',
+              '      - api # preserve membership note',
+              '  - name: unresolved',
+              '    projects: [gateway, GATEWAY]',
+            ].join('\n'),
+          ),
+        );
+        const revision = (yield* readManagerWorksetCatalog(current.config)).revision;
+        const renamed = yield* mutateManagerManifestProject(current.config, {
+          expectedRevision: revision,
+          name: 'API',
+          operation: 'update',
+          path: `${current.root}/api`,
+          project: 'api',
+          seed: [],
+          uri: 'threadnote://resources/repos/api',
+        });
+        const afterRename = yield* current.fs.readFileString(current.manifestPath);
+        expect(afterRename).toContain('- API # preserve membership note');
+        expect(renamed.catalog.projects.find(project => project.name === 'API')?.worksets).toEqual(['platform']);
+
+        const beforeCreate = yield* current.fs.readFileString(current.manifestPath);
+        const createError = yield* mutateManagerManifestProject(current.config, {
+          expectedRevision: renamed.catalog.revision,
+          name: 'gateway',
+          operation: 'create',
+          path: `${current.root}/gateway`,
+          seed: [],
+          uri: 'threadnote://resources/repos/gateway',
+        }).pipe(Effect.flip);
+        expect(createError).toMatchObject({code: 'name-conflict', status: 409});
+        expect(yield* current.fs.readFileString(current.manifestPath)).toBe(beforeCreate);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('rejects renaming an unreferenced project into duplicate unresolved members', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const current = yield* fixture(root =>
+          manifest(root, 'worksets:\n  - name: unresolved\n    projects: [gateway, GATEWAY]'),
+        );
+        const before = yield* current.fs.readFileString(current.manifestPath);
+        const revision = (yield* readManagerWorksetCatalog(current.config)).revision;
+        const error = yield* mutateManagerManifestProject(current.config, {
+          expectedRevision: revision,
+          name: 'gateway',
+          operation: 'update',
+          path: `${current.root}/api`,
+          project: 'api',
+          seed: [],
+          uri: 'threadnote://resources/repos/gateway',
+        }).pipe(Effect.flip);
+        expect(error).toMatchObject({code: 'name-conflict', status: 409});
+        expect(yield* current.fs.readFileString(current.manifestPath)).toBe(before);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('rejects unsafe project resource roots and escaping seed patterns without changing bytes', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const invalidInputs = [
+          {seed: ['../secret'], uri: 'threadnote://resources/repos/new'},
+          {seed: ['docs/../../secret'], uri: 'threadnote://resources/repos/new'},
+          {seed: ['/etc/passwd'], uri: 'threadnote://resources/repos/new'},
+          {seed: [], uri: 'threadnote://user/alice/memories'},
+          {seed: [], uri: 'threadnote://resources/repos/new#fragment'},
+        ];
+        yield* Effect.forEach(
+          invalidInputs,
+          input =>
+            Effect.gen(function* () {
+              const current = yield* fixture(root => manifest(root));
+              const before = yield* current.fs.readFileString(current.manifestPath);
+              const revision = (yield* readManagerWorksetCatalog(current.config)).revision;
+              const error = yield* mutateManagerManifestProject(current.config, {
+                expectedRevision: revision,
+                name: 'new',
+                operation: 'create',
+                path: '~/src/new',
+                seed: input.seed,
+                uri: input.uri,
+              }).pipe(Effect.flip);
+              expect(error).toMatchObject({code: 'invalid-input', status: 400});
+              expect(yield* current.fs.readFileString(current.manifestPath)).toBe(before);
+            }),
+          {concurrency: 1, discard: true},
+        );
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('rejects literal path controls and duplicate project resource roots without changing bytes', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        for (const path of ['/tmp/repo\nspoof', '/tmp/repo\rspoof', '/tmp/repo\tspoof']) {
+          const current = yield* fixture(root => manifest(root));
+          const before = yield* current.fs.readFileString(current.manifestPath);
+          const revision = (yield* readManagerWorksetCatalog(current.config)).revision;
+          const error = yield* mutateManagerManifestProject(current.config, {
+            expectedRevision: revision,
+            name: 'new',
+            operation: 'create',
+            path,
+            seed: [],
+            uri: 'threadnote://resources/repos/new',
+          }).pipe(Effect.flip);
+          expect(error).toMatchObject({code: 'invalid-input', status: 400});
+          expect(yield* current.fs.readFileString(current.manifestPath)).toBe(before);
+        }
+
+        const current = yield* fixture(root =>
+          manifest(root).replace('threadnote://resources/repos/billing', 'threadnote://resources/repos/api'),
+        );
+        const error = yield* readManagerWorksetCatalog(current.config).pipe(Effect.flip);
+        expect(error).toMatchObject({code: 'manifest-invalid', status: 409});
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
   effectIt.effect('creates the first workset without replacing unrelated manifest text', () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -179,6 +452,331 @@ describe('Manager Worksets manifest transactions', () => {
         expect(projects.get('billing')).toMatchObject({branch: 'billing-linked', branchState: 'current'});
         expect(projects.get('worker')).toMatchObject({branchState: 'missing'});
         expect(JSON.stringify(catalog)).not.toContain('private-secret');
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('keeps foreign project paths literal and does not probe a fabricated local checkout', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const current = yield* fixture(root =>
+          manifest(root).replace(`    path: ${root}/api`, '    path: C:\\src\\api'),
+        );
+        const catalog = yield* readManagerWorksetCatalog(current.config);
+        expect(catalog.projects.find(project => project.name === 'api')).toMatchObject({
+          branchState: 'not-observed',
+          folder: 'api',
+          path: 'C:\\src\\api',
+        });
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('canonicalizes nested Git roots and rejects checkout aliases and non-directory paths', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const current = yield* fixture(() => 'version: 1\nprojects: []\n');
+        const repository = current.path.join(current.root, 'repository');
+        const nested = current.path.join(repository, 'packages', 'app');
+        const alias = current.path.join(current.root, 'repository-alias');
+        const file = current.path.join(current.root, 'not-a-directory');
+        yield* current.fs.makeDirectory(nested, {recursive: true});
+        yield* Effect.sync(() => git(repository, ['init', '-q', '-b', 'main']));
+        yield* current.fs.symlink(repository, alias);
+        yield* current.fs.writeFileString(file, 'not a repository root');
+
+        const empty = yield* readManagerWorksetCatalog(current.config);
+        const created = yield* mutateManagerManifestProject(current.config, {
+          expectedRevision: empty.revision,
+          name: 'api',
+          operation: 'create',
+          path: nested,
+          seed: [],
+          uri: 'threadnote://resources/repos/api',
+        });
+        const canonicalRepository = yield* current.fs.realPath(repository);
+        expect((yield* readManagerManifestProject(current.config, 'api')).path).toBe(canonicalRepository);
+
+        const beforeAlias = yield* current.fs.readFileString(current.manifestPath);
+        const aliasError = yield* mutateManagerManifestProject(current.config, {
+          expectedRevision: created.catalog.revision,
+          name: 'alias',
+          operation: 'create',
+          path: alias,
+          seed: [],
+          uri: 'threadnote://resources/repos/alias',
+        }).pipe(Effect.flip);
+        expect(aliasError).toMatchObject({code: 'path-conflict', status: 409});
+        expect(yield* current.fs.readFileString(current.manifestPath)).toBe(beforeAlias);
+
+        const fileError = yield* mutateManagerManifestProject(current.config, {
+          expectedRevision: created.catalog.revision,
+          name: 'file',
+          operation: 'create',
+          path: file,
+          seed: [],
+          uri: 'threadnote://resources/repos/file',
+        }).pipe(Effect.flip);
+        expect(fileError).toMatchObject({code: 'invalid-input', status: 400});
+        expect(yield* current.fs.readFileString(current.manifestPath)).toBe(beforeAlias);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('rejects a canonical non-Git root whose stored path contains control characters', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const current = yield* fixture(() => 'version: 1\nprojects: []\n');
+        const target = current.path.join(current.root, 'unsafe\nroot');
+        const alias = current.path.join(current.root, 'safe-alias');
+        yield* current.fs.makeDirectory(target, {recursive: true});
+        yield* current.fs.symlink(target, alias);
+        const catalog = yield* readManagerWorksetCatalog(current.config);
+        const before = yield* current.fs.readFileString(current.manifestPath);
+
+        const error = yield* mutateManagerManifestProject(current.config, {
+          expectedRevision: catalog.revision,
+          name: 'unsafe',
+          operation: 'create',
+          path: alias,
+          seed: [],
+          uri: 'threadnote://resources/repos/unsafe',
+        }).pipe(Effect.flip);
+        expect(error).toMatchObject({code: 'project-path-unavailable', status: 409});
+        expect(yield* current.fs.readFileString(current.manifestPath)).toBe(before);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('fails closed when the bounded Git root probe cannot execute', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const current = yield* fixture(() => 'version: 1\nprojects: []\n');
+        const repository = current.path.join(current.root, 'repository');
+        yield* current.fs.makeDirectory(repository, {recursive: true});
+        const command = yield* CommandExecutor;
+        const unavailableGit = CommandExecutor.of({
+          ...command,
+          execute: (executable, args, options) =>
+            executable === 'git'
+              ? Effect.succeed({exitCode: 124, stderr: '', stdout: ''})
+              : command.execute(executable, args, options),
+        });
+        const error = yield* validateManagerProjectRoots([], {
+          name: 'repository',
+          path: repository,
+          seed: [],
+          uri: 'threadnote://resources/repos/repository',
+        }).pipe(Effect.provideService(CommandExecutor, unavailableGit), Effect.flip);
+        expect(error.message).toBe('Git could not inspect the configured project root safely.');
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('does not rewrite an unchanged nested checkout path during a seed-only edit', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const current = yield* fixture(root => {
+          const nested = `${root}/api/packages/app`;
+          return manifest(root).replace(`    path: ${root}/api`, `    path: ${nested} # retained nested path`);
+        });
+        const repository = current.path.join(current.root, 'api');
+        const nested = current.path.join(repository, 'packages', 'app');
+        yield* current.fs.makeDirectory(nested, {recursive: true});
+        yield* Effect.sync(() => git(repository, ['init', '-q', '-b', 'main']));
+
+        const catalog = yield* readManagerWorksetCatalog(current.config);
+        const updated = yield* mutateManagerManifestProject(current.config, {
+          expectedRevision: catalog.revision,
+          name: 'api',
+          operation: 'update',
+          path: nested,
+          project: 'api',
+          seed: ['README.md'],
+          uri: 'threadnote://resources/repos/api',
+        });
+        const raw = yield* current.fs.readFileString(current.manifestPath);
+        expect(updated.changed).toBe(true);
+        expect((yield* readManagerManifestProject(current.config, 'api')).path).toBe(nested);
+        expect(raw).toContain(`path: ${nested} # retained nested path`);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('keeps seed-only edits repairable when legacy projects alias one checkout', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const current = yield* fixture(root =>
+          manifest(root).replace(`    path: ${root}/billing`, `    path: ${root}/api/packages/billing`),
+        );
+        const repository = current.path.join(current.root, 'api');
+        yield* current.fs.makeDirectory(current.path.join(repository, 'packages', 'billing'), {recursive: true});
+        yield* Effect.sync(() => git(repository, ['init', '-q', '-b', 'main']));
+        const catalog = yield* readManagerWorksetCatalog(current.config);
+
+        const result = yield* mutateManagerManifestProject(current.config, {
+          expectedRevision: catalog.revision,
+          name: 'api',
+          operation: 'update',
+          path: repository,
+          project: 'api',
+          seed: ['README.md'],
+          uri: 'threadnote://resources/repos/api',
+        });
+        expect(result.changed).toBe(true);
+        expect((yield* readManagerManifestProject(current.config, 'api')).seed).toEqual(['README.md']);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('preserves a legacy canonicalizable URI during an unrelated project update', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const current = yield* fixture(root =>
+          manifest(root).replace(
+            '    uri: threadnote://resources/repos/api',
+            '    uri: threadnote://resources/repos/api/ # legacy URI note',
+          ),
+        );
+        const catalog = yield* readManagerWorksetCatalog(current.config);
+        expect(catalog.projectEditability).toEqual({state: 'editable'});
+        expect((yield* readManagerManifestProject(current.config, 'api')).uri).toBe(
+          'threadnote://resources/repos/api/',
+        );
+
+        const result = yield* mutateManagerManifestProject(current.config, {
+          expectedRevision: catalog.revision,
+          name: 'api',
+          operation: 'update',
+          path: `${current.root}/api`,
+          project: 'api',
+          seed: ['README.md'],
+          uri: 'threadnote://resources/repos/api/',
+        });
+        expect(result.changed).toBe(true);
+        const raw = yield* current.fs.readFileString(current.manifestPath);
+        expect(raw).toContain('uri: threadnote://resources/repos/api/ # legacy URI note');
+        expect((yield* readManagerManifestProject(current.config, 'api')).seed).toEqual(['README.md']);
+
+        const repaired = yield* mutateManagerManifestProject(current.config, {
+          expectedRevision: result.catalog.revision,
+          name: 'api',
+          operation: 'update',
+          path: `${current.root}/api`,
+          project: 'api',
+          seed: ['README.md'],
+          uri: 'threadnote://resources/repos/api',
+        });
+        expect(repaired.changed).toBe(true);
+        const repairedRaw = yield* current.fs.readFileString(current.manifestPath);
+        expect(repairedRaw).toContain('uri: threadnote://resources/repos/api # legacy URI note');
+        expect(repairedRaw).not.toContain('threadnote://resources/repos/api/');
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('preserves a legacy relative project path during an unrelated project update', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const current = yield* fixture(root => manifest(root).replace(`    path: ${root}/api`, '    path: repos/api'));
+        const catalog = yield* readManagerWorksetCatalog(current.config);
+        const result = yield* mutateManagerManifestProject(current.config, {
+          expectedRevision: catalog.revision,
+          name: 'api',
+          operation: 'update',
+          path: 'repos/api',
+          project: 'api',
+          seed: ['README.md'],
+          uri: 'threadnote://resources/repos/api',
+        });
+        expect(result.changed).toBe(true);
+        expect((yield* readManagerManifestProject(current.config, 'api')).path).toBe('repos/api');
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('treats an explicitly edited canonical-equivalent checkout path as a byte-stable no-op', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const current = yield* fixture(root => manifest(root));
+        const repository = current.path.join(current.root, 'api');
+        const nested = current.path.join(repository, 'packages', 'app');
+        yield* current.fs.makeDirectory(nested, {recursive: true});
+        yield* Effect.sync(() => git(repository, ['init', '-q', '-b', 'main']));
+        const canonicalRepository = yield* current.fs.realPath(repository);
+        const canonicalRaw = (yield* current.fs.readFileString(current.manifestPath)).replace(
+          `    path: ${current.root}/api`,
+          `    path: ${canonicalRepository}`,
+        );
+        yield* current.fs.writeFileString(current.manifestPath, canonicalRaw);
+        const catalog = yield* readManagerWorksetCatalog(current.config);
+
+        const result = yield* mutateManagerManifestProject(current.config, {
+          expectedRevision: catalog.revision,
+          name: 'api',
+          operation: 'update',
+          path: nested,
+          project: 'api',
+          seed: [],
+          uri: 'threadnote://resources/repos/api',
+        });
+        expect(result).toMatchObject({changed: false, catalog: {revision: catalog.revision}});
+        expect(yield* current.fs.readFileString(current.manifestPath)).toBe(canonicalRaw);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('keeps sibling linked worktrees distinct and preserves path comments after normalization', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const current = yield* fixture(root =>
+          manifest(root).replace(`    path: ${root}/api`, `    path: ${root}/api # canonical root note`),
+        );
+        const primary = current.path.join(current.root, 'api');
+        const nested = current.path.join(primary, 'packages', 'app');
+        const linked = current.path.join(current.root, 'api-linked');
+        yield* current.fs.makeDirectory(nested, {recursive: true});
+        yield* Effect.sync(() => {
+          git(primary, ['init', '-q', '-b', 'main']);
+          git(primary, [
+            '-c',
+            'user.name=Threadnote Test',
+            '-c',
+            'user.email=test@threadnote.local',
+            'commit',
+            '--allow-empty',
+            '-qm',
+            'fixture',
+          ]);
+          git(primary, ['worktree', 'add', '-q', '-b', 'linked', linked]);
+        });
+
+        const catalog = yield* readManagerWorksetCatalog(current.config);
+        const canonicalPrimary = yield* current.fs.realPath(primary);
+        const canonicalLinked = yield* current.fs.realPath(linked);
+        const normalized = yield* mutateManagerManifestProject(current.config, {
+          expectedRevision: catalog.revision,
+          name: 'api',
+          operation: 'update',
+          path: nested,
+          project: 'api',
+          seed: [],
+          uri: 'threadnote://resources/repos/api',
+        });
+        const raw = yield* current.fs.readFileString(current.manifestPath);
+        expect((yield* readManagerManifestProject(current.config, 'api')).path).toBe(canonicalPrimary);
+        expect(raw).toContain(`path: ${canonicalPrimary} # canonical root note`);
+
+        const withLinked = yield* mutateManagerManifestProject(current.config, {
+          expectedRevision: normalized.catalog.revision,
+          name: 'api-linked',
+          operation: 'create',
+          path: linked,
+          seed: [],
+          uri: 'threadnote://resources/repos/api-linked',
+        });
+        expect(withLinked.catalog.projects.map(project => project.name)).toContain('api-linked');
+        expect((yield* readManagerManifestProject(current.config, 'api-linked')).path).toBe(canonicalLinked);
       }),
     ).pipe(provideTestLayer(ApplicationLayer)),
   );
@@ -358,6 +956,35 @@ describe('Manager Worksets manifest transactions', () => {
     ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
+  effectIt.effect('keeps workset edits available when only the project YAML shape is read-only', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const current = yield* fixture(root => manifest(root).replace('projects:', 'projects: &project-inventory'));
+        const catalog = yield* readManagerWorksetCatalog(current.config);
+        expect(catalog).toMatchObject({
+          projectEditability: {reason: 'unsupported-project-yaml', state: 'read-only'},
+          projectsReadOnly: true,
+          readOnly: false,
+        });
+        const created = yield* mutateManagerWorksetDefinition(current.config, {
+          expectedRevision: catalog.revision,
+          name: 'platform',
+          operation: 'create',
+          projects: ['api'],
+        });
+        const projectError = yield* mutateManagerManifestProject(current.config, {
+          expectedRevision: created.catalog.revision,
+          name: 'extra',
+          operation: 'create',
+          path: '~/src/extra',
+          seed: [],
+          uri: 'threadnote://resources/repos/extra',
+        }).pipe(Effect.flip);
+        expect(projectError).toMatchObject({code: 'manifest-invalid', status: 409});
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
   effectIt.effect('rejects misleading long or whitespace-sensitive manifest names without truncating them', () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -405,6 +1032,38 @@ describe('Manager Worksets manifest transactions', () => {
         expect(outcomes.filter(Result.isSuccess)).toHaveLength(1);
         expect(outcomes.filter(Result.isFailure)).toHaveLength(1);
         expect(catalog.definitions).toHaveLength(1);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('allows exactly one mixed project/workset mutation for one optimistic revision', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const current = yield* fixture(root => manifest(root));
+        const revision = (yield* readManagerWorksetCatalog(current.config)).revision;
+        const outcomes = yield* TestClock.withLive(
+          Effect.all(
+            [
+              mutateManagerManifestProject(current.config, {
+                expectedRevision: revision,
+                name: 'extra',
+                operation: 'create' as const,
+                path: '~/src/extra',
+                seed: [],
+                uri: 'threadnote://resources/repos/extra',
+              }).pipe(Effect.result),
+              mutateManagerWorksetDefinition(current.config, {
+                expectedRevision: revision,
+                name: 'platform',
+                operation: 'create' as const,
+                projects: ['api'],
+              }).pipe(Effect.result),
+            ],
+            {concurrency: 'unbounded'},
+          ),
+        );
+        expect(outcomes.filter(Result.isSuccess)).toHaveLength(1);
+        expect(outcomes.filter(Result.isFailure)).toHaveLength(1);
       }),
     ).pipe(provideTestLayer(ApplicationLayer)),
   );
@@ -468,6 +1127,56 @@ describe('Manager Worksets manifest transactions', () => {
       ).pipe(provideTestLayer(ApplicationLayer)),
     {fastCheck: {numRuns: 12}},
   );
+
+  effectIt.effect.prop(
+    'renames every matching Workset reference and makes the repeated project update byte-stable',
+    {
+      references: fc.array(fc.boolean(), {maxLength: 16, minLength: 1}),
+      uppercase: fc.boolean(),
+    },
+    ({references, uppercase}) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const original = uppercase ? 'API' : 'api';
+          const worksets = [
+            'worksets:',
+            ...references.flatMap((referencesApi, index) => [
+              `  - name: workset-${index}`,
+              `    projects: [${referencesApi ? original : 'billing'}]`,
+            ]),
+          ].join('\n');
+          const current = yield* fixture(root => manifest(root, worksets));
+          const revision = (yield* readManagerWorksetCatalog(current.config)).revision;
+          const renamed = yield* mutateManagerManifestProject(current.config, {
+            expectedRevision: revision,
+            name: 'gateway',
+            operation: 'update',
+            path: `${current.root}/api`,
+            project: original,
+            seed: [],
+            uri: 'threadnote://resources/repos/api',
+          });
+          const renamedBytes = yield* current.fs.readFileString(current.manifestPath);
+          const parsed = yield* readSeedManifest(current.manifestPath);
+          const repeated = yield* mutateManagerManifestProject(current.config, {
+            expectedRevision: renamed.catalog.revision,
+            name: 'gateway',
+            operation: 'update',
+            path: `${current.root}/api`,
+            project: 'gateway',
+            seed: [],
+            uri: 'threadnote://resources/repos/api',
+          });
+
+          expect(parsed.worksets?.map(workset => workset.projects[0])).toEqual(
+            references.map(value => (value ? 'gateway' : 'billing')),
+          );
+          expect(repeated.changed).toBe(false);
+          expect(yield* current.fs.readFileString(current.manifestPath)).toBe(renamedBytes);
+        }),
+      ).pipe(provideTestLayer(ApplicationLayer)),
+    {fastCheck: {numRuns: 20}},
+  );
 });
 
 describe('Manager Worksets API and human labels', () => {
@@ -488,6 +1197,12 @@ describe('Manager Worksets API and human labels', () => {
       const catalogResponse = await fetch(`${server.url}/api/worksets`, {headers});
       const catalog = (await catalogResponse.json()) as {readonly revision: string};
       expect(catalogResponse.status).toBe(200);
+      const unauthorizedProject = await fetch(`${server.url}/api/worksets/projects`, {
+        body: JSON.stringify({expectedRevision: catalog.revision, name: 'x', operation: 'create'}),
+        headers: {'content-type': 'application/json'},
+        method: 'POST',
+      });
+      expect(unauthorizedProject.status).toBe(401);
 
       const createdResponse = await fetch(`${server.url}/api/worksets/definitions`, {
         body: JSON.stringify({
@@ -531,23 +1246,47 @@ describe('Manager Worksets API and human labels', () => {
       expect(statusResponse.status).toBe(200);
       expect(await statusResponse.json()).toMatchObject({catalog: {state: 'missing'}, workset: 'platform'});
 
-      const [definitionsDuringMaintenance, statusDuringMaintenance, jobsDuringMaintenance] = await runEffect(
-        withCodeGraphMaintenanceIntent(
-          config.agentContextHome,
-          Effect.all(
-            [
-              Effect.promise(() => fetch(`${server.url}/api/worksets`, {headers})),
-              Effect.promise(() => fetch(`${server.url}/api/worksets/status?workset=platform`, {headers})),
-              Effect.promise(() => fetch(`${server.url}/api/worksets/jobs`, {headers})),
-            ] as const,
-            {concurrency: 'unbounded'},
+      const [definitionsDuringMaintenance, statusDuringMaintenance, jobsDuringMaintenance, projectDuringMaintenance] =
+        await runEffect(
+          withCodeGraphMaintenanceIntent(
+            config.agentContextHome,
+            Effect.all(
+              [
+                Effect.promise(() => fetch(`${server.url}/api/worksets`, {headers})),
+                Effect.promise(() => fetch(`${server.url}/api/worksets/status?workset=platform`, {headers})),
+                Effect.promise(() => fetch(`${server.url}/api/worksets/jobs`, {headers})),
+                Effect.promise(() =>
+                  fetch(`${server.url}/api/worksets/projects`, {
+                    body: JSON.stringify({
+                      expectedRevision: updated.catalog.revision,
+                      name: 'api',
+                      operation: 'update',
+                      path: `${root}/api`,
+                      project: 'api',
+                      seed: ['README.md'],
+                      uri: 'threadnote://resources/repos/api',
+                    }),
+                    headers: {...headers, 'content-type': 'application/json'},
+                    method: 'POST',
+                  }),
+                ),
+              ] as const,
+              {concurrency: 'unbounded'},
+            ),
           ),
-        ),
-      );
+        );
       expect(definitionsDuringMaintenance.status).toBe(200);
       expect(jobsDuringMaintenance.status).toBe(200);
       expect(statusDuringMaintenance.status).toBe(409);
       expect(await statusDuringMaintenance.json()).toMatchObject({code: 'maintenance-busy'});
+      expect(projectDuringMaintenance.status).toBe(200);
+      const projectMutation = (await projectDuringMaintenance.json()) as {
+        readonly catalog: {readonly revision: string};
+      };
+      expect(await (await fetch(`${server.url}/api/worksets/project?project=api`, {headers})).json()).toMatchObject({
+        name: 'api',
+        seed: ['README.md'],
+      });
 
       const queryResponse = await fetch(`${server.url}/api/worksets/query`, {
         body: JSON.stringify({query: 'checkout ownership', workset: 'platform'}),
@@ -561,7 +1300,7 @@ describe('Manager Worksets API and human labels', () => {
       const deletedResponse = await fetch(`${server.url}/api/worksets/definitions`, {
         body: JSON.stringify({
           confirm: true,
-          expectedRevision: updated.catalog.revision,
+          expectedRevision: projectMutation.catalog.revision,
           operation: 'delete',
           workset: 'platform',
         }),

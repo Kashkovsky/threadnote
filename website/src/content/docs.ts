@@ -12,6 +12,7 @@ export type {
   DocsSection,
   DocsTableBlock,
   DocsTextBlock,
+  DocsVisualBlock,
   McpToolReference,
 } from './docsTypes.js';
 
@@ -1448,6 +1449,10 @@ threadnote manage --no-open`,
         summary: 'Create authoritative repository sets, prepare published evidence, and operate them from Manager.',
         keywords: [
           'Manager Worksets',
+          'Manager projects',
+          'manifest project create edit rename delete',
+          'empty manifest first project',
+          'unresolved Workset project reference',
           'workset definition editor',
           'workset create edit delete',
           'workset query continuation',
@@ -1456,8 +1461,9 @@ threadnote manage --no-open`,
         body: [
           {
             type: 'paragraph',
-            text: 'Open threadnote manage and choose Worksets. A Workset is a named set of projects from the seed manifest, not a second repository registry. The manifest remains authoritative: Manager reads its project inventory and edits only the worksets collection while preserving unrelated keys and supported YAML comments.',
+            text: 'Open threadnote manage and choose Worksets, then switch between Projects and Worksets. The seed manifest remains authoritative: Manager can maintain its repository projects and named cross-repository Worksets while preserving unrelated keys and supported YAML comments.',
           },
+          {type: 'visual', visual: 'manager-onboarding'},
           {
             type: 'code',
             language: 'yaml',
@@ -1478,7 +1484,20 @@ worksets:
           },
           {
             type: 'heading',
-            text: 'Create and maintain definitions',
+            text: 'Create and maintain projects',
+          },
+          {
+            type: 'list',
+            items: [
+              'Choose Projects, then + or Add first project. Enter a unique project name, repository path, threadnote://resources URI, and optional repository-relative seed paths or globs.',
+              'Project cards show the observed branch, local folder, full path, seed count, and number of referencing Worksets. Edit can rename the project or change its path, URI, and seed patterns.',
+              'Renaming a project updates its case-insensitive Workset member references atomically. Changes that affect graph identity retire only the exact affected published Workset generations; seed-only edits retain them.',
+              'Deleting a project leaves its name visible as an unresolved member in every referencing Workset. It never deletes canonical resources or repository graphs, and Manager explains that boundary before confirmation.',
+            ],
+          },
+          {
+            type: 'heading',
+            text: 'Create and maintain Worksets',
           },
           {
             type: 'list',
@@ -1491,11 +1510,12 @@ worksets:
           },
           {
             type: 'paragraph',
-            text: 'Every save carries the SHA-256 revision of the raw manifest that Manager loaded. Threadnote re-reads that revision under the graph-prepare lock and a dedicated manifest lock, validates the complete candidate, writes a private same-directory temporary file, rechecks the revision immediately before promotion, and atomically renames it. A concurrent edit returns revision-conflict without writing; Manager refreshes definitions and preserves the draft for deliberate review. Description-only changes do not stale a graph publication. Rename or membership changes retire only the exact old published generation after the manifest commit; a bounded cleanup warning never rolls the authoritative manifest back.',
+            text: 'Every project or Workset save carries the SHA-256 revision of the raw manifest that Manager loaded. Threadnote re-reads that revision under the graph-prepare lock and a dedicated manifest lock, validates the complete candidate, writes a private same-directory temporary file, rechecks the revision immediately before promotion, and atomically renames it. A concurrent edit returns revision-conflict without writing; Manager refreshes the inventory and preserves an open draft for deliberate review and retry. Description-only Workset and seed-only project changes do not stale a graph publication. Identity or membership changes retire only the exact old published generation after the manifest commit; a bounded cleanup warning never rolls the authoritative manifest back.',
           },
+          {type: 'visual', visual: 'manager-project-lifecycle'},
           {
             type: 'warning',
-            text: 'Manager definition editing is deliberately read-only when the manifest is a symbolic link or when mutable Workset YAML uses aliases, anchors, or unsupported node shapes. Ordinary maps, scalar names and descriptions, and scalar project sequences preserve comments. Project, member, and Workset names must already be normalized non-empty text without surrounding or repeated whitespace and must fit the 256-byte runtime bound; Manager fails closed instead of trimming or presenting a different identity.',
+            text: 'Manager editing is deliberately read-only at the affected boundary when the manifest is a symbolic link or mutable project or Workset YAML uses aliases, anchors, or unsupported node shapes. Unsupported project shapes disable project editing without unnecessarily disabling ordinary Workset edits. Unsupported Workset shapes disable Workset edits and only block a project rename when referenced member scalars must also change; other project fields remain repairable. Ordinary maps and scalar sequences preserve comments. Project, member, and Workset names must already be normalized non-empty text without surrounding or repeated whitespace and must fit the 256-byte runtime bound; Manager fails closed instead of trimming or presenting a different identity.',
           },
           {
             type: 'heading',
@@ -1505,6 +1525,7 @@ worksets:
             type: 'paragraph',
             text: 'Definitions do not build graphs. Choose Prepare to start an explicit background Manager job that indexes the selected repositories, builds exact routing and bridge projections, and atomically publishes one generation. The tab remains usable while the job runs, shows its Workset name and terminal member receipts, supports Stop preparation, and polls only the lightweight job record. Stopping is interruption-safe, but an atomic publication may have completed just before interruption; the selected readiness view is refreshed and remains authoritative.',
           },
+          {type: 'visual', visual: 'manager-prepare-query'},
           {
             type: 'list',
             items: [

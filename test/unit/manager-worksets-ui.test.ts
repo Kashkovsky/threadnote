@@ -13,6 +13,14 @@ interface PendingQuery {
   readonly resolve: (response: Response) => void;
 }
 
+interface PendingProjectDetail extends PendingQuery {
+  readonly name: string;
+}
+
+interface PendingCatalog extends PendingQuery {
+  readonly body: ReturnType<typeof catalog>;
+}
+
 const REVISION = 'a'.repeat(64);
 let reactRoot: Root | undefined;
 let fetchOriginal: typeof fetch;
@@ -20,7 +28,17 @@ let pendingQueries: PendingQuery[];
 let catalogRevision: string;
 let definitionProjects: Map<string, readonly string[]>;
 let definitionMutationBodies: Record<string, unknown>[];
+let projectMutationBodies: Record<string, unknown>[];
 let projectInventory: readonly string[];
+let projectDetails: Map<
+  string,
+  {readonly name: string; readonly path: string; readonly seed: readonly string[]; readonly uri: string}
+>;
+let projectRevisionConflictOnce: boolean;
+let deferProjectDetails: boolean;
+let pendingProjectDetails: PendingProjectDetail[];
+let deferCatalog: boolean;
+let pendingCatalogs: PendingCatalog[];
 let statusUnavailable: boolean;
 
 beforeEach(() => {
@@ -29,16 +47,79 @@ beforeEach(() => {
   pendingQueries = [];
   catalogRevision = REVISION;
   definitionMutationBodies = [];
+  projectMutationBodies = [];
   definitionProjects = new Map([
     ['alpha', ['alpha']],
     ['beta', ['beta']],
   ]);
   projectInventory = ['alpha', 'beta'];
+  projectDetails = new Map(projectInventory.map(name => [name, manifestProject(name)]));
+  projectRevisionConflictOnce = false;
+  deferProjectDetails = false;
+  pendingProjectDetails = [];
+  deferCatalog = false;
+  pendingCatalogs = [];
   statusUnavailable = false;
   const fetchStub = (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.pathname : new URL(input.url).pathname;
-    if (url === '/api/worksets') return Promise.resolve(jsonResponse(catalog()));
+    if (url === '/api/worksets') {
+      const body = catalog();
+      if (deferCatalog) {
+        return new Promise<Response>(resolve =>
+          pendingCatalogs.push({body, resolve, signal: init?.signal ?? undefined}),
+        );
+      }
+      return Promise.resolve(jsonResponse(body));
+    }
     if (url === '/api/worksets/jobs') return Promise.resolve(jsonResponse({jobs: []}));
+    if (url.startsWith('/api/worksets/project?')) {
+      const name = new URL(url, 'http://manager.test').searchParams.get('project') ?? '';
+      const detail = projectDetails.get(name) ?? manifestProject(name);
+      if (deferProjectDetails) {
+        return new Promise<Response>(resolve =>
+          pendingProjectDetails.push({name, resolve, signal: init?.signal ?? undefined}),
+        );
+      }
+      return Promise.resolve(jsonResponse(detail));
+    }
+    if (url === '/api/worksets/projects') {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      projectMutationBodies.push(body);
+      if (projectRevisionConflictOnce) {
+        projectRevisionConflictOnce = false;
+        catalogRevision = 'f'.repeat(64);
+        return Promise.resolve(jsonResponse({code: 'revision-conflict', error: 'Manifest changed.'}, 409));
+      }
+      const operation = body.operation;
+      if (operation === 'delete') {
+        const name = String(body.project);
+        projectInventory = projectInventory.filter(project => project !== name);
+        projectDetails.delete(name);
+      } else {
+        const name = String(body.name);
+        const originalName = operation === 'update' ? String(body.project) : undefined;
+        if (originalName !== undefined) {
+          projectInventory = projectInventory.map(project => (project === originalName ? name : project));
+          definitionProjects = new Map(
+            [...definitionProjects].map(([workset, projects]) => [
+              workset,
+              projects.map(project => (project === originalName ? name : project)),
+            ]),
+          );
+          projectDetails.delete(originalName);
+        } else {
+          projectInventory = [...projectInventory, name];
+        }
+        projectDetails.set(name, {
+          name,
+          path: String(body.path),
+          seed: Array.isArray(body.seed) ? body.seed.map(String) : [],
+          uri: String(body.uri),
+        });
+      }
+      catalogRevision = String.fromCharCode(106 + projectMutationBodies.length - 1).repeat(64);
+      return Promise.resolve(jsonResponse({catalog: catalog(), changed: true, warnings: []}));
+    }
     if (url === '/api/worksets/definitions') {
       const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
       definitionMutationBodies.push(body);
@@ -208,8 +289,150 @@ describe('Manager Worksets interaction fencing', () => {
     });
   });
 
+  it('creates the first manifest project before enabling Workset creation', async () => {
+    projectInventory = [];
+    projectDetails.clear();
+    definitionProjects.clear();
+    await renderWorksets('#manifest-management-panel-projects');
+    await waitForText('Add your first manifest project');
+    await clickButton('Add first project');
+
+    const inputs = [...document.querySelectorAll<HTMLInputElement>('.project-editor input')];
+    expect(inputs).toHaveLength(3);
+    await changeInput(inputs[0]!, 'checkout');
+    await changeInput(inputs[1]!, '~/src/checkout');
+    await changeInput(inputs[2]!, 'threadnote://resources/repos/checkout');
+    const seeds = await waitForElement<HTMLTextAreaElement>('.project-editor textarea');
+    await changeTextArea(seeds, 'AGENTS.md\ndocs/**/*.md');
+    await clickButton('Save project');
+    await waitForText('Manifest project saved.');
+
+    expect(projectMutationBodies[0]).toEqual({
+      expectedRevision: REVISION,
+      name: 'checkout',
+      operation: 'create',
+      path: '~/src/checkout',
+      seed: ['AGENTS.md', 'docs/**/*.md'],
+      uri: 'threadnote://resources/repos/checkout',
+    });
+    await clickButtonStartingWith('Worksets');
+    await waitForText('No workset selected');
+    expect(findButton('Create workset')?.disabled).toBe(false);
+  });
+
+  it('keeps the deletion receipt visible after removing the final project', async () => {
+    projectInventory = ['solo'];
+    projectDetails = new Map([['solo', manifestProject('solo')]]);
+    definitionProjects = new Map([['platform', ['solo']]]);
+    await renderWorksets();
+    await clickButtonStartingWith('Projects');
+    await waitForButtonEnabled('Delete project');
+    await clickButton('Delete project');
+    await flush();
+    await clickButton('Confirm project deletion');
+    await waitForText('Referencing Worksets are now unresolved.');
+    expect(document.body.textContent).toContain('Add your first manifest project');
+    expect(document.querySelector('[role="status"]')?.textContent).toContain(
+      'Referencing Worksets are now unresolved.',
+    );
+  });
+
+  it('preserves an edited project draft across a revision conflict, then renames and deletes it explicitly', async () => {
+    await renderWorksets();
+    await clickButtonStartingWith('Projects');
+    await waitForButtonEnabled('Edit project');
+    await clickButton('Edit project');
+    const inputs = [...document.querySelectorAll<HTMLInputElement>('.project-editor input')];
+    await changeInput(inputs[0]!, 'alpha-renamed');
+    await changeInput(inputs[1]!, '/workspace/alpha-renamed');
+    projectRevisionConflictOnce = true;
+    await clickButton('Save project');
+    await waitForText('your draft is preserved');
+    expect(document.querySelector('[role="dialog"] [role="alert"]')?.textContent).toContain('your draft is preserved');
+    expect(document.querySelector<HTMLInputElement>('.project-editor input')?.value).toBe('alpha-renamed');
+
+    await clickButton('Save project');
+    await waitForText('Manifest project saved.');
+    expect(projectMutationBodies[1]).toMatchObject({
+      expectedRevision: 'f'.repeat(64),
+      name: 'alpha-renamed',
+      operation: 'update',
+      project: 'alpha',
+    });
+    await waitForButtonEnabled('Delete project');
+    await clickButton('Delete project');
+    await flush();
+    expect(document.body.textContent).toContain('Resources and repository graphs are not deleted.');
+    expect(document.body.textContent).toContain('referenced by 1 Workset: alpha');
+    await clickButton('Confirm project deletion');
+    await waitForText('Referencing Worksets are now unresolved.');
+    expect(projectMutationBodies[2]).toMatchObject({
+      confirm: true,
+      operation: 'delete',
+      project: 'alpha-renamed',
+    });
+  });
+
+  it('fences stale project detail responses after selection changes', async () => {
+    deferProjectDetails = true;
+    await renderWorksets();
+    await clickButtonStartingWith('Projects');
+    await waitForPendingProjectDetails(1);
+    await clickButtonStartingWith('beta');
+    await waitForPendingProjectDetails(2);
+    expect(pendingProjectDetails[0]?.signal?.aborted).toBe(true);
+
+    pendingProjectDetails[0]!.resolve(jsonResponse(manifestProject('alpha')));
+    await flush();
+    expect(document.body.textContent).not.toContain('threadnote://resources/repos/alpha');
+    pendingProjectDetails[1]!.resolve(jsonResponse(manifestProject('beta')));
+    await waitForText('threadnote://resources/repos/beta');
+  });
+
+  it('does not let an older catalog refresh overwrite a successful project mutation', async () => {
+    await renderWorksets();
+    deferCatalog = true;
+    await clickButton('Refresh definitions');
+    await waitForPendingCatalogs(1);
+
+    await clickButtonStartingWith('Projects');
+    await waitForButtonEnabled('Edit project');
+    await clickButton('Edit project');
+    const inputs = [...document.querySelectorAll<HTMLInputElement>('.project-editor input')];
+    await changeInput(inputs[0]!, 'gamma');
+    await clickButton('Save project');
+    await waitForText('Manifest project saved.');
+    expect(pendingCatalogs[0]?.signal?.aborted).toBe(true);
+
+    pendingCatalogs[0]!.resolve(jsonResponse(pendingCatalogs[0]!.body));
+    await flush();
+    expect(findButtonStartingWith('gamma')).toBeDefined();
+    expect(findButtonStartingWith('alpha')).toBeUndefined();
+
+    await waitForButtonEnabled('Edit project');
+    await clickButton('Edit project');
+    const updatedInputs = [...document.querySelectorAll<HTMLInputElement>('.project-editor input')];
+    await changeInput(updatedInputs[1]!, '/workspace/gamma');
+    await clickButton('Save project');
+    await waitForText('Manifest project saved.');
+    expect(projectMutationBodies[1]?.expectedRevision).toBe('j'.repeat(64));
+  });
+
   it('links operation tabs to panels and supports arrow-key navigation', async () => {
     await renderWorksets();
+    const managementWorksets = await waitForElement<HTMLButtonElement>('#manifest-management-tab-worksets');
+    await act(async () =>
+      managementWorksets.dispatchEvent(new KeyboardEvent('keydown', {bubbles: true, key: 'ArrowLeft'})),
+    );
+    await flush();
+    const managementProjects = document.querySelector<HTMLButtonElement>('#manifest-management-tab-projects');
+    expect(managementProjects?.getAttribute('aria-selected')).toBe('true');
+    expect(managementProjects?.tabIndex).toBe(0);
+    await act(async () =>
+      managementProjects?.dispatchEvent(new KeyboardEvent('keydown', {bubbles: true, key: 'ArrowRight'})),
+    );
+    await flush();
+
     const queryTab = await waitForElement<HTMLButtonElement>('#worksets-tab-query');
     expect(queryTab.getAttribute('aria-controls')).toBe('worksets-panel-query');
     expect(document.querySelector('#worksets-panel-query')?.getAttribute('aria-labelledby')).toBe('worksets-tab-query');
@@ -233,14 +456,14 @@ describe('Manager Worksets interaction fencing', () => {
   });
 });
 
-async function renderWorksets(): Promise<void> {
+async function renderWorksets(waitSelector = '#worksets-tab-query'): Promise<void> {
   const container = document.createElement('div');
   document.body.append(container);
   reactRoot = createRoot(container);
   await act(async () => {
     reactRoot?.render(React.createElement(ManagerDialogProvider, undefined, React.createElement(WorksetsPanel)));
   });
-  await waitForElement('#worksets-tab-query');
+  await waitForElement(waitSelector);
 }
 
 async function flush(): Promise<void> {
@@ -284,6 +507,30 @@ async function changeInput(input: HTMLInputElement, value: string): Promise<void
   await flush();
 }
 
+async function changeTextArea(input: HTMLTextAreaElement, value: string): Promise<void> {
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(input, value);
+    input.dispatchEvent(new Event('input', {bubbles: true}));
+  });
+  await flush();
+}
+
+async function waitForPendingProjectDetails(count: number): Promise<void> {
+  for (let index = 0; index < 20; index += 1) {
+    if (pendingProjectDetails.length >= count) return;
+    await flush();
+  }
+  throw new Error(`Expected ${count} pending project detail requests.`);
+}
+
+async function waitForPendingCatalogs(count: number): Promise<void> {
+  for (let index = 0; index < 20; index += 1) {
+    if (pendingCatalogs.length >= count) return;
+    await flush();
+  }
+  throw new Error(`Expected ${count} pending catalog requests.`);
+}
+
 async function clickButton(label: string): Promise<void> {
   const button = findButton(label);
   expect(button).toBeDefined();
@@ -305,6 +552,12 @@ function findButton(label: string): HTMLButtonElement | undefined {
   );
 }
 
+function findButtonStartingWith(label: string): HTMLButtonElement | undefined {
+  return [...document.querySelectorAll<HTMLButtonElement>('button')].find(candidate =>
+    candidate.textContent?.trim().startsWith(label),
+  );
+}
+
 function jsonResponse(body: unknown, statusCode = 200): Response {
   return new Response(JSON.stringify(body), {
     headers: {'content-type': 'application/json'},
@@ -321,7 +574,9 @@ function catalog() {
     })),
     definitionSource: 'seed-manifest',
     editability: {state: 'editable'},
+    projectEditability: {state: 'editable'},
     projects: projectInventory.map(project),
+    projectsReadOnly: false,
     readOnly: false,
     revision: catalogRevision,
     type: 'manager-workset-catalog',
@@ -336,6 +591,17 @@ function project(name: string) {
     folder: `${name}-service`,
     name,
     path: `/workspace/${name}-service`,
+    worksets: [...definitionProjects].filter(([, projects]) => projects.includes(name)).map(([workset]) => workset),
+    worksetCount: [...definitionProjects.values()].filter(projects => projects.includes(name)).length,
+  };
+}
+
+function manifestProject(name: string) {
+  return {
+    name,
+    path: `/workspace/${name}-service`,
+    seed: ['AGENTS.md'],
+    uri: `threadnote://resources/repos/${name}`,
   };
 }
 

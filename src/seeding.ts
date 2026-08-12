@@ -1,11 +1,16 @@
-import {Cause, Console, Effect, FileSystem, Option, Path, Result} from 'effect';
+import {Cause, Console, Effect, FileSystem, Option, Path, PlatformError, Result} from 'effect';
 import * as yaml from 'js-yaml';
+import {
+  inspectContainedStableRegularFile,
+  materializeContainedStableRegularFile,
+} from './code_graph/inventory_contained_file.js';
 import {DEFAULT_SEED_PATTERNS, SEED_STATE_FILE, USER_MANIFEST_NAME} from './constants.js';
 import {buildGraphDocument, type DependencyFacts, extractDependencyFacts, resolveGraphEdges} from './graph.js';
 import {applicationError} from './effect/errors.js';
 import {ResourceStore, type ResourceStoreMutation, type ResourceStoreShape} from './effect/resource-store.js';
 import {SystemInfo} from './effect/system.js';
 import {readSeedManifest, uriSegment} from './manifest.js';
+import {validateProjectSeedPattern, validateProjectSeedPatterns} from './seed_pattern.js';
 import {applyScrubber} from './scrubber.js';
 import type {
   InitManifestOptions,
@@ -70,6 +75,16 @@ interface SeedCounters {
 interface SeedWalkBudget {
   candidates: number;
   entries: number;
+}
+
+interface SeedTraversalBoundary {
+  readonly inspections: Map<string, SeedPathInspection | null>;
+  readonly logicalRoot: string;
+  readonly realRoot: string;
+}
+
+interface SeedPathInspection {
+  readonly type: 'Directory' | 'File' | 'Other';
 }
 
 interface PendingSeedMutation {
@@ -187,6 +202,8 @@ const seedProject = Effect.fn('seeding.seedProject')(function* ({
   readonly state: {files: Record<string, SeedStateEntry>; version: 1};
   readonly store: ResourceStoreShape;
 }) {
+  const fs = yield* FileSystem.FileSystem;
+  const canonicalProjectRoot = yield* fs.realPath(projectRoot);
   const currentUris = new Set<string>();
   const pending: PendingSeedMutation[] = [];
   const location = resourceStoreLocation(config);
@@ -217,11 +234,11 @@ const seedProject = Effect.fn('seeding.seedProject')(function* ({
   yield* visitSeedCandidates(project, projectRoot, ignorePatterns, candidate =>
     Effect.gen(function* () {
       currentUris.add(candidate.destinationUri);
-      const fileStat = yield* statSeedFile(candidate.filePath);
+      const fileRead = yield* readSeedFile(canonicalProjectRoot, candidate.relativePath);
       const recorded = state.files[candidate.destinationUri];
-      if (fileStat?.type === 'too-large') {
+      if (fileRead.type === 'too-large') {
         yield* log(
-          `SKIP ${candidate.projectName}/${candidate.relativePath}: file is ${fileStat.size} bytes; maximum seed file size is ${MAX_SEED_FILE_BYTES} bytes`,
+          `SKIP ${candidate.projectName}/${candidate.relativePath}: file is ${fileRead.size} bytes; maximum seed file size is ${MAX_SEED_FILE_BYTES} bytes`,
         );
         if (recorded) {
           if (options.dryRun === true) {
@@ -238,11 +255,10 @@ const seedProject = Effect.fn('seeding.seedProject')(function* ({
         return;
       }
       if (
-        fileStat?.type === 'file' &&
         recorded &&
-        recorded.mtimeMs === fileStat.mtimeMs &&
-        recorded.size === fileStat.size &&
-        recorded.sha256 === fileStat.sha256
+        recorded.mtimeMs === fileRead.mtimeMs &&
+        recorded.size === fileRead.size &&
+        recorded.sha256 === fileRead.sha256
       ) {
         counters.unchanged += 1;
         if (options.dryRun !== true && recorded.project !== project.name) {
@@ -250,7 +266,7 @@ const seedProject = Effect.fn('seeding.seedProject')(function* ({
         }
         return;
       }
-      const content = yield* prepareSeedContent(candidate);
+      const content = yield* prepareSeedContent(candidate, fileRead.bytes);
       if (content === undefined) {
         if (recorded) {
           if (options.dryRun === true) {
@@ -276,15 +292,12 @@ const seedProject = Effect.fn('seeding.seedProject')(function* ({
             type: 'write',
             uri: candidate.destinationUri,
           },
-          stateEntry:
-            fileStat?.type === 'file'
-              ? {
-                  mtimeMs: fileStat.mtimeMs,
-                  project: project.name,
-                  sha256: fileStat.sha256,
-                  size: fileStat.size,
-                }
-              : undefined,
+          stateEntry: {
+            mtimeMs: fileRead.mtimeMs,
+            project: project.name,
+            sha256: fileRead.sha256,
+            size: fileRead.size,
+          },
           stateUri: candidate.destinationUri,
         });
       }
@@ -394,24 +407,62 @@ function filterProjects(
   return projects.filter(project => want.has(project.name));
 }
 
-function statSeedFile(path: string) {
-  return Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
-    const info = yield* fs.stat(path).pipe(Effect.option);
-    if (info._tag === 'None' || info.value.type !== 'File') {
-      return undefined;
-    }
-    const size = Number(info.value.size);
-    if (size > MAX_SEED_FILE_BYTES) {
-      return {size, type: 'too-large' as const};
-    }
-    return {
-      mtimeMs: Option.getOrElse(info.value.mtime, () => new Date(0)).getTime(),
-      sha256: yield* sha256(yield* fs.readFile(path)),
-      size,
-      type: 'file' as const,
-    };
-  });
+const readSeedFile = Effect.fn('seeding.readSeedFile')(function* (projectRoot: string, relativePath: string) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const inspected = yield* inspectContainedStableRegularFile(fs, path, projectRoot, relativePath);
+  if (inspected.size > MAX_SEED_FILE_BYTES) {
+    return {size: inspected.size, type: 'too-large' as const};
+  }
+  const target = path.join(projectRoot, ...relativePath.split('/'));
+  const info = yield* fs.stat(target);
+  if (info.type !== 'File' || Number(info.size) !== inspected.size) {
+    return yield* Effect.fail(new SeedingOperationError(`Seed file changed before it was read: ${relativePath}`));
+  }
+  const materialized = yield* materializeContainedStableRegularFile(
+    fs,
+    path,
+    projectRoot,
+    relativePath,
+    () => false,
+    inspected.size,
+  );
+  if (materialized.bytes === undefined) {
+    return yield* Effect.fail(new SeedingOperationError(`Seed file content was not materialized: ${relativePath}`));
+  }
+  return {
+    bytes: materialized.bytes,
+    mtimeMs: Option.getOrElse(info.mtime, () => new Date(0)).getTime(),
+    sha256: materialized.contentHash,
+    size: materialized.size,
+    type: 'file' as const,
+  };
+});
+
+function optionOnSeedNotFound<A>(effect: Effect.Effect<A, PlatformError.PlatformError>) {
+  return effect.pipe(
+    Effect.map(Option.some),
+    Effect.catch(error => (error.reason._tag === 'NotFound' ? Effect.succeed(Option.none<A>()) : Effect.fail(error))),
+  );
+}
+
+function readSeedLink(fs: FileSystem.FileSystem, target: string) {
+  return fs.readLink(target).pipe(
+    Effect.map(Option.some),
+    Effect.catch(error => (isMissingOrNonLink(error) ? Effect.succeed(Option.none<string>()) : Effect.fail(error))),
+  );
+}
+
+function isMissingOrNonLink(error: PlatformError.PlatformError): boolean {
+  if (error.reason._tag === 'NotFound') return true;
+  if (error.reason._tag !== 'Unknown' || !('cause' in error.reason)) return false;
+  const cause = error.reason.cause;
+  return (
+    typeof cause === 'object' &&
+    cause !== null &&
+    'code' in cause &&
+    (cause as {readonly code?: unknown}).code === 'EINVAL'
+  );
 }
 
 function readSeedState(path: string) {
@@ -678,15 +729,31 @@ const visitSeedCandidates = Effect.fn('seeding.visitSeedCandidates')(function* (
   project: ProjectManifest,
   projectRoot: string,
   ignorePatterns: readonly string[],
-  visit: (candidate: SeedCandidate) => Effect.Effect<void, unknown, FileSystem.FileSystem | Path.Path>,
+  visit: (candidate: SeedCandidate) => Effect.Effect<void, unknown, FileSystem.FileSystem | Path.Path | SystemInfo>,
 ) {
+  const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const seen = new Set<string>();
   const budget: SeedWalkBudget = {candidates: 0, entries: 0};
-  for (const pattern of project.seed) {
-    yield* visitProjectPattern(projectRoot, pattern, ignorePatterns, budget, filePath =>
+  const logicalRoot = path.resolve(projectRoot);
+  const resolvedRoot = yield* optionOnSeedNotFound(Effect.all([fs.realPath(logicalRoot), fs.stat(logicalRoot)]));
+  if (resolvedRoot._tag === 'None' || resolvedRoot.value[1].type !== 'Directory') {
+    return yield* Effect.fail(new SeedingOperationError(`Project path is not a readable directory: ${projectRoot}`));
+  }
+  const boundary: SeedTraversalBoundary = {
+    inspections: new Map([[logicalRoot, {type: 'Directory'}]]),
+    logicalRoot,
+    realRoot: resolvedRoot.value[0],
+  };
+  const patterns = yield* Effect.try({
+    try: () => validateProjectSeedPatterns(project.seed),
+    catch: cause =>
+      new SeedingOperationError(cause instanceof Error ? cause.message : 'Invalid project seed patterns.'),
+  });
+  for (const pattern of patterns) {
+    yield* visitProjectPattern(boundary, pattern, ignorePatterns, budget, filePath =>
       Effect.gen(function* () {
-        const relativePath = toPosixPath(path.relative(projectRoot, filePath));
+        const relativePath = toPosixPath(path.relative(boundary.logicalRoot, filePath));
         if (seen.has(relativePath)) {
           return;
         }
@@ -711,27 +778,31 @@ const visitSeedCandidates = Effect.fn('seeding.visitSeedCandidates')(function* (
 });
 
 const visitProjectPattern = Effect.fn('seeding.visitProjectPattern')(function* (
-  projectRoot: string,
+  boundary: SeedTraversalBoundary,
   pattern: string,
   ignorePatterns: readonly string[],
   budget: SeedWalkBudget,
-  visitFile: (filePath: string) => Effect.Effect<void, unknown, FileSystem.FileSystem | Path.Path>,
+  visitFile: (filePath: string) => Effect.Effect<void, unknown, FileSystem.FileSystem | Path.Path | SystemInfo>,
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const normalizedPattern = toPosixPath(pattern);
+  const normalizedPattern = yield* Effect.try({
+    try: () => toPosixPath(validateProjectSeedPattern(pattern)),
+    catch: cause => new SeedingOperationError(cause instanceof Error ? cause.message : 'Invalid project seed pattern.'),
+  });
   if (!hasGlob(normalizedPattern)) {
-    const filePath = path.join(projectRoot, normalizedPattern);
-    const relativePath = toPosixPath(path.relative(projectRoot, filePath));
-    if ((yield* isFile(filePath)) && !matchesIgnore(relativePath, ignorePatterns)) {
+    const filePath = path.join(boundary.logicalRoot, normalizedPattern);
+    const relativePath = toPosixPath(path.relative(boundary.logicalRoot, filePath));
+    const inspection = yield* inspectSeedPathWithinBoundary(fs, path, boundary, filePath);
+    if (inspection?.type === 'File' && !matchesIgnore(relativePath, ignorePatterns)) {
       yield* visitFile(filePath);
     }
     return;
   }
 
   const globBase = getGlobBase(normalizedPattern);
-  const basePath = path.join(projectRoot, globBase);
-  if (!(yield* exists(basePath))) {
+  const basePath = path.join(boundary.logicalRoot, globBase);
+  if (!(yield* inspectSeedPathWithinBoundary(fs, path, boundary, basePath))) {
     return;
   }
 
@@ -743,24 +814,26 @@ const visitProjectPattern = Effect.fn('seeding.visitProjectPattern')(function* (
       .split('/')
       .filter(segment => segment.startsWith('.') && segment !== '.' && segment !== '..' && !hasGlob(segment)),
   );
-  const visitPath: (currentPath: string) => Effect.Effect<void, unknown, FileSystem.FileSystem | Path.Path> = Effect.fn(
+  const visitPath: (
+    currentPath: string,
+  ) => Effect.Effect<void, unknown, FileSystem.FileSystem | Path.Path | SystemInfo> = Effect.fn(
     'seeding.visitProjectPath',
   )(function* (currentPath: string) {
-    const relativePath = toPosixPath(path.relative(projectRoot, currentPath));
+    const relativePath = toPosixPath(path.relative(boundary.logicalRoot, currentPath));
     if (relativePath !== '' && matchesIgnore(relativePath, ignorePatterns)) {
       return;
     }
-    const pathStat = yield* fs.stat(currentPath).pipe(Effect.option);
-    if (pathStat._tag === 'None' || pathStat.value.type === 'SymbolicLink') {
+    const inspection = yield* inspectSeedPathWithinBoundary(fs, path, boundary, currentPath);
+    if (!inspection) {
       return;
     }
-    if (pathStat.value.type === 'File') {
+    if (inspection.type === 'File') {
       if (regex.test(relativePath)) {
         yield* visitFile(currentPath);
       }
       return;
     }
-    if (pathStat.value.type !== 'Directory') {
+    if (inspection.type !== 'Directory') {
       return;
     }
     const directoryName = relativePath.split('/').at(-1) ?? '';
@@ -778,7 +851,7 @@ const visitProjectPattern = Effect.fn('seeding.visitProjectPattern')(function* (
     }
     for (const entry of yield* fs.readDirectory(currentPath)) {
       const entryPath = path.join(currentPath, entry);
-      const entryRelativePath = toPosixPath(path.relative(projectRoot, entryPath));
+      const entryRelativePath = toPosixPath(path.relative(boundary.logicalRoot, entryPath));
       if (matchesIgnore(entryRelativePath, ignorePatterns)) {
         continue;
       }
@@ -796,9 +869,67 @@ const visitProjectPattern = Effect.fn('seeding.visitProjectPattern')(function* (
   yield* visitPath(basePath);
 });
 
-const prepareSeedContent = Effect.fn('seeding.prepareSeedContent')(function* (candidate: SeedCandidate) {
-  const fs = yield* FileSystem.FileSystem;
-  const content = yield* fs.readFileString(candidate.filePath);
+/**
+ * Resolves a logical seed path only through regular directory entries beneath
+ * the canonical project boundary. The per-project cache preserves the bounded
+ * walk's linear behavior while checking every path component exactly once.
+ */
+function inspectSeedPathWithinBoundary(
+  fs: FileSystem.FileSystem,
+  path: Path.Path,
+  boundary: SeedTraversalBoundary,
+  candidate: string,
+): Effect.Effect<SeedPathInspection | undefined, PlatformError.PlatformError> {
+  return Effect.gen(function* () {
+    const resolvedCandidate = path.resolve(candidate);
+    const relativePath = path.relative(boundary.logicalRoot, resolvedCandidate);
+    if (pathEscapesSeedBoundary(relativePath, path)) {
+      return undefined;
+    }
+    if (relativePath === '') {
+      return boundary.inspections.get(boundary.logicalRoot) ?? undefined;
+    }
+
+    let currentPath = boundary.logicalRoot;
+    const segments = relativePath.split(path.sep).filter(segment => segment !== '' && segment !== '.');
+    for (let index = 0; index < segments.length; index += 1) {
+      currentPath = path.join(currentPath, segments[index]!);
+      let inspection = boundary.inspections.get(currentPath);
+      if (inspection === undefined && !boundary.inspections.has(currentPath)) {
+        const link = yield* readSeedLink(fs, currentPath);
+        if (Option.isSome(link)) {
+          boundary.inspections.set(currentPath, null);
+          return undefined;
+        }
+        const inspectedPath = yield* optionOnSeedNotFound(Effect.all([fs.realPath(currentPath), fs.stat(currentPath)]));
+        const expectedRealPath = path.resolve(boundary.realRoot, path.relative(boundary.logicalRoot, currentPath));
+        if (Option.isNone(inspectedPath) || path.relative(expectedRealPath, inspectedPath.value[0]) !== '') {
+          boundary.inspections.set(currentPath, null);
+          return undefined;
+        }
+        const info = inspectedPath.value[1];
+        inspection = {
+          type: info.type === 'Directory' ? 'Directory' : info.type === 'File' ? 'File' : 'Other',
+        };
+        boundary.inspections.set(currentPath, inspection);
+      }
+      if (!inspection || (index < segments.length - 1 && inspection.type !== 'Directory')) {
+        return undefined;
+      }
+    }
+    return boundary.inspections.get(resolvedCandidate) ?? undefined;
+  });
+}
+
+function pathEscapesSeedBoundary(relativePath: string, path: Path.Path): boolean {
+  return relativePath === '..' || relativePath.startsWith(`..${path.sep}`) || path.isAbsolute(relativePath);
+}
+
+const prepareSeedContent = Effect.fn('seeding.prepareSeedContent')(function* (
+  candidate: SeedCandidate,
+  bytes: Uint8Array,
+) {
+  const content = new TextDecoder().decode(bytes);
   const preRedactedContent = shouldRedactPath(candidate.relativePath)
     ? redactContent(candidate.relativePath, content)
     : content;
