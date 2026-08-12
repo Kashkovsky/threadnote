@@ -4187,7 +4187,7 @@ describe('native code graph lifecycle', () => {
         const query = yield* CodeGraphQueryService;
         const indexed = yield* indexer.index({cwd: root, threadnoteHome: home});
         replaceFunction(root, 'ensureVectorIndex', 'ensureDirtyVectorIndex');
-        const stale = yield* query.status(home, root);
+        const stale = yield* query.status(home, root, {requestMaintenance: false});
         yield* store.markBuilding(before.databasePath, indexed.identity, {
           ...indexed.snapshot,
           id: `${indexed.snapshot.id}-interrupted`,

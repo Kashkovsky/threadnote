@@ -3,6 +3,7 @@ import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {
   CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION,
   type CodeGraphActivationProgressCallback,
+  type CodeGraphLanguagePackProvenance,
   type CodeGraphReusableBaseReceiptInput,
 } from './store_models.js';
 import {configureConnection} from './store_session.js';
@@ -62,6 +63,7 @@ const activateStagedSnapshot = Effect.fn('codeGraph.activateStagedSnapshot')(fun
   reusableBaseReceipt?: CodeGraphReusableBaseReceiptInput,
   promotionLease: Option.Option<CodeGraphActivationLease> = Option.none(),
   onProgress?: CodeGraphActivationProgressCallback,
+  snapshotPackProvenance?: readonly CodeGraphLanguagePackProvenance[],
 ) {
   const observe = activationProgressObserver(onProgress);
   yield* observe('validating-input', 'started');
@@ -96,6 +98,7 @@ const activateStagedSnapshot = Effect.fn('codeGraph.activateStagedSnapshot')(fun
         reusableBaseReceipt,
         promotionLease,
         observe,
+        snapshotPackProvenance,
       );
       return;
     }
@@ -369,6 +372,9 @@ const activateStagedSnapshot = Effect.fn('codeGraph.activateStagedSnapshot')(fun
         yield* associateSnapshotFileShards(sql, snapshot, reusableBaseReceipt);
       }
       yield* recordSnapshotExtractorGeneration(sql, snapshot.id);
+      if (snapshotPackProvenance !== undefined) {
+        yield* recordSnapshotPackProvenance(sql, snapshot.id, snapshotPackProvenance);
+      }
       if (activated && !baseSnapshotId && !snapshot.dirty && reusableBaseReceipt) {
         yield* observe('copying-lookup-keys', 'started');
         yield* sql`
@@ -404,7 +410,6 @@ const activateStagedSnapshot = Effect.fn('codeGraph.activateStagedSnapshot')(fun
             ${new Date().toISOString()}
           FROM activation_symbol_lookup
         `;
-        yield* recordSnapshotPackProvenance(sql, snapshot.id, reusableBaseReceipt.packProvenance);
       }
       yield* insertActivationLease(sql, snapshot.id, promotionLease);
       if (activated) {
@@ -456,6 +461,7 @@ const activatePersistedIncrementalSnapshot = Effect.fn('codeGraph.activatePersis
   reusableBaseReceipt: CodeGraphReusableBaseReceiptInput | undefined,
   promotionLease: Option.Option<CodeGraphActivationLease> = Option.none(),
   onProgress?: CodeGraphActivationProgressCallback,
+  snapshotPackProvenance?: readonly CodeGraphLanguagePackProvenance[],
 ) {
   const observe = activationProgressObserver(onProgress);
   let compactLexicalReceipt = Option.none<CompactLexicalFormatReceipt>();
@@ -718,6 +724,9 @@ const activatePersistedIncrementalSnapshot = Effect.fn('codeGraph.activatePersis
         yield* associateSnapshotFileShards(sql, snapshot, reusableBaseReceipt);
       }
       yield* recordSnapshotExtractorGeneration(sql, snapshot.id);
+      if (snapshotPackProvenance !== undefined) {
+        yield* recordSnapshotPackProvenance(sql, snapshot.id, snapshotPackProvenance);
+      }
       yield* insertActivationLease(sql, snapshot.id, promotionLease);
       if (existing[0]?.state !== 'ready') {
         yield* observe('recording-completion', 'started');

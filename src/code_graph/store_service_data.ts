@@ -21,6 +21,7 @@ import {
   selectEdgePage,
   selectEdgesForNodes,
 } from './store_queries.js';
+import {selectSnapshotPackProvenance} from './store_pack_provenance.js';
 import {pruneCachedFileBlobs} from './store_cleanup_core.js';
 import {prepareActivationTables} from './store_staging_core.js';
 import {
@@ -109,6 +110,7 @@ type CodeGraphStoreDataMethods = Pick<
   | 'currentLexicalReadySnapshotById'
   | 'readySnapshotForCommit'
   | 'reusableBaseReceipt'
+  | 'snapshotPackProvenance'
   | 'reusableCleanBase'
   | 'reusableReexports'
   | 'relationshipSummaryForNode'
@@ -560,6 +562,15 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
           exists ? useReadOnlyDatabase(databasePath, selectReusableBaseReceipt(snapshotId)) : Effect.succeed(undefined),
         ),
         Effect.mapError(cause => storeError('load reusable code graph base receipt', cause)),
+      ),
+    snapshotPackProvenance: (databasePath, snapshotId) =>
+      fs.exists(databasePath).pipe(
+        Effect.flatMap(exists =>
+          exists
+            ? useReadOnlyDatabase(databasePath, selectSnapshotPackProvenance(snapshotId))
+            : Effect.succeed(undefined),
+        ),
+        Effect.mapError(cause => storeError('load code graph snapshot language-pack provenance', cause)),
       ),
     reusableCleanBase: (
       databasePath,

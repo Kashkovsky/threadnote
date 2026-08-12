@@ -5,6 +5,7 @@ import {
   CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION,
   type CodeGraphActivationProgressCallback,
   type CodeGraphDirectPersistentCapacityProtector,
+  type CodeGraphLanguagePackProvenance,
   type CodeGraphReusableBaseReceiptInput,
 } from './store_models.js';
 import {LEGACY_BUILDING_REFERENCES_V3_TABLE} from './store_schema_contracts.js';
@@ -183,6 +184,7 @@ const activateCleanStagedSnapshot = Effect.fn('codeGraph.activateCleanStagedSnap
   reusableBaseReceipt: CodeGraphReusableBaseReceiptInput | undefined,
   promotionLease: Option.Option<CodeGraphActivationLease>,
   observe: ActivationProgressObserver,
+  snapshotPackProvenance?: readonly CodeGraphLanguagePackProvenance[],
 ) {
   const existing = yield* sql<{readonly started_at: string}>`
     SELECT started_at FROM snapshots WHERE id = ${snapshot.id} LIMIT 1
@@ -330,6 +332,9 @@ const activateCleanStagedSnapshot = Effect.fn('codeGraph.activateCleanStagedSnap
       yield* recordCompactLexicalFormat(sql, snapshot.id, copiedTerms, copiedTerms.postingCount, snapshot.symbolCount);
       yield* associateSnapshotFileShards(sql, snapshot, reusableBaseReceipt);
       yield* recordSnapshotExtractorGeneration(sql, snapshot.id);
+      if (snapshotPackProvenance !== undefined) {
+        yield* recordSnapshotPackProvenance(sql, snapshot.id, snapshotPackProvenance);
+      }
       if (!snapshot.dirty && reusableBaseReceipt) {
         yield* sql`
           INSERT INTO snapshot_reuse_receipts (
@@ -344,7 +349,6 @@ const activateCleanStagedSnapshot = Effect.fn('codeGraph.activateCleanStagedSnap
             ${new Date().toISOString()}
           )
         `;
-        yield* recordSnapshotPackProvenance(sql, snapshot.id, reusableBaseReceipt.packProvenance);
       }
       yield* insertActivationLease(sql, snapshot.id, promotionLease);
       yield* observe('recording-completion', 'started');
@@ -584,6 +588,7 @@ const activatePersistedFullSnapshot = Effect.fn('codeGraph.activatePersistedFull
   onProgress?: CodeGraphActivationProgressCallback,
   writerGate?: CodeGraphWriterGate,
   persistentCapacityProtector?: CodeGraphDirectPersistentCapacityProtector,
+  snapshotPackProvenance?: readonly CodeGraphLanguagePackProvenance[],
 ) {
   const runWrite: CodeGraphWriterGate = writerGate ?? (effect => effect);
   const observe = activationProgressObserver(onProgress);
@@ -682,6 +687,9 @@ const activatePersistedFullSnapshot = Effect.fn('codeGraph.activatePersistedFull
           yield* publishCompactLexicalFormat(sql, snapshot.id, compactLexicalReceipt);
           yield* associateSnapshotFileShards(sql, snapshot, reusableBaseReceipt);
           yield* recordSnapshotExtractorGeneration(sql, snapshot.id);
+          if (snapshotPackProvenance !== undefined) {
+            yield* recordSnapshotPackProvenance(sql, snapshot.id, snapshotPackProvenance);
+          }
           if (reusableBaseReceipt) {
             yield* sql`
           INSERT INTO snapshot_reuse_receipts (
@@ -695,7 +703,6 @@ const activatePersistedFullSnapshot = Effect.fn('codeGraph.activatePersistedFull
             ${new Date().toISOString()}
           )
         `;
-            yield* recordSnapshotPackProvenance(sql, snapshot.id, reusableBaseReceipt.packProvenance);
           }
           yield* insertActivationLease(sql, snapshot.id, promotionLease);
           const completed = yield* sql<{readonly id: string}>`
@@ -852,6 +859,17 @@ const activateCleanSnapshotAlias = Effect.fn('codeGraph.activateCleanSnapshotAli
       yield* sql`INSERT INTO lexical_compact_snapshots (snapshot_id) VALUES (${snapshot.id})`;
       yield* publishCompactLexicalFormat(sql, snapshot.id, {postingCount: 0, symbolCount: 0, termCount: 0});
       yield* recordSnapshotExtractorGeneration(sql, snapshot.id);
+      yield* sql`
+        INSERT INTO snapshot_pack_provenance (
+          snapshot_id, pack_id, cache_identity, derivation_identity,
+          resolution_domain, resolution_version
+        )
+        SELECT
+          ${snapshot.id}, pack_id, cache_identity, derivation_identity,
+          resolution_domain, resolution_version
+        FROM snapshot_pack_provenance
+        WHERE snapshot_id = ${baseSnapshotId}
+      `;
     }),
   );
 });

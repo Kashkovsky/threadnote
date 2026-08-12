@@ -5,12 +5,17 @@ import {SystemInfo} from '../effect/system.js';
 import {
   codeGraphDirectPersistentCapacityProtector,
   CodeGraphIndexer,
+  extractorSetIdentityFromPackProvenance,
   type DirectPersistentCapacityProtection,
 } from './indexer.js';
 import type {CodeGraphDirectPersistentCapacityBoundary} from './disk_capacity.js';
 import {CodeGraphMaintenanceCoordinator} from './maintenance_coordinator.js';
 import {worktreeOverlayState} from './inventory.js';
-import {CodeGraphLanguagePackRegistry} from './languages/registry.js';
+import {
+  codeGraphLanguagePackProvenance,
+  CodeGraphLanguagePackRegistry,
+  type CodeGraphLanguagePackRegistryShape,
+} from './languages/registry.js';
 import {
   codeGraphLayout,
   codeGraphMaintenanceLockPath,
@@ -29,7 +34,12 @@ import {
 } from './local_provenance.js';
 import {compareCodeUnits} from './ordering.js';
 import {resolveRepositoryIdentity, resolveRepositoryIdentityForExpectation} from './repository.js';
-import {codeGraphSymbolSearchScoreMultiplier, CodeGraphStore, type CodeGraphStoreShape} from './store.js';
+import {
+  codeGraphSymbolSearchScoreMultiplier,
+  CodeGraphStore,
+  type CodeGraphLanguagePackProvenance,
+  type CodeGraphStoreShape,
+} from './store.js';
 import {CodeGraphEmbeddingIndex, type CodeGraphEmbeddingIndexShape} from './embedding.js';
 import {
   CODE_GRAPH_RESULT_VERSION,
@@ -136,6 +146,41 @@ export function shouldAttachSharedReadySnapshot(input: {
   );
 }
 
+/**
+ * A clean Git worktree can still have a stale graph after a runtime upgrade.
+ * Reconstruct the active extractor contract from the snapshot provenance and the
+ * current language-pack catalog before treating that snapshot as current.
+ */
+export function codeGraphSnapshotMatchesCurrentLanguagePacks(
+  snapshot: Pick<CodeGraphSnapshot, 'extractorSet'>,
+  provenance: readonly CodeGraphLanguagePackProvenance[] | undefined,
+  languagePacks: CodeGraphLanguagePackRegistryShape,
+): boolean {
+  if (provenance === undefined) return false;
+  const previousIds = new Set(provenance.map(pack => pack.id));
+  if (previousIds.size !== provenance.length) return false;
+  const currentProvenance = languagePacks.packs
+    .filter(pack => previousIds.has(pack.id))
+    .map(codeGraphLanguagePackProvenance);
+  if (currentProvenance.length !== previousIds.size) return false;
+  return (
+    extractorSetIdentityFromPackProvenance(provenance) === snapshot.extractorSet &&
+    extractorSetIdentityFromPackProvenance(currentProvenance) === snapshot.extractorSet
+  );
+}
+
+function codeGraphSnapshotRuntimeCurrent(
+  store: CodeGraphStoreShape,
+  databasePath: string,
+  snapshot: CodeGraphSnapshot,
+  languagePacks: CodeGraphLanguagePackRegistryShape,
+) {
+  return store.snapshotPackProvenance(databasePath, snapshot.id).pipe(
+    Effect.map(provenance => codeGraphSnapshotMatchesCurrentLanguagePacks(snapshot, provenance, languagePacks)),
+    Effect.catch(() => Effect.succeed(false)),
+  );
+}
+
 function attachCodeGraphStatusObservation(
   status: CodeGraphStatus,
   observation: CodeGraphStatusObservation | undefined,
@@ -227,9 +272,13 @@ export class CodeGraphQueryService extends Context.Service<
           if (!identityAlreadyObserved) yield* recordVerifiedCodeGraphLocalAssociation(threadnoteHome, identity);
           const layout = codeGraphLayout(path, threadnoteHome, identity.checkoutId, identity.worktreeId);
           const readySnapshot = yield* store.readySnapshot(layout.databasePath, identity.worktreeId);
+          const runtimeCurrent = readySnapshot
+            ? yield* codeGraphSnapshotRuntimeCurrent(store, layout.databasePath, readySnapshot, languagePacks)
+            : false;
           const overlay = options?.observeWorktree === false ? undefined : yield* worktreeOverlayState(identity);
           const stale =
             !readySnapshot ||
+            !runtimeCurrent ||
             readySnapshot.commit !== identity.headCommit ||
             (overlay !== undefined && !snapshotMatches(readySnapshot, identity.headCommit, overlay));
           const status = {
@@ -280,8 +329,12 @@ export class CodeGraphQueryService extends Context.Service<
             identity.repositoryId,
             identity.headCommit,
           );
+          const candidateRuntimeCurrent = candidate
+            ? yield* codeGraphSnapshotRuntimeCurrent(store, layout.databasePath, candidate, languagePacks)
+            : false;
           if (
             candidate === undefined ||
+            !candidateRuntimeCurrent ||
             !shouldAttachSharedReadySnapshot({
               candidate,
               headCommit: identity.headCommit,
@@ -312,8 +365,12 @@ export class CodeGraphQueryService extends Context.Service<
                 identity.repositoryId,
                 identity.headCommit,
               );
+              const lockedCandidateRuntimeCurrent = lockedCandidate
+                ? yield* codeGraphSnapshotRuntimeCurrent(store, layout.databasePath, lockedCandidate, languagePacks)
+                : false;
               if (
                 lockedCandidate === undefined ||
+                !lockedCandidateRuntimeCurrent ||
                 !shouldAttachSharedReadySnapshot({
                   candidate: lockedCandidate,
                   headCommit: identity.headCommit,
@@ -402,6 +459,9 @@ export class CodeGraphQueryService extends Context.Service<
                 (yield* resolveAndRecordCodeGraphLocalAssociation(options.threadnoteHome, options.cwd)).identity;
               const layout = codeGraphLayout(path, options.threadnoteHome, identity.checkoutId, identity.worktreeId);
               const existing = yield* store.readySnapshot(layout.databasePath, identity.worktreeId);
+              const runtimeCurrent = existing
+                ? yield* codeGraphSnapshotRuntimeCurrent(store, layout.databasePath, existing, languagePacks)
+                : false;
               const strictFreshness =
                 options.strictFreshness ??
                 (options.refresh === true || options.operation === 'impact' || options.operation === 'path');
@@ -411,6 +471,7 @@ export class CodeGraphQueryService extends Context.Service<
                 (observeBeforeRead ? yield* observeWorktree(identity, options.interlock) : undefined);
               const stale =
                 !existing ||
+                !runtimeCurrent ||
                 existing.commit !== identity.headCommit ||
                 (overlay !== undefined && !snapshotMatches(existing, identity.headCommit, overlay));
               const freshnessRequired =
@@ -433,6 +494,7 @@ export class CodeGraphQueryService extends Context.Service<
                       embedding,
                       expectedRepositoryId: identity.repositoryId,
                       layout,
+                      languagePacks,
                       deferWorktreeObservation: overlay === undefined && !rebuilt,
                       observation: overlay === undefined || rebuilt ? undefined : {identity, overlay},
                       options,
@@ -1025,6 +1087,7 @@ const inspectReadyGraph = Effect.fn('codeGraph.inspectReadyGraph')(function* (in
   readonly embedding: CodeGraphEmbeddingIndexShape;
   readonly expectedRepositoryId: string;
   readonly layout: CodeGraphLayout;
+  readonly languagePacks: CodeGraphLanguagePackRegistryShape;
   readonly observation?: {
     readonly identity: RepositoryIdentity;
     readonly overlay: {readonly dirty: boolean; readonly fingerprint?: string};
@@ -1051,6 +1114,12 @@ const inspectReadyGraph = Effect.fn('codeGraph.inspectReadyGraph')(function* (in
     );
   }
   const snapshot = {...storedSnapshot, worktreeId: identity.worktreeId};
+  const runtimeCurrent = yield* codeGraphSnapshotRuntimeCurrent(
+    input.store,
+    input.layout.databasePath,
+    snapshot,
+    input.languagePacks,
+  );
   yield* input.options.interlock?.afterSnapshotSelected?.() ?? Effect.void;
   const lease = yield* input.store.acquireSnapshotLease(input.layout.databasePath, snapshot.id, 2 * 60_000);
   const read = Effect.gen(function* () {
@@ -1162,8 +1231,9 @@ const inspectReadyGraph = Effect.fn('codeGraph.inspectReadyGraph')(function* (in
     const finalOverlay = input.strictFreshness
       ? yield* observeWorktree(finalIdentity, input.options.interlock)
       : overlay;
-    const freshness =
-      finalOverlay === undefined
+    const freshness = !runtimeCurrent
+      ? 'stale'
+      : finalOverlay === undefined
         ? snapshot.commit === finalIdentity.headCommit
           ? 'deferred'
           : 'stale'

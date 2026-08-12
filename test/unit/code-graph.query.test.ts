@@ -13,7 +13,7 @@ import type {CodeGraphEmbeddingIndexShape} from '../../src/code_graph/embedding.
 import {CodeGraphEmbeddingIndex} from '../../src/code_graph/embedding.js';
 import {CommandExecutor} from '../../src/effect/command.js';
 import {SystemInfo} from '../../src/effect/system.js';
-import {CodeGraphIndexer} from '../../src/code_graph/indexer.js';
+import {CodeGraphIndexer, extractorSetIdentityFromPackProvenance} from '../../src/code_graph/indexer.js';
 import {CodeGraphLanguagePackRegistry} from '../../src/code_graph/languages/registry.js';
 import type {CodeGraphLayout} from '../../src/code_graph/layout.js';
 import {CodeGraphMaintenanceCoordinator} from '../../src/code_graph/maintenance_coordinator.js';
@@ -147,6 +147,7 @@ describe('code graph query budgets', () => {
             readySnapshot: () => Ref.get(snapshotRef),
             readySnapshotForCommit: () => Effect.succeed(undefined),
             releaseSnapshotLease: () => Effect.void,
+            snapshotPackProvenance: () => Effect.succeed([]),
             symbolsByIds: () => Effect.succeed([]),
             withSession: (_databasePath: string, effect: Effect.Effect<unknown, unknown, unknown>) => effect,
           } as unknown as CodeGraphStoreShape),
@@ -184,7 +185,7 @@ describe('code graph query budgets', () => {
             completedAt: '2026-08-08T00:00:00.000Z',
             dirty: false,
             edgeCount: 0,
-            extractorSet: 'query-maintenance-test',
+            extractorSet: extractorSetIdentityFromPackProvenance([]),
             fileCount: 1,
             id: `cgsn_${'1'.repeat(40)}`,
             repositoryId: identity.repositoryId,
