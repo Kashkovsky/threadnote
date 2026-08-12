@@ -111,6 +111,12 @@ import {
 } from '../code_graph/commands.js';
 import {runProcessDiagnostics} from '../process_diagnostics.js';
 import {runContextBrief} from '../context_brief/commands.js';
+import {
+  cursorCloudRuntimeConfig,
+  runCursorCloudBootstrap,
+  runCursorCloudConfig,
+  runCursorCloudVerify,
+} from '../cursor_cloud.js';
 
 const describeFlag = <A>(flag: Flag.Flag<A>, description: string): Flag.Flag<A> =>
   flag.pipe(Flag.withDescription(description));
@@ -1422,6 +1428,71 @@ const forget = Command.make(
   ({uri, ...options}) => withRuntimeEffect(config => runForget(config, uri, options)),
 ).pipe(Command.withDescription('Remove a threadnote:// URI from local Threadnote context'));
 
+const cursorCloudIdentityFlags = {
+  agentId: defaultString('agent-id', 'Stable agent identity used by Cursor Cloud', 'cursor-cloud'),
+  team: defaultString('team', 'Shared-memory team reserved for Cursor Cloud', 'cursor-cloud'),
+  user: defaultString('user', 'Stable Threadnote user identity used by Cursor Cloud', 'cursor-cloud'),
+} as const;
+
+const cursorCloudConfig = Command.make(
+  'config',
+  {
+    ...cursorCloudIdentityFlags,
+    memoryMode: defaultChoice(
+      'memory-mode',
+      ['shared-read-write'],
+      'Cursor Cloud memory capability profile',
+      'shared-read-write',
+    ),
+  },
+  ({agentId, team, user}) =>
+    withRuntimeEffect(config =>
+      runCursorCloudConfig(cursorCloudRuntimeConfig(config, {agentId, user}), {agentId, team, user}),
+    ),
+).pipe(Command.withDescription('Print a deterministic Cursor Dashboard MCP configuration'));
+
+const cursorCloudBootstrap = Command.make(
+  'bootstrap',
+  {
+    ...cursorCloudIdentityFlags,
+    dryRun: boolean('dry-run', 'Preview configuration without changing or synchronizing the share'),
+    remote: requiredString('remote', 'Credential-free Git URL for the shared memory repository'),
+    sync: negatedBoolean('sync', 'Configure the share without synchronizing it immediately'),
+  },
+  ({agentId, dryRun, remote, sync, team, user}) =>
+    withRuntimeEffect(config =>
+      runCursorCloudBootstrap(cursorCloudRuntimeConfig(config, {agentId, user}), {
+        dryRun,
+        remote,
+        sync,
+        team,
+      }),
+    ),
+).pipe(Command.withDescription('Idempotently prepare an exclusive writable Cursor Cloud memory share'));
+
+const cursorCloudVerify = Command.make(
+  'verify',
+  {
+    ...cursorCloudIdentityFlags,
+    cwd: requiredString('cwd', 'Absolute Cursor Cloud checkout path used for local code-graph inspection'),
+    json: boolean('json', 'Print a machine-readable verification receipt'),
+  },
+  ({agentId, cwd, json, team, user}) =>
+    withRuntimeEffect(config =>
+      runCursorCloudVerify(cursorCloudRuntimeConfig(config, {agentId, user}), {cwd, json, team}),
+    ),
+).pipe(Command.withDescription('Verify the Cursor Cloud runtime, share, and local graph checkout'));
+
+const cursorCloud = Command.make('cursor').pipe(
+  Command.withDescription('Configure Threadnote for Cursor Cloud Agents'),
+  Command.withSubcommands([cursorCloudConfig, cursorCloudBootstrap, cursorCloudVerify]),
+);
+
+const cloud = Command.make('cloud').pipe(
+  Command.withDescription('Cloud-agent integrations'),
+  Command.withSubcommands([cursorCloud]),
+);
+
 const shareInit = Command.make(
   'init',
   {
@@ -1725,6 +1796,7 @@ const topLevelCommandRegistrations = [
   registerTopLevelCommand('handoff', handoff),
   registerTopLevelCommand('archive', archive),
   registerTopLevelCommand('forget', forget),
+  registerTopLevelCommand('cloud', cloud),
   registerTopLevelCommand('share', share, {
     productionLog: {
       subcommands: {

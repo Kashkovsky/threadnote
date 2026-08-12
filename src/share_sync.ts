@@ -76,14 +76,17 @@ export const refreshSharedReposInBackground = Effect.fn('share.refreshSharedRepo
 
 export const syncSharedReposBeforeAgentRead = Effect.fn('share.syncSharedReposBeforeAgentRead')(function* (
   config: ShareRuntime,
+  selectedTeam?: string,
 ) {
   const state = autoShareState(config);
   return yield* enqueueShareOperation(
     state,
     Effect.fn('share.callback')(function* () {
       yield* loadPendingReindexes(config, state);
-      const warnings = yield* refreshShareUpdateStateLocked(config, state, {force: false});
-      const syncTeams = new Set([...state.behindTeams, ...state.pendingReindexes.keys()]);
+      const warnings = yield* refreshShareUpdateStateLocked(config, state, {force: false, team: selectedTeam});
+      const syncTeams = new Set(
+        [...state.behindTeams, ...state.pendingReindexes.keys()].filter(team => !selectedTeam || team === selectedTeam),
+      );
       if (syncTeams.size === 0) {
         return {syncedTeams: [], warnings};
       }
@@ -132,7 +135,7 @@ const refreshShareUpdateState = Effect.fn('share.refreshShareUpdateState')(funct
 const refreshShareUpdateStateLocked = Effect.fn('share.refreshShareUpdateStateLocked')(function* (
   config: ShareRuntime,
   state: AutoShareState,
-  options: {readonly force: boolean},
+  options: {readonly force: boolean; readonly team?: string},
 ) {
   const now = Date.now();
   if (
@@ -145,7 +148,7 @@ const refreshShareUpdateStateLocked = Effect.fn('share.refreshShareUpdateStateLo
   }
   state.forceNextCheck = false;
   return yield* Effect.gen(function* () {
-    const statuses = yield* fetchShareUpdateStatuses(config);
+    const statuses = yield* fetchShareUpdateStatuses(config, options.team);
     const nextBehindTeams = new Set(state.behindTeams);
     for (const status of statuses) {
       if (!status.warning) {
@@ -168,9 +171,12 @@ function enqueueShareOperation<A, E, R>(
   return action();
 }
 
-const fetchShareUpdateStatuses = Effect.fn('share.fetchShareUpdateStatuses')(function* (config: ShareRuntime) {
+const fetchShareUpdateStatuses = Effect.fn('share.fetchShareUpdateStatuses')(function* (
+  config: ShareRuntime,
+  selectedTeam?: string,
+) {
   const teamsFile = yield* readTeamsFile(config);
-  const teams = Object.entries(teamsFile.teams);
+  const teams = Object.entries(teamsFile.teams).filter(([name]) => !selectedTeam || name === selectedTeam);
   if (teams.length === 0) {
     return [];
   }

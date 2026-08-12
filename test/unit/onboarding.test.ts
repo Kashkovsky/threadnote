@@ -35,6 +35,16 @@ describe('buildOnboardingGuide', () => {
     expect(guide).toContain('share_skill(');
   });
 
+  it('describes shared durable writes and transient local handoffs for Cursor Cloud', () => {
+    const guide = buildOnboardingGuide({seededProjects: [], teams: ['engineering'], toolset: 'cursor-cloud'});
+    expect(guide).toContain('exclusive shared-memory scope');
+    expect(guide).toContain('remember_context');
+    expect(guide).toContain('committed and pushed');
+    expect(guide).toContain('kind=handoff write stays local');
+    expect(guide).toContain('all other personal/local memory kinds stay inaccessible');
+    expect(guide).not.toContain('share_publish(');
+  });
+
   it('nudges first-time team setup when no team is configured', () => {
     const guide = buildOnboardingGuide({seededProjects: [], teams: []});
     expect(guide).toContain('No share team configured yet');

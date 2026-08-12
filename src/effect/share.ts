@@ -78,13 +78,16 @@ export const monitorSharedRepositories = Effect.fn('share.monitorRepositories')(
     yield* refresh(false);
   }
 });
-export const syncSharedReposBeforeAgentRead = Effect.fn('share.syncBeforeAgentRead')(function* (config: ShareRuntime) {
+export const syncSharedReposBeforeAgentRead = Effect.fn('share.syncBeforeAgentRead')(function* (
+  config: ShareRuntime,
+  team?: string,
+) {
   const observed = yield* observeSharedRepositoryHomeLock(config.agentContextHome);
   if (observed === 'active') {
     markSharedAutoSyncDeferred(config);
     return {syncedTeams: [] as readonly string[], warnings: [] as readonly string[]};
   }
-  const sync = withSharedRepositoryLock(config, syncSharedReposBeforeAgentReadEffect(config), {
+  const sync = withSharedRepositoryLock(config, syncSharedReposBeforeAgentReadEffect(config, team), {
     waitTimeoutMilliseconds: SHARED_REPOSITORY_READ_LOCK_WAIT_TIMEOUT_MILLISECONDS,
   });
   return yield* sync.pipe(
