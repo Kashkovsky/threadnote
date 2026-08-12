@@ -9,8 +9,9 @@ export const cursorCloudDocsSection: DocsSection = {
       id: 'cursor-cloud-agents',
       title: 'Use Threadnote with Cursor Cloud Agents',
       summary:
-        'Run Threadnote inside each Cursor cloud VM while one writable Git share remains its durable memory plane.',
+        'Use the Threadnote 4.2 beta profile inside each Cursor cloud VM while one writable Git share remains its durable memory plane.',
       keywords: [
+        'Threadnote 4.2',
         'Cursor Cloud Agents',
         'Cursor cloud MCP',
         'cloud agent memory',
@@ -21,12 +22,16 @@ export const cursorCloudDocsSection: DocsSection = {
       ],
       body: [
         {
+          type: 'note',
+          text: 'Available in [Threadnote 4.2](https://github.com/Kashkovsky/threadnote/releases/tag/v4.2.0) as a beta integration. The released capability-enforced cloud profile uses a local stdio MCP server, an idempotent bootstrap command, and one writable Git-backed memory share. Durable memories are committed and pushed; local handoffs remain transient.',
+        },
+        {
           type: 'warning',
-          text: 'Full first-class Cursor Cloud Agents integration is still in development. The current integration uses a local stdio MCP server, an idempotent bootstrap command, and a capability-enforced cloud profile. Durable memories are committed and pushed to one designated share; local handoffs remain transient. Managed remote transport and broader cloud lifecycle automation are not yet included.',
+          text: 'The managed first-class integration is still in development. Threadnote 4.2 does not yet include managed remote memory, provider-backed workload authorization, durable cross-session handoffs, or the complete cloud canary program.',
         },
         {
           type: 'paragraph',
-          text: 'Cursor Cloud Agents run in isolated Ubuntu machines and support custom stdio MCP servers inside the VM. Threadnote can therefore run beside the checked-out repository for current-source graph work. Do not rely on ~/.threadnote memories being available to a later run: use the designated writable Git-backed share for durable memory, and treat local handoffs as workspace-local coordination.',
+          text: 'The released 4.2 profile runs beside the checked-out repository in each isolated Cursor Cloud Ubuntu VM. It uses custom stdio MCP for current-source graph work and scopes historical context to the configured share. Do not rely on ~/.threadnote memories being available to a later run: use the designated writable Git-backed share for durable memory, and treat local handoffs as workspace-local coordination.',
         },
         {
           type: 'note',
@@ -42,10 +47,20 @@ export const cursorCloudDocsSection: DocsSection = {
             'Add the cloud-only instruction block below to the repository guidance read by your agents, such as AGENTS.md. Repository files remain authoritative.',
           ],
         },
-        {type: 'heading', text: '1. Install Threadnote in the cloud environment'},
+        {type: 'heading', text: '1. Install or update to Threadnote 4.2'},
         {
           type: 'paragraph',
-          text: 'In the initial Cursor environment setup terminal or Build, install the standalone Linux release. `--no-start` avoids a readiness message; Threadnote does not need a daemon.',
+          text: 'For an existing standalone installation, upgrade on the stable channel and confirm that the active release is 4.2:',
+        },
+        {
+          type: 'code',
+          language: 'sh',
+          code: `threadnote update
+threadnote version`,
+        },
+        {
+          type: 'paragraph',
+          text: 'For a fresh Cursor environment, install the latest standalone Linux release in the initial setup terminal or Build. `--no-start` avoids a readiness message; Threadnote does not need a daemon.',
         },
         {
           type: 'code',
@@ -202,12 +217,12 @@ threadnote://user/cursor-cloud/memories/shared/cursor-cloud/
             ['Secrets and Git credentials', 'Remain in Cursor or the Git provider and never enter Threadnote memory.'],
           ],
         },
-        {type: 'heading', text: 'What the full integration will add'},
+        {type: 'heading', text: 'Beyond 4.2: what the full integration will add'},
         {
           type: 'list',
           items: [
             'A managed remote memory transport that does not require a VM-local Git checkout.',
-            'Cloud-provider identity and authorization beyond the current stable user, agent, and team identifiers.',
+            "Cloud-provider identity and authorization beyond the 4.2 profile's stable user, agent, and team identifiers.",
             'A durable remote handoff path with explicit lifecycle and concurrency contracts.',
             'Automated clean-VM, resumed-Build, write-concurrency, and multi-agent canary coverage.',
             'A future hybrid transport: local stdio for checkout-specific graph evidence and remote Streamable HTTP for durable shared memory.',
