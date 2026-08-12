@@ -51,7 +51,6 @@ import {
   type RepositoryIdentity,
 } from '../../src/code_graph/types.js';
 import {discoverManifestWorkspace} from '../../src/code_graph/workspace.js';
-import {withExclusiveFileLock} from '../../src/effect/file_lock.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {claimPersistentBuildForTest} from '../helpers/code-graph-build.js';
 import {join, mkdtemp, rm} from '../helpers/effect-filesystem.js';
@@ -1911,71 +1910,47 @@ describe('code graph full-build materialization store', () => {
     ),
   );
 
-  it('opens detached completed-build cleanup only while holding the checkout writer gate', async () => {
-    const fixture = await materializationFixture();
-    const writerLockPath = join(fixture.root, 'checkout-writer.lock');
-    const snapshot = readySnapshot(fixture.identity, 1, 0);
-    const stored = symbol('gated-cleanup', 'gatedCleanup', ['typescript:name:gatedCleanup']);
-    let cleanupConnectionOpened = false;
-    let cleanupConnectionOpenedWhileGateHeld = false;
-
-    const remainingAfterContention = await runEffect(
+  effectIt.effect('opens detached completed-build cleanup only while holding the checkout writer gate', () =>
+    TestClock.withLive(
       Effect.gen(function* () {
+        const fixture = yield* Effect.promise(materializationFixture);
+        const writerLockPath = join(fixture.root, 'checkout-writer.lock');
+        const snapshot = readySnapshot(fixture.identity, 1, 0);
+        const stored = symbol('gated-cleanup', 'gatedCleanup', ['typescript:name:gatedCleanup']);
         const fs = yield* FileSystem.FileSystem;
         const store = yield* CodeGraphStore;
-        yield* withExclusiveFileLock(
-          fs,
-          writerLockPath,
+        const cleanupConnectionOpened = yield* Deferred.make<boolean>();
+        yield* store.withSession(
+          fixture.databasePath,
+          Effect.gen(function* () {
+            const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
+              ...snapshot,
+              state: 'building',
+            });
+            yield* store.prepareActivation(fixture.databasePath, [fixture.file], snapshot.id, 1, ownerToken);
+            yield* store.stageActivationFacts(fixture.databasePath, [stored], [], [], undefined, 0);
+            yield* store.resolveStagedReferences(fixture.databasePath);
+            yield* store.activateStaged(fixture.databasePath, fixture.identity, snapshot);
+          }),
           {
-            retryIntervalMilliseconds: 10,
-            staleAfterMilliseconds: 120_000,
-            waitTimeoutMilliseconds: 5_000,
+            onCompletedBuildCleanupConnection: () =>
+              fs.exists(writerLockPath).pipe(
+                Effect.catch(() => Effect.succeed(false)),
+                Effect.flatMap(writerGateHeld => Deferred.succeed(cleanupConnectionOpened, writerGateHeld)),
+                Effect.asVoid,
+              ),
+            writerLockPath,
           },
-          store.withSession(
-            fixture.databasePath,
-            Effect.gen(function* () {
-              const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
-                ...snapshot,
-                state: 'building',
-              });
-              yield* store.prepareActivation(fixture.databasePath, [fixture.file], snapshot.id, 1, ownerToken);
-              yield* store.stageActivationFacts(fixture.databasePath, [stored], [], [], undefined, 0);
-              yield* store.resolveStagedReferences(fixture.databasePath);
-              yield* store.activateStaged(fixture.databasePath, fixture.identity, snapshot);
-              yield* Effect.promise(() => Bun.sleep(100));
-              cleanupConnectionOpenedWhileGateHeld = cleanupConnectionOpened;
-            }),
-            {
-              onCompletedBuildCleanupConnection: () =>
-                Effect.sync(() => {
-                  cleanupConnectionOpened = true;
-                }),
-              writerGateHeld: true,
-              writerLockPath,
-            },
-          ),
         );
-        const remaining = readCompletedBuildRows(fixture.databasePath, snapshot.id);
-        yield* store.withSession(fixture.databasePath, Effect.void, {
-          cleanupCompletedBuildRows: true,
-          onCompletedBuildCleanupConnection: () =>
-            Effect.sync(() => {
-              cleanupConnectionOpened = true;
-            }),
-          writerLockPath,
+        expect(yield* Deferred.await(cleanupConnectionOpened).pipe(Effect.timeout('5 seconds'))).toBe(true);
+        expect(yield* Effect.promise(() => awaitCompletedBuildCleanup(fixture.databasePath, snapshot.id))).toEqual({
+          batches: 0,
+          candidates: 0,
+          refs: 0,
         });
-        for (let attempt = 0; attempt < 100 && !cleanupConnectionOpened; attempt += 1) {
-          yield* Effect.promise(() => Bun.sleep(10));
-        }
-        return remaining;
-      }),
-    );
-
-    expect(cleanupConnectionOpenedWhileGateHeld).toBe(false);
-    expect(remainingAfterContention.batches).toBe(1);
-    expect(cleanupConnectionOpened).toBe(true);
-    expect(readCompletedBuildRows(fixture.databasePath, snapshot.id)).toEqual({batches: 0, candidates: 0, refs: 0});
-  });
+      }).pipe(provideTestLayer(ApplicationLayer)),
+    ),
+  );
 
   effectIt.effect('gives a waiting foreground writer priority between detached cleanup sweeps', () =>
     TestClock.withLive(
