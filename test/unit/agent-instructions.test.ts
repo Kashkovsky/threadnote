@@ -17,7 +17,7 @@ describe('agent instructions', () => {
 
   it('keeps the always-loaded guidance compact', async () => {
     const instructions = await agentInstructions();
-    expect(Buffer.byteLength(instructions)).toBeLessThanOrEqual(5_000);
+    expect(Buffer.byteLength(instructions)).toBeLessThanOrEqual(3_000);
   });
 
   it('preserves the context lifecycle and safety invariants', async () => {
@@ -26,34 +26,41 @@ describe('agent instructions', () => {
       'Repo files remain authoritative',
       'non-trivial task',
       'callerCwd',
-      'threadnote://` URIs as pointers',
+      '`threadnote://` results',
       '`kind: durable`',
       '`kind: handoff`',
       '`project` and `topic`',
       '`replaceUri`',
       'secrets, credentials, customer data, or raw production logs',
-      'Never publish handoffs or preferences',
-      'confirm with the user',
+      'never publish handoffs or preferences',
+      'Confirm with the user',
       '`threadnote doctor --dry-run`',
-      '`threadnote report-issue',
-      '`--include-logs`',
-      '`gh auth login`',
-      'explicit user approval',
-      'use `inspect_code_graph` before broad `rg` or grep searches',
-      'returned stable `cgs_` ID with `node` for exact lookup, `neighbors` for',
-      'Use text search afterward for exact literals, unsupported files, or verification',
-      'do not silently skip graph search',
-      'no daemon to start',
-      'Before pausing, switching agents, or ending meaningful work',
+      'explicit approval',
+      'call `inspect_code_graph` before broad text search',
+      'round-trip its stable ID through `node`, `neighbors`, or `path`',
+      'Follow with exact text or path search for literals and verification',
+      'If graph tooling is unavailable, say so',
+      'Before pausing or ending meaningful work',
       '`threadnote` CLI',
     ]) {
       expect(instructions).toContain(requiredText);
     }
+    expect(instructions).not.toContain('report-issue');
+    expect(instructions).not.toContain('GitHub issue');
+  });
+
+  it('explains bounded Workset evidence and explicit preparation', async () => {
+    const instructions = (await agentInstructions()).replace(/\s+/g, ' ');
+    expect(instructions).toContain('use a named Workset when one is configured');
+    expect(instructions).toContain('published ready generation');
+    expect(instructions).toContain('never fan out cold graph builds');
+    expect(instructions).toContain('`threadnote workset prepare <name>`');
+    expect(instructions).toContain('bounded, per-repository evidence with provenance');
   });
 
   it('stores routine durable knowledge and handoffs without candidate approval', async () => {
     const instructions = (await agentInstructions()).replace(/\s+/g, ' ');
-    expect(instructions).toContain('store normal durable feature knowledge and handoffs directly without asking');
+    expect(instructions).toContain('Store routine durable knowledge and handoffs directly');
     expect(instructions).toContain('only for additional session-extracted candidates');
     expect(instructions).not.toContain('include a concise handoff candidate');
     expect(instructions).not.toContain('Store it only after approval');

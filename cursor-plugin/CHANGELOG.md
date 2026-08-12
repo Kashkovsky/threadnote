@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.1
+
+- Clarify how agents use published Workset generations for bounded cross-repository evidence.
+- Condense the always-applied rule and remove issue-reporting workflow details.
+
 ## 1.0.0
 
 - Add an always-applied Cursor rule with the complete Threadnote agent instructions.

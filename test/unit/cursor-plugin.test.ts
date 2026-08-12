@@ -12,6 +12,7 @@ import {SystemInfo} from '../../src/effect/system.js';
 
 const root = process.cwd();
 const pluginRoot = join(root, 'cursor-plugin');
+const cursorPluginVersion = '1.0.1';
 
 describe('Cursor plugin package', () => {
   it('matches Cursor manifest anatomy and the canonical Threadnote instructions', async () => {
@@ -27,6 +28,7 @@ describe('Cursor plugin package', () => {
       update,
       marketplaceLogo,
       canonicalLogo,
+      changelog,
     ] = await Promise.all([
       readFile(join(root, '.cursor-plugin', 'marketplace.json'), 'utf8'),
       readFile(join(pluginRoot, '.cursor-plugin', 'plugin.json'), 'utf8'),
@@ -39,6 +41,7 @@ describe('Cursor plugin package', () => {
       readFile(join(root, 'src', 'update.ts'), 'utf8'),
       readFile(join(pluginRoot, 'assets', 'logo.svg'), 'utf8'),
       readFile(join(root, 'assets', 'brand', 'threadnote-logo.svg'), 'utf8'),
+      readFile(join(pluginRoot, 'CHANGELOG.md'), 'utf8'),
     ]);
     const marketplace = JSON.parse(marketplaceRaw) as Record<string, unknown>;
     const manifest = JSON.parse(manifestRaw) as Record<string, unknown>;
@@ -79,8 +82,9 @@ describe('Cursor plugin package', () => {
       minClientVersions: {cursor: '2.5.0'},
       name: 'threadnote',
       rules: './rules/',
-      version: '1.0.0',
+      version: cursorPluginVersion,
     });
+    expect(/^## (\S+)/m.exec(changelog)?.[1]).toBe(cursorPluginVersion);
     expect(rule).toMatch(/^---\ndescription: .+\nalwaysApply: true\n---\n/);
     expect(rule).toContain(
       `${USER_INSTRUCTIONS_START_MARKER}\n${instructions.trim()}\n${USER_INSTRUCTIONS_END_MARKER}`,
@@ -132,7 +136,7 @@ describe('Cursor plugin package', () => {
         expect(local[0]?.detail).toContain('team marketplace');
         yield* fs.remove(localRoot, {recursive: true});
 
-        const cachedRoot = path.join(userHome, '.cursor', 'plugins', 'cache', 'threadnote', '1.0.0');
+        const cachedRoot = path.join(userHome, '.cursor', 'plugins', 'cache', 'threadnote', cursorPluginVersion);
         yield* fs.copy(pluginRoot, cachedRoot, {overwrite: true});
         const cached = yield* doctor();
         expect(cached).toMatchObject([{name: 'Cursor plugin', status: 'ok'}]);
@@ -147,11 +151,14 @@ describe('Cursor plugin package', () => {
         const cachedManifest = path.join(cachedRoot, '.cursor-plugin', 'plugin.json');
         yield* fs.writeFileString(
           cachedManifest,
-          (yield* fs.readFileString(cachedManifest)).replace('"version": "1.0.0"', '"version": "0.9.0"'),
+          (yield* fs.readFileString(cachedManifest)).replace(
+            `"version": "${cursorPluginVersion}"`,
+            '"version": "0.9.0"',
+          ),
         );
         const outdated = yield* doctor();
         expect(outdated).toMatchObject([{name: 'Cursor plugin', status: 'warn'}]);
-        expect(outdated[0]?.detail).toContain('is older than bundled v1.0.0');
+        expect(outdated[0]?.detail).toContain(`is older than bundled v${cursorPluginVersion}`);
         expect(outdated[0]?.detail).toContain('Cursor Marketplace');
 
         yield* fs.copy(pluginRoot, cachedRoot, {overwrite: true});
@@ -160,6 +167,15 @@ describe('Cursor plugin package', () => {
         const invalid = yield* doctor();
         expect(invalid).toMatchObject([{name: 'Cursor plugin', status: 'fail'}]);
         expect(invalid[0]?.detail).toContain('Cursor Marketplace');
+
+        yield* fs.copy(pluginRoot, cachedRoot, {overwrite: true});
+        yield* fs.writeFileString(
+          cachedRule,
+          (yield* fs.readFileString(cachedRule)).replace('source evidence.', 'source evidence for this task.'),
+        );
+        const sameVersionMismatch = yield* doctor();
+        expect(sameVersionMismatch).toMatchObject([{name: 'Cursor plugin', status: 'fail'}]);
+        expect(sameVersionMismatch[0]?.detail).toContain(`differs from bundled v${cursorPluginVersion}`);
       }),
     ).pipe(provideTestLayer(ApplicationLayer)),
   );
