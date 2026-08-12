@@ -230,6 +230,14 @@ export const runUpdate = Effect.fn('runUpdate')(function* (config: RuntimeConfig
     return;
   }
 
+  if (!isUpdateTargetAllowed(info.currentVersion, latestVersion, requestedChannel)) {
+    return yield* Effect.fail(
+      new UpdateOperationError(
+        `Refusing to downgrade Threadnote ${info.currentVersion} to ${latestVersion}. --force does not permit version downgrades; only an explicit beta-to-stable channel switch with --stable may install an older version.`,
+      ),
+    );
+  }
+
   const shouldRepair = options.repair !== false;
   const dryRun = options.dryRun === true;
   const releaseRoot = yield* withStandaloneInstallationLock(
@@ -713,6 +721,19 @@ export function requestedUpdateChannel(options: Pick<UpdateOptions, 'beta' | 'st
     return 'latest';
   }
   return undefined;
+}
+
+export function isUpdateTargetAllowed(
+  currentVersion: string,
+  targetVersion: string,
+  requestedChannel: UpdateChannel | undefined,
+): boolean {
+  if (compareVersions(currentVersion, targetVersion) <= 0) return true;
+  return (
+    requestedChannel === 'latest' &&
+    selectUpdateChannel(currentVersion) === 'beta' &&
+    selectUpdateChannel(targetVersion) === 'latest'
+  );
 }
 
 export function requiresFreshStandaloneInstall(version: string): boolean {
