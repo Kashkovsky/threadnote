@@ -434,7 +434,7 @@ describe('standalone updater', () => {
       );
 
       expect(captured.output).toContain('Latest beta-channel version: 4.2.0');
-      expect(captured.output).toContain('versions/4.2.0');
+      expect(captured.output).toMatch(/versions[\\/]4\.2\.0/);
     }).pipe(provideTestLayer(ApplicationLayer)),
   );
 
@@ -450,7 +450,7 @@ describe('standalone updater', () => {
       );
 
       expect(captured.output).toContain('Latest beta-channel version: 4.2.0-rc.2');
-      expect(captured.output).toContain('versions/4.2.0-rc.2');
+      expect(captured.output).toMatch(/versions[\\/]4\.2\.0-rc\.2/);
     }).pipe(provideTestLayer(ApplicationLayer)),
   );
 
@@ -466,7 +466,7 @@ describe('standalone updater', () => {
       );
 
       expect(captured.output).toContain('Latest beta-channel version: 4.2.0');
-      expect(captured.output).toContain('versions/4.2.0');
+      expect(captured.output).toMatch(/versions[\\/]4\.2\.0/);
     }).pipe(provideTestLayer(ApplicationLayer)),
   );
 
@@ -499,7 +499,7 @@ describe('standalone updater', () => {
       );
 
       expect(captured.output).toContain('Latest beta-channel version: 4.2.0-beta.1');
-      expect(captured.output).toContain('versions/4.2.0-beta.1');
+      expect(captured.output).toMatch(/versions[\\/]4\.2\.0-beta\.1/);
     }).pipe(provideTestLayer(ApplicationLayer)),
   );
 
