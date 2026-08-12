@@ -434,7 +434,7 @@ function Resolve-ThreadnoteVersion {
     switch ($channel) {
       'latest' { $false }
       'stable' { $false }
-      'beta' { $true }
+      'beta' { $null }
       default { throw 'THREADNOTE_CHANNEL must be latest, stable, or beta.' }
     }
   }
@@ -451,7 +451,9 @@ function Resolve-ThreadnoteVersion {
   }
   foreach ($candidate in $releaseResponse) {
     if ($candidate.draft -or $candidate.immutable -ne $true) { continue }
-    if (-not $requestedVersion -and [bool]$candidate.prerelease -ne $prerelease) { continue }
+    if (-not $requestedVersion -and $null -ne $prerelease -and [bool]$candidate.prerelease -ne $prerelease) {
+      continue
+    }
     $candidateVersion = ([string]$candidate.tag_name).TrimStart('v')
     if (-not (ConvertTo-ThreadnoteSemver $candidateVersion)) { continue }
     if ($requestedVersion -and $candidateVersion -cne $requestedVersion) { continue }

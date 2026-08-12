@@ -178,7 +178,7 @@ export const inspectAllCodeGraphs = Effect.fn('codeGraph.inspectAllDiagnostics')
             message: 'An active graph build owns this checkout; database health inspection was deferred.',
           });
         } else {
-          const diagnosed = yield* diagnoseCodeGraphDatabase(database, options.deep === true).pipe(
+          const diagnosed = yield* diagnoseCodeGraphDatabase(threadnoteHome, database, options.deep === true).pipe(
             Effect.match({onFailure: cause => ({cause}) as const, onSuccess: value => ({value}) as const}),
           );
           if ('value' in diagnosed) {

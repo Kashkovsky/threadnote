@@ -589,6 +589,49 @@ describe('manager http API', () => {
     }
   });
 
+  it('requires the session token for process inventory and termination without signaling', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    const server = await startServer(config, 'secret');
+    const kill = vi.spyOn(process, 'kill');
+    try {
+      const inventory = await fetch(`${server.url}/api/processes`);
+      const termination = await fetch(`${server.url}/api/processes/terminate`, {
+        body: JSON.stringify({
+          confirm: true,
+          processId: 123_456,
+          processRef: `tnp_${'a'.repeat(64)}`,
+        }),
+        headers: {'content-type': 'application/json'},
+        method: 'POST',
+      });
+      expect(inventory.status).toBe(401);
+      expect(termination.status).toBe(401);
+      expect(kill).not.toHaveBeenCalled();
+    } finally {
+      kill.mockRestore();
+      await server.close();
+    }
+  });
+
+  it('keeps authenticated process inventory available during graph maintenance', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    const server = await startServer(config, 'secret');
+    try {
+      const response = await runEffect(
+        withCodeGraphMaintenanceIntent(
+          config.agentContextHome,
+          Effect.promise(() => fetch(`${server.url}/api/processes`, {headers: {authorization: 'Bearer secret'}})),
+        ),
+      );
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({processes: expect.any(Array), schemaVersion: 1});
+    } finally {
+      await server.close();
+    }
+  });
+
   it('serves active graph jobs without requiring a graph database read', async () => {
     const config = await makeRuntime();
     homes.push(config.agentContextHome);

@@ -319,7 +319,7 @@ export const repairCodeGraphIndexes = Effect.fn('codeGraph.repairIndexes')(funct
           const decision = yield* store.withSession(
             database,
             Effect.gen(function* () {
-              let diagnosed = yield* diagnoseCodeGraphDatabase(database, deep).pipe(Effect.option);
+              let diagnosed = yield* diagnoseCodeGraphDatabase(threadnoteHome, database, deep).pipe(Effect.option);
               if (
                 diagnosed._tag === 'Some' &&
                 diagnosed.value?.schemaVersion === CODE_GRAPH_SCHEMA_VERSION &&
@@ -343,7 +343,7 @@ export const repairCodeGraphIndexes = Effect.fn('codeGraph.repairIndexes')(funct
                     if (preparation.state === 'deferred') return 'schema-upgrade-on-use' as const;
                   }
                   yield* store.initialize(database);
-                  diagnosed = yield* diagnoseCodeGraphDatabase(database, deep).pipe(Effect.option);
+                  diagnosed = yield* diagnoseCodeGraphDatabase(threadnoteHome, database, deep).pipe(Effect.option);
                   if (diagnosed._tag === 'Some' && diagnosed.value?.integrity === 'ok') {
                     migratedDatabases += 1;
                   } else {

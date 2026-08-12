@@ -28,10 +28,11 @@ type CodeGraphDeepDiagnosticsResponse =
  * worker before the parent releases its maintenance and writer locks.
  */
 export const diagnoseCodeGraphDatabaseDeepIsolated: (
+  threadnoteHome: string,
   databasePath: string,
 ) => Effect.Effect<CodeGraphDatabaseHealth, Error | CommandExecutionError, CommandExecutor | SystemInfo> = Effect.fn(
   'codeGraph.diagnoseDatabaseDeepIsolated',
-)(function* (databasePath: string) {
+)(function* (threadnoteHome: string, databasePath: string) {
   const command = yield* CommandExecutor;
   const system = yield* SystemInfo;
   const invocation = deepDiagnosticsWorkerInvocation(system);
@@ -40,7 +41,7 @@ export const diagnoseCodeGraphDatabaseDeepIsolated: (
     protocol: CODE_GRAPH_DEEP_DIAGNOSTICS_PROTOCOL,
   } satisfies CodeGraphDeepDiagnosticsRequest;
   const result = yield* command.execute(invocation.executable, invocation.arguments, {
-    env: {THREADNOTE_CODE_GRAPH_DEEP_DIAGNOSTICS_WORKER: '1'},
+    env: deepDiagnosticsWorkerEnvironment(system.environment(), threadnoteHome),
     input: new TextEncoder().encode(`${JSON.stringify(request)}\n`),
     maxOutputBytes: CODE_GRAPH_DEEP_DIAGNOSTICS_OUTPUT_BYTES_MAXIMUM,
     timeoutMs: 0,
@@ -53,13 +54,42 @@ export const diagnoseCodeGraphDatabaseDeepIsolated: (
 });
 
 export function diagnoseCodeGraphDatabase(
+  threadnoteHome: string,
   databasePath: string,
   deep: boolean,
 ): Effect.Effect<CodeGraphDatabaseHealth, unknown, CommandExecutor | SystemInfo> {
-  if (deep) return diagnoseCodeGraphDatabaseDeepIsolated(databasePath);
+  if (deep) return diagnoseCodeGraphDatabaseDeepIsolated(threadnoteHome, databasePath);
   return diagnoseCodeGraphDatabaseReadOnly(databasePath, false).pipe(
     Effect.map(health => health as CodeGraphDatabaseHealth),
   );
+}
+
+/** @internal Preserve only host variables required to bootstrap the same-privilege worker. */
+export function deepDiagnosticsWorkerEnvironment(source: NodeJS.ProcessEnv, threadnoteHome: string): NodeJS.ProcessEnv {
+  const environment: NodeJS.ProcessEnv = {
+    THREADNOTE_CODE_GRAPH_DEEP_DIAGNOSTICS_WORKER: '1',
+    THREADNOTE_HOME: threadnoteHome,
+  };
+  for (const key of [
+    'HOME',
+    'USERPROFILE',
+    'HOMEDRIVE',
+    'HOMEPATH',
+    'TMPDIR',
+    'TMP',
+    'TEMP',
+    'PATH',
+    'PATHEXT',
+    'ComSpec',
+    'COMSPEC',
+    'SystemRoot',
+    'SYSTEMROOT',
+    'WINDIR',
+  ] as const) {
+    const value = source[key];
+    if (value !== undefined) environment[key] = value;
+  }
+  return environment;
 }
 
 /** Internal standalone mode. It deliberately runs without BunRuntime signal handlers. */

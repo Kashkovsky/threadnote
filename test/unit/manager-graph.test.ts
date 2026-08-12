@@ -134,6 +134,48 @@ describe('manager graph focus', () => {
     expect(markup).toContain('Index, reindex, and compact require a verified local worktree path.');
   });
 
+  it('labels graph storage without a folder or ready snapshot as disposable and unassociated', () => {
+    const neverResolves = () => new Promise<never>(() => undefined);
+    const markup = renderToStaticMarkup(
+      createElement(GraphWorkspace, {
+        administration: {
+          databases: [
+            {
+              builds: [],
+              checkoutId: 'a'.repeat(64),
+              health: {integrity: 'ok', readySnapshots: 0},
+              healthState: 'checked',
+              issues: [],
+              storage: {state: 'available', totalBytes: 12_000},
+              views: [],
+              waiters: [],
+            },
+          ],
+          generatedAt: '2026-08-12T12:00:00.000Z',
+          mode: {analyze: false, deep: false},
+          obsoleteStores: {bytes: 0, checkouts: [], fileCount: 0, unsafeEntryCount: 0},
+          summary: {databaseCount: 1, readySnapshotCount: 0, viewCount: 0},
+          type: 'code-graph-diagnostics',
+          version: 2,
+        } as never,
+        loadAnalysis: neverResolves,
+        loadCatalogPage: neverResolves,
+        loadGraph: neverResolves,
+        loadNodeDetail: neverResolves,
+        loadQuery: neverResolves,
+        loadViewsPage: neverResolves,
+        onAdministrationAction: () => undefined,
+        onRefresh: () => undefined,
+      }),
+    );
+
+    expect(markup).toContain('<strong>Unassociated graph storage</strong>');
+    expect(markup).toContain('No verified local folder or ready snapshot');
+    expect(markup).toContain('This disposable graph has no queryable snapshot.');
+    expect(markup).toContain('threadnote graph index --cwd &lt;path&gt;');
+    expect(markup).not.toContain('<strong>Indexed repository</strong>');
+  });
+
   it('renders the graph workspace before its first catalog response', () => {
     const neverResolves = () => new Promise<never>(() => undefined);
 

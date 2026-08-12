@@ -305,7 +305,7 @@ const update = Command.make(
   'update',
   {
     allowUntrustedSource: boolean('allow-untrusted-source', 'Allow a non-default release API source'),
-    beta: boolean('beta', 'Update to the latest beta release'),
+    beta: boolean('beta', 'Follow the beta channel: install the newest stable or prerelease release'),
     check: boolean('check', 'Only check whether a newer version is available'),
     dryRun: boolean('dry-run', 'Print update and repair commands without running them'),
     force: boolean('force', 'Reinstall the selected standalone release even if already current'),

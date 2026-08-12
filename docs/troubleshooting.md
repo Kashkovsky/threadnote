@@ -14,7 +14,8 @@ that a package manager could not remove one, run the exact printed uninstall com
 does not remove unverified third-party files. Threadnote 3 cannot install v4 through `threadnote update`; a fresh
 standalone install is the supported upgrade path.
 
-Preserve the release channel when reinstalling. The bootstrap defaults to stable; beta users select the beta channel:
+The bootstrap defaults to stable-only selection. Pass the beta flag to select the newest immutable release across both
+stable and prerelease builds; this can install stable when it is newer than every prerelease:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/install.sh | sh -s -- --beta
@@ -23,6 +24,10 @@ curl -fsSL https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/
 ```powershell
 & ([scriptblock]::Create((irm https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/install.ps1))) -Beta
 ```
+
+A prerelease installation follows this inclusive beta channel for ordinary updates. After it graduates to stable,
+unflagged updates infer stable-only selection again; use `threadnote update --beta` to explicitly re-enter preview
+selection.
 
 The PowerShell installer path is available for testing but no official Windows 4 asset is published until Authenticode
 signing is re-enabled.
@@ -179,7 +184,14 @@ below that parent. Run `threadnote processes` to see a bounded privacy-safe inve
 current operation, and RSS. The output excludes command lines, working directories, repository names, prompts, and
 model input.
 
-`ROLE` is how the process was started and never changes: `mcp`, `cli`, `manager`, `graph-parser-worker`, or
+The Processes tab in `threadnote manage` presents the same bounded registered-runtime inventory and refreshes while
+workers start and stop. Its stop icon requires confirmation and is bound to the exact private registration and operating
+system start identity shown in that row; it refuses stale, replaced, legacy, or unverifiable processes. The Manager
+process hosting the page is intentionally protected. Isolated automatic-compaction and deep-diagnostics workers appear
+there only while their operation is alive, so seeing only Manager after compaction completes is expected.
+
+`ROLE` is how the process was started and never changes: ordinary roles include `mcp`, `cli`, and `manager`; dedicated
+workers include `graph-parser-worker`, `graph-compaction-worker`, `graph-diagnostics-worker`, and
 `local-model-worker`. While a process builds or waits for a code graph, the role it is temporarily acting as is
 appended, as in `cli (graph-builder)` for a dedicated `threadnote graph index` run or `mcp (graph-waiter)` for an MCP
 server queued behind another build. A process is therefore identifiable by its own identity and by the graph work it
@@ -309,6 +321,11 @@ deterministic architecture report and likewise refuses to overwrite.
 If doctor reports a missing or mismatched grammar asset, reinstall or update the standalone archive for the current
 platform. Threadnote never downloads parser grammars at runtime. Repair may discard and rebuild graph SQLite files, but
 it does not modify the repository or canonical memories.
+
+A Manager card labeled **Unassociated graph storage** has neither a verified local repository folder nor a ready
+queryable snapshot. If the repository still exists, run `threadnote graph index --cwd <path>` from that folder and
+refresh Manager. If the database is obsolete, preview and purge it instead; graph databases are derived data and
+purging does not remove repository files or canonical memories.
 
 ## MCP does not appear in the agent
 

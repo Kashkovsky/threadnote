@@ -13,7 +13,7 @@ interface UpdateCacheFile {
   readonly channel: UpdateChannel;
   readonly checkedAt: string;
   readonly latestVersion: string;
-  readonly version: 2;
+  readonly version: 3;
 }
 
 export interface UpdateCheckResult {
@@ -55,7 +55,7 @@ export function checkForThreadnoteUpdate(args: {readonly cachePath: string; read
         channel,
         checkedAt: new Date().toISOString(),
         latestVersion: fresh,
-        version: 2 as const,
+        version: 3 as const,
       });
       return toUpdateCheckResult(args.currentVersion, fresh);
     }
@@ -117,7 +117,7 @@ const readUpdateCache = Effect.fn('updateCheck.readCache')((cachePath: string) =
     }
     const parsed = parsedResult.success;
     if (
-      parsed.version !== 2 ||
+      parsed.version !== 3 ||
       (parsed.channel !== 'beta' && parsed.channel !== 'latest') ||
       typeof parsed.latestVersion !== 'string' ||
       typeof parsed.checkedAt !== 'string'
@@ -128,7 +128,7 @@ const readUpdateCache = Effect.fn('updateCheck.readCache')((cachePath: string) =
       channel: parsed.channel,
       checkedAt: parsed.checkedAt,
       latestVersion: parsed.latestVersion,
-      version: 2 as const,
+      version: 3 as const,
     };
   }).pipe(Effect.catch(() => Effect.succeed(undefined))),
 );

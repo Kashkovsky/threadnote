@@ -202,6 +202,22 @@ esac
       port: 0,
       fetch(request) {
         const name = new URL(request.url).pathname.slice(1);
+        if (name === 'stable-winner-releases') {
+          return Response.json([
+            {
+              draft: false,
+              immutable: true,
+              prerelease: true,
+              tag_name: `v${packageManifest.version}`,
+            },
+            {
+              draft: false,
+              immutable: true,
+              prerelease: false,
+              tag_name: 'v9.0.0',
+            },
+          ]);
+        }
         if (name === 'releases') {
           const origin = new URL(request.url).origin;
           return new Response(
@@ -241,6 +257,12 @@ esac
                   prerelease: true,
                   tag_name: `v${packageManifest.version}`,
                 },
+                {
+                  draft: false,
+                  immutable: true,
+                  prerelease: false,
+                  tag_name: 'v4.1.1',
+                },
               ],
               null,
               2,
@@ -249,6 +271,8 @@ esac
           );
         }
         assetRequests.push(name);
+        if (name === `selection/${artifactName}`) return new Response(Bun.file(artifact));
+        if (name === `selection/${artifactName}.sha256`) return new Response(Bun.file(checksum));
         if (name === `unsafe-parent/${artifactName}`) return new Response(Bun.file(unsafeParentArtifact));
         if (name === `unsafe-parent/${artifactName}.sha256`) return new Response(unsafeParentChecksum);
         if (name === `unsafe-link/${artifactName}`) return new Response(Bun.file(unsafeLinkArtifact));
@@ -273,6 +297,39 @@ esac
         USER: 'standalone-installer-e2e',
         USERPROFILE: userHome,
       };
+      const stableWinnerFailure = await execute(
+        'sh',
+        [join(process.cwd(), 'scripts', 'install.sh'), '--beta', '--no-start'],
+        {
+          env: {
+            ...installEnvironment,
+            THREADNOTE_INSTALL_ROOT: join(root, 'stable-winner-install'),
+            THREADNOTE_RELEASE_DOWNLOAD_ROOT: `http://127.0.0.1:${server.port}/selection`,
+            THREADNOTE_RELEASE_SOURCE: `http://127.0.0.1:${server.port}/stable-winner-releases`,
+          },
+          timeout: 60_000,
+        },
+      ).catch((cause: unknown) => cause);
+      expect(String((stableWinnerFailure as {readonly stdout?: unknown}).stdout)).toContain(
+        'Downloading Threadnote 9.0.0',
+      );
+      expect(String((stableWinnerFailure as {readonly stderr?: unknown}).stderr)).toContain(
+        'Release metadata does not match 9.0.0',
+      );
+      const stableOnlyFailure = await execute('sh', [join(process.cwd(), 'scripts', 'install.sh'), '--no-start'], {
+        env: {
+          ...installEnvironment,
+          THREADNOTE_INSTALL_ROOT: join(root, 'stable-only-install'),
+          THREADNOTE_RELEASE_DOWNLOAD_ROOT: `http://127.0.0.1:${server.port}/selection`,
+        },
+        timeout: 60_000,
+      }).catch((cause: unknown) => cause);
+      expect(String((stableOnlyFailure as {readonly stdout?: unknown}).stdout)).toContain(
+        'Downloading Threadnote 4.1.1',
+      );
+      expect(String((stableOnlyFailure as {readonly stderr?: unknown}).stderr)).toContain(
+        'Release metadata does not match 4.1.1',
+      );
       for (const rejectedVersion of ['4.0.0-beta.6', '4.0.0-beta.5', '4.0.0-beta.4']) {
         const requestsBefore = assetRequests.length;
         const failure = await execute('sh', [join(process.cwd(), 'scripts', 'install.sh'), '--no-start'], {

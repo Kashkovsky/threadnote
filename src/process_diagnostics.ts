@@ -3,6 +3,7 @@ import {writeFinalCliOutput} from './effect/cli_output.js';
 import type {RuntimeConfig} from './types.js';
 import {SystemInfo} from './effect/system.js';
 import {readLiveStandaloneProcessLeases} from './standalone_process_lease.js';
+import {sha256HexSync} from './crypto/sha256.js';
 
 const PROCESS_DIAGNOSTICS_SCHEMA_VERSION = 1;
 const PROCESS_DIAGNOSTICS_LIMIT = 100;
@@ -14,6 +15,8 @@ const SAFE_OPERATION = /^[a-z][a-z0-9-]{0,47}$/;
 export type ThreadnoteProcessRole =
   | 'cli'
   | 'graph-builder'
+  | 'graph-compaction-worker'
+  | 'graph-diagnostics-worker'
   | 'graph-parser-worker'
   | 'graph-waiter'
   | 'legacy'
@@ -52,6 +55,52 @@ export interface ThreadnoteProcessDiagnostics {
   readonly processes: readonly ThreadnoteProcessDiagnostic[];
   readonly schemaVersion: typeof PROCESS_DIAGNOSTICS_SCHEMA_VERSION;
   readonly truncated: boolean;
+}
+
+export interface ManageableThreadnoteProcessDiagnostic extends ThreadnoteProcessDiagnostic {
+  readonly processRef?: string;
+  readonly terminationBlockedReason?: 'current-manager' | 'identity-unverified' | 'legacy-process';
+  readonly terminable: boolean;
+}
+
+export interface ManageableThreadnoteProcessDiagnostics {
+  readonly processes: readonly ManageableThreadnoteProcessDiagnostic[];
+  readonly schemaVersion: typeof PROCESS_DIAGNOSTICS_SCHEMA_VERSION;
+  readonly truncated: boolean;
+}
+
+export type ThreadnoteProcessTerminationErrorCode =
+  | 'current-manager'
+  | 'invalid-process-target'
+  | 'process-not-found'
+  | 'process-permission-denied'
+  | 'process-signal-failed'
+  | 'process-stale';
+
+export class ThreadnoteProcessTerminationError extends Error {
+  readonly _tag = 'ThreadnoteProcessTerminationError' as const;
+
+  constructor(
+    readonly code: ThreadnoteProcessTerminationErrorCode,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+export interface ThreadnoteProcessTerminationResult {
+  readonly processId: number;
+  readonly state: 'signaled' | 'terminated';
+}
+
+export interface ThreadnoteProcessTerminationTarget {
+  readonly processId: number;
+  readonly processRef: string;
+}
+
+export interface ThreadnoteProcessTerminationOptions {
+  readonly gracefulWaitMilliseconds?: number;
+  readonly forceWaitMilliseconds?: number;
 }
 
 interface ActiveProcessRegistration {
@@ -119,6 +168,19 @@ export function withThreadnoteProcessRegistration<A, E, R>(
   );
 }
 
+/**
+ * Register a worker whose top-level runner deliberately retains the host's
+ * default signal behavior. Registration itself installs no signal handlers.
+ */
+export function withSignalTransparentThreadnoteWorkerRegistration<A, E, R>(
+  home: string,
+  role: Extract<RegisteredThreadnoteProcessRole, 'graph-compaction-worker' | 'graph-diagnostics-worker'>,
+  operation: string,
+  effect: Effect.Effect<A, E, R>,
+) {
+  return withThreadnoteProcessRegistration(home, role, effect, operation);
+}
+
 export function withThreadnoteProcessActivity<A, E, R>(
   role: RegisteredThreadnoteProcessRole,
   operation: string,
@@ -148,7 +210,7 @@ export function withThreadnoteProcessActivity<A, E, R>(
   );
 }
 
-export const readThreadnoteProcessDiagnostics = Effect.fn('processDiagnostics.read')(function* (
+const readThreadnoteProcessSnapshot = Effect.fn('processDiagnostics.readSnapshot')(function* (
   config: Pick<RuntimeConfig, 'agentContextHome'>,
 ) {
   const fs = yield* FileSystem.FileSystem;
@@ -253,7 +315,7 @@ export const readThreadnoteProcessDiagnostics = Effect.fn('processDiagnostics.re
     ...value,
     ...(memoryByProcess.get(value.processId) === undefined ? {} : {rssBytes: memoryByProcess.get(value.processId)}),
   }));
-  return {
+  const diagnostics = {
     processes: sorted,
     schemaVersion: PROCESS_DIAGNOSTICS_SCHEMA_VERSION,
     truncated:
@@ -261,6 +323,99 @@ export const readThreadnoteProcessDiagnostics = Effect.fn('processDiagnostics.re
       live.length + legacy.length > PROCESS_DIAGNOSTICS_LIMIT ||
       candidateNames.length < eligibleNames.length,
   } satisfies ThreadnoteProcessDiagnostics;
+  return {diagnostics, registrations: new Map(live.map(value => [value.processId, value] as const))};
+});
+
+export const readThreadnoteProcessDiagnostics = Effect.fn('processDiagnostics.read')(function* (
+  config: Pick<RuntimeConfig, 'agentContextHome'>,
+) {
+  return (yield* readThreadnoteProcessSnapshot(config)).diagnostics;
+});
+
+/**
+ * Adds an opaque, instance-bound control reference only when the private
+ * registration and the host's process-start identity agree. The registration
+ * token and start identity never leave this module.
+ */
+export const readManageableThreadnoteProcessDiagnostics = Effect.fn('processDiagnostics.readManageable')(function* (
+  config: Pick<RuntimeConfig, 'agentContextHome'>,
+) {
+  const system = yield* SystemInfo;
+  const snapshot = yield* readThreadnoteProcessSnapshot(config);
+  const diagnostics = snapshot.diagnostics;
+  const processes: ManageableThreadnoteProcessDiagnostic[] = yield* Effect.forEach(
+    diagnostics.processes,
+    process =>
+      Effect.gen(function* () {
+        if (process.role === 'legacy') {
+          return {
+            ...process,
+            terminable: false,
+            terminationBlockedReason: 'legacy-process' as const,
+          };
+        }
+        const value = snapshot.registrations.get(process.processId);
+        const verified = value === undefined ? false : yield* registrationMatchesRunningProcess(system, value);
+        if (!verified || value === undefined) {
+          return {
+            ...process,
+            terminable: false,
+            terminationBlockedReason: 'identity-unverified' as const,
+          };
+        }
+        if (process.processId === system.processId) {
+          return {
+            ...process,
+            terminable: false,
+            terminationBlockedReason: 'current-manager' as const,
+          };
+        }
+        return {
+          ...process,
+          processRef: processReference(value),
+          terminable: true,
+        };
+      }),
+    {concurrency: 8},
+  );
+  return {...diagnostics, processes} satisfies ManageableThreadnoteProcessDiagnostics;
+});
+
+/** Terminate only the exact registered process instance selected by the caller. */
+export const terminateThreadnoteProcess = Effect.fn('processDiagnostics.terminate')(function* (
+  config: Pick<RuntimeConfig, 'agentContextHome'>,
+  target: ThreadnoteProcessTerminationTarget,
+  options: ThreadnoteProcessTerminationOptions = {},
+) {
+  const system = yield* SystemInfo;
+  if (!Number.isSafeInteger(target.processId) || target.processId <= 0 || !isProcessReference(target.processRef)) {
+    return yield* Effect.fail(
+      new ThreadnoteProcessTerminationError('invalid-process-target', 'The process target is invalid.'),
+    );
+  }
+  if (target.processId === system.processId) {
+    return yield* Effect.fail(
+      new ThreadnoteProcessTerminationError('current-manager', 'The current Manager process cannot terminate itself.'),
+    );
+  }
+
+  const first = yield* resolveTerminationTarget(config, target);
+  yield* signalVerifiedProcess(system, first, 'SIGTERM');
+  const gracefulWaitMilliseconds = boundedTerminationWait(options.gracefulWaitMilliseconds, 2_000);
+  if (yield* waitForProcessExit(system, first, gracefulWaitMilliseconds)) {
+    return {processId: target.processId, state: 'terminated'} satisfies ThreadnoteProcessTerminationResult;
+  }
+
+  // Re-read the private registration and the OS start identity immediately
+  // before escalation. A replacement that reused the PID must never receive
+  // the second signal.
+  const second = yield* resolveTerminationTarget(config, target);
+  yield* signalVerifiedProcess(system, second, 'SIGKILL');
+  const forceWaitMilliseconds = boundedTerminationWait(options.forceWaitMilliseconds, 1_000);
+  return {
+    processId: target.processId,
+    state: (yield* waitForProcessExit(system, second, forceWaitMilliseconds)) ? 'terminated' : 'signaled',
+  } satisfies ThreadnoteProcessTerminationResult;
 });
 
 export const runProcessDiagnostics = Effect.fn('processDiagnostics.run')(function* (
@@ -519,12 +674,146 @@ function isRegisteredThreadnoteProcessRole(value: unknown): value is RegisteredT
   return (
     value === 'cli' ||
     value === 'graph-builder' ||
+    value === 'graph-compaction-worker' ||
+    value === 'graph-diagnostics-worker' ||
     value === 'graph-parser-worker' ||
     value === 'graph-waiter' ||
     value === 'local-model-worker' ||
     value === 'manager' ||
     value === 'mcp'
   );
+}
+
+function processReference(value: ProcessRegistrationFile): string {
+  return `tnp_${sha256HexSync(
+    `${PROCESS_DIAGNOSTICS_SCHEMA_VERSION}\0${value.processId}\0${value.processStartIdentity ?? ''}\0${value.token}`,
+  )}`;
+}
+
+function isProcessReference(value: string): boolean {
+  return /^tnp_[0-9a-f]{64}$/.test(value);
+}
+
+function registrationMatchesRunningProcess(system: SystemInfo['Service'], value: ProcessRegistrationFile) {
+  return Effect.gen(function* () {
+    if (!system.isProcessRunning(value.processId) || value.processStartIdentity === undefined) return false;
+    return (yield* system.processStartIdentity(value.processId)) === value.processStartIdentity;
+  });
+}
+
+function resolveTerminationTarget(
+  config: Pick<RuntimeConfig, 'agentContextHome'>,
+  target: ThreadnoteProcessTerminationTarget,
+) {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const system = yield* SystemInfo;
+    const candidate = yield* readRegistrationFile(
+      fs,
+      path.join(processDiagnosticsDirectory(path, config.agentContextHome), `${target.processId}.json`),
+    );
+    const value = Option.getOrUndefined(candidate);
+    if (!system.isProcessRunning(target.processId)) {
+      return yield* Effect.fail(
+        new ThreadnoteProcessTerminationError('process-not-found', 'The selected Threadnote process has exited.'),
+      );
+    }
+    if (
+      value === undefined ||
+      value.processId !== target.processId ||
+      value.processStartIdentity === undefined ||
+      processReference(value) !== target.processRef ||
+      !(yield* registrationMatchesRunningProcess(system, value))
+    ) {
+      return yield* Effect.fail(
+        new ThreadnoteProcessTerminationError(
+          'process-stale',
+          'The selected process instance changed. Refresh the process list and try again.',
+        ),
+      );
+    }
+    return value;
+  });
+}
+
+function signalVerifiedProcess(
+  system: SystemInfo['Service'],
+  registration: ProcessRegistrationFile,
+  signal: NodeJS.Signals,
+) {
+  return Effect.gen(function* () {
+    if (!system.isProcessRunning(registration.processId) || registration.processStartIdentity === undefined) {
+      return yield* Effect.fail(
+        new ThreadnoteProcessTerminationError(
+          'process-stale',
+          'The selected process instance changed. Refresh the process list and try again.',
+        ),
+      );
+    }
+    const identity = yield* system.processStartIdentity(registration.processId);
+    if (identity !== registration.processStartIdentity) {
+      return yield* Effect.fail(
+        new ThreadnoteProcessTerminationError(
+          'process-stale',
+          'The selected process instance changed. Refresh the process list and try again.',
+        ),
+      );
+    }
+    yield* Effect.try({
+      try: () => system.signalProcess(registration.processId, signal),
+      catch: cause => {
+        const code =
+          typeof cause === 'object' && cause !== null && 'code' in cause && typeof cause.code === 'string'
+            ? cause.code
+            : undefined;
+        if (code === 'ESRCH') {
+          return new ThreadnoteProcessTerminationError(
+            'process-not-found',
+            'The selected Threadnote process has exited.',
+          );
+        }
+        if (code === 'EPERM' || code === 'EACCES') {
+          return new ThreadnoteProcessTerminationError(
+            'process-permission-denied',
+            'Permission was denied while terminating the selected Threadnote process.',
+          );
+        }
+        return new ThreadnoteProcessTerminationError(
+          'process-signal-failed',
+          'The selected Threadnote process could not be terminated.',
+        );
+      },
+    });
+  });
+}
+
+function waitForProcessExit(
+  system: SystemInfo['Service'],
+  registration: ProcessRegistrationFile,
+  waitMilliseconds: number,
+) {
+  return Effect.gen(function* () {
+    const iterations = Math.ceil(waitMilliseconds / 50);
+    for (let iteration = 0; iteration < iterations; iteration += 1) {
+      if (!(yield* processInstanceIsRunning(system, registration))) return true;
+      yield* Effect.sleep(50);
+    }
+    return !(yield* processInstanceIsRunning(system, registration));
+  });
+}
+
+function processInstanceIsRunning(system: SystemInfo['Service'], registration: ProcessRegistrationFile) {
+  if (!system.isProcessRunning(registration.processId) || registration.processStartIdentity === undefined) {
+    return Effect.succeed(false);
+  }
+  return system
+    .processStartIdentity(registration.processId)
+    .pipe(Effect.map(identity => identity === registration.processStartIdentity));
+}
+
+function boundedTerminationWait(value: number | undefined, fallback: number): number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? Math.min(value, 10_000) : fallback;
 }
 
 function removeRegistrationFile(fs: FileSystem.FileSystem, file: string) {

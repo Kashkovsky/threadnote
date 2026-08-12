@@ -78,6 +78,7 @@ interface UpdateCache {
   readonly checkedAt: string;
   readonly latestVersion: string;
   readonly source: string;
+  readonly version: 2;
 }
 
 interface ReleaseAsset {
@@ -178,7 +179,7 @@ export const runUpdate = Effect.fn('runUpdate')(function* (config: RuntimeConfig
   yield* Console.log(keyValue('Current version', infoText(info.currentVersion)));
   yield* Console.log(
     keyValue(
-      info.channel === 'beta' ? 'Latest beta version' : 'Latest version',
+      latestUpdateVersionLabel(info.channel),
       info.latestVersion ? infoText(info.latestVersion) : warning('not published'),
     ),
   );
@@ -192,7 +193,7 @@ export const runUpdate = Effect.fn('runUpdate')(function* (config: RuntimeConfig
   }
 
   if (info.latestVersion === undefined) {
-    yield* Console.log('No beta release is currently published.');
+    yield* Console.log('No release is currently published for the selected channel.');
     return;
   }
   const latestVersion = info.latestVersion;
@@ -219,10 +220,13 @@ export const runUpdate = Effect.fn('runUpdate')(function* (config: RuntimeConfig
 
   if (!info.isUpdateAvailable && options.force !== true) {
     if (info.installedVersion !== undefined) {
-      const path = yield* Path.Path;
-      const activeReleaseRoot = path.join(installationRoot(path, system), 'versions', info.installedVersion);
       yield* withStandaloneInstallationLock(
-        installCommandShim(options.dryRun === true, activeReleaseRoot),
+        Effect.gen(function* () {
+          const path = yield* Path.Path;
+          const mutationInstalledVersion = (yield* activeInstalledVersion()) ?? info.installedVersion!;
+          const activeReleaseRoot = path.join(installationRoot(path, system), 'versions', mutationInstalledVersion);
+          yield* installCommandShim(options.dryRun === true, activeReleaseRoot);
+        }),
         options.dryRun === true,
       );
     }
@@ -231,17 +235,18 @@ export const runUpdate = Effect.fn('runUpdate')(function* (config: RuntimeConfig
   }
 
   if (!isUpdateTargetAllowed(info.currentVersion, latestVersion, requestedChannel)) {
-    return yield* Effect.fail(
-      new UpdateOperationError(
-        `Refusing to downgrade Threadnote ${info.currentVersion} to ${latestVersion}. --force does not permit version downgrades; only an explicit beta-to-stable channel switch with --stable may install an older version.`,
-      ),
-    );
+    return yield* Effect.fail(updateDowngradeError(info.currentVersion, latestVersion));
   }
 
   const shouldRepair = options.repair !== false;
   const dryRun = options.dryRun === true;
-  const releaseRoot = yield* withStandaloneInstallationLock(
+  const mutation = yield* withStandaloneInstallationLock(
     Effect.gen(function* () {
+      const lockedInstalledVersion = yield* activeInstalledVersion();
+      const currentVersion = lockedInstalledVersion ?? info.currentVersion;
+      if (!isUpdateTargetAllowed(currentVersion, latestVersion, requestedChannel)) {
+        return yield* Effect.fail(updateDowngradeError(currentVersion, latestVersion));
+      }
       const installed = yield* installStandaloneRelease({
         dryRun,
         force: options.force === true,
@@ -250,16 +255,17 @@ export const runUpdate = Effect.fn('runUpdate')(function* (config: RuntimeConfig
       });
       yield* installCommandShim(dryRun, installed);
       yield* activateStandaloneRelease(installed, dryRun);
-      return installed;
+      return {currentVersion, releaseRoot: installed};
     }),
     dryRun,
   );
+  const {currentVersion: effectiveCurrentVersion, releaseRoot} = mutation;
   const path = yield* Path.Path;
   const threadnoteCommand = path.join(releaseRoot, system.platform === 'win32' ? 'threadnote.exe' : 'threadnote');
   const postUpdateArgs = [
     'post-update',
     '--from-version',
-    info.currentVersion,
+    effectiveCurrentVersion,
     '--to-version',
     latestVersion,
     ...(options.yes === true ? ['--yes'] : []),
@@ -285,6 +291,12 @@ export const runUpdate = Effect.fn('runUpdate')(function* (config: RuntimeConfig
   yield* withStandaloneInstallationLock(pruneStandaloneReleases(releaseRoot, dryRun), dryRun);
   yield* printWhatsNewIfAvailable(info);
 });
+
+function updateDowngradeError(currentVersion: string, targetVersion: string): UpdateOperationError {
+  return new UpdateOperationError(
+    `Refusing to downgrade Threadnote ${currentVersion} to ${targetVersion}. --force does not permit version downgrades; only an explicit beta-to-stable channel switch with --stable may install an older version.`,
+  );
+}
 
 const installStandaloneRelease = Effect.fn('update.installStandaloneRelease')(function* (options: {
   readonly dryRun: boolean;
@@ -692,9 +704,14 @@ function getUpdateInfo(
         checkedAt: new Date().toISOString(),
         latestVersion,
         source: options.source,
+        version: 2,
       });
     }
-    const isChannelSwitch = options.requestedChannel !== undefined && channel !== inferredChannel;
+    const isChannelSwitch =
+      latestVersion !== undefined &&
+      options.requestedChannel === 'latest' &&
+      inferredChannel === 'beta' &&
+      selectUpdateChannel(latestVersion) === 'latest';
     const isVersionUpgrade = latestVersion !== undefined && compareVersions(currentVersion, latestVersion) < 0;
     return {
       channel,
@@ -736,6 +753,10 @@ export function isUpdateTargetAllowed(
   );
 }
 
+export function latestUpdateVersionLabel(channel: UpdateChannel): string {
+  return channel === 'beta' ? 'Latest beta-channel version' : 'Latest version';
+}
+
 export function requiresFreshStandaloneInstall(version: string): boolean {
   const major = Number.parseInt(stableVersionCore(version).split('.', 1)[0] ?? '', 10);
   return Number.isSafeInteger(major) && major < 4;
@@ -748,7 +769,7 @@ export const fetchLatestVersion = Effect.fn('fetchLatestVersion')(function* (
   channel: UpdateChannel = 'latest',
 ) {
   const releases = yield* fetchAvailableReleases(source);
-  const candidates = releases.filter(release => release.prerelease === (channel === 'beta'));
+  const candidates = channel === 'beta' ? releases : releases.filter(release => !release.prerelease);
   return candidates.sort((left, right) => compareVersions(right.version, left.version))[0]?.version;
 });
 
@@ -811,6 +832,7 @@ const readFreshCache = Effect.fn('update.readFreshCache')(function* (
   const parsed = parsedResult.success;
   if (
     !isJsonObject(parsed) ||
+    parsed.version !== 2 ||
     parsed.channel !== channel ||
     typeof parsed.checkedAt !== 'string' ||
     typeof parsed.latestVersion !== 'string' ||
@@ -822,7 +844,13 @@ const readFreshCache = Effect.fn('update.readFreshCache')(function* (
   if (!Number.isFinite(checkedAt) || Date.now() - checkedAt > UPDATE_CHECK_TTL_MS) {
     return undefined;
   }
-  return {channel, checkedAt: parsed.checkedAt, latestVersion: parsed.latestVersion, source};
+  return {
+    channel,
+    checkedAt: parsed.checkedAt,
+    latestVersion: parsed.latestVersion,
+    source,
+    version: 2,
+  } satisfies UpdateCache;
 });
 
 const writeUpdateCache = Effect.fn('update.writeCache')(function* (config: RuntimeConfig, cache: UpdateCache) {

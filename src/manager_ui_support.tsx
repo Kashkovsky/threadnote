@@ -471,6 +471,8 @@ function tabTitle(name: PanelName): string {
       return 'Graph';
     case 'memory':
       return 'Library';
+    case 'processes':
+      return 'Processes';
     case 'shares':
       return 'Sharing';
     case 'tools':
@@ -488,6 +490,8 @@ function panelIcon(name: PanelName): string {
       return '◉';
     case 'memory':
       return '◇';
+    case 'processes':
+      return '▣';
     case 'shares':
       return '⇄';
     case 'tools':
@@ -505,6 +509,8 @@ function panelNavDescription(name: PanelName): string {
       return 'Explore architecture';
     case 'memory':
       return 'Memories and resources';
+    case 'processes':
+      return 'Verified runtimes';
     case 'shares':
       return 'Team repositories';
     case 'tools':
@@ -522,6 +528,8 @@ function panelDescription(name: PanelName): string {
       return 'Repository architecture explorer';
     case 'memory':
       return 'Browse, edit, and consolidate context';
+    case 'processes':
+      return 'Inspect and safely terminate registered Threadnote runtimes';
     case 'shares':
       return 'Manage synchronized team context';
     case 'tools':

@@ -84,10 +84,12 @@ describe('Windows platform contracts', () => {
     expect(installer).toContain("$type -notin @('-', 'd')");
   });
 
-  it('selects the beta release channel from an explicit bootstrap flag', async () => {
+  it('selects the inclusive beta release channel from an explicit bootstrap flag', async () => {
     const installer = await Bun.file(new URL('../../scripts/install.ps1', import.meta.url)).text();
 
     expect(installer).toContain('[switch]$Beta');
     expect(installer).toContain("$channel = if ($Beta) { 'beta' }");
+    expect(installer).toContain("'beta' { $null }");
+    expect(installer).toContain('$null -ne $prerelease');
   });
 });

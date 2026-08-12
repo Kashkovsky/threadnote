@@ -1414,7 +1414,7 @@ threadnote graph export --format svg --output code-graph.svg`,
       {
         id: 'manager',
         title: 'Manager',
-        summary: 'A foreground, loopback-only web UI for Doctor, memories, shares, tools, and graph visualizations.',
+        summary: 'A foreground, loopback-only web UI for graphs, Worksets, memories, processes, and health.',
         body: [
           {
             type: 'code',
@@ -1436,7 +1436,9 @@ threadnote manage --no-open`,
             items: [
               'Doctor: installation, integration, model, index, and storage health.',
               'Memory: browse lifecycle-aware canonical records and pending candidates.',
-              'Knowledge graph: explore current symbols and relationships, request topology signals, and preview or remove one exact indexed view without requiring its local folder. Removal refreshes the target, asks for explicit confirmation, and reports busy or stale state without force-bypassing shared readers and bases.',
+              'Knowledge graph: explore current symbols and relationships, request topology signals, and preview or remove one exact indexed view without requiring its local folder. Storage with neither a verified folder nor a ready snapshot is labeled unassociated and offers explicit index-or-purge guidance.',
+              'Worksets: create and maintain manifest projects and named cross-repository definitions, publish a ready generation explicitly, then search or traverse its bounded evidence.',
+              'Processes: inspect safe role, parent, operation, age, memory, and version metadata without exposing arguments, environment, paths, prompts, or private registration data. Confirmed termination revalidates the exact opaque registration and OS start identity before every signal; stale targets fail closed and the current Manager is protected.',
               'Shares: inspect configured teams, synchronization, and conflicts.',
               'Tools: discover operational surfaces without memorizing every command.',
             ],
@@ -1771,7 +1773,7 @@ threadnote update --check`,
           },
           {
             type: 'paragraph',
-            text: "After opting into beta, ordinary version and update checks remain on the beta channel. Use --stable to return to stable even when that version is numerically lower. Updates verify immutable release assets, promote atomically, preserve ~/.threadnote data and verified model files, then repair Threadnote-owned integrations. Cursor Marketplace plugin updates remain owned by Cursor and the organization's policy.",
+            text: "The beta channel is an inclusive preview channel: it selects the newest immutable Threadnote release across stable and prerelease builds, so an invoked update can graduate an older beta to a fresher stable without --stable. After that graduation, ordinary updates follow stable; use --beta to re-enter preview selection. Use --stable to request stable explicitly, even when it is numerically lower than an installed prerelease. Updates verify immutable release assets, promote atomically, preserve ~/.threadnote data and verified model files, then repair Threadnote-owned integrations. Cursor Marketplace plugin updates remain owned by Cursor and the organization's policy.",
           },
           {
             type: 'paragraph',

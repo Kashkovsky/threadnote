@@ -51,16 +51,47 @@ if (isCodeGraphDeepDiagnosticsWorker || isCodeGraphCompactionWorker) {
 }
 
 async function codeGraphDeepDiagnosticsWorkerProgram() {
-  const worker = await import('./code_graph/deep_diagnostics.js');
-  return worker.codeGraphDeepDiagnosticsWorkerProgram.pipe(Effect.provide(BunServices.layer));
+  const [worker, system, processDiagnostics, processLease] = await Promise.all([
+    import('./code_graph/deep_diagnostics.js'),
+    import('./effect/system.js'),
+    import('./process_diagnostics.js'),
+    import('./standalone_process_lease.js'),
+  ]);
+  const processHome = normalizedProcessHome(arguments_, processDiagnostics.threadnoteHomeForProcess);
+  return processHome.pipe(
+    Effect.flatMap(home =>
+      processLease.withStandaloneProcessLease(
+        processDiagnostics.withSignalTransparentThreadnoteWorkerRegistration(
+          home,
+          'graph-diagnostics-worker',
+          'deep-graph-diagnostics',
+          worker.codeGraphDeepDiagnosticsWorkerProgram,
+        ),
+      ),
+    ),
+    Effect.provide(Layer.merge(system.SystemInfo.layer, BunServices.layer)),
+  );
 }
 
 async function codeGraphAutomaticCompactionWorkerProgram() {
-  const [worker, system] = await Promise.all([
+  const [worker, system, processDiagnostics, processLease] = await Promise.all([
     import('./code_graph/automatic_compaction.js'),
     import('./effect/system.js'),
+    import('./process_diagnostics.js'),
+    import('./standalone_process_lease.js'),
   ]);
-  return worker.codeGraphAutomaticCompactionWorkerProgram.pipe(
+  const processHome = normalizedProcessHome(arguments_, processDiagnostics.threadnoteHomeForProcess);
+  return processHome.pipe(
+    Effect.flatMap(home =>
+      processLease.withStandaloneProcessLease(
+        processDiagnostics.withSignalTransparentThreadnoteWorkerRegistration(
+          home,
+          'graph-compaction-worker',
+          'compact-graph-storage',
+          worker.codeGraphAutomaticCompactionWorkerProgram,
+        ),
+      ),
+    ),
     Effect.provide(Layer.merge(system.SystemInfo.layer, BunServices.layer)),
   );
 }

@@ -9,7 +9,6 @@ import {
   runEffectAiConsolidation,
   runNativeAiConsolidation,
 } from './effect/ai/consolidator.js';
-import {resolveSelectedLocalModel} from './models/inference.js';
 import {runCommandEffect} from './effect/command.js';
 import {captureConsole} from './effect/console.js';
 import {ResourceStore} from './effect/resource-store.js';
@@ -54,8 +53,8 @@ import {
 } from './share.js';
 import {collectDoctorChecks, runRepair, runStart} from './lifecycle.js';
 import {runSeed, runSeedSkills} from './seeding.js';
-import {currentPackageVersion, fetchLatestVersion, releaseSource} from './update.js';
-import {selectUpdateChannel} from './update_channel.js';
+import {readManagerRuntimeState} from './manager_state.js';
+import {handleManagerProcessRequest} from './manager_processes.js';
 import {
   handleManagerWorksetRequest,
   isManagerWorksetApiPath,
@@ -453,30 +452,7 @@ export const readContextUri = Effect.fn('manager.readContextUri')(function* (
   return {content: result.output, output: result.output};
 });
 
-export const detectConsolidationAgents = Effect.fn('manager.detectConsolidationAgents')(function* (
-  config: Pick<RuntimeConfig, 'agentContextHome'>,
-) {
-  const effectAi = yield* resolveEffectAiConfiguration(config, (yield* SystemInfo).environment());
-  const nativeGeneration = yield* resolveSelectedLocalModel(config.agentContextHome, 'generation');
-  const [codex, claude, cursor, copilot] = yield* Effect.all([
-    findExecutable(['codex']),
-    findExecutable(['claude']),
-    findExecutable(['cursor-agent']),
-    findExecutable(['copilot']),
-  ]);
-  return [
-    {available: codex !== undefined, command: codex, id: 'codex', label: 'Codex'},
-    {available: claude !== undefined, command: claude, id: 'claude', label: 'Claude'},
-    {available: cursor !== undefined, command: cursor, id: 'cursor', label: 'Cursor'},
-    {available: copilot !== undefined, command: copilot, id: 'copilot', label: 'Copilot'},
-    {
-      available: nativeGeneration !== undefined || effectAi !== undefined,
-      command: nativeGeneration?.manifest.id ?? effectAi?.configuration.model,
-      id: 'effect-ai',
-      label: nativeGeneration ? 'Threadnote local AI' : 'Effect AI (explicit remote provider)',
-    },
-  ];
-});
+export {detectConsolidationAgents} from './manager_state.js';
 
 function handleRequestEffect(
   context: ApiContext,
@@ -491,17 +467,10 @@ function handleRequestEffect(
         writeJson(response, 401, {error: 'Unauthorized'});
         return;
       }
-      const system = yield* SystemInfo;
-      const [agents, version] = yield* Effect.all([detectConsolidationAgents(context.config), currentPackageVersion()]);
-      const latest = yield* Effect.succeed(releaseSource(system.environment())).pipe(
-        Effect.flatMap(source => fetchLatestVersion(source, selectUpdateChannel(version))),
-        Effect.match({onFailure: Result.fail, onSuccess: Result.succeed}),
-      );
+      const state = yield* readManagerRuntimeState(context.config);
       writeJson(response, 200, {
-        agents,
+        ...state,
         config: publicConfig(context.config),
-        latestVersion: Result.isSuccess(latest) ? latest.success : undefined,
-        version,
       });
     });
   } else if (request.method === 'POST' && url.pathname === '/api/consolidations') {
@@ -559,6 +528,16 @@ const handleRequestLegacy = Effect.fn('manager.handleRequestLegacy')(function* (
   }
   if (!isAuthorized(context, request)) {
     writeJson(response, 401, {error: 'Unauthorized'});
+    return;
+  }
+  const processResponse = yield* handleManagerProcessRequest({
+    body: request.body,
+    config: context.config,
+    method: request.method,
+    url,
+  });
+  if (processResponse) {
+    writeJson(response, processResponse.status, processResponse.body);
     return;
   }
   if (
