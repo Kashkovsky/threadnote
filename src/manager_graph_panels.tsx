@@ -601,7 +601,10 @@ export function GraphAdministration(props: {
             {props.report.databases.map(database => {
               const view = database.views.find(candidate => candidate.managementAvailable) ?? database.views[0];
               const managementAvailable = view?.managementAvailable === true;
-              const repository = view?.repository.displayName ?? 'Indexed repository';
+              const unassociatedWithoutSnapshot = view === undefined && database.health?.readySnapshots === 0;
+              const repository = unassociatedWithoutSnapshot
+                ? 'Unassociated graph storage'
+                : (view?.repository.displayName ?? 'Indexed repository');
               const jobs = graphAdministrationJobSelection(database.builds, database.waiters);
               const obsolete = props.report?.obsoleteStores.checkouts.find(
                 checkout => checkout.checkoutId === database.checkoutId,
@@ -620,8 +623,10 @@ export function GraphAdministration(props: {
                       <strong>{repository}</strong>
                       <small>
                         {view?.localAssociation.branch ? `observed branch ${view.localAssociation.branch} · ` : ''}
-                        {view?.localAssociation.displayPath ??
-                          'Local folder unavailable; opaque ID shown in diagnostics'}
+                        {unassociatedWithoutSnapshot
+                          ? 'No verified local folder or ready snapshot'
+                          : (view?.localAssociation.displayPath ??
+                            'Local folder unavailable; opaque ID shown in diagnostics')}
                       </small>
                     </span>
                     <em className={`is-${health}`}>{health === 'migration-pending' ? 'migrating' : health}</em>
@@ -886,7 +891,12 @@ export function GraphAdministration(props: {
                       Purge graph
                     </button>
                   </div>
-                  {!managementAvailable ? (
+                  {unassociatedWithoutSnapshot ? (
+                    <small className="graph-management-unavailable">
+                      This disposable graph has no queryable snapshot. Index from the repository folder with{' '}
+                      <code>threadnote graph index --cwd &lt;path&gt;</code>, or preview and purge it if it is obsolete.
+                    </small>
+                  ) : !managementAvailable ? (
                     <small className="graph-management-unavailable">
                       Index, reindex, and compact require a verified local worktree path. Purge actions target this
                       inventoried checkout directly.

@@ -1,7 +1,7 @@
 import {Console, Effect, Result} from 'effect';
 import {heading, info, keyValue, success, warning, withSpinnerEffect} from './cli_ui.js';
 import type {RuntimeConfig, VersionOptions} from './types.js';
-import {currentPackageVersion, fetchLatestVersion, resolveReleaseSource} from './update.js';
+import {currentPackageVersion, fetchLatestVersion, latestUpdateVersionLabel, resolveReleaseSource} from './update.js';
 import {selectUpdateChannel} from './update_channel.js';
 import {compareVersions, errorMessage} from './utils.js';
 import {whatsNewLinesForVersion, whatsNewLinesForVersionRange} from './release_notes.js';
@@ -28,10 +28,7 @@ export const runVersion = Effect.fn('runVersion')(function* (config: RuntimeConf
 
   yield* Console.log(keyValue('Current version', info(currentVersion)));
   yield* Console.log(
-    keyValue(
-      channel === 'beta' ? 'Latest beta version' : 'Latest version',
-      latestVersion ? info(latestVersion) : warning('unavailable'),
-    ),
+    keyValue(latestUpdateVersionLabel(channel), latestVersion ? info(latestVersion) : warning('unavailable')),
   );
   if (latestWarning) {
     yield* Console.log(warning(`Warning: ${latestWarning}`));

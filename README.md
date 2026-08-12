@@ -79,7 +79,8 @@ add it to the team's marketplace. The MCP command above remains required because
 platform-specific server configuration. See the [Cursor plugin guide](./docs/cursor-plugin.md) for installation,
 diagnostics, and publishing.
 
-To opt into prerelease builds, install the Threadnote 4 beta channel on macOS or Linux:
+To select the Threadnote 4 beta channel on macOS or Linux, pass `--beta`. This inclusive preview channel installs the
+newest immutable release across stable and prerelease builds, so a newer stable release wins when one is available:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/install.sh | sh -s -- --beta
@@ -242,7 +243,8 @@ causing future writes to grow it. When freelist bytes are both at least 512 MiB 
 Manager automatically compacts one eligible database at a time after active builders release their locks and sufficient
 disk headroom is verified. SQLite can require more than twice the database size as temporary free space during `VACUUM`, so Manager
 withholds compaction when that conservative headroom cannot be proved. Automatic compaction runs in an isolated child
-process, keeping Manager responsive; Manager shows the latest check, deferral, failure, or reclaimed bytes. Structural
+process, keeping Manager responsive; Manager shows the latest check, deferral, failure, or reclaimed bytes. While it
+runs, the worker also appears in Manager's privacy-safe Processes tab and in `threadnote processes`. Structural
 fragmentation analysis can scan live SQLite pages, so it is never scheduled automatically. Compaction rechecks the
 active snapshot before and after the transactional rewrite, and interruption leaves the original database intact.
 `graph compact --dry-run` remains available to inspect additional fragmentation explicitly, choose the timing, or
@@ -268,6 +270,12 @@ before acting. The CLI equivalent for an orphaned store is
 an already-running Manager returns an explicit busy response for graph requests until maintenance finishes.
 Manager labels graph views with repository name, the branch observed at a stated boundary, and trusted local folder whenever available; opaque
 checkout and worktree identities are reserved for last-resort diagnostics and exact CLI targeting.
+
+Manager's Processes tab shows the same bounded registered-runtime inventory as `threadnote processes`, including
+parentage, safe operation labels, age, memory, and release version. It never exposes command lines, environment
+variables, working directories, prompts, or registration secrets. A confirmed icon action targets one opaque,
+start-identity-bound process instance; stale or unverifiable identities fail closed, and the Manager process serving the
+page cannot terminate itself.
 
 Maven, Gradle, Kotlin Multiplatform/Android conventions, SwiftPM, conservative Xcode metadata, and nested or integrated
 Bazel workspaces form a static workspace model; repository build scripts are never executed. Bazel `WORKSPACE`,
@@ -299,13 +307,16 @@ is accepted for every format; those output controls are not graph admission limi
 
 ```sh
 threadnote update          # latest stable release
-threadnote update --beta   # opt into the latest beta release
-threadnote update --stable # return to the stable channel
+threadnote update --beta   # newest stable or prerelease release
+threadnote update --stable # explicitly select stable-only updates
 ```
 
-Stable installs report and install stable releases only. After opting into beta, ordinary `threadnote version` and
-`threadnote update` calls stay on the beta channel. Run `threadnote update --stable` to switch back, even when the
-stable release has a lower version than the installed beta.
+Stable installs report and install stable releases only. Prerelease installs infer the inclusive beta channel for
+ordinary `threadnote version` and `threadnote update` calls, so an invoked update can graduate to a newer stable release
+without `--stable`.
+Once stable is installed, unflagged calls infer the stable channel again; pass `--beta` to explicitly re-enter preview
+selection. Run `threadnote update --stable` to switch from a prerelease to stable even when the stable release has a
+lower version.
 
 Threadnote 3 cannot cross the new standalone-runtime boundary with `threadnote update`. Install v4 fresh using the
 installer above; after that, `threadnote update` manages all later 4.x releases.

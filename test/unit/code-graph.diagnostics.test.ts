@@ -2,7 +2,7 @@ import {TestError} from '../helpers/test-error.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {it as effectIt} from '@effect/vitest';
 import {Effect, FileSystem, PlatformError} from 'effect';
-import {afterEach, describe, expect} from 'vitest';
+import {afterEach, describe, expect, it} from 'vitest';
 import {
   inspectAllCodeGraphs,
   inspectAllCodeGraphsLocal,
@@ -10,6 +10,7 @@ import {
   type CodeGraphLocalDiagnosticsReport,
 } from '../../src/code_graph/diagnostics.js';
 import {runCodeGraphDiagnostics} from '../../src/code_graph/commands.js';
+import {deepDiagnosticsWorkerEnvironment} from '../../src/code_graph/deep_diagnostics.js';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
 import {recordVerifiedCodeGraphLocalAssociation} from '../../src/code_graph/local_provenance.js';
 import {observeManagerGraphCatalogRevision} from '../../src/code_graph/manager_catalog_revision.js';
@@ -35,6 +36,25 @@ describe('all-code-graph diagnostics', () => {
 
   afterEach(async () => {
     await Promise.all(homes.splice(0).map(home => rm(home, {force: true, recursive: true})));
+  });
+
+  it('passes only bounded bootstrap variables and the exact Threadnote home to the deep worker', () => {
+    expect(
+      deepDiagnosticsWorkerEnvironment(
+        {
+          ARBITRARY_PARENT_VALUE: 'private',
+          HOME: '/bootstrap-home',
+          PATH: '/bootstrap-bin',
+          THREADNOTE_TEST_SECRET: 'private-secret',
+        },
+        '/threadnote-home',
+      ),
+    ).toEqual({
+      HOME: '/bootstrap-home',
+      PATH: '/bootstrap-bin',
+      THREADNOTE_CODE_GRAPH_DEEP_DIAGNOSTICS_WORKER: '1',
+      THREADNOTE_HOME: '/threadnote-home',
+    });
   });
 
   effectIt.effect('reports every database without a repository cwd and keeps JSON privacy-safe', () =>

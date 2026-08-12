@@ -1600,7 +1600,12 @@ describe('Manager logical repository and workspace catalogs', () => {
             const refreshed = yield* managerGraphCatalog(home);
             expect(refreshed.repositories).toEqual([]);
             expect(refreshed.diagnostics).toEqual([
-              expect.objectContaining({checkoutId: identity.checkoutId, code: 'no-ready-snapshot'}),
+              expect.objectContaining({
+                checkoutId: identity.checkoutId,
+                code: 'no-ready-snapshot',
+                message:
+                  'Stored graph data has no queryable snapshot. Index from its repository folder, or purge it if it is obsolete.',
+              }),
             ]);
           }),
         ),

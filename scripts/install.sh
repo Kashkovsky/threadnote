@@ -352,7 +352,7 @@ resolve_version() {
   if [ -z "$requested_version" ]; then
     case "$CHANNEL" in
       latest | stable) prerelease=false ;;
-      beta) prerelease=true ;;
+      beta) prerelease=any ;;
       *) die "THREADNOTE_CHANNEL must be latest, stable, or beta." ;;
     esac
   else
@@ -411,7 +411,7 @@ resolve_version() {
               if (tag !~ /^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$/) continue
               if (requested != "") {
                 if (tag == requested) best = tag
-              } else if (candidate_prerelease == desired && greater(tag, best)) {
+              } else if ((desired == "any" || candidate_prerelease == desired) && greater(tag, best)) {
                 best = tag
               }
             }

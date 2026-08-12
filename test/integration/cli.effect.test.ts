@@ -23,6 +23,7 @@ describe('Effect CLI', () => {
   it('exposes explicit beta and stable update channels', async () => {
     const result = await runCli(['update', '--help']);
     expect(result.stdout).toContain('--beta');
+    expect(result.stdout).toContain('newest stable or prerelease release');
     expect(result.stdout).toContain('--stable');
   });
 

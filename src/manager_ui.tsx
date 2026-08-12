@@ -5,6 +5,7 @@ import remarkGfm from 'remark-gfm';
 import type {CodeGraphLocalDiagnosticsReport} from './code_graph/diagnostics.js';
 import {ManagerAutocompleteInput, ManagerDialogProvider, useManagerDialogs} from './manager_dialog.js';
 import {WorksetsPanel} from './manager_worksets_view.js';
+import {ProcessesPanel} from './manager_processes_view.js';
 import {
   graphViewRemovalApprovalDialog,
   graphViewRemovalTargetIsAbsent,
@@ -65,7 +66,7 @@ export {
   selectableMemoryUris,
 } from './manager_ui_support.js';
 
-export type PanelName = 'doctor' | 'graph' | 'memory' | 'shares' | 'tools' | 'worksets';
+export type PanelName = 'doctor' | 'graph' | 'memory' | 'processes' | 'shares' | 'tools' | 'worksets';
 type NavTreeTab = 'memories' | 'resources';
 type CheckStatus = 'fail' | 'ok' | 'warn';
 type MemoryKind = 'durable' | 'handoff' | 'incident' | 'preference' | 'smoke';
@@ -141,6 +142,7 @@ interface StateResponse {
     readonly user: string;
   };
   readonly latestVersion?: string;
+  readonly updateAvailable: boolean;
   readonly version: string;
 }
 
@@ -1147,7 +1149,7 @@ function App(): React.ReactElement {
         </div>
         <p className="sidebar-label">Workspace</p>
         <nav className="primary-nav" aria-label="Manager sections">
-          {(['graph', 'worksets', 'memory', 'shares', 'doctor', 'tools'] as const).map(name => (
+          {(['graph', 'worksets', 'memory', 'shares', 'processes', 'doctor', 'tools'] as const).map(name => (
             <button
               aria-current={panel === name ? 'page' : undefined}
               className={panel === name ? 'is-active' : undefined}
@@ -1267,7 +1269,7 @@ function App(): React.ReactElement {
             </div>
           </div>
         )}
-        {state?.latestVersion && state.latestVersion !== state.version ? (
+        {state?.updateAvailable && state.latestVersion ? (
           <div className="sidebar-update">
             <span>Update available</span>
             <strong>v{state.latestVersion}</strong>
@@ -1352,6 +1354,12 @@ function App(): React.ReactElement {
         {panel === 'worksets' ? (
           <section className="panel is-active">
             <WorksetsPanel />
+          </section>
+        ) : null}
+
+        {panel === 'processes' ? (
+          <section className="panel is-active">
+            <ProcessesPanel />
           </section>
         ) : null}
 

@@ -3396,6 +3396,127 @@ dd {
   }
 }
 
+.process-workspace {
+  display: grid;
+  gap: 14px;
+  height: 100%;
+  overflow: auto;
+  padding: 20px;
+}
+
+.process-header > div > p:last-child {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+  margin: 9px 0 0;
+  max-width: 720px;
+}
+
+.process-notice,
+.process-empty {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  color: var(--muted);
+  font-size: 12px;
+  margin: 0;
+  padding: 12px 14px;
+}
+
+.process-notice.is-error {
+  background: var(--danger-soft);
+  border-color: rgba(255, 98, 120, 0.35);
+  color: var(--danger);
+}
+
+.process-list {
+  display: grid;
+  gap: 10px;
+}
+
+.process-card {
+  align-items: center;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  display: grid;
+  gap: 14px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 14px;
+}
+
+.process-card-main {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+
+.process-card-title {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.process-card-title strong {
+  font-size: 14px;
+}
+
+.process-card-title em {
+  border: 1px solid var(--accent-line);
+  border-radius: 999px;
+  color: var(--accent);
+  font-size: 9px;
+  font-style: normal;
+  padding: 2px 6px;
+}
+
+.process-card-title span,
+.process-card-main > p,
+.process-card dt {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.process-card-main > p {
+  margin: 0;
+}
+
+.process-card dl {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin: 2px 0 0;
+}
+
+.process-card dl > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.process-card dd {
+  font-size: 11px;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.process-terminate {
+  align-items: center;
+  display: inline-flex;
+  justify-content: center;
+}
+
+.process-terminate svg {
+  fill: none;
+  height: 16px;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  width: 16px;
+}
+
 @media (max-width: 640px) {
   .manager-dialog {
     width: min(100% - 20px, 540px);
@@ -3443,6 +3564,10 @@ dd {
 
   .worksets-operation-tabs button {
     min-width: max-content;
+  }
+
+  .process-card dl {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .worksets-editor-backdrop {

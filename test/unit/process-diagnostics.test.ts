@@ -8,10 +8,14 @@ import {Effect, FileSystem} from 'effect';
 import * as FC from 'effect/testing/FastCheck';
 import {afterEach, beforeEach, describe} from 'vitest';
 import {SystemInfo} from '../../src/effect/system.js';
+import {CODE_GRAPH_COMPACTION_WORKER_ARGUMENT} from '../../src/worker_protocol.js';
 import {
+  readManageableThreadnoteProcessDiagnostics,
   readThreadnoteProcessDiagnostics,
   legacyProcessDoctorCheck,
   renderProcessDiagnosticsTable,
+  terminateThreadnoteProcess,
+  ThreadnoteProcessTerminationError,
   threadnoteHomeForProcess,
   withThreadnoteProcessActivity,
   withThreadnoteProcessRegistration,
@@ -37,7 +41,277 @@ afterEach(async () => {
   previousInstallationRoot = undefined;
 });
 
+function testRegistration(
+  processId: number,
+  role: 'graph-parser-worker' | 'mcp',
+  processStartIdentity: string,
+  token: string,
+) {
+  return {
+    baseRole: role,
+    currentOperation: role === 'mcp' ? 'mcp-server' : 'parser-stdio',
+    parentProcessId: 42,
+    processId,
+    processStartIdentity,
+    role,
+    schemaVersion: 1,
+    startedAt: '2026-08-12T00:00:00.000Z',
+    token,
+    updatedAt: '2026-08-12T00:00:00.000Z',
+  } as const;
+}
+
 describe('process diagnostics', () => {
+  it.effect('binds a process reference to the same registration snapshot as the displayed row', () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const nativeSystem = yield* SystemInfo;
+      const home = yield* fileSystem.makeTempDirectoryScoped({prefix: 'threadnote-process-snapshot-'});
+      const processId = 1_234_501;
+      const registrationPath = join(home, 'runtime', 'processes', `${processId}.json`);
+      const first = testRegistration(processId, 'mcp', 'identity-a', 'first-registration-token');
+      const replacement = testRegistration(processId, 'graph-parser-worker', 'identity-a', 'replacement-token-value');
+      yield* fileSystem.makeDirectory(join(home, 'runtime', 'processes'), {recursive: true});
+      yield* fileSystem.writeFileString(registrationPath, `${JSON.stringify(first)}\n`);
+      let replaced = false;
+      let signals = 0;
+      const replacingFileSystem = FileSystem.FileSystem.of({
+        ...fileSystem,
+        readFileString: (file, encoding) =>
+          fileSystem.readFileString(file, encoding).pipe(
+            Effect.tap(() => {
+              if (file !== registrationPath || replaced) return Effect.void;
+              replaced = true;
+              return fileSystem.writeFileString(registrationPath, `${JSON.stringify(replacement)}\n`);
+            }),
+          ),
+      });
+      const testSystem = SystemInfo.of({
+        ...nativeSystem,
+        isProcessRunning: id => id === processId,
+        processStartIdentity: () => Effect.succeed('identity-a'),
+        signalProcess: () => {
+          signals += 1;
+        },
+      });
+
+      const listed = yield* readManageableThreadnoteProcessDiagnostics({agentContextHome: home}).pipe(
+        Effect.provideService(FileSystem.FileSystem, replacingFileSystem),
+        Effect.provideService(SystemInfo, testSystem),
+      );
+      expect(listed.processes[0]).toMatchObject({processId, role: 'mcp', terminable: true});
+      expect(listed.processes[0]?.processRef).toMatch(/^tnp_[0-9a-f]{64}$/u);
+      const outcome = yield* terminateThreadnoteProcess(
+        {agentContextHome: home},
+        {processId, processRef: listed.processes[0]!.processRef!},
+        {forceWaitMilliseconds: 0, gracefulWaitMilliseconds: 0},
+      ).pipe(
+        Effect.provideService(SystemInfo, testSystem),
+        Effect.match({onFailure: error => ({error}), onSuccess: value => ({value})}),
+      );
+      expect('error' in outcome ? outcome.error : undefined).toMatchObject({code: 'process-stale'});
+      expect(signals).toBe(0);
+      expect(JSON.stringify(listed)).not.toContain(first.token);
+    }).pipe(provideTestLayer(SystemInfo.layer), provideTestLayer(BunServices.layer), Effect.scoped),
+  );
+
+  it.effect('does not signal when process identity changes between target resolution and signal', () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const nativeSystem = yield* SystemInfo;
+      const home = yield* fileSystem.makeTempDirectoryScoped({prefix: 'threadnote-process-signal-race-'});
+      const processId = 1_234_502;
+      const registration = testRegistration(processId, 'mcp', 'identity-a', 'signal-race-token-value');
+      yield* fileSystem.makeDirectory(join(home, 'runtime', 'processes'), {recursive: true});
+      yield* fileSystem.writeFileString(
+        join(home, 'runtime', 'processes', `${processId}.json`),
+        `${JSON.stringify(registration)}\n`,
+      );
+      let terminating = false;
+      let identityReads = 0;
+      let signals = 0;
+      const testSystem = SystemInfo.of({
+        ...nativeSystem,
+        isProcessRunning: id => id === processId,
+        processStartIdentity: () => {
+          identityReads += 1;
+          return Effect.succeed(terminating && identityReads >= 2 ? 'replacement-identity' : 'identity-a');
+        },
+        signalProcess: () => {
+          signals += 1;
+        },
+      });
+      const listed = yield* readManageableThreadnoteProcessDiagnostics({agentContextHome: home}).pipe(
+        Effect.provideService(SystemInfo, testSystem),
+      );
+      identityReads = 0;
+      terminating = true;
+      const outcome = yield* terminateThreadnoteProcess(
+        {agentContextHome: home},
+        {processId, processRef: listed.processes[0]!.processRef!},
+        {forceWaitMilliseconds: 0, gracefulWaitMilliseconds: 0},
+      ).pipe(
+        Effect.provideService(SystemInfo, testSystem),
+        Effect.match({onFailure: error => ({error}), onSuccess: value => ({value})}),
+      );
+      expect('error' in outcome ? outcome.error : undefined).toBeInstanceOf(ThreadnoteProcessTerminationError);
+      expect('error' in outcome ? outcome.error : undefined).toMatchObject({code: 'process-stale'});
+      expect(signals).toBe(0);
+    }).pipe(provideTestLayer(SystemInfo.layer), provideTestLayer(BunServices.layer), Effect.scoped),
+  );
+
+  it.effect('does not force-signal a replacement that appears after the graceful signal', () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const nativeSystem = yield* SystemInfo;
+      const home = yield* fileSystem.makeTempDirectoryScoped({prefix: 'threadnote-process-force-race-'});
+      const processId = 1_234_503;
+      const registration = testRegistration(processId, 'mcp', 'identity-a', 'force-race-token-value');
+      yield* fileSystem.makeDirectory(join(home, 'runtime', 'processes'), {recursive: true});
+      yield* fileSystem.writeFileString(
+        join(home, 'runtime', 'processes', `${processId}.json`),
+        `${JSON.stringify(registration)}\n`,
+      );
+      let terminating = false;
+      let identityReads = 0;
+      const signals: NodeJS.Signals[] = [];
+      const testSystem = SystemInfo.of({
+        ...nativeSystem,
+        isProcessRunning: id => id === processId,
+        processStartIdentity: () => {
+          identityReads += 1;
+          return Effect.succeed(terminating && identityReads >= 5 ? 'replacement-identity' : 'identity-a');
+        },
+        signalProcess: (_id, signal) => {
+          signals.push(signal);
+        },
+      });
+      const listed = yield* readManageableThreadnoteProcessDiagnostics({agentContextHome: home}).pipe(
+        Effect.provideService(SystemInfo, testSystem),
+      );
+      identityReads = 0;
+      terminating = true;
+      const outcome = yield* terminateThreadnoteProcess(
+        {agentContextHome: home},
+        {processId, processRef: listed.processes[0]!.processRef!},
+        {forceWaitMilliseconds: 0, gracefulWaitMilliseconds: 0},
+      ).pipe(
+        Effect.provideService(SystemInfo, testSystem),
+        Effect.match({onFailure: error => ({error}), onSuccess: value => ({value})}),
+      );
+      expect('error' in outcome ? outcome.error : undefined).toMatchObject({code: 'process-stale'});
+      expect(signals).toEqual(['SIGTERM']);
+    }).pipe(provideTestLayer(SystemInfo.layer), provideTestLayer(BunServices.layer), Effect.scoped),
+  );
+
+  it.effect('protects the current Manager process before reading or signaling a target', () =>
+    Effect.gen(function* () {
+      const nativeSystem = yield* SystemInfo;
+      let signals = 0;
+      const processId = 1_234_504;
+      const testSystem = SystemInfo.of({
+        ...nativeSystem,
+        processId,
+        signalProcess: () => {
+          signals += 1;
+        },
+      });
+      const outcome = yield* terminateThreadnoteProcess(
+        {agentContextHome: '/unused'},
+        {processId, processRef: `tnp_${'a'.repeat(64)}`},
+      ).pipe(
+        Effect.provideService(SystemInfo, testSystem),
+        Effect.match({onFailure: error => ({error}), onSuccess: value => ({value})}),
+      );
+      expect('error' in outcome ? outcome.error : undefined).toMatchObject({code: 'current-manager'});
+      expect(signals).toBe(0);
+    }).pipe(provideTestLayer(SystemInfo.layer), provideTestLayer(BunServices.layer)),
+  );
+
+  it.effect('reports termination after the exact registered process exits on SIGTERM', () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const nativeSystem = yield* SystemInfo;
+      const home = yield* fileSystem.makeTempDirectoryScoped({prefix: 'threadnote-process-terminate-'});
+      const processId = 1_234_505;
+      const registration = testRegistration(processId, 'mcp', 'identity-a', 'terminate-token-value');
+      yield* fileSystem.makeDirectory(join(home, 'runtime', 'processes'), {recursive: true});
+      yield* fileSystem.writeFileString(
+        join(home, 'runtime', 'processes', `${processId}.json`),
+        `${JSON.stringify(registration)}\n`,
+      );
+      let running = true;
+      const signals: NodeJS.Signals[] = [];
+      const testSystem = SystemInfo.of({
+        ...nativeSystem,
+        isProcessRunning: id => id === processId && running,
+        processStartIdentity: () => Effect.succeed('identity-a'),
+        signalProcess: (_id, signal) => {
+          signals.push(signal);
+          running = false;
+        },
+      });
+      const listed = yield* readManageableThreadnoteProcessDiagnostics({agentContextHome: home}).pipe(
+        Effect.provideService(SystemInfo, testSystem),
+      );
+      const result = yield* terminateThreadnoteProcess(
+        {agentContextHome: home},
+        {processId, processRef: listed.processes[0]!.processRef!},
+        {gracefulWaitMilliseconds: 0},
+      ).pipe(Effect.provideService(SystemInfo, testSystem));
+      expect(result).toEqual({processId, state: 'terminated'});
+      expect(signals).toEqual(['SIGTERM']);
+    }).pipe(provideTestLayer(SystemInfo.layer), provideTestLayer(BunServices.layer), Effect.scoped),
+  );
+
+  it.live('registers the signal-transparent compaction worker under its Manager parent', () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const home = yield* fileSystem.makeTempDirectoryScoped({prefix: 'threadnote-compaction-process-'});
+      yield* withThreadnoteProcessRegistration(
+        home,
+        'manager',
+        Effect.acquireUseRelease(
+          Effect.sync(() =>
+            Bun.spawn({
+              cmd: [process.execPath, 'src/standalone.ts', CODE_GRAPH_COMPACTION_WORKER_ARGUMENT],
+              cwd: process.cwd(),
+              env: {...process.env, THREADNOTE_HOME: home},
+              stderr: 'pipe',
+              stdin: 'pipe',
+              stdout: 'pipe',
+            }),
+          ),
+          child =>
+            Effect.gen(function* () {
+              const registrationPath = join(home, 'runtime', 'processes', `${child.pid}.json`);
+              for (let attempt = 0; attempt < 100 && !(yield* fileSystem.exists(registrationPath)); attempt += 1) {
+                yield* Effect.sleep(25);
+              }
+              expect(yield* fileSystem.exists(registrationPath)).toBe(true);
+              const diagnostics = yield* readThreadnoteProcessDiagnostics({agentContextHome: home});
+              expect(diagnostics.processes).toContainEqual(
+                expect.objectContaining({
+                  currentOperation: 'compact-graph-storage',
+                  parentProcessId: process.pid,
+                  parentRole: 'manager',
+                  processId: child.pid,
+                  role: 'graph-compaction-worker',
+                }),
+              );
+              child.kill('SIGTERM');
+              yield* Effect.promise(() => child.exited);
+            }),
+          child =>
+            Effect.sync(() => {
+              if (child.exitCode === null) child.kill('SIGKILL');
+            }),
+        ),
+        'manager-ui',
+      );
+    }).pipe(provideTestLayer(SystemInfo.layer), provideTestLayer(BunServices.layer), Effect.scoped),
+  );
+
   it('aligns operation values with their header when preceding cells have different widths', () => {
     expect(
       renderProcessDiagnosticsTable([

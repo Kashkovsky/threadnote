@@ -5,7 +5,7 @@ import {mkdtemp, rm} from '../helpers/node-fs-promises.js';
 import {tmpdir} from '../helpers/node-os.js';
 import {join} from '../helpers/node-path.js';
 import fc from 'fast-check';
-import {Crypto, Effect, FileSystem, Path} from 'effect';
+import {Crypto, Deferred, Effect, Fiber, FileSystem, Path} from 'effect';
 import {TestClock} from 'effect/testing';
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
 import {captureConsole} from '../../src/effect/console.js';
@@ -14,9 +14,9 @@ import {sha256FileHex} from '../../src/effect/digest.js';
 import {HttpService} from '../../src/effect/http.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {SystemInfo} from '../../src/effect/system.js';
-import {activateStandaloneRelease} from '../../src/installations.js';
+import {activateStandaloneRelease, withStandaloneInstallationLock} from '../../src/installations.js';
 import {migrateThreadnoteStorageLayout} from '../../src/migration/layout.js';
-import type {RuntimeConfig} from '../../src/types.js';
+import type {RuntimeConfig, UpdateOptions} from '../../src/types.js';
 
 vi.mock('../../src/utils.js', async importOriginal => {
   const actual = await importOriginal<typeof import('../../src/utils.js')>();
@@ -30,6 +30,7 @@ vi.mock('../../src/utils.js', async importOriginal => {
 import {
   fetchLatestVersion,
   isUpdateTargetAllowed,
+  latestUpdateVersionLabel,
   maybeNotifyUpdate,
   maybeRunPostUpdateAfterRepair,
   parseReleaseChecksum,
@@ -81,6 +82,11 @@ describe('standalone release selection', () => {
     expect(requiresFreshStandaloneInstall('4.0.0-beta.1')).toBe(false);
   });
 
+  it('labels the inclusive beta channel without describing a stable winner as a beta release', () => {
+    expect(latestUpdateVersionLabel('beta')).toBe('Latest beta-channel version');
+    expect(latestUpdateVersionLabel('latest')).toBe('Latest version');
+  });
+
   it('permits generated version transitions only under the downgrade policy', () => {
     fc.assert(
       fc.property(
@@ -105,7 +111,7 @@ describe('standalone release selection', () => {
     );
   });
 
-  effectIt.effect('selects stable and beta GitHub releases while ignoring drafts and mutable releases', () =>
+  effectIt.effect('selects a newer prerelease for beta while stable excludes it, drafts, and mutable releases', () =>
     Effect.gen(function* () {
       const releases = [
         releaseResponse('4.1.0-beta.2', true),
@@ -129,6 +135,58 @@ describe('standalone release selection', () => {
       expect(stable).toBe('4.0.1');
       expect(beta).toBe('4.1.0-beta.2');
     }),
+  );
+
+  effectIt.effect('selects a newer stable release for the inclusive beta channel', () =>
+    Effect.gen(function* () {
+      const releases = [releaseResponse('4.1.0-beta.2', true), releaseResponse('4.2.0', false)];
+      const http = HttpService.of({
+        downloadToFile: () => Effect.die('not used'),
+        getJson: () => Effect.succeed({body: releases, status: 200}),
+        getStatus: () => Effect.succeed(200),
+        getText: () => Effect.die('not used'),
+      });
+
+      const [stable, beta] = yield* Effect.all([
+        fetchLatestVersion(OFFICIAL_RELEASE_SOURCE, 'latest'),
+        fetchLatestVersion(OFFICIAL_RELEASE_SOURCE, 'beta'),
+      ]).pipe(Effect.provideService(HttpService, http));
+
+      expect(stable).toBe('4.2.0');
+      expect(beta).toBe('4.2.0');
+    }),
+  );
+
+  effectIt.effect.prop(
+    'selects the newest stable-or-prerelease version for every bounded beta-channel pair',
+    {
+      betaMinor: fc.integer({max: 50, min: 0}),
+      stableMinor: fc.integer({max: 50, min: 0}),
+    },
+    ({betaMinor, stableMinor}) =>
+      Effect.gen(function* () {
+        const betaVersion = `4.${betaMinor}.0-beta.1`;
+        const stableVersion = `4.${stableMinor}.0`;
+        const http = HttpService.of({
+          downloadToFile: () => Effect.die('not used'),
+          getJson: () =>
+            Effect.succeed({
+              body: [releaseResponse(betaVersion, true), releaseResponse(stableVersion, false)],
+              status: 200,
+            }),
+          getStatus: () => Effect.succeed(200),
+          getText: () => Effect.die('not used'),
+        });
+
+        const [stable, beta] = yield* Effect.all([
+          fetchLatestVersion(OFFICIAL_RELEASE_SOURCE, 'latest'),
+          fetchLatestVersion(OFFICIAL_RELEASE_SOURCE, 'beta'),
+        ]).pipe(Effect.provideService(HttpService, http));
+
+        expect(stable).toBe(stableVersion);
+        expect(beta).toBe(betaMinor > stableMinor ? betaVersion : stableVersion);
+      }),
+    {fastCheck: {numRuns: 100}},
   );
 
   it('requires HTTPS and explicit trust for custom release sources', () => {
@@ -211,6 +269,61 @@ describe('standalone release selection', () => {
 });
 
 describe('update notifications', () => {
+  effectIt.effect('invalidates a prerelease-only beta cache before announcing a newer stable release', () =>
+    Effect.gen(function* () {
+      vi.mocked(utils.currentPackageVersion).mockReturnValue(Effect.succeed('4.1.0-beta.2'));
+      const result = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const baseSystem = yield* SystemInfo;
+          const temporaryRoot = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-update-cache-version-'});
+          const config = runtimeConfig(path.join(temporaryRoot, 'home'));
+          yield* fs.makeDirectory(config.agentContextHome, {recursive: true});
+          yield* fs.writeFileString(
+            path.join(config.agentContextHome, 'update-check.json'),
+            `${JSON.stringify({
+              channel: 'beta',
+              checkedAt: new Date().toISOString(),
+              latestVersion: '4.1.0-beta.3',
+              source: OFFICIAL_RELEASE_SOURCE,
+            })}\n`,
+          );
+          let requests = 0;
+          const http = HttpService.of({
+            downloadToFile: () => Effect.die('not used'),
+            getJson: () =>
+              Effect.sync(() => {
+                requests += 1;
+                return {body: [releaseResponse('4.2.0', false)], status: 200};
+              }),
+            getStatus: () => Effect.die('not used'),
+            getText: () => Effect.die('not used'),
+          });
+          const system = SystemInfo.of({...baseSystem, environment: () => ({})});
+          const captured = yield* captureConsole(
+            maybeNotifyUpdate(config).pipe(
+              Effect.provideService(HttpService, http),
+              Effect.provideService(SystemInfo, system),
+            ),
+          );
+          return {
+            cache: JSON.parse(yield* fs.readFileString(path.join(config.agentContextHome, 'update-check.json'))) as {
+              readonly latestVersion: string;
+              readonly version?: number;
+            },
+            output: captured.output,
+            requests,
+          };
+        }),
+      ).pipe(provideTestLayer(ApplicationLayer));
+
+      expect(result.requests).toBe(1);
+      expect(result.output).toContain('Update available: threadnote 4.1.0-beta.2 -> 4.2.0');
+      expect(result.cache).toMatchObject({latestVersion: '4.2.0', version: 2});
+    }),
+  );
+
   effectIt.effect('revalidates a cached update before announcing a withdrawn release', () =>
     Effect.gen(function* () {
       const result = yield* Effect.scoped(
@@ -309,6 +422,87 @@ describe('update notifications', () => {
 });
 
 describe('standalone updater', () => {
+  effectIt.effect('updates an installed beta to a newer stable release without an explicit channel flag', () =>
+    Effect.gen(function* () {
+      const captured = yield* captureDryRunUpdateSelection(
+        '4.1.0-beta.2',
+        [
+          ['4.1.0-beta.3', true],
+          ['4.2.0', false],
+        ],
+        {},
+      );
+
+      expect(captured.output).toContain('Latest beta-channel version: 4.2.0');
+      expect(captured.output).toContain('versions/4.2.0');
+    }).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('updates an installed release candidate through the inclusive preview channel', () =>
+    Effect.gen(function* () {
+      const captured = yield* captureDryRunUpdateSelection(
+        '4.2.0-rc.1',
+        [
+          ['4.2.0-rc.2', true],
+          ['4.1.1', false],
+        ],
+        {},
+      );
+
+      expect(captured.output).toContain('Latest beta-channel version: 4.2.0-rc.2');
+      expect(captured.output).toContain('versions/4.2.0-rc.2');
+    }).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('selects a newer stable release when --beta explicitly enters the inclusive channel', () =>
+    Effect.gen(function* () {
+      const captured = yield* captureDryRunUpdateSelection(
+        '4.1.0-beta.2',
+        [
+          ['4.1.0-beta.3', true],
+          ['4.2.0', false],
+        ],
+        {beta: true},
+      );
+
+      expect(captured.output).toContain('Latest beta-channel version: 4.2.0');
+      expect(captured.output).toContain('versions/4.2.0');
+    }).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('does not reinstall an equal stable winner merely because --beta was explicit', () =>
+    Effect.gen(function* () {
+      const captured = yield* captureDryRunUpdateSelection(
+        '4.2.0',
+        [
+          ['4.1.0-beta.9', true],
+          ['4.2.0', false],
+        ],
+        {beta: true},
+      );
+
+      expect(captured.output).toContain('Latest beta-channel version: 4.2.0');
+      expect(captured.output).toContain('Threadnote is up to date.');
+      expect(captured.output).not.toContain('Would install standalone Threadnote');
+    }).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('selects a newer beta over the newest stable release', () =>
+    Effect.gen(function* () {
+      const captured = yield* captureDryRunUpdateSelection(
+        '4.1.0',
+        [
+          ['4.2.0-beta.1', true],
+          ['4.1.1', false],
+        ],
+        {beta: true},
+      );
+
+      expect(captured.output).toContain('Latest beta-channel version: 4.2.0-beta.1');
+      expect(captured.output).toContain('versions/4.2.0-beta.1');
+    }).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
   effectIt.effect('treats a stale same-channel release listing as up to date without force', () =>
     Effect.gen(function* () {
       const currentVersion = '4.2.0-beta.2';
@@ -362,7 +556,87 @@ describe('standalone updater', () => {
     }),
   );
 
-  effectIt.effect('refuses a stable-to-older-beta channel switch before downloading or activating it', () =>
+  effectIt.effect('revalidates the active version under the installation lock before a forced reinstall', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const selectedVersion = '4.2.0-beta.2';
+        const concurrentlyActivatedVersion = '4.2.0-beta.3';
+        vi.mocked(utils.currentPackageVersion).mockReturnValue(Effect.succeed(selectedVersion));
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const baseSystem = yield* SystemInfo;
+        const temporaryRoot = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-update-lock-race-'});
+        const installRoot = path.join(temporaryRoot, 'install');
+        const binRoot = path.join(temporaryRoot, 'bin');
+        const selectedRoot = path.join(installRoot, 'versions', selectedVersion);
+        const concurrentRoot = path.join(installRoot, 'versions', concurrentlyActivatedVersion);
+        for (const [releaseRoot, version] of [
+          [selectedRoot, selectedVersion],
+          [concurrentRoot, concurrentlyActivatedVersion],
+        ] as const) {
+          yield* fs.makeDirectory(releaseRoot, {recursive: true});
+          yield* fs.writeFileString(path.join(releaseRoot, 'release.json'), `${JSON.stringify({version})}\n`);
+        }
+        const testSystem = SystemInfo.of({
+          ...baseSystem,
+          environment: () => ({
+            ...baseSystem.environment(),
+            THREADNOTE_BIN_DIR: binRoot,
+            THREADNOTE_INSTALL_ROOT: installRoot,
+          }),
+        });
+        yield* activateStandaloneRelease(selectedRoot, false).pipe(Effect.provideService(SystemInfo, testSystem));
+
+        const selectionStarted = yield* Deferred.make<void>();
+        const allowSelection = yield* Deferred.make<void>();
+        let releaseFetches = 0;
+        let downloadAttempted = false;
+        const http = HttpService.of({
+          downloadToFile: () => {
+            downloadAttempted = true;
+            return Effect.die('the stale target must not download');
+          },
+          getJson: () =>
+            Effect.gen(function* () {
+              releaseFetches += 1;
+              if (releaseFetches === 1) {
+                yield* Deferred.succeed(selectionStarted, undefined);
+                yield* Deferred.await(allowSelection);
+              }
+              return {body: [releaseResponse(selectedVersion, true)], status: 200};
+            }),
+          getStatus: () => Effect.die('not used'),
+          getText: () => Effect.die('the stale target must not fetch checksums'),
+        });
+        const updater = yield* Effect.forkScoped(
+          runUpdate(runtimeConfig(path.join(temporaryRoot, 'home')), {
+            beta: true,
+            force: true,
+            postUpdate: false,
+            repair: false,
+          }).pipe(Effect.provideService(HttpService, http), Effect.provideService(SystemInfo, testSystem), Effect.flip),
+        );
+        yield* Deferred.await(selectionStarted);
+        yield* withStandaloneInstallationLock(activateStandaloneRelease(concurrentRoot, false)).pipe(
+          Effect.provideService(SystemInfo, testSystem),
+        );
+        yield* Deferred.succeed(allowSelection, undefined);
+
+        const failure = yield* Fiber.join(updater);
+        const active = JSON.parse(yield* fs.readFileString(path.join(installRoot, 'active-release.json'))) as {
+          version: string;
+        };
+        expect(String(failure)).toContain(
+          `Refusing to downgrade Threadnote ${concurrentlyActivatedVersion} to ${selectedVersion}`,
+        );
+        expect(releaseFetches).toBe(1);
+        expect(downloadAttempted).toBe(false);
+        expect(active.version).toBe(concurrentlyActivatedVersion);
+      }),
+    ).pipe(TestClock.withLive, provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('refuses a forced stable-to-older-beta selection before downloading or activating it', () =>
     Effect.gen(function* () {
       const currentVersion = '4.2.0';
       const olderVersion = '4.1.0-beta.1';
@@ -380,6 +654,7 @@ describe('standalone updater', () => {
 
       const failure = yield* runUpdate(runtimeConfig('/tmp/threadnote-update-stable-to-beta-downgrade'), {
         beta: true,
+        force: true,
       }).pipe(Effect.provideService(HttpService, http), provideTestLayer(ApplicationLayer), Effect.flip);
 
       expect(String(failure)).toContain(`Refusing to downgrade Threadnote ${currentVersion} to ${olderVersion}`);
@@ -1443,6 +1718,36 @@ function runtimeConfig(home: string): RuntimeConfig {
   };
 }
 
+function captureDryRunUpdateSelection(
+  currentVersion: string,
+  releases: readonly (readonly [version: string, prerelease: boolean])[],
+  options: UpdateOptions,
+) {
+  vi.mocked(utils.currentPackageVersion).mockReturnValue(Effect.succeed(currentVersion));
+  return Effect.gen(function* () {
+    const system = yield* SystemInfo;
+    const artifactName = releaseArtifactName(system);
+    const http = HttpService.of({
+      downloadToFile: () => Effect.die('dry run must not download'),
+      getJson: () =>
+        Effect.succeed({
+          body: releases.map(([version, prerelease]) => releaseResponse(version, prerelease, artifactName)),
+          status: 200,
+        }),
+      getStatus: () => Effect.die('not used'),
+      getText: () => Effect.die('dry run must not fetch checksums'),
+    });
+    return yield* captureConsole(
+      runUpdate(runtimeConfig(`/tmp/threadnote-update-selection-${currentVersion}`), {
+        ...options,
+        dryRun: true,
+        postUpdate: false,
+        repair: false,
+      }).pipe(Effect.provideService(HttpService, http)),
+    );
+  });
+}
+
 function writeUpdateCacheFixture(
   fs: FileSystem.FileSystem,
   path: Path.Path,
@@ -1458,6 +1763,7 @@ function writeUpdateCacheFixture(
           checkedAt: new Date().toISOString(),
           latestVersion,
           source: OFFICIAL_RELEASE_SOURCE,
+          version: 2,
         })}\n`,
       ),
     ),

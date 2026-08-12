@@ -326,7 +326,8 @@ export const managerGraphCatalog = Effect.fn('codeGraph.managerCatalog')(functio
             diagnostic: {
               checkoutId,
               code: 'no-ready-snapshot',
-              message: 'An indexed repository database has no ready graph snapshot.',
+              message:
+                'Stored graph data has no queryable snapshot. Index from its repository folder, or purge it if it is obsolete.',
             } satisfies ManagerGraphCatalogDiagnostic,
           } as const;
         }
@@ -351,7 +352,8 @@ export const managerGraphCatalog = Effect.fn('codeGraph.managerCatalog')(functio
             diagnostic: {
               checkoutId,
               code: 'no-ready-snapshot',
-              message: 'An indexed repository database has no ready graph snapshot.',
+              message:
+                'Stored graph data has no queryable snapshot. Index from its repository folder, or purge it if it is obsolete.',
             } satisfies ManagerGraphCatalogDiagnostic,
           } as const;
         }

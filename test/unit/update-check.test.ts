@@ -33,7 +33,7 @@ describe('Effect update check', () => {
       yield* Effect.promise(() =>
         writeFile(
           cachePath,
-          JSON.stringify({channel: 'latest', checkedAt: new Date().toISOString(), latestVersion: '2.0.0', version: 2}),
+          JSON.stringify({channel: 'latest', checkedAt: new Date().toISOString(), latestVersion: '2.0.0', version: 3}),
           'utf8',
         ),
       );
@@ -77,14 +77,19 @@ describe('Effect update check', () => {
     }),
   );
 
-  effectIt.effect('uses and caches the beta channel for an installed beta', () =>
+  effectIt.effect('invalidates a v2 beta cache and discovers a newer stable release', () =>
     Effect.gen(function* () {
       const directory = yield* Effect.promise(temporaryDirectory);
       const cachePath = join(directory, 'update.json');
       yield* Effect.promise(() =>
         writeFile(
           cachePath,
-          JSON.stringify({channel: 'latest', checkedAt: new Date().toISOString(), latestVersion: '2.0.4', version: 2}),
+          JSON.stringify({
+            channel: 'beta',
+            checkedAt: new Date().toISOString(),
+            latestVersion: '3.0.0-beta.2',
+            version: 2,
+          }),
           'utf8',
         ),
       );
@@ -97,17 +102,26 @@ describe('Effect update check', () => {
             prerelease: true,
             tag_name: 'v3.0.0-beta.2',
           },
+          {
+            assets: [],
+            draft: false,
+            immutable: true,
+            prerelease: false,
+            tag_name: 'v3.0.0',
+          },
         ]),
       );
       vi.stubGlobal('fetch', fetch);
 
       expect(yield* runCheck(cachePath, '3.0.0-beta.1')).toEqual({
         currentVersion: '3.0.0-beta.1',
-        latestVersion: '3.0.0-beta.2',
+        latestVersion: '3.0.0',
         outdated: true,
       });
       expect(fetch.mock.calls.some(([url]) => String(url).includes('/releases?per_page=100'))).toBe(true);
       expect(yield* Effect.promise(() => readFile(cachePath, 'utf8'))).toContain('"channel":"beta"');
+      expect(yield* Effect.promise(() => readFile(cachePath, 'utf8'))).toContain('"latestVersion":"3.0.0"');
+      expect(yield* Effect.promise(() => readFile(cachePath, 'utf8'))).toContain('"version":3');
     }),
   );
 });
