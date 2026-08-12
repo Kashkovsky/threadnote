@@ -22,7 +22,7 @@ export const cursorCloudDocsSection: DocsSection = {
       body: [
         {
           type: 'warning',
-          text: 'Full first-class Cursor Cloud Agents integration is still in development. The current beta uses a local stdio MCP server, an idempotent bootstrap command, and a capability-enforced cloud profile. Durable memories are committed and pushed to one designated share; local handoffs remain transient. Managed remote transport and broader cloud lifecycle automation are not yet included.',
+          text: 'Full first-class Cursor Cloud Agents integration is still in development. The current integration uses a local stdio MCP server, an idempotent bootstrap command, and a capability-enforced cloud profile. Durable memories are committed and pushed to one designated share; local handoffs remain transient. Managed remote transport and broader cloud lifecycle automation are not yet included.',
         },
         {
           type: 'paragraph',

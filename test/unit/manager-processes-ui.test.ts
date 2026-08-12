@@ -5,6 +5,8 @@ import {createRoot, type Root} from 'react-dom/client';
 import {afterEach, beforeEach, describe, expect, it} from 'vitest';
 import {ManagerDialogProvider} from '../../src/manager_dialog.js';
 import {ProcessesPanel} from '../../src/manager_processes_view.js';
+import {readFile} from '../helpers/node-fs-promises.js';
+import {join} from '../helpers/node-path.js';
 
 let reactRoot: Root | undefined;
 let fetchOriginal: typeof fetch;
@@ -76,6 +78,9 @@ afterEach(async () => {
 describe('Manager Processes panel', () => {
   it('shows compaction and activity roles without exposing opaque control data as text', async () => {
     await renderProcesses();
+    const processList = document.querySelector('[aria-label="Threadnote process inventory"]');
+    expect(processList?.getAttribute('role')).toBe('list');
+    expect(processList?.querySelectorAll('[role="listitem"]')).toHaveLength(3);
     expect(document.body.textContent).toContain('Graph compaction worker');
     expect(document.body.textContent).toContain('Compact graph storage');
     expect(document.body.textContent).toContain('Manager · PID 80276');
@@ -108,6 +113,18 @@ describe('Manager Processes panel', () => {
       processId: 80297,
       processRef: `tnp_${'a'.repeat(64)}`,
     });
+  });
+
+  it('keeps process rows content-sized and lets metadata wrap responsively', async () => {
+    const css = await readFile(join(process.cwd(), 'manager', 'app.css'), 'utf8');
+    expect(css).toMatch(
+      /\.process-workspace\s*\{[\s\S]*?align-content: start;[\s\S]*?grid-auto-rows: max-content;[\s\S]*?min-height: 0;/u,
+    );
+    expect(css).toMatch(
+      /\.process-list\s*\{[\s\S]*?align-content: start;[\s\S]*?grid-auto-rows: max-content;[\s\S]*?min-height: 0;/u,
+    );
+    expect(css).toMatch(/\.process-card dl\s*\{[\s\S]*?repeat\(auto-fit, minmax\(min\(140px, 100%\), 1fr\)\)/u);
+    expect(css).toMatch(/\.process-card dd\s*\{[\s\S]*?overflow-wrap: anywhere;/u);
   });
 });
 
