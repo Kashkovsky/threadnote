@@ -4,6 +4,7 @@ import {
   canonicalResourceUri,
   InvalidResourceId,
   parseResourceId,
+  resourceIdIsWithin,
   resourceIdWithoutAnchor,
 } from '../../src/storage/resource-id.js';
 
@@ -126,6 +127,27 @@ describe('ResourceId properties', () => {
       expect(resourceIdWithoutAnchor(withoutAnchor)).toBe(withoutAnchor);
     },
     {fastCheck: {numRuns: 250}},
+  );
+
+  it.prop(
+    'accepts exactly a canonical root and its descendants while rejecting sibling roots',
+    {
+      childSegments: FC.array(portableSegmentArbitrary, {maxLength: 5}),
+      namespace: portableSegmentArbitrary,
+      rootSegments: FC.array(portableSegmentArbitrary, {maxLength: 5, minLength: 1}),
+      sibling: portableSegmentArbitrary,
+    },
+    ({childSegments, namespace, rootSegments, sibling}) => {
+      const root = canonicalResourceUri(namespace, rootSegments);
+      const child = canonicalResourceUri(namespace, [...rootSegments, ...childSegments]);
+      const siblingRoot = canonicalResourceUri(namespace, [...rootSegments.slice(0, -1), sibling]);
+
+      expect(resourceIdIsWithin(root, root)).toBe(true);
+      expect(resourceIdIsWithin(child, root)).toBe(true);
+      if (siblingRoot !== root) expect(resourceIdIsWithin(siblingRoot, root)).toBe(false);
+      expect(resourceIdIsWithin(canonicalResourceUri(`${namespace}-other`, rootSegments), root)).toBe(false);
+    },
+    {fastCheck: {numRuns: 200}},
   );
 
   it.prop(

@@ -60,6 +60,8 @@ import {
   withCandidateReviewLock,
 } from './candidate_memory.js';
 import {recordRecallFeedback} from './recall/feedback.js';
+import type {CursorCloudMemoryScope} from './cursor_cloud.js';
+import {resourceIdIsWithin} from './storage/resource-id.js';
 import {loadRecallExactMatches} from './recall/index.js';
 import {RECALL_RANKER_VERSION} from './recall/rank.js';
 import {syncObsidianSourcesBeforeRecall} from './obsidian_source.js';
@@ -104,6 +106,7 @@ import {
   runNativeReadTool,
   textFromCallToolResult,
   writeDurableMemory,
+  writeCursorCloudSharedMemory,
 } from './mcp_server_memory.js';
 export function registerCandidateMemoryTools(server: EffectMcpServerAdapter, config: RuntimeConfig): void {
   server.registerTool(
@@ -631,6 +634,7 @@ export function registerSearchTool(
   name: string,
   description: string,
   progressTiming: RecallProgressTiming,
+  memoryScope?: CursorCloudMemoryScope,
 ): void {
   server.registerTool(
     name,
@@ -664,13 +668,20 @@ export function registerSearchTool(
       if (!checkedUri.ok) {
         return checkedUri.error;
       }
+      if (workset?.trim() && memoryScope) {
+        return argumentError(`${name} does not allow worksets in the Cursor Cloud profile.`);
+      }
+      const scopedUri = checkedUri.value ?? memoryScope?.root;
+      if (scopedUri && memoryScope && !resourceIdIsWithin(scopedUri, memoryScope.root)) {
+        return argumentError(`${name} uri must stay within ${memoryScope.root}.`);
+      }
       return runRecallTool(
         config,
         {
           callerCwd,
           project: project?.trim() || undefined,
           query: checkedQuery.value,
-          pinnedUri: checkedUri.value,
+          pinnedUri: scopedUri,
           nodeLimit,
           includeArchived: includeArchived === true,
           threshold: threshold === undefined ? undefined : String(threshold),
@@ -678,6 +689,7 @@ export function registerSearchTool(
         },
         progress,
         progressTiming,
+        memoryScope,
       ).pipe(
         Effect.flatMap(withStaleVersionNotice),
         Effect.catch(error =>
@@ -712,6 +724,7 @@ function runRecallTool(
   params: RecallToolParams,
   progress: McpToolProgress,
   progressTiming: RecallProgressTiming,
+  memoryScope?: CursorCloudMemoryScope,
 ) {
   return Effect.gen(function* () {
     const syncWarnings: string[] = [];
@@ -721,9 +734,9 @@ function runRecallTool(
       withProductionPhaseTiming(
         'recall.shared-sync',
         progressTiming.sharedSyncDelayMilliseconds === 0
-          ? syncSharedReposBeforeAgentRead(config)
+          ? syncSharedReposBeforeAgentRead(config, memoryScope?.team)
           : Effect.sleep(progressTiming.sharedSyncDelayMilliseconds).pipe(
-              Effect.andThen(syncSharedReposBeforeAgentRead(config)),
+              Effect.andThen(syncSharedReposBeforeAgentRead(config, memoryScope?.team)),
             ),
       ),
       progressTiming.heartbeatMilliseconds,
@@ -738,21 +751,23 @@ function runRecallTool(
       }),
     );
     const obsidianSyncWarnings: string[] = [];
-    const syncedObsidianSources = yield* withMcpProgressHeartbeat(
-      progress,
-      RECALL_MCP_PROGRESS.obsidianSync,
-      withProductionPhaseTiming('recall.obsidian-sync', syncObsidianSourcesBeforeRecall(config)),
-      progressTiming.heartbeatMilliseconds,
-    ).pipe(
-      Effect.map(syncResult => {
-        obsidianSyncWarnings.push(...syncResult.warnings);
-        return syncResult.syncedSources;
-      }),
-      Effect.catch(error => {
-        obsidianSyncWarnings.push(`Obsidian source refresh failed: ${errorMessage(error)}`);
-        return Effect.succeed([] as readonly string[]);
-      }),
-    );
+    const syncedObsidianSources = memoryScope
+      ? []
+      : yield* withMcpProgressHeartbeat(
+          progress,
+          RECALL_MCP_PROGRESS.obsidianSync,
+          withProductionPhaseTiming('recall.obsidian-sync', syncObsidianSourcesBeforeRecall(config)),
+          progressTiming.heartbeatMilliseconds,
+        ).pipe(
+          Effect.map(syncResult => {
+            obsidianSyncWarnings.push(...syncResult.warnings);
+            return syncResult.syncedSources;
+          }),
+          Effect.catch(error => {
+            obsidianSyncWarnings.push(`Obsidian source refresh failed: ${errorMessage(error)}`);
+            return Effect.succeed([] as readonly string[]);
+          }),
+        );
     yield* progress.report(RECALL_MCP_PROGRESS.workspaceContext);
     const query = yield* enrichRecallQueryWithWorkspaceContext(params.query, {
       cwd: params.callerCwd,
@@ -998,12 +1013,18 @@ function runRecallTool(
       sections.push(`Auto-sync warning: ${warning}`);
     }
     if (sections.length === 0) {
-      return {content: [{type: 'text' as const, text: 'No recall results found.'}]};
+      return {
+        content: [{type: 'text' as const, text: 'No recall results found.'}],
+        ...(memoryScope
+          ? {structuredContent: {memoryScope: cursorCloudMemoryScopeReceipt(memoryScope), results: []}}
+          : {}),
+      };
     }
     return {
       content: [{type: 'text' as const, text: sections.join('\n\n')}],
       structuredContent: {
         confidence: recallSections.confidence,
+        ...(memoryScope ? {memoryScope: cursorCloudMemoryScopeReceipt(memoryScope)} : {}),
         queryExpansions: expansionQueries,
         rankerVersion: RECALL_RANKER_VERSION,
         results: recallSections.ranked.slice(0, params.nodeLimit ?? 12).map(hit => ({
@@ -1082,6 +1103,7 @@ export function registerReadTool(
   config: RuntimeConfig,
   name: string,
   description: string,
+  memoryScope?: CursorCloudMemoryScope,
 ): void {
   server.registerTool(
     name,
@@ -1100,9 +1122,15 @@ export function registerReadTool(
       if (!checkedUris.ok) {
         return checkedUris.error;
       }
+      const outsideScope = memoryScope
+        ? checkedUris.value.find(uri => !resourceIdIsWithin(uri, memoryScope.root))
+        : undefined;
+      if (outsideScope) {
+        return argumentError(`${name} uri must stay within ${memoryScope!.root}.`);
+      }
       return Effect.gen(function* () {
         const syncWarnings: string[] = [];
-        const syncedTeams = yield* syncSharedReposBeforeAgentRead(config).pipe(
+        const syncedTeams = yield* syncSharedReposBeforeAgentRead(config, memoryScope?.team).pipe(
           Effect.map(result => {
             syncWarnings.push(...result.warnings);
             return result.syncedTeams;
@@ -1113,16 +1141,25 @@ export function registerReadTool(
           }),
         );
         const result = yield* runNativeReadTool(config, checkedUris.value);
+        const scopedResult = memoryScope
+          ? {
+              ...result,
+              _meta: {
+                ...result._meta,
+                'threadnote.io/memory-scope': cursorCloudMemoryScopeReceipt(memoryScope),
+              },
+            }
+          : result;
         if (result.isError === true || (syncedTeams.length === 0 && syncWarnings.length === 0)) {
-          return result;
+          return scopedResult;
         }
         const syncMessages = [
           syncedTeams.length > 0 ? `Auto-synced shared memories: ${syncedTeams.join(', ')}` : undefined,
           ...syncWarnings.map(warning => `Auto-sync warning: ${warning}`),
         ].filter((part): part is string => part !== undefined);
         return {
-          ...result,
-          content: [...result.content, {type: 'text', text: syncMessages.join('\n')}],
+          ...scopedResult,
+          content: [...scopedResult.content, {type: 'text', text: syncMessages.join('\n')}],
         };
       });
     },
@@ -1134,6 +1171,7 @@ export function registerListTool(
   config: RuntimeConfig,
   name: string,
   description: string,
+  memoryScope?: CursorCloudMemoryScope,
 ): void {
   server.registerTool(
     name,
@@ -1154,15 +1192,33 @@ export function registerListTool(
       if (!checkedUri.ok) {
         return checkedUri.error;
       }
-      return yield* runNativeListTool(config, {
+      const scopedUri = checkedUri.value ?? memoryScope?.root ?? 'threadnote://';
+      if (memoryScope && !resourceIdIsWithin(scopedUri, memoryScope.root)) {
+        return argumentError(`${name} uri must stay within ${memoryScope.root}.`);
+      }
+      yield* syncSharedReposBeforeAgentRead(config, memoryScope?.team).pipe(Effect.catch(() => Effect.void));
+      const result = yield* runNativeListTool(config, {
         all,
         nodeLimit: nodeLimit ?? node_limit,
         recursive,
         simple,
-        uri: checkedUri.value ?? 'threadnote://',
+        uri: scopedUri,
       });
+      return memoryScope && result.structuredContent
+        ? {
+            ...result,
+            structuredContent: {
+              ...result.structuredContent,
+              memoryScope: cursorCloudMemoryScopeReceipt(memoryScope),
+            },
+          }
+        : result;
     }),
   );
+}
+
+function cursorCloudMemoryScopeReceipt(scope: CursorCloudMemoryScope) {
+  return {mode: scope.mode, root: scope.root, team: scope.team, type: 'threadnote-memory-scope', version: 1} as const;
 }
 
 export function registerStoreTool(
@@ -1170,6 +1226,7 @@ export function registerStoreTool(
   config: RuntimeConfig,
   name: string,
   description: string,
+  memoryScope?: CursorCloudMemoryScope,
 ): void {
   server.registerTool(
     name,
@@ -1207,8 +1264,37 @@ export function registerStoreTool(
       if (!checkedReferences.ok) {
         return checkedReferences.error;
       }
+      const memoryKind = kind ?? 'durable';
+      if (memoryScope && memoryKind !== 'durable' && memoryKind !== 'handoff') {
+        return argumentError(
+          `${name} supports durable shared memories and transient local handoffs in the Cursor Cloud profile.`,
+        );
+      }
+      if (memoryScope) {
+        const outsideReference = checkedReferences.value?.find(
+          reference => !resourceIdIsWithin(reference, memoryScope.root),
+        );
+        if (outsideReference) {
+          return argumentError(`${name} references must stay within ${memoryScope.root}.`);
+        }
+        if (
+          memoryKind === 'durable' &&
+          checkedReplaceUri.value &&
+          !resourceIdIsWithin(checkedReplaceUri.value, memoryScope.root)
+        ) {
+          return argumentError(`${name} replaceUri must stay within ${memoryScope.root}.`);
+        }
+        const handoffRoot = `threadnote://user/${uriSegment(config.user)}/memories/handoffs`;
+        if (
+          memoryKind === 'handoff' &&
+          checkedReplaceUri.value &&
+          !resourceIdIsWithin(checkedReplaceUri.value, handoffRoot)
+        ) {
+          return argumentError(`${name} local handoff replaceUri must stay within ${handoffRoot}.`);
+        }
+      }
       const metadata: MemoryMetadata = {
-        kind: kind ?? 'durable',
+        kind: memoryKind,
         project: normalizeOptionalMetadata(project),
         references: checkedReferences.value,
         sourceAgentClient: sourceAgentClient ?? 'mcp',
@@ -1217,8 +1303,15 @@ export function registerStoreTool(
         topic: normalizeOptionalMetadata(topic),
       };
       return Effect.gen(function* () {
+        if (memoryScope && memoryKind === 'durable') {
+          return yield* writeCursorCloudSharedMemory(config, memoryScope, {
+            bodyText: checkedText.value,
+            metadata,
+            replaceUri: checkedReplaceUri.value,
+          });
+        }
         const enrichedMetadata =
-          checkedReplaceUri.value && isInSharedNamespace(config, checkedReplaceUri.value)
+          memoryScope || (checkedReplaceUri.value && isInSharedNamespace(config, checkedReplaceUri.value))
             ? metadata
             : yield* enrichMemoryMetadataWithConfiguredLocalAi(config, metadata, checkedText.value).pipe(
                 Effect.catch(error =>
@@ -1227,11 +1320,25 @@ export function registerStoreTool(
                   ).pipe(Effect.as(metadata)),
                 ),
               );
-        return yield* writeDurableMemory(config, {
+        const result = yield* writeDurableMemory(config, {
           bodyText: checkedText.value,
           metadata: enrichedMetadata,
           replaceUri: checkedReplaceUri.value,
         });
+        return memoryScope && memoryKind === 'handoff'
+          ? {
+              ...result,
+              _meta: {
+                ...result._meta,
+                'threadnote.io/persistence': {
+                  durability: 'cloud-workspace-local',
+                  note: 'This handoff may not survive a new Cursor Cloud session.',
+                  type: 'threadnote-cloud-persistence',
+                  version: 1,
+                },
+              },
+            }
+          : result;
       }).pipe(Effect.flatMap(withStaleVersionNotice));
     },
   );

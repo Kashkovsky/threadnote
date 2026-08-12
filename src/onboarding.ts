@@ -41,6 +41,23 @@ const safeSeededProjects = Effect.fn('onboarding.safeSeededProjects')((config: O
 // unit-testable without MCP plumbing. The text is instructions FOR
 // the agent (present conversationally, offer to run), not a message to paste.
 export function buildOnboardingGuide(state: OnboardingState): string {
+  if (state.toolset === 'cursor-cloud') {
+    return [
+      '# Threadnote for Cursor Cloud Agents',
+      '',
+      'This session has one exclusive shared-memory scope. Start with recall_context,',
+      'then read only the threadnote:// URIs it returns. list_context can browse within that same scope.',
+      '',
+      'The code graph is local to the current cloud checkout. Use inspect_code_graph before broad text',
+      'search and analyze_code_graph for repository-wide structure. Named worksets are unavailable.',
+      '',
+      'Store durable knowledge with remember_context. Each write is committed and pushed to the configured',
+      'share so it survives the ephemeral cloud session. A kind=handoff write stays local and may not survive',
+      'a new cloud session; all other personal/local memory kinds stay inaccessible.',
+      'Review/apply actions, separate publishing, Obsidian operations, and maintenance tools are unavailable.',
+      'Full Cursor Cloud integration is still in development.',
+    ].join('\n');
+  }
   const runtimeLine =
     state.runtimeReady === false
       ? 'The Threadnote home is not ready — run `threadnote install`, then `threadnote doctor`. Offer to walk the user through that first.'

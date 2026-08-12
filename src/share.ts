@@ -16,10 +16,12 @@ export type {
 } from './share_core.js';
 export {
   clearAutoShareStateForTest,
+  assertShareTeamWritable,
   DEFAULT_GIT_REMOTE_NAME,
   ensureSharedDirectoryChain,
   isInSharedNamespace,
   markSharedAutoSyncDeferred,
+  normalizeTeamName,
   parentUri,
   personalUriFor,
   readTeamsFile,

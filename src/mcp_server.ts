@@ -1,6 +1,12 @@
 import {Console, Effect} from 'effect';
 import {MCP_PROCESS_LIFECYCLE_PROBE_ENV} from './constants.js';
-import {DEFAULT_MCP_TOOLSET, MCP_TOOLSET_ENV, type McpToolset, parseMcpToolset} from './mcp_toolset.js';
+import {
+  DEFAULT_MCP_TOOLSET,
+  MCP_TOOLSET_ENV,
+  type McpToolset,
+  mcpToolCapabilities,
+  parseMcpToolset,
+} from './mcp_toolset.js';
 import {currentPackageVersion} from './utils.js';
 import {getRuntimeConfig as getApplicationRuntimeConfig} from './runtime.js';
 import {EffectMcpServerAdapter, McpInput, mcpProgressHeartbeatMilliseconds} from './effect/ai/mcp.js';
@@ -15,6 +21,7 @@ import {captureConsole} from './effect/console.js';
 import {monitorSharedRepositories} from './effect/share.js';
 import {runObsidianProjectionPublish} from './obsidian_projection.js';
 import {withProductionLogging} from './effect/production_log.js';
+import {resolveCursorCloudMemoryScope, type CursorCloudMemoryScope} from './cursor_cloud.js';
 import {
   McpServerOperationError,
   type RecallProgressTiming,
@@ -86,9 +93,12 @@ export const mcpServerEffect = Effect.gen(function* () {
         heartbeatMilliseconds: mcpProgressHeartbeatMilliseconds(system.environment()),
         sharedSyncDelayMilliseconds: mcpProgressTestSharedSyncDelayMilliseconds(system.environment()),
       };
+      const memoryScope =
+        toolset === 'cursor-cloud' ? yield* resolveCursorCloudMemoryScope(config, system.environment()) : undefined;
       setMcpStartupVersion(yield* currentPackageVersion().pipe(Effect.catch(() => Effect.succeed(undefined))));
-      const instructions =
-        'Call `recall_context` with project and absolute `callerCwd`; read `threadnote://` URIs. Use `inspect_code_graph` before broad `rg`/grep; round-trip `cgs_` IDs via `node`, `neighbors`, or `path`. Use `analyze_code_graph` for whole-repo stats, communities, hubs, and surprises. Retry `state=indexing` after `retryAfterMilliseconds`; exact text search remains useful meanwhile. Write durable knowledge and handoffs directly under stable project/topic; replace duplicates. Use `review_session_context` for additional user-approved candidates. Do not store secrets/customer data/raw logs. Confirm publishes; never publish handoffs/preferences.';
+      const instructions = memoryScope
+        ? `Cursor Cloud uses the exclusive shared memory scope ${memoryScope.root}. Call recall_context with an absolute callerCwd, then read returned threadnote:// URIs. Store durable memories with remember_context; writes are committed and pushed to the configured share. Memory tools reject any URI outside that scope. Use inspect_code_graph and analyze_code_graph only for the local checkout; worksets are disabled. Full cloud integration is still in development.`
+        : 'Call `recall_context` with project and absolute `callerCwd`; read `threadnote://` URIs. Use `inspect_code_graph` before broad `rg`/grep; round-trip `cgs_` IDs via `node`, `neighbors`, or `path`. Use `analyze_code_graph` for whole-repo stats, communities, hubs, and surprises. Retry `state=indexing` after `retryAfterMilliseconds`; exact text search remains useful meanwhile. Write durable knowledge and handoffs directly under stable project/topic; replace duplicates. Use `review_session_context` for additional user-approved candidates. Do not store secrets/customer data/raw logs. Confirm publishes; never publish handoffs/preferences.';
       const server = new EffectMcpServerAdapter(
         'threadnote-local-adapter',
         '0.2.0',
@@ -96,22 +106,26 @@ export const mcpServerEffect = Effect.gen(function* () {
         config.agentContextHome,
       );
 
-      registerResources(server, config);
-      registerTools(server, config, toolset, recallProgressTiming);
+      registerResources(server, config, memoryScope);
+      registerTools(server, config, toolset, recallProgressTiming, memoryScope);
       // Packaged lifecycle coverage uses runtime diagnostics to create the real
       // crash-isolated child without requiring an installed or selected model.
       if (system.environment()[MCP_PROCESS_LIFECYCLE_PROBE_ENV] === '1') {
         const runtime = yield* LocalModelRuntime;
         yield* runtime.diagnostics.pipe(Effect.catch(() => Effect.void));
       }
-      yield* Effect.forkScoped(monitorSharedRepositories(config));
+      if (!memoryScope) yield* Effect.forkScoped(monitorSharedRepositories(config));
       yield* Console.error('Threadnote local MCP adapter running');
       return yield* server.run();
     }),
   );
 });
 
-function registerResources(server: EffectMcpServerAdapter, config: RuntimeConfig): void {
+function registerResources(
+  server: EffectMcpServerAdapter,
+  config: RuntimeConfig,
+  memoryScope?: CursorCloudMemoryScope,
+): void {
   server.registerResourceTemplate(
     {
       description:
@@ -125,7 +139,7 @@ function registerResources(server: EffectMcpServerAdapter, config: RuntimeConfig
       routerPath: '*',
       uriTemplate: 'threadnote://{+resourcePath}',
     },
-    uri => readThreadnoteMcpResource(config, uri),
+    uri => readThreadnoteMcpResource(config, uri, memoryScope?.root),
   );
 }
 
@@ -138,13 +152,16 @@ function registerTools(
   config: RuntimeConfig,
   toolset: McpToolset,
   recallProgressTiming: RecallProgressTiming,
+  memoryScope?: CursorCloudMemoryScope,
 ): void {
+  const capabilities = mcpToolCapabilities(toolset);
   registerSearchTool(
     server,
     config,
     'recall_context',
     'Search memories and seeded project guidance. Pass a stable project and absolute callerCwd for current repo/branch. Returns threadnote:// pointers to read or list. Lower threshold if results are sparse.',
     recallProgressTiming,
+    memoryScope,
   );
   if (toolset === 'full') {
     registerSearchTool(
@@ -156,88 +173,99 @@ function registerTools(
     );
   }
 
-  registerCodeGraphTool(server, config);
-  registerContextBriefTool(server, config);
+  registerCodeGraphTool(server, config, {allowWorkset: capabilities.graphWorkset});
+  if (capabilities.contextBrief) registerContextBriefTool(server, config);
 
   registerReadTool(
     server,
     config,
     'read_context',
     'Read a threadnote:// file URI returned by recall_context or list_context.',
+    memoryScope,
   );
   if (toolset === 'full') {
     registerReadTool(server, config, 'read', 'Compatibility alias for read_context.');
   }
 
-  registerListTool(server, config, 'list_context', 'List a threadnote:// directory returned by recall_context.');
+  registerListTool(
+    server,
+    config,
+    'list_context',
+    'List a threadnote:// directory returned by recall_context.',
+    memoryScope,
+  );
   if (toolset === 'full') {
     registerListTool(server, config, 'list', 'Compatibility alias for list_context.');
   }
 
-  registerStoreTool(
-    server,
-    config,
-    'remember_context',
-    'Store a durable Threadnote memory. Required: pass JSON arguments with text.',
-  );
+  if (capabilities.memoryWrite) {
+    registerStoreTool(
+      server,
+      config,
+      'remember_context',
+      'Store a durable Threadnote memory. Required: pass JSON arguments with text.',
+      memoryScope,
+    );
+  }
   if (toolset === 'full') {
     registerStoreTool(server, config, 'store', 'Compatibility alias for remember_context.');
   }
 
-  registerCandidateMemoryTools(server, config);
+  if (capabilities.memoryReview) registerCandidateMemoryTools(server, config);
 
-  server.registerTool(
-    'obsidian_publish',
-    {
-      annotations: {readOnlyHint: false, destructiveHint: true, idempotentHint: true},
-      description:
-        'Preview or publish explicitly selected Threadnote memory URIs to a configured Obsidian projection. Preview is the default; set apply=true only after the user selects the memories and destination projection.',
-      inputSchema: {
-        apply: McpInput.boolean('Write the selected memories and persist their projection selection'),
-        force: McpInput.boolean('Regenerate edited files already managed by this projection'),
-        projection: McpInput.string('Required configured Obsidian projection identifier'),
-        uri: McpInput.stringOrStrings('Required canonical Threadnote memory URI or list of URIs'),
-        uris: McpInput.stringOrStrings('Compatibility alias for uri'),
+  if (capabilities.memoryPublish)
+    server.registerTool(
+      'obsidian_publish',
+      {
+        annotations: {readOnlyHint: false, destructiveHint: true, idempotentHint: true},
+        description:
+          'Preview or publish explicitly selected Threadnote memory URIs to a configured Obsidian projection. Preview is the default; set apply=true only after the user selects the memories and destination projection.',
+        inputSchema: {
+          apply: McpInput.boolean('Write the selected memories and persist their projection selection'),
+          force: McpInput.boolean('Regenerate edited files already managed by this projection'),
+          projection: McpInput.string('Required configured Obsidian projection identifier'),
+          uri: McpInput.stringOrStrings('Required canonical Threadnote memory URI or list of URIs'),
+          uris: McpInput.stringOrStrings('Compatibility alias for uri'),
+        },
       },
-    },
-    ({apply, force, projection, uri, uris}) => {
-      const checkedProjection = requiredText(projection, 'obsidian_publish', 'projection', {
-        projection: 'engineering-memory',
-        uri: 'threadnote://user/example/memories/durable/projects/threadnote/obsidian.md',
-      });
-      if (!checkedProjection.ok) {
-        return checkedProjection.error;
-      }
-      const checkedUris = requiredResourceUriList(
-        uris ?? uri,
-        'obsidian_publish',
-        'threadnote://user/example/memories/durable/projects/threadnote/obsidian.md',
-      );
-      if (!checkedUris.ok) {
-        return checkedUris.error;
-      }
-      return captureConsole(
-        runObsidianProjectionPublish(config, {
-          apply,
-          force,
-          id: checkedProjection.value,
-          uris: checkedUris.value,
-        }),
-      ).pipe(
-        Effect.map(({output, value}) => ({
-          content: [{type: 'text' as const, text: output}],
-          structuredContent: {
-            applied: apply === true,
-            entries: value,
-            projection: checkedProjection.value,
+      ({apply, force, projection, uri, uris}) => {
+        const checkedProjection = requiredText(projection, 'obsidian_publish', 'projection', {
+          projection: 'engineering-memory',
+          uri: 'threadnote://user/example/memories/durable/projects/threadnote/obsidian.md',
+        });
+        if (!checkedProjection.ok) {
+          return checkedProjection.error;
+        }
+        const checkedUris = requiredResourceUriList(
+          uris ?? uri,
+          'obsidian_publish',
+          'threadnote://user/example/memories/durable/projects/threadnote/obsidian.md',
+        );
+        if (!checkedUris.ok) {
+          return checkedUris.error;
+        }
+        return captureConsole(
+          runObsidianProjectionPublish(config, {
+            apply,
+            force,
+            id: checkedProjection.value,
             uris: checkedUris.value,
-          },
-        })),
-      );
-    },
-  );
+          }),
+        ).pipe(
+          Effect.map(({output, value}) => ({
+            content: [{type: 'text' as const, text: output}],
+            structuredContent: {
+              applied: apply === true,
+              entries: value,
+              projection: checkedProjection.value,
+              uris: checkedUris.value,
+            },
+          })),
+        );
+      },
+    );
 
-  if (toolset === 'full') {
+  if (capabilities.maintenance) {
     registerArchiveTool(
       server,
       config,
@@ -262,39 +290,40 @@ function registerTools(
     }),
   );
 
-  server.registerTool(
-    'share_publish',
-    {
-      annotations: {readOnlyHint: false, destructiveHint: true},
-      description:
-        'Publish a personal durable memory to the team shared repo. Scans for sensitive data, optionally redacts soft leaks, writes and pushes the shared copy first, then removes the original. Confirm with the user; never publish handoffs or preferences. Use preview to inspect without writing.',
-      inputSchema: {
-        message: McpInput.string('Commit message override; defaults to "share: publish <path>"'),
-        preview: McpInput.boolean(
-          'Return the bytes that would land in the shared git repo (after frontmatter strip and redaction) without writing or committing. Use this to inspect the body before publishing.',
-        ),
-        push: McpInput.boolean('Push to remote after committing; defaults to true'),
-        redact: McpInput.boolean(
-          'Replace soft-leak matches (local paths) with placeholders and continue; credentials still block.',
-        ),
-        team: McpInput.string('Team name; defaults to the configured default team'),
-        uri: McpInput.string('Required threadnote:// memory URI to publish'),
+  if (capabilities.memoryPublish)
+    server.registerTool(
+      'share_publish',
+      {
+        annotations: {readOnlyHint: false, destructiveHint: true},
+        description:
+          'Publish a personal durable memory to the team shared repo. Scans for sensitive data, optionally redacts soft leaks, writes and pushes the shared copy first, then removes the original. Confirm with the user; never publish handoffs or preferences. Use preview to inspect without writing.',
+        inputSchema: {
+          message: McpInput.string('Commit message override; defaults to "share: publish <path>"'),
+          preview: McpInput.boolean(
+            'Return the bytes that would land in the shared git repo (after frontmatter strip and redaction) without writing or committing. Use this to inspect the body before publishing.',
+          ),
+          push: McpInput.boolean('Push to remote after committing; defaults to true'),
+          redact: McpInput.boolean(
+            'Replace soft-leak matches (local paths) with placeholders and continue; credentials still block.',
+          ),
+          team: McpInput.string('Team name; defaults to the configured default team'),
+          uri: McpInput.string('Required threadnote:// memory URI to publish'),
+        },
       },
-    },
-    ({message, preview, push, redact, team, uri}) => {
-      const checkedUri = requiredResourceUri(
-        uri,
-        'share_publish',
-        'threadnote://user/example/memories/durable/projects/foo/bar.md',
-      );
-      if (!checkedUri.ok) {
-        return checkedUri.error;
-      }
-      return runSharePublishTool(config, checkedUri.value, {message, preview, push, redact, team});
-    },
-  );
+      ({message, preview, push, redact, team, uri}) => {
+        const checkedUri = requiredResourceUri(
+          uri,
+          'share_publish',
+          'threadnote://user/example/memories/durable/projects/foo/bar.md',
+        );
+        if (!checkedUri.ok) {
+          return checkedUri.error;
+        }
+        return runSharePublishTool(config, checkedUri.value, {message, preview, push, redact, team});
+      },
+    );
 
-  if (toolset === 'core') {
+  if (!capabilities.maintenance) {
     return;
   }
 

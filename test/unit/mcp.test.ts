@@ -10,7 +10,7 @@ import {captureConsole} from '../../src/effect/console.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import {mcpAdapterCommand, resolveMcpClients, runMcpInstall} from '../../src/mcp.js';
-import {parseMcpToolset} from '../../src/mcp_toolset.js';
+import {mcpToolCapabilities, parseMcpToolset} from '../../src/mcp_toolset.js';
 import type {RuntimeConfig} from '../../src/types.js';
 
 function runtime(): RuntimeConfig {
@@ -87,7 +87,22 @@ describe('MCP toolsets', () => {
   );
 
   it('rejects unsupported toolsets', () => {
-    expect(() => parseMcpToolset('minimal')).toThrow('Invalid MCP toolset: minimal. Expected core or full.');
+    expect(() => parseMcpToolset('minimal')).toThrow(
+      'Invalid MCP toolset: minimal. Expected core, cursor-cloud, or full.',
+    );
+  });
+
+  it('gives Cursor Cloud shared writes without review, publishing, maintenance, or worksets', () => {
+    expect(mcpToolCapabilities(parseMcpToolset('cursor-cloud'))).toEqual({
+      contextBrief: false,
+      graphLocal: true,
+      graphWorkset: false,
+      maintenance: false,
+      memoryPublish: false,
+      memoryRead: true,
+      memoryReview: false,
+      memoryWrite: true,
+    });
   });
 
   effectIt.effect('launches the Windows MCP cmd adapter through ComSpec', () =>

@@ -121,7 +121,11 @@ export function registerContextBriefTool(server: EffectMcpServerAdapter, config:
   );
 }
 
-export function registerCodeGraphTool(server: EffectMcpServerAdapter, config: RuntimeConfig): void {
+export function registerCodeGraphTool(
+  server: EffectMcpServerAdapter,
+  config: RuntimeConfig,
+  options: {readonly allowWorkset?: boolean} = {},
+): void {
   server.registerTool(
     'inspect_code_graph',
     {
@@ -207,6 +211,14 @@ export function registerCodeGraphTool(server: EffectMcpServerAdapter, config: Ru
         }
         if (packageName?.trim() && operation !== 'query') {
           return argumentError('inspect_code_graph package is valid only for operation=query.');
+        }
+        if (
+          options.allowWorkset === false &&
+          (workset?.trim() || cursor?.trim() || budgetTokens !== undefined || operation === 'topology')
+        ) {
+          return argumentError(
+            'inspect_code_graph workset operations are unavailable in the Cursor Cloud profile; inspect the local checkout with callerCwd.',
+          );
         }
         if (workset?.trim() && !['query', 'path', 'impact', 'topology'].includes(operation)) {
           return argumentError('inspect_code_graph workset is valid for query, path, impact, and topology.');

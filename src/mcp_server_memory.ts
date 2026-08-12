@@ -10,6 +10,7 @@ import {
 } from './memory_hygiene.js';
 import {
   ensureSharedDirectoryChain,
+  assertShareTeamWritable,
   assertSharedWorktreeFileReady,
   isInSharedNamespace,
   publishShareGitChange,
@@ -19,6 +20,8 @@ import {
   sharedTeamNameForUri,
   stripPersonalProvenance,
   resourceUriToWorktreeRelative,
+  setMemoryVisibility,
+  sharedUriFor,
   writeMemoryFile,
   writeSharedWorktreeFile,
 } from './share.js';
@@ -29,7 +32,13 @@ import {withMemoryUriLocks} from './effect/memory_lock.js';
 import {withSharedRepositoryLock} from './effect/share_lock.js';
 import {ResourceStore, type ResourceStoreMutation} from './effect/resource-store.js';
 import {canonicalMemoryDocumentContent, formatMemoryDocument, type MemoryMetadata} from './memory_document.js';
-import {canonicalResourceUri, parseResourceId, resourceIdWithoutAnchor} from './storage/resource-id.js';
+import {
+  canonicalResourceUri,
+  parseResourceId,
+  resourceIdIsWithin,
+  resourceIdWithoutAnchor,
+} from './storage/resource-id.js';
+import type {CursorCloudMemoryScope} from './cursor_cloud.js';
 import {
   McpServerOperationError,
   type RuntimeConfig,
@@ -384,6 +393,102 @@ export function writeDurableMemory(config: RuntimeConfig, params: WriteDurableMe
       ? withSharedRepositoryLock(config, write)
       : write;
   return serializedWrite.pipe(
+    Effect.catch(error =>
+      Effect.succeed({content: [{type: 'text' as const, text: errorMessage(error)}], isError: true}),
+    ),
+    Effect.map(result => result as CallToolResult),
+  );
+}
+
+export function writeCursorCloudSharedMemory(
+  config: RuntimeConfig,
+  scope: CursorCloudMemoryScope,
+  params: WriteDurableMemoryParams,
+) {
+  const write = withSharedRepositoryLock(
+    config,
+    Effect.gen(function* () {
+      if (params.metadata.kind !== 'durable') {
+        return argumentError('Cursor Cloud shared memory writes support durable memories only.');
+      }
+      const prepared = yield* preparePersonalMemoryWrite(config, params);
+      const targetUri = params.replaceUri ?? sharedUriFor(config, prepared.memoryUri, scope.team);
+      if (!resourceIdIsWithin(targetUri, scope.root)) {
+        return argumentError(`Cursor Cloud durable memory writes must stay within ${scope.root}.`);
+      }
+      const resolved = yield* resolveTeam(config, scope.team);
+      assertShareTeamWritable(resolved, 'write Cursor Cloud memories');
+      const fs = yield* FileSystem.FileSystem;
+      return yield* withMemoryUriLocks(
+        fs,
+        config.agentContextHome,
+        [targetUri],
+        Effect.gen(function* () {
+          const [existingTarget] = yield* readMemoryRecordsByUri(config, [targetUri]);
+          if (params.replaceUri && !existingTarget) {
+            return argumentError(`Shared memory ${targetUri} no longer exists.`);
+          }
+          const metadata: MemoryMetadata = {
+            ...prepared.finalMetadata,
+            createdAt:
+              existingTarget?.metadata.createdAt ??
+              existingTarget?.metadata.timestamp ??
+              prepared.finalMetadata.createdAt,
+            memoryId: existingTarget?.metadata.memoryId ?? prepared.finalMetadata.memoryId,
+            supersedes: undefined,
+            visibility: 'shared',
+          };
+          const rawMemory = setMemoryVisibility(formatMemoryDocument('MEMORY', metadata, params.bodyText), 'shared');
+          const scrub = applyScrubber(rawMemory, {redact: false});
+          if (scrub.blocker) {
+            return argumentError(
+              `Refusing to write shared memory ${targetUri}: possible ${scrub.blocker}. Strip the sensitive value first.`,
+            );
+          }
+          const relativePath = resourceUriToWorktreeRelative(config, targetUri, resolved.name);
+          yield* assertSharedWorktreeFileReady(resolved.config.worktree, relativePath, existingTarget?.content);
+          yield* ensureSharedDirectoryChain(config, 'threadnote-native', targetUri, false, {quiet: true});
+          yield* writeMemoryFile(
+            config,
+            'threadnote-native',
+            targetUri,
+            scrub.cleaned,
+            existingTarget ? 'replace' : 'create',
+            false,
+            {quiet: true},
+          );
+          const [storedTarget] = yield* readMemoryRecordsByUri(config, [targetUri]);
+          if (
+            !storedTarget ||
+            canonicalMemoryDocumentContent(storedTarget.content) !== canonicalMemoryDocumentContent(scrub.cleaned)
+          ) {
+            return argumentError(`Shared memory verification failed after writing ${targetUri}.`);
+          }
+          yield* writeSharedWorktreeFile(resolved.config.worktree, relativePath, scrub.cleaned);
+          const gitMessages = yield* publishShareGitChange(
+            resolved.config.worktree,
+            relativePath,
+            `cloud: ${existingTarget ? 'update' : 'store'} ${relativePath}`,
+          );
+          const messages = [`${existingTarget ? 'Updated' : 'Stored'} shared memory: ${targetUri}`, ...gitMessages];
+          return {
+            _meta: {
+              'threadnote.io/memory-scope': {
+                mode: scope.mode,
+                root: scope.root,
+                team: scope.team,
+                type: 'threadnote-memory-scope',
+                version: 1,
+              },
+            },
+            content: [{type: 'text' as const, text: messages.join('\n')}],
+            structuredContent: {memoryUri: targetUri, persistence: 'shared-git-pushed'},
+          } satisfies CallToolResult;
+        }),
+      );
+    }),
+  );
+  return write.pipe(
     Effect.catch(error =>
       Effect.succeed({content: [{type: 'text' as const, text: errorMessage(error)}], isError: true}),
     ),

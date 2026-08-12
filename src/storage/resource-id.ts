@@ -62,6 +62,15 @@ export function resourceIdWithoutAnchor(resourceId: ResourceId): ResourceId {
   };
 }
 
+export function resourceIdIsWithin(candidateUri: string, rootUri: string): boolean {
+  const candidate = resourceIdWithoutAnchor(parseResourceId(candidateUri));
+  const root = resourceIdWithoutAnchor(parseResourceId(rootUri));
+  return (
+    candidate.namespace === root.namespace &&
+    root.segments.every((segment, index) => candidate.segments[index] === segment)
+  );
+}
+
 export function validatePortableSegment(value: string, input = value): string {
   if (!value) return invalid(input, 'empty path segments are not allowed');
   if (value !== value.normalize('NFC')) return invalid(input, 'path segments must use NFC Unicode normalization');

@@ -1,6 +1,6 @@
 import {Effect} from 'effect';
 import {McpSchema} from 'effect/unstable/ai';
-import {parseResourceId} from '../../storage/resource-id.js';
+import {parseResourceId, resourceIdIsWithin} from '../../storage/resource-id.js';
 import {ResourceStore, type ResourceStoreError} from '../resource-store.js';
 import {MCP_RESOURCE_ERROR_DATA, MCP_RESOURCE_NOT_FOUND_ERROR_DATA} from './mcp.js';
 
@@ -19,6 +19,7 @@ interface McpResourceConfig {
 export function readThreadnoteMcpResource(
   config: McpResourceConfig,
   uri: string,
+  scopeRoot?: string,
 ): Effect.Effect<
   typeof McpSchema.ReadResourceResult.Type,
   McpSchema.InternalError | McpSchema.InvalidParams,
@@ -26,6 +27,12 @@ export function readThreadnoteMcpResource(
 > {
   return Effect.gen(function* () {
     const canonicalUri = yield* canonicalThreadnoteUri(uri);
+    if (scopeRoot && !resourceIdIsWithin(canonicalUri, scopeRoot)) {
+      return yield* new McpSchema.InvalidParams({
+        data: MCP_RESOURCE_ERROR_DATA,
+        message: 'The requested resource is outside the active Cursor Cloud memory scope.',
+      });
+    }
     const store = yield* ResourceStore;
     const location = {account: config.account, home: config.agentContextHome, user: config.user};
     const read = yield* store.readBounded(location, canonicalUri, MCP_RESOURCE_READ_MAX_BYTES);
