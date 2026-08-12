@@ -1,7 +1,7 @@
 {
   "name": "threadnote",
   "displayName": "Threadnote",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Always-on Cursor instructions for using Threadnote as shared local context and engineering memory.",
   "minClientVersions": {
     "cursor": "2.5.0"

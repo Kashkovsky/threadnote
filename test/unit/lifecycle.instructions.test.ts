@@ -141,13 +141,14 @@ describe('agent instruction lifecycle', () => {
           expect(generatedInstructions[2]).toContain('applyTo: "**"');
           expect(yield* fs.readFileString(legacyCursorRule)).toBe('Preserve this user-authored note.\n');
           expect(yield* fs.exists(legacyCursorMdcRule)).toBe(false);
-          expect(generatedInstructions.every(content => content.includes('`query` finds definitions'))).toBe(true);
-          expect(generatedInstructions.every(content => content.includes('Git `base`'))).toBe(true);
-          expect(
-            generatedInstructions.every(content =>
-              /use `threadnote report-issue .*` to prepare the\s+public GitHub issue preview/.test(content),
-            ),
-          ).toBe(true);
+          expect(generatedInstructions.every(content => content.includes('`query` to find a'))).toBe(true);
+          expect(generatedInstructions.every(content => content.includes('`impact` for reverse dependencies'))).toBe(
+            true,
+          );
+          expect(generatedInstructions.every(content => content.includes('`threadnote workset prepare <name>`'))).toBe(
+            true,
+          );
+          expect(generatedInstructions.every(content => !content.includes('report-issue'))).toBe(true);
 
           const checks = yield* userAgentInstructionsChecks().pipe(Effect.provideService(SystemInfo, testSystem));
           expect(checks).toHaveLength(3);
