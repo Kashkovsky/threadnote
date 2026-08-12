@@ -15,6 +15,7 @@ import type {
   CodeGraphDirectPersistentCapacityProtector,
   CodeGraphEdgeCursor,
   CodeGraphPersistentBuildClaim,
+  CodeGraphLanguagePackProvenance,
   CodeGraphRemovedViewCleanupAuthorizationResult,
   CodeGraphRemovedViewCleanupEntry,
   CodeGraphRemovedViewCleanupStoreOptions,
@@ -90,6 +91,7 @@ export interface CodeGraphStoreShape {
     files: readonly CodeGraphInventoryFile[],
     symbols: readonly CodeGraphSymbol[],
     edges: readonly CodeGraphEdge[],
+    snapshotPackProvenance?: readonly CodeGraphLanguagePackProvenance[],
   ) => Effect.Effect<void, CodeGraphStoreError>;
   readonly activateStaged: (
     databasePath: string,
@@ -99,6 +101,7 @@ export interface CodeGraphStoreShape {
     promotionLeaseDurationMilliseconds?: number,
     onProgress?: CodeGraphActivationProgressCallback,
     persistentCapacityProtector?: CodeGraphDirectPersistentCapacityProtector,
+    snapshotPackProvenance?: readonly CodeGraphLanguagePackProvenance[],
   ) => Effect.Effect<Option.Option<string>, CodeGraphStoreError>;
   readonly activateCleanSnapshotAlias?: (
     databasePath: string,
@@ -409,6 +412,10 @@ export interface CodeGraphStoreShape {
     databasePath: string,
     snapshotId: string,
   ) => Effect.Effect<CodeGraphReusableBaseReceipt | undefined, CodeGraphStoreError>;
+  readonly snapshotPackProvenance: (
+    databasePath: string,
+    snapshotId: string,
+  ) => Effect.Effect<readonly CodeGraphLanguagePackProvenance[] | undefined, CodeGraphStoreError>;
   readonly reusableCleanBase?: (
     databasePath: string,
     repositoryId: string,

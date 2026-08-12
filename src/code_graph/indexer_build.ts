@@ -1643,6 +1643,7 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
             }) ?? Effect.void
           ).pipe(Effect.catch(() => Effect.void)),
         persistentCapacityGuard,
+        input.languagePacks.activePackProvenance(input.inventory.files.map(file => file.path)),
       ),
       lease =>
         Option.match(lease, {

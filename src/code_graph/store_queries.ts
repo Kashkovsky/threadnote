@@ -45,6 +45,7 @@ import {
 } from './store_query_core.js';
 import {materializedFileShardIdentity} from './store_cache.js';
 import {type CodeGraphSqlQueryStatement} from './store_visualization_sql.js';
+import {selectSnapshotPackProvenance} from './store_pack_provenance.js';
 
 const selectReadySnapshot = Effect.fn('codeGraph.selectReadySnapshot')(function* (worktreeId: string) {
   const sql = yield* SqlClient.SqlClient;
@@ -333,18 +334,8 @@ const selectReusableBaseReceipt = Effect.fn('codeGraph.selectReusableBaseReceipt
   `;
   const row = rows[0];
   if (!row) return undefined;
-  const packProvenance = yield* sql<{
-    readonly cache_identity: string;
-    readonly derivation_identity: string;
-    readonly pack_id: string;
-    readonly resolution_domain: string;
-    readonly resolution_version: string;
-  }>`
-    SELECT pack_id, cache_identity, derivation_identity, resolution_domain, resolution_version
-    FROM snapshot_pack_provenance
-    WHERE snapshot_id = ${snapshotId}
-    ORDER BY pack_id
-  `;
+  const packProvenance = yield* selectSnapshotPackProvenance(snapshotId);
+  if (packProvenance === undefined) return undefined;
   const lookupCount = Number(row.lookup_count);
   const aliasCount = Number(row.alias_count);
   const reexportCount = Number(row.reexport_count);
@@ -367,13 +358,7 @@ const selectReusableBaseReceipt = Effect.fn('codeGraph.selectReusableBaseReceipt
     fileSetFingerprint: row.file_set_fingerprint,
     formatVersion: Number(row.format_version),
     lookupCount,
-    packProvenance: packProvenance.map(pack => ({
-      cacheIdentity: pack.cache_identity,
-      derivationIdentity: pack.derivation_identity,
-      id: pack.pack_id,
-      resolutionDomain: pack.resolution_domain,
-      resolutionVersion: pack.resolution_version,
-    })),
+    packProvenance,
     reexportCount,
     resolutionSurfaceVersion: Number(row.resolution_surface_version),
     snapshotId: row.snapshot_id,

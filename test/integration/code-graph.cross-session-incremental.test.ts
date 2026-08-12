@@ -9,6 +9,7 @@ import {Context, Effect, Layer, Path} from 'effect';
 import {TestClock} from 'effect/testing';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {CodeGraphIndexer} from '../../src/code_graph/indexer.js';
+import {CodeGraphQueryService} from '../../src/code_graph/query.js';
 import {
   BUILTIN_LANGUAGE_PACK_REGISTRY,
   CodeGraphLanguagePackRegistry,
@@ -266,6 +267,58 @@ describe('cross-session code graph increments', () => {
         Effect.ensuring(removeTemporaryPaths(() => [root, home, referenceHome])),
         provideTestLayer(ApplicationLayer),
         TestClock.withLive,
+      );
+    },
+    60_000,
+  );
+
+  it.effect(
+    'refreshes a clean ready snapshot when the current language pack accepts a previously omitted AXL source',
+    () => {
+      let home: string | undefined;
+      let root: string | undefined;
+      return Effect.gen(function* () {
+        root = createRepository();
+        home = mkdtempSync(join(tmpdir(), 'threadnote-axl-pack-upgrade-home-'));
+        const axlPath = 'crates/aspect-cli/src/builtins/aspect/bazel.axl';
+        mkdirSync(join(root, 'crates/aspect-cli/src/builtins/aspect'), {recursive: true});
+        writeFileSync(join(root, 'BUILD.bazel'), 'exports_files(["package.json"])\n');
+        writeFileSync(join(root, axlPath), 'UPGRADE_MARKER = 1\n');
+        git(root, ['add', '.']);
+        git(root, ['commit', '--amend', '-qm', 'fixture with AXL source']);
+
+        const legacyRegistry = createCodeGraphLanguagePackRegistry(
+          BUILTIN_LANGUAGE_PACK_REGISTRY.packs.map(pack =>
+            pack.id === 'bazel'
+              ? {...pack, files: pack.files.filter(matcher => matcher.value !== '.axl'), version: '1.0.0'}
+              : pack,
+          ),
+        );
+        const legacy = yield* indexWithRegistry(root, home, legacyRegistry);
+        const query = yield* CodeGraphQueryService;
+        const before = yield* query.status(home, root, {requestMaintenance: false});
+
+        expect(legacy.snapshot.fileCount).toBe(3);
+        expect(before).toMatchObject({freshness: 'stale', stale: true});
+
+        const refreshed = yield* query.inspect({
+          cwd: root,
+          operation: 'query',
+          query: axlPath,
+          refresh: true,
+          requestMaintenance: false,
+          threadnoteHome: home,
+        });
+
+        expect(refreshed.freshness).toBe('current');
+        expect(refreshed.snapshot.id).not.toBe(legacy.snapshot.id);
+        expect(refreshed.nodes).toEqual(
+          expect.arrayContaining([expect.objectContaining({language: 'starlark', path: axlPath})]),
+        );
+      }).pipe(
+        provideTestLayer(ApplicationLayer),
+        TestClock.withLive,
+        Effect.ensuring(removeTemporaryPaths(() => [root, home])),
       );
     },
     60_000,

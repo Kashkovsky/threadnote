@@ -302,7 +302,7 @@ export function makeCodeGraphStoreLifecycleMethods(runtime: CodeGraphStoreRuntim
           true,
         );
       }).pipe(Effect.mapError(cause => storeError('validate code graph view snapshot lease', cause))),
-    activate: (databasePath, identity, snapshot, files, symbols, edges) =>
+    activate: (databasePath, identity, snapshot, files, symbols, edges, snapshotPackProvenance) =>
       prepare(databasePath).pipe(
         Effect.andThen(
           withWriterGate(
@@ -317,7 +317,15 @@ export function makeCodeGraphStoreLifecycleMethods(runtime: CodeGraphStoreRuntim
                 yield* stageActivationSymbols(sql, symbols, 'insert');
                 yield* stageActivationSymbolTerms(sql, symbols, 'insert');
                 yield* stageActivationEdges(sql, edges, 'insert');
-                yield* activateStagedSnapshot(sql, identity, snapshot);
+                yield* activateStagedSnapshot(
+                  sql,
+                  identity,
+                  snapshot,
+                  undefined,
+                  undefined,
+                  undefined,
+                  snapshotPackProvenance,
+                );
               }),
             ),
           ),
@@ -332,8 +340,10 @@ export function makeCodeGraphStoreLifecycleMethods(runtime: CodeGraphStoreRuntim
       promotionLeaseDurationMilliseconds,
       onProgress,
       persistentCapacityProtector,
+      snapshotPackProvenance,
     ) =>
       Effect.gen(function* () {
+        const activationPackProvenance = snapshotPackProvenance ?? reusableBaseReceipt?.packProvenance;
         const promotionLease =
           promotionLeaseDurationMilliseconds === undefined
             ? Option.none<CodeGraphActivationLease>()
@@ -358,6 +368,7 @@ export function makeCodeGraphStoreLifecycleMethods(runtime: CodeGraphStoreRuntim
                   reusableBaseReceipt,
                   promotionLease,
                   onProgress,
+                  activationPackProvenance,
                 ),
               );
               const capacity = yield* temporaryPublicationCapacity(sql);
@@ -380,12 +391,21 @@ export function makeCodeGraphStoreLifecycleMethods(runtime: CodeGraphStoreRuntim
                 onProgress,
                 effect => withWriterGate(databasePath, effect),
                 persistentCapacityProtector,
+                activationPackProvenance,
               );
               return snapshot.id;
             }
             const publication = withWriterGate(
               databasePath,
-              activateStagedSnapshot(sql, identity, snapshot, reusableBaseReceipt, promotionLease, onProgress),
+              activateStagedSnapshot(
+                sql,
+                identity,
+                snapshot,
+                reusableBaseReceipt,
+                promotionLease,
+                onProgress,
+                activationPackProvenance,
+              ),
             );
             const capacity = yield* temporaryPublicationCapacity(sql);
             yield* persistentCapacityProtector ? persistentCapacityProtector(capacity, publication) : publication;

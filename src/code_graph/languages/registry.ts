@@ -100,13 +100,7 @@ export function createCodeGraphLanguagePackRegistry(
       const activeIds = new Set(paths.flatMap(path => Option.toArray(Option.map(match(path), value => value.pack.id))));
       return packs
         .filter(pack => activeIds.has(pack.id))
-        .map(pack => ({
-          cacheIdentity: packCacheIdentity(pack),
-          derivationIdentity: packDerivationIdentity(pack),
-          id: pack.id,
-          resolutionDomain: pack.resolutionStrategy.domain,
-          resolutionVersion: pack.resolutionStrategy.version,
-        }))
+        .map(codeGraphLanguagePackProvenance)
         .sort((left, right) => left.id.localeCompare(right.id));
     },
     cacheIdentityForPath: path => Option.map(match(path), value => value.cacheIdentity),
@@ -155,6 +149,16 @@ export function createCodeGraphLanguagePackRegistry(
       .extract(attributed, context)
       .pipe(Effect.map(facts => captureRationaleInputs(attributed, facts)));
   }
+}
+
+export function codeGraphLanguagePackProvenance(pack: CodeGraphLanguagePack): CodeGraphLanguagePackProvenance {
+  return {
+    cacheIdentity: packCacheIdentity(pack),
+    derivationIdentity: packDerivationIdentity(pack),
+    id: pack.id,
+    resolutionDomain: pack.resolutionStrategy.domain,
+    resolutionVersion: pack.resolutionStrategy.version,
+  };
 }
 
 export function packCacheIdentity(pack: CodeGraphLanguagePack): string {
