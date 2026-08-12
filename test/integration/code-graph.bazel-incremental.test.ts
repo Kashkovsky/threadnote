@@ -15,13 +15,12 @@ describe('mixed Node and Bazel incremental indexing', () => {
   it.effect('keeps a comment-only nested MODULE.bazel edit local and equivalent to a full rebuild', () =>
     Effect.acquireUseRelease(
       Effect.sync(createMixedWorkspaceRepository),
-      root =>
+      fixture =>
         Effect.gen(function* () {
           const indexer = yield* CodeGraphIndexer;
           const path = yield* Path.Path;
           const store = yield* CodeGraphStore;
-          const incrementalHome = join(root, '.threadnote-incremental');
-          const fullHome = join(root, '.threadnote-full');
+          const {fullHome, incrementalHome, root} = fixture;
           yield* indexer.index({cwd: root, threadnoteHome: incrementalHome});
 
           yield* Effect.sync(() =>
@@ -58,20 +57,19 @@ describe('mixed Node and Bazel incremental indexing', () => {
           );
           expect(normalizeGraph(incrementalGraph)).toEqual(normalizeGraph(fullGraph));
         }),
-      root => Effect.sync(() => rmSync(root, {force: true, recursive: true})),
+      fixture => Effect.sync(() => rmSync(fixture.temporaryRoot, {force: true, recursive: true})),
     ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );
 
   it.effect('rematerializes only a changed nested Bazel dependency closure', () =>
     Effect.acquireUseRelease(
       Effect.sync(createMixedWorkspaceRepository),
-      root =>
+      fixture =>
         Effect.gen(function* () {
           const indexer = yield* CodeGraphIndexer;
           const path = yield* Path.Path;
           const store = yield* CodeGraphStore;
-          const incrementalHome = join(root, '.threadnote-incremental');
-          const fullHome = join(root, '.threadnote-full');
+          const {fullHome, incrementalHome, root} = fixture;
           yield* indexer.index({cwd: root, threadnoteHome: incrementalHome});
 
           yield* Effect.sync(() =>
@@ -106,13 +104,22 @@ describe('mixed Node and Bazel incremental indexing', () => {
           expect(incremental.materialization?.stagedFiles).toBeLessThan(incremental.materialization!.totalFiles);
           expect(normalizeGraph(incrementalGraph)).toEqual(normalizeGraph(fullGraph));
         }),
-      root => Effect.sync(() => rmSync(root, {force: true, recursive: true})),
+      fixture => Effect.sync(() => rmSync(fixture.temporaryRoot, {force: true, recursive: true})),
     ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );
 });
 
-function createMixedWorkspaceRepository(): string {
-  const root = mkdtempSync(join(tmpdir(), 'threadnote-mixed-bazel-incremental-'));
+interface MixedWorkspaceFixture {
+  readonly fullHome: string;
+  readonly incrementalHome: string;
+  readonly root: string;
+  readonly temporaryRoot: string;
+}
+
+function createMixedWorkspaceRepository(): MixedWorkspaceFixture {
+  const temporaryRoot = mkdtempSync(join(tmpdir(), 'threadnote-mixed-bazel-incremental-'));
+  const root = join(temporaryRoot, 'repository');
+  mkdirSync(root, {recursive: true});
   write(root, 'package.json', {name: '@fixture/root', private: true, workspaces: ['libs/*']});
   write(root, 'nx.json', {namedInputs: {default: ['{projectRoot}/**/*']}});
   write(root, 'libs/shared/package.json', {name: '@fixture/shared'});
@@ -143,7 +150,12 @@ function createMixedWorkspaceRepository(): string {
   git(root, ['config', 'user.email', 'test@threadnote.local']);
   git(root, ['add', '.']);
   git(root, ['commit', '-qm', 'fixture']);
-  return root;
+  return {
+    fullHome: join(temporaryRoot, 'threadnote-full'),
+    incrementalHome: join(temporaryRoot, 'threadnote-incremental'),
+    root,
+    temporaryRoot,
+  };
 }
 
 function write(root: string, path: string, value: unknown): void {

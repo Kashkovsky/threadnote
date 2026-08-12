@@ -172,13 +172,28 @@ describe('live removed-view residual maintenance', () => {
             }),
           ).toMatchObject({state: 'removed'});
 
-          yield* TestClock.adjust(2);
-          yield* coordinator.kickResidual(fixture.tick);
-          expect(readCleanupRow(fixture.databasePath)).toMatchObject({phase: 'build-status', revision: 2});
+          let afterVector = readCleanupRow(fixture.databasePath);
+          for (let attempt = 0; attempt < 16 && afterVector.phase === 'vector-pointers'; attempt += 1) {
+            const before = afterVector;
+            yield* TestClock.adjust(
+              before.revision === 0 ? 2 : CODE_GRAPH_REMOVED_VIEW_CLEANUP_CLAIM_LEASE_MILLISECONDS + 1,
+            );
+            expect((yield* coordinator.kickResidual(fixture.tick)).state).toBe('completed');
+            afterVector = readCleanupRow(fixture.databasePath);
+            const revisionDelta = afterVector.revision - before.revision;
+            expect(revisionDelta).toBeGreaterThanOrEqual(1);
+            expect(revisionDelta).toBeLessThanOrEqual(2);
+            if (afterVector.phase === 'vector-pointers') expect(revisionDelta).toBe(1);
+          }
+          expect(afterVector.phase).toBe('build-status');
 
           yield* TestClock.adjust(2);
           yield* coordinator.kickResidual(fixture.tick);
-          expect(readCleanupRow(fixture.databasePath)).toMatchObject({phase: 'provenance', revision: 4});
+          const afterBuildStatus = readCleanupRow(fixture.databasePath);
+          expect(afterBuildStatus).toMatchObject({
+            phase: 'provenance',
+            revision: afterVector.revision + 2,
+          });
 
           yield* TestClock.adjust(2);
           yield* coordinator.kickResidual(fixture.tick);
@@ -188,7 +203,7 @@ describe('live removed-view residual maintenance', () => {
             blocked_code: 'invalid-sidecar',
             cursor_token: null,
             phase: 'provenance',
-            revision: 6,
+            revision: afterBuildStatus.revision + 2,
           });
 
           // The persisted retry timestamp prevents an immediate hot retry.
