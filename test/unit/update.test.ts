@@ -4,6 +4,7 @@ import {provideTestLayer} from '../helpers/effect-layer.js';
 import {mkdtemp, rm} from '../helpers/node-fs-promises.js';
 import {tmpdir} from '../helpers/node-os.js';
 import {join} from '../helpers/node-path.js';
+import fc from 'fast-check';
 import {Crypto, Effect, FileSystem, Path} from 'effect';
 import {TestClock} from 'effect/testing';
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
@@ -28,6 +29,7 @@ vi.mock('../../src/utils.js', async importOriginal => {
 
 import {
   fetchLatestVersion,
+  isUpdateTargetAllowed,
   maybeNotifyUpdate,
   maybeRunPostUpdateAfterRepair,
   parseReleaseChecksum,
@@ -77,6 +79,30 @@ describe('standalone release selection', () => {
   it('requires a fresh install before the standalone 4.x updater boundary', () => {
     expect(requiresFreshStandaloneInstall('3.0.5')).toBe(true);
     expect(requiresFreshStandaloneInstall('4.0.0-beta.1')).toBe(false);
+  });
+
+  it('permits generated version transitions only under the downgrade policy', () => {
+    fc.assert(
+      fc.property(
+        fc.integer({max: 100, min: 1}),
+        fc.constantFrom<'downgrade' | 'equal' | 'upgrade'>('downgrade', 'equal', 'upgrade'),
+        fc.boolean(),
+        fc.boolean(),
+        fc.constantFrom<undefined | 'beta' | 'latest'>(undefined, 'beta', 'latest'),
+        (baseMajor, direction, currentIsBeta, targetIsBeta, requestedChannel) => {
+          const currentMajor = direction === 'downgrade' ? baseMajor + 1 : baseMajor;
+          const targetMajor = direction === 'upgrade' ? baseMajor + 1 : baseMajor;
+          const effectiveTargetIsBeta = direction === 'equal' ? currentIsBeta : targetIsBeta;
+          const currentVersion = `${currentMajor}.0.0${currentIsBeta ? '-beta.2' : ''}`;
+          const targetVersion = `${targetMajor}.0.0${effectiveTargetIsBeta ? '-beta.2' : ''}`;
+          const expected =
+            direction !== 'downgrade' || (currentIsBeta && !effectiveTargetIsBeta && requestedChannel === 'latest');
+
+          expect(isUpdateTargetAllowed(currentVersion, targetVersion, requestedChannel)).toBe(expected);
+        },
+      ),
+      {numRuns: 200},
+    );
   });
 
   effectIt.effect('selects stable and beta GitHub releases while ignoring drafts and mutable releases', () =>
@@ -283,6 +309,140 @@ describe('update notifications', () => {
 });
 
 describe('standalone updater', () => {
+  effectIt.effect('treats a stale same-channel release listing as up to date without force', () =>
+    Effect.gen(function* () {
+      const currentVersion = '4.2.0-beta.2';
+      const olderVersion = '4.2.0-beta.1';
+      vi.mocked(utils.currentPackageVersion).mockReturnValue(Effect.succeed(currentVersion));
+      let downloadAttempted = false;
+      const http = HttpService.of({
+        downloadToFile: () => {
+          downloadAttempted = true;
+          return Effect.die('up-to-date path must not download');
+        },
+        getJson: () => Effect.succeed({body: [releaseResponse(olderVersion, true)], status: 200}),
+        getStatus: () => Effect.die('not used'),
+        getText: () => Effect.die('up-to-date path must not fetch checksums'),
+      });
+
+      const captured = yield* captureConsole(
+        runUpdate(runtimeConfig('/tmp/threadnote-update-stale-listing'), {beta: true}).pipe(
+          Effect.provideService(HttpService, http),
+        ),
+      );
+
+      expect(captured.output).toContain('Threadnote is up to date.');
+      expect(downloadAttempted).toBe(false);
+    }).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('refuses a forced same-channel downgrade before downloading or activating it', () =>
+    Effect.gen(function* () {
+      const currentVersion = '4.2.0-beta.2';
+      const olderVersion = '4.2.0-beta.1';
+      vi.mocked(utils.currentPackageVersion).mockReturnValue(Effect.succeed(currentVersion));
+      let downloadAttempted = false;
+      const http = HttpService.of({
+        downloadToFile: () => {
+          downloadAttempted = true;
+          return Effect.die('downgrade must not download');
+        },
+        getJson: () => Effect.succeed({body: [releaseResponse(olderVersion, true)], status: 200}),
+        getStatus: () => Effect.die('not used'),
+        getText: () => Effect.die('downgrade must not fetch checksums'),
+      });
+
+      const failure = yield* runUpdate(runtimeConfig('/tmp/threadnote-update-same-channel-downgrade'), {
+        beta: true,
+        force: true,
+      }).pipe(Effect.provideService(HttpService, http), provideTestLayer(ApplicationLayer), Effect.flip);
+
+      expect(String(failure)).toContain(`Refusing to downgrade Threadnote ${currentVersion} to ${olderVersion}`);
+      expect(downloadAttempted).toBe(false);
+    }),
+  );
+
+  effectIt.effect('refuses a stable-to-older-beta channel switch before downloading or activating it', () =>
+    Effect.gen(function* () {
+      const currentVersion = '4.2.0';
+      const olderVersion = '4.1.0-beta.1';
+      vi.mocked(utils.currentPackageVersion).mockReturnValue(Effect.succeed(currentVersion));
+      let downloadAttempted = false;
+      const http = HttpService.of({
+        downloadToFile: () => {
+          downloadAttempted = true;
+          return Effect.die('downgrade must not download');
+        },
+        getJson: () => Effect.succeed({body: [releaseResponse(olderVersion, true)], status: 200}),
+        getStatus: () => Effect.die('not used'),
+        getText: () => Effect.die('downgrade must not fetch checksums'),
+      });
+
+      const failure = yield* runUpdate(runtimeConfig('/tmp/threadnote-update-stable-to-beta-downgrade'), {
+        beta: true,
+      }).pipe(Effect.provideService(HttpService, http), provideTestLayer(ApplicationLayer), Effect.flip);
+
+      expect(String(failure)).toContain(`Refusing to downgrade Threadnote ${currentVersion} to ${olderVersion}`);
+      expect(downloadAttempted).toBe(false);
+    }),
+  );
+
+  effectIt.effect('allows an explicit beta-to-stable channel switch to an older stable version', () =>
+    Effect.gen(function* () {
+      const currentVersion = '4.2.0-beta.1';
+      const stableVersion = '4.1.1';
+      vi.mocked(utils.currentPackageVersion).mockReturnValue(Effect.succeed(currentVersion));
+      const system = yield* SystemInfo;
+      const artifactName = releaseArtifactName(system);
+      const http = HttpService.of({
+        downloadToFile: () => Effect.die('dry run must not download'),
+        getJson: () => Effect.succeed({body: [releaseResponse(stableVersion, false, artifactName)], status: 200}),
+        getStatus: () => Effect.die('not used'),
+        getText: () => Effect.die('dry run must not fetch checksums'),
+      });
+
+      const captured = yield* captureConsole(
+        runUpdate(runtimeConfig('/tmp/threadnote-update-beta-to-stable'), {
+          dryRun: true,
+          postUpdate: false,
+          repair: false,
+          stable: true,
+        }).pipe(Effect.provideService(HttpService, http)),
+      );
+
+      expect(captured.output).toContain(`Would install standalone Threadnote to:`);
+      expect(captured.output).toContain(stableVersion);
+    }).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('allows force to reinstall the equal selected version', () =>
+    Effect.gen(function* () {
+      const currentVersion = '4.2.0-beta.1';
+      vi.mocked(utils.currentPackageVersion).mockReturnValue(Effect.succeed(currentVersion));
+      const system = yield* SystemInfo;
+      const artifactName = releaseArtifactName(system);
+      const http = HttpService.of({
+        downloadToFile: () => Effect.die('dry run must not download'),
+        getJson: () => Effect.succeed({body: [releaseResponse(currentVersion, true, artifactName)], status: 200}),
+        getStatus: () => Effect.die('not used'),
+        getText: () => Effect.die('dry run must not fetch checksums'),
+      });
+
+      const captured = yield* captureConsole(
+        runUpdate(runtimeConfig('/tmp/threadnote-update-force-reinstall'), {
+          beta: true,
+          dryRun: true,
+          force: true,
+          postUpdate: false,
+          repair: false,
+        }).pipe(Effect.provideService(HttpService, http)),
+      );
+
+      expect(captured.output).toContain(`Would install standalone Threadnote to:`);
+      expect(captured.output).toContain(currentVersion);
+    }).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
   effectIt.effect('updates the active installation when a newer local development binary invokes the updater', () =>
     Effect.gen(function* () {
       const activeVersion = '4.0.0-beta.19';
