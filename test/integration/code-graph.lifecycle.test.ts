@@ -4379,55 +4379,50 @@ describe('native code graph lifecycle', () => {
     );
   });
 
-  it('holds the maintenance gate while the repair diagnosis is consumed', async () => {
-    const root = createFixtureRepository();
-    const home = join(root, '.threadnote-test-home');
-    const result = await runEffect(
-      Effect.gen(function* () {
+  effectIt.effect('holds the maintenance gate while the repair diagnosis is consumed', () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.sync(createFixtureRepository);
+      const home = join(root, '.threadnote-test-home');
+      // Close setup maintenance children before the gate-specific repair/index race begins.
+      yield* Effect.gen(function* () {
         const indexer = yield* CodeGraphIndexer;
         yield* indexer.index({cwd: root, threadnoteHome: home});
-        const diagnosed = yield* Deferred.make<DoctorCheck>();
-        const releaseDiagnosis = yield* Deferred.make<void>();
-        const registered = yield* Deferred.make<void>();
-        const repairing = yield* Effect.forkChild(
-          repairCodeGraphIndexes(home, false, undefined, completion =>
-            Deferred.succeed(diagnosed, completion.doctorCheck).pipe(
-              Effect.andThen(Deferred.await(releaseDiagnosis)),
-              Effect.asVoid,
-            ),
+      }).pipe(provideTestLayer(ApplicationLayer));
+      const indexer = yield* CodeGraphIndexer;
+      const diagnosed = yield* Deferred.make<DoctorCheck>();
+      const releaseDiagnosis = yield* Deferred.make<void>();
+      const registered = yield* Deferred.make<void>();
+      const repairing = yield* Effect.forkChild(
+        repairCodeGraphIndexes(home, false, undefined, completion =>
+          Deferred.succeed(diagnosed, completion.doctorCheck).pipe(
+            Effect.andThen(Deferred.await(releaseDiagnosis)),
+            Effect.asVoid,
           ),
-        );
-        const check = yield* Deferred.await(diagnosed);
-        replaceFunction(root, 'ensureVectorIndex', 'ensureAfterRepairVectorIndex');
-        const indexing = yield* Effect.forkChild(
-          indexer.index({
-            cwd: root,
-            onProgress: progress =>
-              progress.phase === 'registering'
-                ? Deferred.succeed(registered, undefined).pipe(Effect.asVoid)
-                : Effect.void,
-            threadnoteHome: home,
-          }),
-        );
-        yield* Effect.yieldNow;
-        const registeredBeforeRelease = yield* Deferred.isDone(registered);
-        yield* Deferred.succeed(releaseDiagnosis, undefined);
-        const repair = yield* Fiber.join(repairing);
-        yield* Fiber.join(indexing);
-        return {
-          check,
-          registeredAfterRelease: yield* Deferred.isDone(registered),
-          registeredBeforeRelease,
-          repair,
-        };
-      }),
-    );
-
-    expect(result.check.status).toBe('ok');
-    expect(result.registeredBeforeRelease).toBe(false);
-    expect(result.registeredAfterRelease).toBe(true);
-    expect(result.repair).toMatchObject({databases: 1, discarded: 0});
-  });
+        ),
+      );
+      const check = yield* Deferred.await(diagnosed);
+      replaceFunction(root, 'ensureVectorIndex', 'ensureAfterRepairVectorIndex');
+      const indexing = yield* Effect.forkChild(
+        indexer.index({
+          cwd: root,
+          onProgress: progress =>
+            progress.phase === 'registering'
+              ? Deferred.succeed(registered, undefined).pipe(Effect.asVoid)
+              : Effect.void,
+          threadnoteHome: home,
+        }),
+      );
+      yield* Effect.yieldNow;
+      const registeredBeforeRelease = yield* Deferred.isDone(registered);
+      yield* Deferred.succeed(releaseDiagnosis, undefined);
+      const repair = yield* Fiber.join(repairing);
+      yield* Fiber.join(indexing);
+      expect(check.status).toBe('ok');
+      expect(registeredBeforeRelease).toBe(false);
+      expect(yield* Deferred.isDone(registered)).toBe(true);
+      expect(repair).toMatchObject({databases: 1, discarded: 0});
+    }).pipe(provideTestLayer(ApplicationLayer)),
+  );
 
   it('does not follow vector cleanup symlinks outside the derived index root', async () => {
     const root = createFixtureRepository();
