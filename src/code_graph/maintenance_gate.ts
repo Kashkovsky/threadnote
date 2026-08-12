@@ -34,6 +34,10 @@ interface MaintenanceIntentOwner {
   readonly token: string;
 }
 
+class CodeGraphMaintenanceGateError extends Error {
+  readonly _tag = 'CodeGraphMaintenanceGateError' as const;
+}
+
 export const CODE_GRAPH_MAINTENANCE_PROGRESS_PHASES = [
   'acquiring-gates',
   'waiting-builders',
@@ -149,7 +153,9 @@ const withCodeGraphMaintenanceIntentOwner = Effect.fn('codeGraph.withMaintenance
   const intent = codeGraphMaintenanceIntentPath(path, threadnoteHome);
   const processStartIdentity = yield* system.processStartIdentity(system.processId);
   if (!processStartIdentity) {
-    return yield* Effect.fail(new Error('Could not identify the maintenance process instance.'));
+    return yield* Effect.fail(
+      new CodeGraphMaintenanceGateError('Could not identify the maintenance process instance.'),
+    );
   }
   const owner = {
     processId: system.processId,
@@ -325,10 +331,10 @@ function codeGraphWorktreeLockFiles(
   return Effect.gen(function* () {
     if (!(yield* fs.exists(root))) return [];
     if (Option.isSome(yield* fs.readLink(root).pipe(Effect.option))) {
-      return yield* Effect.fail(new Error('Code graph worktree lock root is a symbolic link.'));
+      return yield* Effect.fail(new CodeGraphMaintenanceGateError('Code graph worktree lock root is a symbolic link.'));
     }
     if ((yield* fs.stat(root)).type !== 'Directory') {
-      return yield* Effect.fail(new Error('Code graph worktree lock root is not a directory.'));
+      return yield* Effect.fail(new CodeGraphMaintenanceGateError('Code graph worktree lock root is not a directory.'));
     }
     return (yield* fs.readDirectory(root))
       .filter(name => /^[0-9a-f]{64}\.lock$/.test(name))
@@ -388,7 +394,7 @@ const validateReportedMaintenance = Effect.fn('codeGraph.validateReportedMainten
     progress.total <= 0 ||
     progress.completed > progress.total
   ) {
-    return yield* Effect.fail(new Error('Code graph maintenance progress is invalid.'));
+    return yield* Effect.fail(new CodeGraphMaintenanceGateError('Code graph maintenance progress is invalid.'));
   }
 });
 
@@ -419,10 +425,12 @@ const writeMaintenanceStatus = Effect.fn('codeGraph.writeMaintenanceStatus')(fun
   } satisfies StoredCodeGraphMaintenanceStatus;
   const content = `${JSON.stringify(status)}\n`;
   if (new TextEncoder().encode(content).byteLength > CODE_GRAPH_MAINTENANCE_STATUS_BYTES) {
-    return yield* Effect.fail(new Error('Code graph maintenance progress exceeded its bounded size.'));
+    return yield* Effect.fail(
+      new CodeGraphMaintenanceGateError('Code graph maintenance progress exceeded its bounded size.'),
+    );
   }
   if (Option.isSome(yield* fs.readLink(statusPath).pipe(Effect.option))) {
-    return yield* Effect.fail(new Error('Code graph maintenance status is a symbolic link.'));
+    return yield* Effect.fail(new CodeGraphMaintenanceGateError('Code graph maintenance status is a symbolic link.'));
   }
   const temporary = path.join(
     path.dirname(statusPath),
@@ -431,10 +439,14 @@ const writeMaintenanceStatus = Effect.fn('codeGraph.writeMaintenanceStatus')(fun
   yield* fs.writeFileString(temporary, content, {flag: 'wx', mode: 0o600});
   yield* Effect.gen(function* () {
     if ((yield* fs.readFileString(intentPath)).trim() !== ownerToken) {
-      return yield* Effect.fail(new Error('Code graph maintenance owner changed before progress publication.'));
+      return yield* Effect.fail(
+        new CodeGraphMaintenanceGateError('Code graph maintenance owner changed before progress publication.'),
+      );
     }
     if (Option.isSome(yield* fs.readLink(statusPath).pipe(Effect.option))) {
-      return yield* Effect.fail(new Error('Code graph maintenance status changed before publication.'));
+      return yield* Effect.fail(
+        new CodeGraphMaintenanceGateError('Code graph maintenance status changed before publication.'),
+      );
     }
     yield* fs.rename(temporary, statusPath);
   }).pipe(Effect.onError(() => fs.remove(temporary, {force: true}).pipe(Effect.catch(() => Effect.void))));

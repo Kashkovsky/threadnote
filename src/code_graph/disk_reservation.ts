@@ -711,7 +711,7 @@ function classifyOwner(system: SystemInfoShape, processId: number) {
     return validProcessStartIdentity(processStartIdentity)
       ? ({processStartIdentity, state: 'running'} as const)
       : ({state: 'unknown'} as const);
-  }).pipe(Effect.catch(() => Effect.succeed({state: 'unknown'} as const)));
+  });
 }
 
 function canonicalProcessStartIdentity(system: SystemInfoShape, processId: number) {

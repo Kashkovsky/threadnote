@@ -1,3 +1,5 @@
+import {TestError} from '../helpers/test-error.js';
+import {provideTestLayer} from '../helpers/effect-layer.js';
 import {Database} from 'bun:sqlite';
 import {it as effectIt} from '@effect/vitest';
 import {Effect, FileSystem, Path} from 'effect';
@@ -116,9 +118,9 @@ describe('code graph semantic storage attribution', () => {
 
       const storage = yield* inspectCodeGraphStorage(home, checkoutId, {attributeObjects: true});
       if (storage.state !== 'available' || storage.pageStorage.state !== 'available')
-        throw new Error('missing storage');
+        throw new TestError('missing storage');
       const attribution = storage.pageStorage.attribution;
-      if (!attribution) throw new Error('missing attribution');
+      if (!attribution) throw new TestError('missing attribution');
       if (attribution.state === 'unavailable') {
         expect(attribution.reason).toBe('sqlite-dbstat-unavailable');
         return;
@@ -130,7 +132,7 @@ describe('code graph semantic storage attribution', () => {
         ]),
       );
       assertSnapshotAttribution(attribution.semantic.snapshots, snapshotId, factsJson);
-    }).pipe(Effect.provide(ApplicationLayer)),
+    }).pipe(provideTestLayer(ApplicationLayer)),
   );
 });
 
@@ -139,7 +141,7 @@ function assertSnapshotAttribution(
   snapshotId: string,
   factsJson: string,
 ): void {
-  if (attribution.state !== 'available') throw new Error('missing snapshot attribution');
+  if (attribution.state !== 'available') throw new TestError('missing snapshot attribution');
   expect(attribution.baseline).toMatchObject({activeSnapshotCount: 1, activeSymbolCount: 1});
   expect(attribution.snapshots[0]).toMatchObject({
     active: true,

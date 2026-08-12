@@ -2,7 +2,7 @@ import * as BunStdio from '@effect/platform-bun/BunStdio';
 import {Cause, Context, Effect, Layer, Logger, Option, Schema, Sink, Stdio} from 'effect';
 import {McpSchema, McpServer} from 'effect/unstable/ai';
 import {RpcMessage, RpcSerialization, RpcServer} from 'effect/unstable/rpc';
-import {fromPromiseError} from '../errors.js';
+import {applicationError, fromPromise} from '../errors.js';
 import type {ApplicationServices} from '../runtime.js';
 import {omitProductionLogPhaseRecorder, withProductionLogging} from '../production_log.js';
 
@@ -13,6 +13,7 @@ const MCP_PRODUCTION_LOG_WRITE_TIMEOUT_MILLISECONDS = 500;
 const EFFECT_RPC_CAUSE_MARKER = new TextEncoder().encode('"_tag":"Cause"');
 const MCP_RESOURCE_ERROR_BRAND_KEY = 'threadnote.io/resource-read-error';
 export const MCP_RESOURCE_ERROR_DATA = Object.freeze({[MCP_RESOURCE_ERROR_BRAND_KEY]: 1});
+export const MCP_RESOURCE_NOT_FOUND_ERROR_DATA = Object.freeze({[MCP_RESOURCE_ERROR_BRAND_KEY]: 2});
 export const MCP_PROGRESS_HEARTBEAT_MILLISECONDS = 10_000;
 export const MCP_PROGRESS_MESSAGE_MAX_BYTES = 160;
 export const MCP_PROGRESS_METADATA_KEY = 'threadnote.io/progress';
@@ -123,7 +124,7 @@ type ResourceTemplateHandler = (
   uri: string,
 ) => Effect.Effect<
   typeof McpSchema.ReadResourceResult.Type,
-  McpSchema.InternalError | McpSchema.InvalidParams | McpSchema.McpErrorBase,
+  McpSchema.InternalError | McpSchema.InvalidParams,
   ApplicationServices
 >;
 
@@ -200,18 +201,9 @@ export class EffectMcpServerAdapter {
             annotations: Context.empty(),
             completions: {},
             handle: uri =>
-              // The negotiated Effect MCP revision accepts McpErrorBase on
-              // the wire, but addResourceTemplate's beta type only lists two
-              // concrete subclasses. Preserve the wider protocol error here.
               registration
                 .handle(uri)
-                .pipe(
-                  Effect.provideContext(applicationServices),
-                  Effect.catchCause(mcpResourceFailureResult),
-                ) as Effect.Effect<
-                typeof McpSchema.ReadResourceResult.Type,
-                McpSchema.InternalError | McpSchema.InvalidParams
-              >,
+                .pipe(Effect.provideContext(applicationServices), Effect.catchCause(mcpResourceFailureResult)),
             routerPath: registration.definition.routerPath,
             template: new McpSchema.ResourceTemplate({
               _meta: registration.definition.meta,
@@ -714,17 +706,13 @@ function boundedMcpProgressMessage(value: string): string {
 
 export function mcpResourceFailureResult(
   cause: Cause.Cause<unknown>,
-): Effect.Effect<never, McpSchema.InternalError | McpSchema.InvalidParams | McpSchema.McpErrorBase> {
+): Effect.Effect<never, McpSchema.InternalError | McpSchema.InvalidParams> {
   if (Cause.hasInterrupts(cause)) {
-    return Effect.failCause(
-      cause as Cause.Cause<McpSchema.InternalError | McpSchema.InvalidParams | McpSchema.McpErrorBase>,
-    );
+    return Effect.failCause(cause as Cause.Cause<McpSchema.InternalError | McpSchema.InvalidParams>);
   }
   const error = Option.getOrUndefined(Cause.findErrorOption(cause));
   if (
-    (error instanceof McpSchema.InvalidParams ||
-      error instanceof McpSchema.InternalError ||
-      error instanceof McpSchema.McpErrorBase) &&
+    (error instanceof McpSchema.InvalidParams || error instanceof McpSchema.InternalError) &&
     hasMcpResourceErrorBrand(error)
   ) {
     return Effect.fail(error);
@@ -790,13 +778,13 @@ function toolHandlerEffect(
   evaluate: () => ToolHandlerResult,
   applicationServices: Context.Context<ApplicationServices>,
 ): Effect.Effect<ToolResult, unknown> {
-  return Effect.try({try: evaluate, catch: normalizeError}).pipe(
+  return Effect.try({try: evaluate, catch: cause => applicationError('evaluate MCP tool handler', cause)}).pipe(
     Effect.flatMap(handled => {
       if (Effect.isEffect(handled)) {
         return handled.pipe(Effect.provideContext(applicationServices));
       }
       if (isPromiseLike(handled)) {
-        return fromPromiseError(() => Promise.resolve(handled));
+        return fromPromise('handle Effect AI MCP request', () => Promise.resolve(handled));
       }
       return Effect.succeed(handled);
     }),
@@ -805,10 +793,6 @@ function toolHandlerEffect(
 
 function isPromiseLike(value: unknown): value is PromiseLike<ToolResult> {
   return typeof value === 'object' && value !== null && 'then' in value && typeof value.then === 'function';
-}
-
-function normalizeError(cause: unknown): Error {
-  return cause instanceof Error ? cause : new Error(String(cause));
 }
 
 const annotate = <S extends Schema.Top>(schema: S, description?: string): S['Rebuild'] =>
@@ -955,7 +939,7 @@ function unwrapEffectRpcMcpError(parsed: Record<string, unknown>): Record<string
   return {
     ...parsed,
     error: {
-      code: typed.code,
+      code: hasMcpResourceNotFoundErrorBrand(typed) ? -32_002 : typed.code,
       message: typed.message,
     },
   };
@@ -970,7 +954,20 @@ function hasMcpResourceErrorBrand(error: unknown): boolean {
     !Array.isArray(data) &&
     Object.keys(data).length === 1 &&
     MCP_RESOURCE_ERROR_BRAND_KEY in data &&
-    data[MCP_RESOURCE_ERROR_BRAND_KEY] === 1
+    (data[MCP_RESOURCE_ERROR_BRAND_KEY] === 1 || data[MCP_RESOURCE_ERROR_BRAND_KEY] === 2)
+  );
+}
+
+function hasMcpResourceNotFoundErrorBrand(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null || !('data' in error)) return false;
+  const data = error.data;
+  return (
+    typeof data === 'object' &&
+    data !== null &&
+    !Array.isArray(data) &&
+    Object.keys(data).length === 1 &&
+    MCP_RESOURCE_ERROR_BRAND_KEY in data &&
+    data[MCP_RESOURCE_ERROR_BRAND_KEY] === 2
   );
 }
 

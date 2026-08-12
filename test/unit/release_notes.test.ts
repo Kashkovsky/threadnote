@@ -1,3 +1,5 @@
+import {it as effectIt} from '@effect/vitest';
+import {provideTestLayer} from '../helpers/effect-layer.js';
 import {Effect} from 'effect';
 import {afterEach, describe, expect, it, vi} from 'vitest';
 import {
@@ -37,37 +39,39 @@ afterEach(() => {
 });
 
 describe('fetchThreadnoteReleaseNotes', () => {
-  it('includes GitHub prereleases only when the beta channel requests them', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () =>
-        Response.json([
-          {
-            body: '- Beta change.',
-            draft: false,
-            name: '3.0.0-beta.1',
-            prerelease: true,
-            tag_name: 'v3.0.0-beta.1',
-          },
-          {
-            body: '- Stable change.',
-            draft: false,
-            name: '2.0.4',
-            prerelease: false,
-            tag_name: 'v2.0.4',
-          },
-        ]),
-      ),
-    );
+  effectIt.effect('includes GitHub prereleases only when the beta channel requests them', () =>
+    Effect.gen(function* () {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () =>
+          Response.json([
+            {
+              body: '- Beta change.',
+              draft: false,
+              name: '3.0.0-beta.1',
+              prerelease: true,
+              tag_name: 'v3.0.0-beta.1',
+            },
+            {
+              body: '- Stable change.',
+              draft: false,
+              name: '2.0.4',
+              prerelease: false,
+              tag_name: 'v2.0.4',
+            },
+          ]),
+        ),
+      );
 
-    const stable = await Effect.runPromise(fetchThreadnoteReleaseNotes().pipe(Effect.provide(ApplicationLayer)));
-    const beta = await Effect.runPromise(
-      fetchThreadnoteReleaseNotes({includePrereleases: true}).pipe(Effect.provide(ApplicationLayer)),
-    );
+      const stable = yield* fetchThreadnoteReleaseNotes().pipe(provideTestLayer(ApplicationLayer));
+      const beta = yield* fetchThreadnoteReleaseNotes({includePrereleases: true}).pipe(
+        provideTestLayer(ApplicationLayer),
+      );
 
-    expect(stable.map(release => release.version)).toEqual(['2.0.4']);
-    expect(beta.map(release => release.version)).toEqual(['3.0.0-beta.1', '2.0.4']);
-  });
+      expect(stable.map(release => release.version)).toEqual(['2.0.4']);
+      expect(beta.map(release => release.version)).toEqual(['3.0.0-beta.1', '2.0.4']);
+    }),
+  );
 });
 
 describe('releasesBetween', () => {

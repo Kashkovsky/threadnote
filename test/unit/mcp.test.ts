@@ -1,17 +1,17 @@
-import {chmod, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises';
-import {tmpdir} from 'node:os';
-import {delimiter, join} from 'node:path';
+import {it as effectIt} from '@effect/vitest';
+import {provideTestLayer} from '../helpers/effect-layer.js';
+import {runEffect} from '../helpers/effect-runtime.js';
+import {chmod, mkdtemp, readFile, rm, writeFile} from '../helpers/node-fs-promises.js';
+import {tmpdir} from '../helpers/node-os.js';
+import {delimiter, join} from '../helpers/node-path.js';
 import {Effect} from 'effect';
 import {afterEach, describe, expect, it, vi} from 'vitest';
 import {captureConsole} from '../../src/effect/console.js';
-import {ApplicationLayer, type ApplicationServices} from '../../src/effect/runtime.js';
+import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import {mcpAdapterCommand, resolveMcpClients, runMcpInstall} from '../../src/mcp.js';
 import {parseMcpToolset} from '../../src/mcp_toolset.js';
 import type {RuntimeConfig} from '../../src/types.js';
-
-const run = <A, E>(effect: Effect.Effect<A, E, ApplicationServices>) =>
-  Effect.runPromise(effect.pipe(Effect.provide(ApplicationLayer)));
 
 function runtime(): RuntimeConfig {
   return {
@@ -23,11 +23,11 @@ function runtime(): RuntimeConfig {
   };
 }
 
-async function dryRunOutput(toolset?: 'core' | 'full'): Promise<string> {
-  const lines: string[] = [];
-  vi.spyOn(console, 'log').mockImplementation(value => lines.push(String(value)));
-  await run(runMcpInstall(runtime(), 'codex', {toolset}));
-  return lines.join('\n');
+function dryRunOutput(toolset?: 'core' | 'full') {
+  return captureConsole(runMcpInstall(runtime(), 'codex', {toolset})).pipe(
+    Effect.map(result => result.output),
+    provideTestLayer(ApplicationLayer),
+  );
 }
 
 const originalPath = process.env.PATH;
@@ -54,39 +54,45 @@ afterEach(async () => {
 });
 
 describe('MCP toolsets', () => {
-  it('installs the core stdio toolset by default', async () => {
-    await expect(dryRunOutput()).resolves.toContain('THREADNOTE_MCP_TOOLSET=core');
-  });
+  effectIt.effect('installs the core stdio toolset by default', () =>
+    Effect.gen(function* () {
+      expect(yield* dryRunOutput()).toContain('THREADNOTE_MCP_TOOLSET=core');
+    }),
+  );
 
-  it('uses the stable standalone launcher instead of POSIX env', async () => {
-    const output = await dryRunOutput();
-    expect(output).toContain('mcp-server');
-    expect(output).not.toContain('/usr/bin/env');
-  });
+  effectIt.effect('uses the stable standalone launcher instead of POSIX env', () =>
+    Effect.gen(function* () {
+      const output = yield* dryRunOutput();
+      expect(output).toContain('mcp-server');
+      expect(output).not.toContain('/usr/bin/env');
+    }),
+  );
 
-  it('installs the full stdio toolset when requested', async () => {
-    await expect(dryRunOutput('full')).resolves.toContain('THREADNOTE_MCP_TOOLSET=full');
-  });
+  effectIt.effect('installs the full stdio toolset when requested', () =>
+    Effect.gen(function* () {
+      expect(yield* dryRunOutput('full')).toContain('THREADNOTE_MCP_TOOLSET=full');
+    }),
+  );
 
-  it('uses the owning repair command instead of advertising an unsupported apply flag', async () => {
-    const result = await run(
-      captureConsole(
+  effectIt.effect('uses the owning repair command instead of advertising an unsupported apply flag', () =>
+    Effect.gen(function* () {
+      const result = yield* captureConsole(
         runMcpInstall(runtime(), 'codex', {
           dryRunApplyCommand: 'threadnote repair',
         }),
-      ),
-    );
-    expect(result.output).toContain('Run `threadnote repair` without `--dry-run`');
-    expect(result.output).not.toContain('Re-run with --apply');
-  });
+      ).pipe(provideTestLayer(ApplicationLayer));
+      expect(result.output).toContain('Run `threadnote repair` without `--dry-run`');
+      expect(result.output).not.toContain('Re-run with --apply');
+    }),
+  );
 
   it('rejects unsupported toolsets', () => {
     expect(() => parseMcpToolset('minimal')).toThrow('Invalid MCP toolset: minimal. Expected core or full.');
   });
 
-  it('launches the Windows MCP cmd adapter through ComSpec', async () => {
-    const command = await Effect.runPromise(
-      Effect.gen(function* () {
+  effectIt.effect('launches the Windows MCP cmd adapter through ComSpec', () =>
+    Effect.gen(function* () {
+      const command = yield* Effect.gen(function* () {
         const baseSystem = yield* SystemInfo;
         const testSystem = SystemInfo.of({
           ...baseSystem,
@@ -98,13 +104,13 @@ describe('MCP toolsets', () => {
           platform: 'win32',
         });
         return yield* mcpAdapterCommand().pipe(Effect.provideService(SystemInfo, testSystem));
-      }).pipe(Effect.provide(ApplicationLayer)),
-    );
+      }).pipe(provideTestLayer(ApplicationLayer));
 
-    expect(command.slice(0, 3)).toEqual(['C:\\Windows\\System32\\cmd.exe', '/d', '/c']);
-    expect(command[3]).toMatch(/C:\\Threadnote\\bin[\\/]threadnote-mcp-server\.cmd$/);
-    expect(command[3]).not.toContain('"');
-  });
+      expect(command.slice(0, 3)).toEqual(['C:\\Windows\\System32\\cmd.exe', '/d', '/c']);
+      expect(command[3]).toMatch(/C:\\Threadnote\\bin[\\/]threadnote-mcp-server\.cmd$/);
+      expect(command[3]).not.toContain('"');
+    }),
+  );
 });
 
 describe('MCP agent executable resolution', () => {
@@ -116,7 +122,7 @@ describe('MCP agent executable resolution', () => {
     );
     process.env.PATH = [join(broken, '..'), join(healthy, '..')].join(delimiter);
 
-    await run(runMcpInstall(runtime(), 'codex', {apply: true}));
+    await runEffect(runMcpInstall(runtime(), 'codex', {apply: true}));
 
     const calls = await readFile(callsPath, 'utf8');
     expect(calls).toContain('mcp remove threadnote');
@@ -128,10 +134,10 @@ describe('MCP agent executable resolution', () => {
     const broken = await codexLauncher("printf '%s\\n' 'missing native binary' >&2\nexit 1");
     process.env.PATH = [join(broken, '..'), '/usr/bin', '/bin'].join(delimiter);
 
-    const resolution = await run(captureConsole(resolveMcpClients('codex', 'repair')));
+    const resolution = await runEffect(captureConsole(resolveMcpClients('codex', 'repair')));
     expect(resolution.value).toEqual([]);
     expect(resolution.output).toMatch(/codex command.*not working/i);
-    await expect(run(runMcpInstall(runtime(), 'codex', {apply: true}))).rejects.toThrow(
+    await expect(runEffect(runMcpInstall(runtime(), 'codex', {apply: true}))).rejects.toThrow(
       /repair or reinstall codex.*threadnote mcp-install codex --apply/i,
     );
   });

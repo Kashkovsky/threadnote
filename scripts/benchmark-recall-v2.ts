@@ -1,3 +1,4 @@
+import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import {Clock, Effect} from 'effect';
 import {runCommandEffect} from '../src/effect/command.js';
@@ -46,7 +47,7 @@ const benchmarkRecall = Effect.gen(function* () {
     const result = runQuery();
     const finishedAt = yield* Clock.currentTimeNanos;
     durations.push(Number(finishedAt - startedAt) / NANOSECONDS_PER_MILLISECOND);
-    if (!result.results[0]) return yield* Effect.fail(new Error('Recall benchmark returned no result'));
+    if (!result.results[0]) return yield* Effect.fail(new ScriptError('Recall benchmark returned no result'));
     const memory = system.memoryUsage();
     rss.push(memory.rss);
     externalMemory.push(memory.external);
@@ -56,7 +57,7 @@ const benchmarkRecall = Effect.gen(function* () {
   const latency = benchmarkMeasurement('hybrid-rank-one-query', 'milliseconds', durations);
   const throughput = durations.map(duration => 1_000 / duration);
   const [commit, status, hardware] = yield* Effect.all(
-    [git(['rev-parse', 'HEAD']), git(['status', '--porcelain']), system.hardwareInfo()],
+    [git(['rev-parse', 'HEAD']), git(['status', '--porcelain']), system.hardwareInfo],
     {
       concurrency: 'unbounded',
     },
@@ -124,7 +125,7 @@ function parseArguments(args: readonly string[]): BenchmarkOptions {
     else if (argument === '--samples') samples = positiveInteger(args[++index], argument);
     else if (argument === '--seed') seed = positiveInteger(args[++index], argument);
     else if (argument === '--warmups') warmups = nonNegativeInteger(args[++index], argument);
-    else throw new Error(`Unknown recall benchmark option: ${argument}`);
+    else throw new ScriptError(`Unknown recall benchmark option: ${argument}`);
   }
   return {documentCount, outputPath, samples, seed, warmups};
 }
@@ -135,21 +136,21 @@ const git = Effect.fn('benchmark.git')((arguments_: readonly string[]) =>
 
 function positiveInteger(value: string | undefined, option: string): number {
   const parsed = nonNegativeInteger(value, option);
-  if (parsed < 1) throw new Error(`${option} requires a positive integer`);
+  if (parsed < 1) throw new ScriptError(`${option} requires a positive integer`);
   return parsed;
 }
 
 function nonNegativeInteger(value: string | undefined, option: string): number {
   const parsed = Number.parseInt(requiredValue(value, option), 10);
   if (!Number.isSafeInteger(parsed) || parsed < 0) {
-    throw new Error(`${option} requires a non-negative integer`);
+    throw new ScriptError(`${option} requires a non-negative integer`);
   }
   return parsed;
 }
 
 function requiredValue(value: string | undefined, option: string): string {
-  if (!value?.trim()) throw new Error(`${option} requires a value`);
+  if (!value?.trim()) throw new ScriptError(`${option} requires a value`);
   return value;
 }
 
-BunRuntime.runMain(benchmarkRecall.pipe(Effect.provide(ApplicationLayer)));
+BunRuntime.runMain(provideScriptLayer(benchmarkRecall, ApplicationLayer));

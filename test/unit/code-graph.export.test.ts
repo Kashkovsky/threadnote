@@ -1,7 +1,8 @@
+import {TestError} from '../helpers/test-error.js';
 import {it as effectIt} from '@effect/vitest';
-import {Deferred, Effect, Fiber} from 'effect';
+import {Cause, Deferred, Effect, Exit, Fiber} from 'effect';
 import {TestClock} from 'effect/testing';
-import {describe, expect, it} from 'vitest';
+import {describe, expect} from 'vitest';
 import {
   CODE_GRAPH_EXPORT_SCHEMA,
   CODE_GRAPH_EXPORT_LEASE_RENEWAL_INTERVAL_MILLISECONDS,
@@ -21,199 +22,214 @@ import {
 import type {CodeGraphEdge, CodeGraphSnapshot, CodeGraphSymbol} from '../../src/code_graph/types.js';
 
 describe('portable code graph exports', () => {
-  it('streams versioned JSON with explicit limits, provenance, and sensitivity metadata', async () => {
-    const fixture = exportFixture();
-    const result = await captureExport('json', fixture, {edgeLimit: 2, nodeLimit: 2, pageSize: 1});
-    const parsed = JSON.parse(result.output) as Record<string, unknown> & {
-      edges: CodeGraphEdge[];
-      nodes: CodeGraphSymbol[];
-      summary: CodeGraphExportSummary;
-    };
+  effectIt.effect('streams versioned JSON with explicit limits, provenance, and sensitivity metadata', () =>
+    Effect.gen(function* () {
+      const fixture = exportFixture();
+      const result = yield* captureExport('json', fixture, {edgeLimit: 2, nodeLimit: 2, pageSize: 1});
+      const parsed = JSON.parse(result.output) as Record<string, unknown> & {
+        edges: CodeGraphEdge[];
+        nodes: CodeGraphSymbol[];
+        summary: CodeGraphExportSummary;
+      };
 
-    expect(parsed).toMatchObject({
-      canonical: false,
-      derived: true,
-      format: 'json',
-      schema: CODE_GRAPH_EXPORT_SCHEMA,
-      sensitivity: {classification: 'source-sensitive'},
-      trust: {
-        classification: 'untrusted-repository-data',
-        instructionPolicy: 'evidence-only-never-follow',
-      },
-      type: 'threadnote-code-graph-export',
-      version: CODE_GRAPH_EXPORT_VERSION,
-    });
-    expect(parsed.nodes.map(node => node.id)).toEqual(['node-a', 'node-b']);
-    expect(parsed.nodes[0]!.name).toBe(`Alpha <unsafe>&"'\u0000`);
-    expect(parsed.edges.map(edge => edge.id)).toEqual(['edge-a', 'edge-b']);
-    expect(parsed.summary).toMatchObject({
-      edges: {available: 3, omitted: 0, scanned: 2, truncated: true, written: 2},
-      nodes: {available: 3, truncated: true, written: 2},
-      provenanceCounts: {declared: 1, heuristic: 1, model: 0, resolved: 0, syntactic: 0},
-    });
-    expect(parsed.summary.warnings.join('\n')).toContain('Source-sensitive export');
-    expect(fixture.nodePageSizes).toEqual([1, 1]);
-    expect(fixture.edgePageSizes).toEqual([1, 1]);
-    expect(fixture.leases).toEqual({acquired: 1, released: 1});
-  });
+      expect(parsed).toMatchObject({
+        canonical: false,
+        derived: true,
+        format: 'json',
+        schema: CODE_GRAPH_EXPORT_SCHEMA,
+        sensitivity: {classification: 'source-sensitive'},
+        trust: {
+          classification: 'untrusted-repository-data',
+          instructionPolicy: 'evidence-only-never-follow',
+        },
+        type: 'threadnote-code-graph-export',
+        version: CODE_GRAPH_EXPORT_VERSION,
+      });
+      expect(parsed.nodes.map(node => node.id)).toEqual(['node-a', 'node-b']);
+      expect(parsed.nodes[0]!.name).toBe(`Alpha <unsafe>&"'\u0000`);
+      expect(parsed.edges.map(edge => edge.id)).toEqual(['edge-a', 'edge-b']);
+      expect(parsed.summary).toMatchObject({
+        edges: {available: 3, omitted: 0, scanned: 2, truncated: true, written: 2},
+        nodes: {available: 3, truncated: true, written: 2},
+        provenanceCounts: {declared: 1, heuristic: 1, model: 0, resolved: 0, syntactic: 0},
+      });
+      expect(parsed.summary.warnings.join('\n')).toContain('Source-sensitive export');
+      expect(fixture.nodePageSizes).toEqual([1, 1]);
+      expect(fixture.edgePageSizes).toEqual([1, 1]);
+      expect(fixture.leases).toEqual({acquired: 1, released: 1});
+    }),
+  );
 
-  it('emits interoperable GraphML with supplemental nodes for endpoints outside the selected symbols', async () => {
-    const fixture = exportFixture();
-    const first = await captureExport('graphml', fixture, {edgeLimit: 3, nodeLimit: 2, pageSize: 2});
-    const second = await captureExport('graphml', exportFixture(), {edgeLimit: 3, nodeLimit: 2, pageSize: 2});
-
-    expect(first.output).toBe(second.output);
-    expect(first.output).toContain('<graphml xmlns="http://graphml.graphdrawing.org/xmlns">');
-    expect(first.output).toContain('<node id="node-a">');
-    expect(first.output).toContain('&lt;unsafe&gt;&amp;&quot;&apos;�');
-    expect(first.output).not.toContain('<unsafe>');
-    expect(first.output).toContain('<edge id="edge-a" source="node-a" target="node-b">');
-    expect(first.output).toContain('<edge id="edge-b" source="node-b" target="tn-outside-selection-target-2">');
-    expect(first.output).toContain(
-      '<edge id="edge-c" source="tn-outside-selection-source-3" target="tn-unresolved-target-3">',
-    );
-    expect(first.output).toContain('<node id="tn-outside-selection-target-2">');
-    expect(first.output).toContain('<node id="tn-outside-selection-source-3">');
-    expect(first.output).toContain('<node id="tn-unresolved-target-3">');
-    expect(first.summary.edges).toEqual({available: 3, omitted: 0, scanned: 3, truncated: false, written: 3});
-    expect(first.summary.nodes).toEqual({available: 3, supplemental: 3, truncated: true, written: 2});
-    expect(first.summary.provenanceCounts).toEqual({
-      declared: 1,
-      heuristic: 1,
-      model: 0,
-      resolved: 0,
-      syntactic: 1,
-    });
-  });
-
-  it('builds a script-free self-contained HTML report with an inline bounded overview', async () => {
-    const result = await captureExport('html', exportFixture(), {edgeLimit: 3, nodeLimit: 3, pageSize: 2});
-
-    expect(result.output).toContain('<!doctype html>');
-    expect(result.output).toContain('Content-Security-Policy');
-    expect(result.output).toContain("default-src 'none'; style-src 'unsafe-inline'");
-    expect(result.output).not.toMatch(/<script\b/i);
-    expect(result.output).toContain('&lt;unsafe&gt;&amp;&quot;&#39;�');
-    expect(result.output).toContain('<svg xmlns="http://www.w3.org/2000/svg"');
-    expect(result.output).toContain('Derived · noncanonical · source-sensitive');
-    expect(result.summary).toMatchObject({
-      edges: {omitted: 0, scanned: 3, written: 3},
-      nodes: {written: 3},
-    });
-  });
-
-  it('builds a deterministic standalone SVG with non-authoritative edges distinguished', async () => {
-    const first = await captureExport('svg', exportFixture(), {edgeLimit: 3, nodeLimit: 3, pageSize: 1});
-    const second = await captureExport('svg', exportFixture(), {edgeLimit: 3, nodeLimit: 3, pageSize: 3});
-
-    expect(first.output).toBe(second.output);
-    expect(first.output).toMatch(/^<\?xml version="1\.0" encoding="UTF-8"\?>/);
-    expect(first.output).toContain('<metadata>');
-    expect(first.output).toContain('DERIVED · NONCANONICAL · SOURCE-SENSITIVE');
-    expect(first.output).toContain('stroke-dasharray="5 5"');
-    expect(first.output).not.toMatch(/<script\b/i);
-    expect(first.summary.edges).toEqual({available: 3, omitted: 1, scanned: 3, truncated: true, written: 2});
-  });
-
-  it('rejects non-safe-integer limits before opening a snapshot or writing output', async () => {
-    const fixture = exportFixture();
-    let writes = 0;
-    await expect(
-      Effect.runPromise(
-        exportCodeGraph({
-          databasePath: '/graph.sqlite',
-          format: 'svg',
-          nodeLimit: Number.MAX_SAFE_INTEGER + 1,
-          repository: {displayName: 'acme/repo', repositoryId: 'repository'},
-          snapshotId: fixture.snapshot.id,
-          write: () => Effect.sync(() => void (writes += 1)),
-        }).pipe(Effect.provideService(CodeGraphStore, fixture.store)),
-      ),
-    ).rejects.toBeInstanceOf(CodeGraphExportError);
-
-    expect(writes).toBe(0);
-    expect(fixture.snapshotReads).toBe(0);
-    expect(fixture.leases).toEqual({acquired: 0, released: 0});
-  });
-
-  it('accepts explicit graph selections above visualization defaults without a fixed maximum', async () => {
-    const result = await captureExport('svg', exportFixture(), {
-      edgeLimit: 500_000,
-      nodeLimit: 1_000_000,
-      pageSize: 500,
-    });
-
-    expect(result.summary.limits).toEqual({edgeLimit: 500_000, nodeLimit: 1_000_000});
-    expect(result.summary).toMatchObject({
-      edges: {scanned: 3, written: 2},
-      nodes: {written: 3},
-    });
-    expect(result.summary.warnings.join('\n')).toContain('Large SVG overviews');
-  });
-
-  it('lets bounded visual formats explicitly stream the complete snapshot', async () => {
-    const result = await captureExport('svg', exportFixture(), {
-      edgeLimit: 'all',
-      nodeLimit: 'all',
-      pageSize: 1,
-    });
-
-    expect(result.summary.limits).toEqual({edgeLimit: 'all', nodeLimit: 'all'});
-    expect(result.summary).toMatchObject({
-      edges: {available: 3, scanned: 3, written: 2},
-      nodes: {available: 3, written: 3},
-    });
-    expect(result.summary.warnings.join('\n')).toContain('Complete snapshot selection');
-  });
-
-  it('applies conservative format-specific defaults when limits are omitted', async () => {
-    const summaries = await Promise.all(
-      (['json', 'graphml', 'html', 'svg'] as const).map(async format => {
+  effectIt.effect(
+    'emits interoperable GraphML with supplemental nodes for endpoints outside the selected symbols',
+    () =>
+      Effect.gen(function* () {
         const fixture = exportFixture();
-        const chunks: string[] = [];
-        return Effect.runPromise(
-          exportCodeGraph({
+        const first = yield* captureExport('graphml', fixture, {edgeLimit: 3, nodeLimit: 2, pageSize: 2});
+        const second = yield* captureExport('graphml', exportFixture(), {edgeLimit: 3, nodeLimit: 2, pageSize: 2});
+
+        expect(first.output).toBe(second.output);
+        expect(first.output).toContain('<graphml xmlns="http://graphml.graphdrawing.org/xmlns">');
+        expect(first.output).toContain('<node id="node-a">');
+        expect(first.output).toContain('&lt;unsafe&gt;&amp;&quot;&apos;�');
+        expect(first.output).not.toContain('<unsafe>');
+        expect(first.output).toContain('<edge id="edge-a" source="node-a" target="node-b">');
+        expect(first.output).toContain('<edge id="edge-b" source="node-b" target="tn-outside-selection-target-2">');
+        expect(first.output).toContain(
+          '<edge id="edge-c" source="tn-outside-selection-source-3" target="tn-unresolved-target-3">',
+        );
+        expect(first.output).toContain('<node id="tn-outside-selection-target-2">');
+        expect(first.output).toContain('<node id="tn-outside-selection-source-3">');
+        expect(first.output).toContain('<node id="tn-unresolved-target-3">');
+        expect(first.summary.edges).toEqual({available: 3, omitted: 0, scanned: 3, truncated: false, written: 3});
+        expect(first.summary.nodes).toEqual({available: 3, supplemental: 3, truncated: true, written: 2});
+        expect(first.summary.provenanceCounts).toEqual({
+          declared: 1,
+          heuristic: 1,
+          model: 0,
+          resolved: 0,
+          syntactic: 1,
+        });
+      }),
+  );
+
+  effectIt.effect('builds a script-free self-contained HTML report with an inline bounded overview', () =>
+    Effect.gen(function* () {
+      const result = yield* captureExport('html', exportFixture(), {edgeLimit: 3, nodeLimit: 3, pageSize: 2});
+
+      expect(result.output).toContain('<!doctype html>');
+      expect(result.output).toContain('Content-Security-Policy');
+      expect(result.output).toContain("default-src 'none'; style-src 'unsafe-inline'");
+      expect(result.output).not.toMatch(/<script\b/i);
+      expect(result.output).toContain('&lt;unsafe&gt;&amp;&quot;&#39;�');
+      expect(result.output).toContain('<svg xmlns="http://www.w3.org/2000/svg"');
+      expect(result.output).toContain('Derived · noncanonical · source-sensitive');
+      expect(result.summary).toMatchObject({
+        edges: {omitted: 0, scanned: 3, written: 3},
+        nodes: {written: 3},
+      });
+    }),
+  );
+
+  effectIt.effect('builds a deterministic standalone SVG with non-authoritative edges distinguished', () =>
+    Effect.gen(function* () {
+      const first = yield* captureExport('svg', exportFixture(), {edgeLimit: 3, nodeLimit: 3, pageSize: 1});
+      const second = yield* captureExport('svg', exportFixture(), {edgeLimit: 3, nodeLimit: 3, pageSize: 3});
+
+      expect(first.output).toBe(second.output);
+      expect(first.output).toMatch(/^<\?xml version="1\.0" encoding="UTF-8"\?>/);
+      expect(first.output).toContain('<metadata>');
+      expect(first.output).toContain('DERIVED · NONCANONICAL · SOURCE-SENSITIVE');
+      expect(first.output).toContain('stroke-dasharray="5 5"');
+      expect(first.output).not.toMatch(/<script\b/i);
+      expect(first.summary.edges).toEqual({available: 3, omitted: 1, scanned: 3, truncated: true, written: 2});
+    }),
+  );
+
+  effectIt.effect('rejects non-safe-integer limits before opening a snapshot or writing output', () =>
+    Effect.gen(function* () {
+      const fixture = exportFixture();
+      let writes = 0;
+      const failure = yield* exportCodeGraph({
+        databasePath: '/graph.sqlite',
+        format: 'svg',
+        nodeLimit: Number.MAX_SAFE_INTEGER + 1,
+        repository: {displayName: 'acme/repo', repositoryId: 'repository'},
+        snapshotId: fixture.snapshot.id,
+        write: () => Effect.sync(() => void (writes += 1)),
+      }).pipe(Effect.provideService(CodeGraphStore, fixture.store), Effect.flip);
+      expect(failure).toBeInstanceOf(CodeGraphExportError);
+
+      expect(writes).toBe(0);
+      expect(fixture.snapshotReads).toBe(0);
+      expect(fixture.leases).toEqual({acquired: 0, released: 0});
+    }),
+  );
+
+  effectIt.effect('accepts explicit graph selections above visualization defaults without a fixed maximum', () =>
+    Effect.gen(function* () {
+      const result = yield* captureExport('svg', exportFixture(), {
+        edgeLimit: 500_000,
+        nodeLimit: 1_000_000,
+        pageSize: 500,
+      });
+
+      expect(result.summary.limits).toEqual({edgeLimit: 500_000, nodeLimit: 1_000_000});
+      expect(result.summary).toMatchObject({
+        edges: {scanned: 3, written: 2},
+        nodes: {written: 3},
+      });
+      expect(result.summary.warnings.join('\n')).toContain('Large SVG overviews');
+    }),
+  );
+
+  effectIt.effect('lets bounded visual formats explicitly stream the complete snapshot', () =>
+    Effect.gen(function* () {
+      const result = yield* captureExport('svg', exportFixture(), {
+        edgeLimit: 'all',
+        nodeLimit: 'all',
+        pageSize: 1,
+      });
+
+      expect(result.summary.limits).toEqual({edgeLimit: 'all', nodeLimit: 'all'});
+      expect(result.summary).toMatchObject({
+        edges: {available: 3, scanned: 3, written: 2},
+        nodes: {available: 3, written: 3},
+      });
+      expect(result.summary.warnings.join('\n')).toContain('Complete snapshot selection');
+    }),
+  );
+
+  effectIt.effect('applies conservative format-specific defaults when limits are omitted', () =>
+    Effect.gen(function* () {
+      const summaries = yield* Effect.forEach(
+        ['json', 'graphml', 'html', 'svg'] as const,
+        format => {
+          const fixture = exportFixture();
+          const chunks: string[] = [];
+          return exportCodeGraph({
             databasePath: '/graph.sqlite',
             format,
             repository: {displayName: 'acme/repo', repositoryId: 'repository'},
             snapshotId: fixture.snapshot.id,
             write: chunk => Effect.sync(() => void chunks.push(chunk)),
-          }).pipe(Effect.provideService(CodeGraphStore, fixture.store)),
-        );
-      }),
-    );
+          }).pipe(Effect.provideService(CodeGraphStore, fixture.store));
+        },
+        {concurrency: 'unbounded'},
+      );
 
-    expect(summaries.map(summary => [summary.format, summary.limits])).toEqual([
-      ['json', {edgeLimit: 'all', nodeLimit: 'all'}],
-      ['graphml', {edgeLimit: 'all', nodeLimit: 'all'}],
-      ['html', {edgeLimit: 'all', nodeLimit: 'all'}],
-      ['svg', {edgeLimit: 1_000, nodeLimit: 300}],
-    ]);
-    expect(summaries.slice(0, 3).every(summary => summary.nodes.written === 3)).toBe(true);
-    expect(summaries.slice(0, 3).every(summary => summary.edges.written === 3)).toBe(true);
-  });
+      expect(summaries.map(summary => [summary.format, summary.limits])).toEqual([
+        ['json', {edgeLimit: 'all', nodeLimit: 'all'}],
+        ['graphml', {edgeLimit: 'all', nodeLimit: 'all'}],
+        ['html', {edgeLimit: 'all', nodeLimit: 'all'}],
+        ['svg', {edgeLimit: 1_000, nodeLimit: 300}],
+      ]);
+      expect(summaries.slice(0, 3).every(summary => summary.nodes.written === 3)).toBe(true);
+      expect(summaries.slice(0, 3).every(summary => summary.edges.written === 3)).toBe(true);
+    }),
+  );
 
-  it('always releases the snapshot lease when a writer fails', async () => {
-    const fixture = exportFixture();
-    let writes = 0;
-    await expect(
-      Effect.runPromise(
-        exportCodeGraph({
-          databasePath: '/graph.sqlite',
-          format: 'json',
-          repository: {displayName: 'acme/repo', repositoryId: 'repository'},
-          snapshotId: fixture.snapshot.id,
-          write: () =>
-            Effect.sync(() => {
-              writes += 1;
-              if (writes === 2) throw new Error('disk full');
-            }),
-        }).pipe(Effect.provideService(CodeGraphStore, fixture.store)),
-      ),
-    ).rejects.toThrow('disk full');
+  effectIt.effect('always releases the snapshot lease when a writer fails', () =>
+    Effect.gen(function* () {
+      const fixture = exportFixture();
+      let writes = 0;
+      const exit = yield* exportCodeGraph({
+        databasePath: '/graph.sqlite',
+        format: 'json',
+        repository: {displayName: 'acme/repo', repositoryId: 'repository'},
+        snapshotId: fixture.snapshot.id,
+        write: () =>
+          Effect.sync(() => {
+            writes += 1;
+            if (writes === 2) throw new TestError('disk full');
+          }),
+      }).pipe(Effect.provideService(CodeGraphStore, fixture.store), Effect.exit);
 
-    expect(fixture.leases).toEqual({acquired: 1, released: 1});
-  });
+      expect(Exit.isFailure(exit)).toBe(true);
+      if (Exit.isFailure(exit)) expect(String(Cause.squash(exit.cause))).toContain('disk full');
+      expect(fixture.leases).toEqual({acquired: 1, released: 1});
+    }),
+  );
 
   effectIt.effect('renews the snapshot lease while a complete export remains in progress', () =>
     Effect.gen(function* () {
@@ -333,7 +349,7 @@ function exportFixture(): Fixture {
   return fixture;
 }
 
-async function captureExport(
+function captureExport(
   format: CodeGraphExportFormat,
   fixture: Fixture,
   limits: {
@@ -343,17 +359,17 @@ async function captureExport(
   },
 ) {
   const chunks: string[] = [];
-  const summary = await Effect.runPromise(
-    exportCodeGraph({
-      databasePath: '/graph.sqlite',
-      format,
-      ...limits,
-      repository: {displayName: 'acme/repo', repositoryId: 'repository'},
-      snapshotId: fixture.snapshot.id,
-      write: chunk => Effect.sync(() => void chunks.push(chunk)),
-    }).pipe(Effect.provideService(CodeGraphStore, fixture.store)),
+  return exportCodeGraph({
+    databasePath: '/graph.sqlite',
+    format,
+    ...limits,
+    repository: {displayName: 'acme/repo', repositoryId: 'repository'},
+    snapshotId: fixture.snapshot.id,
+    write: chunk => Effect.sync(() => void chunks.push(chunk)),
+  }).pipe(
+    Effect.provideService(CodeGraphStore, fixture.store),
+    Effect.map(summary => ({output: chunks.join(''), summary})),
   );
-  return {output: chunks.join(''), summary};
 }
 
 function node(id: string, path: string, name: string): CodeGraphSymbol {

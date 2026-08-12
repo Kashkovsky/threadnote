@@ -1,6 +1,7 @@
-// oxlint-disable threadnote/no-effect-runtime-in-tests -- This established pure-boundary suite uses promise assertions throughout.
+import {it as effectIt} from '@effect/vitest';
 import fc from 'fast-check';
 import {Effect} from 'effect';
+import {TestClock} from 'effect/testing';
 import {describe, expect, it} from 'vitest';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
 import {codeGraphProtobufMoniker} from '../../src/code_graph/cross_repository/monikers.js';
@@ -25,396 +26,400 @@ import type {
 } from '../../src/code_graph/workset_catalog/types.js';
 
 describe('code graph Workset Search V2 core', () => {
-  it('returns compact qualified evidence and persists every referenced handle', async () => {
-    const fixture = makeFixture(4);
-    const persisted: string[] = [];
-    const execution = await Effect.runPromise(
-      runCodeGraphWorksetQueryV2Core(
+  effectIt.effect('returns compact qualified evidence and persists every referenced handle', () =>
+    Effect.gen(function* () {
+      const fixture = makeFixture(4);
+      const persisted: string[] = [];
+      const execution = yield* runCodeGraphWorksetQueryV2Core(
         dependencies(fixture, {
           persistRefs: refs => persisted.push(...refs.map(ref => `${ref.repositoryId}:${ref.nodeId}`)),
         }),
         fixture.input,
-      ),
-    );
+      );
 
-    expect(execution.logicalResult.cards).toHaveLength(2);
-    expect(execution.logicalResult.coverage).toMatchObject({
-      cataloguedRepositories: 4,
-      complete: true,
-      consideredRepositories: 4,
-      deepQueriedRepositories: 4,
-      stopReason: 'sufficient-evidence',
-    });
-    expect(persisted).toHaveLength(2);
-    expect(execution.projected.measurement.estimatedTokens).toBeLessThanOrEqual(1_250);
-    expect(execution.projected.structuredContent.cards.every(card => card.ref.startsWith('cgr_'))).toBe(true);
-    expect(JSON.stringify(execution.projected)).not.toContain('cgwr_');
-    expect(JSON.stringify(execution.projected)).not.toContain('cgwsc_');
-  });
+      expect(execution.logicalResult.cards).toHaveLength(2);
+      expect(execution.logicalResult.coverage).toMatchObject({
+        cataloguedRepositories: 4,
+        complete: true,
+        consideredRepositories: 4,
+        deepQueriedRepositories: 4,
+        stopReason: 'sufficient-evidence',
+      });
+      expect(persisted).toHaveLength(2);
+      expect(execution.projected.measurement.estimatedTokens).toBeLessThanOrEqual(1_250);
+      expect(execution.projected.structuredContent.cards.every(card => card.ref.startsWith('cgr_'))).toBe(true);
+      expect(JSON.stringify(execution.projected)).not.toContain('cgwr_');
+      expect(JSON.stringify(execution.projected)).not.toContain('cgwsc_');
+    }),
+  );
 
-  it('reports a failed ready-snapshot read without changing evidence from other repositories', async () => {
-    const fixture = makeFixture(4);
-    const baseline = await Effect.runPromise(runCodeGraphWorksetQueryV2Core(dependencies(fixture), fixture.input));
-    const failed = await Effect.runPromise(
-      runCodeGraphWorksetQueryV2Core(dependencies(fixture, {failRepositoryKey: 'repository-3'}), fixture.input),
-    );
+  effectIt.effect('reports a failed ready-snapshot read without changing evidence from other repositories', () =>
+    Effect.gen(function* () {
+      const fixture = makeFixture(4);
+      const baseline = yield* runCodeGraphWorksetQueryV2Core(dependencies(fixture), fixture.input);
+      const failed = yield* runCodeGraphWorksetQueryV2Core(
+        dependencies(fixture, {failRepositoryKey: 'repository-3'}),
+        fixture.input,
+      );
 
-    expect(failed.logicalResult.repositories['repository-3']).toMatchObject({deepQueried: true, state: 'failed'});
-    expect(failed.logicalResult.cards).toEqual(baseline.logicalResult.cards);
-    expect(failed.instrumentation.deepQueryFailures).toBe(1);
-  });
+      expect(failed.logicalResult.repositories['repository-3']).toMatchObject({deepQueried: true, state: 'failed'});
+      expect(failed.logicalResult.cards).toEqual(baseline.logicalResult.cards);
+      expect(failed.instrumentation.deepQueryFailures).toBe(1);
+    }),
+  );
 
-  it('interrupts an admitted deep-read batch at the query deadline and reports it truthfully', async () => {
-    const fixture = makeFixture(4);
-    const delays = new Map(fixture.input.members.map(member => [member.repositoryKey, 1_000] as const));
-    const execution = await Effect.runPromise(
-      runCodeGraphWorksetQueryV2Core(dependencies(fixture, {delays}), {
+  effectIt.effect('interrupts an admitted deep-read batch at the query deadline and reports it truthfully', () =>
+    Effect.gen(function* () {
+      const fixture = makeFixture(4);
+      const delays = new Map(fixture.input.members.map(member => [member.repositoryKey, 1_000] as const));
+      const execution = yield* runCodeGraphWorksetQueryV2Core(dependencies(fixture, {delays}), {
         ...fixture.input,
         deadlineMilliseconds: 350,
-      }),
-    );
+      }).pipe(TestClock.withLive);
 
-    expect(execution.logicalResult.coverage.stopReason).toBe('deadline');
-    expect(execution.logicalResult.cards).toEqual([]);
-    expect(execution.logicalResult.warnings).toContain('The workset query stopped at its read deadline.');
-  });
+      expect(execution.logicalResult.coverage.stopReason).toBe('deadline');
+      expect(execution.logicalResult.cards).toEqual([]);
+      expect(execution.logicalResult.warnings).toContain('The workset query stopped at its read deadline.');
+    }),
+  );
 
-  it('accounts for runtime preflight elapsed before the core read begins', async () => {
-    const fixture = makeFixture(4);
-    const baseDependencies = dependencies(fixture);
-    const admitted = await Effect.runPromise(
-      runCodeGraphWorksetQueryV2Core(
-        {...baseDependencies, nowMilliseconds: () => Effect.succeed(1_000)},
+  effectIt.effect('accounts for runtime preflight elapsed before the core read begins', () =>
+    Effect.gen(function* () {
+      const fixture = makeFixture(4);
+      const baseDependencies = dependencies(fixture);
+      const admitted = yield* runCodeGraphWorksetQueryV2Core(
+        {...baseDependencies, nowMilliseconds: Effect.succeed(1_000)},
         {...fixture.input, deadlineMilliseconds: 1_000},
         {startedAtMilliseconds: 1_000},
-      ),
-    );
-    const expired = await Effect.runPromise(
-      runCodeGraphWorksetQueryV2Core(
-        {...baseDependencies, nowMilliseconds: () => Effect.succeed(1_000)},
+      );
+      const expired = yield* runCodeGraphWorksetQueryV2Core(
+        {...baseDependencies, nowMilliseconds: Effect.succeed(1_000)},
         {...fixture.input, deadlineMilliseconds: 1_000},
         {startedAtMilliseconds: 0},
-      ),
-    );
+      );
 
-    expect(admitted.instrumentation.deepQueriedRepositories).toBe(4);
-    expect(expired.logicalResult.coverage.stopReason).toBe('deadline');
-    expect(expired.instrumentation.deepQueriedRepositories).toBe(0);
-    expect(expired.logicalResult.cards).toEqual([]);
-    expect(expired.logicalResult.warnings).toContain('The workset query stopped at its read deadline.');
-  });
+      expect(admitted.instrumentation.deepQueriedRepositories).toBe(4);
+      expect(expired.logicalResult.coverage.stopReason).toBe('deadline');
+      expect(expired.instrumentation.deepQueriedRepositories).toBe(0);
+      expect(expired.logicalResult.cards).toEqual([]);
+      expect(expired.logicalResult.warnings).toContain('The workset query stopped at its read deadline.');
+    }),
+  );
 
-  it('retains repositories that completed before another deep read reached the deadline', async () => {
-    const fixture = makeFixture(4);
-    const delays = new Map(
-      fixture.input.members.map((member, index) => [member.repositoryKey, index === 0 ? 0 : 1_000] as const),
-    );
-    const execution = await Effect.runPromise(
-      runCodeGraphWorksetQueryV2Core(dependencies(fixture, {delays}), {
+  effectIt.effect('retains repositories that completed before another deep read reached the deadline', () =>
+    Effect.gen(function* () {
+      const fixture = makeFixture(4);
+      const delays = new Map(
+        fixture.input.members.map((member, index) => [member.repositoryKey, index === 0 ? 0 : 1_000] as const),
+      );
+      const execution = yield* runCodeGraphWorksetQueryV2Core(dependencies(fixture, {delays}), {
         ...fixture.input,
         deadlineMilliseconds: 350,
-      }),
-    );
+      }).pipe(TestClock.withLive);
 
-    expect(execution.logicalResult.coverage.stopReason).toBe('deadline');
-    expect(execution.logicalResult.cards.map(card => card.repositoryKey)).toEqual(['repository-0']);
-    expect(execution.logicalResult.repositories['repository-0']).toMatchObject({deepQueried: true, state: 'current'});
-  });
+      expect(execution.logicalResult.coverage.stopReason).toBe('deadline');
+      expect(execution.logicalResult.cards.map(card => card.repositoryKey)).toEqual(['repository-0']);
+      expect(execution.logicalResult.repositories['repository-0']).toMatchObject({deepQueried: true, state: 'current'});
+    }),
+  );
 
-  it('shares one absolute deadline across queued repository waves', async () => {
-    const base = makeFixture(20);
-    const fixture = {
-      ...base,
-      graphs: new Map(
-        [...base.graphs].map(([repositoryKey, value], index) => [
-          repositoryKey,
-          index < 8 ? {...value, nodes: []} : value,
-        ]),
-      ),
-    };
-    const uncertain = {
-      ...fixture,
-      router: {
-        ...fixture.router,
-        uncertainty: {reasons: ['close-repository-scores'], shouldExpand: true, state: 'ambiguous'} as const,
-      },
-    };
-    const delays = new Map(
-      uncertain.router.repositories.map(
-        (repository, index) => [repository.repositoryKey, index < 8 ? 0 : index < 12 ? 750 : 1_000] as const,
-      ),
-    );
-    const started = Date.now();
-    const execution = await Effect.runPromise(
-      runCodeGraphWorksetQueryV2Core(dependencies(uncertain, {delays, realClock: true}), {
+  effectIt.effect('shares one absolute deadline across queued repository waves', () =>
+    Effect.gen(function* () {
+      const base = makeFixture(20);
+      const fixture = {
+        ...base,
+        graphs: new Map(
+          [...base.graphs].map(([repositoryKey, value], index) => [
+            repositoryKey,
+            index < 8 ? {...value, nodes: []} : value,
+          ]),
+        ),
+      };
+      const uncertain = {
+        ...fixture,
+        router: {
+          ...fixture.router,
+          uncertainty: {reasons: ['close-repository-scores'], shouldExpand: true, state: 'ambiguous'} as const,
+        },
+      };
+      const delays = new Map(
+        uncertain.router.repositories.map(
+          (repository, index) => [repository.repositoryKey, index < 8 ? 0 : index < 12 ? 750 : 1_000] as const,
+        ),
+      );
+      const started = Date.now();
+      const execution = yield* runCodeGraphWorksetQueryV2Core(dependencies(uncertain, {delays, realClock: true}), {
         ...uncertain.input,
         deadlineMilliseconds: 950,
         evidenceCards: 40,
-      }),
-    );
+      }).pipe(TestClock.withLive);
 
-    expect(Date.now() - started).toBeLessThan(1_250);
-    expect(execution.logicalResult.coverage.stopReason).toBe('deadline');
-    expect(execution.logicalResult.cards.map(card => card.repositoryKey)).toEqual(
-      uncertain.router.repositories.slice(8, 12).map(repository => repository.repositoryKey),
-    );
-    expect(execution.instrumentation.deepQueriedRepositories).toBe(16);
-    for (const repository of uncertain.router.repositories.slice(16, 20)) {
-      expect(execution.logicalResult.repositories[repository.repositoryKey]?.deepQueried).toBe(false);
-    }
-  });
+      expect(Date.now() - started).toBeLessThan(1_250);
+      expect(execution.logicalResult.coverage.stopReason).toBe('deadline');
+      expect(execution.logicalResult.cards.map(card => card.repositoryKey)).toEqual(
+        uncertain.router.repositories.slice(8, 12).map(repository => repository.repositoryKey),
+      );
+      expect(execution.instrumentation.deepQueriedRepositories).toBe(16);
+      for (const repository of uncertain.router.repositories.slice(16, 20)) {
+        expect(execution.logicalResult.repositories[repository.repositoryKey]?.deepQueried).toBe(false);
+      }
+    }),
+  );
 
-  it('validates a second repository batch when routing remains uncertain despite enough cards', async () => {
-    const fixture = makeFixture(20);
-    const uncertain = {
-      ...fixture,
-      router: {
-        ...fixture.router,
-        uncertainty: {reasons: ['close-repository-scores'], shouldExpand: true, state: 'ambiguous'} as const,
-      },
-    };
-    const execution = await Effect.runPromise(
-      runCodeGraphWorksetQueryV2Core(dependencies(uncertain), {...uncertain.input, evidenceCards: 40}),
-    );
-
-    expect(execution.instrumentation.expansionBatches).toBe(2);
-    expect(execution.instrumentation.deepQueriedRepositories).toBe(8);
-    expect(execution.logicalResult.coverage.stopReason).toBe('work-budget');
-    expect(execution.logicalResult.warnings).toContain(
-      'The workset query stopped after its bounded ambiguity-validation work budget.',
-    );
-  });
-
-  it('stops a confident catalog route after the first batch yields validated evidence', async () => {
-    const fixture = makeFixture(12);
-    const execution = await Effect.runPromise(
-      runCodeGraphWorksetQueryV2Core(dependencies(fixture), {...fixture.input, evidenceCards: 40}),
-    );
-
-    expect(execution.instrumentation.deepQueriedRepositories).toBe(4);
-    expect(execution.instrumentation.expansionBatches).toBe(1);
-    expect(execution.logicalResult.coverage.stopReason).toBe('sufficient-evidence');
-  });
-
-  it('defaults to a 40-card logical sequence independently of the compact response projection', async () => {
-    const fixture = makeFixture(32);
-    const expanded = withNodesPerGraph(fixture, 12);
-    const {evidenceCards: _evidenceCards, ...input} = fixture.input;
-    const execution = await Effect.runPromise(runCodeGraphWorksetQueryV2Core(dependencies(expanded), input));
-
-    expect(execution.logicalResult.cards).toHaveLength(40);
-    expect(execution.instrumentation.cards).toBe(40);
-    expect(execution.logicalResult.coverage.stopReason).toBe('result-budget');
-    expect(execution.projected.structuredContent.output).toMatchObject({
-      totalCards: 40,
-      truncated: true,
-    });
-    expect(execution.projected.measurement.estimatedTokens).toBeLessThanOrEqual(1_250);
-    expect(execution.projected.structuredContent.cards.length).toBeLessThan(40);
-    expect(execution.projected.structuredContent.continuation).toBeDefined();
-  });
-
-  it('preserves the ranked prefix when the logical evidence budget increases', async () => {
-    const fixture = withNodesPerGraph(makeFixture(32), 12);
-    await fc.assert(
-      fc.asyncProperty(
-        fc.tuple(fc.integer({min: 1, max: 48}), fc.integer({min: 1, max: 48})),
-        async ([leftBudget, rightBudget]) => {
-          const smallerBudget = Math.min(leftBudget, rightBudget);
-          const largerBudget = Math.max(leftBudget, rightBudget);
-          const smaller = await Effect.runPromise(
-            runCodeGraphWorksetQueryV2Core(dependencies(fixture), {
-              ...fixture.input,
-              evidenceCards: smallerBudget,
-            }),
-          );
-          const larger = await Effect.runPromise(
-            runCodeGraphWorksetQueryV2Core(dependencies(fixture), {
-              ...fixture.input,
-              evidenceCards: largerBudget,
-            }),
-          );
-
-          expect(larger.logicalResult.cards.slice(0, smaller.logicalResult.cards.length)).toEqual(
-            smaller.logicalResult.cards,
-          );
-          expect(larger.instrumentation.deepQueriedRepositories).toBe(smaller.instrumentation.deepQueriedRepositories);
+  effectIt.effect('validates a second repository batch when routing remains uncertain despite enough cards', () =>
+    Effect.gen(function* () {
+      const fixture = makeFixture(20);
+      const uncertain = {
+        ...fixture,
+        router: {
+          ...fixture.router,
+          uncertainty: {reasons: ['close-repository-scores'], shouldExpand: true, state: 'ambiguous'} as const,
         },
-      ),
-      {numRuns: 20},
-    );
-  });
+      };
+      const execution = yield* runCodeGraphWorksetQueryV2Core(dependencies(uncertain), {
+        ...uncertain.input,
+        evidenceCards: 40,
+      });
 
-  it('keeps a bridge endpoint stable when a larger budget also admits its local card', async () => {
-    const base = withNodesPerGraph(makeFixture(4), 32);
-    const bridge = protobufBridge(base.input.published);
-    const graph = base.graphs.get('repository-0')!;
-    const fixture = {
-      ...base,
-      graphs: new Map(base.graphs).set('repository-0', {
-        ...graph,
-        nodes: [
-          ...graph.nodes,
-          {
-            ...graph.nodes[0]!,
-            id: protobufBridgeNodeId(0),
-            language: 'protobuf',
-            name: 'session.proto',
-            path: 'proto/repository-0.proto',
-            qualifiedName: 'fixture/session/v1/session.proto',
-            score: 0.1,
-          },
-        ],
-      }),
-    };
-    const bridgeExpansion = {
-      bridgeSet: {
-        digest: digest('bridge-set'),
-        generationId: fixture.input.published.id,
-        totalBridges: 1,
-      },
-      bridges: [bridge],
-      complete: true,
-      seededRepositories: 1,
-      warnings: [],
-    };
-    const smaller = await Effect.runPromise(
-      runCodeGraphWorksetQueryV2Core(dependencies(fixture, {bridgeExpansion}), {
-        ...fixture.input,
-        evidenceCards: 24,
-      }),
-    );
-    const larger = await Effect.runPromise(
-      runCodeGraphWorksetQueryV2Core(dependencies(fixture, {bridgeExpansion}), {
+      expect(execution.instrumentation.expansionBatches).toBe(2);
+      expect(execution.instrumentation.deepQueriedRepositories).toBe(8);
+      expect(execution.logicalResult.coverage.stopReason).toBe('work-budget');
+      expect(execution.logicalResult.warnings).toContain(
+        'The workset query stopped after its bounded ambiguity-validation work budget.',
+      );
+    }),
+  );
+
+  effectIt.effect('stops a confident catalog route after the first batch yields validated evidence', () =>
+    Effect.gen(function* () {
+      const fixture = makeFixture(12);
+      const execution = yield* runCodeGraphWorksetQueryV2Core(dependencies(fixture), {
         ...fixture.input,
         evidenceCards: 40,
+      });
+
+      expect(execution.instrumentation.deepQueriedRepositories).toBe(4);
+      expect(execution.instrumentation.expansionBatches).toBe(1);
+      expect(execution.logicalResult.coverage.stopReason).toBe('sufficient-evidence');
+    }),
+  );
+
+  effectIt.effect('defaults to a 40-card logical sequence independently of the compact response projection', () =>
+    Effect.gen(function* () {
+      const fixture = makeFixture(32);
+      const expanded = withNodesPerGraph(fixture, 12);
+      const {evidenceCards: _evidenceCards, ...input} = fixture.input;
+      const execution = yield* runCodeGraphWorksetQueryV2Core(dependencies(expanded), input);
+
+      expect(execution.logicalResult.cards).toHaveLength(40);
+      expect(execution.instrumentation.cards).toBe(40);
+      expect(execution.logicalResult.coverage.stopReason).toBe('result-budget');
+      expect(execution.projected.structuredContent.output).toMatchObject({
+        totalCards: 40,
+        truncated: true,
+      });
+      expect(execution.projected.measurement.estimatedTokens).toBeLessThanOrEqual(1_250);
+      expect(execution.projected.structuredContent.cards.length).toBeLessThan(40);
+      expect(execution.projected.structuredContent.continuation).toBeDefined();
+    }),
+  );
+
+  effectIt.effect.prop(
+    'preserves the ranked prefix when the logical evidence budget increases',
+    {budgets: fc.tuple(fc.integer({min: 1, max: 48}), fc.integer({min: 1, max: 48}))},
+    ({budgets: [leftBudget, rightBudget]}) =>
+      Effect.gen(function* () {
+        const fixture = withNodesPerGraph(makeFixture(32), 12);
+        const smallerBudget = Math.min(leftBudget, rightBudget);
+        const largerBudget = Math.max(leftBudget, rightBudget);
+        const smaller = yield* runCodeGraphWorksetQueryV2Core(dependencies(fixture), {
+          ...fixture.input,
+          evidenceCards: smallerBudget,
+        });
+        const larger = yield* runCodeGraphWorksetQueryV2Core(dependencies(fixture), {
+          ...fixture.input,
+          evidenceCards: largerBudget,
+        });
+
+        expect(larger.logicalResult.cards.slice(0, smaller.logicalResult.cards.length)).toEqual(
+          smaller.logicalResult.cards,
+        );
+        expect(larger.instrumentation.deepQueriedRepositories).toBe(smaller.instrumentation.deepQueriedRepositories);
       }),
-    );
+    {fastCheck: {numRuns: 20}},
+  );
 
-    expect(larger.logicalResult.cards.slice(0, smaller.logicalResult.cards.length)).toEqual(
-      smaller.logicalResult.cards,
-    );
-    expect(smaller.logicalResult.cards.map(card => card.ref)).toContain(
-      bridge.source.reference.kind === 'qualified-ref' ? bridge.source.reference.ref : '',
-    );
-  });
+  effectIt.effect('keeps a bridge endpoint stable when a larger budget also admits its local card', () =>
+    Effect.gen(function* () {
+      const base = withNodesPerGraph(makeFixture(4), 32);
+      const bridge = protobufBridge(base.input.published);
+      const graph = base.graphs.get('repository-0')!;
+      const fixture = {
+        ...base,
+        graphs: new Map(base.graphs).set('repository-0', {
+          ...graph,
+          nodes: [
+            ...graph.nodes,
+            {
+              ...graph.nodes[0]!,
+              id: protobufBridgeNodeId(0),
+              language: 'protobuf',
+              name: 'session.proto',
+              path: 'proto/repository-0.proto',
+              qualifiedName: 'fixture/session/v1/session.proto',
+              score: 0.1,
+            },
+          ],
+        }),
+      };
+      const bridgeExpansion = {
+        bridgeSet: {
+          digest: digest('bridge-set'),
+          generationId: fixture.input.published.id,
+          totalBridges: 1,
+        },
+        bridges: [bridge],
+        complete: true,
+        seededRepositories: 1,
+        warnings: [],
+      };
+      const smaller = yield* runCodeGraphWorksetQueryV2Core(dependencies(fixture, {bridgeExpansion}), {
+        ...fixture.input,
+        evidenceCards: 24,
+      });
+      const larger = yield* runCodeGraphWorksetQueryV2Core(dependencies(fixture, {bridgeExpansion}), {
+        ...fixture.input,
+        evidenceCards: 40,
+      });
 
-  it('keeps bridge relationship ownership stable when the source enters after a top-ranked target', async () => {
-    const fixture = makeFixture(2);
-    const bridge = protobufBridge(fixture.input.published, 1, 0);
-    const bridgeExpansion = {
-      bridgeSet: {
-        digest: digest('reverse-bridge-set'),
-        generationId: fixture.input.published.id,
-        totalBridges: 1,
-      },
-      bridges: [bridge],
-      complete: true,
-      seededRepositories: 1,
-      warnings: [],
-    };
-    const smaller = await Effect.runPromise(
-      runCodeGraphWorksetQueryV2Core(dependencies(fixture, {bridgeExpansion}), {
+      expect(larger.logicalResult.cards.slice(0, smaller.logicalResult.cards.length)).toEqual(
+        smaller.logicalResult.cards,
+      );
+      expect(smaller.logicalResult.cards.map(card => card.ref)).toContain(
+        bridge.source.reference.kind === 'qualified-ref' ? bridge.source.reference.ref : '',
+      );
+    }),
+  );
+
+  effectIt.effect('keeps bridge relationship ownership stable when the source enters after a top-ranked target', () =>
+    Effect.gen(function* () {
+      const fixture = makeFixture(2);
+      const bridge = protobufBridge(fixture.input.published, 1, 0);
+      const bridgeExpansion = {
+        bridgeSet: {
+          digest: digest('reverse-bridge-set'),
+          generationId: fixture.input.published.id,
+          totalBridges: 1,
+        },
+        bridges: [bridge],
+        complete: true,
+        seededRepositories: 1,
+        warnings: [],
+      };
+      const smaller = yield* runCodeGraphWorksetQueryV2Core(dependencies(fixture, {bridgeExpansion}), {
         ...fixture.input,
         evidenceCards: 1,
-      }),
-    );
-    const larger = await Effect.runPromise(
-      runCodeGraphWorksetQueryV2Core(dependencies(fixture, {bridgeExpansion}), {
+      });
+      const larger = yield* runCodeGraphWorksetQueryV2Core(dependencies(fixture, {bridgeExpansion}), {
         ...fixture.input,
         evidenceCards: 2,
-      }),
-    );
+      });
 
-    expect(larger.logicalResult.cards.slice(0, 1)).toEqual(smaller.logicalResult.cards);
-    expect(smaller.logicalResult.cards[0]?.relationships).toEqual([]);
-    expect(larger.logicalResult.cards[1]?.relationships).toHaveLength(1);
-  });
+      expect(larger.logicalResult.cards.slice(0, 1)).toEqual(smaller.logicalResult.cards);
+      expect(smaller.logicalResult.cards[0]?.relationships).toEqual([]);
+      expect(larger.logicalResult.cards[1]?.relationships).toHaveLength(1);
+    }),
+  );
 
-  it('is invariant to bounded asynchronous repository completion order', async () => {
-    await fc.assert(
-      fc.asyncProperty(fc.shuffledSubarray([0, 1, 2, 3], {minLength: 4, maxLength: 4}), async completionOrder => {
+  effectIt.effect.prop(
+    'is invariant to bounded asynchronous repository completion order',
+    {completionOrder: fc.shuffledSubarray([0, 1, 2, 3], {minLength: 4, maxLength: 4})},
+    ({completionOrder}) =>
+      Effect.gen(function* () {
         const fixture = makeFixture(4);
         const delays = new Map(completionOrder.map((repository, index) => [`repository-${repository}`, index]));
-        const forward = await Effect.runPromise(runCodeGraphWorksetQueryV2Core(dependencies(fixture), fixture.input));
-        const reordered = await Effect.runPromise(
-          runCodeGraphWorksetQueryV2Core(dependencies(fixture, {delays}), fixture.input),
+        const forward = yield* runCodeGraphWorksetQueryV2Core(dependencies(fixture), fixture.input);
+        const reordered = yield* runCodeGraphWorksetQueryV2Core(dependencies(fixture, {delays}), fixture.input).pipe(
+          TestClock.withLive,
         );
         expect(reordered.logicalResult).toEqual(forward.logicalResult);
       }),
-      {numRuns: 30},
-    );
-  });
+    {fastCheck: {numRuns: 30}},
+  );
 
-  it('expands a routed repository through an exact protobuf bridge and returns the dual-sided contract', async () => {
-    const fixture = makeFixture(2);
-    const bridge = protobufBridge(fixture.input.published);
-    const firstRepository = fixture.router.repositories[0]!;
-    const routed = {
-      ...fixture,
-      input: {...fixture.input, evidenceCards: 4},
-      router: {
-        ...fixture.router,
-        expansion: {exhausted: true, repositories: [firstRepository], requestedBatchSize: 4},
-        repositories: [firstRepository],
-        symbols: fixture.router.symbols.filter(symbol => symbol.symbol.repositoryKey === firstRepository.repositoryKey),
-      },
-    };
-    const execution = await Effect.runPromise(
-      runCodeGraphWorksetQueryV2Core(
-        dependencies(routed, {
-          bridgeExpansion: {
-            bridgeSet: {
-              digest: digest('bridge-set'),
-              generationId: fixture.input.published.id,
-              totalBridges: 1,
+  effectIt.effect(
+    'expands a routed repository through an exact protobuf bridge and returns the dual-sided contract',
+    () =>
+      Effect.gen(function* () {
+        const fixture = makeFixture(2);
+        const bridge = protobufBridge(fixture.input.published);
+        const firstRepository = fixture.router.repositories[0]!;
+        const routed = {
+          ...fixture,
+          input: {...fixture.input, evidenceCards: 4},
+          router: {
+            ...fixture.router,
+            expansion: {exhausted: true, repositories: [firstRepository], requestedBatchSize: 4},
+            repositories: [firstRepository],
+            symbols: fixture.router.symbols.filter(
+              symbol => symbol.symbol.repositoryKey === firstRepository.repositoryKey,
+            ),
+          },
+        };
+        const execution = yield* runCodeGraphWorksetQueryV2Core(
+          dependencies(routed, {
+            bridgeExpansion: {
+              bridgeSet: {
+                digest: digest('bridge-set'),
+                generationId: fixture.input.published.id,
+                totalBridges: 1,
+              },
+              bridges: [bridge],
+              complete: true,
+              seededRepositories: 1,
+              warnings: [],
             },
-            bridges: [bridge],
-            complete: true,
-            seededRepositories: 1,
-            warnings: [],
-          },
-        }),
-        routed.input,
-      ),
-    );
+          }),
+          routed.input,
+        );
 
-    expect(execution.instrumentation).toMatchObject({
-      bridgeEdgesConsidered: 1,
-      bridgeExpandedRepositories: 1,
-      bridgeExpansionComplete: true,
-      deepQueriedRepositories: 2,
-    });
-    expect([...new Set(execution.logicalResult.cards.map(card => card.repositoryKey))]).toEqual([
-      'repository-0',
-      'repository-1',
-    ]);
-    expect(
-      execution.logicalResult.cards
-        .filter(card => card.symbol.language === 'protobuf')
-        .map(card => ({name: card.symbol.name, path: card.symbol.path})),
-    ).toEqual([
-      {name: 'session.proto', path: 'proto/repository-0.proto'},
-      {name: 'session.proto', path: 'proto/repository-1.proto'},
-    ]);
-    expect(execution.logicalResult.cards.flatMap(card => card.relationships)).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          authority: 'authoritative',
-          provenance: 'declared',
-          relation: 'imports',
-          source: {
-            ref: bridge.source.reference.kind === 'qualified-ref' ? bridge.source.reference.ref : '',
-            repositoryKey: 'repository-0',
-          },
-          target: {
-            ref: bridge.target.reference.kind === 'qualified-ref' ? bridge.target.reference.ref : '',
-            repositoryKey: 'repository-1',
-          },
-        }),
-      ]),
-    );
-  });
+        expect(execution.instrumentation).toMatchObject({
+          bridgeEdgesConsidered: 1,
+          bridgeExpandedRepositories: 1,
+          bridgeExpansionComplete: true,
+          deepQueriedRepositories: 2,
+        });
+        expect([...new Set(execution.logicalResult.cards.map(card => card.repositoryKey))]).toEqual([
+          'repository-0',
+          'repository-1',
+        ]);
+        expect(
+          execution.logicalResult.cards
+            .filter(card => card.symbol.language === 'protobuf')
+            .map(card => ({name: card.symbol.name, path: card.symbol.path})),
+        ).toEqual([
+          {name: 'session.proto', path: 'proto/repository-0.proto'},
+          {name: 'session.proto', path: 'proto/repository-1.proto'},
+        ]);
+        expect(execution.logicalResult.cards.flatMap(card => card.relationships)).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              authority: 'authoritative',
+              provenance: 'declared',
+              relation: 'imports',
+              source: {
+                ref: bridge.source.reference.kind === 'qualified-ref' ? bridge.source.reference.ref : '',
+                repositoryKey: 'repository-0',
+              },
+              target: {
+                ref: bridge.target.reference.kind === 'qualified-ref' ? bridge.target.reference.ref : '',
+                repositoryKey: 'repository-1',
+              },
+            }),
+          ]),
+        );
+      }),
+  );
 
   it('promotes an existing low-ranked contract neighbor directly after its strongest seed', () => {
     const fixture = makeFixture(20);
@@ -469,7 +474,7 @@ function dependencies(
       const delay = options.delays?.get(repository.repositoryKey) ?? 0;
       return delay === 0 ? Effect.succeed(graph) : Effect.sleep(delay).pipe(Effect.as(graph));
     },
-    nowMilliseconds: () => (options.realClock ? Effect.sync(() => Date.now()) : Effect.succeed(0)),
+    nowMilliseconds: options.realClock ? Effect.sync(() => Date.now()) : Effect.succeed(0),
     persist: (result: {readonly cards: readonly unknown[]}, refs: readonly {nodeId: string; repositoryId: string}[]) =>
       Effect.sync(() => {
         options.persistRefs?.(refs);
@@ -488,7 +493,7 @@ function dependencies(
       }),
     readBridgeExpansion: () =>
       Effect.succeed(options.bridgeExpansion ?? {bridges: [], complete: true, seededRepositories: 0, warnings: []}),
-    route: () => Effect.succeed(fixture.router),
+    route: Effect.succeed(fixture.router),
   };
 }
 

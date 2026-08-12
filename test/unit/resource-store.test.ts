@@ -1,5 +1,6 @@
-import {symlink, writeFile as writeFileBytes} from 'node:fs/promises';
-import {join} from 'node:path';
+import {provideTestLayer} from '../helpers/effect-layer.js';
+import {symlink, writeFile as writeFileBytes} from '../helpers/node-fs-promises.js';
+import {join} from '../helpers/node-path.js';
 import {describe, expect, it} from '@effect/vitest';
 import * as FC from 'effect/testing/FastCheck';
 import {Effect, FileSystem, Option} from 'effect';
@@ -220,7 +221,7 @@ describe('native ResourceStore', () => {
               stat: filePath => fs.stat(filePath).pipe(Effect.map(withoutIdentity)),
             });
             const store = yield* ResourceStore.pipe(
-              Effect.provide(ResourceStore.layerWith()),
+              provideTestLayer(ResourceStore.layerWith()),
               Effect.provideService(FileSystem.FileSystem, customFs),
             );
             return yield* Effect.flip(store.readBounded(location(home), uri, 100));
@@ -442,8 +443,8 @@ describe('native ResourceStore', () => {
           }),
       });
       const [removeStore, writeStore] = await Promise.all([
-        runEffect(ResourceStore.pipe(Effect.provide(layer))),
-        runEffect(ResourceStore.pipe(Effect.provide(layer))),
+        runEffect(ResourceStore.pipe(provideTestLayer(layer))),
+        runEffect(ResourceStore.pipe(provideTestLayer(layer))),
       ]);
 
       await mkdir(join(home, 'locks', 'resources', 'local'), {recursive: true});

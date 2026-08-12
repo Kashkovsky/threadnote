@@ -1,3 +1,5 @@
+import {TestError} from './test-error.js';
+import {provideTestLayer} from './effect-layer.js';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {Effect, FileSystem, Layer} from 'effect';
 import {runCodeGraphOrdinaryVectorMaintenanceUnit} from '../../src/code_graph/vector_maintenance.js';
@@ -40,9 +42,9 @@ const program = Effect.gen(function* () {
     if (result.state === 'complete') break;
   }
   return yield* Effect.fail(
-    new Error(`Vector child completed without a database commit barrier: ${observations.join(',')}`),
+    new TestError(`Vector child completed without a database commit barrier: ${observations.join(',')}`),
   );
-}).pipe(Effect.provide(childLayer));
+}).pipe(provideTestLayer(childLayer));
 
 Effect.runPromise(program).catch(cause => {
   process.stderr.write(

@@ -1,3 +1,4 @@
+import {scriptError, ScriptError} from '../effect/errors.js';
 import {Clock, Effect} from 'effect';
 import {CodeGraphIndexer, type CodeGraphIndexerShape} from '../../src/code_graph/indexer.js';
 import {
@@ -209,7 +210,7 @@ const publishIndexedCodeGraphWorksetCatalogScoped = Effect.fn('codeGraphWorksetH
             ];
       });
       if (members.length === 0) {
-        return yield* Effect.fail(new Error(`Fixture workset ${worksetName} has no ready routing projections.`));
+        return yield* Effect.fail(new ScriptError(`Fixture workset ${worksetName} has no ready routing projections.`));
       }
       const stagedGeneration = yield* stageCodeGraphWorksetCatalogGenerationFromReceipts(fixture.home, {
         manifestDigest: codeGraphWorksetManifestDigest(workset),
@@ -427,7 +428,7 @@ export function codeGraphWorksetBenchmarkSample(
 ): CodeGraphWorksetBenchmarkSample {
   const measurement = measured.measurement;
   if (measurement.evidenceCardCount === 0 || measurement.timeToFirstEvidenceCardMilliseconds === undefined) {
-    throw new Error(`Workset benchmark control returned no evidence at size ${worksetSize}.`);
+    throw new ScriptError(`Workset benchmark control returned no evidence at size ${worksetSize}.`);
   }
   return {
     completionMilliseconds: measurement.completionMilliseconds,
@@ -554,7 +555,7 @@ function indexFixtureRepository(
   if (repository.state === 'stale') {
     return Effect.tryPromise({
       try: () => establishCodeGraphWorksetStaleReadySnapshot(repository, cwd => Effect.runPromise(index(cwd))),
-      catch: cause => (cause instanceof Error ? cause : new Error(String(cause))),
+      catch: cause => scriptError(cause),
     }).pipe(Effect.asVoid);
   }
   return index(repository.path).pipe(
@@ -614,9 +615,9 @@ function fixtureRepositoryId(fixture: CodeGraphWorksetEvaluationFixtureV1, repos
 }
 
 function assertNonNegativeInteger(value: number, label: string): void {
-  if (!Number.isSafeInteger(value) || value < 0) throw new Error(`${label} must be a non-negative safe integer.`);
+  if (!Number.isSafeInteger(value) || value < 0) throw new ScriptError(`${label} must be a non-negative safe integer.`);
 }
 
 function assertNonNegativeFinite(value: number, label: string): void {
-  if (!Number.isFinite(value) || value < 0) throw new Error(`${label} must be a non-negative finite number.`);
+  if (!Number.isFinite(value) || value < 0) throw new ScriptError(`${label} must be a non-negative finite number.`);
 }

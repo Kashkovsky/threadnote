@@ -1,3 +1,4 @@
+import {TestError} from '../helpers/test-error.js';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {Database} from 'bun:sqlite';
 import {describe, expect, it as effectIt} from '@effect/vitest';
@@ -177,7 +178,7 @@ describe('code graph ordinary vector retirement maintenance', () => {
                     receiptOperations = operations;
                   }),
                 ),
-                Effect.andThen(Effect.fail(new Error('simulated crash after protected intent'))),
+                Effect.andThen(Effect.fail(new TestError('simulated crash after protected intent'))),
               ),
           });
 
@@ -226,7 +227,7 @@ describe('code graph ordinary vector retirement maintenance', () => {
               afterModelCommitBeforeFinalCursorCas: () =>
                 Effect.suspend(() => {
                   interrupted += 1;
-                  return Effect.fail(new Error(`simulated ${scenario} post-commit crash`));
+                  return Effect.fail(new TestError(`simulated ${scenario} post-commit crash`));
                 }),
             });
 
@@ -831,7 +832,7 @@ function prepareRetirementUntilReady(databasePath: string) {
       });
       if (result.state === 'ready') return;
     }
-    return yield* Effect.die(new Error('Vector retirement schema did not become ready.'));
+    return yield* Effect.die(new TestError('Vector retirement schema did not become ready.'));
   });
 }
 

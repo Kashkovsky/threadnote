@@ -1,4 +1,5 @@
-import {createHash} from 'node:crypto';
+import {TestError} from '../helpers/test-error.js';
+import {createHash} from '../helpers/node-crypto.js';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {describe, expect, it} from '@effect/vitest';
 import * as FC from 'effect/testing/FastCheck';
@@ -236,7 +237,7 @@ function callArguments(arity: number): string {
 
 function inventoryFile(path: string, content: string): CodeGraphInventoryFile {
   const match = BUILTIN_LANGUAGE_PACK_REGISTRY.match(path);
-  if (Option.isNone(match)) throw new Error(`Fixture path is not accepted by a language pack: ${path}.`);
+  if (Option.isNone(match)) throw new TestError(`Fixture path is not accepted by a language pack: ${path}.`);
   return {
     blobId: `fixture-${path}`,
     content,

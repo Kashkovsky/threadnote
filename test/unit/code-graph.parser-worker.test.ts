@@ -1,3 +1,5 @@
+import {TestError} from '../helpers/test-error.js';
+import {provideTestLayer} from '../helpers/effect-layer.js';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {describe, expect, it} from '@effect/vitest';
 import * as FC from 'effect/testing/FastCheck';
@@ -161,29 +163,36 @@ describe('code graph parser worker pool', () => {
     {fastCheck: {numRuns: 100}},
   );
 
-  it.effect('honors explicit capacity without consulting hardware', () => {
-    const unavailableHardware = systemWith({hardwareInfo: () => Effect.die('hardware must not be read')});
-    return Effect.gen(function* () {
-      const pool = yield* CodeGraphParserPool;
-      expect(pool.capacity).toBe(8);
-    }).pipe(Effect.provide(parserLayer({capacity: 99}, Layer.succeed(SystemInfo, unavailableHardware))), Effect.scoped);
-  });
+  it.effect('honors explicit capacity without consulting hardware', () =>
+    Effect.gen(function* () {
+      const unavailableHardware = yield* systemWith({hardwareInfo: Effect.die('hardware must not be read')});
+      yield* Effect.gen(function* () {
+        const pool = yield* CodeGraphParserPool;
+        expect(pool.capacity).toBe(8);
+      }).pipe(
+        provideTestLayer(parserLayer({capacity: 99}, Layer.succeed(SystemInfo, unavailableHardware))),
+        Effect.scoped,
+      );
+    }),
+  );
 
-  it.effect('falls back to one worker when automatic hardware lookup fails', () => {
-    let hardwareLookups = 0;
-    const unavailableHardware = systemWith({
-      environment: () => ({}),
-      hardwareInfo: () => {
-        hardwareLookups += 1;
-        return Effect.fail(new Error('hardware unavailable'));
-      },
-    });
-    return Effect.gen(function* () {
-      const pool = yield* CodeGraphParserPool;
-      expect(pool.capacity).toBe(1);
-      expect(hardwareLookups).toBe(1);
-    }).pipe(Effect.provide(parserLayer({}, Layer.succeed(SystemInfo, unavailableHardware))), Effect.scoped);
-  });
+  it.effect('falls back to one worker when automatic hardware lookup fails', () =>
+    Effect.gen(function* () {
+      let hardwareLookups = 0;
+      const unavailableHardware = yield* systemWith({
+        environment: () => ({}),
+        hardwareInfo: Effect.suspend(() => {
+          hardwareLookups += 1;
+          return Effect.fail(new TestError('hardware unavailable'));
+        }),
+      });
+      yield* Effect.gen(function* () {
+        const pool = yield* CodeGraphParserPool;
+        expect(pool.capacity).toBe(1);
+        expect(hardwareLookups).toBe(1);
+      }).pipe(provideTestLayer(parserLayer({}, Layer.succeed(SystemInfo, unavailableHardware))), Effect.scoped);
+    }),
+  );
 
   it('honors the environment override and ignores invalid automatic hardware values', () => {
     expect(
@@ -232,7 +241,7 @@ describe('code graph parser worker pool', () => {
         ),
       ]);
       expect(launches).toEqual([]);
-    }).pipe(Effect.provide(parserLayer({capacity: 1, maxSourceBytes: 16, spawnWorker: spawn})), Effect.scoped);
+    }).pipe(provideTestLayer(parserLayer({capacity: 1, maxSourceBytes: 16, spawnWorker: spawn})), Effect.scoped);
   });
 
   it.effect('admits source exactly at the byte boundary and leaves omitted content metadata-only', () => {
@@ -261,7 +270,7 @@ describe('code graph parser worker pool', () => {
           16,
         ),
       ).toEqual({exceeded: false, maximumBytes: 16, observedBytes: 0});
-    }).pipe(Effect.provide(parserLayer({capacity: 1, maxSourceBytes: 16, spawnWorker: spawn})), Effect.scoped);
+    }).pipe(provideTestLayer(parserLayer({capacity: 1, maxSourceBytes: 16, spawnWorker: spawn})), Effect.scoped);
   });
 
   it.prop(
@@ -298,37 +307,39 @@ describe('code graph parser worker pool', () => {
       expect(result.facts.path).toBe('src/real-worker.ts');
       expect(result.facts.symbols.some(symbol => symbol.name === 'realWorker')).toBe(true);
 
-      yield* pool.trimIdle();
+      yield* pool.trimIdle;
       const restarted = yield* pool.extract(
         inventoryFile('src/restarted-worker.ts', 'export const restartedWorker = true;'),
         home,
       );
       expect(restarted.degraded).toBe(false);
       expect(restarted.facts.symbols.some(symbol => symbol.name === 'restartedWorker')).toBe(true);
-    }).pipe(Effect.provide(parserLayer({capacity: 1})), Effect.scoped),
+    }).pipe(provideTestLayer(parserLayer({capacity: 1})), Effect.scoped),
   );
 
-  it.effect('degrades and recycles a real worker that exceeds its RSS budget', () => {
-    const resourceLimitedSystem = systemWith({
-      environment: () => ({...process.env, [CODE_GRAPH_PARSER_RSS_BYTES_ENV]: '1'}),
-    });
-    return Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-parser-worker-rss-'});
-      const pool = yield* CodeGraphParserPool;
-      const result = yield* pool.extract(inventoryFile('src/rss-worker.ts', 'export const rssWorker = true;'), home);
+  it.effect('degrades and recycles a real worker that exceeds its RSS budget', () =>
+    Effect.gen(function* () {
+      const resourceLimitedSystem = yield* systemWith({
+        environment: () => ({...process.env, [CODE_GRAPH_PARSER_RSS_BYTES_ENV]: '1'}),
+      });
+      yield* Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-parser-worker-rss-'});
+        const pool = yield* CodeGraphParserPool;
+        const result = yield* pool.extract(inventoryFile('src/rss-worker.ts', 'export const rssWorker = true;'), home);
 
-      expect(result.degraded).toBe(true);
-      expect(result.facts.symbols).toHaveLength(1);
-      expect(result.facts.diagnostics[0]).toContain(
-        '[code-graph-budget code=rss-bytes status=exhausted observed-bytes=',
+        expect(result.degraded).toBe(true);
+        expect(result.facts.symbols).toHaveLength(1);
+        expect(result.facts.diagnostics[0]).toContain(
+          '[code-graph-budget code=rss-bytes status=exhausted observed-bytes=',
+        );
+        expect(result.facts.diagnostics[0]).toContain('maximum-bytes=1]');
+      }).pipe(
+        provideTestLayer(parserLayer({capacity: 1}, Layer.succeed(SystemInfo, resourceLimitedSystem))),
+        Effect.scoped,
       );
-      expect(result.facts.diagnostics[0]).toContain('maximum-bytes=1]');
-    }).pipe(
-      Effect.provide(parserLayer({capacity: 1}, Layer.succeed(SystemInfo, resourceLimitedSystem))),
-      Effect.scoped,
-    );
-  });
+    }),
+  );
 
   it.effect('recycles a persistent slot after a worker reports resource degradation', () => {
     const processes: ScriptedParserWorkerProcess[] = [];
@@ -358,7 +369,7 @@ describe('code graph parser worker pool', () => {
       expect(recovered.degraded).toBe(false);
       expect(processes).toHaveLength(2);
       expect(processes[0]!.inputClosed).toBe(true);
-    }).pipe(Effect.provide(parserLayer({capacity: 1, spawnWorker: spawn})), Effect.scoped);
+    }).pipe(provideTestLayer(parserLayer({capacity: 1, spawnWorker: spawn})), Effect.scoped);
   });
 
   it.effect('degrades pathological emitted facts in the real worker before response serialization', () =>
@@ -368,7 +379,7 @@ describe('code graph parser worker pool', () => {
       const content = `Pathological corpus\n===================\n\nprivate-corpus-sentinel ${'漢'.repeat(2_850_000)}`;
       const file = inventoryFile('docs/pathological.rst', content, 'document');
       const raw = yield* BUILTIN_LANGUAGE_PACK_REGISTRY.extractRawFile(file).pipe(
-        Effect.provide(TreeSitterRuntime.layer),
+        provideTestLayer(TreeSitterRuntime.layer),
       );
       const worker = yield* CodeGraphParserPool;
       const result = yield* worker.extract(file, home);
@@ -383,7 +394,7 @@ describe('code graph parser worker pool', () => {
         CODE_GRAPH_PARSER_WORKER_RESPONSE_BYTES_MAXIMUM,
       );
       expect(JSON.stringify(result.facts)).not.toContain('private-corpus-sentinel');
-    }).pipe(Effect.provide(parserLayer({capacity: 1})), Effect.scoped),
+    }).pipe(provideTestLayer(parserLayer({capacity: 1})), Effect.scoped),
   );
 
   it.effect.prop(
@@ -409,7 +420,7 @@ describe('code graph parser worker pool', () => {
         expect(serial.map(result => result.facts)).toEqual(parallel.map(result => result.facts));
         expect(serial.every(result => !result.degraded)).toBe(true);
         expect(parallel.every(result => !result.degraded)).toBe(true);
-      }).pipe(Effect.provide(baseLayer), Effect.scoped),
+      }).pipe(provideTestLayer(baseLayer), Effect.scoped),
     {fastCheck: {numRuns: 30}},
   );
 
@@ -437,7 +448,7 @@ describe('code graph parser worker pool', () => {
       expect(right).toHaveLength(rightFiles.length);
       expect(tracker.maximum).toBe(2);
       expect(tracker.active).toBe(0);
-    }).pipe(Effect.provide(baseLayer), Effect.scoped);
+    }).pipe(provideTestLayer(baseLayer), Effect.scoped);
   });
 
   it.effect('interrupts a hung worker, returns its slot, and does not retry the interrupted request', () => {
@@ -469,7 +480,7 @@ describe('code graph parser worker pool', () => {
       expect(recovered.degraded).toBe(false);
       expect(processes).toHaveLength(2);
     }).pipe(
-      Effect.provide(parserLayer({capacity: 1, requestTimeoutMilliseconds: 5_000, spawnWorker: spawn})),
+      provideTestLayer(parserLayer({capacity: 1, requestTimeoutMilliseconds: 5_000, spawnWorker: spawn})),
       Effect.scoped,
     );
   });
@@ -499,7 +510,7 @@ describe('code graph parser worker pool', () => {
         '[code-graph-budget code=elapsed status=exhausted observed-milliseconds=20 maximum-milliseconds=20]',
       );
     }).pipe(
-      Effect.provide(parserLayer({capacity: 1, requestTimeoutMilliseconds: 20, spawnWorker: spawn})),
+      provideTestLayer(parserLayer({capacity: 1, requestTimeoutMilliseconds: 20, spawnWorker: spawn})),
       Effect.scoped,
     );
   });
@@ -528,7 +539,7 @@ describe('code graph parser worker pool', () => {
       expect(degraded.degraded).toBe(true);
       expect(recovered.degraded).toBe(false);
       expect(processes).toHaveLength(3);
-    }).pipe(Effect.provide(parserLayer({capacity: 1, spawnWorker: spawn})), Effect.scoped);
+    }).pipe(provideTestLayer(parserLayer({capacity: 1, spawnWorker: spawn})), Effect.scoped);
   });
 
   it.effect('does not retry deterministic extraction failures or leak worker stderr into persisted facts', () => {
@@ -555,7 +566,7 @@ describe('code graph parser worker pool', () => {
       expect(processes).toHaveLength(1);
       expect(JSON.stringify(result.facts)).not.toContain('SUPER_SECRET_SOURCE_TEXT');
       expect(result.facts.diagnostics.join('\n')).toContain('language extraction failed');
-    }).pipe(Effect.provide(parserLayer({capacity: 1, spawnWorker: spawn})), Effect.scoped);
+    }).pipe(provideTestLayer(parserLayer({capacity: 1, spawnWorker: spawn})), Effect.scoped);
   });
 
   it.effect('propagates each selected home and restarts a persistent slot when the home changes', () => {
@@ -578,7 +589,7 @@ describe('code graph parser worker pool', () => {
       expect(launches.map(launch => launch.environment.THREADNOTE_HOME)).toEqual([firstHome, secondHome]);
       expect(launches.every(launch => launch.arguments.at(-1) === CODE_GRAPH_PARSER_WORKER_ARGUMENT)).toBe(true);
       expect(launches.every(launch => launch.environment.THREADNOTE_CODE_GRAPH_PARSER_WORKER === '1')).toBe(true);
-    }).pipe(Effect.provide(parserLayer({capacity: 1, spawnWorker: spawn})), Effect.scoped);
+    }).pipe(provideTestLayer(parserLayer({capacity: 1, spawnWorker: spawn})), Effect.scoped);
   });
 
   it.effect('evicts idle workers so a long-lived MCP runtime releases parser memory', () => {
@@ -601,7 +612,10 @@ describe('code graph parser worker pool', () => {
       const afterIdle = yield* pool.extract(inventoryFile('src/after-idle.ts', 'export const afterIdle = true;'), home);
       expect(afterIdle.degraded).toBe(false);
       expect(processes).toHaveLength(2);
-    }).pipe(Effect.provide(parserLayer({capacity: 1, idleTimeoutMilliseconds: 15, spawnWorker: spawn})), Effect.scoped);
+    }).pipe(
+      provideTestLayer(parserLayer({capacity: 1, idleTimeoutMilliseconds: 15, spawnWorker: spawn})),
+      Effect.scoped,
+    );
   });
 
   it.effect('trims idle workers concurrently exactly once and lazily restarts their slots', () => {
@@ -618,14 +632,14 @@ describe('code graph parser worker pool', () => {
       const pool = yield* CodeGraphParserPool;
 
       yield* pool.extract(inventoryFile('src/before-trim.ts', 'export const beforeTrim = true;'), home);
-      yield* Effect.all([pool.trimIdle(), pool.trimIdle()], {concurrency: 'unbounded'});
+      yield* Effect.all([pool.trimIdle, pool.trimIdle], {concurrency: 'unbounded'});
       expect(processes[0]!.closeInputCalls).toBe(1);
       expect(yield* Effect.promise(() => processes[0]!.exited)).toBe(0);
 
       const afterTrim = yield* pool.extract(inventoryFile('src/after-trim.ts', 'export const afterTrim = true;'), home);
       expect(afterTrim.degraded).toBe(false);
       expect(processes).toHaveLength(2);
-    }).pipe(Effect.provide(parserLayer({capacity: 1, spawnWorker: spawn})), Effect.scoped);
+    }).pipe(provideTestLayer(parserLayer({capacity: 1, spawnWorker: spawn})), Effect.scoped);
   });
 
   it.effect('does not terminate an active extraction when idle slots are trimmed', () => {
@@ -645,48 +659,50 @@ describe('code graph parser worker pool', () => {
       );
       yield* waitUntil(() => processes[0]?.writes.length === 1);
 
-      yield* pool.trimIdle();
+      yield* pool.trimIdle;
       expect(processes[0]!.inputClosed).toBe(false);
       expect(processes[0]!.killed).toBe(false);
 
       const request = processes[0]!.writes[0]!;
       processes[0]!.respond(request, factsFor(request.file));
       expect((yield* Fiber.join(fiber)).degraded).toBe(false);
-      yield* pool.trimIdle();
+      yield* pool.trimIdle;
       expect(processes[0]!.closeInputCalls).toBe(1);
     }).pipe(
-      Effect.provide(parserLayer({capacity: 1, requestTimeoutMilliseconds: 5_000, spawnWorker: spawn})),
+      provideTestLayer(parserLayer({capacity: 1, requestTimeoutMilliseconds: 5_000, spawnWorker: spawn})),
       Effect.scoped,
     );
   });
 
-  it.effect('uses the packaged executable directly on Windows and preserves array-safe paths', () => {
-    const launches: ParserWorkerSpawnOptions[] = [];
-    const spawn: ParserWorkerSpawner = options => {
-      launches.push(options);
-      return echoProcess();
-    };
-    const windowsSystem = systemWith({
-      executablePath: 'C:\\Program Files\\Threadnote\\threadnote.exe',
-      platform: 'win32',
-      processArguments: ['C:\\Program Files\\Threadnote\\threadnote.exe', 'graph', 'index'],
-    });
+  it.effect('uses the packaged executable directly on Windows and preserves array-safe paths', () =>
+    Effect.gen(function* () {
+      const launches: ParserWorkerSpawnOptions[] = [];
+      const spawn: ParserWorkerSpawner = options => {
+        launches.push(options);
+        return echoProcess();
+      };
+      const windowsSystem = yield* systemWith({
+        executablePath: 'C:\\Program Files\\Threadnote\\threadnote.exe',
+        platform: 'win32',
+        processArguments: ['C:\\Program Files\\Threadnote\\threadnote.exe', 'graph', 'index'],
+      });
 
-    return Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-parser-worker-windows-'});
-      const pool = yield* CodeGraphParserPool;
-      const result = yield* pool.extract(inventoryFile('src/windows.ts', 'export const windows = true;'), home);
+      yield* Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-parser-worker-windows-'});
+        const pool = yield* CodeGraphParserPool;
+        const result = yield* pool.extract(inventoryFile('src/windows.ts', 'export const windows = true;'), home);
 
-      expect(result.degraded).toBe(false);
-      expect(launches).toHaveLength(1);
-      expect(launches[0]!.executable).toBe('C:\\Program Files\\Threadnote\\threadnote.exe');
-      expect(launches[0]!.arguments).toEqual([CODE_GRAPH_PARSER_WORKER_ARGUMENT]);
-    }).pipe(
-      Effect.provide(parserLayer({capacity: 1, spawnWorker: spawn}, Layer.succeed(SystemInfo, windowsSystem))),
-      Effect.scoped,
-    );
-  });
+        expect(result.degraded).toBe(false);
+        expect(launches).toHaveLength(1);
+        expect(launches[0]!.executable).toBe('C:\\Program Files\\Threadnote\\threadnote.exe');
+        expect(launches[0]!.arguments).toEqual([CODE_GRAPH_PARSER_WORKER_ARGUMENT]);
+      }).pipe(
+        provideTestLayer(parserLayer({capacity: 1, spawnWorker: spawn}, Layer.succeed(SystemInfo, windowsSystem))),
+        Effect.scoped,
+      );
+    }),
+  );
 });
 
 function runPool(
@@ -698,7 +714,7 @@ function runPool(
   return Effect.gen(function* () {
     const pool = yield* CodeGraphParserPool;
     return yield* Effect.forEach(files, file => pool.extract(file, home), {concurrency: 'unbounded'});
-  }).pipe(Effect.provide(parserLayer({capacity, spawnWorker})));
+  }).pipe(provideTestLayer(parserLayer({capacity, spawnWorker})));
 }
 
 const baseLayer = Layer.mergeAll(BunServices.layer, SystemInfo.layer);
@@ -905,7 +921,9 @@ function advanceContentionClock(): Effect.Effect<void> {
   });
 }
 
-function systemWith(overrides: Partial<SystemInfoShape>): SystemInfoShape {
-  const current = Effect.runSync(SystemInfo.pipe(Effect.provide(SystemInfo.layer)));
-  return SystemInfo.of({...current, ...overrides});
+function systemWith(overrides: Partial<SystemInfoShape>) {
+  return SystemInfo.pipe(
+    provideTestLayer(SystemInfo.layer),
+    Effect.map(current => SystemInfo.of({...current, ...overrides})),
+  );
 }

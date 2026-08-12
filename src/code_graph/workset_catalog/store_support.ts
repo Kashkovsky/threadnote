@@ -22,8 +22,10 @@ import {
 import {codeGraphWorksetResultSequenceDigest, type PreparedCodeGraphWorksetResultSequenceV1} from './result_set.js';
 import {codeGraphWorksetRoutingExactKeys} from './routing_normalization.js';
 import {
+  CODE_GRAPH_WORKSET_CATALOG_PAGE_SIZE_BYTES,
   configureCodeGraphWorksetCatalogReadConnection,
   initializeCodeGraphWorksetCatalogSchema,
+  inspectCodeGraphWorksetCatalogPageSize,
   inspectCodeGraphWorksetCatalogSchemaVersion,
 } from './schema.js';
 import {
@@ -35,7 +37,6 @@ import {
   type CodeGraphWorksetCatalogHealthV1,
   type CodeGraphWorksetRoutingProjectionReceiptV1,
   type CodeGraphWorksetRoutingProjectionDigestStateV1,
-  type CodeGraphWorksetRoutingProjectionV1,
   type CodeGraphWorksetRoutingSymbolV1,
   type CodeGraphWorksetRoutingTermV1,
 } from './types.js';
@@ -170,10 +171,20 @@ export function withCatalogWriter<A, E, R>(
           }),
         );
         yield* fs.chmod(layout.databasePath, 0o600);
+        yield* removeObsoleteCatalogV2Files(fs, path, threadnoteHome);
         return result;
       }),
     );
   }).pipe(mapCatalogError('write workset catalog'));
+}
+
+function removeObsoleteCatalogV2Files(fs: FileSystem.FileSystem, path: Path.Path, threadnoteHome: string) {
+  const legacyDatabase = path.join(threadnoteHome, 'indexes', 'code-graph', 'worksets', 'catalog-v2.sqlite');
+  return Effect.forEach(
+    [legacyDatabase, `${legacyDatabase}-journal`, `${legacyDatabase}-shm`, `${legacyDatabase}-wal`],
+    candidate => fs.remove(candidate, {force: true}),
+    {concurrency: 1, discard: true},
+  );
 }
 
 export function withCatalogReader<A, E, R>(
@@ -235,33 +246,76 @@ export function projectionState(sql: SqlClient.SqlClient, projectionDigest: stri
   return selectProjectionByDigest(sql, projectionDigest).pipe(Effect.map(row => row?.state));
 }
 
+export function dropQueuedReferencedProjections(sql: SqlClient.SqlClient, limit: number) {
+  if (limit === 0) return Effect.void;
+  return sql.unsafe(
+    `DELETE FROM routing_projection_retirements
+     WHERE projection_digest IN (
+       SELECT q.projection_digest FROM routing_projection_retirements AS q
+       WHERE EXISTS (
+         SELECT 1 FROM workset_generation_members AS m
+         WHERE m.projection_digest = q.projection_digest
+       )
+       ORDER BY q.requested_at, q.projection_digest
+       LIMIT ?
+     )`,
+    [limit],
+  );
+}
+
 export function insertProjectionHeader(
   sql: SqlClient.SqlClient,
   receipt: CodeGraphWorksetRoutingProjectionReceiptV1,
   now: string,
+  reservedLogicalBytes: number,
+  stagingToken: string,
 ) {
   return sql.withTransaction(
-    sql.unsafe(
-      `INSERT INTO repository_snapshots (
-         projection_digest, repository_id, checkout_id, worktree_id, snapshot_id,
-         snapshot_digest, commit_id, extractor_generation, projector_version,
-         component_count, symbol_count, state, created_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'staging', ?)`,
-      [
-        receipt.projectionDigest,
-        receipt.repositoryId,
-        receipt.checkoutId,
-        receipt.worktreeId,
-        receipt.snapshotId,
-        receipt.snapshotDigest,
-        receipt.commitId,
-        receipt.extractorGeneration,
-        receipt.projectorVersion,
-        receipt.componentCount,
-        receipt.symbolCount,
-        now,
-      ],
-    ),
+    Effect.gen(function* () {
+      yield* sql.unsafe(
+        `INSERT INTO repository_snapshots (
+           projection_digest, repository_id, checkout_id, worktree_id, snapshot_id,
+           snapshot_digest, commit_id, extractor_generation, projector_version,
+           component_count, symbol_count, state, created_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'staging', ?)`,
+        [
+          receipt.projectionDigest,
+          receipt.repositoryId,
+          receipt.checkoutId,
+          receipt.worktreeId,
+          receipt.snapshotId,
+          receipt.snapshotDigest,
+          receipt.commitId,
+          receipt.extractorGeneration,
+          receipt.projectorVersion,
+          receipt.componentCount,
+          receipt.symbolCount,
+          now,
+        ],
+      );
+      yield* sql.unsafe(
+        `UPDATE catalog_capacity
+         SET projection_logical_bytes = projection_logical_bytes + ?
+         WHERE singleton = 1 AND projection_logical_bytes <= ? - bridge_logical_bytes`,
+        [reservedLogicalBytes, CODE_GRAPH_WORKSET_CATALOG_LIMITS.catalogPhysicalBytesMaximum - reservedLogicalBytes],
+      );
+      if ((yield* changes(sql)) !== 1) {
+        return yield* Effect.fail(
+          new CodeGraphWorksetCatalogError('capacity', 'The home-global routing projection catalog is full.'),
+        );
+      }
+      yield* sql.unsafe(
+        `INSERT INTO routing_projection_storage (
+           projection_digest, logical_bytes, reserved_bytes, staging_token
+         ) VALUES (?, 0, ?, ?)`,
+        [receipt.projectionDigest, reservedLogicalBytes, stagingToken],
+      );
+      yield* sql.unsafe(
+        `INSERT INTO routing_projection_retirements (projection_digest, requested_at)
+         VALUES (?, ?)`,
+        [receipt.projectionDigest, now],
+      );
+    }),
   );
 }
 
@@ -281,91 +335,6 @@ export function projectionReceipt(
     symbolCount: metadata.symbol_count,
     worktreeId: metadata.worktree_id,
   };
-}
-
-export function stageProjection(
-  sql: SqlClient.SqlClient,
-  projection: CodeGraphWorksetRoutingProjectionV1,
-  now: string,
-) {
-  return Effect.gen(function* () {
-    const existing = yield* sql.unsafe<ProjectionRow>(
-      `SELECT projection_digest, repository_id, checkout_id, worktree_id, snapshot_id,
-              snapshot_digest, commit_id, extractor_generation, projector_version,
-              component_count, symbol_count, state
-       FROM repository_snapshots
-       WHERE checkout_id = ? AND worktree_id = ? AND snapshot_id = ? AND projector_version = ?
-       LIMIT 1`,
-      [projection.checkoutId, projection.worktreeId, projection.snapshotId, projection.projectorVersion],
-    );
-    if (existing.length === 1) {
-      const metadata = yield* decodeProjectionMetadata(existing[0]!);
-      if (metadata.projection_digest !== projection.projectionDigest) {
-        return yield* Effect.fail(
-          new CodeGraphWorksetCatalogError(
-            'invalid-input',
-            'A ready snapshot produced different records for the same projector version.',
-          ),
-        );
-      }
-      if (metadata.state === 'ready') {
-        yield* loadAndValidateProjection(sql, projection.projectionDigest, true);
-        return;
-      }
-      yield* sql.withTransaction(
-        sql.unsafe('DELETE FROM repository_snapshots WHERE projection_digest = ? AND state = ?', [
-          projection.projectionDigest,
-          'staging',
-        ]),
-      );
-    }
-    yield* sql.withTransaction(
-      sql.unsafe(
-        `INSERT INTO repository_snapshots (
-           projection_digest, repository_id, checkout_id, worktree_id, snapshot_id,
-           snapshot_digest, commit_id, extractor_generation, projector_version,
-           component_count, symbol_count, state, created_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'staging', ?)`,
-        [
-          projection.projectionDigest,
-          projection.repositoryId,
-          projection.checkoutId,
-          projection.worktreeId,
-          projection.snapshotId,
-          projection.snapshotDigest,
-          projection.commitId,
-          projection.extractorGeneration,
-          projection.projectorVersion,
-          projection.componentCount,
-          projection.symbols.length,
-          now,
-        ],
-      ),
-    );
-    for (let offset = 0; offset < projection.symbols.length; offset += PROJECTION_INSERT_BATCH_SIZE) {
-      const page = projection.symbols.slice(offset, offset + PROJECTION_INSERT_BATCH_SIZE);
-      yield* sql.withTransaction(
-        Effect.forEach(page, symbol => insertRoutingSymbol(sql, projection.projectionDigest, symbol), {
-          concurrency: 1,
-          discard: true,
-        }),
-      );
-    }
-    const stored = yield* loadAndValidateProjection(sql, projection.projectionDigest);
-    if (stored.receipt.projectionDigest !== projection.projectionDigest) {
-      return yield* Effect.fail(corrupt('Staged routing projection changed before publication.'));
-    }
-    yield* sql.withTransaction(
-      sql.unsafe(
-        `UPDATE repository_snapshots SET state = 'ready'
-         WHERE projection_digest = ? AND state = 'staging'`,
-        [projection.projectionDigest],
-      ),
-    );
-    if ((yield* changes(sql)) !== 1) {
-      return yield* Effect.fail(corrupt('Routing projection publication lost its staging state.'));
-    }
-  });
 }
 
 export function insertRoutingSymbol(
@@ -557,7 +526,9 @@ export function loadAndValidateProjection(sql: SqlClient.SqlClient, projectionDi
 export function decodeProjectionMetadata(row: ProjectionRow) {
   return validateStored(() => {
     const state = requiredText(row.state, 'projection state');
-    if (state !== 'ready' && state !== 'staging') throw corrupt('Routing projection state is invalid.');
+    if (state !== 'ready' && state !== 'reclaiming' && state !== 'staging') {
+      throw corrupt('Routing projection state is invalid.');
+    }
     const projectionDigest = requiredText(row.projection_digest, 'projection digest');
     const repositoryId = requiredText(row.repository_id, 'repository identity');
     const checkoutId = requiredText(row.checkout_id, 'checkout identity');
@@ -1040,6 +1011,10 @@ export function inspectCatalogLayout(
           const schemaVersion = yield* inspectCodeGraphWorksetCatalogSchemaVersion(sql);
           if (schemaVersion !== CODE_GRAPH_WORKSET_CATALOG_SCHEMA_VERSION) {
             return {schemaVersion: schemaVersion ?? 0, state: 'incompatible'} as const;
+          }
+          const pageSize = yield* inspectCodeGraphWorksetCatalogPageSize(sql);
+          if (pageSize !== CODE_GRAPH_WORKSET_CATALOG_PAGE_SIZE_BYTES) {
+            return {schemaVersion, state: 'incompatible'} as const;
           }
           const quick = yield* sql.unsafe<{readonly quick_check: unknown}>('PRAGMA quick_check');
           if (quick.length !== 1 || quick[0]?.quick_check !== 'ok') {

@@ -553,7 +553,6 @@ function isOwnedFile(fs: FileSystem.FileSystem, file: string): Effect.Effect<boo
 function pathEntryExists(fs: FileSystem.FileSystem, target: string): Effect.Effect<boolean, never> {
   return Effect.all([fs.stat(target).pipe(Effect.option), fs.readLink(target).pipe(Effect.option)]).pipe(
     Effect.map(([info, link]) => Option.isSome(info) || Option.isSome(link)),
-    Effect.catch(() => Effect.succeed(false)),
   );
 }
 
@@ -1526,17 +1525,14 @@ function planLegacyShareMigrations(
     const teamsPath = path.join(legacyHome, 'share', 'teams.json');
     if (!(yield* fs.exists(teamsPath))) return [];
     const raw = yield* fs.readFileString(teamsPath);
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(raw);
-    } catch {
-      return yield* Effect.fail(
+    const parsed = yield* Effect.try({
+      try: () => JSON.parse(raw) as unknown,
+      catch: () =>
         new HomeMigrationUnsafe({
           message: 'Legacy share teams file is not valid JSON.',
           path: teamsPath,
         }),
-      );
-    }
+    });
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return [];
     const teams = (parsed as {readonly teams?: unknown}).teams;
     if (typeof teams !== 'object' || teams === null || Array.isArray(teams)) return [];

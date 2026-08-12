@@ -1,3 +1,4 @@
+import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import {Effect, FileSystem, Path} from 'effect';
 import {codeGraphLayout} from '../src/code_graph/layout.js';
@@ -140,7 +141,7 @@ const evaluateNativeCodeGraph = Effect.scoped(
         metrics,
         observations,
       });
-      return yield* Effect.fail(new Error(gateFailures.join('\n')));
+      return yield* Effect.fail(new ScriptError(gateFailures.join('\n')));
     }
     const baseline: CodeGraphEvaluationBaselineV1 = {
       createdAt: options.createdAt,
@@ -206,14 +207,14 @@ function parseArguments(args: readonly string[]): {
     if (argument === '--output') outputPath = required(args[++index], argument);
     else if (argument === '--fixture') fixture = required(args[++index], argument);
     else if (argument === '--created-at') createdAt = new Date(required(args[++index], argument)).toISOString();
-    else throw new Error(`Unknown code graph evaluation option: ${argument}`);
+    else throw new ScriptError(`Unknown code graph evaluation option: ${argument}`);
   }
-  if (!/^code-graph-[a-z0-9-]+$/.test(fixture)) throw new Error(`Invalid code graph fixture name: ${fixture}.`);
+  if (!/^code-graph-[a-z0-9-]+$/.test(fixture)) throw new ScriptError(`Invalid code graph fixture name: ${fixture}.`);
   return {createdAt, fixture, outputPath};
 }
 
 function required(value: string | undefined, option: string): string {
-  if (!value?.trim()) throw new Error(`${option} requires a value`);
+  if (!value?.trim()) throw new ScriptError(`${option} requires a value`);
   return value;
 }
 
@@ -224,8 +225,9 @@ const replaceContractSymbol = Effect.fn('codeGraphEvaluation.replaceContractSymb
   to: string,
 ) {
   const content = yield* fs.readFileString(target);
-  if (!content.includes(from)) return yield* Effect.fail(new Error(`Evaluation fixture does not contain ${from}.`));
+  if (!content.includes(from))
+    return yield* Effect.fail(new ScriptError(`Evaluation fixture does not contain ${from}.`));
   yield* fs.writeFileString(target, content.replaceAll(from, to));
 });
 
-BunRuntime.runMain(evaluateNativeCodeGraph.pipe(Effect.provide(ApplicationLayer)));
+BunRuntime.runMain(provideScriptLayer(evaluateNativeCodeGraph, ApplicationLayer));

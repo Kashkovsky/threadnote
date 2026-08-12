@@ -1,3 +1,4 @@
+import {provideTestLayer} from '../helpers/effect-layer.js';
 import {Database} from 'bun:sqlite';
 import {it as effectIt} from '@effect/vitest';
 import {Deferred, Effect, Fiber, FileSystem, Path, Ref} from 'effect';
@@ -154,7 +155,7 @@ describe('routine code graph maintenance', () => {
           ),
         ),
       ).toBe(false);
-    }).pipe(Effect.provide(ApplicationLayer), TestClock.withLive),
+    }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );
 
   it('reclaims exactly one physical table page per tick and becomes idempotent', async () => {
@@ -764,7 +765,7 @@ describe('routine code graph maintenance', () => {
           reopened.close(false);
         }
       });
-    }).pipe(Effect.provide(ApplicationLayer)),
+    }).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('does not mutate a populated unversioned lease table that lost its expiry index', () =>
@@ -824,7 +825,7 @@ describe('routine code graph maintenance', () => {
           reopened.close(false);
         }
       });
-    }).pipe(Effect.provide(ApplicationLayer)),
+    }).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('preserves a flagged expiry baton when the bounded successor index is unavailable', () =>
@@ -898,7 +899,7 @@ describe('routine code graph maintenance', () => {
           reopened.close(false);
         }
       });
-    }).pipe(Effect.provide(ApplicationLayer)),
+    }).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it('skips an incomplete base schema before applying the additive lease migration', async () => {
@@ -1301,7 +1302,7 @@ describe('routine code graph maintenance', () => {
         'snapshots_base_state_id',
       ]);
       expect(yield* store.prepareWorktreeReconciliationIndexes(databasePath)).toEqual({state: 'ready'});
-    }).pipe(Effect.provide(ApplicationLayer)),
+    }).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect.prop(

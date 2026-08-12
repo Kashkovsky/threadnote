@@ -1,8 +1,9 @@
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import * as BunServices from '@effect/platform-bun/BunServices';
-import {Effect, Runtime} from 'effect';
+import {Effect, Layer, Runtime} from 'effect';
 import {withCliOutputConsole} from './effect/cli_output.js';
 import {
+  CODE_GRAPH_COMPACTION_WORKER_ARGUMENT,
   CODE_GRAPH_DEEP_DIAGNOSTICS_WORKER_ARGUMENT,
   CODE_GRAPH_GIT_WORKTREE_REGISTRATION_WORKER_ARGUMENT,
   CODE_GRAPH_PARSER_WORKER_ARGUMENT,
@@ -13,6 +14,7 @@ const executableName = process.execPath.replaceAll('\\', '/').split('/').at(-1)?
 const arguments_ = process.argv.slice(2);
 const isLocalModelWorker = arguments_[0] === LOCAL_MODEL_WORKER_ARGUMENT;
 const isCodeGraphParserWorker = arguments_[0] === CODE_GRAPH_PARSER_WORKER_ARGUMENT;
+const isCodeGraphCompactionWorker = arguments_[0] === CODE_GRAPH_COMPACTION_WORKER_ARGUMENT;
 const isCodeGraphDeepDiagnosticsWorker = arguments_[0] === CODE_GRAPH_DEEP_DIAGNOSTICS_WORKER_ARGUMENT;
 const isGitWorktreeRegistrationWorker = arguments_[0] === CODE_GRAPH_GIT_WORKTREE_REGISTRATION_WORKER_ARGUMENT;
 const isMcpServer = executableName?.startsWith('threadnote-mcp-server') === true || arguments_[0] === 'mcp-server';
@@ -24,12 +26,17 @@ const runSignalTransparentMain = Runtime.makeRunMain(({fiber, teardown}) => {
   });
 });
 
-if (isCodeGraphDeepDiagnosticsWorker) {
+if (isCodeGraphDeepDiagnosticsWorker || isCodeGraphCompactionWorker) {
   // SQLite's integrity_check is synchronous native work. This worker must keep
   // the OS default SIGTERM behavior so the lock-owning parent can always stop it.
-  runSignalTransparentMain(await codeGraphDeepDiagnosticsWorkerProgram(), {disableErrorReporting: true});
+  runSignalTransparentMain(
+    isCodeGraphCompactionWorker
+      ? await codeGraphAutomaticCompactionWorkerProgram()
+      : await codeGraphDeepDiagnosticsWorkerProgram(),
+    {disableErrorReporting: true},
+  );
 } else {
-  const program = isLocalModelWorker
+  const program: Effect.Effect<void, unknown, never> = isLocalModelWorker
     ? await localModelWorkerProgram(arguments_)
     : isCodeGraphParserWorker
       ? await codeGraphParserWorkerProgram(arguments_)
@@ -48,20 +55,30 @@ async function codeGraphDeepDiagnosticsWorkerProgram() {
   return worker.codeGraphDeepDiagnosticsWorkerProgram.pipe(Effect.provide(BunServices.layer));
 }
 
+async function codeGraphAutomaticCompactionWorkerProgram() {
+  const [worker, system] = await Promise.all([
+    import('./code_graph/automatic_compaction.js'),
+    import('./effect/system.js'),
+  ]);
+  return worker.codeGraphAutomaticCompactionWorkerProgram.pipe(
+    Effect.provide(Layer.merge(system.SystemInfo.layer, BunServices.layer)),
+  );
+}
+
 async function gitWorktreeRegistrationWorkerProgram() {
   const [worker, system] = await Promise.all([
     import('./code_graph/git_worktree_registration_worker.js'),
     import('./effect/system.js'),
   ]);
   return worker.gitWorktreeRegistrationWorkerProgram.pipe(
-    Effect.provide(system.SystemInfo.layer),
-    Effect.provide(BunServices.layer),
+    Effect.provide(Layer.merge(system.SystemInfo.layer, BunServices.layer)),
   );
 }
 
 async function localModelWorkerProgram(arguments_: readonly string[]) {
-  const [model, systemModule, processDiagnostics, processLease] = await Promise.all([
+  const [isolatedModel, model, systemModule, processDiagnostics, processLease] = await Promise.all([
     import('./effect/ai/isolated-local-model-runtime.js'),
+    import('./effect/ai/local-model-runtime.js'),
     import('./effect/system.js'),
     import('./process_diagnostics.js'),
     import('./standalone_process_lease.js'),
@@ -73,13 +90,12 @@ async function localModelWorkerProgram(arguments_: readonly string[]) {
         processDiagnostics.withThreadnoteProcessRegistration(
           home,
           'local-model-worker',
-          Effect.scoped(model.nativeLocalModelWorkerServer),
+          Effect.scoped(isolatedModel.localModelWorkerServer.pipe(Effect.provide(model.localModelRuntimeLayer()))),
           'model-stdio',
         ),
       ),
     ),
-    Effect.provide(systemModule.SystemInfo.layer),
-    Effect.provide(BunServices.layer),
+    Effect.provide(Layer.merge(systemModule.SystemInfo.layer, BunServices.layer)),
   );
 }
 
@@ -103,9 +119,11 @@ async function codeGraphParserWorkerProgram(arguments_: readonly string[]) {
         ),
       ),
     ),
-    Effect.provide(treeSitter.TreeSitterRuntime.layer),
-    Effect.provide(systemModule.SystemInfo.layer),
-    Effect.provide(BunServices.layer),
+    Effect.provide(
+      treeSitter.TreeSitterRuntime.layer.pipe(
+        Layer.provideMerge(Layer.merge(systemModule.SystemInfo.layer, BunServices.layer)),
+      ),
+    ),
   );
 }
 

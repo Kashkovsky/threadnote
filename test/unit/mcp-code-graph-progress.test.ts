@@ -1,3 +1,5 @@
+import {it as effectIt} from '@effect/vitest';
+import {TestError} from '../helpers/test-error.js';
 import {describe, expect, it} from '@effect/vitest';
 import {Effect} from 'effect';
 import * as FC from 'effect/testing/FastCheck';
@@ -368,197 +370,200 @@ describe('MCP code graph indexing progress', () => {
     });
   });
 
-  it('marks a small stats projection complete when all stats evidence fits', async () => {
-    const first = analysisSymbol('stats-first', '@acme/stats', 'src/stats.ts');
-    const second = analysisSymbol('stats-second', '@acme/stats', 'src/stats.ts');
-    const edges = [analysisEdge('stats-edge', first, second, 'contains')];
-    const analysis = await Effect.runPromise(
-      analyzeCodeGraph(pagedAnalysisStore([first, second], edges), {
+  effectIt.effect('marks a small stats projection complete when all stats evidence fits', () =>
+    Effect.gen(function* () {
+      const first = analysisSymbol('stats-first', '@acme/stats', 'src/stats.ts');
+      const second = analysisSymbol('stats-second', '@acme/stats', 'src/stats.ts');
+      const edges = [analysisEdge('stats-edge', first, second, 'contains')];
+      const analysis = yield* analyzeCodeGraph(pagedAnalysisStore([first, second], edges), {
         databasePath: ':memory:',
         limits: codeGraphMcpAnalysisLimits('stats', 24),
         snapshot: analysisSnapshot([first, second], edges),
-      }),
-    );
+      });
 
-    const response = codeGraphAnalysisMcpResponse(analysis, 'stats', {
-      displayName: 'Fixture/stats',
-      repositoryId: 'repository-id',
-    });
+      const response = codeGraphAnalysisMcpResponse(analysis, 'stats', {
+        displayName: 'Fixture/stats',
+        repositoryId: 'repository-id',
+      });
 
-    expect(response.structuredContent.output.structuredContent).toEqual({
-      budgetBytes: 24 * 1_024,
-      byteLength: expect.any(Number),
-      complete: true,
-      omitted: {},
-      truncated: false,
-      truncatedStrings: 0,
-    });
-    expect(response.structuredContent.output.text).toMatchObject({complete: true, truncated: false});
-    expect(response.structuredContent.result).toMatchObject({
-      communities: [],
-      components: [],
-      confidenceAudit: {findings: [], provenances: []},
-      hubs: [],
-      memberships: [],
-      relationshipGroups: [],
-      surprisingLinks: [],
-    });
-    expect(response.text).toContain('structured projection complete');
-  });
+      expect(response.structuredContent.output.structuredContent).toEqual({
+        budgetBytes: 24 * 1_024,
+        byteLength: expect.any(Number),
+        complete: true,
+        omitted: {},
+        truncated: false,
+        truncatedStrings: 0,
+      });
+      expect(response.structuredContent.output.text).toMatchObject({complete: true, truncated: false});
+      expect(response.structuredContent.result).toMatchObject({
+        communities: [],
+        components: [],
+        confidenceAudit: {findings: [], provenances: []},
+        hubs: [],
+        memberships: [],
+        relationshipGroups: [],
+        surprisingLinks: [],
+      });
+      expect(response.text).toContain('structured projection complete');
+    }),
+  );
 
-  it('excludes unrelated topology arrays before stats truncation and byte accounting', async () => {
-    const first = analysisSymbol('scoped-first', '@acme/scoped', 'src/scoped.ts');
-    const second = analysisSymbol('scoped-second', '@acme/scoped', 'src/scoped.ts');
-    const symbols = [first, second];
-    const edges = [analysisEdge('scoped-edge', first, second, 'contains')];
-    const store = pagedAnalysisStore(symbols, edges);
-    const snapshot = analysisSnapshot(symbols, edges);
-    const [stats, topology] = await Promise.all([
-      Effect.runPromise(
-        analyzeCodeGraph(store, {
-          databasePath: ':memory:',
-          limits: codeGraphMcpAnalysisLimits('stats', 24),
-          snapshot,
+  effectIt.effect('excludes unrelated topology arrays before stats truncation and byte accounting', () =>
+    Effect.gen(function* () {
+      const first = analysisSymbol('scoped-first', '@acme/scoped', 'src/scoped.ts');
+      const second = analysisSymbol('scoped-second', '@acme/scoped', 'src/scoped.ts');
+      const symbols = [first, second];
+      const edges = [analysisEdge('scoped-edge', first, second, 'contains')];
+      const store = pagedAnalysisStore(symbols, edges);
+      const snapshot = analysisSnapshot(symbols, edges);
+      const [stats, topology] = yield* Effect.all(
+        [
+          analyzeCodeGraph(store, {
+            databasePath: ':memory:',
+            limits: codeGraphMcpAnalysisLimits('stats', 24),
+            snapshot,
+          }),
+          analyzeCodeGraph(store, {databasePath: ':memory:', snapshot}),
+        ],
+        {concurrency: 2},
+      );
+      const community = topology.communities[0];
+      const component = topology.components[0];
+      const membership = topology.memberships[0];
+      expect(community).toBeDefined();
+      expect(component).toBeDefined();
+      expect(membership).toBeDefined();
+      if (!community || !component || !membership) throw new TestError('Expected topology fixtures.');
+      const longRepositoryText = '界'.repeat(800);
+      const noisyStats = {
+        ...stats,
+        communities: Array.from({length: 200}, (_, index) => ({
+          ...community,
+          label: `irrelevant-community-${index}-${longRepositoryText}`,
+        })),
+        components: Array.from({length: 200}, (_, index) => ({
+          ...component,
+          label: `irrelevant-component-${index}-${longRepositoryText}`,
+        })),
+        memberships: Array.from({length: 200}, (_, index) => ({
+          ...membership,
+          node: {
+            ...membership.node,
+            path: `src/irrelevant-${index}-${longRepositoryText}.ts`,
+          },
+        })),
+      };
+      const repository = {displayName: 'Fixture/scoped-stats', repositoryId: 'repository-id'};
+
+      const clean = codeGraphAnalysisMcpResponse(stats, 'stats', repository);
+      const noisy = codeGraphAnalysisMcpResponse(noisyStats, 'stats', repository);
+
+      expect(noisy).toEqual(clean);
+      expect(noisy.structuredContent.output.structuredContent).toMatchObject({
+        complete: true,
+        omitted: {},
+        truncated: false,
+        truncatedStrings: 0,
+      });
+      expect(new TextEncoder().encode(JSON.stringify(noisy.structuredContent)).byteLength).toBeLessThanOrEqual(
+        24 * 1_024,
+      );
+    }),
+  );
+
+  effectIt.effect('independently bounds deterministic MCP analysis text and structured projections', () =>
+    Effect.gen(function* () {
+      const path = `src/${'深'.repeat(600)}.ts`;
+      const symbols = Array.from({length: 180}, (_, index) =>
+        analysisSymbol(`node-${index.toString().padStart(4, '0')}`, '@acme/large', path, {
+          name: `node-${index}-${'🙂'.repeat(300)}`,
+          qualifiedName: `Fixture.${'Namespace.'.repeat(100)}node${index}`,
         }),
-      ),
-      Effect.runPromise(analyzeCodeGraph(store, {databasePath: ':memory:', snapshot})),
-    ]);
-    const community = topology.communities[0];
-    const component = topology.components[0];
-    const membership = topology.memberships[0];
-    expect(community).toBeDefined();
-    expect(component).toBeDefined();
-    expect(membership).toBeDefined();
-    if (!community || !component || !membership) throw new Error('Expected topology fixtures.');
-    const longRepositoryText = '界'.repeat(800);
-    const noisyStats = {
-      ...stats,
-      communities: Array.from({length: 200}, (_, index) => ({
-        ...community,
-        label: `irrelevant-community-${index}-${longRepositoryText}`,
-      })),
-      components: Array.from({length: 200}, (_, index) => ({
-        ...component,
-        label: `irrelevant-component-${index}-${longRepositoryText}`,
-      })),
-      memberships: Array.from({length: 200}, (_, index) => ({
-        ...membership,
-        node: {
-          ...membership.node,
-          path: `src/irrelevant-${index}-${longRepositoryText}.ts`,
-        },
-      })),
-    };
-    const repository = {displayName: 'Fixture/scoped-stats', repositoryId: 'repository-id'};
-
-    const clean = codeGraphAnalysisMcpResponse(stats, 'stats', repository);
-    const noisy = codeGraphAnalysisMcpResponse(noisyStats, 'stats', repository);
-
-    expect(noisy).toEqual(clean);
-    expect(noisy.structuredContent.output.structuredContent).toMatchObject({
-      complete: true,
-      omitted: {},
-      truncated: false,
-      truncatedStrings: 0,
-    });
-    expect(new TextEncoder().encode(JSON.stringify(noisy.structuredContent)).byteLength).toBeLessThanOrEqual(
-      24 * 1_024,
-    );
-  });
-
-  it('independently bounds deterministic MCP analysis text and structured projections', async () => {
-    const path = `src/${'深'.repeat(600)}.ts`;
-    const symbols = Array.from({length: 180}, (_, index) =>
-      analysisSymbol(`node-${index.toString().padStart(4, '0')}`, '@acme/large', path, {
-        name: `node-${index}-${'🙂'.repeat(300)}`,
-        qualifiedName: `Fixture.${'Namespace.'.repeat(100)}node${index}`,
-      }),
-    );
-    const edges = symbols.slice(1).map((symbol, index) => analysisEdge(`edge-${index}`, symbols[index]!, symbol));
-    const store = pagedAnalysisStore(symbols, edges);
-    const snapshot = analysisSnapshot(symbols, edges);
-    const communities = await Effect.runPromise(
-      analyzeCodeGraph(store, {
+      );
+      const edges = symbols.slice(1).map((symbol, index) => analysisEdge(`edge-${index}`, symbols[index]!, symbol));
+      const store = pagedAnalysisStore(symbols, edges);
+      const snapshot = analysisSnapshot(symbols, edges);
+      const communities = yield* analyzeCodeGraph(store, {
         databasePath: ':memory:',
         limits: codeGraphMcpAnalysisLimits('communities', 24),
         snapshot,
-      }),
-    );
-    const communityId = communities.communities[0]?.id;
-    expect(communityId).toMatch(/^cgc_[a-f0-9]{32}$/);
-    if (!communityId) throw new Error('Expected one deterministic fixture community.');
-    const analysis = await Effect.runPromise(
-      analyzeCodeGraph(store, {
+      });
+      const communityId = communities.communities[0]?.id;
+      expect(communityId).toMatch(/^cgc_[a-f0-9]{32}$/);
+      if (!communityId) throw new TestError('Expected one deterministic fixture community.');
+      const analysis = yield* analyzeCodeGraph(store, {
         communityId,
         databasePath: ':memory:',
         limits: codeGraphMcpAnalysisLimits('community', 5_000),
         snapshot,
-      }),
-    );
-    const verbose = {
-      ...analysis,
-      warnings: Array.from({length: 5_000}, () => ''),
-    };
-    const first = codeGraphAnalysisMcpResponse(verbose, 'community', {
-      displayName: `Fixture/${'界'.repeat(2_000)}`,
-      repositoryId: 'repository-id',
-    });
-    const second = codeGraphAnalysisMcpResponse(verbose, 'community', {
-      displayName: `Fixture/${'界'.repeat(2_000)}`,
-      repositoryId: 'repository-id',
-    });
-    const structuredBytes = new TextEncoder().encode(JSON.stringify(first.structuredContent)).byteLength;
-    const textBytes = new TextEncoder().encode(first.text).byteLength;
+      });
+      const verbose = {
+        ...analysis,
+        warnings: Array.from({length: 5_000}, () => ''),
+      };
+      const first = codeGraphAnalysisMcpResponse(verbose, 'community', {
+        displayName: `Fixture/${'界'.repeat(2_000)}`,
+        repositoryId: 'repository-id',
+      });
+      const second = codeGraphAnalysisMcpResponse(verbose, 'community', {
+        displayName: `Fixture/${'界'.repeat(2_000)}`,
+        repositoryId: 'repository-id',
+      });
+      const structuredBytes = new TextEncoder().encode(JSON.stringify(first.structuredContent)).byteLength;
+      const textBytes = new TextEncoder().encode(first.text).byteLength;
 
-    expect(first).toEqual(second);
-    expect(structuredBytes).toBeLessThanOrEqual(24 * 1_024);
-    expect(textBytes).toBeLessThanOrEqual(24 * 1_024);
-    expect(first.structuredContent).toMatchObject({
-      output: {
-        analysisCoverage: {topology: analysis.coverage.topology.state},
-        structuredContent: {
-          budgetBytes: 24 * 1_024,
-          byteLength: structuredBytes,
-          complete: false,
-          omitted: {
-            communityMembers: expect.any(Number),
+      expect(first).toEqual(second);
+      expect(structuredBytes).toBeLessThanOrEqual(24 * 1_024);
+      expect(textBytes).toBeLessThanOrEqual(24 * 1_024);
+      expect(first.structuredContent).toMatchObject({
+        output: {
+          analysisCoverage: {topology: analysis.coverage.topology.state},
+          structuredContent: {
+            budgetBytes: 24 * 1_024,
+            byteLength: structuredBytes,
+            complete: false,
+            omitted: {
+              communityMembers: expect.any(Number),
+            },
+            truncated: true,
+            truncatedStrings: expect.any(Number),
           },
-          truncated: true,
-          truncatedStrings: expect.any(Number),
+          text: {
+            budgetBytes: 24 * 1_024,
+            byteLength: textBytes,
+            complete: false,
+            truncated: true,
+          },
         },
-        text: {
-          budgetBytes: 24 * 1_024,
-          byteLength: textBytes,
-          complete: false,
-          truncated: true,
-        },
-      },
-      sourceVersion: analysis.version,
-      type: 'code-graph-analysis',
-      version: 1,
-    });
-    expect(first.text).toContain('MCP text output coverage: truncated');
-    expect(first.structuredContent.result.coverage).toEqual(analysis.coverage);
-  });
+        sourceVersion: analysis.version,
+        type: 'code-graph-analysis',
+        version: 1,
+      });
+      expect(first.text).toContain('MCP text output coverage: truncated');
+      expect(first.structuredContent.result.coverage).toEqual(analysis.coverage);
+    }),
+  );
 
-  it('marks MCP topology unavailable above the retained-node cap without changing the analysis defaults', async () => {
-    const symbols = [analysisSymbol('one', '@acme/capped', 'src/one.ts')];
-    const snapshot = {...analysisSnapshot(symbols, []), symbolCount: codeGraphMcpAnalysisBudget().maxNodes! + 1};
-    const result = await Effect.runPromise(
-      analyzeCodeGraph(pagedAnalysisStore(symbols, []), {
-        budget: codeGraphMcpAnalysisBudget(),
-        databasePath: ':memory:',
-        limits: codeGraphMcpAnalysisLimits('hubs', 24),
-        snapshot,
+  effectIt.effect(
+    'marks MCP topology unavailable above the retained-node cap without changing the analysis defaults',
+    () =>
+      Effect.gen(function* () {
+        const symbols = [analysisSymbol('one', '@acme/capped', 'src/one.ts')];
+        const snapshot = {...analysisSnapshot(symbols, []), symbolCount: codeGraphMcpAnalysisBudget().maxNodes! + 1};
+        const result = yield* analyzeCodeGraph(pagedAnalysisStore(symbols, []), {
+          budget: codeGraphMcpAnalysisBudget(),
+          databasePath: ':memory:',
+          limits: codeGraphMcpAnalysisLimits('hubs', 24),
+          snapshot,
+        });
+
+        expect(result.budget).toMatchObject(codeGraphMcpAnalysisBudget());
+        expect(result.coverage.topology.state).toBe('unavailable');
+        expect(result.warnings).toContain(
+          `Topology was not derived because only 1 of ${snapshot.symbolCount.toLocaleString()} symbols fit the node/time budget.`,
+        );
       }),
-    );
-
-    expect(result.budget).toMatchObject(codeGraphMcpAnalysisBudget());
-    expect(result.coverage.topology.state).toBe('unavailable');
-    expect(result.warnings).toContain(
-      `Topology was not derived because only 1 of ${snapshot.symbolCount.toLocaleString()} symbols fit the node/time budget.`,
-    );
-  });
+  );
 
   it.prop(
     'never exceeds MCP context budgets across result cardinalities',

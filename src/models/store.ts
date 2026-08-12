@@ -72,18 +72,15 @@ export class LocalModelStore extends Context.Service<LocalModelStore, LocalModel
     return Layer.effect(
       LocalModelStore,
       Effect.gen(function* () {
-        const crypto = yield* Crypto.Crypto;
         const fs = yield* FileSystem.FileSystem;
         const http = yield* HttpService;
         const path = yield* Path.Path;
         const system = yield* SystemInfo;
-        const providePlatform = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-          effect.pipe(
-            Effect.provideService(Crypto.Crypto, crypto),
-            Effect.provideService(FileSystem.FileSystem, fs),
-            Effect.provideService(Path.Path, path),
-            Effect.provideService(SystemInfo, system),
-          ) as Effect.Effect<A, E, Exclude<R, Crypto.Crypto | FileSystem.FileSystem | Path.Path | SystemInfo>>;
+        const platform = yield* Effect.context<Crypto.Crypto | FileSystem.FileSystem | Path.Path | SystemInfo>();
+        const providePlatform = <A, E, R>(
+          effect: Effect.Effect<A, E, R>,
+        ): Effect.Effect<A, E, Exclude<R, Crypto.Crypto | FileSystem.FileSystem | Path.Path | SystemInfo>> =>
+          effect.pipe(Effect.provide(platform));
         return LocalModelStore.of(makeLocalModelStore(fs, http, path, system, providePlatform, options));
       }),
     );
@@ -91,6 +88,11 @@ export class LocalModelStore extends Context.Service<LocalModelStore, LocalModel
 
   static readonly layer = LocalModelStore.layerWith();
 }
+
+// GitHub marks these releases immutable, and each asset is named by its verified model digest.
+const THREADNOTE_MODEL_RELEASES_BY_SHA256: Readonly<Record<string, string>> = {
+  f046db1dc724cf4f6f0a0c5917e922823b73eb1d27b8f9a9c2797f7866974804: 'v4.1.1',
+};
 
 function makeLocalModelStore(
   fs: FileSystem.FileSystem,
@@ -301,7 +303,7 @@ function makeLocalModelStore(
           yield* cacheVerifiedInstallation(home, manifest, installed);
           return installed;
         }),
-      ) as Effect.Effect<LocalModelInstallResult, LocalModelStoreError>,
+      ),
     path: modelPath,
     remove: (home, manifest) =>
       withModelLock(
@@ -315,7 +317,7 @@ function makeLocalModelStore(
           verifiedModels.delete(verificationCacheKey(home, manifest));
           return true;
         }),
-      ) as Effect.Effect<boolean, LocalModelStoreError>,
+      ),
     status,
     verify: (home, manifest) =>
       cachedVerification(home, manifest).pipe(
@@ -324,11 +326,15 @@ function makeLocalModelStore(
             ? Effect.succeed(cached.value)
             : withModelLock(home, manifest, 'verify', verifyUnlocked(home, manifest, true)),
         ),
-      ) as Effect.Effect<LocalModelInstallation, LocalModelStoreError>,
+      ),
   };
 }
 
 export function modelDownloadUrl(manifest: LocalModelManifest): string {
+  const threadnoteRelease = THREADNOTE_MODEL_RELEASES_BY_SHA256[manifest.sha256];
+  if (threadnoteRelease) {
+    return `https://github.com/Kashkovsky/threadnote/releases/download/${threadnoteRelease}/${manifest.sha256}.gguf`;
+  }
   const repository = manifest.repository.split('/').filter(Boolean).map(encodeURIComponent).join('/');
   const file = manifest.file.split('/').filter(Boolean).map(encodeURIComponent).join('/');
   return `https://huggingface.co/${repository}/resolve/${manifest.revision}/${file}`;

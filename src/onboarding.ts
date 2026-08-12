@@ -30,17 +30,11 @@ export const gatherOnboardingContext = Effect.fn('onboarding.gatherContext')(fun
 });
 
 const safeTeams = Effect.fn('onboarding.safeTeams')((config: OnboardingConfig) =>
-  readTeamsFile(config).pipe(
-    Effect.map(file => Object.keys(file.teams ?? {}).sort()),
-    Effect.catch(() => Effect.succeed([])),
-  ),
+  readTeamsFile(config).pipe(Effect.map(file => Object.keys(file.teams ?? {}).sort())),
 );
 
 const safeSeededProjects = Effect.fn('onboarding.safeSeededProjects')((config: OnboardingConfig) =>
-  readSeedManifest(config.manifestPath).pipe(
-    Effect.map(manifest => manifest.projects.map(project => project.name)),
-    Effect.catch(() => Effect.succeed([])),
-  ),
+  readSeedManifest(config.manifestPath).pipe(Effect.map(manifest => manifest.projects.map(project => project.name))),
 );
 
 // Builds the agent-facing onboarding walkthrough. Pure and deterministic so it is

@@ -1,4 +1,4 @@
-import {Cause, Clock, Crypto, Effect, FileSystem, Option, Path} from 'effect';
+import {Cause, Clock, Crypto, Effect, FileSystem, Layer, Option, Path} from 'effect';
 import * as SqliteClient from '@effect/sql-sqlite-bun/SqliteClient';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {SEED_STATE_FILE} from '../constants.js';
@@ -17,19 +17,30 @@ import {redactSensitiveText} from '../scrubber.js';
 import {canonicalResourceUri, parseResourceId} from '../storage/resource-id.js';
 import type {ProjectManifest} from '../types.js';
 import {errorMessage, expandPath, globToRegExp} from '../utils.js';
+import {
+  POSTING_BM25_LENGTH_NORMALIZATION,
+  POSTING_BM25_SATURATION,
+  POSTING_IDENTIFIER_WEIGHT,
+  candidatePostings,
+  identifiers,
+  indexTerms,
+  postingInverseDocumentFrequency,
+  postingLexicalScore,
+  selectQueryTerms,
+  stripRecallAnchor,
+  type RecallIndexPosting,
+  type RecallQueryTermStatistics,
+} from './index_lexical.js';
 import {recallDocumentTerms, type RecallCandidate, type RecallCorpusStatistics} from './rank.js';
+
+class RecallIndexOperationError extends Error {
+  readonly _tag = 'RecallIndexOperationError' as const;
+}
 
 interface RecallIndexSource {
   readonly modifiedAt?: string;
   readonly path: string;
   readonly size: number;
-  readonly uri: string;
-}
-
-interface RecallIndexPosting {
-  readonly documentLength: number;
-  readonly fieldWeight: number;
-  readonly termFrequency: number;
   readonly uri: string;
 }
 
@@ -126,11 +137,6 @@ interface RecallTermStatisticRow {
   readonly term: string;
 }
 
-interface RecallQueryTermStatistics {
-  readonly documentCount: number;
-  readonly documentFrequency: Readonly<Record<string, number>>;
-}
-
 interface IndexedRecallSource {
   readonly candidate: RecallCandidate;
   readonly documentLength: number;
@@ -150,19 +156,8 @@ const MAX_INDEXED_FILE_BYTES = 512 * 1_024;
 const DEFAULT_QUERY_RESULT_LIMIT = 100;
 const QUERY_POSTING_POOL_MULTIPLIER = 5;
 const MINIMUM_QUERY_POSTING_POOL = 500;
-const MAX_QUERY_TERMS = 32;
-const POSTING_IDENTIFIER_WEIGHT = 4;
-const POSTING_TITLE_WEIGHT = 3;
-const POSTING_TOPIC_WEIGHT = 2;
-const POSTING_KEYWORD_WEIGHT = 2;
-const POSTING_PROJECT_WEIGHT = 1;
-const POSTING_BODY_WEIGHT = 1;
-const POSTING_BM25_SATURATION = 1.2;
-const POSTING_BM25_LENGTH_NORMALIZATION = 0.75;
-const POSTING_BM25_IDF_SMOOTHING = 0.5;
 const SEED_FILE_MTIME_TOLERANCE_MILLISECONDS = 1;
 const TEXT_EXTENSIONS = new Set(['.json', '.md', '.mdx', '.txt', '.yaml', '.yml']);
-const IDENTIFIER_PATTERN = /[a-z0-9][a-z0-9_.-]{2,}/gi;
 let staleGenerationCounter = 0;
 
 interface RecallIndexPointer {
@@ -328,7 +323,7 @@ const recoverRecallIndex = Effect.fn('recall.recoverIndex')(function* (
       ).pipe(
         Effect.catchCause(secondCause =>
           Effect.fail(
-            new Error(
+            new RecallIndexOperationError(
               `Lexical recall index recovery failed: ${Cause.pretty(firstCause)}; replacement failed: ${Cause.pretty(secondCause)}`,
             ),
           ),
@@ -634,88 +629,6 @@ const selectRecallExactMatches = Effect.fn('recall.selectExactMatches')(function
     })) satisfies readonly RecallExactMatch[];
 });
 
-function candidatePostings(candidate: RecallCandidate): ReadonlyMap<string, RecallIndexPosting> {
-  const weights = new Map<string, number>();
-  const add = (value: string | readonly string[] | undefined, weight: number): void => {
-    if (value === undefined) {
-      return;
-    }
-    for (const term of new Set(indexTerms(typeof value === 'string' ? value : value.join(' ')))) {
-      weights.set(term, Math.max(weight, weights.get(term) ?? 0));
-    }
-  };
-  add(candidate.text, POSTING_BODY_WEIGHT);
-  add(candidate.fields?.project, POSTING_PROJECT_WEIGHT);
-  add(candidate.fields?.topic, POSTING_TOPIC_WEIGHT);
-  add(candidate.fields?.keywords, POSTING_KEYWORD_WEIGHT);
-  add(candidate.fields?.title, POSTING_TITLE_WEIGHT);
-  add(candidate.fields?.identifiers, POSTING_IDENTIFIER_WEIGHT);
-  const documentTerms = recallDocumentTerms(candidate);
-  const termFrequencies = new Map<string, number>();
-  for (const term of documentTerms) {
-    termFrequencies.set(term, (termFrequencies.get(term) ?? 0) + 1);
-  }
-  return new Map(
-    [...weights].map(([term, fieldWeight]) => [
-      term,
-      {
-        documentLength: documentTerms.length,
-        fieldWeight,
-        termFrequency: termFrequencies.get(term) ?? 1,
-        uri: stripRecallAnchor(candidate.uri),
-      },
-    ]),
-  );
-}
-
-function postingLexicalScore(
-  posting: Pick<RecallIndexPosting, 'documentLength' | 'fieldWeight' | 'termFrequency'>,
-  term: string,
-  corpusStatistics: RecallCorpusStatistics,
-): number {
-  const inverseDocumentFrequency = postingInverseDocumentFrequency(term, corpusStatistics);
-  const denominator =
-    posting.termFrequency +
-    POSTING_BM25_SATURATION *
-      (1 -
-        POSTING_BM25_LENGTH_NORMALIZATION +
-        POSTING_BM25_LENGTH_NORMALIZATION *
-          (posting.documentLength / Math.max(1, corpusStatistics.averageDocumentLength)));
-  const bm25 = inverseDocumentFrequency * ((posting.termFrequency * (POSTING_BM25_SATURATION + 1)) / denominator);
-  return bm25 + posting.fieldWeight / POSTING_IDENTIFIER_WEIGHT;
-}
-
-function postingInverseDocumentFrequency(term: string, corpusStatistics: RecallCorpusStatistics): number {
-  const documentCount = Math.max(1, corpusStatistics.documentCount);
-  const documentsWithTerm = ownRecordValue(corpusStatistics.documentFrequency, term) ?? 0;
-  return Math.log(
-    1 +
-      (documentCount - documentsWithTerm + POSTING_BM25_IDF_SMOOTHING) /
-        (documentsWithTerm + POSTING_BM25_IDF_SMOOTHING),
-  );
-}
-
-function selectQueryTerms(terms: readonly string[], statistics: RecallQueryTermStatistics): readonly string[] {
-  const documentCount = Math.max(1, statistics.documentCount);
-  return [...new Set(terms)]
-    .map(term => ({frequency: ownRecordValue(statistics.documentFrequency, term) ?? 0, term}))
-    .filter(item => item.frequency > 0)
-    .sort((left, right) => {
-      const leftIdf = Math.log(
-        1 +
-          (documentCount - left.frequency + POSTING_BM25_IDF_SMOOTHING) / (left.frequency + POSTING_BM25_IDF_SMOOTHING),
-      );
-      const rightIdf = Math.log(
-        1 +
-          (documentCount - right.frequency + POSTING_BM25_IDF_SMOOTHING) /
-            (right.frequency + POSTING_BM25_IDF_SMOOTHING),
-      );
-      return rightIdf - leftIdf || left.term.localeCompare(right.term);
-    })
-    .slice(0, MAX_QUERY_TERMS)
-    .map(item => item.term);
-}
-
 export function recallUriMatchesScopes(uri: string, scopes: readonly string[] | undefined): boolean {
   if (scopes === undefined || scopes.length === 0) {
     return true;
@@ -723,10 +636,6 @@ export function recallUriMatchesScopes(uri: string, scopes: readonly string[] | 
   const documentUri = stripRecallAnchor(uri);
   const normalizedScopes = normalizeRecallUriScopes(scopes);
   return normalizedScopes.some(scope => documentUri === scope || documentUri.startsWith(`${scope}/`));
-}
-
-function stripRecallAnchor(uri: string): string {
-  return uri.replace(/#.*$/, '');
 }
 
 function normalizeRecallUriScopes(scopes: readonly string[]): readonly string[] {
@@ -811,7 +720,11 @@ function useRecallDatabase<A, E, R>(
   databasePath: string,
   effect: Effect.Effect<A, E, R | SqlClient.SqlClient>,
 ): Effect.Effect<A, E, R> {
-  return Effect.scoped(effect.pipe(Effect.provide(SqliteClient.layer({filename: databasePath}))));
+  return Effect.scoped(
+    Layer.build(SqliteClient.layer({filename: databasePath})).pipe(
+      Effect.flatMap(context => effect.pipe(Effect.provide(context))),
+    ),
+  );
 }
 
 function useRecallDatabaseReadOnly<A, E, R>(
@@ -819,18 +732,16 @@ function useRecallDatabaseReadOnly<A, E, R>(
   effect: Effect.Effect<A, E, R | SqlClient.SqlClient>,
 ): Effect.Effect<A, E, Exclude<R, SqlClient.SqlClient>> {
   return Effect.scoped(
-    effect.pipe(
-      Effect.provide(
-        SqliteClient.layer({
-          create: false,
-          disableWAL: true,
-          filename: databasePath,
-          readonly: true,
-          readwrite: false,
-        }),
-      ),
-    ),
-  ) as Effect.Effect<A, E, Exclude<R, SqlClient.SqlClient>>;
+    Layer.build(
+      SqliteClient.layer({
+        create: false,
+        disableWAL: true,
+        filename: databasePath,
+        readonly: true,
+        readwrite: false,
+      }),
+    ).pipe(Effect.flatMap(context => effect.pipe(Effect.provide(context)))),
+  );
 }
 
 const initializeRecallDatabase = Effect.fn('recall.initializeDatabase')(function* (sql: SqlClient.SqlClient) {
@@ -1119,7 +1030,7 @@ const refreshRecallDatabase = Effect.fn('recall.refreshDatabase')(function* (
           batch.flatMap(indexed => {
             const documentId = insertedIdByUri.get(stripRecallAnchor(indexed.candidate.uri));
             if (documentId === undefined) {
-              throw new Error(`Could not resolve exact-search document ${indexed.candidate.uri}.`);
+              throw new RecallIndexOperationError(`Could not resolve exact-search document ${indexed.candidate.uri}.`);
             }
             return [documentId, indexed.exactSearchText];
           }),
@@ -1140,7 +1051,9 @@ const refreshRecallDatabase = Effect.fn('recall.refreshDatabase')(function* (
       for (const indexed of indexedSources) {
         const documentId = insertedIdByUri.get(stripRecallAnchor(indexed.candidate.uri));
         if (documentId === undefined) {
-          return yield* Effect.fail(new Error(`Could not resolve inserted document ${indexed.candidate.uri}.`));
+          return yield* Effect.fail(
+            new RecallIndexOperationError(`Could not resolve inserted document ${indexed.candidate.uri}.`),
+          );
         }
         for (const [term, posting] of indexed.postings) {
           postingBatch.push([term, documentId, posting.fieldWeight, posting.termFrequency]);
@@ -1670,33 +1583,6 @@ function memoryRelations(memory: ReturnType<typeof parseMemoryDocument>): readon
   return relations.length > 0 ? relations : undefined;
 }
 
-function indexTerms(value: string): readonly string[] {
-  const terms: string[] = [];
-  for (const match of value.matchAll(IDENTIFIER_PATTERN)) {
-    const raw = match[0];
-    const original = raw.toLowerCase();
-    terms.push(original);
-    terms.push(
-      ...raw
-        .replace(/([a-z])([A-Z])/g, '$1 $2')
-        .split(/[._/-]+/)
-        .map(term => term.toLowerCase())
-        .filter(term => term.length >= 2),
-    );
-  }
-  return terms;
-}
-
-function identifiers(value: string): readonly string[] {
-  return [
-    ...new Set(
-      [...value.matchAll(IDENTIFIER_PATTERN)]
-        .map(match => match[0].toLowerCase())
-        .filter(term => /[0-9_.-]/.test(term)),
-    ),
-  ].slice(0, 64);
-}
-
 function firstHeading(value: string): string | undefined {
   return /^#{1,3}\s+(.+)$/m.exec(value)?.[1]?.trim();
 }
@@ -1721,29 +1607,24 @@ function readStaleMarker(fs: FileSystem.FileSystem, path: string): Effect.Effect
     }
     const raw = yield* fs.readFileString(stalePath).pipe(Effect.catch(() => Effect.succeed('present')));
     const legacyGeneration = raw.trim() || 'present';
-    try {
-      const value = JSON.parse(raw) as unknown;
-      if (
-        typeof value === 'object' &&
-        value !== null &&
-        (value as {readonly version?: unknown}).version === RECALL_STALE_MARKER_VERSION &&
-        typeof (value as {readonly generation?: unknown}).generation === 'string' &&
-        (value as {readonly generation: string}).generation.length > 0 &&
-        typeof (value as {readonly forceRefresh?: unknown}).forceRefresh === 'boolean' &&
-        Array.isArray((value as {readonly invalidatedUris?: unknown}).invalidatedUris) &&
-        (value as {readonly invalidatedUris: readonly unknown[]}).invalidatedUris.every(uri => typeof uri === 'string')
-      ) {
-        const marker = value as RecallStaleMarker;
-        return {
-          forceRefresh: marker.forceRefresh,
-          generation: marker.generation,
-          invalidatedUris: [...new Set(marker.invalidatedUris.map(stripRecallAnchor))],
-          version: RECALL_STALE_MARKER_VERSION,
-        };
-      }
-    } catch {
-      // Plain-text markers were written before URI-aware invalidation. They
-      // require a conservative full refresh so same-size replacements remain correct.
+    const value = Option.getOrUndefined(Option.liftThrowable((content: string): unknown => JSON.parse(content))(raw));
+    if (
+      typeof value === 'object' &&
+      value !== null &&
+      (value as {readonly version?: unknown}).version === RECALL_STALE_MARKER_VERSION &&
+      typeof (value as {readonly generation?: unknown}).generation === 'string' &&
+      (value as {readonly generation: string}).generation.length > 0 &&
+      typeof (value as {readonly forceRefresh?: unknown}).forceRefresh === 'boolean' &&
+      Array.isArray((value as {readonly invalidatedUris?: unknown}).invalidatedUris) &&
+      (value as {readonly invalidatedUris: readonly unknown[]}).invalidatedUris.every(uri => typeof uri === 'string')
+    ) {
+      const marker = value as RecallStaleMarker;
+      return {
+        forceRefresh: marker.forceRefresh,
+        generation: marker.generation,
+        invalidatedUris: [...new Set(marker.invalidatedUris.map(stripRecallAnchor))],
+        version: RECALL_STALE_MARKER_VERSION,
+      };
     }
     return {
       forceRefresh: true,
@@ -1833,12 +1714,12 @@ function loadCanonicalResourcePolicy(
     const manifestRaw = yield* fs.readFileString(config.manifestPath as string);
     const manifest = yield* Effect.try({
       try: () => parseSeedManifest(manifestRaw, config.manifestPath as string),
-      catch: cause => cause,
+      catch: cause => new RecallIndexOperationError(cause instanceof Error ? cause.message : String(cause), {cause}),
     });
     const seedStateRaw = yield* fs.readFileString(pathService.join(config.agentContextHome, SEED_STATE_FILE));
     const seedState = yield* Effect.try({
       try: () => parseSeedState(seedStateRaw),
-      catch: cause => cause,
+      catch: cause => new RecallIndexOperationError(cause instanceof Error ? cause.message : String(cause), {cause}),
     });
     const entryKeyByUri = new Map<string, string>();
     const sourcePathByUri = new Map<string, string>();
@@ -2043,8 +1924,4 @@ function isFiniteNumber(value: unknown): value is number {
 
 function isStringArray(value: unknown): value is readonly string[] {
   return Array.isArray(value) && value.every(entry => typeof entry === 'string');
-}
-
-function ownRecordValue<Value>(record: Readonly<Record<string, Value>>, key: string): Value | undefined {
-  return Object.hasOwn(record, key) ? record[key] : undefined;
 }

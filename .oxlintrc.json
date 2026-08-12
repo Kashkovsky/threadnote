@@ -197,6 +197,12 @@
       }
     },
     {
+      "files": ["test/helpers/node-*.ts"],
+      "rules": {
+        "effecttsgo/node-builtin-import": "off"
+      }
+    },
+    {
       "files": ["test/**/*.test.ts", "test/**/*.spec.ts", "test/e2e/**/*.e2e.ts"],
       "rules": {
         "threadnote/no-effect-runtime-in-tests": "warn"

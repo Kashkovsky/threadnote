@@ -1,3 +1,4 @@
+import {TestError} from '../helpers/test-error.js';
 import {Clock, Effect, Fiber, FileSystem, Path, Result} from 'effect';
 import {describe, expect, it} from 'vitest';
 import {runBinaryCommandEffect, runCommandEffect, runStreamingCommandEffect} from '../../src/effect/command.js';
@@ -103,7 +104,7 @@ describe('Effect CommandExecutor', () => {
             yield* Effect.sleep(10);
           }
           if (pid === undefined) {
-            return yield* Effect.fail(new Error('Streaming child did not report readiness.'));
+            return yield* Effect.fail(new TestError('Streaming child did not report readiness.'));
           }
           yield* Fiber.interrupt(fiber);
           return pid;

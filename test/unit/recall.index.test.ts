@@ -298,7 +298,7 @@ describe('local recall index', () => {
 
     await writeFile(databasePath(), '{invalid', 'utf8');
     await expect(run(loadRecallIndex(config(), {forceRefresh: true, includeInactive: false}))).resolves.toHaveLength(1);
-    clearRecallIndexMemoryCache();
+    await run(clearRecallIndexMemoryCache());
     await expect(run(loadRecallIndex(config(), {includeInactive: false}))).resolves.toEqual([
       expect.objectContaining({text: expect.stringContaining('beta-9000')}),
     ]);
@@ -311,7 +311,7 @@ describe('local recall index', () => {
     await run(loadRecallIndex(config(), {includeInactive: false}));
 
     executeDatabase("UPDATE metadata SET value = '2' WHERE key = 'schema_version'");
-    clearRecallIndexMemoryCache();
+    await run(clearRecallIndexMemoryCache());
 
     const recovered = await run(loadRecallIndex(config(), {forceRefresh: true, includeInactive: false}));
     const status = await run(recallIndexStatus(config()));

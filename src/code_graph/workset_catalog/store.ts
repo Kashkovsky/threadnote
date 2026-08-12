@@ -1,6 +1,8 @@
 import {Clock, Crypto, Effect, FileSystem, Path} from 'effect';
+import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {sha256HexSync} from '../../crypto/sha256.js';
 import {withExclusiveFileLock} from '../../effect/file_lock.js';
+import {SystemInfo} from '../../effect/system.js';
 import {
   CODE_GRAPH_WORKSET_EVIDENCE_PROJECTOR_VERSION,
   codeGraphQualifiedRefHandle,
@@ -49,8 +51,8 @@ import {
   selectProjectionForSnapshot,
   selectProjectionByDigest,
   projectionState,
+  dropQueuedReferencedProjections,
   insertProjectionHeader,
-  stageProjection,
   insertRoutingSymbol,
   loadAndValidateProjection,
   decodeProjectionMetadata,
@@ -95,6 +97,14 @@ import {
   invalid,
   corrupt,
 } from './store_support.js';
+import {
+  codeGraphWorksetRoutingProjectionLogicalBytes,
+  codeGraphWorksetRoutingProjectionLogicalBytesAppend,
+} from './projection_storage.js';
+import {
+  codeGraphWorksetCatalogWriteRequiredFreeBytes,
+  verifyCodeGraphWorksetCatalogDiskCapacity,
+} from './storage_capacity.js';
 export {withCodeGraphWorksetCatalogReader, withCodeGraphWorksetCatalogWriter} from './store_support.js';
 
 const CATALOG_LOCK_OPTIONS = {
@@ -109,6 +119,9 @@ const QUALIFIED_REF = /^cgr_[0-9a-f]{40}$/u;
 const CONTINUATION_CURSOR = /^cgwc_[0-9a-f]{40}$/u;
 const SHA256_HEX = /^[0-9a-f]{64}$/u;
 const LOCAL_NODE_ID = /^cgs_(?:[0-9a-f]{32}|[0-9a-f]{40}|[0-9a-f]{64})$/u;
+const PRODUCTION_MAINTENANCE_LIMIT = 32;
+const STAGING_GENERATION_RETENTION_MILLISECONDS = 24 * 60 * 60 * 1_000;
+const CATALOG_RECLAIM_ROW_BUDGET = 256;
 
 interface GenerationRow {
   readonly generation_digest: unknown;
@@ -216,8 +229,24 @@ export const ensureCodeGraphWorksetCatalog = Effect.fn('codeGraphWorksetCatalog.
 export const beginCodeGraphWorksetCatalogProjection = Effect.fn('codeGraphWorksetCatalog.beginProjection')(function* (
   threadnoteHome: string,
   input: CodeGraphWorksetRoutingProjectionReceiptV1,
+  reservedLogicalBytes: number,
 ) {
-  const receipt = yield* validateInput(() => validateCodeGraphWorksetRoutingProjectionReceipt(input));
+  const receipt = yield* validateInput(() => {
+    const validated = validateCodeGraphWorksetRoutingProjectionReceipt(input);
+    if (
+      !Number.isSafeInteger(reservedLogicalBytes) ||
+      reservedLogicalBytes < 0 ||
+      reservedLogicalBytes > CODE_GRAPH_WORKSET_CATALOG_LIMITS.projectionBytesMaximum
+    ) {
+      throw invalid('Workset routing projection reservation is invalid.');
+    }
+    return validated;
+  });
+  const crypto = yield* Crypto.Crypto;
+  const stagingToken = sha256HexSync(yield* crypto.randomBytes(32));
+  const path = yield* Path.Path;
+  const system = yield* SystemInfo;
+  const layout = codeGraphWorksetCatalogLayout(path, threadnoteHome);
   return yield* withCatalogWriter(threadnoteHome, sql =>
     Effect.gen(function* () {
       const now = yield* currentIsoInstant;
@@ -232,15 +261,23 @@ export const beginCodeGraphWorksetCatalogProjection = Effect.fn('codeGraphWorkse
           yield* loadAndValidateProjection(sql, receipt.projectionDigest, true);
           return {receipt, state: 'ready' as const};
         }
-        yield* sql.withTransaction(
-          sql.unsafe('DELETE FROM repository_snapshots WHERE projection_digest = ? AND state = ?', [
-            receipt.projectionDigest,
-            'staging',
-          ]),
+        return yield* Effect.fail(
+          new CodeGraphWorksetCatalogError(
+            existing.state === 'reclaiming' ? 'capacity' : 'busy',
+            existing.state === 'reclaiming'
+              ? 'Routing projection cleanup must finish before restaging.'
+              : 'Another routing projection stream is already staging this snapshot.',
+          ),
         );
       }
-      yield* insertProjectionHeader(sql, receipt, now);
-      return {receipt, state: 'staging' as const};
+      yield* verifyCodeGraphWorksetCatalogDiskCapacity(
+        target => system.availableDiskBytes(target),
+        layout.root,
+        codeGraphWorksetCatalogWriteRequiredFreeBytes(reservedLogicalBytes, receipt.symbolCount),
+        'routing projection reservation',
+      );
+      yield* insertProjectionHeader(sql, receipt, now, reservedLogicalBytes, stagingToken);
+      return {receipt, stagingToken, state: 'staging' as const};
     }),
   );
 });
@@ -249,10 +286,15 @@ export const beginCodeGraphWorksetCatalogProjection = Effect.fn('codeGraphWorkse
 export const appendCodeGraphWorksetCatalogProjectionPage = Effect.fn('codeGraphWorksetCatalog.appendProjectionPage')(
   function* (
     threadnoteHome: string,
-    input: {readonly projectionDigest: string; readonly symbols: readonly CodeGraphWorksetRoutingSymbolV1[]},
+    input: {
+      readonly projectionDigest: string;
+      readonly stagingToken: string;
+      readonly symbols: readonly CodeGraphWorksetRoutingSymbolV1[];
+    },
   ) {
-    yield* validateInput(() => {
+    const pageBytes = yield* validateInput(() => {
       if (!SHA256_HEX.test(input.projectionDigest)) throw invalid('Workset projection digest is invalid.');
+      if (!SHA256_HEX.test(input.stagingToken)) throw invalid('Workset projection staging token is invalid.');
       if (input.symbols.length < 1 || input.symbols.length > CODE_GRAPH_WORKSET_CATALOG_PROJECTION_PAGE_MAXIMUM) {
         throw invalid('Workset projection page size is invalid.');
       }
@@ -260,13 +302,61 @@ export const appendCodeGraphWorksetCatalogProjectionPage = Effect.fn('codeGraphW
         codeGraphWorksetRoutingProjectionDigestStart(),
         input.symbols,
       );
+      const bytes = codeGraphWorksetRoutingProjectionLogicalBytes(input.symbols);
+      if (bytes > CODE_GRAPH_WORKSET_CATALOG_LIMITS.projectionPageBytesMaximum) {
+        throw new CodeGraphWorksetCatalogError(
+          'capacity',
+          'Workset routing projection page exceeds the supported aggregate byte bound.',
+        );
+      }
+      return bytes;
     });
+    const path = yield* Path.Path;
+    const system = yield* SystemInfo;
+    const layout = codeGraphWorksetCatalogLayout(path, threadnoteHome);
+    yield* verifyCodeGraphWorksetCatalogDiskCapacity(
+      target => system.availableDiskBytes(target),
+      layout.root,
+      codeGraphWorksetCatalogWriteRequiredFreeBytes(pageBytes, input.symbols.length),
+      'routing projection page',
+    );
     yield* withCatalogWriter(threadnoteHome, sql =>
       sql.withTransaction(
         Effect.gen(function* () {
           const state = yield* projectionState(sql, input.projectionDigest);
           if (state !== 'staging') {
             return yield* Effect.fail(new CodeGraphWorksetCatalogError('stale', 'Projection staging is not active.'));
+          }
+          yield* sql.unsafe(
+            `UPDATE routing_projection_storage
+             SET logical_bytes = logical_bytes + ?
+             WHERE projection_digest = ? AND staging_token = ?
+               AND logical_bytes <= reserved_bytes - ?`,
+            [pageBytes, input.projectionDigest, input.stagingToken, pageBytes],
+          );
+          if ((yield* changes(sql)) !== 1) {
+            const receipts = yield* sql.unsafe<{
+              readonly logical_bytes: unknown;
+              readonly staging_token: unknown;
+            }>(
+              `SELECT logical_bytes, staging_token FROM routing_projection_storage
+               WHERE projection_digest = ? LIMIT 1`,
+              [input.projectionDigest],
+            );
+            if (receipts.length === 0) {
+              return yield* Effect.fail(corrupt('Routing projection storage receipt is missing.'));
+            }
+            if (receipts[0]!.staging_token !== input.stagingToken) {
+              return yield* Effect.fail(
+                new CodeGraphWorksetCatalogError('stale', 'Routing projection staging ownership changed.'),
+              );
+            }
+            return yield* Effect.fail(
+              new CodeGraphWorksetCatalogError(
+                'capacity',
+                'Workset routing projection exceeds the supported aggregate byte bound.',
+              ),
+            );
           }
           yield* Effect.forEach(input.symbols, symbol => insertRoutingSymbol(sql, input.projectionDigest, symbol), {
             concurrency: 1,
@@ -280,24 +370,76 @@ export const appendCodeGraphWorksetCatalogProjectionPage = Effect.fn('codeGraphW
 
 /** Recompute streamed integrity and make one fully appended projection eligible for a generation. */
 export const completeCodeGraphWorksetCatalogProjection = Effect.fn('codeGraphWorksetCatalog.completeProjection')(
-  function* (threadnoteHome: string, projectionDigest: string) {
+  function* (threadnoteHome: string, input: {readonly projectionDigest: string; readonly stagingToken: string}) {
     yield* validateInput(() => {
-      if (!SHA256_HEX.test(projectionDigest)) throw invalid('Workset projection digest is invalid.');
+      if (!SHA256_HEX.test(input.projectionDigest)) throw invalid('Workset projection digest is invalid.');
+      if (!SHA256_HEX.test(input.stagingToken)) throw invalid('Workset projection staging token is invalid.');
     });
     return yield* withCatalogWriter(threadnoteHome, sql =>
       Effect.gen(function* () {
-        const projection = yield* loadAndValidateProjection(sql, projectionDigest);
-        if (projection.state === 'ready') return projection.receipt;
-        yield* sql.withTransaction(
-          sql.unsafe(
-            `UPDATE repository_snapshots SET state = 'ready'
-             WHERE projection_digest = ? AND state = 'staging'`,
-            [projectionDigest],
-          ),
+        const ownership = yield* sql.unsafe<{
+          readonly staging_token: unknown;
+          readonly state: unknown;
+        }>(
+          `SELECT p.state, s.staging_token
+           FROM repository_snapshots AS p
+           JOIN routing_projection_storage AS s USING (projection_digest)
+           WHERE p.projection_digest = ? LIMIT 1`,
+          [input.projectionDigest],
         );
-        if ((yield* changes(sql)) !== 1) {
-          return yield* Effect.fail(corrupt('Routing projection publication lost its staging state.'));
+        if (ownership.length !== 1) {
+          return yield* Effect.fail(new CodeGraphWorksetCatalogError('stale', 'Projection staging is not active.'));
         }
+        if (ownership[0]!.state === 'ready') {
+          return (yield* loadAndValidateProjection(sql, input.projectionDigest, true)).receipt;
+        }
+        if (ownership[0]!.state !== 'staging' || ownership[0]!.staging_token !== input.stagingToken) {
+          return yield* Effect.fail(
+            new CodeGraphWorksetCatalogError('stale', 'Routing projection staging ownership changed.'),
+          );
+        }
+        const projection = yield* loadAndValidateProjection(sql, input.projectionDigest);
+        yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const storage = yield* sql.unsafe<{
+              readonly logical_bytes: unknown;
+              readonly reserved_bytes: unknown;
+              readonly staging_token: unknown;
+            }>(
+              `SELECT logical_bytes, reserved_bytes, staging_token FROM routing_projection_storage
+               WHERE projection_digest = ? AND staging_token = ?
+               LIMIT 1`,
+              [input.projectionDigest, input.stagingToken],
+            );
+            if (storage.length !== 1) {
+              return yield* Effect.fail(
+                new CodeGraphWorksetCatalogError('stale', 'Routing projection staging ownership changed.'),
+              );
+            }
+            if (
+              requiredInteger(storage[0]!.logical_bytes, 'routing projection logical bytes') !==
+              requiredInteger(storage[0]!.reserved_bytes, 'routing projection reserved bytes')
+            ) {
+              return yield* Effect.fail(corrupt('Routing projection storage reservation is incomplete.'));
+            }
+            yield* sql.unsafe(
+              `UPDATE repository_snapshots SET state = 'ready'
+               WHERE projection_digest = ? AND state = 'staging'`,
+              [input.projectionDigest],
+            );
+            if ((yield* changes(sql)) !== 1) {
+              return yield* Effect.fail(corrupt('Routing projection publication lost its staging state.'));
+            }
+            yield* sql.unsafe(
+              `UPDATE routing_projection_storage SET staging_token = NULL
+               WHERE projection_digest = ? AND staging_token = ?`,
+              [input.projectionDigest, input.stagingToken],
+            );
+            if ((yield* changes(sql)) !== 1) {
+              return yield* Effect.fail(corrupt('Routing projection staging ownership changed before publication.'));
+            }
+          }),
+        );
         return projection.receipt;
       }),
     );
@@ -314,70 +456,111 @@ export const stageCodeGraphWorksetCatalogGeneration = Effect.fn('codeGraphWorkse
   input: CodeGraphWorksetCatalogGenerationInputV1,
 ) {
   const identity = yield* validateInput(() => codeGraphWorksetCatalogGenerationIdentity(input));
-  return yield* withCatalogWriter(threadnoteHome, sql =>
-    Effect.gen(function* () {
-      const now = yield* currentIsoInstant;
-      const existing = yield* selectGeneration(sql, identity.id);
-      if (existing?.state === 'ready') {
-        const published = yield* generationIsPublished(sql, identity.id, input.worksetName);
-        if (!published) {
-          return yield* Effect.fail(corrupt('A ready workset generation has no matching published pointer.'));
-        }
-        return generationReceipt(existing);
-      }
-      yield* sql.withTransaction(
-        Effect.gen(function* () {
-          if (existing !== undefined) {
-            yield* sql.unsafe('DELETE FROM workset_generations WHERE id = ?', [identity.id]);
-          }
-          yield* sql.unsafe(
-            `INSERT INTO workset_generations (
-                 id, workset_name, manifest_digest, generation_digest, state,
-                 member_count, created_at, published_at
-               ) VALUES (?, ?, ?, ?, 'staging', ?, ?, NULL)`,
-            [identity.id, input.worksetName, input.manifestDigest, identity.digest, identity.members.length, now],
-          );
-        }),
-      );
-
-      for (let ordinal = 0; ordinal < identity.members.length; ordinal += 1) {
-        const member = identity.members[ordinal]!;
-        yield* stageProjection(sql, member.projection, now);
-        yield* sql.withTransaction(
-          sql.unsafe(
-            `INSERT INTO workset_generation_members (
-                 generation_id, ordinal, repository_key, repository_id, snapshot_id, projection_digest
-               ) VALUES (?, ?, ?, ?, ?, ?)`,
-            [
-              identity.id,
-              ordinal,
-              member.repositoryKey,
-              member.projection.repositoryId,
-              member.projection.snapshotId,
-              member.projection.projectionDigest,
-            ],
-          ),
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const layout = codeGraphWorksetCatalogLayout(path, threadnoteHome);
+  const ownedProjectionDigests: string[] = [];
+  const critical = Effect.gen(function* () {
+    yield* drainCodeGraphWorksetCatalogPreparationPages(threadnoteHome);
+    const members: CodeGraphWorksetCatalogGenerationDigestMemberV1[] = [];
+    for (const member of identity.members) {
+      const projection = member.projection;
+      const projectionReceipt = {
+        checkoutId: projection.checkoutId,
+        commitId: projection.commitId,
+        componentCount: projection.componentCount,
+        extractorGeneration: projection.extractorGeneration,
+        projectionDigest: projection.projectionDigest,
+        projectorVersion: projection.projectorVersion,
+        repositoryId: projection.repositoryId,
+        snapshotDigest: projection.snapshotDigest,
+        snapshotId: projection.snapshotId,
+        symbolCount: projection.symbols.length,
+        worktreeId: projection.worktreeId,
+      } satisfies CodeGraphWorksetRoutingProjectionReceiptV1;
+      const reservation = codeGraphWorksetRoutingProjectionLogicalBytes(projection.symbols);
+      const staged = yield* beginCodeGraphWorksetCatalogProjection(threadnoteHome, projectionReceipt, reservation);
+      if (staged.state === 'staging') {
+        ownedProjectionDigests.push(projection.projectionDigest);
+        yield* appendFullProjectionPages(
+          threadnoteHome,
+          projection.projectionDigest,
+          staged.stagingToken,
+          projection.symbols,
         );
+        yield* completeCodeGraphWorksetCatalogProjection(threadnoteHome, {
+          projectionDigest: projection.projectionDigest,
+          stagingToken: staged.stagingToken,
+        });
       }
-      const count = yield* rowCount(
-        sql,
-        'SELECT COUNT(*) AS count FROM workset_generation_members WHERE generation_id = ?',
-        [identity.id],
-      );
-      if (count !== identity.members.length) {
-        return yield* Effect.fail(corrupt('Staged workset generation member count is inconsistent.'));
-      }
-      return {
-        digest: identity.digest,
-        id: identity.id,
-        manifestDigest: input.manifestDigest,
-        memberCount: identity.members.length,
-        state: 'staging' as const,
-        worksetName: input.worksetName,
-      };
-    }),
+      members.push({
+        projectionDigest: projection.projectionDigest,
+        repositoryId: projection.repositoryId,
+        repositoryKey: member.repositoryKey,
+        snapshotId: projection.snapshotId,
+      });
+    }
+    return yield* stageCodeGraphWorksetCatalogGenerationFromReceipts(threadnoteHome, {
+      manifestDigest: input.manifestDigest,
+      members,
+      worksetName: input.worksetName,
+    });
+  }).pipe(
+    Effect.onError(() =>
+      retireCodeGraphWorksetCatalogPreparation(threadnoteHome, {
+        projectionDigests: ownedProjectionDigests,
+      }).pipe(
+        Effect.andThen(drainCodeGraphWorksetCatalogPreparationPages(threadnoteHome)),
+        Effect.catchCause(() => Effect.void),
+      ),
+    ),
+  );
+  return yield* withExclusiveFileLock(fs, layout.prepareLockPath, CATALOG_LOCK_OPTIONS, critical).pipe(
+    mapCatalogError('serialize workset catalog preparation'),
   );
 });
+
+function appendFullProjectionPages(
+  threadnoteHome: string,
+  projectionDigest: string,
+  stagingToken: string,
+  symbols: readonly CodeGraphWorksetRoutingSymbolV1[],
+) {
+  return Effect.gen(function* () {
+    let page: CodeGraphWorksetRoutingSymbolV1[] = [];
+    let pageBytes = 0;
+    for (const symbol of symbols) {
+      const nextBytes = codeGraphWorksetRoutingProjectionLogicalBytesAppend(pageBytes, [symbol]);
+      if (
+        page.length > 0 &&
+        (page.length === CODE_GRAPH_WORKSET_CATALOG_PROJECTION_PAGE_MAXIMUM ||
+          nextBytes > CODE_GRAPH_WORKSET_CATALOG_LIMITS.projectionPageBytesMaximum)
+      ) {
+        yield* appendCodeGraphWorksetCatalogProjectionPage(threadnoteHome, {
+          projectionDigest,
+          stagingToken,
+          symbols: page,
+        });
+        page = [];
+        pageBytes = 0;
+      }
+      pageBytes = codeGraphWorksetRoutingProjectionLogicalBytesAppend(pageBytes, [symbol]);
+      if (pageBytes > CODE_GRAPH_WORKSET_CATALOG_LIMITS.projectionPageBytesMaximum) {
+        return yield* Effect.fail(
+          new CodeGraphWorksetCatalogError('capacity', 'A routing symbol exceeds the supported projection page bound.'),
+        );
+      }
+      page.push(symbol);
+    }
+    if (page.length > 0) {
+      yield* appendCodeGraphWorksetCatalogProjectionPage(threadnoteHome, {
+        projectionDigest,
+        stagingToken,
+        symbols: page,
+      });
+    }
+  });
+}
 
 /** Stage a deterministic generation from lightweight, already-streamed projection receipts. */
 export const stageCodeGraphWorksetCatalogGenerationFromReceipts = Effect.fn(
@@ -394,6 +577,28 @@ export const stageCodeGraphWorksetCatalogGenerationFromReceipts = Effect.fn(
         }
         return generationReceipt(existing);
       }
+      if (existing?.state === 'staging') {
+        const stagedMembers = yield* loadGenerationMembers(sql, identity.id);
+        const matches =
+          stagedMembers.length === identity.members.length &&
+          stagedMembers.every((member, ordinal) => {
+            const expected = identity.members[ordinal];
+            return (
+              expected !== undefined &&
+              member.repository_key === expected.repositoryKey &&
+              member.repository_id === expected.repositoryId &&
+              member.snapshot_id === expected.snapshotId &&
+              member.projection_digest === expected.projectionDigest
+            );
+          });
+        if (!matches) return yield* Effect.fail(corrupt('An existing staging generation is incomplete.'));
+        return generationReceipt(existing);
+      }
+      if (existing?.state === 'retired') {
+        return yield* Effect.fail(
+          new CodeGraphWorksetCatalogError('capacity', 'Retired catalog cleanup must finish before restaging.'),
+        );
+      }
       for (const member of identity.members) {
         const projection = yield* selectProjectionByDigest(sql, member.projectionDigest);
         if (
@@ -409,7 +614,6 @@ export const stageCodeGraphWorksetCatalogGenerationFromReceipts = Effect.fn(
       }
       yield* sql.withTransaction(
         Effect.gen(function* () {
-          if (existing !== undefined) yield* sql.unsafe('DELETE FROM workset_generations WHERE id = ?', [identity.id]);
           yield* sql.unsafe(
             `INSERT INTO workset_generations (
                id, workset_name, manifest_digest, generation_digest, state,
@@ -417,27 +621,28 @@ export const stageCodeGraphWorksetCatalogGenerationFromReceipts = Effect.fn(
              ) VALUES (?, ?, ?, ?, 'staging', ?, ?, NULL)`,
             [identity.id, input.worksetName, input.manifestDigest, identity.digest, identity.members.length, now],
           );
+          for (let ordinal = 0; ordinal < identity.members.length; ordinal += 1) {
+            const member = identity.members[ordinal]!;
+            yield* sql.unsafe(
+              `INSERT INTO workset_generation_members (
+                 generation_id, ordinal, repository_key, repository_id, snapshot_id, projection_digest
+               ) VALUES (?, ?, ?, ?, ?, ?)`,
+              [
+                identity.id,
+                ordinal,
+                member.repositoryKey,
+                member.repositoryId,
+                member.snapshotId,
+                member.projectionDigest,
+              ],
+            );
+            yield* sql.unsafe('DELETE FROM routing_projection_retirements WHERE projection_digest = ?', [
+              member.projectionDigest,
+            ]);
+          }
         }),
       );
-      for (let ordinal = 0; ordinal < identity.members.length; ordinal += 1) {
-        const member = identity.members[ordinal]!;
-        yield* sql.withTransaction(
-          sql.unsafe(
-            `INSERT INTO workset_generation_members (
-               generation_id, ordinal, repository_key, repository_id, snapshot_id, projection_digest
-             ) VALUES (?, ?, ?, ?, ?, ?)`,
-            [
-              identity.id,
-              ordinal,
-              member.repositoryKey,
-              member.repositoryId,
-              member.snapshotId,
-              member.projectionDigest,
-            ],
-          ),
-        );
-      }
-      return {
+      const receipt = {
         digest: identity.digest,
         id: identity.id,
         manifestDigest: input.manifestDigest,
@@ -445,9 +650,49 @@ export const stageCodeGraphWorksetCatalogGenerationFromReceipts = Effect.fn(
         state: 'staging' as const,
         worksetName: input.worksetName,
       };
+      return receipt;
     }),
   );
 });
+
+/** @internal Retire one serialized prepare attempt without cascading heavy payload. */
+export const retireCodeGraphWorksetCatalogPreparation = Effect.fn('codeGraphWorksetCatalog.retirePreparation')(
+  function* (
+    threadnoteHome: string,
+    input: {readonly generationId?: string; readonly projectionDigests: readonly string[]},
+  ) {
+    yield* validateInput(() => {
+      if (input.generationId !== undefined && !GENERATION_ID.test(input.generationId)) {
+        throw invalid('Workset catalog generation identity is invalid.');
+      }
+      if (input.projectionDigests.length > CODE_GRAPH_WORKSET_CATALOG_LIMITS.membersPerGeneration) {
+        throw invalid('Workset catalog projection retirement exceeds the supported bound.');
+      }
+      const unique = new Set(input.projectionDigests);
+      if (
+        unique.size !== input.projectionDigests.length ||
+        input.projectionDigests.some(digest => !SHA256_HEX.test(digest))
+      ) {
+        throw invalid('Workset catalog projection retirement identity is invalid.');
+      }
+    });
+    const now = yield* currentIsoInstant;
+    yield* withCatalogWriter(threadnoteHome, sql =>
+      sql.withTransaction(
+        Effect.gen(function* () {
+          if (input.generationId !== undefined) {
+            yield* discardStagingGenerationWithSql(sql, input.generationId);
+          }
+          for (const projectionDigest of input.projectionDigests) {
+            yield* queueProjectionRetirement(sql, projectionDigest, now);
+          }
+          yield* markQueuedOrphanProjectionsRetiring(sql, input.projectionDigests.length);
+          yield* dropQueuedReferencedProjections(sql, input.projectionDigests.length);
+        }),
+      ),
+    );
+  },
+);
 
 /** Atomically replace one workset's published pointer after validating every staged projection receipt. */
 export const publishCodeGraphWorksetCatalogGeneration = Effect.fn('codeGraphWorksetCatalog.publishGeneration')(
@@ -557,6 +802,65 @@ export const publishCodeGraphWorksetCatalogGeneration = Effect.fn('codeGraphWork
     );
   },
 );
+
+/**
+ * Remove one manifest-deleted/renamed workset publication without touching any
+ * repository snapshot. Heavy derived payload is reclaimed in bounded pages.
+ */
+export const retireCodeGraphWorksetPublication = Effect.fn('codeGraphWorksetCatalog.retirePublication')(function* (
+  threadnoteHome: string,
+  input: {readonly generationId: string; readonly worksetName: string},
+) {
+  yield* validateInput(() => {
+    assertInputText(input.worksetName, 'workset name', 256);
+    if (!GENERATION_ID.test(input.generationId)) throw invalid('Workset catalog generation identity is invalid.');
+  });
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const layout = codeGraphWorksetCatalogLayout(path, threadnoteHome);
+  return yield* withExclusiveFileLock(
+    fs,
+    layout.prepareLockPath,
+    CATALOG_LOCK_OPTIONS,
+    Effect.gen(function* () {
+      const retired = yield* withCatalogWriter(threadnoteHome, sql =>
+        sql.withTransaction(
+          Effect.gen(function* () {
+            const pointers = yield* sql.unsafe<{readonly generation_id: unknown}>(
+              `SELECT generation_id FROM published_worksets
+               WHERE workset_name = ? AND generation_id = ? LIMIT 1`,
+              [input.worksetName, input.generationId],
+            );
+            if (pointers.length === 0) return false;
+            const generationId = requiredText(pointers[0]!.generation_id, 'published generation identity');
+            yield* sql.unsafe('DELETE FROM published_worksets WHERE workset_name = ? AND generation_id = ?', [
+              input.worksetName,
+              generationId,
+            ]);
+            if ((yield* changes(sql)) !== 1) {
+              return yield* Effect.fail(corrupt('Published workset pointer changed during retirement.'));
+            }
+            yield* sql.unsafe(
+              `UPDATE workset_generations SET state = 'retired'
+                 WHERE id = ? AND workset_name = ? AND state = 'ready'
+                   AND NOT EXISTS (
+                     SELECT 1 FROM published_worksets AS p WHERE p.generation_id = workset_generations.id
+                   )`,
+              [generationId, input.worksetName],
+            );
+            if ((yield* changes(sql)) !== 1) {
+              return yield* Effect.fail(corrupt('Published workset generation changed during retirement.'));
+            }
+            return true;
+          }),
+        ),
+      );
+      if (!retired) return {cleanupPending: false, retired};
+      const maintenance = yield* maintainCodeGraphWorksetCatalogPreparationPage(threadnoteHome);
+      return {cleanupPending: maintenance.pendingCleanup, retired};
+    }),
+  ).pipe(mapCatalogError('retire workset catalog publication'));
+});
 
 export const readPublishedCodeGraphWorksetCatalogGeneration = Effect.fn(
   'codeGraphWorksetCatalog.readPublishedGeneration',
@@ -1223,6 +1527,11 @@ export const maintainCodeGraphWorksetResultSets = Effect.fn('codeGraphWorksetCat
           capacityResultSetsDeleted += yield* changes(sql);
           capacity = yield* resultSetCapacity(sql);
         }
+        yield* maintainCatalogRowsWithSql(sql, {
+          generationLimit: PRODUCTION_MAINTENANCE_LIMIT,
+          now,
+          projectionLimit: 0,
+        });
         return {
           capacityResultSetsDeleted,
           expiredResultSetsDeleted,
@@ -1250,67 +1559,388 @@ export const maintainCodeGraphWorksetCatalog = Effect.fn('codeGraphWorksetCatalo
   const generationLimit = yield* validateInput(() => retirementLimit(options.generationLimit, 32));
   const projectionLimit = yield* validateInput(() => retirementLimit(options.projectionLimit, 32));
   const stagingBefore = yield* validateInput(() => optionalIsoInstant(options.stagingBefore));
+  const now = yield* currentIsoInstant;
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const layout = codeGraphWorksetCatalogLayout(path, threadnoteHome);
+  return yield* withExclusiveFileLock(
+    fs,
+    layout.prepareLockPath,
+    CATALOG_LOCK_OPTIONS,
+    withCatalogWriter(threadnoteHome, sql =>
+      sql.withTransaction(
+        Effect.gen(function* () {
+          yield* deleteExpiredResultSets(sql, now, CODE_GRAPH_WORKSET_CATALOG_LIMITS.resultSetsMaximum);
+          const result = yield* maintainCatalogRowsWithSql(sql, {
+            generationLimit,
+            now,
+            projectionLimit,
+            stagingBefore,
+          });
+          return {
+            projectionsDeleted: result.projectionsDeleted,
+            retiredGenerationsDeleted: result.retiredGenerationsDeleted,
+            stagingGenerationsRetired: result.stagingGenerationsRetired,
+          };
+        }),
+      ),
+    ),
+  ).pipe(mapCatalogError('maintain workset catalog'));
+});
+
+/** @internal One physically bounded cleanup page for the home-global prepare lock holder. */
+export const maintainCodeGraphWorksetCatalogPreparationPage = Effect.fn(
+  'codeGraphWorksetCatalog.maintainPreparationPage',
+)(function* (threadnoteHome: string) {
+  const now = yield* currentIsoInstant;
   return yield* withCatalogWriter(threadnoteHome, sql =>
     sql.withTransaction(
       Effect.gen(function* () {
-        let stagingGenerationsRetired = 0;
-        if (stagingBefore !== undefined && generationLimit > 0) {
-          yield* sql.unsafe(
-            `UPDATE workset_generations
-             SET state = 'retired'
-             WHERE id IN (
-               SELECT id FROM workset_generations
-               WHERE state = 'staging' AND created_at < ?
-               ORDER BY created_at, id
-               LIMIT ?
-             )`,
-            [stagingBefore, generationLimit],
-          );
-          stagingGenerationsRetired = yield* changes(sql);
-        }
-        let retiredGenerationsDeleted = 0;
-        if (generationLimit > 0) {
-          yield* sql.unsafe(
-            `DELETE FROM workset_generations
-             WHERE id IN (
-               SELECT g.id FROM workset_generations AS g
-               WHERE g.state = 'retired'
-                 AND NOT EXISTS (
-                   SELECT 1 FROM published_worksets AS p WHERE p.generation_id = g.id
-                 )
-                 AND NOT EXISTS (
-                   SELECT 1 FROM result_sets AS r WHERE r.generation_id = g.id
-                 )
-               ORDER BY g.created_at, g.id
-               LIMIT ?
-             )`,
-            [generationLimit],
-          );
-          retiredGenerationsDeleted = yield* changes(sql);
-        }
-        let projectionsDeleted = 0;
-        if (projectionLimit > 0) {
-          yield* sql.unsafe(
-            `DELETE FROM repository_snapshots
-             WHERE projection_digest IN (
-               SELECT p.projection_digest FROM repository_snapshots AS p
-               WHERE NOT EXISTS (
-                 SELECT 1 FROM workset_generation_members AS m
-                 WHERE m.projection_digest = p.projection_digest
-               )
-               ORDER BY p.created_at, p.projection_digest
-               LIMIT ?
-             )`,
-            [projectionLimit],
-          );
-          projectionsDeleted = yield* changes(sql);
-        }
-        return {projectionsDeleted, retiredGenerationsDeleted, stagingGenerationsRetired};
+        yield* deleteExpiredResultSets(sql, now, CODE_GRAPH_WORKSET_CATALOG_LIMITS.resultSetsMaximum);
+        return yield* maintainCatalogRowsWithSql(sql, {
+          generationLimit: PRODUCTION_MAINTENANCE_LIMIT,
+          now,
+          projectionLimit: CODE_GRAPH_WORKSET_CATALOG_LIMITS.membersPerGeneration,
+          stagingBefore: stagingGenerationCutoff(now),
+        });
       }),
     ),
   );
 });
 
+function drainCodeGraphWorksetCatalogPreparationPages(threadnoteHome: string) {
+  return Effect.gen(function* () {
+    let pendingCleanup = true;
+    while (pendingCleanup) {
+      const page = yield* maintainCodeGraphWorksetCatalogPreparationPage(threadnoteHome);
+      pendingCleanup = page.pendingCleanup;
+      if (pendingCleanup) yield* Effect.yieldNow;
+    }
+  });
+}
+
+function maintainCatalogRowsWithSql(
+  sql: SqlClient.SqlClient,
+  input: {
+    readonly generationLimit: number;
+    readonly now: string;
+    readonly projectionLimit: number;
+    readonly stagingBefore?: string;
+  },
+) {
+  return Effect.gen(function* () {
+    let stagingGenerationsRetired = 0;
+    if (input.stagingBefore !== undefined && input.generationLimit > 0) {
+      yield* sql.unsafe(
+        `UPDATE workset_generations
+         SET state = 'retired'
+         WHERE id = (
+           SELECT g.id FROM workset_generations AS g
+           WHERE g.state = 'staging' AND g.created_at < ?
+             AND NOT EXISTS (
+               SELECT 1 FROM published_worksets AS p WHERE p.generation_id = g.id
+             )
+           ORDER BY g.created_at, g.id
+           LIMIT 1
+         )`,
+        [input.stagingBefore],
+      );
+      stagingGenerationsRetired = yield* changes(sql);
+    }
+    let retiredGenerationsDeleted = 0;
+    let generationWorkPerformed = stagingGenerationsRetired > 0;
+    if (input.generationLimit > 0 && !generationWorkPerformed) {
+      const candidates = yield* sql.unsafe<{readonly id: unknown}>(
+        `SELECT g.id FROM workset_generations AS g
+         WHERE g.state = 'retired'
+           AND NOT EXISTS (
+             SELECT 1 FROM published_worksets AS p WHERE p.generation_id = g.id
+           )
+           AND (
+             g.member_count > 0
+             OR EXISTS (
+               SELECT 1 FROM workset_generation_members AS m WHERE m.generation_id = g.id
+             )
+             OR EXISTS (
+               SELECT 1 FROM cross_repository_bridge_sets AS b WHERE b.generation_id = g.id
+             )
+             OR NOT EXISTS (
+               SELECT 1 FROM result_sets AS r WHERE r.generation_id = g.id
+             )
+           )
+         ORDER BY g.created_at, g.id
+         LIMIT 1`,
+      );
+      const candidate = candidates[0];
+      if (candidate !== undefined) {
+        const generationId = requiredText(candidate.id, 'retired generation identity');
+        yield* sql.unsafe(
+          `DELETE FROM cross_repository_bridges
+           WHERE generation_id = ? AND ordinal IN (
+             SELECT ordinal FROM cross_repository_bridges
+             WHERE generation_id = ?
+             ORDER BY ordinal
+             LIMIT ?
+           )`,
+          [generationId, generationId, CATALOG_RECLAIM_ROW_BUDGET],
+        );
+        generationWorkPerformed = (yield* changes(sql)) > 0;
+        if (!generationWorkPerformed) {
+          const bridgeSets = yield* sql.unsafe<{readonly bridge_bytes: unknown}>(
+            'SELECT bridge_bytes FROM cross_repository_bridge_sets WHERE generation_id = ? LIMIT 1',
+            [generationId],
+          );
+          if (bridgeSets[0] !== undefined) {
+            const bridgeBytes = requiredInteger(bridgeSets[0].bridge_bytes, 'retired bridge logical bytes');
+            yield* sql.unsafe(
+              `UPDATE catalog_capacity
+               SET bridge_logical_bytes = bridge_logical_bytes - ?
+               WHERE singleton = 1 AND bridge_logical_bytes >= ?`,
+              [bridgeBytes, bridgeBytes],
+            );
+            if ((yield* changes(sql)) !== 1) {
+              return yield* Effect.fail(corrupt('Bridge capacity receipt is inconsistent during reclamation.'));
+            }
+            yield* sql.unsafe('DELETE FROM cross_repository_bridge_sets WHERE generation_id = ?', [generationId]);
+            if ((yield* changes(sql)) !== 1) {
+              return yield* Effect.fail(corrupt('Retired bridge set changed during reclamation.'));
+            }
+            generationWorkPerformed = true;
+          }
+        }
+        if (!generationWorkPerformed) {
+          const members = yield* sql.unsafe<{readonly projection_digest: unknown}>(
+            `SELECT projection_digest FROM workset_generation_members
+             WHERE generation_id = ?
+             ORDER BY ordinal
+             LIMIT ?`,
+            [generationId, CATALOG_RECLAIM_ROW_BUDGET],
+          );
+          if (members.length > 0) {
+            for (const member of members) {
+              yield* queueProjectionRetirement(
+                sql,
+                requiredText(member.projection_digest, 'projection digest'),
+                input.now,
+              );
+            }
+            yield* sql.unsafe(
+              `DELETE FROM workset_generation_members
+               WHERE generation_id = ? AND ordinal IN (
+                 SELECT ordinal FROM workset_generation_members
+                 WHERE generation_id = ?
+                 ORDER BY ordinal
+                 LIMIT ?
+               )`,
+              [generationId, generationId, CATALOG_RECLAIM_ROW_BUDGET],
+            );
+            const membersDeleted = yield* changes(sql);
+            if (membersDeleted !== members.length) {
+              return yield* Effect.fail(corrupt('Retired generation members changed during reclamation.'));
+            }
+            yield* markQueuedOrphanProjectionsRetiring(sql, members.length);
+            yield* dropQueuedReferencedProjections(sql, members.length);
+            generationWorkPerformed = true;
+          }
+        }
+        if (!generationWorkPerformed) {
+          yield* sql.unsafe('UPDATE workset_generations SET member_count = 0 WHERE id = ? AND state = ?', [
+            generationId,
+            'retired',
+          ]);
+          yield* sql.unsafe(
+            `DELETE FROM workset_generations
+             WHERE id = ? AND state = 'retired'
+               AND NOT EXISTS (
+                 SELECT 1 FROM result_sets AS r WHERE r.generation_id = workset_generations.id
+               )`,
+            [generationId],
+          );
+          retiredGenerationsDeleted = yield* changes(sql);
+          generationWorkPerformed = true;
+        }
+      }
+    }
+    let projectionsDeleted = 0;
+    if (input.projectionLimit > 0 && !generationWorkPerformed) {
+      yield* markQueuedOrphanProjectionsRetiring(sql, 1);
+      const projectionsMarked = yield* changes(sql);
+      if (projectionsMarked === 0) {
+        projectionsDeleted = yield* reclaimOneProjectionPage(sql);
+      }
+    }
+    const pendingCleanup = yield* catalogCleanupPending(sql, input.projectionLimit > 0);
+    return {pendingCleanup, projectionsDeleted, retiredGenerationsDeleted, stagingGenerationsRetired};
+  });
+}
+
+function reclaimOneProjectionPage(sql: SqlClient.SqlClient) {
+  return Effect.gen(function* () {
+    const queued = yield* sql.unsafe<{readonly projection_digest: unknown}>(
+      `SELECT q.projection_digest FROM routing_projection_retirements AS q
+       JOIN repository_snapshots AS p ON p.projection_digest = q.projection_digest
+       WHERE p.state = 'reclaiming'
+         AND NOT EXISTS (
+           SELECT 1 FROM workset_generation_members AS m
+           WHERE m.projection_digest = q.projection_digest
+         )
+       ORDER BY q.requested_at, q.projection_digest
+       LIMIT 1`,
+    );
+    if (queued[0] === undefined) return 0;
+    const projectionDigest = requiredText(queued[0].projection_digest, 'retired projection digest');
+    for (const child of [
+      ['routing_exact_keys', '(projection_digest, node_id, key_kind, exact_key)', 'node_id, key_kind, exact_key'],
+      ['routing_lookup_keys', '(projection_digest, node_id, lookup_key)', 'node_id, lookup_key'],
+      ['routing_terms', '(projection_digest, node_id, term)', 'node_id, term'],
+    ] as const) {
+      if ((yield* deleteRoutingChildPage(sql, child[0], child[1], child[2], projectionDigest)) > 0) return 0;
+    }
+    yield* sql.unsafe(
+      `DELETE FROM routing_symbols
+       WHERE projection_digest = ? AND node_id IN (
+         SELECT node_id FROM routing_symbols
+         WHERE projection_digest = ?
+         ORDER BY node_id
+         LIMIT ?
+       )`,
+      [projectionDigest, projectionDigest, CATALOG_RECLAIM_ROW_BUDGET],
+    );
+    if ((yield* changes(sql)) > 0) return 0;
+    const storage = yield* sql.unsafe<{readonly reserved_bytes: unknown}>(
+      'SELECT reserved_bytes FROM routing_projection_storage WHERE projection_digest = ? LIMIT 1',
+      [projectionDigest],
+    );
+    if (storage.length !== 1) {
+      return yield* Effect.fail(corrupt('Routing projection storage receipt is missing during reclamation.'));
+    }
+    const logicalBytes = requiredInteger(storage[0]!.reserved_bytes, 'routing projection reserved bytes');
+    yield* sql.unsafe(
+      `UPDATE catalog_capacity
+       SET projection_logical_bytes = projection_logical_bytes - ?
+       WHERE singleton = 1 AND projection_logical_bytes >= ?`,
+      [logicalBytes, logicalBytes],
+    );
+    if ((yield* changes(sql)) !== 1) {
+      return yield* Effect.fail(corrupt('Routing projection capacity receipt is inconsistent.'));
+    }
+    yield* sql.unsafe(
+      `DELETE FROM repository_snapshots
+       WHERE projection_digest = ? AND state = 'reclaiming'
+         AND NOT EXISTS (
+           SELECT 1 FROM workset_generation_members AS m
+           WHERE m.projection_digest = repository_snapshots.projection_digest
+         )`,
+      [projectionDigest],
+    );
+    const deleted = yield* changes(sql);
+    if (deleted !== 1) return yield* Effect.fail(corrupt('Retired routing projection changed during reclamation.'));
+    return deleted;
+  });
+}
+
+function discardStagingGenerationWithSql(sql: SqlClient.SqlClient, generationId: string) {
+  return sql.unsafe(
+    `UPDATE workset_generations SET state = 'retired'
+     WHERE id = ? AND state = 'staging'
+       AND NOT EXISTS (
+         SELECT 1 FROM published_worksets AS p WHERE p.generation_id = workset_generations.id
+       )`,
+    [generationId],
+  );
+}
+
+function queueProjectionRetirement(sql: SqlClient.SqlClient, projectionDigest: string, requestedAt: string) {
+  return sql.unsafe(
+    `INSERT OR IGNORE INTO routing_projection_retirements (projection_digest, requested_at)
+     SELECT projection_digest, ? FROM repository_snapshots WHERE projection_digest = ?`,
+    [requestedAt, projectionDigest],
+  );
+}
+
+function markQueuedOrphanProjectionsRetiring(sql: SqlClient.SqlClient, limit: number) {
+  if (limit === 0) return Effect.void;
+  return sql.unsafe(
+    `UPDATE repository_snapshots SET state = 'reclaiming'
+     WHERE projection_digest IN (
+       SELECT q.projection_digest FROM routing_projection_retirements AS q
+       WHERE NOT EXISTS (
+         SELECT 1 FROM workset_generation_members AS m
+         WHERE m.projection_digest = q.projection_digest
+       )
+       ORDER BY q.requested_at, q.projection_digest
+       LIMIT ?
+     ) AND state IN ('ready', 'staging')`,
+    [limit],
+  );
+}
+
+function deleteRoutingChildPage(
+  sql: SqlClient.SqlClient,
+  table: 'routing_exact_keys' | 'routing_lookup_keys' | 'routing_terms',
+  tuple: string,
+  orderBy: string,
+  projectionDigest: string,
+) {
+  return Effect.gen(function* () {
+    yield* sql.unsafe(
+      `DELETE FROM ${table}
+       WHERE ${tuple} IN (
+         SELECT ${tuple.slice(1, -1)} FROM ${table}
+         WHERE projection_digest = ?
+         ORDER BY ${orderBy}
+         LIMIT ?
+       )`,
+      [projectionDigest, CATALOG_RECLAIM_ROW_BUDGET],
+    );
+    return yield* changes(sql);
+  });
+}
+
+function catalogCleanupPending(sql: SqlClient.SqlClient, includeProjections: boolean) {
+  return sql
+    .unsafe<{readonly count: unknown}>(
+      `SELECT (
+         EXISTS (
+           SELECT 1 FROM workset_generations AS g
+           WHERE g.state = 'retired'
+             AND NOT EXISTS (
+               SELECT 1 FROM published_worksets AS p WHERE p.generation_id = g.id
+             )
+             AND (
+               g.member_count > 0
+               OR EXISTS (
+                 SELECT 1 FROM workset_generation_members AS m WHERE m.generation_id = g.id
+               )
+               OR EXISTS (
+                 SELECT 1 FROM cross_repository_bridge_sets AS b WHERE b.generation_id = g.id
+               )
+               OR NOT EXISTS (
+                 SELECT 1 FROM result_sets AS r WHERE r.generation_id = g.id
+               )
+             )
+           LIMIT 1
+         )
+         ${
+           includeProjections
+             ? `OR EXISTS (
+           SELECT 1 FROM routing_projection_retirements AS q
+           WHERE NOT EXISTS (
+             SELECT 1 FROM workset_generation_members AS m
+             WHERE m.projection_digest = q.projection_digest
+           )
+           LIMIT 1
+         )`
+             : ''
+         }
+       ) AS count`,
+    )
+    .pipe(Effect.map(rows => requiredInteger(rows[0]?.count, 'cleanup pending count') > 0));
+}
+
+function stagingGenerationCutoff(now: string): string {
+  return new Date(new Date(now).getTime() - STAGING_GENERATION_RETENTION_MILLISECONDS).toISOString();
+}
 /** Inspect and reconstruct only the disposable catalog when corruption or schema drift is proven. */
 export const recoverCodeGraphWorksetCatalog = Effect.fn('codeGraphWorksetCatalog.recover')(function* (
   threadnoteHome: string,
@@ -1320,20 +1950,25 @@ export const recoverCodeGraphWorksetCatalog = Effect.fn('codeGraphWorksetCatalog
   const layout = codeGraphWorksetCatalogLayout(path, threadnoteHome);
   return yield* withExclusiveFileLock(
     fs,
-    layout.lockPath,
+    layout.prepareLockPath,
     CATALOG_LOCK_OPTIONS,
-    Effect.gen(function* () {
-      const health = yield* inspectCatalogLayout(fs, layout);
-      if (health.state === 'ok') return {previousState: health.state, rebuilt: false};
-      if (health.state === 'unavailable') {
-        return yield* Effect.fail(
-          new CodeGraphWorksetCatalogError('storage', 'The workset catalog is unavailable and was not rebuilt.'),
-        );
-      }
-      if (health.state !== 'missing') yield* removeCatalogFiles(fs, layout);
-      yield* initializeCatalogLayout(fs, layout);
-      return {previousState: health.state, rebuilt: health.state !== 'missing'};
-    }),
+    withExclusiveFileLock(
+      fs,
+      layout.lockPath,
+      CATALOG_LOCK_OPTIONS,
+      Effect.gen(function* () {
+        const health = yield* inspectCatalogLayout(fs, layout);
+        if (health.state === 'ok') return {previousState: health.state, rebuilt: false};
+        if (health.state === 'unavailable') {
+          return yield* Effect.fail(
+            new CodeGraphWorksetCatalogError('storage', 'The workset catalog is unavailable and was not rebuilt.'),
+          );
+        }
+        if (health.state !== 'missing') yield* removeCatalogFiles(fs, layout);
+        yield* initializeCatalogLayout(fs, layout);
+        return {previousState: health.state, rebuilt: health.state !== 'missing'};
+      }),
+    ),
   ).pipe(mapCatalogError('recover workset catalog'));
 });
 
@@ -1346,11 +1981,16 @@ export const rebuildCodeGraphWorksetCatalog = Effect.fn('codeGraphWorksetCatalog
   const layout = codeGraphWorksetCatalogLayout(path, threadnoteHome);
   return yield* withExclusiveFileLock(
     fs,
-    layout.lockPath,
+    layout.prepareLockPath,
     CATALOG_LOCK_OPTIONS,
-    Effect.gen(function* () {
-      yield* removeCatalogFiles(fs, layout);
-      yield* initializeCatalogLayout(fs, layout);
-    }),
+    withExclusiveFileLock(
+      fs,
+      layout.lockPath,
+      CATALOG_LOCK_OPTIONS,
+      Effect.gen(function* () {
+        yield* removeCatalogFiles(fs, layout);
+        yield* initializeCatalogLayout(fs, layout);
+      }),
+    ),
   ).pipe(mapCatalogError('rebuild workset catalog'));
 });

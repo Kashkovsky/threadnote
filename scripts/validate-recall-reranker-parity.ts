@@ -1,3 +1,4 @@
+import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {Clock, Effect, FileSystem, Layer, Path} from 'effect';
@@ -109,7 +110,7 @@ function parseArguments(args: readonly string[], resolve: (value: string) => str
       minimumOrderingGap = numberValue(args[++index], argument);
     } else if (argument === '--model') model = resolve(required(args[++index], argument));
     else if (argument === '--output') output = resolve(required(args[++index], argument));
-    else throw new Error(`Unknown reranker-parity option: ${argument}`);
+    else throw new ScriptError(`Unknown reranker-parity option: ${argument}`);
   }
   return {
     fixture: required(fixture, '--fixture'),
@@ -129,13 +130,13 @@ function verifyRuntimeBinding(
   },
   manifest: LocalModelManifest,
 ): void {
-  if (manifest.role !== 'reranker') throw new Error(`Local model ${manifest.id} is not a reranker.`);
+  if (manifest.role !== 'reranker') throw new ScriptError(`Local model ${manifest.id} is not a reranker.`);
   if (
     manifest.architecture !== expected.architecture ||
     manifest.contextLimit !== expected.contextLimit ||
     manifest.runtime.nodeLlamaCpp !== expected.nodeLlamaCpp
   ) {
-    throw new Error('Local reranker manifest does not match the Python parity fixture runtime target.');
+    throw new ScriptError('Local reranker manifest does not match the Python parity fixture runtime target.');
   }
 }
 
@@ -145,24 +146,24 @@ const verifyModelArtifact = Effect.fn('validateRecallRerankerParity.verifyModelA
 ) {
   const fs = yield* FileSystem.FileSystem;
   const info = yield* fs.stat(modelPath);
-  if (info.type !== 'File') throw new Error(`Local reranker artifact is not a regular file: ${modelPath}`);
+  if (info.type !== 'File') throw new ScriptError(`Local reranker artifact is not a regular file: ${modelPath}`);
   if (Number(info.size) !== manifest.size) {
-    throw new Error(`Local reranker size ${info.size} does not match manifest size ${manifest.size}.`);
+    throw new ScriptError(`Local reranker size ${info.size} does not match manifest size ${manifest.size}.`);
   }
   const digest = yield* sha256FileHex(modelPath);
   if (digest !== manifest.sha256) {
-    throw new Error(`Local reranker SHA-256 ${digest} does not match manifest SHA-256 ${manifest.sha256}.`);
+    throw new ScriptError(`Local reranker SHA-256 ${digest} does not match manifest SHA-256 ${manifest.sha256}.`);
   }
 });
 
 function required(value: string | undefined, option: string): string {
-  if (!value?.trim()) throw new Error(`${option} requires a value.`);
+  if (!value?.trim()) throw new ScriptError(`${option} requires a value.`);
   return value;
 }
 
 function numberValue(value: string | undefined, option: string): number {
   const parsed = Number(required(value, option));
-  if (!Number.isFinite(parsed) || parsed < 0) throw new Error(`${option} requires a finite non-negative number.`);
+  if (!Number.isFinite(parsed) || parsed < 0) throw new ScriptError(`${option} requires a finite non-negative number.`);
   return parsed;
 }
 
@@ -170,4 +171,4 @@ const systemLayer = SystemInfo.layer;
 const runtimeLayer = isolatedLocalModelRuntimeLayer().pipe(Layer.provideMerge(systemLayer));
 const ParityLayer = Layer.mergeAll(runtimeLayer, systemLayer).pipe(Layer.provideMerge(BunServices.layer));
 
-BunRuntime.runMain(validateParity.pipe(Effect.provide(ParityLayer)));
+BunRuntime.runMain(provideScriptLayer(validateParity, ParityLayer));

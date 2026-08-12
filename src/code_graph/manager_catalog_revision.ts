@@ -75,7 +75,7 @@ export const observeManagerGraphCatalogStatus = Effect.fn('codeGraph.observeMana
               checkoutId,
               repositoryId: view.repositoryId,
               worktreeId: view.worktreeId,
-            }).pipe(Effect.catch(() => Effect.succeed({available: false, state: 'invalid'} as const))),
+            }),
           {concurrency: 2},
         );
         const anchor = associations.find(association => association.state === 'verified' && 'path' in association);

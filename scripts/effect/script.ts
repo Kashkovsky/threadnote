@@ -1,3 +1,4 @@
+import {ScriptError} from './errors.js';
 import {Console, Effect, FileSystem, Path} from 'effect';
 import {sha256Hex} from '../../src/effect/digest.js';
 import {SystemInfo} from '../../src/effect/system.js';
@@ -17,7 +18,7 @@ export const readJsonFile = Effect.fn('script.readJsonFile')(function* (file: st
   const raw = yield* fs.readFileString(file);
   return yield* Effect.try({
     try: () => JSON.parse(raw) as unknown,
-    catch: cause => new Error(`Could not parse JSON file ${file}.`, {cause}),
+    catch: cause => new ScriptError(`Could not parse JSON file ${file}.`, {cause}),
   });
 });
 

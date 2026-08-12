@@ -4,6 +4,10 @@ import {BUILTIN_MODEL_MANIFESTS} from '../models/builtin.js';
 import type {LocalModelManifest} from '../models/catalog.js';
 import {readModelSelection, writeModelSelection} from '../models/selection.js';
 
+class LegacyLocalModelMigrationError extends Error {
+  readonly _tag = 'LegacyLocalModelMigrationError' as const;
+}
+
 export const LEGACY_LOCAL_MODEL_MIGRATION_ID = 'legacy-local-model-v1';
 const LEGACY_MODEL_DIRECTORY = 'threadnote/models';
 
@@ -45,7 +49,9 @@ export const isLegacyLocalModelMigrationPending = Effect.fn('legacyLocalModelMig
     for (const modelId of receipt.models) {
       const manifest = manifests.find(candidate => candidate.id === modelId);
       if (!manifest) {
-        return yield* Effect.fail(new Error(`Legacy model migration receipt references unknown model ${modelId}.`));
+        return yield* Effect.fail(
+          new LegacyLocalModelMigrationError(`Legacy model migration receipt references unknown model ${modelId}.`),
+        );
       }
       yield* inspectLegacyModelCandidate(fs, path.join(home, LEGACY_MODEL_DIRECTORY, manifest.file), manifest);
     }
@@ -94,7 +100,9 @@ export const migrateLegacyLocalModels = Effect.fn('legacyLocalModelMigration.mig
   for (const modelId of legacyModels) {
     const manifest = manifests.find(candidate => candidate.id === modelId);
     if (!manifest) {
-      return yield* Effect.fail(new Error(`Legacy model migration receipt references unknown model ${modelId}.`));
+      return yield* Effect.fail(
+        new LegacyLocalModelMigrationError(`Legacy model migration receipt references unknown model ${modelId}.`),
+      );
     }
     const source = path.join(home, LEGACY_MODEL_DIRECTORY, manifest.file);
     const directory = path.join(home, 'models', manifest.role, manifest.id);
@@ -104,7 +112,9 @@ export const migrateLegacyLocalModels = Effect.fn('legacyLocalModelMigration.mig
     const targetExists = yield* fs.exists(target);
     if (sourceExists && targetExists) {
       return yield* Effect.fail(
-        new Error(`Both legacy and canonical model files exist for ${manifest.id}; refusing to overwrite either.`),
+        new LegacyLocalModelMigrationError(
+          `Both legacy and canonical model files exist for ${manifest.id}; refusing to overwrite either.`,
+        ),
       );
     }
     if (sourceExists) {
@@ -118,7 +128,9 @@ export const migrateLegacyLocalModels = Effect.fn('legacyLocalModelMigration.mig
       resumed = true;
       yield* verifyModel(fs, target, manifest);
     } else {
-      return yield* Effect.fail(new Error(`Model ${manifest.id} disappeared while its legacy migration was pending.`));
+      return yield* Effect.fail(
+        new LegacyLocalModelMigrationError(`Model ${manifest.id} disappeared while its legacy migration was pending.`),
+      );
     }
     yield* fs.writeFileString(path.join(directory, 'manifest.json'), `${JSON.stringify(manifest, undefined, 2)}\n`, {
       mode: 0o600,
@@ -168,17 +180,23 @@ function assertLegacyModelAncestors(fs: FileSystem.FileSystem, path: Path.Path, 
     for (const relative of ['threadnote', LEGACY_MODEL_DIRECTORY] as const) {
       const ancestor = path.join(home, relative);
       if (Option.isSome(yield* fs.readLink(ancestor).pipe(Effect.option))) {
-        return yield* Effect.fail(new Error(`Legacy model parent ${relative} must not be a symbolic link.`));
+        return yield* Effect.fail(
+          new LegacyLocalModelMigrationError(`Legacy model parent ${relative} must not be a symbolic link.`),
+        );
       }
       if (!(yield* fs.exists(ancestor))) continue;
       const info = yield* fs.stat(ancestor);
       if (info.type !== 'Directory') {
-        return yield* Effect.fail(new Error(`Legacy model parent ${relative} must be a regular directory.`));
+        return yield* Effect.fail(
+          new LegacyLocalModelMigrationError(`Legacy model parent ${relative} must be a regular directory.`),
+        );
       }
       if (canonicalHome !== undefined) {
         const canonicalAncestor = yield* fs.realPath(ancestor);
         if (path.resolve(canonicalAncestor) !== path.resolve(canonicalHome, relative)) {
-          return yield* Effect.fail(new Error(`Legacy model parent ${relative} resolves outside its owned path.`));
+          return yield* Effect.fail(
+            new LegacyLocalModelMigrationError(`Legacy model parent ${relative} resolves outside its owned path.`),
+          );
         }
       }
     }
@@ -188,12 +206,16 @@ function assertLegacyModelAncestors(fs: FileSystem.FileSystem, path: Path.Path, 
 function inspectLegacyModelCandidate(fs: FileSystem.FileSystem, modelPath: string, manifest: LocalModelManifest) {
   return Effect.gen(function* () {
     if (Option.isSome(yield* fs.readLink(modelPath).pipe(Effect.option))) {
-      return yield* Effect.fail(new Error(`Legacy model ${manifest.id} must not be a symbolic link.`));
+      return yield* Effect.fail(
+        new LegacyLocalModelMigrationError(`Legacy model ${manifest.id} must not be a symbolic link.`),
+      );
     }
     if (!(yield* fs.exists(modelPath))) return false;
     const info = yield* fs.stat(modelPath);
     if (info.type !== 'File') {
-      return yield* Effect.fail(new Error(`Legacy model ${manifest.id} must be a regular file.`));
+      return yield* Effect.fail(
+        new LegacyLocalModelMigrationError(`Legacy model ${manifest.id} must be a regular file.`),
+      );
     }
     return true;
   });
@@ -202,18 +224,24 @@ function inspectLegacyModelCandidate(fs: FileSystem.FileSystem, modelPath: strin
 function verifyModel(fs: FileSystem.FileSystem, modelPath: string, manifest: LocalModelManifest) {
   return Effect.gen(function* () {
     if (Option.isSome(yield* fs.readLink(modelPath).pipe(Effect.option))) {
-      return yield* Effect.fail(new Error(`Legacy model ${manifest.id} must not be a symbolic link.`));
+      return yield* Effect.fail(
+        new LegacyLocalModelMigrationError(`Legacy model ${manifest.id} must not be a symbolic link.`),
+      );
     }
     const info = yield* fs.stat(modelPath);
     if (info.type !== 'File' || Number(info.size) !== manifest.size) {
       return yield* Effect.fail(
-        new Error(`Legacy model ${manifest.id} has ${Number(info.size)} bytes; expected ${manifest.size}.`),
+        new LegacyLocalModelMigrationError(
+          `Legacy model ${manifest.id} has ${Number(info.size)} bytes; expected ${manifest.size}.`,
+        ),
       );
     }
     const digest = yield* sha256FileHex(modelPath);
     if (digest !== manifest.sha256) {
       return yield* Effect.fail(
-        new Error(`Legacy model ${manifest.id} checksum is ${digest}; expected ${manifest.sha256}.`),
+        new LegacyLocalModelMigrationError(
+          `Legacy model ${manifest.id} checksum is ${digest}; expected ${manifest.sha256}.`,
+        ),
       );
     }
   });
@@ -233,7 +261,7 @@ function readReceipt(
         !Array.isArray(parsed.models) ||
         !parsed.models.every(model => typeof model === 'string')
       ) {
-        throw new Error('Invalid legacy local-model migration receipt.');
+        throw new LegacyLocalModelMigrationError('Invalid legacy local-model migration receipt.');
       }
       return parsed as LegacyLocalModelMigrationReceipt;
     }),

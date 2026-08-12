@@ -34,6 +34,10 @@ export interface ObsidianConfiguration {
   readonly version: 1;
 }
 
+class ObsidianConfigurationError extends Error {
+  readonly _tag = 'ObsidianConfigurationError' as const;
+}
+
 export const DEFAULT_OBSIDIAN_EXCLUDES = ['.obsidian/**', '.trash/**'] as const;
 export const DEFAULT_PROJECTION_KINDS = ['durable', 'handoff'] as const;
 export const DEFAULT_PROJECTION_STATUSES = ['active'] as const;
@@ -73,7 +77,10 @@ export const readObsidianConfiguration = Effect.fn('obsidian.readConfiguration')
   const raw = yield* fs.readFileString(path);
   return yield* Effect.try({
     try: () => parseObsidianConfiguration(raw, path),
-    catch: cause => (cause instanceof Error ? cause : new Error(String(cause))),
+    catch: cause =>
+      cause instanceof ObsidianConfigurationError
+        ? cause
+        : new ObsidianConfigurationError(cause instanceof Error ? cause.message : String(cause), {cause}),
   });
 });
 
@@ -106,13 +113,15 @@ export const writeObsidianConfiguration = Effect.fn('obsidian.writeConfiguration
 export function parseObsidianConfiguration(raw: string, path = CONFIGURATION_FILENAME): ObsidianConfiguration {
   const loaded = yaml.load(raw);
   if (!isJsonObject(loaded)) {
-    throw new Error(`Obsidian source configuration must be an object: ${path}`);
+    throw new ObsidianConfigurationError(`Obsidian source configuration must be an object: ${path}`);
   }
   if (loaded.version !== CONFIGURATION_VERSION) {
-    throw new Error(`Unsupported Obsidian source configuration version in ${path}. Expected 1.`);
+    throw new ObsidianConfigurationError(`Unsupported Obsidian source configuration version in ${path}. Expected 1.`);
   }
   if (!Array.isArray(loaded.sources) || !Array.isArray(loaded.projections)) {
-    throw new Error(`Obsidian source configuration requires sources and projections arrays: ${path}`);
+    throw new ObsidianConfigurationError(
+      `Obsidian source configuration requires sources and projections arrays: ${path}`,
+    );
   }
   const sources = loaded.sources.map((value, index) => parseSource(value, `${path} sources[${index}]`));
   const projections = loaded.projections.map((value, index) => parseProjection(value, `${path} projections[${index}]`));
@@ -183,7 +192,7 @@ export function removeObsidianProjection(configuration: ObsidianConfiguration, i
 export function requireObsidianSource(configuration: ObsidianConfiguration, id: string): ObsidianSourceConfig {
   const source = configuration.sources.find(item => item.id === id);
   if (!source) {
-    throw new Error(`No Obsidian source named "${id}".`);
+    throw new ObsidianConfigurationError(`No Obsidian source named "${id}".`);
   }
   return source;
 }
@@ -191,7 +200,7 @@ export function requireObsidianSource(configuration: ObsidianConfiguration, id: 
 export function requireObsidianProjection(configuration: ObsidianConfiguration, id: string): ObsidianProjectionConfig {
   const projection = configuration.projections.find(item => item.id === id);
   if (!projection) {
-    throw new Error(`No Obsidian projection named "${id}".`);
+    throw new ObsidianConfigurationError(`No Obsidian projection named "${id}".`);
   }
   return projection;
 }
@@ -199,22 +208,24 @@ export function requireObsidianProjection(configuration: ObsidianConfiguration, 
 export function validateObsidianIdentifier(value: string, label: string): string {
   const normalized = value.trim().toLowerCase();
   if (!IDENTIFIER_PATTERN.test(normalized)) {
-    throw new Error(`${label} must contain only lowercase letters, digits, dots, underscores, and hyphens.`);
+    throw new ObsidianConfigurationError(
+      `${label} must contain only lowercase letters, digits, dots, underscores, and hyphens.`,
+    );
   }
   return normalized;
 }
 
 function parseSource(value: unknown, label: string): ObsidianSourceConfig {
   if (!isJsonObject(value)) {
-    throw new Error(`${label} must be an object.`);
+    throw new ObsidianConfigurationError(`${label} must be an object.`);
   }
   const id = requiredIdentifier(value.id, `${label}.id`);
   if (value.type !== 'obsidian') {
-    throw new Error(`${label}.type must be "obsidian".`);
+    throw new ObsidianConfigurationError(`${label}.type must be "obsidian".`);
   }
   const include = sourcePatterns(value.include, `${label}.include`);
   if (include.length === 0) {
-    throw new Error(`${label}.include must contain at least one allowlist pattern.`);
+    throw new ObsidianConfigurationError(`${label}.include must contain at least one allowlist pattern.`);
   }
   return {
     enabled: optionalBoolean(value.enabled, true, `${label}.enabled`),
@@ -230,11 +241,11 @@ function parseSource(value: unknown, label: string): ObsidianSourceConfig {
 
 function parseProjection(value: unknown, label: string): ObsidianProjectionConfig {
   if (!isJsonObject(value)) {
-    throw new Error(`${label} must be an object.`);
+    throw new ObsidianConfigurationError(`${label} must be an object.`);
   }
   const id = requiredIdentifier(value.id, `${label}.id`);
   if (value.type !== 'obsidian') {
-    throw new Error(`${label}.type must be "obsidian".`);
+    throw new ObsidianConfigurationError(`${label}.type must be "obsidian".`);
   }
   return {
     enabled: optionalBoolean(value.enabled, true, `${label}.enabled`),
@@ -259,14 +270,14 @@ function assertUniqueIds(
   const sourceIds = new Set<string>();
   for (const source of sources) {
     if (sourceIds.has(source.id)) {
-      throw new Error(`Duplicate source id "${source.id}" in ${path}.`);
+      throw new ObsidianConfigurationError(`Duplicate source id "${source.id}" in ${path}.`);
     }
     sourceIds.add(source.id);
   }
   const projectionIds = new Set<string>();
   for (const projection of projections) {
     if (projectionIds.has(projection.id)) {
-      throw new Error(`Duplicate projection id "${projection.id}" in ${path}.`);
+      throw new ObsidianConfigurationError(`Duplicate projection id "${projection.id}" in ${path}.`);
     }
     projectionIds.add(projection.id);
   }
@@ -278,7 +289,7 @@ function requiredIdentifier(value: unknown, label: string): string {
 
 function requiredString(value: unknown, label: string): string {
   if (typeof value !== 'string' || value.trim().length === 0) {
-    throw new Error(`${label} must be a non-empty string.`);
+    throw new ObsidianConfigurationError(`${label} must be a non-empty string.`);
   }
   return value.trim();
 }
@@ -286,7 +297,7 @@ function requiredString(value: unknown, label: string): string {
 function requiredAbsoluteVaultPath(value: unknown, label: string): string {
   const path = requiredString(value, label);
   if (!path.startsWith('/') && !/^[a-zA-Z]:[\\/]/.test(path) && !/^\\\\/.test(path)) {
-    throw new Error(`${label} must be an absolute path.`);
+    throw new ObsidianConfigurationError(`${label} must be an absolute path.`);
   }
   return path;
 }
@@ -296,14 +307,14 @@ function requiredRelativeFolder(value: unknown, label: string): string {
     .replaceAll('\\', '/')
     .replace(/^\/+|\/+$/g, '');
   if (folder.length === 0 || folder.split('/').some(segment => segment === '' || segment === '.' || segment === '..')) {
-    throw new Error(`${label} must be a safe vault-relative folder.`);
+    throw new ObsidianConfigurationError(`${label} must be a safe vault-relative folder.`);
   }
   return folder;
 }
 
 function requiredStringArray(value: unknown, label: string): readonly string[] {
   if (!Array.isArray(value) || !value.every(item => typeof item === 'string' && item.trim().length > 0)) {
-    throw new Error(`${label} must be an array of non-empty strings.`);
+    throw new ObsidianConfigurationError(`${label} must be an array of non-empty strings.`);
   }
   return [...new Set(value.map(item => (item as string).trim()))];
 }
@@ -316,7 +327,9 @@ function sourcePatterns(value: unknown, label: string): readonly string[] {
       /^[a-zA-Z]:\//.test(normalized) ||
       normalized.split('/').some(segment => segment === '..')
     ) {
-      throw new Error(`${label} must contain only vault-relative patterns without parent traversal.`);
+      throw new ObsidianConfigurationError(
+        `${label} must contain only vault-relative patterns without parent traversal.`,
+      );
     }
     return normalized;
   });
@@ -327,7 +340,7 @@ function optionalBoolean(value: unknown, fallback: boolean, label: string): bool
     return fallback;
   }
   if (typeof value !== 'boolean') {
-    throw new Error(`${label} must be a boolean.`);
+    throw new ObsidianConfigurationError(`${label} must be a boolean.`);
   }
   return value;
 }
@@ -340,7 +353,7 @@ function memoryKinds(value: unknown, label: string): readonly MemoryKind[] {
         item === 'durable' || item === 'handoff' || item === 'incident' || item === 'preference' || item === 'smoke',
     )
   ) {
-    throw new Error(`${label} contains an unsupported memory kind.`);
+    throw new ObsidianConfigurationError(`${label} contains an unsupported memory kind.`);
   }
   return values as readonly MemoryKind[];
 }
@@ -348,7 +361,7 @@ function memoryKinds(value: unknown, label: string): readonly MemoryKind[] {
 function memoryStatuses(value: unknown, label: string): readonly MemoryStatus[] {
   const values = value === undefined ? DEFAULT_PROJECTION_STATUSES : requiredStringArray(value, label);
   if (!values.every(item => item === 'active' || item === 'archived' || item === 'superseded')) {
-    throw new Error(`${label} contains an unsupported memory status.`);
+    throw new ObsidianConfigurationError(`${label} contains an unsupported memory status.`);
   }
   return values as readonly MemoryStatus[];
 }
@@ -363,7 +376,7 @@ function selectedMemoryUris(value: unknown, label: string): readonly string[] {
         parsed.segments[1] !== 'memories' ||
         !parsed.segments.at(-1)?.toLowerCase().endsWith('.md')
       ) {
-        throw new Error(`${label} may contain only canonical Threadnote memory URIs.`);
+        throw new ObsidianConfigurationError(`${label} may contain only canonical Threadnote memory URIs.`);
       }
       return parsed.canonicalUri;
     })

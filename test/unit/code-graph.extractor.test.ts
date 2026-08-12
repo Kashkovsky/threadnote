@@ -1,5 +1,5 @@
-import {readFileSync, readdirSync, statSync} from 'node:fs';
-import {join, relative} from 'node:path';
+import {readFileSync, readdirSync, statSync} from '../helpers/node-fs.js';
+import {join, relative} from '../helpers/node-path.js';
 import * as FC from 'effect/testing/FastCheck';
 import {describe, expect, it} from 'vitest';
 import {sha256HexSync} from '../../src/crypto/sha256.js';

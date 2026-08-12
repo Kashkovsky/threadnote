@@ -1,8 +1,8 @@
-import {createHash} from 'node:crypto';
-import {execFileSync} from 'node:child_process';
-import {access, mkdir, mkdtemp, readFile, rm, stat, writeFile} from 'node:fs/promises';
-import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {createHash} from '../helpers/node-crypto.js';
+import {execFileSync} from '../helpers/node-child-process.js';
+import {access, mkdir, mkdtemp, readFile, rm, stat, writeFile} from '../helpers/node-fs-promises.js';
+import {tmpdir} from '../helpers/node-os.js';
+import {join} from '../helpers/node-path.js';
 import {describe, expect, it} from 'vitest';
 import {assertPerformanceSourceClean} from '../../scripts/site-performance-evidence.js';
 import {loadLatestMajorWebsiteReleases} from '../../scripts/site-release-notes.js';

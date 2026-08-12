@@ -1,3 +1,4 @@
+import {provideTestLayer} from '../helpers/effect-layer.js';
 import {it as effectIt} from '@effect/vitest';
 import {Cause, Effect, Exit, FileSystem, Path} from 'effect';
 import {beforeEach, describe, expect, vi} from 'vitest';
@@ -67,7 +68,7 @@ describe('read-only shared teams', () => {
         expect(stored.teams.reference.access).toBe('read-only');
         expect(vi.mocked(utils.runCommand)).not.toHaveBeenCalled();
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('persists and displays access while clean sync fetches without committing or pushing', () =>
@@ -98,7 +99,7 @@ describe('read-only shared teams', () => {
         expect(gitArguments.some(args => args.includes('commit'))).toBe(false);
         expect(gitArguments.some(args => args.includes('push'))).toBe(false);
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('rejects every publication surface before reading its source', () =>
@@ -142,7 +143,7 @@ describe('read-only shared teams', () => {
           expect.stringContaining('read-only; cannot publish agent artifact bundles'),
         ]);
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('refuses dirty state instead of auto-committing a read-only worktree', () =>
@@ -160,7 +161,7 @@ describe('read-only shared teams', () => {
         expect(gitArguments.some(args => args.includes('commit'))).toBe(false);
         expect(gitArguments.some(args => args.includes('push'))).toBe(false);
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 });
 

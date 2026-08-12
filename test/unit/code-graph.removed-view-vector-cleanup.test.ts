@@ -1,3 +1,4 @@
+import {TestError} from '../helpers/test-error.js';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {Database} from 'bun:sqlite';
 import {describe, expect, it as effectIt} from '@effect/vitest';
@@ -778,7 +779,7 @@ function progressResult(
   result: CodeGraphRemovedViewVectorUnitResult,
 ): Extract<CodeGraphRemovedViewVectorUnitResult, {readonly state: 'progress'}> {
   expect(result.state).toBe('progress');
-  if (result.state !== 'progress') throw new Error('Expected vector-unit progress.');
+  if (result.state !== 'progress') throw new TestError('Expected vector-unit progress.');
   return result;
 }
 
@@ -788,7 +789,7 @@ function parseCursor(result: CodeGraphRemovedViewVectorUnitResult): ParsedCursor
     progress.cursorToken,
   );
   expect(match).not.toBeNull();
-  if (match === null) throw new Error('Vector-unit cursor is not canonical.');
+  if (match === null) throw new TestError('Vector-unit cursor is not canonical.');
   return {
     digest: match[2]!,
     mode: match[1] as ParsedCursor['mode'],

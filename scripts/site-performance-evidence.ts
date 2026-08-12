@@ -1,3 +1,4 @@
+import {ScriptError} from './effect/errors.js';
 import {parseBenchmarkArtifactV1} from '../src/evaluation/benchmark.js';
 import {
   pendingPerformanceEvidence,
@@ -17,7 +18,7 @@ export function performanceArtifactPublicUrl(siteBase: string): string {
     siteBase.includes('//') ||
     segments.some(segment => segment === '.' || segment === '..' || !/^[A-Za-z0-9._~-]+$/.test(segment))
   ) {
-    throw new Error('THREADNOTE_SITE_BASE must be a root-relative directory path ending in /.');
+    throw new ScriptError('THREADNOTE_SITE_BASE must be a root-relative directory path ending in /.');
   }
   return `${siteBase}performance-evidence.json`;
 }
@@ -47,13 +48,13 @@ const utcTimestampPattern = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/
 
 function exactRecord(value: unknown, path: string, keys: readonly string[]): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw new Error(`Performance binding ${path} must be an object.`);
+    throw new ScriptError(`Performance binding ${path} must be an object.`);
   }
   const record = value as Record<string, unknown>;
   const actualKeys = Object.keys(record).sort();
   const expectedKeys = [...keys].sort();
   if (actualKeys.length !== expectedKeys.length || actualKeys.some((key, index) => key !== expectedKeys[index])) {
-    throw new Error(`Performance binding ${path} has unexpected or missing fields.`);
+    throw new ScriptError(`Performance binding ${path} has unexpected or missing fields.`);
   }
   return record;
 }
@@ -67,7 +68,7 @@ function matchingString(
 ): string {
   const value = record[key];
   if (typeof value !== 'string' || !pattern.test(value)) {
-    throw new Error(`Performance binding ${path}.${key} must be ${label}.`);
+    throw new ScriptError(`Performance binding ${path}.${key} must be ${label}.`);
   }
   return value;
 }
@@ -80,7 +81,7 @@ export function validatePerformanceArtifactBinding(input: unknown): PerformanceA
     'sourceThreadnoteCommit',
     'sourceTreeSha256',
   ]);
-  if (binding.schemaVersion !== 1) throw new Error('Performance binding root.schemaVersion must be 1.');
+  if (binding.schemaVersion !== 1) throw new ScriptError('Performance binding root.schemaVersion must be 1.');
   matchingString(binding, 'artifactSha256', 'root', sha256Pattern, 'a lowercase SHA-256 digest');
   matchingString(binding, 'generatedAt', 'root', utcTimestampPattern, 'an ISO-8601 UTC timestamp');
   matchingString(binding, 'sourceThreadnoteCommit', 'root', sha40Pattern, 'a lowercase 40-character Git commit');
@@ -99,7 +100,7 @@ function parseRetainedPerformanceArtifactBytes(artifactBytes: Uint8Array): Retai
   try {
     parsed = JSON.parse(new TextDecoder().decode(artifactBytes));
   } catch {
-    throw new Error('Retained performance artifact is not valid JSON.');
+    throw new ScriptError('Retained performance artifact is not valid JSON.');
   }
   parseBenchmarkArtifactV1(parsed);
   return validateRetainedPerformancePayload(parsed);
@@ -115,21 +116,21 @@ export function bindRetainedPerformanceArtifact(input: {
 }): PerformanceEvidence {
   const binding = validatePerformanceArtifactBinding(input.binding);
   if (!sha256Pattern.test(input.currentSourceTreeSha256)) {
-    throw new Error('Current performance source-tree digest is invalid.');
+    throw new ScriptError('Current performance source-tree digest is invalid.');
   }
   const actualArtifactSha256 = sha256Hex(input.artifactBytes);
   if (actualArtifactSha256 !== binding.artifactSha256) {
-    throw new Error(
+    throw new ScriptError(
       `Retained performance artifact SHA-256 mismatch: expected ${binding.artifactSha256}, got ${actualArtifactSha256}.`,
     );
   }
   if (input.currentSourceTreeSha256 !== binding.sourceTreeSha256) {
-    throw new Error('Retained performance evidence does not match the current Threadnote source tree.');
+    throw new ScriptError('Retained performance evidence does not match the current Threadnote source tree.');
   }
 
   const payload = parseRetainedPerformanceArtifactBytes(input.artifactBytes);
   if (payload.environment.commit !== binding.sourceThreadnoteCommit) {
-    throw new Error('Retained performance artifact and binding name different Threadnote source commits.');
+    throw new ScriptError('Retained performance artifact and binding name different Threadnote source commits.');
   }
   const artifact = retainedPerformanceArtifactFromHarness(payload, {
     artifactUrl: input.artifactPublicUrl,
@@ -156,27 +157,29 @@ function runGit(repositoryRoot: string, arguments_: readonly string[]): ReturnTy
 
 function requireSuccessfulGit(result: ReturnType<typeof Bun.spawnSync>, operation: string): void {
   if (result.exitCode !== 0) {
-    throw new Error(`Could not ${operation}: ${decodeOutput(result.stderr) || `git exited with ${result.exitCode}`}.`);
+    throw new ScriptError(
+      `Could not ${operation}: ${decodeOutput(result.stderr) || `git exited with ${result.exitCode}`}.`,
+    );
   }
 }
 
 export function assertPerformanceSourceClean(repositoryRoot: string): void {
   const unstaged = runGit(repositoryRoot, ['diff', '--quiet', '--', ...performanceSourcePathspecs]);
   if (unstaged.exitCode === 1) {
-    throw new Error('Performance-bound sources contain tracked working-tree modifications.');
+    throw new ScriptError('Performance-bound sources contain tracked working-tree modifications.');
   }
   requireSuccessfulGit(unstaged, 'inspect tracked performance-source modifications');
 
   const staged = runGit(repositoryRoot, ['diff', '--cached', '--quiet', '--', ...performanceSourcePathspecs]);
   if (staged.exitCode === 1) {
-    throw new Error('Performance-bound sources contain staged modifications.');
+    throw new ScriptError('Performance-bound sources contain staged modifications.');
   }
   requireSuccessfulGit(staged, 'inspect staged performance-source modifications');
 
   const untracked = runGit(repositoryRoot, ['ls-files', '--others', '-z', '--', ...performanceSourcePathspecs]);
   requireSuccessfulGit(untracked, 'inspect untracked performance sources');
   if ((untracked.stdout?.byteLength ?? 0) > 0) {
-    throw new Error('Performance-bound sources contain untracked files.');
+    throw new ScriptError('Performance-bound sources contain untracked files.');
   }
 }
 
@@ -184,13 +187,15 @@ function verifySourceCommit(repositoryRoot: string, sourceCommit: string): void 
   assertPerformanceSourceClean(repositoryRoot);
   const commit = runGit(repositoryRoot, ['cat-file', '-e', `${sourceCommit}^{commit}`]);
   if (commit.exitCode !== 0) {
-    throw new Error(
+    throw new ScriptError(
       `Retained performance source commit ${sourceCommit} is unavailable; use a full Git checkout for the website build.`,
     );
   }
   const ancestor = runGit(repositoryRoot, ['merge-base', '--is-ancestor', sourceCommit, 'HEAD']);
   if (ancestor.exitCode !== 0) {
-    throw new Error(`Retained performance source commit ${sourceCommit} is not an ancestor of the website build.`);
+    throw new ScriptError(
+      `Retained performance source commit ${sourceCommit} is not an ancestor of the website build.`,
+    );
   }
   const changed = runGit(repositoryRoot, [
     'diff',
@@ -201,7 +206,9 @@ function verifySourceCommit(repositoryRoot: string, sourceCommit: string): void 
     ...performanceSourcePathspecs,
   ]);
   if (changed.exitCode !== 0) {
-    throw new Error('Threadnote runtime sources changed after the retained performance run; publish fresh evidence.');
+    throw new ScriptError(
+      'Threadnote runtime sources changed after the retained performance run; publish fresh evidence.',
+    );
   }
 }
 
@@ -210,7 +217,7 @@ function verifyReleaseEvidenceSource(repositoryRoot: string, payload: RetainedPe
   const resolved = runGit(repositoryRoot, ['rev-parse', '--verify', `${ref}^{commit}`]);
   requireSuccessfulGit(resolved, 'resolve the retained performance release tag');
   if (decodeOutput(resolved.stdout) !== payload.environment.commit) {
-    throw new Error('Retained performance release tag does not resolve to the measured Threadnote commit.');
+    throw new ScriptError('Retained performance release tag does not resolve to the measured Threadnote commit.');
   }
 }
 
@@ -218,7 +225,7 @@ export async function computePerformanceSourceTreeSha256(repositoryRoot: string)
   assertPerformanceSourceClean(repositoryRoot);
   const listed = runGit(repositoryRoot, ['ls-files', '--stage', '-z', '--', ...performanceSourcePathspecs]);
   if (listed.exitCode !== 0) {
-    throw new Error(`Could not inventory performance-bound sources: ${decodeOutput(listed.stderr)}.`);
+    throw new ScriptError(`Could not inventory performance-bound sources: ${decodeOutput(listed.stderr)}.`);
   }
   const entries = new TextDecoder()
     .decode(listed.stdout)
@@ -226,15 +233,15 @@ export async function computePerformanceSourceTreeSha256(repositoryRoot: string)
     .filter(Boolean)
     .map(entry => {
       const tabIndex = entry.indexOf('\t');
-      if (tabIndex === -1) throw new Error('Git returned an invalid performance source entry.');
+      if (tabIndex === -1) throw new ScriptError('Git returned an invalid performance source entry.');
       const metadata = entry.slice(0, tabIndex).split(' ');
       const mode = metadata[0];
       const path = entry.slice(tabIndex + 1);
-      if (!mode || !path) throw new Error('Git returned an incomplete performance source entry.');
+      if (!mode || !path) throw new ScriptError('Git returned an incomplete performance source entry.');
       return {mode, path};
     })
     .sort((left, right) => left.path.localeCompare(right.path));
-  if (entries.length === 0) throw new Error('Performance source inventory is empty.');
+  if (entries.length === 0) throw new ScriptError('Performance source inventory is empty.');
 
   const hasher = new Bun.CryptoHasher('sha256');
   for (const entry of entries) {
@@ -273,14 +280,14 @@ export async function loadRetainedPerformanceEvidence(
     );
   }
   if (!artifactExists || !bindingExists) {
-    throw new Error('Retained performance evidence requires both the local JSON artifact and its binding file.');
+    throw new ScriptError('Retained performance evidence requires both the local JSON artifact and its binding file.');
   }
 
   let bindingInput: unknown;
   try {
     bindingInput = JSON.parse(await bindingFile.text());
   } catch {
-    throw new Error('Retained performance binding is not valid JSON.');
+    throw new ScriptError('Retained performance binding is not valid JSON.');
   }
   const binding = validatePerformanceArtifactBinding(bindingInput);
   verifySourceCommit(repositoryRoot, binding.sourceThreadnoteCommit);
@@ -304,7 +311,9 @@ export async function loadRetainedPerformanceEvidence(
 export async function writePerformanceArtifactBinding(repositoryRoot: string): Promise<PerformanceArtifactBinding> {
   const artifactFile = Bun.file(`${repositoryRoot}/${performanceArtifactRelativePath}`);
   if (!(await artifactFile.exists())) {
-    throw new Error(`Place the reviewed payload at ${performanceArtifactRelativePath} before creating its binding.`);
+    throw new ScriptError(
+      `Place the reviewed payload at ${performanceArtifactRelativePath} before creating its binding.`,
+    );
   }
 
   const artifactBytes = new Uint8Array(await artifactFile.arrayBuffer());

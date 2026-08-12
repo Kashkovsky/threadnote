@@ -1,3 +1,4 @@
+import {provideTestLayer} from '../helpers/effect-layer.js';
 import {describe, expect, it} from '@effect/vitest';
 import * as FC from 'effect/testing/FastCheck';
 import {Effect, Layer} from 'effect';
@@ -28,7 +29,7 @@ const chunkWidthsArbitrary = FC.array(FC.integer({max: 64, min: 1}), {
 });
 
 const echoRuntime: LocalModelRuntimeShape = {
-  diagnostics: () => Effect.succeed({backend: 'property-test', buildType: 'prebuilt', cpuMathCores: 4}),
+  diagnostics: Effect.succeed({backend: 'property-test', buildType: 'prebuilt', cpuMathCores: 4}),
   embedMany: request => Effect.succeed(request.inputs.map(input => [input.length, 1])),
   generate: request => Effect.succeed({prompt: request.prompt, system: request.system}),
   rerank: request => Effect.succeed(request.documents.map(document => document.length)),
@@ -52,7 +53,7 @@ describe('isolated local model worker protocol properties', () => {
       widths: chunkWidthsArbitrary,
     },
     ({finalNewline, leadingBlankLines, requests, widths}) =>
-      Effect.promise(async () => {
+      Effect.gen(function* () {
         const lines: FramedLine[] = requests.map((request, index) => ({
           blankLines: request.blankLines,
           eol: request.crlf ? '\r\n' : '\n',
@@ -73,7 +74,7 @@ describe('isolated local model worker protocol properties', () => {
         const bytes = new TextEncoder().encode(frameLines(lines, leadingBlankLines, finalNewline));
         const output: string[] = [];
 
-        await serveWorker(echoRuntime, {
+        yield* serveWorker(echoRuntime, {
           input: asyncChunks(splitBytes(bytes, widths)),
           writeLine: line => {
             output.push(line);
@@ -115,7 +116,7 @@ describe('isolated local model worker protocol properties', () => {
       widths: chunkWidthsArbitrary,
     },
     ({finalNewline, invalidLines, widths}) =>
-      Effect.promise(async () => {
+      Effect.gen(function* () {
         const lines: FramedLine[] = [
           ...invalidLines.map(record => ({
             blankLines: record.blankLines,
@@ -135,7 +136,7 @@ describe('isolated local model worker protocol properties', () => {
         ];
         const output: string[] = [];
 
-        await serveWorker(echoRuntime, {
+        yield* serveWorker(echoRuntime, {
           input: asyncChunks(splitBytes(new TextEncoder().encode(frameLines(lines, 1, finalNewline)), widths)),
           writeLine: line => {
             output.push(line);
@@ -220,7 +221,7 @@ describe('isolated local model worker protocol properties', () => {
         expect(processes[0]!.writes).toHaveLength(1);
         expect(processes[1]!.writes).toHaveLength(1);
         expect(processes[0]!.writes[0]!.id).not.toBe(processes[1]!.writes[0]!.id);
-      }).pipe(Effect.provide(workerRuntimeLayer(spawn)));
+      }).pipe(provideTestLayer(workerRuntimeLayer(spawn)));
     },
     {fastCheck: {numRuns: 40}},
   );

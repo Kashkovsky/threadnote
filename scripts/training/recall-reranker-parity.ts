@@ -1,3 +1,4 @@
+import {ScriptError} from '../effect/errors.js';
 import {Schema} from 'effect';
 
 export const RECALL_RERANKER_PARITY_FIXTURE_VERSION = 1 as const;
@@ -150,29 +151,29 @@ export function parseRecallRerankerParityFixtureV1(value: unknown): RecallRerank
     fixture.run.runJsonSha256,
   ];
   if (shaValues.some(value => !/^[0-9a-f]{64}$/.test(value))) {
-    throw new Error('Recall reranker parity fixture contains an invalid SHA-256.');
+    throw new ScriptError('Recall reranker parity fixture contains an invalid SHA-256.');
   }
   if (!/^[0-9a-f]{40}$/.test(fixture.run.trainingCodeRevision)) {
-    throw new Error('Recall reranker parity fixture must pin an immutable training source revision.');
+    throw new ScriptError('Recall reranker parity fixture must pin an immutable training source revision.');
   }
   if (
     fixture.groups.length === 0 ||
     fixture.selection.maximumGroups <= 0 ||
     fixture.groups.length > fixture.selection.maximumGroups
   ) {
-    throw new Error('Recall reranker parity fixture contains an invalid validation-group selection.');
+    throw new ScriptError('Recall reranker parity fixture contains an invalid validation-group selection.');
   }
   if (fixture.runtimeTarget.contextLimit <= 0 || fixture.runtimeTarget.documentCharacterLimit <= 0) {
-    throw new Error('Recall reranker parity fixture contains invalid runtime limits.');
+    throw new ScriptError('Recall reranker parity fixture contains invalid runtime limits.');
   }
   const groupIds = new Set<string>();
   for (const group of fixture.groups) {
     if (!group.groupId.trim() || !group.query.trim() || groupIds.has(group.groupId)) {
-      throw new Error('Recall reranker parity fixture contains an invalid or duplicate group.');
+      throw new ScriptError('Recall reranker parity fixture contains an invalid or duplicate group.');
     }
     groupIds.add(group.groupId);
     if (group.candidates.length < 2) {
-      throw new Error(`Recall reranker parity group ${group.groupId} requires at least two candidates.`);
+      throw new ScriptError(`Recall reranker parity group ${group.groupId} requires at least two candidates.`);
     }
     const candidateIds = new Set<string>();
     for (const candidate of group.candidates) {
@@ -185,7 +186,7 @@ export function parseRecallRerankerParityFixtureV1(value: unknown): RecallRerank
         candidate.relevance < 0 ||
         candidate.relevance > 3
       ) {
-        throw new Error(`Recall reranker parity group ${group.groupId} contains an invalid candidate.`);
+        throw new ScriptError(`Recall reranker parity group ${group.groupId} contains an invalid candidate.`);
       }
       candidateIds.add(candidate.candidateId);
     }
@@ -210,7 +211,7 @@ export function evaluateRecallRerankerParity(
   for (const group of fixture.groups) {
     const scores = nativeScores.get(group.groupId);
     if (!scores || scores.length !== group.candidates.length || scores.some(score => !Number.isFinite(score))) {
-      throw new Error(`Native reranker returned invalid scores for parity group ${group.groupId}.`);
+      throw new ScriptError(`Native reranker returned invalid scores for parity group ${group.groupId}.`);
     }
     const candidates = group.candidates.map((candidate, index) => {
       const nativeScore = scores[index]!;
@@ -246,7 +247,7 @@ export function evaluateRecallRerankerParity(
     groups.push({candidates, groupId: group.groupId});
   }
   if (nativeScores.size !== fixture.groups.length) {
-    throw new Error('Native reranker parity scores contain unexpected groups.');
+    throw new ScriptError('Native reranker parity scores contain unexpected groups.');
   }
   return {
     absoluteError: {
@@ -268,6 +269,6 @@ function validateThresholds(thresholds: RecallRerankerParityThresholds): void {
     !Number.isFinite(thresholds.minimumOrderingGap) ||
     thresholds.minimumOrderingGap < 0
   ) {
-    throw new Error('Recall reranker parity thresholds must be finite non-negative numbers.');
+    throw new ScriptError('Recall reranker parity thresholds must be finite non-negative numbers.');
   }
 }

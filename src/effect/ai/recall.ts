@@ -185,13 +185,19 @@ export const runEffectAiRecallExpansion = Effect.fn('RecallQueryExpander.run')(f
     expansionCache.set(fingerprint, cached);
     return cached;
   }
-  const rewrites = yield* expandRecallQueryEffect(input).pipe(
-    Effect.provide(recallQueryExpanderLayer(config)),
-    Effect.timeoutOrElse({
-      duration: RECALL_EXPANSION_TIMEOUT_MILLISECONDS,
-      orElse: () => Effect.succeed([]),
-    }),
-    Effect.catch(() => Effect.succeed([])),
+  const rewrites = yield* Effect.scoped(
+    Layer.build(recallQueryExpanderLayer(config)).pipe(
+      Effect.flatMap(context =>
+        expandRecallQueryEffect(input).pipe(
+          Effect.provide(context),
+          Effect.timeoutOrElse({
+            duration: RECALL_EXPANSION_TIMEOUT_MILLISECONDS,
+            orElse: () => Effect.succeed([]),
+          }),
+          Effect.catch(() => Effect.succeed([])),
+        ),
+      ),
+    ),
   );
   expansionCache.set(fingerprint, rewrites);
   while (expansionCache.size > MAX_RECALL_EXPANSION_CACHE_ENTRIES) {
@@ -215,7 +221,6 @@ export const expandWeakRecallQueryEffect = Effect.fn('RecallQueryExpander.expand
       duration: RECALL_EXPANSION_TIMEOUT_MILLISECONDS,
       orElse: () => Effect.succeed(false),
     }),
-    Effect.catch(() => Effect.succeed(false)),
   );
   if (!ready) return [];
   const config = resolved.configuration;
@@ -368,8 +373,10 @@ const runEffectAiRecallSelection = Effect.fn('RecallCandidateSelector.run')(func
     selectionCache.set(fingerprint, cached);
     return cached;
   }
-  const selected = yield* selectRecallCandidatesEffect(input).pipe(
-    Effect.provide(recallCandidateSelectorLayer(config)),
+  const selected = yield* Effect.scoped(
+    Layer.build(recallCandidateSelectorLayer(config)).pipe(
+      Effect.flatMap(context => selectRecallCandidatesEffect(input).pipe(Effect.provide(context))),
+    ),
   );
   selectionCache.set(fingerprint, selected);
   while (selectionCache.size > MAX_RECALL_EXPANSION_CACHE_ENTRIES) {

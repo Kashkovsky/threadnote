@@ -37,6 +37,10 @@ import {
   type CodeGraphCrossRepositoryTraversalEndpointV1,
 } from './traversal.js';
 
+class CodeGraphCrossRepositoryRuntimeError extends Error {
+  readonly _tag = 'CodeGraphCrossRepositoryRuntimeError' as const;
+}
+
 const SNAPSHOT_LEASE_MILLISECONDS = 2 * 60_000;
 const LOCAL_ADJACENCY_SCAN_MAXIMUM = 5_000;
 const TOPOLOGY_BRIDGES_MAXIMUM_DEFAULT = 20_000;
@@ -210,13 +214,17 @@ const inspectCodeGraphWorksetTopologyScoped = Effect.fn('codeGraphCrossRepositor
         page.totalBridges !== bridgeSet.bridgeCount ||
         page.coverage.state !== 'complete'
       ) {
-        throw new Error('The published bridge set changed or became unavailable during topology assembly.');
+        throw new CodeGraphCrossRepositoryRuntimeError(
+          'The published bridge set changed or became unavailable during topology assembly.',
+        );
       }
       bridges.push(...page.bridges);
       after = page.next;
     } while (after !== undefined);
     if (bridges.length !== bridgeSet.bridgeCount) {
-      throw new Error('The complete bridge topology page sequence does not match its receipt.');
+      throw new CodeGraphCrossRepositoryRuntimeError(
+        'The complete bridge topology page sequence does not match its receipt.',
+      );
     }
     const topology = projectCodeGraphCrossRepositoryTopology({
       bridgeSet: {
@@ -259,12 +267,16 @@ function prepareRuntime(config: RuntimeConfig, worksetName: string) {
     const published = yield* readPublishedCodeGraphWorksetCatalogGeneration(config.agentContextHome, workset.name);
     if (published === undefined) {
       return yield* Effect.fail(
-        new Error(`No published workset catalog exists for ${workset.name}; run \`threadnote workset prepare\`.`),
+        new CodeGraphCrossRepositoryRuntimeError(
+          `No published workset catalog exists for ${workset.name}; run \`threadnote workset prepare\`.`,
+        ),
       );
     }
     if (!codeGraphWorksetCatalogGenerationMatches(workset, manifestDigest, published)) {
       return yield* Effect.fail(
-        new Error(`The published workset catalog for ${workset.name} is stale; run \`threadnote workset prepare\`.`),
+        new CodeGraphCrossRepositoryRuntimeError(
+          `The published workset catalog for ${workset.name} is stale; run \`threadnote workset prepare\`.`,
+        ),
       );
     }
     const projectsByKey = new Map(workset.projects.map(project => [safeLabel(project.name), project] as const));
@@ -301,11 +313,17 @@ function requireCompleteBridgeSet(config: RuntimeConfig, runtime: PreparedRuntim
     Effect.flatMap(bridgeSet => {
       if (bridgeSet === undefined) {
         return Effect.fail(
-          new Error('The published workset generation has no cross-repository bridge receipt; run workset prepare.'),
+          new CodeGraphCrossRepositoryRuntimeError(
+            'The published workset generation has no cross-repository bridge receipt; run workset prepare.',
+          ),
         );
       }
       if (bridgeSet.coverage.state !== 'complete') {
-        return Effect.fail(new Error('Cross-repository bridge coverage is incomplete; path and impact were withheld.'));
+        return Effect.fail(
+          new CodeGraphCrossRepositoryRuntimeError(
+            'Cross-repository bridge coverage is incomplete; path and impact were withheld.',
+          ),
+        );
       }
       return Effect.succeed(bridgeSet);
     }),
@@ -418,7 +436,9 @@ function readLocalAdjacencyPage(
       const sourceMayHaveMore = rows.length === requested;
       if (selected.length >= limit || !sourceMayHaveMore || requested === LOCAL_ADJACENCY_SCAN_MAXIMUM) {
         if (selected.length === 0 && sourceMayHaveMore && requested === LOCAL_ADJACENCY_SCAN_MAXIMUM) {
-          throw new Error('Local adjacency exceeded the bounded scan before yielding a traversable edge.');
+          throw new CodeGraphCrossRepositoryRuntimeError(
+            'Local adjacency exceeded the bounded scan before yielding a traversable edge.',
+          );
         }
         for (const {edge} of selected) {
           for (const candidate of [edge.source, edge.target]) {
@@ -503,17 +523,24 @@ function resolveTraversalEndpoint(config: RuntimeConfig, runtime: PreparedRuntim
       const record = yield* resolveCodeGraphQualifiedRef(config.agentContextHome, {ref: normalized});
       const member = runtime.published.members.find(candidate => candidate.repositoryId === record.repositoryId);
       if (member === undefined)
-        throw new Error('The qualified reference repository is not in this workset generation.');
+        throw new CodeGraphCrossRepositoryRuntimeError(
+          'The qualified reference repository is not in this workset generation.',
+        );
       const present = yield* codeGraphWorksetCatalogProjectionContainsNode(config.agentContextHome, {
         nodeId: record.nodeId,
         projectionDigest: member.projectionDigest,
       });
-      if (!present) throw new Error('The qualified reference is not present in the published snapshot projection.');
+      if (!present)
+        throw new CodeGraphCrossRepositoryRuntimeError(
+          'The qualified reference is not present in the published snapshot projection.',
+        );
       return traversalEndpoint(member, {kind: 'qualified-ref', ref: normalized});
     }
     if (COMPONENT_ID.test(normalized)) {
       if (runtime.published.members.length !== 1) {
-        throw new Error('A component selector in a multi-repository workset must use <repository>:<cgp_...>.');
+        throw new CodeGraphCrossRepositoryRuntimeError(
+          'A component selector in a multi-repository workset must use <repository>:<cgp_...>.',
+        );
       }
       return traversalEndpoint(runtime.published.members[0]!, {componentId: normalized, kind: 'component'});
     }
@@ -521,12 +548,18 @@ function resolveTraversalEndpoint(config: RuntimeConfig, runtime: PreparedRuntim
     if (marker > 0) {
       const repositoryKey = normalized.slice(0, marker);
       const componentId = normalized.slice(marker + 1);
-      if (!COMPONENT_ID.test(componentId)) throw new Error('Workset component selector is invalid.');
+      if (!COMPONENT_ID.test(componentId))
+        throw new CodeGraphCrossRepositoryRuntimeError('Workset component selector is invalid.');
       const member = runtime.published.members.find(candidate => candidate.repositoryKey === repositoryKey);
-      if (member === undefined) throw new Error('Workset component selector names an unknown generation member.');
+      if (member === undefined)
+        throw new CodeGraphCrossRepositoryRuntimeError(
+          'Workset component selector names an unknown generation member.',
+        );
       return traversalEndpoint(member, {componentId, kind: 'component'});
     }
-    throw new Error('Workset path/impact requires a cgr_ handle or <repository>:<cgp_...> component selector.');
+    throw new CodeGraphCrossRepositoryRuntimeError(
+      'Workset path/impact requires a cgr_ handle or <repository>:<cgp_...> component selector.',
+    );
   });
 }
 
@@ -559,7 +592,8 @@ function repositorySnapshotKey(value: {readonly repositoryId: string; readonly s
 
 function localOffset(cursor: string | undefined): number {
   if (cursor === undefined) return 0;
-  if (!/^(?:0|[1-9]\d{0,3})$/u.test(cursor)) throw new Error('Local traversal cursor is invalid.');
+  if (!/^(?:0|[1-9]\d{0,3})$/u.test(cursor))
+    throw new CodeGraphCrossRepositoryRuntimeError('Local traversal cursor is invalid.');
   return boundedInteger(Number(cursor), 'local traversal cursor', 0, LOCAL_ADJACENCY_SCAN_MAXIMUM);
 }
 
@@ -570,7 +604,7 @@ function safeLabel(value: string): string {
 
 function boundedInteger(value: number, label: string, minimum: number, maximum: number): number {
   if (!Number.isSafeInteger(value) || value < minimum || value > maximum) {
-    throw new Error(`${label} must be an integer from ${minimum} to ${maximum}.`);
+    throw new CodeGraphCrossRepositoryRuntimeError(`${label} must be an integer from ${minimum} to ${maximum}.`);
   }
   return value;
 }

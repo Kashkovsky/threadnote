@@ -1,3 +1,5 @@
+import {TestError} from '../helpers/test-error.js';
+import {provideTestLayer} from '../helpers/effect-layer.js';
 import {Effect, Layer} from 'effect';
 import {describe, expect, it} from 'vitest';
 import {GenerationFailed} from '../../src/effect/ai/errors.js';
@@ -28,7 +30,7 @@ describe('native memory enrichment', () => {
             topic: 'lease-recovery',
           },
         );
-      }).pipe(Effect.provide(fakeRuntimeLayer), Effect.provide(fakeStoreLayer(home)));
+      }).pipe(provideTestLayer(fakeRuntimeLayer), provideTestLayer(fakeStoreLayer(home)));
       await expect(runEffect(effect)).resolves.toEqual([
         'resume jobs after heartbeat timeout',
         'recover worker after expired lease',
@@ -53,7 +55,7 @@ describe('native memory enrichment', () => {
             topic: 'native-enrichment',
           },
         );
-      }).pipe(Effect.provide(failingRuntimeLayer), Effect.provide(fakeStoreLayer(home)));
+      }).pipe(provideTestLayer(failingRuntimeLayer), provideTestLayer(fakeStoreLayer(home)));
       await expect(runEffect(effect)).rejects.toThrow(
         'Native memory enrichment failed: Could not create a generation context for gemma-4-e4b-it-q4: native context detail',
       );
@@ -66,21 +68,21 @@ describe('native memory enrichment', () => {
 const fakeRuntimeLayer = Layer.succeed(
   LocalModelRuntime,
   LocalModelRuntime.of({
-    diagnostics: () => Effect.succeed({backend: 'fake', buildType: 'prebuilt', cpuMathCores: 4}),
-    embedMany: () => Effect.die(new Error('Unexpected embedding')),
+    diagnostics: Effect.succeed({backend: 'fake', buildType: 'prebuilt', cpuMathCores: 4}),
+    embedMany: () => Effect.die(new TestError('Unexpected embedding')),
     generate: () =>
       Effect.succeed({
         searchPhrases: ['resume jobs after heartbeat timeout', 'recover worker after expired lease', 'lease recovery'],
       }),
-    rerank: () => Effect.die(new Error('Unexpected reranking')),
+    rerank: () => Effect.die(new TestError('Unexpected reranking')),
   }),
 );
 
 const failingRuntimeLayer = Layer.succeed(
   LocalModelRuntime,
   LocalModelRuntime.of({
-    diagnostics: () => Effect.succeed({backend: 'fake', buildType: 'prebuilt', cpuMathCores: 4}),
-    embedMany: () => Effect.die(new Error('Unexpected embedding')),
+    diagnostics: Effect.succeed({backend: 'fake', buildType: 'prebuilt', cpuMathCores: 4}),
+    embedMany: () => Effect.die(new TestError('Unexpected embedding')),
     generate: request =>
       Effect.fail(
         new GenerationFailed({
@@ -89,7 +91,7 @@ const failingRuntimeLayer = Layer.succeed(
           modelId: request.manifest.id,
         }),
       ),
-    rerank: () => Effect.die(new Error('Unexpected reranking')),
+    rerank: () => Effect.die(new TestError('Unexpected reranking')),
   }),
 );
 
@@ -105,7 +107,7 @@ function fakeStoreLayer(home: string) {
   return Layer.succeed(
     LocalModelStore,
     LocalModelStore.of({
-      install: () => Effect.die(new Error('Unexpected install')),
+      install: () => Effect.die(new TestError('Unexpected install')),
       path: () => installation.path,
       remove: () => Effect.succeed(false),
       status: () => Effect.succeed(installation),

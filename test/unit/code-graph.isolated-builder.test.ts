@@ -1,3 +1,4 @@
+import {TestError} from '../helpers/test-error.js';
 import {it as effectIt} from '@effect/vitest';
 import {describe, expect, it} from 'vitest';
 import fc from 'fast-check';
@@ -28,13 +29,12 @@ function systemInfoStub(overrides: Partial<SystemInfoShape>): SystemInfoShape {
     currentDirectory: () => '/',
     environment: () => ({}),
     executablePath: '/opt/threadnote/bin/threadnote',
-    hardwareInfo: () =>
-      Effect.succeed({
-        cpuModel: 'test',
-        effectiveMemoryBytes: 1,
-        memoryBytes: 1,
-        operatingSystem: 'test',
-      }),
+    hardwareInfo: Effect.succeed({
+      cpuModel: 'test',
+      effectiveMemoryBytes: 1,
+      memoryBytes: 1,
+      operatingSystem: 'test',
+    }),
     homeDirectory: '/home/test',
     isProcessRunning: () => false,
     memoryUsage: () => ({external: 0, heapUsed: 0, rss: 0}),
@@ -131,7 +131,7 @@ describe('isolated code-graph builder spawn plan', () => {
           resolveIdentity: () => Effect.succeed(identity),
           spawn: () => {
             spawnCalls += 1;
-            throw new Error('spawn must not run');
+            throw new TestError('spawn must not run');
           },
           threadnoteHome: '/fixture/home',
         }),
@@ -356,24 +356,24 @@ describe('shouldAwaitExistingBuilder and statusBelongsToChild', () => {
 });
 
 describe('isolated builder exit contracts', () => {
-  it('surfaces summaries and rejects missing results', async () => {
-    expect(isolatedBuilderFailureMessage(1, 'lock contended', 'ignored')).toBe('lock contended');
-    expect(isolatedBuilderFailureMessage(2, undefined, '  boom  ')).toBe(
-      'isolated graph index exited with code 2: boom',
-    );
-    expect(isolatedBuilderFailureMessage(3, undefined, undefined)).toBe('isolated graph index exited with code 3');
+  effectIt.effect('surfaces summaries and rejects missing results', () =>
+    Effect.gen(function* () {
+      expect(isolatedBuilderFailureMessage(1, 'lock contended', 'ignored')).toBe('lock contended');
+      expect(isolatedBuilderFailureMessage(2, undefined, '  boom  ')).toBe(
+        'isolated graph index exited with code 2: boom',
+      );
+      expect(isolatedBuilderFailureMessage(3, undefined, undefined)).toBe('isolated graph index exited with code 3');
 
-    await expect(
-      Effect.runPromise(
-        isolatedBuilderResultFromCompletedStatus({
+      expect(
+        yield* isolatedBuilderResultFromCompletedStatus({
           result: {dirty: false, edges: 4, files: 1, snapshotId: 'snap', symbols: 2},
         }),
-      ),
-    ).resolves.toEqual({edges: 4, symbols: 2});
-    await expect(Effect.runPromise(isolatedBuilderResultFromCompletedStatus(undefined))).rejects.toThrow(
-      /finished without writing a build result/,
-    );
-  });
+      ).toEqual({edges: 4, symbols: 2});
+      expect(String(yield* Effect.flip(isolatedBuilderResultFromCompletedStatus(undefined)))).toMatch(
+        /finished without writing a build result/,
+      );
+    }),
+  );
 
   effectIt.effect('waits for the exact owned result during a bounded post-exit grace', () =>
     Effect.gen(function* () {
@@ -456,10 +456,15 @@ describe('isolated builder exit contracts', () => {
     }),
   );
 
-  it('never accepts a foreign, prior, or different-build result while polling (property)', async () => {
-    const invalidStatus = fc.constantFrom('absent', 'foreign', 'prior', 'different-build', 'owned-pending');
-    await fc.assert(
-      fc.asyncProperty(fc.array(invalidStatus, {maxLength: 12}), async sequence => {
+  effectIt.effect.prop(
+    'never accepts a foreign, prior, or different-build result while polling (property)',
+    {
+      sequence: fc.array(fc.constantFrom('absent', 'foreign', 'prior', 'different-build', 'owned-pending'), {
+        maxLength: 12,
+      }),
+    },
+    ({sequence}) =>
+      Effect.gen(function* () {
         const statusFor = (kind: (typeof sequence)[number]): ObservedCodeGraphBuildStatus | undefined => {
           if (kind === 'absent') return undefined;
           const buildId =
@@ -481,20 +486,17 @@ describe('isolated builder exit contracts', () => {
         const statuses = [...sequence.map(statusFor), ownedCompleted];
         let reads = 0;
 
-        await expect(
-          Effect.runPromise(
-            awaitOwnedIsolatedBuilderResult(
-              Effect.sync(() => statuses[Math.min(reads++, statuses.length - 1)]),
-              7,
-              'prior-build',
-              'owned-build',
-              {pollMilliseconds: 0, timeoutMilliseconds: 10_000},
-            ),
+        expect(
+          yield* awaitOwnedIsolatedBuilderResult(
+            Effect.sync(() => statuses[Math.min(reads++, statuses.length - 1)]),
+            7,
+            'prior-build',
+            'owned-build',
+            {pollMilliseconds: 0, timeoutMilliseconds: 10_000},
           ),
-        ).resolves.toEqual({edges: 41, symbols: 29});
+        ).toEqual({edges: 41, symbols: 29});
         expect(reads).toBe(statuses.length);
       }),
-      {numRuns: 60},
-    );
-  });
+    {fastCheck: {numRuns: 60}},
+  );
 });

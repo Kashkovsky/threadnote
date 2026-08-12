@@ -1,3 +1,4 @@
+import {provideTestLayer} from '../helpers/effect-layer.js';
 import {describe, expect, it} from '@effect/vitest';
 import {Effect, FileSystem, Path} from 'effect';
 import * as FC from 'effect/testing/FastCheck';
@@ -45,7 +46,7 @@ describe('code graph maintenance-gate properties', () => {
           expect(active).toBe(false);
           expect((yield* fs.readFileString(intent)).trim()).toBe(replacementToken);
         }),
-      ).pipe(Effect.provide(ApplicationLayer)),
+      ).pipe(provideTestLayer(ApplicationLayer)),
     {fastCheck: {numRuns: 50}},
   );
 });

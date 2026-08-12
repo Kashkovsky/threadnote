@@ -78,8 +78,8 @@ export interface CodeGraphRemovedViewCleanupWorkerDependencies {
     use: (commit: Effect.Effect<CodeGraphRemovedViewCleanupPageResult, unknown>) => Effect.Effect<A, E>,
   ) => Effect.Effect<A, unknown>;
   /** Monotonic elapsed-time source; never use wall clock for the burst deadline. */
-  readonly monotonicMilliseconds: () => Effect.Effect<number, never>;
-  readonly nowMilliseconds: () => Effect.Effect<number, never>;
+  readonly monotonicMilliseconds: Effect.Effect<number, never>;
+  readonly nowMilliseconds: Effect.Effect<number, never>;
   readonly sleep: (milliseconds: number) => Effect.Effect<void, never>;
   readonly update: (
     input: CodeGraphRemovedViewCleanupWorkerInput,
@@ -132,7 +132,7 @@ export const makeCodeGraphRemovedViewCleanupWorker = Effect.fn('codeGraph.makeRe
       ): Effect.Effect<CodeGraphRemovedViewCleanupWorkerResult, never> =>
         Effect.gen(function* () {
           const result: MutableWorkerResult = {advanced: 0, claimed: 0, deferred: 0, progressed: 0, stale: 0};
-          const startedAt = yield* dependencies.monotonicMilliseconds();
+          const startedAt = yield* dependencies.monotonicMilliseconds;
           const preparation: CodeGraphRemovedViewCleanupVectorPreparation = {
             deadlineMonotonicMilliseconds: startedAt + maximumDurationMilliseconds,
             reservationMode: 'nonblocking-one-attempt',
@@ -142,10 +142,10 @@ export const makeCodeGraphRemovedViewCleanupWorker = Effect.fn('codeGraph.makeRe
 
           while (result.claimed < maximumUnits) {
             if (result.claimed > 0) {
-              const observedAt = yield* dependencies.monotonicMilliseconds();
+              const observedAt = yield* dependencies.monotonicMilliseconds;
               if (observedAt - startedAt >= maximumDurationMilliseconds) break;
             }
-            const claimAt = yield* dependencies.nowMilliseconds();
+            const claimAt = yield* dependencies.nowMilliseconds;
             const claimed = yield* dependencies.claim(input, claimAt, 1).pipe(
               Effect.match({
                 onFailure: () => undefined,
@@ -166,7 +166,7 @@ export const makeCodeGraphRemovedViewCleanupWorker = Effect.fn('codeGraph.makeRe
             const outcome = yield* runClaimedUnit(dependencies, input, entry, preparation);
             result[outcome] += 1;
             if (result.claimed < maximumUnits) {
-              const beforePause = yield* dependencies.monotonicMilliseconds();
+              const beforePause = yield* dependencies.monotonicMilliseconds;
               const remainingMilliseconds = maximumDurationMilliseconds - (beforePause - startedAt);
               if (remainingMilliseconds <= 0) break;
               yield* dependencies.sleep(
@@ -183,7 +183,7 @@ export const makeCodeGraphRemovedViewCleanupWorker = Effect.fn('codeGraph.makeRe
             };
           }
           return {...result, remaining, state: 'worked' as const};
-        }).pipe(Effect.catch(() => Effect.succeed(unavailableResult())));
+        });
 
       return {
         burst: input =>
@@ -236,7 +236,7 @@ const runAuthorizedCleanupUnit = Effect.fn('codeGraph.runAuthorizedRemovedViewCl
 
       const page = yield* cleanup(authorization.entry).pipe(Effect.catch(() => Effect.succeed(ioFailurePage())));
       const normalized = normalizePageResult(authorization.entry, page);
-      const now = yield* dependencies.nowMilliseconds();
+      const now = yield* dependencies.nowMilliseconds;
       const update = updateForPageResult(authorization.entry, normalized, now);
       if (update === undefined) return 'deferred' as const;
       const stored = yield* dependencies.update(input, authorization.entry, update);
@@ -373,16 +373,4 @@ function invalidSidecarPage(): CodeGraphRemovedViewCleanupPageResult {
 
 function ioFailurePage(): CodeGraphRemovedViewCleanupPageResult {
   return {blockedCode: 'io-error', retryAfterMilliseconds: 1_000, state: 'deferred'};
-}
-
-function unavailableResult(): CodeGraphRemovedViewCleanupWorkerResult {
-  return {
-    advanced: 0,
-    claimed: 0,
-    deferred: 0,
-    progressed: 0,
-    remaining: true,
-    stale: 0,
-    state: 'deferred',
-  };
 }

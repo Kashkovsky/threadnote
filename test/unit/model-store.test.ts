@@ -1,11 +1,15 @@
-import {createHash} from 'node:crypto';
-import {mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises';
-import {createServer, type Server} from 'node:http';
-import {tmpdir} from 'node:os';
-import {dirname, join} from 'node:path';
+import {it as effectIt} from '@effect/vitest';
+import {TestError} from '../helpers/test-error.js';
+import {provideTestLayer} from '../helpers/effect-layer.js';
+import {createHash} from '../helpers/node-crypto.js';
+import {mkdir, mkdtemp, readFile, rm, writeFile} from '../helpers/node-fs-promises.js';
+import {createServer, type Server} from '../helpers/node-http.js';
+import {tmpdir} from '../helpers/node-os.js';
+import {dirname, join} from '../helpers/node-path.js';
 import {Effect, Result} from 'effect';
 import {afterEach, describe, expect, it} from 'vitest';
-import {assertSufficientModelDiskSpace, LocalModelStore} from '../../src/models/store.js';
+import {BUILTIN_MODEL_MANIFESTS, CORE_EMBEDDING_MODEL_ID} from '../../src/models/builtin.js';
+import {assertSufficientModelDiskSpace, LocalModelStore, modelDownloadUrl} from '../../src/models/store.js';
 import type {LocalModelManifest} from '../../src/models/catalog.js';
 import {runEffect} from '../helpers/effect-runtime.js';
 
@@ -18,17 +22,30 @@ afterEach(async () => {
 });
 
 describe('LocalModelStore', () => {
-  it('fails disk-space preflight before a model download can start', async () => {
-    const manifest = fixtureManifest(Buffer.from('fixture'));
-    const result = await Effect.runPromise(
-      assertSufficientModelDiskSpace(manifest, manifest.size, manifest.size).pipe(Effect.result),
+  it('downloads the core embedding model from its immutable GitHub release asset', () => {
+    const coreModel = BUILTIN_MODEL_MANIFESTS.find(model => model.id === CORE_EMBEDDING_MODEL_ID);
+    const nonCoreModel = BUILTIN_MODEL_MANIFESTS.find(model => model.id === 'bge-m3-q8');
+
+    if (!coreModel || !nonCoreModel) throw new TestError('Missing built-in model fixture.');
+    expect(modelDownloadUrl(coreModel)).toBe(
+      `https://github.com/Kashkovsky/threadnote/releases/download/v4.1.1/${coreModel.sha256}.gguf`,
     );
-    expect(Result.isFailure(result)).toBe(true);
-    if (Result.isFailure(result)) {
-      expect(result.failure._tag).toBe('InsufficientDiskSpace');
-      expect(result.failure.requiredBytes).toBe(manifest.size * 2);
-    }
+    expect(modelDownloadUrl(nonCoreModel)).toBe(
+      `https://huggingface.co/ggml-org/bge-m3-Q8_0-GGUF/resolve/${nonCoreModel.revision}/bge-m3-q8_0.gguf`,
+    );
   });
+
+  effectIt.effect('fails disk-space preflight before a model download can start', () =>
+    Effect.gen(function* () {
+      const manifest = fixtureManifest(Buffer.from('fixture'));
+      const result = yield* assertSufficientModelDiskSpace(manifest, manifest.size, manifest.size).pipe(Effect.result);
+      expect(Result.isFailure(result)).toBe(true);
+      if (Result.isFailure(result)) {
+        expect(result.failure._tag).toBe('InsufficientDiskSpace');
+        expect(result.failure.requiredBytes).toBe(manifest.size * 2);
+      }
+    }),
+  );
 
   it('resumes a partial download, verifies SHA-256, and atomically promotes it', async () => {
     const bytes = Buffer.from('small deterministic GGUF fixture');
@@ -134,7 +151,7 @@ describe('LocalModelStore', () => {
         yield* Effect.promise(() => mkdir(dirname(installedPath), {recursive: true}));
         yield* Effect.promise(() => writeFile(installedPath, bytes));
         return yield* Effect.all([store.verify(home, manifest), store.verify(home, manifest)], {concurrency: 1});
-      }).pipe(Effect.provide(layer)),
+      }).pipe(provideTestLayer(layer)),
     );
 
     expect(results.every(result => result.verified)).toBe(true);
@@ -163,8 +180,8 @@ describe('LocalModelStore', () => {
         }),
     });
     const [installStore, removeStore] = await Promise.all([
-      runEffect(LocalModelStore.pipe(Effect.provide(layer))),
-      runEffect(LocalModelStore.pipe(Effect.provide(layer))),
+      runEffect(LocalModelStore.pipe(provideTestLayer(layer))),
+      runEffect(LocalModelStore.pipe(provideTestLayer(layer))),
     ]);
     const installedPath = installStore.path(home, manifest);
 
@@ -220,7 +237,7 @@ async function serve(bytes: Buffer, ranges: Array<string | undefined>): Promise<
   servers.push(server);
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', () => resolve()));
   const address = server.address();
-  if (!address || typeof address === 'string') throw new Error('Could not resolve test model server address.');
+  if (!address || typeof address === 'string') throw new TestError('Could not resolve test model server address.');
   return `http://127.0.0.1:${address.port}/model.gguf`;
 }
 
@@ -247,7 +264,7 @@ async function serveControlled(bytes: Buffer): Promise<{
   servers.push(server);
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', () => resolve()));
   const address = server.address();
-  if (!address || typeof address === 'string') throw new Error('Could not resolve test model server address.');
+  if (!address || typeof address === 'string') throw new TestError('Could not resolve test model server address.');
   return {
     release: () => release(),
     requestStarted,

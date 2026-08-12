@@ -39,6 +39,7 @@ import {
   GraphWorkspace,
   managerGraphDebouncedQueryCandidate,
   managerGraphQueryCandidate,
+  mergeGraphCatalogStatus,
   mergeGraphRepositoryGroups,
   resolveGraphSelection,
   type GraphEdge,
@@ -123,7 +124,8 @@ describe('manager graph focus', () => {
     expect(markup).toContain('<dt>Stored ready snapshots</dt><dd>3</dd>');
     expect(markup).toContain('<dt>Active worktree views</dt><dd>1</dd>');
     expect(markup).toContain('Snapshot and view counts can differ');
-    expect(markup).toContain('Active view bbbbbbbb');
+    expect(markup).toContain('<strong>acme/platform</strong>');
+    expect(markup).not.toContain('Active view bbbbbbbb');
     expect(markup.match(/aria-label="Remove active worktree view bbbbbbbb"/g)).toHaveLength(1);
     expect(markup).toContain('title="Remove active worktree view"');
     expect(markup).not.toContain('Preview remove');
@@ -218,6 +220,7 @@ describe('manager graph focus', () => {
         ...view,
         localAssociation: {
           available: true,
+          branch: 'feature/manager-labels',
           displayPath: '~/jobs/repository-task-17',
           path: '/tmp/jobs/repository-task-17',
           state: 'verified' as const,
@@ -424,6 +427,9 @@ describe('manager graph focus', () => {
     expect(graphStatusPollDelay([graphBuildStatus('queued')])).toBe(1_000);
     expect(graphStatusPollDelay([graphBuildStatus('completed')])).toBe(5_000);
     expect(graphStatusPollDelay([], undefined, true)).toBe(1_000);
+    expect(
+      graphStatusPollDelay([], undefined, false, {startedAt: '2026-08-12T00:00:00.000Z', state: 'inspecting'}),
+    ).toBe(1_000);
     const maintenance = {
       checkoutId: 'a'.repeat(64),
       completed: 3,
@@ -447,6 +453,86 @@ describe('manager graph focus', () => {
     };
     expect(graphBuildIsActive(staleOwner)).toBe(true);
     expect(graphBuildShouldDisplay(staleOwner)).toBe(true);
+  });
+
+  it('shows live reclaiming status when the full graph catalog is not available yet', () => {
+    const reclaiming = {
+      ...graphBuildStatus('running'),
+      counters: {completed: 0, pagesCompleted: 14, rowsDeleted: 2_048, total: 61, unit: 'snapshots'},
+      phase: 'reclaiming',
+      subphase: 'superseded-snapshots',
+    };
+
+    const merged = mergeGraphCatalogStatus(undefined, {
+      automaticCompaction: {
+        checkoutId: 'a'.repeat(64),
+        opportunityBytes: 19.6 * 1024 ** 3,
+        startedAt: '2026-08-12T00:00:00.000Z',
+        state: 'running',
+      },
+      builds: [reclaiming],
+      lifecyclePending: false,
+      storage: {
+        checkout: {
+          databaseBytes: 22 * 1024 ** 3,
+          pageStorage: {
+            allocatedBytes: 22 * 1024 ** 3,
+            automaticCompaction: 'eligible',
+            inUseBytes: 2.35 * 1024 ** 3,
+            reclaimableRatio: 0.893,
+            reusableBytes: 19.65 * 1024 ** 3,
+            state: 'available',
+          },
+          physicalBytes: 22 * 1024 ** 3,
+          sidecarBytes: 0,
+          state: 'available',
+        },
+      },
+      waiterCount: 0,
+      waiters: [],
+    });
+
+    expect(merged).toMatchObject({builds: [reclaiming], diagnostics: [], repositories: []});
+    expect(graphAdministrationJobSelection(merged.builds, merged.waiters).jobs).toEqual([reclaiming]);
+    const neverResolves = () => new Promise<never>(() => undefined);
+    const markup = renderToStaticMarkup(
+      createElement(GraphWorkspace, {
+        catalog: merged,
+        loadAnalysis: neverResolves,
+        loadCatalogPage: neverResolves,
+        loadGraph: neverResolves,
+        loadNodeDetail: neverResolves,
+        loadQuery: neverResolves,
+        loadViewsPage: neverResolves,
+        onRefresh: () => undefined,
+      }),
+    );
+    expect(markup).toContain('reclaiming/superseded-snapshots');
+    expect(markup).toContain('2,048 rows reclaimed');
+    expect(markup).toContain('22.0 GiB physical SQLite file + sidecars');
+    expect(markup).toContain('2.35 GiB pages in use');
+    expect(markup).toContain('19.6 GiB reusable inside SQLite');
+    expect(markup).toContain('eligible for automatic compaction after retry-cooldown and maintenance safety checks');
+    expect(markup).toContain('Automatic graph storage compaction');
+    expect(markup).toContain('Compacting Indexed repository in an isolated process without blocking Manager');
+    expect(markup).not.toContain('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+
+    const previousMaintenance = {
+      checkoutId: 'a'.repeat(64),
+      completed: 3,
+      operation: 'selected-snapshot-purge' as const,
+      phase: 'verifying-graph' as const,
+      snapshotId: `cgsn_${'b'.repeat(40)}-direct`,
+      total: 5,
+    };
+    const afterMaintenance = mergeGraphCatalogStatus(
+      {...merged, catalogRevision: 'visible-revision', maintenance: previousMaintenance},
+      {builds: [reclaiming], lifecyclePending: false, waiterCount: 0, waiters: []},
+    );
+    expect(afterMaintenance.catalogRevision).toBe('visible-revision');
+    expect(afterMaintenance.maintenance).toBeUndefined();
+    expect(afterMaintenance.automaticCompaction).toEqual(merged.automaticCompaction);
+    expect(afterMaintenance.storage).toEqual(merged.storage);
   });
 
   it('shows only a bounded actionable administration job summary', () => {
@@ -582,8 +668,8 @@ describe('manager graph focus', () => {
   it('disambiguates distinct logical repositories that share a display name', () => {
     const first = {...repositoryGroup('11111111-logical', ['view-a'], 'view-a'), displayName: 'mobile-native'};
     const second = {...repositoryGroup('22222222-logical', ['view-b'], 'view-b'), displayName: 'mobile-native'};
-    expect(graphRepositoryOptionLabel(first, [first, second])).toBe('mobile-native · 11111111');
-    expect(graphRepositoryOptionLabel(second, [first, second])).toBe('mobile-native · 22222222');
+    expect(graphRepositoryOptionLabel(first, [first, second])).toBe('mobile-native · repository 11111111');
+    expect(graphRepositoryOptionLabel(second, [first, second])).toBe('mobile-native · repository 22222222');
   });
 
   it('labels build banners with their global repository and home-abbreviated worktree path', () => {
@@ -594,6 +680,7 @@ describe('manager graph focus', () => {
         ...view,
         localAssociation: {
           available: true,
+          branch: 'feature/manager-labels',
           displayPath: '~/jobs/repo-a-task-17',
           path: '/tmp/jobs/repo-a-task-17',
           state: 'verified' as const,
@@ -609,22 +696,26 @@ describe('manager graph focus', () => {
         repositoryId: 'repo-a',
         worktreeId: 'view-a',
       },
-      managerContext: {worktreePath: '/tmp/jobs/repo-a-task-17'},
+      managerContext: {branch: 'feature/manager-labels', worktreePath: '/tmp/jobs/repo-a-task-17'},
     };
     expect(graphBuildTarget(build, [repository])).toEqual({
       repositoryLabel: 'repo-a',
-      worktreeLabel: '~/jobs/repo-a-task-17',
+      worktreeLabel: 'observed worktree branch feature/manager-labels · ~/jobs/repo-a-task-17',
     });
     expect(graphBuildTarget({...build, managerContext: undefined}, [baseRepository])).toEqual({
       repositoryLabel: 'repo-a',
       worktreeLabel: 'view-a',
     });
     const {managerContext: _managerContext, ...buildWithoutContext} = build;
+    expect(graphBuildTarget({...build, identity: {...build.identity, repositoryId: 'missing'}}, [])).toEqual({
+      repositoryLabel: 'example/repo-a',
+      worktreeLabel: 'build-start branch feature/manager-labels · /tmp/jobs/repo-a-task-17',
+    });
     expect(
       graphBuildTarget({...buildWithoutContext, identity: {...build.identity, repositoryId: 'missing'}}, []),
     ).toEqual({
-      repositoryLabel: 'example/repo-a · repository missing',
-      worktreeLabel: 'Checkout view-a · worktree view-a',
+      repositoryLabel: 'example/repo-a',
+      worktreeLabel: 'Local folder unavailable · commit abcdef01',
     });
   });
 

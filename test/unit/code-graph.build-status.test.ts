@@ -1,4 +1,6 @@
-import {existsSync} from 'node:fs';
+import {TestError} from '../helpers/test-error.js';
+import {provideTestLayer} from '../helpers/effect-layer.js';
+import {existsSync} from '../helpers/node-fs.js';
 import {it as effectIt} from '@effect/vitest';
 import {Effect, FileSystem, Path} from 'effect';
 import {TestClock} from 'effect/testing';
@@ -85,7 +87,7 @@ describe('code graph cross-process build status', () => {
             });
           }
           return (yield* readCodeGraphBuildStatuses(layout))[0]?.eta;
-        }).pipe(Effect.provide(ApplicationLayer));
+        }).pipe(provideTestLayer(ApplicationLayer));
 
       const stable = yield* confidenceFor(Array.from({length: 24}, () => 50));
       expect(stable).toMatchObject({scope: 'phase'});
@@ -128,6 +130,7 @@ describe('code graph cross-process build status', () => {
     expect(JSON.stringify(statuses)).not.toContain(home);
     expect(result.global).toHaveLength(2);
     expect(result.global.every(status => status.managerContext?.worktreePath === `${home}/repository`)).toBe(true);
+    expect(result.global.every(status => status.managerContext?.branch === 'feature/manager-labels')).toBe(true);
   });
 
   it('persists privacy-safe superseded-snapshot reclamation progress', async () => {
@@ -736,7 +739,7 @@ describe('code graph cross-process build status', () => {
         const completed = yield* makeCodeGraphBuildReporter(identity, layout);
         yield* completed.completeSnapshot(fixtureSnapshot(identity));
         const failed = yield* makeCodeGraphBuildReporter(identity, layout);
-        yield* failed.fail(new Error(`Could not read ${home}/private/source.ts while indexing`));
+        yield* failed.fail(new TestError(`Could not read ${home}/private/source.ts while indexing`));
         return yield* readCodeGraphBuildStatuses(layout);
       }),
     );
@@ -957,6 +960,7 @@ function resolutionActivity(
 
 function fixtureIdentity(home: string): RepositoryIdentity {
   return {
+    branch: 'feature/manager-labels',
     caseMode: 'sensitive',
     checkoutId: 'a'.repeat(64),
     displayName: 'example/repository',
@@ -988,5 +992,5 @@ function fixtureSnapshot(identity: RepositoryIdentity): CodeGraphSnapshot {
 
 function runGit(cwd: string, args: readonly string[]): void {
   const result = Bun.spawnSync({cmd: ['git', '-C', cwd, ...args], stderr: 'pipe', stdout: 'pipe'});
-  if (result.exitCode !== 0) throw new Error(result.stderr.toString());
+  if (result.exitCode !== 0) throw new TestError(result.stderr.toString());
 }

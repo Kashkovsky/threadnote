@@ -1,3 +1,4 @@
+import {TestError} from '../helpers/test-error.js';
 import {Effect, FileSystem} from 'effect';
 import {describe, expect, it, vi} from 'vitest';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
@@ -297,7 +298,7 @@ describe('cross-repository graph runtime safety', () => {
   it('suppresses a protobuf bridge relationship when either endpoint snapshot is unusable', () => {
     const fixture = runtimeFixture(2);
     const bridge = protobufBridgeForMembers(fixture.members[0]!, fixture.members[1]!);
-    if (bridge.source.reference.kind !== 'qualified-ref') throw new Error('Invalid protobuf fixture source.');
+    if (bridge.source.reference.kind !== 'qualified-ref') throw new TestError('Invalid protobuf fixture source.');
     const card = evidenceCard(bridge.source.reference.ref, fixture.members[0]!.repositoryKey);
 
     expect(
@@ -433,10 +434,10 @@ function configureRuntimeMocks(fixture: RuntimeFixture): void {
     Effect.succeed(bridgePage({bridges: [], digest: digest('runtime-set'), totalBridges: 0})),
   );
   mocks.registerQualifiedRef.mockReturnValue(Effect.void);
-  mocks.resolveQualifiedRef.mockReturnValue(Effect.fail(new Error('Qualified reference not registered.')));
+  mocks.resolveQualifiedRef.mockReturnValue(Effect.fail(new TestError('Qualified reference not registered.')));
   mocks.status.mockImplementation((_home: string, cwd: string) => {
     const status = fixture.statuses.get(cwd);
-    return status === undefined ? Effect.fail(new Error('Unknown fixture path.')) : Effect.succeed(status);
+    return status === undefined ? Effect.fail(new TestError('Unknown fixture path.')) : Effect.succeed(status);
   });
   mocks.acquireLease.mockReturnValue(Effect.succeed('lease-token'));
   mocks.releaseLease.mockReturnValue(Effect.void);

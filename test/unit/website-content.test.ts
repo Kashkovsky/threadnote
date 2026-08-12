@@ -1,7 +1,7 @@
-// oxlint-disable effecttsgo/node-builtin-import -- This compatibility suite exercises Node-facing website scripts.
-import {execFileSync} from 'node:child_process';
-import {access, readFile} from 'node:fs/promises';
-import {join} from 'node:path';
+import {TestError} from '../helpers/test-error.js';
+import {execFileSync} from '../helpers/node-child-process.js';
+import {access, readFile} from '../helpers/node-fs-promises.js';
+import {join} from '../helpers/node-path.js';
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import {
@@ -108,7 +108,7 @@ type DisplayedTool = keyof typeof toolKeys;
 function toolName(actor: string): DisplayedTool {
   const name = actor.split(' · ', 1)[0];
   if (!name || !(name in toolKeys)) {
-    throw new Error(`Website scenario uses an unverified tool contract: ${actor}`);
+    throw new TestError(`Website scenario uses an unverified tool contract: ${actor}`);
   }
   return name as DisplayedTool;
 }
@@ -116,7 +116,7 @@ function toolName(actor: string): DisplayedTool {
 function parseToolPayload(text: string): Record<string, unknown> {
   const parsed: unknown = JSON.parse(text);
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new Error(`Tool payload must be a JSON object: ${text}`);
+    throw new TestError(`Tool payload must be a JSON object: ${text}`);
   }
   return parsed as Record<string, unknown>;
 }
@@ -708,7 +708,7 @@ describe('Threadnote 4 website content', () => {
 
     expect(worksetArticle).toBeDefined();
     expect(mcpExample?.type).toBe('code');
-    if (!mcpExample || mcpExample.type !== 'code') throw new Error('Missing workset MCP example.');
+    if (!mcpExample || mcpExample.type !== 'code') throw new TestError('Missing workset MCP example.');
     expect(content).toContain('threadnote workset status checkout');
     expect(content).toContain('threadnote workset prepare checkout --concurrency 4');
     expect(content).toContain('threadnote graph query');
@@ -982,7 +982,7 @@ describe('Threadnote 4 website content', () => {
       ...loaders,
       faq: async () => {
         faqAttempts += 1;
-        if (faqAttempts === 1) throw new Error('transient chunk failure');
+        if (faqAttempts === 1) throw new TestError('transient chunk failure');
         return 'faq';
       },
     });
@@ -1414,22 +1414,34 @@ describe('Threadnote 4 website content', () => {
       'darwin-arm64-m1-max',
       'code-graph-worktree-readiness-2026-08-04.json',
     );
-    const [artifactBytes, harnessBytes, viteConfig] = await Promise.all([
+    const [artifactBytes, viteConfig] = await Promise.all([
       readFile(artifactFile),
-      readFile(join(root, 'scripts', 'benchmark-worktree-readiness.ts')),
       readFile(join(root, 'website', 'vite.config.ts'), 'utf8'),
     ]);
     const artifact = JSON.parse(artifactBytes.toString('utf8')) as {
-      source: {candidate: {commit: string; ref: string}; baseline: {commit: string}; harness: {sha256: string}};
+      source: {
+        candidate: {commit: string; ref: string};
+        baseline: {commit: string};
+        harness: {commit: string; path: string; sha256: string};
+      };
       scenarios: {
         graphEquivalentCommit: {candidate: {observations: Array<{stagedFiles: number}>}};
         oneFileChange: {candidate: {observations: Array<{stagedFiles: number}>}};
       };
     };
+    const harnessBytes = execFileSync(
+      'git',
+      ['show', `${artifact.source.harness.commit}:${artifact.source.harness.path}`],
+      {cwd: root},
+    );
 
     expect(artifact.source).toMatchObject({
       candidate: {commit: '55c4bf3f35c0d6ddd43a4d686f5e9d0c6b9a670b', ref: 'v4.0.1'},
       baseline: {commit: '4c8911e868096bb0aa57b3dd8078bd339f396d92'},
+      harness: {
+        commit: '4e5f224527e67b4785ece5fa6f4f2e72849bb661',
+        path: 'scripts/benchmark-worktree-readiness.ts',
+      },
     });
     expect(sha256Hex(harnessBytes)).toBe(artifact.source.harness.sha256);
     expect(

@@ -2714,6 +2714,465 @@ dd {
   color: var(--danger);
 }
 
+.worksets-workspace {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: 270px minmax(0, 1fr);
+  height: 100%;
+  min-height: 0;
+}
+
+.worksets-catalog,
+.worksets-main,
+.worksets-card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.worksets-catalog {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 14px;
+}
+
+.worksets-main {
+  min-width: 0;
+  overflow: auto;
+  padding: 18px;
+}
+
+.worksets-section-head,
+.worksets-header,
+.worksets-editor header,
+.worksets-editor footer {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.worksets-section-head h2,
+.worksets-section-head h3,
+.worksets-header h2,
+.worksets-editor h2 {
+  margin: 0;
+}
+
+.worksets-header {
+  align-items: flex-start;
+  margin-bottom: 14px;
+}
+
+.worksets-header > div:first-child {
+  min-width: 0;
+}
+
+.worksets-header p:not(.eyebrow),
+.worksets-boundary,
+.worksets-muted,
+.worksets-definition-list p {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.worksets-boundary {
+  border-bottom: 1px solid var(--line-soft);
+  margin: 10px 0;
+  padding-bottom: 10px;
+}
+
+.worksets-definition-list {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 12px;
+  min-height: 0;
+  overflow: auto;
+}
+
+.worksets-definition-list button {
+  display: grid;
+  gap: 4px;
+  justify-items: start;
+  text-align: left;
+}
+
+.worksets-definition-list button.is-selected {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+}
+
+.worksets-definition-list span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.worksets-catalog > .quiet-button {
+  margin-top: auto;
+}
+
+.worksets-card {
+  margin-top: 14px;
+  padding: 16px;
+}
+
+.worksets-notice,
+.worksets-warning,
+.worksets-error {
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.45;
+  margin: 9px 0;
+  padding: 8px 10px;
+}
+
+.worksets-notice {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.worksets-warning {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.worksets-error {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.worksets-metrics {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin: 14px 0;
+}
+
+.worksets-metrics > div {
+  background: var(--panel-alt);
+  border: 1px solid var(--line-soft);
+  border-radius: 9px;
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  padding: 10px;
+}
+
+.worksets-metrics span,
+.worksets-metrics strong {
+  overflow-wrap: anywhere;
+}
+
+.worksets-metrics span {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.worksets-member-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+}
+
+.worksets-member-grid article,
+.worksets-evidence-list article,
+.worksets-edge-list article,
+.worksets-topology-grid article {
+  background: var(--panel-alt);
+  border: 1px solid var(--line-soft);
+  border-radius: 9px;
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  padding: 10px;
+}
+
+.worksets-member-grid small,
+.worksets-evidence-list small,
+.worksets-edge-list small,
+.worksets-topology-grid small,
+.worksets-receipt {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.worksets-state {
+  border-radius: 999px;
+  font-size: 10px;
+  justify-self: start;
+  padding: 2px 7px;
+}
+
+.worksets-state.is-ok {
+  background: var(--ok-soft);
+  color: var(--ok);
+}
+
+.worksets-state.is-warn {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.worksets-state.is-fail {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.worksets-job {
+  align-items: center;
+  background: var(--panel-alt);
+  border: 1px solid var(--accent-line);
+  border-radius: var(--radius);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  margin-top: 14px;
+  padding: 12px;
+}
+
+.worksets-job > div {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  min-width: min(100%, 340px);
+}
+
+.worksets-job > span {
+  color: var(--muted);
+  font-size: 11px;
+  margin-left: auto;
+}
+
+.worksets-job-receipts {
+  display: grid !important;
+  flex-basis: 100%;
+  gap: 8px !important;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+}
+
+.worksets-job-receipts article {
+  background: var(--panel);
+  border: 1px solid var(--line-soft);
+  border-radius: 9px;
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  padding: 9px;
+}
+
+.worksets-job-receipts small {
+  color: var(--muted);
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+
+.worksets-operation-tabs {
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  gap: 4px;
+  margin-top: 18px;
+  overflow-x: auto;
+}
+
+.worksets-operation-tabs button {
+  background: transparent;
+  border-color: transparent;
+  border-radius: 8px 8px 0 0;
+}
+
+.worksets-operation-tabs button.is-active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.worksets-operation {
+  display: grid;
+  gap: 12px;
+  margin-top: 0;
+}
+
+.worksets-form-row,
+.worksets-topology-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.worksets-operation label,
+.worksets-editor > label {
+  display: grid;
+  font-size: 12px;
+  font-weight: 650;
+  gap: 6px;
+}
+
+.worksets-checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+}
+
+.worksets-checks label,
+.worksets-project-picker label {
+  align-items: center;
+  display: flex;
+  font-size: 12px;
+  gap: 7px;
+}
+
+.worksets-checks input,
+.worksets-project-picker input {
+  min-height: auto;
+  width: auto;
+}
+
+.worksets-evidence-list,
+.worksets-edge-list,
+.worksets-topology-grid > div {
+  display: grid;
+  gap: 8px;
+}
+
+.worksets-evidence-list article header {
+  align-items: flex-start;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.worksets-evidence-list article header span,
+.worksets-edge-list article > span,
+.worksets-topology-grid article > span {
+  color: var(--accent);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.worksets-evidence-list code {
+  color: var(--muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.worksets-reference-actions {
+  border-top: 1px solid var(--line-soft);
+  color: var(--muted);
+  font-size: 11px;
+  padding-top: 7px;
+}
+
+.worksets-reference-actions > code {
+  display: block;
+  margin: 7px 0;
+}
+
+.worksets-evidence-list p,
+.worksets-brief-section p {
+  line-height: 1.45;
+  margin: 0;
+}
+
+.worksets-topology-grid h4,
+.worksets-brief-section h4 {
+  font-size: 13px;
+  margin: 8px 0 0;
+}
+
+.worksets-brief-section {
+  border-top: 1px solid var(--line-soft);
+  display: grid;
+  gap: 7px;
+  padding-top: 10px;
+}
+
+.worksets-brief-section p {
+  background: var(--panel-alt);
+  border-radius: 7px;
+  font-size: 12px;
+  padding: 8px;
+}
+
+.worksets-empty {
+  align-items: center;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  justify-content: center;
+  text-align: center;
+}
+
+.worksets-empty p {
+  color: var(--muted);
+}
+
+.worksets-editor-backdrop {
+  align-items: center;
+  background: rgba(3, 6, 10, 0.76);
+  display: flex;
+  inset: 0;
+  justify-content: center;
+  padding: 20px;
+  position: fixed;
+  z-index: 30;
+}
+
+.worksets-editor {
+  background: var(--panel);
+  border: 1px solid var(--accent-line);
+  border-radius: 15px;
+  box-shadow: var(--shadow);
+  display: grid;
+  gap: 14px;
+  max-height: min(760px, calc(100dvh - 40px));
+  overflow: hidden;
+  padding: 18px;
+  width: min(620px, 100%);
+}
+
+.worksets-project-picker {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: grid;
+  gap: 8px;
+  max-height: 280px;
+  overflow: auto;
+  padding: 10px;
+}
+
+.worksets-project-picker-controls {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.worksets-project-picker-controls span {
+  color: var(--muted);
+  font-size: 11px;
+  margin-right: auto;
+}
+
+.worksets-project-picker label > span {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.worksets-project-picker small {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.worksets-editor footer {
+  border-top: 1px solid var(--line-soft);
+  justify-content: flex-end;
+  padding-top: 12px;
+}
+
 .sr-only {
   border: 0;
   clip: rect(0, 0, 0, 0);
@@ -2727,6 +3186,14 @@ dd {
 }
 
 @media (max-width: 1180px) {
+  .worksets-workspace {
+    grid-template-columns: 230px minmax(0, 1fr);
+  }
+
+  .worksets-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .graph-toolbar {
     grid-template-areas:
       'scope scope'
@@ -2776,7 +3243,7 @@ dd {
   }
 
   .primary-nav {
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-columns: repeat(6, minmax(0, 1fr));
   }
 
   .primary-nav > button {
@@ -2801,6 +3268,29 @@ dd {
 
   .main {
     min-height: 760px;
+  }
+
+  .worksets-workspace {
+    grid-template-columns: 1fr;
+    height: auto;
+  }
+
+  .worksets-catalog {
+    max-height: 340px;
+  }
+
+  .worksets-main {
+    min-height: 620px;
+    overflow: visible;
+  }
+
+  .worksets-header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .worksets-header .button-row {
+    justify-content: flex-start;
   }
 
   .graph-workspace {
@@ -2854,6 +3344,47 @@ dd {
   .workspace-header {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .primary-nav {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .worksets-main,
+  .worksets-catalog {
+    padding: 12px;
+  }
+
+  .worksets-form-row,
+  .worksets-metrics,
+  .worksets-topology-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .worksets-section-head,
+  .worksets-editor header,
+  .worksets-editor footer {
+    align-items: stretch;
+    flex-wrap: wrap;
+  }
+
+  .worksets-operation-tabs button {
+    min-width: max-content;
+  }
+
+  .worksets-editor-backdrop {
+    align-items: stretch;
+    padding: 8px;
+  }
+
+  .worksets-editor {
+    max-height: calc(100dvh - 16px);
+    overflow-y: auto;
+    padding: 14px;
+  }
+
+  .worksets-editor footer button {
+    flex: 1 1 130px;
   }
 
   .graph-toolbar {

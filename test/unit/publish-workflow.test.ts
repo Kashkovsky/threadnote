@@ -1,3 +1,4 @@
+import {provideTestLayer} from '../helpers/effect-layer.js';
 import {BunFileSystem} from '@effect/platform-bun';
 import {describe, expect, it} from '@effect/vitest';
 import {Effect, FileSystem} from 'effect';
@@ -6,13 +7,13 @@ import {BUILTIN_MODEL_MANIFESTS, CORE_EMBEDDING_MODEL_ID} from '../../src/models
 const readProjectFile = (path: string) =>
   FileSystem.FileSystem.pipe(
     Effect.flatMap(fs => fs.readFileString(`${process.cwd()}/${path}`)),
-    Effect.provide(BunFileSystem.layer),
+    provideTestLayer(BunFileSystem.layer),
   );
 
 const projectFileExists = (path: string) =>
   FileSystem.FileSystem.pipe(
     Effect.flatMap(fs => fs.exists(`${process.cwd()}/${path}`)),
-    Effect.provide(BunFileSystem.layer),
+    provideTestLayer(BunFileSystem.layer),
   );
 
 describe('standalone release workflows', () => {

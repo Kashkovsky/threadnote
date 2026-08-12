@@ -236,11 +236,17 @@ threadnote graph repair --all --dry-run
 threadnote graph compact --dry-run
 ```
 
-`graph status` reports active SQLite database, WAL, and SHM bytes plus page/freelist and reclaimable-byte diagnostics.
-When both 512 MiB and 20% of the database are reclaimable it recommends explicit compaction. `graph compact` takes
-zero-wait maintenance and checkout locks, verifies the active snapshot before and after SQLite's transactional
-`VACUUM`, and defers safely during a build. Preview it with `--dry-run`; `--force` is available below the reviewed
-threshold.
+`graph status` reports physical SQLite database, WAL, and SHM bytes separately from pages in use and freelist bytes
+already reusable inside the database. A large physical file can therefore contain little live graph data without
+causing future writes to grow it. When freelist bytes are both at least 512 MiB and 20% of the database, a running
+Manager automatically compacts one eligible database at a time after active builders release their locks and sufficient
+disk headroom is verified. SQLite can require more than twice the database size as temporary free space during `VACUUM`, so Manager
+withholds compaction when that conservative headroom cannot be proved. Automatic compaction runs in an isolated child
+process, keeping Manager responsive; Manager shows the latest check, deferral, failure, or reclaimed bytes. Structural
+fragmentation analysis can scan live SQLite pages, so it is never scheduled automatically. Compaction rechecks the
+active snapshot before and after the transactional rewrite, and interruption leaves the original database intact.
+`graph compact --dry-run` remains available to inspect additional fragmentation explicitly, choose the timing, or
+troubleshoot; `--force` is the expert override below the reviewed threshold.
 
 `graph diagnostics` is home-wide and does not resolve a repository from the current directory. It reports every local
 graph database, ready snapshot, indexed view, active build, waiter, storage total, health issue, and obsolete store;
@@ -260,6 +266,8 @@ before acting. The CLI equivalent for an orphaned store is
 
 `threadnote manage` fails fast when graph repair or another native graph maintenance operation is already active;
 an already-running Manager returns an explicit busy response for graph requests until maintenance finishes.
+Manager labels graph views with repository name, the branch observed at a stated boundary, and trusted local folder whenever available; opaque
+checkout and worktree identities are reserved for last-resort diagnostics and exact CLI targeting.
 
 Maven, Gradle, Kotlin Multiplatform/Android conventions, SwiftPM, conservative Xcode metadata, and nested or integrated
 Bazel workspaces form a static workspace model; repository build scripts are never executed. Bazel `WORKSPACE`,

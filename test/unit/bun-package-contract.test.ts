@@ -1,5 +1,5 @@
-import {readFile} from 'node:fs/promises';
-import {join} from 'node:path';
+import {readFile} from '../helpers/node-fs-promises.js';
+import {join} from '../helpers/node-path.js';
 import {describe, expect, it} from 'vitest';
 
 interface PackageManifest {

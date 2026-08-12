@@ -41,6 +41,10 @@ import {
 
 export {managerGraphBuildCatalog, type ManagerGraphBuildCatalog} from './manager_status.js';
 
+class CodeGraphVisualizationError extends Error {
+  readonly _tag = 'CodeGraphVisualizationError' as const;
+}
+
 const NODE_DETAIL_EDGE_LIMIT = 160;
 const NODE_DETAIL_SUMMARY_LIMIT = 2_000;
 const MANAGER_CATALOG_PROJECT_LIMIT = 160;
@@ -322,7 +326,7 @@ export const managerGraphCatalog = Effect.fn('codeGraph.managerCatalog')(functio
             diagnostic: {
               checkoutId,
               code: 'no-ready-snapshot',
-              message: `Checkout ${shortIdentity(checkoutId)} has no ready graph snapshot.`,
+              message: 'An indexed repository database has no ready graph snapshot.',
             } satisfies ManagerGraphCatalogDiagnostic,
           } as const;
         }
@@ -347,7 +351,7 @@ export const managerGraphCatalog = Effect.fn('codeGraph.managerCatalog')(functio
             diagnostic: {
               checkoutId,
               code: 'no-ready-snapshot',
-              message: `Checkout ${shortIdentity(checkoutId)} has no ready graph snapshot.`,
+              message: 'An indexed repository database has no ready graph snapshot.',
             } satisfies ManagerGraphCatalogDiagnostic,
           } as const;
         }
@@ -361,6 +365,14 @@ export const managerGraphCatalog = Effect.fn('codeGraph.managerCatalog')(functio
             ]).pipe(Effect.map(localAssociation => ({catalog, localAssociation}))),
           {concurrency: 4},
         );
+        const primaryView = observedCatalogs[0];
+        const primaryViewPath =
+          primaryView && 'displayPath' in primaryView.localAssociation
+            ? primaryView.localAssociation.displayPath
+            : undefined;
+        const viewLabel = primaryView
+          ? `${primaryView.catalog.repository.displayName}${primaryViewPath ? ` at ${primaryViewPath}` : ''}`
+          : 'The indexed repository';
         return {
           checkoutId,
           catalogs: observedCatalogs,
@@ -374,8 +386,8 @@ export const managerGraphCatalog = Effect.fn('codeGraph.managerCatalog')(functio
                     ? ('lease-failed' as const)
                     : ('lease-deferred' as const),
                   message: retained.some(result => result.state === 'failed')
-                    ? `Checkout ${shortIdentity(checkoutId)} remains readable. Snapshot retention is temporarily unavailable, and background maintenance will retry.`
-                    : `Checkout ${shortIdentity(checkoutId)} is readable, but snapshot retention is deferred while another graph writer is active. Retry after the active build completes.`,
+                    ? `${viewLabel} remains readable. Snapshot retention is temporarily unavailable, and background maintenance will retry.`
+                    : `${viewLabel} is readable, but snapshot retention is deferred while another graph writer is active. Retry after the active build completes.`,
                 } satisfies ManagerGraphCatalogDiagnostic,
               }),
           viewsTruncated: catalogs.length > MANAGER_CATALOG_VIEW_LIMIT,
@@ -388,7 +400,7 @@ export const managerGraphCatalog = Effect.fn('codeGraph.managerCatalog')(functio
             diagnostic: {
               checkoutId,
               code: 'unreadable-database',
-              message: `Checkout ${shortIdentity(checkoutId)} graph database is unreadable: ${privacySafeCatalogError(cause)}`,
+              message: `An indexed repository graph database is unreadable: ${privacySafeCatalogError(cause)}`,
             } satisfies ManagerGraphCatalogDiagnostic,
           } as const),
         ),
@@ -698,7 +710,9 @@ export const managerGraphCatalogPage = Effect.fn('codeGraph.managerCatalogPage')
   request: {readonly offset?: number; readonly query?: string; readonly workspaceOffset?: number} = {},
 ) {
   if (Option.isNone(expectedSnapshotId)) {
-    return yield* Effect.fail(new Error('Graph catalog continuation requires the selected snapshot identity.'));
+    return yield* Effect.fail(
+      new CodeGraphVisualizationError('Graph catalog continuation requires the selected snapshot identity.'),
+    );
   }
   const projectOffset = boundedCatalogOffset(request.offset);
   const workspaceOffset = boundedCatalogOffset(request.workspaceOffset);
@@ -732,13 +746,14 @@ export const managerGraphViewsPage = Effect.fn('codeGraph.managerViewsPage')(fun
   indexedViewId: string,
   request: {readonly offset?: number; readonly query?: string} = {},
 ) {
-  if (!INDEXED_VIEW_ID.test(indexedViewId)) return yield* Effect.fail(new Error('Graph view identity is invalid.'));
+  if (!INDEXED_VIEW_ID.test(indexedViewId))
+    return yield* Effect.fail(new CodeGraphVisualizationError('Graph view identity is invalid.'));
   const path = yield* Path.Path;
   const store = yield* CodeGraphStore;
   const [checkoutId] = indexedViewId.split('.', 1) as [string];
   const databases = yield* codeGraphDatabasePaths(threadnoteHome);
   const database = databases.find(candidate => path.basename(path.dirname(candidate)) === checkoutId);
-  if (!database) return yield* Effect.fail(new Error('Indexed graph checkout was not found.'));
+  if (!database) return yield* Effect.fail(new CodeGraphVisualizationError('Indexed graph checkout was not found.'));
   const offset = boundedCatalogOffset(request.offset);
   const query = boundedCatalogQuery(request.query);
   const catalogs = yield* store.loadVisualizationCatalogs(database, 'deferred', {
@@ -781,7 +796,8 @@ export const managerGraphAnalysis = Effect.fn('codeGraph.managerAnalysis')(funct
   indexedViewId: string,
   expectedSnapshotId: Option.Option<string> = Option.none(),
 ) {
-  if (!INDEXED_VIEW_ID.test(indexedViewId)) return yield* Effect.fail(new Error('Graph view identity is invalid.'));
+  if (!INDEXED_VIEW_ID.test(indexedViewId))
+    return yield* Effect.fail(new CodeGraphVisualizationError('Graph view identity is invalid.'));
   const store = yield* CodeGraphStore;
   return yield* Effect.acquireUseRelease(
     resolveManagerGraphView(threadnoteHome, indexedViewId, {
@@ -811,7 +827,8 @@ export const managerGraphVisualization = Effect.fn('codeGraph.managerVisualizati
   requestedBudget: ManagerGraphVisualizationBudget = {},
   expectedSnapshotId: Option.Option<string> = Option.none(),
 ) {
-  if (!INDEXED_VIEW_ID.test(indexedViewId)) return yield* Effect.fail(new Error('Graph view identity is invalid.'));
+  if (!INDEXED_VIEW_ID.test(indexedViewId))
+    return yield* Effect.fail(new CodeGraphVisualizationError('Graph view identity is invalid.'));
   const store = yield* CodeGraphStore;
   const projectId = requestedProjectId.trim() || 'all';
   return yield* Effect.acquireUseRelease(
@@ -829,7 +846,8 @@ export const managerGraphVisualization = Effect.fn('codeGraph.managerVisualizati
           return yield* overviewVisualization(store, database, repository, catalog, limits);
         }
         const project = catalog.projects.find(candidate => candidate.id === projectId);
-        if (!project) return yield* Effect.fail(new Error('Indexed graph project was not found.'));
+        if (!project)
+          return yield* Effect.fail(new CodeGraphVisualizationError('Indexed graph project was not found.'));
         return yield* detailVisualization(store, database, repository, project, limits);
       }),
     resolved => resolved.release,
@@ -843,13 +861,16 @@ export const managerGraphQuery = Effect.fn('codeGraph.managerQuery')(function* (
   requestedBudget: ManagerGraphVisualizationBudget = {},
   expectedSnapshotId: Option.Option<string> = Option.none(),
 ) {
-  if (!INDEXED_VIEW_ID.test(indexedViewId)) return yield* Effect.fail(new Error('Graph view identity is invalid.'));
+  if (!INDEXED_VIEW_ID.test(indexedViewId))
+    return yield* Effect.fail(new CodeGraphVisualizationError('Graph view identity is invalid.'));
   if (Option.isNone(expectedSnapshotId)) {
-    return yield* Effect.fail(new Error('Graph queries require the selected snapshot identity.'));
+    return yield* Effect.fail(new CodeGraphVisualizationError('Graph queries require the selected snapshot identity.'));
   }
   const query = requestedQuery.trim();
   if (query.length === 0 || query.length > MANAGER_QUERY_MAX_LENGTH) {
-    return yield* Effect.fail(new Error('Graph query must contain between 1 and 512 characters.'));
+    return yield* Effect.fail(
+      new CodeGraphVisualizationError('Graph query must contain between 1 and 512 characters.'),
+    );
   }
   const path = yield* Path.Path;
   const store = yield* CodeGraphStore;
@@ -936,10 +957,11 @@ export const managerGraphNodeDetail = Effect.fn('codeGraph.managerNodeDetail')(f
   requestedNodeId: string,
   expectedSnapshotId: Option.Option<string> = Option.none(),
 ) {
-  if (!INDEXED_VIEW_ID.test(indexedViewId)) return yield* Effect.fail(new Error('Graph view identity is invalid.'));
+  if (!INDEXED_VIEW_ID.test(indexedViewId))
+    return yield* Effect.fail(new CodeGraphVisualizationError('Graph view identity is invalid.'));
   const nodeId = requestedNodeId.trim();
   if (nodeId.length === 0 || nodeId.length > NODE_ID_MAX_LENGTH) {
-    return yield* Effect.fail(new Error('Graph node identity is invalid.'));
+    return yield* Effect.fail(new CodeGraphVisualizationError('Graph node identity is invalid.'));
   }
   const store = yield* CodeGraphStore;
   return yield* Effect.acquireUseRelease(
@@ -952,7 +974,7 @@ export const managerGraphNodeDetail = Effect.fn('codeGraph.managerNodeDetail')(f
       Effect.gen(function* () {
         const symbols = yield* store.symbolsByIds(database, catalog.snapshot.id, [nodeId]);
         const symbol = symbols.find(candidate => candidate.id === nodeId);
-        if (!symbol) return yield* Effect.fail(new Error('Indexed graph node was not found.'));
+        if (!symbol) return yield* Effect.fail(new CodeGraphVisualizationError('Indexed graph node was not found.'));
 
         const [edges, summary] = yield* Effect.all([
           store.edgesForNodes(
@@ -1422,7 +1444,7 @@ function repositoryFromCatalog(
     checkoutId,
     displayName: catalog.repository.displayName,
     id: viewId,
-    label: indexedViewLabel(checkoutId, catalog),
+    label: indexedViewLabel(catalog),
     localAssociation,
     metrics: catalog.metrics,
     model: catalog.model,
@@ -1506,7 +1528,7 @@ const resolveManagerGraphView = Effect.fn('codeGraph.resolveManagerGraphView')(f
   const [checkoutId, worktreeId] = indexedViewId.split('.', 2) as [string, string | undefined];
   const databases = yield* codeGraphDatabasePaths(threadnoteHome);
   const database = databases.find(candidate => path.basename(path.dirname(candidate)) === checkoutId);
-  if (!database) return yield* Effect.fail(new Error('Indexed graph checkout was not found.'));
+  if (!database) return yield* Effect.fail(new CodeGraphVisualizationError('Indexed graph checkout was not found.'));
   const catalogOptions = {
     includeDependencies: options.includeDependencies,
     projectOffset: options.projectOffset,
@@ -1531,11 +1553,13 @@ const resolveManagerGraphView = Effect.fn('codeGraph.resolveManagerGraphView')(f
         ? new ManagerGraphViewUnavailableError(
             'The selected graph view changed or was removed. Refresh the graph catalog.',
           )
-        : new Error('Indexed graph view has no ready snapshot.'),
+        : new CodeGraphVisualizationError('Indexed graph view has no ready snapshot.'),
     );
   }
   if (worktreeId && catalog.viewWorktreeId !== worktreeId) {
-    return yield* Effect.fail(new Error('Indexed graph snapshot does not belong to the requested view.'));
+    return yield* Effect.fail(
+      new CodeGraphVisualizationError('Indexed graph snapshot does not belong to the requested view.'),
+    );
   }
   const retention = yield* retainManagerSnapshot(
     store,
@@ -1642,16 +1666,12 @@ function compareIndexedViews(left: ManagerGraphIndexedView, right: ManagerGraphI
   );
 }
 
-function indexedViewLabel(checkoutId: string, catalog: CodeGraphVisualizationCatalog): string {
+function indexedViewLabel(catalog: CodeGraphVisualizationCatalog): string {
   const commit = catalog.snapshot.commit.slice(0, 8) || 'no-commit';
   const state = catalog.snapshot.dirty ? 'dirty' : 'clean';
   const indexed = catalog.activatedAt ?? catalog.snapshot.completedAt;
   const indexedLabel = indexed ? new Date(indexed).toISOString().slice(0, 16).replace('T', ' ') + 'Z' : 'time unknown';
-  return `${commit} · ${state} · ${indexedLabel} · checkout ${shortIdentity(checkoutId)} · worktree ${shortIdentity(catalog.viewWorktreeId)}`;
-}
-
-function shortIdentity(value: string): string {
-  return value.slice(-8) || 'unknown';
+  return `${commit} · ${state} · indexed ${indexedLabel}`;
 }
 
 function privacySafeCatalogError(cause: unknown): string {

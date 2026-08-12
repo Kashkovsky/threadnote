@@ -1,3 +1,5 @@
+import {TestError} from '../helpers/test-error.js';
+import {provideTestLayer} from '../helpers/effect-layer.js';
 import {Database} from 'bun:sqlite';
 import {it as effectIt} from '@effect/vitest';
 import {Deferred, Effect, Fiber, FileSystem, Option, Ref} from 'effect';
@@ -456,7 +458,7 @@ describe('code graph full-build materialization store', () => {
       expect(persisted.edges).toEqual([declares]);
       expect(persisted.diagnostics[0]).toMatch(/^Cached code graph facts exceeded the per-file persistence budget/);
       expect(persisted.diagnostics[0]).not.toMatch(/private-cache-sentinel|materialization\.ts/);
-    }).pipe(Effect.provide(ApplicationLayer)),
+    }).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect(
@@ -520,7 +522,7 @@ describe('code graph full-build materialization store', () => {
         expect(oversized.message.length).toBeLessThan(512);
         expect(receipts).toBe(0);
         expect(writers).toBe(0);
-      }).pipe(Effect.provide(ApplicationLayer)),
+      }).pipe(provideTestLayer(ApplicationLayer)),
     30_000,
   );
 
@@ -645,7 +647,7 @@ describe('code graph full-build materialization store', () => {
       expect(corruptAssociation.message).not.toContain(fixture.file.path);
       expect(receipts).toBe(0);
       expect(writers).toBe(0);
-    }).pipe(Effect.provide(ApplicationLayer)),
+    }).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('rejects and repairs materialized shard rows with inconsistent identities', () =>
@@ -743,7 +745,7 @@ describe('code graph full-build materialization store', () => {
           database.close(false);
         }
       });
-    }).pipe(Effect.provide(ApplicationLayer)),
+    }).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('replans a normal shard upsert when a tuple collision arrives before the writer', () =>
@@ -819,7 +821,7 @@ describe('code graph full-build materialization store', () => {
           database.close(false);
         }
       });
-    }).pipe(Effect.provide(ApplicationLayer)),
+    }).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('still writes requested facts when a competing repair makes the frozen collision normal', () =>
@@ -917,7 +919,7 @@ describe('code graph full-build materialization store', () => {
       );
       expect(reservations).toBe(2);
       expect(loaded.facts.get(fixture.file.path)?.diagnostics).toEqual(['requested after competing repair']);
-    }).pipe(Effect.provide(ApplicationLayer)),
+    }).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect(
@@ -1089,7 +1091,7 @@ describe('code graph full-build materialization store', () => {
             database.close(false);
           }
         });
-      }).pipe(Effect.provide(ApplicationLayer)),
+      }).pipe(provideTestLayer(ApplicationLayer)),
     30_000,
   );
 
@@ -1193,7 +1195,7 @@ describe('code graph full-build materialization store', () => {
         derivationIdentity,
       );
       expect(loaded.facts.get(fixture.file.path)?.diagnostics).toEqual(['canonical after association replan']);
-    }).pipe(Effect.provide(ApplicationLayer)),
+    }).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('reads a repair association count and page from one frozen SQLite snapshot', () =>
@@ -1269,7 +1271,7 @@ describe('code graph full-build materialization store', () => {
           competingWriter.close(false);
         }
       });
-    }).pipe(Effect.provide(ApplicationLayer)),
+    }).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it('adapts persistent copy pages toward a bounded three-second transaction', () => {
@@ -1737,7 +1739,7 @@ describe('code graph full-build materialization store', () => {
             yield* store.resolveStagedReferences(fixture.databasePath);
             const staged = yield* store.stagedFactCounts(fixture.databasePath);
             if (staged.edges !== referenceCount) {
-              return yield* Effect.fail(new Error(`Expected ${referenceCount} staged edges, got ${staged.edges}.`));
+              return yield* Effect.fail(new TestError(`Expected ${referenceCount} staged edges, got ${staged.edges}.`));
             }
             yield* store.activateStaged(
               fixture.databasePath,
@@ -1860,7 +1862,7 @@ describe('code graph full-build materialization store', () => {
               return yield* store.readySnapshotById(fixture.databasePath, snapshot.id);
             }),
           );
-        }).pipe(Effect.provide(ApplicationLayer));
+        }).pipe(provideTestLayer(ApplicationLayer));
 
         expect(ready?.state).toBe('ready');
         expect(readCompletedBuildRows(fixture.databasePath, snapshot.id).batches).toBe(1);
@@ -1872,7 +1874,7 @@ describe('code graph full-build materialization store', () => {
             }),
             {onFailure: observedStoreFailure, onSuccess: () => undefined},
           );
-        }).pipe(Effect.provide(ApplicationLayer));
+        }).pipe(provideTestLayer(ApplicationLayer));
         expect(cleanupFailure).toMatchObject({
           code: 'unknown',
           message: 'prune retired code graph snapshots failed with an unclassified storage error.',
@@ -1899,7 +1901,7 @@ describe('code graph full-build materialization store', () => {
             ),
             {cleanupCompletedBuildRows: true, writerLockPath},
           );
-        }).pipe(Effect.provide(ApplicationLayer));
+        }).pipe(provideTestLayer(ApplicationLayer));
         expect(readCompletedBuildRows(fixture.databasePath, snapshot.id)).toEqual({
           batches: 0,
           candidates: 0,
@@ -1998,7 +2000,7 @@ describe('code graph full-build materialization store', () => {
               yield* store.activateStaged(fixture.databasePath, fixture.identity, snapshot);
             }),
           );
-        }).pipe(Effect.provide(ApplicationLayer));
+        }).pipe(provideTestLayer(ApplicationLayer));
 
         yield* Effect.sync(() => {
           const seeded = new Database(fixture.databasePath, {strict: true});
@@ -2088,7 +2090,7 @@ describe('code graph full-build materialization store', () => {
             remainingAfterForeground,
             secondSweepStartedBeforeForeground,
           };
-        }).pipe(Effect.provide(ApplicationLayer));
+        }).pipe(provideTestLayer(ApplicationLayer));
 
         expect(result.cleanupConnectionsBeforeForeground).toBe(1);
         expect(result.secondSweepStartedBeforeForeground).toBe(false);
@@ -2636,7 +2638,7 @@ describe('code graph full-build materialization store', () => {
         expect(rebuilt.current?.id).toBe(snapshot.id);
         expect(rebuilt.active?.id).toBe(snapshot.id);
         expect(rebuilt.graph.symbols.map(entry => entry.id)).toEqual([replacement.id]);
-      }).pipe(Effect.provide(ApplicationLayer)),
+      }).pipe(provideTestLayer(ApplicationLayer)),
     ),
   );
 
@@ -2755,7 +2757,7 @@ describe('code graph full-build materialization store', () => {
       // explicit, disk-preflighted `graph compact` operation.
       expect(freelist.freelist_count).toBeGreaterThan(0);
       expect(pages.page_count).toBeGreaterThan(freelist.freelist_count);
-    }).pipe(Effect.provide(ApplicationLayer)),
+    }).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it('keeps interrupted logical plans compatible across grouped transactions and resumes deterministically', async () => {
@@ -3939,7 +3941,7 @@ describe('code graph full-build materialization store', () => {
                   Effect.sync(() => interruptedProgress.push(progress)).pipe(
                     Effect.andThen(
                       progress.stage === 'copying-symbols' && progress.state === 'started'
-                        ? Effect.die(new Error('injected activation boundary defect'))
+                        ? Effect.die(new TestError('injected activation boundary defect'))
                         : Effect.void,
                     ),
                   ),
@@ -4045,7 +4047,7 @@ describe('code graph full-build materialization store', () => {
       expect(metadata.facts.size).toBe(0);
       expect(metadata.keys).toEqual(new Set([fixture.file.path]));
       expect(metadata.bytes).toBe(decoded.bytes);
-    }).pipe(Effect.provide(ApplicationLayer)),
+    }).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('reuses one committed structured blob with target-path-local identities', () =>
@@ -4139,7 +4141,7 @@ describe('code graph full-build materialization store', () => {
           reuse_class: 'structured-object-v1:json:full',
         },
       ]);
-    }).pipe(Effect.provide(ApplicationLayer)),
+    }).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('does not hold the checkout writer lock while a direct build validates repository-scale input', () =>
@@ -4202,7 +4204,9 @@ describe('code graph full-build materialization store', () => {
           {writerLockPath},
         ),
         Effect.sleep('2 seconds').pipe(
-          Effect.andThen(Effect.fail(new Error('Linked-worktree writer remained blocked by direct-build validation.'))),
+          Effect.andThen(
+            Effect.fail(new TestError('Linked-worktree writer remained blocked by direct-build validation.')),
+          ),
         ),
       ).pipe(Effect.ensuring(Deferred.succeed(validationMayContinue, undefined)));
       yield* Fiber.join(activation);
@@ -4213,7 +4217,7 @@ describe('code graph full-build materialization store', () => {
         'linked-worktree-cache',
       );
       expect(cached.facts.get(fixture.file.path)).toEqual(cachedFacts);
-    }).pipe(Effect.provide(ApplicationLayer)),
+    }).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('defers retired snapshot deletion until bounded maintenance cleanup', () =>
@@ -4277,7 +4281,7 @@ describe('code graph full-build materialization store', () => {
       expect(retiredTermsAfter).toEqual([]);
       expect(currentTermsAfter.length).toBeGreaterThan(0);
       expect(foreignKeyViolations).toEqual([]);
-    }).pipe(Effect.provide(ApplicationLayer)),
+    }).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('guards each persistent inventory transaction and resumes an exact 2,500-row prefix', () =>
@@ -4355,7 +4359,7 @@ describe('code graph full-build materialization store', () => {
         files: 2_501,
         lexicalCounters: 1,
       });
-    }).pipe(Effect.provide(ApplicationLayer)),
+    }).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('stops temporary staging and publication before mutation while preserving the prior ready view', () =>
@@ -4528,7 +4532,7 @@ describe('code graph full-build materialization store', () => {
         overlay_rows: 0,
       });
       expect(result.resumed).toEqual({state: 'ready'});
-    }).pipe(Effect.provide(ApplicationLayer)),
+    }).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('reserves every temporary reference page before mutating its resumable stage', () =>
@@ -4599,7 +4603,7 @@ describe('code graph full-build materialization store', () => {
       expect(result.resume).toEqual(result.pause);
       expect(result.resolution.resolved).toBe(1);
       expect(result.afterResume).toEqual({remaining: 0, resolved: 1});
-    }).pipe(Effect.provide(ApplicationLayer)),
+    }).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('guards both persistent resolution transaction families and resumes their committed prefix', () =>
@@ -4767,7 +4771,7 @@ describe('code graph full-build materialization store', () => {
       expect(result.resolution.resolved).toBe(1);
       expect(result.afterResume).toEqual({remainingReferences: 0, resolvedEdges: 1});
       expect(result.resumed.some(value => value.operation === 'resolve persistent code graph references')).toBe(true);
-    }).pipe(Effect.provide(ApplicationLayer)),
+    }).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('guards high-cardinality ready promotion and resumes the exact ready snapshot', () =>
@@ -4909,7 +4913,7 @@ describe('code graph full-build materialization store', () => {
         unrelatedLeases: leaseCount,
         unrelatedState: 'ready',
       });
-    }).pipe(Effect.provide(ApplicationLayer)),
+    }).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect(
@@ -5189,7 +5193,7 @@ describe('code graph full-build materialization store', () => {
         expect(result.publicationPause).toEqual([expectedPublicationBoundary]);
         expect(result.publicationResume).toEqual([expectedPublicationBoundary]);
         expect(result.published).toEqual({owners: 0, state: 'ready'});
-      }).pipe(Effect.provide(ApplicationLayer)),
+      }).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect.skipIf(process.platform === 'win32')(
@@ -5215,7 +5219,7 @@ describe('code graph full-build materialization store', () => {
             } catch (error) {
               child.kill('SIGKILL');
               const stderr = await new Response(child.stderr).text();
-              throw new Error(`Activation kill child failed before its committed-chunk marker: ${stderr}`, {
+              throw new TestError(`Activation kill child failed before its committed-chunk marker: ${stderr}`, {
                 cause: error,
               });
             }
@@ -5283,7 +5287,7 @@ describe('code graph full-build materialization store', () => {
           expect(recovered.repaired?.removedSnapshots).toBe(1);
           expect(recovered.activeAfterRetry?.id).toBe(interruptedSnapshot.id);
           expect(recovered.graphAfterRetry?.symbols).toHaveLength(replacementSymbols.length);
-        }).pipe(Effect.provide(ApplicationLayer)),
+        }).pipe(provideTestLayer(ApplicationLayer)),
       ),
     60_000,
   );
@@ -5299,7 +5303,7 @@ async function readJsonLine(
     let buffered = '';
     while (true) {
       const next = await reader.read();
-      if (next.done) throw new Error('Activation kill child exited before reporting progress.');
+      if (next.done) throw new TestError('Activation kill child exited before reporting progress.');
       buffered += decoder.decode(next.value, {stream: true});
       const newline = buffered.indexOf('\n');
       if (newline >= 0)
@@ -5309,7 +5313,7 @@ async function readJsonLine(
   return Promise.race([
     read(),
     Bun.sleep(timeoutMilliseconds).then(() => {
-      throw new Error(`Timed out after ${timeoutMilliseconds}ms waiting for activation progress.`);
+      throw new TestError(`Timed out after ${timeoutMilliseconds}ms waiting for activation progress.`);
     }),
   ]);
 }

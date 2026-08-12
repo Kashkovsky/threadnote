@@ -1,6 +1,7 @@
-import {mkdtempSync, rmSync} from 'node:fs';
-import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {TestError} from '../helpers/test-error.js';
+import {mkdtempSync, rmSync} from '../helpers/node-fs.js';
+import {tmpdir} from '../helpers/node-os.js';
+import {join} from '../helpers/node-path.js';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {it as effectIt} from '@effect/vitest';
 import {Effect, FileSystem, Path} from 'effect';
@@ -116,7 +117,7 @@ describe('removed view build-status cleanup', () => {
               afterManagerContextRemoval: () =>
                 Effect.sync(() => {
                   interrupted = true;
-                }).pipe(Effect.andThen(Effect.fail(new Error('interrupt')))),
+                }).pipe(Effect.andThen(Effect.fail(new TestError('interrupt')))),
             },
           );
 

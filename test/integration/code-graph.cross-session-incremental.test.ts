@@ -1,7 +1,8 @@
-import {execFileSync} from 'node:child_process';
-import {mkdirSync, mkdtempSync, rmSync, writeFileSync} from 'node:fs';
-import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {provideTestLayer} from '../helpers/effect-layer.js';
+import {execFileSync} from '../helpers/node-child-process.js';
+import {mkdirSync, mkdtempSync, rmSync, writeFileSync} from '../helpers/node-fs.js';
+import {tmpdir} from '../helpers/node-os.js';
+import {join} from '../helpers/node-path.js';
 import {Database} from 'bun:sqlite';
 import {describe, expect, it} from '@effect/vitest';
 import {Context, Effect, Layer, Path} from 'effect';
@@ -58,7 +59,7 @@ describe('cross-session code graph increments', () => {
         Effect.ensuring(
           Effect.sync(() => (root === undefined ? undefined : rmSync(root, {force: true, recursive: true}))),
         ),
-        Effect.provide(ApplicationLayer),
+        provideTestLayer(ApplicationLayer),
         TestClock.withLive,
       );
     },
@@ -113,7 +114,7 @@ describe('cross-session code graph increments', () => {
         'Dirty overlay reused persisted clean base for 1 modified file(s).',
       );
     }).pipe(
-      Effect.provide(ApplicationLayer),
+      provideTestLayer(ApplicationLayer),
       TestClock.withLive,
       Effect.ensuring(removeTemporaryPaths(() => [root, incrementalHome, fullHome])),
     );
@@ -149,7 +150,7 @@ describe('cross-session code graph increments', () => {
         ).toBe(operation === 'add');
       }
     }).pipe(
-      Effect.provide(ApplicationLayer),
+      provideTestLayer(ApplicationLayer),
       TestClock.withLive,
       Effect.ensuring(removeTemporaryPaths(() => temporaryPaths)),
     );
@@ -197,7 +198,7 @@ describe('cross-session code graph increments', () => {
         ),
       ).toEqual(new Set(decodeDeclarations.map(symbol => symbol.id)));
     }).pipe(
-      Effect.provide(ApplicationLayer),
+      provideTestLayer(ApplicationLayer),
       TestClock.withLive,
       Effect.ensuring(removeTemporaryPaths(() => [root, incrementalHome, fullHome])),
     );
@@ -221,7 +222,7 @@ describe('cross-session code graph increments', () => {
         totalFiles: 2,
       });
     }).pipe(
-      Effect.provide(ApplicationLayer),
+      provideTestLayer(ApplicationLayer),
       TestClock.withLive,
       Effect.ensuring(removeTemporaryPaths(() => [root, home])),
     );
@@ -230,14 +231,16 @@ describe('cross-session code graph increments', () => {
   it.effect(
     're-extracts only the changed language pack across a compatible extractor rollout',
     () => {
+      let home: string | undefined;
+      let referenceHome: string | undefined;
       let root: string | undefined;
       return Effect.gen(function* () {
         root = createRepository(6);
         writeFileSync(join(root, 'README.md'), '# Mixed language fixture\n');
         git(root, ['add', 'README.md']);
         git(root, ['commit', '--amend', '-qm', 'fixture']);
-        const home = join(root, '.threadnote-pack-rollout');
-        const referenceHome = join(root, '.threadnote-pack-rollout-reference');
+        home = mkdtempSync(join(tmpdir(), 'threadnote-pack-rollout-home-'));
+        referenceHome = mkdtempSync(join(tmpdir(), 'threadnote-pack-rollout-reference-home-'));
         const initialRegistry = createCodeGraphLanguagePackRegistry(BUILTIN_LANGUAGE_PACK_REGISTRY.packs);
         const nextRegistry = createCodeGraphLanguagePackRegistry(
           BUILTIN_LANGUAGE_PACK_REGISTRY.packs.map(pack =>
@@ -260,10 +263,9 @@ describe('cross-session code graph increments', () => {
           projectGraph(yield* loadGraphEffect(root, referenceHome, rebuilt)),
         );
       }).pipe(
-        Effect.ensuring(
-          Effect.sync(() => (root === undefined ? undefined : rmSync(root, {force: true, recursive: true}))),
-        ),
-        Effect.provide(ApplicationLayer),
+        Effect.ensuring(removeTemporaryPaths(() => [root, home, referenceHome])),
+        provideTestLayer(ApplicationLayer),
+        TestClock.withLive,
       );
     },
     60_000,
@@ -289,7 +291,7 @@ describe('cross-session code graph increments', () => {
       Effect.ensuring(
         Effect.sync(() => (root === undefined ? undefined : rmSync(root, {force: true, recursive: true}))),
       ),
-      Effect.provide(ApplicationLayer),
+      provideTestLayer(ApplicationLayer),
     );
   });
 
@@ -317,7 +319,7 @@ describe('cross-session code graph increments', () => {
       expect(state.snapshot?.state).toBe('ready');
       expect(state.receipt?.snapshotId).toBe(baseSnapshotId);
     }).pipe(
-      Effect.provide(ApplicationLayer),
+      provideTestLayer(ApplicationLayer),
       TestClock.withLive,
       Effect.ensuring(removeTemporaryPaths(() => [root, home])),
     );
@@ -356,7 +358,7 @@ describe('cross-session code graph increments', () => {
         minimum: CODE_GRAPH_EXTRACTOR_GENERATION,
       });
     }).pipe(
-      Effect.provide(ApplicationLayer),
+      provideTestLayer(ApplicationLayer),
       TestClock.withLive,
       Effect.ensuring(removeTemporaryPaths(() => [root, home])),
     );

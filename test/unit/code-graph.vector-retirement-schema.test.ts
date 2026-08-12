@@ -1,3 +1,5 @@
+import {TestError} from '../helpers/test-error.js';
+import {provideTestLayer} from '../helpers/effect-layer.js';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import * as SqliteClient from '@effect/sql-sqlite-bun/SqliteClient';
 import {Database} from 'bun:sqlite';
@@ -1006,7 +1008,8 @@ describe('code graph vector retirement schema', () => {
 
             const resetPlan = yield* planCodeGraphVectorRetirementAdmission(databasePath);
             expect(resetPlan.state, scenario).toBe('planned');
-            if (resetPlan.state !== 'planned') return yield* Effect.die(new Error('Expected a revision reset plan.'));
+            if (resetPlan.state !== 'planned')
+              return yield* Effect.die(new TestError('Expected a revision reset plan.'));
             expect(yield* commitCodeGraphVectorRetirementAdmission(databasePath, resetPlan), scenario).toEqual({
               state: 'restarted',
             });
@@ -1824,7 +1827,7 @@ function prepareUntilReady(
       states.push(result.state);
       if (result.state === 'ready') return states;
     }
-    return yield* Effect.die(new Error('Vector retirement schema did not become ready within sixteen steps.'));
+    return yield* Effect.die(new TestError('Vector retirement schema did not become ready within sixteen steps.'));
   });
 }
 
@@ -2121,7 +2124,7 @@ function useVectorSqlClient<A, E, R>(databasePath: string, use: (sql: SqlClient.
     const sql = yield* SqlClient.SqlClient;
     return yield* use(sql);
   }).pipe(
-    Effect.provide(
+    provideTestLayer(
       SqliteClient.layer({
         create: false,
         disableWAL: true,
@@ -2192,7 +2195,7 @@ function corruptMarkedGeneration(
   const trigger = CODE_GRAPH_VECTOR_RETIREMENT_TRIGGER_DEFINITIONS.find(
     candidate => candidate.name === 'vector_retirement_generation_update_guard',
   );
-  if (trigger === undefined) throw new Error('Vector retirement generation-update guard is unavailable.');
+  if (trigger === undefined) throw new TestError('Vector retirement generation-update guard is unavailable.');
   withWritableDatabase(databasePath, database => {
     database.exec('DROP TRIGGER vector_retirement_generation_update_guard');
     try {
@@ -2216,7 +2219,7 @@ function insertCorruptRetirementMarker(
   const trigger = CODE_GRAPH_VECTOR_RETIREMENT_TRIGGER_DEFINITIONS.find(
     candidate => candidate.name === 'vector_retirement_marker_insert_guard',
   );
-  if (trigger === undefined) throw new Error('Vector retirement marker-insert guard is unavailable.');
+  if (trigger === undefined) throw new TestError('Vector retirement marker-insert guard is unavailable.');
   withWritableDatabase(databasePath, database => {
     database.exec('DROP TRIGGER vector_retirement_marker_insert_guard');
     try {
@@ -2322,7 +2325,7 @@ function readVectorGenerationFactBytes(databasePath: string, generation: string)
       .get(generation) as Record<string, unknown>;
     const values = ['generation', 'snapshot_id', 'model_id', 'model_sha256', 'state', 'created_at'].map(column => {
       const value = row[column];
-      if (typeof value !== 'string') throw new Error(`Vector generation ${column} is invalid.`);
+      if (typeof value !== 'string') throw new TestError(`Vector generation ${column} is invalid.`);
       return value;
     });
     const encoder = new TextEncoder();
@@ -2391,7 +2394,7 @@ function explainRetirementAuthority(databasePath: string) {
     });
     const globalMarker = codeGraphVectorRetirementMarkerPageStatement({afterGeneration: 'generation-plan'});
     if ([...marker.parameters, ...globalMarker.parameters].some(parameter => parameter === undefined)) {
-      throw new Error('Production vector retirement marker statement retained an undefined binding.');
+      throw new TestError('Production vector retirement marker statement retained an undefined binding.');
     }
     const boundMarker = marker as {readonly parameters: readonly (number | string)[]; readonly text: string};
     const boundGlobalMarker = globalMarker as {
@@ -2423,6 +2426,6 @@ function explainRetirementAuthority(databasePath: string) {
 function requiredSemanticColumn(columns: readonly string[], pattern: RegExp): string {
   const column = columns.find(candidate => pattern.test(candidate));
   if (column === undefined || !/^[a-z_]+$/.test(column))
-    throw new Error(`Missing safe vector retirement column ${pattern}.`);
+    throw new TestError(`Missing safe vector retirement column ${pattern}.`);
   return column;
 }

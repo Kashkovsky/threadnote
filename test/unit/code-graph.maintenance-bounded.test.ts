@@ -1,3 +1,5 @@
+import {TestError} from '../helpers/test-error.js';
+import {provideTestLayer} from '../helpers/effect-layer.js';
 import {Database} from 'bun:sqlite';
 import {it as effectIt} from '@effect/vitest';
 import {Clock, Deferred, Effect, Fiber, FileSystem, Path} from 'effect';
@@ -200,7 +202,7 @@ describe('bounded code graph maintenance', () => {
           }),
         ).toEqual(before);
       }
-    }).pipe(Effect.provide(ApplicationLayer)),
+    }).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it('defers deep repair when database diagnosis is unreadable instead of discarding it', async () => {
@@ -276,7 +278,7 @@ describe('bounded code graph maintenance', () => {
 
       yield* store.initialize(databasePath);
       expect(yield* codeGraphDoctorCheck(home)).toMatchObject({status: 'ok'});
-    }).pipe(Effect.provide(ApplicationLayer)),
+    }).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it('reports exact extension contract drift with a current receipt and preserves the database for self-healing', async () => {
@@ -356,7 +358,7 @@ describe('bounded code graph maintenance', () => {
       expect(repair).toMatchObject({deferredDatabases: 0, migratedDatabases: 1});
       expect(repairProgress).toEqual(['checking', 'migrating-schema']);
       expect(yield* codeGraphDoctorCheck(home)).toMatchObject({status: 'ok'});
-    }).pipe(Effect.provide(ApplicationLayer)),
+    }).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('prepares legacy reconciliation indexes before an explicit extension repair', () =>
@@ -420,7 +422,7 @@ describe('bounded code graph maintenance', () => {
         ],
         revision: {value: String(CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION)},
       });
-    }).pipe(Effect.provide(ApplicationLayer)),
+    }).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('keeps revision-6 ready snapshots readable while background maintenance migrates them', () =>
@@ -443,7 +445,7 @@ describe('bounded code graph maintenance', () => {
       yield* Effect.sync(() => downgradeToReleasedRevision6(databasePath));
       const legacyStore = yield* Effect.gen(function* () {
         return yield* CodeGraphStore;
-      }).pipe(Effect.provide(CodeGraphStore.layer));
+      }).pipe(provideTestLayer(CodeGraphStore.layer));
 
       const before = yield* diagnoseCodeGraphDatabaseReadOnly(databasePath, false);
       expect(before).toMatchObject({integrity: 'migration-pending', readySnapshots: 1});
@@ -468,7 +470,7 @@ describe('bounded code graph maintenance', () => {
       }
       expect(readPersistentExtensionRevision(databasePath)).toBe(6);
       const inspectedTarget = yield* inspectCodeGraphViewDatabaseTarget(home, identity.checkoutId);
-      if (inspectedTarget.state !== 'ready') throw new Error('legacy graph target disappeared');
+      if (inspectedTarget.state !== 'ready') throw new TestError('legacy graph target disappeared');
       yield* Effect.sleep(100);
 
       const path = yield* Path.Path;
@@ -499,7 +501,7 @@ describe('bounded code graph maintenance', () => {
         revision: CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION,
       });
       expect((yield* legacyStore.readySnapshot(databasePath, identity.worktreeId))?.id).toBe(snapshot.id);
-    }).pipe(Effect.provide(ApplicationLayer), TestClock.withLive),
+    }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );
 
   effectIt.effect('repair migrates a released revision-6 store without dropping its ready graph', () =>
@@ -530,7 +532,7 @@ describe('bounded code graph maintenance', () => {
       expect(readPersistentExtensionRevision(databasePath)).toBe(CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION);
       expect((yield* store.readySnapshot(databasePath, identity.worktreeId))?.id).toBe(snapshot.id);
       expect(yield* codeGraphDoctorCheck(home)).toMatchObject({status: 'ok'});
-    }).pipe(Effect.provide(ApplicationLayer)),
+    }).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('repairs one checkout while an unrelated checkout build remains active', () =>
@@ -593,7 +595,7 @@ describe('bounded code graph maintenance', () => {
       expect(repair).toMatchObject({databases: 1, deferredDatabases: 0, migratedDatabases: 1});
       expect(readPersistentExtensionRevision(databasePath)).toBe(CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION);
       expect(yield* codeGraphDoctorCheck(home)).toMatchObject({status: 'ok'});
-    }).pipe(Effect.provide(ApplicationLayer), TestClock.withLive),
+    }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );
 
   effectIt.effect('exposes foreground schema migration through graph repair --all', () =>
@@ -631,7 +633,7 @@ describe('bounded code graph maintenance', () => {
         version: 1,
       });
       expect(yield* codeGraphDoctorCheck(home)).toMatchObject({status: 'ok'});
-    }).pipe(Effect.provide(ApplicationLayer)),
+    }).pipe(provideTestLayer(ApplicationLayer)),
   );
 });
 

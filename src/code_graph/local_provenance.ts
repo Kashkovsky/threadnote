@@ -10,9 +10,13 @@ import {
   type CodeGraphGitWorktreeRegistration,
 } from './git_worktree_registration.js';
 import {classifyCodeGraphLifecycle} from './lifecycle_classification.js';
-import {resolveRepositoryIdentityDetail} from './repository.js';
+import {normalizeRepositoryBranchName, resolveRepositoryIdentityDetail} from './repository.js';
 import {codeGraphLocalProvenanceLockPath} from './layout.js';
 import type {RepositoryIdentity} from './types.js';
+
+class CodeGraphLocalProvenanceError extends Error {
+  readonly _tag = 'CodeGraphLocalProvenanceError' as const;
+}
 
 const LOCAL_CONTEXT_DIRECTORY = 'local-context';
 const LOCAL_WORKTREES_DIRECTORY = 'worktrees';
@@ -28,6 +32,7 @@ export type CodeGraphLocalAssociationState = 'invalid' | 'legacy-unknown' | 'mis
 
 export interface CodeGraphLocalAssociation {
   readonly available: boolean;
+  readonly branch?: string;
   /** Home-abbreviated path for trusted local human interfaces. */
   readonly displayPath?: string;
   readonly observedAt?: string;
@@ -43,6 +48,7 @@ export interface CodeGraphLocalAssociationTarget {
 }
 
 interface CodeGraphLocalProvenanceRecordBase {
+  readonly branch?: string;
   readonly canonicalWorktreePath: string;
   readonly checkoutId: string;
   readonly headCommit?: string;
@@ -244,6 +250,7 @@ const recordResolvedCodeGraphLocalAssociationUnlocked = Effect.fn('codeGraph.rec
     if (
       existing?.canonicalWorktreePath === identity.repoRoot &&
       existing.headCommit === identity.headCommit &&
+      existing.branch === identity.branch &&
       existing.schemaVersion === LOCAL_PROVENANCE_SCHEMA_VERSION &&
       sameCodeGraphGitWorktreeRegistration(existing.registration, registration.value) &&
       now - Date.parse(existing.observedAt) >= 0 &&
@@ -253,6 +260,7 @@ const recordResolvedCodeGraphLocalAssociationUnlocked = Effect.fn('codeGraph.rec
     }
 
     const record = {
+      ...(identity.branch === undefined ? {} : {branch: identity.branch}),
       canonicalWorktreePath: identity.repoRoot,
       checkoutId: identity.checkoutId,
       headCommit: identity.headCommit,
@@ -282,10 +290,14 @@ const recordResolvedCodeGraphLocalAssociationUnlocked = Effect.fn('codeGraph.rec
         directory.value,
       );
       if (revalidated !== directory.value) {
-        return yield* Effect.fail(new Error('Code graph local provenance directory changed during observation.'));
+        return yield* Effect.fail(
+          new CodeGraphLocalProvenanceError('Code graph local provenance directory changed during observation.'),
+        );
       }
       if (Option.isSome(yield* fs.readLink(target).pipe(Effect.option))) {
-        return yield* Effect.fail(new Error('Code graph local provenance target is a symbolic link.'));
+        return yield* Effect.fail(
+          new CodeGraphLocalProvenanceError('Code graph local provenance target is a symbolic link.'),
+        );
       }
       yield* options.beforePublishValidation?.() ?? Effect.void;
       const finalIdentity = yield* resolveMatchingRepositoryIdentity(identity);
@@ -294,7 +306,9 @@ const recordResolvedCodeGraphLocalAssociationUnlocked = Effect.fn('codeGraph.rec
         finalIdentity.gitDirectory,
       );
       if (!sameCodeGraphGitWorktreeRegistration(record.registration, finalRegistration)) {
-        return yield* Effect.fail(new Error('Code graph local provenance registration changed during observation.'));
+        return yield* Effect.fail(
+          new CodeGraphLocalProvenanceError('Code graph local provenance registration changed during observation.'),
+        );
       }
       yield* fs.rename(temporary, target);
       yield* syncDirectory(fs, directory.value);
@@ -325,7 +339,9 @@ export const readCodeGraphLocalAssociation = Effect.fn('codeGraph.readLocalAssoc
       identity.worktreeId === target.worktreeId &&
       (target.repositoryId === undefined || identity.repositoryId === target.repositoryId)
         ? Effect.void
-        : Effect.fail(new Error('Live worktree identity does not match the requested graph association.')),
+        : Effect.fail(
+            new CodeGraphLocalProvenanceError('Live worktree identity does not match the requested graph association.'),
+          ),
   }).pipe(Effect.option);
   return Option.isSome(resolved) && resolved.value.association.state === 'verified'
     ? resolved.value.association
@@ -620,16 +636,20 @@ const readLocalProvenanceCleanupCandidate = Effect.fn('codeGraph.readLocalProven
     Number(info.size) > LOCAL_PROVENANCE_BYTES_LIMIT ||
     (system.platform !== 'win32' && (info.mode & 0o777) !== 0o600)
   ) {
-    return yield* Effect.fail(new Error('Code graph local provenance cleanup target is invalid.'));
+    return yield* Effect.fail(
+      new CodeGraphLocalProvenanceError('Code graph local provenance cleanup target is invalid.'),
+    );
   }
   const content = yield* readBoundedObservedRegularFile(fs, file, info);
   if (Option.isSome(yield* fs.readLink(file).pipe(Effect.option))) {
-    return yield* Effect.fail(new Error('Code graph local provenance cleanup target changed.'));
+    return yield* Effect.fail(new CodeGraphLocalProvenanceError('Code graph local provenance cleanup target changed.'));
   }
   const record = parseCodeGraphLocalProvenanceRecordJson(content, target);
   if (record?.schemaVersion !== LOCAL_PROVENANCE_SCHEMA_VERSION) return undefined;
   if (!isCanonicalAbsolutePath(path, record.canonicalWorktreePath)) {
-    return yield* Effect.fail(new Error('Code graph local provenance cleanup record is invalid.'));
+    return yield* Effect.fail(
+      new CodeGraphLocalProvenanceError('Code graph local provenance cleanup record is invalid.'),
+    );
   }
   const recordDigest = sha256HexSync(content);
   return {
@@ -888,7 +908,8 @@ export function parseCodeGraphLocalProvenanceRecord(
     !isHash(value.repositoryId) ||
     !isCanonicalTimestamp(value.observedAt) ||
     !isLocalPath(value.canonicalWorktreePath) ||
-    (value.headCommit !== undefined && (typeof value.headCommit !== 'string' || !COMMIT_ID.test(value.headCommit)))
+    (value.headCommit !== undefined && (typeof value.headCommit !== 'string' || !COMMIT_ID.test(value.headCommit))) ||
+    (value.branch !== undefined && !isBranchName(value.branch))
   ) {
     return undefined;
   }
@@ -906,6 +927,7 @@ export function parseCodeGraphLocalProvenanceRecord(
     return undefined;
   }
   const base = {
+    ...(value.branch === undefined ? {} : {branch: value.branch}),
     canonicalWorktreePath: value.canonicalWorktreePath,
     checkoutId: value.checkoutId,
     ...(value.headCommit === undefined ? {} : {headCommit: value.headCommit}),
@@ -939,7 +961,7 @@ function validTarget(target: CodeGraphLocalAssociationTarget): boolean {
 function resolveMatchingRepositoryIdentity(identity: RepositoryIdentity) {
   return Effect.gen(function* () {
     if (!validTarget(identity) || !COMMIT_ID.test(identity.headCommit)) {
-      return yield* Effect.fail(new Error('Code graph local provenance identity is invalid.'));
+      return yield* Effect.fail(new CodeGraphLocalProvenanceError('Code graph local provenance identity is invalid.'));
     }
     const resolvedDetail = yield* resolveRepositoryIdentityDetail(identity.repoRoot);
     const resolved = resolvedDetail.identity;
@@ -949,9 +971,12 @@ function resolveMatchingRepositoryIdentity(identity: RepositoryIdentity) {
       resolved.checkoutId !== identity.checkoutId ||
       resolved.worktreeId !== identity.worktreeId ||
       resolved.repositoryId !== identity.repositoryId ||
-      resolved.headCommit !== identity.headCommit
+      resolved.headCommit !== identity.headCommit ||
+      resolved.branch !== identity.branch
     ) {
-      return yield* Effect.fail(new Error('Code graph local provenance identity changed before observation.'));
+      return yield* Effect.fail(
+        new CodeGraphLocalProvenanceError('Code graph local provenance identity changed before observation.'),
+      );
     }
     return resolvedDetail;
   });
@@ -987,7 +1012,8 @@ function ensureLocalWorktreeDirectory(
   checkoutId: string,
 ) {
   return Effect.gen(function* () {
-    if (!HASH_ID.test(checkoutId)) return yield* Effect.fail(new Error('Code graph checkout identity is invalid.'));
+    if (!HASH_ID.test(checkoutId))
+      return yield* Effect.fail(new CodeGraphLocalProvenanceError('Code graph checkout identity is invalid.'));
     const canonicalHome = yield* fs.realPath(threadnoteHome);
     const indexes = yield* ensureContainedDirectory(fs, path, canonicalHome, 'indexes', false);
     const codeGraph = yield* ensureContainedDirectory(fs, path, indexes, 'code-graph', false);
@@ -1026,11 +1052,15 @@ function ensureContainedDirectory(
   return Effect.gen(function* () {
     const directory = path.join(canonicalParent, name);
     if (Option.isSome(yield* fs.readLink(directory).pipe(Effect.option))) {
-      return yield* Effect.fail(new Error('Code graph local provenance directory is a symbolic link.'));
+      return yield* Effect.fail(
+        new CodeGraphLocalProvenanceError('Code graph local provenance directory is a symbolic link.'),
+      );
     }
     yield* fs.makeDirectory(directory, {recursive: true, mode: privateDirectory ? 0o700 : 0o755});
     if (Option.isSome(yield* fs.readLink(directory).pipe(Effect.option))) {
-      return yield* Effect.fail(new Error('Code graph local provenance directory is a symbolic link.'));
+      return yield* Effect.fail(
+        new CodeGraphLocalProvenanceError('Code graph local provenance directory is a symbolic link.'),
+      );
     }
     const canonical = yield* inspectContainedDirectory(fs, path, canonicalParent, directory);
     if (privateDirectory) yield* fs.chmod(canonical, 0o700);
@@ -1047,7 +1077,9 @@ function inspectOptionalContainedDirectory(
   return Effect.gen(function* () {
     const directory = path.join(canonicalParent, name);
     if (Option.isSome(yield* fs.readLink(directory).pipe(Effect.option))) {
-      return yield* Effect.fail(new Error('Code graph local provenance directory is a symbolic link.'));
+      return yield* Effect.fail(
+        new CodeGraphLocalProvenanceError('Code graph local provenance directory is a symbolic link.'),
+      );
     }
     if (!(yield* fs.exists(directory))) return undefined;
     return yield* inspectContainedDirectory(fs, path, canonicalParent, directory);
@@ -1066,7 +1098,9 @@ function inspectPrivateContainedDirectory(
     const system = yield* SystemInfo;
     const mode = system.platform === 'win32' ? 0o700 : info.mode;
     if ((mode & 0o777) === 0o700) return canonical;
-    return yield* Effect.fail(new Error('Code graph local provenance directory permissions are not private.'));
+    return yield* Effect.fail(
+      new CodeGraphLocalProvenanceError('Code graph local provenance directory permissions are not private.'),
+    );
   });
 }
 
@@ -1078,15 +1112,21 @@ function inspectContainedDirectory(
 ) {
   return Effect.gen(function* () {
     if (Option.isSome(yield* fs.readLink(directory).pipe(Effect.option))) {
-      return yield* Effect.fail(new Error('Code graph local provenance directory is a symbolic link.'));
+      return yield* Effect.fail(
+        new CodeGraphLocalProvenanceError('Code graph local provenance directory is a symbolic link.'),
+      );
     }
     const info = yield* fs.stat(directory);
     if (info.type !== 'Directory') {
-      return yield* Effect.fail(new Error('Code graph local provenance path is not a directory.'));
+      return yield* Effect.fail(
+        new CodeGraphLocalProvenanceError('Code graph local provenance path is not a directory.'),
+      );
     }
     const canonical = yield* fs.realPath(directory);
     if (path.dirname(canonical) !== canonicalParent || path.basename(canonical) !== path.basename(directory)) {
-      return yield* Effect.fail(new Error('Code graph local provenance path escaped its checkout.'));
+      return yield* Effect.fail(
+        new CodeGraphLocalProvenanceError('Code graph local provenance path escaped its checkout.'),
+      );
     }
     return canonical;
   });
@@ -1097,6 +1137,7 @@ function associationForRecord(path: Path.Path, record: CodeGraphLocalProvenanceR
     const system = yield* SystemInfo;
     return {
       available: state === 'verified',
+      ...(record.branch === undefined ? {} : {branch: record.branch}),
       displayPath: homeAbbreviatedPath(path, system.homeDirectory, record.canonicalWorktreePath),
       observedAt: record.observedAt,
       path: record.canonicalWorktreePath,
@@ -1122,6 +1163,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isHash(value: unknown): value is string {
   return typeof value === 'string' && HASH_ID.test(value);
+}
+
+function isBranchName(value: unknown): value is string {
+  return typeof value === 'string' && normalizeRepositoryBranchName(value) === value;
 }
 
 function isCanonicalTimestamp(value: unknown): value is string {
@@ -1190,10 +1235,14 @@ function readBoundedObservedRegularFile(fs: FileSystem.FileSystem, file: string,
         !sameObservedRegularFile(pathInfoBefore, openedInfoBefore) ||
         !sameObservedRegularFile(pathInfoBefore, pathInfoOpened)
       ) {
-        return yield* Effect.fail(new Error('Code graph local provenance changed while opening it.'));
+        return yield* Effect.fail(
+          new CodeGraphLocalProvenanceError('Code graph local provenance changed while opening it.'),
+        );
       }
       if (Number(openedInfoBefore.size) > LOCAL_PROVENANCE_BYTES_LIMIT) {
-        return yield* Effect.fail(new Error('Code graph local provenance exceeds its bounded read limit.'));
+        return yield* Effect.fail(
+          new CodeGraphLocalProvenanceError('Code graph local provenance exceeds its bounded read limit.'),
+        );
       }
 
       const bytes = new Uint8Array(LOCAL_PROVENANCE_BYTES_LIMIT + 1);
@@ -1201,7 +1250,9 @@ function readBoundedObservedRegularFile(fs: FileSystem.FileSystem, file: string,
       while (offset < bytes.length) {
         const count = Number(yield* opened.read(bytes.subarray(offset)));
         if (!Number.isSafeInteger(count) || count < 0 || count > bytes.length - offset) {
-          return yield* Effect.fail(new Error('Code graph local provenance returned an invalid bounded read size.'));
+          return yield* Effect.fail(
+            new CodeGraphLocalProvenanceError('Code graph local provenance returned an invalid bounded read size.'),
+          );
         }
         if (count === 0) break;
         offset += count;
@@ -1213,14 +1264,18 @@ function readBoundedObservedRegularFile(fs: FileSystem.FileSystem, file: string,
         !sameObservedRegularFile(pathInfoBefore, openedInfoAfter) ||
         !sameObservedRegularFile(pathInfoBefore, pathInfoAfter)
       ) {
-        return yield* Effect.fail(new Error('Code graph local provenance changed during its bounded read.'));
+        return yield* Effect.fail(
+          new CodeGraphLocalProvenanceError('Code graph local provenance changed during its bounded read.'),
+        );
       }
       if (offset > LOCAL_PROVENANCE_BYTES_LIMIT || BigInt(offset) !== openedInfoBefore.size) {
-        return yield* Effect.fail(new Error('Code graph local provenance changed size during its bounded read.'));
+        return yield* Effect.fail(
+          new CodeGraphLocalProvenanceError('Code graph local provenance changed size during its bounded read.'),
+        );
       }
       return yield* Effect.try({
         try: () => new TextDecoder('utf-8', {fatal: true, ignoreBOM: true}).decode(bytes.subarray(0, offset)),
-        catch: cause => new Error('Code graph local provenance is not valid UTF-8.', {cause}),
+        catch: cause => new CodeGraphLocalProvenanceError('Code graph local provenance is not valid UTF-8.', {cause}),
       });
     }),
   );

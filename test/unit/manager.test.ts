@@ -1,16 +1,16 @@
-import {execFileSync} from 'node:child_process';
-import {existsSync} from 'node:fs';
-import {mkdir, mkdtemp, rm, stat, symlink, writeFile} from 'node:fs/promises';
-import {tmpdir} from 'node:os';
-import {join} from 'node:path';
-import {BunHttpServer} from '@effect/platform-bun';
+import {TestError} from '../helpers/test-error.js';
+import {provideTestLayer} from '../helpers/effect-layer.js';
+import {startManagerTestServer as startServer} from '../helpers/manager-test-server.js';
+import {execFileSync} from '../helpers/node-child-process.js';
+import {existsSync} from '../helpers/node-fs.js';
+import {mkdir, mkdtemp, rm, stat, symlink, writeFile} from '../helpers/node-fs-promises.js';
+import {tmpdir} from '../helpers/node-os.js';
+import {join} from '../helpers/node-path.js';
 import {it as effectIt} from '@effect/vitest';
 import {Console, Deferred, Effect, Fiber, Path} from 'effect';
-import {HttpServer} from 'effect/unstable/http';
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
 import {
   consolidationAgentScript,
-  createManagerServer,
   memoryTree,
   parseDoctorChecksFromOutput,
   readManagedMemory,
@@ -28,6 +28,7 @@ import * as lifecycle from '../../src/lifecycle.js';
 import * as memory from '../../src/memory.js';
 import * as seeding from '../../src/seeding.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
+import * as automaticCompaction from '../../src/code_graph/automatic_compaction.js';
 import {codeGraphLayout} from '../../src/code_graph/layout.js';
 import {makeCodeGraphBuildReporter} from '../../src/code_graph/build_status.js';
 import {recordVerifiedCodeGraphLocalAssociation} from '../../src/code_graph/local_provenance.js';
@@ -80,6 +81,11 @@ vi.mock('../../src/seeding.js', async importOriginal => {
       Console.log(options.dryRun ? 'seed skills dry run' : 'seed skills applied'),
     ),
   };
+});
+
+vi.mock('../../src/code_graph/automatic_compaction.js', async importOriginal => {
+  const actual = await importOriginal<typeof import('../../src/code_graph/automatic_compaction.js')>();
+  return {...actual, compactCodeGraphStorageIsolated: vi.fn(actual.compactCodeGraphStorageIsolated)};
 });
 
 async function makeRuntime(): Promise<RuntimeConfig> {
@@ -350,40 +356,6 @@ function fileNode(uri: string, name: string, isSystem = false): TreeNode {
   };
 }
 
-async function startServer(
-  config: RuntimeConfig,
-  token: string,
-): Promise<{readonly close: () => Promise<void>; readonly url: string}> {
-  let resolveAddress: ((value: string) => void) | undefined;
-  let rejectAddress: ((reason: unknown) => void) | undefined;
-  const address = new Promise<string>((resolve, reject) => {
-    resolveAddress = resolve;
-    rejectAddress = reject;
-  });
-  const fiber = Effect.runFork(
-    Effect.scoped(
-      Effect.gen(function* () {
-        const server = yield* HttpServer.HttpServer;
-        yield* server.serve(createManagerServer({config, jobs: new Map(), token}));
-        const serverAddress = server.address;
-        if (serverAddress._tag !== 'TcpAddress') {
-          return yield* Effect.fail(new Error('manager test server did not bind to TCP'));
-        }
-        yield* Effect.sync(() => resolveAddress?.(`http://127.0.0.1:${serverAddress.port}`));
-        return yield* Effect.never;
-      }),
-    ).pipe(
-      Effect.provide(BunHttpServer.layerTest),
-      Effect.provide(ApplicationLayer),
-      Effect.tapError(error => Effect.sync(() => rejectAddress?.(error))),
-    ),
-  );
-  return {
-    close: () => Effect.runPromise(Fiber.interrupt(fiber)).then(() => undefined),
-    url: await address,
-  };
-}
-
 async function fetchManagerGraphActionWhenAvailable(url: string, init: RequestInit): Promise<Response> {
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const response = await fetch(url, init);
@@ -392,7 +364,7 @@ async function fetchManagerGraphActionWhenAvailable(url: string, init: RequestIn
     if (body.code !== 'graph-view-busy' || attempt === 2) return response;
     await new Promise(resolve => setTimeout(resolve, body.retryAfterMilliseconds ?? 1_000));
   }
-  throw new Error('Manager graph action retry budget was exhausted.');
+  throw new TestError('Manager graph action retry budget was exhausted.');
 }
 
 function initializeGitRepository(root: string): void {
@@ -585,6 +557,7 @@ describe('manager http API', () => {
   const homes: string[] = [];
 
   beforeEach(() => {
+    vi.mocked(automaticCompaction.compactCodeGraphStorageIsolated).mockClear();
     vi.mocked(lifecycle.runRepair)
       .mockReset()
       .mockImplementation((_config, options) => Console.log(options.dryRun ? 'repair dry run' : 'repair applied'));
@@ -1093,6 +1066,45 @@ describe('manager http API', () => {
     }
   });
 
+  it('applies a verified isolated graph compaction through the authenticated Manager route', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    const root = join(config.agentContextHome, 'manager-compaction-worktree');
+    initializeGitRepository(root);
+    const identity = await runEffect(resolveRepositoryIdentity(root));
+    vi.mocked(automaticCompaction.compactCodeGraphStorageIsolated).mockReturnValueOnce(
+      Effect.succeed({action: 'compacted', checkoutId: identity.checkoutId, reclaimedBytes: 1_048_576}),
+    );
+    const server = await startServer(config, 'secret');
+    try {
+      const response = await fetch(`${server.url}/api/graphs/action`, {
+        body: JSON.stringify({
+          action: 'compact',
+          checkoutId: identity.checkoutId,
+          confirm: true,
+          cwd: root,
+          force: true,
+          repositoryId: identity.repositoryId,
+          worktreeId: identity.worktreeId,
+        }),
+        headers: {authorization: 'Bearer secret', 'content-type': 'application/json'},
+        method: 'POST',
+      });
+
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({
+        output: 'Compacted the selected graph in an isolated process and reclaimed 1,048,576 bytes.',
+      });
+      expect(automaticCompaction.compactCodeGraphStorageIsolated).toHaveBeenCalledWith(
+        config.agentContextHome,
+        identity.checkoutId,
+        {force: true, operation: 'compact'},
+      );
+    } finally {
+      await server.close();
+    }
+  });
+
   it('previews and applies an exact authenticated graph view removal with an approval digest', async () => {
     const config = await makeRuntime();
     homes.push(config.agentContextHome);
@@ -1212,7 +1224,7 @@ describe('manager http API', () => {
           checkoutId,
           worktreeId,
           Deferred.succeed(acquired, undefined).pipe(Effect.andThen(Deferred.await(release))),
-        ).pipe(Effect.provide(ApplicationLayer), Effect.forkScoped);
+        ).pipe(provideTestLayer(ApplicationLayer), Effect.forkScoped);
         yield* Effect.gen(function* () {
           const headers = {authorization: 'Bearer secret', 'content-type': 'application/json'};
           const target = {action: 'remove-view', checkoutId, expectedSnapshotId: snapshotId, worktreeId};
@@ -1424,7 +1436,7 @@ describe('manager http API', () => {
     homes.push(config.agentContextHome);
     vi.mocked(memory.runArchive).mockImplementation((_config, uri) => {
       if (uri.endsWith('bad.md')) {
-        return Effect.fail(new Error('archive failed'));
+        return Effect.fail(new TestError('archive failed'));
       }
       return Effect.succeed(undefined);
     });

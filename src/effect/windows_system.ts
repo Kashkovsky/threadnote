@@ -1,6 +1,10 @@
 import {dlopen} from 'bun:ffi';
 import {Effect} from 'effect';
 
+class WindowsSystemError extends Error {
+  readonly _tag = 'WindowsSystemError' as const;
+}
+
 const PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
 const DOTNET_TICKS_AT_WINDOWS_FILE_TIME_EPOCH = 504_911_232_000_000_000n;
 const MEMORY_STATUS_BYTES = 64;
@@ -37,14 +41,14 @@ export function readWindowsHardwareInfo(environment: NodeJS.ProcessEnv) {
         const memoryView = new DataView(memoryStatus.buffer);
         memoryView.setUint32(0, MEMORY_STATUS_BYTES, true);
         if (kernel.symbols.GlobalMemoryStatusEx(memoryStatus) === 0) {
-          throw new Error('GlobalMemoryStatusEx failed.');
+          throw new WindowsSystemError('GlobalMemoryStatusEx failed.');
         }
 
         const versionInfo = new Uint8Array(WINDOWS_VERSION_INFO_BYTES);
         const versionView = new DataView(versionInfo.buffer);
         versionView.setUint32(0, WINDOWS_VERSION_INFO_BYTES, true);
         if (native.symbols.RtlGetVersion(versionInfo) !== 0) {
-          throw new Error('RtlGetVersion failed.');
+          throw new WindowsSystemError('RtlGetVersion failed.');
         }
 
         const memoryBytes = Number(memoryView.getBigUint64(MEMORY_STATUS_TOTAL_PHYSICAL_OFFSET, true));
@@ -55,7 +59,7 @@ export function readWindowsHardwareInfo(environment: NodeJS.ProcessEnv) {
           true,
         )}.${versionView.getUint32(WINDOWS_VERSION_BUILD_OFFSET, true)}`;
         if (!Number.isSafeInteger(memoryBytes) || memoryBytes <= 0) {
-          throw new Error('Windows memory metadata is invalid.');
+          throw new WindowsSystemError('Windows memory metadata is invalid.');
         }
         return {
           cpuModel,
@@ -68,7 +72,7 @@ export function readWindowsHardwareInfo(environment: NodeJS.ProcessEnv) {
         kernel.close();
       }
     },
-    catch: cause => new Error('Could not read native Windows hardware metadata.', {cause}),
+    catch: cause => new WindowsSystemError('Could not read native Windows hardware metadata.', {cause}),
   });
 }
 

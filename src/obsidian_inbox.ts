@@ -16,6 +16,10 @@ import {scrubberBlocker} from './scrubber.js';
 import type {MemoryKind, RuntimeConfig} from './types.js';
 import {isJsonObject, toPosixPath} from './utils.js';
 
+class ObsidianInboxError extends Error {
+  readonly _tag = 'ObsidianInboxError' as const;
+}
+
 export interface ObsidianInboxScanOptions {
   readonly apply?: boolean;
   readonly dryRun?: boolean;
@@ -64,14 +68,14 @@ export const runObsidianInboxScan = Effect.fn('obsidian.inboxScan')(function* (
   const source = requireObsidianSource(yield* readObsidianConfiguration(config), options.source);
   if (!source.inbox) {
     return yield* Effect.fail(
-      new Error(`Obsidian source "${source.id}" has no Inbox. Configure one with source add --inbox.`),
+      new ObsidianInboxError(`Obsidian source "${source.id}" has no Inbox. Configure one with source add --inbox.`),
     );
   }
   const fs = yield* FileSystem.FileSystem;
   const pathService = yield* Path.Path;
   const inboxRoot = pathService.join(source.vault, ...source.inbox.split('/'));
   if (!(yield* fs.exists(inboxRoot))) {
-    return yield* Effect.fail(new Error(`Configured Obsidian Inbox does not exist: ${source.inbox}`));
+    return yield* Effect.fail(new ObsidianInboxError(`Configured Obsidian Inbox does not exist: ${source.inbox}`));
   }
   const statePath = yield* inboxStatePath(config, source.id);
   return yield* withExclusiveFileLock(
@@ -101,7 +105,10 @@ export const runObsidianInboxScan = Effect.fn('obsidian.inboxScan')(function* (
         }
         const parsed = yield* Effect.try({
           try: () => parseObsidianInboxNote(content, relativePath),
-          catch: cause => (cause instanceof Error ? cause : new Error(String(cause))),
+          catch: cause =>
+            cause instanceof ObsidianInboxError
+              ? cause
+              : new ObsidianInboxError(cause instanceof Error ? cause.message : String(cause), {cause}),
         }).pipe(
           Effect.catch(error => Console.log(`SKIP ${relativePath}: ${error.message}`).pipe(Effect.as(undefined))),
         );
@@ -156,14 +163,14 @@ export const runObsidianInboxScan = Effect.fn('obsidian.inboxScan')(function* (
 export function parseObsidianInboxNote(content: string, label = 'Inbox note'): ParsedInboxNote {
   const match = FRONTMATTER_PATTERN.exec(content);
   if (!match) {
-    throw new Error('missing YAML frontmatter');
+    throw new ObsidianInboxError('missing YAML frontmatter');
   }
   const loaded = yaml.load(match[1] ?? '');
   if (!isJsonObject(loaded)) {
-    throw new Error('frontmatter must be an object');
+    throw new ObsidianInboxError('frontmatter must be an object');
   }
   if (loaded.threadnote_candidate !== true) {
-    throw new Error('threadnote_candidate must be true');
+    throw new ObsidianInboxError('threadnote_candidate must be true');
   }
   const kind = inboxKind(loaded.kind);
   const project = requiredMetadataString(loaded.project, 'project');
@@ -174,7 +181,7 @@ export function parseObsidianInboxNote(content: string, label = 'Inbox note'): P
       : loaded.category === 'decision' || loaded.category === 'invariant'
         ? loaded.category
         : (() => {
-            throw new Error('category must be decision or invariant');
+            throw new ObsidianInboxError('category must be decision or invariant');
           })();
   const evidence =
     loaded.evidence === undefined
@@ -182,11 +189,11 @@ export function parseObsidianInboxNote(content: string, label = 'Inbox note'): P
       : Array.isArray(loaded.evidence) && loaded.evidence.every(value => typeof value === 'string')
         ? loaded.evidence.map(value => value.trim()).filter(Boolean)
         : (() => {
-            throw new Error('evidence must be a string array');
+            throw new ObsidianInboxError('evidence must be a string array');
           })();
   const body = content.slice(match[0].length).trim();
   if (!body) {
-    throw new Error(`${label} has an empty body`);
+    throw new ObsidianInboxError(`${label} has an empty body`);
   }
   return {body, category, evidence, kind, project, topic};
 }
@@ -245,7 +252,10 @@ const readInboxState = Effect.fn('obsidian.readInboxState')(function* (path: str
   const raw = yield* fs.readFileString(path);
   return yield* Effect.try({
     try: () => parseInboxState(JSON.parse(raw), sourceId),
-    catch: cause => (cause instanceof Error ? cause : new Error(String(cause))),
+    catch: cause =>
+      cause instanceof ObsidianInboxError
+        ? cause
+        : new ObsidianInboxError(cause instanceof Error ? cause.message : String(cause), {cause}),
   });
 });
 
@@ -274,7 +284,7 @@ function parseInboxState(value: unknown, sourceId: string): ObsidianInboxState {
     typeof value.entries !== 'object' ||
     value.entries === null
   ) {
-    throw new Error(`Invalid Obsidian Inbox state for "${sourceId}".`);
+    throw new ObsidianInboxError(`Invalid Obsidian Inbox state for "${sourceId}".`);
   }
   const entries: Record<string, ObsidianInboxStateEntry> = {};
   for (const [relativePath, entry] of Object.entries(value.entries)) {
@@ -288,7 +298,7 @@ function parseInboxState(value: unknown, sourceId: string): ObsidianInboxState {
       !('reviewedAt' in entry) ||
       typeof entry.reviewedAt !== 'string'
     ) {
-      throw new Error(`Invalid Obsidian Inbox state entry "${relativePath}".`);
+      throw new ObsidianInboxError(`Invalid Obsidian Inbox state entry "${relativePath}".`);
     }
     entries[relativePath] = {
       contentHash: entry.contentHash,
@@ -307,12 +317,12 @@ function inboxKind(value: unknown): ParsedInboxNote['kind'] {
   if (value === 'durable' || value === 'handoff' || value === 'preference') {
     return value;
   }
-  throw new Error('kind must be durable, handoff, or preference');
+  throw new ObsidianInboxError('kind must be durable, handoff, or preference');
 }
 
 function requiredMetadataString(value: unknown, label: string): string {
   if (typeof value !== 'string' || value.trim().length === 0) {
-    throw new Error(`${label} must be a non-empty string`);
+    throw new ObsidianInboxError(`${label} must be a non-empty string`);
   }
   return value.trim();
 }

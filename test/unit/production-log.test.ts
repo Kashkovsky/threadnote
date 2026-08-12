@@ -1,3 +1,5 @@
+import {TestError} from '../helpers/test-error.js';
+import {provideTestLayer} from '../helpers/effect-layer.js';
 import {it as effectIt} from '@effect/vitest';
 import {Cause, Effect, Exit, Fiber, FileSystem, Path} from 'effect';
 import {TestClock} from 'effect/testing';
@@ -48,7 +50,7 @@ describe('production log writer', () => {
         expect(yield* fs.exists(home)).toBe(false);
         expect(excerpt).toEqual({content: '', discardedEntries: 0, includedEntries: 0, omittedEntries: 0});
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('writes correlated success and typed-failure entries without application content', () =>
@@ -91,7 +93,7 @@ describe('production log writer', () => {
         expect(content).not.toContain(customerText);
         expect(content).not.toContain(localPath);
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('blocks credential-shaped failure types and throwing diagnostic getters', () =>
@@ -99,14 +101,14 @@ describe('production log writer', () => {
       Effect.gen(function* () {
         const {fs, home, path} = yield* ownedTestHome('unsafe-error-types');
         const secretType = 'sk-1234567890abcdefghijkl';
-        const secretNamedFailure = new Error('private');
+        const secretNamedFailure = new TestError('private');
         secretNamedFailure.name = secretType;
         const taggedFailure = {_tag: secretType};
         const throwingFailure = new Proxy(
           {},
           {
             get: () => {
-              throw new Error('diagnostic getter should not escape');
+              throw new TestError('diagnostic getter should not escape');
             },
             has: () => true,
           },
@@ -136,7 +138,7 @@ describe('production log writer', () => {
           ]),
         );
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('preserves application results and executes once when log writes fail', () =>
@@ -173,7 +175,7 @@ describe('production log writer', () => {
         expect(failureRuns).toBe(1);
         expect(Exit.isFailure(failed)).toBe(true);
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('classifies MCP error results without recording their response text', () =>
@@ -203,7 +205,7 @@ describe('production log writer', () => {
         });
         expect(content).not.toContain(responseText);
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('batches typed phase timings into the existing finished entry without application content', () =>
@@ -238,7 +240,7 @@ describe('production log writer', () => {
         ]);
         expect(content).not.toContain(privateQuery);
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('serializes concurrent writers into valid JSON lines without losing entries', () =>
@@ -258,7 +260,7 @@ describe('production log writer', () => {
         expect(entries).toHaveLength(invocationCount * 2);
         expect(new Set(entries.map(entry => entry.invocationId)).size).toBe(invocationCount);
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('does not replace existing log history when Windows reports non-POSIX file modes', () =>
@@ -279,7 +281,7 @@ describe('production log writer', () => {
         expect(entries).toHaveLength(4);
         expect(entries.map(entry => entry.operation)).toEqual(['version', 'version', 'doctor', 'doctor']);
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('rotates at the configured size and prunes files beyond retention', () =>
@@ -311,7 +313,7 @@ describe('production log writer', () => {
         expect(yield* fs.exists(`${active}.3`)).toBe(false);
         expect((yield* fs.stat(active)).size <= 1_200n).toBe(true);
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('lists support files and explains the privacy boundary', () =>
@@ -333,7 +335,7 @@ describe('production log writer', () => {
         expect(report.output).toContain(PRODUCTION_LOG_FILE_NAME);
         expect(report.output).toContain('never command arguments, memory content, recall results, or MCP payloads');
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('keeps support excerpts bounded and retains the newest complete entries', () =>
@@ -353,7 +355,7 @@ describe('production log writer', () => {
         expect(excerpt.content).toContain('"operation":"logs"');
         expect(excerpt.content.trim().split('\n')).toHaveLength(excerpt.includedEntries);
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('bounds oversized support reads and rejects non-file rotations', () =>
@@ -373,7 +375,7 @@ describe('production log writer', () => {
         expect(excerpt.omittedEntries).toBeGreaterThan(0);
         expect(excerpt.discardedEntries).toBeGreaterThan(0);
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('does not follow active or rotated log symlinks', () =>
@@ -403,7 +405,7 @@ describe('production log writer', () => {
         expect(excerpt.content).not.toContain('OUTSIDE-LOG-MUST-NOT-CHANGE');
         expect(excerpt.discardedEntries).toBeGreaterThan(0);
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 });
 

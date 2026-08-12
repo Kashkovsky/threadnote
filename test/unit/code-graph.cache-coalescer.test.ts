@@ -16,6 +16,10 @@ import type {CodeGraphDirectPersistentCapacityProtector, CodeGraphStoreShape} fr
 import type {TreeSitterRuntimeShape} from '../../src/code_graph/tree_sitter/runtime.js';
 import type {CodeGraphFileFacts, CodeGraphInventoryFile} from '../../src/code_graph/types.js';
 
+class InjectedProgressError extends Error {
+  readonly _tag = 'InjectedProgressError' as const;
+}
+
 interface CacheCall {
   readonly cacheIdentity: string;
   readonly facts: readonly {readonly facts: CodeGraphFileFacts; readonly json: string}[];
@@ -40,7 +44,7 @@ describe('code graph parser cache coalescer', () => {
           );
         }
         expect(harness.calls).toHaveLength(142);
-        yield* harness.flush();
+        yield* harness.flush;
 
         expect(harness.calls).toHaveLength(143);
         expect(harness.calls.slice(0, -1).every(call => call.files.length === 512)).toBe(true);
@@ -84,8 +88,8 @@ describe('code graph parser cache coalescer', () => {
         yield* first.run(batch, cacheContext(batch.length));
         yield* second.run([...batch].reverse(), cacheContext(batch.length));
       }
-      yield* first.flush();
-      yield* second.flush();
+      yield* first.flush;
+      yield* second.flush;
 
       expect(cacheCallIdentity(first.calls)).toEqual(cacheCallIdentity(second.calls));
       expect(first.calls.reduce((total, call) => total + call.files.length, 0)).toBe(files.length);
@@ -137,7 +141,7 @@ describe('code graph parser cache coalescer', () => {
 
         yield* harness.run(files, cacheContext(files.length));
         expect(harness.calls).toHaveLength(1);
-        const interrupted = yield* harness.flush().pipe(Effect.ensuring(harness.discard()), Effect.forkChild);
+        const interrupted = yield* harness.flush.pipe(Effect.ensuring(harness.discard), Effect.forkChild);
         yield* Deferred.await(secondWriterEntered);
         yield* Fiber.interrupt(interrupted);
 
@@ -146,7 +150,7 @@ describe('code graph parser cache coalescer', () => {
         expect(committed.size).toBeGreaterThan(0);
         expect(committed.size).toBeLessThan(files.length);
         assertCacheCallsBounded(harness.calls);
-        yield* harness.flush();
+        yield* harness.flush;
         expect(harness.calls).toHaveLength(2);
 
         const retry = coalescerHarness({
@@ -164,7 +168,7 @@ describe('code graph parser cache coalescer', () => {
             }),
         });
         yield* retry.run(files, cacheContext(files.length));
-        yield* retry.flush();
+        yield* retry.flush;
 
         expect([...committed.keys()].sort()).toEqual(files.map(file => file.path));
         expect(retry.calls).toHaveLength(2);
@@ -192,7 +196,7 @@ describe('code graph parser cache coalescer', () => {
         );
       }
       expect(harness.calls).toHaveLength(1);
-      yield* harness.flush();
+      yield* harness.flush;
 
       expect(harness.calls).toHaveLength(2);
       expect(harness.calls.every(call => call.files.every(file => !('bytes' in file) && !('content' in file)))).toBe(
@@ -212,7 +216,7 @@ describe('code graph parser cache coalescer', () => {
       expect(harness.calls).toEqual([]);
       yield* harness.acceptExtracted([extractedRow(overlay)], cacheContext(1));
       expect(harness.calls).toHaveLength(1);
-      yield* harness.flush();
+      yield* harness.flush;
 
       expect(harness.calls).toHaveLength(2);
       expect(harness.calls.map(call => call.files.map(file => file.contentHash))).toEqual([
@@ -245,7 +249,7 @@ describe('code graph parser cache coalescer', () => {
 
       yield* harness.run([donor], context);
       yield* harness.run([target], context);
-      yield* harness.flush();
+      yield* harness.flush;
 
       expect(extractions).toBe(1);
       const cachedFacts = new Map(
@@ -293,7 +297,7 @@ describe('code graph parser cache coalescer', () => {
       });
 
       yield* harness.run([file], cacheContext(1));
-      yield* harness.flush();
+      yield* harness.flush;
 
       const completed = observed.find(
         value =>
@@ -336,7 +340,7 @@ describe('code graph parser cache coalescer', () => {
 
       yield* harness.run([donor], context);
       yield* harness.run([target], context);
-      yield* harness.flush();
+      yield* harness.flush;
 
       expect(extractions).toBe(2);
       expect(harness.calls.flatMap(call => call.files).every(file => file.blobId === '')).toBe(true);
@@ -365,7 +369,7 @@ describe('code graph parser cache coalescer', () => {
 
       const caching = yield* harness
         .run(files, cacheContext(files.length))
-        .pipe(Effect.ensuring(harness.discard()), Effect.forkChild);
+        .pipe(Effect.ensuring(harness.discard), Effect.forkChild);
       yield* Deferred.await(thirdExtractionEntered);
       yield* Fiber.interrupt(caching);
 
@@ -382,14 +386,14 @@ describe('code graph parser cache coalescer', () => {
           progress.phase === 'scanning' &&
           progress.activity?.stage === 'extracting' &&
           progress.activity.path.endsWith('000002.ts')
-            ? Effect.fail(new Error('injected later-window progress failure'))
+            ? Effect.fail(new InjectedProgressError('injected later-window progress failure'))
             : Effect.void,
       });
       const files = Array.from({length: 3}, (_, index) => cacheFile(index, 'src/failure'));
 
       const failure = yield* harness
         .run(files, cacheContext(files.length))
-        .pipe(Effect.ensuring(harness.discard()), Effect.flip);
+        .pipe(Effect.ensuring(harness.discard), Effect.flip);
 
       expect(failure).toBeInstanceOf(Error);
       expect(harness.calls).toEqual([]);
@@ -416,7 +420,7 @@ function coalescerHarness(options: {
       };
       return Effect.isEffect(result) ? result : Effect.succeed(result);
     },
-    trimIdle: () => Effect.void,
+    trimIdle: Effect.void,
   } satisfies CodeGraphParserPoolShape;
   const store = {
     cacheFacts: (

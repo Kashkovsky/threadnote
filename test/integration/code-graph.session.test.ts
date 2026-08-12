@@ -1,8 +1,9 @@
+import {TestError} from '../helpers/test-error.js';
 import {Database} from 'bun:sqlite';
-import {execFileSync} from 'node:child_process';
-import {existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync} from 'node:fs';
-import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {execFileSync} from '../helpers/node-child-process.js';
+import {existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync} from '../helpers/node-fs.js';
+import {tmpdir} from '../helpers/node-os.js';
+import {join} from '../helpers/node-path.js';
 import {Context, Effect, Layer} from 'effect';
 import {afterAll, beforeAll, beforeEach, describe, expect, it, vi} from 'vitest';
 import {CodeGraphIndexer} from '../../src/code_graph/indexer.js';
@@ -194,7 +195,7 @@ describe('code graph SQLite session lifetime', () => {
             onProgress: progress => {
               if (progress.phase !== 'materializing') return Effect.void;
               materializingObserved = true;
-              return Effect.fail(new Error('fixture materialization failure'));
+              return Effect.fail(new TestError('fixture materialization failure'));
             },
             threadnoteHome: join(repositoryRoot, '.threadnote-failure-home'),
           });
@@ -218,7 +219,7 @@ describe('code graph SQLite session lifetime', () => {
             onProgress: progress => {
               if (progress.phase !== 'materializing') return Effect.void;
               materializingObserved = true;
-              return Effect.fail(new Error('fixture committed-base failure'));
+              return Effect.fail(new TestError('fixture committed-base failure'));
             },
             threadnoteHome: join(repositoryRoot, '.threadnote-commit-failure-home'),
           });

@@ -1,3 +1,4 @@
+import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {Console, Effect, Layer, Path} from 'effect';
@@ -38,15 +39,15 @@ function parseArguments(args: readonly string[], resolve: (value: string) => str
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index]!;
     if (argument === '--output') output = resolve(required(args[++index], argument));
-    else throw new Error(`Unknown recall reranker dataset option: ${argument}. Pass --help for usage.`);
+    else throw new ScriptError(`Unknown recall reranker dataset option: ${argument}. Pass --help for usage.`);
   }
   return {output};
 }
 
 function required(value: string | undefined, option: string): string {
-  if (!value?.trim()) throw new Error(`${option} requires a value.`);
+  if (!value?.trim()) throw new ScriptError(`${option} requires a value.`);
   return value;
 }
 
 const scriptLayer = Layer.mergeAll(BunServices.layer, SystemInfo.layer);
-BunRuntime.runMain(program.pipe(Effect.provide(scriptLayer)));
+BunRuntime.runMain(provideScriptLayer(program, scriptLayer));

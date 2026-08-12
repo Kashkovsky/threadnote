@@ -1,0 +1,142 @@
+import {recallDocumentTerms, type RecallCandidate, type RecallCorpusStatistics} from './rank.js';
+
+export interface RecallIndexPosting {
+  readonly documentLength: number;
+  readonly fieldWeight: number;
+  readonly termFrequency: number;
+  readonly uri: string;
+}
+
+export interface RecallQueryTermStatistics {
+  readonly documentCount: number;
+  readonly documentFrequency: Readonly<Record<string, number>>;
+}
+
+const MAX_QUERY_TERMS = 32;
+export const POSTING_IDENTIFIER_WEIGHT = 4;
+const POSTING_TITLE_WEIGHT = 3;
+const POSTING_TOPIC_WEIGHT = 2;
+const POSTING_KEYWORD_WEIGHT = 2;
+const POSTING_PROJECT_WEIGHT = 1;
+const POSTING_BODY_WEIGHT = 1;
+export const POSTING_BM25_SATURATION = 1.2;
+export const POSTING_BM25_LENGTH_NORMALIZATION = 0.75;
+const POSTING_BM25_IDF_SMOOTHING = 0.5;
+const IDENTIFIER_PATTERN = /[a-z0-9][a-z0-9_.-]{2,}/gi;
+
+export function candidatePostings(candidate: RecallCandidate): ReadonlyMap<string, RecallIndexPosting> {
+  const weights = new Map<string, number>();
+  const add = (value: string | readonly string[] | undefined, weight: number): void => {
+    if (value === undefined) {
+      return;
+    }
+    for (const term of new Set(indexTerms(typeof value === 'string' ? value : value.join(' ')))) {
+      weights.set(term, Math.max(weight, weights.get(term) ?? 0));
+    }
+  };
+  add(candidate.text, POSTING_BODY_WEIGHT);
+  add(candidate.fields?.project, POSTING_PROJECT_WEIGHT);
+  add(candidate.fields?.topic, POSTING_TOPIC_WEIGHT);
+  add(candidate.fields?.keywords, POSTING_KEYWORD_WEIGHT);
+  add(candidate.fields?.title, POSTING_TITLE_WEIGHT);
+  add(candidate.fields?.identifiers, POSTING_IDENTIFIER_WEIGHT);
+  const documentTerms = recallDocumentTerms(candidate);
+  const termFrequencies = new Map<string, number>();
+  for (const term of documentTerms) {
+    termFrequencies.set(term, (termFrequencies.get(term) ?? 0) + 1);
+  }
+  return new Map(
+    [...weights].map(([term, fieldWeight]) => [
+      term,
+      {
+        documentLength: documentTerms.length,
+        fieldWeight,
+        termFrequency: termFrequencies.get(term) ?? 1,
+        uri: stripRecallAnchor(candidate.uri),
+      },
+    ]),
+  );
+}
+
+export function postingLexicalScore(
+  posting: Pick<RecallIndexPosting, 'documentLength' | 'fieldWeight' | 'termFrequency'>,
+  term: string,
+  corpusStatistics: RecallCorpusStatistics,
+): number {
+  const inverseDocumentFrequency = postingInverseDocumentFrequency(term, corpusStatistics);
+  const denominator =
+    posting.termFrequency +
+    POSTING_BM25_SATURATION *
+      (1 -
+        POSTING_BM25_LENGTH_NORMALIZATION +
+        POSTING_BM25_LENGTH_NORMALIZATION *
+          (posting.documentLength / Math.max(1, corpusStatistics.averageDocumentLength)));
+  const bm25 = inverseDocumentFrequency * ((posting.termFrequency * (POSTING_BM25_SATURATION + 1)) / denominator);
+  return bm25 + posting.fieldWeight / POSTING_IDENTIFIER_WEIGHT;
+}
+
+export function postingInverseDocumentFrequency(term: string, corpusStatistics: RecallCorpusStatistics): number {
+  const documentCount = Math.max(1, corpusStatistics.documentCount);
+  const documentsWithTerm = ownRecordValue(corpusStatistics.documentFrequency, term) ?? 0;
+  return Math.log(
+    1 +
+      (documentCount - documentsWithTerm + POSTING_BM25_IDF_SMOOTHING) /
+        (documentsWithTerm + POSTING_BM25_IDF_SMOOTHING),
+  );
+}
+
+export function selectQueryTerms(terms: readonly string[], statistics: RecallQueryTermStatistics): readonly string[] {
+  const documentCount = Math.max(1, statistics.documentCount);
+  return [...new Set(terms)]
+    .map(term => ({frequency: ownRecordValue(statistics.documentFrequency, term) ?? 0, term}))
+    .filter(item => item.frequency > 0)
+    .sort((left, right) => {
+      const leftIdf = Math.log(
+        1 +
+          (documentCount - left.frequency + POSTING_BM25_IDF_SMOOTHING) / (left.frequency + POSTING_BM25_IDF_SMOOTHING),
+      );
+      const rightIdf = Math.log(
+        1 +
+          (documentCount - right.frequency + POSTING_BM25_IDF_SMOOTHING) /
+            (right.frequency + POSTING_BM25_IDF_SMOOTHING),
+      );
+      return rightIdf - leftIdf || left.term.localeCompare(right.term);
+    })
+    .slice(0, MAX_QUERY_TERMS)
+    .map(item => item.term);
+}
+
+export function stripRecallAnchor(uri: string): string {
+  return uri.replace(/#.*$/, '');
+}
+
+export function indexTerms(value: string): readonly string[] {
+  const terms: string[] = [];
+  for (const match of value.matchAll(IDENTIFIER_PATTERN)) {
+    const raw = match[0];
+    const original = raw.toLowerCase();
+    terms.push(original);
+    terms.push(
+      ...raw
+        .replace(/([a-z])([A-Z])/g, '$1 $2')
+        .split(/[._/-]+/)
+        .map(term => term.toLowerCase())
+        .filter(term => term.length >= 2),
+    );
+  }
+  return terms;
+}
+
+export function identifiers(value: string): readonly string[] {
+  return [
+    ...new Set(
+      [...value.matchAll(IDENTIFIER_PATTERN)]
+        .map(match => match[0].toLowerCase())
+        .filter(term => /[0-9_.-]/.test(term)),
+    ),
+  ].slice(0, 64);
+}
+
+function ownRecordValue<Value>(record: Readonly<Record<string, Value>>, key: string): Value | undefined {
+  return Object.hasOwn(record, key) ? record[key] : undefined;
+}

@@ -1,3 +1,5 @@
+import {TestError} from '../helpers/test-error.js';
+import {provideTestLayer} from '../helpers/effect-layer.js';
 import {expect, it} from '@effect/vitest';
 import {Effect, FileSystem, Path} from 'effect';
 import {describe} from 'vitest';
@@ -55,11 +57,11 @@ describe('agent instruction lifecycle', () => {
             verify: () => Effect.succeed(installation),
           } satisfies LocalModelStoreShape);
           const modelRuntime = LocalModelRuntime.of({
-            diagnostics: () => Effect.succeed({backend: 'fake', buildType: 'prebuilt', cpuMathCores: 4}),
+            diagnostics: Effect.succeed({backend: 'fake', buildType: 'prebuilt', cpuMathCores: 4}),
             embedMany: ({inputs, manifest}) =>
               Effect.succeed(inputs.map(() => [1, ...new Array<number>((manifest.dimensions ?? 1) - 1).fill(0)])),
-            generate: () => Effect.die(new Error('Unexpected generation')),
-            rerank: () => Effect.die(new Error('Unexpected reranking')),
+            generate: () => Effect.die(new TestError('Unexpected generation')),
+            rerank: () => Effect.die(new TestError('Unexpected reranking')),
           });
           const commandShim = path.join(userHome, '.local', 'bin', 'threadnote');
           const legacyCursorRule = path.join(userHome, '.cursor', 'rules', 'threadnote.md');
@@ -164,7 +166,7 @@ describe('agent instruction lifecycle', () => {
             expect(missingTarget.stderr).not.toContain('Cannot find module');
           }
         }),
-      ).pipe(Effect.provide(ApplicationLayer)),
+      ).pipe(provideTestLayer(ApplicationLayer)),
     30_000,
   );
 
@@ -194,6 +196,6 @@ describe('agent instruction lifecycle', () => {
         expect(result.output).toContain(`WARN not overwriting unmanaged command launcher: ${commandShim}`);
         expect(yield* fs.readFileString(commandShim)).toBe(content);
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 });

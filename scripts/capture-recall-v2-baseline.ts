@@ -1,3 +1,4 @@
+import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import {Effect} from 'effect';
 import {ApplicationLayer} from '../src/effect/runtime.js';
@@ -67,7 +68,7 @@ function parseArguments(args: readonly string[]): Options {
     const argument = args[index]!;
     if (argument === '--created-at') createdAt = isoDate(requiredValue(args[++index], argument));
     else if (argument === '--output') outputPath = requiredValue(args[++index], argument);
-    else throw new Error(`Unknown recall baseline option: ${argument}`);
+    else throw new ScriptError(`Unknown recall baseline option: ${argument}`);
   }
   return {createdAt, outputPath};
 }
@@ -79,13 +80,13 @@ function sourceDate(): string {
 
 function isoDate(value: string): string {
   const date = new Date(value);
-  if (Number.isNaN(date.getTime())) throw new Error(`Invalid ISO timestamp: ${value}`);
+  if (Number.isNaN(date.getTime())) throw new ScriptError(`Invalid ISO timestamp: ${value}`);
   return date.toISOString();
 }
 
 function requiredValue(value: string | undefined, option: string): string {
-  if (!value?.trim()) throw new Error(`${option} requires a value`);
+  if (!value?.trim()) throw new ScriptError(`${option} requires a value`);
   return value;
 }
 
-BunRuntime.runMain(captureBaseline.pipe(Effect.provide(ApplicationLayer)));
+BunRuntime.runMain(provideScriptLayer(captureBaseline, ApplicationLayer));

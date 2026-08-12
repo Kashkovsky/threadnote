@@ -29,6 +29,8 @@ export type CodeGraphRelation =
   | 'tests';
 
 export interface RepositoryIdentity {
+  /** Local-only current branch when HEAD is attached. */
+  readonly branch?: string;
   readonly caseMode: 'insensitive' | 'sensitive';
   readonly checkoutId: string;
   readonly displayName: string;

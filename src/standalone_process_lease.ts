@@ -2,6 +2,10 @@ import {Clock, Crypto, Effect, Exit, FileSystem, Option, Path} from 'effect';
 import {SystemInfo, type SystemInfoShape} from './effect/system.js';
 import {compareVersions} from './version_compare.js';
 
+class StandaloneProcessLeaseError extends Error {
+  readonly _tag = 'StandaloneProcessLeaseError' as const;
+}
+
 const THREADNOTE_COMMAND = 'threadnote';
 const PROCESS_LEASE_HEARTBEAT_MILLISECONDS = 30_000;
 const PROCESS_LEASE_DIAGNOSTIC_SCAN_LIMIT = 1_024;
@@ -213,7 +217,9 @@ export const liveReleaseLeaseVersions = Effect.fn('installations.liveLeaseVersio
   );
   if (scan.truncated) {
     return yield* Effect.fail(
-      new Error('Standalone release pruning could not completely inspect the live process leases.'),
+      new StandaloneProcessLeaseError(
+        'Standalone release pruning could not completely inspect the live process leases.',
+      ),
     );
   }
   return [...new Set(scan.leases.map(lease => lease.version))];
@@ -231,7 +237,9 @@ export const terminateSupersededStandaloneProcesses = Effect.fn('installations.t
     const path = yield* Path.Path;
     const system = yield* SystemInfo;
     if (!STANDALONE_RELEASE_VERSION_PATTERN.test(activeVersion)) {
-      return yield* Effect.fail(new Error('Cannot terminate processes for an invalid active release version.'));
+      return yield* Effect.fail(
+        new StandaloneProcessLeaseError('Cannot terminate processes for an invalid active release version.'),
+      );
     }
     const scan = yield* liveStandaloneProcessLeases(
       fs,
@@ -242,7 +250,9 @@ export const terminateSupersededStandaloneProcesses = Effect.fn('installations.t
     );
     if (scan.truncated) {
       return yield* Effect.fail(
-        new Error('Cannot terminate superseded processes because live lease inspection was incomplete.'),
+        new StandaloneProcessLeaseError(
+          'Cannot terminate superseded processes because live lease inspection was incomplete.',
+        ),
       );
     }
     const superseded = scan.leases.filter(
@@ -332,7 +342,7 @@ const liveStandaloneProcessLeases = Effect.fn('installations.liveProcessLeases')
       const processIsRunning = system.isProcessRunning(processId);
       const currentProcessIdentity =
         processIsRunning && Option.isSome(lease.value.processStartIdentity)
-          ? yield* system.processStartIdentity(processId).pipe(Effect.catch(() => Effect.succeed(undefined)))
+          ? yield* system.processStartIdentity(processId)
           : undefined;
       const identityMatches =
         Option.isNone(lease.value.processStartIdentity) ||
@@ -373,9 +383,7 @@ function signalLeaseIfStillOwned(
 ): Effect.Effect<boolean> {
   return Effect.gen(function* () {
     if (!system.isProcessRunning(lease.processId) || Option.isNone(lease.processStartIdentity)) return false;
-    const identity = yield* system
-      .processStartIdentity(lease.processId)
-      .pipe(Effect.catch(() => Effect.succeed(undefined)));
+    const identity = yield* system.processStartIdentity(lease.processId);
     if (identity !== lease.processStartIdentity.value) return false;
     return yield* Effect.try({
       try: () => {

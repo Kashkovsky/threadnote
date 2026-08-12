@@ -1,4 +1,6 @@
-import {readFileSync} from 'node:fs';
+import {TestError} from '../helpers/test-error.js';
+import {provideTestLayer} from '../helpers/effect-layer.js';
+import {readFileSync} from '../helpers/node-fs.js';
 import {it as effectIt} from '@effect/vitest';
 import {Database} from 'bun:sqlite';
 import {Clock, Effect, FileSystem, Path, PlatformError, Schedule} from 'effect';
@@ -73,7 +75,7 @@ describe('code graph external benchmark harness', () => {
       });
 
       expect(yield* directoryBytes(disappearingFileSystem, path, root)).toBe(42);
-    }).pipe(Effect.provide(ApplicationLayer)),
+    }).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it('applies the public path relevance policy to vector positive-control scores', () => {
@@ -204,7 +206,7 @@ describe('code graph external benchmark harness', () => {
                     }),
                 };
               }),
-              () => Effect.fail(new Error('index failed')),
+              () => Effect.fail(new TestError('index failed')),
               Effect.sync(() => events.push('final-index-storage-sampled')),
             ),
           () => Effect.sync(() => events.push('overlay-restored')),
@@ -446,9 +448,9 @@ describe('code graph external benchmark harness', () => {
     });
   });
 
-  it('applies and restores the overlay byte-for-byte while preserving concurrent edits', async () => {
-    const result = await Effect.runPromise(
-      Effect.scoped(
+  effectIt.effect('applies and restores the overlay byte-for-byte while preserving concurrent edits', () =>
+    Effect.gen(function* () {
+      const result = yield* Effect.scoped(
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
@@ -485,18 +487,20 @@ describe('code graph external benchmark harness', () => {
             restoreConflict: restoreConflict._tag,
           };
         }),
-      ).pipe(Effect.provide(ApplicationLayer)),
-    );
+      ).pipe(provideTestLayer(ApplicationLayer));
 
-    expect([...result.applied]).toEqual([
-      ...new TextEncoder().encode("\uFEFFimport 'threadnote-benchmark-overlay';\r\nexport const source = 1;\r\n"),
-    ]);
-    expect([...result.restored]).toEqual([...new TextEncoder().encode('\uFEFFexport const source = 1;\r\n')]);
-    expect(result.applyConflict).toBe('Failure');
-    expect(result.restoreConflict).toBe('Failure');
-    expect([...result.afterApplyConflict]).toEqual([...new TextEncoder().encode('export const userEdit = true;\n')]);
-    expect([...result.afterRestoreConflict]).toEqual([...new TextEncoder().encode('export const userEdit = true;\n')]);
-  });
+      expect([...result.applied]).toEqual([
+        ...new TextEncoder().encode("\uFEFFimport 'threadnote-benchmark-overlay';\r\nexport const source = 1;\r\n"),
+      ]);
+      expect([...result.restored]).toEqual([...new TextEncoder().encode('\uFEFFexport const source = 1;\r\n')]);
+      expect(result.applyConflict).toBe('Failure');
+      expect(result.restoreConflict).toBe('Failure');
+      expect([...result.afterApplyConflict]).toEqual([...new TextEncoder().encode('export const userEdit = true;\n')]);
+      expect([...result.afterRestoreConflict]).toEqual([
+        ...new TextEncoder().encode('export const userEdit = true;\n'),
+      ]);
+    }),
+  );
 
   it('rejects non-UTF-8 overlay sources without lossy replacement', () => {
     expect(() => decodeBenchmarkSource(Uint8Array.from([0xc3, 0x28]))).toThrow('valid UTF-8');
@@ -644,7 +648,8 @@ describe('code graph external benchmark harness', () => {
             snapshotLeaseRenewalMilliseconds: 100,
           });
           const after = yield* sqliteStructuralGraphEvidence(databasePath, firstSnapshotId);
-          if (comparisonLease === undefined) return yield* Effect.die(new Error('Comparison lease was not acquired.'));
+          if (comparisonLease === undefined)
+            return yield* Effect.die(new TestError('Comparison lease was not acquired.'));
           yield* store.releaseSnapshotLease(databasePath, comparisonLease);
           const mismatch = codeGraphStructuralParityEvidence(before, after);
           const failureMessage = codeGraphStructuralParityFailureMessage(mismatch);
@@ -679,7 +684,7 @@ describe('code graph external benchmark harness', () => {
             finalDatabase.close(false);
           }
         }),
-      ).pipe(Effect.provide(ApplicationLayer));
+      ).pipe(provideTestLayer(ApplicationLayer));
 
       expect(result.pinned).toEqual(result.before);
       expect(result.before.streams.find(stream => stream.name === 'symbol-terms')?.rowCount).toBe(1);

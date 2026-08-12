@@ -1,5 +1,5 @@
 import * as SqliteClient from '@effect/sql-sqlite-bun/SqliteClient';
-import {Context, Effect, Option, Path} from 'effect';
+import {Context, Effect, Layer, Option, Path} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import * as SqlError from 'effect/unstable/sql/SqlError';
 import type {
@@ -56,18 +56,16 @@ export function useExistingDatabase<A, E, R>(
   effect: Effect.Effect<A, E, R | SqlClient.SqlClient>,
 ): Effect.Effect<A, E, Exclude<R, SqlClient.SqlClient>> {
   return Effect.scoped(
-    effect.pipe(
-      Effect.provide(
-        SqliteClient.layer({
-          create: false,
-          disableWAL: true,
-          filename: databasePath,
-          readonly: false,
-          readwrite: true,
-        }),
-      ),
-    ),
-  ) as Effect.Effect<A, E, Exclude<R, SqlClient.SqlClient>>;
+    Layer.build(
+      SqliteClient.layer({
+        create: false,
+        disableWAL: true,
+        filename: databasePath,
+        readonly: false,
+        readwrite: true,
+      }),
+    ).pipe(Effect.flatMap(context => effect.pipe(Effect.provide(context)))),
+  );
 }
 
 export function useDatabaseDirect<A, E, R>(
@@ -84,7 +82,7 @@ export function useDatabaseDirect<A, E, R>(
         readwrite: false,
       })
     : SqliteClient.layer({disableWAL: true, filename: databasePath});
-  return Effect.scoped(effect.pipe(Effect.provide(layer))) as Effect.Effect<A, E, Exclude<R, SqlClient.SqlClient>>;
+  return Effect.scoped(Layer.build(layer).pipe(Effect.flatMap(context => effect.pipe(Effect.provide(context)))));
 }
 
 export const configureConnection = Effect.fn('codeGraph.configureConnection')(function* (sql: SqlClient.SqlClient) {

@@ -1,6 +1,7 @@
-import {mkdtempSync, rmSync} from 'node:fs';
-import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {provideTestLayer} from '../helpers/effect-layer.js';
+import {mkdtempSync, rmSync} from '../helpers/node-fs.js';
+import {tmpdir} from '../helpers/node-os.js';
+import {join} from '../helpers/node-path.js';
 import {Database} from 'bun:sqlite';
 import {describe, expect, it} from '@effect/vitest';
 import {Effect} from 'effect';
@@ -84,7 +85,7 @@ describe('project-closure persisted store', () => {
         const graph = yield* store.loadGraph(databasePath, ready.id);
         expect(graph.symbols).toEqual([replacement]);
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it.effect('bounds reusable exact-base reexport output without returning a partial closure', () =>
@@ -111,7 +112,7 @@ describe('project-closure persisted store', () => {
           }),
         ).toHaveLength(10_001);
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it.effect('does not hide later batched provenance behind overlapping prefix rows', () =>
@@ -139,7 +140,7 @@ describe('project-closure persisted store', () => {
           {importedName: 'shared', localName: 'foo', sourcePath: 'z', targetPath: 'm'},
         ]);
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it.effect('rejects unknown persisted resolution closure tags at preparation and activation', () =>
@@ -182,7 +183,7 @@ describe('project-closure persisted store', () => {
           'Failure',
         );
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it.effect('reports raw cache bytes and rejects a payload whose path disagrees with its tuple', () =>
@@ -200,7 +201,7 @@ describe('project-closure persisted store', () => {
         expect(metadata.bytes).toBe(oversized.length);
         expect(metadata.bytesByPath?.get(file.path)).toBe(oversized.length);
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 });
 

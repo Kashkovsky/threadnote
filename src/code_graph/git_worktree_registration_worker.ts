@@ -1,5 +1,5 @@
 import {Effect, FileSystem, Stdio, Stream} from 'effect';
-import {fromPromiseError} from '../effect/errors.js';
+import {fromPromise} from '../effect/errors.js';
 import {SystemInfo} from '../effect/system.js';
 import {
   CODE_GRAPH_GIT_WORKTREE_REGISTRATION_LIMITS,
@@ -10,6 +10,10 @@ import {
   validCodeGraphWorktreeAuthorityWorkerRequest,
   type CodeGraphGitWorktreeRegistryRequest,
 } from './git_worktree_registration.js';
+
+class GitWorktreeRegistrationError extends Error {
+  readonly _tag = 'GitWorktreeRegistrationError' as const;
+}
 
 const UTF8 = new TextEncoder();
 
@@ -29,23 +33,23 @@ export const gitWorktreeRegistrationWorkerProgram = Effect.gen(function* () {
 const workerResponse = Effect.fn('codeGraph.gitWorktreeRegistrationWorkerResponse')(function* (input: Uint8Array) {
   const decoded = yield* Effect.try({
     try: () => new TextDecoder('utf-8', {fatal: true, ignoreBOM: true}).decode(input),
-    catch: () => new Error('invalid'),
+    catch: () => new GitWorktreeRegistrationError('invalid'),
   });
   if (!decoded.endsWith('\n') || decoded.slice(0, -1).includes('\n')) {
-    return yield* Effect.fail(new Error('invalid'));
+    return yield* Effect.fail(new GitWorktreeRegistrationError('invalid'));
   }
   const request = yield* Effect.try({
     try: (): unknown => JSON.parse(decoded.slice(0, -1)),
-    catch: () => new Error('invalid'),
+    catch: () => new GitWorktreeRegistrationError('invalid'),
   });
   if (validCodeGraphWorktreeAuthorityWorkerRequest(request)) {
     yield* blockAuthorityLstatForTest();
-    return yield* fromPromiseError(() => scanCodeGraphWorktreeAuthorityWorkerRequest(request));
+    return yield* fromPromise('scan worktree authority', () => scanCodeGraphWorktreeAuthorityWorkerRequest(request));
   }
   if (validCodeGraphGitWorktreeRegistryBatchRequest(request)) {
-    return yield* fromPromiseError(() => scanCodeGraphGitWorktreeRegistryBatch(request));
+    return yield* fromPromise('scan Git worktree registry', () => scanCodeGraphGitWorktreeRegistryBatch(request));
   }
-  return yield* fromPromiseError(() =>
+  return yield* fromPromise('scan Git worktree registration batch', () =>
     scanCodeGraphGitWorktreeRegistry(request as CodeGraphGitWorktreeRegistryRequest),
   );
 });
@@ -59,7 +63,7 @@ const readBoundedStandardInput = Effect.fn('codeGraph.readGitWorktreeRegistratio
   yield* stdio.stdin.pipe(
     Stream.runForEach(chunk => {
       total += chunk.byteLength;
-      if (total > limit) return Effect.fail(new Error('invalid'));
+      if (total > limit) return Effect.fail(new GitWorktreeRegistrationError('invalid'));
       chunks.push(chunk);
       return Effect.void;
     }),

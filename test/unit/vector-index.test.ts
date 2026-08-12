@@ -1,5 +1,7 @@
+import {TestError} from '../helpers/test-error.js';
+import {provideTestLayer} from '../helpers/effect-layer.js';
 import {Database} from 'bun:sqlite';
-import {join} from 'node:path';
+import {join} from '../helpers/node-path.js';
 import {Effect, Layer, Option, Result} from 'effect';
 import {describe, expect, it} from 'vitest';
 import {InferenceInterrupted} from '../../src/effect/ai/errors.js';
@@ -28,7 +30,7 @@ const manifest = BUILTIN_MODEL_MANIFESTS.find(model => model.id === 'bge-small-e
 const modelStoreLayer = Layer.succeed(
   LocalModelStore,
   LocalModelStore.of({
-    install: () => Effect.die(new Error('Unexpected install')),
+    install: () => Effect.die(new TestError('Unexpected install')),
     path: home => `${home}/models/fake.gguf`,
     remove: () => Effect.succeed(false),
     status: home => Effect.succeed(installation(home)),
@@ -50,7 +52,7 @@ describe('vector index generations', () => {
         ]);
         const scores = yield* selectedSemanticScores({agentContextHome: home}, 'alpha deployment');
         return {rebuilt, scores};
-      }).pipe(Effect.provide(runtimeLayer), Effect.provide(modelStoreLayer));
+      }).pipe(provideTestLayer(runtimeLayer), provideTestLayer(modelStoreLayer));
       const {rebuilt, scores} = await runEffect(effect);
       expect(rebuilt.ready).toBe(true);
       expect(rebuilt.chunkCount).toBe(2);
@@ -76,8 +78,8 @@ describe('vector index generations', () => {
           {text: '# Alpha\n\nSQLite vector rows.', uri: 'threadnote://resources/repos/a.md'},
           {text: '# Beta\n\nPaged exact search.', uri: 'threadnote://resources/repos/b.md'},
         ]).pipe(
-          Effect.provide(fakeRuntimeLayer(input => (input.includes('Alpha') ? 0 : 1))),
-          Effect.provide(modelStoreLayer),
+          provideTestLayer(fakeRuntimeLayer(input => (input.includes('Alpha') ? 0 : 1))),
+          provideTestLayer(modelStoreLayer),
         ),
       );
 
@@ -111,8 +113,8 @@ describe('vector index generations', () => {
         const runtimeLayer = fakeRuntimeLayer(() => 0);
         await runEffect(
           rebuildVectorIndex({agentContextHome: home}, manifest, candidates).pipe(
-            Effect.provide(runtimeLayer),
-            Effect.provide(modelStoreLayer),
+            provideTestLayer(runtimeLayer),
+            provideTestLayer(modelStoreLayer),
           ),
         );
         const incompatible = new Database(vectorDatabasePath(home));
@@ -121,8 +123,8 @@ describe('vector index generations', () => {
 
         const rebuilt = await runEffect(
           ensureVectorIndex({agentContextHome: home}, manifest, candidates).pipe(
-            Effect.provide(runtimeLayer),
-            Effect.provide(modelStoreLayer),
+            provideTestLayer(runtimeLayer),
+            provideTestLayer(modelStoreLayer),
           ),
         );
 
@@ -151,8 +153,8 @@ describe('vector index generations', () => {
 
       const rebuilt = await runEffect(
         rebuildVectorIndex({agentContextHome: home}, manifest, candidates).pipe(
-          Effect.provide(fakeRuntimeLayer(() => 0)),
-          Effect.provide(modelStoreLayer),
+          provideTestLayer(fakeRuntimeLayer(() => 0)),
+          provideTestLayer(modelStoreLayer),
         ),
       );
 
@@ -181,8 +183,8 @@ describe('vector index generations', () => {
       const runtimeLayer = fakeRuntimeLayer(() => 0);
       await runEffect(
         rebuildVectorIndex({agentContextHome: home}, manifest, candidates).pipe(
-          Effect.provide(runtimeLayer),
-          Effect.provide(modelStoreLayer),
+          provideTestLayer(runtimeLayer),
+          provideTestLayer(modelStoreLayer),
         ),
       );
       await rm(vectorDatabasePath(home), {force: true});
@@ -192,8 +194,8 @@ describe('vector index generations', () => {
 
       const rebuilt = await runEffect(
         rebuildVectorIndex({agentContextHome: home}, manifest, candidates).pipe(
-          Effect.provide(runtimeLayer),
-          Effect.provide(modelStoreLayer),
+          provideTestLayer(runtimeLayer),
+          provideTestLayer(modelStoreLayer),
         ),
       );
 
@@ -220,7 +222,7 @@ describe('vector index generations', () => {
           const catalog = yield* LocalModelCatalog;
           yield* selectLocalModel(home, catalog, 'embedding', manifest.id);
           yield* rebuildVectorIndex({agentContextHome: home}, manifest, candidates);
-        }).pipe(Effect.provide(runtimeLayer), Effect.provide(modelStoreLayer)),
+        }).pipe(provideTestLayer(runtimeLayer), provideTestLayer(modelStoreLayer)),
       );
       const corrupted = new Database(vectorDatabasePath(home));
       corrupted.exec(`
@@ -233,16 +235,16 @@ describe('vector index generations', () => {
       const status = await runEffect(vectorIndexStatus(home, manifest));
       const failedSearch = await runEffect(
         selectedSemanticScores({agentContextHome: home}, 'alpha').pipe(
-          Effect.provide(runtimeLayer),
-          Effect.provide(modelStoreLayer),
+          provideTestLayer(runtimeLayer),
+          provideTestLayer(modelStoreLayer),
           Effect.as('unexpected'),
           Effect.catchCause(() => Effect.succeed('failed')),
         ),
       );
       const repaired = await runEffect(
         rebuildVectorIndex({agentContextHome: home}, manifest, candidates).pipe(
-          Effect.provide(runtimeLayer),
-          Effect.provide(modelStoreLayer),
+          provideTestLayer(runtimeLayer),
+          provideTestLayer(modelStoreLayer),
         ),
       );
 
@@ -274,7 +276,7 @@ describe('vector index generations', () => {
           yield* selectLocalModel(home, catalog, 'embedding', manifest.id);
           const index = yield* loadRecallIndexData(config, {forceRefresh: true, includeInactive: false});
           yield* rebuildVectorIndex(config, manifest, index.candidates, {corpusGeneration: index.generation});
-        }).pipe(Effect.provide(runtimeLayer), Effect.provide(modelStoreLayer)),
+        }).pipe(provideTestLayer(runtimeLayer), provideTestLayer(modelStoreLayer)),
       );
       const corrupted = new Database(vectorDatabasePath(home));
       corrupted.exec('UPDATE vector_values SET vector = zeroblob(4)');
@@ -282,8 +284,8 @@ describe('vector index generations', () => {
 
       const scores = await runEffect(
         loadRecallSemanticScores(config, 'alpha semantic repair', 5).pipe(
-          Effect.provide(runtimeLayer),
-          Effect.provide(modelStoreLayer),
+          provideTestLayer(runtimeLayer),
+          provideTestLayer(modelStoreLayer),
         ),
       );
 
@@ -320,7 +322,7 @@ describe('vector index generations', () => {
           yield* selectLocalModel(home, catalog, 'embedding', manifest.id);
           const index = yield* loadRecallIndexData(config, {forceRefresh: true, includeInactive: false});
           yield* rebuildVectorIndex(config, manifest, index.candidates, {corpusGeneration: index.generation});
-        }).pipe(Effect.provide(runtimeLayer), Effect.provide(modelStoreLayer)),
+        }).pipe(provideTestLayer(runtimeLayer), provideTestLayer(modelStoreLayer)),
       );
       const corrupted = new Database(vectorDatabasePath(home));
       corrupted.exec('UPDATE vector_values SET vector = zeroblob(4)');
@@ -328,8 +330,8 @@ describe('vector index generations', () => {
 
       const result = await runEffect(
         loadMcpRecallSemanticScoresResult(config, 'alpha read-only fallback', 5).pipe(
-          Effect.provide(runtimeLayer),
-          Effect.provide(modelStoreLayer),
+          provideTestLayer(runtimeLayer),
+          provideTestLayer(modelStoreLayer),
         ),
       );
 
@@ -353,19 +355,19 @@ describe('vector index generations', () => {
       const candidates = [{text: '# Alpha\n\nStable canonical content.', uri: 'threadnote://resources/repos/a.md'}];
       const first = await runEffect(
         rebuildVectorIndex({agentContextHome: home}, manifest, candidates).pipe(
-          Effect.provide(fakeRuntimeLayer(() => 0)),
-          Effect.provide(modelStoreLayer),
+          provideTestLayer(fakeRuntimeLayer(() => 0)),
+          provideTestLayer(modelStoreLayer),
         ),
       );
       const failed = await runEffect(
         rebuildVectorIndex({agentContextHome: home}, manifest, [
           {text: '# Alpha\n\nChanged canonical content.', uri: 'threadnote://resources/repos/a.md'},
         ]).pipe(
-          Effect.provide(
+          provideTestLayer(
             Layer.succeed(
               LocalModelRuntime,
               LocalModelRuntime.of({
-                diagnostics: () => Effect.succeed({backend: 'fake', buildType: 'prebuilt', cpuMathCores: 4}),
+                diagnostics: Effect.succeed({backend: 'fake', buildType: 'prebuilt', cpuMathCores: 4}),
                 embedMany: () =>
                   Effect.fail(
                     new InferenceInterrupted({
@@ -374,12 +376,12 @@ describe('vector index generations', () => {
                       operation: 'embed',
                     }),
                   ),
-                generate: () => Effect.die(new Error('Unexpected generation')),
-                rerank: () => Effect.die(new Error('Unexpected reranking')),
+                generate: () => Effect.die(new TestError('Unexpected generation')),
+                rerank: () => Effect.die(new TestError('Unexpected reranking')),
               }),
             ),
           ),
-          Effect.provide(modelStoreLayer),
+          provideTestLayer(modelStoreLayer),
           Effect.result,
         ),
       );
@@ -407,8 +409,8 @@ describe('vector index generations', () => {
       const rebuild = (documents: typeof candidates) =>
         runEffect(
           rebuildVectorIndex({agentContextHome: home}, manifest, documents).pipe(
-            Effect.provide(runtimeLayer),
-            Effect.provide(modelStoreLayer),
+            provideTestLayer(runtimeLayer),
+            provideTestLayer(modelStoreLayer),
           ),
         );
 
@@ -474,8 +476,8 @@ describe('vector index generations', () => {
       const ensure = (documents: typeof initial, corpusGeneration: string) =>
         runEffect(
           ensureVectorIndex({agentContextHome: home}, manifest, documents, {corpusGeneration}).pipe(
-            Effect.provide(runtimeLayer),
-            Effect.provide(modelStoreLayer),
+            provideTestLayer(runtimeLayer),
+            provideTestLayer(modelStoreLayer),
           ),
         );
 
@@ -520,7 +522,7 @@ describe('vector index generations', () => {
     const runtimeLayer = Layer.succeed(
       LocalModelRuntime,
       LocalModelRuntime.of({
-        diagnostics: () => Effect.succeed({backend: 'fake', buildType: 'prebuilt', cpuMathCores: 4}),
+        diagnostics: Effect.succeed({backend: 'fake', buildType: 'prebuilt', cpuMathCores: 4}),
         embedMany: ({inputs, manifest: requested}) => {
           embeddingCalls += 1;
           return Effect.promise(
@@ -531,8 +533,8 @@ describe('vector index generations', () => {
               }),
           );
         },
-        generate: () => Effect.die(new Error('Unexpected generation')),
-        rerank: () => Effect.die(new Error('Unexpected reranking')),
+        generate: () => Effect.die(new TestError('Unexpected generation')),
+        rerank: () => Effect.die(new TestError('Unexpected reranking')),
       }),
     );
     const ensure = (corpusGeneration: string, text: string) =>
@@ -542,7 +544,7 @@ describe('vector index generations', () => {
           manifest,
           [{text, uri: 'threadnote://resources/repos/generation.md'}],
           {corpusGeneration, currentCorpusGeneration: generationFence},
-        ).pipe(Effect.provide(runtimeLayer), Effect.provide(modelStoreLayer)),
+        ).pipe(provideTestLayer(runtimeLayer), provideTestLayer(modelStoreLayer)),
       );
 
     try {
@@ -557,7 +559,7 @@ describe('vector index generations', () => {
             corpusGeneration: 'lexical-generation-1',
             currentCorpusGeneration: generationFence,
           },
-        ).pipe(Effect.provide(runtimeLayer), Effect.provide(modelStoreLayer), Effect.result),
+        ).pipe(provideTestLayer(runtimeLayer), provideTestLayer(modelStoreLayer), Effect.result),
       );
 
       releaseEmbedding();
@@ -589,7 +591,7 @@ describe('vector index generations', () => {
     const runtimeLayer = Layer.succeed(
       LocalModelRuntime,
       LocalModelRuntime.of({
-        diagnostics: () => Effect.succeed({backend: 'fake', buildType: 'prebuilt', cpuMathCores: 4}),
+        diagnostics: Effect.succeed({backend: 'fake', buildType: 'prebuilt', cpuMathCores: 4}),
         embedMany: ({inputs, manifest: requested}) => {
           embeddingCalls += 1;
           const vectors = inputs.map(() => unitVector(requested.dimensions ?? 0, 0));
@@ -602,8 +604,8 @@ describe('vector index generations', () => {
               }),
           );
         },
-        generate: () => Effect.die(new Error('Unexpected generation')),
-        rerank: () => Effect.die(new Error('Unexpected reranking')),
+        generate: () => Effect.die(new TestError('Unexpected generation')),
+        rerank: () => Effect.die(new TestError('Unexpected reranking')),
       }),
     );
     const documents = [
@@ -614,7 +616,7 @@ describe('vector index generations', () => {
         ensureVectorIndex({agentContextHome: home}, manifest, documents, {
           corpusGeneration,
           currentCorpusGeneration: generationFence,
-        }).pipe(Effect.provide(runtimeLayer), Effect.provide(modelStoreLayer), Effect.result),
+        }).pipe(provideTestLayer(runtimeLayer), provideTestLayer(modelStoreLayer), Effect.result),
       );
 
     try {
@@ -668,7 +670,7 @@ describe('vector index generations', () => {
         ensureVectorIndex({agentContextHome: home}, manifest, documents, {
           corpusGeneration,
           currentCorpusGeneration: generationFence,
-        }).pipe(Effect.provide(runtimeLayer), Effect.provide(modelStoreLayer), Effect.result),
+        }).pipe(provideTestLayer(runtimeLayer), provideTestLayer(modelStoreLayer), Effect.result),
       );
 
     try {
@@ -719,7 +721,7 @@ describe('vector index generations', () => {
     const runtimeLayer = Layer.succeed(
       LocalModelRuntime,
       LocalModelRuntime.of({
-        diagnostics: () => Effect.succeed({backend: 'fake', buildType: 'prebuilt', cpuMathCores: 4}),
+        diagnostics: Effect.succeed({backend: 'fake', buildType: 'prebuilt', cpuMathCores: 4}),
         embedMany: ({inputs, manifest: requested}) => {
           const vectors = inputs.map(() => unitVector(requested.dimensions ?? 0, 0));
           if (!delayQuery || !inputs.some(input => input.includes('generation-race-query'))) {
@@ -733,12 +735,12 @@ describe('vector index generations', () => {
               }),
           );
         },
-        generate: () => Effect.die(new Error('Unexpected generation')),
-        rerank: () => Effect.die(new Error('Unexpected reranking')),
+        generate: () => Effect.die(new TestError('Unexpected generation')),
+        rerank: () => Effect.die(new TestError('Unexpected reranking')),
       }),
     );
     const withRuntime = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-      effect.pipe(Effect.provide(runtimeLayer), Effect.provide(modelStoreLayer));
+      effect.pipe(provideTestLayer(runtimeLayer), provideTestLayer(modelStoreLayer));
 
     try {
       await runEffect(
@@ -810,7 +812,7 @@ describe('vector index generations', () => {
       const interruptedLayer = Layer.succeed(
         LocalModelRuntime,
         LocalModelRuntime.of({
-          diagnostics: () => Effect.succeed({backend: 'fake', buildType: 'prebuilt', cpuMathCores: 4}),
+          diagnostics: Effect.succeed({backend: 'fake', buildType: 'prebuilt', cpuMathCores: 4}),
           embedMany: ({inputs, manifest: requested}) => {
             call += 1;
             if (call === 2) {
@@ -824,14 +826,14 @@ describe('vector index generations', () => {
             }
             return Effect.succeed(inputs.map((_, index) => unitVector(requested.dimensions ?? 0, index % 2)));
           },
-          generate: () => Effect.die(new Error('Unexpected generation')),
-          rerank: () => Effect.die(new Error('Unexpected reranking')),
+          generate: () => Effect.die(new TestError('Unexpected generation')),
+          rerank: () => Effect.die(new TestError('Unexpected reranking')),
         }),
       );
       const interrupted = await runEffect(
         rebuildVectorIndex({agentContextHome: home}, manifest, candidates).pipe(
-          Effect.provide(interruptedLayer),
-          Effect.provide(modelStoreLayer),
+          provideTestLayer(interruptedLayer),
+          provideTestLayer(modelStoreLayer),
           Effect.result,
         ),
       );
@@ -840,13 +842,13 @@ describe('vector index generations', () => {
       const resumedBatches: number[] = [];
       const resumed = await runEffect(
         rebuildVectorIndex({agentContextHome: home}, manifest, candidates).pipe(
-          Effect.provide(
+          provideTestLayer(
             fakeRuntimeLayer(
               () => 0,
               inputs => resumedBatches.push(inputs.length),
             ),
           ),
-          Effect.provide(modelStoreLayer),
+          provideTestLayer(modelStoreLayer),
         ),
       );
       expect(resumed.chunkCount).toBe(300);
@@ -872,7 +874,7 @@ describe('vector index generations', () => {
             Effect.sync(() => {
               progress.push(event);
             }),
-        }).pipe(Effect.provide(fakeRuntimeLayer(() => 0)), Effect.provide(modelStoreLayer)),
+        }).pipe(provideTestLayer(fakeRuntimeLayer(() => 0)), provideTestLayer(modelStoreLayer)),
       );
 
       expect(rebuilt.chunkCount).toBe(300);
@@ -897,7 +899,7 @@ describe('vector index generations', () => {
     const runtimeLayer = Layer.succeed(
       LocalModelRuntime,
       LocalModelRuntime.of({
-        diagnostics: () => Effect.succeed({backend: 'fake', buildType: 'prebuilt', cpuMathCores: 4}),
+        diagnostics: Effect.succeed({backend: 'fake', buildType: 'prebuilt', cpuMathCores: 4}),
         embedMany: ({inputs, manifest: requested}) =>
           Effect.promise(
             () =>
@@ -906,15 +908,15 @@ describe('vector index generations', () => {
                 releaseEmbedding = () => resolve(inputs.map(() => unitVector(requested.dimensions ?? 0, 0)));
               }),
           ),
-        generate: () => Effect.die(new Error('Unexpected generation')),
-        rerank: () => Effect.die(new Error('Unexpected reranking')),
+        generate: () => Effect.die(new TestError('Unexpected generation')),
+        rerank: () => Effect.die(new TestError('Unexpected reranking')),
       }),
     );
     try {
       const rebuilding = runEffect(
         rebuildVectorIndex({agentContextHome: home}, manifest, [
           {text: '# Alpha\n\nLock coordination.', uri: 'threadnote://resources/repos/a.md'},
-        ]).pipe(Effect.provide(runtimeLayer), Effect.provide(modelStoreLayer)),
+        ]).pipe(provideTestLayer(runtimeLayer), provideTestLayer(modelStoreLayer)),
       );
       await started;
       let purgeSettled = false;
@@ -953,14 +955,14 @@ function fakeRuntimeLayer(
   return Layer.succeed(
     LocalModelRuntime,
     LocalModelRuntime.of({
-      diagnostics: () => Effect.succeed({backend: 'fake', buildType: 'prebuilt', cpuMathCores: 4}),
+      diagnostics: Effect.succeed({backend: 'fake', buildType: 'prebuilt', cpuMathCores: 4}),
       embedMany: ({inputs, manifest: requested}) =>
         Effect.sync(() => {
           onInputs(inputs);
           return inputs.map(input => unitVector(requested.dimensions ?? 0, vectorIndex(input)));
         }),
-      generate: () => Effect.die(new Error('Unexpected generation')),
-      rerank: () => Effect.die(new Error('Unexpected reranking')),
+      generate: () => Effect.die(new TestError('Unexpected generation')),
+      rerank: () => Effect.die(new TestError('Unexpected reranking')),
     }),
   );
 }

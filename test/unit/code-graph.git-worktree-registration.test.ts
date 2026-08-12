@@ -1,4 +1,6 @@
-import {execFileSync} from 'node:child_process';
+import {TestError} from '../helpers/test-error.js';
+import {provideTestLayer} from '../helpers/effect-layer.js';
+import {execFileSync} from '../helpers/node-child-process.js';
 import {
   chmodSync,
   existsSync,
@@ -9,9 +11,9 @@ import {
   rmSync,
   symlinkSync,
   writeFileSync,
-} from 'node:fs';
-import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+} from '../helpers/node-fs.js';
+import {tmpdir} from '../helpers/node-os.js';
+import {join} from '../helpers/node-path.js';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {it as effectIt} from '@effect/vitest';
 import {Effect, Fiber, Layer} from 'effect';
@@ -79,7 +81,8 @@ describe('code graph common-gitdir worktree authority', () => {
       Effect.gen(function* () {
         const command = yield* CommandExecutor;
         const executeBytes = command.executeBytes;
-        if (executeBytes === undefined) return yield* Effect.fail(new Error('binary command adapter is unavailable'));
+        if (executeBytes === undefined)
+          return yield* Effect.fail(new TestError('binary command adapter is unavailable'));
         const recording = CommandExecutor.of({
           ...command,
           executeBytes: (executable, args, options) => {
@@ -311,7 +314,7 @@ describe('code graph common-gitdir worktree authority', () => {
       const serialized = JSON.stringify(observation);
       expect(serialized).not.toContain(common);
       expect(targets.every(target => !serialized.includes(target.canonicalWorktreePath))).toBe(true);
-    }).pipe(Effect.provide(authorityWorkerLayer)),
+    }).pipe(provideTestLayer(authorityWorkerLayer)),
   );
 
   effectIt.effect('rejects over-page authority before spawning and strictly parses malformed responses', () =>
@@ -376,7 +379,7 @@ describe('code graph common-gitdir worktree authority', () => {
       expect(parseCodeGraphWorktreeReconciliationAuthorityResponse(Buffer.from(validAuthority), 1).state).toBe(
         'complete',
       );
-    }).pipe(Effect.provide(authorityWorkerLayer)),
+    }).pipe(provideTestLayer(authorityWorkerLayer)),
   );
 
   effectIt.effect('accepts the maximally escaped valid page and rejects stdin beyond the hard cap', () =>
@@ -431,7 +434,7 @@ describe('code graph common-gitdir worktree authority', () => {
       expect(invalidUtf8.exitCode).toBe(0);
       expect(new TextDecoder().decode(invalidUtf8.stdout)).toBe('{"reason":"invalid","state":"unknown"}\n');
       expect(invalidUtf8.stderr).toBe('');
-    }).pipe(Effect.provide(authorityWorkerLayer)),
+    }).pipe(provideTestLayer(authorityWorkerLayer)),
   );
 
   effectIt.effect('classifies direct lstat states and fails closed for non-ENOENT path errors', () =>
@@ -463,7 +466,7 @@ describe('code graph common-gitdir worktree authority', () => {
         chmodSync(inaccessible, 0o700);
         expect(permission).toEqual({reason: 'unavailable', state: 'unknown'});
       }
-    }).pipe(Effect.provide(authorityWorkerLayer)),
+    }).pipe(provideTestLayer(authorityWorkerLayer)),
   );
 
   effectIt.effect('kills a hard-blocked lstat worker on deadline and interruption', () =>
@@ -492,7 +495,7 @@ describe('code graph common-gitdir worktree authority', () => {
             yield* Effect.promise(() => waitForProcessExit(childProcess, 2_000));
           }),
         );
-      }).pipe(Effect.provide(authorityWorkerLayer)),
+      }).pipe(provideTestLayer(authorityWorkerLayer)),
     ),
   );
 });
@@ -544,7 +547,7 @@ async function completesWithin<A>(promise: Promise<A>, milliseconds: number): Pr
     return await Promise.race([
       promise,
       new Promise<never>((_, reject) => {
-        timeout = setTimeout(() => reject(new Error('operation exceeded bounded test deadline')), milliseconds);
+        timeout = setTimeout(() => reject(new TestError('operation exceeded bounded test deadline')), milliseconds);
       }),
     ]);
   } finally {
@@ -585,7 +588,7 @@ function restoreEnvironment(name: string, value: string | undefined): void {
 async function waitForFile(path: string, timeoutMilliseconds: number): Promise<void> {
   const deadline = Date.now() + timeoutMilliseconds;
   while (!existsSync(path)) {
-    if (Date.now() >= deadline) throw new Error('Worker did not publish its test PID before the deadline.');
+    if (Date.now() >= deadline) throw new TestError('Worker did not publish its test PID before the deadline.');
     await new Promise(resolve => setTimeout(resolve, 5));
   }
 }
@@ -599,7 +602,7 @@ async function waitForProcessExit(pid: number, timeoutMilliseconds: number): Pro
       if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'ESRCH') return;
       throw error;
     }
-    if (Date.now() >= deadline) throw new Error(`Worker ${String(pid)} survived its bounded cancellation.`);
+    if (Date.now() >= deadline) throw new TestError(`Worker ${String(pid)} survived its bounded cancellation.`);
     await new Promise(resolve => setTimeout(resolve, 5));
   }
 }

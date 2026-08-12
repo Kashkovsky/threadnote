@@ -1,3 +1,4 @@
+import {provideScriptLayer, scriptError, ScriptError} from './effect/errors.js';
 import {BunRuntime} from '@effect/platform-bun';
 import {Clock, Console, Effect, FileSystem, Option, Path} from 'effect';
 import {ApplicationLayer} from '../src/effect/runtime.js';
@@ -33,7 +34,7 @@ const program = Effect.gen(function* () {
   const raw = yield* fs.readFileString(FIXTURE_PATH);
   const fixture = yield* Effect.try({
     try: () => parseRecallEvaluationFixture(JSON.parse(raw)),
-    catch: cause => (cause instanceof Error ? cause : new Error(String(cause))),
+    catch: cause => scriptError(cause),
   });
   const durations: number[] = [];
   for (const query of fixture.queries) {
@@ -55,12 +56,12 @@ const program = Effect.gen(function* () {
   };
   yield* Console.log(JSON.stringify(output, undefined, 2));
   if (result.failures.length > 0) {
-    return yield* Effect.fail(new Error(`Recall evaluation failed ${result.failures.length} contract check(s).`));
+    return yield* Effect.fail(new ScriptError(`Recall evaluation failed ${result.failures.length} contract check(s).`));
   }
   for (const [name, benchmark] of Object.entries(productionBenchmark.scenarios)) {
     if (benchmark.p95Milliseconds > benchmark.p95LimitMilliseconds) {
       return yield* Effect.fail(
-        new Error(
+        new ScriptError(
           `Recall ${name} benchmark p95 ${benchmark.p95Milliseconds.toFixed(2)}ms exceeds ${benchmark.p95LimitMilliseconds}ms.`,
         ),
       );
@@ -118,7 +119,7 @@ const runProductionBenchmark = Effect.scoped(
       const targetInfo = yield* fs.stat(targetRepoPath);
       const modifiedAt = Option.getOrUndefined(targetInfo.mtime)?.getTime();
       if (modifiedAt === undefined) {
-        return yield* Effect.fail(new Error('Production benchmark target has no modification time.'));
+        return yield* Effect.fail(new ScriptError('Production benchmark target has no modification time.'));
       }
       yield* fs.writeFileString(
         seedStatePath,
@@ -140,7 +141,9 @@ const runProductionBenchmark = Effect.scoped(
       initialIndex.find(candidate => candidate.uri === 'threadnote://resources/repos/threadnote/09999.md')
         ?.authority !== 'canonical_repo'
     ) {
-      return yield* Effect.fail(new Error('Production benchmark target did not receive verified seed authority.'));
+      return yield* Effect.fail(
+        new ScriptError('Production benchmark target did not receive verified seed authority.'),
+      );
     }
     const prepareForQuery = (query: string) =>
       prepareRecallSections(config, {
@@ -158,7 +161,7 @@ const runProductionBenchmark = Effect.scoped(
     for (let index = 0; index < PRODUCTION_BENCHMARK_WARMUP_COUNT; index += 1) {
       const warmup = yield* prepare;
       if (!warmup.ranked.some(hit => hit.uri === 'threadnote://resources/repos/threadnote/09999.md')) {
-        return yield* Effect.fail(new Error('Production benchmark failed to retrieve its exact target.'));
+        return yield* Effect.fail(new ScriptError('Production benchmark failed to retrieve its exact target.'));
       }
     }
     const targetUri = 'threadnote://resources/repos/threadnote/09999.md';
@@ -176,7 +179,7 @@ const runProductionBenchmark = Effect.scoped(
           const result = yield* runSample(sample);
           const finishedAt = yield* Clock.currentTimeNanos;
           if (!result.ranked.some(hit => hit.uri === targetUri)) {
-            return yield* Effect.fail(new Error('Production benchmark failed to retrieve its target.'));
+            return yield* Effect.fail(new ScriptError('Production benchmark failed to retrieve its target.'));
           }
           durations.push(Number(finishedAt - startedAt) / NANOSECONDS_PER_MILLISECOND);
         }
@@ -203,7 +206,7 @@ const runProductionBenchmark = Effect.scoped(
           const found = matches.some(match => match.uri === targetUri);
           if ((expected === 'hit' && !found) || (expected === 'no-hit' && matches.length > 0)) {
             return yield* Effect.fail(
-              new Error(`Production exact-search benchmark produced an unexpected ${expected}.`),
+              new ScriptError(`Production exact-search benchmark produced an unexpected ${expected}.`),
             );
           }
           durations.push(Number(finishedAt - startedAt) / NANOSECONDS_PER_MILLISECOND);
@@ -247,7 +250,7 @@ const runProductionBenchmark = Effect.scoped(
     const finalUnchangedQuery = yield* prepare;
     if (!finalUnchangedQuery.ranked.some(hit => hit.uri === targetUri)) {
       return yield* Effect.fail(
-        new Error('Production benchmark lost an unchanged-term target after sustained incremental updates.'),
+        new ScriptError('Production benchmark lost an unchanged-term target after sustained incremental updates.'),
       );
     }
     return {
@@ -272,6 +275,6 @@ function percentile(sorted: readonly number[], quantile: number): number {
   return sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * quantile))] ?? 0;
 }
 
-BunRuntime.runMain(program.pipe(Effect.provide(ApplicationLayer)), {
+BunRuntime.runMain(provideScriptLayer(program, ApplicationLayer), {
   disableErrorReporting: false,
 });

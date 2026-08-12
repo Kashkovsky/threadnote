@@ -3,6 +3,14 @@ import {sha256HexSync} from '../crypto/sha256.js';
 import {readExclusiveFileLockOwner, type FileLockOwner} from '../effect/file_lock.js';
 import {runtimeTextDirectoryNamePage, SystemInfo, type SystemInfoShape} from '../effect/system.js';
 import type {CodeGraphBuildOwnerIdentity} from './build_owner.js';
+import {parseCodeGraphBuildStatus} from './build_status_codec.js';
+import {
+  CODE_GRAPH_BUILD_HASH_ID as HASH_ID,
+  CODE_GRAPH_BUILD_ID as BUILD_ID,
+  CODE_GRAPH_BUILD_STATUS_SCHEMA_VERSION,
+  isBuildStatusRecord as isRecord,
+  isBuildStatusText as isText,
+} from './build_status_validation.js';
 import {classifyCodeGraphLifecycle, type CodeGraphLifecycleProtection} from './lifecycle_classification.js';
 import {codeGraphRepositoriesRoot, codeGraphWorktreeLockPath, type CodeGraphLayout} from './layout.js';
 import {
@@ -18,7 +26,6 @@ import {
   CODE_GRAPH_TOP_SLOW_FILE_LIMIT,
   codeGraphPathExtension,
   codeGraphSourceSizeBucket,
-  isCodeGraphSourceSizeBucket,
   retainCodeGraphSlowFileTelemetry,
   type CodeGraphScanningMetrics,
   type CodeGraphSlowFileTelemetry,
@@ -29,18 +36,21 @@ import type {
   CodeGraphIndexSummary,
   CodeGraphMaterializationActivity,
   CodeGraphMaterializationMetrics,
-  CodeGraphMaterializationRows,
-  CodeGraphOverlayFallbackReason,
   CodeGraphProgress,
   CodeGraphResolutionActivity,
   CodeGraphSnapshot,
   RepositoryIdentity,
 } from './types.js';
 
-export const CODE_GRAPH_BUILD_STATUS_SCHEMA_VERSION = 1 as const;
+export {parseCodeGraphBuildStatus} from './build_status_codec.js';
+export {CODE_GRAPH_BUILD_STATUS_SCHEMA_VERSION} from './build_status_validation.js';
 export const CODE_GRAPH_BUILD_HEARTBEAT_INTERVAL_MILLISECONDS = 2_000;
 export const CODE_GRAPH_BUILD_PROGRESS_WRITE_INTERVAL_MILLISECONDS = 250;
 export const CODE_GRAPH_BUILD_STALE_AFTER_MILLISECONDS = 15_000;
+
+class CodeGraphBuildStatusError extends Error {
+  readonly _tag = 'CodeGraphBuildStatusError' as const;
+}
 
 export type CodeGraphBuildState = 'completed' | 'failed' | 'queued' | 'running';
 export type CodeGraphBuildLiveness = 'abandoned' | 'active' | 'completed' | 'failed' | 'stalled';
@@ -167,6 +177,7 @@ export interface ObservedCodeGraphBuildStatus extends CodeGraphBuildStatus {
   };
   /** Local-only Manager context. Never written into the privacy-safe build status document. */
   readonly managerContext?: {
+    readonly branch?: string;
     readonly worktreePath: string;
   };
   readonly observation: {
@@ -223,39 +234,7 @@ const MANAGER_CONTEXT_FILE_BYTES_LIMIT = 8 * 1_024;
 const MANAGER_CONTEXT_SCHEMA_VERSION = 1 as const;
 const BUILD_HISTORY_INVALID_RETRY_MILLISECONDS = 30_000;
 const BUILD_HISTORY_IO_RETRY_MILLISECONDS = 1_000;
-const HASH_ID = /^[0-9a-f]{64}$/;
-const BUILD_ID = /^[0-9a-f-]{16,64}$/;
 const BUILD_STATUS_FILE = /^([0-9a-f-]{16,64})\.json$/;
-const COMMIT_ID = /^[0-9a-f]{7,64}$/;
-const VALID_PHASES = new Set<CodeGraphProgress['phase']>([
-  'activating',
-  'embedding',
-  'materializing',
-  'reclaiming',
-  'registering',
-  'resolving',
-  'scanning',
-  'waiting',
-]);
-const VALID_STATES = new Set<CodeGraphBuildState>(['completed', 'failed', 'queued', 'running']);
-const VALID_MATERIALIZATION_FALLBACK_REASONS = new Set<CodeGraphOverlayFallbackReason>([
-  'cache-incomplete',
-  'disabled',
-  'dynamic-aliases',
-  'extractor-context-changed',
-  'fact-budget-expanded',
-  'file-set-changed',
-  'forced-full-rebuild',
-  'incremental-rewrite-unbounded',
-  'no-materialized-changes',
-  'project-closure-incomplete',
-  'project-closure-unbounded',
-  'reexport-closure-unbounded',
-  'resolution-surface-changed',
-  'staging-identity-mismatch',
-  'staging-unavailable',
-  'workspace-changed',
-]);
 
 export type CodeGraphBuildHistoryPruneResult =
   | {readonly state: 'complete'}
@@ -359,7 +338,9 @@ export const makeCodeGraphBuildReporter = Effect.fn('codeGraph.buildStatus.makeR
       .pipe(Effect.catch(() => Effect.void));
 
   yield* persist(current => current, true);
-  yield* writeCodeGraphManagerContext(fs, path, file, buildId, identity.repoRoot).pipe(Effect.catch(() => Effect.void));
+  yield* writeCodeGraphManagerContext(fs, path, file, buildId, identity.repoRoot, identity.branch).pipe(
+    Effect.catch(() => Effect.void),
+  );
   reporterHistoryAuthority.current = Option.getOrUndefined(
     yield* inspectBuildHistoryDirectory(fs, path, layout, identity.worktreeId).pipe(Effect.option),
   );
@@ -484,7 +465,7 @@ export const makeCodeGraphBuildReporter = Effect.fn('codeGraph.buildStatus.makeR
           };
         }, true);
       }
-    }).pipe(Effect.catch(() => Effect.void)),
+    }),
     ownerIdentity: {
       buildId,
       processId: system.processId,
@@ -982,7 +963,8 @@ function codeGraphBuildStatusPath(
   worktreeId: string,
   buildId: string,
 ): string {
-  if (!HASH_ID.test(worktreeId) || !BUILD_ID.test(buildId)) throw new Error('Code graph build identity is invalid.');
+  if (!HASH_ID.test(worktreeId) || !BUILD_ID.test(buildId))
+    throw new CodeGraphBuildStatusError('Code graph build identity is invalid.');
   return path.join(layout.repositoryRoot, STATUS_DIRECTORY, worktreeId, `${buildId}.json`);
 }
 
@@ -999,15 +981,17 @@ function writeCodeGraphBuildStatus(
     if (initializeDirectory) {
       yield* ensurePrivateRegularDirectory(fs, path, directory);
     } else if (!(yield* regularDirectory(fs, directory))) {
-      return yield* Effect.fail(new Error('Code graph build status directory was removed.'));
+      return yield* Effect.fail(new CodeGraphBuildStatusError('Code graph build status directory was removed.'));
     }
     if ((yield* fs.readLink(file).pipe(Effect.option))._tag === 'Some') {
-      return yield* Effect.fail(new Error('Code graph build status path is a symbolic link.'));
+      return yield* Effect.fail(new CodeGraphBuildStatusError('Code graph build status path is a symbolic link.'));
     }
     const temporary = path.join(directory, `.${status.buildId}.${sequence}.tmp`);
     const content = `${JSON.stringify(status)}\n`;
     if (new TextEncoder().encode(content).byteLength > STATUS_FILE_BYTES_LIMIT) {
-      return yield* Effect.fail(new Error('Code graph build status exceeded its bounded sidecar size.'));
+      return yield* Effect.fail(
+        new CodeGraphBuildStatusError('Code graph build status exceeded its bounded sidecar size.'),
+      );
     }
     yield* fs.writeFileString(temporary, content, {flag: 'wx', mode: 0o600});
     yield* fs
@@ -1026,13 +1010,19 @@ function writeCodeGraphManagerContext(
   statusFile: string,
   buildId: string,
   worktreePath: string,
+  branch?: string,
 ) {
   return Effect.gen(function* () {
     if (!isText(worktreePath, 4_096)) return;
     const file = codeGraphManagerContextPath(path, statusFile, buildId);
     if ((yield* fs.readLink(file).pipe(Effect.option))._tag === 'Some') return;
     const temporary = path.join(path.dirname(file), `.${buildId}.manager-context.tmp`);
-    const content = `${JSON.stringify({buildId, schemaVersion: MANAGER_CONTEXT_SCHEMA_VERSION, worktreePath})}\n`;
+    const content = `${JSON.stringify({
+      ...(branch !== undefined && isText(branch, 1_024) ? {branch} : {}),
+      buildId,
+      schemaVersion: MANAGER_CONTEXT_SCHEMA_VERSION,
+      worktreePath,
+    })}\n`;
     if (new TextEncoder().encode(content).byteLength > MANAGER_CONTEXT_FILE_BYTES_LIMIT) return;
     yield* fs.writeFileString(temporary, content, {flag: 'wx', mode: 0o600});
     yield* fs
@@ -1098,11 +1088,12 @@ function readCodeGraphManagerContext(fs: FileSystem.FileSystem, file: string, bu
       !isRecord(value) ||
       value.schemaVersion !== MANAGER_CONTEXT_SCHEMA_VERSION ||
       value.buildId !== buildId ||
-      !isText(value.worktreePath, 4_096)
+      !isText(value.worktreePath, 4_096) ||
+      (value.branch !== undefined && !isText(value.branch, 1_024))
     ) {
       return undefined;
     }
-    return {worktreePath: value.worktreePath};
+    return {...(value.branch === undefined ? {} : {branch: value.branch}), worktreePath: value.worktreePath};
   }).pipe(Effect.catch(() => Effect.succeed(undefined)));
 }
 
@@ -1111,11 +1102,11 @@ function ensurePrivateRegularDirectory(fs: FileSystem.FileSystem, path: Path.Pat
     const parent = path.dirname(directory);
     yield* fs.makeDirectory(parent, {recursive: true, mode: 0o700});
     if ((yield* fs.readLink(parent).pipe(Effect.option))._tag === 'Some') {
-      return yield* Effect.fail(new Error('Code graph build status parent is a symbolic link.'));
+      return yield* Effect.fail(new CodeGraphBuildStatusError('Code graph build status parent is a symbolic link.'));
     }
     yield* fs.makeDirectory(directory, {recursive: true, mode: 0o700});
     if ((yield* fs.readLink(directory).pipe(Effect.option))._tag === 'Some') {
-      return yield* Effect.fail(new Error('Code graph build status directory is a symbolic link.'));
+      return yield* Effect.fail(new CodeGraphBuildStatusError('Code graph build status directory is a symbolic link.'));
     }
   });
 }
@@ -1166,791 +1157,6 @@ function readStatusFile(fs: FileSystem.FileSystem, file: string) {
       processStartIdentity,
     });
   }).pipe(Effect.catch(() => Effect.succeed(undefined)));
-}
-
-export function parseCodeGraphBuildStatus(value: unknown): CodeGraphBuildStatus | undefined {
-  if (!isRecord(value) || value.schemaVersion !== CODE_GRAPH_BUILD_STATUS_SCHEMA_VERSION) return undefined;
-  if (!isText(value.buildId, 64) || !BUILD_ID.test(value.buildId)) return undefined;
-  if (!isRecord(value.identity) || !isRecord(value.owner) || !isRecord(value.timestamps)) return undefined;
-  if (
-    !isHash(value.identity.repositoryId) ||
-    !isHash(value.identity.checkoutId) ||
-    !isHash(value.identity.worktreeId) ||
-    !isText(value.identity.commit, 64) ||
-    !COMMIT_ID.test(value.identity.commit) ||
-    !Number.isSafeInteger(value.owner.processId) ||
-    Number(value.owner.processId) <= 0 ||
-    value.owner.runtime !== 'bun' ||
-    !isText(value.owner.runtimeVersion, 64) ||
-    !VALID_PHASES.has(value.phase as CodeGraphProgress['phase']) ||
-    !VALID_STATES.has(value.state as CodeGraphBuildState)
-  ) {
-    return undefined;
-  }
-  const timestamps = value.timestamps;
-  if (
-    !isTimestamp(timestamps.startedAt) ||
-    !isTimestamp(timestamps.phaseStartedAt) ||
-    !isTimestamp(timestamps.lastProgressAt) ||
-    !isTimestamp(timestamps.heartbeatAt) ||
-    !isTimestamp(timestamps.updatedAt) ||
-    (timestamps.completedAt !== undefined && !isTimestamp(timestamps.completedAt))
-  ) {
-    return undefined;
-  }
-  const counters = parseCounters(value.counters);
-  if (!counters) return undefined;
-  const activity = parseActivity(value.activity);
-  if (value.activity !== undefined && !activity) return undefined;
-  const activation = parseActivation(value.activation);
-  if (value.activation !== undefined && !activation) return undefined;
-  const timings = parseTimings(value.timings);
-  if (value.timings !== undefined && !timings) return undefined;
-  const materialization = parseMaterialization(value.materialization);
-  if (value.materialization !== undefined && !materialization) return undefined;
-  const ownerStart = value.owner.processStartIdentity;
-  if (ownerStart !== undefined && !isText(ownerStart, 256)) return undefined;
-  const subphase = value.subphase;
-  if (subphase !== undefined && !isText(subphase, 64)) return undefined;
-  const error = parseError(value.error);
-  if (value.error !== undefined && !error) return undefined;
-  const eta = parseEta(value.eta);
-  if (value.eta !== undefined && !eta) return undefined;
-  const extraction = parseExtraction(value.extraction);
-  if (value.extraction !== undefined && !extraction) return undefined;
-  const result = parseResult(value.result);
-  if (value.result !== undefined && !result) return undefined;
-  const request = parseRequest(value.request);
-  if (value.request !== undefined && !request) return undefined;
-  const resolution = parseResolution(value.resolution);
-  if (value.resolution !== undefined && !resolution) return undefined;
-  const displayName = value.identity.displayName;
-  if (displayName !== undefined && !isText(displayName, 256)) return undefined;
-  return {
-    ...(activation ? {activation} : {}),
-    ...(activity ? {activity} : {}),
-    buildId: value.buildId,
-    counters,
-    ...(error ? {error} : {}),
-    ...(eta ? {eta} : {}),
-    ...(extraction ? {extraction} : {}),
-    identity: {
-      checkoutId: value.identity.checkoutId,
-      commit: value.identity.commit,
-      ...(displayName ? {displayName} : {}),
-      repositoryId: value.identity.repositoryId,
-      worktreeId: value.identity.worktreeId,
-    },
-    ...(materialization ? {materialization} : {}),
-    owner: {
-      processId: Number(value.owner.processId),
-      ...(ownerStart ? {processStartIdentity: ownerStart} : {}),
-      runtime: 'bun',
-      runtimeVersion: value.owner.runtimeVersion,
-    },
-    phase: value.phase as CodeGraphProgress['phase'],
-    ...(request ? {request} : {}),
-    ...(resolution ? {resolution} : {}),
-    ...(result ? {result} : {}),
-    schemaVersion: CODE_GRAPH_BUILD_STATUS_SCHEMA_VERSION,
-    state: value.state as CodeGraphBuildState,
-    ...(subphase ? {subphase} : {}),
-    ...(timings ? {timings} : {}),
-    timestamps: {
-      ...(timestamps.completedAt ? {completedAt: timestamps.completedAt} : {}),
-      heartbeatAt: timestamps.heartbeatAt,
-      lastProgressAt: timestamps.lastProgressAt,
-      phaseStartedAt: timestamps.phaseStartedAt,
-      startedAt: timestamps.startedAt,
-      updatedAt: timestamps.updatedAt,
-    },
-  };
-}
-
-function parseActivation(value: unknown): CodeGraphBuildActivation | undefined {
-  if (!isRecord(value)) return undefined;
-  const activity = parseActivationActivity(value.activity);
-  return activity ? {activity} : undefined;
-}
-
-function parseActivationActivity(value: unknown): CodeGraphBuildActivation['activity'] | undefined {
-  if (
-    !isRecord(value) ||
-    ![
-      'checkpointing-snapshot',
-      'committing-snapshot',
-      'copying-edges',
-      'copying-files',
-      'copying-lookup-keys',
-      'copying-reexports',
-      'copying-symbols',
-      'copying-terms',
-      'copying-workspace',
-      'recording-completion',
-      'validating-input',
-    ].includes(String(value.stage)) ||
-    !['completed', 'progress', 'started'].includes(String(value.state)) ||
-    !isNonNegativeFinite(value.elapsedMilliseconds) ||
-    !isNonNegativeFinite(value.stageElapsedMilliseconds) ||
-    !isTimestamp(value.startedAt)
-  ) {
-    return undefined;
-  }
-  if (value.rows !== undefined && !isNonNegativeSafeInteger(value.rows)) return undefined;
-  if (value.transactionMilliseconds !== undefined && !isNonNegativeFinite(value.transactionMilliseconds)) {
-    return undefined;
-  }
-  return {
-    elapsedMilliseconds: Number(value.elapsedMilliseconds),
-    ...(value.rows === undefined ? {} : {rows: Number(value.rows)}),
-    stage: value.stage as CodeGraphActivationActivity['stage'],
-    stageElapsedMilliseconds: Number(value.stageElapsedMilliseconds),
-    startedAt: value.startedAt,
-    state: value.state as CodeGraphActivationActivity['state'],
-    ...(value.transactionMilliseconds === undefined
-      ? {}
-      : {transactionMilliseconds: Number(value.transactionMilliseconds)}),
-  };
-}
-
-function parseResolution(value: unknown): CodeGraphBuildResolution | undefined {
-  if (!isRecord(value)) return undefined;
-  const activity = parseResolutionActivity(value.activity);
-  return activity ? {activity} : undefined;
-}
-
-function parseResolutionActivity(value: unknown): CodeGraphBuildResolution['activity'] | undefined {
-  if (!isRecord(value) || !isTimestamp(value.startedAt)) return undefined;
-  for (const key of [
-    'aliasesDiscovered',
-    'pageCompleted',
-    'pageTotal',
-    'pagesCompleted',
-    'pass',
-    'referencesCompleted',
-    'referencesExamined',
-    'referencesTotal',
-    'resolved',
-  ] as const) {
-    if (!isNonNegativeSafeInteger(value[key])) return undefined;
-  }
-  for (const key of ['elapsedMilliseconds', 'matchingMilliseconds', 'transactionMilliseconds'] as const) {
-    if (!isNonNegativeFinite(value[key])) return undefined;
-  }
-  if (
-    Number(value.pass) < 1 ||
-    Number(value.pageCompleted) > Number(value.pageTotal) ||
-    Number(value.referencesCompleted) > Number(value.referencesTotal) ||
-    Number(value.pageCompleted) > Number(value.pagesCompleted) ||
-    Number(value.resolved) > Number(value.referencesExamined)
-  ) {
-    return undefined;
-  }
-  return {
-    aliasesDiscovered: Number(value.aliasesDiscovered),
-    elapsedMilliseconds: Number(value.elapsedMilliseconds),
-    matchingMilliseconds: Number(value.matchingMilliseconds),
-    pageCompleted: Number(value.pageCompleted),
-    pageTotal: Number(value.pageTotal),
-    pagesCompleted: Number(value.pagesCompleted),
-    pass: Number(value.pass),
-    referencesCompleted: Number(value.referencesCompleted),
-    referencesExamined: Number(value.referencesExamined),
-    referencesTotal: Number(value.referencesTotal),
-    resolved: Number(value.resolved),
-    startedAt: value.startedAt,
-    transactionMilliseconds: Number(value.transactionMilliseconds),
-  };
-}
-
-function parseMaterialization(value: unknown): CodeGraphBuildMaterialization | undefined {
-  if (!isRecord(value)) return undefined;
-  const activity = parseMaterializationActivity(value.activity);
-  if (value.activity !== undefined && !activity) return undefined;
-  const metrics = parseMaterializationMetrics(value.metrics);
-  if (value.metrics !== undefined && !metrics) return undefined;
-  if (!activity && !metrics) return undefined;
-  return {...(activity ? {activity} : {}), ...(metrics ? {metrics} : {})};
-}
-
-function parseMaterializationActivity(value: unknown): CodeGraphBuildMaterialization['activity'] | undefined {
-  if (
-    !isRecord(value) ||
-    !isBatchProgress(value.batchCompleted, value.batchTotal) ||
-    !Number.isSafeInteger(value.sourceBytes) ||
-    Number(value.sourceBytes) < 0 ||
-    ![
-      'attributing',
-      'committing',
-      'loading-cache',
-      'preparing-rows',
-      'writing-analysis',
-      'writing-candidates',
-      'writing-edges',
-      'writing-facts',
-      'writing-lookups',
-      'writing-references',
-      'writing-receipt',
-      'writing-symbols',
-      'writing-terms',
-    ].includes(String(value.stage)) ||
-    !isTimestamp(value.startedAt)
-  ) {
-    return undefined;
-  }
-  if (value.cachedFactBytes !== undefined && !isNonNegativeSafeInteger(value.cachedFactBytes)) return undefined;
-  if (value.elapsedMilliseconds !== undefined && !isNonNegativeFinite(value.elapsedMilliseconds)) return undefined;
-  if (value.factsBytes !== undefined && !isNonNegativeSafeInteger(value.factsBytes)) return undefined;
-  if (value.stageElapsedMilliseconds !== undefined && !isNonNegativeFinite(value.stageElapsedMilliseconds)) {
-    return undefined;
-  }
-  if (value.transactionMilliseconds !== undefined && !isNonNegativeFinite(value.transactionMilliseconds)) {
-    return undefined;
-  }
-  const rows = parseMaterializationRows(value.rows);
-  if (value.rows !== undefined && !rows) return undefined;
-  return {
-    batchCompleted: Number(value.batchCompleted),
-    batchTotal: Number(value.batchTotal),
-    ...(value.cachedFactBytes === undefined ? {} : {cachedFactBytes: Number(value.cachedFactBytes)}),
-    ...(value.elapsedMilliseconds === undefined ? {} : {elapsedMilliseconds: Number(value.elapsedMilliseconds)}),
-    ...(value.factsBytes === undefined ? {} : {factsBytes: Number(value.factsBytes)}),
-    ...(rows ? {rows} : {}),
-    sourceBytes: Number(value.sourceBytes),
-    stage: value.stage as CodeGraphMaterializationActivity['stage'],
-    ...(value.stageElapsedMilliseconds === undefined
-      ? {}
-      : {stageElapsedMilliseconds: Number(value.stageElapsedMilliseconds)}),
-    startedAt: value.startedAt,
-    ...(value.transactionMilliseconds === undefined
-      ? {}
-      : {transactionMilliseconds: Number(value.transactionMilliseconds)}),
-  };
-}
-
-function parseMaterializationMetrics(value: unknown): CodeGraphMaterializationMetrics | undefined {
-  if (
-    !isRecord(value) ||
-    !isBatchProgress(value.batchesCompleted, value.batchesTotal) ||
-    !isNonNegativeSafeInteger(value.sourceBytesCompleted) ||
-    !isNonNegativeSafeInteger(value.sourceBytesTotal) ||
-    Number(value.sourceBytesCompleted) > Number(value.sourceBytesTotal)
-  ) {
-    return undefined;
-  }
-  if (
-    value.fallbackReason !== undefined &&
-    !VALID_MATERIALIZATION_FALLBACK_REASONS.has(value.fallbackReason as CodeGraphOverlayFallbackReason)
-  ) {
-    return undefined;
-  }
-  if (value.mode !== undefined && !['full', 'incremental-clean', 'incremental-overlay'].includes(String(value.mode))) {
-    return undefined;
-  }
-  for (const key of [
-    'cachedFactBytesCompleted',
-    'cachedFactBytesTotal',
-    'factsBytesCompleted',
-    'factsBytesTotal',
-  ] as const) {
-    if (value[key] !== undefined && !isNonNegativeSafeInteger(value[key])) return undefined;
-  }
-  if (
-    value.cachedFactBytesCompleted !== undefined &&
-    value.cachedFactBytesTotal !== undefined &&
-    Number(value.cachedFactBytesCompleted) > Number(value.cachedFactBytesTotal)
-  ) {
-    return undefined;
-  }
-  if (
-    value.factsBytesCompleted !== undefined &&
-    value.factsBytesTotal !== undefined &&
-    Number(value.factsBytesCompleted) > Number(value.factsBytesTotal)
-  ) {
-    return undefined;
-  }
-  for (const key of ['attributionMilliseconds', 'loadingMilliseconds', 'transactionMilliseconds'] as const) {
-    if (value[key] !== undefined && !isNonNegativeFinite(value[key])) return undefined;
-  }
-  const rows = parseMaterializationRows(value.rows);
-  if (value.rows !== undefined && !rows) return undefined;
-  const stageMilliseconds = parseMaterializationStageMilliseconds(value.stageMilliseconds);
-  if (value.stageMilliseconds !== undefined && !stageMilliseconds) return undefined;
-  const storage = parseMaterializationStorage(value.storage);
-  if (value.storage !== undefined && !storage) return undefined;
-  if (storage?.estimateBasis === 'cached-fact-bytes' && value.cachedFactBytesTotal === undefined) return undefined;
-  if (storage?.estimateBasis === 'final-fact-bytes' && value.factsBytesTotal === undefined) return undefined;
-  return {
-    ...(value.fallbackReason === undefined
-      ? {}
-      : {fallbackReason: value.fallbackReason as CodeGraphMaterializationMetrics['fallbackReason']}),
-    ...(value.attributionMilliseconds === undefined
-      ? {}
-      : {attributionMilliseconds: Number(value.attributionMilliseconds)}),
-    batchesCompleted: Number(value.batchesCompleted),
-    batchesTotal: Number(value.batchesTotal),
-    ...(value.cachedFactBytesCompleted === undefined
-      ? {}
-      : {cachedFactBytesCompleted: Number(value.cachedFactBytesCompleted)}),
-    ...(value.cachedFactBytesTotal === undefined ? {} : {cachedFactBytesTotal: Number(value.cachedFactBytesTotal)}),
-    ...(value.factsBytesCompleted === undefined ? {} : {factsBytesCompleted: Number(value.factsBytesCompleted)}),
-    ...(value.factsBytesTotal === undefined ? {} : {factsBytesTotal: Number(value.factsBytesTotal)}),
-    ...(value.loadingMilliseconds === undefined ? {} : {loadingMilliseconds: Number(value.loadingMilliseconds)}),
-    ...(value.mode === undefined ? {} : {mode: value.mode as CodeGraphMaterializationMetrics['mode']}),
-    ...(rows ? {rows} : {}),
-    sourceBytesCompleted: Number(value.sourceBytesCompleted),
-    sourceBytesTotal: Number(value.sourceBytesTotal),
-    ...(stageMilliseconds ? {stageMilliseconds} : {}),
-    ...(storage ? {storage} : {}),
-    ...(value.transactionMilliseconds === undefined
-      ? {}
-      : {transactionMilliseconds: Number(value.transactionMilliseconds)}),
-  };
-}
-
-function parseMaterializationStageMilliseconds(
-  value: unknown,
-): CodeGraphMaterializationMetrics['stageMilliseconds'] | undefined {
-  if (!isRecord(value)) return undefined;
-  const stages = [
-    'attributing',
-    'committing',
-    'loading-cache',
-    'preparing-rows',
-    'writing-analysis',
-    'writing-candidates',
-    'writing-edges',
-    'writing-facts',
-    'writing-lookups',
-    'writing-receipt',
-    'writing-references',
-    'writing-symbols',
-    'writing-terms',
-  ] as const satisfies readonly CodeGraphMaterializationActivity['stage'][];
-  const allowed = new Set<string>(stages);
-  const parsed: Partial<Record<CodeGraphMaterializationActivity['stage'], number>> = {};
-  for (const [stage, milliseconds] of Object.entries(value)) {
-    if (!allowed.has(stage) || !isNonNegativeFinite(milliseconds)) return undefined;
-    parsed[stage as CodeGraphMaterializationActivity['stage']] = Number(milliseconds);
-  }
-  return parsed;
-}
-
-function parseMaterializationStorage(
-  value: unknown,
-): NonNullable<CodeGraphMaterializationMetrics['storage']> | undefined {
-  if (
-    !isRecord(value) ||
-    !isNonNegativeSafeInteger(value.temporaryDatabaseBytes) ||
-    !isNonNegativeSafeInteger(value.temporaryDatabaseHighWaterBytes) ||
-    Number(value.temporaryDatabaseBytes) > Number(value.temporaryDatabaseHighWaterBytes)
-  ) {
-    return undefined;
-  }
-  if (
-    value.estimateBasis !== undefined &&
-    !['cached-fact-bytes', 'final-fact-bytes', 'source-bytes-fallback'].includes(String(value.estimateBasis))
-  ) {
-    return undefined;
-  }
-  for (const key of [
-    'availableBytes',
-    'durableAvailableBytes',
-    'durableDatabaseBytes',
-    'durableDatabaseFileBytes',
-    'durableDatabaseFileHighWaterBytes',
-    'durableDatabaseGrowthBytes',
-    'durableDatabaseGrowthHighWaterBytes',
-    'durableDatabaseHighWaterBytes',
-    'durableDatabaseStartBytes',
-    'durableFilesystemBytes',
-    'durableFilesystemHighWaterBytes',
-    'durableJournalBytes',
-    'durableJournalHighWaterBytes',
-    'durableSharedMemoryBytes',
-    'durableSharedMemoryHighWaterBytes',
-    'durableWalBytes',
-    'durableWalHighWaterBytes',
-    'estimatedConcurrentBuildBytes',
-    'estimatedDurableFilesystemRequiredBytes',
-    'estimatedDurableSnapshotBytes',
-    'estimatedJournalBytes',
-    'estimatedRequiredBytes',
-    'estimatedTemporaryFilesystemRequiredBytes',
-    'estimatedTemporaryDatabaseBytes',
-    'temporaryAvailableBytes',
-  ] as const) {
-    if (value[key] !== undefined && !isNonNegativeSafeInteger(value[key])) return undefined;
-  }
-  if (value.filesystemsShared !== undefined && typeof value.filesystemsShared !== 'boolean') return undefined;
-  if (
-    value.materializationMode !== undefined &&
-    !['direct-persistent', 'temporary-staged'].includes(String(value.materializationMode))
-  ) {
-    return undefined;
-  }
-  for (const [current, highWater] of [
-    ['durableDatabaseFileBytes', 'durableDatabaseFileHighWaterBytes'],
-    ['durableDatabaseGrowthBytes', 'durableDatabaseGrowthHighWaterBytes'],
-    ['durableFilesystemBytes', 'durableFilesystemHighWaterBytes'],
-    ['durableJournalBytes', 'durableJournalHighWaterBytes'],
-    ['durableSharedMemoryBytes', 'durableSharedMemoryHighWaterBytes'],
-    ['durableWalBytes', 'durableWalHighWaterBytes'],
-  ] as const) {
-    if (
-      value[current] !== undefined &&
-      value[highWater] !== undefined &&
-      Number(value[current]) > Number(value[highWater])
-    ) {
-      return undefined;
-    }
-  }
-  if (
-    value.durableDatabaseBytes !== undefined &&
-    value.durableDatabaseHighWaterBytes !== undefined &&
-    Number(value.durableDatabaseBytes) > Number(value.durableDatabaseHighWaterBytes)
-  ) {
-    return undefined;
-  }
-  if (
-    value.estimatedRequiredBytes !== undefined &&
-    value.estimatedConcurrentBuildBytes !== undefined &&
-    Number(value.estimatedRequiredBytes) < Number(value.estimatedConcurrentBuildBytes)
-  ) {
-    return undefined;
-  }
-  return {
-    ...(value.availableBytes === undefined ? {} : {availableBytes: Number(value.availableBytes)}),
-    ...(value.durableAvailableBytes === undefined ? {} : {durableAvailableBytes: Number(value.durableAvailableBytes)}),
-    ...(value.durableDatabaseBytes === undefined ? {} : {durableDatabaseBytes: Number(value.durableDatabaseBytes)}),
-    ...(value.durableDatabaseFileBytes === undefined
-      ? {}
-      : {durableDatabaseFileBytes: Number(value.durableDatabaseFileBytes)}),
-    ...(value.durableDatabaseFileHighWaterBytes === undefined
-      ? {}
-      : {durableDatabaseFileHighWaterBytes: Number(value.durableDatabaseFileHighWaterBytes)}),
-    ...(value.durableDatabaseGrowthBytes === undefined
-      ? {}
-      : {durableDatabaseGrowthBytes: Number(value.durableDatabaseGrowthBytes)}),
-    ...(value.durableDatabaseGrowthHighWaterBytes === undefined
-      ? {}
-      : {durableDatabaseGrowthHighWaterBytes: Number(value.durableDatabaseGrowthHighWaterBytes)}),
-    ...(value.durableDatabaseHighWaterBytes === undefined
-      ? {}
-      : {durableDatabaseHighWaterBytes: Number(value.durableDatabaseHighWaterBytes)}),
-    ...(value.durableDatabaseStartBytes === undefined
-      ? {}
-      : {durableDatabaseStartBytes: Number(value.durableDatabaseStartBytes)}),
-    ...(value.durableFilesystemBytes === undefined
-      ? {}
-      : {durableFilesystemBytes: Number(value.durableFilesystemBytes)}),
-    ...(value.durableFilesystemHighWaterBytes === undefined
-      ? {}
-      : {durableFilesystemHighWaterBytes: Number(value.durableFilesystemHighWaterBytes)}),
-    ...(value.durableJournalBytes === undefined ? {} : {durableJournalBytes: Number(value.durableJournalBytes)}),
-    ...(value.durableJournalHighWaterBytes === undefined
-      ? {}
-      : {durableJournalHighWaterBytes: Number(value.durableJournalHighWaterBytes)}),
-    ...(value.durableSharedMemoryBytes === undefined
-      ? {}
-      : {durableSharedMemoryBytes: Number(value.durableSharedMemoryBytes)}),
-    ...(value.durableSharedMemoryHighWaterBytes === undefined
-      ? {}
-      : {durableSharedMemoryHighWaterBytes: Number(value.durableSharedMemoryHighWaterBytes)}),
-    ...(value.durableWalBytes === undefined ? {} : {durableWalBytes: Number(value.durableWalBytes)}),
-    ...(value.durableWalHighWaterBytes === undefined
-      ? {}
-      : {durableWalHighWaterBytes: Number(value.durableWalHighWaterBytes)}),
-    ...(value.estimateBasis === undefined
-      ? {}
-      : {
-          estimateBasis: value.estimateBasis as 'cached-fact-bytes' | 'final-fact-bytes' | 'source-bytes-fallback',
-        }),
-    ...(value.estimatedConcurrentBuildBytes === undefined
-      ? {}
-      : {estimatedConcurrentBuildBytes: Number(value.estimatedConcurrentBuildBytes)}),
-    ...(value.estimatedDurableFilesystemRequiredBytes === undefined
-      ? {}
-      : {estimatedDurableFilesystemRequiredBytes: Number(value.estimatedDurableFilesystemRequiredBytes)}),
-    ...(value.estimatedDurableSnapshotBytes === undefined
-      ? {}
-      : {estimatedDurableSnapshotBytes: Number(value.estimatedDurableSnapshotBytes)}),
-    ...(value.estimatedJournalBytes === undefined ? {} : {estimatedJournalBytes: Number(value.estimatedJournalBytes)}),
-    ...(value.estimatedRequiredBytes === undefined
-      ? {}
-      : {estimatedRequiredBytes: Number(value.estimatedRequiredBytes)}),
-    ...(value.estimatedTemporaryFilesystemRequiredBytes === undefined
-      ? {}
-      : {estimatedTemporaryFilesystemRequiredBytes: Number(value.estimatedTemporaryFilesystemRequiredBytes)}),
-    ...(value.estimatedTemporaryDatabaseBytes === undefined
-      ? {}
-      : {estimatedTemporaryDatabaseBytes: Number(value.estimatedTemporaryDatabaseBytes)}),
-    ...(value.filesystemsShared === undefined ? {} : {filesystemsShared: value.filesystemsShared}),
-    ...(value.materializationMode === undefined
-      ? {}
-      : {materializationMode: value.materializationMode as 'direct-persistent' | 'temporary-staged'}),
-    ...(value.temporaryAvailableBytes === undefined
-      ? {}
-      : {temporaryAvailableBytes: Number(value.temporaryAvailableBytes)}),
-    temporaryDatabaseBytes: Number(value.temporaryDatabaseBytes),
-    temporaryDatabaseHighWaterBytes: Number(value.temporaryDatabaseHighWaterBytes),
-  };
-}
-
-function parseMaterializationRows(value: unknown): CodeGraphMaterializationRows | undefined {
-  if (!isRecord(value)) return undefined;
-  const keys = [
-    'deduplicatedEdges',
-    'deduplicatedReferences',
-    'edges',
-    'lookupKeys',
-    'referenceCandidates',
-    'references',
-    'reexports',
-    'symbols',
-    'terms',
-  ] as const;
-  for (const key of keys) {
-    if (value[key] !== undefined && !isNonNegativeSafeInteger(value[key])) return undefined;
-  }
-  return Object.fromEntries(keys.flatMap(key => (value[key] === undefined ? [] : [[key, Number(value[key])]])));
-}
-
-function isBatchProgress(completed: unknown, total: unknown): boolean {
-  return isNonNegativeSafeInteger(completed) && isNonNegativeSafeInteger(total) && Number(completed) <= Number(total);
-}
-
-function isNonNegativeSafeInteger(value: unknown): boolean {
-  return Number.isSafeInteger(value) && Number(value) >= 0;
-}
-
-function parseActivity(value: unknown): CodeGraphBuildActivity | undefined {
-  if (
-    !isRecord(value) ||
-    !Number.isSafeInteger(value.batchCompleted) ||
-    !Number.isSafeInteger(value.batchTotal) ||
-    Number(value.batchCompleted) < 0 ||
-    Number(value.batchTotal) < 0 ||
-    Number(value.batchCompleted) > Number(value.batchTotal) ||
-    !Number.isSafeInteger(value.bytes) ||
-    Number(value.bytes) < 0 ||
-    !isText(value.language, 64) ||
-    !['extracting', 'persisting', 'reading'].includes(String(value.stage)) ||
-    (value.classifier !== undefined && !isText(value.classifier, 64)) ||
-    (value.degraded !== undefined && typeof value.degraded !== 'boolean') ||
-    (value.role !== undefined && !isText(value.role, 64)) ||
-    (value.sizeBucket !== undefined && !isCodeGraphSourceSizeBucket(value.sizeBucket))
-  ) {
-    return undefined;
-  }
-  for (const key of ['factsBytes', 'relations', 'symbols'] as const) {
-    if (value[key] !== undefined && (!Number.isSafeInteger(value[key]) || Number(value[key]) < 0)) return undefined;
-  }
-  for (const key of ['parseMilliseconds', 'persistMilliseconds'] as const) {
-    if (value[key] !== undefined && !isNonNegativeFinite(value[key])) return undefined;
-  }
-  return {
-    batchCompleted: Number(value.batchCompleted),
-    batchTotal: Number(value.batchTotal),
-    bytes: Number(value.bytes),
-    ...(value.classifier === undefined ? {} : {classifier: value.classifier}),
-    ...(typeof value.degraded === 'boolean' ? {degraded: value.degraded} : {}),
-    ...(value.factsBytes === undefined ? {} : {factsBytes: Number(value.factsBytes)}),
-    language: value.language,
-    ...(value.parseMilliseconds === undefined ? {} : {parseMilliseconds: Number(value.parseMilliseconds)}),
-    ...(value.persistMilliseconds === undefined ? {} : {persistMilliseconds: Number(value.persistMilliseconds)}),
-    ...(value.relations === undefined ? {} : {relations: Number(value.relations)}),
-    ...(value.role === undefined ? {} : {role: value.role}),
-    ...(value.sizeBucket === undefined ? {} : {sizeBucket: value.sizeBucket}),
-    stage: value.stage as CodeGraphBuildActivity['stage'],
-    ...(value.symbols === undefined ? {} : {symbols: Number(value.symbols)}),
-  };
-}
-
-function parseExtraction(value: unknown): CodeGraphBuildExtraction | undefined {
-  if (
-    !isRecord(value) ||
-    !isNonNegativeSafeInteger(value.completedFiles) ||
-    !isNonNegativeSafeInteger(value.slowFiles) ||
-    Number(value.slowFiles) > Number(value.completedFiles) ||
-    !Array.isArray(value.topSlowFiles) ||
-    value.topSlowFiles.length > CODE_GRAPH_TOP_SLOW_FILE_LIMIT
-  ) {
-    return undefined;
-  }
-  const topSlowFiles = value.topSlowFiles.map(parseSlowFileTelemetry);
-  if (topSlowFiles.some(sample => sample === undefined)) return undefined;
-  const metrics = value.metrics === undefined ? undefined : parseScanningMetrics(value.metrics);
-  if (value.metrics !== undefined && metrics === undefined) return undefined;
-  const samples = topSlowFiles as CodeGraphSlowFileTelemetry[];
-  if (
-    samples.some(
-      (sample, index) =>
-        index > 0 &&
-        (sample.durationMilliseconds > samples[index - 1]!.durationMilliseconds ||
-          (sample.durationMilliseconds === samples[index - 1]!.durationMilliseconds &&
-            sample.pathHash.localeCompare(samples[index - 1]!.pathHash) < 0)),
-    )
-  ) {
-    return undefined;
-  }
-  return {
-    completedFiles: Number(value.completedFiles),
-    ...(metrics === undefined ? {} : {metrics}),
-    slowFiles: Number(value.slowFiles),
-    topSlowFiles: samples,
-  };
-}
-
-function parseScanningMetrics(value: unknown): CodeGraphScanningMetrics | undefined {
-  if (!isRecord(value)) return undefined;
-  for (const key of [
-    'factsBytesCompleted',
-    'sourceBytesCompleted',
-    'sourceBytesTotal',
-    'workUnitsCompleted',
-    'workUnitsTotal',
-  ] as const) {
-    if (!isNonNegativeSafeInteger(value[key])) return undefined;
-  }
-  if (
-    Number(value.sourceBytesCompleted) > Number(value.sourceBytesTotal) ||
-    Number(value.workUnitsCompleted) > Number(value.workUnitsTotal)
-  ) {
-    return undefined;
-  }
-  return {
-    factsBytesCompleted: Number(value.factsBytesCompleted),
-    sourceBytesCompleted: Number(value.sourceBytesCompleted),
-    sourceBytesTotal: Number(value.sourceBytesTotal),
-    workUnitsCompleted: Number(value.workUnitsCompleted),
-    workUnitsTotal: Number(value.workUnitsTotal),
-  };
-}
-
-function parseSlowFileTelemetry(value: unknown): CodeGraphSlowFileTelemetry | undefined {
-  if (
-    !isRecord(value) ||
-    !isText(value.classifier, 64) ||
-    !isNonNegativeFinite(value.durationMilliseconds) ||
-    !isText(value.extension, 16) ||
-    !isText(value.language, 64) ||
-    typeof value.pathHash !== 'string' ||
-    !/^[a-f0-9]{64}$/.test(value.pathHash) ||
-    !isText(value.role, 64) ||
-    !isCodeGraphSourceSizeBucket(value.sizeBucket) ||
-    !isNonNegativeSafeInteger(value.sourceBytes) ||
-    (value.degraded !== undefined && typeof value.degraded !== 'boolean')
-  ) {
-    return undefined;
-  }
-  for (const key of ['factsBytes', 'relations', 'symbols'] as const) {
-    if (value[key] !== undefined && !isNonNegativeSafeInteger(value[key])) return undefined;
-  }
-  return {
-    classifier: value.classifier,
-    ...(value.degraded === undefined ? {} : {degraded: value.degraded}),
-    durationMilliseconds: Number(value.durationMilliseconds),
-    extension: value.extension,
-    ...(value.factsBytes === undefined ? {} : {factsBytes: Number(value.factsBytes)}),
-    language: value.language,
-    pathHash: value.pathHash,
-    ...(value.relations === undefined ? {} : {relations: Number(value.relations)}),
-    role: value.role,
-    sizeBucket: value.sizeBucket,
-    sourceBytes: Number(value.sourceBytes),
-    ...(value.symbols === undefined ? {} : {symbols: Number(value.symbols)}),
-  };
-}
-
-function parseTimings(value: unknown): CodeGraphBuildTimings | undefined {
-  return isRecord(value) &&
-    isNonNegativeFinite(value.extractionMilliseconds) &&
-    isNonNegativeFinite(value.persistenceMilliseconds) &&
-    isNonNegativeFinite(value.readingMilliseconds)
-    ? {
-        extractionMilliseconds: Number(value.extractionMilliseconds),
-        persistenceMilliseconds: Number(value.persistenceMilliseconds),
-        readingMilliseconds: Number(value.readingMilliseconds),
-      }
-    : undefined;
-}
-
-function isNonNegativeFinite(value: unknown): boolean {
-  return typeof value === 'number' && Number.isFinite(value) && value >= 0;
-}
-
-function parseRequest(value: unknown): CodeGraphBuildStatus['request'] | undefined {
-  return isRecord(value) && typeof value.key === 'string' && HASH_ID.test(value.key) ? {key: value.key} : undefined;
-}
-
-function parseCounters(value: unknown): CodeGraphBuildCounters | undefined {
-  if (!isRecord(value)) return undefined;
-  const keys = [
-    'accepted',
-    'completed',
-    'edges',
-    'embedded',
-    'excluded',
-    'pagesCompleted',
-    'reused',
-    'resolved',
-    'rowsDeleted',
-    'skipped',
-    'symbols',
-    'total',
-  ] as const;
-  for (const key of keys) {
-    const counter = value[key];
-    if (counter !== undefined && (!Number.isSafeInteger(counter) || Number(counter) < 0)) return undefined;
-  }
-  if (value.unit !== undefined && !['files', 'references', 'snapshots', 'symbols'].includes(String(value.unit)))
-    return undefined;
-  return Object.fromEntries(
-    [...keys, 'unit' as const].flatMap(key => (value[key] === undefined ? [] : [[key, value[key]]])),
-  ) as CodeGraphBuildCounters;
-}
-
-function parseError(value: unknown): CodeGraphBuildStatus['error'] | undefined {
-  return isRecord(value) && isText(value.summary, 300) ? {summary: value.summary} : undefined;
-}
-
-function parseEta(value: unknown): CodeGraphBuildStatus['eta'] | undefined {
-  return isRecord(value) &&
-    value.scope === 'phase' &&
-    ['high', 'low', 'medium'].includes(String(value.confidence)) &&
-    (value.basis === undefined ||
-      ['cached-fact-bytes', 'extraction-work', 'files', 'final-fact-bytes', 'source-bytes'].includes(
-        String(value.basis),
-      )) &&
-    Number.isSafeInteger(value.remainingMilliseconds) &&
-    Number(value.remainingMilliseconds) >= 0
-    ? {
-        ...(value.basis === undefined
-          ? {}
-          : {
-              basis: value.basis as
-                'cached-fact-bytes' | 'extraction-work' | 'files' | 'final-fact-bytes' | 'source-bytes',
-            }),
-        confidence: value.confidence as 'high' | 'low' | 'medium',
-        remainingMilliseconds: Number(value.remainingMilliseconds),
-        scope: 'phase',
-      }
-    : undefined;
-}
-
-function parseResult(value: unknown): CodeGraphBuildStatus['result'] | undefined {
-  if (!isRecord(value) || typeof value.dirty !== 'boolean' || !isText(value.snapshotId, 128)) return undefined;
-  for (const key of ['edges', 'files', 'symbols'] as const) {
-    if (!Number.isSafeInteger(value[key]) || Number(value[key]) < 0) return undefined;
-  }
-  return {
-    dirty: value.dirty,
-    edges: Number(value.edges),
-    files: Number(value.files),
-    snapshotId: value.snapshotId,
-    symbols: Number(value.symbols),
-  };
 }
 
 function pruneCodeGraphBuildHistory(
@@ -2045,7 +1251,9 @@ interface BuildHistoryDirectoryAuthority {
 
 type BuildHistoryCursor = {readonly mode: 'reset'} | {readonly afterBuildId: string; readonly mode: 'scan'};
 
-class InvalidBuildHistorySidecarError extends Error {}
+class InvalidBuildHistorySidecarError extends Error {
+  readonly _tag = 'InvalidBuildHistorySidecarError' as const;
+}
 
 const pruneCodeGraphBuildHistoryUnitWithServices = Effect.fn('codeGraph.buildStatus.pruneHistoryUnitUnsafe')(function* (
   fs: FileSystem.FileSystem,
@@ -2322,7 +1530,8 @@ const readBuildHistoryManagerContext = Effect.fn('codeGraph.buildStatus.readHist
         isRecord(value) &&
         value.schemaVersion === MANAGER_CONTEXT_SCHEMA_VERSION &&
         value.buildId === buildId &&
-        isText(value.worktreePath, 4_096)
+        isText(value.worktreePath, 4_096) &&
+        (value.branch === undefined || isText(value.branch, 1_024))
       );
     },
     catch: () => new InvalidBuildHistorySidecarError('Build history Manager context is invalid JSON.'),
@@ -2738,20 +1947,4 @@ function privacySafeError(cause: unknown): string {
 
 function boundedText(value: string, maximum: number): string {
   return value.length <= maximum ? value : `${value.slice(0, Math.max(0, maximum - 1))}…`;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function isHash(value: unknown): value is string {
-  return typeof value === 'string' && HASH_ID.test(value);
-}
-
-function isText(value: unknown, maximum: number): value is string {
-  return typeof value === 'string' && value.length > 0 && value.length <= maximum && !/[\p{Cc}]/u.test(value);
-}
-
-function isTimestamp(value: unknown): value is string {
-  return isText(value, 64) && Number.isFinite(Date.parse(value));
 }

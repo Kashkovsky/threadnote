@@ -1,16 +1,17 @@
-import {mkdir, mkdtemp, rm, writeFile} from 'node:fs/promises';
-import {tmpdir} from 'node:os';
-import {join} from 'node:path';
-import {Effect} from 'effect';
-import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
+import {provideTestLayer} from '../helpers/effect-layer.js';
+import {it as effectIt} from '@effect/vitest';
+import {mkdir, mkdtemp, rm, writeFile} from '../helpers/node-fs-promises.js';
+import {tmpdir} from '../helpers/node-os.js';
+import {join} from '../helpers/node-path.js';
+import {Cause, Effect, Exit} from 'effect';
+import {afterEach, beforeEach, describe, expect, vi} from 'vitest';
 import * as aiEnrichment from '../../src/effect/ai/enrichment.js';
+import {captureConsole} from '../../src/effect/console.js';
 import {runRemember} from '../../src/memory.js';
 import type {MemoryMetadata} from '../../src/memory_document.js';
 import type {CommandResult, RuntimeConfig} from '../../src/types.js';
 import * as utils from '../../src/utils.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
-
-const runTestEffect = <A, E>(effect: Effect.Effect<A, E, never>) => Effect.runPromise(effect);
 
 vi.mock('../../src/utils.js', async importOriginal => {
   const actual = await importOriginal<typeof import('../../src/utils.js')>();
@@ -109,153 +110,155 @@ describe('remember shared replacement', () => {
     await Promise.all(homes.splice(0).map(home => rm(home, {force: true, recursive: true})));
   });
 
-  it('updates a shared replaceUri in place instead of writing personal memory and forgetting shared copy', async () => {
-    const config = await makeRuntime();
-    homes.push(config.agentContextHome);
-    const logs: string[] = [];
-    vi.spyOn(console, 'log').mockImplementation((...args: readonly unknown[]) => {
-      logs.push(args.map(String).join(' '));
-    });
+  effectIt.effect(
+    'updates a shared replaceUri in place instead of writing personal memory and forgetting shared copy',
+    () =>
+      Effect.gen(function* () {
+        const config = yield* Effect.promise(makeRuntime);
+        homes.push(config.agentContextHome);
 
-    const sharedUri = 'threadnote://user/test-user/memories/shared/default/durable/projects/orion-worker/lease.md';
-    await runTestEffect(
-      runRemember(config, {
-        dryRun: true,
-        kind: 'durable',
-        replace: sharedUri,
-        sourceAgentClient: 'codex',
-        text: 'Updated shared lease memory.',
-      }).pipe(Effect.provide(ApplicationLayer)),
-    );
+        const sharedUri = 'threadnote://user/test-user/memories/shared/default/durable/projects/orion-worker/lease.md';
+        const captured = yield* captureConsole(
+          runRemember(config, {
+            dryRun: true,
+            kind: 'durable',
+            replace: sharedUri,
+            sourceAgentClient: 'codex',
+            text: 'Updated shared lease memory.',
+          }).pipe(provideTestLayer(ApplicationLayer)),
+        );
 
-    const output = logs.join('\n');
-    expect(output).toContain(sharedUri);
-    expect(output).toContain('project: orion-worker');
-    expect(output).toContain('topic: lease');
-    expect(output).toContain('--mode replace');
-    expect(output).toContain('share: update durable/projects/orion-worker/lease.md');
-    expect(output).toContain('Updated shared memory:');
-    expect(output).not.toContain('supersedes:');
-    expect(output).not.toContain(` rm ${sharedUri}`);
-    expect(output).not.toContain('memories/durable/projects/orion-worker/lease.md --from-file');
-  });
+        const output = captured.output;
+        expect(output).toContain(sharedUri);
+        expect(output).toContain('project: orion-worker');
+        expect(output).toContain('topic: lease');
+        expect(output).toContain('--mode replace');
+        expect(output).toContain('share: update durable/projects/orion-worker/lease.md');
+        expect(output).toContain('Updated shared memory:');
+        expect(output).not.toContain('supersedes:');
+        expect(output).not.toContain(` rm ${sharedUri}`);
+        expect(output).not.toContain('memories/durable/projects/orion-worker/lease.md --from-file');
+      }),
+  );
 
-  it('keeps the project from the storage path when the caller requests a different one', async () => {
-    const config = await makeRuntime();
-    homes.push(config.agentContextHome);
-    const logs: string[] = [];
-    vi.spyOn(console, 'log').mockImplementation((...args: readonly unknown[]) => {
-      logs.push(args.map(String).join(' '));
-    });
+  effectIt.effect('keeps the project from the storage path when the caller requests a different one', () =>
+    Effect.gen(function* () {
+      const config = yield* Effect.promise(makeRuntime);
+      homes.push(config.agentContextHome);
 
-    const sharedUri = 'threadnote://user/test-user/memories/shared/default/durable/projects/orion-worker/lease.md';
-    await runTestEffect(
-      runRemember(config, {
-        dryRun: true,
-        kind: 'durable',
-        project: 'atlas-cache', // differs from the path project (orion-worker)
-        replace: sharedUri,
-        sourceAgentClient: 'codex',
-        text: 'Updated shared lease memory.',
-      }).pipe(Effect.provide(ApplicationLayer)),
-    );
+      const sharedUri = 'threadnote://user/test-user/memories/shared/default/durable/projects/orion-worker/lease.md';
+      const captured = yield* captureConsole(
+        runRemember(config, {
+          dryRun: true,
+          kind: 'durable',
+          project: 'atlas-cache', // differs from the path project (orion-worker)
+          replace: sharedUri,
+          sourceAgentClient: 'codex',
+          text: 'Updated shared lease memory.',
+        }).pipe(provideTestLayer(ApplicationLayer)),
+      );
 
-    const output = logs.join('\n');
-    // Frontmatter tracks the path, not the differing request — no divergence.
-    expect(output).toContain('project: orion-worker');
-    expect(output).not.toContain('project: atlas-cache');
-    expect(output).toContain('keeping shared memory project "orion-worker"');
-    expect(output).toContain('ignoring requested "atlas-cache"');
-  });
+      const output = captured.output;
+      // Frontmatter tracks the path, not the differing request — no divergence.
+      expect(output).toContain('project: orion-worker');
+      expect(output).not.toContain('project: atlas-cache');
+      expect(output).toContain('keeping shared memory project "orion-worker"');
+      expect(output).toContain('ignoring requested "atlas-cache"');
+    }),
+  );
 
-  it('does not warn when the caller project matches the storage path', async () => {
-    const config = await makeRuntime();
-    homes.push(config.agentContextHome);
-    const logs: string[] = [];
-    vi.spyOn(console, 'log').mockImplementation((...args: readonly unknown[]) => {
-      logs.push(args.map(String).join(' '));
-    });
+  effectIt.effect('does not warn when the caller project matches the storage path', () =>
+    Effect.gen(function* () {
+      const config = yield* Effect.promise(makeRuntime);
+      homes.push(config.agentContextHome);
 
-    const sharedUri = 'threadnote://user/test-user/memories/shared/default/durable/projects/orion-worker/lease.md';
-    await runTestEffect(
-      runRemember(config, {
-        dryRun: true,
-        kind: 'durable',
-        project: 'orion-worker', // matches the path project → no drift
-        replace: sharedUri,
-        sourceAgentClient: 'codex',
-        text: 'Updated shared lease memory.',
-      }).pipe(Effect.provide(ApplicationLayer)),
-    );
+      const sharedUri = 'threadnote://user/test-user/memories/shared/default/durable/projects/orion-worker/lease.md';
+      const captured = yield* captureConsole(
+        runRemember(config, {
+          dryRun: true,
+          kind: 'durable',
+          project: 'orion-worker', // matches the path project → no drift
+          replace: sharedUri,
+          sourceAgentClient: 'codex',
+          text: 'Updated shared lease memory.',
+        }).pipe(provideTestLayer(ApplicationLayer)),
+      );
 
-    const output = logs.join('\n');
-    expect(output).toContain('project: orion-worker');
-    expect(output).not.toContain('keeping shared memory project');
-  });
+      const output = captured.output;
+      expect(output).toContain('project: orion-worker');
+      expect(output).not.toContain('keeping shared memory project');
+    }),
+  );
 
-  it('rejects non-durable shared replacements', async () => {
-    const config = await makeRuntime();
-    homes.push(config.agentContextHome);
-    await expect(
-      runTestEffect(
+  effectIt.effect('rejects non-durable shared replacements', () =>
+    Effect.gen(function* () {
+      const config = yield* Effect.promise(makeRuntime);
+      homes.push(config.agentContextHome);
+      const exit = yield* Effect.exit(
         runRemember(config, {
           dryRun: true,
           kind: 'handoff',
           replace: 'threadnote://user/test-user/memories/shared/default/durable/projects/foo/bar.md',
           text: 'Not shareable.',
-        }).pipe(Effect.provide(ApplicationLayer)),
-      ),
-    ).rejects.toThrow(/only supports durable/);
-  });
+        }).pipe(provideTestLayer(ApplicationLayer)),
+      );
+      expect(Exit.isFailure(exit) ? String(Cause.squash(exit.cause)) : 'Operation unexpectedly succeeded.').toMatch(
+        /only supports durable/,
+      );
+    }),
+  );
 
-  it('never sends a shared replacement through automatic enrichment', async () => {
-    const config = await makeRuntime();
-    homes.push(config.agentContextHome);
-    vi.mocked(utils.runCommand).mockReturnValue(Effect.succeed(ok()));
+  effectIt.effect('never sends a shared replacement through automatic enrichment', () =>
+    Effect.gen(function* () {
+      const config = yield* Effect.promise(makeRuntime);
+      homes.push(config.agentContextHome);
+      vi.mocked(utils.runCommand).mockReturnValue(Effect.succeed(ok()));
 
-    await runTestEffect(
-      runRemember(config, {
+      yield* runRemember(config, {
         kind: 'durable',
         replace: 'threadnote://user/test-user/memories/shared/default/durable/projects/orion-worker/lease.md',
         text: 'Updated shared lease memory.',
-      }).pipe(Effect.provide(ApplicationLayer)),
-    );
+      }).pipe(provideTestLayer(ApplicationLayer));
 
-    expect(aiEnrichment.enrichMemoryMetadataWithConfiguredLocalAi).not.toHaveBeenCalled();
-  });
+      expect(aiEnrichment.enrichMemoryMetadataWithConfiguredLocalAi).not.toHaveBeenCalled();
+    }),
+  );
 
-  it('surfaces git push failures instead of reporting a successful shared update', async () => {
-    const config = await makeRuntime();
-    homes.push(config.agentContextHome);
-    const sharedUri = 'threadnote://user/test-user/memories/shared/default/durable/projects/orion-worker/lease.md';
-    vi.mocked(utils.runCommand).mockImplementation((executable, args) => {
-      if (executable === '/ov' && args[0] === 'stat') {
+  effectIt.effect('surfaces git push failures instead of reporting a successful shared update', () =>
+    Effect.gen(function* () {
+      const config = yield* Effect.promise(makeRuntime);
+      homes.push(config.agentContextHome);
+      const sharedUri = 'threadnote://user/test-user/memories/shared/default/durable/projects/orion-worker/lease.md';
+      vi.mocked(utils.runCommand).mockImplementation((executable, args) => {
+        if (executable === '/ov' && args[0] === 'stat') {
+          return Effect.succeed(ok());
+        }
+        if (executable === '/ov' && args[0] === 'write') {
+          return Effect.succeed(ok('written'));
+        }
+        if (executable === 'git' && args.includes('add')) {
+          return Effect.succeed(ok());
+        }
+        if (executable === 'git' && args.includes('commit')) {
+          return Effect.succeed(ok('[main abc123] share'));
+        }
+        if (executable === 'git' && args.includes('push')) {
+          return Effect.succeed(fail('permission denied'));
+        }
         return Effect.succeed(ok());
-      }
-      if (executable === '/ov' && args[0] === 'write') {
-        return Effect.succeed(ok('written'));
-      }
-      if (executable === 'git' && args.includes('add')) {
-        return Effect.succeed(ok());
-      }
-      if (executable === 'git' && args.includes('commit')) {
-        return Effect.succeed(ok('[main abc123] share'));
-      }
-      if (executable === 'git' && args.includes('push')) {
-        return Effect.succeed(fail('permission denied'));
-      }
-      return Effect.succeed(ok());
-    });
+      });
 
-    await expect(
-      runTestEffect(
+      const exit = yield* Effect.exit(
         runRemember(config, {
           kind: 'durable',
           replace: sharedUri,
           sourceAgentClient: 'codex',
           text: 'Updated shared lease memory.',
-        }).pipe(Effect.provide(ApplicationLayer)),
-      ),
-    ).rejects.toThrow(/git push failed/);
-  });
+        }).pipe(provideTestLayer(ApplicationLayer)),
+      );
+      expect(Exit.isFailure(exit) ? String(Cause.squash(exit.cause)) : 'Operation unexpectedly succeeded.').toMatch(
+        /git push failed/,
+      );
+    }),
+  );
 });

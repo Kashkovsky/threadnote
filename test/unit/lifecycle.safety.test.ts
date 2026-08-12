@@ -1,7 +1,18 @@
-import {createHash} from 'node:crypto';
-import {lstat, mkdir, mkdtemp, readFile, readdir, readlink, rm, symlink, writeFile} from 'node:fs/promises';
-import {tmpdir} from 'node:os';
-import {dirname, join, resolve} from 'node:path';
+import {TestError} from '../helpers/test-error.js';
+import {createHash} from '../helpers/node-crypto.js';
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  readlink,
+  rm,
+  symlink,
+  writeFile,
+} from '../helpers/node-fs-promises.js';
+import {tmpdir} from '../helpers/node-os.js';
+import {dirname, join, resolve} from '../helpers/node-path.js';
 import {Database} from 'bun:sqlite';
 import {Effect} from 'effect';
 import {afterEach, describe, expect, it} from 'vitest';
@@ -124,15 +135,15 @@ describe('read-only doctor', () => {
       verified: false,
     };
     const modelStore = LocalModelStore.of({
-      install: () => Effect.die(new Error('Doctor must not install models.')),
+      install: () => Effect.die(new TestError('Doctor must not install models.')),
       path: () => modelPath,
-      remove: () => Effect.die(new Error('Doctor must not remove models.')),
+      remove: () => Effect.die(new TestError('Doctor must not remove models.')),
       status: () => Effect.succeed(installation),
-      verify: () => Effect.die(new Error('Doctor must not acquire the mutating model verification lock.')),
+      verify: () => Effect.die(new TestError('Doctor must not acquire the mutating model verification lock.')),
     } satisfies LocalModelStoreShape);
     const catalog = LocalModelCatalog.of({
       get: modelId =>
-        modelId === manifest.id ? Effect.succeed(manifest) : Effect.die(new Error(`Unexpected model ${modelId}`)),
+        modelId === manifest.id ? Effect.succeed(manifest) : Effect.die(new TestError(`Unexpected model ${modelId}`)),
       list: () => Effect.succeed([manifest]),
       selected: () => Effect.succeed(manifest),
     });
@@ -201,10 +212,10 @@ describe('repair failure propagation', () => {
       verify: () => Effect.succeed(installation),
     } satisfies LocalModelStoreShape);
     const modelRuntime = LocalModelRuntime.of({
-      diagnostics: () => Effect.succeed({backend: 'fake', buildType: 'prebuilt', cpuMathCores: 4}),
-      embedMany: () => Effect.die(new Error('Embedding must not start when lexical index setup fails.')),
-      generate: () => Effect.die(new Error('Unexpected generation.')),
-      rerank: () => Effect.die(new Error('Unexpected reranking.')),
+      diagnostics: Effect.succeed({backend: 'fake', buildType: 'prebuilt', cpuMathCores: 4}),
+      embedMany: () => Effect.die(new TestError('Embedding must not start when lexical index setup fails.')),
+      generate: () => Effect.die(new TestError('Unexpected generation.')),
+      rerank: () => Effect.die(new TestError('Unexpected reranking.')),
     });
 
     await expect(

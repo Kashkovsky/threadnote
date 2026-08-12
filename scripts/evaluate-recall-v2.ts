@@ -1,3 +1,4 @@
+import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import {Effect} from 'effect';
 import {ApplicationLayer} from '../src/effect/runtime.js';
@@ -27,7 +28,9 @@ const evaluateRecall = Effect.gen(function* () {
     : undefined;
   if (baseline && baseline.fixture.hash !== hash) {
     return yield* Effect.fail(
-      new Error(`Recall baseline fixture hash ${baseline.fixture.hash} does not match generated fixture hash ${hash}`),
+      new ScriptError(
+        `Recall baseline fixture hash ${baseline.fixture.hash} does not match generated fixture hash ${hash}`,
+      ),
     );
   }
   const gate = baseline ? evaluateRecallNonInferiority(baselineResult(baseline), result) : undefined;
@@ -98,10 +101,10 @@ function parseArguments(args: readonly string[]): EvaluationOptions {
     else if (argument === '--max-failures') maximumPrintedFailures = positiveInteger(args[++index], '--max-failures');
     else if (argument === '--output') outputPath = requiredValue(args[++index], '--output');
     else if (argument === '--seed') seed = positiveInteger(args[++index], '--seed');
-    else throw new Error(`Unknown recall-v2 evaluation option: ${argument}`);
+    else throw new ScriptError(`Unknown recall-v2 evaluation option: ${argument}`);
   }
   if (failOnRegression && !baselinePath) {
-    throw new Error('--fail-on-regression requires --baseline <path>');
+    throw new ScriptError('--fail-on-regression requires --baseline <path>');
   }
   return {
     baselinePath,
@@ -118,14 +121,14 @@ function parseArguments(args: readonly string[]): EvaluationOptions {
 function positiveInteger(value: string | undefined, option: string): number {
   const parsed = Number.parseInt(requiredValue(value, option), 10);
   if (!Number.isSafeInteger(parsed) || parsed < 1) {
-    throw new Error(`${option} requires a positive integer`);
+    throw new ScriptError(`${option} requires a positive integer`);
   }
   return parsed;
 }
 
 function requiredValue(value: string | undefined, option: string): string {
-  if (!value?.trim()) throw new Error(`${option} requires a value`);
+  if (!value?.trim()) throw new ScriptError(`${option} requires a value`);
   return value;
 }
 
-BunRuntime.runMain(evaluateRecall.pipe(Effect.provide(ApplicationLayer)));
+BunRuntime.runMain(provideScriptLayer(evaluateRecall, ApplicationLayer));

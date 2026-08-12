@@ -1,7 +1,19 @@
+import {TestError} from '../helpers/test-error.js';
+import {provideTestLayer} from '../helpers/effect-layer.js';
 import {it as effectIt} from '@effect/vitest';
-import {existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync} from 'node:fs';
-import {tmpdir} from 'node:os';
-import {join, posix as posixPath, win32 as windowsPath} from 'node:path';
+import {
+  closeSync,
+  existsSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync,
+} from '../helpers/node-fs.js';
+import {cpus, release, tmpdir, totalmem} from '../helpers/node-os.js';
+import {join, posix as posixPath, win32 as windowsPath} from '../helpers/node-path.js';
 import {Clock, Deferred, Effect, Fiber} from 'effect';
 import {TestClock} from 'effect/testing';
 import * as FC from 'effect/testing/FastCheck';
@@ -25,11 +37,29 @@ import {
   readCanonicalProcessStartIdentity,
   readProcessStartIdentity,
   resolveHomeDirectory,
+  runtimeHostHardwareInfo,
+  runtimeLstat,
+  runtimeOperatingSystemRelease,
+  runtimeStat,
   makeCachedProcessStartIdentityResolver,
   SystemInfo,
 } from '../../src/effect/system.js';
 
 describe('SystemInfo structural path adapter', () => {
+  it('retains the host kernel release for benchmark provenance', () => {
+    expect(runtimeOperatingSystemRelease).toBe(release());
+  });
+
+  it('retains the exact host CPU and memory facts for benchmark provenance', () => {
+    const expectedCpus = cpus();
+
+    expect(runtimeHostHardwareInfo()).toEqual({
+      cpuModel: expectedCpus[0]?.model ?? 'unknown',
+      logicalCpuCount: expectedCpus.length,
+      memoryBytes: totalmem(),
+    });
+  });
+
   effectIt.effect.prop(
     'matches the platform path contract across drives, UNC roots, separators, dots, and trailing separators',
     {
@@ -53,9 +83,59 @@ describe('SystemInfo structural path adapter', () => {
         expect(actual.basename(candidate)).toBe(expected.basename(candidate));
         expect(actual.dirname(candidate)).toBe(expected.dirname(candidate));
         expect(actual.join(candidate, child)).toBe(expected.join(candidate, child));
+        expect(actual.relative(candidate, actual.join(candidate, child))).toBe(
+          expected.relative(candidate, expected.join(candidate, child)),
+        );
+        expect(actual.resolve(candidate, child)).toBe(expected.resolve(candidate, child));
+        expect(actual.sep).toBe(expected.sep);
       }),
     {fastCheck: {numRuns: 200}},
   );
+
+  it.skipIf(process.platform === 'win32')('distinguishes link identity from exact followed file identity', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'threadnote-runtime-stat-'));
+    try {
+      const target = join(root, 'target');
+      const link = join(root, 'link');
+      writeFileSync(target, 'threadnote');
+      symlinkSync(target, link);
+
+      const [targetInfo, linkInfo, followedInfo] = await Promise.all([
+        runtimeLstat(target),
+        runtimeLstat(link),
+        runtimeStat(link),
+      ]);
+
+      expect(linkInfo.isSymbolicLink()).toBe(true);
+      expect(followedInfo.isFile()).toBe(true);
+      expect(typeof followedInfo.dev).toBe('bigint');
+      expect(typeof followedInfo.ino).toBe('bigint');
+      expect(followedInfo.dev).toBe(targetInfo.dev);
+      expect(followedInfo.ino).toBe(targetInfo.ino);
+    } finally {
+      rmSync(root, {force: true, recursive: true});
+    }
+  });
+
+  it.skipIf(process.platform !== 'linux')('follows a deleted open file through its proc descriptor', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'threadnote-runtime-fd-stat-'));
+    const target = join(root, 'deleted-open-file');
+    writeFileSync(target, 'retained bytes');
+    const descriptor = openSync(target, 'r');
+    try {
+      const expected = await runtimeStat(target);
+      unlinkSync(target);
+      const observed = await runtimeStat(`/proc/${process.pid}/fd/${descriptor}`);
+
+      expect(observed.isFile()).toBe(true);
+      expect(observed.size).toBe(expected.size);
+      expect(observed.dev).toBe(expected.dev);
+      expect(observed.ino).toBe(expected.ino);
+    } finally {
+      closeSync(descriptor);
+      rmSync(root, {force: true, recursive: true});
+    }
+  });
 });
 
 describe('SystemInfo home directory resolution', () => {
@@ -130,7 +210,7 @@ describe('SystemInfo disk capacity parsing', () => {
         const lower = availableDiskBytesFromStatfs({bavail: BigInt(lowerBlocks), bsize: BigInt(blockSize)});
         const higher = availableDiskBytesFromStatfs({bavail: BigInt(higherBlocks), bsize: BigInt(blockSize)});
         if (lower === undefined || higher === undefined) {
-          throw new Error('Valid native statfs values must produce a safe capacity.');
+          throw new TestError('Valid native statfs values must produce a safe capacity.');
         }
 
         expect(higher).toBe(expected);
@@ -215,7 +295,7 @@ describe('SystemInfo disk capacity parsing', () => {
                 fallbackInvocations += 1;
                 return 42;
               }),
-            statfs: () => Effect.fail(Object.assign(new Error('Native statfs unavailable.'), {code})),
+            statfs: () => Effect.fail(Object.assign(new TestError('Native statfs unavailable.'), {code})),
           },
         );
         expect(available).toBe(42);
@@ -232,7 +312,8 @@ describe('SystemInfo disk capacity parsing', () => {
                 fallbackInvocations += 1;
                 return 99;
               }),
-            statfs: () => Effect.fail(Object.assign(new Error(`/private/ordinary-statfs-failure: ${code}`), {code})),
+            statfs: () =>
+              Effect.fail(Object.assign(new TestError(`/private/ordinary-statfs-failure: ${code}`), {code})),
           },
         );
         expect(available).toBeUndefined();
@@ -300,7 +381,7 @@ describe('SystemInfo disk capacity parsing', () => {
               nativeInvocations += 1;
             }).pipe(
               Effect.andThen(Effect.sleep(60)),
-              Effect.andThen(Effect.fail(Object.assign(new Error('Native statfs unavailable.'), {code: 'ENOSYS'}))),
+              Effect.andThen(Effect.fail(Object.assign(new TestError('Native statfs unavailable.'), {code: 'ENOSYS'}))),
             ),
         },
         100,
@@ -344,7 +425,8 @@ describe('SystemInfo disk capacity parsing', () => {
                 {
                   fallback: (path, platform, environment) =>
                     legacyAvailableDiskBytes(path, platform, environment, join(fixture.root, 'df')),
-                  statfs: () => Effect.fail(Object.assign(new Error('Native statfs unavailable.'), {code: 'ENOSYS'})),
+                  statfs: () =>
+                    Effect.fail(Object.assign(new TestError('Native statfs unavailable.'), {code: 'ENOSYS'})),
                 },
                 750,
               ).pipe(Effect.forkChild({startImmediately: true}));
@@ -385,7 +467,7 @@ describe('SystemInfo disk capacity parsing', () => {
             expect(spies.spawn).not.toHaveBeenCalled();
           }
           expect(spies.spawnSync).not.toHaveBeenCalled();
-        }).pipe(Effect.provide(SystemInfo.layer)),
+        }).pipe(provideTestLayer(SystemInfo.layer)),
       spies =>
         Effect.sync(() => {
           spies.spawn.mockRestore();
@@ -405,7 +487,7 @@ function waitForRecordedProcessId(path: string, timeoutMilliseconds: number) {
       }
       yield* Effect.sleep(10);
     }
-    return yield* Effect.fail(new Error('Timed out waiting for the fallback process to start.'));
+    return yield* Effect.fail(new TestError('Timed out waiting for the fallback process to start.'));
   });
 }
 
@@ -416,7 +498,7 @@ function waitForProcessExit(processId: number, timeoutMilliseconds: number) {
       if (!isProcessRunning(processId)) return;
       yield* Effect.sleep(10);
     }
-    return yield* Effect.fail(new Error('Timed out waiting for the fallback process to exit.'));
+    return yield* Effect.fail(new TestError('Timed out waiting for the fallback process to exit.'));
   });
 }
 
@@ -868,7 +950,7 @@ describe('SystemInfo process identity', () => {
       const system = yield* SystemInfo;
       const canonicalProcessStartIdentity = system.canonicalProcessStartIdentity;
       if (canonicalProcessStartIdentity === undefined) {
-        return yield* Effect.fail(new Error('The production SystemInfo layer must provide the canonical channel.'));
+        return yield* Effect.fail(new TestError('The production SystemInfo layer must provide the canonical channel.'));
       }
       const identities = [
         yield* system.processStartIdentity(system.processId),
@@ -889,7 +971,7 @@ describe('SystemInfo process identity', () => {
       } else {
         expect(canonicalIdentities[0]).toBe(identities[0]);
       }
-    }).pipe(Effect.provide(SystemInfo.layer)),
+    }).pipe(provideTestLayer(SystemInfo.layer)),
   );
 });
 
@@ -906,20 +988,22 @@ function waitForRecordedProcessIds(path: string, expectedCount: number, timeoutM
       }
       yield* Effect.sleep(10);
     }
-    return yield* Effect.fail(new Error(`Timed out waiting for ${expectedCount} process identity probes to start.`));
+    return yield* Effect.fail(
+      new TestError(`Timed out waiting for ${expectedCount} process identity probes to start.`),
+    );
   });
 }
 
 describe('SystemInfo benchmark metadata', () => {
   effectIt.effect('reports real CPU, memory, and operating-system values', () =>
     Effect.gen(function* () {
-      const hardware = yield* (yield* SystemInfo).hardwareInfo();
+      const hardware = yield* (yield* SystemInfo).hardwareInfo;
 
       expect(hardware.cpuModel.trim().length).toBeGreaterThan(0);
       expect(hardware.memoryBytes).toBeGreaterThan(0);
       expect(hardware.effectiveMemoryBytes).toBeGreaterThan(0);
       expect(hardware.effectiveMemoryBytes).toBeLessThanOrEqual(hardware.memoryBytes);
       expect(hardware.operatingSystem.trim().length).toBeGreaterThan(0);
-    }).pipe(Effect.provide(SystemInfo.layer)),
+    }).pipe(provideTestLayer(SystemInfo.layer)),
   );
 });

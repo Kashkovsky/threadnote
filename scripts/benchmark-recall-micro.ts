@@ -1,3 +1,4 @@
+import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import {bench, do_not_optimize, run} from 'mitata';
 import {Effect} from 'effect';
@@ -29,7 +30,7 @@ const benchmarkRecall = Effect.gen(function* () {
   const emitJson = arguments_.includes('--json') || outputIndex !== -1;
   const result = yield* Effect.tryPromise({
     try: () => run({format: emitJson ? 'quiet' : undefined, throw: true}),
-    catch: cause => new Error('Recall microbenchmark failed.', {cause}),
+    catch: cause => new ScriptError('Recall microbenchmark failed.', {cause}),
   });
   if (!emitJson) return;
 
@@ -40,7 +41,7 @@ const benchmarkRecall = Effect.gen(function* () {
       Effect.forEach([...fixtures], ([size, fixture]) =>
         fixtureHash(JSON.stringify(fixture)).pipe(Effect.map(hash => [String(size), hash] as const)),
       ),
-      system.hardwareInfo(),
+      system.hardwareInfo,
     ],
     {concurrency: 'unbounded'},
   );
@@ -80,7 +81,7 @@ const benchmarkRecall = Effect.gen(function* () {
   };
   if (outputIndex !== -1) {
     const outputPath = arguments_[outputIndex + 1];
-    if (!outputPath) return yield* Effect.fail(new Error('--output requires a path'));
+    if (!outputPath) return yield* Effect.fail(new ScriptError('--output requires a path'));
     yield* atomicWrite(outputPath, `${JSON.stringify(artifact, undefined, 2)}\n`);
   }
   if (arguments_.includes('--json') || outputIndex === -1) {
@@ -92,4 +93,4 @@ const git = Effect.fn('benchmark.git')((arguments_: readonly string[]) =>
   runCommandEffect('git', arguments_, {timeoutMs: 30_000}).pipe(Effect.map(result => result.stdout.trim())),
 );
 
-BunRuntime.runMain(benchmarkRecall.pipe(Effect.provide(ApplicationLayer)));
+BunRuntime.runMain(provideScriptLayer(benchmarkRecall, ApplicationLayer));

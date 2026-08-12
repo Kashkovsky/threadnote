@@ -1,7 +1,8 @@
-import {mkdtempSync, rmSync, writeFileSync} from 'node:fs';
-import {createHash} from 'node:crypto';
-import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {provideTestLayer} from '../helpers/effect-layer.js';
+import {mkdtempSync, rmSync, writeFileSync} from '../helpers/node-fs.js';
+import {createHash} from '../helpers/node-crypto.js';
+import {tmpdir} from '../helpers/node-os.js';
+import {join} from '../helpers/node-path.js';
 import {Database} from 'bun:sqlite';
 import {it as effectIt} from '@effect/vitest';
 import {Deferred, Effect, Fiber, FileSystem, Option, Ref} from 'effect';
@@ -40,7 +41,7 @@ describe('code graph view removal core', () => {
         expect(result).toEqual({expectedSnapshotId: snapshotId('missing'), state: 'not-found'});
         expect(yield* Effect.promise(() => Bun.file(databasePath).exists())).toBe(false);
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('adds durable non-cascading removal evidence without replacing v3 data', () =>
@@ -82,7 +83,7 @@ describe('code graph view removal core', () => {
           }
         });
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('performs an exact idempotent CAS and preserves stale or missing targets without mutation', () =>
@@ -164,7 +165,7 @@ describe('code graph view removal core', () => {
           }
         });
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('preserves shared views, readers, recursively required bases, and unrelated dirty history', () =>
@@ -237,7 +238,7 @@ describe('code graph view removal core', () => {
           snapshotId('unrelated-dirty'),
         ]);
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('never resurrects builder history and suppresses only the same mixed-version pointer', () =>
@@ -291,7 +292,7 @@ describe('code graph view removal core', () => {
         expect(tombstoneBeforeCurrentPromotion).toBe(snapshotId('original'));
         expect(tombstoneAfterCurrentPromotion).toBeUndefined();
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('serializes bounded concurrent retries without losing removal evidence', () =>
@@ -312,7 +313,7 @@ describe('code graph view removal core', () => {
         expect(results.filter(result => result.state === 'already-removed')).toHaveLength(15);
         expect(removedView(fixture.databasePath, worktreeId)).toBe(snapshotId('load'));
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('fails fast and path-free on held writer or target-worktree locks without running the mutation', () =>
@@ -396,7 +397,7 @@ describe('code graph view removal core', () => {
         expect(activeView(fixture.databasePath, worktreeId)).toBe(snapshotId('busy'));
         expect(removedView(fixture.databasePath, worktreeId)).toBeUndefined();
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('classifies target-lock filesystem failures without exposing the lock root', () =>
@@ -420,7 +421,7 @@ describe('code graph view removal core', () => {
           expect(String(observed.error)).not.toContain(root);
         }
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 });
 

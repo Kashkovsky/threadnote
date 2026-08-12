@@ -5,6 +5,10 @@ import {LocalModelCatalog, type LocalModelRole} from './catalog.js';
 import {LocalModelStore, modelDownloadUrl} from './store.js';
 import {readModelSelection, selectLocalModel} from './selection.js';
 
+class ModelCommandError extends Error {
+  readonly _tag = 'ModelCommandError' as const;
+}
+
 export const runModelList = Effect.fn('models.command.list')(function* (config: RuntimeConfig) {
   const catalog = yield* LocalModelCatalog;
   const store = yield* LocalModelStore;
@@ -77,13 +81,13 @@ export const runModelSelect = Effect.fn('models.command.select')(function* (
   const catalog = yield* LocalModelCatalog;
   const manifest = yield* catalog.get(modelId);
   if (manifest.role !== role) {
-    return yield* Effect.fail(new Error(`Model ${modelId} has role ${manifest.role}, not ${role}.`));
+    return yield* Effect.fail(new ModelCommandError(`Model ${modelId} has role ${manifest.role}, not ${role}.`));
   }
   const store = yield* LocalModelStore;
   const status = yield* store.status(config.agentContextHome, manifest);
   if (!status.installed) {
     return yield* Effect.fail(
-      new Error(`Model ${modelId} is not installed. Run: threadnote models install ${modelId}`),
+      new ModelCommandError(`Model ${modelId} is not installed. Run: threadnote models install ${modelId}`),
     );
   }
   if (options.dryRun === true) {
@@ -97,7 +101,7 @@ export const runModelSelect = Effect.fn('models.command.select')(function* (
 
 export const runModelRuntimeStatus = Effect.fn('models.command.runtime')(function* () {
   const runtime = yield* LocalModelRuntime;
-  const diagnostics = yield* runtime.diagnostics();
+  const diagnostics = yield* runtime.diagnostics;
   yield* Console.log(`node-llama-cpp: ${diagnostics.buildType}`);
   yield* Console.log(`Backend: ${diagnostics.backend}`);
   yield* Console.log(`CPU math cores: ${diagnostics.cpuMathCores}`);

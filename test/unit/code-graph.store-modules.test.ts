@@ -1,5 +1,5 @@
-import {readdirSync, readFileSync} from 'node:fs';
-import {join} from 'node:path';
+import {readdirSync, readFileSync} from '../helpers/node-fs.js';
+import {join} from '../helpers/node-path.js';
 import {describe, expect, it} from 'vitest';
 
 const STORE_DIRECTORY = join(process.cwd(), 'src/code_graph');

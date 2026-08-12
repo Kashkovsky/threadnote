@@ -1,4 +1,4 @@
-import {readFileSync} from 'node:fs';
+import {readFileSync} from '../helpers/node-fs.js';
 import {JSON_SCHEMA, load} from 'js-yaml';
 import {describe, expect, it} from 'vitest';
 

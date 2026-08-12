@@ -1,3 +1,4 @@
+import {provideTestLayer} from './effect-layer.js';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {Effect, FileSystem, Layer} from 'effect';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
@@ -35,7 +36,7 @@ const program = Effect.gen(function* () {
   // A pending Effect alone does not retain Bun's event loop. Keep a live,
   // bounded timer handle until the parent exercises post-commit SIGKILL.
   for (;;) yield* Effect.sleep(60_000);
-}).pipe(Effect.provide(childLayer));
+}).pipe(provideTestLayer(childLayer));
 
 Effect.runPromise(program).catch(cause => {
   process.stderr.write(`removed-view-cleanup child failed: ${cause instanceof Error ? cause.name : 'unknown'}\n`);

@@ -1,3 +1,5 @@
+import {TestError} from '../helpers/test-error.js';
+import {provideTestLayer} from '../helpers/effect-layer.js';
 import {Database} from 'bun:sqlite';
 import {it as effectIt} from '@effect/vitest';
 import {Deferred, Effect, Exit, Fiber, Option} from 'effect';
@@ -180,7 +182,7 @@ describe('code graph persistent schema migration', () => {
         store.withSession(fixture.databasePath, store.initialize(fixture.databasePath), {
           onPersistentSchemaMigrationPhase: phase =>
             phase === 'migrated-query-indexes'
-              ? Effect.die(new Error('fault after revision 9 query-index migration'))
+              ? Effect.die(new TestError('fault after revision 9 query-index migration'))
               : Effect.void,
         }),
       );
@@ -223,7 +225,7 @@ describe('code graph persistent schema migration', () => {
       const preparedRetry = yield* Effect.sync(() => readRevision9IndexState(fixture.databasePath));
       expect(preparedRetry.currentRootPage).toBe(migrated.currentRootPage);
       expect(preparedRetry.revision).toBe(String(CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION));
-    }).pipe(Effect.provide(ApplicationLayer)),
+    }).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it('keeps revision 4 ready lexical rows readable while enabling compact writes for later snapshots', async () => {
@@ -538,7 +540,7 @@ describe('code graph persistent schema migration', () => {
           yield* store.withSession(fixture.databasePath, store.initialize(fixture.databasePath), {
             onPersistentSchemaMigrationPhase: phase =>
               phase === 'retired-incompatible-ready'
-                ? Effect.die(new Error('fault after ready lexical retirement'))
+                ? Effect.die(new TestError('fault after ready lexical retirement'))
                 : Effect.void,
           });
         }),
@@ -819,7 +821,7 @@ describe('code graph persistent schema migration', () => {
           yield* store.withSession(fixture.databasePath, store.initialize(fixture.databasePath), {
             onPersistentSchemaMigrationPhase: phase =>
               phase === 'created-extensions'
-                ? Effect.die(new Error('fault after compact reference schema creation'))
+                ? Effect.die(new TestError('fault after compact reference schema creation'))
                 : Effect.void,
           });
         }),
@@ -919,7 +921,7 @@ describe('code graph persistent schema migration', () => {
           database.close(false);
         }
       });
-    }).pipe(Effect.provide(ApplicationLayer)),
+    }).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('atomically rolls back revision 8 cleanup publication and converges on retry', () =>
@@ -949,7 +951,7 @@ describe('code graph persistent schema migration', () => {
         .withSession(fixture.databasePath, store.initialize(fixture.databasePath), {
           onPersistentSchemaMigrationPhase: phase =>
             phase === 'added-removed-view-cleanup'
-              ? Effect.die(new Error('fault after cleanup publication'))
+              ? Effect.die(new TestError('fault after cleanup publication'))
               : Effect.void,
         })
         .pipe(Effect.exit);
@@ -975,7 +977,7 @@ describe('code graph persistent schema migration', () => {
       expect(healed.snapshots).toEqual(before.snapshots);
       expect(healed.active).toEqual(before.active);
       expect(healed.tombstones).toEqual(before.tombstones);
-    }).pipe(Effect.provide(ApplicationLayer)),
+    }).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('rolls back revision 8 cleanup publication when the migration Effect is interrupted', () =>
@@ -1026,7 +1028,7 @@ describe('code graph persistent schema migration', () => {
       expect(healed.snapshots).toEqual(before.snapshots);
       expect(healed.active).toEqual(before.active);
       expect(healed.tombstones).toEqual(before.tombstones);
-    }).pipe(Effect.provide(ApplicationLayer)),
+    }).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('atomically rolls back a fault after adding revision 7 owner instances', () =>
@@ -1053,7 +1055,7 @@ describe('code graph persistent schema migration', () => {
         .withSession(fixture.databasePath, store.initialize(fixture.databasePath), {
           onPersistentSchemaMigrationPhase: phase =>
             phase === 'added-build-owner-instance'
-              ? Effect.die(new Error('fault after owner instance creation'))
+              ? Effect.die(new TestError('fault after owner instance creation'))
               : Effect.void,
         })
         .pipe(Effect.exit);
@@ -1085,7 +1087,7 @@ describe('code graph persistent schema migration', () => {
           database.close(false);
         }
       });
-    }).pipe(Effect.provide(ApplicationLayer)),
+    }).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it('atomically rolls back an interrupted additive materialization-plan migration', async () => {
@@ -1102,7 +1104,7 @@ describe('code graph persistent schema migration', () => {
           yield* store.withSession(fixture.databasePath, store.initialize(fixture.databasePath), {
             onPersistentSchemaMigrationPhase: phase =>
               phase === 'added-materialization-plan'
-                ? Effect.die(new Error('fault after additive materialization plan'))
+                ? Effect.die(new TestError('fault after additive materialization plan'))
                 : Effect.void,
           });
         }),
@@ -1261,7 +1263,7 @@ describe('code graph persistent schema migration', () => {
             const store = yield* CodeGraphStore;
             yield* store.withSession(fixture.databasePath, store.initialize(fixture.databasePath), {
               onPersistentSchemaMigrationPhase: phase =>
-                phase === faultPhase ? Effect.die(new Error(`fault after ${phase}`)) : Effect.void,
+                phase === faultPhase ? Effect.die(new TestError(`fault after ${phase}`)) : Effect.void,
             });
           }),
         ),

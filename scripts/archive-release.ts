@@ -1,3 +1,4 @@
+import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {Console, Effect, FileSystem, Layer, Path} from 'effect';
@@ -15,7 +16,7 @@ const archiveRelease = Effect.gen(function* () {
   const target = Bun.env.THREADNOTE_RELEASE_TARGET?.trim();
   if (!target || !ARCHIVE_TARGET_PATTERN.test(target)) {
     return yield* Effect.fail(
-      new Error('THREADNOTE_RELEASE_TARGET must be one of darwin|linux|windows combined with arm64|x64.'),
+      new ScriptError('THREADNOTE_RELEASE_TARGET must be one of darwin|linux|windows combined with arm64|x64.'),
     );
   }
 
@@ -27,7 +28,7 @@ const archiveRelease = Effect.gen(function* () {
   const artifactPath = path.join(artifactsRoot, artifactName);
   const checksumPath = `${artifactPath}.sha256`;
   if (!(yield* fs.exists(path.join(distributionRoot, 'release.json')))) {
-    return yield* Effect.fail(new Error('dist/release.json is missing; build the release before archiving it.'));
+    return yield* Effect.fail(new ScriptError('dist/release.json is missing; build the release before archiving it.'));
   }
 
   yield* fs.makeDirectory(artifactsRoot, {recursive: true});
@@ -45,4 +46,4 @@ const systemLayer = SystemInfo.layer;
 const commandLayer = CommandExecutor.layer.pipe(Layer.provide(systemLayer));
 const archiveLayer = Layer.merge(systemLayer, commandLayer).pipe(Layer.provideMerge(BunServices.layer));
 
-BunRuntime.runMain(archiveRelease.pipe(Effect.provide(archiveLayer)));
+BunRuntime.runMain(provideScriptLayer(archiveRelease, archiveLayer));

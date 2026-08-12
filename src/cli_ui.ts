@@ -167,7 +167,7 @@ const startSpinner = Effect.fn('cliUi.startSpinner')(function* (message: string)
 
 export interface ProgressIndicator {
   update(message: string): Effect.Effect<void>;
-  stop(): Effect.Effect<void>;
+  readonly stop: Effect.Effect<void>;
 }
 
 interface LineProgressState {
@@ -227,19 +227,18 @@ export const startProgress = Effect.fn('cliUi.startProgress')(function* (message
             yield* Ref.set(state, {...current, pendingMessage: nextMessage});
           }),
         ),
-      stop: () =>
-        gate.withPermit(
-          Effect.gen(function* () {
-            const current = yield* Ref.get(state);
-            if (current.pendingMessage === undefined || current.pendingMessage === current.lastEmittedMessage) return;
-            yield* Console.log(current.pendingMessage);
-            yield* Ref.set(state, {
-              family: progressMessageFamily(current.pendingMessage),
-              lastEmittedAtMilliseconds: yield* Clock.currentTimeMillis,
-              lastEmittedMessage: current.pendingMessage,
-            });
-          }),
-        ),
+      stop: gate.withPermit(
+        Effect.gen(function* () {
+          const current = yield* Ref.get(state);
+          if (current.pendingMessage === undefined || current.pendingMessage === current.lastEmittedMessage) return;
+          yield* Console.log(current.pendingMessage);
+          yield* Ref.set(state, {
+            family: progressMessageFamily(current.pendingMessage),
+            lastEmittedAtMilliseconds: yield* Clock.currentTimeMillis,
+            lastEmittedMessage: current.pendingMessage,
+          });
+        }),
+      ),
     };
   }
 
@@ -261,7 +260,7 @@ export const startProgress = Effect.fn('cliUi.startProgress')(function* (message
   const fiber = yield* render.pipe(Effect.repeat(Schedule.spaced(100)), Effect.forkDetach);
   return {
     update: (nextMessage: string) => Ref.set(currentMessage, nextMessage).pipe(Effect.andThen(render)),
-    stop: () => Fiber.interrupt(fiber).pipe(Effect.andThen(flush), Effect.andThen(terminal.display('\r\u001b[2K'))),
+    stop: Fiber.interrupt(fiber).pipe(Effect.andThen(flush), Effect.andThen(terminal.display('\r\u001b[2K'))),
   };
 });
 

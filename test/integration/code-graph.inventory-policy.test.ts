@@ -1,7 +1,7 @@
-import {execFileSync} from 'node:child_process';
-import {mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync} from 'node:fs';
-import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {execFileSync} from '../helpers/node-child-process.js';
+import {mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync} from '../helpers/node-fs.js';
+import {tmpdir} from '../helpers/node-os.js';
+import {join} from '../helpers/node-path.js';
 import {Effect, FileSystem} from 'effect';
 import {afterEach, describe, expect, it} from 'vitest';
 import {inventoryRepository, previewCodeGraphInventory, worktreeOverlayState} from '../../src/code_graph/inventory.js';

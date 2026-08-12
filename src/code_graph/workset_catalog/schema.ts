@@ -7,6 +7,10 @@ import {
   CodeGraphWorksetCatalogError,
 } from './types.js';
 
+export const CODE_GRAPH_WORKSET_CATALOG_PAGE_SIZE_BYTES = 4_096;
+const CATALOG_PAGE_COUNT_MAXIMUM =
+  CODE_GRAPH_WORKSET_CATALOG_LIMITS.catalogPhysicalBytesMaximum / CODE_GRAPH_WORKSET_CATALOG_PAGE_SIZE_BYTES;
+
 export const configureCodeGraphWorksetCatalogReadConnection = Effect.fn(
   'codeGraphWorksetCatalog.configureReadConnection',
 )(function* (sql: SqlClient.SqlClient) {
@@ -19,15 +23,28 @@ export const configureCodeGraphWorksetCatalogWriteConnection = Effect.fn(
 )(function* (sql: SqlClient.SqlClient) {
   yield* sql.unsafe('PRAGMA foreign_keys = ON');
   yield* sql.unsafe('PRAGMA busy_timeout = 5000');
+  yield* sql.unsafe(`PRAGMA page_size = ${CODE_GRAPH_WORKSET_CATALOG_PAGE_SIZE_BYTES}`);
   yield* sql.unsafe('PRAGMA journal_mode = WAL');
   yield* sql.unsafe('PRAGMA synchronous = FULL');
   yield* sql.unsafe('PRAGMA wal_autocheckpoint = 1000');
+  yield* sql.unsafe('PRAGMA journal_size_limit = 67108864');
+  yield* sql.unsafe(`PRAGMA max_page_count = ${CATALOG_PAGE_COUNT_MAXIMUM}`);
 });
 
 export const initializeCodeGraphWorksetCatalogSchema = Effect.fn('codeGraphWorksetCatalog.initializeSchema')(function* (
   sql: SqlClient.SqlClient,
 ) {
   yield* configureCodeGraphWorksetCatalogWriteConnection(sql);
+  const pageSize = yield* readSqlitePragmaInteger(sql, 'page_size');
+  const maximumPages = yield* readSqlitePragmaInteger(sql, 'max_page_count');
+  if (pageSize !== CODE_GRAPH_WORKSET_CATALOG_PAGE_SIZE_BYTES || maximumPages !== CATALOG_PAGE_COUNT_MAXIMUM) {
+    return yield* Effect.fail(
+      new CodeGraphWorksetCatalogError(
+        'incompatible',
+        'Workset catalog physical capacity settings are incompatible with this release.',
+      ),
+    );
+  }
   yield* sql.unsafe(`
     CREATE TABLE IF NOT EXISTS catalog_metadata (
       key TEXT PRIMARY KEY NOT NULL,
@@ -66,11 +83,29 @@ export const initializeCodeGraphWorksetCatalogSchema = Effect.fn('codeGraphWorks
   yield* sql.unsafe(`PRAGMA user_version = ${CODE_GRAPH_WORKSET_CATALOG_SCHEMA_VERSION}`);
 });
 
+function readSqlitePragmaInteger(sql: SqlClient.SqlClient, pragma: 'max_page_count' | 'page_size') {
+  return sql.unsafe<Record<string, unknown>>(`PRAGMA ${pragma}`).pipe(
+    Effect.flatMap(rows => {
+      const value = rows[0]?.[pragma];
+      const parsed = typeof value === 'bigint' ? Number(value) : value;
+      return typeof parsed === 'number' && Number.isSafeInteger(parsed) && parsed > 0
+        ? Effect.succeed(parsed)
+        : Effect.fail(new CodeGraphWorksetCatalogError('corrupt', 'Workset catalog capacity metadata is invalid.'));
+    }),
+  );
+}
+
 export const inspectCodeGraphWorksetCatalogSchemaVersion = Effect.fn('codeGraphWorksetCatalog.inspectSchemaVersion')(
   function* (sql: SqlClient.SqlClient) {
     return yield* readCodeGraphWorksetCatalogMetadataInteger(sql, 'schema_version');
   },
 );
+
+export const inspectCodeGraphWorksetCatalogPageSize = Effect.fn('codeGraphWorksetCatalog.inspectPageSize')(function* (
+  sql: SqlClient.SqlClient,
+) {
+  return yield* readSqlitePragmaInteger(sql, 'page_size');
+});
 
 function createCodeGraphWorksetCatalogTables(sql: SqlClient.SqlClient) {
   return Effect.gen(function* () {
@@ -87,11 +122,24 @@ function createCodeGraphWorksetCatalogTables(sql: SqlClient.SqlClient) {
         projector_version INTEGER NOT NULL CHECK(projector_version > 0),
         component_count INTEGER NOT NULL CHECK(component_count >= 0),
         symbol_count INTEGER NOT NULL CHECK(symbol_count >= 0),
-        state TEXT NOT NULL CHECK(state IN ('staging', 'ready')),
+        state TEXT NOT NULL CHECK(state IN ('staging', 'ready', 'reclaiming')),
         created_at TEXT NOT NULL,
         UNIQUE(checkout_id, worktree_id, snapshot_id, projector_version)
       )
     `);
+    yield* sql.unsafe(`
+      CREATE TABLE IF NOT EXISTS catalog_capacity (
+        singleton INTEGER PRIMARY KEY NOT NULL CHECK(singleton = 1),
+        bridge_logical_bytes INTEGER NOT NULL CHECK(bridge_logical_bytes >= 0),
+        projection_logical_bytes INTEGER NOT NULL
+          CHECK(projection_logical_bytes >= 0),
+        CHECK(bridge_logical_bytes + projection_logical_bytes <= ${CODE_GRAPH_WORKSET_CATALOG_LIMITS.catalogPhysicalBytesMaximum})
+      ) WITHOUT ROWID
+    `);
+    yield* sql.unsafe(
+      `INSERT OR IGNORE INTO catalog_capacity (singleton, bridge_logical_bytes, projection_logical_bytes)
+       VALUES (1, 0, 0)`,
+    );
     yield* sql.unsafe(`
       CREATE TABLE IF NOT EXISTS routing_symbols (
         projection_digest TEXT NOT NULL REFERENCES repository_snapshots(projection_digest) ON DELETE CASCADE,
@@ -108,6 +156,24 @@ function createCodeGraphWorksetCatalogTables(sql: SqlClient.SqlClient) {
         span_end_line INTEGER NOT NULL CHECK(span_end_line >= span_line),
         span_end_column INTEGER NOT NULL CHECK(span_end_column >= 0),
         PRIMARY KEY (projection_digest, node_id)
+      ) WITHOUT ROWID
+    `);
+    yield* sql.unsafe(`
+      CREATE TABLE IF NOT EXISTS routing_projection_storage (
+        projection_digest TEXT PRIMARY KEY NOT NULL
+          REFERENCES repository_snapshots(projection_digest) ON DELETE CASCADE,
+        logical_bytes INTEGER NOT NULL
+          CHECK(logical_bytes >= 0 AND logical_bytes <= ${CODE_GRAPH_WORKSET_CATALOG_LIMITS.projectionBytesMaximum}),
+        reserved_bytes INTEGER NOT NULL
+          CHECK(reserved_bytes >= logical_bytes AND reserved_bytes <= ${CODE_GRAPH_WORKSET_CATALOG_LIMITS.projectionBytesMaximum}),
+        staging_token TEXT CHECK(staging_token IS NULL OR length(staging_token) = 64)
+      ) WITHOUT ROWID
+    `);
+    yield* sql.unsafe(`
+      CREATE TABLE IF NOT EXISTS routing_projection_retirements (
+        projection_digest TEXT PRIMARY KEY NOT NULL
+          REFERENCES repository_snapshots(projection_digest) ON DELETE CASCADE,
+        requested_at TEXT NOT NULL
       ) WITHOUT ROWID
     `);
     yield* sql.unsafe(`
@@ -229,6 +295,8 @@ function createCodeGraphWorksetCatalogTables(sql: SqlClient.SqlClient) {
         resolver_version INTEGER NOT NULL CHECK(resolver_version > 0),
         bridge_count INTEGER NOT NULL
           CHECK(bridge_count >= 0 AND bridge_count <= ${CODE_GRAPH_WORKSET_CATALOG_LIMITS.bridgesPerGeneration}),
+        bridge_bytes INTEGER NOT NULL
+          CHECK(bridge_bytes >= 0 AND bridge_bytes <= ${CODE_GRAPH_WORKSET_CATALOG_LIMITS.bridgeSetBytesMaximum}),
         bridge_set_digest TEXT NOT NULL CHECK(length(bridge_set_digest) = 64),
         coverage_state TEXT NOT NULL CHECK(coverage_state IN ('complete', 'partial', 'failed')),
         repository_count INTEGER NOT NULL
@@ -315,6 +383,11 @@ function createCodeGraphWorksetCatalogTables(sql: SqlClient.SqlClient) {
     yield* sql.unsafe(`
       CREATE INDEX IF NOT EXISTS workset_generation_members_projection
       ON workset_generation_members(projection_digest, generation_id)
+    `);
+    yield* sql.unsafe('DROP INDEX IF EXISTS workset_generations_state_created');
+    yield* sql.unsafe(`
+      CREATE INDEX IF NOT EXISTS routing_projection_retirements_requested
+      ON routing_projection_retirements(requested_at, projection_digest)
     `);
     yield* sql.unsafe(`
       CREATE INDEX IF NOT EXISTS qualified_refs_repository_node

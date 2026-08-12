@@ -1,5 +1,6 @@
-import {Effect, FileSystem, Result} from 'effect';
+import {Effect, Exit, FileSystem, Path, Result} from 'effect';
 import {sha256HexSync} from '../../crypto/sha256.js';
+import {isFileLockTimeout, withExclusiveFileLock} from '../../effect/file_lock.js';
 import {requireWorkset} from '../../manifest.js';
 import type {ProjectManifest, ResolvedWorkset, RuntimeConfig} from '../../types.js';
 import {expandPath} from '../../utils.js';
@@ -23,12 +24,16 @@ import {
   type RepositoryIdentity,
 } from '../types.js';
 import {stageCodeGraphWorksetRoutingProjectionScoped} from './projection_builder.js';
+import {codeGraphWorksetCatalogLayout} from './layout.js';
 import {
+  maintainCodeGraphWorksetCatalogPreparationPage,
   publishCodeGraphWorksetCatalogGeneration,
   readPublishedCodeGraphWorksetCatalogGeneration,
   registerCodeGraphQualifiedRef,
+  retireCodeGraphWorksetCatalogPreparation,
   stageCodeGraphWorksetCatalogGenerationFromReceipts,
 } from './store.js';
+import {CodeGraphWorksetCatalogError} from './types.js';
 import type {
   CodeGraphWorksetCatalogGenerationDigestMemberV1,
   CodeGraphWorksetCatalogGenerationReceiptV1,
@@ -38,6 +43,12 @@ import type {
 
 export const CODE_GRAPH_WORKSET_PREPARE_CONCURRENCY_DEFAULT = 2;
 export const CODE_GRAPH_WORKSET_PREPARE_CONCURRENCY_MAXIMUM = 8;
+const WORKSET_PREPARE_LOCK_OPTIONS = {
+  heartbeatIntervalMilliseconds: 10_000,
+  retryIntervalMilliseconds: 25,
+  staleAfterMilliseconds: 30_000,
+  waitTimeoutMilliseconds: 30_000,
+} as const;
 
 export type CodeGraphWorksetPrepareMemberV1 =
   | {
@@ -170,11 +181,15 @@ const prepareCodeGraphWorksetScoped = Effect.fn('codeGraphWorkset.prepareScoped'
   options: PrepareCodeGraphWorksetOptionsV1 = {},
 ) {
   const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
   const indexer = yield* CodeGraphIndexer;
   const workset = yield* requireWorkset(config.manifestPath, worksetName);
   const concurrency = yield* Effect.try({
     try: () => prepareConcurrency(options.concurrency),
-    catch: cause => (cause instanceof Error ? cause : new Error(String(cause))),
+    catch: cause =>
+      new CodeGraphWorksetCatalogError('invalid-input', cause instanceof Error ? cause.message : String(cause), {
+        cause,
+      }),
   });
   const manifestDigest = codeGraphWorksetManifestDigest(workset);
   const indexed = yield* Effect.forEach(
@@ -182,44 +197,110 @@ const prepareCodeGraphWorksetScoped = Effect.fn('codeGraphWorkset.prepareScoped'
     project => prepareConfiguredSnapshot(config, project, fs, indexer),
     {concurrency},
   );
-  // Projection reads and catalog appends are deliberately serial: at most one
-  // normalized symbol page is live across the complete preparation.
-  const configured: readonly PreparedMemberWithProjection[] = yield* Effect.forEach(
-    indexed,
-    member => stageConfiguredMember(config, member),
-    {concurrency: 1},
+  const projectionDigests = new Set<string>();
+  let stagedGenerationId: string | undefined;
+  const critical = Effect.gen(function* () {
+    yield* assertCurrentWorksetManifest(config, workset.name, manifestDigest);
+    yield* drainCodeGraphWorksetCatalogCleanup(config.agentContextHome);
+    // Projection reads and catalog appends are deliberately serial: at most one
+    // normalized symbol page is live across the complete preparation.
+    const configured: readonly PreparedMemberWithProjection[] = yield* Effect.forEach(
+      indexed,
+      member =>
+        stageConfiguredMember(config, member).pipe(
+          Effect.tap(prepared =>
+            Effect.sync(() => {
+              if (prepared.state === 'ready') projectionDigests.add(prepared.projectionDigest);
+            }),
+          ),
+        ),
+      {concurrency: 1},
+    );
+    const unresolved: readonly PreparedMemberWithProjection[] = workset.unresolvedProjects.map(
+      project =>
+        ({
+          project: safeLabel(project),
+          reason: 'unknown-project',
+          state: 'excluded',
+        }) as const satisfies CodeGraphWorksetPrepareMemberV1,
+    );
+    const members: readonly PreparedMemberWithProjection[] = [...configured, ...unresolved];
+    const generationMembers = members.flatMap(member =>
+      member.state === 'ready' ? [preparedGenerationMember(member)] : [],
+    );
+    if (generationMembers.length === 0) {
+      return prepareResult(workset.name, manifestDigest, members, undefined);
+    }
+    yield* assertPreparedMemberLeases(members);
+    const staged = yield* stageCodeGraphWorksetCatalogGenerationFromReceipts(config.agentContextHome, {
+      manifestDigest,
+      members: generationMembers,
+      worksetName: workset.name,
+    });
+    stagedGenerationId = staged.state === 'staging' ? staged.id : undefined;
+    const bridgeMembers = members.filter((member): member is PreparedReadyMember => member.state === 'ready');
+    const bridges = yield* prepareCodeGraphWorksetBridgesForGeneration(config, staged.id, bridgeMembers);
+    yield* assertPreparedMemberLeases(members);
+    const published = yield* publishCodeGraphWorksetCatalogGeneration(config.agentContextHome, {
+      beforePointerSwap: () =>
+        assertPreparedMemberLeases(members).pipe(
+          Effect.andThen(assertCurrentWorksetManifest(config, workset.name, manifestDigest)),
+        ),
+      generationId: staged.id,
+      worksetName: workset.name,
+    });
+    stagedGenerationId = undefined;
+    return prepareResult(workset.name, manifestDigest, members, published, bridges);
+  }).pipe(
+    Effect.onExit(exit =>
+      (Exit.isSuccess(exit)
+        ? drainCodeGraphWorksetCatalogCleanup(config.agentContextHome)
+        : retireCodeGraphWorksetCatalogPreparation(config.agentContextHome, {
+            ...(stagedGenerationId === undefined ? {} : {generationId: stagedGenerationId}),
+            projectionDigests: [...projectionDigests],
+          }).pipe(Effect.andThen(drainCodeGraphWorksetCatalogCleanup(config.agentContextHome)))
+      ).pipe(Effect.catchCause(() => Effect.void)),
+    ),
   );
-  const unresolved: readonly PreparedMemberWithProjection[] = workset.unresolvedProjects.map(
-    project =>
-      ({
-        project: safeLabel(project),
-        reason: 'unknown-project',
-        state: 'excluded',
-      }) as const satisfies CodeGraphWorksetPrepareMemberV1,
+  const layout = codeGraphWorksetCatalogLayout(path, config.agentContextHome);
+  return yield* withExclusiveFileLock(fs, layout.prepareLockPath, WORKSET_PREPARE_LOCK_OPTIONS, critical).pipe(
+    Effect.mapError(cause =>
+      cause instanceof CodeGraphWorksetCatalogError
+        ? cause
+        : new CodeGraphWorksetCatalogError(
+            isFileLockTimeout(cause) ? 'busy' : 'storage',
+            isFileLockTimeout(cause)
+              ? 'Timed out waiting to prepare the home-global workset catalog.'
+              : 'Unable to serialize home-global workset preparation.',
+            {cause},
+          ),
+    ),
   );
-  const members: readonly PreparedMemberWithProjection[] = [...configured, ...unresolved];
-  const generationMembers = members.flatMap(member =>
-    member.state === 'ready' ? [preparedGenerationMember(member)] : [],
-  );
-  if (generationMembers.length === 0) {
-    return prepareResult(workset.name, manifestDigest, members, undefined);
-  }
-  yield* assertPreparedMemberLeases(members);
-  const staged = yield* stageCodeGraphWorksetCatalogGenerationFromReceipts(config.agentContextHome, {
-    manifestDigest,
-    members: generationMembers,
-    worksetName: workset.name,
-  });
-  const bridgeMembers = members.filter((member): member is PreparedReadyMember => member.state === 'ready');
-  const bridges = yield* prepareCodeGraphWorksetBridgesForGeneration(config, staged.id, bridgeMembers);
-  yield* assertPreparedMemberLeases(members);
-  const published = yield* publishCodeGraphWorksetCatalogGeneration(config.agentContextHome, {
-    beforePointerSwap: () => assertPreparedMemberLeases(members),
-    generationId: staged.id,
-    worksetName: workset.name,
-  });
-  return prepareResult(workset.name, manifestDigest, members, published, bridges);
 });
+
+function assertCurrentWorksetManifest(config: RuntimeConfig, worksetName: string, expectedDigest: string) {
+  return requireWorkset(config.manifestPath, worksetName).pipe(
+    Effect.flatMap(current =>
+      codeGraphWorksetManifestDigest(current) === expectedDigest
+        ? Effect.void
+        : Effect.fail(
+            new CodeGraphWorksetCatalogError(
+              'stale',
+              'The workset definition changed while its catalog generation was preparing.',
+            ),
+          ),
+    ),
+    Effect.mapError(cause =>
+      cause instanceof CodeGraphWorksetCatalogError
+        ? cause
+        : new CodeGraphWorksetCatalogError(
+            'stale',
+            'The workset definition changed while its catalog generation was preparing.',
+            {cause},
+          ),
+    ),
+  );
+}
 
 export const prepareCodeGraphWorkset = Effect.fn('codeGraphWorkset.prepare')(function* (
   config: RuntimeConfig,
@@ -551,7 +632,10 @@ export const prepareCodeGraphWorksetBridgesForGeneration = Effect.fn('codeGraphW
     const resolution = yield* Effect.result(
       Effect.try({
         try: () => resolveCodeGraphCrossRepositoryBridges(repositories),
-        catch: cause => (cause instanceof Error ? cause : new Error(String(cause))),
+        catch: cause =>
+          new CodeGraphWorksetCatalogError('invalid-input', cause instanceof Error ? cause.message : String(cause), {
+            cause,
+          }),
       }),
     );
     if (Result.isFailure(resolution)) {
@@ -643,6 +727,16 @@ function assertBridgeMemberLeases(members: readonly CodeGraphWorksetBridgePrepar
   return Effect.forEach(members, member => member.assertLease, {
     concurrency: CODE_GRAPH_WORKSET_PREPARE_CONCURRENCY_DEFAULT,
     discard: true,
+  });
+}
+
+function drainCodeGraphWorksetCatalogCleanup(threadnoteHome: string) {
+  return Effect.gen(function* () {
+    for (;;) {
+      const page = yield* maintainCodeGraphWorksetCatalogPreparationPage(threadnoteHome);
+      if (!page.pendingCleanup) return;
+      yield* Effect.yieldNow;
+    }
   });
 }
 

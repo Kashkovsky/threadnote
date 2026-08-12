@@ -1,3 +1,4 @@
+import {TestError} from '../helpers/test-error.js';
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import {
@@ -102,7 +103,7 @@ describe('code graph lifecycle classification properties', () => {
         let cursor: string | undefined;
         for (let index = 0; index < targets.length; index += 1) {
           const selected = selectCodeGraphLifecycleOpportunityTarget(targets, cursor);
-          if (!selected) throw new Error('valid lifecycle target was not selected');
+          if (!selected) throw new TestError('valid lifecycle target was not selected');
           visited.push(selected.checkoutId);
           cursor = `${selected.checkoutId}\0${selected.databasePath}`;
         }

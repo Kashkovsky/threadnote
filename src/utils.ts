@@ -27,6 +27,10 @@ import type {CommandStatus, JsonObject} from './types.js';
 import {getThreadnoteVersion} from './version.js';
 import {compareVersions} from './version_compare.js';
 
+class UtilityOperationError extends Error {
+  readonly _tag = 'UtilityOperationError' as const;
+}
+
 export {formatShellCommand, shellQuote, withoutGitEnvironment} from './effect/command.js';
 export {compareVersions} from './version_compare.js';
 
@@ -123,7 +127,7 @@ export function escapeRegExp(value: string): string {
 export const requiredExecutable = Effect.fn('utils.requiredExecutable')(function* (command: string) {
   const executable = yield* findExecutable([command]);
   if (!executable) {
-    return yield* Effect.fail(new Error(`${command} was not found in PATH.`));
+    return yield* Effect.fail(new UtilityOperationError(`${command} was not found in PATH.`));
   }
   return executable;
 });
@@ -505,7 +509,7 @@ export const removePath = Effect.fn('utils.removePath')(function* (path: string,
 export function parsePort(value: string): number {
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed <= 0 || parsed > 65535) {
-    throw new Error(`Invalid port: ${value}`);
+    throw new UtilityOperationError(`Invalid port: ${value}`);
   }
   return parsed;
 }
@@ -513,7 +517,7 @@ export function parsePort(value: string): number {
 export function parsePositiveInteger(value: string, label: string): number {
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed <= 0) {
-    throw new Error(`Invalid ${label}: ${value}`);
+    throw new UtilityOperationError(`Invalid ${label}: ${value}`);
   }
   return parsed;
 }
@@ -552,36 +556,49 @@ export const assertSafeThreadnoteHomeForErase = Effect.fn('utils.assertSafeThrea
     comparable(resolvedPath) === comparable(resolvedUserHome) ||
     comparable(resolvedPath) === comparable(pathService.dirname(resolvedUserHome))
   ) {
-    return yield* Effect.fail(new Error(`Refusing to erase unsafe THREADNOTE_HOME: ${resolvedPath}`));
+    return yield* Effect.fail(new UtilityOperationError(`Refusing to erase unsafe THREADNOTE_HOME: ${resolvedPath}`));
   }
   if ((yield* fs.readLink(resolvedPath).pipe(Effect.option))._tag === 'Some') {
-    return yield* Effect.fail(new Error(`Refusing to erase symbolic-link THREADNOTE_HOME: ${resolvedPath}`));
+    return yield* Effect.fail(
+      new UtilityOperationError(`Refusing to erase symbolic-link THREADNOTE_HOME: ${resolvedPath}`),
+    );
   }
   const homeInfo = yield* fs.stat(resolvedPath).pipe(Effect.option);
   if (Option.isNone(homeInfo) || homeInfo.value.type !== 'Directory') {
-    return yield* Effect.fail(new Error(`Refusing to erase invalid THREADNOTE_HOME directory: ${resolvedPath}`));
+    return yield* Effect.fail(
+      new UtilityOperationError(`Refusing to erase invalid THREADNOTE_HOME directory: ${resolvedPath}`),
+    );
   }
   const receiptPath = pathService.join(resolvedPath, 'layout.json');
   if ((yield* fs.readLink(receiptPath).pipe(Effect.option))._tag === 'Some') {
-    return yield* Effect.fail(new Error(`Refusing to trust symbolic-link Threadnote layout receipt: ${receiptPath}`));
+    return yield* Effect.fail(
+      new UtilityOperationError(`Refusing to trust symbolic-link Threadnote layout receipt: ${receiptPath}`),
+    );
   }
   const receiptInfo = yield* fs.stat(receiptPath).pipe(Effect.option);
   if (Option.isNone(receiptInfo) || receiptInfo.value.type !== 'File') {
     return yield* Effect.fail(
-      new Error(`Refusing to erase unowned THREADNOTE_HOME without a valid layout receipt: ${resolvedPath}`),
+      new UtilityOperationError(
+        `Refusing to erase unowned THREADNOTE_HOME without a valid layout receipt: ${resolvedPath}`,
+      ),
     );
   }
   const receipt = yield* fs.readFileString(receiptPath).pipe(
     Effect.flatMap(content =>
       Effect.try({
         try: () => JSON.parse(content) as unknown,
-        catch: () => new Error(`Refusing to erase THREADNOTE_HOME with an invalid layout receipt: ${resolvedPath}`),
+        catch: () =>
+          new UtilityOperationError(
+            `Refusing to erase THREADNOTE_HOME with an invalid layout receipt: ${resolvedPath}`,
+          ),
       }),
     ),
   );
   if (!isThreadnoteStorageLayoutReceipt(receipt)) {
     return yield* Effect.fail(
-      new Error(`Refusing to erase THREADNOTE_HOME with an invalid or unsupported layout receipt: ${resolvedPath}`),
+      new UtilityOperationError(
+        `Refusing to erase THREADNOTE_HOME with an invalid or unsupported layout receipt: ${resolvedPath}`,
+      ),
     );
   }
   return resolvedPath;
@@ -1556,7 +1573,7 @@ function hybridRankRecallHits(
         : result.results.map(ranked => {
             const hit = byUri.get(ranked.candidate.uri);
             if (!hit) {
-              throw new Error(`Hybrid ranker returned unknown URI: ${ranked.candidate.uri}`);
+              throw new UtilityOperationError(`Hybrid ranker returned unknown URI: ${ranked.candidate.uri}`);
             }
             return {
               ...hit,

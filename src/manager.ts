@@ -1,5 +1,5 @@
 import * as BunHttpServer from '@effect/platform-bun/BunHttpServer';
-import {Console, Crypto, Effect, Encoding, FileSystem, Option, Path, Result} from 'effect';
+import {Console, Crypto, Effect, Encoding, FileSystem, Layer, Option, Path, Ref, Result, Scope} from 'effect';
 import * as HttpServer from 'effect/unstable/http/HttpServer';
 import * as HttpServerRequest from 'effect/unstable/http/HttpServerRequest';
 import * as HttpServerResponse from 'effect/unstable/http/HttpServerResponse';
@@ -56,7 +56,31 @@ import {collectDoctorChecks, runRepair, runStart} from './lifecycle.js';
 import {runSeed, runSeedSkills} from './seeding.js';
 import {currentPackageVersion, fetchLatestVersion, releaseSource} from './update.js';
 import {selectUpdateChannel} from './update_channel.js';
-import {runCodeGraphCompact, runCodeGraphIndex, runCodeGraphPurge, runCodeGraphRepair} from './code_graph/commands.js';
+import {
+  handleManagerWorksetRequest,
+  isManagerWorksetApiPath,
+  managerWorksetRequestAllowedDuringMaintenance,
+} from './manager_worksets.js';
+import {
+  cleanupMode,
+  consolidationAgent,
+  memoryKind,
+  memoryStatus,
+  optionalNonEmptyQuery,
+  optionalNonNegativeIntegerQuery,
+  optionalPositiveIntegerQuery,
+  optionalString,
+  requireConfirm,
+  requiredQuery,
+  requireString,
+  requireStringArray,
+} from './manager_request_inputs.js';
+import {runCodeGraphIndex, runCodeGraphPurge, runCodeGraphRepair} from './code_graph/commands.js';
+import {
+  compactCodeGraphStorageIsolated,
+  runCodeGraphAutomaticCompactionLoop,
+  type CodeGraphAutomaticCompactionStatus,
+} from './code_graph/automatic_compaction.js';
 import {inspectAllCodeGraphsLocal} from './code_graph/diagnostics.js';
 import {readAllCodeGraphBuildStatuses} from './code_graph/build_status.js';
 import {
@@ -113,6 +137,12 @@ interface ManagerDirectoryEntry {
   readonly isFile: () => boolean;
 }
 
+class ManagerOperationError extends Error {
+  readonly _tag = 'ManagerOperationError' as const;
+}
+function managerOperationError(cause: unknown): ManagerOperationError {
+  return cause instanceof ManagerOperationError ? cause : new ManagerOperationError(errorMessage(cause), {cause});
+}
 const pathJoin = Effect.fn('manager.pathJoin')(function* (...parts: readonly string[]) {
   const path = yield* Path.Path;
   return path.join(...parts);
@@ -195,8 +225,10 @@ interface ReadTreeOptions {
 }
 
 interface ApiContext {
+  readonly automaticCompactionStatus?: Ref.Ref<CodeGraphAutomaticCompactionStatus>;
   readonly config: RuntimeConfig;
   readonly jobs: Map<string, ConsolidationJob>;
+  readonly worksetScope: Scope.Scope;
   readonly runEffect?: ManagerEffectPromise;
   readonly token: string;
 }
@@ -271,33 +303,46 @@ const STATIC_FILES: Readonly<
 
 export function runManage(config: RuntimeConfig, options: ManageOptions) {
   return Effect.scoped(
-    Effect.gen(function* () {
-      if (yield* codeGraphMaintenanceIntentActive(config.agentContextHome)) {
-        return yield* Effect.fail(new Error(GRAPH_MAINTENANCE_BUSY_MESSAGE));
-      }
-      const crypto = yield* Crypto.Crypto;
-      const lifecycleMaintenance = yield* CodeGraphMaintenanceCoordinator;
-      const lifecycleTargets = yield* observeCodeGraphLifecycleOpportunityTargets(config.agentContextHome);
-      yield* runCodeGraphLifecycleOpportunity({
-        maintenance: lifecycleMaintenance,
-        opportunity: 'startup',
-        targets: lifecycleTargets,
-        threadnoteHome: config.agentContextHome,
-      }).pipe(Effect.catch(() => Effect.void));
-      const token = Encoding.encodeBase64Url(yield* crypto.randomBytes(24));
-      const server = yield* HttpServer.HttpServer;
-      yield* Effect.addFinalizer(() => releaseManagerGraphSnapshotLeases());
-      yield* server.serve(createManagerServer({config, jobs: new Map(), token}));
-      const actualPort = server.address._tag === 'TcpAddress' ? server.address.port : (options.uiPort ?? 0);
-      const url = `http://127.0.0.1:${actualPort}/?token=${encodeURIComponent(token)}`;
-      yield* Console.log(`Threadnote manager: ${url}`);
-      yield* Console.log('Press Ctrl-C to stop the manager.');
-      if (options.open !== false) {
-        yield* runCommandEffect('open', [url], {allowFailure: true});
-      }
-      return yield* Effect.never;
-    }),
-  ).pipe(Effect.provide(BunHttpServer.layer({hostname: '127.0.0.1', port: options.uiPort ?? 0})));
+    Layer.build(BunHttpServer.layer({hostname: '127.0.0.1', port: options.uiPort ?? 0})).pipe(
+      Effect.flatMap(context =>
+        Effect.gen(function* () {
+          if (yield* codeGraphMaintenanceIntentActive(config.agentContextHome)) {
+            return yield* Effect.fail(new ManagerOperationError(GRAPH_MAINTENANCE_BUSY_MESSAGE));
+          }
+          const crypto = yield* Crypto.Crypto;
+          const lifecycleMaintenance = yield* CodeGraphMaintenanceCoordinator;
+          const lifecycleTargets = yield* observeCodeGraphLifecycleOpportunityTargets(config.agentContextHome);
+          yield* runCodeGraphLifecycleOpportunity({
+            maintenance: lifecycleMaintenance,
+            opportunity: 'startup',
+            targets: lifecycleTargets,
+            threadnoteHome: config.agentContextHome,
+          }).pipe(Effect.catch(() => Effect.void));
+          const token = Encoding.encodeBase64Url(yield* crypto.randomBytes(24));
+          const automaticCompactionStatus = yield* Ref.make<CodeGraphAutomaticCompactionStatus>({state: 'idle'});
+          const worksetScope = yield* Scope.Scope;
+          const server = yield* HttpServer.HttpServer;
+          yield* Effect.addFinalizer(() => releaseManagerGraphSnapshotLeases());
+          yield* server.serve(
+            createManagerServer({automaticCompactionStatus, config, jobs: new Map(), token, worksetScope}),
+          );
+          yield* Effect.forkScoped(
+            runCodeGraphAutomaticCompactionLoop(config.agentContextHome, status =>
+              Ref.set(automaticCompactionStatus, status),
+            ),
+          );
+          const actualPort = server.address._tag === 'TcpAddress' ? server.address.port : (options.uiPort ?? 0);
+          const url = `http://127.0.0.1:${actualPort}/?token=${encodeURIComponent(token)}`;
+          yield* Console.log(`Threadnote manager: ${url}`);
+          yield* Console.log('Press Ctrl-C to stop the manager.');
+          if (options.open !== false) {
+            yield* runCommandEffect('open', [url], {allowFailure: true});
+          }
+          return yield* Effect.never;
+        }).pipe(Effect.provide(context)),
+      ),
+    ),
+  );
 }
 
 type ManagerRequestEffect = Effect.Effect<void, never, ApplicationServices>;
@@ -317,7 +362,7 @@ export function createManagerServer(
         Effect.flatMap(parsed =>
           typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
             ? Effect.succeed(parsed as Record<string, unknown>)
-            : Effect.fail(new Error('Expected a JSON object body.')),
+            : Effect.fail(new ManagerOperationError('Expected a JSON object body.')),
         ),
       ),
       headers: request.headers,
@@ -361,11 +406,11 @@ export const readManagedMemory = Effect.fn('manager.readManagedMemory')(function
   assertResourceUri(uri);
   const path = yield* localPathForMemoryUri(config, uri);
   if (!path) {
-    return yield* Effect.fail(new Error(`Manager can only read current-user memory URIs: ${uri}`));
+    return yield* Effect.fail(new ManagerOperationError(`Manager can only read current-user memory URIs: ${uri}`));
   }
   const pathStat = yield* lstat(path);
   if (!pathStat.isFile()) {
-    return yield* Effect.fail(new Error(`Manager can only read regular memory files: ${uri}`));
+    return yield* Effect.fail(new ManagerOperationError(`Manager can only read regular memory files: ${uri}`));
   }
   const content = yield* readFile(path, 'utf8');
   const relativePath = (yield* pathRelative(yield* localMemoriesRoot(config), path))
@@ -517,11 +562,28 @@ const handleRequestLegacy = Effect.fn('manager.handleRequestLegacy')(function* (
     return;
   }
   if (
-    isGraphApiPath(url.pathname) &&
-    url.pathname !== '/api/graphs/status' &&
+    ((isGraphApiPath(url.pathname) && url.pathname !== '/api/graphs/status') ||
+      (isManagerWorksetApiPath(url.pathname) &&
+        !managerWorksetRequestAllowedDuringMaintenance(request.method, url.pathname))) &&
     (yield* codeGraphMaintenanceIntentActive(context.config.agentContextHome))
   ) {
-    writeJson(response, 409, {error: GRAPH_MAINTENANCE_BUSY_MESSAGE});
+    writeJson(response, 409, {
+      code: 'maintenance-busy',
+      error: GRAPH_MAINTENANCE_BUSY_MESSAGE,
+      retryAfterMilliseconds: 1_000,
+    });
+    return;
+  }
+  const worksetResponse = yield* handleManagerWorksetRequest({
+    body: request.body,
+    config: context.config,
+    contextKey: context,
+    jobScope: context.worksetScope,
+    method: request.method,
+    url,
+  });
+  if (worksetResponse) {
+    writeJson(response, worksetResponse.status, worksetResponse.body);
     return;
   }
 
@@ -535,7 +597,10 @@ const handleRequestLegacy = Effect.fn('manager.handleRequestLegacy')(function* (
     return;
   }
   if (request.method === 'GET' && url.pathname === '/api/graphs/status') {
-    writeJson(response, 200, yield* managerGraphBuildCatalog(context.config.agentContextHome));
+    const automaticCompaction = context.automaticCompactionStatus
+      ? yield* Ref.get(context.automaticCompactionStatus)
+      : undefined;
+    writeJson(response, 200, yield* managerGraphBuildCatalog(context.config.agentContextHome, automaticCompaction));
     return;
   }
   if (request.method === 'GET' && url.pathname === '/api/graphs/diagnostics') {
@@ -938,7 +1003,7 @@ const readTree: (
     const isDir = pathStat.isDirectory();
     if (!isDir) {
       if (!pathStat.isFile()) {
-        throw new Error(`Manager can only read regular files or directories: ${uri}`);
+        throw new ManagerOperationError(`Manager can only read regular files or directories: ${uri}`);
       }
       const record =
         options.parseMemoryDocuments === false
@@ -1031,7 +1096,7 @@ const writeRawMemory = Effect.fn('manager.writeRawMemory')(function* (
   if (isInSharedNamespace(config, uri)) {
     const teamName = sharedTeamNameForUri(config, uri);
     if (!teamName) {
-      throw new Error(`${uri} is not in a configured shared namespace.`);
+      throw new ManagerOperationError(`${uri} is not in a configured shared namespace.`);
     }
     const team = yield* resolveTeam(config, teamName);
     const existing = yield* readManagedMemory(config, uri);
@@ -1070,7 +1135,7 @@ const moveMemory = Effect.fn('manager.moveMemory')(function* (
     if (isInSharedNamespace(config, sourceUri)) {
       const team = sharedTeamNameForUri(config, sourceUri);
       if (team !== targetTeam) {
-        throw new Error(
+        throw new ManagerOperationError(
           'Cross-team shared moves are not supported in V1. Copy/unpublish, then publish to the target team.',
         );
       }
@@ -1178,7 +1243,7 @@ const removeSharedSource = Effect.fn('manager.removeSharedSource')(function* (
 ) {
   const teamName = sharedTeamNameForUri(config, sourceUri);
   if (!teamName) {
-    throw new Error(`${sourceUri} is not a shared memory.`);
+    throw new ManagerOperationError(`${sourceUri} is not a shared memory.`);
   }
   const team = yield* resolveTeam(config, teamName);
   const ov = NATIVE_RESOURCE_BACKEND;
@@ -1197,22 +1262,24 @@ const removeManagedFolder = Effect.fn('manager.removeManagedFolder')(function* (
   assertResourceUri(uri);
   const rootUri = `threadnote://user/${uriSegment(config.user)}/memories`;
   if (uri === rootUri) {
-    throw new Error('Refusing to remove the root memories folder.');
+    throw new ManagerOperationError('Refusing to remove the root memories folder.');
   }
   if (isInSharedNamespace(config, uri)) {
-    throw new Error('Shared folders are managed from Sharing. Remove the share or unpublish selected memories.');
+    throw new ManagerOperationError(
+      'Shared folders are managed from Sharing. Remove the share or unpublish selected memories.',
+    );
   }
   const path = yield* localPathForMemoryUri(config, uri);
   if (!path) {
-    throw new Error(`Manager can only remove current-user memory folders: ${uri}`);
+    throw new ManagerOperationError(`Manager can only remove current-user memory folders: ${uri}`);
   }
   const pathStat = yield* lstat(path);
   if (!pathStat.isDirectory()) {
-    throw new Error(`Not a folder: ${uri}`);
+    throw new ManagerOperationError(`Not a folder: ${uri}`);
   }
   const relativePath = yield* pathRelative(yield* localMemoriesRoot(config), path);
   if (!relativePath || relativePath.startsWith('..') || relativePath.split(yield* pathSeparator).includes('..')) {
-    throw new Error('Refusing to remove a folder outside the memories tree.');
+    throw new ManagerOperationError('Refusing to remove a folder outside the memories tree.');
   }
   const fileUris = yield* fileUrisUnderFolder(config, path);
   for (const fileUri of fileUris) {
@@ -1264,7 +1331,7 @@ const runBulk = Effect.fn('manager.runBulk')(function* (
             runEffect,
           )).output;
         } else {
-          return yield* Effect.fail(new Error(`Unsupported bulk action: ${action}`));
+          return yield* Effect.fail(new ManagerOperationError(`Unsupported bulk action: ${action}`));
         }
         return output;
       }),
@@ -1287,7 +1354,7 @@ function createConsolidation(context: ApiContext, body: Record<string, unknown>)
         sourceUris: requireStringArray(body.uris, 'uris'),
         target: targetFromBody(body),
       }),
-      catch: cause => (cause instanceof Error ? cause : new Error(String(cause))),
+      catch: managerOperationError,
     });
     const job: ConsolidationJob = {
       agent: input.agent,
@@ -1323,10 +1390,10 @@ const applyConsolidation = Effect.fn('manager.applyConsolidation')(function* (
 ) {
   const job = jobs.get(id);
   if (!job) {
-    throw new Error('Consolidation job not found.');
+    throw new ManagerOperationError('Consolidation job not found.');
   }
   if (job.status !== 'completed' || !job.draft) {
-    throw new Error('Consolidation job is not completed.');
+    throw new ManagerOperationError('Consolidation job is not completed.');
   }
   const draft = optionalString(body.draft) ?? job.draft;
   const target = targetFromBody({...job.target, ...body});
@@ -1374,7 +1441,7 @@ function runConsolidationAgent(
       return (
         native ??
         (yield* Effect.fail(
-          new Error(
+          new ManagerOperationError(
             'No generation model is selected. Install and select one with `threadnote models`, or configure an explicit remote Effect AI provider.',
           ),
         ))
@@ -1382,12 +1449,14 @@ function runConsolidationAgent(
     });
   }
   if (agent !== 'codex' && agent !== 'claude') {
-    return Effect.fail(new Error(`${agent} does not expose a supported non-interactive consolidation mode.`));
+    return Effect.fail(
+      new ManagerOperationError(`${agent} does not expose a supported non-interactive consolidation mode.`),
+    );
   }
   return Effect.gen(function* () {
     const executable = yield* findExecutable([agent]);
     if (!executable) {
-      return yield* Effect.fail(new Error(`${agent} executable was not found.`));
+      return yield* Effect.fail(new ManagerOperationError(`${agent} executable was not found.`));
     }
     return yield* Effect.scoped(
       Effect.gen(function* () {
@@ -1403,12 +1472,14 @@ function runConsolidationAgent(
         });
         if (result.exitCode !== 0) {
           return yield* Effect.fail(
-            new Error(result.stderr.trim() || result.stdout.trim() || `${agent} exited with ${result.exitCode}`),
+            new ManagerOperationError(
+              result.stderr.trim() || result.stdout.trim() || `${agent} exited with ${result.exitCode}`,
+            ),
           );
         }
         const draft = result.stdout.trim();
         if (!draft) {
-          return yield* Effect.fail(new Error(`${agent} returned an empty consolidation draft.`));
+          return yield* Effect.fail(new ManagerOperationError(`${agent} returned an empty consolidation draft.`));
         }
         return draft;
       }),
@@ -1423,7 +1494,7 @@ export function consolidationAgentScript(agent: AgentClient, executable: string)
   if (agent === 'claude') {
     return `${shellQuote(executable)} --print --permission-mode default < "$1"`;
   }
-  throw new Error(`${agent} does not expose a supported non-interactive consolidation mode.`);
+  throw new ManagerOperationError(`${agent} does not expose a supported non-interactive consolidation mode.`);
 }
 
 function consolidationPrompt(sources: readonly {readonly content: string; readonly node: ManagerTreeNode}[]): string {
@@ -1468,7 +1539,7 @@ const shareSummaries = Effect.fn('manager.shareSummaries')(function* (config: Ru
 const collectManagerDoctorChecks = Effect.fn('manager.collectManagerDoctorChecks')(function* (config: RuntimeConfig) {
   const threadnote = yield* findExecutable(['threadnote']);
   if (!threadnote) {
-    return collectDoctorChecks(config, {});
+    return yield* collectDoctorChecks(config, {});
   }
   const result = yield* runCommand(
     threadnote,
@@ -1526,13 +1597,13 @@ const runManagerGraphAction = Effect.fn('manager.runGraphAction')(function* (
 ) {
   const action = yield* Effect.try({
     try: () => requireString(body.action, 'action'),
-    catch: error => error,
+    catch: managerOperationError,
   });
   const dryRun = body.dryRun === true;
   if (!dryRun && ['compact', 'purge', 'purge-all', 'purge-obsolete', 'remove-view', 'repair'].includes(action)) {
     yield* Effect.try({
       try: () => requireConfirm(body),
-      catch: error => error,
+      catch: managerOperationError,
     });
   }
   if (action === 'repair') {
@@ -1551,7 +1622,7 @@ const runManagerGraphAction = Effect.fn('manager.runGraphAction')(function* (
   }
   const checkoutId = yield* Effect.try({
     try: () => requireGraphIdentity(body.checkoutId, 'checkoutId'),
-    catch: error => error,
+    catch: managerOperationError,
   });
   if (action === 'purge') {
     return yield* runCaptured(
@@ -1564,18 +1635,20 @@ const runManagerGraphAction = Effect.fn('manager.runGraphAction')(function* (
   }
   const worktreeId = yield* Effect.try({
     try: () => requireGraphIdentity(body.worktreeId, 'worktreeId'),
-    catch: error => error,
+    catch: managerOperationError,
   });
   if (action === 'remove-view') {
     const expectedSnapshotId = yield* Effect.try({
       try: () => requireGraphSnapshotIdentity(body.expectedSnapshotId),
-      catch: error => error,
+      catch: managerOperationError,
     });
     const target = {checkoutId, snapshotId: expectedSnapshotId, worktreeId};
     const approvalDigest = yield* managerGraphViewRemovalApprovalDigest(target);
     if (!dryRun && body.approvalDigest !== approvalDigest) {
       return yield* Effect.fail(
-        new Error('Preview this exact graph view removal and provide its approval digest before applying.'),
+        new ManagerOperationError(
+          'Preview this exact graph view removal and provide its approval digest before applying.',
+        ),
       );
     }
     const path = yield* Path.Path;
@@ -1622,14 +1695,38 @@ const runManagerGraphAction = Effect.fn('manager.runGraphAction')(function* (
   }
   const repositoryId = yield* Effect.try({
     try: () => requireGraphIdentity(body.repositoryId, 'repositoryId'),
-    catch: error => error,
+    catch: managerOperationError,
   });
   const expectedIdentity = {checkoutId, repositoryId, worktreeId} satisfies RepositoryIdentityExpectation;
   const cwd = yield* resolveManagerGraphActionCwd(config.agentContextHome, expectedIdentity, optionalString(body.cwd));
   switch (action) {
     case 'compact':
       return yield* runCaptured(
-        () => runCodeGraphCompact(config, {cwd, dryRun, expectedIdentity, force: body.force === true}),
+        () =>
+          compactCodeGraphStorageIsolated(config.agentContextHome, checkoutId, {
+            force: body.force === true,
+            operation: dryRun ? 'probe' : 'compact',
+          }).pipe(
+            Effect.flatMap(summary =>
+              summary.action === 'compacted'
+                ? Console.log(
+                    `Compacted the selected graph in an isolated process and reclaimed ${summary.reclaimedBytes.toLocaleString()} bytes.`,
+                  )
+                : summary.action === 'would-compact'
+                  ? Console.log(
+                      `The selected graph is eligible for isolated compaction; estimated opportunity ${summary.reclaimedBytes.toLocaleString()} bytes.`,
+                    )
+                  : summary.action === 'deferred'
+                    ? Console.log(
+                        `Graph compaction was deferred because ${
+                          summary.reason === 'active-build'
+                            ? 'a graph build is active'
+                            : 'another maintenance operation is active'
+                        }.`,
+                      )
+                    : Console.log(`Graph compaction completed with result: ${summary.action}.`),
+            ),
+          ),
         runEffect,
       );
     case 'index':
@@ -1638,7 +1735,7 @@ const runManagerGraphAction = Effect.fn('manager.runGraphAction')(function* (
         runEffect,
       );
     default:
-      return yield* Effect.fail(new Error(`Unsupported graph Manager action: ${action}`));
+      return yield* Effect.fail(new ManagerOperationError(`Unsupported graph Manager action: ${action}`));
   }
 });
 
@@ -1650,13 +1747,15 @@ const resolveManagerGraphActionCwd = Effect.fn('manager.resolveGraphActionCwd')(
   if (suppliedCwd) {
     const path = yield* Path.Path;
     if (!path.isAbsolute(suppliedCwd)) {
-      return yield* Effect.fail(new Error('Supply cwd as an absolute local worktree path.'));
+      return yield* Effect.fail(new ManagerOperationError('Supply cwd as an absolute local worktree path.'));
     }
     const {identity} = yield* resolveAndRecordCodeGraphLocalAssociation(threadnoteHome, suppliedCwd, {
       validateIdentity: identity =>
         repositoryIdentityMatchesExpectation(identity, expectedIdentity)
           ? Effect.void
-          : Effect.fail(new Error('The supplied worktree path does not match the selected graph identity.')),
+          : Effect.fail(
+              new ManagerOperationError('The supplied worktree path does not match the selected graph identity.'),
+            ),
     });
     return identity.repoRoot;
   }
@@ -1666,7 +1765,9 @@ const resolveManagerGraphActionCwd = Effect.fn('manager.resolveGraphActionCwd')(
       validateIdentity: identity =>
         repositoryIdentityMatchesExpectation(identity, expectedIdentity)
           ? Effect.void
-          : Effect.fail(new Error('The persisted worktree path no longer matches the selected graph identity.')),
+          : Effect.fail(
+              new ManagerOperationError('The persisted worktree path no longer matches the selected graph identity.'),
+            ),
     }).pipe(Effect.option);
     if (Option.isSome(observed)) return observed.value.identity.repoRoot;
   }
@@ -1685,26 +1786,31 @@ const resolveManagerGraphActionCwd = Effect.fn('manager.resolveGraphActionCwd')(
         validateIdentity: identity =>
           repositoryIdentityMatchesExpectation(identity, expectedIdentity)
             ? Effect.void
-            : Effect.fail(new Error('Manager graph context no longer matches the selected graph identity.')),
+            : Effect.fail(
+                new ManagerOperationError('Manager graph context no longer matches the selected graph identity.'),
+              ),
       },
     ).pipe(Effect.option);
     if (Option.isSome(observed)) return observed.value.identity.repoRoot;
   }
   return yield* Effect.fail(
-    new Error('The selected graph has no current local worktree target. Supply cwd and refresh graph diagnostics.'),
+    new ManagerOperationError(
+      'The selected graph has no current local worktree target. Supply cwd and refresh graph diagnostics.',
+    ),
   );
 });
 
 function requireGraphIdentity(value: unknown, name: string): string {
   const identity = requireString(value, name);
-  if (!/^[0-9a-f]{64}$/.test(identity)) throw new Error(`Provide ${name} as a 64-character graph identity.`);
+  if (!/^[0-9a-f]{64}$/.test(identity))
+    throw new ManagerOperationError(`Provide ${name} as a 64-character graph identity.`);
   return identity;
 }
 
 function requireGraphSnapshotIdentity(value: unknown): string {
   const identity = requireString(value, 'expectedSnapshotId');
   if (!/^cgsn_[0-9a-f]{40}(?:-direct|-full-[0-9a-f]{16})?$/.test(identity)) {
-    throw new Error('Provide expectedSnapshotId as an exact code graph snapshot identity.');
+    throw new ManagerOperationError('Provide expectedSnapshotId as an exact code graph snapshot identity.');
   }
   return identity;
 }
@@ -1752,7 +1858,7 @@ function sharedMemoryUriFor(
   },
 ): string {
   if (metadata.kind !== 'durable') {
-    throw new Error('Only durable memories can be moved into shared team memory.');
+    throw new ManagerOperationError('Only durable memories can be moved into shared team memory.');
   }
   return `threadnote://user/${uriSegment(config.user)}/memories/shared/${uriSegment(team)}/durable/projects/${uriSegment(metadata.project)}/${uriSegment(metadata.topic)}.md`;
 }
@@ -1820,7 +1926,7 @@ function isMissingPathError(err: unknown): boolean {
 const localPathToMemoryUri = Effect.fn('manager.localPathToMemoryUri')(function* (config: RuntimeConfig, path: string) {
   const relativePath = yield* pathRelative(yield* localMemoriesRoot(config), path);
   if (!relativePath || relativePath.startsWith('..') || relativePath.split(yield* pathSeparator).includes('..')) {
-    throw new Error(`Path is outside the memories tree: ${path}`);
+    throw new ManagerOperationError(`Path is outside the memories tree: ${path}`);
   }
   return `threadnote://user/${uriSegment(config.user)}/memories/${relativePath.split(yield* pathSeparator).join('/')}`;
 });
@@ -1874,59 +1980,6 @@ function writeJson(response: ManagerResponseSink, statusCode: number, body: unkn
   });
 }
 
-function requiredQuery(url: URL, name: string): string {
-  const value = url.searchParams.get(name);
-  if (!value) {
-    throw new Error(`Missing query parameter: ${name}`);
-  }
-  return value;
-}
-
-function optionalPositiveIntegerQuery(url: URL, name: string): Option.Option<number> {
-  return Option.fromNullishOr(url.searchParams.get(name)).pipe(
-    Option.map(value => Number(value)),
-    Option.filter(value => Number.isSafeInteger(value) && value > 0),
-  );
-}
-
-function optionalNonNegativeIntegerQuery(url: URL, name: string): Option.Option<number> {
-  return Option.fromNullishOr(url.searchParams.get(name)).pipe(
-    Option.map(value => Number(value)),
-    Option.filter(value => Number.isSafeInteger(value) && value >= 0),
-  );
-}
-
-function optionalNonEmptyQuery(url: URL, name: string): Option.Option<string> {
-  return Option.fromNullishOr(url.searchParams.get(name)).pipe(
-    Option.map(value => value.trim()),
-    Option.filter(value => value.length > 0),
-  );
-}
-
-function requireString(value: unknown, name: string): string {
-  if (typeof value !== 'string' || value.trim().length === 0) {
-    throw new Error(`Provide ${name}.`);
-  }
-  return value;
-}
-
-function optionalString(value: unknown): string | undefined {
-  return typeof value === 'string' && value.trim().length > 0 ? value : undefined;
-}
-
-function requireStringArray(value: unknown, name: string): readonly string[] {
-  if (!Array.isArray(value) || value.length === 0 || !value.every(item => typeof item === 'string')) {
-    throw new Error(`Provide ${name} as a non-empty string array.`);
-  }
-  return value;
-}
-
-function requireConfirm(body: Record<string, unknown>): void {
-  if (body.confirm !== true) {
-    throw new Error('Set confirm=true for this action.');
-  }
-}
-
 function targetFromBody(body: Record<string, unknown>): TargetMemoryInput {
   return {
     kind: memoryKind(body.kind),
@@ -1938,34 +1991,6 @@ function targetFromBody(body: Record<string, unknown>): TargetMemoryInput {
   };
 }
 
-function memoryKind(value: unknown): MemoryKind | undefined {
-  return value === 'durable' ||
-    value === 'handoff' ||
-    value === 'incident' ||
-    value === 'preference' ||
-    value === 'smoke'
-    ? value
-    : undefined;
-}
-
-function memoryStatus(value: unknown): MemoryStatus | undefined {
-  return value === 'active' || value === 'archived' || value === 'superseded' ? value : undefined;
-}
-
 function isRawMemoryDocument(text: string): boolean {
   return text.startsWith('MEMORY\n') || text.startsWith('HANDOFF\n');
-}
-
-function consolidationAgent(value: string): ConsolidationAgent {
-  if (value === 'codex' || value === 'claude' || value === 'cursor' || value === 'copilot' || value === 'effect-ai') {
-    return value;
-  }
-  throw new Error(`Unsupported consolidation agent: ${value}`);
-}
-
-function cleanupMode(value: unknown): 'archive' | 'forget' | 'keep' {
-  if (value === 'forget' || value === 'keep') {
-    return value;
-  }
-  return 'archive';
 }

@@ -1,30 +1,33 @@
-import {mkdir, mkdtemp, rm, writeFile} from 'node:fs/promises';
-import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {TestError} from '../helpers/test-error.js';
+import {mkdir, mkdtemp, rm, writeFile} from '../helpers/node-fs-promises.js';
+import {tmpdir} from '../helpers/node-os.js';
+import {join} from '../helpers/node-path.js';
 import {describe, expect, it} from '@effect/vitest';
 import * as FC from 'effect/testing/FastCheck';
 import {
   FILE_LENGTH_OXLINT_CONFIG,
   PRODUCTION_FILE_LINE_LIMIT,
-  collectProductionFileLintPlan,
+  collectProductionCodeFiles,
   isProductionCodePath,
-  partitionProductionCodeFiles,
+  productionCodeFiles,
   runProductionFileLengthLint,
   type OxlintFileLengthRequest,
 } from '../../scripts/lint-file-length.js';
 
 function runGit(repositoryRoot: string, arguments_: readonly string[]): void {
   const result = Bun.spawnSync({cmd: ['git', ...arguments_], cwd: repositoryRoot, stderr: 'pipe', stdout: 'pipe'});
-  if (result.exitCode !== 0) throw new Error(new TextDecoder().decode(result.stderr));
+  if (result.exitCode !== 0) throw new TestError(new TextDecoder().decode(result.stderr));
 }
 
 describe('production file length lint', () => {
-  it('configures the native max-lines rule as a 2000-line warning', async () => {
+  it('configures the native max-lines rule as a 2000-line error without path ignores', async () => {
     const config = (await Bun.file(FILE_LENGTH_OXLINT_CONFIG).json()) as {
+      readonly ignorePatterns?: readonly string[];
       readonly rules: Readonly<Record<string, unknown>>;
     };
     expect(PRODUCTION_FILE_LINE_LIMIT).toBe(2_000);
-    expect(config.rules['max-lines']).toEqual(['warn', {max: 2_000, skipBlankLines: false, skipComments: false}]);
+    expect(config.rules['max-lines']).toEqual(['error', {max: 2_000, skipBlankLines: false, skipComments: false}]);
+    expect(config.ignorePatterns).toBeUndefined();
   });
 
   it('includes production JavaScript and TypeScript while excluding tests and tooling', () => {
@@ -44,26 +47,20 @@ describe('production file length lint', () => {
   });
 
   it.prop(
-    'partitions production paths deterministically by changed-file membership',
-    {
-      changedIndexes: FC.uniqueArray(FC.integer({max: 30, min: 0}), {maxLength: 20}),
-      indexes: FC.uniqueArray(FC.integer({max: 30, min: 0}), {maxLength: 30}),
-    },
-    ({changedIndexes, indexes}) => {
+    'selects every production path deterministically regardless iteration order',
+    {indexes: FC.uniqueArray(FC.integer({max: 30, min: 0}), {maxLength: 30})},
+    ({indexes}) => {
       const files = indexes.map(index => `src/module-${index}.ts`);
-      const changed = changedIndexes.map(index => `src/module-${index}.ts`);
-      const expected = partitionProductionCodeFiles(files, changed);
+      const expected = productionCodeFiles(files);
 
-      expect(partitionProductionCodeFiles([...files].reverse(), [...changed].reverse())).toEqual(expected);
-      expect(partitionProductionCodeFiles([...files, ...files], [...changed, ...changed])).toEqual(expected);
-      expect(new Set([...expected.errorFiles, ...expected.warningFiles])).toEqual(new Set(files));
-      for (const file of expected.errorFiles) expect(changed).toContain(file);
-      for (const file of expected.warningFiles) expect(changed).not.toContain(file);
+      expect(productionCodeFiles([...files].reverse())).toEqual(expected);
+      expect(productionCodeFiles([...files, ...files])).toEqual(expected);
+      expect(new Set(expected)).toEqual(new Set(files));
     },
     {fastCheck: {numRuns: 250}},
   );
 
-  it('routes committed, working-tree, and untracked production changes to error severity', async () => {
+  it('checks committed, working-tree, and untracked production files in one error-only pass', async () => {
     const repositoryRoot = await mkdtemp(join(tmpdir(), 'threadnote-file-length-'));
     try {
       await Promise.all([
@@ -108,14 +105,17 @@ describe('production file length lint', () => {
         writeFile(join(repositoryRoot, 'test/large.test.ts'), 'export const changed = true;\n'),
       ]);
 
-      const plan = collectProductionFileLintPlan(repositoryRoot, {base: 'HEAD~1'});
-      expect(plan.warningFiles).toEqual(['src/legacy.ts', 'website/src/site.ts']);
-      expect(plan.errorFiles).toEqual(['src/committed.ts', 'src/new.ts', 'src/working-tree.ts']);
+      expect(collectProductionCodeFiles(repositoryRoot)).toEqual([
+        'src/committed.ts',
+        'src/legacy.ts',
+        'src/new.ts',
+        'src/working-tree.ts',
+        'website/src/site.ts',
+      ]);
 
       const requests: OxlintFileLengthRequest[] = [];
       expect(
         runProductionFileLengthLint({
-          base: 'HEAD~1',
           execute: request => {
             requests.push(request);
             return 0;
@@ -123,9 +123,13 @@ describe('production file length lint', () => {
           repositoryRoot,
         }),
       ).toBe(0);
-      expect(requests.map(({files, severity}) => ({files, severity}))).toEqual([
-        {files: ['src/legacy.ts', 'website/src/site.ts'], severity: 'warn'},
-        {files: ['src/committed.ts', 'src/new.ts', 'src/working-tree.ts'], severity: 'error'},
+      expect(requests).toHaveLength(1);
+      expect(requests[0]?.files).toEqual([
+        'src/committed.ts',
+        'src/legacy.ts',
+        'src/new.ts',
+        'src/working-tree.ts',
+        'website/src/site.ts',
       ]);
     } finally {
       await rm(repositoryRoot, {force: true, recursive: true});

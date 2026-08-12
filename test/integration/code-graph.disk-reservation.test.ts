@@ -1,3 +1,5 @@
+import {TestError} from '../helpers/test-error.js';
+import {provideTestLayer} from '../helpers/effect-layer.js';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {it as effectIt} from '@effect/vitest';
 import {Deferred, Effect, Exit, Fiber, FileSystem, Layer, Option, Path, Ref} from 'effect';
@@ -100,7 +102,7 @@ describe('code graph disk reservation ledger', () => {
             `v1-${replacementLease.token}.json`,
             replacementLease.canonicalReceipt,
           );
-          if (!parsed) return yield* Effect.fail(new Error('Fixture receipt did not parse.'));
+          if (!parsed) return yield* Effect.fail(new TestError('Fixture receipt did not parse.'));
           expect(parsed.processStartIdentity).toMatch(
             process.platform === 'darwin' ? /^darwin-v2:/u : new RegExp(`^${process.platform}:`, 'u'),
           );
@@ -114,7 +116,7 @@ describe('code graph disk reservation ledger', () => {
           expect(yield* releaseCodeGraphDiskReservation(options, replacementLease)).toBe('retained');
           expect(yield* fs.readFileString(replacementLease.receiptPath)).toBe(replacement);
         }),
-      ).pipe(Effect.provide(reservationLayer)),
+      ).pipe(provideTestLayer(reservationLayer)),
     ),
   );
 
@@ -134,8 +136,8 @@ describe('code graph disk reservation ledger', () => {
             );
 
           expect(Exit.isSuccess(yield* runAndAssertEmpty(Effect.succeed('ok')))).toBe(true);
-          expect(Exit.isFailure(yield* runAndAssertEmpty(Effect.fail(new Error('expected failure'))))).toBe(true);
-          expect(Exit.isFailure(yield* runAndAssertEmpty(Effect.die(new Error('expected defect'))))).toBe(true);
+          expect(Exit.isFailure(yield* runAndAssertEmpty(Effect.fail(new TestError('expected failure'))))).toBe(true);
+          expect(Exit.isFailure(yield* runAndAssertEmpty(Effect.die(new TestError('expected defect'))))).toBe(true);
 
           const started = yield* Deferred.make<void>();
           const cancelled = yield* Effect.forkChild(
@@ -152,7 +154,7 @@ describe('code graph disk reservation ledger', () => {
           const transientOptions = reservationOptions(fixture, {
             beforeReleaseAttempt: Ref.updateAndGet(releaseAttempts, count => count + 1).pipe(
               Effect.flatMap(attempt =>
-                attempt === 1 ? Effect.fail(new Error('transient release fault')) : Effect.void,
+                attempt === 1 ? Effect.fail(new TestError('transient release fault')) : Effect.void,
               ),
             ),
           });
@@ -166,7 +168,7 @@ describe('code graph disk reservation ledger', () => {
           const diagnostics = yield* Ref.make(0);
           const exhausted = reservationOptions(fixture, {
             beforeReleaseAttempt: Ref.update(exhaustedAttempts, count => count + 1).pipe(
-              Effect.andThen(Effect.fail(new Error('persistent release fault'))),
+              Effect.andThen(Effect.fail(new TestError('persistent release fault'))),
             ),
             onDiagnostic: () => Ref.update(diagnostics, count => count + 1),
           });
@@ -183,7 +185,7 @@ describe('code graph disk reservation ledger', () => {
           yield* withCodeGraphDiskReservation(reservationOptions(fixture), Effect.void);
           expect(yield* fs.readDirectory(fixture.ledgerRoot)).toEqual([]);
         }),
-      ).pipe(Effect.provide(reservationLayer)),
+      ).pipe(provideTestLayer(reservationLayer)),
     ),
   );
 
@@ -238,7 +240,7 @@ describe('code graph disk reservation ledger', () => {
           expect(yield* Deferred.isDone(progressing)).toBe(true);
           expect(yield* fs.readDirectory(fixture.ledgerRoot)).toEqual([]);
         }),
-      ).pipe(Effect.provide(reservationLayer)),
+      ).pipe(provideTestLayer(reservationLayer)),
     ),
   );
 
@@ -282,7 +284,7 @@ describe('code graph disk reservation ledger', () => {
             yield* FileSystem.FileSystem.pipe(Effect.flatMap(service => service.readDirectory(fixture.ledgerRoot))),
           ).toEqual([]);
         }),
-      ).pipe(Effect.provide(reservationLayer)),
+      ).pipe(provideTestLayer(reservationLayer)),
     ),
   );
 
@@ -305,7 +307,7 @@ describe('code graph disk reservation ledger', () => {
         const lease = yield* acquireCodeGraphDiskReservation(reservationOptions(fixture));
         expect(yield* releaseCodeGraphDiskReservation(reservationOptions(fixture), lease)).toBe('released');
       }),
-    ).pipe(Effect.provide(reservationLayer)),
+    ).pipe(provideTestLayer(reservationLayer)),
   );
 
   effectIt.effect('fails closed instead of falling back when the canonical owner channel is unavailable', () =>
@@ -322,7 +324,7 @@ describe('code graph disk reservation ledger', () => {
         expect(Exit.isFailure(attempted)).toBe(true);
         expect(yield* fs.exists(fixture.ledgerRoot)).toBe(false);
       }),
-    ).pipe(Effect.provide(reservationLayer)),
+    ).pipe(provideTestLayer(reservationLayer)),
   );
 
   effectIt.effect('fails closed without mutating unknown ledger entries and recovers only exact orphan temps', () =>
@@ -389,7 +391,7 @@ describe('code graph disk reservation ledger', () => {
           expect(yield* fs.exists(temporary)).toBe(false);
           expect(yield* fs.readDirectory(fixture.ledgerRoot)).toEqual([]);
         }),
-      ).pipe(Effect.provide(reservationLayer)),
+      ).pipe(provideTestLayer(reservationLayer)),
     ),
   );
 
@@ -401,14 +403,14 @@ describe('code graph disk reservation ledger', () => {
             const fs = yield* FileSystem.FileSystem;
             const path = yield* Path.Path;
             const exhausted = reservationOptions(first, {
-              beforeReleaseAttempt: Effect.fail(new Error('persistent release fault')),
+              beforeReleaseAttempt: Effect.fail(new TestError('persistent release fault')),
             });
             yield* withCodeGraphDiskReservation(exhausted, Effect.void);
             const firstNames = (yield* fs.readDirectory(first.ledgerRoot)).filter(name => name.endsWith('.json'));
             expect(firstNames).toHaveLength(1);
             const receiptName = firstNames[0]!;
             const token = /^v1-([0-9a-f]{64})\.json$/u.exec(receiptName)?.[1];
-            if (!token) return yield* Effect.fail(new Error('Fixture receipt name was invalid.'));
+            if (!token) return yield* Effect.fail(new TestError('Fixture receipt name was invalid.'));
             const canonicalReceipt = yield* fs.readFileString(path.join(first.ledgerRoot, receiptName));
             const copiedReceiptPath = path.join(second.ledgerRoot, receiptName);
             yield* fs.makeDirectory(second.ledgerRoot, {recursive: true, mode: 0o700});
@@ -436,7 +438,7 @@ describe('code graph disk reservation ledger', () => {
             expect(yield* fs.readDirectory(first.ledgerRoot)).toEqual([]);
           }),
         ),
-      ).pipe(Effect.provide(reservationLayer)),
+      ).pipe(provideTestLayer(reservationLayer)),
     ),
   );
 
@@ -458,7 +460,7 @@ describe('code graph disk reservation ledger', () => {
           expect(Exit.isFailure(yield* acquireCodeGraphDiskReservation(options).pipe(Effect.exit))).toBe(true);
           expect((yield* fs.readDirectory(fixture.ledgerRoot)).sort()).toEqual(names);
         }),
-      ).pipe(Effect.provide(reservationLayer)),
+      ).pipe(provideTestLayer(reservationLayer)),
     ),
   );
 
@@ -500,7 +502,7 @@ describe('code graph disk reservation ledger', () => {
                 ),
             );
           }),
-        ).pipe(Effect.provide(reservationLayer)),
+        ).pipe(provideTestLayer(reservationLayer)),
       ),
     {fastCheck: {numRuns: 40}},
   );
@@ -545,7 +547,7 @@ describe('code graph disk reservation ledger', () => {
           );
           const failures = results.filter(result => result.exitCode !== 0);
           if (failures[0]) {
-            return yield* Effect.fail(new Error(`Disk reservation child failed: ${failures[0].stderr}`));
+            return yield* Effect.fail(new TestError(`Disk reservation child failed: ${failures[0].stderr}`));
           }
           const events = results.flatMap(result => result.events);
           const intervals = events
@@ -559,7 +561,7 @@ describe('code graph disk reservation ledger', () => {
                   event.processId === acquired.processId &&
                   event.iteration === acquired.iteration,
               );
-              if (!leaving) throw new Error('Disk reservation child omitted its leaving marker.');
+              if (!leaving) throw new TestError('Disk reservation child omitted its leaving marker.');
               return {
                 acquiredAt: acquired.at,
                 acquisitionMilliseconds: acquired.acquisitionMilliseconds,
@@ -584,7 +586,7 @@ describe('code graph disk reservation ledger', () => {
           );
           expect(yield* fs.readDirectory(fixture.ledgerRoot)).toEqual([]);
         }),
-      ).pipe(Effect.provide(reservationLayer)),
+      ).pipe(provideTestLayer(reservationLayer)),
     ),
   );
 
@@ -625,7 +627,7 @@ describe('code graph disk reservation ledger', () => {
           );
           expect(yield* fs.readDirectory(fixture.ledgerRoot)).toEqual([]);
         }),
-      ).pipe(Effect.provide(reservationLayer)),
+      ).pipe(provideTestLayer(reservationLayer)),
     ),
   );
 
@@ -683,7 +685,7 @@ describe('code graph disk reservation ledger', () => {
           const fs = yield* FileSystem.FileSystem;
           expect(yield* fs.readDirectory(fixture.ledgerRoot)).toEqual([]);
         }),
-      ).pipe(Effect.provide(reservationLayer)),
+      ).pipe(provideTestLayer(reservationLayer)),
     ),
   );
 });
@@ -772,7 +774,7 @@ function collectReservationChild(child: ReservationChildProcess) {
           .split(/\r?\n/)
           .filter(Boolean)
           .map(line => JSON.parse(line) as ReservationChildEvent),
-      catch: cause => new Error('Disk reservation child output was invalid.', {cause}),
+      catch: cause => new TestError('Disk reservation child output was invalid.', {cause}),
     });
     return {events, exitCode, stderr: stderr.trim()};
   });
@@ -785,7 +787,8 @@ function waitForReservationChildrenReady(readyPaths: readonly string[]) {
     while (true) {
       const ready = yield* Effect.forEach(readyPaths, target => fs.exists(target), {concurrency: 8});
       if (ready.every(Boolean)) return;
-      if (Date.now() >= deadline) return yield* Effect.fail(new Error('Disk reservation children missed the barrier.'));
+      if (Date.now() >= deadline)
+        return yield* Effect.fail(new TestError('Disk reservation children missed the barrier.'));
       yield* Effect.sleep(10);
     }
   });
@@ -794,7 +797,7 @@ function waitForReservationChildrenReady(readyPaths: readonly string[]) {
 function terminateReservationChild(child: ReservationChildProcess): Effect.Effect<void, never> {
   return Effect.gen(function* () {
     if (child.exitCode === null) child.kill('SIGKILL');
-    yield* Effect.promise(() => child.exited).pipe(Effect.catch(() => Effect.void));
+    yield* Effect.promise(() => child.exited);
   });
 }
 
@@ -808,16 +811,16 @@ function readReservationChildMarker(stream: ReadableStream<Uint8Array>) {
           let buffered = '';
           while (true) {
             const next = await reader.read();
-            if (next.done) throw new Error('Disk reservation child exited before its marker.');
+            if (next.done) throw new TestError('Disk reservation child exited before its marker.');
             buffered += decoder.decode(next.value, {stream: true});
             if (new TextEncoder().encode(buffered).byteLength > 4_096) {
-              throw new Error('Disk reservation child marker exceeded its byte bound.');
+              throw new TestError('Disk reservation child marker exceeded its byte bound.');
             }
             const newline = buffered.indexOf('\n');
             if (newline >= 0) return JSON.parse(buffered.slice(0, newline)) as ReservationChildEvent;
           }
         },
-        catch: cause => new Error('Could not read disk reservation child marker.', {cause}),
+        catch: cause => new TestError('Could not read disk reservation child marker.', {cause}),
       }),
     reader => Effect.sync(() => reader.releaseLock()),
   );
@@ -835,7 +838,8 @@ function readBoundedReservationChildStream(stream: ReadableStream<Uint8Array>, m
             const next = await reader.read();
             if (next.done) break;
             totalBytes += next.value.byteLength;
-            if (totalBytes > maximumBytes) throw new Error('Disk reservation child output exceeded its byte bound.');
+            if (totalBytes > maximumBytes)
+              throw new TestError('Disk reservation child output exceeded its byte bound.');
             chunks.push(next.value);
           }
           const joined = new Uint8Array(totalBytes);
@@ -846,8 +850,8 @@ function readBoundedReservationChildStream(stream: ReadableStream<Uint8Array>, m
           }
           return new TextDecoder('utf-8', {fatal: true}).decode(joined);
         },
-        catch: cause => new Error('Could not read bounded disk reservation child output.', {cause}),
+        catch: cause => new TestError('Could not read bounded disk reservation child output.', {cause}),
       }),
-    reader => Effect.promise(() => reader.cancel()).pipe(Effect.catch(() => Effect.void)),
+    reader => Effect.promise(() => reader.cancel()),
   );
 }

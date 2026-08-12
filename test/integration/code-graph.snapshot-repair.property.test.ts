@@ -1,7 +1,8 @@
-import {execFileSync} from 'node:child_process';
-import {mkdirSync, mkdtempSync, rmSync, writeFileSync} from 'node:fs';
-import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {TestError} from '../helpers/test-error.js';
+import {execFileSync} from '../helpers/node-child-process.js';
+import {mkdirSync, mkdtempSync, rmSync, writeFileSync} from '../helpers/node-fs.js';
+import {tmpdir} from '../helpers/node-os.js';
+import {join} from '../helpers/node-path.js';
 import {Database} from 'bun:sqlite';
 import {describe, expect, it} from '@effect/vitest';
 import * as FC from 'effect/testing/FastCheck';
@@ -200,7 +201,7 @@ class ReleaseLeaseCommand implements FC.AsyncCommand<SnapshotModel, SnapshotReal
 
   async run(model: SnapshotModel, real: SnapshotReal): Promise<void> {
     const token = real.leaseTokens.get(this.slot);
-    if (token === undefined) throw new Error(`Model lease ${this.slot} has no real token.`);
+    if (token === undefined) throw new TestError(`Model lease ${this.slot} has no real token.`);
     await runEffect(
       Effect.gen(function* () {
         const store = yield* CodeGraphStore;

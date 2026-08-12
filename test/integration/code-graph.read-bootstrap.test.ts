@@ -1,6 +1,8 @@
-import {existsSync} from 'node:fs';
-import {spawn, type ChildProcess} from 'node:child_process';
-import {join} from 'node:path';
+import {TestError} from '../helpers/test-error.js';
+import {provideTestLayer} from '../helpers/effect-layer.js';
+import {existsSync} from '../helpers/node-fs.js';
+import {spawn, type ChildProcess} from '../helpers/node-child-process.js';
+import {join} from '../helpers/node-path.js';
 import {it as effectIt} from '@effect/vitest';
 import {Effect, Path} from 'effect';
 import {expect} from 'vitest';
@@ -37,7 +39,7 @@ effectIt.effect('serves parallel ready-snapshot reads while another process hold
       );
       yield* Effect.tryPromise({
         try: () => waitForWriter(marker, writer),
-        catch: cause => new Error('Held SQLite writer did not become ready.', {cause}),
+        catch: cause => new TestError('Held SQLite writer did not become ready.', {cause}),
       });
 
       const snapshots = yield* Effect.all(
@@ -50,7 +52,7 @@ effectIt.effect('serves parallel ready-snapshot reads while another process hold
       expect(snapshots).toHaveLength(8);
       expect(snapshots.every(snapshot => snapshot?.id === indexed.snapshot.id)).toBe(true);
     }),
-  ).pipe(Effect.provide(ApplicationLayer)),
+  ).pipe(provideTestLayer(ApplicationLayer)),
 );
 
 function startHeldWriter(databasePath: string, markerPath: string): HeldWriter {
@@ -81,9 +83,9 @@ async function waitForWriter(markerPath: string, writer: HeldWriter): Promise<vo
   const deadline = Date.now() + 15_000;
   while (!existsSync(markerPath)) {
     if (writer.child.exitCode !== null || writer.child.signalCode !== null) {
-      throw new Error(`Held-writer child exited before acquiring SQLite: ${writer.stderr()}`);
+      throw new TestError(`Held-writer child exited before acquiring SQLite: ${writer.stderr()}`);
     }
-    if (Date.now() >= deadline) throw new Error(`Timed out waiting for held-writer marker: ${writer.stderr()}`);
+    if (Date.now() >= deadline) throw new TestError(`Timed out waiting for held-writer marker: ${writer.stderr()}`);
     await new Promise(resolve => setTimeout(resolve, 25));
   }
 }

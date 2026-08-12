@@ -1,5 +1,9 @@
 import {Console, Context, Effect, Layer, Logger} from 'effect';
 
+class CliOutputError extends Error {
+  readonly _tag = 'CliOutputError' as const;
+}
+
 export interface CliOutputShape {
   readonly drain: Effect.Effect<void, Error>;
   readonly enqueueError: (output: string) => void;
@@ -13,7 +17,7 @@ export function makeFinalCliOutput(write: (output: string) => Promise<void>) {
   return Effect.fn('cliOutput.writeFinal')(function* (output: string) {
     yield* Effect.tryPromise({
       try: () => write(output),
-      catch: cause => new Error('Failed to write complete Threadnote CLI output.', {cause}),
+      catch: cause => new CliOutputError('Failed to write complete Threadnote CLI output.', {cause}),
     });
   });
 }
@@ -74,13 +78,13 @@ export class CliOutput extends Context.Service<CliOutput, CliOutputShape>()('thr
     return CliOutput.of({
       drain: Effect.tryPromise({
         try: () => Promise.all([stdout.drain(), stderr.drain()]).then(() => undefined),
-        catch: cause => new Error('Failed to drain Threadnote CLI output.', {cause}),
+        catch: cause => new CliOutputError('Failed to drain Threadnote CLI output.', {cause}),
       }),
       enqueueError: stderr.enqueue,
       enqueueOutput: stdout.enqueue,
       flush: Effect.tryPromise({
         try: () => Promise.all([stdout.flush(), stderr.flush()]).then(() => undefined),
-        catch: cause => new Error('Failed to flush Threadnote CLI output.', {cause}),
+        catch: cause => new CliOutputError('Failed to flush Threadnote CLI output.', {cause}),
       }),
       writeError: makeFinalCliOutput(stderr.write),
       writeFinal: makeFinalCliOutput(stdout.write),

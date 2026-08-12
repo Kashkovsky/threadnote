@@ -2,7 +2,7 @@ import {Effect} from 'effect';
 import {McpSchema} from 'effect/unstable/ai';
 import {parseResourceId} from '../../storage/resource-id.js';
 import {ResourceStore, type ResourceStoreError} from '../resource-store.js';
-import {MCP_RESOURCE_ERROR_DATA} from './mcp.js';
+import {MCP_RESOURCE_ERROR_DATA, MCP_RESOURCE_NOT_FOUND_ERROR_DATA} from './mcp.js';
 
 export const MCP_RESOURCE_READ_MAX_BYTES = 1_048_576;
 export const MCP_RESOURCE_MIME_TYPE = 'text/plain; charset=utf-8';
@@ -21,7 +21,7 @@ export function readThreadnoteMcpResource(
   uri: string,
 ): Effect.Effect<
   typeof McpSchema.ReadResourceResult.Type,
-  McpSchema.InternalError | McpSchema.InvalidParams | McpSchema.McpErrorBase,
+  McpSchema.InternalError | McpSchema.InvalidParams,
   ResourceStore
 > {
   return Effect.gen(function* () {
@@ -67,7 +67,7 @@ function resourceTooLarge(): McpSchema.InvalidParams {
 
 function mcpResourceReadError(
   error: ResourceStoreError | McpSchema.InternalError | McpSchema.InvalidParams,
-): McpSchema.InternalError | McpSchema.InvalidParams | McpSchema.McpErrorBase {
+): McpSchema.InternalError | McpSchema.InvalidParams {
   if (error instanceof McpSchema.InvalidParams || error instanceof McpSchema.InternalError) {
     return error;
   }
@@ -83,9 +83,8 @@ function mcpResourceReadError(
         message: 'Threadnote resource is not readable in the active account.',
       });
     case 'ResourceNotFound':
-      return new McpSchema.McpErrorBase({
-        code: MCP_RESOURCE_NOT_FOUND_CODE,
-        data: MCP_RESOURCE_ERROR_DATA,
+      return new McpSchema.InvalidParams({
+        data: MCP_RESOURCE_NOT_FOUND_ERROR_DATA,
         message: 'Threadnote resource was not found.',
       });
     default:

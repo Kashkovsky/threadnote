@@ -1,3 +1,4 @@
+import {provideTestLayer} from '../helpers/effect-layer.js';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {it as effectIt} from '@effect/vitest';
 import {Deferred, Effect, Fiber, FileSystem, Layer} from 'effect';
@@ -58,7 +59,7 @@ describe('Effect file lock', () => {
         yield* Fiber.join(secondFiber);
 
         expect(trace).toEqual(['first:start', 'first:end', 'second:start', 'second:end']);
-      }).pipe(Effect.provide(FILE_LOCK_TEST_LAYER)),
+      }).pipe(provideTestLayer(FILE_LOCK_TEST_LAYER)),
     ),
   );
 
@@ -91,7 +92,7 @@ describe('Effect file lock', () => {
         const reacquired = yield* withExclusiveFileLock(fs, lockPath, TEST_LOCK_OPTIONS, Effect.succeed('reacquired'));
         expect(reacquired).toBe('reacquired');
         expect(yield* fs.exists(lockPath)).toBe(false);
-      }).pipe(Effect.provide(FILE_LOCK_TEST_LAYER)),
+      }).pipe(provideTestLayer(FILE_LOCK_TEST_LAYER)),
     ),
   );
 
@@ -272,7 +273,7 @@ describe('Effect file lock', () => {
         expect(outcome).toBe('timed-out');
         expect(canonicalLookups).toBeGreaterThanOrEqual(2);
         expect(legacyLookups).toBe(0);
-      }).pipe(Effect.provide(FILE_LOCK_TEST_LAYER)),
+      }).pipe(provideTestLayer(FILE_LOCK_TEST_LAYER)),
     ),
   );
 
@@ -330,7 +331,7 @@ describe('Effect file lock', () => {
         expect(acquiredIdentity).toBe('darwin-v2:Sat Aug  8 23:04:27 2026');
         expect(canonicalLookups).toBeGreaterThanOrEqual(3);
         expect(legacyLookups).toBe(0);
-      }).pipe(Effect.provide(FILE_LOCK_TEST_LAYER)),
+      }).pipe(provideTestLayer(FILE_LOCK_TEST_LAYER)),
     ),
   );
 

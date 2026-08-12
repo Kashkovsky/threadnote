@@ -1,6 +1,6 @@
 import * as BunHttpClient from '@effect/platform-bun/BunHttpClient';
 import {OpenAiClient, OpenAiLanguageModel} from '@effect/ai-openai-compat';
-import {Context, Effect, Layer, pipe, Redacted, Schema} from 'effect';
+import {Context, Effect, Layer, Redacted, Schema} from 'effect';
 import {LanguageModel} from 'effect/unstable/ai';
 import type {RuntimeConfig} from '../../types.js';
 import {generateWithSelectedLocalModel} from '../../models/inference.js';
@@ -130,7 +130,11 @@ export function effectAiLanguageModelLayer(
 }
 
 export function runEffectAiConsolidation(prompt: string, config: EffectAiConfiguration) {
-  return pipe(consolidateWithAiEffect(prompt), Effect.provide(aiConsolidatorLayer(config)));
+  return Effect.scoped(
+    Layer.build(aiConsolidatorLayer(config)).pipe(
+      Effect.flatMap(context => consolidateWithAiEffect(prompt).pipe(Effect.provide(context))),
+    ),
+  );
 }
 
 export const runNativeAiConsolidation = Effect.fn('AiConsolidator.consolidateNative')(function* (

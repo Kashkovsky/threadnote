@@ -1,3 +1,5 @@
+import {TestError} from '../helpers/test-error.js';
+import {provideTestLayer} from '../helpers/effect-layer.js';
 import {Database} from 'bun:sqlite';
 import {it as effectIt} from '@effect/vitest';
 import {Effect, FileSystem, Path} from 'effect';
@@ -83,7 +85,7 @@ describe('code graph repair process signals', () => {
             child.kill('SIGKILL');
             yield* Effect.promise(() => child.exited);
             const [capturedStdout, capturedStderr] = yield* Effect.promise(() => Promise.all([stdout, stderr]));
-            throw new Error(
+            throw new TestError(
               `Repair ignored SIGTERM. stdout=${JSON.stringify(capturedStdout)} stderr=${JSON.stringify(capturedStderr)}`,
             );
           }
@@ -91,7 +93,7 @@ describe('code graph repair process signals', () => {
           yield* Effect.promise(() => waitFor(async () => !(await anyExists(locks)), 2_000));
           expect(yield* Effect.promise(() => anyExists(locks))).toBe(false);
         }),
-      ).pipe(Effect.provide(ApplicationLayer)),
+      ).pipe(provideTestLayer(ApplicationLayer)),
     15_000,
   );
 });
@@ -124,5 +126,5 @@ async function waitFor(
     if (Array.isArray(observed) ? observed.every(Boolean) : observed) return;
     await Bun.sleep(25);
   }
-  throw new Error('Timed out waiting for the repair signal fixture.');
+  throw new TestError('Timed out waiting for the repair signal fixture.');
 }

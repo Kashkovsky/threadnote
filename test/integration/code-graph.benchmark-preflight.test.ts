@@ -1,5 +1,8 @@
+import {it as effectIt} from '@effect/vitest';
+import {provideTestLayer} from '../helpers/effect-layer.js';
 import {Effect, FileSystem, Path} from 'effect';
-import {describe, expect, it} from 'vitest';
+import {TestClock} from 'effect/testing';
+import {describe, expect} from 'vitest';
 import {
   credentialsDisabledGitProofEnvironment,
   publicGitHubRepositoryEvidence,
@@ -18,9 +21,9 @@ const CONTROL = JSON.stringify({
 });
 
 describe('external code graph benchmark execution safety', () => {
-  it('rejects source and external checkout drift before emitting preflight evidence', async () => {
-    const result = await Effect.runPromise(
-      Effect.scoped(
+  effectIt.effect('rejects source and external checkout drift before emitting preflight evidence', () =>
+    Effect.gen(function* () {
+      const result = yield* Effect.scoped(
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
@@ -70,17 +73,17 @@ describe('external code graph benchmark execution safety', () => {
           ).pipe(Effect.provideService(SystemInfo, testSystem), Effect.flip);
           return {externalFailure: String(externalFailure), initial, sourceFailure: String(sourceFailure)};
         }),
-      ).pipe(Effect.provide(ApplicationLayer)),
-    );
+      ).pipe(provideTestLayer(ApplicationLayer));
 
-    expect(result.initial.mode).toBe('github-actions-clean-source');
-    expect(result.sourceFailure).toContain('clean Threadnote checkout');
-    expect(result.externalFailure).toContain('External repository changed during the benchmark');
-  });
+      expect(result.initial.mode).toBe('github-actions-clean-source');
+      expect(result.sourceFailure).toContain('clean Threadnote checkout');
+      expect(result.externalFailure).toContain('External repository changed during the benchmark');
+    }),
+  );
 
-  it('binds anonymous proof to the exact published commit and strips Git credential configuration', async () => {
-    const result = await Effect.runPromise(
-      Effect.scoped(
+  effectIt.effect('binds anonymous proof to the exact published commit and strips Git credential configuration', () =>
+    Effect.gen(function* () {
+      const result = yield* Effect.scoped(
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
@@ -148,24 +151,24 @@ describe('external code graph benchmark execution safety', () => {
 
           return {sanitized, unpublishedFailure: String(unpublishedFailure), verification};
         }),
-      ).pipe(Effect.provide(ApplicationLayer)),
-    );
+      ).pipe(provideTestLayer(ApplicationLayer));
 
-    expect(result.verification).toBe('anonymous-https-exact-commit-fetch');
-    expect(result.unpublishedFailure).toContain('could not be fetched from the public repository');
-    expect(result.sanitized).not.toHaveProperty('GH_TOKEN');
-    expect(result.sanitized).not.toHaveProperty('GITHUB_TOKEN');
-    expect(result.sanitized).not.toHaveProperty('GIT_CONFIG_COUNT');
-    expect(result.sanitized).not.toHaveProperty('GIT_CONFIG_KEY_0');
-    expect(result.sanitized).not.toHaveProperty('GIT_CONFIG_VALUE_0');
-    expect(JSON.stringify(result.sanitized)).not.toContain('must-not-survive');
-  });
+      expect(result.verification).toBe('anonymous-https-exact-commit-fetch');
+      expect(result.unpublishedFailure).toContain('could not be fetched from the public repository');
+      expect(result.sanitized).not.toHaveProperty('GH_TOKEN');
+      expect(result.sanitized).not.toHaveProperty('GITHUB_TOKEN');
+      expect(result.sanitized).not.toHaveProperty('GIT_CONFIG_COUNT');
+      expect(result.sanitized).not.toHaveProperty('GIT_CONFIG_KEY_0');
+      expect(result.sanitized).not.toHaveProperty('GIT_CONFIG_VALUE_0');
+      expect(JSON.stringify(result.sanitized)).not.toContain('must-not-survive');
+    }),
+  );
 
-  it.skipIf(process.platform !== 'darwin' && process.platform !== 'linux')(
+  effectIt.effect.skipIf(process.platform !== 'darwin' && process.platform !== 'linux')(
     'preflights every run, sees config-hidden dirt, and releases prospective homes',
-    async () => {
-      const result = await Effect.runPromise(
-        Effect.scoped(
+    () =>
+      Effect.gen(function* () {
+        const result = yield* Effect.scoped(
           Effect.gen(function* () {
             const fs = yield* FileSystem.FileSystem;
             const path = yield* Path.Path;
@@ -281,76 +284,75 @@ describe('external code graph benchmark execution safety', () => {
               sourceDirty,
             };
           }),
-        ).pipe(Effect.provide(ApplicationLayer)),
-      );
+        ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive);
 
-      expect(result.firstHomesReleased).toBe(true);
-      expect(result.secondHomesReleased).toBe(true);
-      expect(result.lowDiskHomesReleased).toBe(true);
-      if (result.sourceDirty) {
-        for (const attempt of [result.first, result.second, result.dirty, result.lowDisk, result.actual]) {
-          expect(attempt.exitCode).not.toBe(0);
-          expect(`${attempt.stderr}\n${attempt.stdout}`).toContain('clean Threadnote checkout');
-        }
-        expect(result.preflightArtifactExists).toBe(false);
-        expect(result.actual.exitCode).not.toBe(0);
-        expect(`${result.actual.stderr}\n${result.actual.stdout}`).not.toContain(
-          'one-file reindex incremental-overlay materialization mode',
-        );
-        expect(result.artifactExists).toBe(false);
-      } else {
-        expect(result.first.exitCode).toBe(0);
-        expect(result.second.exitCode).toBe(0);
-        expect(result.preflightArtifactExists).toBe(true);
-        expect(result.dirty.exitCode).not.toBe(0);
-        expect(`${result.dirty.stderr}\n${result.dirty.stdout}`).toContain('requires a clean checkout');
-        expect(result.lowDisk.exitCode).not.toBe(0);
-        expect(`${result.lowDisk.stderr}\n${result.lowDisk.stdout}`).toContain(
-          'External benchmark preflight requires at least 8000000 GiB',
-        );
-        expect(
-          result.actual.exitCode,
-          `benchmark stderr:\n${result.actual.stderr}\nbenchmark stdout:\n${result.actual.stdout}`,
-        ).toBe(0);
-        expect(result.artifactExists).toBe(true);
-        expect(result.artifact?.metadata).toMatchObject({
-          externalRepositoryName: 'Example/benchmark-fixture',
-          externalRepositoryPublicVerification: 'anonymous-https-exact-commit-fetch',
-          externalRepositoryUrl: 'https://github.com/Example/benchmark-fixture',
-          managerRequestCancellationPassed: true,
-          managerRequestLifecycleControl:
-            'real Manager queries through the GraphWorkspace request gate: superseding aborts an in-flight request; a completed late response is rejected',
-          managerSnapshotBindingPassed: true,
-          managerStaleResponseRejectionPassed: true,
-          oneFileReindexMaterializationMode: 'incremental-overlay',
-          sameOverlayReferenceMaterializationMode: 'full',
-          simultaneousWorktrees: 2,
-          worktreeIsolationIndexedFiles: 2,
-          worktreeIsolationPassed: true,
-          worktreeIsolationTopology: 'bounded-synthetic-linked-worktrees-in-measured-primary-home',
-        });
-        for (const name of [
-          'external-query-cold-typescript-duration',
-          'manager-catalog-cold',
-          'manager-catalog-warm',
-          'manager-overview-cold',
-          'manager-overview-warm',
-          'manager-detail-cold',
-          'manager-layout-preparation-proxy',
-          'manager-response-payload',
-          'manager-bounded-query',
-          'manager-bounded-query-payload',
-          'concurrent-worktree-isolation-duration',
-        ]) {
-          expect(result.artifact?.measurements.some((measurement: {name: string}) => measurement.name === name)).toBe(
-            true,
+        expect(result.firstHomesReleased).toBe(true);
+        expect(result.secondHomesReleased).toBe(true);
+        expect(result.lowDiskHomesReleased).toBe(true);
+        if (result.sourceDirty) {
+          for (const attempt of [result.first, result.second, result.dirty, result.lowDisk, result.actual]) {
+            expect(attempt.exitCode).not.toBe(0);
+            expect(`${attempt.stderr}\n${attempt.stdout}`).toContain('clean Threadnote checkout');
+          }
+          expect(result.preflightArtifactExists).toBe(false);
+          expect(result.actual.exitCode).not.toBe(0);
+          expect(`${result.actual.stderr}\n${result.actual.stdout}`).not.toContain(
+            'one-file reindex incremental-overlay materialization mode',
+          );
+          expect(result.artifactExists).toBe(false);
+        } else {
+          expect(result.first.exitCode).toBe(0);
+          expect(result.second.exitCode).toBe(0);
+          expect(result.preflightArtifactExists).toBe(true);
+          expect(result.dirty.exitCode).not.toBe(0);
+          expect(`${result.dirty.stderr}\n${result.dirty.stdout}`).toContain('requires a clean checkout');
+          expect(result.lowDisk.exitCode).not.toBe(0);
+          expect(`${result.lowDisk.stderr}\n${result.lowDisk.stdout}`).toContain(
+            'External benchmark preflight requires at least 8000000 GiB',
+          );
+          expect(
+            result.actual.exitCode,
+            `benchmark stderr:\n${result.actual.stderr}\nbenchmark stdout:\n${result.actual.stdout}`,
+          ).toBe(0);
+          expect(result.artifactExists).toBe(true);
+          expect(result.artifact?.metadata).toMatchObject({
+            externalRepositoryName: 'Example/benchmark-fixture',
+            externalRepositoryPublicVerification: 'anonymous-https-exact-commit-fetch',
+            externalRepositoryUrl: 'https://github.com/Example/benchmark-fixture',
+            managerRequestCancellationPassed: true,
+            managerRequestLifecycleControl:
+              'real Manager queries through the GraphWorkspace request gate: superseding aborts an in-flight request; a completed late response is rejected',
+            managerSnapshotBindingPassed: true,
+            managerStaleResponseRejectionPassed: true,
+            oneFileReindexMaterializationMode: 'incremental-overlay',
+            sameOverlayReferenceMaterializationMode: 'full',
+            simultaneousWorktrees: 2,
+            worktreeIsolationIndexedFiles: 2,
+            worktreeIsolationPassed: true,
+            worktreeIsolationTopology: 'bounded-synthetic-linked-worktrees-in-measured-primary-home',
+          });
+          for (const name of [
+            'external-query-cold-typescript-duration',
+            'manager-catalog-cold',
+            'manager-catalog-warm',
+            'manager-overview-cold',
+            'manager-overview-warm',
+            'manager-detail-cold',
+            'manager-layout-preparation-proxy',
+            'manager-response-payload',
+            'manager-bounded-query',
+            'manager-bounded-query-payload',
+            'concurrent-worktree-isolation-duration',
+          ]) {
+            expect(result.artifact?.measurements.some((measurement: {name: string}) => measurement.name === name)).toBe(
+              true,
+            );
+          }
+          expect(result.artifact?.metadata.structuralGraphDigestIncremental).toBe(
+            result.artifact?.metadata.structuralGraphDigestSameOverlayReference,
           );
         }
-        expect(result.artifact?.metadata.structuralGraphDigestIncremental).toBe(
-          result.artifact?.metadata.structuralGraphDigestSameOverlayReference,
-        );
-      }
-    },
+      }),
     30_000,
   );
 });

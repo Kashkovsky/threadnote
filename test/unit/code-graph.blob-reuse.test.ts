@@ -1,4 +1,4 @@
-import {createHash} from 'node:crypto';
+import {createHash} from '../helpers/node-crypto.js';
 import {describe, expect, it} from '@effect/vitest';
 import * as FC from 'effect/testing/FastCheck';
 import {Option} from 'effect';

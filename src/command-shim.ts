@@ -201,6 +201,5 @@ function cmdQuote(value: string): string {
 function pathEntryExists(fs: FileSystem.FileSystem, target: string): Effect.Effect<boolean, never> {
   return Effect.all([fs.stat(target).pipe(Effect.option), fs.readLink(target).pipe(Effect.option)]).pipe(
     Effect.map(([info, link]) => Option.isSome(info) || Option.isSome(link)),
-    Effect.catch(() => Effect.succeed(false)),
   );
 }

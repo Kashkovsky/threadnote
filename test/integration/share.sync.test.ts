@@ -1,6 +1,7 @@
-import {chmod, mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises';
-import {tmpdir} from 'node:os';
-import {dirname, join} from 'node:path';
+import {TestError} from '../helpers/test-error.js';
+import {chmod, mkdir, mkdtemp, readFile, rm, writeFile} from '../helpers/node-fs-promises.js';
+import {tmpdir} from '../helpers/node-os.js';
+import {dirname, join} from '../helpers/node-path.js';
 import {afterEach, beforeEach, describe, expect, it} from 'vitest';
 import {
   clearAutoShareStateForTest,
@@ -1266,10 +1267,12 @@ describe('share sync git handling', () => {
       const readyDeadline = Date.now() + 10_000;
       while (!(await Bun.file(ready).exists())) {
         if (owner.exitCode !== null) {
-          throw new Error(`Receipt owner exited before acquiring the lock: ${await new Response(owner.stderr).text()}`);
+          throw new TestError(
+            `Receipt owner exited before acquiring the lock: ${await new Response(owner.stderr).text()}`,
+          );
         }
         if (Date.now() >= readyDeadline) {
-          throw new Error('Timed out waiting for the receipt owner to acquire the shared repository lock.');
+          throw new TestError('Timed out waiting for the receipt owner to acquire the shared repository lock.');
         }
         await Bun.sleep(10);
       }
@@ -1284,7 +1287,7 @@ describe('share sync git handling', () => {
       ownerExitCode = await owner.exited;
     }
     if (ownerExitCode !== 0) {
-      throw new Error(`Receipt owner exited with ${ownerExitCode}: ${await new Response(owner.stderr).text()}`);
+      throw new TestError(`Receipt owner exited with ${ownerExitCode}: ${await new Response(owner.stderr).text()}`);
     }
 
     const caughtUp = await syncSharedReposBeforeAgentRead(config);

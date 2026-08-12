@@ -1,3 +1,4 @@
+import {provideTestLayer} from '../helpers/effect-layer.js';
 import {describe, expect, it} from '@effect/vitest';
 import {Effect, FileSystem, Path} from 'effect';
 import * as FC from 'effect/testing/FastCheck';
@@ -35,9 +36,10 @@ describe('code graph incremental barrel differential properties', () => {
           const indexer = yield* CodeGraphIndexer;
           const store = yield* CodeGraphStore;
           const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-code-graph-barrel-property-'});
+          const homesRoot = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-code-graph-barrel-homes-'});
           const sourceRoot = path.join(root, 'src');
-          const incrementalHome = path.join(root, '.threadnote-barrel-incremental-home');
-          const fullHome = path.join(root, '.threadnote-barrel-full-home');
+          const incrementalHome = path.join(homesRoot, 'incremental');
+          const fullHome = path.join(homesRoot, 'full');
           const writeConsumer = (arities: readonly number[], revision: number) => {
             const calls = arities.map(arity => (arity === 0 ? 'decode()' : 'decode("a", "b")'));
             return fs.writeFileString(
@@ -121,7 +123,7 @@ describe('code graph incremental barrel differential properties', () => {
           );
           expect(resolvedArities).toEqual(new Set(scenario.dirtyArities));
         }),
-      ).pipe(Effect.provide(ApplicationLayer)),
+      ).pipe(provideTestLayer(ApplicationLayer)),
     {
       fastCheck: {interruptAfterTimeLimit: 180_000, markInterruptAsFailure: true, numRuns: 6},
       timeout: 190_000,

@@ -1,7 +1,8 @@
-import {mkdtempSync, rmSync} from 'node:fs';
-import {createHash} from 'node:crypto';
-import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {provideTestLayer} from '../helpers/effect-layer.js';
+import {mkdtempSync, rmSync} from '../helpers/node-fs.js';
+import {createHash} from '../helpers/node-crypto.js';
+import {tmpdir} from '../helpers/node-os.js';
+import {join} from '../helpers/node-path.js';
 import {Database} from 'bun:sqlite';
 import {it as effectIt} from '@effect/vitest';
 import {Effect} from 'effect';
@@ -89,7 +90,7 @@ describe('code graph view removal state-machine properties', () => {
             }
           }),
         ),
-      ).pipe(Effect.provide(ApplicationLayer)),
+      ).pipe(provideTestLayer(ApplicationLayer)),
     {fastCheck: {numRuns: 40}},
   );
 });

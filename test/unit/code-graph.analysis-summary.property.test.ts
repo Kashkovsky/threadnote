@@ -1,3 +1,4 @@
+import {provideTestLayer} from '../helpers/effect-layer.js';
 import {Database} from 'bun:sqlite';
 import {describe, expect, it} from '@effect/vitest';
 import {Effect, FileSystem, Option, Path} from 'effect';
@@ -112,7 +113,7 @@ describe('persisted code graph analysis summaries', () => {
           const rebuilt = Option.getOrThrow(yield* store.loadAnalysisSummary(databasePath, rebuiltSnapshot.id));
           expect(overlay).toEqual(rebuilt);
         }),
-      ).pipe(Effect.provide(ApplicationLayer)),
+      ).pipe(provideTestLayer(ApplicationLayer)),
     {fastCheck: {numRuns: 40}},
   );
 
@@ -217,7 +218,7 @@ describe('persisted code graph analysis summaries', () => {
           expect.objectContaining({count: 1, provenance: 'resolved', relation: 'calls', selfLoopCount: 0}),
         ]);
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it.effect('does not double-count a replayed direct materialization batch', () =>
@@ -260,7 +261,7 @@ describe('persisted code graph analysis summaries', () => {
         expect(summary).toMatchObject({edgeCount: 1, symbolCount: 2});
         expect(summary.edges).toEqual([expect.objectContaining({count: 1, provenance: 'resolved', relation: 'calls'})]);
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it.effect('updates compact edge aggregates in the same transaction as reference resolution', () =>
@@ -338,7 +339,7 @@ describe('persisted code graph analysis summaries', () => {
           }),
         ]);
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it.effect('backfills a legacy ready snapshot once and repairs a corrupt receipt on the writer path', () =>
@@ -481,7 +482,7 @@ describe('persisted code graph analysis summaries', () => {
         });
         expect(cascadedCounts).toEqual({batches: 0, edges: 0, histogram: 0, receipts: 0, symbols: 0});
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it.effect('backfills a legacy dirty snapshot together with its clean base', () =>
@@ -564,7 +565,7 @@ describe('persisted code graph analysis summaries', () => {
         expect(Option.isSome(backfilledBase)).toBe(true);
         expect(backfilledOverlay).toEqual(expected);
       }),
-    ).pipe(Effect.provide(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it('serializes concurrent legacy backfills across independent runtimes', async () => {

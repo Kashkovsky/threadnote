@@ -1,9 +1,11 @@
-import {copyFile, rename} from 'node:fs/promises';
+import {TestError} from '../helpers/test-error.js';
+import {copyFile, rename} from '../helpers/node-fs-promises.js';
 import {Database} from 'bun:sqlite';
 import {Deferred, Effect, Fiber, FileSystem, Path} from 'effect';
 import fc from 'fast-check';
 import {afterEach, describe, expect, it} from 'vitest';
 import {codeGraphWorktreeLockPath} from '../../src/code_graph/layout.js';
+import {codeGraphAutomaticCompactionCandidateAllowed} from '../../src/code_graph/automatic_compaction.js';
 import {
   codeGraphCompactionRecommendation,
   codeGraphStorageUnattributedBytes,
@@ -24,24 +26,35 @@ describe('active code graph storage', () => {
     await Promise.all(homes.splice(0).map(home => rm(home, {force: true, recursive: true})));
   });
 
+  it('reserves two database copies plus WAL and a separate safety margin for VACUUM', () => {
+    const databaseBytes = 4 * 1024 ** 3;
+    const walBytes = 256 * 1024 ** 2;
+    const workingBytes = databaseBytes * 2 + walBytes;
+
+    expect(codeGraphCompactionRequiredFreeBytes({databaseBytes, walBytes})).toBe(
+      workingBytes + Math.ceil(workingBytes * 0.1),
+    );
+  });
+
   it('reports exact sidecar bytes and transactionally compacts verified free pages', async () => {
     const fixture = await storageFixture(homes);
     const ordinary = await runEffect(inspectCodeGraphStorage(fixture.home, fixture.checkoutId));
     if (ordinary.state !== 'available' || ordinary.pageStorage.state !== 'available') {
-      throw new Error('missing ordinary storage');
+      throw new TestError('missing ordinary storage');
     }
     expect(ordinary.pageStorage.attribution).toBeUndefined();
 
     const before = await runEffect(inspectCodeGraphStorage(fixture.home, fixture.checkoutId, {attributeObjects: true}));
     expect(before).toMatchObject({state: 'available'});
-    if (before.state !== 'available' || before.pageStorage.state !== 'available') throw new Error('missing storage');
+    if (before.state !== 'available' || before.pageStorage.state !== 'available')
+      throw new TestError('missing storage');
     expect(before.filesystemBytes).toBe(before.databaseBytes + before.walBytes + before.journalBytes + before.shmBytes);
     expect(before.totalBytes).toBe(before.filesystemBytes + before.temporaryBytes);
     expect(before.pageStorage.freelistPages).toBeGreaterThan(0);
     expect(before.pageStorage.reclaimableBytes).toBe(before.pageStorage.pageSize * before.pageStorage.freelistPages);
     const attribution = before.pageStorage.attribution;
     expect(attribution).toBeDefined();
-    if (!attribution) throw new Error('missing deep storage attribution');
+    if (!attribution) throw new TestError('missing deep storage attribution');
     if (attribution.state === 'unavailable') {
       expect(attribution.reason).toBe('sqlite-dbstat-unavailable');
     } else {
@@ -72,16 +85,22 @@ describe('active code graph storage', () => {
       }
     }
 
+    const compactionCandidate = {checkoutId: fixture.checkoutId, opportunityBytes: 0};
+    expect(await runEffect(codeGraphAutomaticCompactionCandidateAllowed(fixture.home, compactionCandidate))).toBe(true);
     const dryRun = await runEffect(
       compactCodeGraphStorage(fixture.home, fixture.checkoutId, {dryRun: true, force: true}),
     );
     expect(dryRun).toMatchObject({action: 'would-compact', dryRun: true});
+    expect(await runEffect(codeGraphAutomaticCompactionCandidateAllowed(fixture.home, compactionCandidate))).toBe(true);
 
     const compacted = await runEffect(
       compactCodeGraphStorage(fixture.home, fixture.checkoutId, {dryRun: false, force: true}),
     );
     expect(compacted).toMatchObject({action: 'compacted', dryRun: false});
-    if (compacted.action !== 'compacted') throw new Error(`unexpected action ${compacted.action}`);
+    expect(await runEffect(codeGraphAutomaticCompactionCandidateAllowed(fixture.home, compactionCandidate))).toBe(
+      false,
+    );
+    if (compacted.action !== 'compacted') throw new TestError(`unexpected action ${compacted.action}`);
     expect(compacted.reclaimedBytes).toBeGreaterThan(0);
     expect(compacted.after?.pageStorage).toMatchObject({freelistPages: 0, state: 'available'});
     const database = new Database(fixture.databasePath, {readonly: true, strict: true});
@@ -164,7 +183,7 @@ describe('active code graph storage', () => {
   it('refuses compaction before VACUUM when available disk space is below the conservative requirement', async () => {
     const fixture = await storageFixture(homes);
     const before = await runEffect(inspectCodeGraphStorage(fixture.home, fixture.checkoutId));
-    if (before.state !== 'available') throw new Error('missing storage');
+    if (before.state !== 'available') throw new TestError('missing storage');
     const required = codeGraphCompactionRequiredFreeBytes(before);
 
     await expect(compactWithAvailableDisk(fixture, required - 1)).rejects.toThrow(

@@ -1,7 +1,8 @@
-import {execFileSync} from 'node:child_process';
-import {mkdtempSync, mkdirSync, rmSync, writeFileSync} from 'node:fs';
-import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {provideTestLayer} from '../helpers/effect-layer.js';
+import {execFileSync} from '../helpers/node-child-process.js';
+import {mkdtempSync, mkdirSync, rmSync, writeFileSync} from '../helpers/node-fs.js';
+import {tmpdir} from '../helpers/node-os.js';
+import {join} from '../helpers/node-path.js';
 import {strToU8, zipSync} from 'fflate';
 import {it as effectIt} from '@effect/vitest';
 import {Effect} from 'effect';
@@ -58,7 +59,7 @@ describe('code graph mixed corpus lifecycle', () => {
       expect(indexed.diagnostics.join('\n')).toContain('Deferred 1 opaque corpus asset');
       expect(document.nodes.some(node => node.path === 'docs/operations.rst')).toBe(true);
       expect(image.nodes).toEqual([]);
-    }).pipe(Effect.provide(ApplicationLayer), TestClock.withLive),
+    }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );
 
   effectIt.effect('indexes tracked text, OpenXML, media metadata, and rationale in one transactional snapshot', () =>
@@ -128,7 +129,7 @@ describe('code graph mixed corpus lifecycle', () => {
       expect(rationale.nodes).toEqual(
         expect.arrayContaining([expect.objectContaining({kind: 'rationale', path: 'src/retry.ts'})]),
       );
-    }).pipe(Effect.provide(ApplicationLayer), TestClock.withLive),
+    }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );
 });
 

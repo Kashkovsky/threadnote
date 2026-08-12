@@ -65,7 +65,9 @@ type BuildStatusCursor =
       readonly mode: 'verify';
     };
 
-class InvalidBuildSidecarError extends Error {}
+class InvalidBuildSidecarError extends Error {
+  readonly _tag = 'InvalidBuildSidecarError' as const;
+}
 
 /**
  * Remove at most one exact terminal status for the tombstoned snapshot.

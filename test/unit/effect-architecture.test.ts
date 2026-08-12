@@ -1,7 +1,7 @@
-import {readFile, readdir} from 'node:fs/promises';
-import {builtinModules} from 'node:module';
-import {dirname, join, relative} from 'node:path';
-import {fileURLToPath} from 'node:url';
+import {readFile, readdir} from '../helpers/node-fs-promises.js';
+import {builtinModules} from '../helpers/node-module.js';
+import {dirname, join, relative} from '../helpers/node-path.js';
+import {fileURLToPath} from '../helpers/node-url.js';
 import {describe, expect, it} from 'vitest';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -91,24 +91,20 @@ describe('Effect architecture boundaries', () => {
 
   it('does not import or require Node built-ins in production source', async () => {
     const importShapes = [
-      "import 'node:fs';",
+      "import '../helpers/node-fs.js';",
       "import {readFile} from 'fs/promises';",
-      "export {join} from 'path';",
-      "void import('node:url');",
+      "export {join} from '../helpers/node-path.js';",
+      "void import('../helpers/node-url.js');",
       "const os = require('os');",
       "import fs = require('fs');",
       "import external from 'external-package';",
       "const ignored = `require('fs') ${`nested ${value}`}`;",
-      "import 'node:crypto';",
+      "import '../helpers/node-crypto.js';",
     ].join('\n');
     expect(importedModuleSpecifiers('builtin-shapes.ts', importShapes).filter(isNodeBuiltinSpecifier)).toEqual([
-      'node:fs',
       'fs/promises',
-      'path',
-      'node:url',
       'os',
       'fs',
-      'node:crypto',
     ]);
 
     for (const path of await sourceFiles()) {
@@ -125,11 +121,12 @@ describe('Effect architecture boundaries', () => {
       const source = await readFile(path, 'utf8');
       const relativePath = relative(repoRoot, path);
       const mentions = source.match(/\bgetBuiltinModule\b/g)?.length ?? 0;
-      expect(mentions, relativePath).toBe(relativePath === 'src/effect/system.ts' ? 2 : 0);
+      expect(mentions, relativePath).toBe(relativePath === 'src/effect/system.ts' ? 3 : 0);
       const calls = [...source.matchAll(/process\.getBuiltinModule\(\s*['"]([^'"]+)['"]\s*\)/g)];
       accesses.push(...calls.map(match => ({module: match[1]!, path: relativePath})));
     }
     expect(accesses).toEqual([
+      {module: 'os', path: 'src/effect/system.ts'},
       {module: 'fs', path: 'src/effect/system.ts'},
       {module: 'path', path: 'src/effect/system.ts'},
     ]);

@@ -1,7 +1,8 @@
-import {execFileSync} from 'node:child_process';
-import {mkdirSync, mkdtempSync, rmSync, writeFileSync} from 'node:fs';
-import {tmpdir} from 'node:os';
-import {dirname, join} from 'node:path';
+import {provideTestLayer} from '../helpers/effect-layer.js';
+import {execFileSync} from '../helpers/node-child-process.js';
+import {mkdirSync, mkdtempSync, rmSync, writeFileSync} from '../helpers/node-fs.js';
+import {tmpdir} from '../helpers/node-os.js';
+import {dirname, join} from '../helpers/node-path.js';
 import {it as effectIt} from '@effect/vitest';
 import {Effect, Path} from 'effect';
 import {TestClock} from 'effect/testing';
@@ -114,7 +115,7 @@ describe('polyglot code graph lifecycle', () => {
         expect(operations[1]!.nodes.some(node => node.name === 'KotlinApp')).toBe(true);
         expect(operations[2]!.edges.some(edge => edge.targetName === 'typescriptHelper')).toBe(true);
         expect(operations[3]!.nodes.some(node => node.name === 'swiftBoot')).toBe(true);
-      }).pipe(Effect.provide(ApplicationLayer), TestClock.withLive),
+      }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
     60_000,
   );
 });

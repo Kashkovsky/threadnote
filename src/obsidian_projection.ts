@@ -24,6 +24,10 @@ import {parseResourceId, resourceIdWithoutAnchor} from './storage/resource-id.js
 import type {MemoryKind, MemoryStatus, RuntimeConfig} from './types.js';
 import {expandPath, isDirectory, toPosixPath} from './utils.js';
 
+class ObsidianProjectionError extends Error {
+  readonly _tag = 'ObsidianProjectionError' as const;
+}
+
 export interface ObsidianProjectionAddOptions {
   readonly apply?: boolean;
   readonly folder: string;
@@ -168,7 +172,7 @@ export const runObsidianProjectionSync = Effect.fn('obsidian.projectionSync')(fu
   const apply = options.apply === true && options.dryRun !== true;
   const projection = requireObsidianProjection(yield* readObsidianConfiguration(config), options.id);
   if (!projection.enabled) {
-    return yield* Effect.fail(new Error(`Obsidian projection "${projection.id}" is disabled.`));
+    return yield* Effect.fail(new ObsidianProjectionError(`Obsidian projection "${projection.id}" is disabled.`));
   }
   const fs = yield* FileSystem.FileSystem;
   const root = yield* projectionRoot(projection);
@@ -247,11 +251,11 @@ export const runObsidianProjectionPublish = Effect.fn('obsidian.projectionPublis
   const configuration = yield* readObsidianConfiguration(config);
   const projection = requireObsidianProjection(configuration, options.id);
   if (!projection.enabled) {
-    return yield* Effect.fail(new Error(`Obsidian projection "${projection.id}" is disabled.`));
+    return yield* Effect.fail(new ObsidianProjectionError(`Obsidian projection "${projection.id}" is disabled.`));
   }
   if (projection.selectedUris === undefined) {
     return yield* Effect.fail(
-      new Error(
+      new ObsidianProjectionError(
         `Obsidian projection "${projection.id}" predates explicit memory selection. ` +
           'Re-run threadnote projection add with the same id, vault, and folder plus --apply, then publish again.',
       ),
@@ -267,7 +271,7 @@ export const runObsidianProjectionPublish = Effect.fn('obsidian.projectionPublis
   const unavailable = requestedUris.filter(uri => !projectedUris.has(uri));
   if (unavailable.length > 0) {
     return yield* Effect.fail(
-      new Error(
+      new ObsidianProjectionError(
         `Cannot publish ${unavailable.join(', ')}. Ensure each memory exists and matches projection ` +
           `"${projection.id}" kind, status, and shared-memory filters.`,
       ),
@@ -308,7 +312,7 @@ export const runObsidianProjectionRemove = Effect.fn('obsidian.projectionRemove'
   }
   if (drift.length > 0 && options.force !== true) {
     return yield* Effect.fail(
-      new Error(
+      new ObsidianProjectionError(
         `Projection "${projection.id}" contains ${drift.length} edited managed file(s). ` +
           'Resolve them or repeat with --force to remove the managed files.',
       ),
@@ -358,7 +362,7 @@ export const resolveProjectedMemoryPath = Effect.fn('obsidian.resolveProjectedMe
   }
   if (matches.length === 0) {
     return yield* Effect.fail(
-      new Error(
+      new ObsidianProjectionError(
         `Memory ${uri} is not present in an enabled Obsidian projection. ` +
           'Run threadnote projection publish <id> --uri <memory-uri> --apply.',
       ),
@@ -366,7 +370,7 @@ export const resolveProjectedMemoryPath = Effect.fn('obsidian.resolveProjectedMe
   }
   if (matches.length > 1) {
     return yield* Effect.fail(
-      new Error(
+      new ObsidianProjectionError(
         `Memory ${uri} appears in multiple projections. Pass --projection with one of: ${matches
           .map(match => match.projection.id)
           .join(', ')}.`,
@@ -680,7 +684,10 @@ export const readProjectionState = Effect.fn('obsidian.readProjectionState')(fun
   const raw = yield* fs.readFileString(path);
   return yield* Effect.try({
     try: () => parseProjectionState(JSON.parse(raw), projectionId),
-    catch: cause => (cause instanceof Error ? cause : new Error(String(cause))),
+    catch: cause =>
+      cause instanceof ObsidianProjectionError
+        ? cause
+        : new ObsidianProjectionError(cause instanceof Error ? cause.message : String(cause), {cause}),
   });
 });
 
@@ -714,7 +721,7 @@ function parseProjectionState(value: unknown, projectionId: string): ObsidianPro
     typeof value.files !== 'object' ||
     value.files === null
   ) {
-    throw new Error(`Invalid Obsidian projection state for "${projectionId}".`);
+    throw new ObsidianProjectionError(`Invalid Obsidian projection state for "${projectionId}".`);
   }
   const files: Record<string, ObsidianProjectionFileState> = {};
   for (const [relativePath, entry] of Object.entries(value.files)) {
@@ -725,7 +732,7 @@ function parseProjectionState(value: unknown, projectionId: string): ObsidianPro
       !('contentHash' in entry) ||
       typeof entry.contentHash !== 'string'
     ) {
-      throw new Error(`Invalid Obsidian projection state entry "${relativePath}".`);
+      throw new ObsidianProjectionError(`Invalid Obsidian projection state entry "${relativePath}".`);
     }
     files[relativePath] = {
       contentHash: entry.contentHash,
@@ -767,7 +774,9 @@ const safeProjectionTarget = Effect.fn('obsidian.safeProjectionTarget')(function
   const target = pathService.resolve(root, ...relativePath.split('/'));
   const relative = pathService.relative(pathService.resolve(root), target);
   if (relative === '..' || relative.startsWith(`..${pathService.sep}`) || pathService.isAbsolute(relative)) {
-    return yield* Effect.fail(new Error(`Projection path escapes its managed folder: ${relativePath}`));
+    return yield* Effect.fail(
+      new ObsidianProjectionError(`Projection path escapes its managed folder: ${relativePath}`),
+    );
   }
   return target;
 });
@@ -779,7 +788,7 @@ function assertSafeProjectionRelativePath(relativePath: string): void {
     normalized.startsWith('/') ||
     normalized.split('/').some(segment => segment === '' || segment === '.' || segment === '..')
   ) {
-    throw new Error(`Unsafe projection state path: ${relativePath}`);
+    throw new ObsidianProjectionError(`Unsafe projection state path: ${relativePath}`);
   }
 }
 
@@ -808,7 +817,7 @@ const canonicalDirectory = Effect.fn('obsidian.projectionCanonicalDirectory')(fu
   const fs = yield* FileSystem.FileSystem;
   const expanded = yield* expandPath(value);
   if (!(yield* isDirectory(expanded))) {
-    return yield* Effect.fail(new Error(`${label} is not a directory: ${expanded}`));
+    return yield* Effect.fail(new ObsidianProjectionError(`${label} is not a directory: ${expanded}`));
   }
   return yield* fs.realPath(expanded);
 });
@@ -819,7 +828,7 @@ function normalizeProjectionFolder(value: string): string {
     normalized.length === 0 ||
     normalized.split('/').some(segment => segment === '' || segment === '.' || segment === '..')
   ) {
-    throw new Error('Projection folder must be a safe vault-relative path.');
+    throw new ObsidianProjectionError('Projection folder must be a safe vault-relative path.');
   }
   return normalized;
 }
@@ -827,7 +836,9 @@ function normalizeProjectionFolder(value: string): string {
 function normalizeIdentifier(value: string, label: string): string {
   const normalized = value.trim().toLowerCase();
   if (!/^[a-z0-9][a-z0-9._-]*$/.test(normalized)) {
-    throw new Error(`${label} must contain only lowercase letters, digits, dots, underscores, and hyphens.`);
+    throw new ObsidianProjectionError(
+      `${label} must contain only lowercase letters, digits, dots, underscores, and hyphens.`,
+    );
   }
   return normalized;
 }
@@ -888,7 +899,7 @@ function normalizeProjectionMemoryUris(
   values: readonly string[],
 ): readonly string[] {
   if (values.length === 0) {
-    throw new Error('Provide at least one Threadnote memory URI with --uri.');
+    throw new ObsidianProjectionError('Provide at least one Threadnote memory URI with --uri.');
   }
   const expectedUser = uriSegment(config.user);
   return [...new Set(values.map(value => canonicalProjectionMemoryUri(value, expectedUser)))].sort((left, right) =>
@@ -899,7 +910,7 @@ function normalizeProjectionMemoryUris(
 function canonicalProjectionMemoryUri(value: string, expectedUser: string): string {
   const parsed = parseResourceId(value);
   if (parsed.anchor) {
-    throw new Error(`Obsidian projections require whole-memory URIs without anchors: ${value}`);
+    throw new ObsidianProjectionError(`Obsidian projections require whole-memory URIs without anchors: ${value}`);
   }
   const canonical = resourceIdWithoutAnchor(parsed);
   if (
@@ -909,7 +920,7 @@ function canonicalProjectionMemoryUri(value: string, expectedUser: string): stri
     canonical.segments.length < 3 ||
     !canonical.segments.at(-1)?.toLowerCase().endsWith('.md')
   ) {
-    throw new Error(`Obsidian projections accept only current-user Threadnote memory URIs: ${value}`);
+    throw new ObsidianProjectionError(`Obsidian projections accept only current-user Threadnote memory URIs: ${value}`);
   }
   return canonical.canonicalUri;
 }
