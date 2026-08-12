@@ -549,7 +549,7 @@ const preparePersistedIncrementalActivation = Effect.fn('codeGraph.preparePersis
   if (!isPersistedIncrementalResolutionClosure(resolutionClosure)) return false;
   const deletedPaths = [...new Set(options.deletedPaths ?? [])];
   if (
-    (files.length === 0 && (resolutionClosure !== 'full' || deletedPaths.length === 0)) ||
+    (files.length === 0 && (resolutionClosure === 'changed' || deletedPaths.length === 0)) ||
     facts.length !== files.length
   ) {
     return false;

@@ -769,15 +769,11 @@ const persistedIncrementalProjectFilesMatch = Effect.fn('codeGraph.persistedIncr
       SELECT changed.path
       FROM activation_incremental_paths AS changed
       LEFT JOIN activation_files AS current ON current.path = changed.path
-      WHERE current.path IS NULL
-      UNION ALL
-      SELECT current.path
-      FROM activation_files AS current
       LEFT JOIN snapshot_files AS base
-        ON base.snapshot_id = ${baseSnapshotId} AND base.path = current.path
-      WHERE base.path IS NULL
-         OR base.language IS NOT current.language
-         OR base.mode IS NOT current.mode
+        ON base.snapshot_id = ${baseSnapshotId} AND base.path = changed.path
+      WHERE (current.path IS NULL AND base.path IS NULL)
+         OR (current.path IS NOT NULL AND base.path IS NOT NULL
+             AND (base.language IS NOT current.language OR base.mode IS NOT current.mode))
       LIMIT 1
     `;
   return invalid.length === 0;

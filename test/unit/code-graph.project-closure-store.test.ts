@@ -46,7 +46,7 @@ describe('project-closure persisted store', () => {
             [{...facts, path: added.path}],
             {resolutionClosure: 'project'},
           ),
-        ).toBe(false);
+        ).toBe(true);
         expect(
           yield* store.preparePersistedIncrementalActivation(
             databasePath,
@@ -62,6 +62,12 @@ describe('project-closure persisted store', () => {
             resolutionClosure: 'project',
           }),
         ).toBe(false);
+        expect(
+          yield* store.preparePersistedIncrementalActivation(databasePath, base.id, [], [], {
+            deletedPaths: [file.path],
+            resolutionClosure: 'project',
+          }),
+        ).toBe(true);
         expect(
           yield* store.preparePersistedIncrementalActivation(databasePath, base.id, [file], [facts], {
             deletedPaths: ['packages/deleted/index.ts'],

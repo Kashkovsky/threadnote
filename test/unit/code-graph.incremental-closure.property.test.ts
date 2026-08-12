@@ -1,6 +1,10 @@
 import {describe, expect, it} from '@effect/vitest';
 import * as FC from 'effect/testing/FastCheck';
-import {assessProjectClosureSeeds, planProjectIncrementalClosure} from '../../src/code_graph/incremental_closure.js';
+import {
+  assessProjectClosureSeeds,
+  assessProjectFileSetClosureSeeds,
+  planProjectIncrementalClosure,
+} from '../../src/code_graph/incremental_closure.js';
 import {resolvePersistedReexportTerminals} from '../../src/code_graph/indexer.js';
 import type {CodeGraphWorkspaceProject} from '../../src/code_graph/languages/types.js';
 import type {CodeGraphReusableReexport} from '../../src/code_graph/store.js';
@@ -72,6 +76,70 @@ describe('project incremental closure', () => {
         projects,
       }),
     ).toEqual({mode: 'fallback', reason: 'resolution-surface-changed'});
+  });
+
+  it.prop(
+    'selects file-set closure seeds deterministically from added, modified, and deleted project paths',
+    {
+      currentMask: FC.integer({max: 65_535, min: 0}),
+      deletedMask: FC.integer({max: 65_535, min: 0}),
+      projectCount: FC.integer({max: 16, min: 1}),
+      reverse: FC.boolean(),
+    },
+    ({currentMask, deletedMask, projectCount, reverse}) => {
+      const boundedMask = (1 << projectCount) - 1;
+      const maskedCurrent = currentMask & boundedMask;
+      const effectiveDeletedMask = deletedMask & boundedMask;
+      const effectiveCurrentMask = (maskedCurrent | effectiveDeletedMask) === 0 ? 1 : maskedCurrent;
+      const projects = Array.from({length: projectCount}, (_, index) => project(`p${index}`));
+      const paths = (mask: number) =>
+        projects.filter((_, index) => (mask & (1 << index)) !== 0).map(value => `${value.root}/index.ts`);
+      const expected = projects
+        .filter((_, index) => ((effectiveCurrentMask | effectiveDeletedMask) & (1 << index)) !== 0)
+        .map(value => value.id)
+        .sort();
+      const input = {
+        baseProjects: reverse ? [...projects].reverse() : projects,
+        currentChangedPaths: reverse ? paths(effectiveCurrentMask).reverse() : paths(effectiveCurrentMask),
+        currentProjects: reverse ? [...projects].reverse() : projects,
+        deletedPaths: reverse ? paths(effectiveDeletedMask).reverse() : paths(effectiveDeletedMask),
+      };
+      const first = assessProjectFileSetClosureSeeds(input);
+      const second = assessProjectFileSetClosureSeeds(input);
+
+      expect(first).toEqual(second);
+      expect(first).toMatchObject({mode: 'eligible', seedProjectIds: expected});
+    },
+    {fastCheck: {numRuns: 200}},
+  );
+
+  it('fails closed when a file-set change lacks stable declared ownership in both workspace models', () => {
+    const declared = project('a');
+    const input = {
+      baseProjects: [declared],
+      currentChangedPaths: ['packages/a/added.ts'],
+      currentProjects: [declared],
+      deletedPaths: [] as readonly string[],
+    };
+
+    expect(assessProjectFileSetClosureSeeds({...input, currentChangedPaths: ['unowned.ts']})).toEqual({
+      mode: 'fallback',
+      reason: 'project-closure-incomplete',
+    });
+    expect(
+      assessProjectFileSetClosureSeeds({
+        ...input,
+        currentProjects: [{...declared, provenance: 'inferred'}],
+      }),
+    ).toEqual({mode: 'fallback', reason: 'project-closure-incomplete'});
+    expect(assessProjectFileSetClosureSeeds({...input, currentProjects: []})).toEqual({
+      mode: 'fallback',
+      reason: 'project-closure-incomplete',
+    });
+    expect(assessProjectFileSetClosureSeeds({...input, currentProjects: [declared, declared]})).toEqual({
+      mode: 'fallback',
+      reason: 'project-closure-incomplete',
+    });
   });
 
   it('fails closed for inferred, ambiguous, diagnostic, incomplete, missing-cache, and oversized closure evidence', () => {

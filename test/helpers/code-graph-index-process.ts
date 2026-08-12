@@ -19,7 +19,7 @@ const summary = await Effect.runPromise(
         Effect.gen(function* () {
           process.stdout.write(`${JSON.stringify({progress, type: 'progress'})}\n`);
           if (progress.phase === 'waiting') writeFileSync(`${marker}.waiting`, 'waiting\n');
-          if (progress.phase !== 'scanning' || progress.completed !== 0) return;
+          if (progress.phase !== 'scanning' || existsSync(`${marker}.scanning`)) return;
           writeFileSync(`${marker}.scanning`, 'scanning\n');
           while (!existsSync(releaseGate)) yield* Effect.sleep(25);
         }),
