@@ -508,7 +508,7 @@ threadnote doctor`,
           },
           {
             type: 'note',
-            text: 'Cursor Cloud Agents use a Dashboard-owned MCP configuration and a read-only shared-memory contract. See [Use Threadnote with Cursor Cloud Agents](cursor-cloud-agents/).',
+            text: 'Cursor Cloud Agents use a Dashboard-owned MCP configuration and one exclusive writable memory share. See [Use Threadnote with Cursor Cloud Agents](cursor-cloud-agents/).',
           },
         ],
       },

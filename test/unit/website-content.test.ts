@@ -1553,7 +1553,7 @@ describe('Threadnote 4 website content', () => {
     expect(content).not.toContain('Cursor, and Copilot rely on the user-level instructions Threadnote installs');
   });
 
-  it('documents Cursor Cloud Agents with an exclusive read-only shared-memory contract', () => {
+  it('documents Cursor Cloud Agents with an exclusive writable shared-memory contract', () => {
     const article = docsSections
       .flatMap(section => section.articles)
       .find(candidate => candidate.id === 'cursor-cloud-agents');
@@ -1567,15 +1567,17 @@ describe('Threadnote 4 website content', () => {
 
     expect(article).toBeDefined();
     expect(article?.title).toBe('Use Threadnote with Cursor Cloud Agents');
-    expect(content).toContain('Full first-class Cursor Cloud Agents integration is in development');
-    expect(content).toContain('only durable memory plane');
+    expect(content).toContain('Full first-class Cursor Cloud Agents integration is still in development');
+    expect(content).toContain('writable Git-backed share for durable memory');
     expect(content).toContain('--team cursor-cloud');
-    expect(content).toContain('--read-only');
+    expect(content).toContain('cloud cursor bootstrap');
+    expect(content).toContain('cloud cursor verify');
     expect(content).toContain('threadnote://user/cursor-cloud/memories/shared/cursor-cloud/');
     expect(content).toContain('Do not run `threadnote mcp-install cursor --apply`');
-    expect(content).toContain('Do not call remember_context');
-    expect(content).toContain('do not broaden the recall');
-    expect(content).toContain('capability-enforced read-only MCP profile');
+    expect(content).toContain('remember_context kind=durable');
+    expect(content).toContain('kind=handoff');
+    expect(content).toContain('commits and pushes');
+    expect(content).toContain('capability-enforced cloud profile');
 
     if (!mcpConfiguration || mcpConfiguration.type !== 'code') {
       throw new TestError('Missing Cursor Cloud MCP configuration.');
@@ -1586,7 +1588,8 @@ describe('Threadnote 4 website content', () => {
       env: {
         THREADNOTE_ACCOUNT: 'local',
         THREADNOTE_AGENT_ID: 'cursor-cloud',
-        THREADNOTE_MCP_TOOLSET: 'core',
+        THREADNOTE_CURSOR_CLOUD_TEAM: 'cursor-cloud',
+        THREADNOTE_MCP_TOOLSET: 'cursor-cloud',
         THREADNOTE_USER: 'cursor-cloud',
       },
       type: 'stdio',
@@ -1598,7 +1601,6 @@ describe('Threadnote 4 website content', () => {
     expect(JSON.parse(recallPayload.code)).toMatchObject({
       callerCwd: '/workspace/your-repository',
       project: 'your-project',
-      uri: 'threadnote://user/cursor-cloud/memories/shared/cursor-cloud/',
     });
     expect(searchDocs(createDocsSearchIndex(docsSections), 'Cursor Cloud Agents shared memory')[0]?.article.id).toBe(
       'cursor-cloud-agents',
