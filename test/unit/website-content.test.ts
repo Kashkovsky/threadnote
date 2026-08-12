@@ -1567,7 +1567,9 @@ describe('Threadnote 4 website content', () => {
 
     expect(article).toBeDefined();
     expect(article?.title).toBe('Use Threadnote with Cursor Cloud Agents');
-    expect(content).toContain('Full first-class Cursor Cloud Agents integration is still in development');
+    expect(content).toContain('Available in [Threadnote 4.2]');
+    expect(content).toContain('The managed first-class integration is still in development');
+    expect(content).toContain('Beyond 4.2: what the full integration will add');
     expect(content).toContain('writable Git-backed share for durable memory');
     expect(content).toContain('--team cursor-cloud');
     expect(content).toContain('cloud cursor bootstrap');

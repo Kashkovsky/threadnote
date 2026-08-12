@@ -508,7 +508,7 @@ threadnote doctor`,
           },
           {
             type: 'note',
-            text: 'Cursor Cloud Agents use a Dashboard-owned MCP configuration and one exclusive writable memory share. See [Use Threadnote with Cursor Cloud Agents](cursor-cloud-agents/).',
+            text: 'Threadnote 4.2 includes a beta Cursor Cloud Agents profile using Dashboard-owned MCP configuration and one exclusive writable memory share. See [Use Threadnote with Cursor Cloud Agents](cursor-cloud-agents/).',
           },
         ],
       },
