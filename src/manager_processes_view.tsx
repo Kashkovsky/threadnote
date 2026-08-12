@@ -97,14 +97,14 @@ export function ProcessesPanel(): React.ReactElement {
         <p className="process-notice">The bounded inventory is truncated. Refresh after other processes exit.</p>
       ) : null}
 
-      <div className="process-list">
+      <div aria-label="Threadnote process inventory" className="process-list" role="list">
         {diagnostics === undefined ? (
           <p className="process-empty">Loading registered processes…</p>
         ) : diagnostics.processes.length === 0 ? (
           <p className="process-empty">No registered Threadnote processes are visible.</p>
         ) : (
           diagnostics.processes.map(process => (
-            <article className="process-card" key={`${process.processId}:${process.startedAt}`}>
+            <article className="process-card" key={`${process.processId}:${process.startedAt}`} role="listitem">
               <div className="process-card-main">
                 <div className="process-card-title">
                   <strong>{processRoleLabel(process.role)}</strong>
