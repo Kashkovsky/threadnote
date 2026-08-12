@@ -2714,11 +2714,46 @@ dd {
   color: var(--danger);
 }
 
+.worksets-management {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  height: 100%;
+  min-height: 0;
+}
+
+.worksets-management-tabs {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 6px;
+}
+
+.worksets-management-tabs button {
+  align-items: center;
+  background: var(--panel);
+  display: flex;
+  gap: 8px;
+}
+
+.worksets-management-tabs button.is-active {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+  color: var(--accent);
+}
+
+.worksets-management-tabs span {
+  background: var(--panel-alt);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 10px;
+  padding: 2px 7px;
+}
+
 .worksets-workspace {
   display: grid;
+  flex: 1 1 auto;
   gap: 14px;
   grid-template-columns: 270px minmax(0, 1fr);
-  height: 100%;
   min-height: 0;
 }
 
@@ -2809,6 +2844,10 @@ dd {
   font-size: 11px;
 }
 
+.projects-list button {
+  overflow-wrap: anywhere;
+}
+
 .worksets-catalog > .quiet-button {
   margin-top: auto;
 }
@@ -2816,6 +2855,36 @@ dd {
 .worksets-card {
   margin-top: 14px;
   padding: 16px;
+}
+
+.project-detail-card {
+  margin-top: 0;
+}
+
+.project-manifest-fields {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+}
+
+.project-manifest-fields > div {
+  background: var(--panel-alt);
+  border: 1px solid var(--line-soft);
+  border-radius: 9px;
+  display: grid;
+  gap: 4px;
+  padding: 10px;
+}
+
+.project-manifest-fields dt {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.project-manifest-fields dd {
+  font-size: 12px;
+  margin: 0;
+  overflow-wrap: anywhere;
 }
 
 .worksets-notice,
@@ -3131,6 +3200,10 @@ dd {
   overflow: hidden;
   padding: 18px;
   width: min(620px, 100%);
+}
+
+.project-editor > label > .worksets-muted {
+  font-weight: 400;
 }
 
 .worksets-project-picker {

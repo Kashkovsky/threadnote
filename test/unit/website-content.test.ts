@@ -3,6 +3,8 @@ import {execFileSync} from '../helpers/node-child-process.js';
 import {access, readFile} from '../helpers/node-fs-promises.js';
 import {join} from '../helpers/node-path.js';
 import fc from 'fast-check';
+import {createElement} from 'react';
+import {renderToStaticMarkup} from 'react-dom/server';
 import {describe, expect, it} from 'vitest';
 import {
   bindRetainedPerformanceArtifact,
@@ -17,6 +19,10 @@ import {
 } from '../../scripts/site-release-notes.js';
 import {assertExternalPerformanceEvidence} from '../../scripts/benchmark-code-graph.js';
 import {docsSections, mcpTools} from '../../website/src/content/docs.js';
+import {
+  ManagerOperationsVisual,
+  managerOperationsVisualKinds,
+} from '../../website/src/components/ManagerOperationsVisual.js';
 import {graphAnalyzeScenario, graphInspectScenario, heroScenario} from '../../website/src/content/landing.js';
 import {managerDemoShares, managerDemoTabs} from '../../website/src/content/managerDemo.js';
 import {
@@ -508,6 +514,46 @@ describe('Threadnote 4 website content', () => {
         'architecture',
       ]),
     );
+  });
+
+  it('documents Manager project and Workset operations with accessible motion-safe illustrations', async () => {
+    const managerWorksets = docsSections
+      .flatMap(section => section.articles)
+      .find(article => article.id === 'manager-worksets');
+    const content = JSON.stringify(managerWorksets);
+    const visualKinds = managerWorksets?.body.filter(block => block.type === 'visual').map(block => block.visual);
+
+    expect(managerWorksets).toBeDefined();
+    expect(visualKinds).toEqual(managerOperationsVisualKinds);
+    expect(content).toContain('Add first project');
+    expect(content).toContain('threadnote://resources URI');
+    expect(content).toContain('observed branch, local folder, full path');
+    expect(content).toContain('Renaming a project updates its case-insensitive Workset member references atomically');
+    expect(content).toContain('leaves its name visible as an unresolved member');
+    expect(content).toContain('never deletes canonical resources or repository graphs');
+    expect(content).toContain('revision-conflict');
+    expect(content).toContain('Prepare is the only Worksets action that builds');
+
+    for (const kind of managerOperationsVisualKinds) {
+      const markup = renderToStaticMarkup(createElement(ManagerOperationsVisual, {kind}));
+      expect(markup).toContain(`<figure class="docs-manager-workflow docs-manager-workflow--${kind}"`);
+      expect(markup).toContain(`aria-labelledby="docs-${kind}-caption"`);
+      expect(markup).toContain(`<figcaption id="docs-${kind}-caption">`);
+      expect(markup).toContain('aria-hidden="true"');
+      expect(markup).not.toContain('<button');
+    }
+
+    const styles = await readFile(join(root, 'website', 'src', 'styles.css'), 'utf8');
+    const visualStyles = styles.slice(styles.indexOf('.docs-manager-workflow'), styles.indexOf('.docs-pagination'));
+    const reducedMotionStyles = styles.slice(styles.indexOf('@media (prefers-reduced-motion: reduce)'));
+
+    expect(visualStyles).toContain('@keyframes docs-manager-stage-enter');
+    expect(visualStyles).toContain('@keyframes docs-manager-flow-signal');
+    expect(visualStyles).not.toContain('infinite');
+    expect(reducedMotionStyles).toContain('.docs-manager-flow__arrow::after');
+    expect(reducedMotionStyles).toContain('animation: none !important');
+    expect(reducedMotionStyles).toContain('opacity: 1');
+    expect(reducedMotionStyles).toContain('transform: none');
   });
 
   it('keeps pro-tip simulations aligned with the requested team and graph workflows', () => {

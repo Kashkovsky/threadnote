@@ -25,7 +25,13 @@ export type DocsTableBlock = {
   rows: string[][];
 };
 
-export type DocsBlock = DocsTextBlock | DocsHeadingBlock | DocsCodeBlock | DocsListBlock | DocsTableBlock;
+export type DocsVisualBlock = {
+  type: 'visual';
+  visual: 'manager-onboarding' | 'manager-project-lifecycle' | 'manager-prepare-query';
+};
+
+export type DocsBlock =
+  DocsTextBlock | DocsHeadingBlock | DocsCodeBlock | DocsListBlock | DocsTableBlock | DocsVisualBlock;
 
 export interface DocsArticle {
   id: string;

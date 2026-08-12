@@ -19,19 +19,25 @@ import {
 } from './code_graph/workset_catalog/store.js';
 import {continueCodeGraphWorksetQueryV2, queryCodeGraphWorksetV2} from './code_graph/workset_query_v2.js';
 import {CODE_GRAPH_WORKSET_ROUTER_LIMITS} from './code_graph/workset_router.js';
-import {observeRepositoryBranch} from './code_graph/repository.js';
 import {sha256HexSync} from './crypto/sha256.js';
 import {isFileLockTimeout, withExclusiveFileLock} from './effect/file_lock.js';
 import type {ApplicationServices} from './effect/runtime.js';
 import {parseSeedManifest, readSeedManifest} from './manifest.js';
+import {
+  observeManagerManifestProjects,
+  validateManagerProjectRoots,
+  type ManagerProjectRootValidation,
+} from './manager_project_roots.js';
+import {validateProjectSeedPatterns} from './seed_pattern.js';
+import {parseResourceId} from './storage/resource-id.js';
 import type {ProjectManifest, RuntimeConfig, SeedManifest, WorksetManifest} from './types.js';
-import {expandPath} from './utils.js';
 
 const UTF8 = new TextEncoder();
 const MANAGER_WORKSET_DEFINITION_MAXIMUM = 4_096;
 const MANAGER_WORKSET_MEMBER_MAXIMUM = 4_096;
 const MANAGER_WORKSET_NAME_BYTES_MAXIMUM = 256;
 const MANAGER_WORKSET_DESCRIPTION_BYTES_MAXIMUM = 4_096;
+const MANAGER_PROJECT_VALUE_BYTES_MAXIMUM = 4_096;
 const MANAGER_WORKSET_QUERY_BYTES_MAXIMUM = CODE_GRAPH_WORKSET_ROUTER_LIMITS.queryBytesMaximum;
 const MANAGER_WORKSET_SELECTOR_BYTES_MAXIMUM = 4_096;
 const MANAGER_WORKSET_JOB_MAXIMUM = 32;
@@ -61,6 +67,15 @@ export interface ManagerWorksetProjectSummary {
   readonly folder: string;
   readonly name: string;
   readonly path: string;
+  readonly worksets: readonly string[];
+  readonly worksetCount: number;
+}
+
+export interface ManagerManifestProject {
+  readonly name: string;
+  readonly path: string;
+  readonly seed: readonly string[];
+  readonly uri: string;
 }
 
 export interface ManagerWorksetDefinition {
@@ -84,7 +99,12 @@ export interface ManagerWorksetCatalog {
     readonly reason?: 'manifest-symlink' | 'unsupported-workset-yaml';
     readonly state: 'editable' | 'read-only';
   };
+  readonly projectEditability: {
+    readonly reason?: 'manifest-symlink' | 'unsupported-project-yaml';
+    readonly state: 'editable' | 'read-only';
+  };
   readonly projects: readonly ManagerWorksetProjectSummary[];
+  readonly projectsReadOnly: boolean;
   readonly readOnly: boolean;
   readonly revision: string;
   readonly type: 'manager-workset-catalog';
@@ -118,6 +138,38 @@ export interface ManagerWorksetDefinitionMutationResult {
   readonly catalog: ManagerWorksetCatalog;
   readonly changed: boolean;
   readonly operation: ManagerWorksetDefinitionMutation['operation'];
+  readonly warnings: readonly string[];
+}
+
+export type ManagerManifestProjectMutation =
+  | {
+      readonly expectedRevision: string;
+      readonly name: string;
+      readonly operation: 'create';
+      readonly path: string;
+      readonly seed: readonly string[];
+      readonly uri: string;
+    }
+  | {
+      readonly expectedRevision: string;
+      readonly name: string;
+      readonly operation: 'update';
+      readonly path: string;
+      readonly project: string;
+      readonly seed: readonly string[];
+      readonly uri: string;
+    }
+  | {
+      readonly confirm: true;
+      readonly expectedRevision: string;
+      readonly operation: 'delete';
+      readonly project: string;
+    };
+
+export interface ManagerManifestProjectMutationResult {
+  readonly catalog: ManagerWorksetCatalog;
+  readonly changed: boolean;
+  readonly operation: ManagerManifestProjectMutation['operation'];
   readonly warnings: readonly string[];
 }
 
@@ -191,9 +243,10 @@ const JOB_REGISTRIES = new WeakMap<object, ManagerWorksetJobRegistry>();
 export function managerWorksetRequestAllowedDuringMaintenance(method: string, pathname: string): boolean {
   return (
     pathname === '/api/worksets' ||
-    (method === 'GET' && pathname === '/api/worksets/definition') ||
+    (method === 'GET' && (pathname === '/api/worksets/definition' || pathname === '/api/worksets/project')) ||
     (method === 'GET' && (pathname === '/api/worksets/jobs' || pathname.startsWith('/api/worksets/jobs/'))) ||
     pathname === '/api/worksets/definitions' ||
+    pathname === '/api/worksets/projects' ||
     pathname === '/api/worksets/jobs/cancel'
   );
 }
@@ -206,16 +259,19 @@ export function managerWorksetCatalogFromManifest(
   manifest: SeedManifest,
   revision: string,
   editability: ManagerWorksetCatalog['editability'] = {state: 'editable'},
-  projects: readonly ManagerWorksetProjectSummary[] = manifest.projects.map(project => ({
-    branchState: 'not-observed',
-    folder:
-      project.path
-        .replace(/[\\/]+$/u, '')
-        .split(/[\\/]/u)
-        .at(-1) || safeLabel(project.name),
-    name: safeLabel(project.name),
-    path: safeLocalPath(project.path),
-  })),
+  projects: readonly Omit<ManagerWorksetProjectSummary, 'worksetCount' | 'worksets'>[] = manifest.projects.map(
+    project => ({
+      branchState: 'not-observed',
+      folder:
+        project.path
+          .replace(/[\\/]+$/u, '')
+          .split(/[\\/]/u)
+          .at(-1) || safeLabel(project.name),
+      name: safeLabel(project.name),
+      path: safeLocalPath(project.path),
+    }),
+  ),
+  projectEditability: ManagerWorksetCatalog['projectEditability'] = {state: 'editable'},
 ): ManagerWorksetCatalog {
   if (!SHA256.test(revision)) throw new Error('Manager workset catalog revision is invalid.');
   assertUniqueManagerManifestIdentity(manifest);
@@ -224,6 +280,14 @@ export function managerWorksetCatalogFromManifest(
   }
   if (manifest.projects.length > MANAGER_WORKSET_MEMBER_MAXIMUM) {
     throw new Error(`The seed manifest exceeds ${MANAGER_WORKSET_MEMBER_MAXIMUM} projects.`);
+  }
+  const projectWorksets = new Map<string, string[]>();
+  for (const workset of manifest.worksets ?? []) {
+    for (const project of new Set(workset.projects.map(name => name.toLowerCase()))) {
+      const names = projectWorksets.get(project) ?? [];
+      names.push(safeLabel(workset.name));
+      projectWorksets.set(project, names);
+    }
   }
   const definitions = (manifest.worksets ?? []).map(workset => {
     if (workset.projects.length > MANAGER_WORKSET_MEMBER_MAXIMUM) {
@@ -239,7 +303,12 @@ export function managerWorksetCatalogFromManifest(
     definitions,
     definitionSource: 'seed-manifest',
     editability,
-    projects,
+    projectEditability,
+    projects: projects.map(project => {
+      const worksets = projectWorksets.get(project.name.toLowerCase()) ?? [];
+      return {...project, worksets, worksetCount: worksets.length};
+    }),
+    projectsReadOnly: projectEditability.state === 'read-only',
     readOnly: editability.state === 'read-only',
     revision,
     type: 'manager-workset-catalog',
@@ -254,19 +323,53 @@ export const readManagerWorksetCatalog = Effect.fn('managerWorksets.readCatalog'
   yield* managerWorksetValidation(() => assertUniqueManagerManifestIdentity(manifest));
   const document = parseDocument(raw, {keepSourceTokens: true});
   const symbolicTarget = yield* fs.readLink(config.manifestPath).pipe(Effect.option);
-  const projects = yield* observeManagerWorksetProjects(manifest.projects);
+  const projects = yield* observeManagerManifestProjects(manifest.projects, MANAGER_WORKSET_BRANCH_OBSERVATION_MAXIMUM);
+  const manifestIsSymbolic = symbolicTarget._tag === 'Some';
   return yield* managerWorksetValidation(() =>
     managerWorksetCatalogFromManifest(
       manifest,
       sha256HexSync(raw),
-      symbolicTarget._tag === 'Some'
+      manifestIsSymbolic
         ? {reason: 'manifest-symlink', state: 'read-only'}
         : managerWorksetYamlSupported(document)
           ? {state: 'editable'}
           : {reason: 'unsupported-workset-yaml', state: 'read-only'},
       projects,
+      manifestIsSymbolic
+        ? {reason: 'manifest-symlink', state: 'read-only'}
+        : managerProjectYamlSupported(document)
+          ? {state: 'editable'}
+          : {reason: 'unsupported-project-yaml', state: 'read-only'},
     ),
   );
+});
+
+export const readManagerManifestProject = Effect.fn('managerWorksets.readProject')(function* (
+  config: RuntimeConfig,
+  projectName: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const raw = yield* fs.readFileString(config.manifestPath);
+  const manifest = yield* parseManifestForMutation(raw, config.manifestPath);
+  yield* managerWorksetValidation(() => assertUniqueManagerManifestIdentity(manifest));
+  const project = manifest.projects.find(item => item.name.toLowerCase() === projectName.toLowerCase());
+  if (!project)
+    return yield* Effect.fail(new ManagerWorksetApiError('project-not-found', 'Manifest project not found.', 404));
+  const document = parseDocument(raw, {keepSourceTokens: true});
+  const projects = document.get('projects', true);
+  const rawUri = isSeq(projects)
+    ? projects.items.flatMap(item => {
+        if (!isMap(item) || String(item.get('name')).toLowerCase() !== project.name.toLowerCase()) return [];
+        const value = item.get('uri');
+        return typeof value === 'string' ? [value] : [];
+      })[0]
+    : undefined;
+  return {
+    name: project.name,
+    path: project.path,
+    seed: project.seed,
+    uri: rawUri ?? project.uri,
+  } satisfies ManagerManifestProject;
 });
 
 export const readManagerWorksetDefinition = Effect.fn('managerWorksets.readDefinition')(function* (
@@ -279,11 +382,12 @@ export const readManagerWorksetDefinition = Effect.fn('managerWorksets.readDefin
   if (!workset)
     return yield* Effect.fail(new ManagerWorksetApiError('workset-not-found', 'Workset definition not found.', 404));
   const projects = new Map(manifest.projects.map(project => [project.name.toLowerCase(), project]));
-  const observed = yield* observeManagerWorksetProjects(
+  const observed = yield* observeManagerManifestProjects(
     workset.projects.flatMap(project => {
       const configured = projects.get(project.toLowerCase());
       return configured === undefined ? [] : [configured];
     }),
+    MANAGER_WORKSET_BRANCH_OBSERVATION_MAXIMUM,
   );
   const observedByName = new Map(observed.map(project => [project.name.toLowerCase(), project]));
   const members = workset.projects.map(project => {
@@ -311,155 +415,246 @@ export const mutateManagerWorksetDefinition = Effect.fn('managerWorksets.mutateD
   config: RuntimeConfig,
   mutation: ManagerWorksetDefinitionMutation,
 ) {
-  yield* managerWorksetValidation(() => validateExpectedRevision(mutation.expectedRevision));
-  const fs = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
-  const lockPath = `${config.manifestPath}.worksets.lock`;
-  const promoted = yield* withExclusiveFileLock(
-    fs,
-    codeGraphWorksetCatalogLayout(path, config.agentContextHome).prepareLockPath,
-    MANAGER_WORKSET_LOCK_OPTIONS,
-    withExclusiveFileLock(
+  const result = yield* mutateManagerManifest(
+    config,
+    mutation.expectedRevision,
+    mutation.operation,
+    assertSupportedManagerWorksetYaml,
+    (document, manifest) => applyDefinitionMutation(document, manifest, mutation),
+  );
+  return result satisfies ManagerWorksetDefinitionMutationResult;
+});
+
+export const mutateManagerManifestProject = Effect.fn('managerWorksets.mutateProject')(function* (
+  config: RuntimeConfig,
+  mutation: ManagerManifestProjectMutation,
+) {
+  const result = yield* mutateManagerManifest(
+    config,
+    mutation.expectedRevision,
+    mutation.operation,
+    assertSupportedManagerProjectYaml,
+    (document, manifest) => applyProjectMutation(document, manifest, mutation),
+  );
+  return result satisfies ManagerManifestProjectMutationResult;
+});
+
+interface ManagerManifestMutationChange {
+  readonly changed: boolean;
+  readonly normalizeProjectPath?: boolean;
+  readonly projectCandidate?: ProjectManifest;
+  readonly projectCurrentName?: string;
+  readonly retireWorksets: readonly string[];
+  readonly warnings: readonly string[];
+}
+
+function mutateManagerManifest<Operation extends string>(
+  config: RuntimeConfig,
+  expectedRevision: string,
+  operation: Operation,
+  validateDocument: (document: ReturnType<typeof parseDocument>) => void,
+  apply: (document: ReturnType<typeof parseDocument>, manifest: SeedManifest) => ManagerManifestMutationChange,
+) {
+  return Effect.gen(function* () {
+    yield* managerWorksetValidation(() => validateExpectedRevision(expectedRevision));
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const lockPath = `${config.manifestPath}.worksets.lock`;
+    const promoted = yield* withExclusiveFileLock(
       fs,
-      lockPath,
+      codeGraphWorksetCatalogLayout(path, config.agentContextHome).prepareLockPath,
       MANAGER_WORKSET_LOCK_OPTIONS,
-      Effect.gen(function* () {
-        const symbolicTarget = yield* fs.readLink(config.manifestPath).pipe(Effect.option);
-        if (symbolicTarget._tag === 'Some') {
-          return yield* Effect.fail(
-            new ManagerWorksetApiError(
-              'manifest-symlink',
-              'Workset definitions cannot edit a symbolic-link manifest.',
-              409,
-            ),
-          );
-        }
-        const raw = yield* fs.readFileString(config.manifestPath);
-        const revision = sha256HexSync(raw);
-        if (revision !== mutation.expectedRevision) {
-          return yield* Effect.fail(
-            new ManagerWorksetApiError(
-              'revision-conflict',
-              'The seed manifest changed after it was loaded. Refresh Worksets and retry.',
-              409,
-            ),
-          );
-        }
-        const manifest = yield* parseManifestForMutation(raw, config.manifestPath);
-        const document = parseDocument(raw, {keepSourceTokens: true});
-        if (document.errors.length > 0) {
-          return yield* Effect.fail(
-            new ManagerWorksetApiError('manifest-invalid', 'The seed manifest contains invalid YAML.', 409),
-          );
-        }
-        const change = yield* managerWorksetValidation(() => {
-          assertSupportedManagerWorksetYaml(document);
-          return applyDefinitionMutation(document, manifest, mutation);
-        });
-        if (!change.changed) {
-          return {
-            catalog: yield* managerWorksetValidation(() => managerWorksetCatalogFromManifest(manifest, revision)),
-            changed: false,
-            operation: mutation.operation,
-            retirementTargets: [],
-            warnings: [],
-          };
-        }
-        const candidate = String(document);
-        const parsedCandidate = yield* parseManifestForMutation(candidate, config.manifestPath);
-        const candidateCatalog = yield* managerWorksetValidation(() =>
-          managerWorksetCatalogFromManifest(parsedCandidate, sha256HexSync(candidate)),
-        );
-        const retirementCaptures = yield* Effect.forEach(
-          change.retireWorksets,
-          worksetName =>
-            readPublishedCodeGraphWorksetCatalogGeneration(config.agentContextHome, worksetName).pipe(
-              Effect.map(generation =>
-                generation === undefined
-                  ? {target: undefined, warning: undefined}
-                  : {target: {generationId: generation.id, worksetName}, warning: undefined},
-              ),
-              Effect.catch(() =>
-                Effect.succeed({
-                  target: undefined,
-                  warning: `The manifest can be changed, but published storage for ${safeLabel(worksetName)} needs catalog repair before retirement.`,
-                }),
-              ),
-            ),
-          {concurrency: 1},
-        );
-        const crypto = yield* Crypto.Crypto;
-        const temporary = path.join(
-          path.dirname(config.manifestPath),
-          `.${path.basename(config.manifestPath)}.worksets-${yield* crypto.randomUUIDv4}.tmp`,
-        );
-        yield* Effect.gen(function* () {
-          yield* fs.writeFileString(temporary, candidate, {flag: 'wx', mode: 0o600});
-          yield* fs.chmod(temporary, 0o600);
-          const latestRaw = yield* fs.readFileString(config.manifestPath);
-          const latestSymbolicTarget = yield* fs.readLink(config.manifestPath).pipe(Effect.option);
-          if (sha256HexSync(latestRaw) !== revision || latestSymbolicTarget._tag === 'Some') {
+      withExclusiveFileLock(
+        fs,
+        lockPath,
+        MANAGER_WORKSET_LOCK_OPTIONS,
+        Effect.gen(function* () {
+          const symbolicTarget = yield* fs.readLink(config.manifestPath).pipe(Effect.option);
+          if (symbolicTarget._tag === 'Some') {
             return yield* Effect.fail(
               new ManagerWorksetApiError(
-                'revision-conflict',
-                'The seed manifest changed while the workset edit was being prepared. Refresh Worksets and retry.',
+                'manifest-symlink',
+                'Manager cannot edit projects or worksets through a symbolic-link manifest.',
                 409,
               ),
             );
           }
-          yield* fs.rename(temporary, config.manifestPath);
-        }).pipe(Effect.ensuring(fs.remove(temporary, {force: true}).pipe(Effect.catch(() => Effect.void))));
-        return {
-          catalog: candidateCatalog,
-          changed: true,
-          operation: mutation.operation,
-          retirementTargets: retirementCaptures.flatMap(capture =>
-            capture.target === undefined ? [] : [capture.target],
-          ),
-          warnings: [
-            ...change.warnings,
-            ...retirementCaptures.flatMap(capture => (capture.warning === undefined ? [] : [capture.warning])),
-          ],
-        };
-      }),
-    ),
-  ).pipe(
-    Effect.mapError(cause =>
-      isFileLockTimeout(cause)
-        ? new ManagerWorksetApiError(
-            'workset-busy',
-            'Another workset definition or preparation operation is active. Retry shortly.',
-            409,
-            1_000,
-          )
-        : cause,
-    ),
-  );
-  const retirementWarnings = yield* Effect.forEach(
-    promoted.retirementTargets,
-    target =>
-      retireCodeGraphWorksetPublication(config.agentContextHome, target).pipe(
-        Effect.map(receipt =>
-          receipt.cleanupPending
-            ? `Published storage for ${safeLabel(target.worksetName)} was retired; bounded cleanup remains pending.`
-            : undefined,
-        ),
-        Effect.catch(() =>
-          Effect.succeed(
-            `The manifest changed, but published storage for ${safeLabel(target.worksetName)} could not be retired yet.`,
-          ),
-        ),
+          const raw = yield* fs.readFileString(config.manifestPath);
+          const revision = sha256HexSync(raw);
+          if (revision !== expectedRevision) {
+            return yield* Effect.fail(
+              new ManagerWorksetApiError(
+                'revision-conflict',
+                'The seed manifest changed after it was loaded. Refresh Worksets and retry.',
+                409,
+              ),
+            );
+          }
+          const manifest = yield* parseManifestForMutation(raw, config.manifestPath);
+          const document = parseDocument(raw, {keepSourceTokens: true});
+          if (document.errors.length > 0) {
+            return yield* Effect.fail(
+              new ManagerWorksetApiError('manifest-invalid', 'The seed manifest contains invalid YAML.', 409),
+            );
+          }
+          const change = yield* managerWorksetValidation(() => {
+            validateDocument(document);
+            return apply(document, manifest);
+          });
+          if (!change.changed) {
+            return {
+              catalog: yield* managerWorksetValidation(() => managerWorksetCatalogFromManifest(manifest, revision)),
+              changed: false,
+              operation,
+              retirementTargets: [],
+              warnings: change.warnings,
+            };
+          }
+          const projectRootValidation = yield* validateManagerProjectRootMutation(manifest, change);
+          if (
+            projectRootValidation !== undefined &&
+            change.projectCandidate !== undefined &&
+            change.normalizeProjectPath === true &&
+            projectRootValidation.path !== change.projectCandidate.path
+          ) {
+            setManagerProjectPath(document, change.projectCandidate.name, projectRootValidation.path);
+          }
+          const candidate = String(document);
+          if (candidate === raw) {
+            return {
+              catalog: yield* managerWorksetValidation(() => managerWorksetCatalogFromManifest(manifest, revision)),
+              changed: false,
+              operation,
+              retirementTargets: [],
+              warnings: change.warnings,
+            };
+          }
+          const parsedCandidate = yield* parseManifestForMutation(candidate, config.manifestPath);
+          const candidateCatalog = yield* managerWorksetValidation(() =>
+            managerWorksetCatalogFromManifest(parsedCandidate, sha256HexSync(candidate)),
+          );
+          const retirementCaptures = yield* Effect.forEach(
+            change.retireWorksets,
+            worksetName =>
+              readPublishedCodeGraphWorksetCatalogGeneration(config.agentContextHome, worksetName).pipe(
+                Effect.map(generation =>
+                  generation === undefined
+                    ? {target: undefined, warning: undefined}
+                    : {target: {generationId: generation.id, worksetName}, warning: undefined},
+                ),
+                Effect.catch(() =>
+                  Effect.succeed({
+                    target: undefined,
+                    warning: `The manifest can be changed, but published storage for ${safeLabel(worksetName)} needs catalog repair before retirement.`,
+                  }),
+                ),
+              ),
+            {concurrency: 1},
+          );
+          const crypto = yield* Crypto.Crypto;
+          const temporary = path.join(
+            path.dirname(config.manifestPath),
+            `.${path.basename(config.manifestPath)}.manager-${yield* crypto.randomUUIDv4}.tmp`,
+          );
+          yield* Effect.gen(function* () {
+            yield* fs.writeFileString(temporary, candidate, {flag: 'wx', mode: 0o600});
+            yield* fs.chmod(temporary, 0o600);
+            if (projectRootValidation !== undefined && change.projectCandidate !== undefined) {
+              const normalizedCandidate = parsedCandidate.projects.find(
+                project => project.name.toLowerCase() === change.projectCandidate!.name.toLowerCase(),
+              );
+              if (normalizedCandidate === undefined) {
+                return yield* Effect.fail(
+                  new ManagerWorksetApiError(
+                    'revision-conflict',
+                    'The project edit changed while it was prepared.',
+                    409,
+                  ),
+                );
+              }
+              const revalidated = yield* validateManagerProjectRoots(
+                manifest.projects.filter(
+                  project =>
+                    change.projectCurrentName === undefined ||
+                    project.name.toLowerCase() !== change.projectCurrentName.toLowerCase(),
+                ),
+                normalizedCandidate,
+              ).pipe(Effect.mapError(cause => new ManagerWorksetApiError('revision-conflict', cause.message, 409)));
+              if (revalidated.fingerprint !== projectRootValidation.fingerprint) {
+                return yield* Effect.fail(
+                  new ManagerWorksetApiError(
+                    'revision-conflict',
+                    'A configured project root changed while the manifest edit was prepared. Refresh and retry.',
+                    409,
+                  ),
+                );
+              }
+            }
+            const latestRaw = yield* fs.readFileString(config.manifestPath);
+            const latestSymbolicTarget = yield* fs.readLink(config.manifestPath).pipe(Effect.option);
+            if (sha256HexSync(latestRaw) !== revision || latestSymbolicTarget._tag === 'Some') {
+              return yield* Effect.fail(
+                new ManagerWorksetApiError(
+                  'revision-conflict',
+                  'The seed manifest changed while the workset edit was being prepared. Refresh Worksets and retry.',
+                  409,
+                ),
+              );
+            }
+            yield* fs.rename(temporary, config.manifestPath);
+          }).pipe(Effect.ensuring(fs.remove(temporary, {force: true}).pipe(Effect.catch(() => Effect.void))));
+          return {
+            catalog: candidateCatalog,
+            changed: true,
+            operation,
+            retirementTargets: retirementCaptures.flatMap(capture =>
+              capture.target === undefined ? [] : [capture.target],
+            ),
+            warnings: [
+              ...change.warnings,
+              ...retirementCaptures.flatMap(capture => (capture.warning === undefined ? [] : [capture.warning])),
+            ],
+          };
+        }),
       ),
-    {concurrency: 1},
-  );
-  const catalog = yield* readManagerWorksetCatalog(config).pipe(Effect.catch(() => Effect.succeed(promoted.catalog)));
-  return {
-    catalog,
-    changed: promoted.changed,
-    operation: promoted.operation,
-    warnings: [...promoted.warnings, ...retirementWarnings.filter(value => value !== undefined)],
-  } satisfies ManagerWorksetDefinitionMutationResult;
-});
+    ).pipe(
+      Effect.mapError(cause =>
+        isFileLockTimeout(cause)
+          ? new ManagerWorksetApiError(
+              'workset-busy',
+              'Another workset definition or preparation operation is active. Retry shortly.',
+              409,
+              1_000,
+            )
+          : cause,
+      ),
+    );
+    const retirementWarnings = yield* Effect.forEach(
+      promoted.retirementTargets,
+      target =>
+        retireCodeGraphWorksetPublication(config.agentContextHome, target).pipe(
+          Effect.map(receipt =>
+            receipt.cleanupPending
+              ? `Published storage for ${safeLabel(target.worksetName)} was retired; bounded cleanup remains pending.`
+              : undefined,
+          ),
+          Effect.catch(() =>
+            Effect.succeed(
+              `The manifest changed, but published storage for ${safeLabel(target.worksetName)} could not be retired yet.`,
+            ),
+          ),
+        ),
+      {concurrency: 1},
+    );
+    const catalog = yield* readManagerWorksetCatalog(config).pipe(Effect.catch(() => Effect.succeed(promoted.catalog)));
+    return {
+      catalog,
+      changed: promoted.changed,
+      operation: promoted.operation,
+      warnings: [...promoted.warnings, ...retirementWarnings.filter(value => value !== undefined)],
+    };
+  });
+}
 
 export const handleManagerWorksetRequest = Effect.fn('managerWorksets.handleRequest')(function* (
   request: ManagerWorksetApiRequest,
@@ -482,6 +677,9 @@ function routeManagerWorksetRequest(request: ManagerWorksetApiRequest) {
     }
     if (method === 'GET' && url.pathname === '/api/worksets/definition') {
       return response(200, yield* readManagerWorksetDefinition(config, requiredQuery(url, 'workset')));
+    }
+    if (method === 'GET' && url.pathname === '/api/worksets/project') {
+      return response(200, yield* readManagerManifestProject(config, requiredQuery(url, 'project')));
     }
     if (method === 'GET' && url.pathname === '/api/worksets/jobs') {
       const jobs = [...registryFor(request.contextKey).jobs.values()]
@@ -508,6 +706,8 @@ function routeManagerWorksetRequest(request: ManagerWorksetApiRequest) {
           200,
           yield* mutateManagerWorksetDefinitionFromRequest(request, definitionMutationFromBody(body)),
         );
+      case '/api/worksets/projects':
+        return response(200, yield* mutateManagerManifestProjectFromRequest(request, projectMutationFromBody(body)));
       case '/api/worksets/prepare':
         return response(202, {job: yield* startManagerWorksetPrepare(request, body)});
       case '/api/worksets/jobs/cancel':
@@ -803,6 +1003,261 @@ function definitionMutationFromBody(body: Record<string, unknown>): ManagerWorks
   throw new ManagerWorksetApiError('invalid-input', 'Workset definition operation is invalid.', 400);
 }
 
+function projectMutationFromBody(body: Record<string, unknown>): ManagerManifestProjectMutation {
+  const expectedRevision = requiredText(body.expectedRevision, 'expectedRevision', 64);
+  if (body.operation === 'create' || body.operation === 'update') {
+    const common = {
+      expectedRevision,
+      name: requiredText(body.name, 'name', MANAGER_WORKSET_NAME_BYTES_MAXIMUM),
+      path: requiredLiteralText(body.path, 'path', MANAGER_PROJECT_VALUE_BYTES_MAXIMUM),
+      seed: projectSeedPatterns(body.seed),
+      uri: requiredLiteralText(body.uri, 'uri', MANAGER_PROJECT_VALUE_BYTES_MAXIMUM),
+    };
+    return body.operation === 'create'
+      ? {...common, operation: 'create'}
+      : {
+          ...common,
+          operation: 'update',
+          project: requiredText(body.project, 'project', MANAGER_WORKSET_NAME_BYTES_MAXIMUM),
+        };
+  }
+  if (body.operation === 'delete') {
+    if (body.confirm !== true)
+      throw new ManagerWorksetApiError('confirmation-required', 'Confirm project deletion.', 400);
+    return {
+      confirm: true,
+      expectedRevision,
+      operation: 'delete',
+      project: requiredText(body.project, 'project', MANAGER_WORKSET_NAME_BYTES_MAXIMUM),
+    };
+  }
+  throw new ManagerWorksetApiError('invalid-input', 'Manifest project operation is invalid.', 400);
+}
+
+function applyProjectMutation(
+  document: ReturnType<typeof parseDocument>,
+  manifest: SeedManifest,
+  mutation: ManagerManifestProjectMutation,
+): ManagerManifestMutationChange {
+  const projects = document.get('projects', true);
+  if (!isSeq(projects))
+    throw new ManagerWorksetApiError('manifest-invalid', 'Manifest projects must be a YAML sequence.', 409);
+  const sequence = projects as YAMLSeq;
+  const targetName = mutation.operation === 'create' ? mutation.name : mutation.project;
+  const targetIndexes = findNamedMapIndexes(sequence, targetName);
+  if (targetIndexes.length > 1) {
+    throw new ManagerWorksetApiError('name-conflict', 'The target project name is ambiguous in the manifest.', 409);
+  }
+  const index = targetIndexes[0] ?? -1;
+  const current = index < 0 ? undefined : manifest.projects[index];
+  if (mutation.operation === 'create') {
+    if (index >= 0) throw new ManagerWorksetApiError('name-conflict', 'A project with that name already exists.', 409);
+    const value = validatedProject(manifest, mutation);
+    assertProjectReferenceMutationSafe(manifest, undefined, value.name);
+    sequence.add(document.createNode(value));
+    const affected = affectedWorksets(manifest, value.name);
+    return {
+      changed: true,
+      normalizeProjectPath: true,
+      projectCandidate: value,
+      retireWorksets: affected,
+      warnings: [],
+    };
+  }
+  if (index < 0 || !current) throw new ManagerWorksetApiError('project-not-found', 'Manifest project not found.', 404);
+  const affected = affectedWorksets(manifest, current.name);
+  if (mutation.operation === 'delete') {
+    sequence.delete(index);
+    return {
+      changed: true,
+      retireWorksets: affected,
+      warnings:
+        affected.length === 0
+          ? []
+          : [
+              `Deleted project ${safeLabel(current.name)} remains as an unresolved member in ${affected.length} affected workset${affected.length === 1 ? '' : 's'}.`,
+            ],
+    };
+  }
+  const value = validatedProject(manifest, mutation, current);
+  const node = sequence.items[index];
+  if (!isMap(node)) throw unsupportedProjectYaml();
+  const map = node as YAMLMap;
+  const configuredUri = map.get('uri');
+  if (typeof configuredUri !== 'string') throw unsupportedProjectYaml();
+  const configuredUriChanged = mutation.uri !== configuredUri;
+  if (projectsEqual(current, value) && !configuredUriChanged) {
+    return {changed: false, retireWorksets: [], warnings: []};
+  }
+  const renamed = current.name !== value.name;
+  if (renamed) {
+    assertProjectReferenceMutationSafe(manifest, current.name, value.name);
+    if (affected.length > 0) {
+      assertSupportedManagerWorksetYaml(document);
+      reconcileWorksetProjectReferences(document, current.name, value.name);
+    }
+    setManagerYamlString(map, 'name', value.name);
+  }
+  if (current.path !== value.path) setManagerYamlString(map, 'path', value.path);
+  if (configuredUriChanged) setManagerYamlString(map, 'uri', value.uri);
+  if (!textArraysEqual(current.seed, value.seed)) reconcileSeedSequence(map, value.seed);
+  const graphIdentityChanged = renamed || current.path !== value.path || current.uri !== value.uri;
+  const retireWorksets = renamed
+    ? uniqueCaseInsensitive([...affected, ...affectedWorksets(manifest, value.name)])
+    : affected;
+  return {
+    changed: true,
+    normalizeProjectPath: current.path !== value.path,
+    projectCandidate: value,
+    projectCurrentName: current.name,
+    retireWorksets: graphIdentityChanged ? retireWorksets : [],
+    warnings: [],
+  };
+}
+
+function assertProjectReferenceMutationSafe(
+  manifest: SeedManifest,
+  previousName: string | undefined,
+  nextName: string,
+): void {
+  const nextKey = nextName.toLowerCase();
+  const previousKey = previousName?.toLowerCase();
+  const collision = (manifest.worksets ?? []).find(workset => {
+    const relevant =
+      previousKey === undefined
+        ? workset.projects.some(project => project.toLowerCase() === nextKey)
+        : workset.projects.some(project => {
+            const key = project.toLowerCase();
+            return key === previousKey || key === nextKey;
+          });
+    if (!relevant) return false;
+    const rewritten = workset.projects.map(project =>
+      previousKey !== undefined && project.toLowerCase() === previousKey ? nextKey : project.toLowerCase(),
+    );
+    return rewritten.filter(project => project === nextKey).length > 1;
+  });
+  if (collision) {
+    throw new ManagerWorksetApiError(
+      'name-conflict',
+      `Workset ${safeLabel(collision.name)} contains duplicate references for the target project name.`,
+      409,
+    );
+  }
+}
+
+function validatedProject(
+  manifest: SeedManifest,
+  input: Extract<ManagerManifestProjectMutation, {readonly operation: 'create' | 'update'}>,
+  current?: ProjectManifest,
+): ProjectManifest {
+  const name = normalizedText(input.name, 'name', MANAGER_WORKSET_NAME_BYTES_MAXIMUM);
+  const path =
+    current !== undefined && input.path === current.path ? current.path : validateManagerProjectPath(input.path);
+  const uri = validateManagerProjectUri(input.uri, current?.uri);
+  const seed = projectSeedPatterns(input.seed);
+  const duplicateName = manifest.projects.some(
+    project => project !== current && project.name.toLowerCase() === name.toLowerCase(),
+  );
+  if (duplicateName) throw new ManagerWorksetApiError('name-conflict', 'A project with that name already exists.', 409);
+  const duplicateUri = manifest.projects.some(project => project !== current && project.uri === uri);
+  if (duplicateUri)
+    throw new ManagerWorksetApiError('uri-conflict', 'Another manifest project already owns that resource URI.', 409);
+  return {name, path, seed, uri};
+}
+
+function validateManagerProjectPath(value: string): string {
+  if (
+    value.length === 0 ||
+    UTF8.encode(value).byteLength > MANAGER_PROJECT_VALUE_BYTES_MAXIMUM ||
+    hasLiteralControlCharacter(value)
+  ) {
+    throw new ManagerWorksetApiError(
+      'invalid-input',
+      'Project path must be bounded text without control characters.',
+      400,
+    );
+  }
+  if (!isAbsoluteManagerProjectPath(value)) {
+    throw new ManagerWorksetApiError('invalid-input', 'Project path must be absolute or start with ~/.', 400);
+  }
+  const normalized = value.replaceAll('\\', '/');
+  if (normalized.split('/').includes('..')) {
+    throw new ManagerWorksetApiError('invalid-input', 'Project path must not contain parent traversal segments.', 400);
+  }
+  return value;
+}
+
+function validateManagerProjectRootMutation(
+  manifest: SeedManifest,
+  change: ManagerManifestMutationChange,
+): Effect.Effect<ManagerProjectRootValidation | undefined, ManagerWorksetApiError, ApplicationServices> {
+  return change.projectCandidate === undefined || change.normalizeProjectPath !== true
+    ? Effect.succeed(undefined)
+    : validateManagerProjectRoots(
+        manifest.projects.filter(
+          project =>
+            change.projectCurrentName === undefined ||
+            project.name.toLowerCase() !== change.projectCurrentName.toLowerCase(),
+        ),
+        change.projectCandidate,
+      ).pipe(
+        Effect.mapError(cause => {
+          const invalidInput = cause.message.startsWith('Project path must identify');
+          return new ManagerWorksetApiError(
+            cause.message.startsWith('Another manifest project')
+              ? 'path-conflict'
+              : invalidInput
+                ? 'invalid-input'
+                : 'project-path-unavailable',
+            cause.message,
+            invalidInput ? 400 : 409,
+          );
+        }),
+      );
+}
+
+function isAbsoluteManagerProjectPath(value: string): boolean {
+  return (
+    value.startsWith('/') ||
+    value === '~' ||
+    value.startsWith('~/') ||
+    value.startsWith('~\\') ||
+    /^[a-z]:[\\/]/iu.test(value) ||
+    /^\\\\/u.test(value)
+  );
+}
+
+function validateManagerProjectUri(value: string, retainedCanonicalUri?: string): string {
+  try {
+    const parsed = parseResourceId(value);
+    if (
+      parsed.anchor !== undefined ||
+      parsed.namespace !== 'resources' ||
+      parsed.segments[0] !== 'repos' ||
+      parsed.segments.length < 2
+    ) {
+      throw new Error('unsupported project resource root');
+    }
+    if (parsed.canonicalUri !== value && parsed.canonicalUri !== retainedCanonicalUri) {
+      throw new Error('noncanonical project resource root');
+    }
+    return parsed.canonicalUri;
+  } catch {
+    throw new ManagerWorksetApiError(
+      'invalid-input',
+      'Project URI must be a canonical anchorless threadnote://resources/repos/... root.',
+      400,
+    );
+  }
+}
+
+function affectedWorksets(manifest: SeedManifest, projectName: string): readonly string[] {
+  const key = projectName.toLowerCase();
+  return (manifest.worksets ?? [])
+    .filter(workset => workset.projects.some(project => project.toLowerCase() === key))
+    .map(workset => workset.name);
+}
+
 function applyDefinitionMutation(
   document: ReturnType<typeof parseDocument>,
   manifest: SeedManifest,
@@ -931,6 +1386,13 @@ function assertUniqueManagerManifestIdentity(manifest: SeedManifest): void {
       );
     }
   }
+  const projectUris = new Set<string>();
+  for (const project of manifest.projects) {
+    if (projectUris.has(project.uri)) {
+      throw new ManagerWorksetApiError('manifest-invalid', 'Manifest project resource URIs must be unique.', 409);
+    }
+    projectUris.add(project.uri);
+  }
   if (manifest.projects.length > MANAGER_WORKSET_MEMBER_MAXIMUM) {
     throw new ManagerWorksetApiError('manifest-invalid', 'The seed manifest has too many projects for Manager.', 409);
   }
@@ -964,6 +1426,37 @@ function managerWorksetYamlSupported(document: ReturnType<typeof parseDocument>)
     return true;
   } catch {
     return false;
+  }
+}
+
+function managerProjectYamlSupported(document: ReturnType<typeof parseDocument>): boolean {
+  try {
+    assertSupportedManagerProjectYaml(document);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function assertSupportedManagerProjectYaml(document: ReturnType<typeof parseDocument>): void {
+  const projects = document.get('projects', true);
+  if (!isSeq(projects) || hasYamlAnchor(projects)) throw unsupportedProjectYaml();
+  for (const item of projects.items) {
+    if (!isMap(item) || hasYamlAnchor(item)) throw unsupportedProjectYaml();
+    for (const field of ['name', 'path', 'uri'] as const) {
+      const value = item.get(field, true);
+      if (!isScalar(value) || typeof value.value !== 'string' || hasYamlAnchor(value)) {
+        throw unsupportedProjectYaml();
+      }
+    }
+    const seed = item.get('seed', true);
+    if (
+      !isSeq(seed) ||
+      hasYamlAnchor(seed) ||
+      seed.items.some(pattern => !isScalar(pattern) || typeof pattern.value !== 'string' || hasYamlAnchor(pattern))
+    ) {
+      throw unsupportedProjectYaml();
+    }
   }
 }
 
@@ -1007,6 +1500,14 @@ function unsupportedWorksetYaml(): ManagerWorksetApiError {
   return new ManagerWorksetApiError(
     'manifest-invalid',
     'Workset definitions use YAML aliases or shapes that Manager cannot edit safely.',
+    409,
+  );
+}
+
+function unsupportedProjectYaml(): ManagerWorksetApiError {
+  return new ManagerWorksetApiError(
+    'manifest-invalid',
+    'Manifest projects use YAML aliases or shapes that Manager cannot edit safely.',
     409,
   );
 }
@@ -1089,6 +1590,18 @@ function mutateManagerWorksetDefinitionFromRequest(
   assertNoActiveManagerPrepare(registry);
   registry.mutating = true;
   return mutateManagerWorksetDefinition(request.config, mutation).pipe(
+    Effect.ensuring(Effect.sync(() => (registry.mutating = false))),
+  );
+}
+
+function mutateManagerManifestProjectFromRequest(
+  request: ManagerWorksetApiRequest,
+  mutation: ManagerManifestProjectMutation,
+) {
+  const registry = registryFor(request.contextKey);
+  assertNoActiveManagerPrepare(registry);
+  registry.mutating = true;
+  return mutateManagerManifestProject(request.config, mutation).pipe(
     Effect.ensuring(Effect.sync(() => (registry.mutating = false))),
   );
 }
@@ -1178,6 +1691,33 @@ function requiredTextArray(value: unknown, name: string, maximumItems: number): 
   return value.map(item => requiredText(item, name, MANAGER_WORKSET_NAME_BYTES_MAXIMUM));
 }
 
+function requiredLiteralText(value: unknown, name: string, maximumBytes: number): string {
+  if (
+    typeof value !== 'string' ||
+    value.length === 0 ||
+    UTF8.encode(value).byteLength > maximumBytes ||
+    hasLiteralControlCharacter(value)
+  ) {
+    throw new ManagerWorksetApiError('invalid-input', `${name} must be bounded text without control characters.`, 400);
+  }
+  return value;
+}
+
+function projectSeedPatterns(value: unknown): readonly string[] {
+  if (!Array.isArray(value) || !value.every(item => typeof item === 'string')) {
+    throw new ManagerWorksetApiError('invalid-input', 'Provide seed as a bounded string array.', 400);
+  }
+  try {
+    return validateProjectSeedPatterns(value);
+  } catch (cause) {
+    throw new ManagerWorksetApiError(
+      'invalid-input',
+      cause instanceof Error ? cause.message : 'Project seed patterns are invalid.',
+      400,
+    );
+  }
+}
+
 function contextBriefMode(value: unknown): ContextBriefMode {
   if (value === undefined || value === 'brief') return 'brief';
   if (value === 'locate' || value === 'explain' || value === 'trace' || value === 'impact') return value;
@@ -1193,12 +1733,29 @@ function findWorksetNodeIndex(sequence: YAMLSeq, name: string): number {
 }
 
 function findWorksetNodeIndexes(sequence: YAMLSeq, name: string): readonly number[] {
+  return findNamedMapIndexes(sequence, name);
+}
+
+function findNamedMapIndexes(sequence: YAMLSeq, name: string): readonly number[] {
   const target = name.toLowerCase();
   return sequence.items.flatMap((item, index) => {
     if (!isMap(item)) return [];
     const value = item.get('name');
     return typeof value === 'string' && value.toLowerCase() === target ? [index] : [];
   });
+}
+
+function projectsEqual(left: ProjectManifest, right: ProjectManifest): boolean {
+  return (
+    left.name === right.name &&
+    left.path === right.path &&
+    left.uri === right.uri &&
+    textArraysEqual(left.seed, right.seed)
+  );
+}
+
+function textArraysEqual(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
 function definitionsEqual(left: WorksetManifest, right: WorksetManifest): boolean {
@@ -1235,6 +1792,70 @@ function reconcileProjectSequence(map: YAMLMap, projects: readonly string[]): vo
     if (retainedKeys.has(project.toLowerCase())) continue;
     current.add(project);
   }
+}
+
+function reconcileWorksetProjectReferences(
+  document: ReturnType<typeof parseDocument>,
+  previousName: string,
+  nextName: string,
+): void {
+  const worksets = document.get('worksets', true);
+  if (worksets === undefined) return;
+  if (!isSeq(worksets)) throw unsupportedWorksetYaml();
+  const key = previousName.toLowerCase();
+  for (const item of worksets.items) {
+    if (!isMap(item)) throw unsupportedWorksetYaml();
+    const projects = item.get('projects', true);
+    if (!isSeq(projects)) throw unsupportedWorksetYaml();
+    for (const project of projects.items) {
+      if (!isScalar(project) || typeof project.value !== 'string') throw unsupportedWorksetYaml();
+      if (project.value.toLowerCase() === key) project.value = nextName;
+    }
+  }
+}
+
+function reconcileSeedSequence(map: YAMLMap, patterns: readonly string[]): void {
+  const current = map.get('seed', true);
+  if (!isSeq(current)) {
+    map.set('seed', [...patterns]);
+    return;
+  }
+  const available = new Map<string, typeof current.items>();
+  for (const item of current.items) {
+    if (!isScalar(item) || typeof item.value !== 'string') continue;
+    const matches = available.get(item.value) ?? [];
+    matches.push(item);
+    available.set(item.value, matches);
+  }
+  const next = [] as typeof current.items;
+  for (const pattern of patterns) {
+    const retained = available.get(pattern)?.shift();
+    if (retained !== undefined) {
+      next.push(retained);
+      continue;
+    }
+    current.add(pattern);
+    next.push(current.items.pop()!);
+  }
+  current.items = next;
+}
+
+function setManagerYamlString(map: YAMLMap, key: string, value: string): void {
+  const current = map.get(key, true);
+  if (isScalar(current) && typeof current.value === 'string') {
+    current.value = value;
+    return;
+  }
+  map.set(key, value);
+}
+
+function setManagerProjectPath(document: ReturnType<typeof parseDocument>, projectName: string, value: string): void {
+  const projects = document.get('projects', true);
+  if (!isSeq(projects)) throw unsupportedProjectYaml();
+  const indexes = findNamedMapIndexes(projects as YAMLSeq, projectName);
+  const item = indexes.length === 1 ? projects.items[indexes[0]!] : undefined;
+  if (!isMap(item)) throw unsupportedProjectYaml();
+  setManagerYamlString(item as YAMLMap, 'path', value);
 }
 
 function managerWorksetErrorResponse(error: unknown): ManagerWorksetApiResponse {
@@ -1329,34 +1950,27 @@ function safeLocalPath(value: string): string {
     .slice(0, MANAGER_WORKSET_SELECTOR_BYTES_MAXIMUM);
 }
 
-const observeManagerWorksetProjects = Effect.fn('managerWorksets.observeProjects')(function* (
-  projects: readonly ProjectManifest[],
-) {
-  const path = yield* Path.Path;
-  return yield* Effect.forEach(
-    projects,
-    (project, index) =>
-      Effect.gen(function* () {
-        const localPath = yield* expandPath(project.path);
-        const base = {
-          folder: path.basename(localPath) || safeLabel(project.name),
-          name: safeLabel(project.name),
-          path: safeLocalPath(localPath),
-        };
-        if (index >= MANAGER_WORKSET_BRANCH_OBSERVATION_MAXIMUM) {
-          return {...base, branchState: 'not-observed' as const};
-        }
-        const branch = yield* observeRepositoryBranch(localPath);
-        return {...base, ...(branch.state === 'current' ? {branch: branch.branch} : {}), branchState: branch.state};
-      }),
-    {concurrency: 16},
-  );
-});
-
 function hasControlCharacter(value: string): boolean {
   return [...value].some(character => {
     const code = character.codePointAt(0) ?? 0;
     return code <= 8 || code === 11 || code === 12 || (code >= 14 && code <= 31) || code === 127;
+  });
+}
+
+function hasLiteralControlCharacter(value: string): boolean {
+  return [...value].some(character => {
+    const code = character.codePointAt(0) ?? 0;
+    return code <= 31 || code === 127;
+  });
+}
+
+function uniqueCaseInsensitive(values: readonly string[]): readonly string[] {
+  const seen = new Set<string>();
+  return values.filter(value => {
+    const key = value.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
   });
 }
 

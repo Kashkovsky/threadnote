@@ -1,9 +1,9 @@
 import {provideTestLayer} from '../helpers/effect-layer.js';
-import {mkdir, mkdtemp, readFile, rename, rm, stat, utimes, writeFile} from '../helpers/node-fs-promises.js';
+import {mkdir, mkdtemp, readFile, rename, rm, stat, symlink, utimes, writeFile} from '../helpers/node-fs-promises.js';
 import {tmpdir} from '../helpers/node-os.js';
 import {join} from '../helpers/node-path.js';
 import {it as effectIt} from '@effect/vitest';
-import {Effect} from 'effect';
+import {Effect, FileSystem, PlatformError} from 'effect';
 import {TestClock} from 'effect/testing';
 import {afterEach, describe, expect} from 'vitest';
 import {runInitManifest, runSeed, runSeedSkills, seedDependencyGraphs} from '../../src/seeding.js';
@@ -64,6 +64,282 @@ describe('runSeed', () => {
       expect(output).not.toContain('--wait');
       expect(output).not.toContain('--reason');
       expect(output).not.toContain('Project guidance for');
+    }),
+  );
+
+  effectIt.effect('rejects a manually configured seed pattern that escapes the project root', () =>
+    Effect.gen(function* () {
+      const contextHome = yield* Effect.promise(() => mkdtemp(join(tmpdir(), 'threadnote-seed-context-')));
+      const parent = yield* Effect.promise(() => mkdtemp(join(tmpdir(), 'threadnote-seed-parent-')));
+      const repo = join(parent, 'repo');
+      homes.push(contextHome, parent);
+      yield* Effect.promise(() => mkdir(repo, {recursive: true}));
+      yield* Effect.promise(() => writeFile(join(parent, 'secret.md'), '# must stay outside\n', 'utf8'));
+      const manifestPath = join(contextHome, 'seed-manifest.yaml');
+      yield* Effect.promise(() =>
+        writeFile(
+          manifestPath,
+          [
+            'version: 1',
+            'projects:',
+            '  - name: sample-repo',
+            `    path: ${repo}`,
+            '    uri: threadnote://resources/repos/sample-repo',
+            '    seed: [../secret.md]',
+            '',
+          ].join('\n'),
+        ),
+      );
+      const config: RuntimeConfig = {
+        account: 'local',
+        agentContextHome: contextHome,
+        agentId: 'threadnote',
+        manifestPath,
+        user: 'denys',
+      };
+
+      const error = yield* run(runSeed(config, {dryRun: true})).pipe(Effect.flip);
+      expect(error).toMatchObject({
+        message: '1 project(s) failed after the remaining projects were processed: sample-repo',
+      });
+    }),
+  );
+
+  effectIt.effect('does not follow exact seed paths through symbolic links', () =>
+    Effect.gen(function* () {
+      const contextHome = yield* Effect.promise(() => mkdtemp(join(tmpdir(), 'threadnote-seed-context-')));
+      const repo = yield* Effect.promise(() => mkdtemp(join(tmpdir(), 'threadnote-seed-repo-')));
+      const outside = yield* Effect.promise(() => mkdtemp(join(tmpdir(), 'threadnote-seed-outside-')));
+      homes.push(contextHome, repo, outside);
+      yield* Effect.promise(() => mkdir(join(repo, 'docs'), {recursive: true}));
+      yield* Effect.promise(() => writeFile(join(repo, 'README.md'), '# Safe root file\n', 'utf8'));
+      yield* Effect.promise(() => writeFile(join(repo, 'docs', 'inside.md'), '# Safe internal file\n', 'utf8'));
+      yield* Effect.promise(() => writeFile(join(outside, 'secret.md'), '# must stay outside\n', 'utf8'));
+      yield* Effect.promise(() => symlink(outside, join(repo, 'linked'), 'dir'));
+      yield* Effect.promise(() => symlink(join(repo, 'docs', 'inside.md'), join(repo, 'inside-link.md')));
+      const manifestPath = join(contextHome, 'seed-manifest.yaml');
+      yield* Effect.promise(() =>
+        writeFile(
+          manifestPath,
+          [
+            'version: 1',
+            'projects:',
+            '  - name: sample-repo',
+            `    path: ${repo}`,
+            '    uri: threadnote://resources/repos/sample-repo',
+            '    seed: [README.md, linked/secret.md, inside-link.md]',
+            '',
+          ].join('\n'),
+        ),
+      );
+      const config: RuntimeConfig = {
+        account: 'local',
+        agentContextHome: contextHome,
+        agentId: 'threadnote',
+        manifestPath,
+        user: 'denys',
+      };
+
+      const output = yield* captureConsole(runSeed(config, {dryRun: true}));
+
+      expect(output).toContain('sample-repo/README.md');
+      expect(output).not.toContain('sample-repo/linked/secret.md');
+      expect(output).not.toContain('sample-repo/inside-link.md');
+      expect(output).toContain('Seed complete: 1 candidate(s)');
+    }),
+  );
+
+  effectIt.effect('does not follow glob seed paths through symbolic links', () =>
+    Effect.gen(function* () {
+      const contextHome = yield* Effect.promise(() => mkdtemp(join(tmpdir(), 'threadnote-seed-context-')));
+      const repo = yield* Effect.promise(() => mkdtemp(join(tmpdir(), 'threadnote-seed-repo-')));
+      const outside = yield* Effect.promise(() => mkdtemp(join(tmpdir(), 'threadnote-seed-outside-')));
+      homes.push(contextHome, repo, outside);
+      yield* Effect.promise(() => mkdir(join(repo, 'docs'), {recursive: true}));
+      yield* Effect.promise(() => writeFile(join(repo, 'docs', 'guide.md'), '# Safe internal file\n', 'utf8'));
+      yield* Effect.promise(() => writeFile(join(outside, 'secret.md'), '# must stay outside\n', 'utf8'));
+      yield* Effect.promise(() => symlink(outside, join(repo, 'linked'), 'dir'));
+      yield* Effect.promise(() => symlink(join(repo, 'docs'), join(repo, 'inside-linked'), 'dir'));
+      const manifestPath = join(contextHome, 'seed-manifest.yaml');
+      yield* Effect.promise(() =>
+        writeFile(
+          manifestPath,
+          [
+            'version: 1',
+            'projects:',
+            '  - name: sample-repo',
+            `    path: ${repo}`,
+            '    uri: threadnote://resources/repos/sample-repo',
+            '    seed: ["docs/**/*.md", "linked/**/*.md", "inside-linked/**/*.md"]',
+            '',
+          ].join('\n'),
+        ),
+      );
+      const config: RuntimeConfig = {
+        account: 'local',
+        agentContextHome: contextHome,
+        agentId: 'threadnote',
+        manifestPath,
+        user: 'denys',
+      };
+
+      const output = yield* captureConsole(runSeed(config, {dryRun: true}));
+
+      expect(output).toContain('sample-repo/docs/guide.md');
+      expect(output).not.toContain('sample-repo/linked/secret.md');
+      expect(output).not.toContain('sample-repo/inside-linked/guide.md');
+      expect(output).toContain('Seed complete: 1 candidate(s)');
+    }),
+  );
+
+  effectIt.effect('rejects a seed ancestor swapped to a symbolic link before descriptor open', () =>
+    Effect.gen(function* () {
+      const contextHome = yield* Effect.promise(() => mkdtemp(join(tmpdir(), 'threadnote-seed-context-')));
+      const repo = yield* Effect.promise(() => mkdtemp(join(tmpdir(), 'threadnote-seed-repo-')));
+      const outside = yield* Effect.promise(() => mkdtemp(join(tmpdir(), 'threadnote-seed-outside-')));
+      homes.push(contextHome, repo, outside);
+      const sourceDirectory = join(repo, 'docs');
+      const source = join(sourceDirectory, 'README.md');
+      const outsideSource = join(outside, 'README.md');
+      yield* Effect.promise(() => mkdir(sourceDirectory, {recursive: true}));
+      yield* Effect.promise(() => writeFile(source, '# Safe original\n', 'utf8'));
+      yield* Effect.promise(() => writeFile(outsideSource, '# outside secret\n', 'utf8'));
+      const manifestPath = join(contextHome, 'seed-manifest.yaml');
+      yield* Effect.promise(() =>
+        writeFile(
+          manifestPath,
+          [
+            'version: 1',
+            'projects:',
+            '  - name: sample-repo',
+            `    path: ${repo}`,
+            '    uri: threadnote://resources/repos/sample-repo',
+            '    seed: [docs/README.md]',
+            '',
+          ].join('\n'),
+        ),
+      );
+      const config: RuntimeConfig = {
+        account: 'local',
+        agentContextHome: contextHome,
+        agentId: 'threadnote',
+        manifestPath,
+        user: 'denys',
+      };
+      const storedPath = join(contextHome, 'data', 'local', 'resources', 'repos', 'sample-repo', 'docs', 'README.md');
+      const statePath = join(contextHome, 'seed-state.json');
+      yield* captureConsole(runSeed(config, {}));
+      const stateBefore = JSON.parse(yield* Effect.promise(() => readFile(statePath, 'utf8'))) as unknown;
+      let swapped = false;
+
+      const error = yield* run(
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const canonicalSource = yield* fileSystem.realPath(source);
+          const canonicalSourceDirectory = yield* fileSystem.realPath(sourceDirectory);
+          const originalSourceDirectory = `${canonicalSourceDirectory}.original`;
+          const racingFileSystem = FileSystem.FileSystem.of({
+            ...fileSystem,
+            open: (target, options) => {
+              if (String(target) !== canonicalSource || swapped) {
+                return fileSystem.open(target, options);
+              }
+              swapped = true;
+              return fileSystem
+                .rename(canonicalSourceDirectory, originalSourceDirectory)
+                .pipe(
+                  Effect.andThen(fileSystem.symlink(outside, canonicalSourceDirectory)),
+                  Effect.andThen(fileSystem.open(target, options)),
+                );
+            },
+          });
+          return yield* runSeed(config, {}).pipe(
+            Effect.provideService(FileSystem.FileSystem, racingFileSystem),
+            Effect.flip,
+          );
+        }),
+      );
+
+      expect(swapped).toBe(true);
+      expect(error).toMatchObject({
+        message: '1 project(s) failed after the remaining projects were processed: sample-repo',
+      });
+      const preserved = yield* Effect.promise(() => readFile(storedPath, 'utf8'));
+      expect(preserved).toContain('Safe original');
+      expect(preserved).not.toContain('outside secret');
+      expect(JSON.parse(yield* Effect.promise(() => readFile(statePath, 'utf8')))).toEqual(stateBefore);
+    }),
+  );
+
+  effectIt.effect('preserves seeded resources when filesystem observation is denied', () =>
+    Effect.gen(function* () {
+      const contextHome = yield* Effect.promise(() => mkdtemp(join(tmpdir(), 'threadnote-seed-context-')));
+      const repo = yield* Effect.promise(() => mkdtemp(join(tmpdir(), 'threadnote-seed-repo-')));
+      homes.push(contextHome, repo);
+      const source = join(repo, 'README.md');
+      yield* Effect.promise(() => writeFile(source, '# Preserve on observation error\n', 'utf8'));
+      const manifestPath = join(contextHome, 'seed-manifest.yaml');
+      yield* Effect.promise(() =>
+        writeFile(
+          manifestPath,
+          [
+            'version: 1',
+            'projects:',
+            '  - name: sample-repo',
+            `    path: ${repo}`,
+            '    uri: threadnote://resources/repos/sample-repo',
+            '    seed: [README.md]',
+            '',
+          ].join('\n'),
+        ),
+      );
+      const config: RuntimeConfig = {
+        account: 'local',
+        agentContextHome: contextHome,
+        agentId: 'threadnote',
+        manifestPath,
+        user: 'denys',
+      };
+      const storedPath = join(contextHome, 'data', 'local', 'resources', 'repos', 'sample-repo', 'README.md');
+      const statePath = join(contextHome, 'seed-state.json');
+      yield* captureConsole(runSeed(config, {}));
+      const stateBefore = JSON.parse(yield* Effect.promise(() => readFile(statePath, 'utf8'))) as unknown;
+      let deniedObservations = 0;
+
+      const error = yield* run(
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const deniedFileSystem = FileSystem.FileSystem.of({
+            ...fileSystem,
+            stat: target => {
+              if (String(target) !== source) {
+                return fileSystem.stat(target);
+              }
+              deniedObservations += 1;
+              return Effect.fail(
+                PlatformError.systemError({
+                  _tag: 'PermissionDenied',
+                  description: 'injected seed observation failure',
+                  method: 'stat',
+                  module: 'FileSystem',
+                  pathOrDescriptor: source,
+                }),
+              );
+            },
+          });
+          return yield* runSeed(config, {}).pipe(
+            Effect.provideService(FileSystem.FileSystem, deniedFileSystem),
+            Effect.flip,
+          );
+        }),
+      );
+
+      expect(deniedObservations).toBeGreaterThan(0);
+      expect(error).toMatchObject({
+        message: '1 project(s) failed after the remaining projects were processed: sample-repo',
+      });
+      expect(yield* Effect.promise(() => readFile(storedPath, 'utf8'))).toContain('Preserve on observation error');
+      expect(JSON.parse(yield* Effect.promise(() => readFile(statePath, 'utf8')))).toEqual(stateBefore);
     }),
   );
 
