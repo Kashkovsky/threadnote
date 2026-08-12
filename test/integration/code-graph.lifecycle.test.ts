@@ -52,6 +52,7 @@ import {resolveRepositoryIdentity} from '../../src/code_graph/repository.js';
 import {compactCodeGraphStorage} from '../../src/code_graph/storage.js';
 import {CodeGraphStore, type StoredCodeGraph} from '../../src/code_graph/store.js';
 import {
+  CODE_GRAPH_SCHEMA_VERSION,
   CodeGraphStoreNoSpaceError,
   type CodeGraphMaterializationMetrics,
   type CodeGraphProgress,
@@ -4295,31 +4296,35 @@ describe('native code graph lifecycle', () => {
     expect(['cleaning-vectors:2/2', 'deferred:2/2']).toContain(repairProgress[3]);
   });
 
-  it('streams progress before discarding an incompatible derived database', async () => {
-    const root = createFixtureRepository();
-    const home = join(root, '.threadnote-test-home');
-    const progress: string[] = [];
-    const result = await runEffect(
-      Effect.gen(function* () {
-        const indexer = yield* CodeGraphIndexer;
-        const query = yield* CodeGraphQueryService;
-        yield* indexer.index({cwd: root, threadnoteHome: home});
-        const status = yield* query.status(home, root);
-        yield* Effect.sync(() => setGraphSchemaVersion(status.databasePath, '999'));
-        const repair = yield* repairCodeGraphIndexes(home, false, state =>
-          Effect.sync(() => progress.push(`${state.phase}:${state.current}/${state.total}`)),
-        );
-        return {databasePath: status.databasePath, repair};
-      }),
-    );
+  effectIt.effect('streams progress before discarding an incompatible derived database', () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.sync(createFixtureRepository);
+      const home = join(root, '.threadnote-test-home');
+      const databasePath = join(
+        home,
+        'indexes',
+        'code-graph',
+        'repositories',
+        'a'.repeat(64),
+        `graph-v${CODE_GRAPH_SCHEMA_VERSION}.sqlite`,
+      );
+      const progress: string[] = [];
+      const store = yield* CodeGraphStore;
+      yield* store.initialize(databasePath);
+      yield* Effect.sync(() => setGraphSchemaVersion(databasePath, '999'));
+      const repair = yield* repairCodeGraphIndexes(home, false, state =>
+        Effect.sync(() => progress.push(`${state.phase}:${state.current}/${state.total}`)),
+      );
 
-    expect(result.repair).toMatchObject({
-      databases: 1,
-      discarded: 1,
-    });
-    expect(progress).toEqual(['checking:1/1', 'discarding:1/1']);
-    expect(existsSync(result.databasePath)).toBe(false);
-  });
+      expect(repair).toMatchObject({
+        databases: 1,
+        deferredDatabases: 0,
+        discarded: 1,
+      });
+      expect(progress).toEqual(['checking:1/1', 'discarding:1/1']);
+      expect(existsSync(databasePath)).toBe(false);
+    }).pipe(provideTestLayer(ApplicationLayer)),
+  );
 
   it('keeps default lifecycle repair bounded and points deep maintenance to an explicit command', async () => {
     const root = createFixtureRepository();
