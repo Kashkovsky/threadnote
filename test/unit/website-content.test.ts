@@ -1507,6 +1507,58 @@ describe('Threadnote 4 website content', () => {
     expect(content).not.toContain('Cursor, and Copilot rely on the user-level instructions Threadnote installs');
   });
 
+  it('documents Cursor Cloud Agents with an exclusive read-only shared-memory contract', () => {
+    const article = docsSections
+      .flatMap(section => section.articles)
+      .find(candidate => candidate.id === 'cursor-cloud-agents');
+    const content = JSON.stringify(article);
+    const mcpConfiguration = article?.body.find(
+      block => block.type === 'code' && block.language === 'json' && block.code.includes('THREADNOTE_MCP_TOOLSET'),
+    );
+    const recallPayload = article?.body.find(
+      block => block.type === 'code' && block.language === 'json' && block.code.includes('callerCwd'),
+    );
+
+    expect(article).toBeDefined();
+    expect(article?.title).toBe('Use Threadnote with Cursor Cloud Agents');
+    expect(content).toContain('Full first-class Cursor Cloud Agents integration is in development');
+    expect(content).toContain('only durable memory plane');
+    expect(content).toContain('--team cursor-cloud');
+    expect(content).toContain('--read-only');
+    expect(content).toContain('threadnote://user/cursor-cloud/memories/shared/cursor-cloud/');
+    expect(content).toContain('Do not run `threadnote mcp-install cursor --apply`');
+    expect(content).toContain('Do not call remember_context');
+    expect(content).toContain('do not broaden the recall');
+    expect(content).toContain('capability-enforced read-only MCP profile');
+
+    if (!mcpConfiguration || mcpConfiguration.type !== 'code') {
+      throw new TestError('Missing Cursor Cloud MCP configuration.');
+    }
+    expect(JSON.parse(mcpConfiguration.code)).toMatchObject({
+      args: ['-lc', 'exec "$HOME/.local/bin/threadnote" mcp-server'],
+      command: '/bin/sh',
+      env: {
+        THREADNOTE_ACCOUNT: 'local',
+        THREADNOTE_AGENT_ID: 'cursor-cloud',
+        THREADNOTE_MCP_TOOLSET: 'core',
+        THREADNOTE_USER: 'cursor-cloud',
+      },
+      type: 'stdio',
+    });
+
+    if (!recallPayload || recallPayload.type !== 'code') {
+      throw new TestError('Missing Cursor Cloud scoped recall payload.');
+    }
+    expect(JSON.parse(recallPayload.code)).toMatchObject({
+      callerCwd: '/workspace/your-repository',
+      project: 'your-project',
+      uri: 'threadnote://user/cursor-cloud/memories/shared/cursor-cloud/',
+    });
+    expect(searchDocs(createDocsSearchIndex(docsSections), 'Cursor Cloud Agents shared memory')[0]?.article.id).toBe(
+      'cursor-cloud-agents',
+    );
+  });
+
   it('uses the real Manager labels and share status fields in the mock data', () => {
     expect(managerDemoTabs.map(tab => tab.label)).toEqual(['Graph', 'Library', 'Sharing', 'Health', 'Tools']);
     for (const share of managerDemoShares) {

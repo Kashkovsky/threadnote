@@ -1,3 +1,4 @@
+import {cursorCloudDocsSection} from './docsCursorCloud.js';
 import {memoryWorkflowsDocsSection} from './docsMemoryWorkflows.js';
 import type {CliCommandReference, DocsSection, McpToolReference} from './docsTypes.js';
 
@@ -504,6 +505,10 @@ threadnote doctor`,
             type: 'note',
             text: 'Ask your agent “what can I do with Threadnote?” to invoke threadnote_guide. The tour is loaded only on demand, so normal sessions do not pay its context cost.',
           },
+          {
+            type: 'note',
+            text: 'Cursor Cloud Agents use a Dashboard-owned MCP configuration and a read-only shared-memory contract. See [Use Threadnote with Cursor Cloud Agents](cursor-cloud-agents/).',
+          },
         ],
       },
       {
@@ -897,6 +902,7 @@ threadnote index status`,
     ],
   },
   memoryWorkflowsDocsSection,
+  cursorCloudDocsSection,
   {
     id: 'team-sharing',
     title: 'Team sharing',
