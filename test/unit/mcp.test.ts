@@ -139,7 +139,7 @@ describe('MCP toolsets', () => {
 
   it('rejects unsupported toolsets', () => {
     expect(() => parseMcpToolset('minimal')).toThrow(
-      'Invalid MCP toolset: minimal. Expected core, cursor-cloud, or full.',
+      'Invalid MCP toolset: minimal. Expected core, cursor-cloud, cursor-cloud-git-beta, cursor-cloud-local, or full.',
     );
   });
 
@@ -153,6 +153,22 @@ describe('MCP toolsets', () => {
       memoryRead: true,
       memoryReview: false,
       memoryWrite: true,
+    });
+    expect(mcpToolCapabilities(parseMcpToolset('cursor-cloud-git-beta'))).toEqual(
+      mcpToolCapabilities(parseMcpToolset('cursor-cloud')),
+    );
+  });
+
+  it('keeps the Cursor Cloud local toolset graph-only', () => {
+    expect(mcpToolCapabilities(parseMcpToolset('cursor-cloud-local'))).toEqual({
+      contextBrief: false,
+      graphLocal: true,
+      graphWorkset: false,
+      maintenance: false,
+      memoryPublish: false,
+      memoryRead: false,
+      memoryReview: false,
+      memoryWrite: false,
     });
   });
 

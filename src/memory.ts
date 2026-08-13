@@ -171,10 +171,12 @@ export function parseMemoryKind(value: string): MemoryKind {
 }
 
 export function parseMemoryStatus(value: string): MemoryStatus {
-  if (['active', 'archived', 'superseded'].includes(value)) {
+  if (['active', 'archived', 'expired', 'superseded'].includes(value)) {
     return value as MemoryStatus;
   }
-  throw new MemoryOperationError(`Unsupported memory status "${value}". Expected active, archived, or superseded.`);
+  throw new MemoryOperationError(
+    `Unsupported memory status "${value}". Expected active, archived, expired, or superseded.`,
+  );
 }
 
 export function parseCompactKind(value: string): CompactableMemoryKind {

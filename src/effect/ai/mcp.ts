@@ -1,6 +1,9 @@
 import * as BunStdio from '@effect/platform-bun/BunStdio';
 import {Cause, Context, Effect, Layer, Logger, Option, Schema, Sink, Stdio} from 'effect';
 import {McpSchema, McpServer} from 'effect/unstable/ai';
+import * as HttpRouter from 'effect/unstable/http/HttpRouter';
+import * as HttpServerRequest from 'effect/unstable/http/HttpServerRequest';
+import * as HttpServerResponse from 'effect/unstable/http/HttpServerResponse';
 import {RpcMessage, RpcSerialization, RpcServer} from 'effect/unstable/rpc';
 import {applicationError, fromPromise} from '../errors.js';
 import type {ApplicationServices} from '../runtime.js';
@@ -94,8 +97,37 @@ export interface McpToolProgress {
   readonly report: (update: McpProgressUpdate) => Effect.Effect<void, never>;
 }
 
+export interface McpRequestContext {
+  readonly correlationId?: string;
+  readonly deadlineEpochMilliseconds?: number;
+  readonly identity?: unknown;
+  readonly policy?: unknown;
+  readonly transport: 'http' | 'stdio';
+}
+
+export interface McpHttpRequestContext {
+  readonly correlationId: string;
+  readonly deadlineEpochMilliseconds?: number;
+  readonly identity?: unknown;
+  readonly policy?: unknown;
+}
+
+// Resolve authentication and policy from the live HTTP request. Implementations
+// must return only bounded, already-validated values: credentials and raw token
+// claims must never enter tool arguments or McpToolCallContext. Failing with an
+// HTTP response rejects the complete endpoint request before MCP dispatch.
+export type McpHttpRequestContextResolver = (
+  request: HttpServerRequest.HttpServerRequest,
+) => Effect.Effect<McpHttpRequestContext, HttpServerResponse.HttpServerResponse>;
+
+export interface McpHttpTransportOptions {
+  readonly path: HttpRouter.PathInput;
+  readonly resolveRequestContext: McpHttpRequestContextResolver;
+}
+
 export interface McpToolCallContext {
   readonly progress: McpToolProgress;
+  readonly requestContext: McpRequestContext;
 }
 
 interface RegisteredTool {
@@ -122,6 +154,7 @@ interface RegisteredResourceTemplate {
 
 type ResourceTemplateHandler = (
   uri: string,
+  context: McpRequestContext,
 ) => Effect.Effect<
   typeof McpSchema.ReadResourceResult.Type,
   McpSchema.InternalError | McpSchema.InvalidParams,
@@ -135,6 +168,10 @@ const DISABLED_MCP_TOOL_PROGRESS: McpToolProgress = Object.freeze({
 
 const CurrentMcpToolProgress = Context.Reference<McpToolProgress>('threadnote/CurrentMcpToolProgress', {
   defaultValue: () => DISABLED_MCP_TOOL_PROGRESS,
+});
+
+const CurrentMcpRequestContext = Context.Reference<McpRequestContext>('threadnote/CurrentMcpRequestContext', {
+  defaultValue: () => Object.freeze({transport: 'stdio'}),
 });
 
 interface McpProgressRequestAssociation {
@@ -160,16 +197,14 @@ export function mcpProgressNotificationForCurrentRequest(
   );
 }
 
-export class EffectMcpServerAdapter {
+export interface McpRegistrationLayerOptions {
+  readonly prepareServer?: (server: EffectMcpServer) => void;
+  readonly productionLogHome?: string;
+}
+
+export class EffectMcpServerRegistry {
   readonly #resourceTemplates: RegisteredResourceTemplate[] = [];
   readonly #tools: RegisteredTool[] = [];
-
-  constructor(
-    readonly name: string,
-    readonly version: string,
-    readonly instructions: string,
-    readonly productionLogHome?: string,
-  ) {}
 
   registerTool<const Fields extends ToolFields>(
     name: string,
@@ -187,23 +222,25 @@ export class EffectMcpServerAdapter {
     this.#resourceTemplates.push({definition, handle});
   }
 
-  private registrationLayer(): Layer.Layer<never, never, McpServer.McpServer | ApplicationServices> {
+  registrationLayer(
+    options: McpRegistrationLayerOptions = {},
+  ): Layer.Layer<never, never, McpServer.McpServer | ApplicationServices> {
     const resourceTemplates = [...this.#resourceTemplates];
     const registrations = [...this.#tools];
-    const productionLogHome = this.productionLogHome;
+    const productionLogHome = options.productionLogHome;
     return Layer.effectDiscard(
       Effect.gen(function* () {
         const server = yield* McpServer.McpServer;
-        installCallToolProgressBridge(server);
+        options.prepareServer?.(server);
         const applicationServices = omitProductionLogPhaseRecorder(yield* Effect.context<ApplicationServices>());
         for (const registration of resourceTemplates) {
           yield* server.addResourceTemplate({
             annotations: Context.empty(),
             completions: {},
             handle: uri =>
-              registration
-                .handle(uri)
-                .pipe(Effect.provideContext(applicationServices), Effect.catchCause(mcpResourceFailureResult)),
+              Effect.flatMap(CurrentMcpRequestContext, requestContext =>
+                registration.handle(uri, requestContext).pipe(Effect.provideContext(applicationServices)),
+              ).pipe(Effect.catchCause(mcpResourceFailureResult)),
             routerPath: registration.definition.routerPath,
             template: new McpSchema.ResourceTemplate({
               _meta: registration.definition.meta,
@@ -229,48 +266,101 @@ export class EffectMcpServerAdapter {
               name: registration.name,
             }),
             handle: payload =>
-              Effect.flatMap(CurrentMcpToolProgress, progress => {
-                const handling = Schema.decodeUnknownEffect(input, {errors: 'all'})(payload).pipe(
-                  Effect.flatMap(parsed =>
-                    toolHandlerEffect(() => registration.handle(parsed, {progress}), applicationServices).pipe(
-                      Effect.matchCauseEffect({
-                        onFailure: mcpToolFailureResult,
-                        onSuccess: result =>
-                          Effect.succeed(new McpSchema.CallToolResult(result as McpSchema.CallToolResult)),
-                      }),
+              Effect.flatMap(CurrentMcpToolProgress, progress =>
+                Effect.flatMap(CurrentMcpRequestContext, requestContext => {
+                  const handling = Schema.decodeUnknownEffect(input, {errors: 'all'})(payload).pipe(
+                    Effect.flatMap(parsed =>
+                      toolHandlerEffect(
+                        () => registration.handle(parsed, {progress, requestContext}),
+                        applicationServices,
+                      ).pipe(
+                        Effect.matchCauseEffect({
+                          onFailure: mcpToolFailureResult,
+                          onSuccess: result =>
+                            Effect.succeed(new McpSchema.CallToolResult(result as McpSchema.CallToolResult)),
+                        }),
+                      ),
                     ),
-                  ),
-                  Effect.catchCause(mcpToolFailureResult),
-                );
-                return productionLogHome === undefined
-                  ? handling
-                  : withProductionLogging(
-                      productionLogHome,
-                      {
-                        component: 'mcp',
-                        operation: registration.name,
-                        reportedFailure: result => result.isError === true,
-                        reportedFailureType: 'McpToolError',
-                        writeTimeoutMilliseconds: MCP_PRODUCTION_LOG_WRITE_TIMEOUT_MILLISECONDS,
-                      },
-                      handling,
-                    ).pipe(Effect.provideContext(applicationServices));
-              }),
+                    Effect.catchCause(mcpToolFailureResult),
+                  );
+                  return productionLogHome === undefined
+                    ? handling
+                    : withProductionLogging(
+                        productionLogHome,
+                        {
+                          component: 'mcp',
+                          operation: registration.name,
+                          reportedFailure: result => result.isError === true,
+                          reportedFailureType: 'McpToolError',
+                          writeTimeoutMilliseconds: MCP_PRODUCTION_LOG_WRITE_TIMEOUT_MILLISECONDS,
+                        },
+                        handling,
+                      ).pipe(Effect.provideContext(applicationServices));
+                }),
+              ),
           });
         }
       }),
     );
   }
+}
 
-  run(): Effect.Effect<never, never, ApplicationServices> {
+export class EffectMcpServerAdapter extends EffectMcpServerRegistry {
+  constructor(
+    readonly name: string,
+    readonly version: string,
+    readonly instructions: string,
+    readonly productionLogHome?: string,
+  ) {
+    super();
+  }
+
+  runStdio(): Effect.Effect<never, never, ApplicationServices> {
     return Layer.launch(
-      this.registrationLayer().pipe(
+      this.registrationLayer({
+        prepareServer: installCallToolProgressBridge,
+        productionLogHome: this.productionLogHome,
+      }).pipe(
         Layer.provide(mcpStdioLayer({name: this.name, version: this.version})),
         Layer.provide(stdioWithInstructionsLayer(this.instructions)),
         Layer.provide(Layer.succeed(Logger.LogToStderr)(true)),
       ),
     );
   }
+
+  run(): Effect.Effect<never, never, ApplicationServices> {
+    return this.runStdio();
+  }
+
+  httpLayer(options: McpHttpTransportOptions): Layer.Layer<never, never, ApplicationServices | HttpRouter.HttpRouter> {
+    const requestContextMiddleware = mcpHttpRequestContextMiddleware(options.resolveRequestContext);
+    // Do not install the stdio compatibility bridge here. It intentionally
+    // enforces one lifetime client, while Streamable HTTP must preserve SDK
+    // client/session isolation for concurrent principals.
+    const serverLayer = McpServer.layerHttp({
+      name: this.name,
+      path: options.path,
+      version: this.version,
+    }).pipe(Layer.provide(requestContextMiddleware.layer));
+    return this.registrationLayer({productionLogHome: this.productionLogHome}).pipe(Layer.provide(serverLayer));
+  }
+}
+
+function mcpHttpRequestContextMiddleware(resolveRequestContext: McpHttpRequestContextResolver) {
+  return HttpRouter.middleware(httpEffect =>
+    Effect.flatMap(HttpServerRequest.HttpServerRequest, request =>
+      Effect.matchEffect(
+        Effect.suspend(() => resolveRequestContext(request)),
+        {
+          onFailure: response => Effect.succeed(response),
+          onSuccess: requestContext =>
+            httpEffect.pipe(
+              Effect.provideService(CurrentMcpRequestContext, Object.freeze({...requestContext, transport: 'http'})),
+            ),
+        },
+      ),
+    ),
+  );
 }
 
 const MCP_CANCELLED_REQUEST_TOMBSTONE_LIMIT = 256;

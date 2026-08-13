@@ -81,9 +81,10 @@ describe('dependency-aware CI workflow', () => {
     const quality = ci.jobs.quality!;
     const standard = ci.jobs.standard_tests!;
     const long = ci.jobs.long_tests!;
+    const remotePostgres = ci.jobs.remote_memory_postgres!;
     const actionlint = quality.steps?.find(step => step.uses === 'docker://rhysd/actionlint:1.7.8');
 
-    expect(primary.needs).toEqual(['changes', 'quality', 'standard_tests', 'long_tests']);
+    expect(primary.needs).toEqual(['changes', 'quality', 'standard_tests', 'long_tests', 'remote_memory_postgres']);
     expect(primary.if).toBe('always()');
     expect(primary.steps?.some(step => step.name === 'Require every applicable test shard')).toBe(true);
 
@@ -121,6 +122,20 @@ describe('dependency-aware CI workflow', () => {
       THREADNOTE_VITEST_LONG_GROUP: '${{ matrix.group }}',
     });
     expect(long.steps?.some(step => step.uses?.startsWith('actions/upload-artifact@'))).toBe(false);
+
+    expect(remotePostgres).toMatchObject({
+      needs: 'changes',
+      if: "needs.changes.outputs.code == 'true'",
+    });
+    expect(remotePostgres.steps?.filter(step => step.uses?.startsWith('actions/checkout@'))).toHaveLength(1);
+    expect(
+      stepForRun(remotePostgres, 'bun --bun vitest run test/integration/remote-memory-postgres.test.ts').env,
+    ).toEqual({
+      THREADNOTE_TEST_POSTGRES_URL: 'postgres://postgres:postgres@127.0.0.1:5432/threadnote_ci',
+    });
+    expect(primary.steps?.[0]?.env).toMatchObject({
+      REMOTE_MEMORY_POSTGRES_RESULT: '${{ needs.remote_memory_postgres.result }}',
+    });
   });
 
   it('keeps the quota-aware long-test plan bounded and non-overlapping', () => {

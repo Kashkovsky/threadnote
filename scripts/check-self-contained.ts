@@ -127,8 +127,8 @@ const checkSelfContained = Effect.gen(function* () {
   if (manifest.dependencies?.['web-tree-sitter'] !== EXPECTED_WEB_TREE_SITTER_VERSION) {
     failures.push(`web-tree-sitter must be pinned to ${EXPECTED_WEB_TREE_SITTER_VERSION}`);
   }
-  if (manifest.devDependencies?.['@effect/platform-bun'] !== EXPECTED_EFFECT_VERSION) {
-    failures.push(`@effect/platform-bun must be pinned to ${EXPECTED_EFFECT_VERSION}`);
+  if (manifest.dependencies?.['@effect/platform-bun'] !== EXPECTED_EFFECT_VERSION) {
+    failures.push(`@effect/platform-bun must be a runtime dependency pinned to ${EXPECTED_EFFECT_VERSION}`);
   }
   if (manifest.devDependencies?.['@vscode/tree-sitter-wasm'] !== EXPECTED_VSCODE_TREE_SITTER_WASM_VERSION) {
     failures.push(`@vscode/tree-sitter-wasm must be pinned to ${EXPECTED_VSCODE_TREE_SITTER_WASM_VERSION}`);

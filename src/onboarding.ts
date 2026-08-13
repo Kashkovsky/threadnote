@@ -41,9 +41,28 @@ const safeSeededProjects = Effect.fn('onboarding.safeSeededProjects')((config: O
 // unit-testable without MCP plumbing. The text is instructions FOR
 // the agent (present conversationally, offer to run), not a message to paste.
 export function buildOnboardingGuide(state: OnboardingState): string {
-  if (state.toolset === 'cursor-cloud') {
+  if (state.toolset === 'cursor-cloud-local') {
     return [
-      '# Threadnote for Cursor Cloud Agents',
+      '# Threadnote remote-hybrid mode for Cursor Cloud Agents',
+      '',
+      'Use the managed threadnote-memory HTTP server for every historical memory read and write.',
+      'It is bound to exactly one remote memory share by the threadnote-share-id Dashboard header.',
+      'Do not remove, replace, or infer that share binding from a memory URI.',
+      'This local server deliberately has no recall, read, list, remember, resource, or Git-share tools.',
+      'Never fall back to personal or VM-local memory when the managed service is unavailable.',
+      '',
+      'Use inspect_code_graph before broad text search and analyze_code_graph for repository-wide',
+      'structure in the current checkout. Named worksets are unavailable in this cloud-local profile.',
+      'Use cursor_cloud_status to check the two planes and confirm the same share binding independently.',
+      '',
+      'When the managed server returns an attestation challenge, pass its exact metadata to',
+      'complete_cursor_attestation. The helper sends the Cursor OIDC token directly to Threadnote',
+      'and returns only the opaque attestation ID.',
+    ].join('\n');
+  }
+  if (state.toolset === 'cursor-cloud' || state.toolset === 'cursor-cloud-git-beta') {
+    return [
+      '# Threadnote Cursor Cloud Git beta',
       '',
       'This session has one exclusive shared-memory scope. Start with recall_context,',
       'then read only the threadnote:// URIs it returns. list_context can browse within that same scope.',
@@ -55,7 +74,7 @@ export function buildOnboardingGuide(state: OnboardingState): string {
       'share so it survives the ephemeral cloud session. A kind=handoff write stays local and may not survive',
       'a new cloud session; all other personal/local memory kinds stay inaccessible.',
       'Review/apply actions, separate publishing, Obsidian operations, and maintenance tools are unavailable.',
-      'Full Cursor Cloud integration is still in development.',
+      'Use the remote-hybrid profile instead when managed Threadnote memory is enabled for the environment.',
     ].join('\n');
   }
   const runtimeLine =

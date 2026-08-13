@@ -5,7 +5,7 @@ export type ConsolidationAgent = AgentClient | 'effect-ai';
 export type ClaudeMcpScope = 'local' | 'project' | 'user';
 export type CommandStatus = 'fail' | 'ok' | 'warn';
 export type MemoryKind = 'durable' | 'handoff' | 'incident' | 'preference' | 'smoke';
-export type MemoryStatus = 'active' | 'archived' | 'superseded';
+export type MemoryStatus = 'active' | 'archived' | 'expired' | 'superseded';
 
 export interface RuntimeConfig {
   readonly account: string;
