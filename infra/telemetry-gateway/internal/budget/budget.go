@@ -4,8 +4,12 @@ const (
 	// AcceptedBytesPerMachinePerMinute is the canonical protobuf accepted by one
 	// gateway Machine. The gateway applies this after schema validation.
 	AcceptedBytesPerMachinePerMinute = 32 * 1024
-	AccountingDays                   = 31
-	ProductionMachineCount           = 2
+	// AcceptedBytesPerSourcePerMinute prevents one Fly-identified source from
+	// consuming the whole Machine budget while leaving room for ordinary MCP
+	// batching plus nearby CLI invocations behind the same network address.
+	AcceptedBytesPerSourcePerMinute = 16 * 1024
+	AccountingDays                  = 31
+	ProductionMachineCount          = 2
 
 	// SafeMonthlyCanonicalBytes is an internal ceiling, not Grafana capacity.
 	// It deliberately leaves substantial distance to both operator alerts.

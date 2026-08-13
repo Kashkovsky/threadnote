@@ -26,20 +26,21 @@ import (
 )
 
 const (
-	acceptedBytesPerMin  = budget.AcceptedBytesPerMachinePerMinute
-	collectorConfigPath  = "/etc/otelcol-contrib/config.yaml"
-	collectorHealthURL   = "http://127.0.0.1:13133/healthz"
-	collectorTracesURL   = "http://127.0.0.1:4318/v1/traces"
-	globalRequestsPerMin = 300
-	listenAddress        = "0.0.0.0:8080"
-	maxConcurrent        = 4
-	maxHealthConcurrent  = 1
-	maxRequestBytes      = 256 * 1024
-	maxSources           = 1024
-	perSourceRequestsMin = 60
-	publicIngestionEnv   = "THREADNOTE_TELEMETRY_PUBLIC_INGESTION"
-	trustedHealthHeader  = "X-Threadnote-Internal-Health"
-	trustedHealthValue   = "fly-service-check-v1"
+	acceptedBytesPerMin       = budget.AcceptedBytesPerMachinePerMinute
+	acceptedBytesPerSourceMin = budget.AcceptedBytesPerSourcePerMinute
+	collectorConfigPath       = "/etc/otelcol-contrib/config.yaml"
+	collectorHealthURL        = "http://127.0.0.1:13133/healthz"
+	collectorTracesURL        = "http://127.0.0.1:4318/v1/traces"
+	globalRequestsPerMin      = 300
+	listenAddress             = "0.0.0.0:8080"
+	maxConcurrent             = 4
+	maxHealthConcurrent       = 1
+	maxRequestBytes           = 256 * 1024
+	maxSources                = 1024
+	perSourceRequestsMin      = 60
+	publicIngestionEnv        = "THREADNOTE_TELEMETRY_PUBLIC_INGESTION"
+	trustedHealthHeader       = "X-Threadnote-Internal-Health"
+	trustedHealthValue        = "fly-service-check-v1"
 )
 
 type windowCounter struct {
@@ -323,7 +324,7 @@ func (limiter *requestLimiter) allowBytes(source string, size int, now time.Time
 	limiter.resetWindow(now)
 	counter, admitted := limiter.sourceCounter(source)
 	if !admitted || size < 0 || limiter.global.bytes+size > acceptedBytesPerMin ||
-		counter.bytes+size > acceptedBytesPerMin {
+		counter.bytes+size > acceptedBytesPerSourceMin {
 		return false
 	}
 	counter.bytes += size

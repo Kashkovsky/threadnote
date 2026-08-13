@@ -146,12 +146,14 @@ describe('telemetry producer and production gateway schema', () => {
     const runbook = readFileSync(join(root, 'docs', 'operations', 'telemetry-production.md'), 'utf8');
 
     expect(budget).toMatch(/AcceptedBytesPerMachinePerMinute\s*=\s*32 \* 1024/u);
+    expect(budget).toMatch(/AcceptedBytesPerSourcePerMinute\s*=\s*16 \* 1024/u);
     expect(budget).toMatch(/ProductionMachineCount\s*=\s*2/u);
     expect(budget).toMatch(/SafeMonthlyCanonicalBytes\s+int64\s*=\s*3_000_000_000/u);
     expect(budget).toMatch(/UsageWarningBytes\s+int64\s*=\s*10_000_000_000/u);
     expect(budget).toMatch(/UsageShutdownBytes\s+int64\s*=\s*20_000_000_000/u);
     expect(budget).toMatch(/GrafanaFreeMonthlyBytes\s+int64\s*=\s*50_000_000_000/u);
-    expect(gateway).toContain('acceptedBytesPerMin  = budget.AcceptedBytesPerMachinePerMinute');
+    expect(gateway).toMatch(/acceptedBytesPerMin\s*=\s*budget\.AcceptedBytesPerMachinePerMinute/u);
+    expect(gateway).toMatch(/acceptedBytesPerSourceMin\s*=\s*budget\.AcceptedBytesPerSourcePerMinute/u);
     expect(gateway).toContain('THREADNOTE_TELEMETRY_PUBLIC_INGESTION');
     expect(collector).toMatch(/retry_on_failure:\s*\n(?:\s*#[^\n]*\n)*\s*enabled: false/u);
     expect(collector).toMatch(/sending_queue:\s*\n\s*enabled: false/u);

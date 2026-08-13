@@ -470,8 +470,14 @@ func TestAcceptedByteBudgetStaysInsideTheFreeTierEnvelope(t *testing.T) {
 	if limiter.allowBytes("third", 1, now) {
 		t.Fatal("global accepted byte budget was exceeded")
 	}
-	if !limiter.allowBytes("third", acceptedBytesPerMin, now.Add(time.Minute)) {
+	if !limiter.allowBytes("third", acceptedBytesPerSourceMin, now.Add(time.Minute)) {
 		t.Fatal("accepted byte budget did not reset for the next minute")
+	}
+	if limiter.allowBytes("third", 1, now.Add(time.Minute)) {
+		t.Fatal("one source exceeded its accepted byte budget")
+	}
+	if !limiter.allowBytes("fourth", acceptedBytesPerSourceMin, now.Add(time.Minute)) {
+		t.Fatal("another source could not use the remaining global byte budget")
 	}
 	if maximum := budget.MaximumMonthlyCanonicalBytes(budget.ProductionMachineCount); maximum >= budget.SafeMonthlyCanonicalBytes {
 		t.Fatalf("production monthly cap = %d bytes, want less than %d canonical bytes", maximum, budget.SafeMonthlyCanonicalBytes)

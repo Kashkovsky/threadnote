@@ -44,13 +44,22 @@ Pro or a payment method, disable public ingestion immediately and resolve the
 account state before resuming.
 
 The gateway independently caps accepted canonical protobuf at 32 KiB per
-minute per Machine. The reviewed upper bound is exactly
+minute per Machine and 16 KiB per Fly-identified source. One public source
+therefore cannot consume the whole Machine allowance; multiple-source abuse
+remains bounded by the global limit. The reviewed upper bound is exactly
 `32768 × 2 × 31 × 24 × 60 = 2,925,527,040` canonical bytes per 31 days. The
 Collector queue and retry loop are disabled, so it makes one best-effort export
 attempt per accepted batch rather than intentionally amplifying that volume.
 Grafana's provider-side accounting remains authoritative and can differ from
 canonical wire bytes, which is why the first operator gate is still more than
 three times the gateway ceiling.
+
+This anonymous public feed is diagnostic evidence, not a security, audit, or
+billing record. Schema-valid public spans are untrusted. The per-source limit
+uses Fly Proxy's client-IP boundary only for ephemeral abuse containment; the
+gateway HMACs the address with a process-random key and never logs or exports
+it. Keep `telemetry.threadnote.io` DNS-only to Fly. Do not place a shared-egress
+reverse proxy in front of Fly without redesigning the source limit.
 
 Keep the live Fly inventory at exactly two started Machines. The scheduled
 storage canary reads the real Machine inventory with a read-only Fly token and
