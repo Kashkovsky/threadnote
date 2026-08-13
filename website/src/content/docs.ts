@@ -452,7 +452,7 @@ threadnote doctor`,
           },
           {
             type: 'paragraph',
-            text: "The bootstrap installer downloads an immutable GitHub release, verifies SHA-256, atomically promotes it, and invokes threadnote install. That lifecycle initializes ~/.threadnote, downloads and selects the core BGE Small embedding model, builds recall indexes, and writes supported user-level instructions for Codex, Claude Code, and Copilot. Cursor instructions are installed separately through Cursor's Marketplace. Existing verified models and canonical data are preserved during updates.",
+            text: "The bootstrap installer downloads an immutable GitHub release, verifies SHA-256, atomically promotes it, and invokes threadnote install. That lifecycle initializes ~/.threadnote, extracts and selects the core BGE Small embedding model bundled in the executable, builds recall indexes, and writes supported user-level instructions for Codex, Claude Code, and Copilot. Cursor instructions are installed separately through Cursor's Marketplace. Existing verified models and canonical data are preserved during updates.",
           },
           {
             type: 'note',
@@ -827,7 +827,7 @@ threadnote recall --query "checkout retry contract" --threshold 0.3 --caller-cwd
         body: [
           {
             type: 'paragraph',
-            text: 'Install and repair automatically download, verify, select, and preserve the pinned 36.7 MB BGE Small embedding model. Model manifests pin revision, filename, byte size, SHA-256, license, runtime compatibility, and memory class before atomic promotion.',
+            text: 'Install and repair automatically extract, verify, select, and preserve the pinned 36.7 MB BGE Small embedding model bundled in the standalone executable. Model manifests pin revision, filename, byte size, SHA-256, license, runtime compatibility, and memory class before atomic promotion.',
           },
           {
             type: 'paragraph',
@@ -1746,7 +1746,7 @@ threadnote repair`,
           },
           {
             type: 'paragraph',
-            text: 'Model downloads are resumable. A partial or checksum-mismatched artifact is never selected. A verified existing model is preserved across reinstall and update.',
+            text: 'The bundled core model is installed without a network request. Downloads for additional models are resumable, and a partial or checksum-mismatched artifact is never selected. A verified existing model is preserved across reinstall and update.',
           },
           {
             type: 'paragraph',

@@ -2,6 +2,7 @@ import {Console, Effect} from 'effect';
 import type {RuntimeConfig} from '../types.js';
 import {LocalModelRuntime} from '../effect/ai/local-model-runtime.js';
 import {LocalModelCatalog, type LocalModelRole} from './catalog.js';
+import {bundledCoreEmbeddingSource} from './core-embedding-asset.js';
 import {LocalModelStore, modelDownloadUrl} from './store.js';
 import {readModelSelection, selectLocalModel} from './selection.js';
 
@@ -33,16 +34,23 @@ export const runModelInstall = Effect.fn('models.command.install')(function* (
   const catalog = yield* LocalModelCatalog;
   const manifest = yield* catalog.get(modelId);
   const store = yield* LocalModelStore;
+  const bundledSource = bundledCoreEmbeddingSource(manifest);
   if (options.dryRun === true) {
-    yield* Console.log(`Would download ${modelDownloadUrl(manifest)}.`);
+    yield* Console.log(
+      bundledSource
+        ? `Would install ${manifest.id} from the Threadnote executable.`
+        : `Would download ${modelDownloadUrl(manifest)}.`,
+    );
     yield* Console.log(`Would verify ${manifest.size} bytes and SHA-256 ${manifest.sha256}.`);
     yield* Console.log(`Would install to the Threadnote ${manifest.role} model store.`);
     return;
   }
   yield* Console.log(
-    `Downloading ${manifest.id} (${formatBytes(manifest.size)}); interrupted downloads are resumable.`,
+    bundledSource
+      ? `Installing bundled ${manifest.id} (${formatBytes(manifest.size)}).`
+      : `Downloading ${manifest.id} (${formatBytes(manifest.size)}); interrupted downloads are resumable.`,
   );
-  const installed = yield* store.install(config.agentContextHome, manifest);
+  const installed = yield* store.install(config.agentContextHome, manifest, bundledSource);
   yield* Console.log(
     `${installed.resumed ? 'Resumed and installed' : 'Installed'} ${manifest.id}; checksum verified at ${installed.path}.`,
   );
