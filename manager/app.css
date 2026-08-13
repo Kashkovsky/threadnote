@@ -1085,13 +1085,44 @@ dd {
   display: flex;
   gap: 14px;
   justify-content: space-between;
-  list-style-position: inside;
+  list-style: none;
   padding: 9px 12px;
 }
 
-.graph-administration > summary > span {
+.graph-administration > summary::-webkit-details-marker {
+  display: none;
+}
+
+.graph-administration > summary::marker {
+  content: '';
+}
+
+.graph-administration-title {
   display: inline-grid;
   gap: 2px;
+}
+
+.graph-administration-summary-state {
+  align-items: center;
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 8px;
+}
+
+.graph-administration-caret {
+  fill: none;
+  height: 16px;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.75;
+  transform: rotate(-90deg);
+  transition: transform 140ms ease;
+  width: 16px;
+}
+
+.graph-administration[open] .graph-administration-caret {
+  transform: rotate(0deg);
 }
 
 .graph-administration > summary small,

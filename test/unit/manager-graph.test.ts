@@ -122,6 +122,8 @@ describe('manager graph focus', () => {
     );
 
     expect(markup).toContain('1 graph database · 3 stored ready snapshots · 1 active worktree view');
+    expect(markup).toContain('<details class="graph-administration" open="">');
+    expect(markup).toContain('class="graph-administration-caret"');
     expect(markup).toContain('<dt>Stored ready snapshots</dt><dd>3</dd>');
     expect(markup).toContain('<dt>Active worktree views</dt><dd>1</dd>');
     expect(markup).toContain('Snapshot and view counts can differ');
@@ -218,6 +220,8 @@ describe('manager graph focus', () => {
     expect(markup).toContain('id="graph-explore-panel" role="tabpanel" tabindex="0"');
     expect(css).toMatch(/\.graph-tab-panel\s*{[^}]*overflow: auto;/s);
     expect(css).toMatch(/\.graph-explorer-tab\s*{[^}]*minmax\(440px, 1fr\)/s);
+    expect(css).toMatch(/\.graph-administration-caret\s*{[^}]*transform: rotate\(-90deg\)/s);
+    expect(css).toMatch(/\.graph-administration\[open\] \.graph-administration-caret\s*{[^}]*rotate\(0deg\)/s);
   });
 
   it('orders build status banners by stable folder or checkout identity', () => {
