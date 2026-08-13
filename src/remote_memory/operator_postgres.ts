@@ -94,7 +94,7 @@ export class PostgresRemoteMemoryOperatorAdapter implements RemoteMemoryOperator
           tenant_id, share_id, plan_id, plan_digest, alias_compatibility_ends_at, outcome
         ) VALUES (
           ${tenantId}, ${input.shareId}, ${input.planId}, ${input.planDigest},
-          ${input.aliasCompatibilityEndsAt}, ${JSON.stringify(outcomes)}::jsonb
+          ${input.aliasCompatibilityEndsAt}, ${transaction.json(outcomes.map(outcome => ({...outcome})))}
         )
       `;
       return outcomes;
@@ -230,8 +230,8 @@ async function importRecord(
       `;
   const migrationPrincipalId = 'system:migration';
   const migrationPolicyVersion = 'system:migration-v1';
-  const migrationPolicyDocument = JSON.stringify({capabilities: ['memory:admin'], internal: 'migration'});
-  const migrationPolicyDigest = sha256HexSync(migrationPolicyDocument);
+  const migrationPolicyDocument = {capabilities: ['memory:admin'], internal: 'migration'};
+  const migrationPolicyDigest = sha256HexSync(JSON.stringify(migrationPolicyDocument));
   await transaction`
     INSERT INTO remote_memory.principals(tenant_id, id, status)
     VALUES (${tenantId}, ${migrationPrincipalId}, 'active')
@@ -242,7 +242,7 @@ async function importRecord(
       tenant_id, share_id, version, principal_id, policy_document, policy_digest
     ) VALUES (
       ${tenantId}, ${shareId}, ${migrationPolicyVersion}, ${migrationPrincipalId},
-      ${migrationPolicyDocument}::jsonb, ${migrationPolicyDigest}
+      ${transaction.json(migrationPolicyDocument)}, ${migrationPolicyDigest}
     ) ON CONFLICT (tenant_id, share_id, version, principal_id) DO NOTHING
   `;
   await transaction`

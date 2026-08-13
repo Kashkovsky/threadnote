@@ -1,4 +1,4 @@
-import postgres, {type Sql, type TransactionSql} from 'postgres';
+import postgres, {type JSONValue, type Sql, type TransactionSql} from 'postgres';
 import {sha256HexSync} from '../crypto/sha256.js';
 import type {
   AuthorizedRemotePrincipal,
@@ -77,6 +77,8 @@ interface SharePolicyRow {
   readonly policy_version: string;
   readonly status: string;
 }
+
+type JsonObject = Readonly<Record<string, JSONValue | undefined>>;
 
 export interface RemoteMemoryProvisioningInput {
   readonly allowedProjects?: readonly string[];
@@ -553,7 +555,7 @@ export class PostgresRemoteControlPlane implements RemoteAuthorizationStore, Cur
             tenant_id, share_id, version, policy_document, policy_digest
           ) VALUES (
             ${input.tenantId}, ${input.shareId}, ${sharePolicyVersion},
-            ${JSON.stringify(desiredSharePolicy.document)}::jsonb, ${desiredSharePolicy.digest}
+            ${transaction.json(desiredSharePolicy.document)}, ${desiredSharePolicy.digest}
           )
           ON CONFLICT (tenant_id, share_id, version) DO NOTHING
         `;
@@ -570,7 +572,7 @@ export class PostgresRemoteControlPlane implements RemoteAuthorizationStore, Cur
           tenant_id, share_id, version, principal_id, policy_document, policy_digest
         ) VALUES (
           ${input.tenantId}, ${input.shareId}, ${input.policyVersion}, ${input.principalId},
-          ${JSON.stringify(desiredPolicy.document)}::jsonb, ${desiredPolicy.digest}
+          ${transaction.json(desiredPolicy.document)}, ${desiredPolicy.digest}
         )
         ON CONFLICT (tenant_id, share_id, version, principal_id) DO NOTHING
       `;
@@ -587,7 +589,7 @@ export class PostgresRemoteControlPlane implements RemoteAuthorizationStore, Cur
           tenant_id, share_id, version, principal_id, policy_document, policy_digest
         ) VALUES (
           ${input.tenantId}, ${input.shareId}, 'retention-v1', ${retentionPrincipalId},
-          ${JSON.stringify(retentionPolicy.document)}::jsonb, ${retentionPolicy.digest}
+          ${transaction.json(retentionPolicy.document)}, ${retentionPolicy.digest}
         ) ON CONFLICT (tenant_id, share_id, version, principal_id) DO NOTHING
       `;
       const storedRetentionPolicies = await transaction<{policy_digest: string}[]>`
@@ -855,7 +857,7 @@ function validateProvisioningIdentity(issuer: string, subject: string): void {
 
 function provisioningPolicy(input: RemoteMemoryProvisioningInput): {
   readonly digest: string;
-  readonly document: Readonly<Record<string, unknown>>;
+  readonly document: JsonObject;
 } {
   const document = {
     allowedProjects: input.allowedProjects ? [...new Set(input.allowedProjects)].sort() : 'all',
@@ -872,7 +874,7 @@ function provisioningPolicy(input: RemoteMemoryProvisioningInput): {
 
 function internalRetentionPolicy(): {
   readonly digest: string;
-  readonly document: Readonly<Record<string, unknown>>;
+  readonly document: JsonObject;
 } {
   const document = {capabilities: ['memory:admin'], internal: 'retention'} as const;
   return {digest: sha256HexSync(JSON.stringify(document)), document};
@@ -880,7 +882,7 @@ function internalRetentionPolicy(): {
 
 function provisioningSharePolicy(input: RemoteMemoryProvisioningInput): {
   readonly digest: string;
-  readonly document: Readonly<Record<string, unknown>>;
+  readonly document: JsonObject;
 } {
   const repositoryBindings = Object.fromEntries(
     Object.entries(input.repositoryBindings ?? {})
@@ -906,7 +908,7 @@ function requireCompleteSharePolicy(input: RemoteMemoryProvisioningInput): void 
   }
 }
 
-export function decodeStoredSharePolicyDocument(json: unknown): Readonly<Record<string, unknown>> {
+export function decodeStoredSharePolicyDocument(json: unknown): JsonObject {
   if (
     typeof json !== 'string' ||
     json.length < 2 ||
@@ -923,7 +925,7 @@ export function decodeStoredSharePolicyDocument(json: unknown): Readonly<Record<
   if (!document || typeof document !== 'object' || Array.isArray(document)) {
     throw remoteMemoryError('conflict', 'The stored share-wide policy cannot be safely compared.');
   }
-  return document as Readonly<Record<string, unknown>>;
+  return document as JsonObject;
 }
 
 export function requireNoImplicitSharePolicyChange(
