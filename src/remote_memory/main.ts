@@ -16,8 +16,14 @@ import {
 } from './worker_health.js';
 import {startRemoteMemoryServer} from './server.js';
 
+export interface RemoteMemoryServiceRuntime {
+  readonly error: (message: string) => void;
+  readonly shutdownSignal: () => {readonly dispose: () => void; readonly promise: Promise<string>};
+}
+
 export async function runRemoteMemoryService(
-  environment: Readonly<Record<string, string | undefined>> = process.env,
+  environment: Readonly<Record<string, string | undefined>>,
+  runtime: RemoteMemoryServiceRuntime,
 ): Promise<void> {
   const config = remoteMemoryConfigFromEnvironment(environment);
   const sql = createRemoteMemorySql(config.databaseUrl);
@@ -26,7 +32,7 @@ export async function runRemoteMemoryService(
   const workerHealth = createRemoteMemoryWorkerHealth(
     (name, cause) => {
       if (!workers.signal.aborted)
-        console.error(`Threadnote remote memory ${name} worker failed: ${safeErrorClass(cause)}.`);
+        runtime.error(`Threadnote remote memory ${name} worker failed: ${remoteMemoryFailureClass(cause)}.`);
     },
     () => workers.signal.aborted,
   );
@@ -75,7 +81,7 @@ export async function runRemoteMemoryService(
     workerHealth.supervise('retention', retentionTask);
     const shutdown = (reason: string) => {
       stopping ??= (async () => {
-        console.error(`Threadnote remote memory stopping after ${reason}; draining requests.`);
+        runtime.error(`Threadnote remote memory stopping after ${reason}; draining requests.`);
         workers.abort();
         await server.stop(false);
         await Promise.allSettled(workerTasks);
@@ -83,9 +89,9 @@ export async function runRemoteMemoryService(
       })();
       return stopping;
     };
-    console.error(`Threadnote remote memory listening on ${server.url.toString()}`);
-    console.error(JSON.stringify(redactedRemoteMemoryConfig(config)));
-    const processSignal = waitForProcessSignal();
+    runtime.error(`Threadnote remote memory listening on ${server.url.toString()}`);
+    runtime.error(JSON.stringify(redactedRemoteMemoryConfig(config)));
+    const processSignal = runtime.shutdownSignal();
     try {
       await superviseRemoteMemoryService({
         shutdown,
@@ -121,7 +127,7 @@ async function remoteMemoryWorkersReady(sql: ReturnType<typeof createRemoteMemor
   return remoteMemoryWorkerRowsReady(rows);
 }
 
-function safeErrorClass(cause: unknown): string {
+export function remoteMemoryFailureClass(cause: unknown): string {
   const name = cause instanceof Error ? cause.name : 'unknown_error';
   return /^[A-Za-z][A-Za-z0-9_]{0,63}$/u.test(name) ? name : 'worker_error';
 }
@@ -145,29 +151,4 @@ export async function superviseRemoteMemoryService(input: {
 
 function workerFailureError(failure: RemoteMemoryWorkerFailure): Error {
   return new Error(`Remote memory ${failure.name} worker failed.`, {cause: failure.cause});
-}
-
-function waitForProcessSignal(): {readonly dispose: () => void; readonly promise: Promise<string>} {
-  let resolveSignal: ((signal: string) => void) | undefined;
-  const promise = new Promise<string>(resolve => {
-    resolveSignal = resolve;
-  });
-  const onSigint = () => resolveSignal?.('SIGINT');
-  const onSigterm = () => resolveSignal?.('SIGTERM');
-  process.once('SIGINT', onSigint);
-  process.once('SIGTERM', onSigterm);
-  return {
-    dispose: () => {
-      process.removeListener('SIGINT', onSigint);
-      process.removeListener('SIGTERM', onSigterm);
-    },
-    promise,
-  };
-}
-
-if (import.meta.main) {
-  runRemoteMemoryService().catch(cause => {
-    console.error(`Remote memory service failed: ${safeErrorClass(cause)}.`);
-    process.exitCode = 1;
-  });
 }

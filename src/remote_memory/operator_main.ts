@@ -1,5 +1,6 @@
 import * as z from 'zod/v4';
-import {Cause, Effect, FileSystem, Path, Schema} from 'effect';
+import {Cause, Console, Effect, FileSystem, Path, Schema} from 'effect';
+import {fromPromiseInterruptibleAwaiting} from '../effect/errors.js';
 import {createRemoteMemorySql, type RemoteMemoryProvisioningInput} from './postgres_control_plane.js';
 import {
   applyGitBetaImportOperator,
@@ -65,11 +66,6 @@ const ProvisioningInput = z
   })
   .strict();
 
-interface OperatorOutput {
-  readonly error: (message: string) => void;
-  readonly log: (message: string) => void;
-}
-
 class RemoteMemoryOperatorInvocationError extends Schema.TaggedErrorClass<RemoteMemoryOperatorInvocationError>()(
   'RemoteMemoryOperatorInvocationError',
   {message: Schema.String},
@@ -85,15 +81,14 @@ const defaultRuntime: RemoteMemoryOperatorRuntime = {
 
 export const runRemoteMemoryOperator = Effect.fn('remoteMemory.operator.run')(function* (
   arguments_: readonly string[],
-  environment: Readonly<Record<string, string | undefined>> = process.env,
-  output: OperatorOutput = console,
+  environment: Readonly<Record<string, string | undefined>>,
   runtime: RemoteMemoryOperatorRuntime = defaultRuntime,
 ): Effect.fn.Return<number, never, RemoteMemoryOperatorFileServices> {
   // FileSystem and Path requirements are supplied only by the hidden
   // src/standalone.ts application entrypoint.
   const [command, ...rest] = arguments_;
   if (!command || command === 'help' || command === '--help') {
-    output.log(operatorHelp());
+    yield* Console.log(operatorHelp());
     return 0;
   }
   return yield* Effect.gen(function* () {
@@ -105,20 +100,20 @@ export const runRemoteMemoryOperator = Effect.fn('remoteMemory.operator.run')(fu
           const options = parseOptions(rest);
           if (command === 'capabilities') {
             rejectOptions(options, []);
-            output.log(JSON.stringify(adapter.capabilities));
+            yield* Console.log(JSON.stringify(adapter.capabilities));
             return 0;
           }
           if (command === 'migrate') {
             rejectOptions(options, []);
-            output.log(JSON.stringify(yield* Effect.promise(() => migrateRemoteMemoryOperator(adapter))));
+            yield* Console.log(JSON.stringify(yield* operatorPromise(() => migrateRemoteMemoryOperator(adapter))));
             return 0;
           }
           if (command === 'provision') {
             rejectOptions(options, ['input']);
             const input = ProvisioningInput.parse(yield* readOperatorJson<unknown>(requiredOption(options, 'input')));
-            output.log(
+            yield* Console.log(
               JSON.stringify(
-                yield* Effect.promise(() =>
+                yield* operatorPromise(() =>
                   provisionRemoteMemoryOperator(adapter, input as RemoteMemoryProvisioningInput),
                 ),
               ),
@@ -142,7 +137,7 @@ export const runRemoteMemoryOperator = Effect.fn('remoteMemory.operator.run')(fu
               user: requiredOption(options, 'user'),
             });
             const projects = optionalList(options, 'projects');
-            const plan = yield* Effect.promise(() =>
+            const plan = yield* operatorPromise(() =>
               planGitBetaImportOperator(adapter, {
                 aliasCompatibilityEndsAt: requiredOption(options, 'alias-compatibility-ends-at'),
                 apply: flag(options, 'for-apply'),
@@ -156,7 +151,7 @@ export const runRemoteMemoryOperator = Effect.fn('remoteMemory.operator.run')(fu
               }),
             );
             yield* writeOperatorJsonExclusive(requiredOption(options, 'output'), plan);
-            output.log(
+            yield* Console.log(
               JSON.stringify({counts: plan.counts, dryRun: plan.dryRun, planId: plan.planId, version: plan.version}),
             );
             return plan.counts.blocked + plan.counts.conflict + plan.counts.invalid === 0 ? 0 : 2;
@@ -169,37 +164,33 @@ export const runRemoteMemoryOperator = Effect.fn('remoteMemory.operator.run')(fu
               user: requiredOption(options, 'user'),
             });
             const plan = yield* readGitBetaImportPlan(requiredOption(options, 'plan'));
-            const result = yield* Effect.promise(() => applyGitBetaImportOperator(adapter, {plan, records: sources}));
+            const result = yield* operatorPromise(() => applyGitBetaImportOperator(adapter, {plan, records: sources}));
             yield* writeOperatorJsonExclusive(requiredOption(options, 'receipt'), result);
-            output.log(
+            yield* Console.log(
               JSON.stringify({planId: result.cutover.planId, status: result.cutover.status, version: result.version}),
             );
             return 0;
           }
           if (command === 'export') {
             rejectOptions(options, ['output', 'share']);
-            const plan = yield* Effect.promise(() =>
+            const plan = yield* operatorPromise(() =>
               exportRemoteMemoryOperator(adapter, requiredOption(options, 'share')),
             );
             yield* writeRemoteMemoryExportBundle(requiredOption(options, 'output'), plan);
-            output.log(
+            yield* Console.log(
               JSON.stringify({bundleDigest: plan.bundleDigest, files: plan.files.length, version: plan.version}),
             );
             return 0;
           }
           return yield* Effect.fail(operatorInvocationError('Unknown remote memory operator command.'));
         }),
-      adapter => Effect.promise(() => adapter.close?.() ?? Promise.resolve()),
+      adapter => (adapter.close ? operatorPromise(() => adapter.close!()) : Effect.void),
     );
-  }).pipe(
-    Effect.catchCause(cause =>
-      Effect.sync(() => {
-        output.error(operatorFailureMessage(Cause.squash(cause)));
-        return 1;
-      }),
-    ),
-  );
+  }).pipe(Effect.catchCause(cause => Console.error(operatorFailureMessage(Cause.squash(cause))).pipe(Effect.as(1))));
 });
+
+const operatorPromise = <A>(evaluate: (signal: AbortSignal) => PromiseLike<A>) =>
+  fromPromiseInterruptibleAwaiting(evaluate, cause => cause);
 
 function parseOptions(arguments_: readonly string[]): ReadonlyMap<string, string | true> {
   const options = new Map<string, string | true>();

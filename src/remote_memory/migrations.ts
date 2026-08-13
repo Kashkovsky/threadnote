@@ -36,14 +36,28 @@ export async function migrateRemoteMemoryDatabase(sql: Sql): Promise<void> {
         }
         continue;
       }
-      await connection.begin(async transaction => {
-        await transaction.unsafe(source);
-        await transaction`
+      await connection.unsafe('BEGIN');
+      try {
+        await connection.unsafe(source);
+        await connection`
           INSERT INTO remote_memory.schema_migrations(version, checksum)
           VALUES (${migration.version}, ${checksum})
           ON CONFLICT (version) DO NOTHING
         `;
-      });
+        const recorded = await connection<{checksum: string}[]>`
+          SELECT checksum FROM remote_memory.schema_migrations WHERE version = ${migration.version}
+        `;
+        if (recorded[0]?.checksum !== checksum) {
+          throw remoteMemoryError(
+            'service_unavailable',
+            `Remote memory migration ${migration.version} changed while applying.`,
+          );
+        }
+        await connection.unsafe('COMMIT');
+      } catch (cause) {
+        await connection.unsafe('ROLLBACK');
+        throw cause;
+      }
     }
   } finally {
     try {

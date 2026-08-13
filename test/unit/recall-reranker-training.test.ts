@@ -78,7 +78,7 @@ describe('recall reranker training dataset v1', () => {
     const source = dataset.manifest.sources[0]!;
 
     expect(() => rebuild(dataset, credentialGroups)).toThrow(/sensitive data/);
-    expect(() => rebuild(dataset, pathGroups)).toThrow(/absolute local path/);
+    expect(() => rebuild(dataset, pathGroups)).toThrow(/contains sensitive data \(Windows absolute path\)/);
     expect(() =>
       createRecallRerankerDatasetV1(
         draft(dataset, [
