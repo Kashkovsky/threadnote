@@ -149,9 +149,10 @@ function telemetryLayerForHome(home: string, fallbackScope: 'broker' | 'invocati
         isEnabled,
         serviceVersion,
         sessionId: session.id,
-        // A missing or slow collector must not add the MCP-oriented three
-        // second final flush budget to every short standalone command.
-        shutdownTimeout: fallbackScope === 'invocation' ? '250 millis' : '3 seconds',
+        // A fresh public TLS connection routinely needs more than 250ms. Keep
+        // the opt-in CLI budget below the MCP-oriented three-second window,
+        // while allowing short invocations to finish one anonymous export.
+        shutdownTimeout: fallbackScope === 'invocation' ? '2 seconds' : '3 seconds',
       });
     }).pipe(Effect.catchCause(() => Effect.succeed(anonymousTelemetryLayer()))),
   ).pipe(Layer.catchCause(() => anonymousTelemetryLayer()));
