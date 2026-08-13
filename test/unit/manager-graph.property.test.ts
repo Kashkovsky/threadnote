@@ -6,6 +6,7 @@ import {
   graphFocusTarget,
   graphWheelZoomFactor,
   graphWithNodeNeighborhood,
+  orderGraphBuildStatuses,
   type GraphBuildStatus,
   type GraphNodeDetail,
   type GraphVisualization,
@@ -95,6 +96,50 @@ describe('Manager graph properties', () => {
           expect(forward.total).toBe(expectedTotal);
           expect(new Set(forward.jobs.map(job => job.buildId)).size).toBe(forward.jobs.length);
           expect(forward.jobs.every(job => job.state !== 'completed')).toBe(true);
+        },
+      ),
+      {numRuns: 120},
+    );
+  });
+
+  it('keeps build banner order invariant across polling order and progress updates', () => {
+    fc.assert(
+      fc.property(
+        fc.uniqueArray(
+          fc.record({
+            buildNumber: fc.integer({min: 0, max: 1_000_000}),
+            locationNumber: fc.integer({min: 0, max: 100}),
+            progressAt: fc.integer({min: 0, max: 2_000_000_000}),
+          }),
+          {maxLength: 80, selector: item => item.buildNumber},
+        ),
+        records => {
+          const statuses = records.map(record => ({
+            ...graphBuildStatus(
+              `build-${record.buildNumber}`,
+              record.buildNumber.toString(16).padStart(12, '0'),
+              record.progressAt,
+              'running',
+            ),
+            identity: {
+              checkoutId: `checkout-${record.buildNumber.toString().padStart(7, '0')}`,
+              commit: record.buildNumber.toString(16).padStart(12, '0'),
+              repositoryId: 'repository',
+              worktreeId: `worktree-${record.buildNumber.toString().padStart(7, '0')}`,
+            },
+            managerContext: {worktreePath: `/worktrees/${record.locationNumber.toString().padStart(3, '0')}`},
+          }));
+          const expected = orderGraphBuildStatuses(statuses).map(status => status.buildId);
+          const polled = [...statuses].reverse().map((status, index) => ({
+            ...status,
+            timestamps: {
+              ...status.timestamps,
+              lastProgressAt: new Date(2_000_000_000 - index).toISOString(),
+            },
+          }));
+
+          expect(orderGraphBuildStatuses(polled).map(status => status.buildId)).toEqual(expected);
+          expect(statuses.map(status => status.buildId)).toEqual(records.map(record => `build-${record.buildNumber}`));
         },
       ),
       {numRuns: 120},

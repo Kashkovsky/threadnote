@@ -971,7 +971,7 @@ dd {
 .graph-workspace {
   display: grid;
   gap: 14px;
-  grid-template-rows: auto auto auto auto minmax(0, 1fr) auto;
+  grid-template-rows: auto auto minmax(0, 1fr);
   height: 100%;
   min-height: 0;
   padding: 20px;
@@ -981,10 +981,92 @@ dd {
   grid-row: 1;
 }
 
+.graph-page-tabs {
+  background: rgba(8, 11, 16, 0.56);
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  display: grid;
+  gap: 3px;
+  grid-row: 2;
+  grid-template-columns: repeat(2, minmax(0, max-content));
+  justify-content: start;
+  padding: 3px;
+}
+
+.graph-page-tabs button {
+  align-items: center;
+  background: transparent;
+  border-color: transparent;
+  display: inline-flex;
+  font-size: 11px;
+  gap: 7px;
+  justify-content: center;
+  min-height: 34px;
+  padding: 6px 12px;
+}
+
+.graph-page-tabs button[aria-selected='true'] {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+  color: var(--accent);
+}
+
+.graph-page-tabs small {
+  align-items: center;
+  background: rgba(103, 232, 199, 0.12);
+  border-radius: 999px;
+  display: inline-flex;
+  font-size: 9px;
+  font-weight: 700;
+  justify-content: center;
+  min-height: 18px;
+  min-width: 18px;
+  padding: 1px 5px;
+}
+
+.graph-tab-panel {
+  grid-row: 3;
+  min-height: 0;
+  min-width: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.graph-tab-panel[hidden] {
+  display: none;
+}
+
+.graph-explorer-tab {
+  display: grid;
+  gap: 14px;
+  grid-template-rows: auto auto minmax(440px, 1fr) auto;
+  height: 100%;
+}
+
+.graph-explorer-tab .graph-toolbar {
+  grid-row: 1;
+}
+
+.graph-explorer-tab .graph-filterbar {
+  grid-row: 2;
+}
+
+.graph-explorer-tab .graph-body {
+  grid-row: 3;
+}
+
+.graph-explorer-tab .graph-notes {
+  grid-row: 4;
+}
+
+.graph-administration-tab {
+  padding-right: 4px;
+}
+
 .graph-notices {
   display: grid;
   gap: 8px;
-  grid-row: 2;
 }
 
 .graph-notices:empty {
@@ -1027,6 +1109,11 @@ dd {
   max-height: min(460px, 56vh);
   overflow: auto;
   padding: 10px 12px 12px;
+}
+
+.graph-administration-tab .graph-administration-body {
+  max-height: none;
+  overflow: visible;
 }
 
 .graph-administration-toolbar,
@@ -1360,18 +1447,6 @@ dd {
   grid-area: scope;
   grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
   min-width: 0;
-}
-
-.graph-filterbar {
-  grid-row: 4;
-}
-
-.graph-body {
-  grid-row: 5;
-}
-
-.graph-notes {
-  grid-row: 6;
 }
 
 .graph-toolbar label,
