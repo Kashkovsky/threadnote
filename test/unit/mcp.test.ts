@@ -111,7 +111,9 @@ describe('MCP toolsets', () => {
         const result = yield* captureConsole(runMcpInstall(runtime(), agent, {})).pipe(
           Effect.provideService(SystemInfo, testSystem),
         );
-        expect(result.output, agent).toContain(brokerLauncher);
+        const renderedBrokerLauncher =
+          agent === 'cursor' || agent === 'copilot' ? JSON.stringify(brokerLauncher).slice(1, -1) : brokerLauncher;
+        expect(result.output, agent).toContain(renderedBrokerLauncher);
         expect(result.output, agent).not.toMatch(/\bthreadnote\s+mcp-server\b/);
       }
     }).pipe(provideTestLayer(ApplicationLayer)),
