@@ -145,6 +145,7 @@ describe('standalone release workflows', () => {
       const ci = yield* readProjectFile('.github/workflows/ci.yml');
       const asset = yield* readProjectFile('src/models/core-embedding-asset.ts');
       const checker = yield* readProjectFile('scripts/check-embedded-core-model.ts');
+      const modelLicense = yield* readProjectFile('assets/models/licenses/bge-small-en-v1.5.LICENSE');
       const packageManifest = JSON.parse(yield* readProjectFile('package.json')) as {
         readonly scripts?: Readonly<Record<string, string>>;
       };
@@ -153,6 +154,9 @@ describe('standalone release workflows', () => {
       expect(asset).toContain(`${model.sha256}.gguf`);
       expect(asset).toContain("type: 'file'");
       expect(checker).toContain('BUNDLED_CORE_EMBEDDING_MANIFEST.sha256');
+      expect(checker).toContain('BUNDLED_MODEL_LICENSE_SHA256');
+      expect(modelLicense).toContain('Copyright (c) 2022 staoxiao');
+      expect(modelLicense).toContain('The above copyright notice and this permission notice shall be included');
       expect(packageManifest.scripts?.build).toMatch(/^bun scripts\/check-embedded-core-model\.ts && /);
       expect(packageManifest.scripts?.['compile:targets']).toMatch(/^bun scripts\/check-embedded-core-model\.ts && /);
       for (const content of [ci, workflow]) {

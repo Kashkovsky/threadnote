@@ -1,13 +1,25 @@
+import * as BunServices from '@effect/platform-bun/BunServices';
 import {createHash} from 'node:crypto';
 import {it as effectIt} from '@effect/vitest';
-import {Effect, FileSystem, Path, Result} from 'effect';
+import {Deferred, Effect, Fiber, FileSystem, Layer, Path, Result} from 'effect';
+import {TestClock} from 'effect/testing';
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
-import {ApplicationLayer} from '../../src/effect/runtime.js';
+import {HttpService} from '../../src/effect/http.js';
+import {SystemInfo} from '../../src/effect/system.js';
 import type {LocalModelManifest} from '../../src/models/catalog.js';
 import {BUNDLED_CORE_EMBEDDING_MANIFEST, bundledCoreEmbeddingSource} from '../../src/models/core-embedding-asset.js';
 import {BUILTIN_MODEL_MANIFESTS} from '../../src/models/builtin.js';
-import {LocalModelStore} from '../../src/models/store.js';
+import {LocalModelStore, type LocalModelStoreLayerOptions} from '../../src/models/store.js';
+import {provideTestLayer} from '../helpers/effect-layer.js';
+import {TestError} from '../helpers/test-error.js';
+
+const modelStoreTestLayer = (options: LocalModelStoreLayerOptions = {}) =>
+  LocalModelStore.layerWith(options).pipe(
+    Layer.provideMerge(HttpService.layer),
+    Layer.provideMerge(SystemInfo.layer),
+    Layer.provideMerge(BunServices.layer),
+  );
 
 describe('bundled model installation', () => {
   it('routes only the exact pinned core embedding manifest to the executable asset', () => {
@@ -22,7 +34,7 @@ describe('bundled model installation', () => {
     expect(bundledCoreEmbeddingSource({...BUNDLED_CORE_EMBEDDING_MANIFEST, sha256: '0'.repeat(64)})).toBeUndefined();
   });
 
-  effectIt.layer(ApplicationLayer)(layerIt => {
+  effectIt.layer(modelStoreTestLayer())(layerIt => {
     layerIt.effect.prop(
       'atomically promotes exactly the verified bundled bytes and rejects same-size mutations',
       {bytes: fc.uint8Array({maxLength: 128, minLength: 1})},
@@ -80,6 +92,82 @@ describe('bundled model installation', () => {
       {fastCheck: {numRuns: 50}},
     );
   });
+
+  effectIt.effect('holds the model lock until interrupted bundled extraction settles', () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-bundled-model-interruption-'});
+        const home = path.join(root, 'home');
+        const bytes = Uint8Array.from([1, 2, 3, 4]);
+        const manifest = fixtureManifest(bytes);
+        const extractionStarted = yield* Deferred.make<void>();
+        const releaseExtraction = yield* Deferred.make<void>();
+        const removeContended = yield* Deferred.make<void>();
+        const completionOrder: string[] = [];
+        const layer = modelStoreTestLayer({
+          extractBundledSource: (_sourcePath, destinationPath) =>
+            Deferred.succeed(extractionStarted, undefined).pipe(
+              Effect.andThen(Deferred.await(releaseExtraction)),
+              Effect.andThen(fs.writeFile(destinationPath, bytes)),
+              Effect.as(bytes.length),
+            ),
+          onModelLockCompleted: event => Effect.sync(() => completionOrder.push(event.operation)).pipe(Effect.asVoid),
+          onModelLockContention: event =>
+            event.operation === 'remove'
+              ? Deferred.succeed(removeContended, undefined).pipe(Effect.asVoid)
+              : Effect.void,
+        });
+
+        yield* Effect.gen(function* () {
+          const store = yield* LocalModelStore;
+          const install = yield* store
+            .install(home, manifest, {sourcePath: 'embedded://fixture', sourceUrl: 'embedded://fixture'})
+            .pipe(Effect.forkChild({startImmediately: true}));
+          yield* Deferred.await(extractionStarted);
+          const interruption = yield* Fiber.interrupt(install).pipe(Effect.forkChild({startImmediately: true}));
+          const remove = yield* store.remove(home, manifest).pipe(Effect.forkChild({startImmediately: true}));
+
+          yield* Deferred.await(removeContended);
+          expect(completionOrder).toEqual([]);
+          yield* Deferred.succeed(releaseExtraction, undefined);
+          yield* Fiber.join(interruption);
+          expect(yield* Fiber.join(remove)).toBe(true);
+          expect(completionOrder).toEqual(['install', 'remove']);
+          expect(yield* fs.exists(store.path(home, manifest))).toBe(false);
+          expect(yield* fs.exists(`${store.path(home, manifest)}.partial`)).toBe(false);
+        }).pipe(provideTestLayer(layer));
+      }).pipe(provideTestLayer(BunServices.layer), Effect.scoped),
+    ),
+  );
+
+  effectIt.effect('cleans a bundled partial when extraction fails', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-bundled-model-failure-'});
+      const home = path.join(root, 'home');
+      const bytes = Uint8Array.from([1, 2, 3, 4]);
+      const manifest = fixtureManifest(bytes);
+      const layer = modelStoreTestLayer({
+        extractBundledSource: (_sourcePath, destinationPath) =>
+          fs
+            .writeFile(destinationPath, bytes)
+            .pipe(Effect.andThen(Effect.fail(new TestError('fixture extraction failed')))),
+      });
+
+      yield* Effect.gen(function* () {
+        const store = yield* LocalModelStore;
+        const result = yield* store
+          .install(home, manifest, {sourcePath: 'embedded://fixture', sourceUrl: 'embedded://fixture'})
+          .pipe(Effect.result);
+        expect(Result.isFailure(result)).toBe(true);
+        if (Result.isFailure(result)) expect(result.failure._tag).toBe('ModelStoreIoFailed');
+        expect(yield* fs.exists(`${store.path(home, manifest)}.partial`)).toBe(false);
+      }).pipe(provideTestLayer(layer));
+    }).pipe(provideTestLayer(BunServices.layer), Effect.scoped),
+  );
 });
 
 function fixtureManifest(bytes: Uint8Array): LocalModelManifest {

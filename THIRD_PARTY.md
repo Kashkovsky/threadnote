@@ -42,7 +42,8 @@ Grammar and parser license copies, source revisions, ABIs, and SHA-256 checksums
 `assets/code-graph/`. Consult those files and each installed package's metadata for the authoritative terms. The
 pinned MIT-licensed BGE Small embedding model is embedded in the standalone executable and installed automatically by
 `threadnote install`; other model files require an explicit `threadnote models install` action. Catalog entries identify
-every model source and license.
+every model source and license. The complete upstream BGE/FlagEmbedding MIT notice is included in release archives at
+`assets/models/licenses/bge-small-en-v1.5.LICENSE`.
 
 ### `yaml` 2.9.0 license notice
 
