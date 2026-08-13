@@ -11,6 +11,7 @@ import {
   recallIndexStatus,
   recallUriMatchesScopes,
 } from '../../src/recall/index.js';
+import {chunksForRecallCandidates} from '../../src/search/vector-index.js';
 import {join, mkdir, mkdtemp, rm, stat, symlink, utimes, writeFile} from '../helpers/effect-filesystem.js';
 import {runEffect as run} from '../helpers/effect-runtime.js';
 
@@ -114,7 +115,7 @@ describe('local recall index', () => {
       'threadnote://resources/repos/threadnote/alpha.md',
       'threadnote://user/me/memories/durable/projects/threadnote/recall.md',
     ]);
-    expect(candidates[0]?.text).toMatch(/alpha-42|recall/);
+    expect(candidates[0]?.text).toMatch(/Alpha-42|Recall/);
     expect((await stat(databasePath())).mode & 0o777).toBe(0o600);
     expect(queryDatabase<{document_count: number}>('SELECT COUNT(*) AS document_count FROM documents')).toEqual([
       {document_count: 2},
@@ -125,7 +126,7 @@ describe('local recall index', () => {
     const candidateJson = queryDatabase<{candidate_json: string}>('SELECT candidate_json FROM documents').map(
       row => row.candidate_json,
     );
-    expect(candidateJson.join('\n')).not.toContain('# Alpha-42');
+    expect(candidateJson.join('\n')).toContain('# Alpha-42');
     expect(candidateJson.join('\n')).not.toContain('MEMORY\\nkind: durable');
 
     const withArchived = await run(loadRecallIndex(config(), {includeInactive: true}));
@@ -136,6 +137,50 @@ describe('local recall index', () => {
       isFile: expect.any(Function),
     });
     expect(await run(loadRecallIndex(config(), {includeInactive: false}))).toHaveLength(2);
+  });
+
+  it('retrieves pure Ukrainian text and keeps redacted natural language for vector chunks', async () => {
+    const resourceRoot = join(directory, 'data', 'local', 'resources', 'repos', 'threadnote');
+    await mkdir(resourceRoot, {recursive: true});
+    await writeFile(
+      join(resourceRoot, 'ukrainian.md'),
+      `# Київська зустріч\n\nПам’ять про розмову: Ігор любить український борщ і план–2026.\napi_key=AIza${'A'.repeat(35)}`,
+      'utf8',
+    );
+    await writeFile(join(resourceRoot, 'other.md'), '# Інше\n\nСадівництво та грушеві дерева.', 'utf8');
+
+    const candidates = await run(
+      loadRecallIndex(config(), {
+        includeInactive: false,
+        query: 'памʼять український борщ',
+      }),
+    );
+
+    expect(candidates.map(candidate => candidate.uri)).toEqual([
+      'threadnote://resources/repos/threadnote/ukrainian.md',
+    ]);
+    expect(candidates[0]?.text).toContain('Пам’ять про розмову');
+    expect(candidates[0]?.text).toContain('api_key=[REDACTED]');
+    expect(candidates[0]?.text).not.toContain(`AIza${'A'.repeat(35)}`);
+    expect(
+      chunksForRecallCandidates(candidates)
+        .map(chunk => chunk.content)
+        .join('\n'),
+    ).toContain('Ігор любить український борщ');
+
+    const exact = await run(
+      loadRecallExactMatches(config(), {
+        includeInactive: false,
+        terms: ['памʼять', 'український', 'план-2026'],
+        uriScopes: ['threadnote://resources/repos/threadnote'],
+      }),
+    );
+    expect(exact).toEqual([
+      {
+        terms: ['памʼять', 'український', 'план-2026'],
+        uri: 'threadnote://resources/repos/threadnote/ukrainian.md',
+      },
+    ]);
   });
 
   it('reports canonical documents omitted by the bounded file-size policy', async () => {

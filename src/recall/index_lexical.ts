@@ -1,4 +1,5 @@
 import {recallDocumentTerms, type RecallCandidate, type RecallCorpusStatistics} from './rank.js';
+import {recallLexicalTerms, recallTokens} from './tokenize.js';
 
 export interface RecallIndexPosting {
   readonly documentLength: number;
@@ -22,7 +23,6 @@ const POSTING_BODY_WEIGHT = 1;
 export const POSTING_BM25_SATURATION = 1.2;
 export const POSTING_BM25_LENGTH_NORMALIZATION = 0.75;
 const POSTING_BM25_IDF_SMOOTHING = 0.5;
-const IDENTIFIER_PATTERN = /[a-z0-9][a-z0-9_.-]{2,}/gi;
 
 export function candidatePostings(candidate: RecallCandidate): ReadonlyMap<string, RecallIndexPosting> {
   const weights = new Map<string, number>();
@@ -111,28 +111,15 @@ export function stripRecallAnchor(uri: string): string {
 }
 
 export function indexTerms(value: string): readonly string[] {
-  const terms: string[] = [];
-  for (const match of value.matchAll(IDENTIFIER_PATTERN)) {
-    const raw = match[0];
-    const original = raw.toLowerCase();
-    terms.push(original);
-    terms.push(
-      ...raw
-        .replace(/([a-z])([A-Z])/g, '$1 $2')
-        .split(/[._/-]+/)
-        .map(term => term.toLowerCase())
-        .filter(term => term.length >= 2),
-    );
-  }
-  return terms;
+  return recallLexicalTerms(value);
 }
 
 export function identifiers(value: string): readonly string[] {
   return [
     ...new Set(
-      [...value.matchAll(IDENTIFIER_PATTERN)]
-        .map(match => match[0].toLowerCase())
-        .filter(term => /[0-9_.-]/.test(term)),
+      recallTokens(value)
+        .map(term => recallLexicalTerms(term)[0])
+        .filter((term): term is string => term !== undefined && /[\p{N}_.-]/u.test(term)),
     ),
   ].slice(0, 64);
 }

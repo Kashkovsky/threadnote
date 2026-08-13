@@ -1,6 +1,6 @@
 import {sha256HexSync} from '../crypto/sha256.js';
 
-export const RECALL_CHUNKER_VERSION = 2 as const;
+export const RECALL_CHUNKER_VERSION = 3 as const;
 export const DEFAULT_CHUNK_MAX_CHARACTERS = 2400;
 export const DEFAULT_CHUNK_OVERLAP_CHARACTERS = 240;
 

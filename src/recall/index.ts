@@ -32,6 +32,7 @@ import {
   type RecallQueryTermStatistics,
 } from './index_lexical.js';
 import {recallDocumentTerms, type RecallCandidate, type RecallCorpusStatistics} from './rank.js';
+import {normalizeRecallSearchText} from './tokenize.js';
 
 class RecallIndexOperationError extends Error {
   readonly _tag = 'RecallIndexOperationError' as const;
@@ -145,7 +146,7 @@ interface IndexedRecallSource {
   readonly source: RecallIndexSource;
 }
 
-const RECALL_INDEX_DATABASE_VERSION = 3;
+const RECALL_INDEX_DATABASE_VERSION = 4;
 const RECALL_INDEX_POINTER_VERSION = 1;
 const RECALL_STALE_MARKER_VERSION = 1;
 const ACTIVE_DATABASE_FILENAME = `active-v${RECALL_INDEX_DATABASE_VERSION}.sqlite`;
@@ -603,7 +604,7 @@ const selectRecallExactMatches = Effect.fn('recall.selectExactMatches')(function
   for (const scopeUri of scopes) {
     const scope = recallUriScopePredicate('d', [scopeUri]);
     for (const term of terms) {
-      const phrase = `"${term.replaceAll('"', '""')}"`;
+      const phrase = `"${normalizeRecallSearchText(term).replaceAll('"', '""')}"`;
       const rows = yield* sql.unsafe<{readonly uri: string}>(
         `SELECT d.uri
          FROM exact_search
@@ -940,7 +941,7 @@ const refreshRecallDatabase = Effect.fn('recall.refreshDatabase')(function* (
             return {
               candidate,
               documentLength: recallDocumentTerms(candidate).length,
-              exactSearchText: redactSensitiveText(content),
+              exactSearchText: normalizeRecallSearchText(redactSensitiveText(content)),
               postings,
               source,
             } satisfies IndexedRecallSource;
@@ -1562,7 +1563,7 @@ function indexCandidate(uri: string, content: string, canonicalResource: boolean
     kind: memory?.metadata.kind,
     relations: memoryRelations(memory),
     status: memory?.metadata.status,
-    text: indexTerms(text).join(' '),
+    text,
     timestamp: memory?.metadata.timestamp,
     trust: boundedMemoryTrust(uri, memory?.metadata, {canonicalResource}),
     uri,

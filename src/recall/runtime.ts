@@ -14,6 +14,7 @@ import {
   recallUriMatchesScopes,
 } from './index.js';
 import type {RecallCandidate} from './rank.js';
+import {recallLexicalTerms, recallTokens} from './tokenize.js';
 import {normalizeRecallRerankerScore} from './reranker-score.js';
 import {
   ensureVectorIndex,
@@ -81,10 +82,7 @@ export function deterministicRecallQueryVariants(query: string): readonly string
     .split(/\s+(?:and|or)\s+|[,;]+/i)
     .map(clause => clause.replace(/\s+/g, ' ').trim())
     .filter(Boolean);
-  if (
-    clauses.length < 2 ||
-    clauses.some(clause => (clause.match(/[a-z0-9][a-z0-9_.-]{2,}/gi)?.length ?? 0) < MINIMUM_QUERY_VARIANT_TERMS)
-  ) {
+  if (clauses.length < 2 || clauses.some(clause => recallTokens(clause).length < MINIMUM_QUERY_VARIANT_TERMS)) {
     return [];
   }
   return clauses.slice(0, MAX_DETERMINISTIC_QUERY_VARIANTS);
@@ -608,21 +606,21 @@ export function recallSelectionQueries(
     candidates.filter(candidate => selectedIds.includes(candidate.id)).map(candidate => candidate.uri),
   );
   const queryTerms = new Map(
-    (originalQuery.match(/[A-Za-z0-9]{3,}/g) ?? []).map(term => [
-      term.toLowerCase(),
-      /^[A-Z][A-Z0-9_.-]{2,}$/.test(term) ? 4 : 1,
-    ]),
+    recallTokens(originalQuery).flatMap(term => {
+      const weight = /^\p{Lu}[\p{Lu}\p{N}_.-]{2,}$/u.test(term) ? 4 : 1;
+      return recallLexicalTerms(term).map(normalized => [normalized, weight] as const);
+    }),
   );
   const selectedCandidates = indexedCandidates
     .map((candidate, index) => {
       const fieldTerms = new Set(
-        [candidate.fields?.topic, candidate.fields?.title, ...(candidate.fields?.keywords ?? [])]
-          .filter((value): value is string => value !== undefined)
-          .join(' ')
-          .toLowerCase()
-          .match(/[a-z0-9]{3,}/g) ?? [],
+        recallLexicalTerms(
+          [candidate.fields?.topic, candidate.fields?.title, ...(candidate.fields?.keywords ?? [])]
+            .filter((value): value is string => value !== undefined)
+            .join(' '),
+        ),
       );
-      const bodyTerms = new Set(candidate.text.toLowerCase().match(/[a-z0-9]{3,}/g) ?? []);
+      const bodyTerms = new Set(recallLexicalTerms(candidate.text));
       return {
         candidate,
         index,
