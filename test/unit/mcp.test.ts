@@ -4,7 +4,7 @@ import {runEffect} from '../helpers/effect-runtime.js';
 import {chmod, mkdtemp, readFile, rm, writeFile} from '../helpers/node-fs-promises.js';
 import {tmpdir} from '../helpers/node-os.js';
 import {delimiter, join} from '../helpers/node-path.js';
-import {Effect} from 'effect';
+import {Effect, FileSystem, Path} from 'effect';
 import {afterEach, describe, expect, it, vi} from 'vitest';
 import {captureConsole} from '../../src/effect/console.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
@@ -31,16 +31,23 @@ function dryRunOutput(toolset?: 'core' | 'full') {
 }
 
 const originalPath = process.env.PATH;
+const originalThreadnoteBinDirectory = process.env.THREADNOTE_BIN_DIR;
 const temporaryDirectories: string[] = [];
 const posixIt = process.platform === 'win32' ? it.skip : it;
 
-async function codexLauncher(script: string): Promise<string> {
-  const directory = await mkdtemp(join(tmpdir(), 'threadnote-codex-'));
+async function agentLauncher(agent: 'claude' | 'codex', script: string): Promise<string> {
+  const directory = await mkdtemp(join(tmpdir(), `threadnote-${agent}-`));
   temporaryDirectories.push(directory);
-  const launcher = join(directory, 'codex');
+  const launcher = join(directory, agent);
   await writeFile(launcher, `#!/bin/sh\n${script}\n`);
   await chmod(launcher, 0o755);
   return launcher;
+}
+
+const codexLauncher = (script: string) => agentLauncher('codex', script);
+
+function shellLiteral(value: string): string {
+  return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 
 afterEach(async () => {
@@ -49,6 +56,11 @@ afterEach(async () => {
     delete process.env.PATH;
   } else {
     process.env.PATH = originalPath;
+  }
+  if (originalThreadnoteBinDirectory === undefined) {
+    delete process.env.THREADNOTE_BIN_DIR;
+  } else {
+    process.env.THREADNOTE_BIN_DIR = originalThreadnoteBinDirectory;
   }
   await Promise.all(temporaryDirectories.splice(0).map(path => rm(path, {force: true, recursive: true})));
 });
@@ -60,12 +72,43 @@ describe('MCP toolsets', () => {
     }),
   );
 
-  effectIt.effect('uses the stable standalone launcher instead of POSIX env', () =>
+  effectIt.effect('uses the stable MCP broker launcher instead of a direct server command', () =>
     Effect.gen(function* () {
-      const output = yield* dryRunOutput();
-      expect(output).toContain('mcp-server');
-      expect(output).not.toContain('/usr/bin/env');
-    }),
+      const baseSystem = yield* SystemInfo;
+      const testSystem = SystemInfo.of({
+        ...baseSystem,
+        environment: () => ({
+          ...baseSystem.environment(),
+          THREADNOTE_BIN_DIR: '/opt/threadnote/bin',
+        }),
+        platform: 'linux',
+      });
+      const command = yield* mcpAdapterCommand().pipe(Effect.provideService(SystemInfo, testSystem));
+
+      expect(command).toEqual(['/opt/threadnote/bin/threadnote-mcp-server']);
+    }).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('renders the broker launcher for every supported MCP host', () =>
+    Effect.gen(function* () {
+      const baseSystem = yield* SystemInfo;
+      const testSystem = SystemInfo.of({
+        ...baseSystem,
+        environment: () => ({
+          ...baseSystem.environment(),
+          THREADNOTE_BIN_DIR: '/opt/threadnote/bin',
+        }),
+        platform: 'linux',
+      });
+
+      for (const agent of ['codex', 'claude', 'cursor', 'copilot'] as const) {
+        const result = yield* captureConsole(runMcpInstall(runtime(), agent, {})).pipe(
+          Effect.provideService(SystemInfo, testSystem),
+        );
+        expect(result.output, agent).toContain('/opt/threadnote/bin/threadnote-mcp-server');
+        expect(result.output, agent).not.toMatch(/\bthreadnote\s+mcp-server\b/);
+      }
+    }).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('installs the full stdio toolset when requested', () =>
@@ -128,7 +171,241 @@ describe('MCP toolsets', () => {
   );
 });
 
+describe('JSON MCP host configuration', () => {
+  effectIt.effect('preserves differently formatted current Cursor and Copilot entries byte-for-byte', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const baseSystem = yield* SystemInfo;
+        const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-json-mcp-current-'});
+        const user = path.join(root, 'user');
+        const bin = path.join(root, 'bin');
+        const broker = path.join(bin, 'threadnote-mcp-server');
+        const cursorPath = path.join(user, '.cursor', 'mcp.json');
+        const copilotPath = path.join(root, 'copilot-mcp.json');
+        const managedEnvironment = {
+          THREADNOTE_USER: 'test-user',
+          THREADNOTE_MCP_TOOLSET: 'core',
+          THREADNOTE_HOME: '/tmp/threadnote-test',
+          THREADNOTE_AGENT_ID: 'threadnote',
+          THREADNOTE_ACCOUNT: 'local',
+          USER_EXTENSION: 'preserved',
+        };
+        const testSystem = SystemInfo.of({
+          ...baseSystem,
+          environment: () => ({
+            ...baseSystem.environment(),
+            THREADNOTE_BIN_DIR: bin,
+            THREADNOTE_COPILOT_MCP_CONFIG: copilotPath,
+          }),
+          homeDirectory: user,
+          platform: 'linux',
+        });
+
+        for (const agent of ['cursor', 'copilot'] as const) {
+          const configPath = agent === 'cursor' ? cursorPath : copilotPath;
+          const containerKey = agent === 'cursor' ? 'mcpServers' : 'servers';
+          const original = JSON.stringify(
+            {
+              userSetting: true,
+              [containerKey]: {
+                unrelated: {command: 'unrelated-server'},
+                threadnote: {
+                  userMetadata: {preserve: true},
+                  env: managedEnvironment,
+                  command: broker,
+                  args: [],
+                  ...(agent === 'copilot' ? {type: 'stdio'} : {}),
+                },
+              },
+            },
+            null,
+            agent === 'cursor' ? 4 : 0,
+          );
+          yield* fs.makeDirectory(path.dirname(configPath), {recursive: true});
+          yield* fs.writeFileString(configPath, original);
+
+          const result = yield* captureConsole(runMcpInstall(runtime(), agent, {apply: true})).pipe(
+            Effect.provideService(SystemInfo, testSystem),
+          );
+
+          expect(result.output, agent).toContain(`Already configured: ${configPath}`);
+          expect(yield* fs.readFileString(configPath), agent).toBe(original);
+        }
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('rewrites drifted Cursor and Copilot entries while preserving unrelated configuration', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const baseSystem = yield* SystemInfo;
+        const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-json-mcp-drift-'});
+        const user = path.join(root, 'user');
+        const bin = path.join(root, 'bin');
+        const broker = path.join(bin, 'threadnote-mcp-server');
+        const cursorPath = path.join(user, '.cursor', 'mcp.json');
+        const copilotPath = path.join(root, 'copilot-mcp.json');
+        const testSystem = SystemInfo.of({
+          ...baseSystem,
+          environment: () => ({
+            ...baseSystem.environment(),
+            THREADNOTE_BIN_DIR: bin,
+            THREADNOTE_COPILOT_MCP_CONFIG: copilotPath,
+          }),
+          homeDirectory: user,
+          platform: 'linux',
+        });
+
+        for (const agent of ['cursor', 'copilot'] as const) {
+          const configPath = agent === 'cursor' ? cursorPath : copilotPath;
+          const containerKey = agent === 'cursor' ? 'mcpServers' : 'servers';
+          yield* fs.makeDirectory(path.dirname(configPath), {recursive: true});
+          yield* fs.writeFileString(
+            configPath,
+            JSON.stringify({
+              userSetting: true,
+              [containerKey]: {
+                unrelated: {command: 'unrelated-server'},
+                threadnote: {
+                  args: ['mcp-server'],
+                  command: path.join(bin, 'threadnote'),
+                  env: {
+                    THREADNOTE_ACCOUNT: 'local',
+                    THREADNOTE_AGENT_ID: 'threadnote',
+                    THREADNOTE_HOME: '/tmp/threadnote-test',
+                    THREADNOTE_MCP_TOOLSET: 'full',
+                    THREADNOTE_USER: 'test-user',
+                  },
+                  ...(agent === 'copilot' ? {type: 'stdio'} : {}),
+                },
+              },
+            }),
+          );
+
+          const result = yield* captureConsole(runMcpInstall(runtime(), agent, {apply: true})).pipe(
+            Effect.provideService(SystemInfo, testSystem),
+          );
+          const updated: unknown = JSON.parse(yield* fs.readFileString(configPath));
+
+          expect(result.output, agent).toContain('Updated');
+          expect(updated, agent).toMatchObject({
+            userSetting: true,
+            [containerKey]: {
+              unrelated: {command: 'unrelated-server'},
+              threadnote: {
+                args: [],
+                command: broker,
+                env: {THREADNOTE_MCP_TOOLSET: 'core'},
+                ...(agent === 'copilot' ? {type: 'stdio'} : {}),
+              },
+            },
+          });
+        }
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+});
+
 describe('MCP agent executable resolution', () => {
+  posixIt('does not remove or add semantically current Codex and Claude broker configurations', async () => {
+    const bin = await mkdtemp(join(tmpdir(), 'threadnote-managed-bin-'));
+    temporaryDirectories.push(bin);
+    process.env.THREADNOTE_BIN_DIR = bin;
+    const broker = join(bin, 'threadnote-mcp-server');
+    const managedEnvironment = {
+      THREADNOTE_ACCOUNT: 'local',
+      THREADNOTE_AGENT_ID: 'threadnote',
+      THREADNOTE_HOME: '/tmp/threadnote-test',
+      THREADNOTE_MCP_TOOLSET: 'core',
+      THREADNOTE_USER: 'test-user',
+    };
+
+    for (const agent of ['codex', 'claude'] as const) {
+      const callsPath = join(tmpdir(), `threadnote-${agent}-current-calls-${process.pid}-${Date.now()}`);
+      const output =
+        agent === 'codex'
+          ? JSON.stringify({
+              enabled: true,
+              transport: {args: [], command: broker, env: managedEnvironment, type: 'stdio'},
+            })
+          : [
+              'threadnote:',
+              '  Scope: User config (available in all your projects)',
+              '  Status: ✘ Failed to connect',
+              '  Type: stdio',
+              `  Command: ${broker}`,
+              '  Args:',
+              '  Environment:',
+              ...Object.entries(managedEnvironment).map(([key, value]) => `    ${key}=${value}`),
+            ].join('\n');
+      const launcher = await agentLauncher(
+        agent,
+        `if [ "$1" = "--version" ]; then printf '%s\\n' '${agent} 1'; exit 0; fi\nprintf '%s\\n' "$*" >> ${shellLiteral(callsPath)}\nprintf '%s\\n' ${shellLiteral(output)}`,
+      );
+      process.env.PATH = [join(launcher, '..'), '/usr/bin', '/bin'].join(delimiter);
+
+      await runEffect(runMcpInstall(runtime(), agent, {apply: true}));
+
+      const calls = await readFile(callsPath, 'utf8');
+      expect(calls, agent).toContain('mcp get threadnote');
+      expect(calls, agent).not.toContain('mcp remove');
+      expect(calls, agent).not.toContain('mcp add');
+      await rm(callsPath, {force: true});
+    }
+  });
+
+  posixIt('migrates legacy direct Codex and Claude server configurations to the broker launcher', async () => {
+    const bin = await mkdtemp(join(tmpdir(), 'threadnote-managed-bin-'));
+    temporaryDirectories.push(bin);
+    process.env.THREADNOTE_BIN_DIR = bin;
+    const broker = join(bin, 'threadnote-mcp-server');
+    const legacyCommand = join(bin, 'threadnote');
+    const managedEnvironment = {
+      THREADNOTE_ACCOUNT: 'local',
+      THREADNOTE_AGENT_ID: 'threadnote',
+      THREADNOTE_HOME: '/tmp/threadnote-test',
+      THREADNOTE_MCP_TOOLSET: 'core',
+      THREADNOTE_USER: 'test-user',
+    };
+
+    for (const agent of ['codex', 'claude'] as const) {
+      const callsPath = join(tmpdir(), `threadnote-${agent}-legacy-calls-${process.pid}-${Date.now()}`);
+      const output =
+        agent === 'codex'
+          ? JSON.stringify({
+              enabled: true,
+              transport: {args: ['mcp-server'], command: legacyCommand, env: managedEnvironment, type: 'stdio'},
+            })
+          : [
+              'threadnote:',
+              '  Scope: User config (available in all your projects)',
+              '  Status: ✘ Failed to connect',
+              '  Type: stdio',
+              `  Command: ${legacyCommand}`,
+              '  Args: mcp-server',
+              '  Environment:',
+              ...Object.entries(managedEnvironment).map(([key, value]) => `    ${key}=${value}`),
+            ].join('\n');
+      const launcher = await agentLauncher(
+        agent,
+        `if [ "$1" = "--version" ]; then printf '%s\\n' '${agent} 1'; exit 0; fi\nprintf '%s\\n' "$*" >> ${shellLiteral(callsPath)}\ncase "$*" in\n  "mcp get threadnote"*) printf '%s\\n' ${shellLiteral(output)} ;;\nesac`,
+      );
+      process.env.PATH = [join(launcher, '..'), '/usr/bin', '/bin'].join(delimiter);
+
+      await runEffect(runMcpInstall(runtime(), agent, {apply: true}));
+
+      const calls = await readFile(callsPath, 'utf8');
+      expect(calls, agent).toContain('mcp remove threadnote');
+      expect(calls, agent).toContain('mcp add');
+      expect(calls, agent).toContain(broker);
+      await rm(callsPath, {force: true});
+    }
+  });
+
   posixIt('uses a healthy later PATH entry when the first Codex launcher is stale', async () => {
     const broken = await codexLauncher("printf '%s\\n' 'missing native binary' >&2\nexit 1");
     const callsPath = join(tmpdir(), `threadnote-codex-calls-${process.pid}-${Date.now()}`);

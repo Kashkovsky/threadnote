@@ -211,11 +211,26 @@ export const activeInstalledRelease = Effect.fn('installations.activeRelease')(f
   const path = yield* Path.Path;
   const system = yield* SystemInfo;
   const root = installationRoot(path, system);
-  const active = yield* readActiveRelease(fs, path.join(root, ACTIVE_RELEASE_FILE));
-  if (!active) return undefined;
-  const validated = yield* readValidatedRelease(fs, path, active.releaseRoot, root);
-  if (validated?.version === active.version) return validated;
-  return undefined;
+  const readValidatedPointer = (pointerPath: string) =>
+    Effect.gen(function* () {
+      const pointer = yield* readActiveRelease(fs, pointerPath);
+      if (!pointer) return undefined;
+      const validated = yield* readValidatedRelease(fs, path, pointer.releaseRoot, root);
+      return validated?.version === pointer.version ? validated : undefined;
+    });
+  const active = yield* readValidatedPointer(path.join(root, ACTIVE_RELEASE_FILE));
+  if (active) return active;
+
+  // Activation briefly moves the old pointer aside before atomically promoting
+  // the replacement. A broker starting in that bounded gap may keep serving the
+  // validated previous release, but only while an exact, valid promotion
+  // journal proves that the backup belongs to this installation. This is a
+  // read-only fallback: installation-lock recovery remains the sole mutator.
+  const journalPath = path.join(root, ACTIVE_RELEASE_JOURNAL_FILE);
+  const promotion = yield* readActiveReleasePromotion(fs, path, root, journalPath).pipe(
+    Effect.catch(() => Effect.succeed(undefined)),
+  );
+  return promotion ? yield* readValidatedPointer(promotion.backupPath) : undefined;
 });
 
 export const activeInstalledVersion = Effect.fn('installations.activeVersion')(function* () {

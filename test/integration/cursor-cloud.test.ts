@@ -56,6 +56,8 @@ describe('Cursor Cloud integration', () => {
       ]);
       expect(secondConfig.stdout).toBe(firstConfig.stdout);
       expect(JSON.parse(firstConfig.stdout)).toMatchObject({
+        args: ['-lc', 'exec "$HOME/.local/bin/threadnote-mcp-server"'],
+        command: '/bin/sh',
         env: {
           THREADNOTE_CURSOR_CLOUD_TEAM: 'engineering',
           THREADNOTE_MCP_TOOLSET: 'cursor-cloud',

@@ -27,6 +27,7 @@ export interface McpBrokerChild {
 export interface McpBrokerDependencies {
   readonly input: AsyncIterable<Uint8Array>;
   readonly readActiveRelease: () => Promise<StandaloneActiveRelease | undefined>;
+  readonly replayTimeoutMilliseconds?: number;
   readonly spawn: (release: StandaloneActiveRelease) => McpBrokerChild;
   readonly writeOutput: (line: string) => Promise<void>;
 }
@@ -35,17 +36,25 @@ interface JsonRpcEnvelope {
   readonly error?: unknown;
   readonly id?: unknown;
   readonly method?: unknown;
+  readonly params?: unknown;
   readonly result?: unknown;
 }
 
 interface ActiveBrokerChild {
   readonly child: McpBrokerChild;
+  readonly generation: number;
   readonly release: StandaloneActiveRelease;
   replay?: {
     readonly idKey: string;
     readonly reject: (cause: unknown) => void;
     readonly resolve: () => void;
   };
+}
+
+interface ServerRequestRoute {
+  readonly child: ActiveBrokerChild;
+  readonly externalId: string;
+  readonly originalId: string | number;
 }
 
 /**
@@ -62,12 +71,23 @@ export async function runMcpBroker(dependencies: McpBrokerDependencies): Promise
 class McpBroker {
   readonly #clientRequests = new Map<string, string | number>();
   readonly #dependencies: McpBrokerDependencies;
-  readonly #serverRequests = new Set<string>();
+  readonly #serverRequestRoutes = new Map<string, ServerRequestRoute>();
+  readonly #serverRequestRoutesByChildId = new Map<string, ServerRequestRoute>();
   #child: ActiveBrokerChild | undefined;
+  #nextChildGeneration = 0;
+  #nextServerRequestSequence = 0;
   #initializeLine: string | undefined;
   #initializeRequestId: string | number | undefined;
   #initializedLine: string | undefined;
   #outputTail = Promise.resolve();
+  #pendingInitialize:
+    | {
+        readonly child: ActiveBrokerChild;
+        readonly idKey: string;
+        readonly line: string;
+        readonly requestId: string | number;
+      }
+    | undefined;
 
   constructor(dependencies: McpBrokerDependencies) {
     this.#dependencies = dependencies;
@@ -86,19 +106,56 @@ class McpBroker {
 
   async #handleClientLine(line: string): Promise<void> {
     const envelope = parseJsonRpcEnvelope(line);
-    const current = await this.#ensureCurrentChild();
-    if (envelope?.method === 'initialize' && isJsonRpcId(envelope.id)) {
-      this.#initializeLine = line;
-      this.#initializeRequestId = envelope.id;
-    } else if (envelope?.method === 'notifications/initialized') {
-      this.#initializedLine = line;
+    if (envelope?.method === undefined && isJsonRpcId(envelope?.id)) {
+      await this.#handleClientResponse(line, envelope.id);
+      return;
     }
-    if (envelope?.method !== undefined && isJsonRpcId(envelope.id)) {
-      this.#clientRequests.set(jsonRpcIdKey(envelope.id), envelope.id);
-    } else if (envelope?.method === undefined && isJsonRpcId(envelope?.id)) {
-      this.#serverRequests.delete(jsonRpcIdKey(envelope.id));
+
+    const requestId = envelope?.method !== undefined && isJsonRpcId(envelope.id) ? envelope.id : undefined;
+    let trackedRequest = false;
+    try {
+      const current = await this.#ensureCurrentChild();
+      if (envelope?.method === 'initialize' && requestId !== undefined) {
+        this.#pendingInitialize = {
+          child: current,
+          idKey: jsonRpcIdKey(requestId),
+          line,
+          requestId,
+        };
+      } else if (envelope?.method === 'notifications/initialized') {
+        this.#initializedLine = line;
+      } else if (envelope?.method === 'notifications/cancelled') {
+        const cancelledId = cancelledRequestId(envelope.params);
+        if (cancelledId !== undefined) {
+          const cancelledKey = jsonRpcIdKey(cancelledId);
+          if (!this.#clientRequests.has(cancelledKey)) return;
+          this.#clientRequests.delete(cancelledKey);
+        }
+      }
+      if (requestId !== undefined) {
+        this.#clientRequests.set(jsonRpcIdKey(requestId), requestId);
+        trackedRequest = true;
+      }
+      await writeChildLine(current.child, line);
+    } catch {
+      const pending = [...this.#clientRequests.values()];
+      this.#clientRequests.clear();
+      if (requestId !== undefined && !trackedRequest) pending.push(requestId);
+      await this.#stopCurrentChild();
+      for (const id of pending) await this.#queueRequestFailure(id);
     }
-    await writeChildLine(current.child, line);
+  }
+
+  async #handleClientResponse(line: string, externalId: string | number): Promise<void> {
+    const route = this.#serverRequestRoutes.get(jsonRpcIdKey(externalId));
+    if (route === undefined) return;
+    this.#deleteServerRequestRoute(route);
+    if (this.#child !== route.child) return;
+    try {
+      await writeChildLine(route.child.child, replaceJsonRpcId(line, route.originalId));
+    } catch {
+      await this.#stopCurrentChild();
+    }
   }
 
   async #ensureCurrentChild(): Promise<ActiveBrokerChild> {
@@ -114,19 +171,24 @@ class McpBroker {
     ) {
       return this.#child;
     }
-    if (this.#child !== undefined && (this.#clientRequests.size > 0 || this.#serverRequests.size > 0)) {
+    if (this.#child !== undefined && (this.#clientRequests.size > 0 || this.#serverRequestRoutes.size > 0)) {
       return this.#child;
     }
     await this.#stopCurrentChild();
     const next = this.#startChild(active);
     if (this.#initializeLine !== undefined && this.#initializeRequestId !== undefined) {
       await this.#replayInitialization(next);
+      if (this.#initializedLine !== undefined) await this.#queueListChangedNotifications();
     }
     return next;
   }
 
   #startChild(release: StandaloneActiveRelease): ActiveBrokerChild {
-    const active = {child: this.#dependencies.spawn(release), release} satisfies ActiveBrokerChild;
+    const active = {
+      child: this.#dependencies.spawn(release),
+      generation: (this.#nextChildGeneration += 1),
+      release,
+    } satisfies ActiveBrokerChild;
     this.#child = active;
     void this.#observeChild(active);
     return active;
@@ -136,19 +198,15 @@ class McpBroker {
     await Promise.all([this.#readChildOutput(active), active.child.exited.catch(() => -1)]).catch(() => undefined);
     if (this.#child !== active) return;
     this.#child = undefined;
+    if (this.#pendingInitialize?.child === active) this.#pendingInitialize = undefined;
     active.replay?.reject(new McpBrokerError('Threadnote MCP runtime exited during session promotion.'));
     active.replay = undefined;
     const pending = [...this.#clientRequests.values()];
     this.#clientRequests.clear();
-    this.#serverRequests.clear();
+    await this.#cancelServerRequestRoutes(active);
+    this.#deleteServerRequestRoutes(active);
     for (const id of pending) {
-      await this.#queueOutput(
-        JSON.stringify({
-          error: {code: -32_603, message: MCP_BROKER_RUNTIME_EXIT_ERROR},
-          id,
-          jsonrpc: '2.0',
-        }),
-      );
+      await this.#queueRequestFailure(id);
     }
   }
 
@@ -156,6 +214,7 @@ class McpBroker {
     for await (const line of ndjsonLines(active.child.output)) {
       if (this.#child !== active) continue;
       const envelope = parseJsonRpcEnvelope(line);
+      let outgoingLine = line;
       if (isJsonRpcId(envelope?.id)) {
         const idKey = jsonRpcIdKey(envelope.id);
         if (active.replay?.idKey === idKey && envelope?.method === undefined) {
@@ -165,10 +224,30 @@ class McpBroker {
           else replay.reject(new McpBrokerError('The promoted MCP runtime rejected the replayed initialization.'));
           continue;
         }
-        if (envelope?.method === undefined) this.#clientRequests.delete(idKey);
-        else this.#serverRequests.add(idKey);
+        if (this.#pendingInitialize?.child === active && this.#pendingInitialize.idKey === idKey) {
+          const pending = this.#pendingInitialize;
+          this.#pendingInitialize = undefined;
+          if (envelope.error === undefined && envelope.result !== undefined) {
+            this.#initializeLine = pending.line;
+            this.#initializeRequestId = pending.requestId;
+          }
+        }
+        if (envelope?.method === undefined) {
+          this.#clientRequests.delete(idKey);
+        } else {
+          const route = this.#createServerRequestRoute(active, envelope.id);
+          outgoingLine = replaceJsonRpcId(line, route.externalId);
+        }
+      } else if (envelope?.method === 'notifications/cancelled') {
+        const requestId = cancelledRequestId(envelope.params);
+        if (requestId !== undefined) {
+          const route = this.#serverRequestRoutesByChildId.get(childRequestIdKey(active, requestId));
+          if (route === undefined) continue;
+          this.#deleteServerRequestRoute(route);
+          outgoingLine = replaceCancelledRequestId(line, route.externalId);
+        }
       }
-      await this.#queueOutput(line);
+      await this.#queueOutput(outgoingLine);
     }
   }
 
@@ -182,7 +261,7 @@ class McpBroker {
     await writeChildLine(active.child, initializeLine);
     await Promise.race([
       replayed,
-      Bun.sleep(MCP_BROKER_REPLAY_TIMEOUT_MILLISECONDS).then(() => {
+      Bun.sleep(this.#dependencies.replayTimeoutMilliseconds ?? MCP_BROKER_REPLAY_TIMEOUT_MILLISECONDS).then(() => {
         throw new McpBrokerError('Timed out initializing the promoted Threadnote MCP runtime.');
       }),
     ]);
@@ -193,6 +272,9 @@ class McpBroker {
     const active = this.#child;
     if (active === undefined) return;
     this.#child = undefined;
+    if (this.#pendingInitialize?.child === active) this.#pendingInitialize = undefined;
+    await this.#cancelServerRequestRoutes(active);
+    this.#deleteServerRequestRoutes(active);
     active.replay?.reject(new McpBrokerError('Threadnote MCP runtime promotion was superseded.'));
     active.replay = undefined;
     await Promise.resolve(active.child.input.end()).catch(() => undefined);
@@ -209,6 +291,55 @@ class McpBroker {
       // The child already exited.
     }
     await exitsWithin(active.child, MCP_BROKER_CHILD_STOP_WAIT_MILLISECONDS);
+  }
+
+  #createServerRequestRoute(active: ActiveBrokerChild, originalId: string | number): ServerRequestRoute {
+    const previous = this.#serverRequestRoutesByChildId.get(childRequestIdKey(active, originalId));
+    if (previous !== undefined) this.#deleteServerRequestRoute(previous);
+    const externalId = `threadnote-broker:${active.generation}:${(this.#nextServerRequestSequence += 1)}`;
+    const route = {child: active, externalId, originalId} satisfies ServerRequestRoute;
+    this.#serverRequestRoutes.set(jsonRpcIdKey(externalId), route);
+    this.#serverRequestRoutesByChildId.set(childRequestIdKey(active, originalId), route);
+    return route;
+  }
+
+  #deleteServerRequestRoute(route: ServerRequestRoute): void {
+    this.#serverRequestRoutes.delete(jsonRpcIdKey(route.externalId));
+    this.#serverRequestRoutesByChildId.delete(childRequestIdKey(route.child, route.originalId));
+  }
+
+  #deleteServerRequestRoutes(active: ActiveBrokerChild): void {
+    for (const route of this.#serverRequestRoutes.values()) {
+      if (route.child === active) this.#deleteServerRequestRoute(route);
+    }
+  }
+
+  async #cancelServerRequestRoutes(active: ActiveBrokerChild): Promise<void> {
+    for (const route of this.#serverRequestRoutes.values()) {
+      if (route.child !== active) continue;
+      await this.#queueOutput(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          method: 'notifications/cancelled',
+          params: {reason: 'Threadnote MCP runtime exited.', requestId: route.externalId},
+        }),
+      );
+    }
+  }
+
+  async #queueListChangedNotifications(): Promise<void> {
+    await this.#queueOutput(JSON.stringify({jsonrpc: '2.0', method: 'notifications/tools/list_changed'}));
+    await this.#queueOutput(JSON.stringify({jsonrpc: '2.0', method: 'notifications/resources/list_changed'}));
+  }
+
+  #queueRequestFailure(id: string | number): Promise<void> {
+    return this.#queueOutput(
+      JSON.stringify({
+        error: {code: -32_603, message: MCP_BROKER_RUNTIME_EXIT_ERROR},
+        id,
+        jsonrpc: '2.0',
+      }),
+    );
   }
 
   #queueOutput(line: string): Promise<void> {
@@ -254,7 +385,9 @@ async function* ndjsonLines(input: AsyncIterable<Uint8Array>): AsyncGenerator<st
 function parseJsonRpcEnvelope(line: string): JsonRpcEnvelope | undefined {
   try {
     const value = JSON.parse(line) as unknown;
-    return typeof value === 'object' && value !== null && !Array.isArray(value) ? (value as JsonRpcEnvelope) : undefined;
+    return typeof value === 'object' && value !== null && !Array.isArray(value)
+      ? (value as JsonRpcEnvelope)
+      : undefined;
   } catch {
     return undefined;
   }
@@ -266,4 +399,28 @@ function isJsonRpcId(value: unknown): value is string | number {
 
 function jsonRpcIdKey(value: string | number): string {
   return `${typeof value}:${String(value)}`;
+}
+
+function childRequestIdKey(active: ActiveBrokerChild, id: string | number): string {
+  return `${active.generation}:${jsonRpcIdKey(id)}`;
+}
+
+function replaceJsonRpcId(line: string, id: string | number): string {
+  return JSON.stringify({...JSON.parse(line), id});
+}
+
+function replaceCancelledRequestId(line: string, requestId: string | number): string {
+  const envelope = JSON.parse(line) as {readonly params?: unknown};
+  const params =
+    typeof envelope.params === 'object' && envelope.params !== null && !Array.isArray(envelope.params)
+      ? envelope.params
+      : {};
+  return JSON.stringify({...envelope, params: {...params, requestId}});
+}
+
+function cancelledRequestId(params: unknown): string | number | undefined {
+  if (typeof params !== 'object' || params === null || Array.isArray(params) || !('requestId' in params)) {
+    return undefined;
+  }
+  return isJsonRpcId(params.requestId) ? params.requestId : undefined;
 }

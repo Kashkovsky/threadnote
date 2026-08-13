@@ -526,6 +526,7 @@ describe('standalone updater', () => {
       );
 
       expect(captured.output).toContain('Threadnote is up to date.');
+      expect(captured.output).toContain('run `threadnote repair`, then restart that host once');
       expect(downloadAttempted).toBe(false);
     }).pipe(provideTestLayer(ApplicationLayer)),
   );
@@ -687,6 +688,8 @@ describe('standalone updater', () => {
 
       expect(captured.output).toContain(`Would install standalone Threadnote to:`);
       expect(captured.output).toContain(stableVersion);
+      expect(captured.output).toContain('MCP host configurations were not refreshed');
+      expect(captured.output).toContain('must run `threadnote repair` and restart once');
     }).pipe(provideTestLayer(ApplicationLayer)),
   );
 

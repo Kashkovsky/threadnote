@@ -604,6 +604,22 @@ esac
       await expect(stat(promotionBackup)).rejects.toThrow();
       await expect(stat(promotionJournal)).resolves.toMatchObject({size: expect.any(Number)});
 
+      const cursorConfigPath = join(userHome, '.cursor', 'mcp.json');
+      await mkdir(join(userHome, '.cursor'), {recursive: true});
+      await Bun.write(
+        cursorConfigPath,
+        `${JSON.stringify(
+          {
+            mcpServers: {
+              other: {args: ['serve'], command: '/opt/example-mcp'},
+              threadnote: {args: ['mcp-server'], command: join(binRoot, 'threadnote')},
+            },
+          },
+          null,
+          2,
+        )}\n`,
+      );
+
       const update = await execute(
         join(binRoot, 'threadnote'),
         [
@@ -615,7 +631,6 @@ esac
           '--source',
           `http://127.0.0.1:${server.port}/releases`,
           '--allow-untrusted-source',
-          '--no-repair',
           '--no-post-update',
         ],
         {
@@ -632,6 +647,15 @@ esac
       expect(`${update.stdout}${update.stderr}`).toContain(
         `Installed standalone Threadnote ${packageManifest.version}`,
       );
+      expect(`${update.stdout}${update.stderr}`).toContain('Repairing local Threadnote setup after standalone update.');
+      const cursorConfig = JSON.parse(await readFile(cursorConfigPath, 'utf8')) as {
+        readonly mcpServers: Record<string, {readonly args?: readonly string[]; readonly command?: string}>;
+      };
+      expect(cursorConfig.mcpServers.other).toEqual({args: ['serve'], command: '/opt/example-mcp'});
+      expect(cursorConfig.mcpServers.threadnote).toMatchObject({
+        args: [],
+        command: join(binRoot, 'threadnote-mcp-server'),
+      });
       await expect(stat(promotionBackup)).rejects.toThrow();
       await expect(stat(promotionJournal)).rejects.toThrow();
       const transport = new StdioClientTransport({

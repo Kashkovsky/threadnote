@@ -517,9 +517,7 @@ function readProcessLease(fs: FileSystem.FileSystem, leasePath: string) {
           ? Option.some(value.startedAt)
           : Option.none<string>();
       const retirementPolicy =
-        'retirementPolicy' in value && value.retirementPolicy === 'preserve-session'
-          ? 'preserve-session'
-          : 'terminate';
+        'retirementPolicy' in value && value.retirementPolicy === 'preserve-session' ? 'preserve-session' : 'terminate';
       return Option.some({
         parentProcessId,
         processId: value.processId,

@@ -32,13 +32,19 @@ describe('Cursor Cloud profile', () => {
       team: 'engineering',
       user: 'cloud-user',
     });
-    expect(buildCursorCloudMcpConfig(profile)).toEqual(buildCursorCloudMcpConfig(profile));
-    expect(buildCursorCloudMcpConfig(profile).env).toEqual({
-      THREADNOTE_ACCOUNT: 'local',
-      THREADNOTE_AGENT_ID: 'cursor-agent',
-      THREADNOTE_CURSOR_CLOUD_TEAM: 'engineering',
-      THREADNOTE_MCP_TOOLSET: 'cursor-cloud',
-      THREADNOTE_USER: 'cloud-user',
+    const mcpConfig = buildCursorCloudMcpConfig(profile);
+    expect(mcpConfig).toEqual(buildCursorCloudMcpConfig(profile));
+    expect(mcpConfig).toEqual({
+      args: ['-lc', 'exec "$HOME/.local/bin/threadnote-mcp-server"'],
+      command: '/bin/sh',
+      env: {
+        THREADNOTE_ACCOUNT: 'local',
+        THREADNOTE_AGENT_ID: 'cursor-agent',
+        THREADNOTE_CURSOR_CLOUD_TEAM: 'engineering',
+        THREADNOTE_MCP_TOOLSET: 'cursor-cloud',
+        THREADNOTE_USER: 'cloud-user',
+      },
+      type: 'stdio',
     });
   });
 

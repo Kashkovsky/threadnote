@@ -7,6 +7,7 @@ import {describe, expect} from 'vitest';
 import {SystemInfo, type SystemInfoShape} from '../../src/effect/system.js';
 import {
   activateStandaloneRelease,
+  activeInstalledRelease,
   activeInstalledVersion,
   promoteStandaloneReleaseDirectory,
   pruneStandaloneReleases,
@@ -261,6 +262,12 @@ describe('standalone release lifecycle', () => {
                 : Effect.void,
           }).pipe(Effect.provideService(SystemInfo, testSystem), Effect.flip);
           const activeMissingAfterCrash = !(yield* fs.exists(path.join(installRoot, 'active-release.json')));
+          const readableDuringGap = yield* activeInstalledRelease().pipe(Effect.provideService(SystemInfo, testSystem));
+          const gapAfterRead = {
+            activeMissing: !(yield* fs.exists(path.join(installRoot, 'active-release.json'))),
+            backupExists: yield* fs.exists(path.join(installRoot, 'active-release.previous.json')),
+            journalExists: yield* fs.exists(path.join(installRoot, 'active-release.promotion.json')),
+          };
 
           yield* activateStandaloneRelease(newRelease, false).pipe(Effect.provideService(SystemInfo, testSystem));
           return {
@@ -269,8 +276,10 @@ describe('standalone release lifecycle', () => {
             },
             activeMissingAfterCrash,
             backupExists: yield* fs.exists(path.join(installRoot, 'active-release.previous.json')),
+            gapAfterRead,
             interrupted: String(interrupted),
             journalExists: yield* fs.exists(path.join(installRoot, 'active-release.promotion.json')),
+            readableDuringGap,
           };
         }),
       ).pipe(provideTestLayer(ApplicationLayer));
@@ -279,7 +288,9 @@ describe('standalone release lifecycle', () => {
         active: {version: '4.0.2'},
         activeMissingAfterCrash: true,
         backupExists: false,
+        gapAfterRead: {activeMissing: true, backupExists: true, journalExists: true},
         journalExists: false,
+        readableDuringGap: {releaseRoot: expect.any(String), version: '4.0.1'},
       });
       expect(result.interrupted).toContain('simulated active pointer crash');
     }),
@@ -614,24 +625,8 @@ describe('standalone release lifecycle', () => {
             undefined,
             'preserve-session',
           );
-          yield* writeProcessLease(
-            fs,
-            path,
-            installRoot,
-            '4.0.0',
-            mcpProcessId,
-            'mcp-process',
-            brokerProcessId,
-          );
-          yield* writeProcessLease(
-            fs,
-            path,
-            installRoot,
-            '4.0.0',
-            workerProcessId,
-            'worker-process',
-            mcpProcessId,
-          );
+          yield* writeProcessLease(fs, path, installRoot, '4.0.0', mcpProcessId, 'mcp-process', brokerProcessId);
+          yield* writeProcessLease(fs, path, installRoot, '4.0.0', workerProcessId, 'worker-process', mcpProcessId);
           yield* writeProcessLease(fs, path, installRoot, '4.0.0', cliProcessId, 'cli-process');
           const running = new Set([brokerProcessId, mcpProcessId, workerProcessId, cliProcessId]);
           const identity = new Map([

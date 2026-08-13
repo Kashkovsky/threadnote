@@ -1580,12 +1580,13 @@ describe('Threadnote 4 website content', () => {
     expect(content).toContain('kind=handoff');
     expect(content).toContain('commits and pushes');
     expect(content).toContain('capability-enforced cloud profile');
+    expect(content).toContain('stable `threadnote-mcp-server` launcher brokers');
 
     if (!mcpConfiguration || mcpConfiguration.type !== 'code') {
       throw new TestError('Missing Cursor Cloud MCP configuration.');
     }
     expect(JSON.parse(mcpConfiguration.code)).toMatchObject({
-      args: ['-lc', 'exec "$HOME/.local/bin/threadnote" mcp-server'],
+      args: ['-lc', 'exec "$HOME/.local/bin/threadnote-mcp-server"'],
       command: '/bin/sh',
       env: {
         THREADNOTE_ACCOUNT: 'local',

@@ -198,7 +198,6 @@ async function applicationProgram(arguments_: readonly string[], isMcpServer: bo
             Effect.scoped(mcpServerEffect),
             'mcp-server',
           ),
-          {retirementPolicy: 'preserve-session'},
         ),
       ),
       Effect.provide(runtime.ApplicationLayer),

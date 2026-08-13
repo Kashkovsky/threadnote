@@ -1,10 +1,6 @@
 import {Cause, Effect, Queue} from 'effect';
 import {activeInstalledRelease} from '../installations.js';
-import {
-  McpBrokerError,
-  runMcpBroker,
-  type McpBrokerChild,
-} from '../mcp_broker.js';
+import {McpBrokerError, runMcpBroker, type McpBrokerChild} from '../mcp_broker.js';
 import type {StandaloneActiveRelease} from '../standalone_process_lease.js';
 import {SystemInfo, type SystemInfoShape} from './system.js';
 

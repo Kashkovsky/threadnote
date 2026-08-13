@@ -16,6 +16,7 @@ import {
   withStandaloneInstallationLock,
 } from '../src/installations.js';
 import {
+  preservedStandaloneProcessIds,
   readStandaloneProcessLeaseVerification,
   terminateSupersededStandaloneProcesses,
 } from '../src/standalone_process_lease.js';
@@ -483,11 +484,18 @@ export const activateLocalStandaloneRelease = Effect.fn('developmentInstall.acti
       cleanupIssues.add('process-inspection');
     } else {
       if (live.value.truncated || live.value.unverified.length > 0) cleanupIssues.add('process-inspection');
-      for (const lease of [...live.value.verified, ...live.value.unverified]) {
-        if (lease.version === input.version) continue;
+      const superseded = [...live.value.verified, ...live.value.unverified].filter(
+        lease => lease.version !== input.version,
+      );
+      const preservedProcessIds = preservedStandaloneProcessIds(superseded);
+      for (const lease of superseded) {
         if (preservedMcpSessionProcessIds.has(lease.processId)) continue;
-        if (lease.retirementPolicy === 'preserve-session') preservedMcpSessionProcessIds.add(lease.processId);
-        else unresolvedProcessIds.add(lease.processId);
+        if (preservedProcessIds.has(lease.processId)) {
+          preservedMcpSessionProcessIds.add(lease.processId);
+          unresolvedProcessIds.delete(lease.processId);
+        } else {
+          unresolvedProcessIds.add(lease.processId);
+        }
       }
     }
     if (Option.isSome(input.stagedRoot)) {
