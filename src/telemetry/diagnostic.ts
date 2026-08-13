@@ -63,6 +63,7 @@ const SAFE_TELEMETRY_ERROR_TYPES = new Set([
   'CommandOutputLimitExceeded',
   'CommandSpawnFailed',
   'CommandTimedOut',
+  'CursorAttestationError',
   'CursorCloudOperationError',
   'CursorPluginError',
   'EmbeddingFailed',

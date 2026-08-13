@@ -4,6 +4,7 @@ import {
   DEFAULT_MCP_TOOLSET,
   MCP_TOOLSET_ENV,
   type McpToolset,
+  isCursorCloudGitBetaToolset,
   mcpToolCapabilities,
   parseMcpToolset,
 } from './mcp_toolset.js';
@@ -22,7 +23,14 @@ import {monitorSharedRepositories} from './effect/share.js';
 import {runObsidianProjectionPublish} from './obsidian_projection.js';
 import {withProductionLogging} from './effect/production_log.js';
 import {withAnonymousTelemetry} from './effect/telemetry.js';
-import {resolveCursorCloudMemoryScope, type CursorCloudMemoryScope} from './cursor_cloud.js';
+import {
+  CURSOR_CLOUD_LOCAL_MCP_TOOLSET,
+  CURSOR_CLOUD_MEMORY_ENDPOINT_ENV,
+  cursorCloudRemoteHybridStatus,
+  resolveCursorCloudMemoryScope,
+  type CursorCloudMemoryScope,
+} from './cursor_cloud.js';
+import {runCursorAttestationChallenge} from './cursor_cloud_attestation.js';
 import {
   McpServerOperationError,
   type RecallProgressTiming,
@@ -96,12 +104,15 @@ export const mcpServerEffect = withAnonymousTelemetry(
           heartbeatMilliseconds: mcpProgressHeartbeatMilliseconds(system.environment()),
           sharedSyncDelayMilliseconds: mcpProgressTestSharedSyncDelayMilliseconds(system.environment()),
         };
-        const memoryScope =
-          toolset === 'cursor-cloud' ? yield* resolveCursorCloudMemoryScope(config, system.environment()) : undefined;
+        const memoryScope = isCursorCloudGitBetaToolset(toolset)
+          ? yield* resolveCursorCloudMemoryScope(config, system.environment())
+          : undefined;
         setMcpStartupVersion(yield* currentPackageVersion().pipe(Effect.catch(() => Effect.succeed(undefined))));
         const instructions = memoryScope
-          ? `Cursor Cloud uses the exclusive shared memory scope ${memoryScope.root}. Call recall_context with an absolute callerCwd, then read returned threadnote:// URIs. Store durable memories with remember_context; writes are committed and pushed to the configured share. Memory tools reject any URI outside that scope. Use inspect_code_graph and analyze_code_graph only for the local checkout; worksets are disabled. Full cloud integration is still in development.`
-          : 'Call `recall_context` with project and absolute `callerCwd`; read `threadnote://` URIs. Use `inspect_code_graph` before broad `rg`/grep; round-trip `cgs_` IDs via `node`, `neighbors`, or `path`. Use `analyze_code_graph` for whole-repo stats, communities, hubs, and surprises. Retry `state=indexing` after `retryAfterMilliseconds`; exact text search remains useful meanwhile. Write durable knowledge and handoffs directly under stable project/topic; replace duplicates. Use `review_session_context` for additional user-approved candidates. Do not store secrets/customer data/raw logs. Confirm publishes; never publish handoffs/preferences.';
+          ? `Cursor Cloud Git beta uses the exclusive shared memory scope ${memoryScope.root}. Call recall_context with an absolute callerCwd, then read returned threadnote:// URIs. Store durable memories with remember_context; writes are committed and pushed to the configured share. Memory tools reject any URI outside that scope. Use inspect_code_graph and analyze_code_graph only for the local checkout; worksets are disabled.`
+          : toolset === CURSOR_CLOUD_LOCAL_MCP_TOOLSET
+            ? 'Cursor Cloud remote-hybrid mode uses this local server only for checkout-specific code graph evidence, diagnostics, and workload attestation. All historical memory reads and writes belong to the managed threadnote-memory HTTP server. Never fall back to local personal memory or a Git memory share.'
+            : 'Call `recall_context` with project and absolute `callerCwd`; read `threadnote://` URIs. Use `inspect_code_graph` before broad `rg`/grep; round-trip `cgs_` IDs via `node`, `neighbors`, or `path`. Use `analyze_code_graph` for whole-repo stats, communities, hubs, and surprises. Retry `state=indexing` after `retryAfterMilliseconds`; exact text search remains useful meanwhile. Write durable knowledge and handoffs directly under stable project/topic; replace duplicates. Use `review_session_context` for additional user-approved candidates. Do not store secrets/customer data/raw logs. Confirm publishes; never publish handoffs/preferences.';
         const server = new EffectMcpServerAdapter(
           'threadnote-local-adapter',
           '0.2.0',
@@ -109,7 +120,7 @@ export const mcpServerEffect = withAnonymousTelemetry(
           config.agentContextHome,
         );
 
-        registerResources(server, config, memoryScope);
+        if (mcpToolCapabilities(toolset).memoryRead) registerResources(server, config, memoryScope);
         registerTools(server, config, toolset, recallProgressTiming, memoryScope);
         // Packaged lifecycle coverage uses runtime diagnostics to create the real
         // crash-isolated child without requiring an installed or selected model.
@@ -117,7 +128,9 @@ export const mcpServerEffect = withAnonymousTelemetry(
           const runtime = yield* LocalModelRuntime;
           yield* runtime.diagnostics.pipe(Effect.catch(() => Effect.void));
         }
-        if (!memoryScope) yield* Effect.forkScoped(monitorSharedRepositories(config));
+        if (!memoryScope && toolset !== CURSOR_CLOUD_LOCAL_MCP_TOOLSET) {
+          yield* Effect.forkScoped(monitorSharedRepositories(config));
+        }
         yield* Console.error('Threadnote local MCP adapter running');
         return yield* server.run();
       }),
@@ -147,6 +160,73 @@ function registerResources(
   );
 }
 
+function registerCursorCloudLocalTools(server: EffectMcpServerAdapter, config: RuntimeConfig): void {
+  server.registerTool(
+    'cursor_cloud_status',
+    {
+      annotations: {readOnlyHint: true, destructiveHint: false},
+      description:
+        'Check the local graph plane and remote-memory configuration independently. This never reads local memory or tests Cursor-managed OAuth credentials.',
+      inputSchema: {
+        callerCwd: McpInput.string('Required absolute path to the current Cursor Cloud checkout'),
+      },
+    },
+    Effect.fn('mcp_server.cursorCloudStatus')(function* ({callerCwd}) {
+      const checkedCwd = requiredText(callerCwd, 'cursor_cloud_status', 'callerCwd', {
+        callerCwd: '/workspace/repository',
+      });
+      if (!checkedCwd.ok) return checkedCwd.error;
+      const system = yield* SystemInfo;
+      const endpoint = system.environment()[CURSOR_CLOUD_MEMORY_ENDPOINT_ENV]?.trim();
+      if (!endpoint) {
+        throw new McpServerOperationError(
+          `${CURSOR_CLOUD_MEMORY_ENDPOINT_ENV} is required when ${CURSOR_CLOUD_LOCAL_MCP_TOOLSET} is selected.`,
+        );
+      }
+      const receipt = yield* cursorCloudRemoteHybridStatus(config, {cwd: checkedCwd.value, endpoint});
+      return {
+        content: [{type: 'text' as const, text: JSON.stringify(receipt)}],
+        structuredContent: receipt,
+      };
+    }),
+  );
+
+  server.registerTool(
+    'complete_cursor_attestation',
+    {
+      annotations: {readOnlyHint: false, destructiveHint: false, idempotentHint: false},
+      description:
+        'Complete a Threadnote challenge with Cursor workload identity. The local server mints the nonce-bound OIDC JWT and sends it directly to the configured Threadnote origin; the token is never returned to the model.',
+      inputSchema: {
+        audience: McpInput.string('HTTPS audience returned by begin_cursor_attestation'),
+        challengeId: McpInput.string('Opaque challenge ID returned by begin_cursor_attestation'),
+        completionUrl: McpInput.string('HTTPS completion URL returned by begin_cursor_attestation'),
+        expiresAt: McpInput.string('Challenge expiry returned by begin_cursor_attestation'),
+        nonce: McpInput.string('Nonce returned by begin_cursor_attestation'),
+      },
+    },
+    Effect.fn('mcp_server.completeCursorAttestation')(function* (challenge) {
+      const system = yield* SystemInfo;
+      const endpoint = system.environment()[CURSOR_CLOUD_MEMORY_ENDPOINT_ENV]?.trim();
+      if (!endpoint) {
+        throw new McpServerOperationError(
+          `${CURSOR_CLOUD_MEMORY_ENDPOINT_ENV} is required when ${CURSOR_CLOUD_LOCAL_MCP_TOOLSET} is selected.`,
+        );
+      }
+      const receipt = yield* runCursorAttestationChallenge(challenge, endpoint);
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `Cursor workload attestation completed: ${receipt.attestationId}`,
+          },
+        ],
+        structuredContent: receipt,
+      };
+    }),
+  );
+}
+
 const getRuntimeConfig = Effect.fn('mcpServer.getRuntimeConfig')(function* () {
   return yield* getApplicationRuntimeConfig();
 });
@@ -159,14 +239,16 @@ function registerTools(
   memoryScope?: CursorCloudMemoryScope,
 ): void {
   const capabilities = mcpToolCapabilities(toolset);
-  registerSearchTool(
-    server,
-    config,
-    'recall_context',
-    'Search memories and seeded project guidance. Pass a stable project and absolute callerCwd for current repo/branch. Returns threadnote:// pointers to read or list. Lower threshold if results are sparse.',
-    recallProgressTiming,
-    memoryScope,
-  );
+  if (capabilities.memoryRead) {
+    registerSearchTool(
+      server,
+      config,
+      'recall_context',
+      'Search memories and seeded project guidance. Pass a stable project and absolute callerCwd for current repo/branch. Returns threadnote:// pointers to read or list. Lower threshold if results are sparse.',
+      recallProgressTiming,
+      memoryScope,
+    );
+  }
   if (toolset === 'full') {
     registerSearchTool(
       server,
@@ -180,24 +262,28 @@ function registerTools(
   registerCodeGraphTool(server, config, {allowWorkset: capabilities.graphWorkset});
   if (capabilities.contextBrief) registerContextBriefTool(server, config);
 
-  registerReadTool(
-    server,
-    config,
-    'read_context',
-    'Read a threadnote:// file URI returned by recall_context or list_context.',
-    memoryScope,
-  );
+  if (capabilities.memoryRead) {
+    registerReadTool(
+      server,
+      config,
+      'read_context',
+      'Read a threadnote:// file URI returned by recall_context or list_context.',
+      memoryScope,
+    );
+  }
   if (toolset === 'full') {
     registerReadTool(server, config, 'read', 'Compatibility alias for read_context.');
   }
 
-  registerListTool(
-    server,
-    config,
-    'list_context',
-    'List a threadnote:// directory returned by recall_context.',
-    memoryScope,
-  );
+  if (capabilities.memoryRead) {
+    registerListTool(
+      server,
+      config,
+      'list_context',
+      'List a threadnote:// directory returned by recall_context.',
+      memoryScope,
+    );
+  }
   if (toolset === 'full') {
     registerListTool(server, config, 'list', 'Compatibility alias for list_context.');
   }
@@ -216,6 +302,8 @@ function registerTools(
   }
 
   if (capabilities.memoryReview) registerCandidateMemoryTools(server, config);
+
+  if (toolset === CURSOR_CLOUD_LOCAL_MCP_TOOLSET) registerCursorCloudLocalTools(server, config);
 
   if (capabilities.memoryPublish)
     server.registerTool(

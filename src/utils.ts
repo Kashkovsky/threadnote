@@ -1641,14 +1641,16 @@ function memoryKindFromUri(uri: string): 'durable' | 'handoff' | 'incident' | 'p
           : undefined;
 }
 
-function memoryStatusFromUri(uri: string): 'active' | 'archived' | 'superseded' | undefined {
+function memoryStatusFromUri(uri: string): 'active' | 'archived' | 'expired' | 'superseded' | undefined {
   return uri.includes('/archived/')
     ? 'archived'
-    : uri.includes('/superseded/')
-      ? 'superseded'
-      : uri.includes('/memories/')
-        ? 'active'
-        : undefined;
+    : uri.includes('/expired/')
+      ? 'expired'
+      : uri.includes('/superseded/')
+        ? 'superseded'
+        : uri.includes('/memories/')
+          ? 'active'
+          : undefined;
 }
 
 function resourceProjectFromUri(uri: string): string | undefined {

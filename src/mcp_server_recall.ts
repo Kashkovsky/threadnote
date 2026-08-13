@@ -1259,7 +1259,7 @@ export function registerStoreTool(
         ),
         text: McpInput.string('Required memory text to store'),
         sourceAgentClient: McpInput.string('Originating client, for example cursor, copilot, codex, or claude'),
-        status: McpInput.literals(['active', 'archived', 'superseded'], 'Memory lifecycle status'),
+        status: McpInput.literals(['active', 'archived', 'expired', 'superseded'], 'Memory status'),
         topic: McpInput.string('Stable topic; active project/topic memories update one file'),
       },
     },

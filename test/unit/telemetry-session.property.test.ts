@@ -176,6 +176,21 @@ describe('anonymous telemetry agent sessions', () => {
       correlationScope: 'broker',
       id: inheritedId,
     });
+    expect(
+      resolveAgentSession({
+        configuration: first,
+        environment: withAgentSessionEnvironment(
+          {},
+          {consentGeneration: firstGeneration, id: inheritedId},
+          'auto-update-worker',
+        ),
+        randomBytes,
+      }),
+    ).toMatchObject({
+      consentGeneration: firstGeneration,
+      correlationScope: 'broker',
+      id: inheritedId,
+    });
 
     for (const environment of [
       {

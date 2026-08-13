@@ -360,7 +360,7 @@ function memoryKinds(value: unknown, label: string): readonly MemoryKind[] {
 
 function memoryStatuses(value: unknown, label: string): readonly MemoryStatus[] {
   const values = value === undefined ? DEFAULT_PROJECTION_STATUSES : requiredStringArray(value, label);
-  if (!values.every(item => item === 'active' || item === 'archived' || item === 'superseded')) {
+  if (!values.every(item => item === 'active' || item === 'archived' || item === 'expired' || item === 'superseded')) {
     throw new ObsidianConfigurationError(`${label} contains an unsupported memory status.`);
   }
   return values as readonly MemoryStatus[];

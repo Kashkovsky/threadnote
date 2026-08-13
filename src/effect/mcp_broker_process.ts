@@ -10,6 +10,9 @@ import {
 } from '../telemetry/session.js';
 import {SystemInfo, type SystemInfoShape} from './system.js';
 import {emitAnonymousTelemetryEvent, withAnonymousTelemetry} from './telemetry.js';
+import {triggerAutoUpdateIfEnabled} from '../auto_update.js';
+
+const AUTO_UPDATE_CHECK_INTERVAL_MILLISECONDS = 15 * 60 * 1_000;
 
 interface ActiveReleaseRequest {
   readonly reject: (cause: unknown) => void;
@@ -28,6 +31,15 @@ const mcpBrokerProgram = Effect.gen(function* () {
       Queue.take(brokerFailureEvents).pipe(
         Effect.flatMap(emitMcpBrokerFailureEvent),
         Effect.catchCause(() => Effect.void),
+      ),
+    ),
+  );
+  yield* triggerAutoUpdateIfEnabled(agentSession).pipe(Effect.ignore);
+  yield* Effect.forkScoped(
+    Effect.forever(
+      Effect.sleep(AUTO_UPDATE_CHECK_INTERVAL_MILLISECONDS).pipe(
+        Effect.andThen(triggerAutoUpdateIfEnabled(agentSession)),
+        Effect.ignore,
       ),
     ),
   );

@@ -7,6 +7,7 @@ import {currentPackageVersion, fetchLatestVersion, releaseSource} from './update
 import {selectUpdateChannel} from './update_channel.js';
 import {findExecutable} from './utils.js';
 import {compareVersions} from './version_compare.js';
+import {readAutoUpdateStatus} from './auto_update.js';
 
 export const detectConsolidationAgents = Effect.fn('manager.detectConsolidationAgents')(function* (
   config: Pick<RuntimeConfig, 'agentContextHome'>,
@@ -41,13 +42,18 @@ export const readManagerRuntimeState = Effect.fn('manager.readRuntimeState')(fun
   config: Pick<RuntimeConfig, 'agentContextHome'>,
 ) {
   const system = yield* SystemInfo;
-  const [agents, version] = yield* Effect.all([detectConsolidationAgents(config), currentPackageVersion()]);
+  const [agents, autoUpdate, version] = yield* Effect.all([
+    detectConsolidationAgents(config),
+    readAutoUpdateStatus(),
+    currentPackageVersion(),
+  ]);
   const latestVersion = yield* fetchLatestVersion(
     releaseSource(system.environment()),
     selectUpdateChannel(version),
   ).pipe(Effect.catch(() => Effect.succeed(undefined)));
   return {
     agents,
+    autoUpdate,
     latestVersion,
     updateAvailable: managerUpdateAvailable(version, latestVersion),
     version,

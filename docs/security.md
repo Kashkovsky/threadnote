@@ -9,9 +9,9 @@ file, durable close, and atomic rename. Derived index generations are activated 
 the full generation exists.
 
 Model artifacts are pinned by immutable repository revision, byte count, SHA-256, role, runtime version, and license.
-Install and repair provision the core embedding model automatically; additional model roles require an explicit
-selection. Partial downloads are never loaded. The llama adapter requests prebuilt binaries and refuses runtime
-compilation or implicit binary download.
+Install and repair extract and verify the core embedding model embedded in the standalone executable; additional model
+roles require an explicit selection and download. Partial downloads are never loaded. The llama adapter requests
+prebuilt binaries and refuses runtime compilation or implicit binary download.
 
 Share publishing scrubs known credential and machine-local path patterns before writing or pushing. Handoffs and
 preferences are not publishable. Publish order preserves the personal source until the shared canonical write,

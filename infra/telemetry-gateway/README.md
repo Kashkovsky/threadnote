@@ -17,12 +17,19 @@ depth. Logs and metrics have no pipelines.
 The edge ingress also enforces route, method, media type, body, concurrency, and
 request-rate limits. A 32 KiB accepted-byte budget per Machine per minute keeps
 the required two-Machine deployment below 3 GB of canonical input per month
-even under continuous saturation, leaving Free-tier headroom for bounded
-Collector retries. Source addresses are used
+even under continuous saturation. Collector queues and retries are disabled so
+accepted telemetry receives one best-effort export attempt rather than
+amplifying provider-side volume. Source addresses are used
 only as process-ephemeral HMAC rate-limit keys; they are neither logged nor
 forwarded. Production deployment, credential rotation, storage canary,
 certificate, DNS, monitoring, and rollback requirements live in the
 [production runbook](../../docs/operations/telemetry-production.md).
+
+The scheduled canary checks the actual Fly Machine inventory against the shared
+budget before sending a trace. At the 20 GB operator gate, setting the Fly
+secret `THREADNOTE_TELEMETRY_PUBLIC_INGESTION=disabled` makes `/v1/traces`
+return `503` while `/healthz` remains available; the runbook contains the exact
+shutdown and recovery procedure.
 
 ## Configure Fly
 
@@ -100,6 +107,7 @@ docker run --rm -d --name threadnote-telemetry-gateway \
   -p 127.0.0.1:18080:8080 \
   -e GRAFANA_CLOUD_OTLP_ENDPOINT='https://otlp-gateway-prod-eu-west-2.grafana.net/otlp' \
   -e GRAFANA_CLOUD_AUTHORIZATION='Basic MTIzNDU2OnRva2Vu' \
+  -e THREADNOTE_TELEMETRY_PUBLIC_INGESTION='enabled' \
   threadnote-telemetry-gateway
 curl --fail --silent --show-error http://127.0.0.1:18080/healthz
 docker stop threadnote-telemetry-gateway

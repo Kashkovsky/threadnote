@@ -35,30 +35,71 @@ owner's approval before launch.
 ## Free-plan and ingestion budget
 
 Production must remain on Grafana Cloud **Free**, not a Pro trial or paid plan.
-Before DNS, confirm the organization and stack both show Free/Always free,
-14-day trace retention, a 50 GB monthly trace allowance, and no usage-based
-overage. Grafana documents Free stacks as hard-limited, so reaching the limit
-drops telemetry rather than creating a bill. Do not add a payment method,
-accept a Pro upgrade, or enable a paid feature for this service.
+Before DNS and every release, confirm the organization and stack both show
+Free/Always free at $0 with no credit card, 14-day trace retention, and the
+current 50 GB monthly trace-ingestion limit. Free is a hard product boundary:
+do not add a payment method, accept a Pro trial or upgrade, increase retention,
+or enable a paid feature for this service. If the account or stack ever shows
+Pro or a payment method, disable public ingestion immediately and resolve the
+account state before resuming.
 
 The gateway independently caps accepted canonical protobuf at 32 KiB per
-minute per Machine. With exactly two Machines, even continuous saturation is
-less than 3 GB over 31 days. This leaves substantial headroom for bounded
-Collector retries and other stack use within the 50 GB allowance. Keep Machine
-count exactly two. Scaling out, weakening the byte cap, adding another signal,
-or sharing the stack requires a reviewed budget change before deployment.
+minute per Machine. The reviewed upper bound is exactly
+`32768 × 2 × 31 × 24 × 60 = 2,925,527,040` canonical bytes per 31 days. The
+Collector queue and retry loop are disabled, so it makes one best-effort export
+attempt per accepted batch rather than intentionally amplifying that volume.
+Grafana's provider-side accounting remains authoritative and can differ from
+canonical wire bytes, which is why the first operator gate is still more than
+three times the gateway ceiling.
 
-In Grafana's Billing/Usage dashboard, configure trace-usage notifications at
-10 GB (20%) and 20 GB (40%), and route them to the service owner. Also monitor
-`grafanacloud_traces_instance_usage` and discarded spans from the
-`grafanacloud-usage` data source. A usage alert protects delivery capacity; it
-is not permission to upgrade. At 10 GB, investigate volume and reduce the
-gateway cap. At 20 GB, disable public ingestion until the next allowance window
-or an explicitly approved non-billing storage plan exists.
+Keep the live Fly inventory at exactly two started Machines. The scheduled
+storage canary reads the real Machine inventory with a read-only Fly token and
+fails before sending telemetry if the count or state drifts. Scaling out,
+weakening the byte cap, enabling Collector retries/queues, adding another
+signal, or sharing the stack requires a reviewed budget change before
+deployment. CI keeps the per-Machine cap, two-Machine inventory, 31-day
+accounting period, 3 GB internal ceiling, and 10/20/50 GB gates ordered.
+
+In **Cost Management and Billing > Usage Alerts**, create a global **Traces**
+usage alert with a 20 GB monthly threshold and custom alert levels at 50% and
+100%, yielding notifications at 10 GB and 20 GB. Route both to the named service
+owner and backup, test the contact point, and record the rule IDs and test date.
+Also monitor `grafanacloud_traces_instance_usage`,
+`grafanacloud_traces_instance_bytes_received_per_second`, and discarded spans
+from the `grafanacloud-usage` data source. These alerts are safety gates, never
+permission to upgrade:
+
+- **10 GB:** acknowledge the alert the same day; verify the stack is still Free
+  with 14-day retention, run the live Machine-budget check, identify any shared
+  or unexpected signal usage, and deploy a reviewed lower gateway cap. Do not
+  increase the Grafana limit or move to Pro.
+- **20 GB:** immediately stop public trace ingestion while keeping `/healthz`
+  available:
+
+  ```sh
+  fly secrets set THREADNOTE_TELEMETRY_PUBLIC_INGESTION=disabled \
+    --app threadnote-telemetry
+  curl --output /dev/null --silent --write-out '%{http_code}\n' \
+    --request POST --header 'Content-Type: application/x-protobuf' \
+    --data-binary '' https://threadnote-telemetry.fly.dev/v1/traces
+  ```
+
+  The POST must return `503`; the storage canary and heartbeat will then fail by
+  design and the incident must be acknowledged. Resume only after the provider
+  allowance window resets, the cause is fixed, the owner approves, and a
+  preflight canary succeeds. Restore the checked-in `enabled` value and restart
+  the Machines with:
+
+  ```sh
+  fly secrets unset THREADNOTE_TELEMETRY_PUBLIC_INGESTION \
+    --app threadnote-telemetry
+  ```
+
+  Never resume by upgrading the Grafana plan.
 
 ## Credentials and rotation
 
-Use four distinct identities:
+Use five distinct identities:
 
 1. `threadnote-telemetry-ingest` is single-stack and `traces:write` only. Its
    exact OTLP base URL becomes the Fly secret `GRAFANA_CLOUD_OTLP_ENDPOINT`.
@@ -75,7 +116,17 @@ Use four distinct identities:
 3. The secret `THREADNOTE_TELEMETRY_CANARY_HEARTBEAT_URL` is the endpoint of a
    dedicated Grafana IRM Webhook integration with Heartbeat enabled. Treat the
    endpoint as a credential and expose it only to the canary job.
-4. Dashboard/alert provisioning, when automated, uses a separate Grafana
+4. `THREADNOTE_TELEMETRY_CANARY_FLY_READ_TOKEN` is a short-lived, read-only Fly
+   organization token used only to list the live Machine inventory. Create it
+   with `fly tokens create readonly`, use the shortest practical expiry (30
+   days or less), store it in the protected `telemetry-production` GitHub
+   Environment, and rotate it before expiry. Never use a personal or deploy
+   token for the scheduled canary.
+   Set the non-secret `THREADNOTE_TELEMETRY_CANARY_GATEWAY_URL` Environment
+   variable to the exact `.fly.dev/v1/traces` preflight URL until DNS and TLS
+   are live. Change it to `https://telemetry.threadnote.io/v1/traces` during
+   the hostname cutover; manual workflow dispatch input overrides this value.
+5. Dashboard/alert provisioning, when automated, uses a separate Grafana
    service account restricted to the required dashboard and alert resources.
 
 Rotate without an ingestion gap:
@@ -94,13 +145,15 @@ Rotate without an ingestion gap:
 ## Storage canary and alert
 
 [`telemetry-delivery-canary.yml`](../../.github/workflows/telemetry-delivery-canary.yml)
-runs every 15 minutes and on demand. It generates one random, schema-valid,
-content-free trace, posts it through the public gateway, and polls Grafana
-Tempo by that exact trace ID until the stored protobuf contains the expected
-resource and span identity. The synthetic version is `0.0.0-canary`, making it
-filterable from product telemetry. Success proves public TLS, route and schema
-validation, Collector export, Grafana ingestion, storage, read credentials, and
-query availability. `/healthz` proves none of the storage/read path.
+runs every 15 minutes and on demand. It first pipes `flyctl machine list --json`
+into the budget verifier; no Machine identifiers are logged. It then generates
+one random, schema-valid, content-free trace, posts it through the public
+gateway, and polls Grafana Tempo by that exact trace ID until the stored
+protobuf contains the expected resource and span identity. The synthetic
+version is `0.0.0-canary`, making it filterable from product telemetry. Success
+proves the two-Machine budget, public TLS, route and schema validation,
+Collector export, Grafana ingestion, storage, read credentials, and query
+availability. `/healthz` proves none of the storage/read path.
 
 The exact query contract is:
 
@@ -150,6 +203,8 @@ docker build --pull --file infra/telemetry-gateway/Dockerfile \
   --tag threadnote-telemetry-gateway:release .
 fly config validate --config fly.toml
 fly scale count 2 --app threadnote-telemetry --region fra
+fly machine list --app threadnote-telemetry --json | \
+  go -C infra/telemetry-gateway run ./cmd/budget
 ```
 
 Deploy the exact reviewed commit, record its image digest and Fly release ID,
@@ -217,7 +272,10 @@ Do not increase retention or enable richer logging as an incident shortcut.
 - [Locate the Grafana Cloud Tempo URL and User](https://grafana.com/docs/grafana-cloud/send-data/traces/set-up/locate-url-user-password/)
 - [Create scoped Grafana Cloud access policies](https://grafana.com/docs/grafana-cloud/send-data/traces/set-up/add-access-policy/)
 - [Grafana Cloud retention](https://grafana.com/docs/grafana-cloud/cost-management-and-billing/manage-invoices/understand-your-invoice/logs-invoice/)
+- [Grafana Cloud Free pricing and trace allowance](https://grafana.com/pricing/)
+- [Grafana Cloud usage alerts](https://grafana.com/docs/grafana-cloud/cost-management-and-billing/usage-cost-alerts/create-alerts/)
 - [Grafana IRM heartbeat monitoring](https://grafana.com/docs/grafana-cloud/alerting-and-irm/irm/integrations/configure-integrations/#enable-heartbeat-monitoring)
+- [Fly read-only tokens](https://fly.io/docs/security/tokens/)
 - [Fly Machine availability](https://fly.io/docs/apps/app-availability/)
 - [Fly application-log retention](https://fly.io/docs/monitoring/logging-overview/)
 - [Fly Proxy request headers and transport IP](https://fly.io/docs/networking/request-headers/)

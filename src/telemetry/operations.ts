@@ -57,6 +57,7 @@ const CLI_SUBCOMMANDS = {
 
 const CLI_TOP_LEVEL_OPERATIONS = [
   'archive',
+  'auto-update-worker',
   'cloud',
   'compact',
   'context',
@@ -111,8 +112,10 @@ const FIXED_RUNTIME_OPERATIONS = [
   'analyze_code_graph',
   'apply_memory_candidates',
   'archive_context',
+  'complete_cursor_attestation',
   'compact_context',
   'context_brief',
+  'cursor_cloud_status',
   'forget',
   'glob',
   'graph-build',
@@ -161,6 +164,7 @@ const ANONYMOUS_TELEMETRY_OPERATIONS = new Set<string>([
   ...CLI_TOP_LEVEL_OPERATIONS,
   ...NESTED_CLI_OPERATIONS,
   ...FIXED_RUNTIME_OPERATIONS,
+  'cloud.cursor.attest',
   'cloud.cursor.bootstrap',
   'cloud.cursor.config',
   'cloud.cursor.verify',

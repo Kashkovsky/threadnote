@@ -147,6 +147,13 @@ describe('CLI production log policy', () => {
     });
   });
 
+  it('distinguishes the closed Cursor attestation operation without including challenge data', () => {
+    expect(inspectCliInvocation(['cloud', 'cursor', 'attest', '--challenge', 'private-challenge'])).toMatchObject({
+      operation: 'cloud',
+      telemetryOperation: 'cloud.cursor.attest',
+    });
+  });
+
   it('falls back to closed operations for unregistered command words', () => {
     expect(inspectCliInvocation(['share', 'private-subcommand', 'customer-value'])).toMatchObject({
       operation: 'share',

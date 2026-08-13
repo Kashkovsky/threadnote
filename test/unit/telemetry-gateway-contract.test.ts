@@ -132,7 +132,40 @@ describe('telemetry producer and production gateway schema', () => {
     }
     expect(dockerfile).toContain('infra/telemetry-gateway/cmd');
     expect(dockerignore).toContain('!infra/telemetry-gateway/cmd/');
+    expect(dockerfile).toContain('infra/telemetry-gateway/internal');
+    expect(dockerignore).toContain('!infra/telemetry-gateway/internal/');
     expect(dockerfile).toContain('USER 10001:10001');
+  });
+
+  it('keeps the live Fly topology, gateway cap, and Free-plan stop gates coupled', () => {
+    const budget = readFileSync(join(root, 'infra', 'telemetry-gateway', 'internal', 'budget', 'budget.go'), 'utf8');
+    const gateway = readFileSync(join(root, 'infra', 'telemetry-gateway', 'gateway.go'), 'utf8');
+    const collector = readFileSync(join(root, 'infra', 'telemetry-gateway', 'collector.yaml'), 'utf8');
+    const fly = readFileSync(join(root, 'fly.toml'), 'utf8');
+    const canary = readFileSync(join(root, '.github', 'workflows', 'telemetry-delivery-canary.yml'), 'utf8');
+    const runbook = readFileSync(join(root, 'docs', 'operations', 'telemetry-production.md'), 'utf8');
+
+    expect(budget).toMatch(/AcceptedBytesPerMachinePerMinute\s*=\s*32 \* 1024/u);
+    expect(budget).toMatch(/ProductionMachineCount\s*=\s*2/u);
+    expect(budget).toMatch(/SafeMonthlyCanonicalBytes\s+int64\s*=\s*3_000_000_000/u);
+    expect(budget).toMatch(/UsageWarningBytes\s+int64\s*=\s*10_000_000_000/u);
+    expect(budget).toMatch(/UsageShutdownBytes\s+int64\s*=\s*20_000_000_000/u);
+    expect(budget).toMatch(/GrafanaFreeMonthlyBytes\s+int64\s*=\s*50_000_000_000/u);
+    expect(gateway).toContain('acceptedBytesPerMin  = budget.AcceptedBytesPerMachinePerMinute');
+    expect(gateway).toContain('THREADNOTE_TELEMETRY_PUBLIC_INGESTION');
+    expect(collector).toMatch(/retry_on_failure:\s*\n(?:\s*#[^\n]*\n)*\s*enabled: false/u);
+    expect(collector).toMatch(/sending_queue:\s*\n\s*enabled: false/u);
+    expect(fly).toMatch(/min_machines_running = 2/u);
+    expect(fly).toContain("THREADNOTE_TELEMETRY_PUBLIC_INGESTION = 'enabled'");
+    expect(canary).toContain('THREADNOTE_TELEMETRY_CANARY_FLY_READ_TOKEN');
+    expect(canary).toContain('vars.THREADNOTE_TELEMETRY_CANARY_GATEWAY_URL');
+    expect(canary).toContain('flyctl machine list --app threadnote-telemetry --json | go run ./cmd/budget');
+    expect(runbook).toContain('2,925,527,040');
+    expect(runbook).toContain('10 GB');
+    expect(runbook).toContain('20 GB');
+    expect(runbook).toContain('50 GB');
+    expect(runbook).toContain('THREADNOTE_TELEMETRY_PUBLIC_INGESTION=disabled');
+    expect(runbook).toContain('THREADNOTE_TELEMETRY_CANARY_GATEWAY_URL');
   });
 });
 

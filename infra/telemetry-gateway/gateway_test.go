@@ -13,6 +13,7 @@ import (
 	"testing/quick"
 	"time"
 
+	"github.com/Kashkovsky/threadnote/infra/telemetry-gateway/internal/budget"
 	collectortracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
@@ -392,6 +393,7 @@ func spanAttribute(request *collectortracepb.ExportTraceServiceRequest, key stri
 func TestConfigurationAcceptsOnlyGrafanaHTTPSOTLP(t *testing.T) {
 	t.Setenv("GRAFANA_CLOUD_OTLP_ENDPOINT", "https://otlp-gateway-prod-eu-west-2.grafana.net/otlp")
 	t.Setenv("GRAFANA_CLOUD_AUTHORIZATION", "Basic MTIzNDU2OnRva2Vu")
+	t.Setenv(publicIngestionEnv, "enabled")
 	if validationError := validateConfiguration(); validationError != nil {
 		t.Fatalf("valid configuration failed: %v", validationError)
 	}
@@ -407,6 +409,16 @@ func TestConfigurationAcceptsOnlyGrafanaHTTPSOTLP(t *testing.T) {
 		if validateConfiguration() == nil {
 			t.Fatalf("invalid endpoint was accepted: %s", endpoint)
 		}
+	}
+
+	t.Setenv("GRAFANA_CLOUD_OTLP_ENDPOINT", "https://otlp-gateway-prod-eu-west-2.grafana.net/otlp")
+	t.Setenv(publicIngestionEnv, "disabled")
+	if validationError := validateConfiguration(); validationError != nil {
+		t.Fatalf("disabled public ingestion failed configuration validation: %v", validationError)
+	}
+	t.Setenv(publicIngestionEnv, "typo")
+	if validateConfiguration() == nil {
+		t.Fatal("invalid public ingestion switch was accepted")
 	}
 }
 
@@ -430,6 +442,24 @@ func TestIngressRateLimitsAllRoutes(t *testing.T) {
 	}
 }
 
+func TestPublicIngestionKillSwitchRejectsBeforeReadingTelemetry(t *testing.T) {
+	t.Setenv(publicIngestionEnv, "disabled")
+	handler, handlerError := newGatewayHandler()
+	if handlerError != nil {
+		t.Fatal(handlerError)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/v1/traces", nil)
+	request.Header.Set("Content-Type", "application/x-protobuf")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("disabled ingress returned %d, want %d", response.Code, http.StatusServiceUnavailable)
+	}
+	if response.Header().Get("Retry-After") != "3600" {
+		t.Fatal("disabled ingress response is missing the bounded retry instruction")
+	}
+}
+
 func TestAcceptedByteBudgetStaysInsideTheFreeTierEnvelope(t *testing.T) {
 	limiter := &requestLimiter{sources: make(map[string]windowCounter)}
 	now := time.Unix(1_700_000_000, 0)
@@ -443,10 +473,8 @@ func TestAcceptedByteBudgetStaysInsideTheFreeTierEnvelope(t *testing.T) {
 	if !limiter.allowBytes("third", acceptedBytesPerMin, now.Add(time.Minute)) {
 		t.Fatal("accepted byte budget did not reset for the next minute")
 	}
-	const machines = 2
-	const minutesIn31Days = 31 * 24 * 60
-	if maximum := int64(acceptedBytesPerMin * machines * minutesIn31Days); maximum >= 3_000_000_000 {
-		t.Fatalf("two-Machine monthly cap = %d bytes, want less than 3 GB canonical input", maximum)
+	if maximum := budget.MaximumMonthlyCanonicalBytes(budget.ProductionMachineCount); maximum >= budget.SafeMonthlyCanonicalBytes {
+		t.Fatalf("production monthly cap = %d bytes, want less than %d canonical bytes", maximum, budget.SafeMonthlyCanonicalBytes)
 	}
 }
 

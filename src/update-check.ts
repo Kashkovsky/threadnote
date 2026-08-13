@@ -1,11 +1,8 @@
 import {Effect, FileSystem, Path, Result} from 'effect';
-import * as ChildProcess from 'effect/unstable/process/ChildProcess';
 import {SystemInfo} from './effect/system.js';
-import {withoutTelemetrySessionEnvironment} from './telemetry/session.js';
 import {selectUpdateChannel, type UpdateChannel} from './update_channel.js';
 import {fetchLatestVersion, releaseSource} from './update.js';
 import {compareVersions} from './utils.js';
-import {isStandaloneThreadnoteBuild} from './version.js';
 
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const FETCH_TIMEOUT_MS = 3000;
@@ -63,38 +60,6 @@ export function checkForThreadnoteUpdate(args: {readonly cachePath: string; read
     return channelCache ? toUpdateCheckResult(args.currentVersion, channelCache.latestVersion) : undefined;
   });
 }
-
-/**
- * Spawns `threadnote update --yes` as a detached background process so the
- * current hook fire can return immediately. The child re-invokes the same
- * standalone executable, inheriting nothing and writing to the null device —
- * its job is to swap the install in time for the next session.
- *
- * Best-effort: silently returns if the spawn fails. The nag banner remains as
- * the fallback signal.
- */
-export const spawnDetachedAutoUpdate = Effect.fn('updateCheck.spawnDetachedAutoUpdate')(function* () {
-  const system = yield* SystemInfo;
-  const developmentEntry = system.processArguments[1];
-  const arguments_ = isStandaloneThreadnoteBuild()
-    ? ['update', '--yes']
-    : typeof developmentEntry === 'string' && developmentEntry.length > 0
-      ? [developmentEntry, 'update', '--yes']
-      : undefined;
-  if (!arguments_) return;
-  yield* Effect.scoped(
-    Effect.gen(function* () {
-      const child = yield* ChildProcess.make(system.executablePath, arguments_, {
-        detached: true,
-        env: withoutTelemetrySessionEnvironment(system.environment()),
-        stdin: 'ignore',
-        stdout: 'ignore',
-        stderr: 'ignore',
-      });
-      yield* child.unref.pipe(Effect.asVoid);
-    }),
-  ).pipe(Effect.ignore);
-});
 
 function toUpdateCheckResult(currentVersion: string, latestVersion: string): UpdateCheckResult {
   return {

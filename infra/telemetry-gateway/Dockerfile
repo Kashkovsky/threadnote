@@ -9,6 +9,7 @@ COPY infra/telemetry-gateway/gateway_test.go ./gateway_test.go
 COPY infra/telemetry-gateway/schema.go ./schema.go
 COPY infra/telemetry-gateway/telemetry-schema-v1.json ./telemetry-schema-v1.json
 COPY infra/telemetry-gateway/cmd ./cmd
+COPY infra/telemetry-gateway/internal ./internal
 RUN go test ./... && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags='-s -w' -o /out/threadnote-gateway .
 
 FROM otel/opentelemetry-collector-contrib:0.158.0@sha256:c5918f78992ee73b0d6f0e599423ac5ec52dd5d9726733114d6eca53d5a32ed5

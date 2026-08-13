@@ -400,7 +400,8 @@ See the [Obsidian bridge guide](docs/obsidian.md) for setup, trust boundaries, d
 
 ## Recall
 
-`threadnote install` automatically downloads, verifies, and selects the pinned 36.7 MB BGE Small embedding model.
+`threadnote install` extracts, verifies, and selects the pinned 36.7 MB BGE Small embedding model bundled in the
+standalone executable, so first-run semantic recall does not require a separate model download.
 Recall combines local `node-llama-cpp` vectors with deterministic lexical, field, scope, lifecycle, authority,
 time, graph, and feedback signals. The lexical path remains available as a fail-open fallback if native inference is
 temporarily unavailable.

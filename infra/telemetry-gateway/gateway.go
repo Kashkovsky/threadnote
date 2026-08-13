@@ -21,10 +21,12 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/Kashkovsky/threadnote/infra/telemetry-gateway/internal/budget"
 )
 
 const (
-	acceptedBytesPerMin  = 32 * 1024
+	acceptedBytesPerMin  = budget.AcceptedBytesPerMachinePerMinute
 	collectorConfigPath  = "/etc/otelcol-contrib/config.yaml"
 	collectorHealthURL   = "http://127.0.0.1:13133/healthz"
 	collectorTracesURL   = "http://127.0.0.1:4318/v1/traces"
@@ -35,6 +37,7 @@ const (
 	maxRequestBytes      = 256 * 1024
 	maxSources           = 1024
 	perSourceRequestsMin = 60
+	publicIngestionEnv   = "THREADNOTE_TELEMETRY_PUBLIC_INGESTION"
 	trustedHealthHeader  = "X-Threadnote-Internal-Health"
 	trustedHealthValue   = "fly-service-check-v1"
 )
@@ -141,6 +144,7 @@ func newGatewayHandler() (http.Handler, error) {
 	concurrency := make(chan struct{}, maxConcurrent)
 	healthConcurrency := make(chan struct{}, maxHealthConcurrent)
 	limiter := &requestLimiter{sources: make(map[string]windowCounter)}
+	publicIngestionEnabled := os.Getenv(publicIngestionEnv) != "disabled"
 
 	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		response.Header().Set("Cache-Control", "no-store")
@@ -180,6 +184,11 @@ func newGatewayHandler() (http.Handler, error) {
 		}
 		if request.Header.Get("Content-Type") != "application/x-protobuf" || request.Header.Get("Content-Encoding") != "" {
 			writeStatus(response, http.StatusUnsupportedMediaType)
+			return
+		}
+		if !publicIngestionEnabled {
+			response.Header().Set("Retry-After", "3600")
+			writeStatus(response, http.StatusServiceUnavailable)
 			return
 		}
 		if request.ContentLength > maxRequestBytes {
@@ -305,9 +314,9 @@ func (limiter *requestLimiter) allow(source string, now time.Time) bool {
 	return true
 }
 
-// allowBytes bounds accepted telemetry independently of provider billing. With
-// exactly two Machines, the 32 KiB-per-minute cap is below 3 GB in a 31-day
-// month, leaving headroom for Collector retries within Grafana Cloud Free's allowance.
+// allowBytes bounds accepted telemetry independently of provider billing. The
+// production Machine inventory and this per-Machine limit are verified against
+// the shared budget contract by CI and the scheduled storage canary.
 func (limiter *requestLimiter) allowBytes(source string, size int, now time.Time) bool {
 	limiter.mu.Lock()
 	defer limiter.mu.Unlock()
@@ -373,6 +382,9 @@ func writeStatus(response http.ResponseWriter, status int) {
 }
 
 func validateConfiguration() error {
+	if ingestion := os.Getenv(publicIngestionEnv); ingestion != "enabled" && ingestion != "disabled" {
+		return errors.New("invalid public ingestion switch")
+	}
 	endpoint, parseError := url.ParseRequestURI(os.Getenv("GRAFANA_CLOUD_OTLP_ENDPOINT"))
 	if parseError != nil || endpoint.Scheme != "https" || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" {
 		return errors.New("invalid Grafana endpoint")

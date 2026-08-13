@@ -127,8 +127,8 @@ const checkSelfContained = Effect.gen(function* () {
   if (manifest.dependencies?.['web-tree-sitter'] !== EXPECTED_WEB_TREE_SITTER_VERSION) {
     failures.push(`web-tree-sitter must be pinned to ${EXPECTED_WEB_TREE_SITTER_VERSION}`);
   }
-  if (manifest.devDependencies?.['@effect/platform-bun'] !== EXPECTED_EFFECT_VERSION) {
-    failures.push(`@effect/platform-bun must be pinned to ${EXPECTED_EFFECT_VERSION}`);
+  if (manifest.dependencies?.['@effect/platform-bun'] !== EXPECTED_EFFECT_VERSION) {
+    failures.push(`@effect/platform-bun must be a runtime dependency pinned to ${EXPECTED_EFFECT_VERSION}`);
   }
   if (manifest.devDependencies?.['@vscode/tree-sitter-wasm'] !== EXPECTED_VSCODE_TREE_SITTER_WASM_VERSION) {
     failures.push(`@vscode/tree-sitter-wasm must be pinned to ${EXPECTED_VSCODE_TREE_SITTER_WASM_VERSION}`);
@@ -169,6 +169,8 @@ const checkSelfContained = Effect.gen(function* () {
   if (yield* fs.exists(path.join(root, 'dist'))) {
     const canonicalLogo = path.join(root, 'assets', 'brand', 'threadnote-logo.svg');
     const packagedLogo = path.join(root, 'dist', 'assets', 'brand', 'threadnote-logo.svg');
+    const canonicalModelLicense = path.join(root, 'assets', 'models', 'licenses', 'bge-small-en-v1.5.LICENSE');
+    const packagedModelLicense = path.join(root, 'dist', 'assets', 'models', 'licenses', 'bge-small-en-v1.5.LICENSE');
     for (const directory of FORBIDDEN_RELEASE_DIRECTORIES) {
       if (yield* fs.exists(path.join(root, 'dist', directory))) {
         failures.push(`standalone build output contains website content: dist/${directory}`);
@@ -185,6 +187,7 @@ const checkSelfContained = Effect.gen(function* () {
       path.join(root, 'dist', 'cursor-plugin', 'rules', 'threadnote.mdc'),
       path.join(root, 'dist', 'cursor-plugin', 'LICENSE'),
       packagedLogo,
+      packagedModelLicense,
       path.join(root, 'dist', 'assets', 'code-graph', 'manifest.json'),
       path.join(root, 'dist', 'assets', 'code-graph', 'runtime', 'web-tree-sitter.wasm'),
       path.join(root, 'dist', 'assets', 'code-graph', 'grammars', 'java.wasm'),
@@ -205,6 +208,13 @@ const checkSelfContained = Effect.gen(function* () {
       (yield* sha256FileHex(canonicalLogo)) !== (yield* sha256FileHex(packagedLogo))
     ) {
       failures.push('standalone build output does not contain the canonical Threadnote logo');
+    }
+    if (
+      (yield* fs.exists(canonicalModelLicense)) &&
+      (yield* fs.exists(packagedModelLicense)) &&
+      (yield* sha256FileHex(canonicalModelLicense)) !== (yield* sha256FileHex(packagedModelLicense))
+    ) {
+      failures.push('standalone build output does not contain the pinned BGE Small license notice');
     }
     if (yield* fs.exists(path.join(root, 'dist', 'assets', 'code-graph', 'manifest.json'))) {
       yield* validateCodeGraphAssets(fs, path, path.join(root, 'dist', 'assets', 'code-graph'), failures);

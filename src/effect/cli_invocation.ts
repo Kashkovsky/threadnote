@@ -1,0 +1,189 @@
+import {cliAnonymousTelemetryOperation} from '../telemetry/operations.js';
+
+export type ProductionLogMode = 'always' | 'never' | 'requires-apply' | 'skips-on-preview';
+type CliValueFlagKind = 'other' | 'string';
+
+interface CliCommandRegistration {
+  readonly aliases: readonly string[];
+  readonly canonicalName: string;
+  readonly productionLog: {
+    readonly mode?: ProductionLogMode;
+    readonly subcommands?: Readonly<Record<string, ProductionLogMode>>;
+  };
+}
+
+export interface CliInvocationInspection {
+  readonly homeOverride?: string;
+  readonly operation?: string;
+  readonly telemetryOperation?: string;
+  readonly writeAnonymousTelemetry: boolean;
+  readonly writeProductionLog: boolean;
+}
+
+const encodedStringPrefix = '\u{f0000}threadnote:';
+const valueFlagKinds = new Map<string, CliValueFlagKind>();
+const booleanFlagNames = new Set<string>();
+const cliRuntimeValueFlagKinds = new Map<string, CliValueFlagKind>([
+  ['--completions', 'other'],
+  ['--log-level', 'other'],
+]);
+
+export function registerCliValueFlag(name: string, kind: CliValueFlagKind): void {
+  valueFlagKinds.set(name, kind);
+}
+
+export function registerCliBooleanFlag(name: string): void {
+  booleanFlagNames.add(name);
+}
+
+export function decodeCliStringFlagValue(value: string): string {
+  return value.startsWith(encodedStringPrefix) ? value.slice(encodedStringPrefix.length) : value;
+}
+
+export function makeCliInvocationInspector(registrations: readonly CliCommandRegistration[]) {
+  const operationByName = new Map(
+    registrations.flatMap(registration => [
+      [registration.canonicalName, registration.canonicalName] as const,
+      ...registration.aliases.map(alias => [alias, registration.canonicalName] as const),
+    ]),
+  );
+  const registrationByName = new Map(
+    registrations.map(registration => [registration.canonicalName, registration] as const),
+  );
+
+  return (arguments_: readonly string[]): CliInvocationInspection => {
+    const scanned = scanCliArguments(arguments_);
+    const selectedName = scanned.positionals[0];
+    const operation = selectedName === undefined ? undefined : (operationByName.get(selectedName) ?? 'unknown');
+    const telemetryOperation =
+      operation === undefined
+        ? undefined
+        : cliAnonymousTelemetryOperation(operation, scanned.positionals[1], scanned.positionals[2]);
+    const registration =
+      operation === undefined || operation === 'unknown' ? undefined : registrationByName.get(operation);
+    const mode =
+      registration?.productionLog.subcommands?.[scanned.positionals[1] ?? ''] ??
+      registration?.productionLog.mode ??
+      'always';
+    const writeProductionLog =
+      operation !== undefined &&
+      mode !== 'never' &&
+      scanned.booleanValues.get('--dry-run') !== true &&
+      !scanned.flags.has('--help') &&
+      !scanned.flags.has('-h') &&
+      !(mode === 'requires-apply' && scanned.booleanValues.get('--apply') !== true) &&
+      !(mode === 'skips-on-preview' && scanned.booleanValues.get('--preview') === true);
+    const writeAnonymousTelemetry =
+      operation !== undefined && operation !== 'telemetry' && !scanned.flags.has('--help') && !scanned.flags.has('-h');
+    return {
+      ...(scanned.homeOverride === undefined ? {} : {homeOverride: scanned.homeOverride}),
+      ...(operation === undefined ? {} : {operation}),
+      ...(telemetryOperation === undefined ? {} : {telemetryOperation}),
+      writeAnonymousTelemetry,
+      writeProductionLog,
+    };
+  };
+}
+
+function scanCliArguments(arguments_: readonly string[]) {
+  const booleanValues = new Map<string, boolean>();
+  const flags = new Set<string>();
+  const positionals: string[] = [];
+  let homeOverride: string | undefined;
+  for (let index = 0; index < arguments_.length; index += 1) {
+    const argument = arguments_[index] ?? '';
+    const equalsIndex = argument.indexOf('=');
+    const flagName = equalsIndex > 0 ? argument.slice(0, equalsIndex) : argument;
+    const valueKind = valueFlagKinds.get(flagName) ?? cliRuntimeValueFlagKinds.get(flagName);
+    if (valueKind !== undefined) {
+      const value = equalsIndex > 0 ? argument.slice(equalsIndex + 1) : arguments_[index + 1];
+      if (flagName === '--home') {
+        homeOverride = value;
+      }
+      if (equalsIndex < 0 && value !== undefined) {
+        index += 1;
+      }
+      continue;
+    }
+    if (booleanFlagNames.has(flagName)) {
+      const inlineValue = equalsIndex > 0 ? parseCliBoolean(argument.slice(equalsIndex + 1)) : undefined;
+      const followingValue = equalsIndex < 0 ? parseCliBoolean(arguments_[index + 1]) : undefined;
+      booleanValues.set(flagName, inlineValue ?? followingValue ?? true);
+      if (followingValue !== undefined) {
+        index += 1;
+      }
+      continue;
+    }
+    if (argument.startsWith('-')) {
+      flags.add(flagName);
+    } else {
+      positionals.push(argument);
+    }
+  }
+  return {booleanValues, flags, homeOverride, positionals};
+}
+
+function parseCliBoolean(value: string | undefined): boolean | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  switch (value.toLowerCase()) {
+    case '1':
+    case 'on':
+    case 'true':
+    case 'yes':
+      return true;
+    case '0':
+    case 'false':
+    case 'no':
+    case 'off':
+      return false;
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * Preserve Commander-compatible string values while Effect 4's beta lexer
+ * still tokenizes dash-prefixed values as flags and splits inline values at
+ * every equals sign. Remove this shim once the upstream lexer preserves both.
+ */
+export function normalizeCliArguments(args: readonly string[]): readonly string[] {
+  const normalized: string[] = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const current = args[index] ?? '';
+    const equalsIndex = current.indexOf('=');
+    const inlineName = equalsIndex > 0 ? current.slice(0, equalsIndex) : current;
+    const kind = valueFlagKinds.get(inlineName);
+    if (!kind) {
+      normalized.push(current);
+      continue;
+    }
+
+    if (equalsIndex > 0) {
+      const value = current.slice(equalsIndex + 1);
+      if (kind === 'string') {
+        normalized.push(inlineName, encodeStringArgument(value));
+      } else {
+        normalized.push(current);
+      }
+      continue;
+    }
+
+    const next = args[index + 1];
+    if (next?.startsWith('-') && next !== '-') {
+      normalized.push(kind === 'string' ? current : `${current}=${next}`);
+      if (kind === 'string') {
+        normalized.push(encodeStringArgument(next));
+      }
+      index += 1;
+      continue;
+    }
+    normalized.push(current);
+  }
+  return normalized;
+}
+
+function encodeStringArgument(value: string): string {
+  return value.startsWith('-') ? `${encodedStringPrefix}${value}` : value;
+}

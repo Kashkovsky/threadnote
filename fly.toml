@@ -13,6 +13,9 @@ primary_region = 'fra'
   strategy = 'canary'
   max_unavailable = 1
 
+[env]
+  THREADNOTE_TELEMETRY_PUBLIC_INGESTION = 'enabled'
+
 [http_service]
   internal_port = 8080
   force_https = true

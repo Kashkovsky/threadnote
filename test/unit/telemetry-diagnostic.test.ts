@@ -5,6 +5,7 @@ import {InsufficientMemory} from '../../src/effect/ai/errors.js';
 import {HomeMigrationInsufficientSpace} from '../../src/migration/home.js';
 import {StorageLayoutMigrationConflict} from '../../src/migration/layout.js';
 import {ReportIssueCreateFailed} from '../../src/report_issue.js';
+import {CursorAttestationError} from '../../src/cursor_cloud_attestation.js';
 import {
   anonymousTelemetryDiagnosticFromCodeGraphRefreshFailure,
   anonymousTelemetryDiagnosticFromError,
@@ -48,6 +49,10 @@ describe('anonymous telemetry diagnostics', () => {
     {
       error: new ReportIssueCreateFailed({message: 'private report issue body'}),
       errorType: 'ReportIssueCreateFailed',
+    },
+    {
+      error: new CursorAttestationError('private cursor attestation response'),
+      errorType: 'CursorAttestationError',
     },
   ])('projects $errorType through the closed error-type registry', ({error, errorType}) => {
     const diagnostic = anonymousTelemetryDiagnosticFromError(error);

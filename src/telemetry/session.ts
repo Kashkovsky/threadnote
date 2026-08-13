@@ -18,7 +18,7 @@ const CONSENT_GENERATION_PREFIX = 'tng_';
 
 export type AgentSessionProvider = 'claude' | 'codex' | 'copilot' | 'cursor';
 export type TelemetryChildKind =
-  'graph-builder' | 'local-model-worker' | 'mcp-broker-runtime' | 'mcp-server' | 'parser-worker';
+  'auto-update-worker' | 'graph-builder' | 'local-model-worker' | 'mcp-broker-runtime' | 'mcp-server' | 'parser-worker';
 
 export interface ResolvedAgentSession {
   readonly consentGeneration?: string;
@@ -279,6 +279,7 @@ function clearTelemetrySessionEnvironmentFailSoft(environment: NodeJS.ProcessEnv
 
 function isTelemetryChildKind(value: string | undefined): value is TelemetryChildKind {
   return (
+    value === 'auto-update-worker' ||
     value === 'graph-builder' ||
     value === 'local-model-worker' ||
     value === 'mcp-broker-runtime' ||
