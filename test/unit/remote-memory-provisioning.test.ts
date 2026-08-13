@@ -52,23 +52,18 @@ describe('remote memory provisioning boundary', () => {
   it('decodes bounded JSONB text without relying on the PostgreSQL driver JSON representation', () => {
     const json = '{"displayName": "Threadnote managed memory", "projects": ["threadnote"]}';
 
-    expect(
-      decodeStoredSharePolicyDocument({
-        byteLength: new TextEncoder().encode(json).byteLength,
-        json,
-        type: 'object',
-      }),
-    ).toEqual({displayName: 'Threadnote managed memory', projects: ['threadnote']});
+    expect(decodeStoredSharePolicyDocument(json)).toEqual({
+      displayName: 'Threadnote managed memory',
+      projects: ['threadnote'],
+    });
   });
 
-  it.each([
-    {byteLength: 4, json: '"{}"', type: 'string'},
-    {byteLength: 8, json: 'not-json', type: 'object'},
-    {byteLength: 2, json: '[]', type: 'object'},
-    {byteLength: STORED_SHARE_POLICY_MAX_BYTES + 1, json: '{}', type: 'object'},
-  ])('rejects an unsafe stored share-policy representation %#', stored => {
-    expect(() => decodeStoredSharePolicyDocument(stored)).toThrow('cannot be safely compared');
-  });
+  it.each([undefined, null, {}, '', 'not-json', '[]', `{"value":"${'a'.repeat(STORED_SHARE_POLICY_MAX_BYTES)}"}`])(
+    'rejects an unsafe stored share-policy representation %#',
+    stored => {
+      expect(() => decodeStoredSharePolicyDocument(stored)).toThrow('cannot be safely compared');
+    },
+  );
 
   it('compares nested share policy objects independent of JSONB key order', () => {
     const input: RemoteMemoryProvisioningInput = {

@@ -72,9 +72,7 @@ interface AttestationRow {
 }
 
 interface SharePolicyRow {
-  readonly policy_document_bytes: number;
   readonly policy_document_json: string | null;
-  readonly policy_document_type: string | null;
   readonly policy_digest: string;
   readonly policy_version: string;
   readonly status: string;
@@ -443,9 +441,8 @@ export class PostgresRemoteControlPlane implements RemoteAuthorizationStore, Cur
       const desiredPolicy = provisioningPolicy(input);
       const currentShares = await transaction<SharePolicyRow[]>`
         SELECT s.policy_version, s.policy_digest, s.status,
-          jsonb_typeof(v.policy_document) AS policy_document_type,
-          octet_length(v.policy_document::text) AS policy_document_bytes,
-          CASE WHEN octet_length(v.policy_document::text) <= ${STORED_SHARE_POLICY_MAX_BYTES}
+          CASE WHEN jsonb_typeof(v.policy_document) = 'object'
+            AND octet_length(v.policy_document::text) BETWEEN 2 AND ${STORED_SHARE_POLICY_MAX_BYTES}
             THEN v.policy_document::text ELSE NULL
           END AS policy_document_json
         FROM remote_memory.shares s
@@ -460,11 +457,7 @@ export class PostgresRemoteControlPlane implements RemoteAuthorizationStore, Cur
       }
       const retainedSharePolicy =
         currentShare && input.sharePolicyVersion === undefined
-          ? decodeStoredSharePolicyDocument({
-              byteLength: currentShare.policy_document_bytes,
-              json: currentShare.policy_document_json,
-              type: currentShare.policy_document_type,
-            })
+          ? decodeStoredSharePolicyDocument(currentShare.policy_document_json)
           : undefined;
       if (retainedSharePolicy) {
         requireNoImplicitSharePolicyChange(input, retainedSharePolicy);
@@ -913,27 +906,17 @@ function requireCompleteSharePolicy(input: RemoteMemoryProvisioningInput): void 
   }
 }
 
-export function decodeStoredSharePolicyDocument(
-  input: Readonly<{
-    byteLength: unknown;
-    json: unknown;
-    type: unknown;
-  }>,
-): Readonly<Record<string, unknown>> {
+export function decodeStoredSharePolicyDocument(json: unknown): Readonly<Record<string, unknown>> {
   if (
-    input.type !== 'object' ||
-    typeof input.byteLength !== 'number' ||
-    !Number.isSafeInteger(input.byteLength) ||
-    input.byteLength < 2 ||
-    input.byteLength > STORED_SHARE_POLICY_MAX_BYTES ||
-    typeof input.json !== 'string' ||
-    new TextEncoder().encode(input.json).byteLength !== input.byteLength
+    typeof json !== 'string' ||
+    json.length < 2 ||
+    new TextEncoder().encode(json).byteLength > STORED_SHARE_POLICY_MAX_BYTES
   ) {
     throw remoteMemoryError('conflict', 'The stored share-wide policy cannot be safely compared.');
   }
   let document: unknown;
   try {
-    document = JSON.parse(input.json);
+    document = JSON.parse(json);
   } catch {
     throw remoteMemoryError('conflict', 'The stored share-wide policy cannot be safely compared.');
   }

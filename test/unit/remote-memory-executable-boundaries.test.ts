@@ -1,4 +1,6 @@
-import {readFile} from '../helpers/node-fs-promises.js';
+import {mkdtemp, readFile, rm} from '../helpers/node-fs-promises.js';
+import {tmpdir} from '../helpers/node-os.js';
+import {join} from '../helpers/node-path.js';
 import {it as effectIt} from '@effect/vitest';
 import {Cause, Effect, Exit} from 'effect';
 import {describe, expect, it} from 'vitest';
@@ -10,21 +12,32 @@ const awaitedCancellationFixture = `
   import * as BunRuntime from '@effect/platform-bun/BunRuntime';
   import {Effect} from 'effect';
   import {fromPromiseInterruptibleAwaiting} from './src/effect/errors.ts';
+  const markerPath = process.env.THREADNOTE_TEST_MARKER_PATH;
+  if (!markerPath) throw new Error('Missing marker path.');
+  const {appendFileSync} = process.getBuiltinModule('fs');
+  const initialSignalListeners = process.listenerCount('SIGTERM');
   const program = Effect.acquireUseRelease(
     Effect.void,
     () => fromPromiseInterruptibleAwaiting(
       signal => new Promise(resolve => {
         const drain = () => setTimeout(() => {
-          process.stderr.write('drain-complete\\n');
+          appendFileSync(markerPath, 'drain-complete\\n');
           resolve();
         }, 100);
         signal.addEventListener('abort', drain, {once: true});
-        process.stdout.write('ready\\n');
+        const announceReady = () => {
+          if (process.listenerCount('SIGTERM') <= initialSignalListeners) {
+            setTimeout(announceReady, 1);
+            return;
+          }
+          process.stdout.write('ready\\n');
+        };
+        setTimeout(announceReady, 0);
         if (signal.aborted) drain();
       }),
       cause => cause,
     ),
-    () => Effect.sync(() => process.stderr.write('release-complete\\n')),
+    () => Effect.sync(() => appendFileSync(markerPath, 'release-complete\\n')),
   );
   BunRuntime.runMain(program, {disableErrorReporting: true});
 `;
@@ -54,21 +67,26 @@ describe('remote memory executable boundaries', () => {
     expect(standalone).toContain('fromPromiseInterruptibleAwaiting(');
     expect(standalone).toContain('service.runRemoteMemoryService(process.env');
     expect(operator).toContain('fromPromiseInterruptibleAwaiting(evaluate, cause => cause)');
+    const temporaryRoot = await mkdtemp(join(tmpdir(), 'threadnote-remote-memory-boundary-'));
+    const markerPath = join(temporaryRoot, 'shutdown-order.txt');
     const child = Bun.spawn({
       cmd: [process.execPath, '--eval', awaitedCancellationFixture],
       cwd: repoRoot,
-      env: process.env,
-      stderr: 'pipe',
+      env: {...process.env, THREADNOTE_TEST_MARKER_PATH: markerPath},
+      stderr: 'ignore',
       stdout: 'pipe',
     });
-    const stderr = new Response(child.stderr).text();
+    const stdout = captureOutput(child.stdout);
     try {
-      await waitForOutput(child.stdout, 'ready');
+      await stdout.waitFor('ready');
       child.kill('SIGTERM');
       expect(await child.exited).not.toBe(0);
-      expect(await stderr).toMatch(/drain-complete\nrelease-complete\n$/u);
+      expect(await readFile(markerPath, 'utf8')).toBe('drain-complete\nrelease-complete\n');
     } finally {
       if (child.exitCode === null) child.kill('SIGKILL');
+      await child.exited;
+      await stdout.completed;
+      await rm(temporaryRoot, {force: true, recursive: true});
     }
   });
 
@@ -159,22 +177,41 @@ describe('remote memory executable boundaries', () => {
   });
 });
 
-async function waitForOutput(stream: ReadableStream<Uint8Array>, expected: string): Promise<void> {
+function captureOutput(stream: ReadableStream<Uint8Array>): {
+  readonly completed: Promise<string>;
+  readonly waitFor: (expected: string) => Promise<void>;
+} {
   const reader = stream.getReader();
   const decoder = new TextDecoder();
   let output = '';
-  try {
-    while (!output.includes(expected)) {
-      const chunk = await Promise.race([
-        reader.read(),
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error(`Child did not emit ${expected}.`)), 5_000),
-        ),
-      ]);
-      if (chunk.done) throw new Error(`Child exited before emitting ${expected}.`);
+  const observers = new Set<() => void>();
+  const completed = (async () => {
+    for (;;) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
       output += decoder.decode(chunk.value, {stream: true});
+      for (const observe of observers) observe();
     }
-  } finally {
-    await reader.cancel();
-  }
+    output += decoder.decode();
+    for (const observe of observers) observe();
+    return output;
+  })();
+  return {
+    completed,
+    waitFor: expected =>
+      new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(() => finish(() => reject(new Error(`Child did not emit ${expected}.`))), 5_000);
+        const observe = () => {
+          if (output.includes(expected)) finish(resolve);
+        };
+        const finish = (settle: () => void) => {
+          clearTimeout(timeout);
+          observers.delete(observe);
+          settle();
+        };
+        observers.add(observe);
+        observe();
+        void completed.then(() => finish(() => reject(new Error(`Child exited before emitting ${expected}.`))), reject);
+      }),
+  };
 }
