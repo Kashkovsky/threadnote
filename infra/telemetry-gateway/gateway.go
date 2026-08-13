@@ -134,8 +134,7 @@ func newGatewayHandler() (http.Handler, error) {
 
 	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		response.Header().Set("Cache-Control", "no-store")
-		isHealthCheck := request.URL.Path == "/healthz" && request.URL.RawQuery == "" && request.Method == http.MethodGet
-		if !limiter.allow(requestSource(request, sourceHashKey), time.Now(), !isHealthCheck) {
+		if !limiter.allow(requestSource(request, sourceHashKey), time.Now()) {
 			response.Header().Set("Retry-After", "60")
 			writeStatus(response, http.StatusTooManyRequests)
 			return
@@ -240,7 +239,7 @@ func forwardTraces(response http.ResponseWriter, request *http.Request, client *
 	response.WriteHeader(result.StatusCode)
 }
 
-func (limiter *requestLimiter) allow(source string, now time.Time, enforceSourceLimit bool) bool {
+func (limiter *requestLimiter) allow(source string, now time.Time) bool {
 	limiter.mu.Lock()
 	defer limiter.mu.Unlock()
 	window := now.Truncate(time.Minute)
@@ -254,10 +253,6 @@ func (limiter *requestLimiter) allow(source string, now time.Time, enforceSource
 	}
 	if limiter.global.count >= globalRequestsPerMin {
 		return false
-	}
-	if !enforceSourceLimit {
-		limiter.global.count++
-		return true
 	}
 	counter, exists := limiter.sources[source]
 	if !exists && len(limiter.sources) >= maxSources {

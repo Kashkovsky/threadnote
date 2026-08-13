@@ -26,9 +26,7 @@ primary_region = 'fra'
     interval = '15s'
     timeout = '3s'
     grace_period = '10s'
-    method = 'GET'
-    path = '/healthz'
-    protocol = 'http'
+    protocol = 'tcp'
 
 [[vm]]
   memory = '512mb'
