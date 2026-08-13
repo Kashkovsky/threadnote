@@ -291,7 +291,7 @@ export function rankRecallCandidates(
         compareCodeUnits(left.candidate.uri, right.candidate.uri),
     );
   return {
-    confidence: assessConfidence(ranked),
+    confidence: assessConfidence(ranked, queryTermVariants[0] ?? []),
     rankerVersion: RECALL_RANKER_VERSION,
     results: ranked,
   };
@@ -765,11 +765,17 @@ function reason(code: string, contribution: number, detail: string): RecallReaso
   return {code, contribution, detail};
 }
 
-function assessConfidence(results: readonly RankedRecallCandidate[]): RecallConfidence {
+function assessConfidence(
+  results: readonly RankedRecallCandidate[],
+  originalQueryTerms: readonly string[],
+): RecallConfidence {
   const first = results[0]?.relevanceScore ?? 0;
   const second = results[1]?.relevanceScore ?? 0;
   const margin = Math.max(0, first - second);
   const topSignals = results[0]?.signals;
+  const exactDistinctiveIdentifier = results[0]
+    ? hasExactDistinctiveIdentifierMatch(originalQueryTerms, results[0].candidate.fields)
+    : false;
   const corroboratingSignals = results[0]
     ? [
         results[0].signals.semantic,
@@ -783,7 +789,8 @@ function assessConfidence(results: readonly RankedRecallCandidate[]): RecallConf
     topSignals !== undefined &&
     topSignals.semantic <= SIGNAL_ABSENCE_MAXIMUM &&
     topSignals.graph <= SIGNAL_ABSENCE_MAXIMUM &&
-    Math.max(topSignals.bm25, topSignals.exact, topSignals.field) < LEXICAL_ONLY_ANSWER_MINIMUM;
+    Math.max(topSignals.bm25, topSignals.exact, topSignals.field) < LEXICAL_ONLY_ANSWER_MINIMUM &&
+    !exactDistinctiveIdentifier;
   const weakSemanticOnly =
     topSignals !== undefined &&
     topSignals.semantic > SIGNAL_ABSENCE_MAXIMUM &&
@@ -808,6 +815,18 @@ function assessConfidence(results: readonly RankedRecallCandidate[]): RecallConf
     return {level: 'medium', margin, reason: 'Useful match, but ranking evidence is not decisive.', score: first};
   }
   return {level: 'low', margin, reason: 'Only weak or single-signal evidence supports the top result.', score: first};
+}
+
+function hasExactDistinctiveIdentifierMatch(queryTerms: readonly string[], fields: RecallFields | undefined): boolean {
+  if (!fields?.identifiers?.length) {
+    return false;
+  }
+  const identifiers = new Set(
+    fields.identifiers
+      .map(identifier => tokenize(identifier)[0])
+      .filter((identifier): identifier is string => identifier !== undefined),
+  );
+  return queryTerms.some(term => /[\p{N}_.-]/u.test(term) && identifiers.has(term));
 }
 
 export function recallDocumentTerms(candidate: RecallCandidate): readonly string[] {

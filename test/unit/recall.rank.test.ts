@@ -23,6 +23,58 @@ describe('hybrid recall ranker', () => {
     expect(ranked.results[0]?.signals.field).toBeGreaterThan(0);
   });
 
+  it('keeps an exact structured identifier answer among broad lexical distractors', () => {
+    const target = {
+      authority: 'canonical_repo' as const,
+      fields: {
+        identifiers: ['benchmark-anchor-9999', 'benchmark-update-000'],
+        project: 'threadnote',
+        title: 'Production benchmark target',
+        topic: '09999',
+      },
+      text: 'Production benchmark target common retrieval benchmark-anchor-9999 benchmark-update-000',
+      trust: 'approved' as const,
+      uri: 'threadnote://resources/repos/threadnote/09999.md',
+    };
+    const distractors = Array.from({length: 99}, (_, index) => ({
+      authority: 'external' as const,
+      fields: {project: 'threadnote', title: `Production benchmark ${index}`, topic: String(index)},
+      text: `Production benchmark common retrieval document ${index}`,
+      trust: 'untrusted' as const,
+      uri: `threadnote://resources/repos/threadnote/${String(index).padStart(5, '0')}.md`,
+    }));
+
+    const ranked = rankRecallCandidates('benchmark-update-000', [target, ...distractors], {project: 'threadnote'});
+
+    expect(ranked.results[0]?.candidate.uri).toBe(target.uri);
+    expect(ranked.confidence.level).not.toBe('no_answer');
+  });
+
+  it('keeps ordinary shared-word identifiers behind the lexical-only answer boundary', () => {
+    const candidate = {
+      authority: 'canonical_repo' as const,
+      fields: {
+        identifiers: ['benchmark'],
+        project: 'threadnote',
+        title: 'Production benchmark target',
+        topic: 'target',
+      },
+      text: 'Production benchmark update',
+      trust: 'approved' as const,
+      uri: 'threadnote://resources/repos/threadnote/target.md',
+    };
+    const distractors = Array.from({length: 99}, (_, index) => ({
+      fields: {project: 'threadnote', title: `Production benchmark ${index}`},
+      text: `Production benchmark document ${index}`,
+      uri: `threadnote://resources/repos/threadnote/${index}.md`,
+    }));
+
+    const ranked = rankRecallCandidates('benchmark update', [candidate, ...distractors], {project: 'threadnote'});
+
+    expect(ranked.results[0]?.candidate.uri).toBe(candidate.uri);
+    expect(ranked.confidence.level).toBe('no_answer');
+  });
+
   it('treats enriched keywords as focused topical evidence', () => {
     const candidate = {
       fields: {
