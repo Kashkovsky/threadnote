@@ -31,7 +31,14 @@ describe('automatic update state', () => {
       const statePath = path.join(installRoot, 'auto-update.json');
       const testSystem = SystemInfo.of({
         ...baseSystem,
-        environment: () => ({...baseSystem.environment(), THREADNOTE_INSTALL_ROOT: installRoot}),
+        environment: () => ({
+          ...baseSystem.environment(),
+          CI: undefined,
+          NO_UPDATE_NOTIFIER: undefined,
+          THREADNOTE_AUTO_UPDATE: undefined,
+          THREADNOTE_INSTALL_ROOT: installRoot,
+          THREADNOTE_NO_UPDATE_CHECK: undefined,
+        }),
       });
 
       const initial = yield* readAutoUpdateStatus().pipe(Effect.provideService(SystemInfo, testSystem));
