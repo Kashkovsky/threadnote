@@ -37,13 +37,26 @@ export const cursorCloudDocsSection: DocsSection = {
           type: 'note',
           text: 'This guide uses the shared team name `cursor-cloud` and the stable Threadnote user `cursor-cloud`. Together they make the exclusive memory root `threadnote://user/cursor-cloud/memories/shared/cursor-cloud/` predictable in every VM.',
         },
+        {type: 'heading', text: 'Choose the environment scope'},
+        {
+          type: 'paragraph',
+          text: 'MCP registration scope and cloud-VM provisioning are independent. A personal MCP registration controls who can enable the server, but Threadnote 4.2 uses stdio, so `$HOME/.local/bin/threadnote-mcp-server` and the bootstrapped `$HOME/.threadnote` state must already exist inside the selected cloud environment. A local `threadnote: ready` result does not verify either path in a cloud VM.',
+        },
+        {
+          type: 'paragraph',
+          text: 'Cursor resolves an environment for a repository or repository group in this order: checked-in `.cursor/environment.json`, a personal saved environment, then a team saved environment. To add Threadnote for one user without changing the team environment, create a personal saved environment for the same repository or repository group. Treat it as a complete override rather than an overlay: preserve the project toolchain and setup from the team environment, then add Threadnote. A checked-in `.cursor/environment.json` still wins. See [Cursor Cloud Environment Setup](https://cursor.com/docs/cloud-agent/setup) for the current resolution contract.',
+        },
+        {
+          type: 'note',
+          text: 'Cursor CLI `&` handoff has no documented environment or Build selector. It uses the authenticated user and repository to resolve the environment automatically. For explicit testing, start an agent from a specific Build in the Cloud Agents Dashboard; the [Cloud Agents API](https://cursor.com/docs/cloud-agent/api/endpoints) can create a new agent in a named environment, but that does not continue the existing CLI conversation. See [Cursor CLI handoff](https://cursor.com/docs/cli/using) for the documented handoff surface.',
+        },
         {type: 'heading', text: 'Before you start'},
         {
           type: 'list',
           items: [
             'Create a dedicated Git repository for durable Threadnote memories. You can seed it from a trusted, persistent Threadnote installation using the [team sharing workflow](sharing-setup/).',
             'Give the cloud environment narrowly scoped read/write Git credentials for that repository. Keep tokens and private keys in Cursor environment settings or the Git provider; never place them in the repository, MCP JSON, remote URL, or agent instructions.',
-            'Use Cursor environment Builds for installation state. Build scripts should be idempotent, and saved Builds persist disk state rather than running processes.',
+            "Use Cursor environment Builds for installation state. Put Threadnote installation and share bootstrap in the personal environment's idempotent `install` command. Both must write below the same `$HOME` that the stdio MCP uses; print it during the Build and first agent run to verify the boundary. Saved Builds persist disk state rather than running processes.",
             'Add the cloud-only instruction block below to the repository guidance read by your agents, such as AGENTS.md. Repository files remain authoritative.',
           ],
         },
@@ -60,7 +73,7 @@ threadnote version`,
         },
         {
           type: 'paragraph',
-          text: 'For a fresh Cursor environment, install the latest standalone Linux release in the initial setup terminal or Build. `--no-start` avoids a readiness message; Threadnote does not need a daemon.',
+          text: "For a fresh Cursor environment, add the latest standalone Linux release installation to the personal environment's idempotent `install` command. You can prototype it in Cursor's guided setup terminal, but changes made in an ordinary agent VM do not prepare later Builds. `--no-start` avoids a readiness message; Threadnote does not need a daemon.",
         },
         {
           type: 'code',
@@ -68,6 +81,8 @@ threadnote version`,
           code: `curl -fsSL https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/install.sh | \\
   sh -s -- --no-start
 
+printf 'Threadnote Build HOME=%s\\n' "$HOME"
+test -x "$HOME/.local/bin/threadnote-mcp-server"
 "$HOME/.local/bin/threadnote" doctor --dry-run`,
         },
         {type: 'heading', text: '2. Bootstrap the exclusive memory share'},
@@ -86,7 +101,11 @@ threadnote version`,
         },
         {
           type: 'paragraph',
-          text: 'Save the successful Cursor Build after initialization. It is safe to rerun the same command in a later Build: exact configuration is reused, while a different remote or non-writable team fails closed for explicit review.',
+          text: 'Keep this bootstrap in the same personal-environment `install` command as the Threadnote installation. Trigger a Build, confirm it succeeds, and make that latest successful Build active before starting agents. It is safe to rerun the command in a later Build: exact configuration is reused, while a different remote or non-writable team fails closed for explicit review.',
+        },
+        {
+          type: 'warning',
+          text: 'Cursor makes team and environment-scoped secrets available during Builds, but adds user secrets only when an agent starts. If bootstrap needs Git credentials during the Build, use supported source-control access or a narrowly scoped environment secret. Keep the remote URL credential-free and never capture a token in the Build snapshot. See [Cloud Agent Builds](https://cursor.com/docs/cloud-agent/builds) for the current secret boundary.',
         },
         {
           type: 'note',
@@ -95,7 +114,7 @@ threadnote version`,
         {type: 'heading', text: '3. Register Threadnote as a cloud MCP server'},
         {
           type: 'paragraph',
-          text: 'Generate the Dashboard-ready configuration, then add its JSON as a custom stdio server in Cursor Dashboard → Integrations & MCP:',
+          text: 'Generate the Cursor-ready configuration below. For one user, add and enable it as a personal MCP server from the MCP dropdown at `cursor.com/agents`. Team admins can instead add a shared server under Dashboard → Integrations & MCP. Both scopes run the same stdio command inside the selected VM:',
         },
         {
           type: 'code',
@@ -127,7 +146,7 @@ threadnote version`,
         },
         {
           type: 'warning',
-          text: 'Do not run `threadnote mcp-install cursor --apply` for this cloud setup. That command manages a user-specific local Cursor configuration under the VM home; Cursor Cloud MCP configuration is owned by the Dashboard integration.',
+          text: 'Do not run `threadnote mcp-install cursor --apply` for this cloud setup. That command manages a local Cursor configuration under the current machine home; Cursor Cloud MCP configuration is owned by the personal or team integration at `cursor.com/agents`. Registration does not install the stdio executable in the cloud VM.',
         },
         {
           type: 'paragraph',
@@ -178,9 +197,17 @@ threadnote://user/cursor-cloud/memories/shared/cursor-cloud/
         },
         {type: 'heading', text: '5. Verify a new cloud run'},
         {
+          type: 'paragraph',
+          text: 'On the first run from the saved Build, verify the effective home, executable, bootstrap state, and Threadnote profile before relying on MCP discovery. The run page records the environment and Build used, so compare that provenance when a personal override unexpectedly falls back to a team environment.',
+        },
+        {
           type: 'code',
           language: 'sh',
-          code: `"$HOME/.local/bin/threadnote" cloud cursor verify \\
+          code: `printf 'Cloud Agent HOME=%s\\n' "$HOME"
+test -x "$HOME/.local/bin/threadnote-mcp-server"
+test -d "$HOME/.threadnote"
+
+"$HOME/.local/bin/threadnote" cloud cursor verify \\
   --team cursor-cloud \\
   --user cursor-cloud \\
   --agent-id cursor-cloud \\
