@@ -29,6 +29,47 @@ fly secrets set \
 Do not commit either value. Grafana Cloud owns trace retention; choose its
 shortest practical retention for dogfooding and revisit before wider rollout.
 
+## Import the dogfood dashboard
+
+[`threadnote-anonymous-telemetry-dashboard.json`](./threadnote-anonymous-telemetry-dashboard.json)
+is a portable Classic dashboard model. In Grafana, open **Dashboards**, choose
+**New > Import**, upload the JSON file, and map the `Tempo` input to the
+preconfigured **Grafana Cloud Traces** data source. The import replaces
+`${DS_TEMPO}` with that data source's UID; it does not need or contain ingestion
+credentials.
+
+The suggested dashboard UID is `threadnote-telemetry`. Importing it again into
+the same organization updates that dashboard after confirmation. Change the UID
+on the import screen when a separate copy is desired. Keep the dashboard private:
+its tables can show opaque random session and invocation IDs for correlation, so
+do not publish snapshots or use those IDs as metric groupings or alert labels.
+
+The dashboard defaults to six hours and should remain at 24 hours or less because
+TraceQL metrics queries have a default 24-hour range limit. Every semantic query
+pins telemetry schema version 1 and the anonymous diagnostic span name. Operation
+outcomes and latency use `threadnote.outcome` and the numeric
+`threadnote.duration_ms`; OTLP span status and duration do not represent the
+operation result. Phase panels use checkpoint events so a completion's copy of
+the last phase is not counted again. Memory values are intentionally coarse
+string buckets and are only grouped and counted.
+
+The query design follows Grafana's official documentation for the
+[dashboard JSON model](https://grafana.com/docs/grafana/latest/visualizations/dashboards/build-dashboards/view-dashboard-json-model/),
+[Tempo queries in Grafana](https://grafana.com/docs/grafana/latest/datasources/tempo/query-editor/),
+and [TraceQL metrics functions](https://grafana.com/docs/tempo/latest/metrics-from-traces/metrics-queries/functions/).
+If an imported panel is empty, widen the dashboard range up to 24 hours and
+confirm that the selected Tempo data source returns this query in Explore:
+
+```traceql
+{ resource.service.name = "threadnote" && resource.threadnote.telemetry.schema_version = 1 && span:name = "threadnote.anonymous-diagnostic" } with (most_recent=true)
+```
+
+Validate the artifact locally with:
+
+```sh
+bun --bun vitest run test/unit/telemetry-gateway-dashboard.test.ts
+```
+
 ## Validate and smoke locally
 
 Validate the Collector config without contacting a backend:
