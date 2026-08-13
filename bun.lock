@@ -5,7 +5,7 @@
     "": {
       "name": "threadnote",
       "dependencies": {
-        "@effect/platform-bun": "4.0.0-beta.102",
+        "@effect/platform-bun": "4.0.0-beta.107",
         "@effect/sql-sqlite-bun": "4.0.0-beta.102",
         "@modelcontextprotocol/sdk": "1.30.0",
         "effect": "4.0.0-beta.102",
@@ -108,7 +108,7 @@
 
     "@effect/ai-openai-compat": ["@effect/ai-openai-compat@4.0.0-beta.102", "", { "peerDependencies": { "effect": "^4.0.0-beta.102" } }, "sha512-/++aEJNKqVrtbWVmNiHZ2t40QwAk1+/rCWtdOxl8iCG0UtyFYxc/vyT5OOot3VBCJIQ/mw11vNlH+K9bLQBXvA=="],
 
-    "@effect/platform-bun": ["@effect/platform-bun@4.0.0-beta.102", "", { "dependencies": { "@effect/platform-node-shared": "^4.0.0-beta.102" }, "peerDependencies": { "effect": "^4.0.0-beta.102" } }, "sha512-hTIb0jjTfXhNgnDq2OX5wrigc0OSvTT0VWWb1PLpMM395RJPu8rCIbTlGhy0NS7kZOd8FfgNi9e0sDhgyu+5Ag=="],
+    "@effect/platform-bun": ["@effect/platform-bun@4.0.0-beta.107", "", { "dependencies": { "@effect/platform-node-shared": "^4.0.0-beta.107" }, "peerDependencies": { "effect": "^4.0.0-beta.107" } }, "sha512-nDKutCpgr+xHQX7tgN8Cq6JXtj96GqiElKaJ7AwAkZYl2q9f6onc/3aJgl6CyH/DlUoidw6YaxeU+UaTRmMN1g=="],
 
     "@effect/platform-node-shared": ["@effect/platform-node-shared@4.0.0-beta.102", "", { "dependencies": { "@types/ws": "^8.18.1", "ws": "^8.21.0" }, "peerDependencies": { "effect": "^4.0.0-beta.102" } }, "sha512-gVd793I72MrkX4dXo7eYtRKfNj0RW4eMRfVEKEJI16h2+mBDCzQ+gqMrog2hSTHQnaIbvbYShNQ4TVGuRCYZeQ=="],
 
