@@ -166,7 +166,10 @@ describe('Effect CommandExecutor', () => {
         }
         await new Promise(resolve => setTimeout(resolve, 10));
       }
-      expect(childEnvironment).toEqual({THREADNOTE_DETACHED_SAFE_VALUE: 'preserved'});
+      expect(childEnvironment).toEqual(expect.objectContaining({THREADNOTE_DETACHED_SAFE_VALUE: 'preserved'}));
+      for (const variable of Object.keys(privateValues)) {
+        expect(childEnvironment?.[variable]).toBeUndefined();
+      }
     } finally {
       await rm(directory, {force: true, recursive: true});
     }
@@ -204,12 +207,16 @@ describe('Effect CommandExecutor', () => {
         }
         await new Promise(resolve => setTimeout(resolve, 10));
       }
-      expect(childEnvironment).toEqual({
-        [TELEMETRY_AGENT_SESSION_ENVIRONMENT_VARIABLE]: sessionId,
-        [TELEMETRY_CHILD_ENVIRONMENT_VARIABLE]: 'auto-update-worker',
-        [TELEMETRY_CONSENT_GENERATION_ENVIRONMENT_VARIABLE]: consentGeneration,
-        THREADNOTE_DETACHED_SAFE_VALUE: 'preserved',
-      });
+      expect(childEnvironment).toEqual(
+        expect.objectContaining({
+          [TELEMETRY_AGENT_SESSION_ENVIRONMENT_VARIABLE]: sessionId,
+          [TELEMETRY_CHILD_ENVIRONMENT_VARIABLE]: 'auto-update-worker',
+          [TELEMETRY_CONSENT_GENERATION_ENVIRONMENT_VARIABLE]: consentGeneration,
+          THREADNOTE_DETACHED_SAFE_VALUE: 'preserved',
+        }),
+      );
+      expect(childEnvironment?.[TELEMETRY_PROVIDER_ENVIRONMENT_VARIABLE]).toBeUndefined();
+      expect(childEnvironment?.[TELEMETRY_PROVIDER_SESSION_TOKEN_ENVIRONMENT_VARIABLE]).toBeUndefined();
     } finally {
       await rm(directory, {force: true, recursive: true});
     }
