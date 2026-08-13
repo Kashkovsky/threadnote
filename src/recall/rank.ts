@@ -408,8 +408,20 @@ function exactTermScore(
     return 0;
   }
   const uniqueQuery = new Set(queryTerms);
-  const uniqueExactTerms = [...new Set(exactTerms.map(term => term.toLowerCase()))];
-  const matchedTerms = uniqueExactTerms.filter(term => tokenize(term).some(token => uniqueQuery.has(token)));
+  const uniqueExactTerms = [
+    ...new Set(exactTerms.map(term => tokenize(term)[0]).filter((term): term is string => term !== undefined)),
+  ];
+  const declaredIdentifiers = new Set(
+    (fields?.identifiers ?? [])
+      .map(identifier => tokenize(identifier)[0])
+      .filter((identifier): identifier is string => identifier !== undefined),
+  );
+  const matchedTerms = uniqueExactTerms.filter(term => {
+    const termMatchesQuery = tokenize(term).some(token => uniqueQuery.has(token));
+    return /[\p{N}_.-]/u.test(term)
+      ? uniqueQuery.has(term) || (declaredIdentifiers.has(term) && termMatchesQuery)
+      : termMatchesQuery;
+  });
   const matches = matchedTerms.length;
   if (matches === 0) {
     return 0;
@@ -863,10 +875,12 @@ function qualifyingExactTerms(candidate: RecallCandidate): readonly string[] {
   const projectTerms = new Set(tokenize(candidate.fields?.project ?? ''));
   const kindIntentTerms = candidate.kind ? MEMORY_KIND_INTENT_TERMS[candidate.kind] : undefined;
   return (candidate.exactTerms ?? []).filter(term => {
-    const normalizedTerms = tokenize(term);
-    return normalizedTerms.some(
-      normalized =>
-        topicalTerms.has(normalized) && !projectTerms.has(normalized) && kindIntentTerms?.has(normalized) !== true,
+    const normalized = tokenize(term)[0];
+    return (
+      normalized !== undefined &&
+      topicalTerms.has(normalized) &&
+      !projectTerms.has(normalized) &&
+      kindIntentTerms?.has(normalized) !== true
     );
   });
 }
