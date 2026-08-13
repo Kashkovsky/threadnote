@@ -8,7 +8,7 @@ const RECALL_CONNECTOR_PATTERN = /[._/'\u02bc\u2010-\u2015\u2019\u2212-]+/u;
  * exact substring search, while NFC keeps canonically equivalent input stable.
  */
 export function recallTokens(value: string): readonly string[] {
-  return [...value.normalize('NFC').matchAll(RECALL_TOKEN_PATTERN)]
+  return [...normalizeRecallSearchText(value).matchAll(RECALL_TOKEN_PATTERN)]
     .map(match => match[0])
     .filter(token => {
       const characters = [...token];
@@ -19,6 +19,11 @@ export function recallTokens(value: string): readonly string[] {
           characters.some(character => (character.codePointAt(0) ?? 0) > 0x7f))
       );
     });
+}
+
+/** Normalize canonically equivalent text and common human connector variants. */
+export function normalizeRecallSearchText(value: string): string {
+  return canonicalizeConnectors(value.normalize('NFC'));
 }
 
 /**

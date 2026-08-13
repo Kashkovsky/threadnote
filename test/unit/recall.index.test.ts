@@ -144,7 +144,7 @@ describe('local recall index', () => {
     await mkdir(resourceRoot, {recursive: true});
     await writeFile(
       join(resourceRoot, 'ukrainian.md'),
-      `# Київська зустріч\n\nПам’ять про розмову: Ігор любить український борщ.\napi_key=AIza${'A'.repeat(35)}`,
+      `# Київська зустріч\n\nПам’ять про розмову: Ігор любить український борщ і план–2026.\napi_key=AIza${'A'.repeat(35)}`,
       'utf8',
     );
     await writeFile(join(resourceRoot, 'other.md'), '# Інше\n\nСадівництво та грушеві дерева.', 'utf8');
@@ -171,13 +171,13 @@ describe('local recall index', () => {
     const exact = await run(
       loadRecallExactMatches(config(), {
         includeInactive: false,
-        terms: ['український'],
+        terms: ['памʼять', 'український', 'план-2026'],
         uriScopes: ['threadnote://resources/repos/threadnote'],
       }),
     );
     expect(exact).toEqual([
       {
-        terms: ['український'],
+        terms: ['памʼять', 'український', 'план-2026'],
         uri: 'threadnote://resources/repos/threadnote/ukrainian.md',
       },
     ]);

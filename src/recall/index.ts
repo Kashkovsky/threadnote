@@ -32,6 +32,7 @@ import {
   type RecallQueryTermStatistics,
 } from './index_lexical.js';
 import {recallDocumentTerms, type RecallCandidate, type RecallCorpusStatistics} from './rank.js';
+import {normalizeRecallSearchText} from './tokenize.js';
 
 class RecallIndexOperationError extends Error {
   readonly _tag = 'RecallIndexOperationError' as const;
@@ -603,7 +604,7 @@ const selectRecallExactMatches = Effect.fn('recall.selectExactMatches')(function
   for (const scopeUri of scopes) {
     const scope = recallUriScopePredicate('d', [scopeUri]);
     for (const term of terms) {
-      const phrase = `"${term.replaceAll('"', '""')}"`;
+      const phrase = `"${normalizeRecallSearchText(term).replaceAll('"', '""')}"`;
       const rows = yield* sql.unsafe<{readonly uri: string}>(
         `SELECT d.uri
          FROM exact_search
@@ -940,7 +941,7 @@ const refreshRecallDatabase = Effect.fn('recall.refreshDatabase')(function* (
             return {
               candidate,
               documentLength: recallDocumentTerms(candidate).length,
-              exactSearchText: redactSensitiveText(content),
+              exactSearchText: normalizeRecallSearchText(redactSensitiveText(content)),
               postings,
               source,
             } satisfies IndexedRecallSource;
