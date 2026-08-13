@@ -119,7 +119,7 @@
   },
   "dependencies": {
     "@effect/platform-bun": "4.0.0-beta.102",
-    "@effect/sql-sqlite-bun": "4.0.0-beta.102",
+    "@effect/sql-sqlite-bun": "4.0.0-beta.107",
     "@modelcontextprotocol/sdk": "1.30.0",
     "fflate": "0.8.3",
     "effect": "4.0.0-beta.102",
