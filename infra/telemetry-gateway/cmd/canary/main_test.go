@@ -42,11 +42,11 @@ func TestCanaryPostsExactTraceThenProvesStorage(t *testing.T) {
 			queryCount++
 			current := queryCount
 			mu.Unlock()
+			response.Header().Set("Content-Type", "application/protobuf")
 			if current == 1 {
-				response.WriteHeader(http.StatusNotFound)
+				response.WriteHeader(http.StatusOK)
 				return
 			}
-			response.Header().Set("Content-Type", "application/protobuf")
 			_, _ = response.Write(storedResponse)
 		default:
 			t.Fatalf("unexpected request path %s", request.URL.Path)
@@ -81,7 +81,10 @@ func TestCanaryFailsClosedOnAcceptedButMissingOrWrongTrace(t *testing.T) {
 		wantError string
 	}{
 		{name: "missing", queryCode: http.StatusNotFound, wantError: "did not become queryable"},
+		{name: "empty while pending", queryCode: http.StatusOK, wantError: "did not become queryable"},
 		{name: "wrong payload", queryCode: http.StatusOK, queryBody: tempoResponse(buildEnvelope(canaryIDs{traceID: bytes.Repeat([]byte{9}, 16), spanID: ids.spanID, sessionID: ids.sessionID}, time.Now())), wantError: "outside the canary contract"},
+		{name: "wrong span", queryCode: http.StatusOK, queryBody: tempoResponse(buildEnvelope(canaryIDs{traceID: ids.traceID, spanID: bytes.Repeat([]byte{9}, 8), sessionID: ids.sessionID}, time.Now())), wantError: "outside the canary contract"},
+		{name: "wrong media type", queryCode: http.StatusOK, queryBody: tempoResponse(buildEnvelope(ids, time.Now())), wantError: "unexpected media type"},
 		{name: "unauthorized", queryCode: http.StatusUnauthorized, wantError: "Tempo returned status 401"},
 	}
 	for _, test := range tests {
@@ -90,6 +93,9 @@ func TestCanaryFailsClosedOnAcceptedButMissingOrWrongTrace(t *testing.T) {
 				if request.URL.Path == "/v1/traces" {
 					response.WriteHeader(http.StatusOK)
 					return
+				}
+				if test.name != "wrong media type" && test.queryCode == http.StatusOK {
+					response.Header().Set("Content-Type", "application/protobuf")
 				}
 				response.WriteHeader(test.queryCode)
 				_, _ = response.Write(test.queryBody)
@@ -100,7 +106,7 @@ func TestCanaryFailsClosedOnAcceptedButMissingOrWrongTrace(t *testing.T) {
 			gateway.Path, tempo.Path = "/v1/traces", "/tempo"
 			now := time.Now()
 			queryDeadline := 2 * time.Millisecond
-			if test.name == "missing" {
+			if test.name == "missing" || test.name == "empty while pending" {
 				queryDeadline = 0
 			}
 			configuration := config{
@@ -149,9 +155,23 @@ func TestEnvironmentRejectsNonProductionOrCredentialBearingURLs(t *testing.T) {
 func TestStoredTraceParserRejectsMalformedProtobuf(t *testing.T) {
 	ids := fixedIDs()
 	for _, body := range [][]byte{{0xff}, {0x0a, 0xff}, message(1, []byte{0xff})} {
-		if validStoredTrace(body, ids) {
+		if _, err := inspectStoredTrace(body, ids); err == nil {
 			t.Fatalf("accepted malformed response %x", body)
 		}
+	}
+}
+
+func TestStoredTraceParserTreatsOnlyAnEmptyTraceAsPending(t *testing.T) {
+	ids := fixedIDs()
+	for _, body := range [][]byte{nil, message(1, nil)} {
+		state, err := inspectStoredTrace(body, ids)
+		if err != nil || state != storedTracePending {
+			t.Fatalf("state = %d, error = %v, want pending", state, err)
+		}
+	}
+	state, err := inspectStoredTrace(tempoResponse(buildEnvelope(ids, time.Now())), ids)
+	if err != nil || state != storedTraceMatched {
+		t.Fatalf("state = %d, error = %v, want matched", state, err)
 	}
 }
 
@@ -164,10 +184,6 @@ func fixedIDs() canaryIDs {
 }
 
 func tempoResponse(exportEnvelope []byte) []byte {
-	request, err := parseMessage(exportEnvelope)
-	if err != nil || len(request[1]) != 1 {
-		panic("invalid fixture")
-	}
 	// ExportTraceServiceRequest and Tempo's Trace both encode ResourceSpans as
 	// field 1, so the complete export envelope is the Trace message body.
 	return message(1, exportEnvelope)
