@@ -24,6 +24,7 @@ import {
 } from './request_execution.js';
 
 const DATABASE_TIMEOUT_MILLISECONDS = 5_000;
+export const STORED_SHARE_POLICY_MAX_BYTES = 4 * 1024 * 1024;
 
 interface AuthorizationRow {
   readonly allowed_projects: string[] | null;
@@ -71,8 +72,10 @@ interface AttestationRow {
 }
 
 interface SharePolicyRow {
+  readonly policy_document_bytes: number;
+  readonly policy_document_json: string | null;
+  readonly policy_document_type: string | null;
   readonly policy_digest: string;
-  readonly policy_document: unknown;
   readonly policy_version: string;
   readonly status: string;
 }
@@ -439,7 +442,12 @@ export class PostgresRemoteControlPlane implements RemoteAuthorizationStore, Cur
       `;
       const desiredPolicy = provisioningPolicy(input);
       const currentShares = await transaction<SharePolicyRow[]>`
-        SELECT s.policy_version, s.policy_digest, s.status, v.policy_document
+        SELECT s.policy_version, s.policy_digest, s.status,
+          jsonb_typeof(v.policy_document) AS policy_document_type,
+          octet_length(v.policy_document::text) AS policy_document_bytes,
+          CASE WHEN octet_length(v.policy_document::text) <= ${STORED_SHARE_POLICY_MAX_BYTES}
+            THEN v.policy_document::text ELSE NULL
+          END AS policy_document_json
         FROM remote_memory.shares s
         JOIN remote_memory.share_policy_versions v
           ON v.tenant_id = s.tenant_id AND v.share_id = s.id AND v.version = s.policy_version
@@ -450,12 +458,20 @@ export class PostgresRemoteControlPlane implements RemoteAuthorizationStore, Cur
       if (currentShare && currentShare.status !== 'active') {
         throw remoteMemoryError('conflict', 'The memory share lifecycle state does not allow provisioning.');
       }
-      if (currentShare && input.sharePolicyVersion === undefined) {
-        requireNoImplicitSharePolicyChange(input, currentShare.policy_document);
+      const retainedSharePolicy =
+        currentShare && input.sharePolicyVersion === undefined
+          ? decodeStoredSharePolicyDocument({
+              byteLength: currentShare.policy_document_bytes,
+              json: currentShare.policy_document_json,
+              type: currentShare.policy_document_type,
+            })
+          : undefined;
+      if (retainedSharePolicy) {
+        requireNoImplicitSharePolicyChange(input, retainedSharePolicy);
       }
       const desiredSharePolicy =
-        currentShare && input.sharePolicyVersion === undefined
-          ? {digest: currentShare.policy_digest, document: currentShare.policy_document}
+        retainedSharePolicy && currentShare
+          ? {digest: currentShare.policy_digest, document: retainedSharePolicy}
           : provisioningSharePolicy(input);
       const sharePolicyVersion = input.sharePolicyVersion ?? currentShare?.policy_version ?? input.policyVersion;
       let replaceSharePolicy = currentShare === undefined;
@@ -897,11 +913,40 @@ function requireCompleteSharePolicy(input: RemoteMemoryProvisioningInput): void 
   }
 }
 
-function requireNoImplicitSharePolicyChange(input: RemoteMemoryProvisioningInput, stored: unknown): void {
-  if (!stored || typeof stored !== 'object' || Array.isArray(stored)) {
+export function decodeStoredSharePolicyDocument(
+  input: Readonly<{
+    byteLength: unknown;
+    json: unknown;
+    type: unknown;
+  }>,
+): Readonly<Record<string, unknown>> {
+  if (
+    input.type !== 'object' ||
+    typeof input.byteLength !== 'number' ||
+    !Number.isSafeInteger(input.byteLength) ||
+    input.byteLength < 2 ||
+    input.byteLength > STORED_SHARE_POLICY_MAX_BYTES ||
+    typeof input.json !== 'string' ||
+    new TextEncoder().encode(input.json).byteLength !== input.byteLength
+  ) {
     throw remoteMemoryError('conflict', 'The stored share-wide policy cannot be safely compared.');
   }
-  const document = stored as Readonly<Record<string, unknown>>;
+  let document: unknown;
+  try {
+    document = JSON.parse(input.json);
+  } catch {
+    throw remoteMemoryError('conflict', 'The stored share-wide policy cannot be safely compared.');
+  }
+  if (!document || typeof document !== 'object' || Array.isArray(document)) {
+    throw remoteMemoryError('conflict', 'The stored share-wide policy cannot be safely compared.');
+  }
+  return document as Readonly<Record<string, unknown>>;
+}
+
+export function requireNoImplicitSharePolicyChange(
+  input: RemoteMemoryProvisioningInput,
+  document: Readonly<Record<string, unknown>>,
+): void {
   const explicit = {
     ...(input.cursorTeamId !== undefined ? {cursorTeamId: input.cursorTeamId} : {}),
     displayName: input.displayName,
@@ -918,13 +963,22 @@ function requireNoImplicitSharePolicyChange(input: RemoteMemoryProvisioningInput
       : {}),
   };
   for (const [key, value] of Object.entries(explicit)) {
-    if (JSON.stringify(document[key]) !== JSON.stringify(value)) {
+    if (stablePolicyJson(document[key]) !== stablePolicyJson(value)) {
       throw remoteMemoryError(
         'conflict',
         'Changing share-wide policy requires a new share policy version and exact expected current version.',
       );
     }
   }
+}
+
+function stablePolicyJson(value: unknown): string | undefined {
+  return JSON.stringify(value, (_key, current) => {
+    if (!current || typeof current !== 'object' || Array.isArray(current)) return current;
+    return Object.fromEntries(
+      Object.entries(current).sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0)),
+    );
+  });
 }
 
 function validateProjectName(value: string): void {
