@@ -75,11 +75,42 @@ describe('applyScrubber', () => {
     expect(redacted.redactions.find(r => r.name === 'macOS home path')?.count).toBe(1);
   });
 
-  it('does not treat Git-Bash, WSL, or Windows user paths as macOS homes', () => {
-    const input = 'Git-Bash /c/Users/jane/work, WSL /mnt/c/Users/jane/work, Windows C:/Users/jane/work';
-    const result = applyScrubber(input, {redact: false});
-    expect(result.blocker).toBeUndefined();
-    expect(result.cleaned).toBe(input);
+  it.each([
+    ['Cursor workspace path', '/workspace/threadnote/src/main.ts'],
+    ['Cursor workspace path', '/workspaces/threadnote/src/main.ts'],
+    ['temporary path', '/tmp/cursor-agent/output.json'],
+    ['temporary path', '/private/tmp/cursor-agent/output.json'],
+    ['Windows absolute path', 'C:\\Users\\jane\\work\\secret.txt'],
+    ['Windows absolute path', 'D:/agent/work/output.txt'],
+    ['Windows absolute path', '/c/Users/jane/work/secret.txt'],
+    ['Windows absolute path', '\\\\wsl.localhost\\Ubuntu\\home\\jane\\work.txt'],
+    ['WSL mounted drive path', '/mnt/c/Users/jane/work/secret.txt'],
+  ])('blocks %s without returning the matched path', (name, path) => {
+    const result = applyScrubber(`Local evidence: ${path}`, {redact: false});
+    expect(result.blocker).toBe(name);
+    expect(result.cleaned).toContain(path);
+    const redacted = applyScrubber(`Local evidence: ${path}`, {redact: true});
+    expect(redacted.blocker).toBeUndefined();
+    expect(redacted.cleaned).not.toContain(path);
+  });
+
+  it('does not confuse an ordinary one-letter POSIX directory with a Git-Bash drive', () => {
+    expect(applyScrubber('module /a/project/readme.md', {redact: false}).blocker).toBeUndefined();
+  });
+
+  it('supports deployment policy hooks without mutating the baseline pattern catalog', () => {
+    const result = applyScrubber('Customer marker CUST-123456', {
+      additionalPatterns: [{name: 'customer marker', regex: /\bCUST-\d{6}\b/u}],
+      redact: false,
+    });
+    expect(result.blocker).toBe('customer marker');
+    expect(applyScrubber('Customer marker CUST-123456', {redact: false}).blocker).toBeUndefined();
+  });
+
+  it('evaluates stateful deployment regexes deterministically across calls', () => {
+    const policy = [{name: 'customer marker', regex: /\bCUST-\d{6}\b/gu}];
+    expect(applyScrubber('CUST-123456', {additionalPatterns: policy, redact: false}).blocker).toBe('customer marker');
+    expect(applyScrubber('CUST-123456', {additionalPatterns: policy, redact: false}).blocker).toBe('customer marker');
   });
 
   it('still redacts a macOS home embedded in a file URL', () => {

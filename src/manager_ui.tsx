@@ -70,7 +70,7 @@ export type PanelName = 'doctor' | 'graph' | 'memory' | 'processes' | 'shares' |
 type NavTreeTab = 'memories' | 'resources';
 type CheckStatus = 'fail' | 'ok' | 'warn';
 type MemoryKind = 'durable' | 'handoff' | 'incident' | 'preference' | 'smoke';
-type MemoryStatus = 'active' | 'archived' | 'superseded';
+type MemoryStatus = 'active' | 'archived' | 'expired' | 'superseded';
 type AgentClient = 'claude' | 'codex' | 'copilot' | 'cursor' | 'effect-ai';
 type MemoryViewMode = 'edit' | 'preview';
 type SelectId = 'agent' | 'kind' | 'status';
@@ -1865,7 +1865,7 @@ function TargetFields(props: {
         label="Status"
         onChange={value => set({status: value as MemoryStatus})}
         openSelect={props.openSelect}
-        options={(['active', 'archived', 'superseded'] as const).map(status => ({
+        options={(['active', 'archived', 'expired', 'superseded'] as const).map(status => ({
           label: status,
           value: status,
         }))}

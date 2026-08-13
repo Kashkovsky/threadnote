@@ -202,12 +202,14 @@ const TRUST_BLEND_WEIGHT = 0.3;
 const LIFECYCLE_SCORES: Readonly<Record<MemoryStatus, number>> = {
   active: 1,
   archived: 0.15,
+  expired: 0,
   superseded: 0,
 };
 
 const LIFECYCLE_SCORE_MULTIPLIERS: Readonly<Record<MemoryStatus, number>> = {
   active: 1,
   archived: 0.35,
+  expired: 0.1,
   superseded: 0.15,
 };
 

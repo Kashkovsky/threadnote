@@ -1,7 +1,7 @@
 import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {StdioClientTransport} from '@modelcontextprotocol/sdk/client/stdio.js';
 import {execFile} from '../helpers/node-child-process.js';
-import {mkdir, mkdtemp, readFile, rm, writeFile} from '../helpers/node-fs-promises.js';
+import {access, mkdir, mkdtemp, readFile, rm, writeFile} from '../helpers/node-fs-promises.js';
 import {tmpdir} from '../helpers/node-os.js';
 import {join} from '../helpers/node-path.js';
 import {promisify} from '../helpers/node-util.js';
@@ -15,6 +15,13 @@ const CLOUD_TOOL_NAMES = [
   'read_context',
   'list_context',
   'remember_context',
+  'threadnote_guide',
+] as const;
+const CLOUD_LOCAL_TOOL_NAMES = [
+  'inspect_code_graph',
+  'analyze_code_graph',
+  'cursor_cloud_status',
+  'complete_cursor_attestation',
   'threadnote_guide',
 ] as const;
 const gitIdentityEnvironment = {
@@ -60,7 +67,7 @@ describe('Cursor Cloud integration', () => {
         command: '/bin/sh',
         env: {
           THREADNOTE_CURSOR_CLOUD_TEAM: 'engineering',
-          THREADNOTE_MCP_TOOLSET: 'cursor-cloud',
+          THREADNOTE_MCP_TOOLSET: 'cursor-cloud-git-beta',
           THREADNOTE_USER: 'cloud-user',
         },
         type: 'stdio',
@@ -103,6 +110,154 @@ describe('Cursor Cloud integration', () => {
       });
     } finally {
       await rm(fixture.root, {force: true, recursive: true});
+    }
+  });
+
+  it('renders and idempotently prepares remote-hybrid mode without a memory checkout', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'threadnote-cursor-cloud-hybrid-'));
+    const home = join(root, 'home');
+    const endpoint = 'https://memory.threadnote.io/mcp';
+    const shareId = 'share-engineering';
+    try {
+      await expect(
+        runCli(['cloud', 'cursor', 'config', '--home', home, '--mode', 'remote-hybrid', '--endpoint', endpoint]),
+      ).rejects.toMatchObject({stderr: expect.stringContaining('requires --share-id')});
+
+      const config = await runCli([
+        'cloud',
+        'cursor',
+        'config',
+        '--home',
+        home,
+        '--mode',
+        'remote-hybrid',
+        '--endpoint',
+        endpoint,
+        '--share-id',
+        shareId,
+        '--user',
+        'cloud-user',
+        '--agent-id',
+        'cloud-agent',
+      ]);
+      expect(JSON.parse(config.stdout)).toMatchObject({
+        mcpServers: {
+          'threadnote-local': {
+            args: ['-lc', 'exec "$HOME/.local/bin/threadnote-mcp-server"'],
+            command: '/bin/sh',
+            env: {
+              THREADNOTE_CURSOR_MEMORY_ENDPOINT: endpoint,
+              THREADNOTE_CURSOR_MEMORY_SHARE_ID: shareId,
+              THREADNOTE_MCP_TOOLSET: 'cursor-cloud-local',
+            },
+            type: 'stdio',
+          },
+          'threadnote-memory': {headers: {'threadnote-share-id': shareId}, url: endpoint},
+        },
+      });
+      expect(Object.keys(JSON.parse(config.stdout).mcpServers['threadnote-memory'].headers)).toEqual([
+        'threadnote-share-id',
+      ]);
+
+      const bootstrapArguments = [
+        'cloud',
+        'cursor',
+        'bootstrap',
+        '--home',
+        home,
+        '--mode',
+        'remote-hybrid',
+        '--endpoint',
+        endpoint,
+        '--share-id',
+        shareId,
+        '--cwd',
+        process.cwd(),
+      ] as const;
+      const first = await runCli(bootstrapArguments);
+      const second = await runCli(bootstrapArguments);
+      expect(first.stdout).toContain('no local Git memory share was configured');
+      expect(second.stdout).toBe(first.stdout);
+      await expect(access(join(home, 'share', 'teams.json'))).rejects.toMatchObject({code: 'ENOENT'});
+
+      const verified = await runCli([
+        'cloud',
+        'cursor',
+        'verify',
+        '--home',
+        home,
+        '--mode',
+        'remote-hybrid',
+        '--endpoint',
+        endpoint,
+        '--share-id',
+        shareId,
+        '--cwd',
+        process.cwd(),
+        '--json',
+      ]);
+      expect(JSON.parse(verified.stdout)).toMatchObject({
+        endpoint,
+        localMemoryFallback: 'disabled',
+        mode: 'remote-hybrid',
+        shareId,
+        status: 'ok',
+      });
+
+      await expect(
+        runCli(
+          [
+            'cloud',
+            'cursor',
+            'verify',
+            '--home',
+            home,
+            '--mode',
+            'remote-hybrid',
+            '--endpoint',
+            endpoint,
+            '--share-id',
+            shareId,
+            '--cwd',
+            process.cwd(),
+            '--json',
+          ],
+          {THREADNOTE_CURSOR_MEMORY_SHARE_ID: 'share-other'},
+        ),
+      ).rejects.toMatchObject({
+        stderr: expect.stringContaining('verification failed'),
+        stdout: expect.stringContaining('"status":"fail"'),
+      });
+
+      await withLocalMcp(home, endpoint, shareId, async client => {
+        const tools = await client.listTools();
+        expect(tools.tools.map(tool => tool.name)).toEqual(CLOUD_LOCAL_TOOL_NAMES);
+        expect(tools.tools.map(tool => tool.name)).not.toContain('recall_context');
+        expect((await client.listResourceTemplates()).resourceTemplates).toEqual([]);
+
+        const status = await client.callTool({
+          arguments: {callerCwd: process.cwd()},
+          name: 'cursor_cloud_status',
+        });
+        expect(status.isError).not.toBe(true);
+        expect(status.structuredContent).toMatchObject({
+          localMemoryFallback: 'disabled',
+          shareId,
+          status: 'ok',
+        });
+
+        await expect(
+          callError(client, 'complete_cursor_attestation', {
+            audience: 'https://memory.threadnote.io/attest/cursor',
+            challengeId: 'challenge_123',
+            completionUrl: 'https://attacker.example/complete',
+            expiresAt: new Date(Date.now() + 60_000).toISOString(),
+            nonce: 'nonce_1234567890',
+          }),
+        ).resolves.toContain('must match the configured remote memory service');
+      });
+    } finally {
+      await rm(root, {force: true, recursive: true});
     }
   });
 
@@ -230,10 +385,10 @@ function bootstrap(fixture: CloudFixture) {
   ]);
 }
 
-function runCli(args: readonly string[]) {
+function runCli(args: readonly string[], environment: Readonly<Record<string, string>> = {}) {
   return execFilePromise(process.execPath, ['src/standalone.ts', ...args], {
     cwd: process.cwd(),
-    env: {...process.env, ...gitIdentityEnvironment, NO_COLOR: '1'},
+    env: {...process.env, ...gitIdentityEnvironment, ...environment, NO_COLOR: '1'},
   });
 }
 
@@ -256,6 +411,38 @@ async function withCloudMcp<T>(fixture: CloudFixture, use: (client: Client) => P
     stderr: 'pipe',
   });
   const client = new Client({name: 'threadnote-cursor-cloud-test', version: '0.0.0'});
+  try {
+    await client.connect(transport);
+    return await use(client);
+  } finally {
+    await client.close();
+  }
+}
+
+async function withLocalMcp<T>(
+  home: string,
+  endpoint: string,
+  shareId: string,
+  use: (client: Client) => Promise<T>,
+): Promise<T> {
+  const transport = new StdioClientTransport({
+    args: [join(process.cwd(), 'src', 'standalone.ts'), 'mcp-server'],
+    command: process.execPath,
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      THREADNOTE_ACCOUNT: 'local',
+      THREADNOTE_AGENT_ID: 'cloud-agent',
+      THREADNOTE_CURSOR_MEMORY_ENDPOINT: endpoint,
+      THREADNOTE_CURSOR_MEMORY_SHARE_ID: shareId,
+      THREADNOTE_HOME: home,
+      THREADNOTE_MANIFEST: join(home, 'seed-manifest.yaml'),
+      THREADNOTE_MCP_TOOLSET: 'cursor-cloud-local',
+      THREADNOTE_USER: 'cloud-user',
+    } as Record<string, string>,
+    stderr: 'pipe',
+  });
+  const client = new Client({name: 'threadnote-cursor-cloud-local-test', version: '0.0.0'});
   try {
     await client.connect(transport);
     return await use(client);

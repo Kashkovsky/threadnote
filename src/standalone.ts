@@ -18,6 +18,7 @@ const isCodeGraphCompactionWorker = arguments_[0] === CODE_GRAPH_COMPACTION_WORK
 const isCodeGraphDeepDiagnosticsWorker = arguments_[0] === CODE_GRAPH_DEEP_DIAGNOSTICS_WORKER_ARGUMENT;
 const isGitWorktreeRegistrationWorker = arguments_[0] === CODE_GRAPH_GIT_WORKTREE_REGISTRATION_WORKER_ARGUMENT;
 const isMcpBroker = arguments_[0] === 'mcp-broker';
+const isRemoteMemoryOperator = arguments_[0] === 'remote-memory-operator';
 const isMcpServer = executableName?.startsWith('threadnote-mcp-server') === true || arguments_[0] === 'mcp-server';
 const runSignalTransparentMain = Runtime.makeRunMain(({fiber, teardown}) => {
   fiber.addObserver(exit => {
@@ -37,13 +38,15 @@ if (isCodeGraphDeepDiagnosticsWorker || isCodeGraphCompactionWorker) {
     {disableErrorReporting: true},
   );
 } else {
-  const program: Effect.Effect<void, unknown, never> = isLocalModelWorker
-    ? await localModelWorkerProgram(arguments_)
-    : isCodeGraphParserWorker
-      ? await codeGraphParserWorkerProgram(arguments_)
-      : isGitWorktreeRegistrationWorker
-        ? await gitWorktreeRegistrationWorkerProgram()
-        : await applicationProgram(arguments_, isMcpServer, isMcpBroker);
+  const program: Effect.Effect<void, unknown, never> = isRemoteMemoryOperator
+    ? await remoteMemoryOperatorProgram(arguments_.slice(1))
+    : isLocalModelWorker
+      ? await localModelWorkerProgram(arguments_)
+      : isCodeGraphParserWorker
+        ? await codeGraphParserWorkerProgram(arguments_)
+        : isGitWorktreeRegistrationWorker
+          ? await gitWorktreeRegistrationWorkerProgram()
+          : await applicationProgram(arguments_, isMcpServer, isMcpBroker);
 
   BunRuntime.runMain(program, {
     disableErrorReporting:
@@ -52,6 +55,18 @@ if (isCodeGraphDeepDiagnosticsWorker || isCodeGraphCompactionWorker) {
       isGitWorktreeRegistrationWorker ||
       (!isMcpServer && !isMcpBroker),
   });
+}
+
+async function remoteMemoryOperatorProgram(arguments_: readonly string[]) {
+  const operator = await import('./remote_memory/operator_main.js');
+  return operator.runRemoteMemoryOperator(arguments_).pipe(
+    Effect.flatMap(code =>
+      Effect.sync(() => {
+        process.exitCode = code;
+      }),
+    ),
+    Effect.provide(BunServices.layer),
+  );
 }
 
 async function codeGraphDeepDiagnosticsWorkerProgram() {

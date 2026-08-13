@@ -155,9 +155,44 @@ jobs:
         env:
           THREADNOTE_VITEST_LONG_GROUP: ${{ matrix.group }}
 
+  remote_memory_postgres:
+    name: Tests · remote memory · PostgreSQL
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:17.6-alpine
+        env:
+          POSTGRES_DB: threadnote_ci
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_USER: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d threadnote_ci"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - run: bun install --frozen-lockfile
+
+      - name: Run isolated PostgreSQL integration coverage
+        run: bun --bun vitest run test/integration/remote-memory-postgres.test.ts
+        env:
+          THREADNOTE_TEST_POSTGRES_URL: postgres://postgres:postgres@127.0.0.1:5432/threadnote_ci
+
   test:
     name: Unit and integration tests
-    needs: [changes, quality, standard_tests, long_tests]
+    needs: [changes, quality, standard_tests, long_tests, remote_memory_postgres]
     if: always()
     runs-on: ubuntu-latest
 
@@ -169,12 +204,14 @@ jobs:
           CODE_CHANGED: ${{ needs.changes.outputs.code }}
           STANDARD_RESULT: ${{ needs.standard_tests.result }}
           LONG_RESULT: ${{ needs.long_tests.result }}
+          REMOTE_MEMORY_POSTGRES_RESULT: ${{ needs.remote_memory_postgres.result }}
         run: |
           test "$CHANGES_RESULT" = success
           test "$QUALITY_RESULT" = success
           if [ "$CODE_CHANGED" = true ]; then
             test "$STANDARD_RESULT" = success
             test "$LONG_RESULT" = success
+            test "$REMOTE_MEMORY_POSTGRES_RESULT" = success
           fi
 
   recall-quality:
