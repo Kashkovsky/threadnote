@@ -16,6 +16,7 @@ import {
   withStandaloneInstallationLock,
 } from '../src/installations.js';
 import {
+  preservedStandaloneProcessIds,
   readStandaloneProcessLeaseVerification,
   terminateSupersededStandaloneProcesses,
 } from '../src/standalone_process_lease.js';
@@ -69,6 +70,7 @@ export interface LocalStandaloneInstallResult extends DevelopmentRuntimeEvidence
   readonly cleanupIssues: readonly LocalStandaloneCleanupIssue[];
   readonly doctorVerified: true;
   readonly launchersVerified: true;
+  readonly preservedMcpSessionProcesses: number;
   readonly remainingSupersededProcesses: number;
   readonly reused: boolean;
   readonly terminatedSupersededProcesses: number;
@@ -196,6 +198,11 @@ export const installLocalStandalone = Effect.fn('developmentInstall.run')(functi
     yield* Console.log(`Installed exact-HEAD Threadnote ${result.version}.`);
     yield* Console.log(`Source commit: ${result.sourceCommit}`);
     yield* Console.log(`Executable SHA-256: ${result.executableSha256}`);
+    if (result.preservedMcpSessionProcesses > 0) {
+      yield* Console.log(
+        `${result.preservedMcpSessionProcesses} live MCP session process(es) remain safely pinned and will promote behind their stable transport.`,
+      );
+    }
     const processStateUnknown = result.cleanupIssues.some(
       (issue: LocalStandaloneCleanupIssue) => issue === 'process-inspection' || issue === 'process-termination',
     );
@@ -450,6 +457,7 @@ export const activateLocalStandaloneRelease = Effect.fn('developmentInstall.acti
     );
 
     let terminatedSupersededProcesses = 0;
+    const preservedMcpSessionProcessIds = new Set<number>();
     const unresolvedProcessIds = new Set<number>();
     const cleanupIssues = new Set<LocalStandaloneCleanupIssue>();
     if (input.terminateSuperseded) {
@@ -464,6 +472,7 @@ export const activateLocalStandaloneRelease = Effect.fn('developmentInstall.acti
           cleanupIssues.add('process-termination');
         } else {
           terminatedSupersededProcesses = termination.value.signaled.length;
+          for (const lease of termination.value.preserved) preservedMcpSessionProcessIds.add(lease.processId);
           for (const lease of [...termination.value.skippedUnverified, ...termination.value.remaining]) {
             unresolvedProcessIds.add(lease.processId);
           }
@@ -475,8 +484,18 @@ export const activateLocalStandaloneRelease = Effect.fn('developmentInstall.acti
       cleanupIssues.add('process-inspection');
     } else {
       if (live.value.truncated || live.value.unverified.length > 0) cleanupIssues.add('process-inspection');
-      for (const lease of [...live.value.verified, ...live.value.unverified]) {
-        if (lease.version !== input.version) unresolvedProcessIds.add(lease.processId);
+      const superseded = [...live.value.verified, ...live.value.unverified].filter(
+        lease => lease.version !== input.version,
+      );
+      const preservedProcessIds = preservedStandaloneProcessIds(superseded);
+      for (const lease of superseded) {
+        if (preservedMcpSessionProcessIds.has(lease.processId)) continue;
+        if (preservedProcessIds.has(lease.processId)) {
+          preservedMcpSessionProcessIds.add(lease.processId);
+          unresolvedProcessIds.delete(lease.processId);
+        } else {
+          unresolvedProcessIds.add(lease.processId);
+        }
       }
     }
     if (Option.isSome(input.stagedRoot)) {
@@ -502,6 +521,7 @@ export const activateLocalStandaloneRelease = Effect.fn('developmentInstall.acti
       cleanupIssues: [...cleanupIssues].sort(),
       doctorVerified: true,
       launchersVerified: true,
+      preservedMcpSessionProcesses: preservedMcpSessionProcessIds.size,
       remainingSupersededProcesses: unresolvedProcessIds.size,
       reused,
       terminatedSupersededProcesses,

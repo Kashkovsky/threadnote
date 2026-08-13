@@ -29,7 +29,7 @@ export interface CursorCloudProfileV1 {
 }
 
 export interface CursorCloudMcpConfig {
-  readonly args: readonly ['-lc', 'exec "$HOME/.local/bin/threadnote" mcp-server'];
+  readonly args: readonly ['-lc', 'exec "$HOME/.local/bin/threadnote-mcp-server"'];
   readonly command: '/bin/sh';
   readonly env: Readonly<{
     THREADNOTE_ACCOUNT: string;
@@ -101,7 +101,7 @@ export function buildCursorCloudProfile(
 
 export function buildCursorCloudMcpConfig(profile: CursorCloudProfileV1): CursorCloudMcpConfig {
   return {
-    args: ['-lc', 'exec "$HOME/.local/bin/threadnote" mcp-server'],
+    args: ['-lc', 'exec "$HOME/.local/bin/threadnote-mcp-server"'],
     command: '/bin/sh',
     env: {
       THREADNOTE_ACCOUNT: profile.account,

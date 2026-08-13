@@ -231,6 +231,9 @@ export const runUpdate = Effect.fn('runUpdate')(function* (config: RuntimeConfig
       );
     }
     yield* Console.log(success('Threadnote is up to date.'));
+    yield* Console.log(
+      'Managed launchers are current. If an MCP host still uses the legacy direct server command, run `threadnote repair`, then restart that host once.',
+    );
     return;
   }
 
@@ -283,10 +286,14 @@ export const runUpdate = Effect.fn('runUpdate')(function* (config: RuntimeConfig
     yield* Console.log('Repairing local Threadnote setup after standalone update.');
     yield* runStreamingSubcommand(dryRun, threadnoteCommand, ['repair', '--no-post-update']);
   } else {
-    yield* Console.log('Skipping repair because --no-repair was provided.');
+    yield* Console.log(
+      'Skipping local integration repair because --no-repair was provided. MCP host configurations were not refreshed.',
+    );
   }
   yield* Console.log(
-    'Update complete. Restart Cursor, Copilot, Codex, Claude, or open a fresh agent session so MCP tools reload.',
+    shouldRepair
+      ? 'Update complete. Brokered MCP sessions will use the new version on their next request. Legacy direct-server sessions migrated by repair require one host restart.'
+      : 'Update complete. Brokered MCP sessions will use the new version on their next request. Hosts still using the legacy direct server command must run `threadnote repair` and restart once.',
   );
   yield* withStandaloneInstallationLock(pruneStandaloneReleases(releaseRoot, dryRun), dryRun);
   yield* printWhatsNewIfAvailable(info);

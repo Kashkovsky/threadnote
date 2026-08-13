@@ -25,7 +25,7 @@ import {
   writeMemoryFile,
   writeSharedWorktreeFile,
 } from './share.js';
-import {errorMessage, safeTimestamp, sha256} from './utils.js';
+import {currentPackageVersion, errorMessage, safeTimestamp, sha256} from './utils.js';
 import {EffectMcpServerAdapter, McpInput} from './effect/ai/mcp.js';
 import {sha256Hex} from './effect/digest.js';
 import {withMemoryUriLocks} from './effect/memory_lock.js';
@@ -925,16 +925,18 @@ export function runNativeGlobTool(
 export const runNativeHealthTool = Effect.fn('mcp_server.runNativeHealthTool')(function* (config: RuntimeConfig) {
   const fs = yield* FileSystem.FileSystem;
   const homeExists = yield* fs.exists(config.agentContextHome);
+  const runtimeVersion = yield* currentPackageVersion();
   return {
     content: [
       {
         type: 'text' as const,
-        text: `Threadnote native runtime: ok\nHome: ${config.agentContextHome}\nHome initialized: ${homeExists ? 'yes' : 'no'}`,
+        text: `Threadnote native runtime: ok\nVersion: ${runtimeVersion}\nHome: ${config.agentContextHome}\nHome initialized: ${homeExists ? 'yes' : 'no'}`,
       },
     ],
     structuredContent: {
       home: config.agentContextHome,
       homeInitialized: homeExists,
+      runtimeVersion,
       status: 'ok',
       storage: 'native',
     },

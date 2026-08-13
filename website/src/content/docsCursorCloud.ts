@@ -111,7 +111,7 @@ threadnote version`,
           code: `{
   "type": "stdio",
   "command": "/bin/sh",
-  "args": ["-lc", "exec \\"$HOME/.local/bin/threadnote\\" mcp-server"],
+  "args": ["-lc", "exec \\"$HOME/.local/bin/threadnote-mcp-server\\""],
   "env": {
     "THREADNOTE_ACCOUNT": "local",
     "THREADNOTE_USER": "cursor-cloud",
@@ -120,6 +120,10 @@ threadnote version`,
     "THREADNOTE_MCP_TOOLSET": "cursor-cloud"
   }
 }`,
+        },
+        {
+          type: 'paragraph',
+          text: 'The stable `threadnote-mcp-server` launcher brokers the Dashboard-owned stdio session. After a standalone update activates a new runtime, the next MCP request uses that runtime without changing this configuration.',
         },
         {
           type: 'warning',

@@ -907,6 +907,114 @@ describe('exact-head development runtime', () => {
       }),
   );
 
+  effectIt.effect('reports the complete preserved session tree when superseded processes remain running', () =>
+    Effect.gen(function* () {
+      const result = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const baseSystem = yield* SystemInfo;
+          const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-development-preserved-session-'});
+          const installRoot = path.join(root, 'install');
+          const binRoot = path.join(root, 'bin');
+          const sourceCommit = '7'.repeat(40);
+          const version = developmentBuildVersion('4.0.0-beta.30', sourceCommit);
+          const supersededVersion = '4.0.0-beta.29';
+          const releaseRoot = path.join(installRoot, 'versions', version);
+          const executableName = baseSystem.platform === 'win32' ? 'threadnote.exe' : 'threadnote';
+          yield* writeDevelopmentReleaseFixture(
+            fs,
+            path,
+            releaseRoot,
+            version,
+            sourceCommit,
+            executableName,
+            'preserved-session-release',
+          );
+          const leases = [
+            {
+              processId: 45_001,
+              processStartIdentity: 'broker-process',
+              retirementPolicy: 'preserve-session',
+            },
+            {
+              parentProcessId: 45_001,
+              processId: 45_002,
+              processStartIdentity: 'mcp-process',
+              retirementPolicy: 'terminate',
+            },
+            {
+              parentProcessId: 45_002,
+              processId: 45_003,
+              processStartIdentity: 'worker-process',
+              retirementPolicy: 'terminate',
+            },
+            {
+              processId: 45_004,
+              processStartIdentity: 'cli-process',
+              retirementPolicy: 'terminate',
+            },
+          ] as const;
+          const leasesRoot = path.join(installRoot, 'leases', supersededVersion);
+          yield* fs.makeDirectory(leasesRoot, {recursive: true});
+          for (const lease of leases) {
+            yield* fs.writeFileString(
+              path.join(leasesRoot, `${lease.processId}.json`),
+              `${JSON.stringify({
+                ...lease,
+                startedAt: '2026-08-02T08:00:00.000Z',
+                token: `lease-${lease.processId}`,
+                version: supersededVersion,
+              })}\n`,
+            );
+          }
+          const identities = new Map<number, string>(
+            leases.map(lease => [lease.processId, lease.processStartIdentity]),
+          );
+          const running = new Set<number>(leases.map(lease => lease.processId));
+          const testSystem = SystemInfo.of({
+            ...baseSystem,
+            environment: () => ({
+              ...baseSystem.environment(),
+              THREADNOTE_BIN_DIR: binRoot,
+              THREADNOTE_INSTALL_ROOT: installRoot,
+            }),
+            isProcessRunning: processId => running.has(processId),
+            processId: 99_999,
+            processStartIdentity: processId => Effect.succeed(identities.get(processId)),
+            signalProcess: () => {
+              throw new TestError('Installer must not signal processes without --terminate-superseded');
+            },
+          });
+          return yield* activateLocalStandaloneRelease({
+            canonicalInstallRoot: yield* fs.realPath(installRoot),
+            canonicalVersionsRoot: yield* fs.realPath(path.join(installRoot, 'versions')),
+            commit: sourceCommit,
+            executableName,
+            releaseRoot,
+            reused: true,
+            sourceCheckoutId: 'a'.repeat(64),
+            stagedRoot: Option.none(),
+            takeOverGlobalRuntime: false,
+            terminateSuperseded: false,
+            version,
+          }).pipe(
+            Effect.provideService(CommandExecutor, versionCommandExecutor(version)),
+            Effect.provideService(SystemInfo, testSystem),
+          );
+        }),
+      ).pipe(provideTestLayer(ApplicationLayer));
+
+      expect(result).toMatchObject({
+        cleanupComplete: false,
+        cleanupIssues: [],
+        preservedMcpSessionProcesses: 3,
+        remainingSupersededProcesses: 1,
+        terminatedSupersededProcesses: 0,
+      });
+    }),
+  );
+
   effectIt.effect('restores the prior active pointer and launchers when launcher verification fails', () =>
     Effect.gen(function* () {
       const result = yield* Effect.scoped(

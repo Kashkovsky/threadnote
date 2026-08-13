@@ -526,6 +526,7 @@ describe('standalone updater', () => {
       );
 
       expect(captured.output).toContain('Threadnote is up to date.');
+      expect(captured.output).toContain('run `threadnote repair`, then restart that host once');
       expect(downloadAttempted).toBe(false);
     }).pipe(provideTestLayer(ApplicationLayer)),
   );
@@ -687,6 +688,8 @@ describe('standalone updater', () => {
 
       expect(captured.output).toContain(`Would install standalone Threadnote to:`);
       expect(captured.output).toContain(stableVersion);
+      expect(captured.output).toContain('MCP host configurations were not refreshed');
+      expect(captured.output).toContain('must run `threadnote repair` and restart once');
     }).pipe(provideTestLayer(ApplicationLayer)),
   );
 
@@ -927,7 +930,7 @@ describe('standalone updater', () => {
       expect(JSON.parse(result.activeRelease)).toMatchObject({version: RELEASE_VERSION});
       expect(JSON.parse(result.releaseMetadata)).toMatchObject({version: RELEASE_VERSION});
       expect(result.launcher).toContain(`versions/${RELEASE_VERSION}/threadnote`.replaceAll('/', pathSeparator()));
-      expect(result.mcpLauncher).toContain('mcp-server');
+      expect(result.mcpLauncher).toContain('mcp-broker');
       if (result.platform === 'darwin') {
         expect(result.signatureCommands.join('\n')).toContain('codesign --verify --strict --verbose=2');
         expect(result.signatureCommands.join('\n')).toContain('libfixture.so');

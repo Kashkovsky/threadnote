@@ -21,6 +21,7 @@ import {CodeGraphAnalysis} from '../code_graph/analysis.js';
 import {CodeGraphParserPool} from '../code_graph/parser_worker.js';
 
 const systemLayer = SystemInfo.layer;
+export const StandaloneBrokerLayer = Layer.merge(systemLayer, BunServices.layer);
 const commandLayer = CommandExecutor.layer.pipe(Layer.provide(systemLayer));
 const resourceStoreLayer = ResourceStore.layer.pipe(Layer.provide(systemLayer));
 const localModelStoreLayer = LocalModelStore.layer.pipe(

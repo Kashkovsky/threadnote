@@ -7,6 +7,7 @@ import {describe, expect} from 'vitest';
 import {SystemInfo, type SystemInfoShape} from '../../src/effect/system.js';
 import {
   activateStandaloneRelease,
+  activeInstalledRelease,
   activeInstalledVersion,
   promoteStandaloneReleaseDirectory,
   pruneStandaloneReleases,
@@ -261,6 +262,12 @@ describe('standalone release lifecycle', () => {
                 : Effect.void,
           }).pipe(Effect.provideService(SystemInfo, testSystem), Effect.flip);
           const activeMissingAfterCrash = !(yield* fs.exists(path.join(installRoot, 'active-release.json')));
+          const readableDuringGap = yield* activeInstalledRelease().pipe(Effect.provideService(SystemInfo, testSystem));
+          const gapAfterRead = {
+            activeMissing: !(yield* fs.exists(path.join(installRoot, 'active-release.json'))),
+            backupExists: yield* fs.exists(path.join(installRoot, 'active-release.previous.json')),
+            journalExists: yield* fs.exists(path.join(installRoot, 'active-release.promotion.json')),
+          };
 
           yield* activateStandaloneRelease(newRelease, false).pipe(Effect.provideService(SystemInfo, testSystem));
           return {
@@ -269,8 +276,10 @@ describe('standalone release lifecycle', () => {
             },
             activeMissingAfterCrash,
             backupExists: yield* fs.exists(path.join(installRoot, 'active-release.previous.json')),
+            gapAfterRead,
             interrupted: String(interrupted),
             journalExists: yield* fs.exists(path.join(installRoot, 'active-release.promotion.json')),
+            readableDuringGap,
           };
         }),
       ).pipe(provideTestLayer(ApplicationLayer));
@@ -279,7 +288,9 @@ describe('standalone release lifecycle', () => {
         active: {version: '4.0.2'},
         activeMissingAfterCrash: true,
         backupExists: false,
+        gapAfterRead: {activeMissing: true, backupExists: true, journalExists: true},
         journalExists: false,
+        readableDuringGap: {releaseRoot: expect.any(String), version: '4.0.1'},
       });
       expect(result.interrupted).toContain('simulated active pointer crash');
     }),
@@ -591,6 +602,64 @@ describe('standalone release lifecycle', () => {
     }),
   );
 
+  effectIt.effect('preserves an MCP session process and its complete descendant tree during retirement', () =>
+    Effect.gen(function* () {
+      const result = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const baseSystem = yield* SystemInfo;
+          const temporaryRoot = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-mcp-session-retirement-'});
+          const installRoot = path.join(temporaryRoot, 'install');
+          const brokerProcessId = 44_001;
+          const mcpProcessId = 44_002;
+          const workerProcessId = 44_003;
+          const cliProcessId = 44_004;
+          yield* writeProcessLease(
+            fs,
+            path,
+            installRoot,
+            '4.0.0',
+            brokerProcessId,
+            'broker-process',
+            undefined,
+            'preserve-session',
+          );
+          yield* writeProcessLease(fs, path, installRoot, '4.0.0', mcpProcessId, 'mcp-process', brokerProcessId);
+          yield* writeProcessLease(fs, path, installRoot, '4.0.0', workerProcessId, 'worker-process', mcpProcessId);
+          yield* writeProcessLease(fs, path, installRoot, '4.0.0', cliProcessId, 'cli-process');
+          const running = new Set([brokerProcessId, mcpProcessId, workerProcessId, cliProcessId]);
+          const identity = new Map([
+            [brokerProcessId, 'broker-process'],
+            [mcpProcessId, 'mcp-process'],
+            [workerProcessId, 'worker-process'],
+            [cliProcessId, 'cli-process'],
+          ]);
+          const signals: Array<readonly [number, NodeJS.Signals]> = [];
+          const testSystem = SystemInfo.of({
+            ...baseSystem,
+            environment: () => ({...baseSystem.environment(), THREADNOTE_INSTALL_ROOT: installRoot}),
+            isProcessRunning: processId => running.has(processId),
+            processId: 99_999,
+            processStartIdentity: processId => Effect.succeed(identity.get(processId)),
+            signalProcess: (processId, signal) => {
+              signals.push([processId, signal]);
+              running.delete(processId);
+            },
+          });
+          const termination = yield* terminateSupersededStandaloneProcesses('4.0.1', {
+            gracefulWaitMilliseconds: 0,
+          }).pipe(Effect.provideService(SystemInfo, testSystem));
+          return {running, signals, termination};
+        }),
+      ).pipe(provideTestLayer(ApplicationLayer));
+
+      expect(result.signals).toEqual([[44_004, 'SIGTERM']]);
+      expect(result.termination.preserved.map(lease => lease.processId)).toEqual([44_001, 44_002, 44_003]);
+      expect([...result.running].sort()).toEqual([44_001, 44_002, 44_003]);
+    }),
+  );
+
   effectIt.effect(
     'fails closed on malformed live leases and retains every release while inspection is incomplete',
     () =>
@@ -682,6 +751,7 @@ function writeProcessLease(
   processId: number,
   processStartIdentity?: string,
   parentProcessId?: number,
+  retirementPolicy?: 'preserve-session' | 'terminate',
 ) {
   const leaseRoot = path.join(installRoot, 'leases', version);
   return Effect.gen(function* () {
@@ -692,6 +762,7 @@ function writeProcessLease(
         parentProcessId,
         processId,
         processStartIdentity,
+        retirementPolicy,
         startedAt: '2026-08-02T08:00:00.000Z',
         token: `lease-${processId}`,
         version,

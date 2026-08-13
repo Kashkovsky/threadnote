@@ -65,6 +65,16 @@ export function runMcpInstall(config: RuntimeConfig, agent: AgentClient, options
       return;
     }
 
+    if (
+      yield* cliMcpConfigurationMatches(config, agent, agentExecutable, name, {
+        scope: options.scope,
+        toolset,
+      })
+    ) {
+      yield* Console.log(`Already configured: ${agent} MCP ${name}`);
+      return;
+    }
+
     yield* maybeRunEffect(false, removeCommand.executable, removeCommand.args, {
       allowFailure: true,
       cwd: removeCommand.cwd,
@@ -88,12 +98,15 @@ export const mcpConfigurationChecks = Effect.fn('mcp.configurationChecks')(funct
       timeoutMs: 5_000,
     }).pipe(Effect.option);
     const configured = result._tag === 'Some' && result.value.exitCode === 0;
+    const current = configured && isBrokerMcpCommandOutput(result.value.stdout);
     checks.push({
-      detail: configured
-        ? `${THREADNOTE_MCP_NAME} server configured`
-        : `missing or unreadable; repair will configure ${THREADNOTE_MCP_NAME}`,
+      detail: current
+        ? `${THREADNOTE_MCP_NAME} broker configured`
+        : configured
+          ? `${THREADNOTE_MCP_NAME} uses the legacy direct server command; repair will migrate it to the session broker`
+          : `missing or unreadable; repair will configure ${THREADNOTE_MCP_NAME}`,
       name: `${agent} MCP`,
-      status: configured ? 'ok' : 'warn',
+      status: current ? 'ok' : 'warn',
     });
   }
 
@@ -118,17 +131,150 @@ function jsonMcpConfigurationCheck(name: string, configPath: string, containerKe
     const raw = yield* readFileIfExists(configPath);
     const parsed = raw ? parseJsonConfigObject(raw) : undefined;
     const container = parsed?.[containerKey];
-    const configured =
-      typeof container === 'object' &&
-      container !== null &&
-      !Array.isArray(container) &&
-      THREADNOTE_MCP_NAME in container;
+    const server =
+      isJsonObject(container) && isJsonObject(container[THREADNOTE_MCP_NAME])
+        ? container[THREADNOTE_MCP_NAME]
+        : undefined;
+    const configured = server !== undefined;
+    const current = configured && isBrokerMcpServerConfig(server);
     return {
-      detail: configured ? `${THREADNOTE_MCP_NAME} server configured in ${configPath}` : `${configPath} missing entry`,
+      detail: current
+        ? `${THREADNOTE_MCP_NAME} broker configured in ${configPath}`
+        : configured
+          ? `${configPath} uses the legacy direct server command; repair will migrate it to the session broker`
+          : `${configPath} missing entry`,
       name,
-      status: configured ? ('ok' as const) : ('warn' as const),
+      status: current ? ('ok' as const) : ('warn' as const),
     };
   });
+}
+
+function isBrokerMcpCommandOutput(output: string): boolean {
+  return /(?:^|[\\/])threadnote-mcp-server(?:\.cmd)?(?:\s|$)/im.test(output);
+}
+
+function isBrokerMcpServerConfig(server: JsonObject): boolean {
+  const command = server.command;
+  const arguments_ = server.args;
+  const values = [command, ...(Array.isArray(arguments_) ? arguments_ : [])];
+  return values.some(
+    value => typeof value === 'string' && /(?:^|[\\/])threadnote-mcp-server(?:\.cmd)?$/i.test(value.trim()),
+  );
+}
+
+const cliMcpConfigurationMatches = Effect.fn('mcp.cliConfigurationMatches')(function* (
+  config: RuntimeConfig,
+  agent: 'claude' | 'codex',
+  agentExecutable: string,
+  name: string,
+  options: {
+    readonly scope?: ClaudeMcpScope;
+    readonly toolset: McpToolset;
+  },
+) {
+  const result = yield* runCommandEffect(
+    agentExecutable,
+    agent === 'codex' ? ['mcp', 'get', name, '--json'] : ['mcp', 'get', name],
+    {
+      allowFailure: true,
+      maxOutputBytes: 64 * 1024,
+      timeoutMs: 5_000,
+    },
+  ).pipe(Effect.option);
+  if (result._tag === 'None' || result.value.exitCode !== 0) return false;
+
+  const command = yield* mcpAdapterCommand();
+  const environment = mcpEnvironmentObject(config, options.toolset);
+  return agent === 'codex'
+    ? codexMcpConfigurationMatches(result.value.stdout, command, environment)
+    : claudeMcpConfigurationMatches(result.value.stdout, command, environment, options.scope ?? 'user');
+});
+
+function codexMcpConfigurationMatches(output: string, command: readonly string[], environment: JsonObject): boolean {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(output);
+  } catch {
+    return false;
+  }
+  if (!isJsonObject(parsed) || parsed.enabled !== true || !isJsonObject(parsed.transport)) return false;
+  const transport = parsed.transport;
+  return (
+    transport.type === 'stdio' &&
+    transport.command === command[0] &&
+    stringArrayEquals(transport.args, command.slice(1)) &&
+    managedMcpEnvironmentMatches(transport.env, environment)
+  );
+}
+
+function claudeMcpConfigurationMatches(
+  output: string,
+  command: readonly string[],
+  environment: JsonObject,
+  scope: ClaudeMcpScope,
+): boolean {
+  const lines = output.split(/\r?\n/);
+  const field = (name: string) =>
+    lines
+      .find(line => line.startsWith(`  ${name}:`))
+      ?.slice(name.length + 3)
+      .trim();
+  const environmentStart = lines.findIndex(line => line.trim() === 'Environment:');
+  if (environmentStart < 0) return false;
+  const actualEnvironment: Record<string, string> = {};
+  for (const line of lines.slice(environmentStart + 1)) {
+    if (!line.startsWith('    ')) break;
+    const entry = line.trim();
+    const equalsAt = entry.indexOf('=');
+    if (equalsAt <= 0) return false;
+    actualEnvironment[entry.slice(0, equalsAt)] = entry.slice(equalsAt + 1);
+  }
+  const expectedScope = scope === 'user' ? 'User config' : scope === 'local' ? 'Local config' : 'Project config';
+  return (
+    field('Type') === 'stdio' &&
+    field('Command') === command[0] &&
+    field('Args') === command.slice(1).join(' ') &&
+    field('Scope')?.startsWith(expectedScope) === true &&
+    managedMcpEnvironmentMatches(actualEnvironment, environment)
+  );
+}
+
+function stringArrayEquals(value: unknown, expected: readonly string[]): boolean {
+  return (
+    Array.isArray(value) && value.length === expected.length && value.every((entry, index) => entry === expected[index])
+  );
+}
+
+function managedMcpEnvironmentMatches(value: unknown, expected: JsonObject): boolean {
+  return isJsonObject(value) && Object.entries(expected).every(([key, expectedValue]) => value[key] === expectedValue);
+}
+
+function jsonMcpConfigurationMatches(
+  currentContent: string | undefined,
+  containerKey: 'mcpServers' | 'servers',
+  name: string,
+  expected: JsonObject,
+): boolean {
+  if (currentContent === undefined) return false;
+  const parsed = parseJsonConfigObject(currentContent);
+  const container = parsed?.[containerKey];
+  const actual = isJsonObject(container) && isJsonObject(container[name]) ? container[name] : undefined;
+  const expectedArgs = expected.args;
+  if (
+    actual === undefined ||
+    typeof expected.command !== 'string' ||
+    !Array.isArray(expectedArgs) ||
+    !expectedArgs.every(argument => typeof argument === 'string') ||
+    !isJsonObject(expected.env)
+  ) {
+    return false;
+  }
+  return (
+    actual.command === expected.command &&
+    stringArrayEquals(actual.args, expectedArgs) &&
+    (expected.type === undefined || actual.type === expected.type) &&
+    managedMcpEnvironmentMatches(actual.env, expected.env)
+  );
 }
 
 const runCursorMcpInstall = Effect.fn('mcp.runCursorInstall')(function* (
@@ -147,6 +293,7 @@ const runCursorMcpInstall = Effect.fn('mcp.runCursorInstall')(function* (
     toolset: options.toolset,
   });
   const currentContent = yield* readFileIfExists(path);
+  const current = jsonMcpConfigurationMatches(currentContent, 'mcpServers', name, serverConfig);
   const nextContent = renderCursorMcpConfig(path, currentContent, name, serverConfig);
 
   if (!options.apply) {
@@ -161,7 +308,7 @@ const runCursorMcpInstall = Effect.fn('mcp.runCursorInstall')(function* (
     return;
   }
 
-  if (currentContent === nextContent) {
+  if (current || currentContent === nextContent) {
     yield* Console.log(`Already configured: ${path}`);
     return;
   }
@@ -188,6 +335,7 @@ const runCopilotMcpInstall = Effect.fn('mcp.runCopilotInstall')(function* (
     toolset: options.toolset,
   });
   const currentContent = yield* readFileIfExists(path);
+  const current = jsonMcpConfigurationMatches(currentContent, 'servers', name, serverConfig);
   const nextContent = renderCopilotMcpConfig(path, currentContent, name, serverConfig);
 
   if (!options.apply) {
@@ -202,7 +350,7 @@ const runCopilotMcpInstall = Effect.fn('mcp.runCopilotInstall')(function* (
     return;
   }
 
-  if (currentContent === nextContent) {
+  if (current || currentContent === nextContent) {
     yield* Console.log(`Already configured: ${path}`);
     return;
   }
@@ -300,12 +448,12 @@ const buildMcpInstallCommand = Effect.fn('mcp.buildInstallCommand')(function* (
 
 export const mcpAdapterCommand = Effect.fn('mcp.adapterCommand')(function* () {
   const system = yield* SystemInfo;
+  const launcher = yield* commandLauncherPath('mcp');
   if (system.platform === 'win32') {
-    const launcher = yield* commandLauncherPath('mcp');
     const comSpec = system.environment().ComSpec ?? system.environment().COMSPEC ?? 'C:\\Windows\\System32\\cmd.exe';
     return [comSpec, '/d', '/c', launcher];
   }
-  return [yield* commandLauncherPath('cli'), 'mcp-server'];
+  return [launcher];
 });
 
 const buildMcpRemoveCommand = Effect.fn('mcp.buildRemoveCommand')(function* (

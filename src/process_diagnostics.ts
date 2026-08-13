@@ -22,7 +22,8 @@ export type ThreadnoteProcessRole =
   | 'legacy'
   | 'local-model-worker'
   | 'manager'
-  | 'mcp';
+  | 'mcp'
+  | 'mcp-broker';
 export type RegisteredThreadnoteProcessRole = Exclude<ThreadnoteProcessRole, 'legacy'>;
 
 interface ProcessRegistrationFile {
@@ -680,7 +681,8 @@ function isRegisteredThreadnoteProcessRole(value: unknown): value is RegisteredT
     value === 'graph-waiter' ||
     value === 'local-model-worker' ||
     value === 'manager' ||
-    value === 'mcp'
+    value === 'mcp' ||
+    value === 'mcp-broker'
   );
 }
 

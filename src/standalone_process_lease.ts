@@ -20,10 +20,13 @@ interface ProcessLeaseFile {
   readonly parentProcessId: Option.Option<number>;
   readonly processId: number;
   readonly processStartIdentity: Option.Option<string>;
+  readonly retirementPolicy: StandaloneProcessRetirementPolicy;
   readonly startedAt: Option.Option<string>;
   readonly token: string;
   readonly version: string;
 }
+
+export type StandaloneProcessRetirementPolicy = 'preserve-session' | 'terminate';
 
 /**
  * Privacy-safe process evidence retained by standalone releases predating the
@@ -33,6 +36,7 @@ interface ProcessLeaseFile {
 export interface StandaloneProcessLease {
   readonly parentProcessId: Option.Option<number>;
   readonly processId: number;
+  readonly retirementPolicy: StandaloneProcessRetirementPolicy;
   readonly startedAt: Option.Option<string>;
   readonly version: string;
 }
@@ -60,6 +64,7 @@ interface ObservedStandaloneProcessLease extends StandaloneProcessLease {
 }
 
 export interface SupersededStandaloneProcessTermination {
+  readonly preserved: readonly StandaloneProcessLease[];
   readonly remaining: readonly StandaloneProcessLease[];
   readonly signaled: readonly StandaloneProcessLease[];
   readonly skippedUnverified: readonly StandaloneProcessLease[];
@@ -82,7 +87,10 @@ export function installationRoot(path: Path.Path, system: SystemInfoShape): stri
  * processes acquire their own lease so a killed parent cannot prune code that
  * a still-running child is executing.
  */
-export function withStandaloneProcessLease<A, E, R>(effect: Effect.Effect<A, E, R>) {
+export function withStandaloneProcessLease<A, E, R>(
+  effect: Effect.Effect<A, E, R>,
+  options: {readonly retirementPolicy?: StandaloneProcessRetirementPolicy} = {},
+) {
   return Effect.scoped(
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -105,6 +113,7 @@ export function withStandaloneProcessLease<A, E, R>(effect: Effect.Effect<A, E, 
             parentProcessId: process.ppid,
             processId: system.processId,
             processStartIdentity,
+            retirementPolicy: options.retirementPolicy ?? 'terminate',
             startedAt: new Date(yield* Clock.currentTimeMillis).toISOString(),
             token,
             version: release.version,
@@ -258,8 +267,11 @@ export const terminateSupersededStandaloneProcesses = Effect.fn('installations.t
     const superseded = scan.leases.filter(
       lease => lease.version !== activeVersion && lease.processId !== system.processId,
     );
-    const verified = superseded.filter(lease => lease.identityVerified);
-    const skippedUnverified = superseded.filter(lease => !lease.identityVerified).map(publicLease);
+    const preservedIds = preservedStandaloneProcessIds(superseded);
+    const preserved = superseded.filter(lease => preservedIds.has(lease.processId));
+    const eligible = superseded.filter(lease => !preservedIds.has(lease.processId));
+    const verified = eligible.filter(lease => lease.identityVerified);
+    const skippedUnverified = eligible.filter(lease => !lease.identityVerified).map(publicLease);
     const candidateIds = new Set(verified.map(lease => lease.processId));
     const roots = verified.filter(
       lease => Option.isNone(lease.parentProcessId) || !candidateIds.has(lease.parentProcessId.value),
@@ -285,6 +297,7 @@ export const terminateSupersededStandaloneProcesses = Effect.fn('installations.t
     }
     yield* waitForLeasesToExit(system, verified, 1_000);
     return {
+      preserved: preserved.map(publicLease).sort((left, right) => left.processId - right.processId),
       remaining: verified.filter(lease => system.isProcessRunning(lease.processId)).map(publicLease),
       signaled: [...signaled.values()].sort((left, right) => left.processId - right.processId),
       skippedUnverified: skippedUnverified.sort((left, right) => left.processId - right.processId),
@@ -356,6 +369,7 @@ const liveStandaloneProcessLeases = Effect.fn('installations.liveProcessLeases')
           parentProcessId: lease.value.parentProcessId,
           processId,
           processStartIdentity: lease.value.processStartIdentity,
+          retirementPolicy: lease.value.retirementPolicy,
           startedAt: lease.value.startedAt,
           version,
         });
@@ -371,9 +385,34 @@ function publicLease(lease: ObservedStandaloneProcessLease): StandaloneProcessLe
   return {
     parentProcessId: lease.parentProcessId,
     processId: lease.processId,
+    retirementPolicy: lease.retirementPolicy,
     startedAt: lease.startedAt,
     version: lease.version,
   };
+}
+
+/** @internal Pure ancestry closure used by process-retirement tests. */
+export function preservedStandaloneProcessIds(
+  leases: readonly Pick<StandaloneProcessLease, 'parentProcessId' | 'processId' | 'retirementPolicy'>[],
+): ReadonlySet<number> {
+  const preserved = new Set(
+    leases.filter(lease => lease.retirementPolicy === 'preserve-session').map(lease => lease.processId),
+  );
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const lease of leases) {
+      if (
+        !preserved.has(lease.processId) &&
+        Option.isSome(lease.parentProcessId) &&
+        preserved.has(lease.parentProcessId.value)
+      ) {
+        preserved.add(lease.processId);
+        changed = true;
+      }
+    }
+  }
+  return preserved;
 }
 
 function signalLeaseIfStillOwned(
@@ -477,10 +516,13 @@ function readProcessLease(fs: FileSystem.FileSystem, leasePath: string) {
         'startedAt' in value && typeof value.startedAt === 'string' && Number.isFinite(Date.parse(value.startedAt))
           ? Option.some(value.startedAt)
           : Option.none<string>();
+      const retirementPolicy =
+        'retirementPolicy' in value && value.retirementPolicy === 'preserve-session' ? 'preserve-session' : 'terminate';
       return Option.some({
         parentProcessId,
         processId: value.processId,
         processStartIdentity,
+        retirementPolicy,
         startedAt,
         token: value.token,
         version: value.version,
