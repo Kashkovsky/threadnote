@@ -3,6 +3,9 @@ import {activeInstalledRelease} from '../installations.js';
 import {McpBrokerError, runMcpBroker, type McpBrokerChild} from '../mcp_broker.js';
 import type {StandaloneActiveRelease} from '../standalone_process_lease.js';
 import {SystemInfo, type SystemInfoShape} from './system.js';
+import {triggerAutoUpdateIfEnabled} from '../auto_update.js';
+
+const AUTO_UPDATE_CHECK_INTERVAL_MILLISECONDS = 15 * 60 * 1_000;
 
 interface ActiveReleaseRequest {
   readonly reject: (cause: unknown) => void;
@@ -12,6 +15,15 @@ interface ActiveReleaseRequest {
 /** Runtime boundary for the stable MCP broker's stdio and child process. */
 export const mcpBrokerEffect = Effect.gen(function* () {
   const system = yield* SystemInfo;
+  yield* triggerAutoUpdateIfEnabled().pipe(Effect.ignore);
+  yield* Effect.forkScoped(
+    Effect.forever(
+      Effect.sleep(AUTO_UPDATE_CHECK_INTERVAL_MILLISECONDS).pipe(
+        Effect.andThen(triggerAutoUpdateIfEnabled()),
+        Effect.ignore,
+      ),
+    ),
+  );
   const activeReleaseRequests = yield* Queue.unbounded<ActiveReleaseRequest>();
   yield* Effect.forkScoped(
     Effect.forever(

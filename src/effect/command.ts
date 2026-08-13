@@ -28,6 +28,11 @@ export interface CommandInvocation {
   readonly shell?: string;
 }
 
+export interface DetachedCommandOptions {
+  readonly cwd?: string;
+  readonly env?: NodeJS.ProcessEnv;
+}
+
 export interface StreamingCommandOptions {
   readonly env?: NodeJS.ProcessEnv;
   readonly inheritOutput?: boolean;
@@ -85,6 +90,11 @@ export class CommandExecutor extends Context.Service<
       args: readonly string[],
       options?: StreamingCommandOptions,
     ) => Effect.Effect<CommandResult>;
+    readonly spawnDetached?: (
+      executable: string,
+      args: readonly string[],
+      options?: DetachedCommandOptions,
+    ) => Effect.Effect<boolean>;
   }
 >()('threadnote/effect/CommandExecutor') {
   static readonly layer = Layer.effect(
@@ -106,6 +116,10 @@ export class CommandExecutor extends Context.Service<
           executeStreamingCommand(executable, args, options, system).pipe(
             Effect.provideService(ChildProcessSpawner, childProcessSpawner),
             Effect.provideService(Stdio.Stdio, stdio),
+          ),
+        spawnDetached: (executable, args, options) =>
+          spawnDetachedCommand(executable, args, options ?? {}, system).pipe(
+            Effect.provideService(ChildProcessSpawner, childProcessSpawner),
           ),
       });
     }),
@@ -147,6 +161,16 @@ export const runStreamingCommandEffect = Effect.fn('runStreamingCommandEffect')(
 ) {
   const command = yield* CommandExecutor;
   return yield* command.executeStreaming(executable, args, options);
+});
+
+export const runDetachedCommandEffect = Effect.fn('runDetachedCommandEffect')(function* (
+  executable: string,
+  args: readonly string[],
+  options: DetachedCommandOptions = {},
+) {
+  const command = yield* CommandExecutor;
+  if (!command.spawnDetached) return false;
+  return yield* command.spawnDetached(executable, args, options);
 });
 
 export const maybeRunEffect = Effect.fn('maybeRunEffect')(function* (
@@ -386,6 +410,28 @@ const executeStreamingCommand = Effect.fn('CommandExecutor.executeStreaming')(fu
       return Effect.succeed({exitCode: 1, stderr: `${message}\n`, stdout: ''});
     }),
   );
+});
+
+const spawnDetachedCommand = Effect.fn('CommandExecutor.spawnDetached')(function* (
+  executable: string,
+  args: readonly string[],
+  options: DetachedCommandOptions,
+  system: SystemInfoShape,
+) {
+  return yield* Effect.scoped(
+    Effect.gen(function* () {
+      const handle = yield* ChildProcess.make(executable, [...args], {
+        cwd: options.cwd,
+        detached: true,
+        env: options.env ?? system.environment(),
+        stdin: 'ignore',
+        stdout: 'ignore',
+        stderr: 'ignore',
+      });
+      yield* handle.unref.pipe(Effect.asVoid);
+      return true;
+    }),
+  ).pipe(Effect.catch(() => Effect.succeed(false)));
 });
 
 function collectCommandOutput(

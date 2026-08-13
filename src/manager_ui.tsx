@@ -6,6 +6,7 @@ import type {CodeGraphLocalDiagnosticsReport} from './code_graph/diagnostics.js'
 import {ManagerAutocompleteInput, ManagerDialogProvider, useManagerDialogs} from './manager_dialog.js';
 import {WorksetsPanel} from './manager_worksets_view.js';
 import {ProcessesPanel} from './manager_processes_view.js';
+import {managerUpdateIndicator} from './manager_update_indicator.js';
 import {
   graphViewRemovalApprovalDialog,
   graphViewRemovalTargetIsAbsent,
@@ -136,6 +137,17 @@ interface AgentOption {
 
 interface StateResponse {
   readonly agents: readonly AgentOption[];
+  readonly autoUpdate: {
+    readonly effectivePolicy: 'automatic' | 'notify';
+    readonly lastFailure?: {readonly attempt: number; readonly failedAt: string; readonly summary: string};
+    readonly lastSuccess?: {
+      readonly completedAt: string;
+      readonly fromVersion: string;
+      readonly repairRequired: boolean;
+      readonly toVersion: string;
+    };
+    readonly running?: {readonly attempt: number; readonly fromVersion: string; readonly startedAt: string};
+  };
   readonly config: {
     readonly account: string;
     readonly agentContextHome: string;
@@ -1134,6 +1146,7 @@ function App(): React.ReactElement {
   const doctorBusyMessage = doctorAction ? `${doctorAction}...` : '';
   const metadataFieldsDisabled = Boolean(memory || selectedIsDir || selectedIsResource);
   const appStyle = {'--sidebar-width': `${sidebarWidth}px`} as React.CSSProperties;
+  const updateIndicator = state ? managerUpdateIndicator(state) : undefined;
 
   return (
     <div className="app" style={appStyle}>
@@ -1269,10 +1282,10 @@ function App(): React.ReactElement {
             </div>
           </div>
         )}
-        {state?.updateAvailable && state.latestVersion ? (
+        {updateIndicator ? (
           <div className="sidebar-update">
-            <span>Update available</span>
-            <strong>v{state.latestVersion}</strong>
+            <span>{updateIndicator.label}</span>
+            <strong>{updateIndicator.detail}</strong>
           </div>
         ) : null}
       </aside>

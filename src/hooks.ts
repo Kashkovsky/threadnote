@@ -13,9 +13,10 @@ import {runHandoff, runRecall} from './memory.js';
 import {applyScrubber} from './share.js';
 import {distillTrace} from './trace.js';
 import type {AgentClient, HookRunnerOptions, HooksInstallOptions, JsonObject, RuntimeConfig} from './types.js';
-import {checkForThreadnoteUpdate, spawnDetachedAutoUpdate} from './update-check.js';
+import {checkForThreadnoteUpdate} from './update-check.js';
 import {expandPath, exists, isJsonObject, parseJsonConfigObject, resolveRepoName} from './utils.js';
 import {getThreadnoteVersion} from './version.js';
+import {readAutoUpdateStatus, triggerAutoUpdateIfEnabled} from './auto_update.js';
 
 type HookEvent = 'PreCompact' | 'SessionStart';
 
@@ -223,11 +224,11 @@ export function runSessionStartHook(config: RuntimeConfig, options: HookRunnerOp
   // Hooks must never block session start. Failures fall through quietly so the
   // user just gets a normal session without injected context.
   return Effect.gen(function* () {
+    yield* emitUpdateBannerIfOutdated(config);
     const project = yield* resolveRepoName();
     if (!project) {
       return;
     }
-    yield* emitUpdateBannerIfOutdated(config);
     yield* Console.log(`## Threadnote — latest context for ${project}\n`);
     yield* runRecall(config, {
       dryRun: options.dryRun === true,
@@ -314,26 +315,20 @@ const readStdinWithTimeout = Effect.fn('hooks.readStdin')(function* (timeoutMs: 
 });
 
 function emitUpdateBannerIfOutdated(config: RuntimeConfig) {
-  // Cheap, daily-cached check that nags users to upgrade. Failures are folded
-  // in the Effect error channel so a flaky registry never breaks session start.
-  // With THREADNOTE_AUTO_UPDATE=1, the same code path
-  // spawns `threadnote update --yes` as a detached background process and
-  // tells the user the new version will be active next session.
+  // Automatic mode delegates all network and install work to the detached,
+  // install-scoped coordinator. Notify mode retains the cheap daily banner.
   return Effect.gen(function* () {
+    const autoUpdate = yield* readAutoUpdateStatus();
+    if (autoUpdate.effectivePolicy === 'automatic') {
+      yield* triggerAutoUpdateIfEnabled();
+      return;
+    }
     const path = yield* Path.Path;
-    const system = yield* SystemInfo;
     const result = yield* checkForThreadnoteUpdate({
       cachePath: path.join(config.agentContextHome, '.update-state.json'),
       currentVersion: yield* getThreadnoteVersion(),
     });
     if (!result || !result.outdated) {
-      return;
-    }
-    if (system.environment().THREADNOTE_AUTO_UPDATE === '1') {
-      yield* Console.log(
-        `[threadnote] v${result.latestVersion} available (current v${result.currentVersion}). Auto-updating in the background; the new version takes effect next session.\n`,
-      );
-      yield* spawnDetachedAutoUpdate();
       return;
     }
     yield* Console.log(
