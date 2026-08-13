@@ -10,12 +10,18 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"net/url"
 	"os"
 	"strconv"
 	"strings"
 	"time"
+
+	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
+	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
+	"google.golang.org/protobuf/encoding/protowire"
+	"google.golang.org/protobuf/proto"
 )
 
 const (
@@ -214,37 +220,122 @@ func queryTrace(
 	if err != nil || len(body) > maxResponse {
 		return false, errors.New("invalid Tempo response")
 	}
-	if !validStoredTrace(body, ids) {
+	mediaType, _, err := mime.ParseMediaType(response.Header.Get("Content-Type"))
+	if err != nil || mediaType != "application/protobuf" {
+		return false, errors.New("Tempo returned an unexpected media type")
+	}
+	state, err := inspectStoredTrace(body, ids)
+	if err != nil {
 		return false, errors.New("Tempo returned a trace outside the canary contract")
 	}
-	return true, nil
+	return state == storedTraceMatched, nil
 }
 
-func validStoredTrace(body []byte, ids canaryIDs) bool {
-	response, err := parseMessage(body)
+type storedTraceState uint8
+
+const (
+	storedTracePending storedTraceState = iota
+	storedTraceMatched
+)
+
+func inspectStoredTrace(body []byte, ids canaryIDs) (storedTraceState, error) {
+	tracePayload, present, err := tempoTracePayload(body)
 	if err != nil {
-		return false
+		return storedTracePending, err
 	}
-	for _, trace := range response.messages(1) {
-		for _, resourceSpans := range trace.messages(1) {
-			resources := resourceSpans.messages(1)
-			if len(resources) != 1 {
+	if !present {
+		return storedTracePending, nil
+	}
+	trace := &tracepb.TracesData{}
+	if err := (proto.UnmarshalOptions{DiscardUnknown: false}).Unmarshal(tracePayload, trace); err != nil {
+		return storedTracePending, errors.New("invalid Tempo trace protobuf")
+	}
+	if len(trace.ResourceSpans) == 0 {
+		return storedTracePending, nil
+	}
+	for _, resourceSpans := range trace.ResourceSpans {
+		if resourceSpans == nil {
+			continue
+		}
+		resource := resourceSpans.GetResource()
+		if resource == nil || !hasStringAttribute(resource.Attributes, "service.name", "threadnote") ||
+			!hasStringAttribute(resource.Attributes, "service.version", canaryVersion) ||
+			!hasStringAttribute(resource.Attributes, "session.id", ids.sessionID) {
+			continue
+		}
+		for _, scopeSpans := range resourceSpans.ScopeSpans {
+			if scopeSpans == nil {
 				continue
 			}
-			resource, valid := protoAttributes(resources[0].messages(1))
-			if !valid || resource["service.name"] != "threadnote" || resource["service.version"] != canaryVersion || resource["session.id"] != ids.sessionID {
-				continue
-			}
-			for _, scopeSpans := range resourceSpans.messages(2) {
-				for _, span := range scopeSpans.messages(2) {
-					attributes, valid := protoAttributes(span.messages(9))
-					if valid && bytes.Equal(span.firstBytes(1), ids.traceID) && string(span.firstBytes(5)) == "threadnote.anonymous-diagnostic" &&
-						attributes["threadnote.component"] == "cli" && attributes["threadnote.operation"] == "health" &&
-						attributes["threadnote.event"] == "completion" && attributes["threadnote.outcome"] == "success" {
-						return true
-					}
+			for _, span := range scopeSpans.Spans {
+				if span == nil {
+					continue
+				}
+				if bytes.Equal(span.TraceId, ids.traceID) && bytes.Equal(span.SpanId, ids.spanID) &&
+					span.Name == "threadnote.anonymous-diagnostic" &&
+					hasStringAttribute(span.Attributes, "threadnote.component", "cli") &&
+					hasStringAttribute(span.Attributes, "threadnote.operation", "health") &&
+					hasStringAttribute(span.Attributes, "threadnote.event", "completion") &&
+					hasStringAttribute(span.Attributes, "threadnote.outcome", "success") {
+					return storedTraceMatched, nil
 				}
 			}
+		}
+	}
+	return storedTracePending, errors.New("stored trace does not match the canary")
+}
+
+func tempoTracePayload(payload []byte) ([]byte, bool, error) {
+	var tracePayload []byte
+	seen := make(map[protowire.Number]struct{}, 4)
+	for len(payload) > 0 {
+		number, wireType, tagLength := protowire.ConsumeTag(payload)
+		if tagLength < 0 {
+			return nil, false, errors.New("invalid Tempo response tag")
+		}
+		expectedType, admitted := map[protowire.Number]protowire.Type{
+			1: protowire.BytesType,
+			2: protowire.BytesType,
+			3: protowire.VarintType,
+			4: protowire.BytesType,
+		}[number]
+		if !admitted || wireType != expectedType {
+			return nil, false, errors.New("invalid Tempo response field")
+		}
+		if _, duplicate := seen[number]; duplicate {
+			return nil, false, errors.New("duplicate Tempo response field")
+		}
+		seen[number] = struct{}{}
+		payload = payload[tagLength:]
+
+		var consumed int
+		switch wireType {
+		case protowire.BytesType:
+			value, length := protowire.ConsumeBytes(payload)
+			consumed = length
+			if number == 1 && length >= 0 {
+				tracePayload = append([]byte(nil), value...)
+			}
+		case protowire.VarintType:
+			_, consumed = protowire.ConsumeVarint(payload)
+		}
+		if consumed < 0 {
+			return nil, false, errors.New("invalid Tempo response value")
+		}
+		payload = payload[consumed:]
+	}
+	_, present := seen[1]
+	return tracePayload, present, nil
+}
+
+func hasStringAttribute(attributes []*commonpb.KeyValue, key string, expected string) bool {
+	for _, attribute := range attributes {
+		if attribute == nil || attribute.GetKey() != key || attribute.Value == nil {
+			continue
+		}
+		value, ok := attribute.Value.Value.(*commonpb.AnyValue_StringValue)
+		if ok {
+			return value.StringValue == expected
 		}
 	}
 	return false
@@ -311,98 +402,6 @@ func buildEnvelope(ids canaryIDs, timestamp time.Time) []byte {
 	resourceSpans := message(1, resource)
 	resourceSpans = append(resourceSpans, message(2, scopeSpans)...)
 	return message(1, resourceSpans)
-}
-
-type protoMessage map[uint64][][]byte
-
-func parseMessage(payload []byte) (protoMessage, error) {
-	message := make(protoMessage)
-	for len(payload) > 0 {
-		key, consumed, ok := readVarint(payload)
-		if !ok || key == 0 {
-			return nil, errors.New("invalid protobuf key")
-		}
-		payload = payload[consumed:]
-		field := key >> 3
-		switch key & 7 {
-		case 0:
-			_, consumed, ok = readVarint(payload)
-			if !ok {
-				return nil, errors.New("invalid protobuf varint")
-			}
-			payload = payload[consumed:]
-		case 1:
-			if len(payload) < 8 {
-				return nil, errors.New("invalid protobuf fixed64")
-			}
-			payload = payload[8:]
-		case 2:
-			length, lengthBytes, lengthOK := readVarint(payload)
-			if !lengthOK || length > uint64(len(payload)-lengthBytes) {
-				return nil, errors.New("invalid protobuf bytes")
-			}
-			start, end := lengthBytes, lengthBytes+int(length)
-			message[field] = append(message[field], payload[start:end])
-			payload = payload[end:]
-		case 5:
-			if len(payload) < 4 {
-				return nil, errors.New("invalid protobuf fixed32")
-			}
-			payload = payload[4:]
-		default:
-			return nil, errors.New("unsupported protobuf wire type")
-		}
-	}
-	return message, nil
-}
-
-func (message protoMessage) messages(field uint64) []protoMessage {
-	result := make([]protoMessage, 0, len(message[field]))
-	for _, payload := range message[field] {
-		parsed, err := parseMessage(payload)
-		if err == nil {
-			result = append(result, parsed)
-		}
-	}
-	return result
-}
-
-func (message protoMessage) firstBytes(field uint64) []byte {
-	if len(message[field]) == 0 {
-		return nil
-	}
-	return message[field][0]
-}
-
-func protoAttributes(attributes []protoMessage) (map[string]string, bool) {
-	values := make(map[string]string, len(attributes))
-	for _, attribute := range attributes {
-		key := string(attribute.firstBytes(1))
-		anyValues := attribute.messages(2)
-		if key == "" || len(anyValues) != 1 {
-			return nil, false
-		}
-		// The canary's identity fields are strings. Numeric attributes such as
-		// schema_version and duration_ms are valid but irrelevant to this readback.
-		if len(anyValues[0][1]) == 1 {
-			values[key] = string(anyValues[0][1][0])
-		}
-	}
-	return values, true
-}
-
-func readVarint(payload []byte) (uint64, int, bool) {
-	var value uint64
-	for index, current := range payload {
-		if index == 10 || (index == 9 && current > 1) {
-			return 0, 0, false
-		}
-		value |= uint64(current&0x7f) << (7 * index)
-		if current&0x80 == 0 {
-			return value, index + 1, true
-		}
-	}
-	return 0, 0, false
 }
 
 func keyValue(key string, anyValue []byte) []byte {
