@@ -173,6 +173,8 @@ function processRoleLabel(role: ManageableThreadnoteProcessDiagnostic['role']): 
       return 'Manager';
     case 'mcp':
       return 'MCP server';
+    case 'mcp-broker':
+      return 'MCP session broker';
   }
 }
 

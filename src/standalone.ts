@@ -17,6 +17,7 @@ const isCodeGraphParserWorker = arguments_[0] === CODE_GRAPH_PARSER_WORKER_ARGUM
 const isCodeGraphCompactionWorker = arguments_[0] === CODE_GRAPH_COMPACTION_WORKER_ARGUMENT;
 const isCodeGraphDeepDiagnosticsWorker = arguments_[0] === CODE_GRAPH_DEEP_DIAGNOSTICS_WORKER_ARGUMENT;
 const isGitWorktreeRegistrationWorker = arguments_[0] === CODE_GRAPH_GIT_WORKTREE_REGISTRATION_WORKER_ARGUMENT;
+const isMcpBroker = arguments_[0] === 'mcp-broker';
 const isMcpServer = executableName?.startsWith('threadnote-mcp-server') === true || arguments_[0] === 'mcp-server';
 const runSignalTransparentMain = Runtime.makeRunMain(({fiber, teardown}) => {
   fiber.addObserver(exit => {
@@ -42,11 +43,14 @@ if (isCodeGraphDeepDiagnosticsWorker || isCodeGraphCompactionWorker) {
       ? await codeGraphParserWorkerProgram(arguments_)
       : isGitWorktreeRegistrationWorker
         ? await gitWorktreeRegistrationWorkerProgram()
-        : await applicationProgram(arguments_, isMcpServer);
+        : await applicationProgram(arguments_, isMcpServer, isMcpBroker);
 
   BunRuntime.runMain(program, {
     disableErrorReporting:
-      isLocalModelWorker || isCodeGraphParserWorker || isGitWorktreeRegistrationWorker || !isMcpServer,
+      isLocalModelWorker ||
+      isCodeGraphParserWorker ||
+      isGitWorktreeRegistrationWorker ||
+      (!isMcpServer && !isMcpBroker),
   });
 }
 
@@ -158,12 +162,30 @@ async function codeGraphParserWorkerProgram(arguments_: readonly string[]) {
   );
 }
 
-async function applicationProgram(arguments_: readonly string[], isMcpServer: boolean) {
+async function applicationProgram(arguments_: readonly string[], isMcpServer: boolean, isMcpBroker: boolean) {
   const [runtime, processDiagnostics, processLease] = await Promise.all([
     import('./effect/runtime.js'),
     import('./process_diagnostics.js'),
     import('./standalone_process_lease.js'),
   ]);
+  if (isMcpBroker) {
+    const {mcpBrokerEffect} = await import('./effect/mcp_broker_process.js');
+    const processHome = normalizedProcessHome(arguments_, processDiagnostics.threadnoteHomeForProcess);
+    return processHome.pipe(
+      Effect.flatMap(home =>
+        processLease.withStandaloneProcessLease(
+          processDiagnostics.withThreadnoteProcessRegistration(
+            home,
+            'mcp-broker',
+            Effect.scoped(mcpBrokerEffect),
+            'mcp-broker',
+          ),
+          {retirementPolicy: 'preserve-session'},
+        ),
+      ),
+      Effect.provide(runtime.StandaloneBrokerLayer),
+    );
+  }
   if (isMcpServer) {
     const {mcpServerEffect} = await import('./mcp_server.js');
     const processHome = normalizedProcessHome(arguments_, processDiagnostics.threadnoteHomeForProcess);
@@ -176,6 +198,7 @@ async function applicationProgram(arguments_: readonly string[], isMcpServer: bo
             Effect.scoped(mcpServerEffect),
             'mcp-server',
           ),
+          {retirementPolicy: 'preserve-session'},
         ),
       ),
       Effect.provide(runtime.ApplicationLayer),

@@ -206,7 +206,7 @@ export const recoverStandaloneReleasePromotion = Effect.fn('installations.recove
   return true;
 });
 
-export const activeInstalledVersion = Effect.fn('installations.activeVersion')(function* () {
+export const activeInstalledRelease = Effect.fn('installations.activeRelease')(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const system = yield* SystemInfo;
@@ -214,8 +214,12 @@ export const activeInstalledVersion = Effect.fn('installations.activeVersion')(f
   const active = yield* readActiveRelease(fs, path.join(root, ACTIVE_RELEASE_FILE));
   if (!active) return undefined;
   const validated = yield* readValidatedRelease(fs, path, active.releaseRoot, root);
-  if (validated?.version === active.version) return active.version;
+  if (validated?.version === active.version) return validated;
   return undefined;
+});
+
+export const activeInstalledVersion = Effect.fn('installations.activeVersion')(function* () {
+  return (yield* activeInstalledRelease())?.version;
 });
 
 export const pruneStandaloneReleases = Effect.fn('installations.pruneReleases')(function* (

@@ -92,7 +92,7 @@ render_expected_launcher() {
   launcher_entry="$(canonical_launcher_quote "$launcher_executable")"
   case "$launcher_mode" in
     cli) launcher_mode_argument="" ;;
-    mcp) launcher_mode_argument=" mcp-server" ;;
+    mcp) launcher_mode_argument=" mcp-broker" ;;
     *) die "Unknown launcher mode: $launcher_mode" ;;
   esac
   printf '%s\n' \

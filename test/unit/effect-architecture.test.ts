@@ -68,6 +68,7 @@ describe('Effect architecture boundaries', () => {
       'src/effect/cli_output.ts',
       'src/effect/console.ts',
       'src/effect/errors.ts',
+      'src/effect/mcp_broker_process.ts',
       'src/effect/system.ts',
       'src/mcp_server.ts',
     ]);
@@ -162,6 +163,7 @@ describe('Effect architecture boundaries', () => {
   it('keeps runtime globals inside the SystemInfo, process-adapter, and executable boundaries', async () => {
     const allowed = new Set([
       'src/effect/ai/isolated-local-model-runtime.ts',
+      'src/effect/mcp_broker_process.ts',
       'src/effect/system.ts',
       'src/standalone.ts',
     ]);

@@ -286,7 +286,7 @@ export const runUpdate = Effect.fn('runUpdate')(function* (config: RuntimeConfig
     yield* Console.log('Skipping repair because --no-repair was provided.');
   }
   yield* Console.log(
-    'Update complete. Restart Cursor, Copilot, Codex, Claude, or open a fresh agent session so MCP tools reload.',
+    'Update complete. Brokered MCP sessions will use the new version on their next request. Sessions started before Threadnote 4.2.2 require one host restart.',
   );
   yield* withStandaloneInstallationLock(pruneStandaloneReleases(releaseRoot, dryRun), dryRun);
   yield* printWhatsNewIfAvailable(info);

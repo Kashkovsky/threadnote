@@ -927,7 +927,7 @@ describe('standalone updater', () => {
       expect(JSON.parse(result.activeRelease)).toMatchObject({version: RELEASE_VERSION});
       expect(JSON.parse(result.releaseMetadata)).toMatchObject({version: RELEASE_VERSION});
       expect(result.launcher).toContain(`versions/${RELEASE_VERSION}/threadnote`.replaceAll('/', pathSeparator()));
-      expect(result.mcpLauncher).toContain('mcp-server');
+      expect(result.mcpLauncher).toContain('mcp-broker');
       if (result.platform === 'darwin') {
         expect(result.signatureCommands.join('\n')).toContain('codesign --verify --strict --verbose=2');
         expect(result.signatureCommands.join('\n')).toContain('libfixture.so');

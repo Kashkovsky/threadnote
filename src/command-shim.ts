@@ -138,7 +138,7 @@ export const renderCommandShim = Effect.fn('commandShim.render')(function* (
   const system = yield* SystemInfo;
   const root = releaseRoot ?? (yield* toolRoot());
   const executable = path.join(root, system.platform === 'win32' ? 'threadnote.exe' : 'threadnote');
-  const modeArguments = mode === 'mcp' ? ['mcp-server'] : [];
+  const modeArguments = mode === 'mcp' ? ['mcp-broker'] : [];
   if (system.platform === 'win32') {
     const command = [cmdQuote(executable), ...modeArguments, '%*'].join(' ');
     return [
