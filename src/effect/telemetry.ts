@@ -179,6 +179,7 @@ interface AnonymousTelemetryService {
 
 interface AnonymousTelemetryEventOptions {
   readonly component: 'cli' | 'mcp';
+  readonly diagnostic?: AnonymousTelemetryDiagnostic;
   readonly errorType?: string;
   readonly event?: 'checkpoint' | 'lifecycle';
   readonly fields?: AnonymousTelemetryFields;
@@ -298,19 +299,26 @@ function makeAnonymousTelemetryService(
     isEnabled.pipe(
       Effect.flatMap(enabled =>
         enabled
-          ? emitSafeSpan(
-              tracer,
-              system,
-              event,
-              event.outcome === undefined
-                ? undefined
-                : {
-                    durationMilliseconds: event.fields?.elapsedMilliseconds ?? 0,
-                    ...(event.errorType === undefined ? {} : {errorType: closedTelemetryErrorType(event.errorType)}),
-                    outcome: event.outcome,
-                  },
-              undefined,
-            )
+          ? Effect.suspend(() => {
+              const diagnostic = projectAnonymousTelemetryDiagnostic(event.diagnostic);
+              const errorType =
+                diagnostic?.errorType ??
+                (event.errorType === undefined ? undefined : closedTelemetryErrorType(event.errorType));
+              return emitSafeSpan(
+                tracer,
+                system,
+                event,
+                event.outcome === undefined
+                  ? undefined
+                  : {
+                      durationMilliseconds: event.fields?.elapsedMilliseconds ?? 0,
+                      ...(diagnostic === undefined ? {} : {diagnostic}),
+                      ...(errorType === undefined ? {} : {errorType}),
+                      outcome: event.outcome,
+                    },
+                undefined,
+              );
+            })
           : Effect.void,
       ),
       Effect.catchCause(() => Effect.void),

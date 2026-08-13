@@ -6,10 +6,6 @@ import {
   type McpBrokerFailureEvent,
 } from '../../src/mcp_broker.js';
 import type {StandaloneActiveRelease} from '../../src/standalone_process_lease.js';
-import {anonymousAgentSessionId} from '../../src/telemetry/session.js';
-
-const TEST_AGENT_SESSION_ID = anonymousAgentSessionId(Uint8Array.from({length: 16}, (_, index) => index));
-
 describe('MCP session broker', () => {
   it('reports a closed spawn failure without allowing the observer to alter recovery', async () => {
     const clientInput = new AsyncByteQueue();
@@ -17,7 +13,6 @@ describe('MCP session broker', () => {
     const release = {releaseRoot: '/threadnote/versions/private-release', version: 'private-version'};
     const failures: McpBrokerFailureEvent[] = [];
     const running = runMcpBroker({
-      agentSessionId: TEST_AGENT_SESSION_ID,
       input: clientInput,
       onFailure: event => {
         failures.push(event);
@@ -47,16 +42,13 @@ describe('MCP session broker', () => {
     } satisfies Record<string, StandaloneActiveRelease>;
     let active = releases.first;
     const spawned: FakeMcpChild[] = [];
-    const childAgentSessionIds: string[] = [];
     const failures: McpBrokerFailureEvent[] = [];
     const dependencies: McpBrokerDependencies = {
-      agentSessionId: TEST_AGENT_SESSION_ID,
       input: clientInput,
       onFailure: event => failures.push(event),
       readActiveRelease: async () => active,
       replayTimeoutMilliseconds: 5,
-      spawn: (release, agentSessionId) => {
-        childAgentSessionIds.push(agentSessionId);
+      spawn: release => {
         const child = new FakeMcpChild(release.version);
         spawned.push(child);
         return child;
@@ -77,7 +69,6 @@ describe('MCP session broker', () => {
     expect(JSON.parse(await clientOutput.nextLine())).toMatchObject({method: 'notifications/resources/list_changed'});
     expect(await clientOutput.nextLine()).toContain('4.2.2-b');
     expect(spawned).toHaveLength(2);
-    expect(childAgentSessionIds).toEqual([TEST_AGENT_SESSION_ID, TEST_AGENT_SESSION_ID]);
     expect(spawned[1]?.received.map(line => JSON.parse(line).method)).toEqual([
       'initialize',
       'notifications/initialized',
@@ -98,7 +89,6 @@ describe('MCP session broker', () => {
     const spawned: FakeMcpChild[] = [];
     const failures: McpBrokerFailureEvent[] = [];
     const running = runMcpBroker({
-      agentSessionId: TEST_AGENT_SESSION_ID,
       input: clientInput,
       onFailure: event => failures.push(event),
       readActiveRelease: async () => release,
@@ -149,7 +139,6 @@ describe('MCP session broker', () => {
     const release = {releaseRoot: '/threadnote/versions/4.2.2', version: '4.2.2'};
     const spawned: FakeMcpChild[] = [];
     const running = runMcpBroker({
-      agentSessionId: TEST_AGENT_SESSION_ID,
       input: clientInput,
       readActiveRelease: async () => release,
       spawn: () => {
@@ -184,7 +173,6 @@ describe('MCP session broker', () => {
     let active = releases.first;
     const spawned: FakeMcpChild[] = [];
     const running = runMcpBroker({
-      agentSessionId: TEST_AGENT_SESSION_ID,
       input: clientInput,
       readActiveRelease: async () => active,
       spawn: release => {
@@ -231,7 +219,6 @@ describe('MCP session broker', () => {
     const spawned: FakeMcpChild[] = [];
     const failures: McpBrokerFailureEvent[] = [];
     const running = runMcpBroker({
-      agentSessionId: TEST_AGENT_SESSION_ID,
       input: clientInput,
       onFailure: event => failures.push(event),
       readActiveRelease: async () => release,
@@ -271,7 +258,6 @@ describe('MCP session broker', () => {
     const spawned: FakeMcpChild[] = [];
     const failures: McpBrokerFailureEvent[] = [];
     const running = runMcpBroker({
-      agentSessionId: TEST_AGENT_SESSION_ID,
       input: clientInput,
       onFailure: event => failures.push(event),
       readActiveRelease: async () => active,
@@ -313,7 +299,6 @@ describe('MCP session broker', () => {
     const spawned: FakeMcpChild[] = [];
     const failures: McpBrokerFailureEvent[] = [];
     const running = runMcpBroker({
-      agentSessionId: TEST_AGENT_SESSION_ID,
       input: clientInput,
       onFailure: event => failures.push(event),
       readActiveRelease: async () => active,
@@ -355,7 +340,6 @@ describe('MCP session broker', () => {
     let active = releases.first;
     const spawned: FakeMcpChild[] = [];
     const running = runMcpBroker({
-      agentSessionId: TEST_AGENT_SESSION_ID,
       input: clientInput,
       readActiveRelease: async () => active,
       spawn: release => {
@@ -407,7 +391,6 @@ describe('MCP session broker', () => {
     let active = releases.first;
     const spawned: FakeMcpChild[] = [];
     const running = runMcpBroker({
-      agentSessionId: TEST_AGENT_SESSION_ID,
       input: clientInput,
       readActiveRelease: async () => active,
       spawn: release => {
@@ -445,7 +428,6 @@ describe('MCP session broker', () => {
     const release = {releaseRoot: '/threadnote/versions/4.2.2', version: '4.2.2'};
     const spawned: FakeMcpChild[] = [];
     const running = runMcpBroker({
-      agentSessionId: TEST_AGENT_SESSION_ID,
       input: clientInput,
       readActiveRelease: async () => release,
       spawn: () => {
@@ -477,7 +459,6 @@ describe('MCP session broker', () => {
     const release = {releaseRoot: '/threadnote/versions/4.2.2', version: '4.2.2'};
     const spawned: FakeMcpChild[] = [];
     const running = runMcpBroker({
-      agentSessionId: TEST_AGENT_SESSION_ID,
       input: clientInput,
       readActiveRelease: async () => release,
       spawn: () => {

@@ -47,6 +47,7 @@ import {
   type CodeGraphAutomaticRecoveryCoordinatorShape,
 } from './recovery_coordinator.js';
 import {codeGraphAnonymousTelemetryComponent, emitCodeGraphBackgroundFailure} from './anonymous_telemetry.js';
+import {anonymousTelemetryDiagnosticFromCodeGraphRefreshFailure} from '../telemetry/diagnostic.js';
 
 export interface CodeGraphWatchOptions {
   readonly cwd: string;
@@ -379,7 +380,12 @@ export class CodeGraphWatcher extends Context.Service<CodeGraphWatcher, CodeGrap
         run,
         refresh,
         {
-          onRefreshFailure: () => emitCodeGraphBackgroundFailure(anonymousTelemetryComponent, 'graph-refresh'),
+          onRefreshFailure: failure =>
+            emitCodeGraphBackgroundFailure(
+              anonymousTelemetryComponent,
+              'graph-refresh',
+              anonymousTelemetryDiagnosticFromCodeGraphRefreshFailure(failure),
+            ),
         },
         recover,
       );

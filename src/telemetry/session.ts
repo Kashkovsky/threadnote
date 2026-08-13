@@ -26,6 +26,11 @@ export interface ResolvedAgentSession {
   readonly id: string;
 }
 
+export interface PreparedAgentSession {
+  readonly consentGeneration: string;
+  readonly id: string;
+}
+
 interface ConsumedAgentSessionEnvironment {
   readonly childKind?: string;
   readonly consentGeneration?: string;
@@ -185,6 +190,32 @@ export function takeTelemetrySessionEnvironment(environment: NodeJS.ProcessEnv):
   return snapshot;
 }
 
+/**
+ * Consumes the opaque alias prepared for one exact Threadnote runtime bridge.
+ * Invalid, missing, or inaccessible telemetry state is treated as disabled.
+ */
+export function takePreparedAgentSessionEnvironment(
+  environment: NodeJS.ProcessEnv,
+  expectedChildKind: TelemetryChildKind,
+): PreparedAgentSession | undefined {
+  try {
+    const inputs = consumeAgentSessionEnvironment(environment);
+    if (
+      inputs.childKind !== expectedChildKind ||
+      inputs.consentGeneration === undefined ||
+      inputs.inheritedSessionId === undefined ||
+      !isTelemetryConsentGeneration(inputs.consentGeneration) ||
+      !isAnonymousAgentSessionId(inputs.inheritedSessionId)
+    ) {
+      return undefined;
+    }
+    return {consentGeneration: inputs.consentGeneration, id: inputs.inheritedSessionId};
+  } catch {
+    clearTelemetrySessionEnvironmentFailSoft(environment);
+    return undefined;
+  }
+}
+
 export function isAnonymousAgentSessionId(value: string): boolean {
   return /^tns_[\da-f]{32}$/u.test(value);
 }
@@ -228,6 +259,22 @@ function clearTelemetrySessionEnvironment(environment: NodeJS.ProcessEnv): void 
   delete environment[TELEMETRY_AGENT_SESSION_ENVIRONMENT_VARIABLE];
   delete environment[TELEMETRY_CONSENT_GENERATION_ENVIRONMENT_VARIABLE];
   delete environment[TELEMETRY_CHILD_ENVIRONMENT_VARIABLE];
+}
+
+function clearTelemetrySessionEnvironmentFailSoft(environment: NodeJS.ProcessEnv): void {
+  for (const name of [
+    TELEMETRY_PROVIDER_ENVIRONMENT_VARIABLE,
+    TELEMETRY_PROVIDER_SESSION_TOKEN_ENVIRONMENT_VARIABLE,
+    TELEMETRY_AGENT_SESSION_ENVIRONMENT_VARIABLE,
+    TELEMETRY_CONSENT_GENERATION_ENVIRONMENT_VARIABLE,
+    TELEMETRY_CHILD_ENVIRONMENT_VARIABLE,
+  ]) {
+    try {
+      delete environment[name];
+    } catch {
+      // Telemetry state must never make the owning runtime fail.
+    }
+  }
 }
 
 function isTelemetryChildKind(value: string | undefined): value is TelemetryChildKind {

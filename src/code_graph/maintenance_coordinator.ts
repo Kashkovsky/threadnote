@@ -30,6 +30,7 @@ import {makeLiveCodeGraphWorktreeReconciler} from './worktree_reconciliation.js'
 import {inspectCodeGraphViewDatabaseTarget} from './view_removal.js';
 import {type CodeGraphStoragePressure} from './storage_pressure.js';
 import {codeGraphAnonymousTelemetryComponent, emitCodeGraphBackgroundFailure} from './anonymous_telemetry.js';
+import {anonymousTelemetryDiagnosticFromError} from '../telemetry/diagnostic.js';
 
 export const CODE_GRAPH_MAINTENANCE_PENDING_DATABASE_LIMIT = 128;
 export const CODE_GRAPH_MAINTENANCE_AUTOMATIC_TAIL_MILLISECONDS = 250;
@@ -429,10 +430,11 @@ export class CodeGraphMaintenanceCoordinator extends Context.Service<
             Effect.mapError(() => new CodeGraphStoreError('Could not inspect code graph maintenance coordination.')),
           ),
         {
-          onDeferredFailure: () =>
+          onDeferredFailure: error =>
             emitCodeGraphBackgroundFailure(
               codeGraphAnonymousTelemetryComponent(system.environment()),
               'graph-maintenance',
+              anonymousTelemetryDiagnosticFromError(error),
             ),
         },
         runResidualCleanup,

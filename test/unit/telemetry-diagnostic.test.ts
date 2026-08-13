@@ -2,6 +2,9 @@ import {describe, expect, it} from 'vitest';
 import {ApplicationError} from '../../src/effect/errors.js';
 import {CodeGraphStoreError} from '../../src/code_graph/types.js';
 import {InsufficientMemory} from '../../src/effect/ai/errors.js';
+import {HomeMigrationInsufficientSpace} from '../../src/migration/home.js';
+import {StorageLayoutMigrationConflict} from '../../src/migration/layout.js';
+import {ReportIssueCreateFailed} from '../../src/report_issue.js';
 import {
   anonymousTelemetryDiagnosticFromCodeGraphRefreshFailure,
   anonymousTelemetryDiagnosticFromError,
@@ -23,6 +26,33 @@ describe('anonymous telemetry diagnostics', () => {
     );
 
     expect(diagnostic).toEqual({errorType: 'InsufficientMemory'});
+    expect(JSON.stringify(diagnostic)).not.toContain('private');
+  });
+
+  it.each([
+    {
+      error: new HomeMigrationInsufficientSpace({
+        availableBytes: 1,
+        message: 'private home migration path',
+        requiredBytes: 2,
+      }),
+      errorType: 'HomeMigrationInsufficientSpace',
+    },
+    {
+      error: new StorageLayoutMigrationConflict({
+        message: 'private storage layout conflict',
+        path: '/Users/private/threadnote',
+      }),
+      errorType: 'StorageLayoutMigrationConflict',
+    },
+    {
+      error: new ReportIssueCreateFailed({message: 'private report issue body'}),
+      errorType: 'ReportIssueCreateFailed',
+    },
+  ])('projects $errorType through the closed error-type registry', ({error, errorType}) => {
+    const diagnostic = anonymousTelemetryDiagnosticFromError(error);
+
+    expect(diagnostic).toEqual({errorType});
     expect(JSON.stringify(diagnostic)).not.toContain('private');
   });
 

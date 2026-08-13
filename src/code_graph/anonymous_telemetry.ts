@@ -4,6 +4,7 @@ import {
   recordAnonymousTelemetryFields,
   type AnonymousTelemetryFields,
 } from '../effect/telemetry.js';
+import type {AnonymousTelemetryDiagnostic} from '../telemetry/diagnostic.js';
 import type {CodeGraphProgress} from './types.js';
 
 const CHECKPOINT_INTERVAL_MILLISECONDS = 60_000;
@@ -21,10 +22,12 @@ export function codeGraphAnonymousTelemetryComponent(
 export function emitCodeGraphBackgroundFailure(
   component: CodeGraphAnonymousTelemetryComponent,
   operation: CodeGraphBackgroundFailureOperation,
+  diagnostic: AnonymousTelemetryDiagnostic | undefined,
 ): Effect.Effect<void> {
   return emitAnonymousTelemetryEvent({
     component,
-    errorType: 'CodeGraphStoreError',
+    diagnostic,
+    errorType: diagnostic?.errorType ?? 'CodeGraphStoreError',
     event: 'lifecycle',
     operation,
     outcome: 'failure',

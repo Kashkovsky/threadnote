@@ -113,3 +113,32 @@ appropriate telemetry sink.
 
 The first-party gateway is separate deployment infrastructure and must be live before a release advertises the default
 endpoint. Until then, development and self-hosted validation should pass an explicit collector endpoint.
+
+## Local Jaeger dogfooding
+
+Jaeger's all-in-one image is a convenient transient OTLP receiver and trace UI for local validation. Bind both ports
+to loopback so the collector and UI are not exposed on the network:
+
+```sh
+docker run --detach --rm --name threadnote-jaeger \
+  -p 127.0.0.1:4318:4318 \
+  -p 127.0.0.1:16686:16686 \
+  cr.jaegertracing.io/jaegertracing/jaeger:2.20.0
+```
+
+Use an isolated Threadnote home when exercising consent so normal development configuration stays untouched:
+
+```sh
+export THREADNOTE_DOGFOOD_HOME="$(mktemp -d)"
+THREADNOTE_HOME="$THREADNOTE_DOGFOOD_HOME" threadnote telemetry enable \
+  --endpoint http://127.0.0.1:4318/v1/traces --apply
+THREADNOTE_HOME="$THREADNOTE_DOGFOOD_HOME" threadnote version
+```
+
+Open `http://127.0.0.1:16686`, select the `threadnote` service, and search for traces. The resource attributes include
+the app version as `service.version`; diagnostic spans contain only the allowlisted fields documented above. Jaeger's
+all-in-one storage is in memory, so stopping the container discards the dogfooding traces:
+
+```sh
+docker stop threadnote-jaeger
+```

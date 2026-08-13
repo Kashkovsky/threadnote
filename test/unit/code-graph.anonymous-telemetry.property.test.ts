@@ -9,9 +9,13 @@ import {
   emitCodeGraphBackgroundFailure,
   makeCodeGraphAnonymousTelemetryReporter,
 } from '../../src/code_graph/anonymous_telemetry.js';
-import type {CodeGraphProgress} from '../../src/code_graph/types.js';
+import {CodeGraphStorePermissionError, type CodeGraphProgress} from '../../src/code_graph/types.js';
 import {anonymousTelemetryTestLayer} from '../../src/effect/telemetry.js';
 import type {SystemInfoShape} from '../../src/effect/system.js';
+import {
+  anonymousTelemetryDiagnosticFromCodeGraphRefreshFailure,
+  anonymousTelemetryDiagnosticFromError,
+} from '../../src/telemetry/diagnostic.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 
 describe('code graph anonymous telemetry', () => {
@@ -178,25 +182,55 @@ describe('code graph anonymous telemetry', () => {
     const capture = capturingTracer();
 
     return Effect.gen(function* () {
-      yield* emitCodeGraphBackgroundFailure('mcp', 'graph-refresh');
-      yield* emitCodeGraphBackgroundFailure('cli', 'graph-maintenance');
+      yield* emitCodeGraphBackgroundFailure(
+        'mcp',
+        'graph-refresh',
+        anonymousTelemetryDiagnosticFromCodeGraphRefreshFailure({
+          code: 'busy',
+          operation: 'refresh code graph',
+          recovery: 'defer',
+          retryable: true,
+        }),
+      );
+      yield* emitCodeGraphBackgroundFailure(
+        'cli',
+        'graph-maintenance',
+        anonymousTelemetryDiagnosticFromError(
+          new CodeGraphStorePermissionError('private failure at /Users/private/graph.sqlite', {
+            operation: 'run routine code graph maintenance',
+          }),
+        ),
+      );
 
-      expect(capture.spans.map(captured => Object.fromEntries(captured.span.attributes))).toEqual([
+      const attributes = capture.spans.map(captured => Object.fromEntries(captured.span.attributes));
+      expect(attributes).toEqual([
         expect.objectContaining({
           'error.type': 'CodeGraphStoreError',
           'threadnote.component': 'mcp',
           'threadnote.event': 'lifecycle',
+          'threadnote.failure.code': 'busy',
+          'threadnote.failure.domain': 'code-graph-storage',
+          'threadnote.failure.operation': 'refresh-code-graph',
+          'threadnote.failure.recovery': 'defer',
+          'threadnote.failure.retryable': true,
           'threadnote.operation': 'graph-refresh',
           'threadnote.outcome': 'failure',
         }),
         expect.objectContaining({
-          'error.type': 'CodeGraphStoreError',
+          'error.type': 'CodeGraphStorePermissionError',
           'threadnote.component': 'cli',
           'threadnote.event': 'lifecycle',
+          'threadnote.failure.code': 'permission',
+          'threadnote.failure.domain': 'code-graph-storage',
+          'threadnote.failure.operation': 'run-routine-code-graph-maintenance',
+          'threadnote.failure.recovery': 'fix-permissions',
+          'threadnote.failure.retryable': false,
           'threadnote.operation': 'graph-maintenance',
           'threadnote.outcome': 'failure',
         }),
       ]);
+      expect(JSON.stringify(attributes)).not.toContain('/Users/private');
+      expect(JSON.stringify(attributes)).not.toContain('private failure');
     }).pipe(provideTestLayer(anonymousTelemetryTestLayer({system: systemInfoStub(), tracer: capture.tracer})));
   });
 });

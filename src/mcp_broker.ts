@@ -29,12 +29,11 @@ export type McpBrokerFailureEvent =
   | {readonly area: 'promotion'; readonly reason: 'protocol' | 'timeout'};
 
 export interface McpBrokerDependencies {
-  readonly agentSessionId: string;
   readonly input: AsyncIterable<Uint8Array>;
   readonly onFailure?: (event: McpBrokerFailureEvent) => void;
   readonly readActiveRelease: () => Promise<StandaloneActiveRelease | undefined>;
   readonly replayTimeoutMilliseconds?: number;
-  readonly spawn: (release: StandaloneActiveRelease, agentSessionId: string) => McpBrokerChild;
+  readonly spawn: (release: StandaloneActiveRelease) => McpBrokerChild;
   readonly writeOutput: (line: string) => Promise<void>;
 }
 
@@ -192,7 +191,7 @@ class McpBroker {
   #startChild(release: StandaloneActiveRelease): ActiveBrokerChild {
     let child: McpBrokerChild;
     try {
-      child = this.#dependencies.spawn(release, this.#dependencies.agentSessionId);
+      child = this.#dependencies.spawn(release);
     } catch (cause) {
       this.#reportFailure({area: 'child', reason: 'spawn'});
       throw cause;

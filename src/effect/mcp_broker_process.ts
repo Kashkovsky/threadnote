@@ -1,10 +1,13 @@
-import {Cause, Crypto, Effect, Queue} from 'effect';
+import {Cause, Effect, Queue} from 'effect';
 import {activeInstalledRelease} from '../installations.js';
 import {McpBrokerError, runMcpBroker, type McpBrokerChild, type McpBrokerFailureEvent} from '../mcp_broker.js';
-import {getRuntimeConfig} from '../runtime.js';
 import type {StandaloneActiveRelease} from '../standalone_process_lease.js';
-import {resolveTelemetryConfiguration} from '../telemetry/config.js';
-import {resolveAgentSession, withAgentSessionEnvironment} from '../telemetry/session.js';
+import {
+  takePreparedAgentSessionEnvironment,
+  withAgentSessionEnvironment,
+  withoutTelemetrySessionEnvironment,
+  type PreparedAgentSession,
+} from '../telemetry/session.js';
 import {SystemInfo, type SystemInfoShape} from './system.js';
 import {emitAnonymousTelemetryEvent, withAnonymousTelemetry} from './telemetry.js';
 
@@ -16,14 +19,9 @@ interface ActiveReleaseRequest {
 /** Runtime boundary for the stable MCP broker's stdio and child process. */
 const mcpBrokerProgram = Effect.gen(function* () {
   const system = yield* SystemInfo;
-  const crypto = yield* Crypto.Crypto;
-  const configuration = yield* getRuntimeConfig();
-  const telemetryConfiguration = yield* resolveTelemetryConfiguration(configuration);
-  const agentSession = resolveAgentSession({
-    configuration: telemetryConfiguration,
-    environment: system.environment(),
-    randomBytes: yield* crypto.randomBytes(16),
-  });
+  const agentSession = yield* Effect.sync(() =>
+    takePreparedAgentSessionEnvironment(system.environment(), 'mcp-broker-runtime'),
+  ).pipe(Effect.catchCause(() => Effect.succeed(undefined)));
   const brokerFailureEvents = yield* Queue.dropping<McpBrokerFailureEvent>(64);
   yield* Effect.forkScoped(
     Effect.forever(
@@ -51,7 +49,6 @@ const mcpBrokerProgram = Effect.gen(function* () {
   yield* Effect.tryPromise({
     try: () =>
       runMcpBroker({
-        agentSessionId: agentSession.id,
         input: Bun.stdin.stream() as AsyncIterable<Uint8Array>,
         onFailure: event => {
           Queue.offerUnsafe(brokerFailureEvents, event);
@@ -62,11 +59,7 @@ const mcpBrokerProgram = Effect.gen(function* () {
               reject(new McpBrokerError('Threadnote MCP broker active-release reader is unavailable.'));
             }
           }),
-        spawn: (release, childAgentSessionId) =>
-          spawnMcpRuntime(release, system, {
-            consentGeneration: agentSession.consentGeneration,
-            id: childAgentSessionId,
-          }),
+        spawn: release => spawnMcpRuntime(release, system, agentSession),
         writeOutput: writeBrokerOutput,
       }),
     catch: cause =>
@@ -109,14 +102,16 @@ function mcpBrokerFailureOperation(event: McpBrokerFailureEvent): string {
 function spawnMcpRuntime(
   release: StandaloneActiveRelease,
   system: SystemInfoShape,
-  agentSession: {readonly consentGeneration?: string; readonly id: string},
+  agentSession: PreparedAgentSession | undefined,
 ): McpBrokerChild {
   const separator = release.releaseRoot.endsWith('/') || release.releaseRoot.endsWith('\\') ? '' : '/';
   const executable = `${release.releaseRoot}${separator}${system.platform === 'win32' ? 'threadnote.exe' : 'threadnote'}`;
   const child = Bun.spawn({
     cmd: [executable, 'mcp-server'],
     env: {
-      ...withAgentSessionEnvironment(system.environment(), agentSession, 'mcp-server'),
+      ...(agentSession === undefined
+        ? withoutTelemetrySessionEnvironment(system.environment())
+        : withAgentSessionEnvironment(system.environment(), agentSession, 'mcp-server')),
       THREADNOTE_MCP_BROKER_CHILD: '1',
     },
     stdin: 'pipe',
