@@ -143,6 +143,7 @@ describe('telemetry producer and production gateway schema', () => {
     const collector = readFileSync(join(root, 'infra', 'telemetry-gateway', 'collector.yaml'), 'utf8');
     const fly = readFileSync(join(root, 'fly.toml'), 'utf8');
     const canary = readFileSync(join(root, '.github', 'workflows', 'telemetry-delivery-canary.yml'), 'utf8');
+    const gatewayWorkflow = readFileSync(join(root, '.github', 'workflows', 'telemetry-gateway.yml'), 'utf8');
     const runbook = readFileSync(join(root, 'docs', 'operations', 'telemetry-production.md'), 'utf8');
 
     expect(budget).toMatch(/AcceptedBytesPerMachinePerMinute\s*=\s*32 \* 1024/u);
@@ -162,6 +163,10 @@ describe('telemetry producer and production gateway schema', () => {
     expect(canary).toContain('THREADNOTE_TELEMETRY_CANARY_FLY_READ_TOKEN');
     expect(canary).toContain('vars.THREADNOTE_TELEMETRY_CANARY_GATEWAY_URL');
     expect(canary).toContain('flyctl machine list --app threadnote-telemetry --json | go run ./cmd/budget');
+    expect(gatewayWorkflow).toContain("if: github.event_name != 'pull_request'");
+    expect(gatewayWorkflow).toContain('environment: telemetry-production');
+    expect(gatewayWorkflow).toContain('THREADNOTE_TELEMETRY_CANARY_FLY_READ_TOKEN');
+    expect(gatewayWorkflow).toContain('flyctl config validate --config fly.toml --strict');
     expect(runbook).toContain('2,925,527,040');
     expect(runbook).toContain('10 GB');
     expect(runbook).toContain('20 GB');

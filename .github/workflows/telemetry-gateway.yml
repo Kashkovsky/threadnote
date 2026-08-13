@@ -1,6 +1,7 @@
 name: Telemetry gateway
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
     paths:
@@ -40,11 +41,6 @@ jobs:
       - name: Build the pinned production image
         run: docker build --pull --file infra/telemetry-gateway/Dockerfile --tag threadnote-telemetry-gateway:test .
 
-      - name: Validate the Fly production configuration
-        uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1
-
-      - run: flyctl config validate --config fly.toml
-
       - name: Smoke the complete gateway process
         run: |
           docker run --detach --name threadnote-telemetry-gateway-test \
@@ -63,3 +59,20 @@ jobs:
           docker logs threadnote-telemetry-gateway-test
           docker stop threadnote-telemetry-gateway-test
           exit 1
+
+  validate-fly:
+    name: Validate Fly production configuration
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: telemetry-production
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1
+
+      - name: Validate the authenticated Fly production configuration
+        env:
+          FLY_API_TOKEN: ${{ secrets.THREADNOTE_TELEMETRY_CANARY_FLY_READ_TOKEN }}
+        run: flyctl config validate --config fly.toml --strict
