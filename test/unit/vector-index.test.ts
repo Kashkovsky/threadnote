@@ -39,6 +39,35 @@ const modelStoreLayer = Layer.succeed(
 );
 
 describe('vector index generations', () => {
+  it('embeds Ukrainian natural-language candidate content', async () => {
+    const home = await mkdtemp('threadnote-vector-ukrainian-');
+    const embeddedInputs: string[] = [];
+    try {
+      const rebuilt = await runEffect(
+        rebuildVectorIndex({agentContextHome: home}, manifest, [
+          {
+            text: '# Київська зустріч\n\nПам’ять про розмову та український борщ.',
+            uri: 'threadnote://resources/repos/ukrainian.md',
+          },
+        ]).pipe(
+          provideTestLayer(
+            fakeRuntimeLayer(
+              () => 0,
+              inputs => embeddedInputs.push(...inputs),
+            ),
+          ),
+          provideTestLayer(modelStoreLayer),
+        ),
+      );
+
+      expect(rebuilt).toMatchObject({chunkCount: 1, embeddedChunkCount: 1, ready: true});
+      expect(embeddedInputs).toHaveLength(1);
+      expect(embeddedInputs[0]).toContain('Пам’ять про розмову та український борщ');
+    } finally {
+      await rm(home, {force: true, recursive: true});
+    }
+  });
+
   it('activates a complete fake-embedding generation and supports semantic query lookup', async () => {
     const home = await mkdtemp('threadnote-vector-index-');
     try {

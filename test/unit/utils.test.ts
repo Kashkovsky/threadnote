@@ -356,6 +356,13 @@ describe('exactRecallTerms', () => {
     // A distinctive token still survives among the same filler.
     expect(exactRecallTerms('what does the sharding do')).toEqual(['sharding']);
   });
+
+  it('extracts NFC-normalized Ukrainian exact terms without dropping apostrophes', () => {
+    const terms = exactRecallTerms('згадай пам’ять про Київ та київський-2026');
+    expect(terms).toContain('пам’ять');
+    expect(terms).toContain('Київ');
+    expect(terms).toContain('київський-2026');
+  });
 });
 
 describe('recallQueryRequestsWorkspaceContext', () => {

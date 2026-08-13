@@ -1,5 +1,6 @@
 import type {MemoryAuthority, MemoryRelation, MemoryTrust} from '../memory_document.js';
 import type {MemoryKind, MemoryStatus} from '../types.js';
+import {recallLexicalTerms} from './tokenize.js';
 
 export const RECALL_RANKER_VERSION = 'hybrid-v3';
 
@@ -278,7 +279,7 @@ export function rankRecallCandidates(
             result.signals.exact >= EXACT_TERM_RESCUE_MINIMUM &&
             (result.signals.kindIntent === 1 ||
               result.signals.field >= EXACT_TERM_RESCUE_FIELD_MINIMUM ||
-              qualifyingExactTerms(result.candidate).some(term => /[0-9_.-]/.test(term))))) &&
+              qualifyingExactTerms(result.candidate).some(term => /[\p{N}_.-]/u.test(term))))) &&
         (context.includeInactive === true || result.signals.lifecycle === LIFECYCLE_SCORES.active) &&
         (context.includeTemporallyInvalid === true || result.signals.temporal === 1),
     )
@@ -348,7 +349,7 @@ function scoreCandidate(
     temporal,
   };
   const focusedLexicalEvidence =
-    topicalField >= LEXICAL_ONLY_FOCUSED_FIELD_MINIMUM || exactTerms.some(term => /[0-9_.-]/.test(term));
+    topicalField >= LEXICAL_ONLY_FOCUSED_FIELD_MINIMUM || exactTerms.some(term => /[\p{N}_.-]/u.test(term));
   const passedRelevanceGate =
     Math.max(semantic, reranker, topicalBm25, exact, topicalField) >= RELEVANCE_GATE_MINIMUM &&
     (semantic > SIGNAL_ABSENCE_MAXIMUM ||
@@ -433,7 +434,7 @@ function exactTermScore(
       ),
     );
   }
-  if (matches === 1 && exactPrecision === 1 && /[0-9_.-]/.test(matchedTerms[0] ?? '')) {
+  if (matches === 1 && exactPrecision === 1 && /[\p{N}_.-]/u.test(matchedTerms[0] ?? '')) {
     return EXACT_IDENTIFIER_SCORE;
   }
   if (
@@ -843,8 +844,11 @@ function qualifyingExactTerms(candidate: RecallCandidate): readonly string[] {
   const projectTerms = new Set(tokenize(candidate.fields?.project ?? ''));
   const kindIntentTerms = candidate.kind ? MEMORY_KIND_INTENT_TERMS[candidate.kind] : undefined;
   return (candidate.exactTerms ?? []).filter(term => {
-    const normalized = term.toLowerCase();
-    return topicalTerms.has(normalized) && !projectTerms.has(normalized) && kindIntentTerms?.has(normalized) !== true;
+    const normalizedTerms = tokenize(term);
+    return normalizedTerms.some(
+      normalized =>
+        topicalTerms.has(normalized) && !projectTerms.has(normalized) && kindIntentTerms?.has(normalized) !== true,
+    );
   });
 }
 
@@ -867,16 +871,7 @@ export function buildRecallCorpusStatistics(candidates: readonly RecallCandidate
 
 function tokenize(value: string | readonly string[]): readonly string[] {
   const text = typeof value === 'string' ? value : value.join(' ');
-  return [...text.matchAll(/[a-z0-9][a-z0-9_.-]{1,}/gi)].flatMap(match => {
-    const raw = match[0];
-    const normalized = raw.toLowerCase();
-    const components = raw
-      .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
-      .split(/[._/-]+/)
-      .map(term => term.toLowerCase())
-      .filter(term => term.length >= 2 && term !== normalized);
-    return [normalized, ...components];
-  });
+  return recallLexicalTerms(text);
 }
 
 function clamp(value: number): number {

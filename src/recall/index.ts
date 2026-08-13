@@ -145,7 +145,7 @@ interface IndexedRecallSource {
   readonly source: RecallIndexSource;
 }
 
-const RECALL_INDEX_DATABASE_VERSION = 3;
+const RECALL_INDEX_DATABASE_VERSION = 4;
 const RECALL_INDEX_POINTER_VERSION = 1;
 const RECALL_STALE_MARKER_VERSION = 1;
 const ACTIVE_DATABASE_FILENAME = `active-v${RECALL_INDEX_DATABASE_VERSION}.sqlite`;
@@ -1562,7 +1562,7 @@ function indexCandidate(uri: string, content: string, canonicalResource: boolean
     kind: memory?.metadata.kind,
     relations: memoryRelations(memory),
     status: memory?.metadata.status,
-    text: indexTerms(text).join(' '),
+    text,
     timestamp: memory?.metadata.timestamp,
     trust: boundedMemoryTrust(uri, memory?.metadata, {canonicalResource}),
     uri,
