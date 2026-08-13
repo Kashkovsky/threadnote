@@ -1,0 +1,10 @@
+# The Fly build context is intentionally limited to the telemetry gateway.
+# Do not upload source, local state, credentials, databases, or Git metadata.
+**
+!infra/
+!infra/telemetry-gateway/
+!infra/telemetry-gateway/Dockerfile
+!infra/telemetry-gateway/collector.yaml
+!infra/telemetry-gateway/gateway.go
+!infra/telemetry-gateway/gateway_test.go
+!infra/telemetry-gateway/go.mod
