@@ -1,6 +1,7 @@
 import {Effect, FileSystem, Path, Result} from 'effect';
 import * as ChildProcess from 'effect/unstable/process/ChildProcess';
 import {SystemInfo} from './effect/system.js';
+import {withoutTelemetrySessionEnvironment} from './telemetry/session.js';
 import {selectUpdateChannel, type UpdateChannel} from './update_channel.js';
 import {fetchLatestVersion, releaseSource} from './update.js';
 import {compareVersions} from './utils.js';
@@ -85,6 +86,7 @@ export const spawnDetachedAutoUpdate = Effect.fn('updateCheck.spawnDetachedAutoU
     Effect.gen(function* () {
       const child = yield* ChildProcess.make(system.executablePath, arguments_, {
         detached: true,
+        env: withoutTelemetrySessionEnvironment(system.environment()),
         stdin: 'ignore',
         stdout: 'ignore',
         stderr: 'ignore',

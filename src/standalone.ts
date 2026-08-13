@@ -173,15 +173,17 @@ async function applicationProgram(arguments_: readonly string[], isMcpServer: bo
     const processHome = normalizedProcessHome(arguments_, processDiagnostics.threadnoteHomeForProcess);
     return processHome.pipe(
       Effect.flatMap(home =>
-        processLease.withStandaloneProcessLease(
-          processDiagnostics.withThreadnoteProcessRegistration(
-            home,
-            'mcp-broker',
-            Effect.scoped(mcpBrokerEffect),
-            'mcp-broker',
-          ),
-          {retirementPolicy: 'preserve-session'},
-        ),
+        processLease
+          .withStandaloneProcessLease(
+            processDiagnostics.withThreadnoteProcessRegistration(
+              home,
+              'mcp-broker',
+              Effect.scoped(mcpBrokerEffect),
+              'mcp-broker',
+            ),
+            {retirementPolicy: 'preserve-session'},
+          )
+          .pipe(Effect.provide(runtime.standaloneBrokerLayerForHome(home))),
       ),
       Effect.provide(runtime.StandaloneBrokerLayer),
     );
@@ -191,16 +193,18 @@ async function applicationProgram(arguments_: readonly string[], isMcpServer: bo
     const processHome = normalizedProcessHome(arguments_, processDiagnostics.threadnoteHomeForProcess);
     return processHome.pipe(
       Effect.flatMap(home =>
-        processLease.withStandaloneProcessLease(
-          processDiagnostics.withThreadnoteProcessRegistration(
-            home,
-            'mcp',
-            Effect.scoped(mcpServerEffect),
-            'mcp-server',
-          ),
-        ),
+        processLease
+          .withStandaloneProcessLease(
+            processDiagnostics.withThreadnoteProcessRegistration(
+              home,
+              'mcp',
+              Effect.scoped(mcpServerEffect),
+              'mcp-server',
+            ),
+          )
+          .pipe(Effect.provide(runtime.applicationLayerForHome(home, 'mcp'))),
       ),
-      Effect.provide(runtime.ApplicationLayer),
+      Effect.provide(runtime.StandaloneBrokerLayer),
     );
   }
 
@@ -214,16 +218,18 @@ async function applicationProgram(arguments_: readonly string[], isMcpServer: bo
   const processHome = normalizedProcessHome(arguments_, processDiagnostics.threadnoteHomeForProcess);
   return processHome.pipe(
     Effect.flatMap(home =>
-      processLease.withStandaloneProcessLease(
-        processDiagnostics.withThreadnoteProcessRegistration(
-          home,
-          processRole,
-          withCliOutputConsole(cliEffect(arguments_)),
-          processOperation,
-        ),
-      ),
+      processLease
+        .withStandaloneProcessLease(
+          processDiagnostics.withThreadnoteProcessRegistration(
+            home,
+            processRole,
+            withCliOutputConsole(cliEffect(arguments_)),
+            processOperation,
+          ),
+        )
+        .pipe(Effect.provide(runtime.applicationLayerForHome(home, 'cli'))),
     ),
-    Effect.provide(runtime.ApplicationLayer),
+    Effect.provide(runtime.StandaloneBrokerLayer),
   );
 }
 

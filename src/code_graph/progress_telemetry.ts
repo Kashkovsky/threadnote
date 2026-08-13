@@ -27,6 +27,7 @@ export interface CodeGraphExtractionPlanMetrics {
 }
 
 export interface CodeGraphScanningMetrics extends CodeGraphExtractionPlanMetrics {
+  readonly degradedFiles?: number;
   readonly factsBytesCompleted: number;
   readonly sourceBytesCompleted: number;
   readonly workUnitsCompleted: number;

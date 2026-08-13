@@ -21,6 +21,7 @@ import {captureConsole} from './effect/console.js';
 import {monitorSharedRepositories} from './effect/share.js';
 import {runObsidianProjectionPublish} from './obsidian_projection.js';
 import {withProductionLogging} from './effect/production_log.js';
+import {withAnonymousTelemetry} from './effect/telemetry.js';
 import {resolveCursorCloudMemoryScope, type CursorCloudMemoryScope} from './cursor_cloud.js';
 import {
   McpServerOperationError,
@@ -75,51 +76,54 @@ function mcpProgressTestSharedSyncDelayMilliseconds(environment: NodeJS.ProcessE
     : 0;
 }
 
-export const mcpServerEffect = Effect.gen(function* () {
-  const system = yield* SystemInfo;
-  const config = yield* getRuntimeConfig();
-  return yield* withProductionLogging(
-    config.agentContextHome,
-    {component: 'mcp', operation: 'mcp-server'},
-    Effect.gen(function* () {
-      const toolset = yield* Effect.try({
-        try: () => parseMcpToolset(system.environment()[MCP_TOOLSET_ENV] ?? DEFAULT_MCP_TOOLSET),
-        catch: cause =>
-          cause instanceof McpServerOperationError
-            ? cause
-            : new McpServerOperationError(cause instanceof Error ? cause.message : String(cause), {cause}),
-      });
-      const recallProgressTiming: RecallProgressTiming = {
-        heartbeatMilliseconds: mcpProgressHeartbeatMilliseconds(system.environment()),
-        sharedSyncDelayMilliseconds: mcpProgressTestSharedSyncDelayMilliseconds(system.environment()),
-      };
-      const memoryScope =
-        toolset === 'cursor-cloud' ? yield* resolveCursorCloudMemoryScope(config, system.environment()) : undefined;
-      setMcpStartupVersion(yield* currentPackageVersion().pipe(Effect.catch(() => Effect.succeed(undefined))));
-      const instructions = memoryScope
-        ? `Cursor Cloud uses the exclusive shared memory scope ${memoryScope.root}. Call recall_context with an absolute callerCwd, then read returned threadnote:// URIs. Store durable memories with remember_context; writes are committed and pushed to the configured share. Memory tools reject any URI outside that scope. Use inspect_code_graph and analyze_code_graph only for the local checkout; worksets are disabled. Full cloud integration is still in development.`
-        : 'Call `recall_context` with project and absolute `callerCwd`; read `threadnote://` URIs. Use `inspect_code_graph` before broad `rg`/grep; round-trip `cgs_` IDs via `node`, `neighbors`, or `path`. Use `analyze_code_graph` for whole-repo stats, communities, hubs, and surprises. Retry `state=indexing` after `retryAfterMilliseconds`; exact text search remains useful meanwhile. Write durable knowledge and handoffs directly under stable project/topic; replace duplicates. Use `review_session_context` for additional user-approved candidates. Do not store secrets/customer data/raw logs. Confirm publishes; never publish handoffs/preferences.';
-      const server = new EffectMcpServerAdapter(
-        'threadnote-local-adapter',
-        '0.2.0',
-        instructions,
-        config.agentContextHome,
-      );
+export const mcpServerEffect = withAnonymousTelemetry(
+  {component: 'mcp', operation: 'mcp-server'},
+  Effect.gen(function* () {
+    const system = yield* SystemInfo;
+    const config = yield* getRuntimeConfig();
+    return yield* withProductionLogging(
+      config.agentContextHome,
+      {component: 'mcp', operation: 'mcp-server'},
+      Effect.gen(function* () {
+        const toolset = yield* Effect.try({
+          try: () => parseMcpToolset(system.environment()[MCP_TOOLSET_ENV] ?? DEFAULT_MCP_TOOLSET),
+          catch: cause =>
+            cause instanceof McpServerOperationError
+              ? cause
+              : new McpServerOperationError(cause instanceof Error ? cause.message : String(cause), {cause}),
+        });
+        const recallProgressTiming: RecallProgressTiming = {
+          heartbeatMilliseconds: mcpProgressHeartbeatMilliseconds(system.environment()),
+          sharedSyncDelayMilliseconds: mcpProgressTestSharedSyncDelayMilliseconds(system.environment()),
+        };
+        const memoryScope =
+          toolset === 'cursor-cloud' ? yield* resolveCursorCloudMemoryScope(config, system.environment()) : undefined;
+        setMcpStartupVersion(yield* currentPackageVersion().pipe(Effect.catch(() => Effect.succeed(undefined))));
+        const instructions = memoryScope
+          ? `Cursor Cloud uses the exclusive shared memory scope ${memoryScope.root}. Call recall_context with an absolute callerCwd, then read returned threadnote:// URIs. Store durable memories with remember_context; writes are committed and pushed to the configured share. Memory tools reject any URI outside that scope. Use inspect_code_graph and analyze_code_graph only for the local checkout; worksets are disabled. Full cloud integration is still in development.`
+          : 'Call `recall_context` with project and absolute `callerCwd`; read `threadnote://` URIs. Use `inspect_code_graph` before broad `rg`/grep; round-trip `cgs_` IDs via `node`, `neighbors`, or `path`. Use `analyze_code_graph` for whole-repo stats, communities, hubs, and surprises. Retry `state=indexing` after `retryAfterMilliseconds`; exact text search remains useful meanwhile. Write durable knowledge and handoffs directly under stable project/topic; replace duplicates. Use `review_session_context` for additional user-approved candidates. Do not store secrets/customer data/raw logs. Confirm publishes; never publish handoffs/preferences.';
+        const server = new EffectMcpServerAdapter(
+          'threadnote-local-adapter',
+          '0.2.0',
+          instructions,
+          config.agentContextHome,
+        );
 
-      registerResources(server, config, memoryScope);
-      registerTools(server, config, toolset, recallProgressTiming, memoryScope);
-      // Packaged lifecycle coverage uses runtime diagnostics to create the real
-      // crash-isolated child without requiring an installed or selected model.
-      if (system.environment()[MCP_PROCESS_LIFECYCLE_PROBE_ENV] === '1') {
-        const runtime = yield* LocalModelRuntime;
-        yield* runtime.diagnostics.pipe(Effect.catch(() => Effect.void));
-      }
-      if (!memoryScope) yield* Effect.forkScoped(monitorSharedRepositories(config));
-      yield* Console.error('Threadnote local MCP adapter running');
-      return yield* server.run();
-    }),
-  );
-});
+        registerResources(server, config, memoryScope);
+        registerTools(server, config, toolset, recallProgressTiming, memoryScope);
+        // Packaged lifecycle coverage uses runtime diagnostics to create the real
+        // crash-isolated child without requiring an installed or selected model.
+        if (system.environment()[MCP_PROCESS_LIFECYCLE_PROBE_ENV] === '1') {
+          const runtime = yield* LocalModelRuntime;
+          yield* runtime.diagnostics.pipe(Effect.catch(() => Effect.void));
+        }
+        if (!memoryScope) yield* Effect.forkScoped(monitorSharedRepositories(config));
+        yield* Console.error('Threadnote local MCP adapter running');
+        return yield* server.run();
+      }),
+    );
+  }),
+);
 
 function registerResources(
   server: EffectMcpServerAdapter,

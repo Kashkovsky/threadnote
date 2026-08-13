@@ -1090,6 +1090,45 @@ describe('routine code graph maintenance', () => {
     }),
   );
 
+  effectIt.effect('reports a detached queued failure without changing the active maintenance result', () =>
+    Effect.gen(function* () {
+      const active = tick('/home', '/database/active');
+      const pending = tick('/home', '/database/pending');
+      const started = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const reported = yield* Deferred.make<CodeGraphStoreError>();
+      const expected = new CodeGraphStoreError('private queued failure at /Users/private/graph.sqlite', {
+        code: 'permission',
+        operation: 'routine maintenance test',
+        recovery: 'fix-permissions',
+      });
+      const coordinator = yield* makeCodeGraphMaintenanceCoordinator(
+        input =>
+          input.databasePath === active.databasePath
+            ? Deferred.succeed(started, undefined).pipe(
+                Effect.andThen(Deferred.await(release)),
+                Effect.as(noWorkResult),
+              )
+            : Effect.fail(expected),
+        undefined,
+        {
+          onDeferredFailure: error =>
+            Deferred.succeed(reported, error).pipe(
+              Effect.andThen(Effect.die(new Error('private telemetry defect'))),
+              Effect.asVoid,
+            ),
+        },
+      );
+
+      const owner = yield* coordinator.tick(active).pipe(Effect.forkChild);
+      yield* Deferred.await(started);
+      expect(yield* coordinator.tick(pending)).toEqual({reason: 'home-tick-active', state: 'deferred'});
+      yield* Deferred.succeed(release, undefined);
+      expect(yield* Fiber.join(owner)).toEqual(noWorkResult);
+      expect(yield* Deferred.await(reported)).toBe(expected);
+    }),
+  );
+
   effectIt.effect('reserves one trailing slot for same-database capability upgrades at full capacity', () =>
     Effect.gen(function* () {
       const first = tick('/home', '/database/active');

@@ -11,6 +11,7 @@ import {
   type EffectMcpServer,
   installCallToolProgressBridge,
   makeMcpCancellationCompatibleProtocol,
+  mcpCallToolResultWithTelemetryMetadata,
   makeMcpToolProgress,
   mcpProgressNotificationForCurrentRequest,
   mcpProgressHeartbeatMilliseconds,
@@ -28,6 +29,11 @@ import {
   type McpProgressNotificationPayload,
   withMcpProgressHeartbeat,
 } from '../../src/effect/ai/mcp.js';
+import {
+  attachAnonymousTelemetryReportedOutcome,
+  readAnonymousTelemetryDiagnostic,
+  readAnonymousTelemetryReportedOutcome,
+} from '../../src/telemetry/diagnostic.js';
 
 const initializeResponse = JSON.stringify({
   id: 1,
@@ -288,6 +294,18 @@ describe('Effect MCP resource interruption', () => {
 });
 
 describe('Effect MCP tool interruption', () => {
+  it('preserves private reported outcome metadata while adapting the SDK result class', () => {
+    const source = attachAnonymousTelemetryReportedOutcome(
+      {content: [{type: 'text', text: 'Retry after indexing.'}]},
+      'unavailable',
+    );
+    const adapted = mcpCallToolResultWithTelemetryMetadata(source);
+
+    expect(adapted).toBeInstanceOf(McpSchema.CallToolResult);
+    expect(readAnonymousTelemetryReportedOutcome(adapted)).toBe('unavailable');
+    expect(JSON.stringify(adapted)).toBe(JSON.stringify(source));
+  });
+
   effectIt.effect('re-fails transport cancellation instead of returning an isError payload', () =>
     Effect.gen(function* () {
       const fiber = yield* Effect.never.pipe(Effect.catchCause(mcpToolFailureResult), Effect.forkChild);
@@ -308,6 +326,8 @@ describe('Effect MCP tool interruption', () => {
 
       expect(result.isError).toBe(true);
       expect(result.content).toEqual([{type: 'text', text: 'bounded fixture failure'}]);
+      expect(readAnonymousTelemetryDiagnostic(result)).toEqual({errorType: 'UnknownError'});
+      expect(JSON.stringify(result)).not.toContain('anonymous-telemetry');
     }),
   );
 });

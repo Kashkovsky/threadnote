@@ -111,6 +111,8 @@ import {
 } from '../code_graph/commands.js';
 import {runProcessDiagnostics} from '../process_diagnostics.js';
 import {runContextBrief} from '../context_brief/commands.js';
+import {runTelemetryDisable, runTelemetryEnable, runTelemetryStatus} from '../telemetry/commands.js';
+import {cliAnonymousTelemetryOperation} from '../telemetry/operations.js';
 import {
   cursorCloudRuntimeConfig,
   runCursorCloudBootstrap,
@@ -293,6 +295,28 @@ const version = Command.make(
 
 const logs = Command.make('logs', {}, () => withRuntimeEffect(runProductionLogs)).pipe(
   Command.withDescription('Show privacy-safe rotating production log files for support'),
+);
+
+const telemetryStatus = Command.make('status', {}, () => withRuntimeEffect(config => runTelemetryStatus(config))).pipe(
+  Command.withDescription('Show effective consent, endpoint, data categories, and environment opt-outs'),
+);
+
+const telemetryEnable = Command.make(
+  'enable',
+  {
+    apply: boolean('apply', 'Persist explicit telemetry consent'),
+    endpoint: optionalString('endpoint', 'OTLP/HTTP traces endpoint; HTTPS required except for loopback'),
+  },
+  options => withRuntimeEffect(config => runTelemetryEnable(config, options)),
+).pipe(Command.withDescription('Preview or enable anonymous CLI and MCP operational telemetry'));
+
+const telemetryDisable = Command.make('disable', {apply: boolean('apply', 'Persist telemetry opt-out')}, options =>
+  withRuntimeEffect(config => runTelemetryDisable(config, options)),
+).pipe(Command.withDescription('Preview or disable all anonymous operational telemetry'));
+
+const telemetry = Command.make('telemetry').pipe(
+  Command.withDescription('Manage optional anonymous CLI and MCP operational telemetry'),
+  Command.withSubcommands([telemetryStatus, telemetryEnable, telemetryDisable]),
 );
 
 const reportIssue = Command.make(
@@ -1735,6 +1759,7 @@ const topLevelCommandRegistrations = [
   registerTopLevelCommand('install', install),
   registerTopLevelCommand('version', version),
   registerTopLevelCommand('logs', logs),
+  registerTopLevelCommand('telemetry', telemetry, {productionLog: {mode: 'never'}}),
   registerTopLevelCommand('report-issue', reportIssue, {productionLog: {mode: 'never'}}),
   registerTopLevelCommand('update', update),
   registerTopLevelCommand('post-update', postUpdate),
@@ -1830,6 +1855,8 @@ export const threadnoteCommand = root.pipe(
 export interface CliInvocationInspection {
   readonly homeOverride?: string;
   readonly operation?: string;
+  readonly telemetryOperation?: string;
+  readonly writeAnonymousTelemetry: boolean;
   readonly writeProductionLog: boolean;
 }
 
@@ -1837,6 +1864,10 @@ export function inspectCliInvocation(arguments_: readonly string[]): CliInvocati
   const scanned = scanCliArguments(arguments_);
   const selectedName = scanned.positionals[0];
   const operation = selectedName === undefined ? undefined : (topLevelOperationByName.get(selectedName) ?? 'unknown');
+  const telemetryOperation =
+    operation === undefined
+      ? undefined
+      : cliAnonymousTelemetryOperation(operation, scanned.positionals[1], scanned.positionals[2]);
   const registration =
     operation === undefined || operation === 'unknown' ? undefined : topLevelRegistrationByName.get(operation);
   const mode =
@@ -1851,9 +1882,13 @@ export function inspectCliInvocation(arguments_: readonly string[]): CliInvocati
     !scanned.flags.has('-h') &&
     !(mode === 'requires-apply' && scanned.booleanValues.get('--apply') !== true) &&
     !(mode === 'skips-on-preview' && scanned.booleanValues.get('--preview') === true);
+  const writeAnonymousTelemetry =
+    operation !== undefined && operation !== 'telemetry' && !scanned.flags.has('--help') && !scanned.flags.has('-h');
   return {
     ...(scanned.homeOverride === undefined ? {} : {homeOverride: scanned.homeOverride}),
     ...(operation === undefined ? {} : {operation}),
+    ...(telemetryOperation === undefined ? {} : {telemetryOperation}),
+    writeAnonymousTelemetry,
     writeProductionLog,
   };
 }

@@ -27,6 +27,19 @@ describe('Effect CLI', () => {
     expect(result.stdout).toContain('--stable');
   });
 
+  it('exposes explicit preview/apply telemetry consent commands', async () => {
+    const telemetry = await runCli(['telemetry', '--help']);
+    const enable = await runCli(['telemetry', 'enable', '--help']);
+    const disable = await runCli(['telemetry', 'disable', '--help']);
+
+    expect(telemetry.stdout).toContain('status');
+    expect(telemetry.stdout).toContain('enable');
+    expect(telemetry.stdout).toContain('disable');
+    expect(enable.stdout).toContain('--apply');
+    expect(enable.stdout).toContain('--endpoint string');
+    expect(disable.stdout).toContain('--apply');
+  });
+
   it('exposes local AI model installation and switching commands', async () => {
     const install = await runCli(['local-ai', 'install', '--help']);
     const switching = await runCli(['local-ai', 'model', 'switch', '--help']);

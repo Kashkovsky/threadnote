@@ -14,7 +14,6 @@ import {
   writeMemoryFile,
   writeSharedWorktreeFile,
 } from './share.js';
-import {errorMessage} from './utils.js';
 import {withMemoryUriLocks} from './effect/memory_lock.js';
 import {
   installSharedAgentArtifacts,
@@ -27,7 +26,7 @@ import {
 } from './effect/share.js';
 import {withSharedRepositoryLock} from './effect/share_lock.js';
 import {canonicalMemoryDocumentContent} from './memory_document.js';
-import {type RuntimeConfig, argumentError} from './mcp_server_common.js';
+import {type RuntimeConfig, argumentError, mcpErrorResult} from './mcp_server_common.js';
 import {
   readMemoryRecordsByUri,
   removeResourceWithRetry,
@@ -115,9 +114,7 @@ export function runShareConflictsTool(config: RuntimeConfig, options: ShareConfl
       }
       return {content: [{type: 'text' as const, text: lines.join('\n')}]};
     }),
-    Effect.catch(error =>
-      Effect.succeed({content: [{type: 'text' as const, text: errorMessage(error)}], isError: true}),
-    ),
+    Effect.catch(error => Effect.succeed(mcpErrorResult(error))),
   );
 }
 
@@ -143,9 +140,7 @@ export function runShareConflictShowTool(config: RuntimeConfig, id: string, opti
         },
       ],
     })),
-    Effect.catch(error =>
-      Effect.succeed({content: [{type: 'text' as const, text: errorMessage(error)}], isError: true}),
-    ),
+    Effect.catch(error => Effect.succeed(mcpErrorResult(error))),
   );
 }
 
@@ -170,9 +165,7 @@ export function runShareConflictResolveTool(
       lines.push(...result.gitMessages, `Resolved shared memory conflict: ${result.id}`);
       return {content: [{type: 'text' as const, text: lines.join('\n')}]};
     }),
-    Effect.catch(error =>
-      Effect.succeed({content: [{type: 'text' as const, text: errorMessage(error)}], isError: true}),
-    ),
+    Effect.catch(error => Effect.succeed(mcpErrorResult(error))),
   );
 }
 
@@ -345,11 +338,7 @@ export function runSharePublishTool(config: RuntimeConfig, sourceUri: string, op
       content: [{type: 'text', text: [...messages, ...publication.gitMessages].join('\n')}],
       isError: false,
     };
-  }).pipe(
-    Effect.catch(error =>
-      Effect.succeed({content: [{type: 'text' as const, text: errorMessage(error)}], isError: true}),
-    ),
-  );
+  }).pipe(Effect.catch(error => Effect.succeed(mcpErrorResult(error))));
 }
 
 export function runShareSkillTool(config: RuntimeConfig, sourcePath: string, options: ShareSkillToolOptions) {
@@ -363,9 +352,7 @@ export function runShareSkillTool(config: RuntimeConfig, sourcePath: string, opt
       }
       return {content: [{type: 'text' as const, text: lines.join('\n')}], isError: false};
     }),
-    Effect.catch(error =>
-      Effect.succeed({content: [{type: 'text' as const, text: errorMessage(error)}], isError: true}),
-    ),
+    Effect.catch(error => Effect.succeed(mcpErrorResult(error))),
   );
 }
 
@@ -390,9 +377,7 @@ export function runShareBundleTool(config: RuntimeConfig, manifestPath: string, 
       }
       return {content: [{type: 'text' as const, text: lines.join('\n')}], isError: false};
     }),
-    Effect.catch(error =>
-      Effect.succeed({content: [{type: 'text' as const, text: errorMessage(error)}], isError: true}),
-    ),
+    Effect.catch(error => Effect.succeed(mcpErrorResult(error))),
   );
 }
 
@@ -432,9 +417,7 @@ export function runListSharedSkillsTool(config: RuntimeConfig, options: SharedSk
       }
       return {content: [{type: 'text' as const, text: lines.join('\n')}], isError: false};
     }),
-    Effect.catch(error =>
-      Effect.succeed({content: [{type: 'text' as const, text: errorMessage(error)}], isError: true}),
-    ),
+    Effect.catch(error => Effect.succeed(mcpErrorResult(error))),
   );
 }
 
@@ -455,9 +438,7 @@ export function runInstallSharedSkillTool(config: RuntimeConfig, name: string, o
       ],
       isError: false,
     })),
-    Effect.catch(error =>
-      Effect.succeed({content: [{type: 'text' as const, text: errorMessage(error)}], isError: true}),
-    ),
+    Effect.catch(error => Effect.succeed(mcpErrorResult(error))),
   );
 }
 

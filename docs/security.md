@@ -28,6 +28,13 @@ generated note before atomic replacement. Inbox notes form review candidates but
 The manager binds to loopback, uses a per-process bearer token, and never exposes a model or memory server. MCP uses
 stdio. Threadnote has no background daemon, listening storage port, or native HTTP MCP endpoint.
 
+Anonymous operational telemetry is disabled by default and requires explicit persisted consent. It exports only a
+separate allowlisted diagnostic span for each eligible CLI command and MCP tool—including duration, bounded process
+memory, phase/state observations, and safe typed failures—and never the application's Effect span tree, logs,
+arguments, payloads, content, paths, exception messages, or stacks. There is no persistent installation identifier;
+correlation uses a random agent-session alias. `DO_NOT_TRACK=1` and `THREADNOTE_TELEMETRY=0` are kill switches. The
+complete data and destination contract is documented in [Optional anonymous telemetry](./telemetry.md).
+
 Official standalone installs and updates accept only immutable GitHub releases and verify the archive SHA-256 before
 extraction. macOS additionally requires valid code signatures during installation and Apple notarization acceptance
 before publication. Windows 4 publication is disabled until valid Authenticode signing and clean-machine

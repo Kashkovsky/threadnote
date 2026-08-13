@@ -5,6 +5,12 @@ import {RpcMessage, RpcSerialization, RpcServer} from 'effect/unstable/rpc';
 import {applicationError, fromPromise} from '../errors.js';
 import type {ApplicationServices} from '../runtime.js';
 import {omitProductionLogPhaseRecorder, withProductionLogging} from '../production_log.js';
+import {
+  attachAnonymousTelemetryError,
+  copyAnonymousTelemetryMetadata,
+  readAnonymousTelemetryReportedOutcome,
+} from '../../telemetry/diagnostic.js';
+import {omitAnonymousTelemetryRecorder, withAnonymousTelemetry} from '../telemetry.js';
 
 // Windows antivirus and filesystem scheduling can make an otherwise healthy
 // append exceed 50 ms. Keep MCP diagnostics best-effort and bounded without
@@ -106,6 +112,11 @@ interface RegisteredTool {
 
 type ToolHandlerResult = ToolResult | Effect.Effect<ToolResult, unknown, ApplicationServices> | PromiseLike<ToolResult>;
 
+/** @internal Adapt the SDK result class without dropping private telemetry metadata. */
+export function mcpCallToolResultWithTelemetryMetadata(result: ToolResult): McpSchema.CallToolResult {
+  return copyAnonymousTelemetryMetadata(new McpSchema.CallToolResult(result as McpSchema.CallToolResult), result);
+}
+
 interface ResourceTemplateDefinition {
   readonly description?: string;
   readonly meta?: Readonly<Record<string, boolean | number | string>>;
@@ -195,15 +206,18 @@ export class EffectMcpServerAdapter {
       Effect.gen(function* () {
         const server = yield* McpServer.McpServer;
         installCallToolProgressBridge(server);
-        const applicationServices = omitProductionLogPhaseRecorder(yield* Effect.context<ApplicationServices>());
+        const applicationServices = omitAnonymousTelemetryRecorder(
+          omitProductionLogPhaseRecorder(yield* Effect.context<ApplicationServices>()),
+        );
         for (const registration of resourceTemplates) {
           yield* server.addResourceTemplate({
             annotations: Context.empty(),
             completions: {},
             handle: uri =>
-              registration
-                .handle(uri)
-                .pipe(Effect.provideContext(applicationServices), Effect.catchCause(mcpResourceFailureResult)),
+              withAnonymousTelemetry({component: 'mcp', operation: 'resource-read'}, registration.handle(uri)).pipe(
+                Effect.provideContext(applicationServices),
+                Effect.catchCause(mcpResourceFailureResult),
+              ),
             routerPath: registration.definition.routerPath,
             template: new McpSchema.ResourceTemplate({
               _meta: registration.definition.meta,
@@ -235,26 +249,36 @@ export class EffectMcpServerAdapter {
                     toolHandlerEffect(() => registration.handle(parsed, {progress}), applicationServices).pipe(
                       Effect.matchCauseEffect({
                         onFailure: mcpToolFailureResult,
-                        onSuccess: result =>
-                          Effect.succeed(new McpSchema.CallToolResult(result as McpSchema.CallToolResult)),
+                        onSuccess: result => Effect.succeed(mcpCallToolResultWithTelemetryMetadata(result)),
                       }),
                     ),
                   ),
                   Effect.catchCause(mcpToolFailureResult),
                 );
-                return productionLogHome === undefined
-                  ? handling
-                  : withProductionLogging(
-                      productionLogHome,
-                      {
-                        component: 'mcp',
-                        operation: registration.name,
-                        reportedFailure: result => result.isError === true,
-                        reportedFailureType: 'McpToolError',
-                        writeTimeoutMilliseconds: MCP_PRODUCTION_LOG_WRITE_TIMEOUT_MILLISECONDS,
-                      },
-                      handling,
-                    ).pipe(Effect.provideContext(applicationServices));
+                const loggedHandling =
+                  productionLogHome === undefined
+                    ? handling
+                    : withProductionLogging(
+                        productionLogHome,
+                        {
+                          component: 'mcp',
+                          operation: registration.name,
+                          reportedFailure: result => result.isError === true,
+                          reportedFailureType: 'McpToolError',
+                          writeTimeoutMilliseconds: MCP_PRODUCTION_LOG_WRITE_TIMEOUT_MILLISECONDS,
+                        },
+                        handling,
+                      );
+                return withAnonymousTelemetry(
+                  {
+                    component: 'mcp',
+                    operation: registration.name,
+                    reportedFailure: result => result.isError === true,
+                    reportedFailureType: 'McpToolError',
+                    reportedOutcome: readAnonymousTelemetryReportedOutcome,
+                  },
+                  loggedHandling,
+                ).pipe(Effect.provideContext(applicationServices));
               }),
           });
         }
@@ -730,10 +754,13 @@ export function mcpToolFailureResult(cause: Cause.Cause<unknown>): Effect.Effect
     return Effect.failCause(cause as Cause.Cause<never>);
   }
   return Effect.succeed(
-    new McpSchema.CallToolResult({
-      content: [{type: 'text', text: causeMessage(cause)}],
-      isError: true,
-    }),
+    attachAnonymousTelemetryError(
+      new McpSchema.CallToolResult({
+        content: [{type: 'text', text: causeMessage(cause)}],
+        isError: true,
+      }),
+      Cause.squash(cause),
+    ),
   );
 }
 

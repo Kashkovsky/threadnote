@@ -29,6 +29,7 @@ import {
 import {makeLiveCodeGraphWorktreeReconciler} from './worktree_reconciliation.js';
 import {inspectCodeGraphViewDatabaseTarget} from './view_removal.js';
 import {type CodeGraphStoragePressure} from './storage_pressure.js';
+import {codeGraphAnonymousTelemetryComponent, emitCodeGraphBackgroundFailure} from './anonymous_telemetry.js';
 
 export const CODE_GRAPH_MAINTENANCE_PENDING_DATABASE_LIMIT = 128;
 export const CODE_GRAPH_MAINTENANCE_AUTOMATIC_TAIL_MILLISECONDS = 250;
@@ -99,6 +100,8 @@ export interface CodeGraphMaintenanceCoordinatorInterlocks {
   readonly afterRequestAdmission?: () => Effect.Effect<void>;
   /** @internal Deterministic monotonic clock for automatic-tail budget tests. */
   readonly monotonicMilliseconds?: () => number;
+  /** @internal Closed terminal observation for detached maintenance work. */
+  readonly onDeferredFailure?: (error: CodeGraphStoreError) => Effect.Effect<void>;
 }
 
 interface ActiveMaintenanceTick {
@@ -425,7 +428,13 @@ export class CodeGraphMaintenanceCoordinator extends Context.Service<
             Effect.provideService(SystemInfo, system),
             Effect.mapError(() => new CodeGraphStoreError('Could not inspect code graph maintenance coordination.')),
           ),
-        {},
+        {
+          onDeferredFailure: () =>
+            emitCodeGraphBackgroundFailure(
+              codeGraphAnonymousTelemetryComponent(system.environment()),
+              'graph-maintenance',
+            ),
+        },
         runResidualCleanup,
         runRoutineMaintenance,
       );
@@ -685,6 +694,7 @@ export const makeCodeGraphMaintenanceCoordinator = Effect.fn('codeGraph.makeMain
   const scope = yield* Effect.scope;
   const stateByHome = yield* SynchronizedRef.make(new Map<string, HomeMaintenanceState>());
   const monotonicMilliseconds = interlocks.monotonicMilliseconds ?? (() => performance.now());
+  const onDeferredFailure = interlocks.onDeferredFailure;
   const newBudget = (): MaintenanceExecutionBudget => ({startedAt: monotonicMilliseconds(), units: 0});
 
   const execute = (
@@ -744,7 +754,15 @@ export const makeCodeGraphMaintenanceCoordinator = Effect.fn('codeGraph.makeMain
         });
         if (next !== undefined) {
           yield* execute(next.input, next.completion, next.budget).pipe(
-            Effect.tapError(error => Effect.logWarning(`Deferred code graph maintenance failed (${error.code}).`)),
+            Effect.tapError(error =>
+              Effect.logWarning(`Deferred code graph maintenance failed (${error.code}).`).pipe(
+                Effect.andThen(
+                  onDeferredFailure === undefined
+                    ? Effect.void
+                    : Effect.suspend(() => onDeferredFailure(error)).pipe(Effect.catchCause(() => Effect.void)),
+                ),
+              ),
+            ),
             Effect.ignore,
             Effect.forkIn(scope),
             Effect.asVoid,

@@ -24,11 +24,17 @@ export interface McpBrokerChild {
   readonly processId: number;
 }
 
+export type McpBrokerFailureEvent =
+  | {readonly area: 'child'; readonly reason: 'exit' | 'spawn' | 'write'}
+  | {readonly area: 'promotion'; readonly reason: 'protocol' | 'timeout'};
+
 export interface McpBrokerDependencies {
+  readonly agentSessionId: string;
   readonly input: AsyncIterable<Uint8Array>;
+  readonly onFailure?: (event: McpBrokerFailureEvent) => void;
   readonly readActiveRelease: () => Promise<StandaloneActiveRelease | undefined>;
   readonly replayTimeoutMilliseconds?: number;
-  readonly spawn: (release: StandaloneActiveRelease) => McpBrokerChild;
+  readonly spawn: (release: StandaloneActiveRelease, agentSessionId: string) => McpBrokerChild;
   readonly writeOutput: (line: string) => Promise<void>;
 }
 
@@ -136,7 +142,7 @@ class McpBroker {
         this.#clientRequests.set(jsonRpcIdKey(requestId), requestId);
         trackedRequest = true;
       }
-      await writeChildLine(current.child, line);
+      await this.#writeChildLine(current.child, line);
     } catch {
       const pending = [...this.#clientRequests.values()];
       this.#clientRequests.clear();
@@ -152,7 +158,7 @@ class McpBroker {
     this.#deleteServerRequestRoute(route);
     if (this.#child !== route.child) return;
     try {
-      await writeChildLine(route.child.child, replaceJsonRpcId(line, route.originalId));
+      await this.#writeChildLine(route.child.child, replaceJsonRpcId(line, route.originalId));
     } catch {
       await this.#stopCurrentChild();
     }
@@ -184,8 +190,15 @@ class McpBroker {
   }
 
   #startChild(release: StandaloneActiveRelease): ActiveBrokerChild {
+    let child: McpBrokerChild;
+    try {
+      child = this.#dependencies.spawn(release, this.#dependencies.agentSessionId);
+    } catch (cause) {
+      this.#reportFailure({area: 'child', reason: 'spawn'});
+      throw cause;
+    }
     const active = {
-      child: this.#dependencies.spawn(release),
+      child,
       generation: (this.#nextChildGeneration += 1),
       release,
     } satisfies ActiveBrokerChild;
@@ -197,6 +210,7 @@ class McpBroker {
   async #observeChild(active: ActiveBrokerChild): Promise<void> {
     await Promise.all([this.#readChildOutput(active), active.child.exited.catch(() => -1)]).catch(() => undefined);
     if (this.#child !== active) return;
+    this.#reportFailure({area: 'child', reason: 'exit'});
     this.#child = undefined;
     if (this.#pendingInitialize?.child === active) this.#pendingInitialize = undefined;
     active.replay?.reject(new McpBrokerError('Threadnote MCP runtime exited during session promotion.'));
@@ -221,7 +235,10 @@ class McpBroker {
           const replay = active.replay;
           active.replay = undefined;
           if (envelope.error === undefined && envelope.result !== undefined) replay.resolve();
-          else replay.reject(new McpBrokerError('The promoted MCP runtime rejected the replayed initialization.'));
+          else {
+            this.#reportFailure({area: 'promotion', reason: 'protocol'});
+            replay.reject(new McpBrokerError('The promoted MCP runtime rejected the replayed initialization.'));
+          }
           continue;
         }
         if (this.#pendingInitialize?.child === active && this.#pendingInitialize.idKey === idKey) {
@@ -255,17 +272,28 @@ class McpBroker {
     const initializeLine = this.#initializeLine;
     const initializeRequestId = this.#initializeRequestId;
     if (initializeLine === undefined || initializeRequestId === undefined) return;
+    let rejectReplay = (_cause: unknown): void => undefined;
+    let resolveReplay = (): void => undefined;
     const replayed = new Promise<void>((resolve, reject) => {
-      active.replay = {idKey: jsonRpcIdKey(initializeRequestId), reject, resolve};
+      rejectReplay = cause => reject(cause);
+      resolveReplay = () => resolve();
     });
-    await writeChildLine(active.child, initializeLine);
+    const replay = {
+      idKey: jsonRpcIdKey(initializeRequestId),
+      reject: rejectReplay,
+      resolve: resolveReplay,
+    };
+    active.replay = replay;
+    await this.#writeChildLine(active.child, initializeLine);
     await Promise.race([
       replayed,
       Bun.sleep(this.#dependencies.replayTimeoutMilliseconds ?? MCP_BROKER_REPLAY_TIMEOUT_MILLISECONDS).then(() => {
+        if (active.replay !== replay) return;
+        this.#reportFailure({area: 'promotion', reason: 'timeout'});
         throw new McpBrokerError('Timed out initializing the promoted Threadnote MCP runtime.');
       }),
     ]);
-    if (this.#initializedLine !== undefined) await writeChildLine(active.child, this.#initializedLine);
+    if (this.#initializedLine !== undefined) await this.#writeChildLine(active.child, this.#initializedLine);
   }
 
   async #stopCurrentChild(): Promise<void> {
@@ -346,6 +374,23 @@ class McpBroker {
     const write = this.#outputTail.then(() => this.#dependencies.writeOutput(line));
     this.#outputTail = write.catch(() => undefined);
     return write;
+  }
+
+  #reportFailure(event: McpBrokerFailureEvent): void {
+    try {
+      this.#dependencies.onFailure?.(event);
+    } catch {
+      // Optional diagnostics cannot alter broker recovery or client transport.
+    }
+  }
+
+  async #writeChildLine(child: McpBrokerChild, line: string): Promise<void> {
+    try {
+      await writeChildLine(child, line);
+    } catch (cause) {
+      this.#reportFailure({area: 'child', reason: 'write'});
+      throw cause;
+    }
   }
 }
 

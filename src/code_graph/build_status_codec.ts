@@ -706,6 +706,7 @@ function parseExtraction(value: unknown): CodeGraphBuildExtraction | undefined {
 
 function parseScanningMetrics(value: unknown): CodeGraphScanningMetrics | undefined {
   if (!isRecord(value)) return undefined;
+  if (value.degradedFiles !== undefined && !isNonNegativeSafeInteger(value.degradedFiles)) return undefined;
   for (const key of [
     'factsBytesCompleted',
     'sourceBytesCompleted',
@@ -722,6 +723,7 @@ function parseScanningMetrics(value: unknown): CodeGraphScanningMetrics | undefi
     return undefined;
   }
   return {
+    ...(value.degradedFiles === undefined ? {} : {degradedFiles: Number(value.degradedFiles)}),
     factsBytesCompleted: Number(value.factsBytesCompleted),
     sourceBytesCompleted: Number(value.sourceBytesCompleted),
     sourceBytesTotal: Number(value.sourceBytesTotal),

@@ -3,6 +3,7 @@ import * as ChildProcess from 'effect/unstable/process/ChildProcess';
 import {ChildProcessSpawner} from 'effect/unstable/process/ChildProcessSpawner';
 import {command as commandText, info, warning} from '../cli_ui.js';
 import {redactSensitiveText} from '../scrubber.js';
+import {withoutTelemetrySessionEnvironment} from '../telemetry/session.js';
 import type {CommandResult} from '../types.js';
 import {SystemInfo, type SystemInfoShape} from './system.js';
 
@@ -341,6 +342,7 @@ const executeStreamingCommand = Effect.fn('CommandExecutor.executeStreaming')(fu
   options: StreamingCommandOptions = {},
   system: SystemInfoShape,
 ) {
+  const environment = system.environment();
   const maxOutputChars = options.maxOutputChars ?? 64_000;
   const command = formatShellCommand(executable, args);
   const safeArgs = redactCommandArgs(args);
@@ -354,12 +356,12 @@ const executeStreamingCommand = Effect.fn('CommandExecutor.executeStreaming')(fu
             executable,
             args,
             system.platform,
-            system.environment().ComSpec ?? system.environment().COMSPEC ?? 'cmd.exe',
+            environment.ComSpec ?? environment.COMSPEC ?? 'cmd.exe',
           ),
         catch: spawnFailed,
       });
       const handle = yield* ChildProcess.make(invocation.executable, [...invocation.args], {
-        env: options.env,
+        env: commandEnvironment(executable, options.env, environment),
         forceKillAfter: 1000,
         shell: invocation.shell,
         stdin: 'inherit',
@@ -560,7 +562,8 @@ export function commandEnvironment(
   env: NodeJS.ProcessEnv | undefined,
   systemEnvironment: NodeJS.ProcessEnv,
 ): NodeJS.ProcessEnv | undefined {
-  return isGitExecutable(executable) ? withoutGitEnvironment(env ?? systemEnvironment) : env;
+  const sanitized = withoutTelemetrySessionEnvironment(env ?? systemEnvironment);
+  return isGitExecutable(executable) ? withoutGitEnvironment(sanitized) : sanitized;
 }
 
 export function formatShellCommand(executable: string, args: readonly string[]): string {

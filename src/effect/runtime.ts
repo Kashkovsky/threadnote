@@ -1,5 +1,5 @@
 import * as BunServices from '@effect/platform-bun/BunServices';
-import {Layer} from 'effect';
+import {Crypto, Effect, Layer} from 'effect';
 import {CommandExecutor} from './command.js';
 import {CliOutput} from './cli_output.js';
 import {HttpService} from './http.js';
@@ -19,6 +19,14 @@ import {CodeGraphLanguagePackRegistry} from '../code_graph/languages/registry.js
 import {TreeSitterRuntime} from '../code_graph/tree_sitter/runtime.js';
 import {CodeGraphAnalysis} from '../code_graph/analysis.js';
 import {CodeGraphParserPool} from '../code_graph/parser_worker.js';
+import {resolveTelemetryConfiguration} from '../telemetry/config.js';
+import {
+  resolveAgentSession,
+  retainCurrentAgentSessionEnvironment,
+  takeTelemetrySessionEnvironment,
+} from '../telemetry/session.js';
+import {getThreadnoteVersion} from '../version.js';
+import {anonymousTelemetryLayer} from './telemetry.js';
 
 const systemLayer = SystemInfo.layer;
 export const StandaloneBrokerLayer = Layer.merge(systemLayer, BunServices.layer);
@@ -79,5 +87,89 @@ const ApplicationServicesLayer = Layer.mergeAll(
 );
 
 export const ApplicationLayer = ApplicationServicesLayer.pipe(Layer.provideMerge(BunServices.layer));
+
+/**
+ * Runtime application layer with explicit-consent anonymous telemetry. The
+ * static ApplicationLayer remains telemetry-free for focused tests.
+ */
+export function applicationLayerForHome(home: string, entrypoint: 'cli' | 'mcp') {
+  return telemetryLayerForHome(home, entrypoint === 'cli' ? 'invocation' : 'broker').pipe(
+    Layer.provideMerge(ApplicationLayer),
+  );
+}
+
+export function standaloneBrokerLayerForHome(home: string) {
+  return telemetryLayerForHome(home, 'broker', true).pipe(Layer.provideMerge(StandaloneBrokerLayer));
+}
+
+function telemetryLayerForHome(home: string, fallbackScope: 'broker' | 'invocation', bridgeToBrokerProgram = false) {
+  return Layer.unwrap(
+    Effect.gen(function* () {
+      const system = yield* SystemInfo;
+      const environment = system.environment();
+      const sessionEnvironment = takeTelemetrySessionEnvironment(environment);
+      if (fallbackScope === 'broker' && !bridgeToBrokerProgram) {
+        environment.THREADNOTE_MCP_BROKER_CHILD = '1';
+      }
+      const crypto = yield* Crypto.Crypto;
+      const configuration = yield* boundedTelemetryConfiguration(home);
+      if (configuration === undefined) return anonymousTelemetryLayer();
+      const randomBytes = yield* crypto.randomBytes(16).pipe(
+        Effect.map(bytes => bytes as Uint8Array | undefined),
+        Effect.catchCause(() => Effect.succeed(undefined)),
+      );
+      if (randomBytes === undefined) return anonymousTelemetryLayer();
+      const session = resolveAgentSession({
+        configuration,
+        environment: sessionEnvironment,
+        fallbackScope,
+        randomBytes,
+      });
+      // Provider inputs and inherited child markers were consumed above even
+      // when consent is absent. Retain only an opaque current-process alias;
+      // generic subprocess launchers scrub it, while declared Threadnote child
+      // plans attach a fresh child-kind marker explicitly.
+      retainCurrentAgentSessionEnvironment(
+        environment,
+        session,
+        bridgeToBrokerProgram && configuration !== undefined ? 'mcp-broker-runtime' : undefined,
+      );
+      const serviceVersion = yield* getThreadnoteVersion().pipe(Effect.catch(() => Effect.succeed('unknown')));
+      const consentIdentity = `${configuration.endpoint}\0${configuration.sessionSalt}`;
+      const runtimeContext = yield* Effect.context<Layer.Success<typeof StandaloneBrokerLayer>>();
+      const isEnabled = boundedTelemetryConfiguration(home).pipe(
+        Effect.map(current =>
+          current === undefined ? false : `${current.endpoint}\0${current.sessionSalt}` === consentIdentity,
+        ),
+        Effect.provideContext(runtimeContext),
+      );
+      return anonymousTelemetryLayer({
+        correlationScope: session.correlationScope,
+        endpoint: configuration.endpoint,
+        isEnabled,
+        serviceVersion,
+        sessionId: session.id,
+        // A missing or slow collector must not add the MCP-oriented three
+        // second final flush budget to every short standalone command.
+        shutdownTimeout: fallbackScope === 'invocation' ? '250 millis' : '3 seconds',
+      });
+    }).pipe(Effect.catchCause(() => Effect.succeed(anonymousTelemetryLayer()))),
+  ).pipe(Layer.catchCause(() => anonymousTelemetryLayer()));
+}
+
+const TELEMETRY_CONFIGURATION_READ_TIMEOUT = '250 millis';
+
+function boundedTelemetryConfiguration(home: string) {
+  return resolveTelemetryConfiguration({agentContextHome: home}).pipe(
+    Effect.timeoutOrElse({
+      duration: TELEMETRY_CONFIGURATION_READ_TIMEOUT,
+      orElse: () => Effect.succeed(undefined),
+    }),
+    Effect.catchCause(() => Effect.succeed(undefined)),
+  );
+}
+
+/** @internal Runtime-boundary regression coverage. */
+export const telemetryLayerForHomeForTest = telemetryLayerForHome;
 
 export type ApplicationServices = Layer.Success<typeof ApplicationLayer>;

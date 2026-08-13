@@ -1,7 +1,7 @@
 import {TestError} from '../helpers/test-error.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {expect, it} from '@effect/vitest';
-import {Effect, Exit, Fiber, Layer} from 'effect';
+import {Cause, Effect, Exit, Fiber, Layer} from 'effect';
 import {describe} from 'vitest';
 import {
   isolatedLocalModelRuntimeLayer,
@@ -16,6 +16,7 @@ import {LocalModelRuntime} from '../../src/effect/ai/local-model-runtime.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import {BUILTIN_MODEL_MANIFESTS} from '../../src/models/builtin.js';
 import {fatalLocalModelWorkerHarness} from '../helpers/fatal-local-model-worker.js';
+import {anonymousTelemetryDiagnosticFromError} from '../../src/telemetry/diagnostic.js';
 
 const embeddingManifest = {
   ...BUILTIN_MODEL_MANIFESTS.find(candidate => candidate.role === 'embedding')!,
@@ -29,6 +30,11 @@ describe('isolated local model runtime', () => {
       const system = yield* SystemInfo;
       const options = localModelWorkerSpawnOptions({
         ...system,
+        environment: () => ({
+          ...system.environment(),
+          THREADNOTE_TELEMETRY_SESSION_ID: 'tns_000102030405060708090a0b0c0d0e0f',
+          THREADNOTE_TELEMETRY_CONSENT_GENERATION: 'tng_000102030405060708090a0b0c0d0e0f',
+        }),
         executablePath: '/runtime/bun',
         processArguments: ['/runtime/bun', '/checkout/scripts/evaluate-recall-models.ts'],
       });
@@ -36,6 +42,9 @@ describe('isolated local model runtime', () => {
       expect(options.executable).toBe('/runtime/bun');
       expect(options.arguments.at(-1)).toBe('--threadnote-local-model-worker');
       expect(options.arguments.at(-2)?.replaceAll('\\', '/')).toMatch(/\/src\/standalone\.ts$/);
+      expect(options.environment.THREADNOTE_TELEMETRY_SESSION_ID).toBe('tns_000102030405060708090a0b0c0d0e0f');
+      expect(options.environment.THREADNOTE_TELEMETRY_CONSENT_GENERATION).toBe('tng_000102030405060708090a0b0c0d0e0f');
+      expect(options.environment.THREADNOTE_TELEMETRY_CHILD).toBe('local-model-worker');
     }).pipe(provideTestLayer(SystemInfo.layer)),
   );
 
@@ -59,6 +68,12 @@ describe('isolated local model runtime', () => {
       if (Exit.isFailure(exit)) {
         expect(exit.cause.toString()).toContain('GenerationFailed');
         expect(exit.cause.toString()).toContain('worker retry was exhausted');
+        expect(anonymousTelemetryDiagnosticFromError(Cause.squash(exit.cause))).toMatchObject({
+          domain: 'model-worker',
+          errorType: 'GenerationFailed',
+          operation: 'generate',
+          reason: 'crash',
+        });
       }
       expect(fatalWorker.spawnCount()).toBe(2);
     }).pipe(provideTestLayer(runtimeLayer(fatalWorker.spawnWorker)));

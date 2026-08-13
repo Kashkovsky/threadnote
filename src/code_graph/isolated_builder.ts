@@ -2,6 +2,7 @@ import {Clock, Effect, Option, Path, Ref} from 'effect';
 import {fromPromiseInterruptible} from '../effect/errors.js';
 import {SystemInfo, type SystemInfoShape} from '../effect/system.js';
 import {pollUntilEffect} from '../effect/time.js';
+import {withCurrentAgentSessionEnvironment} from '../telemetry/session.js';
 
 import {
   CODE_GRAPH_BUILD_HEARTBEAT_INTERVAL_MILLISECONDS,
@@ -108,7 +109,7 @@ export function codeGraphIsolatedBuilderSpawnPlan(
       options.cwd,
     ],
     environment: {
-      ...system.environment(),
+      ...withCurrentAgentSessionEnvironment(system.environment(), 'graph-builder'),
       THREADNOTE_HOME: options.threadnoteHome,
     },
     executable: system.executablePath,
