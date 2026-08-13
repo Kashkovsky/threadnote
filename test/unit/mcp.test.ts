@@ -75,28 +75,34 @@ describe('MCP toolsets', () => {
   effectIt.effect('uses the stable MCP broker launcher instead of a direct server command', () =>
     Effect.gen(function* () {
       const baseSystem = yield* SystemInfo;
+      const path = yield* Path.Path;
+      const binDirectory = '/opt/threadnote/bin';
+      const brokerLauncher = path.join(binDirectory, 'threadnote-mcp-server');
       const testSystem = SystemInfo.of({
         ...baseSystem,
         environment: () => ({
           ...baseSystem.environment(),
-          THREADNOTE_BIN_DIR: '/opt/threadnote/bin',
+          THREADNOTE_BIN_DIR: binDirectory,
         }),
         platform: 'linux',
       });
       const command = yield* mcpAdapterCommand().pipe(Effect.provideService(SystemInfo, testSystem));
 
-      expect(command).toEqual(['/opt/threadnote/bin/threadnote-mcp-server']);
+      expect(command).toEqual([brokerLauncher]);
     }).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('renders the broker launcher for every supported MCP host', () =>
     Effect.gen(function* () {
       const baseSystem = yield* SystemInfo;
+      const path = yield* Path.Path;
+      const binDirectory = '/opt/threadnote/bin';
+      const brokerLauncher = path.join(binDirectory, 'threadnote-mcp-server');
       const testSystem = SystemInfo.of({
         ...baseSystem,
         environment: () => ({
           ...baseSystem.environment(),
-          THREADNOTE_BIN_DIR: '/opt/threadnote/bin',
+          THREADNOTE_BIN_DIR: binDirectory,
         }),
         platform: 'linux',
       });
@@ -105,7 +111,7 @@ describe('MCP toolsets', () => {
         const result = yield* captureConsole(runMcpInstall(runtime(), agent, {})).pipe(
           Effect.provideService(SystemInfo, testSystem),
         );
-        expect(result.output, agent).toContain('/opt/threadnote/bin/threadnote-mcp-server');
+        expect(result.output, agent).toContain(brokerLauncher);
         expect(result.output, agent).not.toMatch(/\bthreadnote\s+mcp-server\b/);
       }
     }).pipe(provideTestLayer(ApplicationLayer)),
