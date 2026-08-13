@@ -3618,7 +3618,14 @@ describe('native code graph lifecycle', () => {
   );
 
   it('indexes linked worktrees concurrently across processes without mixing dirty overlays or waiters', async () => {
-    const root = createFixtureRepository();
+    const root = createConcurrentProjectRepository();
+    const home = join(root, '.threadnote-test-home');
+    const baseline = await runEffect(
+      Effect.gen(function* () {
+        const indexer = yield* CodeGraphIndexer;
+        return yield* indexer.index({cwd: root, threadnoteHome: home});
+      }),
+    );
     git(root, ['branch', 'graph-process-a']);
     git(root, ['branch', 'graph-process-b']);
     const worktreeRoot = temporaryDirectory('threadnote-code-graph-process-worktrees-');
@@ -3626,9 +3633,14 @@ describe('native code graph lifecycle', () => {
     const worktreeB = join(worktreeRoot, 'worktree-b');
     git(root, ['worktree', 'add', worktreeA, 'graph-process-a']);
     git(root, ['worktree', 'add', worktreeB, 'graph-process-b']);
-    replaceFunction(worktreeA, 'ensureVectorIndex', 'ensureConcurrentBranchA');
-    replaceFunction(worktreeB, 'ensureVectorIndex', 'ensureConcurrentBranchB');
-    const home = join(root, '.threadnote-test-home');
+    writeFileSync(
+      join(worktreeA, 'packages/shared/branch-a.ts'),
+      'export function ensureConcurrentBranchA(): string { return "a"; }\n',
+    );
+    writeFileSync(
+      join(worktreeB, 'packages/shared/branch-b.ts'),
+      'export function ensureConcurrentBranchB(): string { return "b"; }\n',
+    );
     const gateA = join(root, '.release-worktree-a');
     const gateB = join(root, '.release-worktree-b');
     const markerA = join(root, '.worktree-process-a');
@@ -3641,10 +3653,11 @@ describe('native code graph lifecycle', () => {
       second = startCodeGraphIndexProcess(worktreeB, home, gateB, markerB);
       await waitForPath(`${markerB}.scanning`);
       const observed = await runEffect(Effect.map(readAllCodeGraphBuildStatuses(home), selectCodeGraphBuildStatuses));
+      const owners = observed.builds.filter(build => build.coordination?.role === 'owner');
       expect(observed.waiters).toEqual([]);
-      expect(observed.builds.filter(build => build.coordination?.role === 'owner')).toHaveLength(2);
-      expect(new Set(observed.builds.map(build => build.identity.worktreeId)).size).toBe(2);
-      const checkoutId = observed.builds[0]?.identity.checkoutId;
+      expect(owners).toHaveLength(2);
+      expect(new Set(owners.map(build => build.identity.worktreeId)).size).toBe(2);
+      const checkoutId = owners[0]?.identity.checkoutId;
       if (!checkoutId) throw new TestError('Linked-worktree builders did not publish a checkout identity.');
       expect(await runEffect(compactCodeGraphStorage(home, checkoutId, {dryRun: false, force: true}))).toMatchObject({
         action: 'deferred',
@@ -3665,6 +3678,10 @@ describe('native code graph lifecycle', () => {
       expect(summaryA.identity.checkoutId).toBe(summaryB.identity.checkoutId);
       expect(summaryA.identity.worktreeId).not.toBe(summaryB.identity.worktreeId);
       expect(summaryA.snapshot.id).not.toBe(summaryB.snapshot.id);
+      expect(summaryA.materialization).toMatchObject({mode: 'incremental-overlay'});
+      expect(summaryB.materialization).toMatchObject({mode: 'incremental-overlay'});
+      expect(summaryA.snapshot.baseSnapshotId).toBe(baseline.snapshot.id);
+      expect(summaryB.snapshot.baseSnapshotId).toBe(baseline.snapshot.id);
 
       const [queryA, queryB] = await runEffect(
         Effect.gen(function* () {
@@ -3704,7 +3721,7 @@ describe('native code graph lifecycle', () => {
           .all();
         expect(overlays).toHaveLength(2);
         expect(new Set(overlays.map(row => row.worktree_id)).size).toBe(2);
-        expect(overlays.every(row => row.base_snapshot_id === null)).toBe(true);
+        expect(overlays.every(row => row.base_snapshot_id === baseline.snapshot.id)).toBe(true);
       } finally {
         database.close();
       }
@@ -4477,6 +4494,28 @@ function createFixtureRepository(): string {
   return root;
 }
 
+function createConcurrentProjectRepository(): string {
+  const root = temporaryDirectory('threadnote-code-graph-concurrent-project-');
+  mkdirSync(join(root, 'packages/shared'), {recursive: true});
+  writeFileSync(join(root, '.gitignore'), '/.threadnote-*/\n');
+  writeFileSync(
+    join(root, 'package.json'),
+    `${JSON.stringify({name: '@concurrent/root', private: true, workspaces: ['packages/*']}, null, 2)}\n`,
+  );
+  writeFileSync(
+    join(root, 'packages/shared/package.json'),
+    `${JSON.stringify({name: '@concurrent/shared'}, null, 2)}\n`,
+  );
+  writeFileSync(
+    join(root, 'packages/shared/index.ts'),
+    'export function ensureConcurrentBase(): string { return "base"; }\n',
+  );
+  git(root, ['init', '-q']);
+  git(root, ['add', '.']);
+  git(root, ['-c', 'user.name=Threadnote Test', '-c', 'user.email=test@threadnote.local', 'commit', '-qm', 'fixture']);
+  return root;
+}
+
 function createManySourceRepository(count: number): string {
   const root = temporaryDirectory('threadnote-code-graph-many-');
   mkdirSync(join(root, 'src'), {recursive: true});
@@ -4810,7 +4849,7 @@ function codeGraphProcessProgress(output: string): readonly {readonly completed?
 function codeGraphProcessSummary(output: string): {
   readonly identity: {readonly checkoutId: string; readonly worktreeId: string};
   readonly materialization?: {readonly mode: string; readonly stagedFiles: number};
-  readonly snapshot: {readonly id: string};
+  readonly snapshot: {readonly baseSnapshotId?: string; readonly id: string};
 } {
   const summary = output
     .split(/\r?\n/)
@@ -4821,7 +4860,7 @@ function codeGraphProcessSummary(output: string): {
   return summary as {
     readonly identity: {readonly checkoutId: string; readonly worktreeId: string};
     readonly materialization?: {readonly mode: string; readonly stagedFiles: number};
-    readonly snapshot: {readonly id: string};
+    readonly snapshot: {readonly baseSnapshotId?: string; readonly id: string};
   };
 }
 

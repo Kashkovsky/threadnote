@@ -634,10 +634,11 @@ const attemptReusableCleanSnapshot = Effect.fn('codeGraph.attemptReusableCleanSn
           persistentCapacityProtector: codeGraphDirectPersistentCapacityProtector(input),
           store: input.store,
         };
-        const sameFileSet = deletedPaths.length === 0 && modifiedFiles.every(file => baseByPath.has(file.path));
-        const boundedAssessment = sameFileSet
-          ? yield* assessReusableCleanBaseCompatibility(assessmentInput, workspace, modifiedFiles)
-          : ({mode: 'fallback', reason: 'file-set-changed'} as const);
+        const boundedAssessment = yield* assessReusableCleanBaseCompatibility(
+          assessmentInput,
+          workspace,
+          modifiedFiles,
+        );
         if (boundedAssessment.mode === 'fallback') {
           return Option.some<ReusableCleanSnapshotAttempt>(boundedAssessment);
         }
@@ -850,11 +851,7 @@ export const attemptReusableDirtyBase = Effect.fn('codeGraph.attemptReusableDirt
     persistentCapacityProtector: input.persistentCapacityProtector,
     store: input.store,
   };
-  const sameFileSet =
-    alignedCommitCandidate || (deletedPaths.length === 0 && modifiedFiles.every(file => baseByPath!.has(file.path)));
-  const boundedAssessment = sameFileSet
-    ? yield* assessReusableCleanBaseCompatibility(assessmentInput, workspace, modifiedFiles)
-    : ({mode: 'fallback', reason: 'file-set-changed'} as const);
+  const boundedAssessment = yield* assessReusableCleanBaseCompatibility(assessmentInput, workspace, modifiedFiles);
   if (boundedAssessment.mode === 'fallback') return Option.none();
   const preassessment = boundedAssessment;
   return Option.some({

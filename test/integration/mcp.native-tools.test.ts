@@ -137,6 +137,26 @@ async function callCodeGraphUntilReady(client: Client, arguments_: Readonly<Reco
   }
 }
 
+async function callCodeGraphUntilCurrent(client: Client, arguments_: Readonly<Record<string, unknown>>) {
+  const deadline = Date.now() + 30_000;
+  for (;;) {
+    const result = await client.callTool({arguments: arguments_, name: 'inspect_code_graph'}, undefined, {
+      timeout: 10_000,
+    });
+    const structured = result.structuredContent as
+      {readonly freshness?: unknown; readonly retryAfterMilliseconds?: unknown; readonly state?: unknown} | undefined;
+    if (structured?.freshness === 'current' && !isRetryableCodeGraphState(structured.state)) return result;
+    if (Date.now() >= deadline) {
+      throw new TestError(
+        `Code graph did not become current within 30 seconds: ${JSON.stringify(result.structuredContent)}.`,
+      );
+    }
+    const requestedDelay =
+      typeof structured?.retryAfterMilliseconds === 'number' ? structured.retryAfterMilliseconds : 250;
+    await new Promise(resolve => setTimeout(resolve, Math.max(50, Math.min(1_000, requestedDelay))));
+  }
+}
+
 function isRetryableCodeGraphState(state: unknown): boolean {
   return state === 'indexing' || state === 'timed-out' || state === 'timed_out';
 }
@@ -1504,6 +1524,136 @@ describe('Threadnote MCP toolsets', () => {
       {toolset: 'core'},
     );
   }, 40_000);
+
+  it('keeps graphs immediately available across new TypeScript, Python, and Rust worktrees and edits', async () => {
+    await withMcpClient(
+      async (client, fixture) => {
+        const repositories = [
+          {
+            after: 'typescriptAfterEdit',
+            before: 'typescriptBeforeEdit',
+            files: {
+              'package.json': '{"name":"typescript-readiness"}\n',
+              'src/index.ts': 'export function typescriptBeforeEdit(): string { return "before"; }\n',
+            },
+            name: 'typescript',
+            sourcePath: 'src/index.ts',
+          },
+          {
+            after: 'python_after_edit',
+            before: 'python_before_edit',
+            files: {
+              'pyproject.toml': '[project]\nname = "python-readiness"\nversion = "0.0.0"\n',
+              'src/readiness.py': 'def python_before_edit():\n    return "before"\n',
+            },
+            name: 'python',
+            sourcePath: 'src/readiness.py',
+          },
+          {
+            after: 'rust_after_edit',
+            before: 'rust_before_edit',
+            files: {
+              'Cargo.toml': '[package]\nname = "rust-readiness"\nversion = "0.0.0"\nedition = "2021"\n',
+              'src/lib.rs': 'pub fn rust_before_edit() -> &\'static str { "before" }\n',
+            },
+            name: 'rust',
+            sourcePath: 'src/lib.rs',
+          },
+        ] as const;
+
+        for (const repositoryFixture of repositories) {
+          const repository = join(fixture.root, `${repositoryFixture.name}-repository`);
+          for (const [relativePath, content] of Object.entries(repositoryFixture.files)) {
+            const path = join(repository, relativePath);
+            await mkdir(join(path, '..'), {recursive: true});
+            await writeFile(path, content, 'utf8');
+          }
+          execFileSync('git', ['init', '-q'], {cwd: repository});
+          execFileSync('git', ['config', 'user.email', 'threadnote@example.test'], {cwd: repository});
+          execFileSync('git', ['config', 'user.name', 'Threadnote Test'], {cwd: repository});
+          execFileSync('git', ['add', '.'], {cwd: repository});
+          execFileSync('git', ['commit', '-qm', 'fixture'], {cwd: repository});
+
+          const first = await callCodeGraphUntilReady(client, {
+            callerCwd: repository,
+            operation: 'query',
+            query: repositoryFixture.before,
+          });
+          const firstStructured = first.structuredContent as
+            | {
+                readonly freshness?: unknown;
+                readonly nodes?: readonly {readonly name?: unknown}[];
+                readonly snapshot?: {readonly id?: unknown; readonly worktreeId?: unknown};
+              }
+            | undefined;
+          expect(firstStructured).toMatchObject({
+            freshness: 'current',
+            nodes: expect.arrayContaining([expect.objectContaining({name: repositoryFixture.before})]),
+          });
+          expect(typeof firstStructured?.snapshot?.id).toBe('string');
+
+          const branch = `${repositoryFixture.name}-linked`;
+          const worktree = join(fixture.root, `${repositoryFixture.name}-worktree`);
+          execFileSync('git', ['branch', branch], {cwd: repository});
+          execFileSync('git', ['worktree', 'add', worktree, branch], {cwd: repository});
+
+          const attachedStartedAt = Date.now();
+          const attached = await client.callTool(
+            {
+              arguments: {callerCwd: worktree, operation: 'query', query: repositoryFixture.before},
+              name: 'inspect_code_graph',
+            },
+            undefined,
+            {timeout: 10_000},
+          );
+          expect(Date.now() - attachedStartedAt).toBeLessThan(5_000);
+          expect(attached.isError).not.toBe(true);
+          expect(attached.structuredContent).toMatchObject({
+            freshness: 'current',
+            nodes: expect.arrayContaining([expect.objectContaining({name: repositoryFixture.before})]),
+            snapshot: {id: firstStructured?.snapshot?.id},
+          });
+          expect((attached.structuredContent as {readonly state?: unknown} | undefined)?.state).toBeUndefined();
+
+          const source = join(worktree, repositoryFixture.sourcePath);
+          await writeFile(
+            source,
+            (await readFile(source, 'utf8')).replace(repositoryFixture.before, repositoryFixture.after),
+            'utf8',
+          );
+          const editedStartedAt = Date.now();
+          const edited = await client.callTool(
+            {
+              arguments: {callerCwd: worktree, operation: 'query', query: repositoryFixture.before},
+              name: 'inspect_code_graph',
+            },
+            undefined,
+            {timeout: 10_000},
+          );
+          const editedStructured = edited.structuredContent as
+            {readonly freshness?: unknown; readonly state?: unknown} | undefined;
+          expect(Date.now() - editedStartedAt).toBeLessThan(5_000);
+          expect(edited.isError).not.toBe(true);
+          expect(editedStructured?.state).toBeUndefined();
+          expect(['current', 'stale']).toContain(editedStructured?.freshness);
+
+          const refreshed = await callCodeGraphUntilCurrent(client, {
+            callerCwd: worktree,
+            operation: 'query',
+            query: repositoryFixture.after,
+          });
+          expect(refreshed.structuredContent).toMatchObject({
+            freshness: 'current',
+            nodes: expect.arrayContaining([expect.objectContaining({name: repositoryFixture.after})]),
+          });
+          expect(
+            (refreshed.structuredContent as {readonly snapshot?: {readonly id?: unknown}} | undefined)?.snapshot?.id,
+          ).not.toBe(firstStructured?.snapshot?.id);
+        }
+      },
+      {environment: {THREADNOTE_CODE_GRAPH_PREWARM: '0'}, toolset: 'core'},
+    );
+  }, 120_000);
 
   it('keeps inspected repositories fresh with one MCP-session watcher', async () => {
     await withMcpClient(

@@ -61,6 +61,84 @@ export type ProjectClosureSeedAssessment =
       readonly reason: 'dynamic-aliases' | 'project-closure-incomplete' | 'resolution-surface-changed';
     };
 
+/**
+ * File additions and deletions have no before/after fact pair to compare. They
+ * may still use project-closure materialization when every changed path has a
+ * unique owner in a complete declared dependency model. Deletions are resolved
+ * against the base workspace; current additions and modifications use the
+ * current workspace.
+ */
+export function assessProjectFileSetClosureSeeds(input: {
+  readonly baseProjects: readonly CodeGraphWorkspaceProject[];
+  readonly currentChangedPaths: readonly string[];
+  readonly currentProjects: readonly CodeGraphWorkspaceProject[];
+  readonly deletedPaths: readonly string[];
+}): ProjectClosureSeedAssessment {
+  const baseProjectsById = uniqueProjectsById(input.baseProjects);
+  const currentProjectsById = uniqueProjectsById(input.currentProjects);
+  if (
+    baseProjectsById === undefined ||
+    currentProjectsById === undefined ||
+    !hasCompleteDeclaredDependencyModel(input.baseProjects, baseProjectsById) ||
+    !hasCompleteDeclaredDependencyModel(input.currentProjects, currentProjectsById)
+  ) {
+    return incompleteSeeds();
+  }
+  const seeds = new Set<string>();
+  let ownershipChecks = 0;
+  const collect = (
+    paths: readonly string[],
+    projects: readonly CodeGraphWorkspaceProject[],
+    projectsById: ReadonlyMap<string, CodeGraphWorkspaceProject>,
+  ): boolean => {
+    const indexesByDomain = projectPathIndexesByDomain(projects);
+    for (const path of uniqueSorted(paths)) {
+      let owned = false;
+      for (const [domain, indexes] of indexesByDomain) {
+        ownershipChecks += 1;
+        const owner = nearestProject(indexes, path);
+        if (owner.mode !== 'unique') return false;
+        if (owner.projectId === undefined) continue;
+        const project = projectsById.get(owner.projectId);
+        const currentProject = currentProjectsById.get(owner.projectId);
+        if (
+          !project ||
+          !currentProject ||
+          project.resolutionDomain !== domain ||
+          currentProject.resolutionDomain !== domain ||
+          project.provenance !== 'declared' ||
+          currentProject.provenance !== 'declared' ||
+          project.buildSystem === 'inferred' ||
+          currentProject.buildSystem === 'inferred' ||
+          project.diagnostics.length > 0 ||
+          currentProject.diagnostics.length > 0
+        ) {
+          return false;
+        }
+        seeds.add(owner.projectId);
+        owned = true;
+      }
+      if (!owned) return false;
+    }
+    return true;
+  };
+  if (
+    !collect(input.currentChangedPaths, input.currentProjects, currentProjectsById) ||
+    !collect(input.deletedPaths, input.baseProjects, baseProjectsById) ||
+    seeds.size === 0
+  ) {
+    return incompleteSeeds();
+  }
+  return {
+    mode: 'eligible',
+    planningOperations: {
+      ownershipChecks,
+      pathIndexProjects: input.baseProjects.length + input.currentProjects.length,
+    },
+    seedProjectIds: [...seeds].sort(compareCodeUnits),
+  };
+}
+
 export function planProjectIncrementalClosure(input: ProjectIncrementalClosureInput): ProjectIncrementalClosurePlan {
   const selection = selectProjectIncrementalClosure(input);
   if (selection.mode === 'fallback') return selection;
@@ -370,6 +448,17 @@ function hasCompleteDeclaredDependencyModel(
     }
   }
   return true;
+}
+
+function uniqueProjectsById(
+  projects: readonly CodeGraphWorkspaceProject[],
+): ReadonlyMap<string, CodeGraphWorkspaceProject> | undefined {
+  const projectsById = new Map<string, CodeGraphWorkspaceProject>();
+  for (const project of projects) {
+    if (projectsById.has(project.id)) return undefined;
+    projectsById.set(project.id, project);
+  }
+  return projectsById;
 }
 
 function hasSameGlobalSymbolSurface(left: CodeGraphSymbol, right: CodeGraphSymbol): boolean {

@@ -1,7 +1,7 @@
 import {TestError} from '../helpers/test-error.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {execFileSync} from '../helpers/node-child-process.js';
-import {mkdirSync, mkdtempSync, rmSync, writeFileSync} from '../helpers/node-fs.js';
+import {mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync} from '../helpers/node-fs.js';
 import {tmpdir} from '../helpers/node-os.js';
 import {join} from '../helpers/node-path.js';
 import {Database} from 'bun:sqlite';
@@ -283,14 +283,160 @@ describe('project-closure incremental indexing', () => {
     ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );
 
-  it.effect('fails closed for file-set, global-surface, and unreconciled-workspace changes', () =>
+  it.effect('incrementally materializes bounded project closures for add, delete, and rename file-set changes', () =>
     Effect.forEach(
       [
         {
-          create: () => createProjectClosureRepository(),
+          deltaPaths: [
+            'packages/app/index.ts',
+            'packages/app/package.json',
+            'packages/barrel/extra.ts',
+            'packages/barrel/index.ts',
+            'packages/barrel/package.json',
+          ],
           mutate: (root: string) => writeFile(root, 'packages/barrel/extra.ts', 'export const extra = true;\n'),
-          reason: 'file-set-changed' as const,
+          stagedFiles: 5,
+          totalFiles: 12,
         },
+        {
+          deltaPaths: ['packages/app/index.ts', 'packages/app/package.json', 'packages/barrel/package.json'],
+          mutate: (root: string) => rmSync(join(root, 'packages/barrel/index.ts')),
+          stagedFiles: 3,
+          totalFiles: 10,
+        },
+        {
+          deltaPaths: [
+            'packages/app/index.ts',
+            'packages/app/package.json',
+            'packages/barrel/package.json',
+            'packages/barrel/renamed.ts',
+          ],
+          mutate: (root: string) =>
+            renameSync(join(root, 'packages/barrel/index.ts'), join(root, 'packages/barrel/renamed.ts')),
+          stagedFiles: 4,
+          totalFiles: 11,
+        },
+      ],
+      scenario =>
+        Effect.acquireUseRelease(
+          Effect.sync(createProjectClosureRepository),
+          root =>
+            Effect.gen(function* () {
+              const indexer = yield* CodeGraphIndexer;
+              const path = yield* Path.Path;
+              const store = yield* CodeGraphStore;
+              const incrementalHome = join(root, '.threadnote-file-set-incremental');
+              const fullHome = join(root, '.threadnote-file-set-full');
+              yield* indexer.index({cwd: root, threadnoteHome: incrementalHome});
+              yield* Effect.sync(() => scenario.mutate(root));
+              const incremental = yield* indexer.index({cwd: root, threadnoteHome: incrementalHome});
+              const full = yield* indexer.index({
+                cwd: root,
+                incrementalOverlay: false,
+                threadnoteHome: fullHome,
+              });
+              const incrementalLayout = codeGraphLayout(
+                path,
+                incrementalHome,
+                incremental.identity.checkoutId,
+                incremental.identity.worktreeId,
+              );
+              const fullLayout = codeGraphLayout(path, fullHome, full.identity.checkoutId, full.identity.worktreeId);
+              const incrementalGraph = yield* store.loadGraph(incrementalLayout.databasePath, incremental.snapshot.id);
+              const fullGraph = yield* store.loadGraph(fullLayout.databasePath, full.snapshot.id);
+
+              expect(incremental.materialization).toEqual({
+                closureProjects: 2,
+                mode: 'incremental-overlay',
+                resolutionClosure: 'project',
+                stagedFiles: scenario.stagedFiles,
+                totalFiles: scenario.totalFiles,
+              });
+              expect(normalizeGraph(incrementalGraph)).toEqual(normalizeGraph(fullGraph));
+              expect(normalizeCatalog(yield* store.loadVisualizationCatalog(incrementalLayout.databasePath))).toEqual(
+                normalizeCatalog(yield* store.loadVisualizationCatalog(fullLayout.databasePath)),
+              );
+              expect(yield* store.diagnose(incrementalLayout.databasePath)).toMatchObject({
+                foreignKeyViolations: 0,
+                integrity: 'ok',
+              });
+              expect(deltaPaths(incrementalLayout.databasePath, incremental.snapshot.id)).toEqual(scenario.deltaPaths);
+            }),
+          root => Effect.sync(() => rmSync(root, {force: true, recursive: true})),
+        ),
+      {concurrency: 1},
+    ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
+  it.effect('uses bounded project closures after committed add, delete, and rename file-set changes', () =>
+    Effect.forEach(
+      [
+        {
+          label: 'add',
+          mutate: (root: string) => writeFile(root, 'packages/barrel/extra.ts', 'export const extra = true;\n'),
+          stagedFiles: 5,
+          totalFiles: 12,
+        },
+        {
+          label: 'delete',
+          mutate: (root: string) => rmSync(join(root, 'packages/barrel/index.ts')),
+          stagedFiles: 3,
+          totalFiles: 10,
+        },
+        {
+          label: 'rename',
+          mutate: (root: string) =>
+            renameSync(join(root, 'packages/barrel/index.ts'), join(root, 'packages/barrel/renamed.ts')),
+          stagedFiles: 4,
+          totalFiles: 11,
+        },
+      ],
+      scenario =>
+        Effect.acquireUseRelease(
+          Effect.sync(createProjectClosureRepository),
+          root =>
+            Effect.gen(function* () {
+              const indexer = yield* CodeGraphIndexer;
+              const path = yield* Path.Path;
+              const store = yield* CodeGraphStore;
+              const incrementalHome = join(root, '.threadnote-clean-file-set-incremental');
+              const fullHome = join(root, '.threadnote-clean-file-set-full');
+              yield* indexer.index({cwd: root, threadnoteHome: incrementalHome});
+              yield* Effect.sync(() => {
+                scenario.mutate(root);
+                git(root, ['add', '-A']);
+                git(root, ['commit', '-qm', `${scenario.label} barrel source`]);
+              });
+              const incremental = yield* indexer.index({cwd: root, threadnoteHome: incrementalHome});
+              const full = yield* indexer.index({cwd: root, incrementalOverlay: false, threadnoteHome: fullHome});
+              const incrementalLayout = codeGraphLayout(
+                path,
+                incrementalHome,
+                incremental.identity.checkoutId,
+                incremental.identity.worktreeId,
+              );
+              const fullLayout = codeGraphLayout(path, fullHome, full.identity.checkoutId, full.identity.worktreeId);
+
+              expect(incremental.materialization).toEqual({
+                closureProjects: 2,
+                mode: 'incremental-clean',
+                resolutionClosure: 'project',
+                stagedFiles: scenario.stagedFiles,
+                totalFiles: scenario.totalFiles,
+              });
+              expect(
+                normalizeGraph(yield* store.loadGraph(incrementalLayout.databasePath, incremental.snapshot.id)),
+              ).toEqual(normalizeGraph(yield* store.loadGraph(fullLayout.databasePath, full.snapshot.id)));
+            }),
+          root => Effect.sync(() => rmSync(root, {force: true, recursive: true})),
+        ),
+      {concurrency: 1},
+    ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
+  it.effect('fails closed for global-surface and unreconciled-workspace changes', () =>
+    Effect.forEach(
+      [
         {
           create: () => createProjectClosureRepository(),
           mutate: (root: string) =>

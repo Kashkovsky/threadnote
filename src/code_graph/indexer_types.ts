@@ -81,6 +81,7 @@ export type IncrementalOverlayAssessment =
 
 export type IncrementalOverlayPreassessment =
   | {
+      readonly baseFileSetFingerprint: string;
       readonly committedWorkspace: CodeGraphWorkspace;
       readonly facts: readonly CodeGraphFileFacts[];
       readonly files: readonly CodeGraphInventoryFile[];
