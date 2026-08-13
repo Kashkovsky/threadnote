@@ -73,7 +73,7 @@ import {
   runShareUnpublish,
 } from './share.js';
 import type {RuntimeConfig} from '../types.js';
-import {maybeNotifyUpdate, maybeRunPostUpdateAfterRepair, runPostUpdate, runUpdate} from '../update.js';
+import {maybeNotifyUpdate, maybeRunPostUpdateAfterRepair, runPostUpdate} from '../update.js';
 import {errorMessage} from '../utils.js';
 import {runVersion} from '../version_command.js';
 import {runManage} from '../manager.js';
@@ -111,6 +111,7 @@ import {
 } from '../code_graph/commands.js';
 import {runProcessDiagnostics} from '../process_diagnostics.js';
 import {runContextBrief} from '../context_brief/commands.js';
+import {initializeAutoUpdatePolicy, runAutoUpdateWorker, runThreadnoteUpdateCommand} from '../auto_update.js';
 import {
   cursorCloudRuntimeConfig,
   runCursorCloudBootstrap,
@@ -270,6 +271,7 @@ const install = Command.make(
     withRuntimeEffect(config =>
       Effect.gen(function* () {
         yield* runInstall(config, options);
+        if (!options.dryRun) yield* initializeAutoUpdatePolicy('automatic');
         yield* maybeRunPostUpdateAfterRepair(config, {dryRun: options.dryRun});
         if (options.withHooks) {
           for (const agent of ['claude', 'codex', 'cursor', 'copilot'] as const) {
@@ -311,18 +313,25 @@ const update = Command.make(
   'update',
   {
     allowUntrustedSource: boolean('allow-untrusted-source', 'Allow a non-default release API source'),
+    auto: optionalChoice('auto', ['on', 'off'], 'Persist automatic updates as on or off'),
     beta: boolean('beta', 'Follow the beta channel: install the newest stable or prerelease release'),
     check: boolean('check', 'Only check whether a newer version is available'),
     dryRun: boolean('dry-run', 'Print update and repair commands without running them'),
     force: boolean('force', 'Reinstall the selected standalone release even if already current'),
+    json: boolean('json', 'Emit versioned machine-readable update status'),
     postUpdate: negatedBoolean('post-update', 'Skip post-update migration prompts'),
     repair: negatedBoolean('repair', 'Skip threadnote repair after updating the package'),
     source: optionalString('source', 'GitHub-compatible releases API URL'),
     stable: boolean('stable', 'Switch to the latest stable release'),
+    status: boolean('status', 'Show automatic update policy and the last background result'),
     yes: boolean('yes', 'Accept applicable post-update actions without prompting'),
   },
-  options => withRuntimeEffect(config => runUpdate(config, options)),
+  options => withRuntimeEffect(config => runThreadnoteUpdateCommand(config, options)),
 ).pipe(Command.withDescription('Install a verified standalone Threadnote release, then repair local integrations'));
+
+const autoUpdateWorker = Command.make('auto-update-worker', {}, () =>
+  withRuntimeEffect(config => runAutoUpdateWorker(config).pipe(Effect.asVoid)),
+).pipe(Command.withDescription('Run one coordinated automatic update attempt'), Command.withHidden);
 
 const postUpdate = Command.make(
   'post-update',
@@ -1737,6 +1746,7 @@ const topLevelCommandRegistrations = [
   registerTopLevelCommand('logs', logs),
   registerTopLevelCommand('report-issue', reportIssue, {productionLog: {mode: 'never'}}),
   registerTopLevelCommand('update', update),
+  registerTopLevelCommand('auto-update-worker', autoUpdateWorker),
   registerTopLevelCommand('post-update', postUpdate),
   registerTopLevelCommand('repair', repair),
   registerTopLevelCommand('start', start),
