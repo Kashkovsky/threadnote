@@ -2,6 +2,27 @@ import {describe, expect, it} from 'vitest';
 import {buildRecallCorpusStatistics, rankRecallCandidates, RECALL_RANKER_VERSION} from '../../src/recall/rank.js';
 
 describe('hybrid recall ranker', () => {
+  it('ranks a Ukrainian lexical match without semantic assistance', () => {
+    const ranked = rankRecallCandidates('памʼять про київську зустріч', [
+      {
+        fields: {project: 'threadnote', title: 'Київська зустріч', topic: 'київська-зустріч'},
+        kind: 'durable',
+        text: 'Пам’ять про київську зустріч та улюблений український борщ.',
+        uri: 'threadnote://user/me/memories/ukrainian.md',
+      },
+      {
+        fields: {project: 'threadnote', title: 'Грушевий сад', topic: 'грушевий-сад'},
+        kind: 'durable',
+        text: 'Нотатки про садівництво та дерева.',
+        uri: 'threadnote://user/me/memories/garden.md',
+      },
+    ]);
+
+    expect(ranked.results[0]?.candidate.uri).toContain('ukrainian.md');
+    expect(ranked.results[0]?.signals.bm25).toBeGreaterThan(0);
+    expect(ranked.results[0]?.signals.field).toBeGreaterThan(0);
+  });
+
   it('treats enriched keywords as focused topical evidence', () => {
     const candidate = {
       fields: {

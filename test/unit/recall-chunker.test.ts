@@ -30,7 +30,7 @@ describe('recall chunker', () => {
     expect(first.some(chunk => chunk.heading === 'Storage > Atomic writes')).toBe(true);
     expect(second).toEqual(first);
     expect(new Set(first.map(chunk => chunk.id)).size).toBe(first.length);
-    expect(RECALL_CHUNKER_VERSION).toBe(2);
+    expect(RECALL_CHUNKER_VERSION).toBe(3);
   });
 
   it('rejects unsafe overlap settings and omits empty documents', () => {

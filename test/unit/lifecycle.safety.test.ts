@@ -97,11 +97,11 @@ describe('read-only doctor', () => {
     const config = runtimeConfig(root);
     await writeLayoutReceipt(root);
     await runEffect(loadRecallIndexData(config, {includeInactive: false}));
-    const databasePath = join(root, 'indexes', 'lexical', 'active-v3.sqlite');
+    const databasePath = join(root, 'indexes', 'lexical', 'active-v4.sqlite');
     const sqliteArtifacts = new Set([
-      'indexes/lexical/active-v3.sqlite',
-      'indexes/lexical/active-v3.sqlite-shm',
-      'indexes/lexical/active-v3.sqlite-wal',
+      'indexes/lexical/active-v4.sqlite',
+      'indexes/lexical/active-v4.sqlite-shm',
+      'indexes/lexical/active-v4.sqlite-wal',
     ]);
     const logicalBefore = recallDatabaseLogicalSnapshot(databasePath);
     const before = await filesystemSnapshot(root, sqliteArtifacts);

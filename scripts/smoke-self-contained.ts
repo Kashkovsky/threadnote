@@ -119,7 +119,7 @@ const smokeSelfContained = Effect.scoped(
       );
     }
 
-    const lexicalDatabase = path.join(threadnoteHome, 'indexes', 'lexical', 'active-v3.sqlite');
+    const lexicalDatabase = path.join(threadnoteHome, 'indexes', 'lexical', 'active-v4.sqlite');
     const lexicalInfo = yield* fs.stat(lexicalDatabase);
     if (lexicalInfo.type !== 'File' || lexicalInfo.size <= 0) {
       return yield* Effect.fail(new ScriptError('Standalone recall did not create a populated Bun SQLite index.'));

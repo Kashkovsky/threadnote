@@ -21,6 +21,7 @@ import {
   type RecallSignals,
 } from './recall/rank.js';
 import {redactSensitiveText} from './scrubber.js';
+import {recallTokens} from './recall/tokenize.js';
 import {parseResourceId} from './storage/resource-id.js';
 import {isThreadnoteStorageLayoutReceipt} from './storage/layout.js';
 import type {CommandStatus, JsonObject} from './types.js';
@@ -780,10 +781,10 @@ export function exactRecallTerms(query: string): readonly string[] {
   ]);
   const seen = new Set<string>();
   const terms: string[] = [];
-  for (const match of query.matchAll(/[A-Za-z0-9_.-]{3,}/g)) {
-    const term = match[0];
-    const shortDistinctive = term.length === 3 && ((term.match(/[A-Z]/g) ?? []).length >= 2 || /[0-9]/.test(term));
-    if (term.length < 4 && !shortDistinctive) {
+  for (const term of recallTokens(query)) {
+    const length = [...term].length;
+    const shortDistinctive = length === 3 && ((term.match(/\p{Lu}/gu) ?? []).length >= 2 || /\p{N}/u.test(term));
+    if (length < 4 && !shortDistinctive) {
       continue;
     }
     const normalized = term.toLowerCase();
@@ -1799,10 +1800,10 @@ export function formatExactMatchPointers(matches: readonly ExactMatch[], maxUris
 
 function exactRecallTermScore(term: string): number {
   let score = term.length;
-  if (/[A-Z]/.test(term)) {
+  if (/\p{Lu}/u.test(term)) {
     score += 8;
   }
-  if (/[0-9_.-]/.test(term)) {
+  if (/[\p{N}_.-]/u.test(term)) {
     score += 6;
   }
   return score;
