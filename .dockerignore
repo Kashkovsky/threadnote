@@ -3,8 +3,15 @@
 **
 !infra/
 !infra/telemetry-gateway/
+!infra/telemetry-gateway/cmd/
+!infra/telemetry-gateway/cmd/canary/
+!infra/telemetry-gateway/cmd/canary/main.go
+!infra/telemetry-gateway/cmd/canary/main_test.go
 !infra/telemetry-gateway/Dockerfile
 !infra/telemetry-gateway/collector.yaml
 !infra/telemetry-gateway/gateway.go
 !infra/telemetry-gateway/gateway_test.go
 !infra/telemetry-gateway/go.mod
+!infra/telemetry-gateway/go.sum
+!infra/telemetry-gateway/schema.go
+!infra/telemetry-gateway/telemetry-schema-v1.json

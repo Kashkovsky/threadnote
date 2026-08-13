@@ -233,6 +233,19 @@ describe('anonymous telemetry runtime', () => {
     }).pipe(provideTestLayer(anonymousTelemetryTestLayer({system, tracer: capture.tracer})));
   });
 
+  effectIt.effect('bounds runtime version metadata before it reaches the private span', () => {
+    const capture = capturingTracer();
+    const system = systemInfoStub({runtimeVersion: `4.${'1'.repeat(120)}`});
+
+    return Effect.gen(function* () {
+      yield* withAnonymousTelemetry({component: 'cli', operation: 'version'}, Effect.void);
+
+      expect(spanAttributes(capture.spans[0]!)).toMatchObject({
+        'threadnote.runtime.version': 'unknown',
+      });
+    }).pipe(provideTestLayer(anonymousTelemetryTestLayer({system, tracer: capture.tracer})));
+  });
+
   effectIt.effect('fails closed when the per-event consent gate is disabled', () => {
     const capture = capturingTracer();
     let executions = 0;

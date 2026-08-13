@@ -1,0 +1,52 @@
+import type {CliCommandReference, DocsArticle} from './docsTypes.js';
+
+export const optionalAnonymousTelemetryCliCommand: CliCommandReference = {
+  command: 'telemetry',
+  summary: 'Preview, explicitly enable, inspect, or revoke anonymous CLI and MCP operational telemetry.',
+  examples: [
+    'threadnote telemetry status',
+    'threadnote telemetry enable',
+    'threadnote telemetry enable --apply',
+    'threadnote telemetry disable --apply',
+  ],
+};
+
+export const optionalAnonymousTelemetryDocsArticle: DocsArticle = {
+  id: 'optional-anonymous-telemetry',
+  title: 'Optional anonymous telemetry',
+  summary: 'Explicitly opt in to allowlisted CLI and MCP diagnostics, or keep the default off.',
+  keywords: ['anonymous telemetry', 'OpenTelemetry', 'OTLP', 'privacy', 'diagnostics'],
+  body: [
+    {
+      type: 'code',
+      language: 'sh',
+      code: `threadnote telemetry status
+threadnote telemetry enable
+# Review the preview, then opt in only if you agree:
+threadnote telemetry enable --apply
+# Revoke persisted consent:
+threadnote telemetry disable --apply`,
+    },
+    {
+      type: 'paragraph',
+      text: 'Telemetry is disabled by default. Applied consent covers allowlisted CLI and MCP operation names, outcomes, durations, coarse memory and progress buckets, safe typed failure classes, app and runtime versions, random session and invocation identifiers, and the timestamps and transport IDs required by OTLP. It never includes arguments, environment values, paths, repository identity, prompts or memory content, queries or results, MCP payloads, exception messages, stacks, account identifiers, or a persistent installation identifier.',
+    },
+    {
+      type: 'paragraph',
+      text: 'The default first-party endpoint validates the complete versioned envelope before forwarding traces to Grafana Cloud EU. Accepted traces use the stack’s shortest current retention: 14-day trace retention on the free plan. Fly.io and Grafana necessarily process source IP addresses while transporting HTTPS requests, but Threadnote neither writes an IP into a trace nor emits application access logs.',
+    },
+    {
+      type: 'list',
+      items: [
+        'A random MCP session identifier lasts for one broker lifetime; a standalone CLI invocation gets a fresh identifier.',
+        'DO_NOT_TRACK=1 or THREADNOTE_TELEMETRY=0 disables sending without removing persisted consent.',
+        'Changing, enabling, or re-enabling telemetry requires restarting already-connected MCP clients; CLI changes apply on the next invocation.',
+        'Exporter, network, shutdown, and telemetry-config failures are best-effort and cannot change the application result.',
+      ],
+    },
+    {
+      type: 'note',
+      text: 'Run threadnote telemetry enable without --apply to review the exact current data and destination contract without writing configuration or making a request.',
+    },
+  ],
+};

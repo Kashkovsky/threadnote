@@ -73,9 +73,11 @@ worker crashes, parser memory degradation, timeouts, and non-zero exits are obse
 in-process telemetry system can guarantee a final span if the entire parent is killed or runs out of memory before a
 checkpoint is exported; the last successful checkpoint is the available evidence in that case.
 
-The OTLP payload does not identify a person or installation, but an HTTPS service necessarily receives a source IP
+The OTLP payload does not identify a person or installation, but an HTTPS service necessarily receives a source IP address
 during transport. Operators and hosting providers can process that network metadata even though Threadnote does not
-put it in a span. This is anonymous application telemetry, not a promise of network anonymity.
+put it in a span. This is anonymous application telemetry, not a promise of network anonymity. The first-party
+gateway emits no application access logs; Fly.io still processes transport metadata at its edge and retains the
+gateway process's fixed operational stdout/stderr for seven days.
 
 ## Destination
 
@@ -105,14 +107,16 @@ OpenTelemetry Collector / Grafana Alloy
 Tempo-compatible trace storage
 ```
 
-The gateway, rather than the open-source binary, owns vendor credentials. It must reject logs and metrics in v1,
-enforce the span/resource attribute allowlist, cap bodies and rates, discard unknown fields, avoid forwarding client IP
-headers, and disable application access-log retention. Raw diagnostic traces should have short retention (30 days is
-the proposed default). The static Threadnote GitHub Pages site cannot receive OTLP and public GitHub issues are not an
-appropriate telemetry sink.
+The gateway, rather than the open-source binary, owns vendor credentials. It rejects logs and metrics in v1, validates
+the complete versioned resource/span envelope before forwarding, caps bodies and rates, rejects unknown fields, avoids
+forwarding client IP headers, and emits no application access logs. Accepted traces are stored in Grafana Cloud EU with
+the 14-day retention of its Always Free plan. The gateway's fixed accepted-byte budget keeps the required two-Machine
+deployment below 3 GB of canonical input per month, leaving headroom within the plan's 50 GB allowance for bounded
+retries. The static Threadnote GitHub Pages site cannot receive OTLP and public GitHub issues are not an appropriate
+telemetry sink.
 
-The first-party gateway is separate deployment infrastructure and must be live before a release advertises the default
-endpoint. Until then, development and self-hosted validation should pass an explicit collector endpoint.
+The first-party gateway is separate deployment infrastructure. Its public storage canary verifies TLS, schema
+validation, forwarding, and Grafana query visibility independently of the application release.
 
 ## Local Jaeger dogfooding
 

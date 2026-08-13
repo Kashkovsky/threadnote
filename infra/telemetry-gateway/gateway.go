@@ -24,18 +24,23 @@ import (
 )
 
 const (
+	acceptedBytesPerMin  = 32 * 1024
 	collectorConfigPath  = "/etc/otelcol-contrib/config.yaml"
 	collectorHealthURL   = "http://127.0.0.1:13133/healthz"
 	collectorTracesURL   = "http://127.0.0.1:4318/v1/traces"
 	globalRequestsPerMin = 300
 	listenAddress        = "0.0.0.0:8080"
 	maxConcurrent        = 4
+	maxHealthConcurrent  = 1
 	maxRequestBytes      = 256 * 1024
 	maxSources           = 1024
 	perSourceRequestsMin = 60
+	trustedHealthHeader  = "X-Threadnote-Internal-Health"
+	trustedHealthValue   = "fly-service-check-v1"
 )
 
 type windowCounter struct {
+	bytes int
 	count int
 	start time.Time
 }
@@ -113,6 +118,10 @@ func main() {
 }
 
 func newGatewayHandler() (http.Handler, error) {
+	schema, schemaError := loadTelemetrySchema()
+	if schemaError != nil {
+		return nil, schemaError
+	}
 	sourceHashKey := make([]byte, 32)
 	if _, randomError := rand.Read(sourceHashKey); randomError != nil {
 		return nil, randomError
@@ -130,18 +139,27 @@ func newGatewayHandler() (http.Handler, error) {
 		Transport:     transport,
 	}
 	concurrency := make(chan struct{}, maxConcurrent)
+	healthConcurrency := make(chan struct{}, maxHealthConcurrent)
 	limiter := &requestLimiter{sources: make(map[string]windowCounter)}
 
 	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		response.Header().Set("Cache-Control", "no-store")
-		if !limiter.allow(requestSource(request, sourceHashKey), time.Now()) {
+		response.Header().Set("Strict-Transport-Security", "max-age=31536000")
+		response.Header().Set("X-Content-Type-Options", "nosniff")
+		trustedHealth := isTrustedHealthCheck(request)
+		source := requestSource(request, sourceHashKey)
+		if !trustedHealth && !limiter.allow(source, time.Now()) {
 			response.Header().Set("Retry-After", "60")
 			writeStatus(response, http.StatusTooManyRequests)
 			return
 		}
+		requestConcurrency := concurrency
+		if trustedHealth {
+			requestConcurrency = healthConcurrency
+		}
 		select {
-		case concurrency <- struct{}{}:
-			defer func() { <-concurrency }()
+		case requestConcurrency <- struct{}{}:
+			defer func() { <-requestConcurrency }()
 		default:
 			response.Header().Set("Retry-After", "1")
 			writeStatus(response, http.StatusTooManyRequests)
@@ -184,7 +202,17 @@ func newGatewayHandler() (http.Handler, error) {
 			writeStatus(response, http.StatusBadRequest)
 			return
 		}
-		forwardTraces(response, request, client, payload)
+		canonical, validationError := canonicalTelemetryPayload(payload, schema)
+		if validationError != nil {
+			writeStatus(response, http.StatusBadRequest)
+			return
+		}
+		if !limiter.allowBytes(source, len(canonical), time.Now()) {
+			response.Header().Set("Retry-After", "60")
+			writeStatus(response, http.StatusTooManyRequests)
+			return
+		}
+		forwardTraces(response, request, client, canonical)
 	}), nil
 }
 
@@ -236,12 +264,66 @@ func forwardTraces(response http.ResponseWriter, request *http.Request, client *
 		writeStatus(response, http.StatusBadGateway)
 		return
 	}
+	if result.StatusCode >= 200 && result.StatusCode < 300 {
+		response.Header().Set("Content-Type", "application/x-protobuf")
+		response.WriteHeader(http.StatusOK)
+		return
+	}
 	response.WriteHeader(result.StatusCode)
+}
+
+// Fly service checks reach the Machine over its private network and omit the
+// public Fly-Client-IP header. The fixed check header is an additional marker,
+// not a secret; public requests remain on the bounded ingestion budget.
+func isTrustedHealthCheck(request *http.Request) bool {
+	if request.Method != http.MethodGet || request.URL.Path != "/healthz" || request.URL.RawQuery != "" ||
+		request.Header.Get(trustedHealthHeader) != trustedHealthValue || len(request.Header.Values("Fly-Client-IP")) != 0 {
+		return false
+	}
+	host, _, splitError := net.SplitHostPort(request.RemoteAddr)
+	if splitError != nil {
+		return false
+	}
+	address := net.ParseIP(host)
+	return address != nil && (address.IsPrivate() || address.IsLoopback())
 }
 
 func (limiter *requestLimiter) allow(source string, now time.Time) bool {
 	limiter.mu.Lock()
 	defer limiter.mu.Unlock()
+	limiter.resetWindow(now)
+	if limiter.global.count >= globalRequestsPerMin {
+		return false
+	}
+	counter, admitted := limiter.sourceCounter(source)
+	if !admitted || counter.count >= perSourceRequestsMin {
+		return false
+	}
+	counter.count++
+	limiter.sources[source] = counter
+	limiter.global.count++
+	return true
+}
+
+// allowBytes bounds accepted telemetry independently of provider billing. With
+// exactly two Machines, the 32 KiB-per-minute cap is below 3 GB in a 31-day
+// month, leaving headroom for Collector retries within Grafana Cloud Free's allowance.
+func (limiter *requestLimiter) allowBytes(source string, size int, now time.Time) bool {
+	limiter.mu.Lock()
+	defer limiter.mu.Unlock()
+	limiter.resetWindow(now)
+	counter, admitted := limiter.sourceCounter(source)
+	if !admitted || size < 0 || limiter.global.bytes+size > acceptedBytesPerMin ||
+		counter.bytes+size > acceptedBytesPerMin {
+		return false
+	}
+	counter.bytes += size
+	limiter.sources[source] = counter
+	limiter.global.bytes += size
+	return true
+}
+
+func (limiter *requestLimiter) resetWindow(now time.Time) {
 	window := now.Truncate(time.Minute)
 	if !limiter.global.start.Equal(window) {
 		limiter.global = windowCounter{start: window}
@@ -251,23 +333,18 @@ func (limiter *requestLimiter) allow(source string, now time.Time) bool {
 			}
 		}
 	}
-	if limiter.global.count >= globalRequestsPerMin {
-		return false
-	}
+}
+
+func (limiter *requestLimiter) sourceCounter(source string) (windowCounter, bool) {
+	window := limiter.global.start
 	counter, exists := limiter.sources[source]
 	if !exists && len(limiter.sources) >= maxSources {
-		return false
+		return windowCounter{}, false
 	}
 	if !counter.start.Equal(window) {
 		counter = windowCounter{start: window}
 	}
-	if counter.count >= perSourceRequestsMin {
-		return false
-	}
-	counter.count++
-	limiter.sources[source] = counter
-	limiter.global.count++
-	return true
+	return counter, true
 }
 
 func requestSource(request *http.Request, hashKey []byte) string {

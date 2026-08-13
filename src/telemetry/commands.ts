@@ -26,6 +26,13 @@ const TELEMETRY_DATA_SUMMARY =
   'General CLI and MCP operations, event timestamps and durations, bounded runtime memory/resource observations, phases/state, safe typed failures, app/runtime/schema versions, platform, architecture, and random session/invocation/OTLP transport IDs.';
 const TELEMETRY_EXCLUSION_SUMMARY =
   'Never arguments, environment values, memory or prompt content, recall queries/results, MCP payloads/results, paths, repository identity, exception messages/stacks, user, account, or agent IDs.';
+const FIRST_PARTY_DESTINATION_SUMMARY =
+  'Destination policy: the first-party gateway forwards accepted traces to Grafana Cloud EU with 14-day trace retention; transport providers process source IP addresses, but Threadnote does not store them in telemetry or emit access logs.';
+const CUSTOM_DESTINATION_SUMMARY = 'Destination policy: The selected endpoint operator controls storage and retention.';
+
+function telemetryDestinationSummary(endpoint: string): string {
+  return endpoint === DEFAULT_TELEMETRY_ENDPOINT ? FIRST_PARTY_DESTINATION_SUMMARY : CUSTOM_DESTINATION_SUMMARY;
+}
 
 export const runTelemetryStatus = Effect.fn('telemetry.command.status')(function* (config: RuntimeConfig) {
   const system = yield* SystemInfo;
@@ -51,6 +58,7 @@ export const runTelemetryStatus = Effect.fn('telemetry.command.status')(function
     yield* Console.log('Anonymous telemetry: enabled.');
   }
   yield* Console.log(`Endpoint: ${configuration.endpoint}`);
+  yield* Console.log(telemetryDestinationSummary(configuration.endpoint));
   yield* Console.log(`Data contract: ${TELEMETRY_DATA_SUMMARY}`);
   yield* Console.log(`Privacy contract: ${TELEMETRY_EXCLUSION_SUMMARY}`);
 });
@@ -68,6 +76,7 @@ export const runTelemetryEnable = Effect.fn('telemetry.command.enable')(function
   });
   yield* Console.log('Enable anonymous operational telemetry for Threadnote CLI and MCP diagnostics.');
   yield* Console.log(`Endpoint: ${endpoint}`);
+  yield* Console.log(telemetryDestinationSummary(endpoint));
   yield* Console.log(`Data sent: ${TELEMETRY_DATA_SUMMARY}`);
   yield* Console.log(`Data excluded: ${TELEMETRY_EXCLUSION_SUMMARY}`);
   if (options.apply !== true) {

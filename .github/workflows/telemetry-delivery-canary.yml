@@ -1,0 +1,51 @@
+name: Telemetry delivery canary
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+    inputs:
+      gateway_url:
+        description: Exact production or Fly preflight /v1/traces URL
+        required: true
+        default: https://telemetry.threadnote.io/v1/traces
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: telemetry-delivery-canary
+  cancel-in-progress: false
+
+jobs:
+  stored-trace:
+    name: Public gateway to stored Grafana trace
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: telemetry-production
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        with:
+          cache-dependency-path: infra/telemetry-gateway/go.sum
+          go-version: 1.25.7
+
+      - name: Prove a synthetic trace is stored and queryable
+        working-directory: infra/telemetry-gateway
+        env:
+          THREADNOTE_TELEMETRY_CANARY_GATEWAY_URL: ${{ inputs.gateway_url || 'https://telemetry.threadnote.io/v1/traces' }}
+          THREADNOTE_TELEMETRY_CANARY_TEMPO_URL: ${{ secrets.THREADNOTE_TELEMETRY_CANARY_TEMPO_URL }}
+          THREADNOTE_TELEMETRY_CANARY_TEMPO_USER: ${{ secrets.THREADNOTE_TELEMETRY_CANARY_TEMPO_USER }}
+          THREADNOTE_TELEMETRY_CANARY_TEMPO_TOKEN: ${{ secrets.THREADNOTE_TELEMETRY_CANARY_TEMPO_TOKEN }}
+        run: go run ./cmd/canary
+
+      - name: Record successful storage heartbeat
+        env:
+          THREADNOTE_TELEMETRY_CANARY_HEARTBEAT_URL: ${{ secrets.THREADNOTE_TELEMETRY_CANARY_HEARTBEAT_URL }}
+        run: >-
+          curl --fail --silent --show-error --max-time 10 --proto '=https'
+          --request POST --header 'Content-Type: application/json' --data '{}'
+          "$THREADNOTE_TELEMETRY_CANARY_HEARTBEAT_URL"

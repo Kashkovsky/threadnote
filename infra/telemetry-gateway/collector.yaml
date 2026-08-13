@@ -33,7 +33,7 @@ processors:
         conditions:
           - resource.attributes["service.name"] != "threadnote"
           - not IsString(resource.attributes["service.version"])
-          - not IsMatch(resource.attributes["service.version"], "^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$$")
+          - not IsMatch(resource.attributes["service.version"], "^(unknown|test|[0-9]+(\\.[0-9]+){0,3}([-+][0-9A-Za-z.-]{1,64})?)$$")
           - not IsString(resource.attributes["session.id"])
           - not IsMatch(resource.attributes["session.id"], "^tns_[0-9a-f]{32}$$")
           - resource.attributes["threadnote.session.scope"] != "broker" and resource.attributes["threadnote.session.scope"] != "invocation" and resource.attributes["threadnote.session.scope"] != "provider-session"

@@ -24,6 +24,9 @@ describe('telemetry commands', () => {
         expect(preview.output).toContain('safe typed failures');
         expect(preview.output).toContain('Never arguments');
         expect(preview.output).toContain('MCP payloads/results');
+        expect(preview.output).toContain('Grafana Cloud EU');
+        expect(preview.output).toContain('14-day trace retention');
+        expect(preview.output).toContain('transport providers process source IP addresses');
         expect(preview.output).toContain('No changes made. Re-run with --apply');
         expect(yield* fs.exists(yield* telemetryConfigurationPath(config))).toBe(false);
       }),
@@ -37,6 +40,11 @@ describe('telemetry commands', () => {
         const baseSystem = yield* SystemInfo;
         const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-telemetry-commands-'});
         const config = runtimeConfig(home);
+        const customPreview = yield* captureConsole(
+          runTelemetryEnable(config, {endpoint: 'https://collector.example/v1/traces'}),
+        );
+        expect(customPreview.output).not.toContain('Grafana Cloud EU');
+        expect(customPreview.output).toContain('The selected endpoint operator controls storage and retention.');
         const enabled = yield* captureConsole(runTelemetryEnable(config, {apply: true}));
         expect(enabled.output).toContain('Telemetry consent enabled');
         expect(enabled.output).toContain('Restart connected MCP clients');

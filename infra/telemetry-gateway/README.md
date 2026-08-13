@@ -5,15 +5,24 @@ and forwards the allowlisted envelope to Grafana Cloud. Logs and metrics do not
 have pipelines. The public Go ingress is deliberately small and emits no access
 logs; the Collector only listens on loopback.
 
-The gateway is defense in depth, not a general OTLP schema firewall. It removes
-unknown attributes, resource/scope identifiers, span events, links, trace state,
-and status messages. The edge ingress enforces route, method, media type, body,
-concurrency, and request-rate limits. Exact closed-enum validation remains the
-producer's contract and should be expanded here as the schema stabilizes.
-Source addresses are used only as process-ephemeral HMAC rate-limit keys; they
-are neither logged nor forwarded. This Fly deployment is for bounded dogfooding,
-not the broadly advertised default endpoint. Add generated, exact value/type
-validation and a managed WAF before that wider rollout.
+The Go ingress validates the complete request against
+[`telemetry-schema-v1.json`](./telemetry-schema-v1.json) before the Collector can
+see it. It rejects unknown or duplicate protobuf fields, mixed valid/invalid
+batches, unrecognized attributes and values, invalid field combinations, span
+events, links, trace state, status messages, and malformed identifiers. Accepted
+data is rebuilt into a fresh canonical protobuf envelope rather than forwarding
+the caller's bytes. The Collector repeats the attribute projection as defense in
+depth. Logs and metrics have no pipelines.
+
+The edge ingress also enforces route, method, media type, body, concurrency, and
+request-rate limits. A 32 KiB accepted-byte budget per Machine per minute keeps
+the required two-Machine deployment below 3 GB of canonical input per month
+even under continuous saturation, leaving Free-tier headroom for bounded
+Collector retries. Source addresses are used
+only as process-ephemeral HMAC rate-limit keys; they are neither logged nor
+forwarded. Production deployment, credential rotation, storage canary,
+certificate, DNS, monitoring, and rollback requirements live in the
+[production runbook](../../docs/operations/telemetry-production.md).
 
 ## Configure Fly
 
@@ -26,8 +35,8 @@ fly secrets set \
   GRAFANA_CLOUD_AUTHORIZATION='Basic <base64(instance-id:access-policy-token)>'
 ```
 
-Do not commit either value. Grafana Cloud owns trace retention; choose its
-shortest practical retention for dogfooding and revisit before wider rollout.
+Do not commit either value. The production policy requires a single-stack,
+`traces:write`-only access policy and the shortest available trace retention.
 
 ## Import the dogfood dashboard
 
@@ -96,5 +105,4 @@ curl --fail --silent --show-error http://127.0.0.1:18080/healthz
 docker stop threadnote-telemetry-gateway
 ```
 
-Run `fly config validate` before `fly deploy`. Deployment is intentionally a
-separate, operator-approved step.
+Run `fly config validate` before deployment, then follow the production runbook.

@@ -154,6 +154,7 @@ const SAFE_TELEMETRY_ERROR_TYPES = new Set([
   'ThreadnoteProcessTerminationError',
   'TreeSitterRuntimeError',
   'TypeError',
+  'UnknownError',
   'UnsupportedNativeRuntime',
   'URIError',
   'UpdateOperationError',

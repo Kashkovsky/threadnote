@@ -107,4 +107,26 @@ describe('Threadnote Grafana dashboard', () => {
       for (const attribute of attributes) expect(collector).toContain(`"${attribute}"`);
     }).pipe(provideTestLayer(BunFileSystem.layer)),
   );
+
+  it.effect('keeps the production consent documentation aligned with the operated destination', () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const [commands, telemetryDocs, websiteDocs] = yield* Effect.all(
+        [
+          fileSystem.readFileString(`${process.cwd()}/src/telemetry/commands.ts`),
+          fileSystem.readFileString(`${process.cwd()}/docs/telemetry.md`),
+          fileSystem.readFileString(`${process.cwd()}/website/src/content/docsTelemetry.ts`),
+        ],
+        {concurrency: 'unbounded'},
+      );
+
+      for (const source of [commands, telemetryDocs, websiteDocs]) {
+        expect(source).toContain('14-day');
+        expect(source).toContain('Grafana Cloud EU');
+        expect(source).toMatch(/source IP|IP addresses/u);
+      }
+      expect(telemetryDocs).toContain('https://telemetry.threadnote.io/v1/traces');
+      expect(commands).toContain('endpoint === DEFAULT_TELEMETRY_ENDPOINT');
+    }).pipe(provideTestLayer(BunFileSystem.layer)),
+  );
 });

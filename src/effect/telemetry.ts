@@ -17,6 +17,7 @@ import {
 import {safeAnonymousTelemetryOperation} from '../telemetry/operations.js';
 
 const TELEMETRY_SCHEMA_VERSION = 1;
+const TELEMETRY_VERSION_MAX_BYTES = 96;
 const FIRST_CHECKPOINT_DELAY = '30 seconds';
 const CHECKPOINT_INTERVAL = '60 seconds';
 
@@ -816,7 +817,10 @@ function safeRuntimeLabel(value: string): string {
 }
 
 function safeVersion(value: string): string {
-  return /^(?:unknown|[0-9]+(?:\.[0-9]+){0,3}(?:[-+][0-9A-Za-z.-]{1,64})?|test)$/u.test(value) ? value : 'unknown';
+  return value.length <= TELEMETRY_VERSION_MAX_BYTES &&
+    /^(?:unknown|[0-9]+(?:\.[0-9]+){0,3}(?:[-+][0-9A-Za-z.-]{1,64})?|test)$/u.test(value)
+    ? value
+    : 'unknown';
 }
 
 function safeAgentSessionId(value: string): string {
