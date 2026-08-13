@@ -9,6 +9,7 @@ import {TestError} from '../helpers/test-error.js';
 
 describe('anonymous telemetry OTLP transport', () => {
   effectIt.effect('posts one traces-only protobuf envelope without private failure data', () => {
+    const localServiceVersion = '4.2.2-local.g7a52016818f2accd497ee40e1f7c72e856e14857';
     const requests: Array<{
       readonly authorization: string | null;
       readonly baggage: string | null;
@@ -55,7 +56,7 @@ describe('anonymous telemetry OTLP transport', () => {
                 endpoint,
                 exportInterval: '1 millis',
                 maxBatchSize: 1,
-                serviceVersion: 'test',
+                serviceVersion: localServiceVersion,
                 sessionId: 'tns_000102030405060708090a0b0c0d0e0f',
                 shutdownTimeout: '1 second',
               }).pipe(Layer.provideMerge(SystemInfo.layer)),
@@ -74,7 +75,7 @@ describe('anonymous telemetry OTLP transport', () => {
           const envelope = decodeTelemetryEnvelope(requests[0]!.body);
           expect(envelope.resourceAttributes).toEqual({
             'service.name': 'threadnote',
-            'service.version': 'test',
+            'service.version': localServiceVersion,
             'session.id': 'tns_000102030405060708090a0b0c0d0e0f',
             'threadnote.session.scope': 'invocation',
             'threadnote.telemetry.schema_version': 1,

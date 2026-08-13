@@ -816,7 +816,7 @@ function safeRuntimeLabel(value: string): string {
 }
 
 function safeVersion(value: string): string {
-  return /^(?:unknown|[0-9]+(?:\.[0-9]+){0,3}(?:[-+][0-9A-Za-z.-]{1,40})?|test)$/u.test(value) ? value : 'unknown';
+  return /^(?:unknown|[0-9]+(?:\.[0-9]+){0,3}(?:[-+][0-9A-Za-z.-]{1,64})?|test)$/u.test(value) ? value : 'unknown';
 }
 
 function safeAgentSessionId(value: string): string {
