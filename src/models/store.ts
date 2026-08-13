@@ -6,6 +6,7 @@ import {
   ModelNotInstalled,
 } from '../effect/ai/errors.js';
 import {sha256FileHex} from '../effect/digest.js';
+import {fromPromise} from '../effect/errors.js';
 import {withExclusiveFileLock} from '../effect/file_lock.js';
 import {HttpService, type HttpServiceShape} from '../effect/http.js';
 import {SystemInfo, type SystemInfoShape} from '../effect/system.js';
@@ -23,6 +24,11 @@ export interface LocalModelInstallation {
 export interface LocalModelInstallResult extends LocalModelInstallation {
   readonly resumed: boolean;
   readonly sourceUrl: string;
+}
+
+export interface LocalModelInstallOptions {
+  readonly sourcePath?: string;
+  readonly sourceUrl?: string;
 }
 
 export interface LocalModelLockEvent {
@@ -51,7 +57,7 @@ export interface LocalModelStoreShape {
   readonly install: (
     home: string,
     manifest: LocalModelManifest,
-    options?: {readonly sourceUrl?: string},
+    options?: LocalModelInstallOptions,
   ) => Effect.Effect<LocalModelInstallResult, LocalModelStoreError>;
   readonly path: (home: string, manifest: LocalModelManifest) => string;
   readonly remove: (home: string, manifest: LocalModelManifest) => Effect.Effect<boolean, LocalModelStoreError>;
@@ -229,6 +235,7 @@ function makeLocalModelStore(
         'install',
         Effect.gen(function* () {
           const current = yield* status(home, manifest);
+          const sourcePath = options?.sourcePath;
           const sourceUrl = options?.sourceUrl ?? modelDownloadUrl(manifest);
           const directory = modelDirectory(path, home, manifest);
           if (current.installed) {
@@ -244,7 +251,10 @@ function makeLocalModelStore(
           }
           const partial = partialPath(home, manifest);
           yield* fs.makeDirectory(directory, {recursive: true, mode: 0o700});
-          let offset = current.partialBytes;
+          let offset = sourcePath === undefined ? current.partialBytes : 0;
+          if (sourcePath !== undefined && current.partialBytes > 0) {
+            yield* fs.remove(partial, {force: true});
+          }
           if (offset > manifest.size) {
             yield* fs.remove(partial, {force: true});
             offset = 0;
@@ -261,23 +271,46 @@ function makeLocalModelStore(
             ),
           );
           if (availableBytes !== undefined) {
-            yield* assertSufficientModelDiskSpace(manifest, availableBytes, manifest.size - offset);
+            yield* assertSufficientModelDiskSpace(
+              manifest,
+              availableBytes,
+              sourcePath === undefined ? manifest.size - offset : manifest.size,
+            );
           }
-          const response = yield* http.downloadToFile(sourceUrl, partial, {offset}).pipe(
-            Effect.mapError(
-              cause =>
-                new ModelDownloadFailed({
-                  cause,
-                  message: `Could not download model ${manifest.id}: ${cause.message}`,
-                  modelId: manifest.id,
-                }),
-            ),
-          );
+          const resumed =
+            sourcePath === undefined
+              ? yield* http.downloadToFile(sourceUrl, partial, {offset}).pipe(
+                  Effect.map(response => offset > 0 && response.resumed),
+                  Effect.mapError(
+                    cause =>
+                      new ModelDownloadFailed({
+                        cause,
+                        message: `Could not download model ${manifest.id}: ${cause.message}`,
+                        modelId: manifest.id,
+                      }),
+                  ),
+                )
+              : yield* fromPromise('extract bundled model', () => Bun.write(partial, Bun.file(sourcePath))).pipe(
+                  Effect.mapError(
+                    cause =>
+                      new ModelStoreIoFailed({
+                        cause,
+                        message: `Could not extract bundled model ${manifest.id}.`,
+                        modelId: manifest.id,
+                        operation: 'extract-bundled-source',
+                      }),
+                  ),
+                  Effect.as(false),
+                );
           const downloadedBytes = Number((yield* fs.stat(partial)).size);
           if (downloadedBytes !== manifest.size) {
+            if (sourcePath !== undefined) yield* fs.remove(partial, {force: true});
             return yield* new ModelDownloadFailed({
               cause: {actualBytes: downloadedBytes, expectedBytes: manifest.size},
-              message: `Model ${manifest.id} download has ${downloadedBytes} bytes; expected ${manifest.size}. The partial file was retained for resume.`,
+              message:
+                sourcePath === undefined
+                  ? `Model ${manifest.id} download has ${downloadedBytes} bytes; expected ${manifest.size}. The partial file was retained for resume.`
+                  : `Bundled model ${manifest.id} has ${downloadedBytes} bytes; expected ${manifest.size}.`,
               modelId: manifest.id,
             });
           }
@@ -296,7 +329,7 @@ function makeLocalModelStore(
             modelId: manifest.id,
             partialBytes: 0,
             path: installedPath,
-            resumed: offset > 0 && response.resumed,
+            resumed,
             sourceUrl,
             verified: true,
           };

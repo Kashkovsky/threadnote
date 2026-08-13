@@ -147,7 +147,7 @@ describe('dependency-aware CI workflow', () => {
     ]);
   });
 
-  it('gates quality, Windows, bytecode, model, and release matrices independently', () => {
+  it('gates quality, Windows, bytecode, and self-contained release matrices independently', () => {
     const jobs = workflow('.github/workflows/ci.yml').jobs;
 
     expect(jobs['recall-quality']).toMatchObject({
@@ -158,15 +158,14 @@ describe('dependency-aware CI workflow', () => {
       needs: 'changes',
       if: "needs.changes.outputs.windows == 'true'",
     });
-    for (const name of ['prepare-e2e-model', 'standalone-targets']) {
-      expect(jobs[name]).toMatchObject({
-        needs: 'changes',
-        if: "needs.changes.outputs.release == 'true'",
-      });
-    }
+    expect(jobs['prepare-e2e-model']).toBeUndefined();
+    expect(jobs['standalone-targets']).toMatchObject({
+      needs: 'changes',
+      if: "needs.changes.outputs.release == 'true'",
+    });
     expect(jobs['self-contained-distribution']).toMatchObject({
-      needs: ['changes', 'prepare-e2e-model'],
-      if: "needs.changes.outputs.release == 'true' && needs.prepare-e2e-model.result == 'success'",
+      needs: 'changes',
+      if: "needs.changes.outputs.release == 'true'",
     });
   });
 
