@@ -8,6 +8,7 @@ import {initializeCliUi} from './cli_ui.js';
 import {SystemInfo} from './effect/system.js';
 import {withProductionLogging} from './effect/production_log.js';
 import {expandPath} from './utils.js';
+import {withAnonymousTelemetry} from './effect/telemetry.js';
 
 export const cliEffect = (arguments_: readonly string[]) => {
   const program = Effect.gen(function* () {
@@ -15,13 +16,22 @@ export const cliEffect = (arguments_: readonly string[]) => {
     const version = yield* getThreadnoteVersion();
     return yield* Command.runWith(threadnoteCommand, {version})(normalizeCliArguments(arguments_));
   });
-  const loggedProgram = cliProductionLogContext(arguments_).pipe(
+  const loggedProgram = cliDiagnosticContext(arguments_).pipe(
     Effect.matchEffect({
       onFailure: () => program,
       onSuccess: context =>
         context === undefined
           ? program
-          : withProductionLogging(context.home, {component: 'cli', operation: context.operation}, program),
+          : context.writeAnonymousTelemetry
+            ? withAnonymousTelemetry(
+                {component: 'cli', operation: context.telemetryOperation},
+                context.writeProductionLog
+                  ? withProductionLogging(context.home, {component: 'cli', operation: context.operation}, program)
+                  : program,
+              )
+            : context.writeProductionLog
+              ? withProductionLogging(context.home, {component: 'cli', operation: context.operation}, program)
+              : program,
     }),
   );
   return loggedProgram.pipe(
@@ -41,14 +51,18 @@ export const cliEffect = (arguments_: readonly string[]) => {
   );
 };
 
-const cliProductionLogContext = Effect.fn('threadnote.cliProductionLogContext')(function* (
-  arguments_: readonly string[],
-) {
+const cliDiagnosticContext = Effect.fn('threadnote.cliDiagnosticContext')(function* (arguments_: readonly string[]) {
   const invocation = inspectCliInvocation(arguments_);
-  if (!invocation.writeProductionLog || invocation.operation === undefined) {
+  if ((!invocation.writeProductionLog && !invocation.writeAnonymousTelemetry) || invocation.operation === undefined) {
     return undefined;
   }
   const system = yield* SystemInfo;
   const home = yield* expandPath(invocation.homeOverride ?? system.environment().THREADNOTE_HOME ?? '~/.threadnote');
-  return {home, operation: invocation.operation};
+  return {
+    home,
+    operation: invocation.operation,
+    telemetryOperation: invocation.telemetryOperation ?? 'unknown',
+    writeAnonymousTelemetry: invocation.writeAnonymousTelemetry,
+    writeProductionLog: invocation.writeProductionLog,
+  };
 });

@@ -3,6 +3,11 @@ import * as ChildProcess from 'effect/unstable/process/ChildProcess';
 import {ChildProcessSpawner} from 'effect/unstable/process/ChildProcessSpawner';
 import {command as commandText, info, warning} from '../cli_ui.js';
 import {redactSensitiveText} from '../scrubber.js';
+import {
+  withCurrentAgentSessionEnvironment,
+  withoutTelemetrySessionEnvironment,
+  type TelemetryChildKind,
+} from '../telemetry/session.js';
 import type {CommandResult} from '../types.js';
 import {SystemInfo, type SystemInfoShape} from './system.js';
 
@@ -31,6 +36,8 @@ export interface CommandInvocation {
 export interface DetachedCommandOptions {
   readonly cwd?: string;
   readonly env?: NodeJS.ProcessEnv;
+  /** Preserve only a valid current alias for one declared Threadnote child. */
+  readonly telemetryChild?: TelemetryChildKind;
 }
 
 export interface StreamingCommandOptions {
@@ -365,6 +372,7 @@ const executeStreamingCommand = Effect.fn('CommandExecutor.executeStreaming')(fu
   options: StreamingCommandOptions = {},
   system: SystemInfoShape,
 ) {
+  const environment = system.environment();
   const maxOutputChars = options.maxOutputChars ?? 64_000;
   const command = formatShellCommand(executable, args);
   const safeArgs = redactCommandArgs(args);
@@ -378,12 +386,12 @@ const executeStreamingCommand = Effect.fn('CommandExecutor.executeStreaming')(fu
             executable,
             args,
             system.platform,
-            system.environment().ComSpec ?? system.environment().COMSPEC ?? 'cmd.exe',
+            environment.ComSpec ?? environment.COMSPEC ?? 'cmd.exe',
           ),
         catch: spawnFailed,
       });
       const handle = yield* ChildProcess.make(invocation.executable, [...invocation.args], {
-        env: options.env,
+        env: commandEnvironment(executable, options.env, environment),
         forceKillAfter: 1000,
         shell: invocation.shell,
         stdin: 'inherit',
@@ -423,7 +431,10 @@ const spawnDetachedCommand = Effect.fn('CommandExecutor.spawnDetached')(function
       const handle = yield* ChildProcess.make(executable, [...args], {
         cwd: options.cwd,
         detached: true,
-        env: options.env ?? system.environment(),
+        env:
+          options.telemetryChild === undefined
+            ? commandEnvironment(executable, options.env, system.environment())
+            : withCurrentAgentSessionEnvironment(options.env ?? system.environment(), options.telemetryChild),
         stdin: 'ignore',
         stdout: 'ignore',
         stderr: 'ignore',
@@ -606,7 +617,8 @@ export function commandEnvironment(
   env: NodeJS.ProcessEnv | undefined,
   systemEnvironment: NodeJS.ProcessEnv,
 ): NodeJS.ProcessEnv | undefined {
-  return isGitExecutable(executable) ? withoutGitEnvironment(env ?? systemEnvironment) : env;
+  const sanitized = withoutTelemetrySessionEnvironment(env ?? systemEnvironment);
+  return isGitExecutable(executable) ? withoutGitEnvironment(sanitized) : sanitized;
 }
 
 export function formatShellCommand(executable: string, args: readonly string[]): string {

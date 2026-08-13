@@ -1,9 +1,10 @@
 import {Effect, Layer} from 'effect';
 import * as HttpRouter from 'effect/unstable/http/HttpRouter';
 import * as HttpServerResponse from 'effect/unstable/http/HttpServerResponse';
+import {McpSchema} from 'effect/unstable/ai';
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
-import {EffectMcpServerAdapter, type McpRequestContext} from '../../src/effect/ai/mcp.js';
+import {EffectMcpServerAdapter, type McpRequestContext, MCP_RESOURCE_ERROR_DATA} from '../../src/effect/ai/mcp.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 
 const MCP_PROTOCOL_VERSION = '2025-06-18';
@@ -36,6 +37,20 @@ function makeFixture(): McpHttpFixture {
         progressEnabled: progress.enabled,
       },
     }),
+  );
+  server.registerResourceTemplate(
+    {
+      name: 'Invalid resource fixture',
+      routerPath: '*',
+      uriTemplate: 'threadnote://{+resourcePath}',
+    },
+    () =>
+      Effect.fail(
+        new McpSchema.InvalidParams({
+          data: MCP_RESOURCE_ERROR_DATA,
+          message: 'Expected a canonical threadnote:// URI.',
+        }),
+      ),
   );
   const httpLayer = server
     .httpLayer({
@@ -79,6 +94,7 @@ async function initialize(fixture: McpHttpFixture): Promise<string> {
     jsonrpc: '2.0',
     result: {
       capabilities: {tools: {listChanged: true}},
+      instructions: 'Remote fixture instructions.',
       protocolVersion: MCP_PROTOCOL_VERSION,
       serverInfo: {name: 'threadnote-memory-fixture', version: '1.0.0'},
     },
@@ -88,7 +104,7 @@ async function initialize(fixture: McpHttpFixture): Promise<string> {
 
 async function rpcRequest(
   fixture: McpHttpFixture,
-  message: Readonly<Record<string, unknown>>,
+  message: Readonly<Record<string, unknown>> | readonly Readonly<Record<string, unknown>>[],
   options: {
     readonly principal?: string;
     readonly protocolVersion?: string;
@@ -107,9 +123,10 @@ async function rpcRequest(
     'x-request-id': options.requestId ?? 'fixture-request',
   };
   if (options.sessionId !== undefined) headers['mcp-session-id'] = options.sessionId;
+  const body = Array.isArray(message) ? message.map(item => ({jsonrpc: '2.0', ...item})) : {jsonrpc: '2.0', ...message};
   return fixture.handler(
     new Request('https://memory.example.test/mcp', {
-      body: JSON.stringify({jsonrpc: '2.0', ...message}),
+      body: JSON.stringify(body),
       headers,
       method: 'POST',
     }),
@@ -191,6 +208,104 @@ describe('Effect MCP Streamable HTTP transport', () => {
       expect(response.status).toBe(401);
       expect(response.headers.get('mcp-session-id')).toBeNull();
       expect(response.headers.get('www-authenticate')).toContain('resource_metadata=');
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
+  it('serializes branded resource failures as their MCP protocol error over HTTP', async () => {
+    const fixture = makeFixture();
+    try {
+      const sessionId = await initialize(fixture);
+      const response = await rpcRequest(
+        fixture,
+        {id: 2, method: 'resources/read', params: {uri: 'threadnote://not-canonical'}},
+        {sessionId},
+      );
+
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({
+        error: {code: -32_602, message: 'Expected a canonical threadnote:// URI.'},
+        id: 2,
+        jsonrpc: '2.0',
+      });
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
+  it('repairs every branded resource failure in an HTTP JSON-RPC batch', async () => {
+    const fixture = makeFixture();
+    try {
+      const sessionId = await initialize(fixture);
+      const response = await rpcRequest(
+        fixture,
+        [
+          {id: 2, method: 'resources/read', params: {uri: 'threadnote://not-canonical'}},
+          {id: 'three', method: 'resources/read', params: {uri: 'threadnote://also-not-canonical'}},
+        ],
+        {sessionId},
+      );
+
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual([
+        {
+          error: {code: -32_602, message: 'Expected a canonical threadnote:// URI.'},
+          id: 2,
+          jsonrpc: '2.0',
+        },
+        {
+          error: {code: -32_602, message: 'Expected a canonical threadnote:// URI.'},
+          id: 'three',
+          jsonrpc: '2.0',
+        },
+      ]);
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
+  it('rejects unsupported cross-POST cancellation instead of falsely acknowledging it', async () => {
+    const fixture = makeFixture();
+    try {
+      const sessionId = await initialize(fixture);
+      const cancellation = await rpcRequest(
+        fixture,
+        {method: 'notifications/cancelled', params: {requestId: 7}},
+        {sessionId},
+      );
+
+      expect(cancellation.status).toBe(400);
+      expect(await cancellation.json()).toEqual({
+        error: {
+          code: -32_600,
+          message: 'Streamable HTTP cancellation is not supported until requests can be interrupted across POSTs.',
+        },
+        id: null,
+        jsonrpc: '2.0',
+      });
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
+  it('rejects HTTP cancellation for every MCP request-id representation', async () => {
+    const fixture = makeFixture();
+    try {
+      const sessionId = await initialize(fixture);
+      await fc.assert(
+        fc.asyncProperty(fc.oneof(fc.integer(), headerValue()), async requestId => {
+          const cancellation = await rpcRequest(
+            fixture,
+            {method: 'notifications/cancelled', params: {requestId}},
+            {sessionId},
+          );
+
+          expect(cancellation.status).toBe(400);
+          expect(await cancellation.json()).toMatchObject({error: {code: -32_600}, id: null, jsonrpc: '2.0'});
+        }),
+        {numRuns: 20},
+      );
     } finally {
       await fixture.dispose();
     }

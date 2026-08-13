@@ -2,12 +2,19 @@ import * as BunStdio from '@effect/platform-bun/BunStdio';
 import {Cause, Context, Effect, Layer, Logger, Option, Schema, Sink, Stdio} from 'effect';
 import {McpSchema, McpServer} from 'effect/unstable/ai';
 import * as HttpRouter from 'effect/unstable/http/HttpRouter';
+import * as HttpEffect from 'effect/unstable/http/HttpEffect';
 import * as HttpServerRequest from 'effect/unstable/http/HttpServerRequest';
 import * as HttpServerResponse from 'effect/unstable/http/HttpServerResponse';
 import {RpcMessage, RpcSerialization, RpcServer} from 'effect/unstable/rpc';
 import {applicationError, fromPromise} from '../errors.js';
 import type {ApplicationServices} from '../runtime.js';
 import {omitProductionLogPhaseRecorder, withProductionLogging} from '../production_log.js';
+import {
+  attachAnonymousTelemetryError,
+  copyAnonymousTelemetryMetadata,
+  readAnonymousTelemetryReportedOutcome,
+} from '../../telemetry/diagnostic.js';
+import {omitAnonymousTelemetryRecorder, withAnonymousTelemetry} from '../telemetry.js';
 
 // Windows antivirus and filesystem scheduling can make an otherwise healthy
 // append exceed 50 ms. Keep MCP diagnostics best-effort and bounded without
@@ -27,6 +34,8 @@ const MCP_PROGRESS_ENCODER = new TextEncoder();
 const MCP_PROGRESS_DECODER = new TextDecoder();
 const MCP_PROGRESS_BRIDGED_SERVERS = new WeakSet<object>();
 const MCP_PROGRESS_GENERATION_METADATA_KEY = 'threadnote.io/private/progress-generation';
+const MCP_HTTP_CANCELLATION_UNSUPPORTED_MESSAGE =
+  'Streamable HTTP cancellation is not supported until requests can be interrupted across POSTs.';
 
 export function mcpProgressHeartbeatMilliseconds(environment: NodeJS.ProcessEnv): number {
   if (environment.NODE_ENV !== 'test') return MCP_PROGRESS_HEARTBEAT_MILLISECONDS;
@@ -138,6 +147,11 @@ interface RegisteredTool {
 
 type ToolHandlerResult = ToolResult | Effect.Effect<ToolResult, unknown, ApplicationServices> | PromiseLike<ToolResult>;
 
+/** @internal Adapt the SDK result class without dropping private telemetry metadata. */
+export function mcpCallToolResultWithTelemetryMetadata(result: ToolResult): McpSchema.CallToolResult {
+  return copyAnonymousTelemetryMetadata(new McpSchema.CallToolResult(result as McpSchema.CallToolResult), result);
+}
+
 interface ResourceTemplateDefinition {
   readonly description?: string;
   readonly meta?: Readonly<Record<string, boolean | number | string>>;
@@ -232,14 +246,19 @@ export class EffectMcpServerRegistry {
       Effect.gen(function* () {
         const server = yield* McpServer.McpServer;
         options.prepareServer?.(server);
-        const applicationServices = omitProductionLogPhaseRecorder(yield* Effect.context<ApplicationServices>());
+        const applicationServices = omitAnonymousTelemetryRecorder(
+          omitProductionLogPhaseRecorder(yield* Effect.context<ApplicationServices>()),
+        );
         for (const registration of resourceTemplates) {
           yield* server.addResourceTemplate({
             annotations: Context.empty(),
             completions: {},
             handle: uri =>
               Effect.flatMap(CurrentMcpRequestContext, requestContext =>
-                registration.handle(uri, requestContext).pipe(Effect.provideContext(applicationServices)),
+                withAnonymousTelemetry(
+                  {component: 'mcp', operation: 'resource-read'},
+                  registration.handle(uri, requestContext),
+                ).pipe(Effect.provideContext(applicationServices)),
               ).pipe(Effect.catchCause(mcpResourceFailureResult)),
             routerPath: registration.definition.routerPath,
             template: new McpSchema.ResourceTemplate({
@@ -276,26 +295,36 @@ export class EffectMcpServerRegistry {
                       ).pipe(
                         Effect.matchCauseEffect({
                           onFailure: mcpToolFailureResult,
-                          onSuccess: result =>
-                            Effect.succeed(new McpSchema.CallToolResult(result as McpSchema.CallToolResult)),
+                          onSuccess: result => Effect.succeed(mcpCallToolResultWithTelemetryMetadata(result)),
                         }),
                       ),
                     ),
                     Effect.catchCause(mcpToolFailureResult),
                   );
-                  return productionLogHome === undefined
-                    ? handling
-                    : withProductionLogging(
-                        productionLogHome,
-                        {
-                          component: 'mcp',
-                          operation: registration.name,
-                          reportedFailure: result => result.isError === true,
-                          reportedFailureType: 'McpToolError',
-                          writeTimeoutMilliseconds: MCP_PRODUCTION_LOG_WRITE_TIMEOUT_MILLISECONDS,
-                        },
-                        handling,
-                      ).pipe(Effect.provideContext(applicationServices));
+                  const loggedHandling =
+                    productionLogHome === undefined
+                      ? handling
+                      : withProductionLogging(
+                          productionLogHome,
+                          {
+                            component: 'mcp',
+                            operation: registration.name,
+                            reportedFailure: result => result.isError === true,
+                            reportedFailureType: 'McpToolError',
+                            writeTimeoutMilliseconds: MCP_PRODUCTION_LOG_WRITE_TIMEOUT_MILLISECONDS,
+                          },
+                          handling,
+                        );
+                  return withAnonymousTelemetry(
+                    {
+                      component: 'mcp',
+                      operation: registration.name,
+                      reportedFailure: result => result.isError === true,
+                      reportedFailureType: 'McpToolError',
+                      reportedOutcome: readAnonymousTelemetryReportedOutcome,
+                    },
+                    loggedHandling,
+                  ).pipe(Effect.provideContext(applicationServices));
                 }),
               ),
           });
@@ -333,7 +362,7 @@ export class EffectMcpServerAdapter extends EffectMcpServerRegistry {
   }
 
   httpLayer(options: McpHttpTransportOptions): Layer.Layer<never, never, ApplicationServices | HttpRouter.HttpRouter> {
-    const requestContextMiddleware = mcpHttpRequestContextMiddleware(options.resolveRequestContext);
+    const requestContextMiddleware = mcpHttpRequestContextMiddleware(options.resolveRequestContext, this.instructions);
     // Do not install the stdio compatibility bridge here. It intentionally
     // enforces one lifetime client, while Streamable HTTP must preserve SDK
     // client/session isolation for concurrent principals.
@@ -346,7 +375,7 @@ export class EffectMcpServerAdapter extends EffectMcpServerRegistry {
   }
 }
 
-function mcpHttpRequestContextMiddleware(resolveRequestContext: McpHttpRequestContextResolver) {
+function mcpHttpRequestContextMiddleware(resolveRequestContext: McpHttpRequestContextResolver, instructions: string) {
   return HttpRouter.middleware(httpEffect =>
     Effect.flatMap(HttpServerRequest.HttpServerRequest, request =>
       Effect.matchEffect(
@@ -354,13 +383,80 @@ function mcpHttpRequestContextMiddleware(resolveRequestContext: McpHttpRequestCo
         {
           onFailure: response => Effect.succeed(response),
           onSuccess: requestContext =>
-            httpEffect.pipe(
-              Effect.provideService(CurrentMcpRequestContext, Object.freeze({...requestContext, transport: 'http'})),
+            Effect.flatMap(inspectMcpHttpRequest(request), inspection =>
+              inspection.rejection === undefined
+                ? httpEffect.pipe(
+                    HttpEffect.withPreResponseHandler((_request, response) =>
+                      Effect.succeed(repairMcpHttpResponse(response, inspection.initialize ? instructions : undefined)),
+                    ),
+                    Effect.provideService(
+                      CurrentMcpRequestContext,
+                      Object.freeze({...requestContext, transport: 'http'}),
+                    ),
+                  )
+                : Effect.succeed(inspection.rejection),
             ),
         },
       ),
     ),
   );
+}
+
+interface McpHttpRequestInspection {
+  readonly initialize: boolean;
+  readonly rejection?: HttpServerResponse.HttpServerResponse;
+}
+
+function inspectMcpHttpRequest(
+  request: HttpServerRequest.HttpServerRequest,
+): Effect.Effect<McpHttpRequestInspection, never> {
+  if (request.method !== 'POST') return Effect.succeed({initialize: false});
+  return Effect.match(request.json, {
+    onFailure: () => ({initialize: false}),
+    onSuccess: body =>
+      isMcpCancelledNotification(body)
+        ? {
+            initialize: false,
+            rejection: HttpServerResponse.jsonUnsafe(
+              {
+                error: {code: -32_600, message: MCP_HTTP_CANCELLATION_UNSUPPORTED_MESSAGE},
+                id: null,
+                jsonrpc: '2.0',
+              },
+              {status: 400},
+            ),
+          }
+        : {initialize: isMcpJsonRpcMethod(body, 'initialize')},
+  });
+}
+
+function isMcpCancelledNotification(value: unknown): boolean {
+  return isMcpJsonRpcMethod(value, 'notifications/cancelled');
+}
+
+function isMcpJsonRpcMethod(value: unknown, method: string): boolean {
+  if (Array.isArray(value)) return value.some(item => isMcpJsonRpcMethod(item, method));
+  return typeof value === 'object' && value !== null && 'method' in value && value.method === method;
+}
+
+function repairMcpHttpResponse(
+  response: HttpServerResponse.HttpServerResponse,
+  instructions: string | undefined,
+): HttpServerResponse.HttpServerResponse {
+  if (response.status !== 200 || response.body._tag !== 'Uint8Array' || response.body.contentLength === 0) {
+    return response;
+  }
+  if (instructions === undefined && !couldContainEffectRpcCause(response.body.body)) return response;
+  const repaired = repairMcpJsonRpcEnvelope(new TextDecoder().decode(response.body.body), instructions);
+  return repaired === undefined
+    ? response
+    : HttpServerResponse.uint8Array(new TextEncoder().encode(JSON.stringify(repaired)), {
+        contentType: response.body.contentType,
+        cookies: response.cookies,
+        headers: response.headers,
+        status: response.status,
+        statusText: response.statusText,
+      });
 }
 
 const MCP_CANCELLED_REQUEST_TOMBSTONE_LIMIT = 256;
@@ -820,10 +916,13 @@ export function mcpToolFailureResult(cause: Cause.Cause<unknown>): Effect.Effect
     return Effect.failCause(cause as Cause.Cause<never>);
   }
   return Effect.succeed(
-    new McpSchema.CallToolResult({
-      content: [{type: 'text', text: causeMessage(cause)}],
-      isError: true,
-    }),
+    attachAnonymousTelemetryError(
+      new McpSchema.CallToolResult({
+        content: [{type: 'text', text: causeMessage(cause)}],
+        isError: true,
+      }),
+      Cause.squash(cause),
+    ),
   );
 }
 
@@ -941,32 +1040,76 @@ export function makeInitializeInstructionsTransform(
   return input => {
     if (initialized && !couldContainEffectRpcCause(input)) return input;
     const text = typeof input === 'string' ? input : new TextDecoder().decode(input);
-    const parsed = Option.getOrUndefined(
-      Option.liftThrowable(
-        (content: string) =>
-          JSON.parse(content) as {
-            readonly error?: unknown;
-            readonly result?: {
-              readonly capabilities?: unknown;
-              readonly protocolVersion?: unknown;
-              readonly serverInfo?: unknown;
-            };
-          },
-      )(text),
-    );
+    const parsed = parseMcpJsonRpcEnvelope(text);
     if (!parsed) {
       return input;
     }
-    let transformed: Record<string, unknown> = parsed;
-    if (!initialized && parsed.result?.protocolVersion !== undefined && parsed.result.serverInfo !== undefined) {
+    const isInitializeResponse = mcpJsonRpcEnvelopeContainsInitializeResponse(parsed);
+    const transformed = repairMcpJsonRpcValue(parsed, initialized ? undefined : instructions);
+    if (!initialized && isInitializeResponse) {
       initialized = true;
-      transformed = {...transformed, result: {...parsed.result, instructions}};
     }
-    transformed = unwrapEffectRpcMcpError(transformed);
     if (transformed === parsed) return input;
     const encoded = `${JSON.stringify(transformed)}\n`;
     return typeof input === 'string' ? encoded : new TextEncoder().encode(encoded);
   };
+}
+
+function repairMcpJsonRpcEnvelope(input: string, instructions: string | undefined): McpJsonRpcEnvelope | undefined {
+  const parsed = parseMcpJsonRpcEnvelope(input);
+  if (parsed === undefined) return undefined;
+  const transformed = repairMcpJsonRpcValue(parsed, instructions);
+  return transformed === parsed ? undefined : transformed;
+}
+
+type McpJsonRpcEnvelope = Record<string, unknown> | readonly Record<string, unknown>[];
+
+function parseMcpJsonRpcEnvelope(input: string): McpJsonRpcEnvelope | undefined {
+  const parsed = Option.getOrUndefined(
+    Option.liftThrowable((content: string) => JSON.parse(content) as unknown)(input),
+  );
+  if (Array.isArray(parsed)) {
+    if (parsed.length === 0 || parsed.some(item => typeof item !== 'object' || item === null || Array.isArray(item))) {
+      return undefined;
+    }
+    return parsed as readonly Record<string, unknown>[];
+  }
+  return typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, unknown>) : undefined;
+}
+
+function repairMcpJsonRpcValue(parsed: McpJsonRpcEnvelope, instructions: string | undefined): McpJsonRpcEnvelope {
+  if (!Array.isArray(parsed)) return repairMcpJsonRpcObject(parsed as Record<string, unknown>, instructions);
+  let changed = false;
+  const transformed = parsed.map(item => {
+    const repaired = repairMcpJsonRpcObject(item, instructions);
+    if (repaired !== item) changed = true;
+    return repaired;
+  });
+  return changed ? transformed : parsed;
+}
+
+function mcpJsonRpcEnvelopeContainsInitializeResponse(parsed: McpJsonRpcEnvelope): boolean {
+  return Array.isArray(parsed)
+    ? parsed.some(item => mcpInitializeResponse(item))
+    : mcpInitializeResponse(parsed as Record<string, unknown>);
+}
+
+function repairMcpJsonRpcObject(
+  parsed: Record<string, unknown>,
+  instructions: string | undefined,
+): Record<string, unknown> {
+  let transformed = parsed;
+  if (instructions !== undefined && mcpInitializeResponse(parsed)) {
+    transformed = {...parsed, result: {...parsed.result, instructions}};
+  }
+  return unwrapEffectRpcMcpError(transformed);
+}
+
+function mcpInitializeResponse(parsed: Record<string, unknown>): parsed is Record<string, unknown> & {
+  readonly result: Readonly<Record<string, unknown>>;
+} {
+  if (typeof parsed.result !== 'object' || parsed.result === null || Array.isArray(parsed.result)) return false;
+  return 'protocolVersion' in parsed.result && 'serverInfo' in parsed.result;
 }
 
 function couldContainEffectRpcCause(input: string | Uint8Array): boolean {

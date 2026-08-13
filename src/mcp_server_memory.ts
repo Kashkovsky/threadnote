@@ -43,6 +43,7 @@ import {
   McpServerOperationError,
   type RuntimeConfig,
   argumentError,
+  mcpErrorResult,
   normalizeOptionalMetadata,
   optionalResourceUri,
   rejectLeadingDash,
@@ -132,11 +133,7 @@ export function registerCompactTool(server: EffectMcpServerAdapter, config: Runt
             },
           ],
         };
-      }).pipe(
-        Effect.catch(error =>
-          Effect.succeed({content: [{type: 'text' as const, text: errorMessage(error)}], isError: true}),
-        ),
-      );
+      }).pipe(Effect.catch(error => Effect.succeed(mcpErrorResult(error))));
     },
   );
 }
@@ -393,9 +390,7 @@ export function writeDurableMemory(config: RuntimeConfig, params: WriteDurableMe
       ? withSharedRepositoryLock(config, write)
       : write;
   return serializedWrite.pipe(
-    Effect.catch(error =>
-      Effect.succeed({content: [{type: 'text' as const, text: errorMessage(error)}], isError: true}),
-    ),
+    Effect.catch(error => Effect.succeed(mcpErrorResult(error))),
     Effect.map(result => result as CallToolResult),
   );
 }
@@ -489,9 +484,7 @@ export function writeCursorCloudSharedMemory(
     }),
   );
   return write.pipe(
-    Effect.catch(error =>
-      Effect.succeed({content: [{type: 'text' as const, text: errorMessage(error)}], isError: true}),
-    ),
+    Effect.catch(error => Effect.succeed(mcpErrorResult(error))),
     Effect.map(result => result as CallToolResult),
   );
 }
@@ -626,11 +619,7 @@ export function runNativeRemoveTool(config: RuntimeConfig, uri: string, recursiv
       ],
       isError: false,
     } satisfies CallToolResult;
-  }).pipe(
-    Effect.catch(error =>
-      Effect.succeed({content: [{type: 'text' as const, text: errorMessage(error)}], isError: true}),
-    ),
-  );
+  }).pipe(Effect.catch(error => Effect.succeed(mcpErrorResult(error))));
 }
 
 const ensureMemoryDirectory = Effect.fn('mcp_server.ensureMemoryDirectory')(function* (
@@ -864,11 +853,7 @@ export function runNativeListTool(
       content: [{type: 'text' as const, text}],
       structuredContent: {entries: limited},
     } satisfies CallToolResult;
-  }).pipe(
-    Effect.catch(error =>
-      Effect.succeed({content: [{type: 'text' as const, text: errorMessage(error)}], isError: true}),
-    ),
-  );
+  }).pipe(Effect.catch(error => Effect.succeed(mcpErrorResult(error))));
 }
 
 export function runNativeGrepTool(
@@ -891,11 +876,7 @@ export function runNativeGrepTool(
       content: [{type: 'text' as const, text}],
       structuredContent: {matches},
     } satisfies CallToolResult;
-  }).pipe(
-    Effect.catch(error =>
-      Effect.succeed({content: [{type: 'text' as const, text: errorMessage(error)}], isError: true}),
-    ),
-  );
+  }).pipe(Effect.catch(error => Effect.succeed(mcpErrorResult(error))));
 }
 
 export function runNativeGlobTool(
@@ -915,11 +896,7 @@ export function runNativeGlobTool(
       ],
       structuredContent: {entries: limited},
     } satisfies CallToolResult;
-  }).pipe(
-    Effect.catch(error =>
-      Effect.succeed({content: [{type: 'text' as const, text: errorMessage(error)}], isError: true}),
-    ),
-  );
+  }).pipe(Effect.catch(error => Effect.succeed(mcpErrorResult(error))));
 }
 
 export const runNativeHealthTool = Effect.fn('mcp_server.runNativeHealthTool')(function* (config: RuntimeConfig) {
@@ -970,11 +947,7 @@ export function runNativeReadTool(
       },
       content,
     } satisfies CallToolResult;
-  }).pipe(
-    Effect.catch(error =>
-      Effect.succeed({content: [{type: 'text' as const, text: errorMessage(error)}], isError: true}),
-    ),
-  );
+  }).pipe(Effect.catch(error => Effect.succeed(mcpErrorResult(error))));
 }
 
 export function textFromCallToolResult(result: CallToolResult): string {

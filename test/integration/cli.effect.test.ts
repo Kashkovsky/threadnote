@@ -27,6 +27,19 @@ describe('Effect CLI', () => {
     expect(result.stdout).toContain('--stable');
   });
 
+  it('exposes explicit preview/apply telemetry consent commands', async () => {
+    const telemetry = await runCli(['telemetry', '--help']);
+    const enable = await runCli(['telemetry', 'enable', '--help']);
+    const disable = await runCli(['telemetry', 'disable', '--help']);
+
+    expect(telemetry.stdout).toContain('status');
+    expect(telemetry.stdout).toContain('enable');
+    expect(telemetry.stdout).toContain('disable');
+    expect(enable.stdout).toContain('--apply');
+    expect(enable.stdout).toContain('--endpoint string');
+    expect(disable.stdout).toContain('--apply');
+  });
+
   it('keeps automatic-update policy dry runs read-only and rejects mixed update modes', async () => {
     const root = await mkdtemp(join(tmpdir(), 'threadnote-effect-cli-auto-update-'));
     const environment = {

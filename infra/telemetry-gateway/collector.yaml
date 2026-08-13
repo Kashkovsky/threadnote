@@ -1,0 +1,169 @@
+extensions:
+  health_check:
+    endpoint: 127.0.0.1:13133
+    path: /healthz
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 127.0.0.1:4318
+        traces_url_path: /v1/traces
+        # Keep the unused signal routes unreachable even on the loopback listener.
+        metrics_url_path: /__disabled/metrics
+        logs_url_path: /__disabled/logs
+        include_metadata: false
+        max_request_body_size: 1048576
+        compression_algorithms: ['', gzip]
+        read_timeout: 5s
+        write_timeout: 5s
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 75
+    spike_limit_percentage: 15
+
+  # Reject envelopes outside Threadnote's anonymous trace contract before any
+  # mutation. Conditions are ORed: a match means the item is dropped.
+  filter/anonymous_contract:
+    error_mode: propagate
+    trace_conditions:
+      - context: resource
+        conditions:
+          - resource.attributes["service.name"] != "threadnote"
+          - not IsString(resource.attributes["service.version"])
+          - not IsMatch(resource.attributes["service.version"], "^(unknown|test|[0-9]+(\\.[0-9]+){0,3}([-+][0-9A-Za-z.-]{1,64})?)$$")
+          - not IsString(resource.attributes["session.id"])
+          - not IsMatch(resource.attributes["session.id"], "^tns_[0-9a-f]{32}$$")
+          - resource.attributes["threadnote.session.scope"] != "broker" and resource.attributes["threadnote.session.scope"] != "invocation" and resource.attributes["threadnote.session.scope"] != "provider-session"
+          - resource.attributes["threadnote.telemetry.schema_version"] != 1
+      - context: scope
+        conditions:
+          - scope.name != "threadnote"
+      - context: span
+        conditions:
+          - span.name != "threadnote.anonymous-diagnostic"
+          - span.kind != SPAN_KIND_INTERNAL
+          - span.parent_span_id != SpanID(0x0000000000000000)
+          - span.trace_state != ""
+          - Len(span.links) > 0
+      - context: spanevent
+        conditions:
+          - 'true'
+
+  # Keep attributes independently in each context. The redaction processor uses
+  # one shared allowlist for resource, scope, and span attributes, which can
+  # either erase required resource identity or admit keys in the wrong context.
+  transform/anonymous_contract:
+    error_mode: propagate
+    trace_statements:
+      - context: resource
+        statements:
+          - keep_keys(resource.attributes, ["service.name", "service.version", "session.id", "threadnote.session.scope", "threadnote.telemetry.schema_version"])
+          - truncate_all(resource.attributes, 128)
+          - set(resource.schema_url, "")
+      - context: scope
+        statements:
+          - delete_matching_keys(scope.attributes, ".*")
+          - set(scope.version, "")
+          - set(scope.schema_url, "")
+      - context: span
+        statements:
+          - >-
+            keep_keys(span.attributes, [
+              "error.type",
+              "threadnote.component",
+              "threadnote.duration_ms",
+              "threadnote.event",
+              "threadnote.failure.code",
+              "threadnote.failure.domain",
+              "threadnote.failure.operation",
+              "threadnote.failure.reason",
+              "threadnote.failure.recovery",
+              "threadnote.failure.retryable",
+              "threadnote.graph.degradation_reason",
+              "threadnote.invocation.id",
+              "threadnote.memory.external.current_bucket",
+              "threadnote.memory.external.end_bucket",
+              "threadnote.memory.external.start_bucket",
+              "threadnote.memory.heap.current_bucket",
+              "threadnote.memory.heap.end_bucket",
+              "threadnote.memory.heap.start_bucket",
+              "threadnote.memory.peak_rss.current_bucket",
+              "threadnote.memory.peak_rss.end_bucket",
+              "threadnote.memory.peak_rss.start_bucket",
+              "threadnote.memory.rss.current_bucket",
+              "threadnote.memory.rss.end_bucket",
+              "threadnote.memory.rss.start_bucket",
+              "threadnote.operation",
+              "threadnote.operation.elapsed_ms",
+              "threadnote.outcome",
+              "threadnote.phase",
+              "threadnote.phase.elapsed_ms",
+              "threadnote.phase.extraction_ms",
+              "threadnote.phase.outcome",
+              "threadnote.phase.persistence_ms",
+              "threadnote.phase.reading_ms",
+              "threadnote.phase.stage_elapsed_ms",
+              "threadnote.phase.transaction_ms",
+              "threadnote.runtime.architecture",
+              "threadnote.runtime.platform",
+              "threadnote.runtime.version",
+              "threadnote.stage",
+              "threadnote.subphase",
+              "threadnote.waiting_reason",
+              "threadnote.work.batches_completed_bucket",
+              "threadnote.work.batches_total_bucket",
+              "threadnote.work.completed_bucket",
+              "threadnote.work.degraded_files_bucket",
+              "threadnote.work.facts_bytes_completed_bucket",
+              "threadnote.work.facts_bytes_total_bucket",
+              "threadnote.work.source_bytes_completed_bucket",
+              "threadnote.work.source_bytes_total_bucket",
+              "threadnote.work.total_bucket",
+              "threadnote.work.units_completed_bucket",
+              "threadnote.work.units_total_bucket"
+            ])
+          - truncate_all(span.attributes, 128)
+          - set(span.status.message, "")
+
+  batch:
+    timeout: 1s
+    send_batch_size: 64
+    send_batch_max_size: 128
+
+exporters:
+  otlp_http/grafana:
+    # Base URL only; the exporter appends /v1/traces.
+    endpoint: ${env:GRAFANA_CLOUD_OTLP_ENDPOINT}
+    headers:
+      Authorization: ${env:GRAFANA_CLOUD_AUTHORIZATION}
+    compression: gzip
+    timeout: 5s
+    retry_on_failure:
+      # Anonymous telemetry is best-effort. One exporter attempt per accepted
+      # batch keeps provider-side volume bounded by the gateway ingress budget.
+      enabled: false
+    sending_queue:
+      enabled: false
+
+service:
+  extensions: [health_check]
+  telemetry:
+    logs:
+      level: warn
+      encoding: json
+    metrics:
+      level: none
+    traces:
+      level: none
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors:
+        - memory_limiter
+        - filter/anonymous_contract
+        - transform/anonymous_contract
+        - batch
+      exporters: [otlp_http/grafana]

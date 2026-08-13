@@ -7,6 +7,7 @@ import {SystemInfo} from './effect/system.js';
 import {activeInstalledVersion, installationRoot} from './installations.js';
 import {redactSensitiveText} from './scrubber.js';
 import {sendSystemNotification, type SystemNotificationDelivery} from './system_notification.js';
+import {withAgentSessionEnvironment, type PreparedAgentSession} from './telemetry/session.js';
 import type {RuntimeConfig, UpdateOptions} from './types.js';
 import {runUpdate} from './update.js';
 import {isJsonObject} from './utils.js';
@@ -215,7 +216,9 @@ export const runAutoUpdateWorker = Effect.fn('autoUpdate.runWorker')(function* (
   );
 });
 
-export const triggerAutoUpdateIfEnabled = Effect.fn('autoUpdate.triggerIfEnabled')(function* () {
+export const triggerAutoUpdateIfEnabled = Effect.fn('autoUpdate.triggerIfEnabled')(function* (
+  agentSession?: PreparedAgentSession,
+) {
   if (!isStandaloneThreadnoteBuild()) return false;
   const fs = yield* FileSystem.FileSystem;
   const lockPath = yield* autoUpdateLockPath();
@@ -242,16 +245,27 @@ export const triggerAutoUpdateIfEnabled = Effect.fn('autoUpdate.triggerIfEnabled
     }),
   ).pipe(Effect.catch(error => (error instanceof FileLockTimeout ? Effect.succeed(undefined) : Effect.fail(error))));
   if (!claim) return false;
-  const spawned = yield* spawnDetachedAutoUpdateWorker();
+  const spawned = yield* spawnDetachedAutoUpdateWorker(agentSession);
   if (spawned) return true;
   yield* restoreFailedSpawnClaim(claim);
   return false;
 });
 
-export const spawnDetachedAutoUpdateWorker = Effect.fn('autoUpdate.spawnWorker')(function* () {
+export const spawnDetachedAutoUpdateWorker = Effect.fn('autoUpdate.spawnWorker')(function* (
+  agentSession?: PreparedAgentSession,
+) {
   if (!isStandaloneThreadnoteBuild()) return false;
   const system = yield* SystemInfo;
-  return yield* runDetachedCommandEffect(system.executablePath, ['auto-update-worker']);
+  if (agentSession === undefined) {
+    // A standalone CLI invocation does not carry its correlation scope in the
+    // child environment. Let the worker create a fresh invocation session
+    // instead of mislabelling a CLI alias as a broker session.
+    return yield* runDetachedCommandEffect(system.executablePath, ['auto-update-worker']);
+  }
+  return yield* runDetachedCommandEffect(system.executablePath, ['auto-update-worker'], {
+    env: withAgentSessionEnvironment(system.environment(), agentSession, 'auto-update-worker'),
+    telemetryChild: 'auto-update-worker',
+  });
 });
 
 /** Pure parser used by status readers and state-machine property tests. */

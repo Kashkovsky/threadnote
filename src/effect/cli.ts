@@ -111,6 +111,7 @@ import {
 } from '../code_graph/commands.js';
 import {runProcessDiagnostics} from '../process_diagnostics.js';
 import {runContextBrief} from '../context_brief/commands.js';
+import {runTelemetryDisable, runTelemetryEnable, runTelemetryStatus} from '../telemetry/commands.js';
 import {initializeAutoUpdatePolicy, runAutoUpdateWorker, runThreadnoteUpdateCommand} from '../auto_update.js';
 import {
   cursorCloudRuntimeConfig,
@@ -124,32 +125,31 @@ import {
   makeCursorCloudIdentityFlags,
   makeCursorCloudModeFlag,
 } from './cursor_cloud_cli.js';
+import {
+  decodeCliStringFlagValue,
+  makeCliInvocationInspector,
+  normalizeCliArguments,
+  registerCliBooleanFlag,
+  registerCliValueFlag,
+  type CliInvocationInspection,
+  type ProductionLogMode,
+} from './cli_invocation.js';
 
 const describeFlag = <A>(flag: Flag.Flag<A>, description: string): Flag.Flag<A> =>
   flag.pipe(Flag.withDescription(description));
 
-const encodedStringPrefix = '\u{f0000}threadnote:';
-const valueFlagKinds = new Map<string, 'other' | 'string'>();
-const booleanFlagNames = new Set<string>();
-const cliRuntimeValueFlagKinds = new Map<string, 'other' | 'string'>([
-  ['--completions', 'other'],
-  ['--log-level', 'other'],
-]);
-
 const valueFlag = <A>(name: string, flag: Flag.Flag<A>, kind: 'other' | 'string'): Flag.Flag<A> => {
-  valueFlagKinds.set(`--${name}`, kind);
+  registerCliValueFlag(`--${name}`, kind);
   return flag;
 };
 
 const stringFlag = (name: string): Flag.Flag<string> =>
-  valueFlag(name, Flag.string(name), 'string').pipe(
-    Flag.map(value => (value.startsWith(encodedStringPrefix) ? value.slice(encodedStringPrefix.length) : value)),
-  );
+  valueFlag(name, Flag.string(name), 'string').pipe(Flag.map(decodeCliStringFlagValue));
 
 const integerFlag = (name: string): Flag.Flag<number> => valueFlag(name, Flag.integer(name), 'other');
 
 const withValueAlias = <A>(flag: Flag.Flag<A>, alias: string, kind: 'other' | 'string'): Flag.Flag<A> => {
-  valueFlagKinds.set(alias.length === 1 ? `-${alias}` : `--${alias}`, kind);
+  registerCliValueFlag(alias.length === 1 ? `-${alias}` : `--${alias}`, kind);
   return flag.pipe(Flag.withAlias(alias));
 };
 
@@ -166,12 +166,12 @@ const defaultString = (name: string, description: string, value: string): Flag.F
   describeFlag(stringFlag(name), description).pipe(Flag.withDefault(value));
 
 const boolean = (name: string, description: string): Flag.Flag<boolean> => {
-  booleanFlagNames.add(`--${name}`);
+  registerCliBooleanFlag(`--${name}`);
   return describeFlag(Flag.boolean(name), description);
 };
 
 const negatedBoolean = (name: string, description: string): Flag.Flag<boolean> => {
-  booleanFlagNames.add(`--no-${name}`);
+  registerCliBooleanFlag(`--no-${name}`);
   return describeFlag(Flag.boolean(`no-${name}`), description).pipe(Flag.map(value => !value));
 };
 
@@ -301,6 +301,28 @@ const version = Command.make(
 
 const logs = Command.make('logs', {}, () => withRuntimeEffect(runProductionLogs)).pipe(
   Command.withDescription('Show privacy-safe rotating production log files for support'),
+);
+
+const telemetryStatus = Command.make('status', {}, () => withRuntimeEffect(config => runTelemetryStatus(config))).pipe(
+  Command.withDescription('Show effective consent, endpoint, data categories, and environment opt-outs'),
+);
+
+const telemetryEnable = Command.make(
+  'enable',
+  {
+    apply: boolean('apply', 'Persist explicit telemetry consent'),
+    endpoint: optionalString('endpoint', 'OTLP/HTTP traces endpoint; HTTPS required except for loopback'),
+  },
+  options => withRuntimeEffect(config => runTelemetryEnable(config, options)),
+).pipe(Command.withDescription('Preview or enable anonymous CLI and MCP operational telemetry'));
+
+const telemetryDisable = Command.make('disable', {apply: boolean('apply', 'Persist telemetry opt-out')}, options =>
+  withRuntimeEffect(config => runTelemetryDisable(config, options)),
+).pipe(Command.withDescription('Preview or disable all anonymous operational telemetry'));
+
+const telemetry = Command.make('telemetry').pipe(
+  Command.withDescription('Manage optional anonymous CLI and MCP operational telemetry'),
+  Command.withSubcommands([telemetryStatus, telemetryEnable, telemetryDisable]),
 );
 
 const reportIssue = Command.make(
@@ -1751,8 +1773,6 @@ const importPack = Command.make(
   options => withRuntimeEffect(config => runImportPack(config, options)),
 ).pipe(Command.withDescription('Import an .ovpack archive into local Threadnote context'));
 
-type ProductionLogMode = 'always' | 'never' | 'requires-apply' | 'skips-on-preview';
-
 interface TopLevelCommandMetadata {
   readonly aliases?: readonly string[];
   readonly productionLog?: {
@@ -1779,6 +1799,7 @@ const topLevelCommandRegistrations = [
   registerTopLevelCommand('install', install),
   registerTopLevelCommand('version', version),
   registerTopLevelCommand('logs', logs),
+  registerTopLevelCommand('telemetry', telemetry, {productionLog: {mode: 'never'}}),
   registerTopLevelCommand('report-issue', reportIssue, {productionLog: {mode: 'never'}}),
   registerTopLevelCommand('update', update),
   registerTopLevelCommand('auto-update-worker', autoUpdateWorker),
@@ -1856,154 +1877,16 @@ const topLevelCommandRegistrations = [
   registerTopLevelCommand('import-pack', importPack),
 ] as const;
 
-const topLevelOperationByName = new Map(
-  topLevelCommandRegistrations.flatMap(registration => [
-    [registration.canonicalName, registration.canonicalName] as const,
-    ...registration.aliases.map(alias => [alias, registration.canonicalName] as const),
-  ]),
-);
-
-const topLevelRegistrationByName = new Map(
-  topLevelCommandRegistrations.map(registration => [registration.canonicalName, registration] as const),
-);
+const inspectRegisteredCliInvocation = makeCliInvocationInspector(topLevelCommandRegistrations);
 
 export const threadnoteCommand = root.pipe(
   Command.withDescription('Threadnote shared context workflow for development agents'),
   Command.withSubcommands(topLevelCommandRegistrations.map(registration => registration.command)),
 );
 
-export interface CliInvocationInspection {
-  readonly homeOverride?: string;
-  readonly operation?: string;
-  readonly writeProductionLog: boolean;
-}
-
 export function inspectCliInvocation(arguments_: readonly string[]): CliInvocationInspection {
-  const scanned = scanCliArguments(arguments_);
-  const selectedName = scanned.positionals[0];
-  const operation = selectedName === undefined ? undefined : (topLevelOperationByName.get(selectedName) ?? 'unknown');
-  const registration =
-    operation === undefined || operation === 'unknown' ? undefined : topLevelRegistrationByName.get(operation);
-  const mode =
-    registration?.productionLog.subcommands?.[scanned.positionals[1] ?? ''] ??
-    registration?.productionLog.mode ??
-    'always';
-  const writeProductionLog =
-    operation !== undefined &&
-    mode !== 'never' &&
-    scanned.booleanValues.get('--dry-run') !== true &&
-    !scanned.flags.has('--help') &&
-    !scanned.flags.has('-h') &&
-    !(mode === 'requires-apply' && scanned.booleanValues.get('--apply') !== true) &&
-    !(mode === 'skips-on-preview' && scanned.booleanValues.get('--preview') === true);
-  return {
-    ...(scanned.homeOverride === undefined ? {} : {homeOverride: scanned.homeOverride}),
-    ...(operation === undefined ? {} : {operation}),
-    writeProductionLog,
-  };
+  return inspectRegisteredCliInvocation(arguments_);
 }
 
-function scanCliArguments(arguments_: readonly string[]) {
-  const booleanValues = new Map<string, boolean>();
-  const flags = new Set<string>();
-  const positionals: string[] = [];
-  let homeOverride: string | undefined;
-  for (let index = 0; index < arguments_.length; index += 1) {
-    const argument = arguments_[index] ?? '';
-    const equalsIndex = argument.indexOf('=');
-    const flagName = equalsIndex > 0 ? argument.slice(0, equalsIndex) : argument;
-    const valueKind = valueFlagKinds.get(flagName) ?? cliRuntimeValueFlagKinds.get(flagName);
-    if (valueKind !== undefined) {
-      const value = equalsIndex > 0 ? argument.slice(equalsIndex + 1) : arguments_[index + 1];
-      if (flagName === '--home') {
-        homeOverride = value;
-      }
-      if (equalsIndex < 0 && value !== undefined) {
-        index += 1;
-      }
-      continue;
-    }
-    if (booleanFlagNames.has(flagName)) {
-      const inlineValue = equalsIndex > 0 ? parseCliBoolean(argument.slice(equalsIndex + 1)) : undefined;
-      const followingValue = equalsIndex < 0 ? parseCliBoolean(arguments_[index + 1]) : undefined;
-      booleanValues.set(flagName, inlineValue ?? followingValue ?? true);
-      if (followingValue !== undefined) {
-        index += 1;
-      }
-      continue;
-    }
-    if (argument.startsWith('-')) {
-      flags.add(flagName);
-    } else {
-      positionals.push(argument);
-    }
-  }
-  return {booleanValues, flags, homeOverride, positionals};
-}
-
-function parseCliBoolean(value: string | undefined): boolean | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-  switch (value.toLowerCase()) {
-    case '1':
-    case 'on':
-    case 'true':
-    case 'yes':
-      return true;
-    case '0':
-    case 'false':
-    case 'no':
-    case 'off':
-      return false;
-    default:
-      return undefined;
-  }
-}
-
-/**
- * Preserve Commander-compatible string values while Effect 4's beta lexer
- * still tokenizes dash-prefixed values as flags and splits inline values at
- * every equals sign. Remove this shim once the upstream lexer preserves both.
- */
-export function normalizeCliArguments(args: readonly string[]): readonly string[] {
-  const normalized: string[] = [];
-  for (let index = 0; index < args.length; index += 1) {
-    const current = args[index] ?? '';
-    const equalsIndex = current.indexOf('=');
-    const inlineName = equalsIndex > 0 ? current.slice(0, equalsIndex) : current;
-    const kind = valueFlagKinds.get(inlineName);
-    if (!kind) {
-      normalized.push(current);
-      continue;
-    }
-
-    if (equalsIndex > 0) {
-      const value = current.slice(equalsIndex + 1);
-      if (kind === 'string') {
-        normalized.push(inlineName, encodeStringArgument(value));
-      } else {
-        normalized.push(current);
-      }
-      continue;
-    }
-
-    const next = args[index + 1];
-    if (next?.startsWith('-') && next !== '-') {
-      normalized.push(kind === 'string' ? current : `${current}=${next}`);
-      if (kind === 'string') {
-        normalized.push(encodeStringArgument(next));
-      }
-      index += 1;
-      continue;
-    }
-    normalized.push(current);
-  }
-  return normalized;
-}
-
-function encodeStringArgument(value: string): string {
-  return value.startsWith('-') ? `${encodedStringPrefix}${value}` : value;
-}
-
-export {CliError};
+export type {CliInvocationInspection};
+export {CliError, normalizeCliArguments};

@@ -1,7 +1,22 @@
 import {TestError} from '../helpers/test-error.js';
+import {mkdtemp, readFile, rm} from '../helpers/node-fs-promises.js';
+import {tmpdir} from '../helpers/node-os.js';
+import {join} from '../helpers/node-path.js';
 import {Clock, Effect, Fiber, FileSystem, Path, Result} from 'effect';
 import {describe, expect, it} from 'vitest';
-import {runBinaryCommandEffect, runCommandEffect, runStreamingCommandEffect} from '../../src/effect/command.js';
+import {
+  runBinaryCommandEffect,
+  runCommandEffect,
+  runDetachedCommandEffect,
+  runStreamingCommandEffect,
+} from '../../src/effect/command.js';
+import {
+  TELEMETRY_AGENT_SESSION_ENVIRONMENT_VARIABLE,
+  TELEMETRY_CHILD_ENVIRONMENT_VARIABLE,
+  TELEMETRY_CONSENT_GENERATION_ENVIRONMENT_VARIABLE,
+  TELEMETRY_PROVIDER_ENVIRONMENT_VARIABLE,
+  TELEMETRY_PROVIDER_SESSION_TOKEN_ENVIRONMENT_VARIABLE,
+} from '../../src/telemetry/session.js';
 import {runEffect as run} from '../helpers/effect-runtime.js';
 
 describe('Effect CommandExecutor', () => {
@@ -121,6 +136,90 @@ describe('Effect CommandExecutor', () => {
     );
 
     expect(result).toEqual({exitCode: 0, stderr: '', stdout: ''});
+  });
+
+  it('scrubs telemetry correlation state from detached children', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'threadnote-detached-command-'));
+    const receiptPath = join(directory, 'environment.json');
+    const privateValues = {
+      [TELEMETRY_AGENT_SESSION_ENVIRONMENT_VARIABLE]: 'tns_0123456789abcdef0123456789abcdef',
+      [TELEMETRY_CHILD_ENVIRONMENT_VARIABLE]: 'mcp-server',
+      [TELEMETRY_CONSENT_GENERATION_ENVIRONMENT_VARIABLE]: 'tng_0123456789abcdef',
+      [TELEMETRY_PROVIDER_ENVIRONMENT_VARIABLE]: 'codex',
+      [TELEMETRY_PROVIDER_SESSION_TOKEN_ENVIRONMENT_VARIABLE]: 'private-provider-session',
+    };
+    try {
+      const spawned = await run(
+        runDetachedCommandEffect(
+          process.execPath,
+          ['-e', 'require("node:fs").writeFileSync(process.argv[1], JSON.stringify(process.env))', receiptPath],
+          {env: {...privateValues, THREADNOTE_DETACHED_SAFE_VALUE: 'preserved'}},
+        ),
+      );
+      expect(spawned).toBe(true);
+      let childEnvironment: Record<string, string> | undefined;
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        const receipt = await readFile(receiptPath, 'utf8').catch(() => undefined);
+        if (receipt !== undefined) {
+          childEnvironment = JSON.parse(receipt) as Record<string, string>;
+          break;
+        }
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+      expect(childEnvironment).toEqual(expect.objectContaining({THREADNOTE_DETACHED_SAFE_VALUE: 'preserved'}));
+      for (const variable of Object.keys(privateValues)) {
+        expect(childEnvironment?.[variable]).toBeUndefined();
+      }
+    } finally {
+      await rm(directory, {force: true, recursive: true});
+    }
+  });
+
+  it('preserves only a consent-bound alias for a declared detached Threadnote child', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'threadnote-detached-internal-command-'));
+    const receiptPath = join(directory, 'environment.json');
+    const sessionId = 'tns_0123456789abcdef0123456789abcdef';
+    const consentGeneration = 'tng_0123456789abcdef0123456789abcdef';
+    try {
+      const spawned = await run(
+        runDetachedCommandEffect(
+          process.execPath,
+          ['-e', 'require("node:fs").writeFileSync(process.argv[1], JSON.stringify(process.env))', receiptPath],
+          {
+            env: {
+              [TELEMETRY_AGENT_SESSION_ENVIRONMENT_VARIABLE]: sessionId,
+              [TELEMETRY_CONSENT_GENERATION_ENVIRONMENT_VARIABLE]: consentGeneration,
+              [TELEMETRY_PROVIDER_ENVIRONMENT_VARIABLE]: 'codex',
+              [TELEMETRY_PROVIDER_SESSION_TOKEN_ENVIRONMENT_VARIABLE]: 'private-provider-session',
+              THREADNOTE_DETACHED_SAFE_VALUE: 'preserved',
+            },
+            telemetryChild: 'auto-update-worker',
+          },
+        ),
+      );
+      expect(spawned).toBe(true);
+      let childEnvironment: Record<string, string> | undefined;
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        const receipt = await readFile(receiptPath, 'utf8').catch(() => undefined);
+        if (receipt !== undefined) {
+          childEnvironment = JSON.parse(receipt) as Record<string, string>;
+          break;
+        }
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+      expect(childEnvironment).toEqual(
+        expect.objectContaining({
+          [TELEMETRY_AGENT_SESSION_ENVIRONMENT_VARIABLE]: sessionId,
+          [TELEMETRY_CHILD_ENVIRONMENT_VARIABLE]: 'auto-update-worker',
+          [TELEMETRY_CONSENT_GENERATION_ENVIRONMENT_VARIABLE]: consentGeneration,
+          THREADNOTE_DETACHED_SAFE_VALUE: 'preserved',
+        }),
+      );
+      expect(childEnvironment?.[TELEMETRY_PROVIDER_ENVIRONMENT_VARIABLE]).toBeUndefined();
+      expect(childEnvironment?.[TELEMETRY_PROVIDER_SESSION_TOKEN_ENVIRONMENT_VARIABLE]).toBeUndefined();
+    } finally {
+      await rm(directory, {force: true, recursive: true});
+    }
   });
 });
 

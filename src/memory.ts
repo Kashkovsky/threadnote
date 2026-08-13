@@ -21,6 +21,7 @@ import {syncSharedReposBeforeAgentRead} from './effect/share.js';
 import {withSharedRepositoryLock} from './effect/share_lock.js';
 import {SystemInfo} from './effect/system.js';
 import {ResourceStore, type ResourceStoreMutation} from './effect/resource-store.js';
+import {withAnonymousTelemetryPhase} from './effect/telemetry.js';
 import {runModelInstall, runModelSelect} from './models/commands.js';
 import {resolveSelectedLocalModel} from './models/inference.js';
 import {syncObsidianSourcesBeforeRecall} from './obsidian_source.js';
@@ -512,8 +513,8 @@ function memoryEnrichmentPriority(record: MemoryRecord): number {
 
 export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig, options: RecallOptions) {
   if (options.dryRun !== true) {
-    yield* syncSharedReposAndLog(config);
-    yield* syncObsidianSourcesAndLog(config);
+    yield* withAnonymousTelemetryPhase('recall.shared-sync', syncSharedReposAndLog(config));
+    yield* withAnonymousTelemetryPhase('recall.obsidian-sync', syncObsidianSourcesAndLog(config));
   }
   const workspaceOptions = options.callerCwd
     ? {cwd: options.callerCwd, includeProcessCwd: false}
@@ -608,7 +609,14 @@ export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig
   const recallLimit = nodeLimit ?? 12;
   let semanticResult = dryRun
     ? Option.none<RecallSemanticScoresResult>()
-    : Option.some(yield* loadRecallSemanticScoresResult(config, query, recallLimit));
+    : Option.some(
+        yield* withAnonymousTelemetryPhase(
+          'recall.semantic-retrieval',
+          loadRecallSemanticScoresResult(config, query, recallLimit),
+          result =>
+            Option.isSome(result.warning) ? 'failure' : Option.isSome(result.scores) ? 'success' : 'unavailable',
+        ),
+      );
   const surfacedSemanticWarnings = new Set<string>();
   const surfaceSemanticWarning = (result: RecallSemanticScoresResult) =>
     Option.match(result.warning, {
@@ -621,30 +629,33 @@ export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig
   if (Option.isSome(semanticResult)) yield* surfaceSemanticWarning(semanticResult.value);
   const rerankerCache = createRecallRerankerCache();
   const prepareSections = (candidateUris?: readonly string[]) =>
-    Effect.gen(function* () {
-      const prepared = yield* prepareRecallSections(config, {
-        allowExactRescue: options.threshold === undefined,
-        allowedUriScopes: explicitUri ? [explicitUri] : undefined,
-        candidateUris,
-        exactMatches,
-        feedbackQuery: options.query,
-        includeInactive: includeArchived,
-        limit: recallLimit,
-        minimumScore: hybridMinimumScore,
-        passes,
-        preferredUriScopes: explicitUri ? undefined : [...scopedRecallUris],
-        project: recallProjectName,
-        query,
-        queryVariants: expansionQueries,
-        readRecords: uris => readMemoryRecordsByUri(config, uris),
-        rerankerCache,
-        seedUris: [inferredUri, seededUri].filter((uri): uri is string => uri !== undefined),
-        semanticResult,
-      });
-      semanticResult = Option.some(prepared.semanticResult);
-      yield* surfaceSemanticWarning(prepared.semanticResult);
-      return prepared;
-    });
+    withAnonymousTelemetryPhase(
+      'recall.lexical-ranking',
+      Effect.gen(function* () {
+        const prepared = yield* prepareRecallSections(config, {
+          allowExactRescue: options.threshold === undefined,
+          allowedUriScopes: explicitUri ? [explicitUri] : undefined,
+          candidateUris,
+          exactMatches,
+          feedbackQuery: options.query,
+          includeInactive: includeArchived,
+          limit: recallLimit,
+          minimumScore: hybridMinimumScore,
+          passes,
+          preferredUriScopes: explicitUri ? undefined : [...scopedRecallUris],
+          project: recallProjectName,
+          query,
+          queryVariants: expansionQueries,
+          readRecords: uris => readMemoryRecordsByUri(config, uris),
+          rerankerCache,
+          seedUris: [inferredUri, seededUri].filter((uri): uri is string => uri !== undefined),
+          semanticResult,
+        });
+        semanticResult = Option.some(prepared.semanticResult);
+        yield* surfaceSemanticWarning(prepared.semanticResult);
+        return prepared;
+      }),
+    );
   let recallSections = yield* prepareSections();
   const shouldAttemptAiExpansion = !dryRun && shouldExpandRecall(recallSections.confidence);
   const indexSelectionCandidates = shouldAttemptAiExpansion
@@ -652,10 +663,13 @@ export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig
     : [];
   const indexSelectionIds =
     indexSelectionCandidates.length > 0
-      ? yield* selectExpandedRecallCandidatesEffect(
-          {candidates: indexSelectionCandidates, query: options.query},
-          config,
-          effectAi,
+      ? yield* withAnonymousTelemetryPhase(
+          'model.inference',
+          selectExpandedRecallCandidatesEffect(
+            {candidates: indexSelectionCandidates, query: options.query},
+            config,
+            effectAi,
+          ),
         )
       : undefined;
   const groundedExpansionQueries =
@@ -686,15 +700,18 @@ export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig
   const fallbackExpansionQueries =
     dryRun || !needsFallbackExpansion
       ? []
-      : yield* expandWeakRecallQueryEffect(
-          {
-            confidence: recallSections.confidence,
-            project: recallProjectName,
-            query: options.query,
-            vocabulary: expansionVocabulary,
-          },
-          config,
-          effectAi,
+      : yield* withAnonymousTelemetryPhase(
+          'model.inference',
+          expandWeakRecallQueryEffect(
+            {
+              confidence: recallSections.confidence,
+              project: recallProjectName,
+              query: options.query,
+              vocabulary: expansionVocabulary,
+            },
+            config,
+            effectAi,
+          ),
         );
   const proposedExpansionQueries = mergeRecallRewritesForConfidence(
     recallSections.confidence,
@@ -713,10 +730,9 @@ export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig
       recallSections.expansionCandidates,
       Math.max(nodeLimit ?? 12, 12) * 2,
     );
-    const selectedIds = yield* selectExpandedRecallCandidatesEffect(
-      {candidates: selectionCandidates, query: options.query},
-      config,
-      effectAi,
+    const selectedIds = yield* withAnonymousTelemetryPhase(
+      'model.inference',
+      selectExpandedRecallCandidatesEffect({candidates: selectionCandidates, query: options.query}, config, effectAi),
     );
     if (selectedIds !== undefined) {
       const selectedUris = selectedRecallCandidateUris(

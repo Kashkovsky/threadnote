@@ -4,6 +4,7 @@ import type {RuntimeConfig} from './types.js';
 import {SystemInfo} from './effect/system.js';
 import {readLiveStandaloneProcessLeases} from './standalone_process_lease.js';
 import {sha256HexSync} from './crypto/sha256.js';
+import {withoutTelemetrySessionEnvironment} from './telemetry/session.js';
 
 const PROCESS_DIAGNOSTICS_SCHEMA_VERSION = 1;
 const PROCESS_DIAGNOSTICS_LIMIT = 100;
@@ -832,7 +833,7 @@ function processMemoryBytes(
     if (platform === 'win32') return windowsProcessMemoryBytes(processIds, environment);
     const result = Bun.spawnSync({
       cmd: ['ps', '-o', 'pid=,rss=', '-p', processIds.join(',')],
-      env: environment,
+      env: withoutTelemetrySessionEnvironment(environment),
       stderr: 'pipe',
       stdout: 'pipe',
       timeout: PROCESS_MEMORY_QUERY_TIMEOUT_MS,
@@ -863,7 +864,7 @@ function windowsProcessMemoryBytes(
       '$ids=$env:THREADNOTE_PROCESS_IDS -split ","; ' +
         'Get-Process -Id $ids -ErrorAction SilentlyContinue | Select-Object Id,WorkingSet64 | ConvertTo-Json -Compress',
     ],
-    env: {...environment, THREADNOTE_PROCESS_IDS: processIds.join(',')},
+    env: {...withoutTelemetrySessionEnvironment(environment), THREADNOTE_PROCESS_IDS: processIds.join(',')},
     stderr: 'pipe',
     stdout: 'pipe',
     timeout: PROCESS_MEMORY_QUERY_TIMEOUT_MS,

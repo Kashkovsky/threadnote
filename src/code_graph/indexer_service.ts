@@ -61,6 +61,7 @@ import {repositoryIdentityMatchesExpectation, resolveRepositoryIdentity} from '.
 import {CodeGraphStore} from './store.js';
 import {TreeSitterRuntime} from './tree_sitter/runtime.js';
 import type {CodeGraphIndexSummary, CodeGraphProgress, CodeGraphSnapshot} from './types.js';
+import {makeCodeGraphAnonymousTelemetryReporter} from './anonymous_telemetry.js';
 
 export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGraphIndexerShape>()(
   'threadnote/codeGraph/CodeGraphIndexer',
@@ -82,6 +83,9 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
       const index = (request: CodeGraphIndexOptions, attempt = 0): Effect.Effect<CodeGraphIndexSummary, unknown> =>
         Effect.scoped(
           Effect.gen(function* () {
+            const anonymousTelemetryProgress = makeCodeGraphAnonymousTelemetryReporter(
+              system.environment().THREADNOTE_MCP_BROKER_CHILD === '1' ? 'mcp' : 'cli',
+            );
             const initialIdentity = yield* resolveRepositoryIdentity(request.cwd);
             if (
               request.expectedIdentity &&
@@ -115,7 +119,9 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                   layout,
                   requestKey ? {key: requestKey} : undefined,
                 );
-                yield* request.onProgress?.({phase: 'registering'}) ?? Effect.void;
+                yield* anonymousTelemetryProgress({phase: 'registering'}).pipe(
+                  Effect.andThen(request.onProgress?.({phase: 'registering'}) ?? Effect.void),
+                );
                 return reporter;
               }),
             );
@@ -123,7 +129,10 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
             const options: CodeGraphIndexOptions = {
               ...request,
               onProgress: progress =>
-                reporter.progress(progress).pipe(Effect.andThen(request.onProgress?.(progress) ?? Effect.void)),
+                anonymousTelemetryProgress(progress).pipe(
+                  Effect.andThen(reporter.progress(progress)),
+                  Effect.andThen(request.onProgress?.(progress) ?? Effect.void),
+                ),
             };
             const capacityProtection: DirectPersistentCapacityProtection = {
               availableDiskBytes:
@@ -738,6 +747,9 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
       ) =>
         Effect.scoped(
           Effect.gen(function* () {
+            const anonymousTelemetryProgress = makeCodeGraphAnonymousTelemetryReporter(
+              system.environment().THREADNOTE_MCP_BROKER_CHILD === '1' ? 'mcp' : 'cli',
+            );
             const initialIdentity = yield* resolveRepositoryIdentity(request.cwd);
             if (
               request.expectedIdentity &&
@@ -769,7 +781,10 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
             const options = {
               ...request,
               onProgress: (progress: CodeGraphProgress) =>
-                reporter.progress(progress).pipe(Effect.andThen(request.onProgress?.(progress) ?? Effect.void)),
+                anonymousTelemetryProgress(progress).pipe(
+                  Effect.andThen(reporter.progress(progress)),
+                  Effect.andThen(request.onProgress?.(progress) ?? Effect.void),
+                ),
             };
             const capacityProtection: DirectPersistentCapacityProtection = {
               availableDiskBytes:

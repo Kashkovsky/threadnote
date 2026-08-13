@@ -24,6 +24,9 @@ import type {LlamaCppDiagnostics} from './llama-cpp-engine.js';
 import {SystemInfo, type SystemInfoShape} from '../system.js';
 import {withThreadnoteProcessActivity} from '../../process_diagnostics.js';
 import {LOCAL_MODEL_WORKER_ARGUMENT} from '../../worker_protocol.js';
+import {withAnonymousTelemetryPhase} from '../telemetry.js';
+import {attachAnonymousTelemetryDiagnostic} from '../../telemetry/diagnostic.js';
+import {withCurrentAgentSessionEnvironment} from '../../telemetry/session.js';
 
 export {LOCAL_MODEL_WORKER_ARGUMENT};
 
@@ -156,55 +159,70 @@ export function isolatedLocalModelRuntimeLayer(
         };
 
         const service: LocalModelRuntimeWithDiagnostics = {
-          diagnostics: permits.withPermit(
-            request('diagnostics', {}, decodeDiagnostics).pipe(
-              Effect.mapError(error =>
-                error instanceof LocalModelWorkerTransportError
-                  ? new NativeRuntimeUnavailable({
-                      cause: genericWorkerCause(error.reason),
-                      message: `The isolated local AI worker could not report runtime diagnostics: ${error.message}`,
-                    })
-                  : remoteNativeRuntimeError(error),
+          diagnostics: withAnonymousTelemetryPhase(
+            'model.diagnostics',
+            permits.withPermit(
+              request('diagnostics', {}, decodeDiagnostics).pipe(
+                Effect.mapError(error =>
+                  error instanceof LocalModelWorkerTransportError
+                    ? withWorkerTransportDiagnostic(
+                        new NativeRuntimeUnavailable({
+                          cause: genericWorkerCause(error.reason),
+                          message: `The isolated local AI worker could not report runtime diagnostics: ${error.message}`,
+                        }),
+                        error,
+                      )
+                    : remoteNativeRuntimeError(error),
+                ),
               ),
             ),
           ),
           embedMany: input =>
-            permits.withPermit(
-              Effect.gen(function* () {
-                const vectors: (readonly number[])[] = [];
-                for (let start = 0; start < input.inputs.length; start += EMBEDDING_BATCH_SIZE) {
-                  const batch = input.inputs.slice(start, start + EMBEDDING_BATCH_SIZE);
-                  const response = yield* request('embedMany', {...input, inputs: batch}, result =>
-                    decodeVectors(result, batch.length, input.manifest.dimensions),
-                  ).pipe(
-                    Effect.mapError(error =>
-                      error instanceof LocalModelWorkerTransportError
-                        ? workerEmbeddingFailure(input, error)
-                        : remoteEmbeddingFailure(input, error),
-                    ),
-                  );
-                  vectors.push(...response);
-                }
-                return vectors;
-              }),
+            withAnonymousTelemetryPhase(
+              'model.embedding',
+              permits.withPermit(
+                Effect.gen(function* () {
+                  const vectors: (readonly number[])[] = [];
+                  for (let start = 0; start < input.inputs.length; start += EMBEDDING_BATCH_SIZE) {
+                    const batch = input.inputs.slice(start, start + EMBEDDING_BATCH_SIZE);
+                    const response = yield* request('embedMany', {...input, inputs: batch}, result =>
+                      decodeVectors(result, batch.length, input.manifest.dimensions),
+                    ).pipe(
+                      Effect.mapError(error =>
+                        error instanceof LocalModelWorkerTransportError
+                          ? workerEmbeddingFailure(input, error)
+                          : remoteEmbeddingFailure(input, error),
+                      ),
+                    );
+                    vectors.push(...response);
+                  }
+                  return vectors;
+                }),
+              ),
             ),
           generate: input =>
-            permits.withPermit(
-              request('generate', input, result => Option.some(result)).pipe(
-                Effect.mapError(error =>
-                  error instanceof LocalModelWorkerTransportError
-                    ? workerGenerationFailure(input, error)
-                    : remoteGenerationFailure(input, error),
+            withAnonymousTelemetryPhase(
+              'model.generation',
+              permits.withPermit(
+                request('generate', input, result => Option.some(result)).pipe(
+                  Effect.mapError(error =>
+                    error instanceof LocalModelWorkerTransportError
+                      ? workerGenerationFailure(input, error)
+                      : remoteGenerationFailure(input, error),
+                  ),
                 ),
               ),
             ),
           rerank: input =>
-            permits.withPermit(
-              request('rerank', input, result => decodeScores(result, input.documents.length)).pipe(
-                Effect.mapError(error =>
-                  error instanceof LocalModelWorkerTransportError
-                    ? workerRerankingFailure(input, error)
-                    : remoteRerankingFailure(input, error),
+            withAnonymousTelemetryPhase(
+              'model.reranking',
+              permits.withPermit(
+                request('rerank', input, result => decodeScores(result, input.documents.length)).pipe(
+                  Effect.mapError(error =>
+                    error instanceof LocalModelWorkerTransportError
+                      ? workerRerankingFailure(input, error)
+                      : remoteRerankingFailure(input, error),
+                  ),
                 ),
               ),
             ),
@@ -656,7 +674,7 @@ export function localModelWorkerSpawnOptions(system: SystemInfoShape): LocalMode
   return {
     arguments: [...Option.toArray(script), LOCAL_MODEL_WORKER_ARGUMENT],
     environment: {
-      ...system.environment(),
+      ...withCurrentAgentSessionEnvironment(system.environment(), 'local-model-worker'),
       THREADNOTE_LOCAL_MODEL_WORKER: '1',
     },
     executable: system.executablePath,
@@ -1057,32 +1075,53 @@ function workerEmbeddingFailure(
   request: LocalEmbeddingRequest,
   error: LocalModelWorkerTransportError,
 ): EmbeddingFailed {
-  return new EmbeddingFailed({
-    cause: genericWorkerCause(error.reason),
-    message: `Local AI embedding failed after the isolated worker retry was exhausted: ${error.message}`,
-    modelId: request.manifest.id,
-  });
+  return withWorkerTransportDiagnostic(
+    new EmbeddingFailed({
+      cause: genericWorkerCause(error.reason),
+      message: `Local AI embedding failed after the isolated worker retry was exhausted: ${error.message}`,
+      modelId: request.manifest.id,
+    }),
+    error,
+  );
 }
 
 function workerGenerationFailure(
   request: LocalGenerationRequest,
   error: LocalModelWorkerTransportError,
 ): GenerationFailed {
-  return new GenerationFailed({
-    cause: genericWorkerCause(error.reason),
-    message: `Local AI generation failed after the isolated worker retry was exhausted: ${error.message}`,
-    modelId: request.manifest.id,
-  });
+  return withWorkerTransportDiagnostic(
+    new GenerationFailed({
+      cause: genericWorkerCause(error.reason),
+      message: `Local AI generation failed after the isolated worker retry was exhausted: ${error.message}`,
+      modelId: request.manifest.id,
+    }),
+    error,
+  );
 }
 
 function workerRerankingFailure(
   request: LocalRerankingRequest,
   error: LocalModelWorkerTransportError,
 ): RerankingFailed {
-  return new RerankingFailed({
-    cause: genericWorkerCause(error.reason),
-    message: `Local AI reranking failed after the isolated worker retry was exhausted: ${error.message}`,
-    modelId: request.manifest.id,
+  return withWorkerTransportDiagnostic(
+    new RerankingFailed({
+      cause: genericWorkerCause(error.reason),
+      message: `Local AI reranking failed after the isolated worker retry was exhausted: ${error.message}`,
+      modelId: request.manifest.id,
+    }),
+    error,
+  );
+}
+
+function withWorkerTransportDiagnostic<A extends object>(
+  error: A & {readonly _tag?: string},
+  transport: LocalModelWorkerTransportError,
+): A {
+  return attachAnonymousTelemetryDiagnostic(error, {
+    domain: 'model-worker',
+    errorType: error._tag ?? 'LocalModelWorkerError',
+    operation: workerOperationLabel(transport.operation as WorkerOperation),
+    reason: transport.reason,
   });
 }
 

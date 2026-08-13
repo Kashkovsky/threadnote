@@ -1,7 +1,7 @@
 import {cursorCloudDocsSection} from './docsCursorCloud.js';
 import {memoryWorkflowsDocsSection} from './docsMemoryWorkflows.js';
+import {optionalAnonymousTelemetryCliCommand, optionalAnonymousTelemetryDocsArticle} from './docsTelemetry.js';
 import type {CliCommandReference, DocsSection, McpToolReference} from './docsTypes.js';
-
 export type {
   CliCommandReference,
   DocsArticle,
@@ -15,9 +15,7 @@ export type {
   DocsVisualBlock,
   McpToolReference,
 } from './docsTypes.js';
-
 export const defaultDocId = 'what-is-threadnote';
-
 export const cliCommands: CliCommandReference[] = [
   {
     command: 'install',
@@ -122,6 +120,7 @@ export const cliCommands: CliCommandReference[] = [
       'threadnote index verify',
     ],
   },
+  optionalAnonymousTelemetryCliCommand,
   {
     command: 'manage',
     summary: 'Open the loopback-only Manager for diagnostics, memories, shares, and graph visualizations.',
@@ -1802,6 +1801,7 @@ threadnote update --check`,
           },
         ],
       },
+      optionalAnonymousTelemetryDocsArticle,
       {
         id: 'logs-and-support',
         title: 'Logs and support reports',

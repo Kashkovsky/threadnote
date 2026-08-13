@@ -16,6 +16,7 @@ import {activateStandaloneRelease, pruneStandaloneReleases, withStandaloneInstal
 import {mcpConfigurationChecks, removeMcpConfigs, removeMcpSnippets, resolveMcpClients, runMcpInstall} from './mcp.js';
 import {legacyProcessDoctorCheck} from './process_diagnostics.js';
 import {maybeRunPostUpdateAfterRepair} from './update.js';
+import {readTelemetryConfiguration, telemetryEnvironmentOptOut} from './telemetry/config.js';
 import {
   currentRecallCorpusGeneration,
   loadRecallIndexData,
@@ -159,6 +160,7 @@ export const collectDoctorChecks = Effect.fn('lifecycle.collectDoctorChecks')(fu
     yield* safeDoctorCheck('storage layout', layoutReceiptCheck(fs, path, config.agentContextHome)),
     yield* safeDoctorCheck('seed manifest', manifestCheck(config.manifestPath)),
     yield* safeDoctorCheck('local generation model', localAiDoctorCheck(config)),
+    yield* telemetryDoctorCheck(config),
   );
   checks.push(...(yield* safeDoctorChecks('MCP configuration', mcpConfigurationChecks())));
   checks.push(
@@ -193,6 +195,37 @@ export const collectDoctorChecks = Effect.fn('lifecycle.collectDoctorChecks')(fu
     ),
   );
   return checks;
+});
+
+/** Read-only and fail-soft: doctor never creates consent state or contacts the configured endpoint. */
+export const telemetryDoctorCheck = Effect.fn('lifecycle.telemetryDoctorCheck')(function* (
+  config: Pick<RuntimeConfig, 'agentContextHome'>,
+) {
+  const system = yield* SystemInfo;
+  const loaded = yield* Effect.result(readTelemetryConfiguration(config));
+  if (Result.isFailure(loaded)) {
+    return {
+      detail: 'invalid or unreadable configuration; telemetry fails closed',
+      name: 'anonymous telemetry',
+      status: 'warn' as const,
+    };
+  }
+  if (loaded.success?.enabled !== true) {
+    return {
+      detail: 'disabled; no telemetry is sent',
+      name: 'anonymous telemetry',
+      status: 'ok' as const,
+    };
+  }
+  const optOut = telemetryEnvironmentOptOut(system.environment());
+  return {
+    detail:
+      optOut === undefined
+        ? `enabled by explicit consent; endpoint ${loaded.success.endpoint}`
+        : `persisted consent enabled but suppressed by ${optOut}`,
+    name: 'anonymous telemetry',
+    status: 'ok' as const,
+  };
 });
 
 function safeDoctorCheck<R>(

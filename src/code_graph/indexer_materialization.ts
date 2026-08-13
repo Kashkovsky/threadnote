@@ -186,6 +186,7 @@ export function cacheContentBatch(options: {
   const windowSize = Math.max(1, options.parserPool.capacity * 2);
   let extractionMilliseconds = 0;
   let extractionFactsBytesCompleted = 0;
+  let extractionDegradedFiles = 0;
   let extractionSourceBytesCompleted = 0;
   let extractionWorkUnitsCompleted = 0;
   let extractionPlan = undefined as CodeGraphContentBatchContext['extractionPlan'];
@@ -207,6 +208,7 @@ export function cacheContentBatch(options: {
       ? undefined
       : {
           factsBytesCompleted: extractionFactsBytesCompleted,
+          degradedFiles: extractionDegradedFiles,
           sourceBytesCompleted: extractionSourceBytesCompleted,
           sourceBytesTotal: extractionPlan.sourceBytesTotal,
           workUnitsCompleted: extractionWorkUnitsCompleted,
@@ -216,6 +218,7 @@ export function cacheContentBatch(options: {
     if (plan === undefined) {
       extractionPlan = undefined;
       extractionFactsBytesCompleted = 0;
+      extractionDegradedFiles = 0;
       extractionSourceBytesCompleted = 0;
       extractionWorkUnitsCompleted = 0;
       return;
@@ -226,6 +229,7 @@ export function cacheContentBatch(options: {
       extractionPlan.workUnitsTotal !== plan.workUnitsTotal
     ) {
       extractionFactsBytesCompleted = 0;
+      extractionDegradedFiles = 0;
       extractionSourceBytesCompleted = 0;
       extractionWorkUnitsCompleted = 0;
     }
@@ -456,6 +460,7 @@ export function cacheContentBatch(options: {
                   cacheFact,
                   facts: cacheFact.facts,
                 } satisfies CodeGraphParserResult & {readonly cacheFact: BoundedCodeGraphFact};
+                if (result.degraded) extractionDegradedFiles += 1;
                 if (!result.degraded && reuseKey !== undefined && expectedReuseCount(reuseKey) > 1) {
                   reusableExtractions.set(reuseKey, result);
                 }
@@ -470,6 +475,7 @@ export function cacheContentBatch(options: {
                     bytes: file.size,
                     ...codeGraphFileProgressDimensions(file, options.languagePacks),
                     degraded: result.degraded,
+                    ...(result.degradationReason === undefined ? {} : {degradationReason: result.degradationReason}),
                     factsBytes: result.cacheFact.bytes,
                     language: file.language,
                     parseMilliseconds: result.parseMilliseconds,
