@@ -163,6 +163,19 @@ func TestIngressRateLimitsAllRoutes(t *testing.T) {
 	}
 }
 
+func TestHealthChecksDoNotExhaustThePerSourceBudget(t *testing.T) {
+	limiter := &requestLimiter{sources: make(map[string]windowCounter)}
+	now := time.Unix(0, 0)
+	for index := 0; index < globalRequestsPerMin; index++ {
+		if !limiter.allow("health-checker", now, false) {
+			t.Fatalf("health check %d was rejected before the global limit", index+1)
+		}
+	}
+	if limiter.allow("health-checker", now, false) {
+		t.Fatal("health check was accepted after the global limit")
+	}
+}
+
 func TestRequestSourceIsEphemerallyPseudonymized(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/", nil)
 	request.Header.Set("Fly-Client-IP", "192.0.2.42")
