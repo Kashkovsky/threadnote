@@ -1152,6 +1152,23 @@ describe('code graph release evidence', () => {
 
     expect(() => assertExternalPerformanceEvidence(artifact)).not.toThrow();
     expect(() => validateRetainedPerformancePayload(artifact)).not.toThrow();
+    const harnessDeltaArtifact: BenchmarkArtifactV1 = {
+      ...artifact,
+      metadata: {
+        ...artifact.metadata,
+        releaseEvidenceHarnessCommit: artifact.environment.commit,
+        releaseEvidenceHarnessDeltaPaths: JSON.stringify([
+          'scripts/benchmark-code-graph.ts',
+          'scripts/site-performance-evidence.ts',
+          'src/evaluation/external_evidence.ts',
+        ]),
+        releaseEvidenceResolvedSha: 'f'.repeat(40),
+        releaseEvidenceSha: 'f'.repeat(40),
+        releaseEvidenceSourceMode: 'release-plus-reviewed-harness-delta',
+      },
+    };
+    expect(() => assertExternalPerformanceEvidence(harnessDeltaArtifact)).not.toThrow();
+    expect(() => validateRetainedPerformancePayload(harnessDeltaArtifact)).not.toThrow();
     const projected = retainedPerformanceArtifactFromHarness(artifact, {
       artifactSha256: 'f'.repeat(64),
       artifactUrl: '/performance/performance-evidence.json',
