@@ -2,6 +2,7 @@ import ts from 'typescript-compiler';
 import {Option} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {compareCodeUnits} from './ordering.js';
+import {documentLookupTiers, resolveLegacyDocumentReference, resolveLookupTiers} from './resolution_lookup.js';
 import type {
   CodeGraphEdge,
   CodeGraphFileFacts,
@@ -208,7 +209,7 @@ function addNormalizedLookupKeys(symbol: CodeGraphSymbol): CodeGraphSymbol {
   if (symbol.lookupKeys !== undefined && symbol.resolutionDomain !== undefined) {
     return {
       ...symbol,
-      lookupKeys: uniqueStrings([...symbol.lookupKeys, ...globalLookupKeys(symbol)]),
+      lookupKeys: uniqueStrings([...symbol.lookupKeys, ...generatedGlobalLookupKeys(symbol, symbol.resolutionDomain)]),
     };
   }
   const resolutionDomain = TYPESCRIPT_EXTENSIONS.test(symbol.path)
@@ -230,12 +231,22 @@ function addNormalizedLookupKeys(symbol: CodeGraphSymbol): CodeGraphSymbol {
         : [];
   return {
     ...symbol,
-    lookupKeys: uniqueStrings([...(symbol.lookupKeys ?? []), ...lookupKeys, ...globalLookupKeys(symbol)]),
+    lookupKeys: uniqueStrings([
+      ...(symbol.lookupKeys ?? []),
+      ...lookupKeys,
+      ...generatedGlobalLookupKeys(symbol, resolutionDomain),
+    ]),
     resolutionDomain,
   };
 }
 
-function globalLookupKeys(symbol: CodeGraphSymbol): readonly string[] {
+function generatedGlobalLookupKeys(symbol: CodeGraphSymbol, resolutionDomain: string | undefined): readonly string[] {
+  // TypeScript and JavaScript lookup is path/module scoped. Unscoped global
+  // mirrors turn otherwise file-local declarations into active repository-wide
+  // endpoints and make a bounded resolver closure impossible to prove. Keep
+  // any explicit global keys supplied by an extractor, but do not synthesize
+  // them mechanically for this resolver domain.
+  if (resolutionDomain === 'typescript') return [];
   // Generic JSON/YAML properties are lexical evidence inside their file, not
   // cross-file resolution targets. Persisting two global lookup rows for
   // every leaf duplicates a large structured-data tail without resolving an
@@ -316,13 +327,7 @@ function referenceForLegacyEdge(
     return [referenceForEdge(edge, 'workspace', [[`workspace:package:${lookupComponent(edge.targetName)}`]])];
   }
   if (edge.relation === 'documents') {
-    const lookupTiers = edge.targetName.includes('/')
-      ? [[`global:path:${lookupComponent(edge.targetName)}`]]
-      : [
-          [`global:qualified:${lookupComponent(edge.targetName)}`],
-          [`global:name:${lookupComponent(lastName(edge.targetName))}`],
-        ];
-    return [referenceForEdge(edge, 'global', lookupTiers)];
+    return [referenceForEdge(edge, 'global', documentLookupTiers(edge.targetName))];
   }
   if (!['calls', 'constructs', 'exports', 'extends', 'implements', 'overrides', 'references'].includes(edge.relation)) {
     return [];
@@ -861,17 +866,20 @@ export function createRepositoryFactResolver(
 ): RepositoryFactResolver {
   const packages = discoverPackages(files);
   const symbols = uniqueSymbols(indexFacts.flatMap(file => file.symbols));
-  const byName = groupSymbols(symbols, symbol => symbol.name);
-  const byQualifiedName = groupSymbols(symbols, symbol => symbol.qualifiedName);
-  const byPath = groupSymbols(symbols, symbol => symbol.path);
-  const byPathAndName = groupSymbols(symbols, symbol => `${symbol.path}\0${symbol.name}`);
-  const byLookupKey = groupSymbolLookupKeys(symbols);
+  // The public helper also accepts raw extracted facts. Build its private
+  // resolution indexes from the same normalized keys used by cached/persisted
+  // materialization, while returning the caller's facts and symbols unchanged.
+  const resolutionSymbols = uniqueSymbols(
+    createResolutionAttributorFromIndex(files, packages)(indexFacts).flatMap(file => file.symbols),
+  );
+  const byPathAndName = groupSymbols(resolutionSymbols, symbol => `${symbol.path}\0${symbol.name}`);
+  const byLookupKey = groupSymbolLookupKeys(resolutionSymbols);
   const packageSymbols = groupSymbols(
-    symbols.filter(symbol => symbol.kind === 'package'),
+    resolutionSymbols.filter(symbol => symbol.kind === 'package'),
     symbol => symbol.name,
   );
   const moduleSymbols = new Map(
-    symbols.filter(symbol => symbol.kind === 'module').map(symbol => [symbol.path, symbol]),
+    resolutionSymbols.filter(symbol => symbol.kind === 'module').map(symbol => [symbol.path, symbol]),
   );
   const existingPaths = new Set(files.map(file => file.path));
   const factsByPath = new Map(indexFacts.map(file => [file.path, file]));
@@ -941,22 +949,19 @@ export function createRepositoryFactResolver(
                     )
                   : edge.relation === 'depends_on'
                     ? uniqueSymbol(packageSymbols.get(edge.targetName))
-                    : edge.relation === 'documents' && edge.targetName.includes('/')
-                      ? byPath.get(edge.targetName)?.[0]
-                      : edge.relation === 'documents'
-                        ? (uniqueSymbol(byQualifiedName.get(edge.targetName)) ??
-                          uniqueSymbol(byName.get(lastName(edge.targetName))))
-                        : resolveSourceRelationshipTarget(
-                            edge,
-                            byPathAndName,
-                            imports,
-                            factsByPath,
-                            existingPaths,
-                            packages,
-                            aliases,
-                            resolutionCache,
-                            declaredReference?.arity,
-                          );
+                    : edge.relation === 'documents'
+                      ? resolveLegacyDocumentReference(edge.targetName, byLookupKey)
+                      : resolveSourceRelationshipTarget(
+                          edge,
+                          byPathAndName,
+                          imports,
+                          factsByPath,
+                          existingPaths,
+                          packages,
+                          aliases,
+                          resolutionCache,
+                          declaredReference?.arity,
+                        );
             if (!resolved) return edge;
             const provenance: CodeGraphProvenance =
               edge.provenance === 'declared' ? 'declared' : edge.relation === 'documents' ? 'syntactic' : 'resolved';
@@ -1005,18 +1010,14 @@ function resolveTypedReference(
   reference: CodeGraphReference,
   byLookupKey: ReadonlyMap<string, readonly CodeGraphSymbol[]>,
 ): CodeGraphSymbol | undefined {
-  for (const tier of reference.lookupTiers) {
-    const candidates = new Map<string, CodeGraphSymbol>();
-    for (const key of tier) {
-      for (const symbol of byLookupKey.get(key) ?? []) {
-        if (reference.relation === 'overrides' && symbol.id === reference.sourceId) continue;
-        if (symbol.resolutionDomain === reference.resolutionDomain) candidates.set(symbol.id, symbol);
-      }
-    }
-    if (candidates.size === 1) return candidates.values().next().value;
-    if (candidates.size > 1) return undefined;
-  }
-  return undefined;
+  return resolveLookupTiers(
+    reference.lookupTiers,
+    reference.resolutionDomain,
+    byLookupKey,
+    reference.relation,
+    reference.sourceId,
+    reference.exportedOnly === true,
+  );
 }
 
 function uniqueSymbols(symbols: readonly CodeGraphSymbol[]): readonly CodeGraphSymbol[] {
@@ -1881,10 +1882,6 @@ function expressionName(expression: ts.Expression): string | undefined {
     return expressionName(expression.argumentExpression);
   }
   return undefined;
-}
-
-function lastName(value: string): string {
-  return value.split('.').at(-1) ?? value;
 }
 
 function groupSymbols(

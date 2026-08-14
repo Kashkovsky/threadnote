@@ -122,7 +122,7 @@ func main() {
 }
 
 func newGatewayHandler() (http.Handler, error) {
-	schema, schemaError := loadTelemetrySchema()
+	schemas, schemaError := loadTelemetrySchemas()
 	if schemaError != nil {
 		return nil, schemaError
 	}
@@ -212,7 +212,7 @@ func newGatewayHandler() (http.Handler, error) {
 			writeStatus(response, http.StatusBadRequest)
 			return
 		}
-		canonical, validationError := canonicalTelemetryPayload(payload, schema)
+		canonical, validationError := canonicalTelemetryPayload(payload, schemas)
 		if validationError != nil {
 			writeStatus(response, http.StatusBadRequest)
 			return

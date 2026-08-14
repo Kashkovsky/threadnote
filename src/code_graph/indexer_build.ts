@@ -906,11 +906,21 @@ export const ensureCommittedBase = Effect.fn('codeGraph.ensureCommittedBase')(fu
       const leaseToken = yield* Effect.acquireRelease(Effect.succeed(lease.value), token =>
         input.store.releaseSnapshotLease(input.layout.databasePath, token).pipe(Effect.catch(() => Effect.void)),
       );
+      const summary = {
+        diagnostics: [],
+        durationMs: (yield* Clock.currentTimeMillis) - input.startedAt,
+        identity: input.identity,
+        materialization: {mode: 'reused-snapshot', stagedFiles: 0, totalFiles: cleanInventory.files.length},
+        reusedFiles: cleanInventory.files.length - cleanInventory.parsedFiles,
+        skippedFiles: cleanInventory.skipped,
+        snapshot: existing,
+      } satisfies CodeGraphIndexSummary;
       return {
         diagnostics: [],
         leaseToken: Option.some(leaseToken),
         snapshot: existing,
         stagingReusable: false,
+        summary,
       } satisfies CommittedBaseResult;
     }
   }
@@ -991,8 +1001,24 @@ export const ensureCommittedBase = Effect.fn('codeGraph.ensureCommittedBase')(fu
     // snapshot. Dirty overlays reuse the ready persisted base instead of a
     // connection-private full staging graph.
     stagingReusable: false,
+    summary,
   } satisfies CommittedBaseResult;
 });
+
+function selectedDecodedFactBytes(
+  bytesByPath: ReadonlyMap<string, number> | undefined,
+  paths: readonly string[],
+): number | undefined {
+  if (paths.length === 0) return 0;
+  if (bytesByPath === undefined) return undefined;
+  let total = 0;
+  for (const path of paths) {
+    const bytes = bytesByPath.get(path);
+    if (bytes === undefined || !Number.isSafeInteger(bytes) || bytes < 0) return undefined;
+    total = Math.min(Number.MAX_SAFE_INTEGER, total + bytes);
+  }
+  return total;
+}
 
 export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (input: {
   readonly activatePointer: boolean;
@@ -1126,6 +1152,19 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
     }
     const batches = factMaterializationBatches(input.inventory.files, cachedMetadata.bytesByPath);
     const cachedFactBytesTotal = cachedMetadata.bytes;
+    const committedHashesByPath = new Map(input.inventory.committedFiles.map(file => [file.path, file.contentHash]));
+    const changedCurrentPaths = new Set(
+      input.inventory.files
+        .filter(file => committedHashesByPath.get(file.path) !== file.contentHash)
+        .map(file => file.path),
+    );
+    // A complete materialized-shard set is consumed directly. Partial sets are
+    // discarded as a unit, so only the raw cache payloads loaded below count as
+    // replayed bytes for that path.
+    let cachedFactReplayBytesCompleted = materializedShardSetComplete ? materializedShards.bytes : 0;
+    let changedFactBytesCompleted = materializedShardSetComplete
+      ? selectedDecodedFactBytes(materializedShards.bytesByPath, [...changedCurrentPaths])
+      : 0;
     const storageEstimate = estimatedMaterializationStorageBytes(
       cachedFactBytesTotal,
       sourceBytesTotal,
@@ -1195,6 +1234,8 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
       batchesTotal,
       cachedFactBytesCompleted,
       cachedFactBytesTotal,
+      cachedFactReplayBytesCompleted,
+      ...(changedFactBytesCompleted === undefined ? {} : {changedFactBytesCompleted}),
       ...(fallbackReason === undefined ? {} : {fallbackReason}),
       factsBytesCompleted,
       ...(finalFactsBytesTotal === undefined ? {} : {factsBytesTotal: finalFactsBytesTotal}),
@@ -1419,6 +1460,15 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
         missingShardFiles,
         input.languagePacks,
       );
+      cachedFactReplayBytesCompleted = Math.min(Number.MAX_SAFE_INTEGER, cachedFactReplayBytesCompleted + cached.bytes);
+      const batchChangedFactBytes = selectedDecodedFactBytes(
+        cached.bytesByPath,
+        missingShardFiles.filter(file => changedCurrentPaths.has(file.path)).map(file => file.path),
+      );
+      changedFactBytesCompleted =
+        changedFactBytesCompleted === undefined || batchChangedFactBytes === undefined
+          ? undefined
+          : Math.min(Number.MAX_SAFE_INTEGER, changedFactBytesCompleted + batchChangedFactBytes);
       const batchLoadingMilliseconds = (yield* Clock.currentTimeMillis) - loadingStartedAt;
       loadingMilliseconds += batchLoadingMilliseconds;
       stageMilliseconds['loading-cache'] = loadingMilliseconds;

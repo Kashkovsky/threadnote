@@ -151,8 +151,12 @@ export interface CodeGraphCacheContentCoalescer {
     rows: readonly CodeGraphCacheExtractedRow[],
     context: CodeGraphContentBatchContext,
   ) => Effect.Effect<void, unknown>;
+  /** Marks the committed-to-worktree extraction boundary, even for deletion-only overlays. */
+  readonly beginOverlayExtraction: Effect.Effect<void>;
   /** Drops references only. This is safe in failure/cancellation cleanup because it never starts a write. */
   readonly discard: Effect.Effect<void>;
+  /** Exact serialized fact bytes extracted in the current inventory phase. */
+  readonly extractedFactBytes: Effect.Effect<number>;
   /** Flushes pending rows and is called only after inventory succeeds. */
   readonly flush: Effect.Effect<void, unknown>;
   readonly onContentBatch: NonNullable<CodeGraphInventoryOptions['onContentBatch']>;
@@ -190,6 +194,8 @@ export function cacheContentBatch(options: {
   let extractionSourceBytesCompleted = 0;
   let extractionWorkUnitsCompleted = 0;
   let extractionPlan = undefined as CodeGraphContentBatchContext['extractionPlan'];
+  let extractionPhase: 'none' | 'planned' | 'unplanned' = 'none';
+  let terminalExtractedFactBytes = 0;
   let persistenceMilliseconds = 0;
   let readingMilliseconds = 0;
   let pendingBytes = 0;
@@ -216,6 +222,8 @@ export function cacheContentBatch(options: {
         };
   const observeExtractionPlan = (plan: CodeGraphContentBatchContext['extractionPlan']) => {
     if (plan === undefined) {
+      if (extractionPhase !== 'unplanned') terminalExtractedFactBytes = 0;
+      extractionPhase = 'unplanned';
       extractionPlan = undefined;
       extractionFactsBytesCompleted = 0;
       extractionDegradedFiles = 0;
@@ -224,18 +232,22 @@ export function cacheContentBatch(options: {
       return;
     }
     if (
+      extractionPhase !== 'planned' ||
       extractionPlan === undefined ||
       extractionPlan.sourceBytesTotal !== plan.sourceBytesTotal ||
       extractionPlan.workUnitsTotal !== plan.workUnitsTotal
     ) {
+      terminalExtractedFactBytes = 0;
       extractionFactsBytesCompleted = 0;
       extractionDegradedFiles = 0;
       extractionSourceBytesCompleted = 0;
       extractionWorkUnitsCompleted = 0;
     }
+    extractionPhase = 'planned';
     extractionPlan = plan;
   };
   const completeExtractionMetrics = (file: CodeGraphInventoryFile, factsBytes: number) => {
+    terminalExtractedFactBytes = Math.min(Number.MAX_SAFE_INTEGER, terminalExtractedFactBytes + factsBytes);
     if (extractionPlan === undefined) return undefined;
     extractionFactsBytesCompleted = Math.min(Number.MAX_SAFE_INTEGER, extractionFactsBytesCompleted + factsBytes);
     extractionSourceBytesCompleted = Math.min(
@@ -525,6 +537,7 @@ export function cacheContentBatch(options: {
     });
   return {
     acceptExtracted,
+    beginOverlayExtraction: Effect.sync(() => observeExtractionPlan(undefined)),
     discard: Effect.sync(() => {
       pendingGroups.clear();
       pendingBytes = 0;
@@ -533,6 +546,7 @@ export function cacheContentBatch(options: {
       reusableExtractions.clear();
       reusableExtractionUses.clear();
     }),
+    extractedFactBytes: Effect.sync(() => terminalExtractedFactBytes),
     flush: Effect.gen(function* () {
       while (pendingGroups.size > 0) yield* flushOldestPendingGroup();
       reusableExtractions.clear();

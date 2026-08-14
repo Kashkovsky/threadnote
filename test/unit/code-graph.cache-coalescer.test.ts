@@ -399,6 +399,29 @@ describe('code graph parser cache coalescer', () => {
       expect(harness.calls).toEqual([]);
     }),
   );
+
+  effectIt.effect('retains exact extracted fact bytes across multiple dirty-overlay batches', () =>
+    Effect.gen(function* () {
+      const harness = coalescerHarness({capacity: 1});
+      const committed = cacheFile(0, 'src/committed');
+      const firstOverlay = {...cacheFile(1, 'src/overlay'), source: 'worktree' as const};
+      const secondOverlay = {...cacheFile(2, 'src/overlay'), source: 'worktree' as const};
+
+      yield* harness.run([committed], plannedCacheContext(1));
+      yield* harness.beginOverlayExtraction;
+      expect(yield* harness.extractedFactBytes).toBe(0);
+      yield* harness.run([firstOverlay], cacheContext(1));
+      const firstBytes = yield* harness.extractedFactBytes;
+      yield* harness.run([secondOverlay], cacheContext(1));
+      const secondBytes = yield* harness.extractedFactBytes;
+
+      const expectedFirst = serializeBoundedCodeGraphFact(emptyFacts(firstOverlay.path)).bytes;
+      const expectedSecond = serializeBoundedCodeGraphFact(emptyFacts(secondOverlay.path)).bytes;
+      expect(firstBytes).toBe(expectedFirst);
+      expect(secondBytes).toBe(expectedFirst + expectedSecond);
+      expect(secondBytes).toBeGreaterThan(0);
+    }),
+  );
 });
 
 function coalescerHarness(options: {
@@ -505,6 +528,13 @@ function cacheContext(total: number): CodeGraphContentBatchContext {
     progress: {accepted: total, completed: total, excluded: 0, phase: 'scanning', skipped: 0, total, unit: 'files'},
     readingMilliseconds: 0,
     sourceBytes: total,
+  };
+}
+
+function plannedCacheContext(total: number): CodeGraphContentBatchContext {
+  return {
+    ...cacheContext(total),
+    extractionPlan: {sourceBytesTotal: total, workUnitsTotal: Number.MAX_SAFE_INTEGER},
   };
 }
 

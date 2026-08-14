@@ -94,6 +94,152 @@ describe('project-closure persisted store', () => {
     ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
+  it.effect('admits file-local symbol set changes but rejects published persisted surfaces', () =>
+    withStoreFixture(({databasePath, file, identity, store}) =>
+      Effect.gen(function* () {
+        const published = symbol(1);
+        const oldLocal = localSymbol('oldLocal');
+        const newLocal = localSymbol('newLocal');
+        const base = snapshot(identity, 'base', 2);
+        yield* store.prepareActivation(databasePath, [file]);
+        yield* store.stageActivationFacts(databasePath, [published, oldLocal], []);
+        yield* store.activateStaged(databasePath, identity, base, {
+          fileSetFingerprint: 'same-files',
+          packProvenance: [],
+          workspaceFingerprint: 'same-workspace',
+        });
+
+        expect(
+          yield* store.preparePersistedIncrementalActivation(
+            databasePath,
+            base.id,
+            [file],
+            [fileFactsWithSymbols(file.path, [published])],
+            {resolutionClosure: 'changed'},
+          ),
+        ).toBe(true);
+        expect(
+          yield* store.preparePersistedIncrementalActivation(
+            databasePath,
+            base.id,
+            [file],
+            [fileFactsWithSymbols(file.path, [published, newLocal])],
+            {resolutionClosure: 'changed'},
+          ),
+        ).toBe(true);
+
+        expect(
+          yield* store.preparePersistedIncrementalActivation(
+            databasePath,
+            base.id,
+            [file],
+            [fileFactsWithSymbols(file.path, [published, {...newLocal, exported: true}])],
+            {resolutionClosure: 'changed'},
+          ),
+        ).toBe(false);
+        const foreignGlobal = {
+          ...newLocal,
+          lookupKeys: [...(newLocal.lookupKeys ?? []), 'global:name:foreign'],
+        };
+        expect(
+          yield* store.preparePersistedIncrementalActivation(
+            databasePath,
+            base.id,
+            [file],
+            [fileFactsWithSymbols(file.path, [published, foreignGlobal])],
+            {resolutionClosure: 'changed'},
+          ),
+        ).toBe(false);
+
+        expect(
+          yield* store.preparePersistedIncrementalActivation(
+            databasePath,
+            base.id,
+            [file],
+            [fileFactsWithSymbols(file.path, [published, newLocal])],
+            {resolutionClosure: 'changed'},
+          ),
+        ).toBe(true);
+        yield* store.resolveStagedReferences(databasePath);
+        const ready = {...snapshot(identity, 'local-surface', 2), baseSnapshotId: base.id};
+        yield* store.activateStaged(databasePath, identity, ready);
+        const graph = yield* store.loadGraph(databasePath, ready.id);
+        expect(graph.symbols.map(value => value.id).sort()).toEqual([newLocal.id, published.id].sort());
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  it.effect('fails closed when a staged persisted symbol surface cannot be decoded', () =>
+    withStoreFixture(({databasePath, file, identity, sql, store}) =>
+      Effect.gen(function* () {
+        const published = symbol(1);
+        const base = snapshot(identity, 'base', 1);
+        yield* store.prepareActivation(databasePath, [file]);
+        yield* store.stageActivationFacts(databasePath, [published], []);
+        yield* store.activateStaged(databasePath, identity, base, {
+          fileSetFingerprint: 'same-files',
+          packProvenance: [],
+          workspaceFingerprint: 'same-workspace',
+        });
+        expect(
+          yield* store.preparePersistedIncrementalActivation(
+            databasePath,
+            base.id,
+            [file],
+            [fileFacts(file.path, published)],
+            {resolutionClosure: 'changed'},
+          ),
+        ).toBe(true);
+        yield* store.resolveStagedReferences(databasePath);
+        yield* sql`UPDATE activation_symbols SET lookup_keys_json = '{' WHERE id = ${published.id}`;
+
+        const ready = {...snapshot(identity, 'malformed-surface', 1), baseSnapshotId: base.id};
+        expect((yield* Effect.exit(store.activateStaged(databasePath, identity, ready)))._tag).toBe('Failure');
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  it.effect('rejects a changed-file persisted overlay that contains a deletion-only path', () =>
+    withStoreFixture(({databasePath, file, identity, store}) =>
+      Effect.gen(function* () {
+        const published = symbol(1);
+        const deletedFile = {
+          ...file,
+          blobId: 'deleted-blob',
+          contentHash: 'deleted-hash',
+          path: 'packages/deleted/index.ts',
+        };
+        const deletedSymbol = {
+          ...published,
+          contentHash: deletedFile.contentHash,
+          id: 'deleted-symbol',
+          lookupKeys: ['typescript:project:path:packages%2Fdeleted%2Findex.ts:name:deleted'],
+          name: 'deleted',
+          path: deletedFile.path,
+          qualifiedName: 'deleted',
+        };
+        const base = {...snapshot(identity, 'base', 2), fileCount: 2};
+        yield* store.prepareActivation(databasePath, [file, deletedFile]);
+        yield* store.stageActivationFacts(databasePath, [published, deletedSymbol], []);
+        yield* store.activateStaged(databasePath, identity, base, {
+          fileSetFingerprint: 'same-files',
+          packProvenance: [],
+          workspaceFingerprint: 'same-workspace',
+        });
+
+        expect(
+          yield* store.preparePersistedIncrementalActivation(
+            databasePath,
+            base.id,
+            [file],
+            [fileFacts(file.path, published)],
+            {deletedPaths: [deletedFile.path], resolutionClosure: 'changed'},
+          ),
+        ).toBe(false);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
   it.effect('bounds reusable exact-base reexport output without returning a partial closure', () =>
     withStoreFixture(({databasePath, file, identity, store}) =>
       Effect.gen(function* () {
@@ -285,8 +431,36 @@ function symbol(arity: number): CodeGraphSymbol {
   };
 }
 
+function localSymbol(name: string): CodeGraphSymbol {
+  const path = 'packages/barrel/index.ts';
+  const encodedName = encodeURIComponent(name);
+  const encodedPath = encodeURIComponent(path);
+  return {
+    contentHash: `hash-${name}`,
+    exported: false,
+    id: `local:${name}`,
+    kind: 'function',
+    language: 'typescript',
+    lookupKeys: [
+      `typescript:project:path:${encodedPath}:name:${encodedName}`,
+      `typescript:project:path:${encodedPath}:qualified:${encodedName}`,
+    ],
+    name,
+    packageName: 'barrel',
+    path,
+    qualifiedName: name,
+    resolutionDomain: 'typescript',
+    resolutionScopeId: 'project',
+    span: {column: 1, endColumn: 2, endLine: 1, line: 1},
+  };
+}
+
 function fileFacts(path: string, value: CodeGraphSymbol): CodeGraphFileFacts {
   return {diagnostics: [], edges: [], path, references: [], symbols: [value]};
+}
+
+function fileFactsWithSymbols(path: string, symbols: readonly CodeGraphSymbol[]): CodeGraphFileFacts {
+  return {diagnostics: [], edges: [], path, references: [], symbols};
 }
 
 function snapshot(identity: RepositoryIdentity, suffix: string, symbolCount: number): CodeGraphSnapshot {

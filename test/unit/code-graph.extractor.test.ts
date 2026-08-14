@@ -101,6 +101,69 @@ describe('native code graph extraction', () => {
     ).toMatchObject({provenance: 'resolved', targetId: dependency?.id, targetName: 'dependency'});
   });
 
+  it('resolves documentation through explicit global lookup keys only', () => {
+    const cachedFiles = [
+      sourceFile('src/service.ts', 'class Service { private privateValue(): number { return 1; } }\n'),
+      sourceFile('docs/note.md', '# Internals\n\nSee `privateValue`.\n'),
+    ];
+    const workspace = discoverManifestWorkspace(cachedFiles);
+    const raw = extractRepositoryFileFacts(cachedFiles);
+    const derived = deriveCachedCodeGraphFacts(cachedFiles, workspace, raw);
+    const privateSymbol = derived.flatMap(file => file.symbols).find(symbol => symbol.name === 'privateValue');
+    const unresolved = createRepositoryFactResolver(derived, cachedFiles).resolve(derived);
+
+    expect(privateSymbol).toBeDefined();
+    expect(privateSymbol?.exported).toBe(false);
+    expect(privateSymbol?.lookupKeys?.some(key => key.startsWith('global:'))).toBe(false);
+    expect(
+      unresolved
+        .flatMap(file => file.edges)
+        .find(edge => edge.relation === 'documents' && edge.targetName === 'privateValue')?.targetId,
+    ).toBeUndefined();
+
+    const explicitRaw = raw.map(file => ({
+      ...file,
+      symbols: file.symbols.map(symbol =>
+        symbol.name === 'privateValue'
+          ? {...symbol, lookupKeys: [...(symbol.lookupKeys ?? []), 'global:name:privateValue']}
+          : symbol,
+      ),
+    }));
+    const explicitDerived = deriveCachedCodeGraphFacts(cachedFiles, workspace, explicitRaw);
+    const explicitPrivateSymbol = explicitDerived
+      .flatMap(file => file.symbols)
+      .find(symbol => symbol.name === 'privateValue');
+    const resolved = createRepositoryFactResolver(explicitDerived, cachedFiles).resolve(explicitDerived);
+
+    expect(explicitPrivateSymbol?.lookupKeys).toContain('global:name:privateValue');
+    expect(
+      resolved
+        .flatMap(file => file.edges)
+        .find(edge => edge.relation === 'documents' && edge.targetName === 'privateValue'),
+    ).toMatchObject({provenance: 'syntactic', targetId: explicitPrivateSymbol?.id, targetName: 'privateValue'});
+
+    const documentationFiles = [sourceFile('docs/a.md', 'See `Target`.\n'), sourceFile('docs/b.md', '# Target\n')];
+    const rawDocumentation = extractRepositoryFacts(documentationFiles);
+    const rawHeading = rawDocumentation.flatMap(file => file.symbols).find(symbol => symbol.name === 'Target');
+    const derivedDocumentation = deriveCachedCodeGraphFacts(
+      documentationFiles,
+      discoverManifestWorkspace(documentationFiles),
+      extractRepositoryFileFacts(documentationFiles),
+    );
+    const resolvedDocumentation = createRepositoryFactResolver(derivedDocumentation, documentationFiles).resolve(
+      derivedDocumentation,
+    );
+    const rawDocumentEdge = rawDocumentation
+      .flatMap(file => file.edges)
+      .find(edge => edge.relation === 'documents' && edge.targetName === 'Target');
+    const derivedDocumentEdge = resolvedDocumentation
+      .flatMap(file => file.edges)
+      .find(edge => edge.relation === 'documents' && edge.targetName === 'Target');
+
+    expect(rawDocumentEdge?.targetId).toBe(rawHeading?.id);
+    expect(derivedDocumentEdge?.targetId).toBe(rawHeading?.id);
+  });
+
   it('reuses immutable repository attribution across materialization batches', () => {
     const cachedFiles = [
       sourceFile('package.json', '{"name":"root-package"}\n'),

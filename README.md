@@ -62,9 +62,13 @@ Alice + Codex ──publish curated memory──▶ team Git repo
 - **Shareable diagnostics without transcripts.** Bounded rotating logs capture versions, platform, command or MCP tool
   names, timings, and typed failures—never arguments, memory content, recall results, or MCP payloads. Preview and
   explicitly submit a support report with `threadnote report-issue`.
-- **Optional anonymous telemetry.** Explicit opt-in sends only allowlisted CLI/MCP operation traces with a random
-  agent-session identity, duration, bounded process memory, subsystem phases, and typed failures—never prompts,
-  payloads, paths, error messages, stacks, or a persistent installation ID.
+- **Optional anonymous telemetry.** Explicit versioned opt-in sends only allowlisted CLI/MCP operation traces with a
+  random agent-session identity, duration, bounded process memory, subsystem phases, and typed failures. Successful
+  graph builds can additionally send coarse path-free build-kind, materialization, fallback, closure, efficiency,
+  file-count, fact-byte, and amplification buckets. Failed graph-build lifecycle observations add only bounded
+  outcome/type and interrupted ones only outcome/duration; neither adds graph classifications or buckets. Telemetry
+  never includes prompts, payloads, paths, repository or commit identity, error messages, stacks, or a persistent
+  installation ID.
 
 ## Quickstart
 

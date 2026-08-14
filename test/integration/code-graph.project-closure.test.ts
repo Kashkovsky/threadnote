@@ -199,6 +199,64 @@ describe('project-closure incremental indexing', () => {
     ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );
 
+  it.effect('uses bounded project closure when a declared TypeScript project adds an export', () =>
+    Effect.acquireUseRelease(
+      Effect.sync(createProjectClosureRepository),
+      root =>
+        Effect.gen(function* () {
+          const indexer = yield* CodeGraphIndexer;
+          const path = yield* Path.Path;
+          const store = yield* CodeGraphStore;
+          const incrementalHome = join(root, '.threadnote-added-export-incremental');
+          const fullHome = join(root, '.threadnote-added-export-full');
+          const base = yield* indexer.index({cwd: root, threadnoteHome: incrementalHome});
+          expect(base.snapshot).toMatchObject({dirty: false, state: 'ready'});
+
+          yield* Effect.sync(() => {
+            writeFile(
+              root,
+              'packages/core/index.ts',
+              'export function real() { return "real"; }\nexport function newlyPublished() { return "new"; }\n',
+            );
+          });
+          const incremental = yield* indexer.index({cwd: root, threadnoteHome: incrementalHome});
+          const full = yield* indexer.index({
+            cwd: root,
+            incrementalOverlay: false,
+            threadnoteHome: fullHome,
+          });
+          const incrementalLayout = codeGraphLayout(
+            path,
+            incrementalHome,
+            incremental.identity.checkoutId,
+            incremental.identity.worktreeId,
+          );
+          const fullLayout = codeGraphLayout(path, fullHome, full.identity.checkoutId, full.identity.worktreeId);
+          const incrementalGraph = yield* store.loadGraph(incrementalLayout.databasePath, incremental.snapshot.id);
+          const fullGraph = yield* store.loadGraph(fullLayout.databasePath, full.snapshot.id);
+
+          expect(incremental.materialization).toEqual({
+            closureProjects: 3,
+            mode: 'incremental-overlay',
+            resolutionClosure: 'project',
+            stagedFiles: 6,
+            totalFiles: 11,
+          });
+          expect(normalizeGraph(incrementalGraph)).toEqual(normalizeGraph(fullGraph));
+          expect(incrementalGraph.symbols.some(symbol => symbol.name === 'newlyPublished')).toBe(true);
+          expect(deltaPaths(incrementalLayout.databasePath, incremental.snapshot.id)).toEqual([
+            'packages/app/index.ts',
+            'packages/app/package.json',
+            'packages/barrel/index.ts',
+            'packages/barrel/package.json',
+            'packages/core/index.ts',
+            'packages/core/package.json',
+          ]);
+        }),
+      root => Effect.sync(() => rmSync(root, {force: true, recursive: true})),
+    ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
   it.effect('reparses and replaces a valid cache tuple whose payload names another path', () =>
     Effect.acquireUseRelease(
       Effect.sync(createProjectClosureRepository),

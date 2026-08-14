@@ -32,18 +32,18 @@ describe('telemetry configuration', () => {
 
     for (const malformed of [
       {},
-      {consentVersion: 1, enabled: true, endpoint: DEFAULT_TELEMETRY_ENDPOINT, version: 1},
-      {consentVersion: 1, enabled: false, endpoint: DEFAULT_TELEMETRY_ENDPOINT, version: 1},
+      {consentVersion: 2, enabled: true, endpoint: DEFAULT_TELEMETRY_ENDPOINT, version: 1},
+      {consentVersion: 2, enabled: false, endpoint: DEFAULT_TELEMETRY_ENDPOINT, version: 1},
       {
-        consentVersion: 1,
+        consentVersion: 2,
         enabled: true,
         endpoint: DEFAULT_TELEMETRY_ENDPOINT,
         sessionSalt: FIXED_SESSION_SALT,
         unexpected: true,
         version: 1,
       },
-      {consentVersion: 2, enabled: false, version: 1},
-      {consentVersion: 1, enabled: false, version: 2},
+      {consentVersion: 3, enabled: false, version: 1},
+      {consentVersion: 2, enabled: false, version: 2},
     ]) {
       expect(() => parseTelemetryConfiguration(JSON.stringify(malformed))).toThrow(TelemetryConfigurationError);
     }
@@ -124,6 +124,33 @@ describe('telemetry configuration', () => {
         yield* fs.writeFileString(outside, renderTelemetryConfiguration(disabledTelemetryConfiguration()));
         yield* fs.remove(file);
         yield* fs.symlink(outside, file);
+        expect(yield* resolveTelemetryConfiguration(config)).toBeUndefined();
+        expect(yield* Effect.exit(readTelemetryConfiguration(config))).toMatchObject({_tag: 'Failure'});
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('fails closed for enabled consent from the previous allowlist version', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-telemetry-stale-consent-'});
+        const config = {agentContextHome: home};
+        const file = yield* telemetryConfigurationPath(config);
+        yield* fs.makeDirectory(path.dirname(file), {mode: 0o700, recursive: true});
+        yield* fs.writeFileString(
+          file,
+          `${JSON.stringify({
+            consentVersion: 1,
+            enabled: true,
+            endpoint: DEFAULT_TELEMETRY_ENDPOINT,
+            sessionSalt: FIXED_SESSION_SALT,
+            version: 1,
+          })}\n`,
+          {mode: 0o600},
+        );
+
         expect(yield* resolveTelemetryConfiguration(config)).toBeUndefined();
         expect(yield* Effect.exit(readTelemetryConfiguration(config))).toMatchObject({_tag: 'Failure'});
       }),

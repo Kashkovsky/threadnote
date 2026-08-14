@@ -450,7 +450,7 @@ describe('Effect CLI', () => {
     const home = join(root, '.threadnote-test-home');
     try {
       const declarations = Array.from({length: 80}, (_, index) => {
-        const name = `pipedOutputSymbol${'x'.repeat(1_500)}${index.toString().padStart(3, '0')}`;
+        const name = `pipedOutputSymbol${'x'.repeat(2_500)}${index.toString().padStart(3, '0')}`;
         return `export const ${name} = ${index};`;
       }).join('\n');
       await writeFile(join(root, 'package.json'), '{"name":"large-piped-output"}\n');

@@ -79,6 +79,83 @@ describe('project incremental closure', () => {
   });
 
   it.prop(
+    'admits only effective-only exports whose lookup keys belong to one declared project',
+    {
+      reverseKeys: FC.boolean(),
+      suffix: FC.integer({max: 100_000, min: 0}),
+    },
+    ({reverseKeys, suffix}) => {
+      const scopeId = `p${suffix}`;
+      const name = `added${suffix}`;
+      const path = `packages/${scopeId}/index.ts`;
+      const encodedPath = encodeURIComponent(path);
+      const ownedKeys = [
+        `typescript:${scopeId}:path:${encodedPath}:name:${name}`,
+        `typescript:${scopeId}:path:${encodedPath}:qualified:${name}`,
+        `typescript:${scopeId}:path:${encodedPath}:name:${name}:arity:0`,
+        `typescript:${scopeId}:path:${encodedPath}:name:${name}:implementation`,
+      ];
+      const keys = reverseKeys ? [...ownedKeys].reverse() : ownedKeys;
+      const added: CodeGraphSymbol = {
+        ...symbol(scopeId, 0, keys),
+        id: `symbol-${suffix}`,
+        name,
+        path,
+        qualifiedName: name,
+      };
+      const projects = [project(scopeId)];
+      const committed = facts(path, [], false);
+      const effective = facts(path, [added], false);
+
+      expect(assessProjectClosureSeeds({committedFacts: [committed], effectiveFacts: [effective], projects})).toEqual({
+        mode: 'eligible',
+        planningOperations: {ownershipChecks: 1, pathIndexProjects: 1},
+        seedProjectIds: [scopeId],
+      });
+      expect(assessProjectClosureSeeds({committedFacts: [effective], effectiveFacts: [committed], projects})).toEqual({
+        mode: 'fallback',
+        reason: 'resolution-surface-changed',
+      });
+      expect(
+        assessProjectClosureSeeds({
+          committedFacts: [effective],
+          effectiveFacts: [
+            facts(
+              path,
+              [
+                {
+                  ...added,
+                  id: `renamed-symbol-${suffix}`,
+                  lookupKeys: keys.map(key => key.replaceAll(name, `renamed${suffix}`)),
+                  name: `renamed${suffix}`,
+                  qualifiedName: `renamed${suffix}`,
+                },
+              ],
+              false,
+            ),
+          ],
+          projects,
+        }),
+      ).toEqual({mode: 'fallback', reason: 'resolution-surface-changed'});
+      expect(
+        assessProjectClosureSeeds({
+          committedFacts: [facts(path, [{...added, exported: false}], false)],
+          effectiveFacts: [effective],
+          projects,
+        }),
+      ).toEqual({mode: 'fallback', reason: 'resolution-surface-changed'});
+      expect(
+        assessProjectClosureSeeds({
+          committedFacts: [committed],
+          effectiveFacts: [facts(path, [{...added, lookupKeys: [...keys, `global:name:${name}`]}], false)],
+          projects,
+        }),
+      ).toEqual({mode: 'fallback', reason: 'resolution-surface-changed'});
+    },
+    {fastCheck: {numRuns: 100}},
+  );
+
+  it.prop(
     'selects file-set closure seeds deterministically from added, modified, and deleted project paths',
     {
       currentMask: FC.integer({max: 65_535, min: 0}),

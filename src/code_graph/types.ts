@@ -212,6 +212,10 @@ export interface CodeGraphMaterializationMetrics {
   readonly batchesTotal: number;
   readonly cachedFactBytesCompleted?: number;
   readonly cachedFactBytesTotal?: number;
+  /** Exact UTF-8 bytes of decoded cached facts actually consumed by attribution. */
+  readonly cachedFactReplayBytesCompleted?: number;
+  /** Exact consumed cached-fact bytes for current paths changed from the committed inventory. */
+  readonly changedFactBytesCompleted?: number;
   /** Exact bounded reason a repository-wide rewrite was selected, when known. */
   readonly fallbackReason?: CodeGraphOverlayFallbackReason;
   /** Exact UTF-8 JSON bytes of final postprocessed and attributed facts. */

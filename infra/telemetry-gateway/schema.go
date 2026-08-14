@@ -17,7 +17,10 @@ import (
 )
 
 //go:embed telemetry-schema-v1.json
-var telemetrySchemaJSON []byte
+var telemetrySchemaV1JSON []byte
+
+//go:embed telemetry-schema-v2.json
+var telemetrySchemaV2JSON []byte
 
 type telemetrySchema struct {
 	SchemaVersion int `json:"schemaVersion"`
@@ -58,12 +61,56 @@ type compiledTelemetrySchema struct {
 	spanAttributes     map[string]struct{}
 }
 
-func loadTelemetrySchema() (*compiledTelemetrySchema, error) {
+type compiledTelemetrySchemas struct {
+	byVersion map[int]*compiledTelemetrySchema
+}
+
+var graphRegistrySpanAttributes = map[string]string{
+	"threadnote.graph.build_kind":           "buildKind",
+	"threadnote.graph.efficiency_class":     "efficiencyClass",
+	"threadnote.graph.fallback_reason":      "fallbackReason",
+	"threadnote.graph.materialization_mode": "materializationMode",
+	"threadnote.graph.resolution_closure":   "resolutionClosure",
+}
+
+var terminalGraphSpanAttributes = []string{
+	"threadnote.graph.build_kind",
+	"threadnote.graph.cached_fact_replay_bytes_bucket",
+	"threadnote.graph.changed_fact_bytes_bucket",
+	"threadnote.graph.changed_files_bucket",
+	"threadnote.graph.deleted_files_bucket",
+	"threadnote.graph.delta_files_bucket",
+	"threadnote.graph.efficiency_class",
+	"threadnote.graph.extracted_files_bucket",
+	"threadnote.graph.fact_replay_amplification_bucket",
+	"threadnote.graph.fallback_reason",
+	"threadnote.graph.final_fact_bytes_bucket",
+	"threadnote.graph.materialization_mode",
+	"threadnote.graph.resolution_closure",
+	"threadnote.graph.reused_files_bucket",
+	"threadnote.graph.rewrite_amplification_bucket",
+	"threadnote.graph.staged_files_bucket",
+	"threadnote.graph.total_files_bucket",
+}
+
+func loadTelemetrySchemas() (*compiledTelemetrySchemas, error) {
+	result := &compiledTelemetrySchemas{byVersion: make(map[int]*compiledTelemetrySchema, 2)}
+	for version, data := range map[int][]byte{1: telemetrySchemaV1JSON, 2: telemetrySchemaV2JSON} {
+		compiled, err := compileTelemetrySchema(data, version)
+		if err != nil {
+			return nil, err
+		}
+		result.byVersion[version] = compiled
+	}
+	return result, nil
+}
+
+func compileTelemetrySchema(data []byte, expectedVersion int) (*compiledTelemetrySchema, error) {
 	var raw telemetrySchema
-	if err := json.Unmarshal(telemetrySchemaJSON, &raw); err != nil {
+	if err := json.Unmarshal(data, &raw); err != nil {
 		return nil, fmt.Errorf("decode telemetry schema: %w", err)
 	}
-	if raw.SchemaVersion != 1 || raw.Limits.MaxSpansPerRequest < 1 || raw.Limits.MaxSafeInteger != 9007199254740991 || raw.Limits.MaxVersionBytes < 1 {
+	if raw.SchemaVersion != expectedVersion || raw.Limits.MaxSpansPerRequest < 1 || raw.Limits.MaxSafeInteger != 9007199254740991 || raw.Limits.MaxVersionBytes < 1 {
 		return nil, errors.New("invalid telemetry schema version or limits")
 	}
 	compiled := &compiledTelemetrySchema{
@@ -92,7 +139,11 @@ func loadTelemetrySchema() (*compiledTelemetrySchema, error) {
 		}
 		compiled.patterns[name] = value
 	}
-	for _, registry := range []string{"component", "correlationScope", "degradationReason", "errorType", "event", "failureCode", "failureDomain", "failureOperation", "failureReason", "failureRecovery", "memoryBucket", "modelWorkerOperation", "operation", "outcome", "phase", "stage", "subphase", "waitingReason"} {
+	requiredRegistries := []string{"component", "correlationScope", "degradationReason", "errorType", "event", "failureCode", "failureDomain", "failureOperation", "failureReason", "failureRecovery", "memoryBucket", "modelWorkerOperation", "operation", "outcome", "phase", "stage", "subphase", "waitingReason"}
+	if expectedVersion == 2 {
+		requiredRegistries = append(requiredRegistries, "buildKind", "efficiencyClass", "fallbackReason", "materializationMode", "resolutionClosure")
+	}
+	for _, registry := range requiredRegistries {
 		if len(compiled.registries[registry]) == 0 {
 			return nil, fmt.Errorf("empty telemetry schema registry %s", registry)
 		}
@@ -111,7 +162,7 @@ func stringSet(values []string) map[string]struct{} {
 	return result
 }
 
-func canonicalTelemetryPayload(payload []byte, schema *compiledTelemetrySchema) ([]byte, error) {
+func canonicalTelemetryPayload(payload []byte, schemas *compiledTelemetrySchemas) ([]byte, error) {
 	if err := validateTelemetryWire(payload); err != nil {
 		return nil, err
 	}
@@ -120,6 +171,10 @@ func canonicalTelemetryPayload(payload []byte, schema *compiledTelemetrySchema) 
 		return nil, errors.New("invalid OTLP protobuf")
 	}
 	if err := rejectUnknownProto(request.ProtoReflect()); err != nil {
+		return nil, err
+	}
+	schema, err := selectTelemetrySchema(request, schemas)
+	if err != nil {
 		return nil, err
 	}
 	if err := validateTelemetryRequest(request, schema); err != nil {
@@ -131,6 +186,36 @@ func canonicalTelemetryPayload(payload []byte, schema *compiledTelemetrySchema) 
 		return nil, errors.New("marshal canonical OTLP protobuf")
 	}
 	return canonical, nil
+}
+
+func selectTelemetrySchema(request *collectortracepb.ExportTraceServiceRequest, schemas *compiledTelemetrySchemas) (*compiledTelemetrySchema, error) {
+	if schemas == nil || len(request.ResourceSpans) != 1 || request.ResourceSpans[0] == nil || request.ResourceSpans[0].Resource == nil {
+		return nil, errors.New("invalid telemetry schema envelope")
+	}
+	var version int64
+	found := false
+	for _, attribute := range request.ResourceSpans[0].Resource.Attributes {
+		if attribute == nil || attribute.Key != "threadnote.telemetry.schema_version" {
+			continue
+		}
+		if found || attribute.Value == nil {
+			return nil, errors.New("invalid telemetry schema version")
+		}
+		var ok bool
+		version, ok = anyInt(attribute.Value)
+		if !ok {
+			return nil, errors.New("invalid telemetry schema version")
+		}
+		found = true
+	}
+	if !found {
+		return nil, errors.New("missing telemetry schema version")
+	}
+	schema, admitted := schemas.byVersion[int(version)]
+	if !admitted {
+		return nil, errors.New("unsupported telemetry schema version")
+	}
+	return schema, nil
 }
 
 type wireMessageKind uint8
@@ -451,6 +536,10 @@ func validateSpanAttributeValues(attributes map[string]*commonpb.AnyValue, schem
 			if !valueStringIn(value, schema.registries["failureRecovery"]) {
 				return errors.New("invalid telemetry failure recovery")
 			}
+		case graphRegistrySpanAttributes[key] != "":
+			if !valueStringIn(value, schema.registries[graphRegistrySpanAttributes[key]]) {
+				return errors.New("invalid telemetry graph classification")
+			}
 		case contains(schema.booleanSpan, key):
 			if _, ok := value.Value.(*commonpb.AnyValue_BoolValue); !ok {
 				return errors.New("invalid telemetry boolean attribute")
@@ -533,13 +622,45 @@ func validateSpanAttributeShape(attributes map[string]*commonpb.AnyValue, schema
 			return errors.New("phase outcome requires elapsed time")
 		}
 	}
-	if event == "lifecycle" {
-		value, _ := anyString(attributes["threadnote.outcome"])
-		if value != "failure" {
-			return errors.New("lifecycle event requires failure outcome")
+	operation, _ := anyString(attributes["threadnote.operation"])
+	graphAttributeCount := 0
+	for _, key := range terminalGraphSpanAttributes {
+		if _, exists := attributes[key]; exists {
+			graphAttributeCount++
 		}
-		if _, exists := attributes["error.type"]; !exists {
-			return errors.New("lifecycle event requires error type")
+	}
+	if graphAttributeCount != 0 && (schema.SchemaVersion != 2 || event != "lifecycle" || operation != "graph-build") {
+		return errors.New("graph build attributes require a version 2 graph lifecycle event")
+	}
+	if event == "lifecycle" {
+		outcomeValue, _ := anyString(attributes["threadnote.outcome"])
+		if schema.SchemaVersion == 2 && operation == "graph-build" {
+			if outcomeValue != "success" && outcomeValue != "failure" && outcomeValue != "interrupted" {
+				return errors.New("graph build lifecycle event requires a terminal outcome")
+			}
+			if outcomeValue == "success" && graphAttributeCount != len(terminalGraphSpanAttributes) {
+				return errors.New("successful graph build lifecycle event requires the complete graph surface")
+			}
+			if outcomeValue != "success" && graphAttributeCount != 0 {
+				return errors.New("non-successful graph build lifecycle event cannot include a partial graph surface")
+			}
+			if outcomeValue == "failure" {
+				if _, exists := attributes["error.type"]; !exists {
+					return errors.New("failed graph build lifecycle event requires error type")
+				}
+			}
+			if outcomeValue == "interrupted" {
+				if _, exists := attributes["error.type"]; exists {
+					return errors.New("interrupted graph build lifecycle event cannot include error type")
+				}
+			}
+		} else {
+			if outcomeValue != "failure" {
+				return errors.New("lifecycle event requires failure outcome")
+			}
+			if _, exists := attributes["error.type"]; !exists {
+				return errors.New("lifecycle event requires error type")
+			}
 		}
 	}
 	return nil

@@ -1,5 +1,6 @@
 import type {CodeGraphWorkspaceProject} from './languages/types.js';
 import {compareCodeUnits} from './ordering.js';
+import {isPublishedCodeGraphResolutionSymbol} from './resolution_surface.js';
 import type {CodeGraphFileFacts, CodeGraphInventoryFile, CodeGraphSymbol} from './types.js';
 
 export const PROJECT_INCREMENTAL_CLOSURE_MAX_FILES = 128;
@@ -164,47 +165,10 @@ export function selectProjectIncrementalClosure(
   input: ProjectIncrementalClosureSelectionInput,
 ): ProjectIncrementalClosureSelection {
   if (input.workspaceDiagnostics.length > 0) return incompletePlan();
-  const projectsById = new Map<string, CodeGraphWorkspaceProject>();
-  for (const project of input.projects) {
-    if (projectsById.has(project.id)) return incompletePlan();
-    projectsById.set(project.id, project);
-  }
-  if (!hasCompleteDeclaredDependencyModel(input.projects, projectsById)) return incompletePlan();
-
-  const seedProjectIds = uniqueSorted(input.seedProjectIds);
-  if (seedProjectIds.length === 0 || seedProjectIds.some(id => !projectsById.has(id))) return incompletePlan();
-  const reverseDependencies = new Map<string, string[]>();
-  let dependencyEdges = 0;
-  for (const project of input.projects) {
-    for (const dependencyId of project.dependencies) {
-      dependencyEdges += 1;
-      const dependency = projectsById.get(dependencyId)!;
-      if (dependency.resolutionDomain !== project.resolutionDomain) continue;
-      const dependents = reverseDependencies.get(dependencyId);
-      if (dependents) dependents.push(project.id);
-      else reverseDependencies.set(dependencyId, [project.id]);
-    }
-  }
-  for (const dependents of reverseDependencies.values()) dependents.sort(compareCodeUnits);
-
-  const closure = new Set(seedProjectIds);
-  const queue = [...seedProjectIds];
-  for (let offset = 0; offset < queue.length; offset += 1) {
-    for (const dependentId of reverseDependencies.get(queue[offset]!) ?? []) {
-      if (closure.has(dependentId)) continue;
-      closure.add(dependentId);
-      queue.push(dependentId);
-    }
-  }
-  const projectIds = [...closure].sort(compareCodeUnits);
-  if (
-    projectIds.some(id => {
-      const project = projectsById.get(id)!;
-      return project.provenance !== 'declared' || project.buildSystem === 'inferred' || project.diagnostics.length > 0;
-    })
-  ) {
-    return incompletePlan();
-  }
+  const projectClosure = declaredProjectResolutionClosure(input.projects, input.seedProjectIds);
+  if (projectClosure === undefined) return incompletePlan();
+  const {dependencyEdges, projectIds, projectsById} = projectClosure;
+  const closure = new Set(projectIds);
 
   const indexesByDomain = projectPathIndexesByDomain(input.projects);
   const affected = new Set(input.modifiedPaths);
@@ -255,8 +219,12 @@ export function selectProjectIncrementalClosure(
 
 /**
  * Determines whether changed facts may expand from the changed-file resolver to
- * project closure. Global symbol identity is immutable; only arity and lookup
- * keys owned by one declared project may differ. Static reexports seed their
+ * project closure. Committed published symbol identity is immutable; a newly
+ * exported symbol may seed its unique declared resolver project when every
+ * lookup key is owned by that project. Unexported symbols whose
+ * lookup keys are all local to their own TypeScript path are rewritten with
+ * the changed file. Only arity and lookup keys owned by one declared project
+ * may differ for existing published symbols. Static reexports seed their
  * owning project, while every other alias form fails closed.
  */
 export function assessProjectClosureSeeds(input: {
@@ -311,16 +279,14 @@ export function assessProjectClosureSeeds(input: {
 
   const committedSymbols = uniqueSymbols(input.committedFacts.flatMap(file => file.symbols));
   const effectiveSymbols = uniqueSymbols(input.effectiveFacts.flatMap(file => file.symbols));
-  if (
-    committedSymbols === undefined ||
-    effectiveSymbols === undefined ||
-    committedSymbols.size !== effectiveSymbols.size ||
-    [...committedSymbols.keys()].some(id => !effectiveSymbols.has(id))
-  ) {
+  if (committedSymbols === undefined || effectiveSymbols === undefined) {
     return {mode: 'fallback', reason: 'resolution-surface-changed'};
   }
-  for (const [id, left] of committedSymbols) {
-    const right = effectiveSymbols.get(id)!;
+  const committedPublishedSymbols = publishedSymbols(committedSymbols);
+  const effectivePublishedSymbols = publishedSymbols(effectiveSymbols);
+  for (const [id, left] of committedPublishedSymbols) {
+    const right = effectivePublishedSymbols.get(id);
+    if (right === undefined) return {mode: 'fallback', reason: 'resolution-surface-changed'};
     if (!hasSameGlobalSymbolSurface(left, right)) {
       return {mode: 'fallback', reason: 'resolution-surface-changed'};
     }
@@ -342,6 +308,24 @@ export function assessProjectClosureSeeds(input: {
       if (!sameStrings(leftGlobal, rightGlobal)) {
         return {mode: 'fallback', reason: 'resolution-surface-changed'};
       }
+    }
+    seeds.add(project.project.id);
+  }
+  for (const [id, right] of effectivePublishedSymbols) {
+    if (committedPublishedSymbols.has(id)) continue;
+    if (committedSymbols.has(id) || !right.exported) {
+      return {mode: 'fallback', reason: 'resolution-surface-changed'};
+    }
+    ownershipChecks += 1;
+    const project = declaredProjectForPath(projectsById, indexesByDomain, right.path, right.resolutionDomain);
+    if (project.mode !== 'unique') {
+      return {mode: 'fallback', reason: 'resolution-surface-changed'};
+    }
+    if (right.resolutionScopeId !== project.project.id) {
+      return {mode: 'fallback', reason: 'project-closure-incomplete'};
+    }
+    if ((right.lookupKeys ?? []).some(key => !isOwnedLookupKey(key, project.project))) {
+      return {mode: 'fallback', reason: 'resolution-surface-changed'};
     }
     seeds.add(project.project.id);
   }
@@ -450,6 +434,56 @@ function hasCompleteDeclaredDependencyModel(
   return true;
 }
 
+interface DeclaredProjectResolutionClosure {
+  readonly dependencyEdges: number;
+  readonly projectIds: readonly string[];
+  readonly projectsById: ReadonlyMap<string, CodeGraphWorkspaceProject>;
+}
+
+function declaredProjectResolutionClosure(
+  projects: readonly CodeGraphWorkspaceProject[],
+  seedProjectIds: readonly string[],
+): DeclaredProjectResolutionClosure | undefined {
+  const projectsById = uniqueProjectsById(projects);
+  if (projectsById === undefined || !hasCompleteDeclaredDependencyModel(projects, projectsById)) return undefined;
+  const seeds = uniqueSorted(seedProjectIds);
+  if (seeds.length === 0 || seeds.some(id => !projectsById.has(id))) return undefined;
+
+  const reverseDependencies = new Map<string, string[]>();
+  let dependencyEdges = 0;
+  for (const project of projects) {
+    for (const dependencyId of project.dependencies) {
+      dependencyEdges += 1;
+      const dependency = projectsById.get(dependencyId)!;
+      if (dependency.resolutionDomain !== project.resolutionDomain) continue;
+      const dependents = reverseDependencies.get(dependencyId) ?? [];
+      dependents.push(project.id);
+      reverseDependencies.set(dependencyId, dependents);
+    }
+  }
+  for (const dependents of reverseDependencies.values()) dependents.sort(compareCodeUnits);
+
+  const closure = new Set(seeds);
+  const queue = [...seeds];
+  for (let offset = 0; offset < queue.length; offset += 1) {
+    for (const dependentId of reverseDependencies.get(queue[offset]!) ?? []) {
+      if (closure.has(dependentId)) continue;
+      closure.add(dependentId);
+      queue.push(dependentId);
+    }
+  }
+  const projectIds = [...closure].sort(compareCodeUnits);
+  if (
+    projectIds.some(id => {
+      const project = projectsById.get(id)!;
+      return project.provenance !== 'declared' || project.buildSystem === 'inferred' || project.diagnostics.length > 0;
+    })
+  ) {
+    return undefined;
+  }
+  return {dependencyEdges, projectIds, projectsById};
+}
+
 function uniqueProjectsById(
   projects: readonly CodeGraphWorkspaceProject[],
 ): ReadonlyMap<string, CodeGraphWorkspaceProject> | undefined {
@@ -496,6 +530,10 @@ function uniqueSymbols(symbols: readonly CodeGraphSymbol[]): ReadonlyMap<string,
     output.set(symbol.id, symbol);
   }
   return output;
+}
+
+function publishedSymbols(symbols: ReadonlyMap<string, CodeGraphSymbol>): ReadonlyMap<string, CodeGraphSymbol> {
+  return new Map([...symbols].filter(([, symbol]) => isPublishedCodeGraphResolutionSymbol(symbol)));
 }
 
 function sameStrings(left: readonly string[], right: readonly string[]): boolean {
