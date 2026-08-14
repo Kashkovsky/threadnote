@@ -42,6 +42,9 @@ type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<
 const datasourcePlaceholder = '${DS_TEMPO}';
 const serverOwnedDashboardKeys = new Set(['id', 'iteration', 'schemaVersion', 'uid', 'version']);
 const migrationEmptyFieldConfigPanelIds = new Set([14, 15, 16, 17, 18, 19]);
+const migrationEmptyMappingsPanelIds = new Set([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+const migrationEmptyOverridesPanelIds = new Set([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13]);
+const grafanaDefaultRefreshIntervals = ['5s', '10s', '30s', '1m', '5m', '15m', '30m', '1h', '2h', '1d'];
 const grafanaCloudNamespacePattern = /^stacks-[1-9][0-9]*$/u;
 const gitCommitPattern = /^[0-9a-f]{40}$/u;
 const dashboardApiVersion = 'dashboard.grafana.app/v1';
@@ -244,19 +247,111 @@ function isMigrationEmptyFieldConfig(value: unknown): boolean {
   );
 }
 
+function isObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isExactStringArray(value: unknown, expected: readonly string[]): boolean {
+  return (
+    Array.isArray(value) && value.length === expected.length && value.every((item, index) => item === expected[index])
+  );
+}
+
+function isDatasource(value: unknown, type: string, uid: string): boolean {
+  return isObject(value) && Object.keys(value).length === 2 && value.type === type && value.uid === uid;
+}
+
+function exactTempoDatasourceUid(value: unknown): string | undefined {
+  if (
+    !isObject(value) ||
+    Object.keys(value).length !== 2 ||
+    value.type !== 'tempo' ||
+    typeof value.uid !== 'string' ||
+    value.uid.length === 0
+  ) {
+    return undefined;
+  }
+  return value.uid;
+}
+
+function mixedTempoExpressionTargetDatasourceUid(panel: Record<string, unknown>): string | undefined {
+  if (panel.id !== 13 || !Array.isArray(panel.targets) || panel.targets.length !== 3) return undefined;
+  const [left, right, expression] = panel.targets;
+  if (!isObject(left) || !isObject(right) || !isObject(expression)) return undefined;
+  const leftDatasourceUid = exactTempoDatasourceUid(left.datasource);
+  const rightDatasourceUid = exactTempoDatasourceUid(right.datasource);
+  if (
+    left.refId !== 'A' ||
+    right.refId !== 'B' ||
+    expression.refId !== 'C' ||
+    leftDatasourceUid === undefined ||
+    leftDatasourceUid !== rightDatasourceUid ||
+    !isDatasource(expression.datasource, '__expr__', '__expr__')
+  ) {
+    return undefined;
+  }
+  return leftDatasourceUid;
+}
+
+function normalizePanelMigrationNoise(panel: Record<string, unknown>): void {
+  if (panel.pluginVersion === '') delete panel.pluginVersion;
+  if (typeof panel.id !== 'number') return;
+  const targetDatasourceUid = mixedTempoExpressionTargetDatasourceUid(panel);
+  if (
+    targetDatasourceUid !== undefined &&
+    (isDatasource(panel.datasource, 'tempo', targetDatasourceUid) ||
+      isDatasource(panel.datasource, 'mixed', '-- Mixed --'))
+  ) {
+    delete panel.datasource;
+  }
+  if (migrationEmptyFieldConfigPanelIds.has(panel.id) && isMigrationEmptyFieldConfig(panel.fieldConfig)) {
+    delete panel.fieldConfig;
+    return;
+  }
+  if (!isObject(panel.fieldConfig)) return;
+  const fieldConfig = panel.fieldConfig;
+  if (isObject(fieldConfig.defaults)) {
+    if (
+      migrationEmptyMappingsPanelIds.has(panel.id) &&
+      Array.isArray(fieldConfig.defaults.mappings) &&
+      fieldConfig.defaults.mappings.length === 0
+    ) {
+      delete fieldConfig.defaults.mappings;
+    }
+    if (panel.id === 20 && Object.keys(fieldConfig.defaults).length === 0) delete fieldConfig.defaults;
+  }
+  if (
+    migrationEmptyOverridesPanelIds.has(panel.id) &&
+    Array.isArray(fieldConfig.overrides) &&
+    fieldConfig.overrides.length === 0
+  ) {
+    delete fieldConfig.overrides;
+  }
+}
+
 export function canonicalDashboardSemantics(value: unknown): string {
   const dashboard = record(cloneJson(value, 'dashboard spec'), 'dashboard spec');
   for (const key of serverOwnedDashboardKeys) delete dashboard[key];
+  if (dashboard.preload === false) delete dashboard.preload;
+  if (dashboard.weekStart === '') delete dashboard.weekStart;
+  if (
+    isObject(dashboard.templating) &&
+    Object.keys(dashboard.templating).length === 1 &&
+    Array.isArray(dashboard.templating.list) &&
+    dashboard.templating.list.length === 0
+  ) {
+    delete dashboard.templating;
+  }
+  if (
+    isObject(dashboard.timepicker) &&
+    isExactStringArray(dashboard.timepicker.refresh_intervals, grafanaDefaultRefreshIntervals)
+  ) {
+    delete dashboard.timepicker.refresh_intervals;
+  }
   if (Array.isArray(dashboard.panels)) {
     dashboard.panels = dashboard.panels.map((panelValue, index) => {
       const panel = record(panelValue, `dashboard spec.panels[${index}]`);
-      if (
-        typeof panel.id === 'number' &&
-        migrationEmptyFieldConfigPanelIds.has(panel.id) &&
-        isMigrationEmptyFieldConfig(panel.fieldConfig)
-      ) {
-        delete panel.fieldConfig;
-      }
+      normalizePanelMigrationNoise(panel);
       return panel;
     });
   }
