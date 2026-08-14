@@ -109,8 +109,8 @@ jobs:
       - name: Fail closed when writer configuration is incomplete
         if: steps.freshness.outputs.stale != 'true'
         env:
-          THREADNOTE_TELEMETRY_GRAFANA_NAMESPACE: ${{ vars.THREADNOTE_TELEMETRY_GRAFANA_NAMESPACE }}
-          THREADNOTE_TELEMETRY_GRAFANA_URL: ${{ vars.THREADNOTE_TELEMETRY_GRAFANA_URL }}
+          THREADNOTE_TELEMETRY_GRAFANA_NAMESPACE: ${{ secrets.THREADNOTE_TELEMETRY_GRAFANA_NAMESPACE }}
+          THREADNOTE_TELEMETRY_GRAFANA_URL: ${{ secrets.THREADNOTE_TELEMETRY_GRAFANA_URL }}
           THREADNOTE_TELEMETRY_GRAFANA_WRITE_TOKEN: ${{ secrets.THREADNOTE_TELEMETRY_GRAFANA_WRITE_TOKEN }}
         run: |
           if [[ -z "$THREADNOTE_TELEMETRY_GRAFANA_NAMESPACE" ]]; then
@@ -151,8 +151,8 @@ jobs:
         if: steps.freshness.outputs.stale != 'true' && steps.final_freshness.outputs.stale != 'true'
         env:
           THREADNOTE_TELEMETRY_DASHBOARD_CURRENT_SHA: ${{ github.sha }}
-          THREADNOTE_TELEMETRY_GRAFANA_NAMESPACE: ${{ vars.THREADNOTE_TELEMETRY_GRAFANA_NAMESPACE }}
-          THREADNOTE_TELEMETRY_GRAFANA_URL: ${{ vars.THREADNOTE_TELEMETRY_GRAFANA_URL }}
+          THREADNOTE_TELEMETRY_GRAFANA_NAMESPACE: ${{ secrets.THREADNOTE_TELEMETRY_GRAFANA_NAMESPACE }}
+          THREADNOTE_TELEMETRY_GRAFANA_URL: ${{ secrets.THREADNOTE_TELEMETRY_GRAFANA_URL }}
           THREADNOTE_TELEMETRY_GRAFANA_WRITE_TOKEN: ${{ secrets.THREADNOTE_TELEMETRY_GRAFANA_WRITE_TOKEN }}
         run: >-
           bun --config=/dev/null --no-env-file --no-install
@@ -185,8 +185,8 @@ jobs:
 
       - name: Fail closed when read-only verification configuration is incomplete
         env:
-          THREADNOTE_TELEMETRY_GRAFANA_NAMESPACE: ${{ vars.THREADNOTE_TELEMETRY_GRAFANA_NAMESPACE }}
-          THREADNOTE_TELEMETRY_GRAFANA_URL: ${{ vars.THREADNOTE_TELEMETRY_GRAFANA_URL }}
+          THREADNOTE_TELEMETRY_GRAFANA_NAMESPACE: ${{ secrets.THREADNOTE_TELEMETRY_GRAFANA_NAMESPACE }}
+          THREADNOTE_TELEMETRY_GRAFANA_URL: ${{ secrets.THREADNOTE_TELEMETRY_GRAFANA_URL }}
           THREADNOTE_TELEMETRY_GRAFANA_READ_TOKEN: ${{ secrets.THREADNOTE_TELEMETRY_GRAFANA_READ_TOKEN }}
         run: |
           if [[ -z "$THREADNOTE_TELEMETRY_GRAFANA_NAMESPACE" ]]; then
@@ -204,8 +204,8 @@ jobs:
 
       - name: Verify exact live state, private ACLs, and every Tempo query
         env:
-          THREADNOTE_TELEMETRY_GRAFANA_NAMESPACE: ${{ vars.THREADNOTE_TELEMETRY_GRAFANA_NAMESPACE }}
-          THREADNOTE_TELEMETRY_GRAFANA_URL: ${{ vars.THREADNOTE_TELEMETRY_GRAFANA_URL }}
+          THREADNOTE_TELEMETRY_GRAFANA_NAMESPACE: ${{ secrets.THREADNOTE_TELEMETRY_GRAFANA_NAMESPACE }}
+          THREADNOTE_TELEMETRY_GRAFANA_URL: ${{ secrets.THREADNOTE_TELEMETRY_GRAFANA_URL }}
           THREADNOTE_TELEMETRY_GRAFANA_READ_TOKEN: ${{ secrets.THREADNOTE_TELEMETRY_GRAFANA_READ_TOKEN }}
         run: >-
           bun --config=/dev/null --no-env-file --no-install

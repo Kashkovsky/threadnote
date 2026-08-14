@@ -32,6 +32,7 @@ const testGrafanaNamespace = 'stacks-123456';
 const testGrafanaUrl = 'https://threadnote-test.grafana.net';
 const currentSha = 'a'.repeat(40);
 const grafanaSharedWithMeFolderScope = 'folders:uid:sharedwithme';
+const grafanaDefaultRefreshIntervals = ['5s', '10s', '30s', '1m', '5m', '15m', '30m', '1h', '2h', '1d'];
 
 type WorkflowJob = Readonly<{
   environment?: string | Readonly<{deployment?: boolean; name: string}>;
@@ -71,6 +72,28 @@ function readDashboardArtifact(): DashboardArtifact {
 
 function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function grafanaV42DashboardSpec(spec: Readonly<Record<string, JsonValue>>): Record<string, JsonValue> {
+  const migrated = clone(spec) as Record<string, JsonValue>;
+  migrated.schemaVersion = 42;
+  migrated.preload = false;
+  delete migrated.templating;
+  migrated.timepicker = {refresh_intervals: grafanaDefaultRefreshIntervals};
+  delete migrated.weekStart;
+  const panels = migrated.panels as Record<string, JsonValue>[];
+  for (const panel of panels) {
+    panel.pluginVersion = '';
+    if (typeof panel.id !== 'number') continue;
+    const fieldConfig = panel.fieldConfig as Record<string, JsonValue>;
+    const defaults = fieldConfig.defaults as Record<string, JsonValue>;
+    if (panel.id >= 1 && panel.id <= 12) delete defaults.mappings;
+    if ((panel.id >= 1 && panel.id <= 11) || panel.id === 13) delete fieldConfig.overrides;
+    if (panel.id >= 14 && panel.id <= 19) delete panel.fieldConfig;
+    if (panel.id === 20) delete fieldConfig.defaults;
+    if (panel.id === 13) panel.datasource = {type: 'mixed', uid: '-- Mixed --'};
+  }
+  return migrated;
 }
 
 function artifactWithTitle(resource: DashboardArtifact, title: string): DashboardArtifact {
@@ -250,12 +273,7 @@ describe('direct Grafana dashboard provisioning', () => {
 
   it('normalizes only proven Grafana migration noise', () => {
     const resource = readDashboardArtifact();
-    const migrated = clone(resource.spec) as Record<string, JsonValue>;
-    migrated.schemaVersion = 42;
-    const panels = migrated.panels as Record<string, JsonValue>[];
-    for (const panel of panels) {
-      if (typeof panel.id === 'number' && panel.id >= 14 && panel.id <= 19) delete panel.fieldConfig;
-    }
+    const migrated = grafanaV42DashboardSpec(resource.spec);
     expect(canonicalDashboardSemantics(migrated)).toBe(canonicalDashboardSemantics(resource.spec));
 
     const queryDrift = clone(migrated);
@@ -267,7 +285,56 @@ describe('direct Grafana dashboard provisioning', () => {
     const unapprovedEmptyRemoval = clone(resource.spec);
     delete (unapprovedEmptyRemoval.panels as Record<string, JsonValue>[])[19]!.fieldConfig;
     expect(canonicalDashboardSemantics(unapprovedEmptyRemoval)).not.toBe(canonicalDashboardSemantics(resource.spec));
+
+    const wrongRefreshIntervals = clone(migrated);
+    wrongRefreshIntervals.timepicker = {refresh_intervals: ['17s']};
+    expect(canonicalDashboardSemantics(wrongRefreshIntervals)).not.toBe(canonicalDashboardSemantics(resource.spec));
+
+    const wrongMixedDatasource = clone(migrated);
+    (wrongMixedDatasource.panels as Record<string, JsonValue>[])[12]!.datasource = {
+      type: 'mixed',
+      uid: 'other',
+    };
+    expect(canonicalDashboardSemantics(wrongMixedDatasource)).not.toBe(canonicalDashboardSemantics(resource.spec));
+
+    const mismatchedTargetDatasources = clone(migrated);
+    const expressionTargets = (mismatchedTargetDatasources.panels as Record<string, JsonValue>[])[12]!
+      .targets as Record<string, JsonValue>[];
+    expressionTargets[1]!.datasource = {type: 'tempo', uid: 'other'};
+    expect(canonicalDashboardSemantics(mismatchedTargetDatasources)).not.toBe(
+      canonicalDashboardSemantics(resource.spec),
+    );
   });
+
+  it.prop(
+    'normalizes panel 13 from the exact shared Tempo target datasource across reviewed datasource migrations',
+    {datasourceUid: FC.string({maxLength: 32, minLength: 1})},
+    ({datasourceUid}) => {
+      const historical = clone(readDashboardArtifact().spec);
+      const panel = (historical.panels as Record<string, JsonValue>[])[12]!;
+      panel.datasource = {type: 'tempo', uid: datasourceUid};
+      const targets = panel.targets as Record<string, JsonValue>[];
+      targets[0]!.datasource = {type: 'tempo', uid: datasourceUid};
+      targets[1]!.datasource = {type: 'tempo', uid: datasourceUid};
+
+      expect(canonicalDashboardSemantics(grafanaV42DashboardSpec(historical))).toBe(
+        canonicalDashboardSemantics(historical),
+      );
+    },
+    {fastCheck: {numRuns: 40}},
+  );
+
+  it.prop(
+    'preserves arbitrary nonempty panel plugin versions as semantic drift',
+    {pluginVersion: FC.string({maxLength: 32, minLength: 1})},
+    ({pluginVersion}) => {
+      const resource = readDashboardArtifact();
+      const drift = clone(resource.spec) as Record<string, JsonValue>;
+      (drift.panels as Record<string, JsonValue>[])[0]!.pluginVersion = pluginVersion;
+      expect(canonicalDashboardSemantics(drift)).not.toBe(canonicalDashboardSemantics(resource.spec));
+    },
+    {fastCheck: {numRuns: 40}},
+  );
 
   it.prop(
     'updates only from a trusted historical state and otherwise fails closed',
@@ -295,7 +362,11 @@ describe('direct Grafana dashboard provisioning', () => {
         requestBody = body;
       },
       putResponse: new Response(null, {status: 200}),
-      updated: liveDashboard(current, {resourceVersion: 'next-rv', schemaVersion: 43}),
+      updated: liveDashboard(current, {
+        resourceVersion: 'next-rv',
+        schemaVersion: 43,
+        spec: grafanaV42DashboardSpec(current.spec),
+      }),
     });
 
     await expect(
@@ -391,6 +462,11 @@ describe('direct Grafana dashboard provisioning', () => {
     const firstTarget = (firstPanel.targets as Record<string, JsonValue>[])[0]!;
     firstPanel.datasource = {type: 'tempo', uid: 'previous-traces-datasource'};
     firstTarget.datasource = {type: 'tempo', uid: 'previous-traces-datasource'};
+    const expressionPanel = (historical.spec.panels as Record<string, JsonValue>[])[12]!;
+    expressionPanel.datasource = {type: 'tempo', uid: 'previous-traces-datasource'};
+    const expressionTargets = expressionPanel.targets as Record<string, JsonValue>[];
+    expressionTargets[0]!.datasource = {type: 'tempo', uid: 'previous-traces-datasource'};
+    expressionTargets[1]!.datasource = {type: 'tempo', uid: 'previous-traces-datasource'};
     const reader = async (args: readonly string[]): Promise<string | undefined> => {
       if (args[0] === 'log') {
         expect(args).toEqual([
@@ -413,7 +489,10 @@ describe('direct Grafana dashboard provisioning', () => {
     const artifacts = await loadHistoricalArtifacts('/unused-in-injected-test', currentSha, reader);
     expect(artifacts).toEqual([historical]);
     const current = readDashboardArtifact();
-    const harness = deploymentFetcher({current, live: liveDashboard(historical)});
+    const harness = deploymentFetcher({
+      current,
+      live: liveDashboard(historical, {spec: grafanaV42DashboardSpec(historical.spec)}),
+    });
     await expect(
       deployDashboard({
         baseUrl: testGrafanaUrl,
@@ -625,7 +704,9 @@ describe('direct Grafana dashboard provisioning', () => {
         const url = String(input);
         requests.push({method: init?.method, url});
         if (url.endsWith('/api/access-control/user/permissions')) return Response.json(readerPermissions());
-        if (url.includes('/apis/dashboard.grafana.app/')) return Response.json(liveDashboard(resource));
+        if (url.includes('/apis/dashboard.grafana.app/')) {
+          return Response.json(liveDashboard(resource, {spec: grafanaV42DashboardSpec(resource.spec)}));
+        }
         if (url.includes('/apis/folder.grafana.app/')) return Response.json(liveFolder());
         if (url.endsWith('/permissions')) return Response.json([]);
         return Response.json(successfulQueryResponse(resource));
@@ -729,6 +810,10 @@ describe('direct Grafana dashboard provisioning', () => {
     expect(deployment.if).toContain("THREADNOTE_TELEMETRY_GRAFANA_DIRECT_ENABLED == 'true'");
     expect(deploymentText).toContain('THREADNOTE_TELEMETRY_GRAFANA_WRITE_TOKEN');
     expect(deploymentText).not.toContain('THREADNOTE_TELEMETRY_GRAFANA_READ_TOKEN');
+    expect(deploymentText).toContain('secrets.THREADNOTE_TELEMETRY_GRAFANA_URL');
+    expect(deploymentText).toContain('secrets.THREADNOTE_TELEMETRY_GRAFANA_NAMESPACE');
+    expect(deploymentText).not.toContain('vars.THREADNOTE_TELEMETRY_GRAFANA_URL');
+    expect(deploymentText).not.toContain('vars.THREADNOTE_TELEMETRY_GRAFANA_NAMESPACE');
     expect(deploymentText).not.toContain('bun install');
     expect(deploymentText).toContain('git merge-base --is-ancestor');
     expect(deploymentText).toContain('git diff --quiet --no-ext-diff --no-textconv');
@@ -745,6 +830,10 @@ describe('direct Grafana dashboard provisioning', () => {
     expect(verification.if).toContain("github.repository == 'Kashkovsky/threadnote'");
     expect(verificationText).toContain('THREADNOTE_TELEMETRY_GRAFANA_READ_TOKEN');
     expect(verificationText).not.toContain('THREADNOTE_TELEMETRY_GRAFANA_WRITE_TOKEN');
+    expect(verificationText).toContain('secrets.THREADNOTE_TELEMETRY_GRAFANA_URL');
+    expect(verificationText).toContain('secrets.THREADNOTE_TELEMETRY_GRAFANA_NAMESPACE');
+    expect(verificationText).not.toContain('vars.THREADNOTE_TELEMETRY_GRAFANA_URL');
+    expect(verificationText).not.toContain('vars.THREADNOTE_TELEMETRY_GRAFANA_NAMESPACE');
     expect(verificationText).not.toContain('bun install');
     expect(verificationText).toContain(
       'bun --config=/dev/null --no-env-file --no-install scripts/telemetry-dashboard.ts verify-live',
