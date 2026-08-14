@@ -196,11 +196,26 @@ describe('standalone release workflows', () => {
       const publish = yield* readProjectFile('.github/workflows/publish.yml');
       const hostedReleaseRunners = ['macos-15-intel', 'windows-11-arm'] as const;
 
-      expect(ci).toContain('docker://rhysd/actionlint:1.7.8');
+      expect(ci).toContain(
+        'docker://rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667',
+      );
       expect(ci).toContain('args: -color');
       expect(ci).not.toMatch(/^\s*args:[^\n]*-ignore/gm);
       expect(yield* projectFileExists('.github/actionlint.yaml')).toBe(false);
-      expect(yield* projectFileExists('.github/actionlint.yml')).toBe(false);
+      expect(yield* readProjectFile('.github/actionlint.yml')).toBe(
+        [
+          'paths:',
+          '  .github/workflows/publish.yml:',
+          '    # These jobs are intentionally and immutably disabled until Windows signing is approved.',
+          '    ignore:',
+          `      - '^constant expression "false" in condition\\. remove the if: section$'`,
+          '  .github/workflows/telemetry-gateway.yml:',
+          '    # GitHub supports queue:max; Actionlint 1.7.12 predates that workflow syntax.',
+          '    ignore:',
+          `      - '^unexpected key "queue" for "concurrency" section\\. expected one of "cancel-in-progress", "group"$'`,
+          '',
+        ].join('\n'),
+      );
       for (const runner of hostedReleaseRunners) {
         expect(publish.match(new RegExp(`runner: ${runner}$`, 'gm'))).toHaveLength(1);
       }

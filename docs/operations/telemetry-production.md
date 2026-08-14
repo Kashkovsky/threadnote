@@ -108,7 +108,7 @@ permission to upgrade:
 
 ## Credentials and rotation
 
-Use five distinct identities:
+Use six distinct identities:
 
 1. `threadnote-telemetry-ingest` is single-stack and `traces:write` only. Its
    exact OTLP base URL becomes the Fly secret `GRAFANA_CLOUD_OTLP_ENDPOINT`.
@@ -135,8 +135,43 @@ Use five distinct identities:
    variable to the exact `.fly.dev/v1/traces` preflight URL until DNS and TLS
    are live. Change it to `https://telemetry.threadnote.io/v1/traces` during
    the hostname cutover; manual workflow dispatch input overrides this value.
-5. Dashboard/alert provisioning, when automated, uses a separate Grafana
+5. `THREADNOTE_TELEMETRY_FLY_DEPLOY_TOKEN` is an app-scoped Fly deploy token
+   used only by the `telemetry-production-deploy` GitHub Environment. Create it
+   with a short explicit expiry, for example:
+
+   ```sh
+   fly tokens create deploy --app threadnote-telemetry --expiry 720h \
+     --name threadnote-github-production
+   ```
+
+   Store the result as an Environment secret without printing it again. Allow
+   only `main` to deploy, require the service owner to review deployments, and
+   disallow administrator bypass where the repository plan supports it. The
+   deploy Environment must not contain Tempo read or heartbeat credentials.
+
+6. Dashboard/alert provisioning, when automated, uses a separate Grafana
    service account restricted to the required dashboard and alert resources.
+
+Do not add the deploy token or merge a runtime input until every control below
+is active:
+
+1. The default-branch Repository Ruleset requires a pull request, one approval,
+   code-owner review, signed commits, and linear history. Remove or narrow any
+   always-bypass repository role; an administrator bypass defeats workflow
+   ownership.
+2. `CODEOWNERS` owns itself, both telemetry workflows, the gateway deployment
+   classifier, `fly.toml`, `.dockerignore`, and every gateway runtime input.
+3. After its first tokenless run makes the check name selectable, add
+   **Gateway checks complete** as a required status check in the Ruleset.
+4. Create `telemetry-production-deploy`, admit only `main`, add the required
+   service-owner reviewer, and only then store
+   `THREADNOTE_TELEMETRY_FLY_DEPLOY_TOKEN`. Do not rely on GitHub implicitly
+   creating an unprotected Environment from the workflow reference.
+
+The read-only `telemetry-production` Environment intentionally has no human
+reviewer because its scheduled canary must run unattended. Its main-only branch
+rule, workflow ownership, and non-bypassable Repository Ruleset are therefore
+the protection boundary for Tempo, heartbeat, and Fly read credentials.
 
 Rotate without an ingestion gap:
 
@@ -179,9 +214,11 @@ responses, a wrong trace, malformed protobuf, or timeout fail immediately. The
 canary never prints credentials, trace/session IDs, response bodies, or URLs.
 
 Protect the `telemetry-production` GitHub Environment with a default-branch
-deployment rule and restrict secret access to this workflow. Do not require a
-human approval on scheduled jobs. Enable Actions failure notifications to the
-service owner.
+deployment rule. GitHub does not workflow-allowlist Environment secrets, so the
+Ruleset and `CODEOWNERS` controls above must protect every workflow change. Do
+not require a human approval on scheduled jobs. Its validation and canary jobs
+set `deployment: false`, so reads do not create GitHub deployment records.
+Enable Actions failure notifications to the service owner.
 
 In Grafana IRM, create a dedicated Webhook integration named
 `threadnote-telemetry-canary`, configure its escalation route, enable Heartbeat
@@ -206,23 +243,60 @@ or canary with at most one unavailable Machine. A health check must have its
 own trusted capacity path; it must not consume public per-source or global
 ingestion budget, and a path-only public bypass is forbidden.
 
-Pre-deploy:
+[`telemetry-gateway.yml`](../../.github/workflows/telemetry-gateway.yml) emits an
+always-present terminal check. Pull requests validate without credentials.
+Merges to `main` deploy only when the Docker build context, Fly configuration,
+Collector configuration, gateway runtime (including its shared internal budget
+constants), dependencies, or admitted schemas change. Dashboard,
+documentation, test-only, standalone budget-verifier command, storage-canary,
+and workflow-only changes are validated but cannot start a production rollout.
+
+The production job first rejects a superseded revision when newer `main` commits
+change a production input. Later workflow, classifier, documentation, or
+test-only commits do not strand an otherwise-current reviewed runtime rollout
+and cannot deploy by themselves. The job then requires one shared prior image,
+exactly two started Machines, and two passing service health checks. It builds
+and smokes one image, pushes that image once, resolves its registry digest, and
+gives that immutable digest to `fly deploy`. Rollouts are serialized without
+cancellation and use the checked-in canary strategy with at most one unavailable
+Machine. The deploy is update-only, so unexpected process-group drift cannot
+create additional Machines. A successful rollout must end with exactly two
+healthy Machines running the reviewed digest, healthy production and canonical
+Fly endpoints, and a stored frozen-v1 plus terminal-v2 trace. The rollout queue
+retains up to 100 pending `main` runs so a later non-runtime workflow cannot
+displace a queued deployment. The separately serialized scheduled canary
+boundedly retries its exact two-Machine check while Fly may be replacing a
+canary Machine; persistent drift still fails before it sends telemetry or
+records a heartbeat.
+
+An in-flight rollout continues under the reviewed workflow revision that
+started it. When a workflow or classifier security fix must stop that rollout,
+an operator must cancel it explicitly before merging the fix; a later
+validation-only commit deliberately does not cancel production work.
+
+Equivalent operator pre-deploy evidence is:
 
 ```sh
 go test ./...
 docker build --pull --file infra/telemetry-gateway/Dockerfile \
   --tag threadnote-telemetry-gateway:release .
 fly config validate --config fly.toml
-fly scale count 2 --app threadnote-telemetry --region fra
 fly machine list --app threadnote-telemetry --json | \
   go -C infra/telemetry-gateway run ./cmd/budget
+fly checks list --app threadnote-telemetry
 ```
 
-Deploy the exact reviewed commit, record its image digest and Fly release ID,
-then verify both Machines, routing health, logs, and the storage canary. Do not
-make a single-Machine production exception: it creates avoidable downtime for
-host failure and deploys. If one Machine is temporarily lost, restore count two
-before any deployment or credential rotation.
+The workflow fails rather than silently repairing production drift. Do not make
+a single-Machine production exception: it creates avoidable downtime for host
+failure and deploys. If one Machine is temporarily lost, an operator must
+diagnose it and restore count two before retrying any deployment or credential
+rotation.
+
+The workflow deliberately does not roll back automatically. A storage canary
+can fail because Tempo or its read path is unavailable even when the new gateway
+is healthy; blindly changing the gateway image would hide that distinction. On
+failure, diagnose first, then use the previous immutable image recorded in the
+workflow summary and follow the rollback procedure below.
 
 For a telemetry schema rollout, deployment order is a hard compatibility gate:
 
@@ -302,6 +376,7 @@ Do not increase retention or enable richer logging as an incident shortcut.
 - [Grafana Cloud usage alerts](https://grafana.com/docs/grafana-cloud/cost-management-and-billing/usage-cost-alerts/create-alerts/)
 - [Grafana IRM heartbeat monitoring](https://grafana.com/docs/grafana-cloud/alerting-and-irm/irm/integrations/configure-integrations/#enable-heartbeat-monitoring)
 - [Fly read-only tokens](https://fly.io/docs/security/tokens/)
+- [Fly app-scoped deploy tokens](https://fly.io/docs/flyctl/tokens-create-deploy/)
 - [Fly Machine availability](https://fly.io/docs/apps/app-availability/)
 - [Fly application-log retention](https://fly.io/docs/monitoring/logging-overview/)
 - [Fly Proxy request headers and transport IP](https://fly.io/docs/networking/request-headers/)

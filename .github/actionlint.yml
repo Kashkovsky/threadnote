@@ -1,0 +1,9 @@
+paths:
+  .github/workflows/publish.yml:
+    # These jobs are intentionally and immutably disabled until Windows signing is approved.
+    ignore:
+      - '^constant expression "false" in condition\. remove the if: section$'
+  .github/workflows/telemetry-gateway.yml:
+    # GitHub supports queue:max; Actionlint 1.7.12 predates that workflow syntax.
+    ignore:
+      - '^unexpected key "queue" for "concurrency" section\. expected one of "cancel-in-progress", "group"$'
