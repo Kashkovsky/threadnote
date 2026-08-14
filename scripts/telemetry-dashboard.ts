@@ -510,7 +510,7 @@ async function run(command: string | undefined): Promise<void> {
   const folder = await loadProvisionedFolder(process.cwd());
   if (command === 'render') {
     await Bun.write(telemetryDashboardProvisionedPath, await formatProvisionedDashboard(rendered));
-    console.log(`Rendered ${telemetryDashboardProvisionedPath}`);
+    process.stdout.write(`Rendered ${telemetryDashboardProvisionedPath}\n`);
     return;
   }
   if (command === 'check') {
@@ -518,7 +518,7 @@ async function run(command: string | undefined): Promise<void> {
     if (!(await artifact.exists()) || (await artifact.text()) !== (await formatProvisionedDashboard(rendered))) {
       throw new ScriptError(`Provisioned dashboard is stale; run bun scripts/telemetry-dashboard.ts render.`);
     }
-    console.log(`Verified ${telemetryDashboardProvisionedPath}`);
+    process.stdout.write(`Verified ${telemetryDashboardProvisionedPath}\n`);
     return;
   }
   if (command === 'verify-live') {
@@ -534,7 +534,9 @@ async function run(command: string | undefined): Promise<void> {
       resource: JSON.parse(rendered) as ProvisionedDashboard,
       token,
     });
-    console.log(`Verified synchronized Grafana dashboard ${telemetryDashboardUid} and its bounded Tempo queries.`);
+    process.stdout.write(
+      `Verified synchronized Grafana dashboard ${telemetryDashboardUid} and its bounded Tempo queries.\n`,
+    );
     return;
   }
   throw new ScriptError('Usage: bun scripts/telemetry-dashboard.ts <render|check|verify-live>');
@@ -542,7 +544,7 @@ async function run(command: string | undefined): Promise<void> {
 
 if (import.meta.main) {
   run(Bun.argv[2]).catch(error => {
-    console.error(error instanceof Error ? error.message : 'Telemetry dashboard operation failed.');
+    process.stderr.write(`${error instanceof Error ? error.message : 'Telemetry dashboard operation failed.'}\n`);
     process.exitCode = 1;
   });
 }
