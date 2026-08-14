@@ -18,7 +18,11 @@ type FieldOverride = Readonly<{
 
 type Transformation = Readonly<{
   id: string;
-  options: Readonly<{regex: string; renamePattern: string}>;
+  options: Readonly<{
+    regex?: string;
+    renamePattern?: string;
+    [key: string]: unknown;
+  }>;
 }>;
 
 type Panel = Readonly<{
@@ -152,6 +156,7 @@ describe('Threadnote Grafana dashboard', () => {
       expect(operationDuration?.targets[0]?.query).not.toContain('by (span.threadnote.component)');
       expect(operationDuration?.targets[0]?.query).toContain('span.threadnote.operation != "mcp-server"');
       expect(operationDuration?.targets[0]?.query).toContain('span.threadnote.operation != "mcp-broker"');
+      expect(operationDuration?.targets[0]?.query).toContain('span.threadnote.operation != "manage"');
 
       const phaseElapsed = panels.find(panel => panel.id === 6);
       expect(phaseElapsed?.type).toBe('bargauge');
@@ -167,14 +172,39 @@ describe('Threadnote Grafana dashboard', () => {
           expect(panel.transformations ?? []).toEqual([]);
           continue;
         }
-        expect(panel.transformations).toHaveLength(1);
+        const expectedTransformationCount = panel.type === 'bargauge' ? 4 : 1;
+        expect(panel.transformations).toHaveLength(expectedTransformationCount);
         const transformation = panel.transformations?.[0];
         expect(transformation?.id).toBe('renameByRegex');
+        expect(typeof transformation?.options.regex).toBe('string');
+        expect(typeof transformation?.options.renamePattern).toBe('string');
         expect(
-          rename.raw.replace(new RegExp(transformation!.options.regex, 'u'), transformation!.options.renamePattern),
+          rename.raw.replace(new RegExp(transformation!.options.regex!, 'u'), transformation!.options.renamePattern!),
         ).toBe(rename.rendered);
       }
       expect(metricRenames.size).toBe(6);
+      const descendingGaugeTransforms = [
+        {
+          id: 'reduce',
+          options: {includeTimeField: false, mode: 'seriesToRows', reducers: ['lastNotNull']},
+        },
+        {
+          id: 'sortBy',
+          options: {fields: {}, sort: [{desc: true, field: 'Last *'}]},
+        },
+        {
+          id: 'rowsToFields',
+          options: {
+            mappings: [
+              {fieldName: 'Field', handlerKey: 'field.name'},
+              {fieldName: 'Last *', handlerKey: 'field.value'},
+            ],
+          },
+        },
+      ];
+      for (const panel of [operationDuration, phaseElapsed]) {
+        expect(panel?.transformations?.slice(1)).toEqual(descendingGaugeTransforms);
+      }
       const tables = panels.filter(panel => panel.type === 'table');
       expect(tables).not.toHaveLength(0);
       for (const panel of tables) {

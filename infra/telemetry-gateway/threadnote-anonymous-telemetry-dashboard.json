@@ -360,7 +360,7 @@
         "type": "tempo",
         "uid": "${DS_TEMPO}"
       },
-      "description": "Slowest operation wall-time p50, p95, and p99 values across the selected window from the bounded numeric threadnote.duration_ms attribute. Long-lived MCP process lifecycles and OTLP span duration are intentionally excluded.",
+      "description": "Slowest operation wall-time p50, p95, and p99 values across the selected window from the bounded numeric threadnote.duration_ms attribute, ordered longest first. Long-lived MCP process lifecycles, the manager UI lifetime, and OTLP span duration are intentionally excluded.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -401,7 +401,7 @@
             "uid": "${DS_TEMPO}"
           },
           "metricsQueryType": "instant",
-          "query": "{ resource.service.name = \"threadnote\" && resource.threadnote.telemetry.schema_version = 1 && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"completion\" && span.threadnote.duration_ms != nil && span.threadnote.operation != \"mcp-server\" && span.threadnote.operation != \"mcp-broker\" } | quantile_over_time(span.threadnote.duration_ms, .5, .95, .99) by (span.threadnote.operation) | topk(20)",
+          "query": "{ resource.service.name = \"threadnote\" && resource.threadnote.telemetry.schema_version = 1 && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"completion\" && span.threadnote.duration_ms != nil && span.threadnote.operation != \"mcp-server\" && span.threadnote.operation != \"mcp-broker\" && span.threadnote.operation != \"manage\" } | quantile_over_time(span.threadnote.duration_ms, .5, .95, .99) by (span.threadnote.operation) | topk(20)",
           "queryType": "traceql",
           "refId": "A",
           "tableType": "traces"
@@ -415,6 +415,30 @@
             "regex": "^\\{p=([0-9.]+), span\\.threadnote\\.operation=\"([^\"]+)\"\\}$",
             "renamePattern": "$2: p$1"
           }
+        },
+        {
+          "id": "reduce",
+          "options": {
+            "includeTimeField": false,
+            "mode": "seriesToRows",
+            "reducers": ["lastNotNull"]
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "fields": {},
+            "sort": [{"desc": true, "field": "Last *"}]
+          }
+        },
+        {
+          "id": "rowsToFields",
+          "options": {
+            "mappings": [
+              {"fieldName": "Field", "handlerKey": "field.name"},
+              {"fieldName": "Last *", "handlerKey": "field.value"}
+            ]
+          }
         }
       ],
       "type": "bargauge"
@@ -424,7 +448,7 @@
         "type": "tempo",
         "uid": "${DS_TEMPO}"
       },
-      "description": "Phase elapsed-time p50 and p95 from checkpoint spans only, avoiding completion copies of the last phase.",
+      "description": "Phase elapsed-time p50 and p95 from checkpoint spans only, ordered longest first and avoiding completion copies of the last phase.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -478,6 +502,30 @@
           "options": {
             "regex": "^\\{p=([0-9.]+), span\\.threadnote\\.phase=\"([^\"]+)\"\\}$",
             "renamePattern": "$2: p$1"
+          }
+        },
+        {
+          "id": "reduce",
+          "options": {
+            "includeTimeField": false,
+            "mode": "seriesToRows",
+            "reducers": ["lastNotNull"]
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "fields": {},
+            "sort": [{"desc": true, "field": "Last *"}]
+          }
+        },
+        {
+          "id": "rowsToFields",
+          "options": {
+            "mappings": [
+              {"fieldName": "Field", "handlerKey": "field.name"},
+              {"fieldName": "Last *", "handlerKey": "field.value"}
+            ]
           }
         }
       ],
