@@ -134,6 +134,15 @@
         }
       ],
       "title": "Completions by component and outcome",
+      "transformations": [
+        {
+          "id": "renameByRegex",
+          "options": {
+            "regex": "^\\{span\\.threadnote\\.component=\"([^\"]+)\", span\\.threadnote\\.outcome=\"([^\"]+)\"\\}$",
+            "renamePattern": "$1: $2"
+          }
+        }
+      ],
       "type": "timeseries"
     },
     {
@@ -262,6 +271,15 @@
         }
       ],
       "title": "Top completion operations",
+      "transformations": [
+        {
+          "id": "renameByRegex",
+          "options": {
+            "regex": "^\\{span\\.threadnote\\.operation=\"([^\"]+)\", span\\.threadnote\\.outcome=\"([^\"]+)\"\\}$",
+            "renamePattern": "$1: $2"
+          }
+        }
+      ],
       "type": "timeseries"
     },
     {
@@ -326,6 +344,15 @@
         }
       ],
       "title": "Non-successful operations",
+      "transformations": [
+        {
+          "id": "renameByRegex",
+          "options": {
+            "regex": "^\\{span\\.threadnote\\.operation=\"([^\"]+)\", span\\.threadnote\\.outcome=\"([^\"]+)\"\\}$",
+            "renamePattern": "$1: $2"
+          }
+        }
+      ],
       "type": "timeseries"
     },
     {
@@ -381,6 +408,15 @@
         }
       ],
       "title": "Operation duration quantiles",
+      "transformations": [
+        {
+          "id": "renameByRegex",
+          "options": {
+            "regex": "^\\{p=([0-9.]+), span\\.threadnote\\.operation=\"([^\"]+)\"\\}$",
+            "renamePattern": "$2: p$1"
+          }
+        }
+      ],
       "type": "bargauge"
     },
     {
@@ -436,6 +472,15 @@
         }
       ],
       "title": "Phase elapsed-time quantiles",
+      "transformations": [
+        {
+          "id": "renameByRegex",
+          "options": {
+            "regex": "^\\{p=([0-9.]+), span\\.threadnote\\.phase=\"([^\"]+)\"\\}$",
+            "renamePattern": "$2: p$1"
+          }
+        }
+      ],
       "type": "bargauge"
     },
     {
@@ -500,6 +545,15 @@
         }
       ],
       "title": "Phase checkpoints",
+      "transformations": [
+        {
+          "id": "renameByRegex",
+          "options": {
+            "regex": "^\\{span\\.threadnote\\.phase=\"([^\"]+)\", span\\.threadnote\\.phase\\.outcome=\"([^\"]+)\"\\}$",
+            "renamePattern": "$1: $2"
+          }
+        }
+      ],
       "type": "timeseries"
     },
     {
@@ -775,7 +829,95 @@
           },
           "mappings": []
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "service.version"
+            },
+            "properties": [{"id": "displayName", "value": "App version"}]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "session.id"
+            },
+            "properties": [{"id": "displayName", "value": "Session"}]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "threadnote.session.scope"
+            },
+            "properties": [{"id": "displayName", "value": "Session scope"}]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "threadnote.component"
+            },
+            "properties": [{"id": "displayName", "value": "Component"}]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "threadnote.operation"
+            },
+            "properties": [{"id": "displayName", "value": "Operation"}]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "threadnote.outcome"
+            },
+            "properties": [{"id": "displayName", "value": "Outcome"}]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "error.type"
+            },
+            "properties": [{"id": "displayName", "value": "Error type"}]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "threadnote.duration_ms"
+            },
+            "properties": [
+              {"id": "displayName", "value": "Duration"},
+              {"id": "unit", "value": "ms"}
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "threadnote.failure.domain"
+            },
+            "properties": [{"id": "displayName", "value": "Failure domain"}]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "threadnote.failure.code"
+            },
+            "properties": [{"id": "displayName", "value": "Failure code"}]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "threadnote.failure.recovery"
+            },
+            "properties": [{"id": "displayName", "value": "Recovery"}]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "threadnote.invocation.id"
+            },
+            "properties": [{"id": "displayName", "value": "Invocation"}]
+          }
+        ]
       },
       "gridPos": {
         "h": 10,

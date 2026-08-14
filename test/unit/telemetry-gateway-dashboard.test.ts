@@ -11,11 +11,25 @@ type Target = Readonly<{
   tableType: string;
 }>;
 
+type FieldOverride = Readonly<{
+  matcher: Readonly<{id: string; options: string}>;
+  properties: ReadonlyArray<Readonly<{id: string; value: unknown}>>;
+}>;
+
+type Transformation = Readonly<{
+  id: string;
+  options: Readonly<{regex: string; renamePattern: string}>;
+}>;
+
 type Panel = Readonly<{
   datasource: Readonly<{type: string; uid: string}>;
+  fieldConfig: Readonly<{
+    overrides: ReadonlyArray<FieldOverride>;
+  }>;
   id: number;
   targets: ReadonlyArray<Target>;
   title: string;
+  transformations?: ReadonlyArray<Transformation>;
   type: string;
 }>;
 
@@ -31,6 +45,51 @@ const basePredicates = [
   'resource.threadnote.telemetry.schema_version = 1',
   'span:name = "threadnote.anonymous-diagnostic"',
 ];
+
+const metricRenames = new Map<number, Readonly<{raw: string; rendered: string}>>([
+  [
+    1,
+    {
+      raw: '{span.threadnote.component="cli", span.threadnote.outcome="failure"}',
+      rendered: 'cli: failure',
+    },
+  ],
+  [
+    3,
+    {
+      raw: '{span.threadnote.operation="graph.index", span.threadnote.outcome="success"}',
+      rendered: 'graph.index: success',
+    },
+  ],
+  [
+    4,
+    {
+      raw: '{span.threadnote.operation="graph.index", span.threadnote.outcome="failure"}',
+      rendered: 'graph.index: failure',
+    },
+  ],
+  [
+    5,
+    {
+      raw: '{p=0.95, span.threadnote.operation="graph.index"}',
+      rendered: 'graph.index: p0.95',
+    },
+  ],
+  [
+    6,
+    {
+      raw: '{p=0.95, span.threadnote.phase="graph.resolving"}',
+      rendered: 'graph.resolving: p0.95',
+    },
+  ],
+  [
+    7,
+    {
+      raw: '{span.threadnote.phase="recall.shared-sync", span.threadnote.phase.outcome="success"}',
+      rendered: 'recall.shared-sync: success',
+    },
+  ],
+]);
 
 describe('Threadnote Grafana dashboard', () => {
   it.effect('is reusable, privacy-scoped, and aligned with the gateway allowlist', () =>
@@ -103,7 +162,19 @@ describe('Threadnote Grafana dashboard', () => {
         const metricQueries = panel.targets.map(target => target.query).join('\n');
         expect(metricQueries).not.toContain('session.id');
         expect(metricQueries).not.toContain('invocation.id');
+        const rename = metricRenames.get(panel.id);
+        if (rename === undefined) {
+          expect(panel.transformations ?? []).toEqual([]);
+          continue;
+        }
+        expect(panel.transformations).toHaveLength(1);
+        const transformation = panel.transformations?.[0];
+        expect(transformation?.id).toBe('renameByRegex');
+        expect(
+          rename.raw.replace(new RegExp(transformation!.options.regex, 'u'), transformation!.options.renamePattern),
+        ).toBe(rename.rendered);
       }
+      expect(metricRenames.size).toBe(6);
       const tables = panels.filter(panel => panel.type === 'table');
       expect(tables).not.toHaveLength(0);
       for (const panel of tables) {
@@ -117,6 +188,26 @@ describe('Threadnote Grafana dashboard', () => {
       expect(recentFailures?.targets).toHaveLength(1);
       expect(recentFailures?.targets[0]?.query).toContain('span.threadnote.outcome != "success"');
       expect(recentFailures?.targets[0]?.query).toContain('span.threadnote.outcome != "interrupted"');
+      const failureTableDisplayNames = Object.fromEntries(
+        (recentFailures?.fieldConfig.overrides ?? []).map(override => [
+          override.matcher.options,
+          override.properties.find(property => property.id === 'displayName')?.value,
+        ]),
+      );
+      expect(failureTableDisplayNames).toEqual({
+        'error.type': 'Error type',
+        'service.version': 'App version',
+        'session.id': 'Session',
+        'threadnote.component': 'Component',
+        'threadnote.duration_ms': 'Duration',
+        'threadnote.failure.code': 'Failure code',
+        'threadnote.failure.domain': 'Failure domain',
+        'threadnote.failure.recovery': 'Recovery',
+        'threadnote.invocation.id': 'Invocation',
+        'threadnote.operation': 'Operation',
+        'threadnote.outcome': 'Outcome',
+        'threadnote.session.scope': 'Session scope',
+      });
       const scopedAttribute = /(?:resource|span)\.([A-Za-z_][A-Za-z0-9_.]*)/gu;
       const attributes = new Set(
         queries.flatMap(query => Array.from(query.matchAll(scopedAttribute), match => match[1]!)),
