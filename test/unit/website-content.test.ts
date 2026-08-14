@@ -26,6 +26,11 @@ import {
 import {graphAnalyzeScenario, graphInspectScenario, heroScenario} from '../../website/src/content/landing.js';
 import {managerDemoShares, managerDemoTabs} from '../../website/src/content/managerDemo.js';
 import {
+  checkedInEmbeddingContextPerformance,
+  embeddingContextPerformanceArtifactPath,
+  summarizeEmbeddingContextValues,
+} from '../../website/src/content/embeddingContextPerformance.js';
+import {
   createDocsSearchIndex,
   DOCS_SEARCH_MAXIMUM_LENGTH,
   DOCS_SEARCH_MAXIMUM_TERMS,
@@ -1506,6 +1511,94 @@ describe('Threadnote 4 website content', () => {
     expect(worktreeReadinessArtifactPath).toBe('evidence/code-graph-worktree-readiness-v4.0.1.json');
     expect(viteConfig).toContain('fileName: worktreeReadinessArtifactPath');
     expect(viteConfig).toContain('this.emitFile');
+  });
+
+  it('derives the v4.2.5 CPU embedding results from retained raw samples and exact provenance', async () => {
+    const artifactFile = join(
+      root,
+      'test',
+      'evaluation',
+      'candidates',
+      'threadnote-4.2.5',
+      'benchmarks',
+      'darwin-arm64-m1-max',
+      'code-graph-embedding-contexts-10000-2026-08-14.json',
+    );
+    const [artifactBytes, pageSource, viteConfig] = await Promise.all([
+      readFile(artifactFile),
+      readFile(join(root, 'website', 'src', 'pages', 'PerformancePage.tsx'), 'utf8'),
+      readFile(join(root, 'website', 'vite.config.ts'), 'utf8'),
+    ]);
+    const artifact = JSON.parse(artifactBytes.toString('utf8')) as {
+      observations: readonly unknown[];
+      source: {harness: {commit: string; path: string; sha256: string}; threadnoteCommit: string};
+    };
+    const harnessBytes = execFileSync(
+      'git',
+      ['show', `${artifact.source.harness.commit}:${artifact.source.harness.path}`],
+      {cwd: root},
+    );
+
+    expect(artifact.source).toMatchObject({
+      threadnoteCommit: '304738cccc51ac5fd944b7e3fe7139a79ee180ff',
+      harness: {
+        commit: '304738cccc51ac5fd944b7e3fe7139a79ee180ff',
+        path: 'scripts/benchmark-code-graph-embedding-contexts.ts',
+      },
+    });
+    expect(sha256Hex(harnessBytes)).toBe(artifact.source.harness.sha256);
+    expect(artifact.observations).toHaveLength(16);
+    expect(checkedInEmbeddingContextPerformance).toMatchObject({
+      environment: {
+        cpu: 'Apple M1 Max',
+        cpuMathCores: 8,
+        model: {id: 'bge-small-en-v1.5-q8'},
+        modelGpuLayers: 0,
+      },
+      promotion: {candidate: 8, eligibleForReviewedDefaultChange: true, roundWinsAgainstOne: 4},
+      scope: {observations: 16, rounds: 4, scaleSymbols: 10_000},
+    });
+    expect(
+      checkedInEmbeddingContextPerformance.results.map(result => ({
+        cold: result.coldIndexMilliseconds.median,
+        contexts: result.contexts,
+        speedup: result.pairedMedianSpeedup,
+        vectors: result.coldVectorMilliseconds.median,
+      })),
+    ).toEqual([
+      {cold: 61_841.63025, contexts: 1, speedup: 1, vectors: 50_721.883667},
+      {cold: 49_046.387666, contexts: 2, speedup: 1.253911843830802, vectors: 37_847.605625},
+      {cold: 45_736.534709, contexts: 4, speedup: 1.412931081545555, vectors: 34_026.777709},
+      {cold: 42_400.637875, contexts: 8, speedup: 1.4851069914475903, vectors: 30_992.511291},
+    ]);
+    expect(checkedInEmbeddingContextPerformance.rssIncreasePercent).toBeCloseTo(5.9859, 4);
+    expect(embeddingContextPerformanceArtifactPath).toBe('evidence/code-graph-embedding-contexts-10000-v4.2.5.json');
+    expect(viteConfig).toContain('fileName: embeddingContextPerformanceArtifactPath');
+    expect(pageSource).toContain('Graph embeddings use the CPU you already have');
+    expect(pageSource).toContain('upper-median paired-run');
+    expect(pageSource).toContain('Same-machine engineering comparison, not a portable SLA');
+    expect(pageSource).not.toMatch(/61_841|42_400|1\.485106/);
+  });
+
+  it('summarizes embedding-context observations independently of input order', () => {
+    fc.assert(
+      fc.property(fc.array(fc.integer({min: 0, max: 10_000_000}), {maxLength: 25, minLength: 1}), values => {
+        const summary = summarizeEmbeddingContextValues(values);
+        const reversed = summarizeEmbeddingContextValues([...values].reverse());
+        const sorted = [...values].sort((left, right) => left - right);
+        const percentile = (quantile: number) =>
+          sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * quantile))]!;
+
+        expect(summary).toEqual(reversed);
+        expect(summary).toEqual({
+          maximum: sorted.at(-1),
+          median: percentile(0.5),
+          minimum: sorted[0],
+          p25: percentile(0.25),
+          p75: percentile(0.75),
+        });
+      }),
+    );
   });
 
   it('summarizes worktree-readiness samples independently of input order', () => {
