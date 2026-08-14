@@ -897,10 +897,38 @@ function decodeDiagnostics(value: unknown): Option.Option<LlamaCppDiagnostics> {
   ) {
     return Option.none();
   }
+  const embeddingContextPlan = decodeEmbeddingContextPlanDiagnostics(value.embeddingContextPlan);
+  if (value.embeddingContextPlan !== undefined && Option.isNone(embeddingContextPlan)) return Option.none();
   return Option.some({
     backend: value.backend,
     buildType: value.buildType,
     cpuMathCores: value.cpuMathCores,
+    ...(Option.isSome(embeddingContextPlan) ? {embeddingContextPlan: embeddingContextPlan.value} : {}),
+  });
+}
+
+function decodeEmbeddingContextPlanDiagnostics(
+  value: unknown,
+): Option.Option<NonNullable<LlamaCppDiagnostics['embeddingContextPlan']>> {
+  if (value === undefined) return Option.none();
+  if (
+    !isRecord(value) ||
+    ![1, 2, 4, 8].includes(value.requestedContexts as number) ||
+    ![1, 2, 4, 8].includes(value.effectiveContexts as number) ||
+    (value.modelGpuLayers !== undefined &&
+      (typeof value.modelGpuLayers !== 'number' ||
+        !Number.isSafeInteger(value.modelGpuLayers) ||
+        value.modelGpuLayers < 0)) ||
+    !Array.isArray(value.threadCounts) ||
+    !value.threadCounts.every(threads => typeof threads === 'number' && Number.isSafeInteger(threads) && threads > 0)
+  ) {
+    return Option.none();
+  }
+  return Option.some({
+    effectiveContexts: value.effectiveContexts as number,
+    ...(value.modelGpuLayers === undefined ? {} : {modelGpuLayers: value.modelGpuLayers as number}),
+    requestedContexts: value.requestedContexts as number,
+    threadCounts: value.threadCounts as number[],
   });
 }
 

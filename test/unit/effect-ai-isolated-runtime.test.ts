@@ -24,6 +24,40 @@ const embeddingManifest = {
 const generationManifest = BUILTIN_MODEL_MANIFESTS.find(candidate => candidate.role === 'generation')!;
 
 describe('isolated local model runtime', () => {
+  it.effect('round-trips the effective native embedding context plan in diagnostics', () => {
+    const spawn: LocalModelWorkerSpawner = () => {
+      const worker = new FakeWorkerProcess(request => {
+        worker.respond(request, {
+          backend: 'metal',
+          buildType: 'prebuilt',
+          cpuMathCores: 10,
+          embeddingContextPlan: {
+            effectiveContexts: 4,
+            modelGpuLayers: 0,
+            requestedContexts: 4,
+            threadCounts: [3, 3, 2, 2],
+          },
+        });
+      });
+      return worker;
+    };
+
+    return Effect.gen(function* () {
+      const runtime = yield* LocalModelRuntime;
+      expect(yield* runtime.diagnostics).toEqual({
+        backend: 'metal',
+        buildType: 'prebuilt',
+        cpuMathCores: 10,
+        embeddingContextPlan: {
+          effectiveContexts: 4,
+          modelGpuLayers: 0,
+          requestedContexts: 4,
+          threadCounts: [3, 3, 2, 2],
+        },
+      });
+    }).pipe(provideTestLayer(runtimeLayer(spawn)));
+  });
+
   it.effect('boots the standalone source worker when called from a Bun development script', () =>
     Effect.gen(function* () {
       const system = yield* SystemInfo;

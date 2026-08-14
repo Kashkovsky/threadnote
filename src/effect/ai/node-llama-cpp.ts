@@ -1,4 +1,4 @@
-import {Effect, Layer, Path} from 'effect';
+import {Effect, Exit, Layer, Path, Scope} from 'effect';
 import {fromPromiseInterruptible} from '../errors.js';
 import {SystemInfo} from '../system.js';
 import {
@@ -41,10 +41,12 @@ interface NativeRankingContext {
 interface NativeModel {
   readonly disposed: boolean;
   readonly dispose: () => Promise<void>;
+  readonly gpuLayers?: number;
   readonly createEmbeddingContext: (options: {
     readonly contextSize?: number;
     readonly createSignal: AbortSignal;
     readonly ignoreMemorySafetyChecks: false;
+    readonly threads?: number;
   }) => Promise<NativeEmbeddingContext>;
   readonly createRankingContext: (options: {
     readonly contextSize?: number;
@@ -121,14 +123,21 @@ interface NodeLlamaCppModule {
 const EMBEDDING_CONTEXT_TOKEN_RESERVE = 16;
 const EMBEDDING_WINDOW_OVERLAP_TOKENS = 32;
 const discardNativeLog = (_level: string, _message: string): void => undefined;
+const EMBEDDING_CONTEXT_POOL_SIZES = [1, 2, 4, 8] as const;
+
+export type EmbeddingContextPoolSize = (typeof EMBEDDING_CONTEXT_POOL_SIZES)[number];
+export const THREADNOTE_EMBEDDING_CONTEXTS_ENV = 'THREADNOTE_EMBEDDING_CONTEXTS';
 
 export interface NodeLlamaCppLayerOptions {
+  readonly embeddingContextPoolSize?: EmbeddingContextPoolSize;
   readonly embeddingGpuLayers?: number;
   readonly loadModule?: () => Promise<NodeLlamaCppModule>;
 }
 
 interface NativeEmbeddingPolicy {
   readonly architecture?: string;
+  readonly contextPoolSize?: EmbeddingContextPoolSize;
+  readonly contextPoolSizeEnvironment?: string;
   readonly gpuLayers?: number;
   readonly platform?: string;
 }
@@ -150,6 +159,7 @@ export function nodeLlamaCppEngineLayer(options: NodeLlamaCppLayerOptions = {}) 
     Effect.gen(function* () {
       let loadModule = options.loadModule;
       let embeddingPolicy: NativeEmbeddingPolicy = {
+        contextPoolSize: options.embeddingContextPoolSize ?? 1,
         gpuLayers: options.embeddingGpuLayers,
       };
       if (!loadModule) {
@@ -157,6 +167,8 @@ export function nodeLlamaCppEngineLayer(options: NodeLlamaCppLayerOptions = {}) 
         const system = yield* SystemInfo;
         embeddingPolicy = {
           architecture: system.architecture,
+          contextPoolSize: options.embeddingContextPoolSize,
+          contextPoolSizeEnvironment: system.environment()[THREADNOTE_EMBEDDING_CONTEXTS_ENV],
           gpuLayers: options.embeddingGpuLayers,
           platform: system.platform,
         };
@@ -221,34 +233,81 @@ function makeEngine(
   module: NodeLlamaCppModule,
   embeddingPolicy: NativeEmbeddingPolicy,
 ): LlamaCppEngineShape {
+  const diagnostics: LlamaCppEngineShape['diagnostics'] & {
+    embeddingContextPlan?: NonNullable<LlamaCppEngineShape['diagnostics']['embeddingContextPlan']>;
+  } = {
+    backend: llama.gpu === false ? 'cpu' : llama.gpu,
+    buildType: llama.buildType,
+    cpuMathCores: llama.cpuMathCores,
+  };
   return {
-    diagnostics: {
-      backend: llama.gpu === false ? 'cpu' : llama.gpu,
-      buildType: llama.buildType,
-      cpuMathCores: llama.cpuMathCores,
-    },
+    diagnostics,
     loadEmbeddingSession: options =>
       Effect.gen(function* () {
+        const contextPoolSize = yield* Effect.try({
+          try: () =>
+            embeddingPolicy.contextPoolSize ??
+            parseEmbeddingContextPoolSize(embeddingPolicy.contextPoolSizeEnvironment),
+          catch: cause =>
+            new ModelLoadFailed({
+              cause,
+              message: `${THREADNOTE_EMBEDDING_CONTEXTS_ENV} must be one of 1, 2, 4, or 8.`,
+              modelId: options.modelId,
+            }),
+        });
+        const parentScope = yield* Scope.Scope;
+        const sessionScope = yield* Scope.fork(parentScope);
         const gpuLayers = resolveNativeEmbeddingGpuLayers({
           architecture: embeddingPolicy.architecture,
           layerGpuLayers: embeddingPolicy.gpuLayers,
           modelDarwinArm64GpuLayers: options.darwinArm64EmbeddingGpuLayers,
           platform: embeddingPolicy.platform,
         });
-        const model = yield* acquireModel(llama, options, gpuLayers);
-        const context = yield* Effect.acquireRelease(
-          fromPromiseInterruptible(
-            signal =>
-              model.createEmbeddingContext({
-                contextSize: options.contextSize,
-                createSignal: signal,
-                ignoreMemorySafetyChecks: false,
-              }),
-            cause => modelLoadError(options, cause, 'embedding context'),
-          ),
-          native => disposeIgnoringFailure(native),
+        const load = Effect.gen(function* () {
+          const model = yield* acquireModel(llama, options, gpuLayers);
+          const activeBatches = new Set<Promise<unknown>>();
+          yield* Scope.addFinalizer(
+            sessionScope,
+            fromPromiseInterruptible(
+              () => Promise.allSettled([...activeBatches]).then(() => undefined),
+              cause => cause,
+            ).pipe(Effect.ignore),
+          );
+          const modelGpuLayers = model.gpuLayers ?? gpuLayers ?? (llama.gpu === false ? 0 : undefined);
+          const contextPlan = nativeEmbeddingContextPlan({
+            cpuMathCores: llama.cpuMathCores,
+            modelGpuLayers,
+            requestedContexts: contextPoolSize,
+          });
+          diagnostics.embeddingContextPlan = {
+            effectiveContexts: contextPlan.contexts,
+            ...(modelGpuLayers === undefined ? {} : {modelGpuLayers}),
+            requestedContexts: contextPoolSize,
+            threadCounts: contextPlan.threadCounts.filter((threads): threads is number => threads !== undefined),
+          };
+          const contexts = yield* Effect.forEach(
+            contextPlan.threadCounts,
+            threads =>
+              Effect.acquireRelease(
+                fromPromiseInterruptible(
+                  signal =>
+                    model.createEmbeddingContext({
+                      contextSize: options.contextSize,
+                      createSignal: signal,
+                      ignoreMemorySafetyChecks: false,
+                      ...(threads === undefined ? {} : {threads}),
+                    }),
+                  cause => modelLoadError(options, cause, 'embedding context'),
+                ),
+                native => disposeIgnoringFailure(native),
+              ),
+            {concurrency: 1},
+          );
+          return embeddingSession(options, model, contexts, activeBatches, exit => Scope.close(sessionScope, exit));
+        }).pipe(Effect.provideService(Scope.Scope, sessionScope));
+        return yield* load.pipe(
+          Effect.onExit(exit => (Exit.isFailure(exit) ? Scope.close(sessionScope, exit) : Effect.void)),
         );
-        return embeddingSession(options, model, context);
       }),
     loadGenerationSession: options =>
       Effect.gen(function* () {
@@ -293,6 +352,38 @@ export function resolveNativeEmbeddingGpuLayers(options: {
     options.layerGpuLayers ??
     (options.platform === 'darwin' && options.architecture === 'arm64' ? options.modelDarwinArm64GpuLayers : undefined)
   );
+}
+
+export function parseEmbeddingContextPoolSize(value: string | undefined): EmbeddingContextPoolSize {
+  if (value === undefined || value.trim() === '') return 1;
+  const parsed = Number(value);
+  if (!EMBEDDING_CONTEXT_POOL_SIZES.some(candidate => candidate === parsed)) {
+    throw new RangeError(`${THREADNOTE_EMBEDDING_CONTEXTS_ENV} must be one of 1, 2, 4, or 8.`);
+  }
+  return parsed as EmbeddingContextPoolSize;
+}
+
+export function nativeEmbeddingContextPlan(options: {
+  readonly cpuMathCores: number;
+  readonly modelGpuLayers: number | undefined;
+  readonly requestedContexts: EmbeddingContextPoolSize;
+}): {
+  readonly contexts: EmbeddingContextPoolSize;
+  readonly threadCounts: readonly (number | undefined)[];
+} {
+  if (options.modelGpuLayers !== 0 || options.requestedContexts === 1) {
+    return {contexts: 1, threadCounts: [undefined]};
+  }
+  const availableCores = Math.max(1, Math.floor(options.cpuMathCores));
+  const contexts = [...EMBEDDING_CONTEXT_POOL_SIZES]
+    .reverse()
+    .find(candidate => candidate <= options.requestedContexts && candidate <= availableCores)!;
+  const baseThreads = Math.floor(availableCores / contexts);
+  const remainder = availableCores % contexts;
+  return {
+    contexts,
+    threadCounts: Array.from({length: contexts}, (_, index) => baseThreads + (index < remainder ? 1 : 0)),
+  };
 }
 
 function generationSession(
@@ -410,20 +501,19 @@ function acquireModel(llama: NativeLlama, options: LocalModelLoadOptions, gpuLay
 function embeddingSession(
   options: LocalModelLoadOptions & {readonly dimensions: number},
   model: NativeModel,
-  context: NativeEmbeddingContext,
+  contexts: readonly NativeEmbeddingContext[],
+  activeBatches: Set<Promise<unknown>>,
+  close: (exit: Exit.Exit<unknown, unknown>) => Effect.Effect<void>,
 ): LlamaEmbeddingSession {
   return {
     dimensions: options.dimensions,
     embedMany: inputs =>
       fromPromiseInterruptible(
         signal => {
-          const disposeOnAbort = () => {
-            void context.dispose();
-          };
-          signal.addEventListener('abort', disposeOnAbort, {once: true});
-          return embedInputsSequentially(model, context, inputs, options.contextSize).finally(() => {
-            signal.removeEventListener('abort', disposeOnAbort);
-          });
+          const running = embedInputsWithContextPool(model, contexts, inputs, options.contextSize, signal);
+          const tracked = running.finally(() => activeBatches.delete(tracked));
+          activeBatches.add(tracked);
+          return tracked;
         },
         cause =>
           isAbortError(cause)
@@ -453,6 +543,7 @@ function embeddingSession(
               )
             : Effect.succeed(vectors);
         }),
+        Effect.onExit(exit => (Exit.isFailure(exit) ? close(exit) : Effect.void)),
       ),
     modelId: options.modelId,
   };
@@ -491,17 +582,80 @@ async function embeddingForInput(
   return {vector: magnitude > 0 ? pooled.map(value => value / magnitude) : pooled};
 }
 
-async function embedInputsSequentially(
+async function embedInputsWithContextPool(
   model: NativeModel,
-  context: NativeEmbeddingContext,
+  contexts: readonly NativeEmbeddingContext[],
   inputs: readonly string[],
   contextSize: number | undefined,
+  signal: AbortSignal,
 ): Promise<readonly NativeEmbedding[]> {
-  const embeddings: NativeEmbedding[] = [];
-  for (const input of inputs) {
-    embeddings.push(await embeddingForInput(model, context, input, contextSize));
+  const embeddings = new Array<NativeEmbedding>(inputs.length);
+  let cursor = 0;
+  let failed = false;
+  let failure: unknown;
+  let stopped = signal.aborted;
+  let contextDisposal: Promise<void> | undefined;
+  const stop = () => {
+    stopped = true;
+  };
+  signal.addEventListener('abort', stop, {once: true});
+  const workers = contexts.slice(0, inputs.length).map(async context => {
+    for (;;) {
+      if (stopped || failed) return;
+      const index = cursor;
+      cursor += 1;
+      if (index >= inputs.length) return;
+      try {
+        embeddings[index] = await embeddingForInput(model, context, inputs[index]!, contextSize);
+      } catch (cause) {
+        if (signal.aborted) {
+          stopped = true;
+          return;
+        }
+        if (!failed) {
+          failed = true;
+          failure = cause;
+          contextDisposal = disposeEmbeddingContexts(contexts);
+          await contextDisposal;
+        }
+        return;
+      }
+    }
+  });
+  try {
+    await Promise.allSettled(workers);
+    if (failed) {
+      await contextDisposal;
+      await disposeEmbeddingModel(model);
+      throw failure;
+    }
+    return embeddings;
+  } finally {
+    signal.removeEventListener('abort', stop);
   }
-  return embeddings;
+}
+
+async function disposeEmbeddingContexts(contexts: readonly NativeEmbeddingContext[]): Promise<void> {
+  await Promise.all(
+    contexts.map(async context => {
+      if (context.disposed) return;
+      try {
+        await context.dispose();
+      } catch {
+        // Preserve the embedding failure or interruption that triggered disposal.
+      }
+    }),
+  );
+}
+
+async function disposeEmbeddingModel(model: NativeModel): Promise<void> {
+  if (!model.disposed) {
+    try {
+      await model.dispose();
+    } catch {
+      // Preserve the embedding failure or interruption that triggered disposal.
+    }
+  }
 }
 
 function embeddingInputWindows(

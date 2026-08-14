@@ -23,6 +23,12 @@ export interface LlamaCppDiagnostics {
   readonly backend: string;
   readonly buildType: 'localBuild' | 'prebuilt';
   readonly cpuMathCores: number;
+  readonly embeddingContextPlan?: {
+    readonly effectiveContexts: number;
+    readonly modelGpuLayers?: number;
+    readonly requestedContexts: number;
+    readonly threadCounts: readonly number[];
+  };
 }
 
 export interface LlamaEmbeddingSession {
