@@ -86,6 +86,19 @@ describe('Threadnote Grafana dashboard', () => {
       expect(combined).toContain('quantile_over_time(span.threadnote.duration_ms, .5, .95, .99)');
       expect(combined).toContain('span.threadnote.event = "checkpoint"');
 
+      const operationDuration = panels.find(panel => panel.id === 5);
+      expect(operationDuration?.type).toBe('bargauge');
+      expect(operationDuration?.targets[0]?.metricsQueryType).toBe('instant');
+      expect(operationDuration?.targets[0]?.query).toContain('by (span.threadnote.operation)');
+      expect(operationDuration?.targets[0]?.query).not.toContain('by (span.threadnote.component)');
+      expect(operationDuration?.targets[0]?.query).toContain('span.threadnote.operation != "mcp-server"');
+      expect(operationDuration?.targets[0]?.query).toContain('span.threadnote.operation != "mcp-broker"');
+
+      const phaseElapsed = panels.find(panel => panel.id === 6);
+      expect(phaseElapsed?.type).toBe('bargauge');
+      expect(phaseElapsed?.targets[0]?.metricsQueryType).toBe('instant');
+      expect(phaseElapsed?.targets[0]?.query).toContain('by (span.threadnote.phase)');
+
       for (const panel of panels.filter(candidate => candidate.type !== 'table')) {
         const metricQueries = panel.targets.map(target => target.query).join('\n');
         expect(metricQueries).not.toContain('session.id');

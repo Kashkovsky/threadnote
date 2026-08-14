@@ -333,24 +333,11 @@
         "type": "tempo",
         "uid": "${DS_TEMPO}"
       },
-      "description": "Operation wall-time p50, p95, and p99 from the bounded numeric threadnote.duration_ms attribute. OTLP span duration is intentionally not used.",
+      "description": "Slowest operation wall-time p50, p95, and p99 values across the selected window from the bounded numeric threadnote.duration_ms attribute. Long-lived MCP process lifecycles and OTLP span duration are intentionally excluded.",
       "fieldConfig": {
         "defaults": {
           "color": {
             "mode": "palette-classic"
-          },
-          "custom": {
-            "drawStyle": "line",
-            "fillOpacity": 8,
-            "lineInterpolation": "linear",
-            "lineWidth": 2,
-            "pointSize": 4,
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            }
           },
           "mappings": [],
           "unit": "ms"
@@ -365,16 +352,20 @@
       },
       "id": 5,
       "options": {
-        "legend": {
-          "calcs": ["max", "mean"],
-          "displayMode": "table",
-          "placement": "right",
-          "showLegend": true
+        "displayMode": "gradient",
+        "maxVizHeight": 300,
+        "minVizHeight": 16,
+        "minVizWidth": 8,
+        "namePlacement": "left",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
         },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
+        "showUnfilled": true,
+        "sizing": "auto",
+        "valueMode": "color"
       },
       "targets": [
         {
@@ -382,15 +373,15 @@
             "type": "tempo",
             "uid": "${DS_TEMPO}"
           },
-          "metricsQueryType": "range",
-          "query": "{ resource.service.name = \"threadnote\" && resource.threadnote.telemetry.schema_version = 1 && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"completion\" && span.threadnote.duration_ms != nil } | quantile_over_time(span.threadnote.duration_ms, .5, .95, .99) by (span.threadnote.component)",
+          "metricsQueryType": "instant",
+          "query": "{ resource.service.name = \"threadnote\" && resource.threadnote.telemetry.schema_version = 1 && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"completion\" && span.threadnote.duration_ms != nil && span.threadnote.operation != \"mcp-server\" && span.threadnote.operation != \"mcp-broker\" } | quantile_over_time(span.threadnote.duration_ms, .5, .95, .99) by (span.threadnote.operation) | topk(20)",
           "queryType": "traceql",
           "refId": "A",
           "tableType": "traces"
         }
       ],
       "title": "Operation duration quantiles",
-      "type": "timeseries"
+      "type": "bargauge"
     },
     {
       "datasource": {
@@ -402,19 +393,6 @@
         "defaults": {
           "color": {
             "mode": "palette-classic"
-          },
-          "custom": {
-            "drawStyle": "line",
-            "fillOpacity": 8,
-            "lineInterpolation": "linear",
-            "lineWidth": 2,
-            "pointSize": 4,
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            }
           },
           "mappings": [],
           "unit": "ms"
@@ -429,16 +407,20 @@
       },
       "id": 6,
       "options": {
-        "legend": {
-          "calcs": ["max", "mean"],
-          "displayMode": "table",
-          "placement": "right",
-          "showLegend": true
+        "displayMode": "gradient",
+        "maxVizHeight": 300,
+        "minVizHeight": 16,
+        "minVizWidth": 8,
+        "namePlacement": "left",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
         },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
+        "showUnfilled": true,
+        "sizing": "auto",
+        "valueMode": "color"
       },
       "targets": [
         {
@@ -446,7 +428,7 @@
             "type": "tempo",
             "uid": "${DS_TEMPO}"
           },
-          "metricsQueryType": "range",
+          "metricsQueryType": "instant",
           "query": "{ resource.service.name = \"threadnote\" && resource.threadnote.telemetry.schema_version = 1 && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"checkpoint\" && span.threadnote.phase.elapsed_ms != nil } | quantile_over_time(span.threadnote.phase.elapsed_ms, .5, .95) by (span.threadnote.phase)",
           "queryType": "traceql",
           "refId": "A",
@@ -454,7 +436,7 @@
         }
       ],
       "title": "Phase elapsed-time quantiles",
-      "type": "timeseries"
+      "type": "bargauge"
     },
     {
       "datasource": {
