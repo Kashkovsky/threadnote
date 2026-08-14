@@ -79,10 +79,13 @@ source, or generated artifact.
 Grafana owns the root `schemaVersion`. The PUT preserves the exact live value
 and the post-write GET requires it to remain unchanged, preventing schema
 downgrades. Semantic comparison ignores that root field and the other App API
-server fields. The only structural migration noise tolerated is omission of
-an exactly empty `{defaults: {}, overrides: []}` `fieldConfig` on the six
-known panels 14–19. Query, panel, nonempty field configuration, layout, and all
-other differences remain drift.
+server fields. It also normalizes only the exact Grafana v42 defaults observed
+on this dashboard: empty plugin versions; known empty mappings, overrides, and
+field configuration members; the empty templating/week-start defaults; the
+standard refresh-interval list; `preload: false`; and the Mixed parent
+datasource for the fixed Tempo-plus-expression panel. Query targets, nonempty
+or unknown defaults, panel content, layout, and all other differences remain
+drift.
 
 After a successful PUT, a second GET must show the same immutable UID, a
 different resourceVersion, the preserved schemaVersion, and the exact intended
@@ -147,7 +150,8 @@ a maintenance window before setting the enable variable:
    trusted operator, and remove administrator bypass. Add a second independent
    trusted reviewer before enabling self-review prevention. Configure
    `THREADNOTE_TELEMETRY_GRAFANA_URL` and
-   `THREADNOTE_TELEMETRY_GRAFANA_NAMESPACE` as variables in both Environments.
+   `THREADNOTE_TELEMETRY_GRAFANA_NAMESPACE` as secrets in both Environments so
+   GitHub masks the private deployment identifiers in workflow logs.
    The URL must be an uncredentialed root Grafana Cloud HTTPS origin whose
    hostname ends in `.grafana.net`, with no non-default port. The namespace must
    use the private `stacks-<numeric Stack ID>` form and must not be printed.
