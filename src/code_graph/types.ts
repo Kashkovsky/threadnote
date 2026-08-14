@@ -212,6 +212,10 @@ export interface CodeGraphMaterializationMetrics {
   readonly batchesTotal: number;
   readonly cachedFactBytesCompleted?: number;
   readonly cachedFactBytesTotal?: number;
+  /** Exact UTF-8 bytes of decoded cached facts actually consumed by attribution. */
+  readonly cachedFactReplayBytesCompleted?: number;
+  /** Exact consumed cached-fact bytes for current paths changed from the committed inventory. */
+  readonly changedFactBytesCompleted?: number;
   /** Exact bounded reason a repository-wide rewrite was selected, when known. */
   readonly fallbackReason?: CodeGraphOverlayFallbackReason;
   /** Exact UTF-8 JSON bytes of final postprocessed and attributed facts. */
@@ -336,6 +340,7 @@ export type CodeGraphProgress =
         readonly bytes: number;
         readonly classifier?: string;
         readonly degraded?: boolean;
+        readonly degradationReason?: import('./parser_worker.js').ParserWorkerFailureReason;
         readonly factsBytes?: number;
         readonly language: string;
         readonly parseMilliseconds?: number;

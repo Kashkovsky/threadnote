@@ -81,9 +81,14 @@ describe('dependency-aware CI workflow', () => {
     const quality = ci.jobs.quality!;
     const standard = ci.jobs.standard_tests!;
     const long = ci.jobs.long_tests!;
-    const actionlint = quality.steps?.find(step => step.uses === 'docker://rhysd/actionlint:1.7.8');
+    const remotePostgres = ci.jobs.remote_memory_postgres!;
+    const actionlint = quality.steps?.find(
+      step =>
+        step.uses ===
+        'docker://rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667',
+    );
 
-    expect(primary.needs).toEqual(['changes', 'quality', 'standard_tests', 'long_tests']);
+    expect(primary.needs).toEqual(['changes', 'quality', 'standard_tests', 'long_tests', 'remote_memory_postgres']);
     expect(primary.if).toBe('always()');
     expect(primary.steps?.some(step => step.name === 'Require every applicable test shard')).toBe(true);
 
@@ -121,6 +126,20 @@ describe('dependency-aware CI workflow', () => {
       THREADNOTE_VITEST_LONG_GROUP: '${{ matrix.group }}',
     });
     expect(long.steps?.some(step => step.uses?.startsWith('actions/upload-artifact@'))).toBe(false);
+
+    expect(remotePostgres).toMatchObject({
+      needs: 'changes',
+      if: "needs.changes.outputs.code == 'true'",
+    });
+    expect(remotePostgres.steps?.filter(step => step.uses?.startsWith('actions/checkout@'))).toHaveLength(1);
+    expect(
+      stepForRun(remotePostgres, 'bun --bun vitest run test/integration/remote-memory-postgres.test.ts').env,
+    ).toEqual({
+      THREADNOTE_TEST_POSTGRES_URL: 'postgres://postgres:postgres@127.0.0.1:5432/threadnote_ci',
+    });
+    expect(primary.steps?.[0]?.env).toMatchObject({
+      REMOTE_MEMORY_POSTGRES_RESULT: '${{ needs.remote_memory_postgres.result }}',
+    });
   });
 
   it('keeps the quota-aware long-test plan bounded and non-overlapping', () => {
@@ -147,7 +166,7 @@ describe('dependency-aware CI workflow', () => {
     ]);
   });
 
-  it('gates quality, Windows, bytecode, model, and release matrices independently', () => {
+  it('gates quality, Windows, bytecode, and self-contained release matrices independently', () => {
     const jobs = workflow('.github/workflows/ci.yml').jobs;
 
     expect(jobs['recall-quality']).toMatchObject({
@@ -158,15 +177,14 @@ describe('dependency-aware CI workflow', () => {
       needs: 'changes',
       if: "needs.changes.outputs.windows == 'true'",
     });
-    for (const name of ['prepare-e2e-model', 'standalone-targets']) {
-      expect(jobs[name]).toMatchObject({
-        needs: 'changes',
-        if: "needs.changes.outputs.release == 'true'",
-      });
-    }
+    expect(jobs['prepare-e2e-model']).toBeUndefined();
+    expect(jobs['standalone-targets']).toMatchObject({
+      needs: 'changes',
+      if: "needs.changes.outputs.release == 'true'",
+    });
     expect(jobs['self-contained-distribution']).toMatchObject({
-      needs: ['changes', 'prepare-e2e-model'],
-      if: "needs.changes.outputs.release == 'true' && needs.prepare-e2e-model.result == 'success'",
+      needs: 'changes',
+      if: "needs.changes.outputs.release == 'true'",
     });
   });
 

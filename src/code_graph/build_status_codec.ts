@@ -352,6 +352,8 @@ function parseMaterializationMetrics(value: unknown): CodeGraphMaterializationMe
   for (const key of [
     'cachedFactBytesCompleted',
     'cachedFactBytesTotal',
+    'cachedFactReplayBytesCompleted',
+    'changedFactBytesCompleted',
     'factsBytesCompleted',
     'factsBytesTotal',
   ] as const) {
@@ -395,6 +397,12 @@ function parseMaterializationMetrics(value: unknown): CodeGraphMaterializationMe
       ? {}
       : {cachedFactBytesCompleted: Number(value.cachedFactBytesCompleted)}),
     ...(value.cachedFactBytesTotal === undefined ? {} : {cachedFactBytesTotal: Number(value.cachedFactBytesTotal)}),
+    ...(value.cachedFactReplayBytesCompleted === undefined
+      ? {}
+      : {cachedFactReplayBytesCompleted: Number(value.cachedFactReplayBytesCompleted)}),
+    ...(value.changedFactBytesCompleted === undefined
+      ? {}
+      : {changedFactBytesCompleted: Number(value.changedFactBytesCompleted)}),
     ...(value.factsBytesCompleted === undefined ? {} : {factsBytesCompleted: Number(value.factsBytesCompleted)}),
     ...(value.factsBytesTotal === undefined ? {} : {factsBytesTotal: Number(value.factsBytesTotal)}),
     ...(value.loadingMilliseconds === undefined ? {} : {loadingMilliseconds: Number(value.loadingMilliseconds)}),
@@ -706,6 +714,7 @@ function parseExtraction(value: unknown): CodeGraphBuildExtraction | undefined {
 
 function parseScanningMetrics(value: unknown): CodeGraphScanningMetrics | undefined {
   if (!isRecord(value)) return undefined;
+  if (value.degradedFiles !== undefined && !isNonNegativeSafeInteger(value.degradedFiles)) return undefined;
   for (const key of [
     'factsBytesCompleted',
     'sourceBytesCompleted',
@@ -722,6 +731,7 @@ function parseScanningMetrics(value: unknown): CodeGraphScanningMetrics | undefi
     return undefined;
   }
   return {
+    ...(value.degradedFiles === undefined ? {} : {degradedFiles: Number(value.degradedFiles)}),
     factsBytesCompleted: Number(value.factsBytesCompleted),
     sourceBytesCompleted: Number(value.sourceBytesCompleted),
     sourceBytesTotal: Number(value.sourceBytesTotal),

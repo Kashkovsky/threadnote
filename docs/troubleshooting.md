@@ -89,6 +89,12 @@ logging failure cannot fail the command.
 Review the files before attaching them to a support report. The active file is newest; numbered files are progressively
 older.
 
+For failures that are difficult to reproduce, optional anonymous telemetry can correlate allowlisted command and MCP
+tool outcomes during one agent session. It is off by default. Run `threadnote telemetry enable` to preview the data and
+destination, then rerun with `--apply` only if you consent. Use `threadnote telemetry status` to inspect the effective
+state and `threadnote telemetry disable --apply` to revoke it. Telemetry never replaces the local logs or an explicit
+support report; see [Optional anonymous telemetry](./telemetry.md).
+
 Create a Threadnote GitHub issue through an exact public preview:
 
 ```sh

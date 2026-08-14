@@ -1,0 +1,107 @@
+name: threadnote-remote-memory
+
+services:
+  remote-memory-db:
+    image: postgres:17.6-alpine
+    environment:
+      POSTGRES_DB: threadnote_remote
+      POSTGRES_PASSWORD: ${THREADNOTE_REMOTE_BOOTSTRAP_PASSWORD:?set THREADNOTE_REMOTE_BOOTSTRAP_PASSWORD}
+      POSTGRES_USER: postgres
+      THREADNOTE_REMOTE_MIGRATOR_PASSWORD: ${THREADNOTE_REMOTE_MIGRATOR_PASSWORD:?set THREADNOTE_REMOTE_MIGRATOR_PASSWORD}
+      THREADNOTE_REMOTE_RUNTIME_PASSWORD: ${THREADNOTE_REMOTE_RUNTIME_PASSWORD:?set THREADNOTE_REMOTE_RUNTIME_PASSWORD}
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres -d threadnote_remote']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+    volumes:
+      - remote-memory-postgres:/var/lib/postgresql/data
+      - ./initdb/001-create-roles.sh:/docker-entrypoint-initdb.d/001-create-roles.sh:ro
+
+  migrate:
+    build:
+      context: ../..
+      dockerfile: deploy/remote-memory/Dockerfile
+    cap_drop:
+      - ALL
+    command: ['bun', 'src/standalone.ts', 'remote-memory-operator', 'migrate']
+    depends_on:
+      remote-memory-db:
+        condition: service_healthy
+    environment:
+      THREADNOTE_REMOTE_DATABASE_URL: ${THREADNOTE_REMOTE_MIGRATOR_DATABASE_URL:?set THREADNOTE_REMOTE_MIGRATOR_DATABASE_URL}
+    read_only: true
+    restart: 'no'
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+
+  runtime-grants:
+    image: postgres:17.6-alpine
+    cap_drop:
+      - ALL
+    command: ['psql', '--set=ON_ERROR_STOP=1', '--file=/threadnote-grants/001-runtime.sql']
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      PGDATABASE: threadnote_remote
+      PGHOST: remote-memory-db
+      PGPASSWORD: ${THREADNOTE_REMOTE_MIGRATOR_PASSWORD:?set THREADNOTE_REMOTE_MIGRATOR_PASSWORD}
+      PGUSER: threadnote_remote_migrator
+    read_only: true
+    restart: 'no'
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    volumes:
+      - ./grants/001-runtime.sql:/threadnote-grants/001-runtime.sql:ro
+
+  remote-memory:
+    build:
+      context: ../..
+      dockerfile: deploy/remote-memory/Dockerfile
+    cap_drop:
+      - ALL
+    depends_on:
+      runtime-grants:
+        condition: service_completed_successfully
+    environment:
+      THREADNOTE_REMOTE_ALLOWED_HOSTS: ${THREADNOTE_REMOTE_ALLOWED_HOSTS:-localhost:8787}
+      THREADNOTE_REMOTE_ALLOWED_ORIGINS: ${THREADNOTE_REMOTE_ALLOWED_ORIGINS:-https://cursor.com}
+      THREADNOTE_REMOTE_CURSOR_AUDIENCE: ${THREADNOTE_REMOTE_CURSOR_AUDIENCE:-http://localhost:8787/attest/cursor}
+      THREADNOTE_REMOTE_CURSOR_ISSUER: ${THREADNOTE_REMOTE_CURSOR_ISSUER:-https://api.cursor.com}
+      THREADNOTE_REMOTE_CURSOR_JWKS_URL: ${THREADNOTE_REMOTE_CURSOR_JWKS_URL:?set THREADNOTE_REMOTE_CURSOR_JWKS_URL}
+      THREADNOTE_REMOTE_DATABASE_URL: ${THREADNOTE_REMOTE_RUNTIME_DATABASE_URL:?set THREADNOTE_REMOTE_RUNTIME_DATABASE_URL}
+      THREADNOTE_REMOTE_AUTO_MIGRATE: 'false'
+      THREADNOTE_REMOTE_ENABLED: ${THREADNOTE_REMOTE_ENABLED:-false}
+      THREADNOTE_REMOTE_HOST: 0.0.0.0
+      THREADNOTE_REMOTE_OAUTH_AUDIENCE: ${THREADNOTE_REMOTE_OAUTH_AUDIENCE:-http://localhost:8787/mcp}
+      THREADNOTE_REMOTE_OAUTH_ISSUER: ${THREADNOTE_REMOTE_OAUTH_ISSUER:?set THREADNOTE_REMOTE_OAUTH_ISSUER}
+      THREADNOTE_REMOTE_OAUTH_JWKS_URL: ${THREADNOTE_REMOTE_OAUTH_JWKS_URL:?set THREADNOTE_REMOTE_OAUTH_JWKS_URL}
+      THREADNOTE_REMOTE_PUBLIC_URL: ${THREADNOTE_REMOTE_PUBLIC_URL:-http://localhost:8787}
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'bun',
+          '-e',
+          "const r=await fetch('http://127.0.0.1:8787/readyz',{headers:{host:'localhost:8787'}});process.exit(r.ok?0:1)",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    ports:
+      - '127.0.0.1:8787:8787'
+    read_only: true
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+
+volumes:
+  remote-memory-postgres:

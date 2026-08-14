@@ -1,0 +1,10 @@
+# Production telemetry changes require explicit review by the service owner.
+/.github/CODEOWNERS @Kashkovsky
+/.github/actionlint.yml @Kashkovsky
+/.github/workflows/ @Kashkovsky
+/.dockerignore @Kashkovsky
+/fly.toml @Kashkovsky
+/infra/telemetry-gateway/ @Kashkovsky
+/infra/telemetry-dashboard/ @Kashkovsky
+/scripts/telemetry-dashboard.ts @Kashkovsky
+/docs/operations/telemetry-production.md @Kashkovsky

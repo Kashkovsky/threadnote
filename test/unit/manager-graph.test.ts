@@ -41,6 +41,7 @@ import {
   managerGraphQueryCandidate,
   mergeGraphCatalogStatus,
   mergeGraphRepositoryGroups,
+  orderGraphBuildStatuses,
   resolveGraphSelection,
   type GraphEdge,
   type GraphAnalysis,
@@ -121,6 +122,8 @@ describe('manager graph focus', () => {
     );
 
     expect(markup).toContain('1 graph database · 3 stored ready snapshots · 1 active worktree view');
+    expect(markup).toContain('<details class="graph-administration" open="">');
+    expect(markup).toContain('class="graph-administration-caret"');
     expect(markup).toContain('<dt>Stored ready snapshots</dt><dd>3</dd>');
     expect(markup).toContain('<dt>Active worktree views</dt><dd>1</dd>');
     expect(markup).toContain('Snapshot and view counts can differ');
@@ -192,6 +195,72 @@ describe('manager graph focus', () => {
         }),
       ),
     ).not.toThrow();
+  });
+
+  it('separates the scrollable graph view from status and administration', async () => {
+    const neverResolves = () => new Promise<never>(() => undefined);
+    const markup = renderToStaticMarkup(
+      createElement(GraphWorkspace, {
+        catalog: {builds: [], diagnostics: [], repositories: [], waiterCount: 0, waiters: []},
+        loadAnalysis: neverResolves,
+        loadCatalogPage: neverResolves,
+        loadGraph: neverResolves,
+        loadNodeDetail: neverResolves,
+        loadQuery: neverResolves,
+        loadViewsPage: neverResolves,
+        onRefresh: () => undefined,
+      }),
+    );
+    const css = await Bun.file(new URL('../../manager/app.css', import.meta.url)).text();
+
+    expect(markup).toContain('role="tablist"');
+    expect(markup).toContain('id="graph-explore-tab"');
+    expect(markup).toContain('aria-controls="graph-administration-panel"');
+    expect(markup).toMatch(/class="graph-tab-panel graph-administration-tab" hidden=""[^>]*role="tabpanel"/);
+    expect(markup).toContain('id="graph-explore-panel" role="tabpanel" tabindex="0"');
+    expect(css).toMatch(/\.graph-tab-panel\s*{[^}]*overflow: auto;/s);
+    expect(css).toMatch(/\.graph-explorer-tab\s*{[^}]*minmax\(440px, 1fr\)/s);
+    expect(css).toMatch(/\.graph-administration-caret\s*{[^}]*transform: rotate\(-90deg\)/s);
+    expect(css).toMatch(/\.graph-administration\[open\] \.graph-administration-caret\s*{[^}]*rotate\(0deg\)/s);
+  });
+
+  it('orders build status banners by stable folder or checkout identity', () => {
+    const earlier = {
+      ...graphBuildStatus('running'),
+      buildId: 'build-z',
+      identity: {
+        ...graphBuildStatus('running').identity,
+        checkoutId: 'checkout-z',
+        worktreeId: 'worktree-z',
+      },
+      managerContext: {worktreePath: '/worktrees/zeta'},
+      timestamps: {
+        ...graphBuildStatus('running').timestamps,
+        lastProgressAt: '2026-07-31T12:00:00.000Z',
+      },
+    };
+    const later = {
+      ...graphBuildStatus('running'),
+      buildId: 'build-a',
+      identity: {
+        ...graphBuildStatus('running').identity,
+        checkoutId: 'checkout-a',
+        worktreeId: 'worktree-a',
+      },
+      managerContext: {worktreePath: '/worktrees/alpha'},
+      timestamps: {
+        ...graphBuildStatus('running').timestamps,
+        lastProgressAt: '2026-07-31T13:00:00.000Z',
+      },
+    };
+
+    expect(orderGraphBuildStatuses([earlier, later]).map(build => build.buildId)).toEqual(['build-a', 'build-z']);
+    expect(
+      orderGraphBuildStatuses([
+        {...earlier, managerContext: undefined},
+        {...later, managerContext: undefined},
+      ]).map(build => build.buildId),
+    ).toEqual(['build-a', 'build-z']);
   });
 
   it('renders selected snapshot purge progress alongside graph build progress', () => {

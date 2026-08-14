@@ -164,6 +164,8 @@ export interface CodeGraphInventoryOptions {
     files: readonly CodeGraphInventoryFile[],
     context: CodeGraphContentBatchContext,
   ) => Effect.Effect<void, unknown>;
+  /** Starts the worktree-only extraction counter before any effective overlay batch. */
+  readonly onOverlayStart?: () => Effect.Effect<void>;
   readonly onProgress?: (progress: CodeGraphProgress) => Effect.Effect<void, unknown>;
 }
 
@@ -393,6 +395,7 @@ export const inventoryRepository = Effect.fn('codeGraph.inventoryRepository')(fu
                   },
                 })
             : undefined,
+          options.onOverlayStart,
         );
   const filesByPath = new Map(committed.files.map(file => [file.path, file]));
   for (const changed of overlay.changed) filesByPath.delete(changed);
@@ -1357,6 +1360,7 @@ const readDirtyOverlay = Effect.fn('codeGraph.readDirtyOverlay')(function* (
   knownCommittedAcceptedPaths?: ReadonlySet<string>,
   includeOpaqueCorpusAssets = true,
   onContentBatch?: CodeGraphInventoryOptions['onContentBatch'],
+  onOverlayStart?: CodeGraphInventoryOptions['onOverlayStart'],
 ) {
   const fs = yield* FileSystem.FileSystem;
   const repositoryRoot = yield* fs.realPath(identity.repoRoot);
@@ -1392,6 +1396,7 @@ const readDirtyOverlay = Effect.fn('codeGraph.readDirtyOverlay')(function* (
   for (const value of untracked) {
     changes.changed.add(value);
   }
+  if (changes.changed.size > 0 || changes.deleted.size > 0) yield* onOverlayStart?.() ?? Effect.void;
   const relevantChangedPaths = [...new Set([...changes.changed, ...changes.deleted])].filter(relative =>
     isPotentialOverlayCandidate(relative, languagePacks),
   );

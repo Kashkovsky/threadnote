@@ -271,6 +271,8 @@ export interface GraphBuildStatus {
       readonly batchesTotal: number;
       readonly cachedFactBytesCompleted?: number;
       readonly cachedFactBytesTotal?: number;
+      readonly cachedFactReplayBytesCompleted?: number;
+      readonly changedFactBytesCompleted?: number;
       readonly fallbackReason?: string;
       readonly factsBytesCompleted?: number;
       readonly factsBytesTotal?: number;
@@ -402,6 +404,28 @@ export function graphBuildIsActive(build: GraphBuildStatus): boolean {
 
 export function graphBuildShouldDisplay(build: GraphBuildStatus): boolean {
   return build.state === 'failed' || graphBuildIsActive(build);
+}
+
+/** Keep status banners anchored to a worktree instead of moving as progress timestamps change. */
+export function orderGraphBuildStatuses(
+  builds: readonly GraphBuildStatus[],
+  repositories: readonly GraphRepositoryGroup[] = [],
+): readonly GraphBuildStatus[] {
+  const location = (build: GraphBuildStatus): string => {
+    const repository = repositories.find(candidate => candidate.repositoryId === build.identity.repositoryId);
+    const view = repository?.views.find(
+      candidate =>
+        candidate.checkoutId === build.identity.checkoutId && candidate.worktreeId === build.identity.worktreeId,
+    );
+    return view?.localAssociation.displayPath ?? build.managerContext?.worktreePath ?? build.identity.checkoutId;
+  };
+  return [...builds].sort(
+    (left, right) =>
+      compareCodeUnits(location(left), location(right)) ||
+      compareCodeUnits(left.identity.checkoutId, right.identity.checkoutId) ||
+      compareCodeUnits(left.identity.worktreeId, right.identity.worktreeId) ||
+      compareCodeUnits(left.buildId, right.buildId),
+  );
 }
 
 export const GRAPH_ADMINISTRATION_JOB_LIMIT = 4;

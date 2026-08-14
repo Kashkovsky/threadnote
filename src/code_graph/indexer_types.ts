@@ -60,6 +60,8 @@ export interface CommittedBaseResult {
   readonly leaseToken: Option.Option<string>;
   readonly snapshot: CodeGraphSnapshot;
   readonly stagingReusable: boolean;
+  /** Present when this call performed or observed the committed-base build. */
+  readonly summary?: CodeGraphIndexSummary;
 }
 
 export type IncrementalOverlayAssessment =

@@ -1,6 +1,6 @@
 import {TestError} from '../helpers/test-error.js';
 import {execFile} from '../helpers/node-child-process.js';
-import {mkdir, mkdtemp, rm, writeFile} from '../helpers/node-fs-promises.js';
+import {access, mkdir, mkdtemp, rm, writeFile} from '../helpers/node-fs-promises.js';
 import {tmpdir} from '../helpers/node-os.js';
 import {join} from '../helpers/node-path.js';
 import {promisify} from '../helpers/node-util.js';
@@ -25,6 +25,41 @@ describe('Effect CLI', () => {
     expect(result.stdout).toContain('--beta');
     expect(result.stdout).toContain('newest stable or prerelease release');
     expect(result.stdout).toContain('--stable');
+  });
+
+  it('exposes explicit preview/apply telemetry consent commands', async () => {
+    const telemetry = await runCli(['telemetry', '--help']);
+    const enable = await runCli(['telemetry', 'enable', '--help']);
+    const disable = await runCli(['telemetry', 'disable', '--help']);
+
+    expect(telemetry.stdout).toContain('status');
+    expect(telemetry.stdout).toContain('enable');
+    expect(telemetry.stdout).toContain('disable');
+    expect(enable.stdout).toContain('--apply');
+    expect(enable.stdout).toContain('--endpoint string');
+    expect(disable.stdout).toContain('--apply');
+  });
+
+  it('keeps automatic-update policy dry runs read-only and rejects mixed update modes', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'threadnote-effect-cli-auto-update-'));
+    const environment = {
+      THREADNOTE_HOME: join(root, 'home'),
+      THREADNOTE_INSTALL_ROOT: join(root, 'install'),
+    };
+    try {
+      const preview = await runCli(['update', '--auto', 'on', '--dry-run'], environment);
+      expect(preview.stdout).toContain('Would enable automatic Threadnote updates.');
+      await expect(access(join(root, 'install', 'auto-update.json'))).rejects.toMatchObject({code: 'ENOENT'});
+
+      const mixed = await runCli(['update', '--auto', 'off', '--json'], environment).catch(
+        cause => cause as NodeJS.ErrnoException & {stderr?: string},
+      );
+      expect(mixed).toMatchObject({code: 1});
+      expect(String(mixed.stderr)).toContain('Choose one update mode');
+      await expect(access(join(root, 'install', 'auto-update.json'))).rejects.toMatchObject({code: 'ENOENT'});
+    } finally {
+      await rm(root, {force: true, recursive: true});
+    }
   });
 
   it('exposes local AI model installation and switching commands', async () => {
@@ -415,7 +450,7 @@ describe('Effect CLI', () => {
     const home = join(root, '.threadnote-test-home');
     try {
       const declarations = Array.from({length: 80}, (_, index) => {
-        const name = `pipedOutputSymbol${'x'.repeat(1_500)}${index.toString().padStart(3, '0')}`;
+        const name = `pipedOutputSymbol${'x'.repeat(2_500)}${index.toString().padStart(3, '0')}`;
         return `export const ${name} = ${index};`;
       }).join('\n');
       await writeFile(join(root, 'package.json'), '{"name":"large-piped-output"}\n');

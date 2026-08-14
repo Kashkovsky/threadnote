@@ -203,12 +203,14 @@ const TRUST_BLEND_WEIGHT = 0.3;
 const LIFECYCLE_SCORES: Readonly<Record<MemoryStatus, number>> = {
   active: 1,
   archived: 0.15,
+  expired: 0,
   superseded: 0,
 };
 
 const LIFECYCLE_SCORE_MULTIPLIERS: Readonly<Record<MemoryStatus, number>> = {
   active: 1,
   archived: 0.35,
+  expired: 0.1,
   superseded: 0.15,
 };
 
@@ -289,7 +291,7 @@ export function rankRecallCandidates(
         compareCodeUnits(left.candidate.uri, right.candidate.uri),
     );
   return {
-    confidence: assessConfidence(ranked),
+    confidence: assessConfidence(ranked, queryTermVariants[0] ?? []),
     rankerVersion: RECALL_RANKER_VERSION,
     results: ranked,
   };
@@ -406,8 +408,20 @@ function exactTermScore(
     return 0;
   }
   const uniqueQuery = new Set(queryTerms);
-  const uniqueExactTerms = [...new Set(exactTerms.map(term => term.toLowerCase()))];
-  const matchedTerms = uniqueExactTerms.filter(term => tokenize(term).some(token => uniqueQuery.has(token)));
+  const uniqueExactTerms = [
+    ...new Set(exactTerms.map(term => tokenize(term)[0]).filter((term): term is string => term !== undefined)),
+  ];
+  const declaredIdentifiers = new Set(
+    (fields?.identifiers ?? [])
+      .map(identifier => tokenize(identifier)[0])
+      .filter((identifier): identifier is string => identifier !== undefined),
+  );
+  const matchedTerms = uniqueExactTerms.filter(term => {
+    const termMatchesQuery = tokenize(term).some(token => uniqueQuery.has(token));
+    return /[\p{N}_.-]/u.test(term)
+      ? uniqueQuery.has(term) || (declaredIdentifiers.has(term) && termMatchesQuery)
+      : termMatchesQuery;
+  });
   const matches = matchedTerms.length;
   if (matches === 0) {
     return 0;
@@ -763,11 +777,17 @@ function reason(code: string, contribution: number, detail: string): RecallReaso
   return {code, contribution, detail};
 }
 
-function assessConfidence(results: readonly RankedRecallCandidate[]): RecallConfidence {
+function assessConfidence(
+  results: readonly RankedRecallCandidate[],
+  originalQueryTerms: readonly string[],
+): RecallConfidence {
   const first = results[0]?.relevanceScore ?? 0;
   const second = results[1]?.relevanceScore ?? 0;
   const margin = Math.max(0, first - second);
   const topSignals = results[0]?.signals;
+  const exactDistinctiveIdentifier = results[0]
+    ? hasExactDistinctiveIdentifierMatch(originalQueryTerms, results[0].candidate.fields)
+    : false;
   const corroboratingSignals = results[0]
     ? [
         results[0].signals.semantic,
@@ -781,7 +801,8 @@ function assessConfidence(results: readonly RankedRecallCandidate[]): RecallConf
     topSignals !== undefined &&
     topSignals.semantic <= SIGNAL_ABSENCE_MAXIMUM &&
     topSignals.graph <= SIGNAL_ABSENCE_MAXIMUM &&
-    Math.max(topSignals.bm25, topSignals.exact, topSignals.field) < LEXICAL_ONLY_ANSWER_MINIMUM;
+    Math.max(topSignals.bm25, topSignals.exact, topSignals.field) < LEXICAL_ONLY_ANSWER_MINIMUM &&
+    !exactDistinctiveIdentifier;
   const weakSemanticOnly =
     topSignals !== undefined &&
     topSignals.semantic > SIGNAL_ABSENCE_MAXIMUM &&
@@ -806,6 +827,18 @@ function assessConfidence(results: readonly RankedRecallCandidate[]): RecallConf
     return {level: 'medium', margin, reason: 'Useful match, but ranking evidence is not decisive.', score: first};
   }
   return {level: 'low', margin, reason: 'Only weak or single-signal evidence supports the top result.', score: first};
+}
+
+function hasExactDistinctiveIdentifierMatch(queryTerms: readonly string[], fields: RecallFields | undefined): boolean {
+  if (!fields?.identifiers?.length) {
+    return false;
+  }
+  const identifiers = new Set(
+    fields.identifiers
+      .map(identifier => tokenize(identifier)[0])
+      .filter((identifier): identifier is string => identifier !== undefined),
+  );
+  return queryTerms.some(term => /[\p{N}_.-]/u.test(term) && identifiers.has(term));
 }
 
 export function recallDocumentTerms(candidate: RecallCandidate): readonly string[] {
@@ -842,10 +875,12 @@ function qualifyingExactTerms(candidate: RecallCandidate): readonly string[] {
   const projectTerms = new Set(tokenize(candidate.fields?.project ?? ''));
   const kindIntentTerms = candidate.kind ? MEMORY_KIND_INTENT_TERMS[candidate.kind] : undefined;
   return (candidate.exactTerms ?? []).filter(term => {
-    const normalizedTerms = tokenize(term);
-    return normalizedTerms.some(
-      normalized =>
-        topicalTerms.has(normalized) && !projectTerms.has(normalized) && kindIntentTerms?.has(normalized) !== true,
+    const normalized = tokenize(term)[0];
+    return (
+      normalized !== undefined &&
+      topicalTerms.has(normalized) &&
+      !projectTerms.has(normalized) &&
+      kindIntentTerms?.has(normalized) !== true
     );
   });
 }

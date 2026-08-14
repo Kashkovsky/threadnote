@@ -2,6 +2,7 @@ import {Console, Effect, Result} from 'effect';
 import type {RuntimeConfig} from '../types.js';
 import {CORE_EMBEDDING_MODEL_ID} from './builtin.js';
 import {LocalModelCatalog, type LocalModelManifest} from './catalog.js';
+import {bundledCoreEmbeddingSource} from './core-embedding-asset.js';
 import {readModelSelection, selectLocalModel} from './selection.js';
 import {LocalModelStore, modelDownloadUrl} from './store.js';
 
@@ -27,10 +28,15 @@ export const provisionCoreEmbedding = Effect.fn('models.provisionCoreEmbedding')
       : yield* catalog.get(CORE_EMBEDDING_MODEL_ID);
   const status = yield* store.status(config.agentContextHome, manifest);
   const needsSelection = selection.roles.embedding !== manifest.id;
+  const bundledSource = bundledCoreEmbeddingSource(manifest);
 
   if (options.dryRun === true) {
     if (!status.installed) {
-      yield* Console.log(`Would download core embedding model ${manifest.id} from ${modelDownloadUrl(manifest)}.`);
+      yield* Console.log(
+        bundledSource
+          ? `Would install bundled core embedding model ${manifest.id}.`
+          : `Would download core embedding model ${manifest.id} from ${modelDownloadUrl(manifest)}.`,
+      );
       yield* Console.log(`Would verify ${manifest.size} bytes and SHA-256 ${manifest.sha256}.`);
     } else {
       yield* Console.log(`Would verify installed core embedding model ${manifest.id}.`);
@@ -44,16 +50,20 @@ export const provisionCoreEmbedding = Effect.fn('models.provisionCoreEmbedding')
   }
 
   if (!status.installed) {
-    yield* Console.log(`Downloading core embedding model ${manifest.id}; interrupted downloads are resumable.`);
+    yield* Console.log(
+      bundledSource
+        ? `Installing bundled core embedding model ${manifest.id}.`
+        : `Downloading core embedding model ${manifest.id}; interrupted downloads are resumable.`,
+    );
   }
-  const install = store.install(config.agentContextHome, manifest);
+  const install = store.install(config.agentContextHome, manifest, bundledSource);
   if (status.installed) {
     yield* install.pipe(
       Effect.catchTag('ModelChecksumMismatch', () =>
         Effect.gen(function* () {
-          yield* Console.warn(`Installed ${manifest.id} failed verification; downloading a verified replacement.`);
+          yield* Console.warn(`Installed ${manifest.id} failed verification; installing a verified replacement.`);
           yield* store.remove(config.agentContextHome, manifest);
-          yield* store.install(config.agentContextHome, manifest);
+          yield* store.install(config.agentContextHome, manifest, bundledSource);
         }),
       ),
     );

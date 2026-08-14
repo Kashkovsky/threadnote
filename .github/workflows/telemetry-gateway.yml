@@ -1,0 +1,514 @@
+name: Telemetry gateway
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main, codex/4.0.0]
+
+permissions:
+  contents: read
+
+# A production rollout and its storage proof are one serialized operation. Pull
+# request and manual validation runs use a unique group and remain parallel.
+concurrency:
+  group: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'telemetry-production-gateway' || format('telemetry-gateway-{0}', github.run_id) }}
+  queue: max
+  cancel-in-progress: false
+
+jobs:
+  classify:
+    name: Classify gateway changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      deploy: ${{ steps.changes.outputs.deploy }}
+      supersede: ${{ steps.changes.outputs.supersede }}
+      validate: ${{ steps.changes.outputs.validate }}
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+
+      - name: Separate validation from production inputs
+        id: changes
+        shell: bash
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          validate=false
+          deploy=false
+          supersede=false
+
+          if [[ "$GITHUB_EVENT_NAME" == 'workflow_dispatch' ]]; then
+            validate=true
+          else
+            if [[ "$GITHUB_EVENT_NAME" == 'pull_request' ]]; then
+              base_sha="$PR_BASE_SHA"
+              head_sha="$PR_HEAD_SHA"
+            else
+              base_sha="$BEFORE_SHA"
+              head_sha="$GITHUB_SHA"
+            fi
+
+            if [[ -z "$base_sha" || "$base_sha" =~ ^0+$ ]]; then
+              # A newly created main ref has no trustworthy comparison base.
+              # Validate and deploy fail-closed instead of guessing its inputs.
+              validate=true
+              deploy=true
+              supersede=true
+            else
+              classification="$(
+                git diff --name-only --no-renames --diff-filter=ACDMRT -z "$base_sha" "$head_sha" |
+                  infra/telemetry-gateway/scripts/classify-changes.sh
+              )"
+              validate="$(sed -n 's/^validate=//p' <<< "$classification")"
+              deploy="$(sed -n 's/^deploy=//p' <<< "$classification")"
+              supersede="$(sed -n 's/^supersede=//p' <<< "$classification")"
+            fi
+          fi
+
+          {
+            echo "validate=$validate"
+            echo "deploy=$deploy"
+            echo "supersede=$supersede"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo '### Gateway change classification'
+            echo
+            echo "- Validation required: \`$validate\`"
+            echo "- Production rollout required: \`$deploy\`"
+            echo "- Supersedes an older queued rollout: \`$supersede\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  validate:
+    name: Validate production image
+    needs: classify
+    if: needs.classify.outputs.validate == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        with:
+          cache-dependency-path: infra/telemetry-gateway/go.sum
+          go-version: 1.25.7
+
+      - name: Test the ingress and storage canary
+        working-directory: infra/telemetry-gateway
+        run: go test ./...
+
+      - name: Test gateway change classification
+        run: infra/telemetry-gateway/scripts/classify-changes.test.sh
+
+      - name: Build the pinned production image
+        run: docker build --pull --file infra/telemetry-gateway/Dockerfile --tag threadnote-telemetry-gateway:test .
+
+      - name: Smoke the complete gateway process
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Invoked by the EXIT trap.
+          # shellcheck disable=SC2329
+          cleanup() {
+            docker rm --force threadnote-telemetry-gateway-test >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          docker run --detach --name threadnote-telemetry-gateway-test \
+            --publish 127.0.0.1:18080:8080 \
+            --env GRAFANA_CLOUD_OTLP_ENDPOINT='https://otlp-gateway-prod-eu-west-2.grafana.net/otlp' \
+            --env GRAFANA_CLOUD_AUTHORIZATION='Basic MTIzNDU2OnRva2Vu' \
+            --env THREADNOTE_TELEMETRY_PUBLIC_INGESTION='enabled' \
+            threadnote-telemetry-gateway:test
+          for _ in $(seq 1 30); do
+            if curl --fail --silent --show-error --output /dev/null http://127.0.0.1:18080/healthz; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs threadnote-telemetry-gateway-test
+          exit 1
+
+  validate-fly:
+    name: Validate Fly production configuration
+    needs: classify
+    if: >-
+      github.event_name != 'pull_request' &&
+      github.ref == 'refs/heads/main' &&
+      needs.classify.outputs.validate == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment:
+      name: telemetry-production
+      deployment: false
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1
+        with:
+          version: 0.4.83
+
+      - name: Validate the authenticated Fly production configuration
+        env:
+          FLY_API_TOKEN: ${{ secrets.THREADNOTE_TELEMETRY_CANARY_FLY_READ_TOKEN }}
+        run: flyctl config validate --config fly.toml --strict
+
+  deploy:
+    name: Deploy immutable production image
+    needs: [classify, validate, validate-fly]
+    if: >-
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main' &&
+      needs.classify.outputs.deploy == 'true' &&
+      needs.validate.result == 'success' &&
+      needs.validate-fly.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: telemetry-production-deploy
+      url: https://telemetry.threadnote.io
+    outputs:
+      deployed: ${{ steps.rollout.outputs.deployed || 'false' }}
+      image: ${{ steps.image.outputs.immutable-ref }}
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+
+      - name: Skip a superseded main revision
+        id: freshness
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --force --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          remote_main="$(git rev-parse refs/remotes/origin/main)"
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" "$remote_main"; then
+            echo 'current=false' >> "$GITHUB_OUTPUT"
+            echo 'Production rollout skipped because main no longer descends from this revision.' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if [[ "$remote_main" != "$GITHUB_SHA" ]]; then
+            newer_classification="$(
+              git diff --name-only --no-renames --diff-filter=ACDMRT -z "$GITHUB_SHA" "$remote_main" |
+                infra/telemetry-gateway/scripts/classify-changes.sh
+            )"
+            if grep -qx 'supersede=true' <<< "$newer_classification"; then
+              echo 'current=false' >> "$GITHUB_OUTPUT"
+              echo 'Production rollout skipped because a newer main revision changes a deploy input or its rollout gates.' >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            echo 'A newer main revision contains no deploy inputs; this runtime image remains current.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          echo 'current=true' >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        if: steps.freshness.outputs.current == 'true'
+        with:
+          cache-dependency-path: infra/telemetry-gateway/go.sum
+          go-version: 1.25.7
+
+      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1
+        if: steps.freshness.outputs.current == 'true'
+        with:
+          version: 0.4.83
+
+      - name: Require the app-scoped deploy credential
+        if: steps.freshness.outputs.current == 'true'
+        shell: bash
+        env:
+          FLY_API_TOKEN: ${{ secrets.THREADNOTE_TELEMETRY_FLY_DEPLOY_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$FLY_API_TOKEN" ]]; then
+            echo 'THREADNOTE_TELEMETRY_FLY_DEPLOY_TOKEN is not configured.' >&2
+            exit 1
+          fi
+
+      - name: Enforce the pre-deploy Machine and health gates
+        if: steps.freshness.outputs.current == 'true'
+        shell: bash
+        working-directory: infra/telemetry-gateway
+        env:
+          FLY_API_TOKEN: ${{ secrets.THREADNOTE_TELEMETRY_FLY_DEPLOY_TOKEN }}
+        run: |
+          set -euo pipefail
+          machines_file="$RUNNER_TEMP/threadnote-machines-before.json"
+          checks_file="$RUNNER_TEMP/threadnote-checks-before.json"
+          flyctl machine list --app threadnote-telemetry --json > "$machines_file"
+          go run ./cmd/budget < "$machines_file"
+          flyctl checks list --app threadnote-telemetry --json > "$checks_file"
+          jq -e '
+            [.. | objects | select(has("status")) | .status] as $statuses
+            | ($statuses | length == 2) and ($statuses | all(. == "passing"))
+          ' "$checks_file" >/dev/null
+          previous_image="$(
+            flyctl image show --app threadnote-telemetry --json |
+              jq -er '
+                if type == "array" and length == 2 and ([.[].MachineID] | unique | length) == 2 and ([.[].Digest] | unique | length) == 1
+                then "\(.[0].Registry)/\(.[0].Repository):\(.[0].Tag)@\(.[0].Digest)"
+                else error("production Machines do not share one image")
+                end
+              '
+          )"
+          {
+            echo '### Pre-deploy state'
+            echo
+            echo '- Exactly two started Machines: verified'
+            echo '- Both service health checks: passing'
+            echo "- Previous image: \`$previous_image\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Build, smoke, and push one immutable image
+        id: image
+        if: steps.freshness.outputs.current == 'true'
+        shell: bash
+        env:
+          FLY_API_TOKEN: ${{ secrets.THREADNOTE_TELEMETRY_FLY_DEPLOY_TOKEN }}
+        run: |
+          set -euo pipefail
+          image_tag="registry.fly.io/threadnote-telemetry:git-$GITHUB_SHA"
+          container_name='threadnote-telemetry-gateway-release-test'
+          # Invoked by the EXIT trap.
+          # shellcheck disable=SC2329
+          cleanup() {
+            docker rm --force "$container_name" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          docker build --pull \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            --file infra/telemetry-gateway/Dockerfile \
+            --tag "$image_tag" .
+          docker run --detach --name "$container_name" \
+            --publish 127.0.0.1:18080:8080 \
+            --env GRAFANA_CLOUD_OTLP_ENDPOINT='https://otlp-gateway-prod-eu-west-2.grafana.net/otlp' \
+            --env GRAFANA_CLOUD_AUTHORIZATION='Basic MTIzNDU2OnRva2Vu' \
+            --env THREADNOTE_TELEMETRY_PUBLIC_INGESTION='enabled' \
+            "$image_tag"
+          healthy=false
+          for _ in $(seq 1 30); do
+            if curl --fail --silent --show-error --output /dev/null http://127.0.0.1:18080/healthz; then
+              healthy=true
+              break
+            fi
+            sleep 1
+          done
+          if [[ "$healthy" != 'true' ]]; then
+            docker logs "$container_name"
+            exit 1
+          fi
+
+          flyctl auth docker
+          docker push "$image_tag"
+          immutable_ref="$(docker image inspect "$image_tag" --format '{{index .RepoDigests 0}}')"
+          if [[ ! "$immutable_ref" =~ ^registry\.fly\.io/threadnote-telemetry@sha256:[0-9a-f]{64}$ ]]; then
+            echo 'Fly registry did not return an immutable image digest.' >&2
+            exit 1
+          fi
+          echo "immutable-ref=$immutable_ref" >> "$GITHUB_OUTPUT"
+          {
+            echo '### Reviewed production image'
+            echo
+            echo "- Source revision: \`$GITHUB_SHA\`"
+            echo "- Immutable image: \`$immutable_ref\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Deploy the tested digest with the canary strategy
+        id: rollout
+        if: steps.freshness.outputs.current == 'true'
+        shell: bash
+        env:
+          FLY_API_TOKEN: ${{ secrets.THREADNOTE_TELEMETRY_FLY_DEPLOY_TOKEN }}
+          THREADNOTE_TELEMETRY_IMAGE: ${{ steps.image.outputs.immutable-ref }}
+        run: |
+          set -euo pipefail
+          git fetch --force --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          remote_main="$(git rev-parse refs/remotes/origin/main)"
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" "$remote_main"; then
+            echo 'deployed=false' >> "$GITHUB_OUTPUT"
+            echo 'Production rollout skipped at the final freshness gate because main no longer descends from this revision.' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if [[ "$remote_main" != "$GITHUB_SHA" ]]; then
+            newer_classification="$(
+              git diff --name-only --no-renames --diff-filter=ACDMRT -z "$GITHUB_SHA" "$remote_main" |
+                infra/telemetry-gateway/scripts/classify-changes.sh
+            )"
+            if grep -qx 'supersede=true' <<< "$newer_classification"; then
+              echo 'deployed=false' >> "$GITHUB_OUTPUT"
+              echo 'Production rollout skipped at the final freshness gate because a newer main revision changes a deploy input or its rollout gates.' >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+          fi
+          flyctl deploy . \
+            --app threadnote-telemetry \
+            --config fly.toml \
+            --image "$THREADNOTE_TELEMETRY_IMAGE" \
+            --strategy canary \
+            --max-unavailable 1 \
+            --update-only \
+            --wait-timeout 5m \
+            --yes
+          echo 'deployed=true' >> "$GITHUB_OUTPUT"
+
+      - name: Enforce the post-deploy image, Machine, and health gates
+        if: steps.rollout.outputs.deployed == 'true'
+        shell: bash
+        working-directory: infra/telemetry-gateway
+        env:
+          FLY_API_TOKEN: ${{ secrets.THREADNOTE_TELEMETRY_FLY_DEPLOY_TOKEN }}
+          THREADNOTE_TELEMETRY_IMAGE: ${{ steps.image.outputs.immutable-ref }}
+        run: |
+          set -euo pipefail
+          machines_file="$RUNNER_TEMP/threadnote-machines-after.json"
+          checks_file="$RUNNER_TEMP/threadnote-checks-after.json"
+          images_file="$RUNNER_TEMP/threadnote-images-after.json"
+          flyctl machine list --app threadnote-telemetry --json > "$machines_file"
+          go run ./cmd/budget < "$machines_file"
+          flyctl image show --app threadnote-telemetry --json > "$images_file"
+          expected_digest="${THREADNOTE_TELEMETRY_IMAGE##*@}"
+          jq -e --arg digest "$expected_digest" '
+            type == "array" and
+            length == 2 and
+            ([.[].MachineID] | unique | length) == 2 and
+            all(.Digest == $digest)
+          ' "$images_file" >/dev/null
+
+          healthy=false
+          for _ in $(seq 1 20); do
+            flyctl checks list --app threadnote-telemetry --json > "$checks_file"
+            if jq -e '
+              [.. | objects | select(has("status")) | .status] as $statuses
+              | ($statuses | length == 2) and ($statuses | all(. == "passing"))
+            ' "$checks_file" >/dev/null; then
+              healthy=true
+              break
+            fi
+            sleep 3
+          done
+          if [[ "$healthy" != 'true' ]]; then
+            echo 'Both Fly service checks did not become healthy.' >&2
+            exit 1
+          fi
+          curl --fail --silent --show-error --output /dev/null \
+            --max-time 10 --proto '=https' --tlsv1.2 \
+            https://telemetry.threadnote.io/healthz
+          curl --fail --silent --show-error --output /dev/null \
+            --max-time 10 --proto '=https' --tlsv1.2 \
+            https://threadnote-telemetry.fly.dev/healthz
+          {
+            echo '### Post-deploy state'
+            echo
+            echo '- Exactly two started Machines: verified'
+            echo '- Both Machines run the reviewed digest: verified'
+            echo '- Both Fly service checks: passing'
+            echo '- Production and Fly canonical health endpoints: passing'
+            echo '- Automatic rollback: disabled; use the recorded previous immutable image after diagnosis'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove the ephemeral registry credential
+        if: always() && steps.freshness.outputs.current == 'true'
+        run: docker logout registry.fly.io || true
+
+  storage-canary:
+    name: Prove the deployed schemas reach storage
+    needs: deploy
+    if: needs.deploy.outputs.deployed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment:
+      name: telemetry-production
+      deployment: false
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        with:
+          cache-dependency-path: infra/telemetry-gateway/go.sum
+          go-version: 1.25.7
+
+      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1
+        with:
+          version: 0.4.83
+
+      - name: Recheck the two-Machine production budget
+        working-directory: infra/telemetry-gateway
+        env:
+          FLY_API_TOKEN: ${{ secrets.THREADNOTE_TELEMETRY_CANARY_FLY_READ_TOKEN }}
+        run: flyctl machine list --app threadnote-telemetry --json | go run ./cmd/budget
+
+      - name: Prove frozen v1 and terminal v2 are stored
+        working-directory: infra/telemetry-gateway
+        env:
+          THREADNOTE_TELEMETRY_CANARY_GATEWAY_URL: ${{ vars.THREADNOTE_TELEMETRY_CANARY_GATEWAY_URL || 'https://telemetry.threadnote.io/v1/traces' }}
+          THREADNOTE_TELEMETRY_CANARY_TEMPO_URL: ${{ secrets.THREADNOTE_TELEMETRY_CANARY_TEMPO_URL }}
+          THREADNOTE_TELEMETRY_CANARY_TEMPO_USER: ${{ secrets.THREADNOTE_TELEMETRY_CANARY_TEMPO_USER }}
+          THREADNOTE_TELEMETRY_CANARY_TEMPO_TOKEN: ${{ secrets.THREADNOTE_TELEMETRY_CANARY_TEMPO_TOKEN }}
+        run: go run ./cmd/canary
+
+      - name: Record successful storage heartbeat
+        env:
+          THREADNOTE_TELEMETRY_CANARY_HEARTBEAT_URL: ${{ secrets.THREADNOTE_TELEMETRY_CANARY_HEARTBEAT_URL }}
+        run: >-
+          curl --fail --silent --show-error --max-time 10 --proto '=https'
+          --request POST --header 'Content-Type: application/json' --data '{}'
+          "$THREADNOTE_TELEMETRY_CANARY_HEARTBEAT_URL"
+
+  complete:
+    name: Gateway checks complete
+    needs: [classify, validate, validate-fly, deploy, storage-canary]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+
+    steps:
+      - name: Require every applicable gateway gate
+        shell: bash
+        env:
+          CLASSIFY_RESULT: ${{ needs.classify.result }}
+          VALIDATE_REQUIRED: ${{ needs.classify.outputs.validate }}
+          VALIDATE_RESULT: ${{ needs.validate.result }}
+          FLY_VALIDATE_RESULT: ${{ needs.validate-fly.result }}
+          DEPLOY_REQUIRED: ${{ needs.classify.outputs.deploy }}
+          DEPLOY_RESULT: ${{ needs.deploy.result }}
+          DEPLOYED: ${{ needs.deploy.outputs.deployed }}
+          CANARY_RESULT: ${{ needs.storage-canary.result }}
+        run: |
+          set -euo pipefail
+          [[ "$CLASSIFY_RESULT" == 'success' ]]
+
+          if [[ "$VALIDATE_REQUIRED" == 'true' ]]; then
+            [[ "$VALIDATE_RESULT" == 'success' ]]
+            if [[ "$GITHUB_EVENT_NAME" != 'pull_request' && "$GITHUB_REF" == 'refs/heads/main' ]]; then
+              [[ "$FLY_VALIDATE_RESULT" == 'success' ]]
+            else
+              [[ "$FLY_VALIDATE_RESULT" == 'skipped' ]]
+            fi
+          else
+            [[ "$VALIDATE_RESULT" == 'skipped' ]]
+            [[ "$FLY_VALIDATE_RESULT" == 'skipped' ]]
+          fi
+
+          if [[ "$GITHUB_EVENT_NAME" == 'push' && "$GITHUB_REF" == 'refs/heads/main' && "$DEPLOY_REQUIRED" == 'true' ]]; then
+            [[ "$DEPLOY_RESULT" == 'success' ]]
+            if [[ "$DEPLOYED" == 'true' ]]; then
+              [[ "$CANARY_RESULT" == 'success' ]]
+            else
+              # A successful no-op is permitted only for the stale-main guard.
+              [[ "$CANARY_RESULT" == 'skipped' ]]
+            fi
+          else
+            [[ "$DEPLOY_RESULT" == 'skipped' ]]
+            [[ "$CANARY_RESULT" == 'skipped' ]]
+          fi

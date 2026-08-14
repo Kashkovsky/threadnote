@@ -10,7 +10,10 @@ Direct runtime software and packages bundled into the published JavaScript retai
 - `node-llama-cpp` (MIT), used in a supervised local worker with prebuilt `llama.cpp` binaries for GGUF inference
 - Bun (MIT), embedded into each compiled executable
 - `effect`, `@effect/platform-bun`, `@effect/ai-openai-compat`, `@effect/sql-sqlite-bun`, and `@effect/vitest` (MIT)
-- `@modelcontextprotocol/sdk` (MIT)
+- `@modelcontextprotocol/sdk` 1.30.0 (MIT), pinned for the Streamable HTTP and stdio MCP protocol boundary
+- `jose` 6.2.3 (MIT), used for OAuth and Cursor workload JWT/JWKS verification
+- `postgres` 3.4.7 (MIT), used by the managed remote-memory PostgreSQL service and operator
+- `zod` 4.4.3 (MIT), used for strict remote MCP and operator request schemas
 - `react`, `react-dom`, and `react-markdown` (MIT)
 - `remark-gfm` (MIT)
 - `three` (MIT), used for GPU-accelerated manager graph rendering
@@ -40,8 +43,10 @@ Direct runtime software and packages bundled into the published JavaScript retai
 
 Grammar and parser license copies, source revisions, ABIs, and SHA-256 checksums are included under
 `assets/code-graph/`. Consult those files and each installed package's metadata for the authoritative terms. The
-pinned MIT-licensed BGE Small embedding model is installed automatically by `threadnote install`; other model files
-require an explicit `threadnote models install` action. Catalog entries identify every model source and license.
+pinned MIT-licensed BGE Small embedding model is embedded in the standalone executable and installed automatically by
+`threadnote install`; other model files require an explicit `threadnote models install` action. Catalog entries identify
+every model source and license. The complete upstream BGE/FlagEmbedding MIT notice is included in release archives at
+`assets/models/licenses/bge-small-en-v1.5.LICENSE`.
 
 ### `yaml` 2.9.0 license notice
 

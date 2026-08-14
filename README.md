@@ -62,6 +62,13 @@ Alice + Codex ──publish curated memory──▶ team Git repo
 - **Shareable diagnostics without transcripts.** Bounded rotating logs capture versions, platform, command or MCP tool
   names, timings, and typed failures—never arguments, memory content, recall results, or MCP payloads. Preview and
   explicitly submit a support report with `threadnote report-issue`.
+- **Optional anonymous telemetry.** Explicit versioned opt-in sends only allowlisted CLI/MCP operation traces with a
+  random agent-session identity, duration, bounded process memory, subsystem phases, and typed failures. Successful
+  graph builds can additionally send coarse path-free build-kind, materialization, fallback, closure, efficiency,
+  file-count, fact-byte, and amplification buckets. Failed graph-build lifecycle observations add only bounded
+  outcome/type and interrupted ones only outcome/duration; neither adds graph classifications or buckets. Telemetry
+  never includes prompts, payloads, paths, repository or commit identity, error messages, stacks, or a persistent
+  installation ID.
 
 ## Quickstart
 
@@ -124,6 +131,10 @@ The CLI is the complete execution surface. MCP is a local stdio process with a f
 New to Threadnote? Ask your agent **"what can I do with Threadnote?"** It calls `threadnote_guide`, returns a short
 walkthrough tailored to your setup, and offers to run each step with you. The walkthrough loads only when requested, so
 it does not occupy context during normal work.
+
+Anonymous operational telemetry is off by default. Review the exact contract with `threadnote telemetry enable`, then
+opt in with `threadnote telemetry enable --apply`. See [optional anonymous telemetry](./docs/telemetry.md) for its
+allowlist, session semantics, kill switches, network-privacy limitation, and collector architecture.
 
 ## Daily Workflow
 
@@ -393,7 +404,8 @@ See the [Obsidian bridge guide](docs/obsidian.md) for setup, trust boundaries, d
 
 ## Recall
 
-`threadnote install` automatically downloads, verifies, and selects the pinned 36.7 MB BGE Small embedding model.
+`threadnote install` extracts, verifies, and selects the pinned 36.7 MB BGE Small embedding model bundled in the
+standalone executable, so first-run semantic recall does not require a separate model download.
 Recall combines local `node-llama-cpp` vectors with deterministic lexical, field, scope, lifecycle, authority,
 time, graph, and feedback signals. The lexical path remains available as a fail-open fallback if native inference is
 temporarily unavailable.

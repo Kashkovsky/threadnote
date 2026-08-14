@@ -1,0 +1,101 @@
+import {it as effectIt} from '@effect/vitest';
+import {Effect, FileSystem} from 'effect';
+import {describe, expect} from 'vitest';
+import {captureConsole} from '../../src/effect/console.js';
+import {ApplicationLayer} from '../../src/effect/runtime.js';
+import {SystemInfo} from '../../src/effect/system.js';
+import {runTelemetryDisable, runTelemetryEnable, runTelemetryStatus} from '../../src/telemetry/commands.js';
+import {readTelemetryConfiguration, telemetryConfigurationPath} from '../../src/telemetry/config.js';
+import type {RuntimeConfig} from '../../src/types.js';
+import {provideTestLayer} from '../helpers/effect-layer.js';
+
+describe('telemetry commands', () => {
+  effectIt.effect('previews the complete consent contract without creating state', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-telemetry-preview-'});
+        const config = runtimeConfig(home);
+        const preview = yield* captureConsole(runTelemetryEnable(config, {}));
+
+        expect(preview.output).toContain('General CLI and MCP operations');
+        expect(preview.output).toContain('bounded runtime memory/resource observations');
+        expect(preview.output).toContain('phases/state');
+        expect(preview.output).toContain('safe typed failures');
+        expect(preview.output).toContain('Successful graph builds additionally include');
+        expect(preview.output).toContain('build-kind/materialization/fallback/closure/efficiency');
+        expect(preview.output).toContain('changed/deleted/delta/extracted/reused/staged/total file-count buckets');
+        expect(preview.output).toContain('fact-byte buckets, and rewrite/replay-amplification buckets');
+        expect(preview.output).toContain('Failed graph builds add only bounded outcome/type');
+        expect(preview.output).toContain('interrupted graph builds add only outcome/duration');
+        expect(preview.output).toContain('Neither adds graph classifications or buckets');
+        expect(preview.output).toContain('Never arguments');
+        expect(preview.output).toContain('MCP payloads/results');
+        expect(preview.output).toContain('Grafana Cloud EU');
+        expect(preview.output).toContain('14-day trace retention');
+        expect(preview.output).toContain('transport providers process source IP addresses');
+        expect(preview.output).toContain('No changes made. Re-run with --apply');
+        expect(yield* fs.exists(yield* telemetryConfigurationPath(config))).toBe(false);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('applies consent, reports an environment kill switch, and disables with salt removal', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const baseSystem = yield* SystemInfo;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-telemetry-commands-'});
+        const config = runtimeConfig(home);
+        const customPreview = yield* captureConsole(
+          runTelemetryEnable(config, {endpoint: 'https://collector.example/v1/traces'}),
+        );
+        expect(customPreview.output).not.toContain('Grafana Cloud EU');
+        expect(customPreview.output).toContain('The selected endpoint operator controls storage and retention.');
+        const enabled = yield* captureConsole(runTelemetryEnable(config, {apply: true}));
+        expect(enabled.output).toContain('Telemetry consent enabled');
+        expect(enabled.output).toContain('Restart connected MCP clients');
+        const firstConfiguration = yield* readTelemetryConfiguration(config);
+        expect(firstConfiguration?.enabled).toBe(true);
+        yield* runTelemetryEnable(config, {apply: true});
+        expect(yield* readTelemetryConfiguration(config)).toEqual(firstConfiguration);
+        yield* runTelemetryEnable(config, {apply: true, endpoint: 'https://collector.example/v1/traces'});
+        const changedEndpoint = yield* readTelemetryConfiguration(config);
+        expect(changedEndpoint).toMatchObject({
+          enabled: true,
+          endpoint: 'https://collector.example/v1/traces',
+        });
+        expect(changedEndpoint?.enabled === true ? changedEndpoint.sessionSalt : undefined).not.toBe(
+          firstConfiguration?.enabled === true ? firstConfiguration.sessionSalt : undefined,
+        );
+
+        const dntSystem = SystemInfo.of({
+          ...baseSystem,
+          environment: () => ({...baseSystem.environment(), DNT: '1'}),
+        });
+        const status = yield* captureConsole(runTelemetryStatus(config)).pipe(
+          Effect.provideService(SystemInfo, dntSystem),
+        );
+        expect(status.output).toContain('disabled by DNT');
+        expect(status.output).toContain('persisted consent remains enabled');
+
+        yield* runTelemetryDisable(config, {});
+        expect((yield* readTelemetryConfiguration(config))?.enabled).toBe(true);
+        yield* runTelemetryDisable(config, {apply: true});
+        const disabled = yield* readTelemetryConfiguration(config);
+        expect(disabled).toEqual({consentVersion: 2, enabled: false, version: 1});
+        expect(yield* fs.readFileString(yield* telemetryConfigurationPath(config))).not.toContain('sessionSalt');
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+});
+
+function runtimeConfig(agentContextHome: string): RuntimeConfig {
+  return {
+    account: 'local',
+    agentContextHome,
+    agentId: 'threadnote',
+    manifestPath: `${agentContextHome}/manifest.yaml`,
+    user: 'tester',
+  };
+}

@@ -770,7 +770,7 @@ describe('built self-contained distribution', () => {
     expect(output).toMatch(/OK\s+codex user instructions:/);
   });
 
-  it('seeds Windows path guidance while pruning generated and implicit hidden trees', async () => {
+  it('redacts cross-platform path guidance while pruning generated and implicit hidden trees', async () => {
     const repo = join(temporaryRoot, 'seed-windows-repo');
     await mkdir(join(repo, 'node_modules', 'dependency'), {recursive: true});
     await mkdir(join(repo, '.nx', 'cache'), {recursive: true});
@@ -813,8 +813,7 @@ describe('built self-contained distribution', () => {
       join(home, 'data', 'local', 'resources', 'repos', 'windows-guidance', 'CLAUDE.md'),
       'utf8',
     );
-    expect(seeded).toContain('/c/Users/developer/project');
-    expect(seeded).toContain('macOS checkout `<local-path>`');
+    expect(seeded).toBe('Bash uses `<local-path>`; macOS checkout `<local-path>`.\n');
   });
 
   it('bridges an allowlisted Obsidian vault through the native store', async () => {

@@ -1,6 +1,5 @@
 import type {CallToolResult} from '@modelcontextprotocol/sdk/types.js';
 import {Effect, Option, Path} from 'effect';
-import {errorMessage} from './utils.js';
 import {EffectMcpServerAdapter, McpInput} from './effect/ai/mcp.js';
 import {CodeGraphQueryService, observationFromCodeGraphStatus, renderCodeGraphResult} from './code_graph/query.js';
 import {repositoryChangesSince} from './code_graph/repository.js';
@@ -37,7 +36,12 @@ import {
   renderCodeGraphAnalysis,
   type CodeGraphAnalysisView,
 } from './code_graph/analysis_render.js';
-import {argumentError, requiredText, type RuntimeConfig} from './mcp_server_common.js';
+import {argumentError, mcpErrorResult, requiredText, type RuntimeConfig} from './mcp_server_common.js';
+import {
+  anonymousTelemetryDiagnosticFromCodeGraphRefreshFailure,
+  attachAnonymousTelemetryDiagnostic,
+  attachAnonymousTelemetryReportedOutcome,
+} from './telemetry/diagnostic.js';
 const MCP_CODE_GRAPH_INITIAL_WAIT_MILLISECONDS = 5_000;
 const MCP_CODE_GRAPH_POLL_MILLISECONDS = 100;
 const MCP_CODE_GRAPH_RETRY_FALLBACK_MILLISECONDS = 5_000;
@@ -112,11 +116,7 @@ export function registerContextBriefTool(server: EffectMcpServerAdapter, config:
           content: [{type: 'text' as const, text: response.text}],
           structuredContent: response.structuredContent,
         };
-      }).pipe(
-        Effect.catch(error =>
-          Effect.succeed({content: [{type: 'text' as const, text: errorMessage(error)}], isError: true}),
-        ),
-      );
+      }).pipe(Effect.catch(error => Effect.succeed(mcpErrorResult(error))));
     },
   );
 }
@@ -390,9 +390,7 @@ export function registerCodeGraphTool(
           duration: MCP_CODE_GRAPH_QUERY_TIMEOUT_MILLISECONDS,
           orElse: () => codeGraphQueryTimeoutResultFor(operation, timeoutContext),
         }),
-        Effect.catch(error =>
-          Effect.succeed({content: [{type: 'text' as const, text: errorMessage(error)}], isError: true}),
-        ),
+        Effect.catch(error => Effect.succeed(mcpErrorResult(error))),
       );
     },
   );
@@ -508,9 +506,7 @@ export function registerCodeGraphTool(
           duration: MCP_CODE_GRAPH_TOOL_TIMEOUT_MILLISECONDS,
           orElse: () => Effect.succeed(codeGraphAnalysisTimeoutResult(operation)),
         }),
-        Effect.catch(error =>
-          Effect.succeed({content: [{type: 'text' as const, text: errorMessage(error)}], isError: true}),
-        ),
+        Effect.catch(error => Effect.succeed(mcpErrorResult(error))),
       );
     },
   );
@@ -1344,61 +1340,70 @@ export function codeGraphAnalysisRefreshResult(
       return codeGraphRuntimeReconnectResult(operation, status.failure, 'code-graph-analysis-state');
     }
     const warning = codeGraphRefreshRecoveryWarning(status.failure);
-    return {
-      content: [
-        {
-          type: 'text',
-          text:
-            `Code graph refresh is deferred (${status.failure.code}). ${warning} ` +
-            'Whole-graph analysis requires a current ready snapshot; retry analyze_code_graph after recovery.',
+    return codeGraphRefreshFailureResult(
+      {
+        content: [
+          {
+            type: 'text',
+            text:
+              `Code graph refresh is deferred (${status.failure.code}). ${warning} ` +
+              'Whole-graph analysis requires a current ready snapshot; retry analyze_code_graph after recovery.',
+          },
+        ],
+        structuredContent: {
+          failure: status.failure,
+          operation,
+          state: 'deferred',
+          type: 'code-graph-analysis-state',
+          version: 2,
         },
-      ],
-      structuredContent: {
-        failure: status.failure,
-        operation,
-        state: 'deferred',
-        type: 'code-graph-analysis-state',
-        version: 2,
       },
-    };
+      status.failure,
+    );
   }
   const progress = status?.state === 'indexing' ? status.progress : undefined;
   const retryAfterMilliseconds = codeGraphRetryAfterMilliseconds(status);
   const compactProgress = compactCodeGraphMcpProgress(progress);
-  return {
-    content: [
-      {
-        type: 'text',
-        text:
-          `Code graph indexing is continuing in the background (${codeGraphProgressSummary(progress) ?? 'queued'}). ` +
-          `Retry analyze_code_graph in about ${retryAfterMilliseconds / 1_000} seconds.`,
+  return attachAnonymousTelemetryReportedOutcome(
+    {
+      content: [
+        {
+          type: 'text',
+          text:
+            `Code graph indexing is continuing in the background (${codeGraphProgressSummary(progress) ?? 'queued'}). ` +
+            `Retry analyze_code_graph in about ${retryAfterMilliseconds / 1_000} seconds.`,
+        },
+      ],
+      structuredContent: {
+        operation,
+        ...(compactProgress ? {progress: compactProgress} : {}),
+        retryAfterMilliseconds,
+        state: 'indexing',
+        type: 'code-graph-analysis-state',
+        version: 1,
       },
-    ],
-    structuredContent: {
-      operation,
-      ...(compactProgress ? {progress: compactProgress} : {}),
-      retryAfterMilliseconds,
-      state: 'indexing',
-      type: 'code-graph-analysis-state',
-      version: 1,
     },
-  };
+    'unavailable',
+  );
 }
 
 function codeGraphAnalysisTimeoutResult(operation: CodeGraphAnalysisView): CallToolResult {
-  return {
-    content: [
-      {
-        type: 'text',
-        text:
-          `Whole-graph analysis exceeded Threadnote's ${MCP_CODE_GRAPH_TOOL_TIMEOUT_MILLISECONDS / 1_000}-second MCP envelope. ` +
-          'Run `threadnote graph analyze --view ' +
-          `${operation}` +
-          '` in a terminal for the longer CLI budget.',
-      },
-    ],
-    structuredContent: {operation, state: 'timed-out', type: 'code-graph-analysis-state', version: 1},
-  };
+  return attachAnonymousTelemetryReportedOutcome(
+    {
+      content: [
+        {
+          type: 'text',
+          text:
+            `Whole-graph analysis exceeded Threadnote's ${MCP_CODE_GRAPH_TOOL_TIMEOUT_MILLISECONDS / 1_000}-second MCP envelope. ` +
+            'Run `threadnote graph analyze --view ' +
+            `${operation}` +
+            '` in a terminal for the longer CLI budget.',
+        },
+      ],
+      structuredContent: {operation, state: 'timed-out', type: 'code-graph-analysis-state', version: 1},
+    },
+    'timed-out',
+  );
 }
 
 const waitForCodeGraphRefresh = Effect.fn('mcpServer.waitForCodeGraphRefresh')(function* (
@@ -1526,23 +1531,26 @@ function codeGraphRefreshResult(
       return codeGraphRuntimeReconnectResult(operation, status.failure, 'code-graph-index-state');
     }
     const warning = codeGraphRefreshRecoveryWarning(status.failure);
-    return {
-      content: [
-        {
-          type: 'text',
-          text:
-            `Code graph refresh is deferred (${status.failure.code}). ${warning} ` +
-            'Non-strict query, node, neighbors, and explain operations may continue from an existing usable ready snapshot.',
+    return codeGraphRefreshFailureResult(
+      {
+        content: [
+          {
+            type: 'text',
+            text:
+              `Code graph refresh is deferred (${status.failure.code}). ${warning} ` +
+              'Non-strict query, node, neighbors, and explain operations may continue from an existing usable ready snapshot.',
+          },
+        ],
+        structuredContent: {
+          failure: status.failure,
+          operation,
+          state: 'deferred',
+          type: 'code-graph-index-state',
+          version: 4,
         },
-      ],
-      structuredContent: {
-        failure: status.failure,
-        operation,
-        state: 'deferred',
-        type: 'code-graph-index-state',
-        version: 4,
       },
-    };
+      status.failure,
+    );
   }
   const progress = status?.state === 'indexing' ? status.progress : undefined;
   const timing = status?.state === 'indexing' ? status.timing : undefined;
@@ -1559,29 +1567,32 @@ function codeGraphRefreshResult(
         : ` Estimated remaining time for this phase: about ${formatCodeGraphDuration(
             timing.estimatedPhaseRemainingMilliseconds,
           )} (${timing.estimateConfidence ?? 'low'} confidence).`;
-  return {
-    content: [
-      {
-        type: 'text',
-        text:
-          `Code graph indexing is continuing in the background (${progressSummary ?? `phase: ${phase}`}).` +
-          estimateSummary +
-          ` Retry this inspect_code_graph call in about ${retryAfterMilliseconds / 1_000} seconds for graph evidence. ` +
-          'Continue with targeted text/path search or other independent investigation while the graph builds; ' +
-          'retry before making relationship-aware graph claims.',
+  return attachAnonymousTelemetryReportedOutcome(
+    {
+      content: [
+        {
+          type: 'text',
+          text:
+            `Code graph indexing is continuing in the background (${progressSummary ?? `phase: ${phase}`}).` +
+            estimateSummary +
+            ` Retry this inspect_code_graph call in about ${retryAfterMilliseconds / 1_000} seconds for graph evidence. ` +
+            'Continue with targeted text/path search or other independent investigation while the graph builds; ' +
+            'retry before making relationship-aware graph claims.',
+        },
+      ],
+      structuredContent: {
+        operation,
+        phase,
+        ...(compactProgress ? {progress: compactProgress} : {}),
+        retryAfterMilliseconds,
+        state: 'indexing',
+        ...(compactTiming ? {timing: compactTiming} : {}),
+        type: 'code-graph-index-state',
+        version: 3,
       },
-    ],
-    structuredContent: {
-      operation,
-      phase,
-      ...(compactProgress ? {progress: compactProgress} : {}),
-      retryAfterMilliseconds,
-      state: 'indexing',
-      ...(compactTiming ? {timing: compactTiming} : {}),
-      type: 'code-graph-index-state',
-      version: 3,
     },
-  };
+    'unavailable',
+  );
 }
 
 function codeGraphRuntimeReconnectResult(
@@ -1589,23 +1600,33 @@ function codeGraphRuntimeReconnectResult(
   failure: CodeGraphRefreshFailure,
   type: 'code-graph-analysis-state' | 'code-graph-index-state',
 ): CallToolResult {
-  return {
-    content: [
-      {
-        type: 'text',
-        text:
-          'Code graph storage was upgraded by a newer Threadnote runtime. Reconnect this Threadnote MCP server ' +
-          'to load the installed runtime, then retry the same graph request. No background build was started.',
+  return codeGraphRefreshFailureResult(
+    {
+      content: [
+        {
+          type: 'text',
+          text:
+            'Code graph storage was upgraded by a newer Threadnote runtime. Reconnect this Threadnote MCP server ' +
+            'to load the installed runtime, then retry the same graph request. No background build was started.',
+        },
+      ],
+      structuredContent: {
+        failure,
+        operation,
+        state: 'reconnect-required',
+        type,
+        version: 1,
       },
-    ],
-    structuredContent: {
-      failure,
-      operation,
-      state: 'reconnect-required',
-      type,
-      version: 1,
     },
-  };
+    failure,
+  );
+}
+
+function codeGraphRefreshFailureResult(result: CallToolResult, failure: CodeGraphRefreshFailure): CallToolResult {
+  return attachAnonymousTelemetryReportedOutcome(
+    attachAnonymousTelemetryDiagnostic(result, anonymousTelemetryDiagnosticFromCodeGraphRefreshFailure(failure)),
+    'failure',
+  );
 }
 
 const codeGraphQueryTimeoutResultFor = Effect.fn('mcpServer.codeGraphQueryTimeoutResultFor')(function* (
@@ -1634,25 +1655,28 @@ export function codeGraphQueryTimeoutResult(
   if (status?.state === 'deferred' || status?.state === 'indexing') {
     return codeGraphRefreshResult(operation, status);
   }
-  return {
-    content: [
-      {
-        type: 'text',
-        text:
-          `Code graph inspection exceeded Threadnote's ${MCP_CODE_GRAPH_QUERY_TIMEOUT_MILLISECONDS / 1_000}-second ` +
-          'server budget and was stopped before the MCP client timeout. No indexing failure was observed; retry the ' +
-          'same request after the suggested delay. If it repeats, run `threadnote graph status`, then ' +
-          '`threadnote doctor --dry-run`, and report the bounded diagnostic.',
+  return attachAnonymousTelemetryReportedOutcome(
+    {
+      content: [
+        {
+          type: 'text',
+          text:
+            `Code graph inspection exceeded Threadnote's ${MCP_CODE_GRAPH_QUERY_TIMEOUT_MILLISECONDS / 1_000}-second ` +
+            'server budget and was stopped before the MCP client timeout. No indexing failure was observed; retry the ' +
+            'same request after the suggested delay. If it repeats, run `threadnote graph status`, then ' +
+            '`threadnote doctor --dry-run`, and report the bounded diagnostic.',
+        },
+      ],
+      structuredContent: {
+        operation,
+        retryAfterMilliseconds: MCP_CODE_GRAPH_RETRY_FALLBACK_MILLISECONDS,
+        state: 'timed-out',
+        type: 'code-graph-query-state',
+        version: 2,
       },
-    ],
-    structuredContent: {
-      operation,
-      retryAfterMilliseconds: MCP_CODE_GRAPH_RETRY_FALLBACK_MILLISECONDS,
-      state: 'timed-out',
-      type: 'code-graph-query-state',
-      version: 2,
     },
-  };
+    'timed-out',
+  );
 }
 
 export function codeGraphRetryAfterMilliseconds(status: CodeGraphRefreshStatus | undefined): number {

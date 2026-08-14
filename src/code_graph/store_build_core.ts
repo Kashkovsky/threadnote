@@ -26,6 +26,7 @@ import {type CodeGraphBuildWorkspace, type CodeGraphWorkspaceProject} from './la
 import {chunk, lookupDomain, sortedBy, symbolTerms, uniqueBy} from './store_utilities.js';
 import {lastStatementChangeCount} from './store_activation_core.js';
 import {type EdgeRow} from './store_internal_models.js';
+import {persistedIncrementalSurfaceMatches} from './store_incremental_surface.js';
 
 function persistentSnapshotBuildIdentityMatches(current: CodeGraphSnapshot, requested: CodeGraphSnapshot): boolean {
   return (
@@ -715,51 +716,6 @@ interface PreparedPersistedFullFactBatch {
   readonly reexportsByReferenceBatch: readonly (readonly CodeGraphReusableReexport[])[];
   readonly symbolTerms: ReadonlyMap<CodeGraphSymbol, readonly (readonly [string, number])[]>;
 }
-
-const persistedIncrementalSurfaceMatches = Effect.fn('codeGraph.persistedIncrementalSurfaceMatches')(function* (
-  sql: SqlClient.SqlClient,
-  baseSnapshotId: string,
-) {
-  const changedFiles = yield* sql<{readonly expected: number; readonly present: number}>`
-    SELECT
-      (SELECT COUNT(*) FROM activation_files) AS expected,
-      (
-        SELECT COUNT(*)
-        FROM activation_files AS current
-        JOIN snapshot_files AS base
-          ON base.snapshot_id = ${baseSnapshotId} AND base.path = current.path
-      ) AS present
-  `;
-  if (Number(changedFiles[0]?.expected ?? 0) !== Number(changedFiles[0]?.present ?? -1)) return false;
-  const mismatches = yield* sql<{readonly count: number}>`
-    SELECT COUNT(*) AS count
-    FROM (
-      SELECT current.id
-      FROM activation_symbols AS current
-      LEFT JOIN symbols AS base
-        ON base.snapshot_id = ${baseSnapshotId} AND base.id = current.id
-      WHERE base.id IS NULL
-         OR base.kind IS NOT current.kind
-         OR base.name IS NOT current.name
-         OR base.qualified_name IS NOT current.qualified_name
-         OR base.path IS NOT current.path
-         OR base.language IS NOT current.language
-         OR base.arity IS NOT current.arity
-         OR base.lookup_keys_json IS NOT current.lookup_keys_json
-         OR base.resolution_domain IS NOT current.resolution_domain
-         OR base.resolution_scope_id IS NOT current.resolution_scope_id
-         OR base.package_name IS NOT current.package_name
-         OR base.exported IS NOT current.exported
-      UNION ALL
-      SELECT base.id
-      FROM symbols AS base
-      JOIN activation_files AS changed ON changed.path = base.path
-      LEFT JOIN activation_symbols AS current ON current.id = base.id
-      WHERE base.snapshot_id = ${baseSnapshotId} AND current.id IS NULL
-    ) AS mismatch
-  `;
-  return Number(mismatches[0]?.count ?? 0) === 0;
-});
 
 const persistedIncrementalProjectFilesMatch = Effect.fn('codeGraph.persistedIncrementalProjectFilesMatch')(function* (
   sql: SqlClient.SqlClient,

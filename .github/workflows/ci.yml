@@ -19,8 +19,6 @@ permissions:
 
 env:
   BUN_VERSION: 1.3.14
-  E2E_EMBEDDING_MODEL_ID: bge-small-en-v1.5-q8
-  E2E_EMBEDDING_MODEL_SHA256: f046db1dc724cf4f6f0a0c5917e922823b73eb1d27b8f9a9c2797f7866974804
 
 jobs:
   changes:
@@ -66,7 +64,7 @@ jobs:
 
       - name: Validate GitHub Actions workflows
         if: needs.changes.outputs.actions == 'true'
-        uses: docker://rhysd/actionlint:1.7.8
+        uses: docker://rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
         with:
           args: -color
 
@@ -155,9 +153,44 @@ jobs:
         env:
           THREADNOTE_VITEST_LONG_GROUP: ${{ matrix.group }}
 
+  remote_memory_postgres:
+    name: Tests · remote memory · PostgreSQL
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:17.6-alpine
+        env:
+          POSTGRES_DB: threadnote_ci
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_USER: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d threadnote_ci"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - run: bun install --frozen-lockfile
+
+      - name: Run isolated PostgreSQL integration coverage
+        run: bun --bun vitest run test/integration/remote-memory-postgres.test.ts
+        env:
+          THREADNOTE_TEST_POSTGRES_URL: postgres://postgres:postgres@127.0.0.1:5432/threadnote_ci
+
   test:
     name: Unit and integration tests
-    needs: [changes, quality, standard_tests, long_tests]
+    needs: [changes, quality, standard_tests, long_tests, remote_memory_postgres]
     if: always()
     runs-on: ubuntu-latest
 
@@ -169,12 +202,14 @@ jobs:
           CODE_CHANGED: ${{ needs.changes.outputs.code }}
           STANDARD_RESULT: ${{ needs.standard_tests.result }}
           LONG_RESULT: ${{ needs.long_tests.result }}
+          REMOTE_MEMORY_POSTGRES_RESULT: ${{ needs.remote_memory_postgres.result }}
         run: |
           test "$CHANGES_RESULT" = success
           test "$QUALITY_RESULT" = success
           if [ "$CODE_CHANGED" = true ]; then
             test "$STANDARD_RESULT" = success
             test "$LONG_RESULT" = success
+            test "$REMOTE_MEMORY_POSTGRES_RESULT" = success
           fi
 
   recall-quality:
@@ -233,42 +268,6 @@ jobs:
           test/unit/update.test.ts
           test/unit/mcp.test.ts
 
-  prepare-e2e-model:
-    name: Prepare pinned E2E model
-    needs: changes
-    if: needs.changes.outputs.release == 'true'
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: ${{ env.BUN_VERSION }}
-
-      - run: bun install --frozen-lockfile
-
-      - name: Restore verified model cache
-        id: model-cache
-        uses: actions/cache@v6
-        with:
-          key: threadnote-e2e-model-${{ env.E2E_EMBEDDING_MODEL_SHA256 }}
-          path: artifacts/e2e-model-home/models/embedding/${{ env.E2E_EMBEDDING_MODEL_ID }}
-
-      - name: Download and verify pinned model once
-        if: steps.model-cache.outputs.cache-hit != 'true'
-        run: >-
-          bun src/standalone.ts
-          --home artifacts/e2e-model-home
-          models install ${{ env.E2E_EMBEDDING_MODEL_ID }}
-
-      - name: Share pinned model with platform E2E jobs
-        uses: actions/upload-artifact@v7
-        with:
-          name: e2e-core-embedding-model
-          path: artifacts/e2e-model-home/models/embedding/${{ env.E2E_EMBEDDING_MODEL_ID }}/${{ env.E2E_EMBEDDING_MODEL_SHA256 }}.gguf
-          retention-days: 1
-
   standalone-targets:
     name: Bytecode compile · ${{ matrix.target }}
     needs: changes
@@ -301,8 +300,8 @@ jobs:
 
   self-contained-distribution:
     name: Self-contained Bun release · ${{ matrix.os }}
-    needs: [changes, prepare-e2e-model]
-    if: needs.changes.outputs.release == 'true' && needs.prepare-e2e-model.result == 'success'
+    needs: changes
+    if: needs.changes.outputs.release == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -320,12 +319,6 @@ jobs:
 
       - run: bun install --frozen-lockfile
 
-      - name: Download pinned E2E model
-        uses: actions/download-artifact@v8
-        with:
-          name: e2e-core-embedding-model
-          path: artifacts/e2e-model-fixture
-
       - run: bun run check:self-contained
       - name: Platform process identity smoke
         run: bun --bun vitest run test/unit/effect-system.test.ts
@@ -333,5 +326,3 @@ jobs:
 
       - name: Installed release E2E
         run: bun run test:e2e:local-bins
-        env:
-          THREADNOTE_E2E_MODEL_PATH: ${{ github.workspace }}/artifacts/e2e-model-fixture/${{ env.E2E_EMBEDDING_MODEL_SHA256 }}.gguf

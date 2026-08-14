@@ -504,9 +504,9 @@ export function GraphAdministration(props: {
     props.onAction(targeted);
   };
   return (
-    <details className="graph-administration">
+    <details className="graph-administration" open>
       <summary>
-        <span>
+        <span className="graph-administration-title">
           <strong>Graph administration</strong>
           <small>
             {props.report
@@ -514,7 +514,12 @@ export function GraphAdministration(props: {
               : 'Load home-wide status, diagnostics, and maintenance controls'}
           </small>
         </span>
-        {props.busy ? <em>{props.busy}…</em> : null}
+        <span className="graph-administration-summary-state">
+          {props.busy ? <em>{props.busy}…</em> : null}
+          <svg aria-hidden="true" className="graph-administration-caret" viewBox="0 0 16 16">
+            <path d="m4 6 4 4 4-4" />
+          </svg>
+        </span>
       </summary>
       <div className="graph-administration-body">
         <div className="graph-administration-toolbar">

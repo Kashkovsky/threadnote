@@ -13,6 +13,7 @@ import {BUILTIN_LANGUAGE_PACK_REGISTRY} from './languages/registry.js';
 import {TreeSitterRuntime, type TreeSitterRuntimeShape} from './tree_sitter/runtime.js';
 import type {CodeGraphFileFacts, CodeGraphInventoryFile, CodeGraphSymbol} from './types.js';
 import {CODE_GRAPH_PARSER_WORKER_ARGUMENT} from '../worker_protocol.js';
+import {withCurrentAgentSessionEnvironment} from '../telemetry/session.js';
 
 export {CODE_GRAPH_PARSER_WORKER_ARGUMENT};
 export const CODE_GRAPH_PARSER_WORKERS_ENV = 'THREADNOTE_CODE_GRAPH_PARSER_WORKERS';
@@ -38,7 +39,7 @@ const PARSER_WORKER_MEMORY_BYTES_PER_SLOT = 8 * 1_024 * 1_024 * 1_024;
 
 type ParserWorkerEnvironment = Readonly<Record<string, string | undefined>>;
 
-type ParserWorkerFailureReason =
+export type ParserWorkerFailureReason =
   | 'abort'
   | 'allocation'
   | 'exit'
@@ -113,6 +114,7 @@ interface ParserWorkerRequest {
 }
 
 interface ParserWorkerSuccess {
+  readonly degradationReason?: ParserWorkerFailureReason;
   readonly degraded: boolean;
   readonly facts: CodeGraphFileFacts;
   readonly id: string;
@@ -132,6 +134,8 @@ interface ParserWorkerFailure {
 type ParserWorkerResponse = ParserWorkerFailure | ParserWorkerSuccess;
 
 export interface CodeGraphParserResult {
+  /** Closed parent-observed reason; never includes a path or native message. */
+  readonly degradationReason?: ParserWorkerFailureReason;
   readonly degraded: boolean;
   readonly facts: CodeGraphFileFacts;
   readonly parseMilliseconds: number;
@@ -239,6 +243,7 @@ export function codeGraphParserPoolLayer(
               const sourceByteBudget = parserWorkerSourceByteBudget(file, maxSourceBytes);
               if (sourceByteBudget.exceeded) {
                 return Effect.succeed({
+                  degradationReason: 'source-bytes',
                   degraded: true,
                   facts: degradedFacts(
                     file,
@@ -264,13 +269,15 @@ export function codeGraphParserPoolLayer(
                     capacity,
                     slot.extract(file, threadnoteHome),
                   ).pipe(
-                    Effect.catch(cause =>
-                      Effect.succeed({
+                    Effect.catch(cause => {
+                      const reason = cause instanceof ParserWorkerError ? cause.reason : 'protocol';
+                      return Effect.succeed({
+                        degradationReason: reason,
                         degraded: true,
                         facts: degradedFacts(file, cause),
                         parseMilliseconds: 0,
-                      }),
-                    ),
+                      });
+                    }),
                   ),
                 slot => Queue.offer(available, slot),
               );
@@ -380,6 +387,11 @@ class ParserWorkerSlot {
               if (!response.ok) throw new ParserWorkerError('operation');
               if (response.recycle) await this.discard(active).catch(() => undefined);
               return {
+                ...(response.degradationReason === undefined
+                  ? response.degraded
+                    ? {degradationReason: 'operation' as const}
+                    : {}
+                  : {degradationReason: response.degradationReason}),
                 degraded: response.degraded,
                 facts: response.facts,
                 parseMilliseconds: response.parseMilliseconds,
@@ -658,7 +670,7 @@ function parserWorkerSpawnOptions(system: SystemInfoShape, threadnoteHome: strin
   return {
     arguments: [...Option.toArray(script), CODE_GRAPH_PARSER_WORKER_ARGUMENT],
     environment: {
-      ...system.environment(),
+      ...withCurrentAgentSessionEnvironment(system.environment(), 'parser-worker'),
       THREADNOTE_HOME: threadnoteHome,
       THREADNOTE_CODE_GRAPH_PARSER_WORKER: '1',
     },
@@ -798,12 +810,11 @@ function handleParserWorkerLine(
       resourceOptions,
     );
     if (resourceBudget !== undefined) {
+      const degradationReason = resourceBudget.code === 'rss-bytes' ? 'rss' : 'allocation';
       return {
+        degradationReason,
         degraded: true,
-        facts: degradedFacts(
-          request.file,
-          new ParserWorkerError(resourceBudget.code === 'rss-bytes' ? 'rss' : 'allocation', resourceBudget),
-        ),
+        facts: degradedFacts(request.file, new ParserWorkerError(degradationReason, resourceBudget)),
         id: request.id,
         ok: true,
         parseMilliseconds,
@@ -814,6 +825,7 @@ function handleParserWorkerLine(
     if (facts === undefined) return protocolFailure(request.id, 'Language extraction failed.');
     const bounded = budgetParserWorkerFacts(request.file, facts);
     return {
+      ...(bounded.degradationReason === undefined ? {} : {degradationReason: bounded.degradationReason}),
       degraded: bounded.degraded,
       facts: bounded.facts,
       id: request.id,
@@ -887,6 +899,7 @@ function decodeResponse(line: string, expectedId: string, expectedPath: string):
     return isFileFacts(value.facts) &&
       value.facts.path === expectedPath &&
       typeof value.degraded === 'boolean' &&
+      (value.degradationReason === undefined || parserWorkerFailureReason(value.degradationReason)) &&
       typeof value.recycle === 'boolean' &&
       typeof value.parseMilliseconds === 'number' &&
       Number.isFinite(value.parseMilliseconds) &&
@@ -1019,13 +1032,14 @@ export function budgetParserWorkerFacts(
   file: CodeGraphInventoryFile,
   facts: CodeGraphFileFacts,
   options: ParserWorkerFactBudgetOptions = {},
-): Pick<CodeGraphParserResult, 'degraded' | 'facts'> {
+): Pick<CodeGraphParserResult, 'degradationReason' | 'degraded' | 'facts'> {
   const maximumSymbols = Math.min(
     CODE_GRAPH_PARSER_SYMBOLS_MAXIMUM,
     positiveInteger(options.maximumSymbols, CODE_GRAPH_PARSER_SYMBOLS_MAXIMUM),
   );
   if (facts.symbols.length > maximumSymbols) {
     return {
+      degradationReason: 'symbols',
       degraded: true,
       facts: degradedFacts(
         file,
@@ -1046,6 +1060,7 @@ export function budgetParserWorkerFacts(
     const observedBytes = cachedCodeGraphFactBytes(facts);
     if (observedBytes > maximumFactBytes) {
       return {
+        degradationReason: 'fact-bytes',
         degraded: true,
         facts: degradedFacts(
           file,
@@ -1222,6 +1237,23 @@ function parserWorkerFailureSummary(reason: ParserWorkerFailureReason): string {
     case 'write':
       return 'parser worker input failed';
   }
+}
+
+function parserWorkerFailureReason(value: unknown): value is ParserWorkerFailureReason {
+  return (
+    value === 'abort' ||
+    value === 'allocation' ||
+    value === 'exit' ||
+    value === 'fact-bytes' ||
+    value === 'operation' ||
+    value === 'protocol' ||
+    value === 'rss' ||
+    value === 'source-bytes' ||
+    value === 'spawn' ||
+    value === 'symbols' ||
+    value === 'timeout' ||
+    value === 'write'
+  );
 }
 
 function positiveInteger(value: number | undefined, fallback: number): number {

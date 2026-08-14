@@ -9,9 +9,9 @@ file, durable close, and atomic rename. Derived index generations are activated 
 the full generation exists.
 
 Model artifacts are pinned by immutable repository revision, byte count, SHA-256, role, runtime version, and license.
-Install and repair provision the core embedding model automatically; additional model roles require an explicit
-selection. Partial downloads are never loaded. The llama adapter requests prebuilt binaries and refuses runtime
-compilation or implicit binary download.
+Install and repair extract and verify the core embedding model embedded in the standalone executable; additional model
+roles require an explicit selection and download. Partial downloads are never loaded. The llama adapter requests
+prebuilt binaries and refuses runtime compilation or implicit binary download.
 
 Share publishing scrubs known credential and machine-local path patterns before writing or pushing. Handoffs and
 preferences are not publishable. Publish order preserves the personal source until the shared canonical write,
@@ -27,6 +27,13 @@ generated note before atomic replacement. Inbox notes form review candidates but
 
 The manager binds to loopback, uses a per-process bearer token, and never exposes a model or memory server. MCP uses
 stdio. Threadnote has no background daemon, listening storage port, or native HTTP MCP endpoint.
+
+Anonymous operational telemetry is disabled by default and requires explicit persisted consent. It exports only a
+separate allowlisted diagnostic span for each eligible CLI command and MCP tool—including duration, bounded process
+memory, phase/state observations, and safe typed failures—and never the application's Effect span tree, logs,
+arguments, payloads, content, paths, exception messages, or stacks. There is no persistent installation identifier;
+correlation uses a random agent-session alias. `DO_NOT_TRACK=1` and `THREADNOTE_TELEMETRY=0` are kill switches. The
+complete data and destination contract is documented in [Optional anonymous telemetry](./telemetry.md).
 
 Official standalone installs and updates accept only immutable GitHub releases and verify the archive SHA-256 before
 extraction. macOS additionally requires valid code signatures during installation and Apple notarization acceptance

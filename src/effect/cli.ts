@@ -73,7 +73,7 @@ import {
   runShareUnpublish,
 } from './share.js';
 import type {RuntimeConfig} from '../types.js';
-import {maybeNotifyUpdate, maybeRunPostUpdateAfterRepair, runPostUpdate, runUpdate} from '../update.js';
+import {maybeNotifyUpdate, maybeRunPostUpdateAfterRepair, runPostUpdate} from '../update.js';
 import {errorMessage} from '../utils.js';
 import {runVersion} from '../version_command.js';
 import {runManage} from '../manager.js';
@@ -111,38 +111,45 @@ import {
 } from '../code_graph/commands.js';
 import {runProcessDiagnostics} from '../process_diagnostics.js';
 import {runContextBrief} from '../context_brief/commands.js';
+import {runTelemetryDisable, runTelemetryEnable, runTelemetryStatus} from '../telemetry/commands.js';
+import {initializeAutoUpdatePolicy, runAutoUpdateWorker, runThreadnoteUpdateCommand} from '../auto_update.js';
 import {
   cursorCloudRuntimeConfig,
   runCursorCloudBootstrap,
   runCursorCloudConfig,
   runCursorCloudVerify,
 } from '../cursor_cloud.js';
+import {runCursorAttestationCommand} from '../cursor_cloud_attestation.js';
+import {
+  makeCursorCloudAttestCommand,
+  makeCursorCloudIdentityFlags,
+  makeCursorCloudModeFlag,
+} from './cursor_cloud_cli.js';
+import {
+  decodeCliStringFlagValue,
+  makeCliInvocationInspector,
+  normalizeCliArguments,
+  registerCliBooleanFlag,
+  registerCliValueFlag,
+  type CliInvocationInspection,
+  type ProductionLogMode,
+} from './cli_invocation.js';
 
 const describeFlag = <A>(flag: Flag.Flag<A>, description: string): Flag.Flag<A> =>
   flag.pipe(Flag.withDescription(description));
 
-const encodedStringPrefix = '\u{f0000}threadnote:';
-const valueFlagKinds = new Map<string, 'other' | 'string'>();
-const booleanFlagNames = new Set<string>();
-const cliRuntimeValueFlagKinds = new Map<string, 'other' | 'string'>([
-  ['--completions', 'other'],
-  ['--log-level', 'other'],
-]);
-
 const valueFlag = <A>(name: string, flag: Flag.Flag<A>, kind: 'other' | 'string'): Flag.Flag<A> => {
-  valueFlagKinds.set(`--${name}`, kind);
+  registerCliValueFlag(`--${name}`, kind);
   return flag;
 };
 
 const stringFlag = (name: string): Flag.Flag<string> =>
-  valueFlag(name, Flag.string(name), 'string').pipe(
-    Flag.map(value => (value.startsWith(encodedStringPrefix) ? value.slice(encodedStringPrefix.length) : value)),
-  );
+  valueFlag(name, Flag.string(name), 'string').pipe(Flag.map(decodeCliStringFlagValue));
 
 const integerFlag = (name: string): Flag.Flag<number> => valueFlag(name, Flag.integer(name), 'other');
 
 const withValueAlias = <A>(flag: Flag.Flag<A>, alias: string, kind: 'other' | 'string'): Flag.Flag<A> => {
-  valueFlagKinds.set(alias.length === 1 ? `-${alias}` : `--${alias}`, kind);
+  registerCliValueFlag(alias.length === 1 ? `-${alias}` : `--${alias}`, kind);
   return flag.pipe(Flag.withAlias(alias));
 };
 
@@ -159,12 +166,12 @@ const defaultString = (name: string, description: string, value: string): Flag.F
   describeFlag(stringFlag(name), description).pipe(Flag.withDefault(value));
 
 const boolean = (name: string, description: string): Flag.Flag<boolean> => {
-  booleanFlagNames.add(`--${name}`);
+  registerCliBooleanFlag(`--${name}`);
   return describeFlag(Flag.boolean(name), description);
 };
 
 const negatedBoolean = (name: string, description: string): Flag.Flag<boolean> => {
-  booleanFlagNames.add(`--no-${name}`);
+  registerCliBooleanFlag(`--no-${name}`);
   return describeFlag(Flag.boolean(`no-${name}`), description).pipe(Flag.map(value => !value));
 };
 
@@ -270,6 +277,7 @@ const install = Command.make(
     withRuntimeEffect(config =>
       Effect.gen(function* () {
         yield* runInstall(config, options);
+        if (!options.dryRun) yield* initializeAutoUpdatePolicy('automatic');
         yield* maybeRunPostUpdateAfterRepair(config, {dryRun: options.dryRun});
         if (options.withHooks) {
           for (const agent of ['claude', 'codex', 'cursor', 'copilot'] as const) {
@@ -295,6 +303,28 @@ const logs = Command.make('logs', {}, () => withRuntimeEffect(runProductionLogs)
   Command.withDescription('Show privacy-safe rotating production log files for support'),
 );
 
+const telemetryStatus = Command.make('status', {}, () => withRuntimeEffect(config => runTelemetryStatus(config))).pipe(
+  Command.withDescription('Show effective consent, endpoint, data categories, and environment opt-outs'),
+);
+
+const telemetryEnable = Command.make(
+  'enable',
+  {
+    apply: boolean('apply', 'Persist explicit telemetry consent'),
+    endpoint: optionalString('endpoint', 'OTLP/HTTP traces endpoint; HTTPS required except for loopback'),
+  },
+  options => withRuntimeEffect(config => runTelemetryEnable(config, options)),
+).pipe(Command.withDescription('Preview or enable anonymous CLI and MCP operational telemetry'));
+
+const telemetryDisable = Command.make('disable', {apply: boolean('apply', 'Persist telemetry opt-out')}, options =>
+  withRuntimeEffect(config => runTelemetryDisable(config, options)),
+).pipe(Command.withDescription('Preview or disable all anonymous operational telemetry'));
+
+const telemetry = Command.make('telemetry').pipe(
+  Command.withDescription('Manage optional anonymous CLI and MCP operational telemetry'),
+  Command.withSubcommands([telemetryStatus, telemetryEnable, telemetryDisable]),
+);
+
 const reportIssue = Command.make(
   'report-issue',
   {
@@ -311,18 +341,25 @@ const update = Command.make(
   'update',
   {
     allowUntrustedSource: boolean('allow-untrusted-source', 'Allow a non-default release API source'),
+    auto: optionalChoice('auto', ['on', 'off'], 'Persist automatic updates as on or off'),
     beta: boolean('beta', 'Follow the beta channel: install the newest stable or prerelease release'),
     check: boolean('check', 'Only check whether a newer version is available'),
     dryRun: boolean('dry-run', 'Print update and repair commands without running them'),
     force: boolean('force', 'Reinstall the selected standalone release even if already current'),
+    json: boolean('json', 'Emit versioned machine-readable update status'),
     postUpdate: negatedBoolean('post-update', 'Skip post-update migration prompts'),
     repair: negatedBoolean('repair', 'Skip threadnote repair after updating the package'),
     source: optionalString('source', 'GitHub-compatible releases API URL'),
     stable: boolean('stable', 'Switch to the latest stable release'),
+    status: boolean('status', 'Show automatic update policy and the last background result'),
     yes: boolean('yes', 'Accept applicable post-update actions without prompting'),
   },
-  options => withRuntimeEffect(config => runUpdate(config, options)),
+  options => withRuntimeEffect(config => runThreadnoteUpdateCommand(config, options)),
 ).pipe(Command.withDescription('Install a verified standalone Threadnote release, then repair local integrations'));
+
+const autoUpdateWorker = Command.make('auto-update-worker', {}, () =>
+  withRuntimeEffect(config => runAutoUpdateWorker(config).pipe(Effect.asVoid)),
+).pipe(Command.withDescription('Run one coordinated automatic update attempt'), Command.withHidden);
 
 const postUpdate = Command.make(
   'post-update',
@@ -1187,7 +1224,12 @@ const remember = Command.make(
       'string',
     ),
     sourceAgentClient: defaultString('source-agent-client', 'Originating agent client name', 'codex'),
-    status: defaultChoice('status', ['active', 'archived', 'superseded'], 'Memory lifecycle status', 'active'),
+    status: defaultChoice(
+      'status',
+      ['active', 'archived', 'expired', 'superseded'],
+      'Memory lifecycle status',
+      'active',
+    ),
     stdin: boolean('stdin', 'Read memory text from stdin'),
     text: optionalString('text', 'Memory text to store'),
     topic: optionalString('topic', 'Stable topic name for an active project/topic memory'),
@@ -1428,26 +1470,35 @@ const forget = Command.make(
   ({uri, ...options}) => withRuntimeEffect(config => runForget(config, uri, options)),
 ).pipe(Command.withDescription('Remove a threadnote:// URI from local Threadnote context'));
 
-const cursorCloudIdentityFlags = {
-  agentId: defaultString('agent-id', 'Stable agent identity used by Cursor Cloud', 'cursor-cloud'),
-  team: defaultString('team', 'Shared-memory team reserved for Cursor Cloud', 'cursor-cloud'),
-  user: defaultString('user', 'Stable Threadnote user identity used by Cursor Cloud', 'cursor-cloud'),
-} as const;
+const cursorCloudIdentityFlags = makeCursorCloudIdentityFlags(defaultString);
+const cursorCloudMode = makeCursorCloudModeFlag(defaultChoice);
+const cursorCloudRuntime = (config: RuntimeConfig, agentId: string, user: string) =>
+  cursorCloudRuntimeConfig(config, {agentId, user});
 
 const cursorCloudConfig = Command.make(
   'config',
   {
     ...cursorCloudIdentityFlags,
+    endpoint: optionalString('endpoint', 'Managed remote Streamable HTTP MCP endpoint'),
     memoryMode: defaultChoice(
       'memory-mode',
       ['shared-read-write'],
       'Cursor Cloud memory capability profile',
       'shared-read-write',
     ),
+    mode: cursorCloudMode,
+    shareId: optionalString('share-id', 'Opaque managed remote memory share identifier'),
   },
-  ({agentId, team, user}) =>
+  ({agentId, endpoint, mode, shareId, team, user}) =>
     withRuntimeEffect(config =>
-      runCursorCloudConfig(cursorCloudRuntimeConfig(config, {agentId, user}), {agentId, team, user}),
+      runCursorCloudConfig(cursorCloudRuntime(config, agentId, user), {
+        agentId,
+        endpoint,
+        mode,
+        shareId,
+        team,
+        user,
+      }),
     ),
 ).pipe(Command.withDescription('Print a deterministic Cursor Dashboard MCP configuration'));
 
@@ -1455,15 +1506,23 @@ const cursorCloudBootstrap = Command.make(
   'bootstrap',
   {
     ...cursorCloudIdentityFlags,
+    cwd: optionalString('cwd', 'Absolute checkout path prepared for local graph inspection'),
     dryRun: boolean('dry-run', 'Preview configuration without changing or synchronizing the share'),
-    remote: requiredString('remote', 'Credential-free Git URL for the shared memory repository'),
+    endpoint: optionalString('endpoint', 'Managed remote Streamable HTTP MCP endpoint'),
+    mode: cursorCloudMode,
+    remote: optionalString('remote', 'Credential-free Git URL for the shared memory repository'),
+    shareId: optionalString('share-id', 'Opaque managed remote memory share identifier'),
     sync: negatedBoolean('sync', 'Configure the share without synchronizing it immediately'),
   },
-  ({agentId, dryRun, remote, sync, team, user}) =>
+  ({agentId, cwd, dryRun, endpoint, mode, remote, shareId, sync, team, user}) =>
     withRuntimeEffect(config =>
-      runCursorCloudBootstrap(cursorCloudRuntimeConfig(config, {agentId, user}), {
+      runCursorCloudBootstrap(cursorCloudRuntime(config, agentId, user), {
+        cwd,
         dryRun,
+        endpoint,
+        mode,
         remote,
+        shareId,
         sync,
         team,
       }),
@@ -1475,17 +1534,24 @@ const cursorCloudVerify = Command.make(
   {
     ...cursorCloudIdentityFlags,
     cwd: requiredString('cwd', 'Absolute Cursor Cloud checkout path used for local code-graph inspection'),
+    endpoint: optionalString('endpoint', 'Managed remote Streamable HTTP MCP endpoint'),
     json: boolean('json', 'Print a machine-readable verification receipt'),
+    mode: cursorCloudMode,
+    shareId: optionalString('share-id', 'Opaque managed remote memory share identifier'),
   },
-  ({agentId, cwd, json, team, user}) =>
+  ({agentId, cwd, endpoint, json, mode, shareId, team, user}) =>
     withRuntimeEffect(config =>
-      runCursorCloudVerify(cursorCloudRuntimeConfig(config, {agentId, user}), {cwd, json, team}),
+      runCursorCloudVerify(cursorCloudRuntime(config, agentId, user), {cwd, endpoint, json, mode, shareId, team}),
     ),
 ).pipe(Command.withDescription('Verify the Cursor Cloud runtime, share, and local graph checkout'));
 
+const cursorCloudAttest = makeCursorCloudAttestCommand({boolean, requiredString}, options =>
+  withRuntimeEffect(() => runCursorAttestationCommand(options)),
+);
+
 const cursorCloud = Command.make('cursor').pipe(
   Command.withDescription('Configure Threadnote for Cursor Cloud Agents'),
-  Command.withSubcommands([cursorCloudConfig, cursorCloudBootstrap, cursorCloudVerify]),
+  Command.withSubcommands([cursorCloudConfig, cursorCloudBootstrap, cursorCloudVerify, cursorCloudAttest]),
 );
 
 const cloud = Command.make('cloud').pipe(
@@ -1707,8 +1773,6 @@ const importPack = Command.make(
   options => withRuntimeEffect(config => runImportPack(config, options)),
 ).pipe(Command.withDescription('Import an .ovpack archive into local Threadnote context'));
 
-type ProductionLogMode = 'always' | 'never' | 'requires-apply' | 'skips-on-preview';
-
 interface TopLevelCommandMetadata {
   readonly aliases?: readonly string[];
   readonly productionLog?: {
@@ -1735,8 +1799,10 @@ const topLevelCommandRegistrations = [
   registerTopLevelCommand('install', install),
   registerTopLevelCommand('version', version),
   registerTopLevelCommand('logs', logs),
+  registerTopLevelCommand('telemetry', telemetry, {productionLog: {mode: 'never'}}),
   registerTopLevelCommand('report-issue', reportIssue, {productionLog: {mode: 'never'}}),
   registerTopLevelCommand('update', update),
+  registerTopLevelCommand('auto-update-worker', autoUpdateWorker),
   registerTopLevelCommand('post-update', postUpdate),
   registerTopLevelCommand('repair', repair),
   registerTopLevelCommand('start', start),
@@ -1811,154 +1877,16 @@ const topLevelCommandRegistrations = [
   registerTopLevelCommand('import-pack', importPack),
 ] as const;
 
-const topLevelOperationByName = new Map(
-  topLevelCommandRegistrations.flatMap(registration => [
-    [registration.canonicalName, registration.canonicalName] as const,
-    ...registration.aliases.map(alias => [alias, registration.canonicalName] as const),
-  ]),
-);
-
-const topLevelRegistrationByName = new Map(
-  topLevelCommandRegistrations.map(registration => [registration.canonicalName, registration] as const),
-);
+const inspectRegisteredCliInvocation = makeCliInvocationInspector(topLevelCommandRegistrations);
 
 export const threadnoteCommand = root.pipe(
   Command.withDescription('Threadnote shared context workflow for development agents'),
   Command.withSubcommands(topLevelCommandRegistrations.map(registration => registration.command)),
 );
 
-export interface CliInvocationInspection {
-  readonly homeOverride?: string;
-  readonly operation?: string;
-  readonly writeProductionLog: boolean;
-}
-
 export function inspectCliInvocation(arguments_: readonly string[]): CliInvocationInspection {
-  const scanned = scanCliArguments(arguments_);
-  const selectedName = scanned.positionals[0];
-  const operation = selectedName === undefined ? undefined : (topLevelOperationByName.get(selectedName) ?? 'unknown');
-  const registration =
-    operation === undefined || operation === 'unknown' ? undefined : topLevelRegistrationByName.get(operation);
-  const mode =
-    registration?.productionLog.subcommands?.[scanned.positionals[1] ?? ''] ??
-    registration?.productionLog.mode ??
-    'always';
-  const writeProductionLog =
-    operation !== undefined &&
-    mode !== 'never' &&
-    scanned.booleanValues.get('--dry-run') !== true &&
-    !scanned.flags.has('--help') &&
-    !scanned.flags.has('-h') &&
-    !(mode === 'requires-apply' && scanned.booleanValues.get('--apply') !== true) &&
-    !(mode === 'skips-on-preview' && scanned.booleanValues.get('--preview') === true);
-  return {
-    ...(scanned.homeOverride === undefined ? {} : {homeOverride: scanned.homeOverride}),
-    ...(operation === undefined ? {} : {operation}),
-    writeProductionLog,
-  };
+  return inspectRegisteredCliInvocation(arguments_);
 }
 
-function scanCliArguments(arguments_: readonly string[]) {
-  const booleanValues = new Map<string, boolean>();
-  const flags = new Set<string>();
-  const positionals: string[] = [];
-  let homeOverride: string | undefined;
-  for (let index = 0; index < arguments_.length; index += 1) {
-    const argument = arguments_[index] ?? '';
-    const equalsIndex = argument.indexOf('=');
-    const flagName = equalsIndex > 0 ? argument.slice(0, equalsIndex) : argument;
-    const valueKind = valueFlagKinds.get(flagName) ?? cliRuntimeValueFlagKinds.get(flagName);
-    if (valueKind !== undefined) {
-      const value = equalsIndex > 0 ? argument.slice(equalsIndex + 1) : arguments_[index + 1];
-      if (flagName === '--home') {
-        homeOverride = value;
-      }
-      if (equalsIndex < 0 && value !== undefined) {
-        index += 1;
-      }
-      continue;
-    }
-    if (booleanFlagNames.has(flagName)) {
-      const inlineValue = equalsIndex > 0 ? parseCliBoolean(argument.slice(equalsIndex + 1)) : undefined;
-      const followingValue = equalsIndex < 0 ? parseCliBoolean(arguments_[index + 1]) : undefined;
-      booleanValues.set(flagName, inlineValue ?? followingValue ?? true);
-      if (followingValue !== undefined) {
-        index += 1;
-      }
-      continue;
-    }
-    if (argument.startsWith('-')) {
-      flags.add(flagName);
-    } else {
-      positionals.push(argument);
-    }
-  }
-  return {booleanValues, flags, homeOverride, positionals};
-}
-
-function parseCliBoolean(value: string | undefined): boolean | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-  switch (value.toLowerCase()) {
-    case '1':
-    case 'on':
-    case 'true':
-    case 'yes':
-      return true;
-    case '0':
-    case 'false':
-    case 'no':
-    case 'off':
-      return false;
-    default:
-      return undefined;
-  }
-}
-
-/**
- * Preserve Commander-compatible string values while Effect 4's beta lexer
- * still tokenizes dash-prefixed values as flags and splits inline values at
- * every equals sign. Remove this shim once the upstream lexer preserves both.
- */
-export function normalizeCliArguments(args: readonly string[]): readonly string[] {
-  const normalized: string[] = [];
-  for (let index = 0; index < args.length; index += 1) {
-    const current = args[index] ?? '';
-    const equalsIndex = current.indexOf('=');
-    const inlineName = equalsIndex > 0 ? current.slice(0, equalsIndex) : current;
-    const kind = valueFlagKinds.get(inlineName);
-    if (!kind) {
-      normalized.push(current);
-      continue;
-    }
-
-    if (equalsIndex > 0) {
-      const value = current.slice(equalsIndex + 1);
-      if (kind === 'string') {
-        normalized.push(inlineName, encodeStringArgument(value));
-      } else {
-        normalized.push(current);
-      }
-      continue;
-    }
-
-    const next = args[index + 1];
-    if (next?.startsWith('-') && next !== '-') {
-      normalized.push(kind === 'string' ? current : `${current}=${next}`);
-      if (kind === 'string') {
-        normalized.push(encodeStringArgument(next));
-      }
-      index += 1;
-      continue;
-    }
-    normalized.push(current);
-  }
-  return normalized;
-}
-
-function encodeStringArgument(value: string): string {
-  return value.startsWith('-') ? `${encodedStringPrefix}${value}` : value;
-}
-
-export {CliError};
+export type {CliInvocationInspection};
+export {CliError, normalizeCliArguments};

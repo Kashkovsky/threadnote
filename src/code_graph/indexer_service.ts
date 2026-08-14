@@ -1,4 +1,4 @@
-import {Clock, Context, Crypto, Effect, FileSystem, Layer, Option, Path} from 'effect';
+import {Clock, Context, Crypto, Effect, Exit, FileSystem, Layer, Option, Path} from 'effect';
 import {CommandExecutor} from '../effect/command.js';
 import {SystemInfo} from '../effect/system.js';
 import {makeCodeGraphBuildReporter} from './build_status.js';
@@ -61,6 +61,11 @@ import {repositoryIdentityMatchesExpectation, resolveRepositoryIdentity} from '.
 import {CodeGraphStore} from './store.js';
 import {TreeSitterRuntime} from './tree_sitter/runtime.js';
 import type {CodeGraphIndexSummary, CodeGraphProgress, CodeGraphSnapshot} from './types.js';
+import {
+  makeCodeGraphBuildAnonymousTelemetryReporter,
+  type CodeGraphBuildAnonymousTelemetryReporter,
+  withCodeGraphBuildAnonymousTelemetry,
+} from './anonymous_telemetry.js';
 
 export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGraphIndexerShape>()(
   'threadnote/codeGraph/CodeGraphIndexer',
@@ -79,7 +84,11 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
       const command = yield* CommandExecutor;
       const crypto = yield* Crypto.Crypto;
       const system = yield* SystemInfo;
-      const index = (request: CodeGraphIndexOptions, attempt = 0): Effect.Effect<CodeGraphIndexSummary, unknown> =>
+      const indexAttempt = (
+        request: CodeGraphIndexOptions,
+        anonymousTelemetry: CodeGraphBuildAnonymousTelemetryReporter,
+        attempt = 0,
+      ): Effect.Effect<CodeGraphIndexSummary, unknown> =>
         Effect.scoped(
           Effect.gen(function* () {
             const initialIdentity = yield* resolveRepositoryIdentity(request.cwd);
@@ -98,6 +107,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
               initialIdentity.worktreeId,
             );
             const requestedOverlay = yield* worktreeBuildRequestState(initialIdentity, request.threadnoteHome);
+            yield* anonymousTelemetry.observeOverlay(requestedOverlay.dirty);
             const requestKey = request.force
               ? undefined
               : codeGraphBuildRequestKey(initialIdentity, requestedOverlay, languagePacks, request.incrementalOverlay);
@@ -115,7 +125,9 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                   layout,
                   requestKey ? {key: requestKey} : undefined,
                 );
-                yield* request.onProgress?.({phase: 'registering'}) ?? Effect.void;
+                yield* anonymousTelemetry
+                  .progress({phase: 'registering'})
+                  .pipe(Effect.andThen(request.onProgress?.({phase: 'registering'}) ?? Effect.void));
                 return reporter;
               }),
             );
@@ -123,7 +135,12 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
             const options: CodeGraphIndexOptions = {
               ...request,
               onProgress: progress =>
-                reporter.progress(progress).pipe(Effect.andThen(request.onProgress?.(progress) ?? Effect.void)),
+                anonymousTelemetry
+                  .progress(progress)
+                  .pipe(
+                    Effect.andThen(reporter.progress(progress)),
+                    Effect.andThen(request.onProgress?.(progress) ?? Effect.void),
+                  ),
             };
             const capacityProtection: DirectPersistentCapacityProtection = {
               availableDiskBytes:
@@ -271,10 +288,13 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                         includeOpaqueCorpusAssets: ensureVectors,
                         languagePacks,
                         onContentBatch: cacheCoalescer.onContentBatch,
+                        onOverlayStart: () => cacheCoalescer.beginOverlayExtraction,
                       }).pipe(
                         Effect.tap(() => cacheCoalescer.flush),
                         Effect.ensuring(cacheCoalescer.discard.pipe(Effect.andThen(parserPool.trimIdle))),
                       );
+                      yield* anonymousTelemetry.observeInventory(inventory);
+                      yield* anonymousTelemetry.observeExtractedFactBytes(yield* cacheCoalescer.extractedFactBytes);
                       // Inventory and extraction build large, short-lived maps and Git payloads. Reclaim them before
                       // the SQLite activation phase so their heap high-water does not overlap the writer page cache.
                       yield* Effect.sync(() => {
@@ -730,11 +750,20 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
           Effect.provideService(SystemInfo, system),
           Effect.catchIf(
             cause => cause instanceof WorktreeChangedDuringIndex && attempt === 0,
-            () => index(request, attempt + 1),
+            () => indexAttempt(request, anonymousTelemetry, attempt + 1),
           ),
         );
-      const ensureCommit = (
+      const index = (request: CodeGraphIndexOptions) =>
+        Effect.flatMap(
+          makeCodeGraphBuildAnonymousTelemetryReporter(
+            system.environment().THREADNOTE_MCP_BROKER_CHILD === '1' ? 'mcp' : 'cli',
+          ),
+          anonymousTelemetry =>
+            withCodeGraphBuildAnonymousTelemetry(anonymousTelemetry, indexAttempt(request, anonymousTelemetry)),
+        );
+      const ensureCommitWithSummary = (
         request: Omit<CodeGraphIndexOptions, 'force' | 'includeOverlay'> & {readonly commit: string},
+        anonymousTelemetry: CodeGraphBuildAnonymousTelemetryReporter,
       ) =>
         Effect.scoped(
           Effect.gen(function* () {
@@ -769,7 +798,12 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
             const options = {
               ...request,
               onProgress: (progress: CodeGraphProgress) =>
-                reporter.progress(progress).pipe(Effect.andThen(request.onProgress?.(progress) ?? Effect.void)),
+                anonymousTelemetry
+                  .progress(progress)
+                  .pipe(
+                    Effect.andThen(reporter.progress(progress)),
+                    Effect.andThen(request.onProgress?.(progress) ?? Effect.void),
+                  ),
             };
             const capacityProtection: DirectPersistentCapacityProtection = {
               availableDiskBytes:
@@ -861,6 +895,8 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                         Effect.tap(() => cacheCoalescer.flush),
                         Effect.ensuring(cacheCoalescer.discard.pipe(Effect.andThen(parserPool.trimIdle))),
                       );
+                      yield* anonymousTelemetry.observeInventory(inventory);
+                      yield* anonymousTelemetry.observeExtractedFactBytes(yield* cacheCoalescer.extractedFactBytes);
                       const committedBase = yield* ensureCommittedBase({
                         buildOwner: reporter.ownerIdentity,
                         capacityProtection,
@@ -884,12 +920,15 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                         snapshot.id,
                         2 * 60_000,
                       );
-                      return {leaseToken, snapshot} satisfies CodeGraphCommitLease;
+                      return {
+                        lease: {leaseToken, snapshot} satisfies CodeGraphCommitLease,
+                        summary: committedBase.summary,
+                      };
                     }),
                     writerSessionOptions(layout, options),
                   )
                   .pipe(
-                    Effect.tap(lease => reporter.completeSnapshot(lease.snapshot)),
+                    Effect.tap(result => reporter.completeSnapshot(result.lease.snapshot)),
                     Effect.tapError(cause => reporter.fail(cause)),
                   );
               }),
@@ -914,9 +953,26 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
           Effect.provideService(Path.Path, path),
           Effect.provideService(SystemInfo, system),
         );
+      const ensureCommit = (
+        request: Omit<CodeGraphIndexOptions, 'force' | 'includeOverlay'> & {readonly commit: string},
+      ) =>
+        Effect.flatMap(
+          makeCodeGraphBuildAnonymousTelemetryReporter(
+            system.environment().THREADNOTE_MCP_BROKER_CHILD === '1' ? 'mcp' : 'cli',
+          ),
+          anonymousTelemetry =>
+            ensureCommitWithSummary(request, anonymousTelemetry).pipe(
+              Effect.onExit(exit =>
+                anonymousTelemetry.terminal(
+                  Exit.isSuccess(exit) ? Exit.succeed(exit.value.summary) : Exit.failCause(exit.cause),
+                ),
+              ),
+              Effect.map(result => result.lease),
+            ),
+        );
       return CodeGraphIndexer.of({
         ensureCommit,
-        index: options => index(options),
+        index,
       });
     }),
   );

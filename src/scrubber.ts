@@ -13,6 +13,11 @@ export interface ScrubberResult {
   readonly redactions: ReadonlyArray<{readonly count: number; readonly name: string}>;
 }
 
+export interface ScrubberOptions {
+  readonly additionalPatterns?: readonly ScrubberPattern[];
+  readonly redact: boolean;
+}
+
 export const SCRUBBER_PATTERNS: readonly ScrubberPattern[] = [
   {name: 'private key', regex: /-----BEGIN [A-Z ]*PRIVATE KEY-----/},
   {name: 'API key (sk-...)', regex: /\bsk-[A-Za-z0-9_-]{16,}/},
@@ -53,16 +58,38 @@ export const SCRUBBER_PATTERNS: readonly ScrubberPattern[] = [
     regex: /(?<![A-Za-z0-9_:])\/Users\/[^\s)>"'`,]+/,
   },
   {name: 'linux home path', placeholder: '<local-path>', regex: /\/home\/[^\s)>"'`,]+/},
+  {
+    name: 'Cursor workspace path',
+    placeholder: '<local-path>',
+    regex: /(?<![A-Za-z0-9_])\/(?:workspace|workspaces)(?:\/[^\s)>"'`,]+)*/i,
+  },
+  {
+    name: 'temporary path',
+    placeholder: '<local-path>',
+    regex: /(?<![A-Za-z0-9_])\/(?:private\/)?tmp(?:\/[^\s)>"'`,]+)*/i,
+  },
+  {
+    name: 'Windows absolute path',
+    placeholder: '<local-path>',
+    regex:
+      /(?<![A-Za-z0-9_])(?:[A-Za-z]:[\\/][^\s)>"'`,]+|\/[A-Za-z]\/(?:Users|Documents and Settings)[\\/][^\s)>"'`,]+|\\\\[^\\/\s]+[\\/][^\s)>"'`,]+)/i,
+  },
+  {
+    name: 'WSL mounted drive path',
+    placeholder: '<local-path>',
+    regex: /(?<![A-Za-z0-9_])\/mnt\/[A-Za-z]\/[^\s)>"'`,]+/i,
+  },
 ];
 
-export function applyScrubber(content: string, {redact}: {readonly redact: boolean}): ScrubberResult {
+export function applyScrubber(content: string, options: ScrubberOptions): ScrubberResult {
   let cleaned = content;
   const redactions: Array<{count: number; name: string}> = [];
-  for (const pattern of SCRUBBER_PATTERNS) {
-    if (!pattern.regex.test(cleaned)) {
+  const patterns = [...SCRUBBER_PATTERNS, ...(options.additionalPatterns ?? [])];
+  for (const pattern of patterns) {
+    if (!matchesPattern(pattern.regex, cleaned)) {
       continue;
     }
-    if (!pattern.placeholder || !redact) {
+    if (!pattern.placeholder || !options.redact) {
       return {blocker: pattern.name, cleaned: content, redactions: []};
     }
     const globalRegex = globalize(pattern.regex);
@@ -80,7 +107,7 @@ export function scrubberBlocker(content: string): string | undefined {
 export function detectSecretMatches(content: string): readonly string[] {
   const matches: string[] = [];
   for (const pattern of SCRUBBER_PATTERNS) {
-    if (pattern.regex.test(content)) {
+    if (matchesPattern(pattern.regex, content)) {
       matches.push(pattern.name);
     }
   }
@@ -89,7 +116,7 @@ export function detectSecretMatches(content: string): readonly string[] {
 
 export function credentialScrubberBlocker(content: string): string | undefined {
   for (const pattern of SCRUBBER_PATTERNS) {
-    if (pattern.placeholder === undefined && pattern.regex.test(content)) {
+    if (pattern.placeholder === undefined && matchesPattern(pattern.regex, content)) {
       return pattern.name;
     }
   }
@@ -111,4 +138,8 @@ export function redactSensitiveText(content: string): string {
 function globalize(regex: RegExp): RegExp {
   const flags = regex.flags.includes('g') ? regex.flags : `${regex.flags}g`;
   return new RegExp(regex.source, flags);
+}
+
+function matchesPattern(regex: RegExp, content: string): boolean {
+  return new RegExp(regex.source, regex.flags).test(content);
 }

@@ -1,5 +1,6 @@
 import {Context, Deferred, Effect, Exit, Layer, Ref} from 'effect';
 import {effectiveLinuxMemoryBytes, linuxCgroupMemoryFiles} from './linux_cgroup.js';
+import {withoutTelemetrySessionEnvironment} from '../telemetry/session.js';
 import {readWindowsHardwareInfo, readWindowsProcessStartIdentity} from './windows_system.js';
 
 class SystemOperationError extends Error {
@@ -489,7 +490,9 @@ export function legacyAvailableDiskBytes(
             '[Console]::Out.Write((Get-PSDrive -Name $root.Substring(0,1)).Free)',
         ]
       : [posixDiskCommand, '-Pk', path];
-  const childEnvironment = platform === 'win32' ? {...environment, THREADNOTE_DISK_PATH: path} : environment;
+  const sanitizedEnvironment = withoutTelemetrySessionEnvironment(environment);
+  const childEnvironment =
+    platform === 'win32' ? {...sanitizedEnvironment, THREADNOTE_DISK_PATH: path} : sanitizedEnvironment;
   return Effect.acquireUseRelease(
     Effect.try({
       try: () =>
@@ -627,7 +630,7 @@ async function readOptionalBunFile(path: string): Promise<string | undefined> {
 function spawnText(command: readonly string[], environment: NodeJS.ProcessEnv): string {
   const result = Bun.spawnSync({
     cmd: [...command],
-    env: environment,
+    env: withoutTelemetrySessionEnvironment(environment),
     stderr: 'pipe',
     stdout: 'pipe',
     timeout: DISK_QUERY_TIMEOUT_MS,
@@ -700,7 +703,7 @@ function readDarwinProcessStartIdentity(
       try: () =>
         Bun.spawn({
           cmd: [command, '-o', 'lstart=', '-p', String(processId)],
-          env: environment,
+          env: withoutTelemetrySessionEnvironment(environment),
           killSignal: 'SIGKILL',
           maxBuffer: PROCESS_IDENTITY_QUERY_OUTPUT_LIMIT_BYTES,
           stderr: 'ignore',

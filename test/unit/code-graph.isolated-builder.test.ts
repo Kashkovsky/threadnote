@@ -143,7 +143,12 @@ describe('isolated code-graph builder spawn plan', () => {
   it('reinvokes CLI graph index with --no-vectors, home, and cwd', () => {
     const plan = codeGraphIsolatedBuilderSpawnPlan(
       systemInfoStub({
-        environment: () => ({PATH: '/usr/bin', THREADNOTE_HOME: '/old-home'}),
+        environment: () => ({
+          PATH: '/usr/bin',
+          THREADNOTE_HOME: '/old-home',
+          THREADNOTE_TELEMETRY_SESSION_ID: 'tns_000102030405060708090a0b0c0d0e0f',
+          THREADNOTE_TELEMETRY_CONSENT_GENERATION: 'tng_000102030405060708090a0b0c0d0e0f',
+        }),
         executablePath: '/opt/threadnote/bin/threadnote',
         processArguments: ['/opt/threadnote/bin/threadnote', '/$bunfs/root/threadnote', 'mcp-server'],
       }),
@@ -162,6 +167,9 @@ describe('isolated code-graph builder spawn plan', () => {
     expect(plan.environment).toEqual({
       PATH: '/usr/bin',
       THREADNOTE_HOME: '/home/.threadnote',
+      THREADNOTE_TELEMETRY_CHILD: 'graph-builder',
+      THREADNOTE_TELEMETRY_CONSENT_GENERATION: 'tng_000102030405060708090a0b0c0d0e0f',
+      THREADNOTE_TELEMETRY_SESSION_ID: 'tns_000102030405060708090a0b0c0d0e0f',
     });
     expect(() => assertIsolatedBuilderPlan(plan)).not.toThrow();
   });

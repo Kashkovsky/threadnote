@@ -1530,7 +1530,10 @@ function excludedDirectory(path: string, includeInactive: boolean): boolean {
   if (normalized.includes('/agent-artifacts/packs/')) {
     return true;
   }
-  return !includeInactive && (normalized.includes('/archived/') || normalized.includes('/superseded/'));
+  return (
+    !includeInactive &&
+    (normalized.includes('/archived/') || normalized.includes('/expired/') || normalized.includes('/superseded/'))
+  );
 }
 
 function excludedFile(path: string): boolean {

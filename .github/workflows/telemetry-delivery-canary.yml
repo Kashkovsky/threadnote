@@ -1,0 +1,77 @@
+name: Telemetry delivery canary
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+    inputs:
+      gateway_url:
+        description: Exact production or Fly preflight /v1/traces URL
+        required: true
+        default: https://telemetry.threadnote.io/v1/traces
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: telemetry-delivery-canary
+  cancel-in-progress: false
+
+jobs:
+  stored-trace:
+    name: Public gateway to stored Grafana trace
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: telemetry-production
+      deployment: false
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        with:
+          cache-dependency-path: infra/telemetry-gateway/go.sum
+          go-version: 1.25.7
+
+      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1
+        with:
+          version: 0.4.83
+
+      - name: Enforce the live two-Machine ingestion budget
+        shell: bash
+        working-directory: infra/telemetry-gateway
+        env:
+          FLY_API_TOKEN: ${{ secrets.THREADNOTE_TELEMETRY_CANARY_FLY_READ_TOKEN }}
+        run: |
+          set -euo pipefail
+          verified=false
+          for _ in $(seq 1 12); do
+            if flyctl machine list --app threadnote-telemetry --json | go run ./cmd/budget; then
+              verified=true
+              break
+            fi
+            sleep 30
+          done
+          if [[ "$verified" != 'true' ]]; then
+            echo 'The production Machine inventory did not settle at exactly two started Machines.' >&2
+            exit 1
+          fi
+
+      - name: Prove a synthetic trace is stored and queryable
+        working-directory: infra/telemetry-gateway
+        env:
+          THREADNOTE_TELEMETRY_CANARY_GATEWAY_URL: ${{ inputs.gateway_url || vars.THREADNOTE_TELEMETRY_CANARY_GATEWAY_URL || 'https://telemetry.threadnote.io/v1/traces' }}
+          THREADNOTE_TELEMETRY_CANARY_TEMPO_URL: ${{ secrets.THREADNOTE_TELEMETRY_CANARY_TEMPO_URL }}
+          THREADNOTE_TELEMETRY_CANARY_TEMPO_USER: ${{ secrets.THREADNOTE_TELEMETRY_CANARY_TEMPO_USER }}
+          THREADNOTE_TELEMETRY_CANARY_TEMPO_TOKEN: ${{ secrets.THREADNOTE_TELEMETRY_CANARY_TEMPO_TOKEN }}
+        run: go run ./cmd/canary
+
+      - name: Record successful storage heartbeat
+        env:
+          THREADNOTE_TELEMETRY_CANARY_HEARTBEAT_URL: ${{ secrets.THREADNOTE_TELEMETRY_CANARY_HEARTBEAT_URL }}
+        run: >-
+          curl --fail --silent --show-error --max-time 10 --proto '=https'
+          --request POST --header 'Content-Type: application/json' --data '{}'
+          "$THREADNOTE_TELEMETRY_CANARY_HEARTBEAT_URL"

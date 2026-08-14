@@ -181,6 +181,8 @@ describe('code graph build-status properties', () => {
             batchesTotal,
             cachedFactBytesCompleted: sample.cachedFactBytes,
             cachedFactBytesTotal: sample.cachedFactBytes,
+            cachedFactReplayBytesCompleted: sample.cachedFactBytes,
+            changedFactBytesCompleted: sample.cachedFactBytes,
             rows: {
               deduplicatedEdges: sample.edges,
               deduplicatedReferences: sample.symbols,

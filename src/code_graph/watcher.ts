@@ -46,6 +46,8 @@ import {
   type CodeGraphAutomaticRecoveryAdmission,
   type CodeGraphAutomaticRecoveryCoordinatorShape,
 } from './recovery_coordinator.js';
+import {codeGraphAnonymousTelemetryComponent, emitCodeGraphBackgroundFailure} from './anonymous_telemetry.js';
+import {anonymousTelemetryDiagnosticFromCodeGraphRefreshFailure} from '../telemetry/diagnostic.js';
 
 export interface CodeGraphWatchOptions {
   readonly cwd: string;
@@ -116,6 +118,8 @@ export interface CodeGraphWatcherShape {
 export interface CodeGraphWatcherLifecycleOptions {
   readonly idleTimeoutMilliseconds?: number;
   readonly maximumWatchers?: number;
+  /** @internal Closed terminal observation for detached refresh work. */
+  readonly onRefreshFailure?: (failure: CodeGraphRefreshFailure) => Effect.Effect<void>;
   readonly sweepIntervalMilliseconds?: number;
 }
 
@@ -242,6 +246,7 @@ export class CodeGraphWatcher extends Context.Service<CodeGraphWatcher, CodeGrap
       const store = yield* CodeGraphStore;
       const scope = yield* Effect.scope;
       const automaticRecovery = yield* makeCodeGraphAutomaticRecoveryCoordinator();
+      const anonymousTelemetryComponent = codeGraphAnonymousTelemetryComponent(systemInfo.environment());
       const prewarmSemaphore = yield* Semaphore.make(1);
       const prewarmedCommits = yield* SynchronizedRef.make(new Set<string>());
       // MCP stdio must not own multi-hour index-repository work; spawn CLI graph index instead.
@@ -371,7 +376,19 @@ export class CodeGraphWatcher extends Context.Service<CodeGraphWatcher, CodeGrap
           options,
           failure,
         ).pipe(Effect.asVoid);
-      const watcher = yield* makeCodeGraphWatcher(run, refresh, {}, recover);
+      const watcher = yield* makeCodeGraphWatcher(
+        run,
+        refresh,
+        {
+          onRefreshFailure: failure =>
+            emitCodeGraphBackgroundFailure(
+              anonymousTelemetryComponent,
+              'graph-refresh',
+              anonymousTelemetryDiagnosticFromCodeGraphRefreshFailure(failure),
+            ),
+        },
+        recover,
+      );
       return CodeGraphWatcher.of({
         ...watcher,
         status: (key, target) =>
@@ -408,6 +425,7 @@ export const makeCodeGraphWatcher = Effect.fn('codeGraph.makeWatcher')(function*
     DEFAULT_IDLE_TIMEOUT_MILLISECONDS,
   );
   const maximumWatchers = positiveInteger(lifecycleOptions.maximumWatchers, DEFAULT_MAXIMUM_WATCHERS);
+  const onRefreshFailure = lifecycleOptions.onRefreshFailure;
   const sweepIntervalMilliseconds = positiveInteger(
     lifecycleOptions.sweepIntervalMilliseconds,
     DEFAULT_SWEEP_INTERVAL_MILLISECONDS,
@@ -508,6 +526,11 @@ export const makeCodeGraphWatcher = Effect.fn('codeGraph.makeWatcher')(function*
                 Option.getOrUndefined(Cause.findErrorOption(cause)),
               );
               return setStatus(key, {failure, state: 'deferred'}).pipe(
+                Effect.andThen(
+                  onRefreshFailure === undefined
+                    ? Effect.void
+                    : Effect.suspend(() => onRefreshFailure(failure)).pipe(Effect.catchCause(() => Effect.void)),
+                ),
                 Effect.andThen(
                   Effect.logWarning(
                     `Code graph background refresh deferred (${failure.code}; recovery: ${failure.recovery}).`,

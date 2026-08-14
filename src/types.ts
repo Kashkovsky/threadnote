@@ -5,7 +5,7 @@ export type ConsolidationAgent = AgentClient | 'effect-ai';
 export type ClaudeMcpScope = 'local' | 'project' | 'user';
 export type CommandStatus = 'fail' | 'ok' | 'warn';
 export type MemoryKind = 'durable' | 'handoff' | 'incident' | 'preference' | 'smoke';
-export type MemoryStatus = 'active' | 'archived' | 'superseded';
+export type MemoryStatus = 'active' | 'archived' | 'expired' | 'superseded';
 
 export interface RuntimeConfig {
   readonly account: string;
@@ -114,14 +114,17 @@ export interface UninstallOptions {
 
 export interface UpdateOptions {
   readonly allowUntrustedSource?: boolean;
+  readonly auto?: 'off' | 'on';
   readonly beta?: boolean;
   readonly check?: boolean;
   readonly dryRun?: boolean;
   readonly force?: boolean;
+  readonly json?: boolean;
   readonly postUpdate?: boolean;
   readonly repair?: boolean;
   readonly source?: string;
   readonly stable?: boolean;
+  readonly status?: boolean;
   readonly yes?: boolean;
 }
 

@@ -32,6 +32,7 @@ import type {CodeGraphLanguagePackRegistryShape} from './languages/registry.js';
 import type {CodeGraphWorkspace} from './languages/types.js';
 import type {CodeGraphLayout} from './layout.js';
 import {compareCodeUnits} from './ordering.js';
+import {hasSameCodeGraphResolutionSurface} from './resolution_surface.js';
 import {
   CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION,
   materializedShardDerivationIdentity,
@@ -48,7 +49,6 @@ import {
   type CodeGraphOverlayFallbackReason,
   type CodeGraphReference,
   type CodeGraphSnapshot,
-  type CodeGraphSymbol,
 } from './types.js';
 import {createWorkspaceAttributor} from './workspace.js';
 import {assessCodeGraphWorkspaceCompatibility} from './workspace_compatibility.js';
@@ -912,43 +912,7 @@ function hasDynamicAliases(facts: readonly CodeGraphFileFacts[]): boolean {
   return facts.some(file => file.references?.some(reference => (reference.aliasLookupKeys?.length ?? 0) > 0) === true);
 }
 
-export function hasSameCodeGraphResolutionSurface(
-  left: readonly CodeGraphSymbol[],
-  right: readonly CodeGraphSymbol[],
-): boolean {
-  if (left.length !== right.length) return false;
-  const leftById = new Map<string, string>();
-  for (const symbol of left) {
-    if (leftById.has(symbol.id)) return false;
-    leftById.set(symbol.id, symbolResolutionSurface(symbol));
-  }
-  const rightIds = new Set<string>();
-  for (const symbol of right) {
-    if (rightIds.has(symbol.id)) return false;
-    rightIds.add(symbol.id);
-    if (leftById.get(symbol.id) !== symbolResolutionSurface(symbol)) return false;
-  }
-  return true;
-}
-
-function symbolResolutionSurface(symbol: CodeGraphSymbol): string {
-  // Signature, content, documentation, and spans are replaced with the changed file's facts but do not affect
-  // cross-file endpoint resolution. The current resolver's complete lookup contract is serialized below.
-  return JSON.stringify({
-    arity: symbol.arity,
-    exported: symbol.exported,
-    id: symbol.id,
-    kind: symbol.kind,
-    language: symbol.language,
-    lookupKeys: symbol.lookupKeys ?? [],
-    name: symbol.name,
-    packageName: symbol.packageName,
-    path: symbol.path,
-    qualifiedName: symbol.qualifiedName,
-    resolutionDomain: symbol.resolutionDomain,
-    resolutionScopeId: symbol.resolutionScopeId,
-  });
-}
+export {hasSameCodeGraphResolutionSurface} from './resolution_surface.js';
 
 export function overlayFallbackDescription(reason: CodeGraphOverlayFallbackReason): string {
   switch (reason) {

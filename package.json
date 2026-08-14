@@ -1,6 +1,6 @@
 {
   "name": "threadnote",
-  "version": "4.2.2",
+  "version": "4.2.4",
   "type": "module",
   "description": "Shared local context and handoffs for development agents",
   "license": "AGPL-3.0-or-later",
@@ -22,10 +22,10 @@
   ],
   "scripts": {
     "archive:release": "bun scripts/archive-release.ts",
-    "build": "bun run generate:code-graph-languages && bun run clean && bun scripts/build.ts",
-    "check:self-contained": "bun scripts/check-self-contained.ts",
+    "build": "bun scripts/check-embedded-core-model.ts && bun run generate:code-graph-languages && bun run clean && bun scripts/build.ts",
+    "check:self-contained": "bun scripts/check-embedded-core-model.ts && bun scripts/check-self-contained.ts",
     "clean": "bun scripts/clean.ts",
-    "compile:targets": "bun scripts/compile-targets.ts",
+    "compile:targets": "bun scripts/check-embedded-core-model.ts && bun scripts/compile-targets.ts",
     "cursor-plugin:check": "bun --bun vitest run test/unit/cursor-plugin.test.ts",
     "dev": "bun src/standalone.ts",
     "dev:install-global": "bun scripts/install-local-standalone.ts",
@@ -82,12 +82,10 @@
   },
   "devDependencies": {
     "@effect/ai-openai-compat": "4.0.0-beta.102",
-    "@effect/platform-bun": "4.0.0-beta.102",
     "@effect/tsgo": "0.36.4",
     "@effect/vitest": "4.0.0-beta.102",
     "@fontsource-variable/jetbrains-mono": "5.3.0",
     "@fontsource-variable/spline-sans": "5.3.0",
-    "@modelcontextprotocol/sdk": "^1.30.0",
     "@repomix/tree-sitter-wasms": "0.1.17",
     "@tree-sitter-grammars/tree-sitter-hcl": "1.2.0",
     "@tree-sitter-grammars/tree-sitter-lua": "0.4.1",
@@ -101,7 +99,6 @@
     "@vitejs/plugin-react": "6.0.5",
     "@vitest/coverage-istanbul": "^4.1.7",
     "@vscode/tree-sitter-wasm": "0.3.1",
-    "effect": "4.0.0-beta.102",
     "fast-check": "4.9.0",
     "happy-dom": "^20.11.1",
     "husky": "^9.1.7",
@@ -122,16 +119,22 @@
     "vitest": "^4.1.7"
   },
   "dependencies": {
+    "@effect/platform-bun": "4.0.0-beta.102",
     "@effect/sql-sqlite-bun": "4.0.0-beta.102",
+    "@modelcontextprotocol/sdk": "1.30.0",
     "fflate": "0.8.3",
+    "effect": "4.0.0-beta.102",
+    "jose": "6.2.3",
     "node-llama-cpp": "3.19.1",
+    "postgres": "3.4.7",
     "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.1",
     "three": "^0.185.1",
     "typescript-compiler": "npm:typescript@5.9.3",
     "unpdf": "1.6.2",
     "web-tree-sitter": "0.26.11",
-    "yaml": "^2.9.0"
+    "yaml": "^2.9.0",
+    "zod": "4.4.3"
   },
   "overrides": {
     "@effect/platform-node-shared": "4.0.0-beta.102",
