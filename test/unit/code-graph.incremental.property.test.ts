@@ -1,7 +1,8 @@
 import {describe, expect, it} from '@effect/vitest';
 import * as FC from 'effect/testing/FastCheck';
+import {createResolutionAttributor} from '../../src/code_graph/extractor.js';
 import {hasSameCodeGraphResolutionSurface} from '../../src/code_graph/indexer.js';
-import type {CodeGraphSymbol} from '../../src/code_graph/types.js';
+import type {CodeGraphFileFacts, CodeGraphInventoryFile, CodeGraphSymbol} from '../../src/code_graph/types.js';
 
 const optionalText = FC.oneof(FC.constant(undefined), FC.string({maxLength: 24}));
 const optionalArity = FC.oneof(FC.constant(undefined), FC.integer({max: 32, min: 0}));
@@ -50,10 +51,108 @@ const symbolArbitrary = FC.record({
     }) satisfies CodeGraphSymbol,
 );
 
+const publishedSymbolArbitrary = symbolArbitrary.map(
+  symbol =>
+    ({
+      ...symbol,
+      exported: true,
+      id: `published:${symbol.id}`,
+      lookupKeys: [...(symbol.lookupKeys ?? []), `global:name:${encodeURIComponent(symbol.name)}`],
+    }) satisfies CodeGraphSymbol,
+);
+
+const typescriptPathArbitrary = FC.tuple(
+  FC.constantFrom('src/private.ts', 'test/callback.spec.ts', 'packages/with space/file:name.ts'),
+  FC.integer({max: 10_000, min: 0}),
+).map(([path, suffix]) => `${path.replace(/\.ts$/, '')}-${suffix}.ts`);
+
+const resolutionScopeIdArbitrary = FC.oneof(
+  FC.constant(undefined),
+  FC.integer({max: 10_000, min: 0}).map(suffix => `project-${suffix}`),
+);
+
+const pathLocalTypeScriptSymbolArbitrary = FC.record({
+  arity: optionalArity,
+  path: typescriptPathArbitrary,
+  resolutionScopeId: resolutionScopeIdArbitrary,
+  suffix: FC.integer({max: 10_000, min: 0}),
+}).map(({arity, path, resolutionScopeId, suffix}) => {
+  const name = `privateMethod${suffix}`;
+  const qualifiedName = `Fixture.${name}`;
+  const ownPathLookupKeys = typescriptPathLocalLookupKeys(path, name, qualifiedName, resolutionScopeId, arity);
+  return {
+    ...(arity === undefined ? {} : {arity}),
+    contentHash: `content-${suffix}`,
+    exported: false,
+    id: `local:${path}:${suffix}`,
+    kind: 'method',
+    language: 'typescript',
+    lookupKeys: ownPathLookupKeys,
+    name,
+    path,
+    qualifiedName,
+    resolutionDomain: 'typescript',
+    ...(resolutionScopeId === undefined ? {} : {resolutionScopeId}),
+    span: {column: 1, endColumn: 2, endLine: 1, line: 1},
+  } satisfies CodeGraphSymbol;
+});
+
 describe('code graph incremental-overlay properties', () => {
+  it('does not synthesize active global endpoints for TypeScript while preserving explicit extractor keys', () => {
+    const path = 'src/example.ts';
+    const ownKey = `typescript:path:${encodeURIComponent(path)}:name:local`;
+    const explicitGlobal = 'global:name:explicit';
+    const local: CodeGraphSymbol = {
+      contentHash: 'hash',
+      exported: false,
+      id: 'local',
+      kind: 'function',
+      language: 'typescript',
+      lookupKeys: [ownKey],
+      name: 'local',
+      path,
+      qualifiedName: 'local',
+      resolutionDomain: 'typescript',
+      span: {column: 1, endColumn: 2, endLine: 1, line: 1},
+    };
+    const facts: CodeGraphFileFacts = {
+      diagnostics: [],
+      edges: [],
+      path,
+      references: [],
+      symbols: [
+        local,
+        {...local, exported: true, id: 'exported', name: 'exported'},
+        {
+          ...local,
+          id: 'explicit',
+          lookupKeys: [ownKey, explicitGlobal],
+          name: 'explicit',
+        },
+      ],
+    };
+    const file: CodeGraphInventoryFile = {
+      blobId: 'blob',
+      content: '',
+      contentHash: 'hash',
+      language: 'typescript',
+      mode: '100644',
+      path,
+      size: 0,
+      source: 'commit',
+    };
+
+    const attributed = createResolutionAttributor([file])([facts])[0]!;
+    expect(attributed.symbols.find(symbol => symbol.id === 'local')?.lookupKeys).toEqual([ownKey]);
+    expect(attributed.symbols.find(symbol => symbol.id === 'exported')?.lookupKeys).not.toContain(
+      'global:name:exported',
+    );
+    expect(attributed.symbols.find(symbol => symbol.id === 'explicit')?.lookupKeys).toContain(explicitGlobal);
+  });
+
   it.prop(
-    'accepts non-resolution metadata changes but rejects every declaration and lookup surface mutation',
-    {symbol: symbolArbitrary},
+    'accepts non-resolution metadata changes but rejects every published declaration and lookup surface mutation',
+    {symbol: publishedSymbolArbitrary},
     ({symbol}) => {
       const metadataOnly: CodeGraphSymbol = {
         ...symbol,
@@ -84,8 +183,69 @@ describe('code graph incremental-overlay properties', () => {
   );
 
   it.prop(
-    'is independent of symbol materialization order while still requiring the exact symbol set',
-    {symbols: FC.array(symbolArbitrary, {maxLength: 12, minLength: 1})},
+    'ignores additions, removals, and renames of unexported own-path TypeScript symbols but not new exports',
+    {local: pathLocalTypeScriptSymbolArbitrary, published: publishedSymbolArbitrary},
+    ({local, published}) => {
+      const baseline = [{...published, id: `baseline:${published.id}`}];
+      const renamed = renamePathLocalSymbol(local);
+
+      expect(hasSameCodeGraphResolutionSurface(baseline, [...baseline, local])).toBe(true);
+      expect(hasSameCodeGraphResolutionSurface([...baseline, local], baseline)).toBe(true);
+      expect(hasSameCodeGraphResolutionSurface([...baseline, local], [...baseline, renamed])).toBe(true);
+      expect(hasSameCodeGraphResolutionSurface(baseline, [...baseline, {...local, exported: true}])).toBe(false);
+    },
+    {fastCheck: {numRuns: 250}},
+  );
+
+  it.prop(
+    'publishes every global and non-own lookup key while retaining empty unexported surfaces as local',
+    {local: pathLocalTypeScriptSymbolArbitrary, published: publishedSymbolArbitrary},
+    ({local, published}) => {
+      const baseline = [{...published, id: `baseline:${published.id}`}];
+      const localKeys = local.lookupKeys ?? [];
+      const derivedLexicalMirrors = derivedTypeScriptLexicalGlobalLookupKeys(local.name, local.qualifiedName);
+      const derivedMirrorSymbol: CodeGraphSymbol = {
+        ...local,
+        lookupKeys: [...localKeys, ...derivedLexicalMirrors],
+      };
+      const globalKey = `global:name:${encodeURIComponent(`other:${local.name}`)}`;
+      const globalSymbol: CodeGraphSymbol = {...local, lookupKeys: [...localKeys, globalKey]};
+      const changedGlobal: CodeGraphSymbol = {
+        ...globalSymbol,
+        lookupKeys: [...localKeys, `global:qualified:${encodeURIComponent(`other:${local.qualifiedName}`)}`],
+      };
+      const globalOnlySymbol: CodeGraphSymbol = {...local, lookupKeys: derivedLexicalMirrors};
+      const noLookupSymbol: CodeGraphSymbol = {...local, lookupKeys: []};
+      const foreignPathSymbol: CodeGraphSymbol = {
+        ...local,
+        lookupKeys: [
+          ...localKeys,
+          typeScriptPathLookupKey(`${local.path}.foreign`, 'name', local.name, local.resolutionScopeId),
+        ],
+      };
+      const moduleKeySymbol: CodeGraphSymbol = {
+        ...local,
+        lookupKeys: [
+          ...localKeys,
+          `${typeScriptLookupKeyPrefix(local.resolutionScopeId)}module:${encodeURIComponent(local.path)}`,
+        ],
+      };
+
+      expect(hasSameCodeGraphResolutionSurface([...baseline, local], [...baseline, derivedMirrorSymbol])).toBe(false);
+      expect(hasSameCodeGraphResolutionSurface([...baseline, globalSymbol], [...baseline, changedGlobal])).toBe(false);
+      expect(hasSameCodeGraphResolutionSurface([...baseline, globalSymbol], [...baseline, local])).toBe(false);
+      expect(hasSameCodeGraphResolutionSurface([...baseline, local], [...baseline, globalSymbol])).toBe(false);
+      expect(hasSameCodeGraphResolutionSurface(baseline, [...baseline, globalOnlySymbol])).toBe(false);
+      expect(hasSameCodeGraphResolutionSurface(baseline, [...baseline, noLookupSymbol])).toBe(true);
+      expect(hasSameCodeGraphResolutionSurface([...baseline, local], [...baseline, foreignPathSymbol])).toBe(false);
+      expect(hasSameCodeGraphResolutionSurface([...baseline, local], [...baseline, moduleKeySymbol])).toBe(false);
+    },
+    {fastCheck: {numRuns: 200}},
+  );
+
+  it.prop(
+    'is independent of published symbol materialization order while still requiring the exact published set',
+    {symbols: FC.array(publishedSymbolArbitrary, {maxLength: 12, minLength: 1})},
     ({symbols}) => {
       const unique = symbols.map((symbol, index) => ({...symbol, id: `symbol-${index}:${symbol.id}`}));
       expect(hasSameCodeGraphResolutionSurface(unique, [...unique].reverse())).toBe(true);
@@ -96,8 +256,8 @@ describe('code graph incremental-overlay properties', () => {
 
   it.prop(
     'fails closed when either resolution surface contains duplicate symbol IDs',
-    {symbol: symbolArbitrary},
-    ({symbol}) => {
+    {local: pathLocalTypeScriptSymbolArbitrary, symbol: publishedSymbolArbitrary},
+    ({local, symbol}) => {
       const changedDuplicate: CodeGraphSymbol = {
         ...symbol,
         name: `changed:${symbol.name}`,
@@ -113,6 +273,8 @@ describe('code graph incremental-overlay properties', () => {
       expect(hasSameCodeGraphResolutionSurface([symbol, symbol], [symbol, uniquePeer])).toBe(false);
       expect(hasSameCodeGraphResolutionSurface([symbol, uniquePeer], [symbol, symbol])).toBe(false);
       expect(hasSameCodeGraphResolutionSurface([symbol, symbol], [symbol, symbol])).toBe(false);
+      expect(hasSameCodeGraphResolutionSurface([local, local], [])).toBe(false);
+      expect(hasSameCodeGraphResolutionSurface([], [local, local])).toBe(false);
     },
     {fastCheck: {numRuns: 150}},
   );
@@ -120,4 +282,57 @@ describe('code graph incremental-overlay properties', () => {
 
 function changedOptional(value: string | undefined): string {
   return `changed:${value ?? ''}`;
+}
+
+function renamePathLocalSymbol(symbol: CodeGraphSymbol): CodeGraphSymbol {
+  const name = `renamed:${symbol.name}`;
+  const qualifiedName = `renamed:${symbol.qualifiedName}`;
+  return {
+    ...symbol,
+    id: `renamed:${symbol.id}`,
+    lookupKeys: [
+      ...typescriptPathLocalLookupKeys(symbol.path, name, qualifiedName, symbol.resolutionScopeId, symbol.arity),
+    ],
+    name,
+    qualifiedName,
+  };
+}
+
+function typescriptPathLocalLookupKeys(
+  path: string,
+  name: string,
+  qualifiedName: string,
+  resolutionScopeId: string | undefined,
+  arity: number | undefined,
+): readonly string[] {
+  return [
+    typeScriptPathLookupKey(path, 'name', name, resolutionScopeId),
+    typeScriptPathLookupKey(path, 'qualified', qualifiedName, resolutionScopeId),
+    ...(arity === undefined
+      ? []
+      : [
+          typeScriptPathLookupKey(path, 'name', name, resolutionScopeId, `arity:${arity}`),
+          typeScriptPathLookupKey(path, 'qualified', qualifiedName, resolutionScopeId, `arity:${arity}`),
+        ]),
+    typeScriptPathLookupKey(path, 'name', name, resolutionScopeId, 'implementation'),
+    typeScriptPathLookupKey(path, 'qualified', qualifiedName, resolutionScopeId, 'implementation'),
+  ];
+}
+
+function typeScriptPathLookupKey(
+  path: string,
+  kind: 'name' | 'qualified',
+  value: string,
+  resolutionScopeId: string | undefined,
+  suffix?: `arity:${number}` | 'implementation',
+): string {
+  return `${typeScriptLookupKeyPrefix(resolutionScopeId)}path:${encodeURIComponent(path)}:${kind}:${encodeURIComponent(value)}${suffix ? `:${suffix}` : ''}`;
+}
+
+function typeScriptLookupKeyPrefix(resolutionScopeId: string | undefined): string {
+  return resolutionScopeId === undefined ? 'typescript:' : `typescript:${resolutionScopeId}:`;
+}
+
+function derivedTypeScriptLexicalGlobalLookupKeys(name: string, qualifiedName: string): readonly string[] {
+  return [`global:name:${encodeURIComponent(name)}`, `global:qualified:${encodeURIComponent(qualifiedName)}`];
 }

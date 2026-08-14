@@ -29,7 +29,7 @@ export const codeGraphLanguagePack: CodeGraphLanguagePack = {
     {kind: 'extension', language: 'javascript', role: 'source', value: '.cjs'},
   ],
   id: 'typescript',
-  resolutionStrategy: {domain: 'typescript', version: 'typescript-modules-v1'},
+  resolutionStrategy: {domain: 'typescript', version: 'typescript-modules-v2-published-surface'},
   version: '1.0.0',
   workspaceDetector: Option.none(),
 };

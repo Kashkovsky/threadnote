@@ -1757,6 +1757,61 @@ describe('native code graph lifecycle', () => {
     expect(normalizeStoredGraph(result.incrementalGraph)).toEqual(normalizeStoredGraph(result.fullGraph));
   });
 
+  effectIt.effect('keeps added file-local TypeScript declarations incremental while a new export fails closed', () =>
+    Effect.gen(function* () {
+      const localRoot = yield* Effect.sync(createPublishedSurfaceRepository);
+      const exportedRoot = yield* Effect.sync(createPublishedSurfaceRepository);
+      const localHome = join(localRoot, '.threadnote-test-home');
+      const exportedHome = join(exportedRoot, '.threadnote-test-home');
+      const indexer = yield* CodeGraphIndexer;
+      const localClean = yield* indexer.index({cwd: localRoot, threadnoteHome: localHome});
+      const exportedClean = yield* indexer.index({cwd: exportedRoot, threadnoteHome: exportedHome});
+
+      expect(localClean.snapshot).toMatchObject({dirty: false, state: 'ready'});
+      expect(exportedClean.snapshot).toMatchObject({dirty: false, state: 'ready'});
+
+      yield* Effect.sync(() => {
+        writeFileSync(
+          join(localRoot, 'src/service.ts'),
+          [
+            'export class PublishedService {',
+            '  value(): number {',
+            '    return this.privateValue();',
+            '  }',
+            '',
+            '  private privateValue(): number {',
+            '    return 1;',
+            '  }',
+            '}',
+            '',
+          ].join('\n'),
+        );
+        writeFileSync(
+          join(localRoot, 'test/service.test.ts'),
+          `${readFileSync(join(localRoot, 'test/service.test.ts'), 'utf8')}\nit('reads through a new callback', () => {\n  return new PublishedService().value();\n});\n`,
+        );
+        writeFileSync(
+          join(exportedRoot, 'src/service.ts'),
+          `${readFileSync(join(exportedRoot, 'src/service.ts'), 'utf8')}\nexport function newPublishedHelper(): number { return 2; }\n`,
+        );
+      });
+
+      const local = yield* indexer.index({cwd: localRoot, threadnoteHome: localHome});
+      const exported = yield* indexer.index({cwd: exportedRoot, threadnoteHome: exportedHome});
+
+      expect(local.materialization).toEqual({mode: 'incremental-overlay', stagedFiles: 2, totalFiles: 2});
+      expect(local.snapshot).toMatchObject({baseSnapshotId: localClean.snapshot.id, dirty: true});
+      expect(exported.materialization).toEqual({
+        fallbackReason: 'resolution-surface-changed',
+        mode: 'full',
+        stagedFiles: 2,
+        totalFiles: 2,
+      });
+      expect(exported.snapshot.baseSnapshotId).toBeUndefined();
+      expect(exported.snapshot.id).not.toBe(exportedClean.snapshot.id);
+    }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
   it('preserves scoped TypeScript barrel resolution in a persisted dirty overlay', async () => {
     const incrementalRoot = createFixtureRepository();
     const fullRoot = createFixtureRepository();
@@ -4588,6 +4643,31 @@ function createBodyModifiedRepository(count = 4): string {
   }
   const file = join(root, 'src/file-000.ts');
   writeFileSync(file, readFileSync(file, 'utf8').replace('return 0;', 'return 1000;'));
+  return root;
+}
+
+function createPublishedSurfaceRepository(): string {
+  const root = temporaryDirectory('threadnote-code-graph-published-surface-');
+  mkdirSync(join(root, 'src'), {recursive: true});
+  mkdirSync(join(root, 'test'), {recursive: true});
+  writeFileSync(
+    join(root, 'src/service.ts'),
+    ['export class PublishedService {', '  value(): number {', '    return 1;', '  }', '}', ''].join('\n'),
+  );
+  writeFileSync(
+    join(root, 'test/service.test.ts'),
+    [
+      'import {PublishedService} from "../src/service.js";',
+      '',
+      "it('reads the published service', () => {",
+      '  return new PublishedService().value();',
+      '});',
+      '',
+    ].join('\n'),
+  );
+  git(root, ['init', '-q']);
+  git(root, ['add', '.']);
+  git(root, ['-c', 'user.name=Threadnote Test', '-c', 'user.email=test@threadnote.local', 'commit', '-qm', 'fixture']);
   return root;
 }
 
