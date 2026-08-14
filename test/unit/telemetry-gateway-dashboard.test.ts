@@ -58,6 +58,9 @@ const graphLifecyclePredicates = [
 const genericSchemaPredicate =
   '(resource.threadnote.telemetry.schema_version = 1 || resource.threadnote.telemetry.schema_version = 2)';
 
+const tempoQueryLengthLimit = 1024;
+const inefficientGraphBuildPredicate = 'span.threadnote.graph.efficiency_class =~ "(small|high|critical).*full"';
+
 const terminalGraphAttributes = [
   'threadnote.graph.build_kind',
   'threadnote.graph.materialization_mode',
@@ -160,11 +163,18 @@ describe('Threadnote Grafana dashboard', () => {
         }
       }
       for (const query of queries) {
-        for (const predicate of basePredicates) expect(query).toContain(predicate);
+        expect(query.length).toBeLessThanOrEqual(tempoQueryLengthLimit);
+        if (query.includes(inefficientGraphBuildPredicate)) {
+          expect(query).toContain(basePredicates[0]);
+          expect(query).toContain('resource.threadnote.telemetry.schema_version = 2');
+          expect(query).not.toContain('resource.threadnote.telemetry.schema_version = 1');
+        } else {
+          for (const predicate of basePredicates) expect(query).toContain(predicate);
+        }
         if (query.includes('span.threadnote.operation = "graph-build"')) {
           for (const predicate of graphLifecyclePredicates) expect(query).toContain(predicate);
           expect(query).not.toContain('resource.threadnote.telemetry.schema_version = 1');
-        } else {
+        } else if (!query.includes(inefficientGraphBuildPredicate)) {
           expect(query).toContain(genericSchemaPredicate);
         }
         expect(query).not.toContain('span:status');
@@ -343,9 +353,8 @@ describe('Threadnote Grafana dashboard', () => {
       expect(recentInefficient?.type).toBe('table');
       expect(recentInefficient?.targets).toHaveLength(1);
       const inefficientQuery = recentInefficient?.targets[0]?.query;
-      for (const efficiencyClass of ['small-delta-full', 'high-amplification-full', 'critical-amplification-full']) {
-        expect(inefficientQuery).toContain(efficiencyClass);
-      }
+      expect(inefficientQuery).toContain(inefficientGraphBuildPredicate);
+      expect(inefficientQuery?.length).toBeLessThanOrEqual(tempoQueryLengthLimit);
       for (const attribute of [
         'resource.service.version',
         ...terminalGraphAttributes.map(attribute => `span.${attribute}`),
