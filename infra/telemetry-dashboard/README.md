@@ -56,9 +56,11 @@ Before a write, the provisioner requires all of the following:
 - a live semantic model equal to either the current canonical artifact or one
   of at most 64 validated first-parent historical artifacts; and
 - an effective writer permission set limited to exact-target dashboard
-  read/write plus exact-folder read and permission-read. Dashboard/folder
-  create/delete, folder/ACL write, query, admin, and wildcard grants are
-  rejected.
+  read/write plus exact-folder read and permission-read. Grafana also reports
+  its built-in `folders:uid:sharedwithme` virtual folder for every authenticated
+  account; that one additional `folders:read` scope is accepted, while any
+  other extra, duplicate, or wildcard scope is rejected. Dashboard/folder
+  create/delete, folder/ACL write, query, and admin grants are rejected.
 
 If live already equals current, deployment is a no-op. If it equals a trusted
 historical artifact, the provisioner updates to current. Any third state is
@@ -121,6 +123,10 @@ a maintenance window before setting the enable variable:
 4. Create a read-only service account for `dashboards:read`, `folders:read`,
    `folders.permissions:read`, `datasources:read`, and `datasources:query`,
    scoped to the exact dashboard, folder, and `grafanacloud-traces` datasource.
+   Grafana may derive the exact datasource read scope from the query grant;
+   audit the effective permissions rather than duplicating it in the custom
+   role. The effective folder-read scopes must be exactly the private folder
+   and Grafana's built-in `folders:uid:sharedwithme` virtual folder.
    Store its token only as `THREADNOTE_TELEMETRY_GRAFANA_READ_TOKEN` in the
    existing `telemetry-dashboard-production` Environment. Keep that Environment
    main-only and read-only (`deployment: false`).

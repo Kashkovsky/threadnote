@@ -46,6 +46,7 @@ const grafanaCloudNamespacePattern = /^stacks-[1-9][0-9]*$/u;
 const gitCommitPattern = /^[0-9a-f]{40}$/u;
 const dashboardApiVersion = 'dashboard.grafana.app/v1';
 const folderApiVersion = 'folder.grafana.app/v1';
+const grafanaSharedWithMeFolderScope = 'folders:uid:sharedwithme';
 
 function record(value: unknown, path: string): Record<string, unknown> {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
@@ -453,7 +454,7 @@ function validatePrivateFolderPermissions(value: unknown): void {
 function validateExactPermissions(
   value: unknown,
   actor: 'reader' | 'writer',
-  exactScopes: Readonly<Record<string, string>>,
+  exactScopes: Readonly<Record<string, readonly string[]>>,
 ): void {
   const permissions = record(value, 'Grafana effective permissions response');
   for (const [action, scopesValue] of Object.entries(permissions)) {
@@ -464,14 +465,25 @@ function validateExactPermissions(
     if (!Object.hasOwn(exactScopes, action) || scopes.some(scope => scope === '*' || scope.endsWith(':*'))) {
       throw new ScriptError(`Grafana dashboard ${actor} has a forbidden permission action or scope.`);
     }
-    const expectedScope = exactScopes[action];
-    if (expectedScope === undefined || scopes.length !== 1 || scopes[0] !== expectedScope) {
+    const expectedScopes = exactScopes[action];
+    if (
+      expectedScopes === undefined ||
+      scopes.length !== expectedScopes.length ||
+      new Set(scopes).size !== scopes.length ||
+      expectedScopes.some(scope => !scopes.includes(scope))
+    ) {
       throw new ScriptError(`Grafana dashboard ${actor} is not restricted to the exact allowed targets.`);
     }
   }
-  for (const [action, expectedScope] of Object.entries(exactScopes)) {
+  for (const [action, expectedScopes] of Object.entries(exactScopes)) {
     const scopes = permissions[action];
-    if (!Array.isArray(scopes) || scopes.length !== 1 || scopes[0] !== expectedScope) {
+    if (
+      !Array.isArray(scopes) ||
+      scopes.some(scope => typeof scope !== 'string') ||
+      scopes.length !== expectedScopes.length ||
+      new Set(scopes).size !== scopes.length ||
+      expectedScopes.some(scope => !scopes.includes(scope as string))
+    ) {
       throw new ScriptError(`Grafana dashboard ${actor} is missing a required exact-target permission.`);
     }
   }
@@ -479,20 +491,20 @@ function validateExactPermissions(
 
 export function validateWriterPermissions(value: unknown): void {
   validateExactPermissions(value, 'writer', {
-    'dashboards:read': `dashboards:uid:${telemetryDashboardUid}`,
-    'dashboards:write': `dashboards:uid:${telemetryDashboardUid}`,
-    'folders.permissions:read': `folders:uid:${telemetryDashboardFolderUid}`,
-    'folders:read': `folders:uid:${telemetryDashboardFolderUid}`,
+    'dashboards:read': [`dashboards:uid:${telemetryDashboardUid}`],
+    'dashboards:write': [`dashboards:uid:${telemetryDashboardUid}`],
+    'folders.permissions:read': [`folders:uid:${telemetryDashboardFolderUid}`],
+    'folders:read': [`folders:uid:${telemetryDashboardFolderUid}`, grafanaSharedWithMeFolderScope],
   });
 }
 
 export function validateReaderPermissions(value: unknown): void {
   validateExactPermissions(value, 'reader', {
-    'dashboards:read': `dashboards:uid:${telemetryDashboardUid}`,
-    'datasources:query': `datasources:uid:${telemetryDashboardDatasourceUid}`,
-    'datasources:read': `datasources:uid:${telemetryDashboardDatasourceUid}`,
-    'folders.permissions:read': `folders:uid:${telemetryDashboardFolderUid}`,
-    'folders:read': `folders:uid:${telemetryDashboardFolderUid}`,
+    'dashboards:read': [`dashboards:uid:${telemetryDashboardUid}`],
+    'datasources:query': [`datasources:uid:${telemetryDashboardDatasourceUid}`],
+    'datasources:read': [`datasources:uid:${telemetryDashboardDatasourceUid}`],
+    'folders.permissions:read': [`folders:uid:${telemetryDashboardFolderUid}`],
+    'folders:read': [`folders:uid:${telemetryDashboardFolderUid}`, grafanaSharedWithMeFolderScope],
   });
 }
 
