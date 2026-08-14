@@ -6,17 +6,19 @@ class GrafanaHttpError extends ScriptError {
   }
 }
 
+class GrafanaTransportError extends ScriptError {
+  constructor() {
+    super('Grafana API request failed before receiving a response.');
+  }
+}
+
 export const telemetryDashboardSourcePath = 'infra/telemetry-gateway/threadnote-anonymous-telemetry-dashboard.json';
-export const telemetryDashboardProvisionedPath =
-  'infra/telemetry-dashboard/git-sync/threadnote-telemetry/threadnote-telemetry.json';
-export const telemetryDashboardFolderPath = 'infra/telemetry-dashboard/git-sync/threadnote-telemetry/_folder.json';
+export const telemetryDashboardArtifactPath = 'infra/telemetry-dashboard/threadnote-telemetry.artifact';
 export const telemetryDashboardDatasourceUid = 'grafanacloud-traces';
 export const telemetryDashboardFolderUid = 'threadnote-telemetry-private';
 export const telemetryDashboardFolderTitle = 'Threadnote private telemetry';
 export const telemetryDashboardUid = 'threadnote-telemetry';
 export const telemetryDashboardQueryLengthLimit = 1024;
-export const telemetryDashboardSourcePathInGitSync = 'threadnote-telemetry/threadnote-telemetry.json';
-export const telemetryDashboardFolderSourcePathInGitSync = 'threadnote-telemetry';
 
 type JsonPrimitive = boolean | null | number | string;
 interface JsonArray extends ReadonlyArray<JsonValue> {
@@ -27,34 +29,34 @@ interface JsonObject {
 }
 export type JsonValue = JsonArray | JsonObject | JsonPrimitive;
 
-export type ProvisionedDashboard = Readonly<{
-  apiVersion: 'dashboard.grafana.app/v1';
-  kind: 'Dashboard';
-  metadata: Readonly<{name: typeof telemetryDashboardUid}>;
+export type DashboardArtifact = Readonly<{
+  dashboardUid: typeof telemetryDashboardUid;
+  folderUid: typeof telemetryDashboardFolderUid;
   spec: Readonly<Record<string, JsonValue>>;
 }>;
 
-export type ProvisionedFolder = Readonly<{
-  apiVersion: 'folder.grafana.app/v1';
-  kind: 'Folder';
-  metadata: Readonly<{name: typeof telemetryDashboardFolderUid}>;
-  spec: Readonly<{title: typeof telemetryDashboardFolderTitle}>;
-}>;
+export type DashboardDeploymentDecision = 'noop' | 'update';
 
 type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
 const datasourcePlaceholder = '${DS_TEMPO}';
-// Grafana's Git Sync parser removes these repository-authored fields before it
-// writes a Dashboard resource. The stable UID remains metadata.name.
-const serverOwnedDashboardKeys = new Set(['id', 'iteration', 'uid', 'version']);
+const serverOwnedDashboardKeys = new Set(['id', 'iteration', 'schemaVersion', 'uid', 'version']);
+const migrationEmptyFieldConfigPanelIds = new Set([14, 15, 16, 17, 18, 19]);
 const grafanaCloudNamespacePattern = /^stacks-[1-9][0-9]*$/u;
-const dns1123LabelPattern = /^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$/u;
+const gitCommitPattern = /^[0-9a-f]{40}$/u;
+const dashboardApiVersion = 'dashboard.grafana.app/v1';
+const folderApiVersion = 'folder.grafana.app/v1';
 
 function record(value: unknown, path: string): Record<string, unknown> {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
     throw new ScriptError(`${path} must be an object.`);
   }
   return value as Record<string, unknown>;
+}
+
+function optionalRecord(value: unknown, path: string): Record<string, unknown> {
+  if (value === undefined) return {};
+  return record(value, path);
 }
 
 export function validateGrafanaCloudNamespace(value: string): string {
@@ -64,17 +66,8 @@ export function validateGrafanaCloudNamespace(value: string): string {
   return value;
 }
 
-export function validateGrafanaGitSyncManagerId(value: string): string {
-  const labels = value.split('.');
-  if (
-    value.length === 0 ||
-    value.length > 253 ||
-    labels.some(label => label.length === 0 || label.length > 63 || !dns1123LabelPattern.test(label))
-  ) {
-    throw new ScriptError(
-      'THREADNOTE_TELEMETRY_GRAFANA_GIT_SYNC_MANAGER_ID must be a valid lowercase repository resource name.',
-    );
-  }
+export function validateGitCommit(value: string, variableName: string): string {
+  if (!gitCommitPattern.test(value)) throw new ScriptError(`${variableName} must be a full lowercase Git commit SHA.`);
   return value;
 }
 
@@ -128,24 +121,9 @@ export function canonicalJson(value: JsonValue): string {
   return `${JSON.stringify(sortedJson(value), null, 2)}\n`;
 }
 
-export function validateProvisionedFolder(value: unknown): ProvisionedFolder {
-  const folder = cloneJson(value, 'provisioned folder');
-  const expected: ProvisionedFolder = {
-    apiVersion: 'folder.grafana.app/v1',
-    kind: 'Folder',
-    metadata: {name: telemetryDashboardFolderUid},
-    spec: {title: telemetryDashboardFolderTitle},
-  };
-  if (canonicalJson(folder) !== canonicalJson(expected)) {
-    throw new ScriptError('Provisioned folder must retain its exact private Git Sync identity and title.');
-  }
-  return value as ProvisionedFolder;
-}
-
 function validateImportContract(source: Record<string, unknown>): void {
-  if (source.uid !== telemetryDashboardUid) {
+  if (source.uid !== telemetryDashboardUid)
     throw new ScriptError(`Dashboard uid must remain ${telemetryDashboardUid}.`);
-  }
   const inputs = source.__inputs;
   if (!Array.isArray(inputs) || inputs.length !== 1) {
     throw new ScriptError('Dashboard import source must declare exactly one Tempo input.');
@@ -156,26 +134,21 @@ function validateImportContract(source: Record<string, unknown>): void {
   }
 }
 
-export function renderProvisionedDashboard(source: unknown): ProvisionedDashboard {
+export function renderDashboardArtifact(source: unknown): DashboardArtifact {
   const sourceRecord = record(source, 'dashboard');
   validateImportContract(sourceRecord);
   const replacements = {count: 0};
   const resolved = record(cloneResolvingDatasource(sourceRecord, 'dashboard', replacements), 'dashboard');
   if (replacements.count === 0) throw new ScriptError('Dashboard import source does not use the DS_TEMPO placeholder.');
-  delete resolved.__inputs;
-  delete resolved.__requires;
-  delete resolved.id;
-  delete resolved.iteration;
-  delete resolved.version;
+  for (const key of ['__inputs', '__requires', ...serverOwnedDashboardKeys]) delete resolved[key];
 
-  const provisioned: ProvisionedDashboard = {
-    apiVersion: 'dashboard.grafana.app/v1',
-    kind: 'Dashboard',
-    metadata: {name: telemetryDashboardUid},
+  const artifact: DashboardArtifact = {
+    dashboardUid: telemetryDashboardUid,
+    folderUid: telemetryDashboardFolderUid,
     spec: resolved as Readonly<Record<string, JsonValue>>,
   };
-  validateProvisionedDashboard(provisioned);
-  return provisioned;
+  validateDashboardArtifact(artifact);
+  return artifact;
 }
 
 type TempoQuery = Readonly<{
@@ -185,9 +158,9 @@ type TempoQuery = Readonly<{
   targetIndex: number;
 }>;
 
-export function collectTempoQueries(resource: ProvisionedDashboard): readonly TempoQuery[] {
+export function collectTempoQueries(resource: DashboardArtifact): readonly TempoQuery[] {
   const panels = resource.spec.panels;
-  if (!Array.isArray(panels) || panels.length === 0) throw new ScriptError('Provisioned dashboard has no panels.');
+  if (!Array.isArray(panels) || panels.length === 0) throw new ScriptError('Dashboard artifact has no panels.');
   const queries: TempoQuery[] = [];
   for (const [panelIndex, panelValue] of panels.entries()) {
     const panel = record(panelValue, `dashboard.panels[${panelIndex}]`);
@@ -218,49 +191,90 @@ export function collectTempoQueries(resource: ProvisionedDashboard): readonly Te
           `Dashboard panel ${panelId} target ${targetIndex} exceeds the ${telemetryDashboardQueryLengthLimit}-character Tempo query limit.`,
         );
       }
-      queries.push({
-        panelId,
-        query: target.query,
-        target: target as Readonly<Record<string, JsonValue>>,
-        targetIndex,
-      });
+      queries.push({panelId, query: target.query, target: target as Readonly<Record<string, JsonValue>>, targetIndex});
     }
   }
-  if (queries.length === 0) throw new ScriptError('Provisioned dashboard has no Tempo queries.');
+  if (queries.length === 0) throw new ScriptError('Dashboard artifact has no Tempo queries.');
   return queries;
 }
 
-export function validateProvisionedDashboard(resource: ProvisionedDashboard): void {
-  if (
-    resource.apiVersion !== 'dashboard.grafana.app/v1' ||
-    resource.kind !== 'Dashboard' ||
-    resource.metadata.name !== telemetryDashboardUid ||
-    resource.spec.uid !== telemetryDashboardUid
-  ) {
-    throw new ScriptError('Provisioned dashboard CRD identity is invalid.');
-  }
-  const rendered = canonicalJson(resource);
+export function validateDashboardArtifact(value: unknown): DashboardArtifact {
+  const artifact = validateHistoricalDashboardArtifact(value);
+  const artifactRecord = artifact as Readonly<Record<string, JsonValue>>;
+  const spec = artifact.spec;
+  const rendered = canonicalJson(cloneJson(artifactRecord, 'dashboard artifact'));
   if (rendered.includes(datasourcePlaceholder)) {
-    throw new ScriptError('Provisioned dashboard still contains an unresolved Tempo data-source placeholder.');
+    throw new ScriptError('Dashboard artifact still contains an unresolved Tempo data-source placeholder.');
   }
-  for (const key of ['__inputs', '__requires', 'id', 'iteration', 'version']) {
-    if (Object.hasOwn(resource.spec, key))
-      throw new ScriptError(`Provisioned dashboard retains volatile field ${key}.`);
+  for (const key of ['__inputs', '__requires', ...serverOwnedDashboardKeys]) {
+    if (Object.hasOwn(spec, key)) throw new ScriptError(`Dashboard artifact retains server-owned field ${key}.`);
   }
-  collectTempoQueries(resource);
+  collectTempoQueries(artifact);
+  return artifact;
 }
 
-export function canonicalDashboardSpec(value: unknown): string {
-  const dashboard = record(value, 'live dashboard');
-  const normalized: Record<string, JsonValue> = {};
-  for (const [key, item] of Object.entries(dashboard)) {
-    if (serverOwnedDashboardKeys.has(key)) continue;
-    normalized[key] = cloneJson(item, `live dashboard.${key}`);
+export function validateHistoricalDashboardArtifact(value: unknown): DashboardArtifact {
+  const artifactRecord = record(value, 'dashboard artifact');
+  record(artifactRecord.spec, 'dashboard artifact.spec');
+  if (
+    artifactRecord.dashboardUid !== telemetryDashboardUid ||
+    artifactRecord.folderUid !== telemetryDashboardFolderUid ||
+    Object.keys(artifactRecord).length !== 3 ||
+    Object.keys(artifactRecord).some(key => !['dashboardUid', 'folderUid', 'spec'].includes(key))
+  ) {
+    throw new ScriptError('Dashboard artifact must retain its exact dashboard and folder identity.');
   }
-  return canonicalJson(normalized);
+  cloneJson(artifactRecord, 'dashboard artifact');
+  return value as DashboardArtifact;
 }
 
-export function buildTempoQueryRequest(resource: ProvisionedDashboard, now = Date.now()): JsonValue {
+function isMigrationEmptyFieldConfig(value: unknown): boolean {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const fieldConfig = value as Record<string, unknown>;
+  const defaults = fieldConfig.defaults;
+  return (
+    Object.keys(fieldConfig).length === 2 &&
+    defaults !== null &&
+    typeof defaults === 'object' &&
+    !Array.isArray(defaults) &&
+    Object.keys(defaults).length === 0 &&
+    Array.isArray(fieldConfig.overrides) &&
+    fieldConfig.overrides.length === 0
+  );
+}
+
+export function canonicalDashboardSemantics(value: unknown): string {
+  const dashboard = record(cloneJson(value, 'dashboard spec'), 'dashboard spec');
+  for (const key of serverOwnedDashboardKeys) delete dashboard[key];
+  if (Array.isArray(dashboard.panels)) {
+    dashboard.panels = dashboard.panels.map((panelValue, index) => {
+      const panel = record(panelValue, `dashboard spec.panels[${index}]`);
+      if (
+        typeof panel.id === 'number' &&
+        migrationEmptyFieldConfigPanelIds.has(panel.id) &&
+        isMigrationEmptyFieldConfig(panel.fieldConfig)
+      ) {
+        delete panel.fieldConfig;
+      }
+      return panel;
+    });
+  }
+  return canonicalJson(dashboard as JsonObject);
+}
+
+export function assessDashboardThreeWay(
+  options: Readonly<{
+    current: string;
+    historical: readonly string[];
+    live: string;
+  }>,
+): DashboardDeploymentDecision {
+  if (options.live === options.current) return 'noop';
+  if (options.historical.includes(options.live)) return 'update';
+  throw new ScriptError('Live Grafana dashboard drifted from the current and trusted historical canonical artifacts.');
+}
+
+export function buildTempoQueryRequest(resource: DashboardArtifact, now = Date.now()): JsonValue {
   const queries = collectTempoQueries(resource).map(({panelId, target, targetIndex}) => ({
     ...target,
     datasource: {type: 'tempo', uid: telemetryDashboardDatasourceUid},
@@ -270,11 +284,7 @@ export function buildTempoQueryRequest(resource: ProvisionedDashboard, now = Dat
     refId: `P${panelId}T${targetIndex}`,
     spanLimit: 1,
   }));
-  return {
-    from: String(now - 5 * 60_000),
-    queries,
-    to: String(now),
-  };
+  return {from: String(now - 5 * 60_000), queries, to: String(now)};
 }
 
 function grafanaUrl(baseUrl: string, path: string): URL {
@@ -284,13 +294,31 @@ function grafanaUrl(baseUrl: string, path: string): URL {
   } catch {
     throw new ScriptError('THREADNOTE_TELEMETRY_GRAFANA_URL must be an absolute HTTPS URL.');
   }
-  if (base.protocol !== 'https:' || base.username || base.password || base.search || base.hash) {
-    throw new ScriptError('THREADNOTE_TELEMETRY_GRAFANA_URL must be an uncredentialed HTTPS origin.');
+  const labels = base.hostname.split('.');
+  if (
+    base.protocol !== 'https:' ||
+    base.username ||
+    base.password ||
+    base.port ||
+    base.pathname !== '/' ||
+    base.search ||
+    base.hash ||
+    base.hostname === 'grafana.net' ||
+    !base.hostname.endsWith('.grafana.net') ||
+    labels.some(label => label.length === 0)
+  ) {
+    throw new ScriptError('THREADNOTE_TELEMETRY_GRAFANA_URL must be an uncredentialed Grafana Cloud HTTPS origin.');
   }
   return new URL(path, `${base.origin}/`);
 }
 
-async function fetchJson(fetcher: FetchLike, url: URL, token: string, init?: RequestInit): Promise<unknown> {
+async function fetchResponse(
+  fetcher: FetchLike,
+  url: URL,
+  token: string,
+  init?: RequestInit,
+  expectedStatus?: number,
+): Promise<Response> {
   let response: Response;
   try {
     response = await fetcher(url, {
@@ -304,11 +332,22 @@ async function fetchJson(fetcher: FetchLike, url: URL, token: string, init?: Req
       signal: AbortSignal.timeout(30_000),
     });
   } catch {
-    // Do not let transport errors echo a private Grafana stack namespace or
-    // repository manager identity from a request URL.
-    throw new ScriptError('Grafana API request failed before receiving a response.');
+    throw new GrafanaTransportError();
   }
-  if (!response.ok) throw new GrafanaHttpError(response.status);
+  if (expectedStatus === undefined ? !response.ok : response.status !== expectedStatus) {
+    throw new GrafanaHttpError(response.status);
+  }
+  return response;
+}
+
+async function fetchJson(
+  fetcher: FetchLike,
+  url: URL,
+  token: string,
+  init?: RequestInit,
+  expectedStatus?: number,
+): Promise<unknown> {
+  const response = await fetchResponse(fetcher, url, token, init, expectedStatus);
   try {
     return await response.json();
   } catch {
@@ -316,57 +355,145 @@ async function fetchJson(fetcher: FetchLike, url: URL, token: string, init?: Req
   }
 }
 
-type ExpectedGitSyncResource = Readonly<{
-  apiVersion: string;
-  folderUid?: string;
-  kind: string;
-  managerId: string;
-  name: string;
+type LiveDashboard = Readonly<{
+  annotations: JsonObject;
+  internalUid: string;
+  labels: JsonObject;
   namespace: string;
-  sourcePath: string;
+  resourceVersion: string;
+  schemaVersion: number;
+  spec: Record<string, unknown>;
 }>;
 
-function gitSyncResource(
-  value: unknown,
-  expected: ExpectedGitSyncResource,
-): Readonly<{
-  matches: boolean;
-  spec: Record<string, unknown>;
-}> {
-  const resource = record(value, 'Grafana resource response');
-  const metadata = record(resource.metadata, 'Grafana resource response.metadata');
-  const spec = record(resource.spec, 'Grafana resource response.spec');
-  const annotations =
-    metadata.annotations !== null && typeof metadata.annotations === 'object' && !Array.isArray(metadata.annotations)
-      ? (metadata.annotations as Record<string, unknown>)
-      : {};
+function annotationsFromMetadata(metadata: Record<string, unknown>, path: string): Record<string, unknown> {
+  return optionalRecord(metadata.annotations, `${path}.annotations`);
+}
+
+function rejectManagedResource(metadata: Record<string, unknown>): void {
+  const annotations = annotationsFromMetadata(metadata, 'Grafana resource metadata');
+  const labels = optionalRecord(metadata.labels, 'Grafana resource metadata.labels');
+  const isReservedProvenanceKey = (key: string): boolean =>
+    key.startsWith('grafana.app/managed') ||
+    key.startsWith('grafana.app/manager') ||
+    key.startsWith('grafana.app/repo') ||
+    key.startsWith('grafana.app/source') ||
+    key.startsWith('provisioning.grafana.app/');
+  if ([...Object.keys(annotations), ...Object.keys(labels)].some(isReservedProvenanceKey)) {
+    throw new ScriptError('Direct dashboard provisioning refuses a managed or provisioned Grafana resource.');
+  }
+}
+
+function parseLiveDashboard(value: unknown, namespace: string): LiveDashboard {
+  const resource = record(value, 'Grafana dashboard response');
+  const metadata = record(resource.metadata, 'Grafana dashboard response.metadata');
+  const annotations = annotationsFromMetadata(metadata, 'Grafana dashboard response.metadata');
+  const spec = record(resource.spec, 'Grafana dashboard response.spec');
+  rejectManagedResource(metadata);
+  if (
+    resource.apiVersion !== dashboardApiVersion ||
+    resource.kind !== 'Dashboard' ||
+    metadata.name !== telemetryDashboardUid ||
+    metadata.namespace !== namespace ||
+    annotations['grafana.app/folder'] !== telemetryDashboardFolderUid
+  ) {
+    throw new ScriptError('Grafana dashboard identity or folder does not match the fixed deployment target.');
+  }
+  if (typeof metadata.resourceVersion !== 'string' || metadata.resourceVersion.length === 0) {
+    throw new ScriptError('Grafana dashboard response is missing metadata.resourceVersion.');
+  }
+  if (typeof metadata.uid !== 'string' || metadata.uid.length === 0) {
+    throw new ScriptError('Grafana dashboard response is missing its immutable metadata.uid.');
+  }
+  if (!Number.isInteger(spec.schemaVersion) || (spec.schemaVersion as number) < 1) {
+    throw new ScriptError('Grafana dashboard response is missing a valid server schemaVersion.');
+  }
   return {
-    matches:
-      resource.apiVersion === expected.apiVersion &&
-      resource.kind === expected.kind &&
-      metadata.name === expected.name &&
-      metadata.namespace === expected.namespace &&
-      annotations['grafana.app/managedBy'] === 'repo' &&
-      annotations['grafana.app/managerId'] === expected.managerId &&
-      annotations['grafana.app/sourcePath'] === expected.sourcePath &&
-      (expected.folderUid === undefined || annotations['grafana.app/folder'] === expected.folderUid),
+    annotations: cloneJson(annotations, 'Grafana dashboard response.metadata.annotations') as JsonObject,
+    internalUid: metadata.uid,
+    labels: cloneJson(
+      optionalRecord(metadata.labels, 'Grafana dashboard response.metadata.labels'),
+      'Grafana dashboard response.metadata.labels',
+    ) as JsonObject,
+    namespace,
+    resourceVersion: metadata.resourceVersion,
+    schemaVersion: spec.schemaVersion as number,
     spec,
   };
 }
 
+function validateLiveFolder(value: unknown, namespace: string): void {
+  const resource = record(value, 'Grafana folder response');
+  const metadata = record(resource.metadata, 'Grafana folder response.metadata');
+  const annotations = annotationsFromMetadata(metadata, 'Grafana folder response.metadata');
+  const spec = record(resource.spec, 'Grafana folder response.spec');
+  rejectManagedResource(metadata);
+  if (
+    resource.apiVersion !== folderApiVersion ||
+    resource.kind !== 'Folder' ||
+    metadata.name !== telemetryDashboardFolderUid ||
+    metadata.namespace !== namespace ||
+    spec.title !== telemetryDashboardFolderTitle ||
+    Object.hasOwn(annotations, 'grafana.app/folder')
+  ) {
+    throw new ScriptError('Grafana private folder identity or title does not match the fixed deployment target.');
+  }
+}
+
 function validatePrivateFolderPermissions(value: unknown): void {
   if (!Array.isArray(value)) throw new ScriptError('Grafana folder permissions response must be an array.');
-  let broadPermissionCount = 0;
   for (const [index, item] of value.entries()) {
     const permission = record(item, `Grafana folder permissions response[${index}]`);
     const role = typeof permission.role === 'string' ? permission.role.toLowerCase() : '';
     if (role === 'viewer' || role === 'editor' || permission.folderId === -1 || permission.dashboardId === -1) {
-      broadPermissionCount += 1;
+      throw new ScriptError('Grafana private folder still grants broad default Viewer or Editor access.');
     }
   }
-  if (broadPermissionCount > 0) {
-    throw new ScriptError('Grafana provisioned folder still grants broad default Viewer or Editor access.');
+}
+
+function validateExactPermissions(
+  value: unknown,
+  actor: 'reader' | 'writer',
+  exactScopes: Readonly<Record<string, string>>,
+): void {
+  const permissions = record(value, 'Grafana effective permissions response');
+  for (const [action, scopesValue] of Object.entries(permissions)) {
+    if (!Array.isArray(scopesValue) || scopesValue.some(scope => typeof scope !== 'string')) {
+      throw new ScriptError('Grafana effective permissions response has an invalid scope list.');
+    }
+    const scopes = scopesValue as string[];
+    if (!Object.hasOwn(exactScopes, action) || scopes.some(scope => scope === '*' || scope.endsWith(':*'))) {
+      throw new ScriptError(`Grafana dashboard ${actor} has a forbidden permission action or scope.`);
+    }
+    const expectedScope = exactScopes[action];
+    if (expectedScope === undefined || scopes.length !== 1 || scopes[0] !== expectedScope) {
+      throw new ScriptError(`Grafana dashboard ${actor} is not restricted to the exact allowed targets.`);
+    }
   }
+  for (const [action, expectedScope] of Object.entries(exactScopes)) {
+    const scopes = permissions[action];
+    if (!Array.isArray(scopes) || scopes.length !== 1 || scopes[0] !== expectedScope) {
+      throw new ScriptError(`Grafana dashboard ${actor} is missing a required exact-target permission.`);
+    }
+  }
+}
+
+export function validateWriterPermissions(value: unknown): void {
+  validateExactPermissions(value, 'writer', {
+    'dashboards:read': `dashboards:uid:${telemetryDashboardUid}`,
+    'dashboards:write': `dashboards:uid:${telemetryDashboardUid}`,
+    'folders.permissions:read': `folders:uid:${telemetryDashboardFolderUid}`,
+    'folders:read': `folders:uid:${telemetryDashboardFolderUid}`,
+  });
+}
+
+export function validateReaderPermissions(value: unknown): void {
+  validateExactPermissions(value, 'reader', {
+    'dashboards:read': `dashboards:uid:${telemetryDashboardUid}`,
+    'datasources:query': `datasources:uid:${telemetryDashboardDatasourceUid}`,
+    'datasources:read': `datasources:uid:${telemetryDashboardDatasourceUid}`,
+    'folders.permissions:read': `folders:uid:${telemetryDashboardFolderUid}`,
+    'folders:read': `folders:uid:${telemetryDashboardFolderUid}`,
+  });
 }
 
 function queryErrors(value: unknown, expectedReferenceIds: readonly string[]): readonly string[] {
@@ -387,89 +514,180 @@ function queryErrors(value: unknown, expectedReferenceIds: readonly string[]): r
   return errors;
 }
 
-export async function verifyLiveDashboard(options: {
-  readonly baseUrl: string;
-  readonly fetcher?: FetchLike;
-  readonly folder: ProvisionedFolder;
-  readonly managerId: string;
-  readonly namespace: string;
-  readonly pollIntervalMs?: number;
-  readonly resource: ProvisionedDashboard;
-  readonly syncTimeoutMs?: number;
-  readonly token: string;
-}): Promise<void> {
-  if (options.token.trim().length === 0) {
-    throw new ScriptError('THREADNOTE_TELEMETRY_GRAFANA_READ_TOKEN is required when Git Sync verification is enabled.');
-  }
-  const namespace = validateGrafanaCloudNamespace(options.namespace);
-  const managerId = validateGrafanaGitSyncManagerId(options.managerId);
-  const fetcher = options.fetcher ?? fetch;
-  const pollIntervalMs = options.pollIntervalMs ?? 10_000;
-  const syncTimeoutMs = options.syncTimeoutMs ?? 5 * 60_000;
-  const expected = canonicalDashboardSpec(options.resource.spec);
-  const dashboardUrl = grafanaUrl(
-    options.baseUrl,
+function dashboardUrl(baseUrl: string, namespace: string): URL {
+  return grafanaUrl(
+    baseUrl,
     `/apis/dashboard.grafana.app/v1/namespaces/${namespace}/dashboards/${telemetryDashboardUid}`,
   );
-  const folderUrl = grafanaUrl(
-    options.baseUrl,
+}
+
+function folderUrl(baseUrl: string, namespace: string): URL {
+  return grafanaUrl(
+    baseUrl,
     `/apis/folder.grafana.app/v1/namespaces/${namespace}/folders/${telemetryDashboardFolderUid}`,
   );
-  const deadline = Date.now() + syncTimeoutMs;
-  let synchronized = false;
-  do {
-    try {
-      const liveDashboard = gitSyncResource(await fetchJson(fetcher, dashboardUrl, options.token), {
-        apiVersion: options.resource.apiVersion,
-        folderUid: telemetryDashboardFolderUid,
-        kind: options.resource.kind,
-        managerId,
-        name: telemetryDashboardUid,
-        namespace,
-        sourcePath: telemetryDashboardSourcePathInGitSync,
-      });
-      if (liveDashboard.matches && canonicalDashboardSpec(liveDashboard.spec) === expected) {
-        const liveFolder = gitSyncResource(await fetchJson(fetcher, folderUrl, options.token), {
-          apiVersion: options.folder.apiVersion,
-          kind: options.folder.kind,
-          managerId,
-          name: telemetryDashboardFolderUid,
-          namespace,
-          sourcePath: telemetryDashboardFolderSourcePathInGitSync,
-        });
-        if (
-          liveFolder.matches &&
-          canonicalDashboardSpec(liveFolder.spec) === canonicalDashboardSpec(options.folder.spec)
-        ) {
-          synchronized = true;
-          break;
-        }
-      }
-    } catch (error) {
-      if (!(error instanceof GrafanaHttpError) || error.status !== 404) throw error;
-    }
-    if (Date.now() < deadline) await Bun.sleep(pollIntervalMs);
-  } while (Date.now() < deadline);
-  if (!synchronized) {
-    throw new ScriptError('Grafana Git Sync did not converge to the canonical dashboard before the timeout.');
-  }
+}
 
-  const permissionsUrl = grafanaUrl(options.baseUrl, `/api/folders/${telemetryDashboardFolderUid}/permissions`);
-  validatePrivateFolderPermissions(await fetchJson(fetcher, permissionsUrl, options.token));
+async function readAndValidateFolder(
+  fetcher: FetchLike,
+  baseUrl: string,
+  namespace: string,
+  token: string,
+): Promise<void> {
+  validateLiveFolder(await fetchJson(fetcher, folderUrl(baseUrl, namespace), token, undefined, 200), namespace);
+  validatePrivateFolderPermissions(
+    await fetchJson(
+      fetcher,
+      grafanaUrl(baseUrl, `/api/folders/${telemetryDashboardFolderUid}/permissions`),
+      token,
+      undefined,
+      200,
+    ),
+  );
+}
 
-  const request = buildTempoQueryRequest(options.resource);
-  const queryUrl = grafanaUrl(options.baseUrl, '/api/ds/query');
-  const response = await fetchJson(fetcher, queryUrl, options.token, {
-    body: JSON.stringify(request),
-    method: 'POST',
-  });
+async function verifyTempoQueries(
+  fetcher: FetchLike,
+  baseUrl: string,
+  token: string,
+  resource: DashboardArtifact,
+): Promise<void> {
+  const request = buildTempoQueryRequest(resource);
+  const response = await fetchJson(
+    fetcher,
+    grafanaUrl(baseUrl, '/api/ds/query'),
+    token,
+    {body: JSON.stringify(request), method: 'POST'},
+    200,
+  );
   const requestRecord = record(request, 'Grafana query request');
   const queries = requestRecord.queries as readonly Readonly<Record<string, JsonValue>>[];
-  const referenceIds = queries.map(query => query.refId as string);
-  const errors = queryErrors(response, referenceIds);
-  if (errors.length > 0) {
-    throw new ScriptError(`Grafana rejected ${errors.length} bounded dashboard query targets.`);
+  const errors = queryErrors(
+    response,
+    queries.map(query => query.refId as string),
+  );
+  if (errors.length > 0) throw new ScriptError(`Grafana rejected ${errors.length} bounded dashboard query targets.`);
+}
+
+export async function verifyLiveDashboard(
+  options: Readonly<{
+    baseUrl: string;
+    fetcher?: FetchLike;
+    namespace: string;
+    resource: DashboardArtifact;
+    token: string;
+  }>,
+): Promise<void> {
+  if (options.token.trim().length === 0) {
+    throw new ScriptError('THREADNOTE_TELEMETRY_GRAFANA_READ_TOKEN is required when live verification is enabled.');
   }
+  const namespace = validateGrafanaCloudNamespace(options.namespace);
+  const fetcher = options.fetcher ?? fetch;
+  validateReaderPermissions(
+    await fetchJson(
+      fetcher,
+      grafanaUrl(options.baseUrl, '/api/access-control/user/permissions'),
+      options.token,
+      undefined,
+      200,
+    ),
+  );
+  const live = parseLiveDashboard(
+    await fetchJson(fetcher, dashboardUrl(options.baseUrl, namespace), options.token, undefined, 200),
+    namespace,
+  );
+  if (canonicalDashboardSemantics(live.spec) !== canonicalDashboardSemantics(options.resource.spec)) {
+    throw new ScriptError('Live Grafana dashboard does not match the canonical dashboard artifact.');
+  }
+  await readAndValidateFolder(fetcher, options.baseUrl, namespace, options.token);
+  await verifyTempoQueries(fetcher, options.baseUrl, options.token, options.resource);
+}
+
+function buildDashboardUpdate(live: LiveDashboard, resource: DashboardArtifact, currentSha: string): JsonObject {
+  return {
+    apiVersion: dashboardApiVersion,
+    kind: 'Dashboard',
+    metadata: {
+      annotations: {
+        ...live.annotations,
+        'grafana.app/folder': telemetryDashboardFolderUid,
+        'grafana.app/message': `Threadnote telemetry dashboard ${currentSha}`,
+      },
+      labels: live.labels,
+      name: telemetryDashboardUid,
+      namespace: live.namespace,
+      resourceVersion: live.resourceVersion,
+      uid: live.internalUid,
+    },
+    spec: {...resource.spec, schemaVersion: live.schemaVersion},
+  };
+}
+
+function validatePostUpdate(previous: LiveDashboard, updated: LiveDashboard, expected: DashboardArtifact): void {
+  if (
+    updated.internalUid !== previous.internalUid ||
+    updated.resourceVersion === previous.resourceVersion ||
+    updated.schemaVersion !== previous.schemaVersion ||
+    canonicalDashboardSemantics(updated.spec) !== canonicalDashboardSemantics(expected.spec)
+  ) {
+    throw new ScriptError('Grafana dashboard post-update state failed its identity, CAS, schema, or semantic check.');
+  }
+}
+
+export async function deployDashboard(
+  options: Readonly<{
+    baseUrl: string;
+    current: DashboardArtifact;
+    currentSha: string;
+    fetcher?: FetchLike;
+    historical: readonly DashboardArtifact[];
+    namespace: string;
+    token: string;
+  }>,
+): Promise<DashboardDeploymentDecision> {
+  if (options.token.trim().length === 0) {
+    throw new ScriptError('THREADNOTE_TELEMETRY_GRAFANA_WRITE_TOKEN is required when direct deployment is enabled.');
+  }
+  const namespace = validateGrafanaCloudNamespace(options.namespace);
+  const currentSha = validateGitCommit(options.currentSha, 'THREADNOTE_TELEMETRY_DASHBOARD_CURRENT_SHA');
+  const fetcher = options.fetcher ?? fetch;
+  validateDashboardArtifact(options.current);
+  for (const artifact of options.historical) validateHistoricalDashboardArtifact(artifact);
+  validateWriterPermissions(
+    await fetchJson(
+      fetcher,
+      grafanaUrl(options.baseUrl, '/api/access-control/user/permissions'),
+      options.token,
+      undefined,
+      200,
+    ),
+  );
+  await readAndValidateFolder(fetcher, options.baseUrl, namespace, options.token);
+  const url = dashboardUrl(options.baseUrl, namespace);
+  const live = parseLiveDashboard(await fetchJson(fetcher, url, options.token, undefined, 200), namespace);
+  const decision = assessDashboardThreeWay({
+    current: canonicalDashboardSemantics(options.current.spec),
+    historical: options.historical.map(artifact => canonicalDashboardSemantics(artifact.spec)),
+    live: canonicalDashboardSemantics(live.spec),
+  });
+  if (decision === 'noop') return decision;
+
+  const body = buildDashboardUpdate(live, options.current, currentSha);
+  try {
+    await fetchResponse(fetcher, url, options.token, {body: JSON.stringify(body), method: 'PUT'}, 200);
+  } catch (error) {
+    if (!(error instanceof GrafanaTransportError)) throw error;
+    const observed = parseLiveDashboard(await fetchJson(fetcher, url, options.token, undefined, 200), namespace);
+    try {
+      validatePostUpdate(live, observed, options.current);
+      return decision;
+    } catch {
+      throw new ScriptError('Grafana dashboard update outcome is indeterminate after a transport failure.');
+    }
+  }
+  const updated = parseLiveDashboard(await fetchJson(fetcher, url, options.token, undefined, 200), namespace);
+  validatePostUpdate(live, updated, options.current);
+  return decision;
 }
 
 async function loadSource(repositoryRoot: string): Promise<unknown> {
@@ -483,63 +701,127 @@ async function loadSource(repositoryRoot: string): Promise<unknown> {
   }
 }
 
-async function loadProvisionedFolder(repositoryRoot: string): Promise<ProvisionedFolder> {
-  const folder = Bun.file(`${repositoryRoot}/${telemetryDashboardFolderPath}`);
-  if (!(await folder.exists())) {
-    throw new ScriptError(`Provisioned folder is missing at ${telemetryDashboardFolderPath}.`);
-  }
+async function loadArtifact(repositoryRoot: string): Promise<DashboardArtifact> {
+  const artifact = Bun.file(`${repositoryRoot}/${telemetryDashboardArtifactPath}`);
+  if (!(await artifact.exists()))
+    throw new ScriptError(`Dashboard artifact is missing at ${telemetryDashboardArtifactPath}.`);
   try {
-    return validateProvisionedFolder(await folder.json());
+    return validateDashboardArtifact(await artifact.json());
   } catch (error) {
     if (error instanceof ScriptError) throw error;
-    throw new ScriptError(`Provisioned folder at ${telemetryDashboardFolderPath} is not valid JSON.`);
+    throw new ScriptError(`Dashboard artifact at ${telemetryDashboardArtifactPath} is not valid JSON.`);
   }
+}
+
+type GitReader = (args: readonly string[]) => Promise<string | undefined>;
+
+async function tryRunGit(repositoryRoot: string, args: readonly string[]): Promise<string | undefined> {
+  const child = Bun.spawn(['git', ...args], {cwd: repositoryRoot, stderr: 'ignore', stdout: 'pipe'});
+  const output = await new Response(child.stdout).text();
+  if ((await child.exited) !== 0) return undefined;
+  return output.trim();
+}
+
+async function runGit(repositoryRoot: string, args: readonly string[]): Promise<string> {
+  const output = await tryRunGit(repositoryRoot, args);
+  if (output === undefined) throw new ScriptError('Git history does not contain the required deployment baseline.');
+  return output;
+}
+
+export async function loadHistoricalArtifacts(
+  repositoryRoot: string,
+  currentSha: string,
+  readGit: GitReader = args => tryRunGit(repositoryRoot, args),
+): Promise<readonly DashboardArtifact[]> {
+  validateGitCommit(currentSha, 'THREADNOTE_TELEMETRY_DASHBOARD_CURRENT_SHA');
+  const history = await readGit([
+    'log',
+    '--first-parent',
+    '--format=%H',
+    '--max-count=65',
+    currentSha,
+    '--',
+    telemetryDashboardArtifactPath,
+  ]);
+  if (history === undefined) throw new ScriptError('Git history does not contain the required deployment baseline.');
+  const revisions = history
+    .split('\n')
+    .filter(revision => revision.length > 0 && revision !== currentSha)
+    .slice(0, 64);
+  const artifacts: DashboardArtifact[] = [];
+  for (const revision of revisions) {
+    const json = await readGit(['show', `${revision}:${telemetryDashboardArtifactPath}`]);
+    if (json === undefined) continue;
+    try {
+      artifacts.push(validateHistoricalDashboardArtifact(JSON.parse(json)));
+    } catch (error) {
+      if (error instanceof ScriptError) throw error;
+      throw new ScriptError('A trusted historical dashboard artifact is not valid JSON.');
+    }
+  }
+  return artifacts;
 }
 
 export async function renderTelemetryDashboard(repositoryRoot = process.cwd()): Promise<string> {
-  return canonicalJson(renderProvisionedDashboard(await loadSource(repositoryRoot)));
+  return canonicalJson(renderDashboardArtifact(await loadSource(repositoryRoot)));
 }
 
-async function formatProvisionedDashboard(rendered: string): Promise<string> {
+export async function formatDashboardArtifact(rendered: string): Promise<string> {
   const {format} = await import('prettier');
   return format(rendered, {parser: 'json', printWidth: 120});
 }
 
+export function validateDashboardArtifactBytes(actual: string, expected: string): void {
+  if (actual !== expected) {
+    throw new ScriptError(`Dashboard artifact is stale; run bun scripts/telemetry-dashboard.ts render.`);
+  }
+}
+
 async function run(command: string | undefined): Promise<void> {
-  const rendered = await renderTelemetryDashboard();
-  const folder = await loadProvisionedFolder(process.cwd());
+  const repositoryRoot = process.cwd();
+  const rendered = await renderTelemetryDashboard(repositoryRoot);
   if (command === 'render') {
-    await Bun.write(telemetryDashboardProvisionedPath, await formatProvisionedDashboard(rendered));
-    process.stdout.write(`Rendered ${telemetryDashboardProvisionedPath}\n`);
+    await Bun.write(telemetryDashboardArtifactPath, await formatDashboardArtifact(rendered));
+    process.stdout.write(`Rendered ${telemetryDashboardArtifactPath}\n`);
     return;
+  }
+  const resource = await loadArtifact(repositoryRoot);
+  if (canonicalJson(resource) !== canonicalJson(JSON.parse(rendered) as JsonValue)) {
+    throw new ScriptError(`Dashboard artifact is stale; run bun scripts/telemetry-dashboard.ts render.`);
   }
   if (command === 'check') {
-    const artifact = Bun.file(telemetryDashboardProvisionedPath);
-    if (!(await artifact.exists()) || (await artifact.text()) !== (await formatProvisionedDashboard(rendered))) {
-      throw new ScriptError(`Provisioned dashboard is stale; run bun scripts/telemetry-dashboard.ts render.`);
-    }
-    process.stdout.write(`Verified ${telemetryDashboardProvisionedPath}\n`);
+    validateDashboardArtifactBytes(
+      await Bun.file(`${repositoryRoot}/${telemetryDashboardArtifactPath}`).text(),
+      await formatDashboardArtifact(rendered),
+    );
+    process.stdout.write(`Verified ${telemetryDashboardArtifactPath}\n`);
     return;
   }
+  const baseUrl = Bun.env.THREADNOTE_TELEMETRY_GRAFANA_URL?.trim() ?? '';
+  const namespace = Bun.env.THREADNOTE_TELEMETRY_GRAFANA_NAMESPACE?.trim() ?? '';
   if (command === 'verify-live') {
-    const baseUrl = Bun.env.THREADNOTE_TELEMETRY_GRAFANA_URL?.trim() ?? '';
-    const managerId = Bun.env.THREADNOTE_TELEMETRY_GRAFANA_GIT_SYNC_MANAGER_ID?.trim() ?? '';
-    const namespace = Bun.env.THREADNOTE_TELEMETRY_GRAFANA_NAMESPACE?.trim() ?? '';
     const token = Bun.env.THREADNOTE_TELEMETRY_GRAFANA_READ_TOKEN?.trim() ?? '';
-    await verifyLiveDashboard({
-      baseUrl,
-      folder,
-      managerId,
-      namespace,
-      resource: JSON.parse(rendered) as ProvisionedDashboard,
-      token,
-    });
+    await verifyLiveDashboard({baseUrl, namespace, resource, token});
+    process.stdout.write(`Verified Grafana dashboard ${telemetryDashboardUid} and its bounded Tempo queries.\n`);
+    return;
+  }
+  if (command === 'deploy') {
+    const currentSha = Bun.env.THREADNOTE_TELEMETRY_DASHBOARD_CURRENT_SHA?.trim() ?? '';
+    const token = Bun.env.THREADNOTE_TELEMETRY_GRAFANA_WRITE_TOKEN?.trim() ?? '';
+    validateGitCommit(currentSha, 'THREADNOTE_TELEMETRY_DASHBOARD_CURRENT_SHA');
+    if ((await runGit(repositoryRoot, ['rev-parse', 'HEAD'])) !== currentSha) {
+      throw new ScriptError('Checked-out HEAD does not match the requested dashboard deployment commit.');
+    }
+    const historical = await loadHistoricalArtifacts(repositoryRoot, currentSha);
+    const decision = await deployDashboard({baseUrl, current: resource, currentSha, historical, namespace, token});
     process.stdout.write(
-      `Verified synchronized Grafana dashboard ${telemetryDashboardUid} and its bounded Tempo queries.\n`,
+      decision === 'noop'
+        ? `Grafana dashboard ${telemetryDashboardUid} already matches the canonical artifact.\n`
+        : `Updated Grafana dashboard ${telemetryDashboardUid} with optimistic concurrency.\n`,
     );
     return;
   }
-  throw new ScriptError('Usage: bun scripts/telemetry-dashboard.ts <render|check|verify-live>');
+  throw new ScriptError('Usage: bun scripts/telemetry-dashboard.ts <render|check|deploy|verify-live>');
 }
 
 if (import.meta.main) {
