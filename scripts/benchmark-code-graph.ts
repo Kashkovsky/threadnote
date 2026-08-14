@@ -52,6 +52,7 @@ import {
 } from '../src/evaluation/benchmark.js';
 import {
   EXTERNAL_REPOSITORY_REQUIRED_MEASUREMENTS,
+  RELEASE_EVIDENCE_HARNESS_DELTA_PATHS,
   isReviewedPublicBenchmarkRepository,
   projectExternalEvidenceMetadata,
   validateExternalRepositoryEvidence,
@@ -1408,8 +1409,11 @@ const benchmarkCodeGraph = Effect.scoped(
         ...(largeEvidenceRun && releaseEvidenceSource
           ? {
               releaseEvidenceRef: releaseEvidenceSource.ref,
+              releaseEvidenceHarnessCommit: releaseEvidenceSource.harnessCommit,
+              releaseEvidenceHarnessDeltaPaths: releaseEvidenceSource.harnessDeltaPaths,
               releaseEvidenceResolvedSha: releaseEvidenceSource.resolvedSha,
               releaseEvidenceSha: releaseEvidenceSource.sha,
+              releaseEvidenceSourceMode: releaseEvidenceSource.sourceMode,
             }
           : {}),
         ...(runtimeProvenance ? benchmarkRuntimeProvenanceMetadata(runtimeProvenance) : {}),
@@ -4195,12 +4199,35 @@ function missingReleaseSourceProvenance(artifact: BenchmarkArtifactV1): readonly
   const ref = artifact.metadata.releaseEvidenceRef;
   const resolvedSha = artifact.metadata.releaseEvidenceResolvedSha;
   const sha = artifact.metadata.releaseEvidenceSha;
+  const sourceMode = artifact.metadata.releaseEvidenceSourceMode;
+  const harnessCommit = artifact.metadata.releaseEvidenceHarnessCommit;
+  let harnessDeltaPaths: readonly string[] = [];
+  try {
+    const parsed = JSON.parse(String(artifact.metadata.releaseEvidenceHarnessDeltaPaths ?? '[]'));
+    if (Array.isArray(parsed) && parsed.every(path => typeof path === 'string')) harnessDeltaPaths = parsed;
+  } catch {
+    // The shared missing-evidence result below reports malformed provenance.
+  }
+  const canonicalHarnessDelta =
+    harnessDeltaPaths.length > 0 &&
+    new Set(harnessDeltaPaths).size === harnessDeltaPaths.length &&
+    harnessDeltaPaths.every(path => (RELEASE_EVIDENCE_HARNESS_DELTA_PATHS as readonly string[]).includes(path)) &&
+    JSON.stringify([...harnessDeltaPaths].sort()) === JSON.stringify(harnessDeltaPaths);
+  const sourceModeValid =
+    (sourceMode === 'exact-release' &&
+      harnessCommit === sha &&
+      artifact.environment.commit === sha &&
+      artifact.metadata.releaseEvidenceHarnessDeltaPaths === '[]') ||
+    (sourceMode === 'release-plus-reviewed-harness-delta' &&
+      harnessCommit === artifact.environment.commit &&
+      harnessCommit !== sha &&
+      canonicalHarnessDelta);
   return typeof ref === 'string' &&
     THREADNOTE_4_RELEASE_REF_PATTERN.test(ref) &&
     typeof sha === 'string' &&
     EXACT_GIT_COMMIT_PATTERN.test(sha) &&
     resolvedSha === sha &&
-    sha === artifact.environment.commit &&
+    sourceModeValid &&
     !artifact.environment.dirty
     ? []
     : ['clean exact release source provenance'];
@@ -4236,7 +4263,7 @@ function missingBenchmarkRuntimeProvenance(artifact: BenchmarkArtifactV1): reado
     metadata.benchmarkValidatedManagedProcessLeaseInspection === 'complete' &&
     metadata.benchmarkValidatedManagedDependencyInstallation === 'bun install --frozen-lockfile' &&
     typeof managedVersion === 'string' &&
-    managedVersion.endsWith(`.local.g${sourceCommit}`) &&
+    (managedVersion.endsWith(`-local.g${sourceCommit}`) || managedVersion.endsWith(`.local.g${sourceCommit}`)) &&
     typeof metadata.benchmarkValidatedManagedPayloadFileCount === 'number' &&
     metadata.benchmarkValidatedManagedPayloadFileCount > 0 &&
     typeof metadata.benchmarkValidatedManagedPayloadBytes === 'number' &&
@@ -4429,19 +4456,42 @@ export function resolvedReleaseEvidenceSource(
   resolvedSha: string,
   checkoutCommit: string,
   dirty: boolean,
-): {readonly ref: string; readonly resolvedSha: string; readonly sha: string} {
+  harnessDeltaPaths: readonly string[] = [],
+  releaseIsAncestor = checkoutCommit === sha,
+): {
+  readonly ref: string;
+  readonly resolvedSha: string;
+  readonly sha: string;
+  readonly harnessCommit: string;
+  readonly harnessDeltaPaths: string;
+  readonly sourceMode: 'exact-release' | 'release-plus-reviewed-harness-delta';
+} {
+  const normalizedDeltaPaths = [...harnessDeltaPaths].sort();
+  const reviewedDelta =
+    checkoutCommit !== sha &&
+    releaseIsAncestor &&
+    normalizedDeltaPaths.length > 0 &&
+    new Set(normalizedDeltaPaths).size === normalizedDeltaPaths.length &&
+    normalizedDeltaPaths.every(path => (RELEASE_EVIDENCE_HARNESS_DELTA_PATHS as readonly string[]).includes(path));
   if (
     !THREADNOTE_4_RELEASE_REF_PATTERN.test(ref) ||
     !EXACT_GIT_COMMIT_PATTERN.test(sha) ||
     resolvedSha !== sha ||
-    checkoutCommit !== sha ||
+    (!reviewedDelta && (checkoutCommit !== sha || harnessDeltaPaths.length > 0)) ||
     dirty
   ) {
     throw new ScriptError(
-      'Release benchmark provenance requires a locally resolvable tag, its exact commit SHA, and a clean checkout.',
+      'Release benchmark provenance requires a locally resolvable tag and either its clean exact commit or a clean descendant with only reviewed harness changes.',
     );
   }
-  return {ref, resolvedSha, sha};
+  return {
+    ref,
+    resolvedSha,
+    sha,
+    harnessCommit: checkoutCommit,
+    harnessDeltaPaths: JSON.stringify(normalizedDeltaPaths),
+    sourceMode: reviewedDelta ? 'release-plus-reviewed-harness-delta' : 'exact-release',
+  };
 }
 
 const validateReleaseEvidenceSource = Effect.fn('benchmarkCodeGraph.validateReleaseEvidenceSource')(function* (
@@ -4468,7 +4518,42 @@ const validateReleaseEvidenceSource = Effect.fn('benchmarkCodeGraph.validateRele
     ],
     {concurrency: 3},
   );
-  return yield* Effect.try(() => resolvedReleaseEvidenceSource(ref, sha, resolvedSha, commit, dirty.length > 0));
+  const [releaseMergeBase, harnessDeltaOutput] =
+    commit === sha
+      ? [sha, '']
+      : yield* Effect.all(
+          [
+            threadnoteSourceGit(sourceRoot, ['merge-base', sha, commit]),
+            threadnoteSourceGit(sourceRoot, [
+              'diff',
+              '--name-only',
+              '--diff-filter=ACDMRTUXB',
+              `${sha}..${commit}`,
+              '--',
+              'src',
+              'scripts',
+              'manager',
+              'config',
+              'assets',
+              'package.json',
+              'bun.lock',
+              'tsconfig.json',
+            ]),
+          ],
+          {concurrency: 2},
+        );
+  const harnessDeltaPaths = harnessDeltaOutput.split('\n').filter(Boolean);
+  return yield* Effect.try(() =>
+    resolvedReleaseEvidenceSource(
+      ref,
+      sha,
+      resolvedSha,
+      commit,
+      dirty.length > 0,
+      harnessDeltaPaths,
+      releaseMergeBase === sha,
+    ),
+  );
 });
 
 export interface CodeGraphBenchmarkOptions {

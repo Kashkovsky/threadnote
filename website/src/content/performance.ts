@@ -2,7 +2,10 @@ import {
   privacySafeExternalControlPath,
   privacySafeExternalControlQuery,
 } from '../../../src/evaluation/public_controls.js';
-import {validateExternalRepositoryEvidence} from '../../../src/evaluation/external_evidence.js';
+import {
+  RELEASE_EVIDENCE_HARNESS_DELTA_PATHS,
+  validateExternalRepositoryEvidence,
+} from '../../../src/evaluation/external_evidence.js';
 import type {BenchmarkArtifactV1} from '../../../src/evaluation/benchmark.js';
 
 export const performanceControlLanguages = ['java', 'kotlin', 'typescript', 'bazel'] as const;
@@ -11,6 +14,7 @@ const retainedManagerNodeBudget = 500;
 const retainedManagerEdgeBudget = 1_500;
 const retainedWorktreeIsolationTopology = 'bounded-synthetic-linked-worktrees-in-measured-primary-home';
 const retainedWorktreeIsolationIndexedFiles = 2;
+const threadnote4ReleaseRefPattern = /^refs\/tags\/v(4\.\d+\.\d+(?:-(?:beta|rc)\.\d+)?)$/;
 
 export type PerformanceControlLanguage = (typeof performanceControlLanguages)[number];
 
@@ -816,7 +820,15 @@ function validateHarnessRuntimeProvenance(
   positiveNumberAt(metadata, 'benchmarkValidatedManagedPayloadBytes', 'harness.metadata', true);
   positiveNumberAt(metadata, 'benchmarkValidatedManagedPayloadFileCount', 'harness.metadata', true);
   const managedVersion = metadataString(metadata, 'benchmarkValidatedManagedVersion');
-  if (!managedVersion.endsWith(`.local.g${commit}`)) {
+  const releaseMatch = threadnote4ReleaseRefPattern.exec(metadataString(metadata, 'releaseEvidenceRef'));
+  if (!releaseMatch) {
+    throw new Error('Performance harness release evidence does not name a Threadnote 4 release tag.');
+  }
+  const releaseVersion = releaseMatch[1];
+  if (
+    managedVersion !== `${releaseVersion}-local.g${commit}` &&
+    managedVersion !== `${releaseVersion}.local.g${commit}`
+  ) {
     throw new Error('Performance harness managed version is not bound to its source commit.');
   }
   const managedRuntime = metadataString(metadata, 'benchmarkValidatedManagedRuntime');
@@ -1026,13 +1038,40 @@ export function validateRetainedPerformancePayload(input: unknown): RetainedPerf
   } catch {
     throw new Error('Performance harness repository name and public GitHub URL do not match.');
   }
-  if (metadataString(metadata, 'releaseEvidenceSha') !== sourceCommit) {
-    throw new Error('Performance harness release evidence is not bound to its source commit.');
+  const releaseEvidenceSha = metadataString(metadata, 'releaseEvidenceSha');
+  const releaseEvidenceHarnessCommit = metadataString(metadata, 'releaseEvidenceHarnessCommit');
+  const releaseEvidenceSourceMode = metadataString(metadata, 'releaseEvidenceSourceMode');
+  let releaseEvidenceHarnessDeltaPaths: readonly string[] = [];
+  try {
+    const parsed = JSON.parse(metadataString(metadata, 'releaseEvidenceHarnessDeltaPaths'));
+    if (Array.isArray(parsed) && parsed.every(path => typeof path === 'string')) {
+      releaseEvidenceHarnessDeltaPaths = parsed;
+    }
+  } catch {
+    // The fail-closed provenance check below reports malformed path evidence.
   }
-  if (!/^refs\/tags\/v4\.0\.0(?:-(?:beta|rc)\.\d+)?$/.test(metadataString(metadata, 'releaseEvidenceRef'))) {
-    throw new Error('Performance harness release evidence does not name a Threadnote 4 release tag.');
+  const canonicalHarnessDelta =
+    releaseEvidenceHarnessDeltaPaths.length > 0 &&
+    new Set(releaseEvidenceHarnessDeltaPaths).size === releaseEvidenceHarnessDeltaPaths.length &&
+    releaseEvidenceHarnessDeltaPaths.every(path =>
+      (RELEASE_EVIDENCE_HARNESS_DELTA_PATHS as readonly string[]).includes(path),
+    ) &&
+    JSON.stringify([...releaseEvidenceHarnessDeltaPaths].sort()) === JSON.stringify(releaseEvidenceHarnessDeltaPaths);
+  if (
+    (releaseEvidenceSourceMode === 'exact-release' &&
+      (releaseEvidenceSha !== sourceCommit ||
+        releaseEvidenceHarnessCommit !== sourceCommit ||
+        metadata.releaseEvidenceHarnessDeltaPaths !== '[]')) ||
+    (releaseEvidenceSourceMode === 'release-plus-reviewed-harness-delta' &&
+      (releaseEvidenceHarnessCommit !== sourceCommit ||
+        releaseEvidenceSha === sourceCommit ||
+        !canonicalHarnessDelta)) ||
+    (releaseEvidenceSourceMode !== 'exact-release' &&
+      releaseEvidenceSourceMode !== 'release-plus-reviewed-harness-delta')
+  ) {
+    throw new Error('Performance harness release evidence is not bound to its source and reviewed harness delta.');
   }
-  literalAt(metadata, 'releaseEvidenceResolvedSha', 'harness.metadata', sourceCommit);
+  literalAt(metadata, 'releaseEvidenceResolvedSha', 'harness.metadata', releaseEvidenceSha);
   positiveNumberAt(metadata, 'benchmarkLogicalCpuCount', 'harness.metadata', true);
   metadataString(metadata, 'benchmarkDiskMedium');
   metadataString(metadata, 'benchmarkDiskFilesystem');

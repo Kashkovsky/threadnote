@@ -8,7 +8,6 @@ import {
 } from '../content/performance';
 import {performanceEvidence} from '../content/performanceEvidence';
 import {checkedInPerformanceEvidence} from '../content/performanceHighlights';
-import {checkedInWorktreeReadinessEvidence} from '../content/worktreeReadiness';
 import {docsArticleHref, setDocumentMeta, siteHref} from '../lib/site';
 
 const integerFormatter = new Intl.NumberFormat('en-US');
@@ -27,10 +26,6 @@ function formatDuration(milliseconds: number): string {
   if (milliseconds < 1_000) return `${milliseconds.toFixed(1)} ms`;
   if (milliseconds < 60_000) return `${(milliseconds / 1_000).toFixed(1)} s`;
   return `${(milliseconds / 60_000).toFixed(1)} min`;
-}
-
-function formatReadinessDuration(milliseconds: number): string {
-  return `${(milliseconds / 1_000).toFixed(2)} s`;
 }
 
 function formatEmbeddingDuration(milliseconds: number): string {
@@ -525,84 +520,6 @@ export default function PerformancePage() {
         </div>
       </section>
 
-      <section className="performance-worktrees">
-        <div className="performance-worktrees__copy">
-          <span className="eyebrow">Measured in Threadnote 4.0.1</span>
-          <h2>A warm worktree is ready in seconds—not another full build.</h2>
-          <p>
-            On the same pinned {formatInteger(checkedInWorktreeReadinessEvidence.scale.files)}-file Threadnote checkout
-            and M1 Max runner, five alternating samples compared v4.0.1 with its immediate pre-feature parent. The graph
-            shape and a controlled query matched in every pair.
-          </p>
-          <ul>
-            <li>
-              <Icon name="check" aria-hidden="true" /> Graph-equivalent commits alias the ready content without staging
-              files
-            </li>
-            <li>
-              <Icon name="check" aria-hidden="true" /> Compatible clean commits materialize only their bounded delta
-            </li>
-            <li>
-              <Icon name="check" aria-hidden="true" /> Exact lexical queries become usable before optional enrichment
-            </li>
-          </ul>
-          <p className="performance-worktrees__evidence">
-            Same-machine engineering comparison, not a portable SLA.{' '}
-            <a href={siteHref(checkedInWorktreeReadinessEvidence.artifactPath)} target="_blank" rel="noreferrer">
-              Inspect all raw samples and provenance
-            </a>
-            .
-          </p>
-        </div>
-        <div className="performance-worktrees__diagram" aria-label="Threadnote 4.0.1 warm worktree readiness evidence">
-          <div className="performance-worktrees__base">
-            <span>Measured warm anchor · v4.0.1</span>
-            <strong>
-              {formatInteger(checkedInWorktreeReadinessEvidence.scale.files)} files ·{' '}
-              {formatInteger(checkedInWorktreeReadinessEvidence.scale.symbols)} symbols
-            </strong>
-            <code>{checkedInWorktreeReadinessEvidence.source.candidate.commit.slice(0, 12)}</code>
-          </div>
-          <div className="performance-worktrees__branches">
-            <article>
-              <span>Graph-equivalent commit</span>
-              <strong>
-                {formatReadinessDuration(
-                  checkedInWorktreeReadinessEvidence.graphEquivalentCommit.candidate.medianMilliseconds,
-                )}{' '}
-                median
-              </strong>
-              <small>
-                {checkedInWorktreeReadinessEvidence.graphEquivalentCommit.medianSpeedup.toFixed(1)}× faster · 0 files
-                staged
-              </small>
-            </article>
-            <article>
-              <span>One-file clean commit</span>
-              <strong>
-                {formatReadinessDuration(checkedInWorktreeReadinessEvidence.oneFileChange.candidate.medianMilliseconds)}{' '}
-                median
-              </strong>
-              <small>
-                {checkedInWorktreeReadinessEvidence.oneFileChange.medianSpeedup.toFixed(1)}× faster · 1 file staged
-              </small>
-            </article>
-            <article>
-              <span>Immediate predecessor</span>
-              <strong>
-                {formatReadinessDuration(
-                  checkedInWorktreeReadinessEvidence.graphEquivalentCommit.baseline.medianMilliseconds,
-                )}
-                –{formatReadinessDuration(checkedInWorktreeReadinessEvidence.oneFileChange.baseline.medianMilliseconds)}
-              </strong>
-              <small>
-                full materialization · {formatInteger(checkedInWorktreeReadinessEvidence.scale.files)} files staged
-              </small>
-            </article>
-          </div>
-        </div>
-      </section>
-
       <section className="performance-section performance-surfaces">
         <header className="section-heading">
           <span className="eyebrow">Right detail for the reader</span>
@@ -635,14 +552,23 @@ export default function PerformancePage() {
             paths working at that shape. It does not promise identical times for every repository, disk, operating
             system, or machine.
           </p>
+          {artifact ? (
+            <p>
+              The comprehensive release-run adapter verified {retainedPerformanceArtifactFieldPaths.length} retained
+              fields and fails closed on malformed, stale, or mixed evidence. Every headline value above is derived from
+              the same bound artifact.
+            </p>
+          ) : (
+            <p>
+              A comprehensive release-run adapter still requires {retainedPerformanceArtifactFieldPaths.length} retained
+              fields and fails closed on malformed or mixed evidence. Until that artifact is available, this page shows
+              narrower checked-in engineering measurements with their exact scope instead of empty cards.
+            </p>
+          )}
           <p>
-            A comprehensive release-run adapter still requires {retainedPerformanceArtifactFieldPaths.length} retained
-            fields and fails closed on malformed or mixed evidence. Until that artifact is available, this page shows
-            narrower checked-in engineering measurements with their exact scope instead of empty cards.
-          </p>
-          <p>
-            The public IntelliJ run covers {formatInteger(checkedInPerformanceEvidence.scale.indexedFiles)} files and
-            polyglot Java, Kotlin, TypeScript, and Bazel controls. The separate 100k-symbol lexical artifact records{' '}
+            The public IntelliJ run covers{' '}
+            {formatInteger(artifact?.inventory.indexedFiles ?? checkedInPerformanceEvidence.scale.indexedFiles)} files
+            and polyglot Java, Kotlin, TypeScript, and Bazel controls. The separate 100k-symbol lexical artifact records{' '}
             {checkedInPerformanceEvidence.lexicalStorage.storageReductionPercent.toFixed(1)}% less allocated storage
             than Threadnote's previous lexical index format, with canonical, query, and posting-count parity.
           </p>

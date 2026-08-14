@@ -304,7 +304,7 @@ function verifiedPerformanceFixture(): Record<string, unknown> {
       benchmarkValidatedManagedReleaseMetadataSha256: '5'.repeat(64),
       benchmarkValidatedManagedRuntime: 'bun-1.3.14',
       benchmarkValidatedManagedTarget: 'darwin-arm64',
-      benchmarkValidatedManagedVersion: `4.0.0-beta.32.local.g${sourceCommit}`,
+      benchmarkValidatedManagedVersion: `4.2.5-local.g${sourceCommit}`,
       coldMaterializationStorageMode: 'direct-persistent',
       externalControlCount: 4,
       externalControlEvidence: JSON.stringify(controls),
@@ -333,9 +333,12 @@ function verifiedPerformanceFixture(): Record<string, unknown> {
       mcpOperationCount: 6,
       oneFileReindexMaterializationMode: 'incremental-overlay',
       oneFileReindexMaterializationStorageMode: 'temporary-staged',
-      releaseEvidenceRef: 'refs/tags/v4.0.0-beta.32',
+      releaseEvidenceRef: 'refs/tags/v4.2.5',
+      releaseEvidenceHarnessCommit: sourceCommit,
+      releaseEvidenceHarnessDeltaPaths: '[]',
       releaseEvidenceResolvedSha: sourceCommit,
       releaseEvidenceSha: sourceCommit,
+      releaseEvidenceSourceMode: 'exact-release',
       retrievalMode: 'lexical-only',
       runnerClass: 'local-unclassified',
       runnerIdentity: 'runner-0123456789abcdef',
@@ -690,8 +693,8 @@ describe('Threadnote 4 website content', () => {
     expect(landingSource).toContain('JSON, GraphML, HTML, or SVG');
     expect(landingSource).toContain('Open the Manager demo');
     expect(landingSource).toContain("siteHref('performance/')");
-    expect(landingSource).toContain('reuses a warm graph instead of rebuilding every new worktree');
-    expect(landingSource).toContain('same-machine, five-sample comparison measured 13.2× faster');
+    expect(landingSource).toContain('Threadnote 4.2.5 build and query a pinned IntelliJ Community checkout');
+    expect(landingSource).toContain('cold and one-file incremental timings');
     expect(scenarios).toContain('current commit + isolated dirty overlay');
     expect(scenarios).toContain('paged SQLite analysis · no repository admission cap');
   });
@@ -998,7 +1001,8 @@ describe('Threadnote 4 website content', () => {
     expect(performancePage).toContain('Threadnote 4.1 also gates large-worktree safety');
     expect(performancePage).toContain('never merged into a universal latency percentile');
     expect(performancePage).toContain('deliberately makes no “maximum performance” claim');
-    expect(landingPage).toContain('public IntelliJ evidence still covers 232,750 files');
+    expect(landingPage).toContain('Threadnote 4.2.5 build and query a pinned IntelliJ Community checkout');
+    expect(landingPage).not.toContain('Threadnote 4.0.1');
     expect(landingPage).not.toMatch(/values stay visibly pending|retained artifact is complete/i);
   });
 
@@ -1102,6 +1106,12 @@ describe('Threadnote 4 website content', () => {
         'credential metadata',
         fixture => {
           (fixture.metadata as Record<string, unknown>).runnerIdentity = 'token=github_pat_example';
+        },
+      ],
+      [
+        'release tag outside Threadnote 4',
+        fixture => {
+          (fixture.metadata as Record<string, unknown>).releaseEvidenceRef = 'refs/tags/v5.0.0';
         },
       ],
       [
@@ -1443,9 +1453,8 @@ describe('Threadnote 4 website content', () => {
     expect(pageSource).toContain('Repository size is never an admission test');
     expect(pageSource).toContain('bounded parser worker pool');
     expect(pageSource).toContain('one backpressured SQLite writer');
-    expect(pageSource).toContain('A warm worktree is ready in seconds');
-    expect(pageSource).toContain('Graph-equivalent commit');
-    expect(pageSource).toContain('One-file clean commit');
+    expect(pageSource).not.toContain('Measured in Threadnote 4.0.1');
+    expect(pageSource).not.toContain('warm worktree readiness evidence');
     expect(pageSource).toContain('Graph responses stay deliberately bounded');
     expect(pageSource).toContain('returns the complete record');
     expect(pageSource).toContain('Your agents will love it');

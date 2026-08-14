@@ -195,12 +195,12 @@ function GraphSearchShowcase() {
 
       <a className="graph-showcase__performance-cta" href={siteHref('performance/')}>
         <div>
-          <span className="eyebrow">Large repositories · fast worktrees</span>
-          <h3>See how Threadnote 4.0.1 reuses a warm graph instead of rebuilding every new worktree.</h3>
+          <span className="eyebrow">Large repositories · retained evidence</span>
+          <h3>See Threadnote 4.2.5 build and query a pinned IntelliJ Community checkout.</h3>
         </div>
         <p>
-          A same-machine, five-sample comparison measured 13.2× faster graph-equivalent readiness and 9.9× faster
-          one-file readiness. The separate public IntelliJ evidence still covers 232,750 files and polyglot controls.
+          The release-bound run retains cold and one-file incremental timings, resource high-water marks, independent
+          rebuild parity, and Java, Kotlin, TypeScript, and Bazel controls from one governed artifact.
         </p>
         <Icon name="arrow" aria-hidden="true" />
       </a>
