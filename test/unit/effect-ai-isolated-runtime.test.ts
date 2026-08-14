@@ -261,6 +261,7 @@ describe('isolated local model runtime', () => {
     return Effect.gen(function* () {
       const runtime = yield* LocalModelRuntime;
       const first = yield* runtime.embedMany({
+        embeddingContextPoolSize: 8,
         inputs,
         manifest: embeddingManifest,
         modelPath: '/models/embedding.gguf',
@@ -275,6 +276,7 @@ describe('isolated local model runtime', () => {
       expect(second).toEqual([[5, 2]]);
       expect(processes).toHaveLength(1);
       expect(processes[0]!.writes.map(request => request.payload.inputs.length)).toEqual([32, 8, 1]);
+      expect(processes[0]!.writes.map(request => request.payload.embeddingContextPoolSize)).toEqual([8, 8, undefined]);
       expect(new Set(processes[0]!.writes.map(request => request.id)).size).toBe(3);
     }).pipe(provideTestLayer(runtimeLayer(spawn)));
   });
@@ -482,6 +484,7 @@ describe('isolated local model runtime', () => {
           id: 'request-1',
           operation: 'embedMany',
           payload: {
+            embeddingContextPoolSize: 8,
             inputs: [secret],
             manifest: embeddingManifest,
             modelPath: '/models/embedding.gguf',
@@ -495,12 +498,16 @@ describe('isolated local model runtime', () => {
         LocalModelRuntime.of({
           diagnostics: Effect.succeed({backend: 'fake', buildType: 'prebuilt', cpuMathCores: 4}),
           embedMany: request =>
-            Effect.fail(
-              new EmbeddingFailed({
-                cause: new TestError(`${secret}:${request.inputs[0]}`),
-                message: secret,
-                modelId: request.manifest.id,
-              }),
+            Effect.sync(() => expect(request.embeddingContextPoolSize).toBe(8)).pipe(
+              Effect.andThen(
+                Effect.fail(
+                  new EmbeddingFailed({
+                    cause: new TestError(`${secret}:${request.inputs[0]}`),
+                    message: secret,
+                    modelId: request.manifest.id,
+                  }),
+                ),
+              ),
             ),
           generate: () => Effect.die(new TestError('Unexpected generation request')),
           rerank: () => Effect.die(new TestError('Unexpected reranking request')),
@@ -545,6 +552,7 @@ interface FakeRequest {
   readonly id: string;
   readonly operation: string;
   readonly payload: {
+    readonly embeddingContextPoolSize?: 1 | 2 | 4 | 8;
     readonly inputs: readonly string[];
   };
   readonly protocol: number;

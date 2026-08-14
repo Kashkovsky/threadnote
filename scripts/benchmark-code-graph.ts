@@ -630,22 +630,24 @@ const benchmarkCodeGraph = Effect.scoped(
       startedAt: coldStarted,
       timeline: coldTimeline,
     } = coldMeasurement;
-    const embeddingContextPlan =
-      options.embeddingContexts === undefined
-        ? undefined
-        : yield* Effect.gen(function* () {
-            const runtime = yield* LocalModelRuntime;
-            const diagnostics = yield* runtime.diagnostics.pipe(
-              Effect.mapError(cause => scriptError(cause, 'Could not read the effective embedding context plan.')),
+    const embeddingContextPlan = !options.vectors
+      ? undefined
+      : yield* Effect.gen(function* () {
+          const runtime = yield* LocalModelRuntime;
+          const diagnostics = yield* runtime.diagnostics.pipe(
+            Effect.mapError(cause => scriptError(cause, 'Could not read the effective embedding context plan.')),
+          );
+          const plan = diagnostics.embeddingContextPlan;
+          if (
+            !plan ||
+            (options.embeddingContexts !== undefined && plan.requestedContexts !== options.embeddingContexts)
+          ) {
+            return yield* Effect.fail(
+              new ScriptError('The native worker did not report the effective embedding context plan.'),
             );
-            const plan = diagnostics.embeddingContextPlan;
-            if (!plan || plan.requestedContexts !== options.embeddingContexts) {
-              return yield* Effect.fail(
-                new ScriptError('The native worker did not report the requested embedding context plan.'),
-              );
-            }
-            return {...plan, cpuMathCores: diagnostics.cpuMathCores};
-          });
+          }
+          return {...plan, cpuMathCores: diagnostics.cpuMathCores};
+        });
     const coldVectorMappingDigest = options.vectors
       ? yield* vectorMappingDigest(fs, path, benchmarkLayout.vectorRoot, benchmarkIdentity.worktreeId)
       : undefined;

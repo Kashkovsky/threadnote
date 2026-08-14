@@ -193,6 +193,7 @@ describe('Effect AI native harness', () => {
       const embeddingContextCalls: unknown[] = [];
       const modelLoadCalls: unknown[] = [];
       const layer = nodeLlamaCppEngineLayer({
+        embeddingContextPoolSize: 1,
         embeddingGpuLayers: 0,
         loadModule: () =>
           Promise.resolve({

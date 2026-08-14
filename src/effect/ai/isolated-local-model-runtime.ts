@@ -792,9 +792,20 @@ function decodeWorkerResponse(line: string): Option.Option<WorkerResponse> {
 
 function decodeEmbeddingRequest(value: unknown): Option.Option<LocalEmbeddingRequest> {
   if (!isRecord(value) || !isStringArray(value.inputs) || typeof value.modelPath !== 'string') return Option.none();
+  const embeddingContextPoolSize = value.embeddingContextPoolSize;
+  if (
+    embeddingContextPoolSize !== undefined &&
+    embeddingContextPoolSize !== 1 &&
+    embeddingContextPoolSize !== 2 &&
+    embeddingContextPoolSize !== 4 &&
+    embeddingContextPoolSize !== 8
+  ) {
+    return Option.none();
+  }
   const manifest = decodeManifest(value.manifest);
   return Option.isSome(manifest)
     ? Option.some({
+        ...(embeddingContextPoolSize === undefined ? {} : {embeddingContextPoolSize}),
         inputs: value.inputs,
         manifest: manifest.value,
         modelPath: value.modelPath,

@@ -159,7 +159,7 @@ export function nodeLlamaCppEngineLayer(options: NodeLlamaCppLayerOptions = {}) 
     Effect.gen(function* () {
       let loadModule = options.loadModule;
       let embeddingPolicy: NativeEmbeddingPolicy = {
-        contextPoolSize: options.embeddingContextPoolSize ?? 1,
+        contextPoolSize: options.embeddingContextPoolSize,
         gpuLayers: options.embeddingGpuLayers,
       };
       if (!loadModule) {
@@ -247,7 +247,9 @@ function makeEngine(
         const contextPoolSize = yield* Effect.try({
           try: () =>
             embeddingPolicy.contextPoolSize ??
-            parseEmbeddingContextPoolSize(embeddingPolicy.contextPoolSizeEnvironment),
+            (embeddingPolicy.contextPoolSizeEnvironment?.trim()
+              ? parseEmbeddingContextPoolSize(embeddingPolicy.contextPoolSizeEnvironment)
+              : (options.embeddingContextPoolSize ?? parseEmbeddingContextPoolSize(undefined))),
           catch: cause =>
             new ModelLoadFailed({
               cause,
@@ -279,12 +281,13 @@ function makeEngine(
             modelGpuLayers,
             requestedContexts: contextPoolSize,
           });
-          diagnostics.embeddingContextPlan = {
+          const embeddingContextPlan = {
             effectiveContexts: contextPlan.contexts,
             ...(modelGpuLayers === undefined ? {} : {modelGpuLayers}),
             requestedContexts: contextPoolSize,
             threadCounts: contextPlan.threadCounts.filter((threads): threads is number => threads !== undefined),
           };
+          diagnostics.embeddingContextPlan = embeddingContextPlan;
           const contexts = yield* Effect.forEach(
             contextPlan.threadCounts,
             threads =>
@@ -303,7 +306,16 @@ function makeEngine(
               ),
             {concurrency: 1},
           );
-          return embeddingSession(options, model, contexts, activeBatches, exit => Scope.close(sessionScope, exit));
+          return embeddingSession(
+            options,
+            model,
+            contexts,
+            activeBatches,
+            () => {
+              diagnostics.embeddingContextPlan = embeddingContextPlan;
+            },
+            exit => Scope.close(sessionScope, exit),
+          );
         }).pipe(Effect.provideService(Scope.Scope, sessionScope));
         return yield* load.pipe(
           Effect.onExit(exit => (Exit.isFailure(exit) ? Scope.close(sessionScope, exit) : Effect.void)),
@@ -503,6 +515,7 @@ function embeddingSession(
   model: NativeModel,
   contexts: readonly NativeEmbeddingContext[],
   activeBatches: Set<Promise<unknown>>,
+  activateDiagnostics: () => void,
   close: (exit: Exit.Exit<unknown, unknown>) => Effect.Effect<void>,
 ): LlamaEmbeddingSession {
   return {
@@ -510,6 +523,7 @@ function embeddingSession(
     embedMany: inputs =>
       fromPromiseInterruptible(
         signal => {
+          activateDiagnostics();
           const running = embedInputsWithContextPool(model, contexts, inputs, options.contextSize, signal);
           const tracked = running.finally(() => activeBatches.delete(tracked));
           activeBatches.add(tracked);

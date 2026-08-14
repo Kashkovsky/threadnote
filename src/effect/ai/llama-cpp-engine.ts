@@ -14,6 +14,7 @@ import type {
 export interface LocalModelLoadOptions {
   readonly contextSize?: number;
   readonly darwinArm64EmbeddingGpuLayers?: number;
+  readonly embeddingContextPoolSize?: 1 | 2 | 4 | 8;
   readonly modelId: string;
   readonly modelPath: string;
   readonly rankingTemplate?: string;

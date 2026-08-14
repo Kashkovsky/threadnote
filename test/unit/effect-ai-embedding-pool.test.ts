@@ -45,7 +45,7 @@ function embeddingHarness(options: {
   readonly cpuMathCores?: number;
   readonly gpu?: string | false;
   readonly gpuLayers?: number;
-  readonly poolSize: EmbeddingContextPoolSize;
+  readonly poolSize?: EmbeddingContextPoolSize;
 }) {
   const state: EmbeddingHarnessState = {
     contextCalls: [],
@@ -54,7 +54,7 @@ function embeddingHarness(options: {
     modelLoads: 0,
   };
   const layer = nodeLlamaCppEngineLayer({
-    embeddingContextPoolSize: options.poolSize,
+    ...(options.poolSize === undefined ? {} : {embeddingContextPoolSize: options.poolSize}),
     loadModule: () =>
       Promise.resolve({
         getLlama: () => {
@@ -124,7 +124,7 @@ function immediateContext(vector: (input: string) => readonly number[]): Embeddi
 }
 
 describe('native embedding context pool', () => {
-  it('defaults to one context and accepts only the benchmarked capacities', () => {
+  it('keeps the shared runtime serial by default and accepts only the benchmarked capacities', () => {
     expect(parseEmbeddingContextPoolSize(undefined)).toBe(1);
     expect(parseEmbeddingContextPoolSize('')).toBe(1);
     expect(parseEmbeddingContextPoolSize(' 4 ')).toBe(4);
@@ -154,6 +154,10 @@ describe('native embedding context pool', () => {
       contexts: 2,
       threadCounts: [2, 1],
     });
+    expect(nativeEmbeddingContextPlan({cpuMathCores: 6, modelGpuLayers: 0, requestedContexts: 8})).toEqual({
+      contexts: 4,
+      threadCounts: [2, 2, 1, 1],
+    });
     expect(nativeEmbeddingContextPlan({cpuMathCores: 8, modelGpuLayers: 1, requestedContexts: 8})).toEqual({
       contexts: 1,
       threadCounts: [undefined],
@@ -162,6 +166,108 @@ describe('native embedding context pool', () => {
       contexts: 1,
       threadCounts: [undefined],
     });
+  });
+
+  it.prop(
+    'uses every available CPU core without exceeding the configured context cap',
+    {
+      cpuMathCores: FC.integer({max: 128, min: 1}),
+      requestedContexts: FC.constantFrom<EmbeddingContextPoolSize>(1, 2, 4, 8),
+    },
+    ({cpuMathCores, requestedContexts}) => {
+      const plan = nativeEmbeddingContextPlan({cpuMathCores, modelGpuLayers: 0, requestedContexts});
+      const expectedContexts = ([8, 4, 2, 1] as const).find(
+        candidate => candidate <= cpuMathCores && candidate <= requestedContexts,
+      )!;
+      expect(plan.contexts).toBe(expectedContexts);
+      if (requestedContexts === 1) {
+        expect(plan.threadCounts).toEqual([undefined]);
+        return;
+      }
+      const threadCounts = plan.threadCounts.filter((threads): threads is number => threads !== undefined);
+      expect(threadCounts).toHaveLength(expectedContexts);
+      expect(threadCounts.reduce((total, threads) => total + threads, 0)).toBe(cpuMathCores);
+      expect(Math.max(...threadCounts) - Math.min(...threadCounts)).toBeLessThanOrEqual(1);
+    },
+  );
+
+  it.effect('uses the available CPU core budget when the graph session requests the benchmarked cap', () => {
+    const manifest = BUILTIN_MODEL_MANIFESTS.find(candidate => candidate.role === 'embedding')!;
+    const {layer, state} = embeddingHarness({
+      context: () => immediateContext(input => Array(manifest.dimensions).fill(input.length)),
+      cpuMathCores: 6,
+      gpuLayers: 0,
+    });
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const runtime = yield* LocalModelRuntime;
+        const vectors = yield* runtime.embedMany({
+          embeddingContextPoolSize: 8,
+          inputs: ['cpu'],
+          manifest,
+          modelPath: '/models/auto-cpu.gguf',
+        });
+        expect(vectors[0]).toHaveLength(manifest.dimensions);
+        expect(state.contextCalls.map(call => call.threads)).toEqual([2, 2, 1, 1]);
+        expect((yield* runtime.diagnostics).embeddingContextPlan).toEqual({
+          effectiveContexts: 4,
+          modelGpuLayers: 0,
+          requestedContexts: 8,
+          threadCounts: [2, 2, 1, 1],
+        });
+      }).pipe(provideTestLayer(localModelRuntimeLayer(layer))),
+    );
+  });
+
+  it.effect('lets an explicit serial runtime override supersede the graph session cap', () => {
+    const {layer, state} = embeddingHarness({
+      context: () => immediateContext(input => [input.length]),
+      gpuLayers: 0,
+      poolSize: 1,
+    });
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const engine = yield* LlamaCppEngine;
+        const session = yield* engine.loadEmbeddingSession({
+          dimensions: 1,
+          embeddingContextPoolSize: 8,
+          modelId: 'serial-override',
+          modelPath: '/models/serial.gguf',
+        });
+        expect(yield* session.embedMany(['serial'])).toEqual([[6]]);
+        expect(state.contextCalls.map(call => call.threads)).toEqual([undefined]);
+        expect(engine.diagnostics.embeddingContextPlan).toEqual({
+          effectiveContexts: 1,
+          modelGpuLayers: 0,
+          requestedContexts: 1,
+          threadCounts: [],
+        });
+      }).pipe(provideTestLayer(layer)),
+    );
+  });
+
+  it.effect('isolates and reuses default and graph-cap sessions while reporting the active plan', () => {
+    const manifest = BUILTIN_MODEL_MANIFESTS.find(candidate => candidate.role === 'embedding')!;
+    const {layer, state} = embeddingHarness({
+      context: () => immediateContext(input => Array(manifest.dimensions).fill(input.length)),
+      gpuLayers: 0,
+    });
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const runtime = yield* LocalModelRuntime;
+        const base = {inputs: ['input'], manifest, modelPath: '/models/cached-plans.gguf'} as const;
+        yield* runtime.embedMany(base);
+        expect((yield* runtime.diagnostics).embeddingContextPlan?.requestedContexts).toBe(1);
+        yield* runtime.embedMany({...base, embeddingContextPoolSize: 8});
+        expect((yield* runtime.diagnostics).embeddingContextPlan?.requestedContexts).toBe(8);
+        yield* runtime.embedMany(base);
+        expect((yield* runtime.diagnostics).embeddingContextPlan?.requestedContexts).toBe(1);
+        yield* runtime.embedMany({...base, embeddingContextPoolSize: 8});
+        expect((yield* runtime.diagnostics).embeddingContextPlan?.requestedContexts).toBe(8);
+        expect(state.modelLoads).toBe(2);
+        expect(state.contextCalls).toHaveLength(9);
+      }).pipe(provideTestLayer(localModelRuntimeLayer(layer))),
+    );
   });
 
   it.effect('runs distinct CPU contexts concurrently and preserves reverse-completion order', () => {
@@ -228,13 +334,13 @@ describe('native embedding context pool', () => {
       context: () => immediateContext(input => [input.length]),
       gpu: 'metal',
       gpuLayers: 1,
-      poolSize: 8,
     });
     return Effect.scoped(
       Effect.gen(function* () {
         const engine = yield* LlamaCppEngine;
         const session = yield* engine.loadEmbeddingSession({
           dimensions: 1,
+          embeddingContextPoolSize: 8,
           modelId: 'gpu-pool',
           modelPath: '/models/gpu.gguf',
         });
