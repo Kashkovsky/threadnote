@@ -8,7 +8,7 @@ import {afterEach, describe, expect, it} from 'vitest';
 import {captureConsole} from '../../src/effect/console.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {SystemInfo} from '../../src/effect/system.js';
-import {memoryProjectConsistencyCheck, runDoctor} from '../../src/lifecycle.js';
+import {memoryProjectConsistencyCheck, runDoctor, telemetryDoctorCheck} from '../../src/lifecycle.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import {runEffect} from '../helpers/effect-runtime.js';
 
@@ -111,6 +111,32 @@ describe('memoryProjectConsistencyCheck', () => {
 });
 
 describe('doctor report resilience', () => {
+  effectIt.effect('checks telemetry consent locally without creating state or contacting an endpoint', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-doctor-telemetry-'});
+        const config = {agentContextHome: home};
+
+        expect(yield* telemetryDoctorCheck(config)).toEqual({
+          detail: 'disabled; no telemetry is sent',
+          name: 'anonymous telemetry',
+          status: 'ok',
+        });
+        expect(yield* fs.exists(path.join(home, 'telemetry'))).toBe(false);
+
+        yield* fs.makeDirectory(path.join(home, 'telemetry'), {recursive: true});
+        yield* fs.writeFileString(path.join(home, 'telemetry', 'config.json'), '{invalid-json}\n');
+        expect(yield* telemetryDoctorCheck(config)).toEqual({
+          detail: 'invalid or unreadable configuration; telemetry fails closed',
+          name: 'anonymous telemetry',
+          status: 'warn',
+        });
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
   effectIt.effect('prints a complete fail-soft report when an individual check cannot read its state', () =>
     Effect.scoped(
       Effect.gen(function* () {

@@ -178,7 +178,41 @@ const trustDemotionCaseArbitrary = FC.record({
   trustedIndex: FC.integer({max: TRUSTED_LEVELS.length - 1, min: 0}),
 });
 
+const structuredIdentifierCaseArbitrary = FC.record({
+  component: FC.constantFrom('artifact', 'backup', 'cache', 'index', 'release', 'upload', 'worker'),
+  connector: FC.constantFrom('-', '‑', '–', '−'),
+  suffix: FC.integer({max: 999, min: 100}),
+});
+
 describe('recall ranking properties', () => {
+  it.prop(
+    'requires a structured identifier declaration before components contribute exact evidence',
+    {identifierCase: structuredIdentifierCaseArbitrary},
+    ({identifierCase}) => {
+      const identifier = `${identifierCase.component.toUpperCase()}${identifierCase.connector}TOKEN${identifierCase.connector}${identifierCase.suffix}`;
+      const candidate: RecallCandidate = {
+        exactTerms: [identifier],
+        fields: {
+          project: 'threadnote',
+          title: `${identifierCase.component} recovery instructions`,
+          topic: `${identifierCase.component}-recovery`,
+        },
+        semantic: 0.6,
+        text: `Body-only identifier: ${identifier}.`,
+        uri: 'threadnote://resources/external/body-only-identifier.md',
+      };
+      const query = `how does ${identifierCase.component} recovery work`;
+      const bodyOnly = rankRecallCandidates(query, [candidate]).results[0];
+      const declared = rankRecallCandidates(query, [
+        {...candidate, fields: {...candidate.fields, identifiers: [identifier]}},
+      ]).results[0];
+
+      expect(bodyOnly?.signals.exact).toBe(0);
+      expect(declared?.signals.exact).toBe(0.9);
+    },
+    {fastCheck: {numRuns: 75}},
+  );
+
   it.prop(
     'never lets an untrusted candidate outrank an otherwise identical trusted candidate',
     {demotionCase: trustDemotionCaseArbitrary},

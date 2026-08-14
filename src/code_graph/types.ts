@@ -336,6 +336,7 @@ export type CodeGraphProgress =
         readonly bytes: number;
         readonly classifier?: string;
         readonly degraded?: boolean;
+        readonly degradationReason?: import('./parser_worker.js').ParserWorkerFailureReason;
         readonly factsBytes?: number;
         readonly language: string;
         readonly parseMilliseconds?: number;

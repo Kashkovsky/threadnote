@@ -261,6 +261,7 @@ describe('CodeGraphWatcher', () => {
       const logger = Logger.make<unknown, void>(options => {
         logs.push(String(options.message));
       });
+      const observedFailures: unknown[] = [];
       const result = yield* Effect.scoped(
         Effect.gen(function* () {
           const starts = yield* Ref.make(0);
@@ -280,6 +281,12 @@ describe('CodeGraphWatcher', () => {
                   ),
                 ),
               ),
+            {
+              onRefreshFailure: failure => {
+                observedFailures.push(failure);
+                throw new TestError('private telemetry defect');
+              },
+            },
           );
 
           yield* watcher.ensure(options);
@@ -320,6 +327,9 @@ describe('CodeGraphWatcher', () => {
       expect(logs.join('\n')).not.toContain('/fixture/repository');
       expect(logs.join('\n')).not.toContain('/Users/private');
       expect(logs.join('\n')).not.toContain('private writer detail');
+      expect(observedFailures).toEqual([
+        {code: 'busy', operation: 'refresh code graph', recovery: 'defer', retryable: true},
+      ]);
     }),
   );
 

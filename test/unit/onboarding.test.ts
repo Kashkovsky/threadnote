@@ -45,6 +45,17 @@ describe('buildOnboardingGuide', () => {
     expect(guide).not.toContain('share_publish(');
   });
 
+  it('keeps the Cursor remote-hybrid local guide free of memory fallback', () => {
+    const guide = buildOnboardingGuide({seededProjects: [], teams: [], toolset: 'cursor-cloud-local'});
+    expect(guide).toContain('managed threadnote-memory HTTP server');
+    expect(guide).toContain('threadnote-share-id');
+    expect(guide).toContain('same share binding');
+    expect(guide).toContain('complete_cursor_attestation');
+    expect(guide).toContain('Never fall back');
+    expect(guide).not.toContain('remember_context(');
+    expect(guide).not.toContain('recall_context(');
+  });
+
   it('nudges first-time team setup when no team is configured', () => {
     const guide = buildOnboardingGuide({seededProjects: [], teams: []});
     expect(guide).toContain('No share team configured yet');

@@ -4,6 +4,7 @@ import {syncDirectoryBestEffort} from '../effect/file_durability.js';
 import {withExclusiveFileLock} from '../effect/file_lock.js';
 import {runtimeTextDirectoryNamePage, SystemInfo, type SystemInfoShape} from '../effect/system.js';
 import {
+  CODE_GRAPH_DIRECT_PERSISTENT_CAPACITY_OPERATIONS,
   codeGraphDiskCapacityFailure,
   codeGraphDiskCapacityReservationProjection,
   codeGraphUtf8ByteLength,
@@ -47,30 +48,9 @@ const RUNTIME_PLATFORMS = new Set<NodeJS.Platform>([
   'sunos',
   'win32',
 ]);
-const OPERATIONS = new Set<CodeGraphDirectPersistentCapacityOperation>([
-  'admit code graph vector retirement',
-  'cache code graph file facts',
-  'cache materialized code graph file shards',
-  'maintain code graph vector retirement',
-  'prepare code graph vector retirement schema',
-  'publish persistent code graph snapshot',
-  'promote ready code graph snapshot',
-  'register persistent code graph materialization plan',
-  'resolve persistent code graph reexport aliases',
-  'resolve persistent code graph references',
-  'retire code graph vector generation',
-  'retire code graph vector pointer',
-  'stage persistent code graph facts',
-  'stage persistent code graph inventory',
-  'stage persistent code graph workspace',
-  'prepare temporary incremental code graph activation',
-  'publish temporary code graph snapshot',
-  'resolve temporary code graph reexport aliases',
-  'resolve temporary code graph references',
-  'stage temporary code graph facts',
-  'stage temporary code graph inventory',
-  'stage temporary code graph workspace',
-]);
+const OPERATIONS = new Set<CodeGraphDirectPersistentCapacityOperation>(
+  CODE_GRAPH_DIRECT_PERSISTENT_CAPACITY_OPERATIONS,
+);
 // Recovery authority is local-process state for one exact immutable receipt.
 // Receipt paths include the ledger identity, so a copied token/canonical body
 // in another Threadnote home can never consume that authority.

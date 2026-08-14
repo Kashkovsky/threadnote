@@ -139,36 +139,34 @@ describe('standalone release workflows', () => {
     }),
   );
 
-  it.effect('prepares one checksum-verified model artifact for every native release runner', () =>
+  it.effect('embeds the checksum-pinned core model in every standalone executable', () =>
     Effect.gen(function* () {
       const workflow = yield* readProjectFile('.github/workflows/publish.yml');
       const ci = yield* readProjectFile('.github/workflows/ci.yml');
+      const asset = yield* readProjectFile('src/models/core-embedding-asset.ts');
+      const checker = yield* readProjectFile('scripts/check-embedded-core-model.ts');
+      const modelLicense = yield* readProjectFile('assets/models/licenses/bge-small-en-v1.5.LICENSE');
+      const packageManifest = JSON.parse(yield* readProjectFile('package.json')) as {
+        readonly scripts?: Readonly<Record<string, string>>;
+      };
       const model = BUILTIN_MODEL_MANIFESTS.find(candidate => candidate.id === CORE_EMBEDDING_MODEL_ID)!;
-      const fixtureDirectory =
-        '${{ runner.temp }}/threadnote-release-home/models/embedding/${{ env.E2E_EMBEDDING_MODEL_ID }}';
-      const fixturePath = `${fixtureDirectory}/` + '${{ env.E2E_EMBEDDING_MODEL_SHA256 }}.gguf';
 
-      for (const sharedModelContract of [
-        `E2E_EMBEDDING_MODEL_ID: ${model.id}`,
-        `E2E_EMBEDDING_MODEL_SHA256: ${model.sha256}`,
-        'key: threadnote-e2e-model-${{ env.E2E_EMBEDDING_MODEL_SHA256 }}',
-        'path: artifacts/e2e-model-home/models/embedding/${{ env.E2E_EMBEDDING_MODEL_ID }}',
-      ]) {
-        expect(ci).toContain(sharedModelContract);
-        expect(workflow).toContain(sharedModelContract);
+      expect(asset).toContain(`${model.sha256}.gguf`);
+      expect(asset).toContain("type: 'file'");
+      expect(checker).toContain('BUNDLED_CORE_EMBEDDING_MANIFEST.sha256');
+      expect(checker).toContain('BUNDLED_MODEL_LICENSE_SHA256');
+      expect(modelLicense).toContain('Copyright (c) 2022 staoxiao');
+      expect(modelLicense).toContain('The above copyright notice and this permission notice shall be included');
+      expect(packageManifest.scripts?.build).toMatch(/^bun scripts\/check-embedded-core-model\.ts && /);
+      expect(packageManifest.scripts?.['compile:targets']).toMatch(/^bun scripts\/check-embedded-core-model\.ts && /);
+      for (const content of [ci, workflow]) {
+        expect(content).not.toContain('THREADNOTE_E2E_MODEL_PATH');
+        expect(content).not.toContain('E2E_EMBEDDING_MODEL_SHA256');
       }
-      expect(workflow).toContain('prepare-release-model:');
-      expect(workflow).toContain('uses: actions/cache@v6');
-      expect(workflow).toContain("if: steps.release-model-cache.outputs.cache-hit != 'true'");
-      expect(workflow).toContain('models install ${{ env.E2E_EMBEDDING_MODEL_ID }}');
-      expect(workflow).toContain('models verify ${{ env.E2E_EMBEDDING_MODEL_ID }}');
-      expect(workflow).toContain('if-no-files-found: error');
-      expect(workflow.match(/name: release-core-embedding-model/g)).toHaveLength(4);
-      expect(workflow.match(/name: Download pinned release model/g)).toHaveLength(3);
-      expect(workflow.match(/needs: prepare-release-model/g)).toHaveLength(2);
-      expect(workflow).toContain('needs: [verify, prepare-release-model]');
-      expect(workflow.split(`path: ${fixtureDirectory}`).length - 1).toBe(3);
-      expect(workflow.split(`THREADNOTE_E2E_MODEL_PATH: ${fixturePath}`).length - 1).toBe(3);
+      expect(ci).not.toContain('prepare-e2e-model:');
+      expect(workflow).not.toContain('prepare-release-model:');
+      expect(workflow).not.toContain('name: Download pinned release model');
+      expect(workflow.match(/needs: verify/g)).toHaveLength(3);
       expect(workflow.match(/install --no-start/g)).toHaveLength(3);
       expect(workflow.match(/doctor --dry-run --strict/g)).toHaveLength(3);
     }),

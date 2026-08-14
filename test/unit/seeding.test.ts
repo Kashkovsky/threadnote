@@ -445,7 +445,7 @@ describe('runSeed', () => {
     }),
   );
 
-  effectIt.effect('redacts real macOS homes in every seeded text file without rejecting Windows path conventions', () =>
+  effectIt.effect('redacts macOS, Git-Bash, WSL, and Windows local paths in seeded text', () =>
     Effect.gen(function* () {
       const contextHome = yield* Effect.promise(() => mkdtemp(join(tmpdir(), 'threadnote-seed-context-')));
       const repo = yield* Effect.promise(() => mkdtemp(join(tmpdir(), 'threadnote-seed-repo-')));
@@ -492,10 +492,15 @@ describe('runSeed', () => {
       );
 
       expect(output).not.toContain('SKIP');
-      expect(seeded).toContain('Local checkout: <local-path>');
-      expect(seeded).toContain('/c/Users/jane/work/project');
-      expect(seeded).toContain('/mnt/c/Users/jane/work/project');
-      expect(seeded).toContain('C:/Users/jane/work/project');
+      expect(seeded).toBe(
+        [
+          'Local checkout: <local-path>',
+          'Git-Bash commands use <local-path>',
+          'WSL commands use <local-path>',
+          'Windows tools use <local-path>',
+          '',
+        ].join('\n'),
+      );
     }),
   );
 

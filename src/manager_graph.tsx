@@ -35,6 +35,7 @@ export {
   managerGraphDebouncedQueryCandidate,
   managerGraphQueryCandidate,
   mergeGraphRepositoryGroups,
+  orderGraphBuildStatuses,
   resolveGraphSelection,
   type GraphAdministrationAction,
   type GraphAdministrationJobSelection,

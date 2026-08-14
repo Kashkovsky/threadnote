@@ -82,7 +82,7 @@ const questions = [
   {
     question: 'Is Threadnote a hosted memory service?',
     answer:
-      'No. Threadnote 4 is a standalone local runtime. Canonical Markdown, models, SQLite indexes, graph snapshots, and share metadata live under ~/.threadnote. A network boundary is crossed only for explicit operations such as downloading a verified release or model, syncing a configured team share, or submitting an approved issue.',
+      'No. Threadnote 4 is a standalone local runtime. Canonical Markdown, models, SQLite indexes, graph snapshots, and share metadata live under ~/.threadnote. A network boundary is crossed only for explicit operations such as downloading a verified release or model, syncing a configured team share, submitting an approved issue, or after explicitly enabling anonymous operational telemetry.',
   },
   {
     question: 'Does Threadnote send prompts or memory to an AI provider?',

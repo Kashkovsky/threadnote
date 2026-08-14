@@ -35,6 +35,31 @@ export type CodeGraphDirectPersistentCapacityOperation =
   | 'stage temporary code graph inventory'
   | 'stage temporary code graph workspace';
 
+export const CODE_GRAPH_DIRECT_PERSISTENT_CAPACITY_OPERATIONS = [
+  'admit code graph vector retirement',
+  'cache code graph file facts',
+  'cache materialized code graph file shards',
+  'prepare code graph vector retirement schema',
+  'maintain code graph vector retirement',
+  'publish persistent code graph snapshot',
+  'promote ready code graph snapshot',
+  'register persistent code graph materialization plan',
+  'resolve persistent code graph reexport aliases',
+  'resolve persistent code graph references',
+  'retire code graph vector generation',
+  'retire code graph vector pointer',
+  'stage persistent code graph facts',
+  'stage persistent code graph inventory',
+  'stage persistent code graph workspace',
+  'prepare temporary incremental code graph activation',
+  'publish temporary code graph snapshot',
+  'resolve temporary code graph reexport aliases',
+  'resolve temporary code graph references',
+  'stage temporary code graph facts',
+  'stage temporary code graph inventory',
+  'stage temporary code graph workspace',
+] as const satisfies readonly CodeGraphDirectPersistentCapacityOperation[];
+
 type CodeGraphCapacityFailureOperation = CodeGraphDirectPersistentCapacityOperation | 'protect code graph storage';
 
 export interface CodeGraphDirectPersistentCapacityBoundary {

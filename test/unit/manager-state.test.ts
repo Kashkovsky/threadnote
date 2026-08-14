@@ -1,6 +1,7 @@
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import {managerUpdateAvailable} from '../../src/manager_state.js';
+import {managerUpdateIndicator} from '../../src/manager_update_indicator.js';
 
 describe('Manager runtime state', () => {
   it.each([
@@ -30,5 +31,41 @@ describe('Manager runtime state', () => {
         expect(managerUpdateAvailable(currentVersion, latestVersion)).toBe(expected);
       }),
     );
+  });
+
+  it.each([
+    {
+      autoUpdate: {
+        effectivePolicy: 'automatic' as const,
+        lastSuccess: {repairRequired: true, toVersion: '4.3.0'},
+        running: {fromVersion: '4.2.2'},
+      },
+      expected: {detail: 'from v4.2.2', label: 'Updating in background'},
+      latestVersion: '4.3.0',
+      updateAvailable: true,
+    },
+    {
+      autoUpdate: {
+        effectivePolicy: 'automatic' as const,
+        lastSuccess: {repairRequired: true, toVersion: '4.3.0'},
+      },
+      expected: {detail: 'v4.3.0', label: 'Update needs attention'},
+      latestVersion: '4.3.0',
+      updateAvailable: true,
+    },
+    {
+      autoUpdate: {effectivePolicy: 'automatic' as const},
+      expected: {detail: 'v4.3.0', label: 'Update queued'},
+      latestVersion: '4.3.0',
+      updateAvailable: true,
+    },
+    {
+      autoUpdate: {effectivePolicy: 'notify' as const},
+      expected: {detail: 'v4.3.0', label: 'Update available'},
+      latestVersion: '4.3.0',
+      updateAvailable: true,
+    },
+  ])('selects the highest-priority update indicator', state => {
+    expect(managerUpdateIndicator(state)).toEqual(state.expected);
   });
 });

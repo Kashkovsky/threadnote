@@ -40,6 +40,7 @@ if (ciLongRunningGroupName && !ciLongRunningGroup) {
 const ciLongRunningTests = [...new Set(Object.values(ciLongRunningTestGroups).flat())];
 
 export default defineConfig({
+  assetsInclude: ['**/*.gguf'],
   test: {
     // Test files use isolated Threadnote homes, so the production home-scoped
     // parser-slot locks cannot bound child processes across Vitest workers.

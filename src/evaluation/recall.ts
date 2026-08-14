@@ -180,7 +180,7 @@ const RecallCandidateSchema = Schema.Struct({
   relations: Schema.optionalKey(Schema.Array(RecallRelationSchema)),
   reranker: Schema.optionalKey(Schema.Finite),
   semantic: Schema.optionalKey(Schema.Finite),
-  status: Schema.optionalKey(Schema.Literals(['active', 'archived', 'superseded'])),
+  status: Schema.optionalKey(Schema.Literals(['active', 'archived', 'expired', 'superseded'])),
   text: NonEmptyString,
   timestamp: Schema.optionalKey(NonEmptyString),
   trust: Schema.optionalKey(Schema.Literals(['approved', 'inferred', 'untrusted'])),

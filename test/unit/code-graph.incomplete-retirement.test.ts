@@ -1,9 +1,13 @@
+import {it as effectIt} from '@effect/vitest';
 import {Database} from 'bun:sqlite';
 import {afterEach, describe, expect, it} from 'vitest';
 import {Deferred, Effect, Fiber, Ref} from 'effect';
+import {TestClock} from 'effect/testing';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
 import type {CodeGraphSnapshot, RepositoryIdentity} from '../../src/code_graph/types.js';
+import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {claimPersistentBuildForTest} from '../helpers/code-graph-build.js';
+import {provideTestLayer} from '../helpers/effect-layer.js';
 import {join, mkdtemp, rm} from '../helpers/effect-filesystem.js';
 import {runEffect} from '../helpers/effect-runtime.js';
 
@@ -272,64 +276,62 @@ describe('code graph incomplete snapshot retirement', () => {
     }
   }, 15_000);
 
-  it('defers repository-sized physical cleanup after one bounded retirement transaction', async () => {
-    const root = await mkdtemp('threadnote-incomplete-deferred-reclaim-');
-    temporaryRoots.push(root);
-    const databasePath = join(root, 'graph-v3.sqlite');
-    const writerLockPath = join(root, 'checkout-writer.lock');
-    const identity = repositoryIdentity(root, 'repository-a', 'worktree-a');
-    const stale = buildingSnapshot(identity, 'stale-deferred');
+  effectIt.effect(
+    'defers repository-sized physical cleanup after one bounded retirement transaction',
+    () =>
+      Effect.acquireUseRelease(
+        Effect.promise(() => mkdtemp('threadnote-incomplete-deferred-reclaim-')),
+        root =>
+          Effect.gen(function* () {
+            const databasePath = join(root, 'graph-v3.sqlite');
+            const writerLockPath = join(root, 'checkout-writer.lock');
+            const identity = repositoryIdentity(root, 'repository-a', 'worktree-a');
+            const stale = buildingSnapshot(identity, 'stale-deferred');
+            const store = yield* CodeGraphStore;
+            yield* store.initialize(databasePath);
+            yield* claimPersistentBuildForTest(store, databasePath, identity, stale);
+            yield* Effect.sync(() => seedLargeInterruptedBuild(databasePath, stale.id, false));
 
-    await runEffect(
-      Effect.gen(function* () {
-        const store = yield* CodeGraphStore;
-        yield* store.initialize(databasePath);
-        yield* claimPersistentBuildForTest(store, databasePath, identity, stale);
-      }),
-    );
-    seedLargeInterruptedBuild(databasePath, stale.id, false);
+            const retirementAcquisitions = yield* Ref.make(0);
+            const retired = yield* store.withSession(
+              databasePath,
+              store.retireIncompleteWorktreeSnapshots(
+                databasePath,
+                identity.repositoryId,
+                identity.worktreeId,
+                new Set(),
+                undefined,
+                {cleanupMode: 'deferred'},
+              ),
+              {
+                onWriterAcquired: () => Ref.update(retirementAcquisitions, count => count + 1),
+                writerLockPath,
+              },
+            );
+            const retainedRows = yield* Effect.sync(() => interruptedRowCount(databasePath, stale.id));
+            yield* store.withSession(databasePath, store.pruneRetiredSnapshots(databasePath), {writerLockPath});
+            const result = {
+              acquisitions: yield* Ref.get(retirementAcquisitions),
+              retainedRows,
+              retired,
+            };
 
-    const result = await runEffect(
-      Effect.gen(function* () {
-        const store = yield* CodeGraphStore;
-        const retirementAcquisitions = yield* Ref.make(0);
-        const retired = yield* store.withSession(
-          databasePath,
-          store.retireIncompleteWorktreeSnapshots(
-            databasePath,
-            identity.repositoryId,
-            identity.worktreeId,
-            new Set(),
-            undefined,
-            {cleanupMode: 'deferred'},
-          ),
-          {
-            onWriterAcquired: () => Ref.update(retirementAcquisitions, count => count + 1),
-            writerLockPath,
-          },
-        );
-        const retainedRows = yield* Effect.sync(() => interruptedRowCount(databasePath, stale.id));
-        yield* store.pruneRetiredSnapshots(databasePath);
-        return {
-          acquisitions: yield* Ref.get(retirementAcquisitions),
-          retainedRows,
-          retired,
-        };
-      }),
-    );
-
-    expect(result.acquisitions).toBe(2);
-    expect(result.retainedRows).toBeGreaterThan(0);
-    expect(result.retainedRows).toBeLessThan(13_500);
-    expect(result.retired).toBe(1);
-    const database = new Database(databasePath, {readonly: true});
-    try {
-      expect(database.query('SELECT state FROM snapshots WHERE id = ?').get(stale.id)).toBeNull();
-      expect(database.query('PRAGMA foreign_key_check').all()).toEqual([]);
-    } finally {
-      database.close();
-    }
-  }, 15_000);
+            expect(result.acquisitions).toBe(2);
+            expect(result.retainedRows).toBeGreaterThan(0);
+            expect(result.retainedRows).toBeLessThan(13_500);
+            expect(result.retired).toBe(1);
+            const database = new Database(databasePath, {readonly: true});
+            try {
+              expect(database.query('SELECT state FROM snapshots WHERE id = ?').get(stale.id)).toBeNull();
+              expect(database.query('PRAGMA foreign_key_check').all()).toEqual([]);
+            } finally {
+              database.close();
+            }
+          }),
+        root => Effect.promise(() => rm(root, {force: true, recursive: true})),
+      ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+    15_000,
+  );
 
   it('never reclaims another worktree from PID, age, or failed-state hints alone', async () => {
     const root = await mkdtemp('threadnote-incomplete-orphan-reclaim-');

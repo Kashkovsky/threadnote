@@ -1,9 +1,16 @@
 import type {CallToolResult} from '@modelcontextprotocol/sdk/types.js';
 import {Clock, Effect} from 'effect';
 import type {ProjectManifest, ResolvedWorkset} from './types.js';
-import {formatStaleVersionNotice, exactMemoryScopeUris, exactRecallScopeIntents, trimTrailingSlash} from './utils.js';
+import {
+  errorMessage,
+  formatStaleVersionNotice,
+  exactMemoryScopeUris,
+  exactRecallScopeIntents,
+  trimTrailingSlash,
+} from './utils.js';
 import {activeInstalledVersion} from './installations.js';
 import {parseResourceId} from './storage/resource-id.js';
+import {attachAnonymousTelemetryDiagnostic, attachAnonymousTelemetryError} from './telemetry/diagnostic.js';
 export interface RuntimeConfig {
   readonly account: string;
   readonly agentContextHome: string;
@@ -288,7 +295,18 @@ export function requiredResourceUriList(
 }
 
 export function argumentError(text: string): CallToolResult {
-  return {content: [{type: 'text', text}], isError: true};
+  return attachAnonymousTelemetryDiagnostic(
+    {content: [{type: 'text', text}], isError: true},
+    {errorType: 'McpArgumentError'},
+  );
+}
+
+/** User-facing MCP failure plus a non-enumerable, privacy-safe diagnostic. */
+export function mcpErrorResult(error: unknown): CallToolResult {
+  return attachAnonymousTelemetryError(
+    {content: [{type: 'text' as const, text: errorMessage(error)}], isError: true},
+    error,
+  );
 }
 
 export function setMcpStartupVersion(version: string | undefined): void {

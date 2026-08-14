@@ -66,6 +66,7 @@ import {loadRecallExactMatches} from './recall/index.js';
 import {RECALL_RANKER_VERSION} from './recall/rank.js';
 import {syncObsidianSourcesBeforeRecall} from './obsidian_source.js';
 import {withProductionPhaseTiming} from './effect/production_log.js';
+import {withAnonymousTelemetryPhase} from './effect/telemetry.js';
 import {
   buildRecallIndexSelectionCandidates,
   buildRecallSelectionCandidates,
@@ -84,6 +85,7 @@ import {
   type RuntimeConfig,
   argumentError,
   exactMemoryScopes,
+  mcpErrorResult,
   normalizeOptionalMetadata,
   optionalResourceUri,
   optionalResourceUriList,
@@ -211,11 +213,7 @@ export function registerCandidateMemoryTools(server: EffectMcpServerAdapter, con
         const review = yield* buildCandidateReview(closeout.input, existing, now);
         yield* saveCandidateReview(config.agentContextHome, review);
         return candidateReviewResult(review);
-      }).pipe(
-        Effect.catch(error =>
-          Effect.succeed({content: [{type: 'text' as const, text: errorMessage(error)}], isError: true}),
-        ),
-      );
+      }).pipe(Effect.catch(error => Effect.succeed(mcpErrorResult(error))));
     },
   );
 
@@ -619,11 +617,7 @@ export function registerCandidateMemoryTools(server: EffectMcpServerAdapter, con
             },
           };
         }),
-      ).pipe(
-        Effect.catch(error =>
-          Effect.succeed({content: [{type: 'text' as const, text: errorMessage(error)}], isError: true}),
-        ),
-      );
+      ).pipe(Effect.catch(error => Effect.succeed(mcpErrorResult(error))));
     },
   );
 }
@@ -692,9 +686,7 @@ export function registerSearchTool(
         memoryScope,
       ).pipe(
         Effect.flatMap(withStaleVersionNotice),
-        Effect.catch(error =>
-          Effect.succeed({content: [{type: 'text' as const, text: errorMessage(error)}], isError: true}),
-        ),
+        Effect.catch(error => Effect.succeed(mcpErrorResult(error))),
       );
     },
   );
@@ -731,13 +723,16 @@ function runRecallTool(
     const syncedTeams = yield* withMcpProgressHeartbeat(
       progress,
       RECALL_MCP_PROGRESS.sharedSync,
-      withProductionPhaseTiming(
+      withAnonymousTelemetryPhase(
         'recall.shared-sync',
-        progressTiming.sharedSyncDelayMilliseconds === 0
-          ? syncSharedReposBeforeAgentRead(config, memoryScope?.team)
-          : Effect.sleep(progressTiming.sharedSyncDelayMilliseconds).pipe(
-              Effect.andThen(syncSharedReposBeforeAgentRead(config, memoryScope?.team)),
-            ),
+        withProductionPhaseTiming(
+          'recall.shared-sync',
+          progressTiming.sharedSyncDelayMilliseconds === 0
+            ? syncSharedReposBeforeAgentRead(config, memoryScope?.team)
+            : Effect.sleep(progressTiming.sharedSyncDelayMilliseconds).pipe(
+                Effect.andThen(syncSharedReposBeforeAgentRead(config, memoryScope?.team)),
+              ),
+        ),
       ),
       progressTiming.heartbeatMilliseconds,
     ).pipe(
@@ -756,7 +751,10 @@ function runRecallTool(
       : yield* withMcpProgressHeartbeat(
           progress,
           RECALL_MCP_PROGRESS.obsidianSync,
-          withProductionPhaseTiming('recall.obsidian-sync', syncObsidianSourcesBeforeRecall(config)),
+          withAnonymousTelemetryPhase(
+            'recall.obsidian-sync',
+            withProductionPhaseTiming('recall.obsidian-sync', syncObsidianSourcesBeforeRecall(config)),
+          ),
           progressTiming.heartbeatMilliseconds,
         ).pipe(
           Effect.map(syncResult => {
@@ -844,9 +842,20 @@ function runRecallTool(
     const semanticRetrieval = yield* withMcpProgressHeartbeat(
       progress,
       RECALL_MCP_PROGRESS.semanticRetrieval,
-      withProductionPhaseTiming(
+      withAnonymousTelemetryPhase(
         'recall.semantic-retrieval',
-        loadMcpRecallSemanticScoresResult(config, query, recallLimit),
+        withProductionPhaseTiming(
+          'recall.semantic-retrieval',
+          loadMcpRecallSemanticScoresResult(config, query, recallLimit),
+          result =>
+            result.status === 'available'
+              ? 'success'
+              : result.status === 'unavailable'
+                ? 'unavailable'
+                : result.status === 'timed-out'
+                  ? 'timed-out'
+                  : 'failure',
+        ),
         result =>
           result.status === 'available'
             ? 'success'
@@ -871,33 +880,36 @@ function runRecallTool(
       withMcpProgressHeartbeat(
         progress,
         RECALL_MCP_PROGRESS.lexicalRanking,
-        withProductionPhaseTiming(
+        withAnonymousTelemetryPhase(
           'recall.lexical-ranking',
-          Effect.gen(function* () {
-            const prepared = yield* prepareRecallSections(config, {
-              allowExactRescue: params.threshold === undefined,
-              allowedUriScopes: params.pinnedUri ? [params.pinnedUri] : undefined,
-              candidateUris,
-              exactMatches,
-              feedbackQuery: params.query,
-              includeInactive: params.includeArchived,
-              limit: recallLimit,
-              minimumScore: hybridMinimumScore,
-              passes,
-              preferredUriScopes: params.pinnedUri ? undefined : [...scopedRecallUris],
-              project: recallProjectName,
-              query,
-              queryVariants: expansionQueries,
-              readRecords: uris => readMemoryRecordsByUri(config, uris),
-              rerankerCache,
-              seedUris: [params.pinnedUri, seededUri].filter((uri): uri is string => uri !== undefined),
-              semanticGenerationMismatchPolicy: 'fallback',
-              semanticResult: Option.some(semanticResult),
-            });
-            semanticResult = prepared.semanticResult;
-            appendSemanticWarning(semanticResult);
-            return prepared;
-          }),
+          withProductionPhaseTiming(
+            'recall.lexical-ranking',
+            Effect.gen(function* () {
+              const prepared = yield* prepareRecallSections(config, {
+                allowExactRescue: params.threshold === undefined,
+                allowedUriScopes: params.pinnedUri ? [params.pinnedUri] : undefined,
+                candidateUris,
+                exactMatches,
+                feedbackQuery: params.query,
+                includeInactive: params.includeArchived,
+                limit: recallLimit,
+                minimumScore: hybridMinimumScore,
+                passes,
+                preferredUriScopes: params.pinnedUri ? undefined : [...scopedRecallUris],
+                project: recallProjectName,
+                query,
+                queryVariants: expansionQueries,
+                readRecords: uris => readMemoryRecordsByUri(config, uris),
+                rerankerCache,
+                seedUris: [params.pinnedUri, seededUri].filter((uri): uri is string => uri !== undefined),
+                semanticGenerationMismatchPolicy: 'fallback',
+                semanticResult: Option.some(semanticResult),
+              });
+              semanticResult = prepared.semanticResult;
+              appendSemanticWarning(semanticResult);
+              return prepared;
+            }),
+          ),
         ),
         progressTiming.heartbeatMilliseconds,
       );
@@ -1247,7 +1259,7 @@ export function registerStoreTool(
         ),
         text: McpInput.string('Required memory text to store'),
         sourceAgentClient: McpInput.string('Originating client, for example cursor, copilot, codex, or claude'),
-        status: McpInput.literals(['active', 'archived', 'superseded'], 'Memory lifecycle status'),
+        status: McpInput.literals(['active', 'archived', 'expired', 'superseded'], 'Memory status'),
         topic: McpInput.string('Stable topic; active project/topic memories update one file'),
       },
     },
@@ -1638,11 +1650,7 @@ export function registerRecallFeedbackTool(server: EffectMcpServerAdapter, confi
             },
           ],
         };
-      }).pipe(
-        Effect.catch(error =>
-          Effect.succeed({content: [{type: 'text' as const, text: errorMessage(error)}], isError: true}),
-        ),
-      );
+      }).pipe(Effect.catch(error => Effect.succeed(mcpErrorResult(error))));
     },
   );
 }
@@ -1718,11 +1726,7 @@ export function registerArchiveTool(
             },
           ],
         };
-      }).pipe(
-        Effect.catch(error =>
-          Effect.succeed({content: [{type: 'text' as const, text: errorMessage(error)}], isError: true}),
-        ),
-      );
+      }).pipe(Effect.catch(error => Effect.succeed(mcpErrorResult(error))));
     },
   );
 }

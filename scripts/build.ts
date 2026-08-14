@@ -12,6 +12,7 @@ interface PackageManifest {
 
 const ROOT_URL = new URL('..', import.meta.url);
 const RELEASE_DIRECTORIES = ['assets', 'config', 'cursor-plugin', 'manager'] as const;
+const REMOTE_MEMORY_MIGRATION_DIRECTORY = 'remote-memory/migrations';
 const FORBIDDEN_RELEASE_DIRECTORIES = ['docs', 'training', 'website', 'site-dist'] as const;
 const RELEASE_FILES = ['.threadnoteignore', 'LICENSE', 'THIRD_PARTY.md'] as const;
 const NATIVE_RUNTIME_PACKAGE = 'node-llama-cpp';
@@ -54,6 +55,11 @@ const build = Effect.gen(function* () {
   for (const directory of RELEASE_DIRECTORIES) {
     yield* fs.copy(path.join(root, directory), path.join(outputRoot, directory), {overwrite: true});
   }
+  yield* fs.copy(
+    path.join(root, 'src', 'remote_memory', 'migrations'),
+    path.join(outputRoot, REMOTE_MEMORY_MIGRATION_DIRECTORY),
+    {overwrite: true},
+  );
   yield* stageCodeGraphPackageAssets(fs, path, root, outputRoot);
   for (const file of RELEASE_FILES) {
     yield* fs.copyFile(path.join(root, file), path.join(outputRoot, file));

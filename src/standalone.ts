@@ -1,7 +1,8 @@
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import * as BunServices from '@effect/platform-bun/BunServices';
-import {Effect, Layer, Runtime} from 'effect';
+import {Console, Effect, Layer, Runtime} from 'effect';
 import {withCliOutputConsole} from './effect/cli_output.js';
+import {fromPromiseInterruptibleAwaiting} from './effect/errors.js';
 import {
   CODE_GRAPH_COMPACTION_WORKER_ARGUMENT,
   CODE_GRAPH_DEEP_DIAGNOSTICS_WORKER_ARGUMENT,
@@ -18,6 +19,8 @@ const isCodeGraphCompactionWorker = arguments_[0] === CODE_GRAPH_COMPACTION_WORK
 const isCodeGraphDeepDiagnosticsWorker = arguments_[0] === CODE_GRAPH_DEEP_DIAGNOSTICS_WORKER_ARGUMENT;
 const isGitWorktreeRegistrationWorker = arguments_[0] === CODE_GRAPH_GIT_WORKTREE_REGISTRATION_WORKER_ARGUMENT;
 const isMcpBroker = arguments_[0] === 'mcp-broker';
+const isRemoteMemoryOperator = arguments_[0] === 'remote-memory-operator';
+const isRemoteMemoryService = arguments_[0] === 'remote-memory-service';
 const isMcpServer = executableName?.startsWith('threadnote-mcp-server') === true || arguments_[0] === 'mcp-server';
 const runSignalTransparentMain = Runtime.makeRunMain(({fiber, teardown}) => {
   fiber.addObserver(exit => {
@@ -37,13 +40,17 @@ if (isCodeGraphDeepDiagnosticsWorker || isCodeGraphCompactionWorker) {
     {disableErrorReporting: true},
   );
 } else {
-  const program: Effect.Effect<void, unknown, never> = isLocalModelWorker
-    ? await localModelWorkerProgram(arguments_)
-    : isCodeGraphParserWorker
-      ? await codeGraphParserWorkerProgram(arguments_)
-      : isGitWorktreeRegistrationWorker
-        ? await gitWorktreeRegistrationWorkerProgram()
-        : await applicationProgram(arguments_, isMcpServer, isMcpBroker);
+  const program: Effect.Effect<void, unknown, never> = isRemoteMemoryService
+    ? await remoteMemoryServiceProgram()
+    : isRemoteMemoryOperator
+      ? await remoteMemoryOperatorProgram(arguments_.slice(1))
+      : isLocalModelWorker
+        ? await localModelWorkerProgram(arguments_)
+        : isCodeGraphParserWorker
+          ? await codeGraphParserWorkerProgram(arguments_)
+          : isGitWorktreeRegistrationWorker
+            ? await gitWorktreeRegistrationWorkerProgram()
+            : await applicationProgram(arguments_, isMcpServer, isMcpBroker);
 
   BunRuntime.runMain(program, {
     disableErrorReporting:
@@ -52,6 +59,67 @@ if (isCodeGraphDeepDiagnosticsWorker || isCodeGraphCompactionWorker) {
       isGitWorktreeRegistrationWorker ||
       (!isMcpServer && !isMcpBroker),
   });
+}
+
+async function remoteMemoryOperatorProgram(arguments_: readonly string[]) {
+  const operator = await import('./remote_memory/operator_main.js');
+  return operator.runRemoteMemoryOperator(arguments_, process.env).pipe(
+    Effect.flatMap(code =>
+      Effect.sync(() => {
+        process.exitCode = code;
+      }),
+    ),
+    Effect.provide(BunServices.layer),
+  );
+}
+
+async function remoteMemoryServiceProgram() {
+  const service = await import('./remote_memory/main.js');
+  return Console.consoleWith(output =>
+    fromPromiseInterruptibleAwaiting(
+      signal =>
+        service.runRemoteMemoryService(process.env, {
+          error: message => output.error(message),
+          shutdownSignal: () => remoteMemoryShutdownSignal(signal),
+        }),
+      cause => cause,
+    ).pipe(
+      Effect.catch(cause =>
+        Console.error(`Remote memory service failed: ${service.remoteMemoryFailureClass(cause)}.`).pipe(
+          Effect.tap(() =>
+            Effect.sync(() => {
+              process.exitCode = 1;
+            }),
+          ),
+        ),
+      ),
+    ),
+  );
+}
+
+function remoteMemoryShutdownSignal(effectSignal: AbortSignal): {
+  readonly dispose: () => void;
+  readonly promise: Promise<string>;
+} {
+  let resolveSignal: ((signal: string) => void) | undefined;
+  const promise = new Promise<string>(resolve => {
+    resolveSignal = resolve;
+  });
+  const onAbort = () => resolveSignal?.('runtime interruption');
+  const onSigint = () => resolveSignal?.('SIGINT');
+  const onSigterm = () => resolveSignal?.('SIGTERM');
+  effectSignal.addEventListener('abort', onAbort, {once: true});
+  process.once('SIGINT', onSigint);
+  process.once('SIGTERM', onSigterm);
+  if (effectSignal.aborted) onAbort();
+  return {
+    dispose: () => {
+      effectSignal.removeEventListener('abort', onAbort);
+      process.removeListener('SIGINT', onSigint);
+      process.removeListener('SIGTERM', onSigterm);
+    },
+    promise,
+  };
 }
 
 async function codeGraphDeepDiagnosticsWorkerProgram() {
@@ -173,15 +241,17 @@ async function applicationProgram(arguments_: readonly string[], isMcpServer: bo
     const processHome = normalizedProcessHome(arguments_, processDiagnostics.threadnoteHomeForProcess);
     return processHome.pipe(
       Effect.flatMap(home =>
-        processLease.withStandaloneProcessLease(
-          processDiagnostics.withThreadnoteProcessRegistration(
-            home,
-            'mcp-broker',
-            Effect.scoped(mcpBrokerEffect),
-            'mcp-broker',
-          ),
-          {retirementPolicy: 'preserve-session'},
-        ),
+        processLease
+          .withStandaloneProcessLease(
+            processDiagnostics.withThreadnoteProcessRegistration(
+              home,
+              'mcp-broker',
+              Effect.scoped(mcpBrokerEffect),
+              'mcp-broker',
+            ),
+            {retirementPolicy: 'preserve-session'},
+          )
+          .pipe(Effect.provide(runtime.standaloneBrokerLayerForHome(home))),
       ),
       Effect.provide(runtime.StandaloneBrokerLayer),
     );
@@ -191,16 +261,18 @@ async function applicationProgram(arguments_: readonly string[], isMcpServer: bo
     const processHome = normalizedProcessHome(arguments_, processDiagnostics.threadnoteHomeForProcess);
     return processHome.pipe(
       Effect.flatMap(home =>
-        processLease.withStandaloneProcessLease(
-          processDiagnostics.withThreadnoteProcessRegistration(
-            home,
-            'mcp',
-            Effect.scoped(mcpServerEffect),
-            'mcp-server',
-          ),
-        ),
+        processLease
+          .withStandaloneProcessLease(
+            processDiagnostics.withThreadnoteProcessRegistration(
+              home,
+              'mcp',
+              Effect.scoped(mcpServerEffect),
+              'mcp-server',
+            ),
+          )
+          .pipe(Effect.provide(runtime.applicationLayerForHome(home, 'mcp'))),
       ),
-      Effect.provide(runtime.ApplicationLayer),
+      Effect.provide(runtime.StandaloneBrokerLayer),
     );
   }
 
@@ -214,16 +286,18 @@ async function applicationProgram(arguments_: readonly string[], isMcpServer: bo
   const processHome = normalizedProcessHome(arguments_, processDiagnostics.threadnoteHomeForProcess);
   return processHome.pipe(
     Effect.flatMap(home =>
-      processLease.withStandaloneProcessLease(
-        processDiagnostics.withThreadnoteProcessRegistration(
-          home,
-          processRole,
-          withCliOutputConsole(cliEffect(arguments_)),
-          processOperation,
-        ),
-      ),
+      processLease
+        .withStandaloneProcessLease(
+          processDiagnostics.withThreadnoteProcessRegistration(
+            home,
+            processRole,
+            withCliOutputConsole(cliEffect(arguments_)),
+            processOperation,
+          ),
+        )
+        .pipe(Effect.provide(runtime.applicationLayerForHome(home, 'cli'))),
     ),
-    Effect.provide(runtime.ApplicationLayer),
+    Effect.provide(runtime.StandaloneBrokerLayer),
   );
 }
 

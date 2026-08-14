@@ -301,7 +301,9 @@ function parseMemoryKind(value: string | undefined): MemoryKind | undefined {
 }
 
 function parseMemoryStatus(value: string | undefined): MemoryStatus | undefined {
-  return value === 'active' || value === 'archived' || value === 'superseded' ? value : undefined;
+  return value === 'active' || value === 'archived' || value === 'expired' || value === 'superseded'
+    ? value
+    : undefined;
 }
 
 function parseMemoryAuthority(value: string | undefined): MemoryAuthority | undefined {

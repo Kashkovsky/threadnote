@@ -751,7 +751,8 @@ function phaseTimingFromExit<A, E>(
   };
 }
 
-function diagnosticErrorType(error: unknown, depth = 0): string {
+/** Privacy-safe bounded failure type shared by local and anonymous diagnostics. */
+export function diagnosticErrorType(error: unknown, depth = 0): string {
   if (
     depth < PRODUCTION_LOG_ERROR_CAUSE_MAX_DEPTH &&
     typeof error === 'object' &&

@@ -65,7 +65,9 @@ export function memoryKind(value: unknown): MemoryKind | undefined {
 }
 
 export function memoryStatus(value: unknown): MemoryStatus | undefined {
-  return value === 'active' || value === 'archived' || value === 'superseded' ? value : undefined;
+  return value === 'active' || value === 'archived' || value === 'expired' || value === 'superseded'
+    ? value
+    : undefined;
 }
 
 export function consolidationAgent(value: string): ConsolidationAgent {

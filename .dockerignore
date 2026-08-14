@@ -1,0 +1,24 @@
+# The Fly build context is intentionally limited to the telemetry gateway.
+# Do not upload source, local state, credentials, databases, or Git metadata.
+**
+!infra/
+!infra/telemetry-gateway/
+!infra/telemetry-gateway/cmd/
+!infra/telemetry-gateway/cmd/budget/
+!infra/telemetry-gateway/cmd/budget/main.go
+!infra/telemetry-gateway/cmd/budget/main_test.go
+!infra/telemetry-gateway/cmd/canary/
+!infra/telemetry-gateway/cmd/canary/main.go
+!infra/telemetry-gateway/cmd/canary/main_test.go
+!infra/telemetry-gateway/Dockerfile
+!infra/telemetry-gateway/collector.yaml
+!infra/telemetry-gateway/gateway.go
+!infra/telemetry-gateway/gateway_test.go
+!infra/telemetry-gateway/go.mod
+!infra/telemetry-gateway/go.sum
+!infra/telemetry-gateway/internal/
+!infra/telemetry-gateway/internal/budget/
+!infra/telemetry-gateway/internal/budget/budget.go
+!infra/telemetry-gateway/internal/budget/budget_test.go
+!infra/telemetry-gateway/schema.go
+!infra/telemetry-gateway/telemetry-schema-v1.json

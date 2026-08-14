@@ -39,6 +39,12 @@ describe('CLI production log policy', () => {
       operation: 'report-issue',
       writeProductionLog: false,
     });
+    for (const command of ['status', 'enable', 'disable']) {
+      expect(inspectCliInvocation(['telemetry', command, '--apply'])).toMatchObject({
+        operation: 'telemetry',
+        writeProductionLog: false,
+      });
+    }
     expect(inspectCliInvocation(['migrate-memories'])).toMatchObject({
       operation: 'migrate-memories',
       writeProductionLog: true,
@@ -92,11 +98,70 @@ describe('CLI production log policy', () => {
     ).toEqual({
       homeOverride: '/tmp/threadnote-test',
       operation: 'remember',
+      telemetryOperation: 'remember',
+      writeAnonymousTelemetry: true,
       writeProductionLog: true,
     });
     expect(inspectCliInvocation(['remember', '--text', '--help'])).toMatchObject({
       operation: 'remember',
       writeProductionLog: true,
+    });
+  });
+
+  it('covers preview and diagnostic commands after consent while excluding consent management', () => {
+    expect(inspectCliInvocation(['remember', '--dry-run', '--text', 'preview'])).toMatchObject({
+      writeAnonymousTelemetry: true,
+    });
+    expect(inspectCliInvocation(['processes'])).toMatchObject({writeAnonymousTelemetry: true});
+    expect(inspectCliInvocation(['report-issue'])).toMatchObject({writeAnonymousTelemetry: true});
+    expect(inspectCliInvocation(['telemetry', 'status'])).toMatchObject({writeAnonymousTelemetry: false});
+  });
+
+  it('derives anonymous graph operations only from registered command words', () => {
+    expect(inspectCliInvocation(['graph', 'index', '/private/repository'])).toMatchObject({
+      operation: 'graph',
+      telemetryOperation: 'graph.index',
+    });
+    expect(
+      inspectCliInvocation([
+        'graph',
+        'query',
+        '--query',
+        'private symbol and customer text',
+        '/private/repository/src/secret.ts',
+      ]),
+    ).toMatchObject({
+      operation: 'graph',
+      telemetryOperation: 'graph.query',
+    });
+    expect(inspectCliInvocation(['graph', 'query', 'private positional query text'])).toMatchObject({
+      operation: 'graph',
+      telemetryOperation: 'graph.query',
+    });
+  });
+
+  it('recognizes nested share conflict resolution without including its identifier', () => {
+    expect(inspectCliInvocation(['share', 'conflict', 'resolve', 'threadnote://team/private-memory'])).toMatchObject({
+      operation: 'share',
+      telemetryOperation: 'share.conflict.resolve',
+    });
+  });
+
+  it('distinguishes the closed Cursor attestation operation without including challenge data', () => {
+    expect(inspectCliInvocation(['cloud', 'cursor', 'attest', '--challenge', 'private-challenge'])).toMatchObject({
+      operation: 'cloud',
+      telemetryOperation: 'cloud.cursor.attest',
+    });
+  });
+
+  it('falls back to closed operations for unregistered command words', () => {
+    expect(inspectCliInvocation(['share', 'private-subcommand', 'customer-value'])).toMatchObject({
+      operation: 'share',
+      telemetryOperation: 'share',
+    });
+    expect(inspectCliInvocation(['private-command', 'customer-value'])).toMatchObject({
+      operation: 'unknown',
+      telemetryOperation: 'unknown',
     });
   });
 });

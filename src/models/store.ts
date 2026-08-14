@@ -9,6 +9,7 @@ import {sha256FileHex} from '../effect/digest.js';
 import {withExclusiveFileLock} from '../effect/file_lock.js';
 import {HttpService, type HttpServiceShape} from '../effect/http.js';
 import {SystemInfo, type SystemInfoShape} from '../effect/system.js';
+import {extractBundledModelSource, type BundledModelSourceExtractor} from './bundled-model-source.js';
 import type {LocalModelManifest} from './catalog.js';
 
 export interface LocalModelInstallation {
@@ -25,6 +26,11 @@ export interface LocalModelInstallResult extends LocalModelInstallation {
   readonly sourceUrl: string;
 }
 
+export interface LocalModelInstallOptions {
+  readonly sourcePath?: string;
+  readonly sourceUrl?: string;
+}
+
 export interface LocalModelLockEvent {
   readonly lockPath: string;
   readonly modelId: string;
@@ -32,6 +38,7 @@ export interface LocalModelLockEvent {
 }
 
 export interface LocalModelStoreLayerOptions {
+  readonly extractBundledSource?: BundledModelSourceExtractor;
   readonly onModelLockAcquired?: (event: LocalModelLockEvent) => Effect.Effect<void, never>;
   readonly onModelLockCompleted?: (event: LocalModelLockEvent) => Effect.Effect<void, never>;
   readonly onModelLockContention?: (event: LocalModelLockEvent) => Effect.Effect<void, never>;
@@ -51,7 +58,7 @@ export interface LocalModelStoreShape {
   readonly install: (
     home: string,
     manifest: LocalModelManifest,
-    options?: {readonly sourceUrl?: string},
+    options?: LocalModelInstallOptions,
   ) => Effect.Effect<LocalModelInstallResult, LocalModelStoreError>;
   readonly path: (home: string, manifest: LocalModelManifest) => string;
   readonly remove: (home: string, manifest: LocalModelManifest) => Effect.Effect<boolean, LocalModelStoreError>;
@@ -222,88 +229,118 @@ function makeLocalModelStore(
     );
   };
   return {
-    install: (home, manifest, options) =>
-      withModelLock(
+    install: (home, manifest, options) => {
+      const sourcePath = options?.sourcePath;
+      const install = Effect.gen(function* () {
+        const current = yield* status(home, manifest);
+        const sourceUrl = options?.sourceUrl ?? modelDownloadUrl(manifest);
+        const directory = modelDirectory(path, home, manifest);
+        if (current.installed) {
+          const verified = yield* verifyUnlocked(home, manifest, false).pipe(Effect.result);
+          if (Result.isSuccess(verified)) {
+            return {...verified.success, resumed: false, sourceUrl};
+          }
+          if (!(verified.failure instanceof ModelChecksumMismatch)) {
+            return yield* Effect.fail(verified.failure);
+          }
+          yield* fs.remove(modelPath(home, manifest), {force: true});
+          yield* fs.remove(path.join(directory, 'manifest.json'), {force: true});
+        }
+        const partial = partialPath(home, manifest);
+        yield* fs.makeDirectory(directory, {recursive: true, mode: 0o700});
+        let offset = sourcePath === undefined ? current.partialBytes : 0;
+        if (sourcePath !== undefined && current.partialBytes > 0) {
+          yield* fs.remove(partial, {force: true});
+        }
+        if (offset > manifest.size) {
+          yield* fs.remove(partial, {force: true});
+          offset = 0;
+        }
+        const availableBytes = yield* system.availableDiskBytes(directory).pipe(
+          Effect.mapError(
+            cause =>
+              new ModelStoreIoFailed({
+                cause,
+                message: `Could not inspect free space before downloading ${manifest.id}.`,
+                modelId: manifest.id,
+                operation: 'disk-space-preflight',
+              }),
+          ),
+        );
+        if (availableBytes !== undefined) {
+          yield* assertSufficientModelDiskSpace(
+            manifest,
+            availableBytes,
+            sourcePath === undefined ? manifest.size - offset : manifest.size,
+          );
+        }
+        const resumed =
+          sourcePath === undefined
+            ? yield* http.downloadToFile(sourceUrl, partial, {offset}).pipe(
+                Effect.map(response => offset > 0 && response.resumed),
+                Effect.mapError(
+                  cause =>
+                    new ModelDownloadFailed({
+                      cause,
+                      message: `Could not download model ${manifest.id}: ${cause.message}`,
+                      modelId: manifest.id,
+                    }),
+                ),
+              )
+            : yield* (layerOptions.extractBundledSource ?? extractBundledModelSource)(sourcePath, partial).pipe(
+                Effect.tapError(() => fs.remove(partial, {force: true}).pipe(Effect.ignore)),
+                Effect.mapError(
+                  cause =>
+                    new ModelStoreIoFailed({
+                      cause,
+                      message: `Could not extract bundled model ${manifest.id}.`,
+                      modelId: manifest.id,
+                      operation: 'extract-bundled-source',
+                    }),
+                ),
+                Effect.as(false),
+              );
+        const downloadedBytes = Number((yield* fs.stat(partial)).size);
+        if (downloadedBytes !== manifest.size) {
+          if (sourcePath !== undefined) yield* fs.remove(partial, {force: true});
+          return yield* new ModelDownloadFailed({
+            cause: {actualBytes: downloadedBytes, expectedBytes: manifest.size},
+            message:
+              sourcePath === undefined
+                ? `Model ${manifest.id} download has ${downloadedBytes} bytes; expected ${manifest.size}. The partial file was retained for resume.`
+                : `Bundled model ${manifest.id} has ${downloadedBytes} bytes; expected ${manifest.size}.`,
+            modelId: manifest.id,
+          });
+        }
+        const digest = yield* providePlatform(sha256FileHex(partial));
+        if (digest !== manifest.sha256) {
+          yield* fs.remove(partial, {force: true});
+          return yield* checksumMismatch(manifest, digest);
+        }
+        const installedPath = modelPath(home, manifest);
+        yield* fs.rename(partial, installedPath);
+        yield* fs.chmod(installedPath, 0o600);
+        yield* writeManifestReceipt(fs, path, directory, manifest);
+        const installed = {
+          bytes: downloadedBytes,
+          installed: true,
+          modelId: manifest.id,
+          partialBytes: 0,
+          path: installedPath,
+          resumed,
+          sourceUrl,
+          verified: true,
+        };
+        yield* cacheVerifiedInstallation(home, manifest, installed);
+        return installed;
+      });
+      return withModelLock(
         home,
         manifest,
         'install',
-        Effect.gen(function* () {
-          const current = yield* status(home, manifest);
-          const sourceUrl = options?.sourceUrl ?? modelDownloadUrl(manifest);
-          const directory = modelDirectory(path, home, manifest);
-          if (current.installed) {
-            const verified = yield* verifyUnlocked(home, manifest, false).pipe(Effect.result);
-            if (Result.isSuccess(verified)) {
-              return {...verified.success, resumed: false, sourceUrl};
-            }
-            if (!(verified.failure instanceof ModelChecksumMismatch)) {
-              return yield* Effect.fail(verified.failure);
-            }
-            yield* fs.remove(modelPath(home, manifest), {force: true});
-            yield* fs.remove(path.join(directory, 'manifest.json'), {force: true});
-          }
-          const partial = partialPath(home, manifest);
-          yield* fs.makeDirectory(directory, {recursive: true, mode: 0o700});
-          let offset = current.partialBytes;
-          if (offset > manifest.size) {
-            yield* fs.remove(partial, {force: true});
-            offset = 0;
-          }
-          const availableBytes = yield* system.availableDiskBytes(directory).pipe(
-            Effect.mapError(
-              cause =>
-                new ModelStoreIoFailed({
-                  cause,
-                  message: `Could not inspect free space before downloading ${manifest.id}.`,
-                  modelId: manifest.id,
-                  operation: 'disk-space-preflight',
-                }),
-            ),
-          );
-          if (availableBytes !== undefined) {
-            yield* assertSufficientModelDiskSpace(manifest, availableBytes, manifest.size - offset);
-          }
-          const response = yield* http.downloadToFile(sourceUrl, partial, {offset}).pipe(
-            Effect.mapError(
-              cause =>
-                new ModelDownloadFailed({
-                  cause,
-                  message: `Could not download model ${manifest.id}: ${cause.message}`,
-                  modelId: manifest.id,
-                }),
-            ),
-          );
-          const downloadedBytes = Number((yield* fs.stat(partial)).size);
-          if (downloadedBytes !== manifest.size) {
-            return yield* new ModelDownloadFailed({
-              cause: {actualBytes: downloadedBytes, expectedBytes: manifest.size},
-              message: `Model ${manifest.id} download has ${downloadedBytes} bytes; expected ${manifest.size}. The partial file was retained for resume.`,
-              modelId: manifest.id,
-            });
-          }
-          const digest = yield* providePlatform(sha256FileHex(partial));
-          if (digest !== manifest.sha256) {
-            yield* fs.remove(partial, {force: true});
-            return yield* checksumMismatch(manifest, digest);
-          }
-          const installedPath = modelPath(home, manifest);
-          yield* fs.rename(partial, installedPath);
-          yield* fs.chmod(installedPath, 0o600);
-          yield* writeManifestReceipt(fs, path, directory, manifest);
-          const installed = {
-            bytes: downloadedBytes,
-            installed: true,
-            modelId: manifest.id,
-            partialBytes: 0,
-            path: installedPath,
-            resumed: offset > 0 && response.resumed,
-            sourceUrl,
-            verified: true,
-          };
-          yield* cacheVerifiedInstallation(home, manifest, installed);
-          return installed;
-        }),
-      ),
+        sourcePath === undefined ? install : Effect.uninterruptible(install),
+      );
+    },
     path: modelPath,
     remove: (home, manifest) =>
       withModelLock(

@@ -3,6 +3,11 @@ import * as ChildProcess from 'effect/unstable/process/ChildProcess';
 import {ChildProcessSpawner} from 'effect/unstable/process/ChildProcessSpawner';
 import {command as commandText, info, warning} from '../cli_ui.js';
 import {redactSensitiveText} from '../scrubber.js';
+import {
+  withCurrentAgentSessionEnvironment,
+  withoutTelemetrySessionEnvironment,
+  type TelemetryChildKind,
+} from '../telemetry/session.js';
 import type {CommandResult} from '../types.js';
 import {SystemInfo, type SystemInfoShape} from './system.js';
 
@@ -26,6 +31,13 @@ export interface CommandInvocation {
   readonly args: readonly string[];
   readonly executable: string;
   readonly shell?: string;
+}
+
+export interface DetachedCommandOptions {
+  readonly cwd?: string;
+  readonly env?: NodeJS.ProcessEnv;
+  /** Preserve only a valid current alias for one declared Threadnote child. */
+  readonly telemetryChild?: TelemetryChildKind;
 }
 
 export interface StreamingCommandOptions {
@@ -85,6 +97,11 @@ export class CommandExecutor extends Context.Service<
       args: readonly string[],
       options?: StreamingCommandOptions,
     ) => Effect.Effect<CommandResult>;
+    readonly spawnDetached?: (
+      executable: string,
+      args: readonly string[],
+      options?: DetachedCommandOptions,
+    ) => Effect.Effect<boolean>;
   }
 >()('threadnote/effect/CommandExecutor') {
   static readonly layer = Layer.effect(
@@ -106,6 +123,10 @@ export class CommandExecutor extends Context.Service<
           executeStreamingCommand(executable, args, options, system).pipe(
             Effect.provideService(ChildProcessSpawner, childProcessSpawner),
             Effect.provideService(Stdio.Stdio, stdio),
+          ),
+        spawnDetached: (executable, args, options) =>
+          spawnDetachedCommand(executable, args, options ?? {}, system).pipe(
+            Effect.provideService(ChildProcessSpawner, childProcessSpawner),
           ),
       });
     }),
@@ -147,6 +168,16 @@ export const runStreamingCommandEffect = Effect.fn('runStreamingCommandEffect')(
 ) {
   const command = yield* CommandExecutor;
   return yield* command.executeStreaming(executable, args, options);
+});
+
+export const runDetachedCommandEffect = Effect.fn('runDetachedCommandEffect')(function* (
+  executable: string,
+  args: readonly string[],
+  options: DetachedCommandOptions = {},
+) {
+  const command = yield* CommandExecutor;
+  if (!command.spawnDetached) return false;
+  return yield* command.spawnDetached(executable, args, options);
 });
 
 export const maybeRunEffect = Effect.fn('maybeRunEffect')(function* (
@@ -341,6 +372,7 @@ const executeStreamingCommand = Effect.fn('CommandExecutor.executeStreaming')(fu
   options: StreamingCommandOptions = {},
   system: SystemInfoShape,
 ) {
+  const environment = system.environment();
   const maxOutputChars = options.maxOutputChars ?? 64_000;
   const command = formatShellCommand(executable, args);
   const safeArgs = redactCommandArgs(args);
@@ -354,12 +386,12 @@ const executeStreamingCommand = Effect.fn('CommandExecutor.executeStreaming')(fu
             executable,
             args,
             system.platform,
-            system.environment().ComSpec ?? system.environment().COMSPEC ?? 'cmd.exe',
+            environment.ComSpec ?? environment.COMSPEC ?? 'cmd.exe',
           ),
         catch: spawnFailed,
       });
       const handle = yield* ChildProcess.make(invocation.executable, [...invocation.args], {
-        env: options.env,
+        env: commandEnvironment(executable, options.env, environment),
         forceKillAfter: 1000,
         shell: invocation.shell,
         stdin: 'inherit',
@@ -386,6 +418,31 @@ const executeStreamingCommand = Effect.fn('CommandExecutor.executeStreaming')(fu
       return Effect.succeed({exitCode: 1, stderr: `${message}\n`, stdout: ''});
     }),
   );
+});
+
+const spawnDetachedCommand = Effect.fn('CommandExecutor.spawnDetached')(function* (
+  executable: string,
+  args: readonly string[],
+  options: DetachedCommandOptions,
+  system: SystemInfoShape,
+) {
+  return yield* Effect.scoped(
+    Effect.gen(function* () {
+      const handle = yield* ChildProcess.make(executable, [...args], {
+        cwd: options.cwd,
+        detached: true,
+        env:
+          options.telemetryChild === undefined
+            ? commandEnvironment(executable, options.env, system.environment())
+            : withCurrentAgentSessionEnvironment(options.env ?? system.environment(), options.telemetryChild),
+        stdin: 'ignore',
+        stdout: 'ignore',
+        stderr: 'ignore',
+      });
+      yield* handle.unref.pipe(Effect.asVoid);
+      return true;
+    }),
+  ).pipe(Effect.catch(() => Effect.succeed(false)));
 });
 
 function collectCommandOutput(
@@ -560,7 +617,8 @@ export function commandEnvironment(
   env: NodeJS.ProcessEnv | undefined,
   systemEnvironment: NodeJS.ProcessEnv,
 ): NodeJS.ProcessEnv | undefined {
-  return isGitExecutable(executable) ? withoutGitEnvironment(env ?? systemEnvironment) : env;
+  const sanitized = withoutTelemetrySessionEnvironment(env ?? systemEnvironment);
+  return isGitExecutable(executable) ? withoutGitEnvironment(sanitized) : sanitized;
 }
 
 export function formatShellCommand(executable: string, args: readonly string[]): string {

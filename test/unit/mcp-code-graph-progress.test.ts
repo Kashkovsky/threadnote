@@ -23,6 +23,10 @@ import {analyzeCodeGraph} from '../../src/code_graph/analysis.js';
 import type {CodeGraphProgress, CodeGraphQueryResult} from '../../src/code_graph/types.js';
 import type {CodeGraphRefreshStatus} from '../../src/code_graph/watcher.js';
 import {analysisEdge, analysisSnapshot, analysisSymbol, pagedAnalysisStore} from '../helpers/code-graph-analysis.js';
+import {
+  readAnonymousTelemetryDiagnostic,
+  readAnonymousTelemetryReportedOutcome,
+} from '../../src/telemetry/diagnostic.js';
 
 describe('MCP code graph indexing progress', () => {
   it('allows stale ready evidence for non-strict operations only', () => {
@@ -154,6 +158,7 @@ describe('MCP code graph indexing progress', () => {
         version: 2,
       },
     });
+    expect(readAnonymousTelemetryReportedOutcome(codeGraphAnalysisRefreshResult('stats', deferred))).toBe('failure');
   });
 
   it('returns a structured reconnect requirement when a newer runtime upgraded graph storage', () => {
@@ -188,6 +193,15 @@ describe('MCP code graph indexing progress', () => {
       type: 'code-graph-analysis-state',
     });
     expect(JSON.stringify(analysis)).toMatch(/reconnect/i);
+    expect(readAnonymousTelemetryReportedOutcome(analysis)).toBe('failure');
+    expect(readAnonymousTelemetryDiagnostic(analysis)).toEqual({
+      code: 'incompatible-schema',
+      domain: 'code-graph-storage',
+      errorType: 'CodeGraphStoreError',
+      operation: 'refresh code graph',
+      recovery: 'reconnect-runtime',
+      retryable: false,
+    });
   });
 
   it('derives a bounded adaptive poll interval from the phase estimate', () => {
@@ -206,6 +220,7 @@ describe('MCP code graph indexing progress', () => {
       type: 'code-graph-query-state',
       version: 2,
     });
+    expect(readAnonymousTelemetryReportedOutcome(timedOut)).toBe('timed-out');
 
     const indexing = codeGraphQueryTimeoutResult('query', indexingStatus(60_000));
     expect(indexing.isError).not.toBe(true);
@@ -215,6 +230,7 @@ describe('MCP code graph indexing progress', () => {
       type: 'code-graph-index-state',
       version: 3,
     });
+    expect(readAnonymousTelemetryReportedOutcome(indexing)).toBe('unavailable');
 
     const deferred = codeGraphQueryTimeoutResult('query', deferredStatus('transient-io'));
     expect(deferred.isError).not.toBe(true);
@@ -224,6 +240,19 @@ describe('MCP code graph indexing progress', () => {
       type: 'code-graph-index-state',
       version: 4,
     });
+    expect(readAnonymousTelemetryReportedOutcome(deferred)).toBe('failure');
+    expect(readAnonymousTelemetryDiagnostic(deferred)).toEqual({
+      code: 'transient-io',
+      domain: 'code-graph-storage',
+      errorType: 'CodeGraphStoreError',
+      operation: 'refresh code graph',
+      recovery: 'retry-read-only',
+      retryable: true,
+    });
+    for (const result of [timedOut, indexing, deferred]) {
+      expect(JSON.stringify(result)).not.toContain('anonymous-telemetry');
+      expect(Object.getOwnPropertySymbols(result)).not.toEqual([]);
+    }
   });
 
   it('keeps detailed materialization telemetry out of MCP indexing state', () => {

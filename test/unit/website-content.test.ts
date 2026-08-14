@@ -1564,6 +1564,9 @@ describe('Threadnote 4 website content', () => {
     const recallPayload = article?.body.find(
       block => block.type === 'code' && block.language === 'json' && block.code.includes('callerCwd'),
     );
+    const cloudVerification = article?.body.find(
+      block => block.type === 'code' && block.language === 'sh' && block.code.includes('cloud cursor verify'),
+    );
 
     expect(article).toBeDefined();
     expect(article?.title).toBe('Use Threadnote with Cursor Cloud Agents');
@@ -1581,6 +1584,16 @@ describe('Threadnote 4 website content', () => {
     expect(content).toContain('commits and pushes');
     expect(content).toContain('capability-enforced cloud profile');
     expect(content).toContain('stable `threadnote-mcp-server` launcher brokers');
+    expect(content).toContain('MCP registration scope and cloud-VM provisioning are independent');
+    expect(content).toContain('checked-in `.cursor/environment.json`, a personal saved environment, then a team saved');
+    expect(content).toContain('complete override rather than an overlay');
+    expect(content).toContain('CLI `&` handoff has no documented environment or Build selector');
+    expect(content).toContain('adds user secrets only when an agent starts');
+    expect(content).toContain("personal environment's idempotent `install` command");
+    expect(content).toContain('changes made in an ordinary agent VM do not prepare later Builds');
+    expect(content).toContain('make that latest successful Build active before starting agents');
+    expect(content).toContain('add and enable it as a personal MCP server');
+    expect(content).toContain('Registration does not install the stdio executable in the cloud VM');
 
     if (!mcpConfiguration || mcpConfiguration.type !== 'code') {
       throw new TestError('Missing Cursor Cloud MCP configuration.');
@@ -1605,6 +1618,18 @@ describe('Threadnote 4 website content', () => {
       callerCwd: '/workspace/your-repository',
       project: 'your-project',
     });
+
+    if (!cloudVerification || cloudVerification.type !== 'code') {
+      throw new TestError('Missing Cursor Cloud in-VM verification commands.');
+    }
+    expect(cloudVerification.code).toContain('test -x "$HOME/.local/bin/threadnote-mcp-server"');
+    expect(cloudVerification.code).toContain('test -d "$HOME/.threadnote"');
+    expect(cloudVerification.code.indexOf('test -x "$HOME/.local/bin/threadnote-mcp-server"')).toBeLessThan(
+      cloudVerification.code.indexOf('cloud cursor verify'),
+    );
+    expect(cloudVerification.code.indexOf('test -d "$HOME/.threadnote"')).toBeLessThan(
+      cloudVerification.code.indexOf('cloud cursor verify'),
+    );
     expect(searchDocs(createDocsSearchIndex(docsSections), 'Cursor Cloud Agents shared memory')[0]?.article.id).toBe(
       'cursor-cloud-agents',
     );
