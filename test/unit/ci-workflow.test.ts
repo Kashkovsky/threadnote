@@ -82,7 +82,11 @@ describe('dependency-aware CI workflow', () => {
     const standard = ci.jobs.standard_tests!;
     const long = ci.jobs.long_tests!;
     const remotePostgres = ci.jobs.remote_memory_postgres!;
-    const actionlint = quality.steps?.find(step => step.uses === 'docker://rhysd/actionlint:1.7.8');
+    const actionlint = quality.steps?.find(
+      step =>
+        step.uses ===
+        'docker://rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667',
+    );
 
     expect(primary.needs).toEqual(['changes', 'quality', 'standard_tests', 'long_tests', 'remote_memory_postgres']);
     expect(primary.if).toBe('always()');
