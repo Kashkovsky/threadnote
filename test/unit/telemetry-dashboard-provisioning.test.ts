@@ -31,6 +31,7 @@ import {
 const testGrafanaNamespace = 'stacks-123456';
 const testGrafanaUrl = 'https://threadnote-test.grafana.net';
 const currentSha = 'a'.repeat(40);
+const grafanaSharedWithMeFolderScope = 'folders:uid:sharedwithme';
 
 type WorkflowJob = Readonly<{
   environment?: string | Readonly<{deployment?: boolean; name: string}>;
@@ -147,7 +148,7 @@ function writerPermissions(overrides: Readonly<Record<string, readonly string[]>
     'dashboards:read': [`dashboards:uid:${telemetryDashboardUid}`],
     'dashboards:write': [`dashboards:uid:${telemetryDashboardUid}`],
     'folders.permissions:read': [`folders:uid:${telemetryDashboardFolderUid}`],
-    'folders:read': [`folders:uid:${telemetryDashboardFolderUid}`],
+    'folders:read': [`folders:uid:${telemetryDashboardFolderUid}`, grafanaSharedWithMeFolderScope],
     ...overrides,
   };
 }
@@ -158,7 +159,7 @@ function readerPermissions(overrides: Readonly<Record<string, readonly string[]>
     'datasources:query': [`datasources:uid:${telemetryDashboardDatasourceUid}`],
     'datasources:read': [`datasources:uid:${telemetryDashboardDatasourceUid}`],
     'folders.permissions:read': [`folders:uid:${telemetryDashboardFolderUid}`],
-    'folders:read': [`folders:uid:${telemetryDashboardFolderUid}`],
+    'folders:read': [`folders:uid:${telemetryDashboardFolderUid}`, grafanaSharedWithMeFolderScope],
     ...overrides,
   };
 }
@@ -564,7 +565,30 @@ describe('direct Grafana dashboard provisioning', () => {
     expect(() => validateWriterPermissions({'dashboards:read': [`dashboards:uid:${telemetryDashboardUid}`]})).toThrow(
       /missing/u,
     );
+    for (const scopes of [
+      [`folders:uid:${telemetryDashboardFolderUid}`],
+      [`folders:uid:${telemetryDashboardFolderUid}`, `folders:uid:${telemetryDashboardFolderUid}`],
+      [`folders:uid:${telemetryDashboardFolderUid}`, grafanaSharedWithMeFolderScope, 'folders:uid:other'],
+    ]) {
+      expect(() => validateWriterPermissions(writerPermissions({'folders:read': scopes}))).toThrow(
+        /exact allowed targets/u,
+      );
+    }
   });
+
+  it.prop(
+    'treats the exact Grafana folder-read scopes as an order-independent set',
+    {actor: FC.constantFrom('reader' as const, 'writer' as const), reverse: FC.boolean()},
+    ({actor, reverse}) => {
+      const scopes = [`folders:uid:${telemetryDashboardFolderUid}`, grafanaSharedWithMeFolderScope];
+      if (reverse) scopes.reverse();
+      const permissions =
+        actor === 'reader' ? readerPermissions({'folders:read': scopes}) : writerPermissions({'folders:read': scopes});
+      const validate = actor === 'reader' ? validateReaderPermissions : validateWriterPermissions;
+      expect(() => validate(permissions)).not.toThrow();
+    },
+    {fastCheck: {numRuns: 20}},
+  );
 
   it('requires a reader token restricted to exact dashboard, folder, and datasource scopes', async () => {
     expect(() => validateReaderPermissions(readerPermissions())).not.toThrow();
