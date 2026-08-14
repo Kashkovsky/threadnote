@@ -213,6 +213,10 @@ describe('standalone release workflows', () => {
           '    # GitHub supports queue:max; Actionlint 1.7.12 predates that workflow syntax.',
           '    ignore:',
           `      - '^unexpected key "queue" for "concurrency" section\\. expected one of "cancel-in-progress", "group"$'`,
+          '  .github/workflows/telemetry-dashboard.yml:',
+          '    # GitHub supports queue:max; Actionlint 1.7.12 predates that workflow syntax.',
+          '    ignore:',
+          `      - '^unexpected key "queue" for "concurrency" section\\. expected one of "cancel-in-progress", "group"$'`,
           '',
         ].join('\n'),
       );

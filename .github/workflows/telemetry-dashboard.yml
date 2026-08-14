@@ -27,12 +27,13 @@ permissions:
   contents: read
 
 concurrency:
-  group: telemetry-dashboard-${{ github.ref }}
-  cancel-in-progress: true
+  group: telemetry-dashboard-${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && 'production' || github.run_id }}
+  queue: max
+  cancel-in-progress: false
 
 jobs:
   validate:
-    name: Validate canonical Grafana resource
+    name: Validate canonical Grafana dashboard
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -45,29 +46,130 @@ jobs:
 
       - run: bun install --frozen-lockfile
 
-      - name: Require the provisioned resource to match its portable source
+      - name: Require the deployment artifact to match its portable source
         run: bun scripts/telemetry-dashboard.ts check
 
-      - name: Validate dashboard privacy, query, rendering, and workflow contracts
+      - name: Validate dashboard privacy, drift, query, rendering, and workflow contracts
         run: >-
           bun --bun vitest run
           test/unit/telemetry-gateway-dashboard.test.ts
           test/unit/telemetry-dashboard-provisioning.test.ts
 
-      - name: Report intentionally disabled live verification
+      - name: Report intentionally disabled live reconciliation
         if: >-
           github.event_name != 'pull_request' &&
-          vars.THREADNOTE_TELEMETRY_GRAFANA_GIT_SYNC_ENABLED != 'true'
+          vars.THREADNOTE_TELEMETRY_GRAFANA_DIRECT_ENABLED != 'true'
         run: >-
-          echo '::notice::Grafana Git Sync live verification is disabled until the controlled migration is complete.'
+          echo '::notice::Direct Grafana dashboard reconciliation is disabled until the controlled activation is complete.'
+
+  deploy:
+    name: Update the existing Grafana dashboard
+    if: >-
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main' &&
+      github.repository == 'Kashkovsky/threadnote' &&
+      vars.THREADNOTE_TELEMETRY_GRAFANA_DIRECT_ENABLED == 'true'
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: telemetry-dashboard-production-deploy
+    outputs:
+      stale: ${{ steps.freshness.outputs.stale == 'true' || steps.final_freshness.outputs.stale == 'true' }}
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: 1.3.14
+
+      - name: Refuse stale deployment control-plane code
+        id: freshness
+        shell: bash
+        run: |
+          git fetch --no-tags origin '+refs/heads/main:refs/remotes/origin/main'
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main; then
+            echo '::error::The deployment commit is no longer an ancestor of main.'
+            exit 1
+          fi
+          if git diff --quiet --no-ext-diff --no-textconv "$GITHUB_SHA" refs/remotes/origin/main -- \
+            .github/workflows/telemetry-dashboard.yml \
+            infra/telemetry-dashboard/threadnote-telemetry.artifact \
+            infra/telemetry-gateway/threadnote-anonymous-telemetry-dashboard.json \
+            scripts/telemetry-dashboard.ts; then
+            echo 'stale=false' >> "$GITHUB_OUTPUT"
+          else
+            echo 'stale=true' >> "$GITHUB_OUTPUT"
+            echo '::notice::A newer main commit changed dashboard deployment inputs; its protected run will reconcile.'
+          fi
+
+      - name: Fail closed when writer configuration is incomplete
+        if: steps.freshness.outputs.stale != 'true'
+        env:
+          THREADNOTE_TELEMETRY_GRAFANA_NAMESPACE: ${{ vars.THREADNOTE_TELEMETRY_GRAFANA_NAMESPACE }}
+          THREADNOTE_TELEMETRY_GRAFANA_URL: ${{ vars.THREADNOTE_TELEMETRY_GRAFANA_URL }}
+          THREADNOTE_TELEMETRY_GRAFANA_WRITE_TOKEN: ${{ secrets.THREADNOTE_TELEMETRY_GRAFANA_WRITE_TOKEN }}
+        run: |
+          if [[ -z "$THREADNOTE_TELEMETRY_GRAFANA_NAMESPACE" ]]; then
+            echo '::error::THREADNOTE_TELEMETRY_GRAFANA_NAMESPACE is required.'
+            exit 1
+          fi
+          if [[ -z "$THREADNOTE_TELEMETRY_GRAFANA_URL" ]]; then
+            echo '::error::THREADNOTE_TELEMETRY_GRAFANA_URL is required.'
+            exit 1
+          fi
+          if [[ -z "$THREADNOTE_TELEMETRY_GRAFANA_WRITE_TOKEN" ]]; then
+            echo '::error::THREADNOTE_TELEMETRY_GRAFANA_WRITE_TOKEN is required.'
+            exit 1
+          fi
+
+      - name: Recheck deployment freshness immediately before the write
+        id: final_freshness
+        if: steps.freshness.outputs.stale != 'true'
+        shell: bash
+        run: |
+          git fetch --no-tags origin '+refs/heads/main:refs/remotes/origin/main'
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main; then
+            echo '::error::The deployment commit is no longer an ancestor of main.'
+            exit 1
+          fi
+          if git diff --quiet --no-ext-diff --no-textconv "$GITHUB_SHA" refs/remotes/origin/main -- \
+            .github/workflows/telemetry-dashboard.yml \
+            infra/telemetry-dashboard/threadnote-telemetry.artifact \
+            infra/telemetry-gateway/threadnote-anonymous-telemetry-dashboard.json \
+            scripts/telemetry-dashboard.ts; then
+            echo 'stale=false' >> "$GITHUB_OUTPUT"
+          else
+            echo 'stale=true' >> "$GITHUB_OUTPUT"
+            echo '::notice::A newer main commit changed dashboard deployment inputs; its protected run will reconcile.'
+          fi
+
+      - name: Reconcile through the update-only Grafana App API
+        if: steps.freshness.outputs.stale != 'true' && steps.final_freshness.outputs.stale != 'true'
+        env:
+          THREADNOTE_TELEMETRY_DASHBOARD_CURRENT_SHA: ${{ github.sha }}
+          THREADNOTE_TELEMETRY_GRAFANA_NAMESPACE: ${{ vars.THREADNOTE_TELEMETRY_GRAFANA_NAMESPACE }}
+          THREADNOTE_TELEMETRY_GRAFANA_URL: ${{ vars.THREADNOTE_TELEMETRY_GRAFANA_URL }}
+          THREADNOTE_TELEMETRY_GRAFANA_WRITE_TOKEN: ${{ secrets.THREADNOTE_TELEMETRY_GRAFANA_WRITE_TOKEN }}
+        run: >-
+          bun --config=/dev/null --no-env-file --no-install
+          scripts/telemetry-dashboard.ts deploy
 
   verify-live:
-    name: Verify Grafana Git Sync convergence and Tempo queries
+    name: Verify live dashboard and bounded Tempo queries
     if: >-
+      always() &&
+      needs.validate.result == 'success' &&
       github.event_name != 'pull_request' &&
       github.ref == 'refs/heads/main' &&
-      vars.THREADNOTE_TELEMETRY_GRAFANA_GIT_SYNC_ENABLED == 'true'
-    needs: validate
+      github.repository == 'Kashkovsky/threadnote' &&
+      vars.THREADNOTE_TELEMETRY_GRAFANA_DIRECT_ENABLED == 'true' &&
+      (github.event_name != 'push' ||
+       (needs.deploy.result == 'success' && needs.deploy.outputs.stale != 'true'))
+    needs: [validate, deploy]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment:
@@ -83,15 +185,10 @@ jobs:
 
       - name: Fail closed when read-only verification configuration is incomplete
         env:
-          THREADNOTE_TELEMETRY_GRAFANA_GIT_SYNC_MANAGER_ID: ${{ vars.THREADNOTE_TELEMETRY_GRAFANA_GIT_SYNC_MANAGER_ID }}
           THREADNOTE_TELEMETRY_GRAFANA_NAMESPACE: ${{ vars.THREADNOTE_TELEMETRY_GRAFANA_NAMESPACE }}
           THREADNOTE_TELEMETRY_GRAFANA_URL: ${{ vars.THREADNOTE_TELEMETRY_GRAFANA_URL }}
           THREADNOTE_TELEMETRY_GRAFANA_READ_TOKEN: ${{ secrets.THREADNOTE_TELEMETRY_GRAFANA_READ_TOKEN }}
         run: |
-          if [[ -z "$THREADNOTE_TELEMETRY_GRAFANA_GIT_SYNC_MANAGER_ID" ]]; then
-            echo '::error::THREADNOTE_TELEMETRY_GRAFANA_GIT_SYNC_MANAGER_ID is required.'
-            exit 1
-          fi
           if [[ -z "$THREADNOTE_TELEMETRY_GRAFANA_NAMESPACE" ]]; then
             echo '::error::THREADNOTE_TELEMETRY_GRAFANA_NAMESPACE is required.'
             exit 1
@@ -105,10 +202,40 @@ jobs:
             exit 1
           fi
 
-      - name: Wait for Git Sync and verify every bounded Tempo query
+      - name: Verify exact live state, private ACLs, and every Tempo query
         env:
-          THREADNOTE_TELEMETRY_GRAFANA_GIT_SYNC_MANAGER_ID: ${{ vars.THREADNOTE_TELEMETRY_GRAFANA_GIT_SYNC_MANAGER_ID }}
           THREADNOTE_TELEMETRY_GRAFANA_NAMESPACE: ${{ vars.THREADNOTE_TELEMETRY_GRAFANA_NAMESPACE }}
           THREADNOTE_TELEMETRY_GRAFANA_URL: ${{ vars.THREADNOTE_TELEMETRY_GRAFANA_URL }}
           THREADNOTE_TELEMETRY_GRAFANA_READ_TOKEN: ${{ secrets.THREADNOTE_TELEMETRY_GRAFANA_READ_TOKEN }}
-        run: bun scripts/telemetry-dashboard.ts verify-live
+        run: >-
+          bun --config=/dev/null --no-env-file --no-install
+          scripts/telemetry-dashboard.ts verify-live
+
+  complete:
+    name: Dashboard checks complete
+    if: always()
+    needs: [validate, deploy, verify-live]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Require every applicable dashboard check to pass
+        env:
+          DEPLOY_RESULT: ${{ needs.deploy.result }}
+          DIRECT_ENABLED: ${{ vars.THREADNOTE_TELEMETRY_GRAFANA_DIRECT_ENABLED }}
+          EVENT_NAME: ${{ github.event_name }}
+          STALE_DEPLOYMENT: ${{ needs.deploy.outputs.stale }}
+          VALIDATE_RESULT: ${{ needs.validate.result }}
+          VERIFY_RESULT: ${{ needs.verify-live.result }}
+        run: |
+          if [[ "$VALIDATE_RESULT" != 'success' ]]; then
+            echo '::error::Dashboard validation did not succeed.'
+            exit 1
+          fi
+          if [[ "$DIRECT_ENABLED" == 'true' && "$EVENT_NAME" == 'push' && "$DEPLOY_RESULT" != 'success' ]]; then
+            echo '::error::Dashboard deployment did not succeed.'
+            exit 1
+          fi
+          if [[ "$DIRECT_ENABLED" == 'true' && "$EVENT_NAME" != 'pull_request' && "$STALE_DEPLOYMENT" != 'true' && "$VERIFY_RESULT" != 'success' ]]; then
+            echo '::error::Live dashboard verification did not succeed.'
+            exit 1
+          fi
