@@ -781,7 +781,7 @@
         "type": "tempo",
         "uid": "${DS_TEMPO}"
       },
-      "description": "Most recent non-successful completion spans with opaque session/invocation correlation IDs and privacy-safe diagnostics. IDs are not grouped or charted.",
+      "description": "Most recent failure, timed-out, and unavailable completion spans with opaque session/invocation correlation IDs and privacy-safe diagnostics. Expected lifecycle interruptions are excluded; IDs are not grouped or charted.",
       "fieldConfig": {
         "defaults": {
           "custom": {
@@ -820,14 +820,14 @@
           },
           "limit": 100,
           "metricsQueryType": "range",
-          "query": "{ resource.service.name = \"threadnote\" && resource.threadnote.telemetry.schema_version = 1 && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"completion\" && span.threadnote.outcome != \"success\" } | select(resource.service.version, resource.session.id, resource.threadnote.session.scope, span.threadnote.component, span.threadnote.operation, span.threadnote.outcome, span.error.type, span.threadnote.duration_ms, span.threadnote.failure.domain, span.threadnote.failure.code, span.threadnote.failure.recovery, span.threadnote.invocation.id) with (most_recent=true)",
+          "query": "{ resource.service.name = \"threadnote\" && resource.threadnote.telemetry.schema_version = 1 && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"completion\" && span.threadnote.outcome != \"success\" && span.threadnote.outcome != \"interrupted\" } | select(resource.service.version, resource.session.id, resource.threadnote.session.scope, span.threadnote.component, span.threadnote.operation, span.threadnote.outcome, span.error.type, span.threadnote.duration_ms, span.threadnote.failure.domain, span.threadnote.failure.code, span.threadnote.failure.recovery, span.threadnote.invocation.id) with (most_recent=true)",
           "queryType": "traceql",
           "refId": "A",
           "spanLimit": 3,
           "tableType": "spans"
         }
       ],
-      "title": "Recent non-successful traces",
+      "title": "Recent operational failures",
       "type": "table"
     }
   ],

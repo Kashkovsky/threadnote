@@ -99,6 +99,11 @@ describe('Threadnote Grafana dashboard', () => {
           expect(target.tableType).toBe('spans');
         }
       }
+      const recentFailures = panels.find(panel => panel.id === 12);
+      expect(recentFailures?.title).toBe('Recent operational failures');
+      expect(recentFailures?.targets).toHaveLength(1);
+      expect(recentFailures?.targets[0]?.query).toContain('span.threadnote.outcome != "success"');
+      expect(recentFailures?.targets[0]?.query).toContain('span.threadnote.outcome != "interrupted"');
       const scopedAttribute = /(?:resource|span)\.([A-Za-z_][A-Za-z0-9_.]*)/gu;
       const attributes = new Set(
         queries.flatMap(query => Array.from(query.matchAll(scopedAttribute), match => match[1]!)),
