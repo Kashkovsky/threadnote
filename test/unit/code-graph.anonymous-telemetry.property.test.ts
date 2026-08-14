@@ -1,6 +1,6 @@
 import {it as effectIt} from '@effect/vitest';
 import fc from 'fast-check';
-import {Effect, Exit, Tracer} from 'effect';
+import {Cause, Effect, Exit, Tracer} from 'effect';
 import {TestClock} from 'effect/testing';
 import {describe, expect, it} from 'vitest';
 import {
@@ -8,8 +8,16 @@ import {
   codeGraphAnonymousTelemetryFields,
   emitCodeGraphBackgroundFailure,
   makeCodeGraphAnonymousTelemetryReporter,
+  makeCodeGraphBuildAnonymousTelemetryReporter,
+  withCodeGraphBuildAnonymousTelemetry,
 } from '../../src/code_graph/anonymous_telemetry.js';
-import {CodeGraphStorePermissionError, type CodeGraphProgress} from '../../src/code_graph/types.js';
+import type {CodeGraphInventory} from '../../src/code_graph/inventory.js';
+import {
+  CodeGraphStorePermissionError,
+  type CodeGraphIndexSummary,
+  type CodeGraphInventoryFile,
+  type CodeGraphProgress,
+} from '../../src/code_graph/types.js';
 import {anonymousTelemetryTestLayer} from '../../src/effect/telemetry.js';
 import type {SystemInfoShape} from '../../src/effect/system.js';
 import {
@@ -178,6 +186,179 @@ describe('code graph anonymous telemetry', () => {
     }).pipe(provideTestLayer(anonymousTelemetryTestLayer({system: systemInfoStub(), tracer: capture.tracer})));
   });
 
+  effectIt.effect('emits one short-build terminal surface from replacement phase evidence', () => {
+    const capture = capturingTracer();
+
+    return Effect.gen(function* () {
+      const reporter = yield* makeCodeGraphBuildAnonymousTelemetryReporter('mcp');
+      yield* reporter.observeOverlay(true);
+      yield* reporter.observeInventory(dirtyTelemetryInventory());
+      yield* reporter.progress(
+        scanningProgress(
+          {
+            completed: 2,
+            factsBytesCompleted: 128,
+            sourceBytesCompleted: 128,
+            sourceBytesTotal: 128,
+            total: 2,
+            workUnitsCompleted: 2,
+            workUnitsTotal: 2,
+          },
+          {classifier: 'private', language: 'private', path: '/private/first.ts', role: 'private'},
+        ),
+      );
+      yield* reporter.progress(
+        scanningProgress(
+          {
+            completed: 2,
+            factsBytesCompleted: 64,
+            sourceBytesCompleted: 64,
+            sourceBytesTotal: 64,
+            total: 2,
+            workUnitsCompleted: 2,
+            workUnitsTotal: 2,
+          },
+          {classifier: 'private', language: 'private', path: '/private/second.ts', role: 'private'},
+        ),
+      );
+      yield* reporter.progress(materializingTelemetryProgress(2_048, 4_096));
+      yield* reporter.progress(materializingTelemetryProgress(512, 1_024));
+      yield* reporter.observeExtractedFactBytes(32);
+      yield* TestClock.adjust('123 millis');
+
+      const summary = dirtyFallbackSummary();
+      yield* reporter.terminal(Exit.succeed(summary));
+      yield* reporter.terminal(Exit.succeed(summary));
+
+      const lifecycle = capture.spans
+        .map(captured => Object.fromEntries(captured.span.attributes))
+        .filter(attributes => attributes['threadnote.event'] === 'lifecycle');
+      expect(lifecycle).toHaveLength(1);
+      expect(lifecycle[0]).toMatchObject({
+        'threadnote.component': 'mcp',
+        'threadnote.duration_ms': 123,
+        'threadnote.event': 'lifecycle',
+        'threadnote.graph.build_kind': 'dirty',
+        'threadnote.graph.cached_fact_replay_bytes_bucket': '2^9',
+        'threadnote.graph.changed_fact_bytes_bucket': '2^5',
+        'threadnote.graph.changed_files_bucket': '2^1',
+        'threadnote.graph.deleted_files_bucket': '2^0',
+        'threadnote.graph.delta_files_bucket': '2^1',
+        'threadnote.graph.efficiency_class': 'small-delta-full',
+        'threadnote.graph.extracted_files_bucket': '2^1',
+        'threadnote.graph.fact_replay_amplification_bucket': '2^4',
+        'threadnote.graph.fallback_reason': 'resolution-surface-changed',
+        'threadnote.graph.final_fact_bytes_bucket': '2^10',
+        'threadnote.graph.materialization_mode': 'full',
+        'threadnote.graph.resolution_closure': 'full',
+        'threadnote.graph.reused_files_bucket': '2^5',
+        'threadnote.graph.rewrite_amplification_bucket': '2^1',
+        'threadnote.graph.staged_files_bucket': '2^3',
+        'threadnote.graph.total_files_bucket': '2^6',
+        'threadnote.operation': 'graph-build',
+        'threadnote.outcome': 'success',
+      });
+      expect(JSON.stringify(lifecycle)).not.toContain('/private');
+    }).pipe(provideTestLayer(anonymousTelemetryTestLayer({system: systemInfoStub(), tracer: capture.tracer})));
+  });
+
+  effectIt.effect('emits one failure terminal without a false success surface', () => {
+    const capture = capturingTracer();
+    const failure = new CodeGraphStorePermissionError('private failure at /Users/private/graph.sqlite', {
+      operation: 'stage code graph facts',
+    });
+
+    return Effect.gen(function* () {
+      const reporter = yield* makeCodeGraphBuildAnonymousTelemetryReporter('cli');
+      yield* TestClock.adjust('321 millis');
+      const exit = yield* Effect.exit(withCodeGraphBuildAnonymousTelemetry(reporter, Effect.fail(failure)));
+      expect(Exit.isFailure(exit)).toBe(true);
+      if (Exit.isFailure(exit)) expect(Cause.squash(exit.cause)).toBe(failure);
+      yield* reporter.terminal(Exit.fail(failure));
+
+      const lifecycle = capture.spans
+        .map(captured => Object.fromEntries(captured.span.attributes))
+        .filter(attributes => attributes['threadnote.event'] === 'lifecycle');
+      expect(lifecycle).toHaveLength(1);
+      expect(lifecycle[0]).toMatchObject({
+        'error.type': 'CodeGraphStorePermissionError',
+        'threadnote.component': 'cli',
+        'threadnote.duration_ms': 321,
+        'threadnote.event': 'lifecycle',
+        'threadnote.operation': 'graph-build',
+        'threadnote.outcome': 'failure',
+      });
+      expect(lifecycle[0]).not.toHaveProperty('threadnote.graph.build_kind');
+      expect(JSON.stringify(lifecycle)).not.toContain('/Users/private');
+      expect(JSON.stringify(lifecycle)).not.toContain('private failure');
+    }).pipe(provideTestLayer(anonymousTelemetryTestLayer({system: systemInfoStub(), tracer: capture.tracer})));
+  });
+
+  effectIt.effect('emits interruption without inventing an error type', () => {
+    const capture = capturingTracer();
+
+    return Effect.gen(function* () {
+      const reporter = yield* makeCodeGraphBuildAnonymousTelemetryReporter('mcp');
+      yield* TestClock.adjust('87 millis');
+      const exit = yield* Effect.exit(withCodeGraphBuildAnonymousTelemetry(reporter, Effect.interrupt));
+      expect(Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)).toBe(true);
+
+      const lifecycle = capture.spans
+        .map(captured => Object.fromEntries(captured.span.attributes))
+        .filter(attributes => attributes['threadnote.event'] === 'lifecycle');
+      expect(lifecycle).toHaveLength(1);
+      expect(lifecycle[0]).toMatchObject({
+        'threadnote.component': 'mcp',
+        'threadnote.duration_ms': 87,
+        'threadnote.event': 'lifecycle',
+        'threadnote.operation': 'graph-build',
+        'threadnote.outcome': 'interrupted',
+      });
+      expect(lifecycle[0]).not.toHaveProperty('error.type');
+      expect(lifecycle[0]).not.toHaveProperty('threadnote.graph.build_kind');
+    }).pipe(provideTestLayer(anonymousTelemetryTestLayer({system: systemInfoStub(), tracer: capture.tracer})));
+  });
+
+  effectIt.effect('drops nested clean-base metrics before an incremental overlay terminal', () => {
+    const capture = capturingTracer();
+
+    return Effect.gen(function* () {
+      const reporter = yield* makeCodeGraphBuildAnonymousTelemetryReporter('cli');
+      yield* reporter.observeOverlay(true);
+      yield* reporter.progress(materializingTelemetryProgress(4_096, 8_192));
+      yield* reporter.progress({phase: 'activating', snapshotId: 'clean-base', subphase: 'complete'});
+      yield* reporter.progress({
+        completed: 0,
+        phase: 'materializing',
+        reused: 62,
+        total: 2,
+        unit: 'files',
+      });
+      const base = dirtyFallbackSummary();
+      yield* reporter.terminal(
+        Exit.succeed({
+          ...base,
+          materialization: {
+            mode: 'incremental-overlay',
+            resolutionClosure: 'changed',
+            stagedFiles: 2,
+            totalFiles: 64,
+          },
+        }),
+      );
+
+      const terminal = capture.spans
+        .map(captured => Object.fromEntries(captured.span.attributes))
+        .find(attributes => attributes['threadnote.event'] === 'lifecycle');
+      expect(terminal).toMatchObject({
+        'threadnote.graph.cached_fact_replay_bytes_bucket': '0',
+        'threadnote.graph.efficiency_class': 'incremental',
+        'threadnote.graph.final_fact_bytes_bucket': '0',
+        'threadnote.graph.materialization_mode': 'incremental-overlay',
+      });
+    }).pipe(provideTestLayer(anonymousTelemetryTestLayer({system: systemInfoStub(), tracer: capture.tracer})));
+  });
+
   effectIt.effect('emits closed terminal events for detached refresh and maintenance failures', () => {
     const capture = capturingTracer();
 
@@ -283,6 +464,107 @@ function scanningProgress(
     skipped: 2,
     total: counters.total,
     unit: 'files',
+  };
+}
+
+function materializingTelemetryProgress(
+  cachedFactBytesTotal: number,
+  factsBytesTotal: number,
+): Extract<CodeGraphProgress, {readonly phase: 'materializing'}> {
+  return {
+    completed: 2,
+    metrics: {
+      batchesCompleted: 1,
+      batchesTotal: 1,
+      cachedFactBytesCompleted: cachedFactBytesTotal,
+      cachedFactReplayBytesCompleted: cachedFactBytesTotal,
+      cachedFactBytesTotal,
+      changedFactBytesCompleted: 32,
+      factsBytesCompleted: factsBytesTotal,
+      factsBytesTotal,
+      fallbackReason: 'resolution-surface-changed',
+      mode: 'full',
+      sourceBytesCompleted: 64,
+      sourceBytesTotal: 64,
+    },
+    phase: 'materializing',
+    reused: 62,
+    total: 2,
+    unit: 'files',
+  };
+}
+
+function dirtyTelemetryInventory(): CodeGraphInventory {
+  const committedFiles = [
+    telemetryInventoryFile('src/changed.ts', 'old', 'commit'),
+    telemetryInventoryFile('src/deleted.ts', 'deleted', 'commit'),
+    telemetryInventoryFile('src/same.ts', 'same', 'commit'),
+  ];
+  return {
+    committedFiles,
+    committedParsedFiles: 0,
+    dirty: true,
+    files: [
+      telemetryInventoryFile('src/changed.ts', 'new', 'worktree'),
+      telemetryInventoryFile('src/added.ts', 'added', 'worktree'),
+      telemetryInventoryFile('src/same.ts', 'same', 'commit'),
+    ],
+    parsedFiles: 2,
+    skipped: 0,
+  };
+}
+
+function telemetryInventoryFile(
+  path: string,
+  contentHash: string,
+  source: CodeGraphInventoryFile['source'],
+): CodeGraphInventoryFile {
+  return {
+    blobId: contentHash,
+    contentHash,
+    language: 'typescript',
+    mode: '100644',
+    path,
+    size: 32,
+    source,
+  };
+}
+
+function dirtyFallbackSummary(): CodeGraphIndexSummary {
+  return {
+    diagnostics: [],
+    durationMs: 234,
+    identity: {
+      caseMode: 'sensitive',
+      checkoutId: 'checkout',
+      displayName: 'private-repository',
+      gitCommonDirectory: '/private/.git',
+      headCommit: 'a'.repeat(40),
+      objectFormat: 'sha1',
+      repoRoot: '/private/repository',
+      repositoryId: 'repository',
+      worktreeId: 'worktree',
+    },
+    materialization: {
+      fallbackReason: 'resolution-surface-changed',
+      mode: 'full',
+      stagedFiles: 8,
+      totalFiles: 64,
+    },
+    reusedFiles: 62,
+    skippedFiles: 0,
+    snapshot: {
+      commit: 'a'.repeat(40),
+      dirty: true,
+      edgeCount: 1,
+      extractorSet: 'private-extractor-set',
+      fileCount: 64,
+      id: 'private-snapshot',
+      repositoryId: 'private-repository',
+      state: 'ready',
+      symbolCount: 1,
+      worktreeId: 'private-worktree',
+    },
   };
 }
 

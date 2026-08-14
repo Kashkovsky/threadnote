@@ -146,7 +146,7 @@ Rotate without an ingestion gap:
    token or build a Basic header in shell output.
 3. Deploy/restart when rotating Fly ingest auth, then run the storage canary.
    For read auth, dispatch the canary directly after updating the secret.
-4. Confirm one stored canary and normal exporter logs, then revoke the old
+4. Confirm both stored schema canaries and normal exporter logs, then revoke the old
    token. Record policy/token IDs and dates, not values.
 5. A failed canary blocks revocation and release. Restore the old secret while
    it remains valid and investigate.
@@ -156,13 +156,15 @@ Rotate without an ingestion gap:
 [`telemetry-delivery-canary.yml`](../../.github/workflows/telemetry-delivery-canary.yml)
 runs every 15 minutes and on demand. It first pipes `flyctl machine list --json`
 into the budget verifier; no Machine identifiers are logged. It then generates
-one random, schema-valid, content-free trace, posts it through the public
-gateway, and polls Grafana Tempo by that exact trace ID until the stored
-protobuf contains the expected resource and span identity. The synthetic
-version is `0.0.0-canary`, making it filterable from product telemetry. Success
-proves the two-Machine budget, public TLS, route and schema validation,
-Collector export, Grafana ingestion, storage, read credentials, and query
-availability. `/healthz` proves none of the storage/read path.
+two random, schema-valid, content-free traces: one frozen schema-v1 completion
+and one complete schema-v2 terminal graph-build lifecycle. It posts each through
+the public gateway and polls Grafana Tempo by the exact trace IDs until both
+stored protobufs contain the expected version-specific resource and span
+identity. The synthetic version is `0.0.0-canary`, making it filterable from
+product telemetry. Success proves the two-Machine budget, public TLS,
+dual-version route and schema validation, Collector export, Grafana ingestion,
+storage, read credentials, and query availability. `/healthz` proves none of
+the storage/read path.
 
 The exact query contract is:
 
@@ -221,6 +223,21 @@ then verify both Machines, routing health, logs, and the storage canary. Do not
 make a single-Machine production exception: it creates avoidable downtime for
 host failure and deploys. If one Machine is temporarily lost, restore count two
 before any deployment or credential rotation.
+
+For a telemetry schema rollout, deployment order is a hard compatibility gate:
+
+1. Deploy the gateway/Collector revision that accepts both frozen schema v1 and
+   the new immutable schema v2. Do not release a v2 producer yet.
+2. Dispatch the production storage canary and require both the v1 completion and
+   complete v2 terminal graph-build traces to be accepted and queryable.
+3. Only after that dual-version proof succeeds, release the schema-v2 producer.
+4. Keep schema-v1 ingress and canary coverage until every supported v1 producer
+   is retired in a separately reviewed schema-removal change.
+
+A v2 canary rejection blocks the producer release even when `/healthz` and the
+v1 canary pass. If a producer was released out of order, roll it back before
+debugging the gateway; telemetry remains best-effort and must not drive an
+unsafe compatibility exception.
 
 ## DNS and TLS launch checklist
 

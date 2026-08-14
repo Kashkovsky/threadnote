@@ -22,6 +22,13 @@ describe('telemetry commands', () => {
         expect(preview.output).toContain('bounded runtime memory/resource observations');
         expect(preview.output).toContain('phases/state');
         expect(preview.output).toContain('safe typed failures');
+        expect(preview.output).toContain('Successful graph builds additionally include');
+        expect(preview.output).toContain('build-kind/materialization/fallback/closure/efficiency');
+        expect(preview.output).toContain('changed/deleted/delta/extracted/reused/staged/total file-count buckets');
+        expect(preview.output).toContain('fact-byte buckets, and rewrite/replay-amplification buckets');
+        expect(preview.output).toContain('Failed graph builds add only bounded outcome/type');
+        expect(preview.output).toContain('interrupted graph builds add only outcome/duration');
+        expect(preview.output).toContain('Neither adds graph classifications or buckets');
         expect(preview.output).toContain('Never arguments');
         expect(preview.output).toContain('MCP payloads/results');
         expect(preview.output).toContain('Grafana Cloud EU');
@@ -76,7 +83,7 @@ describe('telemetry commands', () => {
         expect((yield* readTelemetryConfiguration(config))?.enabled).toBe(true);
         yield* runTelemetryDisable(config, {apply: true});
         const disabled = yield* readTelemetryConfiguration(config);
-        expect(disabled).toEqual({consentVersion: 1, enabled: false, version: 1});
+        expect(disabled).toEqual({consentVersion: 2, enabled: false, version: 1});
         expect(yield* fs.readFileString(yield* telemetryConfigurationPath(config))).not.toContain('sessionSalt');
       }),
     ).pipe(provideTestLayer(ApplicationLayer)),

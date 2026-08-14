@@ -352,6 +352,8 @@ function parseMaterializationMetrics(value: unknown): CodeGraphMaterializationMe
   for (const key of [
     'cachedFactBytesCompleted',
     'cachedFactBytesTotal',
+    'cachedFactReplayBytesCompleted',
+    'changedFactBytesCompleted',
     'factsBytesCompleted',
     'factsBytesTotal',
   ] as const) {
@@ -395,6 +397,12 @@ function parseMaterializationMetrics(value: unknown): CodeGraphMaterializationMe
       ? {}
       : {cachedFactBytesCompleted: Number(value.cachedFactBytesCompleted)}),
     ...(value.cachedFactBytesTotal === undefined ? {} : {cachedFactBytesTotal: Number(value.cachedFactBytesTotal)}),
+    ...(value.cachedFactReplayBytesCompleted === undefined
+      ? {}
+      : {cachedFactReplayBytesCompleted: Number(value.cachedFactReplayBytesCompleted)}),
+    ...(value.changedFactBytesCompleted === undefined
+      ? {}
+      : {changedFactBytesCompleted: Number(value.changedFactBytesCompleted)}),
     ...(value.factsBytesCompleted === undefined ? {} : {factsBytesCompleted: Number(value.factsBytesCompleted)}),
     ...(value.factsBytesTotal === undefined ? {} : {factsBytesTotal: Number(value.factsBytesTotal)}),
     ...(value.loadingMilliseconds === undefined ? {} : {loadingMilliseconds: Number(value.loadingMilliseconds)}),

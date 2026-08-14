@@ -22,3 +22,4 @@
 !infra/telemetry-gateway/internal/budget/budget_test.go
 !infra/telemetry-gateway/schema.go
 !infra/telemetry-gateway/telemetry-schema-v1.json
+!infra/telemetry-gateway/telemetry-schema-v2.json

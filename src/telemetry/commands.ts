@@ -23,9 +23,9 @@ export interface TelemetryDisableOptions {
 }
 
 const TELEMETRY_DATA_SUMMARY =
-  'General CLI and MCP operations, event timestamps and durations, bounded runtime memory/resource observations, phases/state, safe typed failures, app/runtime/schema versions, platform, architecture, and random session/invocation/OTLP transport IDs.';
+  'General CLI and MCP operations, event timestamps and durations, outcomes, bounded runtime memory/resource observations, phases/state, safe typed failures, app/runtime/schema versions, platform, architecture, and random session/invocation/OTLP transport IDs. Successful graph builds additionally include coarse build-kind/materialization/fallback/closure/efficiency classifications, changed/deleted/delta/extracted/reused/staged/total file-count buckets, cached/changed/final fact-byte buckets, and rewrite/replay-amplification buckets. Failed graph builds add only bounded outcome/type to that lifecycle surface; interrupted graph builds add only outcome/duration. Neither adds graph classifications or buckets.';
 const TELEMETRY_EXCLUSION_SUMMARY =
-  'Never arguments, environment values, memory or prompt content, recall queries/results, MCP payloads/results, paths, repository identity, exception messages/stacks, user, account, or agent IDs.';
+  'Never arguments, environment values, memory or prompt content, recall queries/results, MCP payloads/results, paths, repository or commit identity, exception messages/stacks, user, account, or agent IDs.';
 const FIRST_PARTY_DESTINATION_SUMMARY =
   'Destination policy: the first-party gateway forwards accepted traces to Grafana Cloud EU with 14-day trace retention; transport providers process source IP addresses, but Threadnote does not store them in telemetry or emit access logs.';
 const CUSTOM_DESTINATION_SUMMARY = 'Destination policy: The selected endpoint operator controls storage and retention.';

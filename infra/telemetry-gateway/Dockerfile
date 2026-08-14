@@ -8,6 +8,7 @@ COPY infra/telemetry-gateway/gateway.go ./gateway.go
 COPY infra/telemetry-gateway/gateway_test.go ./gateway_test.go
 COPY infra/telemetry-gateway/schema.go ./schema.go
 COPY infra/telemetry-gateway/telemetry-schema-v1.json ./telemetry-schema-v1.json
+COPY infra/telemetry-gateway/telemetry-schema-v2.json ./telemetry-schema-v2.json
 COPY infra/telemetry-gateway/cmd ./cmd
 COPY infra/telemetry-gateway/internal ./internal
 RUN go test ./... && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags='-s -w' -o /out/threadnote-gateway .

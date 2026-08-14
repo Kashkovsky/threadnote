@@ -16,7 +16,7 @@ import {
 } from '../telemetry/diagnostic.js';
 import {safeAnonymousTelemetryOperation} from '../telemetry/operations.js';
 
-const TELEMETRY_SCHEMA_VERSION = 1;
+const TELEMETRY_SCHEMA_VERSION = 2;
 const TELEMETRY_VERSION_MAX_BYTES = 96;
 const FIRST_CHECKPOINT_DELAY = '30 seconds';
 const CHECKPOINT_INTERVAL = '60 seconds';
@@ -100,10 +100,59 @@ export const ANONYMOUS_TELEMETRY_WAITING_REASONS = [
 
 export type AnonymousTelemetryWaitingReason = (typeof ANONYMOUS_TELEMETRY_WAITING_REASONS)[number];
 
+const ANONYMOUS_TELEMETRY_GRAPH_BUILD_KINDS = ['clean', 'dirty'] as const;
+const ANONYMOUS_TELEMETRY_GRAPH_EFFICIENCY_CLASSES = [
+  'critical-amplification-full',
+  'expected-full',
+  'full',
+  'high-amplification-full',
+  'incremental',
+  'small-delta-full',
+] as const;
+const ANONYMOUS_TELEMETRY_GRAPH_FALLBACK_REASONS = [
+  'cache-incomplete',
+  'disabled',
+  'dynamic-aliases',
+  'extractor-context-changed',
+  'fact-budget-expanded',
+  'file-set-changed',
+  'forced-full-rebuild',
+  'incremental-rewrite-unbounded',
+  'no-materialized-changes',
+  'none',
+  'project-closure-incomplete',
+  'project-closure-unbounded',
+  'reexport-closure-unbounded',
+  'resolution-surface-changed',
+  'staging-identity-mismatch',
+  'staging-unavailable',
+  'workspace-changed',
+] as const;
+const ANONYMOUS_TELEMETRY_GRAPH_MATERIALIZATION_MODES = [
+  'full',
+  'incremental-clean',
+  'incremental-overlay',
+  'reused-snapshot',
+] as const;
+const ANONYMOUS_TELEMETRY_GRAPH_RESOLUTION_CLOSURES = ['changed', 'full', 'none', 'project'] as const;
+
+type AnonymousTelemetryGraphBuildKind = (typeof ANONYMOUS_TELEMETRY_GRAPH_BUILD_KINDS)[number];
+type AnonymousTelemetryGraphEfficiencyClass = (typeof ANONYMOUS_TELEMETRY_GRAPH_EFFICIENCY_CLASSES)[number];
+type AnonymousTelemetryGraphFallbackReason = (typeof ANONYMOUS_TELEMETRY_GRAPH_FALLBACK_REASONS)[number];
+type AnonymousTelemetryGraphMaterializationMode = (typeof ANONYMOUS_TELEMETRY_GRAPH_MATERIALIZATION_MODES)[number];
+type AnonymousTelemetryGraphResolutionClosure = (typeof ANONYMOUS_TELEMETRY_GRAPH_RESOLUTION_CLOSURES)[number];
+type AnonymousTelemetryQuantityBucket = '0' | `2^${number}`;
+
 export interface AnonymousTelemetryFields {
   readonly batchesCompleted?: number;
   readonly batchesTotal?: number;
+  readonly buildKind?: AnonymousTelemetryGraphBuildKind;
+  readonly cachedFactReplayBytesBucket?: AnonymousTelemetryQuantityBucket;
+  readonly changedFactBytesBucket?: AnonymousTelemetryQuantityBucket;
+  readonly changedFilesBucket?: AnonymousTelemetryQuantityBucket;
   readonly completed?: number;
+  readonly deletedFilesBucket?: AnonymousTelemetryQuantityBucket;
+  readonly deltaFilesBucket?: AnonymousTelemetryQuantityBucket;
   readonly degradedFiles?: number;
   readonly degradationReason?:
     | 'abort'
@@ -119,20 +168,31 @@ export interface AnonymousTelemetryFields {
     | 'timeout'
     | 'write';
   readonly elapsedMilliseconds?: number;
+  readonly efficiencyClass?: AnonymousTelemetryGraphEfficiencyClass;
+  readonly extractedFilesBucket?: AnonymousTelemetryQuantityBucket;
   readonly extractionMilliseconds?: number;
   readonly factsBytesCompleted?: number;
   readonly factsBytesTotal?: number;
+  readonly factReplayAmplificationBucket?: AnonymousTelemetryQuantityBucket;
+  readonly fallbackReason?: AnonymousTelemetryGraphFallbackReason;
+  readonly finalFactBytesBucket?: AnonymousTelemetryQuantityBucket;
+  readonly mode?: AnonymousTelemetryGraphMaterializationMode;
   readonly operationElapsedMilliseconds?: number;
   readonly persistenceMilliseconds?: number;
   readonly phase?: AnonymousTelemetryPhase;
   readonly phaseOutcome?: 'failure' | 'interrupted' | 'success' | 'timed-out' | 'unavailable';
   readonly readingMilliseconds?: number;
+  readonly resolutionClosure?: AnonymousTelemetryGraphResolutionClosure;
+  readonly reusedFilesBucket?: AnonymousTelemetryQuantityBucket;
+  readonly rewriteAmplificationBucket?: AnonymousTelemetryQuantityBucket;
   readonly sourceBytesCompleted?: number;
   readonly sourceBytesTotal?: number;
   readonly stage?: AnonymousTelemetryStage;
   readonly stageElapsedMilliseconds?: number;
+  readonly stagedFilesBucket?: AnonymousTelemetryQuantityBucket;
   readonly subphase?: AnonymousTelemetrySubphase;
   readonly total?: number;
+  readonly totalFilesBucket?: AnonymousTelemetryQuantityBucket;
   readonly transactionMilliseconds?: number;
   readonly workUnitsCompleted?: number;
   readonly workUnitsTotal?: number;
@@ -181,6 +241,8 @@ interface AnonymousTelemetryService {
 interface AnonymousTelemetryEventOptions {
   readonly component: 'cli' | 'mcp';
   readonly diagnostic?: AnonymousTelemetryDiagnostic;
+  /** Wall-clock duration of a terminal lifecycle event. */
+  readonly durationMilliseconds?: number;
   readonly errorType?: string;
   readonly event?: 'checkpoint' | 'lifecycle';
   readonly fields?: AnonymousTelemetryFields;
@@ -312,7 +374,7 @@ function makeAnonymousTelemetryService(
                 event.outcome === undefined
                   ? undefined
                   : {
-                      durationMilliseconds: event.fields?.elapsedMilliseconds ?? 0,
+                      durationMilliseconds: event.durationMilliseconds ?? event.fields?.elapsedMilliseconds ?? 0,
                       ...(diagnostic === undefined ? {} : {diagnostic}),
                       ...(errorType === undefined ? {} : {errorType}),
                       outcome: event.outcome,
@@ -640,6 +702,34 @@ function telemetryFieldAttributes(fields: AnonymousTelemetryFields | undefined):
   if (fields.waitingReason !== undefined && ANONYMOUS_TELEMETRY_WAITING_REASONS.includes(fields.waitingReason)) {
     attributes['threadnote.waiting_reason'] = fields.waitingReason;
   }
+  if (fields.buildKind !== undefined && ANONYMOUS_TELEMETRY_GRAPH_BUILD_KINDS.includes(fields.buildKind)) {
+    attributes['threadnote.graph.build_kind'] = fields.buildKind;
+  }
+  if (
+    fields.efficiencyClass !== undefined &&
+    ANONYMOUS_TELEMETRY_GRAPH_EFFICIENCY_CLASSES.includes(fields.efficiencyClass)
+  ) {
+    attributes['threadnote.graph.efficiency_class'] = fields.efficiencyClass;
+  }
+  if (
+    fields.fallbackReason !== undefined &&
+    ANONYMOUS_TELEMETRY_GRAPH_FALLBACK_REASONS.includes(fields.fallbackReason)
+  ) {
+    attributes['threadnote.graph.fallback_reason'] = fields.fallbackReason;
+  }
+  if (fields.mode !== undefined && ANONYMOUS_TELEMETRY_GRAPH_MATERIALIZATION_MODES.includes(fields.mode)) {
+    attributes['threadnote.graph.materialization_mode'] = fields.mode;
+  }
+  if (
+    fields.resolutionClosure !== undefined &&
+    ANONYMOUS_TELEMETRY_GRAPH_RESOLUTION_CLOSURES.includes(fields.resolutionClosure)
+  ) {
+    attributes['threadnote.graph.resolution_closure'] = fields.resolutionClosure;
+  }
+  for (const [key, attribute] of Object.entries(GRAPH_QUANTITY_BUCKET_ATTRIBUTE_KEYS)) {
+    const value = fields[key as GraphQuantityBucketField];
+    if (value !== undefined && isQuantityBucket(value)) attributes[attribute] = value;
+  }
   for (const [key, value] of Object.entries(fields)) {
     if (
       key === 'phase' ||
@@ -663,8 +753,48 @@ function telemetryFieldAttributes(fields: AnonymousTelemetryFields | undefined):
 
 type NumericTelemetryField = Exclude<
   keyof AnonymousTelemetryFields,
-  'degradationReason' | 'phase' | 'phaseOutcome' | 'stage' | 'subphase' | 'waitingReason'
+  | GraphQuantityBucketField
+  | 'buildKind'
+  | 'degradationReason'
+  | 'efficiencyClass'
+  | 'fallbackReason'
+  | 'mode'
+  | 'phase'
+  | 'phaseOutcome'
+  | 'resolutionClosure'
+  | 'stage'
+  | 'subphase'
+  | 'waitingReason'
 >;
+
+type GraphQuantityBucketField =
+  | 'cachedFactReplayBytesBucket'
+  | 'changedFactBytesBucket'
+  | 'changedFilesBucket'
+  | 'deletedFilesBucket'
+  | 'deltaFilesBucket'
+  | 'extractedFilesBucket'
+  | 'factReplayAmplificationBucket'
+  | 'finalFactBytesBucket'
+  | 'reusedFilesBucket'
+  | 'rewriteAmplificationBucket'
+  | 'stagedFilesBucket'
+  | 'totalFilesBucket';
+
+const GRAPH_QUANTITY_BUCKET_ATTRIBUTE_KEYS: Readonly<Record<GraphQuantityBucketField, string>> = {
+  cachedFactReplayBytesBucket: 'threadnote.graph.cached_fact_replay_bytes_bucket',
+  changedFactBytesBucket: 'threadnote.graph.changed_fact_bytes_bucket',
+  changedFilesBucket: 'threadnote.graph.changed_files_bucket',
+  deletedFilesBucket: 'threadnote.graph.deleted_files_bucket',
+  deltaFilesBucket: 'threadnote.graph.delta_files_bucket',
+  extractedFilesBucket: 'threadnote.graph.extracted_files_bucket',
+  factReplayAmplificationBucket: 'threadnote.graph.fact_replay_amplification_bucket',
+  finalFactBytesBucket: 'threadnote.graph.final_fact_bytes_bucket',
+  reusedFilesBucket: 'threadnote.graph.reused_files_bucket',
+  rewriteAmplificationBucket: 'threadnote.graph.rewrite_amplification_bucket',
+  stagedFilesBucket: 'threadnote.graph.staged_files_bucket',
+  totalFilesBucket: 'threadnote.graph.total_files_bucket',
+};
 
 const FIELD_ATTRIBUTE_KEYS: Readonly<Record<NumericTelemetryField, string>> = {
   batchesCompleted: 'threadnote.work.batches_completed_bucket',
@@ -806,6 +936,14 @@ function quantityBucket(value: number): string {
   if (value <= 0) return '0';
   const exponent = Math.min(52, Math.floor(Math.log2(value)));
   return `2^${exponent}`;
+}
+
+function isQuantityBucket(value: string): value is AnonymousTelemetryQuantityBucket {
+  if (value === '0') return true;
+  const match = /^2\^(\d{1,2})$/u.exec(value);
+  if (match === null) return false;
+  const exponent = Number(match[1]);
+  return Number.isInteger(exponent) && exponent >= 0 && exponent <= 52;
 }
 
 function boundedNumber(value: number): number {

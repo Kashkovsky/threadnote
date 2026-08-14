@@ -37,7 +37,7 @@ processors:
           - not IsString(resource.attributes["session.id"])
           - not IsMatch(resource.attributes["session.id"], "^tns_[0-9a-f]{32}$$")
           - resource.attributes["threadnote.session.scope"] != "broker" and resource.attributes["threadnote.session.scope"] != "invocation" and resource.attributes["threadnote.session.scope"] != "provider-session"
-          - resource.attributes["threadnote.telemetry.schema_version"] != 1
+          - resource.attributes["threadnote.telemetry.schema_version"] != 1 and resource.attributes["threadnote.telemetry.schema_version"] != 2
       - context: scope
         conditions:
           - scope.name != "threadnote"
@@ -83,6 +83,23 @@ processors:
               "threadnote.failure.recovery",
               "threadnote.failure.retryable",
               "threadnote.graph.degradation_reason",
+              "threadnote.graph.build_kind",
+              "threadnote.graph.cached_fact_replay_bytes_bucket",
+              "threadnote.graph.changed_fact_bytes_bucket",
+              "threadnote.graph.changed_files_bucket",
+              "threadnote.graph.deleted_files_bucket",
+              "threadnote.graph.delta_files_bucket",
+              "threadnote.graph.efficiency_class",
+              "threadnote.graph.extracted_files_bucket",
+              "threadnote.graph.fact_replay_amplification_bucket",
+              "threadnote.graph.fallback_reason",
+              "threadnote.graph.final_fact_bytes_bucket",
+              "threadnote.graph.materialization_mode",
+              "threadnote.graph.resolution_closure",
+              "threadnote.graph.reused_files_bucket",
+              "threadnote.graph.rewrite_amplification_bucket",
+              "threadnote.graph.staged_files_bucket",
+              "threadnote.graph.total_files_bucket",
               "threadnote.invocation.id",
               "threadnote.memory.external.current_bucket",
               "threadnote.memory.external.end_bucket",

@@ -271,6 +271,8 @@ export interface GraphBuildStatus {
       readonly batchesTotal: number;
       readonly cachedFactBytesCompleted?: number;
       readonly cachedFactBytesTotal?: number;
+      readonly cachedFactReplayBytesCompleted?: number;
+      readonly changedFactBytesCompleted?: number;
       readonly fallbackReason?: string;
       readonly factsBytesCompleted?: number;
       readonly factsBytesTotal?: number;

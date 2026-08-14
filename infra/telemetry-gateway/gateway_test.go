@@ -150,9 +150,6 @@ func validTelemetryPayload(t *testing.T) []byte {
 }
 
 func validTelemetryRequest() *collectortracepb.ExportTraceServiceRequest {
-	intValue := func(value int64) *commonpb.AnyValue {
-		return &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: value}}
-	}
 	attribute := func(key string, value *commonpb.AnyValue) *commonpb.KeyValue {
 		return &commonpb.KeyValue{Key: key, Value: value}
 	}
@@ -162,7 +159,7 @@ func validTelemetryRequest() *collectortracepb.ExportTraceServiceRequest {
 			attribute("service.version", stringAnyValue("4.2.2")),
 			attribute("session.id", stringAnyValue("tns_000102030405060708090a0b0c0d0e0f")),
 			attribute("threadnote.session.scope", stringAnyValue("invocation")),
-			attribute("threadnote.telemetry.schema_version", intValue(1)),
+			attribute("threadnote.telemetry.schema_version", intAnyValue(1)),
 		}},
 		ScopeSpans: []*tracepb.ScopeSpans{{
 			Scope: &commonpb.InstrumentationScope{Name: "threadnote"},
@@ -177,7 +174,7 @@ func validTelemetryRequest() *collectortracepb.ExportTraceServiceRequest {
 					attribute("threadnote.runtime.architecture", stringAnyValue("arm64")),
 					attribute("threadnote.runtime.platform", stringAnyValue("darwin")),
 					attribute("threadnote.runtime.version", stringAnyValue("1.3.14")),
-					attribute("threadnote.duration_ms", intValue(1)),
+					attribute("threadnote.duration_ms", intAnyValue(1)),
 					attribute("threadnote.outcome", stringAnyValue("success")),
 				},
 				Status: &tracepb.Status{Code: tracepb.Status_STATUS_CODE_OK},
@@ -187,11 +184,189 @@ func validTelemetryRequest() *collectortracepb.ExportTraceServiceRequest {
 	return request
 }
 
-func TestIngressRejectsAdversarialTelemetryAtomically(t *testing.T) {
-	schema, err := loadTelemetrySchema()
+func validTelemetryV2Request() *collectortracepb.ExportTraceServiceRequest {
+	request := validTelemetryRequest()
+	resourceAttribute(request, "threadnote.telemetry.schema_version").Value = intAnyValue(2)
+	span := request.ResourceSpans[0].ScopeSpans[0].Spans[0]
+	spanAttribute(request, "threadnote.event").Value = stringAnyValue("lifecycle")
+	spanAttribute(request, "threadnote.operation").Value = stringAnyValue("graph-build")
+	span.Attributes = append(span.Attributes,
+		stringKeyValue("threadnote.graph.build_kind", "dirty"),
+		stringKeyValue("threadnote.graph.materialization_mode", "full"),
+		stringKeyValue("threadnote.graph.fallback_reason", "resolution-surface-changed"),
+		stringKeyValue("threadnote.graph.resolution_closure", "full"),
+		stringKeyValue("threadnote.graph.efficiency_class", "high-amplification-full"),
+	)
+	for _, key := range []string{
+		"threadnote.graph.changed_files_bucket",
+		"threadnote.graph.deleted_files_bucket",
+		"threadnote.graph.delta_files_bucket",
+		"threadnote.graph.extracted_files_bucket",
+		"threadnote.graph.reused_files_bucket",
+		"threadnote.graph.staged_files_bucket",
+		"threadnote.graph.total_files_bucket",
+		"threadnote.graph.cached_fact_replay_bytes_bucket",
+		"threadnote.graph.changed_fact_bytes_bucket",
+		"threadnote.graph.final_fact_bytes_bucket",
+		"threadnote.graph.rewrite_amplification_bucket",
+		"threadnote.graph.fact_replay_amplification_bucket",
+	} {
+		span.Attributes = append(span.Attributes, stringKeyValue(key, "2^1"))
+	}
+	return request
+}
+
+func validTelemetryV2CompletionRequest() *collectortracepb.ExportTraceServiceRequest {
+	request := validTelemetryRequest()
+	resourceAttribute(request, "threadnote.telemetry.schema_version").Value = intAnyValue(2)
+	return request
+}
+
+func TestCanonicalTelemetryPayloadAcceptsFrozenV1AndTerminalV2(t *testing.T) {
+	schemas, err := loadTelemetrySchemas()
 	if err != nil {
 		t.Fatal(err)
 	}
+	for _, request := range []*collectortracepb.ExportTraceServiceRequest{
+		validTelemetryRequest(),
+		validTelemetryV2CompletionRequest(),
+		validTelemetryV2Request(),
+	} {
+		payload, marshalError := (proto.MarshalOptions{Deterministic: true}).Marshal(request)
+		if marshalError != nil {
+			t.Fatal(marshalError)
+		}
+		canonical, validationError := canonicalTelemetryPayload(payload, schemas)
+		if validationError != nil {
+			t.Fatalf("valid schema version was rejected: %v", validationError)
+		}
+		if !bytes.Equal(canonical, payload) {
+			t.Fatal("valid canonical telemetry was changed")
+		}
+	}
+}
+
+func TestCanonicalTelemetryPayloadRejectsSchemaMixingAndInvalidV2Shapes(t *testing.T) {
+	schemas, err := loadTelemetrySchemas()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name   string
+		mutate func(*collectortracepb.ExportTraceServiceRequest)
+	}{
+		{name: "mixed resource schema versions", mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			v1 := validTelemetryRequest().ResourceSpans[0]
+			request.ResourceSpans = append(request.ResourceSpans, v1)
+		}},
+		{name: "v2 attribute under v1 resource", mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			resourceAttribute(request, "threadnote.telemetry.schema_version").Value = intAnyValue(1)
+		}},
+		{name: "unknown schema version", mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			resourceAttribute(request, "threadnote.telemetry.schema_version").Value = intAnyValue(3)
+		}},
+		{name: "wrong schema version type", mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			resourceAttribute(request, "threadnote.telemetry.schema_version").Value = stringAnyValue("2")
+		}},
+		{name: "unknown graph classification", mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			spanAttribute(request, "threadnote.graph.efficiency_class").Value = stringAnyValue("private-repository")
+		}},
+		{name: "wrong graph classification type", mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			spanAttribute(request, "threadnote.graph.build_kind").Value = intAnyValue(1)
+		}},
+		{name: "wrong graph bucket type", mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			spanAttribute(request, "threadnote.graph.changed_files_bucket").Value = intAnyValue(2)
+		}},
+		{name: "out of range graph bucket", mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			spanAttribute(request, "threadnote.graph.changed_files_bucket").Value = stringAnyValue("2^53")
+		}},
+		{name: "incomplete success surface", mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			removeSpanAttribute(request, "threadnote.graph.total_files_bucket")
+		}},
+		{name: "graph attributes outside lifecycle", mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			spanAttribute(request, "threadnote.event").Value = stringAnyValue("completion")
+		}},
+		{name: "partial graph attributes on failure", mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			spanAttribute(request, "threadnote.outcome").Value = stringAnyValue("failure")
+			request.ResourceSpans[0].ScopeSpans[0].Spans[0].Attributes = append(
+				request.ResourceSpans[0].ScopeSpans[0].Spans[0].Attributes,
+				stringKeyValue("error.type", "UnknownError"),
+			)
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := validTelemetryV2Request()
+			test.mutate(request)
+			payload, marshalError := (proto.MarshalOptions{Deterministic: true}).Marshal(request)
+			if marshalError != nil {
+				t.Fatal(marshalError)
+			}
+			if _, validationError := canonicalTelemetryPayload(payload, schemas); validationError == nil {
+				t.Fatal("invalid or mixed telemetry schema was accepted")
+			}
+		})
+	}
+}
+
+func TestCanonicalTelemetryPayloadAllowsBoundedNonSuccessfulV2GraphLifecycle(t *testing.T) {
+	schemas, err := loadTelemetrySchemas()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, outcome := range []string{"failure", "interrupted"} {
+		t.Run(outcome, func(t *testing.T) {
+			request := validTelemetryV2Request()
+			spanAttribute(request, "threadnote.outcome").Value = stringAnyValue(outcome)
+			if outcome == "failure" {
+				request.ResourceSpans[0].ScopeSpans[0].Spans[0].Attributes = append(
+					request.ResourceSpans[0].ScopeSpans[0].Spans[0].Attributes,
+					stringKeyValue("error.type", "UnknownError"),
+				)
+			}
+			for _, key := range terminalGraphSpanAttributes {
+				removeSpanAttribute(request, key)
+			}
+			payload, marshalError := (proto.MarshalOptions{Deterministic: true}).Marshal(request)
+			if marshalError != nil {
+				t.Fatal(marshalError)
+			}
+			if _, validationError := canonicalTelemetryPayload(payload, schemas); validationError != nil {
+				t.Fatalf("bounded %s graph lifecycle was rejected: %v", outcome, validationError)
+			}
+		})
+	}
+}
+
+func TestCanonicalTelemetryPayloadRejectsArbitraryPrivateGraphClassifications(t *testing.T) {
+	schemas, err := loadTelemetrySchemas()
+	if err != nil {
+		t.Fatal(err)
+	}
+	property := func(value string) bool {
+		digest := sha256.Sum256([]byte(value))
+		request := validTelemetryV2Request()
+		spanAttribute(request, "threadnote.graph.fallback_reason").Value = stringAnyValue(
+			"private-" + hex.EncodeToString(digest[:]),
+		)
+		payload, marshalError := proto.Marshal(request)
+		if marshalError != nil {
+			return false
+		}
+		_, validationError := canonicalTelemetryPayload(payload, schemas)
+		return validationError != nil
+	}
+	if propertyError := quick.Check(property, &quick.Config{MaxCount: 32}); propertyError != nil {
+		t.Fatal(propertyError)
+	}
+}
+
+func TestIngressRejectsAdversarialTelemetryAtomically(t *testing.T) {
+	schemas, err := loadTelemetrySchemas()
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema := schemas.byVersion[1]
 	valid := validTelemetryRequest()
 	tests := []struct {
 		name   string
@@ -256,7 +431,7 @@ func TestIngressRejectsAdversarialTelemetryAtomically(t *testing.T) {
 			if marshalError != nil {
 				t.Fatal(marshalError)
 			}
-			if _, validationError := canonicalTelemetryPayload(payload, schema); validationError == nil {
+			if _, validationError := canonicalTelemetryPayload(payload, schemas); validationError == nil {
 				t.Fatal("adversarial telemetry was accepted")
 			}
 		})
@@ -264,7 +439,7 @@ func TestIngressRejectsAdversarialTelemetryAtomically(t *testing.T) {
 }
 
 func TestCanonicalTelemetryPayloadRejectsDuplicateSingularWireFields(t *testing.T) {
-	schema, err := loadTelemetrySchema()
+	schemas, err := loadTelemetrySchemas()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -275,7 +450,7 @@ func TestCanonicalTelemetryPayloadRejectsDuplicateSingularWireFields(t *testing.
 		t.Fatal(marshalError)
 	}
 	duplicateTopLevel := append(append([]byte(nil), valid...), protowire.AppendBytes(protowire.AppendTag(nil, 1, protowire.BytesType), resourceSpans)...)
-	if _, validationError := canonicalTelemetryPayload(duplicateTopLevel, schema); validationError == nil {
+	if _, validationError := canonicalTelemetryPayload(duplicateTopLevel, schemas); validationError == nil {
 		t.Fatal("duplicate top-level resource_spans was accepted")
 	}
 
@@ -377,6 +552,10 @@ func stringAnyValue(value string) *commonpb.AnyValue {
 	return &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: value}}
 }
 
+func intAnyValue(value int64) *commonpb.AnyValue {
+	return &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: value}}
+}
+
 func stringKeyValue(key, value string) *commonpb.KeyValue {
 	return &commonpb.KeyValue{Key: key, Value: stringAnyValue(value)}
 }
@@ -388,6 +567,25 @@ func spanAttribute(request *collectortracepb.ExportTraceServiceRequest, key stri
 		}
 	}
 	panic("missing fixture attribute")
+}
+
+func resourceAttribute(request *collectortracepb.ExportTraceServiceRequest, key string) *commonpb.KeyValue {
+	for _, attribute := range request.ResourceSpans[0].Resource.Attributes {
+		if attribute.Key == key {
+			return attribute
+		}
+	}
+	panic("missing fixture resource attribute")
+}
+
+func removeSpanAttribute(request *collectortracepb.ExportTraceServiceRequest, key string) {
+	span := request.ResourceSpans[0].ScopeSpans[0].Spans[0]
+	for index, attribute := range span.Attributes {
+		if attribute.Key == key {
+			span.Attributes = append(span.Attributes[:index], span.Attributes[index+1:]...)
+			return
+		}
+	}
 }
 
 func TestConfigurationAcceptsOnlyGrafanaHTTPSOTLP(t *testing.T) {
@@ -485,7 +683,7 @@ func TestAcceptedByteBudgetStaysInsideTheFreeTierEnvelope(t *testing.T) {
 }
 
 func TestRejectedTelemetryDoesNotConsumeTheAcceptedByteBudget(t *testing.T) {
-	schema, schemaError := loadTelemetrySchema()
+	schemas, schemaError := loadTelemetrySchemas()
 	if schemaError != nil {
 		t.Fatal(schemaError)
 	}
@@ -498,7 +696,7 @@ func TestRejectedTelemetryDoesNotConsumeTheAcceptedByteBudget(t *testing.T) {
 		if marshalError != nil {
 			t.Fatal(marshalError)
 		}
-		if canonical, validationError := canonicalTelemetryPayload(payload, schema); validationError == nil {
+		if canonical, validationError := canonicalTelemetryPayload(payload, schemas); validationError == nil {
 			if !limiter.allowBytes("source", len(canonical), now) {
 				t.Fatal("unexpected byte-budget rejection")
 			}

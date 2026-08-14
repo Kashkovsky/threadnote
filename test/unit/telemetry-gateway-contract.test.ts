@@ -11,7 +11,7 @@ import {safeAnonymousTelemetryOperation} from '../../src/telemetry/operations.js
 import {readFileSync} from '../helpers/node-fs.js';
 import {join} from '../helpers/node-path.js';
 
-interface TelemetrySchemaV1 {
+interface TelemetrySchema {
   readonly attributeContract: {
     readonly booleanSpan: readonly string[];
     readonly integerSpan: readonly string[];
@@ -36,9 +36,12 @@ const effectTelemetrySource = sourceFile('src/effect/telemetry.ts');
 const diagnosticSource = sourceFile('src/telemetry/diagnostic.ts');
 const diskCapacitySource = sourceFile('src/code_graph/disk_capacity.ts');
 const operationsSource = sourceFile('src/telemetry/operations.ts');
-const schema = JSON.parse(
+const schemaV1 = JSON.parse(
   readFileSync(join(root, 'infra', 'telemetry-gateway', 'telemetry-schema-v1.json'), 'utf8'),
-) as TelemetrySchemaV1;
+) as TelemetrySchema;
+const schema = JSON.parse(
+  readFileSync(join(root, 'infra', 'telemetry-gateway', 'telemetry-schema-v2.json'), 'utf8'),
+) as TelemetrySchema;
 
 describe('telemetry producer and production gateway schema', () => {
   it('keeps the exact producer resource and span attribute surface', () => {
@@ -78,6 +81,50 @@ describe('telemetry producer and production gateway schema', () => {
       'threadnote.runtime.platform',
       'threadnote.runtime.version',
     ]);
+  });
+
+  it('retains the frozen v1 boundary while v2 adds only the closed graph-build surface', () => {
+    expect(schemaV1.schemaVersion).toBe(1);
+    expect(schema.schemaVersion).toBe(2);
+    expect(schemaV1.attributeContract.resource).toEqual(schema.attributeContract.resource);
+    expect(
+      schemaV1.attributeContract.span.some(
+        key => key.startsWith('threadnote.graph.') && key !== 'threadnote.graph.degradation_reason',
+      ),
+    ).toBe(false);
+
+    const graphAttributes = schema.attributeContract.span.filter(
+      key => key.startsWith('threadnote.graph.') && key !== 'threadnote.graph.degradation_reason',
+    );
+    expect(graphAttributes).toEqual([
+      'threadnote.graph.build_kind',
+      'threadnote.graph.cached_fact_replay_bytes_bucket',
+      'threadnote.graph.changed_fact_bytes_bucket',
+      'threadnote.graph.changed_files_bucket',
+      'threadnote.graph.deleted_files_bucket',
+      'threadnote.graph.delta_files_bucket',
+      'threadnote.graph.efficiency_class',
+      'threadnote.graph.extracted_files_bucket',
+      'threadnote.graph.fact_replay_amplification_bucket',
+      'threadnote.graph.fallback_reason',
+      'threadnote.graph.final_fact_bytes_bucket',
+      'threadnote.graph.materialization_mode',
+      'threadnote.graph.resolution_closure',
+      'threadnote.graph.reused_files_bucket',
+      'threadnote.graph.rewrite_amplification_bucket',
+      'threadnote.graph.staged_files_bucket',
+      'threadnote.graph.total_files_bucket',
+    ]);
+    expect(graphAttributes.some(key => /(?:repository|path|commit|session|invocation)/u.test(key))).toBe(false);
+    const collector = readFileSync(join(root, 'infra', 'telemetry-gateway', 'collector.yaml'), 'utf8');
+    const canarySource = readFileSync(join(root, 'infra', 'telemetry-gateway', 'cmd', 'canary', 'main.go'), 'utf8');
+    expect(collector).toContain(
+      'resource.attributes["threadnote.telemetry.schema_version"] != 1 and resource.attributes["threadnote.telemetry.schema_version"] != 2',
+    );
+    for (const attribute of graphAttributes) {
+      expect(collector).toContain(`"${attribute}"`);
+      expect(canarySource).toContain(`"${attribute}"`);
+    }
   });
 
   it('keeps every closed producer registry identical to the gateway boundary', () => {
@@ -126,7 +173,7 @@ describe('telemetry producer and production gateway schema', () => {
   it('packages the canonical schema into the production gateway image', () => {
     const dockerfile = readFileSync(join(root, 'infra', 'telemetry-gateway', 'Dockerfile'), 'utf8');
     const dockerignore = readFileSync(join(root, '.dockerignore'), 'utf8');
-    for (const file of ['go.sum', 'schema.go', 'telemetry-schema-v1.json']) {
+    for (const file of ['go.sum', 'schema.go', 'telemetry-schema-v1.json', 'telemetry-schema-v2.json']) {
       expect(dockerfile).toContain(`infra/telemetry-gateway/${file}`);
       expect(dockerignore).toContain(`!infra/telemetry-gateway/${file}`);
     }
@@ -143,6 +190,7 @@ describe('telemetry producer and production gateway schema', () => {
     const collector = readFileSync(join(root, 'infra', 'telemetry-gateway', 'collector.yaml'), 'utf8');
     const fly = readFileSync(join(root, 'fly.toml'), 'utf8');
     const canary = readFileSync(join(root, '.github', 'workflows', 'telemetry-delivery-canary.yml'), 'utf8');
+    const canarySource = readFileSync(join(root, 'infra', 'telemetry-gateway', 'cmd', 'canary', 'main.go'), 'utf8');
     const gatewayWorkflow = readFileSync(join(root, '.github', 'workflows', 'telemetry-gateway.yml'), 'utf8');
     const runbook = readFileSync(join(root, 'docs', 'operations', 'telemetry-production.md'), 'utf8');
 
@@ -163,6 +211,9 @@ describe('telemetry producer and production gateway schema', () => {
     expect(canary).toContain('THREADNOTE_TELEMETRY_CANARY_FLY_READ_TOKEN');
     expect(canary).toContain('vars.THREADNOTE_TELEMETRY_CANARY_GATEWAY_URL');
     expect(canary).toContain('flyctl machine list --app threadnote-telemetry --json | go run ./cmd/budget');
+    expect(canarySource).toContain('[]uint64{1, 2}');
+    expect(canarySource).toContain('threadnote.graph.build_kind');
+    expect(canarySource).toContain('threadnote.graph.fact_replay_amplification_bucket');
     expect(gatewayWorkflow).toContain("if: github.event_name != 'pull_request'");
     expect(gatewayWorkflow).toContain('environment: telemetry-production');
     expect(gatewayWorkflow).toContain('THREADNOTE_TELEMETRY_CANARY_FLY_READ_TOKEN');
@@ -173,6 +224,9 @@ describe('telemetry producer and production gateway schema', () => {
     expect(runbook).toContain('50 GB');
     expect(runbook).toContain('THREADNOTE_TELEMETRY_PUBLIC_INGESTION=disabled');
     expect(runbook).toContain('THREADNOTE_TELEMETRY_CANARY_GATEWAY_URL');
+    expect(runbook).toContain('deployment order is a hard compatibility gate');
+    expect(runbook).toContain('Only after that dual-version proof succeeds');
+    expect(runbook).toContain('Keep schema-v1 ingress and canary coverage');
   });
 });
 
@@ -183,6 +237,7 @@ function producerRegistries(): Readonly<Record<string, readonly string[]>> {
     ...literalRegistry(diagnosticSource, 'CODE_GRAPH_FAILURE_OPERATIONS', {ignoreSpreads: true}),
   ];
   return {
+    buildKind: literalRegistry(effectTelemetrySource, 'ANONYMOUS_TELEMETRY_GRAPH_BUILD_KINDS'),
     component: interfacePropertyStrings(effectTelemetrySource, 'AnonymousTelemetryInvocationOptions', 'component'),
     correlationScope: interfacePropertyStrings(
       effectTelemetrySource,
@@ -190,6 +245,7 @@ function producerRegistries(): Readonly<Record<string, readonly string[]>> {
       'correlationScope',
     ),
     degradationReason: interfacePropertyStrings(effectTelemetrySource, 'AnonymousTelemetryFields', 'degradationReason'),
+    efficiencyClass: literalRegistry(effectTelemetrySource, 'ANONYMOUS_TELEMETRY_GRAPH_EFFICIENCY_CLASSES'),
     errorType: [...literalRegistry(diagnosticSource, 'SAFE_TELEMETRY_ERROR_TYPES'), 'UnknownError'],
     event: functionStringLiterals(effectTelemetrySource, 'safeEvent'),
     failureCode: literalRegistry(diagnosticSource, 'CODE_GRAPH_STORE_FAILURE_CODES'),
@@ -197,11 +253,14 @@ function producerRegistries(): Readonly<Record<string, readonly string[]>> {
     failureOperation: codeGraphFailureOperations.map(value => value.replaceAll(' ', '-')),
     failureReason: interfacePropertyStrings(diagnosticSource, 'AnonymousTelemetryDiagnostic', 'reason'),
     failureRecovery: literalRegistry(diagnosticSource, 'CODE_GRAPH_STORE_RECOVERIES'),
+    fallbackReason: literalRegistry(effectTelemetrySource, 'ANONYMOUS_TELEMETRY_GRAPH_FALLBACK_REASONS'),
     memoryBucket: functionStringLiterals(effectTelemetrySource, 'byteBucket'),
+    materializationMode: literalRegistry(effectTelemetrySource, 'ANONYMOUS_TELEMETRY_GRAPH_MATERIALIZATION_MODES'),
     modelWorkerOperation: modelWorkerOperations,
     operation: anonymousTelemetryOperations(),
     outcome: interfacePropertyStrings(effectTelemetrySource, 'AnonymousTelemetryEventOptions', 'outcome'),
     phase: ANONYMOUS_TELEMETRY_PHASES,
+    resolutionClosure: literalRegistry(effectTelemetrySource, 'ANONYMOUS_TELEMETRY_GRAPH_RESOLUTION_CLOSURES'),
     stage: ANONYMOUS_TELEMETRY_STAGES,
     subphase: ANONYMOUS_TELEMETRY_SUBPHASES,
     waitingReason: ANONYMOUS_TELEMETRY_WAITING_REASONS,

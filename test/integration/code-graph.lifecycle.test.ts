@@ -32,7 +32,11 @@ import {
   CodeGraphDiskCapacityPressureError,
 } from '../../src/code_graph/disk_capacity.js';
 import {ensureBoundedCodeGraphFact} from '../../src/code_graph/fact_budget.js';
-import {decodeStoredCodeGraphFact, encodeStoredCodeGraphFact} from '../../src/code_graph/fact_storage.js';
+import {
+  decodeStoredCodeGraphFact,
+  encodeStoredCodeGraphFact,
+  storedCodeGraphFactRawBytesSql,
+} from '../../src/code_graph/fact_storage.js';
 import {codeGraphLayout} from '../../src/code_graph/layout.js';
 import {BUILTIN_LANGUAGE_PACK_REGISTRY} from '../../src/code_graph/languages/registry.js';
 import {readPersistedCodeGraphLocalAssociation} from '../../src/code_graph/local_provenance.js';
@@ -968,93 +972,124 @@ describe('native code graph lifecycle', () => {
     }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );
 
-  it('reuses content-addressed materialized file shards during a forced clean rebuild', async () => {
-    const root = createManySourceRepository(12);
-    const home = join(root, '.threadnote-test-home');
-    const result = await runEffect(
-      Effect.gen(function* () {
-        const indexer = yield* CodeGraphIndexer;
-        const store = yield* CodeGraphStore;
-        const first = yield* indexer.index({cwd: root, threadnoteHome: home});
-        const firstGraph = yield* store.loadGraph(codeGraphDatabasePath(home, first), first.snapshot.id);
-        yield* repairCodeGraphIndexes(home, false);
-        const rebuilt = yield* indexer.index({cwd: root, force: true, threadnoteHome: home});
-        const databasePath = codeGraphDatabasePath(home, rebuilt);
-        return {
-          databasePath,
-          first,
-          firstGraph,
-          rebuilt,
-          rebuiltGraph: yield* store.loadGraph(databasePath, rebuilt.snapshot.id),
-        };
-      }),
-    );
+  effectIt.effect('counts raw cached facts actually replayed by a first full materialization', () =>
+    Effect.gen(function* () {
+      const root = createManySourceRepository(12);
+      const home = join(root, '.threadnote-test-home');
+      const progress: CodeGraphProgress[] = [];
+      const indexer = yield* CodeGraphIndexer;
+      yield* indexer.index({
+        cwd: root,
+        onProgress: current => Effect.sync(() => progress.push(current)),
+        threadnoteHome: home,
+      });
 
-    expect(result.rebuilt.materialization).toEqual({mode: 'full', stagedFiles: 12, totalFiles: 12});
-    expect(result.rebuilt.diagnostics).toContain('Reused content-addressed materialized shards for 12 file(s).');
-    const database = new Database(result.databasePath, {readonly: true});
-    try {
-      const shards = database
-        .query<{readonly count: number}, []>('SELECT COUNT(*) AS count FROM materialized_file_shards')
-        .get();
-      const references = database
-        .query<{readonly count: number}, [string]>(
-          `SELECT COUNT(*) AS count
-           FROM snapshot_file_shards
-           WHERE snapshot_id = ?`,
-        )
-        .get(result.rebuilt.snapshot.id);
-      expect(shards?.count).toBe(12);
-      expect(references?.count).toBe(12);
-    } finally {
-      database.close();
-    }
-    expect(normalizeStoredGraph(result.rebuiltGraph)).toEqual(normalizeStoredGraph(result.firstGraph));
-  });
+      const metrics = finalFullMaterializationMetrics(progress);
+      expect(metrics.cachedFactReplayBytesCompleted).toBe(metrics.cachedFactBytesTotal);
+      expect(metrics.cachedFactReplayBytesCompleted).toBeGreaterThan(0);
+    }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
 
-  it('falls back to complete attribution when a materialized shard set is partial', async () => {
-    const root = createManySourceRepository(12);
-    const home = join(root, '.threadnote-test-home');
-    const first = await runEffect(
-      Effect.gen(function* () {
-        const indexer = yield* CodeGraphIndexer;
-        return yield* indexer.index({cwd: root, threadnoteHome: home});
-      }),
-    );
-    const databasePath = codeGraphDatabasePath(home, first);
-    const firstGraph = await runEffect(
-      Effect.gen(function* () {
-        const store = yield* CodeGraphStore;
-        return yield* store.loadGraph(databasePath, first.snapshot.id);
-      }),
-    );
-    const database = new Database(databasePath);
-    try {
-      database.exec(`DELETE FROM materialized_file_shards
-                     WHERE id = (SELECT id FROM materialized_file_shards ORDER BY id LIMIT 1)`);
-    } finally {
-      database.close();
-    }
+  effectIt.effect('reuses content-addressed materialized file shards during a forced clean rebuild', () =>
+    Effect.gen(function* () {
+      const root = createManySourceRepository(12);
+      const home = join(root, '.threadnote-test-home');
+      const progress: CodeGraphProgress[] = [];
+      const indexer = yield* CodeGraphIndexer;
+      const store = yield* CodeGraphStore;
+      const first = yield* indexer.index({cwd: root, threadnoteHome: home});
+      const firstGraph = yield* store.loadGraph(codeGraphDatabasePath(home, first), first.snapshot.id);
+      yield* repairCodeGraphIndexes(home, false);
+      const rebuilt = yield* indexer.index({
+        cwd: root,
+        force: true,
+        onProgress: current => Effect.sync(() => progress.push(current)),
+        threadnoteHome: home,
+      });
+      const databasePath = codeGraphDatabasePath(home, rebuilt);
+      const rebuiltGraph = yield* store.loadGraph(databasePath, rebuilt.snapshot.id);
+      const shardState = yield* Effect.sync(() => {
+        const database = new Database(databasePath, {readonly: true});
+        try {
+          const shards = database
+            .query<{readonly bytes: number; readonly count: number}, []>(
+              `SELECT COUNT(*) AS count,
+                      SUM(${storedCodeGraphFactRawBytesSql('facts_json')}) AS bytes
+               FROM materialized_file_shards`,
+            )
+            .get();
+          const references = database
+            .query<{readonly count: number}, [string]>(
+              `SELECT COUNT(*) AS count
+               FROM snapshot_file_shards
+               WHERE snapshot_id = ?`,
+            )
+            .get(rebuilt.snapshot.id);
+          return {bytes: shards?.bytes ?? 0, references: references?.count ?? 0, shards: shards?.count ?? 0};
+        } finally {
+          database.close();
+        }
+      });
 
-    const result = await runEffect(
-      Effect.gen(function* () {
-        const indexer = yield* CodeGraphIndexer;
-        const store = yield* CodeGraphStore;
-        const rebuilt = yield* indexer.index({cwd: root, force: true, threadnoteHome: home});
-        return {
-          rebuilt,
-          rebuiltGraph: yield* store.loadGraph(databasePath, rebuilt.snapshot.id),
-        };
-      }),
-    );
+      expect(rebuilt.materialization).toEqual({mode: 'full', stagedFiles: 12, totalFiles: 12});
+      expect(rebuilt.diagnostics).toContain('Reused content-addressed materialized shards for 12 file(s).');
+      expect(shardState.shards).toBe(12);
+      expect(shardState.references).toBe(12);
+      expect(finalFullMaterializationMetrics(progress).cachedFactReplayBytesCompleted).toBe(shardState.bytes);
+      expect(normalizeStoredGraph(rebuiltGraph)).toEqual(normalizeStoredGraph(firstGraph));
+    }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
 
-    expect(
-      result.rebuilt.diagnostics.some(diagnostic =>
-        diagnostic.startsWith('Reused content-addressed materialized shards for'),
-      ),
-    ).toBe(false);
-    expect(normalizeStoredGraph(result.rebuiltGraph)).toEqual(normalizeStoredGraph(firstGraph));
-  });
+  effectIt.effect('falls back to raw replay without counting a partial materialized shard set', () =>
+    Effect.gen(function* () {
+      const root = createManySourceRepository(12);
+      const home = join(root, '.threadnote-test-home');
+      const progress: CodeGraphProgress[] = [];
+      const indexer = yield* CodeGraphIndexer;
+      const store = yield* CodeGraphStore;
+      const first = yield* indexer.index({cwd: root, threadnoteHome: home});
+      const databasePath = codeGraphDatabasePath(home, first);
+      const firstGraph = yield* store.loadGraph(databasePath, first.snapshot.id);
+      const discardedShardBytes = yield* Effect.sync(() => {
+        const database = new Database(databasePath);
+        try {
+          database.exec(`DELETE FROM materialized_file_shards
+                         WHERE id = (SELECT id FROM materialized_file_shards ORDER BY id LIMIT 1)`);
+          return (
+            database
+              .query<{readonly bytes: number}, []>(
+                `SELECT COALESCE(SUM(${storedCodeGraphFactRawBytesSql('facts_json')}), 0) AS bytes
+                 FROM materialized_file_shards`,
+              )
+              .get()?.bytes ?? 0
+          );
+        } finally {
+          database.close();
+        }
+      });
+
+      const rebuilt = yield* indexer.index({
+        cwd: root,
+        force: true,
+        onProgress: current => Effect.sync(() => progress.push(current)),
+        threadnoteHome: home,
+      });
+      const rebuiltGraph = yield* store.loadGraph(databasePath, rebuilt.snapshot.id);
+      const metrics = finalFullMaterializationMetrics(progress);
+
+      expect(
+        rebuilt.diagnostics.some(diagnostic =>
+          diagnostic.startsWith('Reused content-addressed materialized shards for'),
+        ),
+      ).toBe(false);
+      expect(discardedShardBytes).toBeGreaterThan(0);
+      expect(metrics.cachedFactReplayBytesCompleted).toBe(metrics.cachedFactBytesTotal);
+      expect(metrics.cachedFactReplayBytesCompleted).not.toBe(
+        (metrics.cachedFactBytesTotal ?? 0) + discardedShardBytes,
+      );
+      expect(normalizeStoredGraph(rebuiltGraph)).toEqual(normalizeStoredGraph(firstGraph));
+    }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
 
   it('reextracts one invalid parser-cache item without discarding valid peers', async () => {
     const root = createManySourceRepository(12);
@@ -4844,6 +4879,18 @@ function normalizeStoredGraph(graph: StoredCodeGraph): Pick<StoredCodeGraph, 'ed
     edges: [...graph.edges].sort((left, right) => left.id.localeCompare(right.id)),
     symbols: [...graph.symbols].sort((left, right) => left.id.localeCompare(right.id)),
   };
+}
+
+function finalFullMaterializationMetrics(progress: readonly CodeGraphProgress[]): CodeGraphMaterializationMetrics {
+  const metrics = progress
+    .filter(
+      (current): current is Extract<CodeGraphProgress, {readonly phase: 'materializing'}> =>
+        current.phase === 'materializing',
+    )
+    .flatMap(current => (current.metrics?.mode === 'full' ? [current.metrics] : []))
+    .at(-1);
+  if (metrics === undefined) throw new TestError('Expected terminal full-materialization metrics.');
+  return metrics;
 }
 
 function createLargeInventoryRepository(count: number, bytes = 1_048_576): string {
