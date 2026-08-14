@@ -30,6 +30,7 @@ class CodeGraphEmbeddingError extends Error {
 }
 
 const CODE_GRAPH_EMBEDDING_TEMPLATE_VERSION = 1;
+const CODE_GRAPH_EMBEDDING_CONTEXT_CAP = 8;
 const CODE_GRAPH_VECTOR_DATABASE_VERSION = 2;
 const CODE_GRAPH_SEMANTIC_MINIMUM_SCORE = 0.64;
 const EMBED_BATCH_SIZE = 128;
@@ -415,6 +416,7 @@ const buildVectorGeneration = Effect.fn('codeGraph.buildVectorGeneration')(funct
     for (let start = 0; start < missing.length; start += EMBED_BATCH_SIZE) {
       const batch = missing.slice(start, start + EMBED_BATCH_SIZE);
       const vectors = yield* input.runtime.embedMany({
+        embeddingContextPoolSize: CODE_GRAPH_EMBEDDING_CONTEXT_CAP,
         inputs: batch.map(item => `${input.selected.manifest.promptPrefixes?.document ?? ''}${item.text}`),
         manifest: input.selected.manifest,
         modelPath: input.selected.modelPath,

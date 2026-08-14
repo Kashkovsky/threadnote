@@ -38,6 +38,7 @@ describe('native code graph vector generations', () => {
     Effect.gen(function* () {
       const home = yield* Effect.promise(() => mkdtemp('threadnote-code-graph-vectors-'));
       const embeddedBatches: number[] = [];
+      const embeddingContextPools: Array<1 | 2 | 4 | 8 | undefined> = [];
       try {
         const result = yield* Effect.gen(function* () {
           const path = yield* Path.Path;
@@ -92,7 +93,10 @@ describe('native code graph vector generations', () => {
           };
         }).pipe(
           provideTestLayer(
-            Layer.merge(testEmbeddingLayer(embeddedBatches), LocalModelCatalog.layer(BUILTIN_MODEL_MANIFESTS)),
+            Layer.merge(
+              testEmbeddingLayer(embeddedBatches, undefined, embeddingContextPools),
+              LocalModelCatalog.layer(BUILTIN_MODEL_MANIFESTS),
+            ),
           ),
           provideTestLayer(BunServices.layer),
         );
@@ -139,6 +143,7 @@ describe('native code graph vector generations', () => {
         });
         expect(result.scores.has('beta')).toBe(false);
         expect(embeddedBatches).toEqual([2, 1, 1, 1, 1, 1]);
+        expect(embeddingContextPools).toEqual([8, undefined, 8, 8, 8, undefined]);
       } finally {
         yield* Effect.promise(() =>
           rm(home, {
@@ -408,7 +413,11 @@ describe('native code graph vector generations', () => {
     ),
   );
 });
-function testEmbeddingLayer(embeddedBatches: number[], runtimeOverride?: LocalModelRuntimeShape) {
+function testEmbeddingLayer(
+  embeddedBatches: number[],
+  runtimeOverride?: LocalModelRuntimeShape,
+  embeddingContextPools?: Array<1 | 2 | 4 | 8 | undefined>,
+) {
   const modelStoreLayer = Layer.succeed(
     LocalModelStore,
     LocalModelStore.of({
@@ -428,8 +437,9 @@ function testEmbeddingLayer(embeddedBatches: number[], runtimeOverride?: LocalMo
           buildType: 'prebuilt',
           cpuMathCores: 4,
         }),
-        embedMany: ({inputs, manifest: requested}) => {
+        embedMany: ({embeddingContextPoolSize, inputs, manifest: requested}) => {
           embeddedBatches.push(inputs.length);
+          embeddingContextPools?.push(embeddingContextPoolSize);
           return Effect.succeed(
             inputs.map(input => unitVector(requested.dimensions ?? 0, input.toLowerCase().includes('alpha') ? 0 : 1)),
           );

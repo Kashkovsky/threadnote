@@ -207,6 +207,12 @@ An unused model worker unloads after five minutes by default. Set
 `THREADNOTE_LOCAL_MODEL_WORKER_IDLE_TIMEOUT_MS=<milliseconds>` before starting the client to use a different idle
 window; `0` disables idle eviction. Closing the stdio client closes both its MCP server and worker.
 
+Code graph vector builds can use up to eight embedding contexts on CPU and divide the detected math-core thread budget
+between them. The native runtime caps the pool on smaller CPUs; a model with GPU layers, or unknown offload state,
+stays on one context. Ordinary recall and semantic-query embeddings remain serial by default. Set
+`THREADNOTE_EMBEDDING_CONTEXTS=1`, `2`, `4`, or `8` to override every embedding session in that process; prefix only
+the `threadnote graph index` command to limit the override to a graph build. `1` is the low-memory rollback.
+
 ## An index rebuild was interrupted
 
 Re-run `threadnote repair` or `threadnote index rebuild`. The lexical and vector SQLite databases are disposable and

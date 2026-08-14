@@ -162,6 +162,55 @@ describe('isolated local model worker protocol properties', () => {
     {fastCheck: {numRuns: 40}},
   );
 
+  it.effect('rejects unsupported embedding pool values before invoking the runtime', () =>
+    Effect.gen(function* () {
+      let embeddingCalls = 0;
+      const runtime: LocalModelRuntimeShape = {
+        ...echoRuntime,
+        embedMany: request =>
+          Effect.sync(() => {
+            embeddingCalls += 1;
+            return request.inputs.map(input => [input.length, 1]);
+          }),
+      };
+      const invalidValues: readonly unknown[] = [3, '8'];
+      const input = invalidValues
+        .map((embeddingContextPoolSize, index) =>
+          JSON.stringify({
+            id: `invalid-pool-${index}`,
+            operation: 'embedMany',
+            payload: {
+              embeddingContextPoolSize,
+              inputs: ['input'],
+              manifest: embeddingManifest,
+              modelPath: '/models/embedding.gguf',
+            },
+            protocol: 1,
+          }),
+        )
+        .join('\n');
+      const output: string[] = [];
+
+      yield* serveWorker(runtime, {
+        input: asyncChunks([`${input}\n`]),
+        writeLine: line => {
+          output.push(line);
+          return Promise.resolve();
+        },
+      });
+
+      expect(output.map(line => JSON.parse(line))).toEqual(
+        invalidValues.map((_, index) => ({
+          error: {tag: 'WorkerProtocolInvalid'},
+          id: `invalid-pool-${index}`,
+          ok: false,
+          protocol: 1,
+        })),
+      );
+      expect(embeddingCalls).toBe(0);
+    }),
+  );
+
   it.effect.prop(
     'discards a malformed, mismatched, or oversized worker and retries once with a framed response',
     {

@@ -1,0 +1,501 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-08-14T18:24:16.078Z",
+  "source": {
+    "threadnoteCommit": "304738cccc51ac5fd944b7e3fe7139a79ee180ff",
+    "harness": {
+      "commit": "304738cccc51ac5fd944b7e3fe7139a79ee180ff",
+      "path": "scripts/benchmark-code-graph-embedding-contexts.ts",
+      "sha256": "21f87f0f6d0ddc3aa255feb02e78267ee4941b7368bc2cc52f0360eb78b3667f"
+    }
+  },
+  "environment": {
+    "architecture": "arm64",
+    "cpu": "Apple M1 Max",
+    "cpuMathCores": 8,
+    "dirty": false,
+    "fixtureHash": "generated-code-graph-vectors-v2:10000",
+    "memoryBytes": 68719476736,
+    "model": {
+      "backend": "node-llama-cpp",
+      "id": "bge-small-en-v1.5-q8",
+      "revision": "builtin-pinned"
+    },
+    "modelGpuLayers": 0,
+    "operatingSystem": "macOS 27.0",
+    "runtime": "bun/1.3.14",
+    "runnerClass": "local-unclassified"
+  },
+  "scope": {
+    "name": "cpu-code-graph-embedding-context-sweep",
+    "observations": 16,
+    "rounds": 4,
+    "scaleSymbols": 10000,
+    "schedule": [
+      [1, 2, 8, 4],
+      [2, 4, 1, 8],
+      [4, 8, 2, 1],
+      [8, 1, 4, 2]
+    ]
+  },
+  "contexts": {
+    "1": {
+      "coldEmbeddingCpuMilliseconds": {
+        "maximum": 261370,
+        "median": 253560,
+        "minimum": 236500,
+        "p25": 240420,
+        "p75": 261370
+      },
+      "coldEmbeddingRssBytes": {
+        "maximum": 1462845440,
+        "median": 1408778240,
+        "minimum": 1251459072,
+        "p25": 1384480768,
+        "p75": 1462845440
+      },
+      "coldIndexMilliseconds": {
+        "maximum": 62969.48375,
+        "median": 61841.63025,
+        "minimum": 57720.054959,
+        "p25": 59035.314167,
+        "p75": 62969.48375
+      },
+      "coldSamplerGapMilliseconds": {
+        "maximum": 416,
+        "median": 392,
+        "minimum": 388,
+        "p25": 389,
+        "p75": 416
+      },
+      "coldVectorMilliseconds": {
+        "maximum": 52039.013459,
+        "median": 50721.883667,
+        "minimum": 47105.258708,
+        "p25": 47896.431916,
+        "p75": 52039.013459
+      },
+      "heartbeatGapMilliseconds": {
+        "maximum": 1690.705292,
+        "median": 1664.379584,
+        "minimum": 1150.8955,
+        "p25": 1164.714667,
+        "p75": 1690.705292
+      },
+      "medianSpeedupAgainstOne": 1,
+      "observations": 4,
+      "vectorIndexBytes": {
+        "maximum": 98472272,
+        "median": 98472272,
+        "minimum": 98467840,
+        "p25": 98468076,
+        "p75": 98472272
+      }
+    },
+    "2": {
+      "coldEmbeddingCpuMilliseconds": {
+        "maximum": 295460,
+        "median": 243860,
+        "minimum": 234150,
+        "p25": 237990,
+        "p75": 295460
+      },
+      "coldEmbeddingRssBytes": {
+        "maximum": 1205387264,
+        "median": 1180811264,
+        "minimum": 1144324096,
+        "p25": 1154023424,
+        "p75": 1205387264
+      },
+      "coldIndexMilliseconds": {
+        "maximum": 58587.684042,
+        "median": 49046.387666,
+        "minimum": 46541.094834,
+        "p25": 47080.912791,
+        "p75": 58587.684042
+      },
+      "coldSamplerGapMilliseconds": {
+        "maximum": 461,
+        "median": 450,
+        "minimum": 397,
+        "p25": 411,
+        "p75": 461
+      },
+      "coldVectorMilliseconds": {
+        "maximum": 46800.247459,
+        "median": 37847.605625,
+        "minimum": 35907.205041,
+        "p25": 36436.765916,
+        "p75": 46800.247459
+      },
+      "heartbeatGapMilliseconds": {
+        "maximum": 1200.067834,
+        "median": 1180.995209,
+        "minimum": 847.337083,
+        "p25": 1168.442833,
+        "p75": 1200.067834
+      },
+      "medianSpeedupAgainstOne": 1.253911843830802,
+      "observations": 4,
+      "vectorIndexBytes": {
+        "maximum": 98472272,
+        "median": 98468076,
+        "minimum": 98467840,
+        "p25": 98468076,
+        "p75": 98472272
+      }
+    },
+    "4": {
+      "coldEmbeddingCpuMilliseconds": {
+        "maximum": 215870,
+        "median": 212840,
+        "minimum": 194690,
+        "p25": 196490,
+        "p75": 215870
+      },
+      "coldEmbeddingRssBytes": {
+        "maximum": 1326792704,
+        "median": 1300086784,
+        "minimum": 1259569152,
+        "p25": 1286094848,
+        "p75": 1326792704
+      },
+      "coldIndexMilliseconds": {
+        "maximum": 47650.0245,
+        "median": 45736.534709,
+        "minimum": 40811.370541,
+        "p25": 41782.161167,
+        "p75": 47650.0245
+      },
+      "coldSamplerGapMilliseconds": {
+        "maximum": 450,
+        "median": 414,
+        "minimum": 401,
+        "p25": 407,
+        "p75": 450
+      },
+      "coldVectorMilliseconds": {
+        "maximum": 35631.403291,
+        "median": 34026.777709,
+        "minimum": 30032.173083,
+        "p25": 30451.14025,
+        "p75": 35631.403291
+      },
+      "heartbeatGapMilliseconds": {
+        "maximum": 1227.659916,
+        "median": 1213.935542,
+        "minimum": 1194.457708,
+        "p25": 1197.072,
+        "p75": 1227.659916
+      },
+      "medianSpeedupAgainstOne": 1.412931081545555,
+      "observations": 4,
+      "vectorIndexBytes": {
+        "maximum": 98468076,
+        "median": 98468076,
+        "minimum": 98468076,
+        "p25": 98468076,
+        "p75": 98468076
+      }
+    },
+    "8": {
+      "coldEmbeddingCpuMilliseconds": {
+        "maximum": 185200,
+        "median": 184400,
+        "minimum": 176850,
+        "p25": 177910,
+        "p75": 185200
+      },
+      "coldEmbeddingRssBytes": {
+        "maximum": 1499906048,
+        "median": 1493106688,
+        "minimum": 1366573056,
+        "p25": 1434566656,
+        "p75": 1499906048
+      },
+      "coldIndexMilliseconds": {
+        "maximum": 43358.20525,
+        "median": 42400.637875,
+        "minimum": 39171.484416,
+        "p25": 39518.783292,
+        "p75": 43358.20525
+      },
+      "coldSamplerGapMilliseconds": {
+        "maximum": 457,
+        "median": 429,
+        "minimum": 413,
+        "p25": 417,
+        "p75": 457
+      },
+      "coldVectorMilliseconds": {
+        "maximum": 32361.738625,
+        "median": 30992.511291,
+        "minimum": 28081.0075,
+        "p25": 28834.109417,
+        "p75": 32361.738625
+      },
+      "heartbeatGapMilliseconds": {
+        "maximum": 1203.585375,
+        "median": 1179.775375,
+        "minimum": 1161.576417,
+        "p25": 1171.102416,
+        "p75": 1203.585375
+      },
+      "medianSpeedupAgainstOne": 1.4851069914475903,
+      "observations": 4,
+      "vectorIndexBytes": {
+        "maximum": 98472272,
+        "median": 98468076,
+        "minimum": 98467840,
+        "p25": 98467840,
+        "p75": 98472272
+      }
+    }
+  },
+  "observations": [
+    {
+      "coldEmbeddingCpuMilliseconds": 253560,
+      "coldEmbeddingRssBytes": 1251459072,
+      "coldIndexMilliseconds": 61841.63025,
+      "coldSamplerGapMilliseconds": 392,
+      "coldVectorMilliseconds": 50721.883667,
+      "contexts": 1,
+      "heartbeatGapMilliseconds": 1664.379584,
+      "position": 1,
+      "round": 1,
+      "vectorIndexBytes": 98468076,
+      "vectorRows": 20206
+    },
+    {
+      "coldEmbeddingCpuMilliseconds": 237990,
+      "coldEmbeddingRssBytes": 1205387264,
+      "coldIndexMilliseconds": 46541.094834,
+      "coldSamplerGapMilliseconds": 411,
+      "coldVectorMilliseconds": 36436.765916,
+      "contexts": 2,
+      "heartbeatGapMilliseconds": 847.337083,
+      "position": 2,
+      "round": 1,
+      "vectorIndexBytes": 98467840,
+      "vectorRows": 20206
+    },
+    {
+      "coldEmbeddingCpuMilliseconds": 185200,
+      "coldEmbeddingRssBytes": 1499906048,
+      "coldIndexMilliseconds": 43358.20525,
+      "coldSamplerGapMilliseconds": 457,
+      "coldVectorMilliseconds": 32361.738625,
+      "contexts": 8,
+      "heartbeatGapMilliseconds": 1179.775375,
+      "position": 3,
+      "round": 1,
+      "vectorIndexBytes": 98467840,
+      "vectorRows": 20206
+    },
+    {
+      "coldEmbeddingCpuMilliseconds": 215870,
+      "coldEmbeddingRssBytes": 1300086784,
+      "coldIndexMilliseconds": 47650.0245,
+      "coldSamplerGapMilliseconds": 450,
+      "coldVectorMilliseconds": 35631.403291,
+      "contexts": 4,
+      "heartbeatGapMilliseconds": 1227.659916,
+      "position": 4,
+      "round": 1,
+      "vectorIndexBytes": 98468076,
+      "vectorRows": 20206
+    },
+    {
+      "coldEmbeddingCpuMilliseconds": 295460,
+      "coldEmbeddingRssBytes": 1180811264,
+      "coldIndexMilliseconds": 58587.684042,
+      "coldSamplerGapMilliseconds": 461,
+      "coldVectorMilliseconds": 46800.247459,
+      "contexts": 2,
+      "heartbeatGapMilliseconds": 1200.067834,
+      "position": 1,
+      "round": 2,
+      "vectorIndexBytes": 98468076,
+      "vectorRows": 20206
+    },
+    {
+      "coldEmbeddingCpuMilliseconds": 212840,
+      "coldEmbeddingRssBytes": 1286094848,
+      "coldIndexMilliseconds": 45736.534709,
+      "coldSamplerGapMilliseconds": 414,
+      "coldVectorMilliseconds": 34026.777709,
+      "contexts": 4,
+      "heartbeatGapMilliseconds": 1213.935542,
+      "position": 2,
+      "round": 2,
+      "vectorIndexBytes": 98468076,
+      "vectorRows": 20206
+    },
+    {
+      "coldEmbeddingCpuMilliseconds": 261370,
+      "coldEmbeddingRssBytes": 1384480768,
+      "coldIndexMilliseconds": 62969.48375,
+      "coldSamplerGapMilliseconds": 416,
+      "coldVectorMilliseconds": 52039.013459,
+      "contexts": 1,
+      "heartbeatGapMilliseconds": 1690.705292,
+      "position": 3,
+      "round": 2,
+      "vectorIndexBytes": 98467840,
+      "vectorRows": 20206
+    },
+    {
+      "coldEmbeddingCpuMilliseconds": 184400,
+      "coldEmbeddingRssBytes": 1434566656,
+      "coldIndexMilliseconds": 42400.637875,
+      "coldSamplerGapMilliseconds": 429,
+      "coldVectorMilliseconds": 30992.511291,
+      "contexts": 8,
+      "heartbeatGapMilliseconds": 1203.585375,
+      "position": 4,
+      "round": 2,
+      "vectorIndexBytes": 98467840,
+      "vectorRows": 20206
+    },
+    {
+      "coldEmbeddingCpuMilliseconds": 196490,
+      "coldEmbeddingRssBytes": 1259569152,
+      "coldIndexMilliseconds": 41782.161167,
+      "coldSamplerGapMilliseconds": 401,
+      "coldVectorMilliseconds": 30451.14025,
+      "contexts": 4,
+      "heartbeatGapMilliseconds": 1197.072,
+      "position": 1,
+      "round": 3,
+      "vectorIndexBytes": 98468076,
+      "vectorRows": 20206
+    },
+    {
+      "coldEmbeddingCpuMilliseconds": 176850,
+      "coldEmbeddingRssBytes": 1366573056,
+      "coldIndexMilliseconds": 39171.484416,
+      "coldSamplerGapMilliseconds": 417,
+      "coldVectorMilliseconds": 28081.0075,
+      "contexts": 8,
+      "heartbeatGapMilliseconds": 1161.576417,
+      "position": 2,
+      "round": 3,
+      "vectorIndexBytes": 98468076,
+      "vectorRows": 20206
+    },
+    {
+      "coldEmbeddingCpuMilliseconds": 234150,
+      "coldEmbeddingRssBytes": 1154023424,
+      "coldIndexMilliseconds": 47080.912791,
+      "coldSamplerGapMilliseconds": 397,
+      "coldVectorMilliseconds": 35907.205041,
+      "contexts": 2,
+      "heartbeatGapMilliseconds": 1168.442833,
+      "position": 3,
+      "round": 3,
+      "vectorIndexBytes": 98468076,
+      "vectorRows": 20206
+    },
+    {
+      "coldEmbeddingCpuMilliseconds": 240420,
+      "coldEmbeddingRssBytes": 1408778240,
+      "coldIndexMilliseconds": 59035.314167,
+      "coldSamplerGapMilliseconds": 388,
+      "coldVectorMilliseconds": 47896.431916,
+      "contexts": 1,
+      "heartbeatGapMilliseconds": 1164.714667,
+      "position": 4,
+      "round": 3,
+      "vectorIndexBytes": 98472272,
+      "vectorRows": 20206
+    },
+    {
+      "coldEmbeddingCpuMilliseconds": 177910,
+      "coldEmbeddingRssBytes": 1493106688,
+      "coldIndexMilliseconds": 39518.783292,
+      "coldSamplerGapMilliseconds": 413,
+      "coldVectorMilliseconds": 28834.109417,
+      "contexts": 8,
+      "heartbeatGapMilliseconds": 1171.102416,
+      "position": 1,
+      "round": 4,
+      "vectorIndexBytes": 98472272,
+      "vectorRows": 20206
+    },
+    {
+      "coldEmbeddingCpuMilliseconds": 236500,
+      "coldEmbeddingRssBytes": 1462845440,
+      "coldIndexMilliseconds": 57720.054959,
+      "coldSamplerGapMilliseconds": 389,
+      "coldVectorMilliseconds": 47105.258708,
+      "contexts": 1,
+      "heartbeatGapMilliseconds": 1150.8955,
+      "position": 2,
+      "round": 4,
+      "vectorIndexBytes": 98472272,
+      "vectorRows": 20206
+    },
+    {
+      "coldEmbeddingCpuMilliseconds": 194690,
+      "coldEmbeddingRssBytes": 1326792704,
+      "coldIndexMilliseconds": 40811.370541,
+      "coldSamplerGapMilliseconds": 407,
+      "coldVectorMilliseconds": 30032.173083,
+      "contexts": 4,
+      "heartbeatGapMilliseconds": 1194.457708,
+      "position": 3,
+      "round": 4,
+      "vectorIndexBytes": 98468076,
+      "vectorRows": 20206
+    },
+    {
+      "coldEmbeddingCpuMilliseconds": 243860,
+      "coldEmbeddingRssBytes": 1144324096,
+      "coldIndexMilliseconds": 49046.387666,
+      "coldSamplerGapMilliseconds": 450,
+      "coldVectorMilliseconds": 37847.605625,
+      "contexts": 2,
+      "heartbeatGapMilliseconds": 1180.995209,
+      "position": 4,
+      "round": 4,
+      "vectorIndexBytes": 98472272,
+      "vectorRows": 20206
+    }
+  ],
+  "promotion": {
+    "candidate": 8,
+    "eligibleForReviewedDefaultChange": true,
+    "minimumMedianSpeedup": 1.1,
+    "requiredRoundWins": 3,
+    "roundWinsAgainstOne": 4
+  },
+  "controls": {
+    "vectorMappingDigests": ["8dd58f5abd0f11f9be26035aaed5f48837de364e7602625ef12a3a73f93c6d04"],
+    "coldStructuralGraphDigests": ["ca72102be9ae9a6ba12b98c264ba11be368630bd28e6d95c03ff0b4f7092d8b5"],
+    "incrementalStructuralGraphDigests": ["9fa5763df01aa1e9098c60d701362478746baf7af3be37351c02e9ded32bd8c5"],
+    "sameOverlayStructuralGraphDigests": ["9fa5763df01aa1e9098c60d701362478746baf7af3be37351c02e9ded32bd8c5"],
+    "vectorRowCounts": [20206],
+    "allIncrementalDigestsMatchIndependentRebuild": true,
+    "samplerVersionMinimum": 4,
+    "processTreeFailures": 0,
+    "maximumColdSamplerGapMilliseconds": 461
+  },
+  "threadPlans": [
+    {
+      "contexts": 1,
+      "threads": "upstream-default"
+    },
+    {
+      "contexts": 2,
+      "threads": "4,4"
+    },
+    {
+      "contexts": 4,
+      "threads": "2,2,2,2"
+    },
+    {
+      "contexts": 8,
+      "threads": "1,1,1,1,1,1,1,1"
+    }
+  ]
+}

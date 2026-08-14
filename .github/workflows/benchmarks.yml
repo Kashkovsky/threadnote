@@ -8,6 +8,7 @@ on:
       - 'bun.lock'
       - 'package.json'
       - 'scripts/benchmark-code-graph.ts'
+      - 'scripts/benchmark-code-graph-embedding-contexts.ts'
       - 'scripts/benchmark-code-graph-workset.ts'
       - 'scripts/benchmark-code-graph-heavy-tail.ts'
       - 'scripts/code-graph-benchmark-sampler.ts'

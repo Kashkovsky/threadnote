@@ -29,6 +29,8 @@ import {
 import {runCommandEffect} from '../src/effect/command.js';
 import {sha256FileHex} from '../src/effect/digest.js';
 import {ApplicationLayer, type ApplicationServices} from '../src/effect/runtime.js';
+import {THREADNOTE_EMBEDDING_CONTEXTS_ENV, type EmbeddingContextPoolSize} from '../src/effect/ai/node-llama-cpp.js';
+import {LocalModelRuntime} from '../src/effect/ai/local-model-runtime.js';
 import {SystemInfo} from '../src/effect/system.js';
 import {CORE_EMBEDDING_MODEL_ID} from '../src/models/builtin.js';
 import {LocalModelCatalog} from '../src/models/catalog.js';
@@ -434,6 +436,9 @@ const benchmarkCodeGraph = Effect.scoped(
     const path = yield* Path.Path;
     const system = yield* SystemInfo;
     const options = parseArguments(yield* scriptArguments());
+    if (options.embeddingContexts !== undefined) {
+      process.env[THREADNOTE_EMBEDDING_CONTEXTS_ENV] = String(options.embeddingContexts);
+    }
     const threadnoteSourceRoot = yield* path.fromFileUrl(new URL('..', import.meta.url));
     const runtimeProvenanceRequired =
       options.profile === 'production-large' ||
@@ -448,6 +453,7 @@ const benchmarkCodeGraph = Effect.scoped(
       process.env.THREADNOTE_BENCHMARK_RELEASE_SHA?.trim() || undefined,
     );
     const largeEvidenceRun = options.profile === 'production-large' || options.repository !== undefined;
+    const sampleProcessTree = largeEvidenceRun || options.embeddingContexts !== undefined;
     const externalPrepared =
       options.repository !== undefined ? yield* prepareExternalCodeGraphFixture(options) : undefined;
     if (externalPrepared && releaseEvidenceSource) {
@@ -582,7 +588,7 @@ const benchmarkCodeGraph = Effect.scoped(
     };
     const samplerRoot = path.join(prepared.home, 'benchmark-telemetry');
     const sqliteTemporaryRoot = path.join(samplerRoot, 'sqlite-temp');
-    if (largeEvidenceRun) {
+    if (sampleProcessTree) {
       yield* fs.makeDirectory(sqliteTemporaryRoot, {recursive: true});
       process.env.SQLITE_TMPDIR = sqliteTemporaryRoot;
     }
@@ -590,7 +596,7 @@ const benchmarkCodeGraph = Effect.scoped(
     const coldStoragePeak = new SqliteStoragePeakTelemetry();
     yield* runCheckpoint?.mark('cold-index') ?? Effect.void;
     const coldPhase = yield* measureSampledBenchmarkIndex(
-      largeEvidenceRun
+      sampleProcessTree
         ? startExternalSampler(
             fs,
             path,
@@ -624,6 +630,27 @@ const benchmarkCodeGraph = Effect.scoped(
       startedAt: coldStarted,
       timeline: coldTimeline,
     } = coldMeasurement;
+    const embeddingContextPlan = !options.vectors
+      ? undefined
+      : yield* Effect.gen(function* () {
+          const runtime = yield* LocalModelRuntime;
+          const diagnostics = yield* runtime.diagnostics.pipe(
+            Effect.mapError(cause => scriptError(cause, 'Could not read the effective embedding context plan.')),
+          );
+          const plan = diagnostics.embeddingContextPlan;
+          if (
+            !plan ||
+            (options.embeddingContexts !== undefined && plan.requestedContexts !== options.embeddingContexts)
+          ) {
+            return yield* Effect.fail(
+              new ScriptError('The native worker did not report the effective embedding context plan.'),
+            );
+          }
+          return {...plan, cpuMathCores: diagnostics.cpuMathCores};
+        });
+    const coldVectorMappingDigest = options.vectors
+      ? yield* vectorMappingDigest(fs, path, benchmarkLayout.vectorRoot, benchmarkIdentity.worktreeId)
+      : undefined;
     const coldStorageAfter = yield* codeGraphStorageTelemetry(fs, path, benchmarkLayout.databasePath, databaseRoot);
     yield* runCheckpoint?.mark('hot-query-and-mutation') ?? Effect.void;
     if (options.vectors) {
@@ -724,7 +751,7 @@ const benchmarkCodeGraph = Effect.scoped(
         Effect.gen(function* () {
           yield* runCheckpoint?.mark('incremental-index') ?? Effect.void;
           return yield* measureSampledBenchmarkIndex(
-            largeEvidenceRun
+            sampleProcessTree
               ? startExternalSampler(
                   fs,
                   path,
@@ -849,12 +876,12 @@ const benchmarkCodeGraph = Effect.scoped(
     );
     const sameOverlaySamplerRoot = path.join(sameOverlayReferenceHome, 'benchmark-telemetry');
     const sameOverlaySqliteTemporaryRoot = path.join(sameOverlaySamplerRoot, 'sqlite-temp');
-    if (largeEvidenceRun) yield* fs.makeDirectory(sameOverlaySqliteTemporaryRoot, {recursive: true});
+    if (sampleProcessTree) yield* fs.makeDirectory(sameOverlaySqliteTemporaryRoot, {recursive: true});
     const sameOverlayReferenceStoragePeak = new SqliteStoragePeakTelemetry();
     sqliteWriterEvidencePhase = 'same-overlay-reference';
     const previousSqliteTemporaryRoot = process.env.SQLITE_TMPDIR;
     const sameOverlayReference = yield* Effect.sync(() => {
-      if (largeEvidenceRun) process.env.SQLITE_TMPDIR = sameOverlaySqliteTemporaryRoot;
+      if (sampleProcessTree) process.env.SQLITE_TMPDIR = sameOverlaySqliteTemporaryRoot;
     }).pipe(
       Effect.andThen(
         Effect.acquireUseRelease(
@@ -863,7 +890,7 @@ const benchmarkCodeGraph = Effect.scoped(
             Effect.gen(function* () {
               yield* runCheckpoint?.mark('same-overlay-reference-index') ?? Effect.void;
               const sampled = yield* measureSampledBenchmarkIndex(
-                largeEvidenceRun
+                sampleProcessTree
                   ? startExternalSampler(
                       fs,
                       path,
@@ -1328,10 +1355,25 @@ const benchmarkCodeGraph = Effect.scoped(
         analysisSamples: analysisDurations.length,
         analysisCoverage: 'complete',
         coldIndexSamples: 1,
+        ...(coldVectorMappingDigest === undefined ? {} : {coldVectorMappingDigest}),
         cpuMeasurement: 'process.cpuUsage delta at operation boundary',
         effectiveParserMemoryBytes: hardware.effectiveMemoryBytes,
         effectiveParserWorkers,
         environmentOverrides: JSON.stringify(benchmarkEnvironmentProvenance()),
+        ...(embeddingContextPlan === undefined
+          ? {}
+          : {
+              embeddingContextCpuMathCores: embeddingContextPlan.cpuMathCores,
+              embeddingContextPoolSizeEffective: embeddingContextPlan.effectiveContexts,
+              embeddingContextPoolSizeRequested: embeddingContextPlan.requestedContexts,
+              embeddingContextThreadCounts:
+                embeddingContextPlan.threadCounts.length === 0
+                  ? 'upstream-default'
+                  : embeddingContextPlan.threadCounts.join(','),
+              ...(embeddingContextPlan.modelGpuLayers === undefined
+                ? {}
+                : {embeddingModelGpuLayers: embeddingContextPlan.modelGpuLayers}),
+            }),
         diskMeasurement:
           'final bytes plus SQLite main/WAL/SHM peaks sampled at progress boundaries; vectors, sidecar, and unclassified bytes separate',
         incrementalIndexSamples: 1,
@@ -1408,7 +1450,7 @@ const benchmarkCodeGraph = Effect.scoped(
         runnerClass: benchmarkRunnerLabel('THREADNOTE_BENCHMARK_RUNNER_CLASS', 'local-unclassified'),
         runnerIdentity: benchmarkRunnerLabel('THREADNOTE_BENCHMARK_RUNNER_ID', 'local'),
         runtimePlatform: system.platform,
-        sampler: largeEvidenceRun
+        sampler: sampleProcessTree
           ? externalSamplerDescription(coldExternalTelemetry ?? bootstrapExternalTelemetry)
           : 'progress-boundary storage sampling',
         vectorEnabled: options.vectors,
@@ -1524,7 +1566,7 @@ const benchmarkCodeGraph = Effect.scoped(
       yield* verifyBenchmarkSourceUnchanged(threadnoteSourceRoot, commit);
     }
     if (options.outputPath) yield* atomicWrite(options.outputPath, `${JSON.stringify(artifact, undefined, 2)}\n`);
-    yield* printJson(artifact);
+    if (!options.quiet) yield* printJson(artifact);
   }),
 );
 
@@ -3196,6 +3238,67 @@ const vectorRowCount = Effect.fn('benchmarkCodeGraph.vectorRowCount')(function* 
   return count;
 });
 
+const vectorMappingDigest = Effect.fn('benchmarkCodeGraph.vectorMappingDigest')(function* (
+  fs: FileSystem.FileSystem,
+  path: Path.Path,
+  vectorRoot: string,
+  worktreeId: string,
+) {
+  if (!(yield* fs.exists(vectorRoot))) {
+    return yield* Effect.fail(new ScriptError('Vector mapping digest requires a vector database.'));
+  }
+  const hash = new Bun.CryptoHasher('sha256');
+  let rows = 0;
+  for (const model of (yield* fs.readDirectory(vectorRoot)).sort()) {
+    if (!benchmarkVectorModelDirectoryName(model)) continue;
+    const modelRoot = path.join(vectorRoot, model);
+    if ((yield* fs.stat(modelRoot)).type !== 'Directory') continue;
+    for (const name of (yield* fs.readDirectory(modelRoot)).sort()) {
+      if (!/^vectors-v\d+\.sqlite$/.test(name)) continue;
+      const database = new Database(path.join(modelRoot, name), {readonly: true, strict: true});
+      try {
+        const mappings = database
+          .query(
+            `SELECT vector.symbol_id, vector.fingerprint, vector.vector
+             FROM vector_pointers AS pointer
+             JOIN vectors AS vector ON vector.generation = pointer.generation
+             WHERE pointer.worktree_id = ?
+             ORDER BY vector.symbol_id`,
+          )
+          .all(worktreeId) as readonly {
+          readonly fingerprint?: unknown;
+          readonly symbol_id?: unknown;
+          readonly vector?: unknown;
+        }[];
+        updateVectorMappingDigest(hash, model);
+        for (const mapping of mappings) {
+          if (
+            typeof mapping.symbol_id !== 'string' ||
+            typeof mapping.fingerprint !== 'string' ||
+            !(mapping.vector instanceof Uint8Array)
+          ) {
+            throw new ScriptError('Vector database returned an invalid active mapping row.');
+          }
+          updateVectorMappingDigest(hash, mapping.symbol_id);
+          updateVectorMappingDigest(hash, mapping.fingerprint);
+          updateVectorMappingDigest(hash, mapping.vector);
+          rows += 1;
+        }
+      } finally {
+        database.close(false);
+      }
+    }
+  }
+  if (rows === 0) return yield* Effect.fail(new ScriptError('Vector mapping digest found no active vector rows.'));
+  return hash.digest('hex');
+});
+
+function updateVectorMappingDigest(hash: Bun.CryptoHasher, value: string | Uint8Array): void {
+  const bytes = typeof value === 'string' ? new TextEncoder().encode(value) : value;
+  hash.update(`${bytes.byteLength}:`);
+  hash.update(bytes);
+}
+
 function productionShapeMeasurements(
   profile: ProductionCodeGraphFixtureProfile,
   actual: {
@@ -4369,6 +4472,7 @@ const validateReleaseEvidenceSource = Effect.fn('benchmarkCodeGraph.validateRele
 });
 
 export interface CodeGraphBenchmarkOptions {
+  readonly embeddingContexts?: EmbeddingContextPoolSize;
   readonly externalControls: readonly ExternalRepositoryQueryControl[];
   readonly fixture: string;
   readonly homePath?: string;
@@ -4382,6 +4486,7 @@ export interface CodeGraphBenchmarkOptions {
   readonly profileFiles?: number;
   readonly profileSymbols?: number;
   readonly queryText?: string;
+  readonly quiet: boolean;
   readonly referenceHomePath?: string;
   readonly repository?: string;
   readonly retainHomes: boolean;
@@ -4397,6 +4502,7 @@ export function parseCodeGraphBenchmarkArguments(args: readonly string[]): CodeG
   const structuredControls: ExternalRepositoryQueryControl[] = [];
   let expectedLanguage: string | undefined;
   let expectedPath: string | undefined;
+  let embeddingContexts: EmbeddingContextPoolSize | undefined;
   let fixture = 'code-graph-v1';
   let homePath: string | undefined;
   let incrementalPath: string | undefined;
@@ -4409,6 +4515,7 @@ export function parseCodeGraphBenchmarkArguments(args: readonly string[]): CodeG
   let profileFiles: number | undefined;
   let profileSymbols: number | undefined;
   let queryText: string | undefined;
+  let quiet = false;
   let referenceHomePath: string | undefined;
   let repository: string | undefined;
   let retainHomes = false;
@@ -4421,7 +4528,13 @@ export function parseCodeGraphBenchmarkArguments(args: readonly string[]): CodeG
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index]!;
     if (argument === '--output') outputPath = required(args[++index], argument);
-    else if (argument === '--control') {
+    else if (argument === '--embedding-contexts') {
+      const value = integer(args[++index], argument, 1);
+      if (value !== 1 && value !== 2 && value !== 4 && value !== 8) {
+        throw new ScriptError(`${argument} must be 1, 2, 4, or 8.`);
+      }
+      embeddingContexts = value;
+    } else if (argument === '--control') {
       structuredControls.push(parseExternalRepositoryQueryControl(required(args[++index], argument)));
     } else if (argument === '--expected-language') expectedLanguage = required(args[++index], argument);
     else if (argument === '--expected-path') expectedPath = required(args[++index], argument);
@@ -4443,6 +4556,7 @@ export function parseCodeGraphBenchmarkArguments(args: readonly string[]): CodeG
       profile = value;
     } else if (argument === '--profile-files') profileFiles = integer(args[++index], argument, 2);
     else if (argument === '--profile-symbols') profileSymbols = integer(args[++index], argument, 2);
+    else if (argument === '--quiet') quiet = true;
     else if (argument === '--samples') samples = integer(args[++index], argument, 1);
     else if (argument === '--scale-symbols') scaleSymbols = integer(args[++index], argument, 1);
     else if (argument === '--sqlite-writer-profile') {
@@ -4478,6 +4592,15 @@ export function parseCodeGraphBenchmarkArguments(args: readonly string[]): CodeG
   }
   if (sqliteWriterProfile !== undefined && sqliteWriterProfile !== 'current' && failOnBudget) {
     throw new ScriptError('SQLite writer candidate runs retain comparison evidence and cannot use production budgets.');
+  }
+  if (
+    embeddingContexts !== undefined &&
+    (!vectors || scaleSymbols !== 10_000 || profile !== undefined || repository !== undefined)
+  ) {
+    throw new ScriptError('--embedding-contexts requires --vectors --scale-symbols 10000.');
+  }
+  if (embeddingContexts !== undefined && failOnBudget) {
+    throw new ScriptError('Embedding-context candidates retain comparison evidence and cannot use production budgets.');
   }
   const legacyControlValues = [queryText, expectedPath, expectedLanguage].filter(value => value !== undefined).length;
   if (structuredControls.length > 0 && legacyControlValues > 0) {
@@ -4530,6 +4653,7 @@ export function parseCodeGraphBenchmarkArguments(args: readonly string[]): CodeG
     );
   }
   return {
+    embeddingContexts,
     externalControls,
     failOnBudget,
     fixture,
@@ -4544,6 +4668,7 @@ export function parseCodeGraphBenchmarkArguments(args: readonly string[]): CodeG
     profileFiles,
     profileSymbols,
     queryText: externalControls[0]?.query,
+    quiet,
     referenceHomePath,
     repository,
     retainHomes,
@@ -5262,9 +5387,13 @@ export function sanitizedBenchmarkEnvironmentProvenance(
     10 * 60_000,
   );
   const workers = boundedEnvironmentInteger(environment, 'THREADNOTE_CODE_GRAPH_PARSER_WORKERS', 1, 8);
+  const embeddingContexts = Number(environment[THREADNOTE_EMBEDDING_CONTEXTS_ENV]);
   if (idleTimeout !== undefined) values.THREADNOTE_CODE_GRAPH_PARSER_IDLE_TIMEOUT_MS = String(idleTimeout);
   if (requestTimeout !== undefined) values.THREADNOTE_CODE_GRAPH_PARSER_TIMEOUT_MS = String(requestTimeout);
   if (workers !== undefined) values.THREADNOTE_CODE_GRAPH_PARSER_WORKERS = String(workers);
+  if ([1, 2, 4, 8].includes(embeddingContexts)) {
+    values[THREADNOTE_EMBEDDING_CONTEXTS_ENV] = String(embeddingContexts);
+  }
   if (environment.THREADNOTE_BENCHMARK_RUNNER_CLASS?.trim()) {
     values.THREADNOTE_BENCHMARK_RUNNER_CLASS = benchmarkRunnerLabel(
       'THREADNOTE_BENCHMARK_RUNNER_CLASS',

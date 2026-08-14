@@ -21,6 +21,7 @@ const GENERATION_CONTEXT_RESERVE = 512;
 const GENERATION_CONTEXT_QUANTUM = 1_024;
 
 export interface LocalEmbeddingRequest {
+  readonly embeddingContextPoolSize?: 1 | 2 | 4 | 8;
   readonly inputs: readonly string[];
   readonly manifest: LocalModelManifest;
   readonly modelPath: string;
@@ -100,7 +101,7 @@ function embedManyNative(
   if (!dimensions) {
     return Effect.die(new Error(`Embedding dimensions are missing for ${request.manifest.id}.`));
   }
-  const key = modelCacheKey(request);
+  const key = `${modelCacheKey(request)}\u0000embedding-contexts:${request.embeddingContextPoolSize ?? 'default'}`;
   return Effect.gen(function* () {
     let model = models.get(key);
     if (!model) {
@@ -112,6 +113,9 @@ function embedManyNative(
               contextSize: request.manifest.contextLimit,
               darwinArm64EmbeddingGpuLayers: request.manifest.runtime.darwinArm64EmbeddingGpuLayers,
               dimensions,
+              ...(request.embeddingContextPoolSize === undefined
+                ? {}
+                : {embeddingContextPoolSize: request.embeddingContextPoolSize}),
               modelId: request.manifest.id,
               modelPath: request.modelPath,
             }),

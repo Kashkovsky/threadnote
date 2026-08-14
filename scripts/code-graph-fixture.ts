@@ -213,15 +213,28 @@ export const prepareGeneratedCodeGraphFixture = Effect.fn('codeGraphFixture.prep
   );
   yield* git(repository, ['init', '-q']);
   yield* git(repository, ['add', '.']);
-  yield* git(repository, [
-    '-c',
-    'user.name=Threadnote Evaluation',
-    '-c',
-    'user.email=evaluation@threadnote.local',
-    'commit',
-    '-qm',
-    `generated ${targetSymbols} symbol fixture`,
-  ]);
+  yield* runCommandEffect(
+    'git',
+    [
+      '-C',
+      repository,
+      '-c',
+      'user.name=Threadnote Evaluation',
+      '-c',
+      'user.email=evaluation@threadnote.local',
+      'commit',
+      '-qm',
+      `generated ${targetSymbols} symbol fixture`,
+    ],
+    {
+      env: {
+        GIT_AUTHOR_DATE: '2000-01-01T00:00:00Z',
+        GIT_COMMITTER_DATE: '2000-01-01T00:00:00Z',
+      },
+      maxOutputBytes: 16 * 1_048_576,
+      timeoutMs: 30_000,
+    },
+  );
   return {home, repository, root} satisfies PreparedCodeGraphFixture;
 });
 

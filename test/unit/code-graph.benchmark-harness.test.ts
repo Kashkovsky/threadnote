@@ -28,10 +28,17 @@ import {
   vectorSemanticControlMinimumScore,
 } from '../../scripts/benchmark-code-graph.js';
 import type {CodeGraphBenchmarkSamplerArtifact} from '../../scripts/code-graph-benchmark-sampler.js';
+import {
+  embeddingContextBenchmarkSchedule,
+  parseEmbeddingContextBenchmarkArguments,
+  summarizeEmbeddingContextArtifacts,
+} from '../../scripts/benchmark-code-graph-embedding-contexts.js';
+import {git, prepareGeneratedCodeGraphFixture} from '../../scripts/code-graph-fixture.js';
 import {codeGraphAnalysisLimitsForView} from '../../src/code_graph/analysis_render.js';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
 import {CodeGraphStoreBusyError, type RepositoryIdentity} from '../../src/code_graph/types.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
+import {benchmarkMeasurement, type BenchmarkArtifactV1} from '../../src/evaluation/benchmark.js';
 
 const CONTROL = JSON.stringify({
   expectedLanguage: 'typescript',
@@ -250,6 +257,12 @@ describe('code graph external benchmark harness', () => {
     expect(source).not.toContain('const sameOverlayReferenceStarted = yield* Clock.currentTimeNanos');
   });
 
+  it('enables recursive process sampling for explicit embedding-context candidates', () => {
+    const source = readFileSync('scripts/benchmark-code-graph.ts', 'utf8');
+    expect(source).toContain('const sampleProcessTree = largeEvidenceRun || options.embeddingContexts !== undefined');
+    expect(source.match(/sampleProcessTree\s*\? startExternalSampler/g)).toHaveLength(3);
+  });
+
   it('retains privacy-safe structural parity evidence before a failed external run exits', () => {
     const source = readFileSync('scripts/benchmark-code-graph.ts', 'utf8');
     const analysisParity = sourceSlice(source, 'if (!analysisComplete)', 'const structuralGraphParityEvidence');
@@ -324,6 +337,193 @@ describe('code graph external benchmark harness', () => {
     expect(() => parseCodeGraphBenchmarkArguments(['--materialization-transaction-batches', '2'])).toThrow(
       'must be 1 or 4',
     );
+  });
+
+  it('accepts only forced-no-reuse 10k embedding-context candidates', () => {
+    for (const embeddingContexts of [1, 2, 4, 8] as const) {
+      expect(
+        parseCodeGraphBenchmarkArguments([
+          '--vectors',
+          '--scale-symbols',
+          '10000',
+          '--embedding-contexts',
+          String(embeddingContexts),
+        ]).embeddingContexts,
+      ).toBe(embeddingContexts);
+    }
+    expect(() =>
+      parseCodeGraphBenchmarkArguments(['--vectors', '--scale-symbols', '10000', '--embedding-contexts', '3']),
+    ).toThrow('must be 1, 2, 4, or 8');
+    expect(() => parseCodeGraphBenchmarkArguments(['--embedding-contexts', '4'])).toThrow(
+      'requires --vectors --scale-symbols 10000',
+    );
+    expect(() =>
+      parseCodeGraphBenchmarkArguments([
+        '--vectors',
+        '--scale-symbols',
+        '10000',
+        '--embedding-contexts',
+        '4',
+        '--fail-on-budget',
+      ]),
+    ).toThrow('cannot use production budgets');
+    expect(
+      parseCodeGraphBenchmarkArguments([
+        '--vectors',
+        '--scale-symbols',
+        '10000',
+        '--embedding-contexts',
+        '1',
+        '--quiet',
+      ]).quiet,
+    ).toBe(true);
+  });
+
+  it('uses a balanced embedding-context order and keeps promotion evidence reviewable', () => {
+    const schedule = embeddingContextBenchmarkSchedule(4);
+    expect(schedule).toEqual([
+      [1, 2, 8, 4],
+      [2, 4, 1, 8],
+      [4, 8, 2, 1],
+      [8, 1, 4, 2],
+    ]);
+    expect(
+      parseEmbeddingContextBenchmarkArguments(['--model-home', '/tmp/models', '--output-dir', '/tmp/evidence']),
+    ).toEqual({modelHome: '/tmp/models', outputDirectory: '/tmp/evidence', resume: false, rounds: 4});
+    expect(
+      parseEmbeddingContextBenchmarkArguments([
+        '--model-home',
+        '/tmp/models',
+        '--output-dir',
+        '/tmp/evidence',
+        '--resume',
+      ]),
+    ).toMatchObject({resume: true});
+    expect(() =>
+      parseEmbeddingContextBenchmarkArguments([
+        '--model-home',
+        '/tmp/models',
+        '--output-dir',
+        '/tmp/evidence',
+        '--rounds',
+        '0',
+      ]),
+    ).toThrow('--rounds must be one of 4, 8, 12, or 16');
+
+    for (const rounds of [4, 8, 12, 16]) {
+      const balanced = embeddingContextBenchmarkSchedule(rounds);
+      for (const contexts of [1, 2, 4, 8] as const) {
+        expect(balanced.flat().filter(candidate => candidate === contexts)).toHaveLength(rounds);
+        for (let position = 0; position < 4; position += 1) {
+          expect(balanced.filter(order => order[position] === contexts)).toHaveLength(rounds / 4);
+        }
+      }
+    }
+
+    const vectorMilliseconds = {1: 100, 2: 75, 4: 50, 8: 65} as const;
+    const artifacts = schedule.flatMap((order, round) =>
+      order.map((contexts, position) => ({
+        artifact: embeddingContextArtifact(
+          contexts,
+          vectorMilliseconds[contexts] + round,
+          contexts === 4 ? 1_100 : 1_000,
+        ),
+        artifactPath: `/evidence/round-${round + 1}-position-${position + 1}.json`,
+      })),
+    );
+    const summary = summarizeEmbeddingContextArtifacts(artifacts, schedule);
+    expect(summary.promotion).toMatchObject({
+      candidate: 4,
+      eligibleForReviewedDefaultChange: true,
+      roundWinsAgainstOne: 4,
+    });
+    expect(summary.contexts['4']?.observations).toBe(4);
+  });
+
+  effectIt.effect('gives equivalent generated benchmark fixtures the same commit identity', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const first = yield* prepareGeneratedCodeGraphFixture(10, true);
+        const second = yield* prepareGeneratedCodeGraphFixture(10, true);
+        const firstCommit = (yield* git(first.repository, ['rev-parse', 'HEAD'])).stdout.trim();
+        const secondCommit = (yield* git(second.repository, ['rev-parse', 'HEAD'])).stdout.trim();
+        expect(firstCommit).toMatch(/^[0-9a-f]{40}$/);
+        expect(secondCommit).toBe(firstCommit);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  it('rejects dirty, clamped, unsampled, or vector-mismatched embedding evidence', () => {
+    const schedule = embeddingContextBenchmarkSchedule(4);
+    const artifacts = schedule.flatMap((order, round) =>
+      order.map((contexts, position) => ({
+        artifact: embeddingContextArtifact(contexts, 100 - contexts, 1_000),
+        artifactPath: `/evidence/round-${round + 1}-position-${position + 1}.json`,
+      })),
+    );
+    const replace = (index: number, artifact: BenchmarkArtifactV1) =>
+      artifacts.map((item, itemIndex) => (itemIndex === index ? {...item, artifact} : item));
+    expect(() =>
+      summarizeEmbeddingContextArtifacts(
+        replace(0, {...artifacts[0]!.artifact, environment: {...artifacts[0]!.artifact.environment, dirty: true}}),
+        schedule,
+      ),
+    ).toThrow('dirty source');
+    expect(() =>
+      summarizeEmbeddingContextArtifacts(
+        replace(1, {
+          ...artifacts[1]!.artifact,
+          metadata: {...artifacts[1]!.artifact.metadata, embeddingContextPoolSizeEffective: 1},
+        }),
+        schedule,
+      ),
+    ).toThrow('wrong context capacity');
+    expect(() =>
+      summarizeEmbeddingContextArtifacts(
+        replace(2, {
+          ...artifacts[2]!.artifact,
+          metadata: {...artifacts[2]!.artifact.metadata, coldVectorMappingDigest: 'different'},
+        }),
+        schedule,
+      ),
+    ).toThrow('vector mapping digest');
+    expect(() =>
+      summarizeEmbeddingContextArtifacts(
+        replace(3, {
+          ...artifacts[3]!.artifact,
+          measurements: artifacts[3]!.artifact.measurements.map(item =>
+            item.name === 'cold-external-process-tree-failures-n1'
+              ? benchmarkMeasurement(item.name, 'count', [1])
+              : item,
+          ),
+        }),
+        schedule,
+      ),
+    ).toThrow('lost process-tree samples');
+    expect(() =>
+      summarizeEmbeddingContextArtifacts(
+        replace(1, {
+          ...artifacts[1]!.artifact,
+          metadata: {...artifacts[1]!.artifact.metadata, embeddingContextThreadCounts: '8'},
+        }),
+        schedule,
+      ),
+    ).toThrow('invalid CPU-thread partition');
+    expect(() =>
+      summarizeEmbeddingContextArtifacts(
+        replace(1, {
+          ...artifacts[1]!.artifact,
+          metadata: {
+            ...artifacts[1]!.artifact.metadata,
+            environmentOverrides: JSON.stringify({
+              THREADNOTE_CODE_GRAPH_PARSER_WORKERS: '2',
+              THREADNOTE_EMBEDDING_CONTEXTS: '2',
+            }),
+          },
+        }),
+        schedule,
+      ),
+    ).toThrow('non-embedding environment overrides');
   });
 
   it('requires effective PRAGMA readback and FULL-after-NORMAL publication ordering', () => {
@@ -421,6 +621,7 @@ describe('code graph external benchmark harness', () => {
       THREADNOTE_CODE_GRAPH_PARSER_IDLE_TIMEOUT_MS: '99999999',
       THREADNOTE_CODE_GRAPH_PARSER_TIMEOUT_MS: '2500',
       THREADNOTE_CODE_GRAPH_PARSER_WORKERS: '99',
+      THREADNOTE_EMBEDDING_CONTEXTS: '4',
     });
 
     expect(provenance).toMatchObject({
@@ -429,11 +630,20 @@ describe('code graph external benchmark harness', () => {
       THREADNOTE_CODE_GRAPH_PARSER_IDLE_TIMEOUT_MS: '3600000',
       THREADNOTE_CODE_GRAPH_PARSER_TIMEOUT_MS: '2500',
       THREADNOTE_CODE_GRAPH_PARSER_WORKERS: '8',
+      THREADNOTE_EMBEDDING_CONTEXTS: '4',
     });
     expect(provenance.THREADNOTE_BENCHMARK_RUNNER_ID).toMatch(/^runner-[0-9a-f]{16}$/);
     expect(JSON.stringify(provenance)).not.toContain('denyskashkovskyi');
     expect(JSON.stringify(provenance)).not.toContain('/Users/private');
     expect(JSON.stringify(provenance)).not.toContain('/private/customer');
+  });
+
+  it('omits invalid embedding-context overrides from benchmark provenance', () => {
+    expect(
+      sanitizedBenchmarkEnvironmentProvenance({
+        THREADNOTE_EMBEDDING_CONTEXTS: '16',
+      }),
+    ).not.toHaveProperty('THREADNOTE_EMBEDDING_CONTEXTS');
   });
 
   it('projects only coarse hosted runner classes and always pseudonymizes explicit runner ids', () => {
@@ -817,6 +1027,68 @@ function structuralDigestLookupRows(input: {
   } finally {
     database.close(false);
   }
+}
+
+function embeddingContextArtifact(
+  contexts: 1 | 2 | 4 | 8,
+  coldVectorMilliseconds: number,
+  coldEmbeddingRssBytes: number,
+): BenchmarkArtifactV1 {
+  return {
+    createdAt: '2026-08-14T00:00:00.000Z',
+    environment: {
+      architecture: 'arm64',
+      commit: 'a'.repeat(40),
+      cpu: 'test cpu',
+      dirty: false,
+      fixtureHash: 'generated-code-graph-vectors-v2:10000',
+      memoryBytes: 64 * 1_024 ** 3,
+      model: {backend: 'node-llama-cpp', id: 'bge-small-en-v1.5-q8', revision: 'builtin-pinned'},
+      node: 'bun/test',
+      operatingSystem: 'darwin',
+      packageManager: 'bun/test',
+      runner: 'threadnote-code-graph-e2e',
+      runnerVersion: '1',
+    },
+    measurements: [
+      benchmarkMeasurement('cold-index', 'milliseconds', [coldVectorMilliseconds + 10]),
+      benchmarkMeasurement('cold-vector-index', 'milliseconds', [coldVectorMilliseconds]),
+      benchmarkMeasurement('cold-embedding-progress-external-process-cpu-n1', 'milliseconds', [500]),
+      benchmarkMeasurement('cold-embedding-progress-external-rss-peak-observed-n1', 'bytes', [coldEmbeddingRssBytes]),
+      benchmarkMeasurement('cold-embedding-progress-external-process-samples-n1', 'count', [10]),
+      benchmarkMeasurement('cold-external-sampler-version-n1', 'count', [4]),
+      benchmarkMeasurement('cold-external-storage-samples-n1', 'count', [10]),
+      benchmarkMeasurement('cold-external-process-tree-samples-n1', 'count', [10]),
+      benchmarkMeasurement('cold-external-process-tree-attempts-n1', 'count', [10]),
+      benchmarkMeasurement('cold-external-process-tree-failures-n1', 'count', [0]),
+      benchmarkMeasurement('cold-external-process-tree-maximum-sample-gap-n1', 'milliseconds', [25]),
+      benchmarkMeasurement('cold-maximum-progress-heartbeat-gap-n1', 'milliseconds', [25]),
+      benchmarkMeasurement('vector-index-disk', 'bytes', [1_000_000]),
+      benchmarkMeasurement('vector-rows', 'count', [10_000]),
+    ],
+    metadata: {
+      coldVectorMappingDigest: 'vector-mapping-digest',
+      effectiveParserMemoryBytes: 64 * 1_024 ** 3,
+      effectiveParserWorkers: 4,
+      embeddingContextCpuMathCores: 8,
+      embeddingContextPoolSizeEffective: contexts,
+      embeddingContextPoolSizeRequested: contexts,
+      embeddingContextThreadCounts:
+        contexts === 1 ? 'upstream-default' : Array.from({length: contexts}, () => String(8 / contexts)).join(','),
+      embeddingModelGpuLayers: 0,
+      environmentOverrides: JSON.stringify({THREADNOTE_EMBEDDING_CONTEXTS: String(contexts)}),
+      runnerClass: 'test-runner-class',
+      runnerIdentity: 'test-runner-identity',
+      sameRunnerComparisonKey: 'same-runner',
+      scaleSymbols: 10_000,
+      structuralGraphDigestCold: 'structural-digest',
+      vectorEnabled: true,
+      vectorRows: 10_000,
+    },
+    suite: 'code-graph-vectors-v1',
+    version: 1,
+    warmups: 0,
+  };
 }
 
 function compareLookupRows(left: StructuralLookupRow, right: StructuralLookupRow): number {

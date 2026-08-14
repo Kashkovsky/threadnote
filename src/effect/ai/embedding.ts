@@ -7,6 +7,7 @@ export interface LlamaEmbeddingLayerOptions {
   readonly contextSize?: number;
   readonly darwinArm64EmbeddingGpuLayers?: number;
   readonly dimensions: number;
+  readonly embeddingContextPoolSize?: 1 | 2 | 4 | 8;
   readonly modelId: string;
   readonly modelPath: string;
 }

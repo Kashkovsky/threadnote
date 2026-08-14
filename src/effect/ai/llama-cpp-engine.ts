@@ -14,6 +14,7 @@ import type {
 export interface LocalModelLoadOptions {
   readonly contextSize?: number;
   readonly darwinArm64EmbeddingGpuLayers?: number;
+  readonly embeddingContextPoolSize?: 1 | 2 | 4 | 8;
   readonly modelId: string;
   readonly modelPath: string;
   readonly rankingTemplate?: string;
@@ -23,6 +24,12 @@ export interface LlamaCppDiagnostics {
   readonly backend: string;
   readonly buildType: 'localBuild' | 'prebuilt';
   readonly cpuMathCores: number;
+  readonly embeddingContextPlan?: {
+    readonly effectiveContexts: number;
+    readonly modelGpuLayers?: number;
+    readonly requestedContexts: number;
+    readonly threadCounts: readonly number[];
+  };
 }
 
 export interface LlamaEmbeddingSession {

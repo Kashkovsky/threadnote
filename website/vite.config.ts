@@ -2,6 +2,7 @@ import react from '@vitejs/plugin-react';
 import {defineConfig, type Plugin} from 'vite';
 import {loadRetainedPerformanceEvidence} from '../scripts/site-performance-evidence.ts';
 import {loadLatestMajorWebsiteReleases} from '../scripts/site-release-notes.ts';
+import {embeddingContextPerformanceArtifactPath} from './src/content/embeddingContextPerformance.ts';
 import {worktreeReadinessArtifactPath} from './src/content/worktreeReadiness.ts';
 
 const repositoryRoot = process.cwd();
@@ -14,6 +15,9 @@ const resolvedVirtualReleaseNotesId = `\0${virtualReleaseNotesId}`;
 const worktreeReadinessArtifactSource =
   `${repositoryRoot}/test/evaluation/candidates/threadnote-4.0.1/benchmarks/` +
   'darwin-arm64-m1-max/code-graph-worktree-readiness-2026-08-04.json';
+const embeddingContextPerformanceArtifactSource =
+  `${repositoryRoot}/test/evaluation/candidates/threadnote-4.2.5/benchmarks/` +
+  'darwin-arm64-m1-max/code-graph-embedding-contexts-10000-2026-08-14.json';
 
 const performanceEvidencePlugin = {
   name: 'threadnote-performance-evidence',
@@ -48,10 +52,25 @@ const worktreeReadinessEvidencePlugin: Plugin = {
   },
 };
 
+const embeddingContextPerformanceEvidencePlugin: Plugin = {
+  name: 'threadnote-embedding-context-performance-evidence',
+  async generateBundle() {
+    const source = await Bun.file(embeddingContextPerformanceArtifactSource).text();
+    JSON.parse(source);
+    this.emitFile({fileName: embeddingContextPerformanceArtifactPath, source, type: 'asset'});
+  },
+};
+
 export default defineConfig({
   root: siteRoot,
   base: siteBase,
-  plugins: [react(), performanceEvidencePlugin, releaseNotesPlugin, worktreeReadinessEvidencePlugin],
+  plugins: [
+    react(),
+    performanceEvidencePlugin,
+    releaseNotesPlugin,
+    worktreeReadinessEvidencePlugin,
+    embeddingContextPerformanceEvidencePlugin,
+  ],
   build: {
     outDir: `${siteRoot}/../site-dist`,
     emptyOutDir: true,

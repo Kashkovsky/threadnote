@@ -25,6 +25,40 @@ const embeddingManifest = {
 const generationManifest = BUILTIN_MODEL_MANIFESTS.find(candidate => candidate.role === 'generation')!;
 
 describe('isolated local model runtime', () => {
+  it.effect('round-trips the effective native embedding context plan in diagnostics', () => {
+    const spawn: LocalModelWorkerSpawner = () => {
+      const worker = new FakeWorkerProcess(request => {
+        worker.respond(request, {
+          backend: 'metal',
+          buildType: 'prebuilt',
+          cpuMathCores: 10,
+          embeddingContextPlan: {
+            effectiveContexts: 4,
+            modelGpuLayers: 0,
+            requestedContexts: 4,
+            threadCounts: [3, 3, 2, 2],
+          },
+        });
+      });
+      return worker;
+    };
+
+    return Effect.gen(function* () {
+      const runtime = yield* LocalModelRuntime;
+      expect(yield* runtime.diagnostics).toEqual({
+        backend: 'metal',
+        buildType: 'prebuilt',
+        cpuMathCores: 10,
+        embeddingContextPlan: {
+          effectiveContexts: 4,
+          modelGpuLayers: 0,
+          requestedContexts: 4,
+          threadCounts: [3, 3, 2, 2],
+        },
+      });
+    }).pipe(provideTestLayer(runtimeLayer(spawn)));
+  });
+
   it.effect('boots the standalone source worker when called from a Bun development script', () =>
     Effect.gen(function* () {
       const system = yield* SystemInfo;
@@ -242,6 +276,7 @@ describe('isolated local model runtime', () => {
     return Effect.gen(function* () {
       const runtime = yield* LocalModelRuntime;
       const first = yield* runtime.embedMany({
+        embeddingContextPoolSize: 8,
         inputs,
         manifest: embeddingManifest,
         modelPath: '/models/embedding.gguf',
@@ -256,6 +291,7 @@ describe('isolated local model runtime', () => {
       expect(second).toEqual([[5, 2]]);
       expect(processes).toHaveLength(1);
       expect(processes[0]!.writes.map(request => request.payload.inputs.length)).toEqual([32, 8, 1]);
+      expect(processes[0]!.writes.map(request => request.payload.embeddingContextPoolSize)).toEqual([8, 8, undefined]);
       expect(new Set(processes[0]!.writes.map(request => request.id)).size).toBe(3);
     }).pipe(provideTestLayer(runtimeLayer(spawn)));
   });
@@ -463,6 +499,7 @@ describe('isolated local model runtime', () => {
           id: 'request-1',
           operation: 'embedMany',
           payload: {
+            embeddingContextPoolSize: 8,
             inputs: [secret],
             manifest: embeddingManifest,
             modelPath: '/models/embedding.gguf',
@@ -476,12 +513,16 @@ describe('isolated local model runtime', () => {
         LocalModelRuntime.of({
           diagnostics: Effect.succeed({backend: 'fake', buildType: 'prebuilt', cpuMathCores: 4}),
           embedMany: request =>
-            Effect.fail(
-              new EmbeddingFailed({
-                cause: new TestError(`${secret}:${request.inputs[0]}`),
-                message: secret,
-                modelId: request.manifest.id,
-              }),
+            Effect.sync(() => expect(request.embeddingContextPoolSize).toBe(8)).pipe(
+              Effect.andThen(
+                Effect.fail(
+                  new EmbeddingFailed({
+                    cause: new TestError(`${secret}:${request.inputs[0]}`),
+                    message: secret,
+                    modelId: request.manifest.id,
+                  }),
+                ),
+              ),
             ),
           generate: () => Effect.die(new TestError('Unexpected generation request')),
           rerank: () => Effect.die(new TestError('Unexpected reranking request')),
@@ -526,6 +567,7 @@ interface FakeRequest {
   readonly id: string;
   readonly operation: string;
   readonly payload: {
+    readonly embeddingContextPoolSize?: 1 | 2 | 4 | 8;
     readonly inputs: readonly string[];
   };
   readonly protocol: number;

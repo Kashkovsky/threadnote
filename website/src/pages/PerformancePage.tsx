@@ -1,5 +1,6 @@
 import {Icon} from '../components/Icons';
 import {SiteShell} from '../components/SiteShell';
+import {checkedInEmbeddingContextPerformance} from '../content/embeddingContextPerformance';
 import {
   performanceControlLanguages,
   retainedPerformanceArtifactFieldPaths,
@@ -29,6 +30,10 @@ function formatDuration(milliseconds: number): string {
 }
 
 function formatReadinessDuration(milliseconds: number): string {
+  return `${(milliseconds / 1_000).toFixed(2)} s`;
+}
+
+function formatEmbeddingDuration(milliseconds: number): string {
   return `${(milliseconds / 1_000).toFixed(2)} s`;
 }
 
@@ -452,6 +457,72 @@ export default function PerformancePage() {
             </li>
           ))}
         </ol>
+      </section>
+
+      <section className="performance-worktrees">
+        <div className="performance-worktrees__copy">
+          <span className="eyebrow">Threadnote 4.2.5 candidate evidence</span>
+          <h2>Graph embeddings use the CPU you already have.</h2>
+          <p>
+            On a clean {checkedInEmbeddingContextPerformance.environment.cpu} runner with{' '}
+            {checkedInEmbeddingContextPerformance.environment.cpuMathCores} CPU math cores and a CPU-only BGE model,
+            {formatInteger(checkedInEmbeddingContextPerformance.scope.rounds)} Williams-order rounds compared 1, 2, 4,
+            and 8 contexts on a generated {formatInteger(checkedInEmbeddingContextPerformance.scope.scaleSymbols)}
+            -symbol-scale graph build. Eight contexts cut the upper-median cold index from{' '}
+            {formatEmbeddingDuration(
+              checkedInEmbeddingContextPerformance.results[0].coldIndexMilliseconds.median,
+            )} to {formatEmbeddingDuration(checkedInEmbeddingContextPerformance.winner.coldIndexMilliseconds.median)}.
+          </p>
+          <ul>
+            <li>
+              <Icon name="check" aria-hidden="true" /> {checkedInEmbeddingContextPerformance.winner.contexts} contexts
+              won all {formatInteger(checkedInEmbeddingContextPerformance.scope.rounds)} paired rounds with a{' '}
+              {checkedInEmbeddingContextPerformance.winner.pairedMedianSpeedup.toFixed(2)}× upper-median paired-run
+              speedup
+            </li>
+            <li>
+              <Icon name="check" aria-hidden="true" /> Ordered symbol-to-vector digests matched across all{' '}
+              {formatInteger(checkedInEmbeddingContextPerformance.scope.observations)} observations; upper-median
+              sampled embedding process-tree RSS rose about{' '}
+              {checkedInEmbeddingContextPerformance.rssIncreasePercent.toFixed(0)}%
+            </li>
+            <li>
+              <Icon name="check" aria-hidden="true" /> GPU or unknown-offload models and ordinary recall and query
+              embeddings remain single-context by default
+            </li>
+          </ul>
+          <p className="performance-worktrees__evidence">
+            Same-machine engineering comparison, not a portable SLA.{' '}
+            <a href={siteHref(checkedInEmbeddingContextPerformance.artifactPath)} target="_blank" rel="noreferrer">
+              Inspect all observations and provenance
+            </a>
+            .
+          </p>
+        </div>
+        <div className="performance-worktrees__diagram" aria-label="Threadnote 4.2.5 CPU graph embedding evidence">
+          <div className="performance-worktrees__base">
+            <span>Serial baseline · 1 context</span>
+            <strong>
+              {formatEmbeddingDuration(checkedInEmbeddingContextPerformance.results[0].coldIndexMilliseconds.median)}{' '}
+              cold ·{' '}
+              {formatEmbeddingDuration(checkedInEmbeddingContextPerformance.results[0].coldVectorMilliseconds.median)}{' '}
+              vectors
+            </strong>
+            <code>{checkedInEmbeddingContextPerformance.environment.model.id}</code>
+          </div>
+          <div className="performance-worktrees__branches">
+            {checkedInEmbeddingContextPerformance.results.slice(1).map(result => (
+              <article key={result.contexts}>
+                <span>{result.contexts} contexts</span>
+                <strong>{formatEmbeddingDuration(result.coldIndexMilliseconds.median)} cold</strong>
+                <small>
+                  {result.pairedMedianSpeedup.toFixed(2)}× upper-median paired speedup ·{' '}
+                  {formatEmbeddingDuration(result.coldVectorMilliseconds.median)} vectors
+                </small>
+              </article>
+            ))}
+          </div>
+        </div>
       </section>
 
       <section className="performance-worktrees">
