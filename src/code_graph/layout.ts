@@ -35,6 +35,26 @@ export function codeGraphDiskReservationLockPath(path: Path.Path, threadnoteHome
   return path.join(threadnoteHome, 'locks', 'indexes', 'code-graph', 'disk-capacity-reservations.lock');
 }
 
+export function codeGraphBuilderAdmissionRoot(path: Path.Path, threadnoteHome: string): string {
+  return path.join(threadnoteHome, 'locks', 'indexes', 'code-graph', 'builder-admission');
+}
+
+export function codeGraphBuilderAdmissionLockPath(path: Path.Path, threadnoteHome: string): string {
+  return path.join(threadnoteHome, 'locks', 'indexes', 'code-graph', 'builder-admission.lock');
+}
+
+export function codeGraphBuilderAdmissionSlotPath(path: Path.Path, threadnoteHome: string, slot: 0 | 1): string {
+  return path.join(threadnoteHome, 'locks', 'indexes', 'code-graph', 'builder-slots', `${slot}.lock`);
+}
+
+export function codeGraphRetainedBaseReservationRoot(path: Path.Path, threadnoteHome: string): string {
+  return path.join(threadnoteHome, 'locks', 'indexes', 'code-graph', 'retained-base-reservations');
+}
+
+export function codeGraphRetainedBaseReservationLockPath(path: Path.Path, threadnoteHome: string): string {
+  return path.join(threadnoteHome, 'locks', 'indexes', 'code-graph', 'retained-base-reservations.lock');
+}
+
 export function codeGraphRepositoriesRoot(path: Path.Path, threadnoteHome: string): string {
   return path.join(threadnoteHome, 'indexes', 'code-graph', 'repositories');
 }
@@ -140,6 +160,29 @@ export function codeGraphWorktreeLockPath(
   assertCheckoutId(checkoutId);
   assertWorktreeId(worktreeId);
   return path.join(codeGraphWorktreeLockRoot(path, threadnoteHome, checkoutId), `${worktreeId}.lock`);
+}
+
+/**
+ * Serializes the observe-then-spawn window across MCP hosts. This must remain
+ * distinct from the repository lock acquired by the spawned indexer.
+ */
+export function codeGraphWorktreeSpawnLockPath(
+  path: Path.Path,
+  threadnoteHome: string,
+  checkoutId: string,
+  worktreeId: string,
+): string {
+  assertCheckoutId(checkoutId);
+  assertWorktreeId(worktreeId);
+  return path.join(
+    threadnoteHome,
+    'locks',
+    'indexes',
+    'code-graph',
+    'worktree-spawns',
+    checkoutId,
+    `${worktreeId}.lock`,
+  );
 }
 
 export function codeGraphLayout(

@@ -32,7 +32,6 @@ import {pruneRetiredSnapshotRows} from './store_retirement.js';
 import {chunk, uniqueBy, upsertRepository} from './store_utilities.js';
 import {
   reclaimRetiredSnapshotPage,
-  reclaimRetiredSnapshotRows,
   REEXPORT_CLOSURE_PAGE_MAXIMUM_ROWS,
   REEXPORT_CLOSURE_SEED_PAGE_ROWS,
   stageActivationMonikers,
@@ -174,7 +173,7 @@ const retireIncompleteWorktreeSnapshots = Effect.fn('codeGraph.retireIncompleteW
   retainedSnapshotIds: ReadonlySet<string>,
   writerGate?: CodeGraphWriterGate,
   onProgress?: CodeGraphRetiredSnapshotCleanupProgressCallback,
-  cleanupMode: 'deferred' | 'required' = 'required',
+  _cleanupMode: 'deferred' | 'required' = 'required',
 ) {
   const sql = yield* SqlClient.SqlClient;
   yield* configureConnection(sql);
@@ -260,9 +259,7 @@ const retireIncompleteWorktreeSnapshots = Effect.fn('codeGraph.retireIncompleteW
       }),
     ),
   );
-  if (cleanupMode === 'required' && result.reclaimable.length > 0) {
-    yield* reclaimRetiredSnapshotRows(sql, result.reclaimable, runWrite, onProgress);
-  } else if (result.reclaimable.length > 0) {
+  if (result.reclaimable.length > 0) {
     const targets = result.reclaimable.slice(0, 100);
     yield* onProgress?.({
       pagesCompleted: 0,
@@ -270,6 +267,12 @@ const retireIncompleteWorktreeSnapshots = Effect.fn('codeGraph.retireIncompleteW
       snapshotsCompleted: 0,
       snapshotsTotal: result.reclaimable.length,
     }) ?? Effect.void;
+    // Required admission cleanup remains necessary for genuinely incomplete
+    // repository-sized rows, but it is page-budgeted so it cannot hold the
+    // repository lock across an unbounded physical drain. Committed retained
+    // READY rows are lease-protected and later enter ordinary detached-ready
+    // retirement after that lease lapses; they never enter this incomplete-row
+    // cleaner.
     const page = yield* runWrite(sql.withTransaction(reclaimRetiredSnapshotPage(sql, targets)));
     yield* onProgress?.({
       pagesCompleted: 1,
@@ -283,9 +286,9 @@ const retireIncompleteWorktreeSnapshots = Effect.fn('codeGraph.retireIncompleteW
 
 /**
  * Superseded persistent builds can own repository-sized durable tables. The
- * required mode reclaims their exact identities before replacement work; the
- * indexer uses deferred mode so ordinary ready-snapshot reuse only performs the
- * bounded retirement transaction and hands physical pages to routine cleanup.
+ * required mode reclaims one bounded page before replacement work; deferred
+ * maintenance converges the remaining exact identities without extending the
+ * activation-drift window.
  */
 
 const finalizePersistentMaterializationPlan = Effect.fn('codeGraph.finalizePersistentMaterializationPlan')(function* (

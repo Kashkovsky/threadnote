@@ -50,7 +50,12 @@ import {
   verifyIndexInput,
   type PersistentMaterializationTransactionCandidate,
 } from './indexer_materialization.js';
-import {CodeGraphIndexOperationError, codeGraphInventoryFileChanged, sameInventoryPaths} from './indexer_shared.js';
+import {
+  CodeGraphIndexOperationError,
+  codeGraphInventoryFileChanged,
+  sameInventoryPaths,
+  WorktreeChangedDuringIndex,
+} from './indexer_shared.js';
 import type {
   CodeGraphIndexOptions,
   CommittedBaseResult,
@@ -90,6 +95,43 @@ import {
   type CodeGraphSymbol,
   type RepositoryIdentity,
 } from './types.js';
+import {reserveCodeGraphRetainedBase} from './retained_base_reservation.js';
+
+export const CODE_GRAPH_RETAINED_BASE_LEASE_MILLISECONDS = 45 * 60_000;
+
+const verifyCommittedIndexInput = Effect.fn('codeGraph.verifyCommittedIndexInput')(function* (input: {
+  readonly databasePath: string;
+  readonly identity: RepositoryIdentity;
+  readonly physicalSnapshotId?: string;
+  readonly requestedOverlay?: {readonly dirty: boolean; readonly fingerprint?: string};
+  readonly snapshotId: string;
+  readonly store: CodeGraphStoreShape;
+  readonly threadnoteHome: string;
+}) {
+  return yield* verifyIndexInput(input.identity, true, input.threadnoteHome, input.requestedOverlay).pipe(
+    Effect.catchIf(
+      cause => cause instanceof WorktreeChangedDuringIndex,
+      cause =>
+        Effect.gen(function* () {
+          const lease = yield* input.store
+            .acquireSnapshotLease(input.databasePath, input.snapshotId, CODE_GRAPH_RETAINED_BASE_LEASE_MILLISECONDS, {
+              retainedBase: true,
+            })
+            .pipe(Effect.option);
+          if (Option.isNone(lease)) return yield* Effect.fail(cause);
+          const reserved = yield* reserveCodeGraphRetainedBase({
+            durationMilliseconds: CODE_GRAPH_RETAINED_BASE_LEASE_MILLISECONDS,
+            physicalSnapshotId: input.physicalSnapshotId ?? input.snapshotId,
+            threadnoteHome: input.threadnoteHome,
+          }).pipe(Effect.catch(() => Effect.succeed(false)));
+          if (!reserved) {
+            yield* input.store.releaseSnapshotLease(input.databasePath, lease.value).pipe(Effect.ignore);
+          }
+          return yield* Effect.fail(cause);
+        }),
+    ),
+  );
+});
 
 export function withCodeGraphProcessLock<A, E, R>(
   fs: FileSystem.FileSystem,
@@ -598,6 +640,8 @@ const attemptReusableCleanSnapshot = Effect.fn('codeGraph.attemptReusableCleanSn
             symbolCount: candidate.snapshot.symbolCount,
             worktreeId: input.identity.worktreeId,
           };
+          yield* input.onProgress?.({phase: 'activating', snapshotId: alias.id, subphase: 'validating-input'}) ??
+            Effect.void;
           yield* verifyIndexInput(input.identity, true, input.threadnoteHome, input.requestedOverlay);
           yield* input.store.activateCleanSnapshotAlias!(
             input.layout.databasePath,
@@ -605,9 +649,27 @@ const attemptReusableCleanSnapshot = Effect.fn('codeGraph.attemptReusableCleanSn
             alias,
             candidate.snapshot.id,
           );
-          yield* verifyIndexInput(input.identity, true, input.threadnoteHome, input.requestedOverlay);
+          yield* input.onProgress?.({phase: 'activating', snapshotId: alias.id, subphase: 'promoting'}) ?? Effect.void;
+          yield* verifyCommittedIndexInput({
+            databasePath: input.layout.databasePath,
+            identity: input.identity,
+            physicalSnapshotId: candidate.snapshot.id,
+            requestedOverlay: input.requestedOverlay,
+            snapshotId: alias.id,
+            store: input.store,
+            threadnoteHome: input.threadnoteHome,
+          });
           yield* promoteReadySnapshotWithCapacity(input, alias.id);
-          yield* verifyIndexInput(input.identity, true, input.threadnoteHome, input.requestedOverlay);
+          yield* input.onProgress?.({phase: 'activating', snapshotId: alias.id, subphase: 'promoting'}) ?? Effect.void;
+          yield* verifyCommittedIndexInput({
+            databasePath: input.layout.databasePath,
+            identity: input.identity,
+            physicalSnapshotId: candidate.snapshot.id,
+            requestedOverlay: input.requestedOverlay,
+            snapshotId: alias.id,
+            store: input.store,
+            threadnoteHome: input.threadnoteHome,
+          });
           return Option.some<ReusableCleanSnapshotAttempt>({
             mode: 'complete',
             summary: yield* reuseReadySnapshot({
@@ -751,12 +813,21 @@ export const attemptReusableDirtyBase = Effect.fn('codeGraph.attemptReusableDirt
   },
   workspace: CodeGraphWorkspace,
 ) {
-  if (!input.store.reusableCleanBase) {
+  if (!input.store.reusableCleanBase && !input.store.reusableOverlayBase) {
     return Option.none<{
       readonly committedBase: CommittedBaseResult;
       readonly preassessment: Extract<IncrementalOverlayPreassessment, {readonly mode: 'compatible'}>;
     }>();
   }
+  const retainedOverlayCandidate =
+    input.inventory.overlayFingerprint && input.store.reusableOverlayBase
+      ? yield* input.store.reusableOverlayBase(
+          input.layout.databasePath,
+          input.identity.repositoryId,
+          input.extractorSet,
+          input.inventory.overlayFingerprint,
+        )
+      : undefined;
   // Prefer the exact committed snapshot path below when it is itself a root
   // reusable base. A clean incremental snapshot is already layered, so another
   // overlay must instead reuse its root and include the cumulative changed set.
@@ -771,7 +842,7 @@ export const attemptReusableDirtyBase = Effect.fn('codeGraph.attemptReusableDirt
     input.layout.databasePath,
     exactCommittedSnapshotId,
   );
-  if (exactCommittedSnapshot && exactCommittedSnapshot.baseSnapshotId === undefined) {
+  if (!retainedOverlayCandidate && exactCommittedSnapshot && exactCommittedSnapshot.baseSnapshotId === undefined) {
     return Option.none();
   }
   const committedFileSetFingerprint = reusableBaseFileSetFingerprint(input.inventory.committedFiles);
@@ -786,14 +857,15 @@ export const attemptReusableDirtyBase = Effect.fn('codeGraph.attemptReusableDirt
     ? yield* input.store.reusableBaseReceipt(input.layout.databasePath, commitReady.id)
     : undefined;
   let candidate: CodeGraphReusableCleanBase | undefined =
-    commitReady &&
+    retainedOverlayCandidate ??
+    (commitReady &&
     commitReceipt &&
     commitReady.graphContentId === committedGraphContentId &&
     commitReceipt.fileSetFingerprint === committedFileSetFingerprint &&
     commitReceipt.workspaceFingerprint === workspace.fingerprint
       ? {files: input.inventory.committedFiles, receipt: commitReceipt, snapshot: commitReady}
-      : undefined;
-  if (!candidate) {
+      : undefined);
+  if (!candidate && input.store.reusableCleanBase) {
     const preferredCommitGroups = yield* preferredIncrementalBaseCommitGroups(
       input.identity.repoRoot,
       input.identity.headCommit,
@@ -1241,6 +1313,12 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
       ...(finalFactsBytesTotal === undefined ? {} : {factsBytesTotal: finalFactsBytesTotal}),
       loadingMilliseconds,
       mode: 'full',
+      ...(incrementalAssessment?.resolutionPublicationAssessment
+        ? {
+            resolutionLookupKeyForm: incrementalAssessment.resolutionPublicationAssessment.lookupKeyForm,
+            resolutionPublicationGate: incrementalAssessment.resolutionPublicationAssessment.gate,
+          }
+        : {}),
       rows: materializedRows,
       sourceBytesCompleted,
       sourceBytesTotal,
@@ -1626,7 +1704,7 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
       unit: 'files',
     }) ?? Effect.void;
   }
-  const reusableBaseReceipt = input.building.dirty
+  const reusableBaseReceipt = incrementalApplied
     ? undefined
     : {
         fileSetFingerprint: reusableBaseFileSetFingerprint(input.inventory.files),
@@ -1711,12 +1789,27 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
       // Progress callbacks are user-controlled effects and may yield long enough for
       // the worktree to change. Revalidate on both sides of pointer promotion so a
       // mutation observed in this window triggers the bounded retry.
-      yield* verifyIndexInput(input.identity, input.activatePointer, input.threadnoteHome, input.requestedOverlay);
+      yield* verifyCommittedIndexInput({
+        databasePath: input.layout.databasePath,
+        identity: input.identity,
+        requestedOverlay: input.requestedOverlay,
+        snapshotId: activated.id,
+        store: input.store,
+        threadnoteHome: input.threadnoteHome,
+      });
       yield* input.store.promote(input.layout.databasePath, input.identity, activated.id, {
         persistentCapacityProtector: protectDirectPersistentWrite,
       });
       yield* input.store.shrinkMemory(input.layout.databasePath);
-      yield* verifyIndexInput(input.identity, input.activatePointer, input.threadnoteHome, input.requestedOverlay);
+      yield* input.onProgress?.({phase: 'activating', snapshotId: activated.id, subphase: 'promoting'}) ?? Effect.void;
+      yield* verifyCommittedIndexInput({
+        databasePath: input.layout.databasePath,
+        identity: input.identity,
+        requestedOverlay: input.requestedOverlay,
+        snapshotId: activated.id,
+        store: input.store,
+        threadnoteHome: input.threadnoteHome,
+      });
       if (Option.isSome(activationLease)) {
         yield* input.store.releaseSnapshotLease(input.layout.databasePath, activationLease.value);
       }
@@ -1821,6 +1914,12 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
           }
         : {}),
       ...(fallbackReason ? {fallbackReason} : {}),
+      ...(incrementalAssessment?.resolutionPublicationAssessment
+        ? {
+            resolutionLookupKeyForm: incrementalAssessment.resolutionPublicationAssessment.lookupKeyForm,
+            resolutionPublicationGate: incrementalAssessment.resolutionPublicationAssessment.gate,
+          }
+        : {}),
       mode: incrementalApplied ? (input.inventory.dirty ? 'incremental-overlay' : 'incremental-clean') : 'full',
       stagedFiles: materializedFiles,
       totalFiles: input.inventory.files.length,

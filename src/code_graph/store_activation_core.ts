@@ -817,7 +817,7 @@ const persistedIncrementalFactCounts = Effect.fn('codeGraph.persistedIncremental
         + (SELECT COUNT(*) FROM activation_edges) AS edges
     FROM snapshots AS base
     WHERE base.id = ${baseSnapshotId} AND base.state = 'ready'
-      AND base.dirty = 0 AND base.base_snapshot_id IS NULL
+      AND base.base_snapshot_id IS NULL
     LIMIT 1
   `;
   const row = rows[0];

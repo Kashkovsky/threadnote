@@ -148,7 +148,7 @@ describe('code graph incomplete snapshot retirement', () => {
     }
   });
 
-  it('reclaims prior multi-page direct-build rows while yielding the writer gate to foreground work', async () => {
+  it('page-budgets required direct-build cleanup before yielding to foreground work', async () => {
     const root = await mkdtemp('threadnote-incomplete-reclaim-');
     temporaryRoots.push(root);
     const databasePath = join(root, 'graph-v3.sqlite');
@@ -235,41 +235,28 @@ describe('code graph incomplete snapshot retirement', () => {
     );
 
     expect(result.retired).toBe(0);
-    expect(result.acquisitions).toBeGreaterThan(3);
-    expect(result.progress.length).toBeGreaterThan(4);
+    expect(result.acquisitions).toBe(2);
+    expect(result.progress).toHaveLength(2);
     expect(result.progress[0]).toEqual({
       pagesCompleted: 0,
       rowsDeleted: 0,
       snapshotsCompleted: 0,
       snapshotsTotal: 1,
     });
-    expect(result.progress.slice(1).map(update => update.pagesCompleted)).toEqual(
-      result.progress.slice(1).map((_, index) => index + 1),
-    );
+    expect(result.progress[1]?.pagesCompleted).toBe(1);
     expect(result.progress.every(update => update.snapshotsTotal === 1)).toBe(true);
-    expect(result.progress.at(-1)).toMatchObject({
-      rowsDeleted: 13_501,
-      snapshotsCompleted: 1,
-      snapshotsTotal: 1,
-    });
-    for (let index = 1; index < result.progress.length; index += 1) {
-      expect(result.progress[index]!.rowsDeleted).toBeGreaterThanOrEqual(result.progress[index - 1]!.rowsDeleted);
-    }
+    expect(result.progress[1]?.rowsDeleted).toBeGreaterThan(0);
+    expect(result.progress[1]?.rowsDeleted).toBeLessThan(13_501);
+    expect(result.progress[1]?.snapshotsCompleted).toBe(0);
     const database = new Database(databasePath, {readonly: true});
     try {
-      expect(database.query('SELECT state FROM snapshots WHERE id = ?').get(stale.id)).toBeNull();
+      expect(database.query('SELECT state FROM snapshots WHERE id = ?').get(stale.id)).toEqual({state: 'retired'});
       expect(
         database
           .query<{readonly state: string}, [string]>('SELECT state FROM snapshots WHERE id = ?')
           .get(foreground.id),
       ).toEqual({state: 'building'});
-      for (const table of ['symbols', 'symbol_terms', 'edges'] as const) {
-        expect(
-          database
-            .query<{readonly count: number}, [string]>(`SELECT COUNT(*) AS count FROM ${table} WHERE snapshot_id = ?`)
-            .get(stale.id)?.count,
-        ).toBe(0);
-      }
+      expect(interruptedRowCount(databasePath, stale.id)).toBeGreaterThan(0);
       expect(database.query('PRAGMA foreign_key_check').all()).toEqual([]);
     } finally {
       database.close();

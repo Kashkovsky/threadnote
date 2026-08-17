@@ -1,8 +1,9 @@
 import {TestError} from '../helpers/test-error.js';
+import {provideTestLayer} from '../helpers/effect-layer.js';
 import {it as effectIt} from '@effect/vitest';
 import {describe, expect, it} from 'vitest';
 import fc from 'fast-check';
-import {Effect, Fiber} from 'effect';
+import {Deferred, Effect, Fiber} from 'effect';
 import {TestClock} from 'effect/testing';
 import {
   assertIsolatedBuilderPlan,
@@ -11,6 +12,7 @@ import {
   codeGraphProgressFromBuildStatus,
   isCodeGraphIsolatedBuilderHost,
   isolatedBuilderFailureMessage,
+  isolatedBuilderRequestMatches,
   isolatedBuilderResultFromCompletedStatus,
   runIsolatedCodeGraphIndex,
   shouldAwaitExistingBuilder,
@@ -21,6 +23,10 @@ import type {ObservedCodeGraphBuildStatus} from '../../src/code_graph/build_stat
 import {CodeGraphRuntimeReconnectRequiredError, type RepositoryIdentity} from '../../src/code_graph/types.js';
 import type {SystemInfoShape} from '../../src/effect/system.js';
 import {runEffect} from '../helpers/effect-runtime.js';
+import {mkdtempSync, rmSync} from '../helpers/node-fs.js';
+import {tmpdir} from '../helpers/node-os.js';
+import {join} from '../helpers/node-path.js';
+import {ApplicationLayer} from '../../src/effect/runtime.js';
 
 function systemInfoStub(overrides: Partial<SystemInfoShape>): SystemInfoShape {
   return {
@@ -105,6 +111,13 @@ describe('isolated code-graph builder host detection', () => {
 });
 
 describe('isolated code-graph builder spawn plan', () => {
+  it('reuses completed results only for exact request-key equality', () => {
+    const status = {request: {key: 'request-a'}} as ObservedCodeGraphBuildStatus;
+    expect(isolatedBuilderRequestMatches(status, 'request-a')).toBe(true);
+    expect(isolatedBuilderRequestMatches(status, 'request-b')).toBe(false);
+    expect(isolatedBuilderRequestMatches(status, undefined)).toBe(false);
+  });
+
   it('checks runtime compatibility before observing or spawning a child', async () => {
     const identity: RepositoryIdentity = {
       caseMode: 'sensitive',
@@ -166,6 +179,7 @@ describe('isolated code-graph builder spawn plan', () => {
     ]);
     expect(plan.environment).toEqual({
       PATH: '/usr/bin',
+      THREADNOTE_CODE_GRAPH_BUILDER_ADMISSION_CLASS: 'current-required',
       THREADNOTE_HOME: '/home/.threadnote',
       THREADNOTE_TELEMETRY_CHILD: 'graph-builder',
       THREADNOTE_TELEMETRY_CONSENT_GENERATION: 'tng_000102030405060708090a0b0c0d0e0f',
@@ -275,6 +289,7 @@ describe('codeGraphProgressFromBuildStatus', () => {
     const allowedWaiting = new Set([
       'database-writer',
       'disk-capacity',
+      'home-builder-cap',
       'repository-lock',
       'request-lock',
       'snapshot-build',
@@ -321,6 +336,32 @@ describe('codeGraphProgressFromBuildStatus', () => {
 });
 
 describe('shouldAwaitExistingBuilder and statusBelongsToChild', () => {
+  it('elects exactly one owner for every cross-host observe-then-spawn permutation', () => {
+    fc.assert(
+      fc.property(fc.uniqueArray(fc.integer({max: 10_000, min: 2}), {maxLength: 20, minLength: 1}), callers => {
+        let status: ObservedCodeGraphBuildStatus | undefined;
+        let owners = 0;
+        const waiters: number[] = [];
+        for (const processId of callers) {
+          if (shouldAwaitExistingBuilder(status, processId)) {
+            waiters.push(processId);
+            continue;
+          }
+          owners += 1;
+          status = {
+            observation: {heartbeatAgeMilliseconds: 0, liveness: 'active'},
+            owner: {processId, runtime: 'bun', runtimeVersion: '1'},
+          } as ObservedCodeGraphBuildStatus;
+        }
+
+        expect(owners).toBe(1);
+        const completedSnapshotId = 'owner-snapshot';
+        expect(waiters.map(() => completedSnapshotId)).toEqual(callers.slice(1).map(() => completedSnapshotId));
+      }),
+      {numRuns: 100},
+    );
+  });
+
   it('awaits active and stalled foreign builders only', () => {
     const livenessValues = ['abandoned', 'active', 'completed', 'failed', 'stalled'] as const;
     fc.assert(
@@ -506,5 +547,193 @@ describe('isolated builder exit contracts', () => {
         expect(reads).toBe(statuses.length);
       }),
     {fastCheck: {numRuns: 60}},
+  );
+});
+
+describe('isolated builder cross-host spawn admission', () => {
+  effectIt.effect('spawns once for concurrent callers on one worktree and attaches the waiter', () =>
+    TestClock.withLive(
+      Effect.acquireUseRelease(
+        Effect.sync(() => mkdtempSync(join(tmpdir(), 'threadnote-isolated-spawn-'))),
+        home =>
+          Effect.gen(function* () {
+            const identity: RepositoryIdentity = {
+              caseMode: 'sensitive',
+              checkoutId: 'a'.repeat(64),
+              displayName: 'fixture/repository',
+              gitCommonDirectory: '/fixture/repository/.git',
+              headCommit: 'b'.repeat(40),
+              objectFormat: 'sha1',
+              repoRoot: '/fixture/repository',
+              repositoryId: 'c'.repeat(64),
+              worktreeId: 'd'.repeat(64),
+            };
+            let status: ObservedCodeGraphBuildStatus | undefined;
+            let resolveExit: ((code: number) => void) | undefined;
+            let spawnCalls = 0;
+            const waiterAttached = yield* Deferred.make<void>();
+            const activeStatus = {
+              buildId: 'owned-build',
+              counters: {},
+              identity: {
+                checkoutId: identity.checkoutId,
+                commit: identity.headCommit,
+                repositoryId: identity.repositoryId,
+                worktreeId: identity.worktreeId,
+              },
+              observation: {heartbeatAgeMilliseconds: 0, liveness: 'active'},
+              owner: {processId: 77, runtime: 'bun' as const, runtimeVersion: '1'},
+              phase: 'registering' as const,
+              request: {key: 'request-a'},
+              schemaVersion: 2,
+              state: 'running' as const,
+              timestamps: {
+                heartbeatAt: new Date().toISOString(),
+                lastProgressAt: new Date().toISOString(),
+                phaseStartedAt: new Date().toISOString(),
+                startedAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString(),
+              },
+            } as unknown as ObservedCodeGraphBuildStatus;
+            const options = {
+              assertRuntimeSchemaCompatible: () => Effect.void,
+              cwd: identity.repoRoot,
+              readStatus: Effect.sync(() => status),
+              resolveIdentity: () => Effect.succeed(identity),
+              requestKey: 'request-a',
+              spawn: () => {
+                spawnCalls += 1;
+                status = activeStatus;
+                return {
+                  exited: new Promise<number>(resolve => {
+                    resolveExit = resolve;
+                  }),
+                  kill: () => undefined,
+                  processId: 77,
+                };
+              },
+              threadnoteHome: home,
+            };
+
+            const owner = yield* runIsolatedCodeGraphIndex(options).pipe(Effect.forkChild);
+            while (spawnCalls < 1 || resolveExit === undefined) yield* Effect.yieldNow;
+            const waiter = yield* runIsolatedCodeGraphIndex({
+              ...options,
+              onProgress: progress =>
+                progress.phase === 'registering'
+                  ? Deferred.succeed(waiterAttached, undefined).pipe(Effect.asVoid)
+                  : Effect.void,
+            }).pipe(Effect.forkChild);
+            yield* Deferred.await(waiterAttached);
+            status = {
+              ...activeStatus,
+              observation: {heartbeatAgeMilliseconds: 0, liveness: 'completed'},
+              result: {dirty: false, edges: 11, files: 2, snapshotId: 'snapshot', symbols: 7},
+              state: 'completed',
+            } as ObservedCodeGraphBuildStatus;
+            resolveExit(0);
+
+            expect(yield* Effect.all([Fiber.join(owner), Fiber.join(waiter)], {concurrency: 'unbounded'})).toEqual([
+              {edges: 11, symbols: 7},
+              {edges: 11, symbols: 7},
+            ]);
+            expect(spawnCalls).toBe(1);
+          }),
+        home => Effect.sync(() => rmSync(home, {force: true, recursive: true})),
+      ).pipe(provideTestLayer(ApplicationLayer)),
+    ),
+  );
+
+  effectIt.effect('serializes differing request targets and never reuses the first result as fresh', () =>
+    TestClock.withLive(
+      Effect.acquireUseRelease(
+        Effect.sync(() => mkdtempSync(join(tmpdir(), 'threadnote-isolated-targets-'))),
+        home =>
+          Effect.gen(function* () {
+            const identity: RepositoryIdentity = {
+              caseMode: 'sensitive',
+              checkoutId: 'a'.repeat(64),
+              displayName: 'fixture/repository',
+              gitCommonDirectory: '/fixture/repository/.git',
+              headCommit: 'b'.repeat(40),
+              objectFormat: 'sha1',
+              repoRoot: '/fixture/repository',
+              repositoryId: 'c'.repeat(64),
+              worktreeId: 'd'.repeat(64),
+            };
+            let status: ObservedCodeGraphBuildStatus | undefined;
+            const exits: Array<(code: number) => void> = [];
+            let spawnCalls = 0;
+            const runningStatus = (ordinal: number) =>
+              ({
+                buildId: `owned-build-${ordinal}`,
+                counters: {},
+                identity: {
+                  checkoutId: identity.checkoutId,
+                  commit: identity.headCommit,
+                  repositoryId: identity.repositoryId,
+                  worktreeId: identity.worktreeId,
+                },
+                observation: {heartbeatAgeMilliseconds: 0, liveness: 'active'},
+                owner: {processId: 77 + ordinal, runtime: 'bun' as const, runtimeVersion: '1'},
+                phase: 'registering' as const,
+                request: {key: ordinal === 0 ? 'request-a' : 'request-b'},
+                schemaVersion: 2,
+                state: 'running' as const,
+                timestamps: {
+                  heartbeatAt: new Date().toISOString(),
+                  lastProgressAt: new Date().toISOString(),
+                  phaseStartedAt: new Date().toISOString(),
+                  startedAt: new Date().toISOString(),
+                  updatedAt: new Date().toISOString(),
+                },
+              }) as unknown as ObservedCodeGraphBuildStatus;
+            const common = {
+              assertRuntimeSchemaCompatible: () => Effect.void,
+              cwd: identity.repoRoot,
+              readStatus: Effect.sync(() => status),
+              resolveIdentity: () => Effect.succeed(identity),
+              spawn: () => {
+                const ordinal = spawnCalls++;
+                status = runningStatus(ordinal);
+                return {
+                  exited: new Promise<number>(resolve => exits.push(resolve)),
+                  kill: () => undefined,
+                  processId: 77 + ordinal,
+                };
+              },
+              threadnoteHome: home,
+            };
+
+            const owner = yield* runIsolatedCodeGraphIndex({...common, requestKey: 'request-a'}).pipe(Effect.forkChild);
+            while (spawnCalls < 1 || exits[0] === undefined) yield* Effect.yieldNow;
+            const waiter = yield* runIsolatedCodeGraphIndex({...common, requestKey: 'request-b'}).pipe(
+              Effect.forkChild,
+            );
+            yield* Effect.yieldNow;
+            status = {
+              ...runningStatus(0),
+              observation: {heartbeatAgeMilliseconds: 0, liveness: 'completed'},
+              result: {dirty: false, edges: 11, files: 2, snapshotId: 'snapshot-a', symbols: 7},
+              state: 'completed',
+            } as ObservedCodeGraphBuildStatus;
+            exits[0]!(0);
+
+            expect(yield* Fiber.join(owner)).toEqual({edges: 11, symbols: 7});
+            while (spawnCalls < 2 || exits[1] === undefined) yield* Effect.yieldNow;
+            status = {
+              ...runningStatus(1),
+              observation: {heartbeatAgeMilliseconds: 0, liveness: 'completed'},
+              result: {dirty: true, edges: 13, files: 1, snapshotId: 'snapshot-b', symbols: 9},
+              state: 'completed',
+            } as ObservedCodeGraphBuildStatus;
+            exits[1]!(0);
+
+            expect(yield* Fiber.join(waiter)).toEqual({edges: 13, symbols: 9});
+            expect(spawnCalls).toBe(2);
+          }),
+        home => Effect.sync(() => rmSync(home, {force: true, recursive: true})),
+      ).pipe(provideTestLayer(ApplicationLayer)),
+    ),
   );
 });

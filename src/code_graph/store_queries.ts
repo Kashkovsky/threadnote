@@ -1,4 +1,4 @@
-import {Effect, Option} from 'effect';
+import {Clock, Effect, Option} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {type CodeGraphBlobReuseFile} from './blob_reuse.js';
 import {codeGraphUtf8ByteLength} from './disk_capacity.js';
@@ -246,6 +246,39 @@ const selectReusableCleanBase = Effect.fn('codeGraph.selectReusableCleanBase')(f
   return yield* loadFirstReusableCleanBase(legacyCandidates);
 });
 
+const selectReusableOverlayBase = Effect.fn('codeGraph.selectReusableOverlayBase')(function* (
+  repositoryId: string,
+  extractorSet: string,
+  overlayFingerprint: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* configureConnection(sql);
+  const now = yield* Clock.currentTimeMillis;
+  const candidates = yield* sql<SnapshotRow>`
+    SELECT snapshot.*
+    FROM snapshots AS snapshot
+    JOIN snapshot_reuse_receipts AS receipt ON receipt.snapshot_id = snapshot.id
+    WHERE snapshot.repository_id = ${repositoryId}
+      AND snapshot.extractor_set = ${extractorSet}
+      AND snapshot.state = 'ready'
+      AND snapshot.dirty = 1
+      AND snapshot.base_snapshot_id IS NULL
+      AND receipt.format_version = ${CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION}
+      AND receipt.resolution_surface_version = 1
+    ORDER BY CASE WHEN snapshot.overlay_fingerprint = ${overlayFingerprint} THEN 0 ELSE 1 END,
+             CASE WHEN EXISTS (
+               SELECT 1 FROM snapshot_leases AS lease
+               WHERE lease.snapshot_id = snapshot.id
+                 AND lease.token GLOB 'retained-base:*'
+                 AND lease.expires_at > ${now}
+             ) THEN 0 ELSE 1 END,
+             snapshot.completed_at DESC,
+             snapshot.id
+    LIMIT 8
+  `;
+  return yield* loadFirstReusableOverlayBase(candidates);
+});
+
 const loadFirstReusableCleanBase = Effect.fn('codeGraph.loadFirstReusableCleanBase')(function* (
   candidates: readonly SnapshotRow[],
 ) {
@@ -284,7 +317,53 @@ const loadFirstReusableCleanBase = Effect.fn('codeGraph.loadFirstReusableCleanBa
   return undefined;
 });
 
-const selectReusableBaseReceipt = Effect.fn('codeGraph.selectReusableBaseReceipt')(function* (snapshotId: string) {
+const loadFirstReusableOverlayBase = Effect.fn('codeGraph.loadFirstReusableOverlayBase')(function* (
+  candidates: readonly SnapshotRow[],
+) {
+  const sql = yield* SqlClient.SqlClient;
+  for (const row of candidates) {
+    const receipt = yield* selectReusableBaseReceipt(row.id, true);
+    if (!receipt) continue;
+    const files = yield* sql<{
+      readonly content_hash: string;
+      readonly language: string;
+      readonly mode: string;
+      readonly path: string;
+      readonly size: number;
+      readonly source: string;
+    }>`
+      SELECT content_hash, language, mode, path, size, source
+      FROM snapshot_files
+      WHERE snapshot_id = ${row.id}
+      ORDER BY path
+    `;
+    if (
+      files.length !== Number(row.file_count) ||
+      files.some(file => file.source !== 'commit' && file.source !== 'worktree')
+    ) {
+      continue;
+    }
+    return {
+      files: files.map(file => ({
+        blobId: `snapshot:${file.content_hash}`,
+        contentHash: file.content_hash,
+        language: file.language,
+        mode: file.mode,
+        path: file.path,
+        size: Number(file.size),
+        source: file.source as 'commit' | 'worktree',
+      })),
+      receipt,
+      snapshot: snapshotFromRow(row),
+    } satisfies CodeGraphReusableCleanBase;
+  }
+  return undefined;
+});
+
+const selectReusableBaseReceipt = Effect.fn('codeGraph.selectReusableBaseReceipt')(function* (
+  snapshotId: string,
+  allowDirtyRoot = false,
+) {
   const sql = yield* SqlClient.SqlClient;
   yield* configureConnection(sql);
   const rows = yield* sql<{
@@ -305,7 +384,7 @@ const selectReusableBaseReceipt = Effect.fn('codeGraph.selectReusableBaseReceipt
       AND receipt.resolution_surface_version = 1
       AND receipt.extractor_set = snapshot.extractor_set
       AND snapshot.state = 'ready'
-      AND snapshot.dirty = 0
+      AND (${allowDirtyRoot ? 1 : 0} = 1 OR snapshot.dirty = 0)
       AND snapshot.base_snapshot_id IS NULL
       AND EXISTS (
         SELECT 1 FROM lexical_storage_formats AS lexical
@@ -970,6 +1049,7 @@ export {
   selectCurrentLexicalReadySnapshotById,
   selectReadySnapshotForCommit,
   selectReusableCleanBase,
+  selectReusableOverlayBase,
   selectReusableReexports,
   selectCachedFacts,
   selectMaterializedFileShards,

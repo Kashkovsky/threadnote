@@ -1694,6 +1694,8 @@ function progressMessage(progress: CodeGraphProgress): string {
       switch (progress.reason) {
         case 'database-writer':
           return 'Waiting for the code graph database writer';
+        case 'home-builder-cap':
+          return 'Waiting for the home code graph builder cap';
         case 'request-lock':
           return 'Waiting for the matching code graph request';
         case 'snapshot-build':

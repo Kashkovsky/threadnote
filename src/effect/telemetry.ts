@@ -93,6 +93,7 @@ export type AnonymousTelemetryStage = (typeof ANONYMOUS_TELEMETRY_STAGES)[number
 export const ANONYMOUS_TELEMETRY_WAITING_REASONS = [
   'database-writer',
   'disk-capacity',
+  'home-builder-cap',
   'repository-lock',
   'request-lock',
   'snapshot-build',

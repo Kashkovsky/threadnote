@@ -479,7 +479,7 @@ const activatePersistedIncrementalSnapshot = Effect.fn('codeGraph.activatePersis
   }
   yield* sql.withTransaction(
     Effect.gen(function* () {
-      if (!(yield* selectReusableBaseReceipt(baseSnapshotId))) {
+      if (!(yield* selectReusableBaseReceipt(baseSnapshotId, true))) {
         return yield* Effect.fail(
           new CodeGraphStoreError(`Reusable base receipt ${baseSnapshotId} is unavailable or incomplete.`),
         );

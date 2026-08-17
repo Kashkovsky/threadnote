@@ -264,7 +264,14 @@
       "validating-input",
       "writing-and-checkpointing"
     ],
-    "waitingReason": ["database-writer", "disk-capacity", "repository-lock", "request-lock", "snapshot-build"],
+    "waitingReason": [
+      "database-writer",
+      "disk-capacity",
+      "home-builder-cap",
+      "repository-lock",
+      "request-lock",
+      "snapshot-build"
+    ],
     "operation": [
       "add_resource",
       "analyze_code_graph",

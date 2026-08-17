@@ -4,6 +4,8 @@ import type {CodeGraphDirectPersistentCapacityBoundary} from './disk_capacity.js
 import type {CodeGraphIncrementalWork} from './incremental_work.js';
 import type {CodeGraphInventoryOptions} from './inventory.js';
 import type {CodeGraphWorkspace} from './languages/types.js';
+import type {CodeGraphBuilderAdmissionClass} from './builder_admission.js';
+import type {CodeGraphResolutionPublicationAssessment} from './resolution_surface.js';
 import type {CodeGraphMaintenanceCoordinatorShape} from './maintenance_coordinator.js';
 import type {CodeGraphSqliteWriterSettings, CodeGraphSqliteWriterTuning} from './store.js';
 import type {
@@ -16,6 +18,8 @@ import type {
 } from './types.js';
 
 export interface CodeGraphIndexOptions extends CodeGraphInventoryOptions {
+  /** @internal Home-global builder admission priority. CLI defaults to current-required. */
+  readonly admissionClass?: CodeGraphBuilderAdmissionClass;
   readonly cwd: string;
   /** When false, skip blocking vector materialization after a ready structural snapshot. */
   readonly ensureVectors?: boolean;
@@ -72,6 +76,7 @@ export type IncrementalOverlayAssessment =
       readonly mode: 'eligible';
       readonly deletedPaths?: readonly string[];
       readonly resolutionClosure?: 'changed' | 'full' | 'project';
+      readonly resolutionPublicationAssessment?: CodeGraphResolutionPublicationAssessment;
       readonly extractorTransition?: true;
       readonly reuse: 'persisted-base' | 'staged-base';
       readonly work: CodeGraphIncrementalWork;
@@ -79,6 +84,7 @@ export type IncrementalOverlayAssessment =
   | {
       readonly mode: 'fallback';
       readonly reason: CodeGraphOverlayFallbackReason;
+      readonly resolutionPublicationAssessment?: CodeGraphResolutionPublicationAssessment;
     };
 
 export type IncrementalOverlayPreassessment =
@@ -91,11 +97,13 @@ export type IncrementalOverlayPreassessment =
       readonly mode: 'compatible';
       readonly deletedPaths?: readonly string[];
       readonly resolutionClosure?: 'changed' | 'full' | 'project';
+      readonly resolutionPublicationAssessment?: CodeGraphResolutionPublicationAssessment;
       readonly extractorTransition?: true;
     }
   | {
       readonly mode: 'fallback';
       readonly reason: CodeGraphOverlayFallbackReason;
+      readonly resolutionPublicationAssessment?: CodeGraphResolutionPublicationAssessment;
     };
 
 export type ReusableCleanSnapshotAttempt =
