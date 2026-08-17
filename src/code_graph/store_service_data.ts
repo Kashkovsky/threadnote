@@ -13,6 +13,7 @@ import {
   selectCurrentLexicalReadySnapshotById,
   selectReadySnapshotForCommit,
   selectReusableCleanBase,
+  selectReusableOverlayBase,
   selectReusableReexports,
   selectCachedFacts,
   selectMaterializedFileShards,
@@ -112,6 +113,7 @@ type CodeGraphStoreDataMethods = Pick<
   | 'reusableBaseReceipt'
   | 'snapshotPackProvenance'
   | 'reusableCleanBase'
+  | 'reusableOverlayBase'
   | 'reusableReexports'
   | 'relationshipSummaryForNode'
   | 'pruneCachedFacts'
@@ -509,7 +511,7 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
             options?.cleanupMode,
           ),
         );
-        if (options?.cleanupMode === 'deferred' && result.reclaimable > 0) {
+        if (result.reclaimable > 0) {
           yield* scheduleRoutinePhysicalCleanup(databasePath);
         }
         return result.retired;
@@ -556,10 +558,12 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
         ),
         Effect.mapError(cause => storeError('load ready code graph snapshot for commit', cause)),
       ),
-    reusableBaseReceipt: (databasePath, snapshotId) =>
+    reusableBaseReceipt: (databasePath, snapshotId, options) =>
       fs.exists(databasePath).pipe(
         Effect.flatMap(exists =>
-          exists ? useReadOnlyDatabase(databasePath, selectReusableBaseReceipt(snapshotId)) : Effect.succeed(undefined),
+          exists
+            ? useReadOnlyDatabase(databasePath, selectReusableBaseReceipt(snapshotId, options?.allowDirtyRoot === true))
+            : Effect.succeed(undefined),
         ),
         Effect.mapError(cause => storeError('load reusable code graph base receipt', cause)),
       ),
@@ -600,6 +604,18 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
             : Effect.succeed(undefined),
         ),
         Effect.mapError(cause => storeError('load reusable clean code graph base', cause)),
+      ),
+    reusableOverlayBase: (databasePath, repositoryId, extractorSet, overlayFingerprint) =>
+      fs.exists(databasePath).pipe(
+        Effect.flatMap(exists =>
+          exists
+            ? useReadOnlyDatabase(
+                databasePath,
+                selectReusableOverlayBase(repositoryId, extractorSet, overlayFingerprint),
+              )
+            : Effect.succeed(undefined),
+        ),
+        Effect.mapError(cause => storeError('load reusable retained overlay code graph base', cause)),
       ),
     reusableReexports: (databasePath, snapshotId, seeds, options) =>
       fs.exists(databasePath).pipe(

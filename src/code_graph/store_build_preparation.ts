@@ -565,7 +565,9 @@ const preparePersistedIncrementalActivation = Effect.fn('codeGraph.preparePersis
     return false;
   }
   if (deletedPaths.some(path => paths.has(path))) return false;
-  if (!(yield* selectReusableBaseReceipt(baseSnapshotId))) return false;
+  // A committed dirty full root carries the same reusable receipt contract as
+  // a clean root; layered dirty overlays remain excluded by the receipt query.
+  if (!(yield* selectReusableBaseReceipt(baseSnapshotId, true))) return false;
 
   yield* prepareActivationTables(sql);
   const incrementalPaths = [...paths, ...deletedPaths].sort();

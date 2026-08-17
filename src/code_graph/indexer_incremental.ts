@@ -32,7 +32,11 @@ import type {CodeGraphLanguagePackRegistryShape} from './languages/registry.js';
 import type {CodeGraphWorkspace} from './languages/types.js';
 import type {CodeGraphLayout} from './layout.js';
 import {compareCodeUnits} from './ordering.js';
-import {hasSameCodeGraphResolutionSurface} from './resolution_surface.js';
+import {
+  assessCodeGraphResolutionSymbolPublication,
+  hasSameCodeGraphResolutionSurface,
+  type CodeGraphResolutionPublicationAssessment,
+} from './resolution_surface.js';
 import {
   CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION,
   materializedShardDerivationIdentity,
@@ -94,7 +98,11 @@ export const assessIncrementalOverlay = Effect.fn('codeGraph.assessIncrementalOv
   }
   let reuse: 'persisted-base' | 'staged-base' = 'staged-base';
   if (!input.committedBase.stagingReusable) {
-    const receipt = yield* input.store.reusableBaseReceipt(input.layout.databasePath, input.committedBase.snapshot.id);
+    const receipt = yield* input.store.reusableBaseReceipt(
+      input.layout.databasePath,
+      input.committedBase.snapshot.id,
+      input.committedBase.snapshot.dirty ? {allowDirtyRoot: true} : undefined,
+    );
     if (
       !receipt ||
       receipt.formatVersion !== CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION ||
@@ -164,6 +172,7 @@ export const assessIncrementalOverlay = Effect.fn('codeGraph.assessIncrementalOv
     files: preassessment.files,
     mode: 'eligible',
     resolutionClosure: preassessment.resolutionClosure,
+    resolutionPublicationAssessment: preassessment.resolutionPublicationAssessment,
     reuse,
     work,
   } satisfies IncrementalOverlayAssessment;
@@ -262,6 +271,10 @@ export const assessIncrementalOverlayCompatibility = Effect.fn('codeGraph.assess
       const committed = committedFactsByPath.get(file.path);
       return !committed || !hasSameCodeGraphResolutionSurface(committed.symbols, file.symbols);
     });
+    const resolutionPublicationAssessment = resolutionSurfaceChanged
+      ? (firstChangedResolutionPublicationAssessment(committedFacts, effectiveFacts) ??
+        firstResolutionPublicationAssessment(effectiveFacts))
+      : firstResolutionPublicationAssessment(effectiveFacts);
     const dynamicAliases = hasDynamicAliases(committedFacts) || hasDynamicAliases(effectiveFacts);
     if (!dynamicAliases && !resolutionSurfaceChanged && workspaceCompatibility.mode === 'unchanged') {
       if (finalCodeGraphFactBatches(effectiveFacts).length !== 1) {
@@ -273,9 +286,10 @@ export const assessIncrementalOverlayCompatibility = Effect.fn('codeGraph.assess
         facts: effectiveFacts,
         files: modifiedFiles,
         mode: 'compatible',
+        ...(resolutionPublicationAssessment ? {resolutionPublicationAssessment} : {}),
       } satisfies IncrementalOverlayPreassessment;
     }
-    return yield* assessProjectIncrementalClosureCompatibility({
+    const closure = yield* assessProjectIncrementalClosureCompatibility({
       baseFileSetFingerprint: reusableBaseFileSetFingerprint(input.inventory.committedFiles),
       baseWorkspace: committedWorkspace,
       changedBaseFacts: committedFacts,
@@ -289,6 +303,7 @@ export const assessIncrementalOverlayCompatibility = Effect.fn('codeGraph.assess
       workspaceSeedProjectIds:
         workspaceCompatibility.mode === 'project-closure' ? workspaceCompatibility.seedProjectIds : [],
     });
+    return resolutionPublicationAssessment ? {...closure, resolutionPublicationAssessment} : closure;
   },
 );
 
@@ -407,6 +422,10 @@ export const assessReusableCleanBaseCompatibility = Effect.fn('codeGraph.assessR
       const base = baseFactsByPath.get(file.path);
       return !base || !hasSameCodeGraphResolutionSurface(base.symbols, file.symbols);
     });
+    const resolutionPublicationAssessment = resolutionSurfaceChanged
+      ? (firstChangedResolutionPublicationAssessment(baseFacts, currentFacts) ??
+        firstResolutionPublicationAssessment(currentFacts))
+      : firstResolutionPublicationAssessment(currentFacts);
     const dynamicAliases = hasDynamicAliases(baseFacts) || hasDynamicAliases(currentFacts);
     if (dynamicAliases || resolutionSurfaceChanged) {
       const closure = yield* assessProjectIncrementalClosureCompatibility({
@@ -422,9 +441,11 @@ export const assessReusableCleanBaseCompatibility = Effect.fn('codeGraph.assessR
         store: input.store,
         workspaceSeedProjectIds: [],
       });
-      return closure.mode === 'compatible' && extractorTransition
-        ? {...closure, extractorTransition: true as const}
-        : closure;
+      const result =
+        closure.mode === 'compatible' && extractorTransition
+          ? {...closure, extractorTransition: true as const}
+          : closure;
+      return resolutionPublicationAssessment ? {...result, resolutionPublicationAssessment} : result;
     }
     if (finalCodeGraphFactBatches(currentFacts).length !== 1) {
       return {mode: 'fallback', reason: 'fact-budget-expanded'} satisfies IncrementalOverlayPreassessment;
@@ -448,6 +469,7 @@ export const assessReusableCleanBaseCompatibility = Effect.fn('codeGraph.assessR
       facts: currentFacts,
       files: modifiedFiles,
       mode: 'compatible',
+      ...(resolutionPublicationAssessment ? {resolutionPublicationAssessment} : {}),
     } satisfies IncrementalOverlayPreassessment;
   },
 );
@@ -910,6 +932,36 @@ export function createCachedCodeGraphFactsAttributor(
 
 function hasDynamicAliases(facts: readonly CodeGraphFileFacts[]): boolean {
   return facts.some(file => file.references?.some(reference => (reference.aliasLookupKeys?.length ?? 0) > 0) === true);
+}
+
+function firstResolutionPublicationAssessment(
+  facts: readonly CodeGraphFileFacts[],
+): CodeGraphResolutionPublicationAssessment | undefined {
+  for (const symbol of facts.flatMap(file => file.symbols)) {
+    if (symbol.exported || symbol.resolutionDomain !== 'typescript') continue;
+    return assessCodeGraphResolutionSymbolPublication(symbol);
+  }
+  return undefined;
+}
+
+function firstChangedResolutionPublicationAssessment(
+  committedFacts: readonly CodeGraphFileFacts[],
+  effectiveFacts: readonly CodeGraphFileFacts[],
+): CodeGraphResolutionPublicationAssessment | undefined {
+  const committedById = new Map(committedFacts.flatMap(file => file.symbols).map(symbol => [symbol.id, symbol]));
+  const effectiveById = new Map(effectiveFacts.flatMap(file => file.symbols).map(symbol => [symbol.id, symbol]));
+  for (const symbol of effectiveById.values()) {
+    const committed = committedById.get(symbol.id);
+    if (committed && hasSameCodeGraphResolutionSurface([committed], [symbol])) continue;
+    const assessment = assessCodeGraphResolutionSymbolPublication(symbol);
+    if (assessment.published) return assessment;
+  }
+  for (const symbol of committedById.values()) {
+    if (effectiveById.has(symbol.id)) continue;
+    const assessment = assessCodeGraphResolutionSymbolPublication(symbol);
+    if (assessment.published) return assessment;
+  }
+  return undefined;
 }
 
 export {hasSameCodeGraphResolutionSurface} from './resolution_surface.js';

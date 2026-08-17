@@ -600,9 +600,9 @@ const activatePersistedFullSnapshot = Effect.fn('codeGraph.activatePersistedFull
       new CodeGraphStoreError('Persistent full activation only accepts self-contained snapshots.'),
     );
   }
-  if (snapshot.dirty && reusableBaseReceipt !== undefined) {
-    return yield* Effect.fail(new CodeGraphStoreError('Dirty snapshots cannot publish a reusable clean-base receipt.'));
-  }
+  // A self-contained full dirty snapshot may publish the same bounded reuse
+  // receipt as a clean root. Layered snapshots remain rejected above, so this
+  // never turns an overlay child into a second-hop base.
   const stateRows = yield* sql<{
     readonly repository_id: string;
     readonly state: CodeGraphSnapshot['state'];

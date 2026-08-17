@@ -223,6 +223,10 @@ export interface CodeGraphMaterializationMetrics {
   readonly factsBytesTotal?: number;
   readonly loadingMilliseconds?: number;
   readonly mode?: 'full' | 'incremental-clean' | 'incremental-overlay';
+  /** Closed, path-free evidence for the declaration-publication gate. */
+  readonly resolutionLookupKeyForm?: import('./resolution_surface.js').CodeGraphResolutionLookupKeyForm;
+  /** Closed, path-free evidence for the declaration-publication gate. */
+  readonly resolutionPublicationGate?: import('./resolution_surface.js').CodeGraphResolutionPublicationGate;
   readonly rows?: CodeGraphMaterializationRows;
   readonly sourceBytesCompleted: number;
   readonly sourceBytesTotal: number;
@@ -321,7 +325,13 @@ export type CodeGraphProgress =
     }
   | {
       readonly phase: 'waiting';
-      readonly reason?: 'database-writer' | 'disk-capacity' | 'repository-lock' | 'request-lock' | 'snapshot-build';
+      readonly reason?:
+        | 'database-writer'
+        | 'disk-capacity'
+        | 'home-builder-cap'
+        | 'repository-lock'
+        | 'request-lock'
+        | 'snapshot-build';
     }
   | {
       readonly completed: number;
@@ -418,6 +428,8 @@ export interface CodeGraphIndexSummary {
     readonly fallbackReason?: CodeGraphOverlayFallbackReason;
     readonly mode: 'full' | 'incremental-clean' | 'incremental-overlay' | 'reused-snapshot';
     readonly resolutionClosure?: 'changed' | 'full' | 'project';
+    readonly resolutionLookupKeyForm?: import('./resolution_surface.js').CodeGraphResolutionLookupKeyForm;
+    readonly resolutionPublicationGate?: import('./resolution_surface.js').CodeGraphResolutionPublicationGate;
     readonly stagedFiles: number;
     readonly totalFiles: number;
   };

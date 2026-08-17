@@ -411,6 +411,7 @@ export interface CodeGraphStoreShape {
   readonly reusableBaseReceipt: (
     databasePath: string,
     snapshotId: string,
+    options?: {readonly allowDirtyRoot?: boolean},
   ) => Effect.Effect<CodeGraphReusableBaseReceipt | undefined, CodeGraphStoreError>;
   readonly snapshotPackProvenance: (
     databasePath: string,
@@ -425,6 +426,12 @@ export interface CodeGraphStoreShape {
     graphContentId?: string,
     preferredCommitGroups?: readonly (readonly string[])[],
     allowExtractorMismatch?: boolean,
+  ) => Effect.Effect<CodeGraphReusableCleanBase | undefined, CodeGraphStoreError>;
+  readonly reusableOverlayBase?: (
+    databasePath: string,
+    repositoryId: string,
+    extractorSet: string,
+    overlayFingerprint: string,
   ) => Effect.Effect<CodeGraphReusableCleanBase | undefined, CodeGraphStoreError>;
   readonly reusableReexports: (
     databasePath: string,

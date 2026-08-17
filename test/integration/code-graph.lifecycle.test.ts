@@ -1834,11 +1834,19 @@ describe('native code graph lifecycle', () => {
       const local = yield* indexer.index({cwd: localRoot, threadnoteHome: localHome});
       const exported = yield* indexer.index({cwd: exportedRoot, threadnoteHome: exportedHome});
 
-      expect(local.materialization).toEqual({mode: 'incremental-overlay', stagedFiles: 2, totalFiles: 2});
+      expect(local.materialization).toEqual({
+        mode: 'incremental-overlay',
+        resolutionLookupKeyForm: 'typescript-path-unscoped',
+        resolutionPublicationGate: 'own-path-local',
+        stagedFiles: 2,
+        totalFiles: 2,
+      });
       expect(local.snapshot).toMatchObject({baseSnapshotId: localClean.snapshot.id, dirty: true});
       expect(exported.materialization).toEqual({
         fallbackReason: 'resolution-surface-changed',
         mode: 'full',
+        resolutionLookupKeyForm: 'typescript-path-unscoped',
+        resolutionPublicationGate: 'exported',
         stagedFiles: 2,
         totalFiles: 2,
       });
@@ -2086,7 +2094,8 @@ describe('native code graph lifecycle', () => {
             if (!changed && progress.phase === 'activating' && progress.subphase === 'promoting') {
               staleSnapshotId = progress.snapshotId;
               changed = true;
-              replaceFunction(root, 'ensureVectorIndex', 'ensureRacedVectorIndex');
+              const sourcePath = join(root, 'packages/search/src/vector-index.ts');
+              writeFileSync(sourcePath, readFileSync(sourcePath, 'utf8').replace('vectors-ready', 'vectors-raced'));
             }
           }),
         threadnoteHome: home,
@@ -2094,7 +2103,7 @@ describe('native code graph lifecycle', () => {
       const inspected = yield* query.inspect({
         cwd: root,
         operation: 'query',
-        query: 'ensureRacedVectorIndex',
+        query: 'ensureVectorIndex',
         refresh: false,
         threadnoteHome: home,
       });
@@ -2105,12 +2114,199 @@ describe('native code graph lifecycle', () => {
       const staleGraph = stale ? yield* store.loadGraph(databasePath, stale.id) : undefined;
       const active = yield* store.readySnapshot(databasePath, current.identity.worktreeId);
       expect(inspected.freshness).toBe('deferred');
-      expect(inspected.nodes.some(node => node.name === 'ensureRacedVectorIndex')).toBe(true);
+      expect(inspected.nodes.some(node => node.name === 'ensureVectorIndex')).toBe(true);
       expect(stale).toMatchObject({commit: initialCommit, id: staleSnapshotId, state: 'ready'});
       expect(stale?.id).not.toBe(current.snapshot.id);
       expect(staleGraph?.symbols.some(symbol => symbol.name === 'ensureVectorIndex')).toBe(true);
-      expect(staleGraph?.symbols.some(symbol => symbol.name === 'ensureRacedVectorIndex')).toBe(false);
       expect(active?.id).toBe(current.snapshot.id);
+      expect(current.materialization).toMatchObject({mode: 'incremental-overlay', stagedFiles: 1});
+      expect(snapshotFileHash(databasePath, staleSnapshotId!, 'packages/search/src/vector-index.ts')).not.toBe(
+        snapshotFileHash(databasePath, current.snapshot.id, 'packages/search/src/vector-index.ts'),
+      );
+      const database = new Database(databasePath, {readonly: true});
+      try {
+        const retainedLease = database
+          .query<{readonly expires_at: number; readonly token: string}, [string]>(
+            "SELECT token, expires_at FROM snapshot_leases WHERE snapshot_id = ? AND token GLOB 'retained-base:*'",
+          )
+          .get(staleSnapshotId!);
+        expect(retainedLease?.token).toMatch(/^retained-base:/u);
+        expect(Number(retainedLease?.expires_at) - Date.now()).toBeGreaterThan(32 * 60_000);
+        expect(Number(retainedLease?.expires_at) - Date.now()).toBeLessThanOrEqual(45 * 60_000);
+      } finally {
+        database.close();
+      }
+    }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
+  effectIt.effect('reuses a retained dirty full root for the post-target bounded overlay', () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.sync(createPublishedSurfaceRepository);
+      const home = join(root, '.threadnote-test-home');
+      const sourcePath = join(root, 'src/service.ts');
+      const indexer = yield* CodeGraphIndexer;
+      const store = yield* CodeGraphStore;
+      yield* indexer.index({cwd: root, threadnoteHome: home});
+      yield* Effect.sync(() => {
+        writeFileSync(
+          sourcePath,
+          `${readFileSync(sourcePath, 'utf8')}\nexport function retainedPublishedValue(): number { return 2; }\n`,
+        );
+      });
+
+      let retainedSnapshotId: string | undefined;
+      const current = yield* indexer.index({
+        cwd: root,
+        onProgress: progress =>
+          Effect.sync(() => {
+            if (
+              retainedSnapshotId === undefined &&
+              progress.phase === 'activating' &&
+              progress.subphase === 'promoting'
+            ) {
+              retainedSnapshotId = progress.snapshotId;
+              writeFileSync(sourcePath, readFileSync(sourcePath, 'utf8').replace('return 2;', 'return 3;'));
+            }
+          }),
+        threadnoteHome: home,
+      });
+
+      expect(retainedSnapshotId).toBeDefined();
+      expect(current.materialization).toMatchObject({mode: 'incremental-overlay', stagedFiles: 1});
+      expect(current.snapshot.baseSnapshotId).toBe(retainedSnapshotId);
+      const databasePath = codeGraphDatabasePath(home, current);
+      const retained = yield* store.currentLexicalReadySnapshotById(databasePath, retainedSnapshotId!);
+      expect(retained).toMatchObject({baseSnapshotId: undefined, dirty: true, state: 'ready'});
+      const currentGraph = yield* store.loadGraph(databasePath, current.snapshot.id);
+
+      const forced = yield* indexer.index({
+        cwd: root,
+        force: true,
+        incrementalOverlay: false,
+        threadnoteHome: home,
+      });
+      const forcedGraph = yield* store.loadGraph(databasePath, forced.snapshot.id);
+      expect(forced.materialization).toMatchObject({fallbackReason: 'forced-full-rebuild', mode: 'full'});
+      expect(normalizeStoredGraph(currentGraph)).toEqual(normalizeStoredGraph(forcedGraph));
+    }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
+  effectIt.effect('leaves a post-promotion snapshot active and retained when the retry also drifts', () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.sync(createFixtureRepository);
+      const home = join(root, '.threadnote-test-home');
+      const indexer = yield* CodeGraphIndexer;
+      const store = yield* CodeGraphStore;
+      const baseline = yield* indexer.index({cwd: root, threadnoteHome: home});
+      const sourcePath = join(root, 'packages/search/src/vector-index.ts');
+      yield* Effect.sync(() => {
+        writeFileSync(sourcePath, readFileSync(sourcePath, 'utf8').replace('vectors-ready', 'vectors-before-race'));
+      });
+      let promotingEvents = 0;
+      let postPromotedSnapshotId: string | undefined;
+      let postPromoteMutation = false;
+      let retryMutation = false;
+      const exit = yield* Effect.exit(
+        indexer.index({
+          cwd: root,
+          onProgress: progress =>
+            Effect.sync(() => {
+              if (progress.phase === 'activating' && progress.subphase === 'promoting') {
+                promotingEvents += 1;
+                if (promotingEvents === 2) {
+                  postPromotedSnapshotId = progress.snapshotId;
+                  postPromoteMutation = true;
+                  writeFileSync(
+                    sourcePath,
+                    readFileSync(sourcePath, 'utf8').replace('vectors-before-race', 'vectors-raced-once'),
+                  );
+                }
+              } else if (
+                postPromoteMutation &&
+                !retryMutation &&
+                progress.phase === 'activating' &&
+                progress.subphase === 'validating-input'
+              ) {
+                retryMutation = true;
+                writeFileSync(
+                  sourcePath,
+                  readFileSync(sourcePath, 'utf8').replace('vectors-raced-once', 'vectors-raced-twice'),
+                );
+              }
+            }),
+          threadnoteHome: home,
+        }),
+      );
+
+      expect(exit._tag).toBe('Failure');
+      expect(postPromotedSnapshotId).toBeDefined();
+      expect(retryMutation).toBe(true);
+      const databasePath = codeGraphDatabasePath(home, baseline);
+      const active = yield* store.readySnapshot(databasePath, baseline.identity.worktreeId);
+      const postPromoted = yield* store.currentLexicalReadySnapshotById(databasePath, postPromotedSnapshotId!);
+      expect(active?.id).toBe(postPromotedSnapshotId);
+      expect(postPromoted).toMatchObject({dirty: true, id: postPromotedSnapshotId, state: 'ready'});
+      const database = new Database(databasePath, {readonly: true});
+      try {
+        expect(
+          database
+            .query<{readonly token: string}, [string]>(
+              "SELECT token FROM snapshot_leases WHERE snapshot_id = ? AND token GLOB 'retained-base:*'",
+            )
+            .get(postPromotedSnapshotId!)?.token,
+        ).toMatch(/^retained-base:/u);
+      } finally {
+        database.close();
+      }
+    }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
+  effectIt.effect('retains a clean alias and its source when input drifts before alias promotion', () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.sync(createFixtureRepository);
+      const home = join(root, '.threadnote-test-home');
+      const indexer = yield* CodeGraphIndexer;
+      const store = yield* CodeGraphStore;
+      const baseline = yield* indexer.index({cwd: root, threadnoteHome: home});
+      yield* Effect.sync(() => {
+        execFileSync('git', ['-C', root, 'commit', '--allow-empty', '-m', 'alias target']);
+      });
+      let changed = false;
+      let aliasId: string | undefined;
+      const current = yield* indexer.index({
+        cwd: root,
+        onProgress: progress =>
+          Effect.sync(() => {
+            if (!changed && progress.phase === 'activating' && progress.subphase === 'promoting') {
+              changed = true;
+              aliasId = progress.snapshotId;
+              const sourcePath = join(root, 'packages/search/src/vector-index.ts');
+              writeFileSync(sourcePath, `${readFileSync(sourcePath, 'utf8')}\n// alias promotion race\n`);
+            }
+          }),
+        threadnoteHome: home,
+      });
+
+      expect(changed).toBe(true);
+      expect(aliasId).toBeDefined();
+      const databasePath = codeGraphDatabasePath(home, baseline);
+      const alias = yield* store.currentLexicalReadySnapshotById(databasePath, aliasId!);
+      const source = yield* store.currentLexicalReadySnapshotById(databasePath, baseline.snapshot.id);
+      expect(alias).toMatchObject({baseSnapshotId: baseline.snapshot.id, dirty: false, id: aliasId, state: 'ready'});
+      expect(source).toMatchObject({id: baseline.snapshot.id, state: 'ready'});
+      expect(current.snapshot.id).not.toBe(aliasId);
+      const database = new Database(databasePath, {readonly: true});
+      try {
+        expect(
+          database
+            .query<{readonly token: string}, [string]>(
+              "SELECT token FROM snapshot_leases WHERE snapshot_id = ? AND token GLOB 'retained-base:*'",
+            )
+            .get(aliasId!)?.token,
+        ).toMatch(/^retained-base:/u);
+      } finally {
+        database.close();
+      }
     }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );
 
@@ -2138,33 +2334,18 @@ describe('native code graph lifecycle', () => {
       expect(current.snapshot.dirty).toBe(true);
       const completedReclamation = reclamationProgress.at(-1);
       expect(completedReclamation).toMatchObject({unit: 'snapshots'});
-      expect(completedReclamation?.completed).toBe(completedReclamation?.total);
+      expect(completedReclamation?.pagesCompleted).toBe(1);
+      expect(completedReclamation?.completed).toBeLessThanOrEqual(completedReclamation?.total ?? 0);
       expect(completedReclamation?.rowsDeleted).toBeGreaterThan(0);
       const database = new Database(codeGraphDatabasePath(home, current), {readonly: true, strict: true});
       try {
         const retired = database
           .query<{readonly count: number}, []>("SELECT COUNT(*) AS count FROM snapshots WHERE state = 'retired'")
           .get();
-        const retiredSymbols = database
-          .query<{readonly count: number}, []>(
-            `SELECT COUNT(*) AS count
-             FROM symbols AS symbol
-             JOIN snapshots AS snapshot ON snapshot.id = symbol.snapshot_id
-             WHERE snapshot.state = 'retired'`,
-          )
-          .get();
-        const retiredEdges = database
-          .query<{readonly count: number}, []>(
-            `SELECT COUNT(*) AS count
-             FROM edges AS edge
-             JOIN snapshots AS snapshot ON snapshot.id = edge.snapshot_id
-             WHERE snapshot.state = 'retired'`,
-          )
-          .get();
-        expect(retired?.count).toBe(0);
-        expect(retiredSymbols?.count).toBe(0);
-        expect(retiredEdges?.count).toBe(0);
-        expect(database.query('SELECT id FROM snapshots').all()).toEqual([{id: current.snapshot.id}]);
+        expect(retired?.count).toBe(1);
+        expect(database.query("SELECT id FROM snapshots WHERE state = 'ready'").all()).toEqual([
+          {id: current.snapshot.id},
+        ]);
         expect(database.query('PRAGMA foreign_key_check').all()).toEqual([]);
       } finally {
         database.close(false);

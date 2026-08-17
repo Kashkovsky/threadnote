@@ -205,7 +205,7 @@ export function makeCodeGraphStoreLifecycleMethods(runtime: CodeGraphStoreRuntim
       ),
     acquireSnapshotLease: (databasePath, snapshotId, durationMilliseconds, options) =>
       Effect.gen(function* () {
-        const token = `${system.processId}:${yield* crypto.randomUUIDv4}`;
+        const token = `${options?.retainedBase === true ? 'retained-base:' : ''}${system.processId}:${yield* crypto.randomUUIDv4}`;
         const acquired = yield* prepare(databasePath).pipe(
           Effect.andThen(
             withWriterGate(

@@ -36,6 +36,7 @@ import type {
   CodeGraphIndexSummary,
   CodeGraphMaterializationActivity,
   CodeGraphMaterializationMetrics,
+  CodeGraphOverlayFallbackReason,
   CodeGraphProgress,
   CodeGraphResolutionActivity,
   CodeGraphSnapshot,
@@ -154,6 +155,9 @@ export interface CodeGraphBuildStatus {
     readonly files: number;
     readonly snapshotId: string;
     readonly symbols: number;
+    readonly overlayAssessment?: {
+      readonly outcome: 'overlay-success' | CodeGraphOverlayFallbackReason;
+    };
   };
   readonly schemaVersion: typeof CODE_GRAPH_BUILD_STATUS_SCHEMA_VERSION;
   readonly state: CodeGraphBuildState;
@@ -345,7 +349,12 @@ export const makeCodeGraphBuildReporter = Effect.fn('codeGraph.buildStatus.makeR
     yield* inspectBuildHistoryDirectory(fs, path, layout, identity.worktreeId).pipe(Effect.option),
   );
 
-  const complete = (snapshot: CodeGraphSnapshot, reusedFiles: number, skippedFiles: number) =>
+  const complete = (
+    snapshot: CodeGraphSnapshot,
+    reusedFiles: number,
+    skippedFiles: number,
+    overlayAssessment?: {readonly outcome: 'overlay-success' | CodeGraphOverlayFallbackReason},
+  ) =>
     persist((current, now) => {
       const timestamp = new Date(now).toISOString();
       return {
@@ -371,6 +380,7 @@ export const makeCodeGraphBuildReporter = Effect.fn('codeGraph.buildStatus.makeR
             dirty: snapshot.dirty,
             edges: snapshot.edgeCount,
             files: snapshot.fileCount,
+            ...(overlayAssessment ? {overlayAssessment} : {}),
             snapshotId: snapshot.id,
             symbols: snapshot.symbolCount,
           },
@@ -403,7 +413,17 @@ export const makeCodeGraphBuildReporter = Effect.fn('codeGraph.buildStatus.makeR
     );
 
   return {
-    complete: summary => complete(summary.snapshot, summary.reusedFiles, summary.skippedFiles),
+    complete: summary =>
+      complete(
+        summary.snapshot,
+        summary.reusedFiles,
+        summary.skippedFiles,
+        summary.snapshot.dirty && summary.materialization?.mode === 'incremental-overlay'
+          ? {outcome: 'overlay-success'}
+          : summary.snapshot.dirty && summary.materialization?.mode === 'full'
+            ? {outcome: summary.materialization.fallbackReason ?? 'staging-unavailable'}
+            : undefined,
+      ),
     completeSnapshot: snapshot => complete(snapshot, 0, 0),
     fail: cause =>
       persist((current, now) => {

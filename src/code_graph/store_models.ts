@@ -434,6 +434,8 @@ export interface CodeGraphSnapshotPromotionOptions extends CodeGraphSnapshotLeas
 }
 
 export interface CodeGraphSnapshotLeaseAcquireOptions extends CodeGraphSnapshotLeaseWriterOptions {
+  /** Reserve a committed-but-unpromoted ready row inside detached-ready caps. */
+  readonly retainedBase?: boolean;
   readonly retireWhenInactive?: boolean;
 }
 

@@ -349,6 +349,27 @@ function parseMaterializationMetrics(value: unknown): CodeGraphMaterializationMe
   if (value.mode !== undefined && !['full', 'incremental-clean', 'incremental-overlay'].includes(String(value.mode))) {
     return undefined;
   }
+  if (
+    value.resolutionPublicationGate !== undefined &&
+    ![
+      'exported',
+      'foreign-path',
+      'non-typescript-domain',
+      'own-path-local',
+      'scope-mismatch',
+      'unknown-lookup-form',
+    ].includes(String(value.resolutionPublicationGate))
+  ) {
+    return undefined;
+  }
+  if (
+    value.resolutionLookupKeyForm !== undefined &&
+    !['none', 'non-typescript', 'typescript-other', 'typescript-path-scoped', 'typescript-path-unscoped'].includes(
+      String(value.resolutionLookupKeyForm),
+    )
+  ) {
+    return undefined;
+  }
   for (const key of [
     'cachedFactBytesCompleted',
     'cachedFactBytesTotal',
@@ -388,6 +409,18 @@ function parseMaterializationMetrics(value: unknown): CodeGraphMaterializationMe
     ...(value.fallbackReason === undefined
       ? {}
       : {fallbackReason: value.fallbackReason as CodeGraphMaterializationMetrics['fallbackReason']}),
+    ...(value.resolutionLookupKeyForm === undefined
+      ? {}
+      : {
+          resolutionLookupKeyForm:
+            value.resolutionLookupKeyForm as CodeGraphMaterializationMetrics['resolutionLookupKeyForm'],
+        }),
+    ...(value.resolutionPublicationGate === undefined
+      ? {}
+      : {
+          resolutionPublicationGate:
+            value.resolutionPublicationGate as CodeGraphMaterializationMetrics['resolutionPublicationGate'],
+        }),
     ...(value.attributionMilliseconds === undefined
       ? {}
       : {attributionMilliseconds: Number(value.attributionMilliseconds)}),
@@ -856,10 +889,26 @@ function parseResult(value: unknown): CodeGraphBuildStatus['result'] | undefined
   for (const key of ['edges', 'files', 'symbols'] as const) {
     if (!Number.isSafeInteger(value[key]) || Number(value[key]) < 0) return undefined;
   }
+  const overlayAssessment = value.overlayAssessment;
+  if (
+    overlayAssessment !== undefined &&
+    (!isRecord(overlayAssessment) ||
+      (overlayAssessment.outcome !== 'overlay-success' &&
+        !VALID_MATERIALIZATION_FALLBACK_REASONS.has(overlayAssessment.outcome as CodeGraphOverlayFallbackReason)))
+  ) {
+    return undefined;
+  }
   return {
     dirty: value.dirty,
     edges: Number(value.edges),
     files: Number(value.files),
+    ...(isRecord(overlayAssessment)
+      ? {
+          overlayAssessment: {
+            outcome: overlayAssessment.outcome as 'overlay-success' | CodeGraphOverlayFallbackReason,
+          },
+        }
+      : {}),
     snapshotId: value.snapshotId,
     symbols: Number(value.symbols),
   };

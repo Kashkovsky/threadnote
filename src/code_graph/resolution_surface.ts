@@ -16,6 +16,20 @@ export type CodeGraphResolutionSurfaceSymbol = Pick<
   | 'resolutionScopeId'
 >;
 
+export type CodeGraphResolutionPublicationGate =
+  'exported' | 'non-typescript-domain' | 'own-path-local' | 'unknown-lookup-form' | 'foreign-path' | 'scope-mismatch';
+
+export type CodeGraphResolutionLookupKeyForm =
+  'none' | 'non-typescript' | 'typescript-other' | 'typescript-path-scoped' | 'typescript-path-unscoped';
+
+export interface CodeGraphResolutionPublicationAssessment {
+  /** Closed, path-free gate suitable for anonymous build telemetry. */
+  readonly gate: CodeGraphResolutionPublicationGate;
+  /** Closed lookup-key shape; never contains a symbol, scope, or repository path. */
+  readonly lookupKeyForm: CodeGraphResolutionLookupKeyForm;
+  readonly published: boolean;
+}
+
 export function hasSameCodeGraphResolutionSurface(
   left: readonly CodeGraphResolutionSurfaceSymbol[],
   right: readonly CodeGraphResolutionSurfaceSymbol[],
@@ -46,11 +60,36 @@ export function hasSameCodeGraphResolutionSurface(
  * closed as published.
  */
 export function isPublishedCodeGraphResolutionSymbol(symbol: CodeGraphResolutionSurfaceSymbol): boolean {
-  if (symbol.exported) return true;
-  for (const key of symbol.lookupKeys ?? []) {
-    if (!isOwnTypeScriptPathLookupKey(key, symbol)) return true;
+  return assessCodeGraphResolutionSymbolPublication(symbol).published;
+}
+
+/**
+ * Classifies publication using only resolver lookup tiers. The closed gate and
+ * key form intentionally expose enough evidence to diagnose fail-closed
+ * fallbacks without recording paths, symbol names, or project identifiers.
+ */
+export function assessCodeGraphResolutionSymbolPublication(
+  symbol: CodeGraphResolutionSurfaceSymbol,
+): CodeGraphResolutionPublicationAssessment {
+  if (symbol.exported) {
+    return {gate: 'exported', lookupKeyForm: firstLookupKeyForm(symbol), published: true};
   }
-  return false;
+  if (symbol.resolutionDomain !== 'typescript') {
+    return {
+      gate: 'non-typescript-domain',
+      lookupKeyForm: symbol.lookupKeys?.length ? 'non-typescript' : 'none',
+      published: true,
+    };
+  }
+  let lookupKeyForm: CodeGraphResolutionLookupKeyForm = 'none';
+  for (const key of symbol.lookupKeys ?? []) {
+    const assessment = assessOwnTypeScriptPathLookupKey(key, symbol);
+    lookupKeyForm = assessment.lookupKeyForm;
+    if (assessment.gate !== 'own-path-local') {
+      return {gate: assessment.gate, lookupKeyForm, published: true};
+    }
+  }
+  return {gate: 'own-path-local', lookupKeyForm, published: false};
 }
 
 function symbolResolutionSurface(symbol: CodeGraphResolutionSurfaceSymbol): string {
@@ -73,17 +112,33 @@ function symbolResolutionSurface(symbol: CodeGraphResolutionSurfaceSymbol): stri
   });
 }
 
-function isOwnTypeScriptPathLookupKey(key: string, symbol: CodeGraphResolutionSurfaceSymbol): boolean {
-  if (symbol.resolutionDomain !== 'typescript') return false;
+function assessOwnTypeScriptPathLookupKey(
+  key: string,
+  symbol: CodeGraphResolutionSurfaceSymbol,
+): Pick<CodeGraphResolutionPublicationAssessment, 'gate' | 'lookupKeyForm'> {
   const match =
     /^typescript:(?:([^:]+):)?path:([^:]+):(?:name|qualified):[^:]+(?::(?:arity:\d+|implementation|merge-canonical))?$/.exec(
       key,
     );
-  if (!match) return false;
-  if (match[1] !== symbol.resolutionScopeId) return false;
-  try {
-    return decodeURIComponent(match[2]!) === symbol.path;
-  } catch {
-    return false;
+  if (!match) return {gate: 'unknown-lookup-form', lookupKeyForm: 'typescript-other'};
+  const lookupKeyForm = match[1] === undefined ? 'typescript-path-unscoped' : 'typescript-path-scoped';
+  if (match[1] !== undefined && match[1] !== symbol.resolutionScopeId) {
+    return {gate: 'scope-mismatch', lookupKeyForm};
   }
+  try {
+    return decodeURIComponent(match[2]!) === symbol.path
+      ? {gate: 'own-path-local', lookupKeyForm}
+      : {gate: 'foreign-path', lookupKeyForm};
+  } catch {
+    return {gate: 'unknown-lookup-form', lookupKeyForm};
+  }
+}
+
+function firstLookupKeyForm(symbol: CodeGraphResolutionSurfaceSymbol): CodeGraphResolutionLookupKeyForm {
+  const key = symbol.lookupKeys?.[0];
+  if (key === undefined) return 'none';
+  if (symbol.resolutionDomain !== 'typescript') return 'non-typescript';
+  if (/^typescript:path:/.test(key)) return 'typescript-path-unscoped';
+  if (/^typescript:[^:]+:path:/.test(key)) return 'typescript-path-scoped';
+  return 'typescript-other';
 }

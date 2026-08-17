@@ -335,7 +335,7 @@ export function registerCodeGraphTool(
           status = yield* service.attachSharedReadySnapshot(config.agentContextHome, identity, status);
         }
         let refreshStarted = false;
-        if (status.stale) {
+        if (codeGraphInspectionStartsRefresh(status, operation)) {
           refreshStarted = yield* watcher.refresh({
             ...refreshTarget,
             key: identity.worktreeId,
@@ -1439,6 +1439,18 @@ export function codeGraphInspectionAllowsStaleReady(
   return operation !== 'impact' && operation !== 'path';
 }
 
+/**
+ * Ordinary relationship reads retain immutable ready evidence without starting
+ * repository-sized work. Cold checkouts and correctness-sensitive operations
+ * still request the current graph.
+ */
+export function codeGraphInspectionStartsRefresh(
+  status: {readonly readySnapshot?: unknown; readonly stale: boolean},
+  operation: 'explain' | 'impact' | 'neighbors' | 'node' | 'path' | 'query',
+): boolean {
+  return !status.readySnapshot || (status.stale && !codeGraphInspectionAllowsStaleReady(operation));
+}
+
 /** Retain the exact observed pointer; refresh status alone is never promotion authority. */
 export function selectCodeGraphReadySnapshotForInspection<T>(
   status: {readonly readySnapshot?: T; readonly stale: boolean},
@@ -1462,8 +1474,8 @@ export function codeGraphResultWithRefreshContinuity(
         `(${refreshStatus.failure.code}). ${codeGraphRefreshRecoveryWarning(refreshStatus.failure)}`
       : refreshStatus?.state === 'indexing'
         ? 'Serving the existing stale ready snapshot while code graph refresh continues in the background.'
-        : undefined;
-  if (warning === undefined) return result;
+        : 'Serving the existing stale ready snapshot without starting a background rebuild. ' +
+          'Run `threadnote graph index`, or use `path` or `impact`, when current graph evidence is required.';
   const bounded = compactMcpText(warning, 320);
   return result.warnings.includes(bounded) ? result : {...result, warnings: [...result.warnings, bounded]};
 }

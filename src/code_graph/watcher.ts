@@ -2,6 +2,7 @@ import {
   Cause,
   Clock,
   Context,
+  Crypto,
   Deferred,
   Effect,
   Fiber,
@@ -16,7 +17,7 @@ import {
   SynchronizedRef,
 } from 'effect';
 import {CodeGraphIndexer, type CodeGraphIndexerShape} from './indexer.js';
-import {worktreeOverlayState} from './inventory.js';
+import {worktreeBuildRequestState, worktreeOverlayState} from './inventory.js';
 import {CodeGraphMaintenanceCoordinator} from './maintenance_coordinator.js';
 import {CodeGraphStore, type CodeGraphRoutineMaintenanceResult, type CodeGraphStoreShape} from './store.js';
 import {CommandExecutor, type CommandOptions} from '../effect/command.js';
@@ -29,7 +30,11 @@ import type {
   RepositoryIdentity,
 } from './types.js';
 import {CodeGraphRuntimeReconnectRequiredError} from './types.js';
-import {currentCodeGraphBuildStatus, type ObservedCodeGraphBuildStatus} from './build_status.js';
+import {
+  currentCodeGraphBuildStatus,
+  readCodeGraphBuildStatuses,
+  type ObservedCodeGraphBuildStatus,
+} from './build_status.js';
 import {isCodeGraphIsolatedBuilderHost, runIsolatedCodeGraphIndex} from './isolated_builder.js';
 import {codeGraphLayout} from './layout.js';
 import {runCodeGraphLifecycleOpportunity} from './lifecycle_opportunity.js';
@@ -48,8 +53,12 @@ import {
 } from './recovery_coordinator.js';
 import {codeGraphAnonymousTelemetryComponent, emitCodeGraphBackgroundFailure} from './anonymous_telemetry.js';
 import {anonymousTelemetryDiagnosticFromCodeGraphRefreshFailure} from '../telemetry/diagnostic.js';
+import type {CodeGraphBuilderAdmissionClass} from './builder_admission.js';
+import {codeGraphBuildRequestKey} from './indexer_build.js';
+import {CodeGraphLanguagePackRegistry} from './languages/registry.js';
 
 export interface CodeGraphWatchOptions {
+  readonly admissionClass?: CodeGraphBuilderAdmissionClass;
   readonly cwd: string;
   readonly key: string;
   readonly onProgress?: (progress: CodeGraphProgress) => Effect.Effect<void>;
@@ -137,6 +146,7 @@ export type CodeGraphRecoveryRun = (
 ) => Effect.Effect<void, unknown>;
 
 export interface CodeGraphWatchReconciliationHooks {
+  readonly changeRefreshRequired?: Effect.Effect<boolean, unknown>;
   readonly periodicRefreshRequired: Effect.Effect<boolean, unknown>;
   readonly requestAfterChange: Effect.Effect<void, unknown>;
   readonly requestInitial?: Effect.Effect<void, unknown>;
@@ -238,10 +248,12 @@ export class CodeGraphWatcher extends Context.Service<CodeGraphWatcher, CodeGrap
     CodeGraphWatcher,
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
+      const crypto = yield* Crypto.Crypto;
       const path = yield* Path.Path;
       const commandExecutor = yield* CommandExecutor;
       const systemInfo = yield* SystemInfo;
       const indexer = yield* CodeGraphIndexer;
+      const languagePacks = yield* CodeGraphLanguagePackRegistry;
       const maintenance = yield* CodeGraphMaintenanceCoordinator;
       const store = yield* CodeGraphStore;
       const scope = yield* Effect.scope;
@@ -266,6 +278,7 @@ export class CodeGraphWatcher extends Context.Service<CodeGraphWatcher, CodeGrap
               store,
             }).pipe(
               Effect.provideService(CommandExecutor, commandExecutor),
+              Effect.provideService(Crypto.Crypto, crypto),
               Effect.provideService(FileSystem.FileSystem, fs),
               Effect.provideService(Path.Path, path),
               Effect.provideService(SystemInfo, systemInfo),
@@ -275,13 +288,28 @@ export class CodeGraphWatcher extends Context.Service<CodeGraphWatcher, CodeGrap
       const refresh = (options: CodeGraphWatchOptions) =>
         Effect.gen(function* () {
           if (isolateBuilder) {
+            const identity = yield* resolveRepositoryIdentity(options.cwd).pipe(
+              Effect.provideService(CommandExecutor, commandExecutor),
+              Effect.provideService(FileSystem.FileSystem, fs),
+              Effect.provideService(Path.Path, path),
+              Effect.provideService(SystemInfo, systemInfo),
+            );
+            const requestedOverlay = yield* worktreeBuildRequestState(identity, options.threadnoteHome).pipe(
+              Effect.provideService(CommandExecutor, commandExecutor),
+              Effect.provideService(FileSystem.FileSystem, fs),
+              Effect.provideService(Path.Path, path),
+              Effect.provideService(SystemInfo, systemInfo),
+            );
             const summary = yield* runIsolatedCodeGraphIndex({
+              admissionClass: options.admissionClass,
               assertRuntimeSchemaCompatible: databasePath => store.assertRuntimeSchemaCompatible(databasePath),
               cwd: options.cwd,
               onProgress: options.onProgress,
+              requestKey: codeGraphBuildRequestKey(identity, requestedOverlay, languagePacks, undefined),
               threadnoteHome: options.threadnoteHome,
             }).pipe(
               Effect.provideService(CommandExecutor, commandExecutor),
+              Effect.provideService(Crypto.Crypto, crypto),
               Effect.provideService(FileSystem.FileSystem, fs),
               Effect.provideService(Path.Path, path),
               Effect.provideService(SystemInfo, systemInfo),
@@ -311,12 +339,26 @@ export class CodeGraphWatcher extends Context.Service<CodeGraphWatcher, CodeGrap
         });
       };
       const watchReconciliationHooks = (options: CodeGraphWatchOptions): CodeGraphWatchReconciliationHooks => ({
+        changeRefreshRequired: Effect.gen(function* () {
+          const identity = yield* resolveRecoveryIdentity(options.cwd);
+          const layout = codeGraphLayout(path, options.threadnoteHome, identity.checkoutId, identity.worktreeId);
+          const ready = yield* store.readySnapshot(layout.databasePath, identity.worktreeId);
+          if (ready === undefined) return true;
+          const statuses = yield* readCodeGraphBuildStatuses(layout);
+          return codeGraphCachedOverlayAssessmentAllowsBackgroundRefresh(ready.id, statuses);
+        }).pipe(
+          Effect.provideService(FileSystem.FileSystem, fs),
+          Effect.provideService(Path.Path, path),
+          Effect.provideService(SystemInfo, systemInfo),
+        ),
         periodicRefreshRequired: Effect.gen(function* () {
           const identity = yield* resolveRecoveryIdentity(options.cwd);
           yield* requestWatchMaintenance(options, identity);
           const layout = codeGraphLayout(path, options.threadnoteHome, identity.checkoutId, identity.worktreeId);
           const ready = yield* store.readySnapshot(layout.databasePath, identity.worktreeId);
-          if (ready === undefined || ready.commit !== identity.headCommit) return true;
+          if (ready === undefined) return true;
+          const statuses = yield* readCodeGraphBuildStatuses(layout);
+          if (!codeGraphCachedOverlayAssessmentAllowsBackgroundRefresh(ready.id, statuses)) return false;
           const overlay = yield* worktreeOverlayState(identity).pipe(
             Effect.provideService(CommandExecutor, commandExecutor),
             Effect.provideService(FileSystem.FileSystem, fs),
@@ -324,7 +366,11 @@ export class CodeGraphWatcher extends Context.Service<CodeGraphWatcher, CodeGrap
             Effect.provideService(SystemInfo, systemInfo),
           );
           return codeGraphWatcherSnapshotStale(ready, identity, overlay);
-        }),
+        }).pipe(
+          Effect.provideService(FileSystem.FileSystem, fs),
+          Effect.provideService(Path.Path, path),
+          Effect.provideService(SystemInfo, systemInfo),
+        ),
         requestAfterChange: resolveRecoveryIdentity(options.cwd).pipe(
           Effect.flatMap(identity => requestWatchMaintenance(options, identity)),
         ),
@@ -433,7 +479,7 @@ export const makeCodeGraphWatcher = Effect.fn('codeGraph.makeWatcher')(function*
   const activeWatches = yield* SynchronizedRef.make(new Map<string, ActiveWatch>());
   const activeRefreshes = yield* SynchronizedRef.make(new Map<string, ActiveRefresh>());
   const refreshStatuses = yield* SynchronizedRef.make(new Map<string, CodeGraphRefreshStatus>());
-  const refreshSemaphore = yield* Semaphore.make(1);
+  const refreshSemaphore = yield* Semaphore.make(2);
   const refreshExecutionMetrics = yield* Ref.make<RefreshExecutionMetrics>({executing: 0, highWater: 0});
   const refreshSequence = yield* Ref.make(0);
   const sweepStarted = yield* Ref.make(false);
@@ -600,7 +646,9 @@ export const makeCodeGraphWatcher = Effect.fn('codeGraph.makeWatcher')(function*
       return decision;
     });
   const requestBackgroundRefresh = (options: CodeGraphWatchOptions, queueTrailing: boolean) =>
-    scheduleRefresh(options, queueTrailing).pipe(Effect.map(decision => decision.start));
+    scheduleRefresh({...options, admissionClass: 'background'}, queueTrailing).pipe(
+      Effect.map(decision => decision.start),
+    );
   const requestRefreshAndWait = (options: CodeGraphWatchOptions) =>
     scheduleRefresh(options, false).pipe(Effect.flatMap(decision => Deferred.await(decision.completion)));
   const cancelWatches = (entries: readonly [string, ActiveWatch][]) =>
@@ -707,7 +755,9 @@ export const makeCodeGraphWatcher = Effect.fn('codeGraph.makeWatcher')(function*
     refresh: options =>
       Effect.gen(function* () {
         yield* touchWatch(options.key);
-        return yield* requestBackgroundRefresh(options, false);
+        return yield* scheduleRefresh({...options, admissionClass: 'current-required'}, false).pipe(
+          Effect.map(decision => decision.start),
+        );
       }),
     status: key =>
       Effect.gen(function* () {
@@ -718,7 +768,7 @@ export const makeCodeGraphWatcher = Effect.fn('codeGraph.makeWatcher')(function*
         return Option.some(refreshStatusAt(current, now));
       }),
     watch: options =>
-      requestRefreshAndWait(options).pipe(
+      requestRefreshAndWait({...options, admissionClass: 'current-required'}).pipe(
         Effect.andThen(run(options, true, () => requestBackgroundRefresh(options, true).pipe(Effect.asVoid))),
         Effect.ensuring(removeStatuses([options.key])),
       ),
@@ -1036,7 +1086,15 @@ export const watchRepository = Effect.fn('codeGraph.watchRepository')(function* 
             Effect.catch(() =>
               Effect.logWarning('Code graph change maintenance scheduling failed; refresh remains active.'),
             ),
-            Effect.andThen(requestRefresh()),
+            Effect.andThen(
+              (reconciliationHooks.changeRefreshRequired ?? Effect.succeed(true)).pipe(
+                Effect.match({
+                  onFailure: () => false,
+                  onSuccess: refreshRequired => refreshRequired,
+                }),
+                Effect.flatMap(refreshRequired => (refreshRequired ? requestRefresh() : Effect.void)),
+              ),
+            ),
           )
         : reconciliationHooks.periodicRefreshRequired.pipe(
             Effect.match({
@@ -1059,6 +1117,27 @@ export function codeGraphWatcherSnapshotStale(
     snapshot.dirty !== overlay.dirty ||
     (overlay.dirty && snapshot.overlayFingerprint !== overlay.fingerprint)
   );
+}
+
+/**
+ * Background watch/timer work is admitted only after the current ready base
+ * was produced by a successful bounded overlay assessment. Missing or full
+ * outcomes remain fail-closed until an explicit current-only request records a
+ * new result.
+ */
+export function codeGraphCachedOverlayAssessmentAllowsBackgroundRefresh(
+  readySnapshotId: string,
+  statuses: readonly Pick<ObservedCodeGraphBuildStatus, 'materialization' | 'result' | 'state' | 'timestamps'>[],
+): boolean {
+  const matching = statuses.filter(
+    status => status.state === 'completed' && status.result?.snapshotId === readySnapshotId,
+  );
+  const latest = matching.sort((left, right) => {
+    const leftTime = Date.parse(left.timestamps.completedAt ?? left.timestamps.updatedAt);
+    const rightTime = Date.parse(right.timestamps.completedAt ?? right.timestamps.updatedAt);
+    return rightTime - leftTime;
+  })[0];
+  return latest?.result?.overlayAssessment?.outcome === 'overlay-success';
 }
 
 function relevantWatchPath(path: Path.Path, cwd: string, eventPath: string): boolean {

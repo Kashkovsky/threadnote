@@ -1,5 +1,7 @@
-import {Clock, Effect, Option, Path, Ref} from 'effect';
+import {Clock, Crypto, Effect, FileSystem, Option, Path, Ref} from 'effect';
 import {fromPromiseInterruptible} from '../effect/errors.js';
+import {isFileLockTimeout, withExclusiveFileLock} from '../effect/file_lock.js';
+import {CommandExecutor} from '../effect/command.js';
 import {SystemInfo, type SystemInfoShape} from '../effect/system.js';
 import {pollUntilEffect} from '../effect/time.js';
 import {withCurrentAgentSessionEnvironment} from '../telemetry/session.js';
@@ -11,9 +13,10 @@ import {
   type CodeGraphBuildStatus,
   type ObservedCodeGraphBuildStatus,
 } from './build_status.js';
-import {codeGraphLayout} from './layout.js';
+import {codeGraphLayout, codeGraphWorktreeSpawnLockPath} from './layout.js';
 import {resolveRepositoryIdentity} from './repository.js';
 import type {CodeGraphProgress, RepositoryIdentity} from './types.js';
+import {CODE_GRAPH_BUILDER_ADMISSION_CLASS_ENV, type CodeGraphBuilderAdmissionClass} from './builder_admission.js';
 
 class IsolatedBuilderError extends Error {
   readonly _tag = 'IsolatedBuilderError' as const;
@@ -33,6 +36,8 @@ export const EXISTING_BUILDER_STALLED_TIMEOUT_MILLISECONDS = CODE_GRAPH_BUILD_ST
 /** Allow an atomically-renamed completion sidecar a short, bounded window to become observable after child exit. */
 export const ISOLATED_BUILDER_RESULT_GRACE_MILLISECONDS = 2_000;
 export const ISOLATED_BUILDER_RESULT_POLL_MILLISECONDS = 100;
+export const ISOLATED_BUILDER_SPAWN_OBSERVATION_MILLISECONDS = 10_000;
+export const ISOLATED_BUILDER_SPAWN_LOCK_WAIT_MILLISECONDS = 30_000;
 const STDERR_TAIL_LIMIT_BYTES = 4 * 1024;
 
 export interface CodeGraphIsolatedBuilderSpawnPlan {
@@ -56,13 +61,22 @@ export interface CodeGraphIsolatedBuilderOptions {
   /** Read-only guard that must complete before an isolated child can be observed or spawned. */
   readonly assertRuntimeSchemaCompatible: (databasePath: string) => Effect.Effect<void, unknown>;
   readonly cwd: string;
+  readonly admissionClass?: CodeGraphBuilderAdmissionClass;
   readonly onProgress?: (progress: CodeGraphProgress) => Effect.Effect<void>;
+  /** @internal Deterministic shared-sidecar seam for cross-host spawn tests. */
+  readonly readStatus?: Effect.Effect<ObservedCodeGraphBuildStatus | undefined, unknown>;
+  /** Privacy-safe build request identity used for exact completed-result reuse. */
+  readonly requestKey?: string;
   /** @internal Deterministic identity seam for pre-spawn compatibility tests. */
   readonly resolveIdentity?: (cwd: string) => Effect.Effect<RepositoryIdentity, unknown>;
   readonly spawn?: CodeGraphIsolatedBuilderSpawner;
   readonly spawnPlan?: (
     system: SystemInfoShape,
-    options: {readonly cwd: string; readonly threadnoteHome: string},
+    options: {
+      readonly admissionClass?: CodeGraphBuilderAdmissionClass;
+      readonly cwd: string;
+      readonly threadnoteHome: string;
+    },
   ) => CodeGraphIsolatedBuilderSpawnPlan;
   readonly threadnoteHome: string;
 }
@@ -94,7 +108,11 @@ export function isCodeGraphIsolatedBuilderHost(
  */
 export function codeGraphIsolatedBuilderSpawnPlan(
   system: SystemInfoShape,
-  options: {readonly cwd: string; readonly threadnoteHome: string},
+  options: {
+    readonly admissionClass?: CodeGraphBuilderAdmissionClass;
+    readonly cwd: string;
+    readonly threadnoteHome: string;
+  },
 ): CodeGraphIsolatedBuilderSpawnPlan {
   const script = developmentStandaloneScript(system);
   return {
@@ -110,6 +128,7 @@ export function codeGraphIsolatedBuilderSpawnPlan(
     ],
     environment: {
       ...withCurrentAgentSessionEnvironment(system.environment(), 'graph-builder'),
+      [CODE_GRAPH_BUILDER_ADMISSION_CLASS_ENV]: options.admissionClass ?? 'current-required',
       THREADNOTE_HOME: options.threadnoteHome,
     },
     executable: system.executablePath,
@@ -132,6 +151,7 @@ export function codeGraphProgressFromBuildStatus(
         phase: 'waiting',
         ...(status.subphase === 'database-writer' ||
         status.subphase === 'disk-capacity' ||
+        status.subphase === 'home-builder-cap' ||
         status.subphase === 'repository-lock' ||
         status.subphase === 'request-lock' ||
         status.subphase === 'snapshot-build'
@@ -230,33 +250,97 @@ export function codeGraphProgressFromBuildStatus(
  * Run `graph index --no-vectors` in a child CLI process and mirror its build-status sidecar.
  * On interruption the child is detached (not killed) so a later MCP refresh can re-attach.
  */
-export const runIsolatedCodeGraphIndex = Effect.fn('codeGraph.isolatedBuilder.run')(function* (
+export const runIsolatedCodeGraphIndex: (
   options: CodeGraphIsolatedBuilderOptions,
-) {
+) => Effect.Effect<
+  CodeGraphIsolatedBuilderResult,
+  unknown,
+  CommandExecutor | Crypto.Crypto | FileSystem.FileSystem | Path.Path | SystemInfo
+> = Effect.fn('codeGraph.isolatedBuilder.run')(function* (options: CodeGraphIsolatedBuilderOptions) {
   const system = yield* SystemInfo;
+  const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const identity = yield* options.resolveIdentity?.(options.cwd) ?? resolveRepositoryIdentity(options.cwd);
   const layout = codeGraphLayout(path, options.threadnoteHome, identity.checkoutId, identity.worktreeId);
   yield* options.assertRuntimeSchemaCompatible(layout.databasePath);
   const plan = (options.spawnPlan ?? codeGraphIsolatedBuilderSpawnPlan)(system, {
+    admissionClass: options.admissionClass,
     cwd: identity.repoRoot,
     threadnoteHome: options.threadnoteHome,
   });
   yield* assertIsolatedBuilderPlanEffect(plan);
 
-  const readStatus = currentCodeGraphBuildStatus(layout, identity.worktreeId);
-  const existing = yield* readStatus;
-  if (shouldAwaitExistingBuilder(existing, system.processId)) {
-    return yield* awaitExistingBuilder(readStatus, options.onProgress);
+  const readStatus = options.readStatus ?? currentCodeGraphBuildStatus(layout, identity.worktreeId);
+  const spawn = options.spawn ?? spawnIsolatedBuilderProcess;
+  const spawnLockPath = codeGraphWorktreeSpawnLockPath(
+    path,
+    options.threadnoteHome,
+    identity.checkoutId,
+    identity.worktreeId,
+  );
+  const admission = yield* withExclusiveFileLock(
+    fs,
+    spawnLockPath,
+    {
+      heartbeatIntervalMilliseconds: 5_000,
+      recoverReusedProcessIdImmediately: true,
+      retryIntervalMilliseconds: 25,
+      staleAfterMilliseconds: CODE_GRAPH_BUILD_STALE_AFTER_MILLISECONDS,
+      useCanonicalProcessStartIdentity: true,
+      waitTimeoutMilliseconds: ISOLATED_BUILDER_SPAWN_LOCK_WAIT_MILLISECONDS,
+    },
+    Effect.gen(function* () {
+      const existing = yield* readStatus;
+      if (shouldAwaitExistingBuilder(existing, system.processId)) {
+        return {
+          compatible: isolatedBuilderRequestMatches(existing!, options.requestKey),
+          mode: 'attach' as const,
+        };
+      }
+      if (
+        existing?.observation.liveness === 'completed' &&
+        existing.result &&
+        isolatedBuilderRequestMatches(existing, options.requestKey)
+      ) {
+        return {mode: 'completed' as const, result: existing.result};
+      }
+
+      const priorBuildId = existing?.buildId;
+      // Detach on interruption: do not kill multi-hour builds when the MCP host goes idle or reconnects.
+      const child = yield* isolatedBuilderPromise('Could not spawn isolated code graph builder', () =>
+        Promise.resolve(spawn(plan)),
+      );
+      const observed = yield* pollUntilEffect(statusOwnedBy(readStatus, child.processId, priorBuildId), {
+        intervalMs: ISOLATED_BUILDER_RESULT_POLL_MILLISECONDS,
+        timeoutMs: ISOLATED_BUILDER_SPAWN_OBSERVATION_MILLISECONDS,
+      });
+      if (!observed) {
+        // The child remains detached. A caller that lost the bounded startup
+        // race follows the same sidecar attach path as a spawn-lock waiter.
+        return {compatible: false, mode: 'attach' as const};
+      }
+      return {child, mode: 'spawned' as const, observedBuildId: observed.buildId, priorBuildId};
+    }),
+  ).pipe(Effect.catchIf(isFileLockTimeout, () => Effect.succeed({compatible: false, mode: 'attach' as const})));
+
+  // The spawn lock is released before either branch waits for repository-sized work.
+  if (admission.mode === 'completed') {
+    return {edges: admission.result.edges, symbols: admission.result.symbols};
+  }
+  if (admission.mode === 'attach') {
+    const attached = yield* awaitExistingBuilder(readStatus, options.onProgress, {
+      startupGraceMilliseconds: ISOLATED_BUILDER_SPAWN_OBSERVATION_MILLISECONDS,
+    });
+    if (admission.compatible) return attached;
+    // The owner built a different request. Its completed snapshot is now a
+    // retained-base candidate; re-enter spawn admission so one waiter applies
+    // this request's bounded delta while the rest attach to that new owner.
+    return yield* Effect.suspend(() => runIsolatedCodeGraphIndex(options));
   }
 
-  const priorBuildId = existing?.buildId;
-  const spawn = options.spawn ?? spawnIsolatedBuilderProcess;
-  // Detach on interruption: do not kill multi-hour builds when the MCP host goes idle or reconnects.
-  const child = yield* isolatedBuilderPromise('Could not spawn isolated code graph builder', () =>
-    Promise.resolve(spawn(plan)),
-  );
+  const {child, observedBuildId: initialObservedBuildId, priorBuildId} = admission;
   const observedBuildId = yield* Ref.make<string | undefined>(undefined);
+  yield* Ref.set(observedBuildId, initialObservedBuildId);
 
   const exitCode = yield* Effect.raceFirst(
     isolatedBuilderPromise('Could not await isolated code graph builder', () => child.exited),
@@ -348,6 +432,13 @@ export function shouldAwaitExistingBuilder(
   if (!status) return false;
   if (status.observation.liveness !== 'active' && status.observation.liveness !== 'stalled') return false;
   return status.owner.processId !== currentProcessId;
+}
+
+export function isolatedBuilderRequestMatches(
+  status: Pick<ObservedCodeGraphBuildStatus, 'request'>,
+  requestKey: string | undefined,
+): boolean {
+  return requestKey !== undefined && status.request?.key === requestKey;
 }
 
 export function statusBelongsToChild(
@@ -451,12 +542,20 @@ function statusOwnedBy<E, R>(
 function awaitExistingBuilder<E, R>(
   readStatus: Effect.Effect<ObservedCodeGraphBuildStatus | undefined, E, R>,
   onProgress: CodeGraphIsolatedBuilderOptions['onProgress'],
+  options: {readonly startupGraceMilliseconds?: number} = {},
 ) {
   return Effect.gen(function* () {
     const stalledStartedAt = yield* Ref.make<number | undefined>(undefined);
+    const startedAt = yield* Clock.currentTimeMillis;
     for (;;) {
       const status = yield* readStatus;
       if (!status) {
+        const now = yield* Clock.currentTimeMillis;
+        if (now - startedAt < (options.startupGraceMilliseconds ?? 0)) {
+          yield* emitProgress(onProgress, {phase: 'registering'});
+          yield* Effect.sleep(ISOLATED_BUILDER_RESULT_POLL_MILLISECONDS);
+          continue;
+        }
         return yield* Effect.fail(
           new IsolatedBuilderError('Existing code graph builder status disappeared before completion.'),
         );

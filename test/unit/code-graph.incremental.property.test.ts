@@ -2,6 +2,7 @@ import {describe, expect, it} from '@effect/vitest';
 import * as FC from 'effect/testing/FastCheck';
 import {createResolutionAttributor} from '../../src/code_graph/extractor.js';
 import {hasSameCodeGraphResolutionSurface} from '../../src/code_graph/indexer.js';
+import {assessCodeGraphResolutionSymbolPublication} from '../../src/code_graph/resolution_surface.js';
 import type {CodeGraphFileFacts, CodeGraphInventoryFile, CodeGraphSymbol} from '../../src/code_graph/types.js';
 
 const optionalText = FC.oneof(FC.constant(undefined), FC.string({maxLength: 24}));
@@ -98,6 +99,50 @@ const pathLocalTypeScriptSymbolArbitrary = FC.record({
 });
 
 describe('code graph incremental-overlay properties', () => {
+  it('classifies scoped and unscoped own-path TypeScript keys without leaking lookup values', () => {
+    const path = 'packages/private/src/fixture.ts';
+    const scoped: CodeGraphSymbol = {
+      arity: 1,
+      contentHash: 'content',
+      exported: false,
+      id: 'local-private-method',
+      kind: 'method',
+      language: 'typescript',
+      lookupKeys: [],
+      name: 'privateMethod',
+      path,
+      qualifiedName: 'Fixture.privateMethod',
+      resolutionDomain: 'typescript',
+      resolutionScopeId: 'project-a',
+      span: {column: 1, endColumn: 2, endLine: 1, line: 1},
+    };
+    const unscoped = {
+      ...scoped,
+      lookupKeys: typescriptPathLocalLookupKeys(path, scoped.name, scoped.qualifiedName, undefined, scoped.arity),
+    };
+    const scopedWithKeys = {
+      ...scoped,
+      lookupKeys: typescriptPathLocalLookupKeys(path, scoped.name, scoped.qualifiedName, 'project-a', scoped.arity),
+    };
+
+    expect(assessCodeGraphResolutionSymbolPublication(unscoped)).toEqual({
+      gate: 'own-path-local',
+      lookupKeyForm: 'typescript-path-unscoped',
+      published: false,
+    });
+    expect(assessCodeGraphResolutionSymbolPublication(scopedWithKeys)).toEqual({
+      gate: 'own-path-local',
+      lookupKeyForm: 'typescript-path-scoped',
+      published: false,
+    });
+    expect(
+      assessCodeGraphResolutionSymbolPublication({
+        ...scopedWithKeys,
+        lookupKeys: typescriptPathLocalLookupKeys(path, scoped.name, scoped.qualifiedName, 'project-b', scoped.arity),
+      }),
+    ).toMatchObject({gate: 'scope-mismatch', published: true});
+  });
+
   it('does not synthesize active global endpoints for TypeScript while preserving explicit extractor keys', () => {
     const path = 'src/example.ts';
     const ownKey = `typescript:path:${encodeURIComponent(path)}:name:local`;

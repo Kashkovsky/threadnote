@@ -6,6 +6,7 @@ import {TestClock} from 'effect/testing';
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import {
+  codeGraphCachedOverlayAssessmentAllowsBackgroundRefresh,
   codeGraphWatcherSnapshotStale,
   makeCodeGraphWatcher,
   prewarmCandidatesFromRefOutput,
@@ -19,6 +20,7 @@ import {
   CodeGraphStorePermissionError,
   CodeGraphStoreTransientIoError,
 } from '../../src/code_graph/types.js';
+import {orderCodeGraphBuilderAdmissionTickets} from '../../src/code_graph/builder_admission.js';
 
 const options: CodeGraphWatchOptions = {
   cwd: '/fixture/repository',
@@ -27,6 +29,31 @@ const options: CodeGraphWatchOptions = {
 };
 
 describe('CodeGraphWatcher', () => {
+  it('orders home builder tickets by current-required priority and FIFO within a class (property)', () => {
+    fc.assert(
+      fc.property(fc.array(fc.constantFrom('background' as const, 'current-required' as const)), classes => {
+        const ordered = orderCodeGraphBuilderAdmissionTickets(
+          classes.map((admissionClass, index) => ({
+            admissionClass,
+            createdAt: index,
+            token: `${index}`.padStart(4, '0'),
+          })),
+        );
+        const firstBackground = ordered.findIndex(ticket => ticket.admissionClass === 'background');
+        if (firstBackground >= 0) {
+          expect(ordered.slice(firstBackground).every(ticket => ticket.admissionClass === 'background')).toBe(true);
+        }
+        for (const admissionClass of ['current-required', 'background'] as const) {
+          const arrivals = ordered
+            .filter(ticket => ticket.admissionClass === admissionClass)
+            .map(ticket => ticket.createdAt);
+          expect(arrivals).toEqual([...arrivals].sort((left, right) => left - right));
+        }
+      }),
+      {numRuns: 100},
+    );
+  });
+
   it('admits at most two unique non-current ref tips for prewarming', () => {
     const objectId = fc
       .array(fc.integer({max: 15, min: 0}), {maxLength: 40, minLength: 40})
@@ -50,6 +77,50 @@ describe('CodeGraphWatcher', () => {
       ),
       {numRuns: 250},
     );
+  });
+
+  it('admits background refresh only for an overlay-success outcome on the current ready base', () => {
+    const status = (
+      snapshotId: string,
+      outcome: 'overlay-success' | 'resolution-surface-changed',
+      completedAt = '2026-08-17T12:00:00.000Z',
+    ) => ({
+      materialization: undefined,
+      result: {
+        dirty: true,
+        edges: 1,
+        files: 1,
+        overlayAssessment: {outcome},
+        snapshotId,
+        symbols: 1,
+      },
+      state: 'completed' as const,
+      timestamps: {
+        completedAt,
+        heartbeatAt: completedAt,
+        lastProgressAt: completedAt,
+        phaseStartedAt: completedAt,
+        startedAt: completedAt,
+        updatedAt: completedAt,
+      },
+    });
+
+    expect(codeGraphCachedOverlayAssessmentAllowsBackgroundRefresh('current', [])).toBe(false);
+    expect(
+      codeGraphCachedOverlayAssessmentAllowsBackgroundRefresh('current', [
+        status('previous', 'overlay-success'),
+        status('current', 'resolution-surface-changed'),
+      ]),
+    ).toBe(false);
+    expect(
+      codeGraphCachedOverlayAssessmentAllowsBackgroundRefresh('current', [status('current', 'overlay-success')]),
+    ).toBe(true);
+    expect(
+      codeGraphCachedOverlayAssessmentAllowsBackgroundRefresh('current', [
+        status('current', 'overlay-success', '2026-08-17T12:00:00.000Z'),
+        status('current', 'resolution-surface-changed', '2026-08-17T12:01:00.000Z'),
+      ]),
+    ).toBe(false);
   });
 
   effectIt.effect(
@@ -498,6 +569,36 @@ describe('CodeGraphWatcher', () => {
     }).pipe(Effect.scoped),
   );
 
+  effectIt.effect('suppresses change refresh when the cached overlay outcome is not eligible', () =>
+    Effect.gen(function* () {
+      const events = yield* Ref.make<string[]>([]);
+      const fiber = yield* watchRepository(
+        {watch: () => Stream.make({path: 'source.ts'})} as never,
+        {
+          isAbsolute: (value: string) => value.startsWith('/'),
+          join: (...values: string[]) => values.join('/'),
+          relative: () => 'source.ts',
+          sep: '/',
+        } as never,
+        options,
+        false,
+        () => Ref.update(events, current => [...current, 'refresh']),
+        {
+          changeRefreshRequired: Effect.succeed(false),
+          periodicRefreshRequired: Effect.succeed(false),
+          requestAfterChange: Ref.update(events, current => [...current, 'change-maintenance']),
+          requestInitial: Effect.void,
+        },
+      ).pipe(Effect.forkScoped);
+
+      yield* TestClock.adjust('751 millis');
+      yield* Effect.yieldNow;
+
+      expect(yield* Ref.get(events)).toEqual(['change-maintenance']);
+      yield* Fiber.interrupt(fiber);
+    }).pipe(Effect.scoped),
+  );
+
   effectIt.effect('refreshes on periodic positive staleness and preserves on current or unknown evidence', () =>
     Effect.gen(function* () {
       for (const testCase of [
@@ -687,7 +788,7 @@ describe('CodeGraphWatcher', () => {
     ).pipe(Effect.tap(observed => Effect.sync(() => expect(observed).toEqual(['commit-a', 'commit-c'])))),
   );
 
-  effectIt.effect('serializes refreshes across repository keys to bound process memory', () =>
+  effectIt.effect('admits two refreshes across repository keys while bounding process memory', () =>
     Effect.gen(function* () {
       const result = yield* Effect.scoped(
         Effect.gen(function* () {
@@ -733,8 +834,8 @@ describe('CodeGraphWatcher', () => {
         }),
       );
 
-      expect(result.beforeRelease).toEqual({maximum: 1, starts: 1});
-      expect(result.finalMaximum).toBe(1);
+      expect(result.beforeRelease).toEqual({maximum: 2, starts: 2});
+      expect(result.finalMaximum).toBe(2);
       expect(result.finalStarts).toBe(8);
     }),
   );
@@ -815,8 +916,8 @@ describe('CodeGraphWatcher', () => {
       expect(whileHeld).toEqual({
         activeRefreshKeys: 2,
         activeWatches: 2,
-        executingRefreshes: 1,
-        executingRefreshHighWater: 1,
+        executingRefreshes: 2,
+        executingRefreshHighWater: 2,
         idleSweepFibers: 1,
         maximumWatchers: 4,
         pendingTrailingRefreshes: 2,
@@ -837,7 +938,7 @@ describe('CodeGraphWatcher', () => {
         activeRefreshKeys: 0,
         activeWatches: 2,
         executingRefreshes: 0,
-        executingRefreshHighWater: 1,
+        executingRefreshHighWater: 2,
         idleSweepFibers: 1,
         maximumWatchers: 4,
         pendingTrailingRefreshes: 0,

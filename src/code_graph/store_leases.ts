@@ -34,6 +34,13 @@ import {codeGraphWorktreeReconciliationSchemaCompatible} from './store_reconcili
 import {lastStatementChangeCount} from './store_activation_core.js';
 import {retireReadySnapshotsIfUnused} from './store_cleanup_core.js';
 import {CODE_GRAPH_MINIMUM_BACKGROUND_MIGRATION_REVISION} from './store_health.js';
+import {
+  CODE_GRAPH_DETACHED_READY_COUNT_MAXIMUM,
+  CODE_GRAPH_DETACHED_READY_ESTIMATED_BYTES_MAXIMUM,
+  CODE_GRAPH_RETENTION_ESTIMATED_BYTES_MINIMUM,
+  CODE_GRAPH_RETENTION_ESTIMATED_BYTES_PER_EDGE,
+  CODE_GRAPH_RETENTION_ESTIMATED_BYTES_PER_SYMBOL,
+} from './snapshot_retention.js';
 
 /** Fresh facts are written before the durable building snapshot owns its inventory. */
 
@@ -303,6 +310,108 @@ const acquireSnapshotLease = Effect.fn('codeGraph.acquireSnapshotLease')(functio
       `;
       if (!ready[0]) {
         return yield* Effect.fail(new CodeGraphStoreError(`Ready snapshot ${snapshotId} is no longer available.`));
+      }
+      if (token.startsWith('retained-base:')) {
+        const targets = yield* sql<{
+          readonly estimated_bytes: number;
+          readonly physical_id: string;
+          readonly repository_id: string;
+          readonly worktree_id: string;
+        }>`
+          SELECT repository_id, worktree_id, COALESCE(base_snapshot_id, id) AS physical_id,
+                 MAX(
+                   ${CODE_GRAPH_RETENTION_ESTIMATED_BYTES_MINIMUM},
+                   symbol_count * ${CODE_GRAPH_RETENTION_ESTIMATED_BYTES_PER_SYMBOL} +
+                     edge_count * ${CODE_GRAPH_RETENTION_ESTIMATED_BYTES_PER_EDGE}
+                 ) AS estimated_bytes
+          FROM snapshots
+          WHERE id = ${snapshotId} AND state = 'ready'
+          LIMIT 1
+        `;
+        const target = targets[0];
+        if (!target) {
+          return yield* Effect.fail(new CodeGraphStoreError('Retained code graph base is no longer available.'));
+        }
+        const retainedReservations = yield* sql<{
+          readonly estimated_bytes: number;
+          readonly physical_id: string;
+          readonly repository_id: string;
+          readonly worktree_id: string;
+        }>`
+          SELECT snapshot.repository_id, snapshot.worktree_id,
+                 COALESCE(snapshot.base_snapshot_id, snapshot.id) AS physical_id,
+                 MAX(
+                   ${CODE_GRAPH_RETENTION_ESTIMATED_BYTES_MINIMUM},
+                   snapshot.symbol_count * ${CODE_GRAPH_RETENTION_ESTIMATED_BYTES_PER_SYMBOL} +
+                     snapshot.edge_count * ${CODE_GRAPH_RETENTION_ESTIMATED_BYTES_PER_EDGE}
+                 ) AS estimated_bytes
+          FROM snapshot_leases AS lease
+          JOIN snapshots AS snapshot ON snapshot.id = lease.snapshot_id
+          WHERE lease.token GLOB 'retained-base:*' AND lease.expires_at > ${now}
+          GROUP BY snapshot.repository_id, snapshot.worktree_id, physical_id
+        `;
+        if (
+          retainedReservations.some(
+            row =>
+              row.worktree_id === target.worktree_id &&
+              row.repository_id === target.repository_id &&
+              row.physical_id !== target.physical_id,
+          )
+        ) {
+          return yield* Effect.fail(
+            new CodeGraphStoreError('The worktree already has a retained committed code graph base.'),
+          );
+        }
+        const detachedReady = yield* sql<{
+          readonly estimated_bytes: number;
+          readonly physical_id: string;
+          readonly repository_id: string;
+          readonly worktree_id: string;
+        }>`
+          SELECT snapshot.repository_id, snapshot.worktree_id,
+                 COALESCE(snapshot.base_snapshot_id, snapshot.id) AS physical_id,
+                 MAX(
+                   MAX(
+                     ${CODE_GRAPH_RETENTION_ESTIMATED_BYTES_MINIMUM},
+                     snapshot.symbol_count * ${CODE_GRAPH_RETENTION_ESTIMATED_BYTES_PER_SYMBOL} +
+                       snapshot.edge_count * ${CODE_GRAPH_RETENTION_ESTIMATED_BYTES_PER_EDGE}
+                   )
+                 ) AS estimated_bytes
+          FROM snapshots AS snapshot
+          WHERE snapshot.repository_id = ${target.repository_id}
+            AND snapshot.state = 'ready'
+            AND snapshot.completed_at IS NOT NULL
+            AND NOT EXISTS (
+              SELECT 1 FROM active_snapshots AS active
+              WHERE active.snapshot_id = snapshot.id
+                AND NOT EXISTS (
+                  SELECT 1 FROM removed_views AS removed
+                  WHERE removed.worktree_id = active.worktree_id
+                    AND removed.expected_snapshot_id = active.snapshot_id
+                )
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM snapshots AS child
+              WHERE child.base_snapshot_id = snapshot.id
+              LIMIT 1
+            )
+          GROUP BY snapshot.repository_id, physical_id
+        `;
+        const physical = new Map(
+          [...detachedReady, ...retainedReservations]
+            .filter(row => row.repository_id === target.repository_id)
+            .map(row => [row.physical_id, row] as const),
+        );
+        if (!physical.has(target.physical_id)) physical.set(target.physical_id, target);
+        const retainedBytes = [...physical.values()].reduce((total, row) => total + row.estimated_bytes, 0);
+        if (
+          physical.size > CODE_GRAPH_DETACHED_READY_COUNT_MAXIMUM ||
+          retainedBytes > CODE_GRAPH_DETACHED_READY_ESTIMATED_BYTES_MAXIMUM
+        ) {
+          return yield* Effect.fail(
+            new CodeGraphStoreError('Retained code graph bases would exceed detached-ready capacity.'),
+          );
+        }
       }
       yield* sql`
         INSERT INTO snapshot_leases (token, snapshot_id, expires_at, retire_when_inactive)

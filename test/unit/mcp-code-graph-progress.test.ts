@@ -7,6 +7,7 @@ import {
   codeGraphAnalysisMcpResponse,
   codeGraphAnalysisRefreshResult,
   codeGraphInspectionAllowsStaleReady,
+  codeGraphInspectionStartsRefresh,
   codeGraphMcpAnalysisBudget,
   codeGraphMcpAnalysisLimits,
   codeGraphMcpResponse,
@@ -39,6 +40,28 @@ describe('MCP code graph indexing progress', () => {
       ),
     ).toEqual({explain: true, impact: false, neighbors: true, node: true, path: false, query: true});
   });
+
+  it.prop(
+    'starts refresh only for stale cold or current-required inspections',
+    {
+      operation: FC.constantFrom(
+        'query' as const,
+        'node' as const,
+        'neighbors' as const,
+        'explain' as const,
+        'path' as const,
+        'impact' as const,
+      ),
+      ready: FC.boolean(),
+      stale: FC.boolean(),
+    },
+    ({operation, ready, stale}) => {
+      expect(
+        codeGraphInspectionStartsRefresh({readySnapshot: ready ? {id: 'ready'} : undefined, stale}, operation),
+      ).toBe(!ready || (stale && (operation === 'path' || operation === 'impact')));
+    },
+    {fastCheck: {numRuns: 100}},
+  );
 
   it('allows an explicitly safe ready graph to serve while background indexing continues', () => {
     const indexing = indexingStatus(60_000);
@@ -135,6 +158,15 @@ describe('MCP code graph indexing progress', () => {
       'Serving the existing stale ready snapshot while code graph refresh continues in the background.',
     ]);
     expect(codeGraphResultWithRefreshContinuity(continued, indexingStatus(60_000))).toBe(continued);
+  });
+
+  it('labels stale ready evidence when background refresh is intentionally suppressed', () => {
+    const result = {...verboseCodeGraphResult(), freshness: 'stale' as const, warnings: []};
+    const continued = codeGraphResultWithRefreshContinuity(result, undefined);
+
+    expect(continued.warnings).toEqual([
+      'Serving the existing stale ready snapshot without starting a background rebuild. Run `threadnote graph index`, or use `path` or `impact`, when current graph evidence is required.',
+    ]);
   });
 
   it('keeps path, impact, and whole-graph analysis strict when refresh is deferred', () => {

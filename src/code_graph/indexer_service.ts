@@ -2,6 +2,7 @@ import {Clock, Context, Crypto, Effect, Exit, FileSystem, Layer, Option, Path} f
 import {CommandExecutor} from '../effect/command.js';
 import {SystemInfo} from '../effect/system.js';
 import {makeCodeGraphBuildReporter} from './build_status.js';
+import {CODE_GRAPH_BUILDER_ADMISSION_CLASS_ENV, withCodeGraphBuilderAdmission} from './builder_admission.js';
 import {isCodeGraphCapacityPause} from './disk_capacity.js';
 import {CodeGraphEmbeddingIndex} from './embedding.js';
 import {
@@ -153,7 +154,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
               walAutoCheckpointPages: options.sqliteWriterTuning?.walAutoCheckpointPages ?? 1_000,
             };
             const ensureVectors = codeGraphIndexEnsuresVectors(options);
-            const summary = yield* withCodeGraphProcessLock(
+            const repositoryBuild = withCodeGraphProcessLock(
               fs,
               layout.lockPath,
               () =>
@@ -646,6 +647,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                             edgeCount: 0,
                             extractorSet,
                             fileCount: 0,
+                            graphContentId,
                             id: directSnapshotId,
                             overlayFingerprint: inventory.overlayFingerprint,
                             repositoryId: identity.repositoryId,
@@ -728,6 +730,16 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                   threadnoteHome: options.threadnoteHome,
                 });
               }),
+            );
+            const summary = yield* withCodeGraphBuilderAdmission(
+              {
+                admissionClass: codeGraphBuilderAdmissionClass(options, system.environment()),
+                onWaiting: (options.onProgress?.({phase: 'waiting', reason: 'home-builder-cap'}) ?? Effect.void).pipe(
+                  Effect.catch(() => Effect.void),
+                ),
+                threadnoteHome: options.threadnoteHome,
+              },
+              repositoryBuild,
             ).pipe(
               Effect.ensuring(
                 runCodeGraphLifecycleOpportunity({
@@ -815,7 +827,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
               temporaryDirectory: system.tempDirectory,
               walAutoCheckpointPages: options.sqliteWriterTuning?.walAutoCheckpointPages ?? 1_000,
             };
-            const lease = yield* withCodeGraphProcessLock(
+            const commitBuild = withCodeGraphProcessLock(
               fs,
               layout.lockPath,
               () =>
@@ -932,6 +944,16 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                     Effect.tapError(cause => reporter.fail(cause)),
                   );
               }),
+            );
+            const lease = yield* withCodeGraphBuilderAdmission(
+              {
+                admissionClass: codeGraphBuilderAdmissionClass(options, system.environment()),
+                onWaiting: (options.onProgress?.({phase: 'waiting', reason: 'home-builder-cap'}) ?? Effect.void).pipe(
+                  Effect.catch(() => Effect.void),
+                ),
+                threadnoteHome: options.threadnoteHome,
+              },
+              commitBuild,
             ).pipe(
               Effect.ensuring(
                 runCodeGraphLifecycleOpportunity({
@@ -976,4 +998,14 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
       });
     }),
   );
+}
+
+function codeGraphBuilderAdmissionClass(
+  options: Pick<CodeGraphIndexOptions, 'admissionClass'>,
+  environment: Readonly<Record<string, string | undefined>>,
+) {
+  if (options.admissionClass) return options.admissionClass;
+  return environment[CODE_GRAPH_BUILDER_ADMISSION_CLASS_ENV] === 'background'
+    ? ('background' as const)
+    : ('current-required' as const);
 }
