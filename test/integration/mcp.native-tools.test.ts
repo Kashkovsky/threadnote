@@ -137,26 +137,6 @@ async function callCodeGraphUntilReady(client: Client, arguments_: Readonly<Reco
   }
 }
 
-async function callCodeGraphUntilCurrent(client: Client, arguments_: Readonly<Record<string, unknown>>) {
-  const deadline = Date.now() + 30_000;
-  for (;;) {
-    const result = await client.callTool({arguments: arguments_, name: 'inspect_code_graph'}, undefined, {
-      timeout: 10_000,
-    });
-    const structured = result.structuredContent as
-      {readonly freshness?: unknown; readonly retryAfterMilliseconds?: unknown; readonly state?: unknown} | undefined;
-    if (structured?.freshness === 'current' && !isRetryableCodeGraphState(structured.state)) return result;
-    if (Date.now() >= deadline) {
-      throw new TestError(
-        `Code graph did not become current within 30 seconds: ${JSON.stringify(result.structuredContent)}.`,
-      );
-    }
-    const requestedDelay =
-      typeof structured?.retryAfterMilliseconds === 'number' ? structured.retryAfterMilliseconds : 250;
-    await new Promise(resolve => setTimeout(resolve, Math.max(50, Math.min(1_000, requestedDelay))));
-  }
-}
-
 function isRetryableCodeGraphState(state: unknown): boolean {
   return state === 'indexing' || state === 'timed-out' || state === 'timed_out';
 }
@@ -1637,7 +1617,14 @@ describe('Threadnote MCP toolsets', () => {
           expect(editedStructured?.state).toBeUndefined();
           expect(['current', 'stale']).toContain(editedStructured?.freshness);
 
-          const refreshed = await callCodeGraphUntilCurrent(client, {
+          const refresh = await callCodeGraphUntilReady(client, {
+            base: 'HEAD',
+            callerCwd: worktree,
+            operation: 'impact',
+          });
+          expect(refresh.structuredContent).toMatchObject({freshness: 'current', operation: 'impact'});
+
+          const refreshed = await callCodeGraphUntilReady(client, {
             callerCwd: worktree,
             operation: 'query',
             query: repositoryFixture.after,
@@ -1655,7 +1642,7 @@ describe('Threadnote MCP toolsets', () => {
     );
   }, 120_000);
 
-  it('keeps inspected repositories fresh with one MCP-session watcher', async () => {
+  it('keeps ordinary watched reads stale until an explicit current inspection', async () => {
     await withMcpClient(
       async (client, fixture) => {
         const repository = join(fixture.root, 'watched-repository');
@@ -1693,42 +1680,38 @@ describe('Threadnote MCP toolsets', () => {
           'export function afterSessionWatch(): string { return "after"; }\n',
           'utf8',
         );
-        let refreshed: typeof first | undefined;
-        let lastCandidate: typeof first | undefined;
-        const deadline = Date.now() + 20_000;
-        while (Date.now() < deadline) {
-          await new Promise(resolve => setTimeout(resolve, 250));
-          const candidate = await client.callTool(
-            {
-              arguments: {callerCwd: repository, operation: 'query', query: 'afterSessionWatch'},
-              name: 'inspect_code_graph',
-            },
-            undefined,
-            {timeout: 5_000},
-          );
-          lastCandidate = candidate;
-          const structured = candidate.structuredContent as
-            | {
-                readonly freshness?: unknown;
-                readonly nodes?: readonly {readonly name?: unknown}[];
-                readonly snapshot?: {readonly id?: unknown};
-              }
-            | undefined;
-          if (
-            structured?.freshness === 'current' &&
-            structured.nodes?.some(node => node.name === 'afterSessionWatch') &&
-            structured.snapshot?.id !== firstSnapshotId
-          ) {
-            refreshed = candidate;
-            break;
-          }
-        }
-        expect(refreshed?.structuredContent, JSON.stringify(lastCandidate)).toMatchObject({
+        await new Promise(resolve => setTimeout(resolve, 500));
+        const stale = await client.callTool(
+          {
+            arguments: {callerCwd: repository, operation: 'query', query: 'afterSessionWatch'},
+            name: 'inspect_code_graph',
+          },
+          undefined,
+          {timeout: 5_000},
+        );
+        expect(stale.structuredContent).toMatchObject({
+          freshness: 'stale',
+          snapshot: {id: firstSnapshotId},
+        });
+
+        const refresh = await callCodeGraphUntilReady(client, {
+          base: 'HEAD',
+          callerCwd: repository,
+          operation: 'impact',
+        });
+        expect(refresh.structuredContent).toMatchObject({freshness: 'current', operation: 'impact'});
+
+        const refreshed = await callCodeGraphUntilReady(client, {
+          callerCwd: repository,
+          operation: 'query',
+          query: 'afterSessionWatch',
+        });
+        expect(refreshed.structuredContent).toMatchObject({
           freshness: 'current',
           nodes: expect.arrayContaining([expect.objectContaining({name: 'afterSessionWatch'})]),
         });
         expect(
-          (refreshed?.structuredContent as {readonly snapshot?: {readonly id?: unknown}} | undefined)?.snapshot?.id,
+          (refreshed.structuredContent as {readonly snapshot?: {readonly id?: unknown}} | undefined)?.snapshot?.id,
         ).not.toBe(firstSnapshotId);
 
         const removed = await client.callTool(

@@ -239,6 +239,8 @@ describe('project-closure incremental indexing', () => {
             closureProjects: 3,
             mode: 'incremental-overlay',
             resolutionClosure: 'project',
+            resolutionLookupKeyForm: 'typescript-path-scoped',
+            resolutionPublicationGate: 'exported',
             stagedFiles: 6,
             totalFiles: 11,
           });

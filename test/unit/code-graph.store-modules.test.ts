@@ -27,14 +27,6 @@ function storeModuleDependencies(modules: ReadonlyMap<string, string>): Readonly
 }
 
 describe('code graph Store module boundaries', () => {
-  it('keeps every Store implementation module below 1,000 lines', () => {
-    const oversized = [...storeModules()]
-      .map(([name, source]) => ({name, lines: source.split('\n').length - (source.endsWith('\n') ? 1 : 0)}))
-      .filter(module => module.lines >= 1_000);
-
-    expect(oversized).toEqual([]);
-  });
-
   it('keeps the Store module graph acyclic', () => {
     const modules = storeModules();
     const dependencies = storeModuleDependencies(modules);

@@ -109,6 +109,8 @@ describe('code graph incremental barrel differential properties', () => {
 
           expect(incremental.materialization).toEqual({
             mode: 'incremental-overlay',
+            resolutionLookupKeyForm: 'typescript-path-unscoped',
+            resolutionPublicationGate: 'own-path-local',
             stagedFiles: 1,
             totalFiles: scenario.barrelDepth + 4,
           });

@@ -37,6 +37,8 @@ describe('cross-session code graph increments', () => {
         const committed = yield* indexAndLoadEffect(root, home);
         expect(committed.summary.materialization).toEqual({
           mode: 'incremental-clean',
+          resolutionLookupKeyForm: 'typescript-path-unscoped',
+          resolutionPublicationGate: 'own-path-local',
           stagedFiles: 1,
           totalFiles: 18,
         });
@@ -91,6 +93,8 @@ describe('cross-session code graph increments', () => {
 
       expect(incremental.summary.materialization).toEqual({
         mode: 'incremental-overlay',
+        resolutionLookupKeyForm: 'typescript-path-unscoped',
+        resolutionPublicationGate: 'own-path-local',
         stagedFiles: 1,
         totalFiles: 34,
       });
@@ -257,6 +261,8 @@ describe('cross-session code graph increments', () => {
         const rebuilt = yield* indexWithRegistry(root, referenceHome, nextRegistry, true);
         expect(incremental.materialization).toEqual({
           mode: 'incremental-clean',
+          resolutionLookupKeyForm: 'typescript-path-unscoped',
+          resolutionPublicationGate: 'own-path-local',
           stagedFiles: 8,
           totalFiles: 9,
         });

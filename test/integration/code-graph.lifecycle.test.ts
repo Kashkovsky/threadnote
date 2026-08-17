@@ -2269,7 +2269,18 @@ describe('native code graph lifecycle', () => {
       const store = yield* CodeGraphStore;
       const baseline = yield* indexer.index({cwd: root, threadnoteHome: home});
       yield* Effect.sync(() => {
-        execFileSync('git', ['-C', root, 'commit', '--allow-empty', '-m', 'alias target']);
+        execFileSync('git', [
+          '-C',
+          root,
+          '-c',
+          'user.name=Threadnote Test',
+          '-c',
+          'user.email=test@threadnote.local',
+          'commit',
+          '--allow-empty',
+          '-m',
+          'alias target',
+        ]);
       });
       let changed = false;
       let aliasId: string | undefined;

@@ -528,7 +528,7 @@ describe('code graph incremental-overlay differential properties', () => {
     }
   });
 
-  it('reuses the ready logical snapshot while required cleanup reclaims an interrupted direct sibling', async () => {
+  it.effect('reuses the ready logical snapshot while bounded cleanup retires an interrupted direct sibling', () => {
     const scenario = {
       baseTargets: [1, 0, 1],
       dirty: new Set([0, 2]),
@@ -536,19 +536,16 @@ describe('code graph incremental-overlay differential properties', () => {
       fileCount: 3,
       salt: 62,
     } satisfies DifferentialScenario;
-    const root = createRepository(scenario);
-    const home = join(root, '.threadnote-ready-logical-interrupted-direct-home');
-    try {
-      await runEffect(
+    return Effect.acquireUseRelease(
+      Effect.sync(() => {
+        const root = createRepository(scenario);
+        return {home: join(root, '.threadnote-ready-logical-interrupted-direct-home'), root};
+      }),
+      ({home, root}) =>
         Effect.gen(function* () {
           const indexer = yield* CodeGraphIndexer;
           yield* indexer.index({cwd: root, threadnoteHome: home});
-        }),
-      );
-      applyDirtyScenario(root, scenario);
-      const interrupted = await runEffect(
-        Effect.gen(function* () {
-          const indexer = yield* CodeGraphIndexer;
+          yield* Effect.sync(() => applyDirtyScenario(root, scenario));
           const path = yield* Path.Path;
           const logical = yield* indexer.index({cwd: root, threadnoteHome: home});
           const layout = codeGraphLayout(path, home, logical.identity.checkoutId, logical.identity.worktreeId);
@@ -563,35 +560,28 @@ describe('code graph incremental-overlay differential properties', () => {
               threadnoteHome: home,
             })
             .pipe(Effect.exit);
-          return {databasePath: layout.databasePath, exit, logical};
+          const interrupted = {databasePath: layout.databasePath, exit, logical};
+
+          expect(interrupted.logical.materialization?.mode).toBe('incremental-overlay');
+          expect(interrupted.logical.snapshot.baseSnapshotId).toBeDefined();
+          expect(interrupted.exit._tag).toBe('Failure');
+          const direct = persistedBuildingSnapshot(interrupted.databasePath);
+          expect(direct.id).toMatch(/-direct$/);
+          expect(Option.isNone(direct.baseSnapshotId)).toBe(true);
+          expect(persistedSnapshotRowCount(interrupted.databasePath, direct.id, 'symbols')).toBeGreaterThan(0);
+
+          const reused = yield* indexer.index({cwd: root, threadnoteHome: home});
+
+          expect(reused.snapshot.id).toBe(interrupted.logical.snapshot.id);
+          expect(reused.materialization?.mode).toBe('reused-snapshot');
+          expect(persistedSnapshotState(interrupted.databasePath, direct.id)).toBe('retired');
+          expect(persistedSnapshotRowCount(interrupted.databasePath, direct.id, 'symbols')).toBeGreaterThan(0);
+          expect(
+            persistedSnapshotRowCount(interrupted.databasePath, direct.id, 'building_materialization_batches'),
+          ).toBe(1);
         }),
-      );
-
-      expect(interrupted.logical.materialization?.mode).toBe('incremental-overlay');
-      expect(interrupted.logical.snapshot.baseSnapshotId).toBeDefined();
-      expect(interrupted.exit._tag).toBe('Failure');
-      const direct = persistedBuildingSnapshot(interrupted.databasePath);
-      expect(direct.id).toMatch(/-direct$/);
-      expect(Option.isNone(direct.baseSnapshotId)).toBe(true);
-      expect(persistedSnapshotRowCount(interrupted.databasePath, direct.id, 'symbols')).toBeGreaterThan(0);
-
-      const reused = await runEffect(
-        Effect.gen(function* () {
-          const indexer = yield* CodeGraphIndexer;
-          return yield* indexer.index({cwd: root, threadnoteHome: home});
-        }),
-      );
-
-      expect(reused.snapshot.id).toBe(interrupted.logical.snapshot.id);
-      expect(reused.materialization?.mode).toBe('reused-snapshot');
-      expect(persistedSnapshotState(interrupted.databasePath, direct.id)).toBeUndefined();
-      expect(persistedSnapshotRowCount(interrupted.databasePath, direct.id, 'symbols')).toBe(0);
-      expect(persistedSnapshotRowCount(interrupted.databasePath, direct.id, 'building_materialization_batches')).toBe(
-        0,
-      );
-    } finally {
-      rmSync(root, {force: true, recursive: true});
-    }
+      ({root}) => Effect.sync(() => rmSync(root, {force: true, recursive: true})),
+    ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive);
   });
 
   it('keeps the explicit overlay option inert for a clean canonical snapshot', async () => {
@@ -678,7 +668,7 @@ describe('code graph incremental-overlay differential properties', () => {
     }
   });
 
-  it('indexes the restored clean worktree while required cleanup reclaims an interrupted dirty build', async () => {
+  it.effect('indexes the restored clean worktree while bounded cleanup retires an interrupted dirty build', () => {
     const scenario = {
       baseTargets: [1, 0, 1],
       dirty: new Set([0, 2]),
@@ -686,12 +676,14 @@ describe('code graph incremental-overlay differential properties', () => {
       fileCount: 3,
       salt: 71,
     } satisfies DifferentialScenario;
-    const root = createRepository(scenario);
-    const home = join(root, '.threadnote-dirty-to-clean-home');
-    try {
-      applyDirtyScenario(root, scenario);
-      const databasePath = await runEffect(
+    return Effect.acquireUseRelease(
+      Effect.sync(() => {
+        const root = createRepository(scenario);
+        return {home: join(root, '.threadnote-dirty-to-clean-home'), root};
+      }),
+      ({home, root}) =>
         Effect.gen(function* () {
+          yield* Effect.sync(() => applyDirtyScenario(root, scenario));
           const indexer = yield* CodeGraphIndexer;
           const path = yield* Path.Path;
           const identity = yield* resolveRepositoryIdentity(root);
@@ -707,34 +699,34 @@ describe('code graph incremental-overlay differential properties', () => {
             })
             .pipe(Effect.exit);
           expect(exit._tag).toBe('Failure');
-          return codeGraphLayout(path, home, identity.checkoutId, identity.worktreeId).databasePath;
-        }),
-      );
-      const interrupted = persistedBuildingSnapshot(databasePath);
-      expect(interrupted.id).toMatch(/-direct$/);
-      restoreCleanScenario(root, scenario);
+          const databasePath = codeGraphLayout(path, home, identity.checkoutId, identity.worktreeId).databasePath;
+          const interrupted = persistedBuildingSnapshot(databasePath);
+          expect(interrupted.id).toMatch(/-direct$/);
+          yield* Effect.sync(() => restoreCleanScenario(root, scenario));
 
-      const clean = await runEffect(
-        Effect.gen(function* () {
-          const indexer = yield* CodeGraphIndexer;
-          return yield* indexer.index({cwd: root, threadnoteHome: home});
-        }),
-      );
+          const clean = yield* indexer.index({cwd: root, threadnoteHome: home});
 
-      expect(clean.snapshot.dirty).toBe(false);
-      expect(clean.snapshot.id).not.toMatch(/-direct$/);
-      expect(persistedSnapshotState(databasePath, interrupted.id)).toBeUndefined();
-      expect(persistedSnapshots(databasePath)).toEqual([
-        {
-          baseSnapshotId: Option.none(),
-          dirty: 0,
-          id: clean.snapshot.id,
-          state: 'ready',
-        },
-      ]);
-    } finally {
-      rmSync(root, {force: true, recursive: true});
-    }
+          expect(clean.snapshot.dirty).toBe(false);
+          expect(clean.snapshot.id).not.toMatch(/-direct$/);
+          expect(persistedSnapshotState(databasePath, interrupted.id)).toBe('retired');
+          expect(persistedSnapshotRowCount(databasePath, interrupted.id, 'symbols')).toBeGreaterThan(0);
+          expect(persistedSnapshots(databasePath)).toEqual([
+            {
+              baseSnapshotId: Option.none(),
+              dirty: 1,
+              id: interrupted.id,
+              state: 'retired',
+            },
+            {
+              baseSnapshotId: Option.none(),
+              dirty: 0,
+              id: clean.snapshot.id,
+              state: 'ready',
+            },
+          ]);
+        }),
+      ({root}) => Effect.sync(() => rmSync(root, {force: true, recursive: true})),
+    ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive);
   });
 
   it('switches an interrupted incremental overlay to the disjoint explicit direct snapshot', async () => {
