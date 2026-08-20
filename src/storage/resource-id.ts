@@ -71,6 +71,14 @@ export function resourceIdIsWithin(candidateUri: string, rootUri: string): boole
   );
 }
 
+export function resourceIdIsManagedMemoryNamespace(uri: string): boolean {
+  const resource = parseResourceId(uri);
+  return (
+    (resource.namespace === 'user' || resource.namespace === 'agent' || resource.namespace === 'share') &&
+    resource.segments[1] === 'memories'
+  );
+}
+
 export function validatePortableSegment(value: string, input = value): string {
   if (!value) return invalid(input, 'empty path segments are not allowed');
   if (value !== value.normalize('NFC')) return invalid(input, 'path segments must use NFC Unicode normalization');

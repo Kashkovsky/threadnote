@@ -1,5 +1,5 @@
 import type {CallToolResult} from '@modelcontextprotocol/sdk/types.js';
-import {Clock, Console, Effect, FileSystem, Option, Result} from 'effect';
+import {Clock, Console, Crypto, Effect, FileSystem, Option, Result} from 'effect';
 import {inferProjectFromQuery, inferWorksetFromQuery, requireWorkset} from './manifest.js';
 import type {ProjectManifest} from './types.js';
 import {
@@ -12,11 +12,13 @@ import {
 import {isInSharedNamespace, applyScrubber} from './share.js';
 import {
   errorMessage,
-  enrichRecallQueryWithWorkspaceContext,
   enrichRecallQueryWithWorkspaceProjectContext,
   exactRecallTerms,
   type RecallHit,
-  recallScoreThreshold,
+  recallQueryRequestsBranchContext,
+  recallScoreThresholdPolicy,
+  resolveWorkspaceBranch,
+  resolveWorkspaceComponentContext,
   resolveWorkspaceRepoName,
   trimTrailingSlash,
 } from './utils.js';
@@ -44,6 +46,17 @@ import {SystemInfo} from './effect/system.js';
 import {syncSharedReposBeforeAgentRead} from './effect/share.js';
 import {canonicalMemoryDocumentContent, isSharedMemoryUri, type MemoryMetadata} from './memory_document.js';
 import {
+  MEMORY_READ_DEFAULT_BUDGET_TOKENS,
+  MEMORY_READ_MAXIMUM_BUDGET_TOKENS,
+  MEMORY_READ_MINIMUM_BUDGET_TOKENS,
+  MemoryReadCursorStore,
+  memoryReadCursorToken,
+  memoryReadSourceHashes,
+  memoryReadSourcesMatch,
+  projectMemoryReadPage,
+  type MemoryReadResource,
+} from './memory_read_projection.js';
+import {
   buildCandidateReview,
   candidateReviewWithAuditEvent,
   candidateReviewWithApplyStage,
@@ -60,10 +73,17 @@ import {
   withCandidateReviewLock,
 } from './candidate_memory.js';
 import {recordRecallFeedback} from './recall/feedback.js';
+import {AgentResponseBudgetTooSmallError} from './evaluation/agent-response.js';
 import type {CursorCloudMemoryScope} from './cursor_cloud.js';
 import {resourceIdIsWithin} from './storage/resource-id.js';
 import {loadRecallExactMatches} from './recall/index.js';
 import {RECALL_RANKER_VERSION} from './recall/rank.js';
+import {projectRecallMcpResponse, RECALL_MCP_RESPONSE_MAXIMUM_ESTIMATED_TOKENS} from './recall/mcp_response.js';
+import {
+  lexicalIndexUnavailableWarning,
+  mergeRecallOperationalWarnings,
+  type RecallOperationalWarning,
+} from './recall/warning.js';
 import {syncObsidianSourcesBeforeRecall} from './obsidian_source.js';
 import {withProductionPhaseTiming} from './effect/production_log.js';
 import {withAnonymousTelemetryPhase} from './effect/telemetry.js';
@@ -116,21 +136,21 @@ export function registerCandidateMemoryTools(server: EffectMcpServerAdapter, con
     {
       annotations: {readOnlyHint: false, destructiveHint: false},
       description:
-        'After routine durable and handoff writes, form up to three additional reviewable decision, invariant, preference, or handoff candidates. Compares active project/topic memories and persists only a pending review plus audit event; it never creates active memory.',
+        'After routine durable and handoff writes, form up to three additional reviewable memory candidates. Persists a pending review, never active memory.',
       inputSchema: {
-        callerCwd: McpInput.string('Absolute caller workspace path, used to infer project when project is omitted'),
-        decisions: McpInput.stringOrStrings('Decisions worth carrying into later agent sessions'),
-        evidence: McpInput.stringOrStrings('Bounded evidence pointers such as files, commits, or session turn IDs'),
-        handoff: McpInput.stringOrStrings('Current status, blockers, checks, and next steps'),
-        invariants: McpInput.stringOrStrings('Stable constraints or contracts future work must preserve'),
-        outcome: McpInput.string('Required concise task outcome'),
-        preferences: McpInput.stringOrStrings('User preferences explicitly expressed during this session'),
-        project: McpInput.string('Stable project/repo namespace; inferred from callerCwd when omitted'),
-        sourceAgentClient: McpInput.string('Originating client, for example codex or claude'),
-        sourceCommit: McpInput.string('Optional source commit'),
-        sourceSessionId: McpInput.string('Optional source session/thread identifier'),
-        task: McpInput.string('Required concise task description'),
-        topic: McpInput.string('Stable memory topic; defaults to a slug derived from task'),
+        callerCwd: McpInput.string('Absolute cwd; infers project'),
+        decisions: McpInput.stringOrStrings('Reusable decisions'),
+        evidence: McpInput.stringOrStrings('Bounded file, commit, or session pointers'),
+        handoff: McpInput.stringOrStrings('Status, blockers, checks, and next steps'),
+        invariants: McpInput.stringOrStrings('Stable constraints or contracts'),
+        outcome: McpInput.string('Concise task outcome'),
+        preferences: McpInput.stringOrStrings('Explicit user preferences'),
+        project: McpInput.string('Stable project; inferred from callerCwd'),
+        sourceAgentClient: McpInput.string('Originating client'),
+        sourceCommit: McpInput.string('Source commit'),
+        sourceSessionId: McpInput.string('Source session/thread'),
+        task: McpInput.string('Concise task description'),
+        topic: McpInput.string('Stable topic; defaults from task'),
       },
     },
     ({
@@ -221,22 +241,16 @@ export function registerCandidateMemoryTools(server: EffectMcpServerAdapter, con
     'apply_memory_candidates',
     {
       annotations: {readOnlyHint: false, destructiveHint: true},
-      description:
-        'Record an explicit user decision for one pending session-memory candidate. approve may create or replace active memory; reject and defer never write memory. Pass the review revision to prevent stale decisions.',
+      description: 'Apply an explicit user decision to one pending candidate with revision checking.',
       inputSchema: {
-        action: McpInput.literals(['approve', 'defer', 'reject'], 'Explicit user decision for this candidate'),
-        approved: McpInput.boolean('Must be true for approve, confirming the user explicitly approved this write'),
-        candidateId: McpInput.string('Candidate ID returned by review_session_context'),
-        editedText: McpInput.string('Optional user-edited replacement for the proposed memory text'),
-        operation: McpInput.literals(
-          ['create', 'replace'],
-          'Required for replace/manual-review candidates: explicitly create a new memory or replace the reviewed target',
-        ),
-        replaceUri: McpInput.string(
-          'Required with operation=replace; must exactly match the target returned by review_session_context',
-        ),
-        reviewId: McpInput.string('Review ID returned by review_session_context'),
-        revision: McpInput.integer('Review revision returned by review_session_context', {minimum: 1}),
+        action: McpInput.literals(['approve', 'defer', 'reject'], 'User decision'),
+        approved: McpInput.boolean('Required true for approved writes'),
+        candidateId: McpInput.string('Candidate ID from review'),
+        editedText: McpInput.string('User-edited memory text'),
+        operation: McpInput.literals(['create', 'replace'], 'Create new memory or replace reviewed target'),
+        replaceUri: McpInput.string('Exact reviewed target for replace'),
+        reviewId: McpInput.string('Review ID'),
+        revision: McpInput.integer('Review revision', {minimum: 1}),
       },
     },
     ({action, approved, candidateId, editedText, operation, replaceUri, reviewId, revision}) => {
@@ -636,24 +650,28 @@ export function registerSearchTool(
       annotations: {readOnlyHint: true, destructiveHint: false},
       description,
       inputSchema: {
-        query: McpInput.string('Required search query, for example "unity-ui-ccc latest handoff"'),
-        uri: McpInput.string('Optional threadnote:// subtree to search'),
-        callerCwd: McpInput.string(
-          'Optional absolute caller workspace path used to resolve this/current branch queries',
-        ),
-        project: McpInput.string('Optional stable project/repo namespace; inferred from callerCwd when omitted'),
-        nodeLimit: McpInput.integer('Maximum result count', {minimum: 1, maximum: 100}),
-        includeArchived: McpInput.boolean('Include archived memories in recall results'),
-        threshold: McpInput.number(
-          'Minimum relevance score 0-1 (default 0.5); lower it (toward 0) to broaden when a recall comes back empty',
-          {minimum: 0, maximum: 1},
-        ),
-        workset: McpInput.string(
-          'Optional named workset (a set of related repos from the seed manifest) to recall across as one working set',
-        ),
+        budgetTokens: McpInput.integer('Response budget; default/max 1500 tokens', {
+          minimum: 1,
+          maximum: RECALL_MCP_RESPONSE_MAXIMUM_ESTIMATED_TOKENS,
+        }),
+        query: McpInput.string('Search query'),
+        uri: McpInput.string('threadnote:// subtree'),
+        callerCwd: McpInput.string('Absolute nested workspace cwd'),
+        project: McpInput.string('Stable project; inferred from callerCwd'),
+        nodeLimit: McpInput.integer('Result limit', {minimum: 1, maximum: 100}),
+        includeArchived: McpInput.boolean('Include archived'),
+        explain: McpInput.boolean('Include reasons, signals, and warnings'),
+        threshold: McpInput.number('Topical relevanceScore floor before lifecycle/trust; env or 0.3 default', {
+          minimum: 0,
+          maximum: 1,
+        }),
+        workset: McpInput.string('Seed-manifest workset'),
       },
     },
-    ({callerCwd, includeArchived, nodeLimit, project, query, threshold, uri, workset}, {progress}) => {
+    (
+      {budgetTokens, callerCwd, explain, includeArchived, nodeLimit, project, query, threshold, uri, workset},
+      {progress},
+    ) => {
       const checkedQuery = requiredText(query, name, 'query', {query: 'unity-ui-ccc latest handoff'});
       if (!checkedQuery.ok) {
         return checkedQuery.error;
@@ -672,7 +690,9 @@ export function registerSearchTool(
       return runRecallTool(
         config,
         {
+          budgetTokens,
           callerCwd,
+          explain: explain === true,
           project: project?.trim() || undefined,
           query: checkedQuery.value,
           pinnedUri: scopedUri,
@@ -686,14 +706,20 @@ export function registerSearchTool(
         memoryScope,
       ).pipe(
         Effect.flatMap(withStaleVersionNotice),
-        Effect.catch(error => Effect.succeed(mcpErrorResult(error))),
+        Effect.catch(error =>
+          Effect.succeed(
+            error instanceof AgentResponseBudgetTooSmallError ? argumentError(error.message) : mcpErrorResult(error),
+          ),
+        ),
       );
     },
   );
 }
 
 interface RecallToolParams {
+  readonly budgetTokens: number | undefined;
   readonly callerCwd: string | undefined;
+  readonly explain: boolean;
   readonly includeArchived: boolean;
   readonly nodeLimit: number | undefined;
   readonly pinnedUri: string | undefined;
@@ -767,10 +793,15 @@ function runRecallTool(
           }),
         );
     yield* progress.report(RECALL_MCP_PROGRESS.workspaceContext);
-    const query = yield* enrichRecallQueryWithWorkspaceContext(params.query, {
-      cwd: params.callerCwd,
-      includeProcessCwd: false,
-    });
+    const workspaceComponent =
+      !params.pinnedUri && !params.workset
+        ? yield* resolveWorkspaceComponentContext({cwd: params.callerCwd, includeProcessCwd: false})
+        : undefined;
+    const workspaceBranch =
+      !params.pinnedUri && !params.workset && recallQueryRequestsBranchContext(params.query)
+        ? yield* resolveWorkspaceBranch({cwd: params.callerCwd, includeProcessCwd: false})
+        : undefined;
+    const query = params.query;
     const projectQuery = yield* enrichRecallQueryWithWorkspaceProjectContext(params.query, {
       cwd: params.callerCwd,
       includeProcessCwd: false,
@@ -788,7 +819,12 @@ function runRecallTool(
       ? undefined
       : (project?.name ?? (yield* resolveWorkspaceRepoName({cwd: params.callerCwd, includeProcessCwd: false})));
     const recallProjectName = explicitProjectName ?? inferredProjectMemoryName;
-    const threshold = params.threshold ?? (yield* recallScoreThreshold());
+    const thresholdPolicy =
+      params.threshold === undefined
+        ? yield* recallScoreThresholdPolicy()
+        : {source: 'call' as const, value: params.threshold};
+    const threshold = thresholdPolicy.value;
+    const thresholdConfigured = thresholdPolicy.source !== 'default';
     const explicitWorkset = params.workset ? yield* requireWorkset(config.manifestPath, params.workset) : undefined;
     const passes: Array<readonly RecallHit[]> = [];
     const scopedRecallUris = new Set([params.pinnedUri].filter((uri): uri is string => uri !== undefined));
@@ -821,13 +857,15 @@ function runRecallTool(
       }
     }
 
-    const exactMatches = yield* collectExactMemoryMatches(
+    const exactLookup = yield* collectExactMemoryMatches(
       config,
       query,
       params.includeArchived,
       recallProjectName,
       project,
     );
+    const exactMatches = exactLookup.matches;
+    let operationalWarnings: readonly RecallOperationalWarning[] = exactLookup.operationalWarnings;
     const environment = (yield* SystemInfo).environment();
     const effectAiResult = yield* resolveEffectAiConfiguration(config, environment).pipe(Effect.result);
     const effectAi = Result.isSuccess(effectAiResult) ? effectAiResult.success : undefined;
@@ -836,7 +874,7 @@ function runRecallTool(
         `Local AI recall unavailable: ${errorMessage(effectAiResult.failure)}. Deterministic recall continued.`,
       );
     }
-    let hybridMinimumScore = recallHybridMinimumScore(Number(threshold), params.threshold !== undefined);
+    let hybridMinimumScore = recallHybridMinimumScore(Number(threshold));
     const expansionQueries: string[] = [];
     const recallLimit = params.nodeLimit ?? 12;
     const semanticRetrieval = yield* withMcpProgressHeartbeat(
@@ -886,7 +924,7 @@ function runRecallTool(
             'recall.lexical-ranking',
             Effect.gen(function* () {
               const prepared = yield* prepareRecallSections(config, {
-                allowExactRescue: params.threshold === undefined,
+                allowExactRescue: !thresholdConfigured,
                 allowedUriScopes: params.pinnedUri ? [params.pinnedUri] : undefined,
                 candidateUris,
                 exactMatches,
@@ -904,8 +942,11 @@ function runRecallTool(
                 seedUris: [params.pinnedUri, seededUri].filter((uri): uri is string => uri !== undefined),
                 semanticGenerationMismatchPolicy: 'fallback',
                 semanticResult: Option.some(semanticResult),
+                workspaceBranch,
+                workspaceScope: workspaceComponent?.scope,
               });
               semanticResult = prepared.semanticResult;
+              operationalWarnings = mergeRecallOperationalWarnings(operationalWarnings, prepared.operationalWarnings);
               appendSemanticWarning(semanticResult);
               return prepared;
             }),
@@ -970,7 +1011,7 @@ function runRecallTool(
     );
     for (const expansionQuery of proposedExpansionQueries) {
       expansionQueries.push(expansionQuery);
-      hybridMinimumScore = recallHybridMinimumScore(Number(threshold), params.threshold !== undefined);
+      hybridMinimumScore = recallHybridMinimumScore(Number(threshold));
       recallSections = yield* prepareSections();
     }
     if (expansionQueries.length > 0) {
@@ -1024,30 +1065,30 @@ function runRecallTool(
     for (const warning of obsidianSyncWarnings) {
       sections.push(`Auto-sync warning: ${warning}`);
     }
-    if (sections.length === 0) {
-      return {
-        content: [{type: 'text' as const, text: 'No recall results found.'}],
-        ...(memoryScope
-          ? {structuredContent: {memoryScope: cursorCloudMemoryScopeReceipt(memoryScope), results: []}}
-          : {}),
-      };
-    }
+    const rankedResultSections = new Set([semanticSection, exactTail].filter((value): value is string => !!value));
+    const responseNotices = sections.filter(section => !rankedResultSections.has(section));
+    const projected = yield* Effect.try({
+      try: () =>
+        projectRecallMcpResponse(
+          {
+            confidence: recallSections.confidence,
+            ...(memoryScope ? {memoryScope: cursorCloudMemoryScopeReceipt(memoryScope)} : {}),
+            notices: responseNotices,
+            warnings: operationalWarnings,
+            queryExpansions: expansionQueries,
+            rankerVersion: RECALL_RANKER_VERSION,
+            results: recallSections.ranked.slice(0, params.nodeLimit ?? 12),
+          },
+          {budgetTokens: params.budgetTokens, explain: params.explain},
+        ),
+      catch: error =>
+        error instanceof AgentResponseBudgetTooSmallError
+          ? error
+          : new McpServerOperationError('Recall response projection failed.', {cause: error}),
+    });
     return {
-      content: [{type: 'text' as const, text: sections.join('\n\n')}],
-      structuredContent: {
-        confidence: recallSections.confidence,
-        ...(memoryScope ? {memoryScope: cursorCloudMemoryScopeReceipt(memoryScope)} : {}),
-        queryExpansions: expansionQueries,
-        rankerVersion: RECALL_RANKER_VERSION,
-        results: recallSections.ranked.slice(0, params.nodeLimit ?? 12).map(hit => ({
-          category: hit.category,
-          finalScore: hit.finalScore,
-          reasons: hit.rankReasons,
-          signals: hit.rankSignals,
-          uri: hit.uri,
-          warnings: hit.rankWarnings,
-        })),
-      },
+      content: [{type: 'text' as const, text: projected.text}],
+      structuredContent: projected.structuredContent,
     };
   });
 }
@@ -1099,15 +1140,18 @@ const collectExactMemoryMatches = Effect.fn('mcp_server.collectExactMemoryMatche
 ) {
   const terms = exactRecallTerms(query);
   if (terms.length === 0) {
-    return [];
+    return {matches: [], operationalWarnings: []};
   }
   const scopes = exactMemoryScopes(config, includeArchived, query, projectName, project);
-  return yield* loadRecallExactMatches(config, {
+  const result = yield* loadRecallExactMatches(config, {
     includeInactive: includeArchived,
     limitPerTerm: 25,
     terms,
     uriScopes: scopes,
-  }).pipe(Effect.catch(() => Effect.succeed([])));
+  }).pipe(Effect.result);
+  return Result.isSuccess(result)
+    ? {matches: result.success, operationalWarnings: []}
+    : {matches: [], operationalWarnings: [lexicalIndexUnavailableWarning()]};
 });
 
 export function registerReadTool(
@@ -1117,30 +1161,55 @@ export function registerReadTool(
   description: string,
   memoryScope?: CursorCloudMemoryScope,
 ): void {
+  const cursorStore = new MemoryReadCursorStore();
   server.registerTool(
     name,
     {
       annotations: {readOnlyHint: true, destructiveHint: false},
-      description: `${description} Required: pass JSON arguments with uri, or native canonical-store uris. Canonical memory content is returned in full.`,
+      description: `${description} Paged at no more than 1500 estimated tokens; pass its cursor to continue.`,
       inputSchema: {
-        uri: McpInput.string('Required threadnote:// file URI'),
-        uris: McpInput.stringOrStrings(
-          'Native canonical-store MCP read input: a single threadnote:// URI or array of URIs',
-        ),
+        budgetTokens: McpInput.integer(undefined, {
+          minimum: MEMORY_READ_MINIMUM_BUDGET_TOKENS,
+          maximum: MEMORY_READ_MAXIMUM_BUDGET_TOKENS,
+        }),
+        cursor: McpInput.string(),
+        mode: McpInput.literals(['content', 'outline']),
+        section: McpInput.string(),
+        uri: McpInput.string(),
+        uris: McpInput.stringOrStrings(),
       },
     },
-    ({uri, uris}) => {
-      const checkedUris = requiredResourceUriList(uris ?? uri, name, 'threadnote://user/you/memories/.abstract.md');
-      if (!checkedUris.ok) {
-        return checkedUris.error;
+    ({budgetTokens, cursor, mode, section, uri, uris}) => {
+      const requestedCursor = cursor?.trim();
+      if (requestedCursor && (uri !== undefined || uris !== undefined)) {
+        return argumentError(`${name} cursor cannot be combined with uri or uris.`);
       }
-      const outsideScope = memoryScope
-        ? checkedUris.value.find(uri => !resourceIdIsWithin(uri, memoryScope.root))
-        : undefined;
-      if (outsideScope) {
-        return argumentError(`${name} uri must stay within ${memoryScope!.root}.`);
+      if (requestedCursor && (mode !== undefined || section !== undefined)) {
+        return argumentError(`${name} cursor cannot be combined with mode or section.`);
+      }
+      const initialUris = requestedCursor
+        ? undefined
+        : requiredResourceUriList(uris ?? uri, name, 'threadnote://user/you/memories/.abstract.md');
+      if (initialUris && !initialUris.ok) {
+        return initialUris.error;
       }
       return Effect.gen(function* () {
+        const now = yield* Clock.currentTimeMillis;
+        const continuation = requestedCursor ? cursorStore.take(requestedCursor, now) : undefined;
+        if (requestedCursor && !continuation) {
+          return argumentError(`${name} cursor is invalid, expired, or already consumed; restart from the URI.`);
+        }
+        const requestedUris = continuation?.uris ?? initialUris!.value;
+        const selectedSection = continuation?.section ?? section;
+        if (selectedSection !== undefined && requestedUris.length !== 1) {
+          return argumentError(`${name} section requires exactly one uri.`);
+        }
+        const outsideScope = memoryScope
+          ? requestedUris.find(uri => !resourceIdIsWithin(uri, memoryScope.root))
+          : undefined;
+        if (outsideScope) {
+          return argumentError(`${name} uri must stay within ${memoryScope!.root}.`);
+        }
         const syncWarnings: string[] = [];
         const syncedTeams = yield* syncSharedReposBeforeAgentRead(config, memoryScope?.team).pipe(
           Effect.map(result => {
@@ -1152,7 +1221,7 @@ export function registerReadTool(
             return Effect.succeed([] as readonly string[]);
           }),
         );
-        const result = yield* runNativeReadTool(config, checkedUris.value);
+        const result = yield* runNativeReadTool(config, requestedUris);
         const scopedResult = memoryScope
           ? {
               ...result,
@@ -1162,20 +1231,80 @@ export function registerReadTool(
               },
             }
           : result;
-        if (result.isError === true || (syncedTeams.length === 0 && syncWarnings.length === 0)) {
+        if (result.isError === true) {
           return scopedResult;
         }
         const syncMessages = [
           syncedTeams.length > 0 ? `Auto-synced shared memories: ${syncedTeams.join(', ')}` : undefined,
           ...syncWarnings.map(warning => `Auto-sync warning: ${warning}`),
         ].filter((part): part is string => part !== undefined);
+        const resources = memoryReadResourcesFromNativeResult(result, requestedUris);
+        if (!resources) return argumentError(`${name} could not project the canonical read response.`);
+        if (continuation && !memoryReadSourcesMatch(resources, continuation.sourceHashes)) {
+          return argumentError(`${name} source changed after the prior page; restart from the URI.`);
+        }
+        const crypto = yield* Crypto.Crypto;
+        const continuationCursor = memoryReadCursorToken(yield* crypto.randomUUIDv4);
+        const projected = Result.try(() =>
+          projectMemoryReadPage(resources, {
+            budgetTokens: budgetTokens ?? MEMORY_READ_DEFAULT_BUDGET_TOKENS,
+            continuationCursor,
+            mode: continuation?.mode ?? mode,
+            position: continuation?.position,
+            section: selectedSection,
+            toolName: name,
+            warnings: syncMessages,
+          }),
+        );
+        if (Result.isFailure(projected)) return argumentError(errorMessage(projected.failure));
+        const page = projected.success;
+        if (!page.complete) {
+          cursorStore.put(
+            continuationCursor,
+            {
+              mode: continuation?.mode ?? mode ?? 'content',
+              position: page.nextPosition!,
+              ...(selectedSection === undefined ? {} : {section: selectedSection}),
+              sourceHashes: memoryReadSourceHashes(resources),
+              uris: requestedUris,
+            },
+            now,
+          );
+        }
         return {
-          ...scopedResult,
-          content: [...scopedResult.content, {type: 'text', text: syncMessages.join('\n')}],
+          _meta: {
+            ...(memoryScope ? {'threadnote.io/memory-scope': cursorCloudMemoryScopeReceipt(memoryScope)} : {}),
+            'threadnote.io/read-page': {
+              contentIndex: 0,
+              resource: page.structuredContent.resource,
+              resourceCount: page.structuredContent.resourceCount,
+              type: 'threadnote-read-page',
+              uri: page.uri,
+              version: 1,
+            },
+          },
+          content: [
+            {type: 'text' as const, text: page.content},
+            ...(page.receipt === undefined ? [] : [{type: 'text' as const, text: page.receipt}]),
+          ],
+          structuredContent: page.structuredContent,
         };
       });
     },
   );
+}
+
+function memoryReadResourcesFromNativeResult(
+  result: CallToolResult,
+  uris: readonly string[],
+): MemoryReadResource[] | undefined {
+  const resources: MemoryReadResource[] = [];
+  for (const [index, uri] of uris.entries()) {
+    const content = result.content[index];
+    if (content?.type !== 'text') return undefined;
+    resources.push({text: content.text, uri});
+  }
+  return resources;
 }
 
 export function registerListTool(
@@ -1246,24 +1375,18 @@ export function registerStoreTool(
       annotations: {readOnlyHint: false, destructiveHint: true},
       description: `${description} Never store secrets, credentials, customer data, or raw logs.`,
       inputSchema: {
-        kind: McpInput.literals(
-          ['durable', 'handoff', 'incident', 'preference', 'smoke'],
-          'Memory lifecycle kind; durable facts and handoffs are most common',
-        ),
-        project: McpInput.string('Project/repo namespace, for example threadnote or mobile-native'),
-        references: McpInput.stringOrStrings(
-          'Optional threadnote:// URI(s) to record as one-way, read-only prior context for this memory. Recall surfaces a short excerpt of each. Stripped from shared copies on publish.',
-        ),
-        replaceUri: McpInput.string(
-          'Optional threadnote:// memory URI to replace. Shared URIs are updated in place and pushed; personal URIs are forgotten after the replacement is safely stored.',
-        ),
-        text: McpInput.string('Required memory text to store'),
-        sourceAgentClient: McpInput.string('Originating client, for example cursor, copilot, codex, or claude'),
+        callerCwd: McpInput.string('Absolute cwd for nested package/app scope'),
+        kind: McpInput.literals(['durable', 'handoff', 'incident', 'preference', 'smoke'], 'Memory lifecycle kind'),
+        project: McpInput.string('Project/repo namespace'),
+        references: McpInput.stringOrStrings('Prior read-only threadnote:// URI(s)'),
+        replaceUri: McpInput.string('threadnote:// memory URI to replace safely'),
+        text: McpInput.string('Memory text'),
+        sourceAgentClient: McpInput.string('Originating client'),
         status: McpInput.literals(['active', 'archived', 'expired', 'superseded'], 'Memory status'),
-        topic: McpInput.string('Stable topic; active project/topic memories update one file'),
+        topic: McpInput.string('Stable topic'),
       },
     },
-    ({kind, project, references, replaceUri, sourceAgentClient, status, text, topic}) => {
+    ({callerCwd, kind, project, references, replaceUri, sourceAgentClient, status, text, topic}) => {
       const checkedText = requiredText(text, name, 'text', {text: 'Durable engineering note...'});
       if (!checkedText.ok) {
         return checkedText.error;
@@ -1315,21 +1438,31 @@ export function registerStoreTool(
         topic: normalizeOptionalMetadata(topic),
       };
       return Effect.gen(function* () {
+        const workspaceComponent = callerCwd
+          ? yield* resolveWorkspaceComponentContext({cwd: callerCwd, includeProcessCwd: false})
+          : undefined;
+        const [replaced] = checkedReplaceUri.value
+          ? yield* readMemoryRecordsByUri(config, [checkedReplaceUri.value])
+          : [];
+        const scopedMetadata = {
+          ...metadata,
+          workspaceScope: replaced ? replaced.metadata.workspaceScope : workspaceComponent?.scope,
+        } satisfies MemoryMetadata;
         if (memoryScope && memoryKind === 'durable') {
           return yield* writeCursorCloudSharedMemory(config, memoryScope, {
             bodyText: checkedText.value,
-            metadata,
+            metadata: scopedMetadata,
             replaceUri: checkedReplaceUri.value,
           });
         }
         const enrichedMetadata =
           memoryScope || (checkedReplaceUri.value && isInSharedNamespace(config, checkedReplaceUri.value))
-            ? metadata
-            : yield* enrichMemoryMetadataWithConfiguredLocalAi(config, metadata, checkedText.value).pipe(
+            ? scopedMetadata
+            : yield* enrichMemoryMetadataWithConfiguredLocalAi(config, scopedMetadata, checkedText.value).pipe(
                 Effect.catch(error =>
                   Console.log(
                     `Local AI memory enrichment skipped: ${error instanceof Error ? error.message : String(error)}`,
-                  ).pipe(Effect.as(metadata)),
+                  ).pipe(Effect.as(scopedMetadata)),
                 ),
               );
         const result = yield* writeDurableMemory(config, {

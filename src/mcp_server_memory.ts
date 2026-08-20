@@ -8,6 +8,7 @@ import {
   parseMemoryDocument,
   type MemoryRecord,
 } from './memory_hygiene.js';
+import {applyAtomicExactDuplicateActions} from './memory_hygiene_apply.js';
 import {
   ensureSharedDirectoryChain,
   assertShareTeamWritable,
@@ -29,12 +30,14 @@ import {currentPackageVersion, errorMessage, safeTimestamp, sha256} from './util
 import {EffectMcpServerAdapter, McpInput} from './effect/ai/mcp.js';
 import {sha256Hex} from './effect/digest.js';
 import {withMemoryUriLocks} from './effect/memory_lock.js';
+import {syncSharedReposBeforeAgentRead} from './effect/share.js';
 import {withSharedRepositoryLock} from './effect/share_lock.js';
 import {ResourceStore, type ResourceStoreMutation} from './effect/resource-store.js';
 import {canonicalMemoryDocumentContent, formatMemoryDocument, type MemoryMetadata} from './memory_document.js';
 import {
   canonicalResourceUri,
   parseResourceId,
+  resourceIdIsManagedMemoryNamespace,
   resourceIdIsWithin,
   resourceIdWithoutAnchor,
 } from './storage/resource-id.js';
@@ -56,7 +59,7 @@ export function registerCompactTool(server: EffectMcpServerAdapter, config: Runt
     {
       annotations: {readOnlyHint: false, destructiveHint: true},
       description:
-        'Plan or apply scoped Threadnote memory hygiene. Defaults to dry-run; pass apply=true to archive stale handoffs and forget exact duplicates.',
+        'Plan or apply scoped Threadnote memory hygiene. Audits personal and shared memories, but apply only mutates personal memories; defaults to dry-run.',
       inputSchema: {
         apply: McpInput.boolean('Apply the compact plan; defaults to false'),
         dryRun: McpInput.boolean('Keep the call read-only; defaults to true unless apply=true'),
@@ -77,6 +80,7 @@ export function registerCompactTool(server: EffectMcpServerAdapter, config: Runt
         };
       }
       return Effect.gen(function* () {
+        const sharedAudit = yield* syncSharedMemoriesForCompact(config);
         const records = yield* scopedCompactRecords(config, {
           kind: kind as CompactableMemoryKind | undefined,
           project: checkedProject.value,
@@ -87,14 +91,35 @@ export function registerCompactTool(server: EffectMcpServerAdapter, config: Runt
           topic: normalizeOptionalMetadata(topic),
         });
         const shouldApply = apply === true;
-        const planText = formatCompactPlan(plan, {apply: shouldApply});
+        const planText = [
+          formatCompactPlan(plan, {apply: shouldApply}),
+          '',
+          formatSharedCompactAudit(sharedAudit),
+        ].join('\n');
         if (!shouldApply) {
           return {content: [{type: 'text', text: planText}]};
         }
 
+        const plannedActions = [...plan.keepUpdates, ...plan.archives, ...plan.forgets];
+        const currentByUri = new Map(
+          (yield* readMemoryRecordsByUri(
+            config,
+            plannedActions.map(action => action.uri),
+          )).map(record => [record.uri, record.content]),
+        );
+        const changed = plannedActions.find(action => currentByUri.get(action.uri) !== action.expectedContent);
+        if (changed) {
+          return argumentError(`Memory ${changed.uri} changed after compact_context planned it. Re-run the plan.`);
+        }
+
         const ov = 'threadnote-native';
         const appliedMessages: string[] = [];
-        for (const action of plan.keepUpdates) {
+        const exactDuplicateApply = yield* applyAtomicExactDuplicateActions(config, plan, records);
+        const atomicallyUpdatedUris = new Set(exactDuplicateApply.updatedSurvivorUris);
+        for (const uri of exactDuplicateApply.updatedSurvivorUris) {
+          appliedMessages.push(`Updated kept memory: ${uri}`);
+        }
+        for (const action of plan.keepUpdates.filter(candidate => !atomicallyUpdatedUris.has(candidate.uri))) {
           const keepResult = yield* writeMemoryContentWithExpectedHash(
             config,
             ov,
@@ -117,13 +142,8 @@ export function registerCompactTool(server: EffectMcpServerAdapter, config: Runt
             appliedMessages.push(content.text);
           }
         }
-        for (const action of plan.forgets) {
-          const removed = yield* forgetResourceWithRetry(config, action.uri, false, action.expectedContent);
-          appliedMessages.push(
-            removed
-              ? `Forgot exact duplicate: ${action.uri}`
-              : `Exact duplicate is still processing; retry later with forget: ${action.uri}`,
-          );
+        for (const uri of exactDuplicateApply.forgottenUris) {
+          appliedMessages.push(`Forgot exact duplicate: ${uri}`);
         }
         return {
           content: [
@@ -140,41 +160,105 @@ export function registerCompactTool(server: EffectMcpServerAdapter, config: Runt
 
 function archiveMemoryForCompact(config: RuntimeConfig, action: ArchiveAction) {
   return Effect.gen(function* () {
-    const readResult = yield* runNativeReadTool(config, [action.uri]);
-    const original = textFromCallToolResult(readResult);
-    if (!original) {
-      return {content: [{type: 'text', text: `Could not read ${action.uri} before archiving.`}], isError: true};
-    }
-    const archiveResult = yield* writeDurableMemory(config, {
-      bodyText: ['Archived original Threadnote memory.', '', original].join('\n'),
-      expectedSourceContent: [{content: action.expectedContent, uri: action.uri}],
-      metadata: {
-        archivedFrom: action.uri,
-        kind: action.kind,
-        project: action.project,
-        sourceAgentClient: 'mcp',
-        status: 'archived',
-        timestamp: new Date().toISOString(),
-        topic: action.topic,
-      },
-    });
-    if (archiveResult.isError === true) {
-      return archiveResult;
-    }
-    const removedOriginal = yield* forgetResourceWithRetry(config, action.uri, false, action.expectedContent);
-    const [content] = archiveResult.content;
-    const text = content?.type === 'text' ? content.text : 'Archived memory stored.';
-    return {
-      content: [
-        {
-          type: 'text',
-          text: removedOriginal
-            ? `${text}\nArchived original memory: ${action.uri}`
-            : `${text}\nArchive stored, but original memory is still processing. Retry later with forget: ${action.uri}`,
-        },
-      ],
-    } satisfies CallToolResult;
+    const fs = yield* FileSystem.FileSystem;
+    return yield* withMemoryUriLocks(
+      fs,
+      config.agentContextHome,
+      [action.uri],
+      Effect.gen(function* () {
+        const [source] = yield* readMemoryRecordsByUri(config, [action.uri]);
+        if (!source) {
+          return {content: [{type: 'text', text: `Could not read ${action.uri} before archiving.`}], isError: true};
+        }
+        if (source.content !== action.expectedContent) {
+          return argumentError(`Memory ${action.uri} changed after compact_context planned it. Re-run the plan.`);
+        }
+        const archiveResult = yield* writeDurableMemory(config, {
+          bodyText: ['Archived original Threadnote memory.', '', source.content].join('\n'),
+          metadata: {
+            archivedFrom: action.uri,
+            kind: action.kind,
+            project: action.project,
+            sourceAgentClient: 'mcp',
+            status: 'archived',
+            timestamp: new Date().toISOString(),
+            topic: action.topic,
+          },
+        });
+        if (archiveResult.isError === true) {
+          return archiveResult;
+        }
+        const archiveUri = memoryUriFromWriteResult(archiveResult);
+        if (!archiveUri) {
+          return {
+            content: [{type: 'text', text: `Archive write for ${action.uri} did not report its destination URI.`}],
+            isError: true,
+          };
+        }
+        const [currentSource] = yield* readMemoryRecordsByUri(config, [action.uri]);
+        if (!currentSource || currentSource.content !== action.expectedContent) {
+          const rolledBack = yield* forgetResourceWithRetry(config, archiveUri);
+          return {
+            content: [
+              {
+                type: 'text',
+                text: rolledBack
+                  ? `Memory ${action.uri} changed while its archive was being stored. The archived copy was rolled back; re-run compact_context.`
+                  : `Memory ${action.uri} changed while its archive was being stored. The source was preserved, but cleanup of ${archiveUri} needs review.`,
+              },
+            ],
+            isError: true,
+          };
+        }
+        const removedOriginal = yield* forgetResourceWithRetry(config, action.uri, false, action.expectedContent, true);
+        const [content] = archiveResult.content;
+        const text = content?.type === 'text' ? content.text : 'Archived memory stored.';
+        return {
+          content: [
+            {
+              type: 'text',
+              text: removedOriginal
+                ? `${text}\nArchived original memory: ${action.uri}`
+                : `${text}\nArchive stored and the original is no longer present: ${action.uri}`,
+            },
+          ],
+        } satisfies CallToolResult;
+      }),
+    );
   });
+}
+
+interface CompactSharedAudit {
+  readonly syncedTeams: readonly string[];
+  readonly warnings: readonly string[];
+}
+
+const syncSharedMemoriesForCompact = Effect.fn('mcpServer.syncSharedMemoriesForCompact')(function* (
+  config: RuntimeConfig,
+) {
+  return yield* syncSharedReposBeforeAgentRead(config).pipe(
+    Effect.catch(error =>
+      Effect.succeed({
+        syncedTeams: [] as readonly string[],
+        warnings: [`Shared-memory refresh failed: ${errorMessage(error)}`] as readonly string[],
+      }),
+    ),
+  );
+});
+
+function formatSharedCompactAudit(audit: CompactSharedAudit): string {
+  return [
+    'Shared audit source:',
+    '- bounded auto-sync attempted before scanning local canonical mirrors',
+    audit.syncedTeams.length > 0 ? `- refreshed teams: ${audit.syncedTeams.join(', ')}` : '- refreshed teams: none',
+    '- freshness note: repository contention may defer refresh; hygiene actions never mutate shared memories',
+    ...audit.warnings.map(warning => `- warning: ${warning}`),
+  ].join('\n');
+}
+
+function memoryUriFromWriteResult(result: CallToolResult): string | undefined {
+  const memoryUri = (result.structuredContent as {readonly memoryUri?: unknown} | undefined)?.memoryUri;
+  return typeof memoryUri === 'string' ? memoryUri : undefined;
 }
 
 const scopedCompactRecords = Effect.fn('mcpServer.scopedCompactRecords')(function* (
@@ -186,32 +270,66 @@ const scopedCompactRecords = Effect.fn('mcpServer.scopedCompactRecords')(functio
   const kinds: readonly CompactableMemoryKind[] = options.kind ? [options.kind] : ['handoff', 'durable', 'incident'];
   const records: MemoryRecord[] = [];
   for (const kind of kinds) {
-    const directory = yield* localMemoryDirectoryForCompact(config, kind, options.project);
-    const uriDirectory = memoryUriDirectoryForCompact(config, kind, options.project);
-    const entries = yield* fs.readDirectory(directory).pipe(Effect.option);
-    if (entries._tag === 'None') {
-      continue;
-    }
-    for (const entry of entries.value) {
-      if (entry.startsWith('.') || !entry.endsWith('.md')) {
+    const directories = [
+      {
+        directory: yield* localMemoryDirectoryForCompact(config, kind, options.project),
+        uriDirectory: memoryUriDirectoryForCompact(config, kind, options.project),
+      },
+      ...(yield* sharedMemoryDirectoriesForCompact(config, kind, options.project)),
+    ];
+    for (const {directory, uriDirectory} of directories) {
+      const entries = yield* fs.readDirectory(directory).pipe(Effect.option);
+      if (entries._tag === 'None') {
         continue;
       }
-      const entryPath = path.join(directory, entry);
-      const info = yield* fs.stat(entryPath).pipe(Effect.option);
-      if (info._tag === 'None' || info.value.type !== 'File') {
-        continue;
-      }
-      const content = yield* readTextIfExists(entryPath);
-      if (!content) {
-        continue;
-      }
-      const record = parseMemoryDocument(`${uriDirectory}/${entry}`, content);
-      if (record) {
-        records.push(record);
+      for (const entry of entries.value) {
+        if (entry.startsWith('.') || !entry.endsWith('.md')) {
+          continue;
+        }
+        const entryPath = path.join(directory, entry);
+        const info = yield* fs.stat(entryPath).pipe(Effect.option);
+        if (info._tag === 'None' || info.value.type !== 'File') {
+          continue;
+        }
+        const content = yield* readTextIfExists(entryPath);
+        if (!content) {
+          continue;
+        }
+        const record = parseMemoryDocument(`${uriDirectory}/${entry}`, content);
+        if (record) {
+          records.push(record);
+        }
       }
     }
   }
   return records;
+});
+
+const sharedMemoryDirectoriesForCompact = Effect.fn('mcpServer.sharedMemoryDirectoriesForCompact')(function* (
+  config: RuntimeConfig,
+  kind: CompactableMemoryKind,
+  project: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const sharedRoot = path.join(yield* localUserMemoriesRoot(config), 'shared');
+  const teamEntries = yield* fs.readDirectory(sharedRoot).pipe(Effect.option);
+  if (teamEntries._tag === 'None') return [];
+  const projectSegment = uriSegment(project);
+  const relativeParts = compactMemoryDirectoryParts(kind, projectSegment);
+  const baseUri = `threadnote://user/${uriSegment(config.user)}/memories/shared`;
+  const directories: Array<{readonly directory: string; readonly uriDirectory: string}> = [];
+  for (const team of [...teamEntries.value].sort()) {
+    if (team.startsWith('.')) continue;
+    const teamRoot = path.join(sharedRoot, team);
+    const teamInfo = yield* fs.stat(teamRoot).pipe(Effect.option);
+    if (teamInfo._tag === 'None' || teamInfo.value.type !== 'Directory') continue;
+    directories.push({
+      directory: path.join(teamRoot, ...relativeParts),
+      uriDirectory: `${baseUri}/${team}/${relativeParts.join('/')}`,
+    });
+  }
+  return directories;
 });
 
 export const readMemoryRecordsByUri = Effect.fn('mcpServer.readMemoryRecordsByUri')(function* (
@@ -244,26 +362,23 @@ const localMemoryDirectoryForCompact = Effect.fn('mcpServer.localMemoryDirectory
   const path = yield* Path.Path;
   const root = yield* localUserMemoriesRoot(config);
   const projectSegment = uriSegment(project);
-  switch (kind) {
-    case 'durable':
-      return path.join(root, 'durable', 'projects', projectSegment);
-    case 'handoff':
-      return path.join(root, 'handoffs', 'active', projectSegment);
-    case 'incident':
-      return path.join(root, 'incidents', 'active', projectSegment);
-  }
+  return path.join(root, ...compactMemoryDirectoryParts(kind, projectSegment));
 });
 
 function memoryUriDirectoryForCompact(config: RuntimeConfig, kind: CompactableMemoryKind, project: string): string {
   const base = `threadnote://user/${uriSegment(config.user)}/memories`;
   const projectSegment = uriSegment(project);
+  return `${base}/${compactMemoryDirectoryParts(kind, projectSegment).join('/')}`;
+}
+
+function compactMemoryDirectoryParts(kind: CompactableMemoryKind, projectSegment: string): readonly string[] {
   switch (kind) {
     case 'durable':
-      return `${base}/durable/projects/${projectSegment}`;
+      return ['durable', 'projects', projectSegment];
     case 'handoff':
-      return `${base}/handoffs/active/${projectSegment}`;
+      return ['handoffs', 'active', projectSegment];
     case 'incident':
-      return `${base}/incidents/active/${projectSegment}`;
+      return ['incidents', 'active', projectSegment];
   }
 }
 
@@ -719,6 +834,11 @@ export const runNativeAddResourceTool = Effect.fn('mcp_server.runNativeAddResour
   if (!checkedTo.ok) {
     return checkedTo.error;
   }
+  if (checkedTo.value && resourceIdIsManagedMemoryNamespace(checkedTo.value)) {
+    return argumentError(
+      'add_resource cannot write Threadnote memory namespaces. Use remember_context so memory identity and write locks are preserved.',
+    );
+  }
   if (!source) return argumentError(`Threadnote MCP tool "${toolName}" needs a local path.`);
   if (/^https?:\/\//i.test(source)) {
     return argumentError(
@@ -987,26 +1107,24 @@ export function forgetResourceWithRetry(
   uri: string,
   recursive = false,
   expectedContent?: string,
+  alreadyLocked = false,
 ) {
+  const remove = Effect.gen(function* () {
+    if (expectedContent) {
+      const [current] = yield* readMemoryRecordsByUri(config, [uri]);
+      if (!current || current.content !== expectedContent) {
+        return yield* Effect.fail(
+          new McpServerOperationError(`Memory ${uri} changed after this removal was planned. Re-run the operation.`),
+        );
+      }
+    }
+    return yield* removeResourceWithRetry('threadnote-native', config, uri, recursive);
+  });
+  if (alreadyLocked) {
+    return remove;
+  }
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    return yield* withMemoryUriLocks(
-      fs,
-      config.agentContextHome,
-      [uri],
-      Effect.gen(function* () {
-        if (expectedContent) {
-          const [current] = yield* readMemoryRecordsByUri(config, [uri]);
-          if (!current || current.content !== expectedContent) {
-            return yield* Effect.fail(
-              new McpServerOperationError(
-                `Memory ${uri} changed after this removal was planned. Re-run the operation.`,
-              ),
-            );
-          }
-        }
-        return yield* removeResourceWithRetry('threadnote-native', config, uri, recursive);
-      }),
-    );
+    return yield* withMemoryUriLocks(fs, config.agentContextHome, [uri], remove);
   });
 }

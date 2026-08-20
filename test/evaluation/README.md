@@ -458,18 +458,41 @@ bun run bench:recall:micro -- --json
 THREADNOTE_BENCHMARK_100K=1 bun run bench:recall:micro -- --json
 ```
 
-`bench:recall` is the explicit end-to-end orchestrator. It records p50/p95/p99, throughput, CPU time, RSS, heap,
-external memory, and event-loop delay together with commit/dirty state, fixture hash, Node/npm, OS, architecture, CPU,
-RAM, warmups, and samples:
+`bench:recall` is the explicit end-to-end orchestrator. It records p50/p95/p99 rank latency, throughput, RSS, heap,
+and external memory together with commit/dirty state, fixture hash, Bun runtime, OS, architecture, CPU, RAM, warmups,
+and samples. Use `--require-clean` for checked-in evidence; exploratory dirty runs remain available and identify
+themselves as dirty:
 
 ```sh
-bun run bench:recall -- --documents 10000 --samples 25 --warmups 5 \
-  --output artifacts/recall-10k.json
+bun run bench:recall -- --documents 10000 --samples 25 --warmups 5 --require-clean \
+  --output .artifacts/recall-10k.json
 ```
 
-New benchmark captures derive `sourceVersion` from the package instead of claiming Threadnote 3.0.3. Existing 3.0.3
-and 4.0 performance files remain historical observations; this quality-baseline transition did not regenerate or
-promote them as current performance evidence.
+`bench:recall:monorepo-shares` is a separate deterministic stress diagnostic for package-local work in a monorepo
+where each logical memory has a personal copy and several team-share aliases. It does not mutate the frozen recall-v2
+fixture or any checked baseline. The runner compares the full physical corpus with the same corpus admitted by the
+current workspace-scope predicate, then exercises the production logical-memory deduper and ranker in both modes. It
+reports physical and logical candidate counts, alias compression, duplicate-result rate, target-package recall@k, and
+latency distributions:
+
+```sh
+# Bounded default: 64 packages × 24 logical memories × (1 personal + 3 shared copies).
+bun run bench:recall:monorepo-shares -- --output .artifacts/recall-monorepo-shares.json
+
+# Fast harness smoke while iterating.
+bun run bench:recall:monorepo-shares -- \
+  --packages 8 --logical-per-package 8 --share-aliases 2 --samples 2 --warmups 1
+```
+
+This in-memory diagnostic isolates workspace admission, ranking, and alias deduplication; it does not claim SQLite
+index-build or filesystem-scan performance. Compare latency only for matching fixture hashes and runner classes. The
+runner intentionally records observations without universal pass/fail latency thresholds.
+
+The current Apple M1 Max/64 GiB `hybrid-v3` reference covers 200, 1k, 10k, and 100k documents under
+`baselines/threadnote-4.2.7/benchmarks/darwin-arm64-m1-max/`. Every artifact has clean commit provenance and derives
+`sourceVersion` from the package. The 3.0.3 and 4.0 performance files remain immutable historical observations. Compare
+candidate latency only on like hardware/runtime and matching fixture hashes; do not turn one host's timings into
+universal CI thresholds.
 
 To add a benchmark scenario, expose a stable operation from `scripts/benchmark-target.ts`, register it in
 `scripts/benchmark-recall-micro.mjs`, and add a named measurement to the end-to-end runner when process-level

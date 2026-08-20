@@ -362,3 +362,8 @@ bun run eval:recall:v2 -- \
 The evaluator defaults to the Threadnote 4.2.7 baseline. Inspect global and per-category deltas. Safety metrics cannot
 regress, and `--fail-on-contract` allows fixes to the 193 reviewed failures but rejects any new failure identity or
 count increase. Pass `--no-baseline` to make the same flag require zero contract failures.
+
+For a rank-performance change, use the clean Apple M1 Max `hybrid-v3` artifacts at 200, 1k, 10k, and 100k under
+`test/evaluation/baselines/threadnote-4.2.7/benchmarks/darwin-arm64-m1-max/`. Capture the candidate with
+`bun run bench:recall -- --require-clean` using the reference artifact's document count, seed, warmups, and samples.
+Compare only when hardware, runtime, and fixture hash match; the checked-in timings are not cross-platform limits.

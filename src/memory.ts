@@ -25,12 +25,18 @@ import {withAnonymousTelemetryPhase} from './effect/telemetry.js';
 import {runModelInstall, runModelSelect} from './models/commands.js';
 import {resolveSelectedLocalModel} from './models/inference.js';
 import {syncObsidianSourcesBeforeRecall} from './obsidian_source.js';
-import {canonicalResourceUri, parseResourceId, resourceIdWithoutAnchor} from './storage/resource-id.js';
+import {
+  canonicalResourceUri,
+  parseResourceId,
+  resourceIdIsManagedMemoryNamespace,
+  resourceIdWithoutAnchor,
+} from './storage/resource-id.js';
 import {inferProjectFromQuery, inferWorksetFromQuery, requireWorkset, uriSegment} from './manifest.js';
 import {
   activePersonalMemoryUrisFromText,
   buildCompactPlan,
   type CompactableMemoryKind,
+  DEFAULT_HANDOFF_NEXT_STEP,
   existingReferencedUris,
   formatCompactPlan,
   formatReferencedContextPointers,
@@ -41,6 +47,7 @@ import {
   topicForRecord,
   type MemoryRecord,
 } from './memory_hygiene.js';
+import {applyAtomicExactDuplicateActions} from './memory_hygiene_apply.js';
 import {
   canonicalMemoryDocumentContent,
   formatMemoryDocument,
@@ -61,7 +68,6 @@ import {
   removeResourceWithRetry,
   resourceExists,
   resourceStoreLocation,
-  writeDurableMemoryFile,
 } from './memory_migrations.js';
 import {
   buildRecallIndexSelectionCandidates,
@@ -76,6 +82,11 @@ import {
   type RecallSemanticScoresResult,
 } from './recall/runtime.js';
 import {loadRecallExactMatches} from './recall/index.js';
+import {
+  lexicalIndexUnavailableWarning,
+  renderRecallOperationalWarning,
+  type RecallOperationalWarning,
+} from './recall/warning.js';
 import type {
   ArchiveOptions,
   CompactOptions,
@@ -95,7 +106,6 @@ import type {
 } from './types.js';
 import {
   assertResourceUri,
-  enrichRecallQueryWithWorkspaceContext,
   enrichRecallQueryWithWorkspaceProjectContext,
   errorMessage,
   exactMemoryScopeUris,
@@ -105,15 +115,19 @@ import {
   getInputText,
   getInvocationCwd,
   gitValue,
+  InvalidRecallScoreThreshold,
   parsePositiveInteger,
-  readFileIfExists,
   type RecallHit,
-  recallScoreThreshold,
+  recallQueryRequestsBranchContext,
+  recallScoreThresholdPolicy,
   resolveRepoName,
+  resolveWorkspaceComponentContext,
+  resolveWorkspaceBranch,
   resolveWorkspaceRepoName,
   safeTimestamp,
   sha256,
   trimTrailingSlash,
+  validatedRecallScoreThreshold,
 } from './utils.js';
 import {
   applyScrubber,
@@ -197,6 +211,7 @@ export const runRemember = Effect.fn('runRemember')(function* (config: RuntimeCo
   }
   const timestamp = new Date(yield* Clock.currentTimeMillis).toISOString();
   const [replaced] = options.replace ? yield* readMemoryRecordsByUri(config, [options.replace]) : [];
+  const workspaceComponent = yield* resolveWorkspaceComponentContext({includeProcessCwd: true});
   const crypto = yield* Crypto.Crypto;
   // Projection computes source_hash from canonical content. Keeping the
   // high-entropy digest out of Threadnote's indexed memory preserves semantic
@@ -214,6 +229,10 @@ export const runRemember = Effect.fn('runRemember')(function* (config: RuntimeCo
     topic: normalizeOptionalMetadata(options.topic),
     updatedAt: timestamp,
     visibility: options.replace && isInSharedNamespace(config, options.replace) ? 'shared' : 'personal',
+    // Replacement updates preserve the memory's established engineering
+    // scope. The caller's cwd is context for a new memory, not authorization
+    // to silently migrate an existing repo-wide/package-local contract.
+    workspaceScope: replaced ? replaced.metadata.workspaceScope : workspaceComponent?.scope,
   };
   const metadata =
     options.dryRun === true || (options.replace !== undefined && isInSharedNamespace(config, options.replace))
@@ -516,10 +535,18 @@ export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig
     yield* withAnonymousTelemetryPhase('recall.shared-sync', syncSharedReposAndLog(config));
     yield* withAnonymousTelemetryPhase('recall.obsidian-sync', syncObsidianSourcesAndLog(config));
   }
+  const includeWorkspaceComponent = !options.uri && !options.workset;
   const workspaceOptions = options.callerCwd
     ? {cwd: options.callerCwd, includeProcessCwd: false}
     : {includeProcessCwd: true};
-  const query = yield* enrichRecallQueryWithWorkspaceContext(options.query, workspaceOptions);
+  const workspaceComponent = includeWorkspaceComponent
+    ? yield* resolveWorkspaceComponentContext(workspaceOptions)
+    : undefined;
+  const workspaceBranch =
+    includeWorkspaceComponent && recallQueryRequestsBranchContext(options.query)
+      ? yield* resolveWorkspaceBranch(workspaceOptions)
+      : undefined;
+  const query = options.query;
   const projectQuery = yield* enrichRecallQueryWithWorkspaceProjectContext(options.query, workspaceOptions);
   const dryRun = options.dryRun === true;
   const explicitUri = options.uri ? parseResourceId(options.uri).canonicalUri : undefined;
@@ -533,7 +560,22 @@ export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig
     ? yield* attemptSync(() => parsePositiveInteger(options.nodeLimit!, 'node limit'))
     : undefined;
   const explicitWorkset = options.workset ? yield* requireWorkset(config.manifestPath, options.workset!) : undefined;
-  const recallThreshold = options.threshold ?? (yield* recallScoreThreshold());
+  const explicitThreshold = options.threshold;
+  const thresholdPolicy =
+    explicitThreshold === undefined
+      ? yield* recallScoreThresholdPolicy()
+      : {
+          source: 'call' as const,
+          value: yield* Effect.try({
+            try: () => validatedRecallScoreThreshold(explicitThreshold, '--threshold'),
+            catch: error =>
+              error instanceof InvalidRecallScoreThreshold
+                ? error
+                : new InvalidRecallScoreThreshold('--threshold must be a number from 0 to 1.', {cause: error}),
+          }),
+        };
+  const recallThreshold = thresholdPolicy.value;
+  const thresholdConfigured = thresholdPolicy.source !== 'default';
   // Scope selection feeds the native postings/vector indexes directly. The
   // passes array remains as a compatibility input to the existing explainable
   // ranker; no background process or HTTP service is queried.
@@ -596,15 +638,16 @@ export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig
     }
   }
 
-  const exactMatches = dryRun
-    ? []
+  const exactLookup = dryRun
+    ? {matches: [], operationalWarnings: []}
     : yield* collectNativeExactMemoryMatches(config, query, {
         includeArchived,
         project,
       });
+  const exactMatches = exactLookup.matches;
   const environment = (yield* SystemInfo).environment();
   const effectAi = dryRun ? undefined : yield* resolveEffectAiConfiguration(config, environment);
-  let hybridMinimumScore = recallHybridMinimumScore(Number(recallThreshold), options.threshold !== undefined);
+  let hybridMinimumScore = recallHybridMinimumScore(Number(recallThreshold));
   const expansionQueries: string[] = [];
   const recallLimit = nodeLimit ?? 12;
   let semanticResult = dryRun
@@ -618,6 +661,16 @@ export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig
         ),
       );
   const surfacedSemanticWarnings = new Set<string>();
+  const surfacedOperationalWarningCodes = new Set<RecallOperationalWarning['code']>();
+  const surfaceOperationalWarnings = (warnings: readonly RecallOperationalWarning[]) =>
+    Effect.forEach(
+      warnings.filter(warning => !surfacedOperationalWarningCodes.has(warning.code)),
+      warning =>
+        Effect.sync(() => surfacedOperationalWarningCodes.add(warning.code)).pipe(
+          Effect.andThen(Console.warn(renderRecallOperationalWarning(warning))),
+        ),
+      {discard: true},
+    );
   const surfaceSemanticWarning = (result: RecallSemanticScoresResult) =>
     Option.match(result.warning, {
       onNone: () => Effect.void,
@@ -626,6 +679,7 @@ export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig
           ? Effect.void
           : Effect.sync(() => surfacedSemanticWarnings.add(warning)).pipe(Effect.andThen(Console.warn(warning))),
     });
+  yield* surfaceOperationalWarnings(exactLookup.operationalWarnings);
   if (Option.isSome(semanticResult)) yield* surfaceSemanticWarning(semanticResult.value);
   const rerankerCache = createRecallRerankerCache();
   const prepareSections = (candidateUris?: readonly string[]) =>
@@ -633,7 +687,7 @@ export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig
       'recall.lexical-ranking',
       Effect.gen(function* () {
         const prepared = yield* prepareRecallSections(config, {
-          allowExactRescue: options.threshold === undefined,
+          allowExactRescue: !thresholdConfigured,
           allowedUriScopes: explicitUri ? [explicitUri] : undefined,
           candidateUris,
           exactMatches,
@@ -650,8 +704,11 @@ export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig
           rerankerCache,
           seedUris: [inferredUri, seededUri].filter((uri): uri is string => uri !== undefined),
           semanticResult,
+          workspaceBranch,
+          workspaceScope: workspaceComponent?.scope,
         });
         semanticResult = Option.some(prepared.semanticResult);
+        yield* surfaceOperationalWarnings(prepared.operationalWarnings);
         yield* surfaceSemanticWarning(prepared.semanticResult);
         return prepared;
       }),
@@ -720,7 +777,7 @@ export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig
   );
   for (const expansionQuery of proposedExpansionQueries) {
     expansionQueries.push(expansionQuery);
-    hybridMinimumScore = recallHybridMinimumScore(Number(recallThreshold), options.threshold !== undefined);
+    hybridMinimumScore = recallHybridMinimumScore(Number(recallThreshold));
     recallSections = yield* prepareSections();
   }
   if (expansionQueries.length > 0) {
@@ -812,21 +869,34 @@ export const runRead = Effect.fn('runRead')(function* (config: RuntimeConfig, ur
 
 const syncSharedReposAndLog = Effect.fn('memory.syncSharedReposAndLog')(function* (config: RuntimeConfig) {
   const syncResult = yield* syncSharedReposBeforeAgentRead(config).pipe(
-    Effect.catch(error => {
-      const message = error instanceof Error ? error.message : String(error);
-      return Console.error(`Auto-sync warning: ${message}`).pipe(Effect.as(undefined));
-    }),
+    Effect.catch(error =>
+      Effect.succeed({
+        syncedTeams: [] as readonly string[],
+        warnings: [error instanceof Error ? error.message : String(error)] as readonly string[],
+      }),
+    ),
   );
-  if (!syncResult) {
-    return;
-  }
   if (syncResult.syncedTeams.length > 0) {
     yield* Console.error(`Auto-synced shared memories: ${syncResult.syncedTeams.join(', ')}`);
   }
   for (const warning of syncResult.warnings) {
     yield* Console.error(`Auto-sync warning: ${warning}`);
   }
+  return syncResult;
 });
+
+function formatSharedCompactAudit(audit: {
+  readonly syncedTeams: readonly string[];
+  readonly warnings: readonly string[];
+}): string {
+  return [
+    'Shared audit source:',
+    '- bounded auto-sync attempted before scanning local canonical mirrors',
+    audit.syncedTeams.length > 0 ? `- refreshed teams: ${audit.syncedTeams.join(', ')}` : '- refreshed teams: none',
+    '- freshness note: repository contention may defer refresh; hygiene actions never mutate shared memories',
+    ...audit.warnings.map(warning => `- warning: ${warning}`),
+  ].join('\n');
+}
 
 const syncObsidianSourcesAndLog = Effect.fn('memory.syncObsidianSourcesAndLog')(function* (config: RuntimeConfig) {
   const syncResult = yield* syncObsidianSourcesBeforeRecall(config).pipe(
@@ -874,6 +944,7 @@ export const runCompact = Effect.fn('runCompact')(function* (config: RuntimeConf
     return yield* Effect.fail(new MemoryOperationError('Cannot combine --apply with --dry-run.'));
   }
   const apply = options.apply === true;
+  const sharedAudit = yield* syncSharedReposAndLog(config);
   const records = yield* scopedCompactRecords(config, {
     kind: options.kind,
     project,
@@ -883,33 +954,55 @@ export const runCompact = Effect.fn('runCompact')(function* (config: RuntimeConf
     project,
     topic: normalizeOptionalMetadata(options.topic),
   });
-  yield* Console.log(formatCompactPlan(plan, {apply}));
+  yield* Console.log([formatCompactPlan(plan, {apply}), '', formatSharedCompactAudit(sharedAudit)].join('\n'));
   if (!apply) {
     return;
   }
 
-  const fs = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
-  const ov = NATIVE_RESOURCE_BACKEND;
-  const updatePath = path.join(config.agentContextHome, 'compact-memory-update.txt');
-  yield* Effect.gen(function* () {
-    for (const action of plan.keepUpdates) {
-      yield* fs.writeFileString(updatePath, action.content, {mode: 0o600});
-      yield* fs.chmod(updatePath, 0o600);
-      yield* writeDurableMemoryFile(ov, config, action.uri, updatePath, 'replace');
+  const plannedActions = [...plan.keepUpdates, ...plan.archives, ...plan.forgets];
+  const currentByUri = new Map(
+    (yield* readMemoryRecordsByUri(
+      config,
+      plannedActions.map(action => action.uri),
+    )).map(record => [record.uri, record.content]),
+  );
+  for (const action of plannedActions) {
+    if (currentByUri.get(action.uri) !== action.expectedContent) {
+      return yield* Effect.fail(
+        new MemoryOperationError(`Memory ${action.uri} changed after the hygiene plan. Re-run compact before apply.`),
+      );
     }
-  }).pipe(Effect.ensuring(fs.remove(updatePath, {force: true}).pipe(Effect.ignore)));
+  }
+
+  const fs = yield* FileSystem.FileSystem;
+  const ov = NATIVE_RESOURCE_BACKEND;
+  const exactDuplicateApply = yield* applyAtomicExactDuplicateActions(config, plan, records);
+  const atomicallyUpdatedUris = new Set(exactDuplicateApply.updatedSurvivorUris);
+  for (const action of plan.keepUpdates.filter(candidate => !atomicallyUpdatedUris.has(candidate.uri))) {
+    yield* withMemoryUriLocks(
+      fs,
+      config.agentContextHome,
+      [action.uri],
+      Effect.gen(function* () {
+        const [current] = yield* readMemoryRecordsByUri(config, [action.uri]);
+        if (current?.content !== action.expectedContent) {
+          return yield* Effect.fail(
+            new MemoryOperationError(`Memory ${action.uri} changed during hygiene apply. Re-run compact.`),
+          );
+        }
+        yield* writeMemoryFile(config, ov, action.uri, action.content, 'replace', false, {quiet: true});
+      }),
+    );
+  }
 
   for (const action of plan.archives) {
     yield* runArchive(config, action.uri, {
       dryRun: false,
+      expectedContent: action.expectedContent,
       kind: action.kind,
       project: action.project,
       topic: action.topic,
     });
-  }
-  for (const action of plan.forgets) {
-    yield* runForget(config, action.uri, {dryRun: false});
   }
 });
 
@@ -922,6 +1015,7 @@ export const runCompactDiagnostics = Effect.fn('memory.runCompactDiagnostics')(f
     return yield* Effect.fail(new MemoryOperationError('Provide --project for scoped memory hygiene.'));
   }
   const topic = normalizeOptionalMetadata(options.topic);
+  yield* syncSharedReposAndLog(config);
   const records = yield* scopedCompactRecords(config, {
     kind: options.kind,
     project,
@@ -945,7 +1039,8 @@ export const runCompactDiagnostics = Effect.fn('memory.runCompactDiagnostics')(f
       `- active records in project: ${activeRecords.length}`,
       `- active records matching topic: ${matchingRecords.length}`,
       `- matching by kind: ${formatKindCounts(counts)}`,
-      '- skipped by design: archived memories, shared memories, preferences, smoke records, seeded resources, and non-stable timestamped/global paths',
+      '- shared memories: audited read-only for conflicts/merge review; never mutated by compact',
+      '- skipped by design: archived memories, preferences, smoke records, seeded resources, and non-stable timestamped/global paths',
       '',
     ].join('\n'),
   );
@@ -960,32 +1055,66 @@ const scopedCompactRecords = Effect.fn('memory.scopedCompactRecords')(function* 
   const kinds: readonly CompactableMemoryKind[] = options.kind ? [options.kind] : ['handoff', 'durable', 'incident'];
   const records: MemoryRecord[] = [];
   for (const kind of kinds) {
-    const directory = yield* localMemoryDirectoryForCompact(config, kind, options.project);
-    const uriDirectory = memoryUriDirectoryForCompact(config, kind, options.project);
-    const entries = yield* fs.readDirectory(directory).pipe(Effect.option);
-    if (entries._tag === 'None') {
-      continue;
-    }
-    for (const entry of entries.value) {
-      if (entry.startsWith('.') || !entry.endsWith('.md')) {
+    const directories = [
+      {
+        directory: yield* localMemoryDirectoryForCompact(config, kind, options.project),
+        uriDirectory: memoryUriDirectoryForCompact(config, kind, options.project),
+      },
+      ...(yield* sharedMemoryDirectoriesForCompact(config, kind, options.project)),
+    ];
+    for (const {directory, uriDirectory} of directories) {
+      const entries = yield* fs.readDirectory(directory).pipe(Effect.option);
+      if (entries._tag === 'None') {
         continue;
       }
-      const entryPath = path.join(directory, entry);
-      const info = yield* fs.stat(entryPath).pipe(Effect.option);
-      if (info._tag === 'None' || info.value.type !== 'File') {
-        continue;
-      }
-      const content = yield* readTextIfExists(entryPath);
-      if (!content) {
-        continue;
-      }
-      const record = parseMemoryDocument(`${uriDirectory}/${entry}`, content);
-      if (record) {
-        records.push(record);
+      for (const entry of entries.value) {
+        if (entry.startsWith('.') || !entry.endsWith('.md')) {
+          continue;
+        }
+        const entryPath = path.join(directory, entry);
+        const info = yield* fs.stat(entryPath).pipe(Effect.option);
+        if (info._tag === 'None' || info.value.type !== 'File') {
+          continue;
+        }
+        const content = yield* readTextIfExists(entryPath);
+        if (!content) {
+          continue;
+        }
+        const record = parseMemoryDocument(`${uriDirectory}/${entry}`, content);
+        if (record) {
+          records.push(record);
+        }
       }
     }
   }
   return records;
+});
+
+const sharedMemoryDirectoriesForCompact = Effect.fn('memory.sharedMemoryDirectoriesForCompact')(function* (
+  config: RuntimeConfig,
+  kind: CompactableMemoryKind,
+  project: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const sharedRoot = path.join(yield* localUserMemoriesRoot(config), 'shared');
+  const teamEntries = yield* fs.readDirectory(sharedRoot).pipe(Effect.option);
+  if (teamEntries._tag === 'None') return [];
+  const projectSegment = uriSegment(project);
+  const relativeParts = compactMemoryDirectoryParts(kind, projectSegment);
+  const baseUri = `threadnote://user/${uriSegment(config.user)}/memories/shared`;
+  const directories: Array<{readonly directory: string; readonly uriDirectory: string}> = [];
+  for (const team of [...teamEntries.value].sort()) {
+    if (team.startsWith('.')) continue;
+    const teamRoot = path.join(sharedRoot, team);
+    const teamInfo = yield* fs.stat(teamRoot).pipe(Effect.option);
+    if (teamInfo._tag === 'None' || teamInfo.value.type !== 'Directory') continue;
+    directories.push({
+      directory: path.join(teamRoot, ...relativeParts),
+      uriDirectory: `${baseUri}/${team}/${relativeParts.join('/')}`,
+    });
+  }
+  return directories;
 });
 
 function formatKindCounts(counts: ReadonlyMap<CompactableMemoryKind, number>): string {
@@ -1022,26 +1151,23 @@ const localMemoryDirectoryForCompact = Effect.fn('memory.localMemoryDirectoryFor
   const path = yield* Path.Path;
   const root = yield* localUserMemoriesRoot(config);
   const projectSegment = uriSegment(project);
-  switch (kind) {
-    case 'durable':
-      return path.join(root, 'durable', 'projects', projectSegment);
-    case 'handoff':
-      return path.join(root, 'handoffs', 'active', projectSegment);
-    case 'incident':
-      return path.join(root, 'incidents', 'active', projectSegment);
-  }
+  return path.join(root, ...compactMemoryDirectoryParts(kind, projectSegment));
 });
 
 function memoryUriDirectoryForCompact(config: RuntimeConfig, kind: CompactableMemoryKind, project: string): string {
   const base = `threadnote://user/${uriSegment(config.user)}/memories`;
   const projectSegment = uriSegment(project);
+  return `${base}/${compactMemoryDirectoryParts(kind, projectSegment).join('/')}`;
+}
+
+function compactMemoryDirectoryParts(kind: CompactableMemoryKind, projectSegment: string): readonly string[] {
   switch (kind) {
     case 'durable':
-      return `${base}/durable/projects/${projectSegment}`;
+      return ['durable', 'projects', projectSegment];
     case 'handoff':
-      return `${base}/handoffs/active/${projectSegment}`;
+      return ['handoffs', 'active', projectSegment];
     case 'incident':
-      return `${base}/incidents/active/${projectSegment}`;
+      return ['incidents', 'active', projectSegment];
   }
 }
 
@@ -1095,7 +1221,6 @@ export const runArchive = Effect.fn('runArchive')(function* (
   yield* attemptSync(() => assertResourceUri(uri));
   const ov = NATIVE_RESOURCE_BACKEND;
   const store = yield* ResourceStore;
-  const original = options.dryRun === true ? undefined : (yield* store.read(resourceStoreLocation(config), uri)).trim();
   if (options.dryRun === true) {
     const fallbackMetadata: MemoryMetadata = {
       archivedFrom: uri,
@@ -1115,36 +1240,55 @@ export const runArchive = Effect.fn('runArchive')(function* (
     yield* Console.log(`Would remove archived native resource: ${uri}`);
     return;
   }
-  const originalMemory = yield* requireValue(original, `Could not read ${uri} before archiving.`);
-  const originalLocalPath = yield* localMemoryPathForUri(config, uri);
-  const originalLocalContent = originalLocalPath ? yield* readFileIfExists(originalLocalPath) : undefined;
-
-  const inferredMetadata = inferMemoryMetadata(originalMemory);
-  const metadata: MemoryMetadata = {
-    archivedFrom: uri,
-    kind: options.kind ?? inferredMetadata.kind ?? 'handoff',
-    project: normalizeOptionalMetadata(options.project) ?? inferredMetadata.project,
-    sourceAgentClient: 'threadnote',
-    status: 'archived',
-    timestamp: new Date().toISOString(),
-    topic: normalizeOptionalMetadata(options.topic) ?? inferredMetadata.topic,
-  };
-  yield* storeMemory(config, {
-    bodyText: ['Archived original Threadnote memory.', '', originalMemory].join('\n'),
-    dryRun: false,
-    metadata,
-    title: 'MEMORY',
-  });
-  const removedOriginal = yield* removeResourceWithRetry(ov, config, uri, {
-    expectedContent: originalLocalContent ?? originalMemory,
-  });
-  if (removedOriginal) {
-    yield* Console.log(`Archived original memory: ${uri}`);
-  } else {
-    yield* Console.error(
-      `Archive stored, but original memory is still processing. Retry later: threadnote forget ${uri}`,
-    );
-  }
+  const fs = yield* FileSystem.FileSystem;
+  yield* withMemoryUriLocks(
+    fs,
+    config.agentContextHome,
+    [uri],
+    Effect.gen(function* () {
+      const originalMemory = (yield* store.read(resourceStoreLocation(config), uri)).trim();
+      if (options.expectedContent !== undefined && originalMemory !== options.expectedContent.trim()) {
+        return yield* Effect.fail(
+          new MemoryOperationError(`Memory ${uri} changed after the hygiene plan. Re-run compact before archiving.`),
+        );
+      }
+      const inferredMetadata = inferMemoryMetadata(originalMemory);
+      const metadata: MemoryMetadata = {
+        archivedFrom: uri,
+        kind: options.kind ?? inferredMetadata.kind ?? 'handoff',
+        project: normalizeOptionalMetadata(options.project) ?? inferredMetadata.project,
+        sourceAgentClient: 'threadnote',
+        status: 'archived',
+        timestamp: new Date().toISOString(),
+        topic: normalizeOptionalMetadata(options.topic) ?? inferredMetadata.topic,
+      };
+      const archiveUri = yield* storeMemory(config, {
+        bodyText: ['Archived original Threadnote memory.', '', originalMemory].join('\n'),
+        dryRun: false,
+        metadata,
+        title: 'MEMORY',
+      });
+      const currentSource = yield* store.read(resourceStoreLocation(config), uri).pipe(Effect.option);
+      if (Option.isNone(currentSource) || currentSource.value.trim() !== originalMemory) {
+        const rolledBack = yield* removeResourceWithRetry(ov, config, archiveUri);
+        return yield* Effect.fail(
+          new MemoryOperationError(
+            rolledBack
+              ? `Memory ${uri} changed while its archive was being stored. The archived copy was rolled back; re-run the operation.`
+              : `Memory ${uri} changed while its archive was being stored. The source was preserved, but cleanup of ${archiveUri} needs review.`,
+          ),
+        );
+      }
+      const removedOriginal = yield* removeResourceWithRetry(ov, config, uri, {
+        alreadyLocked: true,
+      });
+      if (removedOriginal) {
+        yield* Console.log(`Archived original memory: ${uri}`);
+      } else {
+        yield* Console.error(`Archive stored and the original is no longer present: ${uri}`);
+      }
+    }),
+  );
 });
 
 export const runForget = Effect.fn('runForget')(function* (config: RuntimeConfig, uri: string, options: ForgetOptions) {
@@ -1266,7 +1410,11 @@ export const runImportPack = Effect.fn('runImportPack')(function* (config: Runti
     });
   }
   if (options.dryRun !== true) {
-    yield* store.mutate(resourceStoreLocation(config), mutations);
+    const mutation = store.mutate(resourceStoreLocation(config), mutations);
+    const managedMemoryUris = planned.map(resource => resource.uri).filter(resourceIdIsManagedMemoryNamespace);
+    yield* managedMemoryUris.length === 0
+      ? mutation
+      : withMemoryUriLocks(fs, config.agentContextHome, managedMemoryUris, mutation);
   }
   yield* Console.log(
     `${options.dryRun === true ? 'Would import' : 'Imported'} ${pack.resources.length} resource(s) from ${inputPath}.`,
@@ -1367,13 +1515,16 @@ const collectNativeExactMemoryMatches = Effect.fn('memory.collectNativeExactMemo
   options: {readonly includeArchived: boolean; readonly project: ProjectManifest | undefined},
 ) {
   const terms = exactRecallTerms(query);
-  if (terms.length === 0) return [];
-  return yield* loadRecallExactMatches(config, {
+  if (terms.length === 0) return {matches: [], operationalWarnings: []};
+  const result = yield* loadRecallExactMatches(config, {
     includeInactive: options.includeArchived,
     limitPerTerm: 25,
     terms,
     uriScopes: exactMemoryScopes(config, options.includeArchived, query, options.project),
-  }).pipe(Effect.catch(() => Effect.succeed([])));
+  }).pipe(Effect.result);
+  return Result.isSuccess(result)
+    ? {matches: result.success, operationalWarnings: []}
+    : {matches: [], operationalWarnings: [lexicalIndexUnavailableWarning()]};
 });
 
 const storeMemory = Effect.fn('storeMemory')(function* (config: RuntimeConfig, options: StoreMemoryOptions) {
@@ -1384,7 +1535,7 @@ const storeMemory = Effect.fn('storeMemory')(function* (config: RuntimeConfig, o
   if (options.replaceUri && isInSharedNamespace(config, options.replaceUri)) {
     if (options.dryRun) {
       yield* storeSharedMemoryReplacement(config, ov, options, options.replaceUri as string);
-      return;
+      return options.replaceUri;
     }
     const fs = yield* FileSystem.FileSystem;
     yield* withSharedRepositoryLock(
@@ -1396,7 +1547,7 @@ const storeMemory = Effect.fn('storeMemory')(function* (config: RuntimeConfig, o
         storeSharedMemoryReplacement(config, ov, options, options.replaceUri as string),
       ),
     );
-    return;
+    return options.replaceUri;
   }
   // Two-pass formatting: assume the caller's replaceUri is a true supersede,
   // compute the destination URI, then drop the supersedes line if it points
@@ -1420,7 +1571,7 @@ const storeMemory = Effect.fn('storeMemory')(function* (config: RuntimeConfig, o
     if (options.replaceUri && !isInPlaceUpdate) {
       yield* Console.log(`Would remove superseded native resource: ${options.replaceUri}`);
     }
-    return;
+    return memoryUri;
   }
   const fs = yield* FileSystem.FileSystem;
   yield* withMemoryUriLocks(
@@ -1448,6 +1599,7 @@ const storeMemory = Effect.fn('storeMemory')(function* (config: RuntimeConfig, o
       }
     }),
   );
+  return memoryUri;
 });
 
 /**
@@ -1668,6 +1820,7 @@ const buildHandoff = Effect.fn('memory.buildHandoff')(function* (options: Handof
   const touchedFiles = yield* gitTouchedFiles(repoRoot);
   const repoName = (yield* resolveRepoName(repoRoot)) ?? path.basename(repoRoot);
   const topicBranch = branch && branch !== 'unknown' ? branch : 'current';
+  const workspaceComponent = yield* resolveWorkspaceComponentContext({includeProcessCwd: true});
   const metadata: MemoryMetadata = {
     kind: 'handoff',
     project: normalizeOptionalMetadata(options.project) ?? repoName,
@@ -1676,6 +1829,7 @@ const buildHandoff = Effect.fn('memory.buildHandoff')(function* (options: Handof
     status: 'active',
     timestamp: new Date().toISOString(),
     topic: handoffTopicForBranch(topicBranch, {timestamped: options.timestamped, topic: options.topic}),
+    workspaceScope: workspaceComponent?.scope,
   };
   // Caller-supplied review-state snapshot (pr/issue/ci). Threadnote has no
   // GitHub client, so these are captured strings paired with the exact commit,
@@ -1709,7 +1863,7 @@ const buildHandoff = Effect.fn('memory.buildHandoff')(function* (options: Handof
     options.blockers ?? '- none recorded',
     '',
     'next_step:',
-    options.nextStep ?? '- inspect the current repo state and continue from this handoff',
+    options.nextStep ?? `- ${DEFAULT_HANDOFF_NEXT_STEP}`,
     ...(options.sessionId ? ['', `session_id: ${options.sessionId}`] : []),
     ...(options.trace ? ['', 'trace (auto-captured, heuristic):', options.trace] : []),
   ].join('\n');

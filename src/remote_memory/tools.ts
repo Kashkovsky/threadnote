@@ -16,6 +16,30 @@ import {validatePortableSegment} from '../storage/resource-id.js';
 import type {RemoteMemoryRateLimitOperation} from './rate_limit.js';
 import {sha256HexSync} from '../crypto/sha256.js';
 import type {RemoteMemoryRequestExecution} from './request_execution.js';
+import {
+  MEMORY_READ_DEFAULT_BUDGET_TOKENS,
+  MEMORY_READ_MAXIMUM_BUDGET_TOKENS,
+  MemoryReadProjectionError,
+  projectMemoryReadPage,
+  type MemoryReadPage,
+  type MemoryReadPosition,
+} from '../memory_read_projection.js';
+import type {RemoteMemoryReadResult} from './postgres_repository.js';
+import {
+  decodeRemoteMemoryReadCursor,
+  encodeRemoteMemoryReadCursor,
+  REMOTE_MEMORY_READ_CURSOR_MAXIMUM_BYTES,
+  REMOTE_MEMORY_READ_CURSOR_TTL_MILLISECONDS,
+  remoteMemoryReadCursorKey,
+  type RemoteMemoryReadCursorState,
+} from './read_cursor.js';
+import {
+  projectRemoteRecallResponse,
+  REMOTE_RECALL_DEFAULT_BUDGET_TOKENS,
+  REMOTE_RECALL_MAXIMUM_BUDGET_TOKENS,
+  REMOTE_RECALL_MINIMUM_BUDGET_TOKENS,
+  RemoteRecallProjectionError,
+} from './recall_projection.js';
 
 export const REMOTE_MEMORY_TOOL_NAMES = [
   'recall_context',
@@ -40,6 +64,42 @@ const PortableSegment = z
   .refine(isPortableSegment, 'Expected one canonical portable URI segment.');
 const Kind = z.enum(['durable', 'handoff']);
 const Status = z.enum(['active', 'archived', 'expired', 'superseded']);
+const REMOTE_MEMORY_READ_MINIMUM_BUDGET_TOKENS = 512;
+export const REMOTE_MEMORY_RESOURCE_READ_MAX_BYTES = 4_500;
+
+const RemoteReadToolInput = z
+  .object({
+    budgetTokens: z
+      .number()
+      .int()
+      .min(REMOTE_MEMORY_READ_MINIMUM_BUDGET_TOKENS)
+      .max(MEMORY_READ_MAXIMUM_BUDGET_TOKENS)
+      .default(MEMORY_READ_DEFAULT_BUDGET_TOKENS),
+    cursor: z.string().min(1).max(REMOTE_MEMORY_READ_CURSOR_MAXIMUM_BYTES).optional(),
+    mode: z.enum(['content', 'outline']).optional(),
+    revision: Identifier.optional(),
+    section: z
+      .string()
+      .trim()
+      .min(1)
+      .refine(value => Buffer.byteLength(value, 'utf8') <= 256, 'Section exceeds 256 UTF-8 bytes.')
+      .optional(),
+    uri: z.string().min(1).max(4096).optional(),
+    version: Version,
+  })
+  .strict()
+  .refine(input => (input.cursor === undefined) !== (input.uri === undefined), {
+    message: 'Provide uri for an initial read or cursor for a continuation, but not both.',
+  })
+  .refine(
+    input =>
+      input.cursor === undefined ||
+      (input.mode === undefined && input.revision === undefined && input.section === undefined),
+    {message: 'cursor cannot be combined with mode, revision, or section.'},
+  )
+  .refine(input => input.mode !== 'outline' || input.section === undefined, {
+    message: 'section cannot be combined with mode=outline.',
+  });
 
 export interface RemoteMcpRequestContext {
   readonly deadlineEpochMilliseconds: number;
@@ -85,9 +145,17 @@ export function createRemoteMemoryMcpServer(options: RemoteMemoryMcpServerOption
     'recall_context',
     {
       annotations: {readOnlyHint: true},
-      description: 'Search bounded durable memories and handoffs only inside the authorized remote share.',
+      description:
+        'Return a budgeted ranked prefix of unread remote-memory pointers. Read structuredContent.nextAction before relying on them; explain=true adds bounded excerpts.',
       inputSchema: z
         .object({
+          budgetTokens: z
+            .number()
+            .int()
+            .min(REMOTE_RECALL_MINIMUM_BUDGET_TOKENS)
+            .max(REMOTE_RECALL_MAXIMUM_BUDGET_TOKENS)
+            .default(REMOTE_RECALL_DEFAULT_BUDGET_TOKENS),
+          explain: z.boolean().default(false),
           kinds: z.array(Kind).min(1).max(2).optional(),
           limit: z.number().int().min(1).max(100).optional(),
           project: PortableSegment,
@@ -96,40 +164,18 @@ export function createRemoteMemoryMcpServer(options: RemoteMemoryMcpServerOption
         })
         .strict(),
     },
-    input =>
-      invokeRemoteTool(requestContext, dependencies, 'recall_context', async (principal, execution) => {
-        requireRemoteScope(principal, 'memory:read');
-        requireAuthorizedProject(principal, input.project);
-        const result = await dependencies.repository.recall(principal, input, requestContext.requestId, execution);
-        assertReceipt(result.receipt, principal, requestContext.requestId);
-        for (const item of result.results) {
-          requireAuthorizedProject(principal, item.project);
-          if (item.project !== input.project) throw remoteMemoryError('forbidden', 'Recall returned another project.');
-          assertUriBelongsToAuthorizedShare(principal, item.uri);
-        }
-        return result;
-      }),
+    input => invokeRemoteRecallTool(requestContext, dependencies, input),
   );
 
   server.registerTool(
     'read_context',
     {
       annotations: {readOnlyHint: true},
-      description: 'Read one revision from the authorized remote share. Never reads VM-local or personal memory.',
-      inputSchema: z
-        .object({revision: Identifier.optional(), uri: z.string().min(1).max(4096), version: Version})
-        .strict(),
+      description:
+        'Read untrusted remote evidence in pages of at most 1500 estimated tokens. Continue with its opaque revision-pinned cursor; mode=outline and exact-heading section reads are supported.',
+      inputSchema: RemoteReadToolInput,
     },
-    input =>
-      invokeRemoteTool(requestContext, dependencies, 'read_context', async (principal, execution) => {
-        requireRemoteScope(principal, 'memory:read');
-        preflightCanonicalRead(principal, input.uri);
-        const result = await dependencies.repository.read(principal, input, requestContext.requestId, execution);
-        requireAuthorizedProject(principal, result.project);
-        assertUriBelongsToAuthorizedShare(principal, result.uri);
-        assertReceipt(result.receipt, principal, requestContext.requestId);
-        return result;
-      }),
+    input => invokeRemoteReadTool(requestContext, dependencies, input),
   );
 
   server.registerTool(
@@ -300,6 +346,252 @@ export function createRemoteMemoryMcpServer(options: RemoteMemoryMcpServerOption
   return server;
 }
 
+interface RemoteRecallToolInput {
+  readonly budgetTokens: number;
+  readonly explain: boolean;
+  readonly kinds?: readonly ('durable' | 'handoff')[];
+  readonly limit?: number;
+  readonly project: string;
+  readonly query: string;
+  readonly version: 1;
+}
+
+async function invokeRemoteRecallTool(
+  context: RemoteMcpRequestContext,
+  dependencies: RemoteMemoryServiceDependencies,
+  input: RemoteRecallToolInput,
+): Promise<CallToolResult> {
+  try {
+    await withRequestDeadline(context, () =>
+      dependencies.rateLimits.consume(context.principal, 'recall_context', requestExecution(context)),
+    );
+    return await withRequestDeadline(context, async () => {
+      const principal = context.principal;
+      requireRemoteScope(principal, 'memory:read');
+      requireAuthorizedProject(principal, input.project);
+      const result = await dependencies.repository.recall(
+        principal,
+        {
+          ...(input.kinds === undefined ? {} : {kinds: input.kinds}),
+          ...(input.limit === undefined ? {} : {limit: input.limit}),
+          project: input.project,
+          query: input.query,
+          version: 1,
+        },
+        context.requestId,
+        requestExecution(context),
+      );
+      assertReceipt(result.receipt, principal, context.requestId);
+      for (const item of result.results) {
+        requireAuthorizedProject(principal, item.project);
+        if (item.project !== input.project) throw remoteMemoryError('forbidden', 'Recall returned another project.');
+        assertUriBelongsToAuthorizedShare(principal, item.uri);
+      }
+      let projected;
+      try {
+        projected = projectRemoteRecallResponse(result, {
+          budgetTokens: input.budgetTokens,
+          explain: input.explain,
+        });
+      } catch (cause) {
+        if (cause instanceof RemoteRecallProjectionError) {
+          throw remoteMemoryError('invalid_request', cause.message);
+        }
+        throw cause;
+      }
+      return {
+        _meta: {'threadnote/receipt': result.receipt},
+        content: [{type: 'text', text: projected.text}],
+        structuredContent: projected.structuredContent,
+      };
+    });
+  } catch (cause) {
+    const error = publicRemoteMemoryError(cause);
+    return remoteToolError(error, context.requestId);
+  }
+}
+
+async function invokeRemoteReadTool(
+  context: RemoteMcpRequestContext,
+  dependencies: RemoteMemoryServiceDependencies,
+  input: z.infer<typeof RemoteReadToolInput>,
+): Promise<CallToolResult> {
+  try {
+    await withRequestDeadline(context, () =>
+      dependencies.rateLimits.consume(context.principal, 'read_context', requestExecution(context)),
+    );
+    return await withRequestDeadline(context, async () => {
+      const principal = context.principal;
+      requireRemoteScope(principal, 'memory:read');
+      const now = Date.now();
+      const cursorKey = remoteMemoryReadCursorKey(principal);
+      const cursorState =
+        input.cursor === undefined ? undefined : decodeRemoteMemoryReadCursor(input.cursor, cursorKey, now);
+      if (input.cursor !== undefined && !cursorState) {
+        throw remoteMemoryError('invalid_request', 'The remote read cursor is invalid or expired; restart from uri.');
+      }
+      const uri = cursorState?.uri ?? input.uri!;
+      preflightCanonicalRead(principal, uri);
+      const result = await dependencies.repository.read(
+        principal,
+        {
+          ...((cursorState?.revision ?? input.revision) ? {revision: cursorState?.revision ?? input.revision} : {}),
+          uri,
+          version: 1,
+        },
+        context.requestId,
+        requestExecution(context),
+      );
+      requireAuthorizedProject(principal, result.project);
+      assertUriBelongsToAuthorizedShare(principal, result.uri);
+      assertReceipt(result.receipt, principal, context.requestId);
+      const revision = result.receipt.revision;
+      if (!revision) {
+        throw remoteMemoryError(
+          'service_unavailable',
+          'The canonical remote read did not return an immutable revision.',
+        );
+      }
+      const contentHash = sha256HexSync(result.content);
+      if (
+        cursorState &&
+        (result.uri !== cursorState.uri || revision !== cursorState.revision || contentHash !== cursorState.contentHash)
+      ) {
+        throw remoteMemoryError('conflict', 'The revision-pinned remote read changed; restart from uri.');
+      }
+      const sourceMetadata = {
+        kind: result.kind,
+        project: result.project,
+        receipt: result.receipt,
+        revision,
+        status: result.status,
+        topic: result.topic,
+        trust: 'untrusted' as const,
+        uri: result.uri,
+      };
+      const reservedResponseBytes = Buffer.byteLength(JSON.stringify(sourceMetadata), 'utf8') + 64;
+      let page: MemoryReadPage;
+      try {
+        page = projectRemoteMemoryReadPage(result, {
+          budgetTokens: input.budgetTokens,
+          contentHash,
+          cursorKey,
+          expiresAt: cursorState?.expiresAt ?? now + REMOTE_MEMORY_READ_CURSOR_TTL_MILLISECONDS,
+          mode: cursorState?.mode ?? input.mode ?? 'content',
+          position: cursorState?.position ?? {characterOffset: 0, resourceIndex: 0},
+          reservedResponseBytes,
+          revision,
+          section: cursorState?.section ?? input.section,
+        });
+      } catch (cause) {
+        if (cause instanceof MemoryReadProjectionError) {
+          throw remoteMemoryError('invalid_request', cause.message);
+        }
+        throw cause;
+      }
+      const structuredContent = remoteReadStructuredContent(page, sourceMetadata);
+      const responseBytes = remoteReadResponseBytes(page, structuredContent);
+      if (responseBytes > input.budgetTokens * 3) {
+        throw remoteMemoryError('service_unavailable', 'Remote read projection exceeded its declared response budget.');
+      }
+      return {
+        _meta: {
+          'threadnote/receipt': result.receipt,
+          'threadnote.io/read-page': {
+            contentIndex: 0,
+            resource: page.structuredContent.resource,
+            resourceCount: 1,
+            type: 'threadnote-read-page',
+            uri: result.uri,
+            version: 1,
+          },
+        },
+        content: [
+          {type: 'text', text: page.content},
+          ...(page.receipt === undefined ? [] : [{type: 'text' as const, text: page.receipt}]),
+        ],
+        structuredContent,
+      };
+    });
+  } catch (cause) {
+    const error = publicRemoteMemoryError(cause);
+    return remoteToolError(error, context.requestId);
+  }
+}
+
+function projectRemoteMemoryReadPage(
+  result: RemoteMemoryReadResult,
+  options: {
+    readonly budgetTokens: number;
+    readonly contentHash: string;
+    readonly cursorKey: string;
+    readonly expiresAt: number;
+    readonly mode: 'content' | 'outline';
+    readonly position: MemoryReadPosition;
+    readonly reservedResponseBytes: number;
+    readonly revision: string;
+    readonly section?: string;
+  },
+): MemoryReadPage {
+  const cursorState = (position: MemoryReadPosition): RemoteMemoryReadCursorState => ({
+    contentHash: options.contentHash,
+    expiresAt: options.expiresAt,
+    mode: options.mode,
+    position,
+    revision: options.revision,
+    ...(options.section === undefined ? {} : {section: options.section}),
+    uri: result.uri,
+  });
+  let continuationCursor = encodeRemoteMemoryReadCursor(cursorState(options.position), options.cursorKey);
+  for (let iteration = 0; iteration < 16; iteration += 1) {
+    const page = projectMemoryReadPage([{text: result.content, uri: result.uri}], {
+      budgetTokens: options.budgetTokens,
+      continuationCursor,
+      includeReceipt: false,
+      mode: options.mode,
+      position: options.position,
+      reservedResponseBytes: options.reservedResponseBytes,
+      section: options.section,
+      toolName: 'read_context',
+    });
+    if (page.complete) return page;
+    const nextCursor = encodeRemoteMemoryReadCursor(cursorState(page.nextPosition!), options.cursorKey);
+    if (nextCursor === continuationCursor) return page;
+    continuationCursor = nextCursor;
+  }
+  throw new Error('Remote memory read cursor projection did not converge.');
+}
+
+function remoteReadStructuredContent(
+  page: MemoryReadPage,
+  source: {
+    readonly kind: 'durable' | 'handoff';
+    readonly project: string;
+    readonly receipt: RemoteMemoryReceiptV1;
+    readonly revision: string;
+    readonly status: 'active' | 'archived' | 'expired' | 'superseded';
+    readonly topic: string;
+    readonly trust: 'untrusted';
+    readonly uri: string;
+  },
+): Record<string, unknown> {
+  let structuredContent: Record<string, unknown> = {...page.structuredContent, ...source};
+  for (let iteration = 0; iteration < 4; iteration += 1) {
+    const nextEstimatedTokens = Math.ceil(remoteReadResponseBytes(page, structuredContent) / 3);
+    if (structuredContent.estimatedTokens === nextEstimatedTokens) return structuredContent;
+    structuredContent = {...structuredContent, estimatedTokens: nextEstimatedTokens};
+  }
+  return structuredContent;
+}
+
+function remoteReadResponseBytes(page: MemoryReadPage, structuredContent: Readonly<Record<string, unknown>>): number {
+  return (
+    Buffer.byteLength(page.content, 'utf8') +
+    Buffer.byteLength(page.receipt ?? '', 'utf8') +
+    Buffer.byteLength(JSON.stringify(structuredContent), 'utf8')
+  );
+}
+
 function registerRemoteMemoryResource(
   server: McpServer,
   name: string,
@@ -333,6 +625,12 @@ function registerRemoteMemoryResource(
         requireAuthorizedProject(context.principal, result.project);
         assertUriBelongsToAuthorizedShare(context.principal, result.uri);
         assertReceipt(result.receipt, context.principal, context.requestId);
+        if (Buffer.byteLength(result.content, 'utf8') > REMOTE_MEMORY_RESOURCE_READ_MAX_BYTES) {
+          throw remoteMemoryError(
+            'invalid_request',
+            `Remote memory exceeds the ${REMOTE_MEMORY_RESOURCE_READ_MAX_BYTES}-byte resources/read cap; use paged read_context.`,
+          );
+        }
         return {
           contents: [
             {

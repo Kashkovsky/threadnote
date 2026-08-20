@@ -1,7 +1,13 @@
 import {Cause, Clock, Console, Effect, Option, Result} from 'effect';
 import {MAX_RECALL_SELECTION_CANDIDATES, type RecallSelectionCandidate} from '../effect/ai/recall.js';
 import type {MemoryRecord} from '../memory_document.js';
-import {buildRecallSections, memoryUriProjectSegment, type ExactMatch, type RecallHit} from '../utils.js';
+import {
+  buildRecallSections,
+  memoryUriProjectSegment,
+  recallIndexPreselectionLimit,
+  type ExactMatch,
+  type RecallHit,
+} from '../utils.js';
 import {rerankWithSelectedLocalModel} from '../models/inference.js';
 import {LocalModelCatalog, type LocalModelManifest} from '../models/catalog.js';
 import {readModelSelection} from '../models/selection.js';
@@ -13,9 +19,20 @@ import {
   loadRecallIndexDataBatch,
   recallUriMatchesScopes,
 } from './index.js';
-import type {RecallCandidate} from './rank.js';
+import {
+  deduplicateLogicalRecallCandidates,
+  rankRecallCandidates,
+  recallCandidateMatchesWorkspaceBranch,
+  type RecallCandidate,
+  type RecallRankContext,
+} from './rank.js';
 import {recallLexicalTerms, recallTokens} from './tokenize.js';
 import {normalizeRecallRerankerScore} from './reranker-score.js';
+import {
+  lexicalIndexUnavailableWarning,
+  mergeRecallOperationalWarnings,
+  type RecallOperationalWarning,
+} from './warning.js';
 import {
   ensureVectorIndex,
   rebuildVectorIndex,
@@ -51,10 +68,12 @@ interface PrepareRecallSectionsInput<R> {
   readonly seedUris?: readonly string[];
   readonly semanticResult?: Option.Option<RecallSemanticScoresResult>;
   readonly semanticGenerationMismatchPolicy?: 'fallback' | 'reload';
+  /** Current Git branch for explicit current-branch intent; structural rank context, never topical query text. */
+  readonly workspaceBranch?: string;
+  /** Structured, repo-relative component scope used for candidate sourcing and ranking, never as topical query text. */
+  readonly workspaceScope?: string;
 }
 
-const INDEX_CANDIDATE_MULTIPLIER = 10;
-const INDEX_CANDIDATE_MINIMUM = 100;
 const EXPANSION_VOCABULARY_LIMIT = 50;
 const EXPANSION_VOCABULARY_INDEX_SAMPLE_LIMIT = 200;
 const EXPANSION_VOCABULARY_RANKED_RESERVE = 25;
@@ -66,6 +85,8 @@ const MINIMUM_QUERY_VARIANT_TERMS = 2;
 const NATIVE_RERANK_CANDIDATE_LIMIT = 32;
 const NATIVE_RERANK_DOCUMENT_LIMIT = 4_000;
 const SEMANTIC_GENERATION_RETRY_LIMIT = 2;
+const WORKSPACE_CANDIDATE_RESERVE_MAXIMUM = 16;
+const WORKSPACE_CANDIDATE_RESERVE_MULTIPLIER = 2;
 export const MCP_RECALL_SEMANTIC_RETRIEVAL_TIMEOUT_MILLISECONDS = 15_000;
 
 export interface RecallRerankerCache {
@@ -110,14 +131,16 @@ export const prepareRecallSections = Effect.fn('recall.prepareSections')(functio
   config: RecallRuntimeConfig,
   input: PrepareRecallSectionsInput<R>,
 ) {
+  let operationalWarnings: readonly RecallOperationalWarning[] = [];
   let semanticResult =
     input.semanticResult === undefined
       ? yield* loadRecallSemanticScoresResult(config, input.query, input.limit)
       : Option.getOrElse(input.semanticResult, emptyRecallSemanticScoresResult);
   for (let retry = 0; ; retry += 1) {
     const prepared = yield* prepareRecallSectionsAttempt(config, input, semanticResult);
+    operationalWarnings = mergeRecallOperationalWarnings(operationalWarnings, prepared.operationalWarnings);
     if (yield* semanticResultMatchesLexicalSnapshot(config, semanticResult, prepared.generations)) {
-      return {...prepared.sections, semanticResult};
+      return {...prepared.sections, operationalWarnings, semanticResult};
     }
     if (input.semanticGenerationMismatchPolicy === 'fallback' || retry >= SEMANTIC_GENERATION_RETRY_LIMIT) {
       const lexicalOnly = yield* prepareRecallSectionsAttempt(
@@ -125,7 +148,11 @@ export const prepareRecallSections = Effect.fn('recall.prepareSections')(functio
         input,
         emptyRecallSemanticScoresResult(semanticResult.warning),
       );
-      return {...lexicalOnly.sections, semanticResult: emptyRecallSemanticScoresResult(semanticResult.warning)};
+      return {
+        ...lexicalOnly.sections,
+        operationalWarnings: mergeRecallOperationalWarnings(operationalWarnings, lexicalOnly.operationalWarnings),
+        semanticResult: emptyRecallSemanticScoresResult(semanticResult.warning),
+      };
     }
     semanticResult = yield* loadRecallSemanticScoresResult(config, input.query, input.limit);
   }
@@ -153,7 +180,35 @@ const prepareRecallSectionsAttempt = Effect.fn('recall.prepareSectionsAttempt')(
     : input.preferredUriScopes?.length
       ? [input.preferredUriScopes, undefined]
       : [undefined];
-  const [feedbackByUri, recallIndexes] = yield* Effect.all(
+  const indexCandidateLimit = recallIndexPreselectionLimit(input.limit);
+  const topicalIndexSelections = indexQueries.flatMap(indexQuery =>
+    scopeSets.map(allowedUriScopes => ({
+      allowedUriScopes,
+      limit: indexCandidateLimit,
+      query: indexQuery,
+      requiredUris: rankingUris,
+    })),
+  );
+  const workspaceScope = input.workspaceScope?.trim();
+  const workspaceIndexSelections = workspaceScope
+    ? scopeSets.map(allowedUriScopes => ({
+        allowedUriScopes,
+        limit: indexCandidateLimit,
+        query: input.query,
+        requiredUris: rankingUris,
+        workspaceScope,
+      }))
+    : [];
+  const workspaceBranch = input.workspaceBranch?.trim();
+  const branchIndexSelections = workspaceBranch
+    ? scopeSets.map(allowedUriScopes => ({
+        allowedUriScopes,
+        limit: indexCandidateLimit,
+        query: `${input.query} ${workspaceBranch}`,
+        requiredUris: rankingUris,
+      }))
+    : [];
+  const [feedbackByUri, recallIndexResult] = yield* Effect.all(
     [
       loadRecallFeedback(config.agentContextHome, {
         now,
@@ -162,28 +217,73 @@ const prepareRecallSectionsAttempt = Effect.fn('recall.prepareSectionsAttempt')(
       }),
       loadRecallIndexDataBatch(config, {
         includeInactive: input.includeInactive,
-        selections: indexQueries.flatMap(indexQuery =>
-          scopeSets.map(allowedUriScopes => ({
-            allowedUriScopes,
-            limit: Math.max(INDEX_CANDIDATE_MINIMUM, input.limit * INDEX_CANDIDATE_MULTIPLIER),
-            query: indexQuery,
-            requiredUris: rankingUris,
-          })),
-        ),
-      }).pipe(Effect.catch(() => Effect.succeed([]))),
+        selections: [...topicalIndexSelections, ...workspaceIndexSelections, ...branchIndexSelections],
+      }).pipe(Effect.result),
     ],
     {concurrency: 2},
   );
+  const recallIndexes = Result.isSuccess(recallIndexResult) ? recallIndexResult.success : [];
+  const operationalWarnings = Result.isFailure(recallIndexResult) ? [lexicalIndexUnavailableWarning()] : [];
   const flattenedRecallIndexes = recallIndexes;
   const generations = [
     ...new Set(flattenedRecallIndexes.flatMap(index => (index?.generation ? [index.generation] : []))),
   ];
-  const recallIndex = flattenedRecallIndexes.find(index => index !== undefined);
-  const recallIndexCandidateSets = flattenedRecallIndexes.map(index => index?.candidates ?? []);
-  const semanticCandidates = mergeRecallIndexCandidates(recallIndexCandidateSets).map(candidate => {
+  const topicalRecallIndexes = flattenedRecallIndexes.slice(0, topicalIndexSelections.length);
+  const workspaceSelectionEnd = topicalIndexSelections.length + workspaceIndexSelections.length;
+  const workspaceRecallIndexes = flattenedRecallIndexes.slice(topicalIndexSelections.length, workspaceSelectionEnd);
+  const branchRecallIndexes = flattenedRecallIndexes.slice(workspaceSelectionEnd);
+  const recallIndex = topicalRecallIndexes.find(index => index !== undefined);
+  const topicalRecallIndexCandidateSets = topicalRecallIndexes.map(index => index?.candidates ?? []);
+  const workspaceRecallIndexCandidateSets = workspaceRecallIndexes.map(index => index?.candidates ?? []);
+  const branchRecallIndexCandidateSets = branchRecallIndexes.map(index => index?.candidates ?? []);
+  const recallIndexCandidateSets = [
+    ...topicalRecallIndexCandidateSets,
+    ...workspaceRecallIndexCandidateSets,
+    ...branchRecallIndexCandidateSets,
+  ];
+  const withSemanticScore = (candidate: RecallCandidate): RecallCandidate => {
     const semantic = semanticScores?.get(candidate.uri.replace(/#.*$/, ''));
     return semantic === undefined ? candidate : {...candidate, semantic};
-  });
+  };
+  const prioritizedWorkspaceCandidates = workspaceScope
+    ? prioritizeWorkspaceRecallCandidates(
+        input.query,
+        mergeRecallIndexCandidates(workspaceRecallIndexCandidateSets).map(withSemanticScore),
+        {
+          includeInactive: input.includeInactive,
+          now,
+          project: input.project,
+          queryVariants,
+          workspaceScope,
+        },
+      )
+    : [];
+  const prioritizedBranchCandidates = workspaceBranch
+    ? prioritizeBranchRecallCandidates(
+        input.query,
+        mergeRecallIndexCandidates(branchRecallIndexCandidateSets).map(withSemanticScore),
+        {
+          includeInactive: input.includeInactive,
+          now,
+          project: input.project,
+          queryVariants,
+          workspaceBranch,
+        },
+      )
+    : [];
+  const semanticCandidates = mergePrioritizedRecallIndexCandidates(
+    [mergeRecallIndexCandidates(topicalRecallIndexCandidateSets).map(withSemanticScore)],
+    [prioritizedBranchCandidates, prioritizedWorkspaceCandidates],
+    prioritizedBranchCandidates.length > 0 || prioritizedWorkspaceCandidates.length > 0
+      ? {
+          admissionLimit: indexCandidateLimit,
+          supplementalReserve: Math.min(
+            WORKSPACE_CANDIDATE_RESERVE_MAXIMUM,
+            Math.max(1, input.limit * WORKSPACE_CANDIDATE_RESERVE_MULTIPLIER),
+          ),
+        }
+      : undefined,
+  );
   const indexedCandidates = yield* applySelectedNativeReranker(
     config.agentContextHome,
     input.query,
@@ -197,12 +297,16 @@ const prepareRecallSectionsAttempt = Effect.fn('recall.prepareSectionsAttempt')(
       }),
     ),
   );
-  const expansionCandidates = mergeRecallExpansionCandidates(recallIndexCandidateSets, rankingUris);
+  const expansionCandidates = mergeRecallExpansionCandidates(
+    recallIndexCandidateSets,
+    rankingUris,
+    topicalRecallIndexCandidateSets.length,
+  );
   const sections = buildRecallSections(input.passes, input.exactMatches, input.limit, {
     allowExactRescue: input.allowExactRescue,
     allowedUriScopes: input.allowedUriScopes,
     candidateUris: input.candidateUris,
-    corpusStatistics: recallIndex?.corpusStatistics,
+    corpusStatistics: workspaceScope ? undefined : recallIndex?.corpusStatistics,
     feedbackByUri,
     includeInactive: input.includeInactive,
     indexedCandidates,
@@ -213,8 +317,10 @@ const prepareRecallSectionsAttempt = Effect.fn('recall.prepareSectionsAttempt')(
     queryVariants,
     records,
     seedUris: input.seedUris,
+    workspaceBranch: input.workspaceBranch,
+    workspaceScope,
   });
-  return {generations, sections: {...sections, expansionCandidates}};
+  return {generations, operationalWarnings, sections: {...sections, expansionCandidates}};
 });
 
 export interface RecallSemanticScoresResult {
@@ -267,7 +373,7 @@ export const loadMcpRecallSemanticScoresResult = Effect.fn('recall.loadMcpSemant
   query: string,
   limit: number,
 ) {
-  const semanticLimit = Math.max(INDEX_CANDIDATE_MINIMUM, limit * INDEX_CANDIDATE_MULTIPLIER);
+  const semanticLimit = recallIndexPreselectionLimit(limit);
   const attempt = yield* boundedRecallSemanticRetrieval(
     loadReadOnlySemanticScoresAttempt(config, query, semanticLimit),
   );
@@ -353,7 +459,7 @@ export const loadRecallSemanticScoresResult = Effect.fn('recall.loadSemanticScor
     const store = yield* LocalModelStore;
     const installed = yield* store.status(config.agentContextHome, manifest);
     if (!installed.installed) return undefined;
-    const semanticLimit = Math.max(INDEX_CANDIDATE_MINIMUM, limit * INDEX_CANDIDATE_MULTIPLIER);
+    const semanticLimit = recallIndexPreselectionLimit(limit);
     return yield* loadCurrentSemanticScores(config, manifest, query, semanticLimit);
   }).pipe(
     Effect.map(snapshot =>
@@ -551,6 +657,7 @@ export function buildRecallSelectionCandidates(
       `category=${hit.category}`,
       project ? `project=${project}` : undefined,
       `topic=${indexed?.fields?.topic ?? uriTopic}`,
+      indexed?.fields?.workspaceScope ? `workspace_scope=${indexed.fields.workspaceScope}` : undefined,
       indexed?.fields?.title ? `title=${indexed.fields.title}` : undefined,
       indexed?.fields?.keywords?.length ? `keywords=${indexed.fields.keywords.join(', ')}` : undefined,
     ].filter((field): field is string => field !== undefined);
@@ -581,6 +688,7 @@ export function buildRecallIndexSelectionCandidates(
       candidate.kind ? `kind=${candidate.kind}` : 'category=resource',
       candidate.fields?.project ? `project=${candidate.fields.project}` : undefined,
       `topic=${candidate.fields?.topic ?? uriTopic}`,
+      candidate.fields?.workspaceScope ? `workspace_scope=${candidate.fields.workspaceScope}` : undefined,
       candidate.fields?.title ? `title=${candidate.fields.title}` : undefined,
       candidate.fields?.keywords?.length ? `keywords=${candidate.fields.keywords.join(', ')}` : undefined,
     ].filter((field): field is string => field !== undefined);
@@ -714,30 +822,131 @@ export const loadRecallExpansionVocabulary = Effect.fn('recall.loadExpansionVoca
 export function mergeRecallIndexCandidates(
   candidateSets: readonly (readonly RecallCandidate[])[],
 ): readonly RecallCandidate[] {
-  const seen = new Set<string>();
-  const merged: RecallCandidate[] = [];
+  const mergedByUri = new Map<string, RecallCandidate>();
   const maximumLength = Math.max(0, ...candidateSets.map(candidates => candidates.length));
   for (let index = 0; index < maximumLength; index += 1) {
     for (const candidates of candidateSets) {
       const candidate = candidates[index];
-      if (!candidate || seen.has(candidate.uri)) continue;
-      seen.add(candidate.uri);
-      merged.push(candidate);
+      if (!candidate) continue;
+      const retained = mergedByUri.get(candidate.uri);
+      if (!retained) mergedByUri.set(candidate.uri, candidate);
+      else if (candidate.identityConflict && !retained.identityConflict) {
+        mergedByUri.set(candidate.uri, {...retained, identityConflict: true});
+      }
     }
   }
-  return merged;
+  return deduplicateLogicalRecallCandidates([...mergedByUri.values()]);
+}
+
+/**
+ * Preserve a topical head while reserving a small admission lane for the
+ * structured workspace source. Supplemental duplicates are promoted into that
+ * lane so a current-package match cannot remain hidden beyond the ranker's
+ * bounded window; the remaining candidates retain deterministic source order.
+ */
+export function mergePrioritizedRecallIndexCandidates(
+  topicalCandidateSets: readonly (readonly RecallCandidate[])[],
+  supplementalCandidateSets: readonly (readonly RecallCandidate[])[],
+  options: {readonly admissionLimit?: number; readonly supplementalReserve?: number} = {},
+): readonly RecallCandidate[] {
+  const topical = mergeRecallIndexCandidates(topicalCandidateSets);
+  const supplemental = mergeRecallIndexCandidates(supplementalCandidateSets);
+  const admissionLimit = Math.max(0, Math.floor(options.admissionLimit ?? 0));
+  const requestedReserve = Math.max(0, Math.floor(options.supplementalReserve ?? 0));
+  if (admissionLimit === 0 || requestedReserve === 0 || supplemental.length === 0) {
+    return deduplicateLogicalRecallCandidates(uniqueRecallCandidatesByUri([...topical, ...supplemental]));
+  }
+
+  const reserve = Math.min(requestedReserve, supplemental.length, admissionLimit);
+  const supplementalHead = supplemental.slice(0, reserve);
+  const supplementalHeadUris = new Set(supplementalHead.map(candidate => candidate.uri));
+  const topicalWithoutReserved = topical.filter(candidate => !supplementalHeadUris.has(candidate.uri));
+  const topicalHeadLength = Math.max(0, admissionLimit - supplementalHead.length);
+  return deduplicateLogicalRecallCandidates(
+    uniqueRecallCandidatesByUri([
+      ...topicalWithoutReserved.slice(0, topicalHeadLength),
+      ...supplementalHead,
+      ...topicalWithoutReserved.slice(topicalHeadLength),
+      ...supplemental.slice(reserve),
+    ]),
+  );
+}
+
+/**
+ * Restrict the supplemental lane to repo-wide memories and the current
+ * component hierarchy, then use the untouched topical query to order that
+ * bounded pool before admission.
+ * Scope affects sourcing and tie-breaking only; the ranker's topical gate and
+ * scoped corpus statistics remain free of workspace path terms.
+ */
+export function prioritizeWorkspaceRecallCandidates(
+  query: string,
+  candidates: readonly RecallCandidate[],
+  context: Pick<RecallRankContext, 'includeInactive' | 'now' | 'project' | 'queryVariants'> & {
+    readonly workspaceScope: string;
+  },
+): readonly RecallCandidate[] {
+  const scopedCandidates = candidates.filter(candidate =>
+    workspaceScopeContains(context.workspaceScope, candidate.fields?.workspaceScope),
+  );
+  return rankRecallCandidates(query, scopedCandidates, context).results.map(result => result.candidate);
+}
+
+export function prioritizeBranchRecallCandidates(
+  query: string,
+  candidates: readonly RecallCandidate[],
+  context: Pick<RecallRankContext, 'includeInactive' | 'now' | 'project' | 'queryVariants'> & {
+    readonly workspaceBranch: string;
+  },
+): readonly RecallCandidate[] {
+  const branchCandidates = candidates.filter(candidate =>
+    recallCandidateMatchesWorkspaceBranch(context.workspaceBranch, candidate),
+  );
+  return rankRecallCandidates(query, branchCandidates, context).results.map(result => result.candidate);
+}
+
+function workspaceScopeContains(currentScope: string, candidateScope: string | undefined): boolean {
+  const current = normalizeWorkspaceScope(currentScope);
+  if (current !== undefined && candidateScope === undefined) return true;
+  const candidate = normalizeWorkspaceScope(candidateScope);
+  return (
+    current !== undefined && candidate !== undefined && (candidate === current || current.startsWith(`${candidate}/`))
+  );
+}
+
+function normalizeWorkspaceScope(scope: string | undefined): string | undefined {
+  const normalized = scope
+    ?.trim()
+    .replaceAll('\\', '/')
+    .split('/')
+    .filter(segment => segment.length > 0 && segment !== '.')
+    .join('/')
+    .toLowerCase();
+  return normalized || undefined;
+}
+
+function uniqueRecallCandidatesByUri(candidates: readonly RecallCandidate[]): readonly RecallCandidate[] {
+  const seen = new Set<string>();
+  return candidates.filter(candidate => {
+    if (seen.has(candidate.uri)) return false;
+    seen.add(candidate.uri);
+    return true;
+  });
 }
 
 export function mergeRecallExpansionCandidates(
   candidateSets: readonly (readonly RecallCandidate[])[],
   requiredUris: readonly string[],
+  topicalSetCount = candidateSets.length,
 ): readonly RecallCandidate[] {
   const required = new Set(requiredUris.map(uri => uri.replace(/#.*$/, '')));
-  return mergeRecallIndexCandidates(
-    candidateSets.map(candidates => [
-      ...candidates.filter(candidate => !required.has(candidate.uri.replace(/#.*$/, ''))),
-      ...candidates.filter(candidate => required.has(candidate.uri.replace(/#.*$/, ''))),
-    ]),
+  const reorderedCandidateSets = candidateSets.map(candidates => [
+    ...candidates.filter(candidate => !required.has(candidate.uri.replace(/#.*$/, ''))),
+    ...candidates.filter(candidate => required.has(candidate.uri.replace(/#.*$/, ''))),
+  ]);
+  return mergePrioritizedRecallIndexCandidates(
+    reorderedCandidateSets.slice(0, topicalSetCount),
+    reorderedCandidateSets.slice(topicalSetCount),
   );
 }
 

@@ -11,6 +11,7 @@ import {
 } from './effect/ai/consolidator.js';
 import {runCommandEffect} from './effect/command.js';
 import {captureConsole} from './effect/console.js';
+import {withMemoryUriLocks} from './effect/memory_lock.js';
 import {ResourceStore} from './effect/resource-store.js';
 import type {ApplicationServices} from './effect/runtime.js';
 import {withSharedRepositoryLock} from './effect/share_lock.js';
@@ -25,6 +26,7 @@ import {
   runShareUnpublish,
 } from './effect/share.js';
 import {uriSegment} from './manifest.js';
+import {parseResourceId, resourceIdIsManagedMemoryNamespace, resourceIdWithoutAnchor} from './storage/resource-id.js';
 import {
   runArchive,
   runCompact,
@@ -1071,24 +1073,32 @@ const writeRawMemory = Effect.fn('manager.writeRawMemory')(function* (
   content: string,
 ) {
   assertResourceUri(uri);
-  const ov = NATIVE_RESOURCE_BACKEND;
-  if (isInSharedNamespace(config, uri)) {
-    const teamName = sharedTeamNameForUri(config, uri);
-    if (!teamName) {
-      throw new ManagerOperationError(`${uri} is not in a configured shared namespace.`);
+  const canonicalUri = resourceIdWithoutAnchor(parseResourceId(uri)).canonicalUri;
+  const write = Effect.gen(function* () {
+    const ov = NATIVE_RESOURCE_BACKEND;
+    if (isInSharedNamespace(config, canonicalUri)) {
+      const teamName = sharedTeamNameForUri(config, canonicalUri);
+      if (!teamName) {
+        throw new ManagerOperationError(`${canonicalUri} is not in a configured shared namespace.`);
+      }
+      const team = yield* resolveTeam(config, teamName);
+      const existing = yield* readManagedMemory(config, canonicalUri);
+      const relativePath = resourceUriToWorktreeRelative(config, canonicalUri, team.name);
+      yield* assertSharedWorktreeFileReady(team.config.worktree, relativePath, existing.content);
+      yield* ensureSharedDirectoryChain(config, ov, canonicalUri, false);
+      yield* writeMemoryFile(config, ov, canonicalUri, content, 'replace', false);
+      yield* writeSharedWorktreeFile(team.config.worktree, relativePath, content);
+      yield* publishShareGitChange(team.config.worktree, relativePath, `share: update ${relativePath}`);
+      return;
     }
-    const team = yield* resolveTeam(config, teamName);
-    const existing = yield* readManagedMemory(config, uri);
-    const relativePath = resourceUriToWorktreeRelative(config, uri, team.name);
-    yield* assertSharedWorktreeFileReady(team.config.worktree, relativePath, existing.content);
-    yield* ensureSharedDirectoryChain(config, ov, uri, false);
-    yield* writeMemoryFile(config, ov, uri, content, 'replace', false);
-    yield* writeSharedWorktreeFile(team.config.worktree, relativePath, content);
-    yield* publishShareGitChange(team.config.worktree, relativePath, `share: update ${relativePath}`);
-    return;
+    yield* ensurePersonalDirectoryChain(config, ov, parentUri(canonicalUri));
+    yield* writeMemoryFile(config, ov, canonicalUri, content, 'replace', false);
+  });
+  if (!resourceIdIsManagedMemoryNamespace(canonicalUri)) {
+    return yield* write;
   }
-  yield* ensurePersonalDirectoryChain(config, ov, parentUri(uri));
-  yield* writeMemoryFile(config, ov, uri, content, 'replace', false);
+  const fs = yield* FileSystem.FileSystem;
+  return yield* withMemoryUriLocks(fs, config.agentContextHome, [canonicalUri], write);
 });
 
 const moveMemory = Effect.fn('manager.moveMemory')(function* (

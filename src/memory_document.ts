@@ -42,6 +42,8 @@ export interface MemoryMetadata {
   readonly validFrom?: string;
   readonly validTo?: string;
   readonly visibility?: MemoryVisibility;
+  /** POSIX, repo-relative package/app root; absent means repo-wide. */
+  readonly workspaceScope?: string;
 }
 
 export interface MemoryRecord {
@@ -121,6 +123,7 @@ export function parseMemoryDocument(uri: string, content: string): MemoryRecord 
       validFrom: memoryHeaderValue(header, 'valid_from'),
       validTo: memoryHeaderValue(header, 'valid_to'),
       visibility: parseMemoryVisibility(memoryHeaderValue(header, 'visibility')),
+      workspaceScope: normalizeOptionalMetadata(memoryHeaderValue(header, 'workspace_scope')),
     },
     uri: canonicalResourceInput(uri),
   };
@@ -140,6 +143,7 @@ export function formatMemoryDocument(title: 'MEMORY' | 'HANDOFF', metadata: Memo
     memoryHeaderLine('created_at', metadata.createdAt),
     memoryHeaderLine('updated_at', metadata.updatedAt),
     memoryHeaderLine('visibility', metadata.visibility),
+    memoryHeaderLine('workspace_scope', metadata.workspaceScope),
     memoryHeaderLine('authority', metadata.authority),
     memoryHeaderLine('trust', metadata.trust),
     memoryHeaderLine('valid_from', metadata.validFrom),
@@ -268,6 +272,7 @@ export function inferMemoryMetadata(memory: string): Partial<MemoryMetadata> {
     validFrom: memoryHeaderValue(header, 'valid_from'),
     validTo: memoryHeaderValue(header, 'valid_to'),
     visibility: parseMemoryVisibility(memoryHeaderValue(header, 'visibility')),
+    workspaceScope: normalizeOptionalMetadata(memoryHeaderValue(header, 'workspace_scope')),
   };
 }
 

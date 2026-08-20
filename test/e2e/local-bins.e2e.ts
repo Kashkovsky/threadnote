@@ -115,7 +115,7 @@ describe('built self-contained distribution', () => {
     );
     expect(installOutput).toContain('Activating vector recall index with 0 chunk(s).');
     expect(installedFiles).toContain('layout.json');
-    expect(installedFiles).toContain(join('indexes', 'lexical', 'active-v4.sqlite'));
+    expect(installedFiles).toContain(join('indexes', 'lexical', 'active-v6.sqlite'));
     expect(installedFiles).toContain(join('indexes', 'vectors', coreEmbeddingModelId, vectorIndexDatabaseFilename()));
     expect(installedFiles).not.toContain(join('cache', 'recall-index-v6.json'));
     expect(installedFiles.some(file => /\.py$|server\.pid|server\.lock|ov\.conf/i.test(file))).toBe(false);
@@ -299,7 +299,7 @@ describe('built self-contained distribution', () => {
     expect(repositories).toHaveLength(1);
     const files = await readdir(join(repositoryIndexes, repositories[0]!), {recursive: true});
     expect(files).toContain('graph-v3.sqlite');
-    expect(files).toEqual(expect.arrayContaining([expect.stringMatching(/vectors-v2\.sqlite$/)]));
+    expect(files).toEqual(expect.arrayContaining([expect.stringMatching(/vectors-v4\.sqlite$/)]));
     expect(files).not.toEqual(expect.arrayContaining([expect.stringMatching(/vectors\.bin$/)]));
 
     const exportPath = join(temporaryRoot, 'native-code-graph.json');

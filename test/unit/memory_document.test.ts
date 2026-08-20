@@ -70,6 +70,7 @@ describe('memory document contract', () => {
       validFrom: '2026-07-23T00:00:00.000Z',
       validTo: '2027-07-23T00:00:00.000Z',
       visibility: 'personal',
+      workspaceScope: 'packages/recall',
     };
 
     const document = formatMemoryDocument('MEMORY', metadata, 'Effect workflows compose upward.');

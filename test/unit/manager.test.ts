@@ -7,7 +7,8 @@ import {mkdir, mkdtemp, rm, stat, symlink, writeFile} from '../helpers/node-fs-p
 import {tmpdir} from '../helpers/node-os.js';
 import {join} from '../helpers/node-path.js';
 import {it as effectIt} from '@effect/vitest';
-import {Console, Deferred, Effect, Fiber, Path} from 'effect';
+import {Console, Deferred, Effect, Fiber, FileSystem, Path} from 'effect';
+import {TestClock} from 'effect/testing';
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
 import {
   consolidationAgentScript,
@@ -28,6 +29,7 @@ import * as lifecycle from '../../src/lifecycle.js';
 import * as memory from '../../src/memory.js';
 import * as seeding from '../../src/seeding.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
+import {withMemoryUriLocks} from '../../src/effect/memory_lock.js';
 import * as automaticCompaction from '../../src/code_graph/automatic_compaction.js';
 import {codeGraphLayout} from '../../src/code_graph/layout.js';
 import {makeCodeGraphBuildReporter} from '../../src/code_graph/build_status.js';
@@ -588,6 +590,82 @@ describe('manager http API', () => {
       await server.close();
     }
   });
+
+  effectIt.effect('serializes raw personal Manager saves with the managed-memory URI lock', () =>
+    TestClock.withLive(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const config = yield* Effect.promise(makeRuntime);
+          homes.push(config.agentContextHome);
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const uri = 'threadnote://user/denys/memories/durable/projects/threadnote/manager-ui.md';
+          const memoryPath = path.join(
+            config.agentContextHome,
+            'data',
+            'local',
+            'user',
+            'denys',
+            'memories',
+            'durable',
+            'projects',
+            'threadnote',
+            'manager-ui.md',
+          );
+          const original = yield* fs.readFileString(memoryPath);
+          const updated = [
+            'MEMORY',
+            'kind: durable',
+            'status: active',
+            'project: threadnote',
+            'topic: manager-ui',
+            'source_agent_client: manager',
+            'timestamp: 2026-08-20T00:00:00.000Z',
+            '',
+            'Serialized Manager edit.',
+          ].join('\n');
+          const server = yield* Effect.promise(() => startServer(config, 'secret'));
+          const acquired = yield* Deferred.make<void>();
+          const release = yield* Deferred.make<void>();
+          const owner = yield* withMemoryUriLocks(
+            fs,
+            config.agentContextHome,
+            [uri],
+            Deferred.succeed(acquired, undefined).pipe(Effect.andThen(Deferred.await(release))),
+          ).pipe(Effect.forkScoped);
+          yield* Deferred.await(acquired);
+
+          yield* Effect.gen(function* () {
+            const requestCompleted = yield* Deferred.make<void>();
+            const request = yield* Effect.promise(() =>
+              fetch(`${server.url}/api/memory/save`, {
+                body: JSON.stringify({replaceUri: uri, text: updated}),
+                headers: {authorization: 'Bearer secret', 'content-type': 'application/json'},
+                method: 'POST',
+              }),
+            ).pipe(Effect.ensuring(Deferred.succeed(requestCompleted, undefined)), Effect.forkScoped);
+            yield* Effect.sleep(100);
+
+            expect(yield* Deferred.isDone(requestCompleted)).toBe(false);
+            expect(yield* fs.readFileString(memoryPath)).toBe(original);
+
+            yield* Deferred.succeed(release, undefined);
+            const response = yield* Fiber.join(request);
+            expect(response.status).toBe(200);
+            expect(yield* fs.readFileString(memoryPath)).toBe(updated);
+          }).pipe(
+            Effect.ensuring(
+              Deferred.succeed(release, undefined).pipe(
+                Effect.andThen(Fiber.await(owner)),
+                Effect.andThen(Effect.promise(() => server.close())),
+                Effect.asVoid,
+              ),
+            ),
+          );
+        }),
+      ),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
 
   it('requires the session token for process inventory and termination without signaling', async () => {
     const config = await makeRuntime();
@@ -1574,6 +1652,58 @@ describe('manager http API', () => {
       expect(body.output).toContain('- active records matching topic: 1');
       expect(body.output).toContain('Dry-run memory hygiene plan for project threadnote, topic manager-ui');
       expect(body.output).toContain('Records scanned: 1');
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('audits shared memories for merge review without planning shared mutations', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    const sharedPath = join(
+      config.agentContextHome,
+      'data',
+      config.account,
+      'user',
+      config.user,
+      'memories',
+      'shared',
+      'platform',
+      'durable',
+      'projects',
+      'threadnote',
+      'manager-ui.md',
+    );
+    await mkdir(join(sharedPath, '..'), {recursive: true});
+    await writeFile(
+      sharedPath,
+      [
+        'MEMORY',
+        'kind: durable',
+        'status: active',
+        'project: threadnote',
+        'topic: manager-ui',
+        'source_agent_client: shared-test',
+        'timestamp: 2026-06-06T00:00:00.000Z',
+        '',
+        'Reviewed shared Manager UI notes.',
+      ].join('\n'),
+    );
+    const server = await startServer(config, 'secret');
+    try {
+      const response = await fetch(`${server.url}/api/compact`, {
+        body: JSON.stringify({project: 'threadnote', topic: 'manager-ui'}),
+        headers: {authorization: 'Bearer secret', 'content-type': 'application/json'},
+        method: 'POST',
+      });
+      const body = (await response.json()) as {readonly output: string};
+
+      expect(response.status).toBe(200);
+      expect(body.output).toContain('Records scanned: 2');
+      expect(body.output).toContain('same project/topic spans multiple memory scopes');
+      expect(body.output).toContain('threadnote://user/denys/memories/shared/platform/');
+      expect(body.output).toContain('Archive expired/stale active memories (0):\n- none');
+      expect(body.output).toContain('Forget exact duplicates (0):\n- none');
     } finally {
       await server.close();
     }

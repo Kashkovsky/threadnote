@@ -109,10 +109,10 @@ export const mcpServerEffect = withAnonymousTelemetry(
           : undefined;
         setMcpStartupVersion(yield* currentPackageVersion().pipe(Effect.catch(() => Effect.succeed(undefined))));
         const instructions = memoryScope
-          ? `Cursor Cloud Git beta uses the exclusive shared memory scope ${memoryScope.root}. Call recall_context with an absolute callerCwd, then read returned threadnote:// URIs. Store durable memories with remember_context; writes are committed and pushed to the configured share. Memory tools reject any URI outside that scope. Use inspect_code_graph and analyze_code_graph only for the local checkout; worksets are disabled.`
+          ? `Cursor Cloud Git beta uses the exclusive shared memory scope ${memoryScope.root}. Call recall_context with an absolute callerCwd. Its results are unread pointers, not evidence; read relevant threadnote:// URIs with read_context before relying on them. Store durable memories with remember_context; writes are committed and pushed to the configured share. Memory tools reject any URI outside that scope. Use inspect_code_graph and analyze_code_graph only for the local checkout; worksets are disabled.`
           : toolset === CURSOR_CLOUD_LOCAL_MCP_TOOLSET
             ? 'Cursor Cloud remote-hybrid mode uses this local server only for checkout-specific code graph evidence, diagnostics, and workload attestation. All historical memory reads and writes belong to the managed threadnote-memory HTTP server. Never fall back to local personal memory or a Git memory share.'
-            : 'Call `recall_context` with project and absolute `callerCwd`; read `threadnote://` URIs. Use `inspect_code_graph` before broad `rg`/grep; round-trip `cgs_` IDs via `node`, `neighbors`, or `path`. Use `analyze_code_graph` for whole-repo stats, communities, hubs, and surprises. Retry `state=indexing` after `retryAfterMilliseconds`; exact text search remains useful meanwhile. Write durable knowledge and handoffs directly under stable project/topic; replace duplicates. Use `review_session_context` for additional user-approved candidates. Do not store secrets/customer data/raw logs. Confirm publishes; never publish handoffs/preferences.';
+            : 'Call `recall_context` with project/absolute `callerCwd`. Results are unread `threadnote://` pointers, not evidence; read them via `read_context`. Use `inspect_code_graph` before broad `rg`/grep; round-trip `cgs_` via `node`/`neighbors`/`path`. Use `analyze_code_graph` for architecture. Retry `state=indexing` after `retryAfterMilliseconds`; exact search remains useful. Write durable knowledge/handoffs directly under project/topic; replace duplicates. Use `review_session_context` only for additional user-approved candidates. Do not store secrets/customer data/raw logs. Confirm publishes; never publish handoffs/preferences.';
         const server = new EffectMcpServerAdapter(
           'threadnote-local-adapter',
           '0.2.0',
@@ -146,7 +146,7 @@ function registerResources(
   server.registerResourceTemplate(
     {
       description:
-        'Read one canonical Threadnote URI already returned by recall_context or list_context. This template does not enumerate private memories; resources/read is bounded, while read_context remains the complete canonical read path.',
+        'Read one Threadnote URI already returned by recall_context or list_context. This template does not enumerate private memories; resources/read and read_context are bounded.',
       meta: {'threadnote.io/max-resource-bytes': MCP_RESOURCE_READ_MAX_BYTES},
       mimeType: MCP_RESOURCE_MIME_TYPE,
       name: 'Threadnote canonical resource',
@@ -244,7 +244,7 @@ function registerTools(
       server,
       config,
       'recall_context',
-      'Search memories and seeded project guidance. Pass a stable project and absolute callerCwd for current repo/branch. Returns threadnote:// pointers to read or list. Lower threshold if results are sparse.',
+      'Search memory for a project/current callerCwd. Results are unread threadnote:// pointers, not evidence; read relevant ones with read_context. Lower threshold if sparse.',
       recallProgressTiming,
       memoryScope,
     );
@@ -267,7 +267,7 @@ function registerTools(
       server,
       config,
       'read_context',
-      'Read a threadnote:// file URI returned by recall_context or list_context.',
+      'Turn a recalled or listed threadnote:// pointer into evidence.',
       memoryScope,
     );
   }

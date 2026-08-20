@@ -13,7 +13,9 @@ import {
   type MemoryRelation,
 } from './memory_document.js';
 import {
+  deduplicateLogicalRecallCandidates,
   rankRecallCandidates,
+  recallMemoryContentHash,
   type RecallCandidate,
   type RecallConfidence,
   type RecallCorpusStatistics,
@@ -27,6 +29,7 @@ import {isThreadnoteStorageLayoutReceipt} from './storage/layout.js';
 import type {CommandStatus, JsonObject} from './types.js';
 import {getThreadnoteVersion} from './version.js';
 import {compareVersions} from './version_compare.js';
+import {findWorkspaceComponentManifest} from './workspace_component.js';
 
 class UtilityOperationError extends Error {
   readonly _tag = 'UtilityOperationError' as const;
@@ -629,19 +632,38 @@ export const getInvocationCwd = Effect.fn('utils.getInvocationCwd')(function* ()
 
 export function recallQueryRequestsWorkspaceContext(query: string): boolean {
   const normalized = query.toLowerCase();
-  return /\b(?:this|current)\s+(?:branch|repo|repository|workspace|worktree)\b/.test(normalized);
+  return /\b(?:this|current)\s+(?:app|branch|component|package|project|repo|repository|workspace|worktree)\b/.test(
+    normalized,
+  );
+}
+
+export function recallQueryRequestsBranchContext(query: string): boolean {
+  return /\b(?:this|current)\s+branch\b/i.test(query);
 }
 
 export const enrichRecallQueryWithWorkspaceContext = Effect.fn('utils.enrichRecallQueryWithWorkspaceContext')(
-  function* (query: string, options: {readonly cwd?: string; readonly includeProcessCwd?: boolean} = {}) {
-    return yield* enrichRecallQueryWithWorkspaceTerms(query, options, true);
+  function* (
+    query: string,
+    options: {
+      readonly cwd?: string;
+      readonly includeComponent?: boolean;
+      readonly includeProcessCwd?: boolean;
+    } = {},
+  ) {
+    return yield* enrichRecallQueryWithWorkspaceTerms(query, options, {
+      includeBranch: true,
+      includeComponent: options.includeComponent !== false,
+    });
   },
 );
 
 export const enrichRecallQueryWithWorkspaceProjectContext = Effect.fn(
   'utils.enrichRecallQueryWithWorkspaceProjectContext',
 )(function* (query: string, options: {readonly cwd?: string; readonly includeProcessCwd?: boolean} = {}) {
-  return yield* enrichRecallQueryWithWorkspaceTerms(query, options, false);
+  return yield* enrichRecallQueryWithWorkspaceTerms(query, options, {
+    includeBranch: false,
+    includeComponent: false,
+  });
 });
 
 export const resolveWorkspaceRepoName = Effect.fn('utils.resolveWorkspaceRepoName')(function* (
@@ -655,16 +677,50 @@ export const resolveWorkspaceRepoName = Effect.fn('utils.resolveWorkspaceRepoNam
   return yield* resolveRepoName(cwd);
 });
 
+export const resolveWorkspaceBranch = Effect.fn('utils.resolveWorkspaceBranch')(function* (
+  options: {readonly cwd?: string; readonly includeProcessCwd?: boolean} = {},
+) {
+  const pathService = yield* Path.Path;
+  const cwd = options.cwd ?? (options.includeProcessCwd === false ? undefined : yield* getInvocationCwd());
+  if (!cwd || !pathService.isAbsolute(cwd)) return undefined;
+  const repoRoot = yield* gitValue(['rev-parse', '--show-toplevel'], cwd);
+  if (!repoRoot) return undefined;
+  return (yield* gitValue(['branch', '--show-current'], repoRoot))?.trim() || undefined;
+});
+
+export interface WorkspaceComponentContext {
+  readonly repoRoot: string;
+  /** POSIX, repo-relative root of the nearest nested package/app manifest. */
+  readonly scope: string;
+  readonly terms: readonly string[];
+}
+
+export const resolveWorkspaceComponentContext = Effect.fn('utils.resolveWorkspaceComponentContext')(function* (
+  options: {readonly cwd?: string; readonly includeProcessCwd?: boolean} = {},
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const pathService = yield* Path.Path;
+  const cwd = options.cwd ?? (options.includeProcessCwd === false ? undefined : yield* getInvocationCwd());
+  if (!cwd || !pathService.isAbsolute(cwd)) return undefined;
+  const repoRoot = yield* gitValue(['rev-parse', '--show-toplevel'], cwd);
+  if (!repoRoot) return undefined;
+  return yield* nestedWorkspaceComponentContext(fs, pathService, cwd, repoRoot);
+});
+
 const enrichRecallQueryWithWorkspaceTerms = Effect.fn('utils.enrichRecallQueryWithWorkspaceTerms')(function* (
   query: string,
   options: {readonly cwd?: string; readonly includeProcessCwd?: boolean},
-  includeBranch: boolean,
+  policy: {
+    readonly includeBranch: boolean;
+    readonly includeComponent: boolean;
+  },
 ) {
-  if (!recallQueryRequestsWorkspaceContext(query)) {
+  const requested = recallQueryRequestsWorkspaceContext(query);
+  if (!requested) {
     return query;
   }
-  const terms = yield* currentWorkspaceRecallTerms(options, includeBranch);
-  const additions = terms.filter(term => !query.toLowerCase().includes(term.toLowerCase()));
+  const workspace = yield* currentWorkspaceRecallTerms(options, policy);
+  const additions = workspace.terms.filter(term => !query.toLowerCase().includes(term.toLowerCase()));
   return additions.length > 0 ? `${query} ${additions.join(' ')}` : query;
 });
 
@@ -673,32 +729,95 @@ const currentWorkspaceRecallTerms = Effect.fn('utils.currentWorkspaceRecallTerms
     readonly cwd?: string;
     readonly includeProcessCwd?: boolean;
   },
-  includeBranch: boolean,
+  policy: {readonly includeBranch: boolean; readonly includeComponent: boolean},
 ) {
+  const fs = yield* FileSystem.FileSystem;
   const pathService = yield* Path.Path;
   const system = yield* SystemInfo;
   const cwd = options.cwd ?? (options.includeProcessCwd === false ? undefined : yield* getInvocationCwd());
   if (!cwd || !pathService.isAbsolute(cwd)) {
-    return [];
+    return {terms: []};
   }
   const repoRoot = yield* gitValue(['rev-parse', '--show-toplevel'], cwd);
   if (!repoRoot) {
-    return [];
+    return {terms: []};
   }
   const branch = yield* gitValue(['branch', '--show-current'], repoRoot);
   const repoName = yield* resolveWorkspaceRepoName({cwd, includeProcessCwd: false});
   const parent = pathService.dirname(repoRoot);
-  return uniqueUsefulWorkspaceTerms([
-    {source: 'branch', value: includeBranch ? branch : undefined},
-    {source: 'path', value: repoName},
-    {source: 'path', value: parent === system.homeDirectory ? undefined : pathService.basename(parent)},
-  ]);
+  const componentContext = policy.includeComponent
+    ? yield* nestedWorkspaceComponentContext(fs, pathService, cwd, repoRoot)
+    : undefined;
+  const componentTerms = componentContext?.terms ?? [];
+  return {
+    terms: uniqueUsefulWorkspaceTerms([
+      {source: 'branch', value: policy.includeBranch ? branch : undefined},
+      {source: 'path', value: repoName},
+      {source: 'path', value: parent === system.homeDirectory ? undefined : pathService.basename(parent)},
+      ...componentTerms.map(value => ({source: 'path' as const, value})),
+    ]),
+  };
+});
+
+const nestedWorkspaceComponentContext = Effect.fn('utils.nestedWorkspaceComponentContext')(function* (
+  fs: FileSystem.FileSystem,
+  pathService: Path.Path,
+  cwd: string,
+  repoRoot: string,
+) {
+  const resolvedRoot = yield* fs
+    .realPath(repoRoot)
+    .pipe(Effect.catch(() => Effect.succeed(pathService.resolve(repoRoot))));
+  const cwdInfo = yield* fs.stat(cwd).pipe(Effect.option);
+  const logicalCurrent = pathService.resolve(
+    cwdInfo._tag === 'Some' && cwdInfo.value.type === 'File' ? pathService.dirname(cwd) : cwd,
+  );
+  let current = yield* fs.realPath(logicalCurrent).pipe(Effect.catch(() => Effect.succeed(logicalCurrent)));
+  const relativeCwd = pathService.relative(resolvedRoot, current);
+  if (relativeCwd.startsWith('..') || pathService.isAbsolute(relativeCwd)) {
+    return undefined;
+  }
+  while (current !== resolvedRoot) {
+    const manifest = yield* findWorkspaceComponentManifest(fs, pathService, current);
+    if (manifest) {
+      const relativeRoot = toPosixPath(pathService.relative(resolvedRoot, current));
+      const declaredName = manifest.declaredName;
+      const unscopedName = declaredName?.startsWith('@') ? declaredName.split('/').at(-1) : undefined;
+      return {
+        repoRoot: resolvedRoot,
+        scope: relativeRoot,
+        terms: uniqueUsefulWorkspaceTerms([
+          {source: 'path', value: declaredName},
+          {source: 'path', value: unscopedName},
+          {source: 'path', value: pathService.basename(current)},
+          {source: 'path', value: relativeRoot},
+        ]),
+      } satisfies WorkspaceComponentContext;
+    }
+    const parent = pathService.dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  return undefined;
 });
 
 export function uniqueUsefulWorkspaceTerms(
   values: readonly {readonly source: 'branch' | 'path'; readonly value: string | undefined}[],
 ): readonly string[] {
-  const ignored = new Set(['repos', 'repositories', 'workspaces', 'worktrees']);
+  const ignored = new Set([
+    'apps',
+    'components',
+    'libs',
+    'modules',
+    'packages',
+    'repos',
+    'repositories',
+    'services',
+    'source',
+    'src',
+    'workspaces',
+    'worktrees',
+  ]);
   const seen = new Set<string>();
   const terms: string[] = [];
   for (const {source, value} of values) {
@@ -803,17 +922,42 @@ export function grepOutputHasMatches(output: string): boolean {
   );
 }
 
+export interface RecallScoreThresholdPolicy {
+  readonly source: 'default' | 'environment';
+  readonly value: string;
+}
+
+export class InvalidRecallScoreThreshold extends Error {
+  override readonly name = 'InvalidRecallScoreThreshold';
+}
+
+export function validatedRecallScoreThreshold(value: string, source = 'Recall threshold'): string {
+  const normalized = value.trim();
+  const parsed = Number(normalized);
+  if (!normalized || !Number.isFinite(parsed) || parsed < 0 || parsed > 1) {
+    throw new InvalidRecallScoreThreshold(`${source} must be a number from 0 to 1.`);
+  }
+  return String(parsed);
+}
+
 /**
- * Minimum `ov search` relevance score for recall. A conservative floor that
- * drops only the clearly-irrelevant tail while keeping mid-relevance hits;
- * passed to `ov search --threshold`. Observed strong hits sit ~0.70+, so 0.45
- * trims noise without risking useful results on lower-scoring queries.
- * Overridable per-call (recall `--threshold` / the `threshold` MCP arg) and
- * globally via THREADNOTE_RECALL_THRESHOLD, matching the THREADNOTE_* env
- * convention used for command timeout/output caps.
+ * Topical relevanceScore floor applied before lifecycle and trust multipliers.
+ * Per-call CLI/MCP inputs take precedence at their call sites. The owned 0.3
+ * default preserves the hybrid ranker's existing scale, while an environment
+ * override is marked as configured so exact-match rescue cannot bypass it.
  */
+export const recallScoreThresholdPolicy = Effect.fn('utils.recallScoreThresholdPolicy')(function* () {
+  const configured = (yield* SystemInfo).environment().THREADNOTE_RECALL_THRESHOLD?.trim();
+  if (!configured) return {source: 'default', value: '0.3'} satisfies RecallScoreThresholdPolicy;
+  const value = yield* Effect.try({
+    try: () => validatedRecallScoreThreshold(configured, 'THREADNOTE_RECALL_THRESHOLD'),
+    catch: error => error as InvalidRecallScoreThreshold,
+  });
+  return {source: 'environment', value} satisfies RecallScoreThresholdPolicy;
+});
+
 export const recallScoreThreshold = Effect.fn('utils.recallScoreThreshold')(function* () {
-  return (yield* SystemInfo).environment().THREADNOTE_RECALL_THRESHOLD?.trim() || '0.45';
+  return (yield* recallScoreThresholdPolicy()).value;
 });
 
 export type ExactScopeIntent = 'durable' | 'handoffs' | 'incidents' | 'preferences';
@@ -962,6 +1106,8 @@ export type RecallCategory = (typeof RECALL_CATEGORY_ORDER)[number];
 export interface RecallHit {
   readonly category: RecallCategory;
   readonly contextType: string;
+  readonly equivalentUris?: readonly string[];
+  readonly identityConflict?: boolean;
   /**
    * Query terms this document matched exactly (lexically) via grep. Present when
    * an exact-match pass corroborates a semantic hit, or when the document was
@@ -1392,6 +1538,10 @@ export const RECALL_CATEGORY_RESERVE = 2;
 const RECALL_INDEX_PRESELECTION_MULTIPLIER = 10;
 const RECALL_INDEX_PRESELECTION_MINIMUM = 100;
 
+export function recallIndexPreselectionLimit(resultLimit: number): number {
+  return Math.max(RECALL_INDEX_PRESELECTION_MINIMUM, resultLimit * RECALL_INDEX_PRESELECTION_MULTIPLIER);
+}
+
 interface HybridRecallOptions {
   readonly allowExactRescue?: boolean;
   readonly allowedUriScopes?: readonly string[];
@@ -1407,6 +1557,8 @@ interface HybridRecallOptions {
   readonly queryVariants?: readonly string[];
   readonly records?: readonly MemoryRecord[];
   readonly seedUris?: readonly string[];
+  readonly workspaceBranch?: string;
+  readonly workspaceScope?: string;
 }
 
 /**
@@ -1507,6 +1659,8 @@ function hybridRankRecallHits(
     return {
       ...indexed,
       authority: indexed?.authority ?? (record ? boundedMemoryAuthority(uri, record.metadata) : recallAuthority(hit)),
+      contentHash: indexed?.contentHash ?? (record ? recallMemoryContentHash(record.body) : undefined),
+      equivalentUris: indexed?.equivalentUris,
       exactTerms: hit.exactTerms,
       feedback: context.feedbackByUri?.get(uri),
       fields: {
@@ -1519,8 +1673,10 @@ function hybridRankRecallHits(
           resourceProjectFromUri(hit.uri),
         title: indexed?.fields?.title ?? uri.split('/').at(-1) ?? uri,
         topic: record?.metadata.topic ?? indexed?.fields?.topic ?? uriSlug(hit.uri),
+        workspaceScope: record?.metadata.workspaceScope ?? indexed?.fields?.workspaceScope,
       },
       kind: record?.metadata.kind ?? indexed?.kind ?? memoryKindFromUri(hit.uri),
+      memoryId: record?.metadata.memoryId ?? indexed?.memoryId,
       relations: record
         ? recallRelations(record, context.seedUris ?? [])
         : [...(indexed?.relations ?? []), ...containmentRelations(hit.uri, context.seedUris ?? [])],
@@ -1578,6 +1734,8 @@ function hybridRankRecallHits(
             }
             return {
               ...hit,
+              equivalentUris: ranked.candidate.equivalentUris,
+              identityConflict: ranked.candidate.identityConflict,
               finalScore: ranked.finalScore,
               rankReasons: ranked.reasons,
               rankSignals: ranked.signals,
@@ -1603,20 +1761,10 @@ function boundedRecallIndexCandidates(
   allowedUriScopes: readonly string[] | undefined,
   resultLimit: number,
 ): readonly RecallCandidate[] {
-  const preselectionLimit = Math.max(
-    RECALL_INDEX_PRESELECTION_MINIMUM,
-    resultLimit * RECALL_INDEX_PRESELECTION_MULTIPLIER,
-  );
-  const bounded: RecallCandidate[] = [];
-  for (const candidate of candidates) {
-    if (uriMatchesRecallScopes(candidate.uri, allowedUriScopes)) {
-      bounded.push(candidate);
-      if (bounded.length >= preselectionLimit) {
-        break;
-      }
-    }
-  }
-  return bounded;
+  const preselectionLimit = recallIndexPreselectionLimit(resultLimit);
+  return deduplicateLogicalRecallCandidates(
+    candidates.filter(candidate => uriMatchesRecallScopes(candidate.uri, allowedUriScopes)),
+  ).slice(0, preselectionLimit);
 }
 
 function recallAuthority(hit: RecallHit): 'agent_generated' | 'external' | 'reviewed_shared' {

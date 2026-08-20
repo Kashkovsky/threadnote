@@ -4,7 +4,7 @@ import {parseResourceId, resourceIdIsWithin} from '../../storage/resource-id.js'
 import {ResourceStore, type ResourceStoreError} from '../resource-store.js';
 import {MCP_RESOURCE_ERROR_DATA, MCP_RESOURCE_NOT_FOUND_ERROR_DATA} from './mcp.js';
 
-export const MCP_RESOURCE_READ_MAX_BYTES = 1_048_576;
+export const MCP_RESOURCE_READ_MAX_BYTES = 4_500;
 export const MCP_RESOURCE_MIME_TYPE = 'text/plain; charset=utf-8';
 // Effect beta.102 negotiates MCP 2025-06-18, whose resources contract uses
 // this server-error code for a resource that does not exist.
@@ -68,7 +68,7 @@ function canonicalThreadnoteUri(uri: string): Effect.Effect<string, McpSchema.In
 function resourceTooLarge(): McpSchema.InvalidParams {
   return new McpSchema.InvalidParams({
     data: MCP_RESOURCE_ERROR_DATA,
-    message: `Threadnote resource exceeds the ${MCP_RESOURCE_READ_MAX_BYTES}-byte resources/read limit; use read_context for a complete canonical read.`,
+    message: `Threadnote resource exceeds the ${MCP_RESOURCE_READ_MAX_BYTES}-byte resources/read limit; use read_context pagination.`,
   });
 }
 

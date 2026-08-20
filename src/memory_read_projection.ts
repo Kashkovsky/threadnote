@@ -1,0 +1,454 @@
+import {sha256HexSync} from './crypto/sha256.js';
+
+export const MEMORY_READ_DEFAULT_BUDGET_TOKENS = 1_500;
+export const MEMORY_READ_MAXIMUM_BUDGET_TOKENS = 1_500;
+export const MEMORY_READ_MINIMUM_BUDGET_TOKENS = 128;
+export const MEMORY_READ_CURSOR_TTL_MILLISECONDS = 10 * 60 * 1_000;
+
+const MEMORY_READ_ESTIMATED_BYTES_PER_TOKEN = 3;
+const MEMORY_READ_CURSOR_PREFIX = 'tnrc_';
+const MEMORY_READ_CURSOR_MAXIMUM_ENTRIES = 256;
+const MEMORY_READ_WARNING_MAXIMUM_BYTES = 160;
+const UTF8 = new TextEncoder();
+
+export type MemoryReadMode = 'content' | 'outline';
+
+export interface MemoryReadResource {
+  readonly text: string;
+  readonly uri: string;
+}
+
+export interface MemoryReadPosition {
+  readonly characterOffset: number;
+  readonly resourceIndex: number;
+}
+
+export interface MemoryReadCursorState {
+  readonly mode: MemoryReadMode;
+  readonly position: MemoryReadPosition;
+  readonly section?: string;
+  readonly sourceHashes: readonly string[];
+  readonly uris: readonly string[];
+}
+
+export interface MemoryReadPageStructuredContent {
+  readonly budgetTokens: number;
+  readonly complete: boolean;
+  readonly contentBytes: number;
+  readonly cursor?: string;
+  readonly estimatedTokens: number;
+  readonly mode: MemoryReadMode;
+  readonly resource: number;
+  readonly resourceCount: number;
+  readonly section?: string;
+  readonly type: 'threadnote-read-page';
+  readonly version: 1;
+  readonly warnings?: readonly string[];
+}
+
+export interface MemoryReadPage {
+  readonly complete: boolean;
+  readonly content: string;
+  readonly nextPosition?: MemoryReadPosition;
+  readonly receipt?: string;
+  readonly structuredContent: MemoryReadPageStructuredContent;
+  readonly uri: string;
+}
+
+export class MemoryReadProjectionError extends Error {
+  override readonly name = 'MemoryReadProjectionError';
+}
+
+interface StoredCursor {
+  readonly expiresAt: number;
+  readonly state: MemoryReadCursorState;
+}
+
+/**
+ * Process-local cursors deliberately contain no source identity. They are
+ * single-use so retries cannot race two divergent continuations, and bounded
+ * so abandoned reads cannot grow the MCP process without limit.
+ */
+export class MemoryReadCursorStore {
+  readonly #entries = new Map<string, StoredCursor>();
+
+  constructor(
+    readonly ttlMilliseconds = MEMORY_READ_CURSOR_TTL_MILLISECONDS,
+    readonly maximumEntries = MEMORY_READ_CURSOR_MAXIMUM_ENTRIES,
+  ) {
+    if (!Number.isSafeInteger(ttlMilliseconds) || ttlMilliseconds < 1) {
+      throw new MemoryReadProjectionError('Memory read cursor TTL must be a positive integer.');
+    }
+    if (!Number.isSafeInteger(maximumEntries) || maximumEntries < 1) {
+      throw new MemoryReadProjectionError('Memory read cursor capacity must be a positive integer.');
+    }
+  }
+
+  put(cursor: string, state: MemoryReadCursorState, now: number): void {
+    this.#prune(now);
+    this.#entries.delete(cursor);
+    while (this.#entries.size >= this.maximumEntries) {
+      const oldest = this.#entries.keys().next().value as string | undefined;
+      if (oldest === undefined) break;
+      this.#entries.delete(oldest);
+    }
+    this.#entries.set(cursor, {expiresAt: now + this.ttlMilliseconds, state});
+  }
+
+  take(cursor: string, now: number): MemoryReadCursorState | undefined {
+    this.#prune(now);
+    const stored = this.#entries.get(cursor);
+    if (!stored) return undefined;
+    this.#entries.delete(cursor);
+    return stored.state;
+  }
+
+  #prune(now: number): void {
+    for (const [cursor, stored] of this.#entries) {
+      if (stored.expiresAt <= now) this.#entries.delete(cursor);
+    }
+  }
+}
+
+export function memoryReadCursorToken(entropy: string): string {
+  return `${MEMORY_READ_CURSOR_PREFIX}${sha256HexSync(entropy).slice(0, 32)}`;
+}
+
+export function memoryReadSourceHashes(resources: readonly MemoryReadResource[]): string[] {
+  return resources.map(resource => sha256HexSync(resource.text));
+}
+
+export function memoryReadSourcesMatch(
+  resources: readonly MemoryReadResource[],
+  expectedHashes: readonly string[],
+): boolean {
+  if (resources.length !== expectedHashes.length) return false;
+  return resources.every((resource, index) => sha256HexSync(resource.text) === expectedHashes[index]);
+}
+
+export function projectMemoryReadPage(
+  resources: readonly MemoryReadResource[],
+  options: {
+    readonly budgetTokens?: number;
+    readonly continuationCursor: string;
+    readonly includeReceipt?: boolean;
+    readonly mode?: MemoryReadMode;
+    readonly position?: MemoryReadPosition;
+    readonly reservedResponseBytes?: number;
+    readonly section?: string;
+    readonly toolName?: string;
+    readonly warnings?: readonly string[];
+  },
+): MemoryReadPage {
+  if (resources.length === 0) throw new MemoryReadProjectionError('Memory read requires at least one resource.');
+  const budgetTokens = options.budgetTokens ?? MEMORY_READ_DEFAULT_BUDGET_TOKENS;
+  if (
+    !Number.isSafeInteger(budgetTokens) ||
+    budgetTokens < MEMORY_READ_MINIMUM_BUDGET_TOKENS ||
+    budgetTokens > MEMORY_READ_MAXIMUM_BUDGET_TOKENS
+  ) {
+    throw new MemoryReadProjectionError(
+      `Memory read budgetTokens must be an integer from ${MEMORY_READ_MINIMUM_BUDGET_TOKENS} through ${MEMORY_READ_MAXIMUM_BUDGET_TOKENS}.`,
+    );
+  }
+  if (
+    options.continuationCursor.length < 1 ||
+    options.continuationCursor.length > 8_192 ||
+    !/^[A-Za-z0-9._:-]+$/u.test(options.continuationCursor)
+  ) {
+    throw new MemoryReadProjectionError('Memory read continuation cursor is invalid.');
+  }
+  const mode = options.mode ?? 'content';
+  const section = normalizedSection(options.section);
+  if (mode === 'outline' && section !== undefined) {
+    throw new MemoryReadProjectionError('Memory read section cannot be combined with mode=outline.');
+  }
+  const position = options.position ?? {characterOffset: 0, resourceIndex: 0};
+  if (
+    !Number.isSafeInteger(position.resourceIndex) ||
+    position.resourceIndex < 0 ||
+    position.resourceIndex >= resources.length ||
+    !Number.isSafeInteger(position.characterOffset) ||
+    position.characterOffset < 0
+  ) {
+    throw new MemoryReadProjectionError('Memory read continuation position is invalid.');
+  }
+
+  const projectedResources = resources.map(resource => ({
+    ...resource,
+    text:
+      mode === 'outline' ? memoryMarkdownOutline(resource.text) : selectMemoryMarkdownSection(resource.text, section),
+  }));
+  const resource = projectedResources[position.resourceIndex]!;
+  if (position.characterOffset > resource.text.length) {
+    throw new MemoryReadProjectionError('Memory read continuation position is stale.');
+  }
+  const warnings = boundedWarnings(options.warnings);
+  const reservedResponseBytes = options.reservedResponseBytes ?? 0;
+  if (!Number.isSafeInteger(reservedResponseBytes) || reservedResponseBytes < 0) {
+    throw new MemoryReadProjectionError('Memory read reserved response bytes must be a non-negative integer.');
+  }
+  const maximumBytes = budgetTokens * MEMORY_READ_ESTIMATED_BYTES_PER_TOKEN - reservedResponseBytes;
+  if (maximumBytes < 1) {
+    throw new MemoryReadProjectionError(`Memory read budgetTokens=${budgetTokens} cannot fit required metadata.`);
+  }
+  const receipt =
+    options.includeReceipt === false
+      ? undefined
+      : `Continue with ${options.toolName ?? 'read_context'} cursor ${options.continuationCursor}.`;
+  const responseOptionCandidates = [
+    {section, warnings},
+    {section, warnings: undefined},
+    {section: undefined, warnings: undefined},
+  ] as const;
+  const responseOptions = responseOptionCandidates.find(candidate => {
+    const envelope = baseStructuredContent({
+      budgetTokens,
+      complete: false,
+      contentBytes: maximumBytes,
+      cursor: options.continuationCursor,
+      estimatedTokens: budgetTokens,
+      mode,
+      resourceCount: resources.length,
+      resourceIndex: position.resourceIndex,
+      section: candidate.section,
+      warnings: candidate.warnings,
+    });
+    return maximumBytes - utf8Bytes(receipt ?? '') - utf8Bytes(JSON.stringify(envelope)) >= 4;
+  }) ?? {section: undefined, warnings: undefined};
+
+  const completeCandidate = resource.text.slice(position.characterOffset);
+  const isLastResource = position.resourceIndex === resources.length - 1;
+  if (isLastResource) {
+    const completeEnvelope = baseStructuredContent({
+      budgetTokens,
+      complete: true,
+      contentBytes: utf8Bytes(completeCandidate),
+      mode,
+      resourceCount: resources.length,
+      resourceIndex: position.resourceIndex,
+      section: responseOptions.section,
+      warnings: responseOptions.warnings,
+    });
+    const completed = finalizedStructuredContent(completeEnvelope, completeCandidate);
+    if (responseBytes(completeCandidate, undefined, completed) <= maximumBytes) {
+      return {complete: true, content: completeCandidate, structuredContent: completed, uri: resource.uri};
+    }
+  }
+
+  const conservativeEnvelope = baseStructuredContent({
+    budgetTokens,
+    complete: false,
+    contentBytes: maximumBytes,
+    cursor: options.continuationCursor,
+    estimatedTokens: budgetTokens,
+    mode,
+    resourceCount: resources.length,
+    resourceIndex: position.resourceIndex,
+    section: responseOptions.section,
+    warnings: responseOptions.warnings,
+  });
+  const availableContentBytes =
+    maximumBytes - utf8Bytes(receipt ?? '') - utf8Bytes(JSON.stringify(conservativeEnvelope));
+  if (availableContentBytes < 1) {
+    throw new MemoryReadProjectionError(`Memory read budgetTokens=${budgetTokens} cannot fit the paging envelope.`);
+  }
+  const slice = utf8Prefix(resource.text, position.characterOffset, availableContentBytes);
+  if (slice.end === position.characterOffset && position.characterOffset < resource.text.length) {
+    throw new MemoryReadProjectionError(`Memory read budgetTokens=${budgetTokens} cannot fit one Unicode character.`);
+  }
+  const nextPosition =
+    slice.end < resource.text.length
+      ? {characterOffset: slice.end, resourceIndex: position.resourceIndex}
+      : {characterOffset: 0, resourceIndex: position.resourceIndex + 1};
+  if (nextPosition.resourceIndex >= resources.length) {
+    throw new MemoryReadProjectionError('Memory read projection produced an invalid terminal continuation.');
+  }
+  const envelope = baseStructuredContent({
+    budgetTokens,
+    complete: false,
+    contentBytes: utf8Bytes(slice.text),
+    cursor: options.continuationCursor,
+    mode,
+    resourceCount: resources.length,
+    resourceIndex: position.resourceIndex,
+    section: responseOptions.section,
+    warnings: responseOptions.warnings,
+  });
+  const structuredContent = finalizedStructuredContent(envelope, slice.text, receipt);
+  if (responseBytes(slice.text, receipt, structuredContent) > maximumBytes) {
+    throw new MemoryReadProjectionError('Memory read projection exceeded its response budget.');
+  }
+  return {
+    complete: false,
+    content: slice.text,
+    nextPosition,
+    receipt,
+    structuredContent,
+    uri: resource.uri,
+  };
+}
+
+export function memoryReadPageEstimatedTokens(page: MemoryReadPage): number {
+  return estimatedTokens(responseBytes(page.content, page.receipt, page.structuredContent));
+}
+
+export function memoryMarkdownOutline(content: string): string {
+  const headings = markdownHeadings(content);
+  if (headings.length === 0) return `- (document without Markdown headings; ${utf8Bytes(content)} bytes)\n`;
+  return `${headings
+    .map((heading, index) => {
+      const next = headings.slice(index + 1).find(candidate => candidate.level <= heading.level);
+      const bytes = utf8Bytes(content.slice(heading.start, next?.start ?? content.length));
+      return `- ${'#'.repeat(heading.level)} ${heading.title} (${bytes} bytes)`;
+    })
+    .join('\n')}\n`;
+}
+
+export function selectMemoryMarkdownSection(content: string, section: string | undefined): string {
+  if (section === undefined) return content;
+  const selector = markdownSectionSelector(section);
+  const headings = markdownHeadings(content);
+  const index = headings.findIndex(
+    heading => heading.title === selector.title && (selector.level === undefined || heading.level === selector.level),
+  );
+  if (index < 0) throw new MemoryReadProjectionError(`Memory section "${section}" was not found.`);
+  const heading = headings[index]!;
+  const next = headings.slice(index + 1).find(candidate => candidate.level <= heading.level);
+  return content.slice(heading.start, next?.start ?? content.length);
+}
+
+interface MarkdownHeading {
+  readonly level: number;
+  readonly start: number;
+  readonly title: string;
+}
+
+function markdownHeadings(content: string): MarkdownHeading[] {
+  const headings: MarkdownHeading[] = [];
+  let fence: {readonly character: '`' | '~'; readonly length: number} | undefined;
+  let start = 0;
+  while (start < content.length) {
+    const newline = content.indexOf('\n', start);
+    const end = newline === -1 ? content.length : newline;
+    const line = content.slice(start, end).replace(/\r$/u, '');
+    if (fence) {
+      const closing = /^ {0,3}(`+|~+)[\t ]*$/u.exec(line)?.[1];
+      if (closing?.[0] === fence.character && closing.length >= fence.length) fence = undefined;
+    } else {
+      const opening = /^ {0,3}(`{3,}|~{3,})(.*)$/u.exec(line);
+      const sequence = opening?.[1];
+      const suffix = opening?.[2] ?? '';
+      if (sequence && (sequence[0] === '~' || !suffix.includes('`'))) {
+        fence = {character: sequence[0] as '`' | '~', length: sequence.length};
+      } else {
+        const heading = /^ {0,3}(#{1,6})[\t ]+(.+?)[\t ]*#*[\t ]*$/u.exec(line);
+        const hashes = heading?.[1];
+        const rawTitle = heading?.[2];
+        if (hashes && rawTitle) headings.push({level: hashes.length, start, title: rawTitle.trim()});
+      }
+    }
+    if (newline === -1) break;
+    start = newline + 1;
+  }
+  return headings;
+}
+
+function markdownSectionSelector(section: string): {readonly level?: number; readonly title: string} {
+  const match = /^(#{1,6})[\t ]+(.+)$/u.exec(section);
+  return match?.[1] && match[2]
+    ? {level: match[1].length, title: match[2].trim().replace(/[\t ]+#+[\t ]*$/u, '')}
+    : {title: section};
+}
+
+function normalizedSection(section: string | undefined): string | undefined {
+  if (section === undefined) return undefined;
+  const normalized = section.trim();
+  if (normalized.length === 0 || utf8Bytes(normalized) > 256) {
+    throw new MemoryReadProjectionError('Memory read section must be 1 through 256 UTF-8 bytes.');
+  }
+  return normalized;
+}
+
+function boundedWarnings(warnings: readonly string[] | undefined): string[] | undefined {
+  if (!warnings || warnings.length === 0) return undefined;
+  const combined = warnings
+    .map(warning => warning.trim())
+    .filter(Boolean)
+    .join('; ');
+  if (!combined) return undefined;
+  return [utf8Prefix(combined, 0, MEMORY_READ_WARNING_MAXIMUM_BYTES).text];
+}
+
+function baseStructuredContent(input: {
+  readonly budgetTokens: number;
+  readonly complete: boolean;
+  readonly contentBytes: number;
+  readonly cursor?: string;
+  readonly estimatedTokens?: number;
+  readonly mode: MemoryReadMode;
+  readonly resourceCount: number;
+  readonly resourceIndex: number;
+  readonly section?: string;
+  readonly warnings?: readonly string[];
+}): MemoryReadPageStructuredContent {
+  return {
+    budgetTokens: input.budgetTokens,
+    complete: input.complete,
+    contentBytes: input.contentBytes,
+    ...(input.cursor === undefined ? {} : {cursor: input.cursor}),
+    estimatedTokens: input.estimatedTokens ?? 0,
+    mode: input.mode,
+    resource: input.resourceIndex + 1,
+    resourceCount: input.resourceCount,
+    ...(input.section === undefined ? {} : {section: input.section}),
+    type: 'threadnote-read-page',
+    version: 1,
+    ...(input.warnings === undefined ? {} : {warnings: input.warnings}),
+  };
+}
+
+function finalizedStructuredContent(
+  input: MemoryReadPageStructuredContent,
+  content: string,
+  receipt?: string,
+): MemoryReadPageStructuredContent {
+  let value = input;
+  for (let iteration = 0; iteration < 4; iteration += 1) {
+    const next = {...value, estimatedTokens: estimatedTokens(responseBytes(content, receipt, value))};
+    if (next.estimatedTokens === value.estimatedTokens) return next;
+    value = next;
+  }
+  return value;
+}
+
+function responseBytes(
+  content: string,
+  receipt: string | undefined,
+  structuredContent: MemoryReadPageStructuredContent,
+): number {
+  return utf8Bytes(content) + utf8Bytes(receipt ?? '') + utf8Bytes(JSON.stringify(structuredContent));
+}
+
+function estimatedTokens(bytes: number): number {
+  return Math.ceil(bytes / MEMORY_READ_ESTIMATED_BYTES_PER_TOKEN);
+}
+
+function utf8Bytes(value: string): number {
+  return UTF8.encode(value).byteLength;
+}
+
+function utf8Prefix(value: string, start: number, maximumBytes: number): {readonly end: number; readonly text: string} {
+  let bytes = 0;
+  let end = start;
+  while (end < value.length) {
+    const codePoint = value.codePointAt(end);
+    if (codePoint === undefined) break;
+    const width = codePoint > 0xffff ? 2 : 1;
+    const characterBytes = utf8Bytes(value.slice(end, end + width));
+    if (bytes + characterBytes > maximumBytes) break;
+    bytes += characterBytes;
+    end += width;
+  }
+  return {end, text: value.slice(start, end)};
+}

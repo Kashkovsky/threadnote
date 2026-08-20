@@ -613,7 +613,7 @@ threadnote forget <threadnote-uri> --dry-run`,
         },
         {
           type: 'paragraph',
-          text: 'Compact is scoped and previews by default. It can archive stale handoffs and remove exact duplicates while preserving the selected current record. Archive writes provenance before removing the active source. Forget removes local canonical context and should be previewed when the target is broad.',
+          text: 'Compact is scoped and previews by default. It archives expired personal memories, archives explicitly terminal handoffs after seven days, reviews nonterminal handoffs after fourteen days, and archives non-pending handoffs after thirty days. It also removes exact personal duplicates and proposes cross-kind or cross-share merges. Shared memories are audit-only and never mutated by compact. Every action is content-revalidated before apply; archive preserves provenance before removing an active source.',
         },
       ],
     },

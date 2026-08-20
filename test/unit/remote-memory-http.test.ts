@@ -5,6 +5,7 @@ import type {RemoteMemoryServiceConfig} from '../../src/remote_memory/config.js'
 import {remoteMemoryError} from '../../src/remote_memory/errors.js';
 import {createRemoteMemoryHttpHandler} from '../../src/remote_memory/http_transport.js';
 import type {OAuthPrincipalClaims} from '../../src/remote_memory/oauth.js';
+import type {RemoteMemoryRecallResult} from '../../src/remote_memory/postgres_repository.js';
 import type {
   RemoteMemoryServiceDependencies,
   RemoteMemoryServiceRepository,
@@ -16,6 +17,7 @@ const PROTOCOL_VERSION = '2025-06-18';
 interface Fixture {
   readonly calls: string[];
   readonly handler: (request: Request) => Promise<Response>;
+  readonly readInputs: Array<{readonly revision?: string; readonly uri: string}>;
 }
 
 function fixture(
@@ -23,6 +25,9 @@ function fixture(
     readonly allowedProjects?: ReadonlySet<string> | 'all';
     readonly capabilities?: readonly string[];
     readonly rateLimitFailure?: boolean;
+    readonly recallResults?: readonly RemoteMemoryRecallResult[];
+    readonly readContent?: string;
+    readonly readRevision?: string;
     readonly ready?: boolean;
     readonly receipt?: Partial<RemoteMemoryReceiptV1>;
     readonly repositoryFailure?: Error;
@@ -31,6 +36,7 @@ function fixture(
   } = {},
 ): Fixture {
   const calls: string[] = [];
+  const readInputs: Array<{readonly revision?: string; readonly uri: string}> = [];
   const OAuth: OAuthPrincipalClaims = {
     issuer: 'https://auth.example.test',
     scopes: new Set(options.capabilities ?? ['memory:read', 'memory:write:durable', 'memory:write:handoff']),
@@ -69,12 +75,14 @@ function fixture(
     },
     read: async (_principal, input, requestId) => {
       calls.push(`read:${requestId}`);
+      readInputs.push({...(input.revision === undefined ? {} : {revision: input.revision}), uri: input.uri});
       if (options.repositoryFailure) throw options.repositoryFailure;
+      const revision = input.revision ?? options.readRevision ?? 'revision-1';
       return {
-        content: 'MEMORY\nkind: durable\n\nFixture body',
+        content: options.readContent ?? 'MEMORY\nkind: durable\n\nFixture body',
         kind: 'durable',
         project: 'threadnote',
-        receipt: {...receipt, requestId, uri: input.uri},
+        receipt: {...receipt, requestId, revision, uri: input.uri},
         status: 'active',
         topic: 'fixture',
         uri: input.uri,
@@ -82,7 +90,7 @@ function fixture(
     },
     recall: async (_principal, input, requestId) => {
       calls.push(`recall:${requestId}:${input.query}`);
-      return {receipt: {...receipt, requestId}, results: []};
+      return {receipt: {...receipt, requestId}, results: options.recallResults ?? []};
     },
     remember: async (_principal, input, requestId) => {
       calls.push(`remember:${requestId}:${input.operationId}`);
@@ -137,6 +145,7 @@ function fixture(
       config: {...configFixture(), globallyEnabled: options.serviceEnabled ?? true},
       dependencies,
     }),
+    readInputs,
   };
 }
 
@@ -324,6 +333,91 @@ describe('remote memory HTTP transport', () => {
     expect(test.calls).toContain('rate:memory_status');
   });
 
+  it('projects 100 worst-case remote recall hits as a compact unread prefix with bounded explain details', async () => {
+    const recallResults: RemoteMemoryRecallResult[] = Array.from({length: 100}, (_, index) => ({
+      excerpt: `REMOTE_EXCERPT_${index.toString().padStart(3, '0')}_${'e'.repeat(600)}`,
+      kind: index % 2 === 0 ? 'durable' : 'handoff',
+      project: 'threadnote',
+      revision: `revision-${index}`,
+      score: Number((1 - index / 200).toFixed(3)),
+      status: 'active',
+      topic: `topic-${index.toString().padStart(3, '0')}`,
+      uri: `threadnote://share/share-1/memories/durable/threadnote/topic-${index.toString().padStart(3, '0')}.md`,
+    }));
+    const test = fixture({recallResults, trackRateLimits: true});
+    const callRecall = async (id: number, explain: boolean) => {
+      const response = await test.handler(
+        mcpRequest({
+          id,
+          method: 'tools/call',
+          params: {
+            arguments: {
+              budgetTokens: 1_500,
+              explain,
+              limit: 100,
+              project: 'threadnote',
+              query: 'worst case recall',
+              version: 1,
+            },
+            name: 'recall_context',
+          },
+        }),
+      );
+      const payload = await json(response);
+      const result = payload.result as {
+        readonly content?: readonly {readonly text?: string; readonly type?: string}[];
+        readonly isError?: boolean;
+        readonly structuredContent?: Readonly<Record<string, unknown>>;
+      };
+      expect(result.isError, JSON.stringify(payload)).not.toBe(true);
+      const blocks = result.content ?? [];
+      const structured = result.structuredContent ?? {};
+      const responseBytes =
+        blocks.reduce(
+          (total, block) => total + (block.type === 'text' ? Buffer.byteLength(block.text ?? '', 'utf8') : 0),
+          0,
+        ) + Buffer.byteLength(JSON.stringify(structured), 'utf8');
+      expect(responseBytes).toBeLessThanOrEqual(1_500 * 3);
+      expect(structured.estimatedTokens).toBe(Math.ceil(responseBytes / 3));
+      return {blocks, structured};
+    };
+
+    const compact = await callRecall(3_100, false);
+    const compactResults = compact.structured.results as readonly Readonly<Record<string, unknown>>[];
+    expect(compactResults.length).toBeGreaterThan(0);
+    expect(compactResults.length).toBeLessThan(100);
+    expect(compactResults.map(result => result.uri)).toEqual(
+      recallResults.slice(0, compactResults.length).map(result => result.uri),
+    );
+    expect(compactResults.every(result => result.readState === 'unread' && typeof result.reason === 'string')).toBe(
+      true,
+    );
+    expect(compactResults.every(result => !('excerpt' in result))).toBe(true);
+    expect(JSON.stringify({content: compact.blocks, structured: compact.structured})).not.toContain('REMOTE_EXCERPT_');
+    expect(compact.structured).toMatchObject({
+      confidence: {level: 'high', topScore: 1},
+      explain: false,
+      nextAction: {tool: 'read_context', uris: recallResults.slice(0, 3).map(result => result.uri)},
+      omittedResults: 100 - compactResults.length,
+      rankerVersion: 'remote-postgres-tsvector-v1',
+      totalResults: 100,
+      type: 'threadnote-remote-recall',
+    });
+    expect(compact.blocks[0]?.text).not.toContain(recallResults[0]!.uri);
+
+    const explained = await callRecall(3_101, true);
+    const explainedResults = explained.structured.results as readonly Readonly<Record<string, unknown>>[];
+    expect(explainedResults.length).toBeGreaterThan(0);
+    expect(explainedResults.length).toBeLessThan(compactResults.length);
+    expect(explainedResults[0]?.excerpt).toEqual(expect.stringContaining('REMOTE_EXCERPT_000_'));
+    expect(explained.structured.explain).toBe(true);
+    expect(explained.blocks[0]?.text).not.toContain('REMOTE_EXCERPT_000_');
+    expect(
+      JSON.stringify({content: explained.blocks, structured: explained.structured}).match(/REMOTE_EXCERPT_000_/gu),
+    ).toHaveLength(1);
+    expect(test.calls.filter(call => call === 'rate:recall_context')).toHaveLength(2);
+  });
+
   it.each([{policyVersion: 'wrong-grant-policy'}, {sharePolicyVersion: 'wrong-share-policy'}])(
     'rejects a repository receipt whose grant/share policy attestation differs: %#',
     async receipt => {
@@ -378,6 +472,73 @@ describe('remote memory HTTP transport', () => {
     });
     expect(test.calls).toContain('rate:read_context');
     expect(test.calls).toContain('read:request-123');
+  });
+
+  it('reconstructs a 1 MB remote memory through revision-pinned pages within the declared budget', async () => {
+    const prefix = 'MEMORY\nkind: durable\n\nREMOTE_PRIVATE_SENTINEL\n';
+    const content = `${prefix}${'x'.repeat(1_000_000 - prefix.length)}`;
+    const test = fixture({readContent: content, trackRateLimits: true});
+    const uri = 'threadnote://share/share-1/memories/durable/threadnote/fixture.md';
+    const budgetTokens = 1_500;
+    const reconstructed: string[] = [];
+    let cursor: string | undefined;
+
+    for (let pageNumber = 0; pageNumber < 1_000; pageNumber += 1) {
+      const response = await test.handler(
+        mcpRequest({
+          id: 4_000 + pageNumber,
+          method: 'tools/call',
+          params: {
+            arguments: cursor === undefined ? {budgetTokens, uri, version: 1} : {budgetTokens, cursor, version: 1},
+            name: 'read_context',
+          },
+        }),
+      );
+      const payload = await json(response);
+      const result = payload.result as {
+        readonly content?: readonly {readonly text?: string; readonly type?: string}[];
+        readonly isError?: boolean;
+        readonly structuredContent?: Readonly<Record<string, unknown>>;
+      };
+      expect(result.isError, JSON.stringify(payload)).not.toBe(true);
+      const blocks = result.content ?? [];
+      const pageContent = blocks[0]?.text ?? '';
+      const structured = result.structuredContent ?? {};
+      const responseBytes =
+        blocks.reduce(
+          (total, block) => total + (block.type === 'text' ? Buffer.byteLength(block.text ?? '', 'utf8') : 0),
+          0,
+        ) + Buffer.byteLength(JSON.stringify(structured), 'utf8');
+      expect(responseBytes).toBeLessThanOrEqual(budgetTokens * 3);
+      expect(structured.estimatedTokens).toBe(Math.ceil(responseBytes / 3));
+      expect(structured).not.toHaveProperty('content');
+      reconstructed.push(pageContent);
+      if (structured.complete === true) {
+        expect(structured.cursor).toBeUndefined();
+        break;
+      }
+      expect(structured.cursor).toMatch(/^tnrr1\.[0-9a-f]{64}\./u);
+      cursor = structured.cursor as string;
+      if (pageNumber === 999) throw new Error('Remote memory pagination did not terminate.');
+    }
+
+    expect(reconstructed.join('')).toBe(content);
+    expect(test.readInputs[0]).toEqual({uri});
+    expect(test.readInputs.slice(1).every(input => input.revision === 'revision-1')).toBe(true);
+    expect(test.readInputs.length).toBeLessThanOrEqual(300);
+    expect(test.calls.filter(call => call === 'rate:read_context')).toHaveLength(test.readInputs.length);
+  }, 30_000);
+
+  it('refuses to expose an oversized remote memory through resources/read', async () => {
+    const privateBody = `REMOTE_RESOURCE_PRIVATE_SENTINEL\n${'x'.repeat(10_000)}`;
+    const test = fixture({readContent: privateBody});
+    const uri = 'threadnote://share/share-1/memories/durable/threadnote/fixture.md';
+    const response = await test.handler(mcpRequest({id: 321, method: 'resources/read', params: {uri}}));
+    const serialized = JSON.stringify(await json(response));
+
+    expect(serialized).toContain('resources/read cap');
+    expect(serialized).toContain('paged read_context');
+    expect(serialized).not.toContain('REMOTE_RESOURCE_PRIVATE_SENTINEL');
   });
 
   it('rejects resource traversal to a different share without reading storage', async () => {

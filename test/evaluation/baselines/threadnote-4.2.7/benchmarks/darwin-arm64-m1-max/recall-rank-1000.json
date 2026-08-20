@@ -1,0 +1,85 @@
+{
+  "createdAt": "2026-08-20T11:06:22.482Z",
+  "environment": {
+    "architecture": "arm64",
+    "commit": "6f090189249de0a95c24d3084946f1a94360653e",
+    "cpu": "Apple M1 Max",
+    "dirty": false,
+    "fixtureHash": "dbc8258af5e0e10b99e34eb55f8e5b0b2b992e7f647d5726ace7ae2e12deab74",
+    "memoryBytes": 68719476736,
+    "node": "bun/1.3.14",
+    "operatingSystem": "macOS 27.0",
+    "packageManager": "bun/1.3.14",
+    "runner": "threadnote-recall-e2e",
+    "runnerVersion": "2"
+  },
+  "measurements": [
+    {
+      "maximum": 74.581959,
+      "mean": 71.36234168000001,
+      "minimum": 69.093,
+      "name": "hybrid-rank-one-query",
+      "p50": 71.068208,
+      "p95": 74.477875,
+      "p99": 74.581959,
+      "samples": 25,
+      "unit": "milliseconds"
+    },
+    {
+      "maximum": 14.473246204391183,
+      "mean": 14.019668133868706,
+      "minimum": 13.40806829705291,
+      "name": "hybrid-rank-throughput",
+      "p50": 14.070989379667488,
+      "p95": 14.44055478474281,
+      "p99": 14.473246204391183,
+      "samples": 25,
+      "unit": "operations_per_second"
+    },
+    {
+      "maximum": 385826816,
+      "mean": 340983152.64,
+      "minimum": 294076416,
+      "name": "process-rss",
+      "p50": 341868544,
+      "p95": 382173184,
+      "p99": 385826816,
+      "samples": 25,
+      "unit": "bytes"
+    },
+    {
+      "maximum": 24457918,
+      "mean": 20207261.6,
+      "minimum": 15801270,
+      "name": "process-external-memory",
+      "p50": 20177719,
+      "p95": 24115619,
+      "p99": 24457918,
+      "samples": 25,
+      "unit": "bytes"
+    },
+    {
+      "maximum": 98489982,
+      "mean": 72946495.52,
+      "minimum": 46697078,
+      "name": "process-heap-used",
+      "p50": 72697111,
+      "p95": 96436003,
+      "p99": 98489982,
+      "samples": 25,
+      "unit": "bytes"
+    }
+  ],
+  "metadata": {
+    "documents": 1000,
+    "homeRedacted": true,
+    "queries": 250,
+    "rankerVersion": "hybrid-v3",
+    "sampleProfile": "standard",
+    "seed": 262144,
+    "sourceVersion": "threadnote-4.2.7"
+  },
+  "suite": "recall-v2",
+  "version": 1,
+  "warmups": 5
+}

@@ -90,9 +90,11 @@ const toolKeys = {
     'to',
     'workset',
   ]),
-  read_context: new Set(['uri', 'uris']),
+  read_context: new Set(['budgetTokens', 'cursor', 'mode', 'section', 'uri', 'uris']),
   recall_context: new Set([
+    'budgetTokens',
     'callerCwd',
+    'explain',
     'includeArchived',
     'nodeLimit',
     'project',
@@ -102,6 +104,7 @@ const toolKeys = {
     'workset',
   ]),
   remember_context: new Set([
+    'callerCwd',
     'kind',
     'project',
     'references',
@@ -1447,7 +1450,7 @@ describe('Threadnote 4 website content', () => {
     expect(pageSource).toContain('Graph-equivalent commit');
     expect(pageSource).toContain('One-file clean commit');
     expect(pageSource).toContain('Graph responses stay deliberately bounded');
-    expect(pageSource).toContain('returns the complete record');
+    expect(pageSource).toContain('provide explicit continuation');
     expect(pageSource).toContain('Your agents will love it');
     expect(pageSource).not.toMatch(/232_750|2_658_990|7_308_099|33_285_996_544/);
     expect(evidenceSource).toContain('derives every displayed measurement and provenance field from this one artifact');

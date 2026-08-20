@@ -8,6 +8,11 @@ import {
 } from './memory_document.js';
 import {parseResourceId} from './storage/resource-id.js';
 import type {MemoryKind, MemoryStatus} from './types.js';
+import {
+  MEMORY_HYGIENE_SOURCES_HEADING,
+  MEMORY_HYGIENE_SOURCES_MARKER,
+  parseMemoryHygieneSources,
+} from './memory_hygiene_provenance.js';
 
 export type CompactableMemoryKind = Extract<MemoryKind, 'durable' | 'handoff' | 'incident'>;
 export {parseMemoryDocument};
@@ -33,6 +38,7 @@ export interface ArchiveAction {
   readonly kind: CompactableMemoryKind;
   readonly project: string;
   readonly reason: string;
+  readonly sourceUris: readonly string[];
   readonly topic?: string;
   readonly uri: string;
 }
@@ -40,6 +46,7 @@ export interface ArchiveAction {
 export interface ForgetAction {
   readonly expectedContent: string;
   readonly reason: string;
+  readonly sourceUris: readonly string[];
   readonly uri: string;
 }
 
@@ -48,20 +55,30 @@ export interface ManualReviewItem {
   readonly uri: string;
 }
 
+export interface MergeReviewProposal {
+  readonly project: string;
+  readonly reason: string;
+  readonly sourceUris: readonly string[];
+  readonly topic: string;
+}
+
 export interface CompactPlan {
   readonly archives: readonly ArchiveAction[];
   readonly forgets: readonly ForgetAction[];
   readonly keepUpdates: readonly KeepUpdateAction[];
   readonly manualReview: readonly ManualReviewItem[];
+  readonly mergeReviewProposals: readonly MergeReviewProposal[];
   readonly options: CompactPlanOptions;
   readonly recordsScanned: number;
 }
 
 interface GroupedRecord {
   readonly groupKey: string;
+  readonly memoryScope: string;
   readonly project: string;
   readonly record: MemoryRecord;
   readonly topic?: string;
+  readonly workspaceScope?: string;
 }
 
 interface ParsedMemoryUri {
@@ -71,8 +88,26 @@ interface ParsedMemoryUri {
   readonly topic: string;
 }
 
-const HYGIENE_SOURCES_HEADING = '## Threadnote Hygiene Sources';
-const STALE_HANDOFF_AGE_MS = 14 * 24 * 60 * 60 * 1000;
+const DAY_MS = 24 * 60 * 60 * 1000;
+const HANDOFF_TERMINAL_RETENTION_MS = 7 * DAY_MS;
+const HANDOFF_REVIEW_AGE_MS = 14 * DAY_MS;
+const HANDOFF_MAXIMUM_ACTIVE_AGE_MS = 30 * DAY_MS;
+const COMPACT_PLAN_SECTION_PREVIEW_LIMIT = 25;
+export const DEFAULT_HANDOFF_NEXT_STEP = 'inspect the current repo state and continue from this handoff';
+const TERMINAL_HANDOFF_STATUSES = new Set([
+  'abandoned',
+  'canceled',
+  'cancelled',
+  'closed',
+  'complete',
+  'completed',
+  'done',
+  'merged',
+  'released',
+  'resolved',
+  'shipped',
+  'superseded',
+]);
 
 export function buildCompactPlan(records: readonly MemoryRecord[], options: CompactPlanOptions): CompactPlan {
   const now = options.now ?? new Date();
@@ -81,17 +116,83 @@ export function buildCompactPlan(records: readonly MemoryRecord[], options: Comp
     .filter((item): item is GroupedRecord => item !== undefined)
     .filter(item => item.project === options.project)
     .filter(item => options.topic === undefined || item.topic === options.topic)
-    .filter(item => options.kind === undefined || item.record.metadata.kind === options.kind);
+    .filter(item => options.kind === undefined || item.record.metadata.kind === options.kind)
+    .sort(compareGroupedRecords);
 
-  const groups = new Map<string, GroupedRecord[]>();
-  for (const item of groupedRecords) {
-    groups.set(item.groupKey, [...(groups.get(item.groupKey) ?? []), item]);
-  }
-
+  const mergeReviewProposals = buildMergeReviewProposals(groupedRecords);
+  const mutableRecords = groupedRecords.filter(item => isPersonalMemoryUri(item.record.uri));
   const keepUpdates: KeepUpdateAction[] = [];
   const archives: ArchiveAction[] = [];
   const forgets: ForgetAction[] = [];
   const manualReview: ManualReviewItem[] = [];
+  const claimedMutationUris = new Set<string>();
+  const protectedReviewUris = new Set<string>();
+
+  const addArchive = (item: GroupedRecord, reason: string): void => {
+    if (claimedMutationUris.has(item.record.uri)) {
+      return;
+    }
+    const kind = item.record.metadata.kind;
+    if (!isCompactableKind(kind)) {
+      return;
+    }
+    claimedMutationUris.add(item.record.uri);
+    archives.push({
+      expectedContent: item.record.content,
+      kind,
+      project: item.project,
+      reason,
+      sourceUris: [item.record.uri],
+      topic: item.topic,
+      uri: item.record.uri,
+    });
+  };
+  const addManualReview = (item: GroupedRecord, reason: string): void => {
+    if (claimedMutationUris.has(item.record.uri) || protectedReviewUris.has(item.record.uri)) {
+      return;
+    }
+    protectedReviewUris.add(item.record.uri);
+    manualReview.push({reason, uri: item.record.uri});
+  };
+
+  for (const item of mutableRecords) {
+    const {record} = item;
+    if (hasExpiredValidity(record, now)) {
+      addArchive(item, `valid_to expired at ${record.metadata.validTo}`);
+      continue;
+    }
+    if (record.metadata.kind !== 'handoff') {
+      continue;
+    }
+    const age = memoryAgeMilliseconds(record, now);
+    if (age === undefined) {
+      continue;
+    }
+    const pending = hasExplicitPendingHandoffState(record.body);
+    const terminal = hasExplicitTerminalHandoffState(record.body);
+    if (age >= HANDOFF_MAXIMUM_ACTIVE_AGE_MS) {
+      if (pending) {
+        addManualReview(item, '30-day handoff retention deferred by explicit pending/open/blocker language');
+      } else {
+        addArchive(item, 'active handoff reached the 30-day recoverable retention boundary');
+      }
+      continue;
+    }
+    if (age >= HANDOFF_TERMINAL_RETENTION_MS && terminal && !pending) {
+      addArchive(item, 'terminal handoff reached the 7-day recoverable retention boundary');
+      continue;
+    }
+    if (age >= HANDOFF_REVIEW_AGE_MS) {
+      addManualReview(item, 'nonterminal active handoff is between 14 and 30 days old');
+    }
+  }
+
+  const groups = new Map<string, GroupedRecord[]>();
+  for (const item of mutableRecords.filter(
+    candidate => !claimedMutationUris.has(candidate.record.uri) && !protectedReviewUris.has(candidate.record.uri),
+  )) {
+    groups.set(item.groupKey, [...(groups.get(item.groupKey) ?? []), item]);
+  }
 
   for (const group of [...groups.values()].sort(compareGroupedRecordLists)) {
     const recordsInGroup = group.map(item => item.record);
@@ -103,36 +204,52 @@ export function buildCompactPlan(records: readonly MemoryRecord[], options: Comp
     }
 
     const duplicateGroups = groupBy(recordsInGroup, record => comparableMemoryBody(record.body));
-    const duplicateForgetUris = new Set<string>();
+    const duplicateRetiredUris = new Set<string>();
+    const duplicateMetadataConflictUris = new Set<string>();
     const distinctBodyCount = duplicateGroups.size;
     for (const duplicateGroup of duplicateGroups.values()) {
       if (duplicateGroup.length < 2) {
         continue;
       }
+      const metadataReference = duplicateGroup[0]!;
+      if (!duplicateGroup.every(record => hasEquivalentMemoryMetadata(record, metadataReference))) {
+        for (const record of duplicateGroup) {
+          duplicateMetadataConflictUris.add(record.uri);
+          addManualReview(
+            group.find(item => item.record.uri === record.uri)!,
+            'same body has distinct metadata or provenance; no automatic retirement',
+          );
+        }
+        continue;
+      }
       const duplicateKeep = preferredKeepRecord(duplicateGroup, topic);
       for (const duplicate of sortedNewestFirst(duplicateGroup).filter(record => record.uri !== duplicateKeep.uri)) {
-        duplicateForgetUris.add(duplicate.uri);
+        duplicateRetiredUris.add(duplicate.uri);
+        const sourceUris = sortedUniqueUris([duplicate.uri, duplicateKeep.uri]);
         forgets.push({
           expectedContent: duplicate.content,
           reason: `exact duplicate of ${duplicateKeep.uri}`,
+          sourceUris,
           uri: duplicate.uri,
         });
+        claimedMutationUris.add(duplicate.uri);
       }
       if (distinctBodyCount === 1 || kind !== 'handoff') {
+        const sourceUris = memoryProvenanceUris(duplicateGroup);
         keepUpdates.push({
-          content: memoryContentWithHygieneSources(
-            duplicateKeep,
-            duplicateGroup.map(record => record.uri),
-          ),
+          content: memoryContentWithHygieneSources(duplicateKeep, sourceUris),
           expectedContent: duplicateKeep.content,
           reason: 'keep exact duplicate group with source URIs',
-          sourceUris: duplicateGroup.map(record => record.uri),
+          sourceUris,
           uri: duplicateKeep.uri,
         });
+        claimedMutationUris.add(duplicateKeep.uri);
       }
     }
 
-    const remainingRecords = recordsInGroup.filter(record => !duplicateForgetUris.has(record.uri));
+    const remainingRecords = recordsInGroup.filter(
+      record => !duplicateRetiredUris.has(record.uri) && !duplicateMetadataConflictUris.has(record.uri),
+    );
     if (recordsInGroup.length > 1 && distinctBodyCount === 1) {
       continue;
     }
@@ -152,16 +269,14 @@ export function buildCompactPlan(records: readonly MemoryRecord[], options: Comp
           sourceUris: [record.uri],
           uri: record.uri,
         });
-      }
-      if (isStaleLookingHandoff(record, now)) {
-        manualReview.push({reason: 'stale-looking active handoff', uri: record.uri});
+        claimedMutationUris.add(record.uri);
       }
       continue;
     }
 
     if (kind === 'handoff') {
       const keep = preferredKeepRecord(remainingRecords, topic);
-      const sourceUris = recordsInGroup.map(record => record.uri);
+      const sourceUris = memoryProvenanceUris(recordsInGroup);
       keepUpdates.push({
         content: memoryContentWithHygieneSources(keep, sourceUris),
         expectedContent: keep.content,
@@ -169,37 +284,44 @@ export function buildCompactPlan(records: readonly MemoryRecord[], options: Comp
         sourceUris,
         uri: keep.uri,
       });
+      claimedMutationUris.add(keep.uri);
       for (const record of sortedNewestFirst(remainingRecords).filter(item => item.uri !== keep.uri)) {
         archives.push({
           expectedContent: record.content,
           kind,
           project,
           reason: `older handoff for ${project}/${topic ?? 'unknown'}`,
+          sourceUris: [record.uri],
           topic,
           uri: record.uri,
         });
+        claimedMutationUris.add(record.uri);
       }
       continue;
     }
 
     for (const record of sortedNewestFirst(remainingRecords)) {
-      manualReview.push({reason: `non-exact ${kind} memory in overlapping group`, uri: record.uri});
+      if (!claimedMutationUris.has(record.uri)) {
+        manualReview.push({reason: `non-exact ${kind} memory in overlapping group`, uri: record.uri});
+      }
     }
   }
 
   return {
-    archives: dedupeByUri(archives),
-    forgets: dedupeByUri(forgets),
-    keepUpdates: dedupeByUri(keepUpdates),
-    manualReview: dedupeByUri(manualReview),
+    archives: sortByUri(dedupeByUri(archives)),
+    forgets: sortByUri(dedupeByUri(forgets)),
+    keepUpdates: sortByUri(dedupeByUri(keepUpdates)),
+    manualReview: sortByUri(dedupeByUri(manualReview)),
+    mergeReviewProposals,
     options,
     recordsScanned: groupedRecords.length,
   };
 }
 
 export function memoryContentWithHygieneSources(record: MemoryRecord, sourceUris: readonly string[]): string {
+  const existingSourceUris = hygieneSourceUris(record.body);
   const body = stripHygieneSources(record.body);
-  const uniqueSourceUris = [...new Set(sourceUris)].sort();
+  const uniqueSourceUris = [...new Set([...existingSourceUris, ...sourceUris])].sort();
   const metadata = {
     ...record.metadata,
     supersedes: record.metadata.supersedes === record.uri ? undefined : record.metadata.supersedes,
@@ -207,7 +329,14 @@ export function memoryContentWithHygieneSources(record: MemoryRecord, sourceUris
   return formatMemoryDocument(
     record.headerTitle,
     metadata,
-    [body, '', HYGIENE_SOURCES_HEADING, '', ...uniqueSourceUris.map(uri => `- ${uri}`)].join('\n'),
+    [
+      body,
+      '',
+      MEMORY_HYGIENE_SOURCES_MARKER,
+      MEMORY_HYGIENE_SOURCES_HEADING,
+      '',
+      ...uniqueSourceUris.map(uri => `- ${uri}`),
+    ].join('\n'),
   );
 }
 
@@ -225,19 +354,25 @@ export function formatCompactPlan(plan: CompactPlan, options: {readonly apply: b
     '',
     formatPlanSection(
       'Keep/update',
-      plan.keepUpdates.map(action => `${action.uri} (${action.reason}; sources: ${action.sourceUris.length})`),
+      plan.keepUpdates.map(action => formatPlanAction(action.uri, action.reason, action.sourceUris)),
     ),
     formatPlanSection(
-      'Archive old handoffs',
-      plan.archives.map(action => `${action.uri} (${action.reason})`),
+      'Archive expired/stale active memories',
+      plan.archives.map(action => formatPlanAction(action.uri, action.reason, action.sourceUris)),
     ),
     formatPlanSection(
       'Forget exact duplicates',
-      plan.forgets.map(action => `${action.uri} (${action.reason})`),
+      plan.forgets.map(action => formatPlanAction(action.uri, action.reason, action.sourceUris)),
     ),
     formatPlanSection(
       'Manual review',
       plan.manualReview.map(item => `${item.uri} (${item.reason})`),
+    ),
+    formatPlanSection(
+      'Merge/review proposals',
+      plan.mergeReviewProposals.map(proposal =>
+        formatPlanAction(`${proposal.project}/${proposal.topic}`, proposal.reason, proposal.sourceUris),
+      ),
     ),
   ];
   if (!options.apply) {
@@ -420,8 +555,12 @@ function groupableRecord(record: MemoryRecord): GroupedRecord | undefined {
     return undefined;
   }
   const topic = topicForRecord(record);
-  const groupKey = [record.metadata.kind, project, topic ?? record.uri].join('\0');
-  return {groupKey, project, record, topic};
+  const memoryScope = memoryScopeForUri(record.uri);
+  const workspaceScope = normalizeOptionalMetadata(record.metadata.workspaceScope);
+  const groupKey = [memoryScope, record.metadata.kind, project, workspaceScope ?? '<repo>', topic ?? record.uri].join(
+    '\0',
+  );
+  return {groupKey, memoryScope, project, record, topic, workspaceScope};
 }
 
 export function topicForRecord(record: MemoryRecord): string | undefined {
@@ -454,20 +593,35 @@ function parseProjectFromUri(uri: string): string | undefined {
 }
 
 function comparableMemoryBody(body: string): string {
-  return stripHygieneSources(body).trim().replace(/\s+/g, ' ');
+  return stripHygieneSources(body).replace(/\r\n?/g, '\n');
+}
+
+function hasEquivalentMemoryMetadata(left: MemoryRecord, right: MemoryRecord): boolean {
+  return (
+    left.headerTitle === right.headerTitle &&
+    formatMemoryDocument(left.headerTitle, left.metadata, '') ===
+      formatMemoryDocument(right.headerTitle, right.metadata, '')
+  );
+}
+
+function hygieneSourceUris(body: string): readonly string[] {
+  return parseMemoryHygieneSources(body)?.uris ?? [];
+}
+
+function memoryProvenanceUris(records: readonly MemoryRecord[]): readonly string[] {
+  return sortedUniqueUris(records.flatMap(record => [record.uri, ...hygieneSourceUris(record.body)]));
 }
 
 function stripHygieneSources(body: string): string {
-  const index = body.indexOf(`\n${HYGIENE_SOURCES_HEADING}`);
-  if (index !== -1) {
-    return body.slice(0, index).trim();
-  }
-  return body.startsWith(HYGIENE_SOURCES_HEADING) ? '' : body.trim();
+  const parsed = parseMemoryHygieneSources(body);
+  return parsed ? parsed.body : body;
 }
 
 function preferredKeepRecord(records: readonly MemoryRecord[], topic?: string): MemoryRecord {
-  const stableRecords = records.filter(record => isStableRecord(record, topic));
-  return sortedNewestFirst(stableRecords.length > 0 ? stableRecords : records)[0] ?? records[0]!;
+  const newestFirst = sortedNewestFirst(records);
+  const newestTimestamp = timestampMs(newestFirst[0] ?? records[0]!);
+  const equallyNew = newestFirst.filter(record => timestampMs(record) === newestTimestamp);
+  return equallyNew.find(record => isStableRecord(record, topic)) ?? equallyNew[0] ?? records[0]!;
 }
 
 function isStableRecord(record: MemoryRecord, topic?: string): boolean {
@@ -491,15 +645,172 @@ function timestampMs(record: MemoryRecord): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-function isStaleLookingHandoff(record: MemoryRecord, now: Date): boolean {
-  if (record.metadata.kind !== 'handoff') {
+function memoryAgeMilliseconds(record: MemoryRecord, now: Date): number | undefined {
+  const nowMilliseconds = now.getTime();
+  const observations = [
+    parseTimestamp(record.metadata.timestamp),
+    parseTimestamp(record.metadata.updatedAt),
+    parseTimestamp(record.metadata.lastReviewed),
+  ].filter((value): value is number => value !== undefined);
+  const observedAt = observations.length > 0 ? Math.max(...observations) : undefined;
+  if (!Number.isFinite(nowMilliseconds) || observedAt === undefined || observedAt > nowMilliseconds) {
+    return undefined;
+  }
+  return nowMilliseconds - observedAt;
+}
+
+function hasExpiredValidity(record: MemoryRecord, now: Date): boolean {
+  const validToMilliseconds = parseTimestamp(record.metadata.validTo);
+  const nowMilliseconds = now.getTime();
+  return (
+    validToMilliseconds !== undefined && Number.isFinite(nowMilliseconds) && validToMilliseconds <= nowMilliseconds
+  );
+}
+
+function parseTimestamp(value: string | undefined): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function hasExplicitTerminalHandoffState(body: string): boolean {
+  const fields = handoffBodyFields(body);
+  const statuses = normalizedFieldValues(fields.get('status'));
+  const nextSteps = normalizedFieldValues(fields.get('next_step'));
+  return statuses.some(status => TERMINAL_HANDOFF_STATUSES.has(status)) || nextSteps.includes('none');
+}
+
+function hasExplicitPendingHandoffState(body: string): boolean {
+  const fields = handoffBodyFields(body);
+  const statuses = normalizedFieldValues(fields.get('status'));
+  const nextSteps = normalizedFieldValues(fields.get('next_step'));
+  const blockers = normalizedFieldValues([...(fields.get('blockers') ?? []), ...(fields.get('blocker') ?? [])]);
+  if (
+    statuses.some(status =>
+      /^(?:active|awaiting(?:\s+.+)?|blocked|in[ _-]?progress|open|pending|waiting(?:\s+.+)?)$/.test(status),
+    )
+  ) {
+    return true;
+  }
+  if (nextSteps.some(nextStep => nextStep !== 'none' && nextStep !== DEFAULT_HANDOFF_NEXT_STEP)) {
+    return true;
+  }
+  if (
+    blockers.some(blocker => !/^(?:n\/?a|no(?:\s+blockers?)?|none(?:\s+recorded)?|not\s+applicable)$/.test(blocker))
+  ) {
+    return true;
+  }
+  return (
+    /\b(?:PR|pull request|issue)\s+(?:is\s+)?open\b/i.test(body) ||
+    /\b(?:awaiting|blocked by|waiting for)\b/i.test(body) ||
+    /\b(?:remains?|still)\s+(?:blocked|open|pending)\b/i.test(body) ||
+    /^\s*(?:[-*]\s+)?(?:blocked|blocker|pending)\s*:/im.test(body)
+  );
+}
+
+function handoffBodyFields(body: string): Map<string, string[]> {
+  const lines = body.split(/\r?\n/);
+  const fields = new Map<string, string[]>();
+  for (let index = 0; index < lines.length; index += 1) {
+    const match = /^\s*(?:[-*]\s+)?(status|next_step|blockers?):\s*(.*?)\s*$/i.exec(lines[index] ?? '');
+    if (!match?.[1]) {
+      continue;
+    }
+    let value = match[2] ?? '';
+    if (!value) {
+      const followingLine = lines
+        .slice(index + 1)
+        .find(line => line.trim().length > 0)
+        ?.trim();
+      if (followingLine && !/^\s*(?:[-*]\s+)?[\w -]+\s*:/.test(followingLine)) {
+        value = followingLine.replace(/^[-*]\s+/, '');
+      }
+    }
+    const key = match[1].toLowerCase();
+    fields.set(key, [...(fields.get(key) ?? []), value]);
+  }
+  return fields;
+}
+
+function normalizedFieldValues(values: readonly string[] | undefined): readonly string[] {
+  return (values ?? [])
+    .map(value =>
+      value
+        .trim()
+        .toLowerCase()
+        .replace(/[.!;:]+$/g, '')
+        .replace(/\s+/g, ' '),
+    )
+    .filter(value => value.length > 0);
+}
+
+function buildMergeReviewProposals(records: readonly GroupedRecord[]): readonly MergeReviewProposal[] {
+  const groups = new Map<string, GroupedRecord[]>();
+  for (const item of records) {
+    if (!item.topic) {
+      continue;
+    }
+    const key = [item.project, item.topic].join('\0');
+    groups.set(key, [...(groups.get(key) ?? []), item]);
+  }
+
+  const proposals: MergeReviewProposal[] = [];
+  for (const group of groups.values()) {
+    const first = group[0];
+    if (!first?.topic || group.length < 2) {
+      continue;
+    }
+    const reasons: string[] = [];
+    const kinds = new Set(group.map(item => item.record.metadata.kind));
+    const memoryScopes = new Set(group.map(item => item.memoryScope));
+    const workspaceScopes = new Set(group.map(item => item.workspaceScope ?? '<repo>'));
+    if (kinds.size > 1) {
+      reasons.push('same project/topic spans multiple memory kinds');
+    }
+    if (memoryScopes.size > 1) {
+      reasons.push('same project/topic spans multiple memory scopes');
+    }
+    if (workspaceScopes.size > 1) {
+      reasons.push('same project/topic spans multiple workspace scopes');
+    }
+    for (const kind of ['durable', 'incident'] as const) {
+      const sameKind = group.filter(item => item.record.metadata.kind === kind);
+      if (sameKind.length > 1 && new Set(sameKind.map(item => comparableMemoryBody(item.record.body))).size > 1) {
+        reasons.push(`divergent active ${kind} memories`);
+      }
+    }
+    if (reasons.length === 0) {
+      continue;
+    }
+    proposals.push({
+      project: first.project,
+      reason: reasons.sort().join('; '),
+      sourceUris: sortedUniqueUris(group.map(item => item.record.uri)),
+      topic: first.topic,
+    });
+  }
+  return proposals.sort(compareMergeReviewProposals);
+}
+
+function memoryScopeForUri(uri: string): string {
+  const canonicalUri = canonicalResourceInput(uri) ?? uri;
+  const shared = /^threadnote:\/\/user\/[^/]+\/memories\/shared\/([^/]+)\//.exec(canonicalUri)?.[1];
+  if (shared) {
+    return `shared:${shared}`;
+  }
+  const personal = /^threadnote:\/\/user\/([^/]+)\/memories\//.exec(canonicalUri)?.[1];
+  return personal ? `personal:${personal}` : `external:${canonicalUri}`;
+}
+
+function isPersonalMemoryUri(uri: string): boolean {
+  const canonicalUri = canonicalResourceInput(uri);
+  if (!canonicalUri || isSharedMemoryUri(canonicalUri)) {
     return false;
   }
-  if (now.getTime() - timestampMs(record) < STALE_HANDOFF_AGE_MS) {
-    return false;
-  }
-  return /\b(?:PR|pull request)\s+(?:OPEN|open|is open)|awaiting review|waiting for review|next steps?:\s*address PR review/i.test(
-    record.body,
+  return /^threadnote:\/\/user\/[^/]+\/memories\/(?:durable\/projects|handoffs\/active|incidents\/active)\//.test(
+    canonicalUri,
   );
 }
 
@@ -516,6 +827,19 @@ function compareGroupedRecordLists(left: readonly GroupedRecord[], right: readon
   return (left[0]?.groupKey ?? '').localeCompare(right[0]?.groupKey ?? '');
 }
 
+function compareGroupedRecords(left: GroupedRecord, right: GroupedRecord): number {
+  return left.groupKey.localeCompare(right.groupKey) || left.record.uri.localeCompare(right.record.uri);
+}
+
+function compareMergeReviewProposals(left: MergeReviewProposal, right: MergeReviewProposal): number {
+  return (
+    left.project.localeCompare(right.project) ||
+    left.topic.localeCompare(right.topic) ||
+    left.sourceUris.join('\0').localeCompare(right.sourceUris.join('\0')) ||
+    left.reason.localeCompare(right.reason)
+  );
+}
+
 function dedupeByUri<T extends {readonly uri: string}>(items: readonly T[]): readonly T[] {
   const seen = new Set<string>();
   const result: T[] = [];
@@ -527,6 +851,14 @@ function dedupeByUri<T extends {readonly uri: string}>(items: readonly T[]): rea
     result.push(item);
   }
   return result;
+}
+
+function sortByUri<T extends {readonly uri: string}>(items: readonly T[]): readonly T[] {
+  return [...items].sort((left, right) => left.uri.localeCompare(right.uri));
+}
+
+function sortedUniqueUris(uris: readonly string[]): readonly string[] {
+  return [...new Set(uris)].sort((left, right) => left.localeCompare(right));
 }
 
 function normalizeOptionalMetadata(value: string | undefined): string | undefined {
@@ -555,7 +887,17 @@ function memoryKindPlural(kind: MemoryKind): string {
 
 function formatPlanSection(title: string, lines: readonly string[]): string {
   if (lines.length === 0) {
-    return `${title}:\n- none`;
+    return `${title} (0):\n- none`;
   }
-  return [`${title}:`, ...lines.map(line => `- ${line}`)].join('\n');
+  const preview = lines.slice(0, COMPACT_PLAN_SECTION_PREVIEW_LIMIT);
+  const omitted = lines.length - preview.length;
+  return [
+    `${title} (${lines.length}):`,
+    ...preview.map(line => `- ${line}`),
+    ...(omitted > 0 ? [`- … ${omitted} more omitted; narrow the plan with kind or topic`] : []),
+  ].join('\n');
+}
+
+function formatPlanAction(uri: string, reason: string, sourceUris: readonly string[]): string {
+  return `${uri} (${reason}; sources: ${sourceUris.join(', ')})`;
 }

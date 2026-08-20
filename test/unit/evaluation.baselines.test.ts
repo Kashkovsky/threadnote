@@ -10,13 +10,57 @@ import {
 } from '../../src/evaluation/recall-baseline.js';
 import {
   createRecallEvaluationFixtureV2,
+  expandRecallEvaluationFixtureV2,
   serializeRecallEvaluationFixtureV2Identity,
 } from '../../src/evaluation/recall-fixture.js';
 
 const HISTORICAL_BASELINE_ROOT = 'test/evaluation/baselines/threadnote-3.0.3';
 const CURRENT_BASELINE_ROOT = 'test/evaluation/baselines/threadnote-4.2.7';
 const BENCHMARK_ROOT = join(HISTORICAL_BASELINE_ROOT, 'benchmarks', 'darwin-arm64-m1-max');
+const CURRENT_BENCHMARK_ROOT = join(CURRENT_BASELINE_ROOT, 'benchmarks', 'darwin-arm64-m1-max');
 const CANDIDATE_ROOT = 'test/evaluation/candidates/threadnote-4.0.0';
+const CURRENT_BENCHMARK_COMMIT = '6f090189249de0a95c24d3084946f1a94360653e';
+const CURRENT_RANK_BENCHMARKS = [
+  {
+    documents: 200,
+    fixtureHash: '3967acf33893251f03126720ebf6fb55f6b6eed62f2c84f768963e9a352e9348',
+    name: 'recall-rank-200.json',
+    sampleProfile: 'standard',
+    samples: 25,
+    warmups: 5,
+  },
+  {
+    documents: 1_000,
+    fixtureHash: 'dbc8258af5e0e10b99e34eb55f8e5b0b2b992e7f647d5726ace7ae2e12deab74',
+    name: 'recall-rank-1000.json',
+    sampleProfile: 'standard',
+    samples: 25,
+    warmups: 5,
+  },
+  {
+    documents: 10_000,
+    fixtureHash: '30beea845c4e2052a27bbf27af29f140a3c59ca7357d1dfc2e14363ad647deb0',
+    name: 'recall-rank-10000.json',
+    sampleProfile: 'standard',
+    samples: 25,
+    warmups: 5,
+  },
+  {
+    documents: 100_000,
+    fixtureHash: '21d54f12a71d06be69e95cfbcc531c50cb8e917a5beb1ddfa12ba8453a254ae6',
+    name: 'recall-rank-100000.json',
+    sampleProfile: 'scale-boundary',
+    samples: 5,
+    warmups: 1,
+  },
+] as const;
+const CURRENT_RANK_MEASUREMENTS = [
+  'hybrid-rank-one-query',
+  'hybrid-rank-throughput',
+  'process-rss',
+  'process-external-memory',
+  'process-heap-used',
+] as const;
 
 describe('frozen Threadnote 3.0.3 baselines', () => {
   it('validates the compact recall-v2 baseline', () => {
@@ -225,6 +269,55 @@ describe('reviewed current recall baseline', () => {
     expect(exceedsReviewedContractFailureLimit([...reviewed, reviewed[0]!], baseline)).toBe(true);
     expect(exceedsReviewedContractFailureLimit([])).toBe(false);
     expect(exceedsReviewedContractFailureLimit(['new-query: new failure'])).toBe(true);
+  });
+});
+
+describe('reviewed Threadnote 4.2.7 performance baseline', () => {
+  it('stores exactly the clean hybrid-v3 M1 Max rank captures at every reviewed scale', () => {
+    const names = readdirSync(CURRENT_BENCHMARK_ROOT)
+      .filter(name => /^recall-rank-\d+\.json$/u.test(name))
+      .sort();
+    expect(names).toEqual(CURRENT_RANK_BENCHMARKS.map(benchmark => benchmark.name).sort());
+
+    for (const expected of CURRENT_RANK_BENCHMARKS) {
+      const artifact = parseBenchmarkArtifactV1(readJson(join(CURRENT_BENCHMARK_ROOT, expected.name)));
+      const fixture = expandRecallEvaluationFixtureV2(createRecallEvaluationFixtureV2(), expected.documents, 262_144);
+      const fixtureHash = createHash('sha256')
+        .update(serializeRecallEvaluationFixtureV2Identity(fixture))
+        .digest('hex');
+
+      expect(fixtureHash).toBe(expected.fixtureHash);
+      expect(artifact.environment).toEqual({
+        architecture: 'arm64',
+        commit: CURRENT_BENCHMARK_COMMIT,
+        cpu: 'Apple M1 Max',
+        dirty: false,
+        fixtureHash: expected.fixtureHash,
+        memoryBytes: 68_719_476_736,
+        node: 'bun/1.3.14',
+        operatingSystem: 'macOS 27.0',
+        packageManager: 'bun/1.3.14',
+        runner: 'threadnote-recall-e2e',
+        runnerVersion: '2',
+      });
+      expect(artifact.environment.commit).toMatch(/^[0-9a-f]{40}$/u);
+      expect(artifact.metadata).toEqual({
+        documents: expected.documents,
+        homeRedacted: true,
+        queries: 250,
+        rankerVersion: 'hybrid-v3',
+        sampleProfile: expected.sampleProfile,
+        seed: 262_144,
+        sourceVersion: 'threadnote-4.2.7',
+      });
+      expect(artifact.measurements.map(measurement => measurement.name)).toEqual(CURRENT_RANK_MEASUREMENTS);
+      expect(artifact.measurements.map(measurement => measurement.samples)).toEqual(
+        CURRENT_RANK_MEASUREMENTS.map(() => expected.samples),
+      );
+      expect(artifact.suite).toBe('recall-v2');
+      expect(artifact.version).toBe(1);
+      expect(artifact.warmups).toBe(expected.warmups);
+    }
   });
 });
 

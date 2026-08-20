@@ -17,6 +17,7 @@ const MAX_QUERY_TERMS = 32;
 export const POSTING_IDENTIFIER_WEIGHT = 4;
 const POSTING_TITLE_WEIGHT = 3;
 const POSTING_TOPIC_WEIGHT = 2;
+const POSTING_WORKSPACE_SCOPE_WEIGHT = 3;
 const POSTING_KEYWORD_WEIGHT = 2;
 const POSTING_PROJECT_WEIGHT = 1;
 const POSTING_BODY_WEIGHT = 1;
@@ -37,6 +38,7 @@ export function candidatePostings(candidate: RecallCandidate): ReadonlyMap<strin
   add(candidate.text, POSTING_BODY_WEIGHT);
   add(candidate.fields?.project, POSTING_PROJECT_WEIGHT);
   add(candidate.fields?.topic, POSTING_TOPIC_WEIGHT);
+  add(candidate.fields?.workspaceScope, POSTING_WORKSPACE_SCOPE_WEIGHT);
   add(candidate.fields?.keywords, POSTING_KEYWORD_WEIGHT);
   add(candidate.fields?.title, POSTING_TITLE_WEIGHT);
   add(candidate.fields?.identifiers, POSTING_IDENTIFIER_WEIGHT);

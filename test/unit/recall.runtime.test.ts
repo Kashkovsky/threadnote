@@ -7,7 +7,7 @@ import {it as effectIt} from '@effect/vitest';
 import {Cause, Effect, Exit, Fiber, Layer, Option, Semaphore} from 'effect';
 import * as FC from 'effect/testing/FastCheck';
 import {TestClock} from 'effect/testing';
-import {afterEach, beforeEach, describe, expect, vi} from 'vitest';
+import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
 const inference = vi.hoisted(() => ({
   rerank: vi.fn(),
 }));
@@ -22,15 +22,20 @@ import {BUILTIN_MODEL_MANIFESTS} from '../../src/models/builtin.js';
 import {LocalModelCatalog} from '../../src/models/catalog.js';
 import {selectLocalModel} from '../../src/models/selection.js';
 import {LocalModelStore, type LocalModelStoreShape} from '../../src/models/store.js';
-import {loadRecallIndex, loadRecallIndexData} from '../../src/recall/index.js';
+import {loadRecallIndex, loadRecallIndexData, recallIndexDatabaseFilename} from '../../src/recall/index.js';
+import {buildRecallTopicalCorpusStatistics} from '../../src/recall/rank.js';
 import {
   boundedRecallSemanticRetrieval,
   createRecallRerankerCache,
   loadRecallExpansionVocabulary,
+  mergeRecallIndexCandidates,
+  mergePrioritizedRecallIndexCandidates,
   MCP_RECALL_SEMANTIC_RETRIEVAL_TIMEOUT_MILLISECONDS,
   prepareRecallSections,
+  prioritizeWorkspaceRecallCandidates,
 } from '../../src/recall/runtime.js';
 import type {RuntimeConfig} from '../../src/types.js';
+import {buildRecallSections} from '../../src/utils.js';
 describe('recall runtime orchestration', () => {
   const homes: string[] = [];
   beforeEach(() => {
@@ -46,6 +51,99 @@ describe('recall runtime orchestration', () => {
         }),
       ),
     );
+  });
+  it('preserves a global identity conflict when an earlier scoped lane retained the same URI', () => {
+    const scoped = {
+      fields: {project: 'threadnote', topic: 'identity-conflict'},
+      memoryId: 'tn_identity_conflict',
+      text: 'Identity conflict target.',
+      uri: 'threadnote://user/test/memories/durable/projects/threadnote/identity-conflict.md',
+    };
+
+    expect(mergeRecallIndexCandidates([[scoped], [{...scoped, identityConflict: true}]])).toEqual([
+      {...scoped, identityConflict: true},
+    ]);
+  });
+  it('keeps a topical repo-wide result ahead of more than one rank window of scope-only candidates', () => {
+    const relevant = {
+      fields: {project: 'monorepo', title: 'Search checkout retry contract', topic: 'checkout-retry'},
+      text: 'Search checkout retry contract uses bounded attempts.',
+      uri: 'threadnote://user/test/memories/durable/projects/monorepo/repo-wide.md',
+    };
+    const scopeOnly = Array.from({length: 150}, (_unused, index) => ({
+      fields: {
+        project: 'monorepo',
+        title: `Unrelated package note ${index}`,
+        topic: `unrelated-${index}`,
+        workspaceScope: 'apps/search',
+      },
+      text: 'Unrelated package-local operational note.',
+      uri: `threadnote://user/test/memories/durable/projects/monorepo/scope-${String(index).padStart(3, '0')}.md`,
+    }));
+    const candidates = mergePrioritizedRecallIndexCandidates([[relevant]], [scopeOnly]);
+
+    expect(candidates[0]?.uri).toBe(relevant.uri);
+    expect(buildRecallTopicalCorpusStatistics(candidates).documentFrequency.search).toBe(1);
+    const sections = buildRecallSections([], [], 5, {
+      indexedCandidates: candidates,
+      project: 'monorepo',
+      query: 'search checkout retry contract',
+      workspaceScope: 'apps/search',
+    });
+    expect(sections.ranked.map(hit => hit.uri)).toEqual([relevant.uri]);
+  });
+  it('reserves bounded admission for a current-package match beyond a full topical window', () => {
+    const siblingCandidates = Array.from({length: 125}, (_unused, index) => ({
+      fields: {
+        project: 'monorepo',
+        title: 'Checkout retry contract',
+        topic: 'checkout-retry',
+        workspaceScope: `apps/sibling-${index}`,
+      },
+      text: 'Checkout retry contract uses bounded attempts.',
+      uri: `threadnote://user/test/memories/durable/projects/monorepo/sibling-${String(index).padStart(3, '0')}.md`,
+    }));
+    const currentPackage = {
+      fields: {
+        project: 'monorepo',
+        title: 'Checkout retry contract',
+        topic: 'checkout-retry',
+        workspaceScope: 'apps/search',
+      },
+      text: 'Checkout retry contract uses bounded attempts.',
+      uri: 'threadnote://user/test/memories/durable/projects/monorepo/current-package.md',
+    };
+    const localIrrelevant = Array.from({length: 20}, (_unused, index) => ({
+      fields: {
+        project: 'monorepo',
+        title: `Unrelated local note ${index}`,
+        topic: `unrelated-local-${index}`,
+        workspaceScope: 'apps/search',
+      },
+      text: 'Unrelated package-local operational note.',
+      uri: `threadnote://user/test/memories/durable/projects/monorepo/local-${String(index).padStart(3, '0')}.md`,
+    }));
+    const supplementalPool = [...localIrrelevant, currentPackage];
+    const prioritizedWorkspace = prioritizeWorkspaceRecallCandidates('checkout retry contract', supplementalPool, {
+      project: 'monorepo',
+      workspaceScope: 'apps/search',
+    });
+    const candidates = mergePrioritizedRecallIndexCandidates(
+      [[...siblingCandidates, currentPackage]],
+      [prioritizedWorkspace],
+      {admissionLimit: 100, supplementalReserve: 10},
+    );
+
+    expect(supplementalPool.indexOf(currentPackage)).toBeGreaterThan(16);
+    expect(prioritizedWorkspace[0]?.uri).toBe(currentPackage.uri);
+    expect(candidates.slice(0, 100).map(candidate => candidate.uri)).toContain(currentPackage.uri);
+    const sections = buildRecallSections([], [], 5, {
+      indexedCandidates: candidates,
+      project: 'monorepo',
+      query: 'checkout retry contract',
+      workspaceScope: 'apps/search',
+    });
+    expect(sections.ranked[0]?.uri).toBe(currentPackage.uri);
   });
   effectIt.effect('bounds one semantic retrieval attempt and interrupts only the timed-out work', () =>
     Effect.gen(function* () {
@@ -328,6 +426,82 @@ describe('recall runtime orchestration', () => {
       expect(recalled.output).toContain(
         'Local AI recall warning: semantic retrieval failed (SemanticRecallUnavailable)',
       );
+    }),
+  );
+  effectIt.effect('preserves fallback hits and reports a real persistent lexical recovery failure', () =>
+    Effect.gen(function* () {
+      const home = yield* Effect.promise(() => mkdtemp(join(tmpdir(), 'threadnote-recall-index-warning-')));
+      homes.push(home);
+      const lexicalRoot = join(home, 'indexes', 'lexical');
+      yield* Effect.promise(() => mkdir(lexicalRoot, {recursive: true}));
+      yield* Effect.promise(() =>
+        writeFile(join(lexicalRoot, recallIndexDatabaseFilename(false)), 'not a sqlite database'),
+      );
+      yield* Effect.promise(() => writeFile(join(lexicalRoot, 'generations'), 'blocks index recovery'));
+      const fallbackUri = 'threadnote://user/tester/memories/durable/projects/threadnote/file-fallback.md';
+      const prepared = yield* prepareRecallSections(
+        {
+          account: 'local',
+          agentContextHome: home,
+          user: 'tester',
+        },
+        {
+          allowExactRescue: false,
+          exactMatches: [],
+          feedbackQuery: 'file fallback anchor',
+          includeInactive: false,
+          limit: 5,
+          passes: [
+            [
+              {
+                category: 'memories',
+                contextType: 'memory',
+                score: 1,
+                snippet: 'File fallback anchor remains available.',
+                uri: fallbackUri,
+              },
+            ],
+          ],
+          query: 'file fallback anchor',
+          readRecords: () => Effect.succeed([]),
+          semanticResult: Option.none(),
+        },
+      ).pipe(provideTestLayer(ApplicationLayer));
+
+      expect(prepared.ranked.map(hit => hit.uri)).toContain(fallbackUri);
+      expect(prepared.operationalWarnings).toEqual([expect.objectContaining({code: 'lexical_index_unavailable'})]);
+    }),
+  );
+  effectIt.effect('surfaces one CLI warning when exact and ranked lexical recovery both fail', () =>
+    Effect.gen(function* () {
+      const home = yield* Effect.promise(() => mkdtemp(join(tmpdir(), 'threadnote-recall-cli-index-warning-')));
+      homes.push(home);
+      const lexicalRoot = join(home, 'indexes', 'lexical');
+      yield* Effect.promise(() => mkdir(lexicalRoot, {recursive: true}));
+      yield* Effect.promise(() =>
+        writeFile(join(lexicalRoot, recallIndexDatabaseFilename(false)), 'not a sqlite database'),
+      );
+      yield* Effect.promise(() => writeFile(join(lexicalRoot, 'generations'), 'blocks index recovery'));
+      const recalled = yield* captureConsole(
+        runRecall(
+          {
+            account: 'local',
+            agentContextHome: home,
+            agentId: 'threadnote',
+            manifestPath: join(home, 'seed-manifest.yaml'),
+            user: 'tester',
+          },
+          {
+            inferScope: false,
+            query: 'degraded lexical exact anchor 7788',
+            threshold: '0.1',
+          },
+        ),
+      ).pipe(provideTestLayer(ApplicationLayer));
+
+      expect(recalled.output.match(/Recall index warning:/g)).toHaveLength(1);
+      expect(recalled.output).toContain('could not be read or recovered');
+      expect(recalled.output).toContain('threadnote doctor --dry-run');
     }),
   );
   effectIt.effect('uses a complete ranked expansion vocabulary without opening the lexical index', () =>
