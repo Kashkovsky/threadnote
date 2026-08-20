@@ -212,7 +212,7 @@ export interface CodeGraphMaterializationMetrics {
   readonly batchesTotal: number;
   readonly cachedFactBytesCompleted?: number;
   readonly cachedFactBytesTotal?: number;
-  /** Exact UTF-8 bytes of decoded cached facts actually consumed by attribution. */
+  /** Exact UTF-8 bytes of decoded facts consumed by materialization: final-shard hits plus raw-cache misses. */
   readonly cachedFactReplayBytesCompleted?: number;
   /** Exact consumed cached-fact bytes for current paths changed from the committed inventory. */
   readonly changedFactBytesCompleted?: number;
