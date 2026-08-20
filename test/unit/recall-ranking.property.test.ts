@@ -245,7 +245,7 @@ describe('recall ranking properties', () => {
         '<!-- threadnote:hygiene-sources:v1 -->',
         '## Threadnote Hygiene Sources',
         '',
-        ...sources.map(source => `- threadnote://user/me/memories/handoffs/archived/threadnote/${source}.md`),
+        ...sources.map(source => `- threadnote://user/me/memories/handoffs/archived/threadnote/source-${source}.md`),
       ].join('\n');
 
       expect(recallMemoryContentHash(decorated)).toBe(recallMemoryContentHash(body));
@@ -268,6 +268,35 @@ describe('recall ranking properties', () => {
         'threadnote://sibling.md',
       ]);
       expect(ranked.results.map(result => result.signals.workspace)).toEqual([1, 0.75, 0.5, 0.25]);
+    },
+    {fastCheck: {numRuns: 100}},
+  );
+
+  it.prop(
+    'keeps explicit-recency ranking monotone in timestamps and stable across candidate permutations',
+    {
+      newerAgeDays: FC.integer({max: 90, min: 0}),
+      olderOffsetDays: FC.integer({max: 90, min: 1}),
+    },
+    ({newerAgeDays, olderOffsetDays}) => {
+      const candidate = (ageDays: number, uri: string): RecallCandidate => ({
+        fields: {project: 'threadnote', title: 'Release status', topic: 'release-status'},
+        kind: 'handoff',
+        semantic: 0.6,
+        status: 'active',
+        text: 'Release status and verification evidence.',
+        timestamp: new Date(FIXED_NOW.getTime() - ageDays * 86_400_000).toISOString(),
+        uri,
+      });
+      const newer = candidate(newerAgeDays, 'threadnote://newer.md');
+      const older = candidate(newerAgeDays + olderOffsetDays, 'threadnote://older.md');
+      const context = {now: FIXED_NOW, project: 'threadnote'};
+      const forward = rankRecallCandidates('latest release status', [older, newer], context);
+      const reverse = rankRecallCandidates('latest release status', [newer, older], context);
+
+      expect(forward).toEqual(reverse);
+      expect(forward.results.map(result => result.candidate.uri)).toEqual([newer.uri, older.uri]);
+      expect(forward.results[0]!.finalScore).toBeGreaterThan(forward.results[1]!.finalScore);
     },
     {fastCheck: {numRuns: 100}},
   );

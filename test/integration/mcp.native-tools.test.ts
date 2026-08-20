@@ -211,15 +211,18 @@ describe('Threadnote MCP toolsets', () => {
         expect(instructions).toContain('threadnote://');
         expect(instructions).toContain('durable');
         expect(instructions).toContain('handoff');
-        expect(instructions).toContain('directly');
-        expect(instructions).toContain('additional user-approved candidates');
+        expect(instructions).toContain('`project` excludes others');
+        expect(instructions).toContain('omit it for global recall');
+        expect(instructions).toContain('Nested cwd prefers its package');
+        expect(instructions).toContain('repo-wide/sibling evidence remains eligible');
+        expect(instructions).toContain('user-approved candidates');
         expect(instructions).toContain('Do not store');
         expect(instructions).toContain('Results are unread `threadnote://` pointers, not evidence');
         expect(instructions).toContain('read them via `read_context`');
-        expect(instructions).toContain('`inspect_code_graph` before broad `rg`/grep');
+        expect(instructions).toContain('`inspect_code_graph` before broad search');
         expect(instructions).toContain('`analyze_code_graph` for architecture');
         expect(instructions).toContain('exact search remains useful');
-        expect(instructions).toContain('Retry `state=indexing` after `retryAfterMilliseconds`');
+        expect(instructions).toContain('Retry indexing when advised');
         const reviewTool = (await client.listTools()).tools.find(tool => tool.name === 'review_session_context');
         expect(reviewTool?.description).toContain('After routine durable and handoff writes');
         expect(reviewTool?.description).toContain('additional reviewable');
@@ -439,7 +442,7 @@ describe('Threadnote MCP toolsets', () => {
           },
           nextAction: {tool: 'read_context', uris: expect.any(Array)},
           output: {budgetTokens: 1_500, explain: false, returnedResults: expect.any(Number)},
-          rankerVersion: 'hybrid-v7',
+          rankerVersion: 'hybrid-v8',
           results: expect.any(Array),
         });
         const compact = result.structuredContent as {

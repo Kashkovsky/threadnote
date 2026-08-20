@@ -20,9 +20,11 @@ import {
   recallUriMatchesScopes,
 } from './index.js';
 import {recallWorkspaceScopeMatches} from './index_scope.js';
+import {RECALL_RECENCY_CANDIDATE_RESERVE} from './index_query.js';
 import {recallRankCandidateIsEligible, type RecallEligibilityPolicy} from './eligibility.js';
 import {
   deduplicateLogicalRecallCandidates,
+  originalQueryRequestsRecency,
   recallCandidateLogicalCorpusKey,
   rankRecallCandidates,
   recallCandidateMatchesWorkspaceBranch,
@@ -226,6 +228,7 @@ const prepareRecallSectionsAttempt = Effect.fn('recall.prepareSectionsAttempt')(
       ? [input.preferredUriScopes, undefined]
       : [undefined];
   const indexCandidateLimit = recallIndexPreselectionLimit(input.limit);
+  const recencyIntent = originalQueryRequestsRecency(input.query);
   const laneBudgets = recallCrossScopeLaneBudgets(input.limit);
   const topicalIndexSelections = indexQueries.flatMap(indexQuery =>
     scopeSets.map(allowedUriScopes => ({
@@ -233,6 +236,7 @@ const prepareRecallSectionsAttempt = Effect.fn('recall.prepareSectionsAttempt')(
       eligibility: input.eligibility,
       limit: indexCandidateLimit,
       query: indexQuery,
+      recencyIntent,
       requiredUris: rankingUris,
     })),
   );
@@ -287,6 +291,7 @@ const prepareRecallSectionsAttempt = Effect.fn('recall.prepareSectionsAttempt')(
   const branchRecallIndexes = flattenedRecallIndexes.slice(workspaceSelectionEnd);
   const recallIndex = topicalRecallIndexes.find(index => index !== undefined);
   const topicalRecallIndexCandidateSets = topicalRecallIndexes.map(index => index?.candidates ?? []);
+  const recentRecallIndexCandidateSets = topicalRecallIndexes.map(index => index?.recentCandidates ?? []);
   const workspaceRecallIndexCandidateSets = workspaceRecallIndexes.map(index => index?.candidates ?? []);
   const branchRecallIndexCandidateSets = branchRecallIndexes.map(index => index?.candidates ?? []);
   const recallIndexCandidateSets = [
@@ -336,6 +341,21 @@ const prepareRecallSectionsAttempt = Effect.fn('recall.prepareSectionsAttempt')(
           workspaceScope,
         },
       )
+    : [];
+  const prioritizedRecentCandidates = recencyIntent
+    ? rankRecallCandidates(
+        input.query,
+        mergeRecallIndexCandidates(recentRecallIndexCandidateSets).map(withSemanticScore),
+        {
+          eligibility: input.eligibility,
+          includeInactive: input.includeInactive,
+          now,
+          project: input.project,
+          queryVariants,
+          workspaceBranch: input.workspaceBranch,
+          workspaceScope,
+        },
+      ).results.map(result => result.candidate)
     : [];
   const shouldLoadCrossScopeFallback =
     Result.isSuccess(recallIndexResult) &&
@@ -403,6 +423,8 @@ const prepareRecallSectionsAttempt = Effect.fn('recall.prepareSectionsAttempt')(
       admissionLimit: indexCandidateLimit,
       crossScopeReserve: laneBudgets.crossScopeReserve,
       protectedReserve: laneBudgets.protectedReserve,
+      recencyCandidateSets: [prioritizedRecentCandidates],
+      recencyReserve: RECALL_RECENCY_CANDIDATE_RESERVE,
     },
   );
   const indexedCandidates = yield* applySelectedNativeReranker(
@@ -1043,29 +1065,40 @@ export function mergeRecallCandidateLanes(
     readonly admissionLimit: number;
     readonly crossScopeReserve: number;
     readonly protectedReserve: number;
+    readonly recencyCandidateSets?: readonly (readonly RecallCandidate[])[];
+    readonly recencyReserve?: number;
   },
 ): readonly RecallCandidate[] {
   const topical = mergeRecallIndexCandidates(topicalCandidateSets);
   const protectedCandidates = mergeRecallIndexCandidates(protectedCandidateSets);
   const crossScopeCandidates = mergeRecallIndexCandidates(crossScopeCandidateSets);
+  const recentCandidates = mergeRecallIndexCandidates(options.recencyCandidateSets ?? []);
   const admissionLimit = Math.max(0, Math.floor(options.admissionLimit));
   if (admissionLimit === 0) {
     return deduplicateLogicalRecallCandidates(
-      uniqueRecallCandidatesByUri([...topical, ...protectedCandidates, ...crossScopeCandidates]),
+      uniqueRecallCandidatesByUri([...topical, ...recentCandidates, ...protectedCandidates, ...crossScopeCandidates]),
     );
   }
   const reservedKeys = new Set<string>();
+  const recentHead = selectRecallLaneHead(
+    recentCandidates,
+    Math.min(Math.max(0, Math.floor(options.recencyReserve ?? 0)), admissionLimit),
+    reservedKeys,
+  );
   const protectedHead = selectRecallLaneHead(
     protectedCandidates,
-    Math.min(Math.max(0, Math.floor(options.protectedReserve)), admissionLimit),
+    Math.min(Math.max(0, Math.floor(options.protectedReserve)), admissionLimit - recentHead.length),
     reservedKeys,
   );
   const crossHead = selectRecallLaneHead(
     crossScopeCandidates,
-    Math.min(Math.max(0, Math.floor(options.crossScopeReserve)), admissionLimit - protectedHead.length),
+    Math.min(
+      Math.max(0, Math.floor(options.crossScopeReserve)),
+      admissionLimit - recentHead.length - protectedHead.length,
+    ),
     reservedKeys,
   );
-  const reserved = [...protectedHead, ...crossHead];
+  const reserved = [...recentHead, ...protectedHead, ...crossHead];
   const topicalWithoutReserved = topical.filter(candidate => !reservedKeys.has(recallCandidateAdmissionKey(candidate)));
   const topicalHeadLength = Math.max(0, admissionLimit - reserved.length);
   return deduplicateLogicalRecallCandidates(
@@ -1075,6 +1108,7 @@ export function mergeRecallCandidateLanes(
       ...topicalWithoutReserved.slice(topicalHeadLength),
       ...protectedCandidates.slice(protectedHead.length),
       ...crossScopeCandidates.slice(crossHead.length),
+      ...recentCandidates.slice(recentHead.length),
     ]),
   );
 }

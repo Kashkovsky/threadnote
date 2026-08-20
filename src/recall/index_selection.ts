@@ -4,6 +4,12 @@ import {boundedRecallPhysicalCandidateLimit} from './index_query.js';
 import {recallEligibilityPolicyRestrictsCandidates, type RecallEligibilityPolicy} from './eligibility.js';
 import {recallEligibilityPredicate} from './index_eligibility.js';
 import {
+  POSTING_BM25_LENGTH_NORMALIZATION,
+  POSTING_BM25_SATURATION,
+  POSTING_IDENTIFIER_WEIGHT,
+  postingInverseDocumentFrequency,
+} from './index_lexical.js';
+import {
   combineRecallSqlPredicates,
   recallUriScopePredicate,
   recallWorkspaceScopePredicate,
@@ -12,10 +18,204 @@ import {
 } from './index_scope.js';
 import type {RecallCorpusStatistics} from './rank.js';
 
-interface RecallDocumentSampleRow {
+export interface RecallDocumentSampleRow {
   readonly candidate_json: string;
   readonly id: number;
   readonly uri: string;
+}
+
+export interface RecallPostingSelectionRow {
+  readonly document_id: number;
+  readonly document_length: number;
+  readonly field_weight: number;
+  readonly term: string;
+  readonly term_frequency: number;
+  readonly uri: string;
+}
+
+interface RecallRecentDocumentRow extends RecallDocumentSampleRow {
+  readonly logical_key: string;
+  readonly recorded_at: string;
+}
+
+const RECALL_RECENCY_MAX_PAGES_PER_TERM = 4;
+
+export function normalizedRecallRecordedAt(timestamp: string | undefined): string | null {
+  const parsed = timestamp ? Date.parse(timestamp) : Number.NaN;
+  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
+}
+
+export function selectRecallDocumentRows(
+  sql: SqlClient.SqlClient,
+  column: 'id' | 'uri',
+  values: readonly (number | string)[],
+) {
+  return Effect.gen(function* () {
+    const rows: RecallDocumentSampleRow[] = [];
+    for (let index = 0; index < values.length; index += 400) {
+      const batch = values.slice(index, index + 400);
+      rows.push(
+        ...(yield* sql<RecallDocumentSampleRow>`
+          SELECT id, uri, candidate_json FROM documents WHERE ${sql.in(column, batch)}
+        `),
+      );
+    }
+    return rows;
+  });
+}
+
+export function selectTopRecallPostingsByTerms(
+  sql: SqlClient.SqlClient,
+  terms: readonly string[],
+  allowedUriScopes: readonly string[] | undefined,
+  eligibility: RecallEligibilityPolicy | undefined,
+  project: string | undefined,
+  workspaceScope: string | undefined,
+  workspaceScopeMode: RecallWorkspaceScopeMode | undefined,
+  postingPoolLimit: number,
+  corpusStatistics: RecallCorpusStatistics,
+) {
+  if (terms.length === 0) return Effect.succeed<readonly RecallPostingSelectionRow[]>([]);
+  const uriScope = recallUriScopePredicate('d', allowedUriScopes);
+  const workspace = recallWorkspaceScopePredicate('d', workspaceScope, workspaceScopeMode);
+  const scope = combineRecallSqlPredicates(
+    uriScope,
+    recallEligibilityPredicate('d', eligibility),
+    recallProjectPredicate('d', project),
+    workspace,
+  );
+  const queryTermValues = terms.map(() => '(?, ?)').join(', ');
+  const queryTermParameters = terms.flatMap(term => [term, postingInverseDocumentFrequency(term, corpusStatistics)]);
+  const indexHint = uriScope.restricted
+    ? ' INDEXED BY documents_uri'
+    : workspace.restricted
+      ? ' INDEXED BY documents_workspace_scope_uri'
+      : '';
+  const postingsFirst = workspaceScopeMode === 'sibling';
+  const fromClause =
+    scope.restricted && !postingsFirst
+      ? `documents AS d${indexHint}
+       INNER JOIN postings AS p ON p.document_id = d.id
+       INNER JOIN query_terms AS q ON q.term = p.term`
+      : `query_terms AS q
+       INNER JOIN postings AS p ON p.term = q.term
+       INNER JOIN documents AS d ON d.id = p.document_id`;
+  return sql.unsafe<RecallPostingSelectionRow>(
+    `WITH query_terms(term, inverse_document_frequency) AS (
+       VALUES ${queryTermValues}
+     ),
+     scored AS (
+       SELECT
+         p.term,
+         p.document_id,
+         p.field_weight,
+         p.term_frequency,
+         d.document_length,
+         d.uri,
+         (
+           q.inverse_document_frequency * (
+             (CAST(p.term_frequency AS REAL) * ?)
+             / (
+               CAST(p.term_frequency AS REAL)
+               + ? * (
+                 ?
+                 + ? * (CAST(d.document_length AS REAL) / ?)
+               )
+             )
+           )
+           + CAST(p.field_weight AS REAL) / ?
+         ) AS score
+       FROM ${fromClause}
+       WHERE ${scope.sql}
+     ),
+     ranked AS (
+       SELECT
+         term,
+         document_id,
+         field_weight,
+         term_frequency,
+         document_length,
+         uri,
+         ROW_NUMBER() OVER (
+           PARTITION BY term
+           ORDER BY score DESC, field_weight DESC, uri ASC
+         ) AS term_rank
+       FROM scored
+     )
+     SELECT term, document_id, field_weight, term_frequency, document_length, uri
+     FROM ranked
+     WHERE term_rank <= ?
+     ORDER BY term ASC, term_rank ASC`,
+    [
+      ...queryTermParameters,
+      POSTING_BM25_SATURATION + 1,
+      POSTING_BM25_SATURATION,
+      1 - POSTING_BM25_LENGTH_NORMALIZATION,
+      POSTING_BM25_LENGTH_NORMALIZATION,
+      Math.max(1, corpusStatistics.averageDocumentLength),
+      POSTING_IDENTIFIER_WEIGHT,
+      ...scope.params,
+      postingPoolLimit,
+    ],
+  );
+}
+
+/**
+ * Bounded lexical admission lane ordered by canonical memory timestamp. URI,
+ * project, authority, and workspace predicates are applied before LIMIT; file
+ * mtimes never participate in temporal recall. Each selected term reads at
+ * most four `limit`-sized pages, paging only when aliases leave too few
+ * distinct logical candidates for the protected reserve.
+ */
+export function selectRecallRecentTopicalDocuments(
+  sql: SqlClient.SqlClient,
+  terms: readonly string[],
+  options: {
+    readonly allowedUriScopes?: readonly string[];
+    readonly eligibility?: RecallEligibilityPolicy;
+    readonly limit: number;
+    readonly minimumLogicalCandidates: number;
+    readonly project?: string;
+    readonly workspaceScope?: string;
+    readonly workspaceScopeMode?: RecallWorkspaceScopeMode;
+  },
+) {
+  const limit = Math.max(0, Math.floor(options.limit));
+  if (limit === 0 || terms.length === 0) return Effect.succeed<readonly RecallDocumentSampleRow[]>([]);
+  const scope = combineRecallSqlPredicates(
+    recallUriScopePredicate('d', options.allowedUriScopes),
+    recallEligibilityPredicate('d', options.eligibility),
+    recallProjectPredicate('d', options.project),
+    recallWorkspaceScopePredicate('d', options.workspaceScope, options.workspaceScopeMode),
+  );
+  const minimumLogicalCandidates = Math.min(limit, Math.max(1, Math.floor(options.minimumLogicalCandidates)));
+  return Effect.gen(function* () {
+    const selected: RecallRecentDocumentRow[] = [];
+    for (const term of terms) {
+      const termRows: RecallRecentDocumentRow[] = [];
+      const logicalKeys = new Set<string>();
+      for (let page = 0; page < RECALL_RECENCY_MAX_PAGES_PER_TERM; page += 1) {
+        const rows = yield* sql.unsafe<RecallRecentDocumentRow>(
+          `SELECT d.id, d.uri, d.candidate_json, d.logical_key, d.recorded_at
+           FROM postings AS p
+           CROSS JOIN documents AS d ON d.id = p.document_id
+           WHERE p.term = ?
+             AND d.recorded_at IS NOT NULL
+             AND ${scope.sql}
+           ORDER BY d.recorded_at DESC, d.uri ASC
+           LIMIT ? OFFSET ?`,
+          [term, ...scope.params, limit, page * limit],
+        );
+        termRows.push(...rows);
+        rows.forEach(row => logicalKeys.add(row.logical_key));
+        if (rows.length < limit || logicalKeys.size >= minimumLogicalCandidates) break;
+      }
+      // Keep physical aliases in the bounded pool so the ordinary logical
+      // deduplicator can retain authorized equivalent URIs.
+      selected.push(...termRows);
+    }
+    return selected;
+  });
 }
 
 export function recallProjectMatches(project: string | undefined, candidateProject: string | undefined): boolean {
