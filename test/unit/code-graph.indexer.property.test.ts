@@ -2,11 +2,13 @@ import {describe, expect, it} from '@effect/vitest';
 import * as FC from 'effect/testing/FastCheck';
 import fc from 'fast-check';
 import {
+  addMaterializationReplayMetrics,
   addMaterializationRows,
   compactCachedFileRelationships,
   codeGraphActiveParserCacheKey,
   codeGraphParserCacheLookupGenerations,
   deduplicateMaterializationRelationships,
+  emptyMaterializationReplayMetrics,
   estimatedMaterializationStorageBytes,
   factMaterializationBatches,
   graphContentIdentity,
@@ -40,6 +42,47 @@ const materializationRows = FC.record({
 });
 
 describe('code graph indexer properties', () => {
+  it.prop(
+    'keeps physical replay components bounded, order-independent, and equal to their combined counter',
+    {
+      observations: FC.array(
+        FC.record({
+          attributedFiles: byteCount,
+          crossGenerationShardFiles: byteCount,
+          exactGenerationShardFiles: byteCount,
+          materializedShardReplayBytes: byteCount,
+          rawFactReplayBytes: byteCount,
+        }),
+        {maxLength: 24},
+      ),
+    },
+    ({observations}) => {
+      const aggregate = observations.reduce(addMaterializationReplayMetrics, emptyMaterializationReplayMetrics());
+      const reversed = [...observations]
+        .reverse()
+        .reduce(addMaterializationReplayMetrics, emptyMaterializationReplayMetrics());
+      const bounded = (values: readonly number[]): number => {
+        const exact = values.reduce((total, value) => total + BigInt(value), 0n);
+        return Number(exact > BigInt(Number.MAX_SAFE_INTEGER) ? BigInt(Number.MAX_SAFE_INTEGER) : exact);
+      };
+      const expectedRaw = bounded(observations.map(observation => observation.rawFactReplayBytes));
+      const expectedMaterialized = bounded(observations.map(observation => observation.materializedShardReplayBytes));
+      const expectedAttributed = bounded(observations.map(observation => observation.attributedFiles));
+      const expectedCrossGeneration = bounded(observations.map(observation => observation.crossGenerationShardFiles));
+      const expectedExactGeneration = bounded(observations.map(observation => observation.exactGenerationShardFiles));
+
+      expect(aggregate).toEqual(reversed);
+      expect(aggregate.attributedFilesCompleted).toBe(expectedAttributed);
+      expect(aggregate.crossGenerationShardFilesCompleted).toBe(expectedCrossGeneration);
+      expect(aggregate.exactGenerationShardFilesCompleted).toBe(expectedExactGeneration);
+      expect(aggregate.rawFactReplayBytesCompleted).toBe(expectedRaw);
+      expect(aggregate.materializedShardReplayBytesCompleted).toBe(expectedMaterialized);
+      expect(aggregate.cachedFactReplayBytesCompleted).toBe(bounded([expectedRaw, expectedMaterialized]));
+      expect(Object.values(aggregate).every(value => Number.isSafeInteger(value) && value >= 0)).toBe(true);
+    },
+    {fastCheck: {numRuns: 100}},
+  );
+
   it.prop(
     'admits both active and degraded parser cache generations deterministically',
     {

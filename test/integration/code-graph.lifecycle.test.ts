@@ -1063,6 +1063,11 @@ describe('native code graph lifecycle', () => {
       const metrics = finalFullMaterializationMetrics(progress);
       expect(metrics.cachedFactReplayBytesCompleted).toBe(metrics.cachedFactBytesTotal);
       expect(metrics.cachedFactReplayBytesCompleted).toBeGreaterThan(0);
+      expect(metrics.rawFactReplayBytesCompleted).toBe(metrics.cachedFactBytesTotal);
+      expect(metrics.materializedShardReplayBytesCompleted).toBe(0);
+      expect(metrics.attributedFilesCompleted).toBe(12);
+      expect(metrics.exactGenerationShardFilesCompleted).toBe(0);
+      expect(metrics.crossGenerationShardFilesCompleted).toBe(0);
     }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );
 
@@ -1111,7 +1116,13 @@ describe('native code graph lifecycle', () => {
       expect(rebuilt.diagnostics).toContain('Reused content-addressed materialized shards for 12 file(s).');
       expect(shardState.shards).toBe(12);
       expect(shardState.references).toBe(12);
-      expect(finalFullMaterializationMetrics(progress).cachedFactReplayBytesCompleted).toBe(shardState.bytes);
+      const metrics = finalFullMaterializationMetrics(progress);
+      expect(metrics.cachedFactReplayBytesCompleted).toBe(shardState.bytes);
+      expect(metrics.rawFactReplayBytesCompleted).toBe(0);
+      expect(metrics.materializedShardReplayBytesCompleted).toBe(shardState.bytes);
+      expect(metrics.attributedFilesCompleted).toBe(0);
+      expect(metrics.exactGenerationShardFilesCompleted).toBe(12);
+      expect(metrics.crossGenerationShardFilesCompleted).toBe(0);
       expect(normalizeStoredGraph(rebuiltGraph)).toEqual(normalizeStoredGraph(firstGraph));
     }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );
@@ -1212,6 +1223,11 @@ describe('native code graph lifecycle', () => {
       expect(metrics.cachedFactReplayBytesCompleted).toBe(
         partialShardState.rawFactBytes + partialShardState.reusedShardBytes,
       );
+      expect(metrics.rawFactReplayBytesCompleted).toBe(partialShardState.rawFactBytes);
+      expect(metrics.materializedShardReplayBytesCompleted).toBe(partialShardState.reusedShardBytes);
+      expect(metrics.attributedFilesCompleted).toBe(2);
+      expect(metrics.exactGenerationShardFilesCompleted).toBe(128);
+      expect(metrics.crossGenerationShardFilesCompleted).toBe(0);
       expect(persistedReuse.associations).toBe(130);
       expect(persistedReuse.writes).toHaveLength(2);
       expect(persistedReuse.writes.filter(write => write.operation === 'insert')).toEqual([
@@ -1276,6 +1292,11 @@ describe('native code graph lifecycle', () => {
       expect(replayState.changedRaw).toBeGreaterThan(0);
       expect(replayState.retainedShard).toBeGreaterThan(0);
       expect(metrics.cachedFactReplayBytesCompleted).toBe(replayState.raw + replayState.retainedShard);
+      expect(metrics.rawFactReplayBytesCompleted).toBe(replayState.raw);
+      expect(metrics.materializedShardReplayBytesCompleted).toBe(replayState.retainedShard);
+      expect(metrics.attributedFilesCompleted).toBe(2);
+      expect(metrics.exactGenerationShardFilesCompleted).toBe(0);
+      expect(metrics.crossGenerationShardFilesCompleted).toBe(0);
       expect(metrics.changedFactBytesCompleted).toBe(replayState.changedRaw);
     }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );

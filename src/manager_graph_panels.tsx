@@ -1269,6 +1269,37 @@ export function GraphBuildProgress(props: {
               ? ''
               : ` · transactions ${formatGraphMilliseconds(build.materialization.metrics.transactionMilliseconds)}`}
           </p>
+          {build.materialization.metrics.attributedFilesCompleted === undefined &&
+          build.materialization.metrics.crossGenerationShardFilesCompleted === undefined &&
+          build.materialization.metrics.exactGenerationShardFilesCompleted === undefined &&
+          build.materialization.metrics.materializedShardReplayBytesCompleted === undefined &&
+          build.materialization.metrics.rawFactReplayBytesCompleted === undefined ? null : (
+            <p>
+              Physical cache replay
+              {build.materialization.metrics.cachedFactReplayBytesCompleted === undefined
+                ? ''
+                : `: ${formatGraphBytes(build.materialization.metrics.cachedFactReplayBytesCompleted)} total decoded`}
+              {build.materialization.metrics.materializedShardReplayBytesCompleted === undefined
+                ? ''
+                : ` · ${formatGraphBytes(
+                    build.materialization.metrics.materializedShardReplayBytesCompleted,
+                  )} materialized-shard payloads decoded`}
+              {build.materialization.metrics.rawFactReplayBytesCompleted === undefined
+                ? ''
+                : ` · ${formatGraphBytes(
+                    build.materialization.metrics.rawFactReplayBytesCompleted,
+                  )} raw parser-fact payloads decoded`}
+              {build.materialization.metrics.attributedFilesCompleted === undefined
+                ? ''
+                : ` · ${build.materialization.metrics.attributedFilesCompleted.toLocaleString()} raw parser-fact files postprocessed and attributed`}
+              {build.materialization.metrics.exactGenerationShardFilesCompleted === undefined
+                ? ''
+                : ` · ${build.materialization.metrics.exactGenerationShardFilesCompleted.toLocaleString()} files selected from exact-generation materialized shards`}
+              {build.materialization.metrics.crossGenerationShardFilesCompleted === undefined
+                ? ''
+                : ` · ${build.materialization.metrics.crossGenerationShardFilesCompleted.toLocaleString()} files selected from cross-generation materialized shards`}
+            </p>
+          )}
           {build.materialization.metrics.storage ? (
             <>
               <p>

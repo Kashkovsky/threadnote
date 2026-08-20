@@ -266,6 +266,7 @@ export interface GraphBuildStatus {
       readonly transactionMilliseconds?: number;
     };
     readonly metrics?: {
+      readonly attributedFilesCompleted?: number;
       readonly attributionMilliseconds?: number;
       readonly batchesCompleted: number;
       readonly batchesTotal: number;
@@ -273,11 +274,15 @@ export interface GraphBuildStatus {
       readonly cachedFactBytesTotal?: number;
       readonly cachedFactReplayBytesCompleted?: number;
       readonly changedFactBytesCompleted?: number;
+      readonly crossGenerationShardFilesCompleted?: number;
+      readonly exactGenerationShardFilesCompleted?: number;
       readonly fallbackReason?: string;
       readonly factsBytesCompleted?: number;
       readonly factsBytesTotal?: number;
       readonly loadingMilliseconds?: number;
+      readonly materializedShardReplayBytesCompleted?: number;
       readonly mode?: 'full' | 'incremental-clean' | 'incremental-overlay';
+      readonly rawFactReplayBytesCompleted?: number;
       readonly rows?: GraphMaterializationRows;
       readonly sourceBytesCompleted: number;
       readonly sourceBytesTotal: number;

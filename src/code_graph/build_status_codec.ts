@@ -371,14 +371,34 @@ function parseMaterializationMetrics(value: unknown): CodeGraphMaterializationMe
     return undefined;
   }
   for (const key of [
+    'attributedFilesCompleted',
     'cachedFactBytesCompleted',
     'cachedFactBytesTotal',
     'cachedFactReplayBytesCompleted',
     'changedFactBytesCompleted',
+    'crossGenerationShardFilesCompleted',
+    'exactGenerationShardFilesCompleted',
     'factsBytesCompleted',
     'factsBytesTotal',
+    'materializedShardReplayBytesCompleted',
+    'rawFactReplayBytesCompleted',
   ] as const) {
     if (value[key] !== undefined && !isNonNegativeSafeInteger(value[key])) return undefined;
+  }
+  const hasReplaySplit =
+    value.materializedShardReplayBytesCompleted !== undefined || value.rawFactReplayBytesCompleted !== undefined;
+  if (
+    hasReplaySplit &&
+    (value.cachedFactReplayBytesCompleted === undefined ||
+      value.materializedShardReplayBytesCompleted === undefined ||
+      value.rawFactReplayBytesCompleted === undefined ||
+      Number(value.cachedFactReplayBytesCompleted) !==
+        Math.min(
+          Number.MAX_SAFE_INTEGER,
+          Number(value.materializedShardReplayBytesCompleted) + Number(value.rawFactReplayBytesCompleted),
+        ))
+  ) {
+    return undefined;
   }
   if (
     value.cachedFactBytesCompleted !== undefined &&
@@ -406,6 +426,9 @@ function parseMaterializationMetrics(value: unknown): CodeGraphMaterializationMe
   if (storage?.estimateBasis === 'cached-fact-bytes' && value.cachedFactBytesTotal === undefined) return undefined;
   if (storage?.estimateBasis === 'final-fact-bytes' && value.factsBytesTotal === undefined) return undefined;
   return {
+    ...(value.attributedFilesCompleted === undefined
+      ? {}
+      : {attributedFilesCompleted: Number(value.attributedFilesCompleted)}),
     ...(value.fallbackReason === undefined
       ? {}
       : {fallbackReason: value.fallbackReason as CodeGraphMaterializationMetrics['fallbackReason']}),
@@ -436,10 +459,22 @@ function parseMaterializationMetrics(value: unknown): CodeGraphMaterializationMe
     ...(value.changedFactBytesCompleted === undefined
       ? {}
       : {changedFactBytesCompleted: Number(value.changedFactBytesCompleted)}),
+    ...(value.crossGenerationShardFilesCompleted === undefined
+      ? {}
+      : {crossGenerationShardFilesCompleted: Number(value.crossGenerationShardFilesCompleted)}),
+    ...(value.exactGenerationShardFilesCompleted === undefined
+      ? {}
+      : {exactGenerationShardFilesCompleted: Number(value.exactGenerationShardFilesCompleted)}),
     ...(value.factsBytesCompleted === undefined ? {} : {factsBytesCompleted: Number(value.factsBytesCompleted)}),
     ...(value.factsBytesTotal === undefined ? {} : {factsBytesTotal: Number(value.factsBytesTotal)}),
     ...(value.loadingMilliseconds === undefined ? {} : {loadingMilliseconds: Number(value.loadingMilliseconds)}),
+    ...(value.materializedShardReplayBytesCompleted === undefined
+      ? {}
+      : {materializedShardReplayBytesCompleted: Number(value.materializedShardReplayBytesCompleted)}),
     ...(value.mode === undefined ? {} : {mode: value.mode as CodeGraphMaterializationMetrics['mode']}),
+    ...(value.rawFactReplayBytesCompleted === undefined
+      ? {}
+      : {rawFactReplayBytesCompleted: Number(value.rawFactReplayBytesCompleted)}),
     ...(rows ? {rows} : {}),
     sourceBytesCompleted: Number(value.sourceBytesCompleted),
     sourceBytesTotal: Number(value.sourceBytesTotal),
