@@ -98,7 +98,7 @@ function sourceDate(committedAt: string): string {
 }
 
 function baselinePath(threadnoteVersion: string): string {
-  return `test/evaluation/baselines/threadnote-${threadnoteVersion}/recall-v2-lexical.json`;
+  return `test/evaluation/baselines/threadnote-${threadnoteVersion}-${RECALL_RANKER_VERSION}/recall-v2-lexical.json`;
 }
 
 const git = Effect.fn('captureRecallBaseline.git')((arguments_: readonly string[]) =>

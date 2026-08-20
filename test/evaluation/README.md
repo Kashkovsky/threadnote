@@ -454,10 +454,10 @@ bun run eval:recall:baseline:v2
 ```
 
 The v2 capture refuses a dirty checkout and defaults to
-`baselines/threadnote-<package-version>/recall-v2-lexical.json`. It derives the package version, pipeline name, commit,
-clean state, and commit timestamp from the checkout. `SOURCE_DATE_EPOCH`, `--created-at`, or `--output` may override the
-reproducible timestamp or destination, but must not be used to relabel historical behavior. The legacy v1 capture
-remains only for its frozen contract.
+`baselines/threadnote-<package-version>-<ranker-version>/recall-v2-lexical.json`. It derives the package version,
+ranker version, pipeline name, commit, clean state, and commit timestamp from the checkout. `SOURCE_DATE_EPOCH`,
+`--created-at`, or `--output` may override the reproducible timestamp or destination, but must not be used to relabel
+historical behavior. The legacy v1 capture remains only for its frozen contract.
 
 ## Metrics
 
@@ -502,11 +502,20 @@ bun run eval:recall:v2 -- --no-baseline --documents 10000 --full --output artifa
 bun run eval:recall:v2 -- --no-baseline --global-eligibility --full
 ```
 
-The evaluator and model bake-off default to the reviewed Threadnote 4.2.7 lexical baseline. Its 193 exact contract
-failure identities remain visible work, not silent waivers: with a baseline, `--fail-on-contract` allows fixes but
-rejects any new identity or count increase; with `--no-baseline`, it remains zero-tolerance. A candidate must also pass
-the independent non-inferiority gate for global, category, and safety metrics. Pass `--baseline` explicitly only to
-reproduce a historical comparison.
+The evaluator and model bake-off default to the reviewed Threadnote 4.2.7 `hybrid-v8` lexical baseline under
+`baselines/threadnote-4.2.7-hybrid-v8/`. Its 99 exact lexical-only contract failure identities remain visible work, not
+silent waivers: with a baseline, `--fail-on-contract` allows fixes but rejects any new identity or count increase; with
+`--no-baseline`, it remains zero-tolerance. The remaining defects are concentrated in contracts that require semantic
+retrieval; the production BGE model evaluation remains the complementary end-to-end semantic-quality check. A
+candidate must also pass the independent non-inferiority gate for global, category, and safety metrics. Pass
+`--baseline` explicitly only to reproduce a historical comparison. The earlier 4.2.7 `hybrid-v3` quality artifact is
+retained in its original directory as historical evidence and as the colocated performance-reference lineage.
+
+The `hybrid-v8` release behavior also covers production recency intent: original-query recency terms can admit a
+bounded newest-candidate lane before the normal topical ranker, so a relevant current handoff is not starved by a large
+set of older matches. A separate real SQLite-store regression pins that behavior. It does not change the 250-query
+lexical fixture aggregates because the fixture remains the stable non-inferiority contract rather than a synthetic
+recency-only scorecard.
 
 The reviewed fixture's `query.project` models the documented explicit-project agent workflow. The
 `--global-eligibility` diagnostic keeps that value only as a soft ranking context while omitting the hard project

@@ -1,13 +1,13 @@
 # Threadnote 4.2.7 recall baseline
 
-`recall-v2-lexical.json` is the active reviewed lexical quality baseline. It was captured before ranker changes from
-clean commit `297cdb92bd164ed2ea58dd6c366c60c67aba97cf` with package version 4.2.7 and ranker `hybrid-v3`.
-The legacy `openVikingVersion` compatibility field is `not-applicable` because this pipeline does not invoke
-OpenViking.
+`recall-v2-lexical.json` is the historical reviewed `hybrid-v3` lexical quality baseline. It was captured before ranker
+changes from clean commit `297cdb92bd164ed2ea58dd6c366c60c67aba97cf` with package version 4.2.7 and ranker
+`hybrid-v3`. The legacy `openVikingVersion` compatibility field is `not-applicable` because this pipeline does not
+invoke OpenViking.
 
-The artifact records the exact identities of 193 reviewed contract defects. They remain visible improvement work: CI
-allows fixes but rejects any newly introduced failure identity or count increase, and independently gates aggregate,
-category, and safety non-inferiority. A strict run without a baseline requires zero defects.
+The artifact records the exact identities of 193 reviewed contract defects and remains immutable comparison evidence.
+The active quality gate moved to `../threadnote-4.2.7-hybrid-v8/`; a strict run without a baseline still requires zero
+defects.
 
 `benchmarks/darwin-arm64-m1-max/` is the current same-host rank-performance reference. Its 200, 1k, and 10k captures
 use 5 warmups and 25 samples; the directional 100k scale-boundary capture uses 1 warmup and 5 samples. All four were

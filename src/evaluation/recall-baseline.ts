@@ -8,7 +8,7 @@ import {
 
 export const RECALL_BASELINE_VERSION = 1 as const;
 export const CURRENT_RECALL_BASELINE_PATH =
-  'test/evaluation/baselines/threadnote-4.2.7/recall-v2-lexical.json' as const;
+  'test/evaluation/baselines/threadnote-4.2.7-hybrid-v8/recall-v2-lexical.json' as const;
 
 export interface RecallEvaluationBaselineV1 {
   readonly createdAt: string;

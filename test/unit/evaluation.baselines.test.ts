@@ -15,9 +15,10 @@ import {
 } from '../../src/evaluation/recall-fixture.js';
 
 const HISTORICAL_BASELINE_ROOT = 'test/evaluation/baselines/threadnote-3.0.3';
-const CURRENT_BASELINE_ROOT = 'test/evaluation/baselines/threadnote-4.2.7';
+const THREADNOTE_427_REFERENCE_ROOT = 'test/evaluation/baselines/threadnote-4.2.7';
+const CURRENT_QUALITY_BASELINE_ROOT = 'test/evaluation/baselines/threadnote-4.2.7-hybrid-v8';
 const BENCHMARK_ROOT = join(HISTORICAL_BASELINE_ROOT, 'benchmarks', 'darwin-arm64-m1-max');
-const CURRENT_BENCHMARK_ROOT = join(CURRENT_BASELINE_ROOT, 'benchmarks', 'darwin-arm64-m1-max');
+const CURRENT_BENCHMARK_ROOT = join(THREADNOTE_427_REFERENCE_ROOT, 'benchmarks', 'darwin-arm64-m1-max');
 const CANDIDATE_ROOT = 'test/evaluation/candidates/threadnote-4.0.0';
 const CURRENT_RANK_CANDIDATE_ROOT =
   'test/evaluation/candidates/threadnote-4.2.7-hybrid-v6/benchmarks/darwin-arm64-m1-max';
@@ -240,20 +241,36 @@ describe('frozen Threadnote 3.0.3 baselines', () => {
   });
 });
 
-describe('reviewed current recall baseline', () => {
-  it('keeps v4.2.7 provenance distinct from the frozen historical artifact', () => {
-    const baselinePath = join(CURRENT_BASELINE_ROOT, 'recall-v2-lexical.json');
+describe('reviewed current recall quality baseline', () => {
+  it('uses the clean hybrid-v8 capture as the active quality gate', () => {
+    const baselinePath = join(CURRENT_QUALITY_BASELINE_ROOT, 'recall-v2-lexical.json');
     const baseline = parseRecallEvaluationBaselineV1(readJson(baselinePath));
     const fixture = createRecallEvaluationFixtureV2();
     const fixtureHash = createHash('sha256').update(serializeRecallEvaluationFixtureV2Identity(fixture)).digest('hex');
 
     expect(baselinePath).toBe(CURRENT_RECALL_BASELINE_PATH);
-    expect(baseline.createdAt).toBe('2026-08-20T07:54:46.000Z');
+    expect(baseline.createdAt).toBe('2026-08-20T19:07:18.000Z');
     expect(baseline.fixture).toMatchObject({documents: 200, hash: fixtureHash, queries: 250, version: 2});
+    expect(baseline.knownContractFailures).toBe(99);
+    expect(baseline.reviewedContractFailures).toHaveLength(99);
+    expect(new Set(baseline.reviewedContractFailures).size).toBe(99);
+    expect(baseline.result.pipeline.name).toBe('threadnote-4.2.7-lexical-only');
+    expect(baseline.source).toEqual({
+      commit: '6f77ff434b948390f3e1d0afaf7e1e00d359fa89',
+      dirty: false,
+      openVikingVersion: 'not-applicable',
+      rankerVersion: 'hybrid-v8',
+      threadnoteVersion: '4.2.7',
+    });
+  });
+
+  it('keeps the 4.2.7 hybrid-v3 quality artifact as historical evidence', () => {
+    const baseline = parseRecallEvaluationBaselineV1(
+      readJson(join(THREADNOTE_427_REFERENCE_ROOT, 'recall-v2-lexical.json')),
+    );
+
     expect(baseline.knownContractFailures).toBe(193);
     expect(baseline.reviewedContractFailures).toHaveLength(193);
-    expect(new Set(baseline.reviewedContractFailures).size).toBe(193);
-    expect(baseline.result.pipeline.name).toBe('threadnote-4.2.7-lexical-only');
     expect(baseline.source).toEqual({
       commit: '297cdb92bd164ed2ea58dd6c366c60c67aba97cf',
       dirty: false,
@@ -264,7 +281,9 @@ describe('reviewed current recall baseline', () => {
   });
 
   it('treats reviewed failures as a ceiling and remains zero-tolerance without a baseline', () => {
-    const baseline = parseRecallEvaluationBaselineV1(readJson(join(CURRENT_BASELINE_ROOT, 'recall-v2-lexical.json')));
+    const baseline = parseRecallEvaluationBaselineV1(
+      readJson(join(CURRENT_QUALITY_BASELINE_ROOT, 'recall-v2-lexical.json')),
+    );
 
     const reviewed = baseline.reviewedContractFailures ?? [];
     expect(exceedsReviewedContractFailureLimit(reviewed, baseline)).toBe(false);
