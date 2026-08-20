@@ -602,15 +602,106 @@ const selectCachedFacts = Effect.fn('codeGraph.selectCachedFacts')(function* (
   return {bytes, bytesByPath, facts: output, keys} satisfies LoadedCodeGraphFacts;
 });
 
+interface MaterializedShardDonor {
+  readonly exactGeneration: boolean;
+  readonly snapshotId: string;
+}
+
+/** @internal Exposed so regression tests can verify the requested-first access plan. */
+export function codeGraphCompleteMaterializedShardDonorStatement(
+  snapshotId: string,
+  files: readonly Pick<CodeGraphInventoryFile, 'contentHash' | 'path'>[],
+  extractorSet: string,
+  derivationIdentity: string,
+): CodeGraphSqlQueryStatement {
+  const requested = JSON.stringify(
+    files.map(file => ({
+      contentHash: file.contentHash,
+      id: materializedFileShardIdentity(file.contentHash, extractorSet, derivationIdentity, file.path),
+      path: file.path,
+    })),
+  );
+  return {
+    parameters: [requested, snapshotId, extractorSet, derivationIdentity],
+    text: `SELECT COUNT(*) AS association_count,
+                  COALESCE(snapshot.graph_content_id, snapshot.id) AS graph_content_id
+           FROM json_each(?) AS requested
+           CROSS JOIN snapshots AS snapshot
+           CROSS JOIN snapshot_file_shards AS association
+           CROSS JOIN materialized_file_shards AS shard
+           WHERE snapshot.id = ?
+             AND snapshot.extractor_set = ?
+             AND association.snapshot_id = snapshot.id
+             AND association.path = json_extract(requested.value, '$.path')
+             AND shard.id = association.shard_id
+             AND shard.id = json_extract(requested.value, '$.id')
+             AND shard.content_hash = json_extract(requested.value, '$.contentHash')
+             AND shard.path_hint = association.path
+             AND shard.extractor_set = snapshot.extractor_set
+             AND shard.derivation_identity = ?
+           GROUP BY snapshot.id, snapshot.graph_content_id`,
+  };
+}
+
+const selectCompleteMaterializedShardDonor = Effect.fn('codeGraph.selectCompleteMaterializedShardDonor')(function* (
+  sql: SqlClient.SqlClient,
+  files: readonly Pick<CodeGraphInventoryFile, 'contentHash' | 'path'>[],
+  extractorSet: string,
+  derivationIdentity: string,
+  currentGraphContentId: string,
+  snapshotIds: readonly string[],
+) {
+  if (files.length === 0 || new Set(files.map(file => file.path)).size !== files.length) return undefined;
+  for (const snapshotId of [...new Set(snapshotIds)].slice(0, 2)) {
+    const statement = codeGraphCompleteMaterializedShardDonorStatement(
+      snapshotId,
+      files,
+      extractorSet,
+      derivationIdentity,
+    );
+    const rows = yield* sql.unsafe<{
+      readonly association_count: number;
+      readonly graph_content_id: string;
+    }>(statement.text, statement.parameters);
+    const row = rows[0];
+    if (
+      row !== undefined &&
+      Number(row.association_count) === files.length &&
+      typeof row.graph_content_id === 'string'
+    ) {
+      return {
+        exactGeneration: row.graph_content_id === currentGraphContentId,
+        snapshotId,
+      } satisfies MaterializedShardDonor;
+    }
+  }
+  return undefined;
+});
+
 const selectMaterializedFileShards = Effect.fn('codeGraph.selectMaterializedFileShards')(function* (
   files: readonly Pick<CodeGraphInventoryFile, 'contentHash' | 'path'>[],
   extractorSet: string,
   derivationIdentity: string,
+  provenance?: {
+    readonly currentGraphContentId: string;
+    readonly snapshotIds: readonly string[];
+  },
 ) {
   const sql = yield* SqlClient.SqlClient;
   yield* configureConnection(sql);
+  const donor = provenance
+    ? yield* selectCompleteMaterializedShardDonor(
+        sql,
+        files,
+        extractorSet,
+        derivationIdentity,
+        provenance.currentGraphContentId,
+        provenance.snapshotIds,
+      )
+    : undefined;
   const output = new Map<string, CodeGraphFileFacts>();
   const bytesByPath = new Map<string, number>();
+  const materializedShardIdsByPath = new Map<string, string>();
   const keys = new Set<string>();
   let bytes = 0;
   for (const batch of chunk(files, 200)) {
@@ -622,11 +713,26 @@ const selectMaterializedFileShards = Effect.fn('codeGraph.selectMaterializedFile
       readonly id: string;
       readonly path_hint: string;
     }>(
-      `SELECT id, content_hash, path_hint, facts_json, ${storedCodeGraphFactRawBytesSql('facts_json')} AS facts_bytes
-       FROM materialized_file_shards
-       WHERE extractor_set = ? AND derivation_identity = ?
-         AND (${batch.map(() => '(content_hash = ? AND path_hint = ?)').join(' OR ')})`,
-      [extractorSet, derivationIdentity, ...batch.flatMap(file => [file.contentHash, file.path])],
+      `SELECT shard.id, shard.content_hash, shard.path_hint, shard.facts_json,
+              ${storedCodeGraphFactRawBytesSql('shard.facts_json')} AS facts_bytes
+       FROM materialized_file_shards AS shard
+       ${
+         provenance === undefined
+           ? ''
+           : `JOIN snapshot_file_shards AS association
+                ON association.snapshot_id = ?
+               AND association.path = shard.path_hint
+               AND association.shard_id = shard.id`
+       }
+       WHERE shard.extractor_set = ? AND shard.derivation_identity = ?
+         AND (${batch.map(() => '(shard.content_hash = ? AND shard.path_hint = ?)').join(' OR ')})
+         ${provenance !== undefined && donor === undefined ? 'AND 0' : ''}`,
+      [
+        ...(provenance === undefined ? [] : [donor?.snapshotId ?? '']),
+        extractorSet,
+        derivationIdentity,
+        ...batch.flatMap(file => [file.contentHash, file.path]),
+      ],
     );
     for (const row of rows) {
       const bounded = decodeStoredCodeGraphFactOption(row.facts_json, row.path_hint);
@@ -638,13 +744,21 @@ const selectMaterializedFileShards = Effect.fn('codeGraph.selectMaterializedFile
         continue;
       }
       output.set(row.path_hint, bounded.facts);
+      materializedShardIdsByPath.set(row.path_hint, row.id);
       keys.add(row.path_hint);
       const factBytes = bounded.bytes;
       bytes += factBytes;
       bytesByPath.set(row.path_hint, factBytes);
     }
   }
-  return {bytes, bytesByPath, facts: output, keys} satisfies LoadedCodeGraphFacts;
+  return {
+    bytes,
+    bytesByPath,
+    ...(provenance === undefined ? {} : {exactGenerationFiles: donor?.exactGeneration === true ? output.size : 0}),
+    facts: output,
+    keys,
+    materializedShardIdsByPath,
+  } satisfies LoadedCodeGraphFacts;
 });
 
 function decodeStoredCodeGraphFactOption(json: string, path: string) {

@@ -23,6 +23,7 @@ import {useDatabase} from './store_session.js';
 import {type CodeGraphInventoryFile, type CodeGraphSnapshot, CodeGraphStoreError} from './types.js';
 import {CodeGraphCacheCapacityPlanChanged} from './store_internal_models.js';
 import {lastStatementChangeCount} from './store_activation_core.js';
+import {assertPersistentBuildOwner} from './store_build_core.js';
 
 interface PlannedFreshFactCacheRow extends CodeGraphCacheCapacityRow {
   readonly blobId?: string;
@@ -108,6 +109,57 @@ export function materializedShardDerivationIdentity(
   ).slice(0, 40)}`;
 }
 
+type MaterializedShardRepositoryEnvelopeFile = Pick<
+  CodeGraphInventoryFile,
+  'contentHash' | 'language' | 'mode' | 'path' | 'source'
+>;
+
+function retainedMaterializationContext(path: string): boolean {
+  const name = path.slice(path.lastIndexOf('/') + 1);
+  return name.toLowerCase() === 'package.json' || /^tsconfig(?:\.[^/]+)?\.json$/iu.test(name);
+}
+
+/**
+ * Captures every repository path that can affect attribution, while retaining
+ * content only for manifests consumed outside the deterministic source batch.
+ * Ordinary source bodies are intentionally represented by their batch key.
+ */
+export function materializedShardRepositorySemanticEnvelope(
+  files: readonly MaterializedShardRepositoryEnvelopeFile[],
+): string {
+  const entries = [...files]
+    .sort((left, right) => compareCodeUnits(left.path, right.path))
+    .map(file => [
+      file.path,
+      file.language,
+      file.mode,
+      retainedMaterializationContext(file.path) ? file.contentHash : null,
+    ]);
+  return `cgfe_${sha256HexSync(`materialized-repository-semantic-envelope-v1\n${JSON.stringify(entries)}`).slice(
+    0,
+    40,
+  )}`;
+}
+
+/**
+ * V4 final-fact derivation identity. The ordered batch is part of the key so
+ * attribution never observes a hit/miss partition that differs from the one
+ * that originally produced the shard rows.
+ */
+export function materializedBatchShardDerivationIdentity(
+  extractorSet: string,
+  workspaceFingerprint: string,
+  repositorySemanticEnvelope: string,
+  files: readonly MaterializedShardRepositoryEnvelopeFile[],
+): string {
+  const orderedBatchMembers = files.map(file => [file.path, file.contentHash, file.language, file.mode, file.source]);
+  return `cgfd_${sha256HexSync(
+    `materialized-file-derivation-v4\n${extractorSet}\n${workspaceFingerprint}\n${repositorySemanticEnvelope}\n${JSON.stringify(
+      orderedBatchMembers,
+    )}`,
+  ).slice(0, 40)}`;
+}
+
 export function materializedFileShardIdentity(
   contentHash: string,
   extractorSet: string,
@@ -118,6 +170,73 @@ export function materializedFileShardIdentity(
     `materialized-file-shard-v1\n${contentHash}\n${extractorSet}\n${derivationIdentity}\n${path}`,
   ).slice(0, 40)}`;
 }
+
+export function shardDonorIds(...candidates: readonly (string | undefined)[]): readonly string[] {
+  return [...new Set(candidates.filter((value): value is string => value !== undefined))].slice(0, 2);
+}
+
+const associateMaterializedFileShardBatch = Effect.fn('codeGraph.associateMaterializedFileShardBatch')(function* (
+  sql: SqlClient.SqlClient,
+  snapshotId: string,
+  ownerToken: string,
+  files: readonly Pick<CodeGraphInventoryFile, 'contentHash' | 'path'>[],
+  extractorSet: string,
+  derivationIdentity: string,
+  selectedShardIds: ReadonlyMap<string, string>,
+) {
+  if (
+    files.length === 0 ||
+    new Set(files.map(file => file.path)).size !== files.length ||
+    selectedShardIds.size !== files.length
+  ) {
+    return yield* Effect.fail(new CodeGraphStoreError('Materialized file shard batch association is incomplete.'));
+  }
+  const expected = files.map(file => ({
+    contentHash: file.contentHash,
+    id: materializedFileShardIdentity(file.contentHash, extractorSet, derivationIdentity, file.path),
+    path: file.path,
+  }));
+  if (expected.some(row => selectedShardIds.get(row.path) !== row.id)) {
+    return yield* Effect.fail(new CodeGraphStoreError('Materialized file shard batch selection changed.'));
+  }
+
+  yield* assertPersistentBuildOwner(sql, snapshotId, ownerToken);
+  const requested = JSON.stringify(expected);
+  const rows = yield* sql<{
+    readonly content_hash: string;
+    readonly id: string;
+    readonly path: string;
+  }>`
+    SELECT shard.id, file.path, file.content_hash
+    FROM json_each(${requested}) AS requested
+    JOIN snapshot_files AS file
+      ON file.snapshot_id = ${snapshotId}
+     AND file.path = json_extract(requested.value, '$.path')
+     AND file.content_hash = json_extract(requested.value, '$.contentHash')
+    JOIN materialized_file_shards AS shard
+      ON shard.id = json_extract(requested.value, '$.id')
+     AND shard.content_hash = file.content_hash
+     AND shard.path_hint = file.path
+     AND shard.extractor_set = ${extractorSet}
+     AND shard.derivation_identity = ${derivationIdentity}
+  `;
+  const stored = new Map(rows.map(row => [row.path, row]));
+  if (
+    stored.size !== expected.length ||
+    expected.some(row => {
+      const actual = stored.get(row.path);
+      return actual?.id !== row.id || actual.content_hash !== row.contentHash;
+    })
+  ) {
+    return yield* Effect.fail(new CodeGraphStoreError('Materialized file shard batch is unavailable.'));
+  }
+  yield* sql.unsafe(
+    `INSERT INTO snapshot_file_shards (snapshot_id, path, shard_id)
+     VALUES ${expected.map(() => '(?, ?, ?)').join(', ')}
+     ON CONFLICT(snapshot_id, path) DO UPDATE SET shard_id = excluded.shard_id`,
+    expected.flatMap(row => [snapshotId, row.path, row.id]),
+  );
+});
 
 const associateSnapshotFileShards = Effect.fn('codeGraph.associateSnapshotFileShards')(function* (
   sql: SqlClient.SqlClient,
@@ -140,7 +259,7 @@ const associateSnapshotFileShards = Effect.fn('codeGraph.associateSnapshotFileSh
      AND shard.extractor_set = ${snapshot.extractorSet}
      AND shard.derivation_identity = ${derivationIdentity}
     WHERE file.snapshot_id = ${snapshot.id}
-    ON CONFLICT(snapshot_id, path) DO UPDATE SET shard_id = excluded.shard_id
+    ON CONFLICT(snapshot_id, path) DO NOTHING
   `;
 });
 
@@ -744,6 +863,7 @@ export {
   MaterializedShardRepairPlan,
   storeNormalMaterializedShardRows,
   validMaterializedShardText,
+  associateMaterializedFileShardBatch,
   associateSnapshotFileShards,
   MaterializedShardCacheWriteInput,
   writeNormalMaterializedShardCacheRows,

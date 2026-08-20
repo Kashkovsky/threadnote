@@ -16,6 +16,7 @@ import type {
   CodeGraphEdgeCursor,
   CodeGraphPersistentBuildClaim,
   CodeGraphLanguagePackProvenance,
+  CodeGraphMaterializedShardAssociationBatch,
   CodeGraphRemovedViewCleanupAuthorizationResult,
   CodeGraphRemovedViewCleanupEntry,
   CodeGraphRemovedViewCleanupStoreOptions,
@@ -102,6 +103,7 @@ export interface CodeGraphStoreShape {
     onProgress?: CodeGraphActivationProgressCallback,
     persistentCapacityProtector?: CodeGraphDirectPersistentCapacityProtector,
     snapshotPackProvenance?: readonly CodeGraphLanguagePackProvenance[],
+    materializedFileShardAssociationsComplete?: boolean,
   ) => Effect.Effect<Option.Option<string>, CodeGraphStoreError>;
   readonly activateCleanSnapshotAlias?: (
     databasePath: string,
@@ -122,6 +124,13 @@ export interface CodeGraphStoreShape {
     facts: readonly CodeGraphCacheFactInput[],
     extractorSet: string,
     derivationIdentity: string,
+    persistentCapacityProtector: CodeGraphDirectPersistentCapacityProtector,
+  ) => Effect.Effect<void, CodeGraphStoreError>;
+  readonly associateMaterializedFileShardBatches: (
+    databasePath: string,
+    snapshotId: string,
+    ownerToken: string,
+    batches: readonly CodeGraphMaterializedShardAssociationBatch[],
     persistentCapacityProtector: CodeGraphDirectPersistentCapacityProtector,
   ) => Effect.Effect<void, CodeGraphStoreError>;
   readonly acquireSnapshotLease: (
@@ -250,6 +259,10 @@ export interface CodeGraphStoreShape {
     files: readonly Pick<CodeGraphInventoryFile, 'contentHash' | 'path'>[],
     extractorSet: string,
     derivationIdentity: string,
+    provenance?: {
+      readonly currentGraphContentId: string;
+      readonly snapshotIds: readonly string[];
+    },
   ) => Effect.Effect<LoadedCodeGraphFacts, CodeGraphStoreError>;
   readonly loadGraph: (databasePath: string, snapshotId: string) => Effect.Effect<StoredCodeGraph, CodeGraphStoreError>;
   readonly loadSymbols: (

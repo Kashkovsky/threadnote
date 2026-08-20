@@ -1,6 +1,10 @@
 import {Effect, Option} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
-import {saturatingCapacityAdd, type CodeGraphDirectPersistentCapacityBoundary} from './disk_capacity.js';
+import {
+  saturatingCapacityAdd,
+  saturatingCapacityMultiply,
+  type CodeGraphDirectPersistentCapacityBoundary,
+} from './disk_capacity.js';
 import {
   CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION,
   type CodeGraphActivationProgressCallback,
@@ -578,6 +582,37 @@ const drainCompletedPersistentBuildRows = Effect.fn('codeGraph.drainCompletedPer
   return {deleted: totalDeleted, remaining};
 });
 
+export function persistentFullShardPublicationPlan(
+  fileCount: number,
+  materializedFileShardAssociationsComplete: boolean,
+  snapshotPackProvenanceCount: number,
+): {
+  readonly associateLegacyMaterializedFileShards: boolean;
+  readonly rowCount: number;
+} {
+  if (
+    !Number.isSafeInteger(fileCount) ||
+    fileCount < 0 ||
+    !Number.isSafeInteger(snapshotPackProvenanceCount) ||
+    snapshotPackProvenanceCount < 0
+  ) {
+    return {
+      associateLegacyMaterializedFileShards: !materializedFileShardAssociationsComplete,
+      rowCount: Number.NaN,
+    };
+  }
+  // Publication replaces pack provenance. Count both the prior-row deletes
+  // and the replacement inserts so a retry or recovered building snapshot
+  // cannot understate the transaction's physical write demand.
+  const fixedRowCount = saturatingCapacityAdd(6, saturatingCapacityMultiply(snapshotPackProvenanceCount, 2));
+  return materializedFileShardAssociationsComplete
+    ? {associateLegacyMaterializedFileShards: false, rowCount: fixedRowCount}
+    : {
+        associateLegacyMaterializedFileShards: true,
+        rowCount: saturatingCapacityAdd(fileCount, fixedRowCount),
+      };
+}
+
 const activatePersistedFullSnapshot = Effect.fn('codeGraph.activatePersistedFullSnapshot')(function* (
   sql: SqlClient.SqlClient,
   identity: RepositoryIdentity,
@@ -589,6 +624,7 @@ const activatePersistedFullSnapshot = Effect.fn('codeGraph.activatePersistedFull
   writerGate?: CodeGraphWriterGate,
   persistentCapacityProtector?: CodeGraphDirectPersistentCapacityProtector,
   snapshotPackProvenance?: readonly CodeGraphLanguagePackProvenance[],
+  materializedFileShardAssociationsComplete = false,
 ) {
   const runWrite: CodeGraphWriterGate = writerGate ?? (effect => effect);
   const observe = activationProgressObserver(onProgress);
@@ -665,16 +701,19 @@ const activatePersistedFullSnapshot = Effect.fn('codeGraph.activatePersistedFull
   yield* configurePublicationDurability(sql);
   yield* observe('recording-completion', 'started');
   yield* observe('committing-snapshot', 'started');
+  const shardPublicationPlan = persistentFullShardPublicationPlan(
+    snapshot.fileCount,
+    materializedFileShardAssociationsComplete,
+    snapshotPackProvenance?.length ?? 0,
+  );
   const publicationCapacity: CodeGraphDirectPersistentCapacityBoundary = {
     finalFactBytes: 0,
     operation: 'publish persistent code graph snapshot',
-    // File-shard association can publish one row per inventory file. The six
-    // fixed rows conservatively cover lexical/extractor/reuse/lease receipts,
-    // the ready-state update, and build-owner deletion.
-    rowCount:
-      Number.isSafeInteger(snapshot.fileCount) && snapshot.fileCount >= 0
-        ? saturatingCapacityAdd(snapshot.fileCount, 6)
-        : Number.NaN,
+    // V4 rows were associated by bounded materialization batches. Legacy
+    // callers can still publish one v3 association per inventory file. The
+    // Fixed rows cover lexical/extractor/reuse/lease receipts, the ready state
+    // update, build-owner deletion, and pack-provenance delete/insert writes.
+    rowCount: shardPublicationPlan.rowCount,
   };
   let readyTransactionStartedAt = 0;
   const readyTransaction = Effect.suspend(() => {
@@ -685,7 +724,9 @@ const activatePersistedFullSnapshot = Effect.fn('codeGraph.activatePersistedFull
           yield* assertPersistentBuildOwner(sql, snapshot.id, ownerToken);
           yield* assertPersistentMaterializationComplete(sql, snapshot.id, ownerToken);
           yield* publishCompactLexicalFormat(sql, snapshot.id, compactLexicalReceipt);
-          yield* associateSnapshotFileShards(sql, snapshot, reusableBaseReceipt);
+          if (shardPublicationPlan.associateLegacyMaterializedFileShards) {
+            yield* associateSnapshotFileShards(sql, snapshot, reusableBaseReceipt);
+          }
           yield* recordSnapshotExtractorGeneration(sql, snapshot.id);
           if (snapshotPackProvenance !== undefined) {
             yield* recordSnapshotPackProvenance(sql, snapshot.id, snapshotPackProvenance);

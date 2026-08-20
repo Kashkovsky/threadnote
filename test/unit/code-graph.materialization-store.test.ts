@@ -24,6 +24,7 @@ import {extractStructuredSchemaFacts} from '../../src/code_graph/languages/schem
 import {augmentRationaleFacts} from '../../src/code_graph/rationale.js';
 import {
   CodeGraphStore,
+  codeGraphCompleteMaterializedShardDonorStatement,
   codeGraphMaterializedShardAssociationPageStatement,
   codeGraphCompactLexicalDeepAuditStatement,
   codeGraphEffectiveSymbolTermsQueryStatement,
@@ -75,6 +76,56 @@ function observedStoreFailure(cause: unknown) {
 }
 
 describe('code graph full-build materialization store', () => {
+  it('proves complete shard donors through requested-first primary-key lookups', () => {
+    const database = new Database(':memory:', {strict: true});
+    try {
+      database.exec(`
+        CREATE TABLE snapshots (
+          id TEXT PRIMARY KEY NOT NULL,
+          extractor_set TEXT NOT NULL,
+          graph_content_id TEXT
+        ) WITHOUT ROWID;
+        CREATE TABLE materialized_file_shards (
+          id TEXT PRIMARY KEY NOT NULL,
+          content_hash TEXT NOT NULL,
+          extractor_set TEXT NOT NULL,
+          derivation_identity TEXT NOT NULL,
+          path_hint TEXT NOT NULL
+        ) WITHOUT ROWID;
+        CREATE TABLE snapshot_file_shards (
+          snapshot_id TEXT NOT NULL,
+          path TEXT NOT NULL,
+          shard_id TEXT NOT NULL,
+          PRIMARY KEY (snapshot_id, path)
+        ) WITHOUT ROWID;
+      `);
+      const statement = codeGraphCompleteMaterializedShardDonorStatement(
+        'cgs_donor',
+        [
+          {contentHash: 'hash-a', path: 'src/a.ts'},
+          {contentHash: 'hash-b', path: 'src/b.ts'},
+        ],
+        'extractor-v4',
+        'derivation-v4',
+      );
+      const plan = (
+        database.query(`EXPLAIN QUERY PLAN ${statement.text}`).all(...statement.parameters) as readonly {
+          readonly detail: string;
+        }[]
+      ).map(row => row.detail);
+      const requestedScan = plan.findIndex(detail => detail.includes('SCAN requested VIRTUAL TABLE'));
+      const associationLookup = plan.findIndex(detail =>
+        detail.includes('SEARCH association USING PRIMARY KEY (snapshot_id=? AND path=?)'),
+      );
+
+      expect(requestedScan).toBeGreaterThanOrEqual(0);
+      expect(associationLookup).toBeGreaterThan(requestedScan);
+      expect(plan.join('\n')).not.toMatch(/SEARCH association USING PRIMARY KEY \(snapshot_id=\?\)(?! AND path)/u);
+    } finally {
+      database.close(false);
+    }
+  });
+
   it('uses bounded in-memory pager surfaces for a persistent full-build writer', async () => {
     const fixture = await materializationFixture();
     const pager = await runEffect(
