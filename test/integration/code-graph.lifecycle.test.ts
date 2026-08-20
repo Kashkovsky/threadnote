@@ -699,7 +699,15 @@ describe('native code graph lifecycle', () => {
           'export function divergentHeadOnly(): string { return "divergent"; }\n',
         );
         git(worktreeB, ['add', 'divergent-head.ts']);
-        git(worktreeB, ['commit', '-m', 'diverge graph worktree']);
+        git(worktreeB, [
+          '-c',
+          'user.name=Threadnote Test',
+          '-c',
+          'user.email=test@threadnote.local',
+          'commit',
+          '-m',
+          'diverge graph worktree',
+        ]);
         return {home: join(root, '.threadnote-test-home'), worktreeA, worktreeB};
       });
       const graph = yield* CodeGraphQueryService;
