@@ -926,7 +926,6 @@ describe('native code graph lifecycle', () => {
       const probesPerObservation = statSync(root).dev === statSync(tmpdir()).dev ? 1 : 2;
       expect(Object.fromEntries(probes)).toEqual({
         'cache code graph file facts': probesPerObservation,
-        'cache materialized code graph file shards': probesPerObservation,
         'prepare temporary incremental code graph activation': probesPerObservation,
         'promote ready code graph snapshot': probesPerObservation,
         'publish temporary code graph snapshot': probesPerObservation,
@@ -1117,9 +1116,9 @@ describe('native code graph lifecycle', () => {
     }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );
 
-  effectIt.effect('reuses valid peers from a partial materialized shard set', () =>
+  effectIt.effect('reattributes an incomplete deterministic batch while reusing a complete peer batch', () =>
     Effect.gen(function* () {
-      const root = createManySourceRepository(12);
+      const root = createManySourceRepository(130);
       const home = join(root, '.threadnote-test-home');
       const progress: CodeGraphProgress[] = [];
       const indexer = yield* CodeGraphIndexer;
@@ -1131,18 +1130,18 @@ describe('native code graph lifecycle', () => {
         const database = new Database(databasePath);
         try {
           const missing = database
-            .query<{readonly id: string; readonly path: string}, []>(
-              `SELECT id, path_hint AS path FROM materialized_file_shards ORDER BY id LIMIT 1`,
+            .query<{readonly id: string; readonly path: string}, [string]>(
+              `SELECT id, path_hint AS path FROM materialized_file_shards WHERE path_hint = ?`,
             )
-            .get();
+            .get('src/file-129.ts');
           if (!missing) throw new Error('Expected a materialized shard to remove.');
-          const missingRawBytes =
+          const rawFactBytes =
             database
-              .query<{readonly bytes: number}, [string]>(
+              .query<{readonly bytes: number}, [string, string]>(
                 `SELECT COALESCE(SUM(${storedCodeGraphFactRawBytesSql('facts_json')}), 0) AS bytes
-                 FROM file_blobs WHERE path_hint = ?`,
+                 FROM file_blobs WHERE path_hint IN (?, ?)`,
               )
-              .get(missing.path)?.bytes ?? 0;
+              .get('src/file-128.ts', 'src/file-129.ts')?.bytes ?? 0;
           database.query('DELETE FROM materialized_file_shards WHERE id = ?').run(missing.id);
           database.exec(`
             CREATE TABLE materialized_shard_write_audit (
@@ -1172,7 +1171,7 @@ describe('native code graph lifecycle', () => {
                  FROM materialized_file_shards`,
               )
               .get()?.bytes ?? 0;
-          return {missingPath: missing.path, missingRawBytes, reusedShardBytes};
+          return {missingPath: missing.path, rawFactBytes, reusedShardBytes};
         } finally {
           database.close();
         }
@@ -1207,17 +1206,128 @@ describe('native code graph lifecycle', () => {
         }
       });
 
-      expect(rebuilt.diagnostics).toContain('Reused content-addressed materialized shards for 11 file(s).');
-      expect(partialShardState.missingRawBytes).toBeGreaterThan(0);
+      expect(rebuilt.diagnostics).toContain('Reused content-addressed materialized shards for 128 file(s).');
+      expect(partialShardState.rawFactBytes).toBeGreaterThan(0);
       expect(partialShardState.reusedShardBytes).toBeGreaterThan(0);
       expect(metrics.cachedFactReplayBytesCompleted).toBe(
-        partialShardState.missingRawBytes + partialShardState.reusedShardBytes,
+        partialShardState.rawFactBytes + partialShardState.reusedShardBytes,
       );
-      expect(persistedReuse).toEqual({
-        associations: 12,
-        writes: [{operation: 'insert', path: partialShardState.missingPath}],
-      });
+      expect(persistedReuse.associations).toBe(130);
+      expect(persistedReuse.writes).toHaveLength(2);
+      expect(persistedReuse.writes.filter(write => write.operation === 'insert')).toEqual([
+        {operation: 'insert', path: partialShardState.missingPath},
+      ]);
+      expect(persistedReuse.writes.filter(write => write.operation === 'update')).toEqual([
+        {operation: 'update', path: 'src/file-128.ts'},
+      ]);
       expect(normalizeStoredGraph(rebuiltGraph)).toEqual(normalizeStoredGraph(firstGraph));
+    }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
+  effectIt.effect('counts one logical changed-fact representation when an incomplete batch replays twice', () =>
+    Effect.gen(function* () {
+      const root = createManySourceRepository(2);
+      const home = temporaryDirectory('threadnote-code-graph-changed-fact-overlap-');
+      const changedPath = join(root, 'src/file-000.ts');
+      writeFileSync(changedPath, readFileSync(changedPath, 'utf8').replace('return 0;', 'return 100;'));
+      const indexer = yield* CodeGraphIndexer;
+      const first = yield* indexer.index({cwd: root, ensureVectors: false, force: true, threadnoteHome: home});
+      const databasePath = codeGraphDatabasePath(home, first);
+      const replayState = yield* Effect.sync(() => {
+        const database = new Database(databasePath);
+        try {
+          const bytes = database
+            .query<
+              {readonly changedRaw: number; readonly raw: number; readonly retainedShard: number},
+              [string, string]
+            >(
+              `SELECT
+                 COALESCE(SUM(${storedCodeGraphFactRawBytesSql('blob.facts_json')}), 0) AS raw,
+                 COALESCE(SUM(CASE WHEN shard.path_hint = ?
+                   THEN ${storedCodeGraphFactRawBytesSql('blob.facts_json')} ELSE 0 END), 0) AS changedRaw,
+                 COALESCE(SUM(CASE WHEN shard.path_hint <> ?
+                   THEN ${storedCodeGraphFactRawBytesSql('shard.facts_json')} ELSE 0 END), 0) AS retainedShard
+               FROM materialized_file_shards AS shard
+               JOIN file_blobs AS blob
+                 ON blob.content_hash = shard.content_hash
+                AND blob.path_hint = shard.path_hint`,
+            )
+            .get('src/file-000.ts', 'src/file-001.ts');
+          const missing = database
+            .query<{readonly id: string}, [string]>('SELECT id FROM materialized_file_shards WHERE path_hint = ?')
+            .get('src/file-001.ts');
+          if (!bytes || !missing) throw new TestError('Expected complete materialized and raw fact cache rows.');
+          database.query('DELETE FROM materialized_file_shards WHERE id = ?').run(missing.id);
+          return bytes;
+        } finally {
+          database.close();
+        }
+      });
+      const progress: CodeGraphProgress[] = [];
+      yield* indexer.index({
+        cwd: root,
+        ensureVectors: false,
+        force: true,
+        onProgress: current => Effect.sync(() => progress.push(current)),
+        threadnoteHome: home,
+      });
+      const metrics = finalFullMaterializationMetrics(progress);
+
+      expect(replayState.changedRaw).toBeGreaterThan(0);
+      expect(replayState.retainedShard).toBeGreaterThan(0);
+      expect(metrics.cachedFactReplayBytesCompleted).toBe(replayState.raw + replayState.retainedShard);
+      expect(metrics.changedFactBytesCompleted).toBe(replayState.changedRaw);
+    }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
+  effectIt.effect('keeps a regenerated barrel caller shard and graph equal to a clean full build', () =>
+    Effect.gen(function* () {
+      const root = createAmbientOverloadBarrelRepository();
+      const mixedHome = temporaryDirectory('threadnote-code-graph-ambient-overload-mixed-');
+      const freshHome = temporaryDirectory('threadnote-code-graph-ambient-overload-fresh-');
+      const indexer = yield* CodeGraphIndexer;
+      const store = yield* CodeGraphStore;
+      const first = yield* indexer.index({cwd: root, ensureVectors: false, threadnoteHome: mixedHome});
+      const mixedDatabasePath = codeGraphDatabasePath(mixedHome, first);
+      yield* Effect.sync(() => {
+        const database = new Database(mixedDatabasePath);
+        try {
+          const caller = database
+            .query<{readonly id: string}, [string]>('SELECT id FROM materialized_file_shards WHERE path_hint = ?')
+            .get('src/caller.ts');
+          if (!caller) throw new TestError('Expected the caller materialized shard to remove.');
+          database.query('DELETE FROM materialized_file_shards WHERE id = ?').run(caller.id);
+        } finally {
+          database.close();
+        }
+      });
+
+      const rebuilt = yield* indexer.index({
+        cwd: root,
+        ensureVectors: false,
+        force: true,
+        threadnoteHome: mixedHome,
+      });
+      const fresh = yield* indexer.index({cwd: root, ensureVectors: false, threadnoteHome: freshHome});
+      const freshDatabasePath = codeGraphDatabasePath(freshHome, fresh);
+      const rebuiltGraph = yield* store.loadGraph(mixedDatabasePath, rebuilt.snapshot.id);
+      const freshGraph = yield* store.loadGraph(freshDatabasePath, fresh.snapshot.id);
+      const [rebuiltCaller, freshCaller] = yield* Effect.sync(
+        () =>
+          [
+            materializedShardFacts(mixedDatabasePath, 'src/caller.ts'),
+            materializedShardFacts(freshDatabasePath, 'src/caller.ts'),
+          ] as const,
+      );
+      const expectedTarget = freshGraph.symbols.find(
+        symbol => symbol.path === 'src/leaf.ts' && symbol.name === 'target' && symbol.arity === 2,
+      );
+      const call = freshGraph.edges.find(edge => edge.evidencePath === 'src/caller.ts' && edge.relation === 'calls');
+
+      expect(expectedTarget).toBeDefined();
+      expect(call).toMatchObject({confidence: 1, provenance: 'resolved', targetId: expectedTarget!.id});
+      expect(rebuiltCaller).toEqual(freshCaller);
+      expect(normalizeStoredGraph(rebuiltGraph)).toEqual(normalizeStoredGraph(freshGraph));
     }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );
 
@@ -1337,7 +1447,9 @@ describe('native code graph lifecycle', () => {
         }
 
         expect(rebuilt.materialization).toEqual({mode: 'full', stagedFiles: 2, totalFiles: 2});
-        expect(rebuilt.diagnostics).toContain('Reused content-addressed materialized shards for 1 file(s).');
+        expect(
+          rebuilt.diagnostics.some(value => value.startsWith('Reused content-addressed materialized shards')),
+        ).toBe(false);
         expect(normalizeStoredGraph(rebuiltGraph)).toEqual(normalizeStoredGraph(firstGraph));
       }).pipe(provideTestLayer(ApplicationLayer)),
     ),
@@ -4951,6 +5063,26 @@ function createManySourceRepository(count: number): string {
   return root;
 }
 
+function createAmbientOverloadBarrelRepository(): string {
+  const root = temporaryDirectory('threadnote-code-graph-ambient-overload-barrel-');
+  mkdirSync(join(root, 'src'), {recursive: true});
+  git(root, ['init', '-q']);
+  writeFileSync(join(root, 'package.json'), `${JSON.stringify({name: 'ambient-overload-barrel', type: 'module'})}\n`);
+  writeFileSync(
+    join(root, 'src/leaf.ts'),
+    'export declare function target(value: string): string;\n' +
+      'export declare function target(value: string, suffix: string): string;\n',
+  );
+  writeFileSync(join(root, 'src/barrel.ts'), 'export {target} from "./leaf";\n');
+  writeFileSync(
+    join(root, 'src/caller.ts'),
+    'import {target} from "./barrel";\nexport const result = target("x", "y");\n',
+  );
+  git(root, ['add', '.']);
+  git(root, ['-c', 'user.name=Threadnote Test', '-c', 'user.email=test@threadnote.local', 'commit', '-qm', 'fixture']);
+  return root;
+}
+
 function updateManySourceRepository(root: string, count: number, prefix: string): void {
   for (let index = 0; index < count; index += 1) {
     writeFileSync(
@@ -5161,6 +5293,21 @@ function createFactBudgetExpandedRepository(): string {
 
 function codeGraphDatabasePath(home: string, indexed: {readonly identity: {readonly checkoutId: string}}): string {
   return join(home, 'indexes', 'code-graph', 'repositories', indexed.identity.checkoutId, 'graph-v3.sqlite');
+}
+
+function materializedShardFacts(databasePath: string, path: string) {
+  const database = new Database(databasePath, {readonly: true});
+  try {
+    const row = database
+      .query<{readonly factsJson: string}, [string]>(
+        'SELECT facts_json AS factsJson FROM materialized_file_shards WHERE path_hint = ?',
+      )
+      .get(path);
+    if (!row) throw new TestError(`Expected a materialized shard for ${path}.`);
+    return decodeStoredCodeGraphFact(row.factsJson, path).facts;
+  } finally {
+    database.close();
+  }
 }
 
 function snapshotLeaseCount(databasePath: string): number {

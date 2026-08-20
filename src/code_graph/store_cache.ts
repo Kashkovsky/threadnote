@@ -104,7 +104,7 @@ export function materializedShardDerivationIdentity(
   graphContentId: string,
 ): string {
   return `cgfd_${sha256HexSync(
-    `materialized-file-derivation-v2\n${extractorSet}\n${workspaceFingerprint}\n${graphContentId}`,
+    `materialized-file-derivation-v3\n${extractorSet}\n${workspaceFingerprint}\n${graphContentId}`,
   ).slice(0, 40)}`;
 }
 

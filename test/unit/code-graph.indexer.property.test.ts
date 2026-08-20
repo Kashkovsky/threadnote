@@ -151,6 +151,17 @@ describe('code graph indexer properties', () => {
     );
   });
 
+  it('does not admit materialized shards derived by the partition-dependent v2 algorithm', () => {
+    const extractor = 'extractor-set';
+    const workspace = 'workspace-fingerprint';
+    const graphContent = 'graph-content';
+    const legacy = `cgfd_${sha256HexSync(
+      `materialized-file-derivation-v2\n${extractor}\n${workspace}\n${graphContent}`,
+    ).slice(0, 40)}`;
+
+    expect(materializedShardDerivationIdentity(extractor, workspace, graphContent)).not.toBe(legacy);
+  });
+
   it('splits high-density low-source-byte facts before one SQLite writer transaction becomes pathological', () => {
     const files = Array.from({length: 7}, (_, index) => ({path: `src/dense-${index}.ts`, size: 32}));
     const factBytes = new Map(files.map(file => [file.path, 4 * 1_048_576]));

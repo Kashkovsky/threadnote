@@ -17,7 +17,11 @@ import {
   type CodeGraphLanguagePackRegistryShape,
 } from '../../src/code_graph/languages/registry.js';
 import {codeGraphLayout} from '../../src/code_graph/layout.js';
-import {CodeGraphStore, type CodeGraphVisualizationCatalog} from '../../src/code_graph/store.js';
+import {
+  CodeGraphStore,
+  materializedShardDerivationIdentity,
+  type CodeGraphVisualizationCatalog,
+} from '../../src/code_graph/store.js';
 import {CODE_GRAPH_EXTRACTOR_GENERATION, type CodeGraphIndexSummary} from '../../src/code_graph/types.js';
 
 describe('cross-session code graph increments', () => {
@@ -122,6 +126,55 @@ describe('cross-session code graph increments', () => {
       provideTestLayer(ApplicationLayer),
       TestClock.withLive,
       Effect.ensuring(removeTemporaryPaths(() => [root, incrementalHome, fullHome])),
+    );
+  });
+
+  it.effect('does not union different-base clean increments into full-materialization shards', () => {
+    let home: string | undefined;
+    let root: string | undefined;
+    let siblingRoot: string | undefined;
+    return Effect.gen(function* () {
+      const fixture = createConvergentIncrementalRepository();
+      root = fixture.root;
+      siblingRoot = fixture.siblingRoot;
+      home = mkdtempSync(join(tmpdir(), 'threadnote-convergent-incremental-home-'));
+      const indexer = yield* CodeGraphIndexer;
+      const store = yield* CodeGraphStore;
+
+      const baseA = yield* indexer.index({cwd: root, force: true, threadnoteHome: home});
+      git(root, ['checkout', '-q', 'target-a']);
+      const targetA = yield* indexAndLoadEffect(root, home);
+      const baseB = yield* indexer.index({cwd: siblingRoot, force: true, threadnoteHome: home});
+      git(siblingRoot, ['checkout', '-q', 'target-b']);
+      const targetB = yield* indexAndLoadEffect(siblingRoot, home);
+
+      expect(targetA.summary.materialization?.mode).toBe('incremental-clean');
+      expect(targetB.summary.materialization?.mode).toBe('incremental-clean');
+      expect(targetA.summary.snapshot.baseSnapshotId).toBe(baseA.snapshot.id);
+      expect(targetB.summary.snapshot.baseSnapshotId).toBe(baseB.snapshot.id);
+      expect(targetA.summary.snapshot.graphContentId).toBeDefined();
+      expect(targetB.summary.snapshot.graphContentId).toBe(targetA.summary.snapshot.graphContentId);
+      expect(projectGraph(targetB.graph)).toEqual(projectGraph(targetA.graph));
+      const [receiptA, receiptB] = yield* Effect.all(
+        [
+          store.reusableBaseReceipt(targetA.databasePath, baseA.snapshot.id),
+          store.reusableBaseReceipt(targetB.databasePath, baseB.snapshot.id),
+        ],
+        {concurrency: 1},
+      );
+      expect(receiptA).toBeDefined();
+      expect(receiptB?.workspaceFingerprint).toBe(receiptA?.workspaceFingerprint);
+      const targetDerivation = materializedShardDerivationIdentity(
+        targetA.summary.snapshot.extractorSet,
+        receiptA!.workspaceFingerprint,
+        targetA.summary.snapshot.graphContentId!,
+      );
+
+      expect(materializedShardCount(targetA.databasePath, targetDerivation)).toBe(0);
+    }).pipe(
+      provideTestLayer(ApplicationLayer),
+      TestClock.withLive,
+      Effect.ensuring(removeTemporaryPaths(() => [siblingRoot, root, home])),
     );
   });
 
@@ -487,6 +540,21 @@ function persistedSnapshotState(databasePath: string, snapshotId: string): strin
   }
 }
 
+function materializedShardCount(databasePath: string, derivationIdentity: string): number {
+  const database = new Database(databasePath, {readonly: true});
+  try {
+    return Number(
+      database
+        .query<{readonly count: number}, [string]>(
+          'SELECT COUNT(*) AS count FROM materialized_file_shards WHERE derivation_identity = ?',
+        )
+        .get(derivationIdentity)?.count ?? 0,
+    );
+  } finally {
+    database.close();
+  }
+}
+
 function normalizeCatalog(catalog: CodeGraphVisualizationCatalog | undefined): unknown {
   if (catalog === undefined) return undefined;
   const {activatedAt: _activatedAt, snapshot, ...stable} = catalog;
@@ -520,6 +588,41 @@ function createRepository(passiveFiles = 0): string {
   git(root, ['add', '.']);
   git(root, ['commit', '-qm', 'fixture']);
   return root;
+}
+
+function createConvergentIncrementalRepository(): {readonly root: string; readonly siblingRoot: string} {
+  const root = mkdtempSync(join(tmpdir(), 'threadnote-convergent-incremental-'));
+  const siblingRoot = `${root}-sibling`;
+  mkdirSync(join(root, 'src'), {recursive: true});
+  writeFileSync(join(root, 'src/a.ts'), 'export const a = "old-a";\n');
+  writeFileSync(join(root, 'src/b.ts'), 'export const b = "old-b";\n');
+  git(root, ['init', '-q']);
+  configureTestGitIdentity(root);
+  git(root, ['add', '.']);
+  git(root, ['commit', '-qm', 'common']);
+  const common = execFileSync('git', ['-C', root, 'rev-parse', 'HEAD'], {encoding: 'utf8'}).trim();
+
+  git(root, ['checkout', '-qb', 'target-a', common]);
+  writeFileSync(join(root, 'src/b.ts'), 'export const b = "final-b";\n');
+  git(root, ['add', 'src/b.ts']);
+  git(root, ['commit', '-qm', 'base a']);
+  git(root, ['branch', 'base-a']);
+  writeFileSync(join(root, 'src/a.ts'), 'export const a = "final-a";\n');
+  git(root, ['add', 'src/a.ts']);
+  git(root, ['commit', '-qm', 'target a']);
+
+  git(root, ['checkout', '-qb', 'target-b', common]);
+  writeFileSync(join(root, 'src/a.ts'), 'export const a = "final-a";\n');
+  git(root, ['add', 'src/a.ts']);
+  git(root, ['commit', '-qm', 'base b']);
+  git(root, ['branch', 'base-b']);
+  writeFileSync(join(root, 'src/b.ts'), 'export const b = "final-b";\n');
+  git(root, ['add', 'src/b.ts']);
+  git(root, ['commit', '-qm', 'target b']);
+
+  git(root, ['checkout', '-q', 'base-a']);
+  git(root, ['worktree', 'add', '-q', siblingRoot, 'base-b']);
+  return {root, siblingRoot};
 }
 
 function createBarrelRepository(): string {
