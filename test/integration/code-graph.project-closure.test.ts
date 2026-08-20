@@ -199,6 +199,70 @@ describe('project-closure incremental indexing', () => {
     ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );
 
+  it.effect('keeps unchanged static re-export resolution local despite an unrelated incomplete project model', () =>
+    Effect.forEach(
+      ['dirty', 'clean'] as const,
+      mode =>
+        Effect.acquireUseRelease(
+          Effect.sync(() => createProjectClosureRepository({orphanProjectBoundary: true})),
+          root =>
+            Effect.gen(function* () {
+              const indexer = yield* CodeGraphIndexer;
+              const path = yield* Path.Path;
+              const store = yield* CodeGraphStore;
+              const incrementalHome = join(root, `.threadnote-span-${mode}-incremental`);
+              const fullHome = join(root, `.threadnote-span-${mode}-full`);
+              yield* indexer.index({cwd: root, threadnoteHome: incrementalHome});
+              yield* Effect.sync(() => {
+                writeFile(
+                  root,
+                  'packages/barrel/index.ts',
+                  [
+                    '// presentation-only edit',
+                    '// shifts the evidence span without changing resolver input',
+                    'export {real as foo} from "../core/index.js";',
+                    '',
+                  ].join('\n'),
+                );
+                if (mode === 'clean') {
+                  git(root, ['add', 'packages/barrel/index.ts']);
+                  git(root, ['commit', '-qm', 'move reexport span']);
+                }
+              });
+
+              const incremental = yield* indexer.index({cwd: root, threadnoteHome: incrementalHome});
+              const full = yield* indexer.index({
+                cwd: root,
+                incrementalOverlay: false,
+                threadnoteHome: fullHome,
+              });
+              const incrementalLayout = codeGraphLayout(
+                path,
+                incrementalHome,
+                incremental.identity.checkoutId,
+                incremental.identity.worktreeId,
+              );
+              const fullLayout = codeGraphLayout(path, fullHome, full.identity.checkoutId, full.identity.worktreeId);
+
+              expect(incremental.materialization).toMatchObject({
+                mode: mode === 'dirty' ? 'incremental-overlay' : 'incremental-clean',
+                stagedFiles: 1,
+              });
+              expect(incremental.materialization?.fallbackReason).toBeUndefined();
+              expect(incremental.materialization?.totalFiles).toBeGreaterThan(1);
+              expect(deltaPaths(incrementalLayout.databasePath, incremental.snapshot.id)).toEqual([
+                'packages/barrel/index.ts',
+              ]);
+              expect(
+                normalizeGraph(yield* store.loadGraph(incrementalLayout.databasePath, incremental.snapshot.id)),
+              ).toEqual(normalizeGraph(yield* store.loadGraph(fullLayout.databasePath, full.snapshot.id)));
+            }),
+          root => Effect.sync(() => rmSync(root, {force: true, recursive: true})),
+        ),
+      {concurrency: 1},
+    ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
   it.effect('uses bounded project closure when a declared TypeScript project adds an export', () =>
     Effect.acquireUseRelease(
       Effect.sync(createProjectClosureRepository),

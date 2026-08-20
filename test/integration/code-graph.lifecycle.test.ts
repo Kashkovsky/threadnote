@@ -2026,11 +2026,23 @@ describe('native code graph lifecycle', () => {
     }).pipe(provideTestLayer(ApplicationLayer)),
   );
 
+  effectIt.effect('keeps a span-only static re-export edit in the changed-file overlay', () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.sync(createSpanOnlyReexportRepository);
+      const indexer = yield* CodeGraphIndexer;
+      const result = yield* indexer.index({cwd: root, threadnoteHome: join(root, '.threadnote-test-home')});
+
+      expect(result.materialization).toEqual({mode: 'incremental-overlay', stagedFiles: 1, totalFiles: 2});
+      expect(result.diagnostics.some(message => message.startsWith('Dirty overlay used full materialization:'))).toBe(
+        false,
+      );
+    }).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
   describe.each([
     ['a renamed declaration', createRenamedDeclarationRepository, 'resolution-surface-changed'],
     ['a changed lookup signature', createChangedSignatureRepository, 'project-closure-incomplete'],
     ['a changed export surface', createChangedExportRepository, 'resolution-surface-changed'],
-    ['dynamic re-export aliases', createDynamicAliasRepository, 'project-closure-incomplete'],
     ['an added eligible file', createAddedFileRepository, 'file-set-changed'],
     ['a deleted eligible file', createDeletedFileRepository, 'file-set-changed'],
     ['an expanded changed-fact batch', createFactBudgetExpandedRepository, 'project-closure-unbounded'],
@@ -5030,15 +5042,18 @@ function createChangedResolutionContextRepository(): string {
   return root;
 }
 
-function createDynamicAliasRepository(): string {
-  const root = temporaryDirectory('threadnote-code-graph-dynamic-alias-');
+function createSpanOnlyReexportRepository(): string {
+  const root = temporaryDirectory('threadnote-code-graph-span-only-reexport-');
   mkdirSync(join(root, 'src'), {recursive: true});
   git(root, ['init', '-q']);
   writeFileSync(join(root, 'src/source.ts'), 'export function value(): number { return 1; }\n');
   writeFileSync(join(root, 'src/index.ts'), '// committed\nexport {value} from "./source.js";\n');
   git(root, ['add', '.']);
   git(root, ['-c', 'user.name=Threadnote Test', '-c', 'user.email=test@threadnote.local', 'commit', '-qm', 'fixture']);
-  writeFileSync(join(root, 'src/index.ts'), '// dirty\nexport {value} from "./source.js";\n');
+  writeFileSync(
+    join(root, 'src/index.ts'),
+    '// dirty comment moves the re-export evidence span\n// without changing its resolver surface\nexport {value} from "./source.js";\n',
+  );
   return root;
 }
 

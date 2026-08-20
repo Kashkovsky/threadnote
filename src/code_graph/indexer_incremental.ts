@@ -34,6 +34,7 @@ import type {CodeGraphLayout} from './layout.js';
 import {compareCodeUnits} from './ordering.js';
 import {
   assessCodeGraphResolutionSymbolPublication,
+  hasSameCodeGraphReexportResolutionSurface,
   hasSameCodeGraphResolutionSurface,
   type CodeGraphResolutionPublicationAssessment,
 } from './resolution_surface.js';
@@ -275,8 +276,11 @@ export const assessIncrementalOverlayCompatibility = Effect.fn('codeGraph.assess
       ? (firstChangedResolutionPublicationAssessment(committedFacts, effectiveFacts) ??
         firstResolutionPublicationAssessment(effectiveFacts))
       : firstResolutionPublicationAssessment(effectiveFacts);
-    const dynamicAliases = hasDynamicAliases(committedFacts) || hasDynamicAliases(effectiveFacts);
-    if (!dynamicAliases && !resolutionSurfaceChanged && workspaceCompatibility.mode === 'unchanged') {
+    const reexportResolutionSurfaceChanged = !hasSameCodeGraphReexportResolutionSurface(
+      committedFacts.flatMap(file => file.references ?? []),
+      effectiveFacts.flatMap(file => file.references ?? []),
+    );
+    if (!reexportResolutionSurfaceChanged && !resolutionSurfaceChanged && workspaceCompatibility.mode === 'unchanged') {
       if (finalCodeGraphFactBatches(effectiveFacts).length !== 1) {
         return {mode: 'fallback', reason: 'fact-budget-expanded'} satisfies IncrementalOverlayPreassessment;
       }
@@ -426,8 +430,11 @@ export const assessReusableCleanBaseCompatibility = Effect.fn('codeGraph.assessR
       ? (firstChangedResolutionPublicationAssessment(baseFacts, currentFacts) ??
         firstResolutionPublicationAssessment(currentFacts))
       : firstResolutionPublicationAssessment(currentFacts);
-    const dynamicAliases = hasDynamicAliases(baseFacts) || hasDynamicAliases(currentFacts);
-    if (dynamicAliases || resolutionSurfaceChanged) {
+    const reexportResolutionSurfaceChanged = !hasSameCodeGraphReexportResolutionSurface(
+      baseFacts.flatMap(file => file.references ?? []),
+      currentFacts.flatMap(file => file.references ?? []),
+    );
+    if (reexportResolutionSurfaceChanged || resolutionSurfaceChanged) {
       const closure = yield* assessProjectIncrementalClosureCompatibility({
         baseFileSetFingerprint: reusableBaseFileSetFingerprint(input.candidate.files),
         baseWorkspace: workspace,
@@ -928,10 +935,6 @@ export function createCachedCodeGraphFactsAttributor(
   const attributeRepositoryFacts = createRepositoryFactAttributor(files);
   const attributeWorkspace = createWorkspaceAttributor(workspace);
   return facts => attributeWorkspace(attributeRepositoryFacts(facts));
-}
-
-function hasDynamicAliases(facts: readonly CodeGraphFileFacts[]): boolean {
-  return facts.some(file => file.references?.some(reference => (reference.aliasLookupKeys?.length ?? 0) > 0) === true);
 }
 
 function firstResolutionPublicationAssessment(

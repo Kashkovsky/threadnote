@@ -161,6 +161,7 @@ export const prepareCodeGraphFixture = Effect.fn('codeGraphFixture.prepare')(fun
 export const prepareGeneratedCodeGraphFixture = Effect.fn('codeGraphFixture.prepareGenerated')(function* (
   targetSymbols: number,
   includeVectorControl = false,
+  includeStaticReexportControl = false,
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -191,6 +192,11 @@ export const prepareGeneratedCodeGraphFixture = Effect.fn('codeGraphFixture.prep
     );
   }
   const symbolsPerFile = 100;
+  if (includeStaticReexportControl && targetSymbols <= symbolsPerFile) {
+    return yield* Effect.fail(
+      new ScriptError(`Generated static re-export control requires at least ${symbolsPerFile + 1} symbols.`),
+    );
+  }
   const fileCount = Math.ceil(targetSymbols / symbolsPerFile);
   yield* Effect.forEach(
     Array.from({length: fileCount}, (_, index) => index),
@@ -204,6 +210,9 @@ export const prepareGeneratedCodeGraphFixture = Effect.fn('codeGraphFixture.prep
           symbolIndex === 0 ? `return ${symbolIndex};` : `return ${generatedSymbolName(symbolIndex - 1)}() + 1;`;
         return `export function ${name}(): number { ${body} }`;
       });
+      if (includeStaticReexportControl && fileIndex === 0) {
+        declarations.push(generatedStaticReexportControlStatement());
+      }
       return fs.writeFileString(
         path.join(source, `module-${String(fileIndex).padStart(5, '0')}.ts`),
         `${declarations.join('\n')}\n`,
@@ -453,6 +462,10 @@ export const prepareProductionCodeGraphFixture = Effect.fn('codeGraphFixture.pre
 
 export function generatedSymbolName(index: number): string {
   return `scaleSymbol${String(index).padStart(6, '0')}`;
+}
+
+export function generatedStaticReexportControlStatement(): string {
+  return `export {${generatedSymbolName(100)} as scaleStaticReexportControl} from "./module-00001.js";`;
 }
 
 export function productionSymbolName(index: number, workspaceIndex: number): string {
