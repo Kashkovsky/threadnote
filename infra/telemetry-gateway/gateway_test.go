@@ -222,7 +222,33 @@ func validTelemetryV2CompletionRequest() *collectortracepb.ExportTraceServiceReq
 	return request
 }
 
-func TestCanonicalTelemetryPayloadAcceptsFrozenV1AndTerminalV2(t *testing.T) {
+func validTelemetryV3GraphRequest() *collectortracepb.ExportTraceServiceRequest {
+	request := validTelemetryV2Request()
+	resourceAttribute(request, "threadnote.telemetry.schema_version").Value = intAnyValue(3)
+	return request
+}
+
+func validTelemetryV3AutoUpdateRequest(repairRequired bool) *collectortracepb.ExportTraceServiceRequest {
+	request := validTelemetryV3AutoUpdateResultRequest("updated")
+	span := request.ResourceSpans[0].ScopeSpans[0].Spans[0]
+	span.Attributes = append(span.Attributes,
+		boolKeyValue("threadnote.auto_update.repair_required", repairRequired),
+	)
+	return request
+}
+
+func validTelemetryV3AutoUpdateResultRequest(result string) *collectortracepb.ExportTraceServiceRequest {
+	request := validTelemetryRequest()
+	resourceAttribute(request, "threadnote.telemetry.schema_version").Value = intAnyValue(3)
+	spanAttribute(request, "threadnote.operation").Value = stringAnyValue("auto-update-worker")
+	span := request.ResourceSpans[0].ScopeSpans[0].Spans[0]
+	span.Attributes = append(span.Attributes,
+		stringKeyValue("threadnote.auto_update.result", result),
+	)
+	return request
+}
+
+func TestCanonicalTelemetryPayloadAcceptsFrozenV1V2AndCurrentV3(t *testing.T) {
 	schemas, err := loadTelemetrySchemas()
 	if err != nil {
 		t.Fatal(err)
@@ -231,6 +257,9 @@ func TestCanonicalTelemetryPayloadAcceptsFrozenV1AndTerminalV2(t *testing.T) {
 		validTelemetryRequest(),
 		validTelemetryV2CompletionRequest(),
 		validTelemetryV2Request(),
+		validTelemetryV3GraphRequest(),
+		validTelemetryV3AutoUpdateRequest(false),
+		validTelemetryV3AutoUpdateRequest(true),
 	} {
 		payload, marshalError := (proto.MarshalOptions{Deterministic: true}).Marshal(request)
 		if marshalError != nil {
@@ -242,6 +271,16 @@ func TestCanonicalTelemetryPayloadAcceptsFrozenV1AndTerminalV2(t *testing.T) {
 		}
 		if !bytes.Equal(canonical, payload) {
 			t.Fatal("valid canonical telemetry was changed")
+		}
+	}
+	for _, result := range []string{"busy", "current", "disabled", "failed"} {
+		request := validTelemetryV3AutoUpdateResultRequest(result)
+		payload, marshalError := (proto.MarshalOptions{Deterministic: true}).Marshal(request)
+		if marshalError != nil {
+			t.Fatal(marshalError)
+		}
+		if _, validationError := canonicalTelemetryPayload(payload, schemas); validationError != nil {
+			t.Fatalf("valid automatic update result %q was rejected: %v", result, validationError)
 		}
 	}
 }
@@ -263,7 +302,7 @@ func TestCanonicalTelemetryPayloadRejectsSchemaMixingAndInvalidV2Shapes(t *testi
 			resourceAttribute(request, "threadnote.telemetry.schema_version").Value = intAnyValue(1)
 		}},
 		{name: "unknown schema version", mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
-			resourceAttribute(request, "threadnote.telemetry.schema_version").Value = intAnyValue(3)
+			resourceAttribute(request, "threadnote.telemetry.schema_version").Value = intAnyValue(4)
 		}},
 		{name: "wrong schema version type", mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
 			resourceAttribute(request, "threadnote.telemetry.schema_version").Value = stringAnyValue("2")
@@ -304,6 +343,53 @@ func TestCanonicalTelemetryPayloadRejectsSchemaMixingAndInvalidV2Shapes(t *testi
 			}
 			if _, validationError := canonicalTelemetryPayload(payload, schemas); validationError == nil {
 				t.Fatal("invalid or mixed telemetry schema was accepted")
+			}
+		})
+	}
+}
+
+func TestCanonicalTelemetryPayloadRejectsInvalidV3AutoUpdateShapes(t *testing.T) {
+	schemas, err := loadTelemetrySchemas()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name   string
+		mutate func(*collectortracepb.ExportTraceServiceRequest)
+	}{
+		{name: "unknown result", mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			spanAttribute(request, "threadnote.auto_update.result").Value = stringAnyValue("private-installation")
+		}},
+		{name: "wrong result type", mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			spanAttribute(request, "threadnote.auto_update.result").Value = intAnyValue(1)
+		}},
+		{name: "repair flag without updated result", mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			spanAttribute(request, "threadnote.auto_update.result").Value = stringAnyValue("failed")
+		}},
+		{name: "updated result without repair flag", mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			removeSpanAttribute(request, "threadnote.auto_update.repair_required")
+		}},
+		{name: "automatic update attributes under v2", mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			resourceAttribute(request, "threadnote.telemetry.schema_version").Value = intAnyValue(2)
+		}},
+		{name: "automatic update attributes on another operation", mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			spanAttribute(request, "threadnote.operation").Value = stringAnyValue("update")
+		}},
+		{name: "successful worker completion without result", mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			removeSpanAttribute(request, "threadnote.auto_update.result")
+			removeSpanAttribute(request, "threadnote.auto_update.repair_required")
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := validTelemetryV3AutoUpdateRequest(false)
+			test.mutate(request)
+			payload, marshalError := (proto.MarshalOptions{Deterministic: true}).Marshal(request)
+			if marshalError != nil {
+				t.Fatal(marshalError)
+			}
+			if _, validationError := canonicalTelemetryPayload(payload, schemas); validationError == nil {
+				t.Fatal("invalid automatic update telemetry was accepted")
 			}
 		})
 	}
@@ -556,8 +642,16 @@ func intAnyValue(value int64) *commonpb.AnyValue {
 	return &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: value}}
 }
 
+func boolAnyValue(value bool) *commonpb.AnyValue {
+	return &commonpb.AnyValue{Value: &commonpb.AnyValue_BoolValue{BoolValue: value}}
+}
+
 func stringKeyValue(key, value string) *commonpb.KeyValue {
 	return &commonpb.KeyValue{Key: key, Value: stringAnyValue(value)}
+}
+
+func boolKeyValue(key string, value bool) *commonpb.KeyValue {
+	return &commonpb.KeyValue{Key: key, Value: boolAnyValue(value)}
 }
 
 func spanAttribute(request *collectortracepb.ExportTraceServiceRequest, key string) *commonpb.KeyValue {

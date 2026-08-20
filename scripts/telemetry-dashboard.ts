@@ -42,8 +42,8 @@ type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<
 const datasourcePlaceholder = '${DS_TEMPO}';
 const serverOwnedDashboardKeys = new Set(['id', 'iteration', 'schemaVersion', 'uid', 'version']);
 const migrationEmptyFieldConfigPanelIds = new Set([14, 15, 16, 17, 18, 19]);
-const migrationEmptyMappingsPanelIds = new Set([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
-const migrationEmptyOverridesPanelIds = new Set([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13]);
+const migrationEmptyMappingsPanelIds = new Set([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 21]);
+const migrationEmptyOverridesPanelIds = new Set([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 21]);
 const grafanaDefaultRefreshIntervals = ['5s', '10s', '30s', '1m', '5m', '15m', '30m', '1h', '2h', '1d'];
 const grafanaCloudNamespacePattern = /^stacks-[1-9][0-9]*$/u;
 const gitCommitPattern = /^[0-9a-f]{40}$/u;

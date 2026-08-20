@@ -64,6 +64,7 @@ Alice + Codex ──publish curated memory──▶ team Git repo
   explicitly submit a support report with `threadnote report-issue`.
 - **Optional anonymous telemetry.** Explicit versioned opt-in sends only allowlisted CLI/MCP operation traces with a
   random agent-session identity, duration, bounded process memory, subsystem phases, and typed failures. Successful
+  automatic-update workers add only a closed result and, when updated, a repair-required boolean. Successful
   graph builds can additionally send coarse path-free build-kind, materialization, fallback, closure, efficiency,
   file-count, fact-byte, and amplification buckets. Failed graph-build lifecycle observations add only bounded
   outcome/type and interrupted ones only outcome/duration; neither adds graph classifications or buckets. Telemetry

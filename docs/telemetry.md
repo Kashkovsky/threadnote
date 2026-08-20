@@ -48,6 +48,9 @@ The current versioned allowlist is limited to:
   diagnose out-of-memory and growth regressions without a process identifier;
 - allowlisted phase durations and states for recall, indexing, graph scanning/materialization/resolution/activation,
   embedding, model work, storage waits, and other explicitly instrumented subsystems;
+- an automatic-update worker completion includes one closed result: `busy`, `current`, `disabled`, `failed`, or
+  `updated`. An `updated` result also includes a boolean saying whether post-update local setup repair still requires
+  attention; it does not include installed versions or installation identity;
 - one terminal graph-build lifecycle observation: a successful build includes clean/dirty build kind; closed
   materialization mode, fallback reason, resolution-closure, and efficiency classifications; coarse
   changed/deleted/delta/extracted/reused/staged/total file-count buckets; cached/changed/final fact-byte buckets; and
@@ -118,7 +121,7 @@ Tempo-compatible trace storage
 ```
 
 The gateway, rather than the open-source binary, owns vendor credentials. It rejects logs and metrics, admits the
-immutable v1 and v2 trace contracts, validates the complete versioned resource/span envelope before forwarding, caps
+immutable v1, v2, and v3 trace contracts, validates the complete versioned resource/span envelope before forwarding, caps
 bodies and rates, rejects unknown fields, avoids forwarding client IP headers, and emits no application access logs.
 Accepted traces are stored in Grafana Cloud EU with
 the 14-day retention of its Always Free plan. The gateway's fixed accepted-byte budget keeps the required two-Machine

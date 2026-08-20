@@ -47,16 +47,20 @@ type Dashboard = Readonly<{
 }>;
 
 const basePredicates = ['resource.service.name = "threadnote"', 'span:name = "threadnote.anonymous-diagnostic"'];
+const canaryExclusionPredicate = 'resource.service.version != "0.0.0-canary"';
+const graphSchemaPredicate =
+  '(resource.threadnote.telemetry.schema_version = 2 || resource.threadnote.telemetry.schema_version = 3)';
 
 const graphLifecyclePredicates = [
-  'resource.threadnote.telemetry.schema_version = 2',
+  canaryExclusionPredicate,
+  graphSchemaPredicate,
   'span.threadnote.event = "lifecycle"',
   'span.threadnote.operation = "graph-build"',
   'span.threadnote.outcome = "success"',
 ];
 
 const genericSchemaPredicate =
-  '(resource.threadnote.telemetry.schema_version = 1 || resource.threadnote.telemetry.schema_version = 2)';
+  '(resource.threadnote.telemetry.schema_version = 1 || resource.threadnote.telemetry.schema_version = 2 || resource.threadnote.telemetry.schema_version = 3)';
 
 const tempoQueryLengthLimit = 1024;
 const inefficientGraphBuildPredicate = 'span.threadnote.graph.efficiency_class =~ "(small|high|critical).*full"';
@@ -80,6 +84,11 @@ const terminalGraphAttributes = [
   'threadnote.graph.rewrite_amplification_bucket',
   'threadnote.graph.fact_replay_amplification_bucket',
 ] as const;
+
+const dashboardGraphAttributes = terminalGraphAttributes.filter(
+  attribute =>
+    attribute !== 'threadnote.graph.deleted_files_bucket' && attribute !== 'threadnote.graph.extracted_files_bucket',
+);
 
 const metricRenames = new Map<number, Readonly<{raw: string; rendered: string}>>([
   [
@@ -166,7 +175,8 @@ describe('Threadnote Grafana dashboard', () => {
         expect(query.length).toBeLessThanOrEqual(tempoQueryLengthLimit);
         if (query.includes(inefficientGraphBuildPredicate)) {
           expect(query).toContain(basePredicates[0]);
-          expect(query).toContain('resource.threadnote.telemetry.schema_version = 2');
+          expect(query).toContain(graphSchemaPredicate);
+          expect(query).toContain(canaryExclusionPredicate);
           expect(query).not.toContain('resource.threadnote.telemetry.schema_version = 1');
         } else {
           for (const predicate of basePredicates) expect(query).toContain(predicate);
@@ -174,6 +184,9 @@ describe('Threadnote Grafana dashboard', () => {
         if (query.includes('span.threadnote.operation = "graph-build"')) {
           for (const predicate of graphLifecyclePredicates) expect(query).toContain(predicate);
           expect(query).not.toContain('resource.threadnote.telemetry.schema_version = 1');
+        } else if (query.includes('span.threadnote.operation = "auto-update-worker"')) {
+          expect(query).toContain('resource.threadnote.telemetry.schema_version = 3');
+          expect(query).toContain(canaryExclusionPredicate);
         } else if (!query.includes(inefficientGraphBuildPredicate)) {
           expect(query).toContain(genericSchemaPredicate);
         }
@@ -325,7 +338,7 @@ describe('Threadnote Grafana dashboard', () => {
       const graphQueryText = graphQueries.join('\n');
       for (const attribute of [
         'resource.service.version',
-        ...terminalGraphAttributes.map(attribute => `span.${attribute}`),
+        ...dashboardGraphAttributes.map(attribute => `span.${attribute}`),
       ]) {
         expect(graphQueryText).toContain(attribute);
       }
@@ -348,6 +361,7 @@ describe('Threadnote Grafana dashboard', () => {
       expect(graphQueryText).not.toContain('repository');
       expect(graphQueryText).not.toContain('commit');
       expect(graphQueryText).not.toContain('path');
+      expect(graphQueries.every(query => query.includes(canaryExclusionPredicate))).toBe(true);
 
       const recentInefficient = panels.find(panel => panel.id === 20);
       expect(recentInefficient?.type).toBe('table');
@@ -357,7 +371,7 @@ describe('Threadnote Grafana dashboard', () => {
       expect(inefficientQuery?.length).toBeLessThanOrEqual(tempoQueryLengthLimit);
       for (const attribute of [
         'resource.service.version',
-        ...terminalGraphAttributes.map(attribute => `span.${attribute}`),
+        ...dashboardGraphAttributes.map(attribute => `span.${attribute}`),
         'span.threadnote.duration_ms',
       ]) {
         expect(inefficientQuery).toContain(attribute);
@@ -365,6 +379,20 @@ describe('Threadnote Grafana dashboard', () => {
       expect(inefficientQuery).not.toContain('session.id');
       expect(inefficientQuery).not.toContain('invocation.id');
       expect(inefficientQuery).toContain('with (most_recent=true)');
+
+      const automaticUpdates = panels.find(panel => panel.id === 21);
+      expect(automaticUpdates?.title).toBe('Automatic update results');
+      expect(automaticUpdates?.type).toBe('timeseries');
+      expect(automaticUpdates?.targets).toHaveLength(1);
+      expect(automaticUpdates?.transformations).toEqual([]);
+      const automaticUpdateQuery = automaticUpdates?.targets[0]?.query;
+      expect(automaticUpdateQuery).toContain('resource.threadnote.telemetry.schema_version = 3');
+      expect(automaticUpdateQuery).toContain(canaryExclusionPredicate);
+      expect(automaticUpdateQuery).toContain('span.threadnote.operation = "auto-update-worker"');
+      expect(automaticUpdateQuery).toContain('span.threadnote.auto_update.result != nil');
+      expect(automaticUpdateQuery).toContain(
+        'by (span.threadnote.auto_update.result, span.threadnote.auto_update.repair_required)',
+      );
 
       const scopedAttribute = /(?:resource|span)\.([A-Za-z_][A-Za-z0-9_.]*)/gu;
       const attributes = new Set(
