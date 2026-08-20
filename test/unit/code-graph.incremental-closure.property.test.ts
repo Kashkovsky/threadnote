@@ -6,9 +6,10 @@ import {
   planProjectIncrementalClosure,
 } from '../../src/code_graph/incremental_closure.js';
 import {resolvePersistedReexportTerminals} from '../../src/code_graph/indexer.js';
-import type {CodeGraphWorkspaceProject} from '../../src/code_graph/languages/types.js';
+import type {CodeGraphWorkspace, CodeGraphWorkspaceProject} from '../../src/code_graph/languages/types.js';
 import type {CodeGraphReusableReexport} from '../../src/code_graph/store.js';
 import type {CodeGraphFileFacts, CodeGraphInventoryFile, CodeGraphSymbol} from '../../src/code_graph/types.js';
+import {mergeCodeGraphWorkspaces} from '../../src/code_graph/workspace.js';
 
 describe('project incremental closure', () => {
   it('finds the exact reverse-transitive declared project closure and deterministically selects its files', () => {
@@ -31,6 +32,37 @@ describe('project incremental closure', () => {
       projectIds: ['app', 'barrel'],
       sourceBytes: 64,
     });
+  });
+
+  it('accepts distinct declared evidence for one structural dependency after workspace composition', () => {
+    const canonicalProjects = [project('app', ['core']), project('core'), project('unrelated')];
+    const appWithBuildEvidence = {
+      ...project('app', ['core']),
+      dependencyDetails: [
+        {
+          evidence: 'packages/app/tsconfig.json',
+          provenance: 'declared' as const,
+          targetId: 'core',
+        },
+      ],
+    };
+    const merged = mergeCodeGraphWorkspaces([workspace(canonicalProjects), workspace([appWithBuildEvidence])]);
+    const files = canonicalProjects.map(value => inventory(`${value.root}/index.ts`, 1));
+    const common = {
+      cachedFactBytesByPath: new Map(files.map(file => [file.path, 1])),
+      files,
+      modifiedPaths: ['packages/core/index.ts'],
+      seedProjectIds: ['core'],
+      workspaceDiagnostics: [] as readonly string[],
+    };
+
+    expect(merged.projects.find(value => value.id === 'app')?.dependencyDetails).toEqual([
+      {evidence: 'packages/app/package.json', provenance: 'declared', targetId: 'core'},
+      {evidence: 'packages/app/tsconfig.json', provenance: 'declared', targetId: 'core'},
+    ]);
+    const canonical = planProjectIncrementalClosure({...common, projects: canonicalProjects});
+    expect(canonical).toMatchObject({mode: 'eligible', projectIds: ['app', 'core']});
+    expect(planProjectIncrementalClosure({...common, projects: merged.projects})).toEqual(canonical);
   });
 
   it('retains otherwise-compatible modified files outside the seeded closure without leaking their unchanged peers', () => {
@@ -317,6 +349,90 @@ describe('project incremental closure', () => {
     );
   });
 
+  it('still fails closed for malformed structural dependency evidence', () => {
+    const target = project('b');
+    const declared = {evidence: 'packages/a/package.json', provenance: 'declared' as const, targetId: 'b'};
+    const malformedProjects = [
+      [{...project('a', ['b']), dependencyDetails: []}, target],
+      [{...project('a'), dependencyDetails: [declared]}, target],
+      [{...project('a', ['b']), dependencyDetails: [{...declared, provenance: 'inferred' as const}]}, target],
+      [project('a', ['missing']), target],
+      [{...project('a', ['b']), dependencies: ['b', 'b']}, target],
+    ];
+    const files = [inventory('packages/a/index.ts', 1), inventory('packages/b/index.ts', 1)];
+    const common = {
+      cachedFactBytesByPath: new Map(files.map(file => [file.path, 1])),
+      files,
+      modifiedPaths: ['packages/a/index.ts'],
+      seedProjectIds: ['a'],
+      workspaceDiagnostics: [] as readonly string[],
+    };
+
+    for (const projects of malformedProjects) {
+      expect(planProjectIncrementalClosure({...common, projects})).toEqual({
+        mode: 'fallback',
+        reason: 'project-closure-incomplete',
+      });
+    }
+  });
+
+  it.prop(
+    'keeps file-set seeds and closure unchanged when declared evidence is added or reordered for existing targets',
+    {
+      evidenceCopies: FC.integer({max: 5, min: 1}),
+      projectCount: FC.integer({max: 8, min: 2}),
+      reverseEvidence: FC.boolean(),
+      seed: FC.integer({max: 100_000, min: 0}),
+    },
+    ({evidenceCopies, projectCount, reverseEvidence, seed}) => {
+      const projects = Array.from({length: projectCount}, (_, index) =>
+        project(`p${index}`, index === 0 ? [] : [`p${index - 1}`]),
+      );
+      const enrichedProjects = projects.map(value => ({
+        ...value,
+        dependencyDetails: value.dependencyDetails.flatMap(dependency => {
+          const evidence = [
+            dependency,
+            ...Array.from({length: evidenceCopies}, (_, index) => ({
+              ...dependency,
+              evidence: `packages/${value.id}/dependency-evidence-${index}.json`,
+            })),
+          ];
+          return reverseEvidence ? evidence.reverse() : evidence;
+        }),
+      }));
+      const seedProject = projects[seed % projectCount]!;
+      const changedPath = `${seedProject.root}/index.ts`;
+      const files = projects.map(value => inventory(`${value.root}/index.ts`, 1));
+      const canonicalSeeds = assessProjectFileSetClosureSeeds({
+        baseProjects: projects,
+        currentChangedPaths: [changedPath],
+        currentProjects: projects,
+        deletedPaths: [],
+      });
+      const enrichedSeeds = assessProjectFileSetClosureSeeds({
+        baseProjects: projects,
+        currentChangedPaths: [changedPath],
+        currentProjects: enrichedProjects,
+        deletedPaths: [],
+      });
+      const common = {
+        cachedFactBytesByPath: new Map(files.map(file => [file.path, 1])),
+        files,
+        modifiedPaths: [changedPath],
+        seedProjectIds: [seedProject.id],
+        workspaceDiagnostics: [] as readonly string[],
+      };
+      const canonicalPlan = planProjectIncrementalClosure({...common, projects});
+
+      expect(canonicalSeeds.mode).toBe('eligible');
+      expect(enrichedSeeds).toEqual(canonicalSeeds);
+      expect(canonicalPlan.mode).toBe('eligible');
+      expect(planProjectIncrementalClosure({...common, projects: enrichedProjects})).toEqual(canonicalPlan);
+    },
+    {fastCheck: {numRuns: 100}},
+  );
+
   it.prop(
     'is deterministic, order-independent, idempotent, seed-containing, monotone, and equal to an independent reverse model',
     {
@@ -540,6 +656,10 @@ function project(id: string, dependencies: readonly string[] = []): CodeGraphWor
     workspaceId: 'workspace',
     workspaceRoots: [''],
   };
+}
+
+function workspace(projects: readonly CodeGraphWorkspaceProject[]): CodeGraphWorkspace {
+  return {diagnostics: [], fingerprint: 'test-workspace', projects, workspaces: []};
 }
 
 function inventory(path: string, size: number): CodeGraphInventoryFile {
