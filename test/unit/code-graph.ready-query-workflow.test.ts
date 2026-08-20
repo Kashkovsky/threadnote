@@ -27,11 +27,18 @@ interface Workflow {
   readonly on: {readonly workflow_dispatch?: unknown};
 }
 
+interface ActionlintConfiguration {
+  readonly 'self-hosted-runner'?: {readonly labels?: readonly string[]};
+}
+
 describe('governed large ready-query workflow', () => {
   it('is manual-only and requires the pinned preprovisioned dedicated runner', () => {
     const workflow = load(readFileSync('.github/workflows/code-graph-ready-query-evidence.yml', 'utf8'), {
       schema: JSON_SCHEMA,
     }) as Workflow;
+    const actionlint = load(readFileSync('.github/actionlint.yml', 'utf8'), {
+      schema: JSON_SCHEMA,
+    }) as ActionlintConfiguration;
     const job = workflow.jobs['ready-query-evidence']!;
     const command = job.steps?.flatMap(step => (step.run ? [step.run] : [])).join('\n') ?? '';
     const upload = job.steps?.find(step => step.uses?.startsWith('actions/upload-artifact@'));
@@ -53,6 +60,7 @@ describe('governed large ready-query workflow', () => {
     expect(job.if).toContain('github.ref_protected == true');
     expect(job.if).toContain("vars.THREADNOTE_READY_QUERY_EVIDENCE_ENABLED == 'true'");
     expect(job['runs-on']).toEqual(['self-hosted', 'linux', 'x64', 'threadnote-large-graph']);
+    expect(actionlint['self-hosted-runner']?.labels).toContain('threadnote-large-graph');
     expect(job['timeout-minutes']).toBe(30);
     expect(checkout?.uses).toBe('actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1');
     expect(checkout?.with).toMatchObject({'persist-credentials': false});
