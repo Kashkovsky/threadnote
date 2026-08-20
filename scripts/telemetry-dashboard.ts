@@ -238,6 +238,36 @@ function unexpectedFullBuildExpressionTarget(resource: DashboardArtifact): Reado
   return expression as Readonly<Record<string, JsonValue>>;
 }
 
+function validateGraphQueryStageTargets(resource: DashboardArtifact): void {
+  const panels = resource.spec.panels;
+  if (!Array.isArray(panels)) throw new ScriptError('Dashboard artifact has no panels.');
+  const matches = panels.filter(panelValue => isObject(panelValue) && panelValue.id === 22);
+  if (matches.length !== 1) throw new ScriptError('Dashboard must contain exactly one graph-query stage panel.');
+  const panel = record(matches[0], 'dashboard panel 22');
+  if (!Array.isArray(panel.targets) || panel.targets.length !== 2) {
+    throw new ScriptError('Dashboard panel 22 must contain separate outer-phase and fine-stage targets.');
+  }
+  const [phaseValue, stageValue] = panel.targets;
+  const phase = record(phaseValue, 'dashboard panel 22 phase target');
+  const stage = record(stageValue, 'dashboard panel 22 stage target');
+  if (
+    phase.refId !== 'A' ||
+    phase.metricsQueryType !== 'instant' ||
+    typeof phase.query !== 'string' ||
+    !phase.query.includes('span.threadnote.phase =~ "graph.query.*"') ||
+    !phase.query.includes('span.threadnote.stage = nil') ||
+    !phase.query.includes('by (span.threadnote.graph.request_kind, span.threadnote.phase)') ||
+    stage.refId !== 'B' ||
+    stage.metricsQueryType !== 'instant' ||
+    typeof stage.query !== 'string' ||
+    !stage.query.includes('span.threadnote.phase =~ "graph.query.*"') ||
+    !stage.query.includes('span.threadnote.stage =~ "query-.*"') ||
+    !stage.query.includes('by (span.threadnote.graph.request_kind, span.threadnote.stage, span.threadnote.subphase)')
+  ) {
+    throw new ScriptError('Dashboard panel 22 must keep outer phases separate and group fine stages by closed labels.');
+  }
+}
+
 export function validateDashboardArtifact(value: unknown): DashboardArtifact {
   const artifact = validateHistoricalDashboardArtifact(value);
   const artifactRecord = artifact as Readonly<Record<string, JsonValue>>;
@@ -251,6 +281,7 @@ export function validateDashboardArtifact(value: unknown): DashboardArtifact {
   }
   collectTempoQueries(artifact);
   unexpectedFullBuildExpressionTarget(artifact);
+  validateGraphQueryStageTargets(artifact);
   return artifact;
 }
 

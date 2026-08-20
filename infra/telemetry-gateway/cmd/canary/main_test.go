@@ -119,7 +119,7 @@ func TestV2CanaryEnvelopeCarriesTheCompleteTerminalGraphSurface(t *testing.T) {
 	}
 }
 
-func TestV3CanaryEnvelopesCarryCheckpointAndCompletionGraphQuerySurfaces(t *testing.T) {
+func TestV3CanaryEnvelopesCarryStageCheckpointAndCompletionGraphQuerySurfaces(t *testing.T) {
 	for _, trace := range []canaryTrace{fixedV3Checkpoint(), fixedTrace(3)} {
 		t.Run(trace.queryEvent, func(t *testing.T) {
 			request := &collectortracepb.ExportTraceServiceRequest{}
@@ -135,19 +135,41 @@ func TestV3CanaryEnvelopesCarryCheckpointAndCompletionGraphQuerySurfaces(t *test
 				t.Fatal("v3 canary resource did not declare schema version 3")
 			}
 			span := request.ResourceSpans[0].ScopeSpans[0].Spans[0]
-			for _, attribute := range []canaryStringAttribute{
+			expected := []canaryStringAttribute{
 				{"threadnote.event", trace.queryEvent},
 				{"threadnote.operation", "inspect_code_graph"},
-				{"threadnote.phase", "graph.query.execute"},
 				{"threadnote.phase.outcome", "success"},
 				{"threadnote.graph.request_kind", "inspect.query"},
 				{"threadnote.graph.request_scope", "local"},
-				{"threadnote.graph.snapshot_selection", "active"},
-				{"threadnote.graph.snapshot_freshness", "deferred"},
-				{"threadnote.graph.snapshot_files_bucket", "2^10"},
-				{"threadnote.graph.snapshot_symbols_bucket", "2^12"},
-				{"threadnote.graph.snapshot_edges_bucket", "2^13"},
-			} {
+			}
+			if trace.queryEvent == "checkpoint" {
+				expected = append(expected,
+					canaryStringAttribute{"threadnote.phase", "graph.query.status"},
+					canaryStringAttribute{"threadnote.stage", "query-worktree-observation"},
+					canaryStringAttribute{"threadnote.subphase", "skipped"},
+				)
+				for _, key := range []string{
+					"threadnote.graph.snapshot_selection",
+					"threadnote.graph.snapshot_freshness",
+					"threadnote.graph.snapshot_files_bucket",
+					"threadnote.graph.snapshot_symbols_bucket",
+					"threadnote.graph.snapshot_edges_bucket",
+				} {
+					if hasAttribute(span.Attributes, key) {
+						t.Fatalf("v3 stage checkpoint unexpectedly contains %s", key)
+					}
+				}
+			} else {
+				expected = append(expected,
+					canaryStringAttribute{"threadnote.phase", "graph.query.execute"},
+					canaryStringAttribute{"threadnote.graph.snapshot_selection", "active"},
+					canaryStringAttribute{"threadnote.graph.snapshot_freshness", "deferred"},
+					canaryStringAttribute{"threadnote.graph.snapshot_files_bucket", "2^10"},
+					canaryStringAttribute{"threadnote.graph.snapshot_symbols_bucket", "2^12"},
+					canaryStringAttribute{"threadnote.graph.snapshot_edges_bucket", "2^13"},
+				)
+			}
+			for _, attribute := range expected {
 				if !hasStringAttribute(span.Attributes, attribute.key, attribute.value) {
 					t.Fatalf("v3 canary is missing %s=%s", attribute.key, attribute.value)
 				}

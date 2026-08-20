@@ -242,6 +242,8 @@ describe('telemetry producer and production gateway schema', () => {
     expect(canarySource).toContain('{schemaVersion: 2}');
     expect(canarySource).toContain('{queryEvent: "checkpoint", schemaVersion: 3}');
     expect(canarySource).toContain('{queryEvent: "completion", schemaVersion: 3}');
+    expect(canarySource).toContain('{"threadnote.stage", "query-worktree-observation"}');
+    expect(canarySource).toContain('{"threadnote.subphase", "skipped"}');
     expect(canarySource).toContain('threadnote.graph.build_kind');
     expect(canarySource).toContain('threadnote.graph.fact_replay_amplification_bucket');
     expect(gatewayWorkflow).toContain("github.event_name != 'pull_request'");

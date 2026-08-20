@@ -5,17 +5,11 @@ import {SystemInfo} from '../effect/system.js';
 import {
   codeGraphDirectPersistentCapacityProtector,
   CodeGraphIndexer,
-  extractorSetIdentityFromPackProvenance,
   type DirectPersistentCapacityProtection,
 } from './indexer.js';
-import type {CodeGraphDirectPersistentCapacityBoundary} from './disk_capacity.js';
 import {CodeGraphMaintenanceCoordinator} from './maintenance_coordinator.js';
 import {worktreeOverlayState} from './inventory.js';
-import {
-  codeGraphLanguagePackProvenance,
-  CodeGraphLanguagePackRegistry,
-  type CodeGraphLanguagePackRegistryShape,
-} from './languages/registry.js';
+import {CodeGraphLanguagePackRegistry, type CodeGraphLanguagePackRegistryShape} from './languages/registry.js';
 import {
   codeGraphLayout,
   codeGraphMaintenanceLockPath,
@@ -35,11 +29,33 @@ import {
 import {compareCodeUnits} from './ordering.js';
 import {resolveRepositoryIdentity, resolveRepositoryIdentityForExpectation} from './repository.js';
 import {
-  codeGraphSymbolSearchScoreMultiplier,
-  CodeGraphStore,
-  type CodeGraphLanguagePackProvenance,
-  type CodeGraphStoreShape,
-} from './store.js';
+  attachCodeGraphStatusObservation,
+  observationFromCodeGraphStatus,
+  shouldAttachSharedReadySnapshot,
+  skipCodeGraphQueryTelemetryStage,
+  withCodeGraphQueryTelemetryStage,
+  type CodeGraphQueryInterlock,
+  type CodeGraphQueryTelemetryObserver,
+  type CodeGraphSharedReadyAttachInterlock,
+  type CodeGraphStatusObservation,
+  type CodeGraphStatusOptions,
+  type CodeGraphTraversalTimeBudgets,
+} from './query_contract.js';
+import {codeGraphSnapshotRuntimeCurrent} from './query_snapshot_runtime.js';
+export {observationFromCodeGraphStatus, shouldAttachSharedReadySnapshot} from './query_contract.js';
+export {codeGraphSnapshotMatchesCurrentLanguagePacks} from './query_snapshot_runtime.js';
+export type {
+  CodeGraphQueryInterlock,
+  CodeGraphQueryTelemetryObserver,
+  CodeGraphQueryTelemetryPhase,
+  CodeGraphQueryTelemetryStage,
+  CodeGraphQueryTelemetryStageDisposition,
+  CodeGraphSharedReadyAttachInterlock,
+  CodeGraphStatusObservation,
+  CodeGraphStatusOptions,
+  CodeGraphTraversalTimeBudgets,
+} from './query_contract.js';
+import {codeGraphSymbolSearchScoreMultiplier, CodeGraphStore, type CodeGraphStoreShape} from './store.js';
 import {CodeGraphEmbeddingIndex, type CodeGraphEmbeddingIndexShape} from './embedding.js';
 import {
   CODE_GRAPH_RESULT_VERSION,
@@ -68,137 +84,13 @@ export interface CodeGraphInspectOptions extends CodeGraphQueryOptions {
   readonly seedQueries?: readonly string[];
   /** Internal pre-read observation returned by status; never serialized to command or MCP output. */
   readonly statusObservation?: CodeGraphStatusObservation;
+  /** @internal Closed anonymous query-stage observer supplied only by reviewed request surfaces. */
+  readonly telemetry?: CodeGraphQueryTelemetryObserver;
   /** Internal override for command surfaces that auto-refresh before a non-strict read. */
   readonly strictFreshness?: boolean;
   readonly threadnoteHome: string;
 }
-
-export interface CodeGraphStatusOptions {
-  /** @internal Run after the owned identity resolution and before reading graph status. */
-  readonly afterIdentityObserved?: (identity: RepositoryIdentity) => Effect.Effect<void, unknown>;
-  readonly observeWorktree?: boolean;
-  /** @internal Evidence harnesses can isolate status work from the detached maintenance lane. */
-  readonly requestMaintenance?: boolean;
-}
-
-export interface CodeGraphQueryInterlock {
-  readonly afterObservation?: () => Effect.Effect<void>;
-  /** @internal Deterministic barrier used to exercise concurrent ready-snapshot acquisition. */
-  readonly afterSnapshotSelected?: () => Effect.Effect<void>;
-  /** @internal Deterministic barrier used to verify that leases cover the complete read session. */
-  readonly beforeReadCompletion?: () => Effect.Effect<void>;
-}
-
-export interface CodeGraphTraversalTimeBudgets {
-  readonly semanticMilliseconds?: number;
-  readonly traversalMilliseconds?: number;
-}
-
-export interface CodeGraphStatusObservation {
-  /** Read-only shared evidence selected without changing this worktree's active pointer. */
-  readonly borrowedSnapshotId?: string;
-  readonly identity: RepositoryIdentity;
-  /** Present only when status performed an exact worktree observation. */
-  readonly overlay?: {readonly dirty: boolean; readonly fingerprint?: string};
-}
-
-export interface CodeGraphSharedReadyAttachInterlock {
-  /** Allow local ordinary reads to borrow stale evidence without promoting it. */
-  readonly allowBorrowedStale?: boolean;
-  /** @internal Deterministic barrier after the optimistic candidate read and before target-lock acquisition. */
-  readonly afterOptimisticCandidate?: () => Effect.Effect<void>;
-  /** @internal Deterministic barrier after promotion and before final identity validation. */
-  readonly afterPromotion?: () => Effect.Effect<void>;
-  /** @internal Deterministic observer before each full identity resolution owned by shared attachment. */
-  readonly beforeIdentityResolution?: () => Effect.Effect<void>;
-  /** @internal Deterministic fresh-capacity probe used by promotion fault tests. */
-  readonly diskCapacityAvailableBytes?: (
-    path: string,
-    boundary: CodeGraphDirectPersistentCapacityBoundary,
-  ) => Effect.Effect<number | undefined, unknown>;
-  /** @internal Evidence harnesses can isolate shared-ready attachment from detached maintenance. */
-  readonly requestMaintenance?: boolean;
-}
-
-const CODE_GRAPH_STATUS_OBSERVATION = Symbol('threadnote/codeGraph/statusObservation');
 const CODE_GRAPH_SHARED_ATTACH_WRITER_WAIT_MILLISECONDS = 250;
-
-type ObservedCodeGraphStatus = CodeGraphStatus & {
-  readonly [CODE_GRAPH_STATUS_OBSERVATION]?: CodeGraphStatusObservation;
-};
-
-/** Retrieve pre-read identity and optional exact overlay evidence without serializing it. */
-export function observationFromCodeGraphStatus(status: CodeGraphStatus): CodeGraphStatusObservation | undefined {
-  return (status as ObservedCodeGraphStatus)[CODE_GRAPH_STATUS_OBSERVATION];
-}
-
-/**
- * Decide whether a shared clean ready snapshot can be promoted onto this worktree
- * without inventory or rematerialization.
- */
-export function shouldAttachSharedReadySnapshot(input: {
-  readonly candidate?: {readonly commit: string; readonly dirty: boolean; readonly id: string};
-  readonly overlayDirty: boolean;
-  readonly readySnapshot?: {readonly commit: string; readonly id: string};
-  readonly headCommit: string;
-}): boolean {
-  if (input.overlayDirty) return false;
-  return (
-    input.candidate !== undefined &&
-    input.candidate.dirty === false &&
-    input.candidate.commit === input.headCommit &&
-    input.candidate.id !== input.readySnapshot?.id
-  );
-}
-
-/**
- * A clean Git worktree can still have a stale graph after a runtime upgrade.
- * Reconstruct the active extractor contract from the snapshot provenance and the
- * current language-pack catalog before treating that snapshot as current.
- */
-export function codeGraphSnapshotMatchesCurrentLanguagePacks(
-  snapshot: Pick<CodeGraphSnapshot, 'extractorSet'>,
-  provenance: readonly CodeGraphLanguagePackProvenance[] | undefined,
-  languagePacks: CodeGraphLanguagePackRegistryShape,
-): boolean {
-  if (provenance === undefined) return false;
-  const previousIds = new Set(provenance.map(pack => pack.id));
-  if (previousIds.size !== provenance.length) return false;
-  const currentProvenance = languagePacks.packs
-    .filter(pack => previousIds.has(pack.id))
-    .map(codeGraphLanguagePackProvenance);
-  if (currentProvenance.length !== previousIds.size) return false;
-  return (
-    extractorSetIdentityFromPackProvenance(provenance) === snapshot.extractorSet &&
-    extractorSetIdentityFromPackProvenance(currentProvenance) === snapshot.extractorSet
-  );
-}
-
-function codeGraphSnapshotRuntimeCurrent(
-  store: CodeGraphStoreShape,
-  databasePath: string,
-  snapshot: CodeGraphSnapshot,
-  languagePacks: CodeGraphLanguagePackRegistryShape,
-) {
-  return store.snapshotPackProvenance(databasePath, snapshot.id).pipe(
-    Effect.map(provenance => codeGraphSnapshotMatchesCurrentLanguagePacks(snapshot, provenance, languagePacks)),
-    Effect.catch(() => Effect.succeed(false)),
-  );
-}
-
-function attachCodeGraphStatusObservation(
-  status: CodeGraphStatus,
-  observation: CodeGraphStatusObservation | undefined,
-): CodeGraphStatus {
-  if (observation === undefined) return status;
-  Object.defineProperty(status, CODE_GRAPH_STATUS_OBSERVATION, {
-    configurable: false,
-    enumerable: false,
-    value: observation,
-    writable: false,
-  });
-  return status;
-}
 
 export class CodeGraphQueryService extends Context.Service<
   CodeGraphQueryService,
@@ -282,7 +174,21 @@ export class CodeGraphQueryService extends Context.Service<
           const runtimeCurrent = readySnapshot
             ? yield* codeGraphSnapshotRuntimeCurrent(store, layout.databasePath, readySnapshot, languagePacks)
             : false;
-          const overlay = options?.observeWorktree === false ? undefined : yield* worktreeOverlayState(identity);
+          const telemetryPhase = options?.telemetryPhase ?? 'graph.query.status';
+          const overlay =
+            options?.observeWorktree === false
+              ? yield* skipCodeGraphQueryTelemetryStage(
+                  options.telemetry,
+                  telemetryPhase,
+                  'query-worktree-observation',
+                ).pipe(Effect.as(undefined))
+              : yield* withCodeGraphQueryTelemetryStage(
+                  options?.telemetry,
+                  telemetryPhase,
+                  'query-worktree-observation',
+                  worktreeOverlayState(identity),
+                  options?.telemetryWorktreeDisposition,
+                );
           const stale =
             !readySnapshot ||
             !runtimeCurrent ||
@@ -326,9 +232,23 @@ export class CodeGraphQueryService extends Context.Service<
             sameRepositoryIdentity(observation.identity, identity)
               ? observedStatus
               : undefined;
-          const status = reusableStatus ?? (yield* statusForIdentity(threadnoteHome, identity));
+          const status =
+            reusableStatus ??
+            (yield* statusForIdentity(threadnoteHome, identity, {
+              telemetry: interlock?.telemetry,
+              telemetryPhase: 'graph.query.snapshot',
+              telemetryWorktreeDisposition: 'fallback',
+            }));
           if (!status.stale && status.readySnapshot?.commit === identity.headCommit) return status;
-          const overlay = observationFromCodeGraphStatus(status)?.overlay ?? (yield* worktreeOverlayState(identity));
+          const overlay =
+            observationFromCodeGraphStatus(status)?.overlay ??
+            (yield* withCodeGraphQueryTelemetryStage(
+              interlock?.telemetry,
+              'graph.query.snapshot',
+              'query-worktree-observation',
+              worktreeOverlayState(identity),
+              'fallback',
+            ));
           if (overlay.dirty) return status;
           const layout = codeGraphLayout(path, threadnoteHome, identity.checkoutId, identity.worktreeId);
           const candidate = yield* store.readySnapshotForCommit(
@@ -361,7 +281,16 @@ export class CodeGraphQueryService extends Context.Service<
               // the target builder is excluded, repeat the complete status and
               // candidate checks so a concurrent promotion or dirty overlay
               // cannot be overwritten by this opportunistic attach.
-              const lockedStatus = yield* statusForIdentity(threadnoteHome, identity, undefined, true);
+              const lockedStatus = yield* statusForIdentity(
+                threadnoteHome,
+                identity,
+                {
+                  telemetry: interlock?.telemetry,
+                  telemetryPhase: 'graph.query.snapshot',
+                  telemetryWorktreeDisposition: 'fallback',
+                },
+                true,
+              );
               if (!lockedStatus.stale && lockedStatus.readySnapshot?.commit === identity.headCommit) {
                 return lockedStatus;
               }
@@ -388,10 +317,19 @@ export class CodeGraphQueryService extends Context.Service<
                 return lockedStatus;
               }
               yield* interlock?.beforeIdentityResolution?.() ?? Effect.void;
-              const promotionIdentity = yield* resolveRepositoryIdentity(identity.repoRoot).pipe(Effect.option);
+              const promotionIdentity = yield* withCodeGraphQueryTelemetryStage(
+                interlock?.telemetry,
+                'graph.query.snapshot',
+                'query-repository-identity',
+                resolveRepositoryIdentity(identity.repoRoot),
+              ).pipe(Effect.option);
               if (Option.isNone(promotionIdentity)) return lockedStatus;
               if (!sameRepositoryIdentity(promotionIdentity.value, identity)) {
-                return yield* statusForIdentity(threadnoteHome, promotionIdentity.value);
+                return yield* statusForIdentity(threadnoteHome, promotionIdentity.value, {
+                  telemetry: interlock?.telemetry,
+                  telemetryPhase: 'graph.query.snapshot',
+                  telemetryWorktreeDisposition: 'fallback',
+                });
               }
               const capacityProtection: DirectPersistentCapacityProtection = {
                 availableDiskBytes:
@@ -421,12 +359,27 @@ export class CodeGraphQueryService extends Context.Service<
                 waitTimeoutMilliseconds: CODE_GRAPH_SHARED_ATTACH_WRITER_WAIT_MILLISECONDS,
               });
               yield* interlock?.afterPromotion?.() ?? Effect.void;
-              const published = yield* postPromotionObservation(promotionIdentity.value);
+              const published = yield* withCodeGraphQueryTelemetryStage(
+                interlock?.telemetry,
+                'graph.query.snapshot',
+                'query-worktree-observation',
+                postPromotionObservation(promotionIdentity.value),
+                'fallback',
+              );
               if (published.headCommit !== promotionIdentity.value.headCommit) {
                 yield* interlock?.beforeIdentityResolution?.() ?? Effect.void;
-                const publishedIdentity = yield* resolveRepositoryIdentity(identity.repoRoot).pipe(Effect.option);
+                const publishedIdentity = yield* withCodeGraphQueryTelemetryStage(
+                  interlock?.telemetry,
+                  'graph.query.snapshot',
+                  'query-repository-identity',
+                  resolveRepositoryIdentity(identity.repoRoot),
+                ).pipe(Effect.option);
                 return Option.isSome(publishedIdentity)
-                  ? yield* statusForIdentity(threadnoteHome, publishedIdentity.value)
+                  ? yield* statusForIdentity(threadnoteHome, publishedIdentity.value, {
+                      telemetry: interlock?.telemetry,
+                      telemetryPhase: 'graph.query.snapshot',
+                      telemetryWorktreeDisposition: 'fallback',
+                    })
                   : lockedStatus;
               }
               const finalOverlay = published.overlay;
@@ -451,11 +404,20 @@ export class CodeGraphQueryService extends Context.Service<
       const borrowSharedReadySnapshot = Effect.fn('codeGraph.query.borrowSharedReadySnapshot')(function* (
         threadnoteHome: string,
         status: CodeGraphStatus,
+        telemetry?: CodeGraphQueryTelemetryObserver,
       ) {
         if (status.readySnapshot) return status;
         const identity = status.identity;
         const observation = observationFromCodeGraphStatus(status);
-        const overlay = observation?.overlay ?? (yield* worktreeOverlayState(identity));
+        const overlay =
+          observation?.overlay ??
+          (yield* withCodeGraphQueryTelemetryStage(
+            telemetry,
+            'graph.query.snapshot',
+            'query-worktree-observation',
+            worktreeOverlayState(identity),
+            'fallback',
+          ));
         const layout = codeGraphLayout(path, threadnoteHome, identity.checkoutId, identity.worktreeId);
         const candidate = yield* store.latestReadySnapshotForRepository(layout.databasePath, identity.repositoryId);
         if (
@@ -482,7 +444,9 @@ export class CodeGraphQueryService extends Context.Service<
       ) => {
         const exact = attachExactSharedReadySnapshot(threadnoteHome, identity, observedStatus, interlock);
         return interlock?.allowBorrowedStale === true
-          ? exact.pipe(Effect.flatMap(status => borrowSharedReadySnapshot(threadnoteHome, status)))
+          ? exact.pipe(
+              Effect.flatMap(status => borrowSharedReadySnapshot(threadnoteHome, status, interlock?.telemetry)),
+            )
           : exact;
       };
       return CodeGraphQueryService.of({
@@ -506,7 +470,13 @@ export class CodeGraphQueryService extends Context.Service<
               const statusObservation = options.statusObservation;
               const identity =
                 statusObservation?.identity ??
-                (yield* resolveAndRecordCodeGraphLocalAssociation(options.threadnoteHome, options.cwd)).identity;
+                (yield* withCodeGraphQueryTelemetryStage(
+                  options.telemetry,
+                  'graph.query.execute',
+                  'query-repository-identity',
+                  resolveAndRecordCodeGraphLocalAssociation(options.threadnoteHome, options.cwd),
+                  'fallback',
+                )).identity;
               const layout = codeGraphLayout(path, options.threadnoteHome, identity.checkoutId, identity.worktreeId);
               const existing = statusObservation?.borrowedSnapshotId
                 ? yield* store.readySnapshotById(layout.databasePath, statusObservation.borrowedSnapshotId)
@@ -519,8 +489,23 @@ export class CodeGraphQueryService extends Context.Service<
                 (options.refresh === true || options.operation === 'impact' || options.operation === 'path');
               const observeBeforeRead = options.refresh !== false || strictFreshness;
               const overlay =
-                statusObservation?.overlay ??
-                (observeBeforeRead ? yield* observeWorktree(identity, options.interlock) : undefined);
+                statusObservation?.overlay !== undefined
+                  ? statusObservation.overlay
+                  : observeBeforeRead
+                    ? yield* withCodeGraphQueryTelemetryStage(
+                        options.telemetry,
+                        'graph.query.execute',
+                        'query-worktree-observation',
+                        observeWorktree(identity, options.interlock),
+                        'fallback',
+                      )
+                    : statusObservation === undefined
+                      ? yield* skipCodeGraphQueryTelemetryStage(
+                          options.telemetry,
+                          'graph.query.execute',
+                          'query-worktree-observation',
+                        ).pipe(Effect.as(undefined))
+                      : undefined;
               const stale =
                 !existing ||
                 !runtimeCurrent ||
@@ -642,7 +627,12 @@ export class CodeGraphQueryService extends Context.Service<
         status: (threadnoteHome, cwd, options) =>
           withRepositoryServices(
             Effect.gen(function* () {
-              const {identity} = yield* resolveAndRecordCodeGraphLocalAssociation(threadnoteHome, cwd);
+              const {identity} = yield* withCodeGraphQueryTelemetryStage(
+                options?.telemetry,
+                'graph.query.status',
+                'query-repository-identity',
+                resolveAndRecordCodeGraphLocalAssociation(threadnoteHome, cwd),
+              );
               yield* options?.afterIdentityObserved?.(identity) ?? Effect.void;
               const status = yield* statusForIdentity(threadnoteHome, identity, options, true);
               if (options?.requestMaintenance !== false) {
@@ -662,7 +652,12 @@ export class CodeGraphQueryService extends Context.Service<
         statusForPublishedIdentity: (threadnoteHome, cwd, expected, options) =>
           withRepositoryServices(
             Effect.gen(function* () {
-              const identity = yield* resolveRepositoryIdentityForExpectation(cwd, expected);
+              const identity = yield* withCodeGraphQueryTelemetryStage(
+                options?.telemetry,
+                'graph.query.status',
+                'query-repository-identity',
+                resolveRepositoryIdentityForExpectation(cwd, expected),
+              );
               yield* options?.afterIdentityObserved?.(identity) ?? Effect.void;
               const status = yield* statusForIdentity(threadnoteHome, identity, options, true);
               if (options?.requestMaintenance !== false) yield* requestMaintenance(threadnoteHome, identity);
@@ -1150,7 +1145,15 @@ const inspectReadyGraph = Effect.fn('codeGraph.inspectReadyGraph')(function* (in
   readonly store: CodeGraphStoreShape;
   readonly strictFreshness: boolean;
 }) {
-  const identity = input.observation?.identity ?? (yield* resolveRepositoryIdentity(input.options.cwd));
+  const identity =
+    input.observation?.identity ??
+    (yield* withCodeGraphQueryTelemetryStage(
+      input.options.telemetry,
+      'graph.query.execute',
+      'query-repository-identity',
+      resolveRepositoryIdentity(input.options.cwd),
+      'fallback',
+    ));
   if (identity.repositoryId !== input.expectedRepositoryId) {
     return yield* Effect.fail(
       new CodeGraphRepositoryError('Repository identity changed while waiting for the graph lock.'),
@@ -1158,7 +1161,15 @@ const inspectReadyGraph = Effect.fn('codeGraph.inspectReadyGraph')(function* (in
   }
   const overlay =
     input.observation?.overlay ??
-    (input.deferWorktreeObservation ? undefined : yield* observeWorktree(identity, input.options.interlock));
+    (input.deferWorktreeObservation
+      ? undefined
+      : yield* withCodeGraphQueryTelemetryStage(
+          input.options.telemetry,
+          'graph.query.execute',
+          'query-worktree-observation',
+          observeWorktree(identity, input.options.interlock),
+          'fallback',
+        ));
   const storedSnapshot = input.borrowedSnapshotId
     ? yield* input.store.readySnapshotById(input.layout.databasePath, input.borrowedSnapshotId)
     : yield* input.store.readySnapshot(input.layout.databasePath, identity.worktreeId);
@@ -1280,13 +1291,34 @@ const inspectReadyGraph = Effect.fn('codeGraph.inspectReadyGraph')(function* (in
       }
     });
     const safeSelection = sanitizeSelection(selected);
-    const finalIdentity = input.strictFreshness ? yield* resolveRepositoryIdentity(input.options.cwd) : identity;
-    if (finalIdentity.repositoryId !== input.expectedRepositoryId || finalIdentity.worktreeId !== identity.worktreeId) {
-      return yield* Effect.fail(new CodeGraphRepositoryError('Repository identity changed during the graph read.'));
-    }
-    const finalOverlay = input.strictFreshness
-      ? yield* observeWorktree(finalIdentity, input.options.interlock)
-      : overlay;
+    const finalObservation = input.strictFreshness
+      ? yield* withCodeGraphQueryTelemetryStage(
+          input.options.telemetry,
+          'graph.query.execute',
+          'query-strict-reobservation',
+          Effect.gen(function* () {
+            const strictIdentity = yield* resolveRepositoryIdentity(input.options.cwd);
+            if (
+              strictIdentity.repositoryId !== input.expectedRepositoryId ||
+              strictIdentity.worktreeId !== identity.worktreeId
+            ) {
+              return yield* Effect.fail(
+                new CodeGraphRepositoryError('Repository identity changed during the graph read.'),
+              );
+            }
+            return {
+              identity: strictIdentity,
+              overlay: yield* observeWorktree(strictIdentity, input.options.interlock),
+            };
+          }),
+        )
+      : yield* skipCodeGraphQueryTelemetryStage(
+          input.options.telemetry,
+          'graph.query.execute',
+          'query-strict-reobservation',
+        ).pipe(Effect.as({identity, overlay}));
+    const finalIdentity = finalObservation.identity;
+    const finalOverlay = finalObservation.overlay;
     const freshness = !runtimeCurrent
       ? 'stale'
       : finalOverlay === undefined

@@ -59,8 +59,11 @@ The current versioned allowlist is limited to:
 - graph-query timing for `inspect_code_graph` and `analyze_code_graph`: a closed request kind and local/workset scope;
   the closed `graph.query.status`, `graph.query.snapshot`, and `graph.query.execute` phase durations; and, for a local
   published snapshot, closed selection/freshness classes plus power-of-two file-, symbol-, and edge-count buckets.
-  Workset requests do not export a member repository's snapshot surface, and non-successful completions do not export
-  snapshot buckets;
+  Schema v3 also admits snapshot-free checkpoints for the closed stages `query-repository-identity`,
+  `query-worktree-observation`, `query-strict-reobservation`, and `query-serialization`. A normal executed stage has no
+  subphase; the only exceptional query-stage subphases are `skipped` and `fallback`. Stage checkpoints never acquire or
+  retain snapshot buckets on the terminal completion. Workset requests do not export a member repository's snapshot
+  surface, and non-successful completions do not export snapshot buckets;
 - a random agent-session identifier and correlation scope, plus a random per-invocation identifier that joins that
   operation's completion, phase, and liveness spans;
 - a bounded safe failure type for every failed operation, plus structured fields when a subsystem exposes a closed

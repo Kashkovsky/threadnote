@@ -2,7 +2,12 @@ import {Clock, Effect, FileSystem} from 'effect';
 import {readSeedManifest, requireWorkset} from '../manifest.js';
 import type {ProjectManifest, RuntimeConfig} from '../types.js';
 import {expandPath} from '../utils.js';
-import {CodeGraphQueryService, observationFromCodeGraphStatus, type CodeGraphStatusOptions} from './query.js';
+import {
+  CodeGraphQueryService,
+  observationFromCodeGraphStatus,
+  type CodeGraphQueryTelemetryObserver,
+  type CodeGraphStatusOptions,
+} from './query.js';
 import type {CodeGraphQueryResult, CodeGraphStatus, RepositoryIdentityExpectation} from './types.js';
 import {
   attachCodeGraphWorksetBridgeRelationships,
@@ -131,6 +136,7 @@ export interface CodeGraphWorksetQueryV2DependenciesV1<R = never> {
 
 interface CodeGraphWorksetQueryV2TimingV1 {
   readonly startedAtMilliseconds?: number;
+  readonly telemetry?: CodeGraphQueryTelemetryObserver;
 }
 
 export interface QueryCodeGraphWorksetV2OptionsV1 {
@@ -144,12 +150,14 @@ export interface QueryCodeGraphWorksetV2OptionsV1 {
   readonly nodeLimit?: number;
   readonly packageName?: string;
   readonly query: string;
+  readonly telemetry?: CodeGraphQueryTelemetryObserver;
   readonly worksetName: string;
 }
 
 export interface ContinueCodeGraphWorksetV2OptionsV1 {
   readonly cursor: string;
   readonly maximumEstimatedTokens?: number;
+  readonly telemetry?: CodeGraphQueryTelemetryObserver;
 }
 
 export interface ResolvedCodeGraphQualifiedRefTargetV1 {
@@ -327,10 +335,15 @@ export const runCodeGraphWorksetQueryV2Core = Effect.fn('codeGraphWorksetV2.runC
   };
   const qualifiedRefs = referencedQualifiedRefs(logicalResult, successful, bridgeExpansion.bridges);
   const registration = yield* dependencies.persist(logicalResult, qualifiedRefs);
-  const projected = projectCodeGraphWorksetEvidence(logicalResult, {
-    continuationForOffset: registration.continuationForOffset,
-    maximumEstimatedTokens: prepared.maximumEstimatedTokens,
-  });
+  const project = Effect.sync(() =>
+    projectCodeGraphWorksetEvidence(logicalResult, {
+      continuationForOffset: registration.continuationForOffset,
+      maximumEstimatedTokens: prepared.maximumEstimatedTokens,
+    }),
+  );
+  const projected = yield* timing.telemetry === undefined
+    ? project
+    : timing.telemetry.stage('graph.query.execute', 'query-serialization', project);
   return {
     instrumentation: {
       bridgeEdgesConsidered: bridgeExpansion.bridges.length,
@@ -422,7 +435,7 @@ export const executeCodeGraphWorksetV2 = Effect.fn('codeGraphWorksetV2.execute')
       }),
     },
     runtime.input,
-    {startedAtMilliseconds: deadlineStartedAtMilliseconds},
+    {startedAtMilliseconds: deadlineStartedAtMilliseconds, telemetry: options.telemetry},
   );
   return execution;
 });
@@ -446,12 +459,17 @@ export const continueCodeGraphWorksetQueryV2 = Effect.fn('codeGraphWorksetV2.con
     expectedProjectorVersion: CODE_GRAPH_WORKSET_EVIDENCE_PROJECTOR_VERSION,
     limit: 128,
   });
-  return projectCodeGraphWorksetEvidence(page.result, {
-    continuationForOffset: page.continuationForOffset,
-    continuationOffsetBase: page.offset,
-    maximumEstimatedTokens: options.maximumEstimatedTokens,
-    totalCards: page.totalCards - page.offset,
-  });
+  const project = Effect.sync(() =>
+    projectCodeGraphWorksetEvidence(page.result, {
+      continuationForOffset: page.continuationForOffset,
+      continuationOffsetBase: page.offset,
+      maximumEstimatedTokens: options.maximumEstimatedTokens,
+      totalCards: page.totalCards - page.offset,
+    }),
+  );
+  return yield* options.telemetry === undefined
+    ? project
+    : options.telemetry.stage('graph.query.execute', 'query-serialization', project);
 });
 
 /**

@@ -1007,7 +1007,7 @@
         "type": "tempo",
         "uid": "${DS_TEMPO}"
       },
-      "description": "Unexpected full materializations as a percentage of real dirty builds. Synthetic canaries are excluded, and empty buckets render as 0%.",
+      "description": "Unexpected full materializations as a percentage of real dirty builds. Synthetic canaries are excluded; zero-count buckets render as 0%, while datasource-wide NoData remains visible.",
       "fieldConfig": {
         "defaults": {
           "decimals": 2,
@@ -1673,7 +1673,7 @@
         "type": "tempo",
         "uid": "${DS_TEMPO}"
       },
-      "description": "Graph-query checkpoint elapsed-time p50 and p95 by closed request kind and query phase. Schema v3 only.",
+      "description": "Graph-query checkpoint elapsed-time p50 and p95. Target A shows outer query phases; target B shows the bounded fine stages and explicit skipped/fallback subphases. Schema v3 only.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1714,9 +1714,20 @@
             "uid": "${DS_TEMPO}"
           },
           "metricsQueryType": "instant",
-          "query": "{ resource.service.name = \"threadnote\" && resource.service.version != \"0.0.0-canary\" && resource.threadnote.telemetry.schema_version = 3 && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"checkpoint\" && span.threadnote.phase =~ \"graph.query.*\" && span.threadnote.graph.request_kind != nil && span.threadnote.phase.elapsed_ms != nil } | quantile_over_time(span.threadnote.phase.elapsed_ms, .5, .95) by (span.threadnote.graph.request_kind, span.threadnote.phase)",
+          "query": "{ resource.service.name = \"threadnote\" && resource.service.version != \"0.0.0-canary\" && resource.threadnote.telemetry.schema_version = 3 && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"checkpoint\" && span.threadnote.phase =~ \"graph.query.*\" && span.threadnote.stage = nil && span.threadnote.graph.request_kind != nil && span.threadnote.phase.elapsed_ms != nil } | quantile_over_time(span.threadnote.phase.elapsed_ms, .5, .95) by (span.threadnote.graph.request_kind, span.threadnote.phase)",
           "queryType": "traceql",
           "refId": "A",
+          "tableType": "traces"
+        },
+        {
+          "datasource": {
+            "type": "tempo",
+            "uid": "${DS_TEMPO}"
+          },
+          "metricsQueryType": "instant",
+          "query": "{ resource.service.name = \"threadnote\" && resource.service.version != \"0.0.0-canary\" && resource.threadnote.telemetry.schema_version = 3 && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"checkpoint\" && span.threadnote.phase =~ \"graph.query.*\" && span.threadnote.stage =~ \"query-.*\" && span.threadnote.graph.request_kind != nil && span.threadnote.phase.elapsed_ms != nil } | quantile_over_time(span.threadnote.phase.elapsed_ms, .5, .95) by (span.threadnote.graph.request_kind, span.threadnote.stage, span.threadnote.subphase)",
+          "queryType": "traceql",
+          "refId": "B",
           "tableType": "traces"
         }
       ],
@@ -1726,6 +1737,20 @@
           "id": "renameByRegex",
           "options": {
             "regex": "^\\{p=([0-9.]+), span\\.threadnote\\.graph\\.request_kind=\"([^\"]+)\", span\\.threadnote\\.phase=\"([^\"]+)\"\\}$",
+            "renamePattern": "$2 / $3: p$1"
+          }
+        },
+        {
+          "id": "renameByRegex",
+          "options": {
+            "regex": "^\\{p=([0-9.]+), span\\.threadnote\\.graph\\.request_kind=\"([^\"]+)\", span\\.threadnote\\.stage=\"([^\"]+)\", span\\.threadnote\\.subphase=\"([^\"]+)\"\\}$",
+            "renamePattern": "$2 / $3 / $4: p$1"
+          }
+        },
+        {
+          "id": "renameByRegex",
+          "options": {
+            "regex": "^\\{p=([0-9.]+), span\\.threadnote\\.graph\\.request_kind=\"([^\"]+)\", span\\.threadnote\\.stage=\"([^\"]+)\"\\}$",
             "renamePattern": "$2 / $3: p$1"
           }
         },

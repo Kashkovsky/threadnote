@@ -23,6 +23,7 @@ import {
   neighborQuery,
   observationFromCodeGraphStatus,
   traversalQuery,
+  type CodeGraphQueryTelemetryObserver,
 } from '../../src/code_graph/query.js';
 import {resolveRepositoryIdentity} from '../../src/code_graph/repository.js';
 import {CodeGraphStore, type CodeGraphStoreShape} from '../../src/code_graph/store.js';
@@ -129,6 +130,19 @@ describe('code graph query budgets', () => {
         );
         const requests = yield* Ref.make<readonly {allowIndexPreparation?: true; databasePath: string}[]>([]);
         const commandCalls = yield* Ref.make<readonly {args: readonly string[]; executable: string}[]>([]);
+        const telemetryEvents: Array<{
+          readonly disposition?: 'fallback' | 'skipped';
+          readonly phase: string;
+          readonly stage: string;
+        }> = [];
+        const telemetry = {
+          skip: (phase, stage) =>
+            Effect.sync(() => telemetryEvents.push({disposition: 'skipped', phase, stage})).pipe(Effect.asVoid),
+          stage: (phase, stage, effect, disposition) =>
+            Effect.sync(() => telemetryEvents.push({...(disposition ? {disposition} : {}), phase, stage})).pipe(
+              Effect.andThen(effect),
+            ),
+        } satisfies CodeGraphQueryTelemetryObserver;
         const systemLayer = SystemInfo.layer;
         const liveCommandLayer = CommandExecutor.layer.pipe(
           Layer.provideMerge(Layer.merge(BunServices.layer, systemLayer)),
@@ -223,10 +237,17 @@ describe('code graph query budgets', () => {
             fixtureRoot.home,
             identity,
             deferredColdStatus,
-            {requestMaintenance: false},
+            {requestMaintenance: false, telemetry},
           );
           expect(observationFromCodeGraphStatus(deferredColdStatus)?.overlay).toBeUndefined();
           expect(observationFromCodeGraphStatus(exactColdAttach)?.overlay).toEqual({dirty: false});
+          expect(telemetryEvents.splice(0)).toEqual([
+            {
+              disposition: 'fallback',
+              phase: 'graph.query.snapshot',
+              stage: 'query-worktree-observation',
+            },
+          ]);
           yield* Ref.set(snapshotRef, snapshot);
 
           yield* Ref.set(commandCalls, []);
@@ -250,6 +271,59 @@ describe('code graph query budgets', () => {
           });
           expect(deferredHotInspection.freshness).toBe('deferred');
           expect(yield* Ref.get(commandCalls)).toEqual([]);
+
+          const telemetryStatus = yield* query.status(fixtureRoot.home, fixtureRoot.repository, {
+            observeWorktree: false,
+            requestMaintenance: false,
+            telemetry,
+          });
+          expect(JSON.stringify(telemetryStatus)).toBe(JSON.stringify(deferredHotStatus));
+          expect(telemetryEvents.splice(0)).toEqual([
+            {phase: 'graph.query.status', stage: 'query-repository-identity'},
+            {disposition: 'skipped', phase: 'graph.query.status', stage: 'query-worktree-observation'},
+          ]);
+
+          const exactTelemetryStatus = yield* query.statusForIdentity(fixtureRoot.home, identity, {
+            observeWorktree: true,
+            requestMaintenance: false,
+            telemetry,
+          });
+          telemetryEvents.splice(0);
+          const strictInspection = yield* query.inspect({
+            cwd: fixtureRoot.repository,
+            nodeId: `cgs_${'a'.repeat(32)}`,
+            operation: 'node',
+            refresh: false,
+            requestMaintenance: false,
+            statusObservation: observationFromCodeGraphStatus(exactTelemetryStatus),
+            strictFreshness: true,
+            telemetry,
+            threadnoteHome: fixtureRoot.home,
+          });
+          expect(strictInspection.freshness).toBe('current');
+          expect(telemetryEvents.splice(0)).toEqual([
+            {phase: 'graph.query.execute', stage: 'query-strict-reobservation'},
+          ]);
+
+          const fallbackInspection = yield* query.inspect({
+            cwd: fixtureRoot.repository,
+            nodeId: `cgs_${'a'.repeat(32)}`,
+            operation: 'node',
+            refresh: false,
+            requestMaintenance: false,
+            telemetry,
+            threadnoteHome: fixtureRoot.home,
+          });
+          expect(fallbackInspection.freshness).toBe('deferred');
+          expect(telemetryEvents.splice(0)).toEqual([
+            {
+              disposition: 'fallback',
+              phase: 'graph.query.execute',
+              stage: 'query-repository-identity',
+            },
+            {disposition: 'skipped', phase: 'graph.query.execute', stage: 'query-worktree-observation'},
+            {disposition: 'skipped', phase: 'graph.query.execute', stage: 'query-strict-reobservation'},
+          ]);
 
           const assertOneRequest = Effect.fn(function* (run: Effect.Effect<unknown, unknown>) {
             yield* Ref.set(requests, []);

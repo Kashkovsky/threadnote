@@ -61,6 +61,27 @@ describe('code graph Workset Search V2 core', () => {
     }),
   );
 
+  effectIt.effect('attributes the bounded evidence projection to query serialization', () =>
+    Effect.gen(function* () {
+      const fixture = makeFixture(4);
+      const observedStages: string[] = [];
+      const execution = yield* runCodeGraphWorksetQueryV2Core(dependencies(fixture), fixture.input, {
+        telemetry: {
+          skip: () => Effect.void,
+          stage: (phase, stage, effect, disposition) =>
+            effect.pipe(
+              Effect.tap(() =>
+                Effect.sync(() => observedStages.push([phase, stage, disposition].filter(Boolean).join(':'))),
+              ),
+            ),
+        },
+      });
+
+      expect(execution.projected.measurement.totalBytes).toBeGreaterThan(0);
+      expect(observedStages).toEqual(['graph.query.execute:query-serialization']);
+    }),
+  );
+
   effectIt.effect('reports a failed ready-snapshot read without changing evidence from other repositories', () =>
     Effect.gen(function* () {
       const fixture = makeFixture(4);

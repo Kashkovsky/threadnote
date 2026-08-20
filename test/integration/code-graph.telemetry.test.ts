@@ -19,7 +19,7 @@ import {provideTestLayer} from '../helpers/effect-layer.js';
 
 describe('code graph terminal telemetry wiring', () => {
   effectIt.effect(
-    'emits the complete privacy-safe query lifecycle through the registered MCP tool',
+    'emits complete privacy-safe inspect and analyze lifecycles through the registered MCP tools',
     () => {
       const capture = capturingTracer();
       let watcherEnsures = 0;
@@ -31,10 +31,12 @@ describe('code graph terminal telemetry wiring', () => {
           const server = new EffectMcpServerAdapter('threadnote-graph-telemetry-test', '1.0.0', 'Test server.');
           registerCodeGraphTool(server, config);
           type AddedTool = Parameters<EffectMcpServer['addTool']>[0];
+          let analyzeHandle: AddedTool['handle'] | undefined;
           let inspectHandle: AddedTool['handle'] | undefined;
           const mcpLayer = Layer.succeed(McpServer.McpServer, {
             addTool: (options: AddedTool) =>
               Effect.sync(() => {
+                if (options.tool.name === 'analyze_code_graph') analyzeHandle = options.handle;
                 if (options.tool.name === 'inspect_code_graph') inspectHandle = options.handle;
               }),
           } as unknown as EffectMcpServer);
@@ -75,7 +77,13 @@ describe('code graph terminal telemetry wiring', () => {
             yield* indexer.index({cwd: fixture.root, ensureVectors: false, threadnoteHome: fixture.home});
             const handle = inspectHandle;
             if (handle === undefined) return yield* Effect.die('inspect_code_graph was not registered');
-            const result = yield* handle({callerCwd: fixture.root, operation: 'query', query: 'value'}).pipe(
+            const privateQuery = 'value';
+            const result = yield* handle({
+              callerCwd: fixture.root,
+              nodeLimit: 1,
+              operation: 'query',
+              query: privateQuery,
+            }).pipe(
               Effect.provideService(
                 McpSchema.McpServerClient,
                 McpSchema.McpServerClient.of({
@@ -95,20 +103,37 @@ describe('code graph terminal telemetry wiring', () => {
             const spans = capture.spans
               .map(span => Object.fromEntries(span.attributes))
               .filter(attributes => attributes['threadnote.operation'] === 'inspect_code_graph');
-            expect(spans).toHaveLength(4);
-            expect(spans.slice(0, 3).map(attributes => attributes['threadnote.phase'])).toEqual([
+            expect(spans).toHaveLength(8);
+            expect(spans.slice(0, 7).map(attributes => attributes['threadnote.phase'])).toEqual([
+              'graph.query.status',
+              'graph.query.status',
               'graph.query.status',
               'graph.query.snapshot',
               'graph.query.execute',
+              'graph.query.execute',
+              'graph.query.execute',
             ]);
+            expect(spans.slice(0, 7).map(attributes => attributes['threadnote.stage'])).toEqual([
+              'query-repository-identity',
+              'query-worktree-observation',
+              undefined,
+              undefined,
+              'query-strict-reobservation',
+              undefined,
+              'query-serialization',
+            ]);
+            expect(spans[1]).toMatchObject({'threadnote.subphase': 'skipped'});
+            expect(spans[4]).toMatchObject({'threadnote.subphase': 'skipped'});
             for (const attributes of spans) {
               expect(attributes).toMatchObject({
                 'threadnote.graph.request_kind': 'inspect.query',
                 'threadnote.graph.request_scope': 'local',
               });
             }
-            expect(spans[0]).not.toHaveProperty('threadnote.graph.snapshot_selection');
-            for (const attributes of spans.slice(1)) {
+            for (const attributes of [spans[0], spans[1], spans[2], spans[4], spans[6]]) {
+              expect(attributes).not.toHaveProperty('threadnote.graph.snapshot_selection');
+            }
+            for (const attributes of [spans[3], spans[5], spans[7]]) {
               expect(attributes).toMatchObject({
                 'threadnote.graph.snapshot_edges_bucket': expect.stringMatching(/^(?:0|2\^\d+)$/u),
                 'threadnote.graph.snapshot_files_bucket': expect.stringMatching(/^(?:0|2\^\d+)$/u),
@@ -117,13 +142,71 @@ describe('code graph terminal telemetry wiring', () => {
                 'threadnote.graph.snapshot_symbols_bucket': expect.stringMatching(/^(?:0|2\^\d+)$/u),
               });
             }
-            expect(spans[3]).toMatchObject({
+            expect(spans[7]).toMatchObject({
               'threadnote.event': 'completion',
               'threadnote.outcome': 'success',
             });
             const serialized = JSON.stringify(spans);
             expect(serialized).not.toContain(fixture.root);
-            expect(serialized).not.toContain('value');
+            expect(serialized).not.toContain(privateQuery);
+
+            const analyze = analyzeHandle;
+            if (analyze === undefined) return yield* Effect.die('analyze_code_graph was not registered');
+            const analyzeResult = yield* analyze({callerCwd: fixture.root, operation: 'stats'}).pipe(
+              Effect.provideService(
+                McpSchema.McpServerClient,
+                McpSchema.McpServerClient.of({
+                  clientId: 0,
+                  getClient: Effect.never,
+                  initializePayload: {
+                    capabilities: {},
+                    clientInfo: {name: 'telemetry-test', version: '1.0.0'},
+                    protocolVersion: '2025-06-18',
+                  },
+                }),
+              ),
+            );
+
+            expect(analyzeResult.isError).not.toBe(true);
+            const analyzeSpans = capture.spans
+              .map(span => Object.fromEntries(span.attributes))
+              .filter(attributes => attributes['threadnote.operation'] === 'analyze_code_graph');
+            expect(analyzeSpans).toHaveLength(7);
+            expect(analyzeSpans.slice(0, 6).map(attributes => attributes['threadnote.phase'])).toEqual([
+              'graph.query.status',
+              'graph.query.status',
+              'graph.query.status',
+              'graph.query.snapshot',
+              'graph.query.execute',
+              'graph.query.execute',
+            ]);
+            expect(analyzeSpans.slice(0, 6).map(attributes => attributes['threadnote.stage'])).toEqual([
+              'query-repository-identity',
+              'query-worktree-observation',
+              undefined,
+              undefined,
+              undefined,
+              'query-serialization',
+            ]);
+            for (const attributes of analyzeSpans) {
+              expect(attributes).toMatchObject({
+                'threadnote.graph.request_kind': 'analyze.stats',
+                'threadnote.graph.request_scope': 'local',
+              });
+            }
+            for (const attributes of [analyzeSpans[0], analyzeSpans[1], analyzeSpans[2], analyzeSpans[5]]) {
+              expect(attributes).not.toHaveProperty('threadnote.graph.snapshot_selection');
+            }
+            for (const attributes of [analyzeSpans[3], analyzeSpans[4], analyzeSpans[6]]) {
+              expect(attributes).toMatchObject({
+                'threadnote.graph.snapshot_selection': 'active',
+              });
+            }
+            expect(analyzeSpans[6]).toMatchObject({
+              'threadnote.event': 'completion',
+              'threadnote.outcome': 'success',
+            });
+            expect(JSON.stringify(analyzeSpans)).not.toContain(fixture.root);
           }).pipe(TestClock.withLive, provideTestLayer(layer));
         },
         fixture => Effect.sync(() => rmSync(fixture.root, {force: true, recursive: true})),

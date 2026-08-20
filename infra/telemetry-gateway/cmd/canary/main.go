@@ -505,12 +505,21 @@ func canaryStringAttributes(canary canaryTrace) []canaryStringAttribute {
 			{"threadnote.graph.fact_replay_amplification_bucket", "2^20"},
 		}...)
 	} else if schemaVersion == 3 {
-		event := "completion"
 		if canary.queryEvent == "checkpoint" {
-			event = "checkpoint"
+			attributes = append(attributes, []canaryStringAttribute{
+				{"threadnote.event", "checkpoint"},
+				{"threadnote.operation", "inspect_code_graph"},
+				{"threadnote.phase", "graph.query.status"},
+				{"threadnote.phase.outcome", "success"},
+				{"threadnote.stage", "query-worktree-observation"},
+				{"threadnote.subphase", "skipped"},
+				{"threadnote.graph.request_kind", "inspect.query"},
+				{"threadnote.graph.request_scope", "local"},
+			}...)
+			return attributes
 		}
 		attributes = append(attributes, []canaryStringAttribute{
-			{"threadnote.event", event},
+			{"threadnote.event", "completion"},
 			{"threadnote.operation", "inspect_code_graph"},
 			{"threadnote.phase", "graph.query.execute"},
 			{"threadnote.phase.outcome", "success"},

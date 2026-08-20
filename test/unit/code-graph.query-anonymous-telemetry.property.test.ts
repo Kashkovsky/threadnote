@@ -98,6 +98,43 @@ describe('code graph query anonymous telemetry', () => {
     );
   });
 
+  it('projects only the closed stage disposition and never snapshot or private fields', () => {
+    fc.assert(
+      fc.property(
+        fc.constantFrom(
+          'query-repository-identity' as const,
+          'query-serialization' as const,
+          'query-strict-reobservation' as const,
+          'query-worktree-observation' as const,
+        ),
+        fc.constantFrom('fallback' as const, 'skipped' as const),
+        fc.string().map(value => `private-stage-input:${value}`),
+        (stage, subphase, privateValue) => {
+          const projected = codeGraphQueryAnonymousTelemetryFields({
+            phase: 'graph.query.execute',
+            privateValue,
+            requestKind: 'inspect.path',
+            requestScope: 'local',
+            snapshot: selectedSnapshot(),
+            stage,
+            subphase,
+          } as CodeGraphQueryAnonymousTelemetryProjection);
+
+          expect(projected).toEqual({
+            phase: 'graph.query.execute',
+            requestKind: 'inspect.path',
+            requestScope: 'local',
+            stage,
+            subphase,
+          });
+          expect(JSON.stringify(projected)).not.toContain(privateValue);
+          expect(projected).not.toHaveProperty('snapshotSelection');
+        },
+      ),
+      {numRuns: 100},
+    );
+  });
+
   it('uses monotone 0-or-power-of-two buckets and rejects invalid counts', () => {
     fc.assert(
       fc.property(
@@ -214,6 +251,71 @@ describe('code graph query anonymous telemetry', () => {
     }).pipe(provideTestLayer(anonymousTelemetryTestLayer({system: systemInfoStub(), tracer: capture.tracer})));
   });
 
+  effectIt.effect('emits executed, fallback, and skipped stages without changing results or terminal fields', () => {
+    const capture = capturingTracer();
+    const reporter = makeCodeGraphQueryAnonymousTelemetryReporter({
+      requestKind: 'inspect.path',
+      requestScope: 'local',
+    });
+
+    return Effect.gen(function* () {
+      const result = yield* withAnonymousTelemetry(
+        {component: 'mcp', operation: 'inspect_code_graph'},
+        Effect.gen(function* () {
+          yield* reporter.annotate;
+          const identity = yield* reporter.stage(
+            'graph.query.status',
+            'query-repository-identity',
+            TestClock.adjust('3 millis').pipe(Effect.as('same-result')),
+          );
+          yield* reporter.stage(
+            'graph.query.execute',
+            'query-worktree-observation',
+            TestClock.adjust('5 millis'),
+            'fallback',
+          );
+          yield* reporter.skip('graph.query.execute', 'query-strict-reobservation');
+          yield* reporter.stage('graph.query.execute', 'query-serialization', TestClock.adjust('7 millis'));
+          return identity;
+        }),
+      );
+
+      expect(result).toBe('same-result');
+      expect(capture.spans).toHaveLength(5);
+      expect(capture.spans.slice(0, 4).map(span => spanAttributes(span))).toEqual([
+        expect.objectContaining({
+          'threadnote.phase': 'graph.query.status',
+          'threadnote.phase.outcome': 'success',
+          'threadnote.stage': 'query-repository-identity',
+        }),
+        expect.objectContaining({
+          'threadnote.phase': 'graph.query.execute',
+          'threadnote.phase.outcome': 'success',
+          'threadnote.stage': 'query-worktree-observation',
+          'threadnote.subphase': 'fallback',
+        }),
+        expect.objectContaining({
+          'threadnote.phase': 'graph.query.execute',
+          'threadnote.phase.outcome': 'success',
+          'threadnote.stage': 'query-strict-reobservation',
+          'threadnote.subphase': 'skipped',
+        }),
+        expect.objectContaining({
+          'threadnote.phase': 'graph.query.execute',
+          'threadnote.phase.outcome': 'success',
+          'threadnote.stage': 'query-serialization',
+        }),
+      ]);
+      for (const span of capture.spans.slice(0, 4)) {
+        expect(spanAttributes(span)).not.toHaveProperty('threadnote.graph.snapshot_selection');
+      }
+      const completion = spanAttributes(capture.spans[4]!);
+      expect(completion).not.toHaveProperty('threadnote.phase');
+      expect(completion).not.toHaveProperty('threadnote.stage');
+      expect(completion).not.toHaveProperty('threadnote.subphase');
+    }).pipe(provideTestLayer(anonymousTelemetryTestLayer({system: systemInfoStub(), tracer: capture.tracer})));
+  });
+
   effectIt.effect('preserves stage failure and excludes result-derived snapshot fields', () => {
     const capture = capturingTracer();
     const reporter = makeCodeGraphQueryAnonymousTelemetryReporter({
@@ -277,7 +379,7 @@ describe('code graph query anonymous telemetry', () => {
     }).pipe(provideTestLayer(anonymousTelemetryTestLayer({system: systemInfoStub(), tracer: capture.tracer})));
   });
 
-  effectIt.effect('preserves interruption and emits no detached query checkpoint', () => {
+  effectIt.effect('preserves stage interruption and emits no detached query checkpoint', () => {
     const capture = capturingTracer();
     const reporter = makeCodeGraphQueryAnonymousTelemetryReporter({
       requestKind: 'inspect.impact',
@@ -289,7 +391,11 @@ describe('code graph query anonymous telemetry', () => {
         const started = yield* Deferred.make<void>();
         const fiber = yield* withAnonymousTelemetry(
           {component: 'mcp', operation: 'inspect_code_graph'},
-          reporter.execute(Deferred.succeed(started, undefined).pipe(Effect.andThen(Effect.never)), selectedSnapshot()),
+          reporter.stage(
+            'graph.query.execute',
+            'query-strict-reobservation',
+            Deferred.succeed(started, undefined).pipe(Effect.andThen(Effect.never)),
+          ),
         ).pipe(
           provideTestLayer(anonymousTelemetryTestLayer({system: systemInfoStub(), tracer: capture.tracer})),
           Effect.forkScoped,
@@ -304,6 +410,7 @@ describe('code graph query anonymous telemetry', () => {
           'threadnote.event': 'checkpoint',
           'threadnote.phase': 'graph.query.execute',
           'threadnote.phase.outcome': 'interrupted',
+          'threadnote.stage': 'query-strict-reobservation',
         });
         expect(spanAttributes(capture.spans[1]!)).toMatchObject({
           'threadnote.event': 'completion',

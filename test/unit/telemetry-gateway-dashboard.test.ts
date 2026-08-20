@@ -29,6 +29,7 @@ type Transformation = Readonly<{
 
 type Panel = Readonly<{
   datasource: Readonly<{type: string; uid: string}>;
+  description?: string;
   fieldConfig: Readonly<{
     overrides: ReadonlyArray<FieldOverride>;
   }>;
@@ -267,6 +268,7 @@ describe('Threadnote Grafana dashboard', () => {
 
       const graphQueryStages = panels.find(panel => panel.id === 22);
       expect(graphQueryStages?.type).toBe('bargauge');
+      expect(graphQueryStages?.targets).toHaveLength(2);
       expect(graphQueryStages?.targets[0]?.metricsQueryType).toBe('instant');
       expect(graphQueryStages?.targets[0]?.query).toContain(
         'quantile_over_time(span.threadnote.phase.elapsed_ms, .5, .95)',
@@ -275,6 +277,12 @@ describe('Threadnote Grafana dashboard', () => {
         'by (span.threadnote.graph.request_kind, span.threadnote.phase)',
       );
       expect(graphQueryStages?.targets[0]?.query).toContain('span.threadnote.phase =~ "graph.query.*"');
+      expect(graphQueryStages?.targets[0]?.query).toContain('span.threadnote.stage = nil');
+      expect(graphQueryStages?.targets[1]?.metricsQueryType).toBe('instant');
+      expect(graphQueryStages?.targets[1]?.query).toContain('span.threadnote.stage =~ "query-.*"');
+      expect(graphQueryStages?.targets[1]?.query).toContain(
+        'by (span.threadnote.graph.request_kind, span.threadnote.stage, span.threadnote.subphase)',
+      );
 
       const graphLatencyBySize = panels.find(panel => panel.id === 23);
       expect(graphLatencyBySize?.type).toBe('bargauge');
@@ -321,7 +329,7 @@ describe('Threadnote Grafana dashboard', () => {
           expect(panel.transformations ?? []).toEqual([]);
           continue;
         }
-        const expectedTransformationCount = panel.type === 'bargauge' ? 4 : 1;
+        const expectedTransformationCount = panel.id === 22 ? 6 : panel.type === 'bargauge' ? 4 : 1;
         expect(panel.transformations).toHaveLength(expectedTransformationCount);
         const transformation = panel.transformations?.[0];
         expect(transformation?.id).toBe('renameByRegex');
@@ -351,15 +359,24 @@ describe('Threadnote Grafana dashboard', () => {
           },
         },
       ];
-      for (const panel of [
-        operationDuration,
-        phaseElapsed,
-        graphRequestDuration,
-        graphQueryStages,
-        graphLatencyBySize,
-      ]) {
+      for (const panel of [operationDuration, phaseElapsed, graphRequestDuration, graphLatencyBySize]) {
         expect(panel?.transformations?.slice(1)).toEqual(descendingGaugeTransforms);
       }
+      expect(graphQueryStages?.transformations?.slice(3)).toEqual(descendingGaugeTransforms);
+      const stageWithSubphaseRename = graphQueryStages?.transformations?.[1];
+      expect(
+        '{p=0.95, span.threadnote.graph.request_kind="inspect.query", span.threadnote.stage="query-worktree-observation", span.threadnote.subphase="skipped"}'.replace(
+          new RegExp(stageWithSubphaseRename!.options.regex!, 'u'),
+          stageWithSubphaseRename!.options.renamePattern!,
+        ),
+      ).toBe('inspect.query / query-worktree-observation / skipped: p0.95');
+      const stageRename = graphQueryStages?.transformations?.[2];
+      expect(
+        '{p=0.95, span.threadnote.graph.request_kind="inspect.query", span.threadnote.stage="query-serialization"}'.replace(
+          new RegExp(stageRename!.options.regex!, 'u'),
+          stageRename!.options.renamePattern!,
+        ),
+      ).toBe('inspect.query / query-serialization: p0.95');
       const tables = panels.filter(panel => panel.type === 'table');
       expect(tables).not.toHaveLength(0);
       for (const panel of tables) {
@@ -396,6 +413,8 @@ describe('Threadnote Grafana dashboard', () => {
 
       const unexpectedFull = panels.find(panel => panel.id === 13);
       expect(unexpectedFull?.title).toBe('Unexpected full-build percentage');
+      expect(unexpectedFull?.description).toContain('zero-count buckets render as 0%');
+      expect(unexpectedFull?.description).toContain('datasource-wide NoData remains visible');
       expect(unexpectedFull?.targets).toHaveLength(3);
       expect(unexpectedFull?.targets[0]?.query).toContain('small-delta-full');
       expect(unexpectedFull?.targets[0]?.query).toContain('high-amplification-full');

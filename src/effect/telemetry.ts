@@ -51,8 +51,10 @@ export type AnonymousTelemetryPhase = (typeof ANONYMOUS_TELEMETRY_PHASES)[number
 
 export const ANONYMOUS_TELEMETRY_SUBPHASES = [
   'complete',
+  'fallback',
   'promoting',
   'references',
+  'skipped',
   'structural-ready',
   'summarizing-analysis',
   'validating-input',
@@ -77,6 +79,10 @@ export const ANONYMOUS_TELEMETRY_STAGES = [
   'loading-cache',
   'persisting',
   'preparing-rows',
+  'query-repository-identity',
+  'query-serialization',
+  'query-strict-reobservation',
+  'query-worktree-observation',
   'reading',
   'recording-completion',
   'validating-input',

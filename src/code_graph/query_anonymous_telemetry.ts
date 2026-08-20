@@ -9,8 +9,15 @@ import {
   type AnonymousTelemetryGraphSnapshotSelection,
   type AnonymousTelemetryPhase,
   type AnonymousTelemetryQuantityBucket,
+  type AnonymousTelemetryStage,
+  type AnonymousTelemetrySubphase,
 } from '../effect/telemetry.js';
 import {observationFromCodeGraphStatus} from './query.js';
+import type {
+  CodeGraphQueryTelemetryObserver,
+  CodeGraphQueryTelemetryStage,
+  CodeGraphQueryTelemetryStageDisposition,
+} from './query.js';
 import type {CodeGraphQueryResult, CodeGraphSnapshot, CodeGraphStatus} from './types.js';
 
 export type CodeGraphInspectAnonymousTelemetryOperation = CodeGraphQueryResult['operation'] | 'topology';
@@ -32,9 +39,11 @@ export interface CodeGraphQueryAnonymousTelemetryProjection {
   readonly requestKind: AnonymousTelemetryGraphRequestKind;
   readonly requestScope: AnonymousTelemetryGraphRequestScope;
   readonly snapshot?: CodeGraphQueryAnonymousTelemetrySnapshotSurface;
+  readonly stage?: CodeGraphQueryTelemetryStage;
+  readonly subphase?: Extract<AnonymousTelemetrySubphase, CodeGraphQueryTelemetryStageDisposition>;
 }
 
-export interface CodeGraphQueryAnonymousTelemetryReporter {
+export interface CodeGraphQueryAnonymousTelemetryReporter extends CodeGraphQueryTelemetryObserver {
   readonly annotate: Effect.Effect<void>;
   readonly execute: <A, E, R>(
     effect: Effect.Effect<A, E, R>,
@@ -72,8 +81,15 @@ export function codeGraphQueryAnonymousTelemetryFields(
     phase: input.phase,
     requestKind: input.requestKind,
     requestScope: input.requestScope,
+    ...(input.stage === undefined ? {} : {stage: input.stage satisfies AnonymousTelemetryStage}),
+    ...(input.subphase === undefined ? {} : {subphase: input.subphase}),
   };
-  if (input.phase === 'graph.query.status' || input.requestScope !== 'local' || input.snapshot === undefined) {
+  if (
+    input.stage !== undefined ||
+    input.phase === 'graph.query.status' ||
+    input.requestScope !== 'local' ||
+    input.snapshot === undefined
+  ) {
     return base;
   }
   if (input.snapshot.selection === 'none') return {...base, snapshotSelection: 'none'};
@@ -134,12 +150,16 @@ export function makeCodeGraphQueryAnonymousTelemetryReporter(input: {
   const fields = (
     phase: CodeGraphQueryAnonymousTelemetryProjection['phase'],
     snapshot?: CodeGraphQueryAnonymousTelemetrySnapshotSurface,
+    stage?: CodeGraphQueryTelemetryStage,
+    subphase?: Extract<AnonymousTelemetrySubphase, CodeGraphQueryTelemetryStageDisposition>,
   ) =>
     codeGraphQueryAnonymousTelemetryFields({
       phase,
       requestKind: input.requestKind,
       requestScope: input.requestScope,
       ...(snapshot === undefined ? {} : {snapshot}),
+      ...(stage === undefined ? {} : {stage}),
+      ...(subphase === undefined ? {} : {subphase}),
     });
   const checkpoint = <A, E, R>(
     phase: CodeGraphQueryAnonymousTelemetryProjection['phase'],
@@ -147,15 +167,18 @@ export function makeCodeGraphQueryAnonymousTelemetryReporter(input: {
     retainFields: boolean,
     snapshot?:
       CodeGraphQueryAnonymousTelemetrySnapshotSurface | ((value: A) => CodeGraphQueryAnonymousTelemetrySnapshotSurface),
+    stage?: CodeGraphQueryTelemetryStage,
+    subphase?: Extract<AnonymousTelemetrySubphase, CodeGraphQueryTelemetryStageDisposition>,
   ) =>
     withAnonymousTelemetryCheckpoint(
       {
-        fields: fields(phase),
+        fields: fields(phase, undefined, stage, subphase),
         retainFields,
         ...(snapshot === undefined
           ? {}
           : {
-              successFields: (value: A) => fields(phase, typeof snapshot === 'function' ? snapshot(value) : snapshot),
+              successFields: (value: A) =>
+                fields(phase, typeof snapshot === 'function' ? snapshot(value) : snapshot, stage, subphase),
             }),
       },
       effect,
@@ -163,7 +186,9 @@ export function makeCodeGraphQueryAnonymousTelemetryReporter(input: {
   return {
     annotate: recordAnonymousTelemetryFields(requestFields),
     execute: (effect, snapshot) => checkpoint('graph.query.execute', effect, true, snapshot),
+    skip: (phase, stage) => checkpoint(phase, Effect.void, false, undefined, stage, 'skipped'),
     snapshot: (effect, select) => checkpoint('graph.query.snapshot', effect, false, select),
+    stage: (phase, stage, effect, disposition) => checkpoint(phase, effect, false, undefined, stage, disposition),
     status: effect => checkpoint('graph.query.status', effect, false),
   };
 }

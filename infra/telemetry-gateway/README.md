@@ -12,8 +12,8 @@ version-selected [`telemetry-schema-v1.json`](./telemetry-schema-v1.json),
 Collector can see it. Versions 1 and 2 remain frozen and accepted for deployed
 clients. Version 2 added closed, path-free terminal graph-build classifications
 and power-of-two buckets. Version 3 inherits that surface and adds only closed
-graph request/scope, query-phase, snapshot selection/freshness, and published
-snapshot-size buckets. It rejects unknown or duplicate protobuf fields, schema
+graph request/scope, query-phase, query-stage/subphase, snapshot selection/freshness,
+and published snapshot-size buckets. It rejects unknown or duplicate protobuf fields, schema
 surface mixing, mixed valid/invalid batches, unrecognized attributes and
 values, invalid field combinations, span events, links, trace state, status
 messages, and malformed identifiers. Accepted

@@ -693,6 +693,10 @@ func validateSpanAttributeShape(attributes map[string]*commonpb.AnyValue, schema
 func validateGraphQueryAttributeShape(attributes map[string]*commonpb.AnyValue, schema *compiledTelemetrySchema, event, operation string) error {
 	phase, hasPhase := anyString(attributes["threadnote.phase"])
 	queryPhase := strings.HasPrefix(phase, "graph.query.")
+	stage, _ := anyString(attributes["threadnote.stage"])
+	subphase, hasSubphase := anyString(attributes["threadnote.subphase"])
+	queryStage := strings.HasPrefix(stage, "query-")
+	querySubphase := subphase == "skipped" || subphase == "fallback"
 	requestKind, hasRequestKind := anyString(attributes["threadnote.graph.request_kind"])
 	requestScope, hasRequestScope := anyString(attributes["threadnote.graph.request_scope"])
 	queryAttributeCount := 0
@@ -715,7 +719,7 @@ func validateGraphQueryAttributeShape(attributes map[string]*commonpb.AnyValue, 
 		requestKindPrefix = "analyze."
 	}
 	if requestKindPrefix == "" {
-		if queryPhase || queryAttributeCount != 0 {
+		if queryPhase || queryAttributeCount != 0 || queryStage || querySubphase {
 			return errors.New("graph query attributes require a graph query operation")
 		}
 		return nil
@@ -723,11 +727,46 @@ func validateGraphQueryAttributeShape(attributes map[string]*commonpb.AnyValue, 
 	if schema.SchemaVersion < 3 {
 		return nil
 	}
-	if !queryPhase && queryAttributeCount == 0 {
+	if !queryPhase && queryAttributeCount == 0 && !queryStage && !querySubphase {
 		return nil
 	}
 	if !hasRequestKind || !hasRequestScope || !strings.HasPrefix(requestKind, requestKindPrefix) {
 		return errors.New("graph query operation requires matching request kind and scope")
+	}
+	if querySubphase && !queryStage {
+		return errors.New("graph query skipped or fallback subphase requires a query stage")
+	}
+	if queryStage {
+		if event != "checkpoint" {
+			return errors.New("graph query stage requires a checkpoint event")
+		}
+		if hasSubphase && !querySubphase {
+			return errors.New("graph query stage permits only skipped or fallback subphases")
+		}
+		if !hasPhase || (phase != "graph.query.status" && phase != "graph.query.snapshot" && phase != "graph.query.execute") {
+			return errors.New("graph query stage checkpoint requires an admitted graph query phase")
+		}
+		phaseOutcome, hasPhaseOutcome := anyString(attributes["threadnote.phase.outcome"])
+		if !hasPhaseOutcome {
+			return errors.New("graph query stage checkpoint requires a phase outcome")
+		}
+		if outcome, hasOutcome := anyString(attributes["threadnote.outcome"]); hasOutcome && outcome != phaseOutcome {
+			return errors.New("graph query stage checkpoint outcomes must agree")
+		}
+		if subphase == "skipped" && phaseOutcome != "success" {
+			return errors.New("skipped graph query stage checkpoint requires a success outcome")
+		}
+		if _, hasPhaseElapsed := anyInt(attributes["threadnote.phase.elapsed_ms"]); !hasPhaseElapsed {
+			return errors.New("graph query stage checkpoint requires phase elapsed time")
+		}
+		snapshotAttributeCount, _ := graphQuerySnapshotAttributeCounts(attributes)
+		if snapshotAttributeCount != 0 {
+			return errors.New("graph query stage checkpoint cannot include a snapshot surface")
+		}
+		if requestScope != "local" && requestScope != "workset" {
+			return errors.New("invalid graph query request scope")
+		}
+		return nil
 	}
 	if event == "checkpoint" {
 		if !hasPhase {
