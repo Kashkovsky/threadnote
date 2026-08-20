@@ -7,6 +7,7 @@ import {
   codeGraphAnalysisMcpResponse,
   codeGraphAnalysisRefreshResult,
   codeGraphInspectionAllowsStaleReady,
+  codeGraphInspectionObservesWorktree,
   codeGraphInspectionStartsRefresh,
   codeGraphMcpAnalysisBudget,
   codeGraphMcpAnalysisLimits,
@@ -40,6 +41,25 @@ describe('MCP code graph indexing progress', () => {
       ),
     ).toEqual({explain: true, impact: false, neighbors: true, node: true, path: false, query: true});
   });
+
+  it.prop(
+    'observes the worktree only for current-required inspections',
+    {
+      operation: FC.constantFrom(
+        'query' as const,
+        'node' as const,
+        'neighbors' as const,
+        'explain' as const,
+        'path' as const,
+        'impact' as const,
+      ),
+    },
+    ({operation}) => {
+      expect(codeGraphInspectionObservesWorktree(operation)).toBe(operation === 'path' || operation === 'impact');
+      expect(codeGraphInspectionObservesWorktree(operation)).toBe(!codeGraphInspectionAllowsStaleReady(operation));
+    },
+    {fastCheck: {numRuns: 100}},
+  );
 
   it.prop(
     'starts refresh only for stale cold or current-required inspections',

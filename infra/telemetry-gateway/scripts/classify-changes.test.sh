@@ -24,6 +24,8 @@ assert_classification "$production" infra/telemetry-gateway/gateway.go
 assert_classification "$production" infra/telemetry-gateway/internal/budget/budget.go
 assert_classification "$production" infra/telemetry-gateway/internal/runtime/new.go
 assert_classification "$production" infra/telemetry-gateway/telemetry-schema-v2.json
+assert_classification "$production" infra/telemetry-gateway/telemetry-schema-v3.json
+assert_classification "$production" infra/telemetry-gateway/telemetry-schema-v4.json
 assert_classification "$production" .dockerignore
 assert_classification "$production" docs/telemetry.md infra/telemetry-gateway/schema.go
 # `git diff --no-renames` presents a move as the old deletion plus new addition;

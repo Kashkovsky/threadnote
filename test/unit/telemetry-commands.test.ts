@@ -31,6 +31,10 @@ describe('telemetry commands', () => {
         expect(preview.output).toContain('Failed graph builds add only bounded outcome/type');
         expect(preview.output).toContain('interrupted graph builds add only outcome/duration');
         expect(preview.output).toContain('Neither adds graph classifications or buckets');
+        expect(preview.output).toContain('MCP graph inspection diagnostics additionally include');
+        expect(preview.output).toContain('closed request-kind, local/workset scope');
+        expect(preview.output).toContain('active/promoted/borrowed selection');
+        expect(preview.output).toContain('file/symbol/edge-count buckets');
         expect(preview.output).toContain('Never arguments');
         expect(preview.output).toContain('MCP payloads/results');
         expect(preview.output).toContain('Grafana Cloud EU');
@@ -85,8 +89,29 @@ describe('telemetry commands', () => {
         expect((yield* readTelemetryConfiguration(config))?.enabled).toBe(true);
         yield* runTelemetryDisable(config, {apply: true});
         const disabled = yield* readTelemetryConfiguration(config);
-        expect(disabled).toEqual({consentVersion: 3, enabled: false, version: 1});
+        expect(disabled).toEqual({consentVersion: 4, enabled: false, version: 1});
         expect(yield* fs.readFileString(yield* telemetryConfigurationPath(config))).not.toContain('sessionSalt');
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('requires an explicit apply before replacing consent from version 3', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-telemetry-consent-v4-'});
+        const config = runtimeConfig(home);
+        yield* runTelemetryEnable(config, {apply: true});
+        const file = yield* telemetryConfigurationPath(config);
+        const previous = JSON.parse(yield* fs.readFileString(file)) as Record<string, unknown>;
+        yield* fs.writeFileString(file, `${JSON.stringify({...previous, consentVersion: 3}, undefined, 2)}\n`);
+
+        const preview = yield* captureConsole(runTelemetryEnable(config, {}));
+        expect(preview.output).toContain('No changes made. Re-run with --apply');
+        expect(JSON.parse(yield* fs.readFileString(file))).toMatchObject({consentVersion: 3, enabled: true});
+
+        yield* runTelemetryEnable(config, {apply: true});
+        expect(yield* readTelemetryConfiguration(config)).toMatchObject({consentVersion: 4, enabled: true});
       }),
     ).pipe(provideTestLayer(ApplicationLayer)),
   );

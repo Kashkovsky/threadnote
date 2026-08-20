@@ -1,4 +1,5 @@
-import type {CodeGraphSymbol} from './types.js';
+import {compareCodeUnits} from './ordering.js';
+import type {CodeGraphReference, CodeGraphSymbol} from './types.js';
 
 export type CodeGraphResolutionSurfaceSymbol = Pick<
   CodeGraphSymbol,
@@ -52,6 +53,72 @@ export function hasSameCodeGraphResolutionSurface(
     if (leftById.get(symbol.id) !== symbolResolutionSurface(symbol)) return false;
   }
   return leftById.size === rightPublishedCount;
+}
+
+/**
+ * Re-export aliases publish lookup keys that may be consumed outside the file
+ * being replaced. A span-only edit is local when the exact resolver input is
+ * otherwise unchanged. Unknown alias forms and duplicate reference identities
+ * deliberately fail closed so they continue through project-closure planning.
+ */
+export function hasSameCodeGraphReexportResolutionSurface(
+  left: readonly CodeGraphReference[],
+  right: readonly CodeGraphReference[],
+): boolean {
+  const leftSurface = staticReexportResolutionSurface(left);
+  const rightSurface = staticReexportResolutionSurface(right);
+  if (leftSurface === undefined || rightSurface === undefined || leftSurface.size !== rightSurface.size) return false;
+  for (const [edgeId, surface] of leftSurface) {
+    if (rightSurface.get(edgeId) !== surface) return false;
+  }
+  return true;
+}
+
+function staticReexportResolutionSurface(
+  references: readonly CodeGraphReference[],
+): ReadonlyMap<string, string> | undefined {
+  const aliases = references.filter(reference => (reference.aliasLookupKeys?.length ?? 0) > 0);
+  if (aliases.length === 0) return new Map();
+
+  const referenceIds = new Set<string>();
+  for (const reference of references) {
+    if (referenceIds.has(reference.edgeId)) return undefined;
+    referenceIds.add(reference.edgeId);
+  }
+
+  const surface = new Map<string, string>();
+  for (const reference of aliases) {
+    if (
+      reference.relation !== 'reexports' ||
+      reference.resolutionDomain !== 'typescript' ||
+      reference.exportedOnly !== true
+    ) {
+      return undefined;
+    }
+    surface.set(reference.edgeId, reexportResolutionSurface(reference));
+  }
+  return surface;
+}
+
+function reexportResolutionSurface(reference: CodeGraphReference): string {
+  return JSON.stringify({
+    aliasLookupKeys: canonicalStringSet(reference.aliasLookupKeys ?? []),
+    arity: reference.arity,
+    edgeId: reference.edgeId,
+    evidencePath: reference.evidencePath,
+    exportedOnly: reference.exportedOnly,
+    lookupTiers: reference.lookupTiers.map(canonicalStringSet),
+    provenance: reference.provenance,
+    relation: reference.relation,
+    resolutionDomain: reference.resolutionDomain,
+    sourceId: reference.sourceId,
+    sourceName: reference.sourceName,
+    targetName: reference.targetName,
+  });
+}
+
+function canonicalStringSet(values: readonly string[]): readonly string[] {
+  return [...new Set(values)].sort(compareCodeUnits);
 }
 
 /**

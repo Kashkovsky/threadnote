@@ -1,4 +1,4 @@
-// Command canary proves that frozen-v1, frozen-v2, and current-v3 privacy-safe
+// Command canary proves that frozen-v1, frozen-v2, frozen-v3, and current-v4 privacy-safe
 // synthetic traces traverse the public gateway and become queryable in Tempo.
 package main
 
@@ -58,6 +58,8 @@ const (
 	canaryTraceCompletion canaryTraceKind = iota
 	canaryTraceGraph
 	canaryTraceAutoUpdate
+	canaryTraceQueryCheckpoint
+	canaryTraceQueryCompletion
 )
 
 type canaryStringAttribute struct {
@@ -79,7 +81,7 @@ func main() {
 		_, _ = fmt.Fprintln(os.Stderr, "threadnote-telemetry-canary:", err)
 		os.Exit(1)
 	}
-	_, _ = fmt.Fprintln(os.Stdout, "threadnote-telemetry-canary: v1, v2, and v3 traces stored")
+	_, _ = fmt.Fprintln(os.Stdout, "threadnote-telemetry-canary: v1, v2, v3, and v4 traces stored")
 }
 
 func configFromEnvironment() (config, error) {
@@ -154,6 +156,10 @@ func run(
 		{schemaVersion: 2, kind: canaryTraceGraph},
 		{schemaVersion: 3, kind: canaryTraceGraph},
 		{schemaVersion: 3, kind: canaryTraceAutoUpdate},
+		{schemaVersion: 4, kind: canaryTraceGraph},
+		{schemaVersion: 4, kind: canaryTraceAutoUpdate},
+		{schemaVersion: 4, kind: canaryTraceQueryCheckpoint},
+		{schemaVersion: 4, kind: canaryTraceQueryCompletion},
 	}
 	traces := make([]canaryTrace, 0, len(plans))
 	for _, trace := range plans {
@@ -203,6 +209,10 @@ func (trace canaryTrace) label() string {
 		return fmt.Sprintf("schema v%d graph", trace.schemaVersion)
 	case canaryTraceAutoUpdate:
 		return fmt.Sprintf("schema v%d automatic update", trace.schemaVersion)
+	case canaryTraceQueryCheckpoint:
+		return fmt.Sprintf("schema v%d query checkpoint", trace.schemaVersion)
+	case canaryTraceQueryCompletion:
+		return fmt.Sprintf("schema v%d query completion", trace.schemaVersion)
 	default:
 		return fmt.Sprintf("schema v%d completion", trace.schemaVersion)
 	}
@@ -434,7 +444,10 @@ func storedSpanMatchesTrace(span *tracepb.Span, trace canaryTrace) bool {
 	if trace.kind == canaryTraceAutoUpdate && !hasBoolAttribute(span.Attributes, "threadnote.auto_update.repair_required", false) {
 		return false
 	}
-	return trace.schemaVersion >= 1 && trace.schemaVersion <= 3
+	if isQueryTrace(trace) && !hasIntAttribute(span.Attributes, "threadnote.phase.elapsed_ms", 1) {
+		return false
+	}
+	return trace.schemaVersion >= 1 && trace.schemaVersion <= 4
 }
 
 func randomIDs() (canaryIDs, error) {
@@ -486,6 +499,9 @@ func buildEnvelope(canary canaryTrace, timestamp time.Time) []byte {
 	}
 	if canary.kind == canaryTraceAutoUpdate {
 		span = append(span, message(9, keyValue("threadnote.auto_update.repair_required", boolValue(false)))...)
+	}
+	if isQueryTrace(canary) {
+		span = append(span, message(9, keyValue("threadnote.phase.elapsed_ms", intValue(1)))...)
 	}
 	span = append(span, message(9, keyValue("threadnote.duration_ms", intValue(1)))...)
 	span = append(span, message(15, varintField(3, 1))...)
@@ -540,8 +556,37 @@ func canaryStringAttributes(canary canaryTrace) []canaryStringAttribute {
 			canaryStringAttribute{"threadnote.operation", "auto-update-worker"},
 			canaryStringAttribute{"threadnote.auto_update.result", "updated"},
 		)
+	case canaryTraceQueryCheckpoint:
+		attributes = append(attributes,
+			canaryStringAttribute{"threadnote.event", "checkpoint"},
+			canaryStringAttribute{"threadnote.operation", "inspect_code_graph"},
+			canaryStringAttribute{"threadnote.phase", "graph.query.status"},
+			canaryStringAttribute{"threadnote.phase.outcome", "success"},
+			canaryStringAttribute{"threadnote.stage", "query-worktree-observation"},
+			canaryStringAttribute{"threadnote.subphase", "skipped"},
+			canaryStringAttribute{"threadnote.graph.request_kind", "inspect.query"},
+			canaryStringAttribute{"threadnote.graph.request_scope", "local"},
+		)
+	case canaryTraceQueryCompletion:
+		attributes = append(attributes,
+			canaryStringAttribute{"threadnote.event", "completion"},
+			canaryStringAttribute{"threadnote.operation", "inspect_code_graph"},
+			canaryStringAttribute{"threadnote.phase", "graph.query.execute"},
+			canaryStringAttribute{"threadnote.phase.outcome", "success"},
+			canaryStringAttribute{"threadnote.graph.request_kind", "inspect.query"},
+			canaryStringAttribute{"threadnote.graph.request_scope", "local"},
+			canaryStringAttribute{"threadnote.graph.snapshot_selection", "active"},
+			canaryStringAttribute{"threadnote.graph.snapshot_freshness", "deferred"},
+			canaryStringAttribute{"threadnote.graph.snapshot_files_bucket", "2^10"},
+			canaryStringAttribute{"threadnote.graph.snapshot_symbols_bucket", "2^12"},
+			canaryStringAttribute{"threadnote.graph.snapshot_edges_bucket", "2^13"},
+		)
 	}
 	return attributes
+}
+
+func isQueryTrace(trace canaryTrace) bool {
+	return trace.kind == canaryTraceQueryCheckpoint || trace.kind == canaryTraceQueryCompletion
 }
 
 func keyValue(key string, anyValue []byte) []byte {

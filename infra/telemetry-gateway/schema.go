@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strings"
 
 	collectortracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
@@ -24,6 +25,9 @@ var telemetrySchemaV2JSON []byte
 
 //go:embed telemetry-schema-v3.json
 var telemetrySchemaV3JSON []byte
+
+//go:embed telemetry-schema-v4.json
+var telemetrySchemaV4JSON []byte
 
 type telemetrySchema struct {
 	SchemaVersion int `json:"schemaVersion"`
@@ -76,6 +80,19 @@ var graphRegistrySpanAttributes = map[string]string{
 	"threadnote.graph.resolution_closure":   "resolutionClosure",
 }
 
+var graphQueryRegistrySpanAttributes = map[string]string{
+	"threadnote.graph.request_kind":       "graphRequestKind",
+	"threadnote.graph.request_scope":      "graphRequestScope",
+	"threadnote.graph.snapshot_freshness": "graphSnapshotFreshness",
+	"threadnote.graph.snapshot_selection": "graphSnapshotSelection",
+}
+
+var graphQuerySnapshotBucketAttributes = []string{
+	"threadnote.graph.snapshot_edges_bucket",
+	"threadnote.graph.snapshot_files_bucket",
+	"threadnote.graph.snapshot_symbols_bucket",
+}
+
 var terminalGraphSpanAttributes = []string{
 	"threadnote.graph.build_kind",
 	"threadnote.graph.cached_fact_replay_bytes_bucket",
@@ -97,8 +114,8 @@ var terminalGraphSpanAttributes = []string{
 }
 
 func loadTelemetrySchemas() (*compiledTelemetrySchemas, error) {
-	result := &compiledTelemetrySchemas{byVersion: make(map[int]*compiledTelemetrySchema, 3)}
-	for version, data := range map[int][]byte{1: telemetrySchemaV1JSON, 2: telemetrySchemaV2JSON, 3: telemetrySchemaV3JSON} {
+	result := &compiledTelemetrySchemas{byVersion: make(map[int]*compiledTelemetrySchema, 4)}
+	for version, data := range map[int][]byte{1: telemetrySchemaV1JSON, 2: telemetrySchemaV2JSON, 3: telemetrySchemaV3JSON, 4: telemetrySchemaV4JSON} {
 		compiled, err := compileTelemetrySchema(data, version)
 		if err != nil {
 			return nil, err
@@ -146,8 +163,16 @@ func compileTelemetrySchema(data []byte, expectedVersion int) (*compiledTelemetr
 	if expectedVersion >= 2 {
 		requiredRegistries = append(requiredRegistries, "buildKind", "efficiencyClass", "fallbackReason", "materializationMode", "resolutionClosure")
 	}
-	if expectedVersion == 3 {
+	if expectedVersion >= 3 {
 		requiredRegistries = append(requiredRegistries, "autoUpdateResult")
+	}
+	if expectedVersion >= 4 {
+		requiredRegistries = append(requiredRegistries,
+			"graphRequestKind",
+			"graphRequestScope",
+			"graphSnapshotFreshness",
+			"graphSnapshotSelection",
+		)
 	}
 	for _, registry := range requiredRegistries {
 		if len(compiled.registries[registry]) == 0 {
@@ -550,6 +575,10 @@ func validateSpanAttributeValues(attributes map[string]*commonpb.AnyValue, schem
 			if !valueStringIn(value, schema.registries[graphRegistrySpanAttributes[key]]) {
 				return errors.New("invalid telemetry graph classification")
 			}
+		case graphQueryRegistrySpanAttributes[key] != "":
+			if !valueStringIn(value, schema.registries[graphQueryRegistrySpanAttributes[key]]) {
+				return errors.New("invalid telemetry graph query classification")
+			}
 		case contains(schema.booleanSpan, key):
 			if _, ok := value.Value.(*commonpb.AnyValue_BoolValue); !ok {
 				return errors.New("invalid telemetry boolean attribute")
@@ -640,15 +669,15 @@ func validateSpanAttributeShape(attributes map[string]*commonpb.AnyValue, schema
 		}
 	}
 	if graphAttributeCount != 0 && (schema.SchemaVersion < 2 || event != "lifecycle" || operation != "graph-build") {
-		return errors.New("graph build attributes require a versioned graph lifecycle event")
+		return errors.New("graph build attributes require a version 2 or later graph lifecycle event")
 	}
 	autoUpdateResult, hasAutoUpdateResult := anyString(attributes["threadnote.auto_update.result"])
 	_, hasAutoUpdateRepairRequired := attributes["threadnote.auto_update.repair_required"]
 	if (hasAutoUpdateResult || hasAutoUpdateRepairRequired) &&
-		(schema.SchemaVersion != 3 || event != "completion" || operation != "auto-update-worker") {
-		return errors.New("automatic update attributes require a version 3 worker completion")
+		(schema.SchemaVersion < 3 || event != "completion" || operation != "auto-update-worker") {
+		return errors.New("automatic update attributes require a version 3 or later worker completion")
 	}
-	if schema.SchemaVersion == 3 && event == "completion" && operation == "auto-update-worker" {
+	if schema.SchemaVersion >= 3 && event == "completion" && operation == "auto-update-worker" {
 		outcomeValue, _ := anyString(attributes["threadnote.outcome"])
 		if outcomeValue == "success" && !hasAutoUpdateResult {
 			return errors.New("successful automatic update worker completion requires a closed result")
@@ -688,7 +717,165 @@ func validateSpanAttributeShape(attributes map[string]*commonpb.AnyValue, schema
 			}
 		}
 	}
+	return validateGraphQueryAttributeShape(attributes, schema, event, operation)
+}
+
+func validateGraphQueryAttributeShape(attributes map[string]*commonpb.AnyValue, schema *compiledTelemetrySchema, event, operation string) error {
+	phase, hasPhase := anyString(attributes["threadnote.phase"])
+	queryPhase := strings.HasPrefix(phase, "graph.query.")
+	stage, _ := anyString(attributes["threadnote.stage"])
+	subphase, hasSubphase := anyString(attributes["threadnote.subphase"])
+	queryStage := strings.HasPrefix(stage, "query-")
+	querySubphase := subphase == "skipped" || subphase == "fallback"
+	requestKind, hasRequestKind := anyString(attributes["threadnote.graph.request_kind"])
+	requestScope, hasRequestScope := anyString(attributes["threadnote.graph.request_scope"])
+	queryAttributeCount := 0
+	for key := range graphQueryRegistrySpanAttributes {
+		if _, exists := attributes[key]; exists {
+			queryAttributeCount++
+		}
+	}
+	for _, key := range graphQuerySnapshotBucketAttributes {
+		if _, exists := attributes[key]; exists {
+			queryAttributeCount++
+		}
+	}
+
+	requestKindPrefix := ""
+	switch operation {
+	case "inspect_code_graph":
+		requestKindPrefix = "inspect."
+	case "analyze_code_graph":
+		requestKindPrefix = "analyze."
+	}
+	if requestKindPrefix == "" {
+		if queryPhase || queryAttributeCount != 0 || queryStage || querySubphase {
+			return errors.New("graph query attributes require a graph query operation")
+		}
+		return nil
+	}
+	if schema.SchemaVersion < 4 {
+		return nil
+	}
+	if !queryPhase && queryAttributeCount == 0 && !queryStage && !querySubphase {
+		return nil
+	}
+	if !hasRequestKind || !hasRequestScope || !strings.HasPrefix(requestKind, requestKindPrefix) {
+		return errors.New("graph query operation requires matching request kind and scope")
+	}
+	if querySubphase && !queryStage {
+		return errors.New("graph query skipped or fallback subphase requires a query stage")
+	}
+	if queryStage {
+		if event != "checkpoint" {
+			return errors.New("graph query stage requires a checkpoint event")
+		}
+		if hasSubphase && !querySubphase {
+			return errors.New("graph query stage permits only skipped or fallback subphases")
+		}
+		if !hasPhase || (phase != "graph.query.status" && phase != "graph.query.snapshot" && phase != "graph.query.execute") {
+			return errors.New("graph query stage checkpoint requires an admitted graph query phase")
+		}
+		phaseOutcome, hasPhaseOutcome := anyString(attributes["threadnote.phase.outcome"])
+		if !hasPhaseOutcome {
+			return errors.New("graph query stage checkpoint requires a phase outcome")
+		}
+		if outcome, hasOutcome := anyString(attributes["threadnote.outcome"]); hasOutcome && outcome != phaseOutcome {
+			return errors.New("graph query stage checkpoint outcomes must agree")
+		}
+		if subphase == "skipped" && phaseOutcome != "success" {
+			return errors.New("skipped graph query stage checkpoint requires a success outcome")
+		}
+		if _, hasPhaseElapsed := anyInt(attributes["threadnote.phase.elapsed_ms"]); !hasPhaseElapsed {
+			return errors.New("graph query stage checkpoint requires phase elapsed time")
+		}
+		snapshotAttributeCount, _ := graphQuerySnapshotAttributeCounts(attributes)
+		if snapshotAttributeCount != 0 {
+			return errors.New("graph query stage checkpoint cannot include a snapshot surface")
+		}
+		if requestScope != "local" && requestScope != "workset" {
+			return errors.New("invalid graph query request scope")
+		}
+		return nil
+	}
+	if event == "checkpoint" {
+		if !hasPhase {
+			_, hasOperationElapsed := anyInt(attributes["threadnote.operation.elapsed_ms"])
+			if queryAttributeCount != 2 || !hasOperationElapsed {
+				return errors.New("phase-less graph query checkpoint requires only request kind, scope, and operation elapsed time")
+			}
+			return nil
+		}
+		if phase != "graph.query.status" && phase != "graph.query.snapshot" && phase != "graph.query.execute" {
+			return errors.New("graph query checkpoint requires an admitted graph query phase")
+		}
+	} else if event == "completion" {
+		if hasPhase && phase != "graph.query.execute" {
+			return errors.New("graph query completion can include only the execute phase")
+		}
+	} else {
+		return errors.New("graph query operation requires a checkpoint or completion event")
+	}
+
+	snapshotAttributeCount, snapshotBucketCount := graphQuerySnapshotAttributeCounts(attributes)
+	if requestScope == "workset" {
+		if snapshotAttributeCount != 0 {
+			return errors.New("workset graph query telemetry cannot include a local snapshot surface")
+		}
+		return nil
+	}
+	if requestScope != "local" {
+		return errors.New("invalid graph query request scope")
+	}
+
+	phaseOutcome, _ := anyString(attributes["threadnote.phase.outcome"])
+	requiresSnapshotSurface := event == "checkpoint" && phaseOutcome == "success" && (phase == "graph.query.snapshot" || phase == "graph.query.execute")
+	if event == "completion" {
+		outcome, _ := anyString(attributes["threadnote.outcome"])
+		requiresSnapshotSurface = outcome == "success"
+	}
+	if event == "checkpoint" && phase == "graph.query.status" && snapshotAttributeCount != 0 {
+		return errors.New("graph query status checkpoint cannot include a snapshot surface")
+	}
+	if !requiresSnapshotSurface {
+		if snapshotAttributeCount != 0 {
+			return errors.New("non-successful graph query telemetry cannot include a snapshot surface")
+		}
+		return nil
+	}
+	selection, hasSelection := anyString(attributes["threadnote.graph.snapshot_selection"])
+	if !hasSelection {
+		return errors.New("local graph query telemetry requires snapshot selection")
+	}
+	if selection == "none" {
+		if snapshotBucketCount != 0 || snapshotAttributeCount != 1 {
+			return errors.New("snapshot selection none forbids freshness and published snapshot buckets")
+		}
+		return nil
+	}
+	_, hasFreshness := anyString(attributes["threadnote.graph.snapshot_freshness"])
+	if !hasFreshness {
+		return errors.New("selected published snapshot requires freshness")
+	}
+	if snapshotBucketCount != len(graphQuerySnapshotBucketAttributes) || snapshotAttributeCount != 2+len(graphQuerySnapshotBucketAttributes) {
+		return errors.New("selected published snapshot requires complete file, symbol, and edge buckets")
+	}
 	return nil
+}
+
+func graphQuerySnapshotAttributeCounts(attributes map[string]*commonpb.AnyValue) (total, buckets int) {
+	for _, key := range []string{"threadnote.graph.snapshot_selection", "threadnote.graph.snapshot_freshness"} {
+		if _, exists := attributes[key]; exists {
+			total++
+		}
+	}
+	for _, key := range graphQuerySnapshotBucketAttributes {
+		if _, exists := attributes[key]; exists {
+			total++
+			buckets++
+		}
+	}
+	return total, buckets
 }
 
 func memoryGroups(attributes map[string]*commonpb.AnyValue) (current, start, end int) {

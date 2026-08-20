@@ -29,6 +29,7 @@ type Transformation = Readonly<{
 
 type Panel = Readonly<{
   datasource: Readonly<{type: string; uid: string}>;
+  description?: string;
   fieldConfig: Readonly<{
     overrides: ReadonlyArray<FieldOverride>;
   }>;
@@ -49,7 +50,7 @@ type Dashboard = Readonly<{
 const basePredicates = ['resource.service.name = "threadnote"', 'span:name = "threadnote.anonymous-diagnostic"'];
 const canaryExclusionPredicate = 'resource.service.version != "0.0.0-canary"';
 const graphSchemaPredicate =
-  '(resource.threadnote.telemetry.schema_version = 2 || resource.threadnote.telemetry.schema_version = 3)';
+  '(resource.threadnote.telemetry.schema_version = 2 || resource.threadnote.telemetry.schema_version = 3 || resource.threadnote.telemetry.schema_version = 4)';
 
 const graphLifecyclePredicates = [
   canaryExclusionPredicate,
@@ -60,7 +61,10 @@ const graphLifecyclePredicates = [
 ];
 
 const genericSchemaPredicate =
-  '(resource.threadnote.telemetry.schema_version = 1 || resource.threadnote.telemetry.schema_version = 2 || resource.threadnote.telemetry.schema_version = 3)';
+  '(resource.threadnote.telemetry.schema_version = 1 || resource.threadnote.telemetry.schema_version = 2 || resource.threadnote.telemetry.schema_version = 3 || resource.threadnote.telemetry.schema_version = 4)';
+const autoUpdateSchemaPredicate =
+  '(resource.threadnote.telemetry.schema_version = 3 || resource.threadnote.telemetry.schema_version = 4)';
+const querySchemaPredicate = 'resource.threadnote.telemetry.schema_version = 4';
 
 const tempoQueryLengthLimit = 1024;
 const inefficientGraphBuildPredicate = 'span.threadnote.graph.efficiency_class =~ "(small|high|critical).*full"';
@@ -87,7 +91,10 @@ const terminalGraphAttributes = [
 
 const dashboardGraphAttributes = terminalGraphAttributes.filter(
   attribute =>
-    attribute !== 'threadnote.graph.deleted_files_bucket' && attribute !== 'threadnote.graph.extracted_files_bucket',
+    attribute !== 'threadnote.graph.deleted_files_bucket' &&
+    attribute !== 'threadnote.graph.extracted_files_bucket' &&
+    attribute !== 'threadnote.graph.reused_files_bucket' &&
+    attribute !== 'threadnote.graph.final_fact_bytes_bucket',
 );
 
 const metricRenames = new Map<number, Readonly<{raw: string; rendered: string}>>([
@@ -133,6 +140,34 @@ const metricRenames = new Map<number, Readonly<{raw: string; rendered: string}>>
       rendered: 'recall.shared-sync: success',
     },
   ],
+  [
+    22,
+    {
+      raw: '{p=0.95, span.threadnote.graph.request_kind="inspect.query"}',
+      rendered: 'inspect.query: p0.95',
+    },
+  ],
+  [
+    23,
+    {
+      raw: '{p=0.95, span.threadnote.graph.request_kind="inspect.query", span.threadnote.phase="graph.query.execute"}',
+      rendered: 'inspect.query / graph.query.execute: p0.95',
+    },
+  ],
+  [
+    24,
+    {
+      raw: '{p=0.95, span.threadnote.graph.request_kind="inspect.query", span.threadnote.graph.snapshot_files_bucket="2^12"}',
+      rendered: 'inspect.query / files 2^12: p0.95',
+    },
+  ],
+  [
+    25,
+    {
+      raw: '{span.threadnote.graph.snapshot_selection="active", span.threadnote.graph.snapshot_freshness="current"}',
+      rendered: 'active: current',
+    },
+  ],
 ]);
 
 describe('Threadnote Grafana dashboard', () => {
@@ -172,7 +207,9 @@ describe('Threadnote Grafana dashboard', () => {
         }
       }
       for (const query of queries) {
+        const isGraphQueryTelemetry = query.includes('span.threadnote.graph.request_kind');
         expect(query.length).toBeLessThanOrEqual(tempoQueryLengthLimit);
+        expect(query.split(canaryExclusionPredicate)).toHaveLength(2);
         if (query.includes(inefficientGraphBuildPredicate)) {
           expect(query).toContain(basePredicates[0]);
           expect(query).toContain(graphSchemaPredicate);
@@ -184,8 +221,12 @@ describe('Threadnote Grafana dashboard', () => {
         if (query.includes('span.threadnote.operation = "graph-build"')) {
           for (const predicate of graphLifecyclePredicates) expect(query).toContain(predicate);
           expect(query).not.toContain('resource.threadnote.telemetry.schema_version = 1');
+        } else if (isGraphQueryTelemetry) {
+          expect(query).toContain(querySchemaPredicate);
+          expect(query).not.toContain('resource.threadnote.telemetry.schema_version = 1');
+          expect(query).not.toContain('resource.threadnote.telemetry.schema_version = 2');
         } else if (query.includes('span.threadnote.operation = "auto-update-worker"')) {
-          expect(query).toContain('resource.threadnote.telemetry.schema_version = 3');
+          expect(query).toContain(autoUpdateSchemaPredicate);
           expect(query).toContain(canaryExclusionPredicate);
         } else if (!query.includes(inefficientGraphBuildPredicate)) {
           expect(query).toContain(genericSchemaPredicate);
@@ -227,6 +268,79 @@ describe('Threadnote Grafana dashboard', () => {
       expect(phaseElapsed?.targets[0]?.metricsQueryType).toBe('instant');
       expect(phaseElapsed?.targets[0]?.query).toContain('by (span.threadnote.phase)');
 
+      const queryPanels = panels.filter(panel => panel.id >= 22 && panel.id <= 25);
+      expect(queryPanels.map(panel => panel.title)).toEqual([
+        'Graph request duration quantiles',
+        'Graph query stage quantiles',
+        'Graph request latency by snapshot size',
+        'Graph snapshot selection and freshness',
+      ]);
+      for (const panel of queryPanels) {
+        expect(panel.description?.toLowerCase()).toContain('schema v4 only');
+        expect(panel.description?.toLowerCase()).not.toContain('schema v3 only');
+      }
+      const graphRequestDuration = panels.find(panel => panel.id === 22);
+      expect(graphRequestDuration?.type).toBe('bargauge');
+      expect(graphRequestDuration?.targets[0]?.metricsQueryType).toBe('instant');
+      expect(graphRequestDuration?.targets[0]?.query).toContain(
+        'quantile_over_time(span.threadnote.duration_ms, .5, .95, .99)',
+      );
+      expect(graphRequestDuration?.targets[0]?.query).toContain('by (span.threadnote.graph.request_kind)');
+
+      const graphQueryStages = panels.find(panel => panel.id === 23);
+      expect(graphQueryStages?.type).toBe('bargauge');
+      expect(graphQueryStages?.targets).toHaveLength(2);
+      expect(graphQueryStages?.targets[0]?.metricsQueryType).toBe('instant');
+      expect(graphQueryStages?.targets[0]?.query).toContain(
+        'quantile_over_time(span.threadnote.phase.elapsed_ms, .5, .95)',
+      );
+      expect(graphQueryStages?.targets[0]?.query).toContain(
+        'by (span.threadnote.graph.request_kind, span.threadnote.phase)',
+      );
+      expect(graphQueryStages?.targets[0]?.query).toContain('span.threadnote.phase =~ "graph.query.*"');
+      expect(graphQueryStages?.targets[0]?.query).toContain('span.threadnote.stage = nil');
+      expect(graphQueryStages?.targets[1]?.metricsQueryType).toBe('instant');
+      expect(graphQueryStages?.targets[1]?.query).toContain('span.threadnote.stage =~ "query-.*"');
+      expect(graphQueryStages?.targets[1]?.query).toContain(
+        'by (span.threadnote.graph.request_kind, span.threadnote.stage, span.threadnote.subphase)',
+      );
+
+      const graphLatencyBySize = panels.find(panel => panel.id === 24);
+      expect(graphLatencyBySize?.type).toBe('bargauge');
+      expect(graphLatencyBySize?.targets[0]?.query).toContain(
+        'by (span.threadnote.graph.request_kind, span.threadnote.graph.snapshot_files_bucket)',
+      );
+
+      const graphSnapshotCounts = panels.find(panel => panel.id === 25);
+      expect(graphSnapshotCounts?.type).toBe('timeseries');
+      expect(graphSnapshotCounts?.targets[0]?.metricsQueryType).toBe('range');
+      expect(graphSnapshotCounts?.targets[0]?.query).toContain(
+        'by (span.threadnote.graph.snapshot_selection, span.threadnote.graph.snapshot_freshness)',
+      );
+      const queryTelemetryText = queryPanels
+        .flatMap(panel => panel.targets)
+        .map(target => target.query)
+        .join('\n');
+      for (const attribute of [
+        'span.threadnote.graph.request_kind',
+        'span.threadnote.graph.snapshot_files_bucket',
+        'span.threadnote.graph.snapshot_selection',
+        'span.threadnote.graph.snapshot_freshness',
+      ]) {
+        expect(queryTelemetryText).toContain(attribute);
+      }
+      for (const excludedField of [
+        'session.id',
+        'invocation.id',
+        'repository',
+        'commit',
+        'file_path',
+        'symbol_name',
+        'query_text',
+      ]) {
+        expect(queryTelemetryText).not.toContain(excludedField);
+      }
+
       for (const panel of panels.filter(candidate => candidate.type !== 'table')) {
         const metricQueries = panel.targets.map(target => target.query).join('\n');
         expect(metricQueries).not.toContain('session.id');
@@ -236,7 +350,7 @@ describe('Threadnote Grafana dashboard', () => {
           expect(panel.transformations ?? []).toEqual([]);
           continue;
         }
-        const expectedTransformationCount = panel.type === 'bargauge' ? 4 : 1;
+        const expectedTransformationCount = panel.id === 23 ? 6 : panel.type === 'bargauge' ? 4 : 1;
         expect(panel.transformations).toHaveLength(expectedTransformationCount);
         const transformation = panel.transformations?.[0];
         expect(transformation?.id).toBe('renameByRegex');
@@ -246,7 +360,7 @@ describe('Threadnote Grafana dashboard', () => {
           rename.raw.replace(new RegExp(transformation!.options.regex!, 'u'), transformation!.options.renamePattern!),
         ).toBe(rename.rendered);
       }
-      expect(metricRenames.size).toBe(6);
+      expect(metricRenames.size).toBe(10);
       const descendingGaugeTransforms = [
         {
           id: 'reduce',
@@ -266,9 +380,24 @@ describe('Threadnote Grafana dashboard', () => {
           },
         },
       ];
-      for (const panel of [operationDuration, phaseElapsed]) {
+      for (const panel of [operationDuration, phaseElapsed, graphRequestDuration, graphLatencyBySize]) {
         expect(panel?.transformations?.slice(1)).toEqual(descendingGaugeTransforms);
       }
+      expect(graphQueryStages?.transformations?.slice(3)).toEqual(descendingGaugeTransforms);
+      const stageWithSubphaseRename = graphQueryStages?.transformations?.[1];
+      expect(
+        '{p=0.95, span.threadnote.graph.request_kind="inspect.query", span.threadnote.stage="query-worktree-observation", span.threadnote.subphase="skipped"}'.replace(
+          new RegExp(stageWithSubphaseRename!.options.regex!, 'u'),
+          stageWithSubphaseRename!.options.renamePattern!,
+        ),
+      ).toBe('inspect.query / query-worktree-observation / skipped: p0.95');
+      const stageRename = graphQueryStages?.transformations?.[2];
+      expect(
+        '{p=0.95, span.threadnote.graph.request_kind="inspect.query", span.threadnote.stage="query-serialization"}'.replace(
+          new RegExp(stageRename!.options.regex!, 'u'),
+          stageRename!.options.renamePattern!,
+        ),
+      ).toBe('inspect.query / query-serialization: p0.95');
       const tables = panels.filter(panel => panel.type === 'table');
       expect(tables).not.toHaveLength(0);
       for (const panel of tables) {
@@ -305,6 +434,8 @@ describe('Threadnote Grafana dashboard', () => {
 
       const unexpectedFull = panels.find(panel => panel.id === 13);
       expect(unexpectedFull?.title).toBe('Unexpected full-build percentage');
+      expect(unexpectedFull?.description).toContain('zero-count buckets render as 0%');
+      expect(unexpectedFull?.description).toContain('datasource-wide NoData remains visible');
       expect(unexpectedFull?.targets).toHaveLength(3);
       expect(unexpectedFull?.targets[0]?.query).toContain('small-delta-full');
       expect(unexpectedFull?.targets[0]?.query).toContain('high-amplification-full');
@@ -315,10 +446,12 @@ describe('Threadnote Grafana dashboard', () => {
       expect(unexpectedFull?.targets[2]).toEqual(
         expect.objectContaining({
           datasource: {type: '__expr__', uid: '__expr__'},
-          expression: '$A / $B * 100',
+          expression: '$A / ($B + ($B == 0)) * 100',
           type: 'math',
         }),
       );
+      expect(unexpectedFull?.targets[0]?.query).toContain(canaryExclusionPredicate);
+      expect(unexpectedFull?.targets[1]?.query).toContain(canaryExclusionPredicate);
 
       const graphPanels = panels.filter(panel => panel.id >= 13 && panel.id <= 20);
       expect(graphPanels.map(panel => panel.title)).toEqual([
@@ -376,6 +509,8 @@ describe('Threadnote Grafana dashboard', () => {
       ]) {
         expect(inefficientQuery).toContain(attribute);
       }
+      expect(inefficientQuery).toContain('span.threadnote.graph.build_kind');
+      expect(inefficientQuery).toContain('span.threadnote.graph.materialization_mode');
       expect(inefficientQuery).not.toContain('session.id');
       expect(inefficientQuery).not.toContain('invocation.id');
       expect(inefficientQuery).toContain('with (most_recent=true)');
@@ -386,7 +521,7 @@ describe('Threadnote Grafana dashboard', () => {
       expect(automaticUpdates?.targets).toHaveLength(1);
       expect(automaticUpdates?.transformations).toEqual([]);
       const automaticUpdateQuery = automaticUpdates?.targets[0]?.query;
-      expect(automaticUpdateQuery).toContain('resource.threadnote.telemetry.schema_version = 3');
+      expect(automaticUpdateQuery).toContain(autoUpdateSchemaPredicate);
       expect(automaticUpdateQuery).toContain(canaryExclusionPredicate);
       expect(automaticUpdateQuery).toContain('span.threadnote.operation = "auto-update-worker"');
       expect(automaticUpdateQuery).toContain('span.threadnote.auto_update.result != nil');
@@ -406,12 +541,14 @@ describe('Threadnote Grafana dashboard', () => {
   it.effect('keeps the production consent documentation aligned with the operated destination', () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
-      const [commands, telemetryDocs, websiteDocs, readme] = yield* Effect.all(
+      const [commands, telemetryDocs, websiteDocs, readme, gatewayReadme, productionRunbook] = yield* Effect.all(
         [
           fileSystem.readFileString(`${process.cwd()}/src/telemetry/commands.ts`),
           fileSystem.readFileString(`${process.cwd()}/docs/telemetry.md`),
           fileSystem.readFileString(`${process.cwd()}/website/src/content/docsTelemetry.ts`),
           fileSystem.readFileString(`${process.cwd()}/README.md`),
+          fileSystem.readFileString(`${process.cwd()}/infra/telemetry-gateway/README.md`),
+          fileSystem.readFileString(`${process.cwd()}/docs/operations/telemetry-production.md`),
         ],
         {concurrency: 'unbounded'},
       );
@@ -443,6 +580,18 @@ describe('Threadnote Grafana dashboard', () => {
       }
       for (const source of [commands, telemetryDocs, websiteDocs]) expect(source).toContain('delta');
       expect(telemetryDocs).toContain('https://telemetry.threadnote.io/v1/traces');
+      expect(telemetryDocs).toContain('requires consent version 4');
+      expect(telemetryDocs).toContain('version 1, version 2, or version 3 opt-in fails closed');
+      for (const excludedQueryDetail of ['query text', 'symbol names', 'exact file/symbol/edge counts']) {
+        expect(telemetryDocs).toContain(excludedQueryDetail);
+      }
+      expect(gatewayReadme).toContain('Existing operation panels admit schema versions 1, 2, 3, and 4');
+      expect(gatewayReadme).toContain('Graph-build panels admit versions 2, 3, and 4');
+      expect(gatewayReadme).toContain('Graph-query panels admit version 4 only');
+      expect(gatewayReadme).toContain('before sending eight traces');
+      expect(productionRunbook).toContain('gateway, eight-trace/four-version canary, and dashboard gates');
+      expect(productionRunbook).toContain('until all eight stored protobufs');
+      expect(productionRunbook).toMatch(/consent-v1\/v2\/v3 configurations\s+must fail closed/u);
       expect(commands).toContain('endpoint === DEFAULT_TELEMETRY_ENDPOINT');
     }).pipe(provideTestLayer(BunFileSystem.layer)),
   );

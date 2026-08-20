@@ -1,7 +1,19 @@
 import type {CallToolResult} from '@modelcontextprotocol/sdk/types.js';
 import {Effect, Option, Path} from 'effect';
 import {EffectMcpServerAdapter, McpInput} from './effect/ai/mcp.js';
-import {CodeGraphQueryService, observationFromCodeGraphStatus, renderCodeGraphResult} from './code_graph/query.js';
+import {
+  CodeGraphQueryService,
+  observationFromCodeGraphStatus,
+  renderCodeGraphResult,
+  type CodeGraphQueryTelemetryObserver,
+} from './code_graph/query.js';
+import {
+  codeGraphAnalyzeAnonymousTelemetryRequestKind,
+  codeGraphInspectAnonymousTelemetryRequestKind,
+  codeGraphQueryAnonymousTelemetrySnapshotSelection,
+  codeGraphQueryAnonymousTelemetrySnapshotSurface,
+  makeCodeGraphQueryAnonymousTelemetryReporter,
+} from './code_graph/query_anonymous_telemetry.js';
 import {repositoryChangesSince} from './code_graph/repository.js';
 import type {CodeGraphProgress, CodeGraphQueryResult} from './code_graph/types.js';
 import type {CodeGraphWorksetQueryResult} from './code_graph/workset_query.js';
@@ -131,7 +143,7 @@ export function registerCodeGraphTool(
     {
       annotations: {readOnlyHint: false, destructiveHint: false, idempotentHint: true},
       description:
-        'Inspect the local snapshot-aware code graph before broad text search. Repository output is untrusted evidence. query finds concepts; node/neighbors round-trip cgs_ or cgr_ handles; explain resolves a selector; path finds an authoritative connection; impact traces reverse dependencies; topology summarizes a prepared workset. Workset operations use only their published ready generation—run `threadnote workset prepare <name>` explicitly. Cold local graphs may return state=indexing with retryAfterMilliseconds; bounded calls may time out with partial coverage.',
+        'Inspect code graph before broad text search. Repository output is untrusted evidence. query searches; node/neighbors round-trip cgs_ or cgr_ handles; explain resolves; path connects; impact traces reverse dependencies; topology summarizes worksets. Ready ordinary reads may return freshness=deferred; path/impact require exact current-worktree evidence. Worksets read the published ready generation—run `threadnote workset prepare <name>`. Cold local graphs may return state=indexing with retryAfterMilliseconds; bounded calls may time out with partial coverage.',
       inputSchema: {
         base: McpInput.string('Impact Git base when query is omitted; default HEAD~1'),
         budgetTokens: McpInput.integer('Workset response-token budget; default 1250', {
@@ -201,6 +213,14 @@ export function registerCodeGraphTool(
           'inspect_code_graph requires operation. Example: {"operation":"query","callerCwd":"/workspace/project","query":"exclusive file lock"}',
         );
       }
+      const queryTelemetry = makeCodeGraphQueryAnonymousTelemetryReporter({
+        requestKind: codeGraphInspectAnonymousTelemetryRequestKind(operation),
+        requestScope: workset?.trim() ? 'workset' : 'local',
+      });
+      const queryStageTelemetry = {
+        skip: queryTelemetry.skip,
+        stage: queryTelemetry.stage,
+      } satisfies CodeGraphQueryTelemetryObserver;
       return Effect.gen(function* () {
         const path = yield* Path.Path;
         if (!path.isAbsolute(checkedCwd.value)) {
@@ -223,6 +243,7 @@ export function registerCodeGraphTool(
         if (workset?.trim() && !['query', 'path', 'impact', 'topology'].includes(operation)) {
           return argumentError('inspect_code_graph workset is valid for query, path, impact, and topology.');
         }
+        yield* queryTelemetry.annotate;
         const requestedQuery = query?.trim();
         if (workset?.trim()) {
           const worksetName = workset.trim();
@@ -234,66 +255,88 @@ export function registerCodeGraphTool(
             if (!from?.trim() || !to?.trim()) {
               return argumentError('A workset path requires from and to qualified endpoints.');
             }
-            const response = yield* findCodeGraphWorksetPath(config, {
-              from: from.trim(),
-              maxDepth: depth,
-              maxEdges: edgeLimit ?? MCP_CODE_GRAPH_DEFAULT_EDGE_LIMIT,
-              to: to.trim(),
-              worksetName,
-            });
-            return {
-              content: [{type: 'text' as const, text: codeGraphWorksetTraversalText(response)}],
-              structuredContent: response,
-            };
+            const response = yield* queryTelemetry.execute(
+              findCodeGraphWorksetPath(config, {
+                from: from.trim(),
+                maxDepth: depth,
+                maxEdges: edgeLimit ?? MCP_CODE_GRAPH_DEFAULT_EDGE_LIMIT,
+                to: to.trim(),
+                worksetName,
+              }),
+            );
+            return yield* queryTelemetry.stage(
+              'graph.query.execute',
+              'query-serialization',
+              Effect.sync(() => ({
+                content: [{type: 'text' as const, text: codeGraphWorksetTraversalText(response)}],
+                structuredContent: response,
+              })),
+            );
           }
           if (operation === 'impact') {
             if (requestedCursor || budgetTokens !== undefined || !requestedQuery) {
               return argumentError('A workset impact requires query with one qualified endpoint.');
             }
-            const response = yield* traceCodeGraphWorksetImpact(config, {
-              maxDepth: depth,
-              maxEdges: edgeLimit ?? MCP_CODE_GRAPH_DEFAULT_EDGE_LIMIT,
-              query: requestedQuery,
-              worksetName,
-            });
-            return {
-              content: [{type: 'text' as const, text: codeGraphWorksetTraversalText(response)}],
-              structuredContent: response,
-            };
+            const response = yield* queryTelemetry.execute(
+              traceCodeGraphWorksetImpact(config, {
+                maxDepth: depth,
+                maxEdges: edgeLimit ?? MCP_CODE_GRAPH_DEFAULT_EDGE_LIMIT,
+                query: requestedQuery,
+                worksetName,
+              }),
+            );
+            return yield* queryTelemetry.stage(
+              'graph.query.execute',
+              'query-serialization',
+              Effect.sync(() => ({
+                content: [{type: 'text' as const, text: codeGraphWorksetTraversalText(response)}],
+                structuredContent: response,
+              })),
+            );
           }
           if (operation === 'topology') {
             if (requestedCursor || budgetTokens !== undefined) {
               return argumentError('cursor and budgetTokens are valid only for a named workset query.');
             }
-            const response = yield* inspectCodeGraphWorksetTopology(config, {
-              maxEdges: edgeLimit ?? MCP_CODE_GRAPH_DEFAULT_EDGE_LIMIT,
-              maxNodes: nodeLimit ?? MCP_CODE_GRAPH_DEFAULT_NODE_LIMIT,
-              worksetName,
-            });
-            return {
-              content: [{type: 'text' as const, text: codeGraphWorksetTopologyText(response)}],
-              structuredContent: response,
-            };
+            const response = yield* queryTelemetry.execute(
+              inspectCodeGraphWorksetTopology(config, {
+                maxEdges: edgeLimit ?? MCP_CODE_GRAPH_DEFAULT_EDGE_LIMIT,
+                maxNodes: nodeLimit ?? MCP_CODE_GRAPH_DEFAULT_NODE_LIMIT,
+                worksetName,
+              }),
+            );
+            return yield* queryTelemetry.stage(
+              'graph.query.execute',
+              'query-serialization',
+              Effect.sync(() => ({
+                content: [{type: 'text' as const, text: codeGraphWorksetTopologyText(response)}],
+                structuredContent: response,
+              })),
+            );
           }
           if (!requestedCursor && !requestedQuery) {
             return argumentError('A workset graph query requires query or cursor.');
           }
-          const response = requestedCursor
-            ? yield* continueCodeGraphWorksetQueryV2(config, {
-                cursor: requestedCursor,
-                maximumEstimatedTokens: budgetTokens,
-              })
-            : yield* queryCodeGraphWorksetV2(config, {
-                depth,
-                edgeLimit: edgeLimit ?? MCP_CODE_GRAPH_DEFAULT_EDGE_LIMIT,
-                includeHeuristic,
-                includeModelAssociations,
-                maximumEstimatedTokens: budgetTokens,
-                nodeLimit: nodeLimit ?? MCP_CODE_GRAPH_DEFAULT_NODE_LIMIT,
-                packageName: packageName?.trim() || undefined,
-                query: requestedQuery!,
-                worksetName,
-              });
+          const response = yield* queryTelemetry.execute(
+            requestedCursor
+              ? continueCodeGraphWorksetQueryV2(config, {
+                  cursor: requestedCursor,
+                  maximumEstimatedTokens: budgetTokens,
+                  telemetry: queryStageTelemetry,
+                })
+              : queryCodeGraphWorksetV2(config, {
+                  depth,
+                  edgeLimit: edgeLimit ?? MCP_CODE_GRAPH_DEFAULT_EDGE_LIMIT,
+                  includeHeuristic,
+                  includeModelAssociations,
+                  maximumEstimatedTokens: budgetTokens,
+                  nodeLimit: nodeLimit ?? MCP_CODE_GRAPH_DEFAULT_NODE_LIMIT,
+                  packageName: packageName?.trim() || undefined,
+                  query: requestedQuery!,
+                  telemetry: queryStageTelemetry,
+                  worksetName,
+                }),
+          );
           return {
             content: [{type: 'text' as const, text: response.text}],
             structuredContent: response.structuredContent,
@@ -306,13 +349,23 @@ export function registerCodeGraphTool(
           return argumentError('inspect_code_graph cursor and budgetTokens require a named workset query.');
         }
         const qualifiedTarget = nodeId?.startsWith('cgr_')
-          ? yield* resolveCodeGraphQualifiedRefTarget(config, nodeId, checkedCwd.value)
+          ? yield* queryTelemetry.stage(
+              'graph.query.status',
+              'query-repository-identity',
+              resolveCodeGraphQualifiedRefTarget(config, nodeId, checkedCwd.value),
+            )
           : undefined;
         const inspectionCwd = qualifiedTarget?.cwd ?? checkedCwd.value;
         const inspectionNodeId = qualifiedTarget?.nodeId ?? nodeId;
+        const allowStaleReadySnapshot = codeGraphInspectionAllowsStaleReady(operation);
+        const strictFreshness = !allowStaleReadySnapshot;
         const changes =
           operation === 'impact' && !requestedQuery
-            ? yield* repositoryChangesSince(inspectionCwd, base?.trim() || 'HEAD~1')
+            ? yield* queryTelemetry.stage(
+                'graph.query.status',
+                'query-worktree-observation',
+                repositoryChangesSince(inspectionCwd, base?.trim() || 'HEAD~1'),
+              )
             : undefined;
         const watcher = yield* CodeGraphWatcher;
         const service = yield* CodeGraphQueryService;
@@ -320,81 +373,156 @@ export function registerCodeGraphTool(
           cwd: inspectionCwd,
           threadnoteHome: config.agentContextHome,
         };
-        let status = yield* service.status(config.agentContextHome, inspectionCwd, {
-          afterIdentityObserved: identity =>
-            Effect.gen(function* () {
-              refreshTarget = {cwd: identity.repoRoot, threadnoteHome: config.agentContextHome};
-              timeoutContext = Option.some({key: identity.worktreeId, target: refreshTarget, watcher});
-              yield* watcher.ensure({...refreshTarget, key: identity.worktreeId});
-            }),
-        });
-        let identity = status.identity;
-        const allowStaleReadySnapshot = codeGraphInspectionAllowsStaleReady(operation);
-        const strictFreshness = !allowStaleReadySnapshot;
-        if (status.stale || !status.readySnapshot) {
-          status = yield* service.attachSharedReadySnapshot(config.agentContextHome, identity, status, {
-            allowBorrowedStale: allowStaleReadySnapshot,
-          });
-        }
-        let refreshStarted = false;
-        if (codeGraphInspectionStartsRefresh(status, operation)) {
-          refreshStarted = yield* watcher.refresh({
-            ...refreshTarget,
-            key: identity.worktreeId,
-          });
-        }
-        if (!status.readySnapshot || (status.stale && strictFreshness)) {
-          if (refreshStarted) {
-            yield* waitForCodeGraphRefresh(watcher, identity.worktreeId, refreshTarget);
-          }
-          status = yield* service.status(config.agentContextHome, inspectionCwd);
-          identity = status.identity;
-          if (status.stale || !status.readySnapshot) {
-            status = yield* service.attachSharedReadySnapshot(config.agentContextHome, identity, status, {
-              allowBorrowedStale: allowStaleReadySnapshot,
-            });
-          }
-          if (!status.readySnapshot || (status.stale && strictFreshness)) {
+        const initialStatus = yield* queryTelemetry.status(
+          service.status(config.agentContextHome, inspectionCwd, {
+            afterIdentityObserved: identity =>
+              Effect.gen(function* () {
+                refreshTarget = {cwd: identity.repoRoot, threadnoteHome: config.agentContextHome};
+                timeoutContext = Option.some({key: identity.worktreeId, target: refreshTarget, watcher});
+                yield* watcher.ensure({...refreshTarget, key: identity.worktreeId});
+              }),
+            observeWorktree: codeGraphInspectionObservesWorktree(operation),
+            requestMaintenance: false,
+            telemetry: queryStageTelemetry,
+          }),
+        );
+        const snapshotResolution = yield* queryTelemetry.snapshot(
+          Effect.gen(function* () {
+            let status = initialStatus;
+            let identity = status.identity;
+            let selection: ReturnType<typeof codeGraphQueryAnonymousTelemetrySnapshotSelection> =
+              status.readySnapshot === undefined ? 'none' : 'active';
+            if (status.stale || !status.readySnapshot) {
+              const beforeAttach = status;
+              status = yield* service.attachSharedReadySnapshot(config.agentContextHome, identity, status, {
+                allowBorrowedStale: allowStaleReadySnapshot,
+                requestMaintenance: false,
+                telemetry: queryStageTelemetry,
+              });
+              selection = codeGraphQueryAnonymousTelemetrySnapshotSelection(beforeAttach, status);
+            }
+            let refreshStarted = false;
+            if (codeGraphInspectionStartsRefresh(status, operation)) {
+              refreshStarted = yield* watcher.refresh({
+                ...refreshTarget,
+                key: identity.worktreeId,
+              });
+            }
+            if (!status.readySnapshot || (status.stale && strictFreshness)) {
+              const beforeRefreshStatus = status;
+              if (refreshStarted) {
+                yield* waitForCodeGraphRefresh(watcher, identity.worktreeId, refreshTarget);
+              }
+              status = yield* service.status(config.agentContextHome, inspectionCwd, {
+                observeWorktree: codeGraphInspectionObservesWorktree(operation),
+                requestMaintenance: false,
+                telemetry: queryStageTelemetry,
+              });
+              identity = status.identity;
+              selection = codeGraphQueryAnonymousTelemetrySnapshotSelection(beforeRefreshStatus, status);
+              if (status.stale || !status.readySnapshot) {
+                const beforeAttach = status;
+                status = yield* service.attachSharedReadySnapshot(config.agentContextHome, identity, status, {
+                  allowBorrowedStale: allowStaleReadySnapshot,
+                  requestMaintenance: false,
+                  telemetry: queryStageTelemetry,
+                });
+                selection = codeGraphQueryAnonymousTelemetrySnapshotSelection(beforeAttach, status);
+              }
+              if (!status.readySnapshot || (status.stale && strictFreshness)) {
+                const refreshStatus = Option.getOrUndefined(yield* watcher.status(identity.worktreeId, refreshTarget));
+                return {
+                  identity,
+                  ready: false as const,
+                  refreshStatus,
+                  selection,
+                  status,
+                };
+              }
+            }
             const refreshStatus = Option.getOrUndefined(yield* watcher.status(identity.worktreeId, refreshTarget));
-            return codeGraphRefreshResult(operation, refreshStatus);
-          }
+            if (
+              selectCodeGraphReadySnapshotForInspection(status, refreshStatus, allowStaleReadySnapshot) === undefined
+            ) {
+              return {
+                identity,
+                ready: false as const,
+                refreshStatus,
+                selection,
+                status,
+              };
+            }
+            return {identity, ready: true as const, refreshStatus, selection, status};
+          }),
+          resolution => codeGraphQueryAnonymousTelemetrySnapshotSurface(resolution.status, resolution.selection),
+        );
+        if (!snapshotResolution.ready) {
+          return yield* queryTelemetry.stage(
+            'graph.query.execute',
+            'query-serialization',
+            Effect.sync(() => codeGraphRefreshResult(operation, snapshotResolution.refreshStatus)),
+          );
         }
-        const refreshStatus = Option.getOrUndefined(yield* watcher.status(identity.worktreeId, refreshTarget));
-        if (selectCodeGraphReadySnapshotForInspection(status, refreshStatus, allowStaleReadySnapshot) === undefined) {
-          return codeGraphRefreshResult(operation, refreshStatus);
-        }
-        const result = yield* service.inspect({
-          baseCommit: changes?.baseCommit,
-          cwd: inspectionCwd,
-          depth,
-          direction,
-          edgeLimit: edgeLimit ?? MCP_CODE_GRAPH_DEFAULT_EDGE_LIMIT,
-          from,
-          includeHeuristic,
-          includeModelAssociations,
-          nodeId: inspectionNodeId,
-          nodeLimit: nodeLimit ?? MCP_CODE_GRAPH_DEFAULT_NODE_LIMIT,
-          operation,
-          packageName: packageName?.trim() || undefined,
-          query: requestedQuery || changes?.paths.join(' '),
-          refresh: false,
-          seedQueries: changes?.paths,
-          statusObservation: observationFromCodeGraphStatus(status),
-          symbol,
-          threadnoteHome: config.agentContextHome,
-          to,
-        });
-        const response = codeGraphMcpResponse(codeGraphResultWithRefreshContinuity(result, refreshStatus));
-        return {
-          content: [{type: 'text' as const, text: response.text}],
-          structuredContent: response.structuredContent,
-        };
+        const {refreshStatus, selection, status} = snapshotResolution;
+        const result = yield* queryTelemetry.execute(
+          service.inspect({
+            baseCommit: changes?.baseCommit,
+            cwd: inspectionCwd,
+            depth,
+            direction,
+            edgeLimit: edgeLimit ?? MCP_CODE_GRAPH_DEFAULT_EDGE_LIMIT,
+            from,
+            includeHeuristic,
+            includeModelAssociations,
+            nodeId: inspectionNodeId,
+            nodeLimit: nodeLimit ?? MCP_CODE_GRAPH_DEFAULT_NODE_LIMIT,
+            operation,
+            packageName: packageName?.trim() || undefined,
+            query: requestedQuery || changes?.paths.join(' '),
+            refresh: false,
+            requestMaintenance: false,
+            seedQueries: changes?.paths,
+            statusObservation: observationFromCodeGraphStatus(status),
+            symbol,
+            telemetry: queryStageTelemetry,
+            threadnoteHome: config.agentContextHome,
+            to,
+          }),
+          codeGraphQueryAnonymousTelemetrySnapshotSurface(status, selection),
+        );
+        return yield* queryTelemetry.stage(
+          'graph.query.execute',
+          'query-serialization',
+          Effect.sync(() => {
+            const response = codeGraphMcpResponse(codeGraphResultWithRefreshContinuity(result, refreshStatus));
+            return {
+              content: [{type: 'text' as const, text: response.text}],
+              structuredContent: response.structuredContent,
+            };
+          }),
+        );
       }).pipe(
         Effect.timeoutOrElse({
           duration: MCP_CODE_GRAPH_QUERY_TIMEOUT_MILLISECONDS,
-          orElse: () => codeGraphQueryTimeoutResultFor(operation, timeoutContext),
+          orElse: () =>
+            Effect.gen(function* () {
+              const status = Option.isSome(timeoutContext)
+                ? yield* queryTelemetry.status(codeGraphQueryTimeoutStatusFor(timeoutContext))
+                : undefined;
+              return yield* queryTelemetry.stage(
+                'graph.query.execute',
+                'query-serialization',
+                Effect.sync(() => codeGraphQueryTimeoutResult(operation, status)),
+              );
+            }),
         }),
-        Effect.catch(error => Effect.succeed(mcpErrorResult(error))),
+        Effect.catch(error =>
+          queryTelemetry.stage(
+            'graph.query.execute',
+            'query-serialization',
+            Effect.sync(() => mcpErrorResult(error)),
+          ),
+        ),
       );
     },
   );
@@ -435,82 +563,145 @@ export function registerCodeGraphTool(
       if (operation === 'community' && !checkedCommunityId?.match(/^cgc_[a-f0-9]{32}$/)) {
         return argumentError('analyze_code_graph operation=community requires communityId from a communities result.');
       }
+      const queryTelemetry = makeCodeGraphQueryAnonymousTelemetryReporter({
+        requestKind: codeGraphAnalyzeAnonymousTelemetryRequestKind(operation),
+        requestScope: 'local',
+      });
+      const queryStageTelemetry = {
+        skip: queryTelemetry.skip,
+        stage: queryTelemetry.stage,
+      } satisfies CodeGraphQueryTelemetryObserver;
       return Effect.gen(function* () {
         const path = yield* Path.Path;
         if (!path.isAbsolute(checkedCwd.value)) {
           return argumentError('analyze_code_graph callerCwd must be an absolute workspace path.');
         }
+        yield* queryTelemetry.annotate;
         const watcher = yield* CodeGraphWatcher;
         const query = yield* CodeGraphQueryService;
-        let status = yield* query.status(config.agentContextHome, checkedCwd.value, {
-          afterIdentityObserved: identity =>
-            watcher.ensure({
-              cwd: identity.repoRoot,
-              key: identity.worktreeId,
-              threadnoteHome: config.agentContextHome,
-            }),
-        });
-        const identity = status.identity;
-        if (status.stale || !status.readySnapshot) {
-          status = yield* query.attachSharedReadySnapshot(config.agentContextHome, identity, status);
-        }
-        const refreshStarted = status.stale
-          ? yield* watcher.refresh({
-              cwd: identity.repoRoot,
-              key: identity.worktreeId,
-              threadnoteHome: config.agentContextHome,
-            })
-          : false;
-        if (refreshStarted) {
-          yield* waitForCodeGraphRefresh(watcher, identity.worktreeId, {
-            cwd: identity.repoRoot,
-            threadnoteHome: config.agentContextHome,
-          });
-        }
-        if (status.stale) status = yield* query.status(config.agentContextHome, checkedCwd.value);
-        if (status.stale || !status.readySnapshot) {
-          status = yield* query.attachSharedReadySnapshot(config.agentContextHome, status.identity, status);
-        }
-        if (!status.readySnapshot || status.stale) {
-          return codeGraphAnalysisRefreshResult(
-            operation,
-            Option.getOrUndefined(
-              yield* watcher.status(identity.worktreeId, {
+        const initialStatus = yield* queryTelemetry.status(
+          query.status(config.agentContextHome, checkedCwd.value, {
+            afterIdentityObserved: identity =>
+              watcher.ensure({
                 cwd: identity.repoRoot,
+                key: identity.worktreeId,
                 threadnoteHome: config.agentContextHome,
               }),
-            ),
+            telemetry: queryStageTelemetry,
+          }),
+        );
+        const snapshotResolution = yield* queryTelemetry.snapshot(
+          Effect.gen(function* () {
+            let status = initialStatus;
+            let selection: ReturnType<typeof codeGraphQueryAnonymousTelemetrySnapshotSelection> =
+              status.readySnapshot === undefined ? 'none' : 'active';
+            const identity = status.identity;
+            if (status.stale || !status.readySnapshot) {
+              const beforeAttach = status;
+              status = yield* query.attachSharedReadySnapshot(config.agentContextHome, identity, status, {
+                telemetry: queryStageTelemetry,
+              });
+              selection = codeGraphQueryAnonymousTelemetrySnapshotSelection(beforeAttach, status);
+            }
+            const refreshStarted = status.stale
+              ? yield* watcher.refresh({
+                  cwd: identity.repoRoot,
+                  key: identity.worktreeId,
+                  threadnoteHome: config.agentContextHome,
+                })
+              : false;
+            if (refreshStarted) {
+              yield* waitForCodeGraphRefresh(watcher, identity.worktreeId, {
+                cwd: identity.repoRoot,
+                threadnoteHome: config.agentContextHome,
+              });
+            }
+            if (status.stale) {
+              const beforeRefreshStatus = status;
+              status = yield* query.status(config.agentContextHome, checkedCwd.value, {telemetry: queryStageTelemetry});
+              selection = codeGraphQueryAnonymousTelemetrySnapshotSelection(beforeRefreshStatus, status);
+            }
+            if (status.stale || !status.readySnapshot) {
+              const beforeAttach = status;
+              status = yield* query.attachSharedReadySnapshot(config.agentContextHome, status.identity, status, {
+                telemetry: queryStageTelemetry,
+              });
+              selection = codeGraphQueryAnonymousTelemetrySnapshotSelection(beforeAttach, status);
+            }
+            if (!status.readySnapshot || status.stale) {
+              return {
+                ready: false as const,
+                refreshStatus: Option.getOrUndefined(
+                  yield* watcher.status(identity.worktreeId, {
+                    cwd: identity.repoRoot,
+                    threadnoteHome: config.agentContextHome,
+                  }),
+                ),
+                selection,
+                status,
+              };
+            }
+            return {ready: true as const, readySnapshot: status.readySnapshot, selection, status};
+          }),
+          resolution => codeGraphQueryAnonymousTelemetrySnapshotSurface(resolution.status, resolution.selection),
+        );
+        if (!snapshotResolution.ready) {
+          return yield* queryTelemetry.stage(
+            'graph.query.execute',
+            'query-serialization',
+            Effect.sync(() => codeGraphAnalysisRefreshResult(operation, snapshotResolution.refreshStatus)),
           );
         }
+        const {readySnapshot, selection, status} = snapshotResolution;
         const analysis = yield* CodeGraphAnalysis;
-        const result = yield* analysis.analyze({
-          allowedProvenances: [
-            'declared',
-            'resolved',
-            'syntactic',
-            ...(includeHeuristic ? (['heuristic'] as const) : []),
-            ...(includeModelAssociations ? (['model'] as const) : []),
-          ],
-          budget: codeGraphMcpAnalysisBudget(),
-          ...(checkedCommunityId === undefined ? {} : {communityId: checkedCommunityId}),
-          databasePath: status.databasePath,
-          limits: codeGraphMcpAnalysisLimits(operation, memberLimit),
-          snapshot: status.readySnapshot,
-        });
-        const response = codeGraphAnalysisMcpResponse(result, operation, {
-          displayName: status.identity.displayName,
-          repositoryId: status.identity.repositoryId,
-        });
-        return {
-          content: [{type: 'text' as const, text: response.text}],
-          structuredContent: response.structuredContent,
-        };
+        const result = yield* queryTelemetry.execute(
+          analysis.analyze({
+            allowedProvenances: [
+              'declared',
+              'resolved',
+              'syntactic',
+              ...(includeHeuristic ? (['heuristic'] as const) : []),
+              ...(includeModelAssociations ? (['model'] as const) : []),
+            ],
+            budget: codeGraphMcpAnalysisBudget(),
+            ...(checkedCommunityId === undefined ? {} : {communityId: checkedCommunityId}),
+            databasePath: status.databasePath,
+            limits: codeGraphMcpAnalysisLimits(operation, memberLimit),
+            snapshot: readySnapshot,
+          }),
+          codeGraphQueryAnonymousTelemetrySnapshotSurface(status, selection),
+        );
+        return yield* queryTelemetry.stage(
+          'graph.query.execute',
+          'query-serialization',
+          Effect.sync(() => {
+            const response = codeGraphAnalysisMcpResponse(result, operation, {
+              displayName: status.identity.displayName,
+              repositoryId: status.identity.repositoryId,
+            });
+            return {
+              content: [{type: 'text' as const, text: response.text}],
+              structuredContent: response.structuredContent,
+            };
+          }),
+        );
       }).pipe(
         Effect.timeoutOrElse({
           duration: MCP_CODE_GRAPH_TOOL_TIMEOUT_MILLISECONDS,
-          orElse: () => Effect.succeed(codeGraphAnalysisTimeoutResult(operation)),
+          orElse: () =>
+            queryTelemetry.stage(
+              'graph.query.execute',
+              'query-serialization',
+              Effect.sync(() => codeGraphAnalysisTimeoutResult(operation)),
+            ),
         }),
-        Effect.catch(error => Effect.succeed(mcpErrorResult(error))),
+        Effect.catch(error =>
+          queryTelemetry.stage(
+            'graph.query.execute',
+            'query-serialization',
+            Effect.sync(() => mcpErrorResult(error)),
+          ),
+        ),
       );
     },
   );
@@ -1444,6 +1635,17 @@ export function codeGraphInspectionAllowsStaleReady(
 }
 
 /**
+ * Exact overlay observation is reserved for operations whose contract requires
+ * current relationship evidence. Ordinary reads remain honest by reporting
+ * deferred freshness when they reuse a HEAD-compatible ready snapshot.
+ */
+export function codeGraphInspectionObservesWorktree(
+  operation: 'explain' | 'impact' | 'neighbors' | 'node' | 'path' | 'query',
+): boolean {
+  return !codeGraphInspectionAllowsStaleReady(operation);
+}
+
+/**
  * Ordinary relationship reads retain immutable ready evidence without starting
  * repository-sized work. Cold checkouts and correctness-sensitive operations
  * still request the current graph.
@@ -1645,15 +1847,14 @@ function codeGraphRefreshFailureResult(result: CallToolResult, failure: CodeGrap
   );
 }
 
-const codeGraphQueryTimeoutResultFor = Effect.fn('mcpServer.codeGraphQueryTimeoutResultFor')(function* (
-  operation: 'explain' | 'impact' | 'neighbors' | 'node' | 'path' | 'query' | 'topology',
+const codeGraphQueryTimeoutStatusFor = Effect.fn('mcpServer.codeGraphQueryTimeoutStatusFor')(function* (
   context: Option.Option<{
     readonly key: string;
     readonly target: {readonly cwd: string; readonly threadnoteHome: string};
     readonly watcher: CodeGraphWatcherShape;
   }>,
 ) {
-  if (Option.isNone(context)) return codeGraphQueryTimeoutResult(operation);
+  if (Option.isNone(context)) return undefined;
   const status = yield* context.value.watcher.status(context.value.key, context.value.target).pipe(
     Effect.timeoutOrElse({
       duration: MCP_CODE_GRAPH_TIMEOUT_STATUS_MILLISECONDS,
@@ -1661,7 +1862,7 @@ const codeGraphQueryTimeoutResultFor = Effect.fn('mcpServer.codeGraphQueryTimeou
     }),
     Effect.catch(() => Effect.succeed(Option.none<CodeGraphRefreshStatus>())),
   );
-  return codeGraphQueryTimeoutResult(operation, Option.getOrUndefined(status));
+  return Option.getOrUndefined(status);
 });
 
 export function codeGraphQueryTimeoutResult(

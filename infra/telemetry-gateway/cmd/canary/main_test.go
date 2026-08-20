@@ -17,7 +17,7 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-func TestCanaryPostsAndProvesFrozenV1V2AndCurrentV3(t *testing.T) {
+func TestCanaryPostsAndProvesFrozenV1V2V3AndCurrentV4(t *testing.T) {
 	started := time.Unix(1_700_000_000, 0)
 	traces := canaryTestTraces()
 	byTraceID := make(map[string]canaryTrace, len(traces))
@@ -74,13 +74,13 @@ func TestCanaryPostsAndProvesFrozenV1V2AndCurrentV3(t *testing.T) {
 	if err := run(context.Background(), configuration, server.Client(), func() time.Time { return started }, idSequence(traces)); err != nil {
 		t.Fatal(err)
 	}
-	if postCount != 4 || queryCount != 4 {
-		t.Fatalf("posts = %d, queries = %d, want 4 each", postCount, queryCount)
+	if postCount != len(traces) || queryCount != len(traces) {
+		t.Fatalf("posts = %d, queries = %d, want %d each", postCount, queryCount, len(traces))
 	}
 }
 
 func TestGraphCanaryEnvelopesCarryTheCompleteTerminalSurface(t *testing.T) {
-	for _, schemaVersion := range []uint64{2, 3} {
+	for _, schemaVersion := range []uint64{2, 3, 4} {
 		trace := fixedTrace(schemaVersion, canaryTraceGraph)
 		request := decodeCanaryEnvelope(t, trace)
 		resource := request.ResourceSpans[0].Resource
@@ -114,13 +114,74 @@ func TestGraphCanaryEnvelopesCarryTheCompleteTerminalSurface(t *testing.T) {
 	}
 }
 
-func TestV3CanaryEnvelopeCarriesTheAutomaticUpdateSurface(t *testing.T) {
-	request := decodeCanaryEnvelope(t, fixedTrace(3, canaryTraceAutoUpdate))
-	span := request.ResourceSpans[0].ScopeSpans[0].Spans[0]
-	if !hasStringAttribute(span.Attributes, "threadnote.operation", "auto-update-worker") ||
-		!hasStringAttribute(span.Attributes, "threadnote.auto_update.result", "updated") ||
-		!hasBoolAttribute(span.Attributes, "threadnote.auto_update.repair_required", false) {
-		t.Fatal("v3 canary is missing the automatic update result surface")
+func TestV3AndV4CanaryEnvelopesCarryTheAutomaticUpdateSurface(t *testing.T) {
+	for _, schemaVersion := range []uint64{3, 4} {
+		request := decodeCanaryEnvelope(t, fixedTrace(schemaVersion, canaryTraceAutoUpdate))
+		span := request.ResourceSpans[0].ScopeSpans[0].Spans[0]
+		if !hasStringAttribute(span.Attributes, "threadnote.operation", "auto-update-worker") ||
+			!hasStringAttribute(span.Attributes, "threadnote.auto_update.result", "updated") ||
+			!hasBoolAttribute(span.Attributes, "threadnote.auto_update.repair_required", false) {
+			t.Fatalf("v%d canary is missing the automatic update result surface", schemaVersion)
+		}
+	}
+}
+
+func TestV4CanaryEnvelopesCarryStageCheckpointAndCompletionGraphQuerySurfaces(t *testing.T) {
+	for _, trace := range []canaryTrace{
+		fixedTrace(4, canaryTraceQueryCheckpoint),
+		fixedTrace(4, canaryTraceQueryCompletion),
+	} {
+		t.Run(trace.label(), func(t *testing.T) {
+			request := decodeCanaryEnvelope(t, trace)
+			resource := request.ResourceSpans[0].Resource
+			if resource == nil || !hasIntAttribute(resource.Attributes, "threadnote.telemetry.schema_version", 4) {
+				t.Fatal("v4 canary resource did not declare schema version 4")
+			}
+			span := request.ResourceSpans[0].ScopeSpans[0].Spans[0]
+			expected := []canaryStringAttribute{
+				{"threadnote.operation", "inspect_code_graph"},
+				{"threadnote.phase.outcome", "success"},
+				{"threadnote.graph.request_kind", "inspect.query"},
+				{"threadnote.graph.request_scope", "local"},
+			}
+			if trace.kind == canaryTraceQueryCheckpoint {
+				expected = append(expected,
+					canaryStringAttribute{"threadnote.event", "checkpoint"},
+					canaryStringAttribute{"threadnote.phase", "graph.query.status"},
+					canaryStringAttribute{"threadnote.stage", "query-worktree-observation"},
+					canaryStringAttribute{"threadnote.subphase", "skipped"},
+				)
+				for _, key := range []string{
+					"threadnote.graph.snapshot_selection",
+					"threadnote.graph.snapshot_freshness",
+					"threadnote.graph.snapshot_files_bucket",
+					"threadnote.graph.snapshot_symbols_bucket",
+					"threadnote.graph.snapshot_edges_bucket",
+				} {
+					if hasAttribute(span.Attributes, key) {
+						t.Fatalf("v4 stage checkpoint unexpectedly contains %s", key)
+					}
+				}
+			} else {
+				expected = append(expected,
+					canaryStringAttribute{"threadnote.event", "completion"},
+					canaryStringAttribute{"threadnote.phase", "graph.query.execute"},
+					canaryStringAttribute{"threadnote.graph.snapshot_selection", "active"},
+					canaryStringAttribute{"threadnote.graph.snapshot_freshness", "deferred"},
+					canaryStringAttribute{"threadnote.graph.snapshot_files_bucket", "2^10"},
+					canaryStringAttribute{"threadnote.graph.snapshot_symbols_bucket", "2^12"},
+					canaryStringAttribute{"threadnote.graph.snapshot_edges_bucket", "2^13"},
+				)
+			}
+			for _, attribute := range expected {
+				if !hasStringAttribute(span.Attributes, attribute.key, attribute.value) {
+					t.Fatalf("v4 canary is missing %s=%s", attribute.key, attribute.value)
+				}
+			}
+			if !hasIntAttribute(span.Attributes, "threadnote.phase.elapsed_ms", 1) {
+				t.Fatal("v4 canary is missing the query-phase elapsed time")
+			}
+		})
 	}
 }
 
@@ -242,17 +303,30 @@ func TestStoredTraceParserTreatsOnlyAnEmptyTraceAsPending(t *testing.T) {
 }
 
 func fixedTrace(schemaVersion uint64, kind canaryTraceKind) canaryTrace {
-	marker := byte(schemaVersion)
-	if kind == canaryTraceAutoUpdate {
-		marker = 4
-	}
+	marker := byte(1)
 	sessionID := "tns_000102030405060708090a0b0c0d0e0f"
-	if schemaVersion == 2 {
+	switch {
+	case schemaVersion == 2:
+		marker = 2
 		sessionID = "tns_101112131415161718191a1b1c1d1e1f"
-	} else if schemaVersion == 3 && kind == canaryTraceGraph {
+	case schemaVersion == 3 && kind == canaryTraceGraph:
+		marker = 3
 		sessionID = "tns_202122232425262728292a2b2c2d2e2f"
-	} else if schemaVersion == 3 {
+	case schemaVersion == 3:
+		marker = 4
 		sessionID = "tns_303132333435363738393a3b3c3d3e3f"
+	case kind == canaryTraceGraph:
+		marker = 5
+		sessionID = "tns_404142434445464748494a4b4c4d4e4f"
+	case kind == canaryTraceAutoUpdate:
+		marker = 6
+		sessionID = "tns_505152535455565758595a5b5c5d5e5f"
+	case kind == canaryTraceQueryCheckpoint:
+		marker = 7
+		sessionID = "tns_606162636465666768696a6b6c6d6e6f"
+	case kind == canaryTraceQueryCompletion:
+		marker = 8
+		sessionID = "tns_707172737475767778797a7b7c7d7e7f"
 	}
 	return canaryTrace{
 		ids: canaryIDs{
@@ -271,6 +345,10 @@ func canaryTestTraces() []canaryTrace {
 		fixedTrace(2, canaryTraceGraph),
 		fixedTrace(3, canaryTraceGraph),
 		fixedTrace(3, canaryTraceAutoUpdate),
+		fixedTrace(4, canaryTraceGraph),
+		fixedTrace(4, canaryTraceAutoUpdate),
+		fixedTrace(4, canaryTraceQueryCheckpoint),
+		fixedTrace(4, canaryTraceQueryCompletion),
 	}
 }
 

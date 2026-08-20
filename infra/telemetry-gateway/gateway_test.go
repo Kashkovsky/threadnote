@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -228,27 +229,191 @@ func validTelemetryV3GraphRequest() *collectortracepb.ExportTraceServiceRequest 
 	return request
 }
 
-func validTelemetryV3AutoUpdateRequest(repairRequired bool) *collectortracepb.ExportTraceServiceRequest {
-	request := validTelemetryV3AutoUpdateResultRequest("updated")
-	span := request.ResourceSpans[0].ScopeSpans[0].Spans[0]
-	span.Attributes = append(span.Attributes,
+func validTelemetryAutoUpdateRequest(schemaVersion int64, repairRequired bool) *collectortracepb.ExportTraceServiceRequest {
+	request := validTelemetryAutoUpdateResultRequest(schemaVersion, "updated")
+	request.ResourceSpans[0].ScopeSpans[0].Spans[0].Attributes = append(
+		request.ResourceSpans[0].ScopeSpans[0].Spans[0].Attributes,
 		boolKeyValue("threadnote.auto_update.repair_required", repairRequired),
 	)
 	return request
 }
 
-func validTelemetryV3AutoUpdateResultRequest(result string) *collectortracepb.ExportTraceServiceRequest {
+func validTelemetryAutoUpdateResultRequest(schemaVersion int64, result string) *collectortracepb.ExportTraceServiceRequest {
 	request := validTelemetryRequest()
-	resourceAttribute(request, "threadnote.telemetry.schema_version").Value = intAnyValue(3)
+	resourceAttribute(request, "threadnote.telemetry.schema_version").Value = intAnyValue(schemaVersion)
 	spanAttribute(request, "threadnote.operation").Value = stringAnyValue("auto-update-worker")
-	span := request.ResourceSpans[0].ScopeSpans[0].Spans[0]
-	span.Attributes = append(span.Attributes,
+	request.ResourceSpans[0].ScopeSpans[0].Spans[0].Attributes = append(
+		request.ResourceSpans[0].ScopeSpans[0].Spans[0].Attributes,
 		stringKeyValue("threadnote.auto_update.result", result),
 	)
 	return request
 }
 
-func TestCanonicalTelemetryPayloadAcceptsFrozenV1V2AndCurrentV3(t *testing.T) {
+func validTelemetryV4CompletionRequest() *collectortracepb.ExportTraceServiceRequest {
+	request := validTelemetryRequest()
+	resourceAttribute(request, "threadnote.telemetry.schema_version").Value = intAnyValue(4)
+	return request
+}
+
+func validTelemetryV4BareGraphOperation(operation string) *collectortracepb.ExportTraceServiceRequest {
+	request := validTelemetryV4CompletionRequest()
+	spanAttribute(request, "threadnote.operation").Value = stringAnyValue(operation)
+	return request
+}
+
+func validTelemetryV4QueryRequest() *collectortracepb.ExportTraceServiceRequest {
+	request := validTelemetryV4CompletionRequest()
+	span := request.ResourceSpans[0].ScopeSpans[0].Spans[0]
+	spanAttribute(request, "threadnote.operation").Value = stringAnyValue("inspect_code_graph")
+	span.Attributes = append(span.Attributes,
+		stringKeyValue("threadnote.phase", "graph.query.execute"),
+		stringKeyValue("threadnote.phase.outcome", "success"),
+		stringKeyValue("threadnote.graph.request_kind", "inspect.query"),
+		stringKeyValue("threadnote.graph.request_scope", "local"),
+		stringKeyValue("threadnote.graph.snapshot_selection", "active"),
+		stringKeyValue("threadnote.graph.snapshot_freshness", "deferred"),
+		stringKeyValue("threadnote.graph.snapshot_files_bucket", "2^10"),
+		stringKeyValue("threadnote.graph.snapshot_symbols_bucket", "2^12"),
+		stringKeyValue("threadnote.graph.snapshot_edges_bucket", "2^13"),
+		&commonpb.KeyValue{Key: "threadnote.phase.elapsed_ms", Value: intAnyValue(1)},
+	)
+	return request
+}
+
+func validTelemetryV4QueryCheckpoint(phase, scope string) *collectortracepb.ExportTraceServiceRequest {
+	request := validTelemetryV4QueryRequest()
+	spanAttribute(request, "threadnote.event").Value = stringAnyValue("checkpoint")
+	removeSpanAttribute(request, "threadnote.phase")
+	removeSpanAttribute(request, "threadnote.phase.outcome")
+	removeSpanAttribute(request, "threadnote.phase.elapsed_ms")
+	request.ResourceSpans[0].ScopeSpans[0].Spans[0].Attributes = append(
+		request.ResourceSpans[0].ScopeSpans[0].Spans[0].Attributes,
+		stringKeyValue("threadnote.phase", phase),
+		stringKeyValue("threadnote.phase.outcome", "success"),
+		&commonpb.KeyValue{Key: "threadnote.phase.elapsed_ms", Value: intAnyValue(1)},
+	)
+	spanAttribute(request, "threadnote.graph.request_scope").Value = stringAnyValue(scope)
+	if phase == "graph.query.status" || scope == "workset" {
+		removeGraphQuerySnapshotSurface(request)
+	}
+	return request
+}
+
+func validTelemetryV4QueryLivenessCheckpoint() *collectortracepb.ExportTraceServiceRequest {
+	request := validTelemetryV4QueryRequest()
+	spanAttribute(request, "threadnote.event").Value = stringAnyValue("checkpoint")
+	for _, key := range []string{
+		"threadnote.duration_ms",
+		"threadnote.outcome",
+		"threadnote.phase",
+		"threadnote.phase.outcome",
+		"threadnote.phase.elapsed_ms",
+	} {
+		removeSpanAttribute(request, key)
+	}
+	removeGraphQuerySnapshotSurface(request)
+	request.ResourceSpans[0].ScopeSpans[0].Spans[0].Attributes = append(
+		request.ResourceSpans[0].ScopeSpans[0].Spans[0].Attributes,
+		&commonpb.KeyValue{Key: "threadnote.operation.elapsed_ms", Value: intAnyValue(30_000)},
+	)
+	return request
+}
+
+func validTelemetryV4QueryStageCheckpoint(stage string, subphase ...string) *collectortracepb.ExportTraceServiceRequest {
+	request := validTelemetryV4QueryCheckpoint("graph.query.execute", "local")
+	removeGraphQuerySnapshotSurface(request)
+	request.ResourceSpans[0].ScopeSpans[0].Spans[0].Attributes = append(
+		request.ResourceSpans[0].ScopeSpans[0].Spans[0].Attributes,
+		stringKeyValue("threadnote.stage", stage),
+	)
+	if len(subphase) == 1 {
+		request.ResourceSpans[0].ScopeSpans[0].Spans[0].Attributes = append(
+			request.ResourceSpans[0].ScopeSpans[0].Spans[0].Attributes,
+			stringKeyValue("threadnote.subphase", subphase[0]),
+		)
+	}
+	return request
+}
+
+func validTelemetryV4AnalyzeStageCheckpoint() *collectortracepb.ExportTraceServiceRequest {
+	request := validTelemetryV4QueryStageCheckpoint("query-serialization")
+	spanAttribute(request, "threadnote.operation").Value = stringAnyValue("analyze_code_graph")
+	spanAttribute(request, "threadnote.graph.request_kind").Value = stringAnyValue("analyze.stats")
+	return request
+}
+
+func validTelemetryV4WorksetStageCheckpoint() *collectortracepb.ExportTraceServiceRequest {
+	request := validTelemetryV4QueryStageCheckpoint("query-serialization")
+	spanAttribute(request, "threadnote.graph.request_scope").Value = stringAnyValue("workset")
+	return request
+}
+
+func validTelemetryV4FailedFallbackStageCheckpoint() *collectortracepb.ExportTraceServiceRequest {
+	request := validTelemetryV4QueryStageCheckpoint("query-worktree-observation", "fallback")
+	spanAttribute(request, "threadnote.outcome").Value = stringAnyValue("failure")
+	spanAttribute(request, "threadnote.phase.outcome").Value = stringAnyValue("failure")
+	request.ResourceSpans[0].ScopeSpans[0].Spans[0].Attributes = append(
+		request.ResourceSpans[0].ScopeSpans[0].Spans[0].Attributes,
+		stringKeyValue("error.type", "UnknownError"),
+	)
+	return request
+}
+
+func validTelemetryV4NoPublishedSnapshotRequest() *collectortracepb.ExportTraceServiceRequest {
+	request := validTelemetryV4QueryRequest()
+	spanAttribute(request, "threadnote.graph.snapshot_selection").Value = stringAnyValue("none")
+	removeSpanAttribute(request, "threadnote.graph.snapshot_freshness")
+	for _, key := range graphQuerySnapshotBucketAttributes {
+		removeSpanAttribute(request, key)
+	}
+	return request
+}
+
+func validTelemetryV4AnalyzeRequest() *collectortracepb.ExportTraceServiceRequest {
+	request := validTelemetryV4QueryRequest()
+	spanAttribute(request, "threadnote.operation").Value = stringAnyValue("analyze_code_graph")
+	spanAttribute(request, "threadnote.graph.request_kind").Value = stringAnyValue("analyze.stats")
+	return request
+}
+
+func validTelemetryV4WorksetRequest() *collectortracepb.ExportTraceServiceRequest {
+	request := validTelemetryV4QueryRequest()
+	spanAttribute(request, "threadnote.graph.request_scope").Value = stringAnyValue("workset")
+	removeGraphQuerySnapshotSurface(request)
+	return request
+}
+
+func validTelemetryV4WorksetTopologyRequest() *collectortracepb.ExportTraceServiceRequest {
+	request := validTelemetryV4WorksetRequest()
+	spanAttribute(request, "threadnote.graph.request_kind").Value = stringAnyValue("inspect.topology")
+	return request
+}
+
+func validTelemetryV4FailedQueryRequest() *collectortracepb.ExportTraceServiceRequest {
+	request := validTelemetryV4QueryRequest()
+	spanAttribute(request, "threadnote.outcome").Value = stringAnyValue("failure")
+	spanAttribute(request, "threadnote.phase.outcome").Value = stringAnyValue("failure")
+	removeGraphQuerySnapshotSurface(request)
+	request.ResourceSpans[0].ScopeSpans[0].Spans[0].Attributes = append(
+		request.ResourceSpans[0].ScopeSpans[0].Spans[0].Attributes,
+		stringKeyValue("error.type", "UnknownError"),
+	)
+	return request
+}
+
+func validTelemetryV4FailedQueryCheckpoint() *collectortracepb.ExportTraceServiceRequest {
+	request := validTelemetryV4QueryCheckpoint("graph.query.execute", "local")
+	spanAttribute(request, "threadnote.outcome").Value = stringAnyValue("failure")
+	spanAttribute(request, "threadnote.phase.outcome").Value = stringAnyValue("failure")
+	removeGraphQuerySnapshotSurface(request)
+	request.ResourceSpans[0].ScopeSpans[0].Spans[0].Attributes = append(
+		request.ResourceSpans[0].ScopeSpans[0].Spans[0].Attributes,
+		stringKeyValue("error.type", "UnknownError"),
+	)
+	return request
+}
+
+func TestCanonicalTelemetryPayloadAcceptsFrozenV1V2V3AndClosedV4(t *testing.T) {
 	schemas, err := loadTelemetrySchemas()
 	if err != nil {
 		t.Fatal(err)
@@ -258,8 +423,32 @@ func TestCanonicalTelemetryPayloadAcceptsFrozenV1V2AndCurrentV3(t *testing.T) {
 		validTelemetryV2CompletionRequest(),
 		validTelemetryV2Request(),
 		validTelemetryV3GraphRequest(),
-		validTelemetryV3AutoUpdateRequest(false),
-		validTelemetryV3AutoUpdateRequest(true),
+		validTelemetryAutoUpdateRequest(3, false),
+		validTelemetryAutoUpdateRequest(3, true),
+		validTelemetryV4CompletionRequest(),
+		validTelemetryAutoUpdateRequest(4, false),
+		validTelemetryAutoUpdateRequest(4, true),
+		validTelemetryV4BareGraphOperation("inspect_code_graph"),
+		validTelemetryV4BareGraphOperation("analyze_code_graph"),
+		validTelemetryV4QueryRequest(),
+		validTelemetryV4NoPublishedSnapshotRequest(),
+		validTelemetryV4AnalyzeRequest(),
+		validTelemetryV4WorksetRequest(),
+		validTelemetryV4WorksetTopologyRequest(),
+		validTelemetryV4FailedQueryRequest(),
+		validTelemetryV4FailedQueryCheckpoint(),
+		validTelemetryV4QueryLivenessCheckpoint(),
+		validTelemetryV4QueryStageCheckpoint("query-repository-identity"),
+		validTelemetryV4QueryStageCheckpoint("query-worktree-observation", "skipped"),
+		validTelemetryV4QueryStageCheckpoint("query-strict-reobservation"),
+		validTelemetryV4QueryStageCheckpoint("query-serialization", "fallback"),
+		validTelemetryV4AnalyzeStageCheckpoint(),
+		validTelemetryV4WorksetStageCheckpoint(),
+		validTelemetryV4FailedFallbackStageCheckpoint(),
+		validTelemetryV4QueryCheckpoint("graph.query.status", "local"),
+		validTelemetryV4QueryCheckpoint("graph.query.snapshot", "local"),
+		validTelemetryV4QueryCheckpoint("graph.query.execute", "local"),
+		validTelemetryV4QueryCheckpoint("graph.query.execute", "workset"),
 	} {
 		payload, marshalError := (proto.MarshalOptions{Deterministic: true}).Marshal(request)
 		if marshalError != nil {
@@ -273,14 +462,54 @@ func TestCanonicalTelemetryPayloadAcceptsFrozenV1V2AndCurrentV3(t *testing.T) {
 			t.Fatal("valid canonical telemetry was changed")
 		}
 	}
-	for _, result := range []string{"busy", "current", "disabled", "failed"} {
-		request := validTelemetryV3AutoUpdateResultRequest(result)
+	for _, schemaVersion := range []int64{3, 4} {
+		for _, result := range []string{"busy", "current", "disabled", "failed"} {
+			request := validTelemetryAutoUpdateResultRequest(schemaVersion, result)
+			payload, marshalError := (proto.MarshalOptions{Deterministic: true}).Marshal(request)
+			if marshalError != nil {
+				t.Fatal(marshalError)
+			}
+			if _, validationError := canonicalTelemetryPayload(payload, schemas); validationError != nil {
+				t.Fatalf("valid v%d automatic update result %q was rejected: %v", schemaVersion, result, validationError)
+			}
+		}
+	}
+}
+
+func TestFrozenTelemetrySchemaArtifactsRemainByteForByte(t *testing.T) {
+	for _, fixture := range []struct {
+		name   string
+		data   []byte
+		digest string
+	}{
+		{name: "v1", data: telemetrySchemaV1JSON, digest: "68ebd9161b68f18267fc7692250bcae1d9ff7dddd5394271304b60e4035d9ef0"},
+		{name: "v2", data: telemetrySchemaV2JSON, digest: "584061cf487c7fcef250d7ffa1ffaff96cbd0c8bd76da3d33d084f95cfcb68dd"},
+		{name: "v3", data: telemetrySchemaV3JSON, digest: "595f5d2f30fb58d4804b4b42dc2c2e81c84f57f53412ebcf3dbd6c052ed36217"},
+		{name: "v4", data: telemetrySchemaV4JSON, digest: "2753788350ad94da58fe265e904be54bc670ef2bed962a25fffedc238b479d5c"},
+	} {
+		t.Run(fixture.name, func(t *testing.T) {
+			digest := sha256.Sum256(fixture.data)
+			if hex.EncodeToString(digest[:]) != fixture.digest {
+				t.Fatal("frozen telemetry schema artifact changed")
+			}
+		})
+	}
+}
+
+func TestV3AndV4RetainTheCompleteTerminalGraphBuildContract(t *testing.T) {
+	schemas, err := loadTelemetrySchemas()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, schemaVersion := range []int64{3, 4} {
+		request := validTelemetryV2Request()
+		resourceAttribute(request, "threadnote.telemetry.schema_version").Value = intAnyValue(schemaVersion)
 		payload, marshalError := (proto.MarshalOptions{Deterministic: true}).Marshal(request)
 		if marshalError != nil {
 			t.Fatal(marshalError)
 		}
 		if _, validationError := canonicalTelemetryPayload(payload, schemas); validationError != nil {
-			t.Fatalf("valid automatic update result %q was rejected: %v", result, validationError)
+			t.Fatalf("schema v%d graph build lifecycle was rejected: %v", schemaVersion, validationError)
 		}
 	}
 }
@@ -302,7 +531,7 @@ func TestCanonicalTelemetryPayloadRejectsSchemaMixingAndInvalidV2Shapes(t *testi
 			resourceAttribute(request, "threadnote.telemetry.schema_version").Value = intAnyValue(1)
 		}},
 		{name: "unknown schema version", mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
-			resourceAttribute(request, "threadnote.telemetry.schema_version").Value = intAnyValue(4)
+			resourceAttribute(request, "threadnote.telemetry.schema_version").Value = intAnyValue(5)
 		}},
 		{name: "wrong schema version type", mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
 			resourceAttribute(request, "threadnote.telemetry.schema_version").Value = stringAnyValue("2")
@@ -348,7 +577,7 @@ func TestCanonicalTelemetryPayloadRejectsSchemaMixingAndInvalidV2Shapes(t *testi
 	}
 }
 
-func TestCanonicalTelemetryPayloadRejectsInvalidV3AutoUpdateShapes(t *testing.T) {
+func TestCanonicalTelemetryPayloadRejectsInvalidV3AndV4AutoUpdateShapes(t *testing.T) {
 	schemas, err := loadTelemetrySchemas()
 	if err != nil {
 		t.Fatal(err)
@@ -380,18 +609,251 @@ func TestCanonicalTelemetryPayloadRejectsInvalidV3AutoUpdateShapes(t *testing.T)
 			removeSpanAttribute(request, "threadnote.auto_update.repair_required")
 		}},
 	}
+	for _, schemaVersion := range []int64{3, 4} {
+		for _, test := range tests {
+			t.Run(fmt.Sprintf("v%d/%s", schemaVersion, test.name), func(t *testing.T) {
+				request := validTelemetryAutoUpdateRequest(schemaVersion, false)
+				test.mutate(request)
+				payload, marshalError := (proto.MarshalOptions{Deterministic: true}).Marshal(request)
+				if marshalError != nil {
+					t.Fatal(marshalError)
+				}
+				if _, validationError := canonicalTelemetryPayload(payload, schemas); validationError == nil {
+					t.Fatal("invalid automatic update telemetry was accepted")
+				}
+			})
+		}
+	}
+}
+
+func TestCanonicalTelemetryPayloadRejectsInvalidV4GraphQueryShapes(t *testing.T) {
+	schemas, err := loadTelemetrySchemas()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name    string
+		request func() *collectortracepb.ExportTraceServiceRequest
+		mutate  func(*collectortracepb.ExportTraceServiceRequest)
+	}{
+		{name: "v4 surface under v1", request: validTelemetryV4QueryRequest, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			resourceAttribute(request, "threadnote.telemetry.schema_version").Value = intAnyValue(1)
+		}},
+		{name: "v4 surface under v2", request: validTelemetryV4QueryRequest, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			resourceAttribute(request, "threadnote.telemetry.schema_version").Value = intAnyValue(2)
+		}},
+		{name: "v4 surface under v3", request: validTelemetryV4QueryRequest, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			resourceAttribute(request, "threadnote.telemetry.schema_version").Value = intAnyValue(3)
+		}},
+		{name: "missing request kind", request: validTelemetryV4QueryRequest, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			removeSpanAttribute(request, "threadnote.graph.request_kind")
+		}},
+		{name: "missing request scope", request: validTelemetryV4QueryRequest, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			removeSpanAttribute(request, "threadnote.graph.request_scope")
+		}},
+		{name: "inspect operation with analyze kind", request: validTelemetryV4QueryRequest, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			spanAttribute(request, "threadnote.graph.request_kind").Value = stringAnyValue("analyze.stats")
+		}},
+		{name: "analyze operation with inspect kind", request: validTelemetryV4AnalyzeRequest, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			spanAttribute(request, "threadnote.graph.request_kind").Value = stringAnyValue("inspect.query")
+		}},
+		{name: "query attributes on generic operation", request: validTelemetryV4QueryRequest, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			spanAttribute(request, "threadnote.operation").Value = stringAnyValue("health")
+		}},
+		{name: "lifecycle query event", request: validTelemetryV4QueryRequest, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			spanAttribute(request, "threadnote.event").Value = stringAnyValue("lifecycle")
+		}},
+		{name: "completion with status phase", request: validTelemetryV4QueryRequest, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			spanAttribute(request, "threadnote.phase").Value = stringAnyValue("graph.query.status")
+		}},
+		{name: "completion with snapshot phase", request: validTelemetryV4QueryRequest, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			spanAttribute(request, "threadnote.phase").Value = stringAnyValue("graph.query.snapshot")
+		}},
+		{name: "checkpoint without query phase", request: func() *collectortracepb.ExportTraceServiceRequest {
+			return validTelemetryV4QueryCheckpoint("graph.query.status", "local")
+		}, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			removeSpanAttribute(request, "threadnote.phase")
+		}},
+		{name: "phase-less query checkpoint without operation elapsed time", request: validTelemetryV4QueryLivenessCheckpoint, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			removeSpanAttribute(request, "threadnote.operation.elapsed_ms")
+		}},
+		{name: "phase-less query checkpoint with snapshot surface", request: validTelemetryV4QueryLivenessCheckpoint, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			request.ResourceSpans[0].ScopeSpans[0].Spans[0].Attributes = append(
+				request.ResourceSpans[0].ScopeSpans[0].Spans[0].Attributes,
+				stringKeyValue("threadnote.graph.snapshot_selection", "none"),
+			)
+		}},
+		{name: "query stage on completion", request: func() *collectortracepb.ExportTraceServiceRequest {
+			return validTelemetryV4QueryStageCheckpoint("query-serialization")
+		}, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			spanAttribute(request, "threadnote.event").Value = stringAnyValue("completion")
+		}},
+		{name: "query stage on lifecycle", request: func() *collectortracepb.ExportTraceServiceRequest {
+			return validTelemetryV4QueryStageCheckpoint("query-serialization")
+		}, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			spanAttribute(request, "threadnote.event").Value = stringAnyValue("lifecycle")
+			spanAttribute(request, "threadnote.outcome").Value = stringAnyValue("failure")
+			request.ResourceSpans[0].ScopeSpans[0].Spans[0].Attributes = append(
+				request.ResourceSpans[0].ScopeSpans[0].Spans[0].Attributes,
+				stringKeyValue("error.type", "UnknownError"),
+			)
+		}},
+		{name: "query stage on generic operation", request: func() *collectortracepb.ExportTraceServiceRequest {
+			return validTelemetryV4QueryStageCheckpoint("query-repository-identity")
+		}, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			spanAttribute(request, "threadnote.operation").Value = stringAnyValue("health")
+		}},
+		{name: "query stage with snapshot surface", request: func() *collectortracepb.ExportTraceServiceRequest {
+			return validTelemetryV4QueryStageCheckpoint("query-worktree-observation")
+		}, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			request.ResourceSpans[0].ScopeSpans[0].Spans[0].Attributes = append(
+				request.ResourceSpans[0].ScopeSpans[0].Spans[0].Attributes,
+				stringKeyValue("threadnote.graph.snapshot_selection", "none"),
+			)
+		}},
+		{name: "query stage without elapsed time", request: func() *collectortracepb.ExportTraceServiceRequest {
+			return validTelemetryV4QueryStageCheckpoint("query-strict-reobservation")
+		}, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			removeSpanAttribute(request, "threadnote.phase.elapsed_ms")
+		}},
+		{name: "query stage without query phase", request: func() *collectortracepb.ExportTraceServiceRequest {
+			return validTelemetryV4QueryStageCheckpoint("query-repository-identity")
+		}, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			removeSpanAttribute(request, "threadnote.phase")
+		}},
+		{name: "query stage with non-query phase", request: func() *collectortracepb.ExportTraceServiceRequest {
+			return validTelemetryV4QueryStageCheckpoint("query-repository-identity")
+		}, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			spanAttribute(request, "threadnote.phase").Value = stringAnyValue("graph.activating")
+		}},
+		{name: "query stage without phase outcome", request: func() *collectortracepb.ExportTraceServiceRequest {
+			return validTelemetryV4QueryStageCheckpoint("query-serialization")
+		}, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			removeSpanAttribute(request, "threadnote.phase.outcome")
+		}},
+		{name: "query stage with disagreeing outcomes", request: func() *collectortracepb.ExportTraceServiceRequest {
+			return validTelemetryV4QueryStageCheckpoint("query-repository-identity")
+		}, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			spanAttribute(request, "threadnote.phase.outcome").Value = stringAnyValue("failure")
+		}},
+		{name: "skipped query stage with failure outcome", request: func() *collectortracepb.ExportTraceServiceRequest {
+			return validTelemetryV4QueryStageCheckpoint("query-worktree-observation", "skipped")
+		}, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			spanAttribute(request, "threadnote.outcome").Value = stringAnyValue("failure")
+			spanAttribute(request, "threadnote.phase.outcome").Value = stringAnyValue("failure")
+			request.ResourceSpans[0].ScopeSpans[0].Spans[0].Attributes = append(
+				request.ResourceSpans[0].ScopeSpans[0].Spans[0].Attributes,
+				stringKeyValue("error.type", "UnknownError"),
+			)
+		}},
+		{name: "query subphase without query stage", request: validTelemetryV4QueryLivenessCheckpoint, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			request.ResourceSpans[0].ScopeSpans[0].Spans[0].Attributes = append(
+				request.ResourceSpans[0].ScopeSpans[0].Spans[0].Attributes,
+				stringKeyValue("threadnote.subphase", "skipped"),
+			)
+		}},
+		{name: "query stage with generic subphase", request: func() *collectortracepb.ExportTraceServiceRequest {
+			return validTelemetryV4QueryStageCheckpoint("query-serialization", "complete")
+		}, mutate: func(_ *collectortracepb.ExportTraceServiceRequest) {}},
+		{name: "query subphase on generic stage", request: validTelemetryV4CompletionRequest, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			spanAttribute(request, "threadnote.event").Value = stringAnyValue("checkpoint")
+			request.ResourceSpans[0].ScopeSpans[0].Spans[0].Attributes = append(
+				request.ResourceSpans[0].ScopeSpans[0].Spans[0].Attributes,
+				stringKeyValue("threadnote.stage", "reading"),
+				stringKeyValue("threadnote.subphase", "fallback"),
+			)
+		}},
+		{name: "checkpoint with non-query phase", request: func() *collectortracepb.ExportTraceServiceRequest {
+			return validTelemetryV4QueryCheckpoint("graph.query.status", "local")
+		}, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			spanAttribute(request, "threadnote.phase").Value = stringAnyValue("graph.activating")
+		}},
+		{name: "status checkpoint with snapshot surface", request: func() *collectortracepb.ExportTraceServiceRequest {
+			return validTelemetryV4QueryCheckpoint("graph.query.snapshot", "local")
+		}, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			spanAttribute(request, "threadnote.phase").Value = stringAnyValue("graph.query.status")
+		}},
+		{name: "local snapshot checkpoint without selection", request: func() *collectortracepb.ExportTraceServiceRequest {
+			return validTelemetryV4QueryCheckpoint("graph.query.snapshot", "local")
+		}, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			removeSpanAttribute(request, "threadnote.graph.snapshot_selection")
+		}},
+		{name: "workset completion with local snapshot surface", request: validTelemetryV4QueryRequest, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			spanAttribute(request, "threadnote.graph.request_scope").Value = stringAnyValue("workset")
+		}},
+		{name: "selected snapshot without edge bucket", request: validTelemetryV4QueryRequest, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			removeSpanAttribute(request, "threadnote.graph.snapshot_edges_bucket")
+		}},
+		{name: "selected snapshot without freshness", request: validTelemetryV4QueryRequest, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			removeSpanAttribute(request, "threadnote.graph.snapshot_freshness")
+		}},
+		{name: "selection none with published snapshot buckets", request: validTelemetryV4QueryRequest, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			spanAttribute(request, "threadnote.graph.snapshot_selection").Value = stringAnyValue("none")
+		}},
+		{name: "selection none with freshness", request: validTelemetryV4NoPublishedSnapshotRequest, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			request.ResourceSpans[0].ScopeSpans[0].Spans[0].Attributes = append(request.ResourceSpans[0].ScopeSpans[0].Spans[0].Attributes, stringKeyValue("threadnote.graph.snapshot_freshness", "stale"))
+		}},
+		{name: "failed completion with snapshot surface", request: validTelemetryV4QueryRequest, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			spanAttribute(request, "threadnote.outcome").Value = stringAnyValue("failure")
+			spanAttribute(request, "threadnote.phase.outcome").Value = stringAnyValue("failure")
+			request.ResourceSpans[0].ScopeSpans[0].Spans[0].Attributes = append(
+				request.ResourceSpans[0].ScopeSpans[0].Spans[0].Attributes,
+				stringKeyValue("error.type", "UnknownError"),
+			)
+		}},
+	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			request := validTelemetryV3AutoUpdateRequest(false)
+			request := test.request()
 			test.mutate(request)
 			payload, marshalError := (proto.MarshalOptions{Deterministic: true}).Marshal(request)
 			if marshalError != nil {
 				t.Fatal(marshalError)
 			}
 			if _, validationError := canonicalTelemetryPayload(payload, schemas); validationError == nil {
-				t.Fatal("invalid automatic update telemetry was accepted")
+				t.Fatal("invalid schema v4 graph query telemetry was accepted")
 			}
 		})
+	}
+}
+
+func TestCanonicalTelemetryPayloadRejectsArbitraryPrivateV4GraphQueryClassifications(t *testing.T) {
+	schemas, err := loadTelemetrySchemas()
+	if err != nil {
+		t.Fatal(err)
+	}
+	property := func(value string) bool {
+		digest := sha256.Sum256([]byte(value))
+		private := "private-" + hex.EncodeToString(digest[:])
+		for _, key := range []string{
+			"threadnote.graph.request_kind",
+			"threadnote.graph.request_scope",
+			"threadnote.graph.snapshot_freshness",
+			"threadnote.graph.snapshot_selection",
+			"threadnote.stage",
+			"threadnote.subphase",
+		} {
+			request := validTelemetryV4QueryRequest()
+			if key == "threadnote.stage" || key == "threadnote.subphase" {
+				request.ResourceSpans[0].ScopeSpans[0].Spans[0].Attributes = append(
+					request.ResourceSpans[0].ScopeSpans[0].Spans[0].Attributes,
+					stringKeyValue(key, private),
+				)
+			} else {
+				spanAttribute(request, key).Value = stringAnyValue(private)
+			}
+			payload, marshalError := proto.Marshal(request)
+			if marshalError != nil {
+				return false
+			}
+			if _, validationError := canonicalTelemetryPayload(payload, schemas); validationError == nil {
+				return false
+			}
+		}
+		return true
+	}
+	if propertyError := quick.Check(property, &quick.Config{MaxCount: 32}); propertyError != nil {
+		t.Fatal(propertyError)
 	}
 }
 
@@ -679,6 +1141,15 @@ func removeSpanAttribute(request *collectortracepb.ExportTraceServiceRequest, ke
 			span.Attributes = append(span.Attributes[:index], span.Attributes[index+1:]...)
 			return
 		}
+	}
+}
+
+func removeGraphQuerySnapshotSurface(request *collectortracepb.ExportTraceServiceRequest) {
+	for _, key := range append([]string{
+		"threadnote.graph.snapshot_selection",
+		"threadnote.graph.snapshot_freshness",
+	}, graphQuerySnapshotBucketAttributes...) {
+		removeSpanAttribute(request, key)
 	}
 }
 

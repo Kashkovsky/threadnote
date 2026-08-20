@@ -2,11 +2,43 @@ import {describe, expect, it} from '@effect/vitest';
 import * as FC from 'effect/testing/FastCheck';
 import {createResolutionAttributor} from '../../src/code_graph/extractor.js';
 import {hasSameCodeGraphResolutionSurface} from '../../src/code_graph/indexer.js';
-import {assessCodeGraphResolutionSymbolPublication} from '../../src/code_graph/resolution_surface.js';
-import type {CodeGraphFileFacts, CodeGraphInventoryFile, CodeGraphSymbol} from '../../src/code_graph/types.js';
+import {
+  assessCodeGraphResolutionSymbolPublication,
+  hasSameCodeGraphReexportResolutionSurface,
+} from '../../src/code_graph/resolution_surface.js';
+import type {
+  CodeGraphFileFacts,
+  CodeGraphInventoryFile,
+  CodeGraphReference,
+  CodeGraphSymbol,
+} from '../../src/code_graph/types.js';
 
 const optionalText = FC.oneof(FC.constant(undefined), FC.string({maxLength: 24}));
 const optionalArity = FC.oneof(FC.constant(undefined), FC.integer({max: 32, min: 0}));
+
+const staticReexportReferenceArbitrary = FC.record({
+  aliasIds: FC.uniqueArray(FC.integer({max: 1_000, min: 0}), {maxLength: 5, minLength: 1}),
+  edgeId: FC.integer({max: 1_000_000, min: 0}),
+  line: FC.integer({max: 500, min: 1}),
+  sourceId: FC.integer({max: 1_000_000, min: 0}),
+  tierIds: FC.array(FC.uniqueArray(FC.integer({max: 1_000, min: 0}), {maxLength: 5}), {
+    maxLength: 4,
+    minLength: 1,
+  }),
+}).map(({aliasIds, edgeId, line, sourceId, tierIds}): CodeGraphReference => ({
+  aliasLookupKeys: aliasIds.map(id => `typescript:scope:path:src/index.ts:name:alias${id}`),
+  edgeId: `edge-${edgeId}`,
+  evidencePath: 'src/index.ts',
+  evidenceSpan: {column: 1, endColumn: 2, endLine: line, line},
+  exportedOnly: true,
+  lookupTiers: tierIds.map(ids => ids.map(id => `typescript:scope:path:src/source.ts:name:value${id}`)),
+  provenance: 'syntactic',
+  relation: 'reexports',
+  resolutionDomain: 'typescript',
+  sourceId: `source-${sourceId}`,
+  sourceName: 'index',
+  targetName: './source.js',
+}));
 
 const symbolArbitrary = FC.record({
   arity: optionalArity,
@@ -99,6 +131,77 @@ const pathLocalTypeScriptSymbolArbitrary = FC.record({
 });
 
 describe('code graph incremental-overlay properties', () => {
+  it.prop(
+    'treats only span, reference order, and set-order churn as an unchanged static re-export surface',
+    {reference: staticReexportReferenceArbitrary},
+    ({reference}) => {
+      const peer: CodeGraphReference = {
+        ...reference,
+        edgeId: `peer:${reference.edgeId}`,
+        sourceId: `peer:${reference.sourceId ?? ''}`,
+      };
+      const spanOnly: CodeGraphReference = {
+        ...reference,
+        evidenceSpan: {
+          column: reference.evidenceSpan.column + 3,
+          endColumn: reference.evidenceSpan.endColumn + 3,
+          endLine: reference.evidenceSpan.endLine + 7,
+          line: reference.evidenceSpan.line + 7,
+        },
+      };
+      const reorderedSets: CodeGraphReference = {
+        ...spanOnly,
+        aliasLookupKeys: [...reference.aliasLookupKeys!, ...reference.aliasLookupKeys!].reverse(),
+        lookupTiers: reference.lookupTiers.map(tier => [...tier, ...tier].reverse()),
+      };
+
+      expect(hasSameCodeGraphReexportResolutionSurface([reference], [reference])).toBe(true);
+      expect(hasSameCodeGraphReexportResolutionSurface([reference], [reorderedSets])).toBe(true);
+      expect(hasSameCodeGraphReexportResolutionSurface([reference, peer], [peer, spanOnly])).toBe(true);
+      expect(hasSameCodeGraphReexportResolutionSurface([reorderedSets], [reference])).toBe(true);
+      const orderedTiers: CodeGraphReference = {...reference, lookupTiers: [['first'], ['second']]};
+      expect(
+        hasSameCodeGraphReexportResolutionSurface(
+          [orderedTiers],
+          [{...orderedTiers, lookupTiers: [['second'], ['first']]}],
+        ),
+      ).toBe(false);
+    },
+    {fastCheck: {numRuns: 200}},
+  );
+
+  it.prop(
+    'fails closed for every changed or unsupported re-export resolver surface',
+    {reference: staticReexportReferenceArbitrary},
+    ({reference}) => {
+      const changedTier = reference.lookupTiers.map((tier, index) =>
+        index === 0 ? [...tier, '__changed_target__'] : tier,
+      );
+      const mutations: readonly CodeGraphReference[] = [
+        {...reference, aliasLookupKeys: [...reference.aliasLookupKeys!, '__changed_alias__']},
+        {...reference, arity: (reference.arity ?? 0) + 1},
+        {...reference, edgeId: `changed:${reference.edgeId}`},
+        {...reference, evidencePath: `changed/${reference.evidencePath}`},
+        {...reference, exportedOnly: false},
+        {...reference, lookupTiers: changedTier},
+        {...reference, provenance: 'heuristic'},
+        {...reference, relation: 'calls'},
+        {...reference, resolutionDomain: 'global'},
+        {...reference, sourceId: `changed:${reference.sourceId ?? ''}`},
+        {...reference, sourceName: `changed:${reference.sourceName}`},
+        {...reference, targetName: `changed:${reference.targetName}`},
+      ];
+
+      expect(mutations.every(mutated => !hasSameCodeGraphReexportResolutionSurface([reference], [mutated]))).toBe(true);
+      expect(hasSameCodeGraphReexportResolutionSurface([reference, reference], [reference, reference])).toBe(false);
+      const unsupported: CodeGraphReference = {...reference, relation: 'calls'};
+      expect(hasSameCodeGraphReexportResolutionSurface([unsupported], [unsupported])).toBe(false);
+      expect(hasSameCodeGraphReexportResolutionSurface([reference], [])).toBe(false);
+      expect(hasSameCodeGraphReexportResolutionSurface([], [reference])).toBe(false);
+    },
+    {fastCheck: {numRuns: 200}},
+  );
+
   it('classifies scoped and unscoped own-path TypeScript keys without leaking lookup values', () => {
     const path = 'packages/private/src/fixture.ts';
     const scoped: CodeGraphSymbol = {

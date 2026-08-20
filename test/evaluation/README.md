@@ -26,6 +26,9 @@ bun run bench:code-graph -- --scale-symbols 100000 --fail-on-budget
 bun run bench:code-graph -- --vectors --scale-symbols 10000 --model-home ~/.threadnote --fail-on-budget
 bun run bench:code-graph:dirty-overlay -- --scale-symbols 10000 --samples 3 \
   --output artifacts/code-graph-dirty-overlay.json
+bun run bench:code-graph:dirty-overlay -- --scenario unchanged-static-reexport \
+  --scale-symbols 10000 --samples 3 \
+  --output artifacts/code-graph-dirty-overlay-static-reexport.json
 bun run bench:worktree-readiness -- --candidate-ref v4.0.1 --samples 5 --warmups 1 \
   --output artifacts/code-graph-worktree-readiness-v4.0.1.json
 
@@ -190,6 +193,12 @@ one-file worktree overlay in the same SQLite session. It alternates the safe sta
 disabled full-materialization control, requires identical graph shape, and records both total and materialization
 time. The reviewed local 10k-symbol result is stored as `dirty-overlay-development.json`; it is comparative evidence
 on one hardware class, not a portable latency gate.
+
+The opt-in `unchanged-static-reexport` scenario shifts only the evidence span above a byte-identical named TypeScript
+re-export. It retains staged/total files plus exact integer rewrite and cached-fact replay amplification for both the
+incremental path and forced-full control; those structural observations are not wall-clock assertions. The generated
+10k-symbol fixture contains 102 indexed files, so this is not evidence for a 10k-file repository or production-large.
+The existing body-only scenario and checked baseline remain unchanged.
 
 `bench:worktree-readiness` compares an exact candidate ref with its immediate parent on one machine and one pinned
 public checkout. Each runtime gets an independent frozen dependency installation, Threadnote home, and fixture clone.

@@ -7,11 +7,14 @@ logs; the Collector only listens on loopback.
 
 The Go ingress validates the complete request against the immutable,
 version-selected [`telemetry-schema-v1.json`](./telemetry-schema-v1.json),
-[`telemetry-schema-v2.json`](./telemetry-schema-v2.json), or
-[`telemetry-schema-v3.json`](./telemetry-schema-v3.json) contract before the
-Collector can see it. Versions 1 and 2 remain accepted for deployed clients;
-version 3 adds only a closed automatic-update worker result and an updated-only
-repair-required boolean. It rejects unknown or duplicate protobuf fields, schema
+[`telemetry-schema-v2.json`](./telemetry-schema-v2.json),
+[`telemetry-schema-v3.json`](./telemetry-schema-v3.json), or
+[`telemetry-schema-v4.json`](./telemetry-schema-v4.json) contract before the
+Collector can see it. Versions 1, 2, and 3 remain immutable and accepted for
+deployed clients. Version 3 adds a closed automatic-update worker result and an
+updated-only repair-required boolean; version 4 inherits that surface and adds
+only closed graph request/scope, query-phase, query-stage/subphase, snapshot
+selection/freshness, and published snapshot-size buckets. It rejects unknown or duplicate protobuf fields, schema
 surface mixing, mixed valid/invalid batches, unrecognized attributes and
 values, invalid field combinations, span events, links, trace state, status
 messages, and malformed identifiers. Accepted
@@ -31,8 +34,9 @@ certificate, DNS, monitoring, and rollback requirements live in the
 [production runbook](../../docs/operations/telemetry-production.md).
 
 The scheduled canary checks the actual Fly Machine inventory against the shared
-budget before sending a frozen-v1 completion, frozen-v2 graph lifecycle, and
-current-v3 graph and automatic-update traces. At the 20 GB operator gate, setting the Fly secret
+budget before sending eight traces: a frozen-v1 completion, frozen-v2 graph
+lifecycle, frozen-v3 graph and automatic-update traces, and current-v4 graph,
+automatic-update, query-checkpoint, and query-completion traces. At the 20 GB operator gate, setting the Fly secret
 `THREADNOTE_TELEMETRY_PUBLIC_INGESTION=disabled` makes `/v1/traces`
 return `503` while `/healthz` remains available; the runbook contains the exact
 shutdown and recovery procedure.
@@ -65,28 +69,34 @@ the same organization updates that dashboard after confirmation. Change the UID
 on the import screen when a separate copy is desired. Keep the dashboard private:
 its tables can show opaque random session and invocation IDs for correlation, so
 do not publish snapshots or use those IDs as metric groupings or alert labels.
-Schemas v2 and v3 inherit that existing ephemeral base correlation envelope; no
-identifier is part of the graph or automatic-update surface, aggregation, or graph
+Schemas v2 through v4 inherit that existing ephemeral base correlation envelope; no
+identifier is part of the graph, automatic-update, or graph-query surface, aggregation, or graph
 incident table.
 
 The dashboard defaults to six hours and should remain at 24 hours or less because
 TraceQL metrics queries have a default 24-hour range limit. Every semantic query
-pins its telemetry schema version and the anonymous diagnostic span name.
-Existing operation panels admit frozen schema versions 1 and 2 plus current
-schema version 3 so producer upgrades do not make them go dark. Graph-build panels use
-versions 2 and 3 and aggregate only by app version, closed mode/fallback/efficiency
+pins its telemetry schema version and the anonymous diagnostic span name. Every
+Tempo query excludes the exact synthetic canary version `0.0.0-canary` before
+aggregation or table selection. Existing operation panels admit schema versions 1, 2, 3, and 4
+so producer upgrades do not make them go dark. Graph-build panels admit versions 2, 3, and 4
+and aggregate only by app version, closed mode/fallback/efficiency
 classifications, and coarse buckets; their incident table selects the same
 bounded fields plus duration. They never group by or select session, invocation,
 repository, path, or commit identity. Operation outcomes and latency use
 `threadnote.outcome` and the numeric
 `threadnote.duration_ms`; OTLP span status and duration do not represent the
-operation result. The automatic-update panel uses schema v3's closed result and
-updated-only repair flag, excluding the synthetic canary version. Phase panels use checkpoint events so a completion's copy of
+operation result. The automatic-update panel uses schema v3 and v4's closed
+result and updated-only repair flag. Graph-query panels admit version 4 only and
+show successful end-to-end p50, p95, and p99 by closed request kind; p50 and p95
+for each closed query phase and request kind; p95 by snapshot file-count bucket;
+selection/freshness counts; and fine-stage latency by stage/subphase. Phase panels use checkpoint events so a completion's copy of
 the last phase is not counted again. Memory values are intentionally coarse
 string buckets and are only grouped and counted.
 
 The dashboard includes an unexpected-full percentage and rewrite/replay
-amplification distributions. The percentage denominator is dirty builds, and
+amplification distributions. The percentage denominator is dirty builds; its
+guarded Grafana expression renders a zero-count bucket as 0% instead of dividing
+by zero, while datasource-wide NoData remains visible. The
 amplification panels require a nonzero coarse denominator so clean cold builds
 cannot dilute or pollute the incident signal. These are not alert rules. The
 operated Tempo data source does not support Grafana-managed alerting, and this
@@ -102,7 +112,7 @@ If an imported panel is empty, widen the dashboard range up to 24 hours and
 confirm that the selected Tempo data source returns this query in Explore:
 
 ```traceql
-{ resource.service.name = "threadnote" && (resource.threadnote.telemetry.schema_version = 1 || resource.threadnote.telemetry.schema_version = 2 || resource.threadnote.telemetry.schema_version = 3) && span:name = "threadnote.anonymous-diagnostic" } with (most_recent=true)
+{ resource.service.name = "threadnote" && resource.service.version != "0.0.0-canary" && (resource.threadnote.telemetry.schema_version = 1 || resource.threadnote.telemetry.schema_version = 2 || resource.threadnote.telemetry.schema_version = 3 || resource.threadnote.telemetry.schema_version = 4) && span:name = "threadnote.anonymous-diagnostic" } with (most_recent=true)
 ```
 
 Validate the artifact locally with:
@@ -113,11 +123,12 @@ bun --bun vitest run test/unit/telemetry-gateway-dashboard.test.ts
 
 ## Validate and smoke locally
 
-Roll out schema v3 gateway-first: deploy the revision that accepts v1, v2, and
-v3, require the production canary to store and read every version-specific
-trace, and only then release a v3 producer. Keep the v1 and v2 canaries and
-ingress contracts until all supported older producers are retired by a separate
-reviewed change. A passing older-schema canary does not waive a failing v3 canary.
+Roll out schema v4 gateway-first: deploy the revision that accepts v1 through
+v4, require the production canary to store and read all eight traces, validate
+the v4-capable dashboard, and only then release a consent-v4 producer. Keep the
+v1, v2, and v3 canaries and ingress contracts until all supported older
+producers are retired by a separate reviewed change. A passing older-schema
+canary does not waive a failing v4 canary.
 
 Validate the Collector config without contacting a backend:
 
