@@ -439,7 +439,7 @@ describe('Threadnote MCP toolsets', () => {
           },
           nextAction: {tool: 'read_context', uris: expect.any(Array)},
           output: {budgetTokens: 1_500, explain: false, returnedResults: expect.any(Number)},
-          rankerVersion: 'hybrid-v6',
+          rankerVersion: 'hybrid-v7',
           results: expect.any(Array),
         });
         const compact = result.structuredContent as {
@@ -1155,7 +1155,7 @@ describe('Threadnote MCP toolsets', () => {
     );
   });
 
-  it('keeps an explicit recall project ahead of conflicting caller workspace inference', async () => {
+  it('treats an explicit recall project as an eligibility boundary while omitted project stays global', async () => {
     await withMcpClient(
       async (client, fixture) => {
         const workspace = join(fixture.root, 'workspace');
@@ -1215,7 +1215,26 @@ describe('Threadnote MCP toolsets', () => {
           'threadnote://user/test-user/memories/handoffs/active/requested-project/project-precedence.md';
         const workspaceUri = 'threadnote://user/test-user/memories/handoffs/active/workspace/project-precedence.md';
         expect(uris?.[0]).toBe(requestedUri);
-        expect(uris?.indexOf(requestedUri)).toBeLessThan(uris?.indexOf(workspaceUri) ?? Number.POSITIVE_INFINITY);
+        expect(uris).not.toContain(workspaceUri);
+
+        const global = await client.callTool(
+          {
+            arguments: {
+              callerCwd: workspace,
+              nodeLimit: 12,
+              query: 'current repo latest handoff project precedence',
+              threshold: 0,
+            },
+            name: 'recall_context',
+          },
+          undefined,
+          {timeout: 10_000},
+        );
+        expect(global.isError).not.toBe(true);
+        const globalUris = (
+          global.structuredContent as {readonly results?: readonly {readonly uri?: unknown}[]} | undefined
+        )?.results?.map(item => item.uri);
+        expect(globalUris).toEqual(expect.arrayContaining([requestedUri, workspaceUri]));
       },
       {toolset: 'core'},
     );
@@ -2264,6 +2283,47 @@ describe('Threadnote MCP toolsets', () => {
         expect(applied).toContain(
           'Stored memory: threadnote://user/test-user/memories/durable/projects/threadnote/approved-candidates.md',
         );
+
+        const approvedUri = 'threadnote://user/test-user/memories/durable/projects/threadnote/approved-candidates.md';
+        const unreviewedUri =
+          'threadnote://user/test-user/memories/durable/projects/threadnote/approved-candidates-shadow.md';
+        await callText(client, 'remember_context', {
+          kind: 'durable',
+          project: 'threadnote',
+          sourceAgentClient: 'codex',
+          status: 'active',
+          text: 'Unreviewed speculation about approved candidates. '.repeat(8),
+          topic: 'approved-candidates-shadow',
+        });
+
+        const approvedRecall = await client.callTool({
+          arguments: {
+            nodeLimit: 12,
+            project: 'threadnote',
+            query: 'canonical approved candidates guidance',
+            threshold: 0,
+          },
+          name: 'recall_context',
+        });
+        const approvedUris = (
+          approvedRecall.structuredContent as {readonly results?: readonly {readonly uri?: unknown}[]} | undefined
+        )?.results?.map(result => result.uri);
+        expect(approvedUris).toContain(approvedUri);
+        expect(approvedUris).not.toContain(unreviewedUri);
+
+        const ordinaryRecall = await client.callTool({
+          arguments: {
+            nodeLimit: 12,
+            project: 'threadnote',
+            query: 'approved candidates',
+            threshold: 0,
+          },
+          name: 'recall_context',
+        });
+        const ordinaryUris = (
+          ordinaryRecall.structuredContent as {readonly results?: readonly {readonly uri?: unknown}[]} | undefined
+        )?.results?.map(result => result.uri);
+        expect(ordinaryUris).toContain(unreviewedUri);
       },
       {toolset: 'core'},
     );

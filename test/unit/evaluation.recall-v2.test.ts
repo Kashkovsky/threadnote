@@ -120,6 +120,46 @@ describe('recall evaluation contract v2', () => {
   );
 
   it(
+    'reports explicit-project and omitted-project global quality as separate retrieval modes',
+    () => {
+      const fixture = createRecallEvaluationFixtureV2();
+      const explicit = evaluateRecallRunV2(
+        fixture,
+        runLexicalRecallEvaluationV2(fixture, {
+          fixtureHash: 'fixture-hash',
+          projectEligibility: 'explicit',
+        }),
+      );
+      const global = evaluateRecallRunV2(
+        fixture,
+        runLexicalRecallEvaluationV2(fixture, {
+          fixtureHash: 'fixture-hash',
+          projectEligibility: 'global',
+        }),
+      );
+
+      expect(explicit.metrics.forbiddenHitRate).toBe(0);
+      expect(global.metrics.forbiddenHitRate).toBeGreaterThan(explicit.metrics.forbiddenHitRate);
+      expect(global.metrics.recallAt5).toBeGreaterThanOrEqual(explicit.metrics.recallAt5);
+    },
+    RECALL_EVALUATION_TEST_TIMEOUT,
+  );
+
+  it('requires the global eligibility diagnostic to opt out of the explicit-project baseline', () => {
+    const result = Bun.spawnSync({
+      cmd: [process.execPath, 'scripts/evaluate-recall-v2.ts', '--global-eligibility'],
+      cwd: process.cwd(),
+      stderr: 'pipe',
+      stdout: 'pipe',
+    });
+
+    expect(result.exitCode).not.toBe(0);
+    expect(`${result.stdout.toString()}\n${result.stderr.toString()}`).toContain(
+      '--global-eligibility requires --no-baseline',
+    );
+  });
+
+  it(
     'gates aggregate and per-category quality without allowing safety regressions',
     () => {
       const fixture = createRecallEvaluationFixtureV2();

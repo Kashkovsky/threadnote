@@ -1,6 +1,8 @@
 import {Effect} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {boundedRecallPhysicalCandidateLimit} from './index_query.js';
+import {recallEligibilityPolicyRestrictsCandidates, type RecallEligibilityPolicy} from './eligibility.js';
+import {recallEligibilityPredicate} from './index_eligibility.js';
 import {
   combineRecallSqlPredicates,
   recallUriScopePredicate,
@@ -32,6 +34,7 @@ export function selectRecallDocumentSample(
   sql: SqlClient.SqlClient,
   options: {
     readonly allowedUriScopes?: readonly string[];
+    readonly eligibility?: RecallEligibilityPolicy;
     readonly limit?: number;
     readonly project?: string;
     readonly workspaceScope?: string;
@@ -42,6 +45,7 @@ export function selectRecallDocumentSample(
   if (normalizedLimit === 0) return Effect.succeed<readonly RecallDocumentSampleRow[]>([]);
   const scope = combineRecallSqlPredicates(
     recallUriScopePredicate('d', options.allowedUriScopes),
+    recallEligibilityPredicate('d', options.eligibility),
     recallProjectPredicate('d', options.project),
     recallWorkspaceScopePredicate('d', options.workspaceScope, options.workspaceScopeMode),
   );
@@ -63,6 +67,7 @@ export function recallSelectionHasDocuments(
   sql: SqlClient.SqlClient,
   options: {
     readonly allowedUriScopes?: readonly string[];
+    readonly eligibility?: RecallEligibilityPolicy;
     readonly project?: string;
     readonly workspaceScope?: string;
     readonly workspaceScopeMode?: RecallWorkspaceScopeMode;
@@ -70,6 +75,7 @@ export function recallSelectionHasDocuments(
 ) {
   const scope = combineRecallSqlPredicates(
     recallUriScopePredicate('d', options.allowedUriScopes),
+    recallEligibilityPredicate('d', options.eligibility),
     recallProjectPredicate('d', options.project),
     recallWorkspaceScopePredicate('d', options.workspaceScope, options.workspaceScopeMode),
   );
@@ -87,6 +93,7 @@ export function selectRecallQueryTermStatistics(
   corpusStatistics: RecallCorpusStatistics,
   options: {
     readonly allowedUriScopes?: readonly string[];
+    readonly eligibility?: RecallEligibilityPolicy;
     readonly project?: string;
     readonly workspaceScope?: string;
     readonly workspaceScopeMode?: RecallWorkspaceScopeMode;
@@ -94,6 +101,7 @@ export function selectRecallQueryTermStatistics(
 ) {
   if (
     (!options.allowedUriScopes || options.allowedUriScopes.length === 0) &&
+    !recallEligibilityPolicyRestrictsCandidates(options.eligibility) &&
     options.project === undefined &&
     options.workspaceScope === undefined
   ) {
@@ -102,7 +110,12 @@ export function selectRecallQueryTermStatistics(
   return Effect.gen(function* () {
     const uriScope = recallUriScopePredicate('d', options.allowedUriScopes);
     const workspace = recallWorkspaceScopePredicate('d', options.workspaceScope, options.workspaceScopeMode);
-    const scope = combineRecallSqlPredicates(uriScope, recallProjectPredicate('d', options.project), workspace);
+    const scope = combineRecallSqlPredicates(
+      uriScope,
+      recallEligibilityPredicate('d', options.eligibility),
+      recallProjectPredicate('d', options.project),
+      workspace,
+    );
     const indexHint = uriScope.restricted
       ? ' INDEXED BY documents_uri'
       : workspace.restricted

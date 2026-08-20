@@ -1,6 +1,7 @@
 import {describe, expect, it} from '@effect/vitest';
 import * as FC from 'effect/testing/FastCheck';
 import {parseRecallCrossScopeSqliteBenchmarkArguments} from '../../scripts/benchmark-recall-cross-scope-sqlite.js';
+import {parseRecallEligibilityBenchmarkArguments} from '../../scripts/benchmark-recall-eligibility-production.js';
 import {
   parseRecallMonorepoSharesBenchmarkArguments,
   rotateRecallBenchmarkPasses,
@@ -29,6 +30,13 @@ describe('recall benchmark runner arguments', () => {
       samples: 10,
       warmups: 2,
     });
+    expect(parseRecallEligibilityBenchmarkArguments([])).toEqual({
+      distractorsPerClass: 525,
+      outputPath: undefined,
+      samples: 5,
+      topK: 5,
+      warmups: 1,
+    });
   });
 
   it.each(['1.5', '7junk', '1e3', '+7', '-0', ' 7'])('rejects partial or non-canonical numeric input %j', value => {
@@ -36,6 +44,9 @@ describe('recall benchmark runner arguments', () => {
       'requires a non-negative integer',
     );
     expect(() => parseRecallMonorepoSharesBenchmarkArguments(['--samples', value])).toThrow(
+      'requires a non-negative integer',
+    );
+    expect(() => parseRecallEligibilityBenchmarkArguments(['--samples', value])).toThrow(
       'requires a non-negative integer',
     );
   });
@@ -52,6 +63,15 @@ describe('recall benchmark runner arguments', () => {
     expect(() => parseRecallMonorepoSharesBenchmarkArguments(['--samples', '0'])).toThrow(
       'requires a positive integer',
     );
+    expect(parseRecallEligibilityBenchmarkArguments(['--warmups', '0']).warmups).toBe(0);
+    expect(() => parseRecallEligibilityBenchmarkArguments(['--samples', '0'])).toThrow('requires a positive integer');
+  });
+
+  it('preserves a fixture larger than the lexical posting pool', () => {
+    expect(() => parseRecallEligibilityBenchmarkArguments(['--distractors-per-class', '500'])).toThrow(
+      'must be at least 501',
+    );
+    expect(parseRecallEligibilityBenchmarkArguments(['--distractors-per-class', '501']).distractorsPerClass).toBe(501);
   });
 });
 

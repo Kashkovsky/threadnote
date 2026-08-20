@@ -1,4 +1,5 @@
 import {Schema} from 'effect';
+import {deriveRecallEligibilityPolicy} from '../recall/eligibility.js';
 import type {RecallCandidate, RecallRankContext} from '../recall/rank.js';
 import {rankRecallCandidates} from '../recall/rank.js';
 
@@ -321,6 +322,7 @@ export function runLexicalRecallEvaluationV2(
     readonly fixtureHash: string;
     readonly limit?: number;
     readonly pipelineName?: string;
+    readonly projectEligibility?: 'explicit' | 'global';
   },
 ): RecallEvaluationRunV1 {
   const limit = Math.max(1, options.limit ?? 10);
@@ -330,6 +332,10 @@ export function runLexicalRecallEvaluationV2(
     pipeline: {name: options.pipelineName ?? 'threadnote-lexical-only'},
     queries: fixture.queries.map(query => {
       const context: RecallRankContext = {
+        eligibility: deriveRecallEligibilityPolicy({
+          explicitProject: options.projectEligibility === 'global' ? undefined : query.project,
+          originalQuery: query.query,
+        }),
         now: query.now ? new Date(query.now) : undefined,
         project: query.project,
         seedUris: query.seedUris,
@@ -378,6 +384,7 @@ export function runScoredRecallEvaluationV2(
     readonly limit?: number;
     readonly model?: string;
     readonly pipelineName: string;
+    readonly projectEligibility?: 'explicit' | 'global';
     readonly revision?: string;
   },
 ): RecallEvaluationRunV1 {
@@ -400,6 +407,10 @@ export function runScoredRecallEvaluationV2(
           semantic: scores?.semantic?.get(document.uri) ?? 0,
         })),
         {
+          eligibility: deriveRecallEligibilityPolicy({
+            explicitProject: options.projectEligibility === 'global' ? undefined : query.project,
+            originalQuery: query.query,
+          }),
           now: query.now ? new Date(query.now) : undefined,
           project: query.project,
           seedUris: query.seedUris,

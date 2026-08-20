@@ -497,6 +497,9 @@ bun run eval:recall:v2 -- \
 
 # Keep the full query run as an untracked CI artifact
 bun run eval:recall:v2 -- --no-baseline --documents 10000 --full --output artifacts/recall-v2-10k.json
+
+# Diagnose omitted-project global retrieval separately from the explicit-project contract
+bun run eval:recall:v2 -- --no-baseline --global-eligibility --full
 ```
 
 The evaluator and model bake-off default to the reviewed Threadnote 4.2.7 lexical baseline. Its 193 exact contract
@@ -504,6 +507,11 @@ failure identities remain visible work, not silent waivers: with a baseline, `--
 rejects any new identity or count increase; with `--no-baseline`, it remains zero-tolerance. A candidate must also pass
 the independent non-inferiority gate for global, category, and safety metrics. Pass `--baseline` explicitly only to
 reproduce a historical comparison.
+
+The reviewed fixture's `query.project` models the documented explicit-project agent workflow. The
+`--global-eligibility` diagnostic keeps that value only as a soft ranking context while omitting the hard project
+boundary, matching a recall call without `project`; it intentionally runs without the explicit-project baseline so
+the two retrieval modes are not conflated.
 
 ## Performance suites
 
@@ -595,6 +603,26 @@ construction. It intentionally records host-specific observations without a univ
 bun run bench:recall:cross-scope-sqlite -- \
   --documents 4000 --samples 5 --warmups 1 \
   --output .artifacts/recall-cross-scope-sqlite.json
+```
+
+`bench:recall:eligibility` is the bounded production-path diagnostic for hard project and approved-authority
+eligibility. It writes canonical personal and shared memory files, builds the production lexical SQLite index, and then
+builds and queries the production vector SQLite index from that indexed corpus. Each disallowed class contains 525
+stronger documents by default, exceeding both the five-result semantic top-k and the lexical loader's 500-row
+per-term posting pool. The weaker target is therefore absent from unrestricted recall and from project-only recall
+(where stronger same-project unapproved memories still dominate), but must be recovered when both explicit-project
+and approved-authoritative eligibility are applied before either retrieval limit.
+
+The summaries report target recovery, disallowed results, lexical posting rows/statements, vector rows eligible for
+scoring, and result counts. Latency samples cover the warm read-only production queries after index construction;
+there is no host-independent timing gate. Vector embeddings are deterministic fixture controls so the run isolates
+SQLite eligibility placement and top-k behavior. It does not claim real embedding-model quality; use
+`eval:recall:models` for that evidence.
+
+```sh
+bun run bench:recall:eligibility -- \
+  --distractors-per-class 525 --samples 5 --warmups 1 \
+  --output .artifacts/recall-eligibility-production.json
 ```
 
 The checked-in `candidates/threadnote-4.2.7-hybrid-v6/` capture is the matched clean post-change comparison. Its p95

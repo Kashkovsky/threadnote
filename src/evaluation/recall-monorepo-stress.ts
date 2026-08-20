@@ -1,4 +1,5 @@
 import {recallWorkspaceScopeMatches} from '../recall/index_scope.js';
+import {deriveRecallEligibilityPolicy} from '../recall/eligibility.js';
 import {
   deduplicateLogicalRecallCandidates,
   rankRecallCandidates,
@@ -163,6 +164,10 @@ export function monorepoShareRecallStressCandidates(
 
   const logicalCandidates = deduplicateLogicalRecallCandidates(fixture.candidates);
   const context = {
+    eligibility: deriveRecallEligibilityPolicy({
+      explicitProject: 'monorepo-stress',
+      originalQuery: fixture.query,
+    }),
     now: FIXED_NOW,
     project: 'monorepo-stress',
     workspaceScope: fixture.targetWorkspaceScope,
@@ -186,6 +191,10 @@ export function runMonorepoShareRecallStressPass(
   candidates: readonly RecallCandidate[],
 ): RankedRecallSet {
   return rankRecallCandidates(fixture.query, candidates, {
+    eligibility: deriveRecallEligibilityPolicy({
+      explicitProject: 'monorepo-stress',
+      originalQuery: fixture.query,
+    }),
     now: FIXED_NOW,
     project: 'monorepo-stress',
     workspaceScope: fixture.targetWorkspaceScope,

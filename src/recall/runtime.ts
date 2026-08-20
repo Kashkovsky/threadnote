@@ -20,6 +20,7 @@ import {
   recallUriMatchesScopes,
 } from './index.js';
 import {recallWorkspaceScopeMatches} from './index_scope.js';
+import {recallRankCandidateIsEligible, type RecallEligibilityPolicy} from './eligibility.js';
 import {
   deduplicateLogicalRecallCandidates,
   recallCandidateLogicalCorpusKey,
@@ -56,6 +57,7 @@ interface PrepareRecallSectionsInput<R> {
   readonly allowedUriScopes?: readonly string[];
   readonly candidateUris?: readonly string[];
   readonly exactMatches: readonly ExactMatch[];
+  readonly eligibility?: RecallEligibilityPolicy;
   readonly feedbackQuery: string;
   readonly includeInactive: boolean;
   readonly limit: number;
@@ -165,7 +167,13 @@ export const prepareRecallSections = Effect.fn('recall.prepareSections')(functio
   let operationalWarnings: readonly RecallOperationalWarning[] = [];
   let semanticResult =
     input.semanticResult === undefined
-      ? yield* loadRecallSemanticScoresResult(config, input.query, input.limit)
+      ? yield* loadRecallSemanticScoresResult(
+          config,
+          input.query,
+          input.limit,
+          input.eligibility,
+          input.allowedUriScopes,
+        )
       : Option.getOrElse(input.semanticResult, emptyRecallSemanticScoresResult);
   for (let retry = 0; ; retry += 1) {
     const prepared = yield* prepareRecallSectionsAttempt(config, input, semanticResult);
@@ -185,7 +193,13 @@ export const prepareRecallSections = Effect.fn('recall.prepareSections')(functio
         semanticResult: emptyRecallSemanticScoresResult(semanticResult.warning),
       };
     }
-    semanticResult = yield* loadRecallSemanticScoresResult(config, input.query, input.limit);
+    semanticResult = yield* loadRecallSemanticScoresResult(
+      config,
+      input.query,
+      input.limit,
+      input.eligibility,
+      input.allowedUriScopes,
+    );
   }
 });
 
@@ -216,6 +230,7 @@ const prepareRecallSectionsAttempt = Effect.fn('recall.prepareSectionsAttempt')(
   const topicalIndexSelections = indexQueries.flatMap(indexQuery =>
     scopeSets.map(allowedUriScopes => ({
       allowedUriScopes,
+      eligibility: input.eligibility,
       limit: indexCandidateLimit,
       query: indexQuery,
       requiredUris: rankingUris,
@@ -225,6 +240,7 @@ const prepareRecallSectionsAttempt = Effect.fn('recall.prepareSectionsAttempt')(
   const workspaceIndexSelections = workspaceScope
     ? scopeSets.map(allowedUriScopes => ({
         allowedUriScopes,
+        eligibility: input.eligibility,
         limit: indexCandidateLimit,
         query: input.query,
         requiredUris: rankingUris,
@@ -236,6 +252,7 @@ const prepareRecallSectionsAttempt = Effect.fn('recall.prepareSectionsAttempt')(
   const branchIndexSelections = workspaceBranch
     ? scopeSets.map(allowedUriScopes => ({
         allowedUriScopes,
+        eligibility: input.eligibility,
         limit: indexCandidateLimit,
         query: `${input.query} ${workspaceBranch}`,
         requiredUris: rankingUris,
@@ -332,6 +349,7 @@ const prepareRecallSectionsAttempt = Effect.fn('recall.prepareSectionsAttempt')(
         // one fallback query searches the authorized global corpus so the
         // preference cannot double the expensive sibling selection.
         allowedUriScopes: input.allowedUriScopes?.length ? input.allowedUriScopes : undefined,
+        eligibility: input.eligibility,
         includeInactive: input.includeInactive,
         limit: laneBudgets.crossSelectionLimit,
         project: workspaceProject,
@@ -404,12 +422,13 @@ const prepareRecallSectionsAttempt = Effect.fn('recall.prepareSectionsAttempt')(
     recallIndexCandidateSets,
     rankingUris,
     topicalRecallIndexCandidateSets.length,
-  );
+  ).filter(candidate => recallRuntimeCandidateIsEligible(candidate, input.eligibility));
   const sections = buildRecallSections(input.passes, input.exactMatches, input.limit, {
     allowExactRescue: input.allowExactRescue,
     allowedUriScopes: input.allowedUriScopes,
     candidateUris: input.candidateUris,
     corpusStatistics: workspaceScope ? undefined : recallIndex?.corpusStatistics,
+    eligibility: input.eligibility,
     feedbackByUri,
     includeInactive: input.includeInactive,
     indexedCandidates,
@@ -475,10 +494,12 @@ export const loadMcpRecallSemanticScoresResult = Effect.fn('recall.loadMcpSemant
   config: RecallRuntimeConfig,
   query: string,
   limit: number,
+  eligibility?: RecallEligibilityPolicy,
+  allowedUriScopes?: readonly string[],
 ) {
   const semanticLimit = recallIndexPreselectionLimit(limit);
   const attempt = yield* boundedRecallSemanticRetrieval(
-    loadReadOnlySemanticScoresAttempt(config, query, semanticLimit),
+    loadReadOnlySemanticScoresAttempt(config, query, semanticLimit, eligibility, allowedUriScopes),
   );
   if (attempt.status === 'timed-out') {
     return {
@@ -509,6 +530,8 @@ const loadReadOnlySemanticScoresAttempt = Effect.fn('recall.loadReadOnlySemantic
   config: RecallRuntimeConfig,
   query: string,
   limit: number,
+  eligibility?: RecallEligibilityPolicy,
+  allowedUriScopes?: readonly string[],
 ) {
   const selection = yield* readModelSelection(config.agentContextHome);
   const modelId = selection.roles.embedding;
@@ -527,6 +550,8 @@ const loadReadOnlySemanticScoresAttempt = Effect.fn('recall.loadReadOnlySemantic
   const scores = yield* selectedSemanticScores(config, query, {
     corpusGeneration: corpusGeneration.value,
     currentCorpusGeneration: () => currentRecallCorpusGeneration(config),
+    allowedUriScopes,
+    eligibility,
     limit,
   });
   return {corpusGeneration: corpusGeneration.value, scores};
@@ -551,6 +576,8 @@ export const loadRecallSemanticScoresResult = Effect.fn('recall.loadSemanticScor
   config: RecallRuntimeConfig,
   query: string,
   limit: number,
+  eligibility?: RecallEligibilityPolicy,
+  allowedUriScopes?: readonly string[],
 ) {
   return yield* Effect.gen(function* () {
     const selection = yield* readModelSelection(config.agentContextHome);
@@ -563,7 +590,7 @@ export const loadRecallSemanticScoresResult = Effect.fn('recall.loadSemanticScor
     const installed = yield* store.status(config.agentContextHome, manifest);
     if (!installed.installed) return undefined;
     const semanticLimit = recallIndexPreselectionLimit(limit);
-    return yield* loadCurrentSemanticScores(config, manifest, query, semanticLimit);
+    return yield* loadCurrentSemanticScores(config, manifest, query, semanticLimit, eligibility, allowedUriScopes);
   }).pipe(
     Effect.map(snapshot =>
       snapshot === undefined
@@ -587,9 +614,18 @@ const loadCurrentSemanticScores = Effect.fn('recall.loadCurrentSemanticScores')(
   manifest: LocalModelManifest,
   query: string,
   limit: number,
+  eligibility?: RecallEligibilityPolicy,
+  allowedUriScopes?: readonly string[],
 ) {
   for (let retry = 0; retry <= SEMANTIC_GENERATION_RETRY_LIMIT; retry += 1) {
-    const attempt = yield* loadSemanticScoresAttempt(config, manifest, query, limit).pipe(Effect.result);
+    const attempt = yield* loadSemanticScoresAttempt(
+      config,
+      manifest,
+      query,
+      limit,
+      eligibility,
+      allowedUriScopes,
+    ).pipe(Effect.result);
     if (Result.isSuccess(attempt)) return attempt.success;
     if (attempt.failure instanceof VectorCorpusGenerationChanged && retry < SEMANTIC_GENERATION_RETRY_LIMIT) {
       continue;
@@ -604,6 +640,8 @@ const loadSemanticScoresAttempt = Effect.fn('recall.loadSemanticScoresAttempt')(
   manifest: LocalModelManifest,
   query: string,
   limit: number,
+  eligibility?: RecallEligibilityPolicy,
+  allowedUriScopes?: readonly string[],
 ) {
   const fence = () => currentRecallCorpusGeneration(config);
   const snapshot = yield* loadRecallIndexData(config, {
@@ -621,8 +659,10 @@ const loadSemanticScoresAttempt = Effect.fn('recall.loadSemanticScoresAttempt')(
     });
   }
   return yield* selectedSemanticScores(config, query, {
+    allowedUriScopes,
     corpusGeneration,
     currentCorpusGeneration: fence,
+    eligibility,
     limit,
   }).pipe(
     Effect.map(scores => ({corpusGeneration, scores})),
@@ -636,8 +676,10 @@ const loadSemanticScoresAttempt = Effect.fn('recall.loadSemanticScoresAttempt')(
             currentCorpusGeneration: fence,
           });
           const scores = yield* selectedSemanticScores(config, query, {
+            allowedUriScopes,
             corpusGeneration: index.generation,
             currentCorpusGeneration: fence,
+            eligibility,
             limit,
           });
           return {corpusGeneration: index.generation, scores};
@@ -650,8 +692,10 @@ export const loadRecallSemanticScores = Effect.fn('recall.loadSemanticScores')(f
   config: RecallRuntimeConfig,
   query: string,
   limit: number,
+  eligibility?: RecallEligibilityPolicy,
+  allowedUriScopes?: readonly string[],
 ) {
-  const result = yield* loadRecallSemanticScoresResult(config, query, limit);
+  const result = yield* loadRecallSemanticScoresResult(config, query, limit, eligibility, allowedUriScopes);
   if (Option.isSome(result.warning)) yield* Console.warn(result.warning.value);
   return Option.getOrUndefined(result.scores);
 });
@@ -900,14 +944,17 @@ export const loadRecallExpansionVocabulary = Effect.fn('recall.loadExpansionVoca
   config: RecallRuntimeConfig,
   input: {
     readonly allowedUriScopes?: readonly string[];
+    readonly eligibility?: RecallEligibilityPolicy;
     readonly includeInactive: boolean;
     readonly project?: string;
     readonly rankedCandidates?: readonly RecallCandidate[];
   },
 ) {
   if (!input.project) return [];
-  const rankedCandidates = (input.rankedCandidates ?? []).filter(candidate =>
-    recallUriMatchesScopes(candidate.uri, input.allowedUriScopes),
+  const rankedCandidates = (input.rankedCandidates ?? []).filter(
+    candidate =>
+      recallUriMatchesScopes(candidate.uri, input.allowedUriScopes) &&
+      recallRuntimeCandidateIsEligible(candidate, input.eligibility),
   );
   const rankedVocabulary = recallExpansionVocabulary(rankedCandidates, input.project);
   if (rankedVocabulary.length >= EXPANSION_VOCABULARY_LIMIT) {
@@ -915,6 +962,7 @@ export const loadRecallExpansionVocabulary = Effect.fn('recall.loadExpansionVoca
   }
   const index = yield* loadRecallIndexData(config, {
     allowedUriScopes: input.allowedUriScopes,
+    eligibility: input.eligibility,
     includeInactive: input.includeInactive,
     limit: EXPANSION_VOCABULARY_INDEX_SAMPLE_LIMIT,
     project: input.project,
@@ -939,6 +987,13 @@ export function mergeRecallIndexCandidates(
     }
   }
   return deduplicateLogicalRecallCandidates([...mergedByUri.values()]);
+}
+
+function recallRuntimeCandidateIsEligible(
+  candidate: RecallCandidate,
+  eligibility: RecallEligibilityPolicy | undefined,
+): boolean {
+  return eligibility === undefined || recallRankCandidateIsEligible(eligibility, candidate);
 }
 
 /**

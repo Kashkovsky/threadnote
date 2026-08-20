@@ -1317,7 +1317,7 @@ const recall = Command.make(
       'limit',
       'string',
     ),
-    project: optionalString('project', 'Add a scoped project memory pass alongside global search'),
+    project: optionalString('project', 'Restrict to this project plus projectless guidance; omit for global recall'),
     query: requiredString('query', 'Search query'),
     threshold: optionalString(
       'threshold',

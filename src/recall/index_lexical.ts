@@ -1,4 +1,5 @@
 import {recallDocumentTerms, type RecallCandidate, type RecallCorpusStatistics} from './rank.js';
+import {casedCodeIdentifiers} from './identifier.js';
 import {recallLexicalTerms, recallTokens} from './tokenize.js';
 
 export interface RecallIndexPosting {
@@ -117,13 +118,10 @@ export function indexTerms(value: string): readonly string[] {
 }
 
 export function identifiers(value: string): readonly string[] {
-  return [
-    ...new Set(
-      recallTokens(value)
-        .map(term => recallLexicalTerms(term)[0])
-        .filter((term): term is string => term !== undefined && /[\p{N}_.-]/u.test(term)),
-    ),
-  ].slice(0, 64);
+  const structuredIdentifiers = recallTokens(value)
+    .map(term => recallLexicalTerms(term)[0])
+    .filter((term): term is string => term !== undefined && /[\p{N}_.-]/u.test(term));
+  return [...new Set([...structuredIdentifiers, ...casedCodeIdentifiers(value)])].slice(0, 64);
 }
 
 function ownRecordValue<Value>(record: Readonly<Record<string, Value>>, key: string): Value | undefined {

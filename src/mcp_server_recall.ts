@@ -77,6 +77,7 @@ import {AgentResponseBudgetTooSmallError} from './evaluation/agent-response.js';
 import type {CursorCloudMemoryScope} from './cursor_cloud.js';
 import {resourceIdIsWithin} from './storage/resource-id.js';
 import {loadRecallExactMatches} from './recall/index.js';
+import {deriveRecallEligibilityPolicy, type RecallEligibilityPolicy} from './recall/eligibility.js';
 import {RECALL_RANKER_VERSION} from './recall/rank.js';
 import {projectRecallMcpResponse, RECALL_MCP_RESPONSE_MAXIMUM_ESTIMATED_TOKENS} from './recall/mcp_response.js';
 import {
@@ -657,7 +658,7 @@ export function registerSearchTool(
         query: McpInput.string('Search query'),
         uri: McpInput.string('threadnote:// subtree'),
         callerCwd: McpInput.string('Absolute nested workspace cwd'),
-        project: McpInput.string('Stable project; inferred from callerCwd'),
+        project: McpInput.string('Restrict to this project plus projectless guidance; omit for global recall'),
         nodeLimit: McpInput.integer('Result limit', {minimum: 1, maximum: 100}),
         includeArchived: McpInput.boolean('Include archived'),
         explain: McpInput.boolean('Include reasons, signals, and warnings'),
@@ -857,10 +858,18 @@ function runRecallTool(
       }
     }
 
+    const eligibility = deriveRecallEligibilityPolicy({
+      explicitProject: params.project,
+      originalQuery: query,
+      pinnedHardUri: params.pinnedUri !== undefined,
+      worksetProjectNames: workset?.projects.map(member => member.name),
+    });
+
     const exactLookup = yield* collectExactMemoryMatches(
       config,
       query,
       params.includeArchived,
+      eligibility,
       recallProjectName,
       project,
     );
@@ -884,7 +893,13 @@ function runRecallTool(
         'recall.semantic-retrieval',
         withProductionPhaseTiming(
           'recall.semantic-retrieval',
-          loadMcpRecallSemanticScoresResult(config, query, recallLimit),
+          loadMcpRecallSemanticScoresResult(
+            config,
+            query,
+            recallLimit,
+            eligibility,
+            params.pinnedUri ? [params.pinnedUri] : undefined,
+          ),
           result =>
             result.status === 'available'
               ? 'success'
@@ -927,6 +942,7 @@ function runRecallTool(
                 allowExactRescue: !thresholdConfigured,
                 allowedUriScopes: params.pinnedUri ? [params.pinnedUri] : undefined,
                 candidateUris,
+                eligibility,
                 exactMatches,
                 feedbackQuery: params.query,
                 includeInactive: params.includeArchived,
@@ -987,6 +1003,7 @@ function runRecallTool(
       needsFallbackExpansion && shouldExpandRecall(recallSections.confidence)
         ? yield* loadRecallExpansionVocabulary(config, {
             allowedUriScopes: params.pinnedUri ? [params.pinnedUri] : [...scopedRecallUris],
+            eligibility,
             includeInactive: params.includeArchived,
             project: recallProjectName,
             rankedCandidates: recallSections.expansionCandidates,
@@ -1135,6 +1152,7 @@ const collectExactMemoryMatches = Effect.fn('mcp_server.collectExactMemoryMatche
   config: RuntimeConfig,
   query: string,
   includeArchived: boolean,
+  eligibility: RecallEligibilityPolicy,
   projectName: string | undefined,
   project: ProjectManifest | undefined,
 ) {
@@ -1144,6 +1162,7 @@ const collectExactMemoryMatches = Effect.fn('mcp_server.collectExactMemoryMatche
   }
   const scopes = exactMemoryScopes(config, includeArchived, query, projectName, project);
   const result = yield* loadRecallExactMatches(config, {
+    eligibility,
     includeInactive: includeArchived,
     limitPerTerm: 25,
     terms,

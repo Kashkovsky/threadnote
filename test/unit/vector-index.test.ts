@@ -116,6 +116,7 @@ describe('vector index generations', () => {
       await mkdir(join(root, 'staging'), {recursive: true});
       await writeFile(join(root, 'active.json'), '{"version":1}', 'utf8');
       await writeFile(join(legacyGeneration, 'vectors.bin'), 'legacy', 'utf8');
+      await writeFile(join(root, 'vectors-v4.sqlite'), 'legacy', 'utf8');
 
       const rebuilt = await runEffect(
         rebuildVectorIndex({agentContextHome: home}, manifest, [
@@ -129,7 +130,7 @@ describe('vector index generations', () => {
 
       const database = new Database(vectorDatabasePath(home), {readonly: true});
       try {
-        expect(database.query('PRAGMA user_version').get()).toEqual({user_version: 4});
+        expect(database.query('PRAGMA user_version').get()).toEqual({user_version: 5});
         expect(database.query('SELECT COUNT(*) AS count FROM vector_chunks').get()).toEqual({count: 2});
         expect(database.query('SELECT COUNT(*) AS count FROM vector_values').get()).toEqual({count: 2});
         expect(database.query('SELECT MIN(length(vector)) AS bytes FROM vector_values').get()).toEqual({
@@ -138,9 +139,25 @@ describe('vector index generations', () => {
         expect(database.query('SELECT state FROM vector_generations').all()).toEqual([{state: 'ready'}]);
         expect(
           database
-            .query("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'vector_aliases_by_representative'")
-            .get(),
-        ).toEqual({name: 'vector_aliases_by_representative'});
+            .query(
+              `SELECT name
+               FROM sqlite_master
+               WHERE type = 'index'
+                 AND name IN (
+                   'vector_aliases_by_representative',
+                   'vector_chunks_by_authority',
+                   'vector_chunks_by_project',
+                   'vector_chunks_by_uri'
+                 )
+               ORDER BY name`,
+            )
+            .all(),
+        ).toEqual([
+          {name: 'vector_aliases_by_representative'},
+          {name: 'vector_chunks_by_authority'},
+          {name: 'vector_chunks_by_project'},
+          {name: 'vector_chunks_by_uri'},
+        ]);
       } finally {
         database.close();
       }
@@ -148,6 +165,7 @@ describe('vector index generations', () => {
       await expect(stat(join(root, 'active.json'))).rejects.toThrow();
       await expect(stat(join(root, 'generations'))).rejects.toThrow();
       await expect(stat(join(root, 'staging'))).rejects.toThrow();
+      await expect(stat(join(root, 'vectors-v4.sqlite'))).rejects.toThrow();
     } finally {
       await rm(home, {force: true, recursive: true});
     }
@@ -181,7 +199,7 @@ describe('vector index generations', () => {
         expect(rebuilt.embeddedChunkCount).toBe(1);
         const current = new Database(vectorDatabasePath(home), {readonly: true});
         try {
-          expect(current.query('PRAGMA user_version').get()).toEqual({user_version: 4});
+          expect(current.query('PRAGMA user_version').get()).toEqual({user_version: 5});
         } finally {
           current.close();
         }

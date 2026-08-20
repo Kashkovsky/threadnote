@@ -18,10 +18,11 @@ import {
   recallMemoryContentHash,
   type RecallCandidate,
   type RecallConfidence,
-  type RecallCorpusStatistics,
+  type RecallRankContext,
   type RecallReason,
   type RecallSignals,
 } from './recall/rank.js';
+import {recallRankCandidateIsEligible, type RecallEligibilityPolicy} from './recall/eligibility.js';
 import {redactSensitiveText} from './scrubber.js';
 import {recallTokens} from './recall/tokenize.js';
 import {parseResourceId} from './storage/resource-id.js';
@@ -1542,23 +1543,13 @@ export function recallIndexPreselectionLimit(resultLimit: number): number {
   return Math.max(RECALL_INDEX_PRESELECTION_MINIMUM, resultLimit * RECALL_INDEX_PRESELECTION_MULTIPLIER);
 }
 
-interface HybridRecallOptions {
-  readonly allowExactRescue?: boolean;
+interface HybridRecallOptions extends RecallRankContext {
   readonly allowedUriScopes?: readonly string[];
   readonly candidateUris?: readonly string[];
-  readonly corpusStatistics?: RecallCorpusStatistics;
   readonly feedbackByUri?: ReadonlyMap<string, number>;
-  readonly includeInactive?: boolean;
   readonly indexedCandidates?: readonly RecallCandidate[];
-  readonly minimumScore?: number;
-  readonly now?: Date;
-  readonly project?: string;
   readonly query: string;
-  readonly queryVariants?: readonly string[];
   readonly records?: readonly MemoryRecord[];
-  readonly seedUris?: readonly string[];
-  readonly workspaceBranch?: string;
-  readonly workspaceScope?: string;
 }
 
 /**
@@ -1650,6 +1641,7 @@ function hybridRankRecallHits(
     context.indexedCandidates ?? [],
     context.allowedUriScopes,
     resultLimit,
+    context.eligibility,
   ).filter(candidate => candidateUris === undefined || candidateUris.has(stripAnchor(candidate.uri)));
   const indexedByUri = new Map(scopedIndexedCandidates.map(candidate => [stripAnchor(candidate.uri), candidate]));
   const hitCandidates = eligibleHits.map(hit => {
@@ -1760,10 +1752,15 @@ function boundedRecallIndexCandidates(
   candidates: readonly RecallCandidate[],
   allowedUriScopes: readonly string[] | undefined,
   resultLimit: number,
+  eligibility?: RecallEligibilityPolicy,
 ): readonly RecallCandidate[] {
   const preselectionLimit = recallIndexPreselectionLimit(resultLimit);
   return deduplicateLogicalRecallCandidates(
-    candidates.filter(candidate => uriMatchesRecallScopes(candidate.uri, allowedUriScopes)),
+    candidates.filter(
+      candidate =>
+        uriMatchesRecallScopes(candidate.uri, allowedUriScopes) &&
+        (eligibility === undefined || recallRankCandidateIsEligible(eligibility, candidate)),
+    ),
   ).slice(0, preselectionLimit);
 }
 

@@ -40,6 +40,13 @@ import {
 } from './rank.js';
 import {normalizeRecallSearchText} from './tokenize.js';
 import {removeLegacyRecallIndexArtifacts} from './index_cleanup.js';
+import {
+  normalizeRecallProject,
+  recallCandidateIsEligible,
+  recallEligibilityPolicyRestrictsCandidates,
+  type RecallEligibilityPolicy,
+} from './eligibility.js';
+import {recallApprovedAuthoritative, recallEligibilityPredicate} from './index_eligibility.js';
 import {boundedRecallPhysicalCandidateLimit, recallStatisticTerms} from './index_query.js';
 import * as RecallIndexIdentity from './index_identity.js';
 import {
@@ -176,7 +183,7 @@ interface IndexedRecallSource {
   readonly source: RecallIndexSource;
 }
 
-const RECALL_INDEX_DATABASE_VERSION = 6;
+const RECALL_INDEX_DATABASE_VERSION = 7;
 const RECALL_INDEX_POINTER_VERSION = 1;
 const RECALL_STALE_MARKER_VERSION = 1;
 const ACTIVE_DATABASE_FILENAME = `active-v${RECALL_INDEX_DATABASE_VERSION}.sqlite`;
@@ -213,6 +220,7 @@ class RecallIndexSchemaIncompatible extends Error {
 
 interface LoadRecallIndexOptions {
   readonly allowedUriScopes?: readonly string[];
+  readonly eligibility?: RecallEligibilityPolicy;
   readonly forceRefresh?: boolean;
   readonly includeInactive: boolean;
   readonly limit?: number;
@@ -234,6 +242,7 @@ interface LoadRecallIndexBatchOptions {
 }
 
 interface LoadRecallExactMatchesOptions {
+  readonly eligibility?: RecallEligibilityPolicy;
   readonly forceRefresh?: boolean;
   readonly includeInactive: boolean;
   readonly limitPerTerm?: number;
@@ -539,6 +548,7 @@ const selectRecallIndexData = Effect.fn('recall.selectIndexData')(function* (
   if (options.query === undefined) {
     const rows =
       options.allowedUriScopes?.length ||
+      recallEligibilityPolicyRestrictsCandidates(options.eligibility) ||
       options.limit !== undefined ||
       options.project !== undefined ||
       options.workspaceScope !== undefined
@@ -548,6 +558,7 @@ const selectRecallIndexData = Effect.fn('recall.selectIndexData')(function* (
     const candidates = options.limit === undefined ? logicalCandidates : logicalCandidates.slice(0, options.limit);
     const identityConflicts = yield* loadIdentityConflicts(
       options.allowedUriScopes,
+      options.eligibility,
       candidates.flatMap(candidate => (candidate.memoryId ? [candidate.memoryId] : [])),
     );
     return {
@@ -568,6 +579,7 @@ const selectRecallIndexData = Effect.fn('recall.selectIndexData')(function* (
       if (!row || selectedIds.has(row.id) || !recallUriMatchesScopes(row.uri, options.allowedUriScopes)) continue;
       const candidate = decodeCandidateRow(row);
       if (
+        recallIndexCandidateIsEligible(options.eligibility, candidate) &&
         recallProjectMatches(options.project, candidate.fields?.project) &&
         recallWorkspaceScopeMatches(
           options.workspaceScope,
@@ -597,7 +609,9 @@ const selectRecallIndexData = Effect.fn('recall.selectIndexData')(function* (
     : yield* selectRecallQueryTermStatistics(sql, indexedQueryTerms, corpusStatistics, options);
   const queryTerms = selectQueryTerms(indexedQueryTerms, queryCorpusStatistics);
   const postingCorpusStatistics =
-    options.workspaceScope === undefined && options.project === undefined
+    options.workspaceScope === undefined &&
+    options.project === undefined &&
+    !recallEligibilityPolicyRestrictsCandidates(options.eligibility)
       ? corpusStatistics
       : siblingWorkspaceSelection
         ? corpusStatistics
@@ -606,6 +620,7 @@ const selectRecallIndexData = Effect.fn('recall.selectIndexData')(function* (
     sql,
     queryTerms,
     options.allowedUriScopes,
+    options.eligibility,
     options.project,
     options.workspaceScope,
     options.workspaceScopeMode,
@@ -645,7 +660,10 @@ const selectRecallIndexData = Effect.fn('recall.selectIndexData')(function* (
     const row = rowById.get(documentId);
     if (row && !selectedIds.has(documentId)) {
       selectedIds.add(documentId);
-      selected.push(decodeCandidateRow(row));
+      const candidate = decodeCandidateRow(row);
+      if (recallIndexCandidateIsEligible(options.eligibility, candidate)) {
+        selected.push(candidate);
+      }
     }
   }
   const deduplicated = deduplicateLogicalRecallCandidates(selected);
@@ -670,11 +688,12 @@ const selectRecallIndexData = Effect.fn('recall.selectIndexData')(function* (
   });
   const identityConflicts = yield* loadIdentityConflicts(
     options.allowedUriScopes,
+    options.eligibility,
     candidates.flatMap(candidate => (candidate.memoryId ? [candidate.memoryId] : [])),
   );
   return {
     candidates: RecallIndexIdentity.markRecallIdentityConflicts(candidates, identityConflicts),
-    corpusStatistics,
+    corpusStatistics: postingCorpusStatistics,
     generation,
     queryExhaustive,
   } satisfies RecallIndexData;
@@ -699,7 +718,10 @@ const selectRecallExactMatches = Effect.fn('recall.selectExactMatches')(function
   }
   const matchedTermsByUri = new Map<string, Set<string>>();
   for (const scopeUri of scopes) {
-    const scope = recallUriScopePredicate('d', [scopeUri]);
+    const scope = combineRecallSqlPredicates(
+      recallUriScopePredicate('d', [scopeUri]),
+      recallEligibilityPredicate('d', options.eligibility),
+    );
     for (const term of terms) {
       const phrase = `"${normalizeRecallSearchText(term).replaceAll('"', '""')}"`;
       const rows = yield* sql.unsafe<{readonly uri: string}>(
@@ -843,6 +865,7 @@ const initializeRecallDatabase = Effect.fn('recall.initializeDatabase')(function
       id INTEGER PRIMARY KEY,
       uri TEXT UNIQUE NOT NULL,
       project TEXT,
+      approved_authoritative INTEGER NOT NULL CHECK (approved_authoritative IN (0, 1)),
       workspace_scope TEXT,
       source_path TEXT NOT NULL,
       source_modified_at TEXT,
@@ -882,6 +905,12 @@ const initializeRecallDatabase = Effect.fn('recall.initializeDatabase')(function
   yield* sql.unsafe('CREATE INDEX IF NOT EXISTS documents_modified_uri ON documents(source_modified_at DESC, uri)');
   yield* sql.unsafe(
     'CREATE INDEX IF NOT EXISTS documents_project_modified_uri ON documents(project, source_modified_at DESC, uri)',
+  );
+  yield* sql.unsafe(
+    'CREATE INDEX IF NOT EXISTS documents_eligibility_uri ON documents(project, approved_authoritative, uri)',
+  );
+  yield* sql.unsafe(
+    'CREATE INDEX IF NOT EXISTS documents_authority_project_uri ON documents(approved_authoritative, project, uri)',
   );
   yield* sql.unsafe('CREATE INDEX IF NOT EXISTS documents_workspace_scope_uri ON documents(workspace_scope, uri)');
   yield* sql.unsafe('CREATE INDEX IF NOT EXISTS postings_document_id ON postings(document_id)');
@@ -1084,6 +1113,7 @@ const refreshRecallDatabase = Effect.fn('recall.refreshDatabase')(function* (
           `INSERT INTO documents (
             uri,
             project,
+            approved_authoritative,
             workspace_scope,
             source_path,
             source_modified_at,
@@ -1092,10 +1122,11 @@ const refreshRecallDatabase = Effect.fn('recall.refreshDatabase')(function* (
             candidate_json,
             logical_key,
             document_length
-          ) VALUES ${batch.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ')}`,
+          ) VALUES ${batch.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ')}`,
           batch.flatMap(indexed => [
             stripRecallAnchor(indexed.candidate.uri),
-            indexed.candidate.fields?.project?.trim().toLowerCase() || null,
+            normalizeRecallProject(indexed.candidate.fields?.project) ?? null,
+            recallApprovedAuthoritative(indexed.candidate.authority, indexed.candidate.trust) ? 1 : 0,
             normalizeRecallWorkspaceScope(indexed.candidate.fields?.workspaceScope) ?? null,
             indexed.source.path,
             indexed.source.modifiedAt ?? null,
@@ -1336,6 +1367,7 @@ function selectTopPostingsByTerms(
   sql: SqlClient.SqlClient,
   terms: readonly string[],
   allowedUriScopes: readonly string[] | undefined,
+  eligibility: RecallEligibilityPolicy | undefined,
   project: string | undefined,
   workspaceScope: string | undefined,
   workspaceScopeMode: RecallWorkspaceScopeMode | undefined,
@@ -1345,7 +1377,12 @@ function selectTopPostingsByTerms(
   if (terms.length === 0) return Effect.succeed<readonly RecallPostingRow[]>([]);
   const uriScope = recallUriScopePredicate('d', allowedUriScopes);
   const workspace = recallWorkspaceScopePredicate('d', workspaceScope, workspaceScopeMode);
-  const scope = combineRecallSqlPredicates(uriScope, recallProjectPredicate('d', project), workspace);
+  const scope = combineRecallSqlPredicates(
+    uriScope,
+    recallEligibilityPredicate('d', eligibility),
+    recallProjectPredicate('d', project),
+    workspace,
+  );
   const queryTermValues = terms.map(() => '(?, ?)').join(', ');
   const queryTermParameters = terms.flatMap(term => [term, postingInverseDocumentFrequency(term, corpusStatistics)]);
   const indexHint = uriScope.restricted
@@ -1446,6 +1483,20 @@ function decodeCandidateRow(row: RecallDocumentRow): RecallCandidate {
     throw new RecallIndexCorrupt(`Lexical index candidate ${row.uri} is invalid.`);
   }
   return value;
+}
+
+function recallIndexCandidateIsEligible(
+  policy: RecallEligibilityPolicy | undefined,
+  candidate: RecallCandidate,
+): boolean {
+  return (
+    policy === undefined ||
+    recallCandidateIsEligible(policy, {
+      authority: candidate.authority,
+      project: candidate.fields?.project,
+      trust: candidate.trust,
+    })
+  );
 }
 
 function sameStoredSource(stored: RecallDocumentSourceRow, source: RecallIndexSource): boolean {

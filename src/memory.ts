@@ -82,6 +82,7 @@ import {
   type RecallSemanticScoresResult,
 } from './recall/runtime.js';
 import {loadRecallExactMatches} from './recall/index.js';
+import {deriveRecallEligibilityPolicy, type RecallEligibilityPolicy} from './recall/eligibility.js';
 import {
   lexicalIndexUnavailableWarning,
   renderRecallOperationalWarning,
@@ -638,10 +639,18 @@ export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig
     }
   }
 
+  const eligibility = deriveRecallEligibilityPolicy({
+    explicitProject: options.project?.trim() || undefined,
+    originalQuery: query,
+    pinnedHardUri: explicitUri !== undefined,
+    worksetProjectNames: workset?.projects.map(member => member.name),
+  });
+
   const exactLookup = dryRun
     ? {matches: [], operationalWarnings: []}
     : yield* collectNativeExactMemoryMatches(config, query, {
         includeArchived,
+        eligibility,
         project,
       });
   const exactMatches = exactLookup.matches;
@@ -655,7 +664,13 @@ export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig
     : Option.some(
         yield* withAnonymousTelemetryPhase(
           'recall.semantic-retrieval',
-          loadRecallSemanticScoresResult(config, query, recallLimit),
+          loadRecallSemanticScoresResult(
+            config,
+            query,
+            recallLimit,
+            eligibility,
+            explicitUri ? [explicitUri] : undefined,
+          ),
           result =>
             Option.isSome(result.warning) ? 'failure' : Option.isSome(result.scores) ? 'success' : 'unavailable',
         ),
@@ -691,6 +706,7 @@ export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig
           allowedUriScopes: explicitUri ? [explicitUri] : undefined,
           candidateUris,
           exactMatches,
+          eligibility,
           feedbackQuery: options.query,
           includeInactive: includeArchived,
           limit: recallLimit,
@@ -749,6 +765,7 @@ export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig
     needsFallbackExpansion && shouldExpandRecall(recallSections.confidence)
       ? yield* loadRecallExpansionVocabulary(config, {
           allowedUriScopes: explicitUri ? [explicitUri] : [...scopedRecallUris],
+          eligibility,
           includeInactive: includeArchived,
           project: recallProjectName,
           rankedCandidates: recallSections.expansionCandidates,
@@ -1512,11 +1529,16 @@ export function hasAgentSkillCatalogIntent(query: string): boolean {
 const collectNativeExactMemoryMatches = Effect.fn('memory.collectNativeExactMemoryMatches')(function* (
   config: RuntimeConfig,
   query: string,
-  options: {readonly includeArchived: boolean; readonly project: ProjectManifest | undefined},
+  options: {
+    readonly eligibility: RecallEligibilityPolicy;
+    readonly includeArchived: boolean;
+    readonly project: ProjectManifest | undefined;
+  },
 ) {
   const terms = exactRecallTerms(query);
   if (terms.length === 0) return {matches: [], operationalWarnings: []};
   const result = yield* loadRecallExactMatches(config, {
+    eligibility: options.eligibility,
     includeInactive: options.includeArchived,
     limitPerTerm: 25,
     terms,

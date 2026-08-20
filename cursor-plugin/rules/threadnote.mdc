@@ -13,6 +13,9 @@ At the start of a non-trivial task, call `recall_context` with the project and a
 the nested package/app cwd. Memory recall provides prior decisions and handoffs; code-graph inspection provides current
 source evidence.
 
+`project` excludes projects but keeps projectless guidance; omit it for global recall or use a Workset. In monorepos,
+`callerCwd` prefers its package without excluding repo-wide or sibling evidence.
+
 A recall result is an unread pointer queue, not evidence. Read relevant `threadnote://` results with `read_context`
 before relying on them or citing memory-backed claims.
 

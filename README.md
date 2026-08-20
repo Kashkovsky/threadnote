@@ -166,6 +166,12 @@ smaller ranked prefix and `explain: true` only when full ranking reasons, signal
 `threshold` input filters topical `relevanceScore` before lifecycle/trust scoring; its default is
 `THREADNOTE_RECALL_THRESHOLD` when configured, otherwise `0.3`.
 
+An explicit recall `project` is an eligibility boundary: matching-project memories and projectless guidance are
+searched before posting and semantic top-k limits, while other projects are excluded. Omit `project` for global recall,
+or use a named Workset to search the union of its projects. Inside one project, `callerCwd` supplies a package/app
+preference rather than a silo: exact/ancestor and repo-wide memories are protected, and a bounded sibling-package
+challenger lane can still recover stronger topical evidence from another component.
+
 ## Native Code Graph
 
 The first graph query lazily builds a disposable snapshot below `~/.threadnote/indexes/code-graph/`. Committed source

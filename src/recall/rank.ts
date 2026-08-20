@@ -2,9 +2,11 @@ import type {MemoryAuthority, MemoryRelation, MemoryTrust} from '../memory_docum
 import {stripGeneratedMemoryHygieneSources} from '../memory_hygiene_provenance.js';
 import {sha256HexSync} from '../crypto/sha256.js';
 import type {MemoryKind, MemoryStatus} from '../types.js';
+import {hasExactCasedCodeIdentifierMatch} from './identifier.js';
+import {recallRankCandidateIsEligible, type RecallEligibilityPolicy} from './eligibility.js';
 import {recallLexicalTerms} from './tokenize.js';
 
-export const RECALL_RANKER_VERSION = 'hybrid-v6';
+export const RECALL_RANKER_VERSION = 'hybrid-v7';
 
 export interface RecallFields {
   readonly identifiers?: readonly string[];
@@ -43,6 +45,7 @@ export interface RecallCandidate {
 export interface RecallRankContext {
   readonly allowExactRescue?: boolean;
   readonly corpusStatistics?: RecallCorpusStatistics;
+  readonly eligibility?: RecallEligibilityPolicy;
   readonly includeInactive?: boolean;
   readonly includeTemporallyInvalid?: boolean;
   readonly minimumScore?: number;
@@ -261,7 +264,11 @@ export function rankRecallCandidates(
   candidates: readonly RecallCandidate[],
   context: RecallRankContext = {},
 ): RankedRecallSet {
-  const logicalCandidates = deduplicateLogicalRecallCandidates(candidates);
+  const eligibility = context.eligibility;
+  const eligibleCandidates = eligibility
+    ? candidates.filter(candidate => recallRankCandidateIsEligible(eligibility, candidate))
+    : candidates;
+  const logicalCandidates = deduplicateLogicalRecallCandidates(eligibleCandidates);
   const queryTermVariants = [
     tokenize(query),
     ...[...new Set(context.queryVariants?.map(variant => variant.trim()).filter(Boolean) ?? [])].map(tokenize),
@@ -309,7 +316,7 @@ export function rankRecallCandidates(
         compareCodeUnits(left.candidate.uri, right.candidate.uri),
     );
   return {
-    confidence: assessConfidence(ranked, queryTermVariants[0] ?? []),
+    confidence: assessConfidence(ranked, query, queryTermVariants[0] ?? []),
     rankerVersion: RECALL_RANKER_VERSION,
     results: ranked,
   };
@@ -1065,6 +1072,7 @@ function reason(code: string, contribution: number, detail: string): RecallReaso
 
 function assessConfidence(
   results: readonly RankedRecallCandidate[],
+  originalQuery: string,
   originalQueryTerms: readonly string[],
 ): RecallConfidence {
   const first = results[0]?.relevanceScore ?? 0;
@@ -1072,7 +1080,7 @@ function assessConfidence(
   const margin = Math.max(0, first - second);
   const topSignals = results[0]?.signals;
   const exactDistinctiveIdentifier = results[0]
-    ? hasExactDistinctiveIdentifierMatch(originalQueryTerms, results[0].candidate.fields)
+    ? hasExactDistinctiveIdentifierMatch(originalQuery, originalQueryTerms, results[0].candidate.fields)
     : false;
   const corroboratingSignals = results[0]
     ? [
@@ -1115,7 +1123,11 @@ function assessConfidence(
   return {level: 'low', margin, reason: 'Only weak or single-signal evidence supports the top result.', score: first};
 }
 
-function hasExactDistinctiveIdentifierMatch(queryTerms: readonly string[], fields: RecallFields | undefined): boolean {
+function hasExactDistinctiveIdentifierMatch(
+  originalQuery: string,
+  queryTerms: readonly string[],
+  fields: RecallFields | undefined,
+): boolean {
   if (!fields?.identifiers?.length) {
     return false;
   }
@@ -1124,7 +1136,10 @@ function hasExactDistinctiveIdentifierMatch(queryTerms: readonly string[], field
       .map(identifier => tokenize(identifier)[0])
       .filter((identifier): identifier is string => identifier !== undefined),
   );
-  return queryTerms.some(term => /[\p{N}_.-]/u.test(term) && identifiers.has(term));
+  return (
+    queryTerms.some(term => /[\p{N}_.-]/u.test(term) && identifiers.has(term)) ||
+    hasExactCasedCodeIdentifierMatch(originalQuery, fields.identifiers)
+  );
 }
 
 export function recallDocumentTerms(candidate: RecallCandidate): readonly string[] {

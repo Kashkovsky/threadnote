@@ -1,4 +1,5 @@
 import {createRecallEvaluationFixtureV2, expandRecallEvaluationFixtureV2} from '../src/evaluation/recall-fixture.js';
+import {deriveRecallEligibilityPolicy} from '../src/recall/eligibility.js';
 import {rankRecallCandidates} from '../src/recall/rank.js';
 
 export function createBenchmarkFixture(documentCount: number) {
@@ -11,6 +12,10 @@ export function runBenchmarkQuery(
 ): {readonly confidence: string; readonly topScore: number; readonly topUri: string} {
   const query = fixture.queries[queryIndex % fixture.queries.length]!;
   const result = rankRecallCandidates(query.query, fixture.documents, {
+    eligibility: deriveRecallEligibilityPolicy({
+      explicitProject: query.project,
+      originalQuery: query.query,
+    }),
     now: query.now ? new Date(query.now) : undefined,
     project: query.project,
     seedUris: query.seedUris,
