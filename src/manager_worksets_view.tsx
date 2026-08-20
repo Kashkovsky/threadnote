@@ -896,7 +896,9 @@ function WorksetStatusPanel(props: {
                   <small>{managerWorksetMemberLocation(definitionMember)}</small>
                   <small>
                     {member.reason ?? 'ready snapshot verified'}
+                    {member.detail ? ` · code: ${member.detail.code}` : ''}
                     {member.detail?.recovery ? ` · recovery: ${member.detail.recovery}` : ''}
+                    {member.detail ? ` · ${member.detail.retryable ? 'retryable' : 'not retryable'}` : ''}
                   </small>
                 </article>
               );
@@ -938,8 +940,13 @@ export function PrepareJobPanel(props: {
         </strong>
         <span>{props.job.progress.message}</span>
       </div>
+      <progress
+        aria-label={`${props.job.workset} preparation progress`}
+        max={Math.max(1, props.job.progress.total)}
+        value={Math.min(props.job.progress.total, props.job.progress.completed ?? 0)}
+      />
       <span>
-        {props.job.progress.completed ?? 0}/{props.job.progress.total} member receipts
+        {props.job.progress.completed ?? 0}/{props.job.progress.total} members complete
       </span>
       {active ? (
         <button disabled={props.job.status === 'cancelling'} onClick={props.onCancel} type="button">
@@ -947,6 +954,7 @@ export function PrepareJobPanel(props: {
         </button>
       ) : null}
       {props.job.error ? <p className="worksets-error">{props.job.error}</p> : null}
+      {props.job.warning ? <p className="worksets-warning">{props.job.warning}</p> : null}
       {receipts.length > 0 ? (
         <div className="worksets-job-receipts">
           {receipts.map(member => (
@@ -954,7 +962,13 @@ export function PrepareJobPanel(props: {
               <strong>{member.project}</strong>
               <span className={`worksets-state is-${statusTone(member.state)}`}>{member.state}</span>
               <small>{managerWorksetMemberLocation(findDefinitionMember(props.definition, member.project))}</small>
-              <small>{'reason' in member ? member.reason : `${member.symbolCount} symbols projected`}</small>
+              <small>
+                {member.state === 'failed'
+                  ? `${member.reason} · ${member.detail.code} · ${member.detail.summary}`
+                  : 'reason' in member
+                    ? member.reason
+                    : `${member.symbolCount} symbols projected`}
+              </small>
             </article>
           ))}
           {allReceipts.length > receipts.length ? (

@@ -93,8 +93,8 @@ function grafanaV42DashboardSpec(spec: Readonly<Record<string, JsonValue>>): Rec
     if (typeof panel.id !== 'number') continue;
     const fieldConfig = panel.fieldConfig as Record<string, JsonValue>;
     const defaults = fieldConfig.defaults as Record<string, JsonValue>;
-    if ((panel.id >= 1 && panel.id <= 12) || (panel.id >= 21 && panel.id <= 24)) delete defaults.mappings;
-    if ((panel.id >= 1 && panel.id <= 11) || panel.id === 13 || (panel.id >= 21 && panel.id <= 24)) {
+    if ((panel.id >= 1 && panel.id <= 12) || (panel.id >= 21 && panel.id <= 25)) delete defaults.mappings;
+    if ((panel.id >= 1 && panel.id <= 11) || panel.id === 13 || (panel.id >= 21 && panel.id <= 25)) {
       delete fieldConfig.overrides;
     }
     if (panel.id >= 14 && panel.id <= 19) delete panel.fieldConfig;

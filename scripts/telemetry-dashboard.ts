@@ -44,8 +44,8 @@ type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<
 const datasourcePlaceholder = '${DS_TEMPO}';
 const serverOwnedDashboardKeys = new Set(['id', 'iteration', 'schemaVersion', 'uid', 'version']);
 const migrationEmptyFieldConfigPanelIds = new Set([14, 15, 16, 17, 18, 19]);
-const migrationEmptyMappingsPanelIds = new Set([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 21, 22, 23, 24]);
-const migrationEmptyOverridesPanelIds = new Set([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 21, 22, 23, 24]);
+const migrationEmptyMappingsPanelIds = new Set([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 21, 22, 23, 24, 25]);
+const migrationEmptyOverridesPanelIds = new Set([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 21, 22, 23, 24, 25]);
 const grafanaDefaultRefreshIntervals = ['5s', '10s', '30s', '1m', '5m', '15m', '30m', '1h', '2h', '1d'];
 const grafanaCloudNamespacePattern = /^stacks-[1-9][0-9]*$/u;
 const gitCommitPattern = /^[0-9a-f]{40}$/u;
@@ -241,15 +241,15 @@ function unexpectedFullBuildExpressionTarget(resource: DashboardArtifact): Reado
 function validateGraphQueryStageTargets(resource: DashboardArtifact): void {
   const panels = resource.spec.panels;
   if (!Array.isArray(panels)) throw new ScriptError('Dashboard artifact has no panels.');
-  const matches = panels.filter(panelValue => isObject(panelValue) && panelValue.id === 22);
+  const matches = panels.filter(panelValue => isObject(panelValue) && panelValue.id === 23);
   if (matches.length !== 1) throw new ScriptError('Dashboard must contain exactly one graph-query stage panel.');
-  const panel = record(matches[0], 'dashboard panel 22');
+  const panel = record(matches[0], 'dashboard panel 23');
   if (!Array.isArray(panel.targets) || panel.targets.length !== 2) {
-    throw new ScriptError('Dashboard panel 22 must contain separate outer-phase and fine-stage targets.');
+    throw new ScriptError('Dashboard panel 23 must contain separate outer-phase and fine-stage targets.');
   }
   const [phaseValue, stageValue] = panel.targets;
-  const phase = record(phaseValue, 'dashboard panel 22 phase target');
-  const stage = record(stageValue, 'dashboard panel 22 stage target');
+  const phase = record(phaseValue, 'dashboard panel 23 phase target');
+  const stage = record(stageValue, 'dashboard panel 23 stage target');
   if (
     phase.refId !== 'A' ||
     phase.metricsQueryType !== 'instant' ||
@@ -264,7 +264,7 @@ function validateGraphQueryStageTargets(resource: DashboardArtifact): void {
     !stage.query.includes('span.threadnote.stage =~ "query-.*"') ||
     !stage.query.includes('by (span.threadnote.graph.request_kind, span.threadnote.stage, span.threadnote.subphase)')
   ) {
-    throw new ScriptError('Dashboard panel 22 must keep outer phases separate and group fine stages by closed labels.');
+    throw new ScriptError('Dashboard panel 23 must keep outer phases separate and group fine stages by closed labels.');
   }
 }
 

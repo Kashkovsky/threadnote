@@ -4,6 +4,7 @@ import fc from 'fast-check';
 import {Effect, FileSystem, Layer, Path} from 'effect';
 import {describe, expect, it} from 'vitest';
 import {
+  autoUpdateWorkerTelemetryFields,
   initializeAutoUpdatePolicy,
   isAutoUpdateDue,
   isAutoUpdateVersionEligible,
@@ -14,6 +15,7 @@ import {
   stateAfterFailedAutoUpdateSpawn,
   terminalAutoUpdateState,
   type AutoUpdateState,
+  type AutoUpdateWorkerResult,
 } from '../../src/auto_update.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
@@ -147,6 +149,25 @@ describe('automatic update state', () => {
   it('never permits unattended replacement of a SHA-bound development runtime', () => {
     expect(isAutoUpdateVersionEligible('4.2.2')).toBe(true);
     expect(isAutoUpdateVersionEligible(`4.2.2-local.g${'a'.repeat(40)}`)).toBe(false);
+  });
+
+  it('projects every closed worker result without inventing a repair state', () => {
+    const cases: ReadonlyArray<readonly [AutoUpdateWorkerResult, Readonly<Record<string, unknown>>]> = [
+      [{result: 'busy'}, {autoUpdateResult: 'busy'}],
+      [{result: 'current'}, {autoUpdateResult: 'current'}],
+      [{result: 'disabled'}, {autoUpdateResult: 'disabled'}],
+      [{result: 'failed'}, {autoUpdateResult: 'failed'}],
+      [
+        {repairRequired: false, result: 'updated'},
+        {autoUpdateRepairRequired: false, autoUpdateResult: 'updated'},
+      ],
+      [
+        {repairRequired: true, result: 'updated'},
+        {autoUpdateRepairRequired: true, autoUpdateResult: 'updated'},
+      ],
+    ];
+
+    for (const [result, expected] of cases) expect(autoUpdateWorkerTelemetryFields(result)).toEqual(expected);
   });
 
   it('removes every running claim from a terminal state transition', () => {

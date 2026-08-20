@@ -21,11 +21,11 @@ threadnote telemetry disable --apply
 unsupported telemetry configuration always fails closed. Install, update, repair, doctor, help, and telemetry consent
 commands never enable telemetry implicitly.
 
-Consent is versioned independently from the configuration-file shape. Schema v3's graph-query performance surface
-requires consent version 3. A version 1 or version 2 opt-in fails closed under a v3 producer: telemetry remains off
-until the user reviews the current preview and explicitly runs `threadnote telemetry enable --apply` again. Threadnote
-never migrates an earlier opt-in silently, even though the gateway continues to admit the frozen v1 and v2 wire
-contracts for older supported producers.
+Consent is versioned independently from the configuration-file shape. Schema v4's graph-query performance surface
+requires consent version 4. A version 1, version 2, or version 3 opt-in fails closed under a v4 producer: telemetry
+remains off until the user reviews the current preview and explicitly runs `threadnote telemetry enable --apply` again.
+Threadnote never migrates an earlier opt-in silently, even though the gateway continues to admit the frozen v1, v2,
+and v3 wire contracts for older supported producers.
 
 Applied disable is observed by active exporters at their next event or transport gate. Queued requests that have not
 started are dropped. A network request that already started cannot be recalled, but no later request is sent. Enabling
@@ -50,6 +50,9 @@ The current versioned allowlist is limited to:
   diagnose out-of-memory and growth regressions without a process identifier;
 - allowlisted phase durations and states for recall, indexing, graph scanning/materialization/resolution/activation,
   embedding, model work, storage waits, and other explicitly instrumented subsystems;
+- an automatic-update worker completion includes one closed result: `busy`, `current`, `disabled`, `failed`, or
+  `updated`. An `updated` result also includes a boolean saying whether post-update local setup repair still requires
+  attention; it does not include installed versions or installation identity;
 - one terminal graph-build lifecycle observation: a successful build includes clean/dirty build kind; closed
   materialization mode, fallback reason, resolution-closure, and efficiency classifications; coarse
   changed/deleted/delta/extracted/reused/staged/total file-count buckets; cached/changed/final fact-byte buckets; and
@@ -59,7 +62,7 @@ The current versioned allowlist is limited to:
 - graph-query timing for `inspect_code_graph` and `analyze_code_graph`: a closed request kind and local/workset scope;
   the closed `graph.query.status`, `graph.query.snapshot`, and `graph.query.execute` phase durations; and, for a local
   published snapshot, closed selection/freshness classes plus power-of-two file-, symbol-, and edge-count buckets.
-  Schema v3 also admits snapshot-free checkpoints for the closed stages `query-repository-identity`,
+  Schema v4 also admits snapshot-free checkpoints for the closed stages `query-repository-identity`,
   `query-worktree-observation`, `query-strict-reobservation`, and `query-serialization`. A normal executed stage has no
   subphase; the only exceptional query-stage subphases are `skipped` and `fallback`. Stage checkpoints never acquire or
   retain snapshot buckets on the terminal completion. Workset requests do not export a member repository's snapshot
@@ -128,18 +131,19 @@ Tempo-compatible trace storage
 ```
 
 The gateway, rather than the open-source binary, owns vendor credentials. It rejects logs and metrics, admits the
-immutable v1, v2, and v3 trace contracts, validates the complete versioned resource/span envelope before forwarding,
+immutable v1, v2, v3, and v4 trace contracts, validates the complete versioned resource/span envelope before forwarding,
 caps bodies and rates, rejects unknown fields, avoids forwarding client IP headers, and emits no application access
-logs. V1 and v2 are frozen; v3 adds only the closed, bucketed graph-query surface described above.
+logs. V1 and v2 are frozen, v3 adds only the closed automatic-update result and repair-required flag, and v4 adds only
+the closed, bucketed graph-query surface described above.
 Accepted traces are stored in Grafana Cloud EU with
 the 14-day retention of its Always Free plan. The gateway's fixed accepted-byte budget keeps the required two-Machine
 deployment below 3 GB of canonical input per month, leaving headroom within the plan's 50 GB allowance for bounded
 retries. The static Threadnote GitHub Pages site cannot receive OTLP and public GitHub issues are not an appropriate
 telemetry sink.
 
-The first-party gateway is separate deployment infrastructure. Its public storage canary verifies TLS, all three
-immutable schemas, forwarding, and Grafana query visibility independently of the application release. Schema v3 is
-rolled out gateway and canary first, then the v3-capable dashboard, and only then the consent-v3 producer.
+The first-party gateway is separate deployment infrastructure. Its public storage canary verifies TLS, all four
+immutable schemas, forwarding, and Grafana query visibility independently of the application release. Schema v4 is
+rolled out gateway and canary first, then the v4-capable dashboard, and only then the consent-v4 producer.
 
 ## Local Jaeger dogfooding
 

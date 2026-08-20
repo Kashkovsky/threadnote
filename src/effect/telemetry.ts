@@ -16,7 +16,7 @@ import {
 } from '../telemetry/diagnostic.js';
 import {safeAnonymousTelemetryOperation} from '../telemetry/operations.js';
 
-const TELEMETRY_SCHEMA_VERSION = 3;
+const TELEMETRY_SCHEMA_VERSION = 4;
 const TELEMETRY_VERSION_MAX_BYTES = 96;
 const FIRST_CHECKPOINT_DELAY = '30 seconds';
 const CHECKPOINT_INTERVAL = '60 seconds';
@@ -110,6 +110,7 @@ export const ANONYMOUS_TELEMETRY_WAITING_REASONS = [
 
 export type AnonymousTelemetryWaitingReason = (typeof ANONYMOUS_TELEMETRY_WAITING_REASONS)[number];
 
+export const ANONYMOUS_TELEMETRY_AUTO_UPDATE_RESULTS = ['busy', 'current', 'disabled', 'failed', 'updated'] as const;
 const ANONYMOUS_TELEMETRY_GRAPH_BUILD_KINDS = ['clean', 'dirty'] as const;
 const ANONYMOUS_TELEMETRY_GRAPH_EFFICIENCY_CLASSES = [
   'critical-amplification-full',
@@ -167,6 +168,7 @@ const ANONYMOUS_TELEMETRY_GRAPH_SNAPSHOT_FRESHNESS = ['current', 'deferred', 'st
 const ANONYMOUS_TELEMETRY_GRAPH_SNAPSHOT_SELECTIONS = ['active', 'borrowed', 'none', 'promoted'] as const;
 
 type AnonymousTelemetryGraphBuildKind = (typeof ANONYMOUS_TELEMETRY_GRAPH_BUILD_KINDS)[number];
+type AnonymousTelemetryAutoUpdateResult = (typeof ANONYMOUS_TELEMETRY_AUTO_UPDATE_RESULTS)[number];
 type AnonymousTelemetryGraphEfficiencyClass = (typeof ANONYMOUS_TELEMETRY_GRAPH_EFFICIENCY_CLASSES)[number];
 type AnonymousTelemetryGraphFallbackReason = (typeof ANONYMOUS_TELEMETRY_GRAPH_FALLBACK_REASONS)[number];
 type AnonymousTelemetryGraphMaterializationMode = (typeof ANONYMOUS_TELEMETRY_GRAPH_MATERIALIZATION_MODES)[number];
@@ -178,6 +180,8 @@ export type AnonymousTelemetryGraphSnapshotSelection = (typeof ANONYMOUS_TELEMET
 export type AnonymousTelemetryQuantityBucket = '0' | `2^${number}`;
 
 export interface AnonymousTelemetryFields {
+  readonly autoUpdateRepairRequired?: boolean;
+  readonly autoUpdateResult?: AnonymousTelemetryAutoUpdateResult;
   readonly batchesCompleted?: number;
   readonly batchesTotal?: number;
   readonly buildKind?: AnonymousTelemetryGraphBuildKind;
@@ -752,6 +756,13 @@ function unsafeCompletionClassification<A, E>(
 function telemetryFieldAttributes(fields: AnonymousTelemetryFields | undefined): Record<string, unknown> {
   if (fields === undefined) return {};
   const attributes: Record<string, unknown> = {};
+  const autoUpdateResult = fields.autoUpdateResult;
+  if (autoUpdateResult !== undefined && ANONYMOUS_TELEMETRY_AUTO_UPDATE_RESULTS.includes(autoUpdateResult)) {
+    attributes['threadnote.auto_update.result'] = autoUpdateResult;
+    if (autoUpdateResult === 'updated' && typeof fields.autoUpdateRepairRequired === 'boolean') {
+      attributes['threadnote.auto_update.repair_required'] = fields.autoUpdateRepairRequired;
+    }
+  }
   if (fields.phase !== undefined && ANONYMOUS_TELEMETRY_PHASES.includes(fields.phase)) {
     attributes['threadnote.phase'] = fields.phase;
   }
@@ -843,6 +854,8 @@ function telemetryFieldAttributes(fields: AnonymousTelemetryFields | undefined):
 type NumericTelemetryField = Exclude<
   keyof AnonymousTelemetryFields,
   | GraphQuantityBucketField
+  | 'autoUpdateRepairRequired'
+  | 'autoUpdateResult'
   | 'buildKind'
   | 'degradationReason'
   | 'efficiencyClass'
@@ -961,6 +974,9 @@ function mergeTelemetryFields(
       const previous = merged[key];
       merged[key] = typeof previous === 'number' ? Math.max(previous, value) : value;
     } else if (
+      (key === 'autoUpdateRepairRequired' && typeof value === 'boolean') ||
+      (key === 'autoUpdateResult' &&
+        ANONYMOUS_TELEMETRY_AUTO_UPDATE_RESULTS.includes(value as AnonymousTelemetryAutoUpdateResult)) ||
       (key === 'phase' && ANONYMOUS_TELEMETRY_PHASES.includes(value as AnonymousTelemetryPhase)) ||
       (key === 'subphase' && ANONYMOUS_TELEMETRY_SUBPHASES.includes(value as AnonymousTelemetrySubphase)) ||
       (key === 'phaseOutcome' &&

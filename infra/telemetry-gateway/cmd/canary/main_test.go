@@ -17,9 +17,9 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-func TestCanaryPostsAndProvesFrozenV1TerminalV2AndQueryV3(t *testing.T) {
+func TestCanaryPostsAndProvesFrozenV1V2V3AndCurrentV4(t *testing.T) {
 	started := time.Unix(1_700_000_000, 0)
-	traces := []canaryTrace{fixedTrace(1), fixedTrace(2), fixedV3Checkpoint(), fixedTrace(3)}
+	traces := canaryTestTraces()
 	byTraceID := make(map[string]canaryTrace, len(traces))
 	for _, trace := range traces {
 		byTraceID[hex.EncodeToString(trace.ids.traceID)] = trace
@@ -74,76 +74,79 @@ func TestCanaryPostsAndProvesFrozenV1TerminalV2AndQueryV3(t *testing.T) {
 	if err := run(context.Background(), configuration, server.Client(), func() time.Time { return started }, idSequence(traces)); err != nil {
 		t.Fatal(err)
 	}
-	if postCount != 4 || queryCount != 4 {
-		t.Fatalf("posts = %d, queries = %d, want 4 each", postCount, queryCount)
+	if postCount != len(traces) || queryCount != len(traces) {
+		t.Fatalf("posts = %d, queries = %d, want %d each", postCount, queryCount, len(traces))
 	}
 }
 
-func TestV2CanaryEnvelopeCarriesTheCompleteTerminalGraphSurface(t *testing.T) {
-	trace := fixedTrace(2)
-	request := &collectortracepb.ExportTraceServiceRequest{}
-	if err := proto.Unmarshal(buildEnvelope(trace, time.Unix(1_700_000_000, 0)), request); err != nil {
-		t.Fatal(err)
-	}
-	if len(request.ResourceSpans) != 1 || len(request.ResourceSpans[0].ScopeSpans) != 1 ||
-		len(request.ResourceSpans[0].ScopeSpans[0].Spans) != 1 {
-		t.Fatal("v2 canary did not contain exactly one span")
-	}
-	resource := request.ResourceSpans[0].Resource
-	if resource == nil || !hasIntAttribute(resource.Attributes, "threadnote.telemetry.schema_version", 2) {
-		t.Fatal("v2 canary resource did not declare schema version 2")
-	}
-	span := request.ResourceSpans[0].ScopeSpans[0].Spans[0]
-	for _, key := range []string{
-		"threadnote.graph.build_kind",
-		"threadnote.graph.cached_fact_replay_bytes_bucket",
-		"threadnote.graph.changed_fact_bytes_bucket",
-		"threadnote.graph.changed_files_bucket",
-		"threadnote.graph.deleted_files_bucket",
-		"threadnote.graph.delta_files_bucket",
-		"threadnote.graph.efficiency_class",
-		"threadnote.graph.extracted_files_bucket",
-		"threadnote.graph.fact_replay_amplification_bucket",
-		"threadnote.graph.fallback_reason",
-		"threadnote.graph.final_fact_bytes_bucket",
-		"threadnote.graph.materialization_mode",
-		"threadnote.graph.resolution_closure",
-		"threadnote.graph.reused_files_bucket",
-		"threadnote.graph.rewrite_amplification_bucket",
-		"threadnote.graph.staged_files_bucket",
-		"threadnote.graph.total_files_bucket",
-	} {
-		if !hasAttribute(span.Attributes, key) {
-			t.Fatalf("v2 canary is missing %s", key)
+func TestGraphCanaryEnvelopesCarryTheCompleteTerminalSurface(t *testing.T) {
+	for _, schemaVersion := range []uint64{2, 3, 4} {
+		trace := fixedTrace(schemaVersion, canaryTraceGraph)
+		request := decodeCanaryEnvelope(t, trace)
+		resource := request.ResourceSpans[0].Resource
+		if resource == nil || !hasIntAttribute(resource.Attributes, "threadnote.telemetry.schema_version", schemaVersion) {
+			t.Fatalf("v%d canary resource did not declare its schema version", schemaVersion)
+		}
+		span := request.ResourceSpans[0].ScopeSpans[0].Spans[0]
+		for _, key := range []string{
+			"threadnote.graph.build_kind",
+			"threadnote.graph.cached_fact_replay_bytes_bucket",
+			"threadnote.graph.changed_fact_bytes_bucket",
+			"threadnote.graph.changed_files_bucket",
+			"threadnote.graph.deleted_files_bucket",
+			"threadnote.graph.delta_files_bucket",
+			"threadnote.graph.efficiency_class",
+			"threadnote.graph.extracted_files_bucket",
+			"threadnote.graph.fact_replay_amplification_bucket",
+			"threadnote.graph.fallback_reason",
+			"threadnote.graph.final_fact_bytes_bucket",
+			"threadnote.graph.materialization_mode",
+			"threadnote.graph.resolution_closure",
+			"threadnote.graph.reused_files_bucket",
+			"threadnote.graph.rewrite_amplification_bucket",
+			"threadnote.graph.staged_files_bucket",
+			"threadnote.graph.total_files_bucket",
+		} {
+			if !hasAttribute(span.Attributes, key) {
+				t.Fatalf("v%d graph canary is missing %s", schemaVersion, key)
+			}
 		}
 	}
 }
 
-func TestV3CanaryEnvelopesCarryStageCheckpointAndCompletionGraphQuerySurfaces(t *testing.T) {
-	for _, trace := range []canaryTrace{fixedV3Checkpoint(), fixedTrace(3)} {
-		t.Run(trace.queryEvent, func(t *testing.T) {
-			request := &collectortracepb.ExportTraceServiceRequest{}
-			if err := proto.Unmarshal(buildEnvelope(trace, time.Unix(1_700_000_000, 0)), request); err != nil {
-				t.Fatal(err)
-			}
-			if len(request.ResourceSpans) != 1 || len(request.ResourceSpans[0].ScopeSpans) != 1 ||
-				len(request.ResourceSpans[0].ScopeSpans[0].Spans) != 1 {
-				t.Fatal("v3 canary did not contain exactly one span")
-			}
+func TestV3AndV4CanaryEnvelopesCarryTheAutomaticUpdateSurface(t *testing.T) {
+	for _, schemaVersion := range []uint64{3, 4} {
+		request := decodeCanaryEnvelope(t, fixedTrace(schemaVersion, canaryTraceAutoUpdate))
+		span := request.ResourceSpans[0].ScopeSpans[0].Spans[0]
+		if !hasStringAttribute(span.Attributes, "threadnote.operation", "auto-update-worker") ||
+			!hasStringAttribute(span.Attributes, "threadnote.auto_update.result", "updated") ||
+			!hasBoolAttribute(span.Attributes, "threadnote.auto_update.repair_required", false) {
+			t.Fatalf("v%d canary is missing the automatic update result surface", schemaVersion)
+		}
+	}
+}
+
+func TestV4CanaryEnvelopesCarryStageCheckpointAndCompletionGraphQuerySurfaces(t *testing.T) {
+	for _, trace := range []canaryTrace{
+		fixedTrace(4, canaryTraceQueryCheckpoint),
+		fixedTrace(4, canaryTraceQueryCompletion),
+	} {
+		t.Run(trace.label(), func(t *testing.T) {
+			request := decodeCanaryEnvelope(t, trace)
 			resource := request.ResourceSpans[0].Resource
-			if resource == nil || !hasIntAttribute(resource.Attributes, "threadnote.telemetry.schema_version", 3) {
-				t.Fatal("v3 canary resource did not declare schema version 3")
+			if resource == nil || !hasIntAttribute(resource.Attributes, "threadnote.telemetry.schema_version", 4) {
+				t.Fatal("v4 canary resource did not declare schema version 4")
 			}
 			span := request.ResourceSpans[0].ScopeSpans[0].Spans[0]
 			expected := []canaryStringAttribute{
-				{"threadnote.event", trace.queryEvent},
 				{"threadnote.operation", "inspect_code_graph"},
 				{"threadnote.phase.outcome", "success"},
 				{"threadnote.graph.request_kind", "inspect.query"},
 				{"threadnote.graph.request_scope", "local"},
 			}
-			if trace.queryEvent == "checkpoint" {
+			if trace.kind == canaryTraceQueryCheckpoint {
 				expected = append(expected,
+					canaryStringAttribute{"threadnote.event", "checkpoint"},
 					canaryStringAttribute{"threadnote.phase", "graph.query.status"},
 					canaryStringAttribute{"threadnote.stage", "query-worktree-observation"},
 					canaryStringAttribute{"threadnote.subphase", "skipped"},
@@ -156,11 +159,12 @@ func TestV3CanaryEnvelopesCarryStageCheckpointAndCompletionGraphQuerySurfaces(t 
 					"threadnote.graph.snapshot_edges_bucket",
 				} {
 					if hasAttribute(span.Attributes, key) {
-						t.Fatalf("v3 stage checkpoint unexpectedly contains %s", key)
+						t.Fatalf("v4 stage checkpoint unexpectedly contains %s", key)
 					}
 				}
 			} else {
 				expected = append(expected,
+					canaryStringAttribute{"threadnote.event", "completion"},
 					canaryStringAttribute{"threadnote.phase", "graph.query.execute"},
 					canaryStringAttribute{"threadnote.graph.snapshot_selection", "active"},
 					canaryStringAttribute{"threadnote.graph.snapshot_freshness", "deferred"},
@@ -171,18 +175,31 @@ func TestV3CanaryEnvelopesCarryStageCheckpointAndCompletionGraphQuerySurfaces(t 
 			}
 			for _, attribute := range expected {
 				if !hasStringAttribute(span.Attributes, attribute.key, attribute.value) {
-					t.Fatalf("v3 canary is missing %s=%s", attribute.key, attribute.value)
+					t.Fatalf("v4 canary is missing %s=%s", attribute.key, attribute.value)
 				}
 			}
 			if !hasIntAttribute(span.Attributes, "threadnote.phase.elapsed_ms", 1) {
-				t.Fatal("v3 canary is missing the execute-phase elapsed time")
+				t.Fatal("v4 canary is missing the query-phase elapsed time")
 			}
 		})
 	}
 }
 
+func decodeCanaryEnvelope(t *testing.T, trace canaryTrace) *collectortracepb.ExportTraceServiceRequest {
+	t.Helper()
+	request := &collectortracepb.ExportTraceServiceRequest{}
+	if err := proto.Unmarshal(buildEnvelope(trace, time.Unix(1_700_000_000, 0)), request); err != nil {
+		t.Fatal(err)
+	}
+	if len(request.ResourceSpans) != 1 || len(request.ResourceSpans[0].ScopeSpans) != 1 ||
+		len(request.ResourceSpans[0].ScopeSpans[0].Spans) != 1 {
+		t.Fatal("canary did not contain exactly one span")
+	}
+	return request
+}
+
 func TestCanaryFailsClosedOnAcceptedButMissingOrWrongTrace(t *testing.T) {
-	traces := []canaryTrace{fixedTrace(1), fixedTrace(2), fixedV3Checkpoint(), fixedTrace(3)}
+	traces := canaryTestTraces()
 	v1 := traces[0]
 	tests := []struct {
 		name      string
@@ -192,8 +209,8 @@ func TestCanaryFailsClosedOnAcceptedButMissingOrWrongTrace(t *testing.T) {
 	}{
 		{name: "missing", queryCode: http.StatusNotFound, wantError: "did not become queryable"},
 		{name: "empty while pending", queryCode: http.StatusOK, wantError: "did not become queryable"},
-		{name: "wrong payload", queryCode: http.StatusOK, queryBody: tempoResponse(buildEnvelope(canaryTrace{ids: canaryIDs{traceID: bytes.Repeat([]byte{9}, 16), spanID: v1.ids.spanID, sessionID: v1.ids.sessionID}, schemaVersion: 1}, time.Now())), wantError: "outside the canary contract"},
-		{name: "wrong span", queryCode: http.StatusOK, queryBody: tempoResponse(buildEnvelope(canaryTrace{ids: canaryIDs{traceID: v1.ids.traceID, spanID: bytes.Repeat([]byte{9}, 8), sessionID: v1.ids.sessionID}, schemaVersion: 1}, time.Now())), wantError: "outside the canary contract"},
+		{name: "wrong payload", queryCode: http.StatusOK, queryBody: tempoResponse(buildEnvelope(canaryTrace{ids: canaryIDs{traceID: bytes.Repeat([]byte{9}, 16), spanID: v1.ids.spanID, sessionID: v1.ids.sessionID}, kind: canaryTraceCompletion, schemaVersion: 1}, time.Now())), wantError: "outside the canary contract"},
+		{name: "wrong span", queryCode: http.StatusOK, queryBody: tempoResponse(buildEnvelope(canaryTrace{ids: canaryIDs{traceID: v1.ids.traceID, spanID: bytes.Repeat([]byte{9}, 8), sessionID: v1.ids.sessionID}, kind: canaryTraceCompletion, schemaVersion: 1}, time.Now())), wantError: "outside the canary contract"},
 		{name: "wrong media type", queryCode: http.StatusOK, queryBody: tempoResponse(buildEnvelope(v1, time.Now())), wantError: "unexpected media type"},
 		{name: "unauthorized", queryCode: http.StatusUnauthorized, wantError: "Tempo returned status 401"},
 	}
@@ -263,7 +280,7 @@ func TestEnvironmentRejectsNonProductionOrCredentialBearingURLs(t *testing.T) {
 }
 
 func TestStoredTraceParserRejectsMalformedProtobuf(t *testing.T) {
-	trace := fixedTrace(1)
+	trace := fixedTrace(1, canaryTraceCompletion)
 	for _, body := range [][]byte{{0xff}, {0x0a, 0xff}, message(1, []byte{0xff})} {
 		if _, err := inspectStoredTrace(body, trace); err == nil {
 			t.Fatalf("accepted malformed response %x", body)
@@ -272,7 +289,7 @@ func TestStoredTraceParserRejectsMalformedProtobuf(t *testing.T) {
 }
 
 func TestStoredTraceParserTreatsOnlyAnEmptyTraceAsPending(t *testing.T) {
-	trace := fixedTrace(1)
+	trace := fixedTrace(1, canaryTraceCompletion)
 	for _, body := range [][]byte{nil, message(1, nil)} {
 		state, err := inspectStoredTrace(body, trace)
 		if err != nil || state != storedTracePending {
@@ -285,13 +302,31 @@ func TestStoredTraceParserTreatsOnlyAnEmptyTraceAsPending(t *testing.T) {
 	}
 }
 
-func fixedTrace(schemaVersion uint64) canaryTrace {
-	marker := byte(schemaVersion)
+func fixedTrace(schemaVersion uint64, kind canaryTraceKind) canaryTrace {
+	marker := byte(1)
 	sessionID := "tns_000102030405060708090a0b0c0d0e0f"
-	if schemaVersion == 2 {
+	switch {
+	case schemaVersion == 2:
+		marker = 2
 		sessionID = "tns_101112131415161718191a1b1c1d1e1f"
-	} else if schemaVersion == 3 {
+	case schemaVersion == 3 && kind == canaryTraceGraph:
+		marker = 3
 		sessionID = "tns_202122232425262728292a2b2c2d2e2f"
+	case schemaVersion == 3:
+		marker = 4
+		sessionID = "tns_303132333435363738393a3b3c3d3e3f"
+	case kind == canaryTraceGraph:
+		marker = 5
+		sessionID = "tns_404142434445464748494a4b4c4d4e4f"
+	case kind == canaryTraceAutoUpdate:
+		marker = 6
+		sessionID = "tns_505152535455565758595a5b5c5d5e5f"
+	case kind == canaryTraceQueryCheckpoint:
+		marker = 7
+		sessionID = "tns_606162636465666768696a6b6c6d6e6f"
+	case kind == canaryTraceQueryCompletion:
+		marker = 8
+		sessionID = "tns_707172737475767778797a7b7c7d7e7f"
 	}
 	return canaryTrace{
 		ids: canaryIDs{
@@ -299,20 +334,21 @@ func fixedTrace(schemaVersion uint64) canaryTrace {
 			spanID:    bytes.Repeat([]byte{marker + 2}, 8),
 			sessionID: sessionID,
 		},
-		queryEvent:    "completion",
+		kind:          kind,
 		schemaVersion: schemaVersion,
 	}
 }
 
-func fixedV3Checkpoint() canaryTrace {
-	return canaryTrace{
-		ids: canaryIDs{
-			traceID:   bytes.Repeat([]byte{4}, 16),
-			spanID:    bytes.Repeat([]byte{6}, 8),
-			sessionID: "tns_303132333435363738393a3b3c3d3e3f",
-		},
-		queryEvent:    "checkpoint",
-		schemaVersion: 3,
+func canaryTestTraces() []canaryTrace {
+	return []canaryTrace{
+		fixedTrace(1, canaryTraceCompletion),
+		fixedTrace(2, canaryTraceGraph),
+		fixedTrace(3, canaryTraceGraph),
+		fixedTrace(3, canaryTraceAutoUpdate),
+		fixedTrace(4, canaryTraceGraph),
+		fixedTrace(4, canaryTraceAutoUpdate),
+		fixedTrace(4, canaryTraceQueryCheckpoint),
+		fixedTrace(4, canaryTraceQueryCompletion),
 	}
 }
 

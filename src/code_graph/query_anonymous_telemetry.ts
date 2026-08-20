@@ -71,7 +71,7 @@ export function codeGraphAnalyzeAnonymousTelemetryRequestKind(
 }
 
 /**
- * Projects only the schema-v3 allowlist. Workset calls and status checkpoints
+ * Projects only the schema-v4 allowlist. Workset calls and status checkpoints
  * cannot acquire local single-snapshot fields through this boundary.
  */
 export function codeGraphQueryAnonymousTelemetryFields(

@@ -1,4 +1,5 @@
 import {it as effectIt} from '@effect/vitest';
+import fc from 'fast-check';
 import {Cause, Deferred, Effect, Exit, Fiber, Tracer} from 'effect';
 import {TestClock} from 'effect/testing';
 import {describe, expect} from 'vitest';
@@ -9,6 +10,7 @@ import {
   recordAnonymousTelemetryFields,
   withAnonymousTelemetry,
   withAnonymousTelemetryPhase,
+  type AnonymousTelemetryFields,
 } from '../../src/effect/telemetry.js';
 import type {SystemInfoShape} from '../../src/effect/system.js';
 import {
@@ -330,6 +332,71 @@ describe('anonymous telemetry runtime', () => {
       });
     }).pipe(provideTestLayer(anonymousTelemetryTestLayer({system: systemInfoStub(), tracer: capture.tracer})));
   });
+
+  effectIt.effect('exports closed automatic-update results and repair state on the worker completion', () => {
+    const capture = capturingTracer();
+    const cases: ReadonlyArray<AnonymousTelemetryFields> = [
+      {autoUpdateResult: 'busy'},
+      {autoUpdateResult: 'current'},
+      {autoUpdateResult: 'disabled'},
+      {autoUpdateResult: 'failed'},
+      {autoUpdateRepairRequired: false, autoUpdateResult: 'updated'},
+      {autoUpdateRepairRequired: true, autoUpdateResult: 'updated'},
+    ];
+
+    return Effect.gen(function* () {
+      for (const fields of cases) {
+        yield* withAnonymousTelemetry(
+          {component: 'cli', operation: 'auto-update-worker'},
+          recordAnonymousTelemetryFields(fields),
+        );
+      }
+
+      expect(capture.spans).toHaveLength(cases.length);
+      expect(
+        capture.spans.map(span => {
+          const attributes = spanAttributes(span);
+          return {
+            repairRequired: attributes['threadnote.auto_update.repair_required'],
+            result: attributes['threadnote.auto_update.result'],
+          };
+        }),
+      ).toEqual([
+        {repairRequired: undefined, result: 'busy'},
+        {repairRequired: undefined, result: 'current'},
+        {repairRequired: undefined, result: 'disabled'},
+        {repairRequired: undefined, result: 'failed'},
+        {repairRequired: false, result: 'updated'},
+        {repairRequired: true, result: 'updated'},
+      ]);
+    }).pipe(provideTestLayer(anonymousTelemetryTestLayer({system: systemInfoStub(), tracer: capture.tracer})));
+  });
+
+  effectIt.effect.prop(
+    'drops arbitrary automatic-update result values and their repair flag from telemetry',
+    {
+      result: fc
+        .string({maxLength: 80})
+        .filter(value => !['busy', 'current', 'disabled', 'failed', 'updated'].includes(value)),
+    },
+    ({result}) => {
+      const capture = capturingTracer();
+      return Effect.gen(function* () {
+        yield* withAnonymousTelemetry(
+          {component: 'cli', operation: 'auto-update-worker'},
+          recordAnonymousTelemetryFields({
+            autoUpdateRepairRequired: true,
+            autoUpdateResult: result as AnonymousTelemetryFields['autoUpdateResult'],
+          }),
+        );
+
+        const attributes = spanAttributes(capture.spans[0]!);
+        expect(attributes).not.toHaveProperty('threadnote.auto_update.result');
+        expect(attributes).not.toHaveProperty('threadnote.auto_update.repair_required');
+      }).pipe(provideTestLayer(anonymousTelemetryTestLayer({system: systemInfoStub(), tracer: capture.tracer})));
+    },
+    {fastCheck: {numRuns: 50}},
+  );
 
   effectIt.effect('records phase timing on both the checkpoint and final operation envelope', () => {
     const capture = capturingTracer();

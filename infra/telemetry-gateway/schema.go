@@ -26,6 +26,9 @@ var telemetrySchemaV2JSON []byte
 //go:embed telemetry-schema-v3.json
 var telemetrySchemaV3JSON []byte
 
+//go:embed telemetry-schema-v4.json
+var telemetrySchemaV4JSON []byte
+
 type telemetrySchema struct {
 	SchemaVersion int `json:"schemaVersion"`
 	Limits        struct {
@@ -111,8 +114,8 @@ var terminalGraphSpanAttributes = []string{
 }
 
 func loadTelemetrySchemas() (*compiledTelemetrySchemas, error) {
-	result := &compiledTelemetrySchemas{byVersion: make(map[int]*compiledTelemetrySchema, 3)}
-	for version, data := range map[int][]byte{1: telemetrySchemaV1JSON, 2: telemetrySchemaV2JSON, 3: telemetrySchemaV3JSON} {
+	result := &compiledTelemetrySchemas{byVersion: make(map[int]*compiledTelemetrySchema, 4)}
+	for version, data := range map[int][]byte{1: telemetrySchemaV1JSON, 2: telemetrySchemaV2JSON, 3: telemetrySchemaV3JSON, 4: telemetrySchemaV4JSON} {
 		compiled, err := compileTelemetrySchema(data, version)
 		if err != nil {
 			return nil, err
@@ -161,7 +164,15 @@ func compileTelemetrySchema(data []byte, expectedVersion int) (*compiledTelemetr
 		requiredRegistries = append(requiredRegistries, "buildKind", "efficiencyClass", "fallbackReason", "materializationMode", "resolutionClosure")
 	}
 	if expectedVersion >= 3 {
-		requiredRegistries = append(requiredRegistries, "graphRequestKind", "graphRequestScope", "graphSnapshotFreshness", "graphSnapshotSelection")
+		requiredRegistries = append(requiredRegistries, "autoUpdateResult")
+	}
+	if expectedVersion >= 4 {
+		requiredRegistries = append(requiredRegistries,
+			"graphRequestKind",
+			"graphRequestScope",
+			"graphSnapshotFreshness",
+			"graphSnapshotSelection",
+		)
 	}
 	for _, registry := range requiredRegistries {
 		if len(compiled.registries[registry]) == 0 {
@@ -556,6 +567,10 @@ func validateSpanAttributeValues(attributes map[string]*commonpb.AnyValue, schem
 			if !valueStringIn(value, schema.registries["failureRecovery"]) {
 				return errors.New("invalid telemetry failure recovery")
 			}
+		case key == "threadnote.auto_update.result":
+			if !valueStringIn(value, schema.registries["autoUpdateResult"]) {
+				return errors.New("invalid telemetry automatic update result")
+			}
 		case graphRegistrySpanAttributes[key] != "":
 			if !valueStringIn(value, schema.registries[graphRegistrySpanAttributes[key]]) {
 				return errors.New("invalid telemetry graph classification")
@@ -656,6 +671,21 @@ func validateSpanAttributeShape(attributes map[string]*commonpb.AnyValue, schema
 	if graphAttributeCount != 0 && (schema.SchemaVersion < 2 || event != "lifecycle" || operation != "graph-build") {
 		return errors.New("graph build attributes require a version 2 or later graph lifecycle event")
 	}
+	autoUpdateResult, hasAutoUpdateResult := anyString(attributes["threadnote.auto_update.result"])
+	_, hasAutoUpdateRepairRequired := attributes["threadnote.auto_update.repair_required"]
+	if (hasAutoUpdateResult || hasAutoUpdateRepairRequired) &&
+		(schema.SchemaVersion < 3 || event != "completion" || operation != "auto-update-worker") {
+		return errors.New("automatic update attributes require a version 3 or later worker completion")
+	}
+	if schema.SchemaVersion >= 3 && event == "completion" && operation == "auto-update-worker" {
+		outcomeValue, _ := anyString(attributes["threadnote.outcome"])
+		if outcomeValue == "success" && !hasAutoUpdateResult {
+			return errors.New("successful automatic update worker completion requires a closed result")
+		}
+		if hasAutoUpdateRepairRequired != (autoUpdateResult == "updated") {
+			return errors.New("automatic update repair state requires an updated result")
+		}
+	}
 	if event == "lifecycle" {
 		outcomeValue, _ := anyString(attributes["threadnote.outcome"])
 		if schema.SchemaVersion >= 2 && operation == "graph-build" {
@@ -724,7 +754,7 @@ func validateGraphQueryAttributeShape(attributes map[string]*commonpb.AnyValue, 
 		}
 		return nil
 	}
-	if schema.SchemaVersion < 3 {
+	if schema.SchemaVersion < 4 {
 		return nil
 	}
 	if !queryPhase && queryAttributeCount == 0 && !queryStage && !querySubphase {

@@ -1,6 +1,7 @@
 import ts from 'typescript-compiler';
 import {describe, expect, it} from 'vitest';
 import {
+  ANONYMOUS_TELEMETRY_AUTO_UPDATE_RESULTS,
   ANONYMOUS_TELEMETRY_PHASES,
   ANONYMOUS_TELEMETRY_STAGES,
   ANONYMOUS_TELEMETRY_SUBPHASES,
@@ -42,8 +43,11 @@ const schemaV1 = JSON.parse(
 const schemaV2 = JSON.parse(
   readFileSync(join(root, 'infra', 'telemetry-gateway', 'telemetry-schema-v2.json'), 'utf8'),
 ) as TelemetrySchema;
-const schema = JSON.parse(
+const schemaV3 = JSON.parse(
   readFileSync(join(root, 'infra', 'telemetry-gateway', 'telemetry-schema-v3.json'), 'utf8'),
+) as TelemetrySchema;
+const schema = JSON.parse(
+  readFileSync(join(root, 'infra', 'telemetry-gateway', 'telemetry-schema-v4.json'), 'utf8'),
 ) as TelemetrySchema;
 
 describe('telemetry producer and production gateway schema', () => {
@@ -86,12 +90,14 @@ describe('telemetry producer and production gateway schema', () => {
     ]);
   });
 
-  it('retains frozen v1/v2 while v3 adds only the closed graph-query surface', () => {
+  it('retains frozen v1/v2/v3 while v4 adds only the closed graph-query surface', () => {
     expect(schemaV1.schemaVersion).toBe(1);
     expect(schemaV2.schemaVersion).toBe(2);
-    expect(schema.schemaVersion).toBe(3);
+    expect(schemaV3.schemaVersion).toBe(3);
+    expect(schema.schemaVersion).toBe(4);
     expect(schemaV1.attributeContract.resource).toEqual(schemaV2.attributeContract.resource);
-    expect(schemaV2.attributeContract.resource).toEqual(schema.attributeContract.resource);
+    expect(schemaV2.attributeContract.resource).toEqual(schemaV3.attributeContract.resource);
+    expect(schemaV3.attributeContract.resource).toEqual(schema.attributeContract.resource);
     expect(
       schemaV1.attributeContract.span.some(
         key => key.startsWith('threadnote.graph.') && key !== 'threadnote.graph.degradation_reason',
@@ -121,8 +127,17 @@ describe('telemetry producer and production gateway schema', () => {
       'threadnote.graph.total_files_bucket',
     ]);
     expect(graphAttributes.some(key => /(?:repository|path|commit|session|invocation)/u.test(key))).toBe(false);
+    const autoUpdateAttributes = schemaV3.attributeContract.span.filter(
+      key => !schemaV2.attributeContract.span.includes(key),
+    );
+    expect(autoUpdateAttributes).toEqual(['threadnote.auto_update.repair_required', 'threadnote.auto_update.result']);
+    expect(
+      schemaV3.attributeContract.booleanSpan.filter(key => !schemaV2.attributeContract.booleanSpan.includes(key)),
+    ).toEqual(['threadnote.auto_update.repair_required']);
+    expect(schemaV3.registries.autoUpdateResult).toEqual(ANONYMOUS_TELEMETRY_AUTO_UPDATE_RESULTS);
+
     const graphQueryAttributes = schema.attributeContract.span.filter(
-      key => key.startsWith('threadnote.graph.') && !schemaV2.attributeContract.span.includes(key),
+      key => key.startsWith('threadnote.graph.') && !schemaV3.attributeContract.span.includes(key),
     );
     expect(graphQueryAttributes).toEqual([
       'threadnote.graph.request_kind',
@@ -136,12 +151,18 @@ describe('telemetry producer and production gateway schema', () => {
     expect(
       graphQueryAttributes.some(key => /(?:repository|path|commit|query_text|symbol_id|graph_id)/u.test(key)),
     ).toBe(false);
+    expect(schema.attributeContract.span.filter(key => !schemaV3.attributeContract.span.includes(key))).toEqual(
+      graphQueryAttributes,
+    );
+    expect(
+      schema.attributeContract.booleanSpan.filter(key => !schemaV3.attributeContract.booleanSpan.includes(key)),
+    ).toEqual([]);
     const collector = readFileSync(join(root, 'infra', 'telemetry-gateway', 'collector.yaml'), 'utf8');
     const canarySource = readFileSync(join(root, 'infra', 'telemetry-gateway', 'cmd', 'canary', 'main.go'), 'utf8');
     expect(collector).toContain(
-      'resource.attributes["threadnote.telemetry.schema_version"] != 1 and resource.attributes["threadnote.telemetry.schema_version"] != 2 and resource.attributes["threadnote.telemetry.schema_version"] != 3',
+      'resource.attributes["threadnote.telemetry.schema_version"] != 1 and resource.attributes["threadnote.telemetry.schema_version"] != 2 and resource.attributes["threadnote.telemetry.schema_version"] != 3 and resource.attributes["threadnote.telemetry.schema_version"] != 4',
     );
-    for (const attribute of [...graphAttributes, ...graphQueryAttributes]) {
+    for (const attribute of [...graphAttributes, ...autoUpdateAttributes, ...graphQueryAttributes]) {
       expect(collector).toContain(`"${attribute}"`);
       expect(canarySource).toContain(`"${attribute}"`);
     }
@@ -199,6 +220,7 @@ describe('telemetry producer and production gateway schema', () => {
       'telemetry-schema-v1.json',
       'telemetry-schema-v2.json',
       'telemetry-schema-v3.json',
+      'telemetry-schema-v4.json',
     ]) {
       expect(dockerfile).toContain(`infra/telemetry-gateway/${file}`);
       expect(dockerignore).toContain(`!infra/telemetry-gateway/${file}`);
@@ -238,12 +260,17 @@ describe('telemetry producer and production gateway schema', () => {
     expect(canary).toContain('THREADNOTE_TELEMETRY_CANARY_FLY_READ_TOKEN');
     expect(canary).toContain('vars.THREADNOTE_TELEMETRY_CANARY_GATEWAY_URL');
     expect(canary).toContain('flyctl machine list --app threadnote-telemetry --json | go run ./cmd/budget');
-    expect(canarySource).toContain('{schemaVersion: 1}');
-    expect(canarySource).toContain('{schemaVersion: 2}');
-    expect(canarySource).toContain('{queryEvent: "checkpoint", schemaVersion: 3}');
-    expect(canarySource).toContain('{queryEvent: "completion", schemaVersion: 3}');
+    expect(canarySource).toContain('{schemaVersion: 1, kind: canaryTraceCompletion}');
+    expect(canarySource).toContain('{schemaVersion: 2, kind: canaryTraceGraph}');
+    expect(canarySource).toContain('{schemaVersion: 3, kind: canaryTraceGraph}');
+    expect(canarySource).toContain('{schemaVersion: 3, kind: canaryTraceAutoUpdate}');
+    expect(canarySource).toContain('{schemaVersion: 4, kind: canaryTraceGraph}');
+    expect(canarySource).toContain('{schemaVersion: 4, kind: canaryTraceAutoUpdate}');
+    expect(canarySource).toContain('{schemaVersion: 4, kind: canaryTraceQueryCheckpoint}');
+    expect(canarySource).toContain('{schemaVersion: 4, kind: canaryTraceQueryCompletion}');
     expect(canarySource).toContain('{"threadnote.stage", "query-worktree-observation"}');
     expect(canarySource).toContain('{"threadnote.subphase", "skipped"}');
+    expect(canarySource).toContain('{"threadnote.auto_update.result", "updated"}');
     expect(canarySource).toContain('threadnote.graph.build_kind');
     expect(canarySource).toContain('threadnote.graph.fact_replay_amplification_bucket');
     expect(gatewayWorkflow).toContain("github.event_name != 'pull_request'");
@@ -280,8 +307,8 @@ describe('telemetry producer and production gateway schema', () => {
     expect(runbook).toContain('THREADNOTE_TELEMETRY_PUBLIC_INGESTION=disabled');
     expect(runbook).toContain('THREADNOTE_TELEMETRY_CANARY_GATEWAY_URL');
     expect(runbook).toContain('deployment order is a hard compatibility gate');
-    expect(runbook).toContain('Only after the gateway, four-trace/three-version canary, and dashboard gates');
-    expect(runbook).toContain('Keep v1/v2 ingress and canary coverage');
+    expect(runbook).toContain('Only after the gateway, eight-trace/four-version canary, and dashboard gates');
+    expect(runbook).toContain('Keep v1/v2/v3 ingress and canary coverage');
   });
 });
 
@@ -292,6 +319,7 @@ function producerRegistries(): Readonly<Record<string, readonly string[]>> {
     ...literalRegistry(diagnosticSource, 'CODE_GRAPH_FAILURE_OPERATIONS', {ignoreSpreads: true}),
   ];
   return {
+    autoUpdateResult: ANONYMOUS_TELEMETRY_AUTO_UPDATE_RESULTS,
     buildKind: literalRegistry(effectTelemetrySource, 'ANONYMOUS_TELEMETRY_GRAPH_BUILD_KINDS'),
     component: interfacePropertyStrings(effectTelemetrySource, 'AnonymousTelemetryInvocationOptions', 'component'),
     correlationScope: interfacePropertyStrings(
