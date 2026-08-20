@@ -5,6 +5,7 @@ import {createHash} from '../helpers/node-crypto.js';
 import {it as effectIt} from '@effect/vitest';
 import {Deferred, Effect, Fiber} from 'effect';
 import {TestClock} from 'effect/testing';
+import fc from 'fast-check';
 import {afterEach, describe, expect, it} from 'vitest';
 import {CodeGraphStore, type CodeGraphStoreShape} from '../../src/code_graph/store.js';
 import {CodeGraphStoreBusyError, type CodeGraphSnapshot, type RepositoryIdentity} from '../../src/code_graph/types.js';
@@ -521,6 +522,114 @@ describe('code graph ready snapshot retention', () => {
     expect(result).toBeInstanceOf(CodeGraphStoreBusyError);
     expect(result.message).not.toContain(root);
   });
+
+  effectIt.effect('does not advance unrelated retired rows when an active snapshot lease is released', () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const root = yield* Effect.promise(() => mkdtemp('threadnote-ready-retention-active-release-'));
+        temporaryRoots.push(root);
+        const databasePath = join(root, 'graph-v3.sqlite');
+        const identity = repositoryIdentity(root);
+        const active = snapshot(identity, 'active-release-current');
+        const retired = snapshot(identity, 'active-release-retired');
+        const store = yield* CodeGraphStore;
+        yield* store.initialize(databasePath);
+        yield* registerReadySnapshots(store, databasePath, identity, [active, retired]);
+        yield* Effect.sync(() => activateSnapshot(databasePath, identity.worktreeId, active.id));
+        yield* Effect.sync(() => seedSymbol(databasePath, active.id));
+        const lease = yield* store.acquireSnapshotLease(databasePath, active.id, 60_000);
+        yield* Effect.sync(() => retireSnapshotWithSymbol(databasePath, retired.id));
+
+        const activeBefore = readActiveSnapshotEvidence(databasePath, identity.worktreeId, active.id);
+        const backlogBefore = readSnapshotSymbolCount(databasePath, retired.id);
+        expect(backlogBefore).toBe(1);
+
+        yield* store.releaseSnapshotLease(databasePath, lease);
+
+        expect(readActiveSnapshotEvidence(databasePath, identity.worktreeId, active.id)).toEqual(activeBefore);
+        expect(readSnapshotSymbolCount(databasePath, retired.id)).toBe(backlogBefore);
+        expect(readSnapshotLeaseTokens(databasePath)).toEqual([]);
+      }).pipe(provideTestLayer(ApplicationLayer)),
+    ),
+  );
+
+  effectIt.effect('advances cleanup when a release reaps an expired transient target', () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const root = yield* Effect.promise(() => mkdtemp('threadnote-ready-retention-expired-release-'));
+        temporaryRoots.push(root);
+        const databasePath = join(root, 'graph-v3.sqlite');
+        const identity = repositoryIdentity(root);
+        const active = snapshot(identity, 'expired-release-current');
+        const expired = snapshot(identity, 'expired-release-transient');
+        const store = yield* CodeGraphStore;
+        yield* store.initialize(databasePath);
+        yield* registerReadySnapshots(store, databasePath, identity, [active, expired]);
+        yield* Effect.sync(() => activateSnapshot(databasePath, identity.worktreeId, active.id));
+        yield* Effect.sync(() => seedSymbol(databasePath, active.id));
+        const activeLease = yield* store.acquireSnapshotLease(databasePath, active.id, 60_000);
+        const expiredLease = yield* store.acquireSnapshotLease(databasePath, expired.id, 60_000, {
+          retireWhenInactive: true,
+        });
+        yield* Effect.sync(() => {
+          seedSymbol(databasePath, expired.id);
+          expireLease(databasePath, expiredLease);
+        });
+
+        const activeBefore = readActiveSnapshotEvidence(databasePath, identity.worktreeId, active.id);
+        yield* store.releaseSnapshotLease(databasePath, activeLease);
+        yield* waitForSnapshotRemoval(databasePath, expired.id);
+
+        expect(readActiveSnapshotEvidence(databasePath, identity.worktreeId, active.id)).toEqual(activeBefore);
+        expect(readSnapshotLeaseTokens(databasePath)).toEqual([]);
+      }).pipe(provideTestLayer(ApplicationLayer)),
+    ),
+  );
+
+  effectIt.effect.prop(
+    'matches active lease overlap and release order without spending unrelated retired backlog',
+    {
+      leaseCount: fc.integer({max: 4, min: 1}),
+      releasePriorities: fc.array(fc.integer(), {maxLength: 4, minLength: 4}),
+    },
+    ({leaseCount, releasePriorities}) =>
+      TestClock.withLive(
+        Effect.gen(function* () {
+          const root = yield* Effect.promise(() => mkdtemp('threadnote-ready-retention-release-order-'));
+          temporaryRoots.push(root);
+          const databasePath = join(root, 'graph-v3.sqlite');
+          const identity = repositoryIdentity(root);
+          const active = snapshot(identity, 'release-order-current');
+          const retired = snapshot(identity, 'release-order-retired');
+          const store = yield* CodeGraphStore;
+          yield* store.initialize(databasePath);
+          yield* registerReadySnapshots(store, databasePath, identity, [active, retired]);
+          yield* Effect.sync(() => activateSnapshot(databasePath, identity.worktreeId, active.id));
+          yield* Effect.sync(() => seedSymbol(databasePath, active.id));
+          const tokens = yield* Effect.forEach(Array.from({length: leaseCount}), () =>
+            store.acquireSnapshotLease(databasePath, active.id, 60_000),
+          );
+          yield* Effect.sync(() => retireSnapshotWithSymbol(databasePath, retired.id));
+
+          const activeBefore = readActiveSnapshotEvidence(databasePath, identity.worktreeId, active.id);
+          const backlogBefore = readSnapshotSymbolCount(databasePath, retired.id);
+          const liveTokens = new Set(tokens);
+          const releaseOrder = Array.from({length: leaseCount}, (_, index) => index).sort(
+            (left, right) => releasePriorities[left]! - releasePriorities[right]! || left - right,
+          );
+
+          for (const index of releaseOrder) {
+            const token = tokens[index]!;
+            liveTokens.delete(token);
+            yield* store.releaseSnapshotLease(databasePath, token);
+            expect(readSnapshotLeaseTokens(databasePath)).toEqual([...liveTokens].sort());
+            expect(readActiveSnapshotEvidence(databasePath, identity.worktreeId, active.id)).toEqual(activeBefore);
+            expect(readSnapshotSymbolCount(databasePath, retired.id)).toBe(backlogBefore);
+          }
+        }).pipe(provideTestLayer(ApplicationLayer)),
+      ),
+    {fastCheck: {numRuns: 12}},
+  );
 });
 
 function registerReadySnapshots(
@@ -601,6 +710,68 @@ function seedSymbol(databasePath: string, snapshotId: string): void {
            NULL, NULL, '{"startLine":1,"endLine":1}')`,
       )
       .run(snapshotId);
+  } finally {
+    database.close(false);
+  }
+}
+
+function retireSnapshotWithSymbol(databasePath: string, snapshotId: string): void {
+  seedSymbol(databasePath, snapshotId);
+  const database = new Database(databasePath, {strict: true});
+  try {
+    database.query("UPDATE snapshots SET state = 'retired' WHERE id = ? AND state = 'ready'").run(snapshotId);
+  } finally {
+    database.close(false);
+  }
+}
+
+function activateSnapshot(databasePath: string, worktreeId: string, snapshotId: string): void {
+  const database = new Database(databasePath, {strict: true});
+  try {
+    database
+      .query('INSERT INTO active_snapshots (worktree_id, snapshot_id, activated_at) VALUES (?, ?, ?)')
+      .run(worktreeId, snapshotId, new Date().toISOString());
+  } finally {
+    database.close(false);
+  }
+}
+
+function readActiveSnapshotEvidence(databasePath: string, worktreeId: string, snapshotId: string) {
+  const database = new Database(databasePath, {readonly: true, strict: true});
+  try {
+    return {
+      active: database.query('SELECT snapshot_id FROM active_snapshots WHERE worktree_id = ?').get(worktreeId),
+      snapshot: database.query('SELECT state FROM snapshots WHERE id = ?').get(snapshotId),
+      symbolCount: readSnapshotSymbolCountFromDatabase(database, snapshotId),
+    };
+  } finally {
+    database.close(false);
+  }
+}
+
+function readSnapshotSymbolCount(databasePath: string, snapshotId: string): number {
+  const database = new Database(databasePath, {readonly: true, strict: true});
+  try {
+    return readSnapshotSymbolCountFromDatabase(database, snapshotId);
+  } finally {
+    database.close(false);
+  }
+}
+
+function readSnapshotSymbolCountFromDatabase(database: Database, snapshotId: string): number {
+  return (
+    database.query('SELECT COUNT(*) AS count FROM symbols WHERE snapshot_id = ?').get(snapshotId) as {
+      readonly count: number;
+    }
+  ).count;
+}
+
+function readSnapshotLeaseTokens(databasePath: string): readonly string[] {
+  const database = new Database(databasePath, {readonly: true, strict: true});
+  try {
+    return (
+      database.query('SELECT token FROM snapshot_leases ORDER BY token').all() as readonly {readonly token: string}[]
+    ).map(row => row.token);
   } finally {
     database.close(false);
   }

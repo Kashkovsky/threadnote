@@ -243,11 +243,12 @@ const removeActiveView = Effect.fn('codeGraph.removeActiveView')(function* (
 /** @internal Exact indexed cleanup statement retained for query-plan regression tests. */
 
 /**
- * Reclaim at most one bounded table page. Lease acquire/release use this
- * foreground step, while pointer promotion schedules the same state machine as
- * a best-effort detached collector. Query completion therefore never cascades
- * a repository-sized snapshot delete, while repeated ordinary use still makes
- * durable progress if a short-lived CLI interrupts the detached fiber.
+ * Reclaim at most one bounded table page. Lease acquisition and a release that
+ * actually retires a snapshot use this foreground step, while pointer promotion
+ * schedules the same state machine as a best-effort detached collector. Query
+ * completion therefore never cascades a repository-sized snapshot delete,
+ * while repeated ordinary use still makes durable progress if a short-lived CLI
+ * interrupts the detached fiber.
  */
 const pruneRetiredSnapshotRowsPage = Effect.fn('codeGraph.pruneRetiredSnapshotRowsPage')(function* (
   providedSql?: SqlClient.SqlClient,

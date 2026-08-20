@@ -259,8 +259,8 @@ export function makeCodeGraphStoreMaintenanceMethods(runtime: CodeGraphStoreRunt
                   Effect.gen(function* () {
                     const sql = yield* SqlClient.SqlClient;
                     yield* ensureLeaseSchemaInitialized(databasePath, sql);
-                    yield* releaseSnapshotLease(token);
-                    return yield* pruneRetiredSnapshotRowsPage();
+                    const retired = yield* releaseSnapshotLease(token);
+                    return retired ? yield* pruneRetiredSnapshotRowsPage() : {deleted: 0, remaining: false};
                   }),
                 ),
                 options?.waitTimeoutMilliseconds,
