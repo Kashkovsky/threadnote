@@ -28,11 +28,15 @@ import {
   boundedRecallSemanticRetrieval,
   createRecallRerankerCache,
   loadRecallExpansionVocabulary,
+  mergeRecallCandidateLanes,
   mergeRecallIndexCandidates,
   mergePrioritizedRecallIndexCandidates,
   MCP_RECALL_SEMANTIC_RETRIEVAL_TIMEOUT_MILLISECONDS,
   prepareRecallSections,
+  prioritizeCrossScopeRecallCandidates,
   prioritizeWorkspaceRecallCandidates,
+  recallCrossScopeFallbackRequired,
+  recallCrossScopeLaneBudgets,
 } from '../../src/recall/runtime.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import {buildRecallSections} from '../../src/utils.js';
@@ -145,6 +149,102 @@ describe('recall runtime orchestration', () => {
     });
     expect(sections.ranked[0]?.uri).toBe(currentPackage.uri);
   });
+  it('rejects repo-wide, current-hierarchy, and malformed candidates from the cross-scope topical lane', () => {
+    const candidate = (workspaceScope: string | undefined, topic: string, project = 'monorepo') => ({
+      fields: {project, topic: `${topic}-quasar-rollback-checksum`, workspaceScope},
+      text: 'Quasar rollback checksum contract.',
+      uri: `threadnote://user/test/memories/durable/projects/monorepo/${topic}.md`,
+    });
+    const sibling = candidate('apps/billing', 'sibling');
+    const descendants = candidate('apps/search/frontend', 'descendant');
+    const candidates = prioritizeCrossScopeRecallCandidates(
+      'quasar rollback checksum',
+      [
+        candidate(undefined, 'repo-wide'),
+        candidate('apps', 'ancestor'),
+        candidate('apps/search', 'exact'),
+        candidate('../apps/billing', 'malformed'),
+        candidate('apps/payments', 'other-project', 'other'),
+        sibling,
+        descendants,
+      ],
+      {project: 'monorepo', workspaceScope: 'apps/search'},
+    );
+
+    expect(candidates.map(result => result.uri)).toEqual(expect.arrayContaining([descendants.uri, sibling.uri]));
+    expect(candidates).toHaveLength(2);
+  });
+  it('skips the sibling fallback only after the broad topical query proves exhaustive', () => {
+    expect(recallCrossScopeFallbackRequired(undefined)).toBe(true);
+    expect(recallCrossScopeFallbackRequired(false)).toBe(true);
+    expect(recallCrossScopeFallbackRequired(true)).toBe(false);
+  });
+  it('does not collapse protected and cross-scope reservations across different logical invariants', () => {
+    const topical = Array.from({length: 100}, (_unused, index) => ({
+      fields: {project: 'monorepo', topic: `topical-${index}`},
+      text: 'Topical candidate.',
+      uri: `threadnote://user/test/memories/durable/projects/monorepo/topical-${index}.md`,
+    }));
+    const protectedCandidate = {
+      contentHash: 'same-body',
+      fields: {project: 'monorepo', topic: 'search-contract', workspaceScope: 'apps/search'},
+      kind: 'durable' as const,
+      memoryId: 'tn_same_header',
+      status: 'active' as const,
+      text: 'Shared contract body.',
+      uri: 'threadnote://user/test/memories/durable/projects/monorepo/search-contract.md',
+    };
+    const crossCandidate = {
+      ...protectedCandidate,
+      fields: {project: 'monorepo', topic: 'billing-contract', workspaceScope: 'apps/billing'},
+      uri: 'threadnote://user/test/memories/durable/projects/monorepo/billing-contract.md',
+    };
+    const budgets = recallCrossScopeLaneBudgets(5);
+    const admitted = mergeRecallCandidateLanes([topical], [[protectedCandidate]], [[crossCandidate]], budgets).slice(
+      0,
+      budgets.admissionLimit,
+    );
+
+    expect(admitted.map(candidate => candidate.uri)).toEqual(
+      expect.arrayContaining([protectedCandidate.uri, crossCandidate.uri]),
+    );
+  });
+  effectIt.effect.prop(
+    'keeps protected and cross-scope reserves independent throughout the bounded admission window',
+    {
+      crossCount: FC.integer({max: 12, min: 0}),
+      protectedCount: FC.integer({max: 24, min: 0}),
+      resultLimit: FC.integer({max: 12, min: 1}),
+      topicalCount: FC.integer({max: 140, min: 100}),
+    },
+    ({crossCount, protectedCount, resultLimit, topicalCount}) =>
+      Effect.sync(() => {
+        const makeCandidate = (lane: string, index: number) => ({
+          fields: {project: 'monorepo', topic: `${lane}-${index}`},
+          text: 'Bounded candidate lane contract.',
+          uri: `threadnote://user/test/memories/durable/projects/monorepo/${lane}-${String(index).padStart(3, '0')}.md`,
+        });
+        const topical = Array.from({length: topicalCount}, (_unused, index) => makeCandidate('topical', index));
+        const protectedCandidates = Array.from({length: protectedCount}, (_unused, index) =>
+          makeCandidate('protected', index),
+        );
+        const crossCandidates = Array.from({length: crossCount}, (_unused, index) => makeCandidate('cross', index));
+        const budgets = recallCrossScopeLaneBudgets(resultLimit);
+        const first = mergeRecallCandidateLanes([topical], [protectedCandidates], [crossCandidates], budgets);
+        const second = mergeRecallCandidateLanes([topical], [protectedCandidates], [crossCandidates], budgets);
+        const admittedUris = new Set(first.slice(0, budgets.admissionLimit).map(candidate => candidate.uri));
+        const expectedProtected = protectedCandidates.slice(0, budgets.protectedReserve);
+        const expectedCross = crossCandidates.slice(0, budgets.crossScopeReserve);
+
+        expect(expectedProtected.every(candidate => admittedUris.has(candidate.uri))).toBe(true);
+        expect(expectedCross.every(candidate => admittedUris.has(candidate.uri))).toBe(true);
+        expect(first).toEqual(second);
+        expect(first.slice(0, budgets.admissionLimit)).toHaveLength(
+          Math.min(budgets.admissionLimit, topicalCount + protectedCount + crossCount),
+        );
+      }),
+    {fastCheck: {numRuns: 50}},
+  );
   effectIt.effect('bounds one semantic retrieval attempt and interrupts only the timed-out work', () =>
     Effect.gen(function* () {
       let interrupted = 0;

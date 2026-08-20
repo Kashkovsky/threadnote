@@ -581,6 +581,84 @@ describe('local recall index', () => {
     ]);
   });
 
+  it('uses a cheap project lookup to skip sibling posting work when the project has no outside scope', async () => {
+    const memoryPath = join(
+      directory,
+      'data',
+      'local',
+      'user',
+      'me',
+      'memories',
+      'durable',
+      'projects',
+      'monorepo',
+      'current.md',
+    );
+    await mkdir(join(memoryPath, '..'), {recursive: true});
+    await writeFile(
+      memoryPath,
+      [
+        'MEMORY',
+        'kind: durable',
+        'status: active',
+        'project: monorepo',
+        'topic: common-posting-anchor',
+        'workspace_scope: apps/search',
+        'source_agent_client: test',
+        'timestamp: 2026-08-20T00:00:00.000Z',
+        '',
+        'Common posting anchor.',
+      ].join('\n'),
+      'utf8',
+    );
+    let postingStatements = 0;
+    const selected = await run(
+      loadRecallIndexData(config(), {
+        includeInactive: false,
+        onQueryDiagnostics: diagnostics =>
+          Effect.sync(() => {
+            postingStatements += diagnostics.postingStatements;
+          }),
+        project: 'monorepo',
+        query: 'common posting anchor',
+        workspaceScope: 'apps/search',
+        workspaceScopeMode: 'sibling',
+      }),
+    );
+    const plan = queryDatabase<{detail: string}>(`
+      EXPLAIN QUERY PLAN
+      SELECT 1
+      FROM documents AS d
+      WHERE d.project = 'monorepo'
+        AND d.workspace_scope IS NOT NULL
+        AND d.workspace_scope NOT IN ('apps', 'apps/search')
+      LIMIT 1
+    `)
+      .map(row => row.detail)
+      .join('\n');
+    const postingPlan = queryDatabase<{detail: string}>(`
+      EXPLAIN QUERY PLAN
+      WITH query_terms(term) AS (VALUES ('common'))
+      SELECT p.term, p.document_id
+      FROM query_terms AS q
+      INNER JOIN postings AS p ON p.term = q.term
+      INNER JOIN documents AS d ON d.id = p.document_id
+      WHERE d.project = 'monorepo'
+        AND d.workspace_scope IS NOT NULL
+        AND d.workspace_scope NOT IN ('apps', 'apps/search')
+    `)
+      .map(row => row.detail)
+      .join('\n');
+
+    expect(selected.candidates).toEqual([]);
+    expect(selected.queryExhaustive).toBe(true);
+    expect(postingStatements).toBe(0);
+    expect(plan).toContain('documents_project_modified_uri');
+    expect(plan).not.toContain('SCAN d');
+    expect(postingPlan).toContain('SEARCH p USING');
+    expect(postingPlan).not.toContain('SCAN p');
+  });
+
   it('reconstructs canonical encoded URIs for external resource paths', async () => {
     const resourcePath = join(
       directory,
@@ -834,7 +912,7 @@ describe('local recall index', () => {
     );
 
     const selected = await run(
-      loadRecallIndex(config(), {
+      loadRecallIndexData(config(), {
         includeInactive: false,
         limit: 5,
         query: 'alpha-42',
@@ -842,10 +920,11 @@ describe('local recall index', () => {
       }),
     );
 
-    expect(selected.map(candidate => candidate.uri)).toEqual([
+    expect(selected.candidates.map(candidate => candidate.uri)).toEqual([
       'threadnote://resources/repos/threadnote/000.md',
       'threadnote://resources/repos/threadnote/139.md',
     ]);
+    expect(selected.queryExhaustive).toBe(true);
     expect(
       queryDatabase<{posting_count: number}>('SELECT COUNT(*) AS posting_count FROM postings')[0]?.posting_count,
     ).toBeGreaterThan(0);
@@ -911,7 +990,7 @@ describe('local recall index', () => {
 
     const diagnostics: Array<{postingRows: number; postingStatements: number; queryTerms: number}> = [];
     const selected = await run(
-      loadRecallIndex(config(), {
+      loadRecallIndexData(config(), {
         includeInactive: false,
         limit: 5,
         onQueryDiagnostics: event =>
@@ -922,7 +1001,8 @@ describe('local recall index', () => {
       }),
     );
 
-    expect(selected[0]?.uri).toBe('threadnote://resources/repos/threadnote/699.md');
+    expect(selected.candidates[0]?.uri).toBe('threadnote://resources/repos/threadnote/699.md');
+    expect(selected.queryExhaustive).toBe(false);
     expect(diagnostics).toHaveLength(1);
     expect(diagnostics[0]?.postingStatements).toBe(1);
     expect(diagnostics[0]?.queryTerms).toBeGreaterThan(1);

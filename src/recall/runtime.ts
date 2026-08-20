@@ -19,8 +19,10 @@ import {
   loadRecallIndexDataBatch,
   recallUriMatchesScopes,
 } from './index.js';
+import {recallWorkspaceScopeMatches} from './index_scope.js';
 import {
   deduplicateLogicalRecallCandidates,
+  recallCandidateLogicalCorpusKey,
   rankRecallCandidates,
   recallCandidateMatchesWorkspaceBranch,
   type RecallCandidate,
@@ -87,7 +89,36 @@ const NATIVE_RERANK_DOCUMENT_LIMIT = 4_000;
 const SEMANTIC_GENERATION_RETRY_LIMIT = 2;
 const WORKSPACE_CANDIDATE_RESERVE_MAXIMUM = 16;
 const WORKSPACE_CANDIDATE_RESERVE_MULTIPLIER = 2;
+const CROSS_SCOPE_CANDIDATE_RESERVE_MAXIMUM = 4;
+const CROSS_SCOPE_CANDIDATE_SELECTION_MAXIMUM = 16;
 export const MCP_RECALL_SEMANTIC_RETRIEVAL_TIMEOUT_MILLISECONDS = 15_000;
+
+export interface RecallCrossScopeLaneBudgets {
+  readonly admissionLimit: number;
+  readonly crossScopeReserve: number;
+  readonly crossSelectionLimit: number;
+  readonly protectedReserve: number;
+}
+
+/** Shared production/benchmark budgets for the bounded workspace candidate lanes. */
+export function recallCrossScopeLaneBudgets(resultLimit: number): RecallCrossScopeLaneBudgets {
+  const limit = Math.max(0, Math.floor(resultLimit));
+  return {
+    admissionLimit: limit === 0 ? 0 : recallIndexPreselectionLimit(limit),
+    crossScopeReserve:
+      limit === 0 ? 0 : Math.min(CROSS_SCOPE_CANDIDATE_RESERVE_MAXIMUM, Math.max(2, Math.ceil(limit / 2))),
+    crossSelectionLimit: limit === 0 ? 0 : Math.min(CROSS_SCOPE_CANDIDATE_SELECTION_MAXIMUM, Math.max(4, limit * 2)),
+    protectedReserve:
+      limit === 0
+        ? 0
+        : Math.min(WORKSPACE_CANDIDATE_RESERVE_MAXIMUM, Math.max(1, limit * WORKSPACE_CANDIDATE_RESERVE_MULTIPLIER)),
+  };
+}
+
+/** Query the dedicated sibling lane unless the broad topical query proved it returned every match. */
+export function recallCrossScopeFallbackRequired(queryExhaustive: boolean | undefined): boolean {
+  return queryExhaustive !== true;
+}
 
 export interface RecallRerankerCache {
   readonly scores: Map<string, number>;
@@ -181,6 +212,7 @@ const prepareRecallSectionsAttempt = Effect.fn('recall.prepareSectionsAttempt')(
       ? [input.preferredUriScopes, undefined]
       : [undefined];
   const indexCandidateLimit = recallIndexPreselectionLimit(input.limit);
+  const laneBudgets = recallCrossScopeLaneBudgets(input.limit);
   const topicalIndexSelections = indexQueries.flatMap(indexQuery =>
     scopeSets.map(allowedUriScopes => ({
       allowedUriScopes,
@@ -199,6 +231,7 @@ const prepareRecallSectionsAttempt = Effect.fn('recall.prepareSectionsAttempt')(
         workspaceScope,
       }))
     : [];
+  const workspaceProject = input.project?.trim() || undefined;
   const workspaceBranch = input.workspaceBranch?.trim();
   const branchIndexSelections = workspaceBranch
     ? scopeSets.map(allowedUriScopes => ({
@@ -229,6 +262,9 @@ const prepareRecallSectionsAttempt = Effect.fn('recall.prepareSectionsAttempt')(
     ...new Set(flattenedRecallIndexes.flatMap(index => (index?.generation ? [index.generation] : []))),
   ];
   const topicalRecallIndexes = flattenedRecallIndexes.slice(0, topicalIndexSelections.length);
+  const broadTopicalRecallIndexes = indexQueries.map(
+    (_query, index) => topicalRecallIndexes[index * scopeSets.length + Math.max(0, scopeSets.length - 1)],
+  );
   const workspaceSelectionEnd = topicalIndexSelections.length + workspaceIndexSelections.length;
   const workspaceRecallIndexes = flattenedRecallIndexes.slice(topicalIndexSelections.length, workspaceSelectionEnd);
   const branchRecallIndexes = flattenedRecallIndexes.slice(workspaceSelectionEnd);
@@ -271,18 +307,85 @@ const prepareRecallSectionsAttempt = Effect.fn('recall.prepareSectionsAttempt')(
         },
       )
     : [];
-  const semanticCandidates = mergePrioritizedRecallIndexCandidates(
+  const topicalCrossScopeCandidates = workspaceScope
+    ? prioritizeCrossScopeRecallCandidates(
+        input.query,
+        mergeRecallIndexCandidates(topicalRecallIndexCandidateSets).map(withSemanticScore),
+        {
+          includeInactive: input.includeInactive,
+          now,
+          project: input.project,
+          queryVariants,
+          workspaceScope,
+        },
+      )
+    : [];
+  const shouldLoadCrossScopeFallback =
+    Result.isSuccess(recallIndexResult) &&
+    workspaceScope !== undefined &&
+    workspaceProject !== undefined &&
+    broadTopicalRecallIndexes.some(index => recallCrossScopeFallbackRequired(index?.queryExhaustive));
+  const crossScopeFallbackResult = shouldLoadCrossScopeFallback
+    ? yield* loadRecallIndexData(config, {
+        // An explicit URI restriction is a hard authorization boundary. Soft
+        // preferred scopes already received their own topical pass above; the
+        // one fallback query searches the authorized global corpus so the
+        // preference cannot double the expensive sibling selection.
+        allowedUriScopes: input.allowedUriScopes?.length ? input.allowedUriScopes : undefined,
+        includeInactive: input.includeInactive,
+        limit: laneBudgets.crossSelectionLimit,
+        project: workspaceProject,
+        // Query variants are topical evidence too. Combining them keeps this
+        // to one bounded sibling selection while rescuing a relevant memory
+        // whose wording is reachable only through an approved rewrite.
+        query: indexQueries.join(' '),
+        workspaceScope,
+        workspaceScopeMode: 'sibling',
+      }).pipe(Effect.result)
+    : undefined;
+  const crossScopeFallbackCandidates =
+    workspaceScope && crossScopeFallbackResult && Result.isSuccess(crossScopeFallbackResult)
+      ? prioritizeCrossScopeRecallCandidates(input.query, crossScopeFallbackResult.success.candidates, {
+          includeInactive: input.includeInactive,
+          now,
+          project: input.project,
+          queryVariants,
+          workspaceScope,
+        })
+      : [];
+  const prioritizedCrossScopeCandidates = workspaceScope
+    ? prioritizeCrossScopeRecallCandidates(
+        input.query,
+        mergeRecallIndexCandidates([topicalCrossScopeCandidates, crossScopeFallbackCandidates]),
+        {
+          includeInactive: input.includeInactive,
+          now,
+          project: input.project,
+          queryVariants,
+          workspaceScope,
+        },
+      )
+    : [];
+  if (crossScopeFallbackResult && Result.isFailure(crossScopeFallbackResult)) {
+    operationalWarnings.push(lexicalIndexUnavailableWarning());
+  }
+  if (
+    crossScopeFallbackResult &&
+    Result.isSuccess(crossScopeFallbackResult) &&
+    crossScopeFallbackResult.success.generation &&
+    !generations.includes(crossScopeFallbackResult.success.generation)
+  ) {
+    generations.push(crossScopeFallbackResult.success.generation);
+  }
+  const semanticCandidates = mergeRecallCandidateLanes(
     [mergeRecallIndexCandidates(topicalRecallIndexCandidateSets).map(withSemanticScore)],
     [prioritizedBranchCandidates, prioritizedWorkspaceCandidates],
-    prioritizedBranchCandidates.length > 0 || prioritizedWorkspaceCandidates.length > 0
-      ? {
-          admissionLimit: indexCandidateLimit,
-          supplementalReserve: Math.min(
-            WORKSPACE_CANDIDATE_RESERVE_MAXIMUM,
-            Math.max(1, input.limit * WORKSPACE_CANDIDATE_RESERVE_MULTIPLIER),
-          ),
-        }
-      : undefined,
+    [prioritizedCrossScopeCandidates],
+    {
+      admissionLimit: indexCandidateLimit,
+      crossScopeReserve: laneBudgets.crossScopeReserve,
+      protectedReserve: laneBudgets.protectedReserve,
+    },
   );
   const indexedCandidates = yield* applySelectedNativeReranker(
     config.agentContextHome,
@@ -873,6 +976,55 @@ export function mergePrioritizedRecallIndexCandidates(
 }
 
 /**
+ * Admit protected workspace/branch candidates and outside-hierarchy
+ * challengers through independent bounded reserves. A busy protected lane can
+ * therefore never consume the challenger's tiny admission budget.
+ */
+export function mergeRecallCandidateLanes(
+  topicalCandidateSets: readonly (readonly RecallCandidate[])[],
+  protectedCandidateSets: readonly (readonly RecallCandidate[])[],
+  crossScopeCandidateSets: readonly (readonly RecallCandidate[])[],
+  options: {
+    readonly admissionLimit: number;
+    readonly crossScopeReserve: number;
+    readonly protectedReserve: number;
+  },
+): readonly RecallCandidate[] {
+  const topical = mergeRecallIndexCandidates(topicalCandidateSets);
+  const protectedCandidates = mergeRecallIndexCandidates(protectedCandidateSets);
+  const crossScopeCandidates = mergeRecallIndexCandidates(crossScopeCandidateSets);
+  const admissionLimit = Math.max(0, Math.floor(options.admissionLimit));
+  if (admissionLimit === 0) {
+    return deduplicateLogicalRecallCandidates(
+      uniqueRecallCandidatesByUri([...topical, ...protectedCandidates, ...crossScopeCandidates]),
+    );
+  }
+  const reservedKeys = new Set<string>();
+  const protectedHead = selectRecallLaneHead(
+    protectedCandidates,
+    Math.min(Math.max(0, Math.floor(options.protectedReserve)), admissionLimit),
+    reservedKeys,
+  );
+  const crossHead = selectRecallLaneHead(
+    crossScopeCandidates,
+    Math.min(Math.max(0, Math.floor(options.crossScopeReserve)), admissionLimit - protectedHead.length),
+    reservedKeys,
+  );
+  const reserved = [...protectedHead, ...crossHead];
+  const topicalWithoutReserved = topical.filter(candidate => !reservedKeys.has(recallCandidateAdmissionKey(candidate)));
+  const topicalHeadLength = Math.max(0, admissionLimit - reserved.length);
+  return deduplicateLogicalRecallCandidates(
+    uniqueRecallCandidatesByUri([
+      ...topicalWithoutReserved.slice(0, topicalHeadLength),
+      ...reserved,
+      ...topicalWithoutReserved.slice(topicalHeadLength),
+      ...protectedCandidates.slice(protectedHead.length),
+      ...crossScopeCandidates.slice(crossHead.length),
+    ]),
+  );
+}
+
+/**
  * Restrict the supplemental lane to repo-wide memories and the current
  * component hierarchy, then use the untouched topical query to order that
  * bounded pool before admission.
@@ -890,6 +1042,33 @@ export function prioritizeWorkspaceRecallCandidates(
     workspaceScopeContains(context.workspaceScope, candidate.fields?.workspaceScope),
   );
   return rankRecallCandidates(query, scopedCandidates, context).results.map(result => result.candidate);
+}
+
+/**
+ * Keep only memories outside the current component hierarchy and require them
+ * to pass the normal topical relevance gate before they can use the challenger
+ * reserve. Workspace path text and the scope relationship are deliberately not
+ * ranking inputs for this lane.
+ */
+export function prioritizeCrossScopeRecallCandidates(
+  query: string,
+  candidates: readonly RecallCandidate[],
+  context: Pick<RecallRankContext, 'includeInactive' | 'now' | 'project' | 'queryVariants'> & {
+    readonly workspaceScope: string;
+  },
+): readonly RecallCandidate[] {
+  const project = context.project?.trim().toLowerCase();
+  const crossScopeCandidates = candidates.filter(
+    candidate =>
+      recallWorkspaceScopeMatches(context.workspaceScope, candidate.fields?.workspaceScope, 'sibling') &&
+      (!project || candidate.fields?.project?.trim().toLowerCase() === project),
+  );
+  return rankRecallCandidates(query, crossScopeCandidates, {
+    includeInactive: context.includeInactive,
+    now: context.now,
+    project: context.project,
+    queryVariants: context.queryVariants,
+  }).results.map(result => result.candidate);
 }
 
 export function prioritizeBranchRecallCandidates(
@@ -923,6 +1102,26 @@ function normalizeWorkspaceScope(scope: string | undefined): string | undefined 
     .join('/')
     .toLowerCase();
   return normalized || undefined;
+}
+
+function selectRecallLaneHead(
+  candidates: readonly RecallCandidate[],
+  limit: number,
+  selectedKeys: Set<string>,
+): readonly RecallCandidate[] {
+  const selected: RecallCandidate[] = [];
+  for (const candidate of candidates) {
+    if (selected.length >= limit) break;
+    const key = recallCandidateAdmissionKey(candidate);
+    if (selectedKeys.has(key)) continue;
+    selectedKeys.add(key);
+    selected.push(candidate);
+  }
+  return selected;
+}
+
+function recallCandidateAdmissionKey(candidate: RecallCandidate): string {
+  return recallCandidateLogicalCorpusKey(candidate);
 }
 
 function uniqueRecallCandidatesByUri(candidates: readonly RecallCandidate[]): readonly RecallCandidate[] {

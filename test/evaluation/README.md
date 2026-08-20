@@ -468,31 +468,76 @@ bun run bench:recall -- --documents 10000 --samples 25 --warmups 5 --require-cle
   --output .artifacts/recall-10k.json
 ```
 
-`bench:recall:monorepo-shares` is a separate deterministic stress diagnostic for package-local work in a monorepo
-where each logical memory has a personal copy and several team-share aliases. It does not mutate the frozen recall-v2
-fixture or any checked baseline. The runner compares the full physical corpus with the same corpus admitted by the
-current workspace-scope predicate, then exercises the production logical-memory deduper and ranker in both modes. It
-reports physical and logical candidate counts, alias compression, duplicate-result rate, target-package recall@k, and
-latency distributions:
+`bench:recall:monorepo-shares` is a separate deterministic stress diagnostic for package-local and cross-package work
+in a monorepo where each logical memory has a personal copy and several team-share aliases. It does not mutate the
+frozen recall-v2 fixture or any checked baseline. It evaluates two ground-truth scenarios: one where the correct
+memory belongs to the current package, and one where the only correct memory belongs to a sibling package while the
+current package contains topical decoys. Each scenario reports three deliberately distinct modes:
+
+- `full-corpus` is the quality oracle that ranks every physical candidate and its aliases.
+- `workspace-prefiltered` is the hierarchy-only control. It protects current, ancestor, and repo-wide memories but,
+  by definition, excludes sibling memories; sibling recall is therefore expected to be zero here.
+- `cross-scope-challenger` uses the production lane budgets, outside-hierarchy prioritizer, and bounded lane merger.
+  Its adversarial topical source order fills the normal head with current-package candidates before admitting a small
+  sibling challenger set.
+
+The output keeps general relevant recall@k and sibling-only cross-scope recall@k separate. It also reports the
+relevant memory's adversarial topical index, the production admission limit, source physical/logical shape, admitted
+candidate representation, alias compression, result duplication, and rank-latency distributions:
 
 ```sh
-# Bounded default: 64 packages × 24 logical memories × (1 personal + 3 shared copies).
+# Bounded default per scenario: 64 packages × 128 logical memories × (1 personal + 3 shared copies).
+# The 128 current-package memories exceed the default 100-candidate admission head.
 bun run bench:recall:monorepo-shares -- --output .artifacts/recall-monorepo-shares.json
 
 # Fast harness smoke while iterating.
 bun run bench:recall:monorepo-shares -- \
-  --packages 8 --logical-per-package 8 --share-aliases 2 --samples 2 --warmups 1
+  --packages 8 --logical-per-package 120 --share-aliases 2 --target-package 0 --sibling-package 7 \
+  --samples 2 --warmups 1
 ```
 
-This in-memory diagnostic isolates workspace admission, ranking, and alias deduplication; it does not claim SQLite
-index-build or filesystem-scan performance. Compare latency only for matching fixture hashes and runner classes. The
-runner intentionally records observations without universal pass/fail latency thresholds.
+This in-memory diagnostic functionally exercises candidate admission, ranking, and alias deduplication. Its adversarial
+source order models a crowded bounded topical window; it does not reproduce SQLite BM25 ordering, index-build cost,
+query I/O, or filesystem scanning. Candidate sets are prepared before sampling, so the measurements are rank-only
+latency for each admitted shape, not admission or end-to-end retrieval latency. The full-corpus result is an oracle,
+not the production retrieval path. Compare latency only for matching fixture hashes and runner classes. The runner
+rotates the complete six-pass scenario/mode matrix on every sample to distribute fixed-order bias and records
+observations without universal pass/fail latency thresholds.
 
 The current Apple M1 Max/64 GiB `hybrid-v3` reference covers 200, 1k, 10k, and 100k documents under
 `baselines/threadnote-4.2.7/benchmarks/darwin-arm64-m1-max/`. Every artifact has clean commit provenance and derives
 `sourceVersion` from the package. The 3.0.3 and 4.0 performance files remain immutable historical observations. Compare
 candidate latency only on like hardware/runtime and matching fixture hashes; do not turn one host's timings into
 universal CI thresholds.
+
+`bench:recall:cross-scope-sqlite` measures the production lexical loader rather than the prepared in-memory rank
+sets. It builds and indexes a temporary canonical memory corpus once, then samples the post-index production-shaped
+path after the configured warmups:
+one `loadRecallIndexDataBatch` containing topical and protected-workspace selections, their in-process lane
+prioritization and bounded admission, and any conditional sibling `loadRecallIndexData` fallback. The fixture covers
+a selective sibling term, a common balanced term, a sibling target buried beyond the global prefix, and a common-term
+project with no sibling-scoped documents. Every scenario runs both a global-only profile and the normal soft
+preferred-plus-global profile, with these comparison modes:
+
+- `no-challenger-reference` runs the ordinary topical and protected-workspace selections without a cross-scope
+  reserve.
+- `evidence-gated` matches production: it reuses ordinary cross-scope candidates, skips the dedicated query only
+  when the broad topical result proves exhaustive, and otherwise runs one project-bound sibling selection.
+- `always-query-reference` runs that one sibling selection even when the topical query was exhaustive.
+
+The summaries report whether the target survived the same protected and bounded cross-reserve merger into the final
+admission window, plus admitted, protected, challenger, posting-row, posting-statement, selection, and fallback counts.
+The artifact shape separates main, no-sibling, and total indexed document counts, and its fixture hash covers the
+deterministic generated paths and content digests. In the no-sibling scenario, a fallback selection request is expected
+but its cheap project/scope `EXISTS` preflight must keep `fallbackPostingStatements` at zero. The timed boundary does
+not include fixture creation, initial index construction, branch or semantic selections, reranking, or final section
+construction. It intentionally records host-specific observations without a universal timing gate:
+
+```sh
+bun run bench:recall:cross-scope-sqlite -- \
+  --documents 4000 --samples 5 --warmups 1 \
+  --output .artifacts/recall-cross-scope-sqlite.json
+```
 
 The checked-in `candidates/threadnote-4.2.7-hybrid-v6/` capture is the matched clean post-change comparison. Its p95
 rank latency ranges from 0.986× to 1.001× the `hybrid-v3` reference across 200 through 100k documents, with lower p95

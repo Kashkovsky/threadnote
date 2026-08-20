@@ -6,6 +6,8 @@ export interface RecallSqlPredicate {
   readonly sql: string;
 }
 
+export type RecallWorkspaceScopeMode = 'hierarchy' | 'sibling';
+
 export function combineRecallSqlPredicates(...predicates: readonly RecallSqlPredicate[]): RecallSqlPredicate {
   return {
     params: predicates.flatMap(predicate => predicate.params),
@@ -41,22 +43,32 @@ export function recallUriScopePredicate(
 export function recallWorkspaceScopeMatches(
   currentWorkspaceScope: string | undefined,
   candidateWorkspaceScope: string | undefined,
+  mode: RecallWorkspaceScopeMode = 'hierarchy',
 ): boolean {
   if (currentWorkspaceScope === undefined) return true;
   const hierarchy = recallWorkspaceScopeHierarchy(currentWorkspaceScope);
   if (hierarchy.length === 0) return false;
-  if (candidateWorkspaceScope === undefined) return true;
+  if (candidateWorkspaceScope === undefined) return mode === 'hierarchy';
   const candidate = normalizeRecallWorkspaceScope(candidateWorkspaceScope);
-  return candidate !== undefined && hierarchy.includes(candidate);
+  if (candidate === undefined) return false;
+  return mode === 'sibling' ? !hierarchy.includes(candidate) : hierarchy.includes(candidate);
 }
 
 export function recallWorkspaceScopePredicate(
   alias: string,
   currentWorkspaceScope: string | undefined,
+  mode: RecallWorkspaceScopeMode = 'hierarchy',
 ): RecallSqlPredicate {
   if (currentWorkspaceScope === undefined) return {params: [], restricted: false, sql: '1 = 1'};
   const hierarchy = recallWorkspaceScopeHierarchy(currentWorkspaceScope);
   if (hierarchy.length === 0) return {params: [], restricted: true, sql: '0 = 1'};
+  if (mode === 'sibling') {
+    return {
+      params: hierarchy,
+      restricted: true,
+      sql: `(${alias}.workspace_scope IS NOT NULL AND ${alias}.workspace_scope NOT IN (${hierarchy.map(() => '?').join(', ')}))`,
+    };
+  }
   return {
     params: hierarchy,
     restricted: true,

@@ -7,16 +7,23 @@ import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {loadRecallIndexData} from '../../src/recall/index.js';
 import {prepareRecallSections} from '../../src/recall/runtime.js';
 
-function memoryContent(topic: string, workspaceScope: string | undefined, body: string): string {
+function memoryContent(
+  topic: string,
+  workspaceScope: string | undefined,
+  body: string,
+  project = 'monorepo',
+  kind = 'durable',
+  timestamp = '2026-08-20T00:00:00.000Z',
+): string {
   return [
     'MEMORY',
-    'kind: durable',
+    `kind: ${kind}`,
     'status: active',
-    'project: monorepo',
+    `project: ${project}`,
     `topic: ${topic}`,
     ...(workspaceScope === undefined ? [] : [`workspace_scope: ${workspaceScope}`]),
     'source_agent_client: integration-test',
-    'timestamp: 2026-08-20T00:00:00.000Z',
+    `timestamp: ${timestamp}`,
     '',
     body,
   ].join('\n');
@@ -115,6 +122,202 @@ effectIt.effect(
       const preparedUris = prepared.ranked.map(result => result.uri);
       expect(preparedUris).toEqual(expect.arrayContaining([packageTargetUri, repoWideTargetUri]));
       expect(preparedUris.indexOf(packageTargetUri)).toBeLessThan(preparedUris.indexOf(repoWideTargetUri));
+    }).pipe(
+      Effect.ensuring(
+        Effect.gen(function* () {
+          if (!home) return;
+          const fs = yield* FileSystem.FileSystem;
+          yield* fs.remove(home, {force: true, recursive: true}).pipe(Effect.catch(() => Effect.void));
+        }),
+      ),
+      provideTestLayer(ApplicationLayer),
+      TestClock.withLive,
+    );
+  },
+  30_000,
+);
+
+effectIt.effect(
+  'admits the only relevant sibling after project-local filtering beyond a full global window',
+  () => {
+    let home: string | undefined;
+    return Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      home = yield* fs.makeTempDirectory({prefix: 'threadnote-cross-scope-selection-'});
+      const memoryRoot = path.join(home, 'data', 'local', 'user', 'me', 'memories', 'durable', 'projects', 'monorepo');
+      yield* fs.makeDirectory(memoryRoot, {recursive: true});
+      const localDecoys = Array.from({length: 140}, (_unused, index) => ({
+        content: memoryContent(`local-decoy-${index}`, 'apps/search', 'Unrelated package-local operational note.'),
+        filename: `local-${String(index).padStart(3, '0')}.md`,
+      }));
+      const otherProjectDecoys = Array.from({length: 140}, (_unused, index) => ({
+        content: memoryContent('checkout-retry-contract', `apps/shadow-${index}`, 'Checkout retry contract.', 'x'),
+        filename: `other-${String(index).padStart(3, '0')}.md`,
+      }));
+      const targetFilename = 'zz-billing-governing-contract.md';
+      yield* Effect.forEach(
+        [
+          ...localDecoys,
+          ...otherProjectDecoys,
+          {
+            content: memoryContent(
+              'billing-retry-policy',
+              'apps/billing',
+              'The billing package uses a bounded checkout retry contract.',
+            ),
+            filename: targetFilename,
+          },
+        ],
+        entry => fs.writeFileString(path.join(memoryRoot, entry.filename), entry.content),
+        {concurrency: 32, discard: true},
+      );
+
+      const config = {account: 'local', agentContextHome: home, user: 'me'};
+      const query = 'checkout retry contract';
+      const targetUri = `threadnote://user/me/memories/durable/projects/monorepo/${targetFilename}`;
+      const globalTopical = yield* loadRecallIndexData(config, {
+        includeInactive: false,
+        limit: 100,
+        query,
+      });
+      let challengerPostingRows = Number.POSITIVE_INFINITY;
+      const siblingOnly = yield* loadRecallIndexData(config, {
+        includeInactive: false,
+        limit: 10,
+        onQueryDiagnostics: diagnostics =>
+          Effect.sync(() => {
+            challengerPostingRows = diagnostics.postingRows;
+          }),
+        project: 'monorepo',
+        query,
+        requiredUris: [
+          'threadnote://user/me/memories/durable/projects/monorepo/local-000.md',
+          'threadnote://user/me/memories/durable/projects/monorepo/other-000.md',
+        ],
+        workspaceScope: 'apps/search',
+        workspaceScopeMode: 'sibling',
+      });
+      const prepared = yield* prepareRecallSections(config, {
+        allowExactRescue: true,
+        exactMatches: [],
+        feedbackQuery: query,
+        includeInactive: false,
+        limit: 5,
+        passes: [],
+        project: 'monorepo',
+        query,
+        readRecords: () => Effect.succeed([]),
+        semanticResult: Option.some({
+          corpusGeneration: Option.some(globalTopical.generation),
+          scores: Option.some(new Map([[targetUri, 0.9]])),
+          warning: Option.none(),
+        }),
+        workspaceScope: 'apps/search',
+      });
+
+      expect(globalTopical.candidates.map(candidate => candidate.uri)).not.toContain(targetUri);
+      expect(siblingOnly.candidates.map(candidate => candidate.uri)).toEqual([targetUri]);
+      expect(challengerPostingRows).toBeLessThanOrEqual(5);
+      expect(prepared.ranked.map(result => result.uri)).toContain(targetUri);
+      expect(Option.isSome(prepared.semanticResult.scores)).toBe(true);
+    }).pipe(
+      Effect.ensuring(
+        Effect.gen(function* () {
+          if (!home) return;
+          const fs = yield* FileSystem.FileSystem;
+          yield* fs.remove(home, {force: true, recursive: true}).pipe(Effect.catch(() => Effect.void));
+        }),
+      ),
+      provideTestLayer(ApplicationLayer),
+      TestClock.withLive,
+    );
+  },
+  30_000,
+);
+
+effectIt.effect(
+  'still queries a supplied-variant sibling lane when mediocre siblings fill its global reserve ahead of the target',
+  () => {
+    let home: string | undefined;
+    return Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      home = yield* fs.makeTempDirectory({prefix: 'threadnote-cross-scope-exhaustion-'});
+      const memoryRoot = path.join(home, 'data', 'local', 'user', 'me', 'memories', 'durable', 'projects', 'monorepo');
+      yield* fs.makeDirectory(memoryRoot, {recursive: true});
+      const currentDecoys = Array.from({length: 98}, (_unused, index) => ({
+        content: memoryContent(
+          `checkout-retry-contract-${index}`,
+          'apps/search',
+          `Checkout retry contract superseded operational history ${index}.`,
+          'monorepo',
+          'durable',
+          '2020-01-01T00:00:00.000Z',
+        ),
+        filename: `current-${String(index).padStart(3, '0')}.md`,
+      }));
+      const mediocreSiblings = Array.from({length: 2}, (_unused, index) => ({
+        content: memoryContent(
+          `checkout-retry-contract-sibling-${index}`,
+          `apps/legacy-${index}`,
+          `Checkout retry contract superseded sibling history ${index}.`,
+          'monorepo',
+          'durable',
+          '2020-01-01T00:00:00.000Z',
+        ),
+        filename: `sibling-${String(index).padStart(3, '0')}.md`,
+      }));
+      const targetFilename = 'zz-billing-governing-contract.md';
+      yield* Effect.forEach(
+        [
+          ...currentDecoys,
+          ...mediocreSiblings,
+          {
+            content: memoryContent(
+              'billing-retry-policy',
+              'apps/billing',
+              'The current governing decision is the bounded checkout retry contract.',
+            ),
+            filename: targetFilename,
+          },
+        ],
+        entry => fs.writeFileString(path.join(memoryRoot, entry.filename), entry.content),
+        {concurrency: 32, discard: true},
+      );
+
+      const config = {account: 'local', agentContextHome: home, user: 'me'};
+      const query = 'checkout retry contract';
+      const originalQuery = 'find applicable note';
+      const targetUri = `threadnote://user/me/memories/durable/projects/monorepo/${targetFilename}`;
+      const globalTopical = yield* loadRecallIndexData(config, {
+        includeInactive: false,
+        limit: 100,
+        query,
+      });
+      const prepared = yield* prepareRecallSections(config, {
+        allowExactRescue: true,
+        exactMatches: [],
+        feedbackQuery: originalQuery,
+        includeInactive: false,
+        limit: 3,
+        passes: [],
+        project: 'monorepo',
+        query: originalQuery,
+        queryVariants: [query],
+        readRecords: () => Effect.succeed([]),
+        semanticResult: Option.none(),
+        workspaceScope: 'apps/search',
+      });
+      const globalSiblingUris = globalTopical.candidates
+        .filter(candidate => candidate.fields?.workspaceScope?.startsWith('apps/legacy-'))
+        .map(candidate => candidate.uri);
+
+      expect(globalTopical.queryExhaustive).toBe(false);
+      expect(globalTopical.candidates).toHaveLength(100);
+      expect(globalSiblingUris).toHaveLength(2);
+      expect(globalTopical.candidates.map(candidate => candidate.uri)).not.toContain(targetUri);
+      expect(prepared.ranked.map(result => result.uri)).toContain(targetUri);
     }).pipe(
       Effect.ensuring(
         Effect.gen(function* () {

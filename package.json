@@ -54,6 +54,7 @@
     "eval:recall:models": "bun scripts/evaluate-recall-models.ts",
     "bench:recall": "bun scripts/benchmark-recall-v2.ts",
     "bench:recall:monorepo-shares": "bun scripts/benchmark-recall-monorepo-shares.ts",
+    "bench:recall:cross-scope-sqlite": "bun scripts/benchmark-recall-cross-scope-sqlite.ts",
     "bench:recall:vectors": "bun scripts/benchmark-recall-vectors.ts",
     "bench:recall:micro": "bun scripts/benchmark-recall-micro.ts",
     "bench:code-graph": "bun scripts/benchmark-code-graph.ts",

@@ -49,7 +49,16 @@ import {
   recallUriScopePredicate,
   recallWorkspaceScopeMatches,
   recallWorkspaceScopePredicate,
+  type RecallWorkspaceScopeMode,
 } from './index_scope.js';
+import {
+  recallProjectMatches,
+  recallProjectPredicate,
+  recallQuerySelectionIsExhaustive,
+  recallSelectionHasDocuments,
+  selectRecallDocumentSample,
+  selectRecallQueryTermStatistics,
+} from './index_selection.js';
 
 export {recallUriMatchesScopes} from './index_scope.js';
 
@@ -85,6 +94,8 @@ export interface RecallIndexData {
   readonly candidates: readonly RecallCandidate[];
   readonly corpusStatistics: RecallCorpusStatistics;
   readonly generation: string;
+  /** True only when the query selection proves that no matching candidate was truncated. */
+  readonly queryExhaustive: boolean;
 }
 
 export interface RecallExactMatch {
@@ -211,6 +222,8 @@ interface LoadRecallIndexOptions {
   readonly query?: string;
   readonly requiredUris?: readonly string[];
   readonly workspaceScope?: string;
+  /** Select the protected hierarchy by default, or only scopes outside it for the bounded challenger lane. */
+  readonly workspaceScopeMode?: RecallWorkspaceScopeMode;
 }
 
 interface LoadRecallIndexBatchOptions {
@@ -529,13 +542,7 @@ const selectRecallIndexData = Effect.fn('recall.selectIndexData')(function* (
       options.limit !== undefined ||
       options.project !== undefined ||
       options.workspaceScope !== undefined
-        ? yield* selectDocumentSample(
-            sql,
-            options.allowedUriScopes,
-            options.project,
-            options.workspaceScope,
-            options.limit,
-          )
+        ? yield* selectRecallDocumentSample(sql, options)
         : yield* sql<RecallDocumentRow>`SELECT id, uri, candidate_json FROM documents ORDER BY uri`;
     const logicalCandidates = deduplicateLogicalRecallCandidates(rows.map(decodeCandidateRow));
     const candidates = options.limit === undefined ? logicalCandidates : logicalCandidates.slice(0, options.limit);
@@ -547,6 +554,7 @@ const selectRecallIndexData = Effect.fn('recall.selectIndexData')(function* (
       candidates: RecallIndexIdentity.markRecallIdentityConflicts(candidates, identityConflicts),
       corpusStatistics,
       generation,
+      queryExhaustive: options.limit === undefined,
     } satisfies RecallIndexData;
   }
   const selected: RecallCandidate[] = [];
@@ -559,7 +567,14 @@ const selectRecallIndexData = Effect.fn('recall.selectIndexData')(function* (
       const row = rowByUri.get(uri);
       if (!row || selectedIds.has(row.id) || !recallUriMatchesScopes(row.uri, options.allowedUriScopes)) continue;
       const candidate = decodeCandidateRow(row);
-      if (recallWorkspaceScopeMatches(options.workspaceScope, candidate.fields?.workspaceScope)) {
+      if (
+        recallProjectMatches(options.project, candidate.fields?.project) &&
+        recallWorkspaceScopeMatches(
+          options.workspaceScope,
+          candidate.fields?.workspaceScope,
+          options.workspaceScopeMode,
+        )
+      ) {
         selectedIds.add(row.id);
         selected.push(candidate);
       }
@@ -568,20 +583,32 @@ const selectRecallIndexData = Effect.fn('recall.selectIndexData')(function* (
   const resultLimit = options.limit ?? DEFAULT_QUERY_RESULT_LIMIT;
   const postingPoolLimit = Math.max(MINIMUM_QUERY_POSTING_POOL, resultLimit * QUERY_POSTING_POOL_MULTIPLIER);
   const indexedQueryTerms = [...new Set(indexTerms(options.query))];
-  const queryCorpusStatistics = yield* loadRecallQueryTermStatistics(
-    sql,
-    indexedQueryTerms,
-    corpusStatistics,
-    options.allowedUriScopes,
-    options.workspaceScope,
-  );
+  const siblingWorkspaceSelection = options.workspaceScopeMode === 'sibling' && options.workspaceScope !== undefined;
+  if (siblingWorkspaceSelection && !(yield* recallSelectionHasDocuments(sql, options))) {
+    return {
+      candidates: [],
+      corpusStatistics,
+      generation,
+      queryExhaustive: true,
+    } satisfies RecallIndexData;
+  }
+  const queryCorpusStatistics = siblingWorkspaceSelection
+    ? corpusStatistics
+    : yield* selectRecallQueryTermStatistics(sql, indexedQueryTerms, corpusStatistics, options);
   const queryTerms = selectQueryTerms(indexedQueryTerms, queryCorpusStatistics);
-  const postingCorpusStatistics = options.workspaceScope === undefined ? corpusStatistics : queryCorpusStatistics;
+  const postingCorpusStatistics =
+    options.workspaceScope === undefined && options.project === undefined
+      ? corpusStatistics
+      : siblingWorkspaceSelection
+        ? corpusStatistics
+        : queryCorpusStatistics;
   const postingRows = yield* selectTopPostingsByTerms(
     sql,
     queryTerms,
     options.allowedUriScopes,
+    options.project,
     options.workspaceScope,
+    options.workspaceScopeMode,
     postingPoolLimit,
     postingCorpusStatistics,
   );
@@ -630,6 +657,17 @@ const selectRecallIndexData = Effect.fn('recall.selectIndexData')(function* (
     .filter(candidate => !requiredCandidates.includes(candidate))
     .slice(0, resultLimit);
   const candidates = [...requiredCandidates, ...rankedCandidates];
+  const queryExhaustive = recallQuerySelectionIsExhaustive({
+    candidateDecodeLimit,
+    deduplicatedCandidateCount: deduplicated.length,
+    documentFrequency: queryCorpusStatistics.documentFrequency,
+    indexedQueryTerms,
+    postingPoolLimit,
+    postingTerms: postingRows.map(posting => posting.term),
+    queryTerms,
+    rankedDocumentCount: rankedIds.length,
+    resultLimit,
+  });
   const identityConflicts = yield* loadIdentityConflicts(
     options.allowedUriScopes,
     candidates.flatMap(candidate => (candidate.memoryId ? [candidate.memoryId] : [])),
@@ -638,6 +676,7 @@ const selectRecallIndexData = Effect.fn('recall.selectIndexData')(function* (
     candidates: RecallIndexIdentity.markRecallIdentityConflicts(candidates, identityConflicts),
     corpusStatistics,
     generation,
+    queryExhaustive,
   } satisfies RecallIndexData;
 });
 
@@ -1279,38 +1318,6 @@ const loadRecallCorpusStatistics = Effect.fn('recall.loadCorpusStatistics')(func
   } satisfies RecallCorpusStatistics;
 });
 
-function selectDocumentSample(
-  sql: SqlClient.SqlClient,
-  allowedUriScopes: readonly string[] | undefined,
-  project: string | undefined,
-  workspaceScope: string | undefined,
-  limit: number | undefined,
-) {
-  const normalizedLimit = limit === undefined ? undefined : Math.max(0, Math.floor(limit));
-  if (normalizedLimit === 0) return Effect.succeed<readonly RecallDocumentRow[]>([]);
-  const scope = combineRecallSqlPredicates(
-    recallUriScopePredicate('d', allowedUriScopes),
-    recallWorkspaceScopePredicate('d', workspaceScope),
-  );
-  const normalizedProject = project?.trim().toLowerCase();
-  const projectPredicate = normalizedProject ? ' AND d.project = ?' : '';
-  const physicalLimit =
-    normalizedLimit === undefined ? undefined : boundedRecallPhysicalCandidateLimit(normalizedLimit);
-  const bounded = physicalLimit === undefined ? '' : ' LIMIT ?';
-  const order = normalizedLimit === undefined ? 'd.uri' : 'd.source_modified_at DESC, d.uri';
-  return sql.unsafe<RecallDocumentRow>(
-    `SELECT d.id, d.uri, d.candidate_json
-     FROM documents AS d
-     WHERE ${scope.sql}${projectPredicate}
-     ORDER BY ${order}${bounded}`,
-    [
-      ...scope.params,
-      ...(normalizedProject ? [normalizedProject] : []),
-      ...(physicalLimit === undefined ? [] : [physicalLimit]),
-    ],
-  );
-}
-
 function selectDocumentRows(sql: SqlClient.SqlClient, column: 'id' | 'uri', values: readonly (number | string)[]) {
   return Effect.gen(function* () {
     const rows: RecallDocumentRow[] = [];
@@ -1325,79 +1332,20 @@ function selectDocumentRows(sql: SqlClient.SqlClient, column: 'id' | 'uri', valu
   });
 }
 
-function loadRecallQueryTermStatistics(
-  sql: SqlClient.SqlClient,
-  terms: readonly string[],
-  corpusStatistics: RecallCorpusStatistics,
-  allowedUriScopes: readonly string[] | undefined,
-  workspaceScope: string | undefined,
-) {
-  if ((!allowedUriScopes || allowedUriScopes.length === 0) && workspaceScope === undefined) {
-    return Effect.succeed<RecallCorpusStatistics>(corpusStatistics);
-  }
-  return Effect.gen(function* () {
-    const uriScope = recallUriScopePredicate('d', allowedUriScopes);
-    const workspace = recallWorkspaceScopePredicate('d', workspaceScope);
-    const scope = combineRecallSqlPredicates(uriScope, workspace);
-    const indexHint = uriScope.restricted
-      ? ' INDEXED BY documents_uri'
-      : workspace.restricted
-        ? ' INDEXED BY documents_workspace_scope_uri'
-        : '';
-    const aggregateRows = yield* sql.unsafe<{
-      readonly document_count: number;
-      readonly total_document_length: number;
-    }>(
-      `SELECT COUNT(*) AS document_count, COALESCE(SUM(document_length), 0) AS total_document_length
-       FROM (
-         SELECT d.logical_key, MAX(d.document_length) AS document_length
-         FROM documents AS d${indexHint}
-         WHERE ${scope.sql}
-         GROUP BY d.logical_key
-       )`,
-      scope.params,
-    );
-    const frequencies: RecallTermStatisticRow[] = [];
-    for (const batch of chunkValues(terms, 300)) {
-      if (batch.length === 0) continue;
-      frequencies.push(
-        ...(yield* sql.unsafe<RecallTermStatisticRow>(
-          `SELECT p.term, COUNT(DISTINCT d.logical_key) AS document_frequency
-           FROM documents AS d${indexHint}
-           INNER JOIN postings AS p ON p.document_id = d.id
-           WHERE p.term IN (${batch.map(() => '?').join(', ')})
-             AND ${scope.sql}
-           GROUP BY p.term`,
-          [...batch, ...scope.params],
-        )),
-      );
-    }
-    const documentCount = aggregateRows[0]?.document_count ?? 0;
-    const totalDocumentLength = aggregateRows[0]?.total_document_length ?? 0;
-    return {
-      averageDocumentLength: documentCount === 0 ? 1 : totalDocumentLength / documentCount,
-      documentCount,
-      documentFrequency: Object.assign(
-        Object.create(null) as Record<string, number>,
-        Object.fromEntries(frequencies.map(row => [row.term, row.document_frequency])),
-      ),
-      totalDocumentLength,
-    } satisfies RecallCorpusStatistics;
-  });
-}
-
 function selectTopPostingsByTerms(
   sql: SqlClient.SqlClient,
   terms: readonly string[],
   allowedUriScopes: readonly string[] | undefined,
+  project: string | undefined,
   workspaceScope: string | undefined,
+  workspaceScopeMode: RecallWorkspaceScopeMode | undefined,
   postingPoolLimit: number,
   corpusStatistics: RecallCorpusStatistics,
 ) {
   if (terms.length === 0) return Effect.succeed<readonly RecallPostingRow[]>([]);
   const uriScope = recallUriScopePredicate('d', allowedUriScopes);
-  const workspace = recallWorkspaceScopePredicate('d', workspaceScope);
-  const scope = combineRecallSqlPredicates(uriScope, workspace);
+  const workspace = recallWorkspaceScopePredicate('d', workspaceScope, workspaceScopeMode);
+  const scope = combineRecallSqlPredicates(uriScope, recallProjectPredicate('d', project), workspace);
   const queryTermValues = terms.map(() => '(?, ?)').join(', ');
   const queryTermParameters = terms.flatMap(term => [term, postingInverseDocumentFrequency(term, corpusStatistics)]);
   const indexHint = uriScope.restricted
@@ -1405,11 +1353,13 @@ function selectTopPostingsByTerms(
     : workspace.restricted
       ? ' INDEXED BY documents_workspace_scope_uri'
       : '';
-  const fromClause = scope.restricted
-    ? `documents AS d${indexHint}
+  const postingsFirst = workspaceScopeMode === 'sibling';
+  const fromClause =
+    scope.restricted && !postingsFirst
+      ? `documents AS d${indexHint}
        INNER JOIN postings AS p ON p.document_id = d.id
        INNER JOIN query_terms AS q ON q.term = p.term`
-    : `query_terms AS q
+      : `query_terms AS q
        INNER JOIN postings AS p ON p.term = q.term
        INNER JOIN documents AS d ON d.id = p.document_id`;
   return sql.unsafe<RecallPostingRow>(
