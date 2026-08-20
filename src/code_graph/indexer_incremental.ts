@@ -1,7 +1,7 @@
 import {Effect} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {createRepositoryFactAttributor} from './extractor.js';
-import {finalCodeGraphFactBatches, serializeBoundedCodeGraphFact} from './fact_budget.js';
+import {finalCodeGraphFactBatches} from './fact_budget.js';
 import {
   assessProjectClosureSeeds,
   assessProjectFileSetClosureSeeds,
@@ -16,7 +16,6 @@ import {
   cachedFactsMetadata,
   extractorSetIdentity,
   extractorSetIdentityFromPackProvenance,
-  graphContentIdentity,
   loadCachedFacts,
   loadCachedFactsWithPackProvenance,
 } from './indexer_materialization.js';
@@ -40,8 +39,6 @@ import {
 } from './resolution_surface.js';
 import {
   CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION,
-  materializedShardDerivationIdentity,
-  type CodeGraphDirectPersistentCapacityProtector,
   type CodeGraphReusableCleanBase,
   type CodeGraphReusableReexport,
   type CodeGraphReusableReexportSeed,
@@ -318,7 +315,6 @@ export const assessReusableCleanBaseCompatibility = Effect.fn('codeGraph.assessR
       readonly inventory: CodeGraphInventory;
       readonly languagePacks: CodeGraphLanguagePackRegistryShape;
       readonly layout: CodeGraphLayout;
-      readonly persistentCapacityProtector: CodeGraphDirectPersistentCapacityProtector;
       readonly store: CodeGraphStoreShape;
     },
     workspace: CodeGraphWorkspace,
@@ -457,18 +453,9 @@ export const assessReusableCleanBaseCompatibility = Effect.fn('codeGraph.assessR
     if (finalCodeGraphFactBatches(currentFacts).length !== 1) {
       return {mode: 'fallback', reason: 'fact-budget-expanded'} satisfies IncrementalOverlayPreassessment;
     }
-    yield* input.store.cacheMaterializedFileShards(
-      input.layout.databasePath,
-      modifiedFiles,
-      currentFacts.map(fact => serializeBoundedCodeGraphFact(fact)),
-      currentExtractorSet,
-      materializedShardDerivationIdentity(
-        currentExtractorSet,
-        workspace.fingerprint,
-        graphContentIdentity(currentExtractorSet, input.inventory.files),
-      ),
-      input.persistentCapacityProtector,
-    );
+    // Incremental facts are attributed from a candidate-specific subset. They
+    // must not populate the full-materialization shard namespace: different
+    // bases can otherwise union into a falsely complete deterministic batch.
     return {
       baseFileSetFingerprint: reusableBaseFileSetFingerprint(input.candidate.files),
       committedWorkspace: workspace,

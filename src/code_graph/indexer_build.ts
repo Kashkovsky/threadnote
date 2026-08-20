@@ -693,7 +693,6 @@ const attemptReusableCleanSnapshot = Effect.fn('codeGraph.attemptReusableCleanSn
           inventory: input.inventory,
           languagePacks: input.languagePacks,
           layout: input.layout,
-          persistentCapacityProtector: codeGraphDirectPersistentCapacityProtector(input),
           store: input.store,
         };
         const boundedAssessment = yield* assessReusableCleanBaseCompatibility(
@@ -758,7 +757,7 @@ const attemptReusableCleanSnapshot = Effect.fn('codeGraph.attemptReusableCleanSn
             deletedPaths: incrementalAssessment.deletedPaths,
             resolutionClosure: incrementalAssessment.resolutionClosure,
           },
-          assessmentInput.persistentCapacityProtector,
+          codeGraphDirectPersistentCapacityProtector(input),
         );
         if (!prepared) {
           return Option.some<ReusableCleanSnapshotAttempt>({mode: 'fallback', reason: 'staging-identity-mismatch'});
@@ -920,7 +919,6 @@ export const attemptReusableDirtyBase = Effect.fn('codeGraph.attemptReusableDirt
     inventory: input.inventory,
     languagePacks: input.languagePacks,
     layout: input.layout,
-    persistentCapacityProtector: input.persistentCapacityProtector,
     store: input.store,
   };
   const boundedAssessment = yield* assessReusableCleanBaseCompatibility(assessmentInput, workspace, modifiedFiles);
@@ -1519,50 +1517,41 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
         unit: 'files',
       }) ?? Effect.void;
       const loadingStartedAt = yield* Clock.currentTimeMillis;
-      // Every shard is bound to the exact extractor, workspace, graph-content,
-      // content-hash, and path derivation above. Load one bounded source batch
-      // at a time and reuse valid peers independently; a missing or malformed
-      // shard only falls back to its raw parser facts.
+      // Final attribution can inspect peer raw facts in this deterministic,
+      // bounded source batch (for example while flattening TypeScript barrel
+      // reexports). Reuse the batch only as a complete unit; otherwise replay
+      // and reattribute every raw peer so a hit/miss partition cannot become a
+      // persisted derivation input.
       const materializedShards = yield* input.store.loadMaterializedFileShards(
         input.layout.databasePath,
         files,
         input.building.extractorSet,
         shardDerivationIdentity,
       );
-      const missingShardFiles = files.filter(file => !materializedShards.facts.has(file.path));
-      const cached = yield* loadCachedFacts(
-        input.store,
-        input.layout.databasePath,
-        missingShardFiles,
-        input.languagePacks,
-      );
+      const materializedShardBatchComplete = materializedShards.facts.size === files.length;
+      const fallbackFiles = materializedShardBatchComplete ? [] : files;
+      const cached = yield* loadCachedFacts(input.store, input.layout.databasePath, fallbackFiles, input.languagePacks);
+      // Count every decoded cache payload, including valid final shards that
+      // were inspected before an incomplete batch fell back to all raw facts.
+      const batchReplayBytes = Math.min(Number.MAX_SAFE_INTEGER, materializedShards.bytes + cached.bytes);
       cachedFactReplayBytesCompleted = Math.min(
         Number.MAX_SAFE_INTEGER,
-        cachedFactReplayBytesCompleted + materializedShards.bytes + cached.bytes,
+        cachedFactReplayBytesCompleted + batchReplayBytes,
       );
-      const batchChangedShardBytes = selectedDecodedFactBytes(
-        materializedShards.bytesByPath,
-        files
-          .filter(file => changedCurrentPaths.has(file.path) && materializedShards.facts.has(file.path))
-          .map(file => file.path),
-      );
-      const batchChangedRawBytes = selectedDecodedFactBytes(
-        cached.bytesByPath,
-        missingShardFiles.filter(file => changedCurrentPaths.has(file.path)).map(file => file.path),
+      // Changed-fact bytes are the logical selected representation used as the
+      // replay-amplification denominator, not every physical cache decode.
+      const batchChangedFactBytes = selectedDecodedFactBytes(
+        materializedShardBatchComplete ? materializedShards.bytesByPath : cached.bytesByPath,
+        files.filter(file => changedCurrentPaths.has(file.path)).map(file => file.path),
       );
       changedFactBytesCompleted =
-        changedFactBytesCompleted === undefined ||
-        batchChangedShardBytes === undefined ||
-        batchChangedRawBytes === undefined
+        changedFactBytesCompleted === undefined || batchChangedFactBytes === undefined
           ? undefined
-          : Math.min(
-              Number.MAX_SAFE_INTEGER,
-              changedFactBytesCompleted + batchChangedShardBytes + batchChangedRawBytes,
-            );
+          : Math.min(Number.MAX_SAFE_INTEGER, changedFactBytesCompleted + batchChangedFactBytes);
       const batchLoadingMilliseconds = (yield* Clock.currentTimeMillis) - loadingStartedAt;
       loadingMilliseconds += batchLoadingMilliseconds;
       stageMilliseconds['loading-cache'] = loadingMilliseconds;
-      if (missingShardFiles.some(file => !cached.facts.has(file.path))) {
+      if (fallbackFiles.some(file => !cached.facts.has(file.path))) {
         return yield* Effect.fail(
           new CodeGraphIndexOperationError(
             'A cached code graph fact disappeared during indexing; retry with a full rebuild.',
@@ -1573,7 +1562,7 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
         activity: {
           batchCompleted: batchesCompleted,
           batchTotal: batchesTotal,
-          cachedFactBytes: Math.min(Number.MAX_SAFE_INTEGER, materializedShards.bytes + cached.bytes),
+          cachedFactBytes: batchReplayBytes,
           elapsedMilliseconds: batchLoadingMilliseconds,
           sourceBytes,
           stage: 'attributing',
@@ -1586,24 +1575,26 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
         unit: 'files',
       }) ?? Effect.void;
       const attributionStartedAt = yield* Clock.currentTimeMillis;
-      const attributedMissingFacts = attributeFacts(
-        missingShardFiles.map(file => input.languagePacks.postprocessFile(file, cached.facts.get(file.path)!)),
+      const attributedFallbackFacts = attributeFacts(
+        fallbackFiles.map(file => input.languagePacks.postprocessFile(file, cached.facts.get(file.path)!)),
       );
-      if (missingShardFiles.length > 0) {
+      if (fallbackFiles.length > 0) {
         yield* input.store.cacheMaterializedFileShards(
           input.layout.databasePath,
-          missingShardFiles,
-          attributedMissingFacts.map(fact => serializeBoundedCodeGraphFact(fact)),
+          fallbackFiles,
+          attributedFallbackFacts.map(fact => serializeBoundedCodeGraphFact(fact)),
           input.building.extractorSet,
           shardDerivationIdentity,
           protectDirectPersistentWrite,
         );
       }
-      const attributedMissingByPath = new Map(attributedMissingFacts.map(fact => [fact.path, fact]));
-      const facts = files.map(
-        file => materializedShards.facts.get(file.path) ?? attributedMissingByPath.get(file.path)!,
+      const attributedFallbackByPath = new Map(attributedFallbackFacts.map(fact => [fact.path, fact]));
+      const facts = files.map(file =>
+        materializedShardBatchComplete
+          ? materializedShards.facts.get(file.path)!
+          : attributedFallbackByPath.get(file.path)!,
       );
-      materializedShardFilesReused += files.length - missingShardFiles.length;
+      materializedShardFilesReused += materializedShardBatchComplete ? files.length : 0;
       const batchAttributionMilliseconds = (yield* Clock.currentTimeMillis) - attributionStartedAt;
       attributionMilliseconds += batchAttributionMilliseconds;
       stageMilliseconds.attributing = attributionMilliseconds;

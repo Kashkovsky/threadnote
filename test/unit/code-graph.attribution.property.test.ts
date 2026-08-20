@@ -11,7 +11,7 @@ const attributionCase = FC.record({
   rotation: FC.integer({max: 31, min: 0}),
 });
 
-const mixedReuseCase = FC.record({
+const batchReuseCase = FC.record({
   batchWidth: FC.integer({max: 5, min: 1}),
   hitMask: FC.array(FC.boolean(), {maxLength: 24, minLength: 1}),
   packageCount: FC.integer({max: 12, min: 1}),
@@ -51,28 +51,28 @@ describe('code graph repository-attribution properties', () => {
   );
 
   it.prop(
-    'matches one-shot attribution when arbitrary final-shard hits are mixed with batched raw misses',
-    {scenario: mixedReuseCase},
+    'matches canonical batch attribution when only complete final-shard batches are reused',
+    {scenario: batchReuseCase},
     ({scenario}) => {
       const files = repositoryFiles(scenario.packageCount);
       const workspace = discoverManifestWorkspace(files);
       const raw = syntheticFacts(files);
       const attributeBatch = createCachedCodeGraphFactsAttributor(files, workspace);
-      const expected = attributeBatch(raw);
-      const hitPaths = new Set(
-        raw.filter((_, index) => scenario.hitMask[index % scenario.hitMask.length]).map(file => file.path),
-      );
-      const hitFacts = new Map(expected.filter(file => hitPaths.has(file.path)).map(file => [file.path, file]));
-      const misses = raw.filter(file => !hitPaths.has(file.path));
-      const rotation = misses.length === 0 ? 0 : scenario.rotation % misses.length;
-      const reorderedMisses = [...misses.slice(rotation), ...misses.slice(0, rotation)];
-      const attributedMisses = new Map<string, CodeGraphFileFacts>();
-      for (let index = 0; index < reorderedMisses.length; index += scenario.batchWidth) {
-        for (const fact of attributeBatch(reorderedMisses.slice(index, index + scenario.batchWidth))) {
-          attributedMisses.set(fact.path, fact);
-        }
+      const rotation = scenario.rotation % raw.length;
+      const reordered = [...raw.slice(rotation), ...raw.slice(0, rotation)];
+      const rawBatches: (readonly CodeGraphFileFacts[])[] = [];
+      for (let index = 0; index < reordered.length; index += scenario.batchWidth) {
+        rawBatches.push(reordered.slice(index, index + scenario.batchWidth));
       }
-      const merged = raw.map(file => hitFacts.get(file.path) ?? attributedMisses.get(file.path)!);
+      const canonicalBatches = rawBatches.map(batch => attributeBatch(batch));
+      const expected = canonicalBatches.flat();
+      const hitPaths = new Set(
+        expected.filter((_, index) => scenario.hitMask[index % scenario.hitMask.length]).map(file => file.path),
+      );
+      const merged = rawBatches.flatMap((batch, index) => {
+        const canonical = canonicalBatches[index]!;
+        return canonical.every(file => hitPaths.has(file.path)) ? canonical : attributeBatch(batch);
+      });
 
       expect(normalizeFacts(merged)).toEqual(normalizeFacts(expected));
     },
