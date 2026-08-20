@@ -204,6 +204,10 @@ describe('standalone release workflows', () => {
       expect(yield* projectFileExists('.github/actionlint.yaml')).toBe(false);
       expect(yield* readProjectFile('.github/actionlint.yml')).toBe(
         [
+          'self-hosted-runner:',
+          '  labels:',
+          '    - threadnote-large-graph',
+          '',
           'paths:',
           '  .github/workflows/publish.yml:',
           '    # These jobs are intentionally and immutably disabled until Windows signing is approved.',

@@ -58,6 +58,7 @@
     "bench:recall:vectors": "bun scripts/benchmark-recall-vectors.ts",
     "bench:recall:micro": "bun scripts/benchmark-recall-micro.ts",
     "bench:code-graph": "bun scripts/benchmark-code-graph.ts",
+    "bench:code-graph:ready-query": "bun scripts/benchmark-code-graph-ready-query.ts",
     "bench:code-graph:embedding-contexts": "bun scripts/benchmark-code-graph-embedding-contexts.ts",
     "bench:code-graph-workset": "bun scripts/benchmark-code-graph-workset.ts",
     "bench:code-graph:lexical-production": "bun scripts/benchmark-code-graph-lexical-production.ts",

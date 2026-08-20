@@ -247,7 +247,65 @@ process tree and deduplicates them by device and inode. That includes immediatel
 databases, journals, and subjournals without retaining their paths. Linux reads `/proc` file descriptors; macOS uses a
 bounded numeric-FD `lsof` projection at the process-sampling interval. Both values are sampled high-water, not exact
 live totals. For a
-production repository that is already cloned locally, run the explicit soak mode without adding a network clone to CI:
+production repository that is already cloned locally, run the explicit soak mode without adding a network clone to CI.
+
+For the narrower ready-query gate, `bench:code-graph:ready-query` consumes the pinned IntelliJ checkout and an already
+prepared compatible Threadnote home. It never calls the indexer: status uses `requestMaintenance: false`, inspection
+uses `refresh: false`, and missing, stale, dirty, incompatible, or under-200,000-file evidence fails closed. The reviewed
+workflow is manual-only, requires the `threadnote-large-graph` self-hosted Linux runner label and protected environment,
+and reads the preprovisioned paths from environment-scoped repository variables. It does not run on public GitHub
+hardware, clone IntelliJ, or alter the existing 73k full-build workflow. The artifact enforces at least eight logical
+CPUs, and the workflow has a 30-minute job ceiling. The protected runner environment remains responsible for
+provisioning at least 32 GiB RAM, a 128 GiB local SSD, and 64 GiB free space; those capacity facts are not yet captured
+as qualifying artifact evidence.
+
+Qualifying evidence is restricted to the canonical `Kashkovsky/threadnote` workflow dispatched from protected `main`.
+Provision and protect the `large-repository-evidence` environment first, including its protected deployment policy,
+self-hosted runner, prebuilt home/repository paths, and environment-only variable
+`THREADNOTE_READY_QUERY_ENVIRONMENT_ATTESTATION=intellij-ready-query-v1:3cbdad9ee6c8a5135fc0f01cc90114fc25c0655c:047481e05148b1c11a52fa813e13323c23abbc0d`.
+Do not define that attestation or the preprovisioned paths at repository or organization scope. Only after that
+environment is ready may a repository administrator set the repository variable
+`THREADNOTE_READY_QUERY_EVIDENCE_ENABLED=true`. The live environment and enable variable are currently absent, so the
+job remains skipped. Environment-scoped values are injected only into steps after environment admission; the job-level
+guard can see only the repository enable variable. The runner rejects missing or mismatched repository name/ID, event,
+job, ref, protected-ref, workflow ref/SHA, run ID/attempt, enablement, environment, attestation, and self-hosted runner
+class inputs. The retained artifact binds the exact closed set of those non-secret values to the measured source
+commit without retaining a runner name or path. Third-party actions in this workflow are pinned to reviewed commit
+SHAs, and output/artifact names include both run ID and attempt.
+
+```sh
+THREADNOTE_READY_QUERY_DEDICATED_RUNNER=true \
+bun run bench:code-graph:ready-query -- \
+  --repository /preprovisioned/intellij-community \
+  --home /preprovisioned/threadnote-ready-home \
+  --output /outside/both/ready-query-preflight.json \
+  --preflight
+```
+
+Local managed exact-HEAD runs may emit only this distinct `ready-query-preflight` readiness receipt, never a qualifying
+benchmark artifact. The real canonical GitHub run
+repeats preflight, executes five warmups and 25 samples per measured freshness policy, schedules deferred requests at a
+fixed 1 Hz with concurrency one, and includes accumulated queue latency in end-to-end values. It sequentially checks
+the reviewed Java, Kotlin, Bazel, and TypeScript controls, requires exact/current and ordinary/deferred digest parity,
+reconciles the available stage timings with an explicit unattributed remainder, caps both MCP-shaped response parts at
+24 KiB, and rejects Linux CPU/I/O/memory pressure, steal, run-queue, or swap contention. The request profile is closed
+and explicit: `query`, node limit 20, edge limit 40, depth 1, heuristic/model associations disabled, 5 s deferred and
+30 s exact outer timeout envelopes, and the recorded runtime-default lexical-first semantic/traversal budgets.
+
+The measured window holds the graph maintenance registration, publishes maintenance intent, acquires the checkout
+repository lock, and drains linked-worktree build locks before its inside-scope status check. It retains those builder
+gates through warmups, controls, samples, final status/source validation, artifact validation, and atomic artifact
+write. This excludes graph builders only. It intentionally does not hold the database-writer lock because normal query
+snapshot leases use that lock, and the artifact explicitly records that full writer isolation and storage-capacity
+isolation are not attested. A unique per-run prepared home or a future writer-reservation protocol remains required for
+those stronger claims.
+
+This artifact is explicitly `composed-status-inspect-serialization` service latency. It bypasses the registered
+MCP/watcher/snapshot-orchestration handler and does not yet retain process CPU time/utilization, RSS, physical/logical
+I/O, SQLite/WAL/TEMP, cache-state, or candidate/hydration/traversal stages. A retained run therefore qualifies only
+this evidence foundation; the complete P0.2 release gate remains pending.
+
+For the full cold/incremental/reference soak, run:
 
 ```sh
 bun run bench:code-graph -- \

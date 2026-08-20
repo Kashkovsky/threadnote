@@ -1,0 +1,98 @@
+name: Retain governed >=200k ready-query evidence
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: code-graph-ready-query-evidence
+  cancel-in-progress: false
+
+jobs:
+  ready-query-evidence:
+    name: Pinned IntelliJ ready-query evidence
+    if: >-
+      github.repository == 'Kashkovsky/threadnote' &&
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/main' &&
+      github.ref_protected == true &&
+      vars.THREADNOTE_READY_QUERY_EVIDENCE_ENABLED == 'true'
+    environment: large-repository-evidence
+    runs-on: [self-hosted, linux, x64, threadnote-large-graph]
+    timeout-minutes: 30
+    steps:
+      - name: Check out the exact Threadnote source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.3.14
+      - name: Install exact dependencies
+        run: bun install --frozen-lockfile
+      - name: Require canonical protected workflow and environment provisioning
+        env:
+          THREADNOTE_READY_QUERY_ENVIRONMENT: large-repository-evidence
+          THREADNOTE_READY_QUERY_ENVIRONMENT_ATTESTATION: ${{ vars.THREADNOTE_READY_QUERY_ENVIRONMENT_ATTESTATION }}
+          THREADNOTE_READY_QUERY_EVIDENCE_ENABLED: 'true'
+          THREADNOTE_READY_QUERY_HOME: ${{ vars.THREADNOTE_READY_QUERY_HOME }}
+          THREADNOTE_READY_QUERY_REPOSITORY: ${{ vars.THREADNOTE_READY_QUERY_REPOSITORY }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = 'Kashkovsky/threadnote'
+          test "$GITHUB_REPOSITORY_ID" = '1230070449'
+          test "$GITHUB_EVENT_NAME" = 'workflow_dispatch'
+          test "$GITHUB_JOB" = 'ready-query-evidence'
+          test "$GITHUB_REF" = 'refs/heads/main'
+          test "$GITHUB_REF_PROTECTED" = 'true'
+          test "$GITHUB_WORKFLOW_REF" = 'Kashkovsky/threadnote/.github/workflows/code-graph-ready-query-evidence.yml@refs/heads/main'
+          test "$GITHUB_WORKFLOW_SHA" = "$GITHUB_SHA"
+          test "$RUNNER_ENVIRONMENT" = 'self-hosted'
+          test "$RUNNER_OS" = 'Linux'
+          test "$RUNNER_ARCH" = 'X64'
+          test "$THREADNOTE_READY_QUERY_EVIDENCE_ENABLED" = 'true'
+          test "$THREADNOTE_READY_QUERY_ENVIRONMENT" = 'large-repository-evidence'
+          test "$THREADNOTE_READY_QUERY_ENVIRONMENT_ATTESTATION" = 'intellij-ready-query-v1:3cbdad9ee6c8a5135fc0f01cc90114fc25c0655c:047481e05148b1c11a52fa813e13323c23abbc0d'
+          test -n "$THREADNOTE_READY_QUERY_REPOSITORY"
+          test -n "$THREADNOTE_READY_QUERY_HOME"
+          test -d "$THREADNOTE_READY_QUERY_REPOSITORY/.git"
+          test -d "$THREADNOTE_READY_QUERY_HOME"
+      - name: Fail-closed preflight without rebuilding
+        env:
+          THREADNOTE_READY_QUERY_DEDICATED_RUNNER: 'true'
+          THREADNOTE_READY_QUERY_HOME: ${{ vars.THREADNOTE_READY_QUERY_HOME }}
+          THREADNOTE_READY_QUERY_REPOSITORY: ${{ vars.THREADNOTE_READY_QUERY_REPOSITORY }}
+        run: >-
+          bun run bench:code-graph:ready-query --
+          --repository "$THREADNOTE_READY_QUERY_REPOSITORY"
+          --home "$THREADNOTE_READY_QUERY_HOME"
+          --output artifacts/code-graph-ready-query-preflight-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}.json
+          --preflight
+          --quiet
+      - name: Capture fixed-rate deferred and sequential exact evidence
+        env:
+          THREADNOTE_READY_QUERY_DEDICATED_RUNNER: 'true'
+          THREADNOTE_READY_QUERY_ENVIRONMENT: large-repository-evidence
+          THREADNOTE_READY_QUERY_ENVIRONMENT_ATTESTATION: ${{ vars.THREADNOTE_READY_QUERY_ENVIRONMENT_ATTESTATION }}
+          THREADNOTE_READY_QUERY_EVIDENCE_ENABLED: 'true'
+          THREADNOTE_READY_QUERY_HOME: ${{ vars.THREADNOTE_READY_QUERY_HOME }}
+          THREADNOTE_READY_QUERY_REPOSITORY: ${{ vars.THREADNOTE_READY_QUERY_REPOSITORY }}
+        run: >-
+          bun run bench:code-graph:ready-query --
+          --repository "$THREADNOTE_READY_QUERY_REPOSITORY"
+          --home "$THREADNOTE_READY_QUERY_HOME"
+          --output artifacts/code-graph-ready-query-evidence-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}.json
+          --quiet
+      - name: Upload compact evidence and preflight receipt
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: code-graph-ready-query-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            artifacts/code-graph-ready-query-preflight-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}.json
+            artifacts/code-graph-ready-query-evidence-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}.json
+          if-no-files-found: error
+          retention-days: 90
