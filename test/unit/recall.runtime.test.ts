@@ -209,6 +209,51 @@ describe('recall runtime orchestration', () => {
       expect.arrayContaining([protectedCandidate.uri, crossCandidate.uri]),
     );
   });
+  it('reserves a newest topical memory beyond a stale full window without consuming other lane reserves', () => {
+    const staleTopical = Array.from({length: 125}, (_unused, index) => ({
+      fields: {project: 'threadnote', title: 'Latest release status', topic: `release-status-${index}`},
+      kind: 'handoff' as const,
+      status: 'active' as const,
+      text: 'Latest release status is complete.',
+      timestamp: '2026-08-04T00:00:00.000Z',
+      uri: `threadnote://user/test/memories/handoffs/active/threadnote/release-${String(index).padStart(3, '0')}.md`,
+    }));
+    const latest = {
+      fields: {project: 'threadnote', title: 'Latest release status', topic: '4.2.7-release'},
+      kind: 'handoff' as const,
+      status: 'active' as const,
+      text: 'Latest release status is complete.',
+      timestamp: '2026-08-20T00:00:00.000Z',
+      uri: 'threadnote://user/test/memories/handoffs/active/threadnote/4.2.7-release.md',
+    };
+    const laneCandidate = (lane: string) => ({
+      fields: {project: 'threadnote', topic: `${lane}-operations`},
+      text: `${lane} unrelated operations note.`,
+      uri: `threadnote://user/test/memories/durable/projects/threadnote/${lane}.md`,
+    });
+    const protectedCandidate = laneCandidate('protected');
+    const crossCandidate = laneCandidate('cross');
+    const merged = mergeRecallCandidateLanes([staleTopical], [[protectedCandidate]], [[crossCandidate]], {
+      admissionLimit: 100,
+      crossScopeReserve: 4,
+      protectedReserve: 16,
+      recencyCandidateSets: [[latest]],
+      recencyReserve: 10,
+    });
+    const admitted = merged.slice(0, 100);
+
+    expect(admitted.map(candidate => candidate.uri)).toEqual(
+      expect.arrayContaining([latest.uri, protectedCandidate.uri, crossCandidate.uri]),
+    );
+    const sections = buildRecallSections([], [], 10, {
+      indexedCandidates: admitted,
+      now: new Date('2026-08-20T12:00:00.000Z'),
+      project: 'threadnote',
+      query: 'latest release status',
+    });
+    expect(sections.ranked[0]?.uri).toBe(latest.uri);
+    expect(sections.ranked.findIndex(hit => hit.uri === staleTopical[0]!.uri)).toBeGreaterThan(0);
+  });
   effectIt.effect.prop(
     'keeps protected and cross-scope reserves independent throughout the bounded admission window',
     {

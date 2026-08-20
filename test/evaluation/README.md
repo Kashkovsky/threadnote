@@ -454,10 +454,10 @@ bun run eval:recall:baseline:v2
 ```
 
 The v2 capture refuses a dirty checkout and defaults to
-`baselines/threadnote-<package-version>/recall-v2-lexical.json`. It derives the package version, pipeline name, commit,
-clean state, and commit timestamp from the checkout. `SOURCE_DATE_EPOCH`, `--created-at`, or `--output` may override the
-reproducible timestamp or destination, but must not be used to relabel historical behavior. The legacy v1 capture
-remains only for its frozen contract.
+`baselines/threadnote-<package-version>-<ranker-version>/recall-v2-lexical.json`. It derives the package version,
+ranker version, pipeline name, commit, clean state, and commit timestamp from the checkout. `SOURCE_DATE_EPOCH`,
+`--created-at`, or `--output` may override the reproducible timestamp or destination, but must not be used to relabel
+historical behavior. The legacy v1 capture remains only for its frozen contract.
 
 ## Metrics
 
@@ -497,13 +497,30 @@ bun run eval:recall:v2 -- \
 
 # Keep the full query run as an untracked CI artifact
 bun run eval:recall:v2 -- --no-baseline --documents 10000 --full --output artifacts/recall-v2-10k.json
+
+# Diagnose omitted-project global retrieval separately from the explicit-project contract
+bun run eval:recall:v2 -- --no-baseline --global-eligibility --full
 ```
 
-The evaluator and model bake-off default to the reviewed Threadnote 4.2.7 lexical baseline. Its 193 exact contract
-failure identities remain visible work, not silent waivers: with a baseline, `--fail-on-contract` allows fixes but
-rejects any new identity or count increase; with `--no-baseline`, it remains zero-tolerance. A candidate must also pass
-the independent non-inferiority gate for global, category, and safety metrics. Pass `--baseline` explicitly only to
-reproduce a historical comparison.
+The evaluator and model bake-off default to the reviewed Threadnote 4.2.7 `hybrid-v8` lexical baseline under
+`baselines/threadnote-4.2.7-hybrid-v8/`. Its 99 exact lexical-only contract failure identities remain visible work, not
+silent waivers: with a baseline, `--fail-on-contract` allows fixes but rejects any new identity or count increase; with
+`--no-baseline`, it remains zero-tolerance. The remaining defects are concentrated in contracts that require semantic
+retrieval; the production BGE model evaluation remains the complementary end-to-end semantic-quality check. A
+candidate must also pass the independent non-inferiority gate for global, category, and safety metrics. Pass
+`--baseline` explicitly only to reproduce a historical comparison. The earlier 4.2.7 `hybrid-v3` quality artifact is
+retained in its original directory as historical evidence and as the colocated performance-reference lineage.
+
+The `hybrid-v8` release behavior also covers production recency intent: original-query recency terms can admit a
+bounded newest-candidate lane before the normal topical ranker, so a relevant current handoff is not starved by a large
+set of older matches. A separate real SQLite-store regression pins that behavior. It does not change the 250-query
+lexical fixture aggregates because the fixture remains the stable non-inferiority contract rather than a synthetic
+recency-only scorecard.
+
+The reviewed fixture's `query.project` models the documented explicit-project agent workflow. The
+`--global-eligibility` diagnostic keeps that value only as a soft ranking context while omitting the hard project
+boundary, matching a recall call without `project`; it intentionally runs without the explicit-project baseline so
+the two retrieval modes are not conflated.
 
 ## Performance suites
 
@@ -595,6 +612,26 @@ construction. It intentionally records host-specific observations without a univ
 bun run bench:recall:cross-scope-sqlite -- \
   --documents 4000 --samples 5 --warmups 1 \
   --output .artifacts/recall-cross-scope-sqlite.json
+```
+
+`bench:recall:eligibility` is the bounded production-path diagnostic for hard project and approved-authority
+eligibility. It writes canonical personal and shared memory files, builds the production lexical SQLite index, and then
+builds and queries the production vector SQLite index from that indexed corpus. Each disallowed class contains 525
+stronger documents by default, exceeding both the five-result semantic top-k and the lexical loader's 500-row
+per-term posting pool. The weaker target is therefore absent from unrestricted recall and from project-only recall
+(where stronger same-project unapproved memories still dominate), but must be recovered when both explicit-project
+and approved-authoritative eligibility are applied before either retrieval limit.
+
+The summaries report target recovery, disallowed results, lexical posting rows/statements, vector rows eligible for
+scoring, and result counts. Latency samples cover the warm read-only production queries after index construction;
+there is no host-independent timing gate. Vector embeddings are deterministic fixture controls so the run isolates
+SQLite eligibility placement and top-k behavior. It does not claim real embedding-model quality; use
+`eval:recall:models` for that evidence.
+
+```sh
+bun run bench:recall:eligibility -- \
+  --distractors-per-class 525 --samples 5 --warmups 1 \
+  --output .artifacts/recall-eligibility-production.json
 ```
 
 The checked-in `candidates/threadnote-4.2.7-hybrid-v6/` capture is the matched clean post-change comparison. Its p95

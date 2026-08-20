@@ -27,7 +27,8 @@ const evaluateRecall = Effect.gen(function* () {
   const hash = yield* fixtureHash(serializeRecallEvaluationFixtureV2Identity(fixture));
   const run = runLexicalRecallEvaluationV2(fixture, {
     fixtureHash: hash,
-    pipelineName: `threadnote-${threadnoteVersion}-lexical-only`,
+    pipelineName: `threadnote-${threadnoteVersion}-${options.globalEligibility ? 'lexical-global' : 'lexical-only'}`,
+    projectEligibility: options.globalEligibility ? 'global' : 'explicit',
   });
   const result = evaluateRecallRunV2(fixture, run);
   const baseline = options.baselinePath
@@ -87,6 +88,7 @@ interface EvaluationOptions {
   readonly failOnContract: boolean;
   readonly failOnRegression: boolean;
   readonly full: boolean;
+  readonly globalEligibility: boolean;
   readonly maximumPrintedFailures: number;
   readonly outputPath?: string;
   readonly seed: number;
@@ -98,6 +100,7 @@ function parseArguments(args: readonly string[]): EvaluationOptions {
   let failOnContract = false;
   let failOnRegression = false;
   let full = false;
+  let globalEligibility = false;
   let maximumPrintedFailures = 20;
   let outputPath: string | undefined;
   let seed = 0x4_00_00;
@@ -109,6 +112,7 @@ function parseArguments(args: readonly string[]): EvaluationOptions {
     else if (argument === '--fail-on-contract') failOnContract = true;
     else if (argument === '--fail-on-regression') failOnRegression = true;
     else if (argument === '--full') full = true;
+    else if (argument === '--global-eligibility') globalEligibility = true;
     else if (argument === '--max-failures') maximumPrintedFailures = positiveInteger(args[++index], '--max-failures');
     else if (argument === '--output') outputPath = requiredValue(args[++index], '--output');
     else if (argument === '--seed') seed = positiveInteger(args[++index], '--seed');
@@ -117,12 +121,16 @@ function parseArguments(args: readonly string[]): EvaluationOptions {
   if (failOnRegression && !baselinePath) {
     throw new ScriptError('--fail-on-regression cannot be combined with --no-baseline');
   }
+  if (globalEligibility && baselinePath) {
+    throw new ScriptError('--global-eligibility requires --no-baseline so retrieval contracts are not conflated');
+  }
   return {
     baselinePath,
     documentCount,
     failOnContract,
     failOnRegression,
     full,
+    globalEligibility,
     maximumPrintedFailures,
     outputPath,
     seed,

@@ -166,6 +166,12 @@ smaller ranked prefix and `explain: true` only when full ranking reasons, signal
 `threshold` input filters topical `relevanceScore` before lifecycle/trust scoring; its default is
 `THREADNOTE_RECALL_THRESHOLD` when configured, otherwise `0.3`.
 
+An explicit recall `project` is an eligibility boundary: matching-project memories and projectless guidance are
+searched before posting and semantic top-k limits, while other projects are excluded. Omit `project` for global recall,
+or use a named Workset to search the union of its projects. Inside one project, `callerCwd` supplies a package/app
+preference rather than a silo: exact/ancestor and repo-wide memories are protected, and a bounded sibling-package
+challenger lane can still recover stronger topical evidence from another component.
+
 ## Native Code Graph
 
 The first graph query lazily builds a disposable snapshot below `~/.threadnote/indexes/code-graph/`. Committed source
@@ -452,11 +458,13 @@ The source home is never modified or deleted, so rollback remains available whil
 
 The reviewed recall-v2 corpus contains 200 documents and 250 queries across lexical, semantic, code, scope, lifecycle,
 authority, time, graph, no-answer, adversarial, chunking, and multilingual categories. The active lexical quality gate
-and current Apple M1 Max `hybrid-v3` rank-performance reference use clean-commit Threadnote 4.2.7 artifacts under
-`test/evaluation/baselines/threadnote-4.2.7/`. The performance reference covers 200, 1k, 10k, and 100k documents and is
-a same-hardware comparison point, not a universal latency threshold. Frozen 3.0.3 quality and performance artifacts
-remain immutable historical evidence under
-`test/evaluation/baselines/threadnote-3.0.3/`; they are not the current gate.
+is the clean-commit Threadnote 4.2.7 `hybrid-v8` artifact under
+`test/evaluation/baselines/threadnote-4.2.7-hybrid-v8/`. The current Apple M1 Max `hybrid-v3` rank-performance reference
+remains under `test/evaluation/baselines/threadnote-4.2.7/`; it covers 200, 1k, 10k, and 100k documents and is a
+same-hardware comparison point, not a universal latency threshold. The earlier 4.2.7 `hybrid-v3` quality artifact and
+frozen 3.0.3 quality and performance artifacts remain immutable historical evidence under their original directories;
+they are not the current quality gate. Frozen 3.0.3 artifacts live under
+`test/evaluation/baselines/threadnote-3.0.3/`.
 
 The original code-graph-v1 repository fixture preserves compiler-backed TypeScript behavior and gates definitions,
 paths, impact, documentation, false edges, no-answer behavior, and worktree isolation against frozen

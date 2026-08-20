@@ -1,4 +1,5 @@
 import {Database} from 'bun:sqlite';
+import {it as effectIt} from '@effect/vitest';
 import {Effect} from 'effect';
 import {afterEach, beforeEach, describe, expect, it} from 'vitest';
 import {
@@ -13,7 +14,10 @@ import {
   recallUriMatchesScopes,
 } from '../../src/recall/index.js';
 import {recallWorkspaceScopeMatches} from '../../src/recall/index_scope.js';
+import {deriveRecallEligibilityPolicy} from '../../src/recall/eligibility.js';
 import {chunksForRecallCandidates} from '../../src/search/vector-index.js';
+import {ApplicationLayer} from '../../src/effect/runtime.js';
+import {provideTestLayer} from '../helpers/effect-layer.js';
 import {join, mkdir, mkdtemp, rm, stat, symlink, utimes, writeFile} from '../helpers/effect-filesystem.js';
 import {runEffect as run} from '../helpers/effect-runtime.js';
 
@@ -148,6 +152,91 @@ describe('local recall index', () => {
     expect(await run(loadRecallIndex(config(), {includeInactive: false}))).toHaveLength(2);
   });
 
+  effectIt.effect('filters projects before the posting window so a real indexed target cannot starve', () =>
+    Effect.gen(function* () {
+      const distractorRoot = join(directory, 'data', 'local', 'resources', 'repos', 'outside');
+      const memoryRoot = join(directory, 'data', 'local', 'user', 'me', 'memories', 'durable');
+      const targetPath = join(memoryRoot, 'projects', 'threadnote', 'zz-target.md');
+      const globalPath = join(memoryRoot, 'global-guidance.md');
+      yield* Effect.promise(async () => {
+        await mkdir(distractorRoot, {recursive: true});
+        await mkdir(join(targetPath, '..'), {recursive: true});
+        await Promise.all(
+          Array.from({length: 525}, async (_, index) =>
+            writeFile(
+              join(distractorRoot, `${String(index).padStart(4, '0')}.md`),
+              `# Outside ${index}\n\nprojectstarvationanchor `.repeat(8),
+              'utf8',
+            ),
+          ),
+        );
+        await writeFile(
+          targetPath,
+          [
+            'MEMORY',
+            'kind: durable',
+            'status: active',
+            'project: threadnote',
+            'topic: eligibility-target',
+            'source_agent_client: codex',
+            'timestamp: 2026-08-20T00:00:00.000Z',
+            '',
+            'projectstarvationanchor is the selected project contract.',
+          ].join('\n'),
+          'utf8',
+        );
+        await writeFile(globalPath, '# Global\n\nprojectstarvationanchor applies to every project.', 'utf8');
+      });
+
+      const unrestricted = yield* loadRecallIndexData(config(), {
+        includeInactive: false,
+        limit: 5,
+        query: 'projectstarvationanchor',
+      });
+      const eligibility = deriveRecallEligibilityPolicy({
+        explicitProject: 'threadnote',
+        originalQuery: 'projectstarvationanchor',
+      });
+      const restricted = yield* loadRecallIndexData(config(), {
+        eligibility,
+        includeInactive: false,
+        limit: 5,
+        query: 'projectstarvationanchor',
+      });
+      const required = yield* loadRecallIndexData(config(), {
+        eligibility,
+        includeInactive: false,
+        query: 'term-that-does-not-exist',
+        requiredUris: [
+          'threadnote://resources/repos/outside/0000.md',
+          'threadnote://user/me/memories/durable/projects/threadnote/zz-target.md',
+        ],
+      });
+      const exact = yield* loadRecallExactMatches(config(), {
+        eligibility,
+        includeInactive: false,
+        terms: ['projectstarvationanchor'],
+        uriScopes: ['threadnote://resources', 'threadnote://user/me/memories'],
+      });
+
+      expect(unrestricted.candidates.some(candidate => candidate.fields?.project === 'threadnote')).toBe(false);
+      expect(restricted.candidates.map(candidate => candidate.fields?.project)).toEqual(
+        expect.arrayContaining(['threadnote', undefined]),
+      );
+      expect(restricted.candidates.every(candidate => candidate.fields?.project !== 'outside')).toBe(true);
+      expect(required.candidates.map(candidate => candidate.uri)).toEqual([
+        'threadnote://user/me/memories/durable/projects/threadnote/zz-target.md',
+      ]);
+      expect(exact.map(match => match.uri)).toEqual(
+        expect.arrayContaining([
+          'threadnote://user/me/memories/durable/global-guidance.md',
+          'threadnote://user/me/memories/durable/projects/threadnote/zz-target.md',
+        ]),
+      );
+      expect(exact.some(match => match.uri.includes('/outside/'))).toBe(false);
+    }).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
   it('collapses identical shared-memory aliases after scope authorization and before result limits', async () => {
     const sharedRoot = join(directory, 'data', 'local', 'user', 'me', 'memories', 'shared');
     const uniquePath = join(sharedRoot, 'alpha', 'durable', 'projects', 'threadnote', 'unique.md');
@@ -218,6 +307,142 @@ describe('local recall index', () => {
     expect(indexData.corpusStatistics.documentFrequency.package).toBe(1);
   });
 
+  it('admits newest topical memories by canonical timestamp beyond stale lexical and shared-alias windows', async () => {
+    const personalRoot = join(directory, 'data', 'local', 'user', 'me', 'memories', 'handoffs', 'active');
+    const projectRoot = join(personalRoot, 'threadnote');
+    const outsideRoot = join(personalRoot, 'outside');
+    const sharedRoot = join(directory, 'data', 'local', 'user', 'me', 'memories', 'shared');
+    await Promise.all([mkdir(projectRoot, {recursive: true}), mkdir(outsideRoot, {recursive: true})]);
+    const memory = (topic: string, timestamp: string, body: string, memoryId?: string) =>
+      [
+        'MEMORY',
+        'kind: handoff',
+        'status: active',
+        `project: ${topic === 'outside-latest' ? 'outside' : 'threadnote'}`,
+        `topic: ${topic}`,
+        'source_agent_client: codex',
+        `timestamp: ${timestamp}`,
+        ...(memoryId ? [`memory_id: ${memoryId}`] : []),
+        '',
+        body,
+      ].join('\n');
+    await Promise.all(
+      Array.from({length: 130}, async (_unused, index) => {
+        const path = join(projectRoot, `stale-${String(index).padStart(3, '0')}.md`);
+        await writeFile(
+          path,
+          memory(
+            `latest-release-status-${index}`,
+            '2026-08-01T00:00:00.000Z',
+            'Latest release status release status release status.',
+          ),
+          'utf8',
+        );
+        await utimes(path, new Date('2026-08-21T00:00:00.000Z'), new Date('2026-08-21T00:00:00.000Z'));
+      }),
+    );
+    const aliasBodies = ['a', 'b'].map(suffix =>
+      memory(
+        `alias-latest-release-${suffix}`,
+        '2026-08-20T02:00:00.000Z',
+        `Latest release alias receipt ${suffix}.`,
+        `tn_latest_alias_${suffix}`,
+      ),
+    );
+    await Promise.all(
+      aliasBodies.flatMap((aliasBody, aliasIndex) =>
+        Array.from({length: 40}, async (_unused, index) => {
+          const path = join(
+            sharedRoot,
+            `team-${String(index).padStart(2, '0')}`,
+            'handoffs',
+            'active',
+            'threadnote',
+            `alias-latest-release-${aliasIndex}.md`,
+          );
+          await mkdir(join(path, '..'), {recursive: true});
+          await writeFile(path, aliasBody, 'utf8');
+          await utimes(path, new Date('2026-08-21T00:00:00.000Z'), new Date('2026-08-21T00:00:00.000Z'));
+        }),
+      ),
+    );
+    const targetPath = join(projectRoot, 'zz-current-release.md');
+    await writeFile(
+      targetPath,
+      memory('4.2.7-release', '2026-08-20T01:00:00.000Z', 'Threadnote v4.2.7 release is published.'),
+      'utf8',
+    );
+    await utimes(targetPath, new Date('2026-07-01T00:00:00.000Z'), new Date('2026-07-01T00:00:00.000Z'));
+    await writeFile(
+      join(outsideRoot, 'outside-latest.md'),
+      memory('outside-latest', '2026-08-20T03:00:00.000Z', 'Latest release status for another project.'),
+      'utf8',
+    );
+
+    const selected = await run(
+      loadRecallIndexData(config(), {
+        eligibility: deriveRecallEligibilityPolicy({
+          explicitProject: 'threadnote',
+          originalQuery: 'latest release status',
+        }),
+        includeInactive: false,
+        limit: 100,
+        query: 'latest release status',
+        recencyIntent: true,
+      }),
+    );
+    const targetUri = 'threadnote://user/me/memories/handoffs/active/threadnote/zz-current-release.md';
+
+    expect(selected.candidates).toHaveLength(100);
+    expect(selected.candidates.map(candidate => candidate.uri)).not.toContain(targetUri);
+    expect(selected.recentCandidates?.map(candidate => candidate.uri)).toContain(targetUri);
+    expect(selected.recentCandidates?.some(candidate => candidate.fields?.project === 'outside')).toBe(false);
+    for (const suffix of ['a', 'b']) {
+      const aliases =
+        selected.recentCandidates?.filter(candidate => candidate.memoryId === `tn_latest_alias_${suffix}`) ?? [];
+      expect(aliases).toHaveLength(1);
+      expect([aliases[0]!.uri, ...(aliases[0]!.equivalentUris ?? [])]).toHaveLength(40);
+    }
+    expect(
+      queryDatabase<{readonly recorded_at: string; readonly source_modified_at: string}>(
+        `SELECT recorded_at, source_modified_at FROM documents WHERE uri = '${targetUri}'`,
+      ),
+    ).toEqual([
+      {
+        recorded_at: '2026-08-20T01:00:00.000Z',
+        source_modified_at: '2026-07-01T00:00:00.000Z',
+      },
+    ]);
+    const plan = queryDatabase<{readonly detail: string}>(`
+      EXPLAIN QUERY PLAN
+      SELECT d.id, d.uri, d.candidate_json, d.logical_key, d.recorded_at
+      FROM postings AS p
+      CROSS JOIN documents AS d ON d.id = p.document_id
+      WHERE p.term = 'latest'
+        AND d.recorded_at IS NOT NULL
+        AND (d.project IS NULL OR d.project IN ('threadnote'))
+      ORDER BY d.recorded_at DESC, d.uri ASC
+      LIMIT 64 OFFSET 0
+    `)
+      .map(row => row.detail)
+      .join('\n');
+    expect(plan).toContain('SEARCH p USING PRIMARY KEY (term=?)');
+    expect(plan).toContain('SEARCH d USING INTEGER PRIMARY KEY (rowid=?)');
+    expect(plan).not.toContain('SCAN p');
+
+    const hardScoped = await run(
+      loadRecallIndexData(config(), {
+        allowedUriScopes: [targetUri],
+        eligibility: deriveRecallEligibilityPolicy({originalQuery: 'latest release status', pinnedHardUri: true}),
+        includeInactive: false,
+        limit: 100,
+        query: 'latest release status',
+        recencyIntent: true,
+      }),
+    );
+    expect(hardScoped.recentCandidates?.map(candidate => candidate.uri)).toEqual([targetUri]);
+  });
+
   it('collapses personal and shared aliases when only a generated hygiene-source trailer differs', async () => {
     const personalPath = join(
       directory,
@@ -281,11 +506,11 @@ describe('local recall index', () => {
     expect([recalled[0]!.uri, ...(recalled[0]!.equivalentUris ?? [])].sort()).toEqual([personalUri, sharedUri].sort());
   });
 
-  it('removes bounded v5 lexical files and their pointer generation after a successful v6 build', async () => {
+  it('removes bounded v7 lexical files and their pointer generation after a successful v8 build', async () => {
     const lexicalRoot = join(directory, 'indexes', 'lexical');
     const oldGeneration = join(lexicalRoot, 'generations', 'active-old.sqlite');
-    const oldFixed = join(lexicalRoot, 'active-v5.sqlite');
-    const oldPointer = join(lexicalRoot, 'active-v5.pointer.json');
+    const oldFixed = join(lexicalRoot, 'active-v7.sqlite');
+    const oldPointer = join(lexicalRoot, 'active-v7.pointer.json');
     const resourcePath = join(directory, 'data', 'local', 'resources', 'repos', 'threadnote', 'current.md');
     await mkdir(join(oldGeneration, '..'), {recursive: true});
     await mkdir(join(resourcePath, '..'), {recursive: true});
@@ -293,7 +518,7 @@ describe('local recall index', () => {
     await writeFile(oldFixed, 'old fixed database', 'utf8');
     await writeFile(`${oldFixed}-wal`, 'old wal', 'utf8');
     await writeFile(oldPointer, JSON.stringify({database: 'generations/active-old.sqlite', version: 1}), 'utf8');
-    await writeFile(resourcePath, '# Current\n\nv6 lexical index', 'utf8');
+    await writeFile(resourcePath, '# Current\n\nv8 lexical index', 'utf8');
 
     await run(loadRecallIndex(config(), {includeInactive: false}));
 
@@ -653,7 +878,7 @@ describe('local recall index', () => {
     expect(selected.candidates).toEqual([]);
     expect(selected.queryExhaustive).toBe(true);
     expect(postingStatements).toBe(0);
-    expect(plan).toContain('documents_project_modified_uri');
+    expect(plan).toContain('documents_eligibility_uri');
     expect(plan).not.toContain('SCAN d');
     expect(postingPlan).toContain('SEARCH p USING');
     expect(postingPlan).not.toContain('SCAN p');

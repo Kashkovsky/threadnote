@@ -22,6 +22,7 @@ import {
 import {BUILTIN_MODEL_MANIFESTS} from '../src/models/builtin.js';
 import {parseLocalModelManifest, type LocalModelManifest} from '../src/models/catalog.js';
 import {LocalModelStore} from '../src/models/store.js';
+import {deriveRecallEligibilityPolicy} from '../src/recall/eligibility.js';
 import {rankRecallCandidates} from '../src/recall/rank.js';
 import {normalizeRecallRerankerScore} from '../src/recall/reranker-score.js';
 import {normalizeVector} from '../src/search/vector-search.js';
@@ -115,6 +116,10 @@ const evaluateModels = Effect.gen(function* () {
               semantic: semantic?.get(document.uri) ?? 0,
             })),
             {
+              eligibility: deriveRecallEligibilityPolicy({
+                explicitProject: query.project,
+                originalQuery: query.query,
+              }),
               now: query.now ? new Date(query.now) : undefined,
               project: query.project,
               seedUris: query.seedUris,

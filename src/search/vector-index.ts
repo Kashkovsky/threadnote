@@ -7,6 +7,14 @@ import {withExclusiveFileLock} from '../effect/file_lock.js';
 import {LocalModelCatalog, type LocalModelManifest} from '../models/catalog.js';
 import {LocalModelStore} from '../models/store.js';
 import {readModelSelection} from '../models/selection.js';
+import {normalizeRecallProject, type RecallEligibilityPolicy} from '../recall/eligibility.js';
+import {recallApprovedAuthoritative, recallEligibilityPredicate} from '../recall/index_eligibility.js';
+import {
+  combineRecallSqlPredicates,
+  recallUriMatchesScopes,
+  recallUriScopePredicate,
+  type RecallSqlPredicate,
+} from '../recall/index_scope.js';
 import type {RecallCandidate} from '../recall/rank.js';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {chunkRecallDocument, RECALL_CHUNKER_VERSION, type RecallChunk} from './chunker.js';
@@ -16,14 +24,14 @@ class VectorIndexOperationError extends Error {
   readonly _tag = 'VectorIndexOperationError' as const;
 }
 
-const VECTOR_INDEX_DATABASE_VERSION = 4;
+const VECTOR_INDEX_DATABASE_VERSION = 5;
 const VECTOR_INDEX_EMBED_BATCH_SIZE = 256;
 const VECTOR_INDEX_PAGE_SIZE = 400;
 const VECTOR_INDEX_INSERT_BATCH_SIZE = 100;
 const VECTOR_INDEX_DATABASE_FILENAME = `vectors-v${VECTOR_INDEX_DATABASE_VERSION}.sqlite`;
 const VECTOR_INDEX_SCHEMA_COLUMNS = {
   vector_aliases: ['generation', 'uri', 'representative_uri'],
-  vector_chunks: ['generation', 'chunk_id', 'uri', 'fingerprint', 'vector_id'],
+  vector_chunks: ['generation', 'chunk_id', 'uri', 'fingerprint', 'project', 'approved_authoritative', 'vector_id'],
   vector_generations: [
     'generation',
     'job_id',
@@ -65,7 +73,12 @@ interface VectorRow {
   readonly vector: unknown;
 }
 
-interface DesiredVectorChunk extends RecallChunk {
+interface VectorChunkMapping extends RecallChunk {
+  readonly approvedAuthoritative: 0 | 1;
+  readonly project: string | null;
+}
+
+interface DesiredVectorChunk extends VectorChunkMapping {
   readonly vectorKey: string;
 }
 
@@ -76,6 +89,22 @@ interface SemanticChunkMatch extends VectorSearchResult {
 interface VectorAliasRow {
   readonly representative_uri: string;
   readonly uri: string;
+}
+
+interface VectorAliasMapping {
+  readonly representativeUri: string;
+  readonly uri: string;
+}
+
+interface VectorInsertRow {
+  readonly approvedAuthoritative: 0 | 1;
+  readonly chunkId: string;
+  readonly fingerprint: string;
+  readonly generation: string;
+  readonly project: string | null;
+  readonly uri: string;
+  readonly vector: Uint8Array;
+  readonly vectorKey: string;
 }
 
 export interface VectorIndexStatus {
@@ -126,6 +155,8 @@ interface VectorIndexBuildOptions<R> extends VectorCorpusGenerationOptions<R> {
 }
 
 interface SemanticScoreOptions<R> extends VectorCorpusGenerationOptions<R> {
+  readonly allowedUriScopes?: readonly string[];
+  readonly eligibility?: RecallEligibilityPolicy;
   readonly limit?: number;
 }
 
@@ -190,8 +221,9 @@ export const ensureVectorIndex = Effect.fn('vectorIndex.ensure')(function* <R = 
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const chunks = candidates.flatMap(candidate => chunkRecallDocument(candidate.uri, candidate.text));
-  const current = yield* currentVectorIndexStatus(config.agentContextHome, manifest, chunks, options).pipe(
+  const chunks = vectorChunkMappings(candidates);
+  const aliases = vectorAliasMappings(candidates);
+  const current = yield* currentVectorIndexStatus(config.agentContextHome, manifest, chunks, aliases, options).pipe(
     Effect.catch(() => Effect.succeed(undefined)),
   );
   if (current) {
@@ -200,14 +232,18 @@ export const ensureVectorIndex = Effect.fn('vectorIndex.ensure')(function* <R = 
   }
   return yield* withVectorIndexLock(fs, path, config.agentContextHome, manifest.id, () =>
     Effect.gen(function* () {
-      const lockedCurrent = yield* currentVectorIndexStatus(config.agentContextHome, manifest, chunks, options).pipe(
-        Effect.catch(() => Effect.succeed(undefined)),
-      );
+      const lockedCurrent = yield* currentVectorIndexStatus(
+        config.agentContextHome,
+        manifest,
+        chunks,
+        aliases,
+        options,
+      ).pipe(Effect.catch(() => Effect.succeed(undefined)));
       if (lockedCurrent) {
         yield* verifyCurrentCorpusGeneration(manifest, options);
         return lockedCurrent;
       }
-      return yield* rebuildVectorIndexUnlocked(config, manifest, candidates, options, chunks);
+      return yield* rebuildVectorIndexUnlocked(config, manifest, candidates, options, chunks, aliases);
     }),
   );
 });
@@ -224,15 +260,19 @@ export const vectorIndexMatchesGeneration = Effect.fn('vectorIndex.matchesGenera
 const currentVectorIndexStatus = Effect.fn('vectorIndex.currentStatus')(function* <R = never>(
   home: string,
   manifest: LocalModelManifest,
-  chunks: readonly RecallChunk[],
+  chunks: readonly VectorChunkMapping[],
+  aliases: readonly VectorAliasMapping[],
   options: VectorIndexBuildOptions<R>,
 ) {
   const active = yield* readActiveVectorGeneration(home, manifest);
   if (!active) return undefined;
-  const current = options.corpusGeneration
-    ? generationMatchesCorpus(active, manifest, options.corpusGeneration)
-    : yield* vectorGenerationMatchesChunks(home, manifest, active.generation, chunks);
-  if (!current) return undefined;
+  const jobId = yield* vectorJobId(
+    manifest,
+    chunks,
+    aliases,
+    options.corpusGeneration ?? active.corpus_generation ?? undefined,
+  );
+  if (!generationIsCompatible(active, manifest) || active.job_id !== jobId) return undefined;
   return {
     chunkCount: active.chunk_count,
     createdAt: active.created_at,
@@ -250,7 +290,8 @@ const rebuildVectorIndexUnlocked = Effect.fn('vectorIndex.rebuildUnlocked')(func
   manifest: LocalModelManifest,
   candidates: readonly RecallCandidate[],
   options: VectorIndexBuildOptions<R> = {},
-  preparedChunks?: readonly RecallChunk[],
+  preparedChunks?: readonly VectorChunkMapping[],
+  preparedAliases?: readonly VectorAliasMapping[],
 ) {
   yield* verifyCurrentCorpusGeneration(manifest, options);
   if (manifest.role !== 'embedding' || !manifest.dimensions) {
@@ -263,12 +304,8 @@ const rebuildVectorIndexUnlocked = Effect.fn('vectorIndex.rebuildUnlocked')(func
   const runtime = yield* LocalModelRuntime;
   const store = yield* LocalModelStore;
   const installed = yield* store.verify(config.agentContextHome, manifest);
-  const chunks = preparedChunks ?? candidates.flatMap(candidate => chunkRecallDocument(candidate.uri, candidate.text));
-  const aliases = candidates
-    .flatMap(candidate =>
-      [candidate.uri, ...(candidate.equivalentUris ?? [])].map(uri => ({representativeUri: candidate.uri, uri})),
-    )
-    .sort((left, right) => left.uri.localeCompare(right.uri));
+  const chunks = preparedChunks ?? vectorChunkMappings(candidates);
+  const aliases = preparedAliases ?? vectorAliasMappings(candidates);
   const recipe = embeddingRecipe(manifest);
   const desiredChunks = chunks.map(chunk => ({
     ...chunk,
@@ -276,17 +313,7 @@ const rebuildVectorIndexUnlocked = Effect.fn('vectorIndex.rebuildUnlocked')(func
   }));
   const root = vectorModelRoot(path, config.agentContextHome, manifest.id);
   const databasePath = vectorDatabasePath(path, config.agentContextHome, manifest.id);
-  const jobId = yield* sha256Hex(
-    JSON.stringify({
-      chunkerVersion: RECALL_CHUNKER_VERSION,
-      chunks: chunks.map(chunk => ({fingerprint: chunk.fingerprint, id: chunk.id, uri: chunk.uri})),
-      aliases,
-      corpusGeneration: options.corpusGeneration ?? null,
-      dimensions: manifest.dimensions,
-      modelSha256: manifest.sha256,
-      promptPrefix: manifest.promptPrefixes?.document ?? '',
-    }),
-  );
+  const jobId = yield* vectorJobId(manifest, chunks, aliases, options.corpusGeneration);
   yield* fs.makeDirectory(root, {recursive: true, mode: 0o700});
   yield* initializeVectorDatabaseWithRecovery(fs, databasePath);
 
@@ -410,17 +437,16 @@ const rebuildVectorIndexUnlocked = Effect.fn('vectorIndex.rebuildUnlocked')(func
             modelPath: installed.path,
           });
           yield* verifyCurrentCorpusGeneration(manifest, options);
-          const rows = batch.map(
-            (chunk, index) =>
-              [
-                building!.generation,
-                chunk.id,
-                chunk.uri,
-                chunk.fingerprint,
-                chunk.vectorKey,
-                encodeVector(normalizeVector(vectors[index]!), dimensions),
-              ] as const,
-          );
+          const rows = batch.map((chunk, index) => ({
+            approvedAuthoritative: chunk.approvedAuthoritative,
+            chunkId: chunk.id,
+            fingerprint: chunk.fingerprint,
+            generation: building!.generation,
+            project: chunk.project,
+            uri: chunk.uri,
+            vector: encodeVector(normalizeVector(vectors[index]!), dimensions),
+            vectorKey: chunk.vectorKey,
+          }));
           yield* insertVectorRows(sql, rows);
           embeddedChunkCount += batch.length;
           yield* options.onProgress?.({
@@ -511,6 +537,7 @@ export const selectedSemanticScores = Effect.fn('vectorIndex.selectedSemanticSco
             );
           }
           const limit = Math.min(active.chunk_count, options.limit ?? 500);
+          const selection = vectorChunkSelectionPredicate(options.eligibility, options.allowedUriScopes);
           let cursor = '';
           let best: readonly SemanticChunkMatch[] = [];
           for (;;) {
@@ -518,10 +545,12 @@ export const selectedSemanticScores = Effect.fn('vectorIndex.selectedSemanticSco
               `SELECT chunk.chunk_id, chunk.uri, chunk.fingerprint, value.vector
                FROM vector_chunks AS chunk
                JOIN vector_values AS value ON value.id = chunk.vector_id
-               WHERE chunk.generation = ? AND chunk.chunk_id > ?
+               WHERE chunk.generation = ?
+                 AND chunk.chunk_id > ?
+                 AND ${selection.sql}
                ORDER BY chunk.chunk_id
                LIMIT ?`,
-              [active.generation, cursor, VECTOR_INDEX_PAGE_SIZE],
+              [active.generation, cursor, ...selection.params, VECTOR_INDEX_PAGE_SIZE],
             );
             if (rows.length === 0) break;
             const pageMatches = yield* Effect.try({
@@ -540,10 +569,21 @@ export const selectedSemanticScores = Effect.fn('vectorIndex.selectedSemanticSco
           for (const result of best) {
             scores.set(result.uri, Math.max(scores.get(result.uri) ?? 0, Math.max(0, result.score)));
           }
-          const aliases = yield* loadVectorAliasesForRepresentatives(sql, active.generation, [...scores.keys()]);
+          const aliases = yield* loadVectorAliasesForRepresentatives(
+            sql,
+            active.generation,
+            [...scores.keys()],
+            options.eligibility,
+            options.allowedUriScopes,
+          );
           for (const alias of aliases) {
             const score = scores.get(alias.representative_uri);
             if (score !== undefined) scores.set(alias.uri, Math.max(scores.get(alias.uri) ?? 0, score));
+          }
+          if (options.allowedUriScopes?.length) {
+            for (const uri of scores.keys()) {
+              if (!recallUriMatchesScopes(uri, options.allowedUriScopes)) scores.delete(uri);
+            }
           }
           return scores;
         }),
@@ -596,12 +636,13 @@ export const vectorIndexStatus = Effect.fn('vectorIndex.status')(function* (
   }
   if (
     candidates &&
-    !(yield* vectorGenerationMatchesChunks(
-      home,
-      manifest,
-      active.success.generation,
-      candidates.flatMap(candidate => chunkRecallDocument(candidate.uri, candidate.text)),
-    ))
+    active.success.job_id !==
+      (yield* vectorJobId(
+        manifest,
+        vectorChunkMappings(candidates),
+        vectorAliasMappings(candidates),
+        active.success.corpus_generation ?? undefined,
+      ))
   ) {
     return {
       chunkCount: active.success.chunk_count,
@@ -658,48 +699,6 @@ const readActiveVectorGeneration = Effect.fn('vectorIndex.readActive')(function*
         );
       }
       return active;
-    }),
-  );
-});
-
-const vectorGenerationMatchesChunks = Effect.fn('vectorIndex.generationMatchesChunks')(function* (
-  home: string,
-  manifest: LocalModelManifest,
-  generation: string,
-  chunks: readonly RecallChunk[],
-) {
-  const fs = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
-  const databasePath = vectorDatabasePath(path, home, manifest.id);
-  if (!(yield* fs.exists(databasePath))) return false;
-  return yield* useVectorDatabaseReadOnly(
-    databasePath,
-    Effect.gen(function* () {
-      const sql = yield* SqlClient.SqlClient;
-      yield* validateVectorDatabase(sql);
-      const expected = new Map(chunks.map(chunk => [chunk.id, chunk]));
-      if (expected.size !== chunks.length) return false;
-      let cursor = '';
-      let count = 0;
-      for (;;) {
-        const rows = yield* sql.unsafe<Omit<VectorRow, 'vector'>>(
-          `SELECT chunk_id, uri, fingerprint
-           FROM vector_chunks
-           WHERE generation = ? AND chunk_id > ?
-           ORDER BY chunk_id
-           LIMIT ?`,
-          [generation, cursor, VECTOR_INDEX_PAGE_SIZE],
-        );
-        if (rows.length === 0) break;
-        for (const row of rows) {
-          const chunk = expected.get(row.chunk_id);
-          if (!chunk || chunk.uri !== row.uri || chunk.fingerprint !== row.fingerprint) return false;
-          count += 1;
-        }
-        cursor = rows.at(-1)!.chunk_id;
-        if (rows.length < VECTOR_INDEX_PAGE_SIZE) break;
-      }
-      return count === chunks.length;
     }),
   );
 });
@@ -824,6 +823,8 @@ const initializeVectorDatabase = Effect.fn('vectorIndex.initializeDatabase')(fun
       chunk_id TEXT NOT NULL,
       uri TEXT NOT NULL,
       fingerprint TEXT NOT NULL,
+      project TEXT,
+      approved_authoritative INTEGER NOT NULL CHECK(approved_authoritative IN (0, 1)),
       vector_id INTEGER NOT NULL REFERENCES vector_values(id),
       PRIMARY KEY (generation, chunk_id)
     ) WITHOUT ROWID
@@ -837,6 +838,15 @@ const initializeVectorDatabase = Effect.fn('vectorIndex.initializeDatabase')(fun
     ) WITHOUT ROWID
   `);
   yield* sql.unsafe('CREATE INDEX IF NOT EXISTS vector_chunks_by_value ON vector_chunks (vector_id)');
+  yield* sql.unsafe(
+    'CREATE INDEX IF NOT EXISTS vector_chunks_by_project ON vector_chunks (generation, project, chunk_id)',
+  );
+  yield* sql.unsafe(
+    'CREATE INDEX IF NOT EXISTS vector_chunks_by_authority ON vector_chunks (generation, approved_authoritative, project, chunk_id)',
+  );
+  yield* sql.unsafe(
+    'CREATE INDEX IF NOT EXISTS vector_chunks_by_uri ON vector_chunks (generation, uri, approved_authoritative, project)',
+  );
   yield* sql.unsafe(
     'CREATE INDEX IF NOT EXISTS vector_aliases_by_representative ON vector_aliases (generation, representative_uri, uri)',
   );
@@ -927,6 +937,8 @@ const prepareDesiredChunks = Effect.fn('vectorIndex.prepareDesiredChunks')(funct
       chunk_id TEXT PRIMARY KEY,
       uri TEXT NOT NULL,
       fingerprint TEXT NOT NULL,
+      project TEXT,
+      approved_authoritative INTEGER NOT NULL CHECK(approved_authoritative IN (0, 1)),
       vector_key TEXT NOT NULL
     ) WITHOUT ROWID
   `);
@@ -934,9 +946,22 @@ const prepareDesiredChunks = Effect.fn('vectorIndex.prepareDesiredChunks')(funct
   for (let start = 0; start < chunks.length; start += VECTOR_INDEX_INSERT_BATCH_SIZE) {
     const batch = chunks.slice(start, start + VECTOR_INDEX_INSERT_BATCH_SIZE);
     yield* sql.unsafe(
-      `INSERT INTO desired_vector_chunks (chunk_id, uri, fingerprint, vector_key)
-       VALUES ${batch.map(() => '(?, ?, ?, ?)').join(', ')}`,
-      batch.flatMap(chunk => [chunk.id, chunk.uri, chunk.fingerprint, chunk.vectorKey]),
+      `INSERT INTO desired_vector_chunks (
+         chunk_id,
+         uri,
+         fingerprint,
+         project,
+         approved_authoritative,
+         vector_key
+       ) VALUES ${batch.map(() => '(?, ?, ?, ?, ?, ?)').join(', ')}`,
+      batch.flatMap(chunk => [
+        chunk.id,
+        chunk.uri,
+        chunk.fingerprint,
+        chunk.project,
+        chunk.approvedAuthoritative,
+        chunk.vectorKey,
+      ]),
     );
   }
 });
@@ -961,22 +986,57 @@ const loadVectorAliasesForRepresentatives = Effect.fn('vectorIndex.loadAliasesFo
   sql: SqlClient.SqlClient,
   generation: string,
   representativeUris: readonly string[],
+  eligibilityPolicy?: RecallEligibilityPolicy,
+  allowedUriScopes?: readonly string[],
 ) {
+  const eligibility = recallEligibilityPredicate('chunk', eligibilityPolicy);
+  const uriScope = recallUriScopePredicate('alias', allowedUriScopes);
   const aliases: VectorAliasRow[] = [];
   for (let start = 0; start < representativeUris.length; start += VECTOR_INDEX_INSERT_BATCH_SIZE) {
     const batch = representativeUris.slice(start, start + VECTOR_INDEX_INSERT_BATCH_SIZE);
     aliases.push(
       ...(yield* sql.unsafe<VectorAliasRow>(
-        `SELECT uri, representative_uri
-         FROM vector_aliases
-         WHERE generation = ? AND representative_uri IN (${batch.map(() => '?').join(', ')})
-         ORDER BY representative_uri, uri`,
-        [generation, ...batch],
+        `SELECT alias.uri, alias.representative_uri
+         FROM vector_aliases AS alias
+         WHERE alias.generation = ?
+           AND alias.representative_uri IN (${batch.map(() => '?').join(', ')})
+           AND ${uriScope.sql}
+           AND EXISTS (
+             SELECT 1
+             FROM vector_chunks AS chunk
+             WHERE chunk.generation = alias.generation
+               AND chunk.uri = alias.representative_uri
+               AND ${eligibility.sql}
+           )
+         ORDER BY alias.representative_uri, alias.uri`,
+        [generation, ...batch, ...uriScope.params, ...eligibility.params],
       )),
     );
   }
   return aliases;
 });
+
+function vectorChunkSelectionPredicate(
+  eligibilityPolicy: RecallEligibilityPolicy | undefined,
+  allowedUriScopes: readonly string[] | undefined,
+): RecallSqlPredicate {
+  const eligibility = recallEligibilityPredicate('chunk', eligibilityPolicy);
+  const directUriScope = recallUriScopePredicate('chunk', allowedUriScopes);
+  if (!directUriScope.restricted) return combineRecallSqlPredicates(eligibility, directUriScope);
+
+  const aliasUriScope = recallUriScopePredicate('scope_alias', allowedUriScopes);
+  return combineRecallSqlPredicates(eligibility, {
+    params: [...directUriScope.params, ...aliasUriScope.params],
+    restricted: true,
+    sql: `(${directUriScope.sql} OR EXISTS (
+      SELECT 1
+      FROM vector_aliases AS scope_alias
+      WHERE scope_alias.generation = chunk.generation
+        AND scope_alias.representative_uri = chunk.uri
+        AND ${aliasUriScope.sql}
+    ))`,
+  });
+}
 
 const removeUndesiredVectorRows = Effect.fn('vectorIndex.removeUndesiredRows')(function* (
   sql: SqlClient.SqlClient,
@@ -991,6 +1051,8 @@ const removeUndesiredVectorRows = Effect.fn('vectorIndex.removeUndesiredRows')(f
          WHERE desired.chunk_id = vector_chunks.chunk_id
            AND desired.uri = vector_chunks.uri
            AND desired.fingerprint = vector_chunks.fingerprint
+           AND desired.project IS vector_chunks.project
+           AND desired.approved_authoritative = vector_chunks.approved_authoritative
        )`,
     [generation],
   );
@@ -1001,8 +1063,23 @@ const mapReusableVectorRows = Effect.fn('vectorIndex.mapReusableRows')(function*
   buildingGeneration: string,
 ) {
   yield* sql.unsafe(
-    `INSERT OR IGNORE INTO vector_chunks (generation, chunk_id, uri, fingerprint, vector_id)
-     SELECT ?, desired.chunk_id, desired.uri, desired.fingerprint, value.id
+    `INSERT OR IGNORE INTO vector_chunks (
+       generation,
+       chunk_id,
+       uri,
+       fingerprint,
+       project,
+       approved_authoritative,
+       vector_id
+     )
+     SELECT
+       ?,
+       desired.chunk_id,
+       desired.uri,
+       desired.fingerprint,
+       desired.project,
+       desired.approved_authoritative,
+       value.id
      FROM desired_vector_chunks AS desired
      JOIN vector_values AS value ON value.vector_key = desired.vector_key`,
     [buildingGeneration],
@@ -1057,10 +1134,7 @@ const selectExistingChunkIds = Effect.fn('vectorIndex.selectExistingChunkIds')(f
   return new Set(rows.map(row => row.chunk_id));
 });
 
-function insertVectorRows(
-  sql: SqlClient.SqlClient,
-  rows: readonly (readonly [string, string, string, string, string, Uint8Array])[],
-) {
+function insertVectorRows(sql: SqlClient.SqlClient, rows: readonly VectorInsertRow[]) {
   return Effect.gen(function* () {
     for (let start = 0; start < rows.length; start += VECTOR_INDEX_INSERT_BATCH_SIZE) {
       const batch = rows.slice(start, start + VECTOR_INDEX_INSERT_BATCH_SIZE);
@@ -1068,25 +1142,40 @@ function insertVectorRows(
         Effect.gen(function* () {
           yield* insertVectorValues(
             sql,
-            batch.map(row => [row[4], row[5]] as const),
+            batch.map(row => [row.vectorKey, row.vector] as const),
           );
           const values = yield* sql.unsafe<{readonly id: number; readonly vector_key: string}>(
             `SELECT id, vector_key
              FROM vector_values
              WHERE vector_key IN (${batch.map(() => '?').join(', ')})`,
-            batch.map(row => row[4]),
+            batch.map(row => row.vectorKey),
           );
           const idByKey = new Map(values.map(value => [value.vector_key, Number(value.id)]));
           const mappings = batch.map(row => {
-            const vectorId = idByKey.get(row[4]);
+            const vectorId = idByKey.get(row.vectorKey);
             if (vectorId === undefined) {
-              throw new VectorIndexOperationError(`Could not resolve stored vector ${row[4]}.`);
+              throw new VectorIndexOperationError(`Could not resolve stored vector ${row.vectorKey}.`);
             }
-            return [row[0], row[1], row[2], row[3], vectorId] as const;
+            return [
+              row.generation,
+              row.chunkId,
+              row.uri,
+              row.fingerprint,
+              row.project,
+              row.approvedAuthoritative,
+              vectorId,
+            ] as const;
           });
           yield* sql.unsafe(
-            `INSERT OR REPLACE INTO vector_chunks (generation, chunk_id, uri, fingerprint, vector_id)
-             VALUES ${mappings.map(() => '(?, ?, ?, ?, ?)').join(', ')}`,
+            `INSERT OR REPLACE INTO vector_chunks (
+               generation,
+               chunk_id,
+               uri,
+               fingerprint,
+               project,
+               approved_authoritative,
+               vector_id
+             ) VALUES ${mappings.map(() => '(?, ?, ?, ?, ?, ?, ?)').join(', ')}`,
             mappings.flat(),
           );
         }),
@@ -1329,6 +1418,60 @@ function generationIsCompatible(generation: VectorGenerationRow, manifest: Local
     generation.embedding_recipe === embeddingRecipe(manifest) &&
     generation.chunker_version === RECALL_CHUNKER_VERSION &&
     generation.normalized === 'l2'
+  );
+}
+
+function vectorChunkMappings(candidates: readonly RecallCandidate[]): readonly VectorChunkMapping[] {
+  return candidates.flatMap(candidate => {
+    const project = normalizeRecallProject(candidate.fields?.project) ?? null;
+    const approvedAuthoritative = recallApprovedAuthoritative(candidate.authority, candidate.trust) ? 1 : 0;
+    return chunkRecallDocument(candidate.uri, candidate.text).map(chunk => ({
+      ...chunk,
+      approvedAuthoritative,
+      project,
+    }));
+  });
+}
+
+function vectorAliasMappings(candidates: readonly RecallCandidate[]): readonly VectorAliasMapping[] {
+  return candidates
+    .flatMap(candidate =>
+      [candidate.uri, ...(candidate.equivalentUris ?? [])].map(uri => ({
+        representativeUri: candidate.uri,
+        uri,
+      })),
+    )
+    .sort(
+      (left, right) =>
+        compareCodeUnits(left.uri, right.uri) || compareCodeUnits(left.representativeUri, right.representativeUri),
+    );
+}
+
+function vectorJobId(
+  manifest: LocalModelManifest,
+  chunks: readonly VectorChunkMapping[],
+  aliases: readonly VectorAliasMapping[],
+  corpusGeneration: string | undefined,
+) {
+  const identityChunks = chunks
+    .map(chunk => ({
+      approvedAuthoritative: chunk.approvedAuthoritative,
+      fingerprint: chunk.fingerprint,
+      id: chunk.id,
+      project: chunk.project,
+      uri: chunk.uri,
+    }))
+    .sort((left, right) => compareCodeUnits(left.id, right.id) || compareCodeUnits(left.uri, right.uri));
+  return sha256Hex(
+    JSON.stringify({
+      aliases,
+      chunkerVersion: RECALL_CHUNKER_VERSION,
+      chunks: identityChunks,
+      corpusGeneration: corpusGeneration ?? null,
+      dimensions: manifest.dimensions,
+      modelSha256: manifest.sha256,
+      promptPrefix: manifest.promptPrefixes?.document ?? '',
+    }),
   );
 }
 

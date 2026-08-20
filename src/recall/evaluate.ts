@@ -1,3 +1,4 @@
+import {deriveRecallEligibilityPolicy} from './eligibility.js';
 import {rankRecallCandidates, shouldExpandRecall, type RecallCandidate, type RecallConfidenceLevel} from './rank.js';
 
 export interface RecallEvaluationQuery {
@@ -78,6 +79,10 @@ export function evaluateRecallFixture(fixture: RecallEvaluationFixture): RecallE
           semantic: semanticScores[document.uri] ?? 0,
         })),
         {
+          eligibility: deriveRecallEligibilityPolicy({
+            explicitProject: query.project,
+            originalQuery: query.query,
+          }),
           now: query.now ? new Date(query.now) : undefined,
           project: query.project,
           seedUris: query.seedUris,

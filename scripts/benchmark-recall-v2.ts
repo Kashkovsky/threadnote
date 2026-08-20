@@ -15,6 +15,7 @@ import {
   expandRecallEvaluationFixtureV2,
   serializeRecallEvaluationFixtureV2Identity,
 } from '../src/evaluation/recall-fixture.js';
+import {deriveRecallEligibilityPolicy} from '../src/recall/eligibility.js';
 import {rankRecallCandidates, RECALL_RANKER_VERSION} from '../src/recall/rank.js';
 import {getThreadnoteVersion} from '../src/version.js';
 import {atomicWrite, fixtureHash, printJson, scriptArguments} from './effect/script.js';
@@ -62,6 +63,10 @@ const benchmarkRecall = Effect.gen(function* () {
   const query = fixture.queries[0]!;
   const runQuery = () =>
     rankRecallCandidates(query.query, fixture.documents, {
+      eligibility: deriveRecallEligibilityPolicy({
+        explicitProject: query.project,
+        originalQuery: query.query,
+      }),
       now: query.now ? new Date(query.now) : undefined,
       project: query.project,
       seedUris: query.seedUris,

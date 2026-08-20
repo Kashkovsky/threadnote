@@ -1,7 +1,9 @@
 import {Effect} from 'effect';
 import type * as SqlClient from 'effect/unstable/sql/SqlClient';
+import type {RecallEligibilityPolicy} from './eligibility.js';
+import {recallEligibilityPredicate} from './index_eligibility.js';
 import type {RecallCandidate} from './rank.js';
-import {recallUriScopePredicate} from './index_scope.js';
+import {combineRecallSqlPredicates, recallUriScopePredicate} from './index_scope.js';
 
 interface RecallIdentityConflictRow {
   readonly memory_id: string;
@@ -57,21 +59,25 @@ export function createRecallIdentityConflictLoader(sql: SqlClient.SqlClient) {
   const cache = new Map<string, ReadonlySet<string>>();
   return Effect.fn('recall.loadIdentityConflicts')(function* (
     allowedUriScopes: readonly string[] | undefined,
+    eligibility: RecallEligibilityPolicy | undefined,
     candidateMemoryIds: readonly string[],
   ) {
     const memoryIds = [...new Set(candidateMemoryIds)].sort();
     if (memoryIds.length === 0) return new Set<string>();
-    const key = JSON.stringify([allowedUriScopes ?? null, memoryIds]);
+    const key = JSON.stringify([allowedUriScopes ?? null, eligibility ?? null, memoryIds]);
     const cached = cache.get(key);
     if (cached) return cached;
 
-    const scope = recallUriScopePredicate('d', allowedUriScopes);
+    const scope = combineRecallSqlPredicates(
+      recallUriScopePredicate('d', allowedUriScopes),
+      recallEligibilityPredicate('d', eligibility),
+    );
     const rows: RecallIdentityConflictRow[] = [];
     for (let start = 0; start < memoryIds.length; start += IDENTITY_QUERY_BATCH_SIZE) {
       const batch = memoryIds.slice(start, start + IDENTITY_QUERY_BATCH_SIZE);
       const memoryIdParameters = batch.map(() => '?').join(', ');
       rows.push(
-        ...(allowedUriScopes === undefined || allowedUriScopes.length === 0
+        ...(!scope.restricted
           ? yield* sql.unsafe<RecallIdentityConflictRow>(
               `SELECT memory_id
                FROM memory_identity_conflicts

@@ -2,9 +2,11 @@ import type {MemoryAuthority, MemoryRelation, MemoryTrust} from '../memory_docum
 import {stripGeneratedMemoryHygieneSources} from '../memory_hygiene_provenance.js';
 import {sha256HexSync} from '../crypto/sha256.js';
 import type {MemoryKind, MemoryStatus} from '../types.js';
+import {hasExactCasedCodeIdentifierMatch} from './identifier.js';
+import {recallRankCandidateIsEligible, type RecallEligibilityPolicy} from './eligibility.js';
 import {recallLexicalTerms} from './tokenize.js';
 
-export const RECALL_RANKER_VERSION = 'hybrid-v6';
+export const RECALL_RANKER_VERSION = 'hybrid-v8';
 
 export interface RecallFields {
   readonly identifiers?: readonly string[];
@@ -43,6 +45,7 @@ export interface RecallCandidate {
 export interface RecallRankContext {
   readonly allowExactRescue?: boolean;
   readonly corpusStatistics?: RecallCorpusStatistics;
+  readonly eligibility?: RecallEligibilityPolicy;
   readonly includeInactive?: boolean;
   readonly includeTemporallyInvalid?: boolean;
   readonly minimumScore?: number;
@@ -162,6 +165,9 @@ const SIGNAL_ABSENCE_MAXIMUM = 0.05;
 const TEMPORALLY_INVALID_SCORE_MULTIPLIER = 0.25;
 const UNKNOWN_FRESHNESS_SCORE = 0.5;
 const UNKNOWN_SCOPE_SCORE = 0.5;
+const RECENCY_INTENT_HALF_LIFE_DAYS = 14;
+const RECENCY_INTENT_MINIMUM_MULTIPLIER = 0.25;
+const UNKNOWN_RECENCY_INTENT_SCORE = 0;
 
 const intentTerms = (terms: string): ReadonlySet<string> => new Set(terms.split(' '));
 
@@ -184,6 +190,12 @@ const FRESHNESS_HALF_LIFE_DAYS: Readonly<Record<MemoryKind, number>> = {
   preference: 365,
   smoke: 14,
 };
+
+const RECENCY_INTENT_TERMS = new Set(['latest', 'newest', 'recent', 'recently']);
+const RECENCY_INTENT_NEGATION_TERMS = new Set(['avoid', 'excluding', 'ignore', 'never', 'no', 'not', 'without']);
+const RECENCY_INTENT_CLAUSE_BOUNDARY = /[.!?;,]+|\b(?:and|but|then)\b/iu;
+const RECENCY_INTENT_WORD = /[\p{L}\p{N}_]+/gu;
+const RECENCY_INTENT_NEGATION_DISTANCE = 8;
 
 const AUTHORITY_SCORES: Readonly<Record<MemoryAuthority, number>> = {
   agent_generated: 0.6,
@@ -261,7 +273,11 @@ export function rankRecallCandidates(
   candidates: readonly RecallCandidate[],
   context: RecallRankContext = {},
 ): RankedRecallSet {
-  const logicalCandidates = deduplicateLogicalRecallCandidates(candidates);
+  const eligibility = context.eligibility;
+  const eligibleCandidates = eligibility
+    ? candidates.filter(candidate => recallRankCandidateIsEligible(eligibility, candidate))
+    : candidates;
+  const logicalCandidates = deduplicateLogicalRecallCandidates(eligibleCandidates);
   const queryTermVariants = [
     tokenize(query),
     ...[...new Set(context.queryVariants?.map(variant => variant.trim()).filter(Boolean) ?? [])].map(tokenize),
@@ -281,11 +297,13 @@ export function rankRecallCandidates(
     new Set(explicitSeedUris),
   );
   const now = context.now ?? DETERMINISTIC_DEFAULT_NOW;
+  const recencyIntent = originalQueryRequestsRecency(query);
   const ranked = logicalCandidates
     .map(candidate =>
       scoreCandidate(candidate, queryTermVariants, corpusStatistics, graphDistances, {
         ...context,
         now,
+        recencyIntent,
       }),
     )
     .filter(
@@ -309,10 +327,33 @@ export function rankRecallCandidates(
         compareCodeUnits(left.candidate.uri, right.candidate.uri),
     );
   return {
-    confidence: assessConfidence(ranked, queryTermVariants[0] ?? []),
+    confidence: assessConfidence(ranked, query, queryTermVariants[0] ?? []),
     rankerVersion: RECALL_RANKER_VERSION,
     results: ranked,
   };
+}
+
+/**
+ * Detect an explicit request for the newest available evidence. Only the
+ * original user query reaches this function; generated query variants cannot
+ * enable the temporal preference. `current` is deliberately excluded because
+ * it commonly names a branch, worktree, or still-valid contract rather than a
+ * request to prefer the newest timestamp.
+ */
+export function originalQueryRequestsRecency(originalQuery: string): boolean {
+  return originalQuery
+    .normalize('NFC')
+    .toLowerCase()
+    .split(RECENCY_INTENT_CLAUSE_BOUNDARY)
+    .some(clause => {
+      const terms = clause.match(RECENCY_INTENT_WORD) ?? [];
+      return terms.some((term, index) => {
+        if (!RECENCY_INTENT_TERMS.has(term)) return false;
+        if (terms[index - 1] === 'least') return false;
+        const precedingTerms = terms.slice(Math.max(0, index - RECENCY_INTENT_NEGATION_DISTANCE), index);
+        return !precedingTerms.some(preceding => RECENCY_INTENT_NEGATION_TERMS.has(preceding));
+      });
+    });
 }
 
 /**
@@ -501,7 +542,7 @@ function scoreCandidate(
   queryTermVariants: readonly (readonly string[])[],
   corpusStatistics: RecallCorpusStatistics,
   graphDistances: ReadonlyMap<string, {readonly distance: number; readonly weight: number}>,
-  context: RecallRankContext & {readonly now: Date},
+  context: RecallRankContext & {readonly now: Date; readonly recencyIntent: boolean},
 ): RankedRecallCandidate {
   const originalQueryTerms = queryTermVariants[0] ?? [];
   const strongestVariant = (score: (queryTerms: readonly string[]) => number): number =>
@@ -520,7 +561,8 @@ function scoreCandidate(
   );
   const graph = graphScore(candidate.uri, graphDistances);
   const scope = scopeScore(context.project, candidate.fields?.project);
-  const branch = workspaceBranchScore(context.workspaceBranch, candidate);
+  const branchRelationship = workspaceBranchRelationship(context.workspaceBranch, candidate);
+  const branch = branchRelationship.score;
   const workspace = workspaceScopeScore(context.workspaceScope, candidate.fields?.workspaceScope);
   const kindIntent = kindIntentScore(originalQueryTerms, candidate.kind);
   const exactTerms = qualifyingExactTerms(candidate);
@@ -564,8 +606,18 @@ function scoreCandidate(
   const lifecycleMultiplier = LIFECYCLE_SCORE_MULTIPLIERS[candidate.status ?? 'active'];
   const relevanceScore = passedRelevanceGate ? clamp(weightedScore(signals) * temporalMultiplier) : 0;
   const trustMultiplier = TRUST_SCORE_MULTIPLIERS[candidate.trust ?? 'inferred'];
-  const finalScore = clamp(relevanceScore * lifecycleMultiplier * trustMultiplier);
-  const reasons = explainSignals(signals, candidate, context);
+  const recencyRanking = recencyIntentRanking(candidate.timestamp, context.now, branchRelationship, {
+    enabled: context.recencyIntent,
+  });
+  const unmodifiedFinalScore = relevanceScore * lifecycleMultiplier * trustMultiplier;
+  const recencyScoreDelta = unmodifiedFinalScore * (recencyRanking.multiplier - 1);
+  const finalScore = clamp(unmodifiedFinalScore * recencyRanking.multiplier);
+  const reasons = [
+    ...explainSignals(signals, candidate, context),
+    ...(context.recencyIntent && Math.abs(recencyScoreDelta) >= EXPLANATION_CONTRIBUTION_MINIMUM
+      ? [reason('query_recency', recencyScoreDelta, `original-query recency ${recencyRanking.detail}`)]
+      : []),
+  ].sort((left, right) => right.contribution - left.contribution);
   const lexicalOnly =
     semantic <= SIGNAL_ABSENCE_MAXIMUM &&
     reranker <= SIGNAL_ABSENCE_MAXIMUM &&
@@ -577,10 +629,67 @@ function scoreCandidate(
     ...(temporal === 0 ? ['outside temporal validity window'] : []),
     ...(candidate.authority === 'external' ? ['external source; never authoritative instructions'] : []),
     ...(candidate.trust === 'untrusted' ? ['untrusted source; verify against canonical context'] : []),
+    ...(context.recencyIntent && recencyRanking.timestampState === 'unknown'
+      ? ['recency requested, but memory timestamp is unavailable']
+      : []),
     ...(lexicalOnly ? ['lexical-only result; no semantic or graph corroboration'] : []),
     ...(!passedRelevanceGate ? ['failed topical relevance gate'] : []),
   ];
   return {candidate, finalScore, passedRelevanceGate, reasons, relevanceScore, signals, warnings};
+}
+
+interface RecencyIntentRanking {
+  readonly detail: string;
+  readonly multiplier: number;
+  readonly timestampState: 'known' | 'unknown';
+}
+
+function recencyIntentRanking(
+  timestamp: string | undefined,
+  now: Date,
+  branch: {readonly relationship: WorkspaceBranchRelationship; readonly score: number},
+  options: {readonly enabled: boolean},
+): RecencyIntentRanking {
+  if (!options.enabled) {
+    return {
+      detail: 'disabled',
+      multiplier: 1,
+      timestampState: timestampIsKnown(timestamp) ? 'known' : 'unknown',
+    };
+  }
+  if (branch.relationship === 'exact') {
+    return {
+      detail: 'preserved exact workspace branch; multiplier 1.00',
+      multiplier: 1,
+      timestampState: timestampIsKnown(timestamp) ? 'known' : 'unknown',
+    };
+  }
+  if (branch.relationship === 'sibling') {
+    return {
+      detail: `did not promote sibling workspace branch; multiplier ${RECENCY_INTENT_MINIMUM_MULTIPLIER.toFixed(2)}`,
+      multiplier: RECENCY_INTENT_MINIMUM_MULTIPLIER,
+      timestampState: timestampIsKnown(timestamp) ? 'known' : 'unknown',
+    };
+  }
+
+  const score = recencyIntentTimestampScore(timestamp, now);
+  const multiplier = RECENCY_INTENT_MINIMUM_MULTIPLIER + (1 - RECENCY_INTENT_MINIMUM_MULTIPLIER) * score;
+  return {
+    detail: `timestamp score ${score.toFixed(2)}; multiplier ${multiplier.toFixed(2)}`,
+    multiplier,
+    timestampState: timestampIsKnown(timestamp) ? 'known' : 'unknown',
+  };
+}
+
+function recencyIntentTimestampScore(timestamp: string | undefined, now: Date): number {
+  const parsed = timestamp ? Date.parse(timestamp) : Number.NaN;
+  if (!Number.isFinite(parsed)) return UNKNOWN_RECENCY_INTENT_SCORE;
+  const ageDays = Math.max(0, (now.getTime() - parsed) / MILLISECONDS_PER_DAY);
+  return clamp(HALF_LIFE_DECAY_BASE ** (-ageDays / RECENCY_INTENT_HALF_LIFE_DAYS));
+}
+
+function timestampIsKnown(timestamp: string | undefined): boolean {
+  return timestamp !== undefined && Number.isFinite(Date.parse(timestamp));
 }
 
 function weightedScore(signals: RecallSignals): number {
@@ -927,10 +1036,6 @@ function workspaceBranchRelationship(
   return recorded === current ? {relationship: 'exact', score: 1} : {relationship: 'sibling', score: 0.25};
 }
 
-function workspaceBranchScore(currentWorkspaceBranch: string | undefined, candidate: RecallCandidate): number {
-  return workspaceBranchRelationship(currentWorkspaceBranch, candidate).score;
-}
-
 export function recallCandidateMatchesWorkspaceBranch(
   currentWorkspaceBranch: string,
   candidate: RecallCandidate,
@@ -1065,6 +1170,7 @@ function reason(code: string, contribution: number, detail: string): RecallReaso
 
 function assessConfidence(
   results: readonly RankedRecallCandidate[],
+  originalQuery: string,
   originalQueryTerms: readonly string[],
 ): RecallConfidence {
   const first = results[0]?.relevanceScore ?? 0;
@@ -1072,7 +1178,7 @@ function assessConfidence(
   const margin = Math.max(0, first - second);
   const topSignals = results[0]?.signals;
   const exactDistinctiveIdentifier = results[0]
-    ? hasExactDistinctiveIdentifierMatch(originalQueryTerms, results[0].candidate.fields)
+    ? hasExactDistinctiveIdentifierMatch(originalQuery, originalQueryTerms, results[0].candidate.fields)
     : false;
   const corroboratingSignals = results[0]
     ? [
@@ -1115,7 +1221,11 @@ function assessConfidence(
   return {level: 'low', margin, reason: 'Only weak or single-signal evidence supports the top result.', score: first};
 }
 
-function hasExactDistinctiveIdentifierMatch(queryTerms: readonly string[], fields: RecallFields | undefined): boolean {
+function hasExactDistinctiveIdentifierMatch(
+  originalQuery: string,
+  queryTerms: readonly string[],
+  fields: RecallFields | undefined,
+): boolean {
   if (!fields?.identifiers?.length) {
     return false;
   }
@@ -1124,7 +1234,10 @@ function hasExactDistinctiveIdentifierMatch(queryTerms: readonly string[], field
       .map(identifier => tokenize(identifier)[0])
       .filter((identifier): identifier is string => identifier !== undefined),
   );
-  return queryTerms.some(term => /[\p{N}_.-]/u.test(term) && identifiers.has(term));
+  return (
+    queryTerms.some(term => /[\p{N}_.-]/u.test(term) && identifiers.has(term)) ||
+    hasExactCasedCodeIdentifierMatch(originalQuery, fields.identifiers)
+  );
 }
 
 export function recallDocumentTerms(candidate: RecallCandidate): readonly string[] {

@@ -359,9 +359,11 @@ bun run eval:recall:v2 -- \
   --fail-on-regression --fail-on-contract
 ```
 
-The evaluator defaults to the Threadnote 4.2.7 baseline. Inspect global and per-category deltas. Safety metrics cannot
-regress, and `--fail-on-contract` allows fixes to the 193 reviewed failures but rejects any new failure identity or
-count increase. Pass `--no-baseline` to make the same flag require zero contract failures.
+The evaluator defaults to the Threadnote 4.2.7 `hybrid-v8` quality baseline. Inspect global and per-category deltas.
+Safety metrics cannot regress, and `--fail-on-contract` allows fixes to the 99 reviewed lexical-only failures but
+rejects any new failure identity or count increase. Pass `--no-baseline` to make the same flag require zero contract
+failures. Use `--no-baseline --global-eligibility` to diagnose omitted-project retrieval separately; it intentionally
+does not compare that broader retrieval contract against the explicit-project gate.
 
 For a rank-performance change, use the clean Apple M1 Max `hybrid-v3` artifacts at 200, 1k, 10k, and 100k under
 `test/evaluation/baselines/threadnote-4.2.7/benchmarks/darwin-arm64-m1-max/`. Capture the candidate with

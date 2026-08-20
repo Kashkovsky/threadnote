@@ -2,6 +2,7 @@ import {describe, expect, it} from 'vitest';
 import {
   buildRecallCorpusStatistics,
   deduplicateLogicalRecallCandidates,
+  originalQueryRequestsRecency,
   rankRecallCandidates,
   recallMemoryContentHash,
   RECALL_RANKER_VERSION,
@@ -189,6 +190,91 @@ describe('hybrid recall ranker', () => {
     });
     expect(detached.results[0]?.candidate.uri).toBe(sibling.uri);
     expect(detached.results.every(result => result.signals.branch === 0)).toBe(true);
+  });
+
+  it('uses explicit original-query recency intent to surface a newer topical release handoff', () => {
+    const oldRelease = {
+      exactTerms: ['release'],
+      fields: {
+        project: 'threadnote',
+        title: 'Threadnote v4.0.3 versioned release notes',
+        topic: '4.0-versioned-release-notes',
+      },
+      kind: 'handoff' as const,
+      semantic: 0.62,
+      status: 'active' as const,
+      text: 'v4.0.3 release completed and production evidence succeeded.',
+      timestamp: '2026-08-04T10:46:49.366Z',
+      uri: 'threadnote://4.0-versioned-release-notes.md',
+    };
+    const recentRelease = {
+      fields: {
+        project: 'threadnote',
+        title: 'Threadnote 4.2.6 release status',
+        topic: '4.2.6-release',
+      },
+      kind: 'handoff' as const,
+      semantic: 0.62,
+      status: 'active' as const,
+      text: 'Release 4.2.6 was prepared and the repository rules blocked the direct main push.',
+      timestamp: '2026-08-17T14:17:51.910Z',
+      uri: 'threadnote://4.2.6-release.md',
+    };
+    const freshButUnrelated = {
+      fields: {project: 'threadnote', title: 'Graph query latency', topic: 'graph-query-latency'},
+      kind: 'handoff' as const,
+      status: 'active' as const,
+      text: 'A recent graph benchmark completed.',
+      timestamp: '2026-08-20T00:00:00.000Z',
+      uri: 'threadnote://fresh-unrelated.md',
+    };
+    const candidates = [oldRelease, freshButUnrelated, recentRelease];
+    const context = {now: new Date('2026-08-20T00:00:00.000Z'), project: 'threadnote'};
+
+    const ordinary = rankRecallCandidates('release status', candidates, context);
+    const generatedOnly = rankRecallCandidates('release status', candidates, {
+      ...context,
+      queryVariants: ['latest release status'],
+    });
+    const latest = rankRecallCandidates('latest release status', candidates, context);
+
+    expect(ordinary.results[0]?.candidate.uri).toBe(oldRelease.uri);
+    expect(generatedOnly.results.map(result => result.candidate.uri)).toEqual(
+      ordinary.results.map(result => result.candidate.uri),
+    );
+    expect(latest.results[0]?.candidate.uri).toBe(recentRelease.uri);
+    expect(latest.results.map(result => result.candidate.uri)).not.toContain(freshButUnrelated.uri);
+    expect(latest.results.find(result => result.candidate.uri === oldRelease.uri)?.reasons).toEqual(
+      expect.arrayContaining([expect.objectContaining({code: 'query_recency', contribution: expect.any(Number)})]),
+    );
+    expect(
+      latest.results
+        .find(result => result.candidate.uri === oldRelease.uri)
+        ?.reasons.find(reason => reason.code === 'query_recency')?.contribution,
+    ).toBeLessThan(0);
+  });
+
+  it('recognizes strong recency wording without treating current or negated wording as temporal intent', () => {
+    for (const query of [
+      'latest release status',
+      'newest deployment decision',
+      'most recent incident',
+      'recently merged',
+      'at least show me the latest release',
+    ]) {
+      expect(originalQueryRequestsRecency(query)).toBe(true);
+    }
+    for (const query of [
+      'current branch status',
+      'current release contract',
+      'not the latest release',
+      'do not show me the absolute latest release',
+      'ignore recent incidents',
+      'least recently used cache policy',
+      'least recent incident',
+    ]) {
+      expect(originalQueryRequestsRecency(query)).toBe(false);
+    }
   });
 
   it('does not let workspace-only index evidence pass the topical gate or exact rescue', () => {

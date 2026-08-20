@@ -115,7 +115,7 @@ describe('built self-contained distribution', () => {
     );
     expect(installOutput).toContain('Activating vector recall index with 0 chunk(s).');
     expect(installedFiles).toContain('layout.json');
-    expect(installedFiles).toContain(join('indexes', 'lexical', 'active-v6.sqlite'));
+    expect(installedFiles).toContain(join('indexes', 'lexical', 'active-v8.sqlite'));
     expect(installedFiles).toContain(join('indexes', 'vectors', coreEmbeddingModelId, vectorIndexDatabaseFilename()));
     expect(installedFiles).not.toContain(join('cache', 'recall-index-v6.json'));
     expect(installedFiles.some(file => /\.py$|server\.pid|server\.lock|ov\.conf/i.test(file))).toBe(false);
