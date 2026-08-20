@@ -274,8 +274,7 @@ const reapAndRetireExpiredSnapshotLeasesPage = Effect.fn('codeGraph.reapAndRetir
   now: number,
 ) {
   const expired = yield* reapExpiredSnapshotLeasesPage(sql, now);
-  yield* retireRoutineLeaseCandidates(sql, expired.candidates, now);
-  return expired;
+  return yield* retireRoutineLeaseCandidates(sql, expired.candidates, now);
 });
 
 const retireRoutineLeaseCandidates = Effect.fn('codeGraph.retireRoutineLeaseCandidates')(function* (
@@ -567,7 +566,7 @@ const validateViewSnapshotLease = Effect.fn('codeGraph.validateViewSnapshotLease
 const releaseSnapshotLease = Effect.fn('codeGraph.releaseSnapshotLease')(function* (token: string) {
   const sql = yield* SqlClient.SqlClient;
   yield* configureConnection(sql);
-  yield* sql.withTransaction(
+  return yield* sql.withTransaction(
     Effect.gen(function* () {
       if (!(yield* codeGraphWorktreeReconciliationSchemaCompatible(sql, false, false))) {
         return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot lease authority schema is invalid.'));
@@ -617,8 +616,9 @@ const releaseSnapshotLease = Effect.fn('codeGraph.releaseSnapshotLease')(functio
           WHERE token = ${token}
         `;
       }
-      yield* retireRoutineLeaseCandidates(sql, releasedCandidates, now);
-      yield* reapAndRetireExpiredSnapshotLeasesPage(sql, now);
+      const releasedRetirements = yield* retireRoutineLeaseCandidates(sql, releasedCandidates, now);
+      const expiredRetirements = yield* reapAndRetireExpiredSnapshotLeasesPage(sql, now);
+      return releasedRetirements + expiredRetirements > 0;
     }),
   );
 });
