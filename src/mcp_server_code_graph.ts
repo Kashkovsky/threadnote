@@ -587,6 +587,7 @@ export function registerCodeGraphTool(
                 key: identity.worktreeId,
                 threadnoteHome: config.agentContextHome,
               }),
+            requestMaintenance: false,
             telemetry: queryStageTelemetry,
           }),
         );
@@ -599,6 +600,7 @@ export function registerCodeGraphTool(
             if (status.stale || !status.readySnapshot) {
               const beforeAttach = status;
               status = yield* query.attachSharedReadySnapshot(config.agentContextHome, identity, status, {
+                requestMaintenance: false,
                 telemetry: queryStageTelemetry,
               });
               selection = codeGraphQueryAnonymousTelemetrySnapshotSelection(beforeAttach, status);
@@ -618,12 +620,16 @@ export function registerCodeGraphTool(
             }
             if (status.stale) {
               const beforeRefreshStatus = status;
-              status = yield* query.status(config.agentContextHome, checkedCwd.value, {telemetry: queryStageTelemetry});
+              status = yield* query.status(config.agentContextHome, checkedCwd.value, {
+                requestMaintenance: false,
+                telemetry: queryStageTelemetry,
+              });
               selection = codeGraphQueryAnonymousTelemetrySnapshotSelection(beforeRefreshStatus, status);
             }
             if (status.stale || !status.readySnapshot) {
               const beforeAttach = status;
               status = yield* query.attachSharedReadySnapshot(config.agentContextHome, status.identity, status, {
+                requestMaintenance: false,
                 telemetry: queryStageTelemetry,
               });
               selection = codeGraphQueryAnonymousTelemetrySnapshotSelection(beforeAttach, status);
