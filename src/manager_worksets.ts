@@ -11,6 +11,7 @@ import {CodeGraphWorksetCatalogError} from './code_graph/workset_catalog/types.j
 import {
   inspectCodeGraphWorksetStatus,
   prepareCodeGraphWorkset,
+  type CodeGraphWorksetPrepareProgressV1,
   type CodeGraphWorksetPrepareResultV1,
 } from './code_graph/workset_catalog/workset.js';
 import {
@@ -28,6 +29,7 @@ import {
   validateManagerProjectRoots,
   type ManagerProjectRootValidation,
 } from './manager_project_roots.js';
+import {updateManagerWorksetPrepareProgress} from './manager_workset_progress.js';
 import {validateProjectSeedPatterns} from './seed_pattern.js';
 import {parseResourceId} from './storage/resource-id.js';
 import type {ProjectManifest, RuntimeConfig, SeedManifest, WorksetManifest} from './types.js';
@@ -182,13 +184,19 @@ export interface ManagerWorksetPrepareJob {
   readonly finishedAt?: string;
   readonly id: string;
   readonly progress: {
+    readonly activity?: CodeGraphWorksetPrepareProgressV1['activity'];
+    readonly attempt?: number;
     readonly completed?: number;
+    readonly elapsedMilliseconds?: number;
+    readonly maxAttempts?: number;
     readonly message: string;
-    readonly phase: 'cancelled' | 'cancelling' | 'completed' | 'failed' | 'preparing';
+    readonly phase: 'cancelled' | 'cancelling' | CodeGraphWorksetPrepareProgressV1['phase'];
+    readonly project?: string;
     readonly total: number;
   };
   readonly result?: CodeGraphWorksetPrepareResultV1;
   readonly status: ManagerWorksetJobStatus;
+  readonly warning?: string;
   readonly workset: string;
 }
 
@@ -208,7 +216,10 @@ export interface ManagerWorksetApiRequest {
   readonly prepareWorkset?: (
     config: RuntimeConfig,
     worksetName: string,
-    options: {readonly concurrency?: number},
+    options: {
+      readonly concurrency?: number;
+      readonly onProgress?: (progress: CodeGraphWorksetPrepareProgressV1) => Effect.Effect<void, unknown>;
+    },
   ) => Effect.Effect<CodeGraphWorksetPrepareResultV1, unknown, ApplicationServices>;
   readonly url: URL;
 }
@@ -848,8 +859,9 @@ function startManagerWorksetPrepare(request: ManagerWorksetApiRequest, body: Rec
           createdAt,
           id,
           progress: {
-            message: 'Indexing members, building routing projections, and publishing one atomic generation.',
-            phase: 'preparing',
+            completed: 0,
+            message: `Preparing ${total} workset member${total === 1 ? '' : 's'}.`,
+            phase: 'starting',
             total,
           },
           status: 'running',
@@ -859,6 +871,7 @@ function startManagerWorksetPrepare(request: ManagerWorksetApiRequest, body: Rec
       registry.jobs.set(id, entry);
       const fiber = yield* (request.prepareWorkset ?? prepareCodeGraphWorkset)(request.config, workset, {
         ...(concurrency === undefined ? {} : {concurrency}),
+        onProgress: progress => updateManagerWorksetPrepareProgress(entry, progress),
       }).pipe(
         Effect.matchCauseEffect({
           onFailure: cause => finishFailedPrepareJob(entry, cause),
@@ -907,12 +920,20 @@ function finishSuccessfulPrepareJob(entry: InternalManagerWorksetPrepareJob, res
           progress: {
             completed: result.members.length,
             message:
-              result.state === 'ready' ? 'Published the ready generation.' : 'Preparation finished without publishing.',
+              result.state !== 'ready'
+                ? 'Preparation finished without publishing.'
+                : result.coverage.complete
+                  ? 'Published the complete ready generation.'
+                  : `Published a generation with incomplete coverage: ${result.coverage.ready}/${result.coverage.requested} members ready.`,
             phase: result.state === 'ready' ? 'completed' : 'failed',
             total: entry.job.progress.total,
           },
           result,
           status: result.state === 'ready' ? 'completed' : 'failed',
+          warning:
+            result.state === 'ready' && !result.coverage.complete
+              ? 'The generation is usable, but one or more members need attention. Review the receipts below.'
+              : undefined,
         };
       }),
     ),

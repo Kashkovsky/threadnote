@@ -1524,7 +1524,7 @@ worksets:
           },
           {
             type: 'paragraph',
-            text: 'Definitions do not build graphs. Choose Prepare to start an explicit background Manager job that indexes the selected repositories, builds exact routing and bridge projections, and atomically publishes one generation. The tab remains usable while the job runs, shows its Workset name and terminal member receipts, supports Stop preparation, and polls only the lightweight job record. Stopping is interruption-safe, but an atomic publication may have completed just before interruption; the selected readiness view is refreshed and remains authoritative.',
+            text: 'Definitions do not build graphs. Choose Prepare to start an explicit background Manager job that indexes the selected repositories, builds exact routing and bridge projections, and atomically publishes one generation. The live job shows the active member, bounded retry attempt, repository-index phase and counters, completed-member count, elapsed time, and later catalog/bridge/publication phases before showing typed terminal receipts. Incomplete published coverage is a visible warning rather than a silent success. The tab remains usable while the job runs, supports Stop preparation, and polls only the lightweight job record. Stopping is interruption-safe, but an atomic publication may have completed just before interruption; the selected readiness view is refreshed and remains authoritative.',
           },
           {type: 'visual', visual: 'manager-prepare-query'},
           {
@@ -1532,7 +1532,7 @@ worksets:
             items: [
               'Reloading the same Manager page rediscovers active and recent jobs. The bounded list retains 32 summaries and fetches one selected job result on demand.',
               'Closing Manager interrupts its active prepare and waits for staging cleanup. Jobs are session state, not a persistent queue or daemon.',
-              'Readiness is loaded only for the selected Workset. It reports current, stale, missing, failed, excluded, deferred, and uncatalogued members plus exact-bridge coverage and recovery guidance.',
+              'Readiness is loaded only for the selected Workset. It reports current, stale, missing, failed, excluded, deferred, and uncatalogued members plus exact-bridge coverage and recovery guidance. Uncatalogued explicitly means that a ready repository snapshot is absent from the published generation.',
               'Status and every read operation use only ready published state and never trigger a cold repository build. Prepare is the only Worksets action that builds.',
             ],
           },

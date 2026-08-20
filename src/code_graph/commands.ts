@@ -45,6 +45,7 @@ import {
   type CodeGraphWorksetPrepareResultV1,
   type CodeGraphWorksetStatusResultV1,
 } from './workset_catalog/workset.js';
+import {makeCodeGraphWorksetJsonProgressReporter} from './workset_progress.js';
 import {CodeGraphAnalysis} from './analysis.js';
 import {
   codeGraphAnalysisLimitsForView,
@@ -819,7 +820,20 @@ export const runCodeGraphWorksetPrepare = Effect.fn('codeGraph.command.worksetPr
   config: RuntimeConfig,
   options: {readonly concurrency?: number; readonly json?: boolean; readonly name: string},
 ) {
-  const result = yield* prepareCodeGraphWorkset(config, options.name, {concurrency: options.concurrency});
+  const result = options.json
+    ? yield* prepareCodeGraphWorkset(config, options.name, {
+        concurrency: options.concurrency,
+        onProgress: yield* makeCodeGraphWorksetJsonProgressReporter(),
+      })
+    : yield* Effect.acquireUseRelease(
+        startProgress(`Preparing workset ${options.name}.`),
+        progress =>
+          prepareCodeGraphWorkset(config, options.name, {
+            concurrency: options.concurrency,
+            onProgress: event => progress.update(event.message),
+          }),
+        progress => progress.stop.pipe(Effect.catch(() => Effect.void)),
+      );
   yield* writeFinalCliOutput(
     options.json ? JSON.stringify(result) : renderCodeGraphWorksetPrepareResult(result).trimEnd(),
   );
@@ -846,13 +860,20 @@ export function renderCodeGraphWorksetPrepareResult(result: CodeGraphWorksetPrep
   const lines = [
     `Workset prepare: ${result.workset}`,
     `State: ${result.state}`,
-    `Members: ${result.members.filter(member => member.state === 'ready').length}/${result.members.length} ready`,
+    `Coverage: ${result.coverage.ready}/${result.coverage.requested} ready (${result.coverage.complete ? 'complete' : 'incomplete'})`,
   ];
   for (const member of result.members) {
     lines.push(
       member.state === 'ready'
         ? `- ${member.project}: ready (${member.symbolCount} routing symbols)`
-        : `- ${member.project}: ${member.state} (${member.reason})`,
+        : member.state === 'failed'
+          ? `- ${member.project}: failed (${member.reason}; ${member.detail.code}; ${member.detail.summary})`
+          : `- ${member.project}: ${member.state} (${member.reason})`,
+    );
+  }
+  if (!result.coverage.complete) {
+    lines.push(
+      `Warning: published coverage is incomplete (${result.coverage.failed} failed, ${result.coverage.missing} missing, ${result.coverage.excluded} excluded).`,
     );
   }
   if (result.bridges !== undefined) {

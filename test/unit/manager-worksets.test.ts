@@ -1409,6 +1409,108 @@ describe('Manager Worksets API and human labels', () => {
     ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
+  effectIt.effect('makes live member progress pollable before preparation completes', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const current = yield* fixture(root => manifest(root, 'worksets:\n  - name: platform\n    projects: [api]'));
+        const contextKey = {};
+        const jobScope = yield* Scope.make();
+        const progressObserved = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        const started = yield* handleManagerWorksetRequest({
+          body: Effect.succeed({workset: 'platform'}),
+          config: current.config,
+          contextKey,
+          jobScope,
+          method: 'POST',
+          prepareWorkset: (_config, workset, options) =>
+            (
+              options.onProgress?.({
+                activity: {completed: 5, phase: 'scanning', total: 10, unit: 'files'},
+                attempt: 1,
+                completed: 0,
+                elapsedMilliseconds: 2_500,
+                maxAttempts: 2,
+                message: 'api · indexing · scanning 5/10 files · 0/1 members.',
+                phase: 'indexing',
+                project: 'api',
+                total: 1,
+                type: 'code-graph-workset-progress',
+                version: 1,
+                workset,
+              }) ?? Effect.void
+            ).pipe(
+              Effect.andThen(Deferred.succeed(progressObserved, undefined)),
+              Effect.andThen(Deferred.await(release)),
+              Effect.as({
+                coverage: {complete: true, excluded: 0, failed: 0, missing: 0, ready: 1, requested: 1},
+                manifestDigest: 'd'.repeat(64),
+                members: [
+                  {
+                    project: 'api',
+                    projectionDigest: 'e'.repeat(64),
+                    repositoryId: 'f'.repeat(64),
+                    snapshotId: `cgsn_${'a'.repeat(40)}-direct`,
+                    state: 'ready' as const,
+                    symbolCount: 10,
+                  },
+                ],
+                state: 'ready' as const,
+                type: 'code-graph-workset-prepare' as const,
+                version: 1 as const,
+                workset,
+              }),
+            ),
+          url: new URL('http://127.0.0.1/api/worksets/prepare'),
+        });
+        if (started === undefined) return yield* Effect.fail(new TestError('prepare route was not handled'));
+        const id = (started.body as {readonly job: {readonly id: string}}).job.id;
+        yield* Deferred.await(progressObserved);
+
+        const running = yield* handleManagerWorksetRequest({
+          body: Effect.succeed({}),
+          config: current.config,
+          contextKey,
+          jobScope,
+          method: 'GET',
+          url: new URL(`http://127.0.0.1/api/worksets/jobs/${id}`),
+        });
+        expect(running).toMatchObject({
+          body: {
+            job: {
+              progress: {
+                activity: {completed: 5, phase: 'scanning', total: 10, unit: 'files'},
+                attempt: 1,
+                completed: 0,
+                elapsedMilliseconds: 2_500,
+                phase: 'indexing',
+                project: 'api',
+              },
+              status: 'running',
+            },
+          },
+          status: 200,
+        });
+
+        yield* Deferred.succeed(release, undefined);
+        yield* Effect.yieldNow;
+        const completed = yield* handleManagerWorksetRequest({
+          body: Effect.succeed({}),
+          config: current.config,
+          contextKey,
+          jobScope,
+          method: 'GET',
+          url: new URL(`http://127.0.0.1/api/worksets/jobs/${id}`),
+        });
+        expect(completed).toMatchObject({
+          body: {job: {progress: {completed: 1, phase: 'completed'}, status: 'completed'}},
+          status: 200,
+        });
+        yield* Scope.close(jobScope, Exit.void);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
   effectIt.effect('registers one Manager-lifetime finalizer while retaining only 32 completed jobs', () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -1426,6 +1528,7 @@ describe('Manager Worksets API and human labels', () => {
             method: 'POST',
             prepareWorkset: (_config, workset) =>
               Effect.succeed({
+                coverage: {complete: true, excluded: 0, failed: 0, missing: 0, ready: 0, requested: 0},
                 manifestDigest: 'd'.repeat(64),
                 members: [],
                 state: 'ready',
@@ -1507,6 +1610,7 @@ describe('Manager Worksets API and human labels', () => {
       id: 'cgwj_example',
       progress: {completed: 2, message: 'Preparation finished without publishing.', phase: 'failed' as const, total: 2},
       result: {
+        coverage: {complete: false, excluded: 0, failed: 1, missing: 0, ready: 1, requested: 2},
         manifestDigest: 'd'.repeat(64),
         members: [
           {
@@ -1517,7 +1621,17 @@ describe('Manager Worksets API and human labels', () => {
             state: 'ready' as const,
             symbolCount: 42,
           },
-          {project: 'worker', reason: 'index-failed' as const, state: 'failed' as const},
+          {
+            detail: {
+              code: 'unknown' as const,
+              errorType: 'TestError',
+              retryable: false,
+              summary: 'Repository indexing failed; run graph diagnostics for this project and retry.',
+            },
+            project: 'worker',
+            reason: 'index-failed' as const,
+            state: 'failed' as const,
+          },
         ],
         state: 'failed' as const,
         type: 'code-graph-workset-prepare' as const,
