@@ -4223,12 +4223,14 @@ describe('native code graph lifecycle', () => {
       expect(failure).toMatchObject({code: 'no-space', recovery: 'free-space'});
       // The parser cache coalesces the 128-row/2-row inventory callbacks into
       // one protected 130-row write before staging.
-      // Inventory and workspace each observe once. Facts allow one transaction,
-      // then observe pressure and the one bounded cleanup retry. Shared storage
-      // never spawns duplicate df or PowerShell probes at a boundary.
+      // Inventory and workspace each observe once. The two deterministic source
+      // batches each protect both their v4 shard write and owner-verified
+      // association write. Facts allow one transaction, then observe pressure
+      // and the one bounded cleanup retry. Shared storage never spawns duplicate
+      // df or PowerShell probes at a boundary.
       expect(Object.fromEntries(probes)).toEqual({
         'cache code graph file facts': probesPerObservation,
-        'cache materialized code graph file shards': probesPerObservation * 2,
+        'cache materialized code graph file shards': probesPerObservation * 4,
         'stage persistent code graph facts': probesPerObservation * 3,
         'stage persistent code graph inventory': probesPerObservation,
         'stage persistent code graph workspace': probesPerObservation,
@@ -4416,11 +4418,13 @@ describe('native code graph lifecycle', () => {
       });
       // The parser cache coalesces the 128-row/2-row inventory callbacks into
       // one protected 130-row write before staging.
-      // The second fact boundary fails closed after one observation; unlike
-      // positive pressure it does not perform cleanup or a fresh re-observation.
+      // The two deterministic source batches each protect both their v4 shard
+      // write and owner-verified association write. The second fact boundary
+      // fails closed after one observation; unlike positive pressure it does
+      // not perform cleanup or a fresh re-observation.
       expect(Object.fromEntries(probes)).toEqual({
         'cache code graph file facts': probesPerObservation,
-        'cache materialized code graph file shards': probesPerObservation * 2,
+        'cache materialized code graph file shards': probesPerObservation * 4,
         'stage persistent code graph facts': probesPerObservation * 2,
         'stage persistent code graph inventory': probesPerObservation,
         'stage persistent code graph workspace': probesPerObservation,
