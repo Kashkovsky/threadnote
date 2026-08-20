@@ -22,8 +22,11 @@ import {
 import {sha256HexSync} from '../../src/crypto/sha256.js';
 import {
   CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION,
+  materializedBatchShardDerivationIdentity,
   materializedFileShardIdentity,
+  materializedShardRepositorySemanticEnvelope,
   materializedShardDerivationIdentity,
+  persistentFullShardPublicationPlan,
 } from '../../src/code_graph/store.js';
 import type {CodeGraphEdge, CodeGraphMaterializationRows, CodeGraphReference} from '../../src/code_graph/types.js';
 
@@ -203,6 +206,122 @@ describe('code graph indexer properties', () => {
     ).slice(0, 40)}`;
 
     expect(materializedShardDerivationIdentity(extractor, workspace, graphContent)).not.toBe(legacy);
+  });
+
+  it('derives v4 batch identities from an independently canonicalized repository envelope', () => {
+    fc.assert(
+      fc.property(
+        fc.uniqueArray(
+          fc.record({
+            contentHash: fc.stringMatching(/^[a-f0-9]{1,24}$/),
+            language: fc.constantFrom('typescript', 'python', 'markdown'),
+            mode: fc.constantFrom('100644', '100755'),
+            path: fc.stringMatching(/^src\/[a-z][a-z0-9]{0,8}\.ts$/),
+            source: fc.constant<'commit'>('commit'),
+          }),
+          {maxLength: 20, minLength: 3, selector: file => file.path},
+        ),
+        files => {
+          const canonicalEntries = [...files]
+            .sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0))
+            .map(file => [file.path, file.language, file.mode, null]);
+          const expectedEnvelope = `cgfe_${sha256HexSync(
+            `materialized-repository-semantic-envelope-v1\n${JSON.stringify(canonicalEntries)}`,
+          ).slice(0, 40)}`;
+          const envelope = materializedShardRepositorySemanticEnvelope(files);
+          const batch = files.slice(0, 2);
+          const expectedDerivation = `cgfd_${sha256HexSync(
+            `materialized-file-derivation-v4\nextractor\nworkspace\n${expectedEnvelope}\n${JSON.stringify(
+              batch.map(file => [file.path, file.contentHash, file.language, file.mode, file.source]),
+            )}`,
+          ).slice(0, 40)}`;
+          const derivation = materializedBatchShardDerivationIdentity('extractor', 'workspace', envelope, batch);
+          const outsideBodyChanged = files.map((file, index) =>
+            index === 2 ? {...file, contentHash: `${file.contentHash}0`, source: 'worktree' as const} : file,
+          );
+
+          expect(envelope).toBe(expectedEnvelope);
+          expect(materializedShardRepositorySemanticEnvelope([...files].reverse())).toBe(envelope);
+          expect(derivation).toBe(expectedDerivation);
+          expect(materializedBatchShardDerivationIdentity('extractor-v2', 'workspace', envelope, batch)).not.toBe(
+            derivation,
+          );
+          expect(materializedBatchShardDerivationIdentity('extractor', 'workspace-v2', envelope, batch)).not.toBe(
+            derivation,
+          );
+          expect(
+            materializedBatchShardDerivationIdentity('extractor', 'workspace', envelope, [...batch].reverse()),
+          ).not.toBe(derivation);
+          expect(
+            materializedBatchShardDerivationIdentity('extractor', 'workspace', envelope, [
+              {...batch[0]!, contentHash: `${batch[0]!.contentHash}0`},
+              batch[1]!,
+            ]),
+          ).not.toBe(derivation);
+          expect(
+            materializedBatchShardDerivationIdentity(
+              'extractor',
+              'workspace',
+              materializedShardRepositorySemanticEnvelope(outsideBodyChanged),
+              batch,
+            ),
+          ).toBe(derivation);
+        },
+      ),
+      {numRuns: 200},
+    );
+  });
+
+  it('invalidates v4 repository envelopes on retained context or path membership changes', () => {
+    const source = {
+      contentHash: 'source-a',
+      language: 'typescript',
+      mode: '100644',
+      path: 'src/index.ts',
+      source: 'commit' as const,
+    };
+    const packageManifest = {
+      contentHash: 'package-a',
+      language: 'npm-manifest',
+      mode: '100644',
+      path: 'package.json',
+      source: 'commit' as const,
+    };
+    const tsconfig = {
+      contentHash: 'tsconfig-a',
+      language: 'typescript-config',
+      mode: '100644',
+      path: 'tsconfig.json',
+      source: 'commit' as const,
+    };
+    const files = [packageManifest, source, tsconfig];
+    const envelope = materializedShardRepositorySemanticEnvelope(files);
+
+    expect(
+      materializedShardRepositorySemanticEnvelope([{...source, contentHash: 'source-b'}, packageManifest, tsconfig]),
+    ).toBe(envelope);
+    expect(
+      materializedShardRepositorySemanticEnvelope([{...packageManifest, contentHash: 'package-b'}, source, tsconfig]),
+    ).not.toBe(envelope);
+    expect(
+      materializedShardRepositorySemanticEnvelope([packageManifest, source, {...tsconfig, contentHash: 'tsconfig-b'}]),
+    ).not.toBe(envelope);
+    expect(materializedShardRepositorySemanticEnvelope([packageManifest, tsconfig])).not.toBe(envelope);
+    expect(materializedBatchShardDerivationIdentity('extractor', 'workspace', envelope, [source])).not.toBe(
+      materializedShardDerivationIdentity('extractor', 'workspace', 'graph-content'),
+    );
+  });
+
+  it('skips the legacy repository-wide shard scan and file reserve after v4 batch association', () => {
+    expect(persistentFullShardPublicationPlan(2, true, 7)).toEqual({
+      associateLegacyMaterializedFileShards: false,
+      rowCount: 20,
+    });
+    expect(persistentFullShardPublicationPlan(2, false, 7)).toEqual({
+      associateLegacyMaterializedFileShards: true,
+      rowCount: 22,
+    });
+    expect(Number.isNaN(persistentFullShardPublicationPlan(2, true, -1).rowCount)).toBe(true);
   });
 
   it('splits high-density low-source-byte facts before one SQLite writer transaction becomes pathological', () => {

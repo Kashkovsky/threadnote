@@ -51,6 +51,7 @@ export {codeGraphPersistentExtensionSchemaCompatible} from './store_schema_inspe
 export {CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION} from './types.js';
 export {nextPersistentActivationBatchRows} from './store_activation_core.js';
 export {codeGraphPersistedEndpointValidationPageStatement} from './store_activation_persistent.js';
+export {persistentFullShardPublicationPlan} from './store_activation_persistent.js';
 export {
   codeGraphAnalysisEdgeAggregatePageStatement,
   codeGraphAnalysisSummaryDigest,
@@ -60,8 +61,11 @@ export {CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION} from './store_build_core.js';
 export {codeGraphCompactLexicalDeepAuditStatement} from './store_build_preparation.js';
 export {
   codeGraphMaterializedShardAssociationPageStatement,
+  materializedBatchShardDerivationIdentity,
   materializedFileShardIdentity,
+  materializedShardRepositorySemanticEnvelope,
   materializedShardDerivationIdentity,
+  shardDonorIds,
 } from './store_cache.js';
 export {
   codeGraphCompactLexicalCleanupPageStatement,
@@ -81,7 +85,11 @@ export {
   isCanonicalAbsoluteBazelLabel,
   type CodeGraphSymbolPathClass,
 } from './store_query_core.js';
-export {codeGraphEffectiveSymbolTermsQueryStatement, codeGraphTermCandidateQueryStatement} from './store_queries.js';
+export {
+  codeGraphCompleteMaterializedShardDonorStatement,
+  codeGraphEffectiveSymbolTermsQueryStatement,
+  codeGraphTermCandidateQueryStatement,
+} from './store_queries.js';
 export {
   codeGraphRemovedViewCleanupAdmissionPageStatement,
   codeGraphRemovedViewCleanupDuePageStatement,

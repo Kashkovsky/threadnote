@@ -54,7 +54,12 @@ import {
 } from '../../src/code_graph/maintenance.js';
 import {resolveRepositoryIdentity} from '../../src/code_graph/repository.js';
 import {compactCodeGraphStorage} from '../../src/code_graph/storage.js';
-import {CodeGraphStore, type StoredCodeGraph} from '../../src/code_graph/store.js';
+import {
+  CodeGraphStore,
+  materializedFileShardIdentity,
+  materializedShardDerivationIdentity,
+  type StoredCodeGraph,
+} from '../../src/code_graph/store.js';
 import {
   CODE_GRAPH_SCHEMA_VERSION,
   CodeGraphStoreNoSpaceError,
@@ -1175,14 +1180,14 @@ describe('native code graph lifecycle', () => {
               INSERT INTO materialized_shard_write_audit VALUES ('delete', OLD.path_hint);
             END;
           `);
-          const reusedShardBytes =
+          const completeShardBytes =
             database
-              .query<{readonly bytes: number}, []>(
+              .query<{readonly bytes: number}, [string, string]>(
                 `SELECT COALESCE(SUM(${storedCodeGraphFactRawBytesSql('facts_json')}), 0) AS bytes
-                 FROM materialized_file_shards`,
+                 FROM materialized_file_shards WHERE path_hint NOT IN (?, ?)`,
               )
-              .get()?.bytes ?? 0;
-          return {missingPath: missing.path, rawFactBytes, reusedShardBytes};
+              .get('src/file-128.ts', 'src/file-129.ts')?.bytes ?? 0;
+          return {completeShardBytes, missingPath: missing.path, rawFactBytes};
         } finally {
           database.close();
         }
@@ -1219,12 +1224,12 @@ describe('native code graph lifecycle', () => {
 
       expect(rebuilt.diagnostics).toContain('Reused content-addressed materialized shards for 128 file(s).');
       expect(partialShardState.rawFactBytes).toBeGreaterThan(0);
-      expect(partialShardState.reusedShardBytes).toBeGreaterThan(0);
+      expect(partialShardState.completeShardBytes).toBeGreaterThan(0);
       expect(metrics.cachedFactReplayBytesCompleted).toBe(
-        partialShardState.rawFactBytes + partialShardState.reusedShardBytes,
+        partialShardState.rawFactBytes + partialShardState.completeShardBytes,
       );
       expect(metrics.rawFactReplayBytesCompleted).toBe(partialShardState.rawFactBytes);
-      expect(metrics.materializedShardReplayBytesCompleted).toBe(partialShardState.reusedShardBytes);
+      expect(metrics.materializedShardReplayBytesCompleted).toBe(partialShardState.completeShardBytes);
       expect(metrics.attributedFilesCompleted).toBe(2);
       expect(metrics.exactGenerationShardFilesCompleted).toBe(128);
       expect(metrics.crossGenerationShardFilesCompleted).toBe(0);
@@ -1291,9 +1296,9 @@ describe('native code graph lifecycle', () => {
 
       expect(replayState.changedRaw).toBeGreaterThan(0);
       expect(replayState.retainedShard).toBeGreaterThan(0);
-      expect(metrics.cachedFactReplayBytesCompleted).toBe(replayState.raw + replayState.retainedShard);
+      expect(metrics.cachedFactReplayBytesCompleted).toBe(replayState.raw);
       expect(metrics.rawFactReplayBytesCompleted).toBe(replayState.raw);
-      expect(metrics.materializedShardReplayBytesCompleted).toBe(replayState.retainedShard);
+      expect(metrics.materializedShardReplayBytesCompleted).toBe(0);
       expect(metrics.attributedFilesCompleted).toBe(2);
       expect(metrics.exactGenerationShardFilesCompleted).toBe(0);
       expect(metrics.crossGenerationShardFilesCompleted).toBe(0);
@@ -1349,6 +1354,363 @@ describe('native code graph lifecycle', () => {
       expect(call).toMatchObject({confidence: 1, provenance: 'resolved', targetId: expectedTarget!.id});
       expect(rebuiltCaller).toEqual(freshCaller);
       expect(normalizeStoredGraph(rebuiltGraph)).toEqual(normalizeStoredGraph(freshGraph));
+    }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
+  effectIt.effect('reuses an unchanged ambient-overload batch across a body-only generation', () =>
+    Effect.gen(function* () {
+      const root = createAmbientOverloadBarrelRepository(126);
+      const reusedHome = temporaryDirectory('threadnote-code-graph-cross-generation-overload-');
+      const freshHome = temporaryDirectory('threadnote-code-graph-cross-generation-overload-fresh-');
+      const indexer = yield* CodeGraphIndexer;
+      const store = yield* CodeGraphStore;
+      const first = yield* indexer.index({cwd: root, ensureVectors: false, threadnoteHome: reusedHome});
+      const changedPath = join(root, 'src/filler-125.ts');
+      yield* Effect.sync(() => {
+        writeFileSync(changedPath, readFileSync(changedPath, 'utf8').replace('return 125;', 'return 1125;'));
+      });
+      const progress: CodeGraphProgress[] = [];
+      const rebuilt = yield* indexer.index({
+        cwd: root,
+        ensureVectors: false,
+        force: true,
+        onProgress: current => Effect.sync(() => progress.push(current)),
+        threadnoteHome: reusedHome,
+      });
+      const fresh = yield* indexer.index({cwd: root, ensureVectors: false, threadnoteHome: freshHome});
+      const reusedDatabasePath = codeGraphDatabasePath(reusedHome, rebuilt);
+      const freshDatabasePath = codeGraphDatabasePath(freshHome, fresh);
+      const rebuiltGraph = yield* store.loadGraph(reusedDatabasePath, rebuilt.snapshot.id);
+      const freshGraph = yield* store.loadGraph(freshDatabasePath, fresh.snapshot.id);
+      const metrics = finalFullMaterializationMetrics(progress);
+      const freshTarget = freshGraph.symbols.find(
+        symbol => symbol.path === 'src/leaf.ts' && symbol.name === 'target' && symbol.arity === 2,
+      );
+      const rebuiltCall = rebuiltGraph.edges.find(
+        edge => edge.evidencePath === 'src/caller.ts' && edge.relation === 'calls',
+      );
+
+      expect(first.snapshot.graphContentId).not.toBe(rebuilt.snapshot.graphContentId);
+      expect(rebuilt.diagnostics).toContain('Reused content-addressed materialized shards for 128 file(s).');
+      expect(metrics.exactGenerationShardFilesCompleted).toBe(0);
+      expect(metrics.crossGenerationShardFilesCompleted).toBe(128);
+      expect(metrics.attributedFilesCompleted).toBe(2);
+      expect(metrics.rawFactReplayBytesCompleted).toBeGreaterThan(0);
+      expect(metrics.materializedShardReplayBytesCompleted).toBeGreaterThan(0);
+      expect(freshTarget).toBeDefined();
+      expect(rebuiltCall).toMatchObject({confidence: 1, provenance: 'resolved', targetId: freshTarget!.id});
+      expect(materializedShardFacts(reusedDatabasePath, 'src/caller.ts')).toEqual(
+        materializedShardFacts(freshDatabasePath, 'src/caller.ts'),
+      );
+      expect(normalizeStoredGraph(rebuiltGraph)).toEqual(normalizeStoredGraph(freshGraph));
+    }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
+  effectIt.effect('invalidates every v4 batch when retained context or path membership changes', () =>
+    Effect.forEach(
+      [
+        {
+          label: 'package context',
+          mutate: (root: string) =>
+            writeFileSync(join(root, 'package.json'), `${JSON.stringify({name: 'ambient-overload-renamed'})}\n`),
+        },
+        {
+          label: 'tsconfig context',
+          mutate: (root: string) =>
+            writeFileSync(
+              join(root, 'tsconfig.json'),
+              `${JSON.stringify({compilerOptions: {baseUrl: '.', paths: {'@/*': ['src/*']}}})}\n`,
+            ),
+        },
+        {
+          label: 'path membership',
+          mutate: (root: string) => renameSync(join(root, 'src/leaf.ts'), join(root, 'src/renamed-leaf.ts')),
+        },
+      ] as const,
+      ({label, mutate}) =>
+        Effect.gen(function* () {
+          const root = createAmbientOverloadBarrelRepository();
+          const home = temporaryDirectory(`threadnote-code-graph-v4-invalidation-${label.replaceAll(' ', '-')}-`);
+          yield* Effect.sync(() => {
+            writeFileSync(join(root, 'tsconfig.json'), `${JSON.stringify({compilerOptions: {baseUrl: '.'}})}\n`);
+            git(root, ['add', 'tsconfig.json']);
+            git(root, [
+              '-c',
+              'user.name=Threadnote Test',
+              '-c',
+              'user.email=test@threadnote.local',
+              'commit',
+              '-qm',
+              'add retained attribution context',
+            ]);
+          });
+          const indexer = yield* CodeGraphIndexer;
+          yield* indexer.index({cwd: root, ensureVectors: false, threadnoteHome: home});
+          yield* Effect.sync(() => {
+            mutate(root);
+            git(root, ['add', '-A']);
+            git(root, [
+              '-c',
+              'user.name=Threadnote Test',
+              '-c',
+              'user.email=test@threadnote.local',
+              'commit',
+              '-qm',
+              `change ${label}`,
+            ]);
+          });
+          const progress: CodeGraphProgress[] = [];
+          yield* indexer.index({
+            cwd: root,
+            ensureVectors: false,
+            force: true,
+            onProgress: current => Effect.sync(() => progress.push(current)),
+            threadnoteHome: home,
+          });
+          const metrics = finalFullMaterializationMetrics(progress);
+
+          expect(metrics.exactGenerationShardFilesCompleted, label).toBe(0);
+          expect(metrics.crossGenerationShardFilesCompleted, label).toBe(0);
+          expect(metrics.attributedFilesCompleted, label).toBe(5);
+          expect(metrics.materializedShardReplayBytesCompleted, label).toBe(0);
+          expect(metrics.rawFactReplayBytesCompleted, label).toBeGreaterThan(0);
+        }),
+      {concurrency: 1},
+    ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
+  effectIt.effect('fails closed on partial association provenance or malformed v4 payloads', () =>
+    Effect.forEach(
+      [
+        {
+          label: 'partial association',
+          mutate: (database: Database, snapshotId: string) => {
+            expect(
+              database
+                .query('DELETE FROM snapshot_file_shards WHERE snapshot_id = ? AND path = ?')
+                .run(snapshotId, 'src/file-001.ts').changes,
+            ).toBe(1);
+          },
+        },
+        {
+          label: 'malformed payload',
+          mutate: (database: Database) => {
+            expect(
+              database
+                .query("UPDATE materialized_file_shards SET facts_json = '{' WHERE path_hint = ?")
+                .run('src/file-001.ts').changes,
+            ).toBe(1);
+          },
+        },
+      ] as const,
+      ({label, mutate}) =>
+        Effect.gen(function* () {
+          const root = createManySourceRepository(2);
+          const home = temporaryDirectory(`threadnote-code-graph-v4-fail-closed-${label.replaceAll(' ', '-')}-`);
+          const indexer = yield* CodeGraphIndexer;
+          const store = yield* CodeGraphStore;
+          const first = yield* indexer.index({cwd: root, ensureVectors: false, threadnoteHome: home});
+          const databasePath = codeGraphDatabasePath(home, first);
+          const firstGraph = yield* store.loadGraph(databasePath, first.snapshot.id);
+          yield* Effect.sync(() => {
+            const database = new Database(databasePath);
+            try {
+              mutate(database, first.snapshot.id);
+            } finally {
+              database.close();
+            }
+          });
+          const progress: CodeGraphProgress[] = [];
+          const rebuilt = yield* indexer.index({
+            cwd: root,
+            ensureVectors: false,
+            force: true,
+            onProgress: current => Effect.sync(() => progress.push(current)),
+            threadnoteHome: home,
+          });
+          const rebuiltGraph = yield* store.loadGraph(databasePath, rebuilt.snapshot.id);
+          const metrics = finalFullMaterializationMetrics(progress);
+
+          expect(metrics.exactGenerationShardFilesCompleted, label).toBe(0);
+          expect(metrics.crossGenerationShardFilesCompleted, label).toBe(0);
+          expect(metrics.attributedFilesCompleted, label).toBe(2);
+          expect(metrics.rawFactReplayBytesCompleted, label).toBeGreaterThan(0);
+          expect(
+            rebuilt.diagnostics.some(value => value.startsWith('Reused content-addressed materialized shards')),
+          ).toBe(false);
+          expect(normalizeStoredGraph(rebuiltGraph), label).toEqual(normalizeStoredGraph(firstGraph));
+        }),
+      {concurrency: 1},
+    ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
+  effectIt.effect('does not synthesize one complete batch from complementary partial donors', () =>
+    Effect.gen(function* () {
+      const root = createManySourceRepository(2);
+      const home = temporaryDirectory('threadnote-code-graph-complementary-shard-donors-');
+      const indexer = yield* CodeGraphIndexer;
+      const store = yield* CodeGraphStore;
+      const first = yield* indexer.index({cwd: root, ensureVectors: false, threadnoteHome: home});
+      const databasePath = codeGraphDatabasePath(home, first);
+      const donor = yield* Effect.sync(() => {
+        const database = new Database(databasePath);
+        try {
+          const rows = database
+            .query<
+              {
+                readonly contentHash: string;
+                readonly derivationIdentity: string;
+                readonly extractorSet: string;
+                readonly id: string;
+                readonly path: string;
+              },
+              []
+            >(
+              `SELECT id, content_hash AS contentHash, extractor_set AS extractorSet,
+                      derivation_identity AS derivationIdentity, path_hint AS path
+               FROM materialized_file_shards ORDER BY path_hint`,
+            )
+            .all();
+          expect(rows).toHaveLength(2);
+          expect(new Set(rows.map(row => row.derivationIdentity)).size).toBe(1);
+          const secondSnapshotId = 'cgsn_complementary_partial_donor';
+          database
+            .query(
+              `INSERT INTO snapshots (
+                 id, repository_id, worktree_id, commit_id, graph_content_id, base_snapshot_id,
+                 extractor_set, dirty, overlay_fingerprint, state, file_count, symbol_count,
+                 edge_count, started_at, completed_at, failure_summary
+               )
+               SELECT ?, repository_id, worktree_id, commit_id, graph_content_id, base_snapshot_id,
+                      extractor_set, dirty, overlay_fingerprint, state, file_count, symbol_count,
+                      edge_count, started_at, completed_at, failure_summary
+               FROM snapshots WHERE id = ?`,
+            )
+            .run(secondSnapshotId, first.snapshot.id);
+          database
+            .query('INSERT INTO snapshot_file_shards (snapshot_id, path, shard_id) VALUES (?, ?, ?)')
+            .run(secondSnapshotId, rows[1]!.path, rows[1]!.id);
+          expect(
+            database
+              .query('DELETE FROM snapshot_file_shards WHERE snapshot_id = ? AND path = ?')
+              .run(first.snapshot.id, rows[1]!.path).changes,
+          ).toBe(1);
+          return {
+            derivationIdentity: rows[0]!.derivationIdentity,
+            extractorSet: rows[0]!.extractorSet,
+            files: rows.map(row => ({contentHash: row.contentHash, path: row.path})),
+            secondSnapshotId,
+          };
+        } finally {
+          database.close();
+        }
+      });
+      const loaded = yield* store.loadMaterializedFileShards(
+        databasePath,
+        donor.files,
+        donor.extractorSet,
+        donor.derivationIdentity,
+        {
+          currentGraphContentId: first.snapshot.graphContentId ?? first.snapshot.id,
+          snapshotIds: [first.snapshot.id, donor.secondSnapshotId],
+        },
+      );
+
+      expect(loaded.facts.size).toBe(0);
+      expect(loaded.materializedShardIdsByPath?.size).toBe(0);
+      expect(loaded.exactGenerationFiles).toBe(0);
+      expect(loaded.bytes).toBe(0);
+    }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
+  effectIt.effect('does not admit associated v3 shard rows into a v4 materialization batch', () =>
+    Effect.gen(function* () {
+      const root = createManySourceRepository(2);
+      const home = temporaryDirectory('threadnote-code-graph-v3-shard-ineligible-');
+      const indexer = yield* CodeGraphIndexer;
+      const store = yield* CodeGraphStore;
+      const first = yield* indexer.index({cwd: root, ensureVectors: false, threadnoteHome: home});
+      const databasePath = codeGraphDatabasePath(home, first);
+      const receipt = yield* store.reusableBaseReceipt(databasePath, first.snapshot.id);
+      if (!receipt) return yield* Effect.fail(new TestError('Expected a reusable base receipt.'));
+      const v3Derivation = materializedShardDerivationIdentity(
+        first.snapshot.extractorSet,
+        receipt.workspaceFingerprint,
+        first.snapshot.graphContentId ?? first.snapshot.id,
+      );
+      yield* Effect.sync(() => {
+        const database = new Database(databasePath);
+        try {
+          const rows = database
+            .query<
+              {
+                readonly contentHash: string;
+                readonly extractorSet: string;
+                readonly factsJson: string;
+                readonly path: string;
+              },
+              []
+            >(
+              `SELECT content_hash AS contentHash, extractor_set AS extractorSet,
+                      facts_json AS factsJson, path_hint AS path
+               FROM materialized_file_shards ORDER BY path_hint`,
+            )
+            .all();
+          expect(rows).toHaveLength(2);
+          database.query('DELETE FROM snapshot_file_shards WHERE snapshot_id = ?').run(first.snapshot.id);
+          database.exec('DELETE FROM materialized_file_shards');
+          const insertShard = database.prepare(
+            `INSERT INTO materialized_file_shards (
+               id, content_hash, extractor_set, derivation_identity, path_hint,
+               facts_json, created_at, last_used_at
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          );
+          const associate = database.prepare(
+            'INSERT INTO snapshot_file_shards (snapshot_id, path, shard_id) VALUES (?, ?, ?)',
+          );
+          for (const row of rows) {
+            const id = materializedFileShardIdentity(row.contentHash, row.extractorSet, v3Derivation, row.path);
+            const now = new Date().toISOString();
+            insertShard.run(id, row.contentHash, row.extractorSet, v3Derivation, row.path, row.factsJson, now, now);
+            associate.run(first.snapshot.id, row.path, id);
+          }
+        } finally {
+          database.close();
+        }
+      });
+      const progress: CodeGraphProgress[] = [];
+      const rebuilt = yield* indexer.index({
+        cwd: root,
+        ensureVectors: false,
+        force: true,
+        onProgress: current => Effect.sync(() => progress.push(current)),
+        threadnoteHome: home,
+      });
+      const metrics = finalFullMaterializationMetrics(progress);
+      const selectedDerivations = yield* Effect.sync(() => {
+        const database = new Database(databasePath, {readonly: true});
+        try {
+          return database
+            .query<{readonly derivation: string}, [string]>(
+              `SELECT DISTINCT shard.derivation_identity AS derivation
+               FROM snapshot_file_shards AS association
+               JOIN materialized_file_shards AS shard ON shard.id = association.shard_id
+               WHERE association.snapshot_id = ?`,
+            )
+            .all(rebuilt.snapshot.id)
+            .map(row => row.derivation);
+        } finally {
+          database.close();
+        }
+      });
+
+      expect(metrics.exactGenerationShardFilesCompleted).toBe(0);
+      expect(metrics.crossGenerationShardFilesCompleted).toBe(0);
+      expect(metrics.attributedFilesCompleted).toBe(2);
+      expect(metrics.materializedShardReplayBytesCompleted).toBe(0);
+      expect(metrics.rawFactReplayBytesCompleted).toBeGreaterThan(0);
+      expect(selectedDerivations).toHaveLength(1);
+      expect(selectedDerivations).not.toContain(v3Derivation);
     }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );
 
@@ -3861,12 +4223,14 @@ describe('native code graph lifecycle', () => {
       expect(failure).toMatchObject({code: 'no-space', recovery: 'free-space'});
       // The parser cache coalesces the 128-row/2-row inventory callbacks into
       // one protected 130-row write before staging.
-      // Inventory and workspace each observe once. Facts allow one transaction,
-      // then observe pressure and the one bounded cleanup retry. Shared storage
-      // never spawns duplicate df or PowerShell probes at a boundary.
+      // Inventory and workspace each observe once. The two deterministic source
+      // batches each protect both their v4 shard write and owner-verified
+      // association write. Facts allow one transaction, then observe pressure
+      // and the one bounded cleanup retry. Shared storage never spawns duplicate
+      // df or PowerShell probes at a boundary.
       expect(Object.fromEntries(probes)).toEqual({
         'cache code graph file facts': probesPerObservation,
-        'cache materialized code graph file shards': probesPerObservation * 2,
+        'cache materialized code graph file shards': probesPerObservation * 4,
         'stage persistent code graph facts': probesPerObservation * 3,
         'stage persistent code graph inventory': probesPerObservation,
         'stage persistent code graph workspace': probesPerObservation,
@@ -4054,11 +4418,13 @@ describe('native code graph lifecycle', () => {
       });
       // The parser cache coalesces the 128-row/2-row inventory callbacks into
       // one protected 130-row write before staging.
-      // The second fact boundary fails closed after one observation; unlike
-      // positive pressure it does not perform cleanup or a fresh re-observation.
+      // The two deterministic source batches each protect both their v4 shard
+      // write and owner-verified association write. The second fact boundary
+      // fails closed after one observation; unlike positive pressure it does
+      // not perform cleanup or a fresh re-observation.
       expect(Object.fromEntries(probes)).toEqual({
         'cache code graph file facts': probesPerObservation,
-        'cache materialized code graph file shards': probesPerObservation * 2,
+        'cache materialized code graph file shards': probesPerObservation * 4,
         'stage persistent code graph facts': probesPerObservation * 2,
         'stage persistent code graph inventory': probesPerObservation,
         'stage persistent code graph workspace': probesPerObservation,
@@ -5084,7 +5450,7 @@ function createManySourceRepository(count: number): string {
   return root;
 }
 
-function createAmbientOverloadBarrelRepository(): string {
+function createAmbientOverloadBarrelRepository(fillerCount = 0): string {
   const root = temporaryDirectory('threadnote-code-graph-ambient-overload-barrel-');
   mkdirSync(join(root, 'src'), {recursive: true});
   git(root, ['init', '-q']);
@@ -5099,6 +5465,12 @@ function createAmbientOverloadBarrelRepository(): string {
     join(root, 'src/caller.ts'),
     'import {target} from "./barrel";\nexport const result = target("x", "y");\n',
   );
+  for (let index = 0; index < fillerCount; index += 1) {
+    writeFileSync(
+      join(root, `src/filler-${String(index).padStart(3, '0')}.ts`),
+      `export function filler${index}(): number { return ${index}; }\n`,
+    );
+  }
   git(root, ['add', '.']);
   git(root, ['-c', 'user.name=Threadnote Test', '-c', 'user.email=test@threadnote.local', 'commit', '-qm', 'fixture']);
   return root;

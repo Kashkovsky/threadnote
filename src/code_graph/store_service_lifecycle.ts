@@ -1,6 +1,8 @@
 import {Effect, Option} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import * as SqlError from 'effect/unstable/sql/SqlError';
+import {CODE_GRAPH_CACHE_TRANSACTION_LIMITS, codeGraphTextFieldsCapacityBytes} from './cache_capacity.js';
+import {saturatingCapacityAdd} from './disk_capacity.js';
 import {ensureBoundedCodeGraphFact} from './fact_budget.js';
 import {
   type CodeGraphSnapshotPurgeObservationResult,
@@ -36,6 +38,7 @@ import {
 } from './store_build_core.js';
 import {validateViewRemovalTarget, observeActiveView} from './store_reconciliation_core.js';
 import {
+  associateMaterializedFileShardBatch,
   cacheCapacityPlanningError,
   prepareFreshFactCacheChunks,
   storeFreshFactRows,
@@ -81,6 +84,7 @@ type CodeGraphStoreLifecycleMethods = Pick<
   | 'activateCleanSnapshotAlias'
   | 'cacheFacts'
   | 'cacheMaterializedFileShards'
+  | 'associateMaterializedFileShardBatches'
   | 'promote'
   | 'observeView'
   | 'observeSnapshotPurge'
@@ -341,6 +345,7 @@ export function makeCodeGraphStoreLifecycleMethods(runtime: CodeGraphStoreRuntim
       onProgress,
       persistentCapacityProtector,
       snapshotPackProvenance,
+      materializedFileShardAssociationsComplete,
     ) =>
       Effect.gen(function* () {
         const activationPackProvenance = snapshotPackProvenance ?? reusableBaseReceipt?.packProvenance;
@@ -392,6 +397,7 @@ export function makeCodeGraphStoreLifecycleMethods(runtime: CodeGraphStoreRuntim
                 effect => withWriterGate(databasePath, effect),
                 persistentCapacityProtector,
                 activationPackProvenance,
+                materializedFileShardAssociationsComplete,
               );
               return snapshot.id;
             }
@@ -504,6 +510,71 @@ export function makeCodeGraphStoreLifecycleMethods(runtime: CodeGraphStoreRuntim
           });
         }
       }).pipe(Effect.mapError(cause => storeError('cache materialized code graph file shards', cause))),
+    associateMaterializedFileShardBatches: (
+      databasePath,
+      snapshotId,
+      ownerToken,
+      batches,
+      persistentCapacityProtector,
+    ) =>
+      Effect.gen(function* () {
+        const rowCount = batches.reduce((total, batch) => saturatingCapacityAdd(total, batch.files.length), 0);
+        if (batches.length === 0) return;
+        if (rowCount > CODE_GRAPH_CACHE_TRANSACTION_LIMITS.rows) {
+          return yield* Effect.fail(new CodeGraphStoreError('Materialized file shard association group is too large.'));
+        }
+        const finalFactBytes = batches.reduce(
+          (total, batch) =>
+            batch.files.reduce(
+              (batchTotal, file) =>
+                saturatingCapacityAdd(
+                  batchTotal,
+                  codeGraphTextFieldsCapacityBytes(snapshotId, file.path, batch.selectedShardIds.get(file.path) ?? ''),
+                ),
+              total,
+            ),
+          0,
+        );
+        if (finalFactBytes > CODE_GRAPH_CACHE_TRANSACTION_LIMITS.payloadBytes) {
+          return yield* Effect.fail(
+            new CodeGraphStoreError('Materialized file shard association group payload is too large.'),
+          );
+        }
+        yield* prepare(databasePath);
+        yield* persistentCapacityProtector(
+          {
+            finalFactBytes,
+            operation: 'cache materialized code graph file shards',
+            rowCount,
+          },
+          withWriterGate(
+            databasePath,
+            useDatabase(
+              databasePath,
+              Effect.gen(function* () {
+                const sql = yield* SqlClient.SqlClient;
+                yield* ensureSchemaInitialized(databasePath, sql);
+                yield* sql.withTransaction(
+                  Effect.forEach(
+                    batches,
+                    batch =>
+                      associateMaterializedFileShardBatch(
+                        sql,
+                        snapshotId,
+                        ownerToken,
+                        batch.files,
+                        batch.extractorSet,
+                        batch.derivationIdentity,
+                        batch.selectedShardIds,
+                      ),
+                    {discard: true},
+                  ),
+                );
+              }),
+            ),
+          ),
+        );
+      }).pipe(Effect.mapError(cause => storeError('associate materialized code graph file shard batches', cause))),
     promote: (databasePath, identity, snapshotId, options) =>
       Effect.gen(function* () {
         yield* prepare(databasePath);

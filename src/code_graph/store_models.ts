@@ -37,6 +37,13 @@ export interface CodeGraphLanguagePackProvenance {
   readonly resolutionVersion: string;
 }
 
+export interface CodeGraphMaterializedShardAssociationBatch {
+  readonly derivationIdentity: string;
+  readonly extractorSet: string;
+  readonly files: readonly Pick<CodeGraphInventoryFile, 'contentHash' | 'path'>[];
+  readonly selectedShardIds: ReadonlyMap<string, string>;
+}
+
 export interface CodeGraphReusableBaseReceipt extends CodeGraphReusableBaseReceiptInput {
   readonly aliasCount: number;
   readonly formatVersion: number;
@@ -206,9 +213,13 @@ export interface LoadedCodeGraphFacts {
   /** UTF-8 bytes occupied by the successfully decoded cached fact payloads. */
   readonly bytes: number;
   readonly bytesByPath?: ReadonlyMap<string, number>;
+  /** Materialized shard paths with provenance in the current graph-content generation. */
+  readonly exactGenerationFiles?: number;
   readonly facts: ReadonlyMap<string, CodeGraphFileFacts>;
   /** Paths represented by stored rows, also populated for metadata-only reads. */
   readonly keys?: ReadonlySet<string>;
+  /** Stable shard IDs selected for each decoded materialized path. */
+  readonly materializedShardIdsByPath?: ReadonlyMap<string, string>;
 }
 
 export type CodeGraphStagingStage =

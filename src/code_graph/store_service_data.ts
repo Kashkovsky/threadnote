@@ -286,10 +286,13 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
         ),
         Effect.mapError(cause => storeError('load cached code graph facts', cause)),
       ),
-    loadMaterializedFileShards: (databasePath, files, extractorSet, derivationIdentity) =>
+    loadMaterializedFileShards: (databasePath, files, extractorSet, derivationIdentity, provenance) =>
       prepare(databasePath).pipe(
         Effect.andThen(
-          useReadOnlyDatabase(databasePath, selectMaterializedFileShards(files, extractorSet, derivationIdentity)),
+          useReadOnlyDatabase(
+            databasePath,
+            selectMaterializedFileShards(files, extractorSet, derivationIdentity, provenance),
+          ),
         ),
         Effect.mapError(cause => storeError('load materialized code graph file shards', cause)),
       ),

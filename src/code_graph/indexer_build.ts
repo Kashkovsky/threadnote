@@ -75,8 +75,12 @@ import {codeGraphRequestBuildLockPath, codeGraphSnapshotBuildLockPath, type Code
 import {compareCodeUnits} from './ordering.js';
 import {
   CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION,
-  materializedShardDerivationIdentity,
+  materializedBatchShardDerivationIdentity,
+  materializedFileShardIdentity,
+  materializedShardRepositorySemanticEnvelope,
+  shardDonorIds,
   type CodeGraphDirectPersistentCapacityProtector,
+  type CodeGraphMaterializedShardAssociationBatch,
   type CodeGraphRetiredSnapshotCleanupProgress,
   type CodeGraphReusableCleanBase,
   type CodeGraphStagingProgress,
@@ -1196,11 +1200,9 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
   }
   if (!incrementalApplied) {
     const attributeFacts = createCachedCodeGraphFactsAttributor(input.inventory.files, workspace);
-    const shardDerivationIdentity = materializedShardDerivationIdentity(
-      input.building.extractorSet,
-      workspace.fingerprint,
-      graphContentIdentity(input.building.extractorSet, input.inventory.files),
-    );
+    const currentGraphContentId = graphContentIdentity(input.building.extractorSet, input.inventory.files);
+    const repositorySemanticEnvelope = materializedShardRepositorySemanticEnvelope(input.inventory.files);
+    const donorSnapshotIds = shardDonorIds(input.building.id, input.committedBase?.snapshot.id, input.existing?.id);
     const sourceBytesTotal = input.inventory.files.reduce((total, file) => total + file.size, 0);
     const cachedMetadata = yield* cachedFactsMetadata(
       input.store,
@@ -1392,6 +1394,19 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
       readonly symbols: readonly CodeGraphSymbol[];
     }
     const pendingBatches: PendingMaterializationBatch[] = [];
+    const pendingShardAssociationBatches: CodeGraphMaterializedShardAssociationBatch[] = [];
+    const flushPendingShardAssociations = () =>
+      Effect.gen(function* () {
+        if (pendingShardAssociationBatches.length === 0) return;
+        const group = pendingShardAssociationBatches.splice(0, pendingShardAssociationBatches.length);
+        yield* input.store.associateMaterializedFileShardBatches(
+          input.layout.databasePath,
+          input.building.id,
+          input.persistentOwnerToken!,
+          group,
+          protectDirectPersistentWrite,
+        );
+      });
     const reportStagingProgress = (batch: PendingMaterializationBatch, progress: CodeGraphStagingProgress) => {
       if (progress.temporaryDatabaseBytes !== undefined) {
         temporaryDatabaseBytes = progress.temporaryDatabaseBytes;
@@ -1503,6 +1518,12 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
         }
       });
     for (const files of batches) {
+      const shardDerivationIdentity = materializedBatchShardDerivationIdentity(
+        input.building.extractorSet,
+        workspace.fingerprint,
+        repositorySemanticEnvelope,
+        files,
+      );
       const sourceBytes = files.reduce((total, file) => total + file.size, 0);
       yield* input.onProgress?.({
         activity: {
@@ -1524,20 +1545,37 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
       // reexports). Reuse the batch only as a complete unit; otherwise replay
       // and reattribute every raw peer so a hit/miss partition cannot become a
       // persisted derivation input.
-      const materializedShards = yield* input.store.loadMaterializedFileShards(
-        input.layout.databasePath,
-        files,
-        input.building.extractorSet,
-        shardDerivationIdentity,
-      );
-      const materializedShardBatchComplete = materializedShards.facts.size === files.length;
+      const materializedShards = directPersistentMaterialization
+        ? yield* input.store.loadMaterializedFileShards(
+            input.layout.databasePath,
+            files,
+            input.building.extractorSet,
+            shardDerivationIdentity,
+            {currentGraphContentId, snapshotIds: donorSnapshotIds},
+          )
+        : {
+            bytes: 0,
+            bytesByPath: new Map<string, number>(),
+            exactGenerationFiles: 0,
+            facts: new Map(),
+            materializedShardIdsByPath: new Map<string, string>(),
+          };
+      const exactGenerationShardFiles = materializedShards.exactGenerationFiles;
+      const materializedShardBatchComplete =
+        directPersistentMaterialization &&
+        exactGenerationShardFiles !== undefined &&
+        Number.isSafeInteger(exactGenerationShardFiles) &&
+        exactGenerationShardFiles >= 0 &&
+        exactGenerationShardFiles <= files.length &&
+        materializedShards.facts.size === files.length &&
+        materializedShards.materializedShardIdsByPath?.size === files.length;
       const fallbackFiles = materializedShardBatchComplete ? [] : files;
       const cached = yield* loadCachedFacts(input.store, input.layout.databasePath, fallbackFiles, input.languagePacks);
-      // Count every decoded cache payload, including valid final shards that
-      // were inspected before an incomplete batch fell back to all raw facts.
+      // Count valid final-shard decodes even when an incomplete batch falls back to raw facts.
       const batchReplayBytes = Math.min(Number.MAX_SAFE_INTEGER, materializedShards.bytes + cached.bytes);
       replayMetrics = addMaterializationReplayMetrics(replayMetrics, {
-        exactGenerationShardFiles: materializedShardBatchComplete ? files.length : 0,
+        crossGenerationShardFiles: materializedShardBatchComplete ? files.length - exactGenerationShardFiles : 0,
+        exactGenerationShardFiles: materializedShardBatchComplete ? exactGenerationShardFiles : 0,
         materializedShardReplayBytes: materializedShards.bytes,
         rawFactReplayBytes: cached.bytes,
       });
@@ -1582,7 +1620,7 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
         fallbackFiles.map(file => input.languagePacks.postprocessFile(file, cached.facts.get(file.path)!)),
       );
       replayMetrics = addMaterializationReplayMetrics(replayMetrics, {attributedFiles: fallbackFiles.length});
-      if (fallbackFiles.length > 0) {
+      if (fallbackFiles.length > 0 && directPersistentMaterialization) {
         yield* input.store.cacheMaterializedFileShards(
           input.layout.databasePath,
           fallbackFiles,
@@ -1591,6 +1629,30 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
           shardDerivationIdentity,
           protectDirectPersistentWrite,
         );
+      }
+      if (directPersistentMaterialization) {
+        const selectedShardIds = materializedShardBatchComplete
+          ? materializedShards.materializedShardIdsByPath!
+          : new Map(
+              files.map(file => [
+                file.path,
+                materializedFileShardIdentity(
+                  file.contentHash,
+                  input.building.extractorSet,
+                  shardDerivationIdentity,
+                  file.path,
+                ),
+              ]),
+            );
+        pendingShardAssociationBatches.push({
+          derivationIdentity: shardDerivationIdentity,
+          extractorSet: input.building.extractorSet,
+          files,
+          selectedShardIds,
+        });
+        if (pendingShardAssociationBatches.length >= persistentTransactionBatchLimit) {
+          yield* flushPendingShardAssociations();
+        }
       }
       const attributedFallbackByPath = new Map(attributedFallbackFacts.map(fact => [fact.path, fact]));
       const facts = files.map(file =>
@@ -1692,6 +1754,7 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
       }
     }
     yield* flushPendingBatches();
+    yield* flushPendingShardAssociations();
     batchesTotal = persistentBatchCursor;
     if (directPersistentMaterialization) {
       yield* input.store.finalizePersistentMaterializationPlan(
@@ -1774,6 +1837,7 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
           ).pipe(Effect.catch(() => Effect.void)),
         persistentCapacityGuard,
         input.languagePacks.activePackProvenance(input.inventory.files.map(file => file.path)),
+        directPersistentMaterialization && !incrementalApplied,
       ),
       lease =>
         Option.match(lease, {
