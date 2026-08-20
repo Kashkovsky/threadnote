@@ -95,11 +95,15 @@ export interface CodeGraphTraversalTimeBudgets {
 }
 
 export interface CodeGraphStatusObservation {
+  /** Read-only shared evidence selected without changing this worktree's active pointer. */
+  readonly borrowedSnapshotId?: string;
   readonly identity: RepositoryIdentity;
   readonly overlay: {readonly dirty: boolean; readonly fingerprint?: string};
 }
 
 export interface CodeGraphSharedReadyAttachInterlock {
+  /** Allow local ordinary reads to borrow stale evidence without promoting it. */
+  readonly allowBorrowedStale?: boolean;
   /** @internal Deterministic barrier after the optimistic candidate read and before target-lock acquisition. */
   readonly afterOptimisticCandidate?: () => Effect.Effect<void>;
   /** @internal Deterministic barrier after promotion and before final identity validation. */
@@ -200,7 +204,9 @@ export class CodeGraphQueryService extends Context.Service<
   {
     /**
      * Promote a shared clean ready snapshot for HEAD onto this worktree when
-     * the worktree is clean and has no matching active pointer yet.
+     * the worktree is clean and has no matching active pointer yet. An explicit
+     * local-read interlock may instead select compatible clean repository
+     * evidence as stale without changing the worktree pointer.
      */
     readonly attachSharedReadySnapshot: (
       threadnoteHome: string,
@@ -302,7 +308,7 @@ export class CodeGraphQueryService extends Context.Service<
           } satisfies CodeGraphStatus;
           return attachCodeGraphStatusObservation(status, overlay === undefined ? undefined : {identity, overlay});
         });
-      const attachSharedReadySnapshot = (
+      const attachExactSharedReadySnapshot = (
         threadnoteHome: string,
         identity: RepositoryIdentity,
         observedStatus?: CodeGraphStatus,
@@ -441,13 +447,56 @@ export class CodeGraphQueryService extends Context.Service<
             ),
           );
         });
+      const borrowSharedReadySnapshot = Effect.fn('codeGraph.query.borrowSharedReadySnapshot')(function* (
+        threadnoteHome: string,
+        status: CodeGraphStatus,
+      ) {
+        if (status.readySnapshot) return status;
+        const identity = status.identity;
+        const observation = observationFromCodeGraphStatus(status);
+        const overlay = observation?.overlay ?? (yield* worktreeOverlayState(identity));
+        const layout = codeGraphLayout(path, threadnoteHome, identity.checkoutId, identity.worktreeId);
+        const candidate = yield* store.latestReadySnapshotForRepository(layout.databasePath, identity.repositoryId);
+        if (
+          candidate === undefined ||
+          !(yield* codeGraphSnapshotRuntimeCurrent(store, layout.databasePath, candidate, languagePacks))
+        ) {
+          return status;
+        }
+        return attachCodeGraphStatusObservation(
+          {
+            ...status,
+            freshness: 'stale',
+            readySnapshot: {...candidate, worktreeId: identity.worktreeId},
+            stale: true,
+          },
+          {borrowedSnapshotId: candidate.id, identity, overlay},
+        );
+      });
+      const attachSharedReadySnapshot = (
+        threadnoteHome: string,
+        identity: RepositoryIdentity,
+        observedStatus?: CodeGraphStatus,
+        interlock?: CodeGraphSharedReadyAttachInterlock,
+      ) => {
+        const exact = attachExactSharedReadySnapshot(threadnoteHome, identity, observedStatus, interlock);
+        return interlock?.allowBorrowedStale === true
+          ? exact.pipe(Effect.flatMap(status => borrowSharedReadySnapshot(threadnoteHome, status)))
+          : exact;
+      };
       return CodeGraphQueryService.of({
         attachSharedReadySnapshot: (threadnoteHome, identity, observedStatus, interlock) => {
           const attach = attachSharedReadySnapshot(threadnoteHome, identity, observedStatus, interlock);
           return withRepositoryServices(
             interlock?.requestMaintenance === false
               ? attach
-              : attach.pipe(Effect.tap(status => requestMaintenance(threadnoteHome, status.identity))),
+              : attach.pipe(
+                  Effect.tap(status =>
+                    observationFromCodeGraphStatus(status)?.borrowedSnapshotId
+                      ? Effect.void
+                      : requestMaintenance(threadnoteHome, status.identity),
+                  ),
+                ),
           );
         },
         inspect: options =>
@@ -458,7 +507,9 @@ export class CodeGraphQueryService extends Context.Service<
                 statusObservation?.identity ??
                 (yield* resolveAndRecordCodeGraphLocalAssociation(options.threadnoteHome, options.cwd)).identity;
               const layout = codeGraphLayout(path, options.threadnoteHome, identity.checkoutId, identity.worktreeId);
-              const existing = yield* store.readySnapshot(layout.databasePath, identity.worktreeId);
+              const existing = statusObservation?.borrowedSnapshotId
+                ? yield* store.readySnapshotById(layout.databasePath, statusObservation.borrowedSnapshotId)
+                : yield* store.readySnapshot(layout.databasePath, identity.worktreeId);
               const runtimeCurrent = existing
                 ? yield* codeGraphSnapshotRuntimeCurrent(store, layout.databasePath, existing, languagePacks)
                 : false;
@@ -491,6 +542,7 @@ export class CodeGraphQueryService extends Context.Service<
                   const read = () =>
                     inspectReadyGraph({
                       baseSnapshotId,
+                      borrowedSnapshotId: rebuilt ? undefined : statusObservation?.borrowedSnapshotId,
                       embedding,
                       expectedRepositoryId: identity.repositoryId,
                       layout,
@@ -1083,6 +1135,7 @@ const observeWorktree = Effect.fn('codeGraph.observeWorktree')(function* (
 
 const inspectReadyGraph = Effect.fn('codeGraph.inspectReadyGraph')(function* (input: {
   readonly baseSnapshotId?: string;
+  readonly borrowedSnapshotId?: string;
   readonly deferWorktreeObservation: boolean;
   readonly embedding: CodeGraphEmbeddingIndexShape;
   readonly expectedRepositoryId: string;
@@ -1105,8 +1158,10 @@ const inspectReadyGraph = Effect.fn('codeGraph.inspectReadyGraph')(function* (in
   const overlay =
     input.observation?.overlay ??
     (input.deferWorktreeObservation ? undefined : yield* observeWorktree(identity, input.options.interlock));
-  const storedSnapshot = yield* input.store.readySnapshot(input.layout.databasePath, identity.worktreeId);
-  if (!storedSnapshot) {
+  const storedSnapshot = input.borrowedSnapshotId
+    ? yield* input.store.readySnapshotById(input.layout.databasePath, input.borrowedSnapshotId)
+    : yield* input.store.readySnapshot(input.layout.databasePath, identity.worktreeId);
+  if (!storedSnapshot || storedSnapshot.repositoryId !== identity.repositoryId) {
     return yield* Effect.fail(
       new CodeGraphSnapshotUnavailable(
         'No ready native code graph snapshot exists. Run `threadnote graph index` first.',

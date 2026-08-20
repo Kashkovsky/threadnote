@@ -1062,12 +1062,14 @@ export const runCodeGraphInspect = Effect.fn('codeGraph.command.inspect')(functi
     qualifiedTarget === undefined ? options : {...options, cwd: qualifiedTarget.cwd, nodeId: qualifiedTarget.nodeId};
   const service = yield* CodeGraphQueryService;
   const cwd = yield* commandCwd(effectiveOptions.cwd);
+  const freshness = options.freshness ?? defaultCodeGraphCliFreshness(options.operation);
   let status = yield* service.status(config.agentContextHome, cwd);
   const identity = status.identity;
   if (status.stale || !status.readySnapshot) {
-    status = yield* service.attachSharedReadySnapshot(config.agentContextHome, identity, status);
+    status = yield* service.attachSharedReadySnapshot(config.agentContextHome, identity, status, {
+      allowBorrowedStale: freshness !== 'current',
+    });
   }
-  const freshness = options.freshness ?? defaultCodeGraphCliFreshness(options.operation);
   const readPlan = codeGraphCliReadPlan(freshness, status);
   if (readPlan.unavailable) {
     const unavailable = codeGraphCliReadState(status, freshness, options.operation, 'no-ready-snapshot');

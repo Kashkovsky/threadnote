@@ -332,7 +332,9 @@ export function registerCodeGraphTool(
         const allowStaleReadySnapshot = codeGraphInspectionAllowsStaleReady(operation);
         const strictFreshness = !allowStaleReadySnapshot;
         if (status.stale || !status.readySnapshot) {
-          status = yield* service.attachSharedReadySnapshot(config.agentContextHome, identity, status);
+          status = yield* service.attachSharedReadySnapshot(config.agentContextHome, identity, status, {
+            allowBorrowedStale: allowStaleReadySnapshot,
+          });
         }
         let refreshStarted = false;
         if (codeGraphInspectionStartsRefresh(status, operation)) {
@@ -348,7 +350,9 @@ export function registerCodeGraphTool(
           status = yield* service.status(config.agentContextHome, inspectionCwd);
           identity = status.identity;
           if (status.stale || !status.readySnapshot) {
-            status = yield* service.attachSharedReadySnapshot(config.agentContextHome, identity, status);
+            status = yield* service.attachSharedReadySnapshot(config.agentContextHome, identity, status, {
+              allowBorrowedStale: allowStaleReadySnapshot,
+            });
           }
           if (!status.readySnapshot || (status.stale && strictFreshness)) {
             const refreshStatus = Option.getOrUndefined(yield* watcher.status(identity.worktreeId, refreshTarget));

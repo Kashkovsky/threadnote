@@ -683,6 +683,83 @@ describe('native code graph lifecycle', () => {
     expect(result.found.nodes.some(node => node.name === 'ensureVectorIndex')).toBe(true);
   });
 
+  effectIt.effect('borrows a divergent-HEAD clean snapshot as stale evidence without promotion', () =>
+    Effect.gen(function* () {
+      const {home, worktreeA, worktreeB} = yield* Effect.sync(() => {
+        const root = createFixtureRepository();
+        git(root, ['branch', 'graph-borrow-a']);
+        git(root, ['branch', 'graph-borrow-b']);
+        const worktreeRoot = temporaryDirectory('threadnote-code-graph-borrow-worktrees-');
+        const worktreeA = join(worktreeRoot, 'worktree-a');
+        const worktreeB = join(worktreeRoot, 'worktree-b');
+        git(root, ['worktree', 'add', worktreeA, 'graph-borrow-a']);
+        git(root, ['worktree', 'add', worktreeB, 'graph-borrow-b']);
+        writeFileSync(
+          join(worktreeB, 'divergent-head.ts'),
+          'export function divergentHeadOnly(): string { return "divergent"; }\n',
+        );
+        git(worktreeB, ['add', 'divergent-head.ts']);
+        git(worktreeB, [
+          '-c',
+          'user.name=Threadnote Test',
+          '-c',
+          'user.email=test@threadnote.local',
+          'commit',
+          '-m',
+          'diverge graph worktree',
+        ]);
+        return {home: join(root, '.threadnote-test-home'), worktreeA, worktreeB};
+      });
+      const graph = yield* CodeGraphQueryService;
+      const indexer = yield* CodeGraphIndexer;
+      const store = yield* CodeGraphStore;
+      const indexed = yield* indexer.index({cwd: worktreeA, threadnoteHome: home});
+      const identityB = yield* resolveRepositoryIdentity(worktreeB);
+      const before = yield* graph.statusForIdentity(home, identityB, {requestMaintenance: false});
+      const exactOnly = yield* graph.attachSharedReadySnapshot(home, identityB, before, {
+        requestMaintenance: false,
+      });
+      const borrowed = yield* graph.attachSharedReadySnapshot(home, identityB, exactOnly, {
+        allowBorrowedStale: true,
+        requestMaintenance: false,
+      });
+      const activeAfterBorrow = yield* store.readySnapshot(borrowed.databasePath, identityB.worktreeId);
+      const found = yield* graph.inspect({
+        cwd: worktreeB,
+        operation: 'query',
+        query: 'ensureVectorIndex',
+        refresh: false,
+        requestMaintenance: false,
+        statusObservation: observationFromCodeGraphStatus(borrowed),
+        strictFreshness: false,
+        threadnoteHome: home,
+      });
+
+      expect(before.readySnapshot).toBeUndefined();
+      expect(exactOnly.readySnapshot).toBeUndefined();
+      expect(borrowed).toMatchObject({
+        freshness: 'stale',
+        readySnapshot: {
+          commit: indexed.snapshot.commit,
+          id: indexed.snapshot.id,
+          worktreeId: identityB.worktreeId,
+        },
+        stale: true,
+      });
+      expect(activeAfterBorrow).toBeUndefined();
+      expect(found).toMatchObject({
+        freshness: 'stale',
+        snapshot: {
+          commit: indexed.snapshot.commit,
+          id: indexed.snapshot.id,
+          worktreeId: identityB.worktreeId,
+        },
+      });
+      expect(found.nodes.some(node => node.name === 'ensureVectorIndex')).toBe(true);
+      expect(found.nodes.some(node => node.name === 'divergentHeadOnly')).toBe(false);
+    }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
   it('attaches a shared clean base while a sibling worktree keeps a dirty overlay', async () => {
     const root = createFixtureRepository();
     git(root, ['branch', 'graph-sibling-a']);
