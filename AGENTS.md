@@ -56,6 +56,11 @@ boundaries, state-machine transitions, incremental-versus-clean equivalence, and
 - Do not force property tests onto static copy, one-off wiring, or behavior with no useful input space or invariant.
   Close out the task by stating which property-testing opportunity was added, or why none was appropriate.
 
+## Let pull-request CI run the full suite
+
+Do not run the complete test suite locally. Run focused tests and checks that cover the changed behavior, then open the
+pull request and use CI as the authoritative full-suite run. Investigate and fix any CI failure before merge.
+
 ## Install logic changes globally
 
 After changing runtime or product logic, do not stop after tests. This includes behavior under `src/`, runtime-facing

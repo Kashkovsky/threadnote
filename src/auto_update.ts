@@ -4,6 +4,7 @@ import {applicationError} from './effect/errors.js';
 import {syncDirectoryBestEffort, syncWritableFile} from './effect/file_durability.js';
 import {FileLockTimeout, withExclusiveFileLock} from './effect/file_lock.js';
 import {SystemInfo} from './effect/system.js';
+import {recordAnonymousTelemetryFields, type AnonymousTelemetryFields} from './effect/telemetry.js';
 import {activeInstalledVersion, installationRoot} from './installations.js';
 import {redactSensitiveText} from './scrubber.js';
 import {sendSystemNotification, type SystemNotificationDelivery} from './system_notification.js';
@@ -70,7 +71,16 @@ export interface AutoUpdateStatus extends AutoUpdateState {
   readonly policySource: 'default' | 'environment' | 'file';
 }
 
-export type AutoUpdateWorkerResult = 'busy' | 'current' | 'disabled' | 'failed' | 'updated';
+export type AutoUpdateWorkerResult =
+  | {readonly result: 'busy' | 'current' | 'disabled' | 'failed'}
+  | {readonly repairRequired: boolean; readonly result: 'updated'};
+
+export function autoUpdateWorkerTelemetryFields(result: AutoUpdateWorkerResult): AnonymousTelemetryFields {
+  return {
+    autoUpdateResult: result.result,
+    ...(result.result === 'updated' ? {autoUpdateRepairRequired: result.repairRequired} : {}),
+  };
+}
 
 export const readAutoUpdateStatus = Effect.fn('autoUpdate.readStatus')(function* () {
   const fs = yield* FileSystem.FileSystem;
@@ -208,12 +218,20 @@ export function runThreadnoteUpdateCommand(config: RuntimeConfig, options: Updat
  * durable result and emits a best-effort desktop notification.
  */
 export const runAutoUpdateWorker = Effect.fn('autoUpdate.runWorker')(function* (config: RuntimeConfig) {
-  if (!isStandaloneThreadnoteBuild()) return 'disabled' as const;
-  const fs = yield* FileSystem.FileSystem;
-  const lockPath = yield* autoUpdateLockPath();
-  return yield* withExclusiveFileLock(fs, lockPath, AUTO_UPDATE_LOCK_OPTIONS, runOwnedAutoUpdate(config)).pipe(
-    Effect.catch(error => (error instanceof FileLockTimeout ? Effect.succeed('busy' as const) : Effect.fail(error))),
-  );
+  const result = yield* Effect.suspend(() => {
+    if (!isStandaloneThreadnoteBuild()) return Effect.succeed<AutoUpdateWorkerResult>({result: 'disabled'});
+    return Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const lockPath = yield* autoUpdateLockPath();
+      return yield* withExclusiveFileLock(fs, lockPath, AUTO_UPDATE_LOCK_OPTIONS, runOwnedAutoUpdate(config)).pipe(
+        Effect.catch(error =>
+          error instanceof FileLockTimeout ? Effect.succeed({result: 'busy'} as const) : Effect.fail(error),
+        ),
+      );
+    });
+  });
+  yield* recordAnonymousTelemetryFields(autoUpdateWorkerTelemetryFields(result));
+  return result;
 });
 
 export const triggerAutoUpdateIfEnabled = Effect.fn('autoUpdate.triggerIfEnabled')(function* (
@@ -336,9 +354,9 @@ function runOwnedAutoUpdate(config: RuntimeConfig) {
   return Effect.gen(function* () {
     const state = yield* readAutoUpdateState();
     const effective = yield* effectiveAutoUpdatePolicy(state);
-    if (effective.policy !== 'automatic') return 'disabled' as const;
+    if (effective.policy !== 'automatic') return {result: 'disabled'} as const;
     const fromVersion = yield* activeInstalledVersion();
-    if (!fromVersion || !isAutoUpdateVersionEligible(fromVersion)) return 'disabled' as const;
+    if (!fromVersion || !isAutoUpdateVersionEligible(fromVersion)) return {result: 'disabled'} as const;
     const startedAt = yield* nowIso();
     const attempt = nextAutoUpdateAttempt(state, fromVersion);
     yield* writeAutoUpdateState({
@@ -357,7 +375,7 @@ function runOwnedAutoUpdate(config: RuntimeConfig) {
           policy: state.policy,
         }),
       );
-      return 'current' as const;
+      return {result: 'current'} as const;
     }
 
     if (toVersion !== fromVersion) {
@@ -410,10 +428,10 @@ function runOwnedAutoUpdate(config: RuntimeConfig) {
           policy: state.policy,
         }),
       );
-      return 'updated' as const;
+      return {repairRequired, result: 'updated'} as const;
     }
 
-    if (Exit.isSuccess(update)) return 'current' as const;
+    if (Exit.isSuccess(update)) return {result: 'current'} as const;
 
     const failedAt = yield* nowIso();
     const failure = {
@@ -438,7 +456,7 @@ function runOwnedAutoUpdate(config: RuntimeConfig) {
         }),
       );
     }
-    return 'failed' as const;
+    return {result: 'failed'} as const;
   });
 }
 

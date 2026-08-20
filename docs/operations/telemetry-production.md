@@ -191,13 +191,14 @@ Rotate without an ingestion gap:
 [`telemetry-delivery-canary.yml`](../../.github/workflows/telemetry-delivery-canary.yml)
 runs every 15 minutes and on demand. It first pipes `flyctl machine list --json`
 into the budget verifier; no Machine identifiers are logged. It then generates
-two random, schema-valid, content-free traces: one frozen schema-v1 completion
-and one complete schema-v2 terminal graph-build lifecycle. It posts each through
-the public gateway and polls Grafana Tempo by the exact trace IDs until both
+four random, schema-valid, content-free traces: one frozen schema-v1 completion,
+one complete schema-v2 terminal graph-build lifecycle, one equivalent schema-v3
+graph lifecycle, and one schema-v3 automatic-update worker completion. It posts each through
+the public gateway and polls Grafana Tempo by the exact trace IDs until all four
 stored protobufs contain the expected version-specific resource and span
 identity. The synthetic version is `0.0.0-canary`, making it filterable from
 product telemetry. Success proves the two-Machine budget, public TLS,
-dual-version route and schema validation, Collector export, Grafana ingestion,
+three-version route and schema validation, Collector export, Grafana ingestion,
 storage, read credentials, and query availability. `/healthz` proves none of
 the storage/read path.
 
@@ -300,16 +301,16 @@ workflow summary and follow the rollback procedure below.
 
 For a telemetry schema rollout, deployment order is a hard compatibility gate:
 
-1. Deploy the gateway/Collector revision that accepts both frozen schema v1 and
-   the new immutable schema v2. Do not release a v2 producer yet.
-2. Dispatch the production storage canary and require both the v1 completion and
-   complete v2 terminal graph-build traces to be accepted and queryable.
-3. Only after that dual-version proof succeeds, release the schema-v2 producer.
-4. Keep schema-v1 ingress and canary coverage until every supported v1 producer
-   is retired in a separately reviewed schema-removal change.
+1. Deploy the gateway/Collector revision that accepts frozen schemas v1 and v2
+   plus the new immutable schema v3. Do not release a v3 producer yet.
+2. Dispatch the production storage canary and require the v1 completion, v2 and
+   v3 terminal graph-build traces, and v3 automatic-update completion to be accepted and queryable.
+3. Only after that three-version proof succeeds, release the schema-v3 producer.
+4. Keep schema-v1 and schema-v2 ingress and canary coverage until every supported
+   older producer is retired in a separately reviewed schema-removal change.
 
-A v2 canary rejection blocks the producer release even when `/healthz` and the
-v1 canary pass. If a producer was released out of order, roll it back before
+A v3 canary rejection blocks the producer release even when `/healthz` and the
+older-schema canaries pass. If a producer was released out of order, roll it back before
 debugging the gateway; telemetry remains best-effort and must not drive an
 unsafe compatibility exception.
 

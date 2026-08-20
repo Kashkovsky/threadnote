@@ -1,5 +1,5 @@
-// Command canary proves that frozen-v1 and terminal-v2 privacy-safe synthetic
-// traces traverse the public gateway and become queryable in Grafana Cloud Tempo.
+// Command canary proves that frozen-v1, frozen-v2, and current-v3 privacy-safe
+// synthetic traces traverse the public gateway and become queryable in Tempo.
 package main
 
 import (
@@ -48,8 +48,17 @@ type canaryIDs struct {
 
 type canaryTrace struct {
 	ids           canaryIDs
+	kind          canaryTraceKind
 	schemaVersion uint64
 }
+
+type canaryTraceKind uint8
+
+const (
+	canaryTraceCompletion canaryTraceKind = iota
+	canaryTraceGraph
+	canaryTraceAutoUpdate
+)
 
 type canaryStringAttribute struct {
 	key   string
@@ -70,7 +79,7 @@ func main() {
 		_, _ = fmt.Fprintln(os.Stderr, "threadnote-telemetry-canary:", err)
 		os.Exit(1)
 	}
-	_, _ = fmt.Fprintln(os.Stdout, "threadnote-telemetry-canary: v1 and v2 traces stored")
+	_, _ = fmt.Fprintln(os.Stdout, "threadnote-telemetry-canary: v1, v2, and v3 traces stored")
 }
 
 func configFromEnvironment() (config, error) {
@@ -140,15 +149,21 @@ func run(
 	newIDs func() (canaryIDs, error),
 ) error {
 	started := now().UTC()
-	traces := make([]canaryTrace, 0, 2)
-	for _, schemaVersion := range []uint64{1, 2} {
+	plans := []canaryTrace{
+		{schemaVersion: 1, kind: canaryTraceCompletion},
+		{schemaVersion: 2, kind: canaryTraceGraph},
+		{schemaVersion: 3, kind: canaryTraceGraph},
+		{schemaVersion: 3, kind: canaryTraceAutoUpdate},
+	}
+	traces := make([]canaryTrace, 0, len(plans))
+	for _, trace := range plans {
 		ids, err := newIDs()
 		if err != nil {
 			return errors.New("generate random identifiers")
 		}
-		trace := canaryTrace{ids: ids, schemaVersion: schemaVersion}
+		trace.ids = ids
 		if err := postTrace(ctx, configuration, client, buildEnvelope(trace, started)); err != nil {
-			return fmt.Errorf("schema v%d: %w", schemaVersion, err)
+			return fmt.Errorf("%s: %w", trace.label(), err)
 		}
 		traces = append(traces, trace)
 	}
@@ -159,7 +174,7 @@ func run(
 		for _, trace := range pending {
 			stored, err := queryTrace(ctx, configuration, client, trace, started, now().UTC())
 			if err != nil {
-				return fmt.Errorf("schema v%d: %w", trace.schemaVersion, err)
+				return fmt.Errorf("%s: %w", trace.label(), err)
 			}
 			if !stored {
 				nextPending = append(nextPending, trace)
@@ -179,6 +194,17 @@ func run(
 			return errors.New("canary deadline exceeded")
 		case <-timer.C:
 		}
+	}
+}
+
+func (trace canaryTrace) label() string {
+	switch trace.kind {
+	case canaryTraceGraph:
+		return fmt.Sprintf("schema v%d graph", trace.schemaVersion)
+	case canaryTraceAutoUpdate:
+		return fmt.Sprintf("schema v%d automatic update", trace.schemaVersion)
+	default:
+		return fmt.Sprintf("schema v%d completion", trace.schemaVersion)
 	}
 }
 
@@ -296,7 +322,7 @@ func inspectStoredTrace(body []byte, canary canaryTrace) (storedTraceState, erro
 					continue
 				}
 				if bytes.Equal(span.TraceId, ids.traceID) && bytes.Equal(span.SpanId, ids.spanID) &&
-					span.Name == "threadnote.anonymous-diagnostic" && storedSpanMatchesVersion(span, canary.schemaVersion) {
+					span.Name == "threadnote.anonymous-diagnostic" && storedSpanMatchesTrace(span, canary) {
 					return storedTraceMatched, nil
 				}
 			}
@@ -383,16 +409,32 @@ func hasIntAttribute(attributes []*commonpb.KeyValue, key string, expected uint6
 	return false
 }
 
-func storedSpanMatchesVersion(span *tracepb.Span, schemaVersion uint64) bool {
+func hasBoolAttribute(attributes []*commonpb.KeyValue, key string, expected bool) bool {
+	for _, attribute := range attributes {
+		if attribute == nil || attribute.GetKey() != key || attribute.Value == nil {
+			continue
+		}
+		value, ok := attribute.Value.Value.(*commonpb.AnyValue_BoolValue)
+		if ok {
+			return value.BoolValue == expected
+		}
+	}
+	return false
+}
+
+func storedSpanMatchesTrace(span *tracepb.Span, trace canaryTrace) bool {
 	if !hasIntAttribute(span.Attributes, "threadnote.duration_ms", 1) {
 		return false
 	}
-	for _, expected := range canaryStringAttributes(schemaVersion) {
+	for _, expected := range canaryStringAttributes(trace) {
 		if !hasStringAttribute(span.Attributes, expected.key, expected.value) {
 			return false
 		}
 	}
-	return schemaVersion == 1 || schemaVersion == 2
+	if trace.kind == canaryTraceAutoUpdate && !hasBoolAttribute(span.Attributes, "threadnote.auto_update.repair_required", false) {
+		return false
+	}
+	return trace.schemaVersion >= 1 && trace.schemaVersion <= 3
 }
 
 func randomIDs() (canaryIDs, error) {
@@ -439,8 +481,11 @@ func buildEnvelope(canary canaryTrace, timestamp time.Time) []byte {
 	nanoseconds := uint64(timestamp.UnixNano())
 	span = append(span, fixed64Field(7, nanoseconds)...)
 	span = append(span, fixed64Field(8, nanoseconds+1_000_000)...)
-	for _, attribute := range canaryStringAttributes(canary.schemaVersion) {
+	for _, attribute := range canaryStringAttributes(canary) {
 		span = append(span, message(9, keyValue(attribute.key, stringValue(attribute.value)))...)
+	}
+	if canary.kind == canaryTraceAutoUpdate {
+		span = append(span, message(9, keyValue("threadnote.auto_update.repair_required", boolValue(false)))...)
 	}
 	span = append(span, message(9, keyValue("threadnote.duration_ms", intValue(1)))...)
 	span = append(span, message(15, varintField(3, 1))...)
@@ -451,7 +496,7 @@ func buildEnvelope(canary canaryTrace, timestamp time.Time) []byte {
 	return message(1, resourceSpans)
 }
 
-func canaryStringAttributes(schemaVersion uint64) []canaryStringAttribute {
+func canaryStringAttributes(canary canaryTrace) []canaryStringAttribute {
 	attributes := []canaryStringAttribute{
 		{"threadnote.component", "cli"},
 		{"threadnote.runtime.architecture", "synthetic"},
@@ -459,12 +504,13 @@ func canaryStringAttributes(schemaVersion uint64) []canaryStringAttribute {
 		{"threadnote.runtime.version", canaryVersion},
 		{"threadnote.outcome", "success"},
 	}
-	if schemaVersion == 1 {
+	switch canary.kind {
+	case canaryTraceCompletion:
 		attributes = append(attributes,
 			canaryStringAttribute{"threadnote.event", "completion"},
 			canaryStringAttribute{"threadnote.operation", "health"},
 		)
-	} else {
+	case canaryTraceGraph:
 		attributes = append(attributes,
 			canaryStringAttribute{"threadnote.event", "lifecycle"},
 			canaryStringAttribute{"threadnote.operation", "graph-build"},
@@ -488,6 +534,12 @@ func canaryStringAttributes(schemaVersion uint64) []canaryStringAttribute {
 			{"threadnote.graph.rewrite_amplification_bucket", "2^9"},
 			{"threadnote.graph.fact_replay_amplification_bucket", "2^20"},
 		}...)
+	case canaryTraceAutoUpdate:
+		attributes = append(attributes,
+			canaryStringAttribute{"threadnote.event", "completion"},
+			canaryStringAttribute{"threadnote.operation", "auto-update-worker"},
+			canaryStringAttribute{"threadnote.auto_update.result", "updated"},
+		)
 	}
 	return attributes
 }
@@ -499,6 +551,12 @@ func keyValue(key string, anyValue []byte) []byte {
 
 func stringValue(value string) []byte { return message(1, []byte(value)) }
 func intValue(value uint64) []byte    { return varintField(3, value) }
+func boolValue(value bool) []byte {
+	if value {
+		return varintField(2, 1)
+	}
+	return varintField(2, 0)
+}
 func message(field uint64, value []byte) []byte {
 	result := varint((field << 3) | 2)
 	result = append(result, varint(uint64(len(value)))...)

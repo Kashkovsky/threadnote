@@ -22,6 +22,9 @@ var telemetrySchemaV1JSON []byte
 //go:embed telemetry-schema-v2.json
 var telemetrySchemaV2JSON []byte
 
+//go:embed telemetry-schema-v3.json
+var telemetrySchemaV3JSON []byte
+
 type telemetrySchema struct {
 	SchemaVersion int `json:"schemaVersion"`
 	Limits        struct {
@@ -94,8 +97,8 @@ var terminalGraphSpanAttributes = []string{
 }
 
 func loadTelemetrySchemas() (*compiledTelemetrySchemas, error) {
-	result := &compiledTelemetrySchemas{byVersion: make(map[int]*compiledTelemetrySchema, 2)}
-	for version, data := range map[int][]byte{1: telemetrySchemaV1JSON, 2: telemetrySchemaV2JSON} {
+	result := &compiledTelemetrySchemas{byVersion: make(map[int]*compiledTelemetrySchema, 3)}
+	for version, data := range map[int][]byte{1: telemetrySchemaV1JSON, 2: telemetrySchemaV2JSON, 3: telemetrySchemaV3JSON} {
 		compiled, err := compileTelemetrySchema(data, version)
 		if err != nil {
 			return nil, err
@@ -140,8 +143,11 @@ func compileTelemetrySchema(data []byte, expectedVersion int) (*compiledTelemetr
 		compiled.patterns[name] = value
 	}
 	requiredRegistries := []string{"component", "correlationScope", "degradationReason", "errorType", "event", "failureCode", "failureDomain", "failureOperation", "failureReason", "failureRecovery", "memoryBucket", "modelWorkerOperation", "operation", "outcome", "phase", "stage", "subphase", "waitingReason"}
-	if expectedVersion == 2 {
+	if expectedVersion >= 2 {
 		requiredRegistries = append(requiredRegistries, "buildKind", "efficiencyClass", "fallbackReason", "materializationMode", "resolutionClosure")
+	}
+	if expectedVersion == 3 {
+		requiredRegistries = append(requiredRegistries, "autoUpdateResult")
 	}
 	for _, registry := range requiredRegistries {
 		if len(compiled.registries[registry]) == 0 {
@@ -536,6 +542,10 @@ func validateSpanAttributeValues(attributes map[string]*commonpb.AnyValue, schem
 			if !valueStringIn(value, schema.registries["failureRecovery"]) {
 				return errors.New("invalid telemetry failure recovery")
 			}
+		case key == "threadnote.auto_update.result":
+			if !valueStringIn(value, schema.registries["autoUpdateResult"]) {
+				return errors.New("invalid telemetry automatic update result")
+			}
 		case graphRegistrySpanAttributes[key] != "":
 			if !valueStringIn(value, schema.registries[graphRegistrySpanAttributes[key]]) {
 				return errors.New("invalid telemetry graph classification")
@@ -629,12 +639,27 @@ func validateSpanAttributeShape(attributes map[string]*commonpb.AnyValue, schema
 			graphAttributeCount++
 		}
 	}
-	if graphAttributeCount != 0 && (schema.SchemaVersion != 2 || event != "lifecycle" || operation != "graph-build") {
-		return errors.New("graph build attributes require a version 2 graph lifecycle event")
+	if graphAttributeCount != 0 && (schema.SchemaVersion < 2 || event != "lifecycle" || operation != "graph-build") {
+		return errors.New("graph build attributes require a versioned graph lifecycle event")
+	}
+	autoUpdateResult, hasAutoUpdateResult := anyString(attributes["threadnote.auto_update.result"])
+	_, hasAutoUpdateRepairRequired := attributes["threadnote.auto_update.repair_required"]
+	if (hasAutoUpdateResult || hasAutoUpdateRepairRequired) &&
+		(schema.SchemaVersion != 3 || event != "completion" || operation != "auto-update-worker") {
+		return errors.New("automatic update attributes require a version 3 worker completion")
+	}
+	if schema.SchemaVersion == 3 && event == "completion" && operation == "auto-update-worker" {
+		outcomeValue, _ := anyString(attributes["threadnote.outcome"])
+		if outcomeValue == "success" && !hasAutoUpdateResult {
+			return errors.New("successful automatic update worker completion requires a closed result")
+		}
+		if hasAutoUpdateRepairRequired != (autoUpdateResult == "updated") {
+			return errors.New("automatic update repair state requires an updated result")
+		}
 	}
 	if event == "lifecycle" {
 		outcomeValue, _ := anyString(attributes["threadnote.outcome"])
-		if schema.SchemaVersion == 2 && operation == "graph-build" {
+		if schema.SchemaVersion >= 2 && operation == "graph-build" {
 			if outcomeValue != "success" && outcomeValue != "failure" && outcomeValue != "interrupted" {
 				return errors.New("graph build lifecycle event requires a terminal outcome")
 			}

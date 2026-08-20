@@ -22,6 +22,8 @@ describe('telemetry commands', () => {
         expect(preview.output).toContain('bounded runtime memory/resource observations');
         expect(preview.output).toContain('phases/state');
         expect(preview.output).toContain('safe typed failures');
+        expect(preview.output).toContain('automatic-update result');
+        expect(preview.output).toContain('repair-required');
         expect(preview.output).toContain('Successful graph builds additionally include');
         expect(preview.output).toContain('build-kind/materialization/fallback/closure/efficiency');
         expect(preview.output).toContain('changed/deleted/delta/extracted/reused/staged/total file-count buckets');
@@ -83,7 +85,7 @@ describe('telemetry commands', () => {
         expect((yield* readTelemetryConfiguration(config))?.enabled).toBe(true);
         yield* runTelemetryDisable(config, {apply: true});
         const disabled = yield* readTelemetryConfiguration(config);
-        expect(disabled).toEqual({consentVersion: 2, enabled: false, version: 1});
+        expect(disabled).toEqual({consentVersion: 3, enabled: false, version: 1});
         expect(yield* fs.readFileString(yield* telemetryConfigurationPath(config))).not.toContain('sessionSalt');
       }),
     ).pipe(provideTestLayer(ApplicationLayer)),

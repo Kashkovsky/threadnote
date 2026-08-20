@@ -1,6 +1,7 @@
 import ts from 'typescript-compiler';
 import {describe, expect, it} from 'vitest';
 import {
+  ANONYMOUS_TELEMETRY_AUTO_UPDATE_RESULTS,
   ANONYMOUS_TELEMETRY_PHASES,
   ANONYMOUS_TELEMETRY_STAGES,
   ANONYMOUS_TELEMETRY_SUBPHASES,
@@ -39,8 +40,11 @@ const operationsSource = sourceFile('src/telemetry/operations.ts');
 const schemaV1 = JSON.parse(
   readFileSync(join(root, 'infra', 'telemetry-gateway', 'telemetry-schema-v1.json'), 'utf8'),
 ) as TelemetrySchema;
-const schema = JSON.parse(
+const schemaV2 = JSON.parse(
   readFileSync(join(root, 'infra', 'telemetry-gateway', 'telemetry-schema-v2.json'), 'utf8'),
+) as TelemetrySchema;
+const schema = JSON.parse(
+  readFileSync(join(root, 'infra', 'telemetry-gateway', 'telemetry-schema-v3.json'), 'utf8'),
 ) as TelemetrySchema;
 
 describe('telemetry producer and production gateway schema', () => {
@@ -83,9 +87,10 @@ describe('telemetry producer and production gateway schema', () => {
     ]);
   });
 
-  it('retains the frozen v1 boundary while v2 adds only the closed graph-build surface', () => {
+  it('retains frozen v1/v2 boundaries while v3 adds only the closed automatic-update surface', () => {
     expect(schemaV1.schemaVersion).toBe(1);
-    expect(schema.schemaVersion).toBe(2);
+    expect(schemaV2.schemaVersion).toBe(2);
+    expect(schema.schemaVersion).toBe(3);
     expect(schemaV1.attributeContract.resource).toEqual(schema.attributeContract.resource);
     expect(
       schemaV1.attributeContract.span.some(
@@ -93,7 +98,7 @@ describe('telemetry producer and production gateway schema', () => {
       ),
     ).toBe(false);
 
-    const graphAttributes = schema.attributeContract.span.filter(
+    const graphAttributes = schemaV2.attributeContract.span.filter(
       key => key.startsWith('threadnote.graph.') && key !== 'threadnote.graph.degradation_reason',
     );
     expect(graphAttributes).toEqual([
@@ -116,10 +121,18 @@ describe('telemetry producer and production gateway schema', () => {
       'threadnote.graph.total_files_bucket',
     ]);
     expect(graphAttributes.some(key => /(?:repository|path|commit|session|invocation)/u.test(key))).toBe(false);
+    expect(schema.attributeContract.span.filter(key => !schemaV2.attributeContract.span.includes(key))).toEqual([
+      'threadnote.auto_update.repair_required',
+      'threadnote.auto_update.result',
+    ]);
+    expect(
+      schema.attributeContract.booleanSpan.filter(key => !schemaV2.attributeContract.booleanSpan.includes(key)),
+    ).toEqual(['threadnote.auto_update.repair_required']);
+    expect(schema.registries.autoUpdateResult).toEqual(ANONYMOUS_TELEMETRY_AUTO_UPDATE_RESULTS);
     const collector = readFileSync(join(root, 'infra', 'telemetry-gateway', 'collector.yaml'), 'utf8');
     const canarySource = readFileSync(join(root, 'infra', 'telemetry-gateway', 'cmd', 'canary', 'main.go'), 'utf8');
     expect(collector).toContain(
-      'resource.attributes["threadnote.telemetry.schema_version"] != 1 and resource.attributes["threadnote.telemetry.schema_version"] != 2',
+      'resource.attributes["threadnote.telemetry.schema_version"] != 1 and resource.attributes["threadnote.telemetry.schema_version"] != 2 and resource.attributes["threadnote.telemetry.schema_version"] != 3',
     );
     for (const attribute of graphAttributes) {
       expect(collector).toContain(`"${attribute}"`);
@@ -173,7 +186,13 @@ describe('telemetry producer and production gateway schema', () => {
   it('packages the canonical schema into the production gateway image', () => {
     const dockerfile = readFileSync(join(root, 'infra', 'telemetry-gateway', 'Dockerfile'), 'utf8');
     const dockerignore = readFileSync(join(root, '.dockerignore'), 'utf8');
-    for (const file of ['go.sum', 'schema.go', 'telemetry-schema-v1.json', 'telemetry-schema-v2.json']) {
+    for (const file of [
+      'go.sum',
+      'schema.go',
+      'telemetry-schema-v1.json',
+      'telemetry-schema-v2.json',
+      'telemetry-schema-v3.json',
+    ]) {
       expect(dockerfile).toContain(`infra/telemetry-gateway/${file}`);
       expect(dockerignore).toContain(`!infra/telemetry-gateway/${file}`);
     }
@@ -212,7 +231,8 @@ describe('telemetry producer and production gateway schema', () => {
     expect(canary).toContain('THREADNOTE_TELEMETRY_CANARY_FLY_READ_TOKEN');
     expect(canary).toContain('vars.THREADNOTE_TELEMETRY_CANARY_GATEWAY_URL');
     expect(canary).toContain('flyctl machine list --app threadnote-telemetry --json | go run ./cmd/budget');
-    expect(canarySource).toContain('[]uint64{1, 2}');
+    expect(canarySource).toContain('schemaVersion: 3, kind: canaryTraceGraph');
+    expect(canarySource).toContain('schemaVersion: 3, kind: canaryTraceAutoUpdate');
     expect(canarySource).toContain('threadnote.graph.build_kind');
     expect(canarySource).toContain('threadnote.graph.fact_replay_amplification_bucket');
     expect(gatewayWorkflow).toContain("github.event_name != 'pull_request'");
@@ -249,8 +269,8 @@ describe('telemetry producer and production gateway schema', () => {
     expect(runbook).toContain('THREADNOTE_TELEMETRY_PUBLIC_INGESTION=disabled');
     expect(runbook).toContain('THREADNOTE_TELEMETRY_CANARY_GATEWAY_URL');
     expect(runbook).toContain('deployment order is a hard compatibility gate');
-    expect(runbook).toContain('Only after that dual-version proof succeeds');
-    expect(runbook).toContain('Keep schema-v1 ingress and canary coverage');
+    expect(runbook).toContain('Only after that three-version proof succeeds');
+    expect(runbook).toContain('Keep schema-v1 and schema-v2 ingress and canary coverage');
   });
 });
 
@@ -261,6 +281,7 @@ function producerRegistries(): Readonly<Record<string, readonly string[]>> {
     ...literalRegistry(diagnosticSource, 'CODE_GRAPH_FAILURE_OPERATIONS', {ignoreSpreads: true}),
   ];
   return {
+    autoUpdateResult: ANONYMOUS_TELEMETRY_AUTO_UPDATE_RESULTS,
     buildKind: literalRegistry(effectTelemetrySource, 'ANONYMOUS_TELEMETRY_GRAPH_BUILD_KINDS'),
     component: interfacePropertyStrings(effectTelemetrySource, 'AnonymousTelemetryInvocationOptions', 'component'),
     correlationScope: interfacePropertyStrings(
