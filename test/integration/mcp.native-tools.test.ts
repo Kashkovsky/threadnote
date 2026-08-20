@@ -1505,6 +1505,97 @@ describe('Threadnote MCP toolsets', () => {
     );
   }, 40_000);
 
+  it('serves a divergent-HEAD new worktree from stale shared evidence while its builder is blocked', async () => {
+    await withMcpClient(
+      async (client, fixture) => {
+        const repository = join(fixture.root, 'divergent-worktree-repository');
+        await mkdir(join(repository, 'src'), {recursive: true});
+        await writeFile(join(repository, 'package.json'), '{"name":"divergent-worktree-repository"}\n', 'utf8');
+        await writeFile(
+          join(repository, 'src', 'index.ts'),
+          'export function sharedBeforeDivergence(): string { return "shared"; }\n',
+          'utf8',
+        );
+        execFileSync('git', ['init', '-q'], {cwd: repository});
+        execFileSync('git', ['config', 'user.email', 'threadnote@example.test'], {cwd: repository});
+        execFileSync('git', ['config', 'user.name', 'Threadnote Test'], {cwd: repository});
+        execFileSync('git', ['add', '.'], {cwd: repository});
+        execFileSync('git', ['commit', '-qm', 'shared graph base'], {cwd: repository});
+
+        const first = await callCodeGraphUntilReady(client, {
+          callerCwd: repository,
+          operation: 'query',
+          query: 'sharedBeforeDivergence',
+        });
+        const firstSnapshot = (
+          first.structuredContent as
+            {readonly snapshot?: {readonly commit?: unknown; readonly id?: unknown}} | undefined
+        )?.snapshot;
+        expect(typeof firstSnapshot?.id).toBe('string');
+        expect(typeof firstSnapshot?.commit).toBe('string');
+
+        const branch = 'divergent-linked';
+        const worktree = join(fixture.root, 'divergent-linked-worktree');
+        execFileSync('git', ['branch', branch], {cwd: repository});
+        execFileSync('git', ['worktree', 'add', worktree, branch], {cwd: repository});
+        await writeFile(
+          join(worktree, 'src', 'divergent.ts'),
+          'export function divergentHeadOnly(): string { return "divergent"; }\n',
+          'utf8',
+        );
+        execFileSync('git', ['add', '.'], {cwd: worktree});
+        execFileSync('git', ['commit', '-qm', 'divergent graph head'], {cwd: worktree});
+
+        const gitCommonDirectory = await realpath(
+          execFileSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], {
+            cwd: worktree,
+            encoding: 'utf8',
+          }).trim(),
+        );
+        const checkoutId = createHash('sha256').update(`checkout-v1\n${gitCommonDirectory}`).digest('hex');
+        const worktreeId = createHash('sha256')
+          .update(`worktree-v1\n${await realpath(worktree)}`)
+          .digest('hex');
+        const graphLock = join(
+          fixture.home,
+          'locks',
+          'indexes',
+          'code-graph',
+          'worktrees',
+          checkoutId,
+          `${worktreeId}.lock`,
+        );
+        await mkdir(join(graphLock, '..'), {recursive: true});
+        await writeFile(graphLock, `${process.pid}:divergent-worktree-test\n`, {encoding: 'utf8', mode: 0o600});
+
+        try {
+          const startedAt = Date.now();
+          const borrowed = await client.callTool(
+            {
+              arguments: {callerCwd: worktree, operation: 'query', query: 'sharedBeforeDivergence'},
+              name: 'inspect_code_graph',
+            },
+            undefined,
+            {timeout: 5_000},
+          );
+          expect(Date.now() - startedAt).toBeLessThan(5_000);
+          expect(borrowed.isError).not.toBe(true);
+          expect(borrowed.structuredContent).toMatchObject({
+            freshness: 'stale',
+            nodes: expect.arrayContaining([expect.objectContaining({name: 'sharedBeforeDivergence'})]),
+            operation: 'query',
+            snapshot: {commit: firstSnapshot?.commit, id: firstSnapshot?.id},
+          });
+          expect((borrowed.structuredContent as {readonly state?: unknown} | undefined)?.state).toBeUndefined();
+          expect(JSON.stringify(borrowed.structuredContent)).not.toContain('divergentHeadOnly');
+        } finally {
+          await rm(graphLock, {force: true});
+        }
+      },
+      {environment: {THREADNOTE_CODE_GRAPH_PREWARM: '0'}, toolset: 'core'},
+    );
+  }, 40_000);
+
   it('keeps graphs immediately available across new TypeScript, Python, and Rust worktrees and edits', async () => {
     await withMcpClient(
       async (client, fixture) => {

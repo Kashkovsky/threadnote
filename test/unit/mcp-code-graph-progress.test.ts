@@ -63,6 +63,32 @@ describe('MCP code graph indexing progress', () => {
     {fastCheck: {numRuns: 100}},
   );
 
+  it.prop(
+    'serves a borrowed stale snapshot only for ordinary inspections',
+    {
+      operation: FC.constantFrom(
+        'query' as const,
+        'node' as const,
+        'neighbors' as const,
+        'explain' as const,
+        'path' as const,
+        'impact' as const,
+      ),
+    },
+    ({operation}) => {
+      const borrowed = {id: 'borrowed'};
+      const status = {readySnapshot: borrowed, stale: true};
+      const allowStale = codeGraphInspectionAllowsStaleReady(operation);
+      const indexing = indexingStatus(60_000);
+
+      expect(codeGraphInspectionStartsRefresh(status, operation)).toBe(!allowStale);
+      expect(selectCodeGraphReadySnapshotForInspection(status, indexing, allowStale)).toBe(
+        allowStale ? borrowed : undefined,
+      );
+    },
+    {fastCheck: {numRuns: 100}},
+  );
+
   it('allows an explicitly safe ready graph to serve while background indexing continues', () => {
     const indexing = indexingStatus(60_000);
 

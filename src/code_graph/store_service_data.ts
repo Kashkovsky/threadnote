@@ -12,6 +12,7 @@ import {
   selectReadySnapshotById,
   selectCurrentLexicalReadySnapshotById,
   selectReadySnapshotForCommit,
+  selectLatestReadySnapshotForRepository,
   selectReusableCleanBase,
   selectReusableOverlayBase,
   selectReusableReexports,
@@ -110,6 +111,7 @@ type CodeGraphStoreDataMethods = Pick<
   | 'readySnapshotById'
   | 'currentLexicalReadySnapshotById'
   | 'readySnapshotForCommit'
+  | 'latestReadySnapshotForRepository'
   | 'reusableBaseReceipt'
   | 'snapshotPackProvenance'
   | 'reusableCleanBase'
@@ -557,6 +559,15 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
             : Effect.succeed(undefined),
         ),
         Effect.mapError(cause => storeError('load ready code graph snapshot for commit', cause)),
+      ),
+    latestReadySnapshotForRepository: (databasePath, repositoryId) =>
+      fs.exists(databasePath).pipe(
+        Effect.flatMap(exists =>
+          exists
+            ? useReadOnlyDatabase(databasePath, selectLatestReadySnapshotForRepository(repositoryId))
+            : Effect.succeed(undefined),
+        ),
+        Effect.mapError(cause => storeError('load latest ready code graph snapshot for repository', cause)),
       ),
     reusableBaseReceipt: (databasePath, snapshotId, options) =>
       fs.exists(databasePath).pipe(

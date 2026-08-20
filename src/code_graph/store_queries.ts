@@ -133,6 +133,31 @@ const selectReadySnapshotForCommit = Effect.fn('codeGraph.selectReadySnapshotFor
   return rows[0] ? snapshotFromRow(rows[0]) : undefined;
 });
 
+const selectLatestReadySnapshotForRepository = Effect.fn('codeGraph.selectLatestReadySnapshotForRepository')(function* (
+  repositoryId: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* configureConnection(sql);
+  if (!(yield* tableExists(sql, 'snapshots')) || !(yield* tableExists(sql, 'lexical_storage_formats'))) {
+    return undefined;
+  }
+  const rows = yield* sql<SnapshotRow>`
+    SELECT *
+    FROM snapshots
+    WHERE repository_id = ${repositoryId}
+      AND dirty = 0
+      AND state = 'ready'
+      AND EXISTS (
+        SELECT 1 FROM lexical_storage_formats AS lexical
+        WHERE lexical.snapshot_id = snapshots.id
+          AND lexical.format_version = ${CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION}
+      )
+    ORDER BY completed_at DESC, id
+    LIMIT 1
+  `;
+  return rows[0] ? snapshotFromRow(rows[0]) : undefined;
+});
+
 const selectReusableCleanBase = Effect.fn('codeGraph.selectReusableCleanBase')(function* (
   repositoryId: string,
   extractorSet: string,
@@ -1048,6 +1073,7 @@ export {
   selectReadySnapshotById,
   selectCurrentLexicalReadySnapshotById,
   selectReadySnapshotForCommit,
+  selectLatestReadySnapshotForRepository,
   selectReusableCleanBase,
   selectReusableOverlayBase,
   selectReusableReexports,
