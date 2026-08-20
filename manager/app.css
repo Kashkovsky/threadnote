@@ -3116,6 +3116,16 @@ dd {
   min-width: min(100%, 340px);
 }
 
+.worksets-job > div > span {
+  overflow-wrap: anywhere;
+}
+
+.worksets-job > progress {
+  accent-color: var(--accent);
+  flex: 1 1 180px;
+  max-width: 360px;
+}
+
 .worksets-job > span {
   color: var(--muted);
   font-size: 11px;

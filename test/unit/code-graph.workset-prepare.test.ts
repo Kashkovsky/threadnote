@@ -1,18 +1,28 @@
 import {TestError} from '../helpers/test-error.js';
 import {it as effectIt} from '@effect/vitest';
-import {Effect, Exit, FileSystem, Path, Semaphore} from 'effect';
+import {Effect, Exit, Fiber, FileSystem, Path, Semaphore} from 'effect';
+import {TestClock} from 'effect/testing';
 import {beforeEach, describe, expect, it, vi} from 'vitest';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
 import {CodeGraphIndexer, type CodeGraphIndexerShape} from '../../src/code_graph/indexer.js';
 import {CodeGraphQueryService} from '../../src/code_graph/query.js';
-import {inspectCodeGraphWorksetStatus, prepareCodeGraphWorkset} from '../../src/code_graph/workset_catalog/workset.js';
+import {
+  inspectCodeGraphWorksetStatus,
+  prepareCodeGraphWorkset,
+  type CodeGraphWorksetPrepareProgressV1,
+} from '../../src/code_graph/workset_catalog/workset.js';
 import {
   CODE_GRAPH_WORKSET_CATALOG_PROJECTOR_VERSION,
   CodeGraphWorksetCatalogError,
   type CodeGraphWorksetCatalogGenerationReceiptInputV1,
   type CodeGraphWorksetCatalogGenerationReceiptV1,
 } from '../../src/code_graph/workset_catalog/types.js';
-import type {CodeGraphIndexSummary, RepositoryIdentity} from '../../src/code_graph/types.js';
+import {
+  CodeGraphStoreBusyError,
+  CodeGraphStoreNoSpaceError,
+  type CodeGraphIndexSummary,
+  type RepositoryIdentity,
+} from '../../src/code_graph/types.js';
 import type {ResolvedWorkset, RuntimeConfig} from '../../src/types.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
@@ -439,6 +449,85 @@ describe('code graph workset mixed-coverage preparation', () => {
         generationId: generation.id,
         projectionDigests: ['b'.repeat(64)],
       });
+    }).pipe(provideTestLayer(ApplicationLayer));
+  });
+
+  effectIt.effect('streams member progress and retries one typed transient index failure', () => {
+    const fs = {exists: (path: string) => Effect.succeed(path === '/ready')} as unknown as FileSystem.FileSystem;
+    const progress: CodeGraphWorksetPrepareProgressV1[] = [];
+    let attempts = 0;
+    const indexer: CodeGraphIndexerShape = {
+      ensureCommit: () => Effect.die('not used'),
+      index: options =>
+        Effect.suspend(() => {
+          attempts += 1;
+          return (options.onProgress?.({phase: 'waiting', reason: 'repository-lock'}) ?? Effect.void).pipe(
+            Effect.andThen(
+              attempts === 1
+                ? Effect.fail(new CodeGraphStoreBusyError('busy fixture', {operation: 'workset member index'}))
+                : Effect.succeed(summary),
+            ),
+          );
+        }),
+    };
+
+    return Effect.gen(function* () {
+      const fiber = yield* prepareCodeGraphWorkset(config, 'engineering', {
+        onProgress: event => Effect.sync(() => progress.push(event)),
+      }).pipe(
+        Effect.provideService(FileSystem.FileSystem, fs),
+        Effect.provideService(CodeGraphIndexer, indexer),
+        Effect.forkChild({startImmediately: true}),
+      );
+      yield* Effect.yieldNow;
+      yield* TestClock.adjust('250 millis');
+      const result = yield* Fiber.join(fiber);
+
+      expect(attempts).toBe(2);
+      expect(result.coverage).toEqual({complete: false, excluded: 0, failed: 0, missing: 1, ready: 1, requested: 2});
+      expect(progress[0]).toMatchObject({completed: 0, phase: 'starting', total: 2});
+      expect(progress).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({attempt: 1, phase: 'indexing', project: 'ready'}),
+          expect.objectContaining({attempt: 2, phase: 'indexing', project: 'ready'}),
+          expect.objectContaining({activity: {phase: 'waiting', reason: 'repository-lock'}, project: 'ready'}),
+          expect.objectContaining({member: expect.objectContaining({project: 'missing', state: 'missing'})}),
+          expect.objectContaining({member: expect.objectContaining({project: 'ready', state: 'ready'})}),
+          expect.objectContaining({completed: 2, phase: 'completed', resultState: 'ready'}),
+        ]),
+      );
+      expect(progress.map(event => event.completed)).toEqual(
+        [...progress.map(event => event.completed)].sort((left, right) => left - right),
+      );
+    }).pipe(provideTestLayer(ApplicationLayer));
+  });
+
+  effectIt.effect('keeps actionable typed detail when every member index fails', () => {
+    const fs = {exists: (path: string) => Effect.succeed(path === '/ready')} as unknown as FileSystem.FileSystem;
+    const indexer: CodeGraphIndexerShape = {
+      ensureCommit: () => Effect.die('not used'),
+      index: () => Effect.fail(new CodeGraphStoreNoSpaceError('no space fixture', {operation: 'workset index'})),
+    };
+
+    return Effect.gen(function* () {
+      const result = yield* prepareCodeGraphWorkset(config, 'engineering').pipe(
+        Effect.provideService(FileSystem.FileSystem, fs),
+        Effect.provideService(CodeGraphIndexer, indexer),
+      );
+
+      expect(result.state).toBe('failed');
+      expect(result.coverage).toEqual({complete: false, excluded: 0, failed: 1, missing: 1, ready: 0, requested: 2});
+      expect(result.members[0]).toMatchObject({
+        detail: {
+          code: 'no-space',
+          errorType: 'CodeGraphStoreNoSpaceError',
+          recovery: 'free-space',
+          retryable: false,
+        },
+        reason: 'index-failed',
+        state: 'failed',
+      });
+      expect(mocks.stageGeneration).not.toHaveBeenCalled();
     }).pipe(provideTestLayer(ApplicationLayer));
   });
 

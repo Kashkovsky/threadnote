@@ -1,4 +1,4 @@
-import {Effect, Exit, FileSystem, Path, Result} from 'effect';
+import {Cause, Clock, Effect, Exit, FileSystem, Path, Ref, Result, Semaphore} from 'effect';
 import {sha256HexSync} from '../../crypto/sha256.js';
 import {isFileLockTimeout, withExclusiveFileLock} from '../../effect/file_lock.js';
 import {requireWorkset} from '../../manifest.js';
@@ -13,10 +13,18 @@ import {
 } from '../cross_repository/store.js';
 import type {CodeGraphMonikerV1} from '../cross_repository/types.js';
 import {CodeGraphIndexer, type CodeGraphIndexerShape} from '../indexer.js';
+import {
+  RepositoryMaintenanceInterrupted,
+  RepositoryRegistrationLost,
+  WorktreeChangedDuringIndex,
+} from '../indexer_shared.js';
 import {CodeGraphQueryService} from '../query.js';
+import {makeCodeGraphWorksetTelemetryReporter} from '../workset_telemetry.js';
 import {
   CodeGraphRepositoryError,
   CodeGraphStoreError,
+  type CodeGraphIndexSummary,
+  type CodeGraphProgress,
   type CodeGraphSnapshot,
   type CodeGraphStatus,
   type CodeGraphStoreFailureCode,
@@ -43,6 +51,8 @@ import type {
 
 export const CODE_GRAPH_WORKSET_PREPARE_CONCURRENCY_DEFAULT = 2;
 export const CODE_GRAPH_WORKSET_PREPARE_CONCURRENCY_MAXIMUM = 8;
+export const CODE_GRAPH_WORKSET_PREPARE_MEMBER_ATTEMPTS_MAXIMUM = 2;
+const CODE_GRAPH_WORKSET_PREPARE_RETRY_DELAY = '250 millis';
 const WORKSET_PREPARE_LOCK_OPTIONS = {
   heartbeatIntervalMilliseconds: 10_000,
   retryIntervalMilliseconds: 25,
@@ -65,6 +75,7 @@ export type CodeGraphWorksetPrepareMemberV1 =
       readonly state: 'excluded';
     }
   | {
+      readonly detail: CodeGraphWorksetPrepareFailureDetailV1;
       readonly project: string;
       readonly reason: 'index-failed' | 'projection-failed';
       readonly state: 'failed';
@@ -75,8 +86,30 @@ export type CodeGraphWorksetPrepareMemberV1 =
       readonly state: 'missing';
     };
 
+export type CodeGraphWorksetPrepareFailureCodeV1 =
+  CodeGraphStoreFailureCode | 'catalog' | 'repository' | 'worktree-changed' | 'unknown';
+
+export interface CodeGraphWorksetPrepareFailureDetailV1 {
+  readonly code: CodeGraphWorksetPrepareFailureCodeV1;
+  readonly errorType: string;
+  readonly recovery?: CodeGraphStoreRecovery;
+  readonly retryable: boolean;
+  /** Authored, path-free diagnostic safe for CLI and Manager receipts. */
+  readonly summary: string;
+}
+
+export interface CodeGraphWorksetPrepareCoverageV1 {
+  readonly complete: boolean;
+  readonly excluded: number;
+  readonly failed: number;
+  readonly missing: number;
+  readonly ready: number;
+  readonly requested: number;
+}
+
 export interface CodeGraphWorksetPrepareResultV1 {
   readonly bridges?: CodeGraphWorksetPrepareBridgeReceiptV1;
+  readonly coverage: CodeGraphWorksetPrepareCoverageV1;
   readonly manifestDigest: string;
   readonly members: readonly CodeGraphWorksetPrepareMemberV1[];
   readonly published?: CodeGraphWorksetCatalogGenerationReceiptV1;
@@ -122,6 +155,7 @@ export interface CodeGraphWorksetStatusMemberV1 {
     | 'invalid-repository'
     | 'missing-path'
     | 'no-ready-snapshot'
+    | 'not-in-published-generation'
     | 'snapshot-drift'
     | 'status-corrupt'
     | 'status-failed'
@@ -157,6 +191,55 @@ export interface CodeGraphWorksetStatusResultV1 {
 
 export interface PrepareCodeGraphWorksetOptionsV1 {
   readonly concurrency?: number;
+  readonly onProgress?: (progress: CodeGraphWorksetPrepareProgressV1) => Effect.Effect<void, unknown>;
+}
+
+export type CodeGraphWorksetPreparePhaseV1 =
+  | 'bridging'
+  | 'cataloging'
+  | 'completed'
+  | 'failed'
+  | 'indexing'
+  | 'projecting'
+  | 'publishing'
+  | 'starting'
+  | 'waiting';
+
+export interface CodeGraphWorksetPrepareIndexActivityV1 {
+  readonly completed?: number;
+  readonly phase: CodeGraphProgress['phase'];
+  readonly reason?: Extract<CodeGraphProgress, {readonly phase: 'waiting'}>['reason'];
+  readonly subphase?: string;
+  readonly total?: number;
+  readonly unit?: 'files' | 'snapshots' | 'symbols';
+}
+
+export interface CodeGraphWorksetPrepareProgressV1 {
+  readonly activity?: CodeGraphWorksetPrepareIndexActivityV1;
+  readonly attempt?: number;
+  readonly completed: number;
+  readonly elapsedMilliseconds: number;
+  readonly maxAttempts?: number;
+  readonly member?: CodeGraphWorksetPrepareMemberV1;
+  readonly message: string;
+  readonly phase: CodeGraphWorksetPreparePhaseV1;
+  readonly project?: string;
+  readonly resultState?: CodeGraphWorksetPrepareResultV1['state'];
+  readonly total: number;
+  readonly type: 'code-graph-workset-progress';
+  readonly version: 1;
+  readonly workset: string;
+}
+
+interface CodeGraphWorksetPrepareProgressInputV1 {
+  readonly activity?: CodeGraphWorksetPrepareIndexActivityV1;
+  readonly attempt?: number;
+  readonly completed?: number;
+  readonly maxAttempts?: number;
+  readonly member?: CodeGraphWorksetPrepareMemberV1;
+  readonly phase: CodeGraphWorksetPreparePhaseV1;
+  readonly project?: string;
+  readonly resultState?: CodeGraphWorksetPrepareResultV1['state'];
 }
 
 export function codeGraphWorksetManifestDigest(workset: ResolvedWorkset): string {
@@ -192,22 +275,60 @@ const prepareCodeGraphWorksetScoped = Effect.fn('codeGraphWorkset.prepareScoped'
       }),
   });
   const manifestDigest = codeGraphWorksetManifestDigest(workset);
+  const total = workset.projects.length + workset.unresolvedProjects.length;
+  const startedAt = yield* Clock.currentTimeMillis;
+  const completed = yield* Ref.make(0);
+  const progressGate = yield* Semaphore.make(1);
+  const telemetry = yield* makeCodeGraphWorksetTelemetryReporter();
+  const reportAt = (input: CodeGraphWorksetPrepareProgressInputV1) =>
+    progressGate.withPermit(
+      Effect.all([Clock.currentTimeMillis, Ref.get(completed)]).pipe(
+        Effect.flatMap(([now, completedMembers]) =>
+          reportCodeGraphWorksetPrepareProgress(options.onProgress, telemetry.progress, {
+            ...input,
+            completed: input.completed ?? completedMembers,
+            elapsedMilliseconds: Math.max(0, now - startedAt),
+            message: '',
+            total,
+            type: 'code-graph-workset-progress',
+            version: 1,
+            workset: workset.name,
+          }),
+        ),
+        Effect.catchCause(() => Effect.void),
+      ),
+    );
+  const completeMember = (phase: 'indexing' | 'projecting', member: CodeGraphWorksetPrepareMemberV1) =>
+    Ref.updateAndGet(completed, value => Math.min(total, value + 1)).pipe(
+      Effect.flatMap(count => reportAt({completed: count, member, phase, project: member.project})),
+    );
+  yield* reportAt({phase: 'starting'});
+  const unresolved: readonly PreparedMemberWithProjection[] = workset.unresolvedProjects.map(
+    project =>
+      ({
+        project: safeLabel(project),
+        reason: 'unknown-project',
+        state: 'excluded',
+      }) as const satisfies CodeGraphWorksetPrepareMemberV1,
+  );
+  yield* Effect.forEach(unresolved, member => completeMember('indexing', member), {discard: true});
   const indexed = yield* Effect.forEach(
     workset.projects,
-    project => prepareConfiguredSnapshot(config, project, fs, indexer),
+    project => prepareConfiguredSnapshot(config, project, fs, indexer, reportAt, completeMember),
     {concurrency},
   );
   const projectionDigests = new Set<string>();
   let stagedGenerationId: string | undefined;
   const critical = Effect.gen(function* () {
     yield* assertCurrentWorksetManifest(config, workset.name, manifestDigest);
+    yield* reportAt({phase: 'cataloging'});
     yield* drainCodeGraphWorksetCatalogCleanup(config.agentContextHome);
     // Projection reads and catalog appends are deliberately serial: at most one
     // normalized symbol page is live across the complete preparation.
     const configured: readonly PreparedMemberWithProjection[] = yield* Effect.forEach(
       indexed,
       member =>
-        stageConfiguredMember(config, member).pipe(
+        stageConfiguredMember(config, member, reportAt, completeMember).pipe(
           Effect.tap(prepared =>
             Effect.sync(() => {
               if (prepared.state === 'ready') projectionDigests.add(prepared.projectionDigest);
@@ -215,14 +336,6 @@ const prepareCodeGraphWorksetScoped = Effect.fn('codeGraphWorkset.prepareScoped'
           ),
         ),
       {concurrency: 1},
-    );
-    const unresolved: readonly PreparedMemberWithProjection[] = workset.unresolvedProjects.map(
-      project =>
-        ({
-          project: safeLabel(project),
-          reason: 'unknown-project',
-          state: 'excluded',
-        }) as const satisfies CodeGraphWorksetPrepareMemberV1,
     );
     const members: readonly PreparedMemberWithProjection[] = [...configured, ...unresolved];
     const generationMembers = members.flatMap(member =>
@@ -239,8 +352,10 @@ const prepareCodeGraphWorksetScoped = Effect.fn('codeGraphWorkset.prepareScoped'
     });
     stagedGenerationId = staged.state === 'staging' ? staged.id : undefined;
     const bridgeMembers = members.filter((member): member is PreparedReadyMember => member.state === 'ready');
+    yield* reportAt({completed: yield* Ref.get(completed), phase: 'bridging'});
     const bridges = yield* prepareCodeGraphWorksetBridgesForGeneration(config, staged.id, bridgeMembers);
     yield* assertPreparedMemberLeases(members);
+    yield* reportAt({completed: yield* Ref.get(completed), phase: 'publishing'});
     const published = yield* publishCodeGraphWorksetCatalogGeneration(config.agentContextHome, {
       beforePointerSwap: () =>
         assertPreparedMemberLeases(members).pipe(
@@ -263,6 +378,7 @@ const prepareCodeGraphWorksetScoped = Effect.fn('codeGraphWorkset.prepareScoped'
     ),
   );
   const layout = codeGraphWorksetCatalogLayout(path, config.agentContextHome);
+  yield* reportAt({completed: yield* Ref.get(completed), phase: 'waiting'});
   return yield* withExclusiveFileLock(fs, layout.prepareLockPath, WORKSET_PREPARE_LOCK_OPTIONS, critical).pipe(
     Effect.mapError(cause =>
       cause instanceof CodeGraphWorksetCatalogError
@@ -275,8 +391,119 @@ const prepareCodeGraphWorksetScoped = Effect.fn('codeGraphWorkset.prepareScoped'
             {cause},
           ),
     ),
+    Effect.tap(result =>
+      reportAt({completed: total, phase: 'completed', resultState: result.state}).pipe(
+        Effect.andThen(telemetry.terminal(result)),
+      ),
+    ),
+    Effect.onExit(exit =>
+      Exit.isFailure(exit)
+        ? Ref.get(completed).pipe(
+            Effect.flatMap(count =>
+              reportAt({completed: count, phase: 'failed'}).pipe(
+                Effect.andThen(telemetry.failure(Cause.squash(exit.cause), count, total)),
+              ),
+            ),
+          )
+        : Effect.void,
+    ),
   );
 });
+
+function reportCodeGraphWorksetPrepareProgress(
+  reporter: PrepareCodeGraphWorksetOptionsV1['onProgress'],
+  telemetryReporter: (progress: CodeGraphWorksetPrepareProgressV1) => Effect.Effect<void>,
+  progress: CodeGraphWorksetPrepareProgressV1,
+) {
+  const event = {...progress, message: renderCodeGraphWorksetPrepareProgress(progress)};
+  return Effect.all([reporter?.(event) ?? Effect.void, telemetryReporter(event)], {discard: true}).pipe(
+    Effect.catchCause(() => Effect.void),
+  );
+}
+
+export function renderCodeGraphWorksetPrepareProgress(
+  progress: Omit<CodeGraphWorksetPrepareProgressV1, 'message'> | CodeGraphWorksetPrepareProgressV1,
+): string {
+  const count = `${progress.completed}/${progress.total} members · ${formatWorksetPrepareElapsed(progress.elapsedMilliseconds)}`;
+  switch (progress.phase) {
+    case 'starting':
+      return `Workset starting · ${progress.total} member${progress.total === 1 ? '' : 's'}.`;
+    case 'waiting':
+      return `Workset waiting · home-global publication lock · ${count}.`;
+    case 'indexing': {
+      const attempt =
+        progress.attempt === undefined
+          ? ''
+          : ` · attempt ${progress.attempt}/${progress.maxAttempts ?? progress.attempt}`;
+      const activity = renderCodeGraphWorksetIndexActivity(progress.activity);
+      const terminal = progress.member === undefined ? '' : ` · ${renderPrepareMemberTerminal(progress.member)}`;
+      return `Workset indexing · ${progress.project ?? 'member'}${attempt}${activity}${terminal} · ${count}.`;
+    }
+    case 'projecting': {
+      const terminal = progress.member === undefined ? '' : ` · ${renderPrepareMemberTerminal(progress.member)}`;
+      return `Workset projecting · ${progress.project ?? 'member'}${terminal} · ${count}.`;
+    }
+    case 'cataloging':
+      return `Workset cataloging · staging an atomic routing catalog · ${count}.`;
+    case 'bridging':
+      return `Workset bridging · resolving cross-repository bridges · ${count}.`;
+    case 'publishing':
+      return `Workset publishing · atomic generation pointer · ${count}.`;
+    case 'completed':
+      return progress.resultState === 'ready'
+        ? `Workset completed · published generation · ${count}.`
+        : `Workset completed · no ready generation published · ${count}.`;
+    case 'failed':
+      return `Workset failed · previous generation preserved · ${count}.`;
+  }
+}
+
+function formatWorksetPrepareElapsed(milliseconds: number): string {
+  const seconds = Math.max(0, Math.floor(milliseconds / 1_000));
+  if (seconds < 60) return `${seconds}s elapsed`;
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes}m ${seconds % 60}s elapsed`;
+}
+
+function renderCodeGraphWorksetIndexActivity(activity: CodeGraphWorksetPrepareIndexActivityV1 | undefined): string {
+  if (activity === undefined) return '';
+  const phase = activity.subphase === undefined ? activity.phase : `${activity.phase}/${activity.subphase}`;
+  const measured =
+    activity.completed === undefined || activity.total === undefined
+      ? ''
+      : ` ${activity.completed}/${activity.total}${activity.unit === undefined ? '' : ` ${activity.unit}`}`;
+  const reason = activity.reason === undefined ? '' : ` (${activity.reason})`;
+  return ` · ${phase}${measured}${reason}`;
+}
+
+function renderPrepareMemberTerminal(member: CodeGraphWorksetPrepareMemberV1): string {
+  switch (member.state) {
+    case 'ready':
+      return `ready with ${member.symbolCount} routing symbols`;
+    case 'failed':
+      return `${member.reason}: ${member.detail.summary}`;
+    case 'excluded':
+    case 'missing':
+      return `${member.state}: ${member.reason}`;
+  }
+}
+
+function codeGraphWorksetPrepareIndexActivity(progress: CodeGraphProgress): CodeGraphWorksetPrepareIndexActivityV1 {
+  const measured =
+    'completed' in progress && 'total' in progress
+      ? {
+          completed: progress.completed,
+          total: progress.total,
+          ...('unit' in progress ? {unit: progress.unit} : {}),
+        }
+      : {};
+  return {
+    ...measured,
+    phase: progress.phase,
+    ...(progress.phase === 'waiting' && progress.reason !== undefined ? {reason: progress.reason} : {}),
+    ...('subphase' in progress && progress.subphase !== undefined ? {subphase: progress.subphase} : {}),
+  };
+}
 
 function assertCurrentWorksetManifest(config: RuntimeConfig, worksetName: string, expectedDigest: string) {
   return requireWorkset(config.manifestPath, worksetName).pipe(
@@ -356,6 +583,25 @@ export const inspectCodeGraphWorksetStatus = Effect.fn('codeGraphWorkset.status'
     published === undefined ? 'missing' : generationDrift || states.current !== members.length ? 'stale' : 'ready';
   const warnings = [
     ...(published === undefined ? ['No published routing catalog exists; run `threadnote workset prepare`.'] : []),
+    ...(states.uncatalogued > 0
+      ? [
+          `${states.uncatalogued} member(s) have a ready repository snapshot but are absent from the published workset generation; prepare the workset and review its member receipts.`,
+        ]
+      : []),
+    ...(states.deferred > 0
+      ? [
+          `${states.deferred} member(s) need a ready repository snapshot; workset preparation will index them explicitly.`,
+        ]
+      : []),
+    ...(states.failed > 0
+      ? [`${states.failed} member status check(s) failed; review the typed recovery detail below.`]
+      : []),
+    ...(states.missing > 0
+      ? [`${states.missing} configured member path(s) are missing; correct the project path or restore the checkout.`]
+      : []),
+    ...(states.stale > 0
+      ? [`${states.stale} member(s) no longer match the published generation; prepare the workset again.`]
+      : []),
     ...(generationDrift ? ['The published catalog generation does not match the current workset manifest.'] : []),
     ...(unresolved.length > 0 ? ['The workset names projects that are absent from the seed manifest.'] : []),
     ...(published !== undefined && bridges === undefined
@@ -387,39 +633,100 @@ function prepareConfiguredSnapshot(
   project: ProjectManifest,
   fs: FileSystem.FileSystem,
   indexer: CodeGraphIndexerShape,
+  report: (progress: CodeGraphWorksetPrepareProgressInputV1) => Effect.Effect<void>,
+  completeMember: (phase: 'indexing' | 'projecting', member: CodeGraphWorksetPrepareMemberV1) => Effect.Effect<void>,
 ) {
   return Effect.gen(function* () {
     const cwd = yield* expandPath(project.path);
-    if (!(yield* fs.exists(cwd))) return failedPrepareMember(project.name, 'missing-path');
-    const indexed = yield* indexer.index({cwd, ensureVectors: false, threadnoteHome: config.agentContextHome});
+    if (!(yield* fs.exists(cwd))) {
+      const missing = failedPrepareMember(project.name, 'missing-path');
+      yield* completeMember('indexing', missing);
+      return missing;
+    }
+    const projectName = safeLabel(project.name);
+    const indexAttempt = (attempt: number): Effect.Effect<CodeGraphIndexSummary, unknown> =>
+      report({
+        attempt,
+        maxAttempts: CODE_GRAPH_WORKSET_PREPARE_MEMBER_ATTEMPTS_MAXIMUM,
+        phase: 'indexing',
+        project: projectName,
+      }).pipe(
+        Effect.andThen(
+          indexer.index({
+            cwd,
+            ensureVectors: false,
+            onProgress: progress =>
+              report({
+                activity: codeGraphWorksetPrepareIndexActivity(progress),
+                attempt,
+                maxAttempts: CODE_GRAPH_WORKSET_PREPARE_MEMBER_ATTEMPTS_MAXIMUM,
+                phase: 'indexing',
+                project: projectName,
+              }),
+            threadnoteHome: config.agentContextHome,
+          }),
+        ),
+        Effect.catch(error =>
+          attempt < CODE_GRAPH_WORKSET_PREPARE_MEMBER_ATTEMPTS_MAXIMUM &&
+          codeGraphWorksetPrepareFailureDetail(error, 'index').retryable
+            ? Effect.sleep(CODE_GRAPH_WORKSET_PREPARE_RETRY_DELAY).pipe(Effect.andThen(indexAttempt(attempt + 1)))
+            : Effect.fail(error),
+        ),
+      );
+    const outcome = yield* Effect.result(indexAttempt(1));
+    if (Result.isFailure(outcome)) {
+      const failed = failedPrepareMember(project.name, 'index-failed', outcome.failure);
+      yield* completeMember('indexing', failed);
+      return failed;
+    }
+    const indexed = outcome.success;
     return {
       indexed: {identity: indexed.identity, snapshot: indexed.snapshot},
-      project: safeLabel(project.name),
+      project: projectName,
       state: 'indexed',
     } as const;
-  }).pipe(Effect.catch(() => Effect.succeed(failedPrepareMember(project.name, 'index-failed'))));
+  }).pipe(
+    Effect.catch(error => {
+      const failed = failedPrepareMember(project.name, 'index-failed', error);
+      return completeMember('indexing', failed).pipe(Effect.as(failed));
+    }),
+  );
 }
 
-function stageConfiguredMember(config: RuntimeConfig, member: PreparedSnapshotMember) {
+function stageConfiguredMember(
+  config: RuntimeConfig,
+  member: PreparedSnapshotMember,
+  report: (progress: CodeGraphWorksetPrepareProgressInputV1) => Effect.Effect<void>,
+  completeMember: (phase: 'indexing' | 'projecting', member: CodeGraphWorksetPrepareMemberV1) => Effect.Effect<void>,
+) {
   return Effect.gen(function* () {
     if (member.state !== 'indexed') return member;
-    return yield* stageCodeGraphWorksetRoutingProjectionScoped({
-      identity: member.indexed.identity,
-      snapshotId: member.indexed.snapshot.id,
-      threadnoteHome: config.agentContextHome,
-    }).pipe(
-      Effect.map(built => ({
-        assertLease: built.assertLease,
+    yield* report({phase: 'projecting', project: member.project});
+    const outcome = yield* Effect.result(
+      stageCodeGraphWorksetRoutingProjectionScoped({
         identity: member.indexed.identity,
-        project: member.project,
-        projectionDigest: built.receipt.projectionDigest,
-        repositoryId: built.receipt.repositoryId,
-        snapshotId: built.receipt.snapshotId,
-        state: 'ready' as const,
-        symbolCount: built.receipt.symbolCount,
-      })),
-      Effect.catch(() => Effect.succeed(failedPrepareMember(member.project, 'projection-failed'))),
+        snapshotId: member.indexed.snapshot.id,
+        threadnoteHome: config.agentContextHome,
+      }),
     );
+    if (Result.isFailure(outcome)) {
+      const failed = failedPrepareMember(member.project, 'projection-failed', outcome.failure);
+      yield* completeMember('projecting', failed);
+      return failed;
+    }
+    const built = outcome.success;
+    const ready = {
+      assertLease: built.assertLease,
+      identity: member.indexed.identity,
+      project: member.project,
+      projectionDigest: built.receipt.projectionDigest,
+      repositoryId: built.receipt.repositoryId,
+      snapshotId: built.receipt.snapshotId,
+      state: 'ready' as const,
+      symbolCount: built.receipt.symbolCount,
+    };
+    yield* completeMember('projecting', publicPrepareMember(ready));
+    return ready;
   });
 }
 
@@ -491,7 +798,7 @@ export function classifyCodeGraphWorksetStatusMember(
     ...(status.readySnapshot === undefined ? {} : {snapshotId: status.readySnapshot.id}),
   };
   if (status.readySnapshot === undefined) return {...common, reason: 'no-ready-snapshot', state: 'deferred'};
-  if (published === undefined) return {...common, state: 'uncatalogued'};
+  if (published === undefined) return {...common, reason: 'not-in-published-generation', state: 'uncatalogued'};
   if (published.repositoryId !== status.identity.repositoryId)
     return {...common, reason: 'identity-drift', state: 'stale'};
   if (published.checkoutId !== status.identity.checkoutId) return {...common, reason: 'checkout-drift', state: 'stale'};
@@ -546,9 +853,105 @@ type PreparedMemberWithProjection =
 function failedPrepareMember(
   project: string,
   reason: 'index-failed' | 'missing-path' | 'projection-failed',
+  error?: unknown,
 ): Exclude<CodeGraphWorksetPrepareMemberV1, {readonly state: 'excluded' | 'ready'}> {
   if (reason === 'missing-path') return {project: safeLabel(project), reason, state: 'missing'};
-  return {project: safeLabel(project), reason, state: 'failed'};
+  return {
+    detail: codeGraphWorksetPrepareFailureDetail(error, reason === 'index-failed' ? 'index' : 'projection'),
+    project: safeLabel(project),
+    reason,
+    state: 'failed',
+  };
+}
+
+export function codeGraphWorksetPrepareFailureDetail(
+  error: unknown,
+  stage: 'index' | 'projection',
+): CodeGraphWorksetPrepareFailureDetailV1 {
+  if (error instanceof CodeGraphStoreError) {
+    return {
+      code: error.code,
+      errorType: safePrepareErrorType(error),
+      recovery: error.recovery,
+      retryable: error.retryable,
+      summary: worksetStoreRecoverySummary(error.recovery),
+    };
+  }
+  if (error instanceof CodeGraphRepositoryError) {
+    return {
+      code: 'repository',
+      errorType: error.name,
+      retryable: false,
+      summary: 'The configured project path is not a readable Git repository.',
+    };
+  }
+  if (
+    error instanceof WorktreeChangedDuringIndex ||
+    error instanceof RepositoryMaintenanceInterrupted ||
+    error instanceof RepositoryRegistrationLost
+  ) {
+    return {
+      code: 'worktree-changed',
+      errorType: error.name,
+      retryable: true,
+      summary:
+        error instanceof RepositoryMaintenanceInterrupted
+          ? 'Graph maintenance superseded indexing; retry after maintenance completes.'
+          : 'The repository changed while indexing; retry when the checkout is stable.',
+    };
+  }
+  if (error instanceof CodeGraphWorksetCatalogError) {
+    return {
+      code: 'catalog',
+      errorType: error.name,
+      retryable: error.reason === 'busy',
+      summary:
+        error.reason === 'capacity'
+          ? 'The routing projection exceeded a bounded catalog capacity; inspect catalog storage diagnostics.'
+          : 'The routing catalog could not stage this member; inspect catalog diagnostics and retry.',
+    };
+  }
+  return {
+    code: 'unknown',
+    errorType: safePrepareErrorType(error),
+    retryable: false,
+    summary:
+      stage === 'index'
+        ? 'Repository indexing failed; run graph diagnostics for this project and retry.'
+        : 'Routing projection failed; run graph diagnostics for this project and retry.',
+  };
+}
+
+function safePrepareErrorType(error: unknown): string {
+  const name = error instanceof Error ? error.name : 'UnknownError';
+  return /^[A-Za-z][A-Za-z0-9_.-]{0,79}$/u.test(name) ? name : 'UnknownError';
+}
+
+function worksetStoreRecoverySummary(recovery: CodeGraphStoreRecovery): string {
+  const summaries: Readonly<Record<CodeGraphStoreRecovery, string>> = {
+    defer: 'Graph storage is busy; wait for the active operation and retry.',
+    diagnose: 'Graph storage failed; run graph diagnostics for this project.',
+    'fix-permissions': 'Graph storage is not writable; fix its permissions and retry.',
+    'free-space': 'Graph storage is out of safe disk capacity; free space and retry.',
+    'manual-migration': 'Graph storage needs a compatible Threadnote runtime or manual migration.',
+    'manual-rebuild': 'Graph storage is corrupt; diagnose and rebuild this project graph.',
+    'migrate-additive': 'Graph storage needs its additive schema migration before retrying.',
+    'reconnect-runtime': 'Reconnect this Threadnote runtime after the graph schema upgrade.',
+    'retry-read-only': 'Graph storage hit transient I/O; retry after the filesystem settles.',
+  };
+  return summaries[recovery];
+}
+
+export function codeGraphWorksetPrepareCoverage(
+  members: readonly CodeGraphWorksetPrepareMemberV1[],
+): CodeGraphWorksetPrepareCoverageV1 {
+  const coverage = {excluded: 0, failed: 0, missing: 0, ready: 0};
+  for (const member of members) coverage[member.state] += 1;
+  return {
+    ...coverage,
+    complete: coverage.ready === members.length,
+    requested: members.length,
+  };
 }
 
 function prepareResult(
@@ -558,10 +961,12 @@ function prepareResult(
   published: CodeGraphWorksetCatalogGenerationReceiptV1 | undefined,
   bridges?: CodeGraphWorksetPrepareBridgeReceiptV1,
 ): CodeGraphWorksetPrepareResultV1 {
+  const publicMembers = members.map(publicPrepareMember);
   return {
     ...(bridges === undefined ? {} : {bridges}),
+    coverage: codeGraphWorksetPrepareCoverage(publicMembers),
     manifestDigest,
-    members: members.map(publicPrepareMember),
+    members: publicMembers,
     ...(published === undefined ? {} : {published}),
     state: published === undefined ? 'failed' : 'ready',
     type: 'code-graph-workset-prepare',

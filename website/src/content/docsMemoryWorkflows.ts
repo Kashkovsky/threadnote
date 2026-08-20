@@ -175,11 +175,11 @@ threadnote workset prepare checkout --json`,
         },
         {
           type: 'paragraph',
-          text: 'Preparation builds or refreshes configured repositories, streams routing projections into the home-global catalog, resolves supported cross-repository monikers, and atomically publishes one cgwg_ generation. It may publish a non-empty ready subset while retaining missing, failed, or excluded member receipts. If no member can be published, the prior ready generation remains the last good state.',
+          text: 'Preparation builds or refreshes configured repositories, streams routing projections into the home-global catalog, resolves supported cross-repository monikers, and atomically publishes one cgwg_ generation. The CLI reports the active member, repository-index phase and counters, projection/catalog/bridge/publication phases, elapsed time, and completed-member count while work continues. A retryable storage or checkout race receives one bounded retry. It may publish a non-empty ready subset while retaining missing, failed, or excluded member receipts; incomplete coverage is called out separately from publication success. If no member can be published, the prior ready generation remains the last good state.',
         },
         {
           type: 'paragraph',
-          text: 'The JSON prepare receipt reports each ready/missing/failed/excluded member, projection symbol counts, the published generation, moniker and bridge counts, resolver version, rejection count, and any unavailable repositories. JSON status separates catalog missing/ready/stale from member current/deferred/excluded/failed/missing/stale/uncatalogued states and includes the published bridge digest/count plus complete, partial, or failed bridge coverage diagnostics.',
+          text: 'The JSON prepare command emits bounded code-graph-workset-progress records on stderr and keeps the final receipt on stdout. The receipt reports complete/incomplete coverage, each ready/missing/failed/excluded member, typed failure code, retryability and recovery guidance, projection symbol counts, the published generation, moniker and bridge counts, resolver version, rejection count, and any unavailable repositories. JSON status separates catalog missing/ready/stale from member current/deferred/excluded/failed/missing/stale/uncatalogued states and includes the published bridge digest/count plus complete, partial, or failed bridge coverage diagnostics. Uncatalogued means a ready repository snapshot is absent from the published Workset generation, not that its repository indexing necessarily failed.',
         },
         {
           type: 'paragraph',
